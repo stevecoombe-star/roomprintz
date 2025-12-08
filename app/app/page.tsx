@@ -16,7 +16,8 @@ import { supabase } from "@/lib/supabaseClient";
 import { useSupabaseUser } from "@/lib/useSupabaseUser";
 import { RealtorHeader } from "@/components/RealtorHeader";
 import { PropertiesSection } from "@/components/PropertiesSection";
-import { useSearchParams, useRouter } from "next/navigation";
+// 🔻 useSearchParams removed; router kept for future use if needed
+import { useRouter } from "next/navigation";
 import { PhotoToolsPanel } from "@/components/PhotoToolsPanel";
 import { SurfaceToolsPanel } from "@/components/SurfaceToolsPanel";
 
@@ -39,7 +40,7 @@ export default function Home() {
   const [isGenerating, setIsGenerating] = useState(false);
   const [resultUrl, setResultUrl] = useState<string | null>(null);
 
-  const searchParams = useSearchParams();
+  // 🔻 useSearchParams completely removed
   const router = useRouter();
 
   // Phase 1: agent photo tools
@@ -127,9 +128,8 @@ export default function Home() {
     loadPropertiesForSelector();
   }, [authLoading, user?.id, supabase]);
 
-  // Handle deep-links from Properties page:
-  // ?propertyId=...&room=...  (new)
-  // ?property=...             (legacy)
+  // 🔻 URL → property/room prefill (useSearchParams) temporarily disabled
+  /*
   useEffect(() => {
     const propertyFromURL =
       searchParams.get("propertyId") || searchParams.get("property");
@@ -150,6 +150,7 @@ export default function Home() {
       }
     }
   }, [searchParams]);
+  */
 
   // Handle file upload + preview
   const handleFileChange = (file: File | null) => {
@@ -339,7 +340,8 @@ export default function Home() {
     }
   };
 
-  // 🔗 Auto-load from deep-link: ?fromJobId=...&fromOriginal=1
+  // 🔻 Deep-link handling (?fromJobId=...) temporarily disabled (uses searchParams)
+  /*
   useEffect(() => {
     if (authLoading) return;
     if (!user) return;
@@ -423,6 +425,7 @@ export default function Home() {
     applyDeepLink();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchParams, authLoading, user, consumedDeepLinkJobId]);
+  */
 
   const handleGenerate = async () => {
     if (!uploadedFile) {
@@ -503,10 +506,7 @@ export default function Home() {
       formData.append("flooringPreset", flooringPreset || "none");
 
       // 🔗 NEW: pass roomType through (auto ⇒ blank / null)
-      formData.append(
-        "roomType",
-        roomType === "auto" ? "" : roomType
-      );
+      formData.append("roomType", roomType === "auto" ? "" : roomType);
 
       const response = await fetch("/api/stage-room", {
         method: "POST",
