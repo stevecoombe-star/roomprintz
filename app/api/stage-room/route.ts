@@ -2,6 +2,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { callCompositorEngine } from "@/lib/callCompositorEngine";
 
+// Ensure we run on the Node.js runtime (needed for Buffer, larger payloads, etc.)
+export const runtime = "nodejs";
+
 export async function POST(req: NextRequest) {
   try {
     const formData = await req.formData();
