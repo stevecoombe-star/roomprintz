@@ -19,6 +19,14 @@ type CompositorResponse = {
   error?: string;
 };
 
+/**
+ * callCompositorEngine
+ *
+ * IMPORTANT:
+ *   ROOMPRINTZ_COMPOSITOR_URL should point directly to the /stage-room endpoint, e.g.:
+ *   - http://localhost:8000/stage-room        (local dev)
+ *   - https://your-cloud-run-url/stage-room   (Cloud Run)
+ */
 export async function callCompositorEngine({
   imageBytes,
   styleId = null,
@@ -34,12 +42,12 @@ export async function callCompositorEngine({
   imageUrl: string;
   originalImageUrl?: string;
 }> {
-  const endpoint = process.env.ROOMPRINTZ_COMPOSITOR_URL;
+  const endpoint = process.env.ROOMPRINTZ_COMPOSITOR_URL?.trim();
   const apiKey = process.env.ROOMPRINTZ_COMPOSITOR_API_KEY;
 
   if (!endpoint) {
     throw new Error(
-      "ROOMPRINTZ_COMPOSITOR_URL is not set in .env.local (RoomPrintz compositor endpoint)."
+      "ROOMPRINTZ_COMPOSITOR_URL is not set. It must point to your FastAPI /stage-room endpoint."
     );
   }
 
@@ -61,6 +69,7 @@ export async function callCompositorEngine({
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
   };
+
   if (apiKey) {
     headers["Authorization"] = `Bearer ${apiKey}`;
   }
@@ -78,11 +87,17 @@ export async function callCompositorEngine({
     roomType, // NEW
   });
 
-  const res = await fetch(endpoint, {
-    method: "POST",
-    headers,
-    body,
-  });
+  let res: Response;
+  try {
+    res = await fetch(endpoint, {
+      method: "POST",
+      headers,
+      body,
+    });
+  } catch (err) {
+    console.error("[callCompositorEngine] network error:", err);
+    throw new Error("Failed to reach compositor backend");
+  }
 
   if (!res.ok) {
     const text = await res.text().catch(() => "");
@@ -93,6 +108,7 @@ export async function callCompositorEngine({
   const data = (await res.json()) as CompositorResponse;
 
   if (data.error || !data.imageUrl) {
+    console.error("[callCompositorEngine] logical error:", data);
     throw new Error(data.error || "Compositor did not return imageUrl");
   }
 
