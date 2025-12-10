@@ -16,12 +16,12 @@ import { supabase } from "@/lib/supabaseClient";
 import { useSupabaseUser } from "@/lib/useSupabaseUser";
 import { RealtorHeader } from "@/components/RealtorHeader";
 import { PropertiesSection } from "@/components/PropertiesSection";
-// 🔻 useSearchParams removed; router kept for future use if needed
-import { useRouter } from "next/navigation";
 import { PhotoToolsPanel } from "@/components/PhotoToolsPanel";
 import { SurfaceToolsPanel } from "@/components/SurfaceToolsPanel";
+// 🔹 App Router navigation hooks
+import { useRouter, useSearchParams } from "next/navigation";
 
-// 🔹 NEW: RoomType type for the dropdown
+// 🔹 RoomType type for the dropdown
 type RoomType =
   | "auto"
   | "living-room"
@@ -40,8 +40,8 @@ export default function Home() {
   const [isGenerating, setIsGenerating] = useState(false);
   const [resultUrl, setResultUrl] = useState<string | null>(null);
 
-  // 🔻 useSearchParams completely removed
   const router = useRouter();
+  const searchParams = useSearchParams();
 
   // Phase 1: agent photo tools
   const [enhancePhoto, setEnhancePhoto] = useState(false);
@@ -56,7 +56,7 @@ export default function Home() {
     "" | "carpet" | "hardwood" | "tile"
   >(""); // "" = no flooring change
 
-  // 🔹 NEW: Room type selection (front-end only for now)
+  // Room type selection
   const [roomType, setRoomType] = useState<RoomType>("auto");
 
   // property + room state
@@ -126,11 +126,11 @@ export default function Home() {
     };
 
     loadPropertiesForSelector();
-  }, [authLoading, user?.id, supabase]);
+  }, [authLoading, user?.id]);
 
-  // 🔻 URL → property/room prefill (useSearchParams) temporarily disabled
-  /*
+  // URL → property/room prefill (for “+ Generate in this room” etc.)
   useEffect(() => {
+    // Next.js gives ReadonlyURLSearchParams; use .get() as usual
     const propertyFromURL =
       searchParams.get("propertyId") || searchParams.get("property");
     const roomFromURL = searchParams.get("room");
@@ -150,7 +150,6 @@ export default function Home() {
       }
     }
   }, [searchParams]);
-  */
 
   // Handle file upload + preview
   const handleFileChange = (file: File | null) => {
@@ -194,7 +193,6 @@ export default function Home() {
         .maybeSingle();
 
       if (existingError && (existingError as any).code !== "PGRST116") {
-        // ignore "No rows" but log other errors
         console.error(
           "[Home] error while searching for existing Untitled property:",
           existingError
@@ -303,7 +301,7 @@ export default function Home() {
     }
   };
 
-  // 🔁 Reuse a staged (or original) image as the new input upload
+  // Reuse a staged (or original) image as the new input upload
   const handleUseImageAsNewInput = async (imageUrl: string | null) => {
     if (!imageUrl) return;
 
@@ -340,8 +338,7 @@ export default function Home() {
     }
   };
 
-  // 🔻 Deep-link handling (?fromJobId=...) temporarily disabled (uses searchParams)
-  /*
+  // Deep-link handling (?fromJobId=..., ?fromOriginal=1) for “Continue from this image”
   useEffect(() => {
     if (authLoading) return;
     if (!user) return;
@@ -425,7 +422,6 @@ export default function Home() {
     applyDeepLink();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchParams, authLoading, user, consumedDeepLinkJobId]);
-  */
 
   const handleGenerate = async () => {
     if (!uploadedFile) {
@@ -505,7 +501,7 @@ export default function Home() {
       formData.append("repaintWalls", repaintWalls ? "true" : "false");
       formData.append("flooringPreset", flooringPreset || "none");
 
-      // 🔗 NEW: pass roomType through (auto ⇒ blank / null)
+      // Room type (auto ⇒ blank / null)
       formData.append("roomType", roomType === "auto" ? "" : roomType);
 
       const response = await fetch("/api/stage-room", {
@@ -759,7 +755,7 @@ export default function Home() {
                 onSelectStyle={setSelectedStyle}
               />
 
-              {/* 🔹 NEW: Room Type dropdown */}
+              {/* Room Type dropdown */}
               <div className="rounded-2xl border border-slate-800 bg-slate-900/70 px-3 py-3 text-xs">
                 <div className="flex items-center justify-between gap-2 mb-2">
                   <div>
