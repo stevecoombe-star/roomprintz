@@ -43,19 +43,6 @@ export default function Home() {
   const router = useRouter();
   const searchParams = useSearchParams();
 
-  // 🔍 Tiny debug effect: log what searchParams sees (useful on Vercel)
-  useEffect(() => {
-    try {
-      const entries = searchParams ? Array.from(searchParams.entries()) : [];
-      if (typeof window !== "undefined") {
-        console.log("[Home][debug] location.href:", window.location.href);
-      }
-      console.log("[Home][debug] searchParams entries:", entries);
-    } catch (err) {
-      console.error("[Home][debug] error reading searchParams:", err);
-    }
-  }, [searchParams]);
-
   // Phase 1: agent photo tools
   const [enhancePhoto, setEnhancePhoto] = useState(false);
   const [cleanupRoom, setCleanupRoom] = useState(false);
