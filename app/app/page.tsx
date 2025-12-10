@@ -18,8 +18,8 @@ import { RealtorHeader } from "@/components/RealtorHeader";
 import { PropertiesSection } from "@/components/PropertiesSection";
 import { PhotoToolsPanel } from "@/components/PhotoToolsPanel";
 import { SurfaceToolsPanel } from "@/components/SurfaceToolsPanel";
-// 🔹 App Router navigation hooks
-import { useRouter, useSearchParams } from "next/navigation";
+// 🔹 App Router navigation hook
+import { useRouter } from "next/navigation";
 
 // 🔹 RoomType type for the dropdown
 type RoomType =
@@ -41,20 +41,6 @@ export default function Home() {
   const [resultUrl, setResultUrl] = useState<string | null>(null);
 
   const router = useRouter();
-  const searchParams = useSearchParams();
-
-  // 🔍 Tiny debug effect: log what searchParams sees (useful on Vercel)
-  useEffect(() => {
-    try {
-      const entries = searchParams ? Array.from(searchParams.entries()) : [];
-      if (typeof window !== "undefined") {
-        console.log("[Home][debug] location.href:", window.location.href);
-      }
-      console.log("[Home][debug] searchParams entries:", entries);
-    } catch (err) {
-      console.error("[Home][debug] error reading searchParams:", err);
-    }
-  }, [searchParams]);
 
   // Phase 1: agent photo tools
   const [enhancePhoto, setEnhancePhoto] = useState(false);
@@ -105,6 +91,16 @@ export default function Home() {
     uploadedFile && user && (selectedStyle || wantsPhotoTools)
   );
 
+  // 🔍 Tiny debug effect: log what the URL/search looks like (useful on Vercel)
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const href = window.location.href;
+    const params = new URLSearchParams(window.location.search);
+    const entries = Array.from(params.entries());
+    console.log("[Home][debug] location.href:", href);
+    console.log("[Home][debug] search params:", entries);
+  }, []);
+
   // Load properties for the selector
   useEffect(() => {
     const loadPropertiesForSelector = async () => {
@@ -143,10 +139,12 @@ export default function Home() {
 
   // URL → property/room prefill (for “+ Generate in this room” etc.)
   useEffect(() => {
-    // Next.js gives ReadonlyURLSearchParams; use .get() as usual
+    if (typeof window === "undefined") return;
+
+    const params = new URLSearchParams(window.location.search);
     const propertyFromURL =
-      searchParams.get("propertyId") || searchParams.get("property");
-    const roomFromURL = searchParams.get("room");
+      params.get("propertyId") || params.get("property");
+    const roomFromURL = params.get("room");
 
     if (propertyFromURL) {
       setSelectedPropertyId(propertyFromURL);
@@ -162,7 +160,7 @@ export default function Home() {
         el.scrollIntoView({ behavior: "smooth", block: "start" });
       }
     }
-  }, [searchParams]);
+  }, []);
 
   // Handle file upload + preview
   const handleFileChange = (file: File | null) => {
@@ -355,9 +353,11 @@ export default function Home() {
   useEffect(() => {
     if (authLoading) return;
     if (!user) return;
+    if (typeof window === "undefined") return;
 
-    const fromJobId = searchParams.get("fromJobId");
-    const fromOriginalParam = searchParams.get("fromOriginal");
+    const params = new URLSearchParams(window.location.search);
+    const fromJobId = params.get("fromJobId");
+    const fromOriginalParam = params.get("fromOriginal");
     const fromOriginal = fromOriginalParam === "1";
 
     if (!fromJobId) return;
@@ -385,8 +385,8 @@ export default function Home() {
 
         // If property/room not already set via query, fall back to job's values
         const propertyFromURL =
-          searchParams.get("propertyId") || searchParams.get("property");
-        const roomFromURL = searchParams.get("room");
+          params.get("propertyId") || params.get("property");
+        const roomFromURL = params.get("room");
 
         if (!propertyFromURL && job.property_id) {
           setSelectedPropertyId(job.property_id as string);
@@ -414,14 +414,12 @@ export default function Home() {
         setConsumedDeepLinkJobId(fromJobId);
 
         // Clean URL so we don't re-apply on refresh/back
-        const qs = new URLSearchParams(searchParams.toString());
-        qs.delete("fromJobId");
-        qs.delete("fromOriginal");
+        params.delete("fromJobId");
+        params.delete("fromOriginal");
 
-        const qsString = qs.toString();
+        const qsString = params.toString();
         const hash = "#staging-area";
 
-        // Keep current pathname; only change query/hash
         if (qsString) {
           router.replace(`?${qsString}${hash}`);
         } else {
@@ -434,7 +432,7 @@ export default function Home() {
 
     applyDeepLink();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [searchParams, authLoading, user, consumedDeepLinkJobId]);
+  }, [authLoading, user, consumedDeepLinkJobId]);
 
   const handleGenerate = async () => {
     if (!uploadedFile) {
