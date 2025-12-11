@@ -43,12 +43,20 @@ export async function POST(req: NextRequest) {
         ? null
         : flooringPresetRaw; // null or "carpet"/"hardwood"/"tile"
 
-    // NEW: roomType
+    // roomType
     const roomTypeRaw = formData.get("roomType");
     const roomType =
       typeof roomTypeRaw === "string" && roomTypeRaw.trim().length > 0
         ? roomTypeRaw.trim()
         : null;
+
+    // NEW: modelVersion ("gemini-3" | "gemini-2.5"), default to gemini-3
+    const modelVersionRaw = formData.get("modelVersion");
+    const normalizedModelVersion =
+      typeof modelVersionRaw === "string" &&
+      (modelVersionRaw === "gemini-3" || modelVersionRaw === "gemini-2.5")
+        ? (modelVersionRaw as "gemini-3" | "gemini-2.5")
+        : "gemini-3";
 
     // Safety check: at least one action
     if (
@@ -83,7 +91,9 @@ export async function POST(req: NextRequest) {
       renovateRoom,
       repaintWalls,
       flooringPreset,
-      roomType, // NEW
+      roomType,
+      // NEW
+      modelVersion: normalizedModelVersion,
     });
 
     const imageUrl = result?.imageUrl ?? null;

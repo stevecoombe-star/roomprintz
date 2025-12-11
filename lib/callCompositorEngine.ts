@@ -1,5 +1,7 @@
 // lib/callCompositorEngine.ts
 
+type ModelVersion = "gemini-3" | "gemini-2.5";
+
 type CallCompositorArgs = {
   imageBytes: Buffer;
   styleId?: string | null;
@@ -10,7 +12,8 @@ type CallCompositorArgs = {
   renovateRoom?: boolean;
   repaintWalls?: boolean;
   flooringPreset?: string | null;
-  roomType?: string | null; // NEW
+  roomType?: string | null;
+  modelVersion?: ModelVersion; // NEW
 };
 
 type CompositorResponse = {
@@ -39,7 +42,8 @@ export async function callCompositorEngine({
   renovateRoom = false,
   repaintWalls = false,
   flooringPreset = null,
-  roomType = null, // NEW
+  roomType = null,
+  modelVersion = "gemini-3", // NEW: default to Gemini 3 (Nano Banana Pro)
 }: CallCompositorArgs): Promise<{
   imageUrl: string;
   originalImageUrl?: string;
@@ -65,7 +69,8 @@ export async function callCompositorEngine({
     renovateRoom,
     repaintWalls,
     flooringPreset,
-    roomType, // NEW
+    roomType,
+    modelVersion, // NEW
   };
 
   console.log("[callCompositorEngine] Calling compositor at:", endpoint, {
@@ -79,6 +84,7 @@ export async function callCompositorEngine({
     repaintWalls,
     flooringPreset,
     roomType,
+    modelVersion, // NEW
   });
 
   const headers: Record<string, string> = {

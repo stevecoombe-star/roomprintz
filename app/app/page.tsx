@@ -33,6 +33,9 @@ type RoomType =
   | "office-den"
   | "other";
 
+// 🔹 Model version toggle
+type ModelVersion = "gemini-3" | "gemini-2.5";
+
 export default function Home() {
   const [uploadedFile, setUploadedFile] = useState<File | null>(null);
   const [uploadedPreview, setUploadedPreview] = useState<string | null>(null);
@@ -57,6 +60,9 @@ export default function Home() {
 
   // Room type selection
   const [roomType, setRoomType] = useState<RoomType>("auto");
+
+  // 🔹 Model version selection
+  const [modelVersion, setModelVersion] = useState<ModelVersion>("gemini-3");
 
   // property + room state
   const [properties, setProperties] = useState<
@@ -515,6 +521,9 @@ export default function Home() {
       // Room type (auto ⇒ blank / null)
       formData.append("roomType", roomType === "auto" ? "" : roomType);
 
+      // 🔹 Model version
+      formData.append("modelVersion", modelVersion);
+
       const response = await fetch("/api/stage-room", {
         method: "POST",
         body: formData,
@@ -796,7 +805,7 @@ export default function Home() {
               </div>
             </div>
 
-            {/* RIGHT COLUMN: Result + Generate */}
+            {/* RIGHT COLUMN: Result + Model toggle + Generate */}
             <div className="space-y-4">
               <ResultPanel
                 uploadedPreview={uploadedPreview}
@@ -812,6 +821,47 @@ export default function Home() {
                 isGenerating={isGenerating}
                 onGenerate={handleGenerate}
               />
+
+              {/* Model selector */}
+              <div className="rounded-2xl border border-slate-800 bg-slate-900/70 px-3 py-3 text-xs">
+                <div className="flex items-center justify-between gap-2 mb-2">
+                  <div>
+                    <div className="text-[11px] font-semibold text-slate-200">
+                      Model
+                    </div>
+                    <div className="text-[11px] text-slate-400">
+                      Choose the Gemini model for this generation.
+                    </div>
+                  </div>
+                </div>
+                <div className="inline-flex rounded-full border border-slate-700 bg-slate-950 p-[2px] text-[11px]">
+                  <button
+                    type="button"
+                    onClick={() => setModelVersion("gemini-3")}
+                    className={
+                      "px-3 py-1 rounded-full transition " +
+                      (modelVersion === "gemini-3"
+                        ? "bg-emerald-500/20 text-emerald-200 border border-emerald-400/80"
+                        : "text-slate-300")
+                    }
+                  >
+                    Gemini 3 (recommended)
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setModelVersion("gemini-2.5")}
+                    className={
+                      "px-3 py-1 rounded-full transition " +
+                      (modelVersion === "gemini-2.5"
+                        ? "bg-emerald-500/20 text-emerald-200 border border-emerald-400/80"
+                        : "text-slate-300")
+                    }
+                  >
+                    Gemini 2.5 (classic)
+                  </button>
+                </div>
+              </div>
+
             </div>
           </section>
 
