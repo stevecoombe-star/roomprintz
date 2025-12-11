@@ -317,10 +317,16 @@ export default function PropertyPage() {
 
       const allocateRoomName = () => {
         let index = 1;
-        while (existingRoomLabels.has(`Room ${index}`)) {
+
+        // 🔹 NEW: always work with zero-padded labels: Room 01, Room 02, ...
+        const makeLabel = (i: number) => `Room ${String(i).padStart(2, "0")}`;
+
+        // 🔹 Skip any indices that already exist (e.g., Room 01, Room 02...)
+        while (existingRoomLabels.has(makeLabel(index))) {
           index += 1;
         }
-        const label = `Room ${index}`;
+
+        const label = makeLabel(index);
         existingRoomLabels.add(label);
         return label;
       };
