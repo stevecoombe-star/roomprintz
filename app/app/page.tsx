@@ -125,10 +125,10 @@ export default function Home() {
   // 🔹 Restore roomType from localStorage on first load
   // useEffect(() => {
   //   if (typeof window === "undefined") return;
-  // 
+
   //   const stored = window.localStorage.getItem(ROOM_TYPE_STORAGE_KEY);
   //   if (!stored) return;
-  // 
+
   //   const validRoomTypes: RoomType[] = [
   //     "auto",
   //     "living-room",
@@ -140,7 +140,7 @@ export default function Home() {
   //     "office-den",
   //     "other",
   //   ];
-  // 
+
   //   if (validRoomTypes.includes(stored as RoomType)) {
   //     setRoomType(stored as RoomType);
   //   }
