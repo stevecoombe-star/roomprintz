@@ -18,7 +18,6 @@ import { RealtorHeader } from "@/components/RealtorHeader";
 import { PropertiesSection } from "@/components/PropertiesSection";
 import { PhotoToolsPanel } from "@/components/PhotoToolsPanel";
 import { SurfaceToolsPanel } from "@/components/SurfaceToolsPanel";
-// 🔹 App Router navigation hook
 import { useRouter } from "next/navigation";
 
 // 🔹 RoomType type for the dropdown
@@ -35,6 +34,9 @@ type RoomType =
 
 // 🔹 Model version toggle
 type ModelVersion = "gemini-3" | "gemini-2.5";
+
+// 🔹 localStorage key for room type persistence
+const ROOM_TYPE_STORAGE_KEY = "roomprintz.roomType";
 
 export default function Home() {
   const [uploadedFile, setUploadedFile] = useState<File | null>(null);
@@ -56,9 +58,9 @@ export default function Home() {
   const [repaintWalls, setRepaintWalls] = useState(false);
   const [flooringPreset, setFlooringPreset] = useState<
     "" | "carpet" | "hardwood" | "tile"
-  >(""); // "" = no flooring change
+  >("");
 
-  // Room type selection
+  // 🔹 Room type selection (persisted)
   const [roomType, setRoomType] = useState<RoomType>("auto");
 
   // 🔹 Model version selection
@@ -75,14 +77,12 @@ export default function Home() {
   const [propertiesRefreshToken, setPropertiesRefreshToken] = useState(0);
   const [jobsRefreshToken, setJobsRefreshToken] = useState(0);
 
-  // track deep-link consumption so we don't re-apply it forever
   const [consumedDeepLinkJobId, setConsumedDeepLinkJobId] = useState<
     string | null
   >(null);
 
   const { user, loading: authLoading } = useSupabaseUser();
 
-  // Tools that count as "doing something" even without a style
   const wantsPhotoTools =
     enhancePhoto ||
     cleanupRoom ||
@@ -92,10 +92,39 @@ export default function Home() {
     repaintWalls ||
     flooringPreset !== "";
 
-  // Property + room NOT required anymore for canGenerate
   const canGenerate = Boolean(
     uploadedFile && user && (selectedStyle || wantsPhotoTools)
   );
+
+  // 🔹 Restore roomType from localStorage on first load
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+
+    const stored = window.localStorage.getItem(ROOM_TYPE_STORAGE_KEY);
+    if (!stored) return;
+
+    const validRoomTypes: RoomType[] = [
+      "auto",
+      "living-room",
+      "family-room",
+      "bedroom",
+      "kitchen",
+      "bathroom",
+      "dining-room",
+      "office-den",
+      "other",
+    ];
+
+    if (validRoomTypes.includes(stored as RoomType)) {
+      setRoomType(stored as RoomType);
+    }
+  }, []);
+
+  // 🔹 Persist roomType changes
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    window.localStorage.setItem(ROOM_TYPE_STORAGE_KEY, roomType);
+  }, [roomType]);
 
   // 🔍 Tiny debug effect: log what the URL/search looks like (useful on Vercel)
   useEffect(() => {
