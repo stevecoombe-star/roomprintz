@@ -35,8 +35,11 @@ type RoomType =
 // 🔹 Model version toggle
 type ModelVersion = "gemini-3" | "gemini-2.5";
 
+// 🔹 localStorage key for selected property persistence (scoped per user)
+const SELECTED_PROPERTY_STORAGE_KEY_PREFIX = "roomprintz.selectedPropertyId.";
+
 // 🔹 localStorage key for room type persistence
-const ROOM_TYPE_STORAGE_KEY = "roomprintz.roomType";
+// const ROOM_TYPE_STORAGE_KEY = "roomprintz.roomType";
 
 export default function Home() {
   const [uploadedFile, setUploadedFile] = useState<File | null>(null);
@@ -60,7 +63,7 @@ export default function Home() {
     "" | "carpet" | "hardwood" | "tile"
   >("");
 
-  // 🔹 Room type selection (persisted)
+  // 🔹 Room type selection
   const [roomType, setRoomType] = useState<RoomType>("auto");
 
   // 🔹 Model version selection
@@ -96,35 +99,73 @@ export default function Home() {
     uploadedFile && user && (selectedStyle || wantsPhotoTools)
   );
 
-  // 🔹 Restore roomType from localStorage on first load
+  // 🔹 Restore selected property from URL (highest priority) or localStorage (fallback)
   useEffect(() => {
     if (typeof window === "undefined") return;
+    if (authLoading) return;
+    if (!user) return;
 
-    const stored = window.localStorage.getItem(ROOM_TYPE_STORAGE_KEY);
-    if (!stored) return;
+    const params = new URLSearchParams(window.location.search);
+    const propertyFromURL = params.get("propertyId") || params.get("property");
 
-    const validRoomTypes: RoomType[] = [
-      "auto",
-      "living-room",
-      "family-room",
-      "bedroom",
-      "kitchen",
-      "bathroom",
-      "dining-room",
-      "office-den",
-      "other",
-    ];
+    const storageKey = `${SELECTED_PROPERTY_STORAGE_KEY_PREFIX}${user.id}`;
 
-    if (validRoomTypes.includes(stored as RoomType)) {
-      setRoomType(stored as RoomType);
+    if (propertyFromURL) {
+      setSelectedPropertyId(propertyFromURL);
+      window.localStorage.setItem(storageKey, propertyFromURL);
+      return;
     }
-  }, []);
+
+    const stored = window.localStorage.getItem(storageKey);
+    if (stored) {
+      setSelectedPropertyId(stored);
+    }
+  }, [authLoading, user?.id]);
+
+  // 🔹 Restore roomType from localStorage on first load
+  // useEffect(() => {
+  //   if (typeof window === "undefined") return;
+  // 
+  //   const stored = window.localStorage.getItem(ROOM_TYPE_STORAGE_KEY);
+  //   if (!stored) return;
+  // 
+  //   const validRoomTypes: RoomType[] = [
+  //     "auto",
+  //     "living-room",
+  //     "family-room",
+  //     "bedroom",
+  //     "kitchen",
+  //     "bathroom",
+  //     "dining-room",
+  //     "office-den",
+  //     "other",
+  //   ];
+  // 
+  //   if (validRoomTypes.includes(stored as RoomType)) {
+  //     setRoomType(stored as RoomType);
+  //   }
+  // }, []);
+
+  // 🔹 Persist selected property changes
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (authLoading) return;
+    if (!user) return;
+
+    const storageKey = `${SELECTED_PROPERTY_STORAGE_KEY_PREFIX}${user.id}`;
+
+    if (selectedPropertyId) {
+      window.localStorage.setItem(storageKey, selectedPropertyId);
+    } else {
+      window.localStorage.removeItem(storageKey);
+    }
+  }, [selectedPropertyId, authLoading, user?.id]);
 
   // 🔹 Persist roomType changes
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    window.localStorage.setItem(ROOM_TYPE_STORAGE_KEY, roomType);
-  }, [roomType]);
+  // useEffect(() => {
+  //   if (typeof window === "undefined") return;
+  //   window.localStorage.setItem(ROOM_TYPE_STORAGE_KEY, roomType);
+  // }, [roomType]);
 
   // 🔍 Tiny debug effect: log what the URL/search looks like (useful on Vercel)
   useEffect(() => {
@@ -135,6 +176,25 @@ export default function Home() {
     console.log("[Home][debug] location.href:", href);
     console.log("[Home][debug] search params:", entries);
   }, []);
+
+  // 🔹 Validate persisted selectedPropertyId exists in current property list
+  useEffect(() => {
+    if (authLoading) return;
+    if (!user) return;
+    if (propertiesLoading) return;
+    if (!selectedPropertyId) return;
+
+    const exists = properties.some((p) => p.id === selectedPropertyId);
+    if (exists) return;
+
+    // stale selection -> clear it
+    setSelectedPropertyId("");
+
+    if (typeof window !== "undefined") {
+      const storageKey = `${SELECTED_PROPERTY_STORAGE_KEY_PREFIX}${user.id}`;
+      window.localStorage.removeItem(storageKey);
+    }
+  }, [authLoading, user?.id, propertiesLoading, properties, selectedPropertyId]);
 
   // Load properties for the selector
   useEffect(() => {
@@ -172,24 +232,18 @@ export default function Home() {
     loadPropertiesForSelector();
   }, [authLoading, user?.id]);
 
-  // URL → property/room prefill (for “+ Generate in this room” etc.)
+  // URL → room prefill only (property handled elsewhere)
   useEffect(() => {
     if (typeof window === "undefined") return;
 
     const params = new URLSearchParams(window.location.search);
-    const propertyFromURL =
-      params.get("propertyId") || params.get("property");
     const roomFromURL = params.get("room");
-
-    if (propertyFromURL) {
-      setSelectedPropertyId(propertyFromURL);
-    }
 
     if (roomFromURL) {
       setRoomName(roomFromURL);
     }
 
-    if (propertyFromURL || roomFromURL) {
+    if (roomFromURL) {
       const el = document.getElementById("staging-area");
       if (el) {
         el.scrollIntoView({ behavior: "smooth", block: "start" });
