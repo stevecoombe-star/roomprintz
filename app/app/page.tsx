@@ -61,11 +61,10 @@ export default function Home() {
   // Phase 1: agent photo tools
   const [enhancePhoto, setEnhancePhoto] = useState(false);
   const [cleanupRoom, setCleanupRoom] = useState(false);
-  const [repairDamage, setRepairDamage] = useState(false);
   const [emptyRoom, setEmptyRoom] = useState(false);
-  const [renovateRoom, setRenovateRoom] = useState(false);
 
   // Phase 2: surfaces
+  const [repairDamage, setRepairDamage] = useState(false);
   const [repaintWalls, setRepaintWalls] = useState(false);
   const [flooringPreset, setFlooringPreset] = useState<
     "" | "carpet" | "hardwood" | "tile"
@@ -99,23 +98,19 @@ export default function Home() {
     // Photo tools
     setEnhancePhoto(false);
     setCleanupRoom(false);
-    setRepairDamage(false);
     setEmptyRoom(false);
-    setRenovateRoom(false);
 
-    // Surface updates
+    // Surface tools
+    setRepairDamage(false);
     setRepaintWalls(false);
-
-    // Flooring preset (default = "No flooring change")
     setFlooringPreset("");
   };
 
   const wantsPhotoTools =
     enhancePhoto ||
     cleanupRoom ||
-    repairDamage ||
     emptyRoom ||
-    renovateRoom ||
+    repairDamage ||
     repaintWalls ||
     flooringPreset !== "";
 
@@ -589,9 +584,8 @@ export default function Home() {
 
       formData.append("enhancePhoto", enhancePhoto ? "true" : "false");
       formData.append("cleanupRoom", cleanupRoom ? "true" : "false");
-      formData.append("repairDamage", repairDamage ? "true" : "false");
       formData.append("emptyRoom", emptyRoom ? "true" : "false");
-      formData.append("renovateRoom", renovateRoom ? "true" : "false");
+      formData.append("repairDamage", repairDamage ? "true" : "false");
       formData.append("repaintWalls", repaintWalls ? "true" : "false");
       formData.append("flooringPreset", flooringPreset || "none");
 
@@ -837,15 +831,13 @@ export default function Home() {
                     onChangeEnhance={setEnhancePhoto}
                     cleanupRoom={cleanupRoom}
                     onChangeCleanup={setCleanupRoom}
-                    repairDamage={repairDamage}
-                    onChangeRepair={setRepairDamage}
                     emptyRoom={emptyRoom}
                     onChangeEmptyRoom={setEmptyRoom}
-                    renovateRoom={renovateRoom}
-                    onChangeRenovateRoom={setRenovateRoom}
                   />
 
                   <SurfaceToolsPanel
+                    repairDamage={repairDamage}
+                    onChangeRepair={setRepairDamage}
                     repaintWalls={repaintWalls}
                     onChangeRepaintWalls={setRepaintWalls}
                     flooringPreset={flooringPreset}
