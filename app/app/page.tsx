@@ -38,9 +38,6 @@ type ModelVersion = "gemini-3" | "gemini-2.5";
 // 🔹 localStorage key for selected property persistence (scoped per user)
 const SELECTED_PROPERTY_STORAGE_KEY_PREFIX = "roomprintz.selectedPropertyId.";
 
-// 🔹 localStorage key for room type persistence
-// const ROOM_TYPE_STORAGE_KEY = "roomprintz.roomType";
-
 export default function Home() {
   const [uploadedFile, setUploadedFile] = useState<File | null>(null);
   const [uploadedPreview, setUploadedPreview] = useState<string | null>(null);
@@ -49,6 +46,17 @@ export default function Home() {
   const [resultUrl, setResultUrl] = useState<string | null>(null);
 
   const router = useRouter();
+
+  // 🔔 Simple toast (no external deps)
+  const [toast, setToast] = useState<{
+    message: string;
+    type: "error" | "info";
+  } | null>(null);
+
+  const showToast = (message: string, type: "error" | "info" = "info") => {
+    setToast({ message, type });
+    window.setTimeout(() => setToast(null), 4500);
+  };
 
   // Phase 1: agent photo tools
   const [enhancePhoto, setEnhancePhoto] = useState(false);
@@ -86,6 +94,22 @@ export default function Home() {
 
   const { user, loading: authLoading } = useSupabaseUser();
 
+  // ✅ Reset Photo Tools + Surface Updates after a SUCCESSFUL generation + job insert
+  const resetToolsAfterGeneration = () => {
+    // Photo tools
+    setEnhancePhoto(false);
+    setCleanupRoom(false);
+    setRepairDamage(false);
+    setEmptyRoom(false);
+    setRenovateRoom(false);
+
+    // Surface updates
+    setRepaintWalls(false);
+
+    // Flooring preset (default = "No flooring change")
+    setFlooringPreset("");
+  };
+
   const wantsPhotoTools =
     enhancePhoto ||
     cleanupRoom ||
@@ -122,30 +146,6 @@ export default function Home() {
     }
   }, [authLoading, user?.id]);
 
-  // 🔹 Restore roomType from localStorage on first load
-  // useEffect(() => {
-  //   if (typeof window === "undefined") return;
-  //
-  //   const stored = window.localStorage.getItem(ROOM_TYPE_STORAGE_KEY);
-  //   if (!stored) return;
-  //
-  //   const validRoomTypes: RoomType[] = [
-  //     "auto",
-  //     "living-room",
-  //     "family-room",
-  //     "bedroom",
-  //     "kitchen",
-  //     "bathroom",
-  //     "dining-room",
-  //     "office-den",
-  //     "other",
-  //   ];
-  //
-  //   if (validRoomTypes.includes(stored as RoomType)) {
-  //     setRoomType(stored as RoomType);
-  //   }
-  // }, []);
-  //
   // 🔹 Persist selected property changes
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -160,12 +160,6 @@ export default function Home() {
       window.localStorage.removeItem(storageKey);
     }
   }, [selectedPropertyId, authLoading, user?.id]);
-
-  // 🔹 Persist roomType changes
-  // useEffect(() => {
-  //   if (typeof window === "undefined") return;
-  //   window.localStorage.setItem(ROOM_TYPE_STORAGE_KEY, roomType);
-  // }, [roomType]);
 
   // 🔍 Tiny debug effect: log what the URL/search looks like (useful on Vercel)
   useEffect(() => {
@@ -695,12 +689,23 @@ export default function Home() {
 
         if (insertError) {
           console.error("[Supabase jobs insert] error:", insertError);
+          showToast(
+            "Staging succeeded, but we couldn’t save this to your history. Please try again.",
+            "error"
+          );
         } else {
           console.log("[Supabase jobs insert] inserted job id:", insertData?.id);
           setJobsRefreshToken((token) => token + 1);
+
+          // ✅ Reset ONLY after job insert succeeds
+          resetToolsAfterGeneration();
         }
       } catch (err) {
         console.error("[Supabase jobs insert] unexpected error:", err);
+        showToast(
+          "Staging succeeded, but we couldn’t save this to your history. Please try again.",
+          "error"
+        );
       }
     } catch (err) {
       console.error("Generate error:", err);
@@ -944,7 +949,6 @@ export default function Home() {
                   </button>
                 </div>
               </div>
-
             </div>
           </section>
 
@@ -962,6 +966,32 @@ export default function Home() {
           <span>Private Beta · 2025</span>
         </div>
       </footer>
+
+      {/* Toast */}
+      {toast && (
+        <div className="fixed bottom-4 right-4 z-50">
+          <div
+            className={
+              "rounded-xl border px-4 py-3 text-xs shadow-lg max-w-sm " +
+              (toast.type === "error"
+                ? "border-rose-500/40 bg-rose-500/10 text-rose-100"
+                : "border-slate-700 bg-slate-900 text-slate-100")
+            }
+          >
+            <div className="flex items-start gap-3">
+              <div className="flex-1 leading-relaxed">{toast.message}</div>
+              <button
+                type="button"
+                onClick={() => setToast(null)}
+                className="text-slate-300 hover:text-slate-50"
+                aria-label="Dismiss"
+              >
+                ✕
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </main>
   );
 }
