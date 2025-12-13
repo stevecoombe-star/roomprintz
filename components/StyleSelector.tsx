@@ -58,7 +58,7 @@ export const ROOM_STYLES: RoomStyle[] = [
 type StyleSelectorProps = {
   styles: RoomStyle[];
   selectedStyle: RoomStyleId | null;
-  onSelectStyle: (styleId: RoomStyleId) => void;
+  onSelectStyle: (styleId: RoomStyleId | null) => void; // allow deselect
 };
 
 export function StyleSelector({
@@ -80,11 +80,12 @@ export function StyleSelector({
       <div className="grid grid-cols-1 gap-2">
         {styles.map((style) => {
           const isSelected = style.id === selectedStyle;
+
           return (
             <button
               key={style.id}
               type="button"
-              onClick={() => onSelectStyle(style.id)}
+              onClick={() => onSelectStyle(isSelected ? null : style.id)} // toggle deselect
               className={[
                 "text-left rounded-xl border px-3 py-2 transition",
                 "bg-slate-950/60 hover:bg-slate-900",
@@ -98,12 +99,14 @@ export function StyleSelector({
                   <div className="text-sm font-medium">{style.name}</div>
                   <div className="text-[11px] text-slate-400">{style.subtitle}</div>
                 </div>
+
                 {isSelected && (
                   <span className="text-[11px] text-emerald-300 border border-emerald-400/60 rounded-full px-2 py-[2px]">
                     Selected
                   </span>
                 )}
               </div>
+
               <p className="text-[11px] text-slate-400 mt-1">{style.description}</p>
             </button>
           );
