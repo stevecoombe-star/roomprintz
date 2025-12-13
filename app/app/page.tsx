@@ -86,6 +86,22 @@ export default function Home() {
 
   const { user, loading: authLoading } = useSupabaseUser();
 
+  // ✅ Reset Photo Tools + Surface Updates after a SUCCESSFUL generation
+  const resetToolsAfterGeneration = () => {
+    // Photo tools
+    setEnhancePhoto(false);
+    setCleanupRoom(false);
+    setRepairDamage(false);
+    setEmptyRoom(false);
+    setRenovateRoom(false);
+
+    // Surface updates
+    setRepaintWalls(false);
+
+    // Flooring preset (default = "No flooring change")
+    setFlooringPreset("");
+  };
+
   const wantsPhotoTools =
     enhancePhoto ||
     cleanupRoom ||
@@ -677,6 +693,9 @@ export default function Home() {
       // 7) Update UI with staged URL
       setResultUrl(stagedImageUrl);
 
+      // ✅ 7.1) Reset Photo Tools + Surface Updates after a SUCCESSFUL generation
+      resetToolsAfterGeneration();
+
       // 8) Save job to Supabase (URLs only, no base64)
       try {
         const { data: insertData, error: insertError } = await supabase
@@ -944,7 +963,6 @@ export default function Home() {
                   </button>
                 </div>
               </div>
-
             </div>
           </section>
 
