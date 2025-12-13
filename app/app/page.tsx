@@ -86,7 +86,7 @@ export default function Home() {
 
   const { user, loading: authLoading } = useSupabaseUser();
 
-  // ✅ Reset Photo Tools + Surface Updates after a SUCCESSFUL generation
+  // ✅ Reset Photo Tools + Surface Updates after a SUCCESSFUL generation + job insert
   const resetToolsAfterGeneration = () => {
     // Photo tools
     setEnhancePhoto(false);
@@ -138,30 +138,6 @@ export default function Home() {
     }
   }, [authLoading, user?.id]);
 
-  // 🔹 Restore roomType from localStorage on first load
-  // useEffect(() => {
-  //   if (typeof window === "undefined") return;
-  //
-  //   const stored = window.localStorage.getItem(ROOM_TYPE_STORAGE_KEY);
-  //   if (!stored) return;
-  //
-  //   const validRoomTypes: RoomType[] = [
-  //     "auto",
-  //     "living-room",
-  //     "family-room",
-  //     "bedroom",
-  //     "kitchen",
-  //     "bathroom",
-  //     "dining-room",
-  //     "office-den",
-  //     "other",
-  //   ];
-  //
-  //   if (validRoomTypes.includes(stored as RoomType)) {
-  //     setRoomType(stored as RoomType);
-  //   }
-  // }, []);
-  //
   // 🔹 Persist selected property changes
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -176,12 +152,6 @@ export default function Home() {
       window.localStorage.removeItem(storageKey);
     }
   }, [selectedPropertyId, authLoading, user?.id]);
-
-  // 🔹 Persist roomType changes
-  // useEffect(() => {
-  //   if (typeof window === "undefined") return;
-  //   window.localStorage.setItem(ROOM_TYPE_STORAGE_KEY, roomType);
-  // }, [roomType]);
 
   // 🔍 Tiny debug effect: log what the URL/search looks like (useful on Vercel)
   useEffect(() => {
@@ -693,9 +663,6 @@ export default function Home() {
       // 7) Update UI with staged URL
       setResultUrl(stagedImageUrl);
 
-      // ✅ 7.1) Reset Photo Tools + Surface Updates after a SUCCESSFUL generation
-      resetToolsAfterGeneration();
-
       // 8) Save job to Supabase (URLs only, no base64)
       try {
         const { data: insertData, error: insertError } = await supabase
@@ -717,6 +684,9 @@ export default function Home() {
         } else {
           console.log("[Supabase jobs insert] inserted job id:", insertData?.id);
           setJobsRefreshToken((token) => token + 1);
+
+          // ✅ Reset ONLY after job insert succeeds
+          resetToolsAfterGeneration();
         }
       } catch (err) {
         console.error("[Supabase jobs insert] unexpected error:", err);
