@@ -38,9 +38,6 @@ type ModelVersion = "gemini-3" | "gemini-2.5";
 // 🔹 localStorage key for selected property persistence (scoped per user)
 const SELECTED_PROPERTY_STORAGE_KEY_PREFIX = "roomprintz.selectedPropertyId.";
 
-// 🔹 localStorage key for room type persistence
-// const ROOM_TYPE_STORAGE_KEY = "roomprintz.roomType";
-
 export default function Home() {
   const [uploadedFile, setUploadedFile] = useState<File | null>(null);
   const [uploadedPreview, setUploadedPreview] = useState<string | null>(null);
@@ -49,6 +46,17 @@ export default function Home() {
   const [resultUrl, setResultUrl] = useState<string | null>(null);
 
   const router = useRouter();
+
+  // 🔔 Simple toast (no external deps)
+  const [toast, setToast] = useState<{
+    message: string;
+    type: "error" | "info";
+  } | null>(null);
+
+  const showToast = (message: string, type: "error" | "info" = "info") => {
+    setToast({ message, type });
+    window.setTimeout(() => setToast(null), 4500);
+  };
 
   // Phase 1: agent photo tools
   const [enhancePhoto, setEnhancePhoto] = useState(false);
@@ -681,6 +689,10 @@ export default function Home() {
 
         if (insertError) {
           console.error("[Supabase jobs insert] error:", insertError);
+          showToast(
+            "Staging succeeded, but we couldn’t save this to your history. Please try again.",
+            "error"
+          );
         } else {
           console.log("[Supabase jobs insert] inserted job id:", insertData?.id);
           setJobsRefreshToken((token) => token + 1);
@@ -690,6 +702,10 @@ export default function Home() {
         }
       } catch (err) {
         console.error("[Supabase jobs insert] unexpected error:", err);
+        showToast(
+          "Staging succeeded, but we couldn’t save this to your history. Please try again.",
+          "error"
+        );
       }
     } catch (err) {
       console.error("Generate error:", err);
@@ -950,6 +966,32 @@ export default function Home() {
           <span>Private Beta · 2025</span>
         </div>
       </footer>
+
+      {/* Toast */}
+      {toast && (
+        <div className="fixed bottom-4 right-4 z-50">
+          <div
+            className={
+              "rounded-xl border px-4 py-3 text-xs shadow-lg max-w-sm " +
+              (toast.type === "error"
+                ? "border-rose-500/40 bg-rose-500/10 text-rose-100"
+                : "border-slate-700 bg-slate-900 text-slate-100")
+            }
+          >
+            <div className="flex items-start gap-3">
+              <div className="flex-1 leading-relaxed">{toast.message}</div>
+              <button
+                type="button"
+                onClick={() => setToast(null)}
+                className="text-slate-300 hover:text-slate-50"
+                aria-label="Dismiss"
+              >
+                ✕
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </main>
   );
 }
