@@ -1,6 +1,7 @@
 // lib/callCompositorEngine.ts
 
 type ModelVersion = "gemini-3" | "gemini-2.5";
+type AspectRatio = "auto" | "4:3" | "3:2" | "16:9" | "1:1";
 
 type CallCompositorArgs = {
   imageBytes: Buffer;
@@ -13,7 +14,8 @@ type CallCompositorArgs = {
   repaintWalls?: boolean;
   flooringPreset?: string | null;
   roomType?: string | null;
-  modelVersion?: ModelVersion; // NEW
+  modelVersion?: ModelVersion;
+  aspectRatio?: AspectRatio; // ✅ NEW
 };
 
 type CompositorResponse = {
@@ -43,7 +45,8 @@ export async function callCompositorEngine({
   repaintWalls = false,
   flooringPreset = null,
   roomType = null,
-  modelVersion = "gemini-3", // NEW: default to Gemini 3 (Nano Banana Pro)
+  modelVersion = "gemini-3",
+  aspectRatio = "auto",
 }: CallCompositorArgs): Promise<{
   imageUrl: string;
   originalImageUrl?: string;
@@ -56,6 +59,10 @@ export async function callCompositorEngine({
       "ROOMPRINTZ_COMPOSITOR_URL is not set in env (RoomPrintz compositor endpoint)."
     );
   }
+
+  // Reliability: Gemini 2.5 Flash -> force 1:1 unless you later decide otherwise
+  const effectiveAspectRatio: AspectRatio =
+    modelVersion === "gemini-2.5" ? "1:1" : aspectRatio;
 
   const imageBase64 = imageBytes.toString("base64");
 
@@ -70,7 +77,8 @@ export async function callCompositorEngine({
     repaintWalls,
     flooringPreset,
     roomType,
-    modelVersion, // NEW
+    modelVersion,
+    aspectRatio: effectiveAspectRatio, // ✅ NEW
   };
 
   console.log("[callCompositorEngine] Calling compositor at:", endpoint, {
@@ -84,7 +92,8 @@ export async function callCompositorEngine({
     repaintWalls,
     flooringPreset,
     roomType,
-    modelVersion, // NEW
+    modelVersion,
+    aspectRatio: effectiveAspectRatio, // ✅ NEW
   });
 
   const headers: Record<string, string> = {
