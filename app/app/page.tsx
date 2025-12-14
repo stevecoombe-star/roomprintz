@@ -35,6 +35,9 @@ type RoomType =
 // 🔹 Model version toggle
 type ModelVersion = "gemini-3" | "gemini-2.5";
 
+// 🔹 Aspect ratio (new)
+type AspectRatio = "auto" | "4:3" | "3:2" | "16:9" | "1:1";
+
 // 🔹 localStorage key for selected property persistence (scoped per user)
 const SELECTED_PROPERTY_STORAGE_KEY_PREFIX = "roomprintz.selectedPropertyId.";
 
@@ -75,6 +78,9 @@ export default function Home() {
 
   // 🔹 Model version selection
   const [modelVersion, setModelVersion] = useState<ModelVersion>("gemini-3");
+
+  // 🔹 Aspect ratio selection (new)
+  const [aspectRatio, setAspectRatio] = useState<AspectRatio>("auto");
 
   // property + room state
   const [properties, setProperties] = useState<
@@ -118,6 +124,15 @@ export default function Home() {
     uploadedFile && user && (selectedStyle || wantsPhotoTools)
   );
 
+  // 🔹 If user chooses Gemini 2.5, nudge aspect ratio to 1:1 (matches backend reliability mode)
+  useEffect(() => {
+    if (modelVersion !== "gemini-2.5") return;
+    if (aspectRatio === "1:1") return;
+
+    // Don’t fight the user if they want to test; but default to reliable behavior.
+    setAspectRatio("1:1");
+  }, [modelVersion]); // intentionally only when model flips
+
   // 🔹 Restore selected property from URL (highest priority) or localStorage (fallback)
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -156,7 +171,7 @@ export default function Home() {
     }
   }, [selectedPropertyId, authLoading, user?.id]);
 
-  // 🔍 Tiny debug effect: log what the URL/search looks like (useful on Vercel)
+  // 🔍 Tiny debug effect
   useEffect(() => {
     if (typeof window === "undefined") return;
     const href = window.location.href;
@@ -176,7 +191,6 @@ export default function Home() {
     const exists = properties.some((p) => p.id === selectedPropertyId);
     if (exists) return;
 
-    // stale selection -> clear it
     setSelectedPropertyId("");
 
     if (typeof window !== "undefined") {
@@ -221,7 +235,7 @@ export default function Home() {
     loadPropertiesForSelector();
   }, [authLoading, user?.id]);
 
-  // URL → room prefill only (property handled elsewhere)
+  // URL → room prefill only
   useEffect(() => {
     if (typeof window === "undefined") return;
 
@@ -243,7 +257,7 @@ export default function Home() {
   // Handle file upload + preview
   const handleFileChange = (file: File | null) => {
     setUploadedFile(file);
-    setResultUrl(null); // clear previous result when new file chosen
+    setResultUrl(null);
 
     if (file) {
       const url = URL.createObjectURL(file);
@@ -262,7 +276,6 @@ export default function Home() {
       return null;
     }
 
-    // 1) Check local state for an existing Untitled property
     const localUntitled = properties.find(
       (p) => (p.title ?? "").trim().toLowerCase() === "untitled property"
     );
@@ -271,7 +284,6 @@ export default function Home() {
       return localUntitled.id;
     }
 
-    // 2) Check Supabase for an existing Untitled property
     try {
       const { data: existingData, error: existingError } = await supabase
         .from("properties")
@@ -291,7 +303,6 @@ export default function Home() {
       if (existingData) {
         const existingId = existingData.id as string;
 
-        // Add to local list if missing
         setProperties((prev) => {
           const alreadyThere = prev.some((p) => p.id === existingId);
           if (alreadyThere) return prev;
@@ -313,10 +324,8 @@ export default function Home() {
         "[Home] unexpected error while searching for existing Untitled property:",
         err
       );
-      // fall through to create a new one
     }
 
-    // 3) No existing Untitled found; create a new one
     try {
       const { data, error } = await supabase
         .from("properties")
@@ -335,7 +344,6 @@ export default function Home() {
 
       const newId = data.id as string;
 
-      // Update local selector list
       setProperties((prev) => [
         {
           id: newId,
@@ -346,7 +354,6 @@ export default function Home() {
       ]);
       setSelectedPropertyId(newId);
 
-      // Tell PropertiesSection to re-fetch its own list
       setPropertiesRefreshToken((t) => t + 1);
 
       return newId;
@@ -357,7 +364,7 @@ export default function Home() {
     }
   };
 
-  // Shared blob-based downloader for staged images (same behavior as property page)
+  // Shared blob-based downloader
   const handleDownloadUrl = async (url: string | null) => {
     if (!url) return;
 
@@ -413,10 +420,8 @@ export default function Home() {
         type: blob.type || "image/png",
       });
 
-      // Reuse existing upload logic so tools + preview behave identically
       handleFileChange(file);
 
-      // Scroll back to staging area for nice UX
       const el = document.getElementById("staging-area");
       if (el) {
         el.scrollIntoView({ behavior: "smooth", block: "start" });
@@ -427,7 +432,7 @@ export default function Home() {
     }
   };
 
-  // Deep-link handling (?fromJobId=..., ?fromOriginal=1) for “Continue from this image”
+  // Deep-link handling (?fromJobId=..., ?fromOriginal=1)
   useEffect(() => {
     if (authLoading) return;
     if (!user) return;
@@ -461,7 +466,6 @@ export default function Home() {
           return;
         }
 
-        // If property/room not already set via query, fall back to job's values
         const propertyFromURL =
           params.get("propertyId") || params.get("property");
         const roomFromURL = params.get("room");
@@ -474,16 +478,12 @@ export default function Home() {
           setRoomName(job.room_name as string);
         }
 
-        // Pick which image to use
         const chosenUrl = fromOriginal
           ? (job.original_image_url as string | null)
           : (job.staged_image_url as string | null);
 
         if (!chosenUrl) {
-          console.warn(
-            "[Home] deep-link job has no suitable image url:",
-            job.id
-          );
+          console.warn("[Home] deep-link job has no suitable image url:", job.id);
           return;
         }
 
@@ -491,7 +491,6 @@ export default function Home() {
 
         setConsumedDeepLinkJobId(fromJobId);
 
-        // Clean URL so we don't re-apply on refresh/back
         params.delete("fromJobId");
         params.delete("fromOriginal");
 
@@ -532,27 +531,23 @@ export default function Home() {
       setIsGenerating(true);
       setResultUrl(null);
 
-      // 1) Ensure we have a property (auto-create Untitled if needed)
       const effectivePropertyId = await ensurePropertyForJob();
       if (!effectivePropertyId) {
         setIsGenerating(false);
         return;
       }
 
-      // 2) Decide room name (auto “Untitled room” if blank)
       const effectiveRoomName =
         roomName.trim().length > 0 ? roomName.trim() : "Untitled room";
       if (!roomName.trim()) {
         setRoomName(effectiveRoomName);
       }
 
-      // 3) Generate a jobId so our storage paths are stable
       const jobId =
         typeof crypto !== "undefined" && crypto.randomUUID
           ? crypto.randomUUID()
           : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
-      // 4) Upload ORIGINAL to Supabase Storage (room-originals bucket)
       const extFromName =
         (uploadedFile.name.split(".").pop() || "jpg").toLowerCase();
       const originalExt = extFromName === "jpeg" ? "jpg" : extFromName;
@@ -560,15 +555,11 @@ export default function Home() {
 
       const { error: originalUploadError } = await supabase.storage
         .from("room-originals")
-        .upload(originalPath, uploadedFile, {
-          upsert: true,
-        });
+        .upload(originalPath, uploadedFile, { upsert: true });
 
       if (originalUploadError) {
         console.error("[Home] original upload error:", originalUploadError);
-        alert(
-          "Failed to upload the original room photo to storage. Please try again."
-        );
+        alert("Failed to upload the original room photo. Please try again.");
         return;
       }
 
@@ -577,7 +568,7 @@ export default function Home() {
         .getPublicUrl(originalPath);
       const originalImageUrl = originalUrlData.publicUrl;
 
-      // 5) Call compositor API (FastAPI via /api/stage-room) to generate staged image
+      // 5) Call compositor API
       const formData = new FormData();
       formData.append("file", uploadedFile);
       if (selectedStyle) formData.append("styleId", selectedStyle);
@@ -592,8 +583,14 @@ export default function Home() {
       // Room type (auto ⇒ blank / null)
       formData.append("roomType", roomType === "auto" ? "" : roomType);
 
-      // 🔹 Model version
+      // Model version
       formData.append("modelVersion", modelVersion);
+
+      // ✅ Aspect ratio (new)
+      // If Gemini 2.5, backend likely forces 1:1; we already nudge UI, but enforce again here.
+      const effectiveAspectRatio: AspectRatio =
+        modelVersion === "gemini-2.5" ? "1:1" : aspectRatio;
+      formData.append("aspectRatio", effectiveAspectRatio);
 
       const response = await fetch("/api/stage-room", {
         method: "POST",
@@ -619,13 +616,12 @@ export default function Home() {
       }
 
       const compositedDataUrl = data.imageUrl;
-
       if (!compositedDataUrl) {
         console.error("[Home] compositor returned no imageUrl");
         throw new Error("Compositor did not return an imageUrl");
       }
 
-      // 6) Upload STAGED image to Supabase Storage (room-staged bucket)
+      // 6) Upload STAGED image
       const stagedResponse = await fetch(compositedDataUrl);
       const stagedBlob = await stagedResponse.blob();
       const stagedMime = stagedBlob.type || "image/png";
@@ -647,9 +643,7 @@ export default function Home() {
 
       if (stagedUploadError) {
         console.error("[Home] staged upload error:", stagedUploadError);
-        alert(
-          "Failed to upload the staged image to storage. Please try again."
-        );
+        alert("Failed to upload the staged image. Please try again.");
         return;
       }
 
@@ -662,10 +656,9 @@ export default function Home() {
         throw new Error("Could not obtain public URL for staged image");
       }
 
-      // 7) Update UI with staged URL
       setResultUrl(stagedImageUrl);
 
-      // 8) Save job to Supabase (URLs only, no base64)
+      // 8) Save job
       try {
         const { data: insertData, error: insertError } = await supabase
           .from("jobs")
@@ -690,8 +683,6 @@ export default function Home() {
         } else {
           console.log("[Supabase jobs insert] inserted job id:", insertData?.id);
           setJobsRefreshToken((token) => token + 1);
-
-          // ✅ Reset ONLY after job insert succeeds
           resetToolsAfterGeneration();
         }
       } catch (err) {
@@ -882,6 +873,45 @@ export default function Home() {
                   <option value="office-den">Office / Den</option>
                   <option value="other">Other / Flex Room</option>
                 </select>
+              </div>
+
+              {/* ✅ Aspect Ratio selector (new) */}
+              <div className="rounded-2xl border border-slate-800 bg-slate-900/70 px-3 py-3 text-xs">
+                <div className="flex items-center justify-between gap-2 mb-2">
+                  <div>
+                    <div className="text-[11px] font-semibold text-slate-200">
+                      Aspect ratio
+                    </div>
+                    <div className="text-[11px] text-slate-400">
+                      Auto chooses the closest match to your upload (minimal crop).
+                    </div>
+                  </div>
+                </div>
+
+                <select
+                  value={aspectRatio}
+                  onChange={(e) => setAspectRatio(e.target.value as AspectRatio)}
+                  className="mt-1 w-full rounded-lg bg-slate-950 border border-slate-800 px-2 py-1 text-xs text-slate-100 outline-none focus:border-emerald-400"
+                  disabled={modelVersion === "gemini-2.5"} // keep simple + reliable
+                  title={
+                    modelVersion === "gemini-2.5"
+                      ? "Gemini 2.5 is limited to 1:1 for reliable output."
+                      : undefined
+                  }
+                >
+                  <option value="auto">Auto (recommended)</option>
+                  <option value="4:3">4:3 (MLS Classic)</option>
+                  <option value="3:2">3:2 (Camera / MLS common)</option>
+                  <option value="16:9">16:9 (Wide)</option>
+                  <option value="1:1">1:1 (Square)</option>
+                </select>
+
+                {modelVersion === "gemini-2.5" && (
+                  <div className="mt-2 text-[11px] text-slate-400">
+                    Gemini 2.5 uses <span className="text-slate-200">1:1</span>{" "}
+                    for best consistency.
+                  </div>
+                )}
               </div>
             </div>
 

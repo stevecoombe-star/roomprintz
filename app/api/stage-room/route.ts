@@ -5,6 +5,17 @@ import { callCompositorEngine } from "@/lib/callCompositorEngine";
 // Ensure we run on the Node.js runtime (needed for Buffer, larger payloads, etc.)
 export const runtime = "nodejs";
 
+type ModelVersion = "gemini-3" | "gemini-2.5";
+type AspectRatio = "auto" | "4:3" | "3:2" | "16:9" | "1:1";
+
+const ALLOWED_ASPECT_RATIOS: Set<string> = new Set([
+  "auto",
+  "4:3",
+  "3:2",
+  "16:9",
+  "1:1",
+]);
+
 export async function POST(req: NextRequest) {
   try {
     const formData = await req.formData();
@@ -50,13 +61,28 @@ export async function POST(req: NextRequest) {
         ? roomTypeRaw.trim()
         : null;
 
-    // NEW: modelVersion ("gemini-3" | "gemini-2.5"), default to gemini-3
+    // modelVersion ("gemini-3" | "gemini-2.5"), default to gemini-3
     const modelVersionRaw = formData.get("modelVersion");
-    const normalizedModelVersion =
+    const normalizedModelVersion: ModelVersion =
       typeof modelVersionRaw === "string" &&
       (modelVersionRaw === "gemini-3" || modelVersionRaw === "gemini-2.5")
-        ? (modelVersionRaw as "gemini-3" | "gemini-2.5")
+        ? (modelVersionRaw as ModelVersion)
         : "gemini-3";
+
+    // ✅ aspectRatio ("auto" | "4:3" | "3:2" | "16:9" | "1:1"), default to auto
+    const aspectRatioRaw = formData.get("aspectRatio");
+    const parsedAspectRatio =
+      typeof aspectRatioRaw === "string" ? aspectRatioRaw.trim() : "";
+
+    let normalizedAspectRatio: AspectRatio = "auto";
+    if (parsedAspectRatio && ALLOWED_ASPECT_RATIOS.has(parsedAspectRatio)) {
+      normalizedAspectRatio = parsedAspectRatio as AspectRatio;
+    }
+
+    // Reliability: Gemini 2.5 Flash -> force 1:1 unless you later decide otherwise
+    if (normalizedModelVersion === "gemini-2.5") {
+      normalizedAspectRatio = "1:1";
+    }
 
     // Safety check: at least one action
     if (
@@ -92,8 +118,9 @@ export async function POST(req: NextRequest) {
       repaintWalls,
       flooringPreset,
       roomType,
-      // NEW
       modelVersion: normalizedModelVersion,
+      // ✅ NEW
+      aspectRatio: normalizedAspectRatio,
     });
 
     const imageUrl = result?.imageUrl ?? null;
