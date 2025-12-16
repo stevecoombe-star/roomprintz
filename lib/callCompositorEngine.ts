@@ -15,7 +15,8 @@ type CallCompositorArgs = {
   flooringPreset?: string | null;
   roomType?: string | null;
   modelVersion?: ModelVersion;
-  aspectRatio?: AspectRatio; // ✅ NEW
+  aspectRatio?: AspectRatio;
+  isContinuation?: boolean; // ✅ NEW
 };
 
 type CompositorResponse = {
@@ -47,6 +48,7 @@ export async function callCompositorEngine({
   roomType = null,
   modelVersion = "gemini-3",
   aspectRatio = "auto",
+  isContinuation = false,
 }: CallCompositorArgs): Promise<{
   imageUrl: string;
   originalImageUrl?: string;
@@ -60,9 +62,11 @@ export async function callCompositorEngine({
     );
   }
 
-  // Reliability: Gemini 2.5 Flash -> force 1:1 unless you later decide otherwise
+  // ✅ Key rule:
+  // - Fresh uploads (isContinuation=false): keep reliability behavior (Gemini 2.5 => force 1:1)
+  // - Continuations (isContinuation=true): do NOT fight framing (backend will omit aspect_ratio)
   const effectiveAspectRatio: AspectRatio =
-    modelVersion === "gemini-2.5" ? "1:1" : aspectRatio;
+    !isContinuation && modelVersion === "gemini-2.5" ? "1:1" : aspectRatio;
 
   const imageBase64 = imageBytes.toString("base64");
 
@@ -78,7 +82,8 @@ export async function callCompositorEngine({
     flooringPreset,
     roomType,
     modelVersion,
-    aspectRatio: effectiveAspectRatio, // ✅ NEW
+    aspectRatio: effectiveAspectRatio,
+    isContinuation,
   };
 
   console.log("[callCompositorEngine] Calling compositor at:", endpoint, {
@@ -93,7 +98,8 @@ export async function callCompositorEngine({
     flooringPreset,
     roomType,
     modelVersion,
-    aspectRatio: effectiveAspectRatio, // ✅ NEW
+    aspectRatio: effectiveAspectRatio,
+    isContinuation,
   });
 
   const headers: Record<string, string> = {
