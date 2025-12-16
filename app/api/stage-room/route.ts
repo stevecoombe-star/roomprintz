@@ -40,8 +40,7 @@ export async function POST(req: NextRequest) {
       (formData.get("cleanupRoom") as string | null) === "true";
     const repairDamage =
       (formData.get("repairDamage") as string | null) === "true";
-    const emptyRoom =
-      (formData.get("emptyRoom") as string | null) === "true";
+    const emptyRoom = (formData.get("emptyRoom") as string | null) === "true";
     const renovateRoom =
       (formData.get("renovateRoom") as string | null) === "true";
     const repaintWalls =
@@ -69,7 +68,7 @@ export async function POST(req: NextRequest) {
         ? (modelVersionRaw as ModelVersion)
         : "gemini-3";
 
-    // ✅ aspectRatio ("auto" | "4:3" | "3:2" | "16:9" | "1:1"), default to auto
+    // aspectRatio ("auto" | "4:3" | "3:2" | "16:9" | "1:1"), default to auto
     const aspectRatioRaw = formData.get("aspectRatio");
     const parsedAspectRatio =
       typeof aspectRatioRaw === "string" ? aspectRatioRaw.trim() : "";
@@ -83,6 +82,11 @@ export async function POST(req: NextRequest) {
     if (normalizedModelVersion === "gemini-2.5") {
       normalizedAspectRatio = "1:1";
     }
+
+    // ✅ NEW: isContinuation (one-shot)
+    const isContinuationRaw = formData.get("isContinuation");
+    const isContinuation =
+      typeof isContinuationRaw === "string" && isContinuationRaw === "true";
 
     // Safety check: at least one action
     if (
@@ -119,8 +123,8 @@ export async function POST(req: NextRequest) {
       flooringPreset,
       roomType,
       modelVersion: normalizedModelVersion,
-      // ✅ NEW
       aspectRatio: normalizedAspectRatio,
+      isContinuation, // ✅ NEW
     });
 
     const imageUrl = result?.imageUrl ?? null;

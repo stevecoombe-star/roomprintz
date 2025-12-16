@@ -50,6 +50,9 @@ export default function Home() {
 
   const router = useRouter();
 
+  // ✅ one-shot continuation flag (true only when user clicks "Continue from this image")
+  const [isContinuation, setIsContinuation] = useState(false);
+
   // 🔔 Simple toast (no external deps)
   const [toast, setToast] = useState<{
     message: string;
@@ -128,8 +131,6 @@ export default function Home() {
   useEffect(() => {
     if (modelVersion !== "gemini-2.5") return;
     if (aspectRatio === "1:1") return;
-
-    // Don’t fight the user if they want to test; but default to reliable behavior.
     setAspectRatio("1:1");
   }, [modelVersion]); // intentionally only when model flips
 
@@ -254,8 +255,25 @@ export default function Home() {
     }
   }, []);
 
-  // Handle file upload + preview
-  const handleFileChange = (file: File | null) => {
+  // ✅ Fresh upload (normal)
+  const handleFileChangeFresh = (file: File | null) => {
+    setIsContinuation(false);
+
+    setUploadedFile(file);
+    setResultUrl(null);
+
+    if (file) {
+      const url = URL.createObjectURL(file);
+      setUploadedPreview(url);
+    } else {
+      setUploadedPreview(null);
+    }
+  };
+
+  // ✅ Continuation (Continue from this image)
+  const handleFileChangeContinuation = (file: File | null) => {
+    setIsContinuation(true);
+
     setUploadedFile(file);
     setResultUrl(null);
 
@@ -420,7 +438,8 @@ export default function Home() {
         type: blob.type || "image/png",
       });
 
-      handleFileChange(file);
+      // ✅ Continuation chain (one-shot for the next Generate)
+      handleFileChangeContinuation(file);
 
       const el = document.getElementById("staging-area");
       if (el) {
@@ -527,6 +546,9 @@ export default function Home() {
       return;
     }
 
+    // ✅ One-shot continuation capture (so it only applies to this generate)
+    const continuationFlag = isContinuation;
+
     try {
       setIsGenerating(true);
       setResultUrl(null);
@@ -586,11 +608,16 @@ export default function Home() {
       // Model version
       formData.append("modelVersion", modelVersion);
 
-      // ✅ Aspect ratio (new)
-      // If Gemini 2.5, backend likely forces 1:1; we already nudge UI, but enforce again here.
+      // ✅ Aspect ratio
       const effectiveAspectRatio: AspectRatio =
         modelVersion === "gemini-2.5" ? "1:1" : aspectRatio;
       formData.append("aspectRatio", effectiveAspectRatio);
+
+      // ✅ isContinuation (one-shot)
+      formData.append("isContinuation", continuationFlag ? "true" : "false");
+
+      // ✅ Reset immediately so next Generate is "fresh" unless user clicks Continue again
+      if (continuationFlag) setIsContinuation(false);
 
       const response = await fetch("/api/stage-room", {
         method: "POST",
@@ -812,7 +839,7 @@ export default function Home() {
               <UploadCard
                 file={uploadedFile}
                 previewUrl={uploadedPreview}
-                onFileChange={handleFileChange}
+                onFileChange={handleFileChangeFresh}
               />
 
               {uploadedFile && (
@@ -875,7 +902,7 @@ export default function Home() {
                 </select>
               </div>
 
-              {/* ✅ Aspect Ratio selector (new) */}
+              {/* ✅ Aspect Ratio selector */}
               <div className="rounded-2xl border border-slate-800 bg-slate-900/70 px-3 py-3 text-xs">
                 <div className="flex items-center justify-between gap-2 mb-2">
                   <div>
@@ -883,7 +910,8 @@ export default function Home() {
                       Aspect ratio
                     </div>
                     <div className="text-[11px] text-slate-400">
-                      Auto chooses the closest match to your upload (minimal crop).
+                      Auto chooses the closest match to your upload (minimal
+                      crop).
                     </div>
                   </div>
                 </div>
@@ -892,7 +920,7 @@ export default function Home() {
                   value={aspectRatio}
                   onChange={(e) => setAspectRatio(e.target.value as AspectRatio)}
                   className="mt-1 w-full rounded-lg bg-slate-950 border border-slate-800 px-2 py-1 text-xs text-slate-100 outline-none focus:border-emerald-400"
-                  disabled={modelVersion === "gemini-2.5"} // keep simple + reliable
+                  disabled={modelVersion === "gemini-2.5"}
                   title={
                     modelVersion === "gemini-2.5"
                       ? "Gemini 2.5 is limited to 1:1 for reliable output."
