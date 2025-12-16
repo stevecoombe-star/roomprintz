@@ -35,7 +35,7 @@ type RoomType =
 // 🔹 Model version toggle
 type ModelVersion = "gemini-3" | "gemini-2.5";
 
-// 🔹 Aspect ratio (new)
+// 🔹 Aspect ratio
 type AspectRatio = "auto" | "4:3" | "3:2" | "16:9" | "1:1";
 
 // 🔹 localStorage key for selected property persistence (scoped per user)
@@ -82,7 +82,7 @@ export default function Home() {
   // 🔹 Model version selection
   const [modelVersion, setModelVersion] = useState<ModelVersion>("gemini-3");
 
-  // 🔹 Aspect ratio selection (new)
+  // 🔹 Aspect ratio selection
   const [aspectRatio, setAspectRatio] = useState<AspectRatio>("auto");
 
   // property + room state
@@ -126,13 +126,6 @@ export default function Home() {
   const canGenerate = Boolean(
     uploadedFile && user && (selectedStyle || wantsPhotoTools)
   );
-
-  // 🔹 If user chooses Gemini 2.5, nudge aspect ratio to 1:1 (matches backend reliability mode)
-  useEffect(() => {
-    if (modelVersion !== "gemini-2.5") return;
-    if (aspectRatio === "1:1") return;
-    setAspectRatio("1:1");
-  }, [modelVersion]); // intentionally only when model flips
 
   // 🔹 Restore selected property from URL (highest priority) or localStorage (fallback)
   useEffect(() => {
@@ -608,10 +601,8 @@ export default function Home() {
       // Model version
       formData.append("modelVersion", modelVersion);
 
-      // ✅ Aspect ratio
-      const effectiveAspectRatio: AspectRatio =
-        modelVersion === "gemini-2.5" ? "1:1" : aspectRatio;
-      formData.append("aspectRatio", effectiveAspectRatio);
+      // ✅ Aspect ratio (ALLOW all ratios for Gemini 2.5 during beta)
+      formData.append("aspectRatio", aspectRatio);
 
       // ✅ isContinuation (one-shot)
       formData.append("isContinuation", continuationFlag ? "true" : "false");
@@ -865,7 +856,7 @@ export default function Home() {
               )}
             </div>
 
-            {/* CENTER COLUMN: Style selection + Room Type */}
+            {/* CENTER COLUMN: Style selection + Room Type + Aspect Ratio */}
             <div className="space-y-4">
               <StyleSelector
                 styles={ROOM_STYLES}
@@ -902,7 +893,7 @@ export default function Home() {
                 </select>
               </div>
 
-              {/* ✅ Aspect Ratio selector */}
+              {/* ✅ Aspect Ratio selector (enabled for Gemini 2.5 now) */}
               <div className="rounded-2xl border border-slate-800 bg-slate-900/70 px-3 py-3 text-xs">
                 <div className="flex items-center justify-between gap-2 mb-2">
                   <div>
@@ -920,12 +911,6 @@ export default function Home() {
                   value={aspectRatio}
                   onChange={(e) => setAspectRatio(e.target.value as AspectRatio)}
                   className="mt-1 w-full rounded-lg bg-slate-950 border border-slate-800 px-2 py-1 text-xs text-slate-100 outline-none focus:border-emerald-400"
-                  disabled={modelVersion === "gemini-2.5"}
-                  title={
-                    modelVersion === "gemini-2.5"
-                      ? "Gemini 2.5 is limited to 1:1 for reliable output."
-                      : undefined
-                  }
                 >
                   <option value="auto">Auto (recommended)</option>
                   <option value="4:3">4:3 (MLS Classic)</option>
@@ -934,12 +919,9 @@ export default function Home() {
                   <option value="1:1">1:1 (Square)</option>
                 </select>
 
-                {modelVersion === "gemini-2.5" && (
-                  <div className="mt-2 text-[11px] text-slate-400">
-                    Gemini 2.5 uses <span className="text-slate-200">1:1</span>{" "}
-                    for best consistency.
-                  </div>
-                )}
+                <div className="mt-2 text-[11px] text-slate-400">
+                  Note: Continuations ignore aspect ratio (passthrough framing).
+                </div>
               </div>
             </div>
 
