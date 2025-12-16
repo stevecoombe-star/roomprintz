@@ -78,11 +78,6 @@ export async function POST(req: NextRequest) {
       normalizedAspectRatio = parsedAspectRatio as AspectRatio;
     }
 
-    // Reliability: Gemini 2.5 Flash -> force 1:1 unless you later decide otherwise
-    if (normalizedModelVersion === "gemini-2.5") {
-      normalizedAspectRatio = "1:1";
-    }
-
     // ✅ NEW: isContinuation (one-shot)
     const isContinuationRaw = formData.get("isContinuation");
     const isContinuation =
@@ -124,7 +119,7 @@ export async function POST(req: NextRequest) {
       roomType,
       modelVersion: normalizedModelVersion,
       aspectRatio: normalizedAspectRatio,
-      isContinuation, // ✅ NEW
+      isContinuation,
     });
 
     const imageUrl = result?.imageUrl ?? null;

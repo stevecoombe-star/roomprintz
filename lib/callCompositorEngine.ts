@@ -16,7 +16,7 @@ type CallCompositorArgs = {
   roomType?: string | null;
   modelVersion?: ModelVersion;
   aspectRatio?: AspectRatio;
-  isContinuation?: boolean; // ✅ NEW
+  isContinuation?: boolean;
 };
 
 type CompositorResponse = {
@@ -62,11 +62,10 @@ export async function callCompositorEngine({
     );
   }
 
-  // ✅ Key rule:
-  // - Fresh uploads (isContinuation=false): keep reliability behavior (Gemini 2.5 => force 1:1)
-  // - Continuations (isContinuation=true): do NOT fight framing (backend will omit aspect_ratio)
-  const effectiveAspectRatio: AspectRatio =
-    !isContinuation && modelVersion === "gemini-2.5" ? "1:1" : aspectRatio;
+  // ✅ Change for beta testing:
+  // Allow ALL aspect ratios for Gemini 2.5 as well.
+  // (Continuation passthrough is still handled by backend via isContinuation.)
+  const effectiveAspectRatio: AspectRatio = aspectRatio;
 
   const imageBase64 = imageBytes.toString("base64");
 
