@@ -1,17 +1,9 @@
+// app/api/stripe/portal/route.ts
 import Stripe from "stripe";
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 
 export const runtime = "nodejs";
-
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, {
-  apiVersion: "2025-12-15.clover",
-});
-
-const supabaseAdmin = createClient(
-  process.env.SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!,
-);
 
 function mustEnv(name: string) {
   const v = process.env[name];
@@ -19,21 +11,65 @@ function mustEnv(name: string) {
   return v;
 }
 
+// Derive the correct base URL (works on localhost + Vercel Preview + Prod)
+function getOrigin(req: Request): string {
+  const origin = req.headers.get("origin");
+  if (origin) return origin;
+
+  const referer = req.headers.get("referer");
+  if (referer) {
+    try {
+      return new URL(referer).origin;
+    } catch {
+      // ignore
+    }
+  }
+
+  return "http://localhost:3000";
+}
+
+function json(status: number, body: Record<string, unknown>) {
+  return NextResponse.json(body, { status });
+}
+
 export async function POST(req: Request) {
   try {
-    const authHeader = req.headers.get("authorization");
-    if (!authHeader?.startsWith("Bearer ")) {
-      return NextResponse.json({ error: "Missing Authorization bearer token" }, { status: 401 });
-    }
-    const accessToken = authHeader.slice("Bearer ".length);
-
-    const supabaseUserClient = createClient(mustEnv("SUPABASE_URL"), mustEnv("SUPABASE_SERVICE_ROLE_KEY"), {
-      global: { headers: { Authorization: `Bearer ${accessToken}` } },
+    // ✅ Instantiate inside handler (build-safe)
+    const stripe = new Stripe(mustEnv("STRIPE_SECRET_KEY"), {
+      apiVersion: "2025-12-15.clover",
     });
 
-    const { data: userData, error: userErr } = await supabaseUserClient.auth.getUser();
+    const supabaseAdmin = createClient(
+      mustEnv("SUPABASE_URL"),
+      mustEnv("SUPABASE_SERVICE_ROLE_KEY")
+    );
+
+    const authHeader = req.headers.get("authorization");
+    if (!authHeader?.startsWith("Bearer ")) {
+      return json(401, { error: "Missing Authorization bearer token" });
+    }
+
+    const accessToken = authHeader.slice("Bearer ".length).trim();
+    if (!accessToken) return json(401, { error: "Missing access token" });
+
+    const supabaseUserClient = createClient(
+      mustEnv("SUPABASE_URL"),
+      mustEnv("SUPABASE_SERVICE_ROLE_KEY"),
+      {
+        global: { headers: { Authorization: `Bearer ${accessToken}` } },
+        auth: {
+          persistSession: false,
+          autoRefreshToken: false,
+          detectSessionInUrl: false,
+        },
+      }
+    );
+
+    const { data: userData, error: userErr } =
+      await supabaseUserClient.auth.getUser();
+
     if (userErr || !userData?.user) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+      return json(401, { error: "Unauthorized" });
     }
 
     const user = userData.user;
@@ -45,19 +81,23 @@ export async function POST(req: Request) {
       .maybeSingle();
 
     if (subErr) throw subErr;
-    if (!subRow?.stripe_customer_id) {
-      return NextResponse.json({ error: "No Stripe customer found" }, { status: 400 });
+
+    const stripeCustomerId = subRow?.stripe_customer_id;
+    if (!stripeCustomerId) {
+      return json(400, { error: "No Stripe customer found" });
     }
 
-    const appUrl = mustEnv("NEXT_PUBLIC_APP_URL");
+    // ✅ Correct return URL for local + preview + prod
+    const origin = getOrigin(req);
+
     const portal = await stripe.billingPortal.sessions.create({
-      customer: subRow.stripe_customer_id,
-      return_url: `${appUrl}/billing`,
+      customer: stripeCustomerId,
+      return_url: `${origin}/billing`,
     });
 
-    return NextResponse.json({ url: portal.url }, { status: 200 });
+    return json(200, { url: portal.url, origin });
   } catch (e: any) {
     console.error("portal route error:", e);
-    return NextResponse.json({ error: e?.message ?? "Portal failed" }, { status: 500 });
+    return json(500, { error: e?.message ?? "Portal failed" });
   }
 }
