@@ -524,204 +524,221 @@ export default function Home() {
   }, [authLoading, user, consumedDeepLinkJobId]);
 
   const handleGenerate = async () => {
-    if (!uploadedFile) {
-      alert("Please upload a room photo first.");
+  if (!uploadedFile) {
+    alert("Please upload a room photo first.");
+    return;
+  }
+
+  if (!user) {
+    alert("You must be logged in to generate rooms.");
+    return;
+  }
+
+  if (!selectedStyle && !wantsPhotoTools) {
+    alert("Please select a staging style or at least one photo tool.");
+    return;
+  }
+
+  // ✅ One-shot continuation capture (so it only applies to this generate)
+  const continuationFlag = isContinuation;
+
+  try {
+    setIsGenerating(true);
+    setResultUrl(null);
+
+    const effectivePropertyId = await ensurePropertyForJob();
+    if (!effectivePropertyId) {
+      setIsGenerating(false);
       return;
     }
 
-    if (!user) {
-      alert("You must be logged in to generate rooms.");
+    const effectiveRoomName =
+      roomName.trim().length > 0 ? roomName.trim() : "Untitled room";
+    if (!roomName.trim()) {
+      setRoomName(effectiveRoomName);
+    }
+
+    const jobId =
+      typeof crypto !== "undefined" && crypto.randomUUID
+        ? crypto.randomUUID()
+        : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+
+    const extFromName = (uploadedFile.name.split(".").pop() || "jpg").toLowerCase();
+    const originalExt = extFromName === "jpeg" ? "jpg" : extFromName;
+    const originalPath = `${user.id}/${effectivePropertyId}/${jobId}.${originalExt}`;
+
+    const { error: originalUploadError } = await supabase.storage
+      .from("room-originals")
+      .upload(originalPath, uploadedFile, { upsert: true });
+
+    if (originalUploadError) {
+      console.error("[Home] original upload error:", originalUploadError);
+      alert("Failed to upload the original room photo. Please try again.");
       return;
     }
 
-    if (!selectedStyle && !wantsPhotoTools) {
-      alert("Please select a staging style or at least one photo tool.");
+    const { data: originalUrlData } = supabase.storage
+      .from("room-originals")
+      .getPublicUrl(originalPath);
+    const originalImageUrl = originalUrlData.publicUrl;
+
+    // 5) Call compositor API
+    const formData = new FormData();
+    formData.append("file", uploadedFile);
+    formData.append("jobId", jobId);
+    if (selectedStyle) formData.append("styleId", selectedStyle);
+
+    formData.append("enhancePhoto", enhancePhoto ? "true" : "false");
+    formData.append("cleanupRoom", cleanupRoom ? "true" : "false");
+    formData.append("emptyRoom", emptyRoom ? "true" : "false");
+    formData.append("repairDamage", repairDamage ? "true" : "false");
+    formData.append("repaintWalls", repaintWalls ? "true" : "false");
+    formData.append("flooringPreset", flooringPreset || "none");
+
+    // Room type (auto ⇒ blank / null)
+    formData.append("roomType", roomType === "auto" ? "" : roomType);
+
+    // Model version
+    formData.append("modelVersion", modelVersion);
+
+    // ✅ Aspect ratio (ALLOW all ratios for Gemini 2.5 during beta)
+    formData.append("aspectRatio", aspectRatio);
+
+    // ✅ isContinuation (one-shot)
+    formData.append("isContinuation", continuationFlag ? "true" : "false");
+
+    // ✅ Reset immediately so next Generate is "fresh" unless user clicks Continue again
+    if (continuationFlag) setIsContinuation(false);
+
+    const { data: sessionData } = await supabase.auth.getSession();
+    const accessToken = sessionData.session?.access_token;
+
+    if (!accessToken) {
+      alert("Your session expired. Please log in again.");
       return;
     }
 
-    // ✅ One-shot continuation capture (so it only applies to this generate)
-    const continuationFlag = isContinuation;
+    const response = await fetch("/api/stage-room", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+      },
+      body: formData,
+    });
 
-    try {
-      setIsGenerating(true);
-      setResultUrl(null);
+    if (response.status === 402) {
+      const payload = await response.json().catch(() => ({}));
+      alert(
+        `Insufficient tokens. Need ${payload.required ?? "more"} token(s). ` +
+          `Balance: ${payload.tokenBalance ?? "?"}`
+      );
+      return;
+    }
 
-      const effectivePropertyId = await ensurePropertyForJob();
-      if (!effectivePropertyId) {
-        setIsGenerating(false);
-        return;
-      }
+    if (!response.ok) {
+      const text = await response.text().catch(() => "");
+      console.error("Stage-room API error:", response.status, response.statusText, text);
+      throw new Error("Failed to generate staged room");
+    }
 
-      const effectiveRoomName =
-        roomName.trim().length > 0 ? roomName.trim() : "Untitled room";
-      if (!roomName.trim()) {
-        setRoomName(effectiveRoomName);
-      }
+    const data: { imageUrl?: string; error?: string } = await response.json();
 
-      const jobId =
-        typeof crypto !== "undefined" && crypto.randomUUID
-          ? crypto.randomUUID()
-          : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    if (data.error) {
+      console.error("Stage-room API returned error:", data.error);
+      throw new Error(data.error);
+    }
 
-      const extFromName =
-        (uploadedFile.name.split(".").pop() || "jpg").toLowerCase();
-      const originalExt = extFromName === "jpeg" ? "jpg" : extFromName;
-      const originalPath = `${user.id}/${effectivePropertyId}/${jobId}.${originalExt}`;
+    const compositedDataUrl = data.imageUrl;
+    if (!compositedDataUrl) {
+      console.error("[Home] compositor returned no imageUrl");
+      throw new Error("Compositor did not return an imageUrl");
+    }
 
-      const { error: originalUploadError } = await supabase.storage
-        .from("room-originals")
-        .upload(originalPath, uploadedFile, { upsert: true });
+    // 6) Upload STAGED image
+    const stagedResponse = await fetch(compositedDataUrl);
+    const stagedBlob = await stagedResponse.blob();
+    const stagedMime = stagedBlob.type || "image/png";
+    const stagedExt =
+      stagedMime === "image/jpeg" ? "jpg" : stagedMime === "image/png" ? "png" : "png";
 
-      if (originalUploadError) {
-        console.error("[Home] original upload error:", originalUploadError);
-        alert("Failed to upload the original room photo. Please try again.");
-        return;
-      }
+    const stagedPath = `${user.id}/${effectivePropertyId}/${jobId}.${stagedExt}`;
 
-      const { data: originalUrlData } = supabase.storage
-        .from("room-originals")
-        .getPublicUrl(originalPath);
-      const originalImageUrl = originalUrlData.publicUrl;
-
-      // 5) Call compositor API
-      const formData = new FormData();
-      formData.append("file", uploadedFile);
-      if (selectedStyle) formData.append("styleId", selectedStyle);
-
-      formData.append("enhancePhoto", enhancePhoto ? "true" : "false");
-      formData.append("cleanupRoom", cleanupRoom ? "true" : "false");
-      formData.append("emptyRoom", emptyRoom ? "true" : "false");
-      formData.append("repairDamage", repairDamage ? "true" : "false");
-      formData.append("repaintWalls", repaintWalls ? "true" : "false");
-      formData.append("flooringPreset", flooringPreset || "none");
-
-      // Room type (auto ⇒ blank / null)
-      formData.append("roomType", roomType === "auto" ? "" : roomType);
-
-      // Model version
-      formData.append("modelVersion", modelVersion);
-
-      // ✅ Aspect ratio (ALLOW all ratios for Gemini 2.5 during beta)
-      formData.append("aspectRatio", aspectRatio);
-
-      // ✅ isContinuation (one-shot)
-      formData.append("isContinuation", continuationFlag ? "true" : "false");
-
-      // ✅ Reset immediately so next Generate is "fresh" unless user clicks Continue again
-      if (continuationFlag) setIsContinuation(false);
-
-      const response = await fetch("/api/stage-room", {
-        method: "POST",
-        body: formData,
+    const { error: stagedUploadError } = await supabase.storage
+      .from("room-staged")
+      .upload(stagedPath, stagedBlob, {
+        upsert: true,
+        contentType: stagedMime,
       });
 
-      if (!response.ok) {
-        const text = await response.text().catch(() => "");
-        console.error(
-          "Stage-room API error:",
-          response.status,
-          response.statusText,
-          text
-        );
-        throw new Error("Failed to generate staged room");
-      }
+    if (stagedUploadError) {
+      console.error("[Home] staged upload error:", stagedUploadError);
+      alert("Failed to upload the staged image. Please try again.");
+      return;
+    }
 
-      const data: { imageUrl?: string; error?: string } = await response.json();
+    const { data: stagedUrlData } = supabase.storage
+      .from("room-staged")
+      .getPublicUrl(stagedPath);
+    const stagedImageUrl = stagedUrlData.publicUrl;
 
-      if (data.error) {
-        console.error("Stage-room API returned error:", data.error);
-        throw new Error(data.error);
-      }
+    if (!stagedImageUrl) {
+      throw new Error("Could not obtain public URL for staged image");
+    }
 
-      const compositedDataUrl = data.imageUrl;
-      if (!compositedDataUrl) {
-        console.error("[Home] compositor returned no imageUrl");
-        throw new Error("Compositor did not return an imageUrl");
-      }
+    setResultUrl(stagedImageUrl);
 
-      // 6) Upload STAGED image
-      const stagedResponse = await fetch(compositedDataUrl);
-      const stagedBlob = await stagedResponse.blob();
-      const stagedMime = stagedBlob.type || "image/png";
-      const stagedExt =
-        stagedMime === "image/jpeg"
-          ? "jpg"
-          : stagedMime === "image/png"
-          ? "png"
-          : "png";
+    // ✅ NEW: tell AuthPanel (and any listeners) to refresh token balance
+    // Only after we have a successful staged result.
+    window.dispatchEvent(new Event("tokens:changed"));
 
-      const stagedPath = `${user.id}/${effectivePropertyId}/${jobId}.${stagedExt}`;
+    // 8) Save job
+    try {
+      const { data: insertData, error: insertError } = await supabase
+        .from("jobs")
+        .insert({
+          id: jobId,
+          style_id: selectedStyle,
+          staged_image_url: stagedImageUrl,
+          original_image_url: originalImageUrl,
+          user_id: user.id,
+          property_id: effectivePropertyId,
+          room_name: effectiveRoomName,
+        })
+        .select("id")
+        .single();
 
-      const { error: stagedUploadError } = await supabase.storage
-        .from("room-staged")
-        .upload(stagedPath, stagedBlob, {
-          upsert: true,
-          contentType: stagedMime,
-        });
-
-      if (stagedUploadError) {
-        console.error("[Home] staged upload error:", stagedUploadError);
-        alert("Failed to upload the staged image. Please try again.");
-        return;
-      }
-
-      const { data: stagedUrlData } = supabase.storage
-        .from("room-staged")
-        .getPublicUrl(stagedPath);
-      const stagedImageUrl = stagedUrlData.publicUrl;
-
-      if (!stagedImageUrl) {
-        throw new Error("Could not obtain public URL for staged image");
-      }
-
-      setResultUrl(stagedImageUrl);
-
-      // 8) Save job
-      try {
-        const { data: insertData, error: insertError } = await supabase
-          .from("jobs")
-          .insert({
-            id: jobId,
-            style_id: selectedStyle,
-            staged_image_url: stagedImageUrl,
-            original_image_url: originalImageUrl,
-            user_id: user.id,
-            property_id: effectivePropertyId,
-            room_name: effectiveRoomName,
-          })
-          .select("id")
-          .single();
-
-        if (insertError) {
-          console.error("[Supabase jobs insert] error:", insertError);
-          showToast(
-            "Staging succeeded, but we couldn’t save this to your history. Please try again.",
-            "error"
-          );
-        } else {
-          console.log("[Supabase jobs insert] inserted job id:", insertData?.id);
-          setJobsRefreshToken((token) => token + 1);
-          resetToolsAfterGeneration();
-        }
-      } catch (err) {
-        console.error("[Supabase jobs insert] unexpected error:", err);
+      if (insertError) {
+        console.error("[Supabase jobs insert] error:", insertError);
         showToast(
           "Staging succeeded, but we couldn’t save this to your history. Please try again.",
           "error"
         );
+      } else {
+        console.log("[Supabase jobs insert] inserted job id:", insertData?.id);
+        setJobsRefreshToken((token) => token + 1);
+        resetToolsAfterGeneration();
+
+        // ✅ Optional: refresh tokens again after job write completes
+        // (harmless; useful if spend happens after job insert in the future)
+        window.dispatchEvent(new Event("tokens:changed"));
       }
     } catch (err) {
-      console.error("Generate error:", err);
-      alert(
-        "Something went wrong generating the staged room. Check console for details."
+      console.error("[Supabase jobs insert] unexpected error:", err);
+      showToast(
+        "Staging succeeded, but we couldn’t save this to your history. Please try again.",
+        "error"
       );
-      if (uploadedPreview) {
-        setResultUrl(uploadedPreview);
-      }
-    } finally {
-      setIsGenerating(false);
     }
-  };
+  } catch (err) {
+    console.error("Generate error:", err);
+    alert("Something went wrong generating the staged room. Check console for details.");
+    if (uploadedPreview) {
+      setResultUrl(uploadedPreview);
+    }
+  } finally {
+    setIsGenerating(false);
+  }
+};
 
   return (
     <main className="min-h-screen bg-slate-950 text-slate-50 flex flex-col">

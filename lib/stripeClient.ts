@@ -2,7 +2,9 @@
 
 import { supabase } from "@/lib/supabaseClient";
 
-async function readJsonOrText(res: Response): Promise<{ json: any | null; text: string }> {
+async function readJsonOrText(
+  res: Response
+): Promise<{ json: any | null; text: string }> {
   const text = await res.text();
 
   // Try JSON first; if server returned HTML (e.g., Next error page), this will fail gracefully.
@@ -14,7 +16,7 @@ async function readJsonOrText(res: Response): Promise<{ json: any | null; text: 
 }
 
 export async function startCheckout(
-  planId: "beta" | "starter" | "pro" | "team" = "beta",
+  planId: "beta" | "starter" | "pro" | "team" = "beta"
 ) {
   const { data } = await supabase.auth.getSession();
   const token = data.session?.access_token;
@@ -39,6 +41,42 @@ export async function startCheckout(
   const url = json?.url;
   if (!url || typeof url !== "string") {
     throw new Error("Checkout failed: missing redirect URL");
+  }
+
+  window.location.href = url;
+}
+
+/**
+ * 🔁 One-time token top-up (Stripe Checkout, mode=payment)
+ * priceId is the Stripe Price ID (e.g., "price_123...") for the selected pack.
+ */
+export async function startTopup(priceId: string) {
+  if (!priceId || typeof priceId !== "string") {
+    throw new Error("Top-up failed: missing priceId");
+  }
+
+  const { data } = await supabase.auth.getSession();
+  const token = data.session?.access_token;
+  if (!token) throw new Error("Not logged in");
+
+  const res = await fetch("/api/stripe/topup", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({ priceId }),
+  });
+
+  const { json, text } = await readJsonOrText(res);
+
+  if (!res.ok) {
+    throw new Error(json?.error ?? text ?? "Top-up failed");
+  }
+
+  const url = json?.url;
+  if (!url || typeof url !== "string") {
+    throw new Error("Top-up failed: missing redirect URL");
   }
 
   window.location.href = url;

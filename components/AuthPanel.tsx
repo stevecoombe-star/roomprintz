@@ -5,6 +5,7 @@ import { useState, useEffect } from "react";
 import { supabase } from "@/lib/supabaseClient";
 import { useSupabaseUser } from "@/lib/useSupabaseUser";
 import { useRouter } from "next/navigation";
+import { startTopup } from "@/lib/stripeClient";
 
 type AuthPanelProps = {
   redirectToAppOnAuth?: boolean;
@@ -17,6 +18,11 @@ export function AuthPanel({ redirectToAppOnAuth = false }: AuthPanelProps) {
   const [authLoading, setAuthLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
+  // ✅ Token counter state
+  const [tokenBalance, setTokenBalance] = useState<number | null>(null);
+  const [tokenLoading, setTokenLoading] = useState(false);
+  const [tokenError, setTokenError] = useState<string | null>(null);
+
   const router = useRouter();
 
   // 👇 Auto-redirect to /app after login/signup when used on landing
@@ -27,6 +33,50 @@ export function AuthPanel({ redirectToAppOnAuth = false }: AuthPanelProps) {
       router.push("/app");
     }
   }, [redirectToAppOnAuth, loading, user, router]);
+
+  const fetchTokenBalance = async () => {
+    if (!user) return;
+
+    setTokenLoading(true);
+    setTokenError(null);
+
+    const { data, error } = await supabase.rpc("get_token_balance");
+
+    if (error) {
+      console.error("[AuthPanel] get_token_balance error:", error);
+      setTokenError(error.message);
+      setTokenBalance(null);
+    } else {
+      setTokenBalance(typeof data === "number" ? data : 0);
+    }
+
+    setTokenLoading(false);
+  };
+
+  // Fetch tokens when user becomes available
+  useEffect(() => {
+    if (!user) {
+      setTokenBalance(null);
+      setTokenError(null);
+      setTokenLoading(false);
+      return;
+    }
+    fetchTokenBalance();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user?.id]);
+
+  // ✅ NEW: Listen for global token refresh events (e.g. after generation spends tokens)
+  useEffect(() => {
+    if (!user) return;
+
+    const handler = () => {
+      fetchTokenBalance();
+    };
+
+    window.addEventListener("tokens:changed", handler);
+    return () => window.removeEventListener("tokens:changed", handler);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user?.id]);
 
   const handleSignUp = async () => {
     setAuthLoading(true);
@@ -97,11 +147,53 @@ export function AuthPanel({ redirectToAppOnAuth = false }: AuthPanelProps) {
         <div className="text-xs text-slate-400">Checking session…</div>
       ) : user ? (
         <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-          <div className="text-xs text-slate-300">
-            Signed in as{" "}
-            <span className="font-medium text-slate-50">
-              {user.email ?? user.id}
-            </span>
+          <div className="flex flex-col gap-1">
+            <div className="text-xs text-slate-300">
+              Signed in as{" "}
+              <span className="font-medium text-slate-50">
+                {user.email ?? user.id}
+              </span>
+            </div>
+
+            {/* ✅ Token counter */}
+            <div className="text-[11px] text-slate-400 flex items-center gap-2">
+              <span className="text-slate-400">Tokens:</span>
+
+              {tokenLoading ? (
+                <span className="text-slate-300">Loading…</span>
+              ) : tokenError ? (
+                <span className="text-rose-300" title={tokenError}>
+                  Error
+                </span>
+              ) : (
+                <span className="text-slate-100 font-medium">
+                  {tokenBalance ?? "—"}
+                </span>
+              )}
+
+              <button
+                type="button"
+                onClick={fetchTokenBalance}
+                disabled={tokenLoading}
+                className="text-[11px] rounded-md border border-slate-700 px-2 py-0.5 hover:border-emerald-400/70 hover:text-emerald-200 transition disabled:opacity-60"
+                title={tokenError ?? "Refresh token balance"}
+              >
+                Refresh
+              </button>
+
+              <button
+                type="button"
+                onClick={() => startTopup("price_1ShhxG1nnn0IHwIjzOnYYCTo")}
+                className="text-[11px] rounded-md bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-medium px-2 py-0.5 transition"
+                title="Buy more tokens"
+              >
+                Buy tokens
+              </button>
+            </div>
+
+            {tokenError && (
+              <div className="text-[11px] text-rose-300">{tokenError}</div>
+            )}
           </div>
 
           <div className="flex flex-col sm:flex-row gap-2">
