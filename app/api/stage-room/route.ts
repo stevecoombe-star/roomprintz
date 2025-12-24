@@ -1,5 +1,6 @@
 // app/api/stage-room/route.ts
 import { NextRequest, NextResponse } from "next/server";
+import { createClient } from "@supabase/supabase-js";
 import { callCompositorEngine } from "@/lib/callCompositorEngine";
 
 // Ensure we run on the Node.js runtime (needed for Buffer, larger payloads, etc.)
@@ -16,16 +17,90 @@ const ALLOWED_ASPECT_RATIOS: Set<string> = new Set([
   "1:1",
 ]);
 
+function mustEnv(...names: string[]) {
+  for (const n of names) {
+    const v = process.env[n];
+    if (v && v.length > 0) return v;
+  }
+  throw new Error(`Missing env var (tried: ${names.join(", ")})`);
+}
+
+const SUPABASE_URL = mustEnv("SUPABASE_URL", "NEXT_PUBLIC_SUPABASE_URL");
+const SUPABASE_ANON_KEY = mustEnv(
+  "SUPABASE_ANON_KEY",
+  "NEXT_PUBLIC_SUPABASE_ANON_KEY"
+);
+
+/**
+ * Creates a user-scoped Supabase client using the Authorization Bearer token.
+ * This is required so RPCs run as the actual user (auth.uid()).
+ */
+function getUserSupabaseClient(req: NextRequest) {
+  const authHeader = req.headers.get("authorization") || "";
+  const token = authHeader.startsWith("Bearer ")
+    ? authHeader.slice("Bearer ".length).trim()
+    : null;
+
+  if (!token) return { supabase: null as any, token: null as string | null };
+
+  const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+    global: {
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    },
+    auth: {
+      persistSession: false,
+      autoRefreshToken: false,
+      detectSessionInUrl: false,
+    },
+  });
+
+  return { supabase, token };
+}
+
+function json(status: number, body: unknown) {
+  return NextResponse.json(body, { status });
+}
+
 export async function POST(req: NextRequest) {
   try {
+    const { supabase, token } = getUserSupabaseClient(req);
+
+    if (!token) {
+      return json(401, {
+        error:
+          "Unauthorized: missing Authorization Bearer token. (Send Supabase access_token in the request.)",
+      });
+    }
+
+    // Verify user
+    const { data: userData, error: userErr } = await supabase.auth.getUser();
+    if (userErr || !userData?.user) {
+      return json(401, { error: "Unauthorized" });
+    }
+    const user = userData.user;
+
     const formData = await req.formData();
     const file = formData.get("file");
 
     if (!(file instanceof Blob)) {
-      return NextResponse.json(
-        { error: "Missing or invalid file in form-data (expected 'file')." },
-        { status: 400 }
-      );
+      return json(400, {
+        error: "Missing or invalid file in form-data (expected 'file').",
+      });
+    }
+
+    // ✅ REQUIRED for idempotent token spend
+    const jobIdRaw = formData.get("jobId");
+    const jobId =
+      typeof jobIdRaw === "string" && jobIdRaw.trim().length > 0
+        ? jobIdRaw.trim()
+        : null;
+
+    if (!jobId) {
+      return json(400, {
+        error: "Missing jobId in form-data (required for token spend idempotency).",
+      });
     }
 
     const styleIdRaw = formData.get("styleId");
@@ -51,7 +126,7 @@ export async function POST(req: NextRequest) {
     const flooringPreset =
       flooringPresetRaw === "" || flooringPresetRaw === "none"
         ? null
-        : flooringPresetRaw; // null or "carpet"/"hardwood"/"tile"
+        : flooringPresetRaw;
 
     // roomType
     const roomTypeRaw = formData.get("roomType");
@@ -78,7 +153,7 @@ export async function POST(req: NextRequest) {
       normalizedAspectRatio = parsedAspectRatio as AspectRatio;
     }
 
-    // ✅ NEW: isContinuation (one-shot)
+    // isContinuation (one-shot)
     const isContinuationRaw = formData.get("isContinuation");
     const isContinuation =
       typeof isContinuationRaw === "string" && isContinuationRaw === "true";
@@ -94,15 +169,52 @@ export async function POST(req: NextRequest) {
       !repaintWalls &&
       !flooringPreset
     ) {
-      return NextResponse.json(
+      return json(
+        400,
         {
           error:
             "No styleId and no photo tools selected. Nothing to do for stage-room.",
-        },
-        { status: 400 }
+        }
       );
     }
 
+    /**
+     * ✅ TOKEN COST RULE (start simple)
+     * You can tune this anytime:
+     * - gemini-3 (higher cost) = 2 tokens
+     * - gemini-2.5 (cheaper)   = 1 token
+     */
+    const tokenCost = normalizedModelVersion === "gemini-3" ? 2 : 1;
+
+    // ✅ Spend tokens BEFORE generation (atomic + idempotent via external_id=jobId)
+    const { data: spendData, error: spendErr } = await supabase.rpc(
+      "try_spend_tokens",
+      {
+        p_cost: tokenCost,
+        p_external_id: jobId,
+        p_reason: `room_generation:${normalizedModelVersion}`,
+      }
+    );
+
+    if (spendErr) {
+      console.error("[stage-room] try_spend_tokens error:", spendErr);
+      return json(500, { error: "Token spend failed" });
+    }
+
+    const spendRow = Array.isArray(spendData) ? spendData[0] : spendData;
+    const spentOk = !!spendRow?.success;
+    const balanceAfterSpend =
+      typeof spendRow?.balance === "number" ? spendRow.balance : null;
+
+    if (!spentOk) {
+      return json(402, {
+        error: "Insufficient tokens",
+        required: tokenCost,
+        tokenBalance: balanceAfterSpend ?? 0,
+      });
+    }
+
+    // ✅ Call compositor
     const arrayBuffer = await file.arrayBuffer();
     const bytes = Buffer.from(arrayBuffer);
 
@@ -126,13 +238,29 @@ export async function POST(req: NextRequest) {
     const originalImageUrl = result?.originalImageUrl ?? null;
 
     if (!imageUrl) {
-      return NextResponse.json(
-        { error: "Compositor did not return an imageUrl." },
-        { status: 500 }
-      );
+      // ✅ Refund on compositor failure (best UX)
+      const { error: refundErr } = await supabase.from("token_ledger").insert({
+        user_id: user.id,
+        delta: tokenCost,
+        kind: "refund",
+        external_id: jobId,
+        reason: "generation_failed_refund",
+        job_id: jobId,
+      });
+
+      if (refundErr) {
+        console.error("[stage-room] refund insert error:", refundErr);
+      }
+
+      return json(500, { error: "Compositor did not return an imageUrl." });
     }
 
-    return NextResponse.json({ imageUrl, originalImageUrl });
+    return json(200, {
+      imageUrl,
+      originalImageUrl,
+      tokenCost,
+      tokenBalance: balanceAfterSpend, // after spend (may be same as before if already spent due to retry)
+    });
   } catch (err: any) {
     console.error("[stage-room] unexpected error:", err);
     return NextResponse.json(

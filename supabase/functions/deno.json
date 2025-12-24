@@ -1,0 +1,8 @@
+{
+  "nodeModulesDir": "auto",
+  "imports": {
+    "edge-runtime": "jsr:@supabase/functions-js@^2.0.0/edge-runtime.d.ts",
+    "stripe": "npm:stripe@^17.0.0",
+    "@supabase/supabase-js": "npm:@supabase/supabase-js@^2.0.0"
+  }
+}

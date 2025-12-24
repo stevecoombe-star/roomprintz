@@ -5,6 +5,7 @@ import { useState, useEffect } from "react";
 import { supabase } from "@/lib/supabaseClient";
 import { useSupabaseUser } from "@/lib/useSupabaseUser";
 import { useRouter } from "next/navigation";
+import { startTopup } from "@/lib/stripeClient";
 
 type AuthPanelProps = {
   redirectToAppOnAuth?: boolean;
@@ -17,9 +18,14 @@ export function AuthPanel({ redirectToAppOnAuth = false }: AuthPanelProps) {
   const [authLoading, setAuthLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
+  // ✅ Token counter state
+  const [tokenBalance, setTokenBalance] = useState<number | null>(null);
+  const [tokenLoading, setTokenLoading] = useState(false);
+  const [tokenError, setTokenError] = useState<string | null>(null);
+
   const router = useRouter();
 
-  // 👇 NEW: auto-redirect to /app after login/signup when used on landing
+  // 👇 Auto-redirect to /app after login/signup when used on landing
   useEffect(() => {
     if (!redirectToAppOnAuth) return;
     if (loading) return;
@@ -28,11 +34,55 @@ export function AuthPanel({ redirectToAppOnAuth = false }: AuthPanelProps) {
     }
   }, [redirectToAppOnAuth, loading, user, router]);
 
+  const fetchTokenBalance = async () => {
+    if (!user) return;
+
+    setTokenLoading(true);
+    setTokenError(null);
+
+    const { data, error } = await supabase.rpc("get_token_balance");
+
+    if (error) {
+      console.error("[AuthPanel] get_token_balance error:", error);
+      setTokenError(error.message);
+      setTokenBalance(null);
+    } else {
+      setTokenBalance(typeof data === "number" ? data : 0);
+    }
+
+    setTokenLoading(false);
+  };
+
+  // Fetch tokens when user becomes available
+  useEffect(() => {
+    if (!user) {
+      setTokenBalance(null);
+      setTokenError(null);
+      setTokenLoading(false);
+      return;
+    }
+    fetchTokenBalance();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user?.id]);
+
+  // ✅ NEW: Listen for global token refresh events (e.g. after generation spends tokens)
+  useEffect(() => {
+    if (!user) return;
+
+    const handler = () => {
+      fetchTokenBalance();
+    };
+
+    window.addEventListener("tokens:changed", handler);
+    return () => window.removeEventListener("tokens:changed", handler);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user?.id]);
+
   const handleSignUp = async () => {
     setAuthLoading(true);
     setErrorMessage(null);
     try {
-      const { data, error } = await supabase.auth.signUp({
+      const { error } = await supabase.auth.signUp({
         email,
         password,
       });
@@ -40,8 +90,6 @@ export function AuthPanel({ redirectToAppOnAuth = false }: AuthPanelProps) {
       if (error) {
         console.error("[AuthPanel] signUp error:", error);
         setErrorMessage(error.message);
-      } else {
-        console.log("[AuthPanel] signUp success:", data);
       }
     } catch (err: any) {
       console.error("[AuthPanel] signUp thrown:", err);
@@ -55,7 +103,7 @@ export function AuthPanel({ redirectToAppOnAuth = false }: AuthPanelProps) {
     setAuthLoading(true);
     setErrorMessage(null);
     try {
-      const { data, error } = await supabase.auth.signInWithPassword({
+      const { error } = await supabase.auth.signInWithPassword({
         email,
         password,
       });
@@ -63,8 +111,6 @@ export function AuthPanel({ redirectToAppOnAuth = false }: AuthPanelProps) {
       if (error) {
         console.error("[AuthPanel] signIn error:", error);
         setErrorMessage(error.message);
-      } else {
-        console.log("[AuthPanel] signIn success:", data);
       }
     } catch (err: any) {
       console.error("[AuthPanel] signIn thrown:", err);
@@ -85,9 +131,8 @@ export function AuthPanel({ redirectToAppOnAuth = false }: AuthPanelProps) {
         return;
       }
 
-      // 👇 NEW: redirect to landing page after sign-out
+      // Redirect to landing page after sign-out
       router.push("/");
-
     } catch (err: any) {
       console.error("[AuthPanel] signOut thrown:", err);
       setErrorMessage(err?.message ?? "Unexpected error");
@@ -102,20 +147,73 @@ export function AuthPanel({ redirectToAppOnAuth = false }: AuthPanelProps) {
         <div className="text-xs text-slate-400">Checking session…</div>
       ) : user ? (
         <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-          <div className="text-xs text-slate-300">
-            Signed in as{" "}
-            <span className="font-medium text-slate-50">
-              {user.email ?? user.id}
-            </span>
+          <div className="flex flex-col gap-1">
+            <div className="text-xs text-slate-300">
+              Signed in as{" "}
+              <span className="font-medium text-slate-50">
+                {user.email ?? user.id}
+              </span>
+            </div>
+
+            {/* ✅ Token counter */}
+            <div className="text-[11px] text-slate-400 flex items-center gap-2">
+              <span className="text-slate-400">Tokens:</span>
+
+              {tokenLoading ? (
+                <span className="text-slate-300">Loading…</span>
+              ) : tokenError ? (
+                <span className="text-rose-300" title={tokenError}>
+                  Error
+                </span>
+              ) : (
+                <span className="text-slate-100 font-medium">
+                  {tokenBalance ?? "—"}
+                </span>
+              )}
+
+              <button
+                type="button"
+                onClick={fetchTokenBalance}
+                disabled={tokenLoading}
+                className="text-[11px] rounded-md border border-slate-700 px-2 py-0.5 hover:border-emerald-400/70 hover:text-emerald-200 transition disabled:opacity-60"
+                title={tokenError ?? "Refresh token balance"}
+              >
+                Refresh
+              </button>
+
+              <button
+                type="button"
+                onClick={() => startTopup("price_1ShhxG1nnn0IHwIjzOnYYCTo")}
+                className="text-[11px] rounded-md bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-medium px-2 py-0.5 transition"
+                title="Buy more tokens"
+              >
+                Buy tokens
+              </button>
+            </div>
+
+            {tokenError && (
+              <div className="text-[11px] text-rose-300">{tokenError}</div>
+            )}
           </div>
-          <button
-            type="button"
-            onClick={handleSignOut}
-            disabled={authLoading}
-            className="self-start mt-1 text-xs rounded-lg border border-slate-700 px-3 py-1 hover:border-emerald-400/70 hover:text-emerald-200 transition"
-          >
-            {authLoading ? "Signing out…" : "Sign out"}
-          </button>
+
+          <div className="flex flex-col sm:flex-row gap-2">
+            <button
+              type="button"
+              onClick={() => router.push("/billing")}
+              className="self-start mt-1 text-xs rounded-lg bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-medium px-3 py-1 transition"
+            >
+              Billing
+            </button>
+
+            <button
+              type="button"
+              onClick={handleSignOut}
+              disabled={authLoading}
+              className="self-start mt-1 text-xs rounded-lg border border-slate-700 px-3 py-1 hover:border-emerald-400/70 hover:text-emerald-200 transition"
+            >
+              {authLoading ? "Signing out…" : "Sign out"}
+            </button>
+          </div>
         </div>
       ) : (
         <>
@@ -132,6 +230,7 @@ export function AuthPanel({ redirectToAppOnAuth = false }: AuthPanelProps) {
                 placeholder="agent@example.com"
               />
             </div>
+
             <div className="flex-1">
               <label className="block text-[11px] text-slate-400 mb-1">
                 Password
@@ -144,6 +243,7 @@ export function AuthPanel({ redirectToAppOnAuth = false }: AuthPanelProps) {
                 placeholder="••••••••"
               />
             </div>
+
             <div className="flex gap-2 mt-2 sm:mt-0">
               <button
                 type="button"
@@ -153,6 +253,7 @@ export function AuthPanel({ redirectToAppOnAuth = false }: AuthPanelProps) {
               >
                 {authLoading ? "Working…" : "Log in"}
               </button>
+
               <button
                 type="button"
                 onClick={handleSignUp}
@@ -163,11 +264,13 @@ export function AuthPanel({ redirectToAppOnAuth = false }: AuthPanelProps) {
               </button>
             </div>
           </div>
+
           {errorMessage && (
             <div className="text-[11px] text-rose-300 mt-1">
               {errorMessage}
             </div>
           )}
+
           <p className="text-[11px] text-slate-500">
             Dev note: email/password only, no email verification in this
             environment.
