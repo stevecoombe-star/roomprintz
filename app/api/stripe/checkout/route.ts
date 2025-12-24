@@ -5,28 +5,47 @@ import { createClient } from "@supabase/supabase-js";
 
 export const runtime = "nodejs";
 
+// Helper: always return JSON (prevents HTML errors leaking to client)
+function json(status: number, body: Record<string, unknown>) {
+  return NextResponse.json(body, { status });
+}
+
 function mustEnv(name: string): string {
   const v = process.env[name];
   if (!v) throw new Error(`Missing env var: ${name}`);
   return v;
 }
 
-const stripe = new Stripe(mustEnv("STRIPE_SECRET_KEY"), {
-  apiVersion: "2025-12-15.clover",
-});
+// Derive the correct base URL (works on localhost + Vercel Preview + Prod)
+function getOrigin(req: Request): string {
+  const origin = req.headers.get("origin");
+  if (origin) return origin;
 
-const supabaseAdmin = createClient(
-  mustEnv("SUPABASE_URL"),
-  mustEnv("SUPABASE_SERVICE_ROLE_KEY"),
-);
+  const referer = req.headers.get("referer");
+  if (referer) {
+    try {
+      return new URL(referer).origin;
+    } catch {
+      // ignore
+    }
+  }
 
-// Helper: always return JSON (prevents HTML errors leaking to client)
-function json(status: number, body: Record<string, unknown>) {
-  return NextResponse.json(body, { status });
+  // Fallback (local dev)
+  return "http://localhost:3000";
 }
 
 export async function POST(req: Request) {
   try {
+    // ✅ Instantiate Stripe + Supabase inside handler (build-safe)
+    const stripe = new Stripe(mustEnv("STRIPE_SECRET_KEY"), {
+      apiVersion: "2025-12-15.clover",
+    });
+
+    const supabaseAdmin = createClient(
+      mustEnv("SUPABASE_URL"),
+      mustEnv("SUPABASE_SERVICE_ROLE_KEY")
+    );
+
     // Parse body safely
     let planId: string | undefined;
     try {
@@ -49,11 +68,22 @@ export async function POST(req: Request) {
     if (!accessToken) return json(401, { error: "Missing access token" });
 
     // Use service role client but pass Authorization header to resolve the user
-    const supabaseUserClient = createClient(mustEnv("SUPABASE_URL"), mustEnv("SUPABASE_SERVICE_ROLE_KEY"), {
-      global: { headers: { Authorization: `Bearer ${accessToken}` } },
-    });
+    const supabaseUserClient = createClient(
+      mustEnv("SUPABASE_URL"),
+      mustEnv("SUPABASE_SERVICE_ROLE_KEY"),
+      {
+        global: { headers: { Authorization: `Bearer ${accessToken}` } },
+        auth: {
+          persistSession: false,
+          autoRefreshToken: false,
+          detectSessionInUrl: false,
+        },
+      }
+    );
 
-    const { data: userData, error: userErr } = await supabaseUserClient.auth.getUser();
+    const { data: userData, error: userErr } =
+      await supabaseUserClient.auth.getUser();
+
     if (userErr || !userData?.user) {
       return json(401, { error: "Unauthorized" });
     }
@@ -90,9 +120,10 @@ export async function POST(req: Request) {
       if (upsertErr) throw upsertErr;
     }
 
-    const appUrl = mustEnv("NEXT_PUBLIC_APP_URL");
-    const successUrl = `${appUrl}/billing/success?session_id={CHECKOUT_SESSION_ID}`;
-    const cancelUrl = `${appUrl}/billing/cancel`;
+    // ✅ Correct redirect base for local + preview + prod
+    const origin = getOrigin(req);
+    const successUrl = `${origin}/billing/success?session_id={CHECKOUT_SESSION_ID}`;
+    const cancelUrl = `${origin}/billing/cancel`;
 
     // Create Checkout Session (subscription)
     const session = await stripe.checkout.sessions.create({
@@ -124,9 +155,8 @@ export async function POST(req: Request) {
       return json(500, { error: "Stripe Checkout Session created without a URL" });
     }
 
-    return json(200, { url: session.url });
+    return json(200, { url: session.url, origin });
   } catch (e: unknown) {
-    // Always JSON back to client
     const message = e instanceof Error ? e.message : String(e);
     console.error("checkout route error:", e);
     return json(500, { error: message || "Checkout failed" });
