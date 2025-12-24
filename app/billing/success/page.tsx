@@ -1,12 +1,10 @@
 // app/billing/success/page.tsx
 "use client";
 
-export const dynamic = "force-dynamic";
-
-import { useEffect, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 
-export default function BillingSuccessPage() {
+function BillingSuccessInner() {
   const params = useSearchParams();
   const router = useRouter();
   const sessionId = params.get("session_id");
@@ -22,7 +20,7 @@ export default function BillingSuccessPage() {
 
     setMessage("Subscription completed ✅ You can close this tab or return to the app.");
 
-    // ✅ Nudge the app to refresh token balance when the user returns
+    // Nudge the app to refresh token balance when the user returns
     window.dispatchEvent(new Event("tokens:changed"));
 
     // Optional: auto-return after a short pause
@@ -53,5 +51,13 @@ export default function BillingSuccessPage() {
         </button>
       </div>
     </div>
+  );
+}
+
+export default function BillingSuccessPage() {
+  return (
+    <Suspense fallback={<div className="max-w-xl mx-auto p-6">Loading…</div>}>
+      <BillingSuccessInner />
+    </Suspense>
   );
 }
