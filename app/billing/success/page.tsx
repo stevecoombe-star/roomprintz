@@ -1,6 +1,8 @@
 // app/billing/success/page.tsx
 "use client";
 
+export const dynamic = "force-dynamic";
+
 import { useEffect, useState } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 
@@ -19,6 +21,9 @@ export default function BillingSuccessPage() {
     }
 
     setMessage("Subscription completed ✅ You can close this tab or return to the app.");
+
+    // ✅ Nudge the app to refresh token balance when the user returns
+    window.dispatchEvent(new Event("tokens:changed"));
 
     // Optional: auto-return after a short pause
     const t = setTimeout(() => {
