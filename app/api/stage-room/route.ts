@@ -170,6 +170,11 @@ export async function POST(req: NextRequest) {
     const isContinuation =
       typeof isContinuationRaw === "string" && isContinuationRaw === "true";
 
+    // sameInputSession (client-side lineage: same uploaded image, same session)
+    const sameInputSessionRaw = formData.get("sameInputSession");
+    const sameInputSession =
+      typeof sameInputSessionRaw === "string" && sameInputSessionRaw === "true";
+
     // ✅ NEW: Property + room context (required for lineage protection)
     const propertyIdRaw = formData.get("propertyId");
     const propertyId =
@@ -209,7 +214,7 @@ export async function POST(req: NextRequest) {
 
     // ✅ NEW: 409 guard (server-side) — fresh uploads cannot target an existing room label
     // Continuations are allowed to reuse an existing room name (same lineage).
-    if (!isContinuation) {
+    if (!isContinuation && !sameInputSession) {
       const { data: rows, error: roomsErr } = await supabase
         .from("jobs")
         .select("room_name")
