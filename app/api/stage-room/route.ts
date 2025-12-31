@@ -63,6 +63,18 @@ function json(status: number, body: unknown) {
   return NextResponse.json(body, { status });
 }
 
+// ---------- Room lineage guard helpers ----------
+const norm = (s: string) => (s || "").trim().toLowerCase();
+
+function suggestUniqueRoomName(desired: string, existing: Set<string>) {
+  const base = desired.trim() || "Untitled room";
+  if (!existing.has(norm(base))) return base;
+
+  let n = 2;
+  while (existing.has(norm(`${base} (${n})`))) n += 1;
+  return `${base} (${n})`;
+}
+
 export async function POST(req: NextRequest) {
   try {
     const { supabase, token } = getUserSupabaseClient(req);
@@ -158,6 +170,26 @@ export async function POST(req: NextRequest) {
     const isContinuation =
       typeof isContinuationRaw === "string" && isContinuationRaw === "true";
 
+    // ✅ NEW: Property + room context (required for lineage protection)
+    const propertyIdRaw = formData.get("propertyId");
+    const propertyId =
+      typeof propertyIdRaw === "string" && propertyIdRaw.trim().length > 0
+        ? propertyIdRaw.trim()
+        : null;
+
+    if (!propertyId) {
+      return json(400, {
+        error:
+          "Missing propertyId in form-data (required for room lineage protection).",
+      });
+    }
+
+    const roomNameRaw = formData.get("roomName");
+    const roomName =
+      typeof roomNameRaw === "string" && roomNameRaw.trim().length > 0
+        ? roomNameRaw.trim()
+        : "Untitled room";
+
     // Safety check: at least one action
     if (
       !styleId &&
@@ -169,13 +201,43 @@ export async function POST(req: NextRequest) {
       !repaintWalls &&
       !flooringPreset
     ) {
-      return json(
-        400,
-        {
-          error:
-            "No styleId and no photo tools selected. Nothing to do for stage-room.",
+      return json(400, {
+        error:
+          "No styleId and no photo tools selected. Nothing to do for stage-room.",
+      });
+    }
+
+    // ✅ NEW: 409 guard (server-side) — fresh uploads cannot target an existing room label
+    // Continuations are allowed to reuse an existing room name (same lineage).
+    if (!isContinuation) {
+      const { data: rows, error: roomsErr } = await supabase
+        .from("jobs")
+        .select("room_name")
+        .eq("user_id", user.id)
+        .eq("property_id", propertyId);
+
+      if (roomsErr) {
+        console.error("[stage-room] room lineage guard query error:", roomsErr);
+        // Fail open (do not block spend/generation) if guard query fails.
+        // Frontend guard should catch most cases; this is a safety net.
+      } else {
+        const existing = new Set<string>();
+        for (const r of rows ?? []) {
+          const label = (r as any)?.room_name?.trim() || "Unlabeled room";
+          existing.add(norm(label));
         }
-      );
+
+        if (existing.has(norm(roomName))) {
+          const suggestedRoomName = suggestUniqueRoomName(roomName, existing);
+
+          return json(409, {
+            error: "room_name_conflict",
+            message:
+              "Room name already exists. Fresh uploads cannot target an existing room (lineage protection).",
+            suggestedRoomName,
+          });
+        }
+      }
     }
 
     /**
