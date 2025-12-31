@@ -32,6 +32,12 @@ type Job = {
   room_notes: string | null;
 };
 
+type PropertyOption = {
+  id: string;
+  title: string | null;
+  address_line_1: string | null;
+};
+
 export default function PropertyPage() {
   const params = useParams();
   const router = useRouter();
@@ -65,7 +71,6 @@ export default function PropertyPage() {
 
   // accordion open/closed rooms
   const [openRooms, setOpenRooms] = useState<string[]>([]);
-  // const [hasAutoOpened, setHasAutoOpened] = useState(false);
 
   // room rename inline editing
   const [editingRoom, setEditingRoom] = useState<string | null>(null);
@@ -100,6 +105,24 @@ export default function PropertyPage() {
   const [moveExistingRoomLabel, setMoveExistingRoomLabel] =
     useState<string>("");
   const [moveNewRoomLabel, setMoveNewRoomLabel] = useState<string>("");
+
+  // ✅ Move ROOM to another property
+  const [moveRoomDialogOpen, setMoveRoomDialogOpen] = useState(false);
+  const [moveRoomLabel, setMoveRoomLabel] = useState<string>("");
+  const [moveRoomDestPropertyId, setMoveRoomDestPropertyId] = useState<string>("");
+  const [moveRoomLoading, setMoveRoomLoading] = useState(false);
+  const [userProperties, setUserProperties] = useState<PropertyOption[]>([]);
+
+  // 🔔 Simple toast (no external deps)
+  const [toast, setToast] = useState<{
+    message: string;
+    type: "error" | "info";
+  } | null>(null);
+
+  const showToast = (message: string, type: "error" | "info" = "info") => {
+    setToast({ message, type });
+    window.setTimeout(() => setToast(null), 4500);
+  };
 
   // ------------ LOAD PROPERTY + JOBS ------------
 
@@ -161,6 +184,33 @@ export default function PropertyPage() {
     loadData();
   }, [authLoading, user, propertyId, router]);
 
+  // ✅ Load user's properties list for Move Room dropdown
+  useEffect(() => {
+    const loadUserProperties = async () => {
+      if (authLoading) return;
+      if (!user) return;
+
+      try {
+        const { data, error } = await supabase
+          .from("properties")
+          .select("id, title, address_line_1")
+          .eq("user_id", user.id)
+          .order("updated_at", { ascending: false });
+
+        if (error) {
+          console.error("[PropertyPage] load user properties error:", error);
+          return;
+        }
+
+        setUserProperties((data ?? []) as PropertyOption[]);
+      } catch (err) {
+        console.error("[PropertyPage] unexpected user properties load error:", err);
+      }
+    };
+
+    loadUserProperties();
+  }, [authLoading, user?.id]);
+
   // ---------- list of all room labels (for move dialog) ----------
 
   const allRoomLabels = useMemo(() => {
@@ -210,17 +260,14 @@ export default function PropertyPage() {
             new Date(b.created_at).getTime()
         );
       const latestStaged =
-        stagedJobs.length > 0
-          ? stagedJobs[stagedJobs.length - 1]
-          : undefined;
+        stagedJobs.length > 0 ? stagedJobs[stagedJobs.length - 1] : undefined;
 
       // earliest original in this room
       const originalJob =
         roomJobs
           .filter(
             (j) =>
-              j.original_image_url &&
-              !j.original_image_url.startsWith("blob:")
+              j.original_image_url && !j.original_image_url.startsWith("blob:")
           )
           .slice()
           .sort(
@@ -240,9 +287,7 @@ export default function PropertyPage() {
 
       if (primaryJob) {
         primaryImageUrl =
-          primaryJob.staged_image_url ||
-          primaryJob.original_image_url ||
-          null;
+          primaryJob.staged_image_url || primaryJob.original_image_url || null;
       } else if (latestStaged) {
         primaryImageUrl = latestStaged.staged_image_url;
       } else if (originalJob?.original_image_url) {
@@ -376,6 +421,10 @@ export default function PropertyPage() {
             original_image_url: originalUrl,
             room_notes: null,
             is_primary_for_room: true,
+
+            // ✅ NEW (for future storage moves)
+            original_storage_path: path,
+            staged_storage_path: null,
           })
           .select(
             "id, staged_image_url, style_id, room_name, created_at, original_image_url, is_primary_for_room, room_notes"
@@ -426,14 +475,6 @@ export default function PropertyPage() {
     }
   };
 
-  // Auto-open the first room only once on initial load
-  // useEffect(() => {
-  //   if (!hasAutoOpened && sortedRooms.length > 0) {
-  //     setOpenRooms([sortedRooms[0].roomName]);
-  //     setHasAutoOpened(true);
-  //   }
-  // }, [sortedRooms, hasAutoOpened]);
-
   const handleExpandAllRooms = () => {
     setOpenRooms(sortedRooms.map((r) => r.roomName));
   };
@@ -470,9 +511,7 @@ export default function PropertyPage() {
     // If a room with this label already exists, just open it
     const existingRoom = sortedRooms.find((r) => r.roomName === roomName);
     if (existingRoom) {
-      setOpenRooms((prev) =>
-        prev.includes(roomName) ? prev : [...prev, roomName]
-      );
+      setOpenRooms((prev) => (prev.includes(roomName) ? prev : [...prev, roomName]));
       return;
     }
 
@@ -491,6 +530,10 @@ export default function PropertyPage() {
           original_image_url: "",
           room_notes: null,
           is_primary_for_room: false,
+
+          // ✅ NEW (for future storage moves)
+          original_storage_path: null,
+          staged_storage_path: null,
         })
         .select(
           "id, staged_image_url, style_id, room_name, created_at, original_image_url, is_primary_for_room, room_notes"
@@ -510,9 +553,7 @@ export default function PropertyPage() {
 
       // Open this new room accordion
       const key = roomName || "Unlabeled room";
-      setOpenRooms((prev) =>
-        prev.includes(key) ? prev : [...prev, key]
-      );
+      setOpenRooms((prev) => (prev.includes(key) ? prev : [...prev, key]));
     } catch (err) {
       console.error("[PropertyPage] unexpected create blank room error:", err);
       alert("Unexpected error creating a blank room.");
@@ -539,8 +580,7 @@ export default function PropertyPage() {
     const newLabelTrimmed = editingRoomValue.trim();
 
     // Map empty string to "Unlabeled room" for UI
-    const effectiveNewLabel =
-      newLabelTrimmed === "" ? "Unlabeled room" : newLabelTrimmed;
+    const effectiveNewLabel = newLabelTrimmed === "" ? "Unlabeled room" : newLabelTrimmed;
 
     // If nothing changed, just cancel
     if (effectiveNewLabel === roomLabel) {
@@ -548,10 +588,21 @@ export default function PropertyPage() {
       return;
     }
 
+    // ❌ Guard: prevent renaming into an existing room label (no merges)
+    const labelAlreadyExists = sortedRooms.some(
+      (r) => r.roomName === effectiveNewLabel && r.roomName !== roomLabel
+    );
+
+    if (labelAlreadyExists) {
+      alert(
+        `That room name already exists in this property.\n\nChoose a different name (merging rooms is disabled).`
+      );
+      return;
+    }
+
     // Map UI labels to DB values
     const oldDbValue = roomLabel === "Unlabeled room" ? null : roomLabel;
-    const newDbValue =
-      newLabelTrimmed.length === 0 ? null : newLabelTrimmed;
+    const newDbValue = newLabelTrimmed.length === 0 ? null : newLabelTrimmed;
 
     try {
       setRoomRenameLoading(true);
@@ -586,9 +637,7 @@ export default function PropertyPage() {
 
       // Update openRooms keys
       setOpenRooms((prev: string[]) =>
-        prev.map((name) =>
-          name === roomLabel ? effectiveNewLabel : name
-        )
+        prev.map((name) => (name === roomLabel ? effectiveNewLabel : name))
       );
 
       cancelRenameRoom();
@@ -602,10 +651,7 @@ export default function PropertyPage() {
 
   // ------------ ROOM NOTES HELPERS ------------
 
-  const startEditRoomNotes = (
-    roomLabel: string,
-    currentNotes: string | null
-  ) => {
+  const startEditRoomNotes = (roomLabel: string, currentNotes: string | null) => {
     setEditingNotesRoom(roomLabel);
     setEditingNotesValue(currentNotes ?? "");
   };
@@ -671,9 +717,7 @@ export default function PropertyPage() {
   // ------------ MOVE IMAGE TO ANOTHER ROOM HELPERS ------------
 
   const startMoveJob = (job: Job, currentRoomLabel: string) => {
-    const availableTargets = allRoomLabels.filter(
-      (label) => label !== currentRoomLabel
-    );
+    const availableTargets = allRoomLabels.filter((label) => label !== currentRoomLabel);
     setMoveExistingRoomLabel(availableTargets[0] ?? "");
     setMoveNewRoomLabel("");
     setMoveJob(job);
@@ -692,14 +736,12 @@ export default function PropertyPage() {
     if (!moveJob) return;
     if (!propertyId) return;
 
-    const currentRoomLabel =
-      moveJob.room_name?.trim() || "Unlabeled room";
+    const currentRoomLabel = moveJob.room_name?.trim() || "Unlabeled room";
 
     const newLabelTrimmed = moveNewRoomLabel.trim();
     const fallbackLabel = moveExistingRoomLabel.trim();
 
-    const targetLabel =
-      newLabelTrimmed.length > 0 ? newLabelTrimmed : fallbackLabel;
+    const targetLabel = newLabelTrimmed.length > 0 ? newLabelTrimmed : fallbackLabel;
 
     if (!targetLabel) {
       alert("Please select an existing room or enter a new room name.");
@@ -707,8 +749,7 @@ export default function PropertyPage() {
     }
 
     // Map target room label → DB value
-    const targetDbValue =
-      targetLabel === "Unlabeled room" ? null : targetLabel;
+    const targetDbValue = targetLabel === "Unlabeled room" ? null : targetLabel;
 
     try {
       setMoveSaving(true);
@@ -726,16 +767,12 @@ export default function PropertyPage() {
 
       // Update local jobs: move only this job
       setJobs((prev: Job[]) =>
-        prev.map((job) =>
-          job.id === moveJob.id ? { ...job, room_name: targetDbValue } : job
-        )
+        prev.map((job) => (job.id === moveJob.id ? { ...job, room_name: targetDbValue } : job))
       );
 
       // Ensure new room accordion is open
       const uiTargetLabel = targetLabel || "Unlabeled room";
-      setOpenRooms((prev: string[]) =>
-        prev.includes(uiTargetLabel) ? prev : [...prev, uiTargetLabel]
-      );
+      setOpenRooms((prev: string[]) => (prev.includes(uiTargetLabel) ? prev : [...prev, uiTargetLabel]));
 
       cancelMoveJob();
     } catch (err) {
@@ -743,6 +780,120 @@ export default function PropertyPage() {
       alert("Unexpected error moving image.");
     } finally {
       setMoveSaving(false);
+    }
+  };
+
+  // ------------ MOVE ROOM TO ANOTHER PROPERTY HELPERS ------------
+
+  const startMoveRoom = (roomLabel: string) => {
+    if (!propertyId) return;
+
+    if (roomLabel === "Unlabeled room") {
+      showToast("Please rename this room before moving it.", "error");
+      return;
+    }
+
+    // Default destination: first property that's not current
+    const firstDest = userProperties.find((p) => p.id !== propertyId)?.id ?? "";
+    setMoveRoomDestPropertyId(firstDest);
+    setMoveRoomLabel(roomLabel);
+    setMoveRoomDialogOpen(true);
+  };
+
+  const cancelMoveRoom = () => {
+    if (moveRoomLoading) return;
+    setMoveRoomDialogOpen(false);
+    setMoveRoomLabel("");
+    setMoveRoomDestPropertyId("");
+  };
+
+  const confirmMoveRoom = async () => {
+    if (!propertyId) return;
+    if (!moveRoomLabel) return;
+
+    if (!moveRoomDestPropertyId) {
+      showToast("Please select a destination property.", "error");
+      return;
+    }
+
+    if (moveRoomDestPropertyId === propertyId) {
+      showToast("Pick a different destination property.", "error");
+      return;
+    }
+
+    try {
+      setMoveRoomLoading(true);
+
+      const { data: sessionData } = await supabase.auth.getSession();
+      const accessToken = sessionData.session?.access_token;
+
+      if (!accessToken) {
+        showToast("Your session expired. Please log in again.", "error");
+        return;
+      }
+
+      const res = await fetch("/api/rooms/move", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${accessToken}`,
+        },
+        body: JSON.stringify({
+          fromPropertyId: propertyId,
+          toPropertyId: moveRoomDestPropertyId,
+          roomName: moveRoomLabel,
+        }),
+      });
+
+      const payload = await res.json().catch(() => ({}));
+
+      if (!res.ok) {
+        console.error("[PropertyPage] move room error:", res.status, payload);
+        showToast(payload?.error || "Failed to move room.", "error");
+        return;
+      }
+
+      const newRoomName = payload?.newRoomName as string | undefined;
+      const movedCount = payload?.movedCount as number | undefined;
+
+      // Remove all jobs in this room from local state (since they moved away)
+      setJobs((prev: Job[]) =>
+        prev.filter((j) => (j.room_name?.trim() || "Unlabeled room") !== moveRoomLabel)
+      );
+
+      // Close accordion for that room
+      setOpenRooms((prev: string[]) => prev.filter((name) => name !== moveRoomLabel));
+
+      // If modal is open for a job in this room, close it
+      if (activeJob) {
+        const activeKey = activeJob.room_name?.trim() || "Unlabeled room";
+        if (activeKey === moveRoomLabel) {
+          setActiveJob(null);
+          setModalOpen(false);
+          setModalRoomJobs([]);
+          setModalIndex(0);
+        }
+      }
+
+      // Toast success (include rename)
+      if (newRoomName && newRoomName !== moveRoomLabel) {
+        showToast(
+          `Moved room as “${newRoomName}” (${movedCount ?? "?"} job${movedCount === 1 ? "" : "s"}).`,
+          "info"
+        );
+      } else {
+        showToast(
+          `Moved room (${movedCount ?? "?"} job${movedCount === 1 ? "" : "s"}).`,
+          "info"
+        );
+      }
+
+      cancelMoveRoom();
+    } catch (err) {
+      console.error("[PropertyPage] unexpected move room error:", err);
+      showToast("Unexpected error moving room. Check console.", "error");
+    } finally {
+      setMoveRoomLoading(false);
     }
   };
 
@@ -767,23 +918,15 @@ export default function PropertyPage() {
     return meta?.name ?? meta?.label ?? styleId;
   };
 
-  const displayTitle =
-    property?.title || property?.address_line_1 || "Untitled property";
+  const displayTitle = property?.title || property?.address_line_1 || "Untitled property";
 
   const displayAddress = property
-    ? [
-        property.address_line_1,
-        property.city,
-        property.state_province,
-        property.postal_code,
-      ]
+    ? [property.address_line_1, property.city, property.state_province, property.postal_code]
         .filter(Boolean)
         .join(", ")
     : "";
 
-  const handleMainImageUpload = async (
-    e: React.ChangeEvent<HTMLInputElement>
-  ) => {
+  const handleMainImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file || !property || !user) return;
 
@@ -806,9 +949,7 @@ export default function PropertyPage() {
         return;
       }
 
-      const { data } = supabase.storage
-        .from("property-images")
-        .getPublicUrl(path);
+      const { data } = supabase.storage.from("property-images").getPublicUrl(path);
 
       const publicUrl = data.publicUrl;
 
@@ -818,23 +959,16 @@ export default function PropertyPage() {
         .eq("id", property.id);
 
       if (updateError) {
-        console.error(
-          "[PropertyPage] update main_image_url error:",
-          updateError
-        );
+        console.error("[PropertyPage] update main_image_url error:", updateError);
         setErrorMessage(updateError.message);
         return;
       }
 
       // update local state so UI refreshes immediately
-      setProperty((prev: Property | null) =>
-        prev ? { ...prev, main_image_url: publicUrl } : prev
-      );
+      setProperty((prev: Property | null) => (prev ? { ...prev, main_image_url: publicUrl } : prev));
     } catch (err: any) {
       console.error("[PropertyPage] unexpected main image upload error:", err);
-      setErrorMessage(
-        err?.message ?? "Unexpected error while uploading property photo."
-      );
+      setErrorMessage(err?.message ?? "Unexpected error while uploading property photo.");
     } finally {
       setUploadingMainImage(false);
       if (e.target) e.target.value = "";
@@ -908,15 +1042,11 @@ export default function PropertyPage() {
     // All staged jobs for this room, oldest → newest (same as grid)
     const roomJobs = jobs
       .filter(
-        (j) =>
-          (j.room_name?.trim() || "Unlabeled room") === roomKey &&
-          j.staged_image_url
+        (j) => (j.room_name?.trim() || "Unlabeled room") === roomKey && j.staged_image_url
       )
       .slice()
       .sort(
-        (a, b) =>
-          new Date(a.created_at).getTime() -
-          new Date(b.created_at).getTime()
+        (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
       );
 
     const idx = roomJobs.findIndex((j) => j.id === job.id);
@@ -1019,10 +1149,7 @@ export default function PropertyPage() {
       setJobActionLoading(true);
 
       // Delete all jobs for this property + room
-      let deleteQuery = supabase
-        .from("jobs")
-        .delete()
-        .eq("property_id", propertyId);
+      let deleteQuery = supabase.from("jobs").delete().eq("property_id", propertyId);
 
       if (roomDbValue === null) {
         deleteQuery = deleteQuery.is("room_name", null);
@@ -1046,9 +1173,7 @@ export default function PropertyPage() {
       );
 
       // Close the accordion for this room
-      setOpenRooms((prev: string[]) =>
-        prev.filter((name) => name !== roomLabel)
-      );
+      setOpenRooms((prev: string[]) => prev.filter((name) => name !== roomLabel));
 
       // If modal is open for a job in this room, close it
       if (activeJob) {
@@ -1082,10 +1207,7 @@ export default function PropertyPage() {
       setPropertyDeleting(true);
 
       // 1) Delete all jobs for this property
-      const { error: jobsError } = await supabase
-        .from("jobs")
-        .delete()
-        .eq("property_id", propertyId);
+      const { error: jobsError } = await supabase.from("jobs").delete().eq("property_id", propertyId);
 
       if (jobsError) {
         console.error("[PropertyPage] delete jobs error:", jobsError);
@@ -1094,10 +1216,7 @@ export default function PropertyPage() {
       }
 
       // 2) Delete the property itself
-      const { error: propError } = await supabase
-        .from("properties")
-        .delete()
-        .eq("id", propertyId);
+      const { error: propError } = await supabase.from("properties").delete().eq("id", propertyId);
 
       if (propError) {
         console.error("[PropertyPage] delete property error:", propError);
@@ -1178,10 +1297,8 @@ export default function PropertyPage() {
   // ---------- full-view modal navigation helpers ----------
 
   const currentJob = modalRoomJobs[modalIndex] || activeJob;
-  const canGoPrev =
-    modalRoomJobs.length > 1 && modalIndex > 0;
-  const canGoNext =
-    modalRoomJobs.length > 1 && modalIndex < modalRoomJobs.length - 1;
+  const canGoPrev = modalRoomJobs.length > 1 && modalIndex > 0;
+  const canGoNext = modalRoomJobs.length > 1 && modalIndex < modalRoomJobs.length - 1;
 
   const goPrev = () => {
     if (!canGoPrev) return;
@@ -1252,13 +1369,9 @@ export default function PropertyPage() {
               <h1 className="text-xl md:text-2xl font-semibold tracking-tight">
                 {displayTitle}
               </h1>
-              {displayAddress && (
-                <p className="text-xs text-slate-400">{displayAddress}</p>
-              )}
+              {displayAddress && <p className="text-xs text-slate-400">{displayAddress}</p>}
               {property?.mls_number && (
-                <p className="text-[11px] text-slate-500 mt-1">
-                  MLS {property.mls_number}
-                </p>
+                <p className="text-[11px] text-slate-500 mt-1">MLS {property.mls_number}</p>
               )}
 
               <div className="mt-2 flex items-center gap-2">
@@ -1334,9 +1447,7 @@ export default function PropertyPage() {
         ) : errorMessage ? (
           <div className="text-xs text-rose-300 py-6">{errorMessage}</div>
         ) : !property ? (
-          <div className="text-xs text-slate-400 py-6">
-            Property not found.
-          </div>
+          <div className="text-xs text-slate-400 py-6">Property not found.</div>
         ) : (
           <>
             {/* Notes (optional) */}
@@ -1361,9 +1472,7 @@ export default function PropertyPage() {
                   <p className="text-[11px] text-slate-400">
                     {jobs.length === 0
                       ? "No staged rooms yet for this property."
-                      : `${jobs.length} job${
-                          jobs.length === 1 ? "" : "s"
-                        } total`}
+                      : `${jobs.length} job${jobs.length === 1 ? "" : "s"} total`}
                   </p>
                 </div>
                 <div className="flex flex-wrap items-center gap-2 text-[11px] text-slate-400">
@@ -1489,18 +1598,14 @@ export default function PropertyPage() {
                     let heroJob: Job | null = null;
                     let heroUrl: string | null = null;
 
-                    if (
-                      primaryJobForRoom &&
-                      primaryJobForRoom.staged_image_url
-                    ) {
+                    if (primaryJobForRoom && primaryJobForRoom.staged_image_url) {
                       heroJob = primaryJobForRoom;
                       heroUrl =
                         primaryJobForRoom.staged_image_url ||
                         primaryJobForRoom.original_image_url ||
                         null;
                     } else if (stagedJobs.length > 0) {
-                      const latestStaged =
-                        stagedJobs[stagedJobs.length - 1];
+                      const latestStaged = stagedJobs[stagedJobs.length - 1];
                       heroJob = latestStaged;
                       heroUrl = latestStaged.staged_image_url || null;
                     } else if (originalUrl) {
@@ -1515,10 +1620,7 @@ export default function PropertyPage() {
                       ? formatCreatedLabel(heroJob.created_at)
                       : "";
 
-                    const heroIsOriginal =
-                      !!heroUrl &&
-                      !!originalUrl &&
-                      heroUrl === originalUrl;
+                    const heroIsOriginal = !!heroUrl && !!originalUrl && heroUrl === originalUrl;
 
                     const encodedRoomLabel = encodeURIComponent(roomLabel);
                     const propertyQueryId = property?.id ?? "";
@@ -1564,9 +1666,7 @@ export default function PropertyPage() {
                                   <input
                                     type="text"
                                     value={editingRoomValue}
-                                    onChange={(e) =>
-                                      setEditingRoomValue(e.target.value)
-                                    }
+                                    onChange={(e) => setEditingRoomValue(e.target.value)}
                                     onClick={(e) => e.stopPropagation()}
                                     onKeyDown={(e) => {
                                       // prevent SPACE/keys from toggling accordion
@@ -1617,8 +1717,7 @@ export default function PropertyPage() {
                                   <span className="text-sm text-slate-100 truncate">
                                     {roomLabel}{" "}
                                     <span className="text-[10px] text-slate-500">
-                                      • {imageCount} image
-                                      {imageCount === 1 ? "" : "s"}
+                                      • {imageCount} image{imageCount === 1 ? "" : "s"}
                                     </span>
                                   </span>
 
@@ -1631,6 +1730,18 @@ export default function PropertyPage() {
                                     className="text-[10px] rounded-md border border-slate-700 px-2 py-0.5 text-slate-300 hover:border-emerald-400/70 hover:text-emerald-200 transition"
                                   >
                                     Rename
+                                  </button>
+
+                                  {/* ✅ NEW: Move room (between Rename and Delete room) */}
+                                  <button
+                                    type="button"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      startMoveRoom(roomLabel);
+                                    }}
+                                    className="text-[10px] rounded-md border border-slate-700 px-2 py-0.5 text-slate-300 hover:border-sky-400/70 hover:text-sky-200 transition"
+                                  >
+                                    Move room
                                   </button>
 
                                   <button
@@ -1668,10 +1779,7 @@ export default function PropertyPage() {
                                     className="w-full md:w-2/3 max-h-[360px] object-contain bg-black cursor-pointer"
                                     onClick={() => {
                                       // Only open modal if hero is a staged image with staged_image_url
-                                      if (
-                                        heroJob &&
-                                        heroJob.staged_image_url
-                                      ) {
+                                      if (heroJob && heroJob.staged_image_url) {
                                         openJobModal(heroJob);
                                       }
                                     }}
@@ -1681,9 +1789,7 @@ export default function PropertyPage() {
                                       <div className="uppercase tracking-[0.18em] text-slate-500 mb-1">
                                         Room hero
                                       </div>
-                                      <div className="text-xs text-slate-100">
-                                        {roomLabel}
-                                      </div>
+                                      <div className="text-xs text-slate-100">{roomLabel}</div>
                                       {heroStyleLabel && !heroIsOriginal && (
                                         <div className="mt-1 text-[11px] text-slate-300">
                                           Style: {heroStyleLabel}
@@ -1696,8 +1802,8 @@ export default function PropertyPage() {
                                       )}
                                       {heroIsOriginal && (
                                         <div className="mt-2 text-[10px] text-slate-500">
-                                          Showing the original photo as the
-                                          hero image (no staged versions yet).
+                                          Showing the original photo as the hero image (no staged
+                                          versions yet).
                                         </div>
                                       )}
                                       {!heroIsOriginal &&
@@ -1713,9 +1819,8 @@ export default function PropertyPage() {
                                 </div>
                               ) : (
                                 <div className="rounded-2xl border border-dashed border-slate-700 bg-slate-950/60 px-3 py-4 text-[11px] text-slate-500 mb-2">
-                                  No images for this room yet. Generate a staged
-                                  room from the main dashboard to see it appear
-                                  here.
+                                  No images for this room yet. Generate a staged room from the main
+                                  dashboard to see it appear here.
                                 </div>
                               )}
                             </div>
@@ -1723,9 +1828,7 @@ export default function PropertyPage() {
                             {/* Room notes */}
                             <div className="rounded-xl border border-slate-800 bg-slate-950/80 px-3 py-2 text-[11px]">
                               <div className="flex items-center justify-between gap-2 mb-1">
-                                <div className="font-semibold text-slate-200">
-                                  Room notes
-                                </div>
+                                <div className="font-semibold text-slate-200">Room notes</div>
                                 {editingNotesRoom === roomLabel ? (
                                   <div className="flex items-center gap-1">
                                     <button
@@ -1753,36 +1856,29 @@ export default function PropertyPage() {
                                   </div>
                                 ) : (
                                   <div className="flex items-center gap-1">
-                                    {roomNotes &&
-                                      roomNotes.trim().length > 0 && (
-                                        <button
-                                          type="button"
-                                          onClick={(e) => {
-                                            e.stopPropagation();
-                                            clearRoomNotes(roomLabel);
-                                          }}
-                                          disabled={roomNotesLoading}
-                                          className="rounded-md border border-slate-700 px-2 py-0.5 text-[10px] text-slate-300 hover:border-rose-500/80 hover:text-rose-200 transition disabled:opacity-50"
-                                        >
-                                          Clear
-                                        </button>
-                                      )}
+                                    {roomNotes && roomNotes.trim().length > 0 && (
+                                      <button
+                                        type="button"
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          clearRoomNotes(roomLabel);
+                                        }}
+                                        disabled={roomNotesLoading}
+                                        className="rounded-md border border-slate-700 px-2 py-0.5 text-[10px] text-slate-300 hover:border-rose-500/80 hover:text-rose-200 transition disabled:opacity-50"
+                                      >
+                                        Clear
+                                      </button>
+                                    )}
                                     <button
                                       type="button"
                                       onClick={(e) => {
                                         e.stopPropagation();
-                                        startEditRoomNotes(
-                                          roomLabel,
-                                          roomNotes
-                                        );
+                                        startEditRoomNotes(roomLabel, roomNotes);
                                       }}
                                       disabled={roomNotesLoading}
                                       className="rounded-md border border-slate-700 px-2 py-0.5 text-[10px] text-slate-300 hover:border-emerald-400/70 hover:text-emerald-200 transition disabled:opacity-50"
                                     >
-                                      {roomNotes &&
-                                      roomNotes.trim().length > 0
-                                        ? "Edit"
-                                        : "Add"}
+                                      {roomNotes && roomNotes.trim().length > 0 ? "Edit" : "Add"}
                                     </button>
                                   </div>
                                 )}
@@ -1791,24 +1887,18 @@ export default function PropertyPage() {
                               {editingNotesRoom === roomLabel ? (
                                 <textarea
                                   value={editingNotesValue}
-                                  onChange={(e) =>
-                                    setEditingNotesValue(e.target.value)
-                                  }
+                                  onChange={(e) => setEditingNotesValue(e.target.value)}
                                   onClick={(e) => e.stopPropagation()}
                                   className="mt-1 w-full rounded-md border border-slate-700 bg-slate-950 px-2 py-1 text-[11px] text-slate-100 outline-none focus:border-emerald-400 min-h-[60px]"
                                   placeholder="Notes about this room (staging preferences, seller comments, MLS reminders)…"
                                   disabled={roomNotesLoading}
                                 />
-                              ) : roomNotes &&
-                                roomNotes.trim().length > 0 ? (
-                                <p className="text-slate-200 whitespace-pre-line">
-                                  {roomNotes}
-                                </p>
+                              ) : roomNotes && roomNotes.trim().length > 0 ? (
+                                <p className="text-slate-200 whitespace-pre-line">{roomNotes}</p>
                               ) : (
                                 <p className="text-slate-500 italic">
-                                  No notes yet for this room. Use this area for
-                                  MLS wording ideas, seller requests, or staging
-                                  reminders.
+                                  No notes yet for this room. Use this area for MLS wording ideas,
+                                  seller requests, or staging reminders.
                                 </p>
                               )}
                             </div>
@@ -1817,9 +1907,7 @@ export default function PropertyPage() {
                             <div className="flex items-center justify-between gap-2 text-[11px]">
                               <p className="text-slate-400">
                                 Continue generating for{" "}
-                                <span className="text-slate-100 font-medium">
-                                  {roomLabel}
-                                </span>{" "}
+                                <span className="text-slate-100 font-medium">{roomLabel}</span>{" "}
                                 with this property context.
                               </p>
                               <Link
@@ -1845,7 +1933,7 @@ export default function PropertyPage() {
                                 </div>
                               ) : (
                                 <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-2">
-                                  {/* Original tile (same size as others, pinned first) */}
+                                  {/* Original tile */}
                                   {originalJob && originalUrl && (
                                     <article className="group rounded-xl border border-emerald-600/70 bg-slate-950/80 overflow-hidden flex flex-col text-[10px]">
                                       <div className="relative">
@@ -1872,19 +1960,14 @@ export default function PropertyPage() {
                                           <div className="flex flex-col items-end gap-1">
                                             <div>
                                               {primaryJobForRoom &&
-                                              primaryJobForRoom.id ===
-                                                originalJob.id ? (
+                                              primaryJobForRoom.id === originalJob.id ? (
                                                 <span className="inline-flex items-center rounded-md border border-emerald-500/70 px-2 py-0.5 text-[10px] text-emerald-300 bg-emerald-500/10">
                                                   Default
                                                 </span>
                                               ) : (
                                                 <button
                                                   type="button"
-                                                  onClick={() =>
-                                                    handleSetPrimaryForRoom(
-                                                      originalJob
-                                                    )
-                                                  }
+                                                  onClick={() => handleSetPrimaryForRoom(originalJob)}
                                                   disabled={jobActionLoading}
                                                   className="inline-flex items-center rounded-md border border-slate-700 px-2 py-0.5 text-[10px] hover:border-emerald-400/70 hover:text-emerald-200 transition disabled:opacity-50"
                                                 >
@@ -1896,9 +1979,7 @@ export default function PropertyPage() {
                                             <div className="flex flex-col items-end gap-1">
                                               <Link
                                                 href={`/app?propertyId=${propertyQueryId}&room=${encodedRoomLabel}&fromJobId=${originalJob.id}&fromOriginal=1#staging-area`}
-                                                onClick={(e) =>
-                                                  e.stopPropagation()
-                                                }
+                                                onClick={(e) => e.stopPropagation()}
                                                 className="inline-flex items-center rounded-md border border-emerald-500/70 px-2 py-0.5 text-[10px] text-emerald-300 bg-emerald-500/10 hover:border-emerald-400/90 hover:text-emerald-100 transition"
                                               >
                                                 Continue from this image
@@ -1922,15 +2003,10 @@ export default function PropertyPage() {
 
                                   {/* Staged tiles */}
                                   {stagedJobs.map((job) => {
-                                    const styleLabel = getStyleLabel(
-                                      job.style_id
-                                    );
-                                    const createdLabel = formatCreatedLabel(
-                                      job.created_at
-                                    );
+                                    const styleLabel = getStyleLabel(job.style_id);
+                                    const createdLabel = formatCreatedLabel(job.created_at);
                                     const isPrimary =
-                                      primaryJobForRoom &&
-                                      primaryJobForRoom.id === job.id;
+                                      primaryJobForRoom && primaryJobForRoom.id === job.id;
                                     return (
                                       <article
                                         key={job.id}
@@ -1972,9 +2048,7 @@ export default function PropertyPage() {
                                                     type="button"
                                                     onClick={(e) => {
                                                       e.stopPropagation();
-                                                      handleSetPrimaryForRoom(
-                                                        job
-                                                      );
+                                                      handleSetPrimaryForRoom(job);
                                                     }}
                                                     disabled={jobActionLoading}
                                                     className="inline-flex items-center rounded-md border border-slate-700 px-2 py-0.5 text-[10px] hover:border-emerald-400/70 hover:text-emerald-200 transition disabled:opacity-50"
@@ -1986,9 +2060,7 @@ export default function PropertyPage() {
 
                                               <Link
                                                 href={`/app?propertyId=${propertyQueryId}&room=${encodedRoomLabel}&fromJobId=${job.id}#staging-area`}
-                                                onClick={(e) =>
-                                                  e.stopPropagation()
-                                                }
+                                                onClick={(e) => e.stopPropagation()}
                                                 className="inline-flex items-center rounded-md border border-emerald-500/70 px-2 py-0.5 text-[10px] text-emerald-300 bg-emerald-500/10 hover:border-emerald-400/90 hover:text-emerald-100 transition"
                                               >
                                                 Continue from this image
@@ -1999,9 +2071,7 @@ export default function PropertyPage() {
                                                   type="button"
                                                   onClick={(e) => {
                                                     e.stopPropagation();
-                                                    handleDownloadJob(
-                                                      job.staged_image_url
-                                                    );
+                                                    handleDownloadJob(job.staged_image_url);
                                                   }}
                                                   className="rounded-md border border-slate-700 px-2 py-0.5 text-[10px] hover:border-emerald-400/70 hover:text-emerald-200 transition"
                                                 >
@@ -2053,10 +2123,7 @@ export default function PropertyPage() {
       {/* FULL-VIEW MODAL */}
       {modalOpen && currentJob && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70">
-          <div
-            className="absolute inset-0"
-            onClick={jobActionLoading ? undefined : closeJobModal}
-          />
+          <div className="absolute inset-0" onClick={jobActionLoading ? undefined : closeJobModal} />
           <div className="relative z-10 max-w-5xl w-full mx-4 rounded-2xl border border-slate-800 bg-slate-950/95 shadow-2xl flex flex-col overflow-hidden">
             {/* Modal header */}
             <div className="flex items-center justify-between px-4 py-3 border-b border-slate-800">
@@ -2076,9 +2143,7 @@ export default function PropertyPage() {
               <div className="flex items-center gap-2">
                 <button
                   type="button"
-                  onClick={() =>
-                    handleDownloadJob(currentJob.staged_image_url)
-                  }
+                  onClick={() => handleDownloadJob(currentJob.staged_image_url)}
                   disabled={jobActionLoading}
                   className="text-[11px] rounded-lg border border-slate-700 px-3 py-1 hover:border-emerald-400/70 hover:text-emerald-200 transition disabled:opacity-50"
                 >
@@ -2142,8 +2207,7 @@ export default function PropertyPage() {
             {/* Small footer info */}
             <div className="px-4 py-2 border-t border-slate-800 text-[10px] text-slate-500 flex items-center justify-between">
               <span>
-                Job ID:{" "}
-                <span className="text-slate-400">{currentJob.id}</span>
+                Job ID: <span className="text-slate-400">{currentJob.id}</span>
               </span>
               {currentJob.style_id && (
                 <span>
@@ -2158,13 +2222,82 @@ export default function PropertyPage() {
         </div>
       )}
 
+      {/* MOVE ROOM TO ANOTHER PROPERTY MODAL */}
+      {moveRoomDialogOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70">
+          <div className="absolute inset-0" onClick={moveRoomLoading ? undefined : cancelMoveRoom} />
+          <div className="relative z-10 w-full max-w-md mx-4 rounded-2xl border border-slate-800 bg-slate-950/95 shadow-2xl overflow-hidden text-[11px]">
+            <div className="px-4 py-3 border-b border-slate-800 flex items-center justify-between">
+              <h2 className="text-sm font-semibold tracking-tight">Move room</h2>
+              <button
+                type="button"
+                onClick={cancelMoveRoom}
+                disabled={moveRoomLoading}
+                className="rounded-lg border border-slate-700 px-2 py-1 text-[11px] hover:border-slate-500 hover:text-slate-100 transition disabled:opacity-50"
+              >
+                Close
+              </button>
+            </div>
+
+            <div className="px-4 py-3 space-y-3">
+              <div>
+                <div className="text-[10px] uppercase tracking-[0.18em] text-slate-500 mb-1">
+                  Room
+                </div>
+                <div className="text-slate-100">{moveRoomLabel}</div>
+                <p className="mt-1 text-[10px] text-slate-500">
+                  If the destination property already has this room name, we’ll automatically rename it (e.g., “{moveRoomLabel} (2)”).
+                </p>
+              </div>
+
+              <div>
+                <label className="block text-[10px] uppercase tracking-[0.18em] text-slate-500 mb-1">
+                  Destination property
+                </label>
+                <select
+                  value={moveRoomDestPropertyId}
+                  onChange={(e) => setMoveRoomDestPropertyId(e.target.value)}
+                  className="w-full rounded-md bg-slate-950 border border-slate-700 px-2 py-1 text-[11px] text-slate-100 outline-none focus:border-emerald-400"
+                  disabled={moveRoomLoading}
+                >
+                  <option value="">Select a property…</option>
+                  {userProperties
+                    .filter((p) => p.id !== propertyId)
+                    .map((p) => (
+                      <option key={p.id} value={p.id}>
+                        {p.title || p.address_line_1 || "Untitled property"}
+                      </option>
+                    ))}
+                </select>
+              </div>
+            </div>
+
+            <div className="px-4 py-3 border-t border-slate-800 flex items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={cancelMoveRoom}
+                disabled={moveRoomLoading}
+                className="rounded-lg border border-slate-700 px-3 py-1 text-[11px] hover:border-slate-500 hover:text-slate-100 transition disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={confirmMoveRoom}
+                disabled={moveRoomLoading}
+                className="rounded-lg border border-sky-500/80 px-3 py-1 text-[11px] text-sky-200 bg-sky-500/10 hover:bg-sky-500/20 hover:border-sky-400 transition disabled:opacity-50"
+              >
+                {moveRoomLoading ? "Moving…" : "Move room"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* MOVE IMAGE TO ANOTHER ROOM MODAL */}
       {moveDialogOpen && moveJob && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70">
-          <div
-            className="absolute inset-0"
-            onClick={moveSaving ? undefined : cancelMoveJob}
-          />
+          <div className="absolute inset-0" onClick={moveSaving ? undefined : cancelMoveJob} />
           <div className="relative z-10 w-full max-w-md mx-4 rounded-2xl border border-slate-800 bg-slate-950/95 shadow-2xl overflow-hidden text-[11px]">
             <div className="px-4 py-3 border-b border-slate-800 flex items-center justify-between">
               <h2 className="text-sm font-semibold tracking-tight">
@@ -2191,11 +2324,8 @@ export default function PropertyPage() {
               </div>
 
               {(() => {
-                const currentLabel =
-                  moveJob.room_name?.trim() || "Unlabeled room";
-                const targetOptions = allRoomLabels.filter(
-                  (label) => label !== currentLabel
-                );
+                const currentLabel = moveJob.room_name?.trim() || "Unlabeled room";
+                const targetOptions = allRoomLabels.filter((label) => label !== currentLabel);
                 return (
                   <>
                     <div>
@@ -2205,9 +2335,7 @@ export default function PropertyPage() {
                       {targetOptions.length > 0 ? (
                         <select
                           value={moveExistingRoomLabel}
-                          onChange={(e) =>
-                            setMoveExistingRoomLabel(e.target.value)
-                          }
+                          onChange={(e) => setMoveExistingRoomLabel(e.target.value)}
                           className="w-full rounded-md bg-slate-950 border border-slate-700 px-2 py-1 text-[11px] text-slate-100 outline-none focus:border-emerald-400"
                         >
                           <option value="">Select a room…</option>
@@ -2219,8 +2347,7 @@ export default function PropertyPage() {
                         </select>
                       ) : (
                         <p className="text-slate-500">
-                          There are no other rooms yet. You can create a new
-                          room name below.
+                          There are no other rooms yet. You can create a new room name below.
                         </p>
                       )}
                     </div>
@@ -2238,8 +2365,7 @@ export default function PropertyPage() {
                         disabled={moveSaving}
                       />
                       <p className="mt-1 text-[10px] text-slate-500">
-                        If you enter a new room name, this image will start a
-                        brand new room section for this property.
+                        If you enter a new room name, this image will start a brand new room section for this property.
                       </p>
                     </div>
                   </>
@@ -2274,15 +2400,11 @@ export default function PropertyPage() {
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70">
           <div
             className="absolute inset-0"
-            onClick={
-              propertySaving ? undefined : () => setEditingProperty(false)
-            }
+            onClick={propertySaving ? undefined : () => setEditingProperty(false)}
           />
           <div className="relative z-10 w-full max-w-lg mx-4 rounded-2xl border border-slate-800 bg-slate-950/95 shadow-2xl overflow-hidden">
             <div className="px-4 py-3 border-b border-slate-800 flex items-center justify-between">
-              <h2 className="text-sm font-semibold tracking-tight">
-                Edit property
-              </h2>
+              <h2 className="text-sm font-semibold tracking-tight">Edit property</h2>
               <button
                 type="button"
                 onClick={() => setEditingProperty(false)}
@@ -2303,10 +2425,7 @@ export default function PropertyPage() {
                     type="text"
                     value={propertyForm.title}
                     onChange={(e) =>
-                      setPropertyForm((prev) => ({
-                        ...prev,
-                        title: e.target.value,
-                      }))
+                      setPropertyForm((prev) => ({ ...prev, title: e.target.value }))
                     }
                     className="w-full rounded-md bg-slate-950 border border-slate-700 px-2 py-1 text-[11px] text-slate-100 outline-none focus:border-emerald-400"
                     placeholder="Downtown condo, Family home, etc."
@@ -2340,10 +2459,7 @@ export default function PropertyPage() {
                       type="text"
                       value={propertyForm.city}
                       onChange={(e) =>
-                        setPropertyForm((prev) => ({
-                          ...prev,
-                          city: e.target.value,
-                        }))
+                        setPropertyForm((prev) => ({ ...prev, city: e.target.value }))
                       }
                       className="w-full rounded-md bg-slate-950 border border-slate-700 px-2 py-1 text-[11px] text-slate-100 outline-none focus:border-emerald-400"
                     />
@@ -2391,10 +2507,7 @@ export default function PropertyPage() {
                       type="text"
                       value={propertyForm.mls_number}
                       onChange={(e) =>
-                        setPropertyForm((prev) => ({
-                          ...prev,
-                          mls_number: e.target.value,
-                        }))
+                        setPropertyForm((prev) => ({ ...prev, mls_number: e.target.value }))
                       }
                       className="w-full rounded-md bg-slate-950 border border-slate-700 px-2 py-1 text-[11px] text-slate-100 outline-none focus:border-emerald-400"
                     />
@@ -2408,10 +2521,7 @@ export default function PropertyPage() {
                   <textarea
                     value={propertyForm.notes}
                     onChange={(e) =>
-                      setPropertyForm((prev) => ({
-                        ...prev,
-                        notes: e.target.value,
-                      }))
+                      setPropertyForm((prev) => ({ ...prev, notes: e.target.value }))
                     }
                     rows={4}
                     className="w-full rounded-md bg-slate-950 border border-slate-700 px-2 py-1 text-[11px] text-slate-100 outline-none focus:border-emerald-400 resize-none"
@@ -2437,6 +2547,32 @@ export default function PropertyPage() {
                 className="text-[11px] rounded-lg border border-emerald-500/80 px-3 py-1 text-emerald-200 bg-emerald-500/10 hover:bg-emerald-500/20 hover:border-emerald-400 transition disabled:opacity-50"
               >
                 {propertySaving ? "Saving…" : "Save changes"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Toast */}
+      {toast && (
+        <div className="fixed bottom-4 right-4 z-50">
+          <div
+            className={
+              "rounded-xl border px-4 py-3 text-xs shadow-lg max-w-sm " +
+              (toast.type === "error"
+                ? "border-rose-500/40 bg-rose-500/10 text-rose-100"
+                : "border-slate-700 bg-slate-900 text-slate-100")
+            }
+          >
+            <div className="flex items-start gap-3">
+              <div className="flex-1 leading-relaxed">{toast.message}</div>
+              <button
+                type="button"
+                onClick={() => setToast(null)}
+                className="text-slate-300 hover:text-slate-50"
+                aria-label="Dismiss"
+              >
+                ✕
               </button>
             </div>
           </div>

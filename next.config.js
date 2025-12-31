@@ -8,8 +8,6 @@ const nextConfig = {
         pathname: "/storage/v1/object/public/**",
       },
     ],
-    // or simpler:
-    // domains: ["rzfvskewfunswzipcfii.supabase.co"],
   },
 };
 
