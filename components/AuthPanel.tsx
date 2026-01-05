@@ -1,7 +1,7 @@
 // components/AuthPanel.tsx
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { supabase } from "@/lib/supabaseClient";
 import { useSupabaseUser } from "@/lib/useSupabaseUser";
 import { useRouter } from "next/navigation";
@@ -10,6 +10,12 @@ import { startTopup } from "@/lib/stripeClient";
 type AuthPanelProps = {
   redirectToAppOnAuth?: boolean;
 };
+
+function errorMessageFromUnknown(err: unknown, fallback: string): string {
+  if (err instanceof Error && err.message) return err.message;
+  if (typeof err === "string" && err.trim().length > 0) return err;
+  return fallback;
+}
 
 export function AuthPanel({ redirectToAppOnAuth = false }: AuthPanelProps) {
   const { user, loading } = useSupabaseUser();
@@ -34,7 +40,7 @@ export function AuthPanel({ redirectToAppOnAuth = false }: AuthPanelProps) {
     }
   }, [redirectToAppOnAuth, loading, user, router]);
 
-  const fetchTokenBalance = async () => {
+  const fetchTokenBalance = useCallback(async () => {
     if (!user) return;
 
     setTokenLoading(true);
@@ -51,7 +57,7 @@ export function AuthPanel({ redirectToAppOnAuth = false }: AuthPanelProps) {
     }
 
     setTokenLoading(false);
-  };
+  }, [user]);
 
   // Fetch tokens when user becomes available
   useEffect(() => {
@@ -62,10 +68,9 @@ export function AuthPanel({ redirectToAppOnAuth = false }: AuthPanelProps) {
       return;
     }
     fetchTokenBalance();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [user?.id]);
+  }, [user, fetchTokenBalance]);
 
-  // ✅ NEW: Listen for global token refresh events (e.g. after generation spends tokens)
+  // ✅ Listen for global token refresh events (e.g. after generation spends tokens)
   useEffect(() => {
     if (!user) return;
 
@@ -75,8 +80,7 @@ export function AuthPanel({ redirectToAppOnAuth = false }: AuthPanelProps) {
 
     window.addEventListener("tokens:changed", handler);
     return () => window.removeEventListener("tokens:changed", handler);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [user?.id]);
+  }, [user, fetchTokenBalance]);
 
   const handleSignUp = async () => {
     setAuthLoading(true);
@@ -91,9 +95,9 @@ export function AuthPanel({ redirectToAppOnAuth = false }: AuthPanelProps) {
         console.error("[AuthPanel] signUp error:", error);
         setErrorMessage(error.message);
       }
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error("[AuthPanel] signUp thrown:", err);
-      setErrorMessage(err?.message ?? "Unexpected error");
+      setErrorMessage(errorMessageFromUnknown(err, "Unexpected error"));
     } finally {
       setAuthLoading(false);
     }
@@ -112,9 +116,9 @@ export function AuthPanel({ redirectToAppOnAuth = false }: AuthPanelProps) {
         console.error("[AuthPanel] signIn error:", error);
         setErrorMessage(error.message);
       }
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error("[AuthPanel] signIn thrown:", err);
-      setErrorMessage(err?.message ?? "Unexpected error");
+      setErrorMessage(errorMessageFromUnknown(err, "Unexpected error"));
     } finally {
       setAuthLoading(false);
     }
@@ -133,9 +137,9 @@ export function AuthPanel({ redirectToAppOnAuth = false }: AuthPanelProps) {
 
       // Redirect to landing page after sign-out
       router.push("/");
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error("[AuthPanel] signOut thrown:", err);
-      setErrorMessage(err?.message ?? "Unexpected error");
+      setErrorMessage(errorMessageFromUnknown(err, "Unexpected error"));
     } finally {
       setAuthLoading(false);
     }
@@ -266,14 +270,11 @@ export function AuthPanel({ redirectToAppOnAuth = false }: AuthPanelProps) {
           </div>
 
           {errorMessage && (
-            <div className="text-[11px] text-rose-300 mt-1">
-              {errorMessage}
-            </div>
+            <div className="text-[11px] text-rose-300 mt-1">{errorMessage}</div>
           )}
 
           <p className="text-[11px] text-slate-500">
-            Dev note: email/password only, no email verification in this
-            environment.
+            Dev note: email/password only, no email verification in this environment.
           </p>
         </>
       )}

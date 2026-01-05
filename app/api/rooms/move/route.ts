@@ -8,6 +8,14 @@ type Body = {
   roomName: string;
 };
 
+type IdRow = {
+  id: string;
+};
+
+type RoomNameRow = {
+  room_name: string | null;
+};
+
 function jsonError(message: string, status = 400) {
   return NextResponse.json({ error: message }, { status });
 }
@@ -51,7 +59,7 @@ export async function POST(req: Request) {
     );
   }
 
-  // Expect the same Bearer token pattern you already use for /api/stage-room
+  // Expect Bearer token
   const authHeader = req.headers.get("authorization") || "";
   const token = authHeader.toLowerCase().startsWith("bearer ")
     ? authHeader.slice(7).trim()
@@ -61,14 +69,15 @@ export async function POST(req: Request) {
 
   let body: Body;
   try {
-    body = (await req.json()) as Body;
+    const parsed: unknown = await req.json();
+    body = parsed as Body;
   } catch {
     return jsonError("Invalid JSON body.", 400);
   }
 
-  const fromPropertyId = (body.fromPropertyId || "").trim();
-  const toPropertyId = (body.toPropertyId || "").trim();
-  const roomName = (body.roomName || "").trim();
+  const fromPropertyId = body.fromPropertyId?.trim();
+  const toPropertyId = body.toPropertyId?.trim();
+  const roomName = body.roomName?.trim();
 
   if (!fromPropertyId) return jsonError("fromPropertyId is required.");
   if (!toPropertyId) return jsonError("toPropertyId is required.");
@@ -100,7 +109,8 @@ export async function POST(req: Request) {
     return jsonError("Failed to validate properties.", 500);
   }
 
-  const propIds = new Set((props ?? []).map((p: any) => p.id));
+  const propIds = new Set((props ?? []).map((p: IdRow) => p.id));
+
   if (!propIds.has(fromPropertyId)) {
     return jsonError("Source property not found (or not owned by user).", 404);
   }
@@ -128,8 +138,7 @@ export async function POST(req: Request) {
     return jsonError("No jobs found for that room in the source property.", 404);
   }
 
-  // Find existing destination room names that collide (exact + suffix pattern)
-  // We'll pull distinct-ish via a normal select and de-dupe in JS.
+  // Find destination room name collisions
   const { data: destNamesRows, error: destNamesErr } = await supabase
     .from("jobs")
     .select("room_name")
@@ -139,13 +148,20 @@ export async function POST(req: Request) {
     .limit(5000);
 
   if (destNamesErr) {
-    console.error("[rooms/move] destination names lookup error:", destNamesErr);
+    console.error(
+      "[rooms/move] destination names lookup error:",
+      destNamesErr
+    );
     return jsonError("Failed to check destination room name collisions.", 500);
   }
 
   const existingNames = Array.from(
-    new Set((destNamesRows ?? []).map((r: any) => (r.room_name ?? "").trim()))
-  ).filter(Boolean);
+    new Set(
+      (destNamesRows ?? [])
+        .map((r: RoomNameRow) => r.room_name?.trim())
+        .filter((v): v is string => Boolean(v))
+    )
+  );
 
   const newRoomName = computeRenamedRoomName(roomName, existingNames);
 
@@ -167,7 +183,7 @@ export async function POST(req: Request) {
   }
 
   const movedCount =
-    typeof count === "number" ? count : (updated?.length ?? 0);
+    typeof count === "number" ? count : updated?.length ?? 0;
 
   return NextResponse.json({
     ok: true,

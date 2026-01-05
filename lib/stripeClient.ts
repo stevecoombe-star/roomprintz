@@ -1,15 +1,28 @@
+// lib/stripeClient.ts
 "use client";
 
 import { supabase } from "@/lib/supabaseClient";
 
-async function readJsonOrText(
-  res: Response
-): Promise<{ json: any | null; text: string }> {
+type JsonValue =
+  | string
+  | number
+  | boolean
+  | null
+  | JsonValue[]
+  | { [key: string]: JsonValue };
+
+type ReadJsonResult = {
+  json: JsonValue | null;
+  text: string;
+};
+
+async function readJsonOrText(res: Response): Promise<ReadJsonResult> {
   const text = await res.text();
 
   // Try JSON first; if server returned HTML (e.g., Next error page), this will fail gracefully.
   try {
-    return { json: JSON.parse(text), text };
+    const parsed = JSON.parse(text) as JsonValue;
+    return { json: parsed, text };
   } catch {
     return { json: null, text };
   }
@@ -34,12 +47,18 @@ export async function startCheckout(
   const { json, text } = await readJsonOrText(res);
 
   if (!res.ok) {
-    // Prefer server-provided JSON error, otherwise surface raw response (often HTML)
-    throw new Error(json?.error ?? text ?? "Checkout failed");
+    if (json && typeof json === "object" && "error" in json) {
+      throw new Error(String(json.error));
+    }
+    throw new Error(text || "Checkout failed");
   }
 
-  const url = json?.url;
-  if (!url || typeof url !== "string") {
+  const url =
+    json && typeof json === "object" && "url" in json
+      ? String(json.url)
+      : null;
+
+  if (!url) {
     throw new Error("Checkout failed: missing redirect URL");
   }
 
@@ -48,10 +67,10 @@ export async function startCheckout(
 
 /**
  * 🔁 One-time token top-up (Stripe Checkout, mode=payment)
- * priceId is the Stripe Price ID (e.g., "price_123...") for the selected pack.
+ * priceId is the Stripe Price ID (e.g., "price_123...")
  */
 export async function startTopup(priceId: string) {
-  if (!priceId || typeof priceId !== "string") {
+  if (!priceId) {
     throw new Error("Top-up failed: missing priceId");
   }
 
@@ -71,11 +90,18 @@ export async function startTopup(priceId: string) {
   const { json, text } = await readJsonOrText(res);
 
   if (!res.ok) {
-    throw new Error(json?.error ?? text ?? "Top-up failed");
+    if (json && typeof json === "object" && "error" in json) {
+      throw new Error(String(json.error));
+    }
+    throw new Error(text || "Top-up failed");
   }
 
-  const url = json?.url;
-  if (!url || typeof url !== "string") {
+  const url =
+    json && typeof json === "object" && "url" in json
+      ? String(json.url)
+      : null;
+
+  if (!url) {
     throw new Error("Top-up failed: missing redirect URL");
   }
 
@@ -97,11 +123,18 @@ export async function openBillingPortal() {
   const { json, text } = await readJsonOrText(res);
 
   if (!res.ok) {
-    throw new Error(json?.error ?? text ?? "Portal failed");
+    if (json && typeof json === "object" && "error" in json) {
+      throw new Error(String(json.error));
+    }
+    throw new Error(text || "Portal failed");
   }
 
-  const url = json?.url;
-  if (!url || typeof url !== "string") {
+  const url =
+    json && typeof json === "object" && "url" in json
+      ? String(json.url)
+      : null;
+
+  if (!url) {
     throw new Error("Portal failed: missing redirect URL");
   }
 

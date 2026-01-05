@@ -15,6 +15,20 @@ type AgentProfile = {
   email: string | null;
 };
 
+function errorMessageFromUnknown(err: unknown, fallback: string): string {
+  if (err instanceof Error && err.message) return err.message;
+  if (typeof err === "string" && err.trim().length > 0) return err;
+  return fallback;
+}
+
+type ProfileRow = {
+  full_name: string | null;
+  brokerage_name: string | null;
+  brokerage_address: string | null;
+  phone: string | null;
+  agent_photo_url: string | null;
+};
+
 export function useAgentProfile() {
   const { user, loading: authLoading } = useSupabaseUser();
   const [profile, setProfile] = useState<AgentProfile | null>(null);
@@ -22,53 +36,73 @@ export function useAgentProfile() {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
+    let cancelled = false;
+
     const loadProfile = async () => {
       if (authLoading) return;
 
       if (!user) {
-        setProfile(null);
-        setLoading(false);
+        if (!cancelled) {
+          setProfile(null);
+          setLoading(false);
+          setError(null);
+        }
         return;
       }
 
-      setLoading(true);
-      setError(null);
+      if (!cancelled) {
+        setLoading(true);
+        setError(null);
+      }
 
       try {
-        const { data, error } = await supabase
+        const { data, error: dbErr } = await supabase
           .from("profiles")
           .select(
-            "id, full_name, brokerage_name, brokerage_address, phone, agent_photo_url"
+            "full_name, brokerage_name, brokerage_address, phone, agent_photo_url"
           )
           .eq("id", user.id)
           .maybeSingle();
 
-        if (error) {
-          console.error("[useAgentProfile] error:", error);
-          setError(error.message);
-          setProfile(null);
-        } else {
+        if (dbErr) {
+          console.error("[useAgentProfile] error:", dbErr);
+          if (!cancelled) {
+            setError(dbErr.message);
+            setProfile(null);
+          }
+          return;
+        }
+
+        const row = (data ?? null) as ProfileRow | null;
+
+        if (!cancelled) {
           setProfile({
             id: user.id,
-            full_name: data?.full_name ?? null,
-            brokerage_name: data?.brokerage_name ?? null,
-            brokerage_address: data?.brokerage_address ?? null,
-            phone: data?.phone ?? null,
-            agent_photo_url: data?.agent_photo_url ?? null,
+            full_name: row?.full_name ?? null,
+            brokerage_name: row?.brokerage_name ?? null,
+            brokerage_address: row?.brokerage_address ?? null,
+            phone: row?.phone ?? null,
+            agent_photo_url: row?.agent_photo_url ?? null,
             email: user.email ?? null,
           });
         }
-      } catch (err: any) {
+      } catch (err: unknown) {
         console.error("[useAgentProfile] unexpected error:", err);
-        setError(err?.message ?? "Unexpected error");
-        setProfile(null);
+        if (!cancelled) {
+          setError(errorMessageFromUnknown(err, "Unexpected error"));
+          setProfile(null);
+        }
       } finally {
-        setLoading(false);
+        if (!cancelled) setLoading(false);
       }
     };
 
-    loadProfile();
-  }, [authLoading, user?.id, user?.email]);
+    void loadProfile();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [authLoading, user, user?.id, user?.email]);
 
   return { profile, loading, error };
 }

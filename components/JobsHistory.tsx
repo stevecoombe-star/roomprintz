@@ -2,15 +2,23 @@
 "use client";
 
 import { useEffect, useState, useMemo } from "react";
+import { createPortal } from "react-dom";
 import { supabase } from "@/lib/supabaseClient";
 import { useSupabaseUser } from "@/lib/useSupabaseUser";
 
 type Job = {
   id: string;
   style_id: string | null;
-  staged_image_url: string; // we filter out blanks below
+  staged_image_url: string;
   created_at: string;
   room_name: string | null;
+  property_id: string | null; // ✅ prevents cross-property room collisions
+};
+
+type RoomRow = {
+  id: string;
+  name: string;
+  property_id: string;
 };
 
 type JobsHistoryProps = {
@@ -66,10 +74,24 @@ export function JobsHistory({ refreshToken, onUseAsNewInput }: JobsHistoryProps)
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [sortOrder, setSortOrder] = useState<SortOrder>("desc");
 
-  // Lightbox state
+  // ✅ mounted guard for portal (prevents SSR/hydration issues)
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => setMounted(true), []);
+
+  // ✅ Lightbox state (restored)
   const [lightboxOpen, setLightboxOpen] = useState(false);
   const [lightboxRoomKey, setLightboxRoomKey] = useState<string | null>(null);
   const [lightboxJobId, setLightboxJobId] = useState<string | null>(null);
+
+  // ✅ Move modal state
+  const [moveOpen, setMoveOpen] = useState(false);
+  const [moveJobId, setMoveJobId] = useState<string | null>(null);
+  const [movePropertyId, setMovePropertyId] = useState<string | null>(null);
+  const [moveFromRoomName, setMoveFromRoomName] = useState<string | null>(null);
+  const [roomsForMove, setRoomsForMove] = useState<RoomRow[]>([]);
+  const [moveTargetRoomName, setMoveTargetRoomName] = useState<string>("");
+  const [moveLoading, setMoveLoading] = useState(false);
+  const [moveError, setMoveError] = useState<string | null>(null);
 
   // --------- LOAD JOBS ---------
 
@@ -85,10 +107,12 @@ export function JobsHistory({ refreshToken, onUseAsNewInput }: JobsHistoryProps)
       try {
         const { data, error } = await supabase
           .from("jobs")
-          .select("id, style_id, staged_image_url, created_at, room_name")
+          .select(
+            "id, style_id, staged_image_url, created_at, room_name, property_id"
+          )
           .eq("user_id", user.id)
           .order("created_at", { ascending: sortOrder === "asc" })
-          .limit(12); // ✅ cap history at 12 latest jobs
+          .limit(12);
 
         if (error) {
           console.error("[JobsHistory] error loading jobs:", error);
@@ -96,7 +120,6 @@ export function JobsHistory({ refreshToken, onUseAsNewInput }: JobsHistoryProps)
           return;
         }
 
-        // Filter out blank-room jobs / rows with no staged_image_url
         const cleaned =
           (data ?? []).filter(
             (job) =>
@@ -114,7 +137,7 @@ export function JobsHistory({ refreshToken, onUseAsNewInput }: JobsHistoryProps)
     };
 
     loadJobs();
-  }, [user?.id, refreshToken, sortOrder]);
+  }, [user, refreshToken, sortOrder]);
 
   // --------- HELPERS ---------
 
@@ -130,7 +153,11 @@ export function JobsHistory({ refreshToken, onUseAsNewInput }: JobsHistoryProps)
 
     setDeletingId(jobId);
     try {
-      const { error } = await supabase.from("jobs").delete().eq("id", jobId);
+      const { error } = await supabase
+        .from("jobs")
+        .delete()
+        .eq("id", jobId)
+        .eq("user_id", user?.id ?? "");
 
       if (error) {
         console.error("[JobsHistory] delete error:", error);
@@ -154,24 +181,30 @@ export function JobsHistory({ refreshToken, onUseAsNewInput }: JobsHistoryProps)
     }
   };
 
-  const roomKeyForJob = (job: Job) =>
+  // ✅ INTERNAL key (collision-safe)
+  const roomKeyForJob = (job: Job) => {
+    const room = job.room_name?.trim() || "Unlabeled room";
+    const prop = job.property_id || "no-property";
+    return `${prop}::${room}`;
+  };
+
+  // ✅ USER-FACING label
+  const roomLabelForJob = (job: Job) =>
     job.room_name?.trim() || "Unlabeled room";
 
-  // Lightbox subset: only jobs from the same room
-  const lightboxRoomJobs = useMemo(() => {
-    if (!lightboxOpen || !lightboxRoomKey) return [];
-    return jobs.filter((job) => roomKeyForJob(job) === lightboxRoomKey);
-  }, [jobs, lightboxOpen, lightboxRoomKey]);
+  // Grouping helpers (used by lightbox navigation)
+  const jobsByRoomKey = useMemo(() => {
+    const map = new Map<string, Job[]>();
+    for (const j of jobs) {
+      const k = roomKeyForJob(j);
+      const arr = map.get(k) ?? [];
+      arr.push(j);
+      map.set(k, arr);
+    }
+    return map;
+  }, [jobs]);
 
-  const lightboxIndex = useMemo(() => {
-    if (!lightboxOpen || !lightboxJobId) return -1;
-    return lightboxRoomJobs.findIndex((job) => job.id === lightboxJobId);
-  }, [lightboxOpen, lightboxJobId, lightboxRoomJobs]);
-
-  const lightboxJob =
-    lightboxIndex >= 0 && lightboxIndex < lightboxRoomJobs.length
-      ? lightboxRoomJobs[lightboxIndex]
-      : null;
+  // --------- LIGHTBOX (restored) ---------
 
   const openLightboxForJob = (job: Job) => {
     const key = roomKeyForJob(job);
@@ -185,6 +218,21 @@ export function JobsHistory({ refreshToken, onUseAsNewInput }: JobsHistoryProps)
     setLightboxRoomKey(null);
     setLightboxJobId(null);
   };
+
+  const lightboxRoomJobs = useMemo(() => {
+    if (!lightboxOpen || !lightboxRoomKey) return [];
+    return jobsByRoomKey.get(lightboxRoomKey) ?? [];
+  }, [jobsByRoomKey, lightboxOpen, lightboxRoomKey]);
+
+  const lightboxIndex = useMemo(() => {
+    if (!lightboxOpen || !lightboxJobId) return -1;
+    return lightboxRoomJobs.findIndex((j) => j.id === lightboxJobId);
+  }, [lightboxOpen, lightboxJobId, lightboxRoomJobs]);
+
+  const lightboxJob =
+    lightboxIndex >= 0 && lightboxIndex < lightboxRoomJobs.length
+      ? lightboxRoomJobs[lightboxIndex]
+      : null;
 
   const goNextInLightbox = () => {
     if (!lightboxRoomJobs.length || lightboxIndex < 0) return;
@@ -222,6 +270,120 @@ export function JobsHistory({ refreshToken, onUseAsNewInput }: JobsHistoryProps)
     return () => window.removeEventListener("keydown", handleKeyDown);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [lightboxOpen, lightboxIndex, lightboxRoomJobs.length]);
+
+  // --------- MOVE IMAGE (job) BETWEEN ROOMS (same property) ---------
+
+  const openMoveModal = async (job: Job) => {
+    if (!user) return;
+
+    if (!job.property_id) {
+      alert(
+        "This image is not associated with a property, so it can't be moved between rooms."
+      );
+      return;
+    }
+
+    setMoveError(null);
+    setMoveOpen(true);
+    setMoveJobId(job.id);
+    setMovePropertyId(job.property_id);
+    setMoveFromRoomName(job.room_name?.trim() || null);
+    setRoomsForMove([]);
+    setMoveTargetRoomName("");
+
+    setMoveLoading(true);
+    try {
+      const { data, error } = await supabase
+        .from("rooms")
+        .select("id, name, property_id")
+        .eq("user_id", user.id)
+        .eq("property_id", job.property_id)
+        .order("name", { ascending: true });
+
+      if (error) {
+        console.error("[JobsHistory] load rooms for move error:", error);
+        setMoveError("Could not load rooms for this property.");
+        return;
+      }
+
+      const rows = (data ?? []) as RoomRow[];
+      setRoomsForMove(rows);
+
+      // Default target: first room that isn't the current label (if any)
+      const currentLabel = (job.room_name ?? "").trim();
+      const firstDifferent = rows.find(
+        (r) => r.name.trim().toLowerCase() !== currentLabel.toLowerCase()
+      );
+      if (firstDifferent) setMoveTargetRoomName(firstDifferent.name);
+      else if (rows[0]) setMoveTargetRoomName(rows[0].name);
+    } catch (err) {
+      console.error("[JobsHistory] unexpected rooms load error:", err);
+      setMoveError("Unexpected error loading rooms.");
+    } finally {
+      setMoveLoading(false);
+    }
+  };
+
+  const closeMoveModal = () => {
+    if (moveLoading) return;
+    setMoveOpen(false);
+    setMoveJobId(null);
+    setMovePropertyId(null);
+    setMoveFromRoomName(null);
+    setRoomsForMove([]);
+    setMoveTargetRoomName("");
+    setMoveError(null);
+  };
+
+  const confirmMove = async () => {
+    if (!user) return;
+    if (!moveJobId || !movePropertyId) return;
+
+    const target = moveTargetRoomName.trim();
+    if (!target) {
+      setMoveError("Please select a destination room.");
+      return;
+    }
+
+    // MVP rule: move only within SAME property.
+    // We enforce this by scoping the update to property_id too.
+    setMoveLoading(true);
+    setMoveError(null);
+
+    try {
+      // Optional UX: if moving to same name, no-op
+      const current = (moveFromRoomName ?? "").trim();
+      if (current && current.toLowerCase() === target.toLowerCase()) {
+        closeMoveModal();
+        return;
+      }
+
+      const { error } = await supabase
+        .from("jobs")
+        .update({ room_name: target })
+        .eq("id", moveJobId)
+        .eq("user_id", user.id)
+        .eq("property_id", movePropertyId);
+
+      if (error) {
+        console.error("[JobsHistory] move job update error:", error);
+        setMoveError("Could not move this image. Please try again.");
+        return;
+      }
+
+      // Update local state (instant UI)
+      setJobs((prev) =>
+        prev.map((j) => (j.id === moveJobId ? { ...j, room_name: target } : j))
+      );
+
+      closeMoveModal();
+    } catch (err) {
+      console.error("[JobsHistory] unexpected move error:", err);
+      setMoveError("Unexpected error moving this image.");
+    } finally {
+      setMoveLoading(false);
+    }
+  };
 
   // --------- MAIN CONTENT ---------
 
@@ -261,11 +423,10 @@ export function JobsHistory({ refreshToken, onUseAsNewInput }: JobsHistoryProps)
     return (
       <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4 mt-2">
         {jobs.map((job) => {
-          const createdDate = new Date(job.created_at);
-          const createdLabel = createdDate.toLocaleString();
+          const createdLabel = new Date(job.created_at).toLocaleString();
           const isDeleting = deletingId === job.id;
           const styleLabel = job.style_id || "Staged room";
-          const roomLabel = roomKeyForJob(job);
+          const roomLabel = roomLabelForJob(job);
           const canUseAsNewInput = Boolean(
             onUseAsNewInput && job.staged_image_url
           );
@@ -275,10 +436,12 @@ export function JobsHistory({ refreshToken, onUseAsNewInput }: JobsHistoryProps)
               key={job.id}
               className="bg-slate-900/90 border border-slate-800 rounded-2xl overflow-hidden flex flex-col shadow-[0_0_0_1px_rgba(15,23,42,0.6)] hover:shadow-[0_18px_40px_rgba(15,23,42,0.8)] hover:border-emerald-500/40 transition-transform transition-shadow duration-200 hover:-translate-y-[2px]"
             >
+              {/* ✅ Clickable image opens lightbox */}
               <button
                 type="button"
                 onClick={() => openLightboxForJob(job)}
                 className="relative w-full h-40 bg-slate-950 text-left"
+                aria-label="Open preview"
               >
                 {/* eslint-disable-next-line @next/next/no-img-element */}
                 <img
@@ -295,11 +458,9 @@ export function JobsHistory({ refreshToken, onUseAsNewInput }: JobsHistoryProps)
               </button>
 
               <div className="px-3 py-2.5 flex flex-col gap-1.5">
-                <div className="flex items-center justify-between gap-2">
-                  <span className="text-[11px] text-slate-400 truncate">
-                    {createdLabel}
-                  </span>
-                </div>
+                <span className="text-[11px] text-slate-400 truncate">
+                  {createdLabel}
+                </span>
 
                 <div className="mt-1 flex flex-col gap-1.5">
                   {canUseAsNewInput && (
@@ -326,6 +487,23 @@ export function JobsHistory({ refreshToken, onUseAsNewInput }: JobsHistoryProps)
                     >
                       Download
                     </button>
+
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        openMoveModal(job);
+                      }}
+                      className="text-[11px] rounded-lg border border-slate-700 px-2 py-1 hover:border-emerald-400/70 hover:text-emerald-200 transition w-full text-center"
+                      title={
+                        job.property_id
+                          ? "Move this image to a different room (same property)"
+                          : "No property assigned"
+                      }
+                    >
+                      Move
+                    </button>
+
                     <button
                       type="button"
                       onClick={(e) => {
@@ -355,8 +533,8 @@ export function JobsHistory({ refreshToken, onUseAsNewInput }: JobsHistoryProps)
             Recent staged rooms
           </h2>
           <p className="text-xs text-slate-400">
-            Showing your latest 12 staged rooms. View, download, or reuse them
-            as fresh starting points.
+            Showing your latest 12 staged rooms. View, download, move, or reuse
+            them as fresh starting points.
           </p>
         </div>
 
@@ -375,118 +553,216 @@ export function JobsHistory({ refreshToken, onUseAsNewInput }: JobsHistoryProps)
 
       {renderContent()}
 
-      {/* LIGHTBOX MODAL */}
-      {lightboxOpen && lightboxJob && (
-        <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/70">
-          {/* click-to-close backdrop */}
-          <div
-            className="absolute inset-0"
-            onClick={closeLightbox}
-          />
+      {/* ✅ LIGHTBOX (PORTAL) */}
+      {mounted &&
+        lightboxOpen &&
+        lightboxJob &&
+        createPortal(
+          <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/70">
+            {/* backdrop */}
+            <div className="absolute inset-0" onClick={closeLightbox} />
 
-          {/* modal */}
-          <div className="relative z-50 max-w-5xl w-full mx-4 rounded-2xl border border-slate-800 bg-slate-950/95 shadow-2xl flex flex-col overflow-hidden">
-            {/* header */}
-            <div className="flex items-center justify-between px-4 py-3 border-b border-slate-800">
-              <div className="flex flex-col min-w-0">
-                <span className="text-[10px] uppercase tracking-[0.18em] text-slate-500">
-                  Staged room
-                </span>
-                <span className="text-sm text-slate-100 truncate">
-                  {roomKeyForJob(lightboxJob)}
-                </span>
-                <span className="text-[11px] text-slate-400">
-                  {new Date(lightboxJob.created_at).toLocaleString()}
-                </span>
-              </div>
-              <div className="flex items-center gap-2">
-                {onUseAsNewInput && lightboxJob.staged_image_url && (
+            {/* modal */}
+            <div className="relative z-50 max-w-5xl w-full mx-4 rounded-2xl border border-slate-800 bg-slate-950/95 shadow-2xl flex flex-col overflow-hidden">
+              {/* header */}
+              <div className="flex items-center justify-between px-4 py-3 border-b border-slate-800">
+                <div className="flex flex-col min-w-0">
+                  <span className="text-[10px] uppercase tracking-[0.18em] text-slate-500">
+                    Staged room
+                  </span>
+                  <span className="text-sm text-slate-100 truncate">
+                    {roomLabelForJob(lightboxJob)}
+                  </span>
+                  <span className="text-[11px] text-slate-400">
+                    {new Date(lightboxJob.created_at).toLocaleString()}
+                  </span>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  {onUseAsNewInput && lightboxJob.staged_image_url && (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        onUseAsNewInput?.(lightboxJob.staged_image_url || null)
+                      }
+                      className="text-[11px] rounded-lg border border-emerald-500/70 px-3 py-1.5 bg-emerald-500/10 text-emerald-200 hover:bg-emerald-500/20 hover:border-emerald-400 transition"
+                    >
+                      Continue from this image
+                    </button>
+                  )}
+
                   <button
                     type="button"
-                    onClick={() =>
-                      onUseAsNewInput?.(lightboxJob.staged_image_url || null)
-                    }
-                    className="text-[11px] rounded-lg border border-emerald-500/70 px-3 py-1.5 bg-emerald-500/10 text-emerald-200 hover:bg-emerald-500/20 hover:border-emerald-400 transition"
+                    onClick={() => handleDownload(lightboxJob)}
+                    className="text-[11px] rounded-lg border border-slate-700 px-3 py-1.5 hover:border-emerald-400/70 hover:text-emerald-200 transition"
                   >
-                    Continue from this image
+                    Download
                   </button>
-                )}
-                <button
-                  type="button"
-                  onClick={() => handleDownload(lightboxJob)}
-                  className="text-[11px] rounded-lg border border-slate-700 px-3 py-1.5 hover:border-emerald-400/70 hover:text-emerald-200 transition"
-                >
-                  Download
-                </button>
-                <button
-                  type="button"
-                  onClick={() => handleDelete(lightboxJob.id)}
-                  disabled={deletingId === lightboxJob.id}
-                  className="text-[11px] rounded-lg border border-rose-700/80 text-rose-300 px-3 py-1.5 hover:border-rose-400 hover:text-rose-200 transition disabled:opacity-60"
-                >
-                  {deletingId === lightboxJob.id ? "Deleting…" : "Delete"}
-                </button>
-                <button
-                  type="button"
-                  onClick={closeLightbox}
-                  className="text-[11px] rounded-lg border border-slate-700 px-3 py-1.5 hover:border-slate-500 hover:text-slate-100 transition"
-                >
-                  Close
-                </button>
-              </div>
-            </div>
 
-            {/* body with fixed max height */}
-            <div className="relative flex-1 bg-slate-950">
-              <div className="p-4 flex-1 flex items-center justify-center">
-                <div className="max-h-[80vh] w-full flex items-center justify-center">
-                  {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img
-                    src={lightboxJob.staged_image_url}
-                    alt={lightboxJob.style_id || "Staged room"}
-                    className="max-h-[75vh] max-w-full object-contain rounded-xl border border-slate-800 bg-black"
-                  />
+                  <button
+                    type="button"
+                    onClick={closeLightbox}
+                    className="text-[11px] rounded-lg border border-slate-700 px-3 py-1.5 hover:border-slate-500 hover:text-slate-100 transition"
+                  >
+                    Close
+                  </button>
                 </div>
               </div>
 
-              {/* Left/right arrow buttons (per room) */}
-              {lightboxRoomJobs.length > 1 && (
-                <>
-                  <button
-                    type="button"
-                    onClick={goPrevInLightbox}
-                    className="absolute left-3 top-1/2 -translate-y-1/2 rounded-full border border-slate-700 bg-slate-900/80 px-2 py-2 text-slate-200 hover:border-emerald-400/70 hover:text-emerald-200 transition"
+              {/* body */}
+              <div className="relative flex-1 bg-slate-950">
+                <div className="p-4 flex-1 flex items-center justify-center">
+                  <div className="max-h-[80vh] w-full flex items-center justify-center">
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img
+                      src={lightboxJob.staged_image_url}
+                      alt={lightboxJob.style_id || "Staged room"}
+                      className="max-h-[75vh] max-w-full object-contain rounded-xl border border-slate-800 bg-black"
+                    />
+                  </div>
+                </div>
+
+                {/* Left/right arrows (per room) */}
+                {lightboxRoomJobs.length > 1 && (
+                  <>
+                    <button
+                      type="button"
+                      onClick={goPrevInLightbox}
+                      className="absolute left-3 top-1/2 -translate-y-1/2 rounded-full border border-slate-700 bg-slate-900/80 px-2 py-2 text-slate-200 hover:border-emerald-400/70 hover:text-emerald-200 transition"
+                      aria-label="Previous image"
+                    >
+                      ‹
+                    </button>
+                    <button
+                      type="button"
+                      onClick={goNextInLightbox}
+                      className="absolute right-3 top-1/2 -translate-y-1/2 rounded-full border border-slate-700 bg-slate-900/80 px-2 py-2 text-slate-200 hover:border-emerald-400/70 hover:text-emerald-200 transition"
+                      aria-label="Next image"
+                    >
+                      ›
+                    </button>
+                  </>
+                )}
+              </div>
+
+              {/* footer */}
+              <div className="px-4 py-2 border-t border-slate-800 text-[10px] text-slate-500 flex items-center justify-between">
+                <span>
+                  Job ID:{" "}
+                  <span className="text-slate-400">{lightboxJob.id}</span>
+                </span>
+                {lightboxJob.style_id && (
+                  <span>
+                    Style:{" "}
+                    <span className="uppercase tracking-[0.18em] text-slate-400">
+                      {lightboxJob.style_id}
+                    </span>
+                  </span>
+                )}
+                <span className="hidden sm:inline">
+                  Tip: use ← / → to navigate, Esc to close.
+                </span>
+              </div>
+            </div>
+          </div>,
+          document.body
+        )}
+
+      {/* MOVE MODAL */}
+      {moveOpen && (
+        <div className="fixed inset-0 z-[9000] flex items-center justify-center bg-black/70">
+          <div className="absolute inset-0" onClick={closeMoveModal} />
+
+          <div className="relative z-50 w-full max-w-lg mx-4 rounded-2xl border border-slate-800 bg-slate-950/95 shadow-2xl overflow-hidden">
+            <div className="flex items-center justify-between px-4 py-3 border-b border-slate-800">
+              <div className="flex flex-col">
+                <span className="text-[10px] uppercase tracking-[0.18em] text-slate-500">
+                  Move image
+                </span>
+                <span className="text-sm text-slate-100">
+                  Choose a destination room
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={closeMoveModal}
+                disabled={moveLoading}
+                className="text-[11px] rounded-lg border border-slate-700 px-3 py-1.5 hover:border-slate-500 hover:text-slate-100 transition disabled:opacity-60"
+              >
+                Close
+              </button>
+            </div>
+
+            <div className="px-4 py-3 text-xs space-y-3">
+              <div className="text-[11px] text-slate-400">
+                This move is restricted to the{" "}
+                <span className="text-slate-200">same property</span>. Only this
+                image will move (descendants stay put).
+              </div>
+
+              <div className="flex flex-col gap-1">
+                <label className="text-[11px] text-slate-400">
+                  Destination room
+                </label>
+
+                {moveLoading ? (
+                  <div className="text-[11px] text-slate-500 py-2">
+                    Loading rooms…
+                  </div>
+                ) : roomsForMove.length === 0 ? (
+                  <div className="text-[11px] text-slate-500 py-2">
+                    No rooms found for this property.
+                  </div>
+                ) : (
+                  <select
+                    value={moveTargetRoomName}
+                    onChange={(e) => setMoveTargetRoomName(e.target.value)}
+                    className="w-full rounded-lg bg-slate-950 border border-slate-800 px-2 py-1 text-xs text-slate-100 outline-none focus:border-emerald-400"
                   >
-                    ‹
-                  </button>
-                  <button
-                    type="button"
-                    onClick={goNextInLightbox}
-                    className="absolute right-3 top-1/2 -translate-y-1/2 rounded-full border border-slate-700 bg-slate-900/80 px-2 py-2 text-slate-200 hover:border-emerald-400/70 hover:text-emerald-200 transition"
-                  >
-                    ›
-                  </button>
-                </>
+                    {roomsForMove.map((r) => (
+                      <option key={r.id} value={r.name}>
+                        {r.name}
+                      </option>
+                    ))}
+                  </select>
+                )}
+
+                {moveFromRoomName && (
+                  <div className="text-[10px] text-slate-500 mt-1">
+                    Current:{" "}
+                    <span className="text-slate-300">{moveFromRoomName}</span>
+                  </div>
+                )}
+              </div>
+
+              {moveError && (
+                <div className="text-[11px] text-rose-300">{moveError}</div>
               )}
             </div>
 
-            {/* footer */}
-            <div className="px-4 py-2 border-t border-slate-800 text-[10px] text-slate-500 flex items-center justify-between">
-              <span>
-                Job ID:{" "}
-                <span className="text-slate-400">{lightboxJob.id}</span>
-              </span>
-              {lightboxJob.style_id && (
-                <span>
-                  Style:{" "}
-                  <span className="uppercase tracking-[0.18em] text-slate-400">
-                    {lightboxJob.style_id}
-                  </span>
-                </span>
-              )}
-              <span className="hidden sm:inline">
-                Tip: use ← / → to navigate, Esc to close.
-              </span>
+            <div className="px-4 py-3 border-t border-slate-800 flex items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={closeMoveModal}
+                disabled={moveLoading}
+                className="text-[11px] rounded-lg border border-slate-700 px-3 py-1.5 hover:border-slate-500 transition disabled:opacity-60"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={confirmMove}
+                disabled={
+                  moveLoading ||
+                  !moveJobId ||
+                  !movePropertyId ||
+                  roomsForMove.length === 0 ||
+                  !moveTargetRoomName.trim()
+                }
+                className="text-[11px] rounded-lg bg-emerald-500 hover:bg-emerald-400 disabled:opacity-60 text-slate-950 px-3 py-1.5 font-medium transition"
+              >
+                {moveLoading ? "Moving…" : "Move image"}
+              </button>
             </div>
           </div>
         </div>

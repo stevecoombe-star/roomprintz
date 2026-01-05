@@ -27,6 +27,12 @@ function formatDate(iso: string) {
   }
 }
 
+function errorMessageFromUnknown(err: unknown, fallback: string): string {
+  if (err instanceof Error && err.message) return err.message;
+  if (typeof err === "string" && err.trim().length > 0) return err;
+  return fallback;
+}
+
 export default function BillingPage() {
   const { user, loading } = useSupabaseUser();
 
@@ -54,13 +60,21 @@ export default function BillingPage() {
           id: "starter" as const,
           name: "Starter",
           price: "$39 / month",
-          bullets: ["More monthly tokens", "Best for occasional listings", "Upgrade anytime"],
+          bullets: [
+            "More monthly tokens",
+            "Best for occasional listings",
+            "Upgrade anytime",
+          ],
         },
         {
           id: "pro" as const,
           name: "Pro",
           price: "$79 / month",
-          bullets: ["Higher monthly tokens", "Best for active agents", "Priority features later"],
+          bullets: [
+            "Higher monthly tokens",
+            "Best for active agents",
+            "Priority features later",
+          ],
         },
         {
           id: "team" as const,
@@ -74,7 +88,7 @@ export default function BillingPage() {
         price: string;
         bullets: string[];
       }>,
-    [],
+    []
   );
 
   useEffect(() => {
@@ -93,13 +107,17 @@ export default function BillingPage() {
           .from("subscriptions")
           .select("status, plan_id, current_period_end")
           .eq("user_id", user!.id)
-          .maybeSingle();
+          .maybeSingle<SubscriptionRow>();
 
         if (error) throw error;
-        if (!cancelled) setSub((data as SubscriptionRow) ?? null);
-      } catch (e: any) {
-        console.error("[BillingPage] subscription fetch error:", e);
-        if (!cancelled) setErrorMessage(e?.message ?? "Failed to load subscription");
+        if (!cancelled) setSub(data ?? null);
+      } catch (err: unknown) {
+        console.error("[BillingPage] subscription fetch error:", err);
+        if (!cancelled) {
+          setErrorMessage(
+            errorMessageFromUnknown(err, "Failed to load subscription")
+          );
+        }
       } finally {
         if (!cancelled) setSubLoading(false);
       }
@@ -181,8 +199,8 @@ export default function BillingPage() {
                   {subLoading
                     ? "—"
                     : sub?.current_period_end
-                      ? formatDate(sub.current_period_end)
-                      : "—"}
+                    ? formatDate(sub.current_period_end)
+                    : "—"}
                 </div>
               </div>
 
@@ -196,9 +214,11 @@ export default function BillingPage() {
                       setErrorMessage(null);
                       try {
                         await openBillingPortal();
-                      } catch (e: any) {
-                        console.error("[BillingPage] portal error:", e);
-                        setErrorMessage(e?.message ?? "Portal failed");
+                      } catch (err: unknown) {
+                        console.error("[BillingPage] portal error:", err);
+                        setErrorMessage(
+                          errorMessageFromUnknown(err, "Portal failed")
+                        );
                       } finally {
                         setUiLoading(null);
                       }
@@ -217,9 +237,11 @@ export default function BillingPage() {
                         setErrorMessage(null);
                         try {
                           await startCheckout("beta");
-                        } catch (e: any) {
-                          console.error("[BillingPage] checkout error:", e);
-                          setErrorMessage(e?.message ?? "Checkout failed");
+                        } catch (err: unknown) {
+                          console.error("[BillingPage] checkout error:", err);
+                          setErrorMessage(
+                            errorMessageFromUnknown(err, "Checkout failed")
+                          );
                         } finally {
                           setUiLoading(null);
                         }
@@ -288,9 +310,11 @@ export default function BillingPage() {
                             try {
                               // Note: server currently routes all plans to beta price until you map planId->priceId.
                               await startCheckout(p.id);
-                            } catch (e: any) {
-                              console.error("[BillingPage] checkout error:", e);
-                              setErrorMessage(e?.message ?? "Checkout failed");
+                            } catch (err: unknown) {
+                              console.error("[BillingPage] checkout error:", err);
+                              setErrorMessage(
+                                errorMessageFromUnknown(err, "Checkout failed")
+                              );
                             } finally {
                               setUiLoading(null);
                             }

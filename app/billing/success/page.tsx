@@ -1,24 +1,24 @@
 // app/billing/success/page.tsx
 "use client";
 
-import { Suspense, useEffect, useState } from "react";
+import { Suspense, useEffect } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 
 function BillingSuccessInner() {
   const params = useSearchParams();
   const router = useRouter();
   const sessionId = params.get("session_id");
-  const [message, setMessage] = useState<string>("Finalizing your subscription…");
+
+  /**
+   * Message is derived from URL state — no need for React state.
+   */
+  const message = sessionId
+    ? "Subscription completed ✅ You can close this tab or return to the app."
+    : "Subscription completed. (No session_id found in URL.)";
 
   useEffect(() => {
     // In beta: we trust webhooks for token grants.
     // This page is just a friendly landing + optional redirect.
-    if (!sessionId) {
-      setMessage("Subscription completed. (No session_id found in URL.)");
-      return;
-    }
-
-    setMessage("Subscription completed ✅ You can close this tab or return to the app.");
 
     // Nudge the app to refresh token balance when the user returns
     window.dispatchEvent(new Event("tokens:changed"));
@@ -29,7 +29,7 @@ function BillingSuccessInner() {
     }, 1500);
 
     return () => clearTimeout(t);
-  }, [sessionId, router]);
+  }, [router]);
 
   return (
     <div className="max-w-xl mx-auto p-6 space-y-3">

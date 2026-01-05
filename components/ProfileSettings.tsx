@@ -6,6 +6,12 @@ import { supabase } from "@/lib/supabaseClient";
 import { useAgentProfile } from "@/lib/useAgentProfile";
 import { useSupabaseUser } from "@/lib/useSupabaseUser";
 
+function errorMessageFromUnknown(err: unknown, fallback: string): string {
+  if (err instanceof Error && err.message) return err.message;
+  if (typeof err === "string" && err.trim().length > 0) return err;
+  return fallback;
+}
+
 export function ProfileSettings() {
   const { user, loading: authLoading } = useSupabaseUser();
   const { profile, loading: profileLoading } = useAgentProfile();
@@ -23,12 +29,20 @@ export function ProfileSettings() {
   // Initialize form fields when profile loads
   useEffect(() => {
     if (!profile) return;
+
     setFullName(profile.full_name ?? "");
     setBrokerageName(profile.brokerage_name ?? "");
     setBrokerageAddress(profile.brokerage_address ?? "");
     setPhone(profile.phone ?? "");
     setPhotoUrl(profile.agent_photo_url ?? "");
-  }, [profile?.id]);
+  }, [
+    profile,
+    profile?.full_name,
+    profile?.brokerage_name,
+    profile?.brokerage_address,
+    profile?.phone,
+    profile?.agent_photo_url,
+  ]);
 
   const handleSave = async () => {
     if (!user) return;
@@ -54,9 +68,11 @@ export function ProfileSettings() {
       }
 
       setStatusMessage("Profile updated.");
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error("[ProfileSettings] unexpected error:", err);
-      setErrorMessage(err?.message ?? "Unexpected error while saving.");
+      setErrorMessage(
+        errorMessageFromUnknown(err, "Unexpected error while saving.")
+      );
     } finally {
       setSaving(false);
       setTimeout(() => setStatusMessage(null), 3000);

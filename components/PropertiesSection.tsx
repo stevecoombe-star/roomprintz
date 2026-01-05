@@ -1,7 +1,7 @@
 // components/PropertiesSection.tsx
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
 import { useSupabaseUser } from "@/lib/useSupabaseUser";
 import Link from "next/link";
@@ -19,8 +19,14 @@ type Property = {
 };
 
 type PropertiesSectionProps = {
-  refreshToken?: number; // NEW
+  refreshToken?: number;
 };
+
+function errorMessageFromUnknown(err: unknown, fallback: string): string {
+  if (err instanceof Error && err.message) return err.message;
+  if (typeof err === "string" && err.trim().length > 0) return err;
+  return fallback;
+}
 
 export function PropertiesSection({ refreshToken = 0 }: PropertiesSectionProps) {
   const { user, loading: authLoading } = useSupabaseUser();
@@ -41,7 +47,7 @@ export function PropertiesSection({ refreshToken = 0 }: PropertiesSectionProps) 
   const [country, setCountry] = useState("");
   const [mlsNumber, setMlsNumber] = useState("");
 
-  const loadProperties = async () => {
+  const loadProperties = useCallback(async () => {
     if (!user) {
       setProperties([]);
       setIsLoading(false);
@@ -64,22 +70,25 @@ export function PropertiesSection({ refreshToken = 0 }: PropertiesSectionProps) 
         console.error("[PropertiesSection] load error:", error);
         setErrorMessage(error.message);
         setProperties([]);
-      } else {
-        setProperties(data ?? []);
+        return;
       }
-    } catch (err: any) {
+
+      setProperties((data ?? []) as Property[]);
+    } catch (err: unknown) {
       console.error("[PropertiesSection] unexpected error:", err);
-      setErrorMessage(err?.message ?? "Unexpected error loading properties.");
+      setErrorMessage(
+        errorMessageFromUnknown(err, "Unexpected error loading properties.")
+      );
       setProperties([]);
     } finally {
       setIsLoading(false);
     }
-  };
+  }, [user]);
 
   useEffect(() => {
     if (authLoading) return;
-    loadProperties();
-  }, [authLoading, user?.id, refreshToken]); // 👈 refreshToken added here
+    void loadProperties();
+  }, [authLoading, loadProperties, refreshToken]);
 
   const resetForm = () => {
     setTitle("");
@@ -100,6 +109,7 @@ export function PropertiesSection({ refreshToken = 0 }: PropertiesSectionProps) 
 
   const handleCreateProperty = async () => {
     if (!user) return;
+
     if (!address1 && !title) {
       setErrorMessage("Please enter at least a property title or address.");
       return;
@@ -129,9 +139,11 @@ export function PropertiesSection({ refreshToken = 0 }: PropertiesSectionProps) 
 
       setIsModalOpen(false);
       await loadProperties();
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error("[PropertiesSection] unexpected insert error:", err);
-      setErrorMessage(err?.message ?? "Unexpected error creating property.");
+      setErrorMessage(
+        errorMessageFromUnknown(err, "Unexpected error creating property.")
+      );
     } finally {
       setSaving(false);
     }
@@ -179,9 +191,7 @@ export function PropertiesSection({ refreshToken = 0 }: PropertiesSectionProps) 
             const updatedLabel = updatedDate.toLocaleString();
 
             const displayTitle =
-              property.title ||
-              property.address_line_1 ||
-              "Untitled property";
+              property.title || property.address_line_1 || "Untitled property";
 
             const displayAddress = [
               property.address_line_1,
@@ -214,19 +224,23 @@ export function PropertiesSection({ refreshToken = 0 }: PropertiesSectionProps) 
                   <div className="text-sm font-medium text-slate-50 truncate">
                     {displayTitle}
                   </div>
+
                   {displayAddress && (
                     <div className="text-[11px] text-slate-400 truncate">
                       {displayAddress}
                     </div>
                   )}
+
                   {property.mls_number && (
                     <div className="text-[11px] text-slate-500">
                       MLS {property.mls_number}
                     </div>
                   )}
+
                   <div className="text-[10px] text-slate-500 mt-1">
                     Updated {updatedLabel}
                   </div>
+
                   <div className="mt-1 flex justify-end">
                     <Link
                       href={`/app/properties/${property.id}`}
@@ -312,6 +326,7 @@ export function PropertiesSection({ refreshToken = 0 }: PropertiesSectionProps) 
                     placeholder="Vancouver"
                   />
                 </div>
+
                 <div className="flex flex-col gap-1">
                   <label className="text-[11px] text-slate-400">
                     State / Province
@@ -324,6 +339,7 @@ export function PropertiesSection({ refreshToken = 0 }: PropertiesSectionProps) 
                     placeholder="BC"
                   />
                 </div>
+
                 <div className="flex flex-col gap-1">
                   <label className="text-[11px] text-slate-400">
                     Postal code
@@ -351,6 +367,7 @@ export function PropertiesSection({ refreshToken = 0 }: PropertiesSectionProps) 
                     placeholder="Canada"
                   />
                 </div>
+
                 <div className="flex flex-col gap-1">
                   <label className="text-[11px] text-slate-400">
                     MLS number (optional)
