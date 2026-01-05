@@ -1,7 +1,7 @@
-// app/page.tsx
+// app/app/page.tsx (Authenticated app)
 "use client";
 
-import { useState, useEffect } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { UploadCard } from "@/components/UploadCard";
 import {
   StyleSelector,
@@ -45,20 +45,6 @@ const SELECTED_PROPERTY_STORAGE_KEY_PREFIX = "roomprintz.selectedPropertyId.";
 // Matches our auto format: "Room - 2025-12-30 19:51:22"
 const ROOM_AUTO_NAME_REGEX =
   /-\s*\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}$/i;
-
-// ✅ Frontend lineage guard helpers (auto-rename on conflict for fresh uploads)
-const normalizeRoomLabel = (s: string) => s.trim().toLowerCase();
-
-const makeUniqueRoomLabel = (desired: string, existingLabels: Set<string>) => {
-  const base = desired.trim() || "Untitled room";
-  if (!existingLabels.has(normalizeRoomLabel(base))) return base;
-
-  let n = 2;
-  while (existingLabels.has(normalizeRoomLabel(`${base} (${n})`))) {
-    n += 1;
-  }
-  return `${base} (${n})`;
-};
 
 function titleCaseLabel(s: string) {
   return s
@@ -128,6 +114,34 @@ function shouldAutoOverwriteRoomName(current: string) {
   return ROOM_AUTO_NAME_REGEX.test(trimmed);
 }
 
+type RoomNameSource = "auto" | "manual";
+
+type PropertyLite = { id: string; title: string | null; address_line_1: string | null };
+
+function getPgCode(err: unknown): string | undefined {
+  if (!err || typeof err !== "object") return undefined;
+  const maybe = err as { code?: unknown };
+  return typeof maybe.code === "string" ? maybe.code : undefined;
+}
+
+function isLikelyUniqueViolation(err: unknown): boolean {
+  if (!err || typeof err !== "object") return false;
+  const maybe = err as { message?: unknown; details?: unknown; hint?: unknown };
+  const msg =
+    (typeof maybe.message === "string" ? maybe.message : "") +
+    " " +
+    (typeof maybe.details === "string" ? maybe.details : "") +
+    " " +
+    (typeof maybe.hint === "string" ? maybe.hint : "");
+  const lower = msg.toLowerCase();
+  return (
+    lower.includes("duplicate") ||
+    lower.includes("unique") ||
+    lower.includes("already exists") ||
+    lower.includes("rooms_property_id_name_key")
+  );
+}
+
 export default function Home() {
   const [uploadedFile, setUploadedFile] = useState<File | null>(null);
   const [uploadedPreview, setUploadedPreview] = useState<string | null>(null);
@@ -136,20 +150,25 @@ export default function Home() {
   const [resultUrl, setResultUrl] = useState<string | null>(null);
 
   const router = useRouter();
+  const { user, loading: authLoading } = useSupabaseUser();
+
+  const userId = user?.id ?? null;
 
   // ✅ one-shot continuation flag (true only when user clicks "Continue from this image")
   const [isContinuation, setIsContinuation] = useState(false);
 
-  // 🔔 Simple toast (no external deps)
-  const [toast, setToast] = useState<{
-    message: string;
-    type: "error" | "info";
-  } | null>(null);
+  // ✅ Track whether roomName was auto-set or user-edited
+  const [roomNameSource, setRoomNameSource] = useState<RoomNameSource>("auto");
 
-  const showToast = (message: string, type: "error" | "info" = "info") => {
+  // 🔔 Simple toast (no external deps)
+  const [toast, setToast] = useState<{ message: string; type: "error" | "info" } | null>(
+    null
+  );
+
+  const showToast = useCallback((message: string, type: "error" | "info" = "info") => {
     setToast({ message, type });
     window.setTimeout(() => setToast(null), 4500);
-  };
+  }, []);
 
   // Phase 1: agent photo tools
   const [enhancePhoto, setEnhancePhoto] = useState(false);
@@ -159,9 +178,9 @@ export default function Home() {
   // Phase 2: surfaces
   const [repairDamage, setRepairDamage] = useState(false);
   const [repaintWalls, setRepaintWalls] = useState(false);
-  const [flooringPreset, setFlooringPreset] = useState<
-    "" | "carpet" | "hardwood" | "tile"
-  >("");
+  const [flooringPreset, setFlooringPreset] = useState<"" | "carpet" | "hardwood" | "tile">(
+    ""
+  );
 
   // 🔹 Room type selection
   const [roomType, setRoomType] = useState<RoomType>("auto");
@@ -173,9 +192,7 @@ export default function Home() {
   const [aspectRatio, setAspectRatio] = useState<AspectRatio>("auto");
 
   // property + room state
-  const [properties, setProperties] = useState<
-    { id: string; title: string | null; address_line_1: string | null }[]
-  >([]);
+  const [properties, setProperties] = useState<PropertyLite[]>([]);
   const [propertiesLoading, setPropertiesLoading] = useState(true);
   const [selectedPropertyId, setSelectedPropertyId] = useState<string | "">("");
   const [roomName, setRoomName] = useState("");
@@ -183,14 +200,12 @@ export default function Home() {
   const [propertiesRefreshToken, setPropertiesRefreshToken] = useState(0);
   const [jobsRefreshToken, setJobsRefreshToken] = useState(0);
 
-  const [consumedDeepLinkJobId, setConsumedDeepLinkJobId] = useState<
-    string | null
-  >(null);
-
-  const { user, loading: authLoading } = useSupabaseUser();
+  const [consumedDeepLinkJobId, setConsumedDeepLinkJobId] = useState<string | null>(
+    null
+  );
 
   // ✅ Reset Photo Tools + Surface Updates after a SUCCESSFUL generation + job insert
-  const resetToolsAfterGeneration = () => {
+  const resetToolsAfterGeneration = useCallback(() => {
     // Photo tools
     setEnhancePhoto(false);
     setCleanupRoom(false);
@@ -200,7 +215,7 @@ export default function Home() {
     setRepairDamage(false);
     setRepaintWalls(false);
     setFlooringPreset("");
-  };
+  }, []);
 
   const wantsPhotoTools =
     enhancePhoto ||
@@ -210,20 +225,21 @@ export default function Home() {
     repaintWalls ||
     flooringPreset !== "";
 
-  const canGenerate = Boolean(
-    uploadedFile && user && (selectedStyle || wantsPhotoTools)
-  );
+  const canGenerate = Boolean(uploadedFile && user && (selectedStyle || wantsPhotoTools));
+
+  const storageKey = useMemo(() => {
+    return userId ? `${SELECTED_PROPERTY_STORAGE_KEY_PREFIX}${userId}` : null;
+  }, [userId]);
 
   // 🔹 Restore selected property from URL (highest priority) or localStorage (fallback)
   useEffect(() => {
     if (typeof window === "undefined") return;
     if (authLoading) return;
-    if (!user) return;
+    if (!userId) return;
+    if (!storageKey) return;
 
     const params = new URLSearchParams(window.location.search);
     const propertyFromURL = params.get("propertyId") || params.get("property");
-
-    const storageKey = `${SELECTED_PROPERTY_STORAGE_KEY_PREFIX}${user.id}`;
 
     if (propertyFromURL) {
       setSelectedPropertyId(propertyFromURL);
@@ -235,22 +251,21 @@ export default function Home() {
     if (stored) {
       setSelectedPropertyId(stored);
     }
-  }, [authLoading, user?.id]);
+  }, [authLoading, userId, storageKey]);
 
   // 🔹 Persist selected property changes
   useEffect(() => {
     if (typeof window === "undefined") return;
     if (authLoading) return;
-    if (!user) return;
-
-    const storageKey = `${SELECTED_PROPERTY_STORAGE_KEY_PREFIX}${user.id}`;
+    if (!userId) return;
+    if (!storageKey) return;
 
     if (selectedPropertyId) {
       window.localStorage.setItem(storageKey, selectedPropertyId);
     } else {
       window.localStorage.removeItem(storageKey);
     }
-  }, [selectedPropertyId, authLoading, user?.id]);
+  }, [selectedPropertyId, authLoading, userId, storageKey]);
 
   // 🔍 Tiny debug effect
   useEffect(() => {
@@ -265,7 +280,7 @@ export default function Home() {
   // 🔹 Validate persisted selectedPropertyId exists in current property list
   useEffect(() => {
     if (authLoading) return;
-    if (!user) return;
+    if (!userId) return;
     if (propertiesLoading) return;
     if (!selectedPropertyId) return;
 
@@ -274,18 +289,17 @@ export default function Home() {
 
     setSelectedPropertyId("");
 
-    if (typeof window !== "undefined") {
-      const storageKey = `${SELECTED_PROPERTY_STORAGE_KEY_PREFIX}${user.id}`;
+    if (typeof window !== "undefined" && storageKey) {
       window.localStorage.removeItem(storageKey);
     }
-  }, [authLoading, user?.id, propertiesLoading, properties, selectedPropertyId]);
+  }, [authLoading, userId, propertiesLoading, properties, selectedPropertyId, storageKey]);
 
   // Load properties for the selector
   useEffect(() => {
     const loadPropertiesForSelector = async () => {
       if (authLoading) return;
 
-      if (!user) {
+      if (!userId) {
         setProperties([]);
         setPropertiesLoading(false);
         return;
@@ -296,14 +310,14 @@ export default function Home() {
         const { data, error } = await supabase
           .from("properties")
           .select("id, title, address_line_1")
-          .eq("user_id", user.id)
+          .eq("user_id", userId)
           .order("updated_at", { ascending: false });
 
         if (error) {
           console.error("[Home] load properties error:", error);
           setProperties([]);
         } else {
-          setProperties(data ?? []);
+          setProperties((data ?? []) as PropertyLite[]);
         }
       } catch (err) {
         console.error("[Home] unexpected properties load error:", err);
@@ -313,8 +327,8 @@ export default function Home() {
       }
     };
 
-    loadPropertiesForSelector();
-  }, [authLoading, user?.id]);
+    void loadPropertiesForSelector();
+  }, [authLoading, userId]);
 
   // URL → room prefill only
   useEffect(() => {
@@ -325,41 +339,52 @@ export default function Home() {
 
     if (roomFromURL) {
       setRoomName(roomFromURL);
-    }
+      setRoomNameSource("manual"); // URL input should be treated as intentional
 
-    if (roomFromURL) {
       const el = document.getElementById("staging-area");
-      if (el) {
-        el.scrollIntoView({ behavior: "smooth", block: "start" });
-      }
+      if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
     }
   }, []);
 
+  // ✅ If roomType changes and roomName is auto-managed, refresh the auto room name
+  useEffect(() => {
+    if (roomNameSource !== "auto") return;
+
+    setRoomName((prev) => {
+      if (!shouldAutoOverwriteRoomName(prev)) return prev;
+      return makeAutoRoomName(roomType);
+    });
+  }, [roomType, roomNameSource]);
+
   // ✅ Fresh upload (normal)
-  const handleFileChangeFresh = (file: File | null) => {
-    setIsContinuation(false);
+  const handleFileChangeFresh = useCallback(
+    (file: File | null) => {
+      setIsContinuation(false);
+      setUploadedFile(file);
+      setResultUrl(null);
 
-    setUploadedFile(file);
-    setResultUrl(null);
+      if (file) {
+        const url = URL.createObjectURL(file);
+        setUploadedPreview(url);
 
-    if (file) {
-      const url = URL.createObjectURL(file);
-      setUploadedPreview(url);
+        setRoomName((prev) => {
+          if (roomNameSource !== "auto" && prev.trim().length > 0) return prev;
+          if (!shouldAutoOverwriteRoomName(prev) && prev.trim().length > 0) return prev;
 
-      // ✅ Auto room naming on NEW upload (only if blank or previously auto-named)
-      setRoomName((prev) => {
-        if (!shouldAutoOverwriteRoomName(prev)) return prev;
-        return makeAutoRoomName(roomType);
-      });
-    } else {
-      setUploadedPreview(null);
-    }
-  };
+          const next = makeAutoRoomName(roomType);
+          setRoomNameSource("auto");
+          return next;
+        });
+      } else {
+        setUploadedPreview(null);
+      }
+    },
+    [roomType, roomNameSource]
+  );
 
   // ✅ Continuation (Continue from this image)
-  const handleFileChangeContinuation = (file: File | null) => {
+  const handleFileChangeContinuation = useCallback((file: File | null) => {
     setIsContinuation(true);
-
     setUploadedFile(file);
     setResultUrl(null);
 
@@ -369,13 +394,13 @@ export default function Home() {
     } else {
       setUploadedPreview(null);
     }
-  };
+  }, []);
 
   // Helper: re-use existing "Untitled property" if present, otherwise create one
-  const ensurePropertyForJob = async (): Promise<string | null> => {
+  const ensurePropertyForJob = useCallback(async (): Promise<string | null> => {
     if (selectedPropertyId) return selectedPropertyId;
 
-    if (!user) {
+    if (!userId) {
       alert("You must be logged in to create a new property.");
       return null;
     }
@@ -392,12 +417,12 @@ export default function Home() {
       const { data: existingData, error: existingError } = await supabase
         .from("properties")
         .select("id, title, address_line_1")
-        .eq("user_id", user.id)
+        .eq("user_id", userId)
         .ilike("title", "untitled property")
         .limit(1)
         .maybeSingle();
 
-      if (existingError && (existingError as any).code !== "PGRST116") {
+      if (existingError && getPgCode(existingError) !== "PGRST116") {
         console.error(
           "[Home] error while searching for existing Untitled property:",
           existingError
@@ -411,11 +436,7 @@ export default function Home() {
           const alreadyThere = prev.some((p) => p.id === existingId);
           if (alreadyThere) return prev;
           return [
-            {
-              id: existingId,
-              title: existingData.title,
-              address_line_1: existingData.address_line_1,
-            },
+            { id: existingId, title: existingData.title, address_line_1: existingData.address_line_1 },
             ...prev,
           ];
         });
@@ -433,10 +454,7 @@ export default function Home() {
     try {
       const { data, error } = await supabase
         .from("properties")
-        .insert({
-          user_id: user.id,
-          title: "Untitled property",
-        })
+        .insert({ user_id: userId, title: "Untitled property" })
         .select("id, title, address_line_1")
         .single();
 
@@ -449,11 +467,7 @@ export default function Home() {
       const newId = data.id as string;
 
       setProperties((prev) => [
-        {
-          id: newId,
-          title: data.title,
-          address_line_1: data.address_line_1,
-        },
+        { id: newId, title: data.title, address_line_1: data.address_line_1 },
         ...prev,
       ]);
       setSelectedPropertyId(newId);
@@ -466,20 +480,58 @@ export default function Home() {
       alert("Unexpected error creating a new property.");
       return null;
     }
-  };
+  }, [properties, selectedPropertyId, userId]);
 
-  // Shared blob-based downloader
-  const handleDownloadUrl = async (url: string | null) => {
+  const ensureRoomExists = useCallback(
+    async (propertyId: string, desiredRoomName: string): Promise<string> => {
+      const finalName = desiredRoomName.trim() || "Untitled room";
+      if (!userId) return finalName;
+
+      try {
+        const { data: existing, error: existsErr } = await supabase
+          .from("rooms")
+          .select("id")
+          .eq("user_id", userId)
+          .eq("property_id", propertyId)
+          .eq("name", finalName)
+          .limit(1)
+          .maybeSingle();
+
+        if (existsErr && getPgCode(existsErr) !== "PGRST116") {
+          console.error("[Home] rooms exists check error:", existsErr);
+        }
+
+        if (existing?.id) {
+          return finalName;
+        }
+
+        const { error: insertErr } = await supabase.from("rooms").insert({
+          user_id: userId,
+          property_id: propertyId,
+          name: finalName,
+        });
+
+        if (insertErr) {
+          if (!isLikelyUniqueViolation(insertErr)) {
+            console.error("[Home] rooms insert error:", insertErr);
+          }
+        }
+      } catch (err) {
+        console.error("[Home] unexpected ensureRoomExists error:", err);
+      }
+
+      return finalName;
+    },
+    [userId]
+  );
+
+  const handleDownloadUrl = useCallback(async (url: string | null) => {
     if (!url) return;
 
     try {
       const response = await fetch(url);
       if (!response.ok) {
-        console.error(
-          "[Home] download fetch error:",
-          response.status,
-          response.statusText
-        );
+        console.error("[Home] download fetch error:", response.status, response.statusText);
         alert("Could not download image. Check console for details.");
         return;
       }
@@ -499,48 +551,46 @@ export default function Home() {
       console.error("[Home] unexpected download error:", err);
       alert("Unexpected error while downloading image.");
     }
-  };
+  }, []);
 
-  // Reuse a staged (or original) image as the new input upload
-  const handleUseImageAsNewInput = async (imageUrl: string | null) => {
-    if (!imageUrl) return;
+  const handleUseImageAsNewInput = useCallback(
+    async (imageUrl: string | null) => {
+      if (!imageUrl) return;
 
-    try {
-      const response = await fetch(imageUrl);
-      if (!response.ok) {
-        console.error(
-          "[Home] fetch image for re-upload failed:",
-          response.status,
-          response.statusText
-        );
-        alert("Could not reuse this image. Check console for details.");
-        return;
+      try {
+        const response = await fetch(imageUrl);
+        if (!response.ok) {
+          console.error(
+            "[Home] fetch image for re-upload failed:",
+            response.status,
+            response.statusText
+          );
+          alert("Could not reuse this image. Check console for details.");
+          return;
+        }
+
+        const blob = await response.blob();
+        const fileName = "roomprintz-input-from-history.png";
+
+        const file = new File([blob], fileName, {
+          type: blob.type || "image/png",
+        });
+
+        handleFileChangeContinuation(file);
+
+        const el = document.getElementById("staging-area");
+        if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
+      } catch (err) {
+        console.error("[Home] unexpected error reusing image:", err);
+        alert("Unexpected error using this image as a new input.");
       }
+    },
+    [handleFileChangeContinuation]
+  );
 
-      const blob = await response.blob();
-      const fileName = "roomprintz-input-from-history.png";
-
-      const file = new File([blob], fileName, {
-        type: blob.type || "image/png",
-      });
-
-      // ✅ Continuation chain (one-shot for the next Generate)
-      handleFileChangeContinuation(file);
-
-      const el = document.getElementById("staging-area");
-      if (el) {
-        el.scrollIntoView({ behavior: "smooth", block: "start" });
-      }
-    } catch (err) {
-      console.error("[Home] unexpected error reusing image:", err);
-      alert("Unexpected error using this image as a new input.");
-    }
-  };
-
-  // Deep-link handling (?fromJobId=..., ?fromOriginal=1)
   useEffect(() => {
     if (authLoading) return;
-    if (!user) return;
+    if (!userId) return;
     if (typeof window === "undefined") return;
 
     const params = new URLSearchParams(window.location.search);
@@ -555,9 +605,7 @@ export default function Home() {
       try {
         const { data: job, error } = await supabase
           .from("jobs")
-          .select(
-            "id, staged_image_url, original_image_url, property_id, room_name"
-          )
+          .select("id, staged_image_url, original_image_url, property_id, room_name")
           .eq("id", fromJobId)
           .maybeSingle();
 
@@ -571,16 +619,16 @@ export default function Home() {
           return;
         }
 
-        const propertyFromURL =
-          params.get("propertyId") || params.get("property");
+        const propertyFromURL = params.get("propertyId") || params.get("property");
         const roomFromURL = params.get("room");
 
         if (!propertyFromURL && job.property_id) {
-          setSelectedPropertyId(job.property_id as string);
+          setSelectedPropertyId(String(job.property_id));
         }
 
         if (!roomFromURL && job.room_name) {
-          setRoomName(job.room_name as string);
+          setRoomName(String(job.room_name));
+          setRoomNameSource("manual");
         }
 
         const chosenUrl = fromOriginal
@@ -612,11 +660,10 @@ export default function Home() {
       }
     };
 
-    applyDeepLink();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [authLoading, user, consumedDeepLinkJobId]);
+    void applyDeepLink();
+  }, [authLoading, userId, consumedDeepLinkJobId, handleUseImageAsNewInput, router]);
 
-  const handleGenerate = async () => {
+  const handleGenerate = useCallback(async () => {
     if (!uploadedFile) {
       alert("Please upload a room photo first.");
       return;
@@ -632,7 +679,6 @@ export default function Home() {
       return;
     }
 
-    // ✅ One-shot continuation capture (so it only applies to this generate)
     const continuationFlag = isContinuation;
 
     try {
@@ -645,66 +691,22 @@ export default function Home() {
         return;
       }
 
-      const effectiveRoomName =
-        roomName.trim().length > 0 ? roomName.trim() : "Untitled room";
+      const effectiveRoomName = roomName.trim().length > 0 ? roomName.trim() : "Untitled room";
       if (!roomName.trim()) {
         setRoomName(effectiveRoomName);
+        setRoomNameSource("auto");
       }
 
-      // ✅ Lineage protection:
-      // For *fresh uploads only*, if the room name already exists for this property,
-      // auto-rename (Living Room -> Living Room (2)).
-      let finalRoomName = effectiveRoomName;
-
-      if (!continuationFlag) {
-        try {
-          const { data: existingRoomRows, error: existingRoomErr } =
-            await supabase
-              .from("jobs")
-              .select("room_name")
-              .eq("user_id", user.id)
-              .eq("property_id", effectivePropertyId);
-
-          if (existingRoomErr) {
-            console.error(
-              "[Home] failed to load existing rooms for lineage guard:",
-              existingRoomErr
-            );
-            // Fail open: backend 409 guard will still protect us.
-          } else {
-            const existingLabels = new Set<string>();
-            for (const row of existingRoomRows ?? []) {
-              const label =
-                (row as any).room_name?.trim() || "Unlabeled room";
-              existingLabels.add(normalizeRoomLabel(label));
-            }
-
-            const unique = makeUniqueRoomLabel(finalRoomName, existingLabels);
-            if (unique !== finalRoomName) {
-              finalRoomName = unique;
-              setRoomName(unique); // reflect in UI
-              showToast(
-                `That room name already exists in this property. Renamed to: ${unique}`,
-                "info"
-              );
-            }
-          }
-        } catch (err) {
-          console.error(
-            "[Home] unexpected error in lineage guard lookup:",
-            err
-          );
-        }
-      }
+      const finalRoomName = await ensureRoomExists(effectivePropertyId, effectiveRoomName);
 
       const jobId =
-        typeof crypto !== "undefined" && crypto.randomUUID
+        typeof crypto !== "undefined" &&
+        "randomUUID" in crypto &&
+        typeof crypto.randomUUID === "function"
           ? crypto.randomUUID()
           : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
-      const extFromName = (
-        uploadedFile.name.split(".").pop() || "jpg"
-      ).toLowerCase();
+      const extFromName = (uploadedFile.name.split(".").pop() || "jpg").toLowerCase();
       const originalExt = extFromName === "jpeg" ? "jpg" : extFromName;
       const originalPath = `${user.id}/${effectivePropertyId}/${jobId}.${originalExt}`;
 
@@ -718,12 +720,9 @@ export default function Home() {
         return;
       }
 
-      const { data: originalUrlData } = supabase.storage
-        .from("room-originals")
-        .getPublicUrl(originalPath);
+      const { data: originalUrlData } = supabase.storage.from("room-originals").getPublicUrl(originalPath);
       const originalImageUrl = originalUrlData.publicUrl;
 
-      // 5) Call compositor API
       const formData = new FormData();
       formData.append("file", uploadedFile);
       formData.append("jobId", jobId);
@@ -736,23 +735,13 @@ export default function Home() {
       formData.append("repaintWalls", repaintWalls ? "true" : "false");
       formData.append("flooringPreset", flooringPreset || "none");
 
-      // Room type (auto ⇒ blank / null)
       formData.append("roomType", roomType === "auto" ? "" : roomType);
-
-      // Model version
       formData.append("modelVersion", modelVersion);
-
-      // ✅ Aspect ratio (ALLOW all ratios for Gemini 2.5 during beta)
       formData.append("aspectRatio", aspectRatio);
-
-      // ✅ isContinuation (one-shot)
       formData.append("isContinuation", continuationFlag ? "true" : "false");
-
-      // ✅ NEW: server-side lineage guard needs these
       formData.append("propertyId", effectivePropertyId);
       formData.append("roomName", finalRoomName);
 
-      // ✅ Reset immediately so next Generate is "fresh" unless user clicks Continue again
       if (continuationFlag) setIsContinuation(false);
 
       const { data: sessionData } = await supabase.auth.getSession();
@@ -765,83 +754,51 @@ export default function Home() {
 
       const response = await fetch("/api/stage-room", {
         method: "POST",
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-        },
+        headers: { Authorization: `Bearer ${accessToken}` },
         body: formData,
       });
 
       if (response.status === 402) {
-        const payload = await response.json().catch(() => ({}));
+        const payload: unknown = await response.json().catch(() => ({}));
+        const p = payload as { required?: unknown; tokenBalance?: unknown };
         alert(
-          `Insufficient tokens. Need ${payload.required ?? "more"} token(s). ` +
-            `Balance: ${payload.tokenBalance ?? "?"}`
+          `Insufficient tokens. Need ${typeof p.required === "number" ? p.required : "more"} token(s). ` +
+            `Balance: ${typeof p.tokenBalance === "number" ? p.tokenBalance : "?"}`
         );
-        return;
-      }
-
-      // ✅ Backend lineage guard (409)
-      if (response.status === 409) {
-        const payload = await response.json().catch(() => ({} as any));
-        const suggested = payload?.suggestedRoomName;
-        if (suggested && typeof suggested === "string") {
-          setRoomName(suggested);
-          showToast(
-            `That room name already exists. Renamed to: ${suggested}`,
-            "info"
-          );
-        } else {
-          showToast(
-            "That room name already exists in this property. Choose a different name.",
-            "error"
-          );
-        }
         return;
       }
 
       if (!response.ok) {
         const text = await response.text().catch(() => "");
-        console.error(
-          "Stage-room API error:",
-          response.status,
-          response.statusText,
-          text
-        );
+        console.error("Stage-room API error:", response.status, response.statusText, text);
         throw new Error("Failed to generate staged room");
       }
 
-      const data: { imageUrl?: string; error?: string } = await response.json();
+      const data: unknown = await response.json();
+      const payload = data as { imageUrl?: unknown; error?: unknown };
 
-      if (data.error) {
-        console.error("Stage-room API returned error:", data.error);
-        throw new Error(data.error);
+      if (typeof payload.error === "string" && payload.error) {
+        console.error("Stage-room API returned error:", payload.error);
+        throw new Error(payload.error);
       }
 
-      const compositedDataUrl = data.imageUrl;
+      const compositedDataUrl = typeof payload.imageUrl === "string" ? payload.imageUrl : null;
       if (!compositedDataUrl) {
         console.error("[Home] compositor returned no imageUrl");
         throw new Error("Compositor did not return an imageUrl");
       }
 
-      // 6) Upload STAGED image
       const stagedResponse = await fetch(compositedDataUrl);
       const stagedBlob = await stagedResponse.blob();
       const stagedMime = stagedBlob.type || "image/png";
       const stagedExt =
-        stagedMime === "image/jpeg"
-          ? "jpg"
-          : stagedMime === "image/png"
-          ? "png"
-          : "png";
+        stagedMime === "image/jpeg" ? "jpg" : stagedMime === "image/png" ? "png" : "png";
 
       const stagedPath = `${user.id}/${effectivePropertyId}/${jobId}.${stagedExt}`;
 
       const { error: stagedUploadError } = await supabase.storage
         .from("room-staged")
-        .upload(stagedPath, stagedBlob, {
-          upsert: true,
-          contentType: stagedMime,
-        });
+        .upload(stagedPath, stagedBlob, { upsert: true, contentType: stagedMime });
 
       if (stagedUploadError) {
         console.error("[Home] staged upload error:", stagedUploadError);
@@ -849,9 +806,7 @@ export default function Home() {
         return;
       }
 
-      const { data: stagedUrlData } = supabase.storage
-        .from("room-staged")
-        .getPublicUrl(stagedPath);
+      const { data: stagedUrlData } = supabase.storage.from("room-staged").getPublicUrl(stagedPath);
       const stagedImageUrl = stagedUrlData.publicUrl;
 
       if (!stagedImageUrl) {
@@ -860,11 +815,8 @@ export default function Home() {
 
       setResultUrl(stagedImageUrl);
 
-      // ✅ NEW: tell AuthPanel (and any listeners) to refresh token balance
-      // Only after we have a successful staged result.
       window.dispatchEvent(new Event("tokens:changed"));
 
-      // 8) Save job
       try {
         const { data: insertData, error: insertError } = await supabase
           .from("jobs")
@@ -876,8 +828,6 @@ export default function Home() {
             user_id: user.id,
             property_id: effectivePropertyId,
             room_name: finalRoomName,
-
-            // ✅ NEW
             original_storage_path: originalPath,
             staged_storage_path: stagedPath,
           })
@@ -894,8 +844,6 @@ export default function Home() {
           console.log("[Supabase jobs insert] inserted job id:", insertData?.id);
           setJobsRefreshToken((token) => token + 1);
           resetToolsAfterGeneration();
-
-          // ✅ Optional: refresh tokens again after job write completes
           window.dispatchEvent(new Event("tokens:changed"));
         }
       } catch (err) {
@@ -907,16 +855,33 @@ export default function Home() {
       }
     } catch (err) {
       console.error("Generate error:", err);
-      alert(
-        "Something went wrong generating the staged room. Check console for details."
-      );
-      if (uploadedPreview) {
-        setResultUrl(uploadedPreview);
-      }
+      alert("Something went wrong generating the staged room. Check console for details.");
+      if (uploadedPreview) setResultUrl(uploadedPreview);
     } finally {
       setIsGenerating(false);
     }
-  };
+  }, [
+    uploadedFile,
+    user,
+    selectedStyle,
+    wantsPhotoTools,
+    isContinuation,
+    ensurePropertyForJob,
+    roomName,
+    ensureRoomExists,
+    enhancePhoto,
+    cleanupRoom,
+    emptyRoom,
+    repairDamage,
+    repaintWalls,
+    flooringPreset,
+    roomType,
+    modelVersion,
+    aspectRatio,
+    uploadedPreview,
+    showToast,
+    resetToolsAfterGeneration,
+  ]);
 
   return (
     <main className="min-h-screen bg-slate-950 text-slate-50 flex flex-col">
@@ -944,9 +909,7 @@ export default function Home() {
       <div className="flex-1">
         <div className="max-w-6xl mx-auto px-4 py-8 space-y-6">
           <AuthPanel />
-
           <RealtorHeader />
-
           <PropertiesSection refreshToken={propertiesRefreshToken} />
 
           {/* Hero text */}
@@ -955,35 +918,25 @@ export default function Home() {
               AI-Powered Real Estate Staging
             </h1>
             <p className="text-slate-300 max-w-2xl">
-              Upload any room, choose a style, and generate listing-ready staged
-              interiors in seconds. This beta is powered by the PetPrintz
-              Compositor Engine™.
+              Upload any room, choose a style, and generate listing-ready staged interiors in
+              seconds. This beta is powered by the PetPrintz Compositor Engine™.
             </p>
           </section>
 
           {/* Property & Room selector */}
           <section className="rounded-2xl border border-slate-800 bg-slate-900/70 px-4 py-3 text-xs flex flex-col md:flex-row md:items-end gap-3">
             <div className="flex-1">
-              <label className="block text-[11px] text-slate-400 mb-1">
-                Property
-              </label>
+              <label className="block text-[11px] text-slate-400 mb-1">Property</label>
               {authLoading ? (
-                <div className="text-[11px] text-slate-500">
-                  Loading your properties…
-                </div>
+                <div className="text-[11px] text-slate-500">Loading your properties…</div>
               ) : !user ? (
-                <div className="text-[11px] text-slate-500">
-                  Log in to select a property.
-                </div>
+                <div className="text-[11px] text-slate-500">Log in to select a property.</div>
               ) : propertiesLoading ? (
-                <div className="text-[11px] text-slate-500">
-                  Loading your properties…
-                </div>
+                <div className="text-[11px] text-slate-500">Loading your properties…</div>
               ) : properties.length === 0 ? (
                 <div className="text-[11px] text-slate-500">
-                  You don&apos;t have any properties yet. Use &quot;New
-                  property&quot; above to create one, then come back here to
-                  stage rooms.
+                  You don&apos;t have any properties yet. Use &quot;New property&quot; above to
+                  create one, then come back here to stage rooms.
                 </div>
               ) : (
                 <select
@@ -1002,16 +955,22 @@ export default function Home() {
             </div>
 
             <div className="flex-1">
-              <label className="block text-[11px] text-slate-400 mb-1">
-                Room name
-              </label>
+              <label className="block text-[11px] text-slate-400 mb-1">Room name</label>
               <input
                 type="text"
                 value={roomName}
-                onChange={(e) => setRoomName(e.target.value)}
+                onChange={(e) => {
+                  setRoomName(e.target.value);
+                  setRoomNameSource("manual");
+                }}
                 className="w-full rounded-lg bg-slate-950 border border-slate-800 px-2 py-1 text-xs text-slate-100 outline-none focus:border-emerald-400"
                 placeholder="Living Room, Kitchen, Primary Bedroom..."
               />
+              {roomNameSource === "manual" && (
+                <div className="mt-1 text-[10px] text-slate-500">
+                  Room name is manual (won&apos;t auto-change on uploads).
+                </div>
+              )}
             </div>
           </section>
 
@@ -1063,9 +1022,7 @@ export default function Home() {
               <div className="rounded-2xl border border-slate-800 bg-slate-900/70 px-3 py-3 text-xs">
                 <div className="flex items-center justify-between gap-2 mb-2">
                   <div>
-                    <div className="text-[11px] font-semibold text-slate-200">
-                      Room type
-                    </div>
+                    <div className="text-[11px] font-semibold text-slate-200">Room type</div>
                     <div className="text-[11px] text-slate-400">
                       Help the AI stage the right type of room (optional).
                     </div>
@@ -1088,25 +1045,20 @@ export default function Home() {
                 </select>
               </div>
 
-              {/* ✅ Aspect Ratio selector (enabled for Gemini 2.5 now) */}
+              {/* Aspect Ratio selector */}
               <div className="rounded-2xl border border-slate-800 bg-slate-900/70 px-3 py-3 text-xs">
                 <div className="flex items-center justify-between gap-2 mb-2">
                   <div>
-                    <div className="text-[11px] font-semibold text-slate-200">
-                      Aspect ratio
-                    </div>
+                    <div className="text-[11px] font-semibold text-slate-200">Aspect ratio</div>
                     <div className="text-[11px] text-slate-400">
-                      Auto chooses the closest match to your upload (minimal
-                      crop).
+                      Auto chooses the closest match to your upload (minimal crop).
                     </div>
                   </div>
                 </div>
 
                 <select
                   value={aspectRatio}
-                  onChange={(e) =>
-                    setAspectRatio(e.target.value as AspectRatio)
-                  }
+                  onChange={(e) => setAspectRatio(e.target.value as AspectRatio)}
                   className="mt-1 w-full rounded-lg bg-slate-950 border border-slate-800 px-2 py-1 text-xs text-slate-100 outline-none focus:border-emerald-400"
                 >
                   <option value="auto">Auto (recommended)</option>
@@ -1143,9 +1095,7 @@ export default function Home() {
               <div className="rounded-2xl border border-slate-800 bg-slate-900/70 px-3 py-3 text-xs">
                 <div className="flex items-center justify-between gap-2 mb-2">
                   <div>
-                    <div className="text-[11px] font-semibold text-slate-200">
-                      Model
-                    </div>
+                    <div className="text-[11px] font-semibold text-slate-200">Model</div>
                     <div className="text-[11px] text-slate-400">
                       Choose the Gemini model for this generation.
                     </div>
@@ -1181,10 +1131,7 @@ export default function Home() {
             </div>
           </section>
 
-          <JobsHistory
-            refreshToken={jobsRefreshToken}
-            onUseAsNewInput={handleUseImageAsNewInput}
-          />
+          <JobsHistory refreshToken={jobsRefreshToken} onUseAsNewInput={handleUseImageAsNewInput} />
         </div>
       </div>
 

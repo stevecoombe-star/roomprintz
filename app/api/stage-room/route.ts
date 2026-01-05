@@ -9,6 +9,46 @@ export const runtime = "nodejs";
 type ModelVersion = "gemini-3" | "gemini-2.5";
 type AspectRatio = "auto" | "4:3" | "3:2" | "16:9" | "1:1";
 
+type SpendRow = {
+  success: boolean;
+  balance: number | null;
+};
+
+type TokenLedgerInsert = {
+  user_id: string;
+  delta: number;
+  kind: string;
+  external_id: string;
+  reason: string;
+  job_id: string;
+};
+
+/**
+ * Minimal Supabase Database type for this route.
+ * This avoids "never" typing for rpc()/insert() without using `any`.
+ */
+type Database = {
+  public: {
+    Tables: {
+      token_ledger: {
+        Row: Record<string, unknown>;
+        Insert: TokenLedgerInsert;
+        Update: Record<string, unknown>;
+        Relationships: never[];
+      };
+    };
+    Views: Record<string, never>;
+    Functions: {
+      try_spend_tokens: {
+        Args: { p_cost: number; p_external_id: string; p_reason: string };
+        Returns: SpendRow[];
+      };
+    };
+    Enums: Record<string, never>;
+    CompositeTypes: Record<string, never>;
+  };
+};
+
 const ALLOWED_ASPECT_RATIOS: Set<string> = new Set([
   "auto",
   "4:3",
@@ -35,15 +75,17 @@ const SUPABASE_ANON_KEY = mustEnv(
  * Creates a user-scoped Supabase client using the Authorization Bearer token.
  * This is required so RPCs run as the actual user (auth.uid()).
  */
-function getUserSupabaseClient(req: NextRequest) {
+function getUserSupabaseClient(
+  req: NextRequest
+): { supabase: ReturnType<typeof createClient<Database>> | null; token: string | null } {
   const authHeader = req.headers.get("authorization") || "";
   const token = authHeader.startsWith("Bearer ")
     ? authHeader.slice("Bearer ".length).trim()
     : null;
 
-  if (!token) return { supabase: null as any, token: null as string | null };
+  if (!token) return { supabase: null, token: null };
 
-  const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+  const supabase = createClient<Database>(SUPABASE_URL, SUPABASE_ANON_KEY, {
     global: {
       headers: {
         Authorization: `Bearer ${token}`,
@@ -63,23 +105,11 @@ function json(status: number, body: unknown) {
   return NextResponse.json(body, { status });
 }
 
-// ---------- Room lineage guard helpers ----------
-const norm = (s: string) => (s || "").trim().toLowerCase();
-
-function suggestUniqueRoomName(desired: string, existing: Set<string>) {
-  const base = desired.trim() || "Untitled room";
-  if (!existing.has(norm(base))) return base;
-
-  let n = 2;
-  while (existing.has(norm(`${base} (${n})`))) n += 1;
-  return `${base} (${n})`;
-}
-
 export async function POST(req: NextRequest) {
   try {
     const { supabase, token } = getUserSupabaseClient(req);
 
-    if (!token) {
+    if (!token || !supabase) {
       return json(401, {
         error:
           "Unauthorized: missing Authorization Bearer token. (Send Supabase access_token in the request.)",
@@ -140,14 +170,12 @@ export async function POST(req: NextRequest) {
         ? null
         : flooringPresetRaw;
 
-    // roomType
     const roomTypeRaw = formData.get("roomType");
     const roomType =
       typeof roomTypeRaw === "string" && roomTypeRaw.trim().length > 0
         ? roomTypeRaw.trim()
         : null;
 
-    // modelVersion ("gemini-3" | "gemini-2.5"), default to gemini-3
     const modelVersionRaw = formData.get("modelVersion");
     const normalizedModelVersion: ModelVersion =
       typeof modelVersionRaw === "string" &&
@@ -155,7 +183,6 @@ export async function POST(req: NextRequest) {
         ? (modelVersionRaw as ModelVersion)
         : "gemini-3";
 
-    // aspectRatio ("auto" | "4:3" | "3:2" | "16:9" | "1:1"), default to auto
     const aspectRatioRaw = formData.get("aspectRatio");
     const parsedAspectRatio =
       typeof aspectRatioRaw === "string" ? aspectRatioRaw.trim() : "";
@@ -165,17 +192,16 @@ export async function POST(req: NextRequest) {
       normalizedAspectRatio = parsedAspectRatio as AspectRatio;
     }
 
-    // isContinuation (one-shot)
     const isContinuationRaw = formData.get("isContinuation");
     const isContinuation =
       typeof isContinuationRaw === "string" && isContinuationRaw === "true";
 
-    // sameInputSession (client-side lineage: same uploaded image, same session)
+    // legacy: intentionally ignored
     const sameInputSessionRaw = formData.get("sameInputSession");
-    const sameInputSession =
+    const _sameInputSession =
       typeof sameInputSessionRaw === "string" && sameInputSessionRaw === "true";
+    void _sameInputSession;
 
-    // ✅ NEW: Property + room context (required for lineage protection)
     const propertyIdRaw = formData.get("propertyId");
     const propertyId =
       typeof propertyIdRaw === "string" && propertyIdRaw.trim().length > 0
@@ -184,8 +210,7 @@ export async function POST(req: NextRequest) {
 
     if (!propertyId) {
       return json(400, {
-        error:
-          "Missing propertyId in form-data (required for room lineage protection).",
+        error: "Missing propertyId in form-data (required for room assignment).",
       });
     }
 
@@ -195,7 +220,6 @@ export async function POST(req: NextRequest) {
         ? roomNameRaw.trim()
         : "Untitled room";
 
-    // Safety check: at least one action
     if (
       !styleId &&
       !enhancePhoto &&
@@ -212,48 +236,14 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    // ✅ NEW: 409 guard (server-side) — fresh uploads cannot target an existing room label
-    // Continuations are allowed to reuse an existing room name (same lineage).
-    if (!isContinuation && !sameInputSession) {
-      const { data: rows, error: roomsErr } = await supabase
-        .from("jobs")
-        .select("room_name")
-        .eq("user_id", user.id)
-        .eq("property_id", propertyId);
-
-      if (roomsErr) {
-        console.error("[stage-room] room lineage guard query error:", roomsErr);
-        // Fail open (do not block spend/generation) if guard query fails.
-        // Frontend guard should catch most cases; this is a safety net.
-      } else {
-        const existing = new Set<string>();
-        for (const r of rows ?? []) {
-          const label = (r as any)?.room_name?.trim() || "Unlabeled room";
-          existing.add(norm(label));
-        }
-
-        if (existing.has(norm(roomName))) {
-          const suggestedRoomName = suggestUniqueRoomName(roomName, existing);
-
-          return json(409, {
-            error: "room_name_conflict",
-            message:
-              "Room name already exists. Fresh uploads cannot target an existing room (lineage protection).",
-            suggestedRoomName,
-          });
-        }
-      }
-    }
-
     /**
-     * ✅ TOKEN COST RULE (start simple)
-     * You can tune this anytime:
-     * - gemini-3 (higher cost) = 2 tokens
-     * - gemini-2.5 (cheaper)   = 1 token
+     * ✅ Room = storage folder
+     * We DO NOT block when a room name already exists.
+     * Fresh uploads and continuations are both allowed to target any existing room label.
      */
+
     const tokenCost = normalizedModelVersion === "gemini-3" ? 2 : 1;
 
-    // ✅ Spend tokens BEFORE generation (atomic + idempotent via external_id=jobId)
     const { data: spendData, error: spendErr } = await supabase.rpc(
       "try_spend_tokens",
       {
@@ -268,8 +258,8 @@ export async function POST(req: NextRequest) {
       return json(500, { error: "Token spend failed" });
     }
 
-    const spendRow = Array.isArray(spendData) ? spendData[0] : spendData;
-    const spentOk = !!spendRow?.success;
+    const spendRow = Array.isArray(spendData) ? spendData[0] : null;
+    const spentOk = Boolean(spendRow?.success);
     const balanceAfterSpend =
       typeof spendRow?.balance === "number" ? spendRow.balance : null;
 
@@ -281,7 +271,6 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    // ✅ Call compositor
     const arrayBuffer = await file.arrayBuffer();
     const bytes = Buffer.from(arrayBuffer);
 
@@ -305,7 +294,6 @@ export async function POST(req: NextRequest) {
     const originalImageUrl = result?.originalImageUrl ?? null;
 
     if (!imageUrl) {
-      // ✅ Refund on compositor failure (best UX)
       const { error: refundErr } = await supabase.from("token_ledger").insert({
         user_id: user.id,
         delta: tokenCost,
@@ -326,13 +314,14 @@ export async function POST(req: NextRequest) {
       imageUrl,
       originalImageUrl,
       tokenCost,
-      tokenBalance: balanceAfterSpend, // after spend (may be same as before if already spent due to retry)
+      tokenBalance: balanceAfterSpend,
+      propertyId,
+      roomName,
     });
-  } catch (err: any) {
+  } catch (err: unknown) {
     console.error("[stage-room] unexpected error:", err);
-    return NextResponse.json(
-      { error: err?.message ?? "Unexpected error in /api/stage-room" },
-      { status: 500 }
-    );
+    const message =
+      err instanceof Error ? err.message : "Unexpected error in /api/stage-room";
+    return NextResponse.json({ error: message }, { status: 500 });
   }
 }

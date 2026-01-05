@@ -5,9 +5,11 @@ import { createClient } from "@supabase/supabase-js";
 
 export const runtime = "nodejs";
 
-function mustEnv(name: string) {
+function mustEnv(name: string): string {
   const v = process.env[name];
-  if (!v) throw new Error(`Missing env var: ${name}`);
+  if (!v || v.length === 0) {
+    throw new Error(`Missing env var: ${name}`);
+  }
   return v;
 }
 
@@ -21,7 +23,7 @@ function getOrigin(req: Request): string {
     try {
       return new URL(referer).origin;
     } catch {
-      // ignore
+      // ignore invalid referer
     }
   }
 
@@ -31,6 +33,10 @@ function getOrigin(req: Request): string {
 function json(status: number, body: Record<string, unknown>) {
   return NextResponse.json(body, { status });
 }
+
+type SubscriptionRow = {
+  stripe_customer_id: string | null;
+};
 
 export async function POST(req: Request) {
   try {
@@ -50,7 +56,9 @@ export async function POST(req: Request) {
     }
 
     const accessToken = authHeader.slice("Bearer ".length).trim();
-    if (!accessToken) return json(401, { error: "Missing access token" });
+    if (!accessToken) {
+      return json(401, { error: "Missing access token" });
+    }
 
     const supabaseUserClient = createClient(
       mustEnv("SUPABASE_URL"),
@@ -78,9 +86,12 @@ export async function POST(req: Request) {
       .from("subscriptions")
       .select("stripe_customer_id")
       .eq("user_id", user.id)
-      .maybeSingle();
+      .maybeSingle<SubscriptionRow>();
 
-    if (subErr) throw subErr;
+    if (subErr) {
+      console.error("[stripe/portal] subscription lookup error:", subErr);
+      return json(500, { error: "Failed to load subscription" });
+    }
 
     const stripeCustomerId = subRow?.stripe_customer_id;
     if (!stripeCustomerId) {
@@ -96,8 +107,10 @@ export async function POST(req: Request) {
     });
 
     return json(200, { url: portal.url, origin });
-  } catch (e: any) {
-    console.error("portal route error:", e);
-    return json(500, { error: e?.message ?? "Portal failed" });
+  } catch (err: unknown) {
+    console.error("[stripe/portal] unexpected error:", err);
+    const message =
+      err instanceof Error ? err.message : "Portal failed";
+    return json(500, { error: message });
   }
 }

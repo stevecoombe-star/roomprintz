@@ -1,71 +1,121 @@
+// app/api/stripe/topup/route.ts
 import Stripe from "stripe";
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 
 export const runtime = "nodejs";
 
-function mustEnv(name: string) {
+function mustEnv(name: string): string {
   const v = process.env[name];
-  if (!v) throw new Error(`Missing env var: ${name}`);
+  if (!v || v.length === 0) throw new Error(`Missing env var: ${name}`);
   return v;
 }
 
-const stripe = new Stripe(mustEnv("STRIPE_SECRET_KEY"), {
-  apiVersion: "2025-12-15.clover",
-});
+type TokenTopupRow = {
+  stripe_price_id: string;
+  tokens: number;
+  is_active: boolean;
+};
 
-const supabaseAdmin = createClient(
-  mustEnv("SUPABASE_URL"),
-  mustEnv("SUPABASE_SERVICE_ROLE_KEY")
-);
+type SubscriptionRow = {
+  stripe_customer_id: string | null;
+};
+
+function json(status: number, body: Record<string, unknown>) {
+  return NextResponse.json(body, { status });
+}
+
+function parsePriceId(body: unknown): string | null {
+  if (!body || typeof body !== "object") return null;
+  const maybe = (body as { priceId?: unknown }).priceId;
+  return typeof maybe === "string" && maybe.trim().length > 0 ? maybe.trim() : null;
+}
 
 export async function POST(req: Request) {
   try {
-    const { priceId } = (await req.json().catch(() => ({}))) as { priceId?: string };
+    // ✅ Instantiate inside handler (build-safe)
+    const stripe = new Stripe(mustEnv("STRIPE_SECRET_KEY"), {
+      apiVersion: "2025-12-15.clover",
+    });
+
+    const supabaseAdmin = createClient(
+      mustEnv("SUPABASE_URL"),
+      mustEnv("SUPABASE_SERVICE_ROLE_KEY")
+    );
+
+    // Body
+    let parsedBody: unknown = {};
+    try {
+      parsedBody = await req.json();
+    } catch {
+      // keep {}
+    }
+
+    const priceId = parsePriceId(parsedBody);
     if (!priceId) {
-      return NextResponse.json({ error: "Missing priceId" }, { status: 400 });
+      return json(400, { error: "Missing priceId" });
     }
 
     // Auth: require Bearer token
-    const authHeader = req.headers.get("authorization");
-    if (!authHeader?.startsWith("Bearer ")) {
-      return NextResponse.json({ error: "Missing Authorization bearer token" }, { status: 401 });
+    const authHeader = req.headers.get("authorization") || "";
+    if (!authHeader.startsWith("Bearer ")) {
+      return json(401, { error: "Missing Authorization bearer token" });
     }
-    const accessToken = authHeader.slice("Bearer ".length);
+    const accessToken = authHeader.slice("Bearer ".length).trim();
+    if (!accessToken) {
+      return json(401, { error: "Missing access token" });
+    }
 
-    // Get user from Supabase using the provided access token
-    const supabaseUserClient = createClient(mustEnv("SUPABASE_URL"), mustEnv("SUPABASE_SERVICE_ROLE_KEY"), {
-      global: { headers: { Authorization: `Bearer ${accessToken}` } },
-      auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
-    });
+    // Get user from Supabase using provided access token
+    const supabaseUserClient = createClient(
+      mustEnv("SUPABASE_URL"),
+      mustEnv("SUPABASE_SERVICE_ROLE_KEY"),
+      {
+        global: { headers: { Authorization: `Bearer ${accessToken}` } },
+        auth: {
+          persistSession: false,
+          autoRefreshToken: false,
+          detectSessionInUrl: false,
+        },
+      }
+    );
 
-    const { data: userData, error: userErr } = await supabaseUserClient.auth.getUser();
+    const { data: userData, error: userErr } =
+      await supabaseUserClient.auth.getUser();
+
     if (userErr || !userData?.user) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+      return json(401, { error: "Unauthorized" });
     }
     const user = userData.user;
 
-    // ✅ Validate priceId is one of your active top-up packs (prevents arbitrary charges)
+    // ✅ Validate priceId is one of your active top-up packs
     const { data: topupRow, error: topupErr } = await supabaseAdmin
       .from("token_topups")
       .select("stripe_price_id,tokens,is_active")
       .eq("stripe_price_id", priceId)
       .eq("is_active", true)
-      .maybeSingle();
+      .maybeSingle<TokenTopupRow>();
 
-    if (topupErr) throw topupErr;
-    if (!topupRow) {
-      return NextResponse.json({ error: "Invalid or inactive top-up priceId" }, { status: 400 });
+    if (topupErr) {
+      console.error("[topup] token_topups lookup error:", topupErr);
+      return json(500, { error: "Failed to validate top-up pack" });
     }
 
-    // Reuse / create Stripe customer (store in subscriptions table you already have)
+    if (!topupRow) {
+      return json(400, { error: "Invalid or inactive top-up priceId" });
+    }
+
+    // Reuse / create Stripe customer (store in subscriptions table)
     const { data: subRow, error: subRowErr } = await supabaseAdmin
       .from("subscriptions")
       .select("stripe_customer_id")
       .eq("user_id", user.id)
-      .maybeSingle();
+      .maybeSingle<SubscriptionRow>();
 
-    if (subRowErr) throw subRowErr;
+    if (subRowErr) {
+      console.error("[topup] subscriptions lookup error:", subRowErr);
+      return json(500, { error: "Failed to load subscription" });
+    }
 
     let stripeCustomerId = subRow?.stripe_customer_id ?? null;
 
@@ -76,12 +126,18 @@ export async function POST(req: Request) {
       });
       stripeCustomerId = customer.id;
 
-      const { error: upsertErr } = await supabaseAdmin.from("subscriptions").upsert({
-        user_id: user.id,
-        stripe_customer_id: stripeCustomerId,
-        status: "inactive",
-      });
-      if (upsertErr) throw upsertErr;
+      const { error: upsertErr } = await supabaseAdmin
+        .from("subscriptions")
+        .upsert({
+          user_id: user.id,
+          stripe_customer_id: stripeCustomerId,
+          status: "inactive",
+        });
+
+      if (upsertErr) {
+        console.error("[topup] subscriptions upsert error:", upsertErr);
+        return json(500, { error: "Failed to save Stripe customer" });
+      }
     }
 
     const appUrl = mustEnv("NEXT_PUBLIC_APP_URL");
@@ -102,9 +158,10 @@ export async function POST(req: Request) {
       },
     });
 
-    return NextResponse.json({ url: session.url }, { status: 200 });
-  } catch (e: any) {
-    console.error("[topup] error:", e);
-    return NextResponse.json({ error: e?.message ?? "Top-up checkout failed" }, { status: 500 });
+    return json(200, { url: session.url });
+  } catch (err: unknown) {
+    console.error("[topup] unexpected error:", err);
+    const message = err instanceof Error ? err.message : "Top-up checkout failed";
+    return json(500, { error: message });
   }
 }

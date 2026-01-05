@@ -1,7 +1,6 @@
-// app/page.tsx
+// app/page.tsx (Landing)
 "use client";
 
-import Link from "next/link";
 import { AuthPanel } from "@/components/AuthPanel";
 
 export default function LandingPage() {

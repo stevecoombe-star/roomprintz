@@ -1,7 +1,7 @@
 // components/ResultPanel.tsx
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import Image from "next/image";
 import { RoomStyleId, ROOM_STYLES } from "@/components/StyleSelector";
 
@@ -24,49 +24,32 @@ export function ResultPanel({
   onDownload,
   onUseAsNewInput,
 }: ResultPanelProps) {
-  const [viewMode, setViewMode] = useState<ViewMode>("before");
-
-  // NEW: zoom modal state
-  const [isZoomOpen, setIsZoomOpen] = useState(false);
-  const [zoomView, setZoomView] = useState<ViewMode>("after");
-
-  // Try to find the style meta; even if we don't use .label, this keeps it future-proof
-  const styleMeta = ROOM_STYLES.find((s) => s.id === selectedStyle) || null;
-
-  // Whenever a new result arrives, default to AFTER view
-  useEffect(() => {
-    if (resultUrl) {
-      setViewMode("after");
-      setZoomView("after");
-    } else {
-      setViewMode("before");
-      setZoomView("before");
-    }
-  }, [resultUrl]);
-
+  /**
+   * View mode is *derived* from whether a result exists.
+   * This avoids setState-in-effect lint issues.
+   */
   const hasBefore = Boolean(uploadedPreview);
   const hasAfter = Boolean(resultUrl);
 
-  // Decide which image to show based on viewMode and availability
-  let activeSrc: string | null = null;
-  let activeLabel = "";
+  const defaultView: ViewMode = hasAfter ? "after" : "before";
 
-  if (viewMode === "after" && hasAfter) {
-    activeSrc = resultUrl!;
-    activeLabel = "Staged result";
-  } else if (hasBefore) {
-    activeSrc = uploadedPreview!;
-    activeLabel = "Original room";
-  }
+  const [viewMode, setViewMode] = useState<ViewMode>(defaultView);
 
-  // Simple helper to display style: use id or fall back gracefully
-  const styleLabel =
-    selectedStyle ??
-    (styleMeta ? (styleMeta as any).id : null); // very safe fallback
+  // Sync viewMode only when the availability changes (event-driven)
+  useEffect(() => {
+    setViewMode(defaultView);
+  }, [defaultView]);
 
-  const canDownload = Boolean(activeSrc && onDownload);
-  const canUseAsNewInput =
-    Boolean(resultUrl && onUseAsNewInput) && viewMode === "after";
+  // Zoom modal state
+  const [isZoomOpen, setIsZoomOpen] = useState(false);
+  const [zoomView, setZoomView] = useState<ViewMode>(defaultView);
+
+  // Keep zoom view aligned when opening
+  const openZoom = () => {
+    if (!activeSrc) return;
+    setZoomView(viewMode);
+    setIsZoomOpen(true);
+  };
 
   // Close zoom modal on Esc
   useEffect(() => {
@@ -83,11 +66,30 @@ export function ResultPanel({
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [isZoomOpen]);
 
-  const openZoom = () => {
-    if (!activeSrc) return;
-    setZoomView(viewMode); // start zoom on whichever view is active
-    setIsZoomOpen(true);
-  };
+  // Style metadata (typed, no any)
+  const styleMeta = useMemo(
+    () => ROOM_STYLES.find((s) => s.id === selectedStyle) ?? null,
+    [selectedStyle]
+  );
+
+  const styleLabel: string | null =
+    selectedStyle ?? styleMeta?.id ?? null;
+
+  // Decide which image to show
+  let activeSrc: string | null = null;
+  let activeLabel = "";
+
+  if (viewMode === "after" && hasAfter) {
+    activeSrc = resultUrl!;
+    activeLabel = "Staged result";
+  } else if (hasBefore) {
+    activeSrc = uploadedPreview!;
+    activeLabel = "Original room";
+  }
+
+  const canDownload = Boolean(activeSrc && onDownload);
+  const canUseAsNewInput =
+    Boolean(resultUrl && onUseAsNewInput) && viewMode === "after";
 
   const showZoomToggle = hasBefore && hasAfter;
 
@@ -109,7 +111,7 @@ export function ResultPanel({
           )}
         </div>
 
-        {/* Before/After toggle + actions */}
+        {/* Before / After toggle + actions */}
         <div className="flex items-center justify-between mt-1 gap-2">
           <div className="inline-flex rounded-full bg-slate-950 border border-slate-800 p-[2px] text-[11px]">
             <button
@@ -183,7 +185,7 @@ export function ResultPanel({
               <div className="absolute bottom-2 left-2 rounded-full bg-black/60 px-2 py-[2px] text-[10px] text-slate-100">
                 {activeLabel} • Click to zoom
               </div>
-              {hasBefore && hasAfter && (
+              {showZoomToggle && (
                 <div className="absolute bottom-2 right-2 text-[10px] text-emerald-300 opacity-80 group-hover:opacity-100">
                   Before / After available
                 </div>
@@ -200,15 +202,12 @@ export function ResultPanel({
       {/* ZOOM MODAL */}
       {isZoomOpen && (uploadedPreview || resultUrl) && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70">
-          {/* backdrop */}
           <div
             className="absolute inset-0"
             onClick={() => setIsZoomOpen(false)}
           />
 
-          {/* modal shell */}
           <div className="relative z-10 max-w-5xl w-full mx-4 rounded-2xl border border-slate-800 bg-slate-950/95 shadow-2xl flex flex-col overflow-hidden">
-            {/* header */}
             <div className="flex items-center justify-between px-4 py-3 border-b border-slate-800">
               <div className="flex flex-col min-w-0">
                 <span className="text-[10px] uppercase tracking-[0.18em] text-slate-500">
@@ -220,7 +219,6 @@ export function ResultPanel({
               </div>
 
               <div className="flex items-center gap-3">
-                {/* Before/After toggle inside modal (only if both exist) */}
                 {showZoomToggle && (
                   <div className="inline-flex rounded-full border border-slate-700 bg-slate-900 overflow-hidden text-[11px]">
                     <button
@@ -260,7 +258,6 @@ export function ResultPanel({
               </div>
             </div>
 
-            {/* body with fixed max height */}
             <div className="p-4 flex-1 flex items-center justify-center bg-slate-950">
               <div className="max-h-[80vh] w-full flex items-center justify-center">
                 {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -276,7 +273,6 @@ export function ResultPanel({
               </div>
             </div>
 
-            {/* footer */}
             <div className="px-4 py-2 border-t border-slate-800 text-[10px] text-slate-500 flex items-center justify-between">
               <span>
                 View:{" "}
