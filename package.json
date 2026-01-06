@@ -10,9 +10,11 @@
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.84.0",
+    "konva": "^10.0.12",
     "next": "^16.0.7",
     "react": "^19.2.1",
     "react-dom": "^19.2.1",
+    "react-konva": "^19.2.1",
     "stripe": "^20.1.0"
   },
   "devDependencies": {
