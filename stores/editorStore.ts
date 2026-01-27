@@ -1,5 +1,6 @@
 // stores/editorStore.ts
 import { create } from "zustand";
+import { loadPendingLocal } from "../lib/pendingGeneration";
 
 /* =========================
    Types
@@ -324,6 +325,7 @@ type EditorState = {
   beginMarkup: () => void;
   clearDraftMarkup: () => void;
   setDraftMarkup: (layer: MarkupLayer) => void;
+  tryRestorePendingFromLocalStorage: () => void;
   beginGenerate: () => { sceneSnapshotForRecovery: any; markupToPersist: MarkupLayer };
   markGeneratingSlow: () => void;
   markGeneratingStall: () => void;
@@ -875,10 +877,38 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       },
     })),
 
+  tryRestorePendingFromLocalStorage: () => {
+    const pending = loadPendingLocal();
+    if (!pending) return;
+
+    const draftMarkup: MarkupLayer = pending.draftMarkup ?? { version: "v1", items: [] };
+    const hasItems = Array.isArray(draftMarkup.items) && draftMarkup.items.length > 0;
+
+    set((s) => ({
+      scene: {
+        ...s.scene,
+        baseImageUrl: pending.baseImageUrl ?? s.scene.baseImageUrl,
+        baseImageWidthPx: pending.baseImageWidthPx ?? s.scene.baseImageWidthPx,
+        baseImageHeightPx: pending.baseImageHeightPx ?? s.scene.baseImageHeightPx,
+        vibeMode: pending.vibeMode ?? s.scene.vibeMode,
+        draftMarkup,
+        phase: hasItems ? "MARKUP" : "IDLE",
+        genUi: {},
+      },
+    }));
+  },
+
   beginGenerate: () => {
     const { scene } = get();
     const now = Date.now();
-    const sceneSnapshotForRecovery = deepClone(scene);
+    const sceneSnapshotForRecovery = {
+      sceneId: scene.sceneId,
+      baseImageUrl: scene.baseImageUrl,
+      baseImageWidthPx: scene.baseImageWidthPx,
+      baseImageHeightPx: scene.baseImageHeightPx,
+      vibeMode: scene.vibeMode,
+      draftMarkup: deepClone(scene.draftMarkup),
+    };
     const markupToPersist = deepClone(scene.draftMarkup);
 
     set((s) => ({
