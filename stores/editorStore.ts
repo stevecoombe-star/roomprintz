@@ -11,6 +11,21 @@ export type RoomDims = {
   heightFt?: number;
 };
 
+export type Phase = "IDLE" | "MARKUP" | "GENERATING" | "SUCCESS" | "ERROR" | "STALL";
+
+export type VibeMode = "on" | "off";
+
+export type MarkupLayer = { version: "v1"; items: any[] };
+
+export type GenerationUi = {
+  startedAtMs?: number;
+  slowHintShown?: boolean;
+  stallHintShown?: boolean;
+  message?: string;
+  lastErrorUserMessage?: string;
+  lastErrorDebug?: { code?: string; message?: string; raw?: any };
+};
+
 export type FurnitureVariant = {
   variantId: string;
   label?: string;
@@ -129,6 +144,10 @@ export type SceneGraph = {
   baseImageUrl?: string;
   baseImageWidthPx?: number;
   baseImageHeightPx?: number;
+  phase: Phase;
+  vibeMode: VibeMode;
+  draftMarkup: MarkupLayer;
+  genUi: GenerationUi;
   room?: {
     dims?: RoomDims;
     sqft?: number;
@@ -299,6 +318,21 @@ type EditorState = {
   updateNodeTransform: (nodeId: string, patch: Partial<NodeTransform>) => void;
   setNodeStatus: (nodeId: string, status: FurnitureNodeStatus) => void;
 
+  // Vibode UX state machine
+  setPhase: (p: Phase) => void;
+  setVibeMode: (m: VibeMode) => void;
+  beginMarkup: () => void;
+  clearDraftMarkup: () => void;
+  setDraftMarkup: (layer: MarkupLayer) => void;
+  beginGenerate: () => { sceneSnapshotForRecovery: any; markupToPersist: MarkupLayer };
+  markGeneratingSlow: () => void;
+  markGeneratingStall: () => void;
+  endGenerateSuccess: (args: { imageUrl: string; widthPx?: number; heightPx?: number }) => void;
+  endGenerateError: (args: {
+    userMessage: string;
+    debug?: { code?: string; message?: string; raw?: any };
+  }) => void;
+
   // Vibode vibe-flow flags
   toggleDelete: (nodeId: string) => void;
   setPendingSwap: (
@@ -411,6 +445,14 @@ function clamp(n: number, min: number, max: number) {
   return Math.max(min, Math.min(max, n));
 }
 
+function scheduleMicrotask(cb: () => void) {
+  if (typeof queueMicrotask === "function") {
+    queueMicrotask(cb);
+  } else {
+    Promise.resolve().then(cb);
+  }
+}
+
 const isFiniteNumber = (n: unknown): n is number =>
   typeof n === "number" && Number.isFinite(n);
 
@@ -515,6 +557,10 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     baseImageUrl: undefined,
     baseImageWidthPx: undefined,
     baseImageHeightPx: undefined,
+    phase: "IDLE",
+    vibeMode: "on",
+    draftMarkup: { version: "v1", items: [] },
+    genUi: {},
     room: { dims: undefined, sqft: undefined, dimsMode: "auto" },
     collection: { collectionId: undefined, bundleId: undefined },
     calibration: undefined,
@@ -806,6 +852,114 @@ export const useEditorStore = create<EditorState>((set, get) => ({
         nodes: s.scene.nodes.map((n) => (n.nodeId === nodeId ? { ...n, status } : n)),
       },
     })),
+
+  /* ---------- Vibode UX state machine ---------- */
+
+  setPhase: (p) => set((s) => ({ scene: { ...s.scene, phase: p } })),
+
+  setVibeMode: (m) => set((s) => ({ scene: { ...s.scene, vibeMode: m } })),
+
+  beginMarkup: () => set((s) => ({ scene: { ...s.scene, phase: "MARKUP" } })),
+
+  clearDraftMarkup: () =>
+    set((s) => ({
+      scene: { ...s.scene, draftMarkup: { version: "v1", items: [] } },
+    })),
+
+  setDraftMarkup: (layer) =>
+    set((s) => ({
+      scene: {
+        ...s.scene,
+        draftMarkup: layer,
+        phase: Array.isArray(layer.items) && layer.items.length > 0 ? "MARKUP" : "IDLE",
+      },
+    })),
+
+  beginGenerate: () => {
+    const { scene } = get();
+    const now = Date.now();
+    const sceneSnapshotForRecovery = deepClone(scene);
+    const markupToPersist = deepClone(scene.draftMarkup);
+
+    set((s) => ({
+      scene: {
+        ...s.scene,
+        phase: "GENERATING",
+        draftMarkup: { version: "v1", items: [] },
+        genUi: { ...s.scene.genUi, startedAtMs: now },
+      },
+    }));
+
+    return { sceneSnapshotForRecovery, markupToPersist };
+  },
+
+  markGeneratingSlow: () =>
+    set((s) => {
+      if (s.scene.phase !== "GENERATING" || s.scene.genUi.slowHintShown) return s;
+      return {
+        scene: {
+          ...s.scene,
+          genUi: {
+            ...s.scene.genUi,
+            slowHintShown: true,
+            message: "This is taking longer than usual.",
+          },
+        },
+      };
+    }),
+
+  markGeneratingStall: () =>
+    set((s) => {
+      if (s.scene.phase !== "GENERATING") return s;
+      return {
+        scene: {
+          ...s.scene,
+          phase: "STALL",
+          genUi: {
+            ...s.scene.genUi,
+            stallHintShown: true,
+            message: "Generation seems stalled.",
+          },
+        },
+      };
+    }),
+
+  endGenerateSuccess: ({ imageUrl, widthPx, heightPx }) => {
+    const hasW = isFiniteNumber(widthPx) && widthPx > 0;
+    const hasH = isFiniteNumber(heightPx) && heightPx > 0;
+
+    set((s) => ({
+      scene: {
+        ...s.scene,
+        baseImageUrl: imageUrl,
+        ...(hasW ? { baseImageWidthPx: widthPx } : {}),
+        ...(hasH ? { baseImageHeightPx: heightPx } : {}),
+        phase: "SUCCESS",
+      },
+    }));
+
+    scheduleMicrotask(() => get().setPhase("IDLE"));
+  },
+
+  endGenerateError: ({ userMessage, debug }) => {
+    set((s) => ({
+      scene: {
+        ...s.scene,
+        phase: "ERROR",
+        genUi: {
+          ...s.scene.genUi,
+          message: userMessage,
+          lastErrorUserMessage: userMessage,
+          lastErrorDebug: debug,
+        },
+      },
+    }));
+
+    const pushSnack = (get() as { pushSnack?: (message: string) => void }).pushSnack;
+    if (typeof pushSnack === "function") pushSnack(userMessage);
+
+    scheduleMicrotask(() => get().setPhase("MARKUP"));
+  },
 
   /* ---------- Vibode vibe-flow ---------- */
 
