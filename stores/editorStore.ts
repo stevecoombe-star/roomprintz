@@ -225,6 +225,11 @@ export type FreezeRecord = {
 
   // B: canonical freeze payload (v1)
   freeze: FreezePayloadV1;
+
+  // Pending generate metadata (UI recovery)
+  pendingMarkup?: MarkupLayer;
+  pendingVibeMode?: VibeMode;
+  pendingStatus?: "pending" | "success" | "error";
 };
 
 /* ===== Rescale prompt (when calibration changes) ===== */
@@ -972,10 +977,13 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   },
 
   endGenerateError: ({ userMessage, debug }) => {
+    const pending = loadPendingLocal();
+    const restored: MarkupLayer = pending?.draftMarkup ?? { version: "v1", items: [] };
     set((s) => ({
       scene: {
         ...s.scene,
         phase: "ERROR",
+        draftMarkup: restored,
         genUi: {
           ...s.scene.genUi,
           message: userMessage,

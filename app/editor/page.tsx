@@ -1,13 +1,14 @@
 // app/editor/page.tsx
 "use client";
 
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 
 import { EditorCanvas } from "@/components/editor/EditorCanvas";
 import { SnackbarHost, type Snackbar } from "@/components/ui/SnackbarHost";
 import { useEditorStore } from "@/stores/editorStore";
 import { MOCK_COLLECTIONS, type RoomSizeBundleId } from "@/data/mockCollections";
+import { clearPendingLocal, savePendingLocal } from "@/lib/pendingGeneration";
 
 // ✅ FIX: import path (avoid "@/src/..." which commonly causes alias/circular issues)
 import { supabaseBrowser } from "@/lib/supabaseBrowser";
@@ -182,10 +183,13 @@ export default function EditorPage() {
     setSnacks((prev) => [...prev, { id: safeId("sn"), message }]);
   };
 
-  const [isGenerating, setIsGenerating] = useState(false);
   const [lastFreezePayload, setLastFreezePayload] = useState<any>(null);
 
   const [isUploading, setIsUploading] = useState(false);
+
+  useEffect(() => {
+    useEditorStore.getState().tryRestorePendingFromLocalStorage();
+  }, []);
 
   const selectedNode = useMemo(() => {
     if (!selectedNodeId) return null;
@@ -246,8 +250,10 @@ export default function EditorPage() {
   const hasManualDims = width > 0 && length > 0;
   const sqft = hasManualDims ? Math.round(width * length * 10) / 10 : undefined;
 
+  const isBusy = scene.phase === "GENERATING" || scene.phase === "STALL";
+
   const onGenerate = async () => {
-    if (isGenerating) return;
+    if (isBusy) return;
   
     // ─────────────────────────────────────────────
     // 0) Preconditions
@@ -271,105 +277,143 @@ export default function EditorPage() {
       return;
     }
   
-    // ─────────────────────────────────────────────
-    // 1) Calibration scaffold: compute assumption only if manual dims exist
-    // ─────────────────────────────────────────────
-    const calNow = useEditorStore.getState().scene.calibration;
-    if (hasManualDims && (!calNow?.ppf || calNow.method === "assumed-fit-width")) {
-      ensurePpfFromAssumption();
-    }
-  
-    const afterCal = useEditorStore.getState().scene.calibration;
-    const ppf = afterCal?.ppf;
-  
-    // ─────────────────────────────────────────────
-    // 2) Choose bundle + build eligible SKUs (still mock)
-    // ─────────────────────────────────────────────
-    const bundleId: RoomSizeBundleId = hasManualDims ? pickBundleIdFromSqft(sqft!) : "medium";
-  
-    const col = MOCK_COLLECTIONS.find((c) => c.collectionId === collectionId);
-    if (!col) {
-      pushSnack("Collection not found (mock data).");
-      return;
-    }
-  
-    const skuIds = col.bundles[bundleId].skuIds;
-  
-    const eligible = skuIds
-      .map((id) => (col.catalog as any)[id])
-      .filter(Boolean)
-      .map((sku: any) => {
-        const realW = typeof sku.realWidthFt === "number" ? (sku.realWidthFt as number) : undefined;
-        const realD = typeof sku.realDepthFt === "number" ? (sku.realDepthFt as number) : undefined;
-  
-        const pxW = ppf && realW ? Math.max(1, Math.round(realW * ppf)) : (sku.defaultPxWidth as number);
-        const pxH = ppf && realD ? Math.max(1, Math.round(realD * ppf)) : (sku.defaultPxHeight as number);
-  
-        return {
-          skuId: sku.skuId,
-          label: sku.label,
-          defaultPxWidth: pxW,
-          defaultPxHeight: pxH,
-          realWidthFt: realW,
-          realDepthFt: realD,
-          variants: sku.variants?.map((v: any) => ({ variantId: v.variantId, label: v.label })),
-        };
-      });
-  
-    setWorkingSet({ collectionId, bundleId, eligibleSkus: eligible });
-  
-    // ─────────────────────────────────────────────
-    // 3) Freeze first (captures intent). BUT do NOT "commitGenerateMock" until model succeeds.
-    //    This prevents UI state from lying when API/model fails.
-    // ─────────────────────────────────────────────
-    const record = freezeNowV1();
-    const payload = record?.freeze ?? null;
-  
-    setLastFreezePayload(payload);
-    console.log("[FREEZE v1]", payload);
-  
-    if (!payload) {
-      pushSnack("Freeze failed (no payload).");
-      return;
-    }
-  
-    // Optional: Validate (client-side) so we fail fast before network call.
-    const valid = validateFreezePayloadV1(payload);
-    if (!valid.ok) {
-      pushSnack(`Freeze saved, model call blocked: ${valid.reason}`);
-      return;
-    }
-  
-    // Helpful toast (keeps your dopamine, but no state mutation yet)
-    pushSnack(
-      hasManualDims
-        ? `Generating: ${col.bundles[bundleId].label} (${skuIds.length} items)…`
-        : `Generating: ${col.bundles[bundleId].label} (${skuIds.length} items) • Dimensions auto…`
-    );
-  
-    // ─────────────────────────────────────────────
-    // 4) Determine echo vs model mode
-    //    Echo is ONLY for blob/data/file/local base urls.
-    // ─────────────────────────────────────────────
-    const baseKind = payload?.baseImage?.kind;
-    const baseUrl = (payload?.baseImage?.url ?? "").toString();
-  
-    const isBlobOrLocal =
-      baseKind !== "storageKey" &&
-      /^(blob:|data:|file:|https?:\/\/localhost|https?:\/\/127\.0\.0\.1|https?:\/\/0\.0\.0\.0)/i.test(
-        baseUrl
-      );
-  
-    const forceEcho = isBlobOrLocal;
-  
-    setIsGenerating(true);
+    const { sceneSnapshotForRecovery, markupToPersist } = useEditorStore
+      .getState()
+      .beginGenerate();
+    savePendingLocal(sceneSnapshotForRecovery);
+
+    const slowTimer = setTimeout(() => useEditorStore.getState().markGeneratingSlow(), 30_000);
+    const stallTimer = setTimeout(() => useEditorStore.getState().markGeneratingStall(), 60_000);
+
+    let generationId: string | null = null;
+
     try {
+      // ─────────────────────────────────────────────
+      // 1) Calibration scaffold: compute assumption only if manual dims exist
+      // ─────────────────────────────────────────────
+      const calNow = useEditorStore.getState().scene.calibration;
+      if (hasManualDims && (!calNow?.ppf || calNow.method === "assumed-fit-width")) {
+        ensurePpfFromAssumption();
+      }
+
+      const afterCal = useEditorStore.getState().scene.calibration;
+      const ppf = afterCal?.ppf;
+
+      // ─────────────────────────────────────────────
+      // 2) Choose bundle + build eligible SKUs (still mock)
+      // ─────────────────────────────────────────────
+      const bundleId: RoomSizeBundleId = hasManualDims ? pickBundleIdFromSqft(sqft!) : "medium";
+
+      const col = MOCK_COLLECTIONS.find((c) => c.collectionId === collectionId);
+      if (!col) {
+        useEditorStore.getState().endGenerateError({
+          userMessage: "Something didn’t work that time. Please try generating again.",
+          debug: { message: "Collection not found (mock data)." },
+        });
+        return;
+      }
+
+      const skuIds = col.bundles[bundleId].skuIds;
+
+      const eligible = skuIds
+        .map((id) => (col.catalog as any)[id])
+        .filter(Boolean)
+        .map((sku: any) => {
+          const realW = typeof sku.realWidthFt === "number" ? (sku.realWidthFt as number) : undefined;
+          const realD = typeof sku.realDepthFt === "number" ? (sku.realDepthFt as number) : undefined;
+
+          const pxW = ppf && realW ? Math.max(1, Math.round(realW * ppf)) : (sku.defaultPxWidth as number);
+          const pxH = ppf && realD ? Math.max(1, Math.round(realD * ppf)) : (sku.defaultPxHeight as number);
+
+          return {
+            skuId: sku.skuId,
+            label: sku.label,
+            defaultPxWidth: pxW,
+            defaultPxHeight: pxH,
+            realWidthFt: realW,
+            realDepthFt: realD,
+            variants: sku.variants?.map((v: any) => ({ variantId: v.variantId, label: v.label })),
+          };
+        });
+
+      setWorkingSet({ collectionId, bundleId, eligibleSkus: eligible });
+
+      // ─────────────────────────────────────────────
+      // 3) Freeze first (captures intent). BUT do NOT "commitGenerateMock" until model succeeds.
+      //    This prevents UI state from lying when API/model fails.
+      // ─────────────────────────────────────────────
+      const record = freezeNowV1();
+      const payload = record?.freeze ?? null;
+
+      setLastFreezePayload(payload);
+      console.log("[FREEZE v1]", payload);
+
+      if (!payload) {
+        useEditorStore.getState().endGenerateError({
+          userMessage: "Something didn’t work that time. Please try generating again.",
+          debug: { message: "Freeze failed (no payload)." },
+        });
+        return;
+      }
+
+      generationId = record?.generationId ?? payload?.generationId ?? null;
+      if (generationId) {
+        useEditorStore.setState((s) => {
+          const idx = s.history.findIndex((h) => h.generationId === generationId);
+          if (idx === -1) return s;
+          const nextHistory = s.history.slice();
+          nextHistory[idx] = {
+            ...nextHistory[idx],
+            pendingMarkup: markupToPersist,
+            pendingVibeMode: sceneSnapshotForRecovery.vibeMode,
+            pendingStatus: "pending",
+          };
+          return { ...s, history: nextHistory };
+        });
+      }
+
+      // Optional: Validate (client-side) so we fail fast before network call.
+      const valid = validateFreezePayloadV1(payload);
+      if (!valid.ok) {
+        useEditorStore.getState().endGenerateError({
+          userMessage: "Something didn’t work that time. Please try generating again.",
+          debug: { message: valid.reason },
+        });
+        return;
+      }
+
+      // Helpful toast (keeps your dopamine, but no state mutation yet)
+      pushSnack(
+        hasManualDims
+          ? `Generating: ${col.bundles[bundleId].label} (${skuIds.length} items)…`
+          : `Generating: ${col.bundles[bundleId].label} (${skuIds.length} items) • Dimensions auto…`
+      );
+
+      // ─────────────────────────────────────────────
+      // 4) Determine echo vs model mode
+      //    Echo is ONLY for blob/data/file/local base urls.
+      // ─────────────────────────────────────────────
+      const baseKind = payload?.baseImage?.kind;
+      const baseUrl = (payload?.baseImage?.url ?? "").toString();
+
+      const isBlobOrLocal =
+        baseKind !== "storageKey" &&
+        /^(blob:|data:|file:|https?:\/\/localhost|https?:\/\/127\.0\.0\.1|https?:\/\/0\.0\.0\.0)/i.test(
+          baseUrl
+        );
+
+      const forceEcho = isBlobOrLocal;
+
       const accessToken = await tryGetSupabaseAccessToken();
   
       // Real model calls require auth. (Echo does not.)
       if (!forceEcho && !accessToken) {
         pushSnack("No Supabase session — redirecting to login…");
         router.push(`/login?next=${encodeURIComponent("/editor")}`);
+        useEditorStore.getState().endGenerateError({
+          userMessage: "Something didn’t work that time. Please try generating again.",
+          debug: { code: "AUTH_MISSING", message: "No Supabase session" },
+        });
         return;
       }
   
@@ -379,7 +423,11 @@ export default function EditorPage() {
           "Content-Type": "application/json",
           ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
         },
-        body: JSON.stringify({ freeze: payload }),
+        body: JSON.stringify({
+          freeze: payload,
+          vibeMode: scene.vibeMode,
+          markup: markupToPersist,
+        }),
       });
   
       // Always parse safely
@@ -389,8 +437,11 @@ export default function EditorPage() {
   
       console.log("[VIBODE GENERATE RESPONSE]", res.status, j);
   
-      if (!res.ok) {
-        pushSnack(`API ${res.status}${j?.error ? ` — ${j.error}` : ""}`.trim());
+      if (!res.ok || j?.ok === false) {
+        useEditorStore.getState().endGenerateError({
+          userMessage: "Something didn’t work that time. Please try generating again.",
+          debug: { code: j?.code, message: j?.message ?? j?.error, raw: j },
+        });
         return;
       }
   
@@ -402,7 +453,10 @@ export default function EditorPage() {
       const sw = ops?.swap?.length ?? 0;
   
       if (j?.mode === "echo") {
-        pushSnack(`Echo OK ✅ nodes=${nodesTotal} add=${add} rm=${rm} swap=${sw}`);
+        useEditorStore.getState().endGenerateError({
+          userMessage: "Something didn’t work that time. Please try generating again.",
+          debug: { code: "ECHO_ONLY", message: "Echo mode returned no image", raw: j },
+        });
         return;
       }
       
@@ -423,12 +477,20 @@ export default function EditorPage() {
       const genId = typeof j?.generationId === "string" ? j.generationId : null;
       
       if (!genId) {
-        pushSnack("Generate OK, but missing generationId in response.");
+        useEditorStore.getState().endGenerateError({
+          userMessage: "Something didn’t work that time. Please try generating again.",
+          debug: { message: "Missing generationId in response", raw: j },
+        });
         return;
       }
+
+      generationId = genId;
       
       if (!imageUrl) {
-        pushSnack("Generate OK, but no image URL in response.");
+        useEditorStore.getState().endGenerateError({
+          userMessage: "Something didn’t work that time. Please try generating again.",
+          debug: { message: "Missing imageUrl in response", raw: j },
+        });
         return;
       }
       
@@ -440,6 +502,27 @@ export default function EditorPage() {
         outputWidthPx: outW,
         outputHeightPx: outH,
       });
+
+      useEditorStore.getState().endGenerateSuccess({
+        imageUrl,
+        widthPx: outW,
+        heightPx: outH,
+      });
+
+      clearPendingLocal();
+
+      if (generationId) {
+        useEditorStore.setState((s) => {
+          const idx = s.history.findIndex((h) => h.generationId === generationId);
+          if (idx === -1) return s;
+          const nextHistory = s.history.slice();
+          nextHistory[idx] = {
+            ...nextHistory[idx],
+            pendingStatus: "success",
+          };
+          return { ...s, history: nextHistory };
+        });
+      }
       
       console.log("[editor][base-swap]", {
         generationId: genId,
@@ -476,9 +559,24 @@ export default function EditorPage() {
   
     } catch (e: any) {
       console.error(e);
-      pushSnack(e?.message ? `API network error — ${e.message}` : "API network error");
+      useEditorStore.getState().endGenerateError({
+        userMessage: "Something didn’t work that time. Please try generating again.",
+        debug: { message: e?.message ?? "API network error", raw: e },
+      });
     } finally {
-      setIsGenerating(false);
+      clearTimeout(slowTimer);
+      clearTimeout(stallTimer);
+      if (generationId) {
+        useEditorStore.setState((s) => {
+          const idx = s.history.findIndex((h) => h.generationId === generationId);
+          if (idx === -1) return s;
+          const nextHistory = s.history.slice();
+          if (nextHistory[idx].pendingStatus === "pending") {
+            nextHistory[idx] = { ...nextHistory[idx], pendingStatus: "error" };
+          }
+          return { ...s, history: nextHistory };
+        });
+      }
     }
   };  
 
@@ -523,15 +621,15 @@ export default function EditorPage() {
 
           <button
             className={`rounded-md border px-3 py-1.5 text-sm ${
-              isGenerating
+              isBusy
                 ? "border-neutral-900 bg-neutral-950 text-neutral-500"
                 : "border-neutral-700 bg-neutral-900 hover:bg-neutral-800"
             }`}
             onClick={onGenerate}
-            disabled={isGenerating}
-            title={isGenerating ? "Generating…" : "Generate"}
+            disabled={isBusy}
+            title={isBusy ? "Generating…" : "Generate"}
           >
-            {isGenerating ? "Generating…" : "Generate"}
+            {isBusy ? "Generating…" : "Generate"}
           </button>
         </div>
       </header>
@@ -572,7 +670,11 @@ export default function EditorPage() {
 
         {/* Canvas area */}
         <main className="flex flex-1 items-center justify-center bg-neutral-950">
-          <div className="relative h-[70vh] w-[70vw] max-w-[1200px] overflow-hidden rounded-lg border border-neutral-800 bg-neutral-900">
+          <div
+            className={`relative h-[70vh] w-[70vw] max-w-[1200px] overflow-hidden rounded-lg border border-neutral-800 bg-neutral-900 ${
+              isBusy ? "blur-[1px] brightness-90" : ""
+            }`}
+          >
             <EditorCanvas
               className="absolute inset-0"
               onRequestSwap={(id) => {
@@ -585,6 +687,16 @@ export default function EditorPage() {
                 setSwapOpen(true);
               }}
             />
+            {isBusy && (
+              <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center">
+                <div className="h-8 w-8 rounded-full border-2 border-neutral-200 border-t-transparent animate-spin" />
+                {scene.genUi.message ? (
+                  <div className="mt-3 max-w-[80%] text-center text-xs text-neutral-300">
+                    {scene.genUi.message}
+                  </div>
+                ) : null}
+              </div>
+            )}
           </div>
         </main>
 
