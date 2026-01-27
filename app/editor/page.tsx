@@ -2,56 +2,485 @@
 "use client";
 
 import React, { useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
+
 import { EditorCanvas } from "@/components/editor/EditorCanvas";
+import { SnackbarHost, type Snackbar } from "@/components/ui/SnackbarHost";
+import { useEditorStore } from "@/stores/editorStore";
+import { MOCK_COLLECTIONS, type RoomSizeBundleId } from "@/data/mockCollections";
+
+// ✅ FIX: import path (avoid "@/src/..." which commonly causes alias/circular issues)
+import { supabaseBrowser } from "@/lib/supabaseBrowser";
 
 const DND_MIME = "application/x-roomprintz-furniture";
 
-const MOCK_FURNITURE = [
-  {
-    skuId: "sofa-001",
-    label: "Sofa — 84in",
-    defaultPxWidth: 260,
-    defaultPxHeight: 120,
-  },
-  {
-    skuId: "chair-001",
-    label: "Accent Chair — 32in",
-    defaultPxWidth: 120,
-    defaultPxHeight: 120,
-  },
-  {
-    skuId: "table-001",
-    label: "Coffee Table — 48in",
-    defaultPxWidth: 180,
-    defaultPxHeight: 90,
-  },
-  {
-    skuId: "rug-001",
-    label: "Rug — 8x10",
-    defaultPxWidth: 300,
-    defaultPxHeight: 220,
-  },
-];
+function safeId(prefix = "sn") {
+  if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
+    return `${prefix}_${crypto.randomUUID()}`;
+  }
+  return `${prefix}_${Math.random().toString(16).slice(2)}_${Date.now()}`;
+}
 
-const SWAP_OPTIONS = MOCK_FURNITURE;
+function pickBundleIdFromSqft(sqft: number): RoomSizeBundleId {
+  if (sqft < 130) return "small";
+  if (sqft < 220) return "medium";
+  return "large";
+}
+
+function isFiniteNumber(n: any) {
+  return typeof n === "number" && Number.isFinite(n);
+}
+
+function validateFreezePayloadV1(payload: any): { ok: true } | { ok: false; reason: string } {
+  if (!payload || typeof payload !== "object") return { ok: false, reason: "payload missing" };
+  if (payload.payloadVersion !== "v1") return { ok: false, reason: `payloadVersion must be "v1"` };
+
+  const base = payload.baseImage;
+  if (!base || typeof base !== "object") return { ok: false, reason: "baseImage missing" };
+  if (!["publicUrl", "signedUrl", "storageKey"].includes(base.kind))
+    return { ok: false, reason: "baseImage.kind invalid" };
+  if ((base.kind === "publicUrl" || base.kind === "signedUrl") && !base.url)
+    return { ok: false, reason: "baseImage.url missing" };
+  if (base.kind === "storageKey" && !base.storageKey)
+    return { ok: false, reason: "baseImage.storageKey missing" };
+  if (!isFiniteNumber(base.widthPx) || !isFiniteNumber(base.heightPx))
+    return { ok: false, reason: "baseImage width/height missing" };
+
+  const snap = payload.sceneSnapshotImageSpace;
+  if (!snap || typeof snap !== "object")
+    return { ok: false, reason: "sceneSnapshotImageSpace missing" };
+  if (!Array.isArray(snap.nodes))
+    return { ok: false, reason: "sceneSnapshotImageSpace.nodes missing" };
+
+  for (const n of snap.nodes) {
+    if (!n?.nodeId || !n?.skuId) return { ok: false, reason: "node missing nodeId/skuId" };
+    const t = n.transform;
+    if (!t) return { ok: false, reason: `node ${n.nodeId} missing transform` };
+    const fields = ["x", "y", "width", "height", "rotation"];
+    for (const f of fields) {
+      if (!isFiniteNumber(t[f]))
+        return { ok: false, reason: `node ${n.nodeId} transform.${f} invalid` };
+    }
+    if (t.width <= 0 || t.height <= 0)
+      return { ok: false, reason: `node ${n.nodeId} width/height must be > 0` };
+  }
+
+  return { ok: true };
+}
+
+async function tryGetSupabaseAccessToken(): Promise<string | null> {
+  try {
+    const supa = supabaseBrowser();
+    const { data, error } = await supa.auth.getSession();
+    if (error) console.warn("[supabase] getSession error:", error);
+    return data?.session?.access_token ?? null;
+  } catch (err) {
+    console.warn("[supabase] getSession threw:", err);
+    return null;
+  }
+}
+
+// ✅ upload helper (blob preview -> storage signed URL)
+// ✅ CHANGE: include Authorization header when available (upload route may be protected)
+async function uploadBaseImageToStorage(opts: {
+  file: File;
+  sceneId: string;
+}): Promise<{ storageKey: string; signedUrl: string; widthPx?: number; heightPx?: number }> {
+  const fd = new FormData();
+  fd.set("file", opts.file);
+  fd.set("sceneId", opts.sceneId);
+
+  const accessToken = await tryGetSupabaseAccessToken();
+
+  const res = await fetch("/api/vibode/upload-base", {
+    method: "POST",
+    headers: {
+      ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
+    },
+    body: fd,
+  });
+
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err?.error || `Upload failed (HTTP ${res.status})`);
+  }
+
+  const json = (await res.json()) as {
+    storageKey?: string;
+    signedUrl?: string;
+    widthPx?: number;
+    heightPx?: number;
+  };
+
+  if (!json?.storageKey || !json?.signedUrl) {
+    throw new Error("Upload succeeded but missing storageKey/signedUrl");
+  }
+
+  return {
+    storageKey: json.storageKey,
+    signedUrl: json.signedUrl,
+    widthPx: json.widthPx,
+    heightPx: json.heightPx,
+  };
+}
 
 export default function EditorPage() {
-  const [activeTool, setActiveTool] = useState<"select" | "furniture" | "mask">(
-    "select"
-  );
-  const [search, setSearch] = useState("");
+  const router = useRouter();
+
+  const scene = useEditorStore((s) => s.scene);
+  const nodes = useEditorStore((s) => s.scene.nodes);
+  const viewport = useEditorStore((s) => s.viewport);
+
+  const activeTool = useEditorStore((s) => s.ui.activeTool);
+  const selectedNodeId = useEditorStore((s) => s.ui.selectedNodeId);
+
+  const workingSet = useEditorStore((s) => s.workingSet);
+  const history = useEditorStore((s) => s.history);
+
+  const setActiveTool = useEditorStore((s) => s.setActiveTool);
+  const setRoomDims = useEditorStore((s) => s.setRoomDims);
+  const setCollection = useEditorStore((s) => s.setCollection);
+  const setWorkingSet = useEditorStore((s) => s.setWorkingSet);
+
+  // legacy mock boundary (keeps UI behavior today)
+  const commitGenerateMock = useEditorStore((s) => s.commitGenerateMock);
+
+  // canonical freeze payload writer
+  const freezeNowV1 = useEditorStore((s) => s.freezeNowV1);
+
+  const setBaseImageFromFile = useEditorStore((s) => s.setBaseImageFromFile);
+  const setBaseImageUrl = useEditorStore((s) => s.setBaseImageUrl);
+
+  const applySwap = useEditorStore((s) => s.applySwap);
+  const setPendingSwap = useEditorStore((s) => s.setPendingSwap);
+
+  const lastAction = useEditorStore((s) => s.lastAction);
+  const undoLastAction = useEditorStore((s) => s.undoLastAction);
+
+  // Calibration
+  const calibration = useEditorStore((s) => s.scene.calibration);
+  const ensurePpfFromAssumption = useEditorStore((s) => s.ensurePpfFromAssumption);
+
+  const beginCalibration = useEditorStore((s) => s.beginCalibration);
+  const clearCalibrationDraft = useEditorStore((s) => s.clearCalibrationDraft);
+  const setCalibrationRealFeet = useEditorStore((s) => s.setCalibrationRealFeet);
+  const finalizeCalibrationFromLine = useEditorStore((s) => s.finalizeCalibrationFromLine);
+  const clearCalibrationLine = useEditorStore((s) => s.clearCalibrationLine);
+
+  // Rescale prompt modal (from store UI)
+  const rescalePrompt = useEditorStore((s) => s.ui.rescalePrompt);
+  const suppressRescalePrompt = useEditorStore((s) => s.ui.suppressRescalePrompt);
+  const setSuppressRescalePrompt = useEditorStore((s) => s.setSuppressRescalePrompt);
+  const dismissRescalePrompt = useEditorStore((s) => s.dismissRescalePrompt);
+  const confirmRescalePrompt = useEditorStore((s) => s.confirmRescalePrompt);
 
   const [swapOpen, setSwapOpen] = useState(false);
   const [swapTargetId, setSwapTargetId] = useState<string | null>(null);
 
-  const filteredFurniture = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    if (!q) return MOCK_FURNITURE;
-    return MOCK_FURNITURE.filter((it) => {
-      const hay = `${it.label} ${it.skuId}`.toLowerCase();
-      return hay.includes(q);
-    });
-  }, [search]);
+  const [snacks, setSnacks] = useState<Snackbar[]>([]);
+  const pushSnack = (message: string) => {
+    setSnacks((prev) => [...prev, { id: safeId("sn"), message }]);
+  };
+
+  const [isGenerating, setIsGenerating] = useState(false);
+  const [lastFreezePayload, setLastFreezePayload] = useState<any>(null);
+
+  const [isUploading, setIsUploading] = useState(false);
+
+  const selectedNode = useMemo(() => {
+    if (!selectedNodeId) return null;
+    return nodes.find((n) => n.nodeId === selectedNodeId) ?? null;
+  }, [nodes, selectedNodeId]);
+
+  const queuedDeletes = useMemo(
+    () => nodes.filter((n) => n.status === "markedForDelete").length,
+    [nodes]
+  );
+  const queuedSwaps = useMemo(
+    () => nodes.filter((n) => n.status === "pendingSwap").length,
+    [nodes]
+  );
+
+  const swapTargetNode = useMemo(() => {
+    if (!swapTargetId) return null;
+    return nodes.find((n) => n.nodeId === swapTargetId) ?? null;
+  }, [nodes, swapTargetId]);
+
+  const collection = useMemo(() => {
+    const id = scene.collection?.collectionId;
+    if (!id) return null;
+    return MOCK_COLLECTIONS.find((c) => c.collectionId === id) ?? null;
+  }, [scene.collection?.collectionId]);
+
+  const swapTargetSku = useMemo(() => {
+    if (!collection || !swapTargetNode) return null;
+    return (collection.catalog as any)[swapTargetNode.skuId] ?? null;
+  }, [collection, swapTargetNode]);
+
+  const closeSwap = () => {
+    if (swapTargetId) setPendingSwap(swapTargetId, false);
+    setSwapOpen(false);
+    setSwapTargetId(null);
+  };
+
+  const eligibleForDrag = workingSet.eligibleSkus ?? [];
+  const latestFreeze = history[0]?.freeze ?? null;
+
+  const canApplyCal =
+    !!calibration?.draft?.p1 &&
+    !!calibration?.draft?.p2 &&
+    (calibration?.draft?.realFeet ?? 0) > 0;
+
+  // Real-time ft size math: nodes are in STAGE px, calibration ppf is in IMAGE px/ft.
+  // Convert to stage px/ft using viewport.scale (stage_px per image_px).
+  const stagePpf = useMemo(() => {
+    const ppf = calibration?.ppf;
+    if (!ppf || !viewport) return null;
+    return ppf * viewport.scale;
+  }, [calibration?.ppf, viewport]);
+
+  // Dims optional (lazy-user mode)
+  const dims = scene.room?.dims;
+  const width = dims?.widthFt ?? 0;
+  const length = dims?.lengthFt ?? 0;
+  const hasManualDims = width > 0 && length > 0;
+  const sqft = hasManualDims ? Math.round(width * length * 10) / 10 : undefined;
+
+  const onGenerate = async () => {
+    if (isGenerating) return;
+  
+    // ─────────────────────────────────────────────
+    // 0) Preconditions
+    // ─────────────────────────────────────────────
+    const collectionId = scene.collection?.collectionId;
+  
+    if (!scene.baseImageUrl) {
+      pushSnack("Upload a room photo first.");
+      return;
+    }
+    if (!collectionId) {
+      pushSnack("Select a Furniture Collection first.");
+      return;
+    }
+    if (!viewport) {
+      pushSnack("Viewport not ready yet (image still loading). Try again in a moment.");
+      return;
+    }
+    if (typeof freezeNowV1 !== "function") {
+      pushSnack("Freeze writer not found (freezeNowV1). Check editorStore export.");
+      return;
+    }
+  
+    // ─────────────────────────────────────────────
+    // 1) Calibration scaffold: compute assumption only if manual dims exist
+    // ─────────────────────────────────────────────
+    const calNow = useEditorStore.getState().scene.calibration;
+    if (hasManualDims && (!calNow?.ppf || calNow.method === "assumed-fit-width")) {
+      ensurePpfFromAssumption();
+    }
+  
+    const afterCal = useEditorStore.getState().scene.calibration;
+    const ppf = afterCal?.ppf;
+  
+    // ─────────────────────────────────────────────
+    // 2) Choose bundle + build eligible SKUs (still mock)
+    // ─────────────────────────────────────────────
+    const bundleId: RoomSizeBundleId = hasManualDims ? pickBundleIdFromSqft(sqft!) : "medium";
+  
+    const col = MOCK_COLLECTIONS.find((c) => c.collectionId === collectionId);
+    if (!col) {
+      pushSnack("Collection not found (mock data).");
+      return;
+    }
+  
+    const skuIds = col.bundles[bundleId].skuIds;
+  
+    const eligible = skuIds
+      .map((id) => (col.catalog as any)[id])
+      .filter(Boolean)
+      .map((sku: any) => {
+        const realW = typeof sku.realWidthFt === "number" ? (sku.realWidthFt as number) : undefined;
+        const realD = typeof sku.realDepthFt === "number" ? (sku.realDepthFt as number) : undefined;
+  
+        const pxW = ppf && realW ? Math.max(1, Math.round(realW * ppf)) : (sku.defaultPxWidth as number);
+        const pxH = ppf && realD ? Math.max(1, Math.round(realD * ppf)) : (sku.defaultPxHeight as number);
+  
+        return {
+          skuId: sku.skuId,
+          label: sku.label,
+          defaultPxWidth: pxW,
+          defaultPxHeight: pxH,
+          realWidthFt: realW,
+          realDepthFt: realD,
+          variants: sku.variants?.map((v: any) => ({ variantId: v.variantId, label: v.label })),
+        };
+      });
+  
+    setWorkingSet({ collectionId, bundleId, eligibleSkus: eligible });
+  
+    // ─────────────────────────────────────────────
+    // 3) Freeze first (captures intent). BUT do NOT "commitGenerateMock" until model succeeds.
+    //    This prevents UI state from lying when API/model fails.
+    // ─────────────────────────────────────────────
+    const record = freezeNowV1();
+    const payload = record?.freeze ?? null;
+  
+    setLastFreezePayload(payload);
+    console.log("[FREEZE v1]", payload);
+  
+    if (!payload) {
+      pushSnack("Freeze failed (no payload).");
+      return;
+    }
+  
+    // Optional: Validate (client-side) so we fail fast before network call.
+    const valid = validateFreezePayloadV1(payload);
+    if (!valid.ok) {
+      pushSnack(`Freeze saved, model call blocked: ${valid.reason}`);
+      return;
+    }
+  
+    // Helpful toast (keeps your dopamine, but no state mutation yet)
+    pushSnack(
+      hasManualDims
+        ? `Generating: ${col.bundles[bundleId].label} (${skuIds.length} items)…`
+        : `Generating: ${col.bundles[bundleId].label} (${skuIds.length} items) • Dimensions auto…`
+    );
+  
+    // ─────────────────────────────────────────────
+    // 4) Determine echo vs model mode
+    //    Echo is ONLY for blob/data/file/local base urls.
+    // ─────────────────────────────────────────────
+    const baseKind = payload?.baseImage?.kind;
+    const baseUrl = (payload?.baseImage?.url ?? "").toString();
+  
+    const isBlobOrLocal =
+      baseKind !== "storageKey" &&
+      /^(blob:|data:|file:|https?:\/\/localhost|https?:\/\/127\.0\.0\.1|https?:\/\/0\.0\.0\.0)/i.test(
+        baseUrl
+      );
+  
+    const forceEcho = isBlobOrLocal;
+  
+    setIsGenerating(true);
+    try {
+      const accessToken = await tryGetSupabaseAccessToken();
+  
+      // Real model calls require auth. (Echo does not.)
+      if (!forceEcho && !accessToken) {
+        pushSnack("No Supabase session — redirecting to login…");
+        router.push(`/login?next=${encodeURIComponent("/editor")}`);
+        return;
+      }
+  
+      const res = await fetch("/api/vibode/generate", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
+        },
+        body: JSON.stringify({ freeze: payload }),
+      });
+  
+      // Always parse safely
+      const j: any = await res
+        .json()
+        .catch(async () => ({ error: await res.text().catch(() => "Bad JSON response") }));
+  
+      console.log("[VIBODE GENERATE RESPONSE]", res.status, j);
+  
+      if (!res.ok) {
+        pushSnack(`API ${res.status}${j?.error ? ` — ${j.error}` : ""}`.trim());
+        return;
+      }
+  
+      // Debug / ops summary
+      const ops = j?.debug?.ops;
+      const nodesTotal = j?.debug?.counts?.nodesTotal ?? 0;
+      const add = ops?.add?.length ?? 0;
+      const rm = ops?.remove?.length ?? 0;
+      const sw = ops?.swap?.length ?? 0;
+  
+      if (j?.mode === "echo") {
+        pushSnack(`Echo OK ✅ nodes=${nodesTotal} add=${add} rm=${rm} swap=${sw}`);
+        return;
+      }
+      
+      const toFinitePosNum = (v: any) => {
+        const n = typeof v === "string" ? Number(v) : v;
+        return Number.isFinite(n) && n > 0 ? n : undefined;
+      };
+      
+      // ─────────────────────────────────────────────
+      // Resolve generated image URL.
+      // Canonical source: j.output.imageUrl
+      // Fallbacks are kept for legacy / transitional API responses.
+      // ─────────────────────────────────────────────
+      const imageUrl: string | null = j?.output?.imageUrl || j?.imageUrl || j?.stagedImageUrl || null;
+      const outW = toFinitePosNum(j?.output?.widthPx ?? j?.widthPx);
+      const outH = toFinitePosNum(j?.output?.heightPx ?? j?.heightPx);
+      
+      const genId = typeof j?.generationId === "string" ? j.generationId : null;
+      
+      if (!genId) {
+        pushSnack("Generate OK, but missing generationId in response.");
+        return;
+      }
+      
+      if (!imageUrl) {
+        pushSnack("Generate OK, but no image URL in response.");
+        return;
+      }
+      
+      useEditorStore.getState().attachOutputAndSwapBase({
+        generationId: genId,
+        outputImageUrl: imageUrl,
+        outputBucket: j?.output?.bucket ?? j?.output?.storage?.bucket,
+        outputStorageKey: j?.output?.storageKey ?? j?.output?.storage?.key,
+        outputWidthPx: outW,
+        outputHeightPx: outH,
+      });
+      
+      console.log("[editor][base-swap]", {
+        generationId: genId,
+        baseImageUrl: useEditorStore.getState().scene.baseImageUrl,
+        baseImageWidthPx: useEditorStore.getState().scene.baseImageWidthPx,
+        baseImageHeightPx: useEditorStore.getState().scene.baseImageHeightPx,
+      });
+      
+      // Optional token info (nice UX)
+      const tokenCost = typeof j?.tokenCost === "number" ? j.tokenCost : null;
+      const tokenBalance = typeof j?.tokenBalance === "number" ? j.tokenBalance : null;
+        
+      pushSnack(
+        `Nano Banana OK ✅ image returned${tokenCost != null ? ` • cost=${tokenCost}` : ""}${
+          tokenBalance != null ? ` • balance=${tokenBalance}` : ""
+        }`
+      );
+  
+      // ─────────────────────────────────────────────
+      // 6) ✅ NOW we are allowed to mutate local UI state.
+      //    If you still want to keep the V0 behavior, commit AFTER success.
+      // ─────────────────────────────────────────────
+      if (j?.mode !== "nanobanana") {
+        commitGenerateMock();
+      }
+  
+      // 🚀 Plumbing (next step): append to history + swap base image:
+      // - add a history tile with imageUrl (prefer storage/signed if returned)
+      // - set base image to returned imageUrl (or storageKey bucket)
+      //
+      // Example placeholder calls (wire to your store actions):
+      // useEditorStore.getState().appendHistoryFromGeneration?.({ generationId: j.generationId, imageUrl });
+      // useEditorStore.getState().setBaseImageFromGeneration?.({ imageUrl, generationId: j.generationId });
+  
+    } catch (e: any) {
+      console.error(e);
+      pushSnack(e?.message ? `API network error — ${e.message}` : "API network error");
+    } finally {
+      setIsGenerating(false);
+    }
+  };  
 
   return (
     <div className="h-dvh w-full bg-neutral-950 text-neutral-100">
@@ -59,17 +488,50 @@ export default function EditorPage() {
       <header className="flex h-12 items-center justify-between border-b border-neutral-800 px-4">
         <div className="flex items-center gap-3">
           <div className="h-6 w-6 rounded bg-neutral-700" />
-          <div className="text-sm font-medium tracking-wide">
-            RoomPrintz Editor
-          </div>
+          <div className="text-sm font-medium tracking-wide">Vibode Editor</div>
           <div className="ml-2 rounded border border-neutral-800 px-2 py-0.5 text-xs text-neutral-300">
             V0
           </div>
         </div>
 
         <div className="flex items-center gap-2">
-          <button className="rounded-md border border-neutral-700 bg-neutral-900 px-3 py-1.5 text-sm hover:bg-neutral-800">
-            Generate
+          {(queuedDeletes > 0 || queuedSwaps > 0) && (
+            <div className="mr-2 rounded-md border border-neutral-800 bg-neutral-900 px-3 py-1.5 text-xs text-neutral-300">
+              {queuedDeletes > 0
+                ? `${queuedDeletes} delete${queuedDeletes === 1 ? "" : "s"} queued`
+                : ""}
+              {queuedDeletes > 0 && queuedSwaps > 0 ? " • " : ""}
+              {queuedSwaps > 0 ? `${queuedSwaps} swap${queuedSwaps === 1 ? "" : "s"} pending` : ""}
+            </div>
+          )}
+
+          <button
+            disabled={!lastAction}
+            onClick={() => {
+              undoLastAction();
+              pushSnack("Undid last action.");
+            }}
+            className={`rounded-md border px-3 py-1.5 text-sm ${
+              lastAction
+                ? "border-neutral-700 bg-neutral-900 hover:bg-neutral-800"
+                : "border-neutral-800 bg-neutral-950 text-neutral-500"
+            }`}
+            title={lastAction ? "Undo last action" : "Nothing to undo"}
+          >
+            Undo
+          </button>
+
+          <button
+            className={`rounded-md border px-3 py-1.5 text-sm ${
+              isGenerating
+                ? "border-neutral-900 bg-neutral-950 text-neutral-500"
+                : "border-neutral-700 bg-neutral-900 hover:bg-neutral-800"
+            }`}
+            onClick={onGenerate}
+            disabled={isGenerating}
+            title={isGenerating ? "Generating…" : "Generate"}
+          >
+            {isGenerating ? "Generating…" : "Generate"}
           </button>
         </div>
       </header>
@@ -78,44 +540,34 @@ export default function EditorPage() {
       <div className="flex h-[calc(100dvh-3rem)] w-full">
         {/* Left tool rail */}
         <aside className="flex w-14 flex-col items-center gap-2 border-r border-neutral-800 bg-neutral-950 py-3">
-          <button
-            className={[
-              "h-10 w-10 rounded-md border text-sm",
-              activeTool === "select"
-                ? "border-neutral-600 bg-neutral-800"
-                : "border-neutral-800 bg-neutral-900 hover:bg-neutral-800",
-            ].join(" ")}
-            title="Select/Move (V)"
-            onClick={() => setActiveTool("select")}
-          >
-            V
-          </button>
-
-          <button
-            className={[
-              "h-10 w-10 rounded-md border text-sm",
-              activeTool === "furniture"
-                ? "border-neutral-600 bg-neutral-800"
-                : "border-neutral-800 bg-neutral-900 hover:bg-neutral-800",
-            ].join(" ")}
-            title="Furniture (F)"
-            onClick={() => setActiveTool("furniture")}
-          >
-            F
-          </button>
-
-          <button
-            className={[
-              "h-10 w-10 rounded-md border text-sm",
-              activeTool === "mask"
-                ? "border-neutral-600 bg-neutral-800"
-                : "border-neutral-800 bg-neutral-900 hover:bg-neutral-800",
-            ].join(" ")}
-            title="Mask (M)"
-            onClick={() => setActiveTool("mask")}
-          >
-            M
-          </button>
+          {[
+            { label: "V", tool: "select" as const, title: "Select/Move" },
+            { label: "F", tool: "furniture" as const, title: "Furniture" },
+            { label: "M", tool: "mask" as const, title: "Mask" },
+            { label: "C", tool: "calibrate" as const, title: "Calibrate (User line)" },
+          ].map((t) => {
+            const isActive = activeTool === t.tool;
+            return (
+              <button
+                key={t.label}
+                onClick={() => {
+                  setActiveTool(t.tool);
+                  if (t.tool === "calibrate") {
+                    beginCalibration();
+                    pushSnack("Calibration mode: click point 1 then point 2.");
+                  }
+                }}
+                className={`h-10 w-10 rounded-md border text-sm ${
+                  isActive
+                    ? "border-neutral-600 bg-neutral-800"
+                    : "border-neutral-800 bg-neutral-900 hover:bg-neutral-800"
+                }`}
+                title={t.title}
+              >
+                {t.label}
+              </button>
+            );
+          })}
         </aside>
 
         {/* Canvas area */}
@@ -123,7 +575,12 @@ export default function EditorPage() {
           <div className="relative h-[70vh] w-[70vw] max-w-[1200px] overflow-hidden rounded-lg border border-neutral-800 bg-neutral-900">
             <EditorCanvas
               className="absolute inset-0"
-              onRequestSwap={(id: string) => {
+              onRequestSwap={(id) => {
+                const node = nodes.find((n) => n.nodeId === id);
+                if (node?.status === "markedForDelete") {
+                  pushSnack("This item is queued for removal. Restore it (red X) to swap.");
+                  return;
+                }
                 setSwapTargetId(id);
                 setSwapOpen(true);
               }}
@@ -136,133 +593,792 @@ export default function EditorPage() {
           <div className="border-b border-neutral-800 px-4 py-3">
             <div className="text-sm font-medium">Panels</div>
             <div className="mt-1 text-xs text-neutral-400">
-              Furniture catalog + AI Actions (coming next)
+              Setup → Working Set → Edit → Generate (V0)
             </div>
           </div>
 
-          <div className="p-4">
-            {/* Furniture */}
+          <div className="space-y-4 p-4">
+            {/* Setup */}
             <div className="rounded-lg border border-neutral-800 bg-neutral-900 p-3">
-              <div className="flex items-center justify-between">
-                <div className="text-sm font-medium">Furniture</div>
-                <div className="rounded border border-neutral-800 bg-neutral-950 px-2 py-0.5 text-[11px] text-neutral-300">
-                  Drag & Drop
+              <div className="text-sm font-medium">Setup</div>
+              <div className="mt-1 text-xs text-neutral-400">
+                Upload photo + (optional) room size + pick a collection. Bundle is selected on
+                Generate.
+              </div>
+
+              {/* Base image upload */}
+              <div className="mt-3">
+                <div className="text-xs text-neutral-400">Room Photo</div>
+                <div className="mt-1 flex items-center gap-2">
+                  <label
+                    className={`cursor-pointer rounded-md border px-3 py-2 text-sm ${
+                      isUploading
+                        ? "border-neutral-900 bg-neutral-950 text-neutral-500"
+                        : "border-neutral-800 bg-neutral-950 hover:bg-neutral-800"
+                    }`}
+                    title={isUploading ? "Uploading…" : "Upload"}
+                  >
+                    {isUploading ? "Uploading…" : "Upload…"}
+                    <input
+                      type="file"
+                      accept="image/*"
+                      className="hidden"
+                      disabled={isUploading}
+                      onChange={async (e) => {
+                        const inputEl = e.currentTarget;
+                        const file = inputEl.files?.[0];
+                        if (!file) return;
+
+                        // allow re-pick same file
+                        inputEl.value = "";
+
+                        // 1) Instant preview (blob)
+                        setBaseImageFromFile(file);
+                        pushSnack("Image loaded (local preview). Uploading to storage…");
+
+                        // 2) Upload to storage + swap to signed URL (kills blob in payload)
+                        setIsUploading(true);
+                        try {
+                          const sceneId = useEditorStore.getState().scene.sceneId;
+                          const up = await uploadBaseImageToStorage({ file, sceneId });
+
+                          setBaseImageUrl(up.signedUrl);
+                          pushSnack("Image uploaded ✅ (signed URL set; blob removed).");
+                        } catch (err: any) {
+                          console.error(err);
+                          pushSnack(
+                            `Upload failed — keeping local preview. (${err?.message ?? "error"})`
+                          );
+                        } finally {
+                          setIsUploading(false);
+                        }
+                      }}
+                    />
+                  </label>
+
+                  {scene.baseImageUrl ? (
+                    <button
+                      className="rounded-md border border-neutral-800 bg-neutral-950 px-3 py-2 text-sm text-neutral-300 hover:bg-neutral-800"
+                      onClick={() => {
+                        const prev = scene.baseImageUrl;
+                        if (prev?.startsWith("blob:")) {
+                          try {
+                            URL.revokeObjectURL(prev);
+                          } catch {}
+                        }
+                        setBaseImageUrl(undefined);
+                        pushSnack("Image cleared.");
+                      }}
+                      title="Clear image"
+                    >
+                      Clear
+                    </button>
+                  ) : (
+                    <div className="text-xs text-neutral-500">No image yet</div>
+                  )}
+                </div>
+
+                <div className="mt-2 text-xs text-neutral-500">
+                  {scene.baseImageUrl?.startsWith("blob:")
+                    ? "Source: Local preview (blob) — upload should swap to signed URL."
+                    : scene.baseImageUrl
+                    ? "Source: Signed URL (storage) ✅"
+                    : "Source: —"}
                 </div>
               </div>
 
-              <div className="mt-2 text-xs text-neutral-400">
-                Drag an item onto the canvas.
+              {/* Viewport debug */}
+              <div className="mt-3 rounded-md border border-neutral-800 bg-neutral-950 px-3 py-2 text-xs text-neutral-400">
+                <div className="flex items-center justify-between">
+                  <div>Viewport</div>
+                  <div className="text-neutral-300">
+                    {viewport ? `${viewport.imageNaturalW}×${viewport.imageNaturalH}` : "—"}
+                  </div>
+                </div>
+                <div className="mt-1 flex items-center justify-between">
+                  <div>Scale (stage px / image px)</div>
+                  <div className="text-neutral-300">
+                    {viewport ? viewport.scale.toFixed(3) : "—"}
+                  </div>
+                </div>
               </div>
 
-              <input
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-                placeholder="Search furniture…"
-                className="mt-3 w-full rounded-md border border-neutral-800 bg-neutral-950 px-3 py-2 text-sm text-neutral-100 placeholder:text-neutral-500 focus:outline-none focus:ring-2 focus:ring-neutral-700"
-              />
-
-              <div className="mt-3 flex max-h-[44vh] flex-col gap-2 overflow-auto pr-1">
-                {filteredFurniture.length === 0 ? (
-                  <div className="rounded-md border border-dashed border-neutral-700 bg-neutral-950 px-3 py-6 text-center text-xs text-neutral-400">
-                    No matches
+              {/* Room dims */}
+              <div className="mt-3">
+                <div className="flex items-center justify-between">
+                  <div className="text-xs text-neutral-400">Room dimensions (optional)</div>
+                  <div className="text-xs text-neutral-500">
+                    Dimensions:{" "}
+                    <span className="text-neutral-200">
+                      {hasManualDims ? "Manual" : "Auto (estimated)"}
+                    </span>
                   </div>
-                ) : (
-                  filteredFurniture.map((item) => (
-                    <div
-                      key={item.skuId}
-                      draggable
-                      onDragStart={(e) => {
-                        e.dataTransfer.setData(DND_MIME, JSON.stringify(item));
-                        e.dataTransfer.effectAllowed = "copy";
+                </div>
+
+                <div className="mt-2 grid grid-cols-3 gap-2">
+                  <div className="col-span-1">
+                    <div className="text-xs text-neutral-400">Width (ft)</div>
+                    <input
+                      className="mt-1 w-full rounded-md border border-neutral-800 bg-neutral-950 px-2 py-1.5 text-sm outline-none focus:border-neutral-600"
+                      type="number"
+                      step="0.1"
+                      value={scene.room?.dims?.widthFt ?? ""}
+                      placeholder="Auto"
+                      onChange={(e) => {
+                        const v = e.target.value;
+                        setRoomDims({
+                          widthFt: v === "" ? undefined : Number(v),
+                          lengthFt: scene.room?.dims?.lengthFt,
+                          heightFt: scene.room?.dims?.heightFt,
+                        });
                       }}
-                      className="cursor-grab rounded-md border border-neutral-800 bg-neutral-950 px-3 py-2 text-sm hover:bg-neutral-800 active:cursor-grabbing"
-                      title="Drag onto canvas"
-                    >
-                      {item.label}
-                      <div className="mt-0.5 text-xs text-neutral-400">
-                        {item.skuId}
+                    />
+                  </div>
+
+                  <div className="col-span-1">
+                    <div className="text-xs text-neutral-400">Length (ft)</div>
+                    <input
+                      className="mt-1 w-full rounded-md border border-neutral-800 bg-neutral-950 px-2 py-1.5 text-sm outline-none focus:border-neutral-600"
+                      type="number"
+                      step="0.1"
+                      value={scene.room?.dims?.lengthFt ?? ""}
+                      placeholder="Auto"
+                      onChange={(e) => {
+                        const v = e.target.value;
+                        setRoomDims({
+                          widthFt: scene.room?.dims?.widthFt,
+                          lengthFt: v === "" ? undefined : Number(v),
+                          heightFt: scene.room?.dims?.heightFt,
+                        });
+                      }}
+                    />
+                  </div>
+
+                  <div className="col-span-1">
+                    <div className="text-xs text-neutral-400">Height (ft)</div>
+                    <input
+                      className="mt-1 w-full rounded-md border border-neutral-800 bg-neutral-950 px-2 py-1.5 text-sm outline-none focus:border-neutral-600"
+                      type="number"
+                      step="0.1"
+                      value={scene.room?.dims?.heightFt ?? ""}
+                      placeholder="Auto"
+                      onChange={(e) => {
+                        const v = e.target.value;
+                        setRoomDims({
+                          widthFt: scene.room?.dims?.widthFt,
+                          lengthFt: scene.room?.dims?.lengthFt,
+                          heightFt: v === "" ? undefined : Number(v),
+                        });
+                      }}
+                    />
+                  </div>
+                </div>
+
+                <div className="mt-3 text-xs text-neutral-400">
+                  Sqft:{" "}
+                  <span className="text-neutral-200">
+                    {hasManualDims ? sqft : "Auto (estimated)"}
+                  </span>
+                </div>
+
+                {!hasManualDims && (
+                  <div className="mt-1 text-xs text-neutral-500">
+                    Leave blank for zero friction — Nano Banana will estimate.
+                  </div>
+                )}
+              </div>
+
+              {/* Furniture collection */}
+              <div className="mt-4">
+                <div className="text-xs text-neutral-400">Furniture Collection</div>
+                <select
+                  className="mt-1 w-full rounded-md border border-neutral-800 bg-neutral-950 px-2 py-2 text-sm outline-none focus:border-neutral-600"
+                  value={scene.collection?.collectionId ?? ""}
+                  onChange={(e) => {
+                    const id = e.target.value;
+                    setCollection(id);
+                    const col = MOCK_COLLECTIONS.find((c) => c.collectionId === id);
+                    if (!col) {
+                      setWorkingSet({
+                        collectionId: id,
+                        bundleId: undefined,
+                        eligibleSkus: [],
+                      });
+                      return;
+                    }
+
+                    const bundleId: RoomSizeBundleId =
+                      hasManualDims && typeof sqft === "number" ? pickBundleIdFromSqft(sqft) : "medium";
+
+                    const skuIds = col.bundles[bundleId].skuIds;
+                    const ppf = calibration?.ppf;
+
+                    const eligible = skuIds
+                      .map((skuId) => (col.catalog as any)[skuId])
+                      .filter(Boolean)
+                      .map((sku: any) => {
+                        const realW =
+                          typeof sku.realWidthFt === "number" ? (sku.realWidthFt as number) : undefined;
+                        const realD =
+                          typeof sku.realDepthFt === "number" ? (sku.realDepthFt as number) : undefined;
+
+                        const pxW = ppf && realW ? Math.max(1, Math.round(realW * ppf)) : sku.defaultPxWidth;
+                        const pxH = ppf && realD ? Math.max(1, Math.round(realD * ppf)) : sku.defaultPxHeight;
+
+                        return {
+                          skuId: sku.skuId,
+                          label: sku.label,
+                          defaultPxWidth: pxW,
+                          defaultPxHeight: pxH,
+                          realWidthFt: realW,
+                          realDepthFt: realD,
+                          variants: sku.variants?.map((v: any) => ({ variantId: v.variantId, label: v.label })),
+                        };
+                      });
+
+                    setWorkingSet({ collectionId: id, bundleId, eligibleSkus: eligible });
+                    pushSnack("Collection selected. Working Set loaded — drag items onto the canvas.");
+                  }}
+                >
+                  <option value="" disabled>
+                    Select…
+                  </option>
+                  {MOCK_COLLECTIONS.map((c) => (
+                    <option key={c.collectionId} value={c.collectionId}>
+                      {c.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="mt-3 text-xs text-neutral-500">
+                Bundle auto-selected on Generate{" "}
+                {hasManualDims ? "by sqft." : "(defaults to Medium when dims are auto)."}
+              </div>
+            </div>
+
+            {/* Calibration Panel */}
+            <div className="rounded-lg border border-neutral-800 bg-neutral-900 p-3">
+              <div className="flex items-center justify-between">
+                <div>
+                  <div className="text-sm font-medium">Calibration</div>
+                  <div className="mt-1 text-xs text-neutral-400">
+                    Tool C • Click 2 points on the photo, enter feet, Apply.
+                  </div>
+                </div>
+
+                <button
+                  className="rounded-md border border-neutral-800 bg-neutral-950 px-3 py-1.5 text-sm hover:bg-neutral-800"
+                  onClick={() => {
+                    setActiveTool("calibrate");
+                    beginCalibration();
+                    pushSnack("Calibration mode: click point 1 then point 2.");
+                  }}
+                >
+                  Start
+                </button>
+              </div>
+
+              <div className="mt-3 text-xs text-neutral-500">
+                Current:{" "}
+                <span className="text-neutral-200">
+                  {calibration?.ppf ? `${calibration.ppf.toFixed(2)} px/ft` : "—"}
+                </span>
+                {calibration?.method ? (
+                  <span className="text-neutral-500"> • {calibration.method}</span>
+                ) : null}
+              </div>
+
+              {scene.calibration?.ppf ? (
+                <div className="mt-1 text-xs text-neutral-400">Drag defaults are scale-aware ✅</div>
+              ) : null}
+
+              <div className="mt-3 grid grid-cols-3 gap-2">
+                <div className="col-span-2">
+                  <div className="text-xs text-neutral-400">Real distance (ft)</div>
+                  <input
+                    className="mt-1 w-full rounded-md border border-neutral-800 bg-neutral-950 px-2 py-1.5 text-sm outline-none focus:border-neutral-600"
+                    type="number"
+                    step="0.1"
+                    value={calibration?.draft?.realFeet ?? 10}
+                    onChange={(e) => setCalibrationRealFeet(Number(e.target.value || 0))}
+                  />
+                </div>
+
+                <div className="col-span-1 flex items-end">
+                  <button
+                    disabled={!canApplyCal}
+                    className={`w-full rounded-md border px-3 py-2 text-sm ${
+                      canApplyCal
+                        ? "border-neutral-800 bg-neutral-950 hover:bg-neutral-800"
+                        : "border-neutral-900 bg-neutral-950 text-neutral-500"
+                    }`}
+                    onClick={() => {
+                      const ok = finalizeCalibrationFromLine();
+                      if (ok) pushSnack("Calibration applied.");
+                      else pushSnack("Need 2 points + a valid feet value.");
+                    }}
+                  >
+                    Apply
+                  </button>
+                </div>
+              </div>
+
+              <div className="mt-3 flex gap-2">
+                <button
+                  className="rounded-md border border-neutral-800 bg-neutral-950 px-3 py-1.5 text-sm hover:bg-neutral-800"
+                  onClick={() => {
+                    clearCalibrationDraft();
+                    pushSnack("Calibration points cleared.");
+                  }}
+                >
+                  Clear points
+                </button>
+                <button
+                  className="rounded-md border border-neutral-800 bg-neutral-950 px-3 py-1.5 text-sm hover:bg-neutral-800"
+                  onClick={() => {
+                    clearCalibrationLine();
+                    pushSnack("Calibration reset.");
+                  }}
+                >
+                  Reset
+                </button>
+              </div>
+
+              <div className="mt-3 flex gap-2">
+                <button
+                  className="rounded-md border border-neutral-800 bg-neutral-900 px-3 py-1.5 text-sm hover:bg-neutral-800"
+                  onClick={() => {
+                    ensurePpfFromAssumption();
+                    pushSnack("Calibration refreshed (V0 assumption).");
+                  }}
+                  title="Compute ppf from V0 assumption (requires manual room width)"
+                >
+                  Refresh (assume)
+                </button>
+              </div>
+
+              {activeTool === "calibrate" && (
+                <div className="mt-3 rounded-md border border-red-900/40 bg-red-950/20 px-3 py-2 text-xs text-red-100/90">
+                  Calibration mode active — click point 1, then point 2.
+                </div>
+              )}
+            </div>
+
+            {/* Selection inspector */}
+            <div className="rounded-lg border border-neutral-800 bg-neutral-900 p-3">
+              <div className="text-sm font-medium">Selection</div>
+
+              {selectedNode ? (
+                <div className="mt-2">
+                  <div className="text-sm">{selectedNode.label}</div>
+                  <div className="mt-0.5 text-xs text-neutral-400">{selectedNode.skuId}</div>
+
+                  {stagePpf ? (
+                    <div className="mt-2 rounded-md border border-neutral-800 bg-neutral-950 px-3 py-2 text-sm">
+                      <div className="text-xs text-neutral-400">Size (ft, live)</div>
+                      <div className="mt-0.5">
+                        {(selectedNode.transform.width / stagePpf).toFixed(2)} ft W •{" "}
+                        {(selectedNode.transform.height / stagePpf).toFixed(2)} ft D
                       </div>
                     </div>
-                  ))
+                  ) : (
+                    <div className="mt-2 rounded-md border border-neutral-900 bg-neutral-950 px-3 py-2 text-xs text-neutral-500">
+                      Size (ft) unavailable — apply calibration to enable.
+                    </div>
+                  )}
+
+                  {selectedNode.variant?.label && (
+                    <div className="mt-2 rounded-md border border-neutral-800 bg-neutral-950 px-3 py-2 text-sm">
+                      <div className="text-xs text-neutral-400">Variant</div>
+                      <div>{selectedNode.variant.label}</div>
+                    </div>
+                  )}
+
+                  {selectedNode.status === "markedForDelete" && (
+                    <div className="mt-2 rounded-md border border-red-900/50 bg-red-950/40 px-3 py-2 text-sm">
+                      <div className="text-xs text-red-200/80">Status</div>
+                      <div className="text-red-100">Queued for removal</div>
+                    </div>
+                  )}
+
+                  {selectedNode.status === "pendingSwap" && (
+                    <div className="mt-2 rounded-md border border-red-900/50 bg-red-950/30 px-3 py-2 text-sm">
+                      <div className="text-xs text-red-200/80">Status</div>
+                      <div className="text-red-100">Swap pending</div>
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <div className="mt-2 text-sm text-neutral-400">No selection</div>
+              )}
+            </div>
+
+            {/* Working Set */}
+            <div className="rounded-lg border border-neutral-800 bg-neutral-900 p-3">
+              <div className="text-sm font-medium">Working Set</div>
+              <div className="mt-1 text-xs text-neutral-400">
+                Collection → Room Size Bundle → Eligible SKUs
+              </div>
+
+              <div className="mt-3 space-y-2 text-sm">
+                <div className="flex items-center justify-between">
+                  <div className="text-neutral-300">Collection</div>
+                  <div className="text-neutral-400">{workingSet.collectionId ?? "—"}</div>
+                </div>
+                <div className="flex items-center justify-between">
+                  <div className="text-neutral-300">Bundle</div>
+                  <div className="text-neutral-400">{workingSet.bundleId ?? "—"}</div>
+                </div>
+
+                <div className="pt-2">
+                  <div className="text-xs font-medium text-neutral-300">Eligible SKUs</div>
+                  {workingSet.eligibleSkus?.length ? (
+                    <div className="mt-2 text-xs text-neutral-500">
+                      {workingSet.eligibleSkus.length} items eligible (drag from Furniture panel).
+                    </div>
+                  ) : (
+                    <div className="mt-2 text-sm text-neutral-400">
+                      Not loaded yet — click Generate to load a bundle.
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            {/* Furniture panel */}
+            <div className="rounded-lg border border-neutral-800 bg-neutral-900 p-3">
+              <div className="text-sm font-medium">Furniture</div>
+              <div className="mt-2 text-xs text-neutral-400">Drag eligible items onto the canvas.</div>
+
+              <div className="mt-3 flex flex-col gap-2">
+                {eligibleForDrag.map((item: any) => (
+                  <div
+                    key={item.skuId}
+                    draggable
+                    onDragStart={(e) => {
+                      e.dataTransfer.setData(
+                        DND_MIME,
+                        JSON.stringify({
+                          skuId: item.skuId,
+                          label: item.label,
+                        })
+                      );
+                      e.dataTransfer.effectAllowed = "copy";
+                    }}
+                    className="cursor-grab rounded-md border border-neutral-800 bg-neutral-950 px-3 py-2 text-sm hover:bg-neutral-800 active:cursor-grabbing"
+                    title="Drag onto canvas"
+                  >
+                    {item.label}
+                    <div className="mt-0.5 text-xs text-neutral-400">{item.skuId}</div>
+                  </div>
+                ))}
+
+                {!eligibleForDrag.length && (
+                  <div className="rounded-md border border-dashed border-neutral-700 bg-neutral-950 px-3 py-3 text-sm text-neutral-400">
+                    Generate to load a Working Set (bundle) for this collection.
+                  </div>
                 )}
               </div>
             </div>
 
-            {/* AI Actions */}
-            <div className="mt-4 rounded-lg border border-neutral-800 bg-neutral-900 p-3">
-              <div className="flex items-center justify-between">
-                <div className="text-sm font-medium">AI Actions</div>
-                <div className="rounded border border-neutral-800 bg-neutral-950 px-2 py-0.5 text-[11px] text-neutral-400">
-                  Soon
-                </div>
-              </div>
+            {/* History */}
+            <div className="rounded-lg border border-neutral-800 bg-neutral-900 p-3">
+              <div className="text-sm font-medium">History</div>
+              <div className="mt-1 text-xs text-neutral-400">Freeze payloads (v1) per Generate</div>
 
+              <div className="mt-3 flex flex-col gap-2">
+                <div className="flex gap-2">
+                  <button
+                    className="rounded-md border border-neutral-800 bg-neutral-950 px-3 py-1.5 text-sm hover:bg-neutral-800"
+                    onClick={async () => {
+                      const payload = lastFreezePayload ?? latestFreeze;
+                      if (!payload) {
+                        pushSnack("No history yet.");
+                        return;
+                      }
+                      try {
+                        await navigator.clipboard.writeText(JSON.stringify(payload, null, 2));
+                        pushSnack("Latest freeze JSON copied.");
+                      } catch {
+                        pushSnack("Clipboard blocked — use Download instead.");
+                      }
+                    }}
+                  >
+                    Copy latest JSON
+                  </button>
+
+                  <button
+                    className="rounded-md border border-neutral-800 bg-neutral-950 px-3 py-1.5 text-sm hover:bg-neutral-800"
+                    onClick={() => {
+                      const payload = lastFreezePayload ?? latestFreeze;
+                      if (!payload) {
+                        pushSnack("No history yet.");
+                        return;
+                      }
+                      const blob = new Blob([JSON.stringify(payload, null, 2)], {
+                        type: "application/json",
+                      });
+                      const url = URL.createObjectURL(blob);
+                      const a = document.createElement("a");
+                      a.href = url;
+                      a.download = `vibode_freeze_${payload.generationId}.json`;
+                      a.click();
+                      setTimeout(() => URL.revokeObjectURL(url), 500);
+                      pushSnack("Downloaded freeze JSON.");
+                    }}
+                  >
+                    Download latest
+                  </button>
+                </div>
+
+                {history.length === 0 ? (
+                  <div className="rounded-md border border-dashed border-neutral-700 bg-neutral-950 px-3 py-3 text-sm text-neutral-400">
+                    No generations yet.
+                  </div>
+                ) : (
+                  history.slice(0, 6).map((h: any) => {
+                    const thumbUrl =
+                      h.outputImageUrl ||
+                      h.compositeImageUrl ||
+                      h.freeze?.baseImage?.url ||
+                      h.freeze?.sceneSnapshot?.baseImageUrl ||
+                      null;
+
+                    return (
+                      <div
+                        key={`${h.generationId}_${h.createdAtIso ?? ""}`}
+                        className="rounded-md border border-neutral-800 bg-neutral-950 px-3 py-2"
+                      >
+                        <div className="text-sm">Generation</div>
+                        <div className="mt-0.5 text-xs text-neutral-400">
+                          {h.createdAtIso ? new Date(h.createdAtIso).toLocaleString() : "—"}
+                        </div>
+
+                        {thumbUrl ? (
+                          <div className="mt-2 aspect-[4/3] w-full overflow-hidden rounded-md border border-neutral-800 bg-neutral-950">
+                            <img
+                              src={thumbUrl}
+                              alt="Generation thumbnail"
+                              className="h-full w-full object-cover"
+                            />
+                          </div>
+                        ) : (
+                          <div className="mt-2 aspect-[4/3] w-full rounded-md border border-neutral-800 bg-neutral-950 text-xs text-neutral-500 flex items-center justify-center">
+                            No preview
+                          </div>
+                        )}
+
+                        {/* ✅ FIX: correct v1 fields */}
+                        <div className="mt-2 text-xs text-neutral-500">
+                          Nodes: {h.freeze?.sceneSnapshotImageSpace?.nodes?.length ?? 0} • SKU IDs:{" "}
+                          {h.freeze?.workingSetSnapshot?.skuIdsInPlay?.length ?? 0}
+                        </div>
+                        <div className="mt-1 text-xs text-neutral-500">
+                          Image-space: {h.freeze?.sceneSnapshotImageSpace ? "yes" : "no"} • v:{" "}
+                          {h.freeze?.payloadVersion ?? "—"}
+                        </div>
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+            </div>
+
+            {/* AI actions */}
+            <div className="rounded-lg border border-neutral-800 bg-neutral-900 p-3">
+              <div className="text-sm font-medium">AI Actions</div>
               <div className="mt-2 flex flex-col gap-2">
-                {["Cleanup Room", "Generate"].map((txt) => (
+                {["Cleanup Room", "Restage (Coming soon)"].map((txt) => (
                   <button
                     key={txt}
                     className="rounded-md border border-neutral-700 bg-neutral-950 px-3 py-2 text-left text-sm hover:bg-neutral-800"
-                    onClick={() => {
-                      console.log(`${txt} clicked`);
-                    }}
+                    onClick={() => pushSnack("Coming soon.")}
                   >
                     {txt}
                   </button>
                 ))}
-              </div>
-
-              <div className="mt-3 text-xs text-neutral-500">
-                Active tool:{" "}
-                <span className="text-neutral-300">{activeTool}</span>
               </div>
             </div>
           </div>
         </aside>
       </div>
 
-      {/* Swap modal */}
+      {/* Rescale Prompt Modal */}
+      {rescalePrompt && (
+        <div className="fixed inset-0 z-[90] flex items-center justify-center bg-black/60 p-4">
+          <div className="w-full max-w-[520px] rounded-xl border border-neutral-800 bg-neutral-950 p-4 shadow-xl">
+            <div className="text-lg font-semibold">Update existing objects to new scale?</div>
+            <div className="mt-2 text-sm text-neutral-300">
+              Calibration changed by{" "}
+              <span className="font-medium">{(rescalePrompt.ratio * 100).toFixed(1)}%</span>. You
+              can rescale placed furniture to match the new calibration (positions stay centered).
+            </div>
+
+            <div className="mt-3 text-xs text-neutral-500">
+              Prev: {rescalePrompt.prevPpf.toFixed(2)} px/ft • New:{" "}
+              {rescalePrompt.nextPpf.toFixed(2)} px/ft
+            </div>
+
+            <label className="mt-4 flex cursor-pointer items-center gap-2 text-sm text-neutral-300">
+              <input
+                type="checkbox"
+                checked={!!suppressRescalePrompt}
+                onChange={(e) => setSuppressRescalePrompt(e.target.checked)}
+              />
+              Don’t ask again
+            </label>
+
+            <div className="mt-4 flex justify-end gap-2">
+              <button
+                className="rounded-md border border-neutral-800 bg-neutral-900 px-3 py-2 text-sm hover:bg-neutral-800"
+                onClick={() => {
+                  dismissRescalePrompt();
+                  pushSnack("Kept existing objects unchanged.");
+                }}
+              >
+                Not now
+              </button>
+
+              <button
+                className="rounded-md border border-neutral-700 bg-neutral-100 px-3 py-2 text-sm text-neutral-900 hover:bg-white"
+                onClick={() => {
+                  confirmRescalePrompt();
+                  pushSnack("Existing objects rescaled to new calibration.");
+                }}
+              >
+                Rescale existing
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Swap Modal */}
       {swapOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
+          onMouseDown={(e) => {
+            if (e.target === e.currentTarget) closeSwap();
+          }}
+        >
           <div className="w-full max-w-lg rounded-xl border border-neutral-800 bg-neutral-950 shadow-xl">
             <div className="flex items-center justify-between border-b border-neutral-800 px-4 py-3">
               <div>
                 <div className="text-sm font-medium">Swap Furniture</div>
                 <div className="text-xs text-neutral-400">
-                  Choose a replacement item
+                  Choose a replacement item or a new color/material.
                 </div>
               </div>
               <button
                 className="rounded-md border border-neutral-800 bg-neutral-900 px-3 py-1.5 text-sm hover:bg-neutral-800"
-                onClick={() => setSwapOpen(false)}
+                onClick={closeSwap}
               >
                 Close
               </button>
             </div>
 
-            <div className="max-h-[60vh] overflow-auto p-4">
-              <div className="grid grid-cols-1 gap-2">
-                {SWAP_OPTIONS.map((opt) => (
-                  <button
-                    key={opt.skuId}
-                    className="rounded-lg border border-neutral-800 bg-neutral-900 px-3 py-3 text-left hover:bg-neutral-800"
-                    onClick={() => {
-                      alert(
-                        `Swap target: ${swapTargetId}\nSelected: ${opt.label} (${opt.skuId})\n\nNext step: wire swap into canvas state.`
-                      );
-                      setSwapOpen(false);
-                    }}
-                  >
-                    <div className="text-sm font-medium">{opt.label}</div>
-                    <div className="mt-0.5 text-xs text-neutral-400">
-                      {opt.skuId}
+            <div className="max-h-[70vh] overflow-auto p-4">
+              {swapTargetNode && (
+                <div className="mb-4 rounded-lg border border-neutral-800 bg-neutral-900 p-3">
+                  <div className="text-sm font-medium">Selected item</div>
+                  <div className="mt-1 text-xs text-neutral-400">
+                    {swapTargetNode.label} ({swapTargetNode.skuId})
+                    {swapTargetNode.variant?.label ? ` — ${swapTargetNode.variant.label}` : ""}
+                  </div>
+
+                  {swapTargetSku?.variants?.length ? (
+                    <div className="mt-3">
+                      <div className="text-xs font-medium text-neutral-300">
+                        Swap color / material
+                      </div>
+                      <div className="mt-2 grid grid-cols-1 gap-2">
+                        {swapTargetSku.variants.map((v: any) => (
+                          <button
+                            key={v.variantId}
+                            className="rounded-md border border-neutral-800 bg-neutral-950 px-3 py-2 text-left text-sm hover:bg-neutral-800"
+                            onClick={() => {
+                              if (!swapTargetId || !swapTargetSku) return;
+                              applySwap(swapTargetId, {
+                                skuId: swapTargetSku.skuId,
+                                label: swapTargetSku.label,
+                                variant: { variantId: v.variantId, label: v.label },
+                              });
+                              closeSwap();
+                              pushSnack("Variant updated.");
+                            }}
+                          >
+                            {v.label}
+                            <div className="mt-0.5 text-xs text-neutral-400">{v.variantId}</div>
+                          </button>
+                        ))}
+                      </div>
                     </div>
-                  </button>
-                ))}
-              </div>
+                  ) : (
+                    <div className="mt-3 text-xs text-neutral-500">
+                      No variants available for this item.
+                    </div>
+                  )}
+                </div>
+              )}
+
+              <div className="text-xs font-medium text-neutral-300">Swap to a different item</div>
+
+              {(() => {
+                const swapOptions: Array<{
+                  skuId: string;
+                  label: string;
+                  defaultPxWidth: number;
+                  defaultPxHeight: number;
+                }> = eligibleForDrag.length
+                  ? eligibleForDrag.map((x: any) => ({
+                      skuId: x.skuId,
+                      label: x.label,
+                      defaultPxWidth: x.defaultPxWidth,
+                      defaultPxHeight: x.defaultPxHeight,
+                    }))
+                  : Object.values((collection?.catalog as any) ?? {}).map((x: any) => ({
+                      skuId: x.skuId,
+                      label: x.label,
+                      defaultPxWidth: x.defaultPxWidth,
+                      defaultPxHeight: x.defaultPxHeight,
+                    }));
+
+                return (
+                  <div className="mt-2 grid grid-cols-1 gap-2">
+                    {swapOptions.map((opt) => (
+                      <button
+                        key={opt.skuId}
+                        className="rounded-lg border border-neutral-800 bg-neutral-900 px-3 py-3 text-left hover:bg-neutral-800"
+                        onClick={() => {
+                          if (!swapTargetId) return;
+                          applySwap(swapTargetId, {
+                            skuId: opt.skuId,
+                            label: opt.label,
+                            defaultPxWidth: opt.defaultPxWidth,
+                            defaultPxHeight: opt.defaultPxHeight,
+                          });
+                          closeSwap();
+                          pushSnack("Item swapped.");
+                        }}
+                      >
+                        <div className="text-sm font-medium">{opt.label}</div>
+                        <div className="mt-0.5 text-xs text-neutral-400">{opt.skuId}</div>
+                      </button>
+                    ))}
+                  </div>
+                );
+              })()}
             </div>
           </div>
         </div>
       )}
+
+      {/* Snackbars */}
+      <SnackbarHost
+        items={snacks}
+        onRemove={(id) => setSnacks((prev) => prev.filter((s) => s.id !== id))}
+      />
     </div>
   );
 }

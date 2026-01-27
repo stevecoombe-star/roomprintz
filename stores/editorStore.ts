@@ -1,0 +1,1265 @@
+// stores/editorStore.ts
+import { create } from "zustand";
+
+/* =========================
+   Types
+========================= */
+
+export type RoomDims = {
+  widthFt?: number;
+  lengthFt?: number;
+  heightFt?: number;
+};
+
+export type FurnitureVariant = {
+  variantId: string;
+  label?: string;
+};
+
+export type NodeTransform = {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  rotation: number;
+  skewX?: number;
+  skewY?: number;
+};
+
+export type FurnitureNodeStatus = "active" | "markedForDelete" | "pendingSwap";
+
+export type FurnitureNode = {
+  nodeId: string;
+
+  // product identity
+  skuId: string;
+  label: string;
+  variant?: FurnitureVariant;
+
+  // render + manipulate
+  zIndex: number;
+  transform: NodeTransform;
+
+  // workflow flags
+  status: FurnitureNodeStatus;
+
+  // provenance scaffolding (expand later)
+  provenance?: {
+    introducedInGenerationId?: string;
+    fromBundleId?: string;
+    fromCollectionId?: string;
+  };
+
+  /**
+   * Swap intent (v1)
+   * When status==="pendingSwap", this holds what we want to swap TO.
+   * (The compositor/prompt can use it deterministically.)
+   */
+  pendingSwap?: {
+    replacementSkuId: string;
+    replacementLabel?: string;
+    replacementVariantId?: string;
+  };
+};
+
+export type WorkingSet = {
+  collectionId?: string;
+  bundleId?: string;
+  eligibleSkus?: Array<{
+    skuId: string;
+    label: string;
+    defaultPxWidth: number;
+    defaultPxHeight: number;
+
+    // scale-aware payload fields
+    realWidthFt?: number;
+    realDepthFt?: number;
+
+    variants?: FurnitureVariant[];
+  }>;
+};
+
+/**
+ * Viewport mapping used to convert Stage (canvas) coords -> Image pixel coords.
+ * scale = stage_px_per_image_px
+ */
+export type ViewportMapping = {
+  imageStageX: number;
+  imageStageY: number;
+  imageStageW: number;
+  imageStageH: number;
+  scale: number;
+
+  imageNaturalW: number;
+  imageNaturalH: number;
+};
+
+/* ===== Calibration (PPF scaffold + user-line) ===== */
+
+export type Calibration = {
+  // pixels per foot in image-space coordinates
+  ppf?: number;
+
+  // previous ppf (for optional rescale of existing nodes)
+  prevPpf?: number;
+
+  // how we got it
+  method?: "assumed-fit-width" | "user-line" | "ai-infer" | "manual";
+  notes?: string;
+
+  // persisted user-line (image space)
+  userLine?: {
+    x1: number;
+    y1: number;
+    x2: number;
+    y2: number;
+    realFeet: number;
+  };
+
+  // draft clicks (image space)
+  draft?: {
+    p1?: { x: number; y: number };
+    p2?: { x: number; y: number };
+    realFeet?: number;
+  };
+};
+
+export type SceneGraph = {
+  sceneId: string;
+  baseImageUrl?: string;
+  baseImageWidthPx?: number;
+  baseImageHeightPx?: number;
+  room?: {
+    dims?: RoomDims;
+    sqft?: number;
+    dimsMode?: "auto" | "manual";
+  };
+  collection?: {
+    collectionId?: string;
+    bundleId?: string;
+  };
+
+  // scale correctness scaffold
+  calibration?: Calibration;
+
+  nodes: FurnitureNode[];
+};
+
+export type RequestedOps = {
+  add: string[]; // nodeIds newly introduced since last freeze
+  remove: string[]; // nodeIds markedForDelete
+  swap: string[]; // nodeIds pendingSwap
+  transformChanged: string[]; // nodeIds with transform changed since last freeze
+};
+
+export type RequestedActionBlock = {
+  type: "generate";
+  ops: RequestedOps;
+};
+
+export type FreezePayloadV1 = {
+  payloadVersion: "v1";
+
+  generationId: string;
+  createdAtIso: string;
+
+  baseImage: {
+    kind: "publicUrl" | "signedUrl" | "storageKey";
+    url?: string;
+    storageKey?: string;
+    widthPx?: number;
+    heightPx?: number;
+  };
+
+  viewport?: ViewportMapping;
+
+  // The compositor should ONLY trust this.
+  sceneSnapshotImageSpace: SceneGraph;
+
+  // Still useful for debugging UI issues
+  sceneSnapshot: SceneGraph;
+
+  workingSetSnapshot: WorkingSet;
+
+  calibration?: Calibration;
+
+  requestedAction: RequestedActionBlock;
+
+  diffFromPrevious?: {
+    previousGenerationId?: string;
+    summary: string;
+  };
+};
+
+export type FreezeRecord = {
+  generationId: string;
+  createdAtIso: string;
+
+  // A: composite image (mock: equals current baseImageUrl for now)
+  compositeImageUrl?: string;
+
+  // If present, this freeze has a realized output image (from Nano Banana Pro).
+  outputImageUrl?: string;
+  outputStorageKey?: string;
+  outputBucket?: string;
+
+  // B: canonical freeze payload (v1)
+  freeze: FreezePayloadV1;
+};
+
+/* ===== Rescale prompt (when calibration changes) ===== */
+
+export type RescalePrompt = {
+  prevPpf: number;
+  nextPpf: number;
+  ratio: number;
+};
+
+type UIState = {
+  activeTool: "select" | "furniture" | "mask" | "calibrate";
+  selectedNodeId: string | null;
+
+  // calibration-change UX
+  rescalePrompt?: RescalePrompt;
+  suppressRescalePrompt?: boolean;
+};
+
+type LastAction =
+  | {
+      kind: "toggleDelete";
+      nodeId: string;
+      prevStatus: FurnitureNodeStatus;
+      nextStatus: FurnitureNodeStatus;
+    }
+  | {
+      kind: "setPendingSwap";
+      nodeId: string;
+      prevStatus: FurnitureNodeStatus;
+      nextStatus: FurnitureNodeStatus;
+    }
+  | null;
+
+type EditorState = {
+  scene: SceneGraph;
+  workingSet: WorkingSet;
+  ui: UIState;
+
+  // viewport mapping for stage<->image coordinate conversion
+  viewport?: ViewportMapping;
+  setViewport: (vp?: ViewportMapping) => void;
+
+  // generation lineage (local mock)
+  history: FreezeRecord[];
+
+  freezeNowV1: () => FreezeRecord | null;
+
+  /**
+   * Legacy/compat alias used by the Editor UI Generate handler.
+   * Returns the FreezePayloadV1 directly (not the wrapper record).
+   */
+  freezeAndAppendHistory: () => FreezePayloadV1 | null;
+
+  /**
+   * NEW (Model plumbing):
+   * Attach the returned staged image to the most recent freeze record,
+   * and (optionally) set it as the current base image.
+   */
+  attachOutputToLatestFreeze: (output: {
+    generationId: string;
+    imageUrl: string;
+    storageKey?: string;
+    bucket?: string;
+  }) => void;
+
+  attachOutputAndSwapBase: (args: {
+    generationId: string;
+    outputImageUrl: string;
+    outputBucket?: string;
+    outputStorageKey?: string;
+    outputWidthPx?: number;
+    outputHeightPx?: number;
+  }) => void;
+
+  /**
+   * NEW (History UX):
+   * Set the current base image to a specific history record’s output image (or composite if no output).
+   */
+  setBaseImageFromHistory: (generationId: string) => boolean;
+
+  // last-action undo (V0)
+  lastAction: LastAction;
+  undoLastAction: () => void;
+
+  // UI + selection
+  setActiveTool: (tool: UIState["activeTool"]) => void;
+  selectNode: (nodeId: string | null) => void;
+
+  // node ops
+  addNode: (node: Omit<FurnitureNode, "nodeId"> & { nodeId?: string }) => string;
+  updateNodeTransform: (nodeId: string, patch: Partial<NodeTransform>) => void;
+  setNodeStatus: (nodeId: string, status: FurnitureNodeStatus) => void;
+
+  // Vibode vibe-flow flags
+  toggleDelete: (nodeId: string) => void;
+  setPendingSwap: (
+    nodeId: string,
+    pending: boolean,
+    replacement?: { skuId: string; label?: string; variantId?: string }
+  ) => void;
+
+  applySwap: (
+    nodeId: string,
+    next: {
+      skuId: string;
+      label: string;
+      variant?: FurnitureVariant;
+      defaultPxWidth?: number;
+      defaultPxHeight?: number;
+    }
+  ) => void;
+
+  // z-order + dev helpers
+  deleteSelectedHard: () => void;
+  bringToFront: (nodeId: string) => void;
+  sendToBack: (nodeId: string) => void;
+  duplicateNode: (nodeId: string) => string | null;
+
+  // scene setup
+  setBaseImageUrl: (url?: string) => void;
+  setBaseImageFromFile: (file: File) => void;
+  setRoomDims: (dims?: RoomDims) => void;
+  setCollection: (collectionId: string) => void;
+  setWorkingSet: (ws: WorkingSet) => void;
+
+  // Calibration actions (assumption + user-line)
+  setCalibration: (cal: Calibration) => void;
+  ensurePpfFromAssumption: () => void;
+
+  beginCalibration: () => void;
+  clearCalibrationDraft: () => void;
+  setCalibrationPoint: (idx: 1 | 2, ptImage: { x: number; y: number }) => void;
+  setCalibrationRealFeet: (feet: number) => void;
+  finalizeCalibrationFromLine: () => boolean;
+  clearCalibrationLine: () => void;
+
+  // Optional helper: rescale existing nodes based on (prevPpf -> ppf)
+  rescaleNodesToCalibration: () => boolean;
+
+  // Rescale prompt actions
+  setSuppressRescalePrompt: (v: boolean) => void;
+  dismissRescalePrompt: () => void;
+  triggerRescalePromptIfNeeded: (prevPpf: number | undefined, nextPpf: number) => void;
+  confirmRescalePrompt: () => void;
+
+  // Generate boundary (mock)
+  commitGenerateMock: () => void;
+};
+
+/* =========================
+   Helpers
+========================= */
+
+function safeUUID() {
+  if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
+    return crypto.randomUUID();
+  }
+  return `id_${Math.random().toString(16).slice(2)}_${Date.now()}`;
+}
+
+function computeSqft(dims?: RoomDims) {
+  const w = dims?.widthFt ?? 0;
+  const l = dims?.lengthFt ?? 0;
+  if (w <= 0 || l <= 0) return undefined;
+  return Math.round(w * l * 10) / 10;
+}
+
+function computeDimsMode(dims?: RoomDims): "auto" | "manual" {
+  const w = dims?.widthFt ?? 0;
+  const l = dims?.lengthFt ?? 0;
+  return w > 0 && l > 0 ? "manual" : "auto";
+}
+
+/**
+ * ✅ Safe deep clone for JSON-ish values used in freeze payloads.
+ * Fixes: JSON.parse(JSON.stringify(undefined)) crash when room dims are left blank.
+ */
+function deepClone<T>(value: T): T {
+  if (value === undefined || value === null) return value;
+
+  // Prefer structuredClone when available (browser runtime)
+  try {
+    // @ts-ignore
+    if (typeof structuredClone === "function") {
+      // @ts-ignore
+      return structuredClone(value);
+    }
+  } catch {
+    // fall through
+  }
+
+  try {
+    const json = JSON.stringify(value);
+    if (json === undefined) return value; // critical: prevents JSON.parse(undefined)
+    return JSON.parse(json) as T;
+  } catch {
+    // defensive: don't crash generate if something non-serializable sneaks in
+    return value;
+  }
+}
+
+function clamp(n: number, min: number, max: number) {
+  return Math.max(min, Math.min(max, n));
+}
+
+const isFiniteNumber = (n: unknown): n is number =>
+  typeof n === "number" && Number.isFinite(n);
+
+/**
+ * Convert a transform from Stage (canvas) pixels to Image pixel coordinates.
+ * Uses viewport.scale = stage_px_per_image_px
+ */
+export function toImageSpaceTransform(t: NodeTransform, vp: ViewportMapping): NodeTransform {
+  const x = (t.x - vp.imageStageX) / vp.scale;
+  const y = (t.y - vp.imageStageY) / vp.scale;
+  const w = t.width / vp.scale;
+  const h = t.height / vp.scale;
+
+  const cx = clamp(x, -vp.imageNaturalW, vp.imageNaturalW * 2);
+  const cy = clamp(y, -vp.imageNaturalH, vp.imageNaturalH * 2);
+
+  return {
+    x: cx,
+    y: cy,
+    width: Math.max(1, w),
+    height: Math.max(1, h),
+    rotation: t.rotation,
+    skewX: t.skewX,
+    skewY: t.skewY,
+  };
+}
+
+export function toImageSpaceScene(scene: SceneGraph, vp: ViewportMapping): SceneGraph {
+  return {
+    ...scene,
+    nodes: scene.nodes.map((n) => ({
+      ...n,
+      transform: toImageSpaceTransform(n.transform, vp),
+    })),
+  };
+}
+
+function epsilonEqual(a: number, b: number, eps = 0.01) {
+  return Math.abs(a - b) <= eps;
+}
+
+function transformEqual(a: NodeTransform, b: NodeTransform) {
+  return (
+    epsilonEqual(a.x, b.x) &&
+    epsilonEqual(a.y, b.y) &&
+    epsilonEqual(a.width, b.width) &&
+    epsilonEqual(a.height, b.height) &&
+    epsilonEqual(a.rotation, b.rotation) &&
+    epsilonEqual(a.skewX ?? 0, b.skewX ?? 0) &&
+    epsilonEqual(a.skewY ?? 0, b.skewY ?? 0)
+  );
+}
+
+function computeRequestedOps(
+  current: SceneGraph,
+  previous?: SceneGraph,
+  generationId?: string
+): RequestedOps {
+  const add: string[] = [];
+  const remove: string[] = [];
+  const swap: string[] = [];
+  const transformChanged: string[] = [];
+
+  const prevById = new Map<string, FurnitureNode>();
+  (previous?.nodes ?? []).forEach((n) => prevById.set(n.nodeId, n));
+
+  for (const n of current.nodes) {
+    if (n.status === "markedForDelete") remove.push(n.nodeId);
+    if (n.status === "pendingSwap") swap.push(n.nodeId);
+
+    const intro = n.provenance?.introducedInGenerationId;
+    const prev = prevById.get(n.nodeId);
+
+    if (generationId) {
+      if (intro === generationId) add.push(n.nodeId);
+    } else {
+      if (!prev) add.push(n.nodeId);
+    }
+
+    if (prev && !transformEqual(n.transform, prev.transform)) {
+      transformChanged.push(n.nodeId);
+    }
+  }
+
+  add.sort();
+  remove.sort();
+  swap.sort();
+  transformChanged.sort();
+
+  return { add, remove, swap, transformChanged };
+}
+
+/* =========================
+   Store
+========================= */
+
+export const useEditorStore = create<EditorState>((set, get) => ({
+  /* ---------- initial state ---------- */
+
+  scene: {
+    sceneId: safeUUID(),
+    baseImageUrl: undefined,
+    baseImageWidthPx: undefined,
+    baseImageHeightPx: undefined,
+    room: { dims: undefined, sqft: undefined, dimsMode: "auto" },
+    collection: { collectionId: undefined, bundleId: undefined },
+    calibration: undefined,
+    nodes: [],
+  },
+
+  workingSet: {},
+
+  ui: {
+    activeTool: "select",
+    selectedNodeId: null,
+    rescalePrompt: undefined,
+    suppressRescalePrompt: false,
+  },
+
+  viewport: undefined,
+
+  history: [],
+
+  lastAction: null,
+
+  /* ---------- viewport ---------- */
+
+  setViewport: (vp) => set(() => ({ viewport: vp })),
+
+  /* ---------- canonical freeze (v1) ---------- */
+
+  freezeNowV1: () => {
+    const { scene, workingSet, viewport, history } = get();
+
+    if (!viewport) return null;
+
+    const createdAtIso = new Date().toISOString();
+    const generationId = safeUUID();
+
+    const sceneSnapshot = deepClone(scene);
+    const workingSetSnapshot = deepClone(workingSet);
+
+    sceneSnapshot.nodes = sceneSnapshot.nodes.map((n) => {
+      if (n.provenance?.introducedInGenerationId) return n;
+      return {
+        ...n,
+        provenance: {
+          ...n.provenance,
+          introducedInGenerationId: generationId,
+          fromBundleId: n.provenance?.fromBundleId ?? sceneSnapshot.collection?.bundleId,
+          fromCollectionId: n.provenance?.fromCollectionId ?? sceneSnapshot.collection?.collectionId,
+        },
+      };
+    });
+
+    const sceneSnapshotImageSpace = toImageSpaceScene(sceneSnapshot, viewport);
+
+    const previous = history[0]?.freeze?.sceneSnapshotImageSpace;
+    const ops = computeRequestedOps(sceneSnapshotImageSpace, previous, generationId);
+
+    const baseImageWidthPx =
+      (isFiniteNumber(scene.baseImageWidthPx) ? scene.baseImageWidthPx : undefined) ??
+      (isFiniteNumber(viewport.imageNaturalW) ? viewport.imageNaturalW : undefined);
+
+    const baseImageHeightPx =
+      (isFiniteNumber(scene.baseImageHeightPx) ? scene.baseImageHeightPx : undefined) ??
+      (isFiniteNumber(viewport.imageNaturalH) ? viewport.imageNaturalH : undefined);
+
+    if (!isFiniteNumber(baseImageWidthPx) || !isFiniteNumber(baseImageHeightPx)) {
+      console.warn("[freezeNowV1] Missing base image natural dimensions", {
+        sceneBaseW: scene.baseImageWidthPx,
+        sceneBaseH: scene.baseImageHeightPx,
+        vpW: viewport.imageNaturalW,
+        vpH: viewport.imageNaturalH,
+      });
+      return null;
+    }
+
+    const freeze: FreezePayloadV1 = {
+      payloadVersion: "v1",
+      generationId,
+      createdAtIso,
+
+      baseImage: {
+        kind: "publicUrl",
+        url: scene.baseImageUrl,
+        widthPx: baseImageWidthPx,
+        heightPx: baseImageHeightPx,
+      },
+
+      viewport,
+
+      sceneSnapshotImageSpace,
+      sceneSnapshot,
+      workingSetSnapshot,
+
+      // ✅ safe now even when calibration is undefined
+      calibration: deepClone(scene.calibration),
+
+      requestedAction: {
+        type: "generate",
+        ops,
+      },
+
+      diffFromPrevious: {
+        previousGenerationId: history[0]?.generationId,
+        summary: `ops(add=${ops.add.length}, remove=${ops.remove.length}, swap=${ops.swap.length}, transformChanged=${ops.transformChanged.length})`,
+      },
+    };
+
+    const record: FreezeRecord = {
+      generationId,
+      createdAtIso,
+      compositeImageUrl: scene.baseImageUrl,
+      freeze,
+    };
+
+    set((s) => ({
+      history: [record, ...s.history],
+    }));
+
+    return record;
+  },
+
+  freezeAndAppendHistory: () => {
+    const rec = get().freezeNowV1();
+    return rec?.freeze ?? null;
+  },
+
+  /* ---------- NEW: attach output to latest freeze ---------- */
+
+  attachOutputToLatestFreeze: (output) =>
+    set((s) => {
+      const idx = s.history.findIndex((r) => r.generationId === output.generationId);
+      if (idx === -1) return s;
+
+      const nextHistory = [...s.history];
+      const rec = nextHistory[idx];
+
+      nextHistory[idx] = {
+        ...rec,
+        outputImageUrl: output.imageUrl,
+        outputStorageKey: output.storageKey,
+        outputBucket: output.bucket,
+      };
+
+      // Auto-advance base image to the newly generated output for “vibe flow”.
+      return {
+        ...s,
+        history: nextHistory,
+        scene: {
+          ...s.scene,
+          baseImageUrl: output.imageUrl,
+        },
+      };
+    }),
+
+  /* ---------- NEW: attach output + swap base (with dimension persistence) ---------- */
+
+  attachOutputAndSwapBase: (args) =>
+    set((s) => {
+      const hist = Array.isArray(s.history) ? s.history : [];
+
+      // ✅ Correct: history is newest-first, so findIndex() naturally searches newest -> oldest
+      const idx = hist.findIndex(
+        (r) => r?.generationId === args.generationId || r?.freeze?.generationId === args.generationId
+      );
+
+      const hasW = isFiniteNumber(args.outputWidthPx) && args.outputWidthPx > 0;
+      const hasH = isFiniteNumber(args.outputHeightPx) && args.outputHeightPx > 0;
+
+      const nextScene: SceneGraph = {
+        ...s.scene,
+        baseImageUrl: args.outputImageUrl,
+        ...(hasW ? { baseImageWidthPx: args.outputWidthPx } : {}),
+        ...(hasH ? { baseImageHeightPx: args.outputHeightPx } : {}),
+      };
+
+      // Always swap base image, even if there is no matching history record
+      if (idx === -1) {
+        return {
+          ...s,
+          scene: nextScene,
+        };
+      }
+
+      const nextHistory = hist.slice();
+      const rec = nextHistory[idx];
+
+      nextHistory[idx] = {
+        ...rec,
+        outputImageUrl: args.outputImageUrl,
+        outputBucket: args.outputBucket ?? rec.outputBucket,
+        outputStorageKey: args.outputStorageKey ?? rec.outputStorageKey,
+      };
+
+      return {
+        ...s,
+        history: nextHistory,
+        scene: nextScene,
+      };
+    }),
+
+  /* ---------- NEW: set base image from history ---------- */
+
+  setBaseImageFromHistory: (generationId) => {
+    const rec = get().history.find((r) => r.generationId === generationId);
+    if (!rec) return false;
+
+    const url = rec.outputImageUrl || rec.compositeImageUrl;
+    if (!url) return false;
+
+    // ✅ Clear stored base dims; they’ll be re-derived by viewport when image loads
+    set((s) => ({
+      scene: {
+        ...s.scene,
+        baseImageUrl: url,
+        baseImageWidthPx: undefined,
+        baseImageHeightPx: undefined,
+      },
+      ui: { ...s.ui, selectedNodeId: null },
+    }));
+    return true;
+  },
+
+  /* ---------- undo ---------- */
+
+  undoLastAction: () =>
+    set((s) => {
+      if (!s.lastAction) return s;
+
+      const { nodeId, prevStatus } = s.lastAction;
+      const exists = s.scene.nodes.some((n) => n.nodeId === nodeId);
+      if (!exists) return { ...s, lastAction: null };
+
+      return {
+        ...s,
+        scene: {
+          ...s.scene,
+          nodes: s.scene.nodes.map((n) => (n.nodeId === nodeId ? { ...n, status: prevStatus } : n)),
+        },
+        lastAction: null,
+      };
+    }),
+
+  /* ---------- UI ---------- */
+
+  setActiveTool: (tool) => set((s) => ({ ui: { ...s.ui, activeTool: tool } })),
+
+  selectNode: (nodeId) => set((s) => ({ ui: { ...s.ui, selectedNodeId: nodeId } })),
+
+  /* ---------- node creation / transform ---------- */
+
+  addNode: (node) => {
+    const id = node.nodeId ?? safeUUID();
+    const maxZ = get().scene.nodes.reduce((m, n) => Math.max(m, n.zIndex), 0);
+
+    const newNode: FurnitureNode = {
+      nodeId: id,
+      skuId: node.skuId,
+      label: node.label,
+      variant: node.variant,
+      zIndex: (node as any).zIndex ?? maxZ + 1,
+      status: (node as any).status ?? "active",
+      transform: node.transform,
+      provenance: node.provenance,
+      pendingSwap: node.pendingSwap,
+    };
+
+    set((s) => ({
+      scene: { ...s.scene, nodes: [...s.scene.nodes, newNode] },
+      ui: { ...s.ui, selectedNodeId: id },
+      lastAction: null,
+    }));
+
+    return id;
+  },
+
+  updateNodeTransform: (nodeId, patch) =>
+    set((s) => ({
+      scene: {
+        ...s.scene,
+        nodes: s.scene.nodes.map((n) =>
+          n.nodeId === nodeId ? { ...n, transform: { ...n.transform, ...patch } } : n
+        ),
+      },
+    })),
+
+  setNodeStatus: (nodeId, status) =>
+    set((s) => ({
+      scene: {
+        ...s.scene,
+        nodes: s.scene.nodes.map((n) => (n.nodeId === nodeId ? { ...n, status } : n)),
+      },
+    })),
+
+  /* ---------- Vibode vibe-flow ---------- */
+
+  toggleDelete: (nodeId) =>
+    set((s) => {
+      const node = s.scene.nodes.find((n) => n.nodeId === nodeId);
+      if (!node) return s;
+
+      const prevStatus = node.status;
+      const nextStatus: FurnitureNodeStatus =
+        prevStatus === "markedForDelete" ? "active" : "markedForDelete";
+
+      const nextPendingSwap = nextStatus === "markedForDelete" ? undefined : node.pendingSwap;
+
+      return {
+        ...s,
+        lastAction: { kind: "toggleDelete", nodeId, prevStatus, nextStatus },
+        scene: {
+          ...s.scene,
+          nodes: s.scene.nodes.map((n) =>
+            n.nodeId === nodeId ? { ...n, status: nextStatus, pendingSwap: nextPendingSwap } : n
+          ),
+        },
+      };
+    }),
+
+  setPendingSwap: (nodeId, pending, replacement) =>
+    set((s) => {
+      const node = s.scene.nodes.find((n) => n.nodeId === nodeId);
+      if (!node || node.status === "markedForDelete") return s;
+
+      const prevStatus = node.status;
+      const nextStatus: FurnitureNodeStatus = pending ? "pendingSwap" : "active";
+
+      const nextPendingSwap =
+        pending && replacement?.skuId
+          ? {
+              replacementSkuId: replacement.skuId,
+              replacementLabel: replacement.label,
+              replacementVariantId: replacement.variantId,
+            }
+          : undefined;
+
+      return {
+        ...s,
+        lastAction: { kind: "setPendingSwap", nodeId, prevStatus, nextStatus },
+        scene: {
+          ...s.scene,
+          nodes: s.scene.nodes.map((n) =>
+            n.nodeId === nodeId ? { ...n, status: nextStatus, pendingSwap: nextPendingSwap } : n
+          ),
+        },
+      };
+    }),
+
+  applySwap: (nodeId, next) =>
+    set((s) => ({
+      scene: {
+        ...s.scene,
+        nodes: s.scene.nodes.map((n) => {
+          if (n.nodeId !== nodeId) return n;
+
+          const t = n.transform;
+          const cx = t.x + t.width / 2;
+          const cy = t.y + t.height / 2;
+
+          const newW = next.defaultPxWidth ?? t.width;
+          const newH = next.defaultPxHeight ?? t.height;
+
+          return {
+            ...n,
+            skuId: next.skuId,
+            label: next.label,
+            variant: next.variant,
+            status: "active",
+            pendingSwap: undefined,
+            transform: {
+              ...t,
+              width: newW,
+              height: newH,
+              x: cx - newW / 2,
+              y: cy - newH / 2,
+            },
+          };
+        }),
+      },
+      lastAction: null,
+    })),
+
+  /* ---------- helpers ---------- */
+
+  deleteSelectedHard: () => {
+    const selected = get().ui.selectedNodeId;
+    if (!selected) return;
+
+    set((s) => ({
+      scene: { ...s.scene, nodes: s.scene.nodes.filter((n) => n.nodeId !== selected) },
+      ui: { ...s.ui, selectedNodeId: null },
+      lastAction: null,
+    }));
+  },
+
+  bringToFront: (nodeId) =>
+    set((s) => {
+      const maxZ = s.scene.nodes.reduce((m, n) => Math.max(m, n.zIndex), 0);
+      return {
+        scene: {
+          ...s.scene,
+          nodes: s.scene.nodes.map((n) => (n.nodeId === nodeId ? { ...n, zIndex: maxZ + 1 } : n)),
+        },
+      };
+    }),
+
+  sendToBack: (nodeId) =>
+    set((s) => {
+      const minZ = s.scene.nodes.reduce((m, n) => Math.min(m, n.zIndex), Infinity);
+      return {
+        scene: {
+          ...s.scene,
+          nodes: s.scene.nodes.map((n) => (n.nodeId === nodeId ? { ...n, zIndex: minZ - 1 } : n)),
+        },
+      };
+    }),
+
+  duplicateNode: (nodeId) => {
+    const src = get().scene.nodes.find((n) => n.nodeId === nodeId);
+    if (!src) return null;
+
+    const id = safeUUID();
+    const maxZ = get().scene.nodes.reduce((m, n) => Math.max(m, n.zIndex), 0);
+
+    const dup: FurnitureNode = {
+      ...src,
+      nodeId: id,
+      zIndex: maxZ + 1,
+      transform: { ...src.transform, x: src.transform.x + 18, y: src.transform.y + 18 },
+      status: "active",
+      pendingSwap: undefined,
+    };
+
+    set((s) => ({
+      scene: { ...s.scene, nodes: [...s.scene.nodes, dup] },
+      ui: { ...s.ui, selectedNodeId: id },
+      lastAction: null,
+    }));
+
+    return id;
+  },
+
+  /* ---------- scene setup ---------- */
+
+  setBaseImageUrl: (url) =>
+    set((s) => ({
+      scene: {
+        ...s.scene,
+        baseImageUrl: url,
+        baseImageWidthPx: undefined,
+        baseImageHeightPx: undefined,
+      },
+    })),
+
+  setBaseImageFromFile: (file) => {
+    const prev = get().scene.baseImageUrl;
+    const url = URL.createObjectURL(file);
+
+    if (prev?.startsWith("blob:")) {
+      try {
+        URL.revokeObjectURL(prev);
+      } catch {}
+    }
+
+    set((s) => ({
+      scene: {
+        ...s.scene,
+        baseImageUrl: url,
+        baseImageWidthPx: undefined,
+        baseImageHeightPx: undefined,
+      },
+    }));
+  },
+
+  setRoomDims: (dims) =>
+    set((s) => ({
+      scene: {
+        ...s.scene,
+        room: {
+          ...s.scene.room,
+          dims,
+          sqft: computeSqft(dims),
+          dimsMode: computeDimsMode(dims),
+        },
+      },
+    })),
+
+  setCollection: (collectionId) =>
+    set((s) => ({
+      scene: { ...s.scene, collection: { ...s.scene.collection, collectionId } },
+      workingSet: { ...s.workingSet, collectionId },
+    })),
+
+  setWorkingSet: (ws) =>
+    set((s) => ({
+      workingSet: { ...s.workingSet, ...ws },
+      scene: {
+        ...s.scene,
+        collection: {
+          collectionId: ws.collectionId ?? s.scene.collection?.collectionId,
+          bundleId: ws.bundleId ?? s.scene.collection?.bundleId,
+        },
+      },
+    })),
+
+  /* ---------- Calibration (assumption + user-line) ---------- */
+
+  setCalibration: (cal) =>
+    set((s) => ({
+      scene: { ...s.scene, calibration: { ...s.scene.calibration, ...cal } },
+    })),
+
+  ensurePpfFromAssumption: () => {
+    const { scene, viewport } = get();
+    const dims = scene.room?.dims;
+    if (!viewport || !(dims?.widthFt && dims?.lengthFt)) return;
+
+    const assumedFeet = dims.widthFt;
+    if (!assumedFeet || assumedFeet <= 0) return;
+
+    const ppf = viewport.imageNaturalW / assumedFeet;
+
+    set((s) => {
+      const prevPpf = s.scene.calibration?.ppf;
+      return {
+        scene: {
+          ...s.scene,
+          calibration: {
+            ...s.scene.calibration,
+            prevPpf,
+            ppf,
+            method: "assumed-fit-width",
+            notes: "V0 assumption: room width spans image width. Replace with user-line calibration.",
+          },
+        },
+      };
+    });
+  },
+
+  beginCalibration: () =>
+    set((s) => ({
+      ui: { ...s.ui, activeTool: "calibrate", selectedNodeId: null },
+      scene: {
+        ...s.scene,
+        calibration: {
+          ...s.scene.calibration,
+          method: "user-line",
+          draft: {
+            p1: undefined,
+            p2: undefined,
+            realFeet: s.scene.calibration?.draft?.realFeet ?? 10,
+          },
+        },
+      },
+      lastAction: null,
+    })),
+
+  clearCalibrationDraft: () =>
+    set((s) => ({
+      scene: {
+        ...s.scene,
+        calibration: {
+          ...s.scene.calibration,
+          draft: {
+            p1: undefined,
+            p2: undefined,
+            realFeet: s.scene.calibration?.draft?.realFeet ?? 10,
+          },
+        },
+      },
+    })),
+
+  setCalibrationPoint: (idx, ptImage) =>
+    set((s) => {
+      const draft = s.scene.calibration?.draft ?? {};
+      const nextDraft = idx === 1 ? { ...draft, p1: ptImage, p2: undefined } : { ...draft, p2: ptImage };
+      return {
+        scene: {
+          ...s.scene,
+          calibration: { ...s.scene.calibration, method: "user-line", draft: nextDraft },
+        },
+      };
+    }),
+
+  setCalibrationRealFeet: (feet) =>
+    set((s) => ({
+      scene: {
+        ...s.scene,
+        calibration: {
+          ...s.scene.calibration,
+          method: "user-line",
+          draft: { ...(s.scene.calibration?.draft ?? {}), realFeet: feet },
+        },
+      },
+    })),
+
+  finalizeCalibrationFromLine: () => {
+    const { viewport, scene } = get();
+    const draft = scene.calibration?.draft;
+
+    if (!viewport || !draft?.p1 || !draft?.p2) return false;
+
+    const realFeet = Number(draft.realFeet);
+    if (!isFinite(realFeet) || realFeet <= 0) return false;
+
+    const dx = draft.p2.x - draft.p1.x;
+    const dy = draft.p2.y - draft.p1.y;
+    const distPx = Math.sqrt(dx * dx + dy * dy);
+    if (!isFinite(distPx) || distPx < 5) return false;
+
+    const nextPpf = distPx / realFeet;
+    const prevPpf = get().scene.calibration?.ppf;
+
+    set((s) => ({
+      scene: {
+        ...s.scene,
+        calibration: {
+          ...s.scene.calibration,
+          prevPpf,
+          ppf: nextPpf,
+          method: "user-line",
+          notes: "Computed from user calibration line.",
+          userLine: {
+            x1: draft.p1!.x,
+            y1: draft.p1!.y,
+            x2: draft.p2!.x,
+            y2: draft.p2!.y,
+            realFeet,
+          },
+          draft: { ...draft, realFeet },
+        },
+      },
+    }));
+
+    get().triggerRescalePromptIfNeeded(prevPpf, nextPpf);
+
+    return true;
+  },
+
+  clearCalibrationLine: () =>
+    set((s) => ({
+      ui: { ...s.ui, rescalePrompt: undefined },
+      scene: {
+        ...s.scene,
+        calibration: {
+          ...s.scene.calibration,
+          ppf: undefined,
+          prevPpf: undefined,
+          userLine: undefined,
+          notes: undefined,
+          method: undefined,
+          draft: {
+            p1: undefined,
+            p2: undefined,
+            realFeet: s.scene.calibration?.draft?.realFeet ?? 10,
+          },
+        },
+      },
+    })),
+
+  /* ---------- Optional: rescale existing nodes to current calibration ---------- */
+
+  rescaleNodesToCalibration: () => {
+    const { scene } = get();
+    const ppf = scene.calibration?.ppf;
+    const prev = scene.calibration?.prevPpf;
+
+    if (!ppf || !prev || prev <= 0) return false;
+
+    const ratio = ppf / prev;
+
+    set((s) => ({
+      scene: {
+        ...s.scene,
+        calibration: {
+          ...s.scene.calibration,
+          prevPpf: ppf,
+        },
+        nodes: s.scene.nodes.map((n) => {
+          if (n.status === "markedForDelete") return n;
+
+          const t = n.transform;
+          const cx = t.x + t.width / 2;
+          const cy = t.y + t.height / 2;
+
+          const newW = Math.max(20, t.width * ratio);
+          const newH = Math.max(20, t.height * ratio);
+
+          return {
+            ...n,
+            transform: {
+              ...t,
+              width: newW,
+              height: newH,
+              x: cx - newW / 2,
+              y: cy - newH / 2,
+            },
+          };
+        }),
+      },
+    }));
+
+    return true;
+  },
+
+  /* ---------- Rescale prompt actions ---------- */
+
+  setSuppressRescalePrompt: (v) => set((s) => ({ ui: { ...s.ui, suppressRescalePrompt: v } })),
+
+  dismissRescalePrompt: () => set((s) => ({ ui: { ...s.ui, rescalePrompt: undefined } })),
+
+  triggerRescalePromptIfNeeded: (prevPpf, nextPpf) => {
+    const { ui, scene } = get();
+    if (ui.suppressRescalePrompt) return;
+
+    if (!prevPpf || !isFinite(prevPpf) || prevPpf <= 0) return;
+    if (!isFinite(nextPpf) || nextPpf <= 0) return;
+
+    const activeNodes = scene.nodes.filter((n) => n.status !== "markedForDelete").length;
+    if (activeNodes === 0) return;
+
+    const ratio = nextPpf / prevPpf;
+    if (!isFinite(ratio) || Math.abs(ratio - 1) < 0.01) return;
+
+    set((s) => ({
+      ui: { ...s.ui, rescalePrompt: { prevPpf, nextPpf, ratio } },
+    }));
+  },
+
+  confirmRescalePrompt: () => {
+    get().rescaleNodesToCalibration();
+    set((s) => ({ ui: { ...s.ui, rescalePrompt: undefined } }));
+  },
+
+  /* ---------- Generate boundary (mock) ---------- */
+
+  commitGenerateMock: () =>
+    set((s) => ({
+      scene: {
+        ...s.scene,
+        nodes: s.scene.nodes
+          .filter((n) => n.status !== "markedForDelete")
+          .map((n) =>
+            n.status === "pendingSwap" ? { ...n, status: "active", pendingSwap: undefined } : n
+          ),
+      },
+      ui: { ...s.ui, selectedNodeId: null },
+      lastAction: null,
+    })),
+}));
