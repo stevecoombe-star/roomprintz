@@ -222,6 +222,8 @@ export type FreezeRecord = {
   outputImageUrl?: string;
   outputStorageKey?: string;
   outputBucket?: string;
+  outputWidthPx?: number;
+  outputHeightPx?: number;
 
   // B: canonical freeze payload (v1)
   freeze: FreezePayloadV1;
@@ -310,6 +312,10 @@ type EditorState = {
    * Set the current base image to a specific history record’s output image (or composite if no output).
    */
   setBaseImageFromHistory: (generationId: string) => boolean;
+
+  loadHistoryImage: (record: FreezeRecord) => void;
+  loadHistoryMarkup: (record: FreezeRecord) => void;
+  loadHistoryBoth: (record: FreezeRecord) => void;
 
   // last-action undo (V0)
   lastAction: LastAction;
@@ -446,6 +452,32 @@ function deepClone<T>(value: T): T {
     // defensive: don't crash generate if something non-serializable sneaks in
     return value;
   }
+}
+
+function normalizeMarkupLayer(layer?: MarkupLayer | null): MarkupLayer {
+  if (!layer || layer.version !== "v1" || !Array.isArray(layer.items)) {
+    return { version: "v1", items: [] };
+  }
+  return layer;
+}
+
+function getHistoryImageUrl(record: FreezeRecord): string | undefined {
+  return (
+    record.outputImageUrl ||
+    record.compositeImageUrl ||
+    record.freeze?.baseImage?.url ||
+    record.freeze?.sceneSnapshot?.baseImageUrl ||
+    record.freeze?.sceneSnapshotImageSpace?.baseImageUrl ||
+    undefined
+  );
+}
+
+function getHistoryMarkupLayer(record: FreezeRecord): MarkupLayer {
+  const layer =
+    record.pendingMarkup ??
+    record.freeze?.sceneSnapshotImageSpace?.draftMarkup ??
+    record.freeze?.sceneSnapshot?.draftMarkup;
+  return normalizeMarkupLayer(layer);
 }
 
 function clamp(n: number, min: number, max: number) {
@@ -758,6 +790,8 @@ export const useEditorStore = create<EditorState>((set, get) => ({
         outputImageUrl: args.outputImageUrl,
         outputBucket: args.outputBucket ?? rec.outputBucket,
         outputStorageKey: args.outputStorageKey ?? rec.outputStorageKey,
+        outputWidthPx: hasW ? args.outputWidthPx : rec.outputWidthPx,
+        outputHeightPx: hasH ? args.outputHeightPx : rec.outputHeightPx,
       };
 
       return {
@@ -787,6 +821,64 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       ui: { ...s.ui, selectedNodeId: null },
     }));
     return true;
+  },
+
+  loadHistoryImage: (record) => {
+    const url = getHistoryImageUrl(record);
+    if (!url) return;
+    const baseImageWidthPx =
+      isFiniteNumber(record.outputWidthPx) && record.outputWidthPx > 0
+        ? record.outputWidthPx
+        : undefined;
+    const baseImageHeightPx =
+      isFiniteNumber(record.outputHeightPx) && record.outputHeightPx > 0
+        ? record.outputHeightPx
+        : undefined;
+    set((s) => ({
+      scene: {
+        ...s.scene,
+        baseImageUrl: url,
+        baseImageWidthPx,
+        baseImageHeightPx,
+        draftMarkup: { version: "v1", items: [] },
+        phase: "IDLE",
+      },
+    }));
+  },
+
+  loadHistoryMarkup: (record) => {
+    const markup = deepClone(getHistoryMarkupLayer(record));
+    set((s) => ({
+      scene: {
+        ...s.scene,
+        draftMarkup: markup,
+        phase: "MARKUP",
+      },
+    }));
+  },
+
+  loadHistoryBoth: (record) => {
+    const url = getHistoryImageUrl(record);
+    if (!url) return;
+    const markup = deepClone(getHistoryMarkupLayer(record));
+    const baseImageWidthPx =
+      isFiniteNumber(record.outputWidthPx) && record.outputWidthPx > 0
+        ? record.outputWidthPx
+        : undefined;
+    const baseImageHeightPx =
+      isFiniteNumber(record.outputHeightPx) && record.outputHeightPx > 0
+        ? record.outputHeightPx
+        : undefined;
+    set((s) => ({
+      scene: {
+        ...s.scene,
+        baseImageUrl: url,
+        baseImageWidthPx,
+        baseImageHeightPx,
+        draftMarkup: markup,
+        phase: "MARKUP",
+      },
+    }));
   },
 
   /* ---------- undo ---------- */
