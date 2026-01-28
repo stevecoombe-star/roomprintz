@@ -40,9 +40,11 @@ function findSkuById(skuId: string) {
 export function EditorCanvas({
   className,
   onRequestSwap,
+  markupVisible = true,
 }: {
   className?: string;
   onRequestSwap?: (nodeId: string) => void;
+  markupVisible?: boolean;
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
 
@@ -488,7 +490,7 @@ export function EditorCanvas({
               const isSelected = n.nodeId === selectedNodeId;
               const isHovered = hoveredNodeId === n.nodeId;
               const showBadges =
-                (isSelected || isHovered) && activeTool !== "calibrate";
+                markupVisible && (isSelected || isHovered) && activeTool !== "calibrate";
 
               const t = n.transform;
 

@@ -148,6 +148,7 @@ export type SceneGraph = {
   phase: Phase;
   vibeMode: VibeMode;
   draftMarkup: MarkupLayer;
+  markupVisible: boolean;
   genUi: GenerationUi;
   room?: {
     dims?: RoomDims;
@@ -336,6 +337,9 @@ type EditorState = {
   beginMarkup: () => void;
   clearDraftMarkup: () => void;
   setDraftMarkup: (layer: MarkupLayer) => void;
+  setMarkupVisible: (visible: boolean) => void;
+  toggleMarkupVisible: () => void;
+  recallLastMarkup: (opts?: { mode: "replace" | "append" }) => boolean;
   tryRestorePendingFromLocalStorage: () => void;
   beginGenerate: () => { sceneSnapshotForRecovery: any; markupToPersist: MarkupLayer };
   markGeneratingSlow: () => void;
@@ -459,6 +463,10 @@ function normalizeMarkupLayer(layer?: MarkupLayer | null): MarkupLayer {
     return { version: "v1", items: [] };
   }
   return layer;
+}
+
+function hasMarkupItems(layer?: MarkupLayer | null): boolean {
+  return !!layer && Array.isArray(layer.items) && layer.items.length > 0;
 }
 
 function getHistoryImageUrl(record: FreezeRecord): string | undefined {
@@ -599,6 +607,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     phase: "IDLE",
     vibeMode: "on",
     draftMarkup: { version: "v1", items: [] },
+    markupVisible: true,
     genUi: {},
     room: { dims: undefined, sqft: undefined, dimsMode: "auto" },
     collection: { collectionId: undefined, bundleId: undefined },
@@ -973,6 +982,64 @@ export const useEditorStore = create<EditorState>((set, get) => ({
         phase: Array.isArray(layer.items) && layer.items.length > 0 ? "MARKUP" : "IDLE",
       },
     })),
+
+  setMarkupVisible: (visible) =>
+    set((s) => ({
+      scene: { ...s.scene, markupVisible: visible },
+    })),
+
+  toggleMarkupVisible: () =>
+    set((s) => ({
+      scene: { ...s.scene, markupVisible: !s.scene.markupVisible },
+    })),
+
+  recallLastMarkup: (opts) => {
+    const mode = opts?.mode ?? "replace";
+    const history = get().history ?? [];
+    let successRecord: FreezeRecord | undefined;
+    for (let i = history.length - 1; i >= 0; i -= 1) {
+      const record = history[i];
+      if (
+        record?.pendingStatus === "success" &&
+        hasMarkupItems(getHistoryMarkupLayer(record))
+      ) {
+        successRecord = record;
+        break;
+      }
+    }
+    let pendingRecord: FreezeRecord | undefined;
+    if (!successRecord) {
+      for (let i = history.length - 1; i >= 0; i -= 1) {
+        const record = history[i];
+        if (record?.pendingMarkup && hasMarkupItems(getHistoryMarkupLayer(record))) {
+          pendingRecord = record;
+          break;
+        }
+      }
+    }
+    const record = successRecord ?? pendingRecord;
+    if (!record) return false;
+
+    const recalled = deepClone(getHistoryMarkupLayer(record));
+    if (!hasMarkupItems(recalled)) return false;
+
+    set((s) => {
+      const current = normalizeMarkupLayer(s.scene.draftMarkup);
+      const next: MarkupLayer =
+        mode === "append"
+          ? { version: "v1", items: [...current.items, ...recalled.items] }
+          : recalled;
+      return {
+        scene: {
+          ...s.scene,
+          draftMarkup: next,
+          phase: "MARKUP",
+        },
+      };
+    });
+
+    return true;
+  },
 
   tryRestorePendingFromLocalStorage: () => {
     const pending = loadPendingLocal();
