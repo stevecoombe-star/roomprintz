@@ -317,6 +317,7 @@ type EditorState = {
   loadHistoryImage: (record: FreezeRecord) => void;
   loadHistoryMarkup: (record: FreezeRecord) => void;
   loadHistoryBoth: (record: FreezeRecord) => void;
+  branchFromHistory: (record: FreezeRecord) => boolean;
 
   // last-action undo (V0)
   lastAction: LastAction;
@@ -888,6 +889,33 @@ export const useEditorStore = create<EditorState>((set, get) => ({
         phase: "MARKUP",
       },
     }));
+  },
+
+  branchFromHistory: (record) => {
+    const url = getHistoryImageUrl(record);
+    if (!url) return false;
+    const markup = deepClone(getHistoryMarkupLayer(record));
+    if (!hasMarkupItems(markup)) return false;
+    const baseImageWidthPx =
+      isFiniteNumber(record.outputWidthPx) && record.outputWidthPx > 0
+        ? record.outputWidthPx
+        : undefined;
+    const baseImageHeightPx =
+      isFiniteNumber(record.outputHeightPx) && record.outputHeightPx > 0
+        ? record.outputHeightPx
+        : undefined;
+
+    set((s) => ({
+      scene: {
+        ...s.scene,
+        baseImageUrl: url,
+        baseImageWidthPx,
+        baseImageHeightPx,
+        draftMarkup: markup,
+        phase: "MARKUP",
+      },
+    }));
+    return true;
   },
 
   /* ---------- undo ---------- */
