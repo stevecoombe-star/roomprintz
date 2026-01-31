@@ -658,7 +658,7 @@ export default function EditorPage() {
                 ? "border-neutral-900 bg-neutral-950 text-neutral-500"
                 : vibeMode === "on"
                 ? "border-sky-600/60 bg-sky-950/40 text-sky-100 shadow-[0_0_12px_rgba(56,189,248,0.25)] hover:bg-sky-900/40"
-                : "border-neutral-700 bg-neutral-900 hover:bg-neutral-800"
+                : "border-[rgba(148,163,184,0.50)] bg-neutral-900 text-slate-200 shadow-[inset_0_0_0_1px_rgba(148,163,184,0.18)] hover:bg-neutral-800"
             }`}
             onClick={onGenerate}
             disabled={isBusy}
