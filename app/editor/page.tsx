@@ -34,7 +34,7 @@ function isFiniteNumber(n: any) {
 }
 
 function formatInches(n?: number) {
-  if (!isFiniteNumber(n)) return "—";
+  if (typeof n !== "number" || !Number.isFinite(n)) return "—";
   return Number.isInteger(n) ? `${n}` : n.toFixed(1);
 }
 
