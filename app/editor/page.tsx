@@ -707,8 +707,8 @@ export default function EditorPage() {
         <main className="flex flex-1 items-center justify-center bg-neutral-950">
           {/* OUTER: owns glow pseudo-elements (NO overflow-hidden) */}
           <div
-            className={`relative h-[70vh] w-[70vw] max-w-[1200px] rounded-lg ${
-              vibeMode === "on" ? "vibe-glow vibe-aura vibe-aura-animate" : "vibe-glow"
+            className={`relative h-[70vh] w-[70vw] max-w-[1200px] rounded-lg precision-ring ${
+              vibeMode === "on" ? "vibe-glow vibe-aura vibe-aura-animate" : ""
             }`}
           >
             {/* INNER: clips canvas contents + keeps border/bg */}

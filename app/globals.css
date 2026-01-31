@@ -25,6 +25,22 @@ body {
   font-family: Arial, Helvetica, sans-serif;
 }
 
+/* Precision ring (static): always present */
+.precision-ring {
+  position: relative;
+}
+
+.precision-ring::after {
+  content: "";
+  position: absolute;
+  inset: -2px;
+  border-radius: inherit;
+  pointer-events: none;
+  box-shadow: 0 0 0 1px rgba(148, 163, 184, 0.30), 0 0 18px rgba(15, 23, 42, 0.35);
+  transition: box-shadow 220ms ease, opacity 220ms ease;
+  opacity: 1;
+}
+
 /* Precision ring (static): always present when .vibe-glow is used */
 .vibe-glow {
   position: relative;
