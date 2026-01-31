@@ -1,6 +1,7 @@
 // stores/editorStore.ts
 import { create } from "zustand";
 import { loadPendingLocal } from "../lib/pendingGeneration";
+import type { IkeaCaSku } from "../data/mockIkeaCaSkus";
 
 /* =========================
    Types
@@ -46,15 +47,34 @@ export type FurnitureNodeStatus = "active" | "markedForDelete" | "pendingSwap";
 
 export type FurnitureNode = {
   nodeId: string;
+  id?: string;
+  kind?: "furniture";
 
   // product identity
   skuId: string;
   label: string;
+  vendor?: "IKEA_CA";
+  displayName?: string;
+  articleNumber?: string;
+  imageUrl?: string;
+  productUrl?: string;
+  dimsIn?: {
+    width: number;
+    depth?: number;
+    height?: number;
+    diameter?: number;
+  };
   variant?: FurnitureVariant;
 
   // render + manipulate
   zIndex: number;
   transform: NodeTransform;
+  bbox?: {
+    x: number;
+    y: number;
+    w: number;
+    h: number;
+  };
 
   // workflow flags
   status: FurnitureNodeStatus;
@@ -329,6 +349,7 @@ type EditorState = {
 
   // node ops
   addNode: (node: Omit<FurnitureNode, "nodeId"> & { nodeId?: string }) => string;
+  addFurnitureNodeFromSku: (sku: IkeaCaSku) => void;
   updateNodeTransform: (nodeId: string, patch: Partial<NodeTransform>) => void;
   setNodeStatus: (nodeId: string, status: FurnitureNodeStatus) => void;
 
@@ -503,6 +524,22 @@ function scheduleMicrotask(cb: () => void) {
 
 const isFiniteNumber = (n: unknown): n is number =>
   typeof n === "number" && Number.isFinite(n);
+
+const DEFAULT_PX_PER_IN = 6; // v0 constant
+
+function skuFootprintInches(sku: IkeaCaSku) {
+  const w = sku.dimsIn.diameter ?? sku.dimsIn.width;
+  const d = sku.dimsIn.depth ?? sku.dimsIn.width;
+  return { wIn: w, dIn: d };
+}
+
+function getViewportCenter(vp?: ViewportMapping) {
+  if (!vp) return { x: 200, y: 200 };
+  const x = vp.imageStageX + vp.imageStageW / 2;
+  const y = vp.imageStageY + vp.imageStageH / 2;
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return { x: 200, y: 200 };
+  return { x, y };
+}
 
 /**
  * Convert a transform from Stage (canvas) pixels to Image pixel coordinates.
@@ -969,6 +1006,51 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     }));
 
     return id;
+  },
+
+  addFurnitureNodeFromSku: (sku) => {
+    const id = safeUUID();
+    const { viewport, scene } = get();
+
+    const { wIn, dIn } = skuFootprintInches(sku);
+    const wPx = Math.max(24, Math.round(wIn * DEFAULT_PX_PER_IN));
+    const hPx = Math.max(24, Math.round(dIn * DEFAULT_PX_PER_IN));
+
+    const center = getViewportCenter(viewport);
+    const x = center.x - wPx / 2;
+    const y = center.y - hPx / 2;
+
+    const maxZ = scene.nodes.reduce((m, n) => Math.max(m, n.zIndex), 0);
+
+    const node: FurnitureNode = {
+      nodeId: id,
+      id,
+      kind: "furniture",
+      skuId: sku.skuId,
+      vendor: "IKEA_CA",
+      displayName: sku.displayName,
+      label: sku.displayName,
+      articleNumber: sku.articleNumber,
+      imageUrl: sku.imageUrl,
+      productUrl: sku.productUrl,
+      dimsIn: { ...sku.dimsIn },
+      zIndex: maxZ + 1,
+      status: "active",
+      transform: {
+        x,
+        y,
+        width: wPx,
+        height: hPx,
+        rotation: 0,
+      },
+      bbox: { x, y, w: wPx, h: hPx },
+    };
+
+    set((s) => ({
+      scene: { ...s.scene, nodes: [...s.scene.nodes, node] },
+      ui: { ...s.ui, selectedNodeId: id },
+      lastAction: null,
+    }));
   },
 
   updateNodeTransform: (nodeId, patch) =>

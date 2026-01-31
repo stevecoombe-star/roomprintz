@@ -8,6 +8,7 @@ import { EditorCanvas } from "@/components/editor/EditorCanvas";
 import { SnackbarHost, type Snackbar } from "@/components/ui/SnackbarHost";
 import { useEditorStore } from "@/stores/editorStore";
 import { MOCK_COLLECTIONS, type RoomSizeBundleId } from "@/data/mockCollections";
+import { IKEA_CA_SKUS, type IkeaCaSku } from "@/data/mockIkeaCaSkus";
 import { clearPendingLocal, savePendingLocal } from "@/lib/pendingGeneration";
 
 // ✅ FIX: import path (avoid "@/src/..." which commonly causes alias/circular issues)
@@ -30,6 +31,20 @@ function pickBundleIdFromSqft(sqft: number): RoomSizeBundleId {
 
 function isFiniteNumber(n: any) {
   return typeof n === "number" && Number.isFinite(n);
+}
+
+function formatInches(n?: number) {
+  if (!isFiniteNumber(n)) return "—";
+  return Number.isInteger(n) ? `${n}` : n.toFixed(1);
+}
+
+function skuDimsLabel(sku: IkeaCaSku) {
+  const { width, depth, height, diameter } = sku.dimsIn;
+  if (diameter) {
+    return `Ø ${formatInches(diameter)}" × H ${formatInches(height)}"`;
+  }
+  const d = depth ?? width;
+  return `W ${formatInches(width)}" × D ${formatInches(d)}" × H ${formatInches(height)}"`;
 }
 
 function validateFreezePayloadV1(payload: any): { ok: true } | { ok: false; reason: string } {
@@ -161,6 +176,7 @@ export default function EditorPage() {
 
   const applySwap = useEditorStore((s) => s.applySwap);
   const setPendingSwap = useEditorStore((s) => s.setPendingSwap);
+  const addFurnitureNodeFromSku = useEditorStore((s) => s.addFurnitureNodeFromSku);
 
   const lastAction = useEditorStore((s) => s.lastAction);
   const undoLastAction = useEditorStore((s) => s.undoLastAction);
@@ -186,6 +202,7 @@ export default function EditorPage() {
   const [swapTargetId, setSwapTargetId] = useState<string | null>(null);
   const [recallConfirmOpen, setRecallConfirmOpen] = useState(false);
   const [branchConfirmFor, setBranchConfirmFor] = useState<string | null>(null);
+  const [addOpen, setAddOpen] = useState(false);
 
   const [snacks, setSnacks] = useState<Snackbar[]>([]);
   const pushSnack = (message: string) => {
@@ -744,6 +761,15 @@ export default function EditorPage() {
                   title={vibeMode === "on" ? "Switch to Precision Mode" : "Switch to Vibe Mode"}
                 >
                   Vibe: {vibeMode === "on" ? "On" : "Off"}
+                </button>
+
+                <button
+                  type="button"
+                  className="rounded-full border border-neutral-700 bg-neutral-950 px-2.5 py-1 text-[11px] text-neutral-200 hover:bg-neutral-800"
+                  onClick={() => setAddOpen(true)}
+                  title="Add furniture"
+                >
+                  ➕ Add
                 </button>
               </div>
 
@@ -1561,6 +1587,63 @@ export default function EditorPage() {
               >
                 Rescale existing
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Add Furniture Panel */}
+      {addOpen && (
+        <div
+          className="fixed inset-0 z-40 flex items-start justify-end bg-black/60 p-4"
+          onMouseDown={(e) => {
+            if (e.target === e.currentTarget) setAddOpen(false);
+          }}
+        >
+          <div
+            className="w-full max-w-[560px] rounded-xl border border-neutral-800 bg-neutral-950 shadow-xl"
+            onMouseDown={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between border-b border-neutral-800 px-4 py-3">
+              <div>
+                <div className="text-sm font-medium">Add Furniture</div>
+                <div className="text-xs text-neutral-400">IKEA Canada catalog (v0)</div>
+              </div>
+              <button
+                className="rounded-md border border-neutral-800 bg-neutral-900 px-3 py-1.5 text-sm hover:bg-neutral-800"
+                onClick={() => setAddOpen(false)}
+              >
+                Close
+              </button>
+            </div>
+
+            <div className="max-h-[70vh] overflow-auto p-4">
+              <div className="grid grid-cols-2 gap-3">
+                {IKEA_CA_SKUS.map((sku) => (
+                  <button
+                    key={sku.skuId}
+                    className="group overflow-hidden rounded-lg border border-neutral-800 bg-neutral-900 text-left hover:bg-neutral-800"
+                    onClick={() => {
+                      addFurnitureNodeFromSku(sku);
+                      setAddOpen(false);
+                    }}
+                  >
+                    <div className="aspect-[4/3] w-full overflow-hidden bg-neutral-950">
+                      <img
+                        src={sku.imageUrl}
+                        alt={sku.displayName}
+                        className="h-full w-full object-cover"
+                        loading="lazy"
+                      />
+                    </div>
+                    <div className="p-3">
+                      <div className="text-sm font-medium text-neutral-100">{sku.displayName}</div>
+                      <div className="mt-0.5 text-xs text-neutral-400">Article {sku.articleNumber}</div>
+                      <div className="mt-1 text-xs text-neutral-300">{skuDimsLabel(sku)}</div>
+                    </div>
+                  </button>
+                ))}
+              </div>
             </div>
           </div>
         </div>
