@@ -24,3 +24,45 @@ body {
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
 }
+
+/* Precision ring (static): always present when .vibe-glow is used */
+.vibe-glow {
+  position: relative;
+}
+
+.vibe-glow::after {
+  content: "";
+  position: absolute;
+  inset: -2px;
+  border-radius: inherit;
+  pointer-events: none;
+  box-shadow: 0 0 0 1px rgba(148, 163, 184, 0.30), 0 0 18px rgba(15, 23, 42, 0.35);
+  transition: box-shadow 220ms ease, opacity 220ms ease;
+  opacity: 1;
+}
+
+/* Vibe aura (animated): only when vibeMode ON adds .vibe-aura + .vibe-aura-animate */
+.vibe-aura::before {
+  content: "";
+  position: absolute;
+  inset: -2px;
+  border-radius: inherit;
+  pointer-events: none;
+  box-shadow: 0 0 0 1px rgba(56, 189, 248, 0.35), 0 0 22px rgba(56, 189, 248, 0.16);
+  transition: box-shadow 220ms ease, opacity 220ms ease;
+  opacity: 1;
+}
+
+.vibe-aura-animate::before {
+  animation: vibeGlow 12s ease-in-out infinite;
+}
+
+@keyframes vibeGlow {
+  0%,
+  100% {
+    box-shadow: 0 0 0 1px rgba(56, 189, 248, 0.3), 0 0 18px rgba(56, 189, 248, 0.11);
+  }
+  50% {
+    box-shadow: 0 0 0 1px rgba(56, 189, 248, 0.45), 0 0 34px rgba(56, 189, 248, 0.24);
+  }
+}

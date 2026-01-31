@@ -142,6 +142,7 @@ export default function EditorPage() {
   const setRoomDims = useEditorStore((s) => s.setRoomDims);
   const setCollection = useEditorStore((s) => s.setCollection);
   const setWorkingSet = useEditorStore((s) => s.setWorkingSet);
+  const setVibeMode = useEditorStore((s) => s.setVibeMode);
 
   // legacy mock boundary (keeps UI behavior today)
   const commitGenerateMock = useEditorStore((s) => s.commitGenerateMock);
@@ -262,6 +263,7 @@ export default function EditorPage() {
   const isBusy = scene.phase === "GENERATING" || scene.phase === "STALL";
   const hasDraftMarkup =
     Array.isArray(scene.draftMarkup?.items) && scene.draftMarkup.items.length > 0;
+  const vibeMode = scene.vibeMode ?? "off";
 
   const runBranchFromHistory = (record: any) => {
     const ok = branchFromHistory(record);
@@ -654,6 +656,8 @@ export default function EditorPage() {
             className={`rounded-md border px-3 py-1.5 text-sm ${
               isBusy
                 ? "border-neutral-900 bg-neutral-950 text-neutral-500"
+                : vibeMode === "on"
+                ? "border-sky-600/60 bg-sky-950/40 text-sky-100 shadow-[0_0_12px_rgba(56,189,248,0.25)] hover:bg-sky-900/40"
                 : "border-neutral-700 bg-neutral-900 hover:bg-neutral-800"
             }`}
             onClick={onGenerate}
@@ -701,34 +705,73 @@ export default function EditorPage() {
 
         {/* Canvas area */}
         <main className="flex flex-1 items-center justify-center bg-neutral-950">
+          {/* OUTER: owns glow pseudo-elements (NO overflow-hidden) */}
           <div
-            className={`relative h-[70vh] w-[70vw] max-w-[1200px] overflow-hidden rounded-lg border border-neutral-800 bg-neutral-900 ${
-              isBusy ? "blur-[1px] brightness-90" : ""
+            className={`relative h-[70vh] w-[70vw] max-w-[1200px] rounded-lg ${
+              vibeMode === "on" ? "vibe-glow vibe-aura vibe-aura-animate" : "vibe-glow"
             }`}
           >
-            <EditorCanvas
-              className="absolute inset-0"
-              markupVisible={scene.markupVisible}
-              onRequestSwap={(id) => {
-                const node = nodes.find((n) => n.nodeId === id);
-                if (node?.status === "markedForDelete") {
-                  pushSnack("This item is queued for removal. Restore it (red X) to swap.");
-                  return;
-                }
-                setSwapTargetId(id);
-                setSwapOpen(true);
-              }}
-            />
-            {isBusy && (
-              <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center">
-                <div className="h-8 w-8 rounded-full border-2 border-neutral-200 border-t-transparent animate-spin" />
-                {scene.genUi.message ? (
-                  <div className="mt-3 max-w-[80%] text-center text-xs text-neutral-300">
-                    {scene.genUi.message}
-                  </div>
-                ) : null}
+            {/* INNER: clips canvas contents + keeps border/bg */}
+            <div
+              className={`relative h-full w-full overflow-hidden rounded-lg border border-neutral-800 bg-neutral-900 ${
+                isBusy ? "blur-[1px] brightness-90" : ""
+              }`}
+            >
+              <div className="absolute right-2 top-2 z-10 flex items-center gap-2">
+                <div
+                  className={`rounded-full border px-2.5 py-1 text-[11px] font-medium ${
+                    vibeMode === "on"
+                      ? "border-sky-500/70 bg-sky-950/70 text-sky-100"
+                      : "border-neutral-700 bg-neutral-900 text-neutral-300"
+                  }`}
+                  title={
+                    vibeMode === "on"
+                      ? "Vibode may style the room more broadly for a cohesive result."
+                      : "Changes should be limited to your markup placements."
+                  }
+                >
+                  {vibeMode === "on" ? "Vibe Mode" : "Precision Mode"}
+                </div>
+
+                <button
+                  type="button"
+                  className={`rounded-full border px-2.5 py-1 text-[11px] ${
+                    vibeMode === "on"
+                      ? "border-sky-700/60 bg-sky-950/50 text-sky-100 hover:bg-sky-900/40"
+                      : "border-neutral-700 bg-neutral-950 text-neutral-300 hover:bg-neutral-800"
+                  }`}
+                  onClick={() => setVibeMode(vibeMode === "on" ? "off" : "on")}
+                  title={vibeMode === "on" ? "Switch to Precision Mode" : "Switch to Vibe Mode"}
+                >
+                  Vibe: {vibeMode === "on" ? "On" : "Off"}
+                </button>
               </div>
-            )}
+
+              <EditorCanvas
+                className="absolute inset-0"
+                markupVisible={scene.markupVisible}
+                onRequestSwap={(id) => {
+                  const node = nodes.find((n) => n.nodeId === id);
+                  if (node?.status === "markedForDelete") {
+                    pushSnack("This item is queued for removal. Restore it (red X) to swap.");
+                    return;
+                  }
+                  setSwapTargetId(id);
+                  setSwapOpen(true);
+                }}
+              />
+
+              {isBusy && (
+                <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center">
+                  <div className="h-8 w-8 rounded-full border-2 border-neutral-200 border-t-transparent animate-spin" />
+                  {scene.genUi.message ? (
+                    <div className="mt-3 max-w-[80%] text-center text-xs text-neutral-300">
+                      {scene.genUi.message}
+                    </div>
+                  ) : null}
+                </div>
+              )}
+            </div>
           </div>
         </main>
 
