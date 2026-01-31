@@ -803,4 +803,166 @@ export const MOCK_COLLECTIONS: FurnitureCollection[] = [
       },
     },
   },
+
+  /* =========================================================
+    COLLECTION 4 — IKEA Canada Reference Set (Real SKUs)
+  ========================================================= */
+  {
+    collectionId: "ikea-ca-reference-v01",
+    label: "IKEA Canada — Reference Set (Real SKUs)",
+    bundles: {
+      small: {
+        label: "Small Room Bundle",
+        skuIds: [
+          "sofa-kivik-3s-ca",
+          "chair-poang-ca",
+          "coffee-lack-90x55-ca",
+          "side-gladom-ca",
+          "lamp-hektar-floor-3spot-ca",
+          "rug-lohals-200x300-ca",
+        ],
+      },
+      medium: {
+        label: "Medium Room Bundle",
+        skuIds: [
+          "sofa-kivik-3s-ca",
+          "sofa-kivik-loveseat-ca",
+          "chair-poang-ca",
+          "coffee-lack-90x55-ca",
+          "side-gladom-ca",
+          "lamp-hektar-floor-3spot-ca",
+          "rug-lohals-200x300-ca",
+        ],
+      },
+      large: {
+        label: "Large Room Bundle",
+        skuIds: [
+          "sofa-kivik-3s-ca",
+          "sofa-kivik-loveseat-ca",
+          "chair-poang-ca",
+          "dining-skogsta-235x100-ca",
+          "chair-bergmund-ca",
+          "bed-malm-queen-ca",
+          "coffee-lack-90x55-ca",
+          "side-gladom-ca",
+          "lamp-hektar-floor-3spot-ca",
+          "rug-lohals-200x300-ca",
+        ],
+      },
+    },
+    catalog: {
+      /* Sofas */
+      "sofa-kivik-3s-ca": {
+        skuId: "sofa-kivik-3s-ca",
+        label: "KIVIK Sofa (IKEA CA) — 89 3/4in",
+        realWidthFt: 89.75 / 12,
+        realDepthFt: 37.375 / 12,
+        realHeightFt: 32.625 / 12,
+        defaultPxWidth: 290,
+        defaultPxHeight: 140,
+        variants: [{ variantId: "tibbleby-beige-gray", label: "Tibbleby — Beige/Gray" }],
+      },
+      "sofa-kivik-loveseat-ca": {
+        skuId: "sofa-kivik-loveseat-ca",
+        label: "KIVIK Loveseat (IKEA CA) — 74 3/4in",
+        realWidthFt: 74.75 / 12,
+        realDepthFt: 37.375 / 12,
+        realHeightFt: 32.625 / 12,
+        defaultPxWidth: 250,
+        defaultPxHeight: 135,
+        variants: [{ variantId: "tibbleby-beige-gray", label: "Tibbleby — Beige/Gray" }],
+      },
+
+      /* Chairs */
+      "chair-poang-ca": {
+        skuId: "chair-poang-ca",
+        label: "POÄNG Armchair (IKEA CA)",
+        realWidthFt: 26.75 / 12,
+        realDepthFt: 32.25 / 12,
+        realHeightFt: 39.375 / 12,
+        defaultPxWidth: 120,
+        defaultPxHeight: 140,
+        variants: [{ variantId: "birch-gunnared-beige", label: "Birch / Gunnared Beige" }],
+      },
+      "chair-bergmund-ca": {
+        skuId: "chair-bergmund-ca",
+        label: "BERGMUND Dining Chair (IKEA CA)",
+        realWidthFt: 20.5 / 12,
+        realDepthFt: 23.25 / 12,
+        realHeightFt: 37.375 / 12,
+        defaultPxWidth: 105,
+        defaultPxHeight: 130,
+        variants: [{ variantId: "black-gunnared-gray", label: "Black / Gunnared Medium Gray" }],
+      },
+
+      /* Tables */
+      "coffee-lack-90x55-ca": {
+        skuId: "coffee-lack-90x55-ca",
+        label: "LACK Coffee Table (IKEA CA) — 35 3/8in",
+        realWidthFt: 35.375 / 12,
+        realDepthFt: 21.625 / 12,
+        realHeightFt: 17.75 / 12,
+        defaultPxWidth: 220,
+        defaultPxHeight: 135,
+        variants: [{ variantId: "white", label: "White" }],
+      },
+      "dining-skogsta-235x100-ca": {
+        skuId: "dining-skogsta-235x100-ca",
+        label: "SKOGSTA Dining Table (IKEA CA) — 92 1/2in",
+        realWidthFt: 92.5 / 12,
+        realDepthFt: 39.375 / 12,
+        realHeightFt: 29.125 / 12,
+        defaultPxWidth: 360,
+        defaultPxHeight: 170,
+        variants: [{ variantId: "acacia-black", label: "Acacia / Black" }],
+      },
+
+      /* Side tables */
+      "side-gladom-ca": {
+        skuId: "side-gladom-ca",
+        label: "GLADOM Tray Table (IKEA CA) — Ø17 1/2in",
+        realWidthFt: 17.5 / 12,
+        realDepthFt: 17.5 / 12,
+        realHeightFt: 20.625 / 12,
+        defaultPxWidth: 95,
+        defaultPxHeight: 95,
+        variants: [{ variantId: "black", label: "Black" }],
+      },
+
+      /* Rugs */
+      "rug-lohals-200x300-ca": {
+        skuId: "rug-lohals-200x300-ca",
+        label: "LOHALS Rug (IKEA CA) — 6'7\" x 9'10\"",
+        realWidthFt: 78.75 / 12,
+        realDepthFt: 118 / 12,
+        defaultPxWidth: 320,
+        defaultPxHeight: 480,
+        variants: [{ variantId: "natural", label: "Natural" }],
+      },
+
+      /* Floor lamps */
+      "lamp-hektar-floor-3spot-ca": {
+        skuId: "lamp-hektar-floor-3spot-ca",
+        label: "HEKTAR Floor Lamp (IKEA CA) — 69in",
+        realWidthFt: 12 / 12, // footprint approx
+        realDepthFt: 12 / 12,
+        realHeightFt: 69 / 12,
+        defaultPxWidth: 70,
+        defaultPxHeight: 220,
+        variants: [{ variantId: "dark-gray", label: "Dark Gray" }],
+      },
+
+      /* Beds */
+      "bed-malm-queen-ca": {
+        skuId: "bed-malm-queen-ca",
+        label: "MALM Bed Frame (IKEA CA) — Queen",
+        realWidthFt: 65 / 12,
+        realDepthFt: 83.125 / 12,
+        realHeightFt: 39.375 / 12, // using headboard height as “height”
+        defaultPxWidth: 320,
+        defaultPxHeight: 420,
+        variants: [{ variantId: "white", label: "White" }],
+      },
+    },
+  },
 ];
