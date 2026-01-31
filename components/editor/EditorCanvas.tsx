@@ -43,7 +43,7 @@ export function EditorCanvas({
   markupVisible = true,
 }: {
   className?: string;
-  onRequestSwap?: (nodeId: string) => void;
+  onRequestSwap?: (id: string) => void;
   markupVisible?: boolean;
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -112,7 +112,7 @@ export function EditorCanvas({
   }, [img, fit.x, fit.y, fit.w, fit.h, fit.scale, setViewport]);
 
   const selectedNode = useMemo(
-    () => nodes.find((n) => n.nodeId === selectedNodeId) ?? null,
+    () => nodes.find((n) => n.id === selectedNodeId) ?? null,
     [nodes, selectedNodeId]
   );
 
@@ -143,7 +143,7 @@ export function EditorCanvas({
     const node = selectedNodeRef.current;
     if (!tr) return;
 
-    const selected = nodes.find((x) => x.nodeId === selectedNodeId);
+    const selected = nodes.find((x) => x.id === selectedNodeId);
 
     if (
       activeTool === "calibrate" ||
@@ -487,15 +487,15 @@ export function EditorCanvas({
           {[...nodes]
             .sort((a, b) => a.zIndex - b.zIndex)
             .map((n) => {
-              const isSelected = n.nodeId === selectedNodeId;
-              const isHovered = hoveredNodeId === n.nodeId;
+              const isSelected = n.id === selectedNodeId;
+              const isHovered = hoveredNodeId === n.id;
               const showBadges =
                 markupVisible && (isSelected || isHovered) && activeTool !== "calibrate";
 
               const t = n.transform;
 
               return (
-                <React.Fragment key={n.nodeId}>
+                <React.Fragment key={n.id}>
                   <Rect
                     ref={isSelected ? selectedNodeRef : undefined}
                     x={t.x}
@@ -510,21 +510,21 @@ export function EditorCanvas({
                     opacity={n.status === "markedForDelete" ? 0.35 : 1}
                     stroke={isSelected ? "#e5e7eb" : "#374151"}
                     strokeWidth={isSelected ? 2 : 1}
-                    onMouseEnter={() => setHoveredNodeId(n.nodeId)}
+                    onMouseEnter={() => setHoveredNodeId(n.id)}
                     onMouseLeave={() =>
-                      setHoveredNodeId((cur) => (cur === n.nodeId ? null : cur))
+                      setHoveredNodeId((cur) => (cur === n.id ? null : cur))
                     }
                     onClick={() => {
                       if (activeTool === "calibrate") return;
-                      selectNode(n.nodeId);
+                      selectNode(n.id);
                     }}
                     onTap={() => {
                       if (activeTool === "calibrate") return;
-                      selectNode(n.nodeId);
+                      selectNode(n.id);
                     }}
                     onDragEnd={(e) => {
                       if (activeTool === "calibrate") return;
-                      updateNodeTransform(n.nodeId, {
+                      updateNodeTransform(n.id, {
                         x: e.target.x(),
                         y: e.target.y(),
                       });
@@ -541,7 +541,7 @@ export function EditorCanvas({
                       node.scaleX(1);
                       node.scaleY(1);
 
-                      updateNodeTransform(n.nodeId, {
+                      updateNodeTransform(n.id, {
                         x: node.x(),
                         y: node.y(),
                         rotation: node.rotation(),
@@ -561,8 +561,8 @@ export function EditorCanvas({
                         onMouseDown={(e) => {
                           e.cancelBubble = true;
                         }}
-                        onClick={() => toggleDelete(n.nodeId)}
-                        onTap={() => toggleDelete(n.nodeId)}
+                        onClick={() => toggleDelete(n.id)}
+                        onTap={() => toggleDelete(n.id)}
                       >
                         <Circle radius={11} fill="#dc2626" />
                         <Line
@@ -587,14 +587,14 @@ export function EditorCanvas({
                           e.cancelBubble = true;
                         }}
                         onClick={() => {
-                          selectNode(n.nodeId);
-                          setPendingSwap(n.nodeId, true);
-                          onRequestSwap?.(n.nodeId);
+                          selectNode(n.id);
+                          setPendingSwap(n.id, true);
+                          onRequestSwap?.(n.id);
                         }}
                         onTap={() => {
-                          selectNode(n.nodeId);
-                          setPendingSwap(n.nodeId, true);
-                          onRequestSwap?.(n.nodeId);
+                          selectNode(n.id);
+                          setPendingSwap(n.id, true);
+                          onRequestSwap?.(n.id);
                         }}
                       >
                         <Circle

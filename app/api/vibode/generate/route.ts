@@ -83,7 +83,7 @@ type FreezePayloadV1 = {
   sceneSnapshotImageSpace: {
     sceneId: string;
     nodes: Array<{
-      nodeId: string;
+      id: string;
       skuId: string;
       label: string;
       variantId?: string;
@@ -361,7 +361,7 @@ function validateFreezePayloadV1(
   }
 
   for (const node of snap.nodes) {
-    if (!node || typeof node.nodeId !== "string" || typeof node.skuId !== "string") {
+    if (!node || typeof node.id !== "string" || typeof node.skuId !== "string") {
       return {
         ok: false,
         error: "Invalid node shape in sceneSnapshotImageSpace.nodes[].",
@@ -377,12 +377,12 @@ function validateFreezePayloadV1(
       !finiteNumber(t.height) ||
       !finiteNumber(t.rotation)
     ) {
-      return { ok: false, error: `Invalid transform for nodeId=${node.nodeId}.`, details: t };
+      return { ok: false, error: `Invalid transform for id=${node.id}.`, details: t };
     }
     if (t.width <= 0 || t.height <= 0) {
       return {
         ok: false,
-        error: `Invalid transform dimensions for nodeId=${node.nodeId} (width/height must be > 0).`,
+        error: `Invalid transform dimensions for id=${node.id} (width/height must be > 0).`,
         details: t,
       };
     }
@@ -407,9 +407,9 @@ function deriveOps(payload: FreezePayloadV1): RequestedOps {
   const transformChanged: string[] = [];
 
   for (const n of payload.sceneSnapshotImageSpace.nodes) {
-    if (n.status === "markedForDelete") remove.push(n.nodeId);
-    if (n.status === "pendingSwap") swap.push(n.nodeId);
-    if (n.provenance?.introducedInGenerationId === payload.generationId) add.push(n.nodeId);
+    if (n.status === "markedForDelete") remove.push(n.id);
+    if (n.status === "pendingSwap") swap.push(n.id);
+    if (n.provenance?.introducedInGenerationId === payload.generationId) add.push(n.id);
   }
 
   return { add, remove, swap, transformChanged };

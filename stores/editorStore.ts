@@ -46,9 +46,8 @@ export type NodeTransform = {
 export type FurnitureNodeStatus = "active" | "markedForDelete" | "pendingSwap";
 
 export type FurnitureNode = {
-  nodeId: string;
-  id?: string;
-  kind?: "furniture";
+  id: string;
+  kind: "furniture";
 
   // product identity
   skuId: string;
@@ -69,12 +68,6 @@ export type FurnitureNode = {
   // render + manipulate
   zIndex: number;
   transform: NodeTransform;
-  bbox?: {
-    x: number;
-    y: number;
-    w: number;
-    h: number;
-  };
 
   // workflow flags
   status: FurnitureNodeStatus;
@@ -187,10 +180,10 @@ export type SceneGraph = {
 };
 
 export type RequestedOps = {
-  add: string[]; // nodeIds newly introduced since last freeze
-  remove: string[]; // nodeIds markedForDelete
-  swap: string[]; // nodeIds pendingSwap
-  transformChanged: string[]; // nodeIds with transform changed since last freeze
+  add: string[]; // ids newly introduced since last freeze
+  remove: string[]; // ids markedForDelete
+  swap: string[]; // ids pendingSwap
+  transformChanged: string[]; // ids with transform changed since last freeze
 };
 
 export type RequestedActionBlock = {
@@ -275,13 +268,13 @@ type UIState = {
 type LastAction =
   | {
       kind: "toggleDelete";
-      nodeId: string;
+      id: string;
       prevStatus: FurnitureNodeStatus;
       nextStatus: FurnitureNodeStatus;
     }
   | {
       kind: "setPendingSwap";
-      nodeId: string;
+      id: string;
       prevStatus: FurnitureNodeStatus;
       nextStatus: FurnitureNodeStatus;
     }
@@ -345,13 +338,13 @@ type EditorState = {
 
   // UI + selection
   setActiveTool: (tool: UIState["activeTool"]) => void;
-  selectNode: (nodeId: string | null) => void;
+  selectNode: (id: string | null) => void;
 
   // node ops
-  addNode: (node: Omit<FurnitureNode, "nodeId"> & { nodeId?: string }) => string;
+  addNode: (node: Omit<FurnitureNode, "id" | "kind"> & { id?: string }) => string;
   addFurnitureNodeFromSku: (sku: IkeaCaSku) => void;
-  updateNodeTransform: (nodeId: string, patch: Partial<NodeTransform>) => void;
-  setNodeStatus: (nodeId: string, status: FurnitureNodeStatus) => void;
+  updateNodeTransform: (id: string, patch: Partial<NodeTransform>) => void;
+  setNodeStatus: (id: string, status: FurnitureNodeStatus) => void;
 
   // Vibode UX state machine
   setPhase: (p: Phase) => void;
@@ -373,15 +366,15 @@ type EditorState = {
   }) => void;
 
   // Vibode vibe-flow flags
-  toggleDelete: (nodeId: string) => void;
+  toggleDelete: (id: string) => void;
   setPendingSwap: (
-    nodeId: string,
+    id: string,
     pending: boolean,
     replacement?: { skuId: string; label?: string; variantId?: string }
   ) => void;
 
   applySwap: (
-    nodeId: string,
+    id: string,
     next: {
       skuId: string;
       label: string;
@@ -393,9 +386,9 @@ type EditorState = {
 
   // z-order + dev helpers
   deleteSelectedHard: () => void;
-  bringToFront: (nodeId: string) => void;
-  sendToBack: (nodeId: string) => void;
-  duplicateNode: (nodeId: string) => string | null;
+  bringToFront: (id: string) => void;
+  sendToBack: (id: string) => void;
+  duplicateNode: (id: string) => string | null;
 
   // scene setup
   setBaseImageUrl: (url?: string) => void;
@@ -565,6 +558,10 @@ export function toImageSpaceTransform(t: NodeTransform, vp: ViewportMapping): No
   };
 }
 
+export function nodeBboxFromTransform(t: NodeTransform) {
+  return { x: t.x, y: t.y, w: t.width, h: t.height };
+}
+
 export function toImageSpaceScene(scene: SceneGraph, vp: ViewportMapping): SceneGraph {
   return {
     ...scene,
@@ -602,23 +599,23 @@ function computeRequestedOps(
   const transformChanged: string[] = [];
 
   const prevById = new Map<string, FurnitureNode>();
-  (previous?.nodes ?? []).forEach((n) => prevById.set(n.nodeId, n));
+  (previous?.nodes ?? []).forEach((n) => prevById.set(n.id, n));
 
   for (const n of current.nodes) {
-    if (n.status === "markedForDelete") remove.push(n.nodeId);
-    if (n.status === "pendingSwap") swap.push(n.nodeId);
+    if (n.status === "markedForDelete") remove.push(n.id);
+    if (n.status === "pendingSwap") swap.push(n.id);
 
     const intro = n.provenance?.introducedInGenerationId;
-    const prev = prevById.get(n.nodeId);
+    const prev = prevById.get(n.id);
 
     if (generationId) {
-      if (intro === generationId) add.push(n.nodeId);
+      if (intro === generationId) add.push(n.id);
     } else {
-      if (!prev) add.push(n.nodeId);
+      if (!prev) add.push(n.id);
     }
 
     if (prev && !transformEqual(n.transform, prev.transform)) {
-      transformChanged.push(n.nodeId);
+      transformChanged.push(n.id);
     }
   }
 
@@ -961,15 +958,15 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     set((s) => {
       if (!s.lastAction) return s;
 
-      const { nodeId, prevStatus } = s.lastAction;
-      const exists = s.scene.nodes.some((n) => n.nodeId === nodeId);
+      const { id, prevStatus } = s.lastAction;
+      const exists = s.scene.nodes.some((n) => n.id === id);
       if (!exists) return { ...s, lastAction: null };
 
       return {
         ...s,
         scene: {
           ...s.scene,
-          nodes: s.scene.nodes.map((n) => (n.nodeId === nodeId ? { ...n, status: prevStatus } : n)),
+          nodes: s.scene.nodes.map((n) => (n.id === id ? { ...n, status: prevStatus } : n)),
         },
         lastAction: null,
       };
@@ -979,16 +976,17 @@ export const useEditorStore = create<EditorState>((set, get) => ({
 
   setActiveTool: (tool) => set((s) => ({ ui: { ...s.ui, activeTool: tool } })),
 
-  selectNode: (nodeId) => set((s) => ({ ui: { ...s.ui, selectedNodeId: nodeId } })),
+  selectNode: (id) => set((s) => ({ ui: { ...s.ui, selectedNodeId: id } })),
 
   /* ---------- node creation / transform ---------- */
 
   addNode: (node) => {
-    const id = node.nodeId ?? safeUUID();
+    const id = node.id ?? safeUUID();
     const maxZ = get().scene.nodes.reduce((m, n) => Math.max(m, n.zIndex), 0);
 
     const newNode: FurnitureNode = {
-      nodeId: id,
+      id,
+      kind: "furniture",
       skuId: node.skuId,
       label: node.label,
       variant: node.variant,
@@ -1023,7 +1021,6 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     const maxZ = scene.nodes.reduce((m, n) => Math.max(m, n.zIndex), 0);
 
     const node: FurnitureNode = {
-      nodeId: id,
       id,
       kind: "furniture",
       skuId: sku.skuId,
@@ -1043,7 +1040,6 @@ export const useEditorStore = create<EditorState>((set, get) => ({
         height: hPx,
         rotation: 0,
       },
-      bbox: { x, y, w: wPx, h: hPx },
     };
 
     set((s) => ({
@@ -1053,21 +1049,21 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     }));
   },
 
-  updateNodeTransform: (nodeId, patch) =>
+  updateNodeTransform: (id, patch) =>
     set((s) => ({
       scene: {
         ...s.scene,
         nodes: s.scene.nodes.map((n) =>
-          n.nodeId === nodeId ? { ...n, transform: { ...n.transform, ...patch } } : n
+          n.id === id ? { ...n, transform: { ...n.transform, ...patch } } : n
         ),
       },
     })),
 
-  setNodeStatus: (nodeId, status) =>
+  setNodeStatus: (id, status) =>
     set((s) => ({
       scene: {
         ...s.scene,
-        nodes: s.scene.nodes.map((n) => (n.nodeId === nodeId ? { ...n, status } : n)),
+        nodes: s.scene.nodes.map((n) => (n.id === id ? { ...n, status } : n)),
       },
     })),
 
@@ -1270,9 +1266,9 @@ export const useEditorStore = create<EditorState>((set, get) => ({
 
   /* ---------- Vibode vibe-flow ---------- */
 
-  toggleDelete: (nodeId) =>
+  toggleDelete: (id) =>
     set((s) => {
-      const node = s.scene.nodes.find((n) => n.nodeId === nodeId);
+      const node = s.scene.nodes.find((n) => n.id === id);
       if (!node) return s;
 
       const prevStatus = node.status;
@@ -1283,19 +1279,19 @@ export const useEditorStore = create<EditorState>((set, get) => ({
 
       return {
         ...s,
-        lastAction: { kind: "toggleDelete", nodeId, prevStatus, nextStatus },
+        lastAction: { kind: "toggleDelete", id, prevStatus, nextStatus },
         scene: {
           ...s.scene,
           nodes: s.scene.nodes.map((n) =>
-            n.nodeId === nodeId ? { ...n, status: nextStatus, pendingSwap: nextPendingSwap } : n
+            n.id === id ? { ...n, status: nextStatus, pendingSwap: nextPendingSwap } : n
           ),
         },
       };
     }),
 
-  setPendingSwap: (nodeId, pending, replacement) =>
+  setPendingSwap: (id, pending, replacement) =>
     set((s) => {
-      const node = s.scene.nodes.find((n) => n.nodeId === nodeId);
+      const node = s.scene.nodes.find((n) => n.id === id);
       if (!node || node.status === "markedForDelete") return s;
 
       const prevStatus = node.status;
@@ -1312,22 +1308,22 @@ export const useEditorStore = create<EditorState>((set, get) => ({
 
       return {
         ...s,
-        lastAction: { kind: "setPendingSwap", nodeId, prevStatus, nextStatus },
+        lastAction: { kind: "setPendingSwap", id, prevStatus, nextStatus },
         scene: {
           ...s.scene,
           nodes: s.scene.nodes.map((n) =>
-            n.nodeId === nodeId ? { ...n, status: nextStatus, pendingSwap: nextPendingSwap } : n
+            n.id === id ? { ...n, status: nextStatus, pendingSwap: nextPendingSwap } : n
           ),
         },
       };
     }),
 
-  applySwap: (nodeId, next) =>
+  applySwap: (id, next) =>
     set((s) => ({
       scene: {
         ...s.scene,
         nodes: s.scene.nodes.map((n) => {
-          if (n.nodeId !== nodeId) return n;
+          if (n.id !== id) return n;
 
           const t = n.transform;
           const cx = t.x + t.width / 2;
@@ -1363,44 +1359,44 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     if (!selected) return;
 
     set((s) => ({
-      scene: { ...s.scene, nodes: s.scene.nodes.filter((n) => n.nodeId !== selected) },
+      scene: { ...s.scene, nodes: s.scene.nodes.filter((n) => n.id !== selected) },
       ui: { ...s.ui, selectedNodeId: null },
       lastAction: null,
     }));
   },
 
-  bringToFront: (nodeId) =>
+  bringToFront: (id) =>
     set((s) => {
       const maxZ = s.scene.nodes.reduce((m, n) => Math.max(m, n.zIndex), 0);
       return {
         scene: {
           ...s.scene,
-          nodes: s.scene.nodes.map((n) => (n.nodeId === nodeId ? { ...n, zIndex: maxZ + 1 } : n)),
+          nodes: s.scene.nodes.map((n) => (n.id === id ? { ...n, zIndex: maxZ + 1 } : n)),
         },
       };
     }),
 
-  sendToBack: (nodeId) =>
+  sendToBack: (id) =>
     set((s) => {
       const minZ = s.scene.nodes.reduce((m, n) => Math.min(m, n.zIndex), Infinity);
       return {
         scene: {
           ...s.scene,
-          nodes: s.scene.nodes.map((n) => (n.nodeId === nodeId ? { ...n, zIndex: minZ - 1 } : n)),
+          nodes: s.scene.nodes.map((n) => (n.id === id ? { ...n, zIndex: minZ - 1 } : n)),
         },
       };
     }),
 
-  duplicateNode: (nodeId) => {
-    const src = get().scene.nodes.find((n) => n.nodeId === nodeId);
+  duplicateNode: (id) => {
+    const src = get().scene.nodes.find((n) => n.id === id);
     if (!src) return null;
 
-    const id = safeUUID();
+    const newId = safeUUID();
     const maxZ = get().scene.nodes.reduce((m, n) => Math.max(m, n.zIndex), 0);
 
     const dup: FurnitureNode = {
       ...src,
-      nodeId: id,
+      id: newId,
       zIndex: maxZ + 1,
       transform: { ...src.transform, x: src.transform.x + 18, y: src.transform.y + 18 },
       status: "active",
@@ -1409,11 +1405,11 @@ export const useEditorStore = create<EditorState>((set, get) => ({
 
     set((s) => ({
       scene: { ...s.scene, nodes: [...s.scene.nodes, dup] },
-      ui: { ...s.ui, selectedNodeId: id },
+      ui: { ...s.ui, selectedNodeId: newId },
       lastAction: null,
     }));
 
-    return id;
+    return newId;
   },
 
   /* ---------- scene setup ---------- */

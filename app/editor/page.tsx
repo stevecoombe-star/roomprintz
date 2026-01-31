@@ -69,16 +69,16 @@ function validateFreezePayloadV1(payload: any): { ok: true } | { ok: false; reas
     return { ok: false, reason: "sceneSnapshotImageSpace.nodes missing" };
 
   for (const n of snap.nodes) {
-    if (!n?.nodeId || !n?.skuId) return { ok: false, reason: "node missing nodeId/skuId" };
+    if (!n?.id || !n?.skuId) return { ok: false, reason: "node missing id/skuId" };
     const t = n.transform;
-    if (!t) return { ok: false, reason: `node ${n.nodeId} missing transform` };
+    if (!t) return { ok: false, reason: `node ${n.id} missing transform` };
     const fields = ["x", "y", "width", "height", "rotation"];
     for (const f of fields) {
       if (!isFiniteNumber(t[f]))
-        return { ok: false, reason: `node ${n.nodeId} transform.${f} invalid` };
+        return { ok: false, reason: `node ${n.id} transform.${f} invalid` };
     }
     if (t.width <= 0 || t.height <= 0)
-      return { ok: false, reason: `node ${n.nodeId} width/height must be > 0` };
+      return { ok: false, reason: `node ${n.id} width/height must be > 0` };
   }
 
   return { ok: true };
@@ -220,7 +220,7 @@ export default function EditorPage() {
 
   const selectedNode = useMemo(() => {
     if (!selectedNodeId) return null;
-    return nodes.find((n) => n.nodeId === selectedNodeId) ?? null;
+    return nodes.find((n) => n.id === selectedNodeId) ?? null;
   }, [nodes, selectedNodeId]);
 
   const queuedDeletes = useMemo(
@@ -234,7 +234,7 @@ export default function EditorPage() {
 
   const swapTargetNode = useMemo(() => {
     if (!swapTargetId) return null;
-    return nodes.find((n) => n.nodeId === swapTargetId) ?? null;
+    return nodes.find((n) => n.id === swapTargetId) ?? null;
   }, [nodes, swapTargetId]);
 
   const collection = useMemo(() => {
@@ -777,7 +777,7 @@ export default function EditorPage() {
                 className="absolute inset-0"
                 markupVisible={scene.markupVisible}
                 onRequestSwap={(id) => {
-                  const node = nodes.find((n) => n.nodeId === id);
+                  const node = nodes.find((n) => n.id === id);
                   if (node?.status === "markedForDelete") {
                     pushSnack("This item is queued for removal. Restore it (red X) to swap.");
                     return;
