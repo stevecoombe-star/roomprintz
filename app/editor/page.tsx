@@ -6,10 +6,11 @@ import { useRouter } from "next/navigation";
 
 import { EditorCanvas } from "@/components/editor/EditorCanvas";
 import { SnackbarHost, type Snackbar } from "@/components/ui/SnackbarHost";
-import { useEditorStore } from "@/stores/editorStore";
+import { useEditorStore, type FurnitureNode } from "@/stores/editorStore";
 import { MOCK_COLLECTIONS, type RoomSizeBundleId } from "@/data/mockCollections";
 import { IKEA_CA_SKUS, type IkeaCaSku } from "@/data/mockIkeaCaSkus";
 import { clearPendingLocal, savePendingLocal } from "@/lib/pendingGeneration";
+import { DEFAULT_PX_PER_IN, skuFootprintInchesFromDims } from "@/lib/ikeaSizing";
 
 // ✅ FIX: import path (avoid "@/src/..." which commonly causes alias/circular issues)
 import { supabaseBrowser } from "@/lib/supabaseBrowser";
@@ -45,6 +46,65 @@ function skuDimsLabel(sku: IkeaCaSku) {
   }
   const d = depth ?? width;
   return `W ${formatInches(width)}" × D ${formatInches(d)}" × H ${formatInches(height)}"`;
+}
+
+type IkeaKind =
+  | "sofa"
+  | "loveseat"
+  | "armchair"
+  | "dining_table"
+  | "dining_chair"
+  | "coffee_table"
+  | "side_table"
+  | "bed"
+  | "rug"
+  | "floor_lamp";
+
+type SwapKindBucket = "sofa" | "chair" | "table" | "lamp" | "bed" | "rug";
+
+const IKEA_KIND_TO_BUCKET: Record<IkeaKind, SwapKindBucket> = {
+  sofa: "sofa",
+  loveseat: "sofa",
+  armchair: "chair",
+  dining_chair: "chair",
+  dining_table: "table",
+  coffee_table: "table",
+  side_table: "table",
+  floor_lamp: "lamp",
+  bed: "bed",
+  rug: "rug",
+};
+
+function mapIkeaKindToBucket(kind: IkeaKind): SwapKindBucket {
+  return IKEA_KIND_TO_BUCKET[kind];
+}
+
+function findIkeaSkuById(skuId?: string | null): IkeaCaSku | null {
+  if (!skuId) return null;
+  return IKEA_CA_SKUS.find((sku) => sku.skuId === skuId) ?? null;
+}
+
+function isIkeaNode(node: FurnitureNode | null): boolean {
+  if (!node) return false;
+  if (node.vendor === "IKEA_CA") return true;
+  if (node.imageUrl || node.productUrl || node.articleNumber) return true;
+  return !!findIkeaSkuById(node.skuId);
+}
+
+function nodeSwapKind(node: FurnitureNode): SwapKindBucket | null {
+  if (!isIkeaNode(node)) return null;
+
+  const sku = findIkeaSkuById(node.skuId);
+  if (sku?.kind) return mapIkeaKindToBucket(sku.kind as IkeaKind);
+
+  const hay = `${node.skuId} ${node.label} ${node.displayName ?? ""}`.toLowerCase();
+  if (hay.includes("sofa") || hay.includes("loveseat")) return "sofa";
+  if (hay.includes("armchair") || hay.includes("chair")) return "chair";
+  if (hay.includes("table") || hay.includes("coffee") || hay.includes("side")) return "table";
+  if (hay.includes("lamp")) return "lamp";
+  if (hay.includes("bed")) return "bed";
+  if (hay.includes("rug")) return "rug";
+  return null;
 }
 
 function validateFreezePayloadV1(payload: any): { ok: true } | { ok: false; reason: string } {
@@ -1737,24 +1797,53 @@ export default function EditorPage() {
               <div className="text-xs font-medium text-neutral-300">Swap to a different item</div>
 
               {(() => {
+                const isIkeaSwapTarget = !!swapTargetNode && isIkeaNode(swapTargetNode);
+                const targetKindBucket = swapTargetNode ? nodeSwapKind(swapTargetNode) : null;
+
                 const swapOptions: Array<{
                   skuId: string;
                   label: string;
                   defaultPxWidth: number;
                   defaultPxHeight: number;
-                }> = eligibleForDrag.length
-                  ? eligibleForDrag.map((x: any) => ({
-                      skuId: x.skuId,
-                      label: x.label,
-                      defaultPxWidth: x.defaultPxWidth,
-                      defaultPxHeight: x.defaultPxHeight,
-                    }))
-                  : Object.values((collection?.catalog as any) ?? {}).map((x: any) => ({
-                      skuId: x.skuId,
-                      label: x.label,
-                      defaultPxWidth: x.defaultPxWidth,
-                      defaultPxHeight: x.defaultPxHeight,
-                    }));
+                  vendor?: "IKEA_CA";
+                  displayName?: string;
+                  articleNumber?: string;
+                  imageUrl?: string;
+                  productUrl?: string;
+                  dimsIn?: IkeaCaSku["dimsIn"];
+                }> = isIkeaSwapTarget
+                  ? targetKindBucket
+                    ? IKEA_CA_SKUS.filter((s) => mapIkeaKindToBucket(s.kind as IkeaKind) === targetKindBucket).map(
+                        (s) => {
+                          const { wIn, dIn } = skuFootprintInchesFromDims(s.dimsIn);
+                          return {
+                            skuId: s.skuId,
+                            label: s.displayName ?? s.skuId,
+                            imageUrl: s.imageUrl,
+                            articleNumber: s.articleNumber,
+                            productUrl: s.productUrl,
+                            vendor: s.vendor,
+                            displayName: s.displayName,
+                            dimsIn: s.dimsIn,
+                            defaultPxWidth: Math.max(24, Math.round(wIn * DEFAULT_PX_PER_IN)),
+                            defaultPxHeight: Math.max(24, Math.round(dIn * DEFAULT_PX_PER_IN)),
+                          };
+                        }
+                      )
+                    : []
+                  : eligibleForDrag.length
+                    ? eligibleForDrag.map((x: any) => ({
+                        skuId: x.skuId,
+                        label: x.label,
+                        defaultPxWidth: x.defaultPxWidth,
+                        defaultPxHeight: x.defaultPxHeight,
+                      }))
+                    : Object.values((collection?.catalog as any) ?? {}).map((x: any) => ({
+                        skuId: x.skuId,
+                        label: x.label,
+                        defaultPxWidth: x.defaultPxWidth,
+                        defaultPxHeight: x.defaultPxHeight,
+                      }));
 
                 return (
                   <div className="mt-2 grid grid-cols-1 gap-2">
@@ -1769,13 +1858,30 @@ export default function EditorPage() {
                             label: opt.label,
                             defaultPxWidth: opt.defaultPxWidth,
                             defaultPxHeight: opt.defaultPxHeight,
+                            vendor: opt.vendor,
+                            displayName: opt.displayName,
+                            articleNumber: opt.articleNumber,
+                            imageUrl: opt.imageUrl,
+                            productUrl: opt.productUrl,
+                            dimsIn: opt.dimsIn,
                           });
                           closeSwap();
                           pushSnack("Item swapped.");
                         }}
                       >
-                        <div className="text-sm font-medium">{opt.label}</div>
-                        <div className="mt-0.5 text-xs text-neutral-400">{opt.skuId}</div>
+                        <div className="flex items-center gap-3">
+                          {opt.imageUrl ? (
+                            <img
+                              src={opt.imageUrl}
+                              alt=""
+                              className="h-12 w-12 rounded-md bg-neutral-800 object-cover"
+                            />
+                          ) : null}
+                          <div>
+                            <div className="text-sm font-medium">{opt.label}</div>
+                            <div className="mt-0.5 text-xs text-neutral-400">{opt.skuId}</div>
+                          </div>
+                        </div>
                       </button>
                     ))}
                   </div>

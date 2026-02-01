@@ -2,6 +2,7 @@
 import { create } from "zustand";
 import { loadPendingLocal } from "../lib/pendingGeneration";
 import type { IkeaCaSku } from "../data/mockIkeaCaSkus";
+import { DEFAULT_PX_PER_IN, skuFootprintInchesFromDims } from "@/lib/ikeaSizing";
 
 /* =========================
    Types
@@ -382,6 +383,12 @@ type EditorState = {
       variant?: FurnitureVariant;
       defaultPxWidth?: number;
       defaultPxHeight?: number;
+      vendor?: FurnitureNode["vendor"];
+      displayName?: string;
+      articleNumber?: string;
+      imageUrl?: string;
+      productUrl?: string;
+      dimsIn?: FurnitureNode["dimsIn"];
     }
   ) => void;
 
@@ -518,14 +525,6 @@ function scheduleMicrotask(cb: () => void) {
 
 const isFiniteNumber = (n: unknown): n is number =>
   typeof n === "number" && Number.isFinite(n);
-
-const DEFAULT_PX_PER_IN = 6; // v0 constant
-
-function skuFootprintInches(sku: IkeaCaSku) {
-  const w = sku.dimsIn.diameter ?? sku.dimsIn.width;
-  const d = sku.dimsIn.depth ?? sku.dimsIn.width;
-  return { wIn: w, dIn: d };
-}
 
 function getViewportCenter(vp?: ViewportMapping) {
   if (!vp) return { x: 200, y: 200 };
@@ -1011,7 +1010,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     const id = safeUUID();
     const { viewport, scene } = get();
 
-    const { wIn, dIn } = skuFootprintInches(sku);
+    const { wIn, dIn } = skuFootprintInchesFromDims(sku.dimsIn);
     const wPx = Math.max(24, Math.round(wIn * DEFAULT_PX_PER_IN));
     const hPx = Math.max(24, Math.round(dIn * DEFAULT_PX_PER_IN));
 
@@ -1343,7 +1342,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
           const newW = next.defaultPxWidth ?? t.width;
           const newH = next.defaultPxHeight ?? t.height;
 
-          return {
+          const base: FurnitureNode = {
             ...n,
             skuId: next.skuId,
             label: next.label,
@@ -1357,6 +1356,16 @@ export const useEditorStore = create<EditorState>((set, get) => ({
               x: cx - newW / 2,
               y: cy - newH / 2,
             },
+          };
+
+          return {
+            ...base,
+            ...(next.vendor !== undefined ? { vendor: next.vendor } : {}),
+            ...(next.displayName !== undefined ? { displayName: next.displayName } : {}),
+            ...(next.articleNumber !== undefined ? { articleNumber: next.articleNumber } : {}),
+            ...(next.imageUrl !== undefined ? { imageUrl: next.imageUrl } : {}),
+            ...(next.productUrl !== undefined ? { productUrl: next.productUrl } : {}),
+            ...(next.dimsIn !== undefined ? { dimsIn: next.dimsIn } : {}),
           };
         }),
       },
