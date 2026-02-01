@@ -203,6 +203,7 @@ export default function EditorPage() {
   const [recallConfirmOpen, setRecallConfirmOpen] = useState(false);
   const [branchConfirmFor, setBranchConfirmFor] = useState<string | null>(null);
   const [addOpen, setAddOpen] = useState(false);
+  const [visualMode, setVisualMode] = useState<"blueprint" | "thumbnails">("blueprint");
 
   const [snacks, setSnacks] = useState<Snackbar[]>([]);
   const pushSnack = (message: string) => {
@@ -766,6 +767,21 @@ export default function EditorPage() {
                 <button
                   type="button"
                   className="rounded-full border border-neutral-700 bg-neutral-950 px-2.5 py-1 text-[11px] text-neutral-200 hover:bg-neutral-800"
+                  onClick={() =>
+                    setVisualMode((cur) => (cur === "blueprint" ? "thumbnails" : "blueprint"))
+                  }
+                  title={
+                    visualMode === "blueprint"
+                      ? "Switch to thumbnail mode"
+                      : "Switch to blueprint mode"
+                  }
+                >
+                  {visualMode === "blueprint" ? "Blueprint" : "Thumbs"}
+                </button>
+
+                <button
+                  type="button"
+                  className="rounded-full border border-neutral-700 bg-neutral-950 px-2.5 py-1 text-[11px] text-neutral-200 hover:bg-neutral-800"
                   onClick={() => setAddOpen(true)}
                   title="Add furniture"
                 >
@@ -776,6 +792,7 @@ export default function EditorPage() {
               <EditorCanvas
                 className="absolute inset-0"
                 markupVisible={scene.markupVisible}
+                visualMode={visualMode}
                 onRequestSwap={(id) => {
                   const node = nodes.find((n) => n.id === id);
                   if (node?.status === "markedForDelete") {

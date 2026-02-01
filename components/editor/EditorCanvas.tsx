@@ -15,7 +15,7 @@ import {
 } from "react-konva";
 import type Konva from "konva";
 import useImage from "use-image";
-import { useEditorStore } from "@/stores/editorStore";
+import { useEditorStore, type FurnitureNode } from "@/stores/editorStore";
 import { MOCK_COLLECTIONS } from "@/data/mockCollections";
 
 type DragFurniturePayload = {
@@ -24,6 +24,136 @@ type DragFurniturePayload = {
 };
 
 const DND_MIME = "application/x-roomprintz-furniture";
+type VisualMode = "blueprint" | "thumbnails";
+type SilhouetteKind = "sofa" | "chair" | "table" | "lamp" | "bed" | "rug";
+
+const SILHOUETTE_FILL = "#f8fafc";
+const SILHOUETTES: Record<SilhouetteKind, string> = {
+  sofa: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 60"><g fill="${SILHOUETTE_FILL}"><rect x="8" y="26" width="84" height="26" rx="8"/><rect x="4" y="18" width="20" height="30" rx="6"/><rect x="76" y="18" width="20" height="30" rx="6"/><rect x="24" y="8" width="52" height="20" rx="8"/></g></svg>`,
+  chair: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 60"><g fill="${SILHOUETTE_FILL}"><rect x="22" y="24" width="56" height="22" rx="6"/><rect x="30" y="8" width="40" height="18" rx="6"/><rect x="24" y="44" width="8" height="12"/><rect x="68" y="44" width="8" height="12"/></g></svg>`,
+  table: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 60"><g fill="${SILHOUETTE_FILL}"><rect x="10" y="14" width="80" height="14" rx="4"/><rect x="16" y="28" width="8" height="24"/><rect x="76" y="28" width="8" height="24"/><rect x="40" y="28" width="8" height="24"/><rect x="52" y="28" width="8" height="24"/></g></svg>`,
+  lamp: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 60"><g fill="${SILHOUETTE_FILL}"><rect x="46" y="22" width="8" height="22"/><rect x="40" y="44" width="20" height="6" rx="3"/><path d="M25 22h50l-10-16H35z"/></g></svg>`,
+  bed: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 60"><g fill="${SILHOUETTE_FILL}"><rect x="10" y="22" width="80" height="26" rx="6"/><rect x="14" y="16" width="22" height="10" rx="4"/><rect x="64" y="16" width="22" height="10" rx="4"/><rect x="10" y="48" width="6" height="8"/><rect x="84" y="48" width="6" height="8"/></g></svg>`,
+  rug: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 60"><rect x="12" y="12" width="76" height="36" rx="10" fill="${SILHOUETTE_FILL}"/></svg>`,
+};
+const silhouetteImageCache = new Map<SilhouetteKind, HTMLImageElement>();
+
+function svgToImage(svg: string) {
+  const img = new Image();
+  img.src = `data:image/svg+xml;utf8,${encodeURIComponent(svg)}`;
+  return img;
+}
+
+function getSilhouetteImage(kind: SilhouetteKind) {
+  const cached = silhouetteImageCache.get(kind);
+  if (cached) return cached;
+  const svg = SILHOUETTES[kind] ?? SILHOUETTES.table;
+  const img = svgToImage(svg);
+  silhouetteImageCache.set(kind, img);
+  return img;
+}
+
+function inferSilhouetteKind(node: FurnitureNode): SilhouetteKind {
+  const sku = (node.skuId || "").toLowerCase();
+  if (sku.includes("sofa")) return "sofa";
+  if (sku.includes("chair")) return "chair";
+  if (sku.includes("table") || sku.includes("coffee") || sku.includes("dining")) return "table";
+  if (sku.includes("lamp")) return "lamp";
+  if (sku.includes("bed")) return "bed";
+  if (sku.includes("rug")) return "rug";
+  return "table";
+}
+
+function useSilhouetteImage(kind: SilhouetteKind) {
+  const [image, setImage] = useState<HTMLImageElement | null>(null);
+
+  useEffect(() => {
+    const img = getSilhouetteImage(kind);
+    if (img.complete) {
+      setImage(img);
+      return;
+    }
+
+    let canceled = false;
+    const onLoad = () => {
+      if (!canceled) setImage(img);
+    };
+    img.addEventListener("load", onLoad);
+    return () => {
+      canceled = true;
+      img.removeEventListener("load", onLoad);
+    };
+  }, [kind]);
+
+  return image;
+}
+
+function SilhouetteLayer({
+  kind,
+  x,
+  y,
+  width,
+  height,
+  opacity,
+}: {
+  kind: SilhouetteKind;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  opacity: number;
+}) {
+  const image = useSilhouetteImage(kind);
+  if (!image) return null;
+  return (
+    <KonvaImage
+      image={image}
+      x={x}
+      y={y}
+      width={width}
+      height={height}
+      opacity={opacity}
+      listening={false}
+    />
+  );
+}
+
+function ThumbnailLayer({
+  url,
+  x,
+  y,
+  width,
+  height,
+  opacity,
+}: {
+  url: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  opacity: number;
+}) {
+  const [image] = useImage(url, "anonymous");
+  if (!image || width <= 0 || height <= 0) return null;
+
+  const scale = Math.min(width / image.width, height / image.height);
+  const w = image.width * scale;
+  const h = image.height * scale;
+  const dx = x + (width - w) / 2;
+  const dy = y + (height - h) / 2;
+
+  return (
+    <KonvaImage
+      image={image}
+      x={dx}
+      y={dy}
+      width={w}
+      height={h}
+      opacity={opacity}
+      listening={false}
+    />
+  );
+}
 
 function clamp(n: number, min: number, max: number) {
   return Math.max(min, Math.min(max, n));
@@ -41,10 +171,12 @@ export function EditorCanvas({
   className,
   onRequestSwap,
   markupVisible = true,
+  visualMode = "blueprint",
 }: {
   className?: string;
   onRequestSwap?: (id: string) => void;
   markupVisible?: boolean;
+  visualMode?: VisualMode;
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
 
@@ -69,7 +201,7 @@ export function EditorCanvas({
   const clearCalibrationDraft = useEditorStore((s) => s.clearCalibrationDraft);
   const setCalibrationPoint = useEditorStore((s) => s.setCalibrationPoint);
 
-  const [hoveredNodeId, setHoveredNodeId] = useState<string | null>(null);
+  const [hoveredId, setHoveredId] = useState<string | null>(null);
 
   const [stageSize, setStageSize] = useState<{ w: number; h: number }>({
     w: 800,
@@ -488,11 +620,21 @@ export function EditorCanvas({
             .sort((a, b) => a.zIndex - b.zIndex)
             .map((n) => {
               const isSelected = n.id === selectedNodeId;
-              const isHovered = hoveredNodeId === n.id;
+              const isHovered = hoveredId === n.id;
               const showBadges =
                 markupVisible && (isSelected || isHovered) && activeTool !== "calibrate";
 
               const t = n.transform;
+              const padding = Math.max(4, Math.min(12, Math.min(t.width, t.height) * 0.08));
+              const innerW = t.width - padding * 2;
+              const innerH = t.height - padding * 2;
+              const canRenderVisuals = innerW > 6 && innerH > 6;
+              const kind = inferSilhouetteKind(n);
+              const showThumbnail =
+                !!n.imageUrl &&
+                (visualMode === "thumbnails" ||
+                  (visualMode === "blueprint" && (isHovered || isSelected)));
+              const thumbnailOpacity = visualMode === "thumbnails" ? 0.2 : 0.22;
 
               return (
                 <React.Fragment key={n.id}>
@@ -510,9 +652,9 @@ export function EditorCanvas({
                     opacity={n.status === "markedForDelete" ? 0.35 : 1}
                     stroke={isSelected ? "#e5e7eb" : "#374151"}
                     strokeWidth={isSelected ? 2 : 1}
-                    onMouseEnter={() => setHoveredNodeId(n.id)}
+                    onMouseEnter={() => setHoveredId(n.id)}
                     onMouseLeave={() =>
-                      setHoveredNodeId((cur) => (cur === n.id ? null : cur))
+                      setHoveredId((cur) => (cur === n.id ? null : cur))
                     }
                     onClick={() => {
                       if (activeTool === "calibrate") return;
@@ -550,6 +692,29 @@ export function EditorCanvas({
                       });
                     }}
                   />
+
+                  {canRenderVisuals && (
+                    <>
+                      <SilhouetteLayer
+                        kind={kind}
+                        x={t.x + padding}
+                        y={t.y + padding}
+                        width={innerW}
+                        height={innerH}
+                        opacity={0.2}
+                      />
+                      {showThumbnail && n.imageUrl && (
+                        <ThumbnailLayer
+                          url={n.imageUrl}
+                          x={t.x + padding}
+                          y={t.y + padding}
+                          width={innerW}
+                          height={innerH}
+                          opacity={thumbnailOpacity}
+                        />
+                      )}
+                    </>
+                  )}
 
                   {/* Vibode vibe-flow overlays */}
                   {showBadges && (
