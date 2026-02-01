@@ -194,6 +194,7 @@ export function EditorCanvas({
   const selectNode = useEditorStore((s) => s.selectNode);
   const addNode = useEditorStore((s) => s.addNode);
   const updateNodeTransform = useEditorStore((s) => s.updateNodeTransform);
+  const deleteNode = useEditorStore((s) => s.deleteNode);
 
   const toggleDelete = useEditorStore((s) => s.toggleDelete);
   const setPendingSwap = useEditorStore((s) => s.setPendingSwap);
@@ -249,7 +250,7 @@ export function EditorCanvas({
   );
 
   const transformerRef = useRef<Konva.Transformer | null>(null);
-  const selectedNodeRef = useRef<Konva.Rect | null>(null);
+  const selectedNodeRef = useRef<Konva.Group | null>(null);
 
   // Resize stage to container
   useEffect(() => {
@@ -625,6 +626,8 @@ export function EditorCanvas({
                 markupVisible && (isSelected || isHovered) && activeTool !== "calibrate";
 
               const t = n.transform;
+              const cx = t.width / 2;
+              const cy = t.height / 2;
               const padding = Math.max(4, Math.min(12, Math.min(t.width, t.height) * 0.08));
               const innerW = t.width - padding * 2;
               const innerH = t.height - padding * 2;
@@ -635,70 +638,83 @@ export function EditorCanvas({
                 (visualMode === "thumbnails" ||
                   (visualMode === "blueprint" && (isHovered || isSelected)));
               const thumbnailOpacity = visualMode === "thumbnails" ? 0.2 : 0.22;
+              const baseFillOpacity =
+                visualMode === "blueprint" ? (isSelected ? 0.82 : 0.7) : 1;
+              const nodeOpacity = n.status === "markedForDelete" ? 0.35 : baseFillOpacity;
 
               return (
-                <React.Fragment key={n.id}>
+                <Group
+                  key={n.id}
+                  ref={isSelected ? selectedNodeRef : undefined}
+                  x={t.x + cx}
+                  y={t.y + cy}
+                  rotation={t.rotation}
+                  offsetX={cx}
+                  offsetY={cy}
+                  draggable={
+                    activeTool !== "calibrate" && n.status !== "markedForDelete"
+                  }
+                  onMouseEnter={() => setHoveredId(n.id)}
+                  onMouseLeave={() =>
+                    setHoveredId((cur) => (cur === n.id ? null : cur))
+                  }
+                  onClick={() => {
+                    if (activeTool === "calibrate") return;
+                    selectNode(n.id);
+                  }}
+                  onTap={() => {
+                    if (activeTool === "calibrate") return;
+                    selectNode(n.id);
+                  }}
+                  onDragEnd={(e) => {
+                    if (activeTool === "calibrate") return;
+                    const node = e.target as Konva.Group;
+                    updateNodeTransform(n.id, {
+                      x: node.x() - t.width / 2,
+                      y: node.y() - t.height / 2,
+                    });
+                  }}
+                  onTransformEnd={(e) => {
+                    if (activeTool === "calibrate") return;
+
+                    const node = e.target as Konva.Group;
+
+                    const scaleX = node.scaleX();
+                    const scaleY = node.scaleY();
+
+                    // Prevent compounding transforms
+                    node.scaleX(1);
+                    node.scaleY(1);
+
+                    const newW = Math.max(20, t.width * scaleX);
+                    const newH = Math.max(20, t.height * scaleY);
+
+                    updateNodeTransform(n.id, {
+                      x: node.x() - newW / 2,
+                      y: node.y() - newH / 2,
+                      rotation: node.rotation(),
+                      width: newW,
+                      height: newH,
+                    });
+                  }}
+                >
                   <Rect
-                    ref={isSelected ? selectedNodeRef : undefined}
-                    x={t.x}
-                    y={t.y}
+                    x={0}
+                    y={0}
                     width={t.width}
                     height={t.height}
-                    rotation={t.rotation}
-                    draggable={
-                      activeTool !== "calibrate" && n.status !== "markedForDelete"
-                    }
                     fill="#1f2937"
-                    opacity={n.status === "markedForDelete" ? 0.35 : 1}
+                    opacity={nodeOpacity}
                     stroke={isSelected ? "#e5e7eb" : "#374151"}
                     strokeWidth={isSelected ? 2 : 1}
-                    onMouseEnter={() => setHoveredId(n.id)}
-                    onMouseLeave={() =>
-                      setHoveredId((cur) => (cur === n.id ? null : cur))
-                    }
-                    onClick={() => {
-                      if (activeTool === "calibrate") return;
-                      selectNode(n.id);
-                    }}
-                    onTap={() => {
-                      if (activeTool === "calibrate") return;
-                      selectNode(n.id);
-                    }}
-                    onDragEnd={(e) => {
-                      if (activeTool === "calibrate") return;
-                      updateNodeTransform(n.id, {
-                        x: e.target.x(),
-                        y: e.target.y(),
-                      });
-                    }}
-                    onTransformEnd={(e) => {
-                      if (activeTool === "calibrate") return;
-
-                      const node = e.target as Konva.Rect;
-
-                      const scaleX = node.scaleX();
-                      const scaleY = node.scaleY();
-
-                      // Prevent compounding transforms
-                      node.scaleX(1);
-                      node.scaleY(1);
-
-                      updateNodeTransform(n.id, {
-                        x: node.x(),
-                        y: node.y(),
-                        rotation: node.rotation(),
-                        width: Math.max(20, node.width() * scaleX),
-                        height: Math.max(20, node.height() * scaleY),
-                      });
-                    }}
                   />
 
                   {canRenderVisuals && (
                     <>
                       <SilhouetteLayer
                         kind={kind}
-                        x={t.x + padding}
-                        y={t.y + padding}
+                        x={padding}
+                        y={padding}
                         width={innerW}
                         height={innerH}
                         opacity={0.2}
@@ -706,8 +722,8 @@ export function EditorCanvas({
                       {showThumbnail && n.imageUrl && (
                         <ThumbnailLayer
                           url={n.imageUrl}
-                          x={t.x + padding}
-                          y={t.y + padding}
+                          x={padding}
+                          y={padding}
                           width={innerW}
                           height={innerH}
                           opacity={thumbnailOpacity}
@@ -721,13 +737,25 @@ export function EditorCanvas({
                     <Group>
                       {/* RED X (delete/restore toggle) — top-left */}
                       <Group
-                        x={t.x + 12}
-                        y={t.y + 12}
+                        x={12}
+                        y={12}
                         onMouseDown={(e) => {
                           e.cancelBubble = true;
                         }}
-                        onClick={() => toggleDelete(n.id)}
-                        onTap={() => toggleDelete(n.id)}
+                        onClick={() => {
+                          if (markupVisible && activeTool !== "calibrate") {
+                            deleteNode(n.id);
+                          } else {
+                            toggleDelete(n.id);
+                          }
+                        }}
+                        onTap={() => {
+                          if (markupVisible && activeTool !== "calibrate") {
+                            deleteNode(n.id);
+                          } else {
+                            toggleDelete(n.id);
+                          }
+                        }}
                       >
                         <Circle radius={11} fill="#dc2626" />
                         <Line
@@ -746,8 +774,8 @@ export function EditorCanvas({
 
                       {/* RED CIRCLE (swap) — top-right */}
                       <Group
-                        x={t.x + t.width - 12}
-                        y={t.y + 12}
+                        x={t.width - 12}
+                        y={12}
                         onMouseDown={(e) => {
                           e.cancelBubble = true;
                         }}
@@ -774,7 +802,7 @@ export function EditorCanvas({
 
                       {/* Marked-for-delete hint */}
                       {n.status === "markedForDelete" && (
-                        <Group x={t.x + 12} y={t.y + t.height - 18}>
+                        <Group x={12} y={t.height - 18}>
                           <Rect
                             width={150}
                             height={16}
@@ -794,7 +822,7 @@ export function EditorCanvas({
                       )}
                     </Group>
                   )}
-                </React.Fragment>
+                </Group>
               );
             })}
 

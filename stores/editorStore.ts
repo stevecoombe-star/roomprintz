@@ -345,6 +345,7 @@ type EditorState = {
   addFurnitureNodeFromSku: (sku: IkeaCaSku) => void;
   updateNodeTransform: (id: string, patch: Partial<NodeTransform>) => void;
   setNodeStatus: (id: string, status: FurnitureNodeStatus) => void;
+  deleteNode: (id: string) => void;
 
   // Vibode UX state machine
   setPhase: (p: Phase) => void;
@@ -1065,6 +1066,16 @@ export const useEditorStore = create<EditorState>((set, get) => ({
         ...s.scene,
         nodes: s.scene.nodes.map((n) => (n.id === id ? { ...n, status } : n)),
       },
+    })),
+
+  deleteNode: (id) =>
+    set((s) => ({
+      scene: { ...s.scene, nodes: s.scene.nodes.filter((n) => n.id !== id) },
+      ui: {
+        ...s.ui,
+        selectedNodeId: s.ui.selectedNodeId === id ? null : s.ui.selectedNodeId,
+      },
+      lastAction: null,
     })),
 
   /* ---------- Vibode UX state machine ---------- */
