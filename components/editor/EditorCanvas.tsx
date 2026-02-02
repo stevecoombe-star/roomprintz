@@ -118,6 +118,8 @@ function SilhouetteLayer({
   );
 }
 
+const failedThumbnailUrls = new Set<string>();
+
 function ThumbnailLayer({
   url,
   x,
@@ -133,7 +135,21 @@ function ThumbnailLayer({
   height: number;
   opacity: number;
 }) {
-  const [image] = useImage(url, "anonymous");
+  const skipLoad = failedThumbnailUrls.has(url);
+  const [image, status] = useImage(skipLoad ? "" : url, "anonymous");
+
+  useEffect(() => {
+    if (!image || skipLoad) return;
+    const onError = () => {
+      failedThumbnailUrls.add(url);
+    };
+    image.addEventListener("error", onError);
+    return () => {
+      image.removeEventListener("error", onError);
+    };
+  }, [image, skipLoad, url]);
+
+  if (skipLoad || status === "failed") return null;
   if (!image || width <= 0 || height <= 0) return null;
 
   const scale = Math.min(width / image.width, height / image.height);
@@ -633,8 +649,13 @@ export function EditorCanvas({
               const innerH = t.height - padding * 2;
               const canRenderVisuals = innerW > 6 && innerH > 6;
               const kind = inferSilhouetteKind(n);
+              const thumbnailUrl = n.imageUrl;
+              const resolvedThumbnailUrl =
+                thumbnailUrl?.includes("ikea.com") && thumbnailUrl
+                  ? `/api/img?url=${encodeURIComponent(thumbnailUrl)}`
+                  : thumbnailUrl;
               const showThumbnail =
-                !!n.imageUrl &&
+                !!resolvedThumbnailUrl &&
                 (visualMode === "thumbnails" ||
                   (visualMode === "blueprint" && (isHovered || isSelected)));
               const thumbnailOpacity = visualMode === "thumbnails" ? 0.2 : 0.22;
@@ -719,9 +740,9 @@ export function EditorCanvas({
                         height={innerH}
                         opacity={0.2}
                       />
-                      {showThumbnail && n.imageUrl && (
+                      {showThumbnail && resolvedThumbnailUrl && (
                         <ThumbnailLayer
-                          url={n.imageUrl}
+                          url={resolvedThumbnailUrl}
                           x={padding}
                           y={padding}
                           width={innerW}
