@@ -3,6 +3,8 @@ import { create } from "zustand";
 import { loadPendingLocal } from "../lib/pendingGeneration";
 import type { IkeaCaSku } from "../data/mockIkeaCaSkus";
 import { DEFAULT_PX_PER_IN, skuFootprintInchesFromDims } from "@/lib/ikeaSizing";
+import { buildFreezePayloadV2, type EditorNodeForV2 } from "../lib/buildFreezePayloadV2";
+import type { FreezePayloadV2, IntentRole, NodeCategory } from "../lib/freezePayloadV2Types";
 
 /* =========================
    Types
@@ -294,6 +296,7 @@ type EditorState = {
   history: FreezeRecord[];
 
   freezeNowV1: () => FreezeRecord | null;
+  freezeNowV2: () => Promise<FreezePayloadV2 | null>;
 
   /**
    * Legacy/compat alias used by the Editor UI Generate handler.
@@ -627,6 +630,38 @@ function computeRequestedOps(
   return { add, remove, swap, transformChanged };
 }
 
+function mapNodeToEditorNodeV2(node: FurnitureNode, viewport: ViewportMapping): EditorNodeForV2 {
+  const imageSpace = toImageSpaceTransform(node.transform, viewport);
+
+  return {
+    nodeId: node.id,
+    skuId: node.skuId,
+    vendor: node.vendor,
+    // TODO: Map productKey/imageKey from existing fields like `productUrl`/`imageUrl` if needed.
+    variant: node.variant
+      ? { variantId: node.variant.variantId, label: node.variant.label }
+      : undefined,
+    // TODO: Derive category/role from existing fields like `label`/`skuId` once taxonomy is defined.
+    category: "decor" as NodeCategory,
+    role: "decor" as IntentRole,
+    // TODO: Derive lockLevel/swapGroup from existing node fields (e.g. `status`, `pendingSwap`).
+    lockLevel: undefined,
+    swapGroup: undefined,
+    xPx: imageSpace.x,
+    yPx: imageSpace.y,
+    widthPx: imageSpace.width,
+    heightPx: imageSpace.height,
+    rotationDeg: imageSpace.rotation,
+    zIndex: node.zIndex,
+    footprintIn: {
+      widthIn: node.dimsIn?.width,
+      depthIn: node.dimsIn?.depth,
+      diameterIn: node.dimsIn?.diameter,
+      heightIn: node.dimsIn?.height,
+    },
+  };
+}
+
 /* =========================
    Store
 ========================= */
@@ -762,6 +797,62 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     }));
 
     return record;
+  },
+
+  freezeNowV2: async () => {
+    const { scene, viewport } = get();
+    if (!viewport) return null;
+
+    const baseImageWidthPx =
+      (isFiniteNumber(scene.baseImageWidthPx) ? scene.baseImageWidthPx : undefined) ??
+      (isFiniteNumber(viewport.imageNaturalW) ? viewport.imageNaturalW : undefined);
+
+    const baseImageHeightPx =
+      (isFiniteNumber(scene.baseImageHeightPx) ? scene.baseImageHeightPx : undefined) ??
+      (isFiniteNumber(viewport.imageNaturalH) ? viewport.imageNaturalH : undefined);
+
+    if (!isFiniteNumber(baseImageWidthPx) || !isFiniteNumber(baseImageHeightPx)) {
+      console.warn("[freezeNowV2] Missing base image natural dimensions", {
+        sceneBaseW: scene.baseImageWidthPx,
+        sceneBaseH: scene.baseImageHeightPx,
+        vpW: viewport.imageNaturalW,
+        vpH: viewport.imageNaturalH,
+      });
+      return null;
+    }
+
+    if (!scene.baseImageUrl) {
+      console.warn("[freezeNowV2] Missing base image URL");
+      return null;
+    }
+
+    const ppf = scene.calibration?.ppf;
+    if (!isFiniteNumber(ppf) || ppf <= 0) {
+      console.warn("[freezeNowV2] Missing calibration ppf");
+      return null;
+    }
+
+    const pxPerIn = ppf / 12;
+    if (!isFiniteNumber(pxPerIn) || pxPerIn <= 0) return null;
+
+    const nodes = scene.nodes.map((node) => mapNodeToEditorNodeV2(node, viewport));
+
+    return buildFreezePayloadV2({
+      baseImage: {
+        signedUrl: scene.baseImageUrl,
+        widthPx: baseImageWidthPx,
+        heightPx: baseImageHeightPx,
+      },
+      calibration: { pxPerIn },
+      stagingBands: {
+        roomType: "living_room",
+        styleBand: "modern_scandi_neutral",
+        lightingBand: "soft_daylight",
+        cameraBand: "wide_eye_level_natural",
+        decorAllowance: "minimal",
+      },
+      nodes,
+    });
   },
 
   freezeAndAppendHistory: () => {
