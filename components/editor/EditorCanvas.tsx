@@ -26,6 +26,7 @@ type DragFurniturePayload = {
 const DND_MIME = "application/x-roomprintz-furniture";
 type VisualMode = "blueprint" | "thumbnails";
 type SilhouetteKind = "sofa" | "chair" | "table" | "lamp" | "bed" | "rug";
+type ActiveTool = ReturnType<typeof useEditorStore.getState>["ui"]["activeTool"];
 
 const SILHOUETTE_FILL = "#f8fafc";
 const SILHOUETTES: Record<SilhouetteKind, string> = {
@@ -199,7 +200,7 @@ export function EditorCanvas({
   const baseImageUrl = useEditorStore((s) => s.scene.baseImageUrl);
   const nodes = useEditorStore((s) => s.scene.nodes);
   const selectedNodeId = useEditorStore((s) => s.ui.selectedNodeId);
-  const activeTool = useEditorStore((s) => s.ui.activeTool);
+  const activeTool: ActiveTool = useEditorStore((s) => s.ui.activeTool);
 
   const viewport = useEditorStore((s) => s.viewport);
   const calibration = useEditorStore((s) => s.scene.calibration);
@@ -388,6 +389,43 @@ export function EditorCanvas({
     return { distPx, feet, ppf: ppfPreview };
   }, [calP1, calP2, calibration?.draft?.realFeet]);
 
+  const handleStagePointerDown = (
+    e: Konva.KonvaEventObject<MouseEvent | TouchEvent>
+  ) => {
+    const stage = e.target.getStage();
+    if (!stage) return;
+
+    // Calibration tool intercepts clicks
+    if (activeTool === "calibrate") {
+      if (!viewport) return;
+
+      const imgPt0 = stagePointerToImage(stage, viewport);
+      if (!imgPt0) return;
+
+      // Ignore clicks outside the base image bounds
+      if (!isInsideImage(imgPt0, viewport)) return;
+
+      const imgPt = clampToImage(imgPt0, viewport);
+
+      // Point picking logic:
+      // click1: set p1
+      // click2: set p2
+      // click3: start over (new p1)
+      if (!calP1) {
+        setCalibrationPoint(1, imgPt);
+      } else if (calP1 && !calP2) {
+        setCalibrationPoint(2, imgPt);
+      } else {
+        clearCalibrationDraft();
+        setCalibrationPoint(1, imgPt);
+      }
+      return;
+    }
+
+    const clickedOnEmpty = e.target === stage;
+    if (clickedOnEmpty) selectNode(null);
+  };
+
   return (
     <div
       ref={containerRef}
@@ -456,68 +494,8 @@ export function EditorCanvas({
       <Stage
         width={stageSize.w}
         height={stageSize.h}
-        onMouseDown={(e) => {
-          const stage = e.target.getStage();
-          if (!stage) return;
-
-          // Calibration tool intercepts clicks
-          if (activeTool === "calibrate") {
-            if (!viewport) return;
-
-            const imgPt0 = stagePointerToImage(stage, viewport);
-            if (!imgPt0) return;
-
-            // Ignore clicks outside the base image bounds
-            if (!isInsideImage(imgPt0, viewport)) return;
-
-            const imgPt = clampToImage(imgPt0, viewport);
-
-            // Point picking logic:
-            // click1: set p1
-            // click2: set p2
-            // click3: start over (new p1)
-            if (!calP1) {
-              setCalibrationPoint(1, imgPt);
-            } else if (calP1 && !calP2) {
-              setCalibrationPoint(2, imgPt);
-            } else {
-              clearCalibrationDraft();
-              setCalibrationPoint(1, imgPt);
-            }
-            return;
-          }
-
-          const clickedOnEmpty = e.target === stage;
-          if (clickedOnEmpty) selectNode(null);
-        }}
-        onTouchStart={(e) => {
-          const stage = e.target.getStage();
-          if (!stage) return;
-
-          if (activeTool === "calibrate") {
-            if (!viewport) return;
-
-            const imgPt0 = stagePointerToImage(stage, viewport);
-            if (!imgPt0) return;
-
-            if (!isInsideImage(imgPt0, viewport)) return;
-
-            const imgPt = clampToImage(imgPt0, viewport);
-
-            if (!calP1) {
-              setCalibrationPoint(1, imgPt);
-            } else if (calP1 && !calP2) {
-              setCalibrationPoint(2, imgPt);
-            } else {
-              clearCalibrationDraft();
-              setCalibrationPoint(1, imgPt);
-            }
-            return;
-          }
-
-          const clickedOnEmpty = e.target === stage;
-          if (clickedOnEmpty) selectNode(null);
-        }}
+        onMouseDown={handleStagePointerDown}
+        onTap={handleStagePointerDown}
       >
         <Layer>
           {/* Matte */}
@@ -527,6 +505,7 @@ export function EditorCanvas({
             width={stageSize.w}
             height={stageSize.h}
             fill="#0a0a0a"
+            listening={false}
           />
 
           {/* Base image (scaled to fit) */}
@@ -638,8 +617,8 @@ export function EditorCanvas({
             .map((n) => {
               const isSelected = n.id === selectedNodeId;
               const isHovered = hoveredId === n.id;
-              const showBadges =
-                markupVisible && (isSelected || isHovered) && activeTool !== "calibrate";
+              const isCalibrate = activeTool === "calibrate";
+              const showBadges = markupVisible && (isSelected || isHovered) && !isCalibrate;
 
               const t = n.transform;
               const cx = t.width / 2;
@@ -658,7 +637,9 @@ export function EditorCanvas({
                 !!resolvedThumbnailUrl &&
                 (visualMode === "thumbnails" ||
                   (visualMode === "blueprint" && (isHovered || isSelected)));
-              const thumbnailOpacity = visualMode === "thumbnails" ? 0.2 : 0.22;
+              const thumbnailOpacity = visualMode === "thumbnails" ? 0.35 : 0.4;
+              const silhouetteOpacity =
+                visualMode === "thumbnails" ? 0.06 : showThumbnail ? 0.1 : 0.2;
               const baseFillOpacity =
                 visualMode === "blueprint" ? (isSelected ? 0.82 : 0.7) : 1;
               const nodeOpacity = n.status === "markedForDelete" ? 0.35 : baseFillOpacity;
@@ -738,7 +719,7 @@ export function EditorCanvas({
                         y={padding}
                         width={innerW}
                         height={innerH}
-                        opacity={0.2}
+                        opacity={silhouetteOpacity}
                       />
                       {showThumbnail && resolvedThumbnailUrl && (
                         <ThumbnailLayer
@@ -764,14 +745,14 @@ export function EditorCanvas({
                           e.cancelBubble = true;
                         }}
                         onClick={() => {
-                          if (markupVisible && activeTool !== "calibrate") {
+                          if (markupVisible) {
                             deleteNode(n.id);
                           } else {
                             toggleDelete(n.id);
                           }
                         }}
                         onTap={() => {
-                          if (markupVisible && activeTool !== "calibrate") {
+                          if (markupVisible) {
                             deleteNode(n.id);
                           } else {
                             toggleDelete(n.id);
