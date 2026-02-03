@@ -630,20 +630,63 @@ function computeRequestedOps(
   return { add, remove, swap, transformChanged };
 }
 
+function mapVariantToRecord(
+  variant?: FurnitureVariant
+): Record<string, string | undefined> | undefined {
+  if (!variant) return undefined;
+  return {
+    variantId: variant.variantId,
+    label: typeof variant.label === "string" ? variant.label : undefined,
+  };
+}
+
+function deriveCategoryFromHint(hint?: string): NodeCategory | undefined {
+  if (!hint) return undefined;
+  const normalized = hint.toLowerCase();
+  if (/\bsofa\b|\bcouch\b|\bsectional\b/.test(normalized)) return "sofa";
+  if (/\brug\b/.test(normalized)) return "rug";
+  if (/\bbed\b/.test(normalized)) return "bed";
+  if (/\bchair\b/.test(normalized)) return "chair";
+  if (/\bcoffee\b/.test(normalized) && /\btable\b/.test(normalized)) return "table_coffee";
+  if (/\bside\b/.test(normalized) && /\btable\b/.test(normalized)) return "table_side";
+  if (/\bdining\b/.test(normalized) && /\btable\b/.test(normalized)) return "table_dining";
+  if (/\bfloor\b/.test(normalized) && /\blamp\b/.test(normalized)) return "lamp_floor";
+  if (/\btable\b/.test(normalized) && /\blamp\b/.test(normalized)) return "lamp_table";
+  if (/\btv\b/.test(normalized) || /\bmedia\b/.test(normalized)) return "tv_stand";
+  if (/\bdesk\b/.test(normalized)) return "desk";
+  if (/\bstorage\b|\bwardrobe\b|\bdresser\b|\bconsole\b|\bcabinet\b|\bshelf\b/.test(normalized))
+    return "storage";
+  return undefined;
+}
+
+function deriveNodeCategory(node: FurnitureNode): NodeCategory {
+  const typedNode = node as FurnitureNode & { type?: string; nodeType?: string };
+  const primaryHint = typedNode.type ?? typedNode.nodeType ?? node.kind;
+  const fromPrimary = deriveCategoryFromHint(primaryHint);
+  if (fromPrimary) return fromPrimary;
+  const fromLabel = deriveCategoryFromHint(node.label) ?? deriveCategoryFromHint(node.skuId);
+  return fromLabel ?? "decor";
+}
+
+function deriveNodeRole(category: NodeCategory): IntentRole {
+  if (category === "sofa" || category === "rug" || category === "bed") return "primary";
+  if (category === "decor") return "decor";
+  return "secondary";
+}
+
 function mapNodeToEditorNodeV2(node: FurnitureNode, viewport: ViewportMapping): EditorNodeForV2 {
   const imageSpace = toImageSpaceTransform(node.transform, viewport);
+  const category = deriveNodeCategory(node);
 
   return {
     nodeId: node.id,
     skuId: node.skuId,
     vendor: node.vendor,
     // TODO: Map productKey/imageKey from existing fields like `productUrl`/`imageUrl` if needed.
-    variant: node.variant
-      ? { variantId: node.variant.variantId, label: node.variant.label }
-      : undefined,
-    // TODO: Derive category/role from existing fields like `label`/`skuId` once taxonomy is defined.
-    category: "decor" as NodeCategory,
-    role: "decor" as IntentRole,
+    variant: mapVariantToRecord(node.variant),
+    // TODO: Replace heuristics when a real taxonomy field exists on nodes.
+    category,
+    role: deriveNodeRole(category),
     // TODO: Derive lockLevel/swapGroup from existing node fields (e.g. `status`, `pendingSwap`).
     lockLevel: undefined,
     swapGroup: undefined,
