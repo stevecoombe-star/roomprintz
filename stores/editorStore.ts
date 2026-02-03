@@ -635,7 +635,7 @@ function mapVariantToRecord(
 ): Record<string, string | undefined> | undefined {
   if (!variant) return undefined;
   return {
-    variantId: variant.variantId,
+    variantId: typeof variant.variantId === "string" ? variant.variantId : String(variant.variantId),
     label: typeof variant.label === "string" ? variant.label : undefined,
   };
 }
@@ -661,7 +661,7 @@ function deriveCategoryFromHint(hint?: string): NodeCategory | undefined {
 
 function deriveNodeCategory(node: FurnitureNode): NodeCategory {
   const typedNode = node as FurnitureNode & { type?: string; nodeType?: string };
-  const primaryHint = typedNode.type ?? typedNode.nodeType ?? node.kind;
+  const primaryHint = node.kind ?? typedNode.type ?? typedNode.nodeType;
   const fromPrimary = deriveCategoryFromHint(primaryHint);
   if (fromPrimary) return fromPrimary;
   const fromLabel = deriveCategoryFromHint(node.label) ?? deriveCategoryFromHint(node.skuId);
