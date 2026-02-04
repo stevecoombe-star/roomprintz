@@ -107,22 +107,55 @@ function nodeSwapKind(node: FurnitureNode): SwapKindBucket | null {
   return null;
 }
 
-function validateFreezePayloadV1(payload: any): { ok: true } | { ok: false; reason: string } {
-  if (!payload || typeof payload !== "object") return { ok: false, reason: "payload missing" };
-  if (payload.payloadVersion !== "v1") return { ok: false, reason: `payloadVersion must be "v1"` };
+type FreezePayloadAccess = {
+  generationId?: unknown;
+  baseImage?: unknown;
+};
 
-  const base = payload.baseImage;
+type FreezeBaseImageAccess = {
+  kind?: unknown;
+  url?: unknown;
+  storageKey?: unknown;
+  widthPx?: unknown;
+  heightPx?: unknown;
+};
+
+function getFreezePayloadAccess(payload: unknown): {
+  generationId: unknown | null;
+  baseImage: FreezeBaseImageAccess | null;
+} {
+  if (!payload || typeof payload !== "object") {
+    return { generationId: null, baseImage: null };
+  }
+  const typed = payload as FreezePayloadAccess;
+  const baseImage =
+    typed.baseImage && typeof typed.baseImage === "object"
+      ? (typed.baseImage as FreezeBaseImageAccess)
+      : null;
+  return { generationId: typed.generationId ?? null, baseImage };
+}
+
+function validateFreezePayloadV1(payload: unknown): { ok: true } | { ok: false; reason: string } {
+  if (!payload || typeof payload !== "object") return { ok: false, reason: "payload missing" };
+  const payloadRecord = payload as { payloadVersion?: unknown; sceneSnapshotImageSpace?: unknown };
+  if (payloadRecord.payloadVersion !== "v1")
+    return { ok: false, reason: `payloadVersion must be "v1"` };
+
+  const base = getFreezePayloadAccess(payload).baseImage;
   if (!base || typeof base !== "object") return { ok: false, reason: "baseImage missing" };
-  if (!["publicUrl", "signedUrl", "storageKey"].includes(base.kind))
+  const baseKind = base.kind as string | undefined;
+  if (!["publicUrl", "signedUrl", "storageKey"].includes(baseKind))
     return { ok: false, reason: "baseImage.kind invalid" };
-  if ((base.kind === "publicUrl" || base.kind === "signedUrl") && !base.url)
+  if ((baseKind === "publicUrl" || baseKind === "signedUrl") && !base.url)
     return { ok: false, reason: "baseImage.url missing" };
-  if (base.kind === "storageKey" && !base.storageKey)
+  if (baseKind === "storageKey" && !base.storageKey)
     return { ok: false, reason: "baseImage.storageKey missing" };
   if (!isFiniteNumber(base.widthPx) || !isFiniteNumber(base.heightPx))
     return { ok: false, reason: "baseImage width/height missing" };
 
-  const snap = payload.sceneSnapshotImageSpace;
+  const snap = payloadRecord.sceneSnapshotImageSpace as {
+    nodes?: Array<{ id?: unknown; skuId?: unknown; transform?: any }>;
+  };
   if (!snap || typeof snap !== "object")
     return { ok: false, reason: "sceneSnapshotImageSpace missing" };
   if (!Array.isArray(snap.nodes))
@@ -224,6 +257,7 @@ export default function EditorPage() {
 
   // canonical freeze payload writer
   const freezeNowV1 = useEditorStore((s) => s.freezeNowV1);
+  const freezeNowV2 = useEditorStore((s) => s.freezeNowV2);
 
   const setBaseImageFromFile = useEditorStore((s) => s.setBaseImageFromFile);
   const setBaseImageUrl = useEditorStore((s) => s.setBaseImageUrl);
@@ -274,6 +308,7 @@ export default function EditorPage() {
 
   const [isUploading, setIsUploading] = useState(false);
   const [historyPickerFor, setHistoryPickerFor] = useState<string | null>(null);
+  const useFreezeV2 = process.env.NEXT_PUBLIC_VIBODE_FREEZE_V2 === "1";
 
   useEffect(() => {
     useEditorStore.getState().tryRestorePendingFromLocalStorage();
@@ -383,8 +418,12 @@ export default function EditorPage() {
       pushSnack("Viewport not ready yet (image still loading). Try again in a moment.");
       return;
     }
-    if (typeof freezeNowV1 !== "function") {
+    if (!useFreezeV2 && typeof freezeNowV1 !== "function") {
       pushSnack("Freeze writer not found (freezeNowV1). Check editorStore export.");
+      return;
+    }
+    if (useFreezeV2 && typeof freezeNowV2 !== "function") {
+      pushSnack("Freeze writer not found (freezeNowV2). Check editorStore export.");
       return;
     }
   
@@ -453,11 +492,19 @@ export default function EditorPage() {
       // 3) Freeze first (captures intent). BUT do NOT "commitGenerateMock" until model succeeds.
       //    This prevents UI state from lying when API/model fails.
       // ─────────────────────────────────────────────
-      const record = freezeNowV1();
-      const payload = record?.freeze ?? null;
+      let payload: unknown = null;
+      let record: ReturnType<typeof freezeNowV1> | null = null;
+
+      if (useFreezeV2) {
+        payload = await freezeNowV2();
+        console.log("[FREEZE v2]", payload);
+      } else {
+        record = freezeNowV1();
+        payload = record?.freeze ?? null;
+        console.log("[FREEZE v1]", payload);
+      }
 
       setLastFreezePayload(payload);
-      console.log("[FREEZE v1]", payload);
 
       if (!payload) {
         useEditorStore.getState().endGenerateError({
@@ -467,7 +514,8 @@ export default function EditorPage() {
         return;
       }
 
-      generationId = record?.generationId ?? payload?.generationId ?? null;
+      const payloadAccess = getFreezePayloadAccess(payload);
+      generationId = record?.generationId ?? (payloadAccess.generationId as string | null) ?? null;
       if (generationId) {
         useEditorStore.setState((s) => {
           const idx = s.history.findIndex((h) => h.generationId === generationId);
@@ -483,14 +531,16 @@ export default function EditorPage() {
         });
       }
 
-      // Optional: Validate (client-side) so we fail fast before network call.
-      const valid = validateFreezePayloadV1(payload);
-      if (!valid.ok) {
-        useEditorStore.getState().endGenerateError({
-          userMessage: "Something didn’t work that time. Please try generating again.",
-          debug: { message: valid.reason },
-        });
-        return;
+      if (!useFreezeV2) {
+        // Optional: Validate (client-side) so we fail fast before network call.
+        const valid = validateFreezePayloadV1(payload);
+        if (!valid.ok) {
+          useEditorStore.getState().endGenerateError({
+            userMessage: "Something didn’t work that time. Please try generating again.",
+            debug: { message: valid.reason },
+          });
+          return;
+        }
       }
 
       // Helpful toast (keeps your dopamine, but no state mutation yet)
@@ -504,8 +554,28 @@ export default function EditorPage() {
       // 4) Determine echo vs model mode
       //    Echo is ONLY for blob/data/file/local base urls.
       // ─────────────────────────────────────────────
-      const baseKind = payload?.baseImage?.kind;
-      const baseUrl = (payload?.baseImage?.url ?? "").toString();
+      const baseImage = payloadAccess.baseImage;
+      let baseKind = baseImage?.kind as string | undefined;
+      let baseUrl = (baseImage?.url ?? "").toString();
+
+      if (useFreezeV2 && baseImage && typeof baseImage === "object") {
+        const storageKey = typeof baseImage.storageKey === "string" ? baseImage.storageKey : "";
+        const signedUrl = typeof baseImage.signedUrl === "string" ? baseImage.signedUrl : "";
+        const imageBase64 = typeof baseImage.imageBase64 === "string" ? baseImage.imageBase64 : "";
+
+        if (storageKey) {
+          baseKind = "storageKey";
+          baseUrl = "";
+        } else if (signedUrl) {
+          baseKind = "signedUrl";
+          baseUrl = signedUrl;
+        } else if (imageBase64) {
+          baseKind = "imageBase64";
+          baseUrl = imageBase64.startsWith("data:")
+            ? imageBase64
+            : `data:image/jpeg;base64,${imageBase64}`;
+        }
+      }
 
       const isBlobOrLocal =
         baseKind !== "storageKey" &&
@@ -1455,7 +1525,10 @@ export default function EditorPage() {
                       const url = URL.createObjectURL(blob);
                       const a = document.createElement("a");
                       a.href = url;
-                      a.download = `vibode_freeze_${payload.generationId}.json`;
+                      const rawGenId = getFreezePayloadAccess(payload).generationId;
+                      const downloadGenId =
+                        typeof rawGenId === "string" && rawGenId.trim() ? rawGenId : "unknown";
+                      a.download = `vibode_freeze_${downloadGenId}.json`;
                       a.click();
                       setTimeout(() => URL.revokeObjectURL(url), 500);
                       pushSnack("Downloaded freeze JSON.");
