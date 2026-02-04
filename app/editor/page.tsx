@@ -115,7 +115,9 @@ type FreezePayloadAccess = {
 type FreezeBaseImageAccess = {
   kind?: unknown;
   url?: unknown;
+  signedUrl?: unknown;
   storageKey?: unknown;
+  imageBase64?: unknown;
   widthPx?: unknown;
   heightPx?: unknown;
 };
@@ -143,7 +145,7 @@ function validateFreezePayloadV1(payload: unknown): { ok: true } | { ok: false; 
 
   const base = getFreezePayloadAccess(payload).baseImage;
   if (!base || typeof base !== "object") return { ok: false, reason: "baseImage missing" };
-  const baseKind = base.kind as string | undefined;
+  const baseKind = (base.kind as string | undefined) ?? "";
   if (!["publicUrl", "signedUrl", "storageKey"].includes(baseKind))
     return { ok: false, reason: "baseImage.kind invalid" };
   if ((baseKind === "publicUrl" || baseKind === "signedUrl") && !base.url)
