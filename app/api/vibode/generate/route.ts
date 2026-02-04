@@ -2,6 +2,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import type { SupabaseClient } from "@supabase/supabase-js";
+import type { FreezePayloadV2 } from "@/lib/freezePayloadV2Types";
 
 // Ensure we run on the Node.js runtime (needed for Buffer, larger payloads, etc.)
 export const runtime = "nodejs";
@@ -50,7 +51,7 @@ type Database = {
   };
 };
 
-type BaseImageKind = "publicUrl" | "signedUrl" | "storageKey";
+type BaseImageKind = "publicUrl" | "signedUrl" | "storageKey" | "url";
 
 type RequestedOps = {
   add: string[];
@@ -320,6 +321,48 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object";
 }
 
+function translateFreezeV2ToV1(freezeV2: FreezePayloadV2): FreezePayloadV1 {
+  const base = freezeV2.baseImage ?? {};
+  const widthPx = finiteNumber(base.widthPx) && base.widthPx > 0 ? base.widthPx : 1;
+  const heightPx = finiteNumber(base.heightPx) && base.heightPx > 0 ? base.heightPx : 1;
+
+  const storageKey = typeof base.storageKey === "string" ? base.storageKey.trim() : "";
+  const signedUrl = typeof base.signedUrl === "string" ? base.signedUrl.trim() : "";
+  const imageBase64 = typeof base.imageBase64 === "string" ? base.imageBase64.trim() : "";
+
+  let baseImage: FreezePayloadV1["baseImage"];
+
+  if (storageKey) {
+    baseImage = { kind: "storageKey", storageKey, widthPx, heightPx };
+  } else if (imageBase64) {
+    const dataUrl = imageBase64.startsWith("data:")
+      ? imageBase64
+      : `data:image/png;base64,${imageBase64}`;
+    baseImage = { kind: "url", url: dataUrl, widthPx, heightPx };
+  } else if (signedUrl) {
+    baseImage = { kind: "url", url: signedUrl, widthPx, heightPx };
+  } else {
+    baseImage = { kind: "url", url: "", widthPx, heightPx };
+  }
+
+  const payload: FreezePayloadV1 & { debug?: { v2SceneHash?: string } } = {
+    payloadVersion: "v1",
+    generationId: freezeV2.sceneHash,
+    baseImage,
+    sceneSnapshotImageSpace: {
+      sceneId: freezeV2.sceneHash,
+      nodes: [],
+    },
+    requestedAction: {
+      type: "generate",
+      ops: { add: [], remove: [], swap: [], transformChanged: [] },
+    },
+    debug: { v2SceneHash: freezeV2.sceneHash },
+  };
+
+  return payload;
+}
+
 function validateFreezePayloadV1(
   payload: FreezePayloadV1,
   opts?: { allowBlobOrLocalBaseUrl?: boolean }
@@ -333,7 +376,13 @@ function validateFreezePayloadV1(
   }
 
   const bi = payload.baseImage;
-  if (!bi || (bi.kind !== "publicUrl" && bi.kind !== "signedUrl" && bi.kind !== "storageKey")) {
+  if (
+    !bi ||
+    (bi.kind !== "publicUrl" &&
+      bi.kind !== "signedUrl" &&
+      bi.kind !== "storageKey" &&
+      bi.kind !== "url")
+  ) {
     return { ok: false, error: "Missing or invalid baseImage.kind." };
   }
 
@@ -818,22 +867,14 @@ export async function POST(req: NextRequest) {
     }
 
     const payloadVersion = isRecord(freeze) ? freeze.payloadVersion : null;
-    if (payloadVersion === "v2") {
-      const sceneHash =
-        isRecord(freeze) && typeof freeze.sceneHash === "string" ? freeze.sceneHash : null;
-      const nodesLength =
-        isRecord(freeze) && Array.isArray(freeze.nodes) ? freeze.nodes.length : 0;
-
-      return json(501, {
-        error: "FreezePayloadV2 received but translation not implemented",
-        details: { payloadVersion: "v2", sceneHash, nodesLength },
-      });
-    }
-
-    const payload = freeze as FreezePayloadV1;
+    const payload =
+      payloadVersion === "v2"
+        ? translateFreezeV2ToV1(freeze as FreezePayloadV2)
+        : (freeze as FreezePayloadV1);
 
     // Determine if echo is even allowed (only for blob/local base image URLs)
-    const baseImage = isRecord(freeze) && isRecord(freeze.baseImage) ? freeze.baseImage : null;
+    const baseImage =
+      isRecord(payload) && isRecord(payload.baseImage) ? payload.baseImage : null;
     const baseUrl = typeof baseImage?.url === "string" ? baseImage.url : "";
     const baseImageKind = typeof baseImage?.kind === "string" ? baseImage.kind : null;
     const forceEchoAllowed =
@@ -846,7 +887,7 @@ export async function POST(req: NextRequest) {
     const forceEcho = forceEchoRequested && forceEchoAllowed;
 
     // Determine action type and ops (ops must be computed BEFORE validate options)
-    const requestedAction = isRecord(freeze) ? freeze.requestedAction : null;
+    const requestedAction = isRecord(payload) ? payload.requestedAction : null;
     const requestedActionType =
       isRecord(requestedAction) && typeof requestedAction.type === "string"
         ? requestedAction.type
