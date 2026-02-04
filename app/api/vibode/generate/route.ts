@@ -808,6 +808,15 @@ export async function POST(req: NextRequest) {
     const body = (await req.json()) as unknown;
     const freeze = isRecord(body) ? body.freeze : undefined;
 
+    if (isRecord(freeze)) {
+      console.log("[API] freeze received", {
+        payloadVersion: freeze.payloadVersion,
+        sceneHash: typeof freeze.sceneHash === "string" ? freeze.sceneHash : null,
+        nodesLength: Array.isArray(freeze.nodes) ? freeze.nodes.length : null,
+        firstNodeId: Array.isArray(freeze.nodes) ? (freeze.nodes[0] as any)?.nodeId : null,
+      });
+    }
+
     const payloadVersion = isRecord(freeze) ? freeze.payloadVersion : null;
     if (payloadVersion === "v2") {
       const sceneHash =

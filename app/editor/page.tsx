@@ -599,7 +599,16 @@ export default function EditorPage() {
         });
         return;
       }
-  
+
+      if (useFreezeV2) {
+        console.log("[V2 DEBUG before fetch]", {
+          payloadVersion: (payload as any)?.payloadVersion,
+          sceneHash: (payload as any)?.sceneHash,
+          nodesLength: (payload as any)?.nodes?.length,
+          firstNodeId: (payload as any)?.nodes?.[0]?.nodeId,
+        });
+      }
+      
       const res = await fetch("/api/vibode/generate", {
         method: "POST",
         headers: {

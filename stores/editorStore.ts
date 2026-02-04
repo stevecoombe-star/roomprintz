@@ -870,15 +870,22 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     }
 
     const ppf = scene.calibration?.ppf;
+    const hasCalibration = Boolean(scene.calibration);
     const hasValidPpf = isFiniteNumber(ppf) && ppf > 0;
-    if (!hasValidPpf) {
-      console.warn("[freezeNowV2] Missing calibration ppf");
+    
+    // Warn only if user attempted calibration but it failed
+    if (hasCalibration && !hasValidPpf) {
+      console.warn("[freezeNowV2] Invalid calibration ppf", { ppf });
     }
 
     const pxPerIn = hasValidPpf ? ppf / 12 : DEFAULT_PX_PER_IN;
     if (!isFiniteNumber(pxPerIn) || pxPerIn <= 0) return null;
 
-    const nodes = scene.nodes.map((node) => mapNodeToEditorNodeV2(node, viewport));
+    const canvasNodes = scene.nodes;
+    if (process.env.NODE_ENV !== "production") {
+      console.log("[freezeNowV2] nodesLength", canvasNodes.length);
+    }
+    const nodes = canvasNodes.map((node) => mapNodeToEditorNodeV2(node, viewport));
 
     return buildFreezePayloadV2({
       baseImage: {
