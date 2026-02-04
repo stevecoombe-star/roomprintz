@@ -294,6 +294,9 @@ function isProbablyBlobOrLocalUrl(url: string) {
 
 function safeUrlForLogs(url?: string | null) {
   if (!url) return null;
+  if (url.trim().toLowerCase().startsWith("data:")) {
+    return "[data-url]";
+  }
   try {
     const u = new URL(url);
     u.search = "";
@@ -311,6 +314,10 @@ function normalizeRequestedOps(raw: any): RequestedOps {
     swap: Array.isArray(raw?.swap) ? raw.swap : [],
     transformChanged: Array.isArray(raw?.transformChanged) ? raw.transformChanged : [],
   };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object";
 }
 
 function validateFreezePayloadV1(
@@ -797,14 +804,31 @@ export async function POST(req: NextRequest) {
     const vibodeEchoOnlyRaw = process.env.VIBODE_ECHO_ONLY ?? null;
     const echoOnly = (process.env.VIBODE_ECHO_ONLY ?? "false").toLowerCase() === "true";
 
-    // Body shape: { freeze: FreezePayloadV1 }
-    const body = (await req.json()) as { freeze?: FreezePayloadV1 };
-    const payload = body?.freeze as FreezePayloadV1;
+    // Body shape: { freeze: FreezePayloadV1 | FreezePayloadV2 }
+    const body = (await req.json()) as unknown;
+    const freeze = isRecord(body) ? body.freeze : undefined;
+
+    const payloadVersion = isRecord(freeze) ? freeze.payloadVersion : null;
+    if (payloadVersion === "v2") {
+      const sceneHash =
+        isRecord(freeze) && typeof freeze.sceneHash === "string" ? freeze.sceneHash : null;
+      const nodesLength =
+        isRecord(freeze) && Array.isArray(freeze.nodes) ? freeze.nodes.length : 0;
+
+      return json(501, {
+        error: "FreezePayloadV2 received but translation not implemented",
+        details: { payloadVersion: "v2", sceneHash, nodesLength },
+      });
+    }
+
+    const payload = freeze as FreezePayloadV1;
 
     // Determine if echo is even allowed (only for blob/local base image URLs)
-    const baseUrl = payload?.baseImage?.url ?? "";
+    const baseImage = isRecord(freeze) && isRecord(freeze.baseImage) ? freeze.baseImage : null;
+    const baseUrl = typeof baseImage?.url === "string" ? baseImage.url : "";
+    const baseImageKind = typeof baseImage?.kind === "string" ? baseImage.kind : null;
     const forceEchoAllowed =
-      payload?.baseImage?.kind !== "storageKey" &&
+      baseImageKind !== "storageKey" &&
       typeof baseUrl === "string" &&
       baseUrl.length > 0 &&
       isProbablyBlobOrLocalUrl(baseUrl);
@@ -813,14 +837,17 @@ export async function POST(req: NextRequest) {
     const forceEcho = forceEchoRequested && forceEchoAllowed;
 
     // Determine action type and ops (ops must be computed BEFORE validate options)
+    const requestedAction = isRecord(freeze) ? freeze.requestedAction : null;
     const requestedActionType =
-      typeof (payload as any)?.requestedAction?.type === "string"
-        ? ((payload as any).requestedAction.type as string)
+      isRecord(requestedAction) && typeof requestedAction.type === "string"
+        ? requestedAction.type
         : null;
 
     const isGenerateAction = requestedActionType ? requestedActionType === "generate" : true;
 
-    const requestedOps = normalizeRequestedOps((payload as any)?.requestedAction?.ops ?? null);
+    const requestedOps = normalizeRequestedOps(
+      isRecord(requestedAction) ? requestedAction.ops : null
+    );
 
     // ✅ Correct: non-generate + empty ops => echo-safe no-op
     const isNonGenerateNoop = !isGenerateAction && opsIsEmpty(requestedOps);
@@ -828,7 +855,9 @@ export async function POST(req: NextRequest) {
     // If you're trying to debug, x-vibode-force-model=true can override echo.
     const willEcho = !forceModel && (forceEcho || echoOnly || isNonGenerateNoop);
 
-    const v = validateFreezePayloadV1(payload, { allowBlobOrLocalBaseUrl: willEcho });
+    const v = validateFreezePayloadV1(payload, {
+      allowBlobOrLocalBaseUrl: willEcho,
+    });
     if (!v.ok) {
       return json(400, { error: v.error, details: v.details });
     }

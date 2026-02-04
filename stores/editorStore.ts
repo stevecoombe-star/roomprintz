@@ -870,12 +870,12 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     }
 
     const ppf = scene.calibration?.ppf;
-    if (!isFiniteNumber(ppf) || ppf <= 0) {
+    const hasValidPpf = isFiniteNumber(ppf) && ppf > 0;
+    if (!hasValidPpf) {
       console.warn("[freezeNowV2] Missing calibration ppf");
-      return null;
     }
 
-    const pxPerIn = ppf / 12;
+    const pxPerIn = hasValidPpf ? ppf / 12 : DEFAULT_PX_PER_IN;
     if (!isFiniteNumber(pxPerIn) || pxPerIn <= 0) return null;
 
     const nodes = scene.nodes.map((node) => mapNodeToEditorNodeV2(node, viewport));
@@ -886,7 +886,10 @@ export const useEditorStore = create<EditorState>((set, get) => ({
         widthPx: baseImageWidthPx,
         heightPx: baseImageHeightPx,
       },
-      calibration: { pxPerIn },
+      calibration: {
+        pxPerIn,
+        method: hasValidPpf ? "user_line" : "auto_fit",
+      },
       stagingBands: {
         roomType: "living_room",
         styleBand: "modern_scandi_neutral",
