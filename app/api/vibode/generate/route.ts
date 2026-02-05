@@ -889,6 +889,7 @@ async function callNanoBananaPro(args: {
   baseImageUrlForModel: string;
   notes: string[];
   styleId: string;
+  vibodePrompt?: string;
 }) {
   const url = process.env.NANOBANANA_PRO_URL;
   const apiKey = process.env.NANOBANANA_PRO_API_KEY;
@@ -904,6 +905,9 @@ async function callNanoBananaPro(args: {
   const styleId = args.styleId;
   const modelVersion = safeStr((args.payload as any)?.modelVersion) ?? "gemini-3";
   const aspectRatio = pickLegacyAspectRatioFromFreeze(args.payload);
+  const vibodePrompt = safeStr(args.vibodePrompt);
+  const vibodePromptTriggersWork =
+    (process.env.VIBODE_NB_VIBODEPROMPT_TRIGGERS_WORK ?? "true").toLowerCase() !== "false";
 
   const body: LegacyStageRoomRequest = {
     imageBase64,
@@ -922,6 +926,22 @@ async function callNanoBananaPro(args: {
   };
 
   args.notes.push(`Resolved styleId='${styleId}' applied for legacy /stage-room.`);
+  if (vibodePrompt) {
+    (body as LegacyStageRoomRequest & { prompt?: string; instruction?: string }).prompt =
+      vibodePrompt;
+    (body as LegacyStageRoomRequest & { prompt?: string; instruction?: string }).instruction =
+      vibodePrompt;
+    args.notes.push("Injected Vibode prompt into legacy /stage-room request.");
+    if (vibodePromptTriggersWork) {
+      if ("enhancePhoto" in body) {
+        body.enhancePhoto = true;
+      } else if ("cleanupRoom" in body) {
+        body.cleanupRoom = true;
+      }
+    } else {
+      args.notes.push("Vibode prompt triggers disabled; skipping enhance/cleanup toggles.");
+    }
+  }
 
   const res = await fetch(url, {
     method: "POST",
@@ -957,6 +977,8 @@ async function callNanoBananaProPrompt(args: {
     );
   }
 
+  const { base64: imageBase64 } = await fetchImageAsBase64(args.baseImageUrlForModel);
+
   const res = await fetch(url, {
     method: "POST",
     headers: {
@@ -964,7 +986,7 @@ async function callNanoBananaProPrompt(args: {
       authorization: `Bearer ${apiKey}`,
     },
     body: JSON.stringify({
-      base_image_url: args.baseImageUrlForModel,
+      imageBase64,
       prompt: args.prompt,
       aspect_ratio: args.aspectRatio,
       seed: args.seed,
@@ -1207,7 +1229,7 @@ export async function POST(req: NextRequest) {
           resolvedStyleId,
         })
       : null;
-    const usePromptEndpoint = vibodePromptEndpointEnabled && shouldUseVibodePrompt;
+    const usePromptEndpoint = false;
     notes.push(`Prompt endpoint enabled=${vibodePromptEndpointEnabled}.`);
     notes.push(`Vibode prompt generated=${Boolean(vibodePrompt)}.`);
 
@@ -1363,21 +1385,13 @@ export async function POST(req: NextRequest) {
     let modelImageUrl: string | null = null;
 
     try {
-      const result = usePromptEndpoint
-        ? await callNanoBananaProPrompt({
-            baseImageUrlForModel,
-            prompt: vibodePrompt ?? "",
-            aspectRatio: pickLegacyAspectRatioFromFreeze(payloadForModel),
-          })
-        : await callNanoBananaPro({
-            payload: payloadForModel,
-            baseImageUrlForModel,
-            notes,
-            styleId: resolvedStyleId,
-          });
-      if (usePromptEndpoint) {
-        notes.push("Using Vibode prompt endpoint (scene nodes + staging bands).");
-      }
+      const result = await callNanoBananaPro({
+        payload: payloadForModel,
+        baseImageUrlForModel,
+        notes,
+        styleId: resolvedStyleId,
+        vibodePrompt: shouldUseVibodePrompt ? vibodePrompt ?? undefined : undefined,
+      });
       modelImageUrl = result.imageUrl;
     } catch (modelErr: unknown) {
       console.error("[vibode/generate] model call failed:", modelErr);
