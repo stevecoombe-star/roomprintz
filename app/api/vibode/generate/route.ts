@@ -321,6 +321,19 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object";
 }
 
+function uniqueStrings(values: Array<string | null | undefined>) {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const v of values) {
+    if (typeof v !== "string") continue;
+    const trimmed = v.trim();
+    if (!trimmed || seen.has(trimmed)) continue;
+    seen.add(trimmed);
+    out.push(trimmed);
+  }
+  return out;
+}
+
 function translateFreezeV2ToV1(freezeV2: FreezePayloadV2): FreezePayloadV1 {
   const base = freezeV2.baseImage ?? {};
   const widthPx = finiteNumber(base.widthPx) && base.widthPx > 0 ? base.widthPx : 1;
@@ -345,17 +358,83 @@ function translateFreezeV2ToV1(freezeV2: FreezePayloadV2): FreezePayloadV1 {
     baseImage = { kind: "url", url: "", widthPx, heightPx };
   }
 
+  const pxPerIn =
+    finiteNumber(freezeV2.calibration?.pxPerIn) && freezeV2.calibration.pxPerIn > 0
+      ? freezeV2.calibration.pxPerIn
+      : 6;
+
+  const v2Nodes = Array.isArray(freezeV2.nodes) ? freezeV2.nodes : [];
+  const v1Nodes: FreezePayloadV1["sceneSnapshotImageSpace"]["nodes"] = v2Nodes.map(
+    (node, index) => {
+      const nodeId =
+        typeof node.nodeId === "string" && node.nodeId.trim() ? node.nodeId.trim() : `${index}`;
+      const skuId =
+        typeof node.sku?.skuId === "string" && node.sku.skuId.trim()
+          ? node.sku.skuId.trim()
+          : "";
+
+      const footprint = node.footprintIn ?? {};
+      const widthIn =
+        (finiteNumber(footprint.widthIn) && footprint.widthIn > 0
+          ? footprint.widthIn
+          : null) ??
+        (finiteNumber(footprint.diameterIn) && footprint.diameterIn > 0
+          ? footprint.diameterIn
+          : null) ??
+        (finiteNumber(footprint.lengthIn) && footprint.lengthIn > 0
+          ? footprint.lengthIn
+          : null);
+      const heightIn =
+        (finiteNumber(footprint.depthIn) && footprint.depthIn > 0
+          ? footprint.depthIn
+          : null) ??
+        (finiteNumber(footprint.diameterIn) && footprint.diameterIn > 0
+          ? footprint.diameterIn
+          : null) ??
+        (finiteNumber(footprint.lengthIn) && footprint.lengthIn > 0
+          ? footprint.lengthIn
+          : null);
+
+      const widthPx = Math.max(1, (widthIn ?? 1) * pxPerIn);
+      const heightPx = Math.max(1, (heightIn ?? 1) * pxPerIn);
+
+      const cxPx = finiteNumber(node.transform?.cxPx) ? node.transform.cxPx : 0;
+      const cyPx = finiteNumber(node.transform?.cyPx) ? node.transform.cyPx : 0;
+      const rotation = finiteNumber(node.transform?.rotationDeg) ? node.transform.rotationDeg : 0;
+      const zIndex = finiteNumber(node.transform?.zIndex) ? node.transform.zIndex : index;
+
+      return {
+        id: nodeId,
+        skuId,
+        label: skuId || nodeId,
+        variantId: undefined,
+        transform: {
+          x: cxPx - widthPx / 2,
+          y: cyPx - heightPx / 2,
+          width: widthPx,
+          height: heightPx,
+          rotation,
+        },
+        zIndex,
+        status: "active",
+      };
+    }
+  );
+
+  const addSkuIds = uniqueStrings(v2Nodes.map((node) => node.sku?.skuId));
+  const transformChanged = uniqueStrings(v2Nodes.map((node) => node.nodeId));
+
   const payload: FreezePayloadV1 & { debug?: { v2SceneHash?: string } } = {
     payloadVersion: "v1",
     generationId: freezeV2.sceneHash,
     baseImage,
     sceneSnapshotImageSpace: {
       sceneId: freezeV2.sceneHash,
-      nodes: [],
+      nodes: v1Nodes,
     },
     requestedAction: {
       type: "generate",
-      ops: { add: [], remove: [], swap: [], transformChanged: [] },
+      ops: { add: addSkuIds, remove: [], swap: [], transformChanged },
     },
     debug: { v2SceneHash: freezeV2.sceneHash },
   };
