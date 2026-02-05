@@ -788,6 +788,97 @@ function pickLegacyAspectRatioFromFreeze(
   return "auto";
 }
 
+function toPromptSafeToken(value: unknown, fallback: string) {
+  const v = typeof value === "string" ? value.trim() : "";
+  return v.length > 0 ? v : fallback;
+}
+
+function buildVibodePrompt(args: {
+  payload: FreezePayloadV1;
+  payloadVersion: string | null;
+  freezeRaw: unknown;
+  resolvedStyleId: string;
+}) {
+  const staging =
+    args.payloadVersion === "v2" && isRecord(args.freezeRaw)
+      ? (isRecord((args.freezeRaw as any).staging) ? (args.freezeRaw as any).staging : null)
+      : null;
+
+  const roomType = toPromptSafeToken(staging?.roomType, "other");
+  const styleBand = toPromptSafeToken(staging?.styleBand, "custom");
+  const lightingBand = toPromptSafeToken(staging?.lightingBand, "unspecified");
+  const cameraBand = toPromptSafeToken(staging?.cameraBand, "unspecified");
+  const decorAllowance = toPromptSafeToken(staging?.decorAllowance, "unspecified");
+
+  const vendorById = new Map<string, string>();
+  const categoryById = new Map<string, string>();
+
+  if (args.payloadVersion === "v2" && isRecord(args.freezeRaw)) {
+    const nodesRaw = Array.isArray((args.freezeRaw as any).nodes) ? (args.freezeRaw as any).nodes : [];
+    for (const node of nodesRaw) {
+      if (!isRecord(node)) continue;
+      const nodeId = typeof (node as any).nodeId === "string" ? (node as any).nodeId : "";
+      if (!nodeId) continue;
+      const vendor =
+        typeof (node as any)?.sku?.vendor === "string" ? (node as any).sku.vendor.trim() : "";
+      const category =
+        typeof (node as any)?.intent?.category === "string"
+          ? (node as any).intent.category.trim()
+          : "";
+      if (vendor) vendorById.set(nodeId, vendor);
+      if (category) categoryById.set(nodeId, category);
+    }
+  }
+
+  const nodes = [...args.payload.sceneSnapshotImageSpace.nodes]
+    .filter((n) => n.status !== "markedForDelete")
+    .sort((a, b) => {
+      const za = finiteNumber(a.zIndex) ? a.zIndex : 0;
+      const zb = finiteNumber(b.zIndex) ? b.zIndex : 0;
+      if (za !== zb) return za - zb;
+      return (a.id || "").localeCompare(b.id || "");
+    });
+
+  const maxNodes = 50;
+  const clipped = nodes.slice(0, maxNodes);
+  const overflow = Math.max(0, nodes.length - clipped.length);
+
+  const lines: string[] = [];
+  lines.push(
+    `roomType=${roomType} styleBand=${styleBand} styleId=${args.resolvedStyleId} lightingBand=${lightingBand} cameraBand=${cameraBand} decorAllowance=${decorAllowance}`
+  );
+  lines.push(
+    "Preserve base room and architecture; keep camera angle; do not invent extra major furniture beyond allowance."
+  );
+  lines.push("Placed furniture (image-space px):");
+
+  if (clipped.length === 0) {
+    lines.push("- none");
+  } else {
+    for (const node of clipped) {
+      const skuId = toPromptSafeToken(node.skuId, node.id || "unknown");
+      const vendor = vendorById.get(node.id) ?? "";
+      const category = categoryById.get(node.id) ?? "furniture";
+      const t = node.transform;
+      const x = finiteNumber(t?.x) ? Math.round(t.x) : 0;
+      const y = finiteNumber(t?.y) ? Math.round(t.y) : 0;
+      const w = finiteNumber(t?.width) ? Math.round(t.width) : 0;
+      const h = finiteNumber(t?.height) ? Math.round(t.height) : 0;
+      const rot = finiteNumber(t?.rotation) ? Math.round(t.rotation) : 0;
+      const vendorPart = vendor ? ` vendor=${vendor}` : "";
+      lines.push(
+        `- skuId=${skuId}${vendorPart} category=${category || "furniture"} x=${x} y=${y} w=${w} h=${h} rot=${rot}`
+      );
+    }
+  }
+
+  if (overflow > 0) {
+    lines.push(`- ... ${overflow} more omitted`);
+  }
+
+  return lines.join("\n");
+}
+
 /**
  * Legacy /stage-room contract:
  * - expects top-level { imageBase64, styleId, ... }
@@ -849,6 +940,73 @@ async function callNanoBananaPro(args: {
   const data = (await res.json()) as { imageUrl?: string };
   if (!data?.imageUrl) throw new Error("Nano Banana Pro did not return imageUrl.");
   return { imageUrl: data.imageUrl };
+}
+
+async function callNanoBananaProPrompt(args: {
+  baseImageUrlForModel: string;
+  prompt: string;
+  aspectRatio?: string;
+  seed?: number;
+}) {
+  const url = process.env.NANOBANANA_PRO_URL;
+  const apiKey = process.env.NANOBANANA_PRO_API_KEY;
+
+  if (!url || !apiKey) {
+    throw new Error(
+      "Nano Banana Pro is not configured (missing NANOBANANA_PRO_URL or NANOBANANA_PRO_API_KEY)."
+    );
+  }
+
+  const res = await fetch(url, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      authorization: `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify({
+      base_image_url: args.baseImageUrlForModel,
+      prompt: args.prompt,
+      aspect_ratio: args.aspectRatio,
+      seed: args.seed,
+    }),
+  });
+
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new NanoBananaError(res.status, text || res.statusText);
+  }
+
+  const contentType = res.headers.get("content-type") || "";
+
+  if (contentType.startsWith("image/")) {
+    const buf = Buffer.from(await res.arrayBuffer());
+    const base64 = buf.toString("base64");
+    return { imageUrl: `data:${contentType};base64,${base64}` };
+  }
+
+  const data = (await res.json().catch(() => ({}))) as {
+    imageUrl?: string;
+    image_url?: string;
+    url?: string;
+    image_base64?: string;
+    base64?: string;
+    imageBase64?: string;
+    mime?: string;
+    contentType?: string;
+  };
+
+  const directUrl = data?.imageUrl || data?.image_url || data?.url;
+  if (typeof directUrl === "string" && directUrl.length > 0) {
+    return { imageUrl: directUrl };
+  }
+
+  const base64 = data?.image_base64 || data?.base64 || data?.imageBase64;
+  if (typeof base64 === "string" && base64.length > 0) {
+    const mime = typeof data?.mime === "string" ? data.mime : data?.contentType || "image/png";
+    return { imageUrl: `data:${mime};base64,${base64}` };
+  }
+
+  throw new Error("Nano Banana Pro did not return a usable image.");
 }
 
 /* =========================
@@ -1030,6 +1188,8 @@ export async function POST(req: NextRequest) {
 
     const hasNanoBananaUrl = Boolean(process.env.NANOBANANA_PRO_URL);
     const hasNanoBananaKey = Boolean(process.env.NANOBANANA_PRO_API_KEY);
+    const vibodePromptEndpointEnabled =
+      (process.env.VIBODE_NB_USE_PROMPT_ENDPOINT ?? "false").toLowerCase() === "true";
 
     const payloadForModel = ensureNonEmptyRequestedActionForModel(payload, notes);
     const resolvedStyleId = resolveStyleId({
@@ -1037,6 +1197,19 @@ export async function POST(req: NextRequest) {
       freezeRaw: freeze,
       payloadV1Translated: payloadForModel,
     });
+    const shouldUseVibodePrompt =
+      payloadVersion === "v2" || payloadForModel.sceneSnapshotImageSpace.nodes.length > 0;
+    const vibodePrompt = shouldUseVibodePrompt
+      ? buildVibodePrompt({
+          payload: payloadForModel,
+          payloadVersion,
+          freezeRaw: freeze,
+          resolvedStyleId,
+        })
+      : null;
+    const usePromptEndpoint = vibodePromptEndpointEnabled && shouldUseVibodePrompt;
+    notes.push(`Prompt endpoint enabled=${vibodePromptEndpointEnabled}.`);
+    notes.push(`Vibode prompt generated=${Boolean(vibodePrompt)}.`);
 
     const ops = deriveOps(payloadForModel);
     const counts = countNodeStatuses(payloadForModel);
@@ -1063,6 +1236,9 @@ export async function POST(req: NextRequest) {
       hasNanoBananaKey,
       stagedBucket: VIBODE_STAGED_BUCKET,
       resolvedStyleId,
+      shouldUseVibodePrompt,
+      vibodePromptEndpointEnabled,
+      usePromptEndpoint,
     });
 
     if (willEcho) {
@@ -1187,12 +1363,21 @@ export async function POST(req: NextRequest) {
     let modelImageUrl: string | null = null;
 
     try {
-      const result = await callNanoBananaPro({
-        payload: payloadForModel,
-        baseImageUrlForModel,
-        notes,
-        styleId: resolvedStyleId,
-      });
+      const result = usePromptEndpoint
+        ? await callNanoBananaProPrompt({
+            baseImageUrlForModel,
+            prompt: vibodePrompt ?? "",
+            aspectRatio: pickLegacyAspectRatioFromFreeze(payloadForModel),
+          })
+        : await callNanoBananaPro({
+            payload: payloadForModel,
+            baseImageUrlForModel,
+            notes,
+            styleId: resolvedStyleId,
+          });
+      if (usePromptEndpoint) {
+        notes.push("Using Vibode prompt endpoint (scene nodes + staging bands).");
+      }
       modelImageUrl = result.imageUrl;
     } catch (modelErr: unknown) {
       console.error("[vibode/generate] model call failed:", modelErr);
