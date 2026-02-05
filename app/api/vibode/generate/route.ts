@@ -2,7 +2,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import type { SupabaseClient } from "@supabase/supabase-js";
-import type { FreezePayloadV2 } from "@/lib/freezePayloadV2Types";
+import type { FreezePayloadV2, StyleBand } from "@/lib/freezePayloadV2Types";
 
 // Ensure we run on the Node.js runtime (needed for Buffer, larger payloads, etc.)
 export const runtime = "nodejs";
@@ -246,10 +246,14 @@ const VIBODE_MAX_MODEL_IMAGE_BASE64_LEN = Math.max(
   Number(process.env.VIBODE_MAX_MODEL_IMAGE_BASE64_LEN ?? 12_000_000)
 );
 
-// Kickstart style (temporary): force staging style so legacy stage-room always does work.
-const VIBODE_NB_KICKSTART_STYLE_ID = (
-  process.env.VIBODE_NB_KICKSTART_STYLE_ID || "modern-luxury"
-).trim();
+const DEFAULT_NB_STYLE_ID = "modern_scandi_neutral";
+const STYLE_BAND_TO_NB_STYLE_ID: Partial<Record<StyleBand, string>> = {
+  modern_scandi_neutral: "modern_scandi_neutral",
+  cozy_neutral: "cozy_neutral",
+  modern_minimal: "modern_minimal",
+  warm_modern: "warm_modern",
+  eclectic_soft: "eclectic_soft",
+};
 
 function getUserSupabaseClient(
   req: NextRequest
@@ -743,6 +747,35 @@ function safeStr(x: unknown): string | null {
   return typeof x === "string" && x.trim().length > 0 ? x.trim() : null;
 }
 
+function resolveStyleId(args: {
+  payloadVersion: string | null;
+  freezeRaw: unknown;
+  payloadV1Translated: FreezePayloadV1;
+}) {
+  const envKickstart = (process.env.VIBODE_NB_KICKSTART_STYLE_ID || "").trim();
+  let styleId: string | null = null;
+
+  if (args.payloadVersion === "v2" && isRecord(args.freezeRaw)) {
+    const staging = isRecord((args.freezeRaw as any).staging) ? (args.freezeRaw as any).staging : null;
+    const styleBandRaw = typeof staging?.styleBand === "string" ? staging.styleBand.trim() : "";
+    if (styleBandRaw && styleBandRaw !== "custom") {
+      styleId = STYLE_BAND_TO_NB_STYLE_ID[styleBandRaw as StyleBand] ?? styleBandRaw;
+    }
+  }
+
+  if (!styleId) {
+    styleId =
+      safeStr((args.payloadV1Translated as any)?.requestedAction?.styleId) ??
+      safeStr((args.payloadV1Translated as any)?.styleId);
+  }
+
+  if (!styleId) {
+    styleId = envKickstart || DEFAULT_NB_STYLE_ID;
+  }
+
+  return styleId;
+}
+
 function pickLegacyAspectRatioFromFreeze(
   payload: FreezePayloadV1
 ): LegacyStageRoomRequest["aspectRatio"] {
@@ -764,6 +797,7 @@ async function callNanoBananaPro(args: {
   payload: FreezePayloadV1;
   baseImageUrlForModel: string;
   notes: string[];
+  styleId: string;
 }) {
   const url = process.env.NANOBANANA_PRO_URL;
   const apiKey = process.env.NANOBANANA_PRO_API_KEY;
@@ -776,7 +810,7 @@ async function callNanoBananaPro(args: {
 
   const { base64: imageBase64 } = await fetchImageAsBase64(args.baseImageUrlForModel);
 
-  const styleId = VIBODE_NB_KICKSTART_STYLE_ID || "modern-luxury";
+  const styleId = args.styleId;
   const modelVersion = safeStr((args.payload as any)?.modelVersion) ?? "gemini-3";
   const aspectRatio = pickLegacyAspectRatioFromFreeze(args.payload);
 
@@ -796,7 +830,7 @@ async function callNanoBananaPro(args: {
     isContinuation: false,
   };
 
-  args.notes.push(`Kickstart styleId='${styleId}' applied for legacy /stage-room.`);
+  args.notes.push(`Resolved styleId='${styleId}' applied for legacy /stage-room.`);
 
   const res = await fetch(url, {
     method: "POST",
@@ -945,7 +979,7 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    const payloadVersion = isRecord(freeze) ? freeze.payloadVersion : null;
+    const payloadVersion = isRecord(freeze) ? safeStr(freeze.payloadVersion) : null;
     const payload =
       payloadVersion === "v2"
         ? translateFreezeV2ToV1(freeze as FreezePayloadV2)
@@ -998,6 +1032,11 @@ export async function POST(req: NextRequest) {
     const hasNanoBananaKey = Boolean(process.env.NANOBANANA_PRO_API_KEY);
 
     const payloadForModel = ensureNonEmptyRequestedActionForModel(payload, notes);
+    const resolvedStyleId = resolveStyleId({
+      payloadVersion,
+      freezeRaw: freeze,
+      payloadV1Translated: payloadForModel,
+    });
 
     const ops = deriveOps(payloadForModel);
     const counts = countNodeStatuses(payloadForModel);
@@ -1023,7 +1062,7 @@ export async function POST(req: NextRequest) {
       hasNanoBananaUrl,
       hasNanoBananaKey,
       stagedBucket: VIBODE_STAGED_BUCKET,
-      kickstartStyleId: VIBODE_NB_KICKSTART_STYLE_ID,
+      resolvedStyleId,
     });
 
     if (willEcho) {
@@ -1152,6 +1191,7 @@ export async function POST(req: NextRequest) {
         payload: payloadForModel,
         baseImageUrlForModel,
         notes,
+        styleId: resolvedStyleId,
       });
       modelImageUrl = result.imageUrl;
     } catch (modelErr: unknown) {
