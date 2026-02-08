@@ -3,6 +3,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { FreezePayloadV2, StyleBand } from "@/lib/freezePayloadV2Types";
+import { callCompositorVibodeCompose } from "@/lib/callCompositorVibodeCompose";
+import { IKEA_CA_SKUS } from "@/data/mockIkeaCaSkus";
 
 // Ensure we run on the Node.js runtime (needed for Buffer, larger payloads, etc.)
 export const runtime = "nodejs";
@@ -245,6 +247,17 @@ const VIBODE_MAX_MODEL_IMAGE_BASE64_LEN = Math.max(
   1_000_000,
   Number(process.env.VIBODE_MAX_MODEL_IMAGE_BASE64_LEN ?? 12_000_000)
 );
+
+const VIBODE_MAX_MODEL_IMAGE_BYTES = Math.max(
+  1_000_000,
+  Math.min(12_000_000, Math.floor(VIBODE_MAX_MODEL_IMAGE_BASE64_LEN * 0.75))
+);
+
+const VIBODE_PLACEMENT_TEST_MODE =
+  (process.env.VIBODE_PLACEMENT_TEST_MODE ?? "false").toLowerCase() === "true";
+
+const useCompose =
+  (process.env.VIBODE_USE_COMPOSITOR_VIBODE_COMPOSE ?? "false").toLowerCase() === "true";
 
 const DEFAULT_NB_STYLE_ID = "modern_scandi_neutral";
 const STYLE_BAND_TO_NB_STYLE_ID: Partial<Record<StyleBand, string>> = {
@@ -645,6 +658,14 @@ async function fetchImageAsBase64(url: string) {
   return { base64 };
 }
 
+const IKEA_CA_SKU_BY_ID = new Map(IKEA_CA_SKUS.map((sku) => [sku.skuId, sku]));
+
+function resolveIkeaSkuImageUrl(skuId: string): string | null {
+  const found = IKEA_CA_SKU_BY_ID.get(skuId);
+  const url = typeof found?.imageUrl === "string" ? found.imageUrl.trim() : "";
+  return url.length > 0 ? url : null;
+}
+
 /* =========================
    Auto-stage: avoid NB "Nothing to do."
 ========================= */
@@ -848,8 +869,15 @@ function buildVibodePrompt(args: {
     `roomType=${roomType} styleBand=${styleBand} styleId=${args.resolvedStyleId} lightingBand=${lightingBand} cameraBand=${cameraBand} decorAllowance=${decorAllowance}`
   );
   lines.push(
-    "Preserve base room and architecture; keep camera angle; do not invent extra major furniture beyond allowance."
+    "Preserve the original room exactly (architecture, existing furniture, materials, colors)."
   );
+  lines.push("Do not restyle or redecorate.");
+  lines.push("Only add/place the listed items at the exact boxes (x,y,w,h,rot).");
+  lines.push("Do not move, resize, or rotate any listed boxes.");
+  lines.push("Do not invent any other furniture or decor.");
+  lines.push("Coordinates are image-space px on the base image.");
+  lines.push("Respect zIndex ordering for overlaps.");
+  lines.push("Keep the camera angle and lighting unchanged.");
   lines.push("Placed furniture (image-space px):");
 
   if (clipped.length === 0) {
@@ -890,6 +918,7 @@ async function callNanoBananaPro(args: {
   notes: string[];
   styleId: string;
   vibodePrompt?: string;
+  placementTestMode?: boolean;
 }) {
   const url = process.env.NANOBANANA_PRO_URL;
   const apiKey = process.env.NANOBANANA_PRO_API_KEY;
@@ -908,31 +937,47 @@ async function callNanoBananaPro(args: {
   const vibodePrompt = safeStr(args.vibodePrompt);
   const vibodePromptTriggersWork =
     (process.env.VIBODE_NB_VIBODEPROMPT_TRIGGERS_WORK ?? "true").toLowerCase() !== "false";
+  const placementTestModeActive = Boolean(args.placementTestMode && vibodePrompt);
 
-  const body: LegacyStageRoomRequest = {
-    imageBase64,
-    styleId,
-    enhancePhoto: false,
-    cleanupRoom: false,
-    repairDamage: false,
-    emptyRoom: false,
-    renovateRoom: false,
-    repaintWalls: false,
-    flooringPreset: null,
-    roomType: null,
-    modelVersion,
-    aspectRatio,
-    isContinuation: false,
-  };
+  const body: LegacyStageRoomRequest = placementTestModeActive
+    ? {
+        imageBase64,
+        styleId: null,
+        enhancePhoto: true,
+        modelVersion,
+        aspectRatio,
+        isContinuation: false,
+      }
+    : {
+        imageBase64,
+        styleId,
+        enhancePhoto: false,
+        cleanupRoom: false,
+        repairDamage: false,
+        emptyRoom: false,
+        renovateRoom: false,
+        repaintWalls: false,
+        flooringPreset: null,
+        roomType: null,
+        modelVersion,
+        aspectRatio,
+        isContinuation: false,
+      };
 
-  args.notes.push(`Resolved styleId='${styleId}' applied for legacy /stage-room.`);
+  if (placementTestModeActive) {
+    args.notes.push(
+      "Placement test mode active: forcing enhancePhoto=true and styleId=null for legacy /stage-room."
+    );
+  } else {
+    args.notes.push(`Resolved styleId='${styleId}' applied for legacy /stage-room.`);
+  }
   if (vibodePrompt) {
     (body as LegacyStageRoomRequest & { prompt?: string; instruction?: string }).prompt =
       vibodePrompt;
     (body as LegacyStageRoomRequest & { prompt?: string; instruction?: string }).instruction =
       vibodePrompt;
     args.notes.push("Injected Vibode prompt into legacy /stage-room request.");
-    if (vibodePromptTriggersWork) {
+    if (vibodePromptTriggersWork && !placementTestModeActive) {
       if ("enhancePhoto" in body) {
         body.enhancePhoto = true;
       } else if ("cleanupRoom" in body) {
@@ -1043,6 +1088,37 @@ function parseDataUrlImage(dataUrl: string): { mime: string; buf: Buffer } {
   const m = dataUrl.trim().match(/^data:([^;]+);base64,(.+)$/);
   if (!m) throw new Error("Invalid data URL");
   return { mime: m[1], buf: Buffer.from(m[2], "base64") };
+}
+
+async function fetchImageAsBytes(url: string): Promise<Buffer> {
+  const trimmed = typeof url === "string" ? url.trim() : "";
+  if (!trimmed) throw new Error("Missing image URL for bytes fetch.");
+
+  if (isDataUrl(trimmed)) {
+    const { buf } = parseDataUrlImage(trimmed);
+    if (buf.length > VIBODE_MAX_MODEL_IMAGE_BYTES) {
+      throw new Error(
+        `Image too large for compositor request (bytes=${buf.length}, max=${VIBODE_MAX_MODEL_IMAGE_BYTES}).`
+      );
+    }
+    return buf;
+  }
+
+  if (!/^https?:\/\//i.test(trimmed)) {
+    throw new Error("Image URL must be http(s) or data URL.");
+  }
+
+  const res = await fetch(trimmed);
+  if (!res.ok) throw new Error(`Failed to fetch image bytes: ${res.status}`);
+  const buf = Buffer.from(await res.arrayBuffer());
+
+  if (buf.length > VIBODE_MAX_MODEL_IMAGE_BYTES) {
+    throw new Error(
+      `Image too large for compositor request (bytes=${buf.length}, max=${VIBODE_MAX_MODEL_IMAGE_BYTES}).`
+    );
+  }
+
+  return buf;
 }
 
 function inferExtFromContentType(ct: string) {
@@ -1229,6 +1305,8 @@ export async function POST(req: NextRequest) {
           resolvedStyleId,
         })
       : null;
+    const placementTestModeActive =
+      VIBODE_PLACEMENT_TEST_MODE && shouldUseVibodePrompt && Boolean(vibodePrompt);
     const usePromptEndpoint = false;
     notes.push(`Prompt endpoint enabled=${vibodePromptEndpointEnabled}.`);
     notes.push(`Vibode prompt generated=${Boolean(vibodePrompt)}.`);
@@ -1385,14 +1463,114 @@ export async function POST(req: NextRequest) {
     let modelImageUrl: string | null = null;
 
     try {
-      const result = await callNanoBananaPro({
-        payload: payloadForModel,
-        baseImageUrlForModel,
-        notes,
-        styleId: resolvedStyleId,
-        vibodePrompt: shouldUseVibodePrompt ? vibodePrompt ?? undefined : undefined,
-      });
-      modelImageUrl = result.imageUrl;
+      const composeEligible =
+        payloadVersion === "v2" || payloadForModel.sceneSnapshotImageSpace.nodes.length > 0;
+      const placements: Array<{
+        nodeId: string;
+        skuId?: string | null;
+        skuImageBytes: Buffer;
+        cxPx: number;
+        cyPx: number;
+        rPx?: number | null;
+      }> = [];
+
+      if (useCompose && composeEligible) {
+        const nodes = payloadForModel.sceneSnapshotImageSpace.nodes.filter(
+          (n) => n.status !== "markedForDelete"
+        );
+        const skuBytesById = new Map<string, Buffer>();
+        let skippedMissingSku = 0;
+        let skippedInvalid = 0;
+        let skippedFetch = 0;
+
+        for (const node of nodes) {
+          const nodeId = typeof node.id === "string" ? node.id.trim() : "";
+          const skuId = typeof node.skuId === "string" ? node.skuId.trim() : "";
+          if (!nodeId || !skuId) {
+            skippedInvalid += 1;
+            continue;
+          }
+
+          const t = node.transform;
+          const x = finiteNumber(t?.x) ? t.x : 0;
+          const y = finiteNumber(t?.y) ? t.y : 0;
+          const w = finiteNumber(t?.width) ? t.width : 0;
+          const h = finiteNumber(t?.height) ? t.height : 0;
+
+          if (w <= 0 || h <= 0) {
+            skippedInvalid += 1;
+            continue;
+          }
+
+          const skuImageUrl = resolveIkeaSkuImageUrl(skuId);
+          if (!skuImageUrl) {
+            skippedMissingSku += 1;
+            continue;
+          }
+
+          let skuImageBytes = skuBytesById.get(skuId);
+          if (!skuImageBytes) {
+            try {
+              skuImageBytes = await fetchImageAsBytes(skuImageUrl);
+              skuBytesById.set(skuId, skuImageBytes);
+            } catch (e) {
+              console.warn("[vibode/generate] sku image fetch failed", {
+                skuId,
+                nodeId,
+                error: e instanceof Error ? e.message : String(e),
+              });
+              skippedFetch += 1;
+              continue;
+            }
+          }
+
+          const minDim = Math.min(w, h);
+          const rRaw = Math.round(minDim * 0.35);
+          const rMax = Math.max(20, Math.floor(minDim / 4));
+          const rPx = Math.min(Math.max(rRaw, 20), rMax);
+
+          placements.push({
+            nodeId,
+            skuId,
+            skuImageBytes,
+            cxPx: x + w / 2,
+            cyPx: y + h / 2,
+            rPx,
+          });
+        }
+
+        notes.push(
+          `Compose placements built=${placements.length}, nodes=${nodes.length}, skippedMissingSku=${skippedMissingSku}, skippedInvalid=${skippedInvalid}, skippedFetch=${skippedFetch}.`
+        );
+      } else {
+        notes.push(`Compose path disabled or ineligible (useCompose=${useCompose}).`);
+      }
+
+      if (useCompose && placements.length > 0) {
+        const roomImageBytes = await fetchImageAsBytes(baseImageUrlForModel);
+        const composeResult = await callCompositorVibodeCompose({
+          roomImageBytes,
+          placements,
+          enhancePhoto: true,
+          modelVersion: safeStr((payloadForModel as any)?.modelVersion),
+          aspectRatio: pickLegacyAspectRatioFromFreeze(payloadForModel),
+        });
+        modelImageUrl = composeResult.imageUrl;
+        notes.push(`Compositor /vibode/compose used (placements=${placements.length}).`);
+      } else {
+        const result = await callNanoBananaPro({
+          payload: payloadForModel,
+          baseImageUrlForModel,
+          notes,
+          styleId: resolvedStyleId,
+          vibodePrompt: shouldUseVibodePrompt ? vibodePrompt ?? undefined : undefined,
+          placementTestMode: placementTestModeActive,
+        });
+        modelImageUrl = result.imageUrl;
+        notes.push(
+          `Legacy /stage-room Nano Banana used (useCompose=${useCompose}, placements=${placements.length}).`
+        );
+      }
     } catch (modelErr: unknown) {
       console.error("[vibode/generate] model call failed:", modelErr);
 
