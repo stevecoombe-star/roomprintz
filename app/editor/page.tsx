@@ -1,12 +1,12 @@
 // app/editor/page.tsx
 "use client";
 
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 
 import { EditorCanvas } from "@/components/editor/EditorCanvas";
 import { SnackbarHost, type Snackbar } from "@/components/ui/SnackbarHost";
-import { useEditorStore, type FurnitureNode } from "@/stores/editorStore";
+import { toImageSpaceTransform, useEditorStore, type FurnitureNode } from "@/stores/editorStore";
 import { MOCK_COLLECTIONS, type RoomSizeBundleId } from "@/data/mockCollections";
 import { IKEA_CA_SKUS, type IkeaCaSku } from "@/data/mockIkeaCaSkus";
 import { clearPendingLocal, savePendingLocal } from "@/lib/pendingGeneration";
@@ -307,6 +307,7 @@ export default function EditorPage() {
   };
 
   const [lastFreezePayload, setLastFreezePayload] = useState<any>(null);
+  const didLogFirstGenerateAttemptRef = useRef(false);
 
   const [isUploading, setIsUploading] = useState(false);
   const [historyPickerFor, setHistoryPickerFor] = useState<string | null>(null);
@@ -376,6 +377,67 @@ export default function EditorPage() {
   const sqft = hasManualDims ? Math.round(width * length * 10) / 10 : undefined;
 
   const isBusy = scene.phase === "GENERATING" || scene.phase === "STALL";
+  const baseImageNaturalWidth =
+    typeof scene.baseImageWidthPx === "number" && Number.isFinite(scene.baseImageWidthPx)
+      ? scene.baseImageWidthPx
+      : viewport?.imageNaturalW;
+  const baseImageNaturalHeight =
+    typeof scene.baseImageHeightPx === "number" && Number.isFinite(scene.baseImageHeightPx)
+      ? scene.baseImageHeightPx
+      : viewport?.imageNaturalH;
+  const hasNaturalDims =
+    typeof baseImageNaturalWidth === "number" &&
+    baseImageNaturalWidth > 0 &&
+    typeof baseImageNaturalHeight === "number" &&
+    baseImageNaturalHeight > 0;
+  const hasImageMapping =
+    !!viewport &&
+    Number.isFinite(viewport.imageStageX) &&
+    Number.isFinite(viewport.imageStageY) &&
+    Number.isFinite(viewport.imageStageW) &&
+    Number.isFinite(viewport.imageStageH) &&
+    Number.isFinite(viewport.scale) &&
+    viewport.imageStageW > 0 &&
+    viewport.imageStageH > 0 &&
+    viewport.scale > 0;
+  const hasFiniteConversionInputs = useMemo(() => {
+    const numericInputs: number[] = [];
+
+    if (typeof baseImageNaturalWidth === "number") numericInputs.push(baseImageNaturalWidth);
+    if (typeof baseImageNaturalHeight === "number") numericInputs.push(baseImageNaturalHeight);
+
+    if (viewport) {
+      numericInputs.push(
+        viewport.imageStageX,
+        viewport.imageStageY,
+        viewport.imageStageW,
+        viewport.imageStageH,
+        viewport.scale,
+        viewport.imageNaturalW,
+        viewport.imageNaturalH
+      );
+    }
+
+    for (const node of nodes) {
+      numericInputs.push(
+        node.transform.x,
+        node.transform.y,
+        node.transform.width,
+        node.transform.height,
+        node.transform.rotation
+      );
+    }
+
+    return numericInputs.every((value) => Number.isFinite(value));
+  }, [baseImageNaturalHeight, baseImageNaturalWidth, nodes, viewport]);
+  const imageSpaceReadinessReasons = useMemo(() => {
+    const reasons: string[] = [];
+    if (!hasNaturalDims) reasons.push("missing natural dims");
+    if (!hasImageMapping) reasons.push("missing mapping");
+    if (!hasFiniteConversionInputs) reasons.push("invalid conversion inputs");
+    return reasons;
+  }, [hasFiniteConversionInputs, hasImageMapping, hasNaturalDims]);
+  const isImageSpaceReady = hasNaturalDims && hasImageMapping && hasFiniteConversionInputs;
   const hasDraftMarkup =
     Array.isArray(scene.draftMarkup?.items) && scene.draftMarkup.items.length > 0;
   const vibeMode = scene.vibeMode ?? "off";
@@ -401,7 +463,76 @@ export default function EditorPage() {
   };
 
   const onGenerate = async () => {
+    if (!didLogFirstGenerateAttemptRef.current) {
+      didLogFirstGenerateAttemptRef.current = true;
+
+      const firstEligibleNode = nodes.find((n) => n.status !== "markedForDelete") ?? null;
+      let markerPreview:
+        | {
+            nodeId: string;
+            xPx: number;
+            yPx: number;
+            imageSpace: string;
+          }
+        | null = null;
+
+      if (viewport && firstEligibleNode) {
+        const imageSpaceTransform = toImageSpaceTransform(firstEligibleNode.transform, viewport);
+        const xPx = imageSpaceTransform.x + imageSpaceTransform.width / 2;
+        const yPx = imageSpaceTransform.y + imageSpaceTransform.height / 2;
+        if (Number.isFinite(xPx) && Number.isFinite(yPx)) {
+          markerPreview = {
+            nodeId: firstEligibleNode.id,
+            xPx,
+            yPx,
+            imageSpace: "base image pixel space (top-left origin)",
+          };
+        }
+      }
+
+      const logPayload = {
+        ready: isImageSpaceReady,
+        reason: imageSpaceReadinessReasons.length
+          ? imageSpaceReadinessReasons.join(", ")
+          : "all required image-space inputs ready",
+        naturalDims: {
+          widthPx: baseImageNaturalWidth ?? null,
+          heightPx: baseImageNaturalHeight ?? null,
+        },
+        stageDisplay: viewport
+          ? {
+              imageStageX: viewport.imageStageX,
+              imageStageY: viewport.imageStageY,
+              imageStageW: viewport.imageStageW,
+              imageStageH: viewport.imageStageH,
+              scaleStagePerImagePx: viewport.scale,
+            }
+          : null,
+        markerPreview:
+          markerPreview ??
+          (nodes.length === 0
+            ? { reason: "no nodes in sceneSnapshotImageSpace" }
+            : { reason: "missing mapping or invalid marker inputs" }),
+      };
+
+      if (isImageSpaceReady) {
+        console.log("[generate][first-attempt-diagnostics]", logPayload);
+      } else {
+        console.warn("[generate][first-attempt-diagnostics]", logPayload);
+      }
+    }
+
     if (isBusy) return;
+
+    if (!isImageSpaceReady) {
+      console.warn("[generate] blocked: image-space transform not ready", {
+        reasons: imageSpaceReadinessReasons,
+        naturalWidth: baseImageNaturalWidth ?? null,
+        naturalHeight: baseImageNaturalHeight ?? null,
+        hasImageMapping,
+      });
+      return;
+    }
   
     // ─────────────────────────────────────────────
     // 0) Preconditions
@@ -813,18 +944,25 @@ export default function EditorPage() {
 
           <button
             className={`rounded-md border px-3 py-1.5 text-sm ${
-              isBusy
+              isBusy || !isImageSpaceReady
                 ? "border-neutral-900 bg-neutral-950 text-neutral-500"
                 : vibeMode === "on"
                 ? "border-sky-600/60 bg-sky-950/40 text-sky-100 shadow-[0_0_12px_rgba(56,189,248,0.25)] hover:bg-sky-900/40"
                 : "border-[rgba(148,163,184,0.50)] bg-neutral-900 text-slate-200 shadow-[inset_0_0_0_1px_rgba(148,163,184,0.18)] hover:bg-neutral-800"
             }`}
             onClick={onGenerate}
-            disabled={isBusy}
-            title={isBusy ? "Generating…" : "Generate"}
+            disabled={isBusy || !isImageSpaceReady}
+            title={
+              isBusy ? "Generating…" : !isImageSpaceReady ? "Initializing image…" : "Generate"
+            }
           >
             {isBusy ? "Generating…" : "Generate"}
           </button>
+          {!isBusy && !isImageSpaceReady && (
+            <div className="text-xs text-neutral-400" aria-live="polite">
+              Initializing image...
+            </div>
+          )}
         </div>
       </header>
 
