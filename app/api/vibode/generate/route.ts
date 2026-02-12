@@ -4,6 +4,11 @@ import { createClient } from "@supabase/supabase-js";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { FreezePayloadV2, StyleBand } from "@/lib/freezePayloadV2Types";
 import { callCompositorVibodeCompose } from "@/lib/callCompositorVibodeCompose";
+import {
+  inferLayerKindFromSkuKind,
+  ensureZIndex,
+  type LayerKind,
+} from "@/lib/layerKind";
 import { IKEA_CA_SKUS } from "@/data/mockIkeaCaSkus";
 
 // Ensure we run on the Node.js runtime (needed for Buffer, larger payloads, etc.)
@@ -101,7 +106,8 @@ type FreezePayloadV1 = {
         skewY?: number;
       };
 
-      zIndex: number;
+      zIndex?: number;
+      layerKind?: LayerKind;
       status: "active" | "markedForDelete" | "pendingSwap";
 
       provenance?: {
@@ -1472,6 +1478,8 @@ export async function POST(req: NextRequest) {
         cxPx: number;
         cyPx: number;
         rPx?: number | null;
+        zIndex: number;
+        layerKind?: string;
       }> = [];
 
       if (useCompose && composeEligible) {
@@ -1529,6 +1537,12 @@ export async function POST(req: NextRequest) {
           const rMax = Math.max(20, Math.floor(minDim / 4));
           const rPx = Math.min(Math.max(rRaw, 20), rMax);
 
+          // z-order + layer backfill for nodes missing layerKind/zIndex
+          const sku = IKEA_CA_SKU_BY_ID.get(skuId);
+          const layerKind: LayerKind =
+            node.layerKind ?? inferLayerKindFromSkuKind(sku?.kind);
+          const zIndex = ensureZIndex(layerKind, node.zIndex);
+
           placements.push({
             nodeId,
             skuId,
@@ -1536,7 +1550,17 @@ export async function POST(req: NextRequest) {
             cxPx: x + w / 2,
             cyPx: y + h / 2,
             rPx,
+            zIndex,
+            layerKind,
           });
+        }
+
+        if (process.env.NODE_ENV !== "production" && placements.length > 0) {
+          const sorted = [...placements].sort((a, b) => a.zIndex - b.zIndex);
+          console.log(
+            "[vibode/generate] placements (z-order)",
+            sorted.map((p) => ({ nodeId: p.nodeId, layerKind: p.layerKind, zIndex: p.zIndex }))
+          );
         }
 
         notes.push(

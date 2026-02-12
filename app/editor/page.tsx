@@ -7,6 +7,7 @@ import { useRouter } from "next/navigation";
 import { EditorCanvas } from "@/components/editor/EditorCanvas";
 import { SnackbarHost, type Snackbar } from "@/components/ui/SnackbarHost";
 import { toImageSpaceTransform, useEditorStore, type FurnitureNode } from "@/stores/editorStore";
+import { computeOverlappingNodeIds } from "@/lib/collisionV1";
 import { MOCK_COLLECTIONS, type RoomSizeBundleId } from "@/data/mockCollections";
 import { IKEA_CA_SKUS, type IkeaCaSku } from "@/data/mockIkeaCaSkus";
 import { clearPendingLocal, savePendingLocal } from "@/lib/pendingGeneration";
@@ -326,6 +327,13 @@ export default function EditorPage() {
     () => nodes.filter((n) => n.status === "markedForDelete").length,
     [nodes]
   );
+
+  const overlappingNodeIds = useMemo(() => {
+    if (!viewport || nodes.length < 2) return new Set<string>();
+    return computeOverlappingNodeIds(nodes, viewport);
+  }, [nodes, viewport]);
+
+  const hasOverlaps = overlappingNodeIds.size > 0;
   const queuedSwaps = useMemo(
     () => nodes.filter((n) => n.status === "pendingSwap").length,
     [nodes]
@@ -942,27 +950,35 @@ export default function EditorPage() {
             Undo
           </button>
 
-          <button
-            className={`rounded-md border px-3 py-1.5 text-sm ${
-              isBusy || !isImageSpaceReady
-                ? "border-neutral-900 bg-neutral-950 text-neutral-500"
-                : vibeMode === "on"
-                ? "border-sky-600/60 bg-sky-950/40 text-sky-100 shadow-[0_0_12px_rgba(56,189,248,0.25)] hover:bg-sky-900/40"
-                : "border-[rgba(148,163,184,0.50)] bg-neutral-900 text-slate-200 shadow-[inset_0_0_0_1px_rgba(148,163,184,0.18)] hover:bg-neutral-800"
-            }`}
-            onClick={onGenerate}
-            disabled={isBusy || !isImageSpaceReady}
-            title={
-              isBusy ? "Generating…" : !isImageSpaceReady ? "Initializing image…" : "Generate"
-            }
-          >
-            {isBusy ? "Generating…" : "Generate"}
-          </button>
-          {!isBusy && !isImageSpaceReady && (
-            <div className="text-xs text-neutral-400" aria-live="polite">
-              Initializing image...
-            </div>
-          )}
+          <div className="flex flex-col items-end gap-0.5">
+            <button
+              className={`rounded-md border px-3 py-1.5 text-sm ${
+                isBusy || !isImageSpaceReady
+                  ? "border-neutral-900 bg-neutral-950 text-neutral-500"
+                  : vibeMode === "on"
+                  ? "border-sky-600/60 bg-sky-950/40 text-sky-100 shadow-[0_0_12px_rgba(56,189,248,0.25)] hover:bg-sky-900/40"
+                  : "border-[rgba(148,163,184,0.50)] bg-neutral-900 text-slate-200 shadow-[inset_0_0_0_1px_rgba(148,163,184,0.18)] hover:bg-neutral-800"
+              }`}
+              onClick={onGenerate}
+              disabled={isBusy || !isImageSpaceReady}
+              title={
+                isBusy ? "Generating…" : !isImageSpaceReady ? "Initializing image…" : "Generate"
+              }
+            >
+              {isBusy ? "Generating…" : "Generate"}
+            </button>
+            {!isBusy && !isImageSpaceReady && (
+              <div className="text-xs text-neutral-400" aria-live="polite">
+                Initializing image...
+              </div>
+            )}
+            {!isBusy && hasOverlaps && (
+              <div className="text-xs text-amber-400" aria-live="polite">
+                ⚠ Possible overlap detected. Vibode will attempt to stage items naturally in the
+                available space — results may vary.
+              </div>
+            )}
+          </div>
         </div>
       </header>
 

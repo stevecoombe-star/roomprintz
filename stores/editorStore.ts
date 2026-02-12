@@ -5,6 +5,13 @@ import type { IkeaCaSku } from "../data/mockIkeaCaSkus";
 import { DEFAULT_PX_PER_IN, skuFootprintInchesFromDims } from "@/lib/ikeaSizing";
 import { buildFreezePayloadV2, type EditorNodeForV2 } from "../lib/buildFreezePayloadV2";
 import type { FreezePayloadV2, IntentRole, NodeCategory } from "../lib/freezePayloadV2Types";
+import {
+  type LayerKind,
+  inferLayerKindFromSkuKind,
+  inferLayerKindFromCategory,
+  ensureZIndex,
+  getNextZIndexForLayer,
+} from "../lib/layerKind";
 
 /* =========================
    Types
@@ -68,7 +75,8 @@ export type FurnitureNode = {
   };
   variant?: FurnitureVariant;
 
-  // render + manipulate
+  // render + manipulate (z-order + occlusion contract for Vibode)
+  layerKind?: LayerKind;
   zIndex: number;
   transform: NodeTransform;
 
@@ -678,6 +686,11 @@ function mapNodeToEditorNodeV2(node: FurnitureNode, viewport: ViewportMapping): 
   const imageSpace = toImageSpaceTransform(node.transform, viewport);
   const category = deriveNodeCategory(node);
 
+  // Backfill layerKind/zIndex for nodes missing them (e.g. from old payloads)
+  const layerKind =
+    node.layerKind ?? inferLayerKindFromCategory(category);
+  const zIndex = ensureZIndex(layerKind, node.zIndex);
+
   return {
     nodeId: node.id,
     skuId: node.skuId,
@@ -695,7 +708,7 @@ function mapNodeToEditorNodeV2(node: FurnitureNode, viewport: ViewportMapping): 
     widthPx: imageSpace.width,
     heightPx: imageSpace.height,
     rotationDeg: imageSpace.rotation,
-    zIndex: node.zIndex,
+    zIndex,
     footprintIn: {
       widthIn: node.dimsIn?.width,
       depthIn: node.dimsIn?.depth,
@@ -1126,7 +1139,13 @@ export const useEditorStore = create<EditorState>((set, get) => ({
 
   addNode: (node) => {
     const id = node.id ?? safeUUID();
-    const maxZ = get().scene.nodes.reduce((m, n) => Math.max(m, n.zIndex), 0);
+    const layerKind: LayerKind =
+      (node as { layerKind?: LayerKind }).layerKind ?? "floor_furniture";
+    const zIndex =
+      typeof (node as { zIndex?: number }).zIndex === "number" &&
+      Number.isFinite((node as { zIndex?: number }).zIndex)
+        ? (node as { zIndex: number }).zIndex
+        : getNextZIndexForLayer(get().scene.nodes, layerKind);
 
     const newNode: FurnitureNode = {
       id,
@@ -1134,7 +1153,8 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       skuId: node.skuId,
       label: node.label,
       variant: node.variant,
-      zIndex: (node as any).zIndex ?? maxZ + 1,
+      layerKind,
+      zIndex,
       status: (node as any).status ?? "active",
       transform: node.transform,
       provenance: node.provenance,
@@ -1162,7 +1182,8 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     const x = center.x - wPx / 2;
     const y = center.y - hPx / 2;
 
-    const maxZ = scene.nodes.reduce((m, n) => Math.max(m, n.zIndex), 0);
+    const layerKind = inferLayerKindFromSkuKind(sku.kind);
+    const zIndex = getNextZIndexForLayer(scene.nodes, layerKind);
 
     const node: FurnitureNode = {
       id,
@@ -1175,7 +1196,8 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       imageUrl: sku.imageUrl,
       productUrl: sku.productUrl,
       dimsIn: { ...sku.dimsIn },
-      zIndex: maxZ + 1,
+      layerKind,
+      zIndex,
       status: "active",
       transform: {
         x,
@@ -1561,6 +1583,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     const dup: FurnitureNode = {
       ...src,
       id: newId,
+      layerKind: src.layerKind ?? "floor_furniture",
       zIndex: maxZ + 1,
       transform: { ...src.transform, x: src.transform.x + 18, y: src.transform.y + 18 },
       status: "active",

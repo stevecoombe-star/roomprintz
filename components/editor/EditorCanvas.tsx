@@ -17,6 +17,7 @@ import type Konva from "konva";
 import useImage from "use-image";
 import { useEditorStore, type FurnitureNode } from "@/stores/editorStore";
 import { MOCK_COLLECTIONS } from "@/data/mockCollections";
+import { computeOverlappingNodeIds } from "@/lib/collisionV1";
 
 type DragFurniturePayload = {
   skuId: string;
@@ -265,6 +266,11 @@ export function EditorCanvas({
     () => nodes.find((n) => n.id === selectedNodeId) ?? null,
     [nodes, selectedNodeId]
   );
+
+  const overlappingNodeIds = useMemo(() => {
+    if (!viewport || nodes.length < 2) return new Set<string>();
+    return computeOverlappingNodeIds(nodes, viewport);
+  }, [nodes, viewport]);
 
   const transformerRef = useRef<Konva.Transformer | null>(null);
   const selectedNodeRef = useRef<Konva.Group | null>(null);
@@ -711,6 +717,34 @@ export function EditorCanvas({
                     strokeWidth={isSelected ? 2 : 1}
                   />
 
+                  {/* Overlap warning badge — top-right, hidden during calibrate */}
+                  {markupVisible && !isCalibrate && overlappingNodeIds.has(n.id) && (
+                    <Group
+                      x={t.width - 28}
+                      y={12}
+                      listening={false}
+                    >
+                      <Rect
+                        width={18}
+                        height={18}
+                        x={-9}
+                        y={-9}
+                        fill="#f59e0b"
+                        cornerRadius={4}
+                        opacity={0.95}
+                      />
+                      <Text
+                        text="⚠"
+                        x={-7}
+                        y={-10}
+                        fontSize={14}
+                        fill="#fff"
+                        align="center"
+                        listening={false}
+                      />
+                    </Group>
+                  )}
+
                   {canRenderVisuals && (
                     <>
                       <SilhouetteLayer
@@ -850,7 +884,15 @@ export function EditorCanvas({
       </Stage>
 
       {/* Tiny HUD (temporary) */}
-      <div className="pointer-events-none absolute left-3 top-3 rounded bg-neutral-950/60 px-2 py-1 text-xs text-neutral-300">
+      <div className="pointer-events-none absolute left-3 top-3 flex flex-col gap-1 rounded bg-neutral-950/60 px-2 py-1 text-xs text-neutral-300">
+        {markupVisible &&
+          activeTool !== "calibrate" &&
+          hoveredId &&
+          overlappingNodeIds.has(hoveredId) && (
+            <div className="text-amber-400" title="Possible overlap with another item.">
+              Possible overlap with another item.
+            </div>
+          )}
         {activeTool === "calibrate"
           ? calP1
             ? calP2

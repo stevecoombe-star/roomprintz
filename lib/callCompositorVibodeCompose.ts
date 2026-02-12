@@ -7,6 +7,10 @@ export type VibodeComposePlacement = {
   cxPx: number;
   cyPx: number;
   rPx?: number | null;
+  /** z-order: higher = in front. Required for compositor stacking. */
+  zIndex: number;
+  /** Optional layer kind for debugging. */
+  layerKind?: string;
 };
 
 type VibodeComposeResponse = {
@@ -49,6 +53,8 @@ export async function callCompositorVibodeCompose(args: {
       cxPx: placement.cxPx,
       cyPx: placement.cyPx,
       rPx: placement.rPx ?? null,
+      zIndex: placement.zIndex,
+      ...(placement.layerKind ? { layerKind: placement.layerKind } : {}),
     })),
     enhancePhoto: enhancePhoto ?? false,
     modelVersion,
