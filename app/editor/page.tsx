@@ -551,8 +551,10 @@ export default function EditorPage() {
       pushSnack("Upload a room photo first.");
       return;
     }
-    if (!collectionId) {
-      pushSnack("Select a Furniture Collection first.");
+    const removeMarks = scene.removeMarks ?? [];
+    const isRemoveMode = removeMarks.length > 0;
+    if (!collectionId && !isRemoveMode) {
+      pushSnack("Select a Furniture Collection first, or use Remove tool to place red X marks.");
       return;
     }
     if (!viewport) {
@@ -595,8 +597,10 @@ export default function EditorPage() {
       // ─────────────────────────────────────────────
       const bundleId: RoomSizeBundleId = hasManualDims ? pickBundleIdFromSqft(sqft!) : "medium";
 
-      const col = MOCK_COLLECTIONS.find((c) => c.collectionId === collectionId);
-      if (!col) {
+      const col = collectionId
+        ? MOCK_COLLECTIONS.find((c) => c.collectionId === collectionId)
+        : null;
+      if (!col && !isRemoveMode) {
         useEditorStore.getState().endGenerateError({
           userMessage: "Something didn’t work that time. Please try generating again.",
           debug: { message: "Collection not found (mock data)." },
@@ -604,10 +608,10 @@ export default function EditorPage() {
         return;
       }
 
-      const skuIds = col.bundles[bundleId].skuIds;
+      const skuIds = col?.bundles[bundleId]?.skuIds ?? [];
 
       const eligible = skuIds
-        .map((id) => (col.catalog as any)[id])
+        .map((id) => (col?.catalog as any)?.[id])
         .filter(Boolean)
         .map((sku: any) => {
           const realW = typeof sku.realWidthFt === "number" ? (sku.realWidthFt as number) : undefined;
@@ -627,7 +631,7 @@ export default function EditorPage() {
           };
         });
 
-      setWorkingSet({ collectionId, bundleId, eligibleSkus: eligible });
+      setWorkingSet({ collectionId: collectionId ?? undefined, bundleId, eligibleSkus: eligible });
 
       // ─────────────────────────────────────────────
       // 3) Freeze first (captures intent). BUT do NOT "commitGenerateMock" until model succeeds.
@@ -686,9 +690,11 @@ export default function EditorPage() {
 
       // Helpful toast (keeps your dopamine, but no state mutation yet)
       pushSnack(
-        hasManualDims
-          ? `Generating: ${col.bundles[bundleId].label} (${skuIds.length} items)…`
-          : `Generating: ${col.bundles[bundleId].label} (${skuIds.length} items) • Dimensions auto…`
+        isRemoveMode
+          ? `Removing objects at ${removeMarks.length} marker(s)…`
+          : hasManualDims
+            ? `Generating: ${col?.bundles[bundleId]?.label ?? "bundle"} (${skuIds.length} items)…`
+            : `Generating: ${col?.bundles[bundleId]?.label ?? "bundle"} (${skuIds.length} items) • Dimensions auto…`
       );
 
       // ─────────────────────────────────────────────
@@ -833,6 +839,10 @@ export default function EditorPage() {
         outputWidthPx: outW,
         outputHeightPx: outH,
       });
+
+      if (isRemoveMode) {
+        useEditorStore.getState().clearRemoveMarks();
+      }
 
       useEditorStore.getState().endGenerateSuccess({
         imageUrl,
@@ -990,6 +1000,7 @@ export default function EditorPage() {
             { label: "V", tool: "select" as const, title: "Select/Move" },
             { label: "F", tool: "furniture" as const, title: "Furniture" },
             { label: "M", tool: "mask" as const, title: "Mask" },
+            { label: "R", tool: "remove" as const, title: "Remove (red X marks)" },
             { label: "C", tool: "calibrate" as const, title: "Calibrate (User line)" },
           ].map((t) => {
             const isActive = activeTool === t.tool;
@@ -1001,6 +1012,8 @@ export default function EditorPage() {
                   if (t.tool === "calibrate") {
                     beginCalibration();
                     pushSnack("Calibration mode: click point 1 then point 2.");
+                  } else if (t.tool === "remove") {
+                    pushSnack("Remove mode: click on the image to place red X markers.");
                   }
                 }}
                 className={`h-10 w-10 rounded-md border text-sm ${

@@ -16,6 +16,7 @@ import type {
     LightingBand,
     CameraBand,
     RoomType,
+    VibodeIntentV2,
   } from "./freezePayloadV2Types";
   import { DETERMINISM, snapPx, snapRotationDeg, snapToStep } from "./determinism";
   import { buildFreezePayloadV2SceneHash, stableNodeSort } from "./freezePayloadV2SceneHash";
@@ -75,6 +76,9 @@ import type {
     };
   
     nodes: EditorNodeForV2[];
+
+    /** Vibode intent: place (default) or remove with marks. */
+    vibodeIntent?: VibodeIntentV2;
   
     // Default "soft lock" categories (so layout doesn't drift for primaries)
     defaultSoftLockCategories?: NodeCategory[];
@@ -175,6 +179,7 @@ import type {
       calibration: input.calibration,
       staging,
       nodes: [...v2Nodes].sort(stableNodeSort),
+      vibodeIntent: input.vibodeIntent ?? { mode: "place" },
       events: input.events,
     };
   

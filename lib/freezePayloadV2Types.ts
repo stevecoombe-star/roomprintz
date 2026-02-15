@@ -152,6 +152,19 @@ export interface RevisionEventV2 {
 
 export type SceneEventV2 = SwapEventV2 | RevisionEventV2;
 
+/** Remove mark in image-space pixels (v1: deterministic ordering via labelIndex 1..N). */
+export interface RemoveMarkV2 {
+  id: string;
+  x: number;
+  y: number;
+  r: number;
+  labelIndex?: number;
+}
+
+export type VibodeIntentV2 =
+  | { mode: "place" }
+  | { mode: "remove"; marks: RemoveMarkV2[] };
+
 export interface FreezePayloadV2 {
   payloadVersion: "v2";
 
@@ -168,6 +181,9 @@ export interface FreezePayloadV2 {
   staging: StagingSpecV2;
 
   nodes: NodePayloadV2[];
+
+  /** Vibode intent: place (default) or remove with red X marks. */
+  vibodeIntent?: VibodeIntentV2;
 
   sceneHash: string;
   seed?: string;

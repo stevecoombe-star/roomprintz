@@ -4,6 +4,7 @@ import { createClient } from "@supabase/supabase-js";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { FreezePayloadV2, StyleBand } from "@/lib/freezePayloadV2Types";
 import { callCompositorVibodeCompose } from "@/lib/callCompositorVibodeCompose";
+import { callCompositorVibodeRemove } from "@/lib/callCompositorVibodeRemove";
 import {
   inferLayerKindFromSkuKind,
   ensureZIndex,
@@ -1469,9 +1470,43 @@ export async function POST(req: NextRequest) {
     let modelImageUrl: string | null = null;
 
     try {
-      const composeEligible =
-        payloadVersion === "v2" || payloadForModel.sceneSnapshotImageSpace.nodes.length > 0;
-      const placements: Array<{
+      // Vibode Remove v1: vibodeIntent.mode === "remove" with marks
+      const vibodeIntent = isRecord(freeze) ? (freeze as any).vibodeIntent : null;
+      const isRemoveMode =
+        isRecord(vibodeIntent) &&
+        vibodeIntent.mode === "remove" &&
+        Array.isArray(vibodeIntent.marks) &&
+        vibodeIntent.marks.length > 0;
+
+      if (isRemoveMode) {
+        const marks = vibodeIntent.marks as Array<{ id: string; x: number; y: number; r: number; labelIndex?: number }>;
+
+        const cleanBytes = await fetchImageAsBytes(baseImageUrlForModel);
+        const cleanBase64 = cleanBytes.toString("base64");
+
+        try {
+          const removeResult = await callCompositorVibodeRemove({
+            cleanBase64,
+            marks,
+            modelVersion: safeStr((payloadForModel as any)?.modelVersion),
+          });
+          modelImageUrl = removeResult.imageUrl;
+          notes.push(`Vibode Remove v1: compositor /vibode/remove used (marks=${marks.length}).`);
+        } catch (removeErr: any) {
+          const is404 = removeErr?.message?.includes("404");
+          if (is404) {
+            return json(501, {
+              error:
+                "Remove mode requires compositor support. Compositor /vibode/remove is not available (404).",
+            });
+          }
+          throw removeErr;
+        }
+      } else {
+        // Place mode (compose or direct NB)
+        const composeEligible =
+          payloadVersion === "v2" || payloadForModel.sceneSnapshotImageSpace.nodes.length > 0;
+        const placements: Array<{
         nodeId: string;
         skuId?: string | null;
         skuImageBytes: Buffer;
@@ -1480,9 +1515,9 @@ export async function POST(req: NextRequest) {
         rPx?: number | null;
         zIndex: number;
         layerKind?: string;
-      }> = [];
+        }> = [];
 
-      if (useCompose && composeEligible) {
+        if (useCompose && composeEligible) {
         const nodes = payloadForModel.sceneSnapshotImageSpace.nodes.filter(
           (n) => n.status !== "markedForDelete"
         );
@@ -1566,23 +1601,23 @@ export async function POST(req: NextRequest) {
         notes.push(
           `Compose placements built=${placements.length}, nodes=${nodes.length}, skippedMissingSku=${skippedMissingSku}, skippedInvalid=${skippedInvalid}, skippedFetch=${skippedFetch}.`
         );
-      } else {
-        notes.push(`Compose path disabled or ineligible (useCompose=${useCompose}).`);
-      }
+        } else {
+          notes.push(`Compose path disabled or ineligible (useCompose=${useCompose}).`);
+        }
 
-      if (useCompose && placements.length > 0) {
-        const roomImageBytes = await fetchImageAsBytes(baseImageUrlForModel);
-        const composeResult = await callCompositorVibodeCompose({
-          roomImageBytes,
-          placements,
-          enhancePhoto: true,
-          modelVersion: safeStr((payloadForModel as any)?.modelVersion),
-          aspectRatio: pickLegacyAspectRatioFromFreeze(payloadForModel),
-        });
-        modelImageUrl = composeResult.imageUrl;
-        notes.push(`Compositor /vibode/compose used (placements=${placements.length}).`);
-      } else {
-        const result = await callNanoBananaPro({
+        if (useCompose && placements.length > 0) {
+          const roomImageBytes = await fetchImageAsBytes(baseImageUrlForModel);
+          const composeResult = await callCompositorVibodeCompose({
+            roomImageBytes,
+            placements,
+            enhancePhoto: true,
+            modelVersion: safeStr((payloadForModel as any)?.modelVersion),
+            aspectRatio: pickLegacyAspectRatioFromFreeze(payloadForModel),
+          });
+          modelImageUrl = composeResult.imageUrl;
+          notes.push(`Compositor /vibode/compose used (placements=${placements.length}).`);
+        } else {
+          const result = await callNanoBananaPro({
           payload: payloadForModel,
           baseImageUrlForModel,
           notes,
@@ -1590,10 +1625,11 @@ export async function POST(req: NextRequest) {
           vibodePrompt: shouldUseVibodePrompt ? vibodePrompt ?? undefined : undefined,
           placementTestMode: placementTestModeActive,
         });
-        modelImageUrl = result.imageUrl;
-        notes.push(
-          `Legacy /stage-room Nano Banana used (useCompose=${useCompose}, placements=${placements.length}).`
-        );
+          modelImageUrl = result.imageUrl;
+          notes.push(
+            `Legacy /stage-room Nano Banana used (useCompose=${useCompose}, placements=${placements.length}).`
+          );
+        }
       }
     } catch (modelErr: unknown) {
       console.error("[vibode/generate] model call failed:", modelErr);

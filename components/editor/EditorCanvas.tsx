@@ -25,6 +25,7 @@ type DragFurniturePayload = {
 };
 
 const DND_MIME = "application/x-roomprintz-furniture";
+const REMOVE_MARK_STAGE_RADIUS = 18;
 type VisualMode = "blueprint" | "thumbnails";
 type SilhouetteKind = "sofa" | "chair" | "table" | "lamp" | "bed" | "rug";
 type ActiveTool = ReturnType<typeof useEditorStore.getState>["ui"]["activeTool"];
@@ -200,7 +201,9 @@ export function EditorCanvas({
 
   const baseImageUrl = useEditorStore((s) => s.scene.baseImageUrl);
   const nodes = useEditorStore((s) => s.scene.nodes);
+  const removeMarks = useEditorStore((s) => s.scene.removeMarks ?? []);
   const selectedNodeId = useEditorStore((s) => s.ui.selectedNodeId);
+  const selectedRemoveMarkId = useEditorStore((s) => s.ui.selectedRemoveMarkId);
   const activeTool: ActiveTool = useEditorStore((s) => s.ui.activeTool);
 
   const viewport = useEditorStore((s) => s.viewport);
@@ -219,6 +222,10 @@ export function EditorCanvas({
 
   const clearCalibrationDraft = useEditorStore((s) => s.clearCalibrationDraft);
   const setCalibrationPoint = useEditorStore((s) => s.setCalibrationPoint);
+  const selectRemoveMark = useEditorStore((s) => s.selectRemoveMark);
+  const addRemoveMark = useEditorStore((s) => s.addRemoveMark);
+  const updateRemoveMark = useEditorStore((s) => s.updateRemoveMark);
+  const removeRemoveMark = useEditorStore((s) => s.removeRemoveMark);
 
   const [hoveredId, setHoveredId] = useState<string | null>(null);
 
@@ -303,6 +310,7 @@ export function EditorCanvas({
 
     if (
       activeTool === "calibrate" ||
+      activeTool === "remove" ||
       !node ||
       selected?.status === "markedForDelete"
     ) {
@@ -320,7 +328,17 @@ export function EditorCanvas({
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
+        if (selectedRemoveMarkId) {
+          selectRemoveMark(null);
+          return;
+        }
         selectNode(null);
+        return;
+      }
+
+      if (selectedRemoveMarkId && (e.key === "Backspace" || e.key === "Delete")) {
+        e.preventDefault();
+        removeRemoveMark(selectedRemoveMarkId);
         return;
       }
 
@@ -334,7 +352,15 @@ export function EditorCanvas({
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [selectNode, selectedNodeId, toggleDelete, activeTool]);
+  }, [
+    activeTool,
+    removeRemoveMark,
+    selectNode,
+    selectRemoveMark,
+    selectedNodeId,
+    selectedRemoveMarkId,
+    toggleDelete,
+  ]);
 
   function stagePointerToImage(
     stage: Konva.Stage,
@@ -376,6 +402,16 @@ export function EditorCanvas({
     return {
       x: vp.imageStageX + pt.x * vp.scale,
       y: vp.imageStageY + pt.y * vp.scale,
+    };
+  }
+
+  function stageToImage(
+    pt: { x: number; y: number },
+    vp: NonNullable<typeof viewport>
+  ) {
+    return {
+      x: (pt.x - vp.imageStageX) / vp.scale,
+      y: (pt.y - vp.imageStageY) / vp.scale,
     };
   }
 
@@ -428,6 +464,22 @@ export function EditorCanvas({
       return;
     }
 
+    // Remove tool: place red X mark on image
+    if (activeTool === "remove") {
+      if (!viewport) return;
+      if (e.target !== stage) return;
+
+      const imgPt0 = stagePointerToImage(stage, viewport);
+      if (!imgPt0) return;
+
+      if (!isInsideImage(imgPt0, viewport)) return;
+
+      const imgPt = clampToImage(imgPt0, viewport);
+      const rImage = REMOVE_MARK_STAGE_RADIUS / viewport.scale;
+      addRemoveMark(imgPt, rImage);
+      return;
+    }
+
     const clickedOnEmpty = e.target === stage;
     if (clickedOnEmpty) selectNode(null);
   };
@@ -443,8 +495,8 @@ export function EditorCanvas({
       onDrop={(e) => {
         e.preventDefault();
 
-        // Do not allow dropping furniture while calibrating
-        if (activeTool === "calibrate") return;
+        // Do not allow dropping furniture while calibrating or in remove mode
+        if (activeTool === "calibrate" || activeTool === "remove") return;
 
         const raw = e.dataTransfer.getData(DND_MIME);
         if (!raw) return;
@@ -614,6 +666,93 @@ export function EditorCanvas({
                   </>
                 );
               })()}
+            </Group>
+          )}
+
+          {/* Remove marks (red X) overlay */}
+          {viewport && removeMarks.length > 0 && (
+            <Group>
+              {removeMarks.map((m) => {
+                const center = imageToStage({ x: m.x, y: m.y }, viewport);
+                const rStage = m.r * viewport.scale;
+                const x1 = -rStage;
+                const y1 = -rStage;
+                const x2 = rStage;
+                const y2 = rStage;
+                const isSelected = m.id === selectedRemoveMarkId;
+                const commitDragPoint = (stageX: number, stageY: number) => {
+                  const imgPt = clampToImage(stageToImage({ x: stageX, y: stageY }, viewport), viewport);
+                  updateRemoveMark(m.id, imgPt);
+                };
+                return (
+                  <Group
+                    key={m.id}
+                    x={center.x}
+                    y={center.y}
+                    draggable={activeTool === "remove"}
+                    dragBoundFunc={(pos) => {
+                      const imgPt = clampToImage(stageToImage(pos, viewport), viewport);
+                      return imageToStage(imgPt, viewport);
+                    }}
+                    onMouseDown={(e) => {
+                      e.cancelBubble = true;
+                    }}
+                    onTouchStart={(e) => {
+                      e.cancelBubble = true;
+                    }}
+                    onClick={(e) => {
+                      e.cancelBubble = true;
+                      if (activeTool !== "remove") return;
+                      if (e.evt.altKey || e.evt.metaKey) {
+                        removeRemoveMark(m.id);
+                        return;
+                      }
+                      selectRemoveMark(m.id);
+                    }}
+                    onTap={(e) => {
+                      e.cancelBubble = true;
+                      if (activeTool !== "remove") return;
+                      selectRemoveMark(m.id);
+                    }}
+                    onDragEnd={(e) => {
+                      if (activeTool !== "remove") return;
+                      const pos = e.target.getAbsolutePosition();
+                      commitDragPoint(pos.x, pos.y);
+                    }}
+                  >
+                    {isSelected && (
+                      <Circle
+                        x={0}
+                        y={0}
+                        radius={rStage + 4}
+                        stroke="#fca5a5"
+                        strokeWidth={Math.max(1.5, 2 * viewport.scale)}
+                      />
+                    )}
+                    <Line
+                      points={[x1, y1, x2, y2]}
+                      stroke="#dc2626"
+                      strokeWidth={Math.max(2, 3 * viewport.scale)}
+                      lineCap="round"
+                    />
+                    <Line
+                      points={[x1, y2, x2, y1]}
+                      stroke="#dc2626"
+                      strokeWidth={Math.max(2, 3 * viewport.scale)}
+                      lineCap="round"
+                    />
+                    {m.labelIndex != null && m.labelIndex > 0 && (
+                      <Text
+                        x={rStage + 4}
+                        y={-8}
+                        text={String(m.labelIndex)}
+                        fontSize={Math.max(10, 12 * viewport.scale)}
+                        fill="#dc2626"
+                      />
+                    )}
+                  </Group>
+                );
+              })}
             </Group>
           )}
 

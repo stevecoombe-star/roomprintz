@@ -4,7 +4,13 @@ import { loadPendingLocal } from "../lib/pendingGeneration";
 import type { IkeaCaSku } from "../data/mockIkeaCaSkus";
 import { DEFAULT_PX_PER_IN, skuFootprintInchesFromDims } from "@/lib/ikeaSizing";
 import { buildFreezePayloadV2, type EditorNodeForV2 } from "../lib/buildFreezePayloadV2";
-import type { FreezePayloadV2, IntentRole, NodeCategory } from "../lib/freezePayloadV2Types";
+import type {
+  FreezePayloadV2,
+  IntentRole,
+  NodeCategory,
+  RemoveMarkV2,
+  VibodeIntentV2,
+} from "../lib/freezePayloadV2Types";
 import {
   type LayerKind,
   inferLayerKindFromSkuKind,
@@ -188,7 +194,10 @@ export type SceneGraph = {
   calibration?: Calibration;
 
   nodes: FurnitureNode[];
-};
+
+  /** Remove marks (red X) in image-space pixels. Used when activeTool === "remove". */
+  removeMarks: RemoveMarkV2[];
+}
 
 export type RequestedOps = {
   add: string[]; // ids newly introduced since last freeze
@@ -268,8 +277,9 @@ export type RescalePrompt = {
 };
 
 type UIState = {
-  activeTool: "select" | "furniture" | "mask" | "calibrate";
+  activeTool: "select" | "furniture" | "mask" | "remove" | "calibrate";
   selectedNodeId: string | null;
+  selectedRemoveMarkId: string | null;
 
   // calibration-change UX
   rescalePrompt?: RescalePrompt;
@@ -423,6 +433,13 @@ type EditorState = {
   beginCalibration: () => void;
   clearCalibrationDraft: () => void;
   setCalibrationPoint: (idx: 1 | 2, ptImage: { x: number; y: number }) => void;
+
+  // Vibode Remove v1
+  selectRemoveMark: (id: string | null) => void;
+  addRemoveMark: (ptImage: { x: number; y: number }, rImage: number) => void;
+  updateRemoveMark: (id: string, ptImage: { x: number; y: number }) => void;
+  removeRemoveMark: (id: string) => void;
+  clearRemoveMarks: () => void;
   setCalibrationRealFeet: (feet: number) => void;
   finalizeCalibrationFromLine: () => boolean;
   clearCalibrationLine: () => void;
@@ -739,6 +756,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     collection: { collectionId: undefined, bundleId: undefined },
     calibration: undefined,
     nodes: [],
+    removeMarks: [],
   },
 
   workingSet: {},
@@ -746,6 +764,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   ui: {
     activeTool: "select",
     selectedNodeId: null,
+    selectedRemoveMarkId: null,
     rescalePrompt: undefined,
     suppressRescalePrompt: false,
   },
@@ -900,6 +919,20 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     }
     const nodes = canvasNodes.map((node) => mapNodeToEditorNodeV2(node, viewport));
 
+    const removeMarks = scene.removeMarks ?? [];
+    const vibodeIntent: VibodeIntentV2 =
+      removeMarks.length > 0
+        ? { mode: "remove", marks: removeMarks.map((m) => ({ ...m, labelIndex: m.labelIndex ?? 0 })) }
+        : { mode: "place" };
+
+    // Assign labelIndex 1..N deterministically when missing
+    if (vibodeIntent.mode === "remove") {
+      vibodeIntent.marks = vibodeIntent.marks.map((m, i) => ({
+        ...m,
+        labelIndex: m.labelIndex ?? i + 1,
+      }));
+    }
+
     return buildFreezePayloadV2({
       baseImage: {
         signedUrl: scene.baseImageUrl,
@@ -918,6 +951,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
         decorAllowance: "minimal",
       },
       nodes,
+      vibodeIntent,
     });
   },
 
@@ -1133,7 +1167,10 @@ export const useEditorStore = create<EditorState>((set, get) => ({
 
   setActiveTool: (tool) => set((s) => ({ ui: { ...s.ui, activeTool: tool } })),
 
-  selectNode: (id) => set((s) => ({ ui: { ...s.ui, selectedNodeId: id } })),
+  selectNode: (id) =>
+    set((s) => ({
+      ui: { ...s.ui, selectedNodeId: id, selectedRemoveMarkId: null },
+    })),
 
   /* ---------- node creation / transform ---------- */
 
@@ -1329,6 +1366,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
 
     const draftMarkup: MarkupLayer = pending.draftMarkup ?? { version: "v1", items: [] };
     const hasItems = Array.isArray(draftMarkup.items) && draftMarkup.items.length > 0;
+    const removeMarks = Array.isArray(pending.removeMarks) ? pending.removeMarks : [];
 
     set((s) => ({
       scene: {
@@ -1338,6 +1376,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
         baseImageHeightPx: pending.baseImageHeightPx ?? s.scene.baseImageHeightPx,
         vibeMode: pending.vibeMode ?? s.scene.vibeMode,
         draftMarkup,
+        removeMarks,
         phase: hasItems ? "MARKUP" : "IDLE",
         genUi: {},
       },
@@ -1350,6 +1389,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     const sceneSnapshotForRecovery = {
       sceneId: scene.sceneId,
       baseImageUrl: scene.baseImageUrl,
+      removeMarks: scene.removeMarks ?? [],
       baseImageWidthPx: scene.baseImageWidthPx,
       baseImageHeightPx: scene.baseImageHeightPx,
       vibeMode: scene.vibeMode,
@@ -1740,6 +1780,69 @@ export const useEditorStore = create<EditorState>((set, get) => ({
         },
       };
     }),
+
+  selectRemoveMark: (id) =>
+    set((s) => ({
+      ui: { ...s.ui, selectedNodeId: null, selectedRemoveMarkId: id },
+    })),
+
+  addRemoveMark: (ptImage, rImage) =>
+    set((s) => {
+      const existing = s.scene.removeMarks ?? [];
+      const labelIndex = existing.length + 1; // 1..N deterministic
+      const mark: RemoveMarkV2 = {
+        id: safeUUID(),
+        x: ptImage.x,
+        y: ptImage.y,
+        r: rImage,
+        labelIndex,
+      };
+      return {
+        scene: {
+          ...s.scene,
+          removeMarks: [...existing, mark],
+        },
+        ui: {
+          ...s.ui,
+          selectedRemoveMarkId: mark.id,
+        },
+      };
+    }),
+
+  updateRemoveMark: (id, ptImage) =>
+    set((s) => ({
+      scene: {
+        ...s.scene,
+        removeMarks: (s.scene.removeMarks ?? []).map((m) =>
+          m.id === id ? { ...m, x: ptImage.x, y: ptImage.y } : m
+        ),
+      },
+    })),
+
+  removeRemoveMark: (id) =>
+    set((s) => ({
+      scene: {
+        ...s.scene,
+        removeMarks: (s.scene.removeMarks ?? []).filter((m) => m.id !== id),
+      },
+      ui: {
+        ...s.ui,
+        selectedRemoveMarkId:
+          s.ui.selectedRemoveMarkId === id ? null : s.ui.selectedRemoveMarkId,
+      },
+    })),
+
+  clearRemoveMarks: () =>
+    set((s) => ({
+      scene: {
+        ...s.scene,
+        removeMarks: [],
+      },
+      ui: {
+        ...s.ui,
+        selectedRemoveMarkId: null,
+      },
+    })),
 
   setCalibrationRealFeet: (feet) =>
     set((s) => ({

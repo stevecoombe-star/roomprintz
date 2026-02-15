@@ -47,6 +47,8 @@ export async function buildFreezePayloadV2SceneHash(
 
     staging: payload.staging,
 
+    vibodeIntent: payload.vibodeIntent ?? null,
+
     nodes: nodesSorted.map((n) => ({
       nodeId: n.nodeId,
       sku: {
