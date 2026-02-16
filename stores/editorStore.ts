@@ -9,6 +9,7 @@ import type {
   IntentRole,
   NodeCategory,
   RemoveMarkV2,
+  SwapMarkV2,
   VibodeIntentV2,
 } from "../lib/freezePayloadV2Types";
 import {
@@ -197,6 +198,8 @@ export type SceneGraph = {
 
   /** Remove marks (red X) in image-space pixels. Used when activeTool === "remove". */
   removeMarks: RemoveMarkV2[];
+  /** Swap marks in image-space pixels. Used when activeTool === "swap". */
+  swapMarks: SwapMarkV2[];
 }
 
 export type RequestedOps = {
@@ -277,9 +280,10 @@ export type RescalePrompt = {
 };
 
 type UIState = {
-  activeTool: "select" | "furniture" | "mask" | "remove" | "calibrate";
+  activeTool: "select" | "furniture" | "mask" | "remove" | "swap" | "calibrate";
   selectedNodeId: string | null;
   selectedRemoveMarkId: string | null;
+  selectedSwapMarkId: string | null;
 
   // calibration-change UX
   rescalePrompt?: RescalePrompt;
@@ -440,6 +444,13 @@ type EditorState = {
   updateRemoveMark: (id: string, ptImage: { x: number; y: number }) => void;
   removeRemoveMark: (id: string) => void;
   clearRemoveMarks: () => void;
+  selectSwapMark: (id: string | null) => void;
+  addSwapMark: (ptImage: { x: number; y: number }) => void;
+  updateSwapMark: (id: string, ptImage: { x: number; y: number }) => void;
+  removeSwapMark: (id: string) => void;
+  setSwapReplacement: (id: string, replacement: { skuId: string; imageUrl: string }) => void;
+  clearSwapMarks: () => void;
+  getSwapMarksSorted: () => SwapMarkV2[];
   setCalibrationRealFeet: (feet: number) => void;
   finalizeCalibrationFromLine: () => boolean;
   clearCalibrationLine: () => void;
@@ -549,6 +560,20 @@ function scheduleMicrotask(cb: () => void) {
   } else {
     Promise.resolve().then(cb);
   }
+}
+
+function sortSwapMarksStable(marks: SwapMarkV2[]): SwapMarkV2[] {
+  return marks
+    .map((mark, index) => ({ mark, index }))
+    .sort((a, b) => {
+      const zA = a.mark.zIndex ?? 0;
+      const zB = b.mark.zIndex ?? 0;
+      if (zA !== zB) return zA - zB;
+      if (a.mark.createdAt !== b.mark.createdAt) return a.mark.createdAt - b.mark.createdAt;
+      if (a.mark.id !== b.mark.id) return a.mark.id < b.mark.id ? -1 : 1;
+      return a.index - b.index;
+    })
+    .map(({ mark }) => mark);
 }
 
 const isFiniteNumber = (n: unknown): n is number =>
@@ -757,6 +782,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     calibration: undefined,
     nodes: [],
     removeMarks: [],
+    swapMarks: [],
   },
 
   workingSet: {},
@@ -765,6 +791,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     activeTool: "select",
     selectedNodeId: null,
     selectedRemoveMarkId: null,
+    selectedSwapMarkId: null,
     rescalePrompt: undefined,
     suppressRescalePrompt: false,
   },
@@ -1169,7 +1196,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
 
   selectNode: (id) =>
     set((s) => ({
-      ui: { ...s.ui, selectedNodeId: id, selectedRemoveMarkId: null },
+      ui: { ...s.ui, selectedNodeId: id, selectedRemoveMarkId: null, selectedSwapMarkId: null },
     })),
 
   /* ---------- node creation / transform ---------- */
@@ -1783,7 +1810,12 @@ export const useEditorStore = create<EditorState>((set, get) => ({
 
   selectRemoveMark: (id) =>
     set((s) => ({
-      ui: { ...s.ui, selectedNodeId: null, selectedRemoveMarkId: id },
+      ui: {
+        ...s.ui,
+        selectedNodeId: null,
+        selectedRemoveMarkId: id,
+        selectedSwapMarkId: null,
+      },
     })),
 
   addRemoveMark: (ptImage, rImage) =>
@@ -1843,6 +1875,84 @@ export const useEditorStore = create<EditorState>((set, get) => ({
         selectedRemoveMarkId: null,
       },
     })),
+
+  selectSwapMark: (id) =>
+    set((s) => ({
+      ui: {
+        ...s.ui,
+        selectedNodeId: null,
+        selectedRemoveMarkId: null,
+        selectedSwapMarkId: id,
+      },
+    })),
+
+  addSwapMark: (ptImage) =>
+    set((s) => {
+      const existing = s.scene.swapMarks ?? [];
+      const nextZIndex = existing.reduce((maxZ, mark) => Math.max(maxZ, mark.zIndex ?? 0), 0) + 1;
+      const mark: SwapMarkV2 = {
+        id: safeUUID(),
+        ptImage: { x: ptImage.x, y: ptImage.y },
+        createdAt: Date.now(),
+        zIndex: nextZIndex,
+      };
+      return {
+        scene: {
+          ...s.scene,
+          swapMarks: [...existing, mark],
+        },
+        ui: {
+          ...s.ui,
+          selectedSwapMarkId: mark.id,
+        },
+      };
+    }),
+
+  updateSwapMark: (id, ptImage) =>
+    set((s) => ({
+      scene: {
+        ...s.scene,
+        swapMarks: (s.scene.swapMarks ?? []).map((m) =>
+          m.id === id ? { ...m, ptImage: { x: ptImage.x, y: ptImage.y } } : m
+        ),
+      },
+    })),
+
+  removeSwapMark: (id) =>
+    set((s) => ({
+      scene: {
+        ...s.scene,
+        swapMarks: (s.scene.swapMarks ?? []).filter((m) => m.id !== id),
+      },
+      ui: {
+        ...s.ui,
+        selectedSwapMarkId: s.ui.selectedSwapMarkId === id ? null : s.ui.selectedSwapMarkId,
+      },
+    })),
+
+  setSwapReplacement: (id, replacement) =>
+    set((s) => ({
+      scene: {
+        ...s.scene,
+        swapMarks: (s.scene.swapMarks ?? []).map((m) =>
+          m.id === id ? { ...m, replacement } : m
+        ),
+      },
+    })),
+
+  clearSwapMarks: () =>
+    set((s) => ({
+      scene: {
+        ...s.scene,
+        swapMarks: [],
+      },
+      ui: {
+        ...s.ui,
+        selectedSwapMarkId: null,
+      },
+    })),
+
+  getSwapMarksSorted: () => sortSwapMarksStable(get().scene.swapMarks ?? []),
 
   setCalibrationRealFeet: (feet) =>
     set((s) => ({
