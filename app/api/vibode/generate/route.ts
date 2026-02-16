@@ -1128,6 +1128,130 @@ async function fetchImageAsBytes(url: string): Promise<Buffer> {
   return buf;
 }
 
+type VibodeSwapReplacement = {
+  kind: "sku";
+  skuId: string;
+  imageUrl: string;
+};
+
+type VibodeSwapMark = {
+  id: string;
+  x: number;
+  y: number;
+  replacement: VibodeSwapReplacement;
+};
+
+function parseVibodeSwapMarks(vibodeIntent: unknown): VibodeSwapMark[] {
+  if (!isRecord(vibodeIntent)) return [];
+  if (vibodeIntent.mode !== "tools") return [];
+  if (!isRecord(vibodeIntent.swap)) return [];
+  if (!Array.isArray(vibodeIntent.swap.marks) || vibodeIntent.swap.marks.length === 0) return [];
+
+  const marks: VibodeSwapMark[] = [];
+  for (const markRaw of vibodeIntent.swap.marks) {
+    if (!isRecord(markRaw)) return [];
+    const id = safeStr(markRaw.id);
+    const x = markRaw.x;
+    const y = markRaw.y;
+    const replacement = markRaw.replacement;
+    if (!id || !finiteNumber(x) || !finiteNumber(y) || !isRecord(replacement)) return [];
+
+    if (replacement.kind !== "sku") return [];
+    const skuId = safeStr(replacement.skuId);
+    const imageUrl = safeStr(replacement.imageUrl);
+    if (!skuId || !imageUrl) return [];
+
+    marks.push({
+      id,
+      x,
+      y,
+      replacement: {
+        kind: "sku",
+        skuId,
+        imageUrl,
+      },
+    });
+  }
+
+  return marks;
+}
+
+function buildVibodeSwapReplacementAssets(marks: VibodeSwapMark[]) {
+  const assets: VibodeSwapReplacement[] = [];
+  const seen = new Set<string>();
+
+  // Preserve deterministic order by scanning marks in-order.
+  for (const mark of marks) {
+    const replacement = mark.replacement;
+    const key = `${replacement.kind}:${replacement.skuId}:${replacement.imageUrl}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    assets.push(replacement);
+  }
+
+  return assets;
+}
+
+async function callCompositorVibodeSwap(args: {
+  cleanBase64: string;
+  marks: VibodeSwapMark[];
+  replacementAssets: VibodeSwapReplacement[];
+  modelVersion?: string | null;
+}): Promise<{ imageUrl: string }> {
+  const endpointBase = process.env.ROOMPRINTZ_COMPOSITOR_URL?.trim();
+
+  if (!endpointBase) {
+    throw new Error(
+      "ROOMPRINTZ_COMPOSITOR_URL is not set in env (RoomPrintz compositor endpoint)."
+    );
+  }
+
+  const endpointBaseNormalized = endpointBase
+    .replace(/\/stage-room\/?$/, "")
+    .replace(/\/vibode\/compose\/?$/, "")
+    .replace(/\/vibode\/remove\/?$/, "")
+    .replace(/\/vibode\/swap\/?$/, "")
+    .replace(/\/$/, "");
+  const endpoint = `${endpointBaseNormalized}/vibode/swap`;
+  const apiKey = process.env.ROOMPRINTZ_COMPOSITOR_API_KEY;
+
+  console.log("[callCompositorVibodeSwap] request", {
+    endpoint,
+    marks: args.marks.length,
+    replacementAssets: args.replacementAssets.length,
+  });
+
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+  };
+  if (apiKey) {
+    headers["Authorization"] = `Bearer ${apiKey}`;
+  }
+
+  const res = await fetch(endpoint, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      cleanBase64: args.cleanBase64,
+      marks: args.marks,
+      replacementAssets: args.replacementAssets,
+      modelVersion: args.modelVersion ?? null,
+    }),
+  });
+
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`Compositor backend error (swap): ${res.status} ${text}`.trim());
+  }
+
+  const data = (await res.json()) as { imageUrl?: string };
+  if (!data?.imageUrl) {
+    throw new Error("Compositor swap did not return imageUrl");
+  }
+
+  return { imageUrl: data.imageUrl };
+}
+
 function inferExtFromContentType(ct: string) {
   const c = (ct || "").toLowerCase();
   if (c.includes("jpeg") || c.includes("jpg")) return { ext: "jpg", contentType: "image/jpeg" };
@@ -1470,15 +1594,41 @@ export async function POST(req: NextRequest) {
     let modelImageUrl: string | null = null;
 
     try {
-      // Vibode Remove v1: vibodeIntent.mode === "remove" with marks
-      const vibodeIntent = isRecord(freeze) ? (freeze as any).vibodeIntent : null;
+      const vibodeIntent =
+        isRecord(freeze) && isRecord((freeze as any).vibodeIntent)
+          ? (freeze as any).vibodeIntent
+          : isRecord((payloadForModel as any).vibodeIntent)
+          ? (payloadForModel as any).vibodeIntent
+          : null;
+      const swapMarks = parseVibodeSwapMarks(vibodeIntent);
+      const isSwapMode = swapMarks.length > 0;
       const isRemoveMode =
         isRecord(vibodeIntent) &&
         vibodeIntent.mode === "remove" &&
         Array.isArray(vibodeIntent.marks) &&
         vibodeIntent.marks.length > 0;
 
-      if (isRemoveMode) {
+      if (isSwapMode) {
+        const replacementAssets = buildVibodeSwapReplacementAssets(swapMarks);
+        console.log("[vibode/generate] vibode swap mode detected", {
+          mode: vibodeIntent.mode,
+          marks: swapMarks.length,
+          replacementAssets: replacementAssets.length,
+        });
+
+        const cleanBytes = await fetchImageAsBytes(baseImageUrlForModel);
+        const cleanBase64 = cleanBytes.toString("base64");
+        const swapResult = await callCompositorVibodeSwap({
+          cleanBase64,
+          marks: swapMarks,
+          replacementAssets,
+          modelVersion: safeStr((payloadForModel as any)?.modelVersion),
+        });
+        modelImageUrl = swapResult.imageUrl;
+        notes.push(
+          `Vibode Swap tools mode: compositor /vibode/swap used (marks=${swapMarks.length}, assets=${replacementAssets.length}).`
+        );
+      } else if (isRemoveMode) {
         const marks = vibodeIntent.marks as Array<{ id: string; x: number; y: number; r: number; labelIndex?: number }>;
 
         const cleanBytes = await fetchImageAsBytes(baseImageUrlForModel);
