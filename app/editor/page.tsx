@@ -49,6 +49,13 @@ function skuDimsLabel(sku: IkeaCaSku) {
   return `W ${formatInches(width)}" × D ${formatInches(d)}" × H ${formatInches(height)}"`;
 }
 
+function formatSignedDegrees(angleDeg: number) {
+  if (!Number.isFinite(angleDeg)) return "0°";
+  const rounded = Math.round(angleDeg);
+  const sign = rounded > 0 ? "+" : "";
+  return `${sign}${rounded}°`;
+}
+
 type IkeaKind =
   | "sofa"
   | "loveseat"
@@ -246,6 +253,7 @@ export default function EditorPage() {
   const activeTool = useEditorStore((s) => s.ui.activeTool);
   const selectedNodeId = useEditorStore((s) => s.ui.selectedNodeId);
   const selectedSwapMarkId = useEditorStore((s) => s.ui.selectedSwapMarkId);
+  const selectedRotateMarkId = useEditorStore((s) => s.ui.selectedRotateMarkId);
 
   const workingSet = useEditorStore((s) => s.workingSet);
   const history = useEditorStore((s) => s.history);
@@ -277,6 +285,8 @@ export default function EditorPage() {
   const addFurnitureNodeFromSku = useEditorStore((s) => s.addFurnitureNodeFromSku);
   const selectSwapMark = useEditorStore((s) => s.selectSwapMark);
   const setSwapReplacement = useEditorStore((s) => s.setSwapReplacement);
+  const updateRotateMark = useEditorStore((s) => s.updateRotateMark);
+  const removeRotateMark = useEditorStore((s) => s.removeRotateMark);
 
   const lastAction = useEditorStore((s) => s.lastAction);
   const undoLastAction = useEditorStore((s) => s.undoLastAction);
@@ -375,6 +385,10 @@ export default function EditorPage() {
     if (!selectedSwapMarkId) return null;
     return (scene.swapMarks ?? []).find((m) => m.id === selectedSwapMarkId) ?? null;
   }, [scene.swapMarks, selectedSwapMarkId]);
+  const selectedRotateMark = useMemo(() => {
+    if (!selectedRotateMarkId) return null;
+    return (scene.rotateMarks ?? []).find((m) => m.id === selectedRotateMarkId) ?? null;
+  }, [scene.rotateMarks, selectedRotateMarkId]);
   const showSwapReplacementPicker = activeTool === "swap" && !!selectedSwapMarkId;
   const swapReplacementOptions = useMemo(() => {
     const eligibleIds = new Set((eligibleForDrag ?? []).map((item: any) => item.skuId));
@@ -1022,6 +1036,7 @@ export default function EditorPage() {
             { label: "M", tool: "mask" as const, title: "Mask" },
             { label: "R", tool: "remove" as const, title: "Remove (red X marks)" },
             { label: "S", tool: "swap" as const, title: "Swap (blue replacement marks)" },
+            { label: "⟳", tool: "rotate" as const, title: "Rotate (purple rotate markers)" },
             { label: "C", tool: "calibrate" as const, title: "Calibrate (User line)" },
           ].map((t) => {
             const isActive = activeTool === t.tool;
@@ -1037,6 +1052,8 @@ export default function EditorPage() {
                     pushSnack("Remove mode: click on the image to place red X markers.");
                   } else if (t.tool === "swap") {
                     pushSnack("Swap mode: click to place blue marks, then choose a replacement.");
+                  } else if (t.tool === "rotate") {
+                    pushSnack("Rotate mode: click to place a marker, then adjust angle in the panel.");
                   }
                 }}
                 className={`h-10 w-10 rounded-md border text-sm ${
@@ -1653,6 +1670,71 @@ export default function EditorPage() {
                 <div className="mt-2 text-sm text-neutral-400">No selection</div>
               )}
             </div>
+
+            {/* Rotate tool inspector */}
+            {activeTool === "rotate" && (
+              <div className="rounded-lg border border-neutral-800 bg-neutral-900 p-3">
+                <div className="text-sm font-medium">Rotate</div>
+                <div className="mt-1 text-xs text-neutral-400">
+                  Click the image to place a rotate marker, then select it.
+                </div>
+
+                {!selectedRotateMark ? (
+                  <div className="mt-3 rounded-md border border-neutral-800 bg-neutral-950 px-3 py-2 text-sm text-neutral-400">
+                    Click the image to place a rotate marker, then select it.
+                  </div>
+                ) : (
+                  <div className="mt-3 space-y-3">
+                    <div className="rounded-md border border-violet-900/40 bg-violet-950/20 px-3 py-2">
+                      <div className="text-xs text-violet-200/80">Angle</div>
+                      <div className="mt-1 text-base font-medium text-violet-100">
+                        {formatSignedDegrees(selectedRotateMark.angleDeg)}
+                      </div>
+                    </div>
+
+                    <div>
+                      <input
+                        type="range"
+                        min={-180}
+                        max={180}
+                        step={1}
+                        value={Math.round(selectedRotateMark.angleDeg)}
+                        onChange={(e) =>
+                          updateRotateMark(selectedRotateMark.id, {
+                            angleDeg: Number(e.target.value),
+                          })
+                        }
+                        className="w-full accent-violet-400"
+                      />
+                      <div className="mt-1 flex items-center justify-between text-[11px] text-neutral-500">
+                        <span>-180°</span>
+                        <span>0°</span>
+                        <span>+180°</span>
+                      </div>
+                    </div>
+
+                    <div className="flex gap-2">
+                      <button
+                        type="button"
+                        className="rounded-md border border-neutral-800 bg-neutral-950 px-3 py-1.5 text-sm hover:bg-neutral-800"
+                        onClick={() => removeRotateMark(selectedRotateMark.id)}
+                      >
+                        Delete marker
+                      </button>
+                      <button
+                        type="button"
+                        disabled
+                        title="TODO: wire rotate apply action"
+                        className="rounded-md border border-neutral-900 bg-neutral-950 px-3 py-1.5 text-sm text-neutral-500"
+                      >
+                        Apply
+                      </button>
+                    </div>
+                    <div className="text-xs text-neutral-500">TODO: Apply is disabled in this patch.</div>
+                  </div>
+                )}
+              </div>
+            )}
 
             {/* Working Set */}
             <div className="rounded-lg border border-neutral-800 bg-neutral-900 p-3">

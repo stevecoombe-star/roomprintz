@@ -27,6 +27,7 @@ type DragFurniturePayload = {
 const DND_MIME = "application/x-roomprintz-furniture";
 const REMOVE_MARK_STAGE_RADIUS = 18;
 const SWAP_MARK_STAGE_RADIUS = 18;
+const ROTATE_MARK_STAGE_RADIUS = 18;
 type VisualMode = "blueprint" | "thumbnails";
 type SilhouetteKind = "sofa" | "chair" | "table" | "lamp" | "bed" | "rug";
 type ActiveTool = ReturnType<typeof useEditorStore.getState>["ui"]["activeTool"];
@@ -204,9 +205,11 @@ export function EditorCanvas({
   const nodes = useEditorStore((s) => s.scene.nodes);
   const removeMarks = useEditorStore((s) => s.scene.removeMarks ?? []);
   const swapMarks = useEditorStore((s) => s.scene.swapMarks ?? []);
+  const rotateMarks = useEditorStore((s) => s.scene.rotateMarks ?? []);
   const selectedNodeId = useEditorStore((s) => s.ui.selectedNodeId);
   const selectedRemoveMarkId = useEditorStore((s) => s.ui.selectedRemoveMarkId);
   const selectedSwapMarkId = useEditorStore((s) => s.ui.selectedSwapMarkId);
+  const selectedRotateMarkId = useEditorStore((s) => s.ui.selectedRotateMarkId);
   const activeTool: ActiveTool = useEditorStore((s) => s.ui.activeTool);
 
   const viewport = useEditorStore((s) => s.viewport);
@@ -233,6 +236,10 @@ export function EditorCanvas({
   const addSwapMark = useEditorStore((s) => s.addSwapMark);
   const updateSwapMark = useEditorStore((s) => s.updateSwapMark);
   const removeSwapMark = useEditorStore((s) => s.removeSwapMark);
+  const selectRotateMark = useEditorStore((s) => s.selectRotateMark);
+  const addRotateMark = useEditorStore((s) => s.addRotateMark);
+  const updateRotateMark = useEditorStore((s) => s.updateRotateMark);
+  const removeRotateMark = useEditorStore((s) => s.removeRotateMark);
 
   const [hoveredId, setHoveredId] = useState<string | null>(null);
 
@@ -319,6 +326,7 @@ export function EditorCanvas({
       activeTool === "calibrate" ||
       activeTool === "remove" ||
       activeTool === "swap" ||
+      activeTool === "rotate" ||
       !node ||
       selected?.status === "markedForDelete"
     ) {
@@ -344,6 +352,10 @@ export function EditorCanvas({
           selectRemoveMark(null);
           return;
         }
+        if (selectedRotateMarkId) {
+          selectRotateMark(null);
+          return;
+        }
         selectNode(null);
         return;
       }
@@ -360,6 +372,12 @@ export function EditorCanvas({
         return;
       }
 
+      if (selectedRotateMarkId && (e.key === "Backspace" || e.key === "Delete")) {
+        e.preventDefault();
+        removeRotateMark(selectedRotateMarkId);
+        return;
+      }
+
       if (
         (e.key === "Backspace" || e.key === "Delete") &&
         selectedNodeId &&
@@ -373,12 +391,15 @@ export function EditorCanvas({
   }, [
     activeTool,
     removeRemoveMark,
+    removeRotateMark,
     removeSwapMark,
     selectNode,
     selectRemoveMark,
+    selectRotateMark,
     selectSwapMark,
     selectedNodeId,
     selectedRemoveMarkId,
+    selectedRotateMarkId,
     selectedSwapMarkId,
     toggleDelete,
   ]);
@@ -516,6 +537,31 @@ export function EditorCanvas({
       return;
     }
 
+    // Rotate tool: place rotate mark in normalized image-space [0..1]
+    if (activeTool === "rotate") {
+      if (!viewport) return;
+      if (e.target !== stage) return;
+
+      const imgPt0 = stagePointerToImage(stage, viewport);
+      if (!imgPt0) return;
+
+      if (!isInsideImage(imgPt0, viewport)) return;
+
+      const imgPt = clampToImage(imgPt0, viewport);
+      const ptNormalized = {
+        x:
+          viewport.imageNaturalW > 0
+            ? clamp(imgPt.x / viewport.imageNaturalW, 0, 1)
+            : 0,
+        y:
+          viewport.imageNaturalH > 0
+            ? clamp(imgPt.y / viewport.imageNaturalH, 0, 1)
+            : 0,
+      };
+      addRotateMark(ptNormalized);
+      return;
+    }
+
     const clickedOnEmpty = e.target === stage;
     if (clickedOnEmpty) selectNode(null);
   };
@@ -532,7 +578,12 @@ export function EditorCanvas({
         e.preventDefault();
 
         // Do not allow dropping furniture while calibrating or in remove mode
-        if (activeTool === "calibrate" || activeTool === "remove" || activeTool === "swap") {
+        if (
+          activeTool === "calibrate" ||
+          activeTool === "remove" ||
+          activeTool === "swap" ||
+          activeTool === "rotate"
+        ) {
           return;
         }
 
@@ -872,6 +923,111 @@ export function EditorCanvas({
                       fontSize={14}
                       fontStyle="bold"
                       fill="#f8fafc"
+                      listening={false}
+                    />
+                  </Group>
+                );
+              })}
+            </Group>
+          )}
+
+          {/* Rotate marks overlay */}
+          {viewport && rotateMarks.length > 0 && (
+            <Group>
+              {rotateMarks.map((m) => {
+                const imgPt = {
+                  x: clamp(m.x, 0, 1) * viewport.imageNaturalW,
+                  y: clamp(m.y, 0, 1) * viewport.imageNaturalH,
+                };
+                const center = imageToStage(imgPt, viewport);
+                const isSelected = m.id === selectedRotateMarkId;
+                const theta = (m.angleDeg * Math.PI) / 180;
+                const pointerLength = ROTATE_MARK_STAGE_RADIUS - 5;
+                const px = Math.cos(theta) * pointerLength;
+                const py = Math.sin(theta) * pointerLength;
+
+                const commitDragPoint = (stageX: number, stageY: number) => {
+                  const nextImg = clampToImage(stageToImage({ x: stageX, y: stageY }, viewport), viewport);
+                  updateRotateMark(m.id, {
+                    ptImage: {
+                      x:
+                        viewport.imageNaturalW > 0
+                          ? clamp(nextImg.x / viewport.imageNaturalW, 0, 1)
+                          : 0,
+                      y:
+                        viewport.imageNaturalH > 0
+                          ? clamp(nextImg.y / viewport.imageNaturalH, 0, 1)
+                          : 0,
+                    },
+                  });
+                };
+
+                return (
+                  <Group
+                    key={m.id}
+                    x={center.x}
+                    y={center.y}
+                    draggable={activeTool === "rotate"}
+                    dragBoundFunc={(pos) => {
+                      const nextImg = clampToImage(stageToImage(pos, viewport), viewport);
+                      return imageToStage(nextImg, viewport);
+                    }}
+                    onMouseDown={(e) => {
+                      e.cancelBubble = true;
+                    }}
+                    onTouchStart={(e) => {
+                      e.cancelBubble = true;
+                    }}
+                    onClick={(e) => {
+                      e.cancelBubble = true;
+                      if (activeTool !== "rotate") return;
+                      selectRotateMark(m.id);
+                    }}
+                    onTap={(e) => {
+                      e.cancelBubble = true;
+                      if (activeTool !== "rotate") return;
+                      selectRotateMark(m.id);
+                    }}
+                    onDragEnd={(e) => {
+                      if (activeTool !== "rotate") return;
+                      const pos = e.target.getAbsolutePosition();
+                      commitDragPoint(pos.x, pos.y);
+                    }}
+                  >
+                    {isSelected && (
+                      <Circle
+                        x={0}
+                        y={0}
+                        radius={ROTATE_MARK_STAGE_RADIUS + 4}
+                        stroke="#ddd6fe"
+                        strokeWidth={2}
+                      />
+                    )}
+                    <Circle
+                      x={0}
+                      y={0}
+                      radius={ROTATE_MARK_STAGE_RADIUS}
+                      fill="rgba(76, 29, 149, 0.35)"
+                      stroke="#c4b5fd"
+                      strokeWidth={2}
+                      shadowColor="#000"
+                      shadowBlur={6}
+                      shadowOpacity={0.35}
+                    />
+                    <Line
+                      points={[0, 0, px, py]}
+                      stroke="#f5f3ff"
+                      strokeWidth={2}
+                      lineCap="round"
+                    />
+                    <Circle x={px} y={py} radius={3.5} fill="#f5f3ff" />
+                    <Text
+                      x={-5}
+                      y={-8}
+                      text="R"
+                      fontSize={13}
+                      fontStyle="bold"
+                      fill="#ede9fe"
                       listening={false}
                     />
                   </Group>

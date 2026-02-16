@@ -185,12 +185,25 @@ export interface VibodeSwapIntentMarkV2 {
   };
 }
 
+/** Rotate mark in normalized image-space coordinates (0..1), clockwise-positive, -180..180. */
+export interface VibodeRotateMark {
+  id: string;
+  x: number;
+  y: number;
+  angleDeg: number;
+}
+
 export type VibodeIntentV2 =
   // Legacy (Remove v1 callers)
-  | { mode: "place" }
-  | { mode: "remove"; marks: RemoveMarkV2[] }
+  | { mode: "place"; rotate?: { marks: VibodeRotateMark[] } }
+  | { mode: "remove"; marks: RemoveMarkV2[]; rotate?: { marks: VibodeRotateMark[] } }
   // New canonical tool-intents shape
-  | { mode: "tools"; remove?: { marks: RemoveMarkV2[] }; swap?: { marks: VibodeSwapIntentMarkV2[] } };
+  | {
+      mode: "tools";
+      remove?: { marks: RemoveMarkV2[] };
+      swap?: { marks: VibodeSwapIntentMarkV2[] };
+      rotate?: { marks: VibodeRotateMark[] };
+    };
 
 export interface FreezePayloadV2 {
   payloadVersion: "v2";
@@ -209,7 +222,7 @@ export interface FreezePayloadV2 {
 
   nodes: NodePayloadV2[];
 
-  /** Vibode intent: place (default) or remove with red X marks. */
+  /** Vibode intent: place/remove/tools with optional rotate marks. */
   vibodeIntent?: VibodeIntentV2;
 
   sceneHash: string;

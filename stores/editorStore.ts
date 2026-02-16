@@ -11,6 +11,7 @@ import type {
   RemoveMarkV2,
   SwapMarkV2,
   VibodeIntentV2,
+  VibodeRotateMark,
 } from "../lib/freezePayloadV2Types";
 import {
   type LayerKind,
@@ -200,6 +201,8 @@ export type SceneGraph = {
   removeMarks: RemoveMarkV2[];
   /** Swap marks in image-space pixels. Used when activeTool === "swap". */
   swapMarks: SwapMarkV2[];
+  /** Rotate marks in normalized image-space coordinates (0..1). Used when activeTool === "rotate". */
+  rotateMarks: VibodeRotateMark[];
 }
 
 export type RequestedOps = {
@@ -280,10 +283,11 @@ export type RescalePrompt = {
 };
 
 type UIState = {
-  activeTool: "select" | "furniture" | "mask" | "remove" | "swap" | "calibrate";
+  activeTool: "select" | "furniture" | "mask" | "remove" | "swap" | "rotate" | "calibrate";
   selectedNodeId: string | null;
   selectedRemoveMarkId: string | null;
   selectedSwapMarkId: string | null;
+  selectedRotateMarkId: string | null;
 
   // calibration-change UX
   rescalePrompt?: RescalePrompt;
@@ -451,6 +455,14 @@ type EditorState = {
   setSwapReplacement: (id: string, replacement: { skuId: string; imageUrl: string }) => void;
   clearSwapMarks: () => void;
   getSwapMarksSorted: () => SwapMarkV2[];
+  selectRotateMark: (id: string | null) => void;
+  addRotateMark: (ptImage: { x: number; y: number }, angleDeg?: number) => void;
+  updateRotateMark: (
+    id: string,
+    patch: { ptImage?: { x: number; y: number }; angleDeg?: number }
+  ) => void;
+  removeRotateMark: (id: string) => void;
+  clearRotateMarks: () => void;
   setCalibrationRealFeet: (feet: number) => void;
   finalizeCalibrationFromLine: () => boolean;
   clearCalibrationLine: () => void;
@@ -552,6 +564,11 @@ function getHistoryMarkupLayer(record: FreezeRecord): MarkupLayer {
 
 function clamp(n: number, min: number, max: number) {
   return Math.max(min, Math.min(max, n));
+}
+
+function normalizeRotateAngleDeg(angleDeg: number) {
+  if (!Number.isFinite(angleDeg)) return 0;
+  return clamp(angleDeg, -180, 180);
 }
 
 function scheduleMicrotask(cb: () => void) {
@@ -796,6 +813,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     nodes: [],
     removeMarks: [],
     swapMarks: [],
+    rotateMarks: [],
   },
 
   workingSet: {},
@@ -805,6 +823,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     selectedNodeId: null,
     selectedRemoveMarkId: null,
     selectedSwapMarkId: null,
+    selectedRotateMarkId: null,
     rescalePrompt: undefined,
     suppressRescalePrompt: false,
   },
@@ -961,6 +980,13 @@ export const useEditorStore = create<EditorState>((set, get) => ({
 
     const removeMarks = scene.removeMarks ?? [];
     const swapMarks = scene.swapMarks ?? [];
+    const rotateMarks = (scene.rotateMarks ?? []).map((m) => ({
+      id: m.id,
+      x: m.x,
+      y: m.y,
+      angleDeg: normalizeRotateAngleDeg(m.angleDeg),
+    }));
+    const hasRotateMarks = rotateMarks.length > 0;
     const sortedSwapMarks = swapMarks.length > 0 ? get().getSwapMarksSorted() : [];
     const eligibleSwapMarks = sortedSwapMarks.filter(hasEligibleSwapReplacement);
 
@@ -981,10 +1007,15 @@ export const useEditorStore = create<EditorState>((set, get) => ({
                 },
               })),
             },
+            rotate: hasRotateMarks ? { marks: rotateMarks } : undefined,
           }
         : removeMarks.length > 0
-          ? { mode: "remove", marks: removeMarks.map((m) => ({ ...m, labelIndex: m.labelIndex ?? 0 })) }
-          : { mode: "place" };
+          ? {
+              mode: "remove",
+              marks: removeMarks.map((m) => ({ ...m, labelIndex: m.labelIndex ?? 0 })),
+              rotate: hasRotateMarks ? { marks: rotateMarks } : undefined,
+            }
+          : { mode: "place", rotate: hasRotateMarks ? { marks: rotateMarks } : undefined };
 
     // Assign labelIndex 1..N deterministically when missing
     if (vibodeIntent.mode === "remove") {
@@ -1230,7 +1261,13 @@ export const useEditorStore = create<EditorState>((set, get) => ({
 
   selectNode: (id) =>
     set((s) => ({
-      ui: { ...s.ui, selectedNodeId: id, selectedRemoveMarkId: null, selectedSwapMarkId: null },
+      ui: {
+        ...s.ui,
+        selectedNodeId: id,
+        selectedRemoveMarkId: null,
+        selectedSwapMarkId: null,
+        selectedRotateMarkId: null,
+      },
     })),
 
   /* ---------- node creation / transform ---------- */
@@ -1428,6 +1465,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     const draftMarkup: MarkupLayer = pending.draftMarkup ?? { version: "v1", items: [] };
     const hasItems = Array.isArray(draftMarkup.items) && draftMarkup.items.length > 0;
     const removeMarks = Array.isArray(pending.removeMarks) ? pending.removeMarks : [];
+    const rotateMarks = Array.isArray(pending.rotateMarks) ? pending.rotateMarks : [];
 
     set((s) => ({
       scene: {
@@ -1438,6 +1476,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
         vibeMode: pending.vibeMode ?? s.scene.vibeMode,
         draftMarkup,
         removeMarks,
+        rotateMarks,
         phase: hasItems ? "MARKUP" : "IDLE",
         genUi: {},
       },
@@ -1451,6 +1490,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       sceneId: scene.sceneId,
       baseImageUrl: scene.baseImageUrl,
       removeMarks: scene.removeMarks ?? [],
+      rotateMarks: scene.rotateMarks ?? [],
       baseImageWidthPx: scene.baseImageWidthPx,
       baseImageHeightPx: scene.baseImageHeightPx,
       vibeMode: scene.vibeMode,
@@ -1849,6 +1889,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
         selectedNodeId: null,
         selectedRemoveMarkId: id,
         selectedSwapMarkId: null,
+        selectedRotateMarkId: null,
       },
     })),
 
@@ -1917,6 +1958,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
         selectedNodeId: null,
         selectedRemoveMarkId: null,
         selectedSwapMarkId: id,
+        selectedRotateMarkId: null,
       },
     })),
 
@@ -1983,6 +2025,79 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       ui: {
         ...s.ui,
         selectedSwapMarkId: null,
+      },
+    })),
+
+  selectRotateMark: (id) =>
+    set((s) => ({
+      ui: {
+        ...s.ui,
+        selectedNodeId: null,
+        selectedRemoveMarkId: null,
+        selectedSwapMarkId: null,
+        selectedRotateMarkId: id,
+      },
+    })),
+
+  addRotateMark: (ptImage, angleDeg = 0) =>
+    set((s) => {
+      const mark: VibodeRotateMark = {
+        id: safeUUID(),
+        x: ptImage.x,
+        y: ptImage.y,
+        angleDeg: normalizeRotateAngleDeg(angleDeg),
+      };
+      return {
+        scene: {
+          ...s.scene,
+          rotateMarks: [...(s.scene.rotateMarks ?? []), mark],
+        },
+        ui: {
+          ...s.ui,
+          selectedRotateMarkId: mark.id,
+        },
+      };
+    }),
+
+  updateRotateMark: (id, patch) =>
+    set((s) => ({
+      scene: {
+        ...s.scene,
+        rotateMarks: (s.scene.rotateMarks ?? []).map((m) => {
+          if (m.id !== id) return m;
+          return {
+            ...m,
+            x: patch.ptImage?.x ?? m.x,
+            y: patch.ptImage?.y ?? m.y,
+            angleDeg:
+              patch.angleDeg === undefined ? m.angleDeg : normalizeRotateAngleDeg(patch.angleDeg),
+          };
+        }),
+      },
+    })),
+
+  removeRotateMark: (id) =>
+    set((s) => ({
+      scene: {
+        ...s.scene,
+        rotateMarks: (s.scene.rotateMarks ?? []).filter((m) => m.id !== id),
+      },
+      ui: {
+        ...s.ui,
+        selectedRotateMarkId:
+          s.ui.selectedRotateMarkId === id ? null : s.ui.selectedRotateMarkId,
+      },
+    })),
+
+  clearRotateMarks: () =>
+    set((s) => ({
+      scene: {
+        ...s.scene,
+        rotateMarks: [],
+      },
+      ui: {
+        ...s.ui,
+        selectedRotateMarkId: null,
       },
     })),
 
