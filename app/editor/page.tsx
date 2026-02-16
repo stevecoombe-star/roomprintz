@@ -56,6 +56,28 @@ function formatSignedDegrees(angleDeg: number) {
   return `${sign}${rounded}°`;
 }
 
+function MoveIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+      aria-hidden="true"
+    >
+      <path d="M12 2v20" />
+      <path d="M2 12h20" />
+      <path d="m8 6 4-4 4 4" />
+      <path d="m8 18 4 4 4-4" />
+      <path d="m6 8-4 4 4 4" />
+      <path d="m18 8 4 4-4 4" />
+    </svg>
+  );
+}
+
 type IkeaKind =
   | "sofa"
   | "loveseat"
@@ -1045,12 +1067,17 @@ export default function EditorPage() {
             { label: "R", tool: "remove" as const, title: "Remove (red X marks)" },
             { label: "S", tool: "swap" as const, title: "Swap (blue replacement marks)" },
             { label: "⟳", tool: "rotate" as const, title: "Rotate (purple rotate markers)" },
+            {
+              label: <MoveIcon className="mx-auto h-4 w-4" />,
+              tool: "move" as const,
+              title: "Move (direction + distance markers)",
+            },
             { label: "C", tool: "calibrate" as const, title: "Calibrate (User line)" },
           ].map((t) => {
             const isActive = activeTool === t.tool;
             return (
               <button
-                key={t.label}
+                key={t.tool}
                 onClick={() => {
                   setActiveTool(t.tool);
                   if (t.tool === "calibrate") {
@@ -1062,6 +1089,8 @@ export default function EditorPage() {
                     pushSnack("Swap mode: click to place blue marks, then choose a replacement.");
                   } else if (t.tool === "rotate") {
                     pushSnack("Rotate mode: click to place a marker, then adjust angle in the panel.");
+                  } else if (t.tool === "move") {
+                    pushSnack("Move mode: click an object, then drag to set direction and distance.");
                   }
                 }}
                 className={`h-10 w-10 rounded-md border text-sm ${
@@ -1070,6 +1099,7 @@ export default function EditorPage() {
                     : "border-neutral-800 bg-neutral-900 hover:bg-neutral-800"
                 }`}
                 title={t.title}
+                aria-label={t.title}
               >
                 {t.label}
               </button>
