@@ -385,10 +385,13 @@ export default function EditorPage() {
     if (!selectedSwapMarkId) return null;
     return (scene.swapMarks ?? []).find((m) => m.id === selectedSwapMarkId) ?? null;
   }, [scene.swapMarks, selectedSwapMarkId]);
+  const rotateMarks = scene.rotateMarks ?? [];
   const selectedRotateMark = useMemo(() => {
     if (!selectedRotateMarkId) return null;
-    return (scene.rotateMarks ?? []).find((m) => m.id === selectedRotateMarkId) ?? null;
-  }, [scene.rotateMarks, selectedRotateMarkId]);
+    return rotateMarks.find((m) => m.id === selectedRotateMarkId) ?? null;
+  }, [rotateMarks, selectedRotateMarkId]);
+  const hasRotateMarks = rotateMarks.length > 0;
+  const canApplyRotate = Boolean(selectedRotateMark && hasRotateMarks);
   const showSwapReplacementPicker = activeTool === "swap" && !!selectedSwapMarkId;
   const swapReplacementOptions = useMemo(() => {
     const eligibleIds = new Set((eligibleForDrag ?? []).map((item: any) => item.skuId));
@@ -587,8 +590,11 @@ export default function EditorPage() {
     }
     const removeMarks = scene.removeMarks ?? [];
     const isRemoveMode = removeMarks.length > 0;
-    if (!collectionId && !isRemoveMode) {
-      pushSnack("Select a Furniture Collection first, or use Remove tool to place red X marks.");
+    const isRotateMode = hasRotateMarks;
+    if (!collectionId && !isRemoveMode && !isRotateMode) {
+      pushSnack(
+        "Select a Furniture Collection first, or use Remove/Rotate tools to place marker(s)."
+      );
       return;
     }
     if (!viewport) {
@@ -726,6 +732,8 @@ export default function EditorPage() {
       pushSnack(
         isRemoveMode
           ? `Removing objects at ${removeMarks.length} marker(s)…`
+          : isRotateMode
+            ? `Applying rotate at ${rotateMarks.length} marker(s)…`
           : hasManualDims
             ? `Generating: ${col?.bundles[bundleId]?.label ?? "bundle"} (${skuIds.length} items)…`
             : `Generating: ${col?.bundles[bundleId]?.label ?? "bundle"} (${skuIds.length} items) • Dimensions auto…`
@@ -1723,14 +1731,18 @@ export default function EditorPage() {
                       </button>
                       <button
                         type="button"
-                        disabled
-                        title="TODO: wire rotate apply action"
-                        className="rounded-md border border-neutral-900 bg-neutral-950 px-3 py-1.5 text-sm text-neutral-500"
+                        disabled={!canApplyRotate || isBusy || !isImageSpaceReady}
+                        title={!canApplyRotate ? "Select a rotate marker to apply." : undefined}
+                        onClick={onGenerate}
+                        className={`rounded-md border px-3 py-1.5 text-sm ${
+                          !canApplyRotate || isBusy || !isImageSpaceReady
+                            ? "border-neutral-900 bg-neutral-950 text-neutral-500"
+                            : "border-violet-700 bg-violet-900/30 text-violet-100 hover:bg-violet-900/50"
+                        }`}
                       >
                         Apply
                       </button>
                     </div>
-                    <div className="text-xs text-neutral-500">TODO: Apply is disabled in this patch.</div>
                   </div>
                 )}
               </div>

@@ -982,8 +982,8 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     const swapMarks = scene.swapMarks ?? [];
     const rotateMarks = (scene.rotateMarks ?? []).map((m) => ({
       id: m.id,
-      x: m.x,
-      y: m.y,
+      x: clamp(m.x, 0, 1),
+      y: clamp(m.y, 0, 1),
       angleDeg: normalizeRotateAngleDeg(m.angleDeg),
     }));
     const hasRotateMarks = rotateMarks.length > 0;

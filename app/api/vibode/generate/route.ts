@@ -5,6 +5,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import type { FreezePayloadV2, StyleBand } from "@/lib/freezePayloadV2Types";
 import { callCompositorVibodeCompose } from "@/lib/callCompositorVibodeCompose";
 import { callCompositorVibodeRemove } from "@/lib/callCompositorVibodeRemove";
+import { callCompositorVibodeRotate } from "@/lib/callCompositorVibodeRotate";
 import {
   inferLayerKindFromSkuKind,
   ensureZIndex,
@@ -1141,6 +1142,21 @@ type VibodeSwapMark = {
   replacement: VibodeSwapReplacement;
 };
 
+type VibodeRotateMark = {
+  id: string;
+  x: number;
+  y: number;
+  angleDeg: number;
+};
+
+function clampUnit(n: number) {
+  return Math.max(0, Math.min(1, n));
+}
+
+function clampRotateAngle(n: number) {
+  return Math.max(-180, Math.min(180, n));
+}
+
 function parseVibodeSwapMarks(vibodeIntent: unknown): VibodeSwapMark[] {
   if (!isRecord(vibodeIntent)) return [];
   if (vibodeIntent.mode !== "tools") return [];
@@ -1170,6 +1186,35 @@ function parseVibodeSwapMarks(vibodeIntent: unknown): VibodeSwapMark[] {
         skuId,
         imageUrl,
       },
+    });
+  }
+
+  return marks;
+}
+
+function parseVibodeRotateMarks(vibodeIntent: unknown): VibodeRotateMark[] {
+  if (!isRecord(vibodeIntent)) return [];
+
+  const mode = vibodeIntent.mode;
+  if (mode !== "tools" && mode !== "place" && mode !== "remove") return [];
+  if (!isRecord(vibodeIntent.rotate)) return [];
+  if (!Array.isArray(vibodeIntent.rotate.marks) || vibodeIntent.rotate.marks.length === 0) return [];
+
+  const marks: VibodeRotateMark[] = [];
+  for (const markRaw of vibodeIntent.rotate.marks) {
+    if (!isRecord(markRaw)) return [];
+
+    const id = safeStr(markRaw.id);
+    const x = markRaw.x;
+    const y = markRaw.y;
+    const angleDeg = markRaw.angleDeg;
+    if (!id || !finiteNumber(x) || !finiteNumber(y) || !finiteNumber(angleDeg)) return [];
+
+    marks.push({
+      id,
+      x: clampUnit(x),
+      y: clampUnit(y),
+      angleDeg: clampRotateAngle(angleDeg),
     });
   }
 
@@ -1594,12 +1639,16 @@ export async function POST(req: NextRequest) {
     let modelImageUrl: string | null = null;
 
     try {
+      const freezeV2Raw =
+        payloadVersion === "v2" && isRecord(freeze) ? (freeze as unknown as FreezePayloadV2) : null;
       const vibodeIntent =
         isRecord(freeze) && isRecord((freeze as any).vibodeIntent)
           ? (freeze as any).vibodeIntent
           : isRecord((payloadForModel as any).vibodeIntent)
           ? (payloadForModel as any).vibodeIntent
           : null;
+      const rotateMarks = parseVibodeRotateMarks(vibodeIntent);
+      const isRotateMode = Boolean(freezeV2Raw && rotateMarks.length > 0);
       const swapMarks = parseVibodeSwapMarks(vibodeIntent);
       const isSwapMode = swapMarks.length > 0;
       const isRemoveMode =
@@ -1608,7 +1657,34 @@ export async function POST(req: NextRequest) {
         Array.isArray(vibodeIntent.marks) &&
         vibodeIntent.marks.length > 0;
 
-      if (isSwapMode) {
+      if (isRotateMode && freezeV2Raw) {
+        console.log("[vibode/generate] vibode rotate mode detected", {
+          mode: vibodeIntent.mode,
+          marks: rotateMarks.length,
+        });
+
+        try {
+          const rotateResult = await callCompositorVibodeRotate({
+            freezePayload: freezeV2Raw,
+            baseImageUrl: baseImageUrlForModel,
+            modelVersion: safeStr((payloadForModel as any)?.modelVersion),
+            aspectRatio: pickLegacyAspectRatioFromFreeze(payloadForModel),
+          });
+          modelImageUrl = rotateResult.imageUrl;
+          notes.push(
+            `Vibode Rotate mode: compositor /vibode/rotate used (marks=${rotateMarks.length}).`
+          );
+        } catch (rotateErr: any) {
+          const is404 = rotateErr?.message?.includes("404");
+          if (is404) {
+            return json(501, {
+              error:
+                "Rotate mode requires compositor support. Compositor /vibode/rotate is not available (404).",
+            });
+          }
+          throw rotateErr;
+        }
+      } else if (isSwapMode) {
         const replacementAssets = buildVibodeSwapReplacementAssets(swapMarks);
         console.log("[vibode/generate] vibode swap mode detected", {
           mode: vibodeIntent.mode,
