@@ -26,6 +26,7 @@ type DragFurniturePayload = {
 
 const DND_MIME = "application/x-roomprintz-furniture";
 const REMOVE_MARK_STAGE_RADIUS = 18;
+const SWAP_MARK_STAGE_RADIUS = 18;
 type VisualMode = "blueprint" | "thumbnails";
 type SilhouetteKind = "sofa" | "chair" | "table" | "lamp" | "bed" | "rug";
 type ActiveTool = ReturnType<typeof useEditorStore.getState>["ui"]["activeTool"];
@@ -202,8 +203,10 @@ export function EditorCanvas({
   const baseImageUrl = useEditorStore((s) => s.scene.baseImageUrl);
   const nodes = useEditorStore((s) => s.scene.nodes);
   const removeMarks = useEditorStore((s) => s.scene.removeMarks ?? []);
+  const swapMarks = useEditorStore((s) => s.scene.swapMarks ?? []);
   const selectedNodeId = useEditorStore((s) => s.ui.selectedNodeId);
   const selectedRemoveMarkId = useEditorStore((s) => s.ui.selectedRemoveMarkId);
+  const selectedSwapMarkId = useEditorStore((s) => s.ui.selectedSwapMarkId);
   const activeTool: ActiveTool = useEditorStore((s) => s.ui.activeTool);
 
   const viewport = useEditorStore((s) => s.viewport);
@@ -226,6 +229,10 @@ export function EditorCanvas({
   const addRemoveMark = useEditorStore((s) => s.addRemoveMark);
   const updateRemoveMark = useEditorStore((s) => s.updateRemoveMark);
   const removeRemoveMark = useEditorStore((s) => s.removeRemoveMark);
+  const selectSwapMark = useEditorStore((s) => s.selectSwapMark);
+  const addSwapMark = useEditorStore((s) => s.addSwapMark);
+  const updateSwapMark = useEditorStore((s) => s.updateSwapMark);
+  const removeSwapMark = useEditorStore((s) => s.removeSwapMark);
 
   const [hoveredId, setHoveredId] = useState<string | null>(null);
 
@@ -311,6 +318,7 @@ export function EditorCanvas({
     if (
       activeTool === "calibrate" ||
       activeTool === "remove" ||
+      activeTool === "swap" ||
       !node ||
       selected?.status === "markedForDelete"
     ) {
@@ -328,11 +336,21 @@ export function EditorCanvas({
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
+        if (selectedSwapMarkId) {
+          selectSwapMark(null);
+          return;
+        }
         if (selectedRemoveMarkId) {
           selectRemoveMark(null);
           return;
         }
         selectNode(null);
+        return;
+      }
+
+      if (selectedSwapMarkId && (e.key === "Backspace" || e.key === "Delete")) {
+        e.preventDefault();
+        removeSwapMark(selectedSwapMarkId);
         return;
       }
 
@@ -355,10 +373,13 @@ export function EditorCanvas({
   }, [
     activeTool,
     removeRemoveMark,
+    removeSwapMark,
     selectNode,
     selectRemoveMark,
+    selectSwapMark,
     selectedNodeId,
     selectedRemoveMarkId,
+    selectedSwapMarkId,
     toggleDelete,
   ]);
 
@@ -480,6 +501,21 @@ export function EditorCanvas({
       return;
     }
 
+    // Swap tool: place swap mark on image
+    if (activeTool === "swap") {
+      if (!viewport) return;
+      if (e.target !== stage) return;
+
+      const imgPt0 = stagePointerToImage(stage, viewport);
+      if (!imgPt0) return;
+
+      if (!isInsideImage(imgPt0, viewport)) return;
+
+      const imgPt = clampToImage(imgPt0, viewport);
+      addSwapMark(imgPt);
+      return;
+    }
+
     const clickedOnEmpty = e.target === stage;
     if (clickedOnEmpty) selectNode(null);
   };
@@ -496,7 +532,9 @@ export function EditorCanvas({
         e.preventDefault();
 
         // Do not allow dropping furniture while calibrating or in remove mode
-        if (activeTool === "calibrate" || activeTool === "remove") return;
+        if (activeTool === "calibrate" || activeTool === "remove" || activeTool === "swap") {
+          return;
+        }
 
         const raw = e.dataTransfer.getData(DND_MIME);
         if (!raw) return;
@@ -750,6 +788,92 @@ export function EditorCanvas({
                         fill="#dc2626"
                       />
                     )}
+                  </Group>
+                );
+              })}
+            </Group>
+          )}
+
+          {/* Swap marks overlay */}
+          {viewport && swapMarks.length > 0 && (
+            <Group>
+              {swapMarks.map((m) => {
+                const center = imageToStage(
+                  { x: m.ptImage.x, y: m.ptImage.y },
+                  viewport
+                );
+                const isSelected = m.id === selectedSwapMarkId;
+                const hasReplacement = !!m.replacement;
+                const commitDragPoint = (stageX: number, stageY: number) => {
+                  const imgPt = clampToImage(
+                    stageToImage({ x: stageX, y: stageY }, viewport),
+                    viewport
+                  );
+                  updateSwapMark(m.id, imgPt);
+                };
+
+                return (
+                  <Group
+                    key={m.id}
+                    x={center.x}
+                    y={center.y}
+                    draggable={activeTool === "swap"}
+                    dragBoundFunc={(pos) => {
+                      const imgPt = clampToImage(stageToImage(pos, viewport), viewport);
+                      return imageToStage(imgPt, viewport);
+                    }}
+                    onMouseDown={(e) => {
+                      e.cancelBubble = true;
+                    }}
+                    onTouchStart={(e) => {
+                      e.cancelBubble = true;
+                    }}
+                    onClick={(e) => {
+                      e.cancelBubble = true;
+                      if (activeTool !== "swap") return;
+                      selectSwapMark(m.id);
+                    }}
+                    onTap={(e) => {
+                      e.cancelBubble = true;
+                      if (activeTool !== "swap") return;
+                      selectSwapMark(m.id);
+                    }}
+                    onDragEnd={(e) => {
+                      if (activeTool !== "swap") return;
+                      const pos = e.target.getAbsolutePosition();
+                      commitDragPoint(pos.x, pos.y);
+                    }}
+                  >
+                    {isSelected && (
+                      <Circle
+                        x={0}
+                        y={0}
+                        radius={SWAP_MARK_STAGE_RADIUS + 4}
+                        stroke="#93c5fd"
+                        strokeWidth={2}
+                      />
+                    )}
+                    <Circle
+                      x={0}
+                      y={0}
+                      radius={SWAP_MARK_STAGE_RADIUS}
+                      fill={hasReplacement ? "#2563eb" : "rgba(17, 24, 39, 0.35)"}
+                      stroke={hasReplacement ? "#dbeafe" : "#bfdbfe"}
+                      strokeWidth={2}
+                      dash={hasReplacement ? undefined : [4, 3]}
+                      shadowColor="#000"
+                      shadowBlur={6}
+                      shadowOpacity={0.35}
+                    />
+                    <Text
+                      x={-6}
+                      y={-8}
+                      text={hasReplacement ? "⇄" : "?"}
+                      fontSize={14}
+                      fontStyle="bold"
+                      fill="#f8fafc"
+                      listening={false}
+                    />
                   </Group>
                 );
               })}
