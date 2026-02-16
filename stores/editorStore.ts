@@ -7,6 +7,7 @@ import { buildFreezePayloadV2, type EditorNodeForV2 } from "../lib/buildFreezePa
 import type {
   FreezePayloadV2,
   IntentRole,
+  MoveMark,
   NodeCategory,
   RemoveMarkV2,
   SwapMarkV2,
@@ -203,6 +204,8 @@ export type SceneGraph = {
   swapMarks: SwapMarkV2[];
   /** Rotate marks in normalized image-space coordinates (0..1). Used when activeTool === "rotate". */
   rotateMarks: VibodeRotateMark[];
+  /** Move marks in normalized image-space coordinates (0..1). Used when activeTool === "move". */
+  moveMarks: MoveMark[];
 }
 
 export type RequestedOps = {
@@ -283,11 +286,20 @@ export type RescalePrompt = {
 };
 
 type UIState = {
-  activeTool: "select" | "furniture" | "mask" | "remove" | "swap" | "rotate" | "calibrate";
+  activeTool:
+    | "select"
+    | "furniture"
+    | "mask"
+    | "remove"
+    | "rotate"
+    | "swap"
+    | "move"
+    | "calibrate";
   selectedNodeId: string | null;
   selectedRemoveMarkId: string | null;
   selectedSwapMarkId: string | null;
   selectedRotateMarkId: string | null;
+  selectedMoveMarkId: string | null;
 
   // calibration-change UX
   rescalePrompt?: RescalePrompt;
@@ -463,6 +475,11 @@ type EditorState = {
   ) => void;
   removeRotateMark: (id: string) => void;
   clearRotateMarks: () => void;
+  selectMoveMark: (id: string | null) => void;
+  addMoveMark: (ptImage: { x: number; y: number }) => void;
+  updateMoveVector: (id: string, dxNorm: number, dyNorm: number) => void;
+  removeMoveMark: (id: string) => void;
+  clearMoveMarks: () => void;
   setCalibrationRealFeet: (feet: number) => void;
   finalizeCalibrationFromLine: () => boolean;
   clearCalibrationLine: () => void;
@@ -814,6 +831,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     removeMarks: [],
     swapMarks: [],
     rotateMarks: [],
+    moveMarks: [],
   },
 
   workingSet: {},
@@ -824,6 +842,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     selectedRemoveMarkId: null,
     selectedSwapMarkId: null,
     selectedRotateMarkId: null,
+    selectedMoveMarkId: null,
     rescalePrompt: undefined,
     suppressRescalePrompt: false,
   },
@@ -980,6 +999,13 @@ export const useEditorStore = create<EditorState>((set, get) => ({
 
     const removeMarks = scene.removeMarks ?? [];
     const swapMarks = scene.swapMarks ?? [];
+    const moveMarks = (scene.moveMarks ?? []).map((m) => ({
+      ...m,
+      xNorm: clamp(m.xNorm, 0, 1),
+      yNorm: clamp(m.yNorm, 0, 1),
+      dxNorm: clamp(m.dxNorm, -1, 1),
+      dyNorm: clamp(m.dyNorm, -1, 1),
+    }));
     const rotateMarks = (scene.rotateMarks ?? []).map((m) => ({
       id: m.id,
       x: clamp(m.x, 0, 1),
@@ -1008,14 +1034,20 @@ export const useEditorStore = create<EditorState>((set, get) => ({
               })),
             },
             rotate: hasRotateMarks ? { marks: rotateMarks } : undefined,
+            move: moveMarks.length > 0 ? { marks: moveMarks } : undefined,
           }
         : removeMarks.length > 0
           ? {
               mode: "remove",
               marks: removeMarks.map((m) => ({ ...m, labelIndex: m.labelIndex ?? 0 })),
               rotate: hasRotateMarks ? { marks: rotateMarks } : undefined,
+              move: moveMarks.length > 0 ? { marks: moveMarks } : undefined,
             }
-          : { mode: "place", rotate: hasRotateMarks ? { marks: rotateMarks } : undefined };
+          : {
+              mode: "place",
+              rotate: hasRotateMarks ? { marks: rotateMarks } : undefined,
+              move: moveMarks.length > 0 ? { marks: moveMarks } : undefined,
+            };
 
     // Assign labelIndex 1..N deterministically when missing
     if (vibodeIntent.mode === "remove") {
@@ -1267,6 +1299,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
         selectedRemoveMarkId: null,
         selectedSwapMarkId: null,
         selectedRotateMarkId: null,
+        selectedMoveMarkId: null,
       },
     })),
 
@@ -1890,6 +1923,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
         selectedRemoveMarkId: id,
         selectedSwapMarkId: null,
         selectedRotateMarkId: null,
+        selectedMoveMarkId: null,
       },
     })),
 
@@ -1959,6 +1993,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
         selectedRemoveMarkId: null,
         selectedSwapMarkId: id,
         selectedRotateMarkId: null,
+        selectedMoveMarkId: null,
       },
     })),
 
@@ -2036,6 +2071,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
         selectedRemoveMarkId: null,
         selectedSwapMarkId: null,
         selectedRotateMarkId: id,
+        selectedMoveMarkId: null,
       },
     })),
 
@@ -2098,6 +2134,73 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       ui: {
         ...s.ui,
         selectedRotateMarkId: null,
+      },
+    })),
+
+  selectMoveMark: (id) =>
+    set((s) => ({
+      ui: {
+        ...s.ui,
+        selectedNodeId: null,
+        selectedRemoveMarkId: null,
+        selectedSwapMarkId: null,
+        selectedRotateMarkId: null,
+        selectedMoveMarkId: id,
+      },
+    })),
+
+  addMoveMark: (ptImage) =>
+    set((s) => {
+      const mark: MoveMark = {
+        id: crypto.randomUUID(),
+        xNorm: ptImage.x,
+        yNorm: ptImage.y,
+        dxNorm: 0,
+        dyNorm: 0,
+      };
+      return {
+        scene: {
+          ...s.scene,
+          moveMarks: [...(s.scene.moveMarks ?? []), mark],
+        },
+        ui: {
+          ...s.ui,
+          selectedMoveMarkId: mark.id,
+        },
+      };
+    }),
+
+  updateMoveVector: (id, dxNorm, dyNorm) =>
+    set((s) => ({
+      scene: {
+        ...s.scene,
+        moveMarks: (s.scene.moveMarks ?? []).map((m) =>
+          m.id === id ? { ...m, dxNorm, dyNorm } : m
+        ),
+      },
+    })),
+
+  removeMoveMark: (id) =>
+    set((s) => ({
+      scene: {
+        ...s.scene,
+        moveMarks: (s.scene.moveMarks ?? []).filter((m) => m.id !== id),
+      },
+      ui: {
+        ...s.ui,
+        selectedMoveMarkId: s.ui.selectedMoveMarkId === id ? null : s.ui.selectedMoveMarkId,
+      },
+    })),
+
+  clearMoveMarks: () =>
+    set((s) => ({
+      scene: {
+        ...s.scene,
+        moveMarks: [],
+      },
+      ui: {
+        ...s.ui,
+        selectedMoveMarkId: null,
       },
     })),
 

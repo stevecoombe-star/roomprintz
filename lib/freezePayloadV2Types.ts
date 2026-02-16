@@ -193,16 +193,34 @@ export interface VibodeRotateMark {
   angleDeg: number;
 }
 
+export type MoveMark = {
+  id: string;
+
+  // Anchor (normalized image-space)
+  xNorm: number;
+  yNorm: number;
+
+  // Translation vector (normalized)
+  dxNorm: number;
+  dyNorm: number;
+};
+
 export type VibodeIntentV2 =
   // Legacy (Remove v1 callers)
-  | { mode: "place"; rotate?: { marks: VibodeRotateMark[] } }
-  | { mode: "remove"; marks: RemoveMarkV2[]; rotate?: { marks: VibodeRotateMark[] } }
+  | { mode: "place"; rotate?: { marks: VibodeRotateMark[] }; move?: { marks: MoveMark[] } }
+  | {
+      mode: "remove";
+      marks: RemoveMarkV2[];
+      rotate?: { marks: VibodeRotateMark[] };
+      move?: { marks: MoveMark[] };
+    }
   // New canonical tool-intents shape
   | {
       mode: "tools";
       remove?: { marks: RemoveMarkV2[] };
       swap?: { marks: VibodeSwapIntentMarkV2[] };
       rotate?: { marks: VibodeRotateMark[] };
+      move?: { marks: MoveMark[] };
     };
 
 export interface FreezePayloadV2 {
