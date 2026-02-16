@@ -579,6 +579,19 @@ function sortSwapMarksStable(marks: SwapMarkV2[]): SwapMarkV2[] {
 const isFiniteNumber = (n: unknown): n is number =>
   typeof n === "number" && Number.isFinite(n);
 
+function hasEligibleSwapReplacement(
+  mark: SwapMarkV2
+): mark is SwapMarkV2 & { replacement: { skuId: string; imageUrl: string } } {
+  const skuId = mark.replacement?.skuId;
+  const imageUrl = mark.replacement?.imageUrl;
+  return (
+    typeof skuId === "string" &&
+    skuId.trim().length > 0 &&
+    typeof imageUrl === "string" &&
+    imageUrl.trim().length > 0
+  );
+}
+
 function getViewportCenter(vp?: ViewportMapping) {
   if (!vp) return { x: 200, y: 200 };
   const x = vp.imageStageX + vp.imageStageW / 2;
@@ -947,10 +960,31 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     const nodes = canvasNodes.map((node) => mapNodeToEditorNodeV2(node, viewport));
 
     const removeMarks = scene.removeMarks ?? [];
+    const swapMarks = scene.swapMarks ?? [];
+    const sortedSwapMarks = swapMarks.length > 0 ? get().getSwapMarksSorted() : [];
+    const eligibleSwapMarks = sortedSwapMarks.filter(hasEligibleSwapReplacement);
+
     const vibodeIntent: VibodeIntentV2 =
-      removeMarks.length > 0
-        ? { mode: "remove", marks: removeMarks.map((m) => ({ ...m, labelIndex: m.labelIndex ?? 0 })) }
-        : { mode: "place" };
+      eligibleSwapMarks.length > 0
+        ? {
+            mode: "tools",
+            swap: {
+              marks: eligibleSwapMarks.map((m) => ({
+                id: m.id,
+                x: m.ptImage.x,
+                y: m.ptImage.y,
+                zIndex: m.zIndex,
+                replacement: {
+                  kind: "sku",
+                  skuId: m.replacement.skuId,
+                  imageUrl: m.replacement.imageUrl,
+                },
+              })),
+            },
+          }
+        : removeMarks.length > 0
+          ? { mode: "remove", marks: removeMarks.map((m) => ({ ...m, labelIndex: m.labelIndex ?? 0 })) }
+          : { mode: "place" };
 
     // Assign labelIndex 1..N deterministically when missing
     if (vibodeIntent.mode === "remove") {
