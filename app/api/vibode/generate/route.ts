@@ -4,6 +4,7 @@ import { createClient } from "@supabase/supabase-js";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { FreezePayloadV2, StyleBand } from "@/lib/freezePayloadV2Types";
 import { callCompositorVibodeCompose } from "@/lib/callCompositorVibodeCompose";
+import { callCompositorVibodeMove } from "@/lib/callCompositorVibodeMove";
 import { callCompositorVibodeRemove } from "@/lib/callCompositorVibodeRemove";
 import { callCompositorVibodeRotate } from "@/lib/callCompositorVibodeRotate";
 import {
@@ -1649,6 +1650,7 @@ export async function POST(req: NextRequest) {
           : null;
       const rotateMarks = parseVibodeRotateMarks(vibodeIntent);
       const isRotateMode = Boolean(freezeV2Raw && rotateMarks.length > 0);
+      const isMoveMode = Boolean(vibodeIntent?.move?.marks?.length);
       const swapMarks = parseVibodeSwapMarks(vibodeIntent);
       const isSwapMode = swapMarks.length > 0;
       const isRemoveMode =
@@ -1704,6 +1706,26 @@ export async function POST(req: NextRequest) {
         notes.push(
           `Vibode Swap tools mode: compositor /vibode/swap used (marks=${swapMarks.length}, assets=${replacementAssets.length}).`
         );
+      } else if (isMoveMode) {
+        const originalImageUrl = baseImageUrlForModel;
+        const freezePayload = freeze as any;
+        try {
+          const moveResult = await callCompositorVibodeMove({
+            imageUrl: originalImageUrl,
+            imageBase64: undefined,
+            marks: vibodeIntent.move.marks,
+            modelVersion: safeStr((payloadForModel as any)?.modelVersion),
+            aspectRatio: freezePayload.aspectRatio ?? "auto",
+          });
+
+          return json(200, {
+            imageUrl: moveResult.imageUrl,
+            appliedAspectRatio: moveResult.appliedAspectRatio,
+          } as any);
+        } catch (err: any) {
+          console.error("[vibode/generate] move error:", err);
+          return json(500, { error: "Move failed." });
+        }
       } else if (isRemoveMode) {
         const marks = vibodeIntent.marks as Array<{ id: string; x: number; y: number; r: number; labelIndex?: number }>;
 
