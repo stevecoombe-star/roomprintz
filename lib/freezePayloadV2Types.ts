@@ -161,9 +161,36 @@ export interface RemoveMarkV2 {
   labelIndex?: number;
 }
 
+/** Swap mark state in image-space pixels (editor UI state). */
+export interface SwapMarkV2 {
+  id: string;
+  ptImage: { x: number; y: number };
+  createdAt: number;
+  zIndex?: number;
+  replacement?: {
+    skuId: string;
+    imageUrl: string;
+  };
+}
+
+export interface VibodeSwapIntentMarkV2 {
+  id: string;
+  x: number;
+  y: number;
+  zIndex?: number;
+  replacement: {
+    kind: "sku";
+    skuId: string;
+    imageUrl: string;
+  };
+}
+
 export type VibodeIntentV2 =
+  // Legacy (Remove v1 callers)
   | { mode: "place" }
-  | { mode: "remove"; marks: RemoveMarkV2[] };
+  | { mode: "remove"; marks: RemoveMarkV2[] }
+  // New canonical tool-intents shape
+  | { mode: "tools"; remove?: { marks: RemoveMarkV2[] }; swap?: { marks: VibodeSwapIntentMarkV2[] } };
 
 export interface FreezePayloadV2 {
   payloadVersion: "v2";
