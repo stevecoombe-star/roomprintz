@@ -245,6 +245,7 @@ export default function EditorPage() {
 
   const activeTool = useEditorStore((s) => s.ui.activeTool);
   const selectedNodeId = useEditorStore((s) => s.ui.selectedNodeId);
+  const selectedSwapMarkId = useEditorStore((s) => s.ui.selectedSwapMarkId);
 
   const workingSet = useEditorStore((s) => s.workingSet);
   const history = useEditorStore((s) => s.history);
@@ -274,6 +275,8 @@ export default function EditorPage() {
   const applySwap = useEditorStore((s) => s.applySwap);
   const setPendingSwap = useEditorStore((s) => s.setPendingSwap);
   const addFurnitureNodeFromSku = useEditorStore((s) => s.addFurnitureNodeFromSku);
+  const selectSwapMark = useEditorStore((s) => s.selectSwapMark);
+  const setSwapReplacement = useEditorStore((s) => s.setSwapReplacement);
 
   const lastAction = useEditorStore((s) => s.lastAction);
   const undoLastAction = useEditorStore((s) => s.undoLastAction);
@@ -301,6 +304,7 @@ export default function EditorPage() {
   const [branchConfirmFor, setBranchConfirmFor] = useState<string | null>(null);
   const [addOpen, setAddOpen] = useState(false);
   const [visualMode, setVisualMode] = useState<"blueprint" | "thumbnails">("blueprint");
+  const [swapPickerOpen, setSwapPickerOpen] = useState(false);
 
   const [snacks, setSnacks] = useState<Snackbar[]>([]);
   const pushSnack = (message: string) => {
@@ -317,6 +321,11 @@ export default function EditorPage() {
   useEffect(() => {
     useEditorStore.getState().tryRestorePendingFromLocalStorage();
   }, []);
+
+  useEffect(() => {
+    if (activeTool === "swap" && selectedSwapMarkId) return;
+    setSwapPickerOpen(false);
+  }, [activeTool, selectedSwapMarkId]);
 
   const selectedNode = useMemo(() => {
     if (!selectedNodeId) return null;
@@ -362,6 +371,17 @@ export default function EditorPage() {
   };
 
   const eligibleForDrag = workingSet.eligibleSkus ?? [];
+  const selectedSwapMark = useMemo(() => {
+    if (!selectedSwapMarkId) return null;
+    return (scene.swapMarks ?? []).find((m) => m.id === selectedSwapMarkId) ?? null;
+  }, [scene.swapMarks, selectedSwapMarkId]);
+  const showSwapReplacementPicker = activeTool === "swap" && !!selectedSwapMarkId;
+  const swapReplacementOptions = useMemo(() => {
+    const eligibleIds = new Set((eligibleForDrag ?? []).map((item: any) => item.skuId));
+    const preferred = IKEA_CA_SKUS.filter((sku) => eligibleIds.has(sku.skuId));
+    const source = preferred.length > 0 ? preferred : IKEA_CA_SKUS;
+    return source.slice(0, 12);
+  }, [eligibleForDrag]);
   const latestFreeze = history[0]?.freeze ?? null;
 
   const canApplyCal =
@@ -1001,6 +1021,7 @@ export default function EditorPage() {
             { label: "F", tool: "furniture" as const, title: "Furniture" },
             { label: "M", tool: "mask" as const, title: "Mask" },
             { label: "R", tool: "remove" as const, title: "Remove (red X marks)" },
+            { label: "S", tool: "swap" as const, title: "Swap (blue replacement marks)" },
             { label: "C", tool: "calibrate" as const, title: "Calibrate (User line)" },
           ].map((t) => {
             const isActive = activeTool === t.tool;
@@ -1014,6 +1035,8 @@ export default function EditorPage() {
                     pushSnack("Calibration mode: click point 1 then point 2.");
                   } else if (t.tool === "remove") {
                     pushSnack("Remove mode: click on the image to place red X markers.");
+                  } else if (t.tool === "swap") {
+                    pushSnack("Swap mode: click to place blue marks, then choose a replacement.");
                   }
                 }}
                 className={`h-10 w-10 rounded-md border text-sm ${
@@ -1096,6 +1119,85 @@ export default function EditorPage() {
                   ➕ Add
                 </button>
               </div>
+
+              {showSwapReplacementPicker && (
+                <div className="absolute left-2 top-2 z-20 w-[340px] rounded-lg border border-blue-800/60 bg-neutral-950/95 p-3 shadow-xl backdrop-blur-sm">
+                  <div className="flex items-center justify-between gap-2">
+                    <div>
+                      <div className="text-sm font-medium text-blue-100">Swap mark selected</div>
+                      <div className="text-xs text-neutral-400">
+                        Choose replacement for this mark.
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      className="rounded-md border border-neutral-700 bg-neutral-900 px-2 py-1 text-xs text-neutral-200 hover:bg-neutral-800"
+                      onClick={() => selectSwapMark(null)}
+                    >
+                      Done
+                    </button>
+                  </div>
+
+                  <div className="mt-3 flex items-center gap-2">
+                    <button
+                      type="button"
+                      className="rounded-md border border-blue-700/60 bg-blue-950/40 px-3 py-1.5 text-xs text-blue-100 hover:bg-blue-900/40"
+                      onClick={() => setSwapPickerOpen((open) => !open)}
+                    >
+                      {swapPickerOpen ? "Hide options" : "Choose replacement"}
+                    </button>
+                    {selectedSwapMark?.replacement && (
+                      <div className="text-xs text-blue-200">
+                        Selected: {selectedSwapMark.replacement.skuId}
+                      </div>
+                    )}
+                  </div>
+
+                  {swapPickerOpen && (
+                    <div className="mt-3 max-h-[44vh] space-y-2 overflow-auto pr-1">
+                      {swapReplacementOptions.map((sku) => {
+                        const isSelected = selectedSwapMark?.replacement?.skuId === sku.skuId;
+                        return (
+                          <button
+                            key={sku.skuId}
+                            type="button"
+                            className={`w-full rounded-lg border px-2 py-2 text-left transition ${
+                              isSelected
+                                ? "border-blue-400/70 bg-blue-950/50"
+                                : "border-neutral-800 bg-neutral-900 hover:bg-neutral-800"
+                            }`}
+                            onClick={() => {
+                              if (!selectedSwapMarkId) return;
+                              setSwapReplacement(selectedSwapMarkId, {
+                                skuId: sku.skuId,
+                                imageUrl: sku.imageUrl,
+                              });
+                              pushSnack(`Swap replacement set: ${sku.displayName}`);
+                            }}
+                          >
+                            <div className="flex items-center gap-3">
+                              <img
+                                src={sku.imageUrl}
+                                alt={sku.displayName}
+                                className="h-12 w-12 rounded-md bg-neutral-800 object-cover"
+                                loading="lazy"
+                              />
+                              <div className="min-w-0">
+                                <div className="truncate text-sm font-medium text-neutral-100">
+                                  {sku.displayName}
+                                </div>
+                                <div className="mt-0.5 truncate text-xs text-neutral-400">
+                                  {sku.skuId}
+                                </div>
+                              </div>
+                            </div>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              )}
 
               <EditorCanvas
                 className="absolute inset-0"
