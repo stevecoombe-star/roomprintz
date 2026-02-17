@@ -265,6 +265,8 @@ const VIBODE_MAX_MODEL_IMAGE_BYTES = Math.max(
 const VIBODE_PLACEMENT_TEST_MODE =
   (process.env.VIBODE_PLACEMENT_TEST_MODE ?? "false").toLowerCase() === "true";
 
+const VIBODE_STRICT = (process.env.VIBODE_STRICT ?? "0").trim() === "1";
+
 const useCompose =
   (process.env.VIBODE_USE_COMPOSITOR_VIBODE_COMPOSE ?? "false").toLowerCase() === "true";
 
@@ -345,6 +347,107 @@ function normalizeRequestedOps(raw: any): RequestedOps {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object";
+}
+
+function collectLegacyFreezeKeys(raw: Record<string, unknown>) {
+  const legacyKeys = new Set<string>();
+
+  const legacyTopLevel = [
+    "generationId",
+    "sceneSnapshotImageSpace",
+    "requestedAction",
+    "workingSetSnapshot",
+    "viewport",
+    "room",
+    "styleId",
+    "aspectRatio",
+    "modelVersion",
+  ];
+
+  for (const key of legacyTopLevel) {
+    if (key in raw) legacyKeys.add(key);
+  }
+
+  const baseImage = isRecord(raw.baseImage) ? raw.baseImage : null;
+  if (baseImage) {
+    if ("kind" in baseImage) legacyKeys.add("baseImage.kind");
+    if ("url" in baseImage) legacyKeys.add("baseImage.url");
+    if ("publicUrl" in baseImage) legacyKeys.add("baseImage.publicUrl");
+  }
+
+  const requestedAction = isRecord(raw.requestedAction) ? raw.requestedAction : null;
+  if (requestedAction) {
+    if ("styleId" in requestedAction) legacyKeys.add("requestedAction.styleId");
+    if ("aspectRatio" in requestedAction) legacyKeys.add("requestedAction.aspectRatio");
+  }
+
+  return [...legacyKeys];
+}
+
+function validateFreezePayloadV2Strict(
+  freeze: unknown
+): { ok: true; payload: FreezePayloadV2 } | { ok: false; error: string; legacyFields?: string[] } {
+  if (!isRecord(freeze)) {
+    return {
+      ok: false,
+      error: "VIBODE_STRICT=1 requires body.freeze to be a valid FreezePayloadV2 object.",
+    };
+  }
+
+  const legacyFields = collectLegacyFreezeKeys(freeze);
+  if (legacyFields.length > 0) {
+    return {
+      ok: false,
+      error:
+        "VIBODE_STRICT=1 rejected legacy Vibode payload fields. Send FreezePayloadV2 only (no V1/legacy fields).",
+      legacyFields,
+    };
+  }
+
+  if (freeze.payloadVersion !== "v2") {
+    return {
+      ok: false,
+      error: "VIBODE_STRICT=1 requires freeze.payloadVersion to be 'v2'.",
+    };
+  }
+
+  if (!isRecord(freeze.baseImage)) {
+    return {
+      ok: false,
+      error: "VIBODE_STRICT=1 requires freeze.baseImage to be an object (FreezePayloadV2).",
+    };
+  }
+
+  if (!isRecord(freeze.calibration) || !finiteNumber(freeze.calibration.pxPerIn)) {
+    return {
+      ok: false,
+      error:
+        "VIBODE_STRICT=1 requires freeze.calibration.pxPerIn to be a finite number (FreezePayloadV2).",
+    };
+  }
+
+  if (!isRecord(freeze.staging)) {
+    return {
+      ok: false,
+      error: "VIBODE_STRICT=1 requires freeze.staging to be an object (FreezePayloadV2).",
+    };
+  }
+
+  if (!Array.isArray(freeze.nodes)) {
+    return {
+      ok: false,
+      error: "VIBODE_STRICT=1 requires freeze.nodes to be an array (FreezePayloadV2).",
+    };
+  }
+
+  if (typeof freeze.sceneHash !== "string" || freeze.sceneHash.trim().length === 0) {
+    return {
+      ok: false,
+      error: "VIBODE_STRICT=1 requires freeze.sceneHash to be a non-empty string.",
+    };
+  }
+
+  return { ok: true, payload: freeze as unknown as FreezePayloadV2 };
 }
 
 function uniqueStrings(values: Array<string | null | undefined>) {
@@ -1388,18 +1491,678 @@ async function persistModelImageToStorage(args: {
    Route
 ========================= */
 
+type ModeResponse = ReturnType<typeof json>;
+
+async function handleSwap(args: {
+  vibodeIntent: any;
+  swapMarks: VibodeSwapMark[];
+  baseImageUrlForModel: string;
+  payloadForModel: FreezePayloadV1;
+  notes: string[];
+}): Promise<string> {
+  const replacementAssets = buildVibodeSwapReplacementAssets(args.swapMarks);
+  console.log("[vibode/generate] vibode swap mode detected", {
+    mode: args.vibodeIntent?.mode ?? null,
+    marks: args.swapMarks.length,
+    replacementAssets: replacementAssets.length,
+  });
+
+  const cleanBytes = await fetchImageAsBytes(args.baseImageUrlForModel);
+  const cleanBase64 = cleanBytes.toString("base64");
+  const swapResult = await callCompositorVibodeSwap({
+    cleanBase64,
+    marks: args.swapMarks,
+    replacementAssets,
+    modelVersion: safeStr((args.payloadForModel as any)?.modelVersion),
+  });
+  args.notes.push(
+    `Vibode Swap tools mode: compositor /vibode/swap used (marks=${args.swapMarks.length}, assets=${replacementAssets.length}).`
+  );
+  return swapResult.imageUrl;
+}
+
+async function handleRemove(args: {
+  vibodeIntent: any;
+  baseImageUrlForModel: string;
+  payloadForModel: FreezePayloadV1;
+  notes: string[];
+}): Promise<{ modelImageUrl?: string; response?: ReturnType<typeof json> }> {
+  const marks = args.vibodeIntent.marks as Array<{
+    id: string;
+    x: number;
+    y: number;
+    r: number;
+    labelIndex?: number;
+  }>;
+
+  const cleanBytes = await fetchImageAsBytes(args.baseImageUrlForModel);
+  const cleanBase64 = cleanBytes.toString("base64");
+
+  try {
+    const removeResult = await callCompositorVibodeRemove({
+      cleanBase64,
+      marks,
+      modelVersion: safeStr((args.payloadForModel as any)?.modelVersion),
+    });
+    args.notes.push(`Vibode Remove v1: compositor /vibode/remove used (marks=${marks.length}).`);
+    return { modelImageUrl: removeResult.imageUrl };
+  } catch (removeErr: any) {
+    const is404 = removeErr?.message?.includes("404");
+    if (is404) {
+      return {
+        response: json(501, {
+          error:
+            "Remove mode requires compositor support. Compositor /vibode/remove is not available (404).",
+        }),
+      };
+    }
+    throw removeErr;
+  }
+}
+
+async function handleCompose(args: {
+  payloadVersion: string | null;
+  payloadForModel: FreezePayloadV1;
+  baseImageUrlForModel: string;
+  notes: string[];
+  resolvedStyleId: string;
+  shouldUseVibodePrompt: boolean;
+  vibodePrompt: string | null;
+  placementTestModeActive: boolean;
+}): Promise<string> {
+  const composeEligible =
+    args.payloadVersion === "v2" || args.payloadForModel.sceneSnapshotImageSpace.nodes.length > 0;
+  const placements: Array<{
+    nodeId: string;
+    skuId?: string | null;
+    skuImageBytes: Buffer;
+    cxPx: number;
+    cyPx: number;
+    rPx?: number | null;
+    zIndex: number;
+    layerKind?: string;
+  }> = [];
+
+  if (useCompose && composeEligible) {
+    const nodes = args.payloadForModel.sceneSnapshotImageSpace.nodes.filter(
+      (n) => n.status !== "markedForDelete"
+    );
+    const skuBytesById = new Map<string, Buffer>();
+    let skippedMissingSku = 0;
+    let skippedInvalid = 0;
+    let skippedFetch = 0;
+
+    for (const node of nodes) {
+      const nodeId = typeof node.id === "string" ? node.id.trim() : "";
+      const skuId = typeof node.skuId === "string" ? node.skuId.trim() : "";
+      if (!nodeId || !skuId) {
+        skippedInvalid += 1;
+        continue;
+      }
+
+      const t = node.transform;
+      const x = finiteNumber(t?.x) ? t.x : 0;
+      const y = finiteNumber(t?.y) ? t.y : 0;
+      const w = finiteNumber(t?.width) ? t.width : 0;
+      const h = finiteNumber(t?.height) ? t.height : 0;
+
+      if (w <= 0 || h <= 0) {
+        skippedInvalid += 1;
+        continue;
+      }
+
+      const skuImageUrl = resolveIkeaSkuImageUrl(skuId);
+      if (!skuImageUrl) {
+        skippedMissingSku += 1;
+        continue;
+      }
+
+      let skuImageBytes = skuBytesById.get(skuId);
+      if (!skuImageBytes) {
+        try {
+          skuImageBytes = await fetchImageAsBytes(skuImageUrl);
+          skuBytesById.set(skuId, skuImageBytes);
+        } catch (e) {
+          console.warn("[vibode/generate] sku image fetch failed", {
+            skuId,
+            nodeId,
+            error: e instanceof Error ? e.message : String(e),
+          });
+          skippedFetch += 1;
+          continue;
+        }
+      }
+
+      const minDim = Math.min(w, h);
+      const rRaw = Math.round(minDim * 0.35);
+      const rMax = Math.max(20, Math.floor(minDim / 4));
+      const rPx = Math.min(Math.max(rRaw, 20), rMax);
+
+      // z-order + layer backfill for nodes missing layerKind/zIndex
+      const sku = IKEA_CA_SKU_BY_ID.get(skuId);
+      const layerKind: LayerKind = node.layerKind ?? inferLayerKindFromSkuKind(sku?.kind);
+      const zIndex = ensureZIndex(layerKind, node.zIndex);
+
+      placements.push({
+        nodeId,
+        skuId,
+        skuImageBytes,
+        cxPx: x + w / 2,
+        cyPx: y + h / 2,
+        rPx,
+        zIndex,
+        layerKind,
+      });
+    }
+
+    if (process.env.NODE_ENV !== "production" && placements.length > 0) {
+      const sorted = [...placements].sort((a, b) => a.zIndex - b.zIndex);
+      console.log(
+        "[vibode/generate] placements (z-order)",
+        sorted.map((p) => ({ nodeId: p.nodeId, layerKind: p.layerKind, zIndex: p.zIndex }))
+      );
+    }
+
+    args.notes.push(
+      `Compose placements built=${placements.length}, nodes=${nodes.length}, skippedMissingSku=${skippedMissingSku}, skippedInvalid=${skippedInvalid}, skippedFetch=${skippedFetch}.`
+    );
+  } else {
+    args.notes.push(`Compose path disabled or ineligible (useCompose=${useCompose}).`);
+  }
+
+  if (useCompose && placements.length > 0) {
+    const roomImageBytes = await fetchImageAsBytes(args.baseImageUrlForModel);
+    const composeResult = await callCompositorVibodeCompose({
+      roomImageBytes,
+      placements,
+      enhancePhoto: true,
+      modelVersion: safeStr((args.payloadForModel as any)?.modelVersion),
+      aspectRatio: pickLegacyAspectRatioFromFreeze(args.payloadForModel),
+    });
+    args.notes.push(`Compositor /vibode/compose used (placements=${placements.length}).`);
+    return composeResult.imageUrl;
+  }
+
+  const result = await callNanoBananaPro({
+    payload: args.payloadForModel,
+    baseImageUrlForModel: args.baseImageUrlForModel,
+    notes: args.notes,
+    styleId: args.resolvedStyleId,
+    vibodePrompt: args.shouldUseVibodePrompt ? args.vibodePrompt ?? undefined : undefined,
+    placementTestMode: args.placementTestModeActive,
+  });
+  args.notes.push(
+    `Legacy /stage-room Nano Banana used (useCompose=${useCompose}, placements=${placements.length}).`
+  );
+  return result.imageUrl;
+}
+
+async function handleGenerateRequest(args: {
+  req: NextRequest;
+  freeze: unknown;
+  payloadVersion: string | null;
+  payload: FreezePayloadV1;
+}): Promise<ModeResponse> {
+  const { req, freeze, payloadVersion, payload } = args;
+  const xVibodeEchoRaw = req.headers.get("x-vibode-echo");
+  const xForceModelRaw = req.headers.get("x-vibode-force-model");
+
+  const forceEchoRequested = headerTruth(req, "x-vibode-echo");
+  const forceModel = headerTruth(req, "x-vibode-force-model");
+
+  const vibodeEchoOnlyRaw = process.env.VIBODE_ECHO_ONLY ?? null;
+  const echoOnly = (process.env.VIBODE_ECHO_ONLY ?? "false").toLowerCase() === "true";
+
+  // Determine if echo is even allowed (only for blob/local base image URLs)
+  const baseImage = isRecord(payload) && isRecord(payload.baseImage) ? payload.baseImage : null;
+  const baseUrl = typeof baseImage?.url === "string" ? baseImage.url : "";
+  const baseImageKind = typeof baseImage?.kind === "string" ? baseImage.kind : null;
+  const forceEchoAllowed =
+    baseImageKind !== "storageKey" &&
+    typeof baseUrl === "string" &&
+    baseUrl.length > 0 &&
+    isProbablyBlobOrLocalUrl(baseUrl);
+
+  // Only respect x-vibode-echo if it's actually necessary
+  const forceEcho = forceEchoRequested && forceEchoAllowed;
+
+  // Determine action type and ops (ops must be computed BEFORE validate options)
+  const requestedAction = isRecord(payload) ? payload.requestedAction : null;
+  const requestedActionType =
+    isRecord(requestedAction) && typeof requestedAction.type === "string"
+      ? requestedAction.type
+      : null;
+
+  const isGenerateAction = requestedActionType ? requestedActionType === "generate" : true;
+
+  const requestedOps = normalizeRequestedOps(isRecord(requestedAction) ? requestedAction.ops : null);
+
+  // ✅ Correct: non-generate + empty ops => echo-safe no-op
+  const isNonGenerateNoop = !isGenerateAction && opsIsEmpty(requestedOps);
+
+  // If you're trying to debug, x-vibode-force-model=true can override echo.
+  const willEcho = !forceModel && (forceEcho || echoOnly || isNonGenerateNoop);
+
+  const v = validateFreezePayloadV1(payload, {
+    allowBlobOrLocalBaseUrl: willEcho,
+  });
+  if (!v.ok) {
+    return json(400, { error: v.error, details: v.details });
+  }
+
+  const generationId = payload.generationId.trim();
+  const notes: string[] = [];
+
+  const hasNanoBananaUrl = Boolean(process.env.NANOBANANA_PRO_URL);
+  const hasNanoBananaKey = Boolean(process.env.NANOBANANA_PRO_API_KEY);
+  const vibodePromptEndpointEnabled =
+    (process.env.VIBODE_NB_USE_PROMPT_ENDPOINT ?? "false").toLowerCase() === "true";
+
+  const payloadForModel = ensureNonEmptyRequestedActionForModel(payload, notes);
+  const resolvedStyleId = resolveStyleId({
+    payloadVersion,
+    freezeRaw: freeze,
+    payloadV1Translated: payloadForModel,
+  });
+  const shouldUseVibodePrompt =
+    payloadVersion === "v2" || payloadForModel.sceneSnapshotImageSpace.nodes.length > 0;
+  const vibodePrompt = shouldUseVibodePrompt
+    ? buildVibodePrompt({
+        payload: payloadForModel,
+        payloadVersion,
+        freezeRaw: freeze,
+        resolvedStyleId,
+      })
+    : null;
+  const placementTestModeActive =
+    VIBODE_PLACEMENT_TEST_MODE && shouldUseVibodePrompt && Boolean(vibodePrompt);
+  const usePromptEndpoint = false;
+  notes.push(`Prompt endpoint enabled=${vibodePromptEndpointEnabled}.`);
+  notes.push(`Vibode prompt generated=${Boolean(vibodePrompt)}.`);
+
+  const ops = deriveOps(payloadForModel);
+  const counts = countNodeStatuses(payloadForModel);
+
+  console.log("[vibode/generate] freeze_v1", {
+    generationId,
+    auth: req.headers.get("authorization") ? "[present]" : null,
+    baseImageKind: payload.baseImage.kind,
+    baseImageUrl: safeUrlForLogs(payload.baseImage.url) ?? null,
+    baseImageStorageKey: payload.baseImage.storageKey ?? null,
+    counts,
+    ops,
+    hasCalibration: Boolean(payload.calibration),
+    willEcho,
+    forceEchoRequested,
+    forceEchoAllowed,
+    forceEcho,
+    echoOnly,
+    forceModel,
+    xVibodeEchoRaw,
+    xForceModelRaw,
+    vibodeEchoOnlyRaw,
+    hasNanoBananaUrl,
+    hasNanoBananaKey,
+    stagedBucket: VIBODE_STAGED_BUCKET,
+    resolvedStyleId,
+    shouldUseVibodePrompt,
+    vibodePromptEndpointEnabled,
+    usePromptEndpoint,
+  });
+
+  if (willEcho) {
+    notes.push(
+      forceEcho
+        ? "DEV ECHO: x-vibode-echo=true AND base image is blob/local. Auth + token spend bypassed. No model call performed."
+        : echoOnly
+        ? "Echo mode enabled (VIBODE_ECHO_ONLY=true). Auth + token spend bypassed. No model call performed."
+        : "Echo mode enabled (non-generate no-op). Auth + token spend bypassed. No model call performed."
+    );
+
+    if (forceEchoRequested && !forceEchoAllowed) {
+      notes.push(
+        "NOTE: x-vibode-echo=true was received but ignored because base image is not blob/local."
+      );
+    }
+
+    if (payload.baseImage.kind === "storageKey") {
+      notes.push(
+        "Base image uses storageKey. In model mode, server will mint a signed URL (requires SUPABASE_SERVICE_ROLE_KEY)."
+      );
+    }
+
+    return json(200, {
+      ok: true,
+      generationId,
+      mode: "echo",
+      tokenCost: 0,
+      tokenBalance: 0,
+      debug: {
+        payloadVersion: "v1",
+        baseImage: {
+          kind: payload.baseImage.kind,
+          url: payload.baseImage.url,
+          storageKey: payload.baseImage.storageKey,
+        },
+        counts,
+        ops,
+        notes,
+        echo: {
+          xVibodeEchoRaw,
+          forceEchoRequested,
+          forceEchoAllowed,
+          forceEcho,
+          echoOnly,
+          willEcho,
+          xVibodeForceModelRaw: xForceModelRaw,
+          forceModel,
+          hasNanoBananaUrl,
+          hasNanoBananaKey,
+          vibodeEchoOnlyRaw,
+        },
+      },
+    });
+  }
+
+  // --- Model mode below this line requires auth + token spend ---
+
+  const { supabase, token } = getUserSupabaseClient(req);
+
+  if (!token || !supabase) {
+    return json(401, {
+      error:
+        "Unauthorized: missing Authorization Bearer token. (Send Supabase access_token in the request.)",
+    });
+  }
+
+  const { data: userData, error: userErr } = await supabase.auth.getUser();
+  if (userErr || !userData?.user) {
+    return json(401, { error: "Unauthorized" });
+  }
+  const user = userData.user;
+
+  const tokenCost = 1;
+
+  const { data: spendData, error: spendErr } = await supabase.rpc("try_spend_tokens", {
+    p_cost: tokenCost,
+    p_external_id: generationId,
+    p_reason: "vibode_generate:v1",
+  });
+
+  if (spendErr) {
+    console.error("[vibode/generate] try_spend_tokens error:", spendErr);
+    return json(500, { error: "Token spend failed" });
+  }
+
+  const spendRow = Array.isArray(spendData) ? spendData[0] : null;
+  const spentOk = Boolean(spendRow?.success);
+  const balanceAfterSpend = typeof spendRow?.balance === "number" ? spendRow.balance : null;
+
+  if (!spentOk) {
+    return json(402, {
+      error: "Insufficient tokens",
+      details: { required: tokenCost, tokenBalance: balanceAfterSpend ?? 0 },
+    });
+  }
+
+  // Resolve a model-ready base image URL (supports storageKey -> signedUrl)
+  let baseImageUrlForModel = "";
+  try {
+    baseImageUrlForModel = await resolveBaseImageUrlForModel(payloadForModel, notes);
+    if (isProbablyBlobOrLocalUrl(baseImageUrlForModel)) {
+      throw new Error("Resolved base image URL is not valid for model mode (blob/local).");
+    }
+  } catch (e: any) {
+    const { error: refundErr } = await supabase.from("token_ledger").insert({
+      user_id: user.id,
+      delta: tokenCost,
+      kind: "refund",
+      external_id: generationId,
+      reason: "vibode_generation_failed_refund",
+      job_id: generationId,
+    });
+    if (refundErr) console.error("[vibode/generate] refund insert error:", refundErr);
+
+    return json(500, {
+      error: e instanceof Error ? e.message : "Failed to prepare base image for model mode.",
+    });
+  }
+
+  // Real model call
+  let modelImageUrl: string | null = null;
+
+  try {
+    const freezeV2Raw =
+      payloadVersion === "v2" && isRecord(freeze) ? (freeze as unknown as FreezePayloadV2) : null;
+    const vibodeIntent =
+      isRecord(freeze) && isRecord((freeze as any).vibodeIntent)
+        ? (freeze as any).vibodeIntent
+        : isRecord((payloadForModel as any).vibodeIntent)
+        ? (payloadForModel as any).vibodeIntent
+        : null;
+    const rotateMarks = parseVibodeRotateMarks(vibodeIntent);
+    const isRotateMode = Boolean(freezeV2Raw && rotateMarks.length > 0);
+    const isMoveMode = Boolean(vibodeIntent?.move?.marks?.length);
+    const swapMarks = parseVibodeSwapMarks(vibodeIntent);
+    const isSwapMode = swapMarks.length > 0;
+    const isRemoveMode =
+      isRecord(vibodeIntent) &&
+      vibodeIntent.mode === "remove" &&
+      Array.isArray(vibodeIntent.marks) &&
+      vibodeIntent.marks.length > 0;
+
+    if (isRotateMode && freezeV2Raw) {
+      console.log("[vibode/generate] vibode rotate mode detected", {
+        mode: vibodeIntent.mode,
+        marks: rotateMarks.length,
+      });
+
+      try {
+        const rotateResult = await callCompositorVibodeRotate({
+          freezePayload: freezeV2Raw,
+          baseImageUrl: baseImageUrlForModel,
+          modelVersion: safeStr((payloadForModel as any)?.modelVersion),
+          aspectRatio: pickLegacyAspectRatioFromFreeze(payloadForModel),
+        });
+        modelImageUrl = rotateResult.imageUrl;
+        notes.push(`Vibode Rotate mode: compositor /vibode/rotate used (marks=${rotateMarks.length}).`);
+      } catch (rotateErr: any) {
+        const is404 = rotateErr?.message?.includes("404");
+        if (is404) {
+          return json(501, {
+            error:
+              "Rotate mode requires compositor support. Compositor /vibode/rotate is not available (404).",
+          });
+        }
+        throw rotateErr;
+      }
+    } else if (isSwapMode) {
+      modelImageUrl = await handleSwap({
+        vibodeIntent,
+        swapMarks,
+        baseImageUrlForModel,
+        payloadForModel,
+        notes,
+      });
+    } else if (isMoveMode) {
+      const originalImageUrl = baseImageUrlForModel;
+      const freezePayload = freeze as any;
+      try {
+        const moveResult = await callCompositorVibodeMove({
+          imageUrl: originalImageUrl,
+          imageBase64: undefined,
+          marks: vibodeIntent.move.marks,
+          modelVersion: safeStr((payloadForModel as any)?.modelVersion),
+          aspectRatio: freezePayload.aspectRatio ?? "auto",
+        });
+        modelImageUrl = moveResult.imageUrl;
+        notes.push(
+          `Vibode Move tools mode: compositor /vibode/move used (marks=${vibodeIntent.move.marks.length}).`
+        );
+      } catch (moveErr: any) {
+        throw moveErr;
+      }
+    } else if (isRemoveMode) {
+      const removeResult = await handleRemove({
+        vibodeIntent,
+        baseImageUrlForModel,
+        payloadForModel,
+        notes,
+      });
+      if (removeResult.response) {
+        return removeResult.response;
+      }
+      modelImageUrl = removeResult.modelImageUrl ?? null;
+    } else {
+      modelImageUrl = await handleCompose({
+        payloadVersion,
+        payloadForModel,
+        baseImageUrlForModel,
+        notes,
+        resolvedStyleId,
+        shouldUseVibodePrompt,
+        vibodePrompt,
+        placementTestModeActive,
+      });
+    }
+  } catch (modelErr: unknown) {
+    console.error("[vibode/generate] model call failed:", modelErr);
+
+    const { error: refundErr } = await supabase.from("token_ledger").insert({
+      user_id: user.id,
+      delta: tokenCost,
+      kind: "refund",
+      external_id: generationId,
+      reason: "vibode_generation_failed_refund",
+      job_id: generationId,
+    });
+
+    if (refundErr) console.error("[vibode/generate] refund insert error:", refundErr);
+
+    if (modelErr instanceof NanoBananaError) {
+      return json(modelErr.status, { error: modelErr.message });
+    }
+
+    const msg = modelErr instanceof Error ? modelErr.message : "Model call failed";
+    return json(500, { error: msg });
+  }
+
+  if (!modelImageUrl) {
+    return json(500, { error: "Model did not return an imageUrl." });
+  }
+
+  notes.push("Model call succeeded.");
+
+  // Persist staged output to Supabase Storage (preferred for editor history)
+  const admin = getAdminSupabaseClient();
+  const sceneId = payloadForModel.sceneSnapshotImageSpace.sceneId;
+
+  try {
+    const persisted = await persistModelImageToStorage({
+      admin,
+      userId: user.id,
+      sceneId,
+      generationId,
+      modelImageUrl,
+      notes,
+    });
+
+    if (admin && isDataUrl(persisted.imageUrl)) {
+      throw new Error("Persistence failed; refusing to return data URL with admin client.");
+    }
+
+    return json(200, {
+      ok: true,
+      generationId,
+      mode: "nanobanana",
+      output: {
+        imageUrl: persisted.imageUrl,
+        storageKey: persisted.storageKey,
+        bucket: persisted.bucket,
+        signedUrlExpiresInSec: persisted.signedUrlExpiresInSec,
+        widthPx: persisted.widthPx ?? payloadForModel.baseImage.widthPx,
+        heightPx: persisted.heightPx ?? payloadForModel.baseImage.heightPx,
+      },
+      tokenCost,
+      tokenBalance: balanceAfterSpend ?? 0,
+      debug: {
+        payloadVersion: "v1",
+        baseImage: {
+          kind: payloadForModel.baseImage.kind,
+          url: payloadForModel.baseImage.url,
+          storageKey: payloadForModel.baseImage.storageKey,
+        },
+        counts,
+        ops,
+        notes,
+        echo: {
+          xVibodeEchoRaw,
+          forceEchoRequested,
+          forceEchoAllowed,
+          forceEcho,
+          echoOnly,
+          willEcho,
+          xVibodeForceModelRaw: xForceModelRaw,
+          forceModel,
+          hasNanoBananaUrl,
+          hasNanoBananaKey,
+          vibodeEchoOnlyRaw,
+        },
+      },
+    });
+  } catch (persistErr: unknown) {
+    console.error("[vibode/generate] persist staged image failed:", persistErr);
+    if (admin) {
+      return json(500, { error: "Failed to persist staged image." });
+    }
+
+    notes.push("Persist staged image failed; returning raw model imageUrl.");
+    return json(200, {
+      ok: true,
+      generationId,
+      mode: "nanobanana",
+      output: {
+        imageUrl: modelImageUrl,
+        storageKey: undefined,
+        bucket: undefined,
+        signedUrlExpiresInSec: undefined,
+        widthPx: payloadForModel.baseImage.widthPx,
+        heightPx: payloadForModel.baseImage.heightPx,
+      },
+      tokenCost,
+      tokenBalance: balanceAfterSpend ?? 0,
+      debug: {
+        payloadVersion: "v1",
+        baseImage: {
+          kind: payloadForModel.baseImage.kind,
+          url: payloadForModel.baseImage.url,
+          storageKey: payloadForModel.baseImage.storageKey,
+        },
+        counts,
+        ops,
+        notes,
+        echo: {
+          xVibodeEchoRaw,
+          forceEchoRequested,
+          forceEchoAllowed,
+          forceEcho,
+          echoOnly,
+          willEcho,
+          xVibodeForceModelRaw: xForceModelRaw,
+          forceModel,
+          hasNanoBananaUrl,
+          hasNanoBananaKey,
+          vibodeEchoOnlyRaw,
+        },
+      },
+    });
+  }
+}
+
 export async function POST(req: NextRequest) {
   try {
-    const xVibodeEchoRaw = req.headers.get("x-vibode-echo");
-    const xForceModelRaw = req.headers.get("x-vibode-force-model");
-
-    const forceEchoRequested = headerTruth(req, "x-vibode-echo");
-    const forceModel = headerTruth(req, "x-vibode-force-model");
-
-    const vibodeEchoOnlyRaw = process.env.VIBODE_ECHO_ONLY ?? null;
-    const echoOnly = (process.env.VIBODE_ECHO_ONLY ?? "false").toLowerCase() === "true";
-
-    // Body shape: { freeze: FreezePayloadV1 | FreezePayloadV2 }
+    // Body shape: { freeze: FreezePayloadV1 | FreezePayloadV2 }.
+    // In strict mode, only FreezePayloadV2 is accepted.
     const body = (await req.json()) as unknown;
     const freeze = isRecord(body) ? body.freeze : undefined;
 
@@ -1412,603 +2175,43 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    const payloadVersion = isRecord(freeze) ? safeStr(freeze.payloadVersion) : null;
-    const payload =
-      payloadVersion === "v2"
-        ? translateFreezeV2ToV1(freeze as FreezePayloadV2)
-        : (freeze as FreezePayloadV1);
+    let payloadVersion: string | null;
+    let payload: FreezePayloadV1;
 
-    // Determine if echo is even allowed (only for blob/local base image URLs)
-    const baseImage =
-      isRecord(payload) && isRecord(payload.baseImage) ? payload.baseImage : null;
-    const baseUrl = typeof baseImage?.url === "string" ? baseImage.url : "";
-    const baseImageKind = typeof baseImage?.kind === "string" ? baseImage.kind : null;
-    const forceEchoAllowed =
-      baseImageKind !== "storageKey" &&
-      typeof baseUrl === "string" &&
-      baseUrl.length > 0 &&
-      isProbablyBlobOrLocalUrl(baseUrl);
-
-    // Only respect x-vibode-echo if it's actually necessary
-    const forceEcho = forceEchoRequested && forceEchoAllowed;
-
-    // Determine action type and ops (ops must be computed BEFORE validate options)
-    const requestedAction = isRecord(payload) ? payload.requestedAction : null;
-    const requestedActionType =
-      isRecord(requestedAction) && typeof requestedAction.type === "string"
-        ? requestedAction.type
-        : null;
-
-    const isGenerateAction = requestedActionType ? requestedActionType === "generate" : true;
-
-    const requestedOps = normalizeRequestedOps(
-      isRecord(requestedAction) ? requestedAction.ops : null
-    );
-
-    // ✅ Correct: non-generate + empty ops => echo-safe no-op
-    const isNonGenerateNoop = !isGenerateAction && opsIsEmpty(requestedOps);
-
-    // If you're trying to debug, x-vibode-force-model=true can override echo.
-    const willEcho = !forceModel && (forceEcho || echoOnly || isNonGenerateNoop);
-
-    const v = validateFreezePayloadV1(payload, {
-      allowBlobOrLocalBaseUrl: willEcho,
-    });
-    if (!v.ok) {
-      return json(400, { error: v.error, details: v.details });
+    if (VIBODE_STRICT) {
+      const strictValidation = validateFreezePayloadV2Strict(freeze);
+      if (!strictValidation.ok) {
+        if (strictValidation.legacyFields && strictValidation.legacyFields.length > 0) {
+          console.warn("[vibode/generate] strict reject legacy payload", {
+            reason: strictValidation.error,
+            payloadVersion: isRecord(freeze) ? safeStr(freeze.payloadVersion) : null,
+            legacyFields: strictValidation.legacyFields,
+          });
+        }
+        return json(400, {
+          error: strictValidation.error,
+          details:
+            strictValidation.legacyFields && strictValidation.legacyFields.length > 0
+              ? { legacyFields: strictValidation.legacyFields }
+              : undefined,
+        });
+      }
+      payloadVersion = "v2";
+      payload = translateFreezeV2ToV1(strictValidation.payload);
+    } else {
+      payloadVersion = isRecord(freeze) ? safeStr(freeze.payloadVersion) : null;
+      payload =
+        payloadVersion === "v2"
+          ? translateFreezeV2ToV1(freeze as FreezePayloadV2)
+          : (freeze as FreezePayloadV1);
     }
 
-    const generationId = payload.generationId.trim();
-    const notes: string[] = [];
-
-    const hasNanoBananaUrl = Boolean(process.env.NANOBANANA_PRO_URL);
-    const hasNanoBananaKey = Boolean(process.env.NANOBANANA_PRO_API_KEY);
-    const vibodePromptEndpointEnabled =
-      (process.env.VIBODE_NB_USE_PROMPT_ENDPOINT ?? "false").toLowerCase() === "true";
-
-    const payloadForModel = ensureNonEmptyRequestedActionForModel(payload, notes);
-    const resolvedStyleId = resolveStyleId({
+    return await handleGenerateRequest({
+      req,
+      freeze,
       payloadVersion,
-      freezeRaw: freeze,
-      payloadV1Translated: payloadForModel,
+      payload,
     });
-    const shouldUseVibodePrompt =
-      payloadVersion === "v2" || payloadForModel.sceneSnapshotImageSpace.nodes.length > 0;
-    const vibodePrompt = shouldUseVibodePrompt
-      ? buildVibodePrompt({
-          payload: payloadForModel,
-          payloadVersion,
-          freezeRaw: freeze,
-          resolvedStyleId,
-        })
-      : null;
-    const placementTestModeActive =
-      VIBODE_PLACEMENT_TEST_MODE && shouldUseVibodePrompt && Boolean(vibodePrompt);
-    const usePromptEndpoint = false;
-    notes.push(`Prompt endpoint enabled=${vibodePromptEndpointEnabled}.`);
-    notes.push(`Vibode prompt generated=${Boolean(vibodePrompt)}.`);
-
-    const ops = deriveOps(payloadForModel);
-    const counts = countNodeStatuses(payloadForModel);
-
-    console.log("[vibode/generate] freeze_v1", {
-      generationId,
-      auth: req.headers.get("authorization") ? "[present]" : null,
-      baseImageKind: payload.baseImage.kind,
-      baseImageUrl: safeUrlForLogs(payload.baseImage.url) ?? null,
-      baseImageStorageKey: payload.baseImage.storageKey ?? null,
-      counts,
-      ops,
-      hasCalibration: Boolean(payload.calibration),
-      willEcho,
-      forceEchoRequested,
-      forceEchoAllowed,
-      forceEcho,
-      echoOnly,
-      forceModel,
-      xVibodeEchoRaw,
-      xForceModelRaw,
-      vibodeEchoOnlyRaw,
-      hasNanoBananaUrl,
-      hasNanoBananaKey,
-      stagedBucket: VIBODE_STAGED_BUCKET,
-      resolvedStyleId,
-      shouldUseVibodePrompt,
-      vibodePromptEndpointEnabled,
-      usePromptEndpoint,
-    });
-
-    if (willEcho) {
-      notes.push(
-        forceEcho
-          ? "DEV ECHO: x-vibode-echo=true AND base image is blob/local. Auth + token spend bypassed. No model call performed."
-          : echoOnly
-          ? "Echo mode enabled (VIBODE_ECHO_ONLY=true). Auth + token spend bypassed. No model call performed."
-          : "Echo mode enabled (non-generate no-op). Auth + token spend bypassed. No model call performed."
-      );
-
-      if (forceEchoRequested && !forceEchoAllowed) {
-        notes.push(
-          "NOTE: x-vibode-echo=true was received but ignored because base image is not blob/local."
-        );
-      }
-
-      if (payload.baseImage.kind === "storageKey") {
-        notes.push(
-          "Base image uses storageKey. In model mode, server will mint a signed URL (requires SUPABASE_SERVICE_ROLE_KEY)."
-        );
-      }
-
-      return json(200, {
-        ok: true,
-        generationId,
-        mode: "echo",
-        tokenCost: 0,
-        tokenBalance: 0,
-        debug: {
-          payloadVersion: "v1",
-          baseImage: {
-            kind: payload.baseImage.kind,
-            url: payload.baseImage.url,
-            storageKey: payload.baseImage.storageKey,
-          },
-          counts,
-          ops,
-          notes,
-          echo: {
-            xVibodeEchoRaw,
-            forceEchoRequested,
-            forceEchoAllowed,
-            forceEcho,
-            echoOnly,
-            willEcho,
-            xVibodeForceModelRaw: xForceModelRaw,
-            forceModel,
-            hasNanoBananaUrl,
-            hasNanoBananaKey,
-            vibodeEchoOnlyRaw,
-          },
-        },
-      });
-    }
-
-    // --- Model mode below this line requires auth + token spend ---
-
-    const { supabase, token } = getUserSupabaseClient(req);
-
-    if (!token || !supabase) {
-      return json(401, {
-        error:
-          "Unauthorized: missing Authorization Bearer token. (Send Supabase access_token in the request.)",
-      });
-    }
-
-    const { data: userData, error: userErr } = await supabase.auth.getUser();
-    if (userErr || !userData?.user) {
-      return json(401, { error: "Unauthorized" });
-    }
-    const user = userData.user;
-
-    const tokenCost = 1;
-
-    const { data: spendData, error: spendErr } = await supabase.rpc("try_spend_tokens", {
-      p_cost: tokenCost,
-      p_external_id: generationId,
-      p_reason: "vibode_generate:v1",
-    });
-
-    if (spendErr) {
-      console.error("[vibode/generate] try_spend_tokens error:", spendErr);
-      return json(500, { error: "Token spend failed" });
-    }
-
-    const spendRow = Array.isArray(spendData) ? spendData[0] : null;
-    const spentOk = Boolean(spendRow?.success);
-    const balanceAfterSpend = typeof spendRow?.balance === "number" ? spendRow.balance : null;
-
-    if (!spentOk) {
-      return json(402, {
-        error: "Insufficient tokens",
-        details: { required: tokenCost, tokenBalance: balanceAfterSpend ?? 0 },
-      });
-    }
-
-    // Resolve a model-ready base image URL (supports storageKey -> signedUrl)
-    let baseImageUrlForModel = "";
-    try {
-      baseImageUrlForModel = await resolveBaseImageUrlForModel(payloadForModel, notes);
-      if (isProbablyBlobOrLocalUrl(baseImageUrlForModel)) {
-        throw new Error("Resolved base image URL is not valid for model mode (blob/local).");
-      }
-    } catch (e: any) {
-      const { error: refundErr } = await supabase.from("token_ledger").insert({
-        user_id: user.id,
-        delta: tokenCost,
-        kind: "refund",
-        external_id: generationId,
-        reason: "vibode_generation_failed_refund",
-        job_id: generationId,
-      });
-      if (refundErr) console.error("[vibode/generate] refund insert error:", refundErr);
-
-      return json(500, {
-        error: e instanceof Error ? e.message : "Failed to prepare base image for model mode.",
-      });
-    }
-
-    // Real model call
-    let modelImageUrl: string | null = null;
-
-    try {
-      const freezeV2Raw =
-        payloadVersion === "v2" && isRecord(freeze) ? (freeze as unknown as FreezePayloadV2) : null;
-      const vibodeIntent =
-        isRecord(freeze) && isRecord((freeze as any).vibodeIntent)
-          ? (freeze as any).vibodeIntent
-          : isRecord((payloadForModel as any).vibodeIntent)
-          ? (payloadForModel as any).vibodeIntent
-          : null;
-      const rotateMarks = parseVibodeRotateMarks(vibodeIntent);
-      const isRotateMode = Boolean(freezeV2Raw && rotateMarks.length > 0);
-      const isMoveMode = Boolean(vibodeIntent?.move?.marks?.length);
-      const swapMarks = parseVibodeSwapMarks(vibodeIntent);
-      const isSwapMode = swapMarks.length > 0;
-      const isRemoveMode =
-        isRecord(vibodeIntent) &&
-        vibodeIntent.mode === "remove" &&
-        Array.isArray(vibodeIntent.marks) &&
-        vibodeIntent.marks.length > 0;
-
-      if (isRotateMode && freezeV2Raw) {
-        console.log("[vibode/generate] vibode rotate mode detected", {
-          mode: vibodeIntent.mode,
-          marks: rotateMarks.length,
-        });
-
-        try {
-          const rotateResult = await callCompositorVibodeRotate({
-            freezePayload: freezeV2Raw,
-            baseImageUrl: baseImageUrlForModel,
-            modelVersion: safeStr((payloadForModel as any)?.modelVersion),
-            aspectRatio: pickLegacyAspectRatioFromFreeze(payloadForModel),
-          });
-          modelImageUrl = rotateResult.imageUrl;
-          notes.push(
-            `Vibode Rotate mode: compositor /vibode/rotate used (marks=${rotateMarks.length}).`
-          );
-        } catch (rotateErr: any) {
-          const is404 = rotateErr?.message?.includes("404");
-          if (is404) {
-            return json(501, {
-              error:
-                "Rotate mode requires compositor support. Compositor /vibode/rotate is not available (404).",
-            });
-          }
-          throw rotateErr;
-        }
-      } else if (isSwapMode) {
-        const replacementAssets = buildVibodeSwapReplacementAssets(swapMarks);
-        console.log("[vibode/generate] vibode swap mode detected", {
-          mode: vibodeIntent.mode,
-          marks: swapMarks.length,
-          replacementAssets: replacementAssets.length,
-        });
-
-        const cleanBytes = await fetchImageAsBytes(baseImageUrlForModel);
-        const cleanBase64 = cleanBytes.toString("base64");
-        const swapResult = await callCompositorVibodeSwap({
-          cleanBase64,
-          marks: swapMarks,
-          replacementAssets,
-          modelVersion: safeStr((payloadForModel as any)?.modelVersion),
-        });
-        modelImageUrl = swapResult.imageUrl;
-        notes.push(
-          `Vibode Swap tools mode: compositor /vibode/swap used (marks=${swapMarks.length}, assets=${replacementAssets.length}).`
-        );
-      } else if (isMoveMode) {
-        const originalImageUrl = baseImageUrlForModel;
-        const freezePayload = freeze as any;
-        try {
-          const moveResult = await callCompositorVibodeMove({
-            imageUrl: originalImageUrl,
-            imageBase64: undefined,
-            marks: vibodeIntent.move.marks,
-            modelVersion: safeStr((payloadForModel as any)?.modelVersion),
-            aspectRatio: freezePayload.aspectRatio ?? "auto",
-          });
-          modelImageUrl = moveResult.imageUrl;
-          notes.push(
-            `Vibode Move tools mode: compositor /vibode/move used (marks=${vibodeIntent.move.marks.length}).`
-          );
-        } catch (moveErr: any) {
-          throw moveErr;
-        }
-      } else if (isRemoveMode) {
-        const marks = vibodeIntent.marks as Array<{ id: string; x: number; y: number; r: number; labelIndex?: number }>;
-
-        const cleanBytes = await fetchImageAsBytes(baseImageUrlForModel);
-        const cleanBase64 = cleanBytes.toString("base64");
-
-        try {
-          const removeResult = await callCompositorVibodeRemove({
-            cleanBase64,
-            marks,
-            modelVersion: safeStr((payloadForModel as any)?.modelVersion),
-          });
-          modelImageUrl = removeResult.imageUrl;
-          notes.push(`Vibode Remove v1: compositor /vibode/remove used (marks=${marks.length}).`);
-        } catch (removeErr: any) {
-          const is404 = removeErr?.message?.includes("404");
-          if (is404) {
-            return json(501, {
-              error:
-                "Remove mode requires compositor support. Compositor /vibode/remove is not available (404).",
-            });
-          }
-          throw removeErr;
-        }
-      } else {
-        // Place mode (compose or direct NB)
-        const composeEligible =
-          payloadVersion === "v2" || payloadForModel.sceneSnapshotImageSpace.nodes.length > 0;
-        const placements: Array<{
-        nodeId: string;
-        skuId?: string | null;
-        skuImageBytes: Buffer;
-        cxPx: number;
-        cyPx: number;
-        rPx?: number | null;
-        zIndex: number;
-        layerKind?: string;
-        }> = [];
-
-        if (useCompose && composeEligible) {
-        const nodes = payloadForModel.sceneSnapshotImageSpace.nodes.filter(
-          (n) => n.status !== "markedForDelete"
-        );
-        const skuBytesById = new Map<string, Buffer>();
-        let skippedMissingSku = 0;
-        let skippedInvalid = 0;
-        let skippedFetch = 0;
-
-        for (const node of nodes) {
-          const nodeId = typeof node.id === "string" ? node.id.trim() : "";
-          const skuId = typeof node.skuId === "string" ? node.skuId.trim() : "";
-          if (!nodeId || !skuId) {
-            skippedInvalid += 1;
-            continue;
-          }
-
-          const t = node.transform;
-          const x = finiteNumber(t?.x) ? t.x : 0;
-          const y = finiteNumber(t?.y) ? t.y : 0;
-          const w = finiteNumber(t?.width) ? t.width : 0;
-          const h = finiteNumber(t?.height) ? t.height : 0;
-
-          if (w <= 0 || h <= 0) {
-            skippedInvalid += 1;
-            continue;
-          }
-
-          const skuImageUrl = resolveIkeaSkuImageUrl(skuId);
-          if (!skuImageUrl) {
-            skippedMissingSku += 1;
-            continue;
-          }
-
-          let skuImageBytes = skuBytesById.get(skuId);
-          if (!skuImageBytes) {
-            try {
-              skuImageBytes = await fetchImageAsBytes(skuImageUrl);
-              skuBytesById.set(skuId, skuImageBytes);
-            } catch (e) {
-              console.warn("[vibode/generate] sku image fetch failed", {
-                skuId,
-                nodeId,
-                error: e instanceof Error ? e.message : String(e),
-              });
-              skippedFetch += 1;
-              continue;
-            }
-          }
-
-          const minDim = Math.min(w, h);
-          const rRaw = Math.round(minDim * 0.35);
-          const rMax = Math.max(20, Math.floor(minDim / 4));
-          const rPx = Math.min(Math.max(rRaw, 20), rMax);
-
-          // z-order + layer backfill for nodes missing layerKind/zIndex
-          const sku = IKEA_CA_SKU_BY_ID.get(skuId);
-          const layerKind: LayerKind =
-            node.layerKind ?? inferLayerKindFromSkuKind(sku?.kind);
-          const zIndex = ensureZIndex(layerKind, node.zIndex);
-
-          placements.push({
-            nodeId,
-            skuId,
-            skuImageBytes,
-            cxPx: x + w / 2,
-            cyPx: y + h / 2,
-            rPx,
-            zIndex,
-            layerKind,
-          });
-        }
-
-        if (process.env.NODE_ENV !== "production" && placements.length > 0) {
-          const sorted = [...placements].sort((a, b) => a.zIndex - b.zIndex);
-          console.log(
-            "[vibode/generate] placements (z-order)",
-            sorted.map((p) => ({ nodeId: p.nodeId, layerKind: p.layerKind, zIndex: p.zIndex }))
-          );
-        }
-
-        notes.push(
-          `Compose placements built=${placements.length}, nodes=${nodes.length}, skippedMissingSku=${skippedMissingSku}, skippedInvalid=${skippedInvalid}, skippedFetch=${skippedFetch}.`
-        );
-        } else {
-          notes.push(`Compose path disabled or ineligible (useCompose=${useCompose}).`);
-        }
-
-        if (useCompose && placements.length > 0) {
-          const roomImageBytes = await fetchImageAsBytes(baseImageUrlForModel);
-          const composeResult = await callCompositorVibodeCompose({
-            roomImageBytes,
-            placements,
-            enhancePhoto: true,
-            modelVersion: safeStr((payloadForModel as any)?.modelVersion),
-            aspectRatio: pickLegacyAspectRatioFromFreeze(payloadForModel),
-          });
-          modelImageUrl = composeResult.imageUrl;
-          notes.push(`Compositor /vibode/compose used (placements=${placements.length}).`);
-        } else {
-          const result = await callNanoBananaPro({
-          payload: payloadForModel,
-          baseImageUrlForModel,
-          notes,
-          styleId: resolvedStyleId,
-          vibodePrompt: shouldUseVibodePrompt ? vibodePrompt ?? undefined : undefined,
-          placementTestMode: placementTestModeActive,
-        });
-          modelImageUrl = result.imageUrl;
-          notes.push(
-            `Legacy /stage-room Nano Banana used (useCompose=${useCompose}, placements=${placements.length}).`
-          );
-        }
-      }
-    } catch (modelErr: unknown) {
-      console.error("[vibode/generate] model call failed:", modelErr);
-
-      const { error: refundErr } = await supabase.from("token_ledger").insert({
-        user_id: user.id,
-        delta: tokenCost,
-        kind: "refund",
-        external_id: generationId,
-        reason: "vibode_generation_failed_refund",
-        job_id: generationId,
-      });
-
-      if (refundErr) console.error("[vibode/generate] refund insert error:", refundErr);
-
-      if (modelErr instanceof NanoBananaError) {
-        return json(modelErr.status, { error: modelErr.message });
-      }
-
-      const msg = modelErr instanceof Error ? modelErr.message : "Model call failed";
-      return json(500, { error: msg });
-    }
-
-    if (!modelImageUrl) {
-      return json(500, { error: "Model did not return an imageUrl." });
-    }
-
-    notes.push("Model call succeeded.");
-
-    // Persist staged output to Supabase Storage (preferred for editor history)
-    const admin = getAdminSupabaseClient();
-    const sceneId = payloadForModel.sceneSnapshotImageSpace.sceneId;
-
-    try {
-      const persisted = await persistModelImageToStorage({
-        admin,
-        userId: user.id,
-        sceneId,
-        generationId,
-        modelImageUrl,
-        notes,
-      });
-
-      if (admin && isDataUrl(persisted.imageUrl)) {
-        throw new Error("Persistence failed; refusing to return data URL with admin client.");
-      }
-
-      return json(200, {
-        ok: true,
-        generationId,
-        mode: "nanobanana",
-        output: {
-          imageUrl: persisted.imageUrl,
-          storageKey: persisted.storageKey,
-          bucket: persisted.bucket,
-          signedUrlExpiresInSec: persisted.signedUrlExpiresInSec,
-          widthPx: persisted.widthPx ?? payloadForModel.baseImage.widthPx,
-          heightPx: persisted.heightPx ?? payloadForModel.baseImage.heightPx,
-        },
-        tokenCost,
-        tokenBalance: balanceAfterSpend ?? 0,
-        debug: {
-          payloadVersion: "v1",
-          baseImage: {
-            kind: payloadForModel.baseImage.kind,
-            url: payloadForModel.baseImage.url,
-            storageKey: payloadForModel.baseImage.storageKey,
-          },
-          counts,
-          ops,
-          notes,
-          echo: {
-            xVibodeEchoRaw,
-            forceEchoRequested,
-            forceEchoAllowed,
-            forceEcho,
-            echoOnly,
-            willEcho,
-            xVibodeForceModelRaw: xForceModelRaw,
-            forceModel,
-            hasNanoBananaUrl,
-            hasNanoBananaKey,
-            vibodeEchoOnlyRaw,
-          },
-        },
-      });
-    } catch (persistErr: unknown) {
-      console.error("[vibode/generate] persist staged image failed:", persistErr);
-      if (admin) {
-        return json(500, { error: "Failed to persist staged image." });
-      }
-
-      notes.push("Persist staged image failed; returning raw model imageUrl.");
-      return json(200, {
-        ok: true,
-        generationId,
-        mode: "nanobanana",
-        output: {
-          imageUrl: modelImageUrl,
-          storageKey: undefined,
-          bucket: undefined,
-          signedUrlExpiresInSec: undefined,
-          widthPx: payloadForModel.baseImage.widthPx,
-          heightPx: payloadForModel.baseImage.heightPx,
-        },
-        tokenCost,
-        tokenBalance: balanceAfterSpend ?? 0,
-        debug: {
-          payloadVersion: "v1",
-          baseImage: {
-            kind: payloadForModel.baseImage.kind,
-            url: payloadForModel.baseImage.url,
-            storageKey: payloadForModel.baseImage.storageKey,
-          },
-          counts,
-          ops,
-          notes,
-          echo: {
-            xVibodeEchoRaw,
-            forceEchoRequested,
-            forceEchoAllowed,
-            forceEcho,
-            echoOnly,
-            willEcho,
-            xVibodeForceModelRaw: xForceModelRaw,
-            forceModel,
-            hasNanoBananaUrl,
-            hasNanoBananaKey,
-            vibodeEchoOnlyRaw,
-          },
-        },
-      });
-    }
   } catch (err: unknown) {
     console.error("[vibode/generate] unexpected error:", err);
     const message = err instanceof Error ? err.message : "Unexpected error in /api/vibode/generate";
