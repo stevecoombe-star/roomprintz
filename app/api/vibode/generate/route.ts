@@ -1717,14 +1717,12 @@ export async function POST(req: NextRequest) {
             modelVersion: safeStr((payloadForModel as any)?.modelVersion),
             aspectRatio: freezePayload.aspectRatio ?? "auto",
           });
-
-          return json(200, {
-            imageUrl: moveResult.imageUrl,
-            appliedAspectRatio: moveResult.appliedAspectRatio,
-          } as any);
-        } catch (err: any) {
-          console.error("[vibode/generate] move error:", err);
-          return json(500, { error: "Move failed." });
+          modelImageUrl = moveResult.imageUrl;
+          notes.push(
+            `Vibode Move tools mode: compositor /vibode/move used (marks=${vibodeIntent.move.marks.length}).`
+          );
+        } catch (moveErr: any) {
+          throw moveErr;
         }
       } else if (isRemoveMode) {
         const marks = vibodeIntent.marks as Array<{ id: string; x: number; y: number; r: number; labelIndex?: number }>;

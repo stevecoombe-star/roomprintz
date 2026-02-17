@@ -11,7 +11,16 @@ export async function callCompositorVibodeMove(args: {
   modelVersion?: string | null;
   aspectRatio?: string | null;
 }) {
-  const res = await fetch(`${process.env.NEXT_PUBLIC_COMPOSITOR_URL}/vibode/move`, {
+  const compositorBaseUrl =
+    process.env.COMPOSITOR_URL ||
+    process.env.NEXT_PUBLIC_COMPOSITOR_URL ||
+    (process.env.NODE_ENV !== "production" ? "http://localhost:8000" : "");
+
+  if (!compositorBaseUrl) {
+    throw new Error("Missing COMPOSITOR_URL (or NEXT_PUBLIC_COMPOSITOR_URL) for Vibode compositor.");
+  }
+
+  const res = await fetch(`${compositorBaseUrl}/vibode/move`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
