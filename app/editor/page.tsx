@@ -140,6 +140,7 @@ function nodeSwapKind(node: FurnitureNode): SwapKindBucket | null {
 type FreezePayloadAccess = {
   generationId?: unknown;
   baseImage?: unknown;
+  vibodeIntent?: unknown;
 };
 
 type FreezeBaseImageAccess = {
@@ -155,16 +156,45 @@ type FreezeBaseImageAccess = {
 function getFreezePayloadAccess(payload: unknown): {
   generationId: unknown | null;
   baseImage: FreezeBaseImageAccess | null;
+  vibodeIntent: unknown | null;
 } {
   if (!payload || typeof payload !== "object") {
-    return { generationId: null, baseImage: null };
+    return { generationId: null, baseImage: null, vibodeIntent: null };
   }
   const typed = payload as FreezePayloadAccess;
   const baseImage =
     typed.baseImage && typeof typed.baseImage === "object"
       ? (typed.baseImage as FreezeBaseImageAccess)
       : null;
-  return { generationId: typed.generationId ?? null, baseImage };
+  return {
+    generationId: typed.generationId ?? null,
+    baseImage,
+    vibodeIntent: typed.vibodeIntent ?? null,
+  };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === "object";
+}
+
+function hasValidSwapReplacement(mark: unknown): boolean {
+  if (!isRecord(mark)) return false;
+  const replacement = mark.replacement;
+  if (!isRecord(replacement)) return false;
+  const imageUrl = replacement.imageUrl;
+  return typeof imageUrl === "string" && imageUrl.trim().length > 0;
+}
+
+function hasSwapMarksWithReplacement(vibodeIntent: unknown): boolean {
+  if (!isRecord(vibodeIntent)) return false;
+
+  const swap = vibodeIntent.swap;
+  const canonicalSwapMarks =
+    isRecord(swap) && Array.isArray(swap.marks) ? (swap.marks as unknown[]) : [];
+  if (canonicalSwapMarks.some(hasValidSwapReplacement)) return true;
+
+  const legacyMarks = Array.isArray(vibodeIntent.marks) ? (vibodeIntent.marks as unknown[]) : [];
+  return legacyMarks.some(hasValidSwapReplacement);
 }
 
 function validateFreezePayloadV1(payload: unknown): { ok: true } | { ok: false; reason: string } {
@@ -612,7 +642,6 @@ export default function EditorPage() {
     }
     const removeMarks = scene.removeMarks ?? [];
     const isRemoveMode = removeMarks.length > 0;
-    const isSwapMode = queuedSwaps > 0;
     const isRotateMode = hasRotateMarks;
     if (!collectionId && !isRemoveMode && !isRotateMode) {
       pushSnack(
@@ -724,6 +753,7 @@ export default function EditorPage() {
 
       const payloadAccess = getFreezePayloadAccess(payload);
       generationId = record?.generationId ?? (payloadAccess.generationId as string | null) ?? null;
+      const isSwapMode = hasSwapMarksWithReplacement(payloadAccess.vibodeIntent);
       if (generationId) {
         useEditorStore.setState((s) => {
           const idx = s.history.findIndex((h) => h.generationId === generationId);

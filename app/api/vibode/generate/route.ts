@@ -266,6 +266,8 @@ const VIBODE_PLACEMENT_TEST_MODE =
   (process.env.VIBODE_PLACEMENT_TEST_MODE ?? "false").toLowerCase() === "true";
 
 const VIBODE_STRICT = (process.env.VIBODE_STRICT ?? "0").trim() === "1";
+const VIBODE_ALLOW_LEGACY_STAGE =
+  (process.env.VIBODE_ALLOW_LEGACY_STAGE ?? "0").trim() === "1";
 
 const useCompose =
   (process.env.VIBODE_USE_COMPOSITOR_VIBODE_COMPOSE ?? "false").toLowerCase() === "true";
@@ -1570,7 +1572,7 @@ async function handleCompose(args: {
   shouldUseVibodePrompt: boolean;
   vibodePrompt: string | null;
   placementTestModeActive: boolean;
-}): Promise<string> {
+}): Promise<{ modelImageUrl?: string; response?: ReturnType<typeof json> }> {
   const composeEligible =
     args.payloadVersion === "v2" || args.payloadForModel.sceneSnapshotImageSpace.nodes.length > 0;
   const placements: Array<{
@@ -1681,7 +1683,19 @@ async function handleCompose(args: {
       aspectRatio: pickLegacyAspectRatioFromFreeze(args.payloadForModel),
     });
     args.notes.push(`Compositor /vibode/compose used (placements=${placements.length}).`);
-    return composeResult.imageUrl;
+    return { modelImageUrl: composeResult.imageUrl };
+  }
+
+  if (!VIBODE_ALLOW_LEGACY_STAGE) {
+    args.notes.push(
+      "Blocked legacy /stage-room Nano Banana fallback because VIBODE_ALLOW_LEGACY_STAGE=0."
+    );
+    return {
+      response: json(501, {
+        error:
+          "Legacy stage-room Nano Banana fallback is disabled (VIBODE_ALLOW_LEGACY_STAGE=0).",
+      }),
+    };
   }
 
   const result = await callNanoBananaPro({
@@ -1695,7 +1709,7 @@ async function handleCompose(args: {
   args.notes.push(
     `Legacy /stage-room Nano Banana used (useCompose=${useCompose}, placements=${placements.length}).`
   );
-  return result.imageUrl;
+  return { modelImageUrl: result.imageUrl };
 }
 
 export async function handleGenerateRequest(args: {
@@ -2015,7 +2029,7 @@ export async function handleGenerateRequest(args: {
       }
       modelImageUrl = removeResult.modelImageUrl ?? null;
     } else {
-      modelImageUrl = await handleCompose({
+      const composeResult = await handleCompose({
         payloadVersion,
         payloadForModel,
         baseImageUrlForModel,
@@ -2025,6 +2039,10 @@ export async function handleGenerateRequest(args: {
         vibodePrompt,
         placementTestModeActive,
       });
+      if (composeResult.response) {
+        return composeResult.response;
+      }
+      modelImageUrl = composeResult.modelImageUrl ?? null;
     }
   } catch (modelErr: unknown) {
     console.error("[vibode/generate] model call failed:", modelErr);
