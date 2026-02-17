@@ -349,7 +349,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object";
 }
 
-function collectLegacyFreezeKeys(raw: Record<string, unknown>) {
+export function collectLegacyFreezeKeys(raw: Record<string, unknown>) {
   const legacyKeys = new Set<string>();
 
   const legacyTopLevel = [
@@ -384,7 +384,7 @@ function collectLegacyFreezeKeys(raw: Record<string, unknown>) {
   return [...legacyKeys];
 }
 
-function validateFreezePayloadV2Strict(
+export function validateFreezePayloadV2Strict(
   freeze: unknown
 ): { ok: true; payload: FreezePayloadV2 } | { ok: false; error: string; legacyFields?: string[] } {
   if (!isRecord(freeze)) {
@@ -1492,6 +1492,7 @@ async function persistModelImageToStorage(args: {
 ========================= */
 
 type ModeResponse = ReturnType<typeof json>;
+export type VibodeRouteMode = "compose" | "remove" | "swap";
 
 async function handleSwap(args: {
   vibodeIntent: any;
@@ -1697,7 +1698,7 @@ async function handleCompose(args: {
   return result.imageUrl;
 }
 
-async function handleGenerateRequest(args: {
+export async function handleGenerateRequest(args: {
   req: NextRequest;
   freeze: unknown;
   payloadVersion: string | null;
@@ -2159,12 +2160,52 @@ async function handleGenerateRequest(args: {
   }
 }
 
-export async function POST(req: NextRequest) {
+function applyVibodeRouteModeOverride(freeze: unknown, routeMode?: VibodeRouteMode): unknown {
+  if (!routeMode || !isRecord(freeze)) return freeze;
+
+  const nextFreeze = structuredClone(freeze) as Record<string, unknown>;
+  const vibodeIntent = isRecord(nextFreeze.vibodeIntent)
+    ? ({ ...nextFreeze.vibodeIntent } as Record<string, unknown>)
+    : ({} as Record<string, unknown>);
+
+  if (routeMode === "compose") {
+    vibodeIntent.mode = "place";
+  } else if (routeMode === "remove") {
+    vibodeIntent.mode = "remove";
+    if (!Array.isArray(vibodeIntent.marks) && isRecord(vibodeIntent.remove)) {
+      const removeIntent = vibodeIntent.remove as Record<string, unknown>;
+      if (Array.isArray(removeIntent.marks)) {
+        vibodeIntent.marks = removeIntent.marks;
+      }
+    }
+  } else if (routeMode === "swap") {
+    vibodeIntent.mode = "tools";
+    if (!isRecord(vibodeIntent.swap) && Array.isArray(vibodeIntent.marks)) {
+      const swapMarks = vibodeIntent.marks.filter(
+        (mark): mark is Record<string, unknown> => isRecord(mark) && isRecord(mark.replacement)
+      );
+      if (swapMarks.length > 0) {
+        vibodeIntent.swap = { marks: swapMarks };
+      }
+    }
+  }
+
+  nextFreeze.vibodeIntent = vibodeIntent;
+  return nextFreeze;
+}
+
+export async function handleVibodeGeneratePost(
+  req: NextRequest,
+  opts?: { routeMode?: VibodeRouteMode }
+) {
   try {
     // Body shape: { freeze: FreezePayloadV1 | FreezePayloadV2 }.
     // In strict mode, only FreezePayloadV2 is accepted.
     const body = (await req.json()) as unknown;
-    const freeze = isRecord(body) ? body.freeze : undefined;
+    const freeze = applyVibodeRouteModeOverride(
+      isRecord(body) ? body.freeze : undefined,
+      opts?.routeMode
+    );
 
     if (isRecord(freeze)) {
       console.log("[API] freeze received", {
@@ -2217,4 +2258,8 @@ export async function POST(req: NextRequest) {
     const message = err instanceof Error ? err.message : "Unexpected error in /api/vibode/generate";
     return NextResponse.json({ error: message }, { status: 500 });
   }
+}
+
+export async function POST(req: NextRequest) {
+  return handleVibodeGeneratePost(req);
 }

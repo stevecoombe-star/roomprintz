@@ -612,6 +612,7 @@ export default function EditorPage() {
     }
     const removeMarks = scene.removeMarks ?? [];
     const isRemoveMode = removeMarks.length > 0;
+    const isSwapMode = queuedSwaps > 0;
     const isRotateMode = hasRotateMarks;
     if (!collectionId && !isRemoveMode && !isRotateMode) {
       pushSnack(
@@ -818,7 +819,12 @@ export default function EditorPage() {
         });
       }
       
-      const res = await fetch("/api/vibode/generate", {
+      const vibodeRoute = isRemoveMode
+        ? "/api/vibode/remove"
+        : isSwapMode
+          ? "/api/vibode/swap"
+          : "/api/vibode/generate";
+      const res = await fetch(vibodeRoute, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
