@@ -2261,5 +2261,12 @@ export async function handleVibodeGeneratePost(
 }
 
 export async function POST(req: NextRequest) {
+  if (process.env.NODE_ENV !== "production") {
+    console.warn("[vibode/generate] /api/vibode/generate is a legacy compat endpoint", {
+      pathname: req.nextUrl.pathname,
+      referer: req.headers.get("referer"),
+      userAgent: req.headers.get("user-agent"),
+    });
+  }
   return handleVibodeGeneratePost(req);
 }

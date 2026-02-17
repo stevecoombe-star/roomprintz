@@ -823,7 +823,9 @@ export default function EditorPage() {
         ? "/api/vibode/remove"
         : isSwapMode
           ? "/api/vibode/swap"
-          : "/api/vibode/generate";
+          : isRotateMode
+            ? "/api/vibode/generate"
+            : "/api/vibode/compose";
       const res = await fetch(vibodeRoute, {
         method: "POST",
         headers: {
