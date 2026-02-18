@@ -641,6 +641,18 @@ export default function EditorPage() {
       return;
     }
     const removeMarks = scene.removeMarks ?? [];
+    const moveMarks = scene.moveMarks ?? [];
+    const hasAnyActiveNodes = nodes.some((n) => n.status !== "markedForDelete");
+    const hasToolMarks =
+      removeMarks.length > 0 ||
+      queuedSwaps > 0 ||
+      rotateMarks.length > 0 ||
+      moveMarks.length > 0;
+    const isVibeStage =
+      (scene.vibeMode ?? "off") === "on" &&
+      !hasAnyActiveNodes &&
+      Boolean(collectionId) &&
+      !hasToolMarks;
     const isRemoveMode = removeMarks.length > 0;
     const isRotateMode = hasRotateMarks;
     if (!collectionId && !isRemoveMode && !isRotateMode) {
@@ -782,11 +794,14 @@ export default function EditorPage() {
       }
 
       // Helpful toast (keeps your dopamine, but no state mutation yet)
+      const stageTargetLabel = col?.bundles[bundleId]?.label ?? col?.label ?? "selected collection";
       pushSnack(
         isRemoveMode
           ? `Removing objects at ${removeMarks.length} marker(s)…`
           : isRotateMode
             ? `Applying rotate at ${rotateMarks.length} marker(s)…`
+            : isVibeStage
+              ? `Staging room with ${stageTargetLabel}...`
           : hasManualDims
             ? `Generating: ${col?.bundles[bundleId]?.label ?? "bundle"} (${skuIds.length} items)…`
             : `Generating: ${col?.bundles[bundleId]?.label ?? "bundle"} (${skuIds.length} items) • Dimensions auto…`
@@ -855,6 +870,8 @@ export default function EditorPage() {
           ? "/api/vibode/swap"
           : isRotateMode
             ? "/api/vibode/generate"
+            : isVibeStage
+              ? "/api/vibode/vibe"
             : "/api/vibode/compose";
       const res = await fetch(vibodeRoute, {
         method: "POST",

@@ -1494,7 +1494,7 @@ async function persistModelImageToStorage(args: {
 ========================= */
 
 type ModeResponse = ReturnType<typeof json>;
-export type VibodeRouteMode = "compose" | "remove" | "swap";
+export type VibodeRouteMode = "compose" | "remove" | "swap" | "vibe";
 
 async function handleSwap(args: {
   vibodeIntent: any;
@@ -1772,6 +1772,8 @@ export async function handleGenerateRequest(args: {
   const hasNanoBananaKey = Boolean(process.env.NANOBANANA_PRO_API_KEY);
   const vibodePromptEndpointEnabled =
     (process.env.VIBODE_NB_USE_PROMPT_ENDPOINT ?? "false").toLowerCase() === "true";
+  const VIBODE_ALLOW_VIBE_STAGE =
+    (process.env.VIBODE_ALLOW_VIBE_STAGE ?? "true").toLowerCase() !== "false";
 
   const payloadForModel = ensureNonEmptyRequestedActionForModel(payload, notes);
   const resolvedStyleId = resolveStyleId({
@@ -1960,13 +1962,31 @@ export async function handleGenerateRequest(args: {
     const isMoveMode = Boolean(vibodeIntent?.move?.marks?.length);
     const swapMarks = parseVibodeSwapMarks(vibodeIntent);
     const isSwapMode = swapMarks.length > 0;
+    const isVibeStage = isRecord(vibodeIntent) && vibodeIntent.mode === "vibe";
     const isRemoveMode =
       isRecord(vibodeIntent) &&
       vibodeIntent.mode === "remove" &&
       Array.isArray(vibodeIntent.marks) &&
       vibodeIntent.marks.length > 0;
 
-    if (isRotateMode && freezeV2Raw) {
+    if (isVibeStage) {
+      if (!VIBODE_ALLOW_VIBE_STAGE) {
+        return json(501, {
+          error: "Vibe stage is disabled (VIBODE_ALLOW_VIBE_STAGE=false).",
+        });
+      }
+
+      const vibeStageResult = await callNanoBananaPro({
+        payload: payloadForModel,
+        baseImageUrlForModel,
+        notes,
+        styleId: resolvedStyleId,
+        vibodePrompt: vibodePrompt ?? undefined,
+        placementTestMode: false,
+      });
+      modelImageUrl = vibeStageResult.imageUrl;
+      notes.push("Vibe Stage mode used legacy stage-room intentionally.");
+    } else if (isRotateMode && freezeV2Raw) {
       console.log("[vibode/generate] vibode rotate mode detected", {
         mode: vibodeIntent.mode,
         marks: rotateMarks.length,
@@ -2206,6 +2226,8 @@ function applyVibodeRouteModeOverride(freeze: unknown, routeMode?: VibodeRouteMo
         vibodeIntent.swap = { marks: swapMarks };
       }
     }
+  } else if (routeMode === "vibe") {
+    vibodeIntent.mode = "vibe";
   }
 
   nextFreeze.vibodeIntent = vibodeIntent;
