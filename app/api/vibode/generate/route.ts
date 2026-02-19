@@ -7,6 +7,7 @@ import { callCompositorVibodeCompose } from "@/lib/callCompositorVibodeCompose";
 import { callCompositorVibodeMove } from "@/lib/callCompositorVibodeMove";
 import { callCompositorVibodeRemove } from "@/lib/callCompositorVibodeRemove";
 import { callCompositorVibodeRotate } from "@/lib/callCompositorVibodeRotate";
+import { callCompositorVibodeVibe } from "@/lib/callCompositorVibodeVibe";
 import {
   inferLayerKindFromSkuKind,
   ensureZIndex,
@@ -1717,8 +1718,9 @@ export async function handleGenerateRequest(args: {
   freeze: unknown;
   payloadVersion: string | null;
   payload: FreezePayloadV1;
+  vibeInput?: unknown;
 }): Promise<ModeResponse> {
-  const { req, freeze, payloadVersion, payload } = args;
+  const { req, freeze, payloadVersion, payload, vibeInput } = args;
   const xVibodeEchoRaw = req.headers.get("x-vibode-echo");
   const xForceModelRaw = req.headers.get("x-vibode-force-model");
 
@@ -1976,16 +1978,54 @@ export async function handleGenerateRequest(args: {
         });
       }
 
-      const vibeStageResult = await callNanoBananaPro({
-        payload: payloadForModel,
-        baseImageUrlForModel,
-        notes,
-        styleId: resolvedStyleId,
-        vibodePrompt: vibodePrompt ?? undefined,
-        placementTestMode: false,
+      const { base64: roomImageBase64Raw } = await fetchImageAsBase64(baseImageUrlForModel);
+      const roomImageBase64 = `data:image/jpeg;base64,${roomImageBase64Raw}`;
+      const eligibleSkus = Array.isArray((vibeInput as any)?.eligibleSkus)
+        ? ((vibeInput as any).eligibleSkus as Array<Record<string, unknown>>)
+        : null;
+      if (!eligibleSkus) {
+        return json(400, {
+          error: "Vibe stage requires eligibleSkus.",
+        });
+      }
+
+      const vibeCollectionId = safeStr((vibeInput as any)?.collectionId);
+      const vibeBundleId = safeStr((vibeInput as any)?.bundleId);
+      const wsCollectionId = safeStr((payloadForModel as any)?.workingSetSnapshot?.collectionId);
+      const wsBundleId = safeStr((payloadForModel as any)?.workingSetSnapshot?.bundleId);
+      const sceneCollectionId = safeStr(
+        (payloadForModel as any)?.sceneSnapshot?.collection?.collectionId
+      );
+      const sceneBundleId = safeStr((payloadForModel as any)?.sceneSnapshot?.collection?.bundleId);
+      const collectionId = vibeCollectionId ?? wsCollectionId ?? sceneCollectionId ?? undefined;
+      const bundleId = vibeBundleId ?? wsBundleId ?? sceneBundleId ?? undefined;
+      const bundleForTargetCount =
+        bundleId === "small" || bundleId === "medium" || bundleId === "large" ? bundleId : undefined;
+      const targetCountInput = (vibeInput as any)?.targetCount;
+      const targetCount = finiteNumber(targetCountInput)
+        ? targetCountInput
+        : Math.min(eligibleSkus.length, pickAutoAddCount(bundleForTargetCount));
+
+      const vibeStageResult = await callCompositorVibodeVibe({
+        roomImageBase64,
+        collectionId,
+        bundleId,
+        eligibleSkus: eligibleSkus as Array<{
+          skuId: string;
+          label?: string | null;
+          defaultPxWidth?: number | null;
+          defaultPxHeight?: number | null;
+          realWidthFt?: number | null;
+          realDepthFt?: number | null;
+          variants?: Array<Record<string, any>> | null;
+        }>,
+        targetCount,
+        enhancePhoto: true,
+        modelVersion: safeStr((payloadForModel as any)?.modelVersion),
+        aspectRatio: pickLegacyAspectRatioFromFreeze(payloadForModel) ?? "auto",
       });
       modelImageUrl = vibeStageResult.imageUrl;
-      notes.push("Vibe Stage mode used legacy stage-room intentionally.");
+      notes.push("Vibe Stage used compositor /vibode/vibe.");
     } else if (isRotateMode && freezeV2Raw) {
       console.log("[vibode/generate] vibode rotate mode detected", {
         mode: vibodeIntent.mode,
@@ -2242,6 +2282,7 @@ export async function handleVibodeGeneratePost(
     // Body shape: { freeze: FreezePayloadV1 | FreezePayloadV2 }.
     // In strict mode, only FreezePayloadV2 is accepted.
     const body = (await req.json()) as unknown;
+    const vibeInput = isRecord(body) ? (body as any).vibe : undefined;
     const freeze = applyVibodeRouteModeOverride(
       isRecord(body) ? body.freeze : undefined,
       opts?.routeMode
@@ -2292,6 +2333,7 @@ export async function handleVibodeGeneratePost(
       freeze,
       payloadVersion,
       payload,
+      vibeInput,
     });
   } catch (err: unknown) {
     console.error("[vibode/generate] unexpected error:", err);

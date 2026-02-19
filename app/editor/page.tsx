@@ -731,7 +731,20 @@ export default function EditorPage() {
             defaultPxHeight: pxH,
             realWidthFt: realW,
             realDepthFt: realD,
-            variants: sku.variants?.map((v: any) => ({ variantId: v.variantId, label: v.label })),
+            variants:
+              sku.variants?.length > 0
+                ? sku.variants.map((v: any) => ({
+                    variantId: v.variantId,
+                    label: v.label,
+                    imageUrl: v.imageUrl || v.pngUrl || v.url || v.src || sku.imageUrl || sku.pngUrl || sku.url || sku.src,
+                  }))
+                : [
+                    {
+                      variantId: sku.skuId,
+                      label: sku.label,
+                      imageUrl: sku.imageUrl || sku.pngUrl || sku.url || sku.src,
+                    },
+                  ],
           };
         });
 
@@ -883,6 +896,15 @@ export default function EditorPage() {
           freeze: payload,
           vibeMode: scene.vibeMode,
           markup: markupToPersist,
+          vibe: isVibeStage
+            ? {
+                collectionId: collectionId ?? undefined,
+                bundleId,
+                eligibleSkus: eligible,
+                targetCount: undefined,
+                enhancePhoto: true,
+              }
+            : undefined,
         }),
       });
   
@@ -1582,7 +1604,28 @@ export default function EditorPage() {
                           defaultPxHeight: pxH,
                           realWidthFt: realW,
                           realDepthFt: realD,
-                          variants: sku.variants?.map((v: any) => ({ variantId: v.variantId, label: v.label })),
+                          variants:
+                            sku.variants?.length > 0
+                              ? sku.variants.map((v: any) => ({
+                                  variantId: v.variantId,
+                                  label: v.label,
+                                  imageUrl:
+                                    v.imageUrl ||
+                                    v.pngUrl ||
+                                    v.url ||
+                                    v.src ||
+                                    sku.imageUrl ||
+                                    sku.pngUrl ||
+                                    sku.url ||
+                                    sku.src,
+                                }))
+                              : [
+                                  {
+                                    variantId: sku.skuId,
+                                    label: sku.label,
+                                    imageUrl: sku.imageUrl || sku.pngUrl || sku.url || sku.src,
+                                  },
+                                ],
                         };
                       });
 
