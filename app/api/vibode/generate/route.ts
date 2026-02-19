@@ -775,9 +775,36 @@ async function fetchImageAsBase64(url: string) {
 
 const IKEA_CA_SKU_BY_ID = new Map(IKEA_CA_SKUS.map((sku) => [sku.skuId, sku]));
 
-function resolveIkeaSkuImageUrl(skuId: string): string | null {
-  const found = IKEA_CA_SKU_BY_ID.get(skuId);
+function resolveIkeaSkuImageUrl(skuIdRaw: string): string | null {
+  const skuId = typeof skuIdRaw === "string" ? skuIdRaw.trim() : "";
+
+  // Map your editor-friendly -ca IDs to the canonical IKEA_CA_SKUS skuIds
+  const aliasToCanonical: Record<string, string> = {
+    "sofa-kivik-3s-ca": "ikea_ca_kivik_sofa_tibbleby_beige_gray_89440604",
+    "sofa-kivik-loveseat-ca": "ikea_ca_kivik_loveseat_tibbleby_beige_gray_59440605",
+    "chair-poang-ca": "ikea_ca_poaeng_armchair_birch_gunnared_beige_09501979",
+    "coffee-lack-90x55-ca": "ikea_ca_lack_coffee_table_white_90449905",
+    "side-gladom-ca": "ikea_ca_gladom_tray_table_black_50411990",
+    "lamp-hektar-floor-3spot-ca": "ikea_ca_hektar_floor_lamp_3_spotlights_dark_gray_40393618",
+    "rug-lohals-200x300-ca": "ikea_ca_lohals_rug_flatwoven_natural_200x300_00277395",
+    "dining-skogsta-235x100-ca": "ikea_ca_skogsta_dining_table_acacia_black_70419264",
+    "chair-bergmund-ca": "ikea_ca_bergmund_chair_black_gunnared_medium_gray_09471699",
+    "bed-malm-queen-ca": "ikea_ca_malm_bed_frame_high_white_queen_19931605",
+  };
+
+  const canonicalId = aliasToCanonical[skuId] ?? skuId;
+
+  // IKEA_CA_SKU_BY_ID might be a Map OR a plain object depending on where/how it’s defined.
+  const byIdAny: any = IKEA_CA_SKU_BY_ID as any;
+  const found =
+    typeof byIdAny?.get === "function" ? byIdAny.get(canonicalId) : byIdAny?.[canonicalId];
+
   const url = typeof found?.imageUrl === "string" ? found.imageUrl.trim() : "";
+
+  // One-time debug (comment out after you see it work)
+  if (skuId === "sofa-kivik-3s-ca") {
+  }
+
   return url.length > 0 ? url : null;
 }
 
@@ -1988,6 +2015,41 @@ export async function handleGenerateRequest(args: {
           error: "Vibe stage requires eligibleSkus.",
         });
       }
+      const eligibleSkusWithImages: Array<Record<string, unknown>> = [];
+      for (const sku of eligibleSkus) {
+        const variants = Array.isArray((sku as any)?.variants)
+          ? ((sku as any).variants as Array<Record<string, unknown>>)
+          : [];
+        const hasVariantImage = variants.some((variant) => {
+          if (!isRecord(variant)) return false;
+          return [variant.imageUrl, variant.url, variant.src, variant.pngUrl].some(
+            (value) => typeof value === "string" && value.trim().length > 0
+          );
+        });
+        if (hasVariantImage) {
+          eligibleSkusWithImages.push(sku);
+          continue;
+        }
+
+        const skuId = safeStr((sku as any)?.skuId) ?? "";
+        const url = resolveIkeaSkuImageUrl(skuId);
+        if (!url) {
+          return json(400, {
+            error: `No imageUrl for eligible skuId=${skuId}. Add variants[].imageUrl or update resolver.`,
+          });
+        }
+
+        eligibleSkusWithImages.push({
+          ...sku,
+          variants: [
+            {
+              variantId: "default",
+              label: (sku as any)?.label ?? "default",
+              imageUrl: url,
+            },
+          ],
+        });
+      }
 
       const vibeCollectionId = safeStr((vibeInput as any)?.collectionId);
       const vibeBundleId = safeStr((vibeInput as any)?.bundleId);
@@ -2010,7 +2072,7 @@ export async function handleGenerateRequest(args: {
         roomImageBase64,
         collectionId,
         bundleId,
-        eligibleSkus: eligibleSkus as Array<{
+        eligibleSkus: eligibleSkusWithImages as Array<{
           skuId: string;
           label?: string | null;
           defaultPxWidth?: number | null;
