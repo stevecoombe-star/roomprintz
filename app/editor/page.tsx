@@ -373,6 +373,7 @@ export default function EditorPage() {
     setSnacks((prev) => [...prev, { id: safeId("sn"), message }]);
   };
 
+  const [fullVibeEnabled, setFullVibeEnabled] = useState(true);
   const [lastFreezePayload, setLastFreezePayload] = useState<any>(null);
   const didLogFirstGenerateAttemptRef = useRef(false);
 
@@ -877,6 +878,7 @@ export default function EditorPage() {
         });
       }
       
+      const useFullVibe = isVibeStage && fullVibeEnabled;
       const vibodeRoute = isRemoveMode
         ? "/api/vibode/remove"
         : isSwapMode
@@ -884,7 +886,9 @@ export default function EditorPage() {
           : isRotateMode
             ? "/api/vibode/generate"
             : isVibeStage
-              ? "/api/vibode/vibe"
+              ? useFullVibe
+                ? "/api/vibode/full-vibe"
+                : "/api/vibode/vibe"
             : "/api/vibode/compose";
       const res = await fetch(vibodeRoute, {
         method: "POST",
@@ -952,7 +956,7 @@ export default function EditorPage() {
       const outW = toFinitePosNum(j?.output?.widthPx ?? j?.widthPx);
       const outH = toFinitePosNum(j?.output?.heightPx ?? j?.heightPx);
       
-      const genId = typeof j?.generationId === "string" ? j.generationId : null;
+      const genId = typeof j?.generationId === "string" ? j.generationId : useFullVibe ? generationId : null;
       
       if (!genId) {
         useEditorStore.getState().endGenerateError({
@@ -1102,6 +1106,15 @@ export default function EditorPage() {
           </button>
 
           <div className="flex flex-col items-end gap-0.5">
+            <label className="mb-1 flex cursor-pointer items-center gap-1 text-xs text-neutral-300">
+              <input
+                type="checkbox"
+                checked={fullVibeEnabled}
+                onChange={(e) => setFullVibeEnabled(e.target.checked)}
+                className="h-3.5 w-3.5 accent-sky-400"
+              />
+              ✨ Full Vibe
+            </label>
             <button
               className={`rounded-md border px-3 py-1.5 text-sm ${
                 isBusy || !isImageSpaceReady
