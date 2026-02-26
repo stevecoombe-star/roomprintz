@@ -561,6 +561,8 @@ export default function EditorPage() {
   };
 
   const onGenerate = async () => {
+    const localGenId = safeId("gen");
+
     if (!didLogFirstGenerateAttemptRef.current) {
       didLogFirstGenerateAttemptRef.current = true;
 
@@ -916,6 +918,29 @@ export default function EditorPage() {
       const j: any = await res
         .json()
         .catch(async () => ({ error: await res.text().catch(() => "Bad JSON response") }));
+
+      // TEMP DEBUG (remove after capturing full-vibe runtime evidence)
+      console.log("[VIBODE DEBUG RAW]", {
+        vibodeRoute,
+        status: res.status,
+        keys: j && typeof j === "object" ? Object.keys(j) : null,
+        imageUrl: j?.imageUrl,
+        stagedImageUrl: j?.stagedImageUrl,
+        outputImageUrl: j?.output?.imageUrl,
+        widthPx: j?.widthPx,
+        heightPx: j?.heightPx,
+        outputWidthPx: j?.output?.widthPx,
+        outputHeightPx: j?.output?.heightPx,
+        generationIdFromResponse: j?.generationId,
+        generationIdLocalBeforeAdopt: generationId,
+        isVibeStage,
+        useFullVibe,
+        fullVibeEnabled,
+        isRemoveMode,
+        isSwapMode,
+        isRotateMode,
+        forceEcho,
+      });
   
       console.log("[VIBODE GENERATE RESPONSE]", res.status, j);
   
@@ -956,7 +981,21 @@ export default function EditorPage() {
       const outW = toFinitePosNum(j?.output?.widthPx ?? j?.widthPx);
       const outH = toFinitePosNum(j?.output?.heightPx ?? j?.heightPx);
       
-      const genId = typeof j?.generationId === "string" ? j.generationId : useFullVibe ? generationId : null;
+      const genId = typeof j?.generationId === "string" ? j.generationId : useFullVibe ? localGenId : null;
+
+      // TEMP DEBUG (remove after capturing full-vibe runtime evidence)
+      console.log("[VIBODE DEBUG COMPUTED]", {
+        outUrl: imageUrl,
+        outW,
+        outH,
+        generationIdFromResponse: j?.generationId,
+        generationIdLocalBeforeAdopt: generationId,
+        genId,
+        gateWillFail: {
+          missingGenId: !genId,
+          missingOutUrl: !imageUrl,
+        },
+      });
       
       if (!genId) {
         useEditorStore.getState().endGenerateError({
