@@ -374,6 +374,9 @@ export default function EditorPage() {
   };
 
   const [fullVibeEnabled, setFullVibeEnabled] = useState(true);
+  const [advancedOpen, setAdvancedOpen] = useState(false);
+  const [enhancePhotoEnabled, setEnhancePhotoEnabled] = useState(true);
+  const [heavyDeclutterEnabled, setHeavyDeclutterEnabled] = useState(false);
   const [lastFreezePayload, setLastFreezePayload] = useState<any>(null);
   const didLogFirstGenerateAttemptRef = useRef(false);
 
@@ -881,6 +884,17 @@ export default function EditorPage() {
       }
       
       const useFullVibe = isVibeStage && fullVibeEnabled;
+      const freezePayloadForRequest =
+        isVibeStage && isRecord(payload)
+          ? {
+              ...payload,
+              vibodeIntent: {
+                ...(isRecord(payload.vibodeIntent) ? payload.vibodeIntent : {}),
+                enhancePhoto: enhancePhotoEnabled,
+                heavyDeclutter: heavyDeclutterEnabled,
+              },
+            }
+          : payload;
       const vibodeRoute = isRemoveMode
         ? "/api/vibode/remove"
         : isSwapMode
@@ -899,7 +913,7 @@ export default function EditorPage() {
           ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
         },
         body: JSON.stringify({
-          freeze: payload,
+          freeze: freezePayloadForRequest,
           vibeMode: scene.vibeMode,
           markup: markupToPersist,
           vibe: isVibeStage
@@ -1154,6 +1168,39 @@ export default function EditorPage() {
               />
               ✨ Full Vibe
             </label>
+            <div className="relative mb-1">
+              <button
+                type="button"
+                onClick={() => setAdvancedOpen((prev) => !prev)}
+                className="text-xs text-neutral-400 transition-colors hover:text-neutral-200"
+              >
+                {advancedOpen ? "Advanced ▾" : "Advanced ▸"}
+              </button>
+              {advancedOpen && (
+                <div className="absolute right-0 top-full mt-1 w-48 rounded-md border border-neutral-700 bg-neutral-900/95 p-2 shadow-lg">
+                  <div className="flex flex-col items-end gap-1 text-xs text-neutral-300">
+                    <label className="flex cursor-pointer items-center gap-1">
+                      <input
+                        type="checkbox"
+                        checked={enhancePhotoEnabled}
+                        onChange={(e) => setEnhancePhotoEnabled(e.target.checked)}
+                        className="h-3.5 w-3.5 accent-sky-400"
+                      />
+                      Enhance Photo
+                    </label>
+                    <label className="flex cursor-pointer items-center gap-1">
+                      <input
+                        type="checkbox"
+                        checked={heavyDeclutterEnabled}
+                        onChange={(e) => setHeavyDeclutterEnabled(e.target.checked)}
+                        className="h-3.5 w-3.5 accent-sky-400"
+                      />
+                      Heavy Declutter
+                    </label>
+                  </div>
+                </div>
+              )}
+            </div>
             <button
               className={`rounded-md border px-3 py-1.5 text-sm ${
                 isBusy || !isImageSpaceReady
