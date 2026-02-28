@@ -600,33 +600,56 @@ export default function EditorPage() {
     setStageStatus((prev) => ({ ...prev, [stageNumber]: "running" }));
 
     try {
+      const requestPayload: Record<string, unknown> = {
+        stage: stageNumber,
+        baseImageUrl: baseImageId ?? scene.baseImageUrl ?? null,
+      };
+
+      if (stageNumber === 1) {
+        const declutterMode =
+          options.declutter === "off" ||
+          options.declutter === "light" ||
+          options.declutter === "heavy"
+            ? options.declutter
+            : stage1Declutter;
+        const cleanupRoom = declutterMode === "light" || declutterMode === "heavy";
+        const heavyDeclutter = declutterMode === "heavy";
+        const emptyRoom = options.emptyRoom === true;
+
+        requestPayload.enhancePhoto =
+          typeof options.enhance === "boolean" ? options.enhance : stage1Enhance;
+        requestPayload.cleanupRoom = cleanupRoom;
+        requestPayload.heavyDeclutter = heavyDeclutter;
+        if (emptyRoom) {
+          requestPayload.emptyRoom = true;
+          requestPayload.stage1Mode = "empty_room";
+        }
+      } else {
+        requestPayload.enhancePhoto = true;
+      }
+
       const res = await fetch("/api/vibode/stage-run", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          stageNumber,
-          options,
-          baseImageId: baseImageId ?? scene.baseImageUrl ?? null,
-          lastStageOutputs,
-        }),
+        body: JSON.stringify(requestPayload),
       });
 
-      const json: any = await res
-        .json()
-        .catch(() => ({ ok: false, message: "Stage run returned invalid JSON." }));
+      const json: any = await res.json().catch(() => ({}));
 
-      if (!res.ok || !json?.ok) {
-        throw new Error(json?.message || `Stage ${stageNumber} failed.`);
+      if (!res.ok) {
+        throw new Error(
+          json?.error || json?.message || json?.detail || `Stage ${stageNumber} failed.`
+        );
+      }
+
+      if (typeof json?.imageUrl !== "string" || json.imageUrl.trim().length === 0) {
+        throw new Error(`Stage ${stageNumber} did not return imageUrl.`);
       }
 
       setStageStatus((prev) => ({ ...prev, [stageNumber]: "success" }));
-      setLastStageOutputs((prev) => ({ ...prev, [stageNumber]: json?.output ?? json }));
-
-      const nextBaseImageId =
-        typeof json?.baseImageId === "string" && json.baseImageId.trim().length > 0
-          ? json.baseImageId
-          : null;
-      if (nextBaseImageId) setBaseImageId(nextBaseImageId);
+      setLastStageOutputs((prev) => ({ ...prev, [stageNumber]: json }));
+      setBaseImageId(json.imageUrl);
+      setBaseImageUrl(json.imageUrl);
 
       if (stageNumber === 3) {
         setHasFurniturePass(true);
