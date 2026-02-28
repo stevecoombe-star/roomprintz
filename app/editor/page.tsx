@@ -197,6 +197,21 @@ function hasSwapMarksWithReplacement(vibodeIntent: unknown): boolean {
   return legacyMarks.some(hasValidSwapReplacement);
 }
 
+type WorkflowStage = 1 | 2 | 3 | 4 | 5;
+type StageRunStatus = "idle" | "running" | "success" | "error";
+type DeclutterMode = "off" | "light" | "heavy";
+type StageStatusMap = Record<WorkflowStage, StageRunStatus>;
+type StageOutputMap = Partial<Record<WorkflowStage, unknown>>;
+
+const WORKFLOW_STAGES: WorkflowStage[] = [1, 2, 3, 4, 5];
+const INITIAL_STAGE_STATUS: StageStatusMap = {
+  1: "idle",
+  2: "idle",
+  3: "idle",
+  4: "idle",
+  5: "idle",
+};
+
 function validateFreezePayloadV1(payload: unknown): { ok: true } | { ok: false; reason: string } {
   if (!payload || typeof payload !== "object") return { ok: false, reason: "payload missing" };
   const payloadRecord = payload as { payloadVersion?: unknown; sceneSnapshotImageSpace?: unknown };
@@ -384,6 +399,14 @@ export default function EditorPage() {
   const [historyPickerFor, setHistoryPickerFor] = useState<string | null>(null);
   const useFreezeV2 = process.env.NEXT_PUBLIC_VIBODE_FREEZE_V2 === "1";
 
+  const [activeStage, setActiveStage] = useState<WorkflowStage>(1);
+  const [stageStatus, setStageStatus] = useState<StageStatusMap>(INITIAL_STAGE_STATUS);
+  const [hasFurniturePass, setHasFurniturePass] = useState(false);
+  const [baseImageId, setBaseImageId] = useState<string | null>(null);
+  const [lastStageOutputs, setLastStageOutputs] = useState<StageOutputMap>({});
+  const [stage1Enhance, setStage1Enhance] = useState(true);
+  const [stage1Declutter, setStage1Declutter] = useState<DeclutterMode>("off");
+
   useEffect(() => {
     useEditorStore.getState().tryRestorePendingFromLocalStorage();
   }, []);
@@ -392,6 +415,11 @@ export default function EditorPage() {
     if (activeTool === "swap" && selectedSwapMarkId) return;
     setSwapPickerOpen(false);
   }, [activeTool, selectedSwapMarkId]);
+
+  useEffect(() => {
+    if (!scene.baseImageUrl) return;
+    setBaseImageId((prev) => prev ?? scene.baseImageUrl ?? null);
+  }, [scene.baseImageUrl]);
 
   const selectedNode = useMemo(() => {
     if (!selectedNodeId) return null;
@@ -561,6 +589,56 @@ export default function EditorPage() {
       draftMarkup: nextScene.draftMarkup,
     });
     pushSnack("Branched from history.");
+  };
+
+  const runStage = async (stageNumber: WorkflowStage, options: Record<string, unknown> = {}) => {
+    if (stageNumber === 5 && !hasFurniturePass) {
+      pushSnack("Stage 5 is locked until Stage 3 furniture pass succeeds.");
+      return null;
+    }
+
+    setStageStatus((prev) => ({ ...prev, [stageNumber]: "running" }));
+
+    try {
+      const res = await fetch("/api/vibode/stage-run", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          stageNumber,
+          options,
+          baseImageId: baseImageId ?? scene.baseImageUrl ?? null,
+          lastStageOutputs,
+        }),
+      });
+
+      const json: any = await res
+        .json()
+        .catch(() => ({ ok: false, message: "Stage run returned invalid JSON." }));
+
+      if (!res.ok || !json?.ok) {
+        throw new Error(json?.message || `Stage ${stageNumber} failed.`);
+      }
+
+      setStageStatus((prev) => ({ ...prev, [stageNumber]: "success" }));
+      setLastStageOutputs((prev) => ({ ...prev, [stageNumber]: json?.output ?? json }));
+
+      const nextBaseImageId =
+        typeof json?.baseImageId === "string" && json.baseImageId.trim().length > 0
+          ? json.baseImageId
+          : null;
+      if (nextBaseImageId) setBaseImageId(nextBaseImageId);
+
+      if (stageNumber === 3) {
+        setHasFurniturePass(true);
+      }
+
+      pushSnack(`Stage ${stageNumber} complete.`);
+      return json;
+    } catch (err: any) {
+      setStageStatus((prev) => ({ ...prev, [stageNumber]: "error" }));
+      pushSnack(err?.message ?? `Stage ${stageNumber} failed.`);
+      return null;
+    }
   };
 
   const onGenerate = async () => {
@@ -1469,6 +1547,134 @@ export default function EditorPage() {
           </div>
 
           <div className="space-y-4 p-4">
+            <div className="rounded-lg border border-neutral-800 bg-neutral-900 p-3">
+              <div className="text-sm font-medium">Workflow</div>
+              <div className="mt-1 text-xs text-neutral-400">Five-stage editor workflow skeleton.</div>
+
+              <div className="mt-3 grid grid-cols-5 gap-1">
+                {WORKFLOW_STAGES.map((stage) => (
+                  <button
+                    key={stage}
+                    type="button"
+                    onClick={() => setActiveStage(stage)}
+                    className={`rounded-md border px-2 py-1 text-xs ${
+                      activeStage === stage
+                        ? "border-neutral-600 bg-neutral-800 text-neutral-100"
+                        : "border-neutral-800 bg-neutral-950 text-neutral-300 hover:bg-neutral-800"
+                    }`}
+                  >
+                    {stage}
+                  </button>
+                ))}
+              </div>
+
+              <div className="mt-2 text-xs text-neutral-500">
+                Status: {stageStatus[activeStage]} • Furniture pass: {hasFurniturePass ? "yes" : "no"}
+              </div>
+              <div className="mt-1 text-xs text-neutral-500">Base image id: {baseImageId ?? "—"}</div>
+
+              <div className="mt-3 rounded-md border border-neutral-800 bg-neutral-950 p-3">
+                <div className="text-sm font-medium">Stage {activeStage}</div>
+
+                {activeStage === 1 ? (
+                  <>
+                    <label className="mt-3 flex cursor-pointer items-center gap-2 text-sm text-neutral-300">
+                      <input
+                        type="checkbox"
+                        checked={stage1Enhance}
+                        onChange={(e) => setStage1Enhance(e.target.checked)}
+                        className="h-4 w-4 accent-sky-400"
+                      />
+                      Enhance
+                    </label>
+
+                    <div className="mt-3">
+                      <div className="text-xs text-neutral-400">Declutter</div>
+                      <div className="mt-1 flex gap-2">
+                        {(["off", "light", "heavy"] as DeclutterMode[]).map((mode) => (
+                          <button
+                            key={mode}
+                            type="button"
+                            onClick={() => setStage1Declutter(mode)}
+                            className={`rounded-md border px-2 py-1 text-xs ${
+                              stage1Declutter === mode
+                                ? "border-neutral-600 bg-neutral-800 text-neutral-100"
+                                : "border-neutral-800 bg-neutral-900 text-neutral-300 hover:bg-neutral-800"
+                            }`}
+                          >
+                            {mode}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div className="mt-3 flex gap-2">
+                      <button
+                        type="button"
+                        onClick={() =>
+                          runStage(1, { enhance: stage1Enhance, declutter: stage1Declutter })
+                        }
+                        disabled={stageStatus[1] === "running"}
+                        className={`rounded-md border px-3 py-1.5 text-sm ${
+                          stageStatus[1] === "running"
+                            ? "border-neutral-900 bg-neutral-950 text-neutral-500"
+                            : "border-neutral-700 bg-neutral-900 hover:bg-neutral-800"
+                        }`}
+                      >
+                        {stageStatus[1] === "running" ? "Running…" : "Run Stage"}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          runStage(1, {
+                            enhance: stage1Enhance,
+                            declutter: stage1Declutter,
+                            emptyRoom: true,
+                          })
+                        }
+                        disabled={stageStatus[1] === "running"}
+                        className={`rounded-md border px-3 py-1.5 text-sm ${
+                          stageStatus[1] === "running"
+                            ? "border-neutral-900 bg-neutral-950 text-neutral-500"
+                            : "border-neutral-700 bg-neutral-900 hover:bg-neutral-800"
+                        }`}
+                      >
+                        Empty Room
+                      </button>
+                    </div>
+                  </>
+                ) : (
+                  <div className="mt-3">
+                    <button
+                      type="button"
+                      onClick={() => runStage(activeStage)}
+                      disabled={
+                        stageStatus[activeStage] === "running" ||
+                        (activeStage === 5 && !hasFurniturePass)
+                      }
+                      className={`rounded-md border px-3 py-1.5 text-sm ${
+                        stageStatus[activeStage] === "running" ||
+                        (activeStage === 5 && !hasFurniturePass)
+                          ? "border-neutral-900 bg-neutral-950 text-neutral-500"
+                          : "border-neutral-700 bg-neutral-900 hover:bg-neutral-800"
+                      }`}
+                    >
+                      {stageStatus[activeStage] === "running" ? "Running…" : "Run Stage"}
+                    </button>
+                    {activeStage === 5 && !hasFurniturePass && (
+                      <div className="mt-2 text-xs text-neutral-500">
+                        Stage 5 is locked until Stage 3 succeeds.
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                <div className="mt-3 text-xs text-neutral-500">
+                  Last output: {lastStageOutputs[activeStage] ? "available" : "none"}
+                </div>
+              </div>
+            </div>
+
             {/* Setup */}
             <div className="rounded-lg border border-neutral-800 bg-neutral-900 p-3">
               <div className="text-sm font-medium">Setup</div>
