@@ -387,6 +387,16 @@ export default function EditorPage() {
   const pushSnack = (message: string) => {
     setSnacks((prev) => [...prev, { id: safeId("sn"), message }]);
   };
+  function getBaseImageLabel(url?: string): string {
+    if (!url) return "—";
+    try {
+      const clean = url.split("?")[0];
+      const parts = clean.split("/");
+      return parts[parts.length - 1] || clean;
+    } catch {
+      return url;
+    }
+  }
 
   const [fullVibeEnabled, setFullVibeEnabled] = useState(true);
   const [advancedOpen, setAdvancedOpen] = useState(false);
@@ -402,7 +412,6 @@ export default function EditorPage() {
   const [activeStage, setActiveStage] = useState<WorkflowStage>(1);
   const [stageStatus, setStageStatus] = useState<StageStatusMap>(INITIAL_STAGE_STATUS);
   const [hasFurniturePass, setHasFurniturePass] = useState(false);
-  const [baseImageId, setBaseImageId] = useState<string | null>(null);
   const [lastStageOutputs, setLastStageOutputs] = useState<StageOutputMap>({});
   const [stage1Enhance, setStage1Enhance] = useState(true);
   const [stage1Declutter, setStage1Declutter] = useState<DeclutterMode>("off");
@@ -420,11 +429,6 @@ export default function EditorPage() {
     if (activeTool === "swap" && selectedSwapMarkId) return;
     setSwapPickerOpen(false);
   }, [activeTool, selectedSwapMarkId]);
-
-  useEffect(() => {
-    if (!scene.baseImageUrl) return;
-    setBaseImageId((prev) => prev ?? scene.baseImageUrl ?? null);
-  }, [scene.baseImageUrl]);
 
   const selectedNode = useMemo(() => {
     if (!selectedNodeId) return null;
@@ -625,19 +629,20 @@ export default function EditorPage() {
     setStageStatus((prev) => ({ ...prev, [stageNumber]: "running" }));
 
     try {
-      const requestPayload: Record<string, unknown> = {
+      const payload: Record<string, unknown> = {
         stage: stageNumber,
       };
-      const candidateUrl = baseImageId ?? scene.baseImageUrl ?? null;
+      const candidateUrl = scene.baseImageUrl ?? null;
       if (typeof candidateUrl === "string" && candidateUrl.startsWith("blob:")) {
-        requestPayload.roomImageBase64 = await blobUrlToBase64(candidateUrl);
+        payload.roomImageBase64 = await blobUrlToBase64(candidateUrl);
       } else if (
         typeof candidateUrl === "string" &&
         candidateUrl.startsWith("data:image/")
       ) {
-        requestPayload.baseImageId = candidateUrl;
+        payload.roomImageBase64 =
+          candidateUrl.split(",", 2)[1] ?? candidateUrl;
       } else {
-        requestPayload.baseImageUrl = candidateUrl;
+        payload.baseImageUrl = candidateUrl;
       }
 
       if (stageNumber === 1) {
@@ -651,27 +656,40 @@ export default function EditorPage() {
         const heavyDeclutter = declutterMode === "heavy";
         const emptyRoom = options.emptyRoom === true;
 
-        requestPayload.enhancePhoto =
+        payload.enhancePhoto =
           typeof options.enhance === "boolean" ? options.enhance : stage1Enhance;
-        requestPayload.cleanupRoom = cleanupRoom;
-        requestPayload.heavyDeclutter = heavyDeclutter;
+        payload.cleanupRoom = cleanupRoom;
+        payload.heavyDeclutter = heavyDeclutter;
         if (emptyRoom) {
-          requestPayload.emptyRoom = true;
-          requestPayload.stage1Mode = "empty_room";
+          payload.emptyRoom = true;
+          payload.stage1Mode = "empty_room";
         }
       } else if (stageNumber === 2) {
-        requestPayload.enhancePhoto = true;
-        requestPayload.repairDamage = stage2Repair;
-        requestPayload.repaintWalls = stage2Repaint;
-        requestPayload.flooringPreset = stage2Flooring !== "none" ? stage2Flooring : undefined;
+        payload.enhancePhoto = true;
+        payload.repairDamage = stage2Repair;
+        payload.repaintWalls = stage2Repaint;
+        payload.flooringPreset = stage2Flooring !== "none" ? stage2Flooring : undefined;
       } else {
-        requestPayload.enhancePhoto = true;
+        payload.enhancePhoto = true;
       }
 
+      if (stageNumber === 3 || stageNumber === 4) {
+        const collectionSkus = IKEA_CA_SKUS;
+        payload.eligibleSkus = collectionSkus.map((s) => ({
+          skuId: s.skuId,
+          label: s.displayName ?? s.skuId,
+          variants: s.imageUrl ? [{ imageUrl: s.imageUrl }] : [],
+        }));
+        if (stageNumber === 3) {
+          payload.targetCount = 8;
+        }
+      }
+
+      console.log("stage-run payload", payload);
       const res = await fetch("/api/vibode/stage-run", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(requestPayload),
+        body: JSON.stringify(payload),
       });
 
       const json: any = await res.json().catch(() => ({}));
@@ -688,7 +706,6 @@ export default function EditorPage() {
 
       setStageStatus((prev) => ({ ...prev, [stageNumber]: "success" }));
       setLastStageOutputs((prev) => ({ ...prev, [stageNumber]: json }));
-      setBaseImageId(json.imageUrl);
       setBaseImageUrl(json.imageUrl);
 
       if (stageNumber === 3) {
@@ -1634,7 +1651,9 @@ export default function EditorPage() {
               <div className="mt-2 text-xs text-neutral-500">
                 Status: {stageStatus[activeStage]} • Furniture pass: {hasFurniturePass ? "yes" : "no"}
               </div>
-              <div className="mt-1 text-xs text-neutral-500">Base image id: {baseImageId ?? "—"}</div>
+              <div className="mt-1 text-xs text-neutral-500">
+                Base image: {getBaseImageLabel(scene.baseImageUrl)}
+              </div>
 
               <div className="mt-3 rounded-md border border-neutral-800 bg-neutral-950 p-3">
                 <div className="text-sm font-medium">Stage {activeStage}</div>
@@ -1826,6 +1845,12 @@ export default function EditorPage() {
 
                         // allow re-pick same file
                         inputEl.value = "";
+
+                        setHasFurniturePass(false);
+                        setStageStatus(INITIAL_STAGE_STATUS);
+                        setLastStageOutputs({});
+                        setActiveStage(1);
+                        clearPendingLocal();
 
                         // 1) Instant preview (blob)
                         setBaseImageFromFile(file);
