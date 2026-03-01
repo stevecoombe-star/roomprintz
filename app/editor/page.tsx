@@ -406,6 +406,11 @@ export default function EditorPage() {
   const [lastStageOutputs, setLastStageOutputs] = useState<StageOutputMap>({});
   const [stage1Enhance, setStage1Enhance] = useState(true);
   const [stage1Declutter, setStage1Declutter] = useState<DeclutterMode>("off");
+  const [stage2Repair, setStage2Repair] = useState(false);
+  const [stage2Repaint, setStage2Repaint] = useState(false);
+  const [stage2Flooring, setStage2Flooring] = useState<"none" | "carpet" | "hardwood" | "tile">(
+    "none"
+  );
 
   useEffect(() => {
     useEditorStore.getState().tryRestorePendingFromLocalStorage();
@@ -591,6 +596,26 @@ export default function EditorPage() {
     pushSnack("Branched from history.");
   };
 
+  const blobUrlToBase64 = async (blobUrl: string): Promise<string> => {
+    const blobResponse = await fetch(blobUrl);
+    const blob = await blobResponse.blob();
+
+    return await new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onerror = () => reject(new Error("Failed to read uploaded image blob."));
+      reader.onloadend = () => {
+        const dataUrl = typeof reader.result === "string" ? reader.result : "";
+        const commaIndex = dataUrl.indexOf(",");
+        if (commaIndex === -1) {
+          reject(new Error("Failed to convert uploaded image to base64."));
+          return;
+        }
+        resolve(dataUrl.slice(commaIndex + 1));
+      };
+      reader.readAsDataURL(blob);
+    });
+  };
+
   const runStage = async (stageNumber: WorkflowStage, options: Record<string, unknown> = {}) => {
     if (stageNumber === 5 && !hasFurniturePass) {
       pushSnack("Stage 5 is locked until Stage 3 furniture pass succeeds.");
@@ -602,8 +627,18 @@ export default function EditorPage() {
     try {
       const requestPayload: Record<string, unknown> = {
         stage: stageNumber,
-        baseImageUrl: baseImageId ?? scene.baseImageUrl ?? null,
       };
+      const candidateUrl = baseImageId ?? scene.baseImageUrl ?? null;
+      if (typeof candidateUrl === "string" && candidateUrl.startsWith("blob:")) {
+        requestPayload.roomImageBase64 = await blobUrlToBase64(candidateUrl);
+      } else if (
+        typeof candidateUrl === "string" &&
+        candidateUrl.startsWith("data:image/")
+      ) {
+        requestPayload.baseImageId = candidateUrl;
+      } else {
+        requestPayload.baseImageUrl = candidateUrl;
+      }
 
       if (stageNumber === 1) {
         const declutterMode =
@@ -624,6 +659,11 @@ export default function EditorPage() {
           requestPayload.emptyRoom = true;
           requestPayload.stage1Mode = "empty_room";
         }
+      } else if (stageNumber === 2) {
+        requestPayload.enhancePhoto = true;
+        requestPayload.repairDamage = stage2Repair;
+        requestPayload.repaintWalls = stage2Repaint;
+        requestPayload.flooringPreset = stage2Flooring !== "none" ? stage2Flooring : undefined;
       } else {
         requestPayload.enhancePhoto = true;
       }
@@ -1663,6 +1703,61 @@ export default function EditorPage() {
                         }`}
                       >
                         Empty Room
+                      </button>
+                    </div>
+                  </>
+                ) : activeStage === 2 ? (
+                  <>
+                    <label className="mt-3 flex cursor-pointer items-center gap-2 text-sm text-neutral-300">
+                      <input
+                        type="checkbox"
+                        checked={stage2Repair}
+                        onChange={(e) => setStage2Repair(e.target.checked)}
+                        className="h-4 w-4 accent-sky-400"
+                      />
+                      Repair Damage
+                    </label>
+
+                    <label className="mt-3 flex cursor-pointer items-center gap-2 text-sm text-neutral-300">
+                      <input
+                        type="checkbox"
+                        checked={stage2Repaint}
+                        onChange={(e) => setStage2Repaint(e.target.checked)}
+                        className="h-4 w-4 accent-sky-400"
+                      />
+                      Repaint Walls
+                    </label>
+
+                    <div className="mt-3">
+                      <div className="text-xs text-neutral-400">Flooring</div>
+                      <select
+                        className="mt-1 w-full rounded-md border border-neutral-800 bg-neutral-950 px-2 py-2 text-sm outline-none focus:border-neutral-600"
+                        value={stage2Flooring}
+                        onChange={(e) =>
+                          setStage2Flooring(
+                            e.target.value as "none" | "carpet" | "hardwood" | "tile"
+                          )
+                        }
+                      >
+                        <option value="none">none</option>
+                        <option value="carpet">carpet</option>
+                        <option value="hardwood">hardwood</option>
+                        <option value="tile">tile</option>
+                      </select>
+                    </div>
+
+                    <div className="mt-3">
+                      <button
+                        type="button"
+                        onClick={() => runStage(2)}
+                        disabled={stageStatus[2] === "running"}
+                        className={`rounded-md border px-3 py-1.5 text-sm ${
+                          stageStatus[2] === "running"
+                            ? "border-neutral-900 bg-neutral-950 text-neutral-500"
+                            : "border-neutral-700 bg-neutral-900 hover:bg-neutral-800"
+                        }`}
+                      >
+                        {stageStatus[2] === "running" ? "Running…" : "Run Stage"}
                       </button>
                     </div>
                   </>
