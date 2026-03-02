@@ -620,8 +620,10 @@ export default function EditorPage() {
     });
   };
 
+  const STAGE5_DEV_BYPASS = process.env.NODE_ENV !== "production";
+
   const runStage = async (stageNumber: WorkflowStage, options: Record<string, unknown> = {}) => {
-    if (stageNumber === 5 && !hasFurniturePass) {
+    if (stageNumber === 5 && !hasFurniturePass && !STAGE5_DEV_BYPASS) {
       pushSnack("Stage 5 is locked until Stage 3 furniture pass succeeds.");
       return null;
     }
@@ -1277,6 +1279,8 @@ export default function EditorPage() {
     }
   };  
 
+  const stage5Locked = activeStage === 5 && !hasFurniturePass && !STAGE5_DEV_BYPASS;
+
   return (
     <div className="h-dvh w-full bg-neutral-950 text-neutral-100">
       {/* Top bar */}
@@ -1787,11 +1791,11 @@ export default function EditorPage() {
                       onClick={() => runStage(activeStage)}
                       disabled={
                         stageStatus[activeStage] === "running" ||
-                        (activeStage === 5 && !hasFurniturePass)
+                        stage5Locked
                       }
                       className={`rounded-md border px-3 py-1.5 text-sm ${
                         stageStatus[activeStage] === "running" ||
-                        (activeStage === 5 && !hasFurniturePass)
+                        stage5Locked
                           ? "border-neutral-900 bg-neutral-950 text-neutral-500"
                           : "border-neutral-700 bg-neutral-900 hover:bg-neutral-800"
                       }`}
