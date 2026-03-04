@@ -17,6 +17,7 @@ import { DEFAULT_PX_PER_IN, skuFootprintInchesFromDims } from "@/lib/ikeaSizing"
 import { supabaseBrowser } from "@/lib/supabaseBrowser";
 
 const DND_MIME = "application/x-roomprintz-furniture";
+const USER_SKU_MAX_INPUT_BYTES = 12 * 1024 * 1024;
 
 function safeId(prefix = "sn") {
   if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
@@ -54,6 +55,18 @@ function formatSignedDegrees(angleDeg: number) {
   const rounded = Math.round(angleDeg);
   const sign = rounded > 0 ? "+" : "";
   return `${sign}${rounded}°`;
+}
+
+function readFileAsDataUrl(file: File): Promise<string> {
+  return new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error("Failed to read uploaded image."));
+    reader.onload = () => {
+      const dataUrl = typeof reader.result === "string" ? reader.result : "";
+      resolve(dataUrl);
+    };
+    reader.readAsDataURL(file);
+  });
 }
 
 function MoveIcon({ className }: { className?: string }) {
@@ -430,6 +443,8 @@ export default function EditorPage() {
   );
   const [productImageUrl, setProductImageUrl] = useState("");
   const [productLabel, setProductLabel] = useState("User Upload");
+  const [uploadedImageDataUrl, setUploadedImageDataUrl] = useState<string | null>(null);
+  const [uploadedImageName, setUploadedImageName] = useState<string | null>(null);
   const [isIngesting, setIsIngesting] = useState(false);
   const [ingestError, setIngestError] = useState<string | null>(null);
   const [ingestedUserSku, setIngestedUserSku] = useState<UserSku | null>(null);
@@ -482,18 +497,23 @@ export default function EditorPage() {
   }, [collection, swapTargetNode]);
   const ingestedSourceHost = useMemo(() => {
     if (!ingestedUserSku) return null;
-    const source = ingestedUserSku.sourceUrl ?? productImageUrl;
+    const source =
+      ingestedUserSku.sourceUrl ?? (uploadedImageDataUrl ? null : productImageUrl.trim());
     if (!source) return null;
     try {
       return new URL(source).hostname;
     } catch {
       return null;
     }
-  }, [ingestedUserSku, productImageUrl]);
+  }, [ingestedUserSku, productImageUrl, uploadedImageDataUrl]);
   const hasIngestedSkuBeenAdded = useMemo(() => {
     if (!ingestedUserSku) return false;
     return userSkusAddedToStage3.some((sku) => sku.skuId === ingestedUserSku.skuId);
   }, [ingestedUserSku, userSkusAddedToStage3]);
+  const hasProductImageInput = useMemo(
+    () => Boolean(productImageUrl.trim() || uploadedImageDataUrl),
+    [productImageUrl, uploadedImageDataUrl]
+  );
 
   const closeSwap = () => {
     if (swapTargetId) setPendingSwap(swapTargetId, false);
@@ -503,8 +523,9 @@ export default function EditorPage() {
 
   const fetchAndNormalizeProductImage = async () => {
     const imageUrl = productImageUrl.trim();
-    if (!imageUrl) {
-      setIngestError("Please paste a product image URL.");
+    const imageBase64 = uploadedImageDataUrl;
+    if (!imageBase64 && !imageUrl) {
+      setIngestError("Please paste a product image URL or upload an image.");
       return;
     }
 
@@ -517,7 +538,7 @@ export default function EditorPage() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          imageUrl,
+          ...(imageBase64 ? { imageBase64 } : { imageUrl }),
           label: productLabel.trim() || "User Upload",
         }),
       });
@@ -549,6 +570,56 @@ export default function EditorPage() {
       prev.some((sku) => sku.skuId === ingestedUserSku.skuId) ? prev : [...prev, ingestedUserSku]
     );
     pushSnack("Added to Stage 3 eligible items ✅");
+  };
+
+  const clearUploadedProductImage = () => {
+    setUploadedImageDataUrl(null);
+    setUploadedImageName(null);
+    setIngestError(null);
+    setIngestedUserSku(null);
+  };
+
+  const onUploadedProductImageChange = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const inputEl = event.currentTarget;
+    const file = inputEl.files?.[0];
+    if (!file) return;
+
+    if (!file.type.startsWith("image/")) {
+      setUploadedImageDataUrl(null);
+      setUploadedImageName(null);
+      setIngestedUserSku(null);
+      setIngestError("Please select an image file (.jpg/.png).");
+      inputEl.value = "";
+      return;
+    }
+
+    if (file.size > USER_SKU_MAX_INPUT_BYTES) {
+      setUploadedImageDataUrl(null);
+      setUploadedImageName(null);
+      setIngestedUserSku(null);
+      setIngestError("Image is too large. Please upload a file up to 12MB.");
+      inputEl.value = "";
+      return;
+    }
+
+    try {
+      const dataUrl = await readFileAsDataUrl(file);
+      if (!dataUrl.startsWith("data:image/")) {
+        throw new Error("Please select a valid image file.");
+      }
+      setUploadedImageDataUrl(dataUrl);
+      setUploadedImageName(file.name || "uploaded-image");
+      setIngestError(null);
+      setIngestedUserSku(null);
+    } catch (err: any) {
+      setUploadedImageDataUrl(null);
+      setUploadedImageName(null);
+      setIngestedUserSku(null);
+      setIngestError(err?.message ?? "Failed to read uploaded image.");
+    } finally {
+      // Allow selecting the same file again on subsequent picks.
+      inputEl.value = "";
+    }
   };
 
   const eligibleForDrag = workingSet.eligibleSkus ?? [];
@@ -1904,7 +1975,8 @@ export default function EditorPage() {
             <div className="rounded-lg border border-neutral-800 bg-neutral-900 p-3">
               <div className="text-sm font-medium">Paste Product Image (MVP)</div>
               <div className="mt-1 text-xs text-neutral-400">
-                Paste a direct product image URL (.jpg/.png) and add it to Stage 3 eligible items.
+                Paste a direct product image URL or upload a local image, then add it to Stage 3
+                eligible items.
               </div>
 
               <div className="mt-3 space-y-2">
@@ -1917,6 +1989,37 @@ export default function EditorPage() {
                     placeholder="https://example.com/product.jpg"
                     className="mt-1 w-full rounded-md border border-neutral-800 bg-neutral-950 px-2 py-2 text-sm outline-none focus:border-neutral-600"
                   />
+                </div>
+
+                <div className="flex items-center gap-2 py-1">
+                  <div className="h-px flex-1 bg-neutral-800" />
+                  <div className="text-[10px] uppercase tracking-wide text-neutral-500">OR</div>
+                  <div className="h-px flex-1 bg-neutral-800" />
+                </div>
+
+                <div>
+                  <div className="text-xs text-neutral-400">Upload Image</div>
+                  <input
+                    type="file"
+                    accept="image/*"
+                    onChange={onUploadedProductImageChange}
+                    className="mt-1 block w-full text-xs text-neutral-300 file:mr-3 file:rounded-md file:border file:border-neutral-800 file:bg-neutral-950 file:px-2 file:py-1.5 file:text-xs file:text-neutral-200 hover:file:bg-neutral-800"
+                  />
+                  <div className="mt-1 text-[11px] text-neutral-500">
+                    Upload a product photo/screenshot (.jpg/.png).
+                  </div>
+                  {uploadedImageName && (
+                    <div className="mt-1 flex items-center gap-2 text-xs text-neutral-300">
+                      <div>Selected: {uploadedImageName}</div>
+                      <button
+                        type="button"
+                        onClick={clearUploadedProductImage}
+                        className="rounded border border-neutral-700 bg-neutral-900 px-2 py-0.5 text-[11px] text-neutral-200 hover:bg-neutral-800"
+                      >
+                        Clear
+                      </button>
+                    </div>
+                  )}
                 </div>
 
                 <div>
@@ -1933,7 +2036,7 @@ export default function EditorPage() {
                 <button
                   type="button"
                   onClick={fetchAndNormalizeProductImage}
-                  disabled={isIngesting || !productImageUrl.trim()}
+                  disabled={isIngesting || !hasProductImageInput}
                   className={`rounded-md border px-3 py-1.5 text-sm ${
                     isIngesting
                       ? "border-neutral-900 bg-neutral-950 text-neutral-500"
