@@ -202,6 +202,14 @@ type StageRunStatus = "idle" | "running" | "success" | "error";
 type DeclutterMode = "off" | "light" | "heavy";
 type StageStatusMap = Record<WorkflowStage, StageRunStatus>;
 type StageOutputMap = Partial<Record<WorkflowStage, unknown>>;
+type UserSku = {
+  skuId: string;
+  label: string;
+  variants: string[];
+  sourceUrl?: string;
+  status: "ready" | "failed";
+  reason?: string | null;
+};
 
 const WORKFLOW_STAGES: WorkflowStage[] = [1, 2, 3, 4, 5];
 const INITIAL_STAGE_STATUS: StageStatusMap = {
@@ -420,6 +428,12 @@ export default function EditorPage() {
   const [stage2Flooring, setStage2Flooring] = useState<"none" | "carpet" | "hardwood" | "tile">(
     "none"
   );
+  const [productImageUrl, setProductImageUrl] = useState("");
+  const [productLabel, setProductLabel] = useState("User Upload");
+  const [isIngesting, setIsIngesting] = useState(false);
+  const [ingestError, setIngestError] = useState<string | null>(null);
+  const [ingestedUserSku, setIngestedUserSku] = useState<UserSku | null>(null);
+  const [userSkusAddedToStage3, setUserSkusAddedToStage3] = useState<UserSku[]>([]);
 
   useEffect(() => {
     useEditorStore.getState().tryRestorePendingFromLocalStorage();
@@ -466,11 +480,75 @@ export default function EditorPage() {
     if (!collection || !swapTargetNode) return null;
     return (collection.catalog as any)[swapTargetNode.skuId] ?? null;
   }, [collection, swapTargetNode]);
+  const ingestedSourceHost = useMemo(() => {
+    if (!ingestedUserSku) return null;
+    const source = ingestedUserSku.sourceUrl ?? productImageUrl;
+    if (!source) return null;
+    try {
+      return new URL(source).hostname;
+    } catch {
+      return null;
+    }
+  }, [ingestedUserSku, productImageUrl]);
+  const hasIngestedSkuBeenAdded = useMemo(() => {
+    if (!ingestedUserSku) return false;
+    return userSkusAddedToStage3.some((sku) => sku.skuId === ingestedUserSku.skuId);
+  }, [ingestedUserSku, userSkusAddedToStage3]);
 
   const closeSwap = () => {
     if (swapTargetId) setPendingSwap(swapTargetId, false);
     setSwapOpen(false);
     setSwapTargetId(null);
+  };
+
+  const fetchAndNormalizeProductImage = async () => {
+    const imageUrl = productImageUrl.trim();
+    if (!imageUrl) {
+      setIngestError("Please paste a product image URL.");
+      return;
+    }
+
+    setIsIngesting(true);
+    setIngestError(null);
+    setIngestedUserSku(null);
+
+    try {
+      const res = await fetch("/api/vibode/user-skus/ingest", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          imageUrl,
+          label: productLabel.trim() || "User Upload",
+        }),
+      });
+      const json = (await res.json().catch(() => ({}))) as { userSku?: UserSku; error?: string };
+
+      if (!res.ok) {
+        throw new Error(json.error || "Failed to normalize image.");
+      }
+
+      if (!json.userSku) {
+        throw new Error("Ingest response missing userSku.");
+      }
+
+      setIngestedUserSku(json.userSku);
+      if (json.userSku.status === "failed") {
+        setIngestError(json.userSku.reason ?? "Normalization failed.");
+      }
+    } catch (err: any) {
+      setIngestError(err?.message ?? "Failed to normalize image.");
+    } finally {
+      setIsIngesting(false);
+    }
+  };
+
+  const addIngestedSkuToRoom = () => {
+    if (!ingestedUserSku || ingestedUserSku.status !== "ready") return;
+
+    setUserSkusAddedToStage3((prev) =>
+      prev.some((sku) => sku.skuId === ingestedUserSku.skuId) ? prev : [...prev, ingestedUserSku]
+    );
+    pushSnack("Added to Stage 3 eligible items ✅");
   };
 
   const eligibleForDrag = workingSet.eligibleSkus ?? [];
@@ -676,14 +754,21 @@ export default function EditorPage() {
       }
 
       if (stageNumber === 3 || stageNumber === 4) {
-        const collectionSkus = IKEA_CA_SKUS;
-        payload.eligibleSkus = collectionSkus.map((s) => ({
+        const ikeaEligibleSkus = IKEA_CA_SKUS.map((s) => ({
           skuId: s.skuId,
           label: s.displayName ?? s.skuId,
           variants: s.imageUrl ? [{ imageUrl: s.imageUrl }] : [],
         }));
         if (stageNumber === 3) {
+          const userEligibleSkus = userSkusAddedToStage3.map((sku) => ({
+            skuId: sku.skuId,
+            label: sku.label || "User Upload",
+            variants: (sku.variants ?? []).map((imageUrl) => ({ imageUrl })),
+          }));
+          payload.eligibleSkus = [...ikeaEligibleSkus, ...userEligibleSkus];
           payload.targetCount = 8;
+        } else if (stageNumber === 4) {
+          payload.eligibleSkus = ikeaEligibleSkus;
         }
       }
 
@@ -1814,6 +1899,101 @@ export default function EditorPage() {
                   Last output: {lastStageOutputs[activeStage] ? "available" : "none"}
                 </div>
               </div>
+            </div>
+
+            <div className="rounded-lg border border-neutral-800 bg-neutral-900 p-3">
+              <div className="text-sm font-medium">Paste Product Image (MVP)</div>
+              <div className="mt-1 text-xs text-neutral-400">
+                Paste a direct product image URL (.jpg/.png) and add it to Stage 3 eligible items.
+              </div>
+
+              <div className="mt-3 space-y-2">
+                <div>
+                  <div className="text-xs text-neutral-400">Image URL</div>
+                  <input
+                    type="url"
+                    value={productImageUrl}
+                    onChange={(e) => setProductImageUrl(e.target.value)}
+                    placeholder="https://example.com/product.jpg"
+                    className="mt-1 w-full rounded-md border border-neutral-800 bg-neutral-950 px-2 py-2 text-sm outline-none focus:border-neutral-600"
+                  />
+                </div>
+
+                <div>
+                  <div className="text-xs text-neutral-400">Label (optional)</div>
+                  <input
+                    type="text"
+                    value={productLabel}
+                    onChange={(e) => setProductLabel(e.target.value)}
+                    placeholder="User Upload"
+                    className="mt-1 w-full rounded-md border border-neutral-800 bg-neutral-950 px-2 py-2 text-sm outline-none focus:border-neutral-600"
+                  />
+                </div>
+
+                <button
+                  type="button"
+                  onClick={fetchAndNormalizeProductImage}
+                  disabled={isIngesting || !productImageUrl.trim()}
+                  className={`rounded-md border px-3 py-1.5 text-sm ${
+                    isIngesting
+                      ? "border-neutral-900 bg-neutral-950 text-neutral-500"
+                      : "border-neutral-700 bg-neutral-900 hover:bg-neutral-800"
+                  }`}
+                >
+                  {isIngesting ? "Fetching…" : "Fetch + Normalize"}
+                </button>
+
+                {ingestError && <div className="text-xs text-red-300">{ingestError}</div>}
+              </div>
+
+              {ingestedUserSku?.status === "ready" && (
+                <div className="mt-3 rounded-md border border-neutral-800 bg-neutral-950 p-2">
+                  <div className="text-xs text-neutral-400">Normalized Preview</div>
+
+                  {ingestedUserSku.variants?.[0] ? (
+                    <div className="mt-2 aspect-[4/3] w-full overflow-hidden rounded-md border border-neutral-800 bg-neutral-900">
+                      <img
+                        src={ingestedUserSku.variants[0]}
+                        alt={ingestedUserSku.label}
+                        className="h-full w-full object-contain"
+                      />
+                    </div>
+                  ) : (
+                    <div className="mt-2 rounded-md border border-dashed border-neutral-700 px-3 py-2 text-xs text-neutral-500">
+                      No normalized image variant returned.
+                    </div>
+                  )}
+
+                  <div className="mt-2 text-sm text-neutral-100">{ingestedUserSku.label}</div>
+                  <div className="mt-0.5 text-xs text-neutral-500">Source: {ingestedSourceHost ?? "—"}</div>
+
+                  <button
+                    type="button"
+                    onClick={addIngestedSkuToRoom}
+                    disabled={hasIngestedSkuBeenAdded}
+                    className={`mt-2 rounded-md border px-3 py-1.5 text-sm ${
+                      hasIngestedSkuBeenAdded
+                        ? "border-emerald-900/50 bg-emerald-950/30 text-emerald-300"
+                        : "border-neutral-700 bg-neutral-900 hover:bg-neutral-800"
+                    }`}
+                  >
+                    {hasIngestedSkuBeenAdded ? "Added ✅" : "Add to Room"}
+                  </button>
+
+                  {hasIngestedSkuBeenAdded && (
+                    <div className="mt-1 text-xs text-emerald-300">
+                      Added to Stage 3 eligible items ✅
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {userSkusAddedToStage3.length > 0 && (
+                <div className="mt-2 text-xs text-neutral-500">
+                  {userSkusAddedToStage3.length} user item
+                  {userSkusAddedToStage3.length === 1 ? "" : "s"} added for Stage 3.
+                </div>
+              )}
             </div>
 
             {/* Setup */}
