@@ -10,7 +10,7 @@ import { toImageSpaceTransform, useEditorStore, type FurnitureNode } from "@/sto
 import { computeOverlappingNodeIds } from "@/lib/collisionV1";
 import { MOCK_COLLECTIONS, type RoomSizeBundleId } from "@/data/mockCollections";
 import { IKEA_CA_SKUS, type IkeaCaSku } from "@/data/mockIkeaCaSkus";
-import { clearPendingLocal, savePendingLocal } from "@/lib/pendingGeneration";
+import { clearPendingLocal, loadPendingLocal, savePendingLocal } from "@/lib/pendingGeneration";
 import { DEFAULT_PX_PER_IN, skuFootprintInchesFromDims } from "@/lib/ikeaSizing";
 
 // ✅ FIX: import path (avoid "@/src/..." which commonly causes alias/circular issues)
@@ -231,6 +231,15 @@ type Stage3SkuItem = {
   active: boolean;
   variants: Array<{ imageUrl: string }>;
 };
+type PendingStage3Payload = {
+  skuItems?: unknown;
+  showCatalog?: unknown;
+};
+type PendingLocalPayload = {
+  sceneId?: unknown;
+  stage3?: PendingStage3Payload;
+  [key: string]: unknown;
+};
 
 const WORKFLOW_STAGES: WorkflowStage[] = [1, 2, 3, 4, 5];
 const INITIAL_STAGE_STATUS: StageStatusMap = {
@@ -280,6 +289,49 @@ function mergeStage3SkuItems(prev: Stage3SkuItem[], userSkus: UserSku[]): Stage3
   }
 
   return next;
+}
+
+function serializeStage3SkuItems(rawItems: unknown): Stage3SkuItem[] {
+  if (!Array.isArray(rawItems)) return [];
+  const next: Stage3SkuItem[] = [];
+
+  for (const rawItem of rawItems) {
+    if (!rawItem || typeof rawItem !== "object") continue;
+    const item = rawItem as Record<string, unknown>;
+    const skuId = typeof item.skuId === "string" ? item.skuId : "";
+    if (!skuId) continue;
+
+    const source: Stage3SkuSource =
+      item.source === "catalog" || item.source === "user" ? item.source : "catalog";
+    const variantsRaw = Array.isArray(item.variants) ? item.variants : [];
+    const variants = variantsRaw
+      .map((variant) => {
+        if (!variant || typeof variant !== "object") return null;
+        const imageUrl = (variant as Record<string, unknown>).imageUrl;
+        return typeof imageUrl === "string" ? { imageUrl } : null;
+      })
+      .filter((variant): variant is { imageUrl: string } => Boolean(variant));
+
+    next.push({
+      skuId,
+      label: typeof item.label === "string" && item.label.trim() ? item.label : skuId,
+      source,
+      active: item.active === true,
+      variants,
+    });
+  }
+
+  return next;
+}
+
+function buildPendingStage3Payload(
+  stage3SkuItems: Stage3SkuItem[],
+  stage3ShowCatalog: boolean
+): { skuItems: Stage3SkuItem[]; showCatalog: boolean } {
+  return {
+    skuItems: serializeStage3SkuItems(stage3SkuItems),
+    showCatalog: stage3ShowCatalog === true,
+  };
 }
 
 function validateFreezePayloadV1(payload: unknown): { ok: true } | { ok: false; reason: string } {
@@ -499,10 +551,46 @@ export default function EditorPage() {
   const [ingestedUserSku, setIngestedUserSku] = useState<UserSku | null>(null);
   const [userSkusAddedToStage3, setUserSkusAddedToStage3] = useState<UserSku[]>([]);
   const [stage3SkuItems, setStage3SkuItems] = useState<Stage3SkuItem[]>([]);
+  const [stage3ShowCatalog, setStage3ShowCatalog] = useState(false);
+  const didRestorePendingRef = useRef(false);
 
   useEffect(() => {
     useEditorStore.getState().tryRestorePendingFromLocalStorage();
+    const pending = loadPendingLocal() as PendingLocalPayload | null;
+    const restoredSkuItems = serializeStage3SkuItems(pending?.stage3?.skuItems);
+    const hasSkuItems = Array.isArray(pending?.stage3?.skuItems);
+    const restoredShowCatalog =
+      typeof pending?.stage3?.showCatalog === "boolean" ? pending.stage3.showCatalog : null;
+
+    if (hasSkuItems) {
+      setStage3SkuItems(restoredSkuItems);
+    }
+    if (restoredShowCatalog !== null) {
+      setStage3ShowCatalog(restoredShowCatalog);
+    }
+
+    console.debug("[stage3.restore]", {
+      restoredSkuItemsCount: restoredSkuItems.length,
+      restoredActiveCount: restoredSkuItems.filter((item) => item.active).length,
+      showCatalog: restoredShowCatalog ?? false,
+    });
+
+    didRestorePendingRef.current = true;
   }, []);
+
+  useEffect(() => {
+    if (!didRestorePendingRef.current) return;
+    const currentPending = loadPendingLocal() as PendingLocalPayload | null;
+    if (!currentPending) return;
+    const currentSceneId =
+      typeof currentPending.sceneId === "string" ? currentPending.sceneId : undefined;
+    if (currentSceneId !== scene.sceneId) return;
+
+    savePendingLocal({
+      ...currentPending,
+      stage3: buildPendingStage3Payload(stage3SkuItems, stage3ShowCatalog),
+    });
+  }, [scene.sceneId, stage3ShowCatalog, stage3SkuItems]);
 
   useEffect(() => {
     if (activeTool === "swap" && selectedSwapMarkId) return;
@@ -569,6 +657,38 @@ export default function EditorPage() {
     () => Boolean(productImageUrl.trim() || uploadedImageDataUrl),
     [productImageUrl, uploadedImageDataUrl]
   );
+  const {
+    totalCount,
+    activeCount,
+    userCount,
+    activeUserCount,
+    catalogCount,
+    activeCatalogCount,
+  } = useMemo(() => {
+    let active = 0;
+    let user = 0;
+    let activeUser = 0;
+    let catalog = 0;
+    let activeCatalog = 0;
+    for (const item of stage3SkuItems) {
+      if (item.active) active += 1;
+      if (item.source === "user") {
+        user += 1;
+        if (item.active) activeUser += 1;
+      } else {
+        catalog += 1;
+        if (item.active) activeCatalog += 1;
+      }
+    }
+    return {
+      totalCount: stage3SkuItems.length,
+      activeCount: active,
+      userCount: user,
+      activeUserCount: activeUser,
+      catalogCount: catalog,
+      activeCatalogCount: activeCatalog,
+    };
+  }, [stage3SkuItems]);
 
   const closeSwap = () => {
     if (swapTargetId) setPendingSwap(swapTargetId, false);
@@ -818,6 +938,7 @@ export default function EditorPage() {
       baseImageHeightPx: nextScene.baseImageHeightPx,
       vibeMode: nextScene.vibeMode,
       draftMarkup: nextScene.draftMarkup,
+      stage3: buildPendingStage3Payload(stage3SkuItems, stage3ShowCatalog),
     });
     pushSnack("Branched from history.");
   };
@@ -1131,7 +1252,10 @@ export default function EditorPage() {
     const { sceneSnapshotForRecovery, markupToPersist } = useEditorStore
       .getState()
       .beginGenerate();
-    savePendingLocal(sceneSnapshotForRecovery);
+    savePendingLocal({
+      ...sceneSnapshotForRecovery,
+      stage3: buildPendingStage3Payload(stage3SkuItems, stage3ShowCatalog),
+    });
 
     const slowTimer = setTimeout(() => useEditorStore.getState().markGeneratingSlow(), 30_000);
     const stallTimer = setTimeout(() => useEditorStore.getState().markGeneratingStall(), 60_000);
@@ -2106,77 +2230,99 @@ export default function EditorPage() {
 
             {activeStage === 3 && (
               <div className="rounded-lg border border-neutral-800 bg-neutral-900 p-3">
-                <div className="text-sm font-medium">Stage 3 Items</div>
+                <div className="flex items-center justify-between gap-2">
+                  <div className="text-sm font-medium">Stage 3 Items</div>
+                  <label className="flex items-center gap-1 text-xs text-neutral-300">
+                    <input
+                      type="checkbox"
+                      checked={stage3ShowCatalog}
+                      onChange={(e) => setStage3ShowCatalog(e.target.checked)}
+                      className="h-4 w-4 accent-sky-400"
+                    />
+                    Show catalog
+                  </label>
+                </div>
+                <div className="mt-1 text-xs text-neutral-400">
+                  Active: {activeCount}/{totalCount} • User: {activeUserCount}/{userCount} • Catalog:{" "}
+                  {activeCatalogCount}/{catalogCount}
+                </div>
                 <div className="mt-1 text-xs text-neutral-400">
                   Choose which SKUs are included for this generation and set order.
                 </div>
 
                 <div className="mt-3 space-y-2">
-                  {stage3SkuItems.map((item, index) => (
-                    <div
-                      key={item.skuId}
-                      className="rounded-md border border-neutral-800 bg-neutral-950 p-2"
-                    >
-                      <div className="flex items-start gap-2">
-                        <div className="min-w-0 flex-1">
-                          <div className="truncate text-sm text-neutral-100">
-                            {item.label || item.skuId}
+                  {stage3SkuItems.map((item, index) => {
+                    if (item.source !== "user" && !(item.active || stage3ShowCatalog)) {
+                      return null;
+                    }
+                    return (
+                      <div
+                        key={item.skuId}
+                        className="rounded-md border border-neutral-800 bg-neutral-950 p-2"
+                      >
+                        <div className="flex items-start gap-2">
+                          <div className="min-w-0 flex-1">
+                            <div className="truncate text-sm text-neutral-100">
+                              {item.label || item.skuId}
+                            </div>
+                            <div className="mt-1 flex items-center gap-2 text-[11px]">
+                              <span
+                                className={`rounded px-1.5 py-0.5 ${
+                                  item.source === "user"
+                                    ? "border border-emerald-900/50 bg-emerald-950/30 text-emerald-300"
+                                    : "border border-neutral-700 bg-neutral-900 text-neutral-300"
+                                }`}
+                              >
+                                {item.source === "user" ? "User" : "Catalog"}
+                              </span>
+                              <span className="truncate text-neutral-500">{item.skuId}</span>
+                            </div>
                           </div>
-                          <div className="mt-1 flex items-center gap-2 text-[11px]">
-                            <span
-                              className={`rounded px-1.5 py-0.5 ${
-                                item.source === "user"
-                                  ? "border border-emerald-900/50 bg-emerald-950/30 text-emerald-300"
-                                  : "border border-neutral-700 bg-neutral-900 text-neutral-300"
+
+                          <label className="flex items-center gap-1 text-xs text-neutral-300">
+                            <input
+                              type="checkbox"
+                              checked={item.active}
+                              onChange={(e) =>
+                                toggleStage3SkuItemActive(item.skuId, e.target.checked)
+                              }
+                              className="h-4 w-4 accent-sky-400"
+                            />
+                            Include
+                          </label>
+
+                          <div className="flex gap-1">
+                            <button
+                              type="button"
+                              onClick={() => moveStage3SkuItem(index, "up")}
+                              disabled={index === 0}
+                              className={`rounded border px-2 py-1 text-xs ${
+                                index === 0
+                                  ? "border-neutral-900 bg-neutral-950 text-neutral-600"
+                                  : "border-neutral-700 bg-neutral-900 text-neutral-200 hover:bg-neutral-800"
                               }`}
+                              aria-label={`Move ${item.skuId} up`}
                             >
-                              {item.source === "user" ? "User" : "Catalog"}
-                            </span>
-                            <span className="truncate text-neutral-500">{item.skuId}</span>
+                              ↑
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => moveStage3SkuItem(index, "down")}
+                              disabled={index === stage3SkuItems.length - 1}
+                              className={`rounded border px-2 py-1 text-xs ${
+                                index === stage3SkuItems.length - 1
+                                  ? "border-neutral-900 bg-neutral-950 text-neutral-600"
+                                  : "border-neutral-700 bg-neutral-900 text-neutral-200 hover:bg-neutral-800"
+                              }`}
+                              aria-label={`Move ${item.skuId} down`}
+                            >
+                              ↓
+                            </button>
                           </div>
-                        </div>
-
-                        <label className="flex items-center gap-1 text-xs text-neutral-300">
-                          <input
-                            type="checkbox"
-                            checked={item.active}
-                            onChange={(e) => toggleStage3SkuItemActive(item.skuId, e.target.checked)}
-                            className="h-4 w-4 accent-sky-400"
-                          />
-                          Include
-                        </label>
-
-                        <div className="flex gap-1">
-                          <button
-                            type="button"
-                            onClick={() => moveStage3SkuItem(index, "up")}
-                            disabled={index === 0}
-                            className={`rounded border px-2 py-1 text-xs ${
-                              index === 0
-                                ? "border-neutral-900 bg-neutral-950 text-neutral-600"
-                                : "border-neutral-700 bg-neutral-900 text-neutral-200 hover:bg-neutral-800"
-                            }`}
-                            aria-label={`Move ${item.skuId} up`}
-                          >
-                            ↑
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => moveStage3SkuItem(index, "down")}
-                            disabled={index === stage3SkuItems.length - 1}
-                            className={`rounded border px-2 py-1 text-xs ${
-                              index === stage3SkuItems.length - 1
-                                ? "border-neutral-900 bg-neutral-950 text-neutral-600"
-                                : "border-neutral-700 bg-neutral-900 text-neutral-200 hover:bg-neutral-800"
-                            }`}
-                            aria-label={`Move ${item.skuId} down`}
-                          >
-                            ↓
-                          </button>
                         </div>
                       </div>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               </div>
             )}
