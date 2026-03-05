@@ -836,11 +836,66 @@ export default function EditorPage() {
             label: sku.label || "User Upload",
             variants: (sku.variants ?? []).map((imageUrl) => ({ imageUrl })),
           }));
-          payload.eligibleSkus = [...ikeaEligibleSkus, ...userEligibleSkus];
+          payload.eligibleSkus = [...userEligibleSkus, ...ikeaEligibleSkus];
           payload.targetCount = 8;
         } else if (stageNumber === 4) {
           payload.eligibleSkus = ikeaEligibleSkus;
         }
+      }
+
+      if (stageNumber === 3) {
+        const eligibleSkusForLog = Array.isArray(payload.eligibleSkus)
+          ? (payload.eligibleSkus as Array<Record<string, unknown>>)
+          : [];
+
+        const skuDebugRows = eligibleSkusForLog.map((sku) => {
+          const skuId = typeof sku.skuId === "string" ? sku.skuId : "";
+          const label = typeof sku.label === "string" ? sku.label : null;
+          const variants = Array.isArray(sku.variants) ? sku.variants : [];
+          const firstVariant = variants[0];
+
+          let firstVariantPreview = "";
+          if (typeof firstVariant === "string") {
+            firstVariantPreview = firstVariant.slice(0, 60);
+          } else if (isRecord(firstVariant) && typeof firstVariant.imageUrl === "string") {
+            firstVariantPreview = firstVariant.imageUrl.slice(0, 60);
+          } else if (firstVariant != null) {
+            const serialized = JSON.stringify(firstVariant);
+            firstVariantPreview = (serialized ?? "").slice(0, 60);
+          }
+
+          return {
+            skuId,
+            label,
+            variantsLength: variants.length,
+            firstVariantPreview,
+            source: sku.source ?? null,
+            priority: sku.priority ?? null,
+          };
+        });
+
+        const skuIdsInOrder = skuDebugRows.map((row) => row.skuId);
+        const userSkuCount = skuIdsInOrder.filter((id) => id.startsWith("user_")).length;
+        const nonUserSkuCount = skuIdsInOrder.length - userSkuCount;
+        const baseImageField = typeof payload.baseImageUrl === "string"
+          ? "baseImageUrl"
+          : typeof payload.baseImageId === "string"
+            ? "baseImageId"
+            : typeof payload.roomImageBase64 === "string"
+              ? "roomImageBase64"
+              : null;
+
+        console.log("[stage3][pre-post][summary]", {
+          stage: stageNumber,
+          targetCount: payload.targetCount ?? null,
+          baseImageField,
+          eligibleSkusLength: eligibleSkusForLog.length,
+          skuIdsInOrder,
+          skuDebugRows,
+          userSkuCount,
+          nonUserSkuCount,
+        });
+        console.log("[stage3][pre-post][payload-json]", JSON.stringify(payload, null, 2));
       }
 
       console.log("stage-run payload", payload);
