@@ -223,6 +223,14 @@ type UserSku = {
   status: "ready" | "failed";
   reason?: string | null;
 };
+type Stage3SkuSource = "user" | "catalog";
+type Stage3SkuItem = {
+  skuId: string;
+  label: string;
+  source: Stage3SkuSource;
+  active: boolean;
+  variants: Array<{ imageUrl: string }>;
+};
 
 const WORKFLOW_STAGES: WorkflowStage[] = [1, 2, 3, 4, 5];
 const INITIAL_STAGE_STATUS: StageStatusMap = {
@@ -232,6 +240,47 @@ const INITIAL_STAGE_STATUS: StageStatusMap = {
   4: "idle",
   5: "idle",
 };
+
+function mergeStage3SkuItems(prev: Stage3SkuItem[], userSkus: UserSku[]): Stage3SkuItem[] {
+  const next: Stage3SkuItem[] = [];
+  const seenSkuIds = new Set<string>();
+
+  for (const item of prev) {
+    if (!item?.skuId || seenSkuIds.has(item.skuId)) continue;
+    seenSkuIds.add(item.skuId);
+    next.push(item);
+  }
+
+  for (const sku of userSkus) {
+    if (!sku?.skuId || seenSkuIds.has(sku.skuId)) continue;
+    const userItem: Stage3SkuItem = {
+      skuId: sku.skuId,
+      label: sku.label || sku.skuId,
+      source: "user",
+      active: true,
+      variants: (sku.variants ?? [])
+        .filter((imageUrl): imageUrl is string => typeof imageUrl === "string")
+        .map((imageUrl) => ({ imageUrl })),
+    };
+    const lastUserIndex = next.findLastIndex((item) => item.source === "user");
+    next.splice(lastUserIndex + 1, 0, userItem);
+    seenSkuIds.add(sku.skuId);
+  }
+
+  for (const sku of IKEA_CA_SKUS) {
+    if (!sku?.skuId || seenSkuIds.has(sku.skuId)) continue;
+    seenSkuIds.add(sku.skuId);
+    next.push({
+      skuId: sku.skuId,
+      label: sku.displayName ?? sku.skuId,
+      source: "catalog",
+      active: false,
+      variants: sku.imageUrl ? [{ imageUrl: sku.imageUrl }] : [],
+    });
+  }
+
+  return next;
+}
 
 function validateFreezePayloadV1(payload: unknown): { ok: true } | { ok: false; reason: string } {
   if (!payload || typeof payload !== "object") return { ok: false, reason: "payload missing" };
@@ -449,6 +498,7 @@ export default function EditorPage() {
   const [ingestError, setIngestError] = useState<string | null>(null);
   const [ingestedUserSku, setIngestedUserSku] = useState<UserSku | null>(null);
   const [userSkusAddedToStage3, setUserSkusAddedToStage3] = useState<UserSku[]>([]);
+  const [stage3SkuItems, setStage3SkuItems] = useState<Stage3SkuItem[]>([]);
 
   useEffect(() => {
     useEditorStore.getState().tryRestorePendingFromLocalStorage();
@@ -458,6 +508,11 @@ export default function EditorPage() {
     if (activeTool === "swap" && selectedSwapMarkId) return;
     setSwapPickerOpen(false);
   }, [activeTool, selectedSwapMarkId]);
+
+  useEffect(() => {
+    if (activeStage !== 3) return;
+    setStage3SkuItems((prev) => mergeStage3SkuItems(prev, userSkusAddedToStage3));
+  }, [activeStage, userSkusAddedToStage3]);
 
   const selectedNode = useMemo(() => {
     if (!selectedNodeId) return null;
@@ -569,7 +624,25 @@ export default function EditorPage() {
     setUserSkusAddedToStage3((prev) =>
       prev.some((sku) => sku.skuId === ingestedUserSku.skuId) ? prev : [...prev, ingestedUserSku]
     );
+    setStage3SkuItems((prev) => mergeStage3SkuItems(prev, [ingestedUserSku]));
     pushSnack("Added to Stage 3 eligible items ✅");
+  };
+
+  const toggleStage3SkuItemActive = (skuId: string, active: boolean) => {
+    setStage3SkuItems((prev) =>
+      prev.map((item) => (item.skuId === skuId ? { ...item, active } : item))
+    );
+  };
+
+  const moveStage3SkuItem = (index: number, direction: "up" | "down") => {
+    setStage3SkuItems((prev) => {
+      const targetIndex = direction === "up" ? index - 1 : index + 1;
+      if (targetIndex < 0 || targetIndex >= prev.length) return prev;
+      const next = [...prev];
+      const [moved] = next.splice(index, 1);
+      next.splice(targetIndex, 0, moved);
+      return next;
+    });
   };
 
   const clearUploadedProductImage = () => {
@@ -825,21 +898,25 @@ export default function EditorPage() {
       }
 
       if (stageNumber === 3 || stageNumber === 4) {
-        const ikeaEligibleSkus = IKEA_CA_SKUS.map((s) => ({
-          skuId: s.skuId,
-          label: s.displayName ?? s.skuId,
-          variants: s.imageUrl ? [{ imageUrl: s.imageUrl }] : [],
-        }));
         if (stageNumber === 3) {
-          const userEligibleSkus = userSkusAddedToStage3.map((sku) => ({
-            skuId: sku.skuId,
-            label: sku.label || "User Upload",
-            variants: (sku.variants ?? []).map((imageUrl) => ({ imageUrl })),
+          const activeItems = stage3SkuItems.filter((item) => item.active);
+          payload.eligibleSkus = activeItems.map((item) => ({
+            skuId: item.skuId,
+            label: item.label || item.skuId,
+            variants: (item.variants ?? [])
+              .filter(
+                (variant): variant is { imageUrl: string } =>
+                  !!variant && typeof variant.imageUrl === "string"
+              )
+              .map((variant) => ({ imageUrl: variant.imageUrl })),
           }));
-          payload.eligibleSkus = [...userEligibleSkus, ...ikeaEligibleSkus];
           payload.targetCount = 8;
         } else if (stageNumber === 4) {
-          payload.eligibleSkus = ikeaEligibleSkus;
+          payload.eligibleSkus = IKEA_CA_SKUS.map((s) => ({
+            skuId: s.skuId,
+            label: s.displayName ?? s.skuId,
+            variants: s.imageUrl ? [{ imageUrl: s.imageUrl }] : [],
+          }));
         }
       }
 
@@ -2026,6 +2103,83 @@ export default function EditorPage() {
                 </div>
               </div>
             </div>
+
+            {activeStage === 3 && (
+              <div className="rounded-lg border border-neutral-800 bg-neutral-900 p-3">
+                <div className="text-sm font-medium">Stage 3 Items</div>
+                <div className="mt-1 text-xs text-neutral-400">
+                  Choose which SKUs are included for this generation and set order.
+                </div>
+
+                <div className="mt-3 space-y-2">
+                  {stage3SkuItems.map((item, index) => (
+                    <div
+                      key={item.skuId}
+                      className="rounded-md border border-neutral-800 bg-neutral-950 p-2"
+                    >
+                      <div className="flex items-start gap-2">
+                        <div className="min-w-0 flex-1">
+                          <div className="truncate text-sm text-neutral-100">
+                            {item.label || item.skuId}
+                          </div>
+                          <div className="mt-1 flex items-center gap-2 text-[11px]">
+                            <span
+                              className={`rounded px-1.5 py-0.5 ${
+                                item.source === "user"
+                                  ? "border border-emerald-900/50 bg-emerald-950/30 text-emerald-300"
+                                  : "border border-neutral-700 bg-neutral-900 text-neutral-300"
+                              }`}
+                            >
+                              {item.source === "user" ? "User" : "Catalog"}
+                            </span>
+                            <span className="truncate text-neutral-500">{item.skuId}</span>
+                          </div>
+                        </div>
+
+                        <label className="flex items-center gap-1 text-xs text-neutral-300">
+                          <input
+                            type="checkbox"
+                            checked={item.active}
+                            onChange={(e) => toggleStage3SkuItemActive(item.skuId, e.target.checked)}
+                            className="h-4 w-4 accent-sky-400"
+                          />
+                          Include
+                        </label>
+
+                        <div className="flex gap-1">
+                          <button
+                            type="button"
+                            onClick={() => moveStage3SkuItem(index, "up")}
+                            disabled={index === 0}
+                            className={`rounded border px-2 py-1 text-xs ${
+                              index === 0
+                                ? "border-neutral-900 bg-neutral-950 text-neutral-600"
+                                : "border-neutral-700 bg-neutral-900 text-neutral-200 hover:bg-neutral-800"
+                            }`}
+                            aria-label={`Move ${item.skuId} up`}
+                          >
+                            ↑
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => moveStage3SkuItem(index, "down")}
+                            disabled={index === stage3SkuItems.length - 1}
+                            className={`rounded border px-2 py-1 text-xs ${
+                              index === stage3SkuItems.length - 1
+                                ? "border-neutral-900 bg-neutral-950 text-neutral-600"
+                                : "border-neutral-700 bg-neutral-900 text-neutral-200 hover:bg-neutral-800"
+                            }`}
+                            aria-label={`Move ${item.skuId} down`}
+                          >
+                            ↓
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
 
             <div className="rounded-lg border border-neutral-800 bg-neutral-900 p-3">
               <div className="text-sm font-medium">Paste Product Image (MVP)</div>
