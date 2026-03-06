@@ -231,6 +231,35 @@ type Stage3SkuItem = {
   active: boolean;
   variants: Array<{ imageUrl: string }>;
 };
+type ScenePlacement = {
+  placementId: string;
+  skuId: string;
+  label?: string;
+  source?: "catalog" | "user";
+  bbox?: { x: number; y: number; w: number; h: number };
+  rotationDeg?: number;
+  stageAdded?: number;
+  locked?: boolean;
+};
+type EditAction = "add" | "remove" | "swap" | "rotate" | "move";
+type VibodeEligibleSku = {
+  skuId: string;
+  label: string;
+  source?: "catalog" | "user";
+  variants: Array<{ imageUrl: string }>;
+};
+type VibodeEditRunRequest = {
+  baseImageUrl: string;
+  action: EditAction;
+  placements: ScenePlacement[];
+  target?: { placementId?: string; skuId?: string };
+  params?: Record<string, unknown>;
+  eligibleSkus?: VibodeEligibleSku[];
+};
+type VibodeEditRunResponse = {
+  imageUrl: string;
+  placements?: ScenePlacement[];
+};
 type PendingStage3Payload = {
   skuItems?: unknown;
   showCatalog?: unknown;
@@ -332,6 +361,24 @@ function buildPendingStage3Payload(
     skuItems: serializeStage3SkuItems(stage3SkuItems),
     showCatalog: stage3ShowCatalog === true,
   };
+}
+
+function getImageUrlFromUnknown(value: unknown): string | null {
+  if (!value || typeof value !== "object") return null;
+  const record = value as Record<string, unknown>;
+  if (typeof record.imageUrl === "string" && record.imageUrl.trim().length > 0) {
+    return record.imageUrl;
+  }
+  const output = record.output;
+  if (
+    output &&
+    typeof output === "object" &&
+    typeof (output as Record<string, unknown>).imageUrl === "string"
+  ) {
+    const outputImage = (output as Record<string, unknown>).imageUrl as string;
+    return outputImage.trim().length > 0 ? outputImage : null;
+  }
+  return null;
 }
 
 function validateFreezePayloadV1(payload: unknown): { ok: true } | { ok: false; reason: string } {
@@ -535,6 +582,14 @@ export default function EditorPage() {
   const [stageStatus, setStageStatus] = useState<StageStatusMap>(INITIAL_STAGE_STATUS);
   const [hasFurniturePass, setHasFurniturePass] = useState(false);
   const [lastStageOutputs, setLastStageOutputs] = useState<StageOutputMap>({});
+  const [workingImageUrl, setWorkingImageUrl] = useState<string | null>(null);
+  const [scenePlacements, setScenePlacements] = useState<ScenePlacement[]>([]);
+  const [selectedPlacementId, setSelectedPlacementId] = useState<string | null>(null);
+  const [selectedEditSkuId, setSelectedEditSkuId] = useState<string>("");
+  const [editRotationDeg, setEditRotationDeg] = useState(0);
+  const [editMoveStep, setEditMoveStep] = useState(0.05);
+  const [editWarning, setEditWarning] = useState<string | null>(null);
+  const [isEditRunning, setIsEditRunning] = useState(false);
   const [stage1Enhance, setStage1Enhance] = useState(true);
   const [stage1Declutter, setStage1Declutter] = useState<DeclutterMode>("off");
   const [stage2Repair, setStage2Repair] = useState(false);
@@ -601,6 +656,64 @@ export default function EditorPage() {
     if (activeStage !== 3) return;
     setStage3SkuItems((prev) => mergeStage3SkuItems(prev, userSkusAddedToStage3));
   }, [activeStage, userSkusAddedToStage3]);
+
+  const stage3SkuItemsActive = useMemo<VibodeEligibleSku[]>(
+    () =>
+      stage3SkuItems
+        .filter((item) => item.active)
+        .map((item) => ({
+          skuId: item.skuId,
+          label: item.label || item.skuId,
+          source: item.source,
+          variants: (item.variants ?? []).filter(
+            (variant): variant is { imageUrl: string } =>
+              !!variant && typeof variant.imageUrl === "string" && variant.imageUrl.length > 0
+          ),
+        })),
+    [stage3SkuItems]
+  );
+
+  useEffect(() => {
+    if (!scene.baseImageUrl) {
+      if (workingImageUrl !== null) {
+        setWorkingImageUrl(null);
+      }
+      return;
+    }
+    if (!workingImageUrl) {
+      setWorkingImageUrl(scene.baseImageUrl);
+    }
+  }, [scene.baseImageUrl, workingImageUrl]);
+
+  const activeStageOutputImageUrl = useMemo(
+    () => getImageUrlFromUnknown(lastStageOutputs[activeStage]),
+    [activeStage, lastStageOutputs]
+  );
+  const previewImageUrl =
+    workingImageUrl ?? activeStageOutputImageUrl ?? scene.baseImageUrl ?? null;
+
+  useEffect(() => {
+    if (!selectedPlacementId) return;
+    const stillExists = scenePlacements.some((placement) => placement.placementId === selectedPlacementId);
+    if (!stillExists) {
+      setSelectedPlacementId(null);
+    }
+  }, [scenePlacements, selectedPlacementId]);
+
+  useEffect(() => {
+    if (!stage3SkuItemsActive.length) {
+      if (selectedEditSkuId) setSelectedEditSkuId("");
+      return;
+    }
+    if (!selectedEditSkuId) {
+      setSelectedEditSkuId(stage3SkuItemsActive[0].skuId);
+      return;
+    }
+    const stillExists = stage3SkuItemsActive.some((sku) => sku.skuId === selectedEditSkuId);
+    if (!stillExists) {
+      setSelectedEditSkuId(stage3SkuItemsActive[0].skuId);
+    }
+  }, [selectedEditSkuId, stage3SkuItemsActive]);
 
   const selectedNode = useMemo(() => {
     if (!selectedNodeId) return null;
@@ -940,6 +1053,9 @@ export default function EditorPage() {
       draftMarkup: nextScene.draftMarkup,
       stage3: buildPendingStage3Payload(stage3SkuItems, stage3ShowCatalog),
     });
+    setWorkingImageUrl(nextScene.baseImageUrl ?? null);
+    setScenePlacements([]);
+    setSelectedPlacementId(null);
     pushSnack("Branched from history.");
   };
 
@@ -977,7 +1093,7 @@ export default function EditorPage() {
       const payload: Record<string, unknown> = {
         stage: stageNumber,
       };
-      const candidateUrl = scene.baseImageUrl ?? null;
+      const candidateUrl = workingImageUrl ?? scene.baseImageUrl ?? null;
       if (typeof candidateUrl === "string" && candidateUrl.startsWith("blob:")) {
         payload.roomImageBase64 = await blobUrlToBase64(candidateUrl);
       } else if (
@@ -1111,13 +1227,13 @@ export default function EditorPage() {
         );
       }
 
-      if (typeof json?.imageUrl !== "string" || json.imageUrl.trim().length === 0) {
-        throw new Error(`Stage ${stageNumber} did not return imageUrl.`);
-      }
+      const nextImageUrl = getImageUrlFromUnknown(json);
+      if (!nextImageUrl) throw new Error("Stage run response missing imageUrl.");
 
       setStageStatus((prev) => ({ ...prev, [stageNumber]: "success" }));
       setLastStageOutputs((prev) => ({ ...prev, [stageNumber]: json }));
-      setBaseImageUrl(json.imageUrl);
+      setWorkingImageUrl(nextImageUrl);
+      setBaseImageUrl(nextImageUrl);
 
       if (stageNumber === 3) {
         setHasFurniturePass(true);
@@ -1130,6 +1246,90 @@ export default function EditorPage() {
       pushSnack(err?.message ?? `Stage ${stageNumber} failed.`);
       return null;
     }
+  };
+
+  const runEdit = async (
+    action: EditAction,
+    payloadParts: Partial<VibodeEditRunRequest> = {}
+  ): Promise<VibodeEditRunResponse | null> => {
+    const baseImageUrl = workingImageUrl;
+    if (!baseImageUrl) {
+      const message = "No working image yet. Run a stage or upload a room photo first.";
+      setEditWarning(message);
+      console.warn("[edit-run] blocked: workingImageUrl missing");
+      pushSnack(message);
+      return null;
+    }
+
+    setIsEditRunning(true);
+    setEditWarning(null);
+
+    try {
+      const body: VibodeEditRunRequest = {
+        baseImageUrl,
+        action,
+        placements: payloadParts.placements ?? scenePlacements,
+        target: payloadParts.target,
+        params: payloadParts.params,
+        eligibleSkus: payloadParts.eligibleSkus,
+      };
+
+      const res = await fetch("/api/vibode/edit-run", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+
+      const json = (await res.json().catch(() => ({}))) as Partial<VibodeEditRunResponse> & {
+        error?: string;
+        message?: string;
+      };
+
+      if (!res.ok) {
+        throw new Error(json.error || json.message || `Edit run failed (HTTP ${res.status})`);
+      }
+      if (typeof json.imageUrl !== "string" || json.imageUrl.trim().length === 0) {
+        throw new Error("Edit run response missing imageUrl.");
+      }
+
+      setWorkingImageUrl(json.imageUrl);
+      setBaseImageUrl(json.imageUrl);
+      if (Array.isArray(json.placements)) {
+        setScenePlacements(json.placements);
+      }
+      pushSnack(`Applied ${action}.`);
+      return json as VibodeEditRunResponse;
+    } catch (err: any) {
+      const message = err?.message ?? `Failed to ${action}.`;
+      setEditWarning(message);
+      console.warn("[edit-run] failed", { action, message, err });
+      pushSnack(message);
+      return null;
+    } finally {
+      setIsEditRunning(false);
+    }
+  };
+
+  const warnEdit = (message: string) => {
+    setEditWarning(message);
+    console.warn(`[edit-run] ${message}`);
+    pushSnack(message);
+  };
+
+  const requireSelectedPlacement = () => {
+    if (!selectedPlacementId) {
+      warnEdit("Select a placement first.");
+      return null;
+    }
+    return selectedPlacementId;
+  };
+
+  const requireSelectedSku = () => {
+    if (!selectedEditSkuId) {
+      warnEdit("Choose an active Stage 3 SKU first.");
+      return null;
+    }
+    return selectedEditSkuId;
   };
 
   const onGenerate = async () => {
@@ -1619,6 +1819,7 @@ export default function EditorPage() {
         widthPx: outW,
         heightPx: outH,
       });
+      setWorkingImageUrl(imageUrl);
 
       clearPendingLocal();
 
@@ -2068,7 +2269,10 @@ export default function EditorPage() {
                 Status: {stageStatus[activeStage]} • Furniture pass: {hasFurniturePass ? "yes" : "no"}
               </div>
               <div className="mt-1 text-xs text-neutral-500">
-                Base image: {getBaseImageLabel(scene.baseImageUrl)}
+                Preview image: {getBaseImageLabel(previewImageUrl ?? scene.baseImageUrl)}
+              </div>
+              <div className="mt-1 text-xs text-neutral-500">
+                Working image: {workingImageUrl ? "ready" : "none"}
               </div>
 
               <div className="mt-3 rounded-md border border-neutral-800 bg-neutral-950 p-3">
@@ -2224,6 +2428,251 @@ export default function EditorPage() {
 
                 <div className="mt-3 text-xs text-neutral-500">
                   Last output: {lastStageOutputs[activeStage] ? "available" : "none"}
+                </div>
+              </div>
+            </div>
+
+            <div className="rounded-lg border border-neutral-800 bg-neutral-900 p-3">
+              <div className="text-sm font-medium">Edit Tools (All Stages)</div>
+              <div className="mt-1 text-xs text-neutral-400">
+                Calls `/api/vibode/edit-run` using the canonical working image.
+              </div>
+              <div className="mt-1 text-xs text-neutral-500">
+                Placements: {scenePlacements.length} • Selected: {selectedPlacementId ?? "none"}
+              </div>
+              {editWarning && (
+                <div className="mt-2 rounded-md border border-amber-900/60 bg-amber-950/30 px-2 py-1 text-xs text-amber-200">
+                  {editWarning}
+                </div>
+              )}
+
+              <div className="mt-3">
+                <div className="text-xs text-neutral-400">Choose placement</div>
+                {scenePlacements.length === 0 ? (
+                  <div className="mt-1 rounded-md border border-dashed border-neutral-700 bg-neutral-950 px-2 py-2 text-xs text-neutral-500">
+                    No placements yet. Run Add first, or wait for placements from edit-run response.
+                  </div>
+                ) : (
+                  <div className="mt-1 max-h-28 space-y-1 overflow-auto pr-1">
+                    {scenePlacements.map((placement) => {
+                      const isSelected = placement.placementId === selectedPlacementId;
+                      return (
+                        <button
+                          key={placement.placementId}
+                          type="button"
+                          onClick={() => {
+                            setSelectedPlacementId(placement.placementId);
+                            setEditWarning(null);
+                          }}
+                          className={`w-full rounded-md border px-2 py-1 text-left text-xs ${
+                            isSelected
+                              ? "border-sky-500/60 bg-sky-950/30 text-sky-100"
+                              : "border-neutral-800 bg-neutral-950 text-neutral-300 hover:bg-neutral-800"
+                          }`}
+                        >
+                          <div className="truncate">
+                            {placement.label || placement.skuId || placement.placementId}
+                          </div>
+                          <div className="truncate text-[10px] text-neutral-500">
+                            {placement.placementId}
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+
+              <div className="mt-3">
+                <div className="text-xs text-neutral-400">SKU for Add / Swap</div>
+                <select
+                  value={selectedEditSkuId}
+                  onChange={(e) => {
+                    setSelectedEditSkuId(e.target.value);
+                    setEditWarning(null);
+                  }}
+                  className="mt-1 w-full rounded-md border border-neutral-800 bg-neutral-950 px-2 py-1.5 text-xs outline-none focus:border-neutral-600"
+                >
+                  <option value="">Select SKU</option>
+                  {stage3SkuItemsActive.map((sku) => (
+                    <option key={sku.skuId} value={sku.skuId}>
+                      {sku.label} ({sku.skuId})
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="mt-3 grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  disabled={isEditRunning || !workingImageUrl}
+                  className={`rounded-md border px-2 py-1.5 text-xs ${
+                    isEditRunning || !workingImageUrl
+                      ? "border-neutral-900 bg-neutral-950 text-neutral-500"
+                      : "border-neutral-700 bg-neutral-900 text-neutral-100 hover:bg-neutral-800"
+                  }`}
+                  onClick={() => {
+                    const skuId = requireSelectedSku();
+                    if (!skuId) return;
+                    void runEdit("add", {
+                      target: { skuId },
+                      params: { x: 0.5, y: 0.7, scale: 0.25 },
+                      eligibleSkus: stage3SkuItemsActive,
+                    });
+                  }}
+                >
+                  Add to center
+                </button>
+                <button
+                  type="button"
+                  disabled={isEditRunning || !workingImageUrl}
+                  className={`rounded-md border px-2 py-1.5 text-xs ${
+                    isEditRunning || !workingImageUrl
+                      ? "border-neutral-900 bg-neutral-950 text-neutral-500"
+                      : "border-neutral-700 bg-neutral-900 text-neutral-100 hover:bg-neutral-800"
+                  }`}
+                  onClick={() => {
+                    const placementId = requireSelectedPlacement();
+                    if (!placementId) return;
+                    void runEdit("remove", { target: { placementId } });
+                  }}
+                >
+                  Remove selected
+                </button>
+              </div>
+
+              <div className="mt-2">
+                <button
+                  type="button"
+                  disabled={isEditRunning || !workingImageUrl}
+                  className={`w-full rounded-md border px-2 py-1.5 text-xs ${
+                    isEditRunning || !workingImageUrl
+                      ? "border-neutral-900 bg-neutral-950 text-neutral-500"
+                      : "border-neutral-700 bg-neutral-900 text-neutral-100 hover:bg-neutral-800"
+                  }`}
+                  onClick={() => {
+                    const placementId = requireSelectedPlacement();
+                    const newSkuId = requireSelectedSku();
+                    if (!placementId || !newSkuId) return;
+                    void runEdit("swap", {
+                      target: { placementId },
+                      params: { newSkuId },
+                      eligibleSkus: stage3SkuItemsActive,
+                    });
+                  }}
+                >
+                  Swap selected
+                </button>
+              </div>
+
+              <div className="mt-3">
+                <div className="text-xs text-neutral-400">Rotate ({Math.round(editRotationDeg)}°)</div>
+                <input
+                  type="range"
+                  min={-180}
+                  max={180}
+                  step={1}
+                  value={editRotationDeg}
+                  onChange={(e) => {
+                    setEditRotationDeg(Number(e.target.value));
+                    setEditWarning(null);
+                  }}
+                  className="mt-1 w-full accent-violet-400"
+                />
+                <button
+                  type="button"
+                  disabled={isEditRunning || !workingImageUrl}
+                  className={`mt-2 w-full rounded-md border px-2 py-1.5 text-xs ${
+                    isEditRunning || !workingImageUrl
+                      ? "border-neutral-900 bg-neutral-950 text-neutral-500"
+                      : "border-violet-800/60 bg-violet-950/30 text-violet-100 hover:bg-violet-900/40"
+                  }`}
+                  onClick={() => {
+                    const placementId = requireSelectedPlacement();
+                    if (!placementId) return;
+                    void runEdit("rotate", {
+                      target: { placementId },
+                      params: { rotationDeg: editRotationDeg },
+                    });
+                  }}
+                >
+                  Apply rotate
+                </button>
+              </div>
+
+              <div className="mt-3">
+                <div className="flex items-center justify-between text-xs text-neutral-400">
+                  <span>Move step</span>
+                  <input
+                    type="number"
+                    min={0.01}
+                    max={0.3}
+                    step={0.01}
+                    value={editMoveStep}
+                    onChange={(e) => {
+                      const next = Number(e.target.value);
+                      if (Number.isFinite(next) && next > 0) {
+                        setEditMoveStep(next);
+                      }
+                    }}
+                    className="w-16 rounded border border-neutral-800 bg-neutral-950 px-1 py-0.5 text-right text-xs outline-none focus:border-neutral-600"
+                  />
+                </div>
+                <div className="mt-2 grid grid-cols-3 gap-1 text-xs">
+                  <div />
+                  <button
+                    type="button"
+                    disabled={isEditRunning || !workingImageUrl}
+                    className="rounded-md border border-neutral-800 bg-neutral-950 px-2 py-1 hover:bg-neutral-800 disabled:border-neutral-900 disabled:text-neutral-600"
+                    onClick={() => {
+                      const placementId = requireSelectedPlacement();
+                      if (!placementId) return;
+                      void runEdit("move", { target: { placementId }, params: { dx: 0, dy: -editMoveStep } });
+                    }}
+                  >
+                    Up
+                  </button>
+                  <div />
+                  <button
+                    type="button"
+                    disabled={isEditRunning || !workingImageUrl}
+                    className="rounded-md border border-neutral-800 bg-neutral-950 px-2 py-1 hover:bg-neutral-800 disabled:border-neutral-900 disabled:text-neutral-600"
+                    onClick={() => {
+                      const placementId = requireSelectedPlacement();
+                      if (!placementId) return;
+                      void runEdit("move", { target: { placementId }, params: { dx: -editMoveStep, dy: 0 } });
+                    }}
+                  >
+                    Left
+                  </button>
+                  <div />
+                  <button
+                    type="button"
+                    disabled={isEditRunning || !workingImageUrl}
+                    className="rounded-md border border-neutral-800 bg-neutral-950 px-2 py-1 hover:bg-neutral-800 disabled:border-neutral-900 disabled:text-neutral-600"
+                    onClick={() => {
+                      const placementId = requireSelectedPlacement();
+                      if (!placementId) return;
+                      void runEdit("move", { target: { placementId }, params: { dx: editMoveStep, dy: 0 } });
+                    }}
+                  >
+                    Right
+                  </button>
+                  <div />
+                  <div />
+                  <button
+                    type="button"
+                    disabled={isEditRunning || !workingImageUrl}
+                    className="rounded-md border border-neutral-800 bg-neutral-950 px-2 py-1 hover:bg-neutral-800 disabled:border-neutral-900 disabled:text-neutral-600"
+                    onClick={() => {
+                      const placementId = requireSelectedPlacement();
+                      if (!placementId) return;
+                      void runEdit("move", { target: { placementId }, params: { dx: 0, dy: editMoveStep } });
+                    }}
+                  >
+                    Down
+                  </button>
+                  <div />
                 </div>
               </div>
             </div>
@@ -2491,6 +2940,9 @@ export default function EditorPage() {
                         setHasFurniturePass(false);
                         setStageStatus(INITIAL_STAGE_STATUS);
                         setLastStageOutputs({});
+                        setWorkingImageUrl(null);
+                        setScenePlacements([]);
+                        setSelectedPlacementId(null);
                         setActiveStage(1);
                         clearPendingLocal();
 
@@ -2505,6 +2957,7 @@ export default function EditorPage() {
                           const up = await uploadBaseImageToStorage({ file, sceneId });
 
                           setBaseImageUrl(up.signedUrl);
+                          setWorkingImageUrl(up.signedUrl);
                           pushSnack("Image uploaded ✅ (signed URL set; blob removed).");
                         } catch (err: any) {
                           console.error(err);
@@ -2529,6 +2982,9 @@ export default function EditorPage() {
                           } catch {}
                         }
                         setBaseImageUrl(undefined);
+                        setWorkingImageUrl(null);
+                        setScenePlacements([]);
+                        setSelectedPlacementId(null);
                         pushSnack("Image cleared.");
                       }}
                       title="Clear image"
@@ -3187,6 +3643,9 @@ export default function EditorPage() {
                               type="button"
                               onClick={() => {
                                 loadHistoryImage(h);
+                                setWorkingImageUrl(null);
+                                setScenePlacements([]);
+                                setSelectedPlacementId(null);
                                 setHistoryPickerFor(null);
                                 setBranchConfirmFor(null);
                               }}
@@ -3209,6 +3668,9 @@ export default function EditorPage() {
                               type="button"
                               onClick={() => {
                                 loadHistoryBoth(h);
+                                setWorkingImageUrl(null);
+                                setScenePlacements([]);
+                                setSelectedPlacementId(null);
                                 setHistoryPickerFor(null);
                                 setBranchConfirmFor(null);
                               }}
