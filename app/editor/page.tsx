@@ -519,6 +519,9 @@ export default function EditorPage() {
   const applySwap = useEditorStore((s) => s.applySwap);
   const setPendingSwap = useEditorStore((s) => s.setPendingSwap);
   const addFurnitureNodeFromSku = useEditorStore((s) => s.addFurnitureNodeFromSku);
+  const addNode = useEditorStore((s) => s.addNode);
+  const deleteNode = useEditorStore((s) => s.deleteNode);
+  const selectNode = useEditorStore((s) => s.selectNode);
   const selectSwapMark = useEditorStore((s) => s.selectSwapMark);
   const setSwapReplacement = useEditorStore((s) => s.setSwapReplacement);
   const updateRotateMark = useEditorStore((s) => s.updateRotateMark);
@@ -586,6 +589,9 @@ export default function EditorPage() {
   const [scenePlacements, setScenePlacements] = useState<ScenePlacement[]>([]);
   const [selectedPlacementId, setSelectedPlacementId] = useState<string | null>(null);
   const [selectedEditSkuId, setSelectedEditSkuId] = useState<string>("");
+  // Ghost Add is a client-only draft placement; commit will call edit-run later.
+  const [ghostAddPlacementId, setGhostAddPlacementId] = useState<string | null>(null);
+  const [ghostAddActive, setGhostAddActive] = useState(false);
   const [editRotationDeg, setEditRotationDeg] = useState(0);
   const [editMoveStep, setEditMoveStep] = useState(0.05);
   const [editWarning, setEditWarning] = useState<string | null>(null);
@@ -1331,6 +1337,249 @@ export default function EditorPage() {
     }
     return selectedEditSkuId;
   };
+
+  const ghostPlacementToNodeId = (placementId: string | null): string | null => {
+    if (!placementId) return null;
+    if (!placementId.startsWith("pl_")) return null;
+    return placementId.slice(3);
+  };
+
+  const toNormalizedPlacementBbox = (
+    transform: FurnitureNode["transform"]
+  ): ScenePlacement["bbox"] | undefined => {
+    if (
+      !viewport ||
+      typeof baseImageNaturalWidth !== "number" ||
+      !Number.isFinite(baseImageNaturalWidth) ||
+      baseImageNaturalWidth <= 0 ||
+      typeof baseImageNaturalHeight !== "number" ||
+      !Number.isFinite(baseImageNaturalHeight) ||
+      baseImageNaturalHeight <= 0
+    ) {
+      return undefined;
+    }
+
+    const imageTransform = toImageSpaceTransform(transform, viewport);
+    const values = [
+      imageTransform.x,
+      imageTransform.y,
+      imageTransform.width,
+      imageTransform.height,
+      baseImageNaturalWidth,
+      baseImageNaturalHeight,
+    ];
+    if (!values.every((value) => Number.isFinite(value))) return undefined;
+
+    return {
+      x: imageTransform.x / baseImageNaturalWidth,
+      y: imageTransform.y / baseImageNaturalHeight,
+      w: imageTransform.width / baseImageNaturalWidth,
+      h: imageTransform.height / baseImageNaturalHeight,
+    };
+  };
+
+  const clearGhostAddDraft = (notify = true) => {
+    const placementId = ghostAddPlacementId;
+    const nodeId = ghostPlacementToNodeId(placementId);
+    if (nodeId) {
+      if (selectedNodeId === nodeId) {
+        selectNode(null);
+      }
+      deleteNode(nodeId);
+    }
+    if (placementId) {
+      setScenePlacements((prev) => prev.filter((placement) => placement.placementId !== placementId));
+      if (selectedPlacementId === placementId) {
+        setSelectedPlacementId(null);
+      }
+    }
+    if (ghostAddPlacementId || ghostAddActive) {
+      setGhostAddPlacementId(null);
+      setGhostAddActive(false);
+      if (notify) pushSnack("Ghost add cancelled.");
+    }
+  };
+
+  const startGhostAdd = () => {
+    const skuId = requireSelectedSku();
+    if (!skuId) return;
+
+    const selectedSku = stage3SkuItemsActive.find((sku) => sku.skuId === skuId);
+    if (!selectedSku) {
+      warnEdit("Choose an active Stage 3 SKU first.");
+      return;
+    }
+
+    if (ghostAddActive || ghostAddPlacementId) {
+      clearGhostAddDraft(false);
+    }
+
+    const now = Date.now();
+    const ghostNodeId = `ghost_${now}`;
+    const placementId = `pl_ghost_${now}`;
+    const fallbackSize = { width: 180, height: 120 };
+    const eligibleSku = eligibleForDrag.find((item) => item.skuId === skuId);
+    const ikeaSku = findIkeaSkuById(skuId);
+    const ikeaFootprint = ikeaSku ? skuFootprintInchesFromDims(ikeaSku.dimsIn) : null;
+    const widthPx =
+      eligibleSku?.defaultPxWidth ??
+      (ikeaFootprint ? Math.max(24, Math.round(ikeaFootprint.wIn * DEFAULT_PX_PER_IN)) : fallbackSize.width);
+    const heightPx =
+      eligibleSku?.defaultPxHeight ??
+      (ikeaFootprint ? Math.max(24, Math.round(ikeaFootprint.dIn * DEFAULT_PX_PER_IN)) : fallbackSize.height);
+    const centerX = viewport ? viewport.imageStageX + viewport.imageStageW / 2 : widthPx * 1.5;
+    const centerY = viewport ? viewport.imageStageY + viewport.imageStageH * 0.58 : heightPx * 1.8;
+    const transform: FurnitureNode["transform"] = {
+      x: centerX - widthPx / 2,
+      y: centerY - heightPx / 2,
+      width: widthPx,
+      height: heightPx,
+      rotation: 0,
+    };
+
+    addNode({
+      id: ghostNodeId,
+      skuId,
+      label: selectedSku.label || skuId,
+      status: "active",
+      zIndex: nodes.length ? Math.max(...nodes.map((node) => node.zIndex ?? 0)) + 1 : 10,
+      transform,
+    });
+    selectNode(ghostNodeId);
+
+    const placementDraft: ScenePlacement = {
+      placementId,
+      skuId,
+      label: selectedSku.label || skuId,
+      source: selectedSku.source,
+      bbox: toNormalizedPlacementBbox(transform),
+      rotationDeg: 0,
+      stageAdded: activeStage || 3,
+      locked: false,
+    };
+
+    setScenePlacements((prev) => [...prev.filter((placement) => placement.placementId !== placementId), placementDraft]);
+    setSelectedPlacementId(placementId);
+    setGhostAddPlacementId(placementId);
+    setGhostAddActive(true);
+    setEditWarning(null);
+    pushSnack("Ghost add started. Drag/rotate, then commit in the next step.");
+  };
+
+  const commitGhostAdd = async () => {
+    if (!ghostAddActive || !ghostAddPlacementId) return;
+
+    const placement = scenePlacements.find((item) => item.placementId === ghostAddPlacementId);
+    if (!placement) {
+      warnEdit("Ghost placement not found.");
+      return;
+    }
+    if (!placement.bbox) {
+      warnEdit("Ghost placement missing bbox; try dragging after image loads.");
+      return;
+    }
+
+    const x = placement.bbox.x + placement.bbox.w / 2;
+    const y = placement.bbox.y + placement.bbox.h / 2;
+    const scale = Math.max(placement.bbox.w, placement.bbox.h);
+    const placementsForCommit = scenePlacements.filter(
+      (item) => item.placementId !== ghostAddPlacementId
+    );
+
+    console.log("[commit-add] payload", {
+      x,
+      y,
+      scale,
+      skuId: placement.skuId,
+      baseImageUrl: workingImageUrl,
+      placementCount: placementsForCommit.length,
+    });
+
+    const previousSelectedPlacementId = selectedPlacementId;
+    const res = await runEdit("add", {
+      target: { skuId: placement.skuId },
+      params: { x, y, scale },
+      eligibleSkus: stage3SkuItemsActive,
+      placements: placementsForCommit,
+    });
+    console.log("[commit-add] response", res);
+
+    if (!res) return;
+
+    const responsePlacements = Array.isArray(res.placements) ? res.placements : null;
+    clearGhostAddDraft(false);
+
+    if (responsePlacements) {
+      setScenePlacements(responsePlacements);
+      if (responsePlacements.length > 0) {
+        const nextSelectedPlacementId =
+          previousSelectedPlacementId &&
+          responsePlacements.some((item) => item.placementId === previousSelectedPlacementId)
+            ? previousSelectedPlacementId
+            : responsePlacements[responsePlacements.length - 1]?.placementId ?? null;
+        if (nextSelectedPlacementId) {
+          setSelectedPlacementId(nextSelectedPlacementId);
+        }
+      }
+    }
+  };
+
+  useEffect(() => {
+    if (!ghostAddActive || !ghostAddPlacementId) return;
+    const ghostNodeId = ghostPlacementToNodeId(ghostAddPlacementId);
+    if (!ghostNodeId) return;
+    const ghostNode = nodes.find((node) => node.id === ghostNodeId);
+    if (!ghostNode) {
+      setScenePlacements((prev) =>
+        prev.filter((placement) => placement.placementId !== ghostAddPlacementId)
+      );
+      if (selectedPlacementId === ghostAddPlacementId) {
+        setSelectedPlacementId(null);
+      }
+      setGhostAddPlacementId(null);
+      setGhostAddActive(false);
+      return;
+    }
+    setScenePlacements((prev) =>
+      prev.map((placement) =>
+        placement.placementId === ghostAddPlacementId
+          ? {
+              ...placement,
+              skuId: ghostNode.skuId,
+              label: placement.label || ghostNode.label || ghostNode.skuId,
+              bbox: toNormalizedPlacementBbox(ghostNode.transform),
+              rotationDeg: ghostNode.transform.rotation,
+              stageAdded: placement.stageAdded ?? activeStage,
+              locked: false,
+            }
+          : placement
+      )
+    );
+  }, [
+    activeStage,
+    baseImageNaturalHeight,
+    baseImageNaturalWidth,
+    ghostAddActive,
+    ghostAddPlacementId,
+    nodes,
+    selectedPlacementId,
+    viewport,
+  ]);
+
+  useEffect(() => {
+    if (!ghostAddPlacementId && !ghostAddActive) return;
+    if (!ghostAddPlacementId) {
+      setGhostAddActive(false);
+      return;
+    }
+    const ghostNodeId = ghostPlacementToNodeId(ghostAddPlacementId);
+    const hasPlacement = scenePlacements.some((placement) => placement.placementId === ghostAddPlacementId);
+    const hasNode = ghostNodeId ? nodes.some((node) => node.id === ghostNodeId) : false;
+    if (!hasPlacement || !hasNode) {
+      setGhostAddPlacementId(null);
+      setGhostAddActive(false);
+    }
+  }, [ghostAddActive, ghostAddPlacementId, nodes, scenePlacements]);
 
   const onGenerate = async () => {
     const localGenId = safeId("gen");
@@ -2505,23 +2754,15 @@ export default function EditorPage() {
               <div className="mt-3 grid grid-cols-2 gap-2">
                 <button
                   type="button"
-                  disabled={isEditRunning || !workingImageUrl}
+                  disabled={isEditRunning}
                   className={`rounded-md border px-2 py-1.5 text-xs ${
-                    isEditRunning || !workingImageUrl
+                    isEditRunning
                       ? "border-neutral-900 bg-neutral-950 text-neutral-500"
                       : "border-neutral-700 bg-neutral-900 text-neutral-100 hover:bg-neutral-800"
                   }`}
-                  onClick={() => {
-                    const skuId = requireSelectedSku();
-                    if (!skuId) return;
-                    void runEdit("add", {
-                      target: { skuId },
-                      params: { x: 0.5, y: 0.7, scale: 0.25 },
-                      eligibleSkus: stage3SkuItemsActive,
-                    });
-                  }}
+                  onClick={startGhostAdd}
                 >
-                  Add to center
+                  Start Add (ghost)
                 </button>
                 <button
                   type="button"
@@ -2539,6 +2780,37 @@ export default function EditorPage() {
                 >
                   Remove selected
                 </button>
+              </div>
+              <div className="mt-2 grid grid-cols-2 gap-2">
+                {ghostAddActive ? (
+                  <button
+                    type="button"
+                    onClick={() => clearGhostAddDraft(true)}
+                    className="rounded-md border border-rose-800/60 bg-rose-950/30 px-2 py-1.5 text-xs text-rose-100 hover:bg-rose-900/40"
+                  >
+                    Cancel ghost
+                  </button>
+                ) : (
+                  <div />
+                )}
+                <button
+                  type="button"
+                  disabled={isEditRunning || !ghostAddActive || !ghostAddPlacementId}
+                  title="Commit will generate into image (next step)"
+                  onClick={() => {
+                    void commitGhostAdd();
+                  }}
+                  className={`rounded-md border px-2 py-1.5 text-xs ${
+                    !isEditRunning && ghostAddActive && ghostAddPlacementId
+                      ? "border-neutral-700 bg-neutral-900 text-neutral-100 hover:bg-neutral-800"
+                      : "border-neutral-900 bg-neutral-950 text-neutral-500"
+                  }`}
+                >
+                  Commit Add (next)
+                </button>
+              </div>
+              <div className="mt-1 text-[11px] text-neutral-500">
+                Commit will generate into image (next step)
               </div>
 
               <div className="mt-2">
