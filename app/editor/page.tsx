@@ -150,6 +150,10 @@ function nodeSwapKind(node: FurnitureNode): SwapKindBucket | null {
   return null;
 }
 
+function isRemoveMarkerNode(node: FurnitureNode | null): boolean {
+  return !!node && node.skuId === "__remove_marker__";
+}
+
 type FreezePayloadAccess = {
   generationId?: unknown;
   baseImage?: unknown;
@@ -248,11 +252,17 @@ type VibodeEligibleSku = {
   source?: "catalog" | "user";
   variants: Array<{ imageUrl: string }>;
 };
+type VibodeEditRunTarget = {
+  placementId?: string;
+  skuId?: string;
+  bbox?: { x: number; y: number; w: number; h: number };
+  [key: string]: unknown;
+};
 type VibodeEditRunRequest = {
   baseImageUrl: string;
   action: EditAction;
   placements: ScenePlacement[];
-  target?: { placementId?: string; skuId?: string };
+  target?: VibodeEditRunTarget;
   params?: Record<string, unknown>;
   eligibleSkus?: VibodeEligibleSku[];
 };
@@ -725,6 +735,14 @@ export default function EditorPage() {
     if (!selectedNodeId) return null;
     return nodes.find((n) => n.id === selectedNodeId) ?? null;
   }, [nodes, selectedNodeId]);
+  const selectedRemoveMarkerNode = useMemo(() => {
+    if (!selectedNode) return null;
+    return isRemoveMarkerNode(selectedNode) ? selectedNode : null;
+  }, [selectedNode]);
+  const removeMarkerNodes = useMemo(
+    () => nodes.filter((node) => node.skuId === "__remove_marker__"),
+    [nodes]
+  );
 
   const queuedDeletes = useMemo(
     () => nodes.filter((n) => n.status === "markedForDelete").length,
@@ -1398,6 +1416,106 @@ export default function EditorPage() {
       setGhostAddActive(false);
       if (notify) pushSnack("Ghost add cancelled.");
     }
+  };
+
+  const addRemoveMarker = () => {
+    const markerNodeId = `remove_mark_${Date.now()}`;
+    const markerSize = 56;
+    const centerX = viewport ? viewport.imageStageX + viewport.imageStageW / 2 : markerSize * 2;
+    const centerY = viewport ? viewport.imageStageY + viewport.imageStageH / 2 : markerSize * 2;
+    const transform: FurnitureNode["transform"] = {
+      x: centerX - markerSize / 2,
+      y: centerY - markerSize / 2,
+      width: markerSize,
+      height: markerSize,
+      rotation: 0,
+    };
+    const zIndex = nodes.length ? Math.max(...nodes.map((node) => node.zIndex ?? 0)) + 1 : 10;
+
+    addNode({
+      id: markerNodeId,
+      skuId: "__remove_marker__",
+      label: "❌ Remove Marker",
+      status: "active",
+      zIndex,
+      transform,
+    });
+    selectNode(markerNodeId);
+    setEditWarning(null);
+    pushSnack("Remove marker added. Drag it to target area, then click Remove Selected.");
+  };
+
+  const removeSelectedMarker = async () => {
+    if (!selectedRemoveMarkerNode) {
+      warnEdit("Select a remove marker first.");
+      return;
+    }
+    const bbox = toNormalizedPlacementBbox(selectedRemoveMarkerNode.transform);
+    if (!bbox) {
+      warnEdit("Remove marker missing bbox; try dragging after image loads.");
+      return;
+    }
+
+    const targetPlacement: ScenePlacement = {
+      placementId: selectedRemoveMarkerNode.id,
+      skuId: selectedRemoveMarkerNode.skuId || "__remove_marker__",
+      label: selectedRemoveMarkerNode.label || "Remove Marker",
+      bbox,
+      rotationDeg: selectedRemoveMarkerNode.transform.rotation,
+      stageAdded: activeStage || 3,
+      locked: false,
+    };
+
+    const placementsForRemove = [...scenePlacements, targetPlacement];
+    const res = await runEdit("remove", {
+      target: { placementId: targetPlacement.placementId },
+      placements: placementsForRemove,
+    });
+    if (!res) return;
+    deleteNode(selectedRemoveMarkerNode.id);
+    setEditWarning(null);
+  };
+
+  const removeAllMarkersSinglePass = async () => {
+    if (!removeMarkerNodes.length) {
+      warnEdit("Add at least one remove marker first.");
+      return;
+    }
+
+    const syntheticTargets: ScenePlacement[] = [];
+    for (const marker of removeMarkerNodes) {
+      const bbox = toNormalizedPlacementBbox(marker.transform);
+      if (!bbox) {
+        warnEdit("A remove marker is missing bbox; try dragging after image loads.");
+        return;
+      }
+      syntheticTargets.push({
+        placementId: marker.id,
+        skuId: "__remove_marker__",
+        label: "Remove Marker",
+        bbox,
+        rotationDeg: marker.transform.rotation,
+        stageAdded: activeStage || 3,
+        locked: false,
+      });
+    }
+
+    const removeTargets = syntheticTargets.map((t) => ({
+      placementId: t.placementId,
+      bbox: t.bbox,
+    }));
+
+    const res = await runEdit("remove", {
+      target: { placementId: syntheticTargets[0].placementId },
+      placements: [...scenePlacements, ...syntheticTargets],
+      params: { removeTargets },
+    });
+    if (!res) return;
+
+    removeMarkerNodes.forEach((marker) => {
+      deleteNode(marker.id);
+    });
+    setEditWarning(null);
   };
 
   const startGhostAdd = () => {
@@ -2749,35 +2867,43 @@ export default function EditorPage() {
                 </select>
               </div>
 
-              <div className="mt-3 grid grid-cols-2 gap-2">
-                <button
-                  type="button"
-                  disabled={isEditRunning}
-                  className={`rounded-md border px-2 py-1.5 text-xs ${
-                    isEditRunning
-                      ? "border-neutral-900 bg-neutral-950 text-neutral-500"
-                      : "border-neutral-700 bg-neutral-900 text-neutral-100 hover:bg-neutral-800"
-                  }`}
-                  onClick={startGhostAdd}
-                >
-                  Start Add (ghost)
-                </button>
-                <button
-                  type="button"
-                  disabled={isEditRunning || !workingImageUrl}
-                  className={`rounded-md border px-2 py-1.5 text-xs ${
-                    isEditRunning || !workingImageUrl
-                      ? "border-neutral-900 bg-neutral-950 text-neutral-500"
-                      : "border-neutral-700 bg-neutral-900 text-neutral-100 hover:bg-neutral-800"
-                  }`}
-                  onClick={() => {
-                    const placementId = requireSelectedPlacement();
-                    if (!placementId) return;
-                    void runEdit("remove", { target: { placementId } });
-                  }}
-                >
-                  Remove selected
-                </button>
+              <div className="mt-3">
+                <div className="text-xs text-neutral-400">Furniture</div>
+                <div className="mt-1 grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    disabled={isEditRunning}
+                    className={`rounded-md border px-2 py-1.5 text-xs ${
+                      isEditRunning
+                        ? "border-neutral-900 bg-neutral-950 text-neutral-500"
+                        : "border-neutral-700 bg-neutral-900 text-neutral-100 hover:bg-neutral-800"
+                    }`}
+                    onClick={startGhostAdd}
+                  >
+                    Start Add (ghost)
+                  </button>
+                  <button
+                    type="button"
+                    disabled={isEditRunning || !workingImageUrl}
+                    className={`rounded-md border px-2 py-1.5 text-xs ${
+                      isEditRunning || !workingImageUrl
+                        ? "border-neutral-900 bg-neutral-950 text-neutral-500"
+                        : "border-neutral-700 bg-neutral-900 text-neutral-100 hover:bg-neutral-800"
+                    }`}
+                    onClick={() => {
+                      const placementId = requireSelectedPlacement();
+                      const newSkuId = requireSelectedSku();
+                      if (!placementId || !newSkuId) return;
+                      void runEdit("swap", {
+                        target: { placementId },
+                        params: { newSkuId },
+                        eligibleSkus: stage3SkuItemsActive,
+                      });
+                    }}
+                  >
+                    Swap Selected
+                  </button>
+                </div>
               </div>
               <div className="mt-2 grid grid-cols-2 gap-2">
                 {ghostAddActive ? (
@@ -2811,28 +2937,53 @@ export default function EditorPage() {
                 Commit will generate into image (next step)
               </div>
 
-              <div className="mt-2">
+              <div className="mt-4">
+                <div className="text-xs text-neutral-400">Remove</div>
+                <div className="mt-1 grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    disabled={isEditRunning}
+                    className={`rounded-md border px-2 py-1.5 text-xs ${
+                      isEditRunning
+                        ? "border-neutral-900 bg-neutral-950 text-neutral-500"
+                        : "border-neutral-700 bg-neutral-900 text-neutral-100 hover:bg-neutral-800"
+                    }`}
+                    onClick={addRemoveMarker}
+                  >
+                    Add Remove Marker
+                  </button>
+                  <button
+                    type="button"
+                    disabled={isEditRunning || !workingImageUrl || !selectedRemoveMarkerNode}
+                    className={`rounded-md border px-2 py-1.5 text-xs ${
+                      isEditRunning || !workingImageUrl || !selectedRemoveMarkerNode
+                        ? "border-neutral-900 bg-neutral-950 text-neutral-500"
+                        : "border-neutral-700 bg-neutral-900 text-neutral-100 hover:bg-neutral-800"
+                    }`}
+                    onClick={() => {
+                      void removeSelectedMarker();
+                    }}
+                  >
+                    Remove Selected
+                  </button>
+                </div>
                 <button
                   type="button"
-                  disabled={isEditRunning || !workingImageUrl}
-                  className={`w-full rounded-md border px-2 py-1.5 text-xs ${
-                    isEditRunning || !workingImageUrl
+                  disabled={isEditRunning || removeMarkerNodes.length === 0}
+                  className={`mt-2 w-full rounded-md border px-2 py-1.5 text-xs ${
+                    isEditRunning || removeMarkerNodes.length === 0
                       ? "border-neutral-900 bg-neutral-950 text-neutral-500"
                       : "border-neutral-700 bg-neutral-900 text-neutral-100 hover:bg-neutral-800"
                   }`}
                   onClick={() => {
-                    const placementId = requireSelectedPlacement();
-                    const newSkuId = requireSelectedSku();
-                    if (!placementId || !newSkuId) return;
-                    void runEdit("swap", {
-                      target: { placementId },
-                      params: { newSkuId },
-                      eligibleSkus: stage3SkuItemsActive,
-                    });
+                    void removeAllMarkersSinglePass();
                   }}
                 >
-                  Swap selected
+                  Remove All Markers
                 </button>
+                <div className="mt-1 text-[11px] text-neutral-500">
+                  {`Remove markers: ${removeMarkerNodes.length}`}
+                </div>
               </div>
 
               <div className="mt-3">

@@ -1317,6 +1317,7 @@ export function EditorCanvas({
           {[...nodes]
             .sort((a, b) => a.zIndex - b.zIndex)
             .map((n) => {
+              const isRemoveMarkerSku = n.skuId === "__remove_marker__";
               const isSelected = n.id === selectedNodeId;
               const isHovered = hoveredId === n.id;
               const isCalibrate = activeTool === "calibrate";
@@ -1345,6 +1346,7 @@ export function EditorCanvas({
               const baseFillOpacity =
                 visualMode === "blueprint" ? (isSelected ? 0.82 : 0.7) : 1;
               const nodeOpacity = n.status === "markedForDelete" ? 0.35 : baseFillOpacity;
+              const removeMarkerRadius = Math.max(18, Math.min(t.width, t.height) * 0.34);
 
               return (
                 <Group
@@ -1407,11 +1409,39 @@ export function EditorCanvas({
                     y={0}
                     width={t.width}
                     height={t.height}
-                    fill="#1f2937"
+                    fill={isRemoveMarkerSku ? "rgba(15, 23, 42, 0.28)" : "#1f2937"}
                     opacity={nodeOpacity}
-                    stroke={isSelected ? "#e5e7eb" : "#374151"}
+                    stroke={isRemoveMarkerSku ? (isSelected ? "#fecaca" : "#ef4444") : isSelected ? "#e5e7eb" : "#374151"}
                     strokeWidth={isSelected ? 2 : 1}
                   />
+
+                  {isRemoveMarkerSku && (
+                    <Group listening={false}>
+                      <Circle
+                        x={cx}
+                        y={cy}
+                        radius={removeMarkerRadius}
+                        fill="rgba(15, 23, 42, 0.58)"
+                        stroke="#fca5a5"
+                        strokeWidth={Math.max(2, Math.min(4, removeMarkerRadius * 0.12))}
+                        shadowColor="#000"
+                        shadowBlur={8}
+                        shadowOpacity={0.35}
+                      />
+                      <Text
+                        text="✕"
+                        x={cx - removeMarkerRadius}
+                        y={cy - removeMarkerRadius}
+                        width={removeMarkerRadius * 2}
+                        height={removeMarkerRadius * 2}
+                        align="center"
+                        verticalAlign="middle"
+                        fontSize={Math.max(26, removeMarkerRadius * 1.4)}
+                        fontStyle="bold"
+                        fill="#ef4444"
+                      />
+                    </Group>
+                  )}
 
                   {/* Overlap warning badge — top-right, hidden during calibrate */}
                   {markupVisible && !isCalibrate && overlappingNodeIds.has(n.id) && (
@@ -1441,7 +1471,7 @@ export function EditorCanvas({
                     </Group>
                   )}
 
-                  {canRenderVisuals && (
+                  {!isRemoveMarkerSku && canRenderVisuals && (
                     <>
                       <SilhouetteLayer
                         kind={kind}
