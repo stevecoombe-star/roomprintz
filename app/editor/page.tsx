@@ -217,6 +217,13 @@ function hasSwapMarksWithReplacement(vibodeIntent: unknown): boolean {
 type WorkflowStage = 1 | 2 | 3 | 4 | 5;
 type StageRunStatus = "idle" | "running" | "success" | "error";
 type DeclutterMode = "off" | "light" | "heavy";
+type Stage4Action =
+  | "style_room"
+  | "accessories"
+  | "wall_art"
+  | "shelves"
+  | "curtains"
+  | "ceiling_light";
 type StageStatusMap = Record<WorkflowStage, StageRunStatus>;
 type StageOutputMap = Partial<Record<WorkflowStage, unknown>>;
 type UserSku = {
@@ -281,6 +288,22 @@ type PendingLocalPayload = {
 };
 
 const WORKFLOW_STAGES: WorkflowStage[] = [1, 2, 3, 4, 5];
+const STAGE4_PRIMARY_ACTION: Stage4Action = "style_room";
+const STAGE4_ADVANCED_ACTIONS: Stage4Action[] = [
+  "accessories",
+  "wall_art",
+  "shelves",
+  "curtains",
+  "ceiling_light",
+];
+const STAGE4_ACTION_LABELS: Record<Stage4Action, string> = {
+  style_room: "Style Room",
+  accessories: "Accessories",
+  wall_art: "Wall Art",
+  shelves: "Shelves",
+  curtains: "Curtains",
+  ceiling_light: "Ceiling Light",
+};
 const INITIAL_STAGE_STATUS: StageStatusMap = {
   1: "idle",
   2: "idle",
@@ -288,6 +311,11 @@ const INITIAL_STAGE_STATUS: StageStatusMap = {
   4: "idle",
   5: "idle",
 };
+
+function isStage4Action(value: unknown): value is Stage4Action {
+  if (typeof value !== "string") return false;
+  return Object.prototype.hasOwnProperty.call(STAGE4_ACTION_LABELS, value);
+}
 
 function mergeStage3SkuItems(prev: Stage3SkuItem[], userSkus: UserSku[]): Stage3SkuItem[] {
   const next: Stage3SkuItem[] = [];
@@ -593,6 +621,7 @@ export default function EditorPage() {
 
   const [activeStage, setActiveStage] = useState<WorkflowStage>(1);
   const [stageStatus, setStageStatus] = useState<StageStatusMap>(INITIAL_STAGE_STATUS);
+  const [stage4RunningAction, setStage4RunningAction] = useState<Stage4Action | null>(null);
   const [hasFurniturePass, setHasFurniturePass] = useState(false);
   const [lastStageOutputs, setLastStageOutputs] = useState<StageOutputMap>({});
   const [workingImageUrl, setWorkingImageUrl] = useState<string | null>(null);
@@ -1111,7 +1140,21 @@ export default function EditorPage() {
       return null;
     }
 
+    const stage4ActionForRun: Stage4Action =
+      stageNumber === 4
+        ? isStage4Action(options.stage4Action)
+          ? options.stage4Action
+          : isStage4Action(options.mode)
+            ? options.mode
+            : isStage4Action(options.action)
+              ? options.action
+              : STAGE4_PRIMARY_ACTION
+        : STAGE4_PRIMARY_ACTION;
+
     setStageStatus((prev) => ({ ...prev, [stageNumber]: "running" }));
+    if (stageNumber === 4) {
+      setStage4RunningAction(stage4ActionForRun);
+    }
 
     try {
       const payload: Record<string, unknown> = {
@@ -1173,11 +1216,7 @@ export default function EditorPage() {
           }));
           payload.targetCount = 8;
         } else if (stageNumber === 4) {
-          payload.eligibleSkus = IKEA_CA_SKUS.map((s) => ({
-            skuId: s.skuId,
-            label: s.displayName ?? s.skuId,
-            variants: s.imageUrl ? [{ imageUrl: s.imageUrl }] : [],
-          }));
+          payload.stage4Mode = stage4ActionForRun;
         }
       }
 
@@ -1263,12 +1302,26 @@ export default function EditorPage() {
         setHasFurniturePass(true);
       }
 
-      pushSnack(`Stage ${stageNumber} complete.`);
+      if (stageNumber === 4) {
+        pushSnack(`Stage 4 ${STAGE4_ACTION_LABELS[stage4ActionForRun]} complete.`);
+      } else {
+        pushSnack(`Stage ${stageNumber} complete.`);
+      }
       return json;
     } catch (err: any) {
       setStageStatus((prev) => ({ ...prev, [stageNumber]: "error" }));
-      pushSnack(err?.message ?? `Stage ${stageNumber} failed.`);
+      if (err?.message) {
+        pushSnack(err.message);
+      } else if (stageNumber === 4) {
+        pushSnack(`Stage 4 ${STAGE4_ACTION_LABELS[stage4ActionForRun]} failed.`);
+      } else {
+        pushSnack(`Stage ${stageNumber} failed.`);
+      }
       return null;
+    } finally {
+      if (stageNumber === 4) {
+        setStage4RunningAction(null);
+      }
     }
   };
 
@@ -2763,6 +2816,56 @@ export default function EditorPage() {
                       >
                         {stageStatus[2] === "running" ? "Running…" : "Run Stage"}
                       </button>
+                    </div>
+                  </>
+                ) : activeStage === 4 ? (
+                  <>
+                    <div className="mt-3">
+                      <button
+                        type="button"
+                        onClick={() => runStage(4, { stage4Action: STAGE4_PRIMARY_ACTION })}
+                        disabled={stageStatus[4] === "running"}
+                        className={`w-full rounded-md border px-3 py-2 text-sm ${
+                          stageStatus[4] === "running"
+                            ? "border-neutral-900 bg-neutral-950 text-neutral-500"
+                            : "border-sky-500/60 bg-sky-950/40 text-sky-100 hover:bg-sky-900/50"
+                        }`}
+                      >
+                        {stageStatus[4] === "running" && stage4RunningAction === STAGE4_PRIMARY_ACTION
+                          ? "Styling…"
+                          : "✨ Style Room"}
+                      </button>
+                    </div>
+
+                    <div className="mt-3 rounded-md border border-neutral-800 bg-neutral-950 p-2">
+                      <div className="text-[11px] uppercase tracking-wide text-neutral-500">
+                        Advanced Stage 4
+                      </div>
+                      <div className="mt-2 flex flex-wrap gap-2">
+                        {STAGE4_ADVANCED_ACTIONS.map((action) => (
+                          <button
+                            key={action}
+                            type="button"
+                            onClick={() => runStage(4, { stage4Action: action })}
+                            disabled={stageStatus[4] === "running"}
+                            className={`rounded-md border px-2 py-1 text-xs ${
+                              stageStatus[4] === "running"
+                                ? "border-neutral-900 bg-neutral-950 text-neutral-500"
+                                : "border-neutral-700 bg-neutral-900 text-neutral-200 hover:bg-neutral-800"
+                            }`}
+                          >
+                            {stageStatus[4] === "running" && stage4RunningAction === action
+                              ? "Running…"
+                              : STAGE4_ACTION_LABELS[action]}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div className="mt-2 text-xs text-neutral-500">
+                      {stageStatus[4] === "running" && stage4RunningAction
+                        ? `Running: ${STAGE4_ACTION_LABELS[stage4RunningAction]}`
+                        : "Image-only styling pass; Stage 3 placements stay unchanged."}
                     </div>
                   </>
                 ) : (
