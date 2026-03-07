@@ -1481,7 +1481,6 @@ export default function EditorPage() {
 
     const x = placement.bbox.x + placement.bbox.w / 2;
     const y = placement.bbox.y + placement.bbox.h / 2;
-    const scale = Math.max(placement.bbox.w, placement.bbox.h);
     const placementsForCommit = scenePlacements.filter(
       (item) => item.placementId !== ghostAddPlacementId
     );
@@ -1489,7 +1488,6 @@ export default function EditorPage() {
     console.log("[commit-add] payload", {
       x,
       y,
-      scale,
       skuId: placement.skuId,
       baseImageUrl: workingImageUrl,
       placementCount: placementsForCommit.length,
@@ -1498,7 +1496,7 @@ export default function EditorPage() {
     const previousSelectedPlacementId = selectedPlacementId;
     const res = await runEdit("add", {
       target: { skuId: placement.skuId },
-      params: { x, y, scale },
+      params: { x, y },
       eligibleSkus: stage3SkuItemsActive,
       placements: placementsForCommit,
     });
