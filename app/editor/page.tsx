@@ -616,6 +616,7 @@ export default function EditorPage() {
   const didLogFirstGenerateAttemptRef = useRef(false);
 
   const [isUploading, setIsUploading] = useState(false);
+  const [isDownloading, setIsDownloading] = useState(false);
   const [historyPickerFor, setHistoryPickerFor] = useState<string | null>(null);
   const useFreezeV2 = process.env.NEXT_PUBLIC_VIBODE_FREEZE_V2 === "1";
 
@@ -736,6 +737,49 @@ export default function EditorPage() {
   );
   const previewImageUrl =
     workingImageUrl ?? activeStageOutputImageUrl ?? scene.baseImageUrl ?? null;
+
+  const handleDownloadPreview = async () => {
+    if (!previewImageUrl || isDownloading) return;
+
+    setIsDownloading(true);
+    try {
+      const response = await fetch(previewImageUrl);
+      if (!response.ok) {
+        throw new Error(`Download failed (HTTP ${response.status}).`);
+      }
+
+      const blob = await response.blob();
+      const objectUrl = URL.createObjectURL(blob);
+      const filename = workingImageUrl
+        ? `vibode-edit-stage-${activeStage}.png`
+        : activeStageOutputImageUrl
+          ? `vibode-stage-${activeStage}.png`
+          : "vibode-original.png";
+
+      try {
+        const anchor = document.createElement("a");
+        anchor.href = objectUrl;
+        anchor.download = filename;
+        anchor.style.display = "none";
+        document.body.appendChild(anchor);
+        anchor.click();
+        anchor.remove();
+      } finally {
+        setTimeout(() => URL.revokeObjectURL(objectUrl), 0);
+      }
+
+      pushSnack("Downloaded current preview.");
+    } catch (err: any) {
+      const message =
+        typeof err?.message === "string" && err.message.trim().length > 0
+          ? `Download failed. ${err.message}`
+          : "Download failed. Please try again.";
+      console.warn("[download-preview] failed", err);
+      pushSnack(message);
+    } finally {
+      setIsDownloading(false);
+    }
+  };
 
   useEffect(() => {
     if (!selectedPlacementId) return;
@@ -2349,6 +2393,20 @@ export default function EditorPage() {
             title={lastAction ? "Undo last action" : "Nothing to undo"}
           >
             Undo
+          </button>
+
+          <button
+            type="button"
+            disabled={!previewImageUrl || isDownloading}
+            onClick={handleDownloadPreview}
+            className={`rounded-md border px-3 py-1.5 text-sm ${
+              !previewImageUrl || isDownloading
+                ? "border-neutral-800 bg-neutral-950 text-neutral-500"
+                : "border-neutral-700 bg-neutral-900 hover:bg-neutral-800"
+            }`}
+            title={!previewImageUrl ? "No preview image available" : "Download current preview"}
+          >
+            {isDownloading ? "Downloading…" : "Download"}
           </button>
 
           <div className="flex flex-col items-end gap-0.5">
