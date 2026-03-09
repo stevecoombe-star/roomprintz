@@ -419,6 +419,33 @@ function getImageUrlFromUnknown(value: unknown): string | null {
   return null;
 }
 
+function getHistoryRecordImageUrl(record: unknown): string | null {
+  if (!isRecord(record)) return null;
+
+  const directCandidates = [record.outputImageUrl, record.compositeImageUrl];
+  for (const candidate of directCandidates) {
+    if (typeof candidate === "string" && candidate.trim().length > 0) {
+      return candidate;
+    }
+  }
+
+  const freeze = isRecord(record.freeze) ? (record.freeze as Record<string, unknown>) : null;
+  if (!freeze) return null;
+
+  const nestedCandidates = [
+    isRecord(freeze.baseImage) ? freeze.baseImage.url : null,
+    isRecord(freeze.sceneSnapshot) ? freeze.sceneSnapshot.baseImageUrl : null,
+    isRecord(freeze.sceneSnapshotImageSpace) ? freeze.sceneSnapshotImageSpace.baseImageUrl : null,
+  ];
+  for (const candidate of nestedCandidates) {
+    if (typeof candidate === "string" && candidate.trim().length > 0) {
+      return candidate;
+    }
+  }
+
+  return null;
+}
+
 function validateFreezePayloadV1(payload: unknown): { ok: true } | { ok: false; reason: string } {
   if (!payload || typeof payload !== "object") return { ok: false, reason: "payload missing" };
   const payloadRecord = payload as { payloadVersion?: unknown; sceneSnapshotImageSpace?: unknown };
@@ -626,6 +653,7 @@ export default function EditorPage() {
   const [hasFurniturePass, setHasFurniturePass] = useState(false);
   const [lastStageOutputs, setLastStageOutputs] = useState<StageOutputMap>({});
   const [workingImageUrl, setWorkingImageUrl] = useState<string | null>(null);
+  const [isWorkingImageGenerated, setIsWorkingImageGenerated] = useState(false);
   const [scenePlacements, setScenePlacements] = useState<ScenePlacement[]>([]);
   const [selectedPlacementId, setSelectedPlacementId] = useState<string | null>(null);
   const [selectedEditSkuId, setSelectedEditSkuId] = useState<string>("");
@@ -1150,6 +1178,7 @@ export default function EditorPage() {
       draftMarkup: nextScene.draftMarkup,
       stage3: buildPendingStage3Payload(stage3SkuItems, stage3ShowCatalog),
     });
+    setIsWorkingImageGenerated(true);
     setWorkingImageUrl(nextScene.baseImageUrl ?? null);
     setScenePlacements([]);
     setSelectedPlacementId(null);
@@ -1205,6 +1234,10 @@ export default function EditorPage() {
         stage: stageNumber,
       };
       const candidateUrl = workingImageUrl ?? scene.baseImageUrl ?? null;
+      const baseComesFromHistory =
+        typeof candidateUrl === "string" &&
+        history.some((record) => getHistoryRecordImageUrl(record) === candidateUrl);
+      payload.isContinuation = isWorkingImageGenerated || baseComesFromHistory;
       if (typeof candidateUrl === "string" && candidateUrl.startsWith("blob:")) {
         payload.roomImageBase64 = await blobUrlToBase64(candidateUrl);
       } else if (
@@ -1340,6 +1373,7 @@ export default function EditorPage() {
       setStageStatus((prev) => ({ ...prev, [stageNumber]: "success" }));
       setLastStageOutputs((prev) => ({ ...prev, [stageNumber]: json }));
       setWorkingImageUrl(nextImageUrl);
+      setIsWorkingImageGenerated(true);
       setBaseImageUrl(nextImageUrl);
 
       if (stageNumber === 3) {
@@ -1414,6 +1448,7 @@ export default function EditorPage() {
       }
 
       setWorkingImageUrl(json.imageUrl);
+      setIsWorkingImageGenerated(true);
       setBaseImageUrl(json.imageUrl);
       if (Array.isArray(json.placements)) {
         setScenePlacements(json.placements);
@@ -2282,6 +2317,7 @@ export default function EditorPage() {
         heightPx: outH,
       });
       setWorkingImageUrl(imageUrl);
+      setIsWorkingImageGenerated(true);
 
       clearPendingLocal();
 
@@ -3523,6 +3559,7 @@ export default function EditorPage() {
                         setStageStatus(INITIAL_STAGE_STATUS);
                         setLastStageOutputs({});
                         setWorkingImageUrl(null);
+                        setIsWorkingImageGenerated(false);
                         setScenePlacements([]);
                         setSelectedPlacementId(null);
                         setActiveStage(1);
@@ -3540,6 +3577,7 @@ export default function EditorPage() {
 
                           setBaseImageUrl(up.signedUrl);
                           setWorkingImageUrl(up.signedUrl);
+                          setIsWorkingImageGenerated(false);
                           pushSnack("Image uploaded ✅ (signed URL set; blob removed).");
                         } catch (err: any) {
                           console.error(err);
@@ -3565,6 +3603,7 @@ export default function EditorPage() {
                         }
                         setBaseImageUrl(undefined);
                         setWorkingImageUrl(null);
+                        setIsWorkingImageGenerated(false);
                         setScenePlacements([]);
                         setSelectedPlacementId(null);
                         pushSnack("Image cleared.");
@@ -4225,6 +4264,7 @@ export default function EditorPage() {
                               type="button"
                               onClick={() => {
                                 loadHistoryImage(h);
+                                setIsWorkingImageGenerated(true);
                                 setWorkingImageUrl(null);
                                 setScenePlacements([]);
                                 setSelectedPlacementId(null);
@@ -4250,6 +4290,7 @@ export default function EditorPage() {
                               type="button"
                               onClick={() => {
                                 loadHistoryBoth(h);
+                                setIsWorkingImageGenerated(true);
                                 setWorkingImageUrl(null);
                                 setScenePlacements([]);
                                 setSelectedPlacementId(null);
