@@ -2482,6 +2482,19 @@ export default function EditorPage() {
             Undo
           </button>
 
+          <div className="flex items-center gap-1.5 rounded-md border border-neutral-700 bg-neutral-900 px-2 py-1.5">
+            <span className="text-xs text-neutral-400">Model</span>
+            <select
+              value={selectedModel}
+              onChange={(e) => setSelectedModel(e.target.value as VibodeModelVersion)}
+              className="rounded-md border border-neutral-700 bg-neutral-950 px-1.5 py-0.5 text-xs text-neutral-200 outline-none focus:border-neutral-500"
+              title="Vibode model"
+            >
+              <option value={VIBODE_MODEL_NBP}>NBP</option>
+              <option value={VIBODE_MODEL_NB2}>NB2</option>
+            </select>
+          </div>
+
           <button
             type="button"
             disabled={!previewImageUrl || isDownloading}
@@ -2519,16 +2532,6 @@ export default function EditorPage() {
                   <div className="text-[10px] uppercase tracking-wide text-neutral-500">
                     Internal testing
                   </div>
-                  <label className="mt-2 block text-[11px] text-neutral-400">Model</label>
-                  <select
-                    value={selectedModel}
-                    onChange={(e) => setSelectedModel(e.target.value as VibodeModelVersion)}
-                    className="mt-1 w-full rounded-md border border-neutral-700 bg-neutral-950 px-2 py-1 text-xs text-neutral-200 outline-none focus:border-neutral-500"
-                  >
-                    <option value={VIBODE_MODEL_NBP}>NBP (Nano Banana Pro)</option>
-                    <option value={VIBODE_MODEL_NB2}>NB2 (Nano Banana 2)</option>
-                  </select>
-                  <div className="mt-1 text-[10px] text-neutral-500">{selectedModel}</div>
                   <div className="mt-2 flex flex-col items-end gap-1 text-xs text-neutral-300">
                     <label className="flex cursor-pointer items-center gap-1">
                       <input
