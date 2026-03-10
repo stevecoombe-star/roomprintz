@@ -269,6 +269,7 @@ const VIBODE_PLACEMENT_TEST_MODE =
 const VIBODE_STRICT = (process.env.VIBODE_STRICT ?? "0").trim() === "1";
 const VIBODE_ALLOW_LEGACY_STAGE =
   (process.env.VIBODE_ALLOW_LEGACY_STAGE ?? "0").trim() === "1";
+const VIBODE_DEFAULT_MODEL_VERSION = "NBP";
 
 const useCompose =
   (process.env.VIBODE_USE_COMPOSITOR_VIBODE_COMPOSE ?? "false").toLowerCase() === "true";
@@ -1074,7 +1075,8 @@ async function callNanoBananaPro(args: {
   const { base64: imageBase64 } = await fetchImageAsBase64(args.baseImageUrlForModel);
 
   const styleId = args.styleId;
-  const modelVersion = safeStr((args.payload as any)?.modelVersion) ?? "gemini-3";
+  const modelVersion =
+    safeStr((args.payload as any)?.modelVersion) ?? VIBODE_DEFAULT_MODEL_VERSION;
   const aspectRatio = pickLegacyAspectRatioFromFreeze(args.payload);
   const vibodePrompt = safeStr(args.vibodePrompt);
   const vibodePromptTriggersWork =
@@ -2344,6 +2346,7 @@ export async function handleVibodeGeneratePost(
     // Body shape: { freeze: FreezePayloadV1 | FreezePayloadV2 }.
     // In strict mode, only FreezePayloadV2 is accepted.
     const body = (await req.json()) as unknown;
+    const bodyModelVersion = isRecord(body) ? safeStr((body as any).modelVersion) : null;
     const vibeInput = isRecord(body) ? (body as any).vibe : undefined;
     const freeze = applyVibodeRouteModeOverride(
       isRecord(body) ? body.freeze : undefined,
@@ -2390,11 +2393,20 @@ export async function handleVibodeGeneratePost(
           : (freeze as FreezePayloadV1);
     }
 
+    const resolvedModelVersion =
+      bodyModelVersion ??
+      safeStr((payload as any)?.modelVersion) ??
+      VIBODE_DEFAULT_MODEL_VERSION;
+    const payloadWithModel = {
+      ...(payload as any),
+      modelVersion: resolvedModelVersion,
+    } as FreezePayloadV1;
+
     return await handleGenerateRequest({
       req,
       freeze,
       payloadVersion,
-      payload,
+      payload: payloadWithModel,
       vibeInput,
     });
   } catch (err: unknown) {

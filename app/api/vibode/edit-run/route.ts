@@ -1,10 +1,17 @@
 import { NextRequest } from "next/server";
 
 export const runtime = "nodejs";
+const VIBODE_DEFAULT_MODEL_VERSION = "NBP";
 
 export async function POST(req: NextRequest) {
   try {
-    const body = await req.json();
+    const bodyRaw = (await req.json()) as unknown;
+    const body =
+      bodyRaw && typeof bodyRaw === "object" ? (bodyRaw as Record<string, unknown>) : {};
+    const modelVersion =
+      typeof body.modelVersion === "string" && body.modelVersion.trim().length > 0
+        ? body.modelVersion
+        : VIBODE_DEFAULT_MODEL_VERSION;
 
     const endpointBase = process.env.ROOMPRINTZ_COMPOSITOR_URL?.trim();
     if (!endpointBase) {
@@ -36,7 +43,10 @@ export async function POST(req: NextRequest) {
     const res = await fetch(endpoint, {
       method: "POST",
       headers,
-      body: JSON.stringify(body),
+      body: JSON.stringify({
+        ...body,
+        modelVersion,
+      }),
     });
 
     const result = await res.json();

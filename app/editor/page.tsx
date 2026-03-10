@@ -18,6 +18,9 @@ import { supabaseBrowser } from "@/lib/supabaseBrowser";
 
 const DND_MIME = "application/x-roomprintz-furniture";
 const USER_SKU_MAX_INPUT_BYTES = 12 * 1024 * 1024;
+const VIBODE_MODEL_STORAGE_KEY = "vibode:modelVersion";
+const VIBODE_MODEL_NBP = "NBP";
+const VIBODE_MODEL_NB2 = "NB2";
 
 function safeId(prefix = "sn") {
   if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
@@ -217,6 +220,7 @@ function hasSwapMarksWithReplacement(vibodeIntent: unknown): boolean {
 type WorkflowStage = 1 | 2 | 3 | 4 | 5;
 type StageRunStatus = "idle" | "running" | "success" | "error";
 type DeclutterMode = "off" | "light" | "heavy";
+type VibodeModelVersion = typeof VIBODE_MODEL_NBP | typeof VIBODE_MODEL_NB2;
 type Stage4Action =
   | "style_room"
   | "accessories"
@@ -272,6 +276,7 @@ type VibodeEditRunRequest = {
   target?: VibodeEditRunTarget;
   params?: Record<string, unknown>;
   eligibleSkus?: VibodeEligibleSku[];
+  modelVersion?: VibodeModelVersion;
 };
 type VibodeEditRunResponse = {
   imageUrl: string;
@@ -619,6 +624,7 @@ export default function EditorPage() {
   const [addOpen, setAddOpen] = useState(false);
   const [visualMode, setVisualMode] = useState<"blueprint" | "thumbnails">("blueprint");
   const [swapPickerOpen, setSwapPickerOpen] = useState(false);
+  const [selectedModel, setSelectedModel] = useState<VibodeModelVersion>(VIBODE_MODEL_NBP);
 
   const [snacks, setSnacks] = useState<Snackbar[]>([]);
   const pushSnack = (message: string) => {
@@ -682,6 +688,17 @@ export default function EditorPage() {
   const [stage3SkuItems, setStage3SkuItems] = useState<Stage3SkuItem[]>([]);
   const [stage3ShowCatalog, setStage3ShowCatalog] = useState(false);
   const didRestorePendingRef = useRef(false);
+
+  useEffect(() => {
+    const raw = window.localStorage.getItem(VIBODE_MODEL_STORAGE_KEY);
+    if (raw === VIBODE_MODEL_NBP || raw === VIBODE_MODEL_NB2) {
+      setSelectedModel(raw);
+    }
+  }, []);
+
+  useEffect(() => {
+    window.localStorage.setItem(VIBODE_MODEL_STORAGE_KEY, selectedModel);
+  }, [selectedModel]);
 
   useEffect(() => {
     useEditorStore.getState().tryRestorePendingFromLocalStorage();
@@ -1232,6 +1249,7 @@ export default function EditorPage() {
     try {
       const payload: Record<string, unknown> = {
         stage: stageNumber,
+        modelVersion: selectedModel,
       };
       const candidateUrl = workingImageUrl ?? scene.baseImageUrl ?? null;
       const baseComesFromHistory =
@@ -1427,6 +1445,7 @@ export default function EditorPage() {
         target: payloadParts.target,
         params: payloadParts.params,
         eligibleSkus: payloadParts.eligibleSkus,
+        modelVersion: selectedModel,
       };
 
       const res = await fetch("/api/vibode/edit-run", {
@@ -2183,6 +2202,7 @@ export default function EditorPage() {
         },
         body: JSON.stringify({
           freeze: freezePayloadForRequest,
+          modelVersion: selectedModel,
           vibeMode: scene.vibeMode,
           markup: markupToPersist,
           vibe: isVibeStage
@@ -2465,7 +2485,20 @@ export default function EditorPage() {
               </button>
               {advancedOpen && (
                 <div className="absolute right-0 top-full mt-1 w-48 rounded-md border border-neutral-700 bg-neutral-900/95 p-2 shadow-lg">
-                  <div className="flex flex-col items-end gap-1 text-xs text-neutral-300">
+                  <div className="text-[10px] uppercase tracking-wide text-neutral-500">
+                    Internal testing
+                  </div>
+                  <label className="mt-2 block text-[11px] text-neutral-400">Model</label>
+                  <select
+                    value={selectedModel}
+                    onChange={(e) => setSelectedModel(e.target.value as VibodeModelVersion)}
+                    className="mt-1 w-full rounded-md border border-neutral-700 bg-neutral-950 px-2 py-1 text-xs text-neutral-200 outline-none focus:border-neutral-500"
+                  >
+                    <option value={VIBODE_MODEL_NBP}>NBP (Nano Banana Pro)</option>
+                    <option value={VIBODE_MODEL_NB2}>NB2 (Nano Banana 2)</option>
+                  </select>
+                  <div className="mt-1 text-[10px] text-neutral-500">{selectedModel}</div>
+                  <div className="mt-2 flex flex-col items-end gap-1 text-xs text-neutral-300">
                     <label className="flex cursor-pointer items-center gap-1">
                       <input
                         type="checkbox"
