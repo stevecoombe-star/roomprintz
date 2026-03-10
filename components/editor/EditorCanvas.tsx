@@ -198,15 +198,18 @@ export function EditorCanvas({
   onRequestSwap,
   markupVisible = true,
   visualMode = "blueprint",
+  imageUrl,
 }: {
   className?: string;
   onRequestSwap?: (id: string) => void;
   markupVisible?: boolean;
   visualMode?: VisualMode;
+  imageUrl?: string | null;
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
 
   const baseImageUrl = useEditorStore((s) => s.scene.baseImageUrl);
+  const canvasImageUrl = imageUrl ?? baseImageUrl;
   const nodes = useEditorStore((s) => s.scene.nodes);
   const removeMarks = useEditorStore((s) => s.scene.removeMarks ?? []);
   const swapMarks = useEditorStore((s) => s.scene.swapMarks ?? []);
@@ -266,7 +269,7 @@ export function EditorCanvas({
     h: 600,
   });
 
-  const [img] = useImage(baseImageUrl ?? "", "anonymous");
+  const [img] = useImage(canvasImageUrl ?? "", "anonymous");
 
   const fit = useMemo(() => {
     if (!img) return { x: 0, y: 0, w: stageSize.w, h: stageSize.h, scale: 1 };

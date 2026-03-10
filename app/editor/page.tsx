@@ -1222,6 +1222,18 @@ export default function EditorPage() {
     });
   };
 
+  const isInlineImageSource = (value: unknown): value is string =>
+    typeof value === "string" &&
+    (value.startsWith("blob:") || value.startsWith("data:image/"));
+
+  const sanitizeStageRunPayloadForLog = (payload: Record<string, unknown>) => {
+    if (typeof payload.roomImageBase64 !== "string") return payload;
+    return {
+      ...payload,
+      roomImageBase64: `[omitted base64, ${payload.roomImageBase64.length} chars]`,
+    };
+  };
+
   const STAGE5_DEV_BYPASS = process.env.NODE_ENV !== "production";
 
   const runStage = async (stageNumber: WorkflowStage, options: Record<string, unknown> = {}) => {
@@ -1251,7 +1263,23 @@ export default function EditorPage() {
         stage: stageNumber,
         modelVersion: selectedModel,
       };
-      const candidateUrl = workingImageUrl ?? scene.baseImageUrl ?? null;
+      const stageImageCandidates =
+        stageNumber === 3
+          ? [workingImageUrl, activeStageOutputImageUrl, scene.baseImageUrl]
+          : [workingImageUrl, scene.baseImageUrl];
+      const candidateUrl =
+        stageImageCandidates.find(
+          (candidate): candidate is string =>
+            typeof candidate === "string" &&
+            candidate.trim().length > 0 &&
+            !candidate.startsWith("blob:") &&
+            !candidate.startsWith("data:image/")
+        ) ??
+        stageImageCandidates.find(
+          (candidate): candidate is string =>
+            typeof candidate === "string" && candidate.trim().length > 0
+        ) ??
+        null;
       const baseComesFromHistory =
         typeof candidateUrl === "string" &&
         history.some((record) => getHistoryRecordImageUrl(record) === candidateUrl);
@@ -1356,6 +1384,7 @@ export default function EditorPage() {
             : typeof payload.roomImageBase64 === "string"
               ? "roomImageBase64"
               : null;
+        const payloadForLog = sanitizeStageRunPayloadForLog(payload);
 
         console.log("[stage3][pre-post][summary]", {
           stage: stageNumber,
@@ -1367,10 +1396,10 @@ export default function EditorPage() {
           userSkuCount,
           nonUserSkuCount,
         });
-        console.log("[stage3][pre-post][payload-json]", JSON.stringify(payload, null, 2));
+        console.log("[stage3][pre-post][payload-json]", JSON.stringify(payloadForLog, null, 2));
       }
 
-      console.log("stage-run payload", payload);
+      console.log("stage-run payload", sanitizeStageRunPayloadForLog(payload));
       const res = await fetch("/api/vibode/stage-run", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -1392,7 +1421,9 @@ export default function EditorPage() {
       setLastStageOutputs((prev) => ({ ...prev, [stageNumber]: json }));
       setWorkingImageUrl(nextImageUrl);
       setIsWorkingImageGenerated(true);
-      setBaseImageUrl(nextImageUrl);
+      if (!isInlineImageSource(nextImageUrl)) {
+        setBaseImageUrl(nextImageUrl);
+      }
 
       if (stageNumber === 3) {
         setHasFurniturePass(true);
@@ -2752,6 +2783,7 @@ export default function EditorPage() {
 
               <EditorCanvas
                 className="absolute inset-0"
+                imageUrl={previewImageUrl}
                 markupVisible={scene.markupVisible}
                 visualMode={visualMode}
                 onRequestSwap={(id) => {
