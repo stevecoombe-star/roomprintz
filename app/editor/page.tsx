@@ -780,8 +780,9 @@ export default function EditorPage() {
     () => getImageUrlFromUnknown(lastStageOutputs[activeStage]),
     [activeStage, lastStageOutputs]
   );
-  const previewImageUrl =
+  const currentImageUrl =
     workingImageUrl ?? activeStageOutputImageUrl ?? scene.baseImageUrl ?? null;
+  const previewImageUrl = currentImageUrl;
 
   const handleDownloadPreview = async () => {
     if (!previewImageUrl || isDownloading) return;
@@ -1263,23 +1264,10 @@ export default function EditorPage() {
         stage: stageNumber,
         modelVersion: selectedModel,
       };
-      const stageImageCandidates =
-        stageNumber === 3
-          ? [workingImageUrl, activeStageOutputImageUrl, scene.baseImageUrl]
-          : [workingImageUrl, scene.baseImageUrl];
       const candidateUrl =
-        stageImageCandidates.find(
-          (candidate): candidate is string =>
-            typeof candidate === "string" &&
-            candidate.trim().length > 0 &&
-            !candidate.startsWith("blob:") &&
-            !candidate.startsWith("data:image/")
-        ) ??
-        stageImageCandidates.find(
-          (candidate): candidate is string =>
-            typeof candidate === "string" && candidate.trim().length > 0
-        ) ??
-        null;
+        typeof currentImageUrl === "string" && currentImageUrl.trim().length > 0
+          ? currentImageUrl
+          : null;
       const baseComesFromHistory =
         typeof candidateUrl === "string" &&
         history.some((record) => getHistoryRecordImageUrl(record) === candidateUrl);
@@ -1399,6 +1387,19 @@ export default function EditorPage() {
         console.log("[stage3][pre-post][payload-json]", JSON.stringify(payloadForLog, null, 2));
       }
 
+      console.log("[runStage][image-source-debug]", {
+        stageNumber,
+        workingImageUrl,
+        activeStageOutputImageUrl,
+        "scene.baseImageUrl": scene.baseImageUrl,
+        candidateUrl,
+        selectedPayloadImageField:
+          typeof candidateUrl === "string" &&
+          (candidateUrl.startsWith("blob:") || candidateUrl.startsWith("data:image/"))
+            ? "roomImageBase64"
+            : "baseImageUrl",
+        "payload.isContinuation": payload.isContinuation,
+      });
       console.log("stage-run payload", sanitizeStageRunPayloadForLog(payload));
       const res = await fetch("/api/vibode/stage-run", {
         method: "POST",
