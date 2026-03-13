@@ -640,7 +640,6 @@ export default function EditorPage() {
     }
   }
 
-  const [fullVibeEnabled, setFullVibeEnabled] = useState(true);
   const [lastFreezePayload, setLastFreezePayload] = useState<any>(null);
   const didLogFirstGenerateAttemptRef = useRef(false);
 
@@ -2193,7 +2192,6 @@ export default function EditorPage() {
         });
       }
       
-      const useFullVibe = isVibeStage && fullVibeEnabled;
       const vibodeRoute = isRemoveMode
         ? "/api/vibode/remove"
         : isSwapMode
@@ -2201,9 +2199,7 @@ export default function EditorPage() {
           : isRotateMode
             ? "/api/vibode/generate"
             : isVibeStage
-              ? useFullVibe
-                ? "/api/vibode/full-vibe"
-                : "/api/vibode/vibe"
+              ? "/api/vibode/full-vibe"
             : "/api/vibode/compose";
       const res = await fetch(vibodeRoute, {
         method: "POST",
@@ -2248,8 +2244,6 @@ export default function EditorPage() {
         generationIdFromResponse: j?.generationId,
         generationIdLocalBeforeAdopt: generationId,
         isVibeStage,
-        useFullVibe,
-        fullVibeEnabled,
         isRemoveMode,
         isSwapMode,
         isRotateMode,
@@ -2295,7 +2289,7 @@ export default function EditorPage() {
       const outW = toFinitePosNum(j?.output?.widthPx ?? j?.widthPx);
       const outH = toFinitePosNum(j?.output?.heightPx ?? j?.heightPx);
       
-      const genId = typeof j?.generationId === "string" ? j.generationId : useFullVibe ? localGenId : null;
+      const genId = typeof j?.generationId === "string" ? j.generationId : isVibeStage ? localGenId : null;
 
       // TEMP DEBUG (remove after capturing full-vibe runtime evidence)
       console.log("[VIBODE DEBUG COMPUTED]", {
@@ -2489,17 +2483,6 @@ export default function EditorPage() {
             {isDownloading ? "Downloading…" : "Download"}
           </button>
 
-          <div>
-            <label className="flex cursor-pointer items-center gap-1 text-xs text-neutral-300">
-              <input
-                type="checkbox"
-                checked={fullVibeEnabled}
-                onChange={(e) => setFullVibeEnabled(e.target.checked)}
-                className="h-3.5 w-3.5 accent-sky-400"
-              />
-              ✨ Full Vibe
-            </label>
-          </div>
         </div>
       </header>
 
