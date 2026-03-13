@@ -596,9 +596,6 @@ export default function EditorPage() {
   const updateRotateMark = useEditorStore((s) => s.updateRotateMark);
   const removeRotateMark = useEditorStore((s) => s.removeRotateMark);
 
-  const lastAction = useEditorStore((s) => s.lastAction);
-  const undoLastAction = useEditorStore((s) => s.undoLastAction);
-
   // Calibration
   const calibration = useEditorStore((s) => s.scene.calibration);
   const ensurePpfFromAssumption = useEditorStore((s) => s.ensurePpfFromAssumption);
@@ -2439,22 +2436,6 @@ export default function EditorPage() {
               {queuedSwaps > 0 ? `${queuedSwaps} swap${queuedSwaps === 1 ? "" : "s"} pending` : ""}
             </div>
           )}
-
-          <button
-            disabled={!lastAction}
-            onClick={() => {
-              undoLastAction();
-              pushSnack("Undid last action.");
-            }}
-            className={`rounded-md border px-3 py-1.5 text-sm ${
-              lastAction
-                ? "border-neutral-700 bg-neutral-900 hover:bg-neutral-800"
-                : "border-neutral-800 bg-neutral-950 text-neutral-500"
-            }`}
-            title={lastAction ? "Undo last action" : "Nothing to undo"}
-          >
-            Undo
-          </button>
 
           <div className="flex items-center gap-1.5 rounded-md border border-neutral-700 bg-neutral-900 px-2 py-1.5">
             <span className="text-xs text-neutral-400">Model</span>
