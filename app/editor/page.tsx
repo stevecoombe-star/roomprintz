@@ -584,9 +584,12 @@ export default function EditorPage() {
   }
 
   const didLogFirstGenerateAttemptRef = useRef(false);
+  const roomPhotoUploadInputRef = useRef<HTMLInputElement | null>(null);
+  const roomPhotoCanvasDragDepthRef = useRef(0);
 
   const [isUploading, setIsUploading] = useState(false);
   const [isDownloading, setIsDownloading] = useState(false);
+  const [isCanvasDragOver, setIsCanvasDragOver] = useState(false);
   const useFreezeV2 = process.env.NEXT_PUBLIC_VIBODE_FREEZE_V2 === "1";
 
   const [activeStage, setActiveStage] = useState<WorkflowStage>(1);
@@ -719,6 +722,117 @@ export default function EditorPage() {
   const currentImageUrl =
     workingImageUrl ?? activeStageOutputImageUrl ?? scene.baseImageUrl ?? null;
   const previewImageUrl = currentImageUrl;
+  const isCanvasEmpty = !previewImageUrl && !scene.baseImageUrl;
+
+  const isImageFile = (file: File | null | undefined) =>
+    !!file && typeof file.type === "string" && file.type.startsWith("image/");
+
+  const hasDraggedImageFile = (dataTransfer: DataTransfer | null) => {
+    if (!dataTransfer) return false;
+
+    const items = Array.from(dataTransfer.items ?? []);
+    if (items.some((item) => item.kind === "file" && item.type.startsWith("image/"))) {
+      return true;
+    }
+
+    const files = Array.from(dataTransfer.files ?? []);
+    return files.some((file) => isImageFile(file));
+  };
+
+  const handleRoomPhotoFile = async (file: File) => {
+    if (!isImageFile(file)) {
+      pushSnack("Please upload an image file.");
+      return;
+    }
+
+    setHasFurniturePass(false);
+    setStageStatus(INITIAL_STAGE_STATUS);
+    setLastStageOutputs({});
+    setWorkingImageUrl(null);
+    setIsWorkingImageGenerated(false);
+    setScenePlacements([]);
+    setSelectedPlacementId(null);
+    setActiveStage(1);
+    clearPendingLocal();
+
+    // 1) Instant preview (blob)
+    setBaseImageFromFile(file);
+    pushSnack("Image loaded (local preview). Uploading to storage…");
+
+    // 2) Upload to storage + swap to signed URL (kills blob in payload)
+    setIsUploading(true);
+    try {
+      const sceneId = useEditorStore.getState().scene.sceneId;
+      const up = await uploadBaseImageToStorage({ file, sceneId });
+
+      setBaseImageUrl(up.signedUrl);
+      setWorkingImageUrl(up.signedUrl);
+      setIsWorkingImageGenerated(false);
+      pushSnack("Image uploaded ✅ (signed URL set; blob removed).");
+    } catch (err: any) {
+      console.error(err);
+      pushSnack(`Upload failed — keeping local preview. (${err?.message ?? "error"})`);
+    } finally {
+      setIsUploading(false);
+    }
+  };
+
+  const handleRoomPhotoInputChange = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const inputEl = event.currentTarget;
+    const file = inputEl.files?.[0];
+    if (!file) return;
+
+    try {
+      await handleRoomPhotoFile(file);
+    } finally {
+      // allow re-pick same file
+      inputEl.value = "";
+    }
+  };
+
+  const handleCanvasDragEnter = (event: React.DragEvent<HTMLDivElement>) => {
+    if (!isCanvasEmpty || !hasDraggedImageFile(event.dataTransfer)) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "copy";
+    roomPhotoCanvasDragDepthRef.current += 1;
+    setIsCanvasDragOver(true);
+  };
+
+  const handleCanvasDragOver = (event: React.DragEvent<HTMLDivElement>) => {
+    if (!isCanvasEmpty || !hasDraggedImageFile(event.dataTransfer)) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "copy";
+    if (!isCanvasDragOver) {
+      setIsCanvasDragOver(true);
+    }
+  };
+
+  const handleCanvasDragLeave = (event: React.DragEvent<HTMLDivElement>) => {
+    if (!isCanvasEmpty) return;
+    roomPhotoCanvasDragDepthRef.current = Math.max(0, roomPhotoCanvasDragDepthRef.current - 1);
+    if (roomPhotoCanvasDragDepthRef.current === 0) {
+      setIsCanvasDragOver(false);
+    }
+  };
+
+  const handleCanvasDrop = async (event: React.DragEvent<HTMLDivElement>) => {
+    if (!isCanvasEmpty) return;
+    roomPhotoCanvasDragDepthRef.current = 0;
+    setIsCanvasDragOver(false);
+
+    const imageFile = Array.from(event.dataTransfer.files ?? []).find((file) => isImageFile(file));
+    if (!imageFile) return;
+
+    event.preventDefault();
+    await handleRoomPhotoFile(imageFile);
+  };
+
+  useEffect(() => {
+    if (!isCanvasEmpty && isCanvasDragOver) {
+      roomPhotoCanvasDragDepthRef.current = 0;
+      setIsCanvasDragOver(false);
+    }
+  }, [isCanvasDragOver, isCanvasEmpty]);
 
   const handleDownloadPreview = async () => {
     if (!previewImageUrl || isDownloading) return;
@@ -2379,8 +2493,25 @@ export default function EditorPage() {
             <div
               className={`relative h-full w-full overflow-hidden rounded-lg border border-neutral-800 bg-neutral-900 ${
                 isBusy ? "blur-[1px] brightness-90" : ""
+              } ${
+                isCanvasEmpty && isCanvasDragOver
+                  ? "border-blue-700/70 bg-blue-950/20 ring-1 ring-inset ring-blue-400/40"
+                  : ""
               }`}
+              onDragEnter={handleCanvasDragEnter}
+              onDragOver={handleCanvasDragOver}
+              onDragLeave={handleCanvasDragLeave}
+              onDrop={handleCanvasDrop}
             >
+              <input
+                ref={roomPhotoUploadInputRef}
+                type="file"
+                accept="image/*"
+                className="hidden"
+                disabled={isUploading}
+                onChange={handleRoomPhotoInputChange}
+              />
+
               {showSwapReplacementPicker && (
                 <div className="absolute left-2 top-2 z-20 w-[340px] rounded-lg border border-blue-800/60 bg-neutral-950/95 p-3 shadow-xl backdrop-blur-sm">
                   <div className="flex items-center justify-between gap-2">
@@ -2462,7 +2593,7 @@ export default function EditorPage() {
 
               <EditorCanvas
                 className={`absolute inset-0 ${
-                  !previewImageUrl && !scene.baseImageUrl
+                  isCanvasEmpty
                     ? "[&>.pointer-events-none.absolute.left-3.top-3]:hidden"
                     : ""
                 }`}
@@ -2479,6 +2610,42 @@ export default function EditorPage() {
                   setSwapOpen(true);
                 }}
               />
+
+              {isCanvasEmpty && (
+                <div
+                  className={`absolute inset-0 z-10 flex items-center justify-center transition ${
+                    isCanvasDragOver ? "bg-blue-950/20" : "bg-neutral-950/20"
+                  }`}
+                >
+                  <div
+                    className={`mx-4 w-full max-w-md rounded-2xl border px-6 py-7 text-center shadow-xl backdrop-blur-sm transition ${
+                      isCanvasDragOver
+                        ? "border-blue-500/60 bg-neutral-900/90"
+                        : "border-blue-900/40 bg-neutral-900/80"
+                    }`}
+                  >
+                    <div className="text-2xl font-semibold tracking-tight text-neutral-100">
+                      Upload your room photo
+                    </div>
+                    <div className="mt-1 text-sm text-blue-200/90">to start Viboding</div>
+
+                    <button
+                      type="button"
+                      className={`mt-6 rounded-md border px-4 py-2 text-sm font-medium transition ${
+                        isUploading
+                          ? "cursor-not-allowed border-neutral-700 bg-neutral-800 text-neutral-500"
+                          : "border-blue-600/80 bg-blue-900/50 text-blue-100 hover:bg-blue-800/60"
+                      }`}
+                      disabled={isUploading}
+                      onClick={() => roomPhotoUploadInputRef.current?.click()}
+                    >
+                      {isUploading ? "Uploading…" : "Upload Photo"}
+                    </button>
+
+                    <div className="mt-3 text-xs text-neutral-400">or drag & drop an image</div>
+                  </div>
+                </div>
+              )}
 
               {isBusy && (
                 <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center">
@@ -3346,47 +3513,7 @@ export default function EditorPage() {
                       accept="image/*"
                       className="hidden"
                       disabled={isUploading}
-                      onChange={async (e) => {
-                        const inputEl = e.currentTarget;
-                        const file = inputEl.files?.[0];
-                        if (!file) return;
-
-                        // allow re-pick same file
-                        inputEl.value = "";
-
-                        setHasFurniturePass(false);
-                        setStageStatus(INITIAL_STAGE_STATUS);
-                        setLastStageOutputs({});
-                        setWorkingImageUrl(null);
-                        setIsWorkingImageGenerated(false);
-                        setScenePlacements([]);
-                        setSelectedPlacementId(null);
-                        setActiveStage(1);
-                        clearPendingLocal();
-
-                        // 1) Instant preview (blob)
-                        setBaseImageFromFile(file);
-                        pushSnack("Image loaded (local preview). Uploading to storage…");
-
-                        // 2) Upload to storage + swap to signed URL (kills blob in payload)
-                        setIsUploading(true);
-                        try {
-                          const sceneId = useEditorStore.getState().scene.sceneId;
-                          const up = await uploadBaseImageToStorage({ file, sceneId });
-
-                          setBaseImageUrl(up.signedUrl);
-                          setWorkingImageUrl(up.signedUrl);
-                          setIsWorkingImageGenerated(false);
-                          pushSnack("Image uploaded ✅ (signed URL set; blob removed).");
-                        } catch (err: any) {
-                          console.error(err);
-                          pushSnack(
-                            `Upload failed — keeping local preview. (${err?.message ?? "error"})`
-                          );
-                        } finally {
-                          setIsUploading(false);
-                        }
-                      }}
+                      onChange={handleRoomPhotoInputChange}
                     />
                   </label>
 
