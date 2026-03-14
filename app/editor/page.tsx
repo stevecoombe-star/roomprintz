@@ -505,6 +505,23 @@ async function uploadBaseImageToStorage(opts: {
   };
 }
 
+function preloadImage(url: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => {
+      img.onload = null;
+      img.onerror = null;
+      resolve();
+    };
+    img.onerror = () => {
+      img.onload = null;
+      img.onerror = null;
+      reject(new Error("Failed to preload image."));
+    };
+    img.src = url;
+  });
+}
+
 export default function EditorPage() {
   const router = useRouter();
 
@@ -764,6 +781,7 @@ export default function EditorPage() {
     try {
       const sceneId = useEditorStore.getState().scene.sceneId;
       const up = await uploadBaseImageToStorage({ file, sceneId });
+      await preloadImage(up.signedUrl);
 
       setBaseImageUrl(up.signedUrl);
       setWorkingImageUrl(up.signedUrl);
