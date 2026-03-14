@@ -38,20 +38,6 @@ function isFiniteNumber(n: any) {
   return typeof n === "number" && Number.isFinite(n);
 }
 
-function formatInches(n?: number) {
-  if (typeof n !== "number" || !Number.isFinite(n)) return "—";
-  return Number.isInteger(n) ? `${n}` : n.toFixed(1);
-}
-
-function skuDimsLabel(sku: IkeaCaSku) {
-  const { width, depth, height, diameter } = sku.dimsIn;
-  if (diameter) {
-    return `Ø ${formatInches(diameter)}" × H ${formatInches(height)}"`;
-  }
-  const d = depth ?? width;
-  return `W ${formatInches(width)}" × D ${formatInches(d)}" × H ${formatInches(height)}"`;
-}
-
 function readFileAsDataUrl(file: File): Promise<string> {
   return new Promise<string>((resolve, reject) => {
     const reader = new FileReader();
@@ -537,7 +523,6 @@ export default function EditorPage() {
   const setRoomDims = useEditorStore((s) => s.setRoomDims);
   const setCollection = useEditorStore((s) => s.setCollection);
   const setWorkingSet = useEditorStore((s) => s.setWorkingSet);
-  const setVibeMode = useEditorStore((s) => s.setVibeMode);
 
   // legacy mock boundary (keeps UI behavior today)
   const commitGenerateMock = useEditorStore((s) => s.commitGenerateMock);
@@ -551,7 +536,6 @@ export default function EditorPage() {
 
   const applySwap = useEditorStore((s) => s.applySwap);
   const setPendingSwap = useEditorStore((s) => s.setPendingSwap);
-  const addFurnitureNodeFromSku = useEditorStore((s) => s.addFurnitureNodeFromSku);
   const addNode = useEditorStore((s) => s.addNode);
   const deleteNode = useEditorStore((s) => s.deleteNode);
   const selectNode = useEditorStore((s) => s.selectNode);
@@ -577,8 +561,6 @@ export default function EditorPage() {
 
   const [swapOpen, setSwapOpen] = useState(false);
   const [swapTargetId, setSwapTargetId] = useState<string | null>(null);
-  const [addOpen, setAddOpen] = useState(false);
-  const [visualMode, setVisualMode] = useState<"blueprint" | "thumbnails">("blueprint");
   const [swapPickerOpen, setSwapPickerOpen] = useState(false);
   const [isEditToolsCollapsed, setIsEditToolsCollapsed] = useState(false);
   const [isPasteProductImageCollapsed, setIsPasteProductImageCollapsed] = useState(false);
@@ -2391,9 +2373,7 @@ export default function EditorPage() {
         <main className="flex flex-1 items-center justify-center bg-neutral-950">
           {/* OUTER: owns glow pseudo-elements (NO overflow-hidden) */}
           <div
-            className={`relative h-[70vh] w-[70vw] max-w-[1200px] rounded-lg precision-ring ${
-              vibeMode === "on" ? "vibe-glow vibe-aura vibe-aura-animate" : ""
-            }`}
+            className="relative h-[70vh] w-[70vw] max-w-[1200px] rounded-lg precision-ring vibe-glow vibe-aura vibe-aura-animate"
           >
             {/* INNER: clips canvas contents + keeps border/bg */}
             <div
@@ -2401,60 +2381,6 @@ export default function EditorPage() {
                 isBusy ? "blur-[1px] brightness-90" : ""
               }`}
             >
-              <div className="absolute right-2 top-2 z-10 flex items-center gap-2">
-                <div
-                  className={`rounded-full border px-2.5 py-1 text-[11px] font-medium ${
-                    vibeMode === "on"
-                      ? "border-sky-500/70 bg-sky-950/70 text-sky-100"
-                      : "border-neutral-700 bg-neutral-900 text-neutral-300"
-                  }`}
-                  title={
-                    vibeMode === "on"
-                      ? "Vibode may style the room more broadly for a cohesive result."
-                      : "Changes should be limited to your markup placements."
-                  }
-                >
-                  {vibeMode === "on" ? "Vibe Mode" : "Precision Mode"}
-                </div>
-
-                <button
-                  type="button"
-                  className={`rounded-full border px-2.5 py-1 text-[11px] ${
-                    vibeMode === "on"
-                      ? "border-sky-700/60 bg-sky-950/50 text-sky-100 hover:bg-sky-900/40"
-                      : "border-neutral-700 bg-neutral-950 text-neutral-300 hover:bg-neutral-800"
-                  }`}
-                  onClick={() => setVibeMode(vibeMode === "on" ? "off" : "on")}
-                  title={vibeMode === "on" ? "Switch to Precision Mode" : "Switch to Vibe Mode"}
-                >
-                  Vibe: {vibeMode === "on" ? "On" : "Off"}
-                </button>
-
-                <button
-                  type="button"
-                  className="rounded-full border border-neutral-700 bg-neutral-950 px-2.5 py-1 text-[11px] text-neutral-200 hover:bg-neutral-800"
-                  onClick={() =>
-                    setVisualMode((cur) => (cur === "blueprint" ? "thumbnails" : "blueprint"))
-                  }
-                  title={
-                    visualMode === "blueprint"
-                      ? "Switch to thumbnail mode"
-                      : "Switch to blueprint mode"
-                  }
-                >
-                  {visualMode === "blueprint" ? "Blueprint" : "Thumbs"}
-                </button>
-
-                <button
-                  type="button"
-                  className="rounded-full border border-neutral-700 bg-neutral-950 px-2.5 py-1 text-[11px] text-neutral-200 hover:bg-neutral-800"
-                  onClick={() => setAddOpen(true)}
-                  title="Add furniture"
-                >
-                  ➕ Add
-                </button>
-              </div>
-
               {showSwapReplacementPicker && (
                 <div className="absolute left-2 top-2 z-20 w-[340px] rounded-lg border border-blue-800/60 bg-neutral-950/95 p-3 shadow-xl backdrop-blur-sm">
                   <div className="flex items-center justify-between gap-2">
@@ -2538,7 +2464,7 @@ export default function EditorPage() {
                 className="absolute inset-0"
                 imageUrl={previewImageUrl}
                 markupVisible={scene.markupVisible}
-                visualMode={visualMode}
+                visualMode="blueprint"
                 onRequestSwap={(id) => {
                   const node = nodes.find((n) => n.id === id);
                   if (node?.status === "markedForDelete") {
@@ -3865,63 +3791,6 @@ export default function EditorPage() {
               >
                 Rescale existing
               </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Add Furniture Panel */}
-      {addOpen && (
-        <div
-          className="fixed inset-0 z-40 flex items-start justify-end bg-black/60 p-4"
-          onMouseDown={(e) => {
-            if (e.target === e.currentTarget) setAddOpen(false);
-          }}
-        >
-          <div
-            className="w-full max-w-[560px] rounded-xl border border-neutral-800 bg-neutral-950 shadow-xl"
-            onMouseDown={(e) => e.stopPropagation()}
-          >
-            <div className="flex items-center justify-between border-b border-neutral-800 px-4 py-3">
-              <div>
-                <div className="text-sm font-medium">Add Furniture</div>
-                <div className="text-xs text-neutral-400">IKEA Canada catalog (v0)</div>
-              </div>
-              <button
-                className="rounded-md border border-neutral-800 bg-neutral-900 px-3 py-1.5 text-sm hover:bg-neutral-800"
-                onClick={() => setAddOpen(false)}
-              >
-                Close
-              </button>
-            </div>
-
-            <div className="max-h-[70vh] overflow-auto p-4">
-              <div className="grid grid-cols-2 gap-3">
-                {IKEA_CA_SKUS.map((sku) => (
-                  <button
-                    key={sku.skuId}
-                    className="group overflow-hidden rounded-lg border border-neutral-800 bg-neutral-900 text-left hover:bg-neutral-800"
-                    onClick={() => {
-                      addFurnitureNodeFromSku(sku);
-                      setAddOpen(false);
-                    }}
-                  >
-                    <div className="aspect-[4/3] w-full overflow-hidden bg-neutral-950">
-                      <img
-                        src={sku.imageUrl}
-                        alt={sku.displayName}
-                        className="h-full w-full object-cover"
-                        loading="lazy"
-                      />
-                    </div>
-                    <div className="p-3">
-                      <div className="text-sm font-medium text-neutral-100">{sku.displayName}</div>
-                      <div className="mt-0.5 text-xs text-neutral-400">Article {sku.articleNumber}</div>
-                      <div className="mt-1 text-xs text-neutral-300">{skuDimsLabel(sku)}</div>
-                    </div>
-                  </button>
-                ))}
-              </div>
             </div>
           </div>
         </div>
