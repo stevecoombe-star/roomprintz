@@ -71,28 +71,6 @@ function readFileAsDataUrl(file: File): Promise<string> {
   });
 }
 
-function MoveIcon({ className }: { className?: string }) {
-  return (
-    <svg
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      className={className}
-      aria-hidden="true"
-    >
-      <path d="M12 2v20" />
-      <path d="M2 12h20" />
-      <path d="m8 6 4-4 4 4" />
-      <path d="m8 18 4 4 4-4" />
-      <path d="m6 8-4 4 4 4" />
-      <path d="m18 8 4 4-4 4" />
-    </svg>
-  );
-}
-
 type IkeaKind =
   | "sofa"
   | "loveseat"
@@ -2469,55 +2447,6 @@ export default function EditorPage() {
 
       {/* Main */}
       <div className="flex h-[calc(100dvh-3rem)] w-full">
-        {/* Left tool rail */}
-        <aside className="flex w-14 flex-col items-center gap-2 border-r border-neutral-800 bg-neutral-950 py-3">
-          {[
-            { label: "V", tool: "select" as const, title: "Select/Move" },
-            { label: "F", tool: "furniture" as const, title: "Furniture" },
-            { label: "M", tool: "mask" as const, title: "Mask" },
-            { label: "R", tool: "remove" as const, title: "Remove (red X marks)" },
-            { label: "S", tool: "swap" as const, title: "Swap (blue replacement marks)" },
-            { label: "⟳", tool: "rotate" as const, title: "Rotate (purple rotate markers)" },
-            {
-              label: <MoveIcon className="mx-auto h-4 w-4" />,
-              tool: "move" as const,
-              title: "Move (direction + distance markers)",
-            },
-            { label: "C", tool: "calibrate" as const, title: "Calibrate (User line)" },
-          ].map((t) => {
-            const isActive = activeTool === t.tool;
-            return (
-              <button
-                key={t.tool}
-                onClick={() => {
-                  setActiveTool(t.tool);
-                  if (t.tool === "calibrate") {
-                    beginCalibration();
-                    pushSnack("Calibration mode: click point 1 then point 2.");
-                  } else if (t.tool === "remove") {
-                    pushSnack("Remove mode: click on the image to place red X markers.");
-                  } else if (t.tool === "swap") {
-                    pushSnack("Swap mode: click to place blue marks, then choose a replacement.");
-                  } else if (t.tool === "rotate") {
-                    pushSnack("Rotate mode: click to place a marker, then adjust angle in the panel.");
-                  } else if (t.tool === "move") {
-                    pushSnack("Move mode: click an object, then drag to set direction and distance.");
-                  }
-                }}
-                className={`h-10 w-10 rounded-md border text-sm ${
-                  isActive
-                    ? "border-neutral-600 bg-neutral-800"
-                    : "border-neutral-800 bg-neutral-900 hover:bg-neutral-800"
-                }`}
-                title={t.title}
-                aria-label={t.title}
-              >
-                {t.label}
-              </button>
-            );
-          })}
-        </aside>
-
         {/* Canvas area */}
         <main className="flex flex-1 items-center justify-center bg-neutral-950">
           {/* OUTER: owns glow pseudo-elements (NO overflow-hidden) */}
