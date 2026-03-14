@@ -4228,21 +4228,6 @@ export default function EditorPage() {
               </div>
             </div>
 
-            {/* AI actions */}
-            <div className="rounded-lg border border-neutral-800 bg-neutral-900 p-3">
-              <div className="text-sm font-medium">AI Actions</div>
-              <div className="mt-2 flex flex-col gap-2">
-                {["Cleanup Room", "Restage (Coming soon)"].map((txt) => (
-                  <button
-                    key={txt}
-                    className="rounded-md border border-neutral-700 bg-neutral-950 px-3 py-2 text-left text-sm hover:bg-neutral-800"
-                    onClick={() => pushSnack("Coming soon.")}
-                  >
-                    {txt}
-                  </button>
-                ))}
-              </div>
-            </div>
           </div>
         </aside>
       </div>
