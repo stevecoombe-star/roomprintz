@@ -556,12 +556,6 @@ export default function EditorPage() {
 
   const setBaseImageFromFile = useEditorStore((s) => s.setBaseImageFromFile);
   const setBaseImageUrl = useEditorStore((s) => s.setBaseImageUrl);
-  const loadHistoryImage = useEditorStore((s) => s.loadHistoryImage);
-  const loadHistoryMarkup = useEditorStore((s) => s.loadHistoryMarkup);
-  const loadHistoryBoth = useEditorStore((s) => s.loadHistoryBoth);
-  const branchFromHistory = useEditorStore((s) => s.branchFromHistory);
-  const toggleMarkupVisible = useEditorStore((s) => s.toggleMarkupVisible);
-  const recallLastMarkup = useEditorStore((s) => s.recallLastMarkup);
 
   const applySwap = useEditorStore((s) => s.applySwap);
   const setPendingSwap = useEditorStore((s) => s.setPendingSwap);
@@ -593,8 +587,6 @@ export default function EditorPage() {
 
   const [swapOpen, setSwapOpen] = useState(false);
   const [swapTargetId, setSwapTargetId] = useState<string | null>(null);
-  const [recallConfirmOpen, setRecallConfirmOpen] = useState(false);
-  const [branchConfirmFor, setBranchConfirmFor] = useState<string | null>(null);
   const [addOpen, setAddOpen] = useState(false);
   const [visualMode, setVisualMode] = useState<"blueprint" | "thumbnails">("blueprint");
   const [swapPickerOpen, setSwapPickerOpen] = useState(false);
@@ -615,12 +607,10 @@ export default function EditorPage() {
     }
   }
 
-  const [lastFreezePayload, setLastFreezePayload] = useState<any>(null);
   const didLogFirstGenerateAttemptRef = useRef(false);
 
   const [isUploading, setIsUploading] = useState(false);
   const [isDownloading, setIsDownloading] = useState(false);
-  const [historyPickerFor, setHistoryPickerFor] = useState<string | null>(null);
   const useFreezeV2 = process.env.NEXT_PUBLIC_VIBODE_FREEZE_V2 === "1";
 
   const [activeStage, setActiveStage] = useState<WorkflowStage>(1);
@@ -1054,8 +1044,6 @@ export default function EditorPage() {
     const source = preferred.length > 0 ? preferred : IKEA_CA_SKUS;
     return source.slice(0, 12);
   }, [eligibleForDrag]);
-  const latestFreeze = history[0]?.freeze ?? null;
-
   const canApplyCal =
     !!calibration?.draft?.p1 &&
     !!calibration?.draft?.p2 &&
@@ -1130,34 +1118,7 @@ export default function EditorPage() {
     return reasons;
   }, [hasFiniteConversionInputs, hasImageMapping, hasNaturalDims]);
   const isImageSpaceReady = hasNaturalDims && hasImageMapping && hasFiniteConversionInputs;
-  const hasDraftMarkup =
-    Array.isArray(scene.draftMarkup?.items) && scene.draftMarkup.items.length > 0;
   const vibeMode = scene.vibeMode ?? "off";
-
-  const runBranchFromHistory = (record: any) => {
-    const ok = branchFromHistory(record);
-    if (!ok) {
-      pushSnack("History record missing image or markup.");
-      return;
-    }
-    setHistoryPickerFor(null);
-    setBranchConfirmFor(null);
-    const nextScene = useEditorStore.getState().scene;
-    savePendingLocal({
-      sceneId: nextScene.sceneId,
-      baseImageUrl: nextScene.baseImageUrl,
-      baseImageWidthPx: nextScene.baseImageWidthPx,
-      baseImageHeightPx: nextScene.baseImageHeightPx,
-      vibeMode: nextScene.vibeMode,
-      draftMarkup: nextScene.draftMarkup,
-      stage3: buildPendingStage3Payload(stage3SkuItems, stage3ShowCatalog),
-    });
-    setIsWorkingImageGenerated(true);
-    setWorkingImageUrl(nextScene.baseImageUrl ?? null);
-    setScenePlacements([]);
-    setSelectedPlacementId(null);
-    pushSnack("Branched from history.");
-  };
 
   const blobUrlToBase64 = async (blobUrl: string): Promise<string> => {
     const blobResponse = await fetch(blobUrl);
@@ -2047,8 +2008,6 @@ export default function EditorPage() {
         payload = record?.freeze ?? null;
         console.log("[FREEZE v1]", payload);
       }
-
-      setLastFreezePayload(payload);
 
       if (!payload) {
         useEditorStore.getState().endGenerateError({
@@ -3863,245 +3822,6 @@ export default function EditorPage() {
                 )}
               </div>
             )}
-
-            {/* History */}
-            <div className="rounded-lg border border-neutral-800 bg-neutral-900 p-3">
-              <div className="text-sm font-medium">History</div>
-              <div className="mt-1 text-xs text-neutral-400">Freeze payloads (v1) per Generate</div>
-
-              <div className="mt-3 flex flex-col gap-2">
-                <div className="flex flex-wrap items-center gap-2">
-                  <button
-                    className="rounded-md border border-neutral-800 bg-neutral-950 px-2 py-1 text-[11px] hover:bg-neutral-800"
-                    onClick={() => toggleMarkupVisible()}
-                    aria-pressed={scene.markupVisible}
-                  >
-                    Markup: {scene.markupVisible ? "On" : "Off"}
-                  </button>
-                  <button
-                    className="rounded-md border border-neutral-800 bg-neutral-950 px-2 py-1 text-[11px] hover:bg-neutral-800"
-                    onClick={() => {
-                      if (hasDraftMarkup) {
-                        setRecallConfirmOpen(true);
-                        return;
-                      }
-                      const ok = recallLastMarkup({ mode: "replace" });
-                      if (!ok) pushSnack("No markup to recall yet.");
-                    }}
-                  >
-                    Recall last markup
-                  </button>
-                </div>
-                {recallConfirmOpen && (
-                  <div className="flex flex-wrap items-center gap-2 rounded-md border border-neutral-800 bg-neutral-950 px-2 py-1 text-[11px] text-neutral-300">
-                    <span>Replace current markup?</span>
-                    <button
-                      className="rounded-md border border-neutral-700 bg-neutral-900 px-2 py-0.5 text-[11px] hover:bg-neutral-800"
-                      onClick={() => {
-                        const ok = recallLastMarkup({ mode: "replace" });
-                        setRecallConfirmOpen(false);
-                        if (!ok) pushSnack("No markup to recall yet.");
-                      }}
-                    >
-                      Replace
-                    </button>
-                    <button
-                      className="rounded-md border border-neutral-800 bg-neutral-950 px-2 py-0.5 text-[11px] hover:bg-neutral-800"
-                      onClick={() => setRecallConfirmOpen(false)}
-                    >
-                      Cancel
-                    </button>
-                  </div>
-                )}
-                <div className="flex gap-2">
-                  <button
-                    className="rounded-md border border-neutral-800 bg-neutral-950 px-3 py-1.5 text-sm hover:bg-neutral-800"
-                    onClick={async () => {
-                      const payload = lastFreezePayload ?? latestFreeze;
-                      if (!payload) {
-                        pushSnack("No history yet.");
-                        return;
-                      }
-                      try {
-                        await navigator.clipboard.writeText(JSON.stringify(payload, null, 2));
-                        pushSnack("Latest freeze JSON copied.");
-                      } catch {
-                        pushSnack("Clipboard blocked — use Download instead.");
-                      }
-                    }}
-                  >
-                    Copy latest JSON
-                  </button>
-
-                  <button
-                    className="rounded-md border border-neutral-800 bg-neutral-950 px-3 py-1.5 text-sm hover:bg-neutral-800"
-                    onClick={() => {
-                      const payload = lastFreezePayload ?? latestFreeze;
-                      if (!payload) {
-                        pushSnack("No history yet.");
-                        return;
-                      }
-                      const blob = new Blob([JSON.stringify(payload, null, 2)], {
-                        type: "application/json",
-                      });
-                      const url = URL.createObjectURL(blob);
-                      const a = document.createElement("a");
-                      a.href = url;
-                      const rawGenId = getFreezePayloadAccess(payload).generationId;
-                      const downloadGenId =
-                        typeof rawGenId === "string" && rawGenId.trim() ? rawGenId : "unknown";
-                      a.download = `vibode_freeze_${downloadGenId}.json`;
-                      a.click();
-                      setTimeout(() => URL.revokeObjectURL(url), 500);
-                      pushSnack("Downloaded freeze JSON.");
-                    }}
-                  >
-                    Download latest
-                  </button>
-                </div>
-
-                {history.length === 0 ? (
-                  <div className="rounded-md border border-dashed border-neutral-700 bg-neutral-950 px-3 py-3 text-sm text-neutral-400">
-                    No generations yet.
-                  </div>
-                ) : (
-                  history.slice(0, 6).map((h: any) => {
-                    const thumbUrl =
-                      h.outputImageUrl ||
-                      h.compositeImageUrl ||
-                      h.freeze?.baseImage?.url ||
-                      h.freeze?.sceneSnapshot?.baseImageUrl ||
-                      h.freeze?.sceneSnapshotImageSpace?.baseImageUrl ||
-                      null;
-                    const isPickerOpen = historyPickerFor === h.generationId;
-
-                    return (
-                      <div
-                        key={`${h.generationId}_${h.createdAtIso ?? ""}`}
-                        className="rounded-md border border-neutral-800 bg-neutral-950 px-3 py-2"
-                      >
-                        <div className="text-sm">Generation</div>
-                        <div className="mt-0.5 text-xs text-neutral-400">
-                          {h.createdAtIso ? new Date(h.createdAtIso).toLocaleString() : "—"}
-                        </div>
-
-                        {thumbUrl ? (
-                          <button
-                            type="button"
-                            onClick={() =>
-                              setHistoryPickerFor((prev) => {
-                                const next = prev === h.generationId ? null : h.generationId;
-                                setBranchConfirmFor(null);
-                                return next;
-                              })
-                            }
-                            className="mt-2 aspect-[4/3] w-full overflow-hidden rounded-md border border-neutral-800 bg-neutral-950 text-left"
-                            aria-label="Choose history load option"
-                            aria-expanded={isPickerOpen}
-                          >
-                            <img
-                              src={thumbUrl}
-                              alt="Generation thumbnail"
-                              className="h-full w-full object-cover"
-                            />
-                          </button>
-                        ) : (
-                          <div className="mt-2 aspect-[4/3] w-full rounded-md border border-neutral-800 bg-neutral-950 text-xs text-neutral-500 flex items-center justify-center">
-                            No preview
-                          </div>
-                        )}
-
-                        {thumbUrl && isPickerOpen && (
-                          <div className="mt-2 flex gap-2">
-                            <button
-                              type="button"
-                              onClick={() => {
-                                loadHistoryImage(h);
-                                setIsWorkingImageGenerated(true);
-                                setWorkingImageUrl(null);
-                                setScenePlacements([]);
-                                setSelectedPlacementId(null);
-                                setHistoryPickerFor(null);
-                                setBranchConfirmFor(null);
-                              }}
-                              className="rounded-md border border-neutral-800 bg-neutral-950 px-2 py-1 text-[11px] hover:bg-neutral-800"
-                            >
-                              Image
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => {
-                                loadHistoryMarkup(h);
-                                setHistoryPickerFor(null);
-                                setBranchConfirmFor(null);
-                              }}
-                              className="rounded-md border border-neutral-800 bg-neutral-950 px-2 py-1 text-[11px] hover:bg-neutral-800"
-                            >
-                              Markup
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => {
-                                loadHistoryBoth(h);
-                                setIsWorkingImageGenerated(true);
-                                setWorkingImageUrl(null);
-                                setScenePlacements([]);
-                                setSelectedPlacementId(null);
-                                setHistoryPickerFor(null);
-                                setBranchConfirmFor(null);
-                              }}
-                              className="rounded-md border border-neutral-800 bg-neutral-950 px-2 py-1 text-[11px] hover:bg-neutral-800"
-                            >
-                              Both
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => {
-                                if (hasDraftMarkup) {
-                                  setBranchConfirmFor(h.generationId ?? null);
-                                  return;
-                                }
-                                runBranchFromHistory(h);
-                              }}
-                              className="rounded-md border border-neutral-800 bg-neutral-950 px-2 py-1 text-[11px] hover:bg-neutral-800"
-                            >
-                              Branch
-                            </button>
-                          </div>
-                        )}
-                        {branchConfirmFor === h.generationId && (
-                          <div className="mt-2 flex flex-wrap items-center gap-2 rounded-md border border-neutral-800 bg-neutral-950 px-2 py-1 text-[11px] text-neutral-300">
-                            <span>Replace current markup?</span>
-                            <button
-                              className="rounded-md border border-neutral-700 bg-neutral-900 px-2 py-0.5 text-[11px] hover:bg-neutral-800"
-                              onClick={() => runBranchFromHistory(h)}
-                            >
-                              Replace
-                            </button>
-                            <button
-                              className="rounded-md border border-neutral-800 bg-neutral-950 px-2 py-0.5 text-[11px] hover:bg-neutral-800"
-                              onClick={() => setBranchConfirmFor(null)}
-                            >
-                              Cancel
-                            </button>
-                          </div>
-                        )}
-
-                        {/* ✅ FIX: correct v1 fields */}
-                        <div className="mt-2 text-xs text-neutral-500">
-                          Nodes: {h.freeze?.sceneSnapshotImageSpace?.nodes?.length ?? 0} • SKU IDs:{" "}
-                          {h.freeze?.workingSetSnapshot?.skuIdsInPlay?.length ?? 0}
-                        </div>
-                        <div className="mt-1 text-xs text-neutral-500">
-                          Image-space: {h.freeze?.sceneSnapshotImageSpace ? "yes" : "no"} • v:{" "}
-                          {h.freeze?.payloadVersion ?? "—"}
-                        </div>
-                      </div>
-                    );
-                  })
-                )}
-              </div>
-            </div>
 
           </div>
         </aside>
