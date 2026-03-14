@@ -2461,7 +2461,11 @@ export default function EditorPage() {
               )}
 
               <EditorCanvas
-                className="absolute inset-0"
+                className={`absolute inset-0 ${
+                  !previewImageUrl && !scene.baseImageUrl
+                    ? "[&>.pointer-events-none.absolute.left-3.top-3]:hidden"
+                    : ""
+                }`}
                 imageUrl={previewImageUrl}
                 markupVisible={scene.markupVisible}
                 visualMode="blueprint"
