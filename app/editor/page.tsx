@@ -580,6 +580,10 @@ export default function EditorPage() {
   const [addOpen, setAddOpen] = useState(false);
   const [visualMode, setVisualMode] = useState<"blueprint" | "thumbnails">("blueprint");
   const [swapPickerOpen, setSwapPickerOpen] = useState(false);
+  const [isEditToolsCollapsed, setIsEditToolsCollapsed] = useState(false);
+  const [isPasteProductImageCollapsed, setIsPasteProductImageCollapsed] = useState(false);
+  const [isSetupCollapsed, setIsSetupCollapsed] = useState(false);
+  const [isCalibrationCollapsed, setIsCalibrationCollapsed] = useState(false);
   const [selectedModel, setSelectedModel] = useState<VibodeModelVersion>(VIBODE_MODEL_NBP);
 
   const [snacks, setSnacks] = useState<Snackbar[]>([]);
@@ -2809,10 +2813,28 @@ export default function EditorPage() {
             </div>
 
             <div className="rounded-lg border border-neutral-800 bg-neutral-900 p-3">
-              <div className="text-sm font-medium">Edit Tools (All Stages)</div>
-              <div className="mt-1 text-xs text-neutral-400">
-                Calls `/api/vibode/edit-run` using the canonical working image.
+              <div className="flex items-center justify-between">
+                <div className="text-sm font-medium">Edit Tools (All Stages)</div>
+                <button
+                  type="button"
+                  className="rounded-md border border-neutral-800 bg-neutral-950 px-2 py-1 text-xs text-neutral-300 hover:bg-neutral-800"
+                  aria-label={
+                    isEditToolsCollapsed
+                      ? "Expand Edit Tools panel"
+                      : "Collapse Edit Tools panel"
+                  }
+                  aria-expanded={!isEditToolsCollapsed}
+                  aria-controls="edit-tools-panel-body"
+                  onClick={() => setIsEditToolsCollapsed((prev) => !prev)}
+                >
+                  {isEditToolsCollapsed ? "▸" : "▾"}
+                </button>
               </div>
+              {!isEditToolsCollapsed ? (
+                <div id="edit-tools-panel-body">
+                  <div className="mt-1 text-xs text-neutral-400">
+                    Calls `/api/vibode/edit-run` using the canonical working image.
+                  </div>
               <div className="mt-1 text-xs text-neutral-500">
                 Placements: {scenePlacements.length} • Selected: {selectedPlacementId ?? "none"}
               </div>
@@ -3107,6 +3129,8 @@ export default function EditorPage() {
                   <div />
                 </div>
               </div>
+              </div>
+              ) : null}
             </div>
 
             {activeStage === 3 && (
@@ -3209,11 +3233,29 @@ export default function EditorPage() {
             )}
 
             <div className="rounded-lg border border-neutral-800 bg-neutral-900 p-3">
-              <div className="text-sm font-medium">Paste Product Image (MVP)</div>
-              <div className="mt-1 text-xs text-neutral-400">
-                Paste a direct product image URL or upload a local image, then add it to Stage 3
-                eligible items.
+              <div className="flex items-center justify-between">
+                <div className="text-sm font-medium">Paste Product Image (MVP)</div>
+                <button
+                  type="button"
+                  className="rounded-md border border-neutral-800 bg-neutral-950 px-2 py-1 text-xs text-neutral-300 hover:bg-neutral-800"
+                  aria-label={
+                    isPasteProductImageCollapsed
+                      ? "Expand Paste Product Image panel"
+                      : "Collapse Paste Product Image panel"
+                  }
+                  aria-expanded={!isPasteProductImageCollapsed}
+                  aria-controls="paste-product-image-panel-body"
+                  onClick={() => setIsPasteProductImageCollapsed((prev) => !prev)}
+                >
+                  {isPasteProductImageCollapsed ? "▸" : "▾"}
+                </button>
               </div>
+              {!isPasteProductImageCollapsed ? (
+                <div id="paste-product-image-panel-body">
+                  <div className="mt-1 text-xs text-neutral-400">
+                    Paste a direct product image URL or upload a local image, then add it to Stage 3
+                    eligible items.
+                  </div>
 
               <div className="mt-3 space-y-2">
                 <div>
@@ -3333,15 +3375,35 @@ export default function EditorPage() {
                   {userSkusAddedToStage3.length === 1 ? "" : "s"} added for Stage 3.
                 </div>
               )}
+                </div>
+              ) : null}
             </div>
 
             {/* Setup */}
             <div className="rounded-lg border border-neutral-800 bg-neutral-900 p-3">
-              <div className="text-sm font-medium">Setup</div>
-              <div className="mt-1 text-xs text-neutral-400">
-                Upload photo + (optional) room size + pick a collection. Bundle is selected on
-                Generate.
+              <div className="flex items-center justify-between">
+                <div className="text-sm font-medium">Setup</div>
+                <button
+                  type="button"
+                  className="rounded-md border border-neutral-800 bg-neutral-950 px-2 py-1 text-xs text-neutral-300 hover:bg-neutral-800"
+                  aria-label={
+                    isSetupCollapsed
+                      ? "Expand Setup panel"
+                      : "Collapse Setup panel"
+                  }
+                  aria-expanded={!isSetupCollapsed}
+                  aria-controls="setup-panel-body"
+                  onClick={() => setIsSetupCollapsed((prev) => !prev)}
+                >
+                  {isSetupCollapsed ? "▸" : "▾"}
+                </button>
               </div>
+              {!isSetupCollapsed ? (
+                <div id="setup-panel-body">
+                  <div className="mt-1 text-xs text-neutral-400">
+                    Upload photo + (optional) room size + pick a collection. Bundle is selected on
+                    Generate.
+                  </div>
 
               {/* Base image upload */}
               <div className="mt-3">
@@ -3629,6 +3691,8 @@ export default function EditorPage() {
                 Bundle auto-selected on Generate{" "}
                 {hasManualDims ? "by sqft." : "(defaults to Medium when dims are auto)."}
               </div>
+                </div>
+              ) : null}
             </div>
 
             {/* Calibration Panel */}
@@ -3641,102 +3705,122 @@ export default function EditorPage() {
                   </div>
                 </div>
 
-                <button
-                  className="rounded-md border border-neutral-800 bg-neutral-950 px-3 py-1.5 text-sm hover:bg-neutral-800"
-                  onClick={() => {
-                    setActiveTool("calibrate");
-                    beginCalibration();
-                    pushSnack("Calibration mode: click point 1 then point 2.");
-                  }}
-                >
-                  Start
-                </button>
-              </div>
-
-              <div className="mt-3 text-xs text-neutral-500">
-                Current:{" "}
-                <span className="text-neutral-200">
-                  {calibration?.ppf ? `${calibration.ppf.toFixed(2)} px/ft` : "—"}
-                </span>
-                {calibration?.method ? (
-                  <span className="text-neutral-500"> • {calibration.method}</span>
-                ) : null}
-              </div>
-
-              {scene.calibration?.ppf ? (
-                <div className="mt-1 text-xs text-neutral-400">Drag defaults are scale-aware ✅</div>
-              ) : null}
-
-              <div className="mt-3 grid grid-cols-3 gap-2">
-                <div className="col-span-2">
-                  <div className="text-xs text-neutral-400">Real distance (ft)</div>
-                  <input
-                    className="mt-1 w-full rounded-md border border-neutral-800 bg-neutral-950 px-2 py-1.5 text-sm outline-none focus:border-neutral-600"
-                    type="number"
-                    step="0.1"
-                    value={calibration?.draft?.realFeet ?? 10}
-                    onChange={(e) => setCalibrationRealFeet(Number(e.target.value || 0))}
-                  />
-                </div>
-
-                <div className="col-span-1 flex items-end">
+                <div className="flex items-center gap-2">
                   <button
-                    disabled={!canApplyCal}
-                    className={`w-full rounded-md border px-3 py-2 text-sm ${
-                      canApplyCal
-                        ? "border-neutral-800 bg-neutral-950 hover:bg-neutral-800"
-                        : "border-neutral-900 bg-neutral-950 text-neutral-500"
-                    }`}
+                    className="rounded-md border border-neutral-800 bg-neutral-950 px-3 py-1.5 text-sm hover:bg-neutral-800"
                     onClick={() => {
-                      const ok = finalizeCalibrationFromLine();
-                      if (ok) pushSnack("Calibration applied.");
-                      else pushSnack("Need 2 points + a valid feet value.");
+                      setActiveTool("calibrate");
+                      beginCalibration();
+                      pushSnack("Calibration mode: click point 1 then point 2.");
                     }}
                   >
-                    Apply
+                    Start
+                  </button>
+                  <button
+                    type="button"
+                    className="rounded-md border border-neutral-800 bg-neutral-950 px-2 py-1 text-xs text-neutral-300 hover:bg-neutral-800"
+                    aria-label={
+                      isCalibrationCollapsed
+                        ? "Expand Calibration panel"
+                        : "Collapse Calibration panel"
+                    }
+                    aria-expanded={!isCalibrationCollapsed}
+                    aria-controls="calibration-panel-body"
+                    onClick={() => setIsCalibrationCollapsed((prev) => !prev)}
+                  >
+                    {isCalibrationCollapsed ? "▸" : "▾"}
                   </button>
                 </div>
               </div>
 
-              <div className="mt-3 flex gap-2">
-                <button
-                  className="rounded-md border border-neutral-800 bg-neutral-950 px-3 py-1.5 text-sm hover:bg-neutral-800"
-                  onClick={() => {
-                    clearCalibrationDraft();
-                    pushSnack("Calibration points cleared.");
-                  }}
-                >
-                  Clear points
-                </button>
-                <button
-                  className="rounded-md border border-neutral-800 bg-neutral-950 px-3 py-1.5 text-sm hover:bg-neutral-800"
-                  onClick={() => {
-                    clearCalibrationLine();
-                    pushSnack("Calibration reset.");
-                  }}
-                >
-                  Reset
-                </button>
-              </div>
+              {!isCalibrationCollapsed ? (
+                <div id="calibration-panel-body">
+                  <div className="mt-3 text-xs text-neutral-500">
+                    Current:{" "}
+                    <span className="text-neutral-200">
+                      {calibration?.ppf ? `${calibration.ppf.toFixed(2)} px/ft` : "—"}
+                    </span>
+                    {calibration?.method ? (
+                      <span className="text-neutral-500"> • {calibration.method}</span>
+                    ) : null}
+                  </div>
 
-              <div className="mt-3 flex gap-2">
-                <button
-                  className="rounded-md border border-neutral-800 bg-neutral-900 px-3 py-1.5 text-sm hover:bg-neutral-800"
-                  onClick={() => {
-                    ensurePpfFromAssumption();
-                    pushSnack("Calibration refreshed (V0 assumption).");
-                  }}
-                  title="Compute ppf from V0 assumption (requires manual room width)"
-                >
-                  Refresh (assume)
-                </button>
-              </div>
+                  {scene.calibration?.ppf ? (
+                    <div className="mt-1 text-xs text-neutral-400">Drag defaults are scale-aware ✅</div>
+                  ) : null}
 
-              {activeTool === "calibrate" && (
-                <div className="mt-3 rounded-md border border-red-900/40 bg-red-950/20 px-3 py-2 text-xs text-red-100/90">
-                  Calibration mode active — click point 1, then point 2.
+                  <div className="mt-3 grid grid-cols-3 gap-2">
+                    <div className="col-span-2">
+                      <div className="text-xs text-neutral-400">Real distance (ft)</div>
+                      <input
+                        className="mt-1 w-full rounded-md border border-neutral-800 bg-neutral-950 px-2 py-1.5 text-sm outline-none focus:border-neutral-600"
+                        type="number"
+                        step="0.1"
+                        value={calibration?.draft?.realFeet ?? 10}
+                        onChange={(e) => setCalibrationRealFeet(Number(e.target.value || 0))}
+                      />
+                    </div>
+
+                    <div className="col-span-1 flex items-end">
+                      <button
+                        disabled={!canApplyCal}
+                        className={`w-full rounded-md border px-3 py-2 text-sm ${
+                          canApplyCal
+                            ? "border-neutral-800 bg-neutral-950 hover:bg-neutral-800"
+                            : "border-neutral-900 bg-neutral-950 text-neutral-500"
+                        }`}
+                        onClick={() => {
+                          const ok = finalizeCalibrationFromLine();
+                          if (ok) pushSnack("Calibration applied.");
+                          else pushSnack("Need 2 points + a valid feet value.");
+                        }}
+                      >
+                        Apply
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="mt-3 flex gap-2">
+                    <button
+                      className="rounded-md border border-neutral-800 bg-neutral-950 px-3 py-1.5 text-sm hover:bg-neutral-800"
+                      onClick={() => {
+                        clearCalibrationDraft();
+                        pushSnack("Calibration points cleared.");
+                      }}
+                    >
+                      Clear points
+                    </button>
+                    <button
+                      className="rounded-md border border-neutral-800 bg-neutral-950 px-3 py-1.5 text-sm hover:bg-neutral-800"
+                      onClick={() => {
+                        clearCalibrationLine();
+                        pushSnack("Calibration reset.");
+                      }}
+                    >
+                      Reset
+                    </button>
+                  </div>
+
+                  <div className="mt-3 flex gap-2">
+                    <button
+                      className="rounded-md border border-neutral-800 bg-neutral-900 px-3 py-1.5 text-sm hover:bg-neutral-800"
+                      onClick={() => {
+                        ensurePpfFromAssumption();
+                        pushSnack("Calibration refreshed (V0 assumption).");
+                      }}
+                      title="Compute ppf from V0 assumption (requires manual room width)"
+                    >
+                      Refresh (assume)
+                    </button>
+                  </div>
+
+                  {activeTool === "calibrate" && (
+                    <div className="mt-3 rounded-md border border-red-900/40 bg-red-950/20 px-3 py-2 text-xs text-red-100/90">
+                      Calibration mode active — click point 1, then point 2.
+                    </div>
+                  )}
                 </div>
-              )}
+              ) : null}
             </div>
 
           </div>
