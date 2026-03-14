@@ -52,13 +52,6 @@ function skuDimsLabel(sku: IkeaCaSku) {
   return `W ${formatInches(width)}" × D ${formatInches(d)}" × H ${formatInches(height)}"`;
 }
 
-function formatSignedDegrees(angleDeg: number) {
-  if (!Number.isFinite(angleDeg)) return "0°";
-  const rounded = Math.round(angleDeg);
-  const sign = rounded > 0 ? "+" : "";
-  return `${sign}${rounded}°`;
-}
-
 function readFileAsDataUrl(file: File): Promise<string> {
   return new Promise<string>((resolve, reject) => {
     const reader = new FileReader();
@@ -536,7 +529,6 @@ export default function EditorPage() {
   const activeTool = useEditorStore((s) => s.ui.activeTool);
   const selectedNodeId = useEditorStore((s) => s.ui.selectedNodeId);
   const selectedSwapMarkId = useEditorStore((s) => s.ui.selectedSwapMarkId);
-  const selectedRotateMarkId = useEditorStore((s) => s.ui.selectedRotateMarkId);
 
   const workingSet = useEditorStore((s) => s.workingSet);
   const history = useEditorStore((s) => s.history);
@@ -565,8 +557,6 @@ export default function EditorPage() {
   const selectNode = useEditorStore((s) => s.selectNode);
   const selectSwapMark = useEditorStore((s) => s.selectSwapMark);
   const setSwapReplacement = useEditorStore((s) => s.setSwapReplacement);
-  const updateRotateMark = useEditorStore((s) => s.updateRotateMark);
-  const removeRotateMark = useEditorStore((s) => s.removeRotateMark);
 
   // Calibration
   const calibration = useEditorStore((s) => s.scene.calibration);
@@ -1031,12 +1021,7 @@ export default function EditorPage() {
     return (scene.swapMarks ?? []).find((m) => m.id === selectedSwapMarkId) ?? null;
   }, [scene.swapMarks, selectedSwapMarkId]);
   const rotateMarks = scene.rotateMarks ?? [];
-  const selectedRotateMark = useMemo(() => {
-    if (!selectedRotateMarkId) return null;
-    return rotateMarks.find((m) => m.id === selectedRotateMarkId) ?? null;
-  }, [rotateMarks, selectedRotateMarkId]);
   const hasRotateMarks = rotateMarks.length > 0;
-  const canApplyRotate = Boolean(selectedRotateMark && hasRotateMarks);
   const showSwapReplacementPicker = activeTool === "swap" && !!selectedSwapMarkId;
   const swapReplacementOptions = useMemo(() => {
     const eligibleIds = new Set((eligibleForDrag ?? []).map((item: any) => item.skuId));
@@ -3753,75 +3738,6 @@ export default function EditorPage() {
                 </div>
               )}
             </div>
-
-            {/* Rotate tool inspector */}
-            {activeTool === "rotate" && (
-              <div className="rounded-lg border border-neutral-800 bg-neutral-900 p-3">
-                <div className="text-sm font-medium">Rotate</div>
-                <div className="mt-1 text-xs text-neutral-400">
-                  Click the image to place a rotate marker, then select it.
-                </div>
-
-                {!selectedRotateMark ? (
-                  <div className="mt-3 rounded-md border border-neutral-800 bg-neutral-950 px-3 py-2 text-sm text-neutral-400">
-                    Click the image to place a rotate marker, then select it.
-                  </div>
-                ) : (
-                  <div className="mt-3 space-y-3">
-                    <div className="rounded-md border border-violet-900/40 bg-violet-950/20 px-3 py-2">
-                      <div className="text-xs text-violet-200/80">Angle</div>
-                      <div className="mt-1 text-base font-medium text-violet-100">
-                        {formatSignedDegrees(selectedRotateMark.angleDeg)}
-                      </div>
-                    </div>
-
-                    <div>
-                      <input
-                        type="range"
-                        min={-180}
-                        max={180}
-                        step={1}
-                        value={Math.round(selectedRotateMark.angleDeg)}
-                        onChange={(e) =>
-                          updateRotateMark(selectedRotateMark.id, {
-                            angleDeg: Number(e.target.value),
-                          })
-                        }
-                        className="w-full accent-violet-400"
-                      />
-                      <div className="mt-1 flex items-center justify-between text-[11px] text-neutral-500">
-                        <span>-180°</span>
-                        <span>0°</span>
-                        <span>+180°</span>
-                      </div>
-                    </div>
-
-                    <div className="flex gap-2">
-                      <button
-                        type="button"
-                        className="rounded-md border border-neutral-800 bg-neutral-950 px-3 py-1.5 text-sm hover:bg-neutral-800"
-                        onClick={() => removeRotateMark(selectedRotateMark.id)}
-                      >
-                        Delete marker
-                      </button>
-                      <button
-                        type="button"
-                        disabled={!canApplyRotate || isBusy || !isImageSpaceReady}
-                        title={!canApplyRotate ? "Select a rotate marker to apply." : undefined}
-                        onClick={onGenerate}
-                        className={`rounded-md border px-3 py-1.5 text-sm ${
-                          !canApplyRotate || isBusy || !isImageSpaceReady
-                            ? "border-neutral-900 bg-neutral-950 text-neutral-500"
-                            : "border-violet-700 bg-violet-900/30 text-violet-100 hover:bg-violet-900/50"
-                        }`}
-                      >
-                        Apply
-                      </button>
-                    </div>
-                  </div>
-                )}
-              </div>
-            )}
 
           </div>
         </aside>
