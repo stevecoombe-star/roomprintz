@@ -1061,14 +1061,6 @@ export default function EditorPage() {
     !!calibration?.draft?.p2 &&
     (calibration?.draft?.realFeet ?? 0) > 0;
 
-  // Real-time ft size math: nodes are in STAGE px, calibration ppf is in IMAGE px/ft.
-  // Convert to stage px/ft using viewport.scale (stage_px per image_px).
-  const stagePpf = useMemo(() => {
-    const ppf = calibration?.ppf;
-    if (!ppf || !viewport) return null;
-    return ppf * viewport.scale;
-  }, [calibration?.ppf, viewport]);
-
   // Dims optional (lazy-user mode)
   const dims = scene.room?.dims;
   const width = dims?.widthFt ?? 0;
@@ -3803,55 +3795,6 @@ export default function EditorPage() {
               )}
             </div>
 
-            {/* Selection inspector */}
-            <div className="rounded-lg border border-neutral-800 bg-neutral-900 p-3">
-              <div className="text-sm font-medium">Selection</div>
-
-              {selectedNode ? (
-                <div className="mt-2">
-                  <div className="text-sm">{selectedNode.label}</div>
-                  <div className="mt-0.5 text-xs text-neutral-400">{selectedNode.skuId}</div>
-
-                  {stagePpf ? (
-                    <div className="mt-2 rounded-md border border-neutral-800 bg-neutral-950 px-3 py-2 text-sm">
-                      <div className="text-xs text-neutral-400">Size (ft, live)</div>
-                      <div className="mt-0.5">
-                        {(selectedNode.transform.width / stagePpf).toFixed(2)} ft W •{" "}
-                        {(selectedNode.transform.height / stagePpf).toFixed(2)} ft D
-                      </div>
-                    </div>
-                  ) : (
-                    <div className="mt-2 rounded-md border border-neutral-900 bg-neutral-950 px-3 py-2 text-xs text-neutral-500">
-                      Size (ft) unavailable — apply calibration to enable.
-                    </div>
-                  )}
-
-                  {selectedNode.variant?.label && (
-                    <div className="mt-2 rounded-md border border-neutral-800 bg-neutral-950 px-3 py-2 text-sm">
-                      <div className="text-xs text-neutral-400">Variant</div>
-                      <div>{selectedNode.variant.label}</div>
-                    </div>
-                  )}
-
-                  {selectedNode.status === "markedForDelete" && (
-                    <div className="mt-2 rounded-md border border-red-900/50 bg-red-950/40 px-3 py-2 text-sm">
-                      <div className="text-xs text-red-200/80">Status</div>
-                      <div className="text-red-100">Queued for removal</div>
-                    </div>
-                  )}
-
-                  {selectedNode.status === "pendingSwap" && (
-                    <div className="mt-2 rounded-md border border-red-900/50 bg-red-950/30 px-3 py-2 text-sm">
-                      <div className="text-xs text-red-200/80">Status</div>
-                      <div className="text-red-100">Swap pending</div>
-                    </div>
-                  )}
-                </div>
-              ) : (
-                <div className="mt-2 text-sm text-neutral-400">No selection</div>
-              )}
-            </div>
-
             {/* Rotate tool inspector */}
             {activeTool === "rotate" && (
               <div className="rounded-lg border border-neutral-800 bg-neutral-900 p-3">
@@ -3920,74 +3863,6 @@ export default function EditorPage() {
                 )}
               </div>
             )}
-
-            {/* Working Set */}
-            <div className="rounded-lg border border-neutral-800 bg-neutral-900 p-3">
-              <div className="text-sm font-medium">Working Set</div>
-              <div className="mt-1 text-xs text-neutral-400">
-                Collection → Room Size Bundle → Eligible SKUs
-              </div>
-
-              <div className="mt-3 space-y-2 text-sm">
-                <div className="flex items-center justify-between">
-                  <div className="text-neutral-300">Collection</div>
-                  <div className="text-neutral-400">{workingSet.collectionId ?? "—"}</div>
-                </div>
-                <div className="flex items-center justify-between">
-                  <div className="text-neutral-300">Bundle</div>
-                  <div className="text-neutral-400">{workingSet.bundleId ?? "—"}</div>
-                </div>
-
-                <div className="pt-2">
-                  <div className="text-xs font-medium text-neutral-300">Eligible SKUs</div>
-                  {workingSet.eligibleSkus?.length ? (
-                    <div className="mt-2 text-xs text-neutral-500">
-                      {workingSet.eligibleSkus.length} items eligible (drag from Furniture panel).
-                    </div>
-                  ) : (
-                    <div className="mt-2 text-sm text-neutral-400">
-                      Not loaded yet — click Generate to load a bundle.
-                    </div>
-                  )}
-                </div>
-              </div>
-            </div>
-
-            {/* Furniture panel */}
-            <div className="rounded-lg border border-neutral-800 bg-neutral-900 p-3">
-              <div className="text-sm font-medium">Furniture</div>
-              <div className="mt-2 text-xs text-neutral-400">Drag eligible items onto the canvas.</div>
-
-              <div className="mt-3 flex flex-col gap-2">
-                {eligibleForDrag.map((item: any) => (
-                  <div
-                    key={item.skuId}
-                    draggable
-                    onDragStart={(e) => {
-                      e.dataTransfer.setData(
-                        DND_MIME,
-                        JSON.stringify({
-                          skuId: item.skuId,
-                          label: item.label,
-                        })
-                      );
-                      e.dataTransfer.effectAllowed = "copy";
-                    }}
-                    className="cursor-grab rounded-md border border-neutral-800 bg-neutral-950 px-3 py-2 text-sm hover:bg-neutral-800 active:cursor-grabbing"
-                    title="Drag onto canvas"
-                  >
-                    {item.label}
-                    <div className="mt-0.5 text-xs text-neutral-400">{item.skuId}</div>
-                  </div>
-                ))}
-
-                {!eligibleForDrag.length && (
-                  <div className="rounded-md border border-dashed border-neutral-700 bg-neutral-950 px-3 py-3 text-sm text-neutral-400">
-                    Generate to load a Working Set (bundle) for this collection.
-                  </div>
-                )}
-              </div>
-            </div>
 
             {/* History */}
             <div className="rounded-lg border border-neutral-800 bg-neutral-900 p-3">
