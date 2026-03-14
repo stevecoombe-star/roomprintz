@@ -2566,13 +2566,6 @@ export default function EditorPage() {
 
         {/* Right panel */}
         <aside className="w-[340px] border-l border-neutral-800 bg-neutral-950">
-          <div className="border-b border-neutral-800 px-4 py-3">
-            <div className="text-sm font-medium">Panels</div>
-            <div className="mt-1 text-xs text-neutral-400">
-              Setup → Working Set → Edit → Generate (V0)
-            </div>
-          </div>
-
           <div className="space-y-4 p-4">
             <div className="rounded-lg border border-neutral-800 bg-neutral-900 p-3">
               <div className="text-sm font-medium">Workflow</div>
