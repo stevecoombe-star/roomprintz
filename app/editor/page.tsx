@@ -584,6 +584,18 @@ export default function EditorPage() {
   const [isSetupCollapsed, setIsSetupCollapsed] = useState(false);
   const [isCalibrationCollapsed, setIsCalibrationCollapsed] = useState(false);
   const [selectedModel, setSelectedModel] = useState<VibodeModelVersion>(VIBODE_MODEL_NBP);
+  const collapseAllRightPanels = () => {
+    setIsSetupCollapsed(true);
+    setIsEditToolsCollapsed(true);
+    setIsPasteProductImageCollapsed(true);
+    setIsCalibrationCollapsed(true);
+  };
+  const expandAllRightPanels = () => {
+    setIsSetupCollapsed(false);
+    setIsEditToolsCollapsed(false);
+    setIsPasteProductImageCollapsed(false);
+    setIsCalibrationCollapsed(false);
+  };
 
   const [snacks, setSnacks] = useState<Snackbar[]>([]);
   const pushSnack = (message: string) => {
@@ -2682,6 +2694,22 @@ export default function EditorPage() {
         {/* Right panel */}
         <aside className="w-[340px] border-l border-neutral-800 bg-neutral-950">
           <div className="space-y-4 p-4">
+            <div className="flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={collapseAllRightPanels}
+                className="rounded-md border border-neutral-800 bg-neutral-900 px-2 py-1 text-xs text-neutral-300 hover:bg-neutral-800"
+              >
+                Collapse All
+              </button>
+              <button
+                type="button"
+                onClick={expandAllRightPanels}
+                className="rounded-md border border-neutral-800 bg-neutral-900 px-2 py-1 text-xs text-neutral-300 hover:bg-neutral-800"
+              >
+                Expand All
+              </button>
+            </div>
             <div className="rounded-lg border border-neutral-800 bg-neutral-900 p-3">
               <div className="text-sm font-medium">Workflow</div>
               <div className="mt-1 text-xs text-neutral-400">Five-stage editor workflow skeleton.</div>
