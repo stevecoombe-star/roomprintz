@@ -2622,11 +2622,7 @@ export default function EditorPage() {
               )}
 
               <EditorCanvas
-                className={`absolute inset-0 ${
-                  isCanvasEmpty
-                    ? "[&>.pointer-events-none.absolute.left-3.top-3]:hidden"
-                    : ""
-                }`}
+                className="absolute inset-0 [&>.pointer-events-none.absolute.left-3.top-3]:hidden"
                 imageUrl={previewImageUrl}
                 markupVisible={scene.markupVisible}
                 visualMode="blueprint"
@@ -2695,22 +2691,6 @@ export default function EditorPage() {
         <aside className="h-full w-[340px] border-l border-neutral-800 bg-neutral-950">
           <div className="h-full overflow-y-auto">
             <div className="space-y-4 p-4">
-            <div className="flex justify-end gap-2">
-              <button
-                type="button"
-                onClick={collapseAllRightPanels}
-                className="rounded-md border border-neutral-800 bg-neutral-900 px-2 py-1 text-xs text-neutral-300 hover:bg-neutral-800"
-              >
-                Collapse All
-              </button>
-              <button
-                type="button"
-                onClick={expandAllRightPanels}
-                className="rounded-md border border-neutral-800 bg-neutral-900 px-2 py-1 text-xs text-neutral-300 hover:bg-neutral-800"
-              >
-                Expand All
-              </button>
-            </div>
             <div className="rounded-lg border border-neutral-800 bg-neutral-900 p-3">
               <div className="text-sm font-medium">Workflow</div>
               <div className="mt-1 text-xs text-neutral-400">Five-stage editor workflow skeleton.</div>
@@ -2947,6 +2927,22 @@ export default function EditorPage() {
                   Last output: {lastStageOutputs[activeStage] ? "available" : "none"}
                 </div>
               </div>
+            </div>
+            <div className="flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={collapseAllRightPanels}
+                className="rounded-md border border-neutral-800 bg-neutral-900 px-2 py-1 text-xs text-neutral-300 hover:bg-neutral-800"
+              >
+                Collapse All
+              </button>
+              <button
+                type="button"
+                onClick={expandAllRightPanels}
+                className="rounded-md border border-neutral-800 bg-neutral-900 px-2 py-1 text-xs text-neutral-300 hover:bg-neutral-800"
+              >
+                Expand All
+              </button>
             </div>
 
             <div className="rounded-lg border border-neutral-800 bg-neutral-900 p-3">
