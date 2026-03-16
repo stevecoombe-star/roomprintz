@@ -74,3 +74,11 @@ next-env.d.ts
 # ----------------------------------------
 .vscode/*
 !.vscode/settings.json
+
+# ----------------------------------------
+# Local scripts / destructive tooling
+# Prevent accidental commits of one-off
+# operational or cleanup scripts (e.g.
+# Supabase storage purge utilities)
+# ----------------------------------------
+scripts/purge-*.mjs
