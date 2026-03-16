@@ -2459,7 +2459,7 @@ export default function EditorPage() {
   const stage5Locked = activeStage === 5 && !hasFurniturePass && !STAGE5_DEV_BYPASS;
 
   return (
-    <div className="h-dvh w-full bg-neutral-950 text-neutral-100">
+    <div className="h-dvh w-full overflow-hidden bg-neutral-950 text-neutral-100">
       {/* Top bar */}
       <header className="flex h-12 items-center justify-between border-b border-neutral-800 px-4">
         <div className="flex items-center gap-3">
@@ -2512,7 +2512,7 @@ export default function EditorPage() {
       </header>
 
       {/* Main */}
-      <div className="flex h-[calc(100dvh-3rem)] w-full">
+      <div className="flex h-[calc(100dvh-3rem)] w-full min-h-0">
         {/* Canvas area */}
         <main className="flex flex-1 items-center justify-center bg-neutral-950">
           {/* OUTER: owns glow pseudo-elements (NO overflow-hidden) */}
@@ -2692,8 +2692,9 @@ export default function EditorPage() {
         </main>
 
         {/* Right panel */}
-        <aside className="w-[340px] border-l border-neutral-800 bg-neutral-950">
-          <div className="space-y-4 p-4">
+        <aside className="h-full w-[340px] border-l border-neutral-800 bg-neutral-950">
+          <div className="h-full overflow-y-auto">
+            <div className="space-y-4 p-4">
             <div className="flex justify-end gap-2">
               <button
                 type="button"
@@ -3919,6 +3920,7 @@ export default function EditorPage() {
               ) : null}
             </div>
 
+            </div>
           </div>
         </aside>
       </div>
