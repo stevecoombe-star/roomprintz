@@ -1,6 +1,7 @@
 // app/api/vibode/upload-base/route.ts
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
+import type { SupabaseClient } from "@supabase/supabase-js";
 import {
   createVibodeRoom,
   createVibodeRoomAsset,
@@ -22,10 +23,11 @@ const SERVICE_ROLE_KEY = mustEnv("SUPABASE_SERVICE_ROLE_KEY");
 const SUPABASE_ANON_KEY = mustEnv("SUPABASE_ANON_KEY", "NEXT_PUBLIC_SUPABASE_ANON_KEY");
 
 const BUCKET = "vibode-base-images";
+type AnySupabaseClient = SupabaseClient<any, "public", any>;
 
 function getUserSupabaseClient(
   req: NextRequest
-): { supabase: ReturnType<typeof createClient> | null; token: string | null } {
+): { supabase: AnySupabaseClient | null; token: string | null } {
   const authHeader = req.headers.get("authorization") || "";
   const token = authHeader.startsWith("Bearer ")
     ? authHeader.slice("Bearer ".length).trim()
@@ -33,7 +35,7 @@ function getUserSupabaseClient(
 
   if (!token) return { supabase: null, token: null };
 
-  const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+  const supabase: AnySupabaseClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
     global: { headers: { Authorization: `Bearer ${token}` } },
     auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
   });
