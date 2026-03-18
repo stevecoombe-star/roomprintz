@@ -7,3 +7,4 @@
  */
 export { supabaseBrowser } from "@/src/lib/supabaseBrowser";
 export { browserClient } from "@/src/lib/supabaseBrowser";
+export { getSupabaseBrowserSession, getSupabaseBrowserAccessToken } from "@/src/lib/supabaseBrowser";

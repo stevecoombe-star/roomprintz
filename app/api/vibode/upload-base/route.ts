@@ -1,6 +1,11 @@
 // app/api/vibode/upload-base/route.ts
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
+import {
+  createVibodeRoom,
+  createVibodeRoomAsset,
+  updateVibodeRoom,
+} from "@/lib/vibodePersistence";
 
 export const runtime = "nodejs";
 
@@ -14,8 +19,55 @@ function mustEnv(...names: string[]) {
 
 const SUPABASE_URL = mustEnv("SUPABASE_URL", "NEXT_PUBLIC_SUPABASE_URL");
 const SERVICE_ROLE_KEY = mustEnv("SUPABASE_SERVICE_ROLE_KEY");
+const SUPABASE_ANON_KEY = mustEnv("SUPABASE_ANON_KEY", "NEXT_PUBLIC_SUPABASE_ANON_KEY");
 
 const BUCKET = "vibode-base-images";
+
+function getUserSupabaseClient(
+  req: NextRequest
+): { supabase: ReturnType<typeof createClient> | null; token: string | null } {
+  const authHeader = req.headers.get("authorization") || "";
+  const token = authHeader.startsWith("Bearer ")
+    ? authHeader.slice("Bearer ".length).trim()
+    : null;
+
+  if (!token) return { supabase: null, token: null };
+
+  const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+    global: { headers: { Authorization: `Bearer ${token}` } },
+    auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
+  });
+
+  return { supabase, token };
+}
+
+function getOptionalFormText(value: FormDataEntryValue | null) {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+function isLikelyExpiringSignedUrl(url: string) {
+  try {
+    const parsed = new URL(url);
+    if (parsed.pathname.includes("/storage/v1/object/sign/")) return true;
+    if (parsed.searchParams.has("token")) return true;
+    if (parsed.searchParams.has("X-Amz-Signature")) return true;
+    if (parsed.searchParams.has("X-Amz-Credential")) return true;
+    return false;
+  } catch {
+    return false;
+  }
+}
+
+function getDurableImageUrl(args: { candidateUrl?: string | null; storageBucket?: string | null }) {
+  const url = typeof args.candidateUrl === "string" ? args.candidateUrl.trim() : "";
+  if (!url) return null;
+  const bucket = typeof args.storageBucket === "string" ? args.storageBucket.trim() : "";
+  const isPrivateBucket = bucket === "vibode-base-images" || bucket === BUCKET;
+  if (isPrivateBucket && isLikelyExpiringSignedUrl(url)) return null;
+  return url;
+}
 
 export async function POST(req: NextRequest) {
   try {
@@ -86,11 +138,63 @@ export async function POST(req: NextRequest) {
       // Non-fatal — editor already has viewport info
     }
 
+    let vibodeRoomId: string | undefined;
+    try {
+      const { supabase: userSupabase, token } = getUserSupabaseClient(req);
+      if (!token || !userSupabase) {
+        console.warn("[upload-base] vibode persistence skipped: missing bearer token");
+      } else {
+        const { data: userData, error: userErr } = await userSupabase.auth.getUser();
+        if (userErr || !userData?.user) {
+          console.warn("[upload-base] vibode persistence skipped: user lookup failed");
+        } else {
+          const aspectRatio = getOptionalFormText(formData.get("aspectRatio"));
+          const selectedModel = getOptionalFormText(formData.get("selectedModel"));
+          const room = await createVibodeRoom(userSupabase, {
+            user_id: userData.user.id,
+            title: "Untitled Room",
+            source_type: "upload",
+            aspect_ratio: aspectRatio,
+            selected_model: selectedModel,
+            status: "draft",
+          });
+
+          const baseAsset = await createVibodeRoomAsset(userSupabase, {
+            room_id: room.id,
+            user_id: userData.user.id,
+            asset_type: "base",
+            stage_number: 0,
+            storage_bucket: BUCKET,
+            storage_path: storageKey,
+            image_url:
+              getDurableImageUrl({ candidateUrl: signed.signedUrl, storageBucket: BUCKET }) ?? "",
+            width: widthPx ?? null,
+            height: heightPx ?? null,
+            is_active: true,
+          });
+
+          await updateVibodeRoom(userSupabase, room.id, {
+            base_asset_id: baseAsset.id,
+            active_asset_id: baseAsset.id,
+            cover_image_url: getDurableImageUrl({
+              candidateUrl: signed.signedUrl,
+              storageBucket: BUCKET,
+            }),
+            sort_key: new Date().toISOString(),
+          });
+          vibodeRoomId = room.id;
+        }
+      }
+    } catch (persistErr) {
+      console.error("[upload-base] vibode persistence failed (non-blocking):", persistErr);
+    }
+
     return NextResponse.json({
       storageKey,
       signedUrl: signed.signedUrl,
       widthPx,
       heightPx,
+      vibodeRoomId,
     });
   } catch (err) {
     console.error("[upload-base] unexpected error:", err);

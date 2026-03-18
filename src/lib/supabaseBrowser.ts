@@ -9,6 +9,7 @@ import { createClient, type SupabaseClient } from "@supabase/supabase-js";
  */
 
 let _browserClient: SupabaseClient | null = null;
+let _authHydrationPromise: Promise<void> | null = null;
 
 export function supabaseBrowser(): SupabaseClient {
   if (_browserClient) return _browserClient;
@@ -31,6 +32,44 @@ export function supabaseBrowser(): SupabaseClient {
   });
 
   return _browserClient;
+}
+
+async function waitForInitialSessionHydration(timeoutMs = 800): Promise<void> {
+  if (typeof window === "undefined") return;
+  if (_authHydrationPromise) return _authHydrationPromise;
+
+  const client = supabaseBrowser();
+  _authHydrationPromise = (async () => {
+    try {
+      const startedAt = Date.now();
+      while (Date.now() - startedAt < timeoutMs) {
+        const { data } = await client.auth.getSession();
+        if (data.session) return;
+        await new Promise<void>((resolve) => {
+          window.setTimeout(resolve, 100);
+        });
+      }
+    } finally {
+      _authHydrationPromise = null;
+    }
+  })();
+
+  return _authHydrationPromise;
+}
+
+export async function getSupabaseBrowserSession() {
+  const client = supabaseBrowser();
+  const initial = await client.auth.getSession();
+  if (initial.data.session) return initial;
+
+  await waitForInitialSessionHydration();
+  return client.auth.getSession();
+}
+
+export async function getSupabaseBrowserAccessToken(): Promise<string | null> {
+  const { data } = await getSupabaseBrowserSession();
+  const token = data.session?.access_token;
+  return typeof token === "string" && token.length > 0 ? token : null;
 }
 
 /**

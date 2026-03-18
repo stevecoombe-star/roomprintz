@@ -12,8 +12,7 @@ import { IKEA_CA_SKUS, type IkeaCaSku } from "@/data/mockIkeaCaSkus";
 import { clearPendingLocal, loadPendingLocal, savePendingLocal } from "@/lib/pendingGeneration";
 import { DEFAULT_PX_PER_IN, skuFootprintInchesFromDims } from "@/lib/ikeaSizing";
 
-// ✅ FIX: import path (avoid "@/src/..." which commonly causes alias/circular issues)
-import { supabaseBrowser } from "@/lib/supabaseBrowser";
+import { getSupabaseBrowserAccessToken } from "@/lib/supabaseBrowser";
 
 const DND_MIME = "application/x-roomprintz-furniture";
 const USER_SKU_MAX_INPUT_BYTES = 12 * 1024 * 1024;
@@ -177,6 +176,7 @@ type WorkflowStage = 1 | 2 | 3 | 4 | 5;
 type StageRunStatus = "idle" | "running" | "success" | "error";
 type DeclutterMode = "off" | "light" | "heavy";
 type VibodeModelVersion = typeof VIBODE_MODEL_NBP | typeof VIBODE_MODEL_NB2;
+type VibodeAspectRatio = "auto" | "4:3" | "3:2" | "16:9" | "1:1";
 type Stage4Action =
   | "style_room"
   | "accessories"
@@ -451,32 +451,50 @@ function validateFreezePayloadV1(payload: unknown): { ok: true } | { ok: false; 
 
 async function tryGetSupabaseAccessToken(): Promise<string | null> {
   try {
-    const supa = supabaseBrowser();
-    const { data, error } = await supa.auth.getSession();
-    if (error) console.warn("[supabase] getSession error:", error);
-    return data?.session?.access_token ?? null;
+    return await getSupabaseBrowserAccessToken();
   } catch (err) {
-    console.warn("[supabase] getSession threw:", err);
+    console.warn("[supabase] access token lookup threw:", err);
     return null;
   }
 }
 
-// ✅ upload helper (blob preview -> storage signed URL)
-// ✅ CHANGE: include Authorization header when available (upload route may be protected)
+// upload helper (blob preview -> storage signed URL)
 async function uploadBaseImageToStorage(opts: {
   file: File;
   sceneId: string;
-}): Promise<{ storageKey: string; signedUrl: string; widthPx?: number; heightPx?: number }> {
+  selectedModel?: string;
+  aspectRatio?: VibodeAspectRatio;
+  accessToken: string;
+}): Promise<{
+  storageKey: string;
+  signedUrl: string;
+  widthPx?: number;
+  heightPx?: number;
+  vibodeRoomId?: string;
+}> {
   const fd = new FormData();
   fd.set("file", opts.file);
   fd.set("sceneId", opts.sceneId);
+  if (opts.selectedModel) {
+    fd.set("selectedModel", opts.selectedModel);
+  }
+  if (opts.aspectRatio) {
+    fd.set("aspectRatio", opts.aspectRatio);
+  }
 
-  const accessToken = await tryGetSupabaseAccessToken();
+  const authorizationHeaderValue = `Bearer ${opts.accessToken}`;
+  const authorizationHeaderAttached =
+    authorizationHeaderValue.startsWith("Bearer ") && opts.accessToken.length > 0;
+  console.debug("[upload-base][auth-diag]", {
+    tokenPresent: opts.accessToken.length > 0,
+    tokenLength: opts.accessToken.length,
+    authorizationHeaderAttached,
+  });
 
   const res = await fetch("/api/vibode/upload-base", {
     method: "POST",
     headers: {
-      ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
+      Authorization: authorizationHeaderValue,
     },
     body: fd,
   });
@@ -491,6 +509,7 @@ async function uploadBaseImageToStorage(opts: {
     signedUrl?: string;
     widthPx?: number;
     heightPx?: number;
+    vibodeRoomId?: string;
   };
 
   if (!json?.storageKey || !json?.signedUrl) {
@@ -502,6 +521,7 @@ async function uploadBaseImageToStorage(opts: {
     signedUrl: json.signedUrl,
     widthPx: json.widthPx,
     heightPx: json.heightPx,
+    vibodeRoomId: typeof json.vibodeRoomId === "string" ? json.vibodeRoomId : undefined,
   };
 }
 
@@ -653,9 +673,33 @@ export default function EditorPage() {
   const [ingestError, setIngestError] = useState<string | null>(null);
   const [ingestedUserSku, setIngestedUserSku] = useState<UserSku | null>(null);
   const [userSkusAddedToStage3, setUserSkusAddedToStage3] = useState<UserSku[]>([]);
+  const [vibodeRoomId, setVibodeRoomId] = useState<string | null>(null);
   const [stage3SkuItems, setStage3SkuItems] = useState<Stage3SkuItem[]>([]);
   const [stage3ShowCatalog, setStage3ShowCatalog] = useState(false);
   const didRestorePendingRef = useRef(false);
+
+  const currentAspectRatioForUpload: VibodeAspectRatio = useMemo(() => {
+    const width = scene.baseImageWidthPx;
+    const height = scene.baseImageHeightPx;
+    if (!isFiniteNumber(width) || !isFiniteNumber(height) || Number(height) <= 0) return "auto";
+    const ratio = Number(width) / Number(height);
+    const candidates: Array<{ label: Exclude<VibodeAspectRatio, "auto">; value: number }> = [
+      { label: "4:3", value: 4 / 3 },
+      { label: "3:2", value: 3 / 2 },
+      { label: "16:9", value: 16 / 9 },
+      { label: "1:1", value: 1 },
+    ];
+    let best: Exclude<VibodeAspectRatio, "auto"> = "4:3";
+    let bestDelta = Number.POSITIVE_INFINITY;
+    for (const candidate of candidates) {
+      const delta = Math.abs(ratio - candidate.value);
+      if (delta < bestDelta) {
+        best = candidate.label;
+        bestDelta = delta;
+      }
+    }
+    return best;
+  }, [scene.baseImageHeightPx, scene.baseImageWidthPx]);
 
   useEffect(() => {
     const raw = window.localStorage.getItem(VIBODE_MODEL_STORAGE_KEY);
@@ -782,6 +826,7 @@ export default function EditorPage() {
     setScenePlacements([]);
     setSelectedPlacementId(null);
     setActiveStage(1);
+    setVibodeRoomId(null);
     clearPendingLocal();
 
     // 1) Instant preview (blob)
@@ -791,16 +836,42 @@ export default function EditorPage() {
     // 2) Upload to storage + swap to signed URL (kills blob in payload)
     setIsUploading(true);
     try {
+      let accessToken = await tryGetSupabaseAccessToken();
+      if (!accessToken) {
+        // Small retry to reduce early-click hydration races right after page load.
+        await new Promise<void>((resolve) => setTimeout(resolve, 250));
+        accessToken = await tryGetSupabaseAccessToken();
+      }
+
+      if (!accessToken) {
+        console.warn("[upload-base][auth-diag]", {
+          tokenPresent: false,
+          tokenLength: 0,
+          authorizationHeaderAttached: false,
+        });
+        pushSnack("No Supabase session — redirecting to login…");
+        router.push(`/login?next=${encodeURIComponent("/editor")}`);
+        return;
+      }
+
       const sceneId = useEditorStore.getState().scene.sceneId;
-      const up = await uploadBaseImageToStorage({ file, sceneId });
+      const up = await uploadBaseImageToStorage({
+        file,
+        sceneId,
+        selectedModel,
+        aspectRatio: currentAspectRatioForUpload,
+        accessToken,
+      });
       await preloadImage(up.signedUrl);
 
       setBaseImageUrl(up.signedUrl);
       setWorkingImageUrl(up.signedUrl);
       setIsWorkingImageGenerated(false);
+      setVibodeRoomId(up.vibodeRoomId ?? null);
       pushSnack("Image uploaded ✅ (signed URL set; blob removed).");
     } catch (err: any) {
       console.error(err);
+      setVibodeRoomId(null);
       pushSnack(`Upload failed — keeping local preview. (${err?.message ?? "error"})`);
     } finally {
       setIsUploading(false);
@@ -1294,7 +1365,9 @@ export default function EditorPage() {
     try {
       const payload: Record<string, unknown> = {
         stage: stageNumber,
+        stageNumber,
         modelVersion: selectedModel,
+        vibodeRoomId: vibodeRoomId ?? undefined,
       };
       const candidateUrl =
         typeof currentImageUrl === "string" && currentImageUrl.trim().length > 0
@@ -1433,9 +1506,13 @@ export default function EditorPage() {
         "payload.isContinuation": payload.isContinuation,
       });
       console.log("stage-run payload", sanitizeStageRunPayloadForLog(payload));
+      const accessToken = await tryGetSupabaseAccessToken();
       const res = await fetch("/api/vibode/stage-run", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
+        },
         body: JSON.stringify(payload),
       });
 
@@ -2251,6 +2328,8 @@ export default function EditorPage() {
         body: JSON.stringify({
           freeze: payload,
           modelVersion: selectedModel,
+          vibodeRoomId: vibodeRoomId ?? undefined,
+          stageNumber: activeStage,
           vibeMode: scene.vibeMode,
           markup: markupToPersist,
           vibe: isVibeStage

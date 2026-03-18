@@ -9,6 +9,12 @@ import { callCompositorVibodeRemove } from "@/lib/callCompositorVibodeRemove";
 import { callCompositorVibodeRotate } from "@/lib/callCompositorVibodeRotate";
 import { callCompositorVibodeVibe } from "@/lib/callCompositorVibodeVibe";
 import {
+  createVibodeGenerationRun,
+  createVibodeRoomAsset,
+  getVibodeRoomById,
+  updateVibodeRoom,
+} from "@/lib/vibodePersistence";
+import {
   inferLayerKindFromSkuKind,
   ensureZIndex,
   type LayerKind,
@@ -911,6 +917,20 @@ function safeStr(x: unknown): string | null {
   return typeof x === "string" && x.trim().length > 0 ? x.trim() : null;
 }
 
+function parseOptionalStageNumber(value: unknown): number | null {
+  if (typeof value !== "number" || !Number.isFinite(value)) return null;
+  const n = Math.trunc(value);
+  if (n < 0 || n > 32767) return null;
+  return n;
+}
+
+function isUuidLike(value: string | null): value is string {
+  if (!value) return false;
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+    value
+  );
+}
+
 function resolveStyleId(args: {
   payloadVersion: string | null;
   freezeRaw: unknown;
@@ -1226,6 +1246,29 @@ async function callNanoBananaProPrompt(args: {
 
 function isDataUrl(s: string) {
   return typeof s === "string" && s.startsWith("data:");
+}
+
+function isLikelyExpiringSignedUrl(url: string) {
+  try {
+    const parsed = new URL(url);
+    if (parsed.pathname.includes("/storage/v1/object/sign/")) return true;
+    if (parsed.searchParams.has("token")) return true;
+    if (parsed.searchParams.has("X-Amz-Signature")) return true;
+    if (parsed.searchParams.has("X-Amz-Credential")) return true;
+    return false;
+  } catch {
+    return false;
+  }
+}
+
+function getDurableImageUrl(args: { candidateUrl?: string | null; storageBucket?: string | null }) {
+  const url = typeof args.candidateUrl === "string" ? args.candidateUrl.trim() : "";
+  if (!url) return null;
+  const bucket = typeof args.storageBucket === "string" ? args.storageBucket.trim() : "";
+  const isPrivateBucket =
+    bucket === "vibode-generations" || bucket === VIBODE_STAGED_BUCKET || bucket === "vibode-base-images";
+  if (isPrivateBucket && isLikelyExpiringSignedUrl(url)) return null;
+  return url;
 }
 
 function parseDataUrlImage(dataUrl: string): { mime: string; buf: Buffer } {
@@ -1748,6 +1791,9 @@ export async function handleGenerateRequest(args: {
   payloadVersion: string | null;
   payload: FreezePayloadV1;
   vibeInput?: unknown;
+  vibodeRoomId?: string | null;
+  requestedStageNumber?: number | null;
+  requestedAspectRatio?: string | null;
 }): Promise<ModeResponse> {
   const { req, freeze, payloadVersion, payload, vibeInput } = args;
   const xVibodeEchoRaw = req.headers.get("x-vibode-echo");
@@ -2214,6 +2260,119 @@ export async function handleGenerateRequest(args: {
       throw new Error("Persistence failed; refusing to return data URL with admin client.");
     }
 
+    if (args.vibodeRoomId) {
+      try {
+        if (!isUuidLike(args.vibodeRoomId)) {
+          console.warn("[vibode/generate] vibode persistence skipped: invalid vibodeRoomId");
+        } else if (!persisted.bucket || !persisted.storageKey) {
+          console.warn(
+            "[vibode/generate] vibode persistence skipped: missing persisted output bucket/key"
+          );
+        } else {
+          const persistenceClient = supabase as unknown as SupabaseClient<any, "public", any>;
+          const existingRoom = await getVibodeRoomById(persistenceClient, args.vibodeRoomId);
+
+          if (!existingRoom) {
+            console.warn("[vibode/generate] vibode persistence skipped: room not found", {
+              roomId: args.vibodeRoomId,
+            });
+          } else if (existingRoom.user_id !== user.id) {
+            console.warn(
+              "[vibode/generate] vibode persistence skipped: room does not belong to user",
+              {
+                roomId: args.vibodeRoomId,
+                userId: user.id,
+              }
+            );
+          } else {
+            const currentStageNumber =
+              parseOptionalStageNumber(args.requestedStageNumber) ?? existingRoom.current_stage ?? 0;
+            const resolvedModelVersion = safeStr((payloadForModel as any)?.modelVersion);
+            const resolvedAspectRatio =
+              safeStr(args.requestedAspectRatio) ?? pickLegacyAspectRatioFromFreeze(payloadForModel);
+            const previousActiveAssetId = existingRoom.active_asset_id ?? null;
+
+            const outputAsset = await createVibodeRoomAsset(persistenceClient, {
+              room_id: existingRoom.id,
+              user_id: user.id,
+              asset_type: "stage_output",
+              stage_number: currentStageNumber,
+              storage_bucket: persisted.bucket,
+              storage_path: persisted.storageKey,
+              image_url:
+                getDurableImageUrl({
+                  candidateUrl: persisted.imageUrl,
+                  storageBucket: persisted.bucket,
+                }) ?? "",
+              model_version: resolvedModelVersion,
+              width: persisted.widthPx ?? payloadForModel.baseImage.widthPx,
+              height: persisted.heightPx ?? payloadForModel.baseImage.heightPx,
+              is_active: true,
+            });
+
+            const { error: deactivateErr } = await persistenceClient
+              .from("vibode_room_assets")
+              .update({ is_active: false })
+              .eq("room_id", existingRoom.id)
+              .eq("user_id", user.id)
+              .eq("is_active", true)
+              .neq("id", outputAsset.id);
+            if (deactivateErr) {
+              throw new Error(
+                `[vibode] failed to deactivate prior room assets: ${deactivateErr.message}`
+              );
+            }
+
+            await updateVibodeRoom(persistenceClient, existingRoom.id, {
+              active_asset_id: outputAsset.id,
+              current_stage: currentStageNumber,
+              cover_image_url: getDurableImageUrl({
+                candidateUrl: persisted.imageUrl,
+                storageBucket: persisted.bucket,
+              }),
+              sort_key: new Date().toISOString(),
+            });
+
+            await createVibodeGenerationRun(persistenceClient, {
+              room_id: existingRoom.id,
+              user_id: user.id,
+              run_type: "stage",
+              stage_number: currentStageNumber,
+              source_asset_id: previousActiveAssetId,
+              output_asset_id: outputAsset.id,
+              model_version: resolvedModelVersion,
+              aspect_ratio: resolvedAspectRatio,
+              status: "completed",
+              request_payload: {
+                generationId,
+                payloadVersion,
+                stageNumber: currentStageNumber,
+                modelVersion: resolvedModelVersion,
+                aspectRatio: resolvedAspectRatio,
+                ops: {
+                  add: ops.add.length,
+                  remove: ops.remove.length,
+                  swap: ops.swap.length,
+                  transformChanged: ops.transformChanged.length,
+                },
+              },
+              response_payload: {
+                mode: "nanobanana",
+                output: {
+                  imageUrl: persisted.imageUrl,
+                  bucket: persisted.bucket,
+                  storageKey: persisted.storageKey,
+                },
+              },
+              completed_at: new Date().toISOString(),
+            });
+          }
+        }
+      } catch (persistDbErr) {
+        console.error("[vibode/generate] vibode db persistence failed (non-blocking):", persistDbErr);
+      }
+    }
+
     return json(200, {
       ok: true,
       generationId,
@@ -2347,6 +2506,9 @@ export async function handleVibodeGeneratePost(
     // In strict mode, only FreezePayloadV2 is accepted.
     const body = (await req.json()) as unknown;
     const bodyModelVersion = isRecord(body) ? safeStr((body as any).modelVersion) : null;
+    const bodyVibodeRoomId = isRecord(body) ? safeStr((body as any).vibodeRoomId) : null;
+    const bodyStageNumber = isRecord(body) ? parseOptionalStageNumber((body as any).stageNumber) : null;
+    const bodyAspectRatio = isRecord(body) ? safeStr((body as any).aspectRatio) : null;
     const vibeInput = isRecord(body) ? (body as any).vibe : undefined;
     const freeze = applyVibodeRouteModeOverride(
       isRecord(body) ? body.freeze : undefined,
@@ -2408,6 +2570,9 @@ export async function handleVibodeGeneratePost(
       payloadVersion,
       payload: payloadWithModel,
       vibeInput,
+      vibodeRoomId: bodyVibodeRoomId,
+      requestedStageNumber: bodyStageNumber,
+      requestedAspectRatio: bodyAspectRatio,
     });
   } catch (err: unknown) {
     console.error("[vibode/generate] unexpected error:", err);
