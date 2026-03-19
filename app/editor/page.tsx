@@ -1,8 +1,8 @@
 // app/editor/page.tsx
 "use client";
 
-import React, { useEffect, useMemo, useRef, useState } from "react";
-import { useRouter } from "next/navigation";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 
 import { EditorCanvas } from "@/components/editor/EditorCanvas";
 import { SnackbarHost, type Snackbar } from "@/components/ui/SnackbarHost";
@@ -12,7 +12,7 @@ import { IKEA_CA_SKUS, type IkeaCaSku } from "@/data/mockIkeaCaSkus";
 import { clearPendingLocal, loadPendingLocal, savePendingLocal } from "@/lib/pendingGeneration";
 import { DEFAULT_PX_PER_IN, skuFootprintInchesFromDims } from "@/lib/ikeaSizing";
 
-import { getSupabaseBrowserAccessToken } from "@/lib/supabaseBrowser";
+import { getSupabaseBrowserAccessToken, supabaseBrowser } from "@/lib/supabaseBrowser";
 
 const DND_MIME = "application/x-roomprintz-furniture";
 const USER_SKU_MAX_INPUT_BYTES = 12 * 1024 * 1024;
@@ -458,6 +458,74 @@ async function tryGetSupabaseAccessToken(): Promise<string | null> {
   }
 }
 
+type VibodeRoomHydrationRow = {
+  id: string;
+  cover_image_url: string | null;
+  selected_model: string | null;
+  current_stage: number | null;
+};
+
+type VibodeRoomActiveAssetRow = {
+  image_url: string | null;
+  storage_bucket: string | null;
+  storage_path: string | null;
+};
+
+function parseRoomIdFromSearch(value: string | null): string | null {
+  if (!value) return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+async function loadRoomHydrationData(
+  roomId: string
+): Promise<{ room: VibodeRoomHydrationRow; imageUrl: string | null }> {
+  const client = supabaseBrowser();
+
+  const { data: roomData, error: roomErr } = await client
+    .from("vibode_rooms")
+    .select("id,cover_image_url,selected_model,current_stage")
+    .eq("id", roomId)
+    .maybeSingle();
+  if (roomErr || !roomData) {
+    throw new Error(roomErr?.message ?? "Room not found.");
+  }
+
+  const room = roomData as VibodeRoomHydrationRow;
+  const cover = typeof room.cover_image_url === "string" ? room.cover_image_url.trim() : "";
+  if (cover.length > 0) {
+    return { room, imageUrl: cover };
+  }
+
+  const { data: assetData } = await client
+    .from("vibode_room_assets")
+    .select("image_url,storage_bucket,storage_path")
+    .eq("room_id", roomId)
+    .eq("is_active", true)
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  const asset = (assetData ?? null) as VibodeRoomActiveAssetRow | null;
+  if (!asset) {
+    return { room, imageUrl: null };
+  }
+
+  const directAssetUrl = typeof asset.image_url === "string" ? asset.image_url.trim() : "";
+  if (directAssetUrl.length > 0) {
+    return { room, imageUrl: directAssetUrl };
+  }
+
+  const bucket = typeof asset.storage_bucket === "string" ? asset.storage_bucket.trim() : "";
+  const path = typeof asset.storage_path === "string" ? asset.storage_path.trim() : "";
+  if (!bucket || !path) {
+    return { room, imageUrl: null };
+  }
+
+  const { data: signed } = await client.storage.from(bucket).createSignedUrl(path, 60 * 60 * 8);
+  return { room, imageUrl: signed?.signedUrl ?? null };
+}
+
 // upload helper (blob preview -> storage signed URL)
 async function uploadBaseImageToStorage(opts: {
   file: File;
@@ -544,6 +612,10 @@ function preloadImage(url: string): Promise<void> {
 
 export default function EditorPage() {
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const requestedRoomId = parseRoomIdFromSearch(
+    searchParams.get("roomId") ?? searchParams.get("vibodeRoomId")
+  );
 
   const scene = useEditorStore((s) => s.scene);
   const nodes = useEditorStore((s) => s.scene.nodes);
@@ -618,9 +690,9 @@ export default function EditorPage() {
   };
 
   const [snacks, setSnacks] = useState<Snackbar[]>([]);
-  const pushSnack = (message: string) => {
+  const pushSnack = useCallback((message: string) => {
     setSnacks((prev) => [...prev, { id: safeId("sn"), message }]);
-  };
+  }, []);
   function getBaseImageLabel(url?: string): string {
     if (!url) return "—";
     try {
@@ -633,6 +705,7 @@ export default function EditorPage() {
   }
 
   const didLogFirstGenerateAttemptRef = useRef(false);
+  const hydratedRoomIdRef = useRef<string | null>(null);
   const roomPhotoUploadInputRef = useRef<HTMLInputElement | null>(null);
   const roomPhotoCanvasDragDepthRef = useRef(0);
 
@@ -701,6 +774,19 @@ export default function EditorPage() {
     return best;
   }, [scene.baseImageHeightPx, scene.baseImageWidthPx]);
 
+  const resetWorkflowForIncomingImage = useCallback(() => {
+    setHasFurniturePass(false);
+    setStageStatus(INITIAL_STAGE_STATUS);
+    setLastStageOutputs({});
+    setWorkingImageUrl(null);
+    setIsWorkingImageGenerated(false);
+    setScenePlacements([]);
+    setSelectedPlacementId(null);
+    setActiveStage(1);
+    setVibodeRoomId(null);
+    clearPendingLocal();
+  }, []);
+
   useEffect(() => {
     const raw = window.localStorage.getItem(VIBODE_MODEL_STORAGE_KEY);
     if (raw === VIBODE_MODEL_NBP || raw === VIBODE_MODEL_NB2) {
@@ -735,6 +821,79 @@ export default function EditorPage() {
 
     didRestorePendingRef.current = true;
   }, []);
+
+  useEffect(() => {
+    if (!requestedRoomId) return;
+    if (hydratedRoomIdRef.current === requestedRoomId) return;
+    hydratedRoomIdRef.current = requestedRoomId;
+
+    let cancelled = false;
+
+    const hydrateFromRoom = async () => {
+      setIsUploading(true);
+      try {
+        let accessToken = await tryGetSupabaseAccessToken();
+        if (!accessToken) {
+          await new Promise<void>((resolve) => setTimeout(resolve, 250));
+          accessToken = await tryGetSupabaseAccessToken();
+        }
+        if (!accessToken) {
+          pushSnack("No Supabase session — redirecting to login…");
+          router.push(`/login?next=${encodeURIComponent(`/editor?roomId=${requestedRoomId}`)}`);
+          return;
+        }
+
+        resetWorkflowForIncomingImage();
+        const hydrated = await loadRoomHydrationData(requestedRoomId);
+        if (cancelled) return;
+
+        if (!hydrated.imageUrl) {
+          pushSnack("This room has no active image yet. Upload a room photo to continue.");
+          return;
+        }
+
+        await preloadImage(hydrated.imageUrl);
+        if (cancelled) return;
+
+        setBaseImageUrl(hydrated.imageUrl);
+        setWorkingImageUrl(hydrated.imageUrl);
+        setVibodeRoomId(hydrated.room.id);
+        setIsWorkingImageGenerated(false);
+
+        if (hydrated.room.selected_model === VIBODE_MODEL_NBP || hydrated.room.selected_model === VIBODE_MODEL_NB2) {
+          setSelectedModel(hydrated.room.selected_model);
+        }
+
+        const maybeStage = hydrated.room.current_stage;
+        if (typeof maybeStage === "number" && maybeStage >= 1 && maybeStage <= 5) {
+          setActiveStage(maybeStage as WorkflowStage);
+        }
+
+        const nowIso = new Date().toISOString();
+        const client = supabaseBrowser();
+        await client
+          .from("vibode_rooms")
+          .update({ last_opened_at: nowIso, sort_key: nowIso })
+          .eq("id", hydrated.room.id);
+
+        pushSnack("Room loaded.");
+      } catch (err: any) {
+        console.error("[editor] room hydration failed:", err);
+        hydratedRoomIdRef.current = null;
+        pushSnack(`Failed to open room. (${err?.message ?? "error"})`);
+      } finally {
+        if (!cancelled) {
+          setIsUploading(false);
+        }
+      }
+    };
+
+    void hydrateFromRoom();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [pushSnack, requestedRoomId, resetWorkflowForIncomingImage, router, setBaseImageUrl]);
 
   useEffect(() => {
     if (!didRestorePendingRef.current) return;
@@ -818,16 +977,7 @@ export default function EditorPage() {
       return;
     }
 
-    setHasFurniturePass(false);
-    setStageStatus(INITIAL_STAGE_STATUS);
-    setLastStageOutputs({});
-    setWorkingImageUrl(null);
-    setIsWorkingImageGenerated(false);
-    setScenePlacements([]);
-    setSelectedPlacementId(null);
-    setActiveStage(1);
-    setVibodeRoomId(null);
-    clearPendingLocal();
+    resetWorkflowForIncomingImage();
 
     // 1) Instant preview (blob)
     setBaseImageFromFile(file);

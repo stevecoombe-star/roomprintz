@@ -8,6 +8,7 @@ export type VibodeRoomRow = {
   id: string;
   user_id: string;
   title: string;
+  folder_id: string | null;
   status: string;
   source_type: string;
   aspect_ratio: string | null;
@@ -85,6 +86,7 @@ export type CreateVibodeRoomAssetInput = {
 
 export type UpdateVibodeRoomInput = {
   title?: string;
+  folder_id?: string | null;
   status?: string;
   source_type?: string;
   aspect_ratio?: string | null;
