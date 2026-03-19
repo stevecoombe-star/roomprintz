@@ -47,8 +47,9 @@ export function RoomCard({
       <button
         type="button"
         onClick={onOpen}
-        className="block w-full text-left focus:outline-none"
+        className="block w-full text-left focus:outline-none disabled:opacity-60"
         aria-label={`Open ${room.title}`}
+        disabled={isBusy}
       >
         <div className="overflow-hidden rounded-2xl border border-slate-800/70 bg-slate-900">
           <div className="relative aspect-[4/3] w-full bg-slate-900">
@@ -64,17 +65,22 @@ export function RoomCard({
                 <div className="pointer-events-none absolute inset-0 bg-gradient-to-b from-transparent to-black/10" />
               </>
             ) : (
-              <div className="flex h-full w-full items-center justify-center bg-gradient-to-br from-slate-900 to-slate-800 text-xs text-slate-500">
-                No preview
+              <div className="flex h-full w-full items-center justify-center bg-gradient-to-br from-slate-900 to-slate-800 p-4">
+                <div className="w-full max-w-[170px] rounded-lg border border-slate-700/70 bg-slate-900/85 px-3 py-2 text-center">
+                  <div className="text-[10px] uppercase tracking-[0.16em] text-slate-500">Preview</div>
+                  <div className="mt-1 truncate text-xs text-slate-300">Not available yet</div>
+                </div>
               </div>
             )}
           </div>
         </div>
 
         <div className="px-1 pb-2 pt-2">
-          <h3 className="truncate text-sm font-medium text-slate-100">{room.title}</h3>
-          <p className="mt-1 text-xs text-slate-400">{recencyLabel}</p>
-          <p className="mt-1 truncate text-[11px] text-slate-500">
+          <h3 className="truncate text-sm font-medium text-slate-100" title={room.title}>
+            {room.title}
+          </h3>
+          <p className="mt-1 truncate text-xs text-slate-400">{recencyLabel}</p>
+          <p className="mt-1 truncate text-[11px] text-slate-500" title={room.folder_name ?? "No folder"}>
             {room.folder_name ? `${room.folder_name}` : "No folder"}
             {room.current_stage > 0 || room.selected_model
               ? ` • Stage ${room.current_stage}${room.selected_model ? ` • ${room.selected_model}` : ""}`
@@ -90,8 +96,9 @@ export function RoomCard({
             setMenuOpen((open) => !open);
             setShowMoveMenu(false);
           }}
+          disabled={isBusy}
           className={
-            "rounded-md border border-slate-700/80 bg-slate-950/85 px-2 py-1 text-xs text-slate-300 backdrop-blur transition " +
+            "rounded-md border border-slate-700/80 bg-slate-950/85 px-2 py-1 text-xs text-slate-300 backdrop-blur transition disabled:opacity-50 " +
             (menuOpen ? "opacity-100" : "opacity-0 group-hover:opacity-100 group-focus-within:opacity-100")
           }
           aria-haspopup="menu"
@@ -110,6 +117,7 @@ export function RoomCard({
                 setShowMoveMenu(false);
                 onOpen();
               }}
+              disabled={isBusy}
               className="w-full rounded-md px-2 py-1 text-left text-xs text-slate-200 transition hover:bg-slate-800"
               role="menuitem"
             >
@@ -122,6 +130,7 @@ export function RoomCard({
                 setShowMoveMenu(false);
                 onRename();
               }}
+              disabled={isBusy}
               className="mt-1 w-full rounded-md px-2 py-1 text-left text-xs text-slate-200 transition hover:bg-slate-800"
               role="menuitem"
             >
@@ -130,6 +139,7 @@ export function RoomCard({
             <button
               type="button"
               onClick={() => setShowMoveMenu((open) => !open)}
+              disabled={isBusy}
               className="mt-1 w-full rounded-md px-2 py-1 text-left text-xs text-slate-200 transition hover:bg-slate-800"
               role="menuitem"
             >
@@ -154,6 +164,7 @@ export function RoomCard({
                 setShowMoveMenu(false);
                 onDelete();
               }}
+              disabled={isBusy}
               className="mt-1 w-full rounded-md px-2 py-1 text-left text-xs text-rose-300 transition hover:bg-rose-500/20"
               role="menuitem"
             >

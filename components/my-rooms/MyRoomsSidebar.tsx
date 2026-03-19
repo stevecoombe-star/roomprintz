@@ -7,10 +7,14 @@ type MyRoomsSidebarProps = {
   selectedFolderId: string | null;
   folders: MyRoomsFolder[];
   totalRoomsCount: number;
+  folderFeatureReady: boolean;
+  mutatingFolderId: string | null;
   onSelectAllRooms: () => void;
   onSelectRecents: () => void;
   onSelectFolder: (folderId: string) => void;
   onCreateFolder: () => void;
+  onRenameFolder: (folder: MyRoomsFolder) => void;
+  onDeleteFolder: (folder: MyRoomsFolder) => void;
 };
 
 function navClass(active: boolean) {
@@ -27,10 +31,14 @@ export function MyRoomsSidebar({
   selectedFolderId,
   folders,
   totalRoomsCount,
+  folderFeatureReady,
+  mutatingFolderId,
   onSelectAllRooms,
   onSelectRecents,
   onSelectFolder,
   onCreateFolder,
+  onRenameFolder,
+  onDeleteFolder,
 }: MyRoomsSidebarProps) {
   return (
     <div className="sticky top-4 rounded-2xl border border-slate-800/80 bg-slate-900/60 p-3">
@@ -63,7 +71,8 @@ export function MyRoomsSidebar({
         <button
           type="button"
           onClick={onCreateFolder}
-          className="rounded-md px-2 py-1 text-[11px] text-slate-300 transition hover:bg-slate-800 hover:text-slate-100"
+          disabled={!folderFeatureReady}
+          className="rounded-md px-2 py-1 text-[11px] text-slate-300 transition hover:bg-slate-800 hover:text-slate-100 disabled:opacity-50 disabled:hover:bg-transparent"
           aria-label="Create folder"
         >
           + New
@@ -76,21 +85,42 @@ export function MyRoomsSidebar({
         ) : (
           folders.map((folder) => {
             const active = selectedScope === "folder" && selectedFolderId === folder.id;
+            const folderBusy = mutatingFolderId === folder.id;
             return (
-              <button
-                key={folder.id}
-                type="button"
-                onClick={() => onSelectFolder(folder.id)}
-                className={navClass(active)}
-                aria-current={active ? "page" : undefined}
-              >
-                <span className="flex items-center justify-between gap-2">
-                  <span className="truncate">{folder.name}</span>
-                  {typeof folder.room_count === "number" ? (
-                    <span className="text-[11px] text-slate-500">{folder.room_count}</span>
-                  ) : null}
-                </span>
-              </button>
+              <div key={folder.id} className="group flex items-center gap-1">
+                <button
+                  type="button"
+                  onClick={() => onSelectFolder(folder.id)}
+                  className={navClass(active) + " min-w-0 flex-1"}
+                  aria-current={active ? "page" : undefined}
+                  disabled={folderBusy}
+                >
+                  <span className="flex items-center justify-between gap-2">
+                    <span className="truncate">{folder.name}</span>
+                    {typeof folder.room_count === "number" ? (
+                      <span className="text-[11px] text-slate-500">{folder.room_count}</span>
+                    ) : null}
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => onRenameFolder(folder)}
+                  disabled={folderBusy}
+                  className="rounded-md px-2 py-1 text-[11px] text-slate-400 transition hover:bg-slate-800 hover:text-slate-100 disabled:opacity-50"
+                  aria-label={`Rename folder ${folder.name}`}
+                >
+                  Edit
+                </button>
+                <button
+                  type="button"
+                  onClick={() => onDeleteFolder(folder)}
+                  disabled={folderBusy}
+                  className="rounded-md px-2 py-1 text-[11px] text-rose-300 transition hover:bg-rose-500/20 disabled:opacity-50"
+                  aria-label={`Delete folder ${folder.name}`}
+                >
+                  Del
+                </button>
+              </div>
             );
           })
         )}

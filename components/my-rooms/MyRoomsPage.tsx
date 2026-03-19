@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { CreateFolderDialog } from "@/components/my-rooms/CreateFolderDialog";
 import { MyRoomsContextBar } from "@/components/my-rooms/MyRoomsContextBar";
 import { MyRoomsGrid } from "@/components/my-rooms/MyRoomsGrid";
@@ -129,12 +129,38 @@ export function MyRoomsPage() {
   const [renameValue, setRenameValue] = useState("");
   const [renameError, setRenameError] = useState<string | null>(null);
   const [isRenamingRoom, setIsRenamingRoom] = useState(false);
+  const [deleteRoom, setDeleteRoom] = useState<MyRoomsRoom | null>(null);
+  const [isDeletingRoom, setIsDeletingRoom] = useState(false);
+
+  const [renameFolder, setRenameFolder] = useState<MyRoomsFolder | null>(null);
+  const [renameFolderValue, setRenameFolderValue] = useState("");
+  const [renameFolderError, setRenameFolderError] = useState<string | null>(null);
+  const [isRenamingFolder, setIsRenamingFolder] = useState(false);
+
+  const [deleteFolder, setDeleteFolder] = useState<MyRoomsFolder | null>(null);
+  const [isDeletingFolder, setIsDeletingFolder] = useState(false);
 
   const [mutatingRoomId, setMutatingRoomId] = useState<string | null>(null);
+  const [mutatingFolderId, setMutatingFolderId] = useState<string | null>(null);
+  const toastTimeoutRef = useRef<number | null>(null);
 
   const showToast = useCallback((message: string, type: "error" | "info" = "info") => {
+    if (toastTimeoutRef.current !== null) {
+      window.clearTimeout(toastTimeoutRef.current);
+    }
     setToast({ message, type });
-    window.setTimeout(() => setToast(null), 4500);
+    toastTimeoutRef.current = window.setTimeout(() => {
+      setToast(null);
+      toastTimeoutRef.current = null;
+    }, 4500);
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (toastTimeoutRef.current !== null) {
+        window.clearTimeout(toastTimeoutRef.current);
+      }
+    };
   }, []);
 
   useEffect(() => {
@@ -288,14 +314,14 @@ export function MyRoomsPage() {
     return sortRooms(filtered, effectiveSortMode);
   }, [scopedRooms, searchQuery, selectedScope, sortMode]);
 
-  const selectedFolderName = useMemo(() => {
+  const selectedFolder = useMemo(() => {
     if (!selectedFolderId) return null;
-    return folders.find((folder) => folder.id === selectedFolderId)?.name ?? null;
+    return folders.find((folder) => folder.id === selectedFolderId) ?? null;
   }, [folders, selectedFolderId]);
 
   const contextLabel = scopeLabel({
     selectedScope,
-    selectedFolderName,
+    selectedFolderName: selectedFolder?.name ?? null,
     searchQuery,
   });
 
@@ -310,7 +336,7 @@ export function MyRoomsPage() {
     if (rooms.length === 0) {
       return {
         title: "No rooms yet",
-        description: "Create your first room in the editor, then come back here to browse and resume.",
+        description: "Saved rooms will appear here. Create your first room in the editor to start building your library.",
         actionLabel: "Open editor",
         onAction: () => router.push("/editor"),
       };
@@ -324,13 +350,13 @@ export function MyRoomsPage() {
     if (selectedScope === "folder" && scopedRooms.length === 0) {
       return {
         title: "This folder is empty",
-        description: "Move rooms into this folder from each card menu.",
+        description: "Move rooms into this folder from each room menu.",
       };
     }
     if (visibleRooms.length === 0) {
       return {
-        title: "Nothing to show",
-        description: "Adjust filters and try again.",
+        title: "Nothing here yet",
+        description: "Try another view or clear the current search.",
       };
     }
     return null;
@@ -381,6 +407,8 @@ export function MyRoomsPage() {
           .sort((a, b) => a.name.localeCompare(b.name))
       );
       setCreateDialogOpen(false);
+      setCreateError(null);
+      showToast("Folder created.");
     } catch (err) {
       console.error("[MyRooms] create folder error:", err);
       setCreateError("Could not create folder right now.");
@@ -443,6 +471,7 @@ export function MyRoomsPage() {
       );
       setRenameRoom(null);
       setRenameValue("");
+      showToast("Room renamed.");
     } catch (err) {
       console.error("[MyRooms] rename failed:", err);
       setRenameError("Could not rename this room.");
@@ -454,6 +483,7 @@ export function MyRoomsPage() {
 
   const handleMoveRoom = async (room: MyRoomsRoom, folderId: string | null) => {
     if (!folderFeatureReady) return;
+    if (room.folder_id === folderId) return;
     setMutatingRoomId(room.id);
     try {
       const { error } = await supabase
@@ -468,6 +498,7 @@ export function MyRoomsPage() {
           candidate.id === room.id ? { ...candidate, folder_id: folderId, folder_name: folderName } : candidate
         )
       );
+      showToast(folderName ? `Moved to "${folderName}".` : "Removed from folder.");
     } catch (err) {
       console.error("[MyRooms] move room failed:", err);
       showToast("Could not move this room right now.", "error");
@@ -476,25 +507,122 @@ export function MyRoomsPage() {
     }
   };
 
-  const handleDeleteRoom = async (room: MyRoomsRoom) => {
-    const confirmed = window.confirm(
-      `Delete "${room.title}"?\n\nThis removes the room and its generated history.`
-    );
-    if (!confirmed) return;
-
-    setMutatingRoomId(room.id);
+  const handleDeleteRoomConfirm = async () => {
+    if (!deleteRoom) return;
+    setIsDeletingRoom(true);
+    setMutatingRoomId(deleteRoom.id);
     try {
       // Deletion relies on DB-level FK cascade from room-linked Vibode tables.
-      const { error } = await supabase.from("vibode_rooms").delete().eq("id", room.id);
+      const { error } = await supabase.from("vibode_rooms").delete().eq("id", deleteRoom.id);
       if (error) throw error;
-      setRooms((prev) => prev.filter((candidate) => candidate.id !== room.id));
+      setRooms((prev) => prev.filter((candidate) => candidate.id !== deleteRoom.id));
+      setDeleteRoom(null);
+      showToast("Room deleted.");
     } catch (err) {
       console.error("[MyRooms] delete failed:", err);
       showToast("Could not delete this room.", "error");
     } finally {
+      setIsDeletingRoom(false);
       setMutatingRoomId(null);
     }
   };
+
+  const handleRenameFolderStart = (folder: MyRoomsFolder) => {
+    setRenameFolder(folder);
+    setRenameFolderValue(folder.name);
+    setRenameFolderError(null);
+  };
+
+  const handleRenameFolderSave = async () => {
+    if (!renameFolder) return;
+    const nextName = renameFolderValue.trim();
+    if (!nextName) {
+      setRenameFolderError("Folder name cannot be empty.");
+      return;
+    }
+    if (nextName === renameFolder.name) {
+      setRenameFolder(null);
+      return;
+    }
+
+    setRenameFolderError(null);
+    setIsRenamingFolder(true);
+    setMutatingFolderId(renameFolder.id);
+    try {
+      const { data, error } = await supabase
+        .from("vibode_room_folders")
+        .update({ name: nextName })
+        .eq("id", renameFolder.id)
+        .select("id,name,created_at,updated_at")
+        .single();
+
+      if (error || !data) {
+        if (likelyUniqueViolation(error)) {
+          setRenameFolderError("A folder with that name already exists.");
+          return;
+        }
+        throw error ?? new Error("Failed to rename folder.");
+      }
+
+      const updatedFolder = data as FolderRow;
+      setFolders((prev) =>
+        prev
+          .map((folder) => (folder.id === updatedFolder.id ? { ...folder, name: updatedFolder.name } : folder))
+          .sort((a, b) => a.name.localeCompare(b.name))
+      );
+      setRooms((prev) =>
+        prev.map((room) =>
+          room.folder_id === updatedFolder.id ? { ...room, folder_name: updatedFolder.name } : room
+        )
+      );
+      setRenameFolder(null);
+      setRenameFolderValue("");
+      showToast("Folder renamed.");
+    } catch (err) {
+      console.error("[MyRooms] rename folder failed:", err);
+      setRenameFolderError("Could not rename this folder.");
+    } finally {
+      setIsRenamingFolder(false);
+      setMutatingFolderId(null);
+    }
+  };
+
+  const handleDeleteFolderConfirm = async () => {
+    if (!deleteFolder) return;
+    setIsDeletingFolder(true);
+    setMutatingFolderId(deleteFolder.id);
+    try {
+      const deletingFolderId = deleteFolder.id;
+      const { error } = await supabase.from("vibode_room_folders").delete().eq("id", deletingFolderId);
+      if (error) throw error;
+
+      setFolders((prev) => prev.filter((folder) => folder.id !== deletingFolderId));
+      setRooms((prev) =>
+        prev.map((room) =>
+          room.folder_id === deletingFolderId ? { ...room, folder_id: null, folder_name: null } : room
+        )
+      );
+      if (selectedFolderId === deletingFolderId) {
+        setSelectedScope("all");
+        setSelectedFolderId(null);
+      }
+      setDeleteFolder(null);
+      showToast("Folder deleted. Rooms moved to All Rooms.");
+    } catch (err) {
+      console.error("[MyRooms] delete folder failed:", err);
+      showToast("Could not delete this folder.", "error");
+    } finally {
+      setIsDeletingFolder(false);
+      setMutatingFolderId(null);
+    }
+  };
+
+  const mobileScopeValue =
+    selectedScope === "folder" && selectedFolderId ? `folder:${selectedFolderId}` : selectedScope;
+  const deleteFolderRoomCount = useMemo(() => {
+    if (!deleteFolder) return 0;
+    return rooms.filter((room) => room.folder_id === deleteFolder.id).length;
+  }, [deleteFolder, rooms]);
 
   if (authLoading) {
     return (
@@ -532,6 +660,8 @@ export function MyRoomsPage() {
             selectedFolderId={selectedFolderId}
             folders={foldersWithCounts}
             totalRoomsCount={rooms.length}
+            folderFeatureReady={folderFeatureReady}
+            mutatingFolderId={mutatingFolderId}
             onSelectAllRooms={selectAllRooms}
             onSelectRecents={selectRecents}
             onSelectFolder={selectFolder}
@@ -539,12 +669,15 @@ export function MyRoomsPage() {
               if (!folderFeatureReady) return;
               setCreateDialogOpen(true);
             }}
+            onRenameFolder={handleRenameFolderStart}
+            onDeleteFolder={(folder) => setDeleteFolder(folder)}
           />
         }
         header={
           <MyRoomsHeader
             searchQuery={searchQuery}
             sortMode={sortMode}
+            folderFeatureReady={folderFeatureReady}
             onSearchChange={setSearchQuery}
             onSortChange={setSortMode}
             onCreateFolder={() => {
@@ -562,29 +695,66 @@ export function MyRoomsPage() {
               </div>
             ) : null}
 
-            <div className="mt-3 flex gap-2 lg:hidden">
-              <button
-                type="button"
-                onClick={selectAllRooms}
-                className={
-                  "rounded-lg px-3 py-1.5 text-xs transition " +
-                  (selectedScope === "all" ? "bg-slate-800 text-slate-100" : "bg-slate-900 text-slate-400")
-                }
-              >
-                All Rooms
-              </button>
-              <button
-                type="button"
-                onClick={selectRecents}
-                className={
-                  "rounded-lg px-3 py-1.5 text-xs transition " +
-                  (selectedScope === "recents"
-                    ? "bg-slate-800 text-slate-100"
-                    : "bg-slate-900 text-slate-400")
-                }
-              >
-                Recents
-              </button>
+            <div className="mt-3 space-y-2 lg:hidden">
+              <div>
+                <label htmlFor="my-rooms-mobile-scope" className="sr-only">
+                  Browse scope
+                </label>
+                <select
+                  id="my-rooms-mobile-scope"
+                  value={mobileScopeValue}
+                  onChange={(event) => {
+                    const nextValue = event.target.value;
+                    if (nextValue === "all") {
+                      selectAllRooms();
+                      return;
+                    }
+                    if (nextValue === "recents") {
+                      selectRecents();
+                      return;
+                    }
+                    if (nextValue.startsWith("folder:")) {
+                      const folderId = nextValue.slice("folder:".length);
+                      if (folderId) {
+                        selectFolder(folderId);
+                      }
+                    }
+                  }}
+                  className="w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-xs text-slate-100 outline-none transition focus:border-slate-500"
+                >
+                  <option value="all">All Rooms</option>
+                  <option value="recents">Recents</option>
+                  {folderFeatureReady && foldersWithCounts.length > 0 ? (
+                    <optgroup label="Folders">
+                      {foldersWithCounts.map((folder) => (
+                        <option key={folder.id} value={`folder:${folder.id}`}>
+                          {folder.name} ({folder.room_count ?? 0})
+                        </option>
+                      ))}
+                    </optgroup>
+                  ) : null}
+                </select>
+              </div>
+              {selectedScope === "folder" && selectedFolder ? (
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => handleRenameFolderStart(selectedFolder)}
+                    disabled={isRenamingFolder || isDeletingFolder}
+                    className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-300 transition hover:border-slate-500 hover:text-slate-100 disabled:opacity-50"
+                  >
+                    Rename Folder
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setDeleteFolder(selectedFolder)}
+                    disabled={isRenamingFolder || isDeletingFolder}
+                    className="rounded-lg border border-rose-400/30 px-3 py-1.5 text-xs text-rose-200 transition hover:bg-rose-500/10 disabled:opacity-50"
+                  >
+                    Delete Folder
+                  </button>
+                </div>
+              ) : null}
             </div>
 
             <MyRoomsGrid
@@ -599,7 +769,7 @@ export function MyRoomsPage() {
               onRenameRoom={handleRenameStart}
               onMoveRoom={handleMoveRoom}
               onDeleteRoom={(room) => {
-                void handleDeleteRoom(room);
+                setDeleteRoom(room);
               }}
             />
           </>
@@ -645,6 +815,7 @@ export function MyRoomsPage() {
                 onClick={() => {
                   if (isRenamingRoom) return;
                   setRenameRoom(null);
+                  setRenameValue("");
                   setRenameError(null);
                 }}
                 className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-300 transition hover:border-slate-500 hover:text-slate-100 disabled:opacity-50"
@@ -667,6 +838,139 @@ export function MyRoomsPage() {
         </div>
       ) : null}
 
+      {renameFolder ? (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 p-4"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="rename-folder-title"
+        >
+          <div className="w-full max-w-md rounded-2xl border border-slate-800 bg-slate-900 p-5 shadow-2xl shadow-slate-950/80">
+            <h2 id="rename-folder-title" className="text-sm font-semibold text-slate-100">
+              Rename folder
+            </h2>
+            <label className="mt-3 block text-[11px] text-slate-400">Folder name</label>
+            <input
+              autoFocus
+              value={renameFolderValue}
+              onChange={(event) => setRenameFolderValue(event.target.value)}
+              maxLength={120}
+              className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 outline-none focus:border-slate-400"
+            />
+            {renameFolderError ? <div className="mt-2 text-xs text-rose-300">{renameFolderError}</div> : null}
+            <div className="mt-5 flex items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  if (isRenamingFolder) return;
+                  setRenameFolder(null);
+                  setRenameFolderValue("");
+                  setRenameFolderError(null);
+                }}
+                className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-300 transition hover:border-slate-500 hover:text-slate-100 disabled:opacity-50"
+                disabled={isRenamingFolder}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  void handleRenameFolderSave();
+                }}
+                className="rounded-lg bg-slate-100 px-3 py-1.5 text-xs font-medium text-slate-900 transition hover:bg-white disabled:opacity-50"
+                disabled={isRenamingFolder || renameFolderValue.trim().length === 0}
+              >
+                {isRenamingFolder ? "Saving..." : "Save"}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {deleteRoom ? (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 p-4"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="delete-room-title"
+        >
+          <div className="w-full max-w-md rounded-2xl border border-slate-800 bg-slate-900 p-5 shadow-2xl shadow-slate-950/80">
+            <h2 id="delete-room-title" className="text-sm font-semibold text-slate-100">
+              Delete room
+            </h2>
+            <p className="mt-2 text-xs text-slate-400">
+              Delete "{deleteRoom.title}"? This removes the room and its generated history.
+            </p>
+            <div className="mt-5 flex items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  if (isDeletingRoom) return;
+                  setDeleteRoom(null);
+                }}
+                className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-300 transition hover:border-slate-500 hover:text-slate-100 disabled:opacity-50"
+                disabled={isDeletingRoom}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  void handleDeleteRoomConfirm();
+                }}
+                className="rounded-lg bg-rose-500/90 px-3 py-1.5 text-xs font-medium text-white transition hover:bg-rose-500 disabled:opacity-50"
+                disabled={isDeletingRoom}
+              >
+                {isDeletingRoom ? "Deleting..." : "Delete room"}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {deleteFolder ? (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 p-4"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="delete-folder-title"
+        >
+          <div className="w-full max-w-md rounded-2xl border border-slate-800 bg-slate-900 p-5 shadow-2xl shadow-slate-950/80">
+            <h2 id="delete-folder-title" className="text-sm font-semibold text-slate-100">
+              Delete folder
+            </h2>
+            <p className="mt-2 text-xs text-slate-400">
+              Delete "{deleteFolder.name}"? {deleteFolderRoomCount}{" "}
+              {deleteFolderRoomCount === 1 ? "room will" : "rooms will"} stay in your library and be moved to
+              "No folder."
+            </p>
+            <div className="mt-5 flex items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  if (isDeletingFolder) return;
+                  setDeleteFolder(null);
+                }}
+                className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-300 transition hover:border-slate-500 hover:text-slate-100 disabled:opacity-50"
+                disabled={isDeletingFolder}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  void handleDeleteFolderConfirm();
+                }}
+                className="rounded-lg bg-rose-500/90 px-3 py-1.5 text-xs font-medium text-white transition hover:bg-rose-500 disabled:opacity-50"
+                disabled={isDeletingFolder}
+              >
+                {isDeletingFolder ? "Deleting..." : "Delete folder"}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
       {toast ? (
         <div className="fixed bottom-4 right-4 z-50">
           <div
@@ -681,7 +985,13 @@ export function MyRoomsPage() {
               <div className="flex-1 leading-relaxed">{toast.message}</div>
               <button
                 type="button"
-                onClick={() => setToast(null)}
+                onClick={() => {
+                  if (toastTimeoutRef.current !== null) {
+                    window.clearTimeout(toastTimeoutRef.current);
+                    toastTimeoutRef.current = null;
+                  }
+                  setToast(null);
+                }}
                 className="text-slate-300 hover:text-slate-50"
                 aria-label="Dismiss"
               >

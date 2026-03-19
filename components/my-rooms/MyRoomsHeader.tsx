@@ -5,6 +5,7 @@ import type { MyRoomsSortMode } from "@/components/my-rooms/types";
 type MyRoomsHeaderProps = {
   searchQuery: string;
   sortMode: MyRoomsSortMode;
+  folderFeatureReady: boolean;
   onSearchChange: (value: string) => void;
   onSortChange: (value: MyRoomsSortMode) => void;
   onCreateFolder: () => void;
@@ -13,6 +14,7 @@ type MyRoomsHeaderProps = {
 export function MyRoomsHeader({
   searchQuery,
   sortMode,
+  folderFeatureReady,
   onSearchChange,
   onSortChange,
   onCreateFolder,
@@ -31,7 +33,8 @@ export function MyRoomsHeader({
           <button
             type="button"
             onClick={onCreateFolder}
-            className="rounded-lg border border-slate-700 px-3 py-2 text-xs text-slate-200 transition hover:border-slate-500 hover:text-white"
+            disabled={!folderFeatureReady}
+            className="rounded-lg border border-slate-700 px-3 py-2 text-xs text-slate-200 transition hover:border-slate-500 hover:text-white disabled:opacity-50"
           >
             New Folder
           </button>
