@@ -16,6 +16,7 @@ import type {
   MyRoomsSortMode,
 } from "@/components/my-rooms/types";
 import { scopeLabel, sortRooms } from "@/components/my-rooms/utils";
+import { getSupabaseBrowserAccessToken } from "@/lib/supabaseBrowser";
 import { supabase } from "@/lib/supabaseClient";
 import { useSupabaseUser } from "@/lib/useSupabaseUser";
 
@@ -41,19 +42,47 @@ type RoomRow = {
   source_type: string | null;
 };
 
-type ActiveAssetRow = {
-  room_id: string;
-  image_url: string | null;
-  storage_bucket: string | null;
-  storage_path: string | null;
-  created_at: string | null;
-};
-
 const ROOM_SELECT =
   "id,title,folder_id,current_stage,selected_model,cover_image_url,created_at,updated_at,last_opened_at,sort_key,status,source_type";
 
 function normalizeText(value: string | null | undefined) {
   return typeof value === "string" ? value.trim() : "";
+}
+
+async function tryGetSupabaseAccessToken(): Promise<string | null> {
+  try {
+    return await getSupabaseBrowserAccessToken();
+  } catch (err) {
+    console.warn("[MyRooms] failed to get Supabase access token:", err);
+    return null;
+  }
+}
+
+async function fetchPreviewUrlForRoom(
+  roomId: string,
+  accessToken: string | null
+): Promise<string | null> {
+  if (!accessToken) return null;
+
+  try {
+    const res = await fetch("/api/vibode/room-preview-url", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${accessToken}`,
+      },
+      body: JSON.stringify({ roomId }),
+    });
+    if (!res.ok) return null;
+
+    const payload = (await res.json()) as { previewUrl?: unknown };
+    return typeof payload.previewUrl === "string" && payload.previewUrl.trim().length > 0
+      ? payload.previewUrl
+      : null;
+  } catch (err) {
+    console.warn("[MyRooms] failed to resolve preview URL:", err);
+    return null;
+  }
 }
 
 function folderQueryMissing(err: unknown): boolean {
@@ -146,61 +175,16 @@ export function MyRoomsPage() {
           folderRows = (foldersRes.data ?? []) as FolderRow[];
         }
 
-        const roomIds = roomRows.map((room) => room.id);
-        let activeAssets: ActiveAssetRow[] = [];
-        if (roomIds.length > 0) {
-          const assetsRes = await supabase
-            .from("vibode_room_assets")
-            .select("room_id,image_url,storage_bucket,storage_path,created_at")
-            .in("room_id", roomIds)
-            .eq("is_active", true);
-          if (!assetsRes.error) {
-            activeAssets = (assetsRes.data ?? []) as ActiveAssetRow[];
-          }
+        const previewByRoom = new Map<string, string | null>();
+        if (roomRows.length > 0) {
+          const accessToken = await tryGetSupabaseAccessToken();
+          await Promise.all(
+            roomRows.map(async (room) => {
+              const previewUrl = await fetchPreviewUrlForRoom(room.id, accessToken);
+              previewByRoom.set(room.id, previewUrl);
+            })
+          );
         }
-
-        const latestAssetByRoom = new Map<string, ActiveAssetRow>();
-        for (const asset of activeAssets) {
-          const existing = latestAssetByRoom.get(asset.room_id);
-          const existingStamp = existing?.created_at ? new Date(existing.created_at).getTime() : 0;
-          const candidateStamp = asset.created_at ? new Date(asset.created_at).getTime() : 0;
-          if (!existing || candidateStamp >= existingStamp) {
-            latestAssetByRoom.set(asset.room_id, asset);
-          }
-        }
-
-        const signedFallbacks = new Map<string, string | null>();
-        await Promise.all(
-          roomRows.map(async (room) => {
-            const directCover = normalizeText(room.cover_image_url);
-            if (directCover) {
-              signedFallbacks.set(room.id, directCover);
-              return;
-            }
-
-            const asset = latestAssetByRoom.get(room.id);
-            if (!asset) {
-              signedFallbacks.set(room.id, null);
-              return;
-            }
-
-            const directAssetUrl = normalizeText(asset.image_url);
-            if (directAssetUrl) {
-              signedFallbacks.set(room.id, directAssetUrl);
-              return;
-            }
-
-            const bucket = normalizeText(asset.storage_bucket);
-            const path = normalizeText(asset.storage_path);
-            if (!bucket || !path) {
-              signedFallbacks.set(room.id, null);
-              return;
-            }
-
-            const { data } = await supabase.storage.from(bucket).createSignedUrl(path, 60 * 60 * 8);
-            signedFallbacks.set(room.id, data?.signedUrl ?? null);
-          })
-        );
 
         const folderMap = new Map<string, FolderRow>();
         for (const folder of folderRows) {
@@ -215,7 +199,7 @@ export function MyRoomsPage() {
           current_stage: room.current_stage ?? 0,
           selected_model: room.selected_model,
           cover_image_url: room.cover_image_url,
-          display_image_url: signedFallbacks.get(room.id) ?? null,
+          display_image_url: previewByRoom.get(room.id) ?? null,
           created_at: room.created_at,
           updated_at: room.updated_at,
           last_opened_at: room.last_opened_at,
