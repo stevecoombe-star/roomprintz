@@ -2,6 +2,7 @@
 "use client";
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 
 import { EditorCanvas } from "@/components/editor/EditorCanvas";
@@ -2692,6 +2693,12 @@ export default function EditorPage() {
       {/* Top bar */}
       <header className="flex h-12 items-center justify-between border-b border-neutral-800 px-4">
         <div className="flex items-center gap-3">
+          <Link
+            href="/my-rooms"
+            className="rounded-md border border-transparent px-2 py-1 text-xs text-neutral-400 transition hover:border-neutral-800 hover:bg-neutral-900 hover:text-neutral-200"
+          >
+            ← My Rooms
+          </Link>
           <div className="h-6 w-6 rounded bg-neutral-700" />
           <div className="text-sm font-medium tracking-wide">Vibode Editor</div>
           <div className="ml-2 rounded border border-neutral-800 px-2 py-0.5 text-xs text-neutral-300">
