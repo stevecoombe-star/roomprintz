@@ -37,6 +37,24 @@ type VisualMode = "blueprint" | "thumbnails";
 type SilhouetteKind = "sofa" | "chair" | "table" | "lamp" | "bed" | "rug";
 type ActiveTool = ReturnType<typeof useEditorStore.getState>["ui"]["activeTool"];
 
+type VibodeDebugWindow = Window & {
+  __VIBODE_DEBUG_ROOM_OPEN__?: boolean;
+};
+
+function isRoomOpenDebugEnabled(): boolean {
+  if (typeof window === "undefined") return false;
+  return (window as VibodeDebugWindow).__VIBODE_DEBUG_ROOM_OPEN__ === true;
+}
+
+function logEditorCanvas(event: string, payload?: Record<string, unknown>) {
+  if (!isRoomOpenDebugEnabled()) return;
+  if (payload) {
+    console.log("[editor-canvas]", event, payload);
+    return;
+  }
+  console.log("[editor-canvas]", event);
+}
+
 const SILHOUETTE_FILL = "#f8fafc";
 const SILHOUETTES: Record<SilhouetteKind, string> = {
   sofa: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 60"><g fill="${SILHOUETTE_FILL}"><rect x="8" y="26" width="84" height="26" rx="8"/><rect x="4" y="18" width="20" height="30" rx="6"/><rect x="76" y="18" width="20" height="30" rx="6"/><rect x="24" y="8" width="52" height="20" rx="8"/></g></svg>`,
@@ -206,6 +224,7 @@ export function EditorCanvas({
   visualMode?: VisualMode;
   imageUrl?: string | null;
 }) {
+  const instanceIdRef = useRef(`canvas_${Math.random().toString(16).slice(2, 10)}`);
   const containerRef = useRef<HTMLDivElement | null>(null);
 
   const baseImageUrl = useEditorStore((s) => s.scene.baseImageUrl);
@@ -269,7 +288,34 @@ export function EditorCanvas({
     h: 600,
   });
 
-  const [img] = useImage(canvasImageUrl ?? "", "anonymous");
+  const [img, imageStatus] = useImage(canvasImageUrl ?? "", "anonymous");
+
+  useEffect(() => {
+    if (!canvasImageUrl) return;
+    logEditorCanvas("image-load-start", {
+      instanceId: instanceIdRef.current,
+      canvasImageUrl,
+    });
+  }, [canvasImageUrl]);
+
+  useEffect(() => {
+    if (!canvasImageUrl) return;
+    if (imageStatus === "loaded" && img) {
+      logEditorCanvas("image-load-success", {
+        instanceId: instanceIdRef.current,
+        canvasImageUrl,
+        naturalWidth: img.width,
+        naturalHeight: img.height,
+      });
+      return;
+    }
+    if (imageStatus === "failed") {
+      logEditorCanvas("image-load-failed", {
+        instanceId: instanceIdRef.current,
+        canvasImageUrl,
+      });
+    }
+  }, [canvasImageUrl, imageStatus, img]);
 
   const fit = useMemo(() => {
     if (!img) return { x: 0, y: 0, w: stageSize.w, h: stageSize.h, scale: 1 };

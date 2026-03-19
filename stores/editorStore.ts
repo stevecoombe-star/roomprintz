@@ -440,6 +440,7 @@ type EditorState = {
   duplicateNode: (id: string) => string | null;
 
   // scene setup
+  resetSessionForIncomingImage: () => void;
   setBaseImageUrl: (url?: string) => void;
   setBaseImageFromFile: (file: File) => void;
   setRoomDims: (dims?: RoomDims) => void;
@@ -807,14 +808,8 @@ function mapNodeToEditorNodeV2(node: FurnitureNode, viewport: ViewportMapping): 
   };
 }
 
-/* =========================
-   Store
-========================= */
-
-export const useEditorStore = create<EditorState>((set, get) => ({
-  /* ---------- initial state ---------- */
-
-  scene: {
+function createInitialScene(): SceneGraph {
+  return {
     sceneId: safeUUID(),
     baseImageUrl: undefined,
     baseImageWidthPx: undefined,
@@ -832,11 +827,11 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     swapMarks: [],
     rotateMarks: [],
     moveMarks: [],
-  },
+  };
+}
 
-  workingSet: {},
-
-  ui: {
+function createInitialUi(previous?: UIState): UIState {
+  return {
     activeTool: "select",
     selectedNodeId: null,
     selectedRemoveMarkId: null,
@@ -844,8 +839,40 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     selectedRotateMarkId: null,
     selectedMoveMarkId: null,
     rescalePrompt: undefined,
-    suppressRescalePrompt: false,
-  },
+    suppressRescalePrompt: previous?.suppressRescalePrompt ?? false,
+  };
+}
+
+type VibodeDebugWindow = Window & {
+  __VIBODE_DEBUG_ROOM_OPEN__?: boolean;
+};
+
+function isRoomOpenDebugEnabled(): boolean {
+  if (typeof window === "undefined") return false;
+  return (window as VibodeDebugWindow).__VIBODE_DEBUG_ROOM_OPEN__ === true;
+}
+
+function logEditorStore(event: string, payload?: Record<string, unknown>) {
+  if (!isRoomOpenDebugEnabled()) return;
+  if (payload) {
+    console.log("[editor-store]", event, payload);
+    return;
+  }
+  console.log("[editor-store]", event);
+}
+
+/* =========================
+   Store
+========================= */
+
+export const useEditorStore = create<EditorState>((set, get) => ({
+  /* ---------- initial state ---------- */
+
+  scene: createInitialScene(),
+
+  workingSet: {},
+
+  ui: createInitialUi(),
 
   viewport: undefined,
 
@@ -1089,7 +1116,9 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   attachOutputToLatestFreeze: (output) =>
     set((s) => {
       const idx = s.history.findIndex((r) => r.generationId === output.generationId);
-      if (idx === -1) return s;
+      if (idx === -1) {
+        return s;
+      }
 
       const nextHistory = [...s.history];
       const rec = nextHistory[idx];
@@ -1164,10 +1193,14 @@ export const useEditorStore = create<EditorState>((set, get) => ({
 
   setBaseImageFromHistory: (generationId) => {
     const rec = get().history.find((r) => r.generationId === generationId);
-    if (!rec) return false;
+    if (!rec) {
+      return false;
+    }
 
     const url = rec.outputImageUrl || rec.compositeImageUrl;
-    if (!url) return false;
+    if (!url) {
+      return false;
+    }
 
     // ✅ Clear stored base dims; they’ll be re-derived by viewport when image loads
     set((s) => ({
@@ -1775,15 +1808,41 @@ export const useEditorStore = create<EditorState>((set, get) => ({
 
   /* ---------- scene setup ---------- */
 
-  setBaseImageUrl: (url) =>
+  resetSessionForIncomingImage: () => {
+    const prevScene = get().scene;
+    const nextScene = createInitialScene();
+    logEditorStore("resetSessionForIncomingImage", {
+      previousSceneId: prevScene.sceneId,
+      previousBaseImageUrl: prevScene.baseImageUrl ?? null,
+      nextSceneId: nextScene.sceneId,
+      nextBaseImageUrl: nextScene.baseImageUrl ?? null,
+    });
     set((s) => ({
-      scene: {
-        ...s.scene,
-        baseImageUrl: url,
-        baseImageWidthPx: undefined,
-        baseImageHeightPx: undefined,
-      },
-    })),
+      scene: nextScene,
+      workingSet: {},
+      ui: createInitialUi(s.ui),
+      viewport: undefined,
+      history: [],
+      lastAction: null,
+    }));
+  },
+
+  setBaseImageUrl: (url) =>
+    set((s) => {
+      logEditorStore("setBaseImageUrl", {
+        sceneId: s.scene.sceneId,
+        previousBaseImageUrl: s.scene.baseImageUrl ?? null,
+        nextBaseImageUrl: url ?? null,
+      });
+      return {
+        scene: {
+          ...s.scene,
+          baseImageUrl: url,
+          baseImageWidthPx: undefined,
+          baseImageHeightPx: undefined,
+        },
+      };
+    }),
 
   setBaseImageFromFile: (file) => {
     const prev = get().scene.baseImageUrl;

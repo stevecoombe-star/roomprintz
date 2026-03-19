@@ -461,15 +461,12 @@ async function tryGetSupabaseAccessToken(): Promise<string | null> {
 
 type VibodeRoomHydrationRow = {
   id: string;
-  cover_image_url: string | null;
   selected_model: string | null;
   current_stage: number | null;
 };
 
-type VibodeRoomActiveAssetRow = {
-  image_url: string | null;
-  storage_bucket: string | null;
-  storage_path: string | null;
+type VibodeDebugWindow = Window & {
+  __VIBODE_DEBUG_ROOM_OPEN__?: boolean;
 };
 
 function parseRoomIdFromSearch(value: string | null): string | null {
@@ -478,14 +475,61 @@ function parseRoomIdFromSearch(value: string | null): string | null {
   return trimmed.length > 0 ? trimmed : null;
 }
 
+function isRoomOpenDebugEnabled(): boolean {
+  if (typeof window === "undefined") return false;
+  return (window as VibodeDebugWindow).__VIBODE_DEBUG_ROOM_OPEN__ === true;
+}
+
+function logEditorRoomOpen(event: string, payload?: Record<string, unknown>) {
+  if (!isRoomOpenDebugEnabled()) return;
+  if (payload) {
+    console.log("[editor-room-open]", event, payload);
+    return;
+  }
+  console.log("[editor-room-open]", event);
+}
+
+function hasRoomIdInCurrentLocation(): boolean {
+  if (typeof window === "undefined") return false;
+  const params = new URLSearchParams(window.location.search);
+  return Boolean(parseRoomIdFromSearch(params.get("roomId") ?? params.get("vibodeRoomId")));
+}
+
+async function fetchPreviewUrlForRoom(roomId: string, accessToken: string): Promise<string | null> {
+  try {
+    const res = await fetch("/api/vibode/room-preview-url", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${accessToken}`,
+      },
+      body: JSON.stringify({ roomId }),
+    });
+    if (!res.ok) {
+      return null;
+    }
+
+    const payload = (await res.json()) as { previewUrl?: unknown };
+    const previewUrl =
+      typeof payload.previewUrl === "string" && payload.previewUrl.trim().length > 0
+      ? payload.previewUrl
+      : null;
+    return previewUrl;
+  } catch (err) {
+    console.warn("[editor] failed to resolve room preview URL:", err);
+    return null;
+  }
+}
+
 async function loadRoomHydrationData(
-  roomId: string
+  roomId: string,
+  accessToken: string
 ): Promise<{ room: VibodeRoomHydrationRow; imageUrl: string | null }> {
   const client = supabaseBrowser();
 
   const { data: roomData, error: roomErr } = await client
     .from("vibode_rooms")
-    .select("id,cover_image_url,selected_model,current_stage")
+    .select("id,selected_model,current_stage")
     .eq("id", roomId)
     .maybeSingle();
   if (roomErr || !roomData) {
@@ -493,38 +537,8 @@ async function loadRoomHydrationData(
   }
 
   const room = roomData as VibodeRoomHydrationRow;
-  const cover = typeof room.cover_image_url === "string" ? room.cover_image_url.trim() : "";
-  if (cover.length > 0) {
-    return { room, imageUrl: cover };
-  }
-
-  const { data: assetData } = await client
-    .from("vibode_room_assets")
-    .select("image_url,storage_bucket,storage_path")
-    .eq("room_id", roomId)
-    .eq("is_active", true)
-    .order("created_at", { ascending: false })
-    .limit(1)
-    .maybeSingle();
-
-  const asset = (assetData ?? null) as VibodeRoomActiveAssetRow | null;
-  if (!asset) {
-    return { room, imageUrl: null };
-  }
-
-  const directAssetUrl = typeof asset.image_url === "string" ? asset.image_url.trim() : "";
-  if (directAssetUrl.length > 0) {
-    return { room, imageUrl: directAssetUrl };
-  }
-
-  const bucket = typeof asset.storage_bucket === "string" ? asset.storage_bucket.trim() : "";
-  const path = typeof asset.storage_path === "string" ? asset.storage_path.trim() : "";
-  if (!bucket || !path) {
-    return { room, imageUrl: null };
-  }
-
-  const { data: signed } = await client.storage.from(bucket).createSignedUrl(path, 60 * 60 * 8);
-  return { room, imageUrl: signed?.signedUrl ?? null };
+  const imageUrl = await fetchPreviewUrlForRoom(room.id, accessToken);
+  return { room, imageUrl };
 }
 
 // upload helper (blob preview -> storage signed URL)
@@ -633,7 +647,6 @@ export default function EditorPage() {
   const setRoomDims = useEditorStore((s) => s.setRoomDims);
   const setCollection = useEditorStore((s) => s.setCollection);
   const setWorkingSet = useEditorStore((s) => s.setWorkingSet);
-
   // legacy mock boundary (keeps UI behavior today)
   const commitGenerateMock = useEditorStore((s) => s.commitGenerateMock);
 
@@ -711,6 +724,7 @@ export default function EditorPage() {
   const roomPhotoCanvasDragDepthRef = useRef(0);
 
   const [isUploading, setIsUploading] = useState(false);
+  const [isRoomHydrating, setIsRoomHydrating] = useState(false);
   const [isDownloading, setIsDownloading] = useState(false);
   const [isCanvasDragOver, setIsCanvasDragOver] = useState(false);
   const useFreezeV2 = process.env.NEXT_PUBLIC_VIBODE_FREEZE_V2 === "1";
@@ -750,6 +764,7 @@ export default function EditorPage() {
   const [vibodeRoomId, setVibodeRoomId] = useState<string | null>(null);
   const [stage3SkuItems, setStage3SkuItems] = useState<Stage3SkuItem[]>([]);
   const [stage3ShowCatalog, setStage3ShowCatalog] = useState(false);
+  const shouldSkipPendingRestoreRef = useRef<boolean>(hasRoomIdInCurrentLocation());
   const didRestorePendingRef = useRef(false);
 
   const currentAspectRatioForUpload: VibodeAspectRatio = useMemo(() => {
@@ -776,11 +791,13 @@ export default function EditorPage() {
   }, [scene.baseImageHeightPx, scene.baseImageWidthPx]);
 
   const resetWorkflowForIncomingImage = useCallback(() => {
+    const store = useEditorStore.getState();
     setHasFurniturePass(false);
     setStageStatus(INITIAL_STAGE_STATUS);
     setLastStageOutputs({});
     setWorkingImageUrl(null);
     setIsWorkingImageGenerated(false);
+    store.resetSessionForIncomingImage();
     setScenePlacements([]);
     setSelectedPlacementId(null);
     setActiveStage(1);
@@ -800,6 +817,15 @@ export default function EditorPage() {
   }, [selectedModel]);
 
   useEffect(() => {
+    if (didRestorePendingRef.current) return;
+    if (requestedRoomId) {
+      shouldSkipPendingRestoreRef.current = true;
+    }
+    if (shouldSkipPendingRestoreRef.current) {
+      didRestorePendingRef.current = true;
+      return;
+    }
+
     useEditorStore.getState().tryRestorePendingFromLocalStorage();
     const pending = loadPendingLocal() as PendingLocalPayload | null;
     const restoredSkuItems = serializeStage3SkuItems(pending?.stage3?.skuItems);
@@ -821,17 +847,28 @@ export default function EditorPage() {
     });
 
     didRestorePendingRef.current = true;
-  }, []);
+  }, [requestedRoomId]);
 
   useEffect(() => {
-    if (!requestedRoomId) return;
-    if (hydratedRoomIdRef.current === requestedRoomId) return;
-    hydratedRoomIdRef.current = requestedRoomId;
-
+    if (requestedRoomId) {
+      shouldSkipPendingRestoreRef.current = true;
+    }
+    if (!requestedRoomId) {
+      hydratedRoomIdRef.current = null;
+      setIsRoomHydrating(false);
+      return;
+    }
+    if (hydratedRoomIdRef.current === requestedRoomId) {
+      setIsRoomHydrating(false);
+      return;
+    }
     let cancelled = false;
 
     const hydrateFromRoom = async () => {
-      setIsUploading(true);
+      let didApplyHydratedRoom = false;
+      logEditorRoomOpen("roomHydration:start", { requestedRoomId });
+      setIsRoomHydrating(true);
+      resetWorkflowForIncomingImage();
       try {
         let accessToken = await tryGetSupabaseAccessToken();
         if (!accessToken) {
@@ -839,17 +876,27 @@ export default function EditorPage() {
           accessToken = await tryGetSupabaseAccessToken();
         }
         if (!accessToken) {
+          logEditorRoomOpen("roomHydration:failed", {
+            requestedRoomId,
+            error: "no-access-token",
+          });
+          hydratedRoomIdRef.current = null;
           pushSnack("No Supabase session — redirecting to login…");
           router.push(`/login?next=${encodeURIComponent(`/editor?roomId=${requestedRoomId}`)}`);
           return;
         }
 
-        resetWorkflowForIncomingImage();
-        const hydrated = await loadRoomHydrationData(requestedRoomId);
+        const hydrated = await loadRoomHydrationData(requestedRoomId, accessToken);
         if (cancelled) return;
 
         if (!hydrated.imageUrl) {
-          pushSnack("This room has no active image yet. Upload a room photo to continue.");
+          logEditorRoomOpen("roomHydration:failed", {
+            requestedRoomId,
+            error: "missing-preview-url",
+            roomId: hydrated.room.id,
+          });
+          hydratedRoomIdRef.current = null;
+          pushSnack("Unable to load this room image right now. Please try again.");
           return;
         }
 
@@ -870,6 +917,15 @@ export default function EditorPage() {
           setActiveStage(maybeStage as WorkflowStage);
         }
 
+        hydratedRoomIdRef.current = requestedRoomId;
+        didApplyHydratedRoom = true;
+        setIsRoomHydrating(false);
+        logEditorRoomOpen("roomHydration:finish", {
+          requestedRoomId,
+          hydratedRoomId: hydrated.room.id,
+          hasImageUrl: Boolean(hydrated.imageUrl),
+        });
+
         const nowIso = new Date().toISOString();
         const client = supabaseBrowser();
         await client
@@ -879,12 +935,18 @@ export default function EditorPage() {
 
         pushSnack("Room loaded.");
       } catch (err: any) {
+        logEditorRoomOpen("roomHydration:failed", {
+          requestedRoomId,
+          error: err?.message ?? "error",
+        });
         console.error("[editor] room hydration failed:", err);
         hydratedRoomIdRef.current = null;
         pushSnack(`Failed to open room. (${err?.message ?? "error"})`);
       } finally {
         if (!cancelled) {
-          setIsUploading(false);
+          if (!didApplyHydratedRoom) {
+            setIsRoomHydrating(false);
+          }
         }
       }
     };
@@ -897,6 +959,7 @@ export default function EditorPage() {
   }, [pushSnack, requestedRoomId, resetWorkflowForIncomingImage, router, setBaseImageUrl]);
 
   useEffect(() => {
+    if (shouldSkipPendingRestoreRef.current) return;
     if (!didRestorePendingRef.current) return;
     const currentPending = loadPendingLocal() as PendingLocalPayload | null;
     if (!currentPending) return;
@@ -954,8 +1017,10 @@ export default function EditorPage() {
   );
   const currentImageUrl =
     workingImageUrl ?? activeStageOutputImageUrl ?? scene.baseImageUrl ?? null;
-  const previewImageUrl = currentImageUrl;
-  const isCanvasEmpty = !previewImageUrl && !scene.baseImageUrl;
+  const hasCanvasImage = Boolean(currentImageUrl);
+  const previewImageUrl = isRoomHydrating ? "" : currentImageUrl;
+  const isCanvasEmpty = !hasCanvasImage;
+  const shouldShowUploadOverlay = isCanvasEmpty && !isRoomHydrating;
 
   const isImageFile = (file: File | null | undefined) =>
     !!file && typeof file.type === "string" && file.type.startsWith("image/");
@@ -2858,6 +2923,7 @@ export default function EditorPage() {
               )}
 
               <EditorCanvas
+                key={scene.sceneId}
                 className="absolute inset-0 [&>.pointer-events-none.absolute.left-3.top-3]:hidden"
                 imageUrl={previewImageUrl}
                 markupVisible={scene.markupVisible}
@@ -2873,7 +2939,7 @@ export default function EditorPage() {
                 }}
               />
 
-              {isCanvasEmpty && (
+              {shouldShowUploadOverlay && (
                 <div
                   className={`absolute inset-0 z-10 flex items-center justify-center transition ${
                     isCanvasDragOver ? "bg-blue-950/20" : "bg-neutral-950/20"
