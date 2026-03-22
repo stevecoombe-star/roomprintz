@@ -289,6 +289,21 @@ export function EditorCanvas({
   });
 
   const [img, imageStatus] = useImage(canvasImageUrl ?? "", "anonymous");
+  const [displayImage, setDisplayImage] = useState<HTMLImageElement | null>(null);
+  const [displayImageUrl, setDisplayImageUrl] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (canvasImageUrl) return;
+    setDisplayImage(null);
+    setDisplayImageUrl(null);
+  }, [canvasImageUrl]);
+
+  useEffect(() => {
+    if (!canvasImageUrl) return;
+    if (imageStatus !== "loaded" || !img) return;
+    setDisplayImage(img);
+    setDisplayImageUrl(canvasImageUrl);
+  }, [canvasImageUrl, imageStatus, img]);
 
   useEffect(() => {
     if (!canvasImageUrl) return;
@@ -318,10 +333,10 @@ export function EditorCanvas({
   }, [canvasImageUrl, imageStatus, img]);
 
   const fit = useMemo(() => {
-    if (!img) return { x: 0, y: 0, w: stageSize.w, h: stageSize.h, scale: 1 };
+    if (!displayImage) return { x: 0, y: 0, w: stageSize.w, h: stageSize.h, scale: 1 };
 
-    const iw = img.width;
-    const ih = img.height;
+    const iw = displayImage.width;
+    const ih = displayImage.height;
 
     const s = Math.min(stageSize.w / iw, stageSize.h / ih);
     const w = iw * s;
@@ -330,11 +345,11 @@ export function EditorCanvas({
     const y = (stageSize.h - h) / 2;
 
     return { x, y, w, h, scale: s };
-  }, [img, stageSize.w, stageSize.h]);
+  }, [displayImage, stageSize.w, stageSize.h]);
 
   // Publish viewport mapping so Freeze can convert Stage coords -> Image pixel coords
   useEffect(() => {
-    if (!img) {
+    if (!displayImage) {
       setViewport(undefined);
       return;
     }
@@ -345,10 +360,10 @@ export function EditorCanvas({
       imageStageW: fit.w,
       imageStageH: fit.h,
       scale: fit.scale, // stage_px per image_px
-      imageNaturalW: img.width,
-      imageNaturalH: img.height,
+      imageNaturalW: displayImage.width,
+      imageNaturalH: displayImage.height,
     });
-  }, [img, fit.x, fit.y, fit.w, fit.h, fit.scale, setViewport]);
+  }, [displayImage, fit.x, fit.y, fit.w, fit.h, fit.scale, setViewport]);
 
   const selectedNode = useMemo(
     () => nodes.find((n) => n.id === selectedNodeId) ?? null,
@@ -889,13 +904,14 @@ export function EditorCanvas({
           />
 
           {/* Base image (scaled to fit) */}
-          {img ? (
+          {displayImage ? (
             <KonvaImage
-              image={img}
+              image={displayImage}
               x={fit.x}
               y={fit.y}
               width={fit.w}
               height={fit.h}
+              opacity={canvasImageUrl && displayImageUrl !== canvasImageUrl ? 0.96 : 1}
               listening={false}
             />
           ) : (
@@ -1678,7 +1694,7 @@ export function EditorCanvas({
           ? `Selected: ${selectedNode.label}${
               selectedNode.variant?.label ? ` — ${selectedNode.variant.label}` : ""
             } (${selectedNode.skuId}) — Drag/Transform — Del deletes (temp)`
-          : img
+          : displayImage
           ? "Drag furniture in — click to select — Esc to deselect"
           : "Upload a room photo → then drag furniture in"}
       </div>

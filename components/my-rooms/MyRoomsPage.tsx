@@ -419,6 +419,12 @@ export function MyRoomsPage() {
 
   const handleOpenRoom = async (room: MyRoomsRoom) => {
     const nowIso = new Date().toISOString();
+    const immediatePreviewUrl =
+      typeof room.display_image_url === "string" && room.display_image_url.trim().length > 0
+        ? room.display_image_url.trim()
+        : typeof room.cover_image_url === "string" && room.cover_image_url.trim().length > 0
+          ? room.cover_image_url.trim()
+          : null;
     setMutatingRoomId(room.id);
     setRooms((prev) =>
       prev.map((candidate) =>
@@ -437,7 +443,13 @@ export function MyRoomsPage() {
       console.error("[MyRooms] open recency update failed:", err);
     } finally {
       setMutatingRoomId(null);
-      router.push(`/editor?roomId=${encodeURIComponent(room.id)}`);
+      const params = new URLSearchParams({
+        roomId: room.id,
+      });
+      if (immediatePreviewUrl) {
+        params.set("roomPreview", immediatePreviewUrl);
+      }
+      router.push(`/editor?${params.toString()}`);
     }
   };
 

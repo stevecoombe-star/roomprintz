@@ -505,6 +505,36 @@ function parseRoomIdFromSearch(value: string | null): string | null {
   return trimmed.length > 0 ? trimmed : null;
 }
 
+function parseRoomPreviewUrlFromSearch(value: string | null): string | null {
+  if (!value) return null;
+  const trimmed = value.trim();
+  if (trimmed.length === 0 || trimmed.length > 8192) return null;
+  if (/^(https?:\/\/|blob:|data:image\/|\/)/i.test(trimmed)) {
+    return trimmed;
+  }
+  return null;
+}
+
+function canonicalizeImageUrlForVisualCompare(url: string): string {
+  try {
+    const baseOrigin =
+      typeof window !== "undefined" && window.location?.origin ? window.location.origin : "http://localhost";
+    const parsed = new URL(url, baseOrigin);
+    if (parsed.protocol === "http:" || parsed.protocol === "https:") {
+      return `${parsed.origin}${parsed.pathname}`;
+    }
+    return parsed.toString();
+  } catch {
+    return url;
+  }
+}
+
+function areLikelySameVisualImage(a: string | null, b: string | null): boolean {
+  if (!a || !b) return false;
+  if (a === b) return true;
+  return canonicalizeImageUrlForVisualCompare(a) === canonicalizeImageUrlForVisualCompare(b);
+}
+
 function isRoomOpenDebugEnabled(): boolean {
   if (typeof window === "undefined") return false;
   return (window as VibodeDebugWindow).__VIBODE_DEBUG_ROOM_OPEN__ === true;
@@ -767,6 +797,9 @@ export default function EditorPage() {
   const searchParams = useSearchParams();
   const requestedRoomId = parseRoomIdFromSearch(
     searchParams.get("roomId") ?? searchParams.get("vibodeRoomId")
+  );
+  const requestedRoomPreviewUrl = parseRoomPreviewUrlFromSearch(
+    searchParams.get("roomPreview") ?? searchParams.get("previewUrl")
   );
 
   const scene = useEditorStore((s) => s.scene);
@@ -1036,9 +1069,19 @@ export default function EditorPage() {
 
     const hydrateFromRoom = async () => {
       let didApplyHydratedRoom = false;
+      const roomOpenPreviewUrl = requestedRoomPreviewUrl;
       logEditorRoomOpen("roomHydration:start", { requestedRoomId });
       setIsRoomHydrating(true);
       resetWorkflowForIncomingImage();
+      if (roomOpenPreviewUrl) {
+        setBaseImageUrl(roomOpenPreviewUrl);
+        setWorkingImageUrl(roomOpenPreviewUrl);
+        setIsWorkingImageGenerated(false);
+        logEditorRoomOpen("roomHydration:previewBridgeApplied", {
+          requestedRoomId,
+          hasPreviewUrl: true,
+        });
+      }
       try {
         let accessToken = await tryGetSupabaseAccessToken();
         if (!accessToken) {
@@ -1077,11 +1120,18 @@ export default function EditorPage() {
           return;
         }
 
-        await preloadImage(hydratedImageUrl);
-        if (cancelled) return;
-
-        setBaseImageUrl(hydratedImageUrl);
-        setWorkingImageUrl(hydratedImageUrl);
+        const shouldSwapHydratedImage = !areLikelySameVisualImage(roomOpenPreviewUrl, hydratedImageUrl);
+        if (shouldSwapHydratedImage) {
+          await preloadImage(hydratedImageUrl);
+          if (cancelled) return;
+          setBaseImageUrl(hydratedImageUrl);
+          setWorkingImageUrl(hydratedImageUrl);
+        } else {
+          logEditorRoomOpen("roomHydration:previewBridgeKept", {
+            requestedRoomId,
+            hydratedRoomId: hydrated.room.id,
+          });
+        }
         setVibodeRoomId(hydrated.room.id);
         setVersions(hydrated.versions);
         setActiveAssetId(hydrated.room.active_asset_id ?? null);
@@ -1139,6 +1189,7 @@ export default function EditorPage() {
   }, [
     pushSnack,
     requestedRoomId,
+    requestedRoomPreviewUrl,
     resetWorkflowForIncomingImage,
     router,
     setActiveAssetId,
@@ -1203,12 +1254,17 @@ export default function EditorPage() {
     () => getImageUrlFromUnknown(lastStageOutputs[activeStage]),
     [activeStage, lastStageOutputs]
   );
+  const roomOpenBridgeImageUrl = requestedRoomId ? requestedRoomPreviewUrl : null;
+  const shouldPreferRoomOpenBridge =
+    !!roomOpenBridgeImageUrl && hydratedRoomIdRef.current !== requestedRoomId;
   const currentImageUrl =
     workingImageUrl ?? activeStageOutputImageUrl ?? scene.baseImageUrl ?? null;
-  const hasCanvasImage = Boolean(currentImageUrl);
-  const previewImageUrl = isRoomHydrating ? "" : currentImageUrl;
+  const previewImageUrl = shouldPreferRoomOpenBridge
+    ? roomOpenBridgeImageUrl
+    : currentImageUrl ?? roomOpenBridgeImageUrl;
+  const hasCanvasImage = Boolean(previewImageUrl);
   const isCanvasEmpty = !hasCanvasImage;
-  const shouldShowUploadOverlay = isCanvasEmpty && !isRoomHydrating;
+  const shouldShowUploadOverlay = isCanvasEmpty;
   const selectedVersionId =
     activeAssetId ?? versions.find((asset) => asset.is_active)?.id ?? null;
   const originalVersion = useMemo(() => {
@@ -3260,7 +3316,9 @@ export default function EditorPage() {
 
               <EditorCanvas
                 key={scene.sceneId}
-                className="absolute inset-0 [&>.pointer-events-none.absolute.left-3.top-3]:hidden"
+                className={`absolute inset-0 transition-opacity duration-200 ease-out ${
+                  isRoomHydrating ? "opacity-95" : "opacity-100"
+                } [&>.pointer-events-none.absolute.left-3.top-3]:hidden`}
                 imageUrl={previewImageUrl}
                 markupVisible={scene.markupVisible}
                 visualMode="blueprint"
