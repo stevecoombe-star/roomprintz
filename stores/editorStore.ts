@@ -277,6 +277,23 @@ export type FreezeRecord = {
   pendingStatus?: "pending" | "success" | "error";
 };
 
+export type VibodeRoomAsset = {
+  id: string;
+  room_id: string;
+  user_id: string;
+  asset_type: string;
+  stage_number: number | null;
+  storage_bucket: string | null;
+  storage_path: string | null;
+  image_url: string;
+  width: number | null;
+  height: number | null;
+  model_version: string | null;
+  is_active: boolean;
+  metadata: Record<string, unknown>;
+  created_at: string;
+};
+
 /* ===== Rescale prompt (when calibration changes) ===== */
 
 export type RescalePrompt = {
@@ -325,10 +342,14 @@ type EditorState = {
   scene: SceneGraph;
   workingSet: WorkingSet;
   ui: UIState;
+  versions: VibodeRoomAsset[];
+  activeAssetId: string | null;
 
   // viewport mapping for stage<->image coordinate conversion
   viewport?: ViewportMapping;
   setViewport: (vp?: ViewportMapping) => void;
+  setVersions: (versions: VibodeRoomAsset[]) => void;
+  setActiveAssetId: (assetId: string | null) => void;
 
   // generation lineage (local mock)
   history: FreezeRecord[];
@@ -875,6 +896,8 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   ui: createInitialUi(),
 
   viewport: undefined,
+  versions: [],
+  activeAssetId: null,
 
   history: [],
 
@@ -883,6 +906,8 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   /* ---------- viewport ---------- */
 
   setViewport: (vp) => set(() => ({ viewport: vp })),
+  setVersions: (versions) => set(() => ({ versions })),
+  setActiveAssetId: (assetId) => set(() => ({ activeAssetId: assetId })),
 
   /* ---------- canonical freeze (v1) ---------- */
 
@@ -1822,6 +1847,8 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       workingSet: {},
       ui: createInitialUi(s.ui),
       viewport: undefined,
+      versions: [],
+      activeAssetId: null,
       history: [],
       lastAction: null,
     }));

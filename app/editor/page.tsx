@@ -7,7 +7,12 @@ import { useRouter, useSearchParams } from "next/navigation";
 
 import { EditorCanvas } from "@/components/editor/EditorCanvas";
 import { SnackbarHost, type Snackbar } from "@/components/ui/SnackbarHost";
-import { toImageSpaceTransform, useEditorStore, type FurnitureNode } from "@/stores/editorStore";
+import {
+  toImageSpaceTransform,
+  useEditorStore,
+  type FurnitureNode,
+  type VibodeRoomAsset,
+} from "@/stores/editorStore";
 import { MOCK_COLLECTIONS, type RoomSizeBundleId } from "@/data/mockCollections";
 import { IKEA_CA_SKUS, type IkeaCaSku } from "@/data/mockIkeaCaSkus";
 import { clearPendingLocal, loadPendingLocal, savePendingLocal } from "@/lib/pendingGeneration";
@@ -20,6 +25,12 @@ const USER_SKU_MAX_INPUT_BYTES = 12 * 1024 * 1024;
 const VIBODE_MODEL_STORAGE_KEY = "vibode:modelVersion";
 const VIBODE_MODEL_NBP = "NBP";
 const VIBODE_MODEL_NB2 = "NB2";
+const VERSION_TIMESTAMP_FORMATTER = new Intl.DateTimeFormat(undefined, {
+  month: "short",
+  day: "numeric",
+  hour: "numeric",
+  minute: "2-digit",
+});
 
 function safeId(prefix = "sn") {
   if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
@@ -463,6 +474,25 @@ type VibodeRoomHydrationRow = {
   id: string;
   selected_model: string | null;
   current_stage: number | null;
+  active_asset_id: string | null;
+  base_asset_id: string | null;
+};
+
+type VibodeRoomAssetHydrationRow = {
+  id: string;
+  room_id: string;
+  user_id: string;
+  asset_type: string;
+  stage_number: number | null;
+  storage_bucket: string | null;
+  storage_path: string | null;
+  image_url: string | null;
+  width: number | null;
+  height: number | null;
+  model_version: string | null;
+  is_active: boolean;
+  metadata: Record<string, unknown> | null;
+  created_at: string;
 };
 
 type VibodeDebugWindow = Window & {
@@ -521,15 +551,121 @@ async function fetchPreviewUrlForRoom(roomId: string, accessToken: string): Prom
   }
 }
 
+async function setActiveVersionForRoom(args: {
+  roomId: string;
+  assetId: string;
+  accessToken: string;
+}): Promise<void> {
+  const res = await fetch("/api/vibode/set-active-version", {
+    method: "PATCH",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${args.accessToken}`,
+    },
+    body: JSON.stringify({
+      roomId: args.roomId,
+      assetId: args.assetId,
+    }),
+  });
+
+  if (!res.ok) {
+    const payload = (await res.json().catch(() => ({}))) as { error?: unknown };
+    const message =
+      typeof payload.error === "string" && payload.error.trim().length > 0
+        ? payload.error
+        : `Failed to set active version (HTTP ${res.status})`;
+    throw new Error(message);
+  }
+}
+
+function normalizeRoomAssetForStore(row: VibodeRoomAssetHydrationRow): VibodeRoomAsset | null {
+  if (typeof row.image_url !== "string" || row.image_url.trim().length === 0) return null;
+  return {
+    id: row.id,
+    room_id: row.room_id,
+    user_id: row.user_id,
+    asset_type: row.asset_type,
+    stage_number: row.stage_number,
+    storage_bucket: row.storage_bucket,
+    storage_path: row.storage_path,
+    image_url: row.image_url,
+    width: row.width,
+    height: row.height,
+    model_version: row.model_version,
+    is_active: row.is_active === true,
+    metadata: row.metadata ?? {},
+    created_at: row.created_at,
+  };
+}
+
+async function loadRoomVersions(roomId: string, accessToken: string): Promise<VibodeRoomAsset[]> {
+  const res = await fetch("/api/vibode/room-versions", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${accessToken}`,
+    },
+    body: JSON.stringify({ roomId }),
+  });
+
+  const payload = (await res.json().catch(() => ({}))) as {
+    versions?: VibodeRoomAssetHydrationRow[];
+    error?: unknown;
+  };
+  if (!res.ok) {
+    const message =
+      typeof payload.error === "string" && payload.error.trim().length > 0
+        ? payload.error
+        : `Failed to load room versions (HTTP ${res.status})`;
+    throw new Error(message);
+  }
+
+  const hydratedRows = (Array.isArray(payload.versions) ? payload.versions : []).map((row) =>
+    normalizeRoomAssetForStore(row)
+  );
+  return hydratedRows.filter((row): row is VibodeRoomAsset => Boolean(row));
+}
+
+function formatVersionTimestamp(value: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "Unknown time";
+  return VERSION_TIMESTAMP_FORMATTER.format(date);
+}
+
+function getVersionSecondaryLabel(asset: VibodeRoomAsset): string {
+  if (asset.asset_type !== "stage_output") return "Original upload";
+  const stageLabel =
+    typeof asset.stage_number === "number" && Number.isFinite(asset.stage_number)
+      ? String(asset.stage_number)
+      : "?";
+  const modelLabel =
+    typeof asset.model_version === "string" && asset.model_version.trim().length > 0
+      ? asset.model_version
+      : "Unknown model";
+  return `Stage ${stageLabel} · ${modelLabel}`;
+}
+
+function isSameLocalDay(a: Date, b: Date): boolean {
+  return (
+    a.getFullYear() === b.getFullYear() &&
+    a.getMonth() === b.getMonth() &&
+    a.getDate() === b.getDate()
+  );
+}
+
+function isSameLocalMonth(a: Date, b: Date): boolean {
+  return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth();
+}
+
 async function loadRoomHydrationData(
   roomId: string,
   accessToken: string
-): Promise<{ room: VibodeRoomHydrationRow; imageUrl: string | null }> {
+): Promise<{ room: VibodeRoomHydrationRow; imageUrl: string | null; versions: VibodeRoomAsset[] }> {
   const client = supabaseBrowser();
 
   const { data: roomData, error: roomErr } = await client
     .from("vibode_rooms")
-    .select("id,selected_model,current_stage")
+    .select("id,selected_model,current_stage,active_asset_id,base_asset_id")
     .eq("id", roomId)
     .maybeSingle();
   if (roomErr || !roomData) {
@@ -538,7 +674,8 @@ async function loadRoomHydrationData(
 
   const room = roomData as VibodeRoomHydrationRow;
   const imageUrl = await fetchPreviewUrlForRoom(room.id, accessToken);
-  return { room, imageUrl };
+  const versions = await loadRoomVersions(room.id, accessToken);
+  return { room, imageUrl, versions };
 }
 
 // upload helper (blob preview -> storage signed URL)
@@ -642,6 +779,8 @@ export default function EditorPage() {
 
   const workingSet = useEditorStore((s) => s.workingSet);
   const history = useEditorStore((s) => s.history);
+  const versions = useEditorStore((s) => s.versions);
+  const activeAssetId = useEditorStore((s) => s.activeAssetId);
 
   const setActiveTool = useEditorStore((s) => s.setActiveTool);
   const setRoomDims = useEditorStore((s) => s.setRoomDims);
@@ -656,6 +795,8 @@ export default function EditorPage() {
 
   const setBaseImageFromFile = useEditorStore((s) => s.setBaseImageFromFile);
   const setBaseImageUrl = useEditorStore((s) => s.setBaseImageUrl);
+  const setVersions = useEditorStore((s) => s.setVersions);
+  const setActiveAssetId = useEditorStore((s) => s.setActiveAssetId);
 
   const applySwap = useEditorStore((s) => s.applySwap);
   const setPendingSwap = useEditorStore((s) => s.setPendingSwap);
@@ -686,17 +827,20 @@ export default function EditorPage() {
   const [swapTargetId, setSwapTargetId] = useState<string | null>(null);
   const [swapPickerOpen, setSwapPickerOpen] = useState(false);
   const [isEditToolsCollapsed, setIsEditToolsCollapsed] = useState(false);
+  const [isVersionsCollapsed, setIsVersionsCollapsed] = useState(false);
   const [isPasteProductImageCollapsed, setIsPasteProductImageCollapsed] = useState(false);
   const [isSetupCollapsed, setIsSetupCollapsed] = useState(false);
   const [isCalibrationCollapsed, setIsCalibrationCollapsed] = useState(false);
   const [selectedModel, setSelectedModel] = useState<VibodeModelVersion>(VIBODE_MODEL_NBP);
   const collapseAllRightPanels = () => {
+    setIsVersionsCollapsed(true);
     setIsSetupCollapsed(true);
     setIsEditToolsCollapsed(true);
     setIsPasteProductImageCollapsed(true);
     setIsCalibrationCollapsed(true);
   };
   const expandAllRightPanels = () => {
+    setIsVersionsCollapsed(false);
     setIsSetupCollapsed(false);
     setIsEditToolsCollapsed(false);
     setIsPasteProductImageCollapsed(false);
@@ -766,6 +910,7 @@ export default function EditorPage() {
   const [stage3ShowCatalog, setStage3ShowCatalog] = useState(false);
   const shouldSkipPendingRestoreRef = useRef<boolean>(hasRoomIdInCurrentLocation());
   const didRestorePendingRef = useRef(false);
+  const [roomBaseAssetId, setRoomBaseAssetId] = useState<string | null>(null);
 
   const currentAspectRatioForUpload: VibodeAspectRatio = useMemo(() => {
     const width = scene.baseImageWidthPx;
@@ -802,8 +947,33 @@ export default function EditorPage() {
     setSelectedPlacementId(null);
     setActiveStage(1);
     setVibodeRoomId(null);
+    setRoomBaseAssetId(null);
     clearPendingLocal();
   }, []);
+
+  const refreshRoomVersions = useCallback(
+    async (roomId: string): Promise<VibodeRoomAsset[] | null> => {
+      try {
+        let accessToken = await tryGetSupabaseAccessToken();
+        if (!accessToken) {
+          await new Promise<void>((resolve) => setTimeout(resolve, 250));
+          accessToken = await tryGetSupabaseAccessToken();
+        }
+        if (!accessToken) {
+          throw new Error("No Supabase session.");
+        }
+
+        const latestVersions = await loadRoomVersions(roomId, accessToken);
+        setVersions(latestVersions);
+        setActiveAssetId(latestVersions.find((asset) => asset.is_active)?.id ?? null);
+        return latestVersions;
+      } catch (err) {
+        console.warn("[editor] failed to refresh room versions:", err);
+        return null;
+      }
+    },
+    [setActiveAssetId, setVersions]
+  );
 
   useEffect(() => {
     const raw = window.localStorage.getItem(VIBODE_MODEL_STORAGE_KEY);
@@ -889,7 +1059,14 @@ export default function EditorPage() {
         const hydrated = await loadRoomHydrationData(requestedRoomId, accessToken);
         if (cancelled) return;
 
-        if (!hydrated.imageUrl) {
+        const hydratedActiveVersion =
+          hydrated.versions.find((asset) => asset.id === hydrated.room.active_asset_id) ??
+          hydrated.versions.find((asset) => asset.is_active) ??
+          hydrated.versions[0] ??
+          null;
+        const hydratedImageUrl = hydrated.imageUrl ?? hydratedActiveVersion?.image_url ?? null;
+
+        if (!hydratedImageUrl) {
           logEditorRoomOpen("roomHydration:failed", {
             requestedRoomId,
             error: "missing-preview-url",
@@ -900,12 +1077,15 @@ export default function EditorPage() {
           return;
         }
 
-        await preloadImage(hydrated.imageUrl);
+        await preloadImage(hydratedImageUrl);
         if (cancelled) return;
 
-        setBaseImageUrl(hydrated.imageUrl);
-        setWorkingImageUrl(hydrated.imageUrl);
+        setBaseImageUrl(hydratedImageUrl);
+        setWorkingImageUrl(hydratedImageUrl);
         setVibodeRoomId(hydrated.room.id);
+        setVersions(hydrated.versions);
+        setActiveAssetId(hydrated.room.active_asset_id ?? null);
+        setRoomBaseAssetId(hydrated.room.base_asset_id ?? null);
         setIsWorkingImageGenerated(false);
 
         if (hydrated.room.selected_model === VIBODE_MODEL_NBP || hydrated.room.selected_model === VIBODE_MODEL_NB2) {
@@ -923,7 +1103,7 @@ export default function EditorPage() {
         logEditorRoomOpen("roomHydration:finish", {
           requestedRoomId,
           hydratedRoomId: hydrated.room.id,
-          hasImageUrl: Boolean(hydrated.imageUrl),
+          hasImageUrl: Boolean(hydratedImageUrl),
         });
 
         const nowIso = new Date().toISOString();
@@ -956,7 +1136,15 @@ export default function EditorPage() {
     return () => {
       cancelled = true;
     };
-  }, [pushSnack, requestedRoomId, resetWorkflowForIncomingImage, router, setBaseImageUrl]);
+  }, [
+    pushSnack,
+    requestedRoomId,
+    resetWorkflowForIncomingImage,
+    router,
+    setActiveAssetId,
+    setBaseImageUrl,
+    setVersions,
+  ]);
 
   useEffect(() => {
     if (shouldSkipPendingRestoreRef.current) return;
@@ -1021,6 +1209,99 @@ export default function EditorPage() {
   const previewImageUrl = isRoomHydrating ? "" : currentImageUrl;
   const isCanvasEmpty = !hasCanvasImage;
   const shouldShowUploadOverlay = isCanvasEmpty && !isRoomHydrating;
+  const selectedVersionId =
+    activeAssetId ?? versions.find((asset) => asset.is_active)?.id ?? null;
+  const originalVersion = useMemo(() => {
+    if (roomBaseAssetId) {
+      const byRoomBaseId = versions.find((asset) => asset.id === roomBaseAssetId);
+      if (byRoomBaseId) return byRoomBaseId;
+    }
+    return versions.find((asset) => asset.asset_type !== "stage_output") ?? null;
+  }, [roomBaseAssetId, versions]);
+  const nonOriginalVersions = useMemo(() => {
+    const originalId = originalVersion?.id ?? null;
+    const sorted = versions
+      .filter((asset) => asset.id !== originalId)
+      .slice()
+      .sort((a, b) => {
+        const aMs = Date.parse(a.created_at);
+        const bMs = Date.parse(b.created_at);
+        const safeA = Number.isFinite(aMs) ? aMs : 0;
+        const safeB = Number.isFinite(bMs) ? bMs : 0;
+        return safeB - safeA;
+      });
+    return sorted;
+  }, [originalVersion?.id, versions]);
+  const groupedVersions = useMemo(() => {
+    const today: VibodeRoomAsset[] = [];
+    const thisMonth: VibodeRoomAsset[] = [];
+    const earlier: VibodeRoomAsset[] = [];
+    const now = new Date();
+
+    for (const version of nonOriginalVersions) {
+      const created = new Date(version.created_at);
+      if (Number.isNaN(created.getTime())) {
+        earlier.push(version);
+        continue;
+      }
+      if (isSameLocalDay(created, now)) {
+        today.push(version);
+      } else if (isSameLocalMonth(created, now)) {
+        thisMonth.push(version);
+      } else {
+        earlier.push(version);
+      }
+    }
+
+    return { today, thisMonth, earlier };
+  }, [nonOriginalVersions]);
+
+  const handleSelectVersion = useCallback(
+    (asset: VibodeRoomAsset) => {
+      const nextUrl = typeof asset.image_url === "string" ? asset.image_url.trim() : "";
+      if (!nextUrl) return;
+
+      setWorkingImageUrl(nextUrl);
+      setIsWorkingImageGenerated(asset.asset_type === "stage_output");
+      setActiveAssetId(asset.id);
+      setVersions(
+        versions.map((candidate) =>
+          candidate.id === asset.id
+            ? { ...candidate, is_active: true }
+            : { ...candidate, is_active: false }
+        )
+      );
+
+      if (!vibodeRoomId) return;
+
+      void (async () => {
+        try {
+          const accessToken = await tryGetSupabaseAccessToken();
+          if (!accessToken) {
+            pushSnack("Could not sync active version right now (missing session).");
+            return;
+          }
+          await setActiveVersionForRoom({
+            roomId: vibodeRoomId,
+            assetId: asset.id,
+            accessToken,
+          });
+        } catch (err) {
+          console.warn("[editor] failed to sync active version:", err);
+          pushSnack("Could not sync selected version. Refreshing versions…");
+          await refreshRoomVersions(vibodeRoomId);
+        }
+      })();
+    },
+    [
+      pushSnack,
+      refreshRoomVersions,
+      setActiveAssetId,
+      setVersions,
+      vibodeRoomId,
+      versions,
+    ]
+  );
 
   const isImageFile = (file: File | null | undefined) =>
     !!file && typeof file.type === "string" && file.type.startsWith("image/");
@@ -1084,10 +1365,18 @@ export default function EditorPage() {
       setWorkingImageUrl(up.signedUrl);
       setIsWorkingImageGenerated(false);
       setVibodeRoomId(up.vibodeRoomId ?? null);
+      if (up.vibodeRoomId) {
+        const latestVersions = await refreshRoomVersions(up.vibodeRoomId);
+        const baseAsset = latestVersions?.find((asset) => asset.asset_type === "base") ?? null;
+        const activeAsset = latestVersions?.find((asset) => asset.is_active) ?? null;
+        setRoomBaseAssetId(baseAsset?.id ?? null);
+        setActiveAssetId(activeAsset?.id ?? baseAsset?.id ?? null);
+      }
       pushSnack("Image uploaded ✅ (signed URL set; blob removed).");
     } catch (err: any) {
       console.error(err);
       setVibodeRoomId(null);
+      setRoomBaseAssetId(null);
       pushSnack(`Upload failed — keeping local preview. (${err?.message ?? "error"})`);
     } finally {
       setIsUploading(false);
@@ -1749,6 +2038,15 @@ export default function EditorPage() {
       setIsWorkingImageGenerated(true);
       if (!isInlineImageSource(nextImageUrl)) {
         setBaseImageUrl(nextImageUrl);
+      }
+      if (vibodeRoomId) {
+        const latestVersions = await refreshRoomVersions(vibodeRoomId);
+        const baseAsset = latestVersions?.find((asset) => asset.asset_type === "base") ?? null;
+        const activeAsset = latestVersions?.find((asset) => asset.is_active) ?? null;
+        if (baseAsset) {
+          setRoomBaseAssetId(baseAsset.id);
+        }
+        setActiveAssetId(activeAsset?.id ?? latestVersions?.[0]?.id ?? null);
       }
 
       if (stageNumber === 3) {
@@ -2679,6 +2977,15 @@ export default function EditorPage() {
       });
       setWorkingImageUrl(imageUrl);
       setIsWorkingImageGenerated(true);
+      if (vibodeRoomId) {
+        const latestVersions = await refreshRoomVersions(vibodeRoomId);
+        const baseAsset = latestVersions?.find((asset) => asset.asset_type === "base") ?? null;
+        const activeAsset = latestVersions?.find((asset) => asset.is_active) ?? null;
+        if (baseAsset) {
+          setRoomBaseAssetId(baseAsset.id);
+        }
+        setActiveAssetId(activeAsset?.id ?? latestVersions?.[0]?.id ?? null);
+      }
 
       clearPendingLocal();
 
@@ -2752,6 +3059,35 @@ export default function EditorPage() {
   };  
 
   const stage5Locked = activeStage === 5 && !hasFurniturePass && !STAGE5_DEV_BYPASS;
+  const renderVersionRow = (asset: VibodeRoomAsset) => {
+    const isActive = selectedVersionId === asset.id;
+    const secondaryText = getVersionSecondaryLabel(asset);
+    return (
+      <button
+        key={asset.id}
+        type="button"
+        onClick={() => handleSelectVersion(asset)}
+        className={`flex w-full items-center gap-2 rounded-md border p-1.5 text-left transition ${
+          isActive
+            ? "border-neutral-600 bg-neutral-800 ring-1 ring-neutral-600/40"
+            : "border-neutral-800 bg-neutral-950 hover:bg-neutral-900"
+        }`}
+      >
+        <img
+          src={asset.image_url}
+          alt={secondaryText}
+          className="h-11 w-14 flex-none rounded bg-neutral-800 object-cover"
+          loading="lazy"
+        />
+        <div className="min-w-0">
+          <div className="truncate text-xs text-neutral-100">
+            {formatVersionTimestamp(asset.created_at)}
+          </div>
+          <div className="truncate text-[11px] text-neutral-500">{secondaryText}</div>
+        </div>
+      </button>
+    );
+  };
 
   return (
     <div className="h-dvh w-full overflow-hidden bg-neutral-950 text-neutral-100">
@@ -2993,6 +3329,64 @@ export default function EditorPage() {
         <aside className="h-full w-[340px] border-l border-neutral-800 bg-neutral-950">
           <div className="h-full overflow-y-auto">
             <div className="space-y-4 p-4">
+            <div className="rounded-lg border border-neutral-800 bg-neutral-900 p-3">
+              <div className="flex items-center justify-between">
+                <div>
+                  <div className="text-sm font-medium">Versions</div>
+                  <div className="mt-1 text-xs text-neutral-400">
+                    {versions.length} version{versions.length === 1 ? "" : "s"}
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  className="rounded-md border border-neutral-800 bg-neutral-950 px-2 py-1 text-xs text-neutral-300 hover:bg-neutral-800"
+                  aria-label={isVersionsCollapsed ? "Expand Versions panel" : "Collapse Versions panel"}
+                  aria-expanded={!isVersionsCollapsed}
+                  aria-controls="versions-panel-body"
+                  onClick={() => setIsVersionsCollapsed((prev) => !prev)}
+                >
+                  {isVersionsCollapsed ? "▸" : "▾"}
+                </button>
+              </div>
+              {!isVersionsCollapsed ? (
+                <div id="versions-panel-body" className="mt-3">
+                  {versions.length === 0 ? (
+                    <div className="rounded-md border border-dashed border-neutral-800 bg-neutral-950 px-3 py-2 text-xs text-neutral-500">
+                      No versions yet. Upload an image to create the original version.
+                    </div>
+                  ) : (
+                    <div className="space-y-3">
+                      {groupedVersions.today.length > 0 ? (
+                        <div>
+                          <div className="mb-1 text-[11px] uppercase tracking-wide text-neutral-500">Today</div>
+                          <div className="space-y-1">{groupedVersions.today.map(renderVersionRow)}</div>
+                        </div>
+                      ) : null}
+                      {groupedVersions.thisMonth.length > 0 ? (
+                        <div>
+                          <div className="mb-1 text-[11px] uppercase tracking-wide text-neutral-500">
+                            This month
+                          </div>
+                          <div className="space-y-1">{groupedVersions.thisMonth.map(renderVersionRow)}</div>
+                        </div>
+                      ) : null}
+                      {groupedVersions.earlier.length > 0 ? (
+                        <div>
+                          <div className="mb-1 text-[11px] uppercase tracking-wide text-neutral-500">Earlier</div>
+                          <div className="space-y-1">{groupedVersions.earlier.map(renderVersionRow)}</div>
+                        </div>
+                      ) : null}
+                      {originalVersion ? (
+                        <div>
+                          <div className="mb-1 text-[11px] uppercase tracking-wide text-neutral-500">Original</div>
+                          <div className="space-y-1">{renderVersionRow(originalVersion)}</div>
+                        </div>
+                      ) : null}
+                    </div>
+                  )}
+                </div>
+              ) : null}
+            </div>
             <div className="rounded-lg border border-neutral-800 bg-neutral-900 p-3">
               <div className="text-sm font-medium">Workflow</div>
               <div className="mt-1 text-xs text-neutral-400">Five-stage editor workflow skeleton.</div>
