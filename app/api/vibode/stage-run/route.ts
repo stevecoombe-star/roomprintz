@@ -8,6 +8,13 @@ import {
   getVibodeRoomById,
   updateVibodeRoom,
 } from "@/lib/vibodePersistence";
+import {
+  canAffordTokens,
+  getTokenCostForAction,
+  getUserTokenWallet,
+  spendTokens,
+} from "@/lib/vibodeTokenDomain";
+import { buildTokenLedgerMetadata, getStageTokenActionKey } from "@/lib/vibodeTokenPolicy";
 
 export const runtime = "nodejs";
 const VIBODE_DEFAULT_MODEL_VERSION = "NBP";
@@ -338,6 +345,100 @@ export async function POST(req: NextRequest) {
     delete payloadForCompositor.vibodeRoomId;
     delete payloadForCompositor.stageNumber;
 
+    let stageRunContext:
+      | {
+          userId: string;
+          room: NonNullable<Awaited<ReturnType<typeof getVibodeRoomById>>> | null;
+          actionKey: NonNullable<ReturnType<typeof getStageTokenActionKey>>;
+          tokenCost: number;
+          walletBalanceBefore: number;
+          resolvedStageNumber: number;
+          supabase: AnySupabaseClient;
+        }
+      | null = null;
+
+    const { supabase, token } = getUserSupabaseClient(req);
+    if (!token || !supabase) {
+      return Response.json(
+        {
+          error:
+            "Unauthorized: missing Authorization Bearer token. (Send Supabase access_token in the request.)",
+        },
+        { status: 401 }
+      );
+    }
+
+    const { data: userData, error: userErr } = await supabase.auth.getUser();
+    if (userErr || !userData?.user) {
+      return Response.json({ error: "Unauthorized" }, { status: 401 });
+    }
+    const authenticatedUserId = userData.user.id;
+
+    let existingRoom: NonNullable<Awaited<ReturnType<typeof getVibodeRoomById>>> | null = null;
+    if (vibodeRoomId) {
+      if (!isUuidLike(vibodeRoomId)) {
+        return Response.json({ error: "Invalid vibodeRoomId." }, { status: 400 });
+      }
+      existingRoom = await getVibodeRoomById(supabase, vibodeRoomId);
+      if (!existingRoom) {
+        return Response.json({ error: "Room not found" }, { status: 404 });
+      }
+      if (existingRoom.user_id !== authenticatedUserId) {
+        return Response.json({ error: "Forbidden" }, { status: 403 });
+      }
+    }
+
+    const preflightStageNumberCandidate = vibodeRoomId
+      ? requestedStageNumber ?? existingRoom?.current_stage ?? 0
+      : requestedStageNumber;
+    const preflightStageNumber =
+      typeof preflightStageNumberCandidate === "number" && Number.isFinite(preflightStageNumberCandidate)
+        ? Math.trunc(preflightStageNumberCandidate)
+        : null;
+    const actionKey = getStageTokenActionKey(preflightStageNumber);
+    if (!actionKey || preflightStageNumber === null) {
+      return Response.json(
+        {
+          errorCode: "UNSUPPORTED_STAGE_ACTION",
+          message: "Unsupported stage number for token accounting.",
+          stageNumber: preflightStageNumber,
+        },
+        { status: 400 }
+      );
+    }
+    const tokenStageNumber = preflightStageNumber;
+
+    const wallet = await getUserTokenWallet(supabase, authenticatedUserId);
+    const tokenCost = await getTokenCostForAction(supabase, actionKey);
+    const affordability = canAffordTokens({
+      balanceTokens: wallet.balance_tokens,
+      requiredTokens: tokenCost,
+    });
+    if (!affordability.allowed) {
+      return Response.json(
+        {
+          errorCode: "INSUFFICIENT_TOKENS",
+          message: "Insufficient internal token balance for this stage generation.",
+          requiredTokens: affordability.requiredTokens,
+          balanceTokens: affordability.balanceTokens,
+          shortfallTokens: affordability.shortfallTokens,
+          actionKey,
+          stageNumber: tokenStageNumber,
+        },
+        { status: 402 }
+      );
+    }
+
+    stageRunContext = {
+      userId: authenticatedUserId,
+      room: existingRoom,
+      actionKey,
+      tokenCost,
+      walletBalanceBefore: wallet.balance_tokens,
+      resolvedStageNumber: tokenStageNumber,
+      supabase,
+    };
+
     const result = (await callCompositorVibodeStageRun({
       payload: {
         ...payloadForCompositor,
@@ -377,58 +478,75 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    if (!vibodeRoomId) {
-      console.info("[vibode/stage-run] persistence skipped: missing vibodeRoomId");
-      return Response.json(responseResult);
+    if (!stageRunContext) {
+      throw new Error("[vibode/stage-run] missing token preflight context");
     }
 
-    try {
-      if (!isUuidLike(vibodeRoomId)) {
-        console.warn("[vibode/stage-run] persistence skipped: invalid vibodeRoomId");
-        return Response.json(responseResult);
-      }
-
-      const { supabase, token } = getUserSupabaseClient(req);
-      if (!token || !supabase) {
-        console.warn("[vibode/stage-run] persistence skipped: missing bearer token");
-        return Response.json(responseResult);
-      }
-
-      const { data: userData, error: userErr } = await supabase.auth.getUser();
-      if (userErr || !userData?.user) {
-        console.warn("[vibode/stage-run] persistence skipped: user lookup failed");
-        return Response.json(responseResult);
-      }
-      const userId = userData.user.id;
-      const persistenceClient = supabase;
-
-      const existingRoom = await getVibodeRoomById(persistenceClient, vibodeRoomId);
-      if (!existingRoom) {
-        console.warn("[vibode/stage-run] persistence skipped: room not found", { roomId: vibodeRoomId });
-        return Response.json(responseResult);
-      }
-      if (existingRoom.user_id !== userId) {
-        console.warn("[vibode/stage-run] persistence skipped: room does not belong to user", {
-          roomId: vibodeRoomId,
-          userId,
+    if (!vibodeRoomId || !stageRunContext.room) {
+      console.info("[vibode/stage-run] persistence skipped: missing vibodeRoomId");
+      let tokensCharged = 0;
+      let remainingTokens: number | null = stageRunContext.walletBalanceBefore;
+      try {
+        const spendResult = await spendTokens({
+          supabase: stageRunContext.supabase,
+          userId: stageRunContext.userId,
+          spendTokens: stageRunContext.tokenCost,
+          eventType: "generation_spend",
+          actionType: stageRunContext.actionKey,
+          stageNumber: stageRunContext.resolvedStageNumber,
+          modelVersion,
+          roomId: null,
+          generationRunId: null,
+          metadata: buildTokenLedgerMetadata({
+            modelVersion,
+            stageNumber: stageRunContext.resolvedStageNumber,
+            endpoint: "/api/vibode/stage-run",
+            requestKind: "stage_generation",
+          }),
         });
-        return Response.json(responseResult);
+        if (spendResult.ok) {
+          tokensCharged = spendResult.spentTokens;
+          remainingTokens = spendResult.balanceTokens;
+        }
+      } catch (tokenSpendErr) {
+        console.error(
+          "[vibode/stage-run] token spend failed after successful generation (no room context):",
+          tokenSpendErr
+        );
       }
 
-      const resolvedStageNumber = requestedStageNumber ?? existingRoom.current_stage ?? 0;
-      const resolvedAspectRatio =
-        requestedAspectRatio ?? safeStr(responseResult.appliedAspectRatio) ?? existingRoom.aspect_ratio;
-      const { storageBucket, storagePath } = resolveOutputStorage(responseResult);
-      const durableImageUrl = getDurableImageUrl({
-        candidateUrl: safeStr(responseResult.imageUrl),
-        storageBucket,
+      return Response.json({
+        ...responseResult,
+        tokensCharged,
+        remainingTokens,
+        actionKey: stageRunContext.actionKey,
       });
-      const { width, height } = resolveOutputDimensions(responseResult);
-      const previousActiveAssetId = existingRoom.active_asset_id ?? null;
-      const nowIso = new Date().toISOString();
+    }
+
+    const room = stageRunContext.room;
+    const userId = stageRunContext.userId;
+    const resolvedStageNumber = stageRunContext.resolvedStageNumber;
+    const resolvedAspectRatio =
+      requestedAspectRatio ?? safeStr(responseResult.appliedAspectRatio) ?? room.aspect_ratio;
+    const { storageBucket, storagePath } = resolveOutputStorage(responseResult);
+    const durableImageUrl = getDurableImageUrl({
+      candidateUrl: safeStr(responseResult.imageUrl),
+      storageBucket,
+    });
+    const { width, height } = resolveOutputDimensions(responseResult);
+    const previousActiveAssetId = room.active_asset_id ?? null;
+    const nowIso = new Date().toISOString();
+    let tokensCharged = 0;
+    let remainingTokens: number | null = stageRunContext.walletBalanceBefore;
+
+    try {
+      const { supabase: persistenceClient, token } = getUserSupabaseClient(req);
+      if (!token || !persistenceClient) {
+        throw new Error("[vibode/stage-run] persistence failed: missing bearer token");
+      }
 
       const outputAsset = await createVibodeRoomAsset(persistenceClient, {
-        room_id: existingRoom.id,
+        room_id: room.id,
         user_id: userId,
         asset_type: "stage_output",
         stage_number: resolvedStageNumber,
@@ -444,7 +562,7 @@ export async function POST(req: NextRequest) {
       const { error: deactivateErr } = await persistenceClient
         .from("vibode_room_assets")
         .update({ is_active: false })
-        .eq("room_id", existingRoom.id)
+        .eq("room_id", room.id)
         .eq("user_id", userId)
         .eq("is_active", true)
         .neq("id", outputAsset.id);
@@ -452,15 +570,15 @@ export async function POST(req: NextRequest) {
         throw new Error(`[vibode] failed to deactivate prior room assets: ${deactivateErr.message}`);
       }
 
-      await updateVibodeRoom(persistenceClient, existingRoom.id, {
+      await updateVibodeRoom(persistenceClient, room.id, {
         active_asset_id: outputAsset.id,
         current_stage: resolvedStageNumber,
         cover_image_url: durableImageUrl,
         sort_key: nowIso,
       });
 
-      await createVibodeGenerationRun(persistenceClient, {
-        room_id: existingRoom.id,
+      const generationRun = await createVibodeGenerationRun(persistenceClient, {
+        room_id: room.id,
         user_id: userId,
         run_type: "stage",
         stage_number: resolvedStageNumber,
@@ -482,11 +600,43 @@ export async function POST(req: NextRequest) {
         }),
         completed_at: nowIso,
       });
+
+      try {
+        const spendResult = await spendTokens({
+          supabase: persistenceClient,
+          userId,
+          spendTokens: stageRunContext.tokenCost,
+          eventType: "generation_spend",
+          actionType: stageRunContext.actionKey,
+          stageNumber: resolvedStageNumber,
+          modelVersion,
+          roomId: room.id,
+          generationRunId: generationRun.id,
+          metadata: buildTokenLedgerMetadata({
+            modelVersion,
+            stageNumber: resolvedStageNumber,
+            endpoint: "/api/vibode/stage-run",
+            requestKind: "stage_generation",
+          }),
+        });
+        if (spendResult.ok) {
+          tokensCharged = spendResult.spentTokens;
+          remainingTokens = spendResult.balanceTokens;
+        }
+      } catch (tokenSpendErr) {
+        // TODO: move stage persistence + token spend into a transactional/compensation flow.
+        console.error("[vibode/stage-run] token spend failed after successful generation:", tokenSpendErr);
+      }
     } catch (persistErr) {
       console.error("[vibode/stage-run] persistence failed (non-blocking):", persistErr);
     }
 
-    return Response.json(responseResult);
+    return Response.json({
+      ...responseResult,
+      tokensCharged,
+      remainingTokens,
+      actionKey: stageRunContext.actionKey,
+    });
   } catch (err: any) {
     const message = String(err?.message || err);
     const status = message.includes(" 400 ")
