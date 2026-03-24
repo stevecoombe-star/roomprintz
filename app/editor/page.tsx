@@ -927,6 +927,9 @@ export default function EditorPage() {
   const [isDownloading, setIsDownloading] = useState(false);
   const [isCanvasDragOver, setIsCanvasDragOver] = useState(false);
   const useFreezeV2 = process.env.NEXT_PUBLIC_VIBODE_FREEZE_V2 === "1";
+  const devUnlockPasteToPlaceRaw = process.env.NEXT_PUBLIC_VIBODE_DEV_UNLOCK_PASTE_TO_PLACE;
+  const isDevUnlockPasteToPlace =
+    devUnlockPasteToPlaceRaw === "1" || devUnlockPasteToPlaceRaw?.toLowerCase() === "true";
 
   const [activeStage, setActiveStage] = useState<WorkflowStage>(1);
   const [stageStatus, setStageStatus] = useState<StageStatusMap>(INITIAL_STAGE_STATUS);
@@ -954,7 +957,7 @@ export default function EditorPage() {
       return false;
     }
   });
-  const canUseFreePasteToPlace = !hasUsedFreePasteToPlace;
+  const canUseFreePasteToPlace = isDevUnlockPasteToPlace || !hasUsedFreePasteToPlace;
   const [hasShownPasteToPlaceClipboardHeadsUp, setHasShownPasteToPlaceClipboardHeadsUp] = useState(
     () => {
       if (typeof window === "undefined") return false;
@@ -2394,7 +2397,9 @@ export default function EditorPage() {
         const latestPlacementId = responsePlacements[responsePlacements.length - 1]?.placementId ?? null;
         if (latestPlacementId) setSelectedPlacementId(latestPlacementId);
 
-        setHasUsedFreePasteToPlace(true);
+        if (!isDevUnlockPasteToPlace) {
+          setHasUsedFreePasteToPlace(true);
+        }
         logEditorRoomOpen("pasteToPlace:success", {
           xNorm,
           yNorm,
@@ -2411,6 +2416,7 @@ export default function EditorPage() {
       clearPasteToPlaceProgressSnack,
       hasShownPasteToPlaceClipboardHeadsUp,
       ingestClipboardUserSku,
+      isDevUnlockPasteToPlace,
       isBusy,
       isEditRunning,
       markPasteToPlaceClipboardHeadsUpShown,
