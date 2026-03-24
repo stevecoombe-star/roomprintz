@@ -214,12 +214,14 @@ function findSkuById(skuId: string) {
 export function EditorCanvas({
   className,
   onRequestSwap,
+  onRequestPasteToPlaceAdd,
   markupVisible = true,
   visualMode = "blueprint",
   imageUrl,
 }: {
   className?: string;
   onRequestSwap?: (id: string) => void;
+  onRequestPasteToPlaceAdd?: (args: { xNorm: number; yNorm: number }) => boolean | Promise<boolean>;
   markupVisible?: boolean;
   visualMode?: VisualMode;
   imageUrl?: string | null;
@@ -651,7 +653,7 @@ export function EditorCanvas({
     }
   }, [activeTool, hoveredMoveAnchorId]);
 
-  const handleStagePointerDown = (
+  const handleStagePointerDown = async (
     e: Konva.KonvaEventObject<MouseEvent | TouchEvent>
   ) => {
     const stage = e.target.getStage();
@@ -769,6 +771,18 @@ export function EditorCanvas({
     }
 
     const clickedOnEmpty = e.target === stage;
+    if (clickedOnEmpty && viewport && onRequestPasteToPlaceAdd) {
+      const imgPt0 = stagePointerToImage(stage, viewport);
+      if (imgPt0 && isInsideImage(imgPt0, viewport)) {
+        const imgPt = clampToImage(imgPt0, viewport);
+        const ptNorm = imageToNormalized(imgPt, viewport);
+        const didHandlePasteToPlace = await onRequestPasteToPlaceAdd({
+          xNorm: ptNorm.x,
+          yNorm: ptNorm.y,
+        });
+        if (didHandlePasteToPlace) return;
+      }
+    }
     if (clickedOnEmpty) selectNode(null);
   };
 
