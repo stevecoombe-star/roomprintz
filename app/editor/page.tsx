@@ -17,7 +17,7 @@ import { MOCK_COLLECTIONS, type RoomSizeBundleId } from "@/data/mockCollections"
 import { IKEA_CA_SKUS, type IkeaCaSku } from "@/data/mockIkeaCaSkus";
 import { clearPendingLocal, loadPendingLocal, savePendingLocal } from "@/lib/pendingGeneration";
 import { DEFAULT_PX_PER_IN, skuFootprintInchesFromDims } from "@/lib/ikeaSizing";
-import { blobToDataUrl, readClipboardImage } from "@/lib/readClipboardImage";
+import { blobToDataUrl, readClipboardImageWithStatus } from "@/lib/readClipboardImage";
 
 import { getSupabaseBrowserAccessToken, supabaseBrowser } from "@/lib/supabaseBrowser";
 
@@ -25,6 +25,7 @@ const DND_MIME = "application/x-roomprintz-furniture";
 const USER_SKU_MAX_INPUT_BYTES = 12 * 1024 * 1024;
 const VIBODE_MODEL_STORAGE_KEY = "vibode:modelVersion";
 const FREE_PASTE_TO_PLACE_SESSION_KEY = "vibode:hasUsedFreePasteToPlace";
+const PASTE_TO_PLACE_CLIPBOARD_HEADS_UP_SESSION_KEY = "vibode:pasteToPlaceClipboardHeadsUpShown";
 const VIBODE_MODEL_NBP = "NBP";
 const VIBODE_MODEL_NB2 = "NB2";
 const VERSION_TIMESTAMP_FORMATTER = new Intl.DateTimeFormat(undefined, {
@@ -887,6 +888,24 @@ export default function EditorPage() {
   const pushSnack = useCallback((message: string) => {
     setSnacks((prev) => [...prev, { id: safeId("sn"), message }]);
   }, []);
+  const pasteToPlaceProgressSnackIdRef = useRef<string | null>(null);
+  const upsertPasteToPlaceProgressSnack = useCallback((message: string) => {
+    setSnacks((prev) => {
+      const existingId = pasteToPlaceProgressSnackIdRef.current;
+      if (existingId && prev.some((snack) => snack.id === existingId)) {
+        return prev.map((snack) => (snack.id === existingId ? { ...snack, message } : snack));
+      }
+      const id = safeId("sn");
+      pasteToPlaceProgressSnackIdRef.current = id;
+      return [...prev, { id, message }];
+    });
+  }, []);
+  const clearPasteToPlaceProgressSnack = useCallback(() => {
+    const existingId = pasteToPlaceProgressSnackIdRef.current;
+    if (!existingId) return;
+    pasteToPlaceProgressSnackIdRef.current = null;
+    setSnacks((prev) => prev.filter((snack) => snack.id !== existingId));
+  }, []);
   function getBaseImageLabel(url?: string): string {
     if (!url) return "—";
     try {
@@ -936,7 +955,26 @@ export default function EditorPage() {
     }
   });
   const canUseFreePasteToPlace = !hasUsedFreePasteToPlace;
+  const [hasShownPasteToPlaceClipboardHeadsUp, setHasShownPasteToPlaceClipboardHeadsUp] = useState(
+    () => {
+      if (typeof window === "undefined") return false;
+      try {
+        return window.sessionStorage.getItem(PASTE_TO_PLACE_CLIPBOARD_HEADS_UP_SESSION_KEY) === "1";
+      } catch {
+        return false;
+      }
+    }
+  );
   const lastPasteToPlaceClipboardSnackAtRef = useRef(0);
+  const markPasteToPlaceClipboardHeadsUpShown = useCallback(() => {
+    setHasShownPasteToPlaceClipboardHeadsUp(true);
+    if (typeof window === "undefined") return;
+    try {
+      window.sessionStorage.setItem(PASTE_TO_PLACE_CLIPBOARD_HEADS_UP_SESSION_KEY, "1");
+    } catch {
+      // no-op
+    }
+  }, []);
   const [stage1Enhance, setStage1Enhance] = useState(true);
   const [stage1Declutter, setStage1Declutter] = useState<DeclutterMode>("off");
   const [stage2Repair, setStage2Repair] = useState(false);
@@ -2262,101 +2300,126 @@ export default function EditorPage() {
       if (!scene.baseImageUrl) return false;
       if (isBusy || isEditRunning) return false;
 
-      const clipboardImage = await readClipboardImage();
-      if (!clipboardImage) {
-        const now = Date.now();
-        if (now - lastPasteToPlaceClipboardSnackAtRef.current > 3000) {
-          pushSnack("Couldn't read copied image. Try copying it again.");
-          lastPasteToPlaceClipboardSnackAtRef.current = now;
+      if (!hasShownPasteToPlaceClipboardHeadsUp) {
+        pushSnack(
+          "Paste-to-Place needs clipboard access to read your copied product image. If your browser asks, click Allow."
+        );
+        markPasteToPlaceClipboardHeadsUpShown();
+      }
+
+      upsertPasteToPlaceProgressSnack("Reading copied image...");
+      try {
+        const clipboardReadResult = await readClipboardImageWithStatus();
+        const clipboardImage = clipboardReadResult.image;
+        if (!clipboardImage) {
+          const now = Date.now();
+          if (now - lastPasteToPlaceClipboardSnackAtRef.current > 3000) {
+            pushSnack(
+              clipboardReadResult.status === "access-unavailable"
+                ? "Clipboard access was blocked or unavailable. Allow access and try again."
+                : "Couldn't read copied image. Try copying it again."
+            );
+            lastPasteToPlaceClipboardSnackAtRef.current = now;
+          }
+          logEditorRoomOpen("pasteToPlace:failure", {
+            xNorm,
+            yNorm,
+            reason:
+              clipboardReadResult.status === "access-unavailable"
+                ? "clipboard-access-unavailable"
+                : "clipboard-image-unavailable",
+          });
+          return false;
         }
-        logEditorRoomOpen("pasteToPlace:failure", {
+
+        if (!canUseFreePasteToPlace) {
+          logEditorRoomOpen("pasteToPlace:free-gate-blocked", { xNorm, yNorm });
+          pushSnack("Free preview used — unlock more placements to keep Viboding.");
+          return true;
+        }
+
+        logEditorRoomOpen("pasteToPlace:start", {
           xNorm,
           yNorm,
-          reason: "clipboard-image-unavailable",
+          mimeType: clipboardImage.mimeType,
         });
-        return false;
-      }
 
-      if (!canUseFreePasteToPlace) {
-        logEditorRoomOpen("pasteToPlace:free-gate-blocked", { xNorm, yNorm });
-        pushSnack("Free preview used — unlock more placements to keep Viboding.");
-        return true;
-      }
+        upsertPasteToPlaceProgressSnack("Preparing product...");
+        const clipboardDataUrl = await blobToDataUrl(clipboardImage.blob);
+        if (!clipboardDataUrl || !clipboardDataUrl.startsWith("data:image/")) {
+          logEditorRoomOpen("pasteToPlace:failure", {
+            xNorm,
+            yNorm,
+            reason: "clipboard-data-url-unavailable",
+          });
+          return true;
+        }
 
-      pushSnack("Placing product...");
-      logEditorRoomOpen("pasteToPlace:start", {
-        xNorm,
-        yNorm,
-        mimeType: clipboardImage.mimeType,
-      });
+        const clipboardSku = await ingestClipboardUserSku(clipboardDataUrl);
+        if (!clipboardSku) {
+          logEditorRoomOpen("pasteToPlace:failure", {
+            xNorm,
+            yNorm,
+            reason: "clipboard-sku-ingest-failed",
+          });
+          pushSnack("Could not place copied product right now.");
+          return true;
+        }
 
-      const clipboardDataUrl = await blobToDataUrl(clipboardImage.blob);
-      if (!clipboardDataUrl || !clipboardDataUrl.startsWith("data:image/")) {
-        logEditorRoomOpen("pasteToPlace:failure", {
+        const clipboardEligibleSku: VibodeEligibleSku = {
+          skuId: clipboardSku.skuId,
+          label: clipboardSku.label || clipboardSku.skuId,
+          source: "user",
+          variants: (clipboardSku.variants ?? []).map((imageUrl) => ({ imageUrl })),
+        };
+        const eligibleSkusForAdd = [...stage3SkuItemsActive, clipboardEligibleSku];
+
+        upsertPasteToPlaceProgressSnack("Placing it in your room...");
+        const res = await runEdit("add", {
+          target: { skuId: clipboardSku.skuId },
+          params: { x: xNorm, y: yNorm },
+          eligibleSkus: eligibleSkusForAdd,
+          placements: scenePlacements,
+        });
+        if (!res) {
+          logEditorRoomOpen("pasteToPlace:failure", {
+            xNorm,
+            yNorm,
+            reason: "edit-run-add-failed",
+          });
+          return true;
+        }
+
+        const responsePlacements = Array.isArray(res.placements) ? res.placements : [];
+        const latestPlacementId = responsePlacements[responsePlacements.length - 1]?.placementId ?? null;
+        if (latestPlacementId) setSelectedPlacementId(latestPlacementId);
+
+        setHasUsedFreePasteToPlace(true);
+        logEditorRoomOpen("pasteToPlace:success", {
           xNorm,
           yNorm,
-          reason: "clipboard-data-url-unavailable",
+          placementCount: responsePlacements.length,
         });
         return true;
+      } finally {
+        clearPasteToPlaceProgressSnack();
       }
-
-      const clipboardSku = await ingestClipboardUserSku(clipboardDataUrl);
-      if (!clipboardSku) {
-        logEditorRoomOpen("pasteToPlace:failure", {
-          xNorm,
-          yNorm,
-          reason: "clipboard-sku-ingest-failed",
-        });
-        pushSnack("Could not place copied product right now.");
-        return true;
-      }
-
-      const clipboardEligibleSku: VibodeEligibleSku = {
-        skuId: clipboardSku.skuId,
-        label: clipboardSku.label || clipboardSku.skuId,
-        source: "user",
-        variants: (clipboardSku.variants ?? []).map((imageUrl) => ({ imageUrl })),
-      };
-      const eligibleSkusForAdd = [...stage3SkuItemsActive, clipboardEligibleSku];
-
-      const res = await runEdit("add", {
-        target: { skuId: clipboardSku.skuId },
-        params: { x: xNorm, y: yNorm },
-        eligibleSkus: eligibleSkusForAdd,
-        placements: scenePlacements,
-      });
-      if (!res) {
-        logEditorRoomOpen("pasteToPlace:failure", {
-          xNorm,
-          yNorm,
-          reason: "edit-run-add-failed",
-        });
-        return true;
-      }
-
-      const responsePlacements = Array.isArray(res.placements) ? res.placements : [];
-      const latestPlacementId = responsePlacements[responsePlacements.length - 1]?.placementId ?? null;
-      if (latestPlacementId) setSelectedPlacementId(latestPlacementId);
-
-      setHasUsedFreePasteToPlace(true);
-      logEditorRoomOpen("pasteToPlace:success", {
-        xNorm,
-        yNorm,
-        placementCount: responsePlacements.length,
-      });
-      return true;
     },
     [
       activeTool,
       canUseFreePasteToPlace,
+      clearPasteToPlaceProgressSnack,
+      hasShownPasteToPlaceClipboardHeadsUp,
       ingestClipboardUserSku,
       isBusy,
       isEditRunning,
+      markPasteToPlaceClipboardHeadsUpShown,
       pushSnack,
-      runEdit,
-      scene.baseImageUrl,
       scenePlacements,
+      scene.baseImageUrl,
       stage3SkuItemsActive,
+      upsertPasteToPlaceProgressSnack,
+      runEdit,
     ]
   );
 
