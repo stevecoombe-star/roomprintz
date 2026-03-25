@@ -36,6 +36,12 @@ const MOVE_MARK_ARROW_STROKE = "#1FD3C6";
 type VisualMode = "blueprint" | "thumbnails";
 type SilhouetteKind = "sofa" | "chair" | "table" | "lamp" | "bed" | "rug";
 type ActiveTool = ReturnType<typeof useEditorStore.getState>["ui"]["activeTool"];
+type PasteToPlaceStatus = "reading" | "preparing" | "placing";
+const PASTE_TO_PLACE_PROGRESS_COPY: Record<PasteToPlaceStatus, string> = {
+  reading: "Reading copied image...",
+  preparing: "Preparing product...",
+  placing: "Placing it in your room...",
+};
 
 type VibodeDebugWindow = Window & {
   __VIBODE_DEBUG_ROOM_OPEN__?: boolean;
@@ -218,6 +224,7 @@ export function EditorCanvas({
   markupVisible = true,
   visualMode = "blueprint",
   imageUrl,
+  pasteToPlaceStatus = null,
 }: {
   className?: string;
   onRequestSwap?: (id: string) => void;
@@ -225,6 +232,7 @@ export function EditorCanvas({
   markupVisible?: boolean;
   visualMode?: VisualMode;
   imageUrl?: string | null;
+  pasteToPlaceStatus?: PasteToPlaceStatus | null;
 }) {
   const instanceIdRef = useRef(`canvas_${Math.random().toString(16).slice(2, 10)}`);
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -376,6 +384,9 @@ export function EditorCanvas({
     if (!viewport || nodes.length < 2) return new Set<string>();
     return computeOverlappingNodeIds(nodes, viewport);
   }, [nodes, viewport]);
+  const pasteToPlaceProgressMessage = pasteToPlaceStatus
+    ? PASTE_TO_PLACE_PROGRESS_COPY[pasteToPlaceStatus]
+    : null;
 
   const transformerRef = useRef<Konva.Transformer | null>(null);
   const selectedNodeRef = useRef<Konva.Group | null>(null);
@@ -1687,6 +1698,15 @@ export function EditorCanvas({
           />
         </Layer>
       </Stage>
+
+      {pasteToPlaceProgressMessage && (
+        <div className="pointer-events-none absolute bottom-4 left-1/2 z-20 -translate-x-1/2">
+          <div className="flex items-center gap-2 rounded-full border border-white/15 bg-neutral-950/75 px-3 py-1.5 text-xs font-medium text-neutral-100 shadow-[0_8px_20px_rgba(0,0,0,0.35)] backdrop-blur-sm">
+            <span className="h-3 w-3 animate-spin rounded-full border border-neutral-300/80 border-t-transparent" />
+            <span>{pasteToPlaceProgressMessage}</span>
+          </div>
+        </div>
+      )}
 
       {/* Tiny HUD (temporary) */}
       <div className="pointer-events-none absolute left-3 top-3 flex flex-col gap-1 rounded bg-neutral-950/60 px-2 py-1 text-xs text-neutral-300">

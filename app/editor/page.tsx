@@ -192,6 +192,7 @@ type StageRunStatus = "idle" | "running" | "success" | "error";
 type DeclutterMode = "off" | "light" | "heavy";
 type VibodeModelVersion = typeof VIBODE_MODEL_NBP | typeof VIBODE_MODEL_NB2;
 type VibodeAspectRatio = "auto" | "4:3" | "3:2" | "16:9" | "1:1";
+type PasteToPlaceStatus = "reading" | "preparing" | "placing";
 type Stage4Action =
   | "style_room"
   | "accessories"
@@ -888,24 +889,7 @@ export default function EditorPage() {
   const pushSnack = useCallback((message: string) => {
     setSnacks((prev) => [...prev, { id: safeId("sn"), message }]);
   }, []);
-  const pasteToPlaceProgressSnackIdRef = useRef<string | null>(null);
-  const upsertPasteToPlaceProgressSnack = useCallback((message: string) => {
-    setSnacks((prev) => {
-      const existingId = pasteToPlaceProgressSnackIdRef.current;
-      if (existingId && prev.some((snack) => snack.id === existingId)) {
-        return prev.map((snack) => (snack.id === existingId ? { ...snack, message } : snack));
-      }
-      const id = safeId("sn");
-      pasteToPlaceProgressSnackIdRef.current = id;
-      return [...prev, { id, message }];
-    });
-  }, []);
-  const clearPasteToPlaceProgressSnack = useCallback(() => {
-    const existingId = pasteToPlaceProgressSnackIdRef.current;
-    if (!existingId) return;
-    pasteToPlaceProgressSnackIdRef.current = null;
-    setSnacks((prev) => prev.filter((snack) => snack.id !== existingId));
-  }, []);
+  const [pasteToPlaceStatus, setPasteToPlaceStatus] = useState<PasteToPlaceStatus | null>(null);
   function getBaseImageLabel(url?: string): string {
     if (!url) return "—";
     try {
@@ -2310,7 +2294,7 @@ export default function EditorPage() {
         markPasteToPlaceClipboardHeadsUpShown();
       }
 
-      upsertPasteToPlaceProgressSnack("Reading copied image...");
+      setPasteToPlaceStatus("reading");
       try {
         const clipboardReadResult = await readClipboardImageWithStatus();
         const clipboardImage = clipboardReadResult.image;
@@ -2347,7 +2331,7 @@ export default function EditorPage() {
           mimeType: clipboardImage.mimeType,
         });
 
-        upsertPasteToPlaceProgressSnack("Preparing product...");
+        setPasteToPlaceStatus("preparing");
         const clipboardDataUrl = await blobToDataUrl(clipboardImage.blob);
         if (!clipboardDataUrl || !clipboardDataUrl.startsWith("data:image/")) {
           logEditorRoomOpen("pasteToPlace:failure", {
@@ -2377,7 +2361,7 @@ export default function EditorPage() {
         };
         const eligibleSkusForAdd = [...stage3SkuItemsActive, clipboardEligibleSku];
 
-        upsertPasteToPlaceProgressSnack("Placing it in your room...");
+        setPasteToPlaceStatus("placing");
         const res = await runEdit("add", {
           target: { skuId: clipboardSku.skuId },
           params: { x: xNorm, y: yNorm },
@@ -2407,13 +2391,12 @@ export default function EditorPage() {
         });
         return true;
       } finally {
-        clearPasteToPlaceProgressSnack();
+        setPasteToPlaceStatus(null);
       }
     },
     [
       activeTool,
       canUseFreePasteToPlace,
-      clearPasteToPlaceProgressSnack,
       hasShownPasteToPlaceClipboardHeadsUp,
       ingestClipboardUserSku,
       isDevUnlockPasteToPlace,
@@ -2424,7 +2407,6 @@ export default function EditorPage() {
       scenePlacements,
       scene.baseImageUrl,
       stage3SkuItemsActive,
-      upsertPasteToPlaceProgressSnack,
       runEdit,
     ]
   );
@@ -3555,6 +3537,7 @@ export default function EditorPage() {
                 imageUrl={previewImageUrl}
                 markupVisible={scene.markupVisible}
                 visualMode="blueprint"
+                pasteToPlaceStatus={pasteToPlaceStatus}
                 onRequestPasteToPlaceAdd={handlePasteToPlaceAdd}
                 onRequestSwap={(id) => {
                   const node = nodes.find((n) => n.id === id);
