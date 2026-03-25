@@ -33,6 +33,7 @@ const MOVE_MARK_ANCHOR_RADIUS = 6;
 const MOVE_MARK_ARROW_HEAD_SIZE = 10;
 const MOVE_MARK_ANCHOR_FILL = "#00B3A4";
 const MOVE_MARK_ARROW_STROKE = "#1FD3C6";
+const PASTE_TO_PLACE_PULSE_DURATION_MS = 560;
 type VisualMode = "blueprint" | "thumbnails";
 type SilhouetteKind = "sofa" | "chair" | "table" | "lamp" | "bed" | "rug";
 type ActiveTool = ReturnType<typeof useEditorStore.getState>["ui"]["activeTool"];
@@ -288,6 +289,9 @@ export function EditorCanvas({
   const [hoveredMoveAnchorId, setHoveredMoveAnchorId] = useState<string | null>(
     null
   );
+  const [pasteToPlacePulse, setPasteToPlacePulse] = useState<{ x: number; y: number } | null>(
+    null
+  );
   const moveVectorDragRef = useRef<{
     id: string;
     anchor: { xNorm: number; yNorm: number };
@@ -524,6 +528,26 @@ export function EditorCanvas({
     return { x, y };
   }
 
+  function eventPointerToContainerCss(
+    evt: MouseEvent | TouchEvent,
+    containerEl: HTMLDivElement
+  ) {
+    const rect = containerEl.getBoundingClientRect();
+    const touchEvt = evt as TouchEvent;
+    const touch = touchEvt.touches?.[0] ?? touchEvt.changedTouches?.[0];
+    if (touch) {
+      return {
+        x: touch.clientX - rect.left,
+        y: touch.clientY - rect.top,
+      };
+    }
+    const mouseEvt = evt as MouseEvent;
+    return {
+      x: mouseEvt.clientX - rect.left,
+      y: mouseEvt.clientY - rect.top,
+    };
+  }
+
   function isInsideImage(
     ptImg: { x: number; y: number },
     vp: NonNullable<typeof viewport>
@@ -664,6 +688,14 @@ export function EditorCanvas({
     }
   }, [activeTool, hoveredMoveAnchorId]);
 
+  useEffect(() => {
+    if (!pasteToPlacePulse) return;
+    const timeoutId = window.setTimeout(() => {
+      setPasteToPlacePulse(null);
+    }, PASTE_TO_PLACE_PULSE_DURATION_MS);
+    return () => window.clearTimeout(timeoutId);
+  }, [pasteToPlacePulse]);
+
   const handleStagePointerDown = async (
     e: Konva.KonvaEventObject<MouseEvent | TouchEvent>
   ) => {
@@ -786,12 +818,23 @@ export function EditorCanvas({
       const imgPt0 = stagePointerToImage(stage, viewport);
       if (imgPt0 && isInsideImage(imgPt0, viewport)) {
         const imgPt = clampToImage(imgPt0, viewport);
+        const containerEl = containerRef.current;
+        if (containerEl) {
+          const pulseCssPt = eventPointerToContainerCss(e.evt, containerEl);
+          setPasteToPlacePulse(pulseCssPt);
+        } else {
+          // Fallback path if container ref is temporarily unavailable.
+          const pulseStagePt = imageToStage(imgPt, viewport);
+          setPasteToPlacePulse(pulseStagePt);
+        }
         const ptNorm = imageToNormalized(imgPt, viewport);
         const didHandlePasteToPlace = await onRequestPasteToPlaceAdd({
           xNorm: ptNorm.x,
           yNorm: ptNorm.y,
         });
-        if (didHandlePasteToPlace) return;
+        if (didHandlePasteToPlace) {
+          return;
+        }
       }
     }
     if (clickedOnEmpty) selectNode(null);
@@ -1698,6 +1741,16 @@ export function EditorCanvas({
           />
         </Layer>
       </Stage>
+
+      {pasteToPlacePulse && (
+        <div
+          className="pointer-events-none absolute z-20 -translate-x-1/2 -translate-y-1/2"
+          style={{ left: `${pasteToPlacePulse.x}px`, top: `${pasteToPlacePulse.y}px` }}
+          aria-hidden="true"
+        >
+          <div className="paste-to-place-pulse-ring" />
+        </div>
+      )}
 
       {pasteToPlaceProgressMessage && (
         <div className="pointer-events-none absolute bottom-4 left-1/2 z-20 -translate-x-1/2">
