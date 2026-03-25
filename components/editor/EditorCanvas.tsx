@@ -34,10 +34,20 @@ const MOVE_MARK_ARROW_HEAD_SIZE = 10;
 const MOVE_MARK_ANCHOR_FILL = "#00B3A4";
 const MOVE_MARK_ARROW_STROKE = "#1FD3C6";
 const PASTE_TO_PLACE_PULSE_DURATION_MS = 560;
+const PASTE_TO_PLACE_MENU_OFFSET_PX = 12;
+const PASTE_TO_PLACE_MENU_EDGE_GUTTER_PX = 8;
+const PASTE_TO_PLACE_MENU_ESTIMATED_WIDTH_PX = 220;
+const PASTE_TO_PLACE_MENU_ESTIMATED_HEIGHT_PX = 132;
 type VisualMode = "blueprint" | "thumbnails";
 type SilhouetteKind = "sofa" | "chair" | "table" | "lamp" | "bed" | "rug";
 type ActiveTool = ReturnType<typeof useEditorStore.getState>["ui"]["activeTool"];
 type PasteToPlaceStatus = "reading" | "preparing" | "placing";
+type PasteToPlaceMenuState = {
+  xNorm: number;
+  yNorm: number;
+  anchorCssX: number;
+  anchorCssY: number;
+} | null;
 const PASTE_TO_PLACE_PROGRESS_COPY: Record<PasteToPlaceStatus, string> = {
   reading: "Reading copied image...",
   preparing: "Preparing product...",
@@ -221,7 +231,12 @@ function findSkuById(skuId: string) {
 export function EditorCanvas({
   className,
   onRequestSwap,
-  onRequestPasteToPlaceAdd,
+  pasteToPlaceMenuState = null,
+  onOpenPasteToPlaceMenu,
+  onPasteToPlaceChoosePlaceHere,
+  onPasteToPlaceChooseSwap,
+  onPasteToPlaceChooseAutoPlace,
+  onDismissPasteToPlaceMenu,
   markupVisible = true,
   visualMode = "blueprint",
   imageUrl,
@@ -229,7 +244,12 @@ export function EditorCanvas({
 }: {
   className?: string;
   onRequestSwap?: (id: string) => void;
-  onRequestPasteToPlaceAdd?: (args: { xNorm: number; yNorm: number }) => boolean | Promise<boolean>;
+  pasteToPlaceMenuState?: PasteToPlaceMenuState;
+  onOpenPasteToPlaceMenu?: (state: NonNullable<PasteToPlaceMenuState>) => void;
+  onPasteToPlaceChoosePlaceHere?: () => void;
+  onPasteToPlaceChooseSwap?: () => void;
+  onPasteToPlaceChooseAutoPlace?: () => void;
+  onDismissPasteToPlaceMenu?: () => void;
   markupVisible?: boolean;
   visualMode?: VisualMode;
   imageUrl?: string | null;
@@ -391,6 +411,26 @@ export function EditorCanvas({
   const pasteToPlaceProgressMessage = pasteToPlaceStatus
     ? PASTE_TO_PLACE_PROGRESS_COPY[pasteToPlaceStatus]
     : null;
+  const clampedPasteToPlaceMenuPosition = useMemo(() => {
+    if (!pasteToPlaceMenuState) return null;
+
+    const requestedLeft = pasteToPlaceMenuState.anchorCssX + PASTE_TO_PLACE_MENU_OFFSET_PX;
+    const requestedTop = pasteToPlaceMenuState.anchorCssY + PASTE_TO_PLACE_MENU_OFFSET_PX;
+
+    const maxLeft = Math.max(
+      PASTE_TO_PLACE_MENU_EDGE_GUTTER_PX,
+      stageSize.w - PASTE_TO_PLACE_MENU_ESTIMATED_WIDTH_PX - PASTE_TO_PLACE_MENU_EDGE_GUTTER_PX
+    );
+    const maxTop = Math.max(
+      PASTE_TO_PLACE_MENU_EDGE_GUTTER_PX,
+      stageSize.h - PASTE_TO_PLACE_MENU_ESTIMATED_HEIGHT_PX - PASTE_TO_PLACE_MENU_EDGE_GUTTER_PX
+    );
+
+    return {
+      left: clamp(requestedLeft, PASTE_TO_PLACE_MENU_EDGE_GUTTER_PX, maxLeft),
+      top: clamp(requestedTop, PASTE_TO_PLACE_MENU_EDGE_GUTTER_PX, maxTop),
+    };
+  }, [pasteToPlaceMenuState, stageSize.h, stageSize.w]);
 
   const transformerRef = useRef<Konva.Transformer | null>(null);
   const selectedNodeRef = useRef<Konva.Group | null>(null);
@@ -444,6 +484,10 @@ export function EditorCanvas({
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
+        if (pasteToPlaceMenuState && onDismissPasteToPlaceMenu) {
+          onDismissPasteToPlaceMenu();
+          return;
+        }
         if (selectedSwapMarkId) {
           selectSwapMark(null);
           return;
@@ -514,6 +558,8 @@ export function EditorCanvas({
     selectedRemoveMarkId,
     selectedRotateMarkId,
     selectedSwapMarkId,
+    pasteToPlaceMenuState,
+    onDismissPasteToPlaceMenu,
     toggleDelete,
   ]);
 
@@ -814,27 +860,36 @@ export function EditorCanvas({
     }
 
     const clickedOnEmpty = e.target === stage;
-    if (clickedOnEmpty && viewport && onRequestPasteToPlaceAdd) {
+    if (clickedOnEmpty && viewport && onOpenPasteToPlaceMenu) {
       const imgPt0 = stagePointerToImage(stage, viewport);
       if (imgPt0 && isInsideImage(imgPt0, viewport)) {
         const imgPt = clampToImage(imgPt0, viewport);
+        const ptNorm = imageToNormalized(imgPt, viewport);
         const containerEl = containerRef.current;
         if (containerEl) {
-          const pulseCssPt = eventPointerToContainerCss(e.evt, containerEl);
-          setPasteToPlacePulse(pulseCssPt);
-        } else {
-          // Fallback path if container ref is temporarily unavailable.
-          const pulseStagePt = imageToStage(imgPt, viewport);
-          setPasteToPlacePulse(pulseStagePt);
-        }
-        const ptNorm = imageToNormalized(imgPt, viewport);
-        const didHandlePasteToPlace = await onRequestPasteToPlaceAdd({
-          xNorm: ptNorm.x,
-          yNorm: ptNorm.y,
-        });
-        if (didHandlePasteToPlace) {
+          const pointerCssPt = eventPointerToContainerCss(e.evt, containerEl);
+          setPasteToPlacePulse(pointerCssPt);
+
+          onOpenPasteToPlaceMenu({
+            xNorm: ptNorm.x,
+            yNorm: ptNorm.y,
+            anchorCssX: pointerCssPt.x,
+            anchorCssY: pointerCssPt.y,
+          });
+
           return;
         }
+
+        // Fallback path if container ref is temporarily unavailable.
+        const pulseStagePt = imageToStage(imgPt, viewport);
+        setPasteToPlacePulse(pulseStagePt);
+        onOpenPasteToPlaceMenu({
+          xNorm: ptNorm.x,
+          yNorm: ptNorm.y,
+          anchorCssX: pulseStagePt.x,
+          anchorCssY: pulseStagePt.y,
+        });
+        return;
       }
     }
     if (clickedOnEmpty) selectNode(null);
@@ -1757,6 +1812,49 @@ export function EditorCanvas({
           <div className="flex items-center gap-2 rounded-full border border-white/15 bg-neutral-950/75 px-3 py-1.5 text-xs font-medium text-neutral-100 shadow-[0_8px_20px_rgba(0,0,0,0.35)] backdrop-blur-sm">
             <span className="h-3 w-3 animate-spin rounded-full border border-neutral-300/80 border-t-transparent" />
             <span>{pasteToPlaceProgressMessage}</span>
+          </div>
+        </div>
+      )}
+
+      {pasteToPlaceMenuState && onDismissPasteToPlaceMenu && (
+        <button
+          type="button"
+          aria-label="Dismiss Paste-to-Place menu"
+          className="absolute inset-0 z-20 bg-transparent"
+          onClick={onDismissPasteToPlaceMenu}
+        />
+      )}
+      {pasteToPlaceMenuState && (
+        <div
+          className="absolute z-30"
+          style={{
+            left:
+              clampedPasteToPlaceMenuPosition?.left ??
+              pasteToPlaceMenuState.anchorCssX + PASTE_TO_PLACE_MENU_OFFSET_PX,
+            top:
+              clampedPasteToPlaceMenuPosition?.top ??
+              pasteToPlaceMenuState.anchorCssY + PASTE_TO_PLACE_MENU_OFFSET_PX,
+          }}
+        >
+          <div className="flex flex-col rounded-lg border border-white/10 bg-neutral-950/85 shadow-lg backdrop-blur-sm">
+            <button
+              className="px-3 py-2 text-left text-sm text-white hover:bg-white/10"
+              onClick={onPasteToPlaceChoosePlaceHere}
+            >
+              ✨ Place here
+            </button>
+            <button
+              className="px-3 py-2 text-left text-sm text-neutral-300 hover:bg-white/10"
+              onClick={onPasteToPlaceChooseSwap}
+            >
+              🔁 Swap item
+            </button>
+            <button
+              className="px-3 py-2 text-left text-sm text-neutral-300 hover:bg-white/10"
+              onClick={onPasteToPlaceChooseAutoPlace}
+            >
+              🎯 Let Vibode decide placement
+            </button>
           </div>
         </div>
       )}

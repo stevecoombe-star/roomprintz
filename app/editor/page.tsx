@@ -255,6 +255,12 @@ type VibodeEditRunResponse = {
   placements?: ScenePlacement[];
 };
 type PasteToPlaceClickHint = { xNorm: number; yNorm: number };
+type PasteToPlaceMenuState = {
+  xNorm: number;
+  yNorm: number;
+  anchorCssX: number;
+  anchorCssY: number;
+} | null;
 type PendingStage3Payload = {
   skuItems?: unknown;
   showCatalog?: unknown;
@@ -890,6 +896,7 @@ export default function EditorPage() {
     setSnacks((prev) => [...prev, { id: safeId("sn"), message }]);
   }, []);
   const [pasteToPlaceStatus, setPasteToPlaceStatus] = useState<PasteToPlaceStatus | null>(null);
+  const [pasteToPlaceMenuState, setPasteToPlaceMenuState] = useState<PasteToPlaceMenuState>(null);
   function getBaseImageLabel(url?: string): string {
     if (!url) return "—";
     try {
@@ -2411,6 +2418,33 @@ export default function EditorPage() {
     ]
   );
 
+  const openPasteToPlaceMenu = useCallback((state: NonNullable<PasteToPlaceMenuState>) => {
+    setPasteToPlaceMenuState(state);
+  }, []);
+
+  const dismissPasteToPlaceMenu = useCallback(() => {
+    setPasteToPlaceMenuState(null);
+  }, []);
+
+  const handlePasteToPlacePlaceHere = useCallback(async () => {
+    if (!pasteToPlaceMenuState) return;
+
+    const { xNorm, yNorm } = pasteToPlaceMenuState;
+    dismissPasteToPlaceMenu();
+
+    await handlePasteToPlaceAdd({ xNorm, yNorm });
+  }, [pasteToPlaceMenuState, dismissPasteToPlaceMenu, handlePasteToPlaceAdd]);
+
+  const handlePasteToPlaceSwap = useCallback(() => {
+    dismissPasteToPlaceMenu();
+    pushSnack("Swap coming next.");
+  }, [dismissPasteToPlaceMenu, pushSnack]);
+
+  const handlePasteToPlaceAutoPlace = useCallback(() => {
+    dismissPasteToPlaceMenu();
+    pushSnack("Auto placement coming next.");
+  }, [dismissPasteToPlaceMenu, pushSnack]);
+
   const warnEdit = (message: string) => {
     setEditWarning(message);
     console.warn(`[edit-run] ${message}`);
@@ -3538,7 +3572,12 @@ export default function EditorPage() {
                 markupVisible={scene.markupVisible}
                 visualMode="blueprint"
                 pasteToPlaceStatus={pasteToPlaceStatus}
-                onRequestPasteToPlaceAdd={handlePasteToPlaceAdd}
+                pasteToPlaceMenuState={pasteToPlaceMenuState}
+                onOpenPasteToPlaceMenu={openPasteToPlaceMenu}
+                onPasteToPlaceChoosePlaceHere={handlePasteToPlacePlaceHere}
+                onPasteToPlaceChooseSwap={handlePasteToPlaceSwap}
+                onPasteToPlaceChooseAutoPlace={handlePasteToPlaceAutoPlace}
+                onDismissPasteToPlaceMenu={dismissPasteToPlaceMenu}
                 onRequestSwap={(id) => {
                   const node = nodes.find((n) => n.id === id);
                   if (node?.status === "markedForDelete") {
