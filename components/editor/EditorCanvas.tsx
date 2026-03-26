@@ -241,6 +241,9 @@ export function EditorCanvas({
   visualMode = "blueprint",
   imageUrl,
   pasteToPlaceStatus = null,
+  isSwapPickMode = false,
+  onSwapPickPoint,
+  onCancelSwapPickMode,
 }: {
   className?: string;
   onRequestSwap?: (id: string) => void;
@@ -254,6 +257,9 @@ export function EditorCanvas({
   visualMode?: VisualMode;
   imageUrl?: string | null;
   pasteToPlaceStatus?: PasteToPlaceStatus | null;
+  isSwapPickMode?: boolean;
+  onSwapPickPoint?: (point: { xNorm: number; yNorm: number }) => void;
+  onCancelSwapPickMode?: () => void;
 }) {
   const instanceIdRef = useRef(`canvas_${Math.random().toString(16).slice(2, 10)}`);
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -484,6 +490,10 @@ export function EditorCanvas({
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
+        if (isSwapPickMode && onCancelSwapPickMode) {
+          onCancelSwapPickMode();
+          return;
+        }
         if (pasteToPlaceMenuState && onDismissPasteToPlaceMenu) {
           onDismissPasteToPlaceMenu();
           return;
@@ -560,6 +570,8 @@ export function EditorCanvas({
     selectedSwapMarkId,
     pasteToPlaceMenuState,
     onDismissPasteToPlaceMenu,
+    isSwapPickMode,
+    onCancelSwapPickMode,
     toggleDelete,
   ]);
 
@@ -748,6 +760,18 @@ export function EditorCanvas({
     const stage = e.target.getStage();
     if (!stage) return;
 
+    if (isSwapPickMode && onSwapPickPoint) {
+      if (!viewport) return;
+      const imgPt0 = stagePointerToImage(stage, viewport);
+      if (!imgPt0) return;
+      if (!isInsideImage(imgPt0, viewport)) return;
+
+      const imgPt = clampToImage(imgPt0, viewport);
+      const ptNorm = imageToNormalized(imgPt, viewport);
+      onSwapPickPoint({ xNorm: ptNorm.x, yNorm: ptNorm.y });
+      return;
+    }
+
     // Calibration tool intercepts clicks
     if (activeTool === "calibrate") {
       if (!viewport) return;
@@ -929,7 +953,9 @@ export function EditorCanvas({
       className={className}
       style={{
         cursor:
-          activeTool === "move"
+          isSwapPickMode
+            ? "copy"
+            : activeTool === "move"
             ? hoveredMoveAnchorId
               ? "pointer"
               : "crosshair"
@@ -1869,7 +1895,9 @@ export function EditorCanvas({
               Possible overlap with another item.
             </div>
           )}
-        {activeTool === "calibrate"
+        {isSwapPickMode
+          ? "Swap: click the item to replace — Esc cancels"
+          : activeTool === "calibrate"
           ? calP1
             ? calP2
               ? "Calibration: line set — enter feet and click Apply"
