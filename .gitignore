@@ -82,3 +82,11 @@ next-env.d.ts
 # Supabase storage purge utilities)
 # ----------------------------------------
 scripts/purge-*.mjs
+
+# ----------------------------------------
+# QA artifacts / generated images
+# Ignore local QA runs and generated
+# image outputs from Paste-to-Place tests
+# ----------------------------------------
+qa-assets/
+*.png

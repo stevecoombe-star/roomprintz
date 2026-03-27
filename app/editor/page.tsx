@@ -274,7 +274,7 @@ type PasteToPlaceClipboardPreparationResult =
     }
   | { status: "no-image" }
   | { status: "blocked" }
-  | { status: "failed" };
+  | { status: "failed"; reason?: string };
 type PasteToPlaceMenuState = {
   xNorm: number;
   yNorm: number;
@@ -2318,15 +2318,71 @@ export default function EditorPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           imageBase64,
-          label: "Clipboard Product",
+          label: "Pasted Product",
         }),
       });
-      const json = (await res.json().catch(() => ({}))) as { userSku?: UserSku; error?: string };
+      const json = (await res.json().catch(() => ({}))) as {
+        status?: string;
+        reason?: string;
+        message?: string;
+        error?: string;
+        userSku?: Partial<UserSku> | null;
+      };
       if (!res.ok) {
         throw new Error(json.error || `Clipboard ingest failed (HTTP ${res.status})`);
       }
-      if (!json.userSku || json.userSku.status !== "ready") return null;
-      return json.userSku;
+
+      const userSku = json.userSku;
+      const ingestStatus = typeof json.status === "string" ? json.status : null;
+      const failureReasonFromPayload =
+        typeof json.reason === "string" && json.reason.trim().length > 0
+          ? json.reason
+          : typeof json.message === "string" && json.message.trim().length > 0
+            ? json.message
+            : null;
+      const rawVariants = Array.isArray(userSku?.variants) ? userSku.variants : [];
+      const variants = rawVariants.filter(
+        (imageUrl): imageUrl is string =>
+          typeof imageUrl === "string" && imageUrl.trim().length > 0
+      );
+
+      const failureReason =
+        ingestStatus === "failed"
+          ? failureReasonFromPayload ?? "ingest-status-failed"
+          : !userSku
+            ? "missing-userSku"
+            : userSku.status === "failed"
+              ? userSku.reason ?? "userSku-status-failed"
+              : userSku.status !== "ready"
+                ? `invalid-userSku-status:${String(userSku.status)}`
+              : typeof userSku.skuId !== "string" || userSku.skuId.trim().length === 0
+                ? "missing-skuId"
+                : variants.length === 0
+                  ? "empty-variants"
+                  : null;
+
+      if (failureReason) {
+        logEditorRoomOpen("pasteToPlace:clipboard-ingest-invalid", {
+          reason: "clipboard-user-sku-invalid",
+          failureReason,
+          ingestStatus,
+          userSkuStatus: userSku?.status ?? null,
+          variantsLength: rawVariants.length,
+        });
+        return null;
+      }
+
+      return {
+        skuId: userSku.skuId!.trim(),
+        label:
+          typeof userSku.label === "string" && userSku.label.trim().length > 0
+            ? userSku.label
+            : userSku.skuId!.trim(),
+        variants,
+        sourceUrl: typeof userSku.sourceUrl === "string" ? userSku.sourceUrl : undefined,
+        status: "ready",
+        reason: typeof userSku.reason === "string" ? userSku.reason : null,
+      };
     } catch (err: any) {
       logEditorRoomOpen("pasteToPlace:clipboard-ingest-catch", {
         reason: "clipboard-user-sku-ingest-catch",
@@ -2399,8 +2455,10 @@ export default function EditorPage() {
           yNorm,
           reason: "clipboard-sku-ingest-failed",
         });
-        pushSnack("Could not place copied product right now.");
-        return { status: "failed" };
+        pushSnack(
+          "Couldn't isolate the copied product clearly. Try copying a cleaner product image."
+        );
+        return { status: "failed", reason: "clipboard-sku-ingest-failed" };
       }
 
       const clipboardEligibleSku: VibodeEligibleSku = {
