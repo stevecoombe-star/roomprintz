@@ -38,6 +38,8 @@ const PASTE_TO_PLACE_MENU_OFFSET_PX = 12;
 const PASTE_TO_PLACE_MENU_EDGE_GUTTER_PX = 8;
 const PASTE_TO_PLACE_MENU_ESTIMATED_WIDTH_PX = 220;
 const PASTE_TO_PLACE_MENU_ESTIMATED_HEIGHT_PX = 132;
+const PASTE_TO_PLACE_MENU_WITH_PREVIEW_ESTIMATED_HEIGHT_PX = 238;
+const PASTE_TO_PLACE_PROGRESS_CARD_ESTIMATED_HEIGHT_PX = 120;
 type VisualMode = "blueprint" | "thumbnails";
 type SilhouetteKind = "sofa" | "chair" | "table" | "lamp" | "bed" | "rug";
 type ActiveTool = ReturnType<typeof useEditorStore.getState>["ui"]["activeTool"];
@@ -237,6 +239,11 @@ export function EditorCanvas({
   onPasteToPlaceChooseSwap,
   onPasteToPlaceChooseAutoPlace,
   onDismissPasteToPlaceMenu,
+  pasteToPlaceMenuPreviewUrl = null,
+  isPasteToPlaceMenuPreviewLoading = false,
+  pasteToPlaceProgressCardState = null,
+  pasteToPlaceProgressCardPreviewUrl = null,
+  isPasteToPlaceProgressCardLoading = false,
   markupVisible = true,
   visualMode = "blueprint",
   imageUrl,
@@ -253,6 +260,11 @@ export function EditorCanvas({
   onPasteToPlaceChooseSwap?: () => void;
   onPasteToPlaceChooseAutoPlace?: () => void;
   onDismissPasteToPlaceMenu?: () => void;
+  pasteToPlaceMenuPreviewUrl?: string | null;
+  isPasteToPlaceMenuPreviewLoading?: boolean;
+  pasteToPlaceProgressCardState?: PasteToPlaceMenuState;
+  pasteToPlaceProgressCardPreviewUrl?: string | null;
+  isPasteToPlaceProgressCardLoading?: boolean;
   markupVisible?: boolean;
   visualMode?: VisualMode;
   imageUrl?: string | null;
@@ -417,6 +429,9 @@ export function EditorCanvas({
   const pasteToPlaceProgressMessage = pasteToPlaceStatus
     ? PASTE_TO_PLACE_PROGRESS_COPY[pasteToPlaceStatus]
     : null;
+  const pasteToPlaceMenuEstimatedHeight = pasteToPlaceMenuPreviewUrl
+    ? PASTE_TO_PLACE_MENU_WITH_PREVIEW_ESTIMATED_HEIGHT_PX
+    : PASTE_TO_PLACE_MENU_ESTIMATED_HEIGHT_PX;
   const clampedPasteToPlaceMenuPosition = useMemo(() => {
     if (!pasteToPlaceMenuState) return null;
 
@@ -429,14 +444,34 @@ export function EditorCanvas({
     );
     const maxTop = Math.max(
       PASTE_TO_PLACE_MENU_EDGE_GUTTER_PX,
-      stageSize.h - PASTE_TO_PLACE_MENU_ESTIMATED_HEIGHT_PX - PASTE_TO_PLACE_MENU_EDGE_GUTTER_PX
+      stageSize.h - pasteToPlaceMenuEstimatedHeight - PASTE_TO_PLACE_MENU_EDGE_GUTTER_PX
     );
 
     return {
       left: clamp(requestedLeft, PASTE_TO_PLACE_MENU_EDGE_GUTTER_PX, maxLeft),
       top: clamp(requestedTop, PASTE_TO_PLACE_MENU_EDGE_GUTTER_PX, maxTop),
     };
-  }, [pasteToPlaceMenuState, stageSize.h, stageSize.w]);
+  }, [pasteToPlaceMenuEstimatedHeight, pasteToPlaceMenuState, stageSize.h, stageSize.w]);
+  const clampedPasteToPlaceProgressCardPosition = useMemo(() => {
+    if (!pasteToPlaceProgressCardState) return null;
+
+    const requestedLeft = pasteToPlaceProgressCardState.anchorCssX + PASTE_TO_PLACE_MENU_OFFSET_PX;
+    const requestedTop = pasteToPlaceProgressCardState.anchorCssY + PASTE_TO_PLACE_MENU_OFFSET_PX;
+    const maxLeft = Math.max(
+      PASTE_TO_PLACE_MENU_EDGE_GUTTER_PX,
+      stageSize.w - PASTE_TO_PLACE_MENU_ESTIMATED_WIDTH_PX - PASTE_TO_PLACE_MENU_EDGE_GUTTER_PX
+    );
+    const maxTop = Math.max(
+      PASTE_TO_PLACE_MENU_EDGE_GUTTER_PX,
+      stageSize.h -
+        PASTE_TO_PLACE_PROGRESS_CARD_ESTIMATED_HEIGHT_PX -
+        PASTE_TO_PLACE_MENU_EDGE_GUTTER_PX
+    );
+    return {
+      left: clamp(requestedLeft, PASTE_TO_PLACE_MENU_EDGE_GUTTER_PX, maxLeft),
+      top: clamp(requestedTop, PASTE_TO_PLACE_MENU_EDGE_GUTTER_PX, maxTop),
+    };
+  }, [pasteToPlaceProgressCardState, stageSize.h, stageSize.w]);
 
   const transformerRef = useRef<Konva.Transformer | null>(null);
   const selectedNodeRef = useRef<Konva.Group | null>(null);
@@ -1863,6 +1898,25 @@ export function EditorCanvas({
           }}
         >
           <div className="flex flex-col rounded-lg border border-white/10 bg-neutral-950/85 shadow-lg backdrop-blur-sm">
+            {(pasteToPlaceMenuPreviewUrl || isPasteToPlaceMenuPreviewLoading) && (
+              <div className="relative mx-2 mt-2 mb-1 overflow-hidden rounded-md border border-white/10 bg-neutral-900/70">
+                {pasteToPlaceMenuPreviewUrl ? (
+                  <img
+                    src={pasteToPlaceMenuPreviewUrl}
+                    alt="Clipboard product preview"
+                    className="h-24 w-full max-w-[220px] object-contain"
+                    draggable={false}
+                  />
+                ) : (
+                  <div className="h-24 w-[220px] bg-neutral-900/70" />
+                )}
+                {isPasteToPlaceMenuPreviewLoading && (
+                  <div className="absolute inset-0 flex items-center justify-center bg-neutral-950/35">
+                    <span className="h-4 w-4 animate-spin rounded-full border border-neutral-100/85 border-t-transparent" />
+                  </div>
+                )}
+              </div>
+            )}
             <button
               className="px-3 py-2 text-left text-sm text-white hover:bg-white/10"
               onClick={onPasteToPlaceChoosePlaceHere}
@@ -1884,6 +1938,41 @@ export function EditorCanvas({
           </div>
         </div>
       )}
+      {pasteToPlaceProgressCardState &&
+        !pasteToPlaceMenuState &&
+        (pasteToPlaceProgressCardPreviewUrl || isPasteToPlaceProgressCardLoading) && (
+          <div
+            className="pointer-events-none absolute z-30"
+            style={{
+              left:
+                clampedPasteToPlaceProgressCardPosition?.left ??
+                pasteToPlaceProgressCardState.anchorCssX + PASTE_TO_PLACE_MENU_OFFSET_PX,
+              top:
+                clampedPasteToPlaceProgressCardPosition?.top ??
+                pasteToPlaceProgressCardState.anchorCssY + PASTE_TO_PLACE_MENU_OFFSET_PX,
+            }}
+          >
+            <div className="flex flex-col rounded-lg border border-white/10 bg-neutral-950/85 shadow-lg backdrop-blur-sm">
+              <div className="relative mx-2 my-2 overflow-hidden rounded-md border border-white/10 bg-neutral-900/70">
+                {pasteToPlaceProgressCardPreviewUrl ? (
+                  <img
+                    src={pasteToPlaceProgressCardPreviewUrl}
+                    alt="Clipboard product preview"
+                    className="h-24 w-full max-w-[220px] object-contain"
+                    draggable={false}
+                  />
+                ) : (
+                  <div className="h-24 w-[220px] bg-neutral-900/70" />
+                )}
+                {isPasteToPlaceProgressCardLoading && (
+                  <div className="absolute inset-0 flex items-center justify-center bg-neutral-950/35">
+                    <span className="h-4 w-4 animate-spin rounded-full border border-neutral-100/85 border-t-transparent" />
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
 
       {/* Tiny HUD (temporary) */}
       <div className="pointer-events-none absolute left-3 top-3 flex flex-col gap-1 rounded bg-neutral-950/60 px-2 py-1 text-xs text-neutral-300">
