@@ -1,7 +1,7 @@
 // app/editor/page.tsx
 "use client";
 
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 
@@ -824,7 +824,7 @@ function preloadImage(url: string): Promise<void> {
   });
 }
 
-export default function EditorPage() {
+function EditorPageInner() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const requestedRoomId = parseRoomIdFromSearch(
@@ -5801,5 +5801,13 @@ export default function EditorPage() {
         onRemove={(id) => setSnacks((prev) => prev.filter((s) => s.id !== id))}
       />
     </div>
+  );
+}
+
+export default function EditorPage() {
+  return (
+    <Suspense fallback={null}>
+      <EditorPageInner />
+    </Suspense>
   );
 }
