@@ -236,10 +236,12 @@ export function EditorCanvas({
   pasteToPlaceMenuState = null,
   onOpenPasteToPlaceMenu,
   onPasteToPlaceChoosePlaceHere,
+  onPasteToPlaceChooseMyFurnitureAdd,
   onPasteToPlaceChooseSwap,
   onPasteToPlaceChooseAutoPlace,
   onDismissPasteToPlaceMenu,
   pasteToPlaceMenuPreviewUrl = null,
+  isMyFurnitureLoading = false,
   isPasteToPlaceMenuPreviewLoading = false,
   pasteToPlaceProgressCardState = null,
   pasteToPlaceProgressCardPreviewUrl = null,
@@ -257,10 +259,12 @@ export function EditorCanvas({
   pasteToPlaceMenuState?: PasteToPlaceMenuState;
   onOpenPasteToPlaceMenu?: (state: NonNullable<PasteToPlaceMenuState>) => void;
   onPasteToPlaceChoosePlaceHere?: () => void;
+  onPasteToPlaceChooseMyFurnitureAdd?: () => void;
   onPasteToPlaceChooseSwap?: () => void;
   onPasteToPlaceChooseAutoPlace?: () => void;
   onDismissPasteToPlaceMenu?: () => void;
   pasteToPlaceMenuPreviewUrl?: string | null;
+  isMyFurnitureLoading?: boolean;
   isPasteToPlaceMenuPreviewLoading?: boolean;
   pasteToPlaceProgressCardState?: PasteToPlaceMenuState;
   pasteToPlaceProgressCardPreviewUrl?: string | null;
@@ -1922,6 +1926,15 @@ export function EditorCanvas({
               onClick={onPasteToPlaceChoosePlaceHere}
             >
               ✨ Place here
+            </button>
+            <button
+              className={`px-3 py-2 text-left text-sm hover:bg-white/10 ${
+                isMyFurnitureLoading ? "cursor-not-allowed text-neutral-500" : "text-neutral-300"
+              }`}
+              onClick={onPasteToPlaceChooseMyFurnitureAdd}
+              disabled={isMyFurnitureLoading || !onPasteToPlaceChooseMyFurnitureAdd}
+            >
+              {isMyFurnitureLoading ? "🪑 Loading My Furniture..." : "🪑 My Furniture"}
             </button>
             <button
               className="px-3 py-2 text-left text-sm text-neutral-300 hover:bg-white/10"

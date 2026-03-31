@@ -6,6 +6,11 @@ import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 
 import { EditorCanvas } from "@/components/editor/EditorCanvas";
+import {
+  MyFurniturePicker,
+  type MyFurniturePickerItem,
+  type MyFurniturePickerMode,
+} from "@/components/editor/MyFurniturePicker";
 import { SnackbarHost, type Snackbar } from "@/components/ui/SnackbarHost";
 import {
   toImageSpaceTransform,
@@ -235,6 +240,11 @@ type VibodeEligibleSku = {
   source?: "catalog" | "user";
   variants: Array<{ imageUrl: string }>;
 };
+type MyFurnitureResolveResponse = {
+  id: string;
+  userSkuId: string;
+  eligibleSku: VibodeEligibleSku;
+};
 type VibodeEditRunTarget = {
   placementId?: string;
   skuId?: string;
@@ -360,6 +370,15 @@ function mergeStage3SkuItems(prev: Stage3SkuItem[], userSkus: UserSku[]): Stage3
     });
   }
 
+  return next;
+}
+
+function mergeEligibleSkusForSavedFurniture(
+  base: VibodeEligibleSku[],
+  resolved: VibodeEligibleSku
+): VibodeEligibleSku[] {
+  const next = base.filter((sku) => sku.skuId !== resolved.skuId);
+  next.push(resolved);
   return next;
 }
 
@@ -967,9 +986,18 @@ function EditorPageInner() {
   const [scenePlacements, setScenePlacements] = useState<ScenePlacement[]>([]);
   const [selectedPlacementId, setSelectedPlacementId] = useState<string | null>(null);
   const [selectedEditSkuId, setSelectedEditSkuId] = useState<string>("");
+  const [myFurnitureOpen, setMyFurnitureOpen] = useState(false);
+  const [myFurnitureItems, setMyFurnitureItems] = useState<MyFurniturePickerItem[]>([]);
+  const [myFurnitureLoading, setMyFurnitureLoading] = useState(false);
+  const [myFurnitureMode, setMyFurnitureMode] = useState<MyFurniturePickerMode | null>(null);
+  const [myFurnitureSelectingId, setMyFurnitureSelectingId] = useState<string | null>(null);
   // Ghost Add is a client-only draft placement; commit will call edit-run later.
   const [ghostAddPlacementId, setGhostAddPlacementId] = useState<string | null>(null);
   const [ghostAddActive, setGhostAddActive] = useState(false);
+  const [ghostAddEligibleSkusOverride, setGhostAddEligibleSkusOverride] = useState<
+    VibodeEligibleSku[] | null
+  >(null);
+  const [ghostAddSavedFurnitureId, setGhostAddSavedFurnitureId] = useState<string | null>(null);
   const [editRotationDeg, setEditRotationDeg] = useState(0);
   const [editMoveStep, setEditMoveStep] = useState(0.05);
   const [editWarning, setEditWarning] = useState<string | null>(null);
@@ -1087,6 +1115,11 @@ function EditorPageInner() {
     store.resetSessionForIncomingImage();
     setScenePlacements([]);
     setSelectedPlacementId(null);
+    setMyFurnitureOpen(false);
+    setMyFurnitureMode(null);
+    setMyFurnitureItems([]);
+    setMyFurnitureLoading(false);
+    setMyFurnitureSelectingId(null);
     cancelPasteToPlaceSwapPick();
     clearPasteToPlaceProgressPreview();
     setActiveStage(1);
@@ -1117,6 +1150,86 @@ function EditorPageInner() {
       }
     },
     [setActiveAssetId, setVersions]
+  );
+
+  const markSavedFurnitureUsed = useCallback(async (id: string) => {
+    try {
+      const accessToken = await tryGetSupabaseAccessToken();
+      if (!accessToken) return;
+      await fetch("/api/vibode/my-furniture/mark-used", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${accessToken}`,
+        },
+        body: JSON.stringify({ id }),
+      });
+    } catch (err) {
+      console.warn("[editor] failed to mark saved furniture used:", err);
+    }
+  }, []);
+
+  const openMyFurniturePicker = useCallback(
+    async (mode: MyFurniturePickerMode) => {
+      setMyFurnitureMode(mode);
+      setMyFurnitureOpen(true);
+      setMyFurnitureLoading(true);
+      setMyFurnitureSelectingId(null);
+      try {
+        const accessToken = await tryGetSupabaseAccessToken();
+        if (!accessToken) {
+          throw new Error("No Supabase session.");
+        }
+        const res = await fetch("/api/vibode/my-furniture/list", {
+          method: "GET",
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+          },
+        });
+        const json = (await res.json().catch(() => ({}))) as {
+          error?: string;
+          items?: MyFurniturePickerItem[];
+        };
+        if (!res.ok) {
+          throw new Error(json.error || `Failed to load My Furniture (HTTP ${res.status})`);
+        }
+        setMyFurnitureItems(Array.isArray(json.items) ? json.items : []);
+      } catch (err: any) {
+        setMyFurnitureItems([]);
+        pushSnack(err?.message ?? "Failed to load My Furniture.");
+      } finally {
+        setMyFurnitureLoading(false);
+      }
+    },
+    [pushSnack]
+  );
+
+  const resolveMyFurnitureForEdit = useCallback(
+    async (id: string): Promise<MyFurnitureResolveResponse | null> => {
+      const accessToken = await tryGetSupabaseAccessToken();
+      if (!accessToken) {
+        throw new Error("No Supabase session.");
+      }
+      const res = await fetch("/api/vibode/my-furniture/resolve", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${accessToken}`,
+        },
+        body: JSON.stringify({ id }),
+      });
+      const json = (await res.json().catch(() => ({}))) as
+        | (MyFurnitureResolveResponse & { error?: never })
+        | { error?: string };
+      if (!res.ok) {
+        throw new Error(("error" in json && json.error) || `Failed to resolve item (HTTP ${res.status})`);
+      }
+      if (!("eligibleSku" in json) || !json.eligibleSku?.skuId) {
+        throw new Error("Saved furniture resolve response is missing eligibleSku.");
+      }
+      return json as MyFurnitureResolveResponse;
+    },
+    []
   );
 
   useEffect(() => {
@@ -1818,15 +1931,24 @@ function EditorPageInner() {
     setIngestedUserSku(null);
 
     try {
+      const accessToken = await tryGetSupabaseAccessToken();
       const res = await fetch("/api/vibode/user-skus/ingest", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          "x-roomprintz-ingest-source": uploadedImageDataUrl ? "upload" : "url",
+          ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
+        },
         body: JSON.stringify({
           ...(imageBase64 ? { imageBase64 } : { imageUrl }),
           label: productLabel.trim() || "User Upload",
         }),
       });
-      const json = (await res.json().catch(() => ({}))) as { userSku?: UserSku; error?: string };
+      const json = (await res.json().catch(() => ({}))) as {
+        userSku?: UserSku;
+        error?: string;
+        savedFurniture?: unknown;
+      };
 
       if (!res.ok) {
         throw new Error(json.error || "Failed to normalize image.");
@@ -1839,6 +1961,8 @@ function EditorPageInner() {
       setIngestedUserSku(json.userSku);
       if (json.userSku.status === "failed") {
         setIngestError(json.userSku.reason ?? "Normalization failed.");
+      } else if (json.userSku.status === "ready" && isRecord(json.savedFurniture)) {
+        pushSnack("Saved to My Furniture ✓");
       }
     } catch (err: any) {
       setIngestError(err?.message ?? "Failed to normalize image.");
@@ -2364,9 +2488,14 @@ function EditorPageInner() {
 
   const ingestClipboardUserSku = useCallback(async (imageBase64: string): Promise<UserSku | null> => {
     try {
+      const accessToken = await tryGetSupabaseAccessToken();
       const res = await fetch("/api/vibode/user-skus/ingest", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          "x-roomprintz-ingest-source": "clipboard",
+          ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
+        },
         body: JSON.stringify({
           imageBase64,
           label: "Pasted Product",
@@ -2378,6 +2507,7 @@ function EditorPageInner() {
         message?: string;
         error?: string;
         userSku?: Partial<UserSku> | null;
+        savedFurniture?: unknown;
       };
       if (!res.ok) {
         throw new Error(json.error || `Clipboard ingest failed (HTTP ${res.status})`);
@@ -2422,6 +2552,9 @@ function EditorPageInner() {
         });
         return null;
       }
+      if (isRecord(json.savedFurniture)) {
+        pushSnack("Saved to My Furniture ✓");
+      }
       const readyUserSku = userSku as UserSku;
 
       return {
@@ -2442,7 +2575,7 @@ function EditorPageInner() {
       });
       return null;
     }
-  }, []);
+  }, [pushSnack]);
 
   const preparePasteToPlaceClipboardProduct = useCallback(
     async ({
@@ -3100,6 +3233,53 @@ function EditorPageInner() {
     return selectedEditSkuId;
   };
 
+  const closeMyFurniturePicker = useCallback(() => {
+    setMyFurnitureOpen(false);
+    setMyFurnitureMode(null);
+    setMyFurnitureSelectingId(null);
+  }, []);
+
+  const handleSelectMyFurnitureItem = async (item: MyFurniturePickerItem) => {
+    if (!myFurnitureMode) return;
+    setMyFurnitureSelectingId(item.id);
+    try {
+      const resolved = await resolveMyFurnitureForEdit(item.id);
+      if (!resolved) return;
+      const mergedEligibleSkus = mergeEligibleSkusForSavedFurniture(
+        stage3SkuItemsActive,
+        resolved.eligibleSku
+      );
+
+      if (myFurnitureMode === "add") {
+        closeMyFurniturePicker();
+        startGhostAdd({
+          selectedSku: resolved.eligibleSku,
+          eligibleSkusOverride: mergedEligibleSkus,
+          savedFurnitureId: item.id,
+        });
+        pushSnack("Saved furniture ready. Place it, then click Commit Add (next).");
+        return;
+      }
+
+      const placementId = requireSelectedPlacement();
+      if (!placementId) return;
+
+      closeMyFurniturePicker();
+      const res = await runEdit("swap", {
+        target: { placementId },
+        params: { newSkuId: resolved.eligibleSku.skuId },
+        eligibleSkus: mergedEligibleSkus,
+      });
+      if (res) {
+        void markSavedFurnitureUsed(item.id);
+      }
+    } catch (err: any) {
+      pushSnack(err?.message ?? "Failed to resolve saved furniture item.");
+    } finally {
+      setMyFurnitureSelectingId(null);
+    }
+  };
+
   const ghostPlacementToNodeId = (placementId: string | null): string | null => {
     if (!placementId) return null;
     if (!placementId.startsWith("pl_")) return null;
@@ -3158,6 +3338,8 @@ function EditorPageInner() {
     if (ghostAddPlacementId || ghostAddActive) {
       setGhostAddPlacementId(null);
       setGhostAddActive(false);
+      setGhostAddEligibleSkusOverride(null);
+      setGhostAddSavedFurnitureId(null);
       if (notify) pushSnack("Ghost add cancelled.");
     }
   };
@@ -3262,11 +3444,16 @@ function EditorPageInner() {
     setEditWarning(null);
   };
 
-  const startGhostAdd = () => {
-    const skuId = requireSelectedSku();
+  const startGhostAdd = (options?: {
+    selectedSku?: VibodeEligibleSku;
+    eligibleSkusOverride?: VibodeEligibleSku[] | null;
+    savedFurnitureId?: string | null;
+  }) => {
+    const explicitSku = options?.selectedSku;
+    const skuId = explicitSku?.skuId ?? requireSelectedSku();
     if (!skuId) return;
 
-    const selectedSku = stage3SkuItemsActive.find((sku) => sku.skuId === skuId);
+    const selectedSku = explicitSku ?? stage3SkuItemsActive.find((sku) => sku.skuId === skuId);
     if (!selectedSku) {
       warnEdit("Choose an active Stage 3 SKU first.");
       return;
@@ -3322,8 +3509,11 @@ function EditorPageInner() {
 
     setScenePlacements((prev) => [...prev.filter((placement) => placement.placementId !== placementId), placementDraft]);
     setSelectedPlacementId(placementId);
+    setSelectedEditSkuId(selectedSku.skuId);
     setGhostAddPlacementId(placementId);
     setGhostAddActive(true);
+    setGhostAddEligibleSkusOverride(options?.eligibleSkusOverride ?? null);
+    setGhostAddSavedFurnitureId(options?.savedFurnitureId ?? null);
     setEditWarning(null);
     pushSnack("Ghost add started. Drag/rotate, then commit in the next step.");
   };
@@ -3356,10 +3546,12 @@ function EditorPageInner() {
     });
 
     const previousSelectedPlacementId = selectedPlacementId;
+    const savedFurnitureIdForMark = ghostAddSavedFurnitureId;
+    const eligibleSkusForCommit = ghostAddEligibleSkusOverride ?? stage3SkuItemsActive;
     const res = await runEdit("add", {
       target: { skuId: placement.skuId },
       params: { x, y },
-      eligibleSkus: stage3SkuItemsActive,
+      eligibleSkus: eligibleSkusForCommit,
       placements: placementsForCommit,
     });
     console.log("[commit-add] response", res);
@@ -3381,6 +3573,10 @@ function EditorPageInner() {
           setSelectedPlacementId(nextSelectedPlacementId);
         }
       }
+    }
+
+    if (savedFurnitureIdForMark) {
+      void markSavedFurnitureUsed(savedFurnitureIdForMark);
     }
   };
 
@@ -4215,9 +4411,14 @@ function EditorPageInner() {
                 }
                 onOpenPasteToPlaceMenu={openPasteToPlaceMenu}
                 onPasteToPlaceChoosePlaceHere={handlePasteToPlacePlaceHere}
+                onPasteToPlaceChooseMyFurnitureAdd={() => {
+                  dismissPasteToPlaceMenu();
+                  void openMyFurniturePicker("add");
+                }}
                 onPasteToPlaceChooseSwap={handlePasteToPlaceSwap}
                 onPasteToPlaceChooseAutoPlace={handlePasteToPlaceAutoPlace}
                 onDismissPasteToPlaceMenu={dismissPasteToPlaceMenu}
+                isMyFurnitureLoading={myFurnitureLoading}
                 isSwapPickMode={isPasteToPlaceSwapPickMode}
                 onSwapPickPoint={handlePasteToPlaceSwapPickPoint}
                 onCancelSwapPickMode={() => {
@@ -4700,7 +4901,7 @@ function EditorPageInner() {
                         ? "border-neutral-900 bg-neutral-950 text-neutral-500"
                         : "border-neutral-700 bg-neutral-900 text-neutral-100 hover:bg-neutral-800"
                     }`}
-                    onClick={startGhostAdd}
+                    onClick={() => startGhostAdd()}
                   >
                     Start Add (ghost)
                   </button>
@@ -5698,6 +5899,21 @@ function EditorPageInner() {
               )}
 
               <div className="text-xs font-medium text-neutral-300">Swap to a different item</div>
+              <button
+                type="button"
+                className={`mt-2 rounded-md border px-3 py-1.5 text-xs ${
+                  myFurnitureLoading
+                    ? "border-neutral-900 bg-neutral-950 text-neutral-500"
+                    : "border-neutral-700 bg-neutral-900 text-neutral-100 hover:bg-neutral-800"
+                }`}
+                disabled={myFurnitureLoading}
+                onClick={() => {
+                  closeSwap();
+                  void openMyFurniturePicker("swap");
+                }}
+              >
+                {myFurnitureLoading ? "Loading My Furniture..." : "My Furniture"}
+              </button>
 
               {(() => {
                 const isIkeaSwapTarget = !!swapTargetNode && isIkeaNode(swapTargetNode);
@@ -5794,6 +6010,18 @@ function EditorPageInner() {
           </div>
         </div>
       )}
+
+      <MyFurniturePicker
+        open={myFurnitureOpen}
+        mode={myFurnitureMode}
+        items={myFurnitureItems}
+        loading={myFurnitureLoading}
+        selectingId={myFurnitureSelectingId}
+        onClose={closeMyFurniturePicker}
+        onSelect={(item) => {
+          void handleSelectMyFurnitureItem(item);
+        }}
+      />
 
       {/* Snackbars */}
       <SnackbarHost
