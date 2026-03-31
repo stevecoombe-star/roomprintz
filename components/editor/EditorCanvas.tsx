@@ -249,6 +249,11 @@ export function EditorCanvas({
   markupVisible = true,
   visualMode = "blueprint",
   imageUrl,
+  frameAspectRatio = null,
+  placeholderImageUrl = null,
+  showPlaceholder = false,
+  finalImageReady = true,
+  isHydratingRoom = false,
   pasteToPlaceStatus = null,
   isSwapPickMode = false,
   onSwapPickPoint,
@@ -272,12 +277,18 @@ export function EditorCanvas({
   markupVisible?: boolean;
   visualMode?: VisualMode;
   imageUrl?: string | null;
+  frameAspectRatio?: number | null;
+  placeholderImageUrl?: string | null;
+  showPlaceholder?: boolean;
+  finalImageReady?: boolean;
+  isHydratingRoom?: boolean;
   pasteToPlaceStatus?: PasteToPlaceStatus | null;
   isSwapPickMode?: boolean;
   onSwapPickPoint?: (point: { xNorm: number; yNorm: number }) => void;
   onCancelSwapPickMode?: () => void;
 }) {
   const instanceIdRef = useRef(`canvas_${Math.random().toString(16).slice(2, 10)}`);
+  const outerShellRef = useRef<HTMLDivElement | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
 
   const baseImageUrl = useEditorStore((s) => s.scene.baseImageUrl);
@@ -343,6 +354,12 @@ export function EditorCanvas({
     w: 800,
     h: 600,
   });
+  const normalizedFrameAspectRatio =
+    typeof frameAspectRatio === "number" && Number.isFinite(frameAspectRatio) && frameAspectRatio > 0
+      ? frameAspectRatio
+      : 1;
+  const shouldRenderPlaceholder = Boolean(placeholderImageUrl) && showPlaceholder;
+  const isFinalLayerVisible = finalImageReady || (!isHydratingRoom && !showPlaceholder);
 
   const [img, imageStatus] = useImage(canvasImageUrl ?? "", "anonymous");
   const [displayImage, setDisplayImage] = useState<HTMLImageElement | null>(null);
@@ -480,23 +497,31 @@ export function EditorCanvas({
   const transformerRef = useRef<Konva.Transformer | null>(null);
   const selectedNodeRef = useRef<Konva.Group | null>(null);
 
-  // Resize stage to container
+  // Resize stage to fit a stable aspect-ratio shell
   useEffect(() => {
-    const el = containerRef.current;
+    const el = outerShellRef.current;
     if (!el) return;
 
     const ro = new ResizeObserver((entries) => {
       const cr = entries[0]?.contentRect;
       if (!cr) return;
+      const outerW = Math.max(1, Math.floor(cr.width));
+      const outerH = Math.max(1, Math.floor(cr.height));
+      let nextW = outerW;
+      let nextH = Math.round(nextW / normalizedFrameAspectRatio);
+      if (nextH > outerH) {
+        nextH = outerH;
+        nextW = Math.round(nextH * normalizedFrameAspectRatio);
+      }
       setStageSize({
-        w: Math.max(320, Math.floor(cr.width)),
-        h: Math.max(240, Math.floor(cr.height)),
+        w: Math.max(1, nextW),
+        h: Math.max(1, nextH),
       });
     });
 
     ro.observe(el);
     return () => ro.disconnect();
-  }, []);
+  }, [normalizedFrameAspectRatio]);
 
   // Attach transformer to selected node (locked if marked for delete, and locked in calibrate mode)
   useEffect(() => {
@@ -988,7 +1013,6 @@ export function EditorCanvas({
 
   return (
     <div
-      ref={containerRef}
       className={className}
       style={{
         cursor:
@@ -1000,86 +1024,119 @@ export function EditorCanvas({
               : "crosshair"
             : undefined,
       }}
-      onDragOver={(e) => {
-        e.preventDefault();
-        e.dataTransfer.dropEffect = "copy";
-      }}
-      onDrop={(e) => {
-        e.preventDefault();
-
-        // Do not allow dropping furniture while calibrating or in remove mode
-        if (
-          activeTool === "calibrate" ||
-          activeTool === "remove" ||
-          activeTool === "swap" ||
-          activeTool === "rotate" ||
-          activeTool === "move"
-        ) {
-          return;
-        }
-
-        const raw = e.dataTransfer.getData(DND_MIME);
-        if (!raw) return;
-
-        let payload: DragFurniturePayload | null = null;
-        try {
-          payload = JSON.parse(raw) as DragFurniturePayload;
-        } catch {
-          return;
-        }
-        if (!payload?.skuId) return;
-
-        const sku = findSkuById(payload.skuId);
-        if (!sku) return;
-
-        const el = containerRef.current;
-        if (!el) return;
-
-        const rect = el.getBoundingClientRect();
-        const dropX = e.clientX - rect.left;
-        const dropY = e.clientY - rect.top;
-
-        // Scale-aware drag defaults:
-        // NOTE: ppf is in IMAGE px/ft, but nodes live in STAGE px.
-        // Convert to stage px/ft using viewport.scale (stage_px per image_px).
-        const stagePpf = ppf && viewport ? ppf * viewport.scale : null;
-
-        const derivedW =
-          stagePpf && sku.realWidthFt
-            ? Math.round(sku.realWidthFt * stagePpf)
-            : sku.defaultPxWidth;
-
-        const derivedH =
-          stagePpf && sku.realDepthFt
-            ? Math.round(sku.realDepthFt * stagePpf)
-            : sku.defaultPxHeight;
-
-        addNode({
-          skuId: sku.skuId,
-          label: sku.label,
-          status: "active",
-          zIndex: 9999, // store will normalize zIndex; this is just a hint
-          transform: {
-            x: Math.max(0, dropX - derivedW / 2),
-            y: Math.max(0, dropY - derivedH / 2),
-            width: derivedW,
-            height: derivedH,
-            rotation: 0,
-          },
-        });
-      }}
     >
-      <Stage
-        width={stageSize.w}
-        height={stageSize.h}
-        onMouseDown={handleStagePointerDown}
-        onTap={handleStagePointerDown}
-        onMouseMove={handleStagePointerMove}
-        onTouchMove={handleStagePointerMove}
-        onMouseUp={handleStagePointerUp}
-        onTouchEnd={handleStagePointerUp}
-        onMouseLeave={handleStagePointerUp}
-      >
+      <div ref={outerShellRef} className="relative h-full w-full">
+        <div
+          ref={containerRef}
+          className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 overflow-hidden bg-neutral-950"
+          style={{
+            width: stageSize.w,
+            height: stageSize.h,
+            aspectRatio: normalizedFrameAspectRatio,
+          }}
+          onDragOver={(e) => {
+            e.preventDefault();
+            e.dataTransfer.dropEffect = "copy";
+          }}
+          onDrop={(e) => {
+            e.preventDefault();
+
+            // Do not allow dropping furniture while calibrating or in remove mode
+            if (
+              activeTool === "calibrate" ||
+              activeTool === "remove" ||
+              activeTool === "swap" ||
+              activeTool === "rotate" ||
+              activeTool === "move"
+            ) {
+              return;
+            }
+
+            const raw = e.dataTransfer.getData(DND_MIME);
+            if (!raw) return;
+
+            let payload: DragFurniturePayload | null = null;
+            try {
+              payload = JSON.parse(raw) as DragFurniturePayload;
+            } catch {
+              return;
+            }
+            if (!payload?.skuId) return;
+
+            const sku = findSkuById(payload.skuId);
+            if (!sku) return;
+
+            const el = containerRef.current;
+            if (!el) return;
+
+            const rect = el.getBoundingClientRect();
+            const dropX = e.clientX - rect.left;
+            const dropY = e.clientY - rect.top;
+
+            // Scale-aware drag defaults:
+            // NOTE: ppf is in IMAGE px/ft, but nodes live in STAGE px.
+            // Convert to stage px/ft using viewport.scale (stage_px per image_px).
+            const stagePpf = ppf && viewport ? ppf * viewport.scale : null;
+
+            const derivedW =
+              stagePpf && sku.realWidthFt
+                ? Math.round(sku.realWidthFt * stagePpf)
+                : sku.defaultPxWidth;
+
+            const derivedH =
+              stagePpf && sku.realDepthFt
+                ? Math.round(sku.realDepthFt * stagePpf)
+                : sku.defaultPxHeight;
+
+            addNode({
+              skuId: sku.skuId,
+              label: sku.label,
+              status: "active",
+              zIndex: 9999, // store will normalize zIndex; this is just a hint
+              transform: {
+                x: Math.max(0, dropX - derivedW / 2),
+                y: Math.max(0, dropY - derivedH / 2),
+                width: derivedW,
+                height: derivedH,
+                rotation: 0,
+              },
+            });
+          }}
+        >
+          <div className="relative h-full w-full">
+          {shouldRenderPlaceholder && placeholderImageUrl && (
+            <div
+              className={`pointer-events-none absolute inset-0 z-0 transition-opacity duration-200 ease-out ${
+                finalImageReady ? "opacity-0" : "opacity-100"
+              }`}
+            >
+              <div className="absolute inset-0 bg-neutral-900" />
+              <img
+                src={placeholderImageUrl}
+                alt=""
+                className="h-full w-full object-contain blur-lg saturate-75 opacity-80"
+                draggable={false}
+              />
+              <div className="absolute inset-0 bg-neutral-950/35" />
+            </div>
+          )}
+
+          <div
+            className={`relative z-10 h-full w-full transition-opacity duration-200 ease-out ${
+              isFinalLayerVisible ? "opacity-100" : "opacity-0"
+            }`}
+          >
+            <Stage
+              width={stageSize.w}
+              height={stageSize.h}
+              onMouseDown={handleStagePointerDown}
+              onTap={handleStagePointerDown}
+              onMouseMove={handleStagePointerMove}
+              onTouchMove={handleStagePointerMove}
+              onMouseUp={handleStagePointerUp}
+              onTouchEnd={handleStagePointerUp}
+              onMouseLeave={handleStagePointerUp}
+            >
         <Layer>
           {/* Matte */}
           <Rect
@@ -1861,6 +1918,7 @@ export function EditorCanvas({
           />
         </Layer>
       </Stage>
+          </div>
 
       {pasteToPlacePulse && (
         <div
@@ -2042,6 +2100,9 @@ export function EditorCanvas({
           )}
         </div>
       )}
+          </div>
+        </div>
+      </div>
     </div>
   );
 }

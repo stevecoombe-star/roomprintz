@@ -231,30 +231,28 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // Existing room-level durable cover fallback.
+    if (activeAsset) {
+      // Prefer the active room image for room-open/editor preview.
+      const assetPreviewUrl = getDurablePreviewUrl(activeAsset.image_url);
+      if (assetPreviewUrl) {
+        return NextResponse.json({ previewUrl: assetPreviewUrl });
+      }
+
+      // Fallback: signed URL from active room asset storage location.
+      const signedAssetPreviewUrl = await createSignedStorageUrl({
+        adminSupabase,
+        bucket: activeAsset.storage_bucket,
+        storagePath: activeAsset.storage_path,
+      });
+      if (signedAssetPreviewUrl) {
+        return NextResponse.json({ previewUrl: signedAssetPreviewUrl });
+      }
+    }
+
+    // Legacy fallback: room-level cover URL.
     const coverPreviewUrl = getDurablePreviewUrl(room.cover_image_url);
     if (coverPreviewUrl) {
       return NextResponse.json({ previewUrl: coverPreviewUrl });
-    }
-
-    if (!activeAsset) {
-      return NextResponse.json({ previewUrl: null });
-    }
-
-    // Durable direct URL on active room asset.
-    const assetPreviewUrl = getDurablePreviewUrl(activeAsset.image_url);
-    if (assetPreviewUrl) {
-      return NextResponse.json({ previewUrl: assetPreviewUrl });
-    }
-
-    // Final fallback: signed URL from active room asset storage location.
-    const signedAssetPreviewUrl = await createSignedStorageUrl({
-      adminSupabase,
-      bucket: activeAsset.storage_bucket,
-      storagePath: activeAsset.storage_path,
-    });
-    if (signedAssetPreviewUrl) {
-      return NextResponse.json({ previewUrl: signedAssetPreviewUrl });
     }
 
     if (!adminSupabase) {

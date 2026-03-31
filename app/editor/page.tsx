@@ -301,6 +301,17 @@ type PendingLocalPayload = {
   stage3?: PendingStage3Payload;
   [key: string]: unknown;
 };
+type CanvasPresentationState = {
+  frameAspectRatio: number | null;
+  placeholderImageUrl: string | null;
+  finalImageReady: boolean;
+  isHydratingRoom: boolean;
+  showPlaceholder: boolean;
+};
+type RoomCanvasHydrationTarget = {
+  imageUrl: string;
+  token: number;
+};
 
 const WORKFLOW_STAGES: WorkflowStage[] = [1, 2, 3, 4, 5];
 const STAGE4_PRIMARY_ACTION: Stage4Action = "style_room";
@@ -567,24 +578,104 @@ function parseRoomPreviewUrlFromSearch(value: string | null): string | null {
   return null;
 }
 
-function canonicalizeImageUrlForVisualCompare(url: string): string {
-  try {
-    const baseOrigin =
-      typeof window !== "undefined" && window.location?.origin ? window.location.origin : "http://localhost";
-    const parsed = new URL(url, baseOrigin);
-    if (parsed.protocol === "http:" || parsed.protocol === "https:") {
-      return `${parsed.origin}${parsed.pathname}`;
-    }
-    return parsed.toString();
-  } catch {
-    return url;
-  }
+type SearchParamReader = {
+  get: (key: string) => string | null;
+};
+
+function parsePositiveNumberFromSearch(value: string | null): number | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  const numeric = Number(trimmed);
+  if (!Number.isFinite(numeric) || numeric <= 0) return null;
+  return numeric;
 }
 
-function areLikelySameVisualImage(a: string | null, b: string | null): boolean {
-  if (!a || !b) return false;
-  if (a === b) return true;
-  return canonicalizeImageUrlForVisualCompare(a) === canonicalizeImageUrlForVisualCompare(b);
+function parseRequestedRoomAspectRatioFromSearch(params: SearchParamReader): number | null {
+  return (
+    normalizeAspectRatio(params.get("roomAspectRatio")) ??
+    normalizeAspectRatio(params.get("roomAspect")) ??
+    normalizeAspectRatio(params.get("aspectRatio")) ??
+    normalizeAspectRatio(params.get("frameAspectRatio")) ??
+    null
+  );
+}
+
+function parseRequestedPreviewAspectRatioFromSearch(params: SearchParamReader): number | null {
+  const directRatio =
+    normalizeAspectRatio(params.get("roomPreviewAspectRatio")) ??
+    normalizeAspectRatio(params.get("previewAspectRatio")) ??
+    normalizeAspectRatio(params.get("previewAr")) ??
+    null;
+  if (directRatio) return directRatio;
+
+  const previewWidth =
+    parsePositiveNumberFromSearch(params.get("roomPreviewWidthPx")) ??
+    parsePositiveNumberFromSearch(params.get("roomPreviewWidth")) ??
+    parsePositiveNumberFromSearch(params.get("previewWidthPx")) ??
+    parsePositiveNumberFromSearch(params.get("previewWidth")) ??
+    null;
+  const previewHeight =
+    parsePositiveNumberFromSearch(params.get("roomPreviewHeightPx")) ??
+    parsePositiveNumberFromSearch(params.get("roomPreviewHeight")) ??
+    parsePositiveNumberFromSearch(params.get("previewHeightPx")) ??
+    parsePositiveNumberFromSearch(params.get("previewHeight")) ??
+    null;
+  return aspectRatioFromDimensions(previewWidth, previewHeight);
+}
+
+function normalizeAspectRatio(raw: unknown): number | null {
+  if (typeof raw === "number" && Number.isFinite(raw) && raw > 0) {
+    return raw;
+  }
+  if (typeof raw === "string") {
+    const trimmed = raw.trim();
+    if (!trimmed) return null;
+    const ratioMatch = trimmed.match(/^(\d+(?:\.\d+)?)\s*:\s*(\d+(?:\.\d+)?)$/);
+    if (ratioMatch) {
+      const width = Number(ratioMatch[1]);
+      const height = Number(ratioMatch[2]);
+      if (Number.isFinite(width) && Number.isFinite(height) && width > 0 && height > 0) {
+        return width / height;
+      }
+      return null;
+    }
+    const numeric = Number(trimmed);
+    if (Number.isFinite(numeric) && numeric > 0) {
+      return numeric;
+    }
+  }
+  return null;
+}
+
+function aspectRatioFromDimensions(width: unknown, height: unknown): number | null {
+  if (
+    typeof width !== "number" ||
+    typeof height !== "number" ||
+    !Number.isFinite(width) ||
+    !Number.isFinite(height) ||
+    width <= 0 ||
+    height <= 0
+  ) {
+    return null;
+  }
+  return width / height;
+}
+
+function aspectRatioFromAssetMetadata(metadata: Record<string, unknown> | null | undefined): number | null {
+  if (!metadata) return null;
+  const directRatio =
+    normalizeAspectRatio(metadata.aspectRatio) ??
+    normalizeAspectRatio(metadata.aspect_ratio) ??
+    normalizeAspectRatio(metadata.frameAspectRatio) ??
+    normalizeAspectRatio(metadata.frame_aspect_ratio);
+  if (directRatio) return directRatio;
+
+  return (
+    aspectRatioFromDimensions(metadata.widthPx, metadata.heightPx) ??
+    aspectRatioFromDimensions(metadata.width, metadata.height) ??
+    null
+  );
 }
 
 function isRoomOpenDebugEnabled(): boolean {
@@ -849,6 +940,23 @@ function preloadImage(url: string): Promise<void> {
   });
 }
 
+function probeImageAspectRatio(url: string): Promise<number | null> {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => {
+      img.onload = null;
+      img.onerror = null;
+      resolve(aspectRatioFromDimensions(img.naturalWidth, img.naturalHeight));
+    };
+    img.onerror = () => {
+      img.onload = null;
+      img.onerror = null;
+      resolve(null);
+    };
+    img.src = url;
+  });
+}
+
 function EditorPageInner() {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -858,6 +966,9 @@ function EditorPageInner() {
   const requestedRoomPreviewUrl = parseRoomPreviewUrlFromSearch(
     searchParams.get("roomPreview") ?? searchParams.get("previewUrl")
   );
+  const requestedRoomAspectRatio = parseRequestedRoomAspectRatioFromSearch(searchParams);
+  const requestedPreviewAspectRatio = parseRequestedPreviewAspectRatioFromSearch(searchParams);
+  const requestedInitialFrameAspectRatio = requestedRoomAspectRatio ?? requestedPreviewAspectRatio;
 
   const scene = useEditorStore((s) => s.scene);
   const nodes = useEditorStore((s) => s.scene.nodes);
@@ -977,6 +1088,17 @@ function EditorPageInner() {
 
   const [isUploading, setIsUploading] = useState(false);
   const [isRoomHydrating, setIsRoomHydrating] = useState(false);
+  const [canvasPresentation, setCanvasPresentation] = useState<CanvasPresentationState>({
+    frameAspectRatio: null,
+    placeholderImageUrl: null,
+    finalImageReady: true,
+    isHydratingRoom: false,
+    showPlaceholder: false,
+  });
+  const roomCanvasHydrationTokenRef = useRef(0);
+  const roomCanvasHydrationFadeTimeoutRef = useRef<number | null>(null);
+  const [roomCanvasHydrationTarget, setRoomCanvasHydrationTarget] =
+    useState<RoomCanvasHydrationTarget | null>(null);
   const [isDownloading, setIsDownloading] = useState(false);
   const [isCanvasDragOver, setIsCanvasDragOver] = useState(false);
   const useFreezeV2 = process.env.NEXT_PUBLIC_VIBODE_FREEZE_V2 === "1";
@@ -1328,10 +1450,35 @@ function EditorPageInner() {
     didRestorePendingRef.current = true;
   }, [activeAssetId, requestedRoomId, versions, vibodeRoomId]);
 
-  const requestedRoomPreviewUrlRef = useRef<string | null>(requestedRoomPreviewUrl);
+  const clearRoomCanvasFadeTimeout = useCallback(() => {
+    if (roomCanvasHydrationFadeTimeoutRef.current !== null) {
+      window.clearTimeout(roomCanvasHydrationFadeTimeoutRef.current);
+      roomCanvasHydrationFadeTimeoutRef.current = null;
+    }
+  }, []);
+
+  const beginRoomCanvasHydration = useCallback(
+    (args: { aspectRatio?: number | null; placeholderImageUrl?: string | null }) => {
+      roomCanvasHydrationTokenRef.current += 1;
+      clearRoomCanvasFadeTimeout();
+      setRoomCanvasHydrationTarget(null);
+      setCanvasPresentation({
+        frameAspectRatio: normalizeAspectRatio(args.aspectRatio) ?? 1,
+        placeholderImageUrl: args.placeholderImageUrl ?? null,
+        finalImageReady: false,
+        isHydratingRoom: true,
+        showPlaceholder: Boolean(args.placeholderImageUrl),
+      });
+      return roomCanvasHydrationTokenRef.current;
+    },
+    [clearRoomCanvasFadeTimeout]
+  );
+
   useEffect(() => {
-    requestedRoomPreviewUrlRef.current = requestedRoomPreviewUrl;
-  }, [requestedRoomPreviewUrl]);
+    return () => {
+      clearRoomCanvasFadeTimeout();
+    };
+  }, [clearRoomCanvasFadeTimeout]);
 
   useEffect(() => {
     if (requestedRoomId) {
@@ -1341,6 +1488,16 @@ function EditorPageInner() {
       inFlightRoomHydrationRoomIdRef.current = null;
       hydratedRoomIdRef.current = null;
       setIsRoomHydrating(false);
+      roomCanvasHydrationTokenRef.current += 1;
+      clearRoomCanvasFadeTimeout();
+      setRoomCanvasHydrationTarget(null);
+      setCanvasPresentation((prev) => ({
+        ...prev,
+        placeholderImageUrl: null,
+        finalImageReady: true,
+        isHydratingRoom: false,
+        showPlaceholder: false,
+      }));
       return;
     }
     if (hydratedRoomIdRef.current === requestedRoomId) {
@@ -1369,22 +1526,28 @@ function EditorPageInner() {
 
     const hydrateFromRoom = async () => {
       let didApplyHydratedRoom = false;
-      const roomOpenPreviewUrl = requestedRoomPreviewUrlRef.current;
+      const roomOpenPreviewUrl = requestedRoomPreviewUrl;
+      const initialFrameAspectRatio = requestedInitialFrameAspectRatio;
+      const canvasHydrationToken = beginRoomCanvasHydration({
+        aspectRatio: initialFrameAspectRatio,
+        placeholderImageUrl: roomOpenPreviewUrl,
+      });
+      if (!initialFrameAspectRatio && roomOpenPreviewUrl) {
+        void probeImageAspectRatio(roomOpenPreviewUrl).then((previewAspectRatio) => {
+          if (!previewAspectRatio || !isRoomOpenSessionActive()) return;
+          if (roomCanvasHydrationTokenRef.current !== canvasHydrationToken) return;
+          setCanvasPresentation((prev) => ({
+            ...prev,
+            frameAspectRatio: normalizeAspectRatio(previewAspectRatio) ?? prev.frameAspectRatio ?? 1,
+          }));
+        });
+      }
       logEditorRoomOpen("roomHydration:start", { requestedRoomId });
       hydratedRoomIdRef.current = null;
       setIsRoomHydrating(true);
       resetWorkflowForIncomingImage();
       if (!isRoomOpenSessionActive()) {
         return;
-      }
-      if (roomOpenPreviewUrl) {
-        setBaseImageUrl(roomOpenPreviewUrl);
-        setWorkingImageUrl(roomOpenPreviewUrl);
-        setIsWorkingImageGenerated(false);
-        logEditorRoomOpen("roomHydration:previewBridgeApplied", {
-          requestedRoomId,
-          hasPreviewUrl: true,
-        });
       }
       try {
         let accessToken = await tryGetSupabaseAccessToken();
@@ -1429,20 +1592,20 @@ function EditorPageInner() {
           return;
         }
 
-        const shouldSwapHydratedImage = !areLikelySameVisualImage(roomOpenPreviewUrl, hydratedImageUrl);
-        if (shouldSwapHydratedImage) {
-          await preloadImage(hydratedImageUrl);
-          if (!isRoomOpenSessionActive()) {
-            return;
-          }
-          setBaseImageUrl(hydratedImageUrl);
-          setWorkingImageUrl(hydratedImageUrl);
-        } else {
-          logEditorRoomOpen("roomHydration:previewBridgeKept", {
-            requestedRoomId,
-            hydratedRoomId: hydrated.room.id,
-          });
-        }
+        const hydratedAspectRatio =
+          aspectRatioFromAssetMetadata(hydratedActiveVersion?.metadata) ??
+          aspectRatioFromDimensions(hydratedActiveVersion?.width, hydratedActiveVersion?.height) ??
+          initialFrameAspectRatio;
+        setCanvasPresentation((prev) => ({
+          ...prev,
+          frameAspectRatio: normalizeAspectRatio(hydratedAspectRatio) ?? prev.frameAspectRatio ?? 1,
+        }));
+        setRoomCanvasHydrationTarget({
+          imageUrl: hydratedImageUrl,
+          token: canvasHydrationToken,
+        });
+        setBaseImageUrl(hydratedImageUrl);
+        setWorkingImageUrl(hydratedImageUrl);
         if (!isRoomOpenSessionActive()) {
           return;
         }
@@ -1490,11 +1653,22 @@ function EditorPageInner() {
         });
         console.error("[editor] room hydration failed:", err);
         hydratedRoomIdRef.current = null;
+        setCanvasPresentation((prev) => ({
+          ...prev,
+          finalImageReady: false,
+          isHydratingRoom: false,
+          showPlaceholder: Boolean(prev.placeholderImageUrl),
+        }));
         pushSnack(`Failed to open room. (${err?.message ?? "error"})`);
       } finally {
         if (isRoomOpenSessionActive()) {
           if (!didApplyHydratedRoom) {
             setIsRoomHydrating(false);
+            setCanvasPresentation((prev) => ({
+              ...prev,
+              isHydratingRoom: false,
+              showPlaceholder: prev.finalImageReady ? false : Boolean(prev.placeholderImageUrl),
+            }));
           }
         }
         clearInFlightHydrationFlag();
@@ -1508,14 +1682,75 @@ function EditorPageInner() {
       clearInFlightHydrationFlag();
     };
   }, [
+    beginRoomCanvasHydration,
+    clearRoomCanvasFadeTimeout,
     pushSnack,
+    requestedInitialFrameAspectRatio,
     requestedRoomId,
+    requestedRoomPreviewUrl,
     resetWorkflowForIncomingImage,
     router,
     setActiveAssetId,
     setBaseImageUrl,
     setVersions,
   ]);
+
+  useEffect(() => {
+    if (!roomCanvasHydrationTarget) return;
+    const { imageUrl, token } = roomCanvasHydrationTarget;
+    if (!imageUrl) return;
+
+    let cancelled = false;
+    const img = new Image();
+
+    const isCurrentToken = () => roomCanvasHydrationTokenRef.current === token;
+    const markReady = () => {
+      if (cancelled || !isCurrentToken()) return;
+      setCanvasPresentation((prev) => ({
+        ...prev,
+        finalImageReady: true,
+        isHydratingRoom: false,
+        showPlaceholder: Boolean(prev.placeholderImageUrl),
+      }));
+      clearRoomCanvasFadeTimeout();
+      roomCanvasHydrationFadeTimeoutRef.current = window.setTimeout(() => {
+        if (!isCurrentToken()) return;
+        setCanvasPresentation((prev) => ({
+          ...prev,
+          showPlaceholder: false,
+        }));
+      }, 200);
+    };
+
+    img.onload = () => {
+      if (typeof img.decode === "function") {
+        void img
+          .decode()
+          .catch(() => undefined)
+          .finally(() => {
+            markReady();
+          });
+        return;
+      }
+      markReady();
+    };
+    img.onerror = () => {
+      if (cancelled || !isCurrentToken()) return;
+      setCanvasPresentation((prev) => ({
+        ...prev,
+        finalImageReady: false,
+        isHydratingRoom: false,
+        showPlaceholder: Boolean(prev.placeholderImageUrl),
+      }));
+    };
+    img.src = imageUrl;
+
+    return () => {
+      cancelled = true;
+      img.onload = null;
+      img.onerror = null;
+    };
+  }, [clearRoomCanvasFadeTimeout, roomCanvasHydrationTarget]);
 
   useEffect(() => {
     if (shouldSkipPendingRestoreRef.current) return;
@@ -1621,7 +1856,15 @@ function EditorPageInner() {
   const previewImageUrl = shouldPreferRoomOpenBridge
     ? roomOpenBridgeImageUrl
     : currentImageUrl ?? roomOpenBridgeImageUrl;
-  const hasCanvasImage = Boolean(previewImageUrl);
+  const resolvedCanvasFrameAspectRatio =
+    canvasPresentation.frameAspectRatio ??
+    aspectRatioFromDimensions(scene.baseImageWidthPx, scene.baseImageHeightPx) ??
+    1;
+  const canvasImageUrl = currentImageUrl;
+  const hasCanvasImage =
+    Boolean(canvasImageUrl) ||
+    canvasPresentation.isHydratingRoom ||
+    (canvasPresentation.showPlaceholder && Boolean(canvasPresentation.placeholderImageUrl));
   const isCanvasEmpty = !hasCanvasImage;
   const shouldShowUploadOverlay = isCanvasEmpty;
   const pasteToPlaceDisplayedPreviewUrl =
@@ -4504,9 +4747,14 @@ function EditorPageInner() {
               <EditorCanvas
                 key={scene.sceneId}
                 className={`absolute inset-0 transition-opacity duration-200 ease-out ${
-                  isRoomHydrating ? "opacity-95" : "opacity-100"
-                } [&>.pointer-events-none.absolute.left-3.top-3]:hidden`}
-                imageUrl={previewImageUrl}
+                  isRoomHydrating || canvasPresentation.isHydratingRoom ? "opacity-95" : "opacity-100"
+                } [&_.pointer-events-none.absolute.left-3.top-3]:hidden`}
+                imageUrl={canvasImageUrl}
+                frameAspectRatio={resolvedCanvasFrameAspectRatio}
+                placeholderImageUrl={canvasPresentation.placeholderImageUrl}
+                showPlaceholder={canvasPresentation.showPlaceholder}
+                finalImageReady={canvasPresentation.finalImageReady}
+                isHydratingRoom={canvasPresentation.isHydratingRoom}
                 markupVisible={scene.markupVisible}
                 visualMode="blueprint"
                 pasteToPlaceStatus={pasteToPlaceStatus}

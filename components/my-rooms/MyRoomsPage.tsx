@@ -60,7 +60,8 @@ async function tryGetSupabaseAccessToken(): Promise<string | null> {
 
 async function fetchPreviewUrlForRoom(
   roomId: string,
-  accessToken: string | null
+  accessToken: string | null,
+  options?: { preferThumbnail?: boolean }
 ): Promise<string | null> {
   if (!accessToken) return null;
 
@@ -71,7 +72,10 @@ async function fetchPreviewUrlForRoom(
         "Content-Type": "application/json",
         Authorization: `Bearer ${accessToken}`,
       },
-      body: JSON.stringify({ roomId, preferThumbnail: true }),
+      body: JSON.stringify({
+        roomId,
+        preferThumbnail: options?.preferThumbnail === true,
+      }),
     });
     if (!res.ok) return null;
 
@@ -206,7 +210,9 @@ export function MyRoomsPage() {
           const accessToken = await tryGetSupabaseAccessToken();
           await Promise.all(
             roomRows.map(async (room) => {
-              const previewUrl = await fetchPreviewUrlForRoom(room.id, accessToken);
+              const previewUrl = await fetchPreviewUrlForRoom(room.id, accessToken, {
+                preferThumbnail: true,
+              });
               previewByRoom.set(room.id, previewUrl);
             })
           );
@@ -417,18 +423,29 @@ export function MyRoomsPage() {
     }
   };
 
-  const handleOpenRoom = (room: MyRoomsRoom) => {
-    const immediatePreviewUrl =
+  const handleOpenRoom = async (room: MyRoomsRoom) => {
+    const existingPreviewFallbackUrl =
       typeof room.cover_image_url === "string" && room.cover_image_url.trim().length > 0
         ? room.cover_image_url.trim()
         : typeof room.display_image_url === "string" && room.display_image_url.trim().length > 0
           ? room.display_image_url.trim()
           : null;
+    let roomOpenPreviewUrl = existingPreviewFallbackUrl;
+    try {
+      const accessToken = await tryGetSupabaseAccessToken();
+      const activeImagePreviewUrl = await fetchPreviewUrlForRoom(room.id, accessToken, {
+        preferThumbnail: false,
+      });
+      roomOpenPreviewUrl = activeImagePreviewUrl ?? existingPreviewFallbackUrl;
+    } catch (err) {
+      console.warn("[MyRooms] room-open preview fallback:", err);
+      roomOpenPreviewUrl = existingPreviewFallbackUrl;
+    }
     const params = new URLSearchParams({
       roomId: room.id,
     });
-    if (immediatePreviewUrl) {
-      params.set("roomPreview", immediatePreviewUrl);
+    if (roomOpenPreviewUrl) {
+      params.set("roomPreview", roomOpenPreviewUrl);
     }
     router.push(`/editor?${params.toString()}`);
   };
