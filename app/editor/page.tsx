@@ -970,6 +970,8 @@ function EditorPageInner() {
 
   const didLogFirstGenerateAttemptRef = useRef(false);
   const hydratedRoomIdRef = useRef<string | null>(null);
+  const roomOpenSessionRef = useRef(0);
+  const inFlightRoomHydrationRoomIdRef = useRef<string | null>(null);
   const roomPhotoUploadInputRef = useRef<HTMLInputElement | null>(null);
   const roomPhotoCanvasDragDepthRef = useRef(0);
 
@@ -1073,6 +1075,18 @@ function EditorPageInner() {
   const shouldSkipPendingRestoreRef = useRef<boolean>(hasRoomIdInCurrentLocation());
   const didRestorePendingRef = useRef(false);
   const [roomBaseAssetId, setRoomBaseAssetId] = useState<string | null>(null);
+  const requestedRoomIdRef = useRef<string | null>(requestedRoomId);
+  const vibodeRoomIdRef = useRef<string | null>(vibodeRoomId);
+  const lastStageOutputsRef = useRef<StageOutputMap>(lastStageOutputs);
+  useEffect(() => {
+    requestedRoomIdRef.current = requestedRoomId;
+  }, [requestedRoomId]);
+  useEffect(() => {
+    vibodeRoomIdRef.current = vibodeRoomId;
+  }, [vibodeRoomId]);
+  useEffect(() => {
+    lastStageOutputsRef.current = lastStageOutputs;
+  }, [lastStageOutputs]);
   const clearPasteToPlaceProgressPreview = useCallback(() => {
     pasteToPlaceMenuPreviewRequestIdRef.current += 1;
     invalidatePasteToPlaceOperation();
@@ -1115,17 +1129,37 @@ function EditorPageInner() {
     const store = useEditorStore.getState();
     setHasFurniturePass(false);
     setStageStatus(INITIAL_STAGE_STATUS);
-    setLastStageOutputs({});
+    setStage4RunningAction(null);
+    setLastStageOutputs((prev) => (Object.keys(prev).length === 0 ? prev : {}));
     setWorkingImageUrl(null);
     setIsWorkingImageGenerated(false);
     store.resetSessionForIncomingImage();
     setScenePlacements([]);
     setSelectedPlacementId(null);
+    setSelectedEditSkuId("");
     setMyFurnitureOpen(false);
     setMyFurnitureMode(null);
     setMyFurnitureItems([]);
     setMyFurnitureLoading(false);
     setMyFurnitureSelectingId(null);
+    setGhostAddPlacementId(null);
+    setGhostAddActive(false);
+    setGhostAddEligibleSkusOverride(null);
+    setGhostAddSavedFurnitureId(null);
+    setEditRotationDeg(0);
+    setEditMoveStep(0.05);
+    setEditWarning(null);
+    setIsEditRunning(false);
+    setProductImageUrl("");
+    setProductLabel("User Upload");
+    setUploadedImageDataUrl(null);
+    setUploadedImageName(null);
+    setIsIngesting(false);
+    setIngestError(null);
+    setIngestedUserSku(null);
+    setUserSkusAddedToStage3([]);
+    setStage3SkuItems([]);
+    setStage3ShowCatalog(false);
     cancelPasteToPlaceSwapPick();
     clearPasteToPlaceProgressPreview();
     setActiveStage(1);
@@ -1291,15 +1325,20 @@ function EditorPageInner() {
       restoredActiveCount: restoredSkuItems.filter((item) => item.active).length,
       showCatalog: restoredShowCatalog ?? false,
     });
-
     didRestorePendingRef.current = true;
-  }, [requestedRoomId]);
+  }, [activeAssetId, requestedRoomId, versions, vibodeRoomId]);
+
+  const requestedRoomPreviewUrlRef = useRef<string | null>(requestedRoomPreviewUrl);
+  useEffect(() => {
+    requestedRoomPreviewUrlRef.current = requestedRoomPreviewUrl;
+  }, [requestedRoomPreviewUrl]);
 
   useEffect(() => {
     if (requestedRoomId) {
       shouldSkipPendingRestoreRef.current = true;
     }
     if (!requestedRoomId) {
+      inFlightRoomHydrationRoomIdRef.current = null;
       hydratedRoomIdRef.current = null;
       setIsRoomHydrating(false);
       return;
@@ -1308,14 +1347,36 @@ function EditorPageInner() {
       setIsRoomHydrating(false);
       return;
     }
+
+    if (inFlightRoomHydrationRoomIdRef.current === requestedRoomId) {
+      return;
+    }
+
+    inFlightRoomHydrationRoomIdRef.current = requestedRoomId;
+    const roomOpenSessionId = roomOpenSessionRef.current + 1;
+    roomOpenSessionRef.current = roomOpenSessionId;
     let cancelled = false;
+    const isRoomOpenSessionActive = () =>
+      !cancelled && roomOpenSessionRef.current === roomOpenSessionId;
+    const clearInFlightHydrationFlag = () => {
+      if (
+        roomOpenSessionRef.current === roomOpenSessionId &&
+        inFlightRoomHydrationRoomIdRef.current === requestedRoomId
+      ) {
+        inFlightRoomHydrationRoomIdRef.current = null;
+      }
+    };
 
     const hydrateFromRoom = async () => {
       let didApplyHydratedRoom = false;
-      const roomOpenPreviewUrl = requestedRoomPreviewUrl;
+      const roomOpenPreviewUrl = requestedRoomPreviewUrlRef.current;
       logEditorRoomOpen("roomHydration:start", { requestedRoomId });
+      hydratedRoomIdRef.current = null;
       setIsRoomHydrating(true);
       resetWorkflowForIncomingImage();
+      if (!isRoomOpenSessionActive()) {
+        return;
+      }
       if (roomOpenPreviewUrl) {
         setBaseImageUrl(roomOpenPreviewUrl);
         setWorkingImageUrl(roomOpenPreviewUrl);
@@ -1331,6 +1392,9 @@ function EditorPageInner() {
           await new Promise<void>((resolve) => setTimeout(resolve, 250));
           accessToken = await tryGetSupabaseAccessToken();
         }
+        if (!isRoomOpenSessionActive()) {
+          return;
+        }
         if (!accessToken) {
           logEditorRoomOpen("roomHydration:failed", {
             requestedRoomId,
@@ -1343,7 +1407,9 @@ function EditorPageInner() {
         }
 
         const hydrated = await loadRoomHydrationData(requestedRoomId, accessToken);
-        if (cancelled) return;
+        if (!isRoomOpenSessionActive()) {
+          return;
+        }
 
         const hydratedActiveVersion =
           hydrated.versions.find((asset) => asset.id === hydrated.room.active_asset_id) ??
@@ -1366,7 +1432,9 @@ function EditorPageInner() {
         const shouldSwapHydratedImage = !areLikelySameVisualImage(roomOpenPreviewUrl, hydratedImageUrl);
         if (shouldSwapHydratedImage) {
           await preloadImage(hydratedImageUrl);
-          if (cancelled) return;
+          if (!isRoomOpenSessionActive()) {
+            return;
+          }
           setBaseImageUrl(hydratedImageUrl);
           setWorkingImageUrl(hydratedImageUrl);
         } else {
@@ -1374,6 +1442,9 @@ function EditorPageInner() {
             requestedRoomId,
             hydratedRoomId: hydrated.room.id,
           });
+        }
+        if (!isRoomOpenSessionActive()) {
+          return;
         }
         setVibodeRoomId(hydrated.room.id);
         setVersions(hydrated.versions);
@@ -1389,7 +1460,6 @@ function EditorPageInner() {
         if (typeof maybeStage === "number" && maybeStage >= 1 && maybeStage <= 5) {
           setActiveStage(maybeStage as WorkflowStage);
         }
-
         hydratedRoomIdRef.current = requestedRoomId;
         didApplyHydratedRoom = true;
         setIsRoomHydrating(false);
@@ -1405,9 +1475,15 @@ function EditorPageInner() {
           .from("vibode_rooms")
           .update({ last_opened_at: nowIso, sort_key: nowIso })
           .eq("id", hydrated.room.id);
+        if (!isRoomOpenSessionActive()) {
+          return;
+        }
 
         pushSnack("Room loaded.");
       } catch (err: any) {
+        if (!isRoomOpenSessionActive()) {
+          return;
+        }
         logEditorRoomOpen("roomHydration:failed", {
           requestedRoomId,
           error: err?.message ?? "error",
@@ -1416,11 +1492,12 @@ function EditorPageInner() {
         hydratedRoomIdRef.current = null;
         pushSnack(`Failed to open room. (${err?.message ?? "error"})`);
       } finally {
-        if (!cancelled) {
+        if (isRoomOpenSessionActive()) {
           if (!didApplyHydratedRoom) {
             setIsRoomHydrating(false);
           }
         }
+        clearInFlightHydrationFlag();
       }
     };
 
@@ -1428,11 +1505,11 @@ function EditorPageInner() {
 
     return () => {
       cancelled = true;
+      clearInFlightHydrationFlag();
     };
   }, [
     pushSnack,
     requestedRoomId,
-    requestedRoomPreviewUrl,
     resetWorkflowForIncomingImage,
     router,
     setActiveAssetId,
@@ -1491,7 +1568,7 @@ function EditorPageInner() {
     if (!workingImageUrl) {
       setWorkingImageUrl(scene.baseImageUrl);
     }
-  }, [scene.baseImageUrl, workingImageUrl]);
+  }, [activeAssetId, requestedRoomId, scene.baseImageUrl, vibodeRoomId, versions, workingImageUrl]);
 
   useEffect(() => {
     if (!pendingPasteToPlaceSwapContext) return;
@@ -1514,11 +1591,33 @@ function EditorPageInner() {
     () => getImageUrlFromUnknown(lastStageOutputs[activeStage]),
     [activeStage, lastStageOutputs]
   );
+  const hasHydratedRequestedRoom =
+    !requestedRoomId || hydratedRoomIdRef.current === requestedRoomId;
+  const isRequestedRoomSessionActive =
+    !requestedRoomId || vibodeRoomId === requestedRoomId || hasHydratedRequestedRoom;
   const roomOpenBridgeImageUrl = requestedRoomId ? requestedRoomPreviewUrl : null;
   const shouldPreferRoomOpenBridge =
-    !!roomOpenBridgeImageUrl && hydratedRoomIdRef.current !== requestedRoomId;
+    !!roomOpenBridgeImageUrl && !hasHydratedRequestedRoom;
+  const currentImageWinner = !isRequestedRoomSessionActive
+    ? "sessionInactive"
+    : workingImageUrl
+      ? "workingImageUrl"
+      : activeStageOutputImageUrl
+        ? "activeStageOutputImageUrl"
+        : scene.baseImageUrl
+          ? "scene.baseImageUrl"
+          : "none";
   const currentImageUrl =
-    workingImageUrl ?? activeStageOutputImageUrl ?? scene.baseImageUrl ?? null;
+    isRequestedRoomSessionActive
+      ? workingImageUrl ?? activeStageOutputImageUrl ?? scene.baseImageUrl ?? null
+      : null;
+  const previewImageWinner = shouldPreferRoomOpenBridge
+    ? "roomOpenBridgeImageUrl"
+    : currentImageUrl
+      ? currentImageWinner
+      : roomOpenBridgeImageUrl
+        ? "roomOpenBridgeImageUrl:fallback"
+        : "none";
   const previewImageUrl = shouldPreferRoomOpenBridge
     ? roomOpenBridgeImageUrl
     : currentImageUrl ?? roomOpenBridgeImageUrl;
@@ -4567,7 +4666,9 @@ function EditorPageInner() {
                   <button
                     key={stage}
                     type="button"
-                    onClick={() => setActiveStage(stage)}
+                    onClick={() => {
+                      setActiveStage(stage);
+                    }}
                     className={`rounded-md border px-2 py-1 text-xs ${
                       activeStage === stage
                         ? "border-neutral-600 bg-neutral-800 text-neutral-100"

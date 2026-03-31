@@ -699,6 +699,20 @@ function epsilonEqual(a: number, b: number, eps = 0.01) {
   return Math.abs(a - b) <= eps;
 }
 
+function viewportMappingEqual(a?: ViewportMapping, b?: ViewportMapping) {
+  if (!a && !b) return true;
+  if (!a || !b) return false;
+  return (
+    epsilonEqual(a.imageStageX, b.imageStageX) &&
+    epsilonEqual(a.imageStageY, b.imageStageY) &&
+    epsilonEqual(a.imageStageW, b.imageStageW) &&
+    epsilonEqual(a.imageStageH, b.imageStageH) &&
+    epsilonEqual(a.scale, b.scale) &&
+    epsilonEqual(a.imageNaturalW, b.imageNaturalW) &&
+    epsilonEqual(a.imageNaturalH, b.imageNaturalH)
+  );
+}
+
 function transformEqual(a: NodeTransform, b: NodeTransform) {
   return (
     epsilonEqual(a.x, b.x) &&
@@ -865,24 +879,6 @@ function createInitialUi(previous?: UIState): UIState {
   };
 }
 
-type VibodeDebugWindow = Window & {
-  __VIBODE_DEBUG_ROOM_OPEN__?: boolean;
-};
-
-function isRoomOpenDebugEnabled(): boolean {
-  if (typeof window === "undefined") return false;
-  return (window as VibodeDebugWindow).__VIBODE_DEBUG_ROOM_OPEN__ === true;
-}
-
-function logEditorStore(event: string, payload?: Record<string, unknown>) {
-  if (!isRoomOpenDebugEnabled()) return;
-  if (payload) {
-    console.log("[editor-store]", event, payload);
-    return;
-  }
-  console.log("[editor-store]", event);
-}
-
 /* =========================
    Store
 ========================= */
@@ -906,7 +902,8 @@ export const useEditorStore = create<EditorState>((set, get) => ({
 
   /* ---------- viewport ---------- */
 
-  setViewport: (vp) => set(() => ({ viewport: vp })),
+  setViewport: (vp) =>
+    set((s) => (viewportMappingEqual(s.viewport, vp) ? s : { viewport: vp })),
   setVersions: (versions) => set(() => ({ versions })),
   setActiveAssetId: (assetId) => set(() => ({ activeAssetId: assetId })),
 
@@ -1835,14 +1832,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   /* ---------- scene setup ---------- */
 
   resetSessionForIncomingImage: () => {
-    const prevScene = get().scene;
     const nextScene = createInitialScene();
-    logEditorStore("resetSessionForIncomingImage", {
-      previousSceneId: prevScene.sceneId,
-      previousBaseImageUrl: prevScene.baseImageUrl ?? null,
-      nextSceneId: nextScene.sceneId,
-      nextBaseImageUrl: nextScene.baseImageUrl ?? null,
-    });
     set((s) => ({
       scene: nextScene,
       workingSet: {},
@@ -1856,21 +1846,14 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   },
 
   setBaseImageUrl: (url) =>
-    set((s) => {
-      logEditorStore("setBaseImageUrl", {
-        sceneId: s.scene.sceneId,
-        previousBaseImageUrl: s.scene.baseImageUrl ?? null,
-        nextBaseImageUrl: url ?? null,
-      });
-      return {
-        scene: {
-          ...s.scene,
-          baseImageUrl: url,
-          baseImageWidthPx: undefined,
-          baseImageHeightPx: undefined,
-        },
-      };
-    }),
+    set((s) => ({
+      scene: {
+        ...s.scene,
+        baseImageUrl: url,
+        baseImageWidthPx: undefined,
+        baseImageHeightPx: undefined,
+      },
+    })),
 
   setBaseImageFromFile: (file) => {
     const prev = get().scene.baseImageUrl;
