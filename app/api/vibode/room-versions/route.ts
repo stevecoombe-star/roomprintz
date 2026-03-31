@@ -29,6 +29,8 @@ type RoomAssetRow = {
   stage_number: number | null;
   storage_bucket: string | null;
   storage_path: string | null;
+  thumbnail_storage_bucket: string | null;
+  thumbnail_storage_path: string | null;
   image_url: string | null;
   width: number | null;
   height: number | null;
@@ -187,7 +189,7 @@ export async function POST(req: NextRequest) {
     const { data: assetRows, error: assetsErr } = await userSupabase
       .from("vibode_room_assets")
       .select(
-        "id,room_id,user_id,asset_type,stage_number,storage_bucket,storage_path,image_url,width,height,model_version,is_active,metadata,created_at"
+        "id,room_id,user_id,asset_type,stage_number,storage_bucket,storage_path,thumbnail_storage_bucket,thumbnail_storage_path,image_url,width,height,model_version,is_active,metadata,created_at"
       )
       .eq("room_id", room.id)
       .eq("user_id", userId)
@@ -207,6 +209,8 @@ export async function POST(req: NextRequest) {
         stage_number: asset.stage_number,
         storage_bucket: asset.storage_bucket,
         storage_path: asset.storage_path,
+        thumbnail_storage_bucket: asset.thumbnail_storage_bucket,
+        thumbnail_storage_path: asset.thumbnail_storage_path,
         image_url: await resolveAssetPreviewUrl(asset, adminSupabase),
         width: asset.width,
         height: asset.height,

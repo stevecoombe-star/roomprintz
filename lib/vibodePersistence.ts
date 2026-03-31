@@ -32,6 +32,8 @@ export type VibodeRoomAssetRow = {
   stage_number: number | null;
   storage_bucket: string | null;
   storage_path: string | null;
+  thumbnail_storage_bucket: string | null;
+  thumbnail_storage_path: string | null;
   image_url: string;
   width: number | null;
   height: number | null;
@@ -76,7 +78,22 @@ export type CreateVibodeRoomAssetInput = {
   stage_number?: number | null;
   storage_bucket?: string | null;
   storage_path?: string | null;
+  thumbnail_storage_bucket?: string | null;
+  thumbnail_storage_path?: string | null;
   image_url: string;
+  width?: number | null;
+  height?: number | null;
+  model_version?: string | null;
+  is_active?: boolean;
+  metadata?: JsonObject;
+};
+
+export type UpdateVibodeRoomAssetInput = {
+  storage_bucket?: string | null;
+  storage_path?: string | null;
+  thumbnail_storage_bucket?: string | null;
+  thumbnail_storage_path?: string | null;
+  image_url?: string;
   width?: number | null;
   height?: number | null;
   model_version?: string | null;
@@ -149,6 +166,23 @@ export async function createVibodeRoomAsset(
     .single();
   if (error || !data) {
     throw new Error(`[vibode] failed to create room asset: ${error?.message ?? "unknown error"}`);
+  }
+  return data as VibodeRoomAssetRow;
+}
+
+export async function updateVibodeRoomAsset(
+  supabase: AnySupabaseClient,
+  assetId: string,
+  input: UpdateVibodeRoomAssetInput
+): Promise<VibodeRoomAssetRow> {
+  const { data, error } = await supabase
+    .from("vibode_room_assets")
+    .update(input)
+    .eq("id", assetId)
+    .select("*")
+    .single();
+  if (error || !data) {
+    throw new Error(`[vibode] failed to update room asset: ${error?.message ?? "unknown error"}`);
   }
   return data as VibodeRoomAssetRow;
 }

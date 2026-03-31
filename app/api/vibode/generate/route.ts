@@ -12,8 +12,10 @@ import {
   createVibodeGenerationRun,
   createVibodeRoomAsset,
   getVibodeRoomById,
+  updateVibodeRoomAsset,
   updateVibodeRoom,
 } from "@/lib/vibodePersistence";
+import { createVibodeAssetThumbnail } from "@/lib/vibodeAssetThumbnails";
 import {
   inferLayerKindFromSkuKind,
   ensureZIndex,
@@ -2309,6 +2311,24 @@ export async function handleGenerateRequest(args: {
               height: persisted.heightPx ?? payloadForModel.baseImage.heightPx,
               is_active: true,
             });
+
+            try {
+              if (admin) {
+                const thumbnailLocation = await createVibodeAssetThumbnail({
+                  adminSupabase: admin as SupabaseClient<any, "public", any>,
+                  roomId: existingRoom.id,
+                  assetId: outputAsset.id,
+                  sourceStorageBucket: persisted.bucket,
+                  sourceStoragePath: persisted.storageKey,
+                  sourceImageUrl: persisted.imageUrl,
+                });
+                if (thumbnailLocation) {
+                  await updateVibodeRoomAsset(persistenceClient, outputAsset.id, thumbnailLocation);
+                }
+              }
+            } catch (thumbnailErr) {
+              console.warn("[vibode/generate] thumbnail generation failed (non-blocking):", thumbnailErr);
+            }
 
             const { error: deactivateErr } = await persistenceClient
               .from("vibode_room_assets")

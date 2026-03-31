@@ -28,6 +28,8 @@ type RoomAssetRow = {
   image_url: string | null;
   storage_bucket: string | null;
   storage_path: string | null;
+  thumbnail_storage_bucket: string | null;
+  thumbnail_storage_path: string | null;
   created_at: string | null;
 };
 
@@ -78,6 +80,11 @@ function parseRoomId(body: unknown): string | null {
   return roomId.length > 0 ? roomId : null;
 }
 
+function parsePreferThumbnail(body: unknown): boolean {
+  if (!body || typeof body !== "object") return false;
+  return (body as { preferThumbnail?: unknown }).preferThumbnail === true;
+}
+
 function getBearerToken(req: NextRequest): string | null {
   const authHeader = req.headers.get("authorization") || "";
   if (authHeader.startsWith("Bearer ")) {
@@ -113,7 +120,8 @@ async function getActiveAssetForRoom(
     activeAssetId: string | null;
   }
 ): Promise<RoomAssetRow | null> {
-  const columns = "id,image_url,storage_bucket,storage_path,created_at";
+  const columns =
+    "id,image_url,storage_bucket,storage_path,thumbnail_storage_bucket,thumbnail_storage_path,created_at";
 
   if (args.activeAssetId) {
     const { data, error } = await supabase
@@ -144,6 +152,21 @@ async function getActiveAssetForRoom(
   return (data as RoomAssetRow | null) ?? null;
 }
 
+async function createSignedStorageUrl(args: {
+  adminSupabase: AnySupabaseClient | null;
+  bucket: string | null | undefined;
+  storagePath: string | null | undefined;
+}): Promise<string | null> {
+  const bucket = normalizeText(args.bucket);
+  const storagePath = normalizeText(args.storagePath);
+  if (!bucket || !storagePath || !args.adminSupabase) return null;
+  const { data: signed, error: signErr } = await args.adminSupabase.storage
+    .from(bucket)
+    .createSignedUrl(storagePath, PREVIEW_SIGNED_URL_EXPIRES_IN_SEC);
+  if (signErr || !signed?.signedUrl) return null;
+  return signed.signedUrl;
+}
+
 export async function POST(req: NextRequest) {
   try {
     if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
@@ -163,6 +186,7 @@ export async function POST(req: NextRequest) {
     }
 
     const roomId = parseRoomId(body);
+    const preferThumbnail = parsePreferThumbnail(body);
     if (!roomId) {
       return jsonError("roomId is required.", 400);
     }
@@ -188,50 +212,55 @@ export async function POST(req: NextRequest) {
       return jsonError("Room not found.", 404);
     }
     const room = roomData as RoomRow;
-
-    // a) trusted durable room cover image URL
-    const coverPreviewUrl = getDurablePreviewUrl(room.cover_image_url);
-    if (coverPreviewUrl) {
-      return NextResponse.json({ previewUrl: coverPreviewUrl });
-    }
+    const adminSupabase = getAdminSupabaseClient();
 
     const activeAsset = await getActiveAssetForRoom(userSupabase, {
       roomId: room.id,
       userId,
       activeAssetId: room.active_asset_id,
     });
+
+    if (preferThumbnail && activeAsset) {
+      const thumbnailPreviewUrl = await createSignedStorageUrl({
+        adminSupabase,
+        bucket: activeAsset.thumbnail_storage_bucket,
+        storagePath: activeAsset.thumbnail_storage_path,
+      });
+      if (thumbnailPreviewUrl) {
+        return NextResponse.json({ previewUrl: thumbnailPreviewUrl });
+      }
+    }
+
+    // Existing room-level durable cover fallback.
+    const coverPreviewUrl = getDurablePreviewUrl(room.cover_image_url);
+    if (coverPreviewUrl) {
+      return NextResponse.json({ previewUrl: coverPreviewUrl });
+    }
+
     if (!activeAsset) {
       return NextResponse.json({ previewUrl: null });
     }
 
-    // b) durable direct URL on active room asset
+    // Durable direct URL on active room asset.
     const assetPreviewUrl = getDurablePreviewUrl(activeAsset.image_url);
     if (assetPreviewUrl) {
       return NextResponse.json({ previewUrl: assetPreviewUrl });
     }
 
-    // c) storage bucket/path on active room asset -> server-side signed URL
-    const bucket = normalizeText(activeAsset.storage_bucket);
-    const storagePath = normalizeText(activeAsset.storage_path);
-    if (!bucket || !storagePath) {
-      return NextResponse.json({ previewUrl: null });
+    // Final fallback: signed URL from active room asset storage location.
+    const signedAssetPreviewUrl = await createSignedStorageUrl({
+      adminSupabase,
+      bucket: activeAsset.storage_bucket,
+      storagePath: activeAsset.storage_path,
+    });
+    if (signedAssetPreviewUrl) {
+      return NextResponse.json({ previewUrl: signedAssetPreviewUrl });
     }
 
-    const adminSupabase = getAdminSupabaseClient();
     if (!adminSupabase) {
       console.warn("[vibode/room-preview-url] service role key missing; cannot sign preview URL.");
-      return NextResponse.json({ previewUrl: null });
     }
-
-    const { data: signed, error: signErr } = await adminSupabase.storage
-      .from(bucket)
-      .createSignedUrl(storagePath, PREVIEW_SIGNED_URL_EXPIRES_IN_SEC);
-    if (signErr || !signed?.signedUrl) {
-      console.warn("[vibode/room-preview-url] failed to sign storage preview URL:", signErr);
-      return NextResponse.json({ previewUrl: null });
-    }
-
-    return NextResponse.json({ previewUrl: signed.signedUrl });
+    return NextResponse.json({ previewUrl: null });
   } catch (err) {
     console.error("[vibode/room-preview-url] unexpected error:", err);
     return jsonError("Unexpected room preview error.", 500);

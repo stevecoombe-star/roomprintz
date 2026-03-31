@@ -6,8 +6,10 @@ import {
   createVibodeGenerationRun,
   createVibodeRoomAsset,
   getVibodeRoomById,
+  updateVibodeRoomAsset,
   updateVibodeRoom,
 } from "@/lib/vibodePersistence";
+import { createVibodeAssetThumbnail } from "@/lib/vibodeAssetThumbnails";
 import {
   canAffordTokens,
   getTokenCostForAction,
@@ -558,6 +560,25 @@ export async function POST(req: NextRequest) {
         height,
         is_active: true,
       });
+
+      try {
+        const adminSupabase = getAdminSupabaseClient();
+        if (adminSupabase) {
+          const thumbnailLocation = await createVibodeAssetThumbnail({
+            adminSupabase,
+            roomId: room.id,
+            assetId: outputAsset.id,
+            sourceStorageBucket: storageBucket,
+            sourceStoragePath: storagePath,
+            sourceImageUrl: durableImageUrl ?? safeStr(responseResult.imageUrl),
+          });
+          if (thumbnailLocation) {
+            await updateVibodeRoomAsset(persistenceClient, outputAsset.id, thumbnailLocation);
+          }
+        }
+      } catch (thumbnailErr) {
+        console.warn("[vibode/stage-run] thumbnail generation failed (non-blocking):", thumbnailErr);
+      }
 
       const { error: deactivateErr } = await persistenceClient
         .from("vibode_room_assets")

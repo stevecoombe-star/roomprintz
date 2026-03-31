@@ -71,7 +71,7 @@ async function fetchPreviewUrlForRoom(
         "Content-Type": "application/json",
         Authorization: `Bearer ${accessToken}`,
       },
-      body: JSON.stringify({ roomId }),
+      body: JSON.stringify({ roomId, preferThumbnail: true }),
     });
     if (!res.ok) return null;
 
@@ -419,10 +419,10 @@ export function MyRoomsPage() {
 
   const handleOpenRoom = (room: MyRoomsRoom) => {
     const immediatePreviewUrl =
-      typeof room.display_image_url === "string" && room.display_image_url.trim().length > 0
-        ? room.display_image_url.trim()
-        : typeof room.cover_image_url === "string" && room.cover_image_url.trim().length > 0
-          ? room.cover_image_url.trim()
+      typeof room.cover_image_url === "string" && room.cover_image_url.trim().length > 0
+        ? room.cover_image_url.trim()
+        : typeof room.display_image_url === "string" && room.display_image_url.trim().length > 0
+          ? room.display_image_url.trim()
           : null;
     const params = new URLSearchParams({
       roomId: room.id,

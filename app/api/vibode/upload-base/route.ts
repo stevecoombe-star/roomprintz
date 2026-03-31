@@ -5,8 +5,10 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import {
   createVibodeRoom,
   createVibodeRoomAsset,
+  updateVibodeRoomAsset,
   updateVibodeRoom,
 } from "@/lib/vibodePersistence";
+import { createVibodeAssetThumbnail } from "@/lib/vibodeAssetThumbnails";
 
 export const runtime = "nodejs";
 
@@ -174,6 +176,22 @@ export async function POST(req: NextRequest) {
             height: heightPx ?? null,
             is_active: true,
           });
+
+          try {
+            const thumbnailLocation = await createVibodeAssetThumbnail({
+              adminSupabase: supabase,
+              roomId: room.id,
+              assetId: baseAsset.id,
+              sourceStorageBucket: BUCKET,
+              sourceStoragePath: storageKey,
+              sourceImageUrl: signed.signedUrl,
+            });
+            if (thumbnailLocation) {
+              await updateVibodeRoomAsset(userSupabase, baseAsset.id, thumbnailLocation);
+            }
+          } catch (thumbnailErr) {
+            console.warn("[upload-base] thumbnail generation failed (non-blocking):", thumbnailErr);
+          }
 
           await updateVibodeRoom(userSupabase, room.id, {
             base_asset_id: baseAsset.id,
