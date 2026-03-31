@@ -538,6 +538,7 @@ type VibodeRoomAssetHydrationRow = {
   storage_bucket: string | null;
   storage_path: string | null;
   image_url: string | null;
+  preview_url: string | null;
   width: number | null;
   height: number | null;
   model_version: string | null;
@@ -661,6 +662,10 @@ async function setActiveVersionForRoom(args: {
 
 function normalizeRoomAssetForStore(row: VibodeRoomAssetHydrationRow): VibodeRoomAsset | null {
   if (typeof row.image_url !== "string" || row.image_url.trim().length === 0) return null;
+  const previewUrl =
+    typeof row.preview_url === "string" && row.preview_url.trim().length > 0
+      ? row.preview_url
+      : row.image_url;
   return {
     id: row.id,
     room_id: row.room_id,
@@ -670,6 +675,7 @@ function normalizeRoomAssetForStore(row: VibodeRoomAssetHydrationRow): VibodeRoo
     storage_bucket: row.storage_bucket,
     storage_path: row.storage_path,
     image_url: row.image_url,
+    preview_url: previewUrl,
     width: row.width,
     height: row.height,
     model_version: row.model_version,
@@ -4196,6 +4202,10 @@ function EditorPageInner() {
   const renderVersionRow = (asset: VibodeRoomAsset) => {
     const isActive = selectedVersionId === asset.id;
     const secondaryText = getVersionSecondaryLabel(asset);
+    const versionPreviewUrl =
+      typeof asset.preview_url === "string" && asset.preview_url.trim().length > 0
+        ? asset.preview_url
+        : asset.image_url;
     return (
       <button
         key={asset.id}
@@ -4208,7 +4218,7 @@ function EditorPageInner() {
         }`}
       >
         <img
-          src={asset.image_url}
+          src={versionPreviewUrl}
           alt={secondaryText}
           className="h-11 w-14 flex-none rounded bg-neutral-800 object-cover"
           loading="lazy"

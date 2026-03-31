@@ -286,6 +286,7 @@ export type VibodeRoomAsset = {
   storage_bucket: string | null;
   storage_path: string | null;
   image_url: string;
+  preview_url?: string;
   width: number | null;
   height: number | null;
   model_version: string | null;

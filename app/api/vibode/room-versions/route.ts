@@ -141,6 +141,30 @@ async function resolveAssetPreviewUrl(
   return signed.signedUrl;
 }
 
+async function resolveAssetThumbnailPreviewUrl(
+  asset: RoomAssetRow,
+  adminSupabase: AnySupabaseClient | null
+): Promise<string | null> {
+  const bucket = normalizeText(asset.thumbnail_storage_bucket);
+  const storagePath = normalizeText(asset.thumbnail_storage_path);
+  if (!bucket || !storagePath || !adminSupabase) return null;
+
+  const { data: signed, error: signErr } = await adminSupabase.storage
+    .from(bucket)
+    .createSignedUrl(storagePath, PREVIEW_SIGNED_URL_EXPIRES_IN_SEC);
+  if (signErr || !signed?.signedUrl) {
+    console.warn("[vibode/room-versions] failed signing room asset thumbnail URL:", {
+      roomAssetId: asset.id,
+      bucket,
+      storagePath,
+      error: signErr?.message ?? null,
+    });
+    return null;
+  }
+
+  return signed.signedUrl;
+}
+
 export async function POST(req: NextRequest) {
   try {
     if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
@@ -201,24 +225,29 @@ export async function POST(req: NextRequest) {
 
     const adminSupabase = getAdminSupabaseClient();
     const versions = await Promise.all(
-      ((assetRows ?? []) as RoomAssetRow[]).map(async (asset) => ({
-        id: asset.id,
-        room_id: asset.room_id,
-        user_id: asset.user_id,
-        asset_type: asset.asset_type,
-        stage_number: asset.stage_number,
-        storage_bucket: asset.storage_bucket,
-        storage_path: asset.storage_path,
-        thumbnail_storage_bucket: asset.thumbnail_storage_bucket,
-        thumbnail_storage_path: asset.thumbnail_storage_path,
-        image_url: await resolveAssetPreviewUrl(asset, adminSupabase),
-        width: asset.width,
-        height: asset.height,
-        model_version: asset.model_version,
-        is_active: asset.is_active === true,
-        metadata: asset.metadata ?? {},
-        created_at: asset.created_at ?? "",
-      }))
+      ((assetRows ?? []) as RoomAssetRow[]).map(async (asset) => {
+        const imageUrl = await resolveAssetPreviewUrl(asset, adminSupabase);
+        const thumbnailPreviewUrl = await resolveAssetThumbnailPreviewUrl(asset, adminSupabase);
+        return {
+          id: asset.id,
+          room_id: asset.room_id,
+          user_id: asset.user_id,
+          asset_type: asset.asset_type,
+          stage_number: asset.stage_number,
+          storage_bucket: asset.storage_bucket,
+          storage_path: asset.storage_path,
+          thumbnail_storage_bucket: asset.thumbnail_storage_bucket,
+          thumbnail_storage_path: asset.thumbnail_storage_path,
+          image_url: imageUrl,
+          preview_url: thumbnailPreviewUrl ?? imageUrl,
+          width: asset.width,
+          height: asset.height,
+          model_version: asset.model_version,
+          is_active: asset.is_active === true,
+          metadata: asset.metadata ?? {},
+          created_at: asset.created_at ?? "",
+        };
+      })
     );
 
     return NextResponse.json({ versions });
