@@ -1,7 +1,7 @@
 // components/editor/EditorCanvas.tsx
 "use client";
 
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useId, useMemo, useRef, useState } from "react";
 import {
   Stage,
   Layer,
@@ -222,6 +222,20 @@ function clamp(n: number, min: number, max: number) {
   return Math.max(min, Math.min(max, n));
 }
 
+function getValidAspectRatio(value: number | null | undefined) {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) return null;
+  return value;
+}
+
+function getAspectRatioFromDimensions(
+  width: number | null | undefined,
+  height: number | null | undefined
+) {
+  if (typeof width !== "number" || !Number.isFinite(width) || width <= 0) return null;
+  if (typeof height !== "number" || !Number.isFinite(height) || height <= 0) return null;
+  return width / height;
+}
+
 function findSkuById(skuId: string) {
   for (const c of MOCK_COLLECTIONS) {
     const sku = c.catalog[skuId];
@@ -287,11 +301,13 @@ export function EditorCanvas({
   onSwapPickPoint?: (point: { xNorm: number; yNorm: number }) => void;
   onCancelSwapPickMode?: () => void;
 }) {
-  const instanceIdRef = useRef(`canvas_${Math.random().toString(16).slice(2, 10)}`);
+  const instanceId = useId();
   const outerShellRef = useRef<HTMLDivElement | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
 
   const baseImageUrl = useEditorStore((s) => s.scene.baseImageUrl);
+  const baseImageWidthPx = useEditorStore((s) => s.scene.baseImageWidthPx);
+  const baseImageHeightPx = useEditorStore((s) => s.scene.baseImageHeightPx);
   const canvasImageUrl = imageUrl ?? baseImageUrl;
   const nodes = useEditorStore((s) => s.scene.nodes);
   const removeMarks = useEditorStore((s) => s.scene.removeMarks ?? []);
@@ -354,12 +370,28 @@ export function EditorCanvas({
     w: 800,
     h: 600,
   });
-  const normalizedFrameAspectRatio =
-    typeof frameAspectRatio === "number" && Number.isFinite(frameAspectRatio) && frameAspectRatio > 0
-      ? frameAspectRatio
-      : 1;
+  const explicitFrameAspectRatio = getValidAspectRatio(frameAspectRatio);
   const shouldRenderPlaceholder = Boolean(placeholderImageUrl) && showPlaceholder;
   const isFinalLayerVisible = finalImageReady || (!isHydratingRoom && !showPlaceholder);
+  const pinnedPlaceholderFrameSize = useMemo(() => {
+    if (!explicitFrameAspectRatio) return null;
+    let nextW = stageSize.w;
+    let nextH = Math.round(nextW / explicitFrameAspectRatio);
+    if (nextH > stageSize.h) {
+      nextH = stageSize.h;
+      nextW = Math.round(nextH * explicitFrameAspectRatio);
+    }
+    return {
+      w: Math.max(1, nextW),
+      h: Math.max(1, nextH),
+    };
+  }, [explicitFrameAspectRatio, stageSize.h, stageSize.w]);
+  const shouldUsePinnedPlaceholderShell =
+    shouldRenderPlaceholder && Boolean(pinnedPlaceholderFrameSize);
+  const pinnedPlaceholderAspectRatio =
+    shouldUsePinnedPlaceholderShell && explicitFrameAspectRatio
+      ? explicitFrameAspectRatio
+      : undefined;
 
   const [img, imageStatus] = useImage(canvasImageUrl ?? "", "anonymous");
   const [displayImage, setDisplayImage] = useState<HTMLImageElement | null>(null);
@@ -378,19 +410,36 @@ export function EditorCanvas({
     setDisplayImageUrl(canvasImageUrl);
   }, [canvasImageUrl, imageStatus, img]);
 
+  const loadedImageAspectRatio = useMemo(() => {
+    if (imageStatus === "loaded" && img) {
+      return getAspectRatioFromDimensions(img.width, img.height);
+    }
+    if (!displayImage) return null;
+    if (canvasImageUrl && displayImageUrl !== canvasImageUrl) return null;
+    return getAspectRatioFromDimensions(displayImage.width, displayImage.height);
+  }, [canvasImageUrl, displayImage, displayImageUrl, imageStatus, img]);
+
+  const sceneMetadataAspectRatio = useMemo(
+    () => getAspectRatioFromDimensions(baseImageWidthPx, baseImageHeightPx),
+    [baseImageHeightPx, baseImageWidthPx]
+  );
+
+  const normalizedFrameAspectRatio =
+    explicitFrameAspectRatio ?? loadedImageAspectRatio ?? sceneMetadataAspectRatio ?? 1;
+
   useEffect(() => {
     if (!canvasImageUrl) return;
     logEditorCanvas("image-load-start", {
-      instanceId: instanceIdRef.current,
+      instanceId,
       canvasImageUrl,
     });
-  }, [canvasImageUrl]);
+  }, [canvasImageUrl, instanceId]);
 
   useEffect(() => {
     if (!canvasImageUrl) return;
     if (imageStatus === "loaded" && img) {
       logEditorCanvas("image-load-success", {
-        instanceId: instanceIdRef.current,
+        instanceId,
         canvasImageUrl,
         naturalWidth: img.width,
         naturalHeight: img.height,
@@ -399,11 +448,11 @@ export function EditorCanvas({
     }
     if (imageStatus === "failed") {
       logEditorCanvas("image-load-failed", {
-        instanceId: instanceIdRef.current,
+        instanceId,
         canvasImageUrl,
       });
     }
-  }, [canvasImageUrl, imageStatus, img]);
+  }, [canvasImageUrl, imageStatus, img, instanceId]);
 
   const fit = useMemo(() => {
     if (!displayImage) return { x: 0, y: 0, w: stageSize.w, h: stageSize.h, scale: 1 };
@@ -497,7 +546,7 @@ export function EditorCanvas({
   const transformerRef = useRef<Konva.Transformer | null>(null);
   const selectedNodeRef = useRef<Konva.Group | null>(null);
 
-  // Resize stage to fit a stable aspect-ratio shell
+  // Stage geometry is always full canvas. Room-open pinning only affects the placeholder shell.
   useEffect(() => {
     const el = outerShellRef.current;
     if (!el) return;
@@ -507,21 +556,15 @@ export function EditorCanvas({
       if (!cr) return;
       const outerW = Math.max(1, Math.floor(cr.width));
       const outerH = Math.max(1, Math.floor(cr.height));
-      let nextW = outerW;
-      let nextH = Math.round(nextW / normalizedFrameAspectRatio);
-      if (nextH > outerH) {
-        nextH = outerH;
-        nextW = Math.round(nextH * normalizedFrameAspectRatio);
-      }
       setStageSize({
-        w: Math.max(1, nextW),
-        h: Math.max(1, nextH),
+        w: outerW,
+        h: outerH,
       });
     });
 
     ro.observe(el);
     return () => ro.disconnect();
-  }, [normalizedFrameAspectRatio]);
+  }, []);
 
   // Attach transformer to selected node (locked if marked for delete, and locked in calibrate mode)
   useEffect(() => {
@@ -1028,12 +1071,7 @@ export function EditorCanvas({
       <div ref={outerShellRef} className="relative h-full w-full">
         <div
           ref={containerRef}
-          className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 overflow-hidden bg-neutral-950"
-          style={{
-            width: stageSize.w,
-            height: stageSize.h,
-            aspectRatio: normalizedFrameAspectRatio,
-          }}
+          className="absolute inset-0 overflow-hidden bg-neutral-950"
           onDragOver={(e) => {
             e.preventDefault();
             e.dataTransfer.dropEffect = "copy";
@@ -1111,12 +1149,25 @@ export function EditorCanvas({
               }`}
             >
               <div className="absolute inset-0 bg-neutral-900" />
-              <img
-                src={placeholderImageUrl}
-                alt=""
-                className="h-full w-full object-contain blur-lg saturate-75 opacity-80"
-                draggable={false}
-              />
+              <div
+                className={
+                  shouldUsePinnedPlaceholderShell
+                    ? "absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 overflow-hidden bg-neutral-950"
+                    : "absolute inset-0 overflow-hidden bg-neutral-950"
+                }
+                style={{
+                  width: shouldUsePinnedPlaceholderShell ? pinnedPlaceholderFrameSize?.w : "100%",
+                  height: shouldUsePinnedPlaceholderShell ? pinnedPlaceholderFrameSize?.h : "100%",
+                  aspectRatio: pinnedPlaceholderAspectRatio,
+                }}
+              >
+                <img
+                  src={placeholderImageUrl}
+                  alt=""
+                  className="h-full w-full object-contain blur-lg saturate-75 opacity-80"
+                  draggable={false}
+                />
+              </div>
               <div className="absolute inset-0 bg-neutral-950/35" />
             </div>
           )}

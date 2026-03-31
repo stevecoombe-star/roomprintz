@@ -337,6 +337,8 @@ const INITIAL_STAGE_STATUS: StageStatusMap = {
   4: "idle",
   5: "idle",
 };
+const ROOM_OPEN_PLACEHOLDER_FADE_MS = 200;
+const ROOM_OPEN_REVEAL_SETTLE_MS = 180;
 
 function isStage4Action(value: unknown): value is Stage4Action {
   if (typeof value !== "string") return false;
@@ -1095,8 +1097,10 @@ function EditorPageInner() {
     isHydratingRoom: false,
     showPlaceholder: false,
   });
+  const [isRoomOpenRevealSettling, setIsRoomOpenRevealSettling] = useState(false);
   const roomCanvasHydrationTokenRef = useRef(0);
   const roomCanvasHydrationFadeTimeoutRef = useRef<number | null>(null);
+  const roomCanvasHydrationSettleTimeoutRef = useRef<number | null>(null);
   const [roomCanvasHydrationTarget, setRoomCanvasHydrationTarget] =
     useState<RoomCanvasHydrationTarget | null>(null);
   const [isDownloading, setIsDownloading] = useState(false);
@@ -1456,12 +1460,20 @@ function EditorPageInner() {
       roomCanvasHydrationFadeTimeoutRef.current = null;
     }
   }, []);
+  const clearRoomCanvasSettleTimeout = useCallback(() => {
+    if (roomCanvasHydrationSettleTimeoutRef.current !== null) {
+      window.clearTimeout(roomCanvasHydrationSettleTimeoutRef.current);
+      roomCanvasHydrationSettleTimeoutRef.current = null;
+    }
+  }, []);
 
   const beginRoomCanvasHydration = useCallback(
     (args: { aspectRatio?: number | null; placeholderImageUrl?: string | null }) => {
       roomCanvasHydrationTokenRef.current += 1;
       clearRoomCanvasFadeTimeout();
+      clearRoomCanvasSettleTimeout();
       setRoomCanvasHydrationTarget(null);
+      setIsRoomOpenRevealSettling(false);
       setCanvasPresentation({
         frameAspectRatio: normalizeAspectRatio(args.aspectRatio) ?? 1,
         placeholderImageUrl: args.placeholderImageUrl ?? null,
@@ -1471,14 +1483,15 @@ function EditorPageInner() {
       });
       return roomCanvasHydrationTokenRef.current;
     },
-    [clearRoomCanvasFadeTimeout]
+    [clearRoomCanvasFadeTimeout, clearRoomCanvasSettleTimeout]
   );
 
   useEffect(() => {
     return () => {
       clearRoomCanvasFadeTimeout();
+      clearRoomCanvasSettleTimeout();
     };
-  }, [clearRoomCanvasFadeTimeout]);
+  }, [clearRoomCanvasFadeTimeout, clearRoomCanvasSettleTimeout]);
 
   useEffect(() => {
     if (requestedRoomId) {
@@ -1490,7 +1503,9 @@ function EditorPageInner() {
       setIsRoomHydrating(false);
       roomCanvasHydrationTokenRef.current += 1;
       clearRoomCanvasFadeTimeout();
+      clearRoomCanvasSettleTimeout();
       setRoomCanvasHydrationTarget(null);
+      setIsRoomOpenRevealSettling(false);
       setCanvasPresentation((prev) => ({
         ...prev,
         placeholderImageUrl: null,
@@ -1684,6 +1699,7 @@ function EditorPageInner() {
   }, [
     beginRoomCanvasHydration,
     clearRoomCanvasFadeTimeout,
+    clearRoomCanvasSettleTimeout,
     pushSnack,
     requestedInitialFrameAspectRatio,
     requestedRoomId,
@@ -1712,14 +1728,22 @@ function EditorPageInner() {
         isHydratingRoom: false,
         showPlaceholder: Boolean(prev.placeholderImageUrl),
       }));
+      setIsRoomOpenRevealSettling(true);
       clearRoomCanvasFadeTimeout();
+      clearRoomCanvasSettleTimeout();
       roomCanvasHydrationFadeTimeoutRef.current = window.setTimeout(() => {
         if (!isCurrentToken()) return;
         setCanvasPresentation((prev) => ({
           ...prev,
           showPlaceholder: false,
         }));
-      }, 200);
+        roomCanvasHydrationFadeTimeoutRef.current = null;
+        roomCanvasHydrationSettleTimeoutRef.current = window.setTimeout(() => {
+          if (!isCurrentToken()) return;
+          setIsRoomOpenRevealSettling(false);
+          roomCanvasHydrationSettleTimeoutRef.current = null;
+        }, ROOM_OPEN_REVEAL_SETTLE_MS);
+      }, ROOM_OPEN_PLACEHOLDER_FADE_MS);
     };
 
     img.onload = () => {
@@ -1736,6 +1760,7 @@ function EditorPageInner() {
     };
     img.onerror = () => {
       if (cancelled || !isCurrentToken()) return;
+      setIsRoomOpenRevealSettling(false);
       setCanvasPresentation((prev) => ({
         ...prev,
         finalImageReady: false,
@@ -1750,7 +1775,7 @@ function EditorPageInner() {
       img.onload = null;
       img.onerror = null;
     };
-  }, [clearRoomCanvasFadeTimeout, roomCanvasHydrationTarget]);
+  }, [clearRoomCanvasFadeTimeout, clearRoomCanvasSettleTimeout, roomCanvasHydrationTarget]);
 
   useEffect(() => {
     if (shouldSkipPendingRestoreRef.current) return;
@@ -1856,16 +1881,23 @@ function EditorPageInner() {
   const previewImageUrl = shouldPreferRoomOpenBridge
     ? roomOpenBridgeImageUrl
     : currentImageUrl ?? roomOpenBridgeImageUrl;
-  const resolvedCanvasFrameAspectRatio =
-    canvasPresentation.frameAspectRatio ??
-    aspectRatioFromDimensions(scene.baseImageWidthPx, scene.baseImageHeightPx) ??
-    1;
   const canvasImageUrl = currentImageUrl;
-  const hasCanvasImage =
-    Boolean(canvasImageUrl) ||
-    canvasPresentation.isHydratingRoom ||
-    (canvasPresentation.showPlaceholder && Boolean(canvasPresentation.placeholderImageUrl));
-  const isCanvasEmpty = !hasCanvasImage;
+  const hasCanvasPresentationPlaceholder =
+    canvasPresentation.showPlaceholder && Boolean(canvasPresentation.placeholderImageUrl);
+  const hasCanvasPresentationImage =
+    Boolean(canvasImageUrl) || canvasPresentation.isHydratingRoom || hasCanvasPresentationPlaceholder;
+  const isRoomOpenPresentationTransition =
+    Boolean(requestedRoomId) &&
+    (canvasPresentation.isHydratingRoom ||
+      hasCanvasPresentationPlaceholder ||
+      isRoomOpenRevealSettling);
+  const shouldPinCanvasFrameAspectRatio = isRoomOpenPresentationTransition;
+  const resolvedCanvasFrameAspectRatio = shouldPinCanvasFrameAspectRatio
+    ? (canvasPresentation.frameAspectRatio ??
+      aspectRatioFromDimensions(scene.baseImageWidthPx, scene.baseImageHeightPx) ??
+      1)
+    : null;
+  const isCanvasEmpty = !hasCanvasPresentationImage;
   const shouldShowUploadOverlay = isCanvasEmpty;
   const pasteToPlaceDisplayedPreviewUrl =
     pasteToPlaceMenuNormalizedPreviewUrl ?? pasteToPlaceMenuRawPreviewUrl;
