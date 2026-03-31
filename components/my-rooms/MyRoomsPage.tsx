@@ -417,40 +417,20 @@ export function MyRoomsPage() {
     }
   };
 
-  const handleOpenRoom = async (room: MyRoomsRoom) => {
-    const nowIso = new Date().toISOString();
+  const handleOpenRoom = (room: MyRoomsRoom) => {
     const immediatePreviewUrl =
       typeof room.display_image_url === "string" && room.display_image_url.trim().length > 0
         ? room.display_image_url.trim()
         : typeof room.cover_image_url === "string" && room.cover_image_url.trim().length > 0
           ? room.cover_image_url.trim()
           : null;
-    setMutatingRoomId(room.id);
-    setRooms((prev) =>
-      prev.map((candidate) =>
-        candidate.id === room.id
-          ? { ...candidate, last_opened_at: nowIso, sort_key: nowIso }
-          : candidate
-      )
-    );
-
-    try {
-      await supabase
-        .from("vibode_rooms")
-        .update({ last_opened_at: nowIso, sort_key: nowIso })
-        .eq("id", room.id);
-    } catch (err) {
-      console.error("[MyRooms] open recency update failed:", err);
-    } finally {
-      setMutatingRoomId(null);
-      const params = new URLSearchParams({
-        roomId: room.id,
-      });
-      if (immediatePreviewUrl) {
-        params.set("roomPreview", immediatePreviewUrl);
-      }
-      router.push(`/editor?${params.toString()}`);
+    const params = new URLSearchParams({
+      roomId: room.id,
+    });
+    if (immediatePreviewUrl) {
+      params.set("roomPreview", immediatePreviewUrl);
     }
+    router.push(`/editor?${params.toString()}`);
   };
 
   const handleRenameStart = (room: MyRoomsRoom) => {
