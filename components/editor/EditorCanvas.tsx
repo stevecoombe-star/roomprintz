@@ -268,6 +268,7 @@ export function EditorCanvas({
   showPlaceholder = false,
   finalImageReady = true,
   isHydratingRoom = false,
+  suppressEmptyCanvasHint = false,
   pasteToPlaceStatus = null,
   isSwapPickMode = false,
   onSwapPickPoint,
@@ -296,6 +297,7 @@ export function EditorCanvas({
   showPlaceholder?: boolean;
   finalImageReady?: boolean;
   isHydratingRoom?: boolean;
+  suppressEmptyCanvasHint?: boolean;
   pasteToPlaceStatus?: PasteToPlaceStatus | null;
   isSwapPickMode?: boolean;
   onSwapPickPoint?: (point: { xNorm: number; yNorm: number }) => void;
@@ -1210,7 +1212,7 @@ export function EditorCanvas({
               opacity={canvasImageUrl && displayImageUrl !== canvasImageUrl ? 0.96 : 1}
               listening={false}
             />
-          ) : (
+          ) : !suppressEmptyCanvasHint ? (
             <Text
               text="Upload a room photo to begin"
               x={24}
@@ -1219,7 +1221,7 @@ export function EditorCanvas({
               fill="#9ca3af"
               listening={false}
             />
-          )}
+          ) : null}
 
           {/* Calibration overlay (image-anchored) */}
           {activeTool === "calibrate" && viewport && calP1 && (

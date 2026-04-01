@@ -1898,7 +1898,8 @@ function EditorPageInner() {
       1)
     : null;
   const isCanvasEmpty = !hasCanvasPresentationImage;
-  const shouldShowUploadOverlay = isCanvasEmpty;
+  const isOpeningExistingRoom = Boolean(requestedRoomId);
+  const shouldShowUploadOverlay = isCanvasEmpty && !isOpeningExistingRoom;
   const pasteToPlaceDisplayedPreviewUrl =
     pasteToPlaceMenuNormalizedPreviewUrl ?? pasteToPlaceMenuRawPreviewUrl;
   const selectedVersionId =
@@ -4787,6 +4788,7 @@ function EditorPageInner() {
                 showPlaceholder={canvasPresentation.showPlaceholder}
                 finalImageReady={canvasPresentation.finalImageReady}
                 isHydratingRoom={canvasPresentation.isHydratingRoom}
+                suppressEmptyCanvasHint={Boolean(requestedRoomId)}
                 markupVisible={scene.markupVisible}
                 visualMode="blueprint"
                 pasteToPlaceStatus={pasteToPlaceStatus}
