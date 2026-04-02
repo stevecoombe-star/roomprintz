@@ -4,12 +4,13 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import { callCompositorVibodeStageRun } from "@/lib/callCompositorVibodeStageRun";
 import {
   createVibodeGenerationRun,
-  createVibodeRoomAsset,
   getVibodeRoomById,
-  updateVibodeRoomAsset,
-  updateVibodeRoom,
 } from "@/lib/vibodePersistence";
-import { createVibodeAssetThumbnail } from "@/lib/vibodeAssetThumbnails";
+import {
+  finalizeVibodeOutputAsset,
+  resolveVibodeOutputDimensions,
+  resolveVibodeOutputStorage,
+} from "@/lib/vibodeAssetFinalization";
 import {
   canAffordTokens,
   getTokenCostForAction,
@@ -24,7 +25,6 @@ const SUPABASE_URL = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABAS
 const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "";
 const SUPABASE_SERVICE_ROLE_KEY =
   process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SERVICE_KEY || "";
-const VIBODE_STAGED_BUCKET = (process.env.VIBODE_STAGED_BUCKET || "vibode-generations").trim();
 
 type StageRunCompositorResult = {
   imageUrl: string;
@@ -32,10 +32,6 @@ type StageRunCompositorResult = {
 } & Record<string, unknown>;
 
 type AnySupabaseClient = SupabaseClient<any, "public", any>;
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === "object";
-}
 
 function safeStr(value: unknown): string | null {
   if (typeof value !== "string") return null;
@@ -52,13 +48,6 @@ function parseOptionalStageNumber(value: unknown): number | null {
   if (typeof value !== "number" || !Number.isFinite(value)) return null;
   const n = Math.trunc(value);
   if (n < 0 || n > 32767) return null;
-  return n;
-}
-
-function parseOptionalPositiveInt(value: unknown): number | null {
-  if (typeof value !== "number" || !Number.isFinite(value)) return null;
-  const n = Math.trunc(value);
-  if (n <= 0) return null;
   return n;
 }
 
@@ -92,196 +81,6 @@ function getAdminSupabaseClient(): AnySupabaseClient | null {
   return createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
     auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
   });
-}
-
-function isLikelyExpiringSignedUrl(url: string) {
-  try {
-    const parsed = new URL(url);
-    if (parsed.pathname.includes("/storage/v1/object/sign/")) return true;
-    if (parsed.searchParams.has("token")) return true;
-    if (parsed.searchParams.has("X-Amz-Signature")) return true;
-    if (parsed.searchParams.has("X-Amz-Credential")) return true;
-    return false;
-  } catch {
-    return false;
-  }
-}
-
-function getDurableImageUrl(args: { candidateUrl?: string | null; storageBucket?: string | null }) {
-  const url = typeof args.candidateUrl === "string" ? args.candidateUrl.trim() : "";
-  if (!url) return null;
-  const bucket = typeof args.storageBucket === "string" ? args.storageBucket.trim() : "";
-  const isPrivateBucket =
-    bucket === "vibode-generations" || bucket === VIBODE_STAGED_BUCKET || bucket === "vibode-base-images";
-  if (isPrivateBucket && isLikelyExpiringSignedUrl(url)) return null;
-  return url;
-}
-
-function parseStorageLocationFromImageUrl(
-  imageUrl: string | null
-): { storageBucket: string | null; storagePath: string | null } {
-  if (!imageUrl) return { storageBucket: null, storagePath: null };
-
-  try {
-    const parsed = new URL(imageUrl);
-    const parts = parsed.pathname.split("/").filter(Boolean);
-    const objectIndex = parts.indexOf("object");
-    if (objectIndex < 0) return { storageBucket: null, storagePath: null };
-
-    let bucketIndex = objectIndex + 1;
-    const mode = parts[objectIndex + 1];
-    if (mode === "sign" || mode === "public" || mode === "authenticated") {
-      bucketIndex = objectIndex + 2;
-    }
-
-    const bucket = parts[bucketIndex];
-    const keyParts = parts.slice(bucketIndex + 1);
-    if (!bucket || keyParts.length === 0) {
-      return { storageBucket: null, storagePath: null };
-    }
-
-    return {
-      storageBucket: decodeURIComponent(bucket),
-      storagePath: decodeURIComponent(keyParts.join("/")),
-    };
-  } catch {
-    return { storageBucket: null, storagePath: null };
-  }
-}
-
-function resolveOutputStorage(result: StageRunCompositorResult): {
-  storageBucket: string | null;
-  storagePath: string | null;
-} {
-  const output = isRecord(result.output) ? result.output : null;
-
-  const storageBucket =
-    safeStr(result.storageBucket) ??
-    safeStr(result.storage_bucket) ??
-    safeStr(result.bucket) ??
-    safeStr(output?.storageBucket) ??
-    safeStr(output?.storage_bucket) ??
-    safeStr(output?.bucket);
-
-  const storagePath =
-    safeStr(result.storagePath) ??
-    safeStr(result.storage_path) ??
-    safeStr(result.storageKey) ??
-    safeStr(result.storage_key) ??
-    safeStr(result.key) ??
-    safeStr(output?.storagePath) ??
-    safeStr(output?.storage_path) ??
-    safeStr(output?.storageKey) ??
-    safeStr(output?.storage_key) ??
-    safeStr(output?.key);
-
-  if (storageBucket && storagePath) {
-    return { storageBucket, storagePath };
-  }
-
-  return parseStorageLocationFromImageUrl(safeStr(result.imageUrl));
-}
-
-function parseDataUrlImage(dataUrl: string): { mime: string; buf: Buffer } {
-  const matched = dataUrl.trim().match(/^data:(image\/[^;]+);base64,(.+)$/i);
-  if (!matched) {
-    throw new Error("Invalid stage output data URL.");
-  }
-  return {
-    mime: matched[1].toLowerCase(),
-    buf: Buffer.from(matched[2], "base64"),
-  };
-}
-
-function inferExtFromContentType(contentType: string) {
-  const c = (contentType || "").toLowerCase();
-  if (c.includes("jpeg") || c.includes("jpg")) return { ext: "jpg", contentType: "image/jpeg" };
-  if (c.includes("webp")) return { ext: "webp", contentType: "image/webp" };
-  if (c.includes("png")) return { ext: "png", contentType: "image/png" };
-  return { ext: "png", contentType: "image/png" };
-}
-
-function sanitizeStoragePathPart(value: string | null | undefined, fallback: string) {
-  const raw = typeof value === "string" ? value.trim() : "";
-  const normalized = raw.replace(/[^a-zA-Z0-9_-]+/g, "-").replace(/^-+|-+$/g, "");
-  return normalized.length > 0 ? normalized : fallback;
-}
-
-function buildStageRunStoragePath(args: {
-  vibodeRoomId: string | null;
-  stageNumber: number | null;
-  ext: string;
-}) {
-  const roomPart = sanitizeStoragePathPart(args.vibodeRoomId, "room");
-  const stagePart =
-    typeof args.stageNumber === "number" && Number.isFinite(args.stageNumber)
-      ? `stage_${Math.trunc(args.stageNumber)}`
-      : "stage_unknown";
-  const nonce = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-  return `${roomPart}/${stagePart}/${nonce}.${args.ext}`;
-}
-
-function getErrorMessage(err: unknown) {
-  return err instanceof Error ? err.message : String(err);
-}
-
-async function persistStageRunDataUrlToStorage(args: {
-  admin: AnySupabaseClient;
-  dataUrl: string;
-  vibodeRoomId: string | null;
-  stageNumber: number | null;
-  storageBucketHint: string | null;
-  storagePathHint: string | null;
-}) {
-  const { mime, buf } = parseDataUrlImage(args.dataUrl);
-  const inferred = inferExtFromContentType(mime);
-  const storageBucket = safeStr(args.storageBucketHint) ?? VIBODE_STAGED_BUCKET;
-  const storagePath =
-    safeStr(args.storagePathHint) ??
-    buildStageRunStoragePath({
-      vibodeRoomId: args.vibodeRoomId,
-      stageNumber: args.stageNumber,
-      ext: inferred.ext,
-    });
-  const expiresInSec = Math.max(
-    60,
-    Number(process.env.VIBODE_STAGED_SIGNED_URL_EXPIRES_IN ?? 60 * 60 * 24 * 7)
-  );
-
-  const { error: uploadErr } = await args.admin.storage
-    .from(storageBucket)
-    .upload(storagePath, buf, { contentType: inferred.contentType, upsert: true });
-  if (uploadErr) {
-    throw new Error(`Failed to upload stage output image: ${uploadErr.message}`);
-  }
-
-  const { data: signed, error: signErr } = await args.admin.storage
-    .from(storageBucket)
-    .createSignedUrl(storagePath, expiresInSec);
-  if (signErr || !signed?.signedUrl) {
-    throw new Error(`Failed to sign stage output image URL: ${signErr?.message ?? "unknown error"}`);
-  }
-
-  return {
-    imageUrl: signed.signedUrl,
-    storageBucket,
-    storagePath,
-  };
-}
-
-function resolveOutputDimensions(result: StageRunCompositorResult): { width: number | null; height: number | null } {
-  const output = isRecord(result.output) ? result.output : null;
-  const width =
-    parseOptionalPositiveInt(result.widthPx) ??
-    parseOptionalPositiveInt(result.width) ??
-    parseOptionalPositiveInt(output?.widthPx) ??
-    parseOptionalPositiveInt(output?.width);
-  const height =
-    parseOptionalPositiveInt(result.heightPx) ??
-    parseOptionalPositiveInt(result.height) ??
-    parseOptionalPositiveInt(output?.heightPx) ??
-    parseOptionalPositiveInt(output?.height);
-  return { width, height };
 }
 
 function summarizeSafeRequestPayload(args: {
@@ -447,42 +246,40 @@ export async function POST(req: NextRequest) {
         modelVersion,
       },
     })) as StageRunCompositorResult;
-    let responseResult: StageRunCompositorResult = result;
-
-    const resultImageUrl = safeStr(result.imageUrl);
-    if (resultImageUrl && isDataUrl(resultImageUrl)) {
-      const adminClient = getAdminSupabaseClient();
-      if (!adminClient) {
-        console.warn("[vibode/stage-run] output storage skipped: missing service role key");
-      } else {
-        try {
-          const hintedStorage = resolveOutputStorage(result);
-          const persistedOutput = await persistStageRunDataUrlToStorage({
-            admin: adminClient,
-            dataUrl: resultImageUrl,
-            vibodeRoomId,
-            stageNumber: requestedStageNumber,
-            storageBucketHint: hintedStorage.storageBucket,
-            storagePathHint: hintedStorage.storagePath,
-          });
-          responseResult = {
-            ...result,
-            imageUrl: persistedOutput.imageUrl,
-            storageBucket: persistedOutput.storageBucket,
-            storagePath: persistedOutput.storagePath,
-          };
-        } catch (storageErr) {
-          console.warn(
-            "[vibode/stage-run] output storage failed; returning base64 fallback",
-            getErrorMessage(storageErr)
-          );
-        }
-      }
-    }
 
     if (!stageRunContext) {
       throw new Error("[vibode/stage-run] missing token preflight context");
     }
+
+    const hintedStorage = resolveVibodeOutputStorage(result);
+    const hintedDimensions = resolveVibodeOutputDimensions(result);
+    const nowIso = new Date().toISOString();
+    const hasRoomPersistenceContext = Boolean(vibodeRoomId && stageRunContext.room);
+    const outputFinalization = await finalizeVibodeOutputAsset({
+      logPrefix: "[vibode/stage-run]",
+      adminSupabase: getAdminSupabaseClient(),
+      persistenceSupabase: hasRoomPersistenceContext ? stageRunContext.supabase : null,
+      roomId: hasRoomPersistenceContext ? stageRunContext.room!.id : vibodeRoomId,
+      userId: stageRunContext.userId,
+      assetType: "stage_output",
+      stageNumber: stageRunContext.resolvedStageNumber,
+      modelVersion,
+      responseImageUrl: safeStr(result.imageUrl),
+      responseStorageBucket: hintedStorage.storageBucket,
+      responseStoragePath: hintedStorage.storagePath,
+      responseWidth: hintedDimensions.width,
+      responseHeight: hintedDimensions.height,
+      sourceImageUrlForThumbnail: safeStr(result.imageUrl),
+      markAssetActive: hasRoomPersistenceContext,
+      updateRoomCurrentStage: hasRoomPersistenceContext ? stageRunContext.resolvedStageNumber : undefined,
+      updateRoomSortKey: nowIso,
+    });
+    const responseResult: StageRunCompositorResult = {
+      ...result,
+      imageUrl: outputFinalization.imageUrl ?? safeStr(result.imageUrl) ?? "",
+      storageBucket: outputFinalization.storageBucket ?? hintedStorage.storageBucket,
+      storagePath: outputFinalization.storagePath ?? hintedStorage.storagePath,
+    };
 
     if (!vibodeRoomId || !stageRunContext.room) {
       console.info("[vibode/stage-run] persistence skipped: missing vibodeRoomId");
@@ -530,81 +327,28 @@ export async function POST(req: NextRequest) {
     const resolvedStageNumber = stageRunContext.resolvedStageNumber;
     const resolvedAspectRatio =
       requestedAspectRatio ?? safeStr(responseResult.appliedAspectRatio) ?? room.aspect_ratio;
-    const { storageBucket, storagePath } = resolveOutputStorage(responseResult);
-    const durableImageUrl = getDurableImageUrl({
-      candidateUrl: safeStr(responseResult.imageUrl),
-      storageBucket,
-    });
-    const { width, height } = resolveOutputDimensions(responseResult);
     const previousActiveAssetId = room.active_asset_id ?? null;
-    const nowIso = new Date().toISOString();
+    const storageBucket = outputFinalization.storageBucket ?? null;
+    const storagePath = outputFinalization.storagePath ?? null;
+    const durableImageUrl = outputFinalization.durableImageUrl ?? null;
     let tokensCharged = 0;
     let remainingTokens: number | null = stageRunContext.walletBalanceBefore;
 
     try {
-      const { supabase: persistenceClient, token } = getUserSupabaseClient(req);
-      if (!token || !persistenceClient) {
-        throw new Error("[vibode/stage-run] persistence failed: missing bearer token");
+      if (outputFinalization.assetFinalizationError) {
+        throw outputFinalization.assetFinalizationError;
+      }
+      if (!outputFinalization.outputAssetId) {
+        throw new Error("[vibode/stage-run] persistence failed: missing output asset id");
       }
 
-      const outputAsset = await createVibodeRoomAsset(persistenceClient, {
-        room_id: room.id,
-        user_id: userId,
-        asset_type: "stage_output",
-        stage_number: resolvedStageNumber,
-        storage_bucket: storageBucket,
-        storage_path: storagePath,
-        image_url: durableImageUrl ?? "",
-        model_version: modelVersion,
-        width,
-        height,
-        is_active: true,
-      });
-
-      try {
-        const adminSupabase = getAdminSupabaseClient();
-        if (adminSupabase) {
-          const thumbnailLocation = await createVibodeAssetThumbnail({
-            adminSupabase,
-            roomId: room.id,
-            assetId: outputAsset.id,
-            sourceStorageBucket: storageBucket,
-            sourceStoragePath: storagePath,
-            sourceImageUrl: durableImageUrl ?? safeStr(responseResult.imageUrl),
-          });
-          if (thumbnailLocation) {
-            await updateVibodeRoomAsset(persistenceClient, outputAsset.id, thumbnailLocation);
-          }
-        }
-      } catch (thumbnailErr) {
-        console.warn("[vibode/stage-run] thumbnail generation failed (non-blocking):", thumbnailErr);
-      }
-
-      const { error: deactivateErr } = await persistenceClient
-        .from("vibode_room_assets")
-        .update({ is_active: false })
-        .eq("room_id", room.id)
-        .eq("user_id", userId)
-        .eq("is_active", true)
-        .neq("id", outputAsset.id);
-      if (deactivateErr) {
-        throw new Error(`[vibode] failed to deactivate prior room assets: ${deactivateErr.message}`);
-      }
-
-      await updateVibodeRoom(persistenceClient, room.id, {
-        active_asset_id: outputAsset.id,
-        current_stage: resolvedStageNumber,
-        cover_image_url: durableImageUrl,
-        sort_key: nowIso,
-      });
-
-      const generationRun = await createVibodeGenerationRun(persistenceClient, {
+      const generationRun = await createVibodeGenerationRun(stageRunContext.supabase, {
         room_id: room.id,
         user_id: userId,
         run_type: "stage",
         stage_number: resolvedStageNumber,
         source_asset_id: previousActiveAssetId,
-        output_asset_id: outputAsset.id,
+        output_asset_id: outputFinalization.outputAssetId,
         model_version: modelVersion,
         aspect_ratio: resolvedAspectRatio,
         status: "completed",
@@ -624,7 +368,7 @@ export async function POST(req: NextRequest) {
 
       try {
         const spendResult = await spendTokens({
-          supabase: persistenceClient,
+          supabase: stageRunContext.supabase,
           userId,
           spendTokens: stageRunContext.tokenCost,
           eventType: "generation_spend",

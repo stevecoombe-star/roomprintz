@@ -259,6 +259,8 @@ type VibodeEditRunRequest = {
   params?: Record<string, unknown>;
   eligibleSkus?: VibodeEligibleSku[];
   modelVersion?: VibodeModelVersion;
+  vibodeRoomId?: string;
+  stageNumber?: number;
 };
 type VibodeEditRunResponse = {
   imageUrl: string;
@@ -2818,6 +2820,7 @@ function EditorPageInner() {
     setEditWarning(null);
 
     try {
+      const accessToken = await tryGetSupabaseAccessToken();
       const body: VibodeEditRunRequest = {
         baseImageUrl,
         action,
@@ -2826,11 +2829,16 @@ function EditorPageInner() {
         params: payloadParts.params,
         eligibleSkus: payloadParts.eligibleSkus,
         modelVersion: selectedModel,
+        vibodeRoomId: vibodeRoomId ?? undefined,
+        stageNumber: activeStage ?? undefined,
       };
 
       const res = await fetch("/api/vibode/edit-run", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
+        },
         body: JSON.stringify(body),
       });
 
@@ -2851,6 +2859,17 @@ function EditorPageInner() {
       setBaseImageUrl(json.imageUrl);
       if (Array.isArray(json.placements)) {
         setScenePlacements(json.placements);
+      }
+      if (vibodeRoomId) {
+        const latestVersions = await refreshRoomVersions(vibodeRoomId);
+        const responseImageUrl = json.imageUrl.trim();
+        const matchingVersion =
+          latestVersions?.find((asset) => asset.image_url === responseImageUrl) ??
+          latestVersions?.find((asset) => asset.preview_url === responseImageUrl) ??
+          null;
+        if (matchingVersion) {
+          setActiveAssetId(matchingVersion.id);
+        }
       }
       lifecycle?.onImageCommitted?.(json as VibodeEditRunResponse);
       cancelPasteToPlaceSwapPick();
