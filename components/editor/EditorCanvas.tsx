@@ -49,6 +49,8 @@ type PasteToPlaceMenuState = {
   yNorm: number;
   anchorCssX: number;
   anchorCssY: number;
+  anchorX?: number;
+  anchorY?: number;
 } | null;
 const PASTE_TO_PLACE_PROGRESS_COPY: Record<PasteToPlaceStatus, string> = {
   reading: "Reading copied image...",
@@ -544,6 +546,50 @@ export function EditorCanvas({
       top: clamp(requestedTop, PASTE_TO_PLACE_MENU_EDGE_GUTTER_PX, maxTop),
     };
   }, [pasteToPlaceProgressCardState, stageSize.h, stageSize.w]);
+  const projectedPasteToPlaceProgressCardAnchor = useMemo(() => {
+    if (!pasteToPlaceProgressCardState || !viewport) return null;
+
+    const { anchorX, anchorY } = pasteToPlaceProgressCardState;
+    if (
+      typeof anchorX !== "number" ||
+      !Number.isFinite(anchorX) ||
+      typeof anchorY !== "number" ||
+      !Number.isFinite(anchorY)
+    ) {
+      return null;
+    }
+
+    if (viewport.imageNaturalW <= 0 || viewport.imageNaturalH <= 0) return null;
+    const imgPt = {
+      x: clamp(anchorX, 0, 1) * viewport.imageNaturalW,
+      y: clamp(anchorY, 0, 1) * viewport.imageNaturalH,
+    };
+    return imageToStage(imgPt, viewport);
+  }, [pasteToPlaceProgressCardState, viewport]);
+  const pasteToPlaceProgressCardPosition = useMemo(() => {
+    if (!pasteToPlaceProgressCardState) return null;
+    if (projectedPasteToPlaceProgressCardAnchor) {
+      return {
+        left: projectedPasteToPlaceProgressCardAnchor.x,
+        top: projectedPasteToPlaceProgressCardAnchor.y,
+        centerOnAnchor: true,
+      };
+    }
+
+    return {
+      left:
+        clampedPasteToPlaceProgressCardPosition?.left ??
+        pasteToPlaceProgressCardState.anchorCssX + PASTE_TO_PLACE_MENU_OFFSET_PX,
+      top:
+        clampedPasteToPlaceProgressCardPosition?.top ??
+        pasteToPlaceProgressCardState.anchorCssY + PASTE_TO_PLACE_MENU_OFFSET_PX,
+      centerOnAnchor: false,
+    };
+  }, [
+    clampedPasteToPlaceProgressCardPosition,
+    pasteToPlaceProgressCardState,
+    projectedPasteToPlaceProgressCardAnchor,
+  ]);
 
   const transformerRef = useRef<Konva.Transformer | null>(null);
   const selectedNodeRef = useRef<Konva.Group | null>(null);
@@ -1008,6 +1054,8 @@ export function EditorCanvas({
             yNorm: ptNorm.y,
             anchorCssX: pointerCssPt.x,
             anchorCssY: pointerCssPt.y,
+            anchorX: ptNorm.x,
+            anchorY: ptNorm.y,
           });
 
           return;
@@ -1021,6 +1069,8 @@ export function EditorCanvas({
           yNorm: ptNorm.y,
           anchorCssX: pulseStagePt.x,
           anchorCssY: pulseStagePt.y,
+          anchorX: ptNorm.x,
+          anchorY: ptNorm.y,
         });
         return;
       }
@@ -2066,14 +2116,14 @@ export function EditorCanvas({
         !pasteToPlaceMenuState &&
         (pasteToPlaceProgressCardPreviewUrl || isPasteToPlaceProgressCardLoading) && (
           <div
-            className="pointer-events-none absolute z-30"
+            className={`pointer-events-none absolute z-30 ${
+              pasteToPlaceProgressCardPosition?.centerOnAnchor
+                ? "-translate-x-1/2 -translate-y-1/2"
+                : ""
+            }`}
             style={{
-              left:
-                clampedPasteToPlaceProgressCardPosition?.left ??
-                pasteToPlaceProgressCardState.anchorCssX + PASTE_TO_PLACE_MENU_OFFSET_PX,
-              top:
-                clampedPasteToPlaceProgressCardPosition?.top ??
-                pasteToPlaceProgressCardState.anchorCssY + PASTE_TO_PLACE_MENU_OFFSET_PX,
+              left: pasteToPlaceProgressCardPosition?.left,
+              top: pasteToPlaceProgressCardPosition?.top,
             }}
           >
             <div className="flex flex-col rounded-lg border border-white/10 bg-neutral-950/85 shadow-lg backdrop-blur-sm">

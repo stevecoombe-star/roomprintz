@@ -293,6 +293,8 @@ type PasteToPlaceMenuState = {
   yNorm: number;
   anchorCssX: number;
   anchorCssY: number;
+  anchorX?: number;
+  anchorY?: number;
 } | null;
 type PendingStage3Payload = {
   skuItems?: unknown;
@@ -3229,7 +3231,11 @@ function EditorPageInner() {
 
       const operationId = beginPasteToPlaceOperation();
       setPasteToPlaceProgressCardState(null);
-      setPasteToPlaceMenuState(state);
+      setPasteToPlaceMenuState({
+        ...state,
+        anchorX: state.anchorX ?? state.xNorm,
+        anchorY: state.anchorY ?? state.yNorm,
+      });
       setPasteToPlaceMenuRawPreviewUrl(null);
       setPasteToPlaceMenuNormalizedPreviewUrl(null);
       setIsPasteToPlaceMenuIngesting(false);
