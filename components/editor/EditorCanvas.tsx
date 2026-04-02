@@ -1214,7 +1214,7 @@ export function EditorCanvas({
             />
           ) : !suppressEmptyCanvasHint ? (
             <Text
-              text="Upload a room photo to begin"
+              text="Upload a photo to create your new room"
               x={24}
               y={24}
               fontSize={14}

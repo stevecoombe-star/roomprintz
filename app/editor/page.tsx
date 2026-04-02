@@ -1087,6 +1087,7 @@ function EditorPageInner() {
   const hydratedRoomIdRef = useRef<string | null>(null);
   const roomOpenSessionRef = useRef(0);
   const inFlightRoomHydrationRoomIdRef = useRef<string | null>(null);
+  const hasAppliedBlankEditorResetRef = useRef(false);
   const roomPhotoUploadInputRef = useRef<HTMLInputElement | null>(null);
   const roomPhotoCanvasDragDepthRef = useRef(0);
 
@@ -1426,11 +1427,10 @@ function EditorPageInner() {
 
   useEffect(() => {
     if (didRestorePendingRef.current) return;
-    if (requestedRoomId) {
+    if (!requestedRoomId) {
       shouldSkipPendingRestoreRef.current = true;
-    }
-    if (shouldSkipPendingRestoreRef.current) {
       didRestorePendingRef.current = true;
+      clearPendingLocal();
       return;
     }
 
@@ -1468,6 +1468,35 @@ function EditorPageInner() {
       roomCanvasHydrationSettleTimeoutRef.current = null;
     }
   }, []);
+  const resetEditorToBlankState = useCallback(() => {
+    roomOpenSessionRef.current += 1;
+    inFlightRoomHydrationRoomIdRef.current = null;
+    hydratedRoomIdRef.current = null;
+    requestedRoomIdRef.current = null;
+    shouldSkipPendingRestoreRef.current = true;
+    didRestorePendingRef.current = true;
+    roomCanvasHydrationTokenRef.current += 1;
+    clearRoomCanvasFadeTimeout();
+    clearRoomCanvasSettleTimeout();
+    setRoomCanvasHydrationTarget(null);
+    setIsRoomOpenRevealSettling(false);
+    setCanvasPresentation({
+      frameAspectRatio: null,
+      placeholderImageUrl: null,
+      finalImageReady: true,
+      isHydratingRoom: false,
+      showPlaceholder: false,
+    });
+    setIsRoomHydrating(false);
+    roomPhotoCanvasDragDepthRef.current = 0;
+    setIsCanvasDragOver(false);
+    setSwapOpen(false);
+    setSwapTargetId(null);
+    setSwapPickerOpen(false);
+    setPasteToPlaceStatus(null);
+    setPasteToPlaceMenuState(null);
+    resetWorkflowForIncomingImage();
+  }, [clearRoomCanvasFadeTimeout, clearRoomCanvasSettleTimeout, resetWorkflowForIncomingImage]);
 
   const beginRoomCanvasHydration = useCallback(
     (args: { aspectRatio?: number | null; placeholderImageUrl?: string | null }) => {
@@ -1496,27 +1525,15 @@ function EditorPageInner() {
   }, [clearRoomCanvasFadeTimeout, clearRoomCanvasSettleTimeout]);
 
   useEffect(() => {
-    if (requestedRoomId) {
-      shouldSkipPendingRestoreRef.current = true;
-    }
     if (!requestedRoomId) {
-      inFlightRoomHydrationRoomIdRef.current = null;
-      hydratedRoomIdRef.current = null;
-      setIsRoomHydrating(false);
-      roomCanvasHydrationTokenRef.current += 1;
-      clearRoomCanvasFadeTimeout();
-      clearRoomCanvasSettleTimeout();
-      setRoomCanvasHydrationTarget(null);
-      setIsRoomOpenRevealSettling(false);
-      setCanvasPresentation((prev) => ({
-        ...prev,
-        placeholderImageUrl: null,
-        finalImageReady: true,
-        isHydratingRoom: false,
-        showPlaceholder: false,
-      }));
+      if (!hasAppliedBlankEditorResetRef.current) {
+        resetEditorToBlankState();
+        hasAppliedBlankEditorResetRef.current = true;
+      }
       return;
     }
+    hasAppliedBlankEditorResetRef.current = false;
+    shouldSkipPendingRestoreRef.current = true;
     if (hydratedRoomIdRef.current === requestedRoomId) {
       setIsRoomHydrating(false);
       return;
@@ -1706,6 +1723,7 @@ function EditorPageInner() {
     requestedInitialFrameAspectRatio,
     requestedRoomId,
     requestedRoomPreviewUrl,
+    resetEditorToBlankState,
     resetWorkflowForIncomingImage,
     router,
     setActiveAssetId,

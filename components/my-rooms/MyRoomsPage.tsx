@@ -689,6 +689,9 @@ export function MyRoomsPage() {
             folderFeatureReady={folderFeatureReady}
             onSearchChange={setSearchQuery}
             onSortChange={setSortMode}
+            onUploadNewPhoto={() => {
+              router.push("/editor");
+            }}
             onCreateFolder={() => {
               if (!folderFeatureReady) return;
               setCreateDialogOpen(true);

@@ -8,6 +8,7 @@ type MyRoomsHeaderProps = {
   folderFeatureReady: boolean;
   onSearchChange: (value: string) => void;
   onSortChange: (value: MyRoomsSortMode) => void;
+  onUploadNewPhoto: () => void;
   onCreateFolder: () => void;
 };
 
@@ -17,6 +18,7 @@ export function MyRoomsHeader({
   folderFeatureReady,
   onSearchChange,
   onSortChange,
+  onUploadNewPhoto,
   onCreateFolder,
 }: MyRoomsHeaderProps) {
   return (
@@ -30,6 +32,13 @@ export function MyRoomsHeader({
         </div>
 
         <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={onUploadNewPhoto}
+            className="rounded-lg bg-slate-100 px-3 py-2 text-xs font-medium text-slate-900 transition hover:bg-white"
+          >
+            Start New Room
+          </button>
           <button
             type="button"
             onClick={onCreateFolder}
