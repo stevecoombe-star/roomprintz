@@ -757,6 +757,45 @@ async function setActiveVersionForRoom(args: {
   }
 }
 
+async function deleteVersionForRoom(args: {
+  roomId: string;
+  assetId: string;
+  accessToken: string;
+}): Promise<{ deletedWasActive: boolean; nextActiveAssetId: string | null }> {
+  const res = await fetch("/api/vibode/delete-version", {
+    method: "DELETE",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${args.accessToken}`,
+    },
+    body: JSON.stringify({
+      roomId: args.roomId,
+      assetId: args.assetId,
+    }),
+  });
+
+  const payload = (await res.json().catch(() => ({}))) as {
+    error?: unknown;
+    deletedWasActive?: unknown;
+    nextActiveAssetId?: unknown;
+  };
+  if (!res.ok) {
+    const message =
+      typeof payload.error === "string" && payload.error.trim().length > 0
+        ? payload.error
+        : `Failed to delete room version (HTTP ${res.status})`;
+    throw new Error(message);
+  }
+
+  return {
+    deletedWasActive: payload.deletedWasActive === true,
+    nextActiveAssetId:
+      typeof payload.nextActiveAssetId === "string" && payload.nextActiveAssetId.trim().length > 0
+        ? payload.nextActiveAssetId
+        : null,
+  };
+}
+
 function normalizeRoomAssetForStore(row: VibodeRoomAssetHydrationRow): VibodeRoomAsset | null {
   if (typeof row.image_url !== "string" || row.image_url.trim().length === 0) return null;
   const previewUrl =
@@ -1039,6 +1078,8 @@ function EditorPageInner() {
   const [isSetupCollapsed, setIsSetupCollapsed] = useState(false);
   const [isCalibrationCollapsed, setIsCalibrationCollapsed] = useState(false);
   const [selectedModel, setSelectedModel] = useState<VibodeModelVersion>(VIBODE_MODEL_NBP);
+  const [deleteVersionTarget, setDeleteVersionTarget] = useState<VibodeRoomAsset | null>(null);
+  const [deletingVersionId, setDeletingVersionId] = useState<string | null>(null);
   const collapseAllRightPanels = () => {
     setIsVersionsCollapsed(true);
     setIsSetupCollapsed(true);
@@ -1970,11 +2011,12 @@ function EditorPageInner() {
 
     return { today, thisMonth, earlier };
   }, [nonOriginalVersions]);
+  const canDeleteVersions = versions.length > 1;
 
-  const handleSelectVersion = useCallback(
-    (asset: VibodeRoomAsset) => {
+  const applyVersionToEditorState = useCallback(
+    (asset: VibodeRoomAsset, sourceVersions: VibodeRoomAsset[]) => {
       const nextUrl = typeof asset.image_url === "string" ? asset.image_url.trim() : "";
-      if (!nextUrl) return;
+      if (!nextUrl) return false;
 
       cancelPasteToPlaceSwapPick();
       clearPasteToPlaceProgressPreview();
@@ -1982,12 +2024,26 @@ function EditorPageInner() {
       setIsWorkingImageGenerated(asset.asset_type === "stage_output");
       setActiveAssetId(asset.id);
       setVersions(
-        versions.map((candidate) =>
+        sourceVersions.map((candidate) =>
           candidate.id === asset.id
             ? { ...candidate, is_active: true }
             : { ...candidate, is_active: false }
         )
       );
+      return true;
+    },
+    [
+      cancelPasteToPlaceSwapPick,
+      clearPasteToPlaceProgressPreview,
+      setActiveAssetId,
+      setVersions,
+    ]
+  );
+
+  const handleSelectVersion = useCallback(
+    (asset: VibodeRoomAsset) => {
+      const applied = applyVersionToEditorState(asset, versions);
+      if (!applied) return;
 
       if (!vibodeRoomId) return;
 
@@ -2011,16 +2067,87 @@ function EditorPageInner() {
       })();
     },
     [
-      cancelPasteToPlaceSwapPick,
-      clearPasteToPlaceProgressPreview,
+      applyVersionToEditorState,
       pushSnack,
       refreshRoomVersions,
-      setActiveAssetId,
-      setVersions,
       vibodeRoomId,
       versions,
     ]
   );
+
+  const handleRequestDeleteVersion = useCallback(
+    (asset: VibodeRoomAsset) => {
+      if (!canDeleteVersions) return;
+      if (deletingVersionId) return;
+      setDeleteVersionTarget(asset);
+    },
+    [canDeleteVersions, deletingVersionId]
+  );
+
+  const handleConfirmDeleteVersion = useCallback(async () => {
+    if (!deleteVersionTarget) return;
+    if (deletingVersionId) return;
+    if (!vibodeRoomId || versions.length <= 1) {
+      setDeleteVersionTarget(null);
+      pushSnack("Couldn’t delete version");
+      return;
+    }
+
+    const target = deleteVersionTarget;
+    setDeletingVersionId(target.id);
+    try {
+      let accessToken = await tryGetSupabaseAccessToken();
+      if (!accessToken) {
+        await new Promise<void>((resolve) => setTimeout(resolve, 250));
+        accessToken = await tryGetSupabaseAccessToken();
+      }
+      if (!accessToken) {
+        throw new Error("No Supabase session.");
+      }
+
+      const result = await deleteVersionForRoom({
+        roomId: vibodeRoomId,
+        assetId: target.id,
+        accessToken,
+      });
+      const latestVersions = await refreshRoomVersions(vibodeRoomId);
+
+      if (result.deletedWasActive) {
+        const trustedVersions =
+          latestVersions ?? (await loadRoomVersions(vibodeRoomId, accessToken));
+        if (!latestVersions) {
+          setVersions(trustedVersions);
+          setActiveAssetId(trustedVersions.find((asset) => asset.is_active)?.id ?? null);
+        }
+        const nextActive =
+          trustedVersions.find((asset) => asset.id === result.nextActiveAssetId) ??
+          trustedVersions.find((asset) => asset.is_active) ??
+          trustedVersions[0] ??
+          null;
+        if (!nextActive || !applyVersionToEditorState(nextActive, trustedVersions)) {
+          throw new Error("No replacement active version after delete.");
+        }
+      }
+
+      pushSnack("Version deleted");
+      setDeleteVersionTarget(null);
+    } catch (err) {
+      console.warn("[editor] failed to delete room version:", err);
+      pushSnack("Couldn’t delete version");
+    } finally {
+      setDeletingVersionId(null);
+    }
+  }, [
+    applyVersionToEditorState,
+    deleteVersionTarget,
+    deletingVersionId,
+    pushSnack,
+    refreshRoomVersions,
+    setActiveAssetId,
+    setVersions,
+    vibodeRoomId,
+    versions.length,
+  ]);
 
   const isImageFile = (file: File | null | undefined) =>
     !!file && typeof file.type === "string" && file.type.startsWith("image/");
@@ -4624,30 +4751,48 @@ function EditorPageInner() {
       typeof asset.preview_url === "string" && asset.preview_url.trim().length > 0
         ? asset.preview_url
         : asset.image_url;
+    const isDeleting = deletingVersionId === asset.id;
     return (
-      <button
-        key={asset.id}
-        type="button"
-        onClick={() => handleSelectVersion(asset)}
-        className={`flex w-full items-center gap-2 rounded-md border p-1.5 text-left transition ${
-          isActive
-            ? "border-neutral-600 bg-neutral-800 ring-1 ring-neutral-600/40"
-            : "border-neutral-800 bg-neutral-950 hover:bg-neutral-900"
-        }`}
-      >
-        <img
-          src={versionPreviewUrl}
-          alt={secondaryText}
-          className="h-11 w-14 flex-none rounded bg-neutral-800 object-cover"
-          loading="lazy"
-        />
-        <div className="min-w-0">
-          <div className="truncate text-xs text-neutral-100">
-            {formatVersionTimestamp(asset.created_at)}
+      <div key={asset.id} className="flex items-center gap-1.5">
+        <button
+          type="button"
+          onClick={() => handleSelectVersion(asset)}
+          className={`flex min-w-0 flex-1 items-center gap-2 rounded-md border p-1.5 text-left transition ${
+            isActive
+              ? "border-neutral-600 bg-neutral-800 ring-1 ring-neutral-600/40"
+              : "border-neutral-800 bg-neutral-950 hover:bg-neutral-900"
+          }`}
+        >
+          <img
+            src={versionPreviewUrl}
+            alt={secondaryText}
+            className="h-11 w-14 flex-none rounded bg-neutral-800 object-cover"
+            loading="lazy"
+          />
+          <div className="min-w-0">
+            <div className="truncate text-xs text-neutral-100">
+              {formatVersionTimestamp(asset.created_at)}
+            </div>
+            <div className="truncate text-[11px] text-neutral-500">{secondaryText}</div>
           </div>
-          <div className="truncate text-[11px] text-neutral-500">{secondaryText}</div>
-        </div>
-      </button>
+        </button>
+        {canDeleteVersions ? (
+          <button
+            type="button"
+            className={`rounded-md border px-2 py-1 text-[11px] transition ${
+              deletingVersionId
+                ? "cursor-not-allowed border-neutral-900 bg-neutral-950 text-neutral-600"
+                : "border-neutral-800 bg-neutral-950 text-neutral-400 hover:bg-neutral-800 hover:text-neutral-200"
+            }`}
+            disabled={Boolean(deletingVersionId)}
+            onClick={() => handleRequestDeleteVersion(asset)}
+            aria-label="Delete version"
+            title="Delete version"
+          >
+            {isDeleting ? "Deleting..." : "Delete"}
+          </button>
+        ) : null}
+      </div>
     );
   };
 
@@ -6215,6 +6360,50 @@ function EditorPageInner() {
           </div>
         </aside>
       </div>
+
+      {deleteVersionTarget ? (
+        <div
+          className="fixed inset-0 z-[95] flex items-center justify-center bg-black/60 p-4"
+          onMouseDown={(event) => {
+            if (event.target !== event.currentTarget) return;
+            if (deletingVersionId) return;
+            setDeleteVersionTarget(null);
+          }}
+        >
+          <div className="w-full max-w-sm rounded-xl border border-neutral-800 bg-neutral-950 p-4 shadow-xl">
+            <div className="text-lg font-semibold">Delete this version?</div>
+            <div className="mt-2 text-sm text-neutral-300">This can’t be undone.</div>
+            <div className="mt-4 flex justify-end gap-2">
+              <button
+                type="button"
+                className={`rounded-md border px-3 py-1.5 text-sm ${
+                  deletingVersionId
+                    ? "cursor-not-allowed border-neutral-900 bg-neutral-950 text-neutral-600"
+                    : "border-neutral-800 bg-neutral-900 text-neutral-200 hover:bg-neutral-800"
+                }`}
+                disabled={Boolean(deletingVersionId)}
+                onClick={() => setDeleteVersionTarget(null)}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className={`rounded-md border px-3 py-1.5 text-sm ${
+                  deletingVersionId
+                    ? "cursor-not-allowed border-red-950 bg-red-950/20 text-red-300/60"
+                    : "border-red-800 bg-red-900/30 text-red-100 hover:bg-red-900/45"
+                }`}
+                disabled={Boolean(deletingVersionId)}
+                onClick={() => {
+                  void handleConfirmDeleteVersion();
+                }}
+              >
+                Delete
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       {/* Rescale Prompt Modal */}
       {rescalePrompt && (
