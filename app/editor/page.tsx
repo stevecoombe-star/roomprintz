@@ -270,20 +270,35 @@ type PasteToPlaceClickHint = { xNorm: number; yNorm: number };
 type PendingPasteToPlaceSwapPreparedProduct = {
   newSkuId: string;
   eligibleSkus: VibodeEligibleSku[];
+  savedFurnitureId?: string | null;
 };
 type PendingPasteToPlaceSwapContext = {
-  source: "clipboard";
+  source: "clipboard" | "my_furniture";
   origin: PasteToPlaceClickHint;
   prepared: PendingPasteToPlaceSwapPreparedProduct;
   operationId: number;
   sceneId: string;
   baseImageUrl: string;
 };
+type PasteToPlacePreparedProduct = {
+  source: "clipboard" | "my_furniture";
+  skuId: string;
+  eligibleSkus: VibodeEligibleSku[];
+  savedFurnitureId?: string | null;
+};
 type PasteToPlaceClipboardPreparationResult =
   | {
       status: "ready";
       clipboardSku: UserSku;
       eligibleSkus: VibodeEligibleSku[];
+    }
+  | { status: "no-image" }
+  | { status: "blocked" }
+  | { status: "failed"; reason?: string };
+type PasteToPlaceMenuPreparationResult =
+  | {
+      status: "ready";
+      prepared: PasteToPlacePreparedProduct;
     }
   | { status: "no-image" }
   | { status: "blocked" }
@@ -1107,6 +1122,8 @@ function EditorPageInner() {
   const [pasteToPlaceMenuNormalizedPreviewUrl, setPasteToPlaceMenuNormalizedPreviewUrl] = useState<
     string | null
   >(null);
+  const [pasteToPlaceMenuPreparedProduct, setPasteToPlaceMenuPreparedProduct] =
+    useState<PasteToPlacePreparedProduct | null>(null);
   const [isPasteToPlaceMenuIngesting, setIsPasteToPlaceMenuIngesting] = useState(false);
   const [pasteToPlaceProgressCardState, setPasteToPlaceProgressCardState] =
     useState<PasteToPlaceMenuState>(null);
@@ -1259,12 +1276,15 @@ function EditorPageInner() {
   useEffect(() => {
     lastStageOutputsRef.current = lastStageOutputs;
   }, [lastStageOutputs]);
+  const clearPasteToPlaceActiveSource = useCallback(() => {
+    setPasteToPlaceMenuRawPreviewUrl(null);
+    setPasteToPlaceMenuNormalizedPreviewUrl(null);
+    setPasteToPlaceMenuPreparedProduct(null);
+  }, []);
   const clearPasteToPlaceProgressPreview = useCallback(() => {
     pasteToPlaceMenuPreviewRequestIdRef.current += 1;
     invalidatePasteToPlaceOperation();
     setPasteToPlaceProgressCardState(null);
-    setPasteToPlaceMenuRawPreviewUrl(null);
-    setPasteToPlaceMenuNormalizedPreviewUrl(null);
     setIsPasteToPlaceMenuIngesting(false);
   }, [invalidatePasteToPlaceOperation]);
   const cancelPasteToPlaceSwapPick = useCallback(() => {
@@ -1334,11 +1354,12 @@ function EditorPageInner() {
     setStage3ShowCatalog(false);
     cancelPasteToPlaceSwapPick();
     clearPasteToPlaceProgressPreview();
+    clearPasteToPlaceActiveSource();
     setActiveStage(1);
     setVibodeRoomId(null);
     setRoomBaseAssetId(null);
     clearPendingLocal();
-  }, [cancelPasteToPlaceSwapPick, clearPasteToPlaceProgressPreview]);
+  }, [cancelPasteToPlaceSwapPick, clearPasteToPlaceActiveSource, clearPasteToPlaceProgressPreview]);
 
   const refreshRoomVersions = useCallback(
     async (roomId: string): Promise<VibodeRoomAsset[] | null> => {
@@ -3249,7 +3270,7 @@ function EditorPageInner() {
       preparedResult,
       operationId,
     }: PasteToPlaceClickHint & {
-      preparedResult?: PasteToPlaceClipboardPreparationResult;
+      preparedResult?: PasteToPlaceMenuPreparationResult;
       operationId?: number;
     }): Promise<boolean> => {
       const isStaleOperation = () =>
@@ -3267,9 +3288,24 @@ function EditorPageInner() {
       if (!scene.baseImageUrl) return false;
       if (isBusy || isEditRunning) return false;
       try {
-        const prepared =
-          preparedResult ??
-          (await preparePasteToPlaceClipboardProduct({ xNorm, yNorm, operationId }));
+        const prepared: PasteToPlaceMenuPreparationResult = preparedResult
+          ? preparedResult
+          : await (async () => {
+              const clipboardPrepared = await preparePasteToPlaceClipboardProduct({
+                xNorm,
+                yNorm,
+                operationId,
+              });
+              if (clipboardPrepared.status !== "ready") return clipboardPrepared;
+              return {
+                status: "ready",
+                prepared: {
+                  source: "clipboard",
+                  skuId: clipboardPrepared.clipboardSku.skuId,
+                  eligibleSkus: clipboardPrepared.eligibleSkus,
+                },
+              };
+            })();
         if (isStaleOperation()) return false;
         if (prepared.status === "no-image") {
           return false;
@@ -3280,15 +3316,16 @@ function EditorPageInner() {
         if (prepared.status !== "ready") {
           return true;
         }
+        const preparedProduct = prepared.prepared;
 
         if (isStaleOperation()) return false;
         setPasteToPlaceStatus("placing");
         const res = await runEdit(
           "add",
           {
-            target: { skuId: prepared.clipboardSku.skuId },
+            target: { skuId: preparedProduct.skuId },
             params: { x: xNorm, y: yNorm },
-            eligibleSkus: prepared.eligibleSkus,
+            eligibleSkus: preparedProduct.eligibleSkus,
             placements: scenePlacements,
           },
           {
@@ -3313,6 +3350,9 @@ function EditorPageInner() {
         const latestPlacementId = responsePlacements[responsePlacements.length - 1]?.placementId ?? null;
         if (latestPlacementId) setSelectedPlacementId(latestPlacementId);
 
+        if (preparedProduct.savedFurnitureId) {
+          void markSavedFurnitureUsed(preparedProduct.savedFurnitureId);
+        }
         if (!isDevUnlockPasteToPlace) {
           setHasUsedFreePasteToPlace(true);
         }
@@ -3336,8 +3376,8 @@ function EditorPageInner() {
       isBusy,
       isEditRunning,
       isPasteToPlaceOperationActive,
+      markSavedFurnitureUsed,
       preparePasteToPlaceClipboardProduct,
-      pushSnack,
       scenePlacements,
       scene.baseImageUrl,
       runEdit,
@@ -3363,8 +3403,6 @@ function EditorPageInner() {
         anchorX: state.anchorX ?? state.xNorm,
         anchorY: state.anchorY ?? state.yNorm,
       });
-      setPasteToPlaceMenuRawPreviewUrl(null);
-      setPasteToPlaceMenuNormalizedPreviewUrl(null);
       setIsPasteToPlaceMenuIngesting(false);
 
       const requestId = pasteToPlaceMenuPreviewRequestIdRef.current + 1;
@@ -3414,9 +3452,18 @@ function EditorPageInner() {
       operationId,
     }: PasteToPlaceClickHint & {
       operationId: number;
-    }): Promise<PasteToPlaceClipboardPreparationResult> => {
+    }): Promise<PasteToPlaceMenuPreparationResult> => {
       if (!isPasteToPlaceOperationActive(operationId)) {
         return { status: "failed", reason: "paste-to-place-operation-stale" };
+      }
+      const activePreparedProduct = pasteToPlaceMenuPreparedProduct;
+      const shouldTryClipboardReplacement =
+        activePreparedProduct?.source === "my_furniture" && Boolean(pasteToPlaceMenuRawPreviewUrl);
+      if (activePreparedProduct && !shouldTryClipboardReplacement) {
+        return {
+          status: "ready",
+          prepared: activePreparedProduct,
+        };
       }
       setIsPasteToPlaceMenuIngesting(true);
       try {
@@ -3424,23 +3471,44 @@ function EditorPageInner() {
         if (!isPasteToPlaceOperationActive(operationId)) {
           return { status: "failed", reason: "paste-to-place-operation-stale" };
         }
-        if (prepared.status !== "ready") return prepared;
+        if (prepared.status !== "ready") {
+          if (activePreparedProduct) {
+            return {
+              status: "ready",
+              prepared: activePreparedProduct,
+            };
+          }
+          return prepared;
+        }
         const normalizedPreviewUrl =
           prepared.clipboardSku.variants.find(
             (imageUrl): imageUrl is string =>
               typeof imageUrl === "string" && imageUrl.trim().length > 0
           ) ?? null;
-        if (normalizedPreviewUrl) {
-          setPasteToPlaceMenuNormalizedPreviewUrl(normalizedPreviewUrl);
-        }
-        return prepared;
+        const clipboardPreparedProduct: PasteToPlacePreparedProduct = {
+          source: "clipboard",
+          skuId: prepared.clipboardSku.skuId,
+          eligibleSkus: prepared.eligibleSkus,
+        };
+        setPasteToPlaceMenuPreparedProduct(clipboardPreparedProduct);
+        setPasteToPlaceMenuRawPreviewUrl(null);
+        setPasteToPlaceMenuNormalizedPreviewUrl(normalizedPreviewUrl);
+        return {
+          status: "ready",
+          prepared: clipboardPreparedProduct,
+        };
       } finally {
         if (isPasteToPlaceOperationActive(operationId)) {
           setIsPasteToPlaceMenuIngesting(false);
         }
       }
     },
-    [isPasteToPlaceOperationActive, preparePasteToPlaceClipboardProduct]
+    [
+      isPasteToPlaceOperationActive,
+      pasteToPlaceMenuPreparedProduct,
+      pasteToPlaceMenuRawPreviewUrl,
+      preparePasteToPlaceClipboardProduct,
+    ]
   );
 
   const resolvePlacementIdForSwapPick = useCallback(
@@ -3562,6 +3630,9 @@ function EditorPageInner() {
           if (!isDevUnlockPasteToPlace) {
             setHasUsedFreePasteToPlace(true);
           }
+          if (pendingContext.prepared.savedFurnitureId) {
+            void markSavedFurnitureUsed(pendingContext.prepared.savedFurnitureId);
+          }
           setPendingPasteToPlaceSwapContext(null);
           logEditorRoomOpen("pasteToPlace:success", {
             xNorm: pendingContext.origin.xNorm,
@@ -3587,6 +3658,7 @@ function EditorPageInner() {
       pushSnack,
       resolvePlacementIdForSwapPick,
       runEdit,
+      markSavedFurnitureUsed,
       scene.baseImageUrl,
       scene.sceneId,
     ]
@@ -3656,11 +3728,12 @@ function EditorPageInner() {
       if (!isPasteToPlaceOperationActive(operationId)) return;
       setPasteToPlaceStatus("placing");
       setPendingPasteToPlaceSwapContext({
-        source: "clipboard",
+        source: prepared.prepared.source,
         origin: { xNorm, yNorm },
         prepared: {
-          newSkuId: prepared.clipboardSku.skuId,
-          eligibleSkus: prepared.eligibleSkus,
+          newSkuId: prepared.prepared.skuId,
+          eligibleSkus: prepared.prepared.eligibleSkus,
+          savedFurnitureId: prepared.prepared.savedFurnitureId,
         },
         operationId,
         sceneId: scene.sceneId,
@@ -3711,7 +3784,7 @@ function EditorPageInner() {
       const res = await runStage(
         3,
         {
-          eligibleSkus: prepared.eligibleSkus,
+          eligibleSkus: prepared.prepared.eligibleSkus,
           targetCount: 1,
         },
         {
@@ -3735,6 +3808,9 @@ function EditorPageInner() {
       if (!isDevUnlockPasteToPlace) {
         setHasUsedFreePasteToPlace(true);
       }
+      if (prepared.prepared.savedFurnitureId) {
+        void markSavedFurnitureUsed(prepared.prepared.savedFurnitureId);
+      }
       logEditorRoomOpen("pasteToPlace:success", {
         xNorm,
         yNorm,
@@ -3756,6 +3832,7 @@ function EditorPageInner() {
     isDevUnlockPasteToPlace,
     isEditRunning,
     isPasteToPlaceOperationActive,
+    markSavedFurnitureUsed,
     pasteToPlaceMenuState,
     preparePasteToPlaceProductFromMenu,
     runStage,
@@ -3802,6 +3879,24 @@ function EditorPageInner() {
       );
 
       if (myFurnitureMode === "add") {
+        if (pasteToPlaceMenuState) {
+          const fallbackPreviewUrl =
+            resolved.eligibleSku.variants.find(
+              (variant) => typeof variant?.imageUrl === "string" && variant.imageUrl.trim().length > 0
+            )?.imageUrl ?? null;
+          const previewUrl = item.normalizedPreviewUrl ?? item.previewImageUrl ?? fallbackPreviewUrl;
+          setPasteToPlaceMenuPreparedProduct({
+            source: "my_furniture",
+            skuId: resolved.eligibleSku.skuId,
+            eligibleSkus: mergedEligibleSkus,
+            savedFurnitureId: item.id,
+          });
+          setPasteToPlaceMenuRawPreviewUrl(null);
+          setPasteToPlaceMenuNormalizedPreviewUrl(previewUrl);
+          closeMyFurniturePicker();
+          pushSnack("Saved furniture selected. Choose where to place it.");
+          return;
+        }
         closeMyFurniturePicker();
         startGhostAdd({
           selectedSku: resolved.eligibleSku,
@@ -4991,7 +5086,6 @@ function EditorPageInner() {
                 onOpenPasteToPlaceMenu={openPasteToPlaceMenu}
                 onPasteToPlaceChoosePlaceHere={handlePasteToPlacePlaceHere}
                 onPasteToPlaceChooseMyFurnitureAdd={() => {
-                  dismissPasteToPlaceMenu();
                   void openMyFurniturePicker("add");
                 }}
                 onPasteToPlaceChooseSwap={handlePasteToPlaceSwap}
@@ -6015,6 +6109,7 @@ function EditorPageInner() {
                         setSelectedPlacementId(null);
                         cancelPasteToPlaceSwapPick();
                         clearPasteToPlaceProgressPreview();
+                        clearPasteToPlaceActiveSource();
                         pushSnack("Image cleared.");
                       }}
                       title="Clear image"
