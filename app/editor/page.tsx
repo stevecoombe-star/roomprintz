@@ -1943,7 +1943,9 @@ function EditorPageInner() {
   const isOpeningExistingRoom = Boolean(requestedRoomId);
   const shouldShowUploadOverlay = isCanvasEmpty && !isOpeningExistingRoom;
   const pasteToPlaceDisplayedPreviewUrl =
-    pasteToPlaceMenuNormalizedPreviewUrl ?? pasteToPlaceMenuRawPreviewUrl;
+    pasteToPlaceMenuPreparedProduct?.source === "my_furniture"
+      ? pasteToPlaceMenuRawPreviewUrl ?? pasteToPlaceMenuNormalizedPreviewUrl
+      : pasteToPlaceMenuNormalizedPreviewUrl ?? pasteToPlaceMenuRawPreviewUrl;
   const selectedVersionId =
     activeAssetId ?? versions.find((asset) => asset.is_active)?.id ?? null;
   const originalVersion = useMemo(() => {
@@ -3429,8 +3431,7 @@ function EditorPageInner() {
         return { status: "failed", reason: "paste-to-place-operation-stale" };
       }
       const activePreparedProduct = pasteToPlaceMenuPreparedProduct;
-      const shouldTryClipboardReplacement =
-        activePreparedProduct?.source === "my_furniture" && Boolean(pasteToPlaceMenuRawPreviewUrl);
+      const shouldTryClipboardReplacement = activePreparedProduct?.source === "my_furniture";
       if (activePreparedProduct && !shouldTryClipboardReplacement) {
         return {
           status: "ready",
@@ -3462,8 +3463,8 @@ function EditorPageInner() {
           skuId: prepared.clipboardSku.skuId,
           eligibleSkus: prepared.eligibleSkus,
         };
+        clearPasteToPlaceActiveSource();
         setPasteToPlaceMenuPreparedProduct(clipboardPreparedProduct);
-        setPasteToPlaceMenuRawPreviewUrl(null);
         setPasteToPlaceMenuNormalizedPreviewUrl(normalizedPreviewUrl);
         return {
           status: "ready",
@@ -3477,8 +3478,8 @@ function EditorPageInner() {
     },
     [
       isPasteToPlaceOperationActive,
+      clearPasteToPlaceActiveSource,
       pasteToPlaceMenuPreparedProduct,
-      pasteToPlaceMenuRawPreviewUrl,
       preparePasteToPlaceClipboardProduct,
     ]
   );
