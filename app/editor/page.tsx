@@ -267,19 +267,6 @@ type VibodeEditRunResponse = {
   placements?: ScenePlacement[];
 };
 type PasteToPlaceClickHint = { xNorm: number; yNorm: number };
-type PendingPasteToPlaceSwapPreparedProduct = {
-  newSkuId: string;
-  eligibleSkus: VibodeEligibleSku[];
-  savedFurnitureId?: string | null;
-};
-type PendingPasteToPlaceSwapContext = {
-  source: "clipboard" | "my_furniture";
-  origin: PasteToPlaceClickHint;
-  prepared: PendingPasteToPlaceSwapPreparedProduct;
-  operationId: number;
-  sceneId: string;
-  baseImageUrl: string;
-};
 type PasteToPlacePreparedProduct = {
   source: "clipboard" | "my_furniture";
   skuId: string;
@@ -1129,9 +1116,6 @@ function EditorPageInner() {
     useState<PasteToPlaceMenuState>(null);
   const pasteToPlaceMenuPreviewRequestIdRef = useRef(0);
   const pasteToPlaceOperationIdRef = useRef(0);
-  const [isPasteToPlaceSwapPickMode, setIsPasteToPlaceSwapPickMode] = useState(false);
-  const [pendingPasteToPlaceSwapContext, setPendingPasteToPlaceSwapContext] =
-    useState<PendingPasteToPlaceSwapContext | null>(null);
   function getBaseImageLabel(url?: string): string {
     if (!url) return "—";
     try {
@@ -1220,8 +1204,6 @@ function EditorPageInner() {
     }
   );
   const lastPasteToPlaceClipboardSnackAtRef = useRef(0);
-  const lastPasteToPlaceSwapPickMissSnackAtRef = useRef(0);
-  const lastPasteToPlaceSwapRetrySnackAtRef = useRef(0);
   const invalidatePasteToPlaceOperation = useCallback(() => {
     pasteToPlaceOperationIdRef.current += 1;
   }, []);
@@ -1287,12 +1269,6 @@ function EditorPageInner() {
     setPasteToPlaceProgressCardState(null);
     setIsPasteToPlaceMenuIngesting(false);
   }, [invalidatePasteToPlaceOperation]);
-  const cancelPasteToPlaceSwapPick = useCallback(() => {
-    invalidatePasteToPlaceOperation();
-    setIsPasteToPlaceSwapPickMode(false);
-    setPendingPasteToPlaceSwapContext(null);
-    setPasteToPlaceStatus(null);
-  }, [invalidatePasteToPlaceOperation]);
 
   const currentAspectRatioForUpload: VibodeAspectRatio = useMemo(() => {
     const width = scene.baseImageWidthPx;
@@ -1352,14 +1328,13 @@ function EditorPageInner() {
     setUserSkusAddedToStage3([]);
     setStage3SkuItems([]);
     setStage3ShowCatalog(false);
-    cancelPasteToPlaceSwapPick();
     clearPasteToPlaceProgressPreview();
     clearPasteToPlaceActiveSource();
     setActiveStage(1);
     setVibodeRoomId(null);
     setRoomBaseAssetId(null);
     clearPendingLocal();
-  }, [cancelPasteToPlaceSwapPick, clearPasteToPlaceActiveSource, clearPasteToPlaceProgressPreview]);
+  }, [clearPasteToPlaceActiveSource, clearPasteToPlaceProgressPreview]);
 
   const refreshRoomVersions = useCallback(
     async (roomId: string): Promise<VibodeRoomAsset[] | null> => {
@@ -1914,23 +1889,6 @@ function EditorPageInner() {
     }
   }, [activeAssetId, requestedRoomId, scene.baseImageUrl, vibodeRoomId, versions, workingImageUrl]);
 
-  useEffect(() => {
-    if (!pendingPasteToPlaceSwapContext) return;
-    if (
-      pendingPasteToPlaceSwapContext.sceneId !== scene.sceneId ||
-      pendingPasteToPlaceSwapContext.baseImageUrl !== scene.baseImageUrl
-    ) {
-      cancelPasteToPlaceSwapPick();
-      clearPasteToPlaceProgressPreview();
-    }
-  }, [
-    cancelPasteToPlaceSwapPick,
-    clearPasteToPlaceProgressPreview,
-    pendingPasteToPlaceSwapContext,
-    scene.baseImageUrl,
-    scene.sceneId,
-  ]);
-
   const activeStageOutputImageUrl = useMemo(
     () => getImageUrlFromUnknown(lastStageOutputs[activeStage]),
     [activeStage, lastStageOutputs]
@@ -2039,7 +1997,6 @@ function EditorPageInner() {
       const nextUrl = typeof asset.image_url === "string" ? asset.image_url.trim() : "";
       if (!nextUrl) return false;
 
-      cancelPasteToPlaceSwapPick();
       clearPasteToPlaceProgressPreview();
       setWorkingImageUrl(nextUrl);
       setIsWorkingImageGenerated(asset.asset_type === "stage_output");
@@ -2054,7 +2011,6 @@ function EditorPageInner() {
       return true;
     },
     [
-      cancelPasteToPlaceSwapPick,
       clearPasteToPlaceProgressPreview,
       setActiveAssetId,
       setVersions,
@@ -3040,7 +2996,6 @@ function EditorPageInner() {
         }
       }
       lifecycle?.onImageCommitted?.(json as VibodeEditRunResponse);
-      cancelPasteToPlaceSwapPick();
       pushSnack(`Applied ${action}.`);
       return json as VibodeEditRunResponse;
     } catch (err: any) {
@@ -3263,13 +3218,15 @@ function EditorPageInner() {
     ]
   );
 
-  const handlePasteToPlaceAdd = useCallback(
+  const runPasteToPlaceClickTargetEdit = useCallback(
     async ({
+      action,
       xNorm,
       yNorm,
       preparedResult,
       operationId,
     }: PasteToPlaceClickHint & {
+      action: "add" | "swap";
       preparedResult?: PasteToPlaceMenuPreparationResult;
       operationId?: number;
     }): Promise<boolean> => {
@@ -3321,7 +3278,7 @@ function EditorPageInner() {
         if (isStaleOperation()) return false;
         setPasteToPlaceStatus("placing");
         const res = await runEdit(
-          "add",
+          action,
           {
             target: { skuId: preparedProduct.skuId },
             params: { x: xNorm, y: yNorm },
@@ -3341,14 +3298,16 @@ function EditorPageInner() {
           logEditorRoomOpen("pasteToPlace:failure", {
             xNorm,
             yNorm,
-            reason: "edit-run-add-failed",
+            reason: `edit-run-${action}-failed`,
           });
           return true;
         }
 
         const responsePlacements = Array.isArray(res.placements) ? res.placements : [];
-        const latestPlacementId = responsePlacements[responsePlacements.length - 1]?.placementId ?? null;
-        if (latestPlacementId) setSelectedPlacementId(latestPlacementId);
+        if (action === "add") {
+          const latestPlacementId = responsePlacements[responsePlacements.length - 1]?.placementId ?? null;
+          if (latestPlacementId) setSelectedPlacementId(latestPlacementId);
+        }
 
         if (preparedProduct.savedFurnitureId) {
           void markSavedFurnitureUsed(preparedProduct.savedFurnitureId);
@@ -3359,6 +3318,7 @@ function EditorPageInner() {
         logEditorRoomOpen("pasteToPlace:success", {
           xNorm,
           yNorm,
+          action,
           placementCount: responsePlacements.length,
         });
         return true;
@@ -3384,15 +3344,29 @@ function EditorPageInner() {
     ]
   );
 
+  const handlePasteToPlaceAdd = useCallback(
+    async ({
+      xNorm,
+      yNorm,
+      preparedResult,
+      operationId,
+    }: PasteToPlaceClickHint & {
+      preparedResult?: PasteToPlaceMenuPreparationResult;
+      operationId?: number;
+    }): Promise<boolean> =>
+      runPasteToPlaceClickTargetEdit({
+        action: "add",
+        xNorm,
+        yNorm,
+        preparedResult,
+        operationId,
+      }),
+    [runPasteToPlaceClickTargetEdit]
+  );
+
   const openPasteToPlaceMenu = useCallback(
     (state: NonNullable<PasteToPlaceMenuState>) => {
-      if (
-        pasteToPlaceStatus ||
-        isPasteToPlaceMenuIngesting ||
-        isPasteToPlaceSwapPickMode ||
-        pasteToPlaceProgressCardState ||
-        pendingPasteToPlaceSwapContext
-      ) {
+      if (pasteToPlaceStatus || isPasteToPlaceMenuIngesting || pasteToPlaceProgressCardState) {
         return;
       }
 
@@ -3426,10 +3400,8 @@ function EditorPageInner() {
       beginPasteToPlaceOperation,
       isPasteToPlaceMenuIngesting,
       isPasteToPlaceOperationActive,
-      isPasteToPlaceSwapPickMode,
       pasteToPlaceStatus,
       pasteToPlaceProgressCardState,
-      pendingPasteToPlaceSwapContext,
     ]
   );
 
@@ -3511,159 +3483,6 @@ function EditorPageInner() {
     ]
   );
 
-  const resolvePlacementIdForSwapPick = useCallback(
-    ({ xNorm, yNorm }: PasteToPlaceClickHint): string | null => {
-      const hitCandidates: Array<{ placementId: string; area: number }> = [];
-
-      for (const placement of scenePlacements) {
-        const bbox = placement.bbox;
-        if (!bbox) continue;
-        if (
-          !isFiniteNumber(bbox.x) ||
-          !isFiniteNumber(bbox.y) ||
-          !isFiniteNumber(bbox.w) ||
-          !isFiniteNumber(bbox.h)
-        ) {
-          continue;
-        }
-
-        const left = Math.min(bbox.x, bbox.x + bbox.w);
-        const right = Math.max(bbox.x, bbox.x + bbox.w);
-        const top = Math.min(bbox.y, bbox.y + bbox.h);
-        const bottom = Math.max(bbox.y, bbox.y + bbox.h);
-
-        if (xNorm < left || xNorm > right || yNorm < top || yNorm > bottom) continue;
-
-        const area = Math.abs(bbox.w * bbox.h);
-        hitCandidates.push({
-          placementId: placement.placementId,
-          area: Number.isFinite(area) ? area : Number.POSITIVE_INFINITY,
-        });
-      }
-
-      if (!hitCandidates.length) return null;
-      hitCandidates.sort((a, b) => {
-        if (a.area !== b.area) return a.area - b.area;
-        if (a.placementId === b.placementId) return 0;
-        return a.placementId < b.placementId ? -1 : 1;
-      });
-      return hitCandidates[0].placementId;
-    },
-    [scenePlacements]
-  );
-
-  const handlePasteToPlaceSwapPickPoint = useCallback(
-    ({ xNorm, yNorm }: PasteToPlaceClickHint) => {
-      if (!isPasteToPlaceSwapPickMode) return;
-      if (!pendingPasteToPlaceSwapContext) {
-        setIsPasteToPlaceSwapPickMode(false);
-        setPendingPasteToPlaceSwapContext(null);
-        return;
-      }
-      if (!isPasteToPlaceOperationActive(pendingPasteToPlaceSwapContext.operationId)) {
-        cancelPasteToPlaceSwapPick();
-        clearPasteToPlaceProgressPreview();
-        return;
-      }
-
-      const placementId = resolvePlacementIdForSwapPick({ xNorm, yNorm });
-      if (!placementId) {
-        const now = Date.now();
-        if (now - lastPasteToPlaceSwapPickMissSnackAtRef.current > 2000) {
-          pushSnack("Click the item you want to replace.");
-          lastPasteToPlaceSwapPickMissSnackAtRef.current = now;
-        }
-        return;
-      }
-
-      setSelectedPlacementId(placementId);
-      setEditWarning(null);
-      setIsPasteToPlaceSwapPickMode(false);
-      const pendingContext = pendingPasteToPlaceSwapContext;
-      void (async () => {
-        try {
-          if (!isPasteToPlaceOperationActive(pendingContext.operationId)) return;
-          if (
-            pendingContext.sceneId !== scene.sceneId ||
-            pendingContext.baseImageUrl !== scene.baseImageUrl
-          ) {
-            setPendingPasteToPlaceSwapContext(null);
-            return;
-          }
-
-          if (!isPasteToPlaceOperationActive(pendingContext.operationId)) return;
-          setPasteToPlaceStatus("placing");
-          const res = await runEdit(
-            "swap",
-            {
-              target: { placementId },
-              params: { newSkuId: pendingContext.prepared.newSkuId },
-              eligibleSkus: pendingContext.prepared.eligibleSkus,
-            },
-            {
-              onImageCommitted: () => {
-                if (!isPasteToPlaceOperationActive(pendingContext.operationId)) return;
-                setPasteToPlaceStatus(null);
-                clearPasteToPlaceProgressPreview();
-              },
-            }
-          );
-          if (!isPasteToPlaceOperationActive(pendingContext.operationId)) return;
-          if (!res) {
-            logEditorRoomOpen("pasteToPlace:failure", {
-              xNorm: pendingContext.origin.xNorm,
-              yNorm: pendingContext.origin.yNorm,
-              reason: "edit-run-swap-failed",
-              placementId,
-            });
-            setPendingPasteToPlaceSwapContext(pendingContext);
-            setIsPasteToPlaceSwapPickMode(true);
-            const now = Date.now();
-            if (now - lastPasteToPlaceSwapRetrySnackAtRef.current > 2500) {
-              pushSnack("Swap failed. Click the target again, or press Esc to cancel.");
-              lastPasteToPlaceSwapRetrySnackAtRef.current = now;
-            }
-            return;
-          }
-
-          if (!isPasteToPlaceOperationActive(pendingContext.operationId)) return;
-          if (!isDevUnlockPasteToPlace) {
-            setHasUsedFreePasteToPlace(true);
-          }
-          if (pendingContext.prepared.savedFurnitureId) {
-            void markSavedFurnitureUsed(pendingContext.prepared.savedFurnitureId);
-          }
-          setPendingPasteToPlaceSwapContext(null);
-          logEditorRoomOpen("pasteToPlace:success", {
-            xNorm: pendingContext.origin.xNorm,
-            yNorm: pendingContext.origin.yNorm,
-            placementId,
-            action: "swap",
-          });
-        } finally {
-          if (isPasteToPlaceOperationActive(pendingContext.operationId)) {
-            setPasteToPlaceStatus(null);
-            clearPasteToPlaceProgressPreview();
-          }
-        }
-      })();
-    },
-    [
-      clearPasteToPlaceProgressPreview,
-      cancelPasteToPlaceSwapPick,
-      isDevUnlockPasteToPlace,
-      isPasteToPlaceOperationActive,
-      isPasteToPlaceSwapPickMode,
-      pendingPasteToPlaceSwapContext,
-      pushSnack,
-      resolvePlacementIdForSwapPick,
-      runEdit,
-      markSavedFurnitureUsed,
-      scene.baseImageUrl,
-      scene.sceneId,
-    ]
-  );
-
   const handlePasteToPlacePlaceHere = useCallback(async () => {
     if (!pasteToPlaceMenuState) return;
     const menuStateSnapshot = pasteToPlaceMenuState;
@@ -3704,62 +3523,42 @@ function EditorPageInner() {
   const handlePasteToPlaceSwap = useCallback(async () => {
     if (!pasteToPlaceMenuState) return;
     const menuStateSnapshot = pasteToPlaceMenuState;
-    const { xNorm, yNorm } = menuStateSnapshot;
-    if (!scene.baseImageUrl || isBusy || isEditRunning) {
+    if (
+      activeTool === "calibrate" ||
+      activeTool === "remove" ||
+      activeTool === "swap" ||
+      activeTool === "rotate" ||
+      activeTool === "move" ||
+      !scene.baseImageUrl ||
+      isBusy ||
+      isEditRunning
+    ) {
       dismissPasteToPlaceMenu();
       return;
     }
 
-    setIsPasteToPlaceSwapPickMode(false);
-    setPendingPasteToPlaceSwapContext(null);
     const operationId = beginPasteToPlaceOperation();
-
-    let shouldClearPreview = true;
-    try {
-      setPasteToPlaceProgressCardState(menuStateSnapshot);
-      dismissPasteToPlaceMenu({ clearPreview: false });
-      const prepared = await preparePasteToPlaceProductFromMenu({ xNorm, yNorm, operationId });
-      if (!isPasteToPlaceOperationActive(operationId)) return;
-      if (prepared.status !== "ready") {
-        setPasteToPlaceStatus(null);
-        return;
-      }
-
-      if (!isPasteToPlaceOperationActive(operationId)) return;
-      setPasteToPlaceStatus("placing");
-      setPendingPasteToPlaceSwapContext({
-        source: prepared.prepared.source,
-        origin: { xNorm, yNorm },
-        prepared: {
-          newSkuId: prepared.prepared.skuId,
-          eligibleSkus: prepared.prepared.eligibleSkus,
-          savedFurnitureId: prepared.prepared.savedFurnitureId,
-        },
-        operationId,
-        sceneId: scene.sceneId,
-        baseImageUrl: scene.baseImageUrl,
-      });
-      setIsPasteToPlaceSwapPickMode(true);
-      pushSnack("Select an item to swap.");
-      shouldClearPreview = false;
-    } finally {
-      if (shouldClearPreview && isPasteToPlaceOperationActive(operationId)) {
-        setPasteToPlaceStatus(null);
-        clearPasteToPlaceProgressPreview();
-      }
-    }
+    setPasteToPlaceProgressCardState(menuStateSnapshot);
+    dismissPasteToPlaceMenu({ clearPreview: false });
+    const { xNorm, yNorm } = menuStateSnapshot;
+    const preparedResult = await preparePasteToPlaceProductFromMenu({ xNorm, yNorm, operationId });
+    await runPasteToPlaceClickTargetEdit({
+      action: "swap",
+      xNorm,
+      yNorm,
+      preparedResult,
+      operationId,
+    });
   }, [
+    activeTool,
     beginPasteToPlaceOperation,
-    clearPasteToPlaceProgressPreview,
     dismissPasteToPlaceMenu,
     isBusy,
     isEditRunning,
-    isPasteToPlaceOperationActive,
     pasteToPlaceMenuState,
     preparePasteToPlaceProductFromMenu,
-    pushSnack,
     scene.baseImageUrl,
-    scene.sceneId,
+    runPasteToPlaceClickTargetEdit,
   ]);
 
   const handlePasteToPlaceAutoPlace = useCallback(async () => {
@@ -3861,6 +3660,22 @@ function EditorPageInner() {
     return selectedEditSkuId;
   };
 
+  const getPlacementClickHint = (placementId: string): PasteToPlaceClickHint | null => {
+    const placement = scenePlacements.find((item) => item.placementId === placementId) ?? null;
+    if (!placement) {
+      warnEdit("Selected placement no longer exists.");
+      return null;
+    }
+    if (!placement.bbox) {
+      warnEdit("Selected placement is missing bbox.");
+      return null;
+    }
+    return {
+      xNorm: placement.bbox.x + placement.bbox.w / 2,
+      yNorm: placement.bbox.y + placement.bbox.h / 2,
+    };
+  };
+
   const closeMyFurniturePicker = useCallback(() => {
     setMyFurnitureOpen(false);
     setMyFurnitureMode(null);
@@ -3909,12 +3724,15 @@ function EditorPageInner() {
 
       const placementId = requireSelectedPlacement();
       if (!placementId) return;
+      const clickHint = getPlacementClickHint(placementId);
+      if (!clickHint) return;
 
       closeMyFurniturePicker();
       const res = await runEdit("swap", {
-        target: { placementId },
-        params: { newSkuId: resolved.eligibleSku.skuId },
+        target: { skuId: resolved.eligibleSku.skuId },
+        params: { x: clickHint.xNorm, y: clickHint.yNorm },
         eligibleSkus: mergedEligibleSkus,
+        placements: scenePlacements,
       });
       if (res) {
         void markSavedFurnitureUsed(item.id);
@@ -5092,12 +4910,6 @@ function EditorPageInner() {
                 onPasteToPlaceChooseAutoPlace={handlePasteToPlaceAutoPlace}
                 onDismissPasteToPlaceMenu={dismissPasteToPlaceMenu}
                 isMyFurnitureLoading={myFurnitureLoading}
-                isSwapPickMode={isPasteToPlaceSwapPickMode}
-                onSwapPickPoint={handlePasteToPlaceSwapPickPoint}
-                onCancelSwapPickMode={() => {
-                  cancelPasteToPlaceSwapPick();
-                  clearPasteToPlaceProgressPreview();
-                }}
                 onRequestSwap={(id) => {
                   const node = nodes.find((n) => n.id === id);
                   if (node?.status === "markedForDelete") {
@@ -5592,10 +5404,13 @@ function EditorPageInner() {
                       const placementId = requireSelectedPlacement();
                       const newSkuId = requireSelectedSku();
                       if (!placementId || !newSkuId) return;
+                      const clickHint = getPlacementClickHint(placementId);
+                      if (!clickHint) return;
                       void runEdit("swap", {
-                        target: { placementId },
-                        params: { newSkuId },
+                        target: { skuId: newSkuId },
+                        params: { x: clickHint.xNorm, y: clickHint.yNorm },
                         eligibleSkus: stage3SkuItemsActive,
+                        placements: scenePlacements,
                       });
                     }}
                   >
@@ -6107,7 +5922,6 @@ function EditorPageInner() {
                         setIsWorkingImageGenerated(false);
                         setScenePlacements([]);
                         setSelectedPlacementId(null);
-                        cancelPasteToPlaceSwapPick();
                         clearPasteToPlaceProgressPreview();
                         clearPasteToPlaceActiveSource();
                         pushSnack("Image cleared.");

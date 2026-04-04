@@ -38,6 +38,10 @@ function parseOptionalStageNumber(value: unknown): number | null {
   return n;
 }
 
+function parseFiniteNumber(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
 function isUuidLike(value: string | null): value is string {
   if (!value) return false;
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
@@ -106,6 +110,46 @@ export async function POST(req: NextRequest) {
     delete payloadForCompositor.vibodeRoomId;
     delete payloadForCompositor.stageNumber;
 
+    const action =
+      typeof payloadForCompositor.action === "string"
+        ? payloadForCompositor.action.trim().toLowerCase()
+        : null;
+    if (action === "add" || action === "swap") {
+      const targetRecord = isRecord(payloadForCompositor.target)
+        ? ({ ...payloadForCompositor.target } as Record<string, unknown>)
+        : {};
+      const paramsRecord = isRecord(payloadForCompositor.params)
+        ? ({ ...payloadForCompositor.params } as Record<string, unknown>)
+        : {};
+      const x = parseFiniteNumber(paramsRecord.x);
+      const y = parseFiniteNumber(paramsRecord.y);
+
+      if (x === null || y === null) {
+        return Response.json(
+          { message: `${action} requires finite params.x and params.y.` },
+          { status: 400 }
+        );
+      }
+
+      const targetSkuId =
+        safeStr(targetRecord.skuId) ?? (action === "swap" ? safeStr(paramsRecord.newSkuId) : null);
+      if (!targetSkuId) {
+        return Response.json({ message: `${action} requires target.skuId.` }, { status: 400 });
+      }
+
+      targetRecord.skuId = targetSkuId;
+      if (Object.prototype.hasOwnProperty.call(targetRecord, "placementId")) {
+        delete targetRecord.placementId;
+      }
+      paramsRecord.x = x;
+      paramsRecord.y = y;
+      if (action === "swap") {
+        paramsRecord.newSkuId = targetSkuId;
+      }
+      payloadForCompositor.target = targetRecord;
+      payloadForCompositor.params = paramsRecord;
+    }
+
     const headers: Record<string, string> = {
       "Content-Type": "application/json",
     };
@@ -113,7 +157,7 @@ export async function POST(req: NextRequest) {
       headers.Authorization = `Bearer ${apiKey}`;
     }
 
-    const res = await fetch(endpoint, {
+    const upstreamRes = await fetch(endpoint, {
       method: "POST",
       headers,
       body: JSON.stringify({
@@ -122,15 +166,18 @@ export async function POST(req: NextRequest) {
       }),
     });
 
-    const result = (await res.json().catch(() => ({}))) as unknown;
-    const responseRecord = isRecord(result) ? ({ ...result } as EditRunCompositorResult) : {};
-    if (!res.ok) {
-      return Response.json(responseRecord, { status: res.status });
+    const upstreamStatus = upstreamRes.status;
+    const upstreamResult = (await upstreamRes.json().catch(() => ({}))) as unknown;
+    const responseRecord = isRecord(upstreamResult)
+      ? ({ ...upstreamResult } as EditRunCompositorResult)
+      : ({} as EditRunCompositorResult);
+    if (!upstreamRes.ok) {
+      return Response.json(responseRecord, { status: upstreamStatus });
     }
     const responseImageUrl = safeStr(responseRecord.imageUrl);
     if (!responseImageUrl) {
       console.warn("[vibode/edit-run] persistence skipped: successful response missing imageUrl");
-      return Response.json(responseRecord, { status: res.status });
+      return Response.json(responseRecord, { status: upstreamStatus });
     }
 
     let persistenceSupabase: AnySupabaseClient | null = null;
@@ -200,7 +247,7 @@ export async function POST(req: NextRequest) {
       ...(finalization.storagePath ? { storagePath: finalization.storagePath } : {}),
     };
 
-    return Response.json(responsePayload, { status: res.status });
+    return Response.json(responsePayload, { status: upstreamStatus });
   } catch (err: any) {
     const message = String(err?.message || err);
     const status = message.includes(" 400 ")
