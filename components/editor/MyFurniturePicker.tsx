@@ -8,12 +8,10 @@ export type MyFurniturePickerItem = {
   id: string;
   userSkuId: string;
   displayName: string | null;
-  itemType: string | null;
-  sourceType: string;
-  sourceLabel: string | null;
   previewImageUrl: string | null;
-  normalizedPreviewUrl: string | null;
-  status: string;
+  sourceUrl: string | null;
+  category: string | null;
+  timesUsed: number;
   lastUsedAt: string | null;
   createdAt: string;
 };
@@ -69,14 +67,15 @@ export function MyFurniturePicker(props: MyFurniturePickerProps) {
             </div>
           ) : props.items.length === 0 ? (
             <div className="rounded-lg border border-dashed border-neutral-700 bg-neutral-900/60 p-6 text-sm text-neutral-400">
-              No ready saved furniture yet. Ingest an item first, then it will appear here.
+              No saved furniture yet. Ingest an item first, then it will appear here.
             </div>
           ) : (
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
               {props.items.map((item) => {
-                const previewUrl = item.normalizedPreviewUrl ?? item.previewImageUrl;
+                const previewUrl = item.previewImageUrl;
                 const isSelecting = props.selectingId === item.id;
                 const label = item.displayName || item.userSkuId;
+                const subtitle = item.category ?? item.sourceUrl ?? "Saved item";
                 return (
                   <button
                     key={item.id}
@@ -100,11 +99,9 @@ export function MyFurniturePicker(props: MyFurniturePickerProps) {
                       )}
                     </div>
                     <div className="mt-2 truncate text-sm font-medium text-neutral-100">{label}</div>
-                    <div className="mt-0.5 truncate text-xs text-neutral-500">
-                      {item.itemType ?? item.sourceType}
-                      {item.sourceLabel ? ` • ${item.sourceLabel}` : ""}
-                    </div>
+                    <div className="mt-0.5 truncate text-xs text-neutral-500">{subtitle}</div>
                     <div className="mt-1 text-[11px] text-neutral-500">
+                      Used {item.timesUsed} {item.timesUsed === 1 ? "time" : "times"} •{" "}
                       Last used: {formatTimestamp(item.lastUsedAt)}
                     </div>
                     {isSelecting ? (

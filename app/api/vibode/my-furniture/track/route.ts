@@ -1,6 +1,7 @@
 import { NextRequest } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import type { SupabaseClient } from "@supabase/supabase-js";
+import { trackVibodeFurnitureEvent, type VibodeFurnitureEventType } from "@/lib/vibodeMyFurniture";
 
 export const runtime = "nodejs";
 
@@ -26,7 +27,18 @@ function getUserSupabaseClient(
   return { supabase, token };
 }
 
-export async function GET(req: NextRequest) {
+function asOptionalString(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+function parseEventType(value: unknown): VibodeFurnitureEventType | null {
+  if (value === "added" || value === "swapped") return value;
+  return null;
+}
+
+export async function POST(req: NextRequest) {
   try {
     const { supabase, token } = getUserSupabaseClient(req);
     if (!token || !supabase) {
@@ -43,28 +55,32 @@ export async function GET(req: NextRequest) {
     if (userErr || !userData?.user) {
       return Response.json({ error: "Unauthorized" }, { status: 401 });
     }
-    const userId = userData.user.id;
 
-    const { data, error } = await supabase
-      .from("vibode_user_furniture")
-      .select(
-        "id,user_sku_id,display_name,preview_image_url,source_url,category,times_used,last_used_at,created_at"
-      )
-      .eq("user_id", userId)
-      .eq("is_archived", false)
-      .order("last_used_at", { ascending: false, nullsFirst: false })
-      .order("created_at", { ascending: false });
+    const body = await req.json().catch(() => null);
+    const userFurnitureId = asOptionalString(
+      (body as { userFurnitureId?: unknown } | null)?.userFurnitureId
+    );
+    const eventType = parseEventType((body as { eventType?: unknown } | null)?.eventType);
+    const roomId = asOptionalString((body as { roomId?: unknown } | null)?.roomId);
 
-    if (error) {
-      return Response.json(
-        { error: `Failed to load My Furniture items: ${error.message}` },
-        { status: 500 }
-      );
+    if (!userFurnitureId) {
+      return Response.json({ error: "userFurnitureId is required." }, { status: 400 });
+    }
+    if (!eventType) {
+      return Response.json({ error: "eventType must be 'added' or 'swapped'." }, { status: 400 });
     }
 
-    return Response.json({ items: data ?? [] });
+    const counters = await trackVibodeFurnitureEvent(supabase, {
+      userId: userData.user.id,
+      userFurnitureId,
+      eventType,
+      roomId,
+    });
+
+    return Response.json({ ok: true, counters });
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : "Unexpected error";
-    return Response.json({ error: message }, { status: 500 });
+    const status = /not found/i.test(message) ? 404 : 500;
+    return Response.json({ error: message }, { status });
   }
 }

@@ -1,10 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import type { SupabaseClient } from "@supabase/supabase-js";
-import {
-  extractPreparedUserSkuCandidate,
-  saveMyFurnitureFromPreparedUserSku,
-} from "@/lib/vibodeMyFurniture";
+import { upsertVibodeUserFurniture } from "@/lib/vibodeMyFurniture";
 
 export const runtime = "nodejs";
 
@@ -14,7 +11,7 @@ type IngestBody = {
   label?: string;
 };
 
-type AnySupabaseClient = SupabaseClient<any, "public", any>;
+type AnySupabaseClient = SupabaseClient;
 
 const SUPABASE_URL = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || "";
 const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "";
@@ -29,6 +26,57 @@ function safeString(value: unknown): string | null {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object";
+}
+
+function firstString(...values: unknown[]): string | null {
+  for (const value of values) {
+    const parsed = safeString(value);
+    if (parsed) return parsed;
+  }
+  return null;
+}
+
+function firstVariantImageUrl(raw: unknown): string | null {
+  if (!Array.isArray(raw)) return null;
+  for (const variant of raw) {
+    if (typeof variant === "string") {
+      const imageUrl = safeString(variant);
+      if (imageUrl) return imageUrl;
+      continue;
+    }
+    if (!isRecord(variant)) continue;
+    const imageUrl = firstString(variant.imageUrl, variant.url, variant.src, variant.pngUrl);
+    if (imageUrl) return imageUrl;
+  }
+  return null;
+}
+
+function extractAutosaveCandidate(raw: unknown): {
+  userSkuId: string;
+  status: string | null;
+  displayName: string | null;
+  previewImageUrl: string | null;
+  sourceUrl: string | null;
+  category: string | null;
+} | null {
+  if (!isRecord(raw)) return null;
+  const userSkuId = firstString(raw.user_sku_id, raw.userSkuId, raw.id, raw.skuId);
+  if (!userSkuId) return null;
+
+  return {
+    userSkuId,
+    status: safeString(raw.status)?.toLowerCase() ?? null,
+    displayName: firstString(raw.display_name, raw.displayName, raw.label, raw.name),
+    previewImageUrl: firstString(
+      raw.preview_image_url,
+      raw.previewImageUrl,
+      raw.normalized_preview_url,
+      raw.normalizedPreviewUrl,
+      firstVariantImageUrl(raw.variants)
+    ),
+    sourceUrl: firstString(raw.source_url, raw.sourceUrl, raw.productUrl, raw.url),
+    category: firstString(raw.category, raw.item_type, raw.itemType, raw.type),
+  };
 }
 
 function getBearerToken(req: NextRequest): string | null {
@@ -107,18 +155,6 @@ function resolveIngestSourceType(req: NextRequest, body: IngestBody): string {
   return "unknown";
 }
 
-function resolveIngestSourceLabel(body: IngestBody): string | null {
-  const label = safeString(body.label);
-  if (label) return label;
-  const imageUrl = safeString(body.imageUrl);
-  if (!imageUrl) return null;
-  try {
-    return new URL(imageUrl).hostname;
-  } catch {
-    return imageUrl;
-  }
-}
-
 export async function POST(req: NextRequest) {
   const requestId = createRequestId();
   const startedAtMs = Date.now();
@@ -180,7 +216,7 @@ export async function POST(req: NextRequest) {
     });
 
     const raw = await upstreamRes.text();
-    let parsed: any = null;
+    let parsed: unknown = null;
 
     try {
       parsed = raw ? JSON.parse(raw) : null;
@@ -203,17 +239,9 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    let savedFurniture:
-      | {
-          id: string;
-          userSkuId: string;
-          displayName: string | null;
-          previewImageUrl: string | null;
-          normalizedPreviewUrl: string | null;
-          status: string;
-        }
-      | null = null;
-    let preparedUserSku: ReturnType<typeof extractPreparedUserSkuCandidate> | null = null;
+    let savedFurniture: Record<string, unknown> | null =
+      isRecord(parsed) && isRecord(parsed.savedFurniture) ? (parsed.savedFurniture as Record<string, unknown>) : null;
+    let preparedUserSku: ReturnType<typeof extractAutosaveCandidate> | null = null;
     let preparedUserSkuPresent = false;
     let eligibleSkuPresent = false;
 
@@ -221,7 +249,7 @@ export async function POST(req: NextRequest) {
       const userSupabase = getUserSupabaseClient(accessToken);
       if (userSupabase && isRecord(parsed)) {
         const userSkuRaw = parsed.userSku;
-        preparedUserSku = extractPreparedUserSkuCandidate(userSkuRaw);
+        preparedUserSku = extractAutosaveCandidate(userSkuRaw);
         preparedUserSkuPresent = Boolean(preparedUserSku);
         const userSkuStatus =
           preparedUserSku?.status?.trim().toLowerCase() ??
@@ -232,20 +260,23 @@ export async function POST(req: NextRequest) {
           try {
             const { data: userData, error: userErr } = await userSupabase.auth.getUser();
             if (!userErr && userData?.user?.id) {
-              const saved = await saveMyFurnitureFromPreparedUserSku({
-                supabase: userSupabase,
+              const saved = await upsertVibodeUserFurniture(userSupabase, {
                 userId: userData.user.id,
-                preparedUserSku,
-                sourceType: resolveIngestSourceType(req, body),
-                sourceLabel: resolveIngestSourceLabel(body),
+                userSkuId: preparedUserSku.userSkuId,
+                displayName: preparedUserSku.displayName ?? label,
+                previewImageUrl: preparedUserSku.previewImageUrl,
+                sourceUrl: preparedUserSku.sourceUrl ?? safeString(body.imageUrl),
+                category: preparedUserSku.category,
               });
               savedFurniture = {
                 id: saved.id,
                 userSkuId: saved.user_sku_id,
                 displayName: saved.display_name,
                 previewImageUrl: saved.preview_image_url,
-                normalizedPreviewUrl: saved.normalized_preview_url,
-                status: saved.status,
+                sourceUrl: saved.source_url,
+                category: saved.category,
+                timesUsed: saved.times_used,
+                lastUsedAt: saved.last_used_at,
               };
               logIngestEvent("info", "saved_to_my_furniture", requestId, {
                 prepared_user_sku_present: preparedUserSkuPresent,
@@ -277,15 +308,16 @@ export async function POST(req: NextRequest) {
     }
 
     return NextResponse.json(parsed ?? {});
-  } catch (err: any) {
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : "Unknown error";
     logIngestEvent("error", "failed", requestId, {
       duration_ms: Date.now() - startedAtMs,
-      error: err?.message ?? "Unknown error",
+      error: message,
     });
     return NextResponse.json(
       {
         error: "Failed to ingest user SKU.",
-        detail: err?.message ?? "Unknown error",
+        detail: message,
       },
       { status: 500 }
     );

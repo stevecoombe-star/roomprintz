@@ -244,6 +244,23 @@ type MyFurnitureResolveResponse = {
   id: string;
   userSkuId: string;
   eligibleSku: VibodeEligibleSku;
+  item: {
+    displayName: string | null;
+    previewImageUrl: string | null;
+    sourceUrl: string | null;
+    category: string | null;
+  };
+};
+type MyFurnitureListApiItem = {
+  id: string;
+  user_sku_id: string;
+  display_name: string | null;
+  preview_image_url: string | null;
+  source_url: string | null;
+  category: string | null;
+  times_used: number | null;
+  last_used_at: string | null;
+  created_at: string;
 };
 type VibodeEditRunTarget = {
   placementId?: string;
@@ -1360,22 +1377,30 @@ function EditorPageInner() {
     [setActiveAssetId, setVersions]
   );
 
-  const markSavedFurnitureUsed = useCallback(async (id: string) => {
+  const trackMyFurnitureUsage = useCallback(async (userFurnitureId: string, eventType: "added" | "swapped") => {
     try {
       const accessToken = await tryGetSupabaseAccessToken();
       if (!accessToken) return;
-      await fetch("/api/vibode/my-furniture/mark-used", {
+      const res = await fetch("/api/vibode/my-furniture/track", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
           Authorization: `Bearer ${accessToken}`,
         },
-        body: JSON.stringify({ id }),
+        body: JSON.stringify({
+          userFurnitureId,
+          eventType,
+          roomId: vibodeRoomId,
+        }),
       });
+      if (!res.ok) {
+        const json = (await res.json().catch(() => ({}))) as { error?: string };
+        throw new Error(json.error || `Track request failed (HTTP ${res.status})`);
+      }
     } catch (err) {
-      console.warn("[editor] failed to mark saved furniture used:", err);
+      console.warn("[editor] failed to track My Furniture usage:", err);
     }
-  }, []);
+  }, [vibodeRoomId]);
 
   const openMyFurniturePicker = useCallback(
     async (mode: MyFurniturePickerMode) => {
@@ -1396,12 +1421,25 @@ function EditorPageInner() {
         });
         const json = (await res.json().catch(() => ({}))) as {
           error?: string;
-          items?: MyFurniturePickerItem[];
+          items?: MyFurnitureListApiItem[];
         };
         if (!res.ok) {
           throw new Error(json.error || `Failed to load My Furniture (HTTP ${res.status})`);
         }
-        setMyFurnitureItems(Array.isArray(json.items) ? json.items : []);
+        const items = Array.isArray(json.items) ? json.items : [];
+        setMyFurnitureItems(
+          items.map((item) => ({
+            id: item.id,
+            userSkuId: item.user_sku_id,
+            displayName: item.display_name,
+            previewImageUrl: item.preview_image_url,
+            sourceUrl: item.source_url,
+            category: item.category,
+            timesUsed: Number(item.times_used ?? 0),
+            lastUsedAt: item.last_used_at,
+            createdAt: item.created_at,
+          }))
+        );
       } catch (err: any) {
         setMyFurnitureItems([]);
         pushSnack(err?.message ?? "Failed to load My Furniture.");
@@ -3312,7 +3350,10 @@ function EditorPageInner() {
         }
 
         if (preparedProduct.savedFurnitureId) {
-          void markSavedFurnitureUsed(preparedProduct.savedFurnitureId);
+          void trackMyFurnitureUsage(
+            preparedProduct.savedFurnitureId,
+            action === "add" ? "added" : "swapped"
+          );
         }
         if (!isDevUnlockPasteToPlace) {
           setHasUsedFreePasteToPlace(true);
@@ -3338,7 +3379,7 @@ function EditorPageInner() {
       isBusy,
       isEditRunning,
       isPasteToPlaceOperationActive,
-      markSavedFurnitureUsed,
+      trackMyFurnitureUsage,
       preparePasteToPlaceClipboardProduct,
       scenePlacements,
       scene.baseImageUrl,
@@ -3608,9 +3649,6 @@ function EditorPageInner() {
       if (!isDevUnlockPasteToPlace) {
         setHasUsedFreePasteToPlace(true);
       }
-      if (prepared.prepared.savedFurnitureId) {
-        void markSavedFurnitureUsed(prepared.prepared.savedFurnitureId);
-      }
       logEditorRoomOpen("pasteToPlace:success", {
         xNorm,
         yNorm,
@@ -3632,7 +3670,6 @@ function EditorPageInner() {
     isDevUnlockPasteToPlace,
     isEditRunning,
     isPasteToPlaceOperationActive,
-    markSavedFurnitureUsed,
     pasteToPlaceMenuState,
     preparePasteToPlaceProductFromMenu,
     runStage,
@@ -3700,7 +3737,7 @@ function EditorPageInner() {
             resolved.eligibleSku.variants.find(
               (variant) => typeof variant?.imageUrl === "string" && variant.imageUrl.trim().length > 0
             )?.imageUrl ?? null;
-          const previewUrl = item.normalizedPreviewUrl ?? item.previewImageUrl ?? fallbackPreviewUrl;
+          const previewUrl = item.previewImageUrl ?? fallbackPreviewUrl;
           setPasteToPlaceMenuPreparedProduct({
             source: "my_furniture",
             skuId: resolved.eligibleSku.skuId,
@@ -3736,7 +3773,7 @@ function EditorPageInner() {
         placements: scenePlacements,
       });
       if (res) {
-        void markSavedFurnitureUsed(item.id);
+        void trackMyFurnitureUsage(item.id, "swapped");
       }
     } catch (err: any) {
       pushSnack(err?.message ?? "Failed to resolve saved furniture item.");
@@ -4041,7 +4078,7 @@ function EditorPageInner() {
     }
 
     if (savedFurnitureIdForMark) {
-      void markSavedFurnitureUsed(savedFurnitureIdForMark);
+      void trackMyFurnitureUsage(savedFurnitureIdForMark, "added");
     }
   };
 
