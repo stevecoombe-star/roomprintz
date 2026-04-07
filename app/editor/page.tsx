@@ -3800,9 +3800,21 @@ function EditorPageInner() {
       }
       if (isBusy || isEditRunning) return false;
 
-      if (preparedResult && preparedResult.status === "no-image") return false;
-      if (preparedResult && preparedResult.status === "blocked") return true;
-      if (preparedResult && preparedResult.status === "failed") return true;
+      if (preparedResult && preparedResult.status === "no-image") {
+        setPasteToPlaceStatus(null);
+        clearPasteToPlaceProgressPreview();
+        return false;
+      }
+      if (preparedResult && preparedResult.status === "blocked") {
+        setPasteToPlaceStatus(null);
+        clearPasteToPlaceProgressPreview();
+        return true;
+      }
+      if (preparedResult && preparedResult.status === "failed") {
+        setPasteToPlaceStatus(null);
+        clearPasteToPlaceProgressPreview();
+        return true;
+      }
 
       const resolvedSource =
         preparedResult && preparedResult.status === "ready"
@@ -3819,6 +3831,8 @@ function EditorPageInner() {
           room_id: roomId,
         });
         pushSnack("Copy a product image or choose an item from My Furniture first.");
+        setPasteToPlaceStatus(null);
+        clearPasteToPlaceProgressPreview();
         return true;
       }
 
