@@ -48,7 +48,7 @@ export function MyFurniturePicker(props: MyFurniturePickerProps) {
           <div>
             <div className="text-sm font-medium">My Furniture</div>
             <div className="text-xs text-neutral-400">
-              {props.mode === "swap" ? "Pick furniture to swap in." : "Pick furniture to add."}
+              Pick furniture to use in your room.
             </div>
           </div>
           <button

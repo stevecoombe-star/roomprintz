@@ -5,6 +5,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 export const runtime = "nodejs";
 
 type AnySupabaseClient = SupabaseClient;
+type UnknownRecord = Record<string, unknown>;
 
 const SUPABASE_URL = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || "";
 const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "";
@@ -24,6 +25,17 @@ function getUserSupabaseClient(
     auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
   });
   return { supabase, token };
+}
+
+function asOptionalString(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+function asNumber(value: unknown): number {
+  const parsed = typeof value === "number" ? value : Number(value);
+  return Number.isFinite(parsed) ? parsed : 0;
 }
 
 export async function GET(req: NextRequest) {
@@ -47,9 +59,7 @@ export async function GET(req: NextRequest) {
 
     const { data, error } = await supabase
       .from("vibode_user_furniture")
-      .select(
-        "id,user_sku_id,display_name,preview_image_url,source_url,category,times_used,last_used_at,created_at"
-      )
+      .select("*")
       .eq("user_id", userId)
       .eq("is_archived", false)
       .order("last_used_at", { ascending: false, nullsFirst: false })
@@ -62,7 +72,36 @@ export async function GET(req: NextRequest) {
       );
     }
 
-    return Response.json({ items: data ?? [] });
+    const items = Array.isArray(data)
+      ? data
+          .map((row) => {
+            if (!row || typeof row !== "object") return null;
+            const item = row as UnknownRecord;
+            const id = asOptionalString(item.id);
+            const userSkuId = asOptionalString(item.user_sku_id ?? item.userSkuId);
+            const createdAt = asOptionalString(item.created_at ?? item.createdAt);
+            if (!id || !userSkuId || !createdAt) return null;
+            return {
+              id,
+              user_sku_id: userSkuId,
+              display_name: asOptionalString(item.display_name ?? item.displayName),
+              category: asOptionalString(item.category),
+              source_label: asOptionalString(item.source_label ?? item.sourceLabel),
+              source_url: asOptionalString(item.source_url ?? item.sourceUrl),
+              preview_image_url: asOptionalString(item.preview_image_url ?? item.previewImageUrl),
+              normalized_preview_url: asOptionalString(
+                item.normalized_preview_url ?? item.normalizedPreviewUrl
+              ),
+              times_used: Math.max(0, asNumber(item.times_used ?? item.timesUsed)),
+              last_used_at: asOptionalString(item.last_used_at ?? item.lastUsedAt),
+              created_at: createdAt,
+              status: asOptionalString(item.status) ?? "ready",
+            };
+          })
+          .filter((item): item is NonNullable<typeof item> => Boolean(item))
+      : [];
+
+    return Response.json({ items });
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : "Unexpected error";
     return Response.json({ error: message }, { status: 500 });

@@ -2134,6 +2134,8 @@ export function EditorCanvas({
               ? "Calibration: line set — enter feet and click Apply"
               : "Calibration: click point 2"
             : "Calibration: click point 1"
+          : activeTool === "swap"
+          ? "Swap mode: Click an item in your room to swap"
           : selectedNode
           ? `Selected: ${selectedNode.label}${
               selectedNode.variant?.label ? ` — ${selectedNode.variant.label}` : ""

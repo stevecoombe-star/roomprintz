@@ -907,6 +907,12 @@ export default function Home() {
             >
               My Rooms
             </Link>
+            <Link
+              href="/my-furniture"
+              className="text-xs px-2 py-1 rounded-full border border-slate-700 text-slate-300 hover:border-slate-500 hover:text-slate-100 transition"
+            >
+              My Furniture
+            </Link>
             <span className="text-xs px-2 py-1 rounded-full bg-slate-800 text-slate-300">
               Private Beta • For trusted agents only
             </span>
