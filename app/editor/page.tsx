@@ -28,11 +28,7 @@ import {
 } from "@/lib/pendingFurnitureAction";
 import { DEFAULT_PX_PER_IN, skuFootprintInchesFromDims } from "@/lib/ikeaSizing";
 import { blobToDataUrl, readClipboardImageWithStatus } from "@/lib/readClipboardImage";
-import {
-  buildPasteToPlaceSnapshot,
-  hashDataUrlForLogs,
-  logPasteToPlaceEvent,
-} from "@/lib/pasteToPlaceDebug";
+import { hashDataUrlForLogs } from "@/lib/pasteToPlaceDebug";
 
 import { getSupabaseBrowserAccessToken, supabaseBrowser } from "@/lib/supabaseBrowser";
 
@@ -1335,97 +1331,18 @@ function EditorPageInner() {
   useEffect(() => {
     activePasteSourceRef.current = activePasteSource;
   }, [activePasteSource]);
-  const buildPasteToPlaceDebugSnapshotFor = useCallback(
-    (source: ActivePasteSource) =>
-      buildPasteToPlaceSnapshot({
-        activeSource: {
-          type: source?.type ?? null,
-          skuId: source?.skuId ?? null,
-          clipboardDataUrlHash: source?.clipboardDataUrlHash ?? null,
-        },
-        hasPreparedProduct: Boolean(source),
-        isIngesting: isPasteToPlaceMenuIngesting,
-        isEditRunning,
-        isMenuOpen: Boolean(pasteToPlaceMenuState),
-        roomId: vibodeRoomId ?? null,
-      }),
-    [isEditRunning, isPasteToPlaceMenuIngesting, pasteToPlaceMenuState, vibodeRoomId]
-  );
-  const emitPasteToPlaceEvent = useCallback(
-    (
-      event: string,
-      payload: Record<string, unknown>,
-      options?: { sourceForSnapshot?: ActivePasteSource }
-    ) => {
-      const sourceForSnapshot = options?.sourceForSnapshot ?? activePasteSourceRef.current;
-      logPasteToPlaceEvent(
-        event,
-        payload,
-        buildPasteToPlaceDebugSnapshotFor(sourceForSnapshot)
-      );
-    },
-    [buildPasteToPlaceDebugSnapshotFor]
-  );
   const setActivePasteSourceWithLifecycle = useCallback(
     ({
       nextSource,
-      reason,
-      requestId,
     }: {
       nextSource: ActivePasteSource;
       reason: string;
       requestId?: string | null;
     }) => {
-      const previousSource = activePasteSourceRef.current;
-      const roomId = vibodeRoomId ?? null;
-      const nextSourceRequestId =
-        nextSource?.type === "clipboard" ? (nextSource.requestId ?? null) : null;
-      if (!previousSource && nextSource) {
-        emitPasteToPlaceEvent(
-          "paste_source_set",
-          {
-            reason,
-            source_type: nextSource.type,
-            sku_id: nextSource.skuId,
-            clipboard_data_url_hash: nextSource.clipboardDataUrlHash,
-            request_id: requestId ?? nextSourceRequestId,
-            room_id: roomId,
-          },
-          { sourceForSnapshot: nextSource }
-        );
-      } else if (previousSource && !nextSource) {
-        emitPasteToPlaceEvent(
-          "paste_source_cleared",
-          {
-            reason,
-            previous_source_type: previousSource.type,
-            previous_sku_id: previousSource.skuId,
-            previous_clipboard_data_url_hash: previousSource.clipboardDataUrlHash,
-            room_id: roomId,
-          },
-          { sourceForSnapshot: null }
-        );
-      } else if (previousSource && nextSource) {
-        emitPasteToPlaceEvent(
-          "paste_source_replaced",
-          {
-            reason,
-            previous_source_type: previousSource.type,
-            previous_sku_id: previousSource.skuId,
-            previous_clipboard_data_url_hash: previousSource.clipboardDataUrlHash,
-            next_source_type: nextSource.type,
-            next_sku_id: nextSource.skuId,
-            next_clipboard_data_url_hash: nextSource.clipboardDataUrlHash,
-            request_id: requestId ?? nextSourceRequestId,
-            room_id: roomId,
-          },
-          { sourceForSnapshot: nextSource }
-        );
-      }
       activePasteSourceRef.current = nextSource;
       setActivePasteSource(nextSource);
     },
-    [emitPasteToPlaceEvent, vibodeRoomId]
+    []
   );
   const clearPasteToPlaceActiveSource = useCallback(
     (reason: string) => {
@@ -2113,10 +2030,6 @@ function EditorPageInner() {
       }
     ) => {
       if (!preparedProduct.savedFurnitureId) {
-        emitPasteToPlaceEvent("paste_source_activation_failed", {
-          reason: "my_furniture_missing_id",
-          room_id: vibodeRoomId ?? null,
-        });
         return;
       }
       const fallbackPreview =
@@ -2155,8 +2068,6 @@ function EditorPageInner() {
       activatePasteToPlaceSource,
       clearPasteToPlaceMenuClipboardPreview,
       clearPasteToPlaceProgressPreview,
-      emitPasteToPlaceEvent,
-      vibodeRoomId,
     ]
   );
 
@@ -3372,11 +3283,6 @@ function EditorPageInner() {
         setPendingMyFurnitureReturnPreviewUrl(null);
 
         clearPendingFurnitureSelection();
-
-        console.info("[my-furniture-ui]", "vibode_my_furniture_pending_selection_consumed", {
-          furnitureId: pending.furnitureId,
-        });
-
         pushSnack("Saved furniture ready. Click in your room to place it.");
       } catch {
         if (!cancelled) {
@@ -3411,14 +3317,9 @@ function EditorPageInner() {
   const ingestClipboardUserSku = useCallback(
     async ({
       imageBase64,
-      requestId,
-      clipboardDataUrlHash,
     }: {
       imageBase64: string;
-      requestId: string;
-      clipboardDataUrlHash: string;
     }): Promise<{ userSku: UserSku; savedFurnitureId: string | null } | null> => {
-      const ingestStartedAt = Date.now();
       try {
         const accessToken = await tryGetSupabaseAccessToken();
         const res = await fetch("/api/vibode/user-skus/ingest", {
@@ -3442,15 +3343,6 @@ function EditorPageInner() {
           savedFurniture?: unknown;
         };
         if (!res.ok) {
-          const errorMessage = json.error || `Clipboard ingest failed (HTTP ${res.status})`;
-          emitPasteToPlaceEvent("clipboard_ingest_failed", {
-            request_id: requestId,
-            duration_ms: Date.now() - ingestStartedAt,
-            clipboard_data_url_hash: clipboardDataUrlHash,
-            error_message: errorMessage,
-            status_code: res.status,
-            room_id: vibodeRoomId ?? null,
-          });
           return null;
         }
 
@@ -3484,14 +3376,6 @@ function EditorPageInner() {
                       : null;
 
         if (failureReason) {
-          emitPasteToPlaceEvent("clipboard_ingest_failed", {
-            request_id: requestId,
-            duration_ms: Date.now() - ingestStartedAt,
-            clipboard_data_url_hash: clipboardDataUrlHash,
-            error_message: failureReason,
-            status_code: res.status,
-            room_id: vibodeRoomId ?? null,
-          });
           return null;
         }
 
@@ -3515,55 +3399,27 @@ function EditorPageInner() {
           status: "ready",
           reason: typeof readyUserSku.reason === "string" ? readyUserSku.reason : null,
         };
-
-        emitPasteToPlaceEvent("clipboard_ingest_success", {
-          request_id: requestId,
-          duration_ms: Date.now() - ingestStartedAt,
-          sku_id: normalizedUserSku.skuId,
-          clipboard_data_url_hash: clipboardDataUrlHash,
-          saved_furniture_id: savedFurnitureId,
-          room_id: vibodeRoomId ?? null,
-        });
-
         return {
           userSku: normalizedUserSku,
           savedFurnitureId,
         };
-      } catch (err: any) {
-        emitPasteToPlaceEvent("clipboard_ingest_failed", {
-          request_id: requestId,
-          duration_ms: Date.now() - ingestStartedAt,
-          clipboard_data_url_hash: clipboardDataUrlHash,
-          error_message: err?.message ?? "clipboard-user-sku-ingest-catch",
-          status_code: null,
-          room_id: vibodeRoomId ?? null,
-        });
+      } catch {
         return null;
       }
     },
-    [emitPasteToPlaceEvent, pushSnack, vibodeRoomId]
+    [pushSnack]
   );
 
   const preparePasteToPlaceClipboardProduct = useCallback(
     async ({
-      xNorm,
-      yNorm,
       operationId,
-      trigger = "explicit_paste_flow",
     }: PasteToPlaceClickHint & {
       operationId?: number;
       trigger?: "menu_open_refresh" | "explicit_refresh" | "explicit_paste_flow";
     }): Promise<PasteToPlaceClipboardPreparationResult> => {
-      const roomId = vibodeRoomId ?? null;
       const isOperationStale = (context: string): boolean => {
         if (typeof operationId !== "number") return false;
         if (isPasteToPlaceOperationActive(operationId)) return false;
-        emitPasteToPlaceEvent("paste_async_result_discarded", {
-          reason: "paste-to-place-operation-stale",
-          operation_id: operationId,
-          context,
-          room_id: roomId,
-        });
         return true;
       };
 
@@ -3578,11 +3434,6 @@ function EditorPageInner() {
       }
 
       const requestId = safeId("ptp_req");
-      emitPasteToPlaceEvent("clipboard_read_started", {
-        reason: "explicit_clipboard_read",
-        trigger,
-        room_id: roomId,
-      });
       setPasteToPlaceStatus("reading");
       const clipboardReadResult = await readClipboardImageWithStatus();
       if (isOperationStale("clipboard_prepare:after_read")) {
@@ -3600,31 +3451,11 @@ function EditorPageInner() {
           );
           lastPasteToPlaceClipboardSnackAtRef.current = now;
         }
-        const reason =
-          clipboardReadResult.status === "access-unavailable"
-            ? "clipboard-access-unavailable"
-            : clipboardReadResult.status === "read-failed"
-              ? "clipboard-read-failed"
-              : "clipboard-image-unavailable";
-        emitPasteToPlaceEvent("clipboard_read_failed", {
-          reason,
-          error_message: reason,
-          error_name: clipboardReadResult.status,
-          trigger,
-          room_id: roomId,
-        });
         setPasteToPlaceStatus(null);
         return { status: "no-image" };
       }
 
       if (!canUseFreePasteToPlace) {
-        emitPasteToPlaceEvent("clipboard_read_failed", {
-          reason: "free-gate-blocked",
-          error_message: "free-gate-blocked",
-          error_name: "EntitlementError",
-          trigger,
-          room_id: roomId,
-        });
         pushSnack("Free preview used — unlock more placements to keep Viboding.");
         setPasteToPlaceStatus(null);
         return { status: "blocked" };
@@ -3636,34 +3467,14 @@ function EditorPageInner() {
         return { status: "failed", reason: "paste-to-place-operation-stale" };
       }
       if (!clipboardDataUrl || !clipboardDataUrl.startsWith("data:image/")) {
-        emitPasteToPlaceEvent("clipboard_read_failed", {
-          reason: "clipboard-data-url-unavailable",
-          error_message: "clipboard-data-url-unavailable",
-          error_name: "InvalidDataUrlError",
-          trigger,
-          room_id: roomId,
-        });
         setPasteToPlaceStatus(null);
         return { status: "failed", reason: "clipboard-data-url-unavailable" };
       }
       const clipboardDataUrlHash = hashDataUrlForLogs(clipboardDataUrl);
       if (!clipboardDataUrlHash) {
-        emitPasteToPlaceEvent("clipboard_read_failed", {
-          reason: "clipboard-hash-unavailable",
-          error_message: "clipboard-hash-unavailable",
-          error_name: "HashError",
-          trigger,
-          room_id: roomId,
-        });
         setPasteToPlaceStatus(null);
         return { status: "failed", reason: "clipboard-hash-unavailable" };
       }
-      emitPasteToPlaceEvent("clipboard_read_success", {
-        clipboard_data_url_hash: clipboardDataUrlHash,
-        mime_type: clipboardImage.mimeType,
-        byte_length: clipboardImage.blob.size,
-        room_id: roomId,
-      });
 
       const currentSource = activePasteSourceRef.current;
       const hasSeenClipboardHashBefore =
@@ -3673,26 +3484,13 @@ function EditorPageInner() {
         (currentSource?.type === "clipboard" &&
           currentSource.clipboardDataUrlHash === clipboardDataUrlHash)
       ) {
-        emitPasteToPlaceEvent("clipboard_unchanged_detected", {
-          clipboard_data_url_hash: clipboardDataUrlHash,
-          current_source_type: currentSource?.type ?? null,
-          current_sku_id: currentSource?.skuId ?? null,
-          room_id: roomId,
-        });
         setPasteToPlaceStatus(null);
         return { status: "failed", reason: "clipboard-source-unchanged" };
       }
 
       setPasteToPlaceStatus("preparing");
-      emitPasteToPlaceEvent("clipboard_ingest_started", {
-        request_id: requestId,
-        clipboard_data_url_hash: clipboardDataUrlHash,
-        room_id: roomId,
-      });
       const ingested = await ingestClipboardUserSku({
         imageBase64: clipboardDataUrl,
-        requestId,
-        clipboardDataUrlHash,
       });
       if (isOperationStale("clipboard_prepare:after_ingest")) {
         setPasteToPlaceStatus(null);
@@ -3749,14 +3547,12 @@ function EditorPageInner() {
       activatePasteToPlaceSource,
       canUseFreePasteToPlace,
       clearPasteToPlaceMenuClipboardPreview,
-      emitPasteToPlaceEvent,
       hasShownPasteToPlaceClipboardHeadsUp,
       ingestClipboardUserSku,
       isPasteToPlaceOperationActive,
       markPasteToPlaceClipboardHeadsUpShown,
       pushSnack,
       stage3SkuItemsActive,
-      vibodeRoomId,
     ]
   );
 
@@ -3772,16 +3568,9 @@ function EditorPageInner() {
       preparedResult?: PasteToPlaceMenuPreparationResult;
       operationId?: number;
     }): Promise<boolean> => {
-      const roomId = vibodeRoomId ?? null;
       const isOperationStale = (context: string): boolean => {
         if (typeof operationId !== "number") return false;
         if (isPasteToPlaceOperationActive(operationId)) return false;
-        emitPasteToPlaceEvent("paste_async_result_discarded", {
-          reason: "paste-to-place-operation-stale",
-          operation_id: operationId,
-          context,
-          room_id: roomId,
-        });
         return true;
       };
       if (isOperationStale("execute:start")) return false;
@@ -3821,50 +3610,15 @@ function EditorPageInner() {
           ? preparedResult.source
           : activePasteSourceRef.current;
       if (!resolvedSource) {
-        emitPasteToPlaceEvent("paste_execute_failed", {
-          action: action === "add" ? "place_here" : action,
-          source_type: null,
-          sku_id: null,
-          duration_ms: 0,
-          error_message: "missing-active-source",
-          status_code: null,
-          room_id: roomId,
-        });
         pushSnack("Copy a product image or choose an item from My Furniture first.");
         setPasteToPlaceStatus(null);
         clearPasteToPlaceProgressPreview();
         return true;
       }
 
-      const logAction: "add" | "swap" | "place_here" | "auto_place" =
-        action === "add" ? "place_here" : "swap";
-      const executeStartedAt = Date.now();
-
-      emitPasteToPlaceEvent("paste_execute_started", {
-        action: logAction,
-        source_type: resolvedSource.type,
-        sku_id: resolvedSource.skuId,
-        clipboard_data_url_hash: resolvedSource.clipboardDataUrlHash,
-        placement_id: null,
-        x: xNorm,
-        y: yNorm,
-        room_id: roomId,
-      });
-
       try {
         if (isOperationStale("execute:before_edit_run")) return false;
         setPasteToPlaceStatus("placing");
-        emitPasteToPlaceEvent("paste_execute_source_used", {
-          action: logAction,
-          source_type: resolvedSource.type,
-          sku_id: resolvedSource.skuId,
-          clipboard_data_url_hash: resolvedSource.clipboardDataUrlHash,
-          request_target: "edit_run",
-          placement_id: null,
-          x: xNorm,
-          y: yNorm,
-          room_id: roomId,
-        });
         const res = await runEdit(
           action,
           {
@@ -3884,15 +3638,6 @@ function EditorPageInner() {
         );
         if (isOperationStale("execute:after_edit_run")) return false;
         if (!res) {
-          emitPasteToPlaceEvent("paste_execute_failed", {
-            action: logAction,
-            source_type: resolvedSource.type,
-            sku_id: resolvedSource.skuId,
-            duration_ms: Date.now() - executeStartedAt,
-            error_message: `edit-run-${action}-failed`,
-            status_code: null,
-            room_id: roomId,
-          });
           return true;
         }
 
@@ -3911,14 +3656,6 @@ function EditorPageInner() {
         if (!isDevUnlockPasteToPlace) {
           setHasUsedFreePasteToPlace(true);
         }
-        emitPasteToPlaceEvent("paste_execute_completed", {
-          action: logAction,
-          source_type: resolvedSource.type,
-          sku_id: resolvedSource.skuId,
-          duration_ms: Date.now() - executeStartedAt,
-          result_asset_id: res.imageUrl ?? null,
-          room_id: roomId,
-        });
         return true;
       } finally {
         if (!isOperationStale("execute:finally")) {
@@ -3930,7 +3667,6 @@ function EditorPageInner() {
     [
       activeTool,
       clearPasteToPlaceProgressPreview,
-      emitPasteToPlaceEvent,
       isBaseImageEditReady,
       isBusy,
       isDevUnlockPasteToPlace,
@@ -3940,7 +3676,6 @@ function EditorPageInner() {
       runEdit,
       scenePlacements,
       trackMyFurnitureUsage,
-      vibodeRoomId,
     ]
   );
 
@@ -4076,15 +3811,8 @@ function EditorPageInner() {
     }: PasteToPlaceClickHint & {
       operationId: number;
     }): Promise<PasteToPlaceMenuPreparationResult> => {
-      const roomId = vibodeRoomId ?? null;
       const isOperationStale = (context: string): boolean => {
         if (isPasteToPlaceOperationActive(operationId)) return false;
-        emitPasteToPlaceEvent("paste_async_result_discarded", {
-          reason: "paste-to-place-operation-stale",
-          operation_id: operationId,
-          context,
-          room_id: roomId,
-        });
         return true;
       };
 
@@ -4128,11 +3856,9 @@ function EditorPageInner() {
       }
     },
     [
-      emitPasteToPlaceEvent,
       isPasteToPlaceOperationActive,
       pasteToPlaceMenuClipboardPreviewUrl,
       preparePasteToPlaceClipboardProduct,
-      vibodeRoomId,
     ]
   );
 
@@ -4223,16 +3949,9 @@ function EditorPageInner() {
       return;
     }
 
-    const roomId = vibodeRoomId ?? null;
     const operationId = beginPasteToPlaceOperation();
     const isOperationStale = (context: string): boolean => {
       if (isPasteToPlaceOperationActive(operationId)) return false;
-      emitPasteToPlaceEvent("paste_async_result_discarded", {
-        reason: "paste-to-place-operation-stale",
-        operation_id: operationId,
-        context,
-        room_id: roomId,
-      });
       return true;
     };
 
@@ -4244,31 +3963,9 @@ function EditorPageInner() {
       if (prepared.status !== "ready") return;
 
       const sourceForExecution = prepared.source;
-      const executeStartedAt = Date.now();
-      emitPasteToPlaceEvent("paste_execute_started", {
-        action: "auto_place",
-        source_type: sourceForExecution.type,
-        sku_id: sourceForExecution.skuId,
-        clipboard_data_url_hash: sourceForExecution.clipboardDataUrlHash,
-        placement_id: null,
-        x: xNorm,
-        y: yNorm,
-        room_id: roomId,
-      });
 
       if (isOperationStale("auto_place:before_stage_run")) return;
       setPasteToPlaceStatus("placing");
-      emitPasteToPlaceEvent("paste_execute_source_used", {
-        action: "auto_place",
-        source_type: sourceForExecution.type,
-        sku_id: sourceForExecution.skuId,
-        clipboard_data_url_hash: sourceForExecution.clipboardDataUrlHash,
-        request_target: "stage_run",
-        placement_id: null,
-        x: xNorm,
-        y: yNorm,
-        room_id: roomId,
-      });
       const res = await runStage(
         3,
         {
@@ -4286,29 +3983,12 @@ function EditorPageInner() {
       );
       if (isOperationStale("auto_place:after_stage_run")) return;
       if (!res) {
-        emitPasteToPlaceEvent("paste_execute_failed", {
-          action: "auto_place",
-          source_type: sourceForExecution.type,
-          sku_id: sourceForExecution.skuId,
-          duration_ms: Date.now() - executeStartedAt,
-          error_message: "stage-run-auto-place-failed",
-          status_code: null,
-          room_id: roomId,
-        });
         return;
       }
 
       if (!isDevUnlockPasteToPlace) {
         setHasUsedFreePasteToPlace(true);
       }
-      emitPasteToPlaceEvent("paste_execute_completed", {
-        action: "auto_place",
-        source_type: sourceForExecution.type,
-        sku_id: sourceForExecution.skuId,
-        duration_ms: Date.now() - executeStartedAt,
-        result_asset_id: activeAssetId ?? null,
-        room_id: roomId,
-      });
     } finally {
       if (!isOperationStale("auto_place:finally")) {
         setPasteToPlaceStatus(null);
@@ -4316,11 +3996,9 @@ function EditorPageInner() {
       }
     }
   }, [
-    activeAssetId,
     beginPasteToPlaceOperation,
     clearPasteToPlaceProgressPreview,
     dismissPasteToPlaceMenu,
-    emitPasteToPlaceEvent,
     isBusy,
     isDevUnlockPasteToPlace,
     isEditRunning,
@@ -4329,7 +4007,6 @@ function EditorPageInner() {
     preparePasteToPlaceProductFromMenu,
     runStage,
     scene.baseImageUrl,
-    vibodeRoomId,
   ]);
 
   const warnEdit = (message: string) => {
