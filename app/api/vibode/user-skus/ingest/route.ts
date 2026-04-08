@@ -1,6 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import type { SupabaseClient } from "@supabase/supabase-js";
+import {
+  detectSourceType,
+  extractDomain,
+  parseDimensions,
+  parsePrice,
+} from "@/lib/attribution/parsers";
+import { normalizeSupplier } from "@/lib/attribution/normalizers";
 import { upsertVibodeUserFurniture } from "@/lib/vibodeMyFurniture";
 
 export const runtime = "nodejs";
@@ -58,6 +65,8 @@ function extractAutosaveCandidate(raw: unknown): {
   previewImageUrl: string | null;
   sourceUrl: string | null;
   category: string | null;
+  priceText: string | null;
+  dimensionsText: string | null;
 } | null {
   if (!isRecord(raw)) return null;
   const userSkuId = firstString(raw.user_sku_id, raw.userSkuId, raw.id, raw.skuId);
@@ -76,6 +85,8 @@ function extractAutosaveCandidate(raw: unknown): {
     ),
     sourceUrl: firstString(raw.source_url, raw.sourceUrl, raw.productUrl, raw.url),
     category: firstString(raw.category, raw.item_type, raw.itemType, raw.type),
+    priceText: firstString(raw.price_text, raw.priceText, raw.price, raw.amountText),
+    dimensionsText: firstString(raw.dimensions_text, raw.dimensionsText, raw.dimensions, raw.sizeText),
   };
 }
 
@@ -260,13 +271,35 @@ export async function POST(req: NextRequest) {
           try {
             const { data: userData, error: userErr } = await userSupabase.auth.getUser();
             if (!userErr && userData?.user?.id) {
+              const parsedDisplayName = preparedUserSku.displayName ?? label;
+              const parsedSourceUrl = preparedUserSku.sourceUrl ?? safeString(body.imageUrl);
+              const parsedSourceDomain = extractDomain(parsedSourceUrl);
+              const parsedSupplierName = normalizeSupplier(parsedSourceDomain);
+              const parsedPrice = parsePrice(preparedUserSku.priceText);
+              const parsedDimensions = parseDimensions(preparedUserSku.dimensionsText);
+
               const saved = await upsertVibodeUserFurniture(userSupabase, {
                 userId: userData.user.id,
                 userSkuId: preparedUserSku.userSkuId,
-                displayName: preparedUserSku.displayName ?? label,
+                displayName: parsedDisplayName,
                 previewImageUrl: preparedUserSku.previewImageUrl,
-                sourceUrl: preparedUserSku.sourceUrl ?? safeString(body.imageUrl),
+                sourceUrl: parsedSourceUrl,
                 category: preparedUserSku.category,
+                parsedDisplayName,
+                parsedSourceUrl,
+                parsedSourceDomain,
+                parsedSupplierName,
+                parsedPriceText: preparedUserSku.priceText,
+                parsedPriceAmount: parsedPrice.amount,
+                parsedPriceCurrency: parsedPrice.currency,
+                parsedDimensionsText: preparedUserSku.dimensionsText,
+                parsedWidthValue: parsedDimensions.width,
+                parsedDepthValue: parsedDimensions.depth,
+                parsedHeightValue: parsedDimensions.height,
+                parsedDimensionUnit: parsedDimensions.unit,
+                parsedCategory: preparedUserSku.category,
+                priceSourceType: detectSourceType(parsedSourceDomain),
+                priceConfidence: parsedPrice.confidence,
               });
               savedFurniture = {
                 id: saved.id,
@@ -275,6 +308,10 @@ export async function POST(req: NextRequest) {
                 previewImageUrl: saved.preview_image_url,
                 sourceUrl: saved.source_url,
                 category: saved.category,
+                parsedSupplierName: saved.parsed_supplier_name,
+                parsedPriceText: saved.parsed_price_text,
+                parsedPriceAmount: saved.parsed_price_amount,
+                parsedPriceCurrency: saved.parsed_price_currency,
                 timesUsed: saved.times_used,
                 lastUsedAt: saved.last_used_at,
               };

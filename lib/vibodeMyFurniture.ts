@@ -1,4 +1,5 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
+import type { PriceConfidence, PriceSourceType } from "@/lib/attribution/parsers";
 
 type AnySupabaseClient = SupabaseClient;
 
@@ -12,6 +13,33 @@ export type VibodeUserFurnitureRow = {
   preview_image_url: string | null;
   source_url: string | null;
   category: string | null;
+  parsed_display_name: string | null;
+  override_display_name: string | null;
+  parsed_source_url: string | null;
+  override_source_url: string | null;
+  parsed_source_domain: string | null;
+  parsed_supplier_name: string | null;
+  override_supplier_name: string | null;
+  parsed_price_text: string | null;
+  parsed_price_amount: number | null;
+  parsed_price_currency: string | null;
+  override_price_text: string | null;
+  override_price_amount: number | null;
+  override_price_currency: string | null;
+  parsed_dimensions_text: string | null;
+  parsed_width_value: number | null;
+  parsed_depth_value: number | null;
+  parsed_height_value: number | null;
+  parsed_dimension_unit: string | null;
+  override_dimensions_text: string | null;
+  override_width_value: number | null;
+  override_depth_value: number | null;
+  override_height_value: number | null;
+  override_dimension_unit: string | null;
+  parsed_category: string | null;
+  override_category: string | null;
+  price_source_type: PriceSourceType | null;
+  price_confidence: PriceConfidence | null;
   times_used: number;
   last_used_at: string | null;
   created_at: string;
@@ -27,6 +55,18 @@ export type VibodeEligibleSku = {
   variants: Array<{ imageUrl: string }>;
 };
 
+export type UpdateVibodeUserFurnitureOverridesArgs = {
+  userId: string;
+  id: string;
+  overrideDisplayName?: string | null;
+  overrideSupplierName?: string | null;
+  overridePriceText?: string | null;
+  overridePriceAmount?: number | null;
+  overridePriceCurrency?: string | null;
+  overrideSourceUrl?: string | null;
+  overrideCategory?: string | null;
+};
+
 function normalizeOptionalString(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const trimmed = value.trim();
@@ -38,6 +78,39 @@ function asStringArray(value: unknown): string[] {
   return value.filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0);
 }
 
+export async function updateVibodeUserFurnitureOverrides(
+  supabase: AnySupabaseClient,
+  args: UpdateVibodeUserFurnitureOverridesArgs
+): Promise<VibodeUserFurnitureRow> {
+  const payload: Record<string, string | number | null> = {
+    override_display_name: normalizeOptionalString(args.overrideDisplayName) ?? null,
+    override_supplier_name: normalizeOptionalString(args.overrideSupplierName) ?? null,
+    override_price_text: normalizeOptionalString(args.overridePriceText) ?? null,
+    override_price_amount: args.overridePriceAmount ?? null,
+    override_price_currency: normalizeOptionalString(args.overridePriceCurrency) ?? null,
+    override_source_url: normalizeOptionalString(args.overrideSourceUrl) ?? null,
+    override_category: normalizeOptionalString(args.overrideCategory) ?? null,
+  };
+
+  const { data, error } = await supabase
+    .from("vibode_user_furniture")
+    .update(payload)
+    .eq("id", args.id)
+    .eq("user_id", args.userId)
+    .eq("is_archived", false)
+    .select("*")
+    .maybeSingle();
+
+  if (error) {
+    throw new Error(`[my-furniture] failed updating overrides: ${error.message}`);
+  }
+  if (!data) {
+    throw new Error("Saved furniture item was not found.");
+  }
+
+  return data as VibodeUserFurnitureRow;
+}
+
 export async function upsertVibodeUserFurniture(
   supabase: AnySupabaseClient,
   args: {
@@ -47,9 +120,24 @@ export async function upsertVibodeUserFurniture(
     previewImageUrl?: string | null;
     sourceUrl?: string | null;
     category?: string | null;
+    parsedDisplayName?: string | null;
+    parsedSourceUrl?: string | null;
+    parsedSourceDomain?: string | null;
+    parsedSupplierName?: string | null;
+    parsedPriceText?: string | null;
+    parsedPriceAmount?: number | null;
+    parsedPriceCurrency?: string | null;
+    parsedDimensionsText?: string | null;
+    parsedWidthValue?: number | null;
+    parsedDepthValue?: number | null;
+    parsedHeightValue?: number | null;
+    parsedDimensionUnit?: string | null;
+    parsedCategory?: string | null;
+    priceSourceType?: PriceSourceType | null;
+    priceConfidence?: PriceConfidence | null;
   }
 ): Promise<VibodeUserFurnitureRow> {
-  const payload = {
+  const payload: Record<string, string | number | boolean | null> = {
     user_id: args.userId,
     user_sku_id: args.userSkuId,
     display_name: normalizeOptionalString(args.displayName) ?? null,
@@ -58,6 +146,52 @@ export async function upsertVibodeUserFurniture(
     category: normalizeOptionalString(args.category) ?? null,
     is_archived: false,
   };
+
+  if (args.parsedDisplayName !== undefined) {
+    payload.parsed_display_name = normalizeOptionalString(args.parsedDisplayName) ?? null;
+  }
+  if (args.parsedSourceUrl !== undefined) {
+    payload.parsed_source_url = normalizeOptionalString(args.parsedSourceUrl) ?? null;
+  }
+  if (args.parsedSourceDomain !== undefined) {
+    payload.parsed_source_domain = normalizeOptionalString(args.parsedSourceDomain) ?? null;
+  }
+  if (args.parsedSupplierName !== undefined) {
+    payload.parsed_supplier_name = normalizeOptionalString(args.parsedSupplierName) ?? null;
+  }
+  if (args.parsedPriceText !== undefined) {
+    payload.parsed_price_text = normalizeOptionalString(args.parsedPriceText) ?? null;
+  }
+  if (args.parsedPriceAmount !== undefined) {
+    payload.parsed_price_amount = args.parsedPriceAmount ?? null;
+  }
+  if (args.parsedPriceCurrency !== undefined) {
+    payload.parsed_price_currency = normalizeOptionalString(args.parsedPriceCurrency) ?? null;
+  }
+  if (args.parsedDimensionsText !== undefined) {
+    payload.parsed_dimensions_text = normalizeOptionalString(args.parsedDimensionsText) ?? null;
+  }
+  if (args.parsedWidthValue !== undefined) {
+    payload.parsed_width_value = args.parsedWidthValue ?? null;
+  }
+  if (args.parsedDepthValue !== undefined) {
+    payload.parsed_depth_value = args.parsedDepthValue ?? null;
+  }
+  if (args.parsedHeightValue !== undefined) {
+    payload.parsed_height_value = args.parsedHeightValue ?? null;
+  }
+  if (args.parsedDimensionUnit !== undefined) {
+    payload.parsed_dimension_unit = normalizeOptionalString(args.parsedDimensionUnit) ?? null;
+  }
+  if (args.parsedCategory !== undefined) {
+    payload.parsed_category = normalizeOptionalString(args.parsedCategory) ?? null;
+  }
+  if (args.priceSourceType !== undefined) {
+    payload.price_source_type = args.priceSourceType ?? null;
+  }
+  if (args.priceConfidence !== undefined) {
+    payload.price_confidence = args.priceConfidence ?? null;
+  }
 
   const { data, error } = await supabase
     .from("vibode_user_furniture")

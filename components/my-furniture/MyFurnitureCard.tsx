@@ -1,6 +1,7 @@
 import {
   getMyFurnitureDisplayTitle,
   getMyFurniturePreferredImageUrl,
+  getMyFurnitureSubtitle,
   getMyFurnitureUsageSignal,
   type MyFurnitureItem,
 } from "@/lib/myFurniture";
@@ -28,7 +29,7 @@ export function MyFurnitureCard({
   const imageUrl = getMyFurniturePreferredImageUrl(item);
   const title = getMyFurnitureDisplayTitle(item);
   const usage = getMyFurnitureUsageSignal(item);
-  const subtitle = item.category || item.sourceLabel || "Saved item";
+  const subtitle = getMyFurnitureSubtitle(item);
 
   return (
     <article

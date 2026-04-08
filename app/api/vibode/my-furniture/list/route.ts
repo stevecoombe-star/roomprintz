@@ -1,6 +1,13 @@
 import { NextRequest } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import type { SupabaseClient } from "@supabase/supabase-js";
+import {
+  resolveCategory,
+  resolveDisplayName,
+  resolvePriceLabel,
+  resolveSourceUrl,
+  resolveSupplier,
+} from "@/lib/myFurniture";
 
 export const runtime = "nodejs";
 
@@ -36,6 +43,11 @@ function asOptionalString(value: unknown): string | null {
 function asNumber(value: unknown): number {
   const parsed = typeof value === "number" ? value : Number(value);
   return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function asOptionalNumber(value: unknown): number | null {
+  const parsed = typeof value === "number" ? value : Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
 }
 
 export async function GET(req: NextRequest) {
@@ -96,12 +108,64 @@ export async function GET(req: NextRequest) {
               last_used_at: asOptionalString(item.last_used_at ?? item.lastUsedAt),
               created_at: createdAt,
               status: asOptionalString(item.status) ?? "ready",
+              parsed_display_name: asOptionalString(item.parsed_display_name ?? item.parsedDisplayName),
+              override_display_name: asOptionalString(item.override_display_name ?? item.overrideDisplayName),
+              parsed_source_url: asOptionalString(item.parsed_source_url ?? item.parsedSourceUrl),
+              override_source_url: asOptionalString(item.override_source_url ?? item.overrideSourceUrl),
+              parsed_source_domain: asOptionalString(item.parsed_source_domain ?? item.parsedSourceDomain),
+              parsed_supplier_name: asOptionalString(item.parsed_supplier_name ?? item.parsedSupplierName),
+              override_supplier_name: asOptionalString(
+                item.override_supplier_name ?? item.overrideSupplierName
+              ),
+              parsed_price_text: asOptionalString(item.parsed_price_text ?? item.parsedPriceText),
+              parsed_price_amount: asOptionalNumber(item.parsed_price_amount ?? item.parsedPriceAmount),
+              parsed_price_currency: asOptionalString(item.parsed_price_currency ?? item.parsedPriceCurrency),
+              override_price_text: asOptionalString(item.override_price_text ?? item.overridePriceText),
+              override_price_amount: asOptionalNumber(
+                item.override_price_amount ?? item.overridePriceAmount
+              ),
+              override_price_currency: asOptionalString(
+                item.override_price_currency ?? item.overridePriceCurrency
+              ),
+              parsed_dimensions_text: asOptionalString(
+                item.parsed_dimensions_text ?? item.parsedDimensionsText
+              ),
+              parsed_width_value: asOptionalNumber(item.parsed_width_value ?? item.parsedWidthValue),
+              parsed_depth_value: asOptionalNumber(item.parsed_depth_value ?? item.parsedDepthValue),
+              parsed_height_value: asOptionalNumber(item.parsed_height_value ?? item.parsedHeightValue),
+              parsed_dimension_unit: asOptionalString(
+                item.parsed_dimension_unit ?? item.parsedDimensionUnit
+              ),
+              override_dimensions_text: asOptionalString(
+                item.override_dimensions_text ?? item.overrideDimensionsText
+              ),
+              override_width_value: asOptionalNumber(item.override_width_value ?? item.overrideWidthValue),
+              override_depth_value: asOptionalNumber(item.override_depth_value ?? item.overrideDepthValue),
+              override_height_value: asOptionalNumber(item.override_height_value ?? item.overrideHeightValue),
+              override_dimension_unit: asOptionalString(
+                item.override_dimension_unit ?? item.overrideDimensionUnit
+              ),
+              parsed_category: asOptionalString(item.parsed_category ?? item.parsedCategory),
+              override_category: asOptionalString(item.override_category ?? item.overrideCategory),
+              price_source_type: asOptionalString(item.price_source_type ?? item.priceSourceType),
+              price_confidence: asOptionalString(item.price_confidence ?? item.priceConfidence),
             };
           })
           .filter((item): item is NonNullable<typeof item> => Boolean(item))
       : [];
 
-    return Response.json({ items });
+    const enriched = items.map((item) => ({
+      ...item,
+      resolved: {
+        displayName: resolveDisplayName(item),
+        sourceUrl: resolveSourceUrl(item),
+        supplier: resolveSupplier(item),
+        priceLabel: resolvePriceLabel(item),
+        category: resolveCategory(item),
+      },
+    }));
+
+    return Response.json({ items: enriched });
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : "Unexpected error";
     return Response.json({ error: message }, { status: 500 });

@@ -1,6 +1,13 @@
 import { NextRequest } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import type { SupabaseClient } from "@supabase/supabase-js";
+import {
+  detectSourceType,
+  extractDomain,
+  parseDimensions,
+  parsePrice,
+} from "@/lib/attribution/parsers";
+import { normalizeSupplier } from "@/lib/attribution/normalizers";
 import { upsertVibodeUserFurniture } from "@/lib/vibodeMyFurniture";
 
 export const runtime = "nodejs";
@@ -57,13 +64,41 @@ export async function POST(req: NextRequest) {
       return Response.json({ error: "userSkuId is required." }, { status: 400 });
     }
 
+    const displayName = asOptionalString((body as { displayName?: unknown } | null)?.displayName);
+    const previewImageUrl = asOptionalString((body as { previewImageUrl?: unknown } | null)?.previewImageUrl);
+    const sourceUrl = asOptionalString((body as { sourceUrl?: unknown } | null)?.sourceUrl);
+    const category = asOptionalString((body as { category?: unknown } | null)?.category);
+    const priceText = asOptionalString((body as { priceText?: unknown } | null)?.priceText);
+    const dimensionsText = asOptionalString((body as { dimensionsText?: unknown } | null)?.dimensionsText);
+
+    const parsedSourceUrl = sourceUrl;
+    const parsedSourceDomain = extractDomain(parsedSourceUrl);
+    const parsedSupplierName = normalizeSupplier(parsedSourceDomain);
+    const parsedPrice = parsePrice(priceText);
+    const parsedDimensions = parseDimensions(dimensionsText);
+
     const row = await upsertVibodeUserFurniture(supabase, {
       userId: userData.user.id,
       userSkuId,
-      displayName: asOptionalString((body as { displayName?: unknown } | null)?.displayName),
-      previewImageUrl: asOptionalString((body as { previewImageUrl?: unknown } | null)?.previewImageUrl),
-      sourceUrl: asOptionalString((body as { sourceUrl?: unknown } | null)?.sourceUrl),
-      category: asOptionalString((body as { category?: unknown } | null)?.category),
+      displayName,
+      previewImageUrl,
+      sourceUrl,
+      category,
+      parsedDisplayName: displayName,
+      parsedSourceUrl,
+      parsedSourceDomain,
+      parsedSupplierName,
+      parsedPriceText: priceText,
+      parsedPriceAmount: parsedPrice.amount,
+      parsedPriceCurrency: parsedPrice.currency,
+      parsedDimensionsText: dimensionsText,
+      parsedWidthValue: parsedDimensions.width,
+      parsedDepthValue: parsedDimensions.depth,
+      parsedHeightValue: parsedDimensions.height,
+      parsedDimensionUnit: parsedDimensions.unit,
+      parsedCategory: category,
+      priceSourceType: detectSourceType(parsedSourceDomain),
+      priceConfidence: parsedPrice.confidence,
     });
 
     return Response.json({
@@ -74,6 +109,21 @@ export async function POST(req: NextRequest) {
         preview_image_url: row.preview_image_url,
         source_url: row.source_url,
         category: row.category,
+        parsed_display_name: row.parsed_display_name,
+        parsed_source_url: row.parsed_source_url,
+        parsed_source_domain: row.parsed_source_domain,
+        parsed_supplier_name: row.parsed_supplier_name,
+        parsed_price_text: row.parsed_price_text,
+        parsed_price_amount: row.parsed_price_amount,
+        parsed_price_currency: row.parsed_price_currency,
+        parsed_dimensions_text: row.parsed_dimensions_text,
+        parsed_width_value: row.parsed_width_value,
+        parsed_depth_value: row.parsed_depth_value,
+        parsed_height_value: row.parsed_height_value,
+        parsed_dimension_unit: row.parsed_dimension_unit,
+        parsed_category: row.parsed_category,
+        price_source_type: row.price_source_type,
+        price_confidence: row.price_confidence,
         times_used: row.times_used,
         last_used_at: row.last_used_at,
         created_at: row.created_at,
