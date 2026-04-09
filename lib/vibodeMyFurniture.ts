@@ -1,9 +1,10 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { PriceConfidence, PriceSourceType } from "@/lib/attribution/parsers";
+import { buildCommercialEventMetadata } from "@/lib/commercial/billing";
 
 type AnySupabaseClient = SupabaseClient;
 
-export type VibodeFurnitureEventType = "added" | "swapped";
+export type VibodeFurnitureEventType = "added" | "swapped" | "outbound_clicked";
 
 export type VibodeUserFurnitureRow = {
   id: string;
@@ -40,6 +41,16 @@ export type VibodeUserFurnitureRow = {
   override_category: string | null;
   price_source_type: PriceSourceType | null;
   price_confidence: PriceConfidence | null;
+  partner_id: string | null;
+  affiliate_url: string | null;
+  affiliate_network: string | null;
+  affiliate_last_resolved_at: string | null;
+  discount_percent: number | null;
+  discount_label: string | null;
+  discount_code: string | null;
+  discount_url: string | null;
+  discount_source: string | null;
+  discount_is_exclusive: boolean;
   times_used: number;
   last_used_at: string | null;
   created_at: string;
@@ -258,14 +269,41 @@ export async function trackVibodeFurnitureEvent(
     throw new Error("Saved furniture item was not found.");
   }
 
+  const sourceUrl = item.override_source_url ?? item.parsed_source_url ?? item.source_url;
+  const commercialMetadata = buildCommercialEventMetadata({
+    item: {
+      partner_id: item.partner_id,
+      source_url: sourceUrl,
+      affiliate_url: item.affiliate_url,
+      discount_url: item.discount_url,
+      discount_is_exclusive: item.discount_is_exclusive,
+    },
+    eventType: args.eventType,
+  });
+
   const { error: eventErr } = await supabase.from("vibode_furniture_events").insert({
     user_id: args.userId,
     user_furniture_id: args.userFurnitureId,
     event_type: args.eventType,
     room_id: normalizeOptionalString(args.roomId) ?? null,
+    partner_id: commercialMetadata.partnerId,
+    commercial_type: commercialMetadata.commercialType,
+    billable_event_type: commercialMetadata.billableEventType,
+    billable_units: commercialMetadata.billableUnits,
+    billable_amount: commercialMetadata.billableAmount,
+    affiliate_url_used: commercialMetadata.affiliateUrlUsed,
+    discount_applied: commercialMetadata.discountApplied,
+    processed_at: null,
   });
   if (eventErr) {
     throw new Error(`[my-furniture] failed inserting event: ${eventErr.message}`);
+  }
+
+  if (args.eventType === "outbound_clicked") {
+    return {
+      times_used: Math.max(0, Number(item.times_used ?? 0)),
+      last_used_at: typeof item.last_used_at === "string" ? item.last_used_at : null,
+    };
   }
 
   const nextTimesUsed = Math.max(0, Number(item.times_used ?? 0)) + 1;

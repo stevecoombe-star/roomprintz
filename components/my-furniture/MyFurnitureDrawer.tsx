@@ -35,6 +35,11 @@ type MyFurnitureUpdateResponse = {
   error?: string;
 };
 
+type MyFurnitureOutboundResponse = {
+  url?: string;
+  error?: string;
+};
+
 function buildFormState(item: MyFurnitureItem | null): DrawerFormState {
   if (!item) {
     return {
@@ -70,6 +75,8 @@ export function MyFurnitureDrawer({
   const [isEditing, setIsEditing] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
+  const [isOpeningOutbound, setIsOpeningOutbound] = useState(false);
+  const [outboundError, setOutboundError] = useState<string | null>(null);
   const [localItem, setLocalItem] = useState<MyFurnitureItem | null>(item);
   const [form, setForm] = useState<DrawerFormState>(() => buildFormState(item));
 
@@ -79,6 +86,8 @@ export function MyFurnitureDrawer({
     setIsEditing(false);
     setIsSaving(false);
     setSaveError(null);
+    setIsOpeningOutbound(false);
+    setOutboundError(null);
   }, [item]);
 
   const effectiveItem = localItem ?? item;
@@ -88,8 +97,20 @@ export function MyFurnitureDrawer({
   const imageUrl = getMyFurniturePreferredImageUrl(effectiveItem);
   const supplier = getMyFurnitureSupplier(effectiveItem);
   const priceLabel = getMyFurniturePriceLabel(effectiveItem);
-  const productUrl = getMyFurnitureSourceUrl(effectiveItem);
+  const productUrl = effectiveItem.resolvedProductUrl ?? getMyFurnitureSourceUrl(effectiveItem);
   const subtitle = getMyFurnitureSubtitle(effectiveItem);
+  const hasCommercialMetadata = Boolean(
+    effectiveItem.partnerId ||
+      effectiveItem.partnerName ||
+      effectiveItem.affiliateUrl ||
+      effectiveItem.discountUrl ||
+      effectiveItem.hasExclusiveDiscount
+  );
+  const discountPercentLabel =
+    effectiveItem.hasExclusiveDiscount && typeof effectiveItem.discountPercent === "number"
+      ? `${effectiveItem.discountPercent}% off`
+      : null;
+  const ctaLabel = effectiveItem.hasExclusiveDiscount ? "View Deal" : "View Product";
 
   async function handleSave() {
     setIsSaving(true);
@@ -144,6 +165,41 @@ export function MyFurnitureDrawer({
     setForm(buildFormState(effectiveItem!));
     setIsEditing(false);
     setSaveError(null);
+  }
+
+  async function handleOpenOutbound() {
+    const outboundItemId = effectiveItem?.id;
+    if (!productUrl || !outboundItemId) return;
+    setIsOpeningOutbound(true);
+    setOutboundError(null);
+    try {
+      const accessToken = await getSupabaseBrowserAccessToken();
+      if (!accessToken) {
+        throw new Error("Please sign in to view product links.");
+      }
+
+      const response = await fetch("/api/vibode/my-furniture/outbound", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${accessToken}`,
+        },
+        body: JSON.stringify({ id: outboundItemId }),
+      });
+
+      const payload = (await response.json().catch(() => ({}))) as MyFurnitureOutboundResponse;
+      const url = typeof payload.url === "string" ? payload.url : null;
+      if (!response.ok || !url) {
+        throw new Error(payload.error || `Could not open product link (HTTP ${response.status}).`);
+      }
+
+      window.open(url, "_blank", "noopener,noreferrer");
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : "Could not open product link right now.";
+      setOutboundError(message);
+    } finally {
+      setIsOpeningOutbound(false);
+    }
   }
 
   return (
@@ -228,6 +284,33 @@ export function MyFurnitureDrawer({
           ) : null}
         </dl>
 
+        {!isEditing && hasCommercialMetadata ? (
+          <section className="mt-4 rounded-xl border border-slate-800 bg-slate-900/40 p-3 text-xs">
+            <h3 className="text-slate-400">Commercial</h3>
+            {effectiveItem.partnerName ? (
+              <p className="mt-2 text-slate-200">
+                <span className="text-slate-500">Partner:</span> {effectiveItem.partnerName}
+              </p>
+            ) : null}
+            {effectiveItem.hasExclusiveDiscount && effectiveItem.discountDisplayLabel ? (
+              <div className="mt-2 flex flex-wrap items-center gap-2">
+                <span className="inline-flex items-center rounded-full border border-violet-300/30 bg-violet-300/10 px-2.5 py-1 text-[11px] font-medium text-violet-100">
+                  {effectiveItem.discountDisplayLabel}
+                </span>
+                {discountPercentLabel ? (
+                  <span className="text-[11px] text-violet-200/90">{discountPercentLabel}</span>
+                ) : null}
+              </div>
+            ) : null}
+            {effectiveItem.hasExclusiveDiscount && priceLabel && effectiveItem.discountedPriceText ? (
+              <p className="mt-2 text-slate-200">
+                <span className="text-slate-500 line-through decoration-slate-500/80">{priceLabel}</span>{" "}
+                <span className="font-medium text-slate-100">{effectiveItem.discountedPriceText}</span>
+              </p>
+            ) : null}
+          </section>
+        ) : null}
+
         {isEditing ? (
           <div className="mt-4 rounded-xl border border-slate-800 bg-slate-900/50 p-3">
             <div className="grid gap-3">
@@ -285,6 +368,16 @@ export function MyFurnitureDrawer({
         ) : null}
 
         <div className="mt-4 flex items-center gap-2">
+          {!isEditing && productUrl ? (
+            <button
+              type="button"
+              disabled={isActing || isSaving || isOpeningOutbound}
+              onClick={() => void handleOpenOutbound()}
+              className="rounded-lg border border-slate-700 px-3 py-2 text-xs font-medium text-slate-100 transition hover:border-slate-500 hover:text-white disabled:opacity-50"
+            >
+              {isOpeningOutbound ? "Opening..." : ctaLabel}
+            </button>
+          ) : null}
           <button
             type="button"
             disabled={isActing || isSaving}
@@ -294,6 +387,7 @@ export function MyFurnitureDrawer({
             Use in Room
           </button>
         </div>
+        {outboundError ? <p className="mt-2 text-xs text-rose-300">{outboundError}</p> : null}
         <p className="mt-2 text-xs text-slate-400">
           Load this item into Paste-to-Place so you can place it in your room.
         </p>

@@ -1,3 +1,10 @@
+import { resolveFurnitureOutboundUrl } from "@/lib/commercial/affiliate";
+import {
+  getDiscountLabel,
+  getDiscountedPriceText,
+  hasExclusiveDiscount,
+} from "@/lib/commercial/discounts";
+
 export type MyFurnitureItem = {
   id: string;
   userSkuId: string;
@@ -13,6 +20,21 @@ export type MyFurnitureItem = {
   status: string;
   supplier: string | null;
   priceLabel: string | null;
+  partnerId: string | null;
+  partnerName: string | null;
+  affiliateUrl: string | null;
+  affiliateNetwork: string | null;
+  affiliateLastResolvedAt: string | null;
+  discountPercent: number | null;
+  discountLabel: string | null;
+  discountCode: string | null;
+  discountUrl: string | null;
+  discountSource: string | null;
+  discountIsExclusive: boolean;
+  resolvedProductUrl: string | null;
+  hasExclusiveDiscount: boolean;
+  discountDisplayLabel: string | null;
+  discountedPriceText: string | null;
   resolved: {
     displayName: string;
     sourceUrl: string | null;
@@ -41,6 +63,11 @@ function asNumber(value: unknown): number {
 function asOptionalNumber(value: unknown): number | null {
   const parsed = typeof value === "number" ? value : Number(value);
   return Number.isFinite(parsed) ? parsed : null;
+}
+
+function asOptionalBoolean(value: unknown): boolean | null {
+  if (typeof value !== "boolean") return null;
+  return value;
 }
 
 function asRecord(value: unknown): UnknownRecord | null {
@@ -189,6 +216,44 @@ export function normalizeMyFurnitureItem(raw: unknown): MyFurnitureItem | null {
     category: resolveCategory(row),
   };
 
+  const partnerId = asOptionalString(row.partner_id ?? row.partnerId);
+  const partnerName = asOptionalString(row.partner_name ?? row.partnerName);
+  const affiliateUrl = asOptionalString(row.affiliate_url ?? row.affiliateUrl);
+  const affiliateNetwork = asOptionalString(row.affiliate_network ?? row.affiliateNetwork);
+  const affiliateLastResolvedAt = asOptionalString(
+    row.affiliate_last_resolved_at ?? row.affiliateLastResolvedAt
+  );
+  const discountPercent = asOptionalNumber(row.discount_percent ?? row.discountPercent);
+  const discountLabel = asOptionalString(row.discount_label ?? row.discountLabel);
+  const discountCode = asOptionalString(row.discount_code ?? row.discountCode);
+  const discountUrl = asOptionalString(row.discount_url ?? row.discountUrl);
+  const discountSource = asOptionalString(row.discount_source ?? row.discountSource);
+  const discountIsExclusive =
+    asOptionalBoolean(row.discount_is_exclusive ?? row.discountIsExclusive) ?? false;
+  const outboundContext = {
+    sourceUrl: resolved.sourceUrl,
+    affiliateUrl,
+    discountUrl,
+  };
+  const resolvedProductUrl = resolveFurnitureOutboundUrl(outboundContext);
+  const isExclusiveDiscount = hasExclusiveDiscount({
+    discountIsExclusive,
+    discountPercent,
+  });
+  const discountDisplayLabel = getDiscountLabel({
+    discountIsExclusive,
+    discountPercent,
+    discountLabel,
+  });
+  const discountedPriceText = getDiscountedPriceText({
+    discountIsExclusive,
+    discountPercent,
+    overridePriceAmount: asOptionalNumber(row.override_price_amount ?? row.overridePriceAmount),
+    parsedPriceAmount: asOptionalNumber(row.parsed_price_amount ?? row.parsedPriceAmount),
+    overridePriceCurrency: asOptionalString(row.override_price_currency ?? row.overridePriceCurrency),
+    parsedPriceCurrency: asOptionalString(row.parsed_price_currency ?? row.parsedPriceCurrency),
+  });
+
   return {
     id,
     userSkuId,
@@ -206,6 +271,21 @@ export function normalizeMyFurnitureItem(raw: unknown): MyFurnitureItem | null {
     status: asOptionalString(row.status) ?? "ready",
     supplier: resolved.supplier,
     priceLabel: resolved.priceLabel,
+    partnerId,
+    partnerName,
+    affiliateUrl,
+    affiliateNetwork,
+    affiliateLastResolvedAt,
+    discountPercent,
+    discountLabel,
+    discountCode,
+    discountUrl,
+    discountSource,
+    discountIsExclusive,
+    resolvedProductUrl,
+    hasExclusiveDiscount: isExclusiveDiscount,
+    discountDisplayLabel,
+    discountedPriceText,
     resolved,
   };
 }
@@ -219,7 +299,7 @@ export function getMyFurnitureDisplayTitle(item: MyFurnitureItem): string {
 }
 
 export function getMyFurnitureSourceUrl(item: MyFurnitureItem): string | null {
-  return item.resolved.sourceUrl;
+  return item.resolvedProductUrl ?? item.resolved.sourceUrl;
 }
 
 export function getMyFurnitureSupplier(item: MyFurnitureItem): string | null {

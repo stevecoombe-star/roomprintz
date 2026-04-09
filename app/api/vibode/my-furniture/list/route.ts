@@ -50,6 +50,11 @@ function asOptionalNumber(value: unknown): number | null {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
+function asOptionalBoolean(value: unknown): boolean | null {
+  if (typeof value !== "boolean") return null;
+  return value;
+}
+
 export async function GET(req: NextRequest) {
   try {
     const { supabase, token } = getUserSupabaseClient(req);
@@ -149,13 +154,46 @@ export async function GET(req: NextRequest) {
               override_category: asOptionalString(item.override_category ?? item.overrideCategory),
               price_source_type: asOptionalString(item.price_source_type ?? item.priceSourceType),
               price_confidence: asOptionalString(item.price_confidence ?? item.priceConfidence),
+              partner_id: asOptionalString(item.partner_id ?? item.partnerId),
+              affiliate_url: asOptionalString(item.affiliate_url ?? item.affiliateUrl),
+              affiliate_network: asOptionalString(item.affiliate_network ?? item.affiliateNetwork),
+              affiliate_last_resolved_at: asOptionalString(
+                item.affiliate_last_resolved_at ?? item.affiliateLastResolvedAt
+              ),
+              discount_percent: asOptionalNumber(item.discount_percent ?? item.discountPercent),
+              discount_label: asOptionalString(item.discount_label ?? item.discountLabel),
+              discount_code: asOptionalString(item.discount_code ?? item.discountCode),
+              discount_url: asOptionalString(item.discount_url ?? item.discountUrl),
+              discount_source: asOptionalString(item.discount_source ?? item.discountSource),
+              discount_is_exclusive: asOptionalBoolean(
+                item.discount_is_exclusive ?? item.discountIsExclusive
+              ),
             };
           })
           .filter((item): item is NonNullable<typeof item> => Boolean(item))
       : [];
 
+    const partnerIds = [...new Set(items.map((item) => item.partner_id).filter((value): value is string => Boolean(value)))];
+    const partnerNameById = new Map<string, string>();
+    if (partnerIds.length > 0) {
+      const { data: partnerRows } = await supabase
+        .from("vibode_partners")
+        .select("id,name")
+        .in("id", partnerIds)
+        .eq("is_active", true);
+      if (Array.isArray(partnerRows)) {
+        for (const row of partnerRows) {
+          const partner = row as UnknownRecord;
+          const id = asOptionalString(partner.id);
+          const name = asOptionalString(partner.name);
+          if (id && name) partnerNameById.set(id, name);
+        }
+      }
+    }
+
     const enriched = items.map((item) => ({
       ...item,
+      partner_name: item.partner_id ? partnerNameById.get(item.partner_id) ?? null : null,
       resolved: {
         displayName: resolveDisplayName(item),
         sourceUrl: resolveSourceUrl(item),
