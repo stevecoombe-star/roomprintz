@@ -108,7 +108,7 @@ export function MyFurnitureDrawer({
           Authorization: `Bearer ${accessToken}`,
         },
         body: JSON.stringify({
-          id: effectiveItem.id,
+          id: effectiveItem!.id,
           overrideDisplayName: form.displayName || null,
           overrideSupplierName: form.supplier || null,
           overridePriceText: form.priceText || null,
@@ -141,7 +141,7 @@ export function MyFurnitureDrawer({
   }
 
   function handleCancel() {
-    setForm(buildFormState(effectiveItem));
+    setForm(buildFormState(effectiveItem!));
     setIsEditing(false);
     setSaveError(null);
   }
@@ -288,7 +288,7 @@ export function MyFurnitureDrawer({
           <button
             type="button"
             disabled={isActing || isSaving}
-            onClick={() => onUseInRoom(effectiveItem.id)}
+            onClick={() => onUseInRoom(effectiveItem!.id)}
             className="rounded-lg bg-slate-100 px-3 py-2 text-xs font-medium text-slate-900 transition hover:bg-white disabled:opacity-50"
           >
             Use in Room
