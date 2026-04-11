@@ -1142,6 +1142,7 @@ function EditorPageInner() {
   const [isPasteProductImageCollapsed, setIsPasteProductImageCollapsed] = useState(false);
   const [isSetupCollapsed, setIsSetupCollapsed] = useState(false);
   const [isCalibrationCollapsed, setIsCalibrationCollapsed] = useState(false);
+  const showObsoleteV0RightPanels = false;
   const [selectedModel, setSelectedModel] = useState<VibodeModelVersion>(VIBODE_MODEL_NBP);
   const [deleteVersionTarget, setDeleteVersionTarget] = useState<VibodeRoomAsset | null>(null);
   const [deletingVersionId, setDeletingVersionId] = useState<string | null>(null);
@@ -6050,6 +6051,8 @@ function EditorPageInner() {
               </div>
             )}
 
+            {showObsoleteV0RightPanels ? (
+              <>
             <div className="rounded-lg border border-neutral-800 bg-neutral-900 p-3">
               <div className="flex items-center justify-between">
                 <div className="text-sm font-medium">Paste Product Image (MVP)</div>
@@ -6608,6 +6611,8 @@ function EditorPageInner() {
                 </div>
               ) : null}
             </div>
+              </>
+            ) : null}
 
             </div>
           </div>
