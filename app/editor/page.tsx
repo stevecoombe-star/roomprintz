@@ -5315,64 +5315,6 @@ function EditorPageInner() {
           <div className="h-full overflow-y-auto">
             <div className="space-y-4 p-4">
             <div className="rounded-lg border border-neutral-800 bg-neutral-900 p-3">
-              <div className="flex items-center justify-between">
-                <div>
-                  <div className="text-sm font-medium">Versions</div>
-                  <div className="mt-1 text-xs text-neutral-400">
-                    {versions.length} version{versions.length === 1 ? "" : "s"}
-                  </div>
-                </div>
-                <button
-                  type="button"
-                  className="rounded-md border border-neutral-800 bg-neutral-950 px-2 py-1 text-xs text-neutral-300 hover:bg-neutral-800"
-                  aria-label={isVersionsCollapsed ? "Expand Versions panel" : "Collapse Versions panel"}
-                  aria-expanded={!isVersionsCollapsed}
-                  aria-controls="versions-panel-body"
-                  onClick={() => setIsVersionsCollapsed((prev) => !prev)}
-                >
-                  {isVersionsCollapsed ? "▸" : "▾"}
-                </button>
-              </div>
-              {!isVersionsCollapsed ? (
-                <div id="versions-panel-body" className="mt-3">
-                  {versions.length === 0 ? (
-                    <div className="rounded-md border border-dashed border-neutral-800 bg-neutral-950 px-3 py-2 text-xs text-neutral-500">
-                      No versions yet. Upload an image to create the original version.
-                    </div>
-                  ) : (
-                    <div className="space-y-3">
-                      {groupedVersions.today.length > 0 ? (
-                        <div>
-                          <div className="mb-1 text-[11px] uppercase tracking-wide text-neutral-500">Today</div>
-                          <div className="space-y-1">{groupedVersions.today.map(renderVersionRow)}</div>
-                        </div>
-                      ) : null}
-                      {groupedVersions.thisMonth.length > 0 ? (
-                        <div>
-                          <div className="mb-1 text-[11px] uppercase tracking-wide text-neutral-500">
-                            This month
-                          </div>
-                          <div className="space-y-1">{groupedVersions.thisMonth.map(renderVersionRow)}</div>
-                        </div>
-                      ) : null}
-                      {groupedVersions.earlier.length > 0 ? (
-                        <div>
-                          <div className="mb-1 text-[11px] uppercase tracking-wide text-neutral-500">Earlier</div>
-                          <div className="space-y-1">{groupedVersions.earlier.map(renderVersionRow)}</div>
-                        </div>
-                      ) : null}
-                      {originalVersion ? (
-                        <div>
-                          <div className="mb-1 text-[11px] uppercase tracking-wide text-neutral-500">Original</div>
-                          <div className="space-y-1">{renderVersionRow(originalVersion)}</div>
-                        </div>
-                      ) : null}
-                    </div>
-                  )}
-                </div>
-              ) : null}
-            </div>
-            <div className="rounded-lg border border-neutral-800 bg-neutral-900 p-3">
               <div className="text-sm font-medium">Workflow</div>
               <div className="mt-1 text-xs text-neutral-400">Five-stage editor workflow skeleton.</div>
 
@@ -6050,6 +5992,65 @@ function EditorPageInner() {
                 </div>
               </div>
             )}
+
+            <div className="rounded-lg border border-neutral-800 bg-neutral-900 p-3">
+              <div className="flex items-center justify-between">
+                <div>
+                  <div className="text-sm font-medium">Versions</div>
+                  <div className="mt-1 text-xs text-neutral-400">
+                    {versions.length} version{versions.length === 1 ? "" : "s"}
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  className="rounded-md border border-neutral-800 bg-neutral-950 px-2 py-1 text-xs text-neutral-300 hover:bg-neutral-800"
+                  aria-label={isVersionsCollapsed ? "Expand Versions panel" : "Collapse Versions panel"}
+                  aria-expanded={!isVersionsCollapsed}
+                  aria-controls="versions-panel-body"
+                  onClick={() => setIsVersionsCollapsed((prev) => !prev)}
+                >
+                  {isVersionsCollapsed ? "▸" : "▾"}
+                </button>
+              </div>
+              {!isVersionsCollapsed ? (
+                <div id="versions-panel-body" className="mt-3">
+                  {versions.length === 0 ? (
+                    <div className="rounded-md border border-dashed border-neutral-800 bg-neutral-950 px-3 py-2 text-xs text-neutral-500">
+                      No versions yet. Upload an image to create the original version.
+                    </div>
+                  ) : (
+                    <div className="space-y-3">
+                      {groupedVersions.today.length > 0 ? (
+                        <div>
+                          <div className="mb-1 text-[11px] uppercase tracking-wide text-neutral-500">Today</div>
+                          <div className="space-y-1">{groupedVersions.today.map(renderVersionRow)}</div>
+                        </div>
+                      ) : null}
+                      {groupedVersions.thisMonth.length > 0 ? (
+                        <div>
+                          <div className="mb-1 text-[11px] uppercase tracking-wide text-neutral-500">
+                            This month
+                          </div>
+                          <div className="space-y-1">{groupedVersions.thisMonth.map(renderVersionRow)}</div>
+                        </div>
+                      ) : null}
+                      {groupedVersions.earlier.length > 0 ? (
+                        <div>
+                          <div className="mb-1 text-[11px] uppercase tracking-wide text-neutral-500">Earlier</div>
+                          <div className="space-y-1">{groupedVersions.earlier.map(renderVersionRow)}</div>
+                        </div>
+                      ) : null}
+                      {originalVersion ? (
+                        <div>
+                          <div className="mb-1 text-[11px] uppercase tracking-wide text-neutral-500">Original</div>
+                          <div className="space-y-1">{renderVersionRow(originalVersion)}</div>
+                        </div>
+                      ) : null}
+                    </div>
+                  )}
+                </div>
+              ) : null}
+            </div>
 
             {showObsoleteV0RightPanels ? (
               <>
