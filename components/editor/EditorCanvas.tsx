@@ -154,6 +154,7 @@ function SilhouetteLayer({
 }) {
   const image = useSilhouetteImage(kind);
   if (!image) return null;
+
   return (
     <KonvaImage
       image={image}
@@ -272,6 +273,10 @@ export function EditorCanvas({
   isHydratingRoom = false,
   suppressEmptyCanvasHint = false,
   pasteToPlaceStatus = null,
+  removeMarkerPosition = null,
+  removeMarkerTargetingActive = false,
+  onPlaceRemoveMarker,
+  onClearRemoveMarker,
 }: {
   className?: string;
   onRequestSwap?: (id: string) => void;
@@ -298,6 +303,10 @@ export function EditorCanvas({
   isHydratingRoom?: boolean;
   suppressEmptyCanvasHint?: boolean;
   pasteToPlaceStatus?: PasteToPlaceStatus | null;
+  removeMarkerPosition?: { xNorm: number; yNorm: number } | null;
+  removeMarkerTargetingActive?: boolean;
+  onPlaceRemoveMarker?: (marker: { xNorm: number; yNorm: number }) => void;
+  onClearRemoveMarker?: () => void;
 }) {
   const instanceId = useId();
   const outerShellRef = useRef<HTMLDivElement | null>(null);
@@ -584,6 +593,14 @@ export function EditorCanvas({
     pasteToPlaceProgressCardState,
     projectedPasteToPlaceProgressCardAnchor,
   ]);
+  const removeMarkerStagePoint = useMemo(() => {
+    if (!viewport || !removeMarkerPosition) return null;
+    const imagePoint = {
+      x: clamp(removeMarkerPosition.xNorm, 0, 1) * viewport.imageNaturalW,
+      y: clamp(removeMarkerPosition.yNorm, 0, 1) * viewport.imageNaturalH,
+    };
+    return imageToStage(imagePoint, viewport);
+  }, [removeMarkerPosition, viewport]);
 
   const transformerRef = useRef<Konva.Transformer | null>(null);
   const selectedNodeRef = useRef<Konva.Group | null>(null);
@@ -622,6 +639,7 @@ export function EditorCanvas({
       activeTool === "swap" ||
       activeTool === "rotate" ||
       activeTool === "move" ||
+      removeMarkerTargetingActive ||
       !node ||
       selected?.status === "markedForDelete"
     ) {
@@ -632,10 +650,10 @@ export function EditorCanvas({
 
     tr.nodes([node]);
     tr.getLayer()?.batchDraw();
-  }, [selectedNodeId, nodes, activeTool]);
+  }, [activeTool, nodes, removeMarkerTargetingActive, selectedNodeId]);
 
   // Keyboard shortcuts
-  // Delete toggles "markedForDelete" (RED X workflow)
+  // Delete clears active marks, then falls back to legacy node toggles.
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
@@ -663,32 +681,39 @@ export function EditorCanvas({
         return;
       }
 
-      if (selectedSwapMarkId && (e.key === "Backspace" || e.key === "Delete")) {
+      const isDeleteKey = e.key === "Backspace" || e.key === "Delete";
+      if (isDeleteKey && removeMarkerPosition && onClearRemoveMarker) {
+        e.preventDefault();
+        onClearRemoveMarker();
+        return;
+      }
+
+      if (selectedSwapMarkId && isDeleteKey) {
         e.preventDefault();
         removeSwapMark(selectedSwapMarkId);
         return;
       }
 
-      if (selectedRemoveMarkId && (e.key === "Backspace" || e.key === "Delete")) {
+      if (selectedRemoveMarkId && isDeleteKey) {
         e.preventDefault();
         removeRemoveMark(selectedRemoveMarkId);
         return;
       }
 
-      if (selectedRotateMarkId && (e.key === "Backspace" || e.key === "Delete")) {
+      if (selectedRotateMarkId && isDeleteKey) {
         e.preventDefault();
         removeRotateMark(selectedRotateMarkId);
         return;
       }
 
-      if (selectedMoveMarkId && (e.key === "Backspace" || e.key === "Delete")) {
+      if (selectedMoveMarkId && isDeleteKey) {
         e.preventDefault();
         removeMoveMark(selectedMoveMarkId);
         return;
       }
 
       if (
-        (e.key === "Backspace" || e.key === "Delete") &&
+        isDeleteKey &&
         selectedNodeId &&
         activeTool !== "calibrate"
       ) {
@@ -701,6 +726,7 @@ export function EditorCanvas({
     activeTool,
     removeMoveMark,
     removeRemoveMark,
+    removeMarkerPosition,
     removeRotateMark,
     removeSwapMark,
     selectNode,
@@ -713,6 +739,7 @@ export function EditorCanvas({
     selectedRemoveMarkId,
     selectedRotateMarkId,
     selectedSwapMarkId,
+    onClearRemoveMarker,
     pasteToPlaceMenuState,
     onDismissPasteToPlaceMenu,
     toggleDelete,
@@ -1014,6 +1041,16 @@ export function EditorCanvas({
       return;
     }
 
+    if (removeMarkerTargetingActive) {
+      if (!viewport) return;
+      const imgPt0 = stagePointerToImage(stage, viewport);
+      if (!imgPt0 || !isInsideImage(imgPt0, viewport)) return;
+      const imgPt = clampToImage(imgPt0, viewport);
+      const marker = imageToNormalized(imgPt, viewport);
+      onPlaceRemoveMarker?.({ xNorm: marker.x, yNorm: marker.y });
+      return;
+    }
+
     const clickedOnEmpty = e.target === stage;
     if (clickedOnEmpty && viewport && onOpenPasteToPlaceMenu) {
       const imgPt0 = stagePointerToImage(stage, viewport);
@@ -1081,6 +1118,8 @@ export function EditorCanvas({
   const handleStagePointerUp = () => {
     clearMoveVectorDrag();
   };
+
+  const shouldInterceptForRemoveMarkerTargeting = removeMarkerTargetingActive;
 
   return (
     <div
@@ -1411,6 +1450,23 @@ export function EditorCanvas({
               })}
             </Group>
           )}
+          {removeMarkerStagePoint && (
+            <Group x={removeMarkerStagePoint.x} y={removeMarkerStagePoint.y} listening={false}>
+              <Circle radius={11} fill="#dc2626" stroke="#fee2e2" strokeWidth={1.5} />
+              <Line
+                points={[-5, -5, 5, 5]}
+                stroke="#fff"
+                strokeWidth={2.5}
+                lineCap="round"
+              />
+              <Line
+                points={[-5, 5, 5, -5]}
+                stroke="#fff"
+                strokeWidth={2.5}
+                lineCap="round"
+              />
+            </Group>
+          )}
 
           {/* Swap marks overlay */}
           {viewport && swapMarks.length > 0 && (
@@ -1700,11 +1756,12 @@ export function EditorCanvas({
           {[...nodes]
             .sort((a, b) => a.zIndex - b.zIndex)
             .map((n) => {
-              const isRemoveMarkerSku = n.skuId === "__remove_marker__";
+              if (n.skuId === "__remove_marker__") return null;
               const isSelected = n.id === selectedNodeId;
               const isHovered = hoveredId === n.id;
               const isCalibrate = activeTool === "calibrate";
               const showBadges = markupVisible && (isSelected || isHovered) && !isCalibrate;
+              const showLegacyNodeBadges = showBadges && !removeMarkerTargetingActive;
 
               const t = n.transform;
               const cx = t.width / 2;
@@ -1729,7 +1786,6 @@ export function EditorCanvas({
               const baseFillOpacity =
                 visualMode === "blueprint" ? (isSelected ? 0.82 : 0.7) : 1;
               const nodeOpacity = n.status === "markedForDelete" ? 0.35 : baseFillOpacity;
-              const removeMarkerRadius = Math.max(18, Math.min(t.width, t.height) * 0.34);
 
               return (
                 <Group
@@ -1747,12 +1803,20 @@ export function EditorCanvas({
                   onMouseLeave={() =>
                     setHoveredId((cur) => (cur === n.id ? null : cur))
                   }
-                  onClick={() => {
+                  onClick={(e) => {
                     if (activeTool === "calibrate") return;
+                    if (shouldInterceptForRemoveMarkerTargeting) {
+                      e.cancelBubble = true;
+                      return;
+                    }
                     selectNode(n.id);
                   }}
-                  onTap={() => {
+                  onTap={(e) => {
                     if (activeTool === "calibrate") return;
+                    if (shouldInterceptForRemoveMarkerTargeting) {
+                      e.cancelBubble = true;
+                      return;
+                    }
                     selectNode(n.id);
                   }}
                   onDragEnd={(e) => {
@@ -1792,39 +1856,11 @@ export function EditorCanvas({
                     y={0}
                     width={t.width}
                     height={t.height}
-                    fill={isRemoveMarkerSku ? "rgba(15, 23, 42, 0.28)" : "#1f2937"}
+                    fill="#1f2937"
                     opacity={nodeOpacity}
-                    stroke={isRemoveMarkerSku ? (isSelected ? "#fecaca" : "#ef4444") : isSelected ? "#e5e7eb" : "#374151"}
+                    stroke={isSelected ? "#e5e7eb" : "#374151"}
                     strokeWidth={isSelected ? 2 : 1}
                   />
-
-                  {isRemoveMarkerSku && (
-                    <Group listening={false}>
-                      <Circle
-                        x={cx}
-                        y={cy}
-                        radius={removeMarkerRadius}
-                        fill="rgba(15, 23, 42, 0.58)"
-                        stroke="#fca5a5"
-                        strokeWidth={Math.max(2, Math.min(4, removeMarkerRadius * 0.12))}
-                        shadowColor="#000"
-                        shadowBlur={8}
-                        shadowOpacity={0.35}
-                      />
-                      <Text
-                        text="✕"
-                        x={cx - removeMarkerRadius}
-                        y={cy - removeMarkerRadius}
-                        width={removeMarkerRadius * 2}
-                        height={removeMarkerRadius * 2}
-                        align="center"
-                        verticalAlign="middle"
-                        fontSize={Math.max(26, removeMarkerRadius * 1.4)}
-                        fontStyle="bold"
-                        fill="#ef4444"
-                      />
-                    </Group>
-                  )}
 
                   {/* Overlap warning badge — top-right, hidden during calibrate */}
                   {markupVisible && !isCalibrate && overlappingNodeIds.has(n.id) && (
@@ -1854,7 +1890,7 @@ export function EditorCanvas({
                     </Group>
                   )}
 
-                  {!isRemoveMarkerSku && canRenderVisuals && (
+                  {canRenderVisuals && (
                     <>
                       <SilhouetteLayer
                         kind={kind}
@@ -1878,7 +1914,7 @@ export function EditorCanvas({
                   )}
 
                   {/* Vibode vibe-flow overlays */}
-                  {showBadges && (
+                  {showLegacyNodeBadges && (
                     <Group>
                       {/* RED X (delete/restore toggle) — top-left */}
                       <Group

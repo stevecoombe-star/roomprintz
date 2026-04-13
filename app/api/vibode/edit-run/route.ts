@@ -42,6 +42,10 @@ function parseFiniteNumber(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
+function clampUnit(value: number): number {
+  return Math.max(0, Math.min(1, value));
+}
+
 function isUuidLike(value: string | null): value is string {
   if (!value) return false;
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
@@ -114,7 +118,47 @@ export async function POST(req: NextRequest) {
       typeof payloadForCompositor.action === "string"
         ? payloadForCompositor.action.trim().toLowerCase()
         : null;
-    if (action === "add" || action === "swap") {
+    if (action === "remove") {
+      const targetRecord = isRecord(payloadForCompositor.target)
+        ? ({ ...payloadForCompositor.target } as Record<string, unknown>)
+        : {};
+      const paramsRecord = isRecord(payloadForCompositor.params)
+        ? ({ ...payloadForCompositor.params } as Record<string, unknown>)
+        : {};
+      const xNormRaw =
+        parseFiniteNumber(targetRecord.xNorm) ??
+        parseFiniteNumber(targetRecord.x) ??
+        parseFiniteNumber(paramsRecord.xNorm) ??
+        parseFiniteNumber(paramsRecord.x);
+      const yNormRaw =
+        parseFiniteNumber(targetRecord.yNorm) ??
+        parseFiniteNumber(targetRecord.y) ??
+        parseFiniteNumber(paramsRecord.yNorm) ??
+        parseFiniteNumber(paramsRecord.y);
+      if (xNormRaw === null || yNormRaw === null) {
+        return Response.json(
+          { message: "remove requires finite target.xNorm and target.yNorm." },
+          { status: 400 }
+        );
+      }
+
+      const xNorm = clampUnit(xNormRaw);
+      const yNorm = clampUnit(yNormRaw);
+
+      payloadForCompositor.target = {
+        xNorm,
+        yNorm,
+        x: xNorm,
+        y: yNorm,
+      };
+      payloadForCompositor.params = {
+        ...paramsRecord,
+        xNorm,
+        yNorm,
+        x: xNorm,
+        y: yNorm,
+      };
+    } else if (action === "add" || action === "swap") {
       const targetRecord = isRecord(payloadForCompositor.target)
         ? ({ ...payloadForCompositor.target } as Record<string, unknown>)
         : {};

@@ -64,6 +64,10 @@ function isFiniteNumber(n: any) {
   return typeof n === "number" && Number.isFinite(n);
 }
 
+function parseFiniteNumber(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
 function isServerFetchableImageUrl(url: string | null | undefined): boolean {
   if (!url || typeof url !== "string") return false;
   const trimmed = url.trim();
@@ -140,10 +144,6 @@ function nodeSwapKind(node: FurnitureNode): SwapKindBucket | null {
   if (hay.includes("bed")) return "bed";
   if (hay.includes("rug")) return "rug";
   return null;
-}
-
-function isRemoveMarkerNode(node: FurnitureNode | null): boolean {
-  return !!node && node.skuId === "__remove_marker__";
 }
 
 type FreezePayloadAccess = {
@@ -280,6 +280,8 @@ type VibodeEditRunTarget = {
   placementId?: string;
   skuId?: string;
   bbox?: { x: number; y: number; w: number; h: number };
+  xNorm?: number;
+  yNorm?: number;
   [key: string]: unknown;
 };
 type VibodeEditRunRequest = {
@@ -1254,6 +1256,8 @@ function EditorPageInner() {
   const [editMoveStep, setEditMoveStep] = useState(0.05);
   const [editWarning, setEditWarning] = useState<string | null>(null);
   const [isEditRunning, setIsEditRunning] = useState(false);
+  const [removeMarkerPosition, setRemoveMarkerPosition] = useState<PasteToPlaceClickHint | null>(null);
+  const [isRemoveMarkerTargeting, setIsRemoveMarkerTargeting] = useState(false);
   // TODO(vibode-entitlements): replace this local free-gate stub with server entitlements.
   const [hasUsedFreePasteToPlace, setHasUsedFreePasteToPlace] = useState(() => {
     if (typeof window === "undefined") return false;
@@ -2543,18 +2547,7 @@ function EditorPageInner() {
     }
   }, [selectedEditSkuId, stage3SkuItemsActive]);
 
-  const selectedNode = useMemo(() => {
-    if (!selectedNodeId) return null;
-    return nodes.find((n) => n.id === selectedNodeId) ?? null;
-  }, [nodes, selectedNodeId]);
-  const selectedRemoveMarkerNode = useMemo(() => {
-    if (!selectedNode) return null;
-    return isRemoveMarkerNode(selectedNode) ? selectedNode : null;
-  }, [selectedNode]);
-  const removeMarkerNodes = useMemo(
-    () => nodes.filter((node) => node.skuId === "__remove_marker__"),
-    [nodes]
-  );
+  const hasActiveRemoveMarker = Boolean(removeMarkerPosition);
 
   const queuedDeletes = useMemo(
     () => nodes.filter((n) => n.status === "markedForDelete").length,
@@ -3172,17 +3165,57 @@ function EditorPageInner() {
 
     try {
       const accessToken = await tryGetSupabaseAccessToken();
+      const targetRecord = isRecord(payloadParts.target)
+        ? ({ ...payloadParts.target } as Record<string, unknown>)
+        : {};
+      const paramsRecord = isRecord(payloadParts.params)
+        ? ({ ...payloadParts.params } as Record<string, unknown>)
+        : {};
+      let normalizedTarget = payloadParts.target;
+      let normalizedParams = payloadParts.params;
+
+      if (action === "remove") {
+        const xNormRaw =
+          parseFiniteNumber(targetRecord.xNorm) ??
+          parseFiniteNumber(targetRecord.x) ??
+          parseFiniteNumber(paramsRecord.xNorm) ??
+          parseFiniteNumber(paramsRecord.x);
+        const yNormRaw =
+          parseFiniteNumber(targetRecord.yNorm) ??
+          parseFiniteNumber(targetRecord.y) ??
+          parseFiniteNumber(paramsRecord.yNorm) ??
+          parseFiniteNumber(paramsRecord.y);
+        if (xNormRaw === null || yNormRaw === null) {
+          const message = "remove requires finite target.xNorm and target.yNorm.";
+          setEditWarning(message);
+          pushSnack(message);
+          return null;
+        }
+        const xNorm = Math.max(0, Math.min(1, xNormRaw));
+        const yNorm = Math.max(0, Math.min(1, yNormRaw));
+        normalizedTarget = { xNorm, yNorm, x: xNorm, y: yNorm };
+        normalizedParams = { xNorm, yNorm, x: xNorm, y: yNorm };
+      }
+
       const body: VibodeEditRunRequest = {
         baseImageUrl,
         action,
         placements: payloadParts.placements ?? scenePlacements,
-        target: payloadParts.target,
-        params: payloadParts.params,
+        target: normalizedTarget,
+        params: normalizedParams,
         eligibleSkus: payloadParts.eligibleSkus,
         modelVersion: selectedModel,
         vibodeRoomId: vibodeRoomId ?? undefined,
         stageNumber: activeStage ?? undefined,
       };
+
+      if (action === "remove") {
+        console.log("[runEdit] remove payload", {
+          action,
+          target: normalizedTarget,
+          params: normalizedParams,
+        });
+      }
 
       const res = await fetch("/api/vibode/edit-run", {
         method: "POST",
@@ -3702,6 +3735,9 @@ function EditorPageInner() {
 
   const openPasteToPlaceMenu = useCallback(
     async (state: NonNullable<PasteToPlaceMenuState>) => {
+      if (isRemoveMarkerTargeting) {
+        return;
+      }
       if (pasteToPlaceStatus || isPasteToPlaceMenuIngesting || pasteToPlaceProgressCardState) {
         return;
       }
@@ -3783,6 +3819,7 @@ function EditorPageInner() {
     [
       beginPasteToPlaceOperation,
       clearPasteToPlaceMenuClipboardPreview,
+      isRemoveMarkerTargeting,
       isPasteToPlaceMenuIngesting,
       pasteToPlaceStatus,
       pasteToPlaceProgressCardState,
@@ -4139,103 +4176,47 @@ function EditorPageInner() {
     }
   };
 
-  const addRemoveMarker = () => {
-    const markerNodeId = `remove_mark_${Date.now()}`;
-    const markerSize = 56;
-    const centerX = viewport ? viewport.imageStageX + viewport.imageStageW / 2 : markerSize * 2;
-    const centerY = viewport ? viewport.imageStageY + viewport.imageStageH / 2 : markerSize * 2;
-    const transform: FurnitureNode["transform"] = {
-      x: centerX - markerSize / 2,
-      y: centerY - markerSize / 2,
-      width: markerSize,
-      height: markerSize,
-      rotation: 0,
-    };
-    const zIndex = nodes.length ? Math.max(...nodes.map((node) => node.zIndex ?? 0)) + 1 : 10;
+  const clearRemoveMarker = useCallback(
+    (notify = true) => {
+      const hadMarker = Boolean(removeMarkerPosition);
+      if (!hadMarker && !isRemoveMarkerTargeting) return;
+      setRemoveMarkerPosition(null);
+      setIsRemoveMarkerTargeting(false);
+      setEditWarning(null);
+      if (notify && hadMarker) {
+        pushSnack("Remove marker cleared.");
+      }
+    },
+    [isRemoveMarkerTargeting, pushSnack, removeMarkerPosition]
+  );
 
-    addNode({
-      id: markerNodeId,
-      skuId: "__remove_marker__",
-      label: "❌ Remove Marker",
-      status: "active",
-      zIndex,
-      transform,
-    });
-    selectNode(markerNodeId);
+  const addRemoveMarker = () => {
+    setIsRemoveMarkerTargeting(true);
     setEditWarning(null);
-    pushSnack("Remove marker added. Drag it to target area, then click Remove Selected.");
+    pushSnack("Remove marker armed. Click anywhere on the image.");
   };
+
+  const handlePlaceRemoveMarker = useCallback((marker: PasteToPlaceClickHint) => {
+    setRemoveMarkerPosition({
+      xNorm: marker.xNorm,
+      yNorm: marker.yNorm,
+    });
+    setIsRemoveMarkerTargeting(false);
+    setEditWarning(null);
+  }, []);
 
   const removeSelectedMarker = async () => {
-    if (!selectedRemoveMarkerNode) {
-      warnEdit("Select a remove marker first.");
+    if (!removeMarkerPosition) {
+      warnEdit("Place a remove marker first.");
       return;
     }
-    const bbox = toNormalizedPlacementBbox(selectedRemoveMarkerNode.transform);
-    if (!bbox) {
-      warnEdit("Remove marker missing bbox; try dragging after image loads.");
-      return;
-    }
-
-    const targetPlacement: ScenePlacement = {
-      placementId: selectedRemoveMarkerNode.id,
-      skuId: selectedRemoveMarkerNode.skuId || "__remove_marker__",
-      label: selectedRemoveMarkerNode.label || "Remove Marker",
-      bbox,
-      rotationDeg: selectedRemoveMarkerNode.transform.rotation,
-      stageAdded: activeStage || 3,
-      locked: false,
-    };
-
-    const placementsForRemove = [...scenePlacements, targetPlacement];
+    const { xNorm, yNorm } = removeMarkerPosition;
     const res = await runEdit("remove", {
-      target: { placementId: targetPlacement.placementId },
-      placements: placementsForRemove,
+      target: { xNorm, yNorm },
+      params: { x: xNorm, y: yNorm, xNorm, yNorm },
     });
     if (!res) return;
-    deleteNode(selectedRemoveMarkerNode.id);
-    setEditWarning(null);
-  };
-
-  const removeAllMarkersSinglePass = async () => {
-    if (!removeMarkerNodes.length) {
-      warnEdit("Add at least one remove marker first.");
-      return;
-    }
-
-    const syntheticTargets: ScenePlacement[] = [];
-    for (const marker of removeMarkerNodes) {
-      const bbox = toNormalizedPlacementBbox(marker.transform);
-      if (!bbox) {
-        warnEdit("A remove marker is missing bbox; try dragging after image loads.");
-        return;
-      }
-      syntheticTargets.push({
-        placementId: marker.id,
-        skuId: "__remove_marker__",
-        label: "Remove Marker",
-        bbox,
-        rotationDeg: marker.transform.rotation,
-        stageAdded: activeStage || 3,
-        locked: false,
-      });
-    }
-
-    const removeTargets = syntheticTargets.map((t) => ({
-      placementId: t.placementId,
-      bbox: t.bbox,
-    }));
-
-    const res = await runEdit("remove", {
-      target: { placementId: syntheticTargets[0].placementId },
-      placements: [...scenePlacements, ...syntheticTargets],
-      params: { removeTargets },
-    });
-    if (!res) return;
-
-    removeMarkerNodes.forEach((marker) => {
-      deleteNode(marker.id);
-    });
+    clearRemoveMarker(false);
     setEditWarning(null);
   };
 
@@ -5249,6 +5230,10 @@ function EditorPageInner() {
                 onPasteToPlaceChooseAutoPlace={handlePasteToPlaceAutoPlace}
                 onDismissPasteToPlaceMenu={dismissPasteToPlaceMenu}
                 isMyFurnitureLoading={myFurnitureLoading}
+                removeMarkerPosition={removeMarkerPosition}
+                removeMarkerTargetingActive={isRemoveMarkerTargeting}
+                onPlaceRemoveMarker={handlePlaceRemoveMarker}
+                onClearRemoveMarker={clearRemoveMarker}
                 onRequestSwap={(id) => {
                   const node = nodes.find((n) => n.id === id);
                   if (node?.status === "markedForDelete") {
@@ -5593,9 +5578,9 @@ function EditorPageInner() {
                   <div className="mt-1 text-xs text-neutral-400">
                     Calls `/api/vibode/edit-run` using the canonical working image.
                   </div>
-              <div className="mt-1 text-xs text-neutral-500">
-                Placements: {scenePlacements.length} • Selected: {selectedPlacementId ?? "none"}
-              </div>
+                  <div className="mt-1 text-xs text-neutral-500">
+                    Placements: {scenePlacements.length} • Selected: {selectedPlacementId ?? "none"}
+                  </div>
               {editWarning && (
                 <div className="mt-2 rounded-md border border-amber-900/60 bg-amber-950/30 px-2 py-1 text-xs text-amber-200">
                   {editWarning}
@@ -5734,50 +5719,55 @@ function EditorPageInner() {
               <div className="mt-4">
                 <div className="text-xs text-neutral-400">Remove</div>
                 <div className="mt-1 grid grid-cols-2 gap-2">
-                  <button
-                    type="button"
-                    disabled={isEditRunning}
-                    className={`rounded-md border px-2 py-1.5 text-xs ${
-                      isEditRunning
-                        ? "border-neutral-900 bg-neutral-950 text-neutral-500"
-                        : "border-neutral-700 bg-neutral-900 text-neutral-100 hover:bg-neutral-800"
-                    }`}
-                    onClick={addRemoveMarker}
-                  >
-                    Add Remove Marker
-                  </button>
-                  <button
-                    type="button"
-                    disabled={isEditRunning || !workingImageUrl || !selectedRemoveMarkerNode}
-                    className={`rounded-md border px-2 py-1.5 text-xs ${
-                      isEditRunning || !workingImageUrl || !selectedRemoveMarkerNode
-                        ? "border-neutral-900 bg-neutral-950 text-neutral-500"
-                        : "border-neutral-700 bg-neutral-900 text-neutral-100 hover:bg-neutral-800"
-                    }`}
-                    onClick={() => {
-                      void removeSelectedMarker();
-                    }}
-                  >
-                    Remove Selected
-                  </button>
+                  {!hasActiveRemoveMarker ? (
+                    <button
+                      type="button"
+                      disabled={isEditRunning}
+                      className={`col-span-2 rounded-md border px-2 py-1.5 text-xs ${
+                        isEditRunning
+                          ? "border-neutral-900 bg-neutral-950 text-neutral-500"
+                          : "border-neutral-700 bg-neutral-900 text-neutral-100 hover:bg-neutral-800"
+                      }`}
+                      onClick={addRemoveMarker}
+                    >
+                      Add Remove Marker
+                    </button>
+                  ) : (
+                    <>
+                      <button
+                        type="button"
+                        disabled={isEditRunning}
+                        className={`rounded-md border px-2 py-1.5 text-xs ${
+                          isEditRunning
+                            ? "border-neutral-900 bg-neutral-950 text-neutral-500"
+                            : "border-neutral-700 bg-neutral-900 text-neutral-100 hover:bg-neutral-800"
+                        }`}
+                        onClick={() => clearRemoveMarker()}
+                      >
+                        Clear Marker
+                      </button>
+                      <button
+                        type="button"
+                        disabled={isEditRunning || !workingImageUrl || !hasActiveRemoveMarker}
+                        className={`rounded-md border px-2 py-1.5 text-xs ${
+                          isEditRunning || !workingImageUrl || !hasActiveRemoveMarker
+                            ? "border-neutral-900 bg-neutral-950 text-neutral-500"
+                            : "border-neutral-700 bg-neutral-900 text-neutral-100 hover:bg-neutral-800"
+                        }`}
+                        onClick={() => {
+                          void removeSelectedMarker();
+                        }}
+                      >
+                        Remove Selected
+                      </button>
+                    </>
+                  )}
                 </div>
-                <button
-                  type="button"
-                  disabled={isEditRunning || removeMarkerNodes.length === 0}
-                  className={`mt-2 w-full rounded-md border px-2 py-1.5 text-xs ${
-                    isEditRunning || removeMarkerNodes.length === 0
-                      ? "border-neutral-900 bg-neutral-950 text-neutral-500"
-                      : "border-neutral-700 bg-neutral-900 text-neutral-100 hover:bg-neutral-800"
-                  }`}
-                  onClick={() => {
-                    void removeAllMarkersSinglePass();
-                  }}
-                >
-                  Remove All Markers
-                </button>
-                <div className="mt-1 text-[11px] text-neutral-500">
-                  {`Remove markers: ${removeMarkerNodes.length}`}
-                </div>
+                {isRemoveMarkerTargeting && !hasActiveRemoveMarker ? (
+                  <div className="mt-1 text-[11px] text-neutral-500">
+                    Click anywhere on the image to place the marker.
+                  </div>
+                ) : null}
               </div>
 
               <div className="mt-3">
