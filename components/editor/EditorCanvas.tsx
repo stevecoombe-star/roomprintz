@@ -28,11 +28,6 @@ const DND_MIME = "application/x-roomprintz-furniture";
 const REMOVE_MARK_STAGE_RADIUS = 18;
 const SWAP_MARK_STAGE_RADIUS = 18;
 const ROTATE_MARK_STAGE_RADIUS = 18;
-const MOVE_MARK_HIT_STAGE_RADIUS = 14;
-const MOVE_MARK_ANCHOR_RADIUS = 6;
-const MOVE_MARK_ARROW_HEAD_SIZE = 10;
-const MOVE_MARK_ANCHOR_FILL = "#00B3A4";
-const MOVE_MARK_ARROW_STROKE = "#1FD3C6";
 const PASTE_TO_PLACE_PULSE_DURATION_MS = 560;
 const PASTE_TO_PLACE_MENU_OFFSET_PX = 12;
 const PASTE_TO_PLACE_MENU_EDGE_GUTTER_PX = 8;
@@ -327,11 +322,9 @@ export function EditorCanvas({
   const nodes = useEditorStore((s) => s.scene.nodes);
   const removeMarks = useEditorStore((s) => s.scene.removeMarks ?? []);
   const swapMarks = useEditorStore((s) => s.scene.swapMarks ?? []);
-  const moveMarks = useEditorStore((s) => s.scene.moveMarks ?? []);
   const selectedNodeId = useEditorStore((s) => s.ui.selectedNodeId);
   const selectedRemoveMarkId = useEditorStore((s) => s.ui.selectedRemoveMarkId);
   const selectedSwapMarkId = useEditorStore((s) => s.ui.selectedSwapMarkId);
-  const selectedMoveMarkId = useEditorStore((s) => s.ui.selectedMoveMarkId);
   const activeTool: ActiveTool = useEditorStore((s) => s.ui.activeTool);
 
   const viewport = useEditorStore((s) => s.viewport);
@@ -358,22 +351,11 @@ export function EditorCanvas({
   const addSwapMark = useEditorStore((s) => s.addSwapMark);
   const updateSwapMark = useEditorStore((s) => s.updateSwapMark);
   const removeSwapMark = useEditorStore((s) => s.removeSwapMark);
-  const selectMoveMark = useEditorStore((s) => s.selectMoveMark);
-  const addMoveMark = useEditorStore((s) => s.addMoveMark);
-  const updateMoveVector = useEditorStore((s) => s.updateMoveVector);
-  const removeMoveMark = useEditorStore((s) => s.removeMoveMark);
 
   const [hoveredId, setHoveredId] = useState<string | null>(null);
-  const [hoveredMoveAnchorId, setHoveredMoveAnchorId] = useState<string | null>(
-    null
-  );
   const [pasteToPlacePulse, setPasteToPlacePulse] = useState<{ x: number; y: number } | null>(
     null
   );
-  const moveVectorDragRef = useRef<{
-    id: string;
-    anchor: { xNorm: number; yNorm: number };
-  } | null>(null);
 
   const [stageSize, setStageSize] = useState<{ w: number; h: number }>({
     w: 800,
@@ -648,7 +630,6 @@ export function EditorCanvas({
       activeTool === "remove" ||
       activeTool === "swap" ||
       activeTool === "rotate" ||
-      activeTool === "move" ||
       removeMarkerTargetingActive ||
       rotateMarkerTargetingActive ||
       !node ||
@@ -680,10 +661,6 @@ export function EditorCanvas({
           selectRemoveMark(null);
           return;
         }
-        if (selectedMoveMarkId) {
-          selectMoveMark(null);
-          return;
-        }
         selectNode(null);
         return;
       }
@@ -712,12 +689,6 @@ export function EditorCanvas({
         return;
       }
 
-      if (selectedMoveMarkId && isDeleteKey) {
-        e.preventDefault();
-        removeMoveMark(selectedMoveMarkId);
-        return;
-      }
-
       if (
         isDeleteKey &&
         selectedNodeId &&
@@ -730,16 +701,13 @@ export function EditorCanvas({
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [
     activeTool,
-    removeMoveMark,
     removeRemoveMark,
     removeMarkerPosition,
     removeSwapMark,
     rotateMarkerPosition,
     selectNode,
-    selectMoveMark,
     selectRemoveMark,
     selectSwapMark,
-    selectedMoveMarkId,
     selectedNodeId,
     selectedRemoveMarkId,
     selectedSwapMarkId,
@@ -833,71 +801,6 @@ export function EditorCanvas({
     };
   }
 
-  function findMoveAnchorHit(
-    stagePt: { x: number; y: number },
-    vp: NonNullable<typeof viewport>
-  ) {
-    const hitRadiusSq = MOVE_MARK_HIT_STAGE_RADIUS * MOVE_MARK_HIT_STAGE_RADIUS;
-    let best:
-      | {
-          id: string;
-          xNorm: number;
-          yNorm: number;
-          distSq: number;
-        }
-      | null = null;
-
-    for (const mark of moveMarks) {
-      const anchorImg = {
-        x: clamp(mark.xNorm, 0, 1) * vp.imageNaturalW,
-        y: clamp(mark.yNorm, 0, 1) * vp.imageNaturalH,
-      };
-      const anchorStage = imageToStage(anchorImg, vp);
-      const dx = stagePt.x - anchorStage.x;
-      const dy = stagePt.y - anchorStage.y;
-      const distSq = dx * dx + dy * dy;
-
-      if (distSq <= hitRadiusSq && (!best || distSq < best.distSq)) {
-        best = {
-          id: mark.id,
-          xNorm: mark.xNorm,
-          yNorm: mark.yNorm,
-          distSq,
-        };
-      }
-    }
-
-    return best;
-  }
-
-  const clearMoveVectorDrag = () => {
-    moveVectorDragRef.current = null;
-  };
-
-  const updateMoveVectorDrag = (
-    stage: Konva.Stage,
-    nativeEvt: MouseEvent | TouchEvent
-  ) => {
-    if (activeTool !== "move" || !viewport) return;
-    const drag = moveVectorDragRef.current;
-    if (!drag) return;
-
-    const imgPt0 = stagePointerToImage(stage, viewport);
-    if (!imgPt0) return;
-
-    const imgPt = clampToImage(imgPt0, viewport);
-    const ptNorm = imageToNormalized(imgPt, viewport);
-
-    let dxNorm = ptNorm.x - drag.anchor.xNorm;
-    let dyNorm = ptNorm.y - drag.anchor.yNorm;
-    if ("shiftKey" in nativeEvt && nativeEvt.shiftKey) {
-      if (Math.abs(dxNorm) >= Math.abs(dyNorm)) dyNorm = 0;
-      else dxNorm = 0;
-    }
-
-    updateMoveVector(drag.id, dxNorm, dyNorm);
-  };
-
   const calP1 = calibration?.draft?.p1;
   const calP2 = calibration?.draft?.p2;
 
@@ -913,13 +816,6 @@ export function EditorCanvas({
 
     return { distPx, feet, ppf: ppfPreview };
   }, [calP1, calP2, calibration?.draft?.realFeet]);
-
-  useEffect(() => {
-    if (activeTool !== "move") {
-      clearMoveVectorDrag();
-      if (hoveredMoveAnchorId) setHoveredMoveAnchorId(null);
-    }
-  }, [activeTool, hoveredMoveAnchorId]);
 
   useEffect(() => {
     if (!pasteToPlacePulse) return;
@@ -993,43 +889,6 @@ export function EditorCanvas({
       return;
     }
 
-    // Move tool: place/select anchor, then drag to set translation vector.
-    if (activeTool === "move") {
-      if (!viewport) return;
-
-      const stagePt = stage.getPointerPosition();
-      if (!stagePt) return;
-
-      const hit = findMoveAnchorHit(stagePt, viewport);
-      if (hit) {
-        selectMoveMark(hit.id);
-        moveVectorDragRef.current = {
-          id: hit.id,
-          anchor: { xNorm: hit.xNorm, yNorm: hit.yNorm },
-        };
-        return;
-      }
-
-      if (e.target !== stage) return;
-
-      const imgPt0 = stagePointerToImage(stage, viewport);
-      if (!imgPt0) return;
-      if (!isInsideImage(imgPt0, viewport)) return;
-
-      const imgPt = clampToImage(imgPt0, viewport);
-      const ptNorm = imageToNormalized(imgPt, viewport);
-      addMoveMark(ptNorm);
-
-      const createdMoveId = useEditorStore.getState().ui.selectedMoveMarkId;
-      if (createdMoveId) {
-        moveVectorDragRef.current = {
-          id: createdMoveId,
-          anchor: { xNorm: ptNorm.x, yNorm: ptNorm.y },
-        };
-      }
-      return;
-    }
-
     if (removeMarkerTargetingActive) {
       if (!viewport) return;
       const imgPt0 = stagePointerToImage(stage, viewport);
@@ -1089,45 +948,11 @@ export function EditorCanvas({
     if (clickedOnEmpty) selectNode(null);
   };
 
-  const handleStagePointerMove = (
-    e: Konva.KonvaEventObject<MouseEvent | TouchEvent>
-  ) => {
-    const stage = e.target.getStage();
-    if (!stage) return;
-
-    if (activeTool !== "move" || !viewport) {
-      if (hoveredMoveAnchorId) setHoveredMoveAnchorId(null);
-      return;
-    }
-
-    const stagePt = stage.getPointerPosition();
-    if (!stagePt) {
-      if (hoveredMoveAnchorId) setHoveredMoveAnchorId(null);
-      return;
-    }
-
-    const hit = findMoveAnchorHit(stagePt, viewport);
-    const hitId = hit?.id ?? null;
-    if (hitId !== hoveredMoveAnchorId) setHoveredMoveAnchorId(hitId);
-
-    updateMoveVectorDrag(stage, e.evt);
-  };
-
-  const handleStagePointerUp = () => {
-    clearMoveVectorDrag();
-  };
-
   const shouldInterceptForMarkerTargeting =
     removeMarkerTargetingActive || rotateMarkerTargetingActive;
 
   return (
-    <div
-      className={className}
-      style={{
-        cursor:
-          activeTool === "move" ? (hoveredMoveAnchorId ? "pointer" : "crosshair") : undefined,
-      }}
-    >
+    <div className={className}>
       <div ref={outerShellRef} className="relative h-full w-full">
         <div
           ref={containerRef}
@@ -1144,8 +969,7 @@ export function EditorCanvas({
               activeTool === "calibrate" ||
               activeTool === "remove" ||
               activeTool === "swap" ||
-              activeTool === "rotate" ||
-              activeTool === "move"
+              activeTool === "rotate"
             ) {
               return;
             }
@@ -1242,11 +1066,6 @@ export function EditorCanvas({
               height={stageSize.h}
               onMouseDown={handleStagePointerDown}
               onTap={handleStagePointerDown}
-              onMouseMove={handleStagePointerMove}
-              onTouchMove={handleStagePointerMove}
-              onMouseUp={handleStagePointerUp}
-              onTouchEnd={handleStagePointerUp}
-              onMouseLeave={handleStagePointerUp}
             >
         <Layer>
           {/* Matte */}
@@ -1570,99 +1389,6 @@ export function EditorCanvas({
                 fill="#ede9fe"
                 listening={false}
               />
-            </Group>
-          )}
-
-          {/* Move marks overlay */}
-          {viewport && moveMarks.length > 0 && (
-            <Group listening={false}>
-              {moveMarks.map((m) => {
-                const anchorImg = {
-                  x: clamp(m.xNorm, 0, 1) * viewport.imageNaturalW,
-                  y: clamp(m.yNorm, 0, 1) * viewport.imageNaturalH,
-                };
-                const endImg = {
-                  x: clamp(m.xNorm + m.dxNorm, 0, 1) * viewport.imageNaturalW,
-                  y: clamp(m.yNorm + m.dyNorm, 0, 1) * viewport.imageNaturalH,
-                };
-                const anchor = imageToStage(anchorImg, viewport);
-                const end = imageToStage(endImg, viewport);
-                const isSelected = m.id === selectedMoveMarkId;
-
-                const vx = end.x - anchor.x;
-                const vy = end.y - anchor.y;
-                const vLen = Math.hypot(vx, vy);
-                const ux = vLen > 0.001 ? vx / vLen : 1;
-                const uy = vLen > 0.001 ? vy / vLen : 0;
-
-                const angle = Math.PI / 7;
-                const cosA = Math.cos(angle);
-                const sinA = Math.sin(angle);
-                const lx = ux * cosA - uy * sinA;
-                const ly = ux * sinA + uy * cosA;
-                const rx = ux * cosA + uy * sinA;
-                const ry = -ux * sinA + uy * cosA;
-
-                const leftHead = {
-                  x: end.x - lx * MOVE_MARK_ARROW_HEAD_SIZE,
-                  y: end.y - ly * MOVE_MARK_ARROW_HEAD_SIZE,
-                };
-                const rightHead = {
-                  x: end.x - rx * MOVE_MARK_ARROW_HEAD_SIZE,
-                  y: end.y - ry * MOVE_MARK_ARROW_HEAD_SIZE,
-                };
-
-                return (
-                  <Group key={m.id}>
-                    <Line
-                      points={[anchor.x, anchor.y, end.x, end.y]}
-                      stroke={MOVE_MARK_ARROW_STROKE}
-                      strokeWidth={isSelected ? 3.5 : 2.5}
-                      lineCap="round"
-                      lineJoin="round"
-                    />
-                    {vLen > 0.001 && (
-                      <Line
-                        points={[
-                          leftHead.x,
-                          leftHead.y,
-                          end.x,
-                          end.y,
-                          rightHead.x,
-                          rightHead.y,
-                        ]}
-                        stroke={MOVE_MARK_ARROW_STROKE}
-                        strokeWidth={isSelected ? 3.5 : 2.5}
-                        lineCap="round"
-                        lineJoin="round"
-                      />
-                    )}
-                    {isSelected && (
-                      <Circle
-                        x={anchor.x}
-                        y={anchor.y}
-                        radius={MOVE_MARK_ANCHOR_RADIUS + 6}
-                        stroke="#67e8f9"
-                        strokeWidth={2}
-                      />
-                    )}
-                    <Circle
-                      x={anchor.x}
-                      y={anchor.y}
-                      radius={MOVE_MARK_ANCHOR_RADIUS + 2}
-                      fill="#ffffff"
-                    />
-                    <Circle
-                      x={anchor.x}
-                      y={anchor.y}
-                      radius={MOVE_MARK_ANCHOR_RADIUS}
-                      fill={MOVE_MARK_ANCHOR_FILL}
-                      stroke="#ffffff"
-                      strokeWidth={1}
-                    />
-                  </Group>
-                );
-              })}
             </Group>
           )}
 
@@ -2094,18 +1820,6 @@ export function EditorCanvas({
           ? "Drag furniture in — click to select — Esc to deselect"
           : "Upload a room photo → then drag furniture in"}
       </div>
-
-      {activeTool === "move" && (
-        <div className="pointer-events-none absolute left-3 top-12 max-w-xs rounded-md bg-neutral-950/70 px-3 py-2 text-xs text-neutral-100 shadow-md">
-          <div className="font-medium">Move</div>
-          <ul className="mt-1 list-disc space-y-1 pl-4 text-neutral-200">
-            <li>Click an object to place an anchor.</li>
-            <li>Drag to set direction and distance.</li>
-            <li>Hold Shift to lock axis.</li>
-            <li>Press Delete to remove a move mark.</li>
-          </ul>
-        </div>
-      )}
 
       {/* PPF preview HUD (calibration only) */}
       {activeTool === "calibrate" && (

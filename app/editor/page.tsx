@@ -247,7 +247,7 @@ type ScenePlacement = {
   stageAdded?: number;
   locked?: boolean;
 };
-type EditAction = "add" | "remove" | "swap" | "rotate" | "move";
+type EditAction = "add" | "remove" | "swap" | "rotate";
 type VibodeEligibleSku = {
   skuId: string;
   label: string;
@@ -1364,7 +1364,6 @@ function EditorPageInner() {
     amountDegrees: 15,
   });
   const [isRotateMarkerTargeting, setIsRotateMarkerTargeting] = useState(false);
-  const [editMoveStep, setEditMoveStep] = useState(0.05);
   const [editWarning, setEditWarning] = useState<string | null>(null);
   const [isEditRunning, setIsEditRunning] = useState(false);
   const [removeMarkerPosition, setRemoveMarkerPosition] = useState<PasteToPlaceClickHint | null>(null);
@@ -1535,7 +1534,6 @@ function EditorPageInner() {
       amountDegrees: 15,
     });
     setIsRotateMarkerTargeting(false);
-    setEditMoveStep(0.05);
     setEditWarning(null);
     setIsEditRunning(false);
     setProductImageUrl("");
@@ -4076,7 +4074,6 @@ function EditorPageInner() {
         activeTool === "remove" ||
         activeTool === "swap" ||
         activeTool === "rotate" ||
-        activeTool === "move" ||
         isRotateMarkerTargeting
       ) {
         return false;
@@ -4375,7 +4372,6 @@ function EditorPageInner() {
       activeTool === "remove" ||
       activeTool === "swap" ||
       activeTool === "rotate" ||
-      activeTool === "move" ||
       isRotateMarkerTargeting ||
       !scene.baseImageUrl ||
       isBusy ||
@@ -4413,7 +4409,6 @@ function EditorPageInner() {
       activeTool === "remove" ||
       activeTool === "swap" ||
       activeTool === "rotate" ||
-      activeTool === "move" ||
       isRotateMarkerTargeting ||
       !scene.baseImageUrl ||
       isBusy ||
@@ -5020,13 +5015,11 @@ function EditorPageInner() {
       return;
     }
     const removeMarks = scene.removeMarks ?? [];
-    const moveMarks = scene.moveMarks ?? [];
     const hasAnyActiveNodes = nodes.some((n) => n.status !== "markedForDelete");
     const hasToolMarks =
       removeMarks.length > 0 ||
       queuedSwaps > 0 ||
-      rotateMarks.length > 0 ||
-      moveMarks.length > 0;
+      rotateMarks.length > 0;
     const isVibeStage =
       (scene.vibeMode ?? "off") === "on" &&
       !hasAnyActiveNodes &&
@@ -6407,81 +6400,6 @@ function EditorPageInner() {
                 </button>
               </div>
 
-              <div className="mt-3">
-                <div className="flex items-center justify-between text-xs text-neutral-400">
-                  <span>Move step</span>
-                  <input
-                    type="number"
-                    min={0.01}
-                    max={0.3}
-                    step={0.01}
-                    value={editMoveStep}
-                    onChange={(e) => {
-                      const next = Number(e.target.value);
-                      if (Number.isFinite(next) && next > 0) {
-                        setEditMoveStep(next);
-                      }
-                    }}
-                    className="w-16 rounded border border-neutral-800 bg-neutral-950 px-1 py-0.5 text-right text-xs outline-none focus:border-neutral-600"
-                  />
-                </div>
-                <div className="mt-2 grid grid-cols-3 gap-1 text-xs">
-                  <div />
-                  <button
-                    type="button"
-                    disabled={isEditRunning || !workingImageUrl}
-                    className="rounded-md border border-neutral-800 bg-neutral-950 px-2 py-1 hover:bg-neutral-800 disabled:border-neutral-900 disabled:text-neutral-600"
-                    onClick={() => {
-                      const placementId = requireSelectedPlacement();
-                      if (!placementId) return;
-                      void runEdit("move", { target: { placementId }, params: { dx: 0, dy: -editMoveStep } });
-                    }}
-                  >
-                    Up
-                  </button>
-                  <div />
-                  <button
-                    type="button"
-                    disabled={isEditRunning || !workingImageUrl}
-                    className="rounded-md border border-neutral-800 bg-neutral-950 px-2 py-1 hover:bg-neutral-800 disabled:border-neutral-900 disabled:text-neutral-600"
-                    onClick={() => {
-                      const placementId = requireSelectedPlacement();
-                      if (!placementId) return;
-                      void runEdit("move", { target: { placementId }, params: { dx: -editMoveStep, dy: 0 } });
-                    }}
-                  >
-                    Left
-                  </button>
-                  <div />
-                  <button
-                    type="button"
-                    disabled={isEditRunning || !workingImageUrl}
-                    className="rounded-md border border-neutral-800 bg-neutral-950 px-2 py-1 hover:bg-neutral-800 disabled:border-neutral-900 disabled:text-neutral-600"
-                    onClick={() => {
-                      const placementId = requireSelectedPlacement();
-                      if (!placementId) return;
-                      void runEdit("move", { target: { placementId }, params: { dx: editMoveStep, dy: 0 } });
-                    }}
-                  >
-                    Right
-                  </button>
-                  <div />
-                  <div />
-                  <button
-                    type="button"
-                    disabled={isEditRunning || !workingImageUrl}
-                    className="rounded-md border border-neutral-800 bg-neutral-950 px-2 py-1 hover:bg-neutral-800 disabled:border-neutral-900 disabled:text-neutral-600"
-                    onClick={() => {
-                      const placementId = requireSelectedPlacement();
-                      if (!placementId) return;
-                      void runEdit("move", { target: { placementId }, params: { dx: 0, dy: editMoveStep } });
-                    }}
-                  >
-                    Down
-                  </button>
-                  <div />
-                </div>
-              </div>
               </div>
               ) : null}
             </div>

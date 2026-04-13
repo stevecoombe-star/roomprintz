@@ -4,7 +4,6 @@ import { createClient } from "@supabase/supabase-js";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { FreezePayloadV2, StyleBand } from "@/lib/freezePayloadV2Types";
 import { callCompositorVibodeCompose } from "@/lib/callCompositorVibodeCompose";
-import { callCompositorVibodeMove } from "@/lib/callCompositorVibodeMove";
 import { callCompositorVibodeRemove } from "@/lib/callCompositorVibodeRemove";
 import { callCompositorVibodeRotate } from "@/lib/callCompositorVibodeRotate";
 import { callCompositorVibodeVibe } from "@/lib/callCompositorVibodeVibe";
@@ -2038,7 +2037,6 @@ export async function handleGenerateRequest(args: {
         : null;
     const rotateMarks = parseVibodeRotateMarks(vibodeIntent);
     const isRotateMode = Boolean(freezeV2Raw && rotateMarks.length > 0);
-    const isMoveMode = Boolean(vibodeIntent?.move?.marks?.length);
     const swapMarks = parseVibodeSwapMarks(vibodeIntent);
     const isSwapMode = swapMarks.length > 0;
     const isVibeStage = isRecord(vibodeIntent) && vibodeIntent.mode === "vibe";
@@ -2166,24 +2164,6 @@ export async function handleGenerateRequest(args: {
         payloadForModel,
         notes,
       });
-    } else if (isMoveMode) {
-      const originalImageUrl = baseImageUrlForModel;
-      const freezePayload = freeze as any;
-      try {
-        const moveResult = await callCompositorVibodeMove({
-          imageUrl: originalImageUrl,
-          imageBase64: undefined,
-          marks: vibodeIntent.move.marks,
-          modelVersion: safeStr((payloadForModel as any)?.modelVersion),
-          aspectRatio: freezePayload.aspectRatio ?? "auto",
-        });
-        modelImageUrl = moveResult.imageUrl;
-        notes.push(
-          `Vibode Move tools mode: compositor /vibode/move used (marks=${vibodeIntent.move.marks.length}).`
-        );
-      } catch (moveErr: any) {
-        throw moveErr;
-      }
     } else if (isRemoveMode) {
       const removeResult = await handleRemove({
         vibodeIntent,
