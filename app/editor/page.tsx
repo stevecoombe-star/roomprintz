@@ -287,9 +287,12 @@ type VibodeEditRunTarget = {
 type VibodeEditRunRequest = {
   baseImageUrl: string;
   action: EditAction;
-  placements: ScenePlacement[];
+  placements?: ScenePlacement[];
   target?: VibodeEditRunTarget;
   params?: Record<string, unknown>;
+  xNorm?: number;
+  yNorm?: number;
+  rotationDegrees?: number;
   eligibleSkus?: VibodeEligibleSku[];
   modelVersion?: VibodeModelVersion;
   vibodeRoomId?: string;
@@ -300,6 +303,17 @@ type VibodeEditRunResponse = {
   placements?: ScenePlacement[];
 };
 type PasteToPlaceClickHint = { xNorm: number; yNorm: number };
+type RotateMarker = {
+  xNorm: number;
+  yNorm: number;
+};
+type RotateDirection = "cw" | "ccw";
+type RotateAmount = 5 | 15 | 30 | 45 | 90;
+type RotateToolState = {
+  marker: RotateMarker | null;
+  direction: RotateDirection;
+  amountDegrees: RotateAmount;
+};
 type PasteToPlacePreparedProduct = {
   source: "clipboard" | "my_furniture";
   skuId: string;
@@ -739,6 +753,98 @@ function aspectRatioFromAssetMetadata(metadata: Record<string, unknown> | null |
     aspectRatioFromDimensions(metadata.width, metadata.height) ??
     null
   );
+}
+
+const SCENE_PLACEMENT_ARRAY_KEYS = [
+  "placements",
+  "scenePlacements",
+  "scene_placements",
+  "editablePlacements",
+  "editable_placements",
+  "currentPlacements",
+] as const;
+
+const SCENE_PLACEMENT_NESTED_KEYS = [
+  "metadata",
+  "output",
+  "result",
+  "response",
+  "data",
+  "scene",
+  "sceneState",
+  "scene_state",
+  "editState",
+  "edit_state",
+  "request_payload",
+  "response_payload",
+] as const;
+
+function parsePlacementBbox(value: unknown): ScenePlacement["bbox"] | undefined {
+  if (!isRecord(value)) return undefined;
+  const x = parseFiniteNumber(value.x);
+  const y = parseFiniteNumber(value.y);
+  const w = parseFiniteNumber(value.w) ?? parseFiniteNumber(value.width);
+  const h = parseFiniteNumber(value.h) ?? parseFiniteNumber(value.height);
+  if (x === null || y === null || w === null || h === null) return undefined;
+  return { x, y, w, h };
+}
+
+function normalizeScenePlacement(value: unknown): ScenePlacement | null {
+  if (!isRecord(value)) return null;
+  const placementId =
+    safeStr(value.placementId) ?? safeStr(value.placement_id) ?? safeStr(value.id);
+  const skuId = safeStr(value.skuId) ?? safeStr(value.sku_id);
+  if (!placementId || !skuId) return null;
+  const sourceRaw = safeStr(value.source);
+  const source: ScenePlacement["source"] =
+    sourceRaw === "catalog" || sourceRaw === "user" ? sourceRaw : undefined;
+  const stageAddedRaw = parseFiniteNumber(value.stageAdded) ?? parseFiniteNumber(value.stage_added);
+  const rotationDegRaw =
+    parseFiniteNumber(value.rotationDeg) ??
+    parseFiniteNumber(value.rotationDegrees) ??
+    parseFiniteNumber(value.rotation);
+  return {
+    placementId,
+    skuId,
+    label: safeStr(value.label) ?? undefined,
+    source,
+    bbox: parsePlacementBbox(value.bbox) ?? parsePlacementBbox(value.box),
+    rotationDeg: rotationDegRaw ?? undefined,
+    stageAdded: stageAddedRaw ?? undefined,
+    locked: typeof value.locked === "boolean" ? value.locked : undefined,
+  };
+}
+
+function normalizeScenePlacementsArray(value: unknown): ScenePlacement[] {
+  if (!Array.isArray(value)) return [];
+  const next: ScenePlacement[] = [];
+  const seen = new Set<string>();
+  for (const item of value) {
+    const normalized = normalizeScenePlacement(item);
+    if (!normalized || seen.has(normalized.placementId)) continue;
+    seen.add(normalized.placementId);
+    next.push(normalized);
+  }
+  return next;
+}
+
+function extractScenePlacementsFromUnknown(value: unknown, depth = 0): ScenePlacement[] {
+  if (depth > 4) return [];
+  const directPlacements = normalizeScenePlacementsArray(value);
+  if (directPlacements.length > 0) return directPlacements;
+  if (!isRecord(value)) return [];
+
+  for (const key of SCENE_PLACEMENT_ARRAY_KEYS) {
+    const placements = normalizeScenePlacementsArray(value[key]);
+    if (placements.length > 0) return placements;
+  }
+
+  for (const key of SCENE_PLACEMENT_NESTED_KEYS) {
+    const placements = extractScenePlacementsFromUnknown(value[key], depth + 1);
+    if (placements.length > 0) return placements;
+  }
+
+  return [];
 }
 
 function isRoomOpenDebugEnabled(): boolean {
@@ -1252,7 +1358,12 @@ function EditorPageInner() {
     VibodeEligibleSku[] | null
   >(null);
   const [ghostAddSavedFurnitureId, setGhostAddSavedFurnitureId] = useState<string | null>(null);
-  const [editRotationDeg, setEditRotationDeg] = useState(0);
+  const [rotateToolState, setRotateToolState] = useState<RotateToolState>({
+    marker: null,
+    direction: "cw",
+    amountDegrees: 15,
+  });
+  const [isRotateMarkerTargeting, setIsRotateMarkerTargeting] = useState(false);
   const [editMoveStep, setEditMoveStep] = useState(0.05);
   const [editWarning, setEditWarning] = useState<string | null>(null);
   const [isEditRunning, setIsEditRunning] = useState(false);
@@ -1324,6 +1435,7 @@ function EditorPageInner() {
   const requestedRoomIdRef = useRef<string | null>(requestedRoomId);
   const vibodeRoomIdRef = useRef<string | null>(vibodeRoomId);
   const lastStageOutputsRef = useRef<StageOutputMap>(lastStageOutputs);
+  const pendingPlacementNodeHydrationRef = useRef<ScenePlacement[] | null>(null);
   useEffect(() => {
     requestedRoomIdRef.current = requestedRoomId;
   }, [requestedRoomId]);
@@ -1403,6 +1515,7 @@ function EditorPageInner() {
     setLastStageOutputs((prev) => (Object.keys(prev).length === 0 ? prev : {}));
     setWorkingImageUrl(null);
     setIsWorkingImageGenerated(false);
+    pendingPlacementNodeHydrationRef.current = null;
     store.resetSessionForIncomingImage();
     setScenePlacements([]);
     setSelectedPlacementId(null);
@@ -1416,7 +1529,12 @@ function EditorPageInner() {
     setGhostAddActive(false);
     setGhostAddEligibleSkusOverride(null);
     setGhostAddSavedFurnitureId(null);
-    setEditRotationDeg(0);
+    setRotateToolState({
+      marker: null,
+      direction: "cw",
+      amountDegrees: 15,
+    });
+    setIsRotateMarkerTargeting(false);
     setEditMoveStep(0.05);
     setEditWarning(null);
     setIsEditRunning(false);
@@ -1818,6 +1936,12 @@ function EditorPageInner() {
         setVibodeRoomId(hydrated.room.id);
         setVersions(hydrated.versions);
         setActiveAssetId(hydrated.room.active_asset_id ?? null);
+        const hydratedPlacements = extractScenePlacementsFromUnknown(hydratedActiveVersion?.metadata);
+        setScenePlacements(hydratedPlacements);
+        setSelectedPlacementId((prev) =>
+          prev && hydratedPlacements.some((placement) => placement.placementId === prev) ? prev : null
+        );
+        hydrateSceneNodesFromPlacements(hydratedPlacements);
         setRoomBaseAssetId(hydrated.room.base_asset_id ?? null);
         setIsWorkingImageGenerated(false);
 
@@ -2164,6 +2288,221 @@ function EditorPageInner() {
       : (pasteToPlaceMenuClipboardPreviewUrl ?? activePasteSourcePreviewUrl));
   const selectedVersionId =
     activeAssetId ?? versions.find((asset) => asset.is_active)?.id ?? null;
+  const selectedVersion = useMemo(
+    () => versions.find((asset) => asset.id === selectedVersionId) ?? null,
+    [selectedVersionId, versions]
+  );
+  const activeVersionMetadataPlacements = useMemo(
+    () => extractScenePlacementsFromUnknown(selectedVersion?.metadata),
+    [selectedVersion?.id, selectedVersion?.metadata]
+  );
+  const stage3OutputPlacements = useMemo(
+    () => extractScenePlacementsFromUnknown(lastStageOutputs[3]),
+    [lastStageOutputs]
+  );
+  const activeStageOutputPlacements = useMemo(
+    () => extractScenePlacementsFromUnknown(lastStageOutputs[activeStage]),
+    [activeStage, lastStageOutputs]
+  );
+  const authoritativeDisplayedPlacements = useMemo(() => {
+    if (scenePlacements.length > 0) return scenePlacements;
+    if (activeVersionMetadataPlacements.length > 0) return activeVersionMetadataPlacements;
+    if (stage3OutputPlacements.length > 0) return stage3OutputPlacements;
+    if (activeStageOutputPlacements.length > 0) return activeStageOutputPlacements;
+    return [];
+  }, [
+    activeStageOutputPlacements,
+    activeVersionMetadataPlacements,
+    scenePlacements,
+    stage3OutputPlacements,
+  ]);
+  const authoritativeDisplayedPlacementsSource = useMemo(() => {
+    if (scenePlacements.length > 0) return "scenePlacements";
+    if (activeVersionMetadataPlacements.length > 0) return "selectedVersion.metadata";
+    if (stage3OutputPlacements.length > 0) return "lastStageOutputs[3]";
+    if (activeStageOutputPlacements.length > 0) return "lastStageOutputs[activeStage]";
+    return "none";
+  }, [
+    activeStageOutputPlacements.length,
+    activeVersionMetadataPlacements.length,
+    scenePlacements.length,
+    stage3OutputPlacements.length,
+  ]);
+  const isSceneNodeHydrationReady = useMemo(() => {
+    const naturalWidth =
+      typeof scene.baseImageWidthPx === "number" && Number.isFinite(scene.baseImageWidthPx)
+        ? scene.baseImageWidthPx
+        : viewport?.imageNaturalW;
+    const naturalHeight =
+      typeof scene.baseImageHeightPx === "number" && Number.isFinite(scene.baseImageHeightPx)
+        ? scene.baseImageHeightPx
+        : viewport?.imageNaturalH;
+    return (
+      !!viewport &&
+      Number.isFinite(viewport.imageStageX) &&
+      Number.isFinite(viewport.imageStageY) &&
+      Number.isFinite(viewport.imageStageW) &&
+      Number.isFinite(viewport.imageStageH) &&
+      Number.isFinite(viewport.scale) &&
+      viewport.imageStageW > 0 &&
+      viewport.imageStageH > 0 &&
+      viewport.scale > 0 &&
+      typeof naturalWidth === "number" &&
+      Number.isFinite(naturalWidth) &&
+      naturalWidth > 0 &&
+      typeof naturalHeight === "number" &&
+      Number.isFinite(naturalHeight) &&
+      naturalHeight > 0
+    );
+  }, [scene.baseImageHeightPx, scene.baseImageWidthPx, viewport]);
+  const applyPlacementsToSceneNodes = useCallback(
+    (placements: ScenePlacement[]) => {
+      if (placements.length === 0) {
+        useEditorStore.setState((s) => ({
+          ...s,
+          scene: { ...s.scene, nodes: [] },
+          ui: s.ui.selectedNodeId ? { ...s.ui, selectedNodeId: null } : s.ui,
+        }));
+        return true;
+      }
+
+      const naturalWidth =
+        typeof scene.baseImageWidthPx === "number" && Number.isFinite(scene.baseImageWidthPx)
+          ? scene.baseImageWidthPx
+          : viewport?.imageNaturalW;
+      const naturalHeight =
+        typeof scene.baseImageHeightPx === "number" && Number.isFinite(scene.baseImageHeightPx)
+          ? scene.baseImageHeightPx
+          : viewport?.imageNaturalH;
+      if (
+        !viewport ||
+        typeof naturalWidth !== "number" ||
+        !Number.isFinite(naturalWidth) ||
+        naturalWidth <= 0 ||
+        typeof naturalHeight !== "number" ||
+        !Number.isFinite(naturalHeight) ||
+        naturalHeight <= 0 ||
+        !Number.isFinite(viewport.scale) ||
+        viewport.scale <= 0
+      ) {
+        return false;
+      }
+
+      useEditorStore.setState((s) => {
+        const existingByKey = new Map<string, FurnitureNode>();
+        for (const node of s.scene.nodes) {
+          existingByKey.set(node.id, node);
+          if (node.id.startsWith("pl_")) {
+            existingByKey.set(node.id.slice(3), node);
+          } else {
+            existingByKey.set(`pl_${node.id}`, node);
+          }
+        }
+
+        const fallbackWidth = Math.max(64, Math.round(viewport.imageStageW * 0.16));
+        const fallbackHeight = Math.max(48, Math.round(viewport.imageStageH * 0.12));
+        const nextNodes: FurnitureNode[] = placements.map((placement, index) => {
+          const nodeIdRaw = placement.placementId.startsWith("pl_")
+            ? placement.placementId.slice(3)
+            : placement.placementId;
+          const nodeId = nodeIdRaw.trim().length > 0 ? nodeIdRaw : `hydrated_${index}`;
+          const existing =
+            existingByKey.get(placement.placementId) ??
+            existingByKey.get(nodeId) ??
+            existingByKey.get(`pl_${nodeId}`);
+          const rotation =
+            typeof placement.rotationDeg === "number" && Number.isFinite(placement.rotationDeg)
+              ? placement.rotationDeg
+              : (existing?.transform.rotation ?? 0);
+          const bbox = placement.bbox;
+          const hasBbox =
+            !!bbox &&
+            Number.isFinite(bbox.x) &&
+            Number.isFinite(bbox.y) &&
+            Number.isFinite(bbox.w) &&
+            Number.isFinite(bbox.h) &&
+            bbox.w > 0 &&
+            bbox.h > 0;
+          const fallbackTransform: FurnitureNode["transform"] = existing?.transform ?? {
+            x: viewport.imageStageX + 24 + (index % 4) * (fallbackWidth + 16),
+            y: viewport.imageStageY + 24 + Math.floor(index / 4) * (fallbackHeight + 16),
+            width: fallbackWidth,
+            height: fallbackHeight,
+            rotation,
+          };
+          const nextTransform: FurnitureNode["transform"] = hasBbox
+            ? {
+                x: viewport.imageStageX + bbox.x * naturalWidth * viewport.scale,
+                y: viewport.imageStageY + bbox.y * naturalHeight * viewport.scale,
+                width: Math.max(1, bbox.w * naturalWidth * viewport.scale),
+                height: Math.max(1, bbox.h * naturalHeight * viewport.scale),
+                rotation,
+              }
+            : { ...fallbackTransform, rotation };
+          const skuId = placement.skuId || existing?.skuId || "unknown_sku";
+          const label = placement.label || existing?.label || skuId;
+          return {
+            ...(existing ?? {
+              id: nodeId,
+              kind: "furniture" as const,
+              skuId,
+              label,
+              zIndex: index + 1,
+              status: "active" as const,
+              transform: nextTransform,
+            }),
+            id: nodeId,
+            kind: "furniture",
+            skuId,
+            label,
+            zIndex:
+              typeof existing?.zIndex === "number" && Number.isFinite(existing.zIndex)
+                ? existing.zIndex
+                : index + 1,
+            status: "active",
+            transform: nextTransform,
+          };
+        });
+
+        const nextSelectedNodeId =
+          s.ui.selectedNodeId && nextNodes.some((node) => node.id === s.ui.selectedNodeId)
+            ? s.ui.selectedNodeId
+            : null;
+        return {
+          ...s,
+          scene: { ...s.scene, nodes: nextNodes },
+          ui:
+            nextSelectedNodeId === s.ui.selectedNodeId
+              ? s.ui
+              : { ...s.ui, selectedNodeId: nextSelectedNodeId },
+        };
+      });
+      return true;
+    },
+    [scene.baseImageHeightPx, scene.baseImageWidthPx, viewport]
+  );
+  const hydrateSceneNodesFromPlacements = useCallback(
+    (placements: ScenePlacement[]) => {
+      if (placements.length === 0) {
+        pendingPlacementNodeHydrationRef.current = null;
+        void applyPlacementsToSceneNodes(placements);
+        return;
+      }
+      pendingPlacementNodeHydrationRef.current = placements;
+      if (!isSceneNodeHydrationReady) return;
+      if (applyPlacementsToSceneNodes(placements)) {
+        pendingPlacementNodeHydrationRef.current = null;
+      }
+    },
+    [applyPlacementsToSceneNodes, isSceneNodeHydrationReady]
+  );
+  useEffect(() => {
+    const pendingPlacements = pendingPlacementNodeHydrationRef.current;
+    if (!pendingPlacements || !isSceneNodeHydrationReady) return;
+    if (applyPlacementsToSceneNodes(pendingPlacements)) {
+      pendingPlacementNodeHydrationRef.current = null;
+    }
+  }, [applyPlacementsToSceneNodes, isSceneNodeHydrationReady]);
   const originalVersion = useMemo(() => {
     if (roomBaseAssetId) {
       const byRoomBaseId = versions.find((asset) => asset.id === roomBaseAssetId);
@@ -2214,10 +2553,16 @@ function EditorPageInner() {
     (asset: VibodeRoomAsset, sourceVersions: VibodeRoomAsset[]) => {
       const nextUrl = typeof asset.image_url === "string" ? asset.image_url.trim() : "";
       if (!nextUrl) return false;
+      const versionPlacements = extractScenePlacementsFromUnknown(asset.metadata);
 
       clearPasteToPlaceProgressPreview();
       setWorkingImageUrl(nextUrl);
       setIsWorkingImageGenerated(asset.asset_type === "stage_output");
+      setScenePlacements(versionPlacements);
+      setSelectedPlacementId((prev) =>
+        prev && versionPlacements.some((placement) => placement.placementId === prev) ? prev : null
+      );
+      hydrateSceneNodesFromPlacements(versionPlacements);
       setActiveAssetId(asset.id);
       setVersions(
         sourceVersions.map((candidate) =>
@@ -2230,7 +2575,10 @@ function EditorPageInner() {
     },
     [
       clearPasteToPlaceProgressPreview,
+      hydrateSceneNodesFromPlacements,
       setActiveAssetId,
+      setScenePlacements,
+      setSelectedPlacementId,
       setVersions,
     ]
   );
@@ -2548,6 +2896,7 @@ function EditorPageInner() {
   }, [selectedEditSkuId, stage3SkuItemsActive]);
 
   const hasActiveRemoveMarker = Boolean(removeMarkerPosition);
+  const hasActiveRotateMarker = Boolean(rotateToolState.marker);
 
   const queuedDeletes = useMemo(
     () => nodes.filter((n) => n.status === "markedForDelete").length,
@@ -2850,6 +3199,67 @@ function EditorPageInner() {
     return reasons;
   }, [hasFiniteConversionInputs, hasImageMapping, hasNaturalDims]);
   const isImageSpaceReady = hasNaturalDims && hasImageMapping && hasFiniteConversionInputs;
+  const scenePlacementsById = useMemo(
+    () => new Map(scenePlacements.map((placement) => [placement.placementId, placement])),
+    [scenePlacements]
+  );
+  const nodeDerivedPlacements = useMemo<ScenePlacement[]>(() => {
+    const canComputeNormalizedBbox =
+      !!viewport &&
+      Number.isFinite(baseImageNaturalWidth) &&
+      baseImageNaturalWidth > 0 &&
+      Number.isFinite(baseImageNaturalHeight) &&
+      baseImageNaturalHeight > 0;
+
+    return nodes
+      .filter((node) => node.status !== "markedForDelete")
+      .map((node) => {
+        const placementId = scenePlacementsById.has(node.id)
+          ? node.id
+          : node.id.startsWith("pl_")
+            ? node.id
+            : `pl_${node.id}`;
+        const previousPlacement = scenePlacementsById.get(placementId);
+        let bbox = previousPlacement?.bbox;
+
+        if (canComputeNormalizedBbox && viewport) {
+          const imageTransform = toImageSpaceTransform(node.transform, viewport);
+          const bboxValues = [
+            imageTransform.x,
+            imageTransform.y,
+            imageTransform.width,
+            imageTransform.height,
+          ];
+          if (bboxValues.every((value) => Number.isFinite(value))) {
+            bbox = {
+              x: imageTransform.x / baseImageNaturalWidth,
+              y: imageTransform.y / baseImageNaturalHeight,
+              w: imageTransform.width / baseImageNaturalWidth,
+              h: imageTransform.height / baseImageNaturalHeight,
+            };
+          }
+        }
+
+        return {
+          placementId,
+          skuId: node.skuId,
+          label: node.label || previousPlacement?.label,
+          source: previousPlacement?.source,
+          bbox,
+          rotationDeg: Number.isFinite(node.transform.rotation)
+            ? node.transform.rotation
+            : previousPlacement?.rotationDeg,
+          stageAdded: previousPlacement?.stageAdded,
+          locked: previousPlacement?.locked,
+        };
+      });
+  }, [
+    baseImageNaturalHeight,
+    baseImageNaturalWidth,
+    nodes,
+    scenePlacementsById,
+    viewport,
+  ]);
   const vibeMode = scene.vibeMode ?? "off";
 
   const blobUrlToBase64 = async (blobUrl: string): Promise<string> => {
@@ -3092,6 +3502,14 @@ function EditorPageInner() {
       }
       setStageStatus((prev) => ({ ...prev, [stageNumber]: "success" }));
       setLastStageOutputs((prev) => ({ ...prev, [stageNumber]: json }));
+      const responsePlacements = extractScenePlacementsFromUnknown(json);
+      if (responsePlacements.length > 0) {
+        setScenePlacements(responsePlacements);
+        setSelectedPlacementId((prev) =>
+          prev && responsePlacements.some((placement) => placement.placementId === prev) ? prev : null
+        );
+        hydrateSceneNodesFromPlacements(responsePlacements);
+      }
       setWorkingImageUrl(nextImageUrl);
       setIsWorkingImageGenerated(true);
       if (!isInlineImageSource(nextImageUrl)) {
@@ -3173,6 +3591,7 @@ function EditorPageInner() {
         : {};
       let normalizedTarget = payloadParts.target;
       let normalizedParams = payloadParts.params;
+      let rotatePayload: { xNorm: number; yNorm: number; rotationDegrees: number } | null = null;
 
       if (action === "remove") {
         const xNormRaw =
@@ -3195,27 +3614,70 @@ function EditorPageInner() {
         const yNorm = Math.max(0, Math.min(1, yNormRaw));
         normalizedTarget = { xNorm, yNorm, x: xNorm, y: yNorm };
         normalizedParams = { xNorm, yNorm, x: xNorm, y: yNorm };
+      } else if (action === "rotate") {
+        const xNormRaw =
+          parseFiniteNumber(payloadParts.xNorm) ??
+          parseFiniteNumber(targetRecord.xNorm) ??
+          parseFiniteNumber(targetRecord.x) ??
+          parseFiniteNumber(paramsRecord.xNorm) ??
+          parseFiniteNumber(paramsRecord.x);
+        const yNormRaw =
+          parseFiniteNumber(payloadParts.yNorm) ??
+          parseFiniteNumber(targetRecord.yNorm) ??
+          parseFiniteNumber(targetRecord.y) ??
+          parseFiniteNumber(paramsRecord.yNorm) ??
+          parseFiniteNumber(paramsRecord.y);
+        const rotationDegreesRaw =
+          parseFiniteNumber(payloadParts.rotationDegrees) ??
+          parseFiniteNumber(paramsRecord.rotationDegrees) ??
+          parseFiniteNumber(paramsRecord.rotationDeg) ??
+          parseFiniteNumber(targetRecord.rotationDegrees);
+        if (xNormRaw === null || yNormRaw === null || rotationDegreesRaw === null) {
+          const message = "rotate requires finite xNorm, yNorm, and rotationDegrees.";
+          setEditWarning(message);
+          pushSnack(message);
+          return null;
+        }
+        rotatePayload = {
+          xNorm: Math.max(0, Math.min(1, xNormRaw)),
+          yNorm: Math.max(0, Math.min(1, yNormRaw)),
+          rotationDegrees: rotationDegreesRaw,
+        };
+        normalizedTarget = undefined;
+        normalizedParams = undefined;
       }
+      const payloadPlacementsForRotate =
+        action === "rotate" && Array.isArray(payloadParts.placements) && payloadParts.placements.length > 0
+          ? payloadParts.placements
+          : undefined;
+      const rotatePlacements =
+        action === "rotate"
+          ? payloadPlacementsForRotate ??
+            (nodeDerivedPlacements.length > 0
+              ? nodeDerivedPlacements
+              : authoritativeDisplayedPlacements)
+          : undefined;
 
       const body: VibodeEditRunRequest = {
         baseImageUrl,
         action,
-        placements: payloadParts.placements ?? scenePlacements,
-        target: normalizedTarget,
-        params: normalizedParams,
-        eligibleSkus: payloadParts.eligibleSkus,
+        ...(action === "rotate"
+          ? {
+              xNorm: rotatePayload?.xNorm,
+              yNorm: rotatePayload?.yNorm,
+              rotationDegrees: rotatePayload?.rotationDegrees,
+              placements: rotatePlacements,
+            }
+          : {
+              placements: payloadParts.placements ?? scenePlacements,
+              target: normalizedTarget,
+              params: normalizedParams,
+              eligibleSkus: payloadParts.eligibleSkus,
+            }),
         modelVersion: selectedModel,
         vibodeRoomId: vibodeRoomId ?? undefined,
         stageNumber: activeStage ?? undefined,
       };
-
-      if (action === "remove") {
-        console.log("[runEdit] remove payload", {
-          action,
-          target: normalizedTarget,
-          params: normalizedParams,
-        });
-      }
 
       const res = await fetch("/api/vibode/edit-run", {
         method: "POST",
@@ -3246,6 +3708,7 @@ function EditorPageInner() {
       setBaseImageUrl(json.imageUrl);
       if (Array.isArray(json.placements)) {
         setScenePlacements(json.placements);
+        hydrateSceneNodesFromPlacements(json.placements);
       }
       if (vibodeRoomId) {
         const latestVersions = await refreshRoomVersions(vibodeRoomId);
@@ -3613,7 +4076,8 @@ function EditorPageInner() {
         activeTool === "remove" ||
         activeTool === "swap" ||
         activeTool === "rotate" ||
-        activeTool === "move"
+        activeTool === "move" ||
+        isRotateMarkerTargeting
       ) {
         return false;
       }
@@ -3706,6 +4170,7 @@ function EditorPageInner() {
       isDevUnlockPasteToPlace,
       isEditRunning,
       isPasteToPlaceOperationActive,
+      isRotateMarkerTargeting,
       pushSnack,
       runEdit,
       scenePlacements,
@@ -3735,7 +4200,7 @@ function EditorPageInner() {
 
   const openPasteToPlaceMenu = useCallback(
     async (state: NonNullable<PasteToPlaceMenuState>) => {
-      if (isRemoveMarkerTargeting) {
+      if (isRemoveMarkerTargeting || isRotateMarkerTargeting) {
         return;
       }
       if (pasteToPlaceStatus || isPasteToPlaceMenuIngesting || pasteToPlaceProgressCardState) {
@@ -3820,6 +4285,7 @@ function EditorPageInner() {
       beginPasteToPlaceOperation,
       clearPasteToPlaceMenuClipboardPreview,
       isRemoveMarkerTargeting,
+      isRotateMarkerTargeting,
       isPasteToPlaceMenuIngesting,
       pasteToPlaceStatus,
       pasteToPlaceProgressCardState,
@@ -3910,6 +4376,7 @@ function EditorPageInner() {
       activeTool === "swap" ||
       activeTool === "rotate" ||
       activeTool === "move" ||
+      isRotateMarkerTargeting ||
       !scene.baseImageUrl ||
       isBusy ||
       isEditRunning
@@ -3932,6 +4399,7 @@ function EditorPageInner() {
     handlePasteToPlaceAdd,
     isBusy,
     isEditRunning,
+    isRotateMarkerTargeting,
     pasteToPlaceMenuState,
     preparePasteToPlaceProductFromMenu,
     scene.baseImageUrl,
@@ -3946,6 +4414,7 @@ function EditorPageInner() {
       activeTool === "swap" ||
       activeTool === "rotate" ||
       activeTool === "move" ||
+      isRotateMarkerTargeting ||
       !scene.baseImageUrl ||
       isBusy ||
       isEditRunning
@@ -3972,6 +4441,7 @@ function EditorPageInner() {
     dismissPasteToPlaceMenu,
     isBusy,
     isEditRunning,
+    isRotateMarkerTargeting,
     pasteToPlaceMenuState,
     preparePasteToPlaceProductFromMenu,
     runPasteToPlaceClickTargetEdit,
@@ -4191,6 +4661,7 @@ function EditorPageInner() {
   );
 
   const addRemoveMarker = () => {
+    setIsRotateMarkerTargeting(false);
     setIsRemoveMarkerTargeting(true);
     setEditWarning(null);
     pushSnack("Remove marker armed. Click anywhere on the image.");
@@ -4217,6 +4688,58 @@ function EditorPageInner() {
     });
     if (!res) return;
     clearRemoveMarker(false);
+    setEditWarning(null);
+  };
+
+  const clearRotateMarker = useCallback(
+    (notify = true) => {
+      const hadMarker = Boolean(rotateToolState.marker);
+      if (!hadMarker && !isRotateMarkerTargeting) return;
+      setRotateToolState((prev) => ({ ...prev, marker: null }));
+      setIsRotateMarkerTargeting(false);
+      setEditWarning(null);
+      if (notify && hadMarker) {
+        pushSnack("Rotate marker cleared.");
+      }
+    },
+    [isRotateMarkerTargeting, pushSnack, rotateToolState.marker]
+  );
+
+  const addRotateMarker = useCallback(() => {
+    setIsRemoveMarkerTargeting(false);
+    setIsRotateMarkerTargeting(true);
+    setEditWarning(null);
+    pushSnack("Rotate marker armed. Click anywhere on the image.");
+  }, [pushSnack]);
+
+  const handlePlaceRotateMarker = useCallback((marker: RotateMarker) => {
+    setRotateToolState((prev) => ({
+      ...prev,
+      marker: {
+        xNorm: marker.xNorm,
+        yNorm: marker.yNorm,
+      },
+    }));
+    setIsRotateMarkerTargeting(false);
+    setEditWarning(null);
+  }, []);
+
+  const rotateSelected = async () => {
+    const marker = rotateToolState.marker;
+    if (!marker) {
+      warnEdit("Place a rotate marker first.");
+      return;
+    }
+    const rotationDegrees =
+      rotateToolState.direction === "cw"
+        ? rotateToolState.amountDegrees
+        : -rotateToolState.amountDegrees;
+    const res = await runEdit("rotate", {
+      xNorm: marker.xNorm,
+      yNorm: marker.yNorm,
+      rotationDegrees,
+    });
+    if (!res) return;
     setEditWarning(null);
   };
 
@@ -5232,8 +5755,12 @@ function EditorPageInner() {
                 isMyFurnitureLoading={myFurnitureLoading}
                 removeMarkerPosition={removeMarkerPosition}
                 removeMarkerTargetingActive={isRemoveMarkerTargeting}
+                rotateMarkerPosition={rotateToolState.marker}
+                rotateMarkerTargetingActive={isRotateMarkerTargeting}
                 onPlaceRemoveMarker={handlePlaceRemoveMarker}
                 onClearRemoveMarker={clearRemoveMarker}
+                onPlaceRotateMarker={handlePlaceRotateMarker}
+                onClearRotateMarker={clearRotateMarker}
                 onRequestSwap={(id) => {
                   const node = nodes.find((n) => n.id === id);
                   if (node?.status === "markedForDelete") {
@@ -5771,37 +6298,112 @@ function EditorPageInner() {
               </div>
 
               <div className="mt-3">
-                <div className="text-xs text-neutral-400">Rotate ({Math.round(editRotationDeg)}°)</div>
-                <input
-                  type="range"
-                  min={-180}
-                  max={180}
-                  step={1}
-                  value={editRotationDeg}
-                  onChange={(e) => {
-                    setEditRotationDeg(Number(e.target.value));
-                    setEditWarning(null);
-                  }}
-                  className="mt-1 w-full accent-violet-400"
-                />
+                <div className="text-xs text-neutral-400">Rotate</div>
+                <div className="mt-1 grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    disabled={isEditRunning}
+                    className={`rounded-md border px-2 py-1.5 text-xs ${
+                      isEditRunning
+                        ? "border-neutral-900 bg-neutral-950 text-neutral-500"
+                        : "border-neutral-700 bg-neutral-900 text-neutral-100 hover:bg-neutral-800"
+                    }`}
+                    onClick={addRotateMarker}
+                  >
+                    Add Rotate Marker
+                  </button>
+                  <button
+                    type="button"
+                    disabled={isEditRunning || (!hasActiveRotateMarker && !isRotateMarkerTargeting)}
+                    className={`rounded-md border px-2 py-1.5 text-xs ${
+                      isEditRunning || (!hasActiveRotateMarker && !isRotateMarkerTargeting)
+                        ? "border-neutral-900 bg-neutral-950 text-neutral-500"
+                        : "border-neutral-700 bg-neutral-900 text-neutral-100 hover:bg-neutral-800"
+                    }`}
+                    onClick={() => clearRotateMarker()}
+                  >
+                    Clear Marker
+                  </button>
+                </div>
+                {isRotateMarkerTargeting ? (
+                  <div className="mt-1 text-[11px] text-neutral-500">
+                    Click anywhere on the image to place the marker.
+                  </div>
+                ) : null}
+
+                <div className="mt-3">
+                  <div className="text-xs text-neutral-400">Direction</div>
+                  <div className="mt-1 grid grid-cols-2 gap-2">
+                    <button
+                      type="button"
+                      disabled={isEditRunning}
+                      className={`rounded-md border px-2 py-1.5 text-xs ${
+                        rotateToolState.direction === "cw"
+                          ? "border-violet-600/70 bg-violet-950/40 text-violet-100"
+                          : "border-neutral-700 bg-neutral-900 text-neutral-100 hover:bg-neutral-800"
+                      }`}
+                      onClick={() => {
+                        setRotateToolState((prev) => ({ ...prev, direction: "cw" }));
+                        setEditWarning(null);
+                      }}
+                    >
+                      Clockwise
+                    </button>
+                    <button
+                      type="button"
+                      disabled={isEditRunning}
+                      className={`rounded-md border px-2 py-1.5 text-xs ${
+                        rotateToolState.direction === "ccw"
+                          ? "border-violet-600/70 bg-violet-950/40 text-violet-100"
+                          : "border-neutral-700 bg-neutral-900 text-neutral-100 hover:bg-neutral-800"
+                      }`}
+                      onClick={() => {
+                        setRotateToolState((prev) => ({ ...prev, direction: "ccw" }));
+                        setEditWarning(null);
+                      }}
+                    >
+                      Counterclockwise
+                    </button>
+                  </div>
+                </div>
+
+                <div className="mt-3">
+                  <div className="text-xs text-neutral-400">Amount</div>
+                  <div className="mt-1 grid grid-cols-5 gap-1">
+                    {([5, 15, 30, 45, 90] as RotateAmount[]).map((amount) => (
+                      <button
+                        key={amount}
+                        type="button"
+                        disabled={isEditRunning}
+                        className={`rounded-md border px-1 py-1 text-xs ${
+                          rotateToolState.amountDegrees === amount
+                            ? "border-violet-600/70 bg-violet-950/40 text-violet-100"
+                            : "border-neutral-700 bg-neutral-900 text-neutral-100 hover:bg-neutral-800"
+                        }`}
+                        onClick={() => {
+                          setRotateToolState((prev) => ({ ...prev, amountDegrees: amount }));
+                          setEditWarning(null);
+                        }}
+                      >
+                        {amount}°
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
                 <button
                   type="button"
-                  disabled={isEditRunning || !workingImageUrl}
+                  disabled={isEditRunning || !workingImageUrl || !hasActiveRotateMarker}
                   className={`mt-2 w-full rounded-md border px-2 py-1.5 text-xs ${
-                    isEditRunning || !workingImageUrl
+                    isEditRunning || !workingImageUrl || !hasActiveRotateMarker
                       ? "border-neutral-900 bg-neutral-950 text-neutral-500"
                       : "border-violet-800/60 bg-violet-950/30 text-violet-100 hover:bg-violet-900/40"
                   }`}
                   onClick={() => {
-                    const placementId = requireSelectedPlacement();
-                    if (!placementId) return;
-                    void runEdit("rotate", {
-                      target: { placementId },
-                      params: { rotationDeg: editRotationDeg },
-                    });
+                    void rotateSelected();
                   }}
                 >
-                  Apply rotate
+                  Rotate Selected
                 </button>
               </div>
 
@@ -6252,6 +6854,12 @@ function EditorPageInner() {
                         setBaseImageUrl(undefined);
                         setWorkingImageUrl(null);
                         setIsWorkingImageGenerated(false);
+                        pendingPlacementNodeHydrationRef.current = null;
+                        useEditorStore.setState((s) => ({
+                          ...s,
+                          scene: { ...s.scene, nodes: [] },
+                          ui: s.ui.selectedNodeId ? { ...s.ui, selectedNodeId: null } : s.ui,
+                        }));
                         setScenePlacements([]);
                         setSelectedPlacementId(null);
                         setPendingMyFurnitureReturnPreviewUrl(null);

@@ -2139,11 +2139,6 @@ export async function handleGenerateRequest(args: {
       modelImageUrl = vibeStageResult.imageUrl;
       notes.push("Vibe Stage used compositor /vibode/vibe.");
     } else if (isRotateMode && freezeV2Raw) {
-      console.log("[vibode/generate] vibode rotate mode detected", {
-        mode: vibodeIntent.mode,
-        marks: rotateMarks.length,
-      });
-
       try {
         const rotateResult = await callCompositorVibodeRotate({
           freezePayload: freezeV2Raw,

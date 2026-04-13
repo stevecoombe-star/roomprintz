@@ -158,6 +158,43 @@ export async function POST(req: NextRequest) {
         x: xNorm,
         y: yNorm,
       };
+    } else if (action === "rotate") {
+      const targetRecord = isRecord(payloadForCompositor.target)
+        ? ({ ...payloadForCompositor.target } as Record<string, unknown>)
+        : {};
+      const paramsRecord = isRecord(payloadForCompositor.params)
+        ? ({ ...payloadForCompositor.params } as Record<string, unknown>)
+        : {};
+      const xNormRaw =
+        parseFiniteNumber(payloadForCompositor.xNorm) ??
+        parseFiniteNumber(targetRecord.xNorm) ??
+        parseFiniteNumber(targetRecord.x) ??
+        parseFiniteNumber(paramsRecord.xNorm) ??
+        parseFiniteNumber(paramsRecord.x);
+      const yNormRaw =
+        parseFiniteNumber(payloadForCompositor.yNorm) ??
+        parseFiniteNumber(targetRecord.yNorm) ??
+        parseFiniteNumber(targetRecord.y) ??
+        parseFiniteNumber(paramsRecord.yNorm) ??
+        parseFiniteNumber(paramsRecord.y);
+      const rotationDegreesRaw =
+        parseFiniteNumber(payloadForCompositor.rotationDegrees) ??
+        parseFiniteNumber(targetRecord.rotationDegrees) ??
+        parseFiniteNumber(paramsRecord.rotationDegrees) ??
+        parseFiniteNumber(paramsRecord.rotationDeg);
+      if (xNormRaw === null || yNormRaw === null || rotationDegreesRaw === null) {
+        return Response.json(
+          { message: "rotate requires finite xNorm, yNorm, and rotationDegrees." },
+          { status: 400 }
+        );
+      }
+
+      payloadForCompositor.xNorm = clampUnit(xNormRaw);
+      payloadForCompositor.yNorm = clampUnit(yNormRaw);
+      payloadForCompositor.rotationDegrees = rotationDegreesRaw;
+      delete payloadForCompositor.target;
+      delete payloadForCompositor.params;
+      delete payloadForCompositor.placementId;
     } else if (action === "add" || action === "swap") {
       const targetRecord = isRecord(payloadForCompositor.target)
         ? ({ ...payloadForCompositor.target } as Record<string, unknown>)

@@ -275,8 +275,12 @@ export function EditorCanvas({
   pasteToPlaceStatus = null,
   removeMarkerPosition = null,
   removeMarkerTargetingActive = false,
+  rotateMarkerPosition = null,
+  rotateMarkerTargetingActive = false,
   onPlaceRemoveMarker,
   onClearRemoveMarker,
+  onPlaceRotateMarker,
+  onClearRotateMarker,
 }: {
   className?: string;
   onRequestSwap?: (id: string) => void;
@@ -305,8 +309,12 @@ export function EditorCanvas({
   pasteToPlaceStatus?: PasteToPlaceStatus | null;
   removeMarkerPosition?: { xNorm: number; yNorm: number } | null;
   removeMarkerTargetingActive?: boolean;
+  rotateMarkerPosition?: { xNorm: number; yNorm: number } | null;
+  rotateMarkerTargetingActive?: boolean;
   onPlaceRemoveMarker?: (marker: { xNorm: number; yNorm: number }) => void;
   onClearRemoveMarker?: () => void;
+  onPlaceRotateMarker?: (marker: { xNorm: number; yNorm: number }) => void;
+  onClearRotateMarker?: () => void;
 }) {
   const instanceId = useId();
   const outerShellRef = useRef<HTMLDivElement | null>(null);
@@ -319,12 +327,10 @@ export function EditorCanvas({
   const nodes = useEditorStore((s) => s.scene.nodes);
   const removeMarks = useEditorStore((s) => s.scene.removeMarks ?? []);
   const swapMarks = useEditorStore((s) => s.scene.swapMarks ?? []);
-  const rotateMarks = useEditorStore((s) => s.scene.rotateMarks ?? []);
   const moveMarks = useEditorStore((s) => s.scene.moveMarks ?? []);
   const selectedNodeId = useEditorStore((s) => s.ui.selectedNodeId);
   const selectedRemoveMarkId = useEditorStore((s) => s.ui.selectedRemoveMarkId);
   const selectedSwapMarkId = useEditorStore((s) => s.ui.selectedSwapMarkId);
-  const selectedRotateMarkId = useEditorStore((s) => s.ui.selectedRotateMarkId);
   const selectedMoveMarkId = useEditorStore((s) => s.ui.selectedMoveMarkId);
   const activeTool: ActiveTool = useEditorStore((s) => s.ui.activeTool);
 
@@ -352,10 +358,6 @@ export function EditorCanvas({
   const addSwapMark = useEditorStore((s) => s.addSwapMark);
   const updateSwapMark = useEditorStore((s) => s.updateSwapMark);
   const removeSwapMark = useEditorStore((s) => s.removeSwapMark);
-  const selectRotateMark = useEditorStore((s) => s.selectRotateMark);
-  const addRotateMark = useEditorStore((s) => s.addRotateMark);
-  const updateRotateMark = useEditorStore((s) => s.updateRotateMark);
-  const removeRotateMark = useEditorStore((s) => s.removeRotateMark);
   const selectMoveMark = useEditorStore((s) => s.selectMoveMark);
   const addMoveMark = useEditorStore((s) => s.addMoveMark);
   const updateMoveVector = useEditorStore((s) => s.updateMoveVector);
@@ -601,6 +603,14 @@ export function EditorCanvas({
     };
     return imageToStage(imagePoint, viewport);
   }, [removeMarkerPosition, viewport]);
+  const rotateMarkerStagePoint = useMemo(() => {
+    if (!viewport || !rotateMarkerPosition) return null;
+    const imagePoint = {
+      x: clamp(rotateMarkerPosition.xNorm, 0, 1) * viewport.imageNaturalW,
+      y: clamp(rotateMarkerPosition.yNorm, 0, 1) * viewport.imageNaturalH,
+    };
+    return imageToStage(imagePoint, viewport);
+  }, [rotateMarkerPosition, viewport]);
 
   const transformerRef = useRef<Konva.Transformer | null>(null);
   const selectedNodeRef = useRef<Konva.Group | null>(null);
@@ -640,6 +650,7 @@ export function EditorCanvas({
       activeTool === "rotate" ||
       activeTool === "move" ||
       removeMarkerTargetingActive ||
+      rotateMarkerTargetingActive ||
       !node ||
       selected?.status === "markedForDelete"
     ) {
@@ -650,7 +661,7 @@ export function EditorCanvas({
 
     tr.nodes([node]);
     tr.getLayer()?.batchDraw();
-  }, [activeTool, nodes, removeMarkerTargetingActive, selectedNodeId]);
+  }, [activeTool, nodes, removeMarkerTargetingActive, rotateMarkerTargetingActive, selectedNodeId]);
 
   // Keyboard shortcuts
   // Delete clears active marks, then falls back to legacy node toggles.
@@ -669,10 +680,6 @@ export function EditorCanvas({
           selectRemoveMark(null);
           return;
         }
-        if (selectedRotateMarkId) {
-          selectRotateMark(null);
-          return;
-        }
         if (selectedMoveMarkId) {
           selectMoveMark(null);
           return;
@@ -687,6 +694,11 @@ export function EditorCanvas({
         onClearRemoveMarker();
         return;
       }
+      if (isDeleteKey && rotateMarkerPosition && onClearRotateMarker) {
+        e.preventDefault();
+        onClearRotateMarker();
+        return;
+      }
 
       if (selectedSwapMarkId && isDeleteKey) {
         e.preventDefault();
@@ -697,12 +709,6 @@ export function EditorCanvas({
       if (selectedRemoveMarkId && isDeleteKey) {
         e.preventDefault();
         removeRemoveMark(selectedRemoveMarkId);
-        return;
-      }
-
-      if (selectedRotateMarkId && isDeleteKey) {
-        e.preventDefault();
-        removeRotateMark(selectedRotateMarkId);
         return;
       }
 
@@ -727,19 +733,18 @@ export function EditorCanvas({
     removeMoveMark,
     removeRemoveMark,
     removeMarkerPosition,
-    removeRotateMark,
     removeSwapMark,
+    rotateMarkerPosition,
     selectNode,
     selectMoveMark,
     selectRemoveMark,
-    selectRotateMark,
     selectSwapMark,
     selectedMoveMarkId,
     selectedNodeId,
     selectedRemoveMarkId,
-    selectedRotateMarkId,
     selectedSwapMarkId,
     onClearRemoveMarker,
+    onClearRotateMarker,
     pasteToPlaceMenuState,
     onDismissPasteToPlaceMenu,
     toggleDelete,
@@ -988,22 +993,6 @@ export function EditorCanvas({
       return;
     }
 
-    // Rotate tool: place rotate mark in normalized image-space [0..1]
-    if (activeTool === "rotate") {
-      if (!viewport) return;
-      if (e.target !== stage) return;
-
-      const imgPt0 = stagePointerToImage(stage, viewport);
-      if (!imgPt0) return;
-
-      if (!isInsideImage(imgPt0, viewport)) return;
-
-      const imgPt = clampToImage(imgPt0, viewport);
-      const ptNormalized = imageToNormalized(imgPt, viewport);
-      addRotateMark(ptNormalized);
-      return;
-    }
-
     // Move tool: place/select anchor, then drag to set translation vector.
     if (activeTool === "move") {
       if (!viewport) return;
@@ -1048,6 +1037,15 @@ export function EditorCanvas({
       const imgPt = clampToImage(imgPt0, viewport);
       const marker = imageToNormalized(imgPt, viewport);
       onPlaceRemoveMarker?.({ xNorm: marker.x, yNorm: marker.y });
+      return;
+    }
+    if (rotateMarkerTargetingActive) {
+      if (!viewport) return;
+      const imgPt0 = stagePointerToImage(stage, viewport);
+      if (!imgPt0 || !isInsideImage(imgPt0, viewport)) return;
+      const imgPt = clampToImage(imgPt0, viewport);
+      const marker = imageToNormalized(imgPt, viewport);
+      onPlaceRotateMarker?.({ xNorm: marker.x, yNorm: marker.y });
       return;
     }
 
@@ -1119,7 +1117,8 @@ export function EditorCanvas({
     clearMoveVectorDrag();
   };
 
-  const shouldInterceptForRemoveMarkerTargeting = removeMarkerTargetingActive;
+  const shouldInterceptForMarkerTargeting =
+    removeMarkerTargetingActive || rotateMarkerTargetingActive;
 
   return (
     <div
@@ -1554,108 +1553,23 @@ export function EditorCanvas({
             </Group>
           )}
 
-          {/* Rotate marks overlay */}
-          {viewport && rotateMarks.length > 0 && (
-            <Group>
-              {rotateMarks.map((m) => {
-                const imgPt = {
-                  x: clamp(m.x, 0, 1) * viewport.imageNaturalW,
-                  y: clamp(m.y, 0, 1) * viewport.imageNaturalH,
-                };
-                const center = imageToStage(imgPt, viewport);
-                const isSelected = m.id === selectedRotateMarkId;
-                const theta = (m.angleDeg * Math.PI) / 180;
-                const pointerLength = ROTATE_MARK_STAGE_RADIUS - 5;
-                const px = Math.cos(theta) * pointerLength;
-                const py = Math.sin(theta) * pointerLength;
-
-                const commitDragPoint = (stageX: number, stageY: number) => {
-                  const nextImg = clampToImage(stageToImage({ x: stageX, y: stageY }, viewport), viewport);
-                  updateRotateMark(m.id, {
-                    ptImage: {
-                      x:
-                        viewport.imageNaturalW > 0
-                          ? clamp(nextImg.x / viewport.imageNaturalW, 0, 1)
-                          : 0,
-                      y:
-                        viewport.imageNaturalH > 0
-                          ? clamp(nextImg.y / viewport.imageNaturalH, 0, 1)
-                          : 0,
-                    },
-                  });
-                };
-
-                return (
-                  <Group
-                    key={m.id}
-                    x={center.x}
-                    y={center.y}
-                    draggable={activeTool === "rotate"}
-                    dragBoundFunc={(pos) => {
-                      const nextImg = clampToImage(stageToImage(pos, viewport), viewport);
-                      return imageToStage(nextImg, viewport);
-                    }}
-                    onMouseDown={(e) => {
-                      e.cancelBubble = true;
-                    }}
-                    onTouchStart={(e) => {
-                      e.cancelBubble = true;
-                    }}
-                    onClick={(e) => {
-                      e.cancelBubble = true;
-                      if (activeTool !== "rotate") return;
-                      selectRotateMark(m.id);
-                    }}
-                    onTap={(e) => {
-                      e.cancelBubble = true;
-                      if (activeTool !== "rotate") return;
-                      selectRotateMark(m.id);
-                    }}
-                    onDragEnd={(e) => {
-                      if (activeTool !== "rotate") return;
-                      const pos = e.target.getAbsolutePosition();
-                      commitDragPoint(pos.x, pos.y);
-                    }}
-                  >
-                    {isSelected && (
-                      <Circle
-                        x={0}
-                        y={0}
-                        radius={ROTATE_MARK_STAGE_RADIUS + 4}
-                        stroke="#ddd6fe"
-                        strokeWidth={2}
-                      />
-                    )}
-                    <Circle
-                      x={0}
-                      y={0}
-                      radius={ROTATE_MARK_STAGE_RADIUS}
-                      fill="rgba(76, 29, 149, 0.35)"
-                      stroke="#c4b5fd"
-                      strokeWidth={2}
-                      shadowColor="#000"
-                      shadowBlur={6}
-                      shadowOpacity={0.35}
-                    />
-                    <Line
-                      points={[0, 0, px, py]}
-                      stroke="#f5f3ff"
-                      strokeWidth={2}
-                      lineCap="round"
-                    />
-                    <Circle x={px} y={py} radius={3.5} fill="#f5f3ff" />
-                    <Text
-                      x={-5}
-                      y={-8}
-                      text="R"
-                      fontSize={13}
-                      fontStyle="bold"
-                      fill="#ede9fe"
-                      listening={false}
-                    />
-                  </Group>
-                );
-              })}
+          {rotateMarkerStagePoint && (
+            <Group x={rotateMarkerStagePoint.x} y={rotateMarkerStagePoint.y} listening={false}>
+              <Circle
+                radius={ROTATE_MARK_STAGE_RADIUS}
+                fill="rgba(76, 29, 149, 0.35)"
+                stroke="#c4b5fd"
+                strokeWidth={2}
+              />
+              <Text
+                x={-5}
+                y={-8}
+                text="R"
+                fontSize={13}
+                fontStyle="bold"
+                fill="#ede9fe"
+                listening={false}
+              />
             </Group>
           )}
 
@@ -1805,7 +1719,7 @@ export function EditorCanvas({
                   }
                   onClick={(e) => {
                     if (activeTool === "calibrate") return;
-                    if (shouldInterceptForRemoveMarkerTargeting) {
+                    if (shouldInterceptForMarkerTargeting) {
                       e.cancelBubble = true;
                       return;
                     }
@@ -1813,7 +1727,7 @@ export function EditorCanvas({
                   }}
                   onTap={(e) => {
                     if (activeTool === "calibrate") return;
-                    if (shouldInterceptForRemoveMarkerTargeting) {
+                    if (shouldInterceptForMarkerTargeting) {
                       e.cancelBubble = true;
                       return;
                     }
