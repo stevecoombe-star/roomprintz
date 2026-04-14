@@ -68,6 +68,10 @@ function parseFiniteNumber(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
+function safeStr(value: unknown): string | null {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
 function isServerFetchableImageUrl(url: string | null | undefined): boolean {
   if (!url || typeof url !== "string") return false;
   const trimmed = url.trim();
@@ -1340,8 +1344,6 @@ function EditorPageInner() {
   const [workingImageUrl, setWorkingImageUrl] = useState<string | null>(null);
   const [isWorkingImageGenerated, setIsWorkingImageGenerated] = useState(false);
   const [scenePlacements, setScenePlacements] = useState<ScenePlacement[]>([]);
-  const [selectedPlacementId, setSelectedPlacementId] = useState<string | null>(null);
-  const [selectedEditSkuId, setSelectedEditSkuId] = useState<string>("");
   const [myFurnitureOpen, setMyFurnitureOpen] = useState(false);
   const [myFurnitureItems, setMyFurnitureItems] = useState<MyFurniturePickerItem[]>([]);
   const [myFurnitureLoading, setMyFurnitureLoading] = useState(false);
@@ -1351,13 +1353,6 @@ function EditorPageInner() {
   const [pendingMyFurnitureReturnPreviewUrl, setPendingMyFurnitureReturnPreviewUrl] = useState<
     string | null
   >(null);
-  // Ghost Add is a client-only draft placement; commit will call edit-run later.
-  const [ghostAddPlacementId, setGhostAddPlacementId] = useState<string | null>(null);
-  const [ghostAddActive, setGhostAddActive] = useState(false);
-  const [ghostAddEligibleSkusOverride, setGhostAddEligibleSkusOverride] = useState<
-    VibodeEligibleSku[] | null
-  >(null);
-  const [ghostAddSavedFurnitureId, setGhostAddSavedFurnitureId] = useState<string | null>(null);
   const [rotateToolState, setRotateToolState] = useState<RotateToolState>({
     marker: null,
     direction: "cw",
@@ -1435,6 +1430,14 @@ function EditorPageInner() {
   const vibodeRoomIdRef = useRef<string | null>(vibodeRoomId);
   const lastStageOutputsRef = useRef<StageOutputMap>(lastStageOutputs);
   const pendingPlacementNodeHydrationRef = useRef<ScenePlacement[] | null>(null);
+  const clearLegacyPlacementNodes = useCallback(() => {
+    pendingPlacementNodeHydrationRef.current = null;
+    useEditorStore.setState((s) => ({
+      ...s,
+      scene: { ...s.scene, nodes: [] },
+      ui: s.ui.selectedNodeId ? { ...s.ui, selectedNodeId: null } : s.ui,
+    }));
+  }, []);
   useEffect(() => {
     requestedRoomIdRef.current = requestedRoomId;
   }, [requestedRoomId]);
@@ -1517,17 +1520,11 @@ function EditorPageInner() {
     pendingPlacementNodeHydrationRef.current = null;
     store.resetSessionForIncomingImage();
     setScenePlacements([]);
-    setSelectedPlacementId(null);
-    setSelectedEditSkuId("");
     setMyFurnitureOpen(false);
     setMyFurnitureMode(null);
     setMyFurnitureItems([]);
     setMyFurnitureLoading(false);
     setMyFurnitureSelectingId(null);
-    setGhostAddPlacementId(null);
-    setGhostAddActive(false);
-    setGhostAddEligibleSkusOverride(null);
-    setGhostAddSavedFurnitureId(null);
     setRotateToolState({
       marker: null,
       direction: "cw",
@@ -1936,9 +1933,6 @@ function EditorPageInner() {
         setActiveAssetId(hydrated.room.active_asset_id ?? null);
         const hydratedPlacements = extractScenePlacementsFromUnknown(hydratedActiveVersion?.metadata);
         setScenePlacements(hydratedPlacements);
-        setSelectedPlacementId((prev) =>
-          prev && hydratedPlacements.some((placement) => placement.placementId === prev) ? prev : null
-        );
         hydrateSceneNodesFromPlacements(hydratedPlacements);
         setRoomBaseAssetId(hydrated.room.base_asset_id ?? null);
         setIsWorkingImageGenerated(false);
@@ -2314,193 +2308,13 @@ function EditorPageInner() {
     scenePlacements,
     stage3OutputPlacements,
   ]);
-  const authoritativeDisplayedPlacementsSource = useMemo(() => {
-    if (scenePlacements.length > 0) return "scenePlacements";
-    if (activeVersionMetadataPlacements.length > 0) return "selectedVersion.metadata";
-    if (stage3OutputPlacements.length > 0) return "lastStageOutputs[3]";
-    if (activeStageOutputPlacements.length > 0) return "lastStageOutputs[activeStage]";
-    return "none";
-  }, [
-    activeStageOutputPlacements.length,
-    activeVersionMetadataPlacements.length,
-    scenePlacements.length,
-    stage3OutputPlacements.length,
-  ]);
-  const isSceneNodeHydrationReady = useMemo(() => {
-    const naturalWidth =
-      typeof scene.baseImageWidthPx === "number" && Number.isFinite(scene.baseImageWidthPx)
-        ? scene.baseImageWidthPx
-        : viewport?.imageNaturalW;
-    const naturalHeight =
-      typeof scene.baseImageHeightPx === "number" && Number.isFinite(scene.baseImageHeightPx)
-        ? scene.baseImageHeightPx
-        : viewport?.imageNaturalH;
-    return (
-      !!viewport &&
-      Number.isFinite(viewport.imageStageX) &&
-      Number.isFinite(viewport.imageStageY) &&
-      Number.isFinite(viewport.imageStageW) &&
-      Number.isFinite(viewport.imageStageH) &&
-      Number.isFinite(viewport.scale) &&
-      viewport.imageStageW > 0 &&
-      viewport.imageStageH > 0 &&
-      viewport.scale > 0 &&
-      typeof naturalWidth === "number" &&
-      Number.isFinite(naturalWidth) &&
-      naturalWidth > 0 &&
-      typeof naturalHeight === "number" &&
-      Number.isFinite(naturalHeight) &&
-      naturalHeight > 0
-    );
-  }, [scene.baseImageHeightPx, scene.baseImageWidthPx, viewport]);
-  const applyPlacementsToSceneNodes = useCallback(
-    (placements: ScenePlacement[]) => {
-      if (placements.length === 0) {
-        useEditorStore.setState((s) => ({
-          ...s,
-          scene: { ...s.scene, nodes: [] },
-          ui: s.ui.selectedNodeId ? { ...s.ui, selectedNodeId: null } : s.ui,
-        }));
-        return true;
-      }
-
-      const naturalWidth =
-        typeof scene.baseImageWidthPx === "number" && Number.isFinite(scene.baseImageWidthPx)
-          ? scene.baseImageWidthPx
-          : viewport?.imageNaturalW;
-      const naturalHeight =
-        typeof scene.baseImageHeightPx === "number" && Number.isFinite(scene.baseImageHeightPx)
-          ? scene.baseImageHeightPx
-          : viewport?.imageNaturalH;
-      if (
-        !viewport ||
-        typeof naturalWidth !== "number" ||
-        !Number.isFinite(naturalWidth) ||
-        naturalWidth <= 0 ||
-        typeof naturalHeight !== "number" ||
-        !Number.isFinite(naturalHeight) ||
-        naturalHeight <= 0 ||
-        !Number.isFinite(viewport.scale) ||
-        viewport.scale <= 0
-      ) {
-        return false;
-      }
-
-      useEditorStore.setState((s) => {
-        const existingByKey = new Map<string, FurnitureNode>();
-        for (const node of s.scene.nodes) {
-          existingByKey.set(node.id, node);
-          if (node.id.startsWith("pl_")) {
-            existingByKey.set(node.id.slice(3), node);
-          } else {
-            existingByKey.set(`pl_${node.id}`, node);
-          }
-        }
-
-        const fallbackWidth = Math.max(64, Math.round(viewport.imageStageW * 0.16));
-        const fallbackHeight = Math.max(48, Math.round(viewport.imageStageH * 0.12));
-        const nextNodes: FurnitureNode[] = placements.map((placement, index) => {
-          const nodeIdRaw = placement.placementId.startsWith("pl_")
-            ? placement.placementId.slice(3)
-            : placement.placementId;
-          const nodeId = nodeIdRaw.trim().length > 0 ? nodeIdRaw : `hydrated_${index}`;
-          const existing =
-            existingByKey.get(placement.placementId) ??
-            existingByKey.get(nodeId) ??
-            existingByKey.get(`pl_${nodeId}`);
-          const rotation =
-            typeof placement.rotationDeg === "number" && Number.isFinite(placement.rotationDeg)
-              ? placement.rotationDeg
-              : (existing?.transform.rotation ?? 0);
-          const bbox = placement.bbox;
-          const hasBbox =
-            !!bbox &&
-            Number.isFinite(bbox.x) &&
-            Number.isFinite(bbox.y) &&
-            Number.isFinite(bbox.w) &&
-            Number.isFinite(bbox.h) &&
-            bbox.w > 0 &&
-            bbox.h > 0;
-          const fallbackTransform: FurnitureNode["transform"] = existing?.transform ?? {
-            x: viewport.imageStageX + 24 + (index % 4) * (fallbackWidth + 16),
-            y: viewport.imageStageY + 24 + Math.floor(index / 4) * (fallbackHeight + 16),
-            width: fallbackWidth,
-            height: fallbackHeight,
-            rotation,
-          };
-          const nextTransform: FurnitureNode["transform"] = hasBbox
-            ? {
-                x: viewport.imageStageX + bbox.x * naturalWidth * viewport.scale,
-                y: viewport.imageStageY + bbox.y * naturalHeight * viewport.scale,
-                width: Math.max(1, bbox.w * naturalWidth * viewport.scale),
-                height: Math.max(1, bbox.h * naturalHeight * viewport.scale),
-                rotation,
-              }
-            : { ...fallbackTransform, rotation };
-          const skuId = placement.skuId || existing?.skuId || "unknown_sku";
-          const label = placement.label || existing?.label || skuId;
-          return {
-            ...(existing ?? {
-              id: nodeId,
-              kind: "furniture" as const,
-              skuId,
-              label,
-              zIndex: index + 1,
-              status: "active" as const,
-              transform: nextTransform,
-            }),
-            id: nodeId,
-            kind: "furniture",
-            skuId,
-            label,
-            zIndex:
-              typeof existing?.zIndex === "number" && Number.isFinite(existing.zIndex)
-                ? existing.zIndex
-                : index + 1,
-            status: "active",
-            transform: nextTransform,
-          };
-        });
-
-        const nextSelectedNodeId =
-          s.ui.selectedNodeId && nextNodes.some((node) => node.id === s.ui.selectedNodeId)
-            ? s.ui.selectedNodeId
-            : null;
-        return {
-          ...s,
-          scene: { ...s.scene, nodes: nextNodes },
-          ui:
-            nextSelectedNodeId === s.ui.selectedNodeId
-              ? s.ui
-              : { ...s.ui, selectedNodeId: nextSelectedNodeId },
-        };
-      });
-      return true;
-    },
-    [scene.baseImageHeightPx, scene.baseImageWidthPx, viewport]
-  );
   const hydrateSceneNodesFromPlacements = useCallback(
-    (placements: ScenePlacement[]) => {
-      if (placements.length === 0) {
-        pendingPlacementNodeHydrationRef.current = null;
-        void applyPlacementsToSceneNodes(placements);
-        return;
-      }
-      pendingPlacementNodeHydrationRef.current = placements;
-      if (!isSceneNodeHydrationReady) return;
-      if (applyPlacementsToSceneNodes(placements)) {
-        pendingPlacementNodeHydrationRef.current = null;
-      }
+    (_placements: ScenePlacement[]) => {
+      // Legacy placement->node hydration is intentionally disabled.
+      clearLegacyPlacementNodes();
     },
-    [applyPlacementsToSceneNodes, isSceneNodeHydrationReady]
+    [clearLegacyPlacementNodes]
   );
-  useEffect(() => {
-    const pendingPlacements = pendingPlacementNodeHydrationRef.current;
-    if (!pendingPlacements || !isSceneNodeHydrationReady) return;
-    if (applyPlacementsToSceneNodes(pendingPlacements)) {
-      pendingPlacementNodeHydrationRef.current = null;
-    }
-  }, [applyPlacementsToSceneNodes, isSceneNodeHydrationReady]);
   const originalVersion = useMemo(() => {
     if (roomBaseAssetId) {
       const byRoomBaseId = versions.find((asset) => asset.id === roomBaseAssetId);
@@ -2557,9 +2371,6 @@ function EditorPageInner() {
       setWorkingImageUrl(nextUrl);
       setIsWorkingImageGenerated(asset.asset_type === "stage_output");
       setScenePlacements(versionPlacements);
-      setSelectedPlacementId((prev) =>
-        prev && versionPlacements.some((placement) => placement.placementId === prev) ? prev : null
-      );
       hydrateSceneNodesFromPlacements(versionPlacements);
       setActiveAssetId(asset.id);
       setVersions(
@@ -2576,7 +2387,6 @@ function EditorPageInner() {
       hydrateSceneNodesFromPlacements,
       setActiveAssetId,
       setScenePlacements,
-      setSelectedPlacementId,
       setVersions,
     ]
   );
@@ -2869,29 +2679,6 @@ function EditorPageInner() {
       setIsDownloading(false);
     }
   };
-
-  useEffect(() => {
-    if (!selectedPlacementId) return;
-    const stillExists = scenePlacements.some((placement) => placement.placementId === selectedPlacementId);
-    if (!stillExists) {
-      setSelectedPlacementId(null);
-    }
-  }, [scenePlacements, selectedPlacementId]);
-
-  useEffect(() => {
-    if (!stage3SkuItemsActive.length) {
-      if (selectedEditSkuId) setSelectedEditSkuId("");
-      return;
-    }
-    if (!selectedEditSkuId) {
-      setSelectedEditSkuId(stage3SkuItemsActive[0].skuId);
-      return;
-    }
-    const stillExists = stage3SkuItemsActive.some((sku) => sku.skuId === selectedEditSkuId);
-    if (!stillExists) {
-      setSelectedEditSkuId(stage3SkuItemsActive[0].skuId);
-    }
-  }, [selectedEditSkuId, stage3SkuItemsActive]);
 
   const hasActiveRemoveMarker = Boolean(removeMarkerPosition);
   const hasActiveRotateMarker = Boolean(rotateToolState.marker);
@@ -3197,67 +2984,6 @@ function EditorPageInner() {
     return reasons;
   }, [hasFiniteConversionInputs, hasImageMapping, hasNaturalDims]);
   const isImageSpaceReady = hasNaturalDims && hasImageMapping && hasFiniteConversionInputs;
-  const scenePlacementsById = useMemo(
-    () => new Map(scenePlacements.map((placement) => [placement.placementId, placement])),
-    [scenePlacements]
-  );
-  const nodeDerivedPlacements = useMemo<ScenePlacement[]>(() => {
-    const canComputeNormalizedBbox =
-      !!viewport &&
-      Number.isFinite(baseImageNaturalWidth) &&
-      baseImageNaturalWidth > 0 &&
-      Number.isFinite(baseImageNaturalHeight) &&
-      baseImageNaturalHeight > 0;
-
-    return nodes
-      .filter((node) => node.status !== "markedForDelete")
-      .map((node) => {
-        const placementId = scenePlacementsById.has(node.id)
-          ? node.id
-          : node.id.startsWith("pl_")
-            ? node.id
-            : `pl_${node.id}`;
-        const previousPlacement = scenePlacementsById.get(placementId);
-        let bbox = previousPlacement?.bbox;
-
-        if (canComputeNormalizedBbox && viewport) {
-          const imageTransform = toImageSpaceTransform(node.transform, viewport);
-          const bboxValues = [
-            imageTransform.x,
-            imageTransform.y,
-            imageTransform.width,
-            imageTransform.height,
-          ];
-          if (bboxValues.every((value) => Number.isFinite(value))) {
-            bbox = {
-              x: imageTransform.x / baseImageNaturalWidth,
-              y: imageTransform.y / baseImageNaturalHeight,
-              w: imageTransform.width / baseImageNaturalWidth,
-              h: imageTransform.height / baseImageNaturalHeight,
-            };
-          }
-        }
-
-        return {
-          placementId,
-          skuId: node.skuId,
-          label: node.label || previousPlacement?.label,
-          source: previousPlacement?.source,
-          bbox,
-          rotationDeg: Number.isFinite(node.transform.rotation)
-            ? node.transform.rotation
-            : previousPlacement?.rotationDeg,
-          stageAdded: previousPlacement?.stageAdded,
-          locked: previousPlacement?.locked,
-        };
-      });
-  }, [
-    baseImageNaturalHeight,
-    baseImageNaturalWidth,
-    nodes,
-    scenePlacementsById,
-    viewport,
-  ]);
   const vibeMode = scene.vibeMode ?? "off";
 
   const blobUrlToBase64 = async (blobUrl: string): Promise<string> => {
@@ -3503,9 +3229,6 @@ function EditorPageInner() {
       const responsePlacements = extractScenePlacementsFromUnknown(json);
       if (responsePlacements.length > 0) {
         setScenePlacements(responsePlacements);
-        setSelectedPlacementId((prev) =>
-          prev && responsePlacements.some((placement) => placement.placementId === prev) ? prev : null
-        );
         hydrateSceneNodesFromPlacements(responsePlacements);
       }
       setWorkingImageUrl(nextImageUrl);
@@ -3651,9 +3374,7 @@ function EditorPageInner() {
       const rotatePlacements =
         action === "rotate"
           ? payloadPlacementsForRotate ??
-            (nodeDerivedPlacements.length > 0
-              ? nodeDerivedPlacements
-              : authoritativeDisplayedPlacements)
+            authoritativeDisplayedPlacements
           : undefined;
 
       const body: VibodeEditRunRequest = {
@@ -3722,6 +3443,7 @@ function EditorPageInner() {
           setActiveAssetId(matchingVersion.id);
         }
       }
+      clearLegacyPlacementNodes();
       lifecycle?.onImageCommitted?.(json as VibodeEditRunResponse);
       pushSnack(`Applied ${action}.`);
       return json as VibodeEditRunResponse;
@@ -4136,12 +3858,6 @@ function EditorPageInner() {
           return true;
         }
 
-        const responsePlacements = Array.isArray(res.placements) ? res.placements : [];
-        if (action === "add") {
-          const latestPlacementId = responsePlacements[responsePlacements.length - 1]?.placementId ?? null;
-          if (latestPlacementId) setSelectedPlacementId(latestPlacementId);
-        }
-
         if (resolvedSource.preparedProduct.savedFurnitureId) {
           void trackMyFurnitureUsage(
             resolvedSource.preparedProduct.savedFurnitureId,
@@ -4518,38 +4234,6 @@ function EditorPageInner() {
     pushSnack(message);
   };
 
-  const requireSelectedPlacement = () => {
-    if (!selectedPlacementId) {
-      warnEdit("Select a placement first.");
-      return null;
-    }
-    return selectedPlacementId;
-  };
-
-  const requireSelectedSku = () => {
-    if (!selectedEditSkuId) {
-      warnEdit("Choose an active Stage 3 SKU first.");
-      return null;
-    }
-    return selectedEditSkuId;
-  };
-
-  const getPlacementClickHint = (placementId: string): PasteToPlaceClickHint | null => {
-    const placement = scenePlacements.find((item) => item.placementId === placementId) ?? null;
-    if (!placement) {
-      warnEdit("Selected placement no longer exists.");
-      return null;
-    }
-    if (!placement.bbox) {
-      warnEdit("Selected placement is missing bbox.");
-      return null;
-    }
-    return {
-      xNorm: placement.bbox.x + placement.bbox.w / 2,
-      yNorm: placement.bbox.y + placement.bbox.h / 2,
-    };
-  };
-
   const closeMyFurniturePicker = useCallback(() => {
     setMyFurnitureOpen(false);
     setMyFurnitureMode(null);
@@ -4577,70 +4261,6 @@ function EditorPageInner() {
     }
   };
 
-  const ghostPlacementToNodeId = (placementId: string | null): string | null => {
-    if (!placementId) return null;
-    if (!placementId.startsWith("pl_")) return null;
-    return placementId.slice(3);
-  };
-
-  const toNormalizedPlacementBbox = (
-    transform: FurnitureNode["transform"]
-  ): ScenePlacement["bbox"] | undefined => {
-    if (
-      !viewport ||
-      typeof baseImageNaturalWidth !== "number" ||
-      !Number.isFinite(baseImageNaturalWidth) ||
-      baseImageNaturalWidth <= 0 ||
-      typeof baseImageNaturalHeight !== "number" ||
-      !Number.isFinite(baseImageNaturalHeight) ||
-      baseImageNaturalHeight <= 0
-    ) {
-      return undefined;
-    }
-
-    const imageTransform = toImageSpaceTransform(transform, viewport);
-    const values = [
-      imageTransform.x,
-      imageTransform.y,
-      imageTransform.width,
-      imageTransform.height,
-      baseImageNaturalWidth,
-      baseImageNaturalHeight,
-    ];
-    if (!values.every((value) => Number.isFinite(value))) return undefined;
-
-    return {
-      x: imageTransform.x / baseImageNaturalWidth,
-      y: imageTransform.y / baseImageNaturalHeight,
-      w: imageTransform.width / baseImageNaturalWidth,
-      h: imageTransform.height / baseImageNaturalHeight,
-    };
-  };
-
-  const clearGhostAddDraft = (notify = true) => {
-    const placementId = ghostAddPlacementId;
-    const nodeId = ghostPlacementToNodeId(placementId);
-    if (nodeId) {
-      if (selectedNodeId === nodeId) {
-        selectNode(null);
-      }
-      deleteNode(nodeId);
-    }
-    if (placementId) {
-      setScenePlacements((prev) => prev.filter((placement) => placement.placementId !== placementId));
-      if (selectedPlacementId === placementId) {
-        setSelectedPlacementId(null);
-      }
-    }
-    if (ghostAddPlacementId || ghostAddActive) {
-      setGhostAddPlacementId(null);
-      setGhostAddActive(false);
-      setGhostAddEligibleSkusOverride(null);
-      setGhostAddSavedFurnitureId(null);
-      if (notify) pushSnack("Ghost add cancelled.");
-    }
-  };
-
   const clearRemoveMarker = useCallback(
     (notify = true) => {
       const hadMarker = Boolean(removeMarkerPosition);
@@ -4656,6 +4276,7 @@ function EditorPageInner() {
   );
 
   const addRemoveMarker = () => {
+    clearLegacyPlacementNodes();
     setIsRotateMarkerTargeting(false);
     setIsRemoveMarkerTargeting(true);
     setEditWarning(null);
@@ -4701,11 +4322,12 @@ function EditorPageInner() {
   );
 
   const addRotateMarker = useCallback(() => {
+    clearLegacyPlacementNodes();
     setIsRemoveMarkerTargeting(false);
     setIsRotateMarkerTargeting(true);
     setEditWarning(null);
     pushSnack("Rotate marker armed. Click anywhere on the image.");
-  }, [pushSnack]);
+  }, [clearLegacyPlacementNodes, pushSnack]);
 
   const handlePlaceRotateMarker = useCallback((marker: RotateMarker) => {
     setRotateToolState((prev) => ({
@@ -4737,199 +4359,6 @@ function EditorPageInner() {
     if (!res) return;
     setEditWarning(null);
   };
-
-  const startGhostAdd = (options?: {
-    selectedSku?: VibodeEligibleSku;
-    eligibleSkusOverride?: VibodeEligibleSku[] | null;
-    savedFurnitureId?: string | null;
-  }) => {
-    const explicitSku = options?.selectedSku;
-    const skuId = explicitSku?.skuId ?? requireSelectedSku();
-    if (!skuId) return;
-
-    const selectedSku = explicitSku ?? stage3SkuItemsActive.find((sku) => sku.skuId === skuId);
-    if (!selectedSku) {
-      warnEdit("Choose an active Stage 3 SKU first.");
-      return;
-    }
-
-    if (ghostAddActive || ghostAddPlacementId) {
-      clearGhostAddDraft(false);
-    }
-
-    const now = Date.now();
-    const ghostNodeId = `ghost_${now}`;
-    const placementId = `pl_ghost_${now}`;
-    const fallbackSize = { width: 180, height: 120 };
-    const eligibleSku = eligibleForDrag.find((item) => item.skuId === skuId);
-    const ikeaSku = findIkeaSkuById(skuId);
-    const ikeaFootprint = ikeaSku ? skuFootprintInchesFromDims(ikeaSku.dimsIn) : null;
-    const widthPx =
-      eligibleSku?.defaultPxWidth ??
-      (ikeaFootprint ? Math.max(24, Math.round(ikeaFootprint.wIn * DEFAULT_PX_PER_IN)) : fallbackSize.width);
-    const heightPx =
-      eligibleSku?.defaultPxHeight ??
-      (ikeaFootprint ? Math.max(24, Math.round(ikeaFootprint.dIn * DEFAULT_PX_PER_IN)) : fallbackSize.height);
-    const centerX = viewport ? viewport.imageStageX + viewport.imageStageW / 2 : widthPx * 1.5;
-    const centerY = viewport ? viewport.imageStageY + viewport.imageStageH * 0.58 : heightPx * 1.8;
-    const transform: FurnitureNode["transform"] = {
-      x: centerX - widthPx / 2,
-      y: centerY - heightPx / 2,
-      width: widthPx,
-      height: heightPx,
-      rotation: 0,
-    };
-
-    addNode({
-      id: ghostNodeId,
-      skuId,
-      label: selectedSku.label || skuId,
-      status: "active",
-      zIndex: nodes.length ? Math.max(...nodes.map((node) => node.zIndex ?? 0)) + 1 : 10,
-      transform,
-    });
-    selectNode(ghostNodeId);
-
-    const placementDraft: ScenePlacement = {
-      placementId,
-      skuId,
-      label: selectedSku.label || skuId,
-      source: selectedSku.source,
-      bbox: toNormalizedPlacementBbox(transform),
-      rotationDeg: 0,
-      stageAdded: activeStage || 3,
-      locked: false,
-    };
-
-    setScenePlacements((prev) => [...prev.filter((placement) => placement.placementId !== placementId), placementDraft]);
-    setSelectedPlacementId(placementId);
-    setSelectedEditSkuId(selectedSku.skuId);
-    setGhostAddPlacementId(placementId);
-    setGhostAddActive(true);
-    setGhostAddEligibleSkusOverride(options?.eligibleSkusOverride ?? null);
-    setGhostAddSavedFurnitureId(options?.savedFurnitureId ?? null);
-    setEditWarning(null);
-    pushSnack("Ghost add started. Drag/rotate, then commit in the next step.");
-  };
-
-  const commitGhostAdd = async () => {
-    if (!ghostAddActive || !ghostAddPlacementId) return;
-
-    const placement = scenePlacements.find((item) => item.placementId === ghostAddPlacementId);
-    if (!placement) {
-      warnEdit("Ghost placement not found.");
-      return;
-    }
-    if (!placement.bbox) {
-      warnEdit("Ghost placement missing bbox; try dragging after image loads.");
-      return;
-    }
-
-    const x = placement.bbox.x + placement.bbox.w / 2;
-    const y = placement.bbox.y + placement.bbox.h / 2;
-    const placementsForCommit = scenePlacements.filter(
-      (item) => item.placementId !== ghostAddPlacementId
-    );
-
-    console.log("[commit-add] payload", {
-      x,
-      y,
-      skuId: placement.skuId,
-      baseImageUrl: workingImageUrl,
-      placementCount: placementsForCommit.length,
-    });
-
-    const previousSelectedPlacementId = selectedPlacementId;
-    const savedFurnitureIdForMark = ghostAddSavedFurnitureId;
-    const eligibleSkusForCommit = ghostAddEligibleSkusOverride ?? stage3SkuItemsActive;
-    const res = await runEdit("add", {
-      target: { skuId: placement.skuId },
-      params: { x, y },
-      eligibleSkus: eligibleSkusForCommit,
-      placements: placementsForCommit,
-    });
-    console.log("[commit-add] response", res);
-
-    if (!res) return;
-
-    const responsePlacements = Array.isArray(res.placements) ? res.placements : null;
-    clearGhostAddDraft(false);
-
-    if (responsePlacements) {
-      setScenePlacements(responsePlacements);
-      if (responsePlacements.length > 0) {
-        const nextSelectedPlacementId =
-          previousSelectedPlacementId &&
-          responsePlacements.some((item) => item.placementId === previousSelectedPlacementId)
-            ? previousSelectedPlacementId
-            : responsePlacements[responsePlacements.length - 1]?.placementId ?? null;
-        if (nextSelectedPlacementId) {
-          setSelectedPlacementId(nextSelectedPlacementId);
-        }
-      }
-    }
-
-    if (savedFurnitureIdForMark) {
-      void trackMyFurnitureUsage(savedFurnitureIdForMark, "added");
-    }
-  };
-
-  useEffect(() => {
-    if (!ghostAddActive || !ghostAddPlacementId) return;
-    const ghostNodeId = ghostPlacementToNodeId(ghostAddPlacementId);
-    if (!ghostNodeId) return;
-    const ghostNode = nodes.find((node) => node.id === ghostNodeId);
-    if (!ghostNode) {
-      setScenePlacements((prev) =>
-        prev.filter((placement) => placement.placementId !== ghostAddPlacementId)
-      );
-      if (selectedPlacementId === ghostAddPlacementId) {
-        setSelectedPlacementId(null);
-      }
-      setGhostAddPlacementId(null);
-      setGhostAddActive(false);
-      return;
-    }
-    setScenePlacements((prev) =>
-      prev.map((placement) =>
-        placement.placementId === ghostAddPlacementId
-          ? {
-              ...placement,
-              skuId: ghostNode.skuId,
-              label: placement.label || ghostNode.label || ghostNode.skuId,
-              bbox: toNormalizedPlacementBbox(ghostNode.transform),
-              rotationDeg: ghostNode.transform.rotation,
-              stageAdded: placement.stageAdded ?? activeStage,
-              locked: false,
-            }
-          : placement
-      )
-    );
-  }, [
-    activeStage,
-    baseImageNaturalHeight,
-    baseImageNaturalWidth,
-    ghostAddActive,
-    ghostAddPlacementId,
-    nodes,
-    selectedPlacementId,
-    viewport,
-  ]);
-
-  useEffect(() => {
-    if (!ghostAddPlacementId && !ghostAddActive) return;
-    if (!ghostAddPlacementId) {
-      setGhostAddActive(false);
-      return;
-    }
-    const ghostNodeId = ghostPlacementToNodeId(ghostAddPlacementId);
-    const hasPlacement = scenePlacements.some((placement) => placement.placementId === ghostAddPlacementId);
-    const hasNode = ghostNodeId ? nodes.some((node) => node.id === ghostNodeId) : false;
-    if (!hasPlacement || !hasNode) {
-      setGhostAddPlacementId(null);
-      setGhostAddActive(false);
-    }
-  }, [ghostAddActive, ghostAddPlacementId, nodes, scenePlacements]);
 
   const onGenerate = async () => {
     const localGenId = safeId("gen");
@@ -6095,148 +5524,13 @@ function EditorPageInner() {
               </div>
               {!isEditToolsCollapsed ? (
                 <div id="edit-tools-panel-body">
-                  <div className="mt-1 text-xs text-neutral-400">
-                    Calls `/api/vibode/edit-run` using the canonical working image.
-                  </div>
-                  <div className="mt-1 text-xs text-neutral-500">
-                    Placements: {scenePlacements.length} • Selected: {selectedPlacementId ?? "none"}
-                  </div>
-              {editWarning && (
-                <div className="mt-2 rounded-md border border-amber-900/60 bg-amber-950/30 px-2 py-1 text-xs text-amber-200">
-                  {editWarning}
-                </div>
-              )}
+                  {editWarning && (
+                    <div className="mt-2 rounded-md border border-amber-900/60 bg-amber-950/30 px-2 py-1 text-xs text-amber-200">
+                      {editWarning}
+                    </div>
+                  )}
 
               <div className="mt-3">
-                <div className="text-xs text-neutral-400">Choose placement</div>
-                {scenePlacements.length === 0 ? (
-                  <div className="mt-1 rounded-md border border-dashed border-neutral-700 bg-neutral-950 px-2 py-2 text-xs text-neutral-500">
-                    No placements yet. Run Add first, or wait for placements from edit-run response.
-                  </div>
-                ) : (
-                  <div className="mt-1 max-h-28 space-y-1 overflow-auto pr-1">
-                    {scenePlacements.map((placement) => {
-                      const isSelected = placement.placementId === selectedPlacementId;
-                      return (
-                        <button
-                          key={placement.placementId}
-                          type="button"
-                          onClick={() => {
-                            setSelectedPlacementId(placement.placementId);
-                            setEditWarning(null);
-                          }}
-                          className={`w-full rounded-md border px-2 py-1 text-left text-xs ${
-                            isSelected
-                              ? "border-sky-500/60 bg-sky-950/30 text-sky-100"
-                              : "border-neutral-800 bg-neutral-950 text-neutral-300 hover:bg-neutral-800"
-                          }`}
-                        >
-                          <div className="truncate">
-                            {placement.label || placement.skuId || placement.placementId}
-                          </div>
-                          <div className="truncate text-[10px] text-neutral-500">
-                            {placement.placementId}
-                          </div>
-                        </button>
-                      );
-                    })}
-                  </div>
-                )}
-              </div>
-
-              <div className="mt-3">
-                <div className="text-xs text-neutral-400">SKU for Add / Swap</div>
-                <select
-                  value={selectedEditSkuId}
-                  onChange={(e) => {
-                    setSelectedEditSkuId(e.target.value);
-                    setEditWarning(null);
-                  }}
-                  className="mt-1 w-full rounded-md border border-neutral-800 bg-neutral-950 px-2 py-1.5 text-xs outline-none focus:border-neutral-600"
-                >
-                  <option value="">Select SKU</option>
-                  {stage3SkuItemsActive.map((sku) => (
-                    <option key={sku.skuId} value={sku.skuId}>
-                      {sku.label} ({sku.skuId})
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              <div className="mt-3">
-                <div className="text-xs text-neutral-400">Furniture</div>
-                <div className="mt-1 grid grid-cols-2 gap-2">
-                  <button
-                    type="button"
-                    disabled={isEditRunning}
-                    className={`rounded-md border px-2 py-1.5 text-xs ${
-                      isEditRunning
-                        ? "border-neutral-900 bg-neutral-950 text-neutral-500"
-                        : "border-neutral-700 bg-neutral-900 text-neutral-100 hover:bg-neutral-800"
-                    }`}
-                    onClick={() => startGhostAdd()}
-                  >
-                    Start Add (ghost)
-                  </button>
-                  <button
-                    type="button"
-                    disabled={isEditRunning || !workingImageUrl}
-                    className={`rounded-md border px-2 py-1.5 text-xs ${
-                      isEditRunning || !workingImageUrl
-                        ? "border-neutral-900 bg-neutral-950 text-neutral-500"
-                        : "border-neutral-700 bg-neutral-900 text-neutral-100 hover:bg-neutral-800"
-                    }`}
-                    onClick={() => {
-                      const placementId = requireSelectedPlacement();
-                      const newSkuId = requireSelectedSku();
-                      if (!placementId || !newSkuId) return;
-                      const clickHint = getPlacementClickHint(placementId);
-                      if (!clickHint) return;
-                      void runEdit("swap", {
-                        target: { skuId: newSkuId },
-                        params: { x: clickHint.xNorm, y: clickHint.yNorm },
-                        eligibleSkus: stage3SkuItemsActive,
-                        placements: scenePlacements,
-                      });
-                    }}
-                  >
-                    Swap Selected
-                  </button>
-                </div>
-              </div>
-              <div className="mt-2 grid grid-cols-2 gap-2">
-                {ghostAddActive ? (
-                  <button
-                    type="button"
-                    onClick={() => clearGhostAddDraft(true)}
-                    className="rounded-md border border-rose-800/60 bg-rose-950/30 px-2 py-1.5 text-xs text-rose-100 hover:bg-rose-900/40"
-                  >
-                    Cancel ghost
-                  </button>
-                ) : (
-                  <div />
-                )}
-                <button
-                  type="button"
-                  disabled={isEditRunning || !ghostAddActive || !ghostAddPlacementId}
-                  title="Commit will generate into image (next step)"
-                  onClick={() => {
-                    void commitGhostAdd();
-                  }}
-                  className={`rounded-md border px-2 py-1.5 text-xs ${
-                    !isEditRunning && ghostAddActive && ghostAddPlacementId
-                      ? "border-neutral-700 bg-neutral-900 text-neutral-100 hover:bg-neutral-800"
-                      : "border-neutral-900 bg-neutral-950 text-neutral-500"
-                  }`}
-                >
-                  Commit Add (next)
-                </button>
-              </div>
-              <div className="mt-1 text-[11px] text-neutral-500">
-                Commit will generate into image (next step)
-              </div>
-
-              <div className="mt-4">
                 <div className="text-xs text-neutral-400">Remove</div>
                 <div className="mt-1 grid grid-cols-2 gap-2">
                   {!hasActiveRemoveMarker ? (
@@ -6772,14 +6066,8 @@ function EditorPageInner() {
                         setBaseImageUrl(undefined);
                         setWorkingImageUrl(null);
                         setIsWorkingImageGenerated(false);
-                        pendingPlacementNodeHydrationRef.current = null;
-                        useEditorStore.setState((s) => ({
-                          ...s,
-                          scene: { ...s.scene, nodes: [] },
-                          ui: s.ui.selectedNodeId ? { ...s.ui, selectedNodeId: null } : s.ui,
-                        }));
+                        clearLegacyPlacementNodes();
                         setScenePlacements([]);
-                        setSelectedPlacementId(null);
                         setPendingMyFurnitureReturnPreviewUrl(null);
                         clearPasteToPlaceProgressPreview();
                         clearPasteToPlaceMenuClipboardPreview();
