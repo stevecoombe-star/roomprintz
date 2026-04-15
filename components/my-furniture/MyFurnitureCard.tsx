@@ -33,7 +33,7 @@ export function MyFurnitureCard({
 
   return (
     <article
-      className="group overflow-hidden rounded-xl border border-slate-800 bg-slate-900/60 transition hover:border-slate-600"
+      className="group relative overflow-visible rounded-2xl bg-slate-900/50 transition hover:bg-slate-900/65"
       role="button"
       tabIndex={0}
       onClick={() => onOpen(item)}
@@ -45,16 +45,18 @@ export function MyFurnitureCard({
       }}
     >
       <div className="relative">
-        <div className="aspect-[4/3] w-full overflow-hidden bg-slate-950">
-          {imageUrl ? (
-            <img src={imageUrl} alt={title} className="h-full w-full object-cover" loading="lazy" />
-          ) : (
-            <div className="flex h-full w-full items-center justify-center text-xs text-slate-500">
-              No preview
-            </div>
-          )}
+        <div className="overflow-hidden rounded-2xl border border-slate-800/70 bg-slate-900">
+          <div className="relative aspect-[4/3] w-full bg-white">
+            {imageUrl ? (
+              <img src={imageUrl} alt={title} className="h-full w-full object-contain p-3" loading="lazy" />
+            ) : (
+              <div className="flex h-full w-full items-center justify-center bg-white px-4 text-xs text-slate-500">
+                No preview
+              </div>
+            )}
+          </div>
         </div>
-        <div className="pointer-events-none absolute inset-x-0 top-0 h-16 bg-gradient-to-b from-slate-950/70 to-transparent opacity-0 transition group-hover:opacity-100" />
+        <div className="pointer-events-none absolute inset-x-0 top-0 h-16 rounded-t-2xl bg-gradient-to-b from-black/10 to-transparent opacity-0 transition group-hover:opacity-100" />
         <div className="absolute right-2 top-2 flex gap-1 opacity-0 transition group-hover:opacity-100">
           <button
             type="button"
@@ -70,10 +72,14 @@ export function MyFurnitureCard({
         </div>
       </div>
 
-      <div className="space-y-1 p-3">
-        <div className="truncate text-sm font-medium text-slate-100">{title}</div>
-        <div className="truncate text-xs text-slate-400">{subtitle}</div>
-        <div className="text-[11px] text-slate-500">
+      <div className="space-y-1 px-1 pb-2 pt-2">
+        <div className="truncate text-sm font-medium text-slate-100" title={title}>
+          {title}
+        </div>
+        <div className="truncate text-xs text-slate-400" title={subtitle}>
+          {subtitle}
+        </div>
+        <div className="truncate text-[11px] text-slate-500">
           {usage} • Added {formatDate(item.createdAt)}
         </div>
       </div>

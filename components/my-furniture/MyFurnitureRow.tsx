@@ -43,9 +43,9 @@ export function MyFurnitureRow({
         }
       }}
     >
-      <div className="h-16 w-16 overflow-hidden rounded-md bg-slate-950">
+      <div className="h-16 w-16 overflow-hidden rounded-md border border-slate-800/70 bg-white">
         {imageUrl ? (
-          <img src={imageUrl} alt={title} className="h-full w-full object-cover" loading="lazy" />
+          <img src={imageUrl} alt={title} className="h-full w-full object-contain p-1.5" loading="lazy" />
         ) : (
           <div className="flex h-full w-full items-center justify-center text-[10px] text-slate-500">
             No preview
