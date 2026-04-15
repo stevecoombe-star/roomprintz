@@ -43,7 +43,7 @@ export function MyFurnitureRow({
         }
       }}
     >
-      <div className="h-16 w-16 overflow-hidden rounded-md border border-slate-800/70 bg-white">
+      <div className="h-16 w-16 overflow-hidden rounded-md border border-slate-800/70 bg-[rgb(237,237,237)]">
         {imageUrl ? (
           <img src={imageUrl} alt={title} className="h-full w-full object-contain p-1.5" loading="lazy" />
         ) : (

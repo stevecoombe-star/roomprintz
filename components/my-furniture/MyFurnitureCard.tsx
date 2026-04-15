@@ -45,16 +45,14 @@ export function MyFurnitureCard({
       }}
     >
       <div className="relative">
-        <div className="overflow-hidden rounded-2xl border border-slate-800/70 bg-slate-900">
-          <div className="relative aspect-[4/3] w-full bg-white">
-            {imageUrl ? (
-              <img src={imageUrl} alt={title} className="h-full w-full object-contain p-3" loading="lazy" />
-            ) : (
-              <div className="flex h-full w-full items-center justify-center bg-white px-4 text-xs text-slate-500">
-                No preview
-              </div>
-            )}
-          </div>
+        <div className="relative aspect-[4/3] w-full overflow-hidden rounded-2xl border border-slate-800/70 bg-[rgb(237,237,237)]">
+          {imageUrl ? (
+            <img src={imageUrl} alt={title} className="h-full w-full object-contain p-3" loading="lazy" />
+          ) : (
+            <div className="flex h-full w-full items-center justify-center bg-slate-100 px-4 text-xs text-slate-500">
+              No preview
+            </div>
+          )}
         </div>
         <div className="pointer-events-none absolute inset-x-0 top-0 h-16 rounded-t-2xl bg-gradient-to-b from-black/10 to-transparent opacity-0 transition group-hover:opacity-100" />
         <div className="absolute right-2 top-2 flex gap-1 opacity-0 transition group-hover:opacity-100">
