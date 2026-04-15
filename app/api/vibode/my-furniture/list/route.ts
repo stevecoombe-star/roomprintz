@@ -8,6 +8,7 @@ import {
   resolveSourceUrl,
   resolveSupplier,
 } from "@/lib/myFurniture";
+import { resolveMyFurnitureImageUrl } from "@/lib/myFurnitureImageUrl.server";
 
 export const runtime = "nodejs";
 
@@ -191,17 +192,28 @@ export async function GET(req: NextRequest) {
       }
     }
 
-    const enriched = items.map((item) => ({
-      ...item,
-      partner_name: item.partner_id ? partnerNameById.get(item.partner_id) ?? null : null,
-      resolved: {
-        displayName: resolveDisplayName(item),
-        sourceUrl: resolveSourceUrl(item),
-        supplier: resolveSupplier(item),
-        priceLabel: resolvePriceLabel(item),
-        category: resolveCategory(item),
-      },
-    }));
+    const enriched = await Promise.all(
+      items.map(async (item) => {
+        const previewImageUrl = await resolveMyFurnitureImageUrl(supabase, item.preview_image_url);
+        const normalizedPreviewUrl = await resolveMyFurnitureImageUrl(
+          supabase,
+          item.normalized_preview_url
+        );
+        return {
+          ...item,
+          preview_image_url: previewImageUrl,
+          normalized_preview_url: normalizedPreviewUrl,
+          partner_name: item.partner_id ? partnerNameById.get(item.partner_id) ?? null : null,
+          resolved: {
+            displayName: resolveDisplayName(item),
+            sourceUrl: resolveSourceUrl(item),
+            supplier: resolveSupplier(item),
+            priceLabel: resolvePriceLabel(item),
+            category: resolveCategory(item),
+          },
+        };
+      })
+    );
 
     return Response.json({ items: enriched });
   } catch (err: unknown) {

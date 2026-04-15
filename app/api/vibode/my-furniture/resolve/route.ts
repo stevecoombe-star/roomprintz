@@ -2,6 +2,7 @@ import { NextRequest } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { getVibodeUserFurnitureById } from "@/lib/vibodeMyFurniture";
+import { resolveMyFurnitureImageUrl } from "@/lib/myFurnitureImageUrl.server";
 
 export const runtime = "nodejs";
 
@@ -62,12 +63,12 @@ function uniqueStrings(values: string[]): string[] {
   return out;
 }
 
-function collectStrictVariantImageUrls(raw: unknown): string[] | null {
+function collectStrictVariantImageRefs(raw: unknown): string[] | null {
   if (!Array.isArray(raw) || raw.length === 0) return null;
   const urls: string[] = [];
   for (const item of raw) {
     const imageUrl = normalizeOptionalString(item);
-    if (!imageUrl || !isImageUrlLike(imageUrl)) {
+    if (!imageUrl) {
       return null;
     }
     urls.push(imageUrl);
@@ -76,14 +77,23 @@ function collectStrictVariantImageUrls(raw: unknown): string[] | null {
   return uniqueUrls.length > 0 ? uniqueUrls : null;
 }
 
-function collectReusableImageUrls(
+async function resolveReusableImageUrls(
+  supabase: AnySupabaseClient,
   rawVariantImageUrls: unknown,
   rawPreviewImageUrl: unknown
-): string[] | null {
-  const variantUrls = collectStrictVariantImageUrls(rawVariantImageUrls);
-  if (variantUrls) return variantUrls;
+): Promise<string[] | null> {
+  const variantUrls = collectStrictVariantImageRefs(rawVariantImageUrls);
+  if (variantUrls) {
+    const resolvedVariantUrls = await Promise.all(
+      variantUrls.map((url) => resolveMyFurnitureImageUrl(supabase, url))
+    );
+    const safeVariantUrls = uniqueStrings(
+      resolvedVariantUrls.filter((url): url is string => Boolean(url && isImageUrlLike(url)))
+    );
+    if (safeVariantUrls.length > 0) return safeVariantUrls;
+  }
 
-  const previewImageUrl = normalizeOptionalString(rawPreviewImageUrl);
+  const previewImageUrl = await resolveMyFurnitureImageUrl(supabase, rawPreviewImageUrl);
   if (!previewImageUrl || !isImageUrlLike(previewImageUrl)) return null;
   return [previewImageUrl];
 }
@@ -128,7 +138,12 @@ export async function POST(req: NextRequest) {
     if (!isReadyStatus((row as Record<string, unknown>).status)) {
       return Response.json({ error: "Saved furniture item is not ready." }, { status: 400 });
     }
-    const variants = collectReusableImageUrls(
+    const resolvedPreviewImageUrl = await resolveMyFurnitureImageUrl(
+      supabase,
+      (row as Record<string, unknown>).preview_image_url
+    );
+    const variants = await resolveReusableImageUrls(
+      supabase,
       (row as Record<string, unknown>).variant_image_urls,
       (row as Record<string, unknown>).preview_image_url
     );
@@ -149,7 +164,7 @@ export async function POST(req: NextRequest) {
       eligibleSku,
       item: {
         displayName: row.display_name,
-        previewImageUrl: row.preview_image_url,
+        previewImageUrl: resolvedPreviewImageUrl,
         sourceUrl: row.source_url,
         category: row.category,
       },
