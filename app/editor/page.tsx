@@ -340,6 +340,9 @@ type ActivePasteSource =
       type: "my_furniture";
       skuId: string;
       furnitureId: string;
+      furnitureIds: string[];
+      selectionCount: number;
+      selectedPreviewUrls: string[];
       preparedProduct: PreparedProductLike;
       rawPreviewUrl: string | null;
       normalizedPreviewUrl: string | null;
@@ -2157,9 +2160,29 @@ function EditorPageInner() {
       options?: {
         normalizedPreviewUrl?: string | null;
         suppressedClipboardPreviewHash?: string | null;
+        selectedFurnitureIds?: string[];
+        selectedPreviewUrls?: string[];
       }
     ) => {
-      if (!preparedProduct.savedFurnitureId) {
+      const candidateFurnitureIds = options?.selectedFurnitureIds?.filter(
+        (id): id is string => typeof id === "string" && id.trim().length > 0
+      ) ?? [];
+      const selectedFurnitureIds =
+        candidateFurnitureIds.length > 0
+          ? Array.from(new Set(candidateFurnitureIds))
+          : preparedProduct.savedFurnitureId
+            ? [preparedProduct.savedFurnitureId]
+            : [];
+      const selectedPreviewUrls = Array.from(
+        new Set(
+          (options?.selectedPreviewUrls ?? []).filter(
+            (previewUrl): previewUrl is string =>
+              typeof previewUrl === "string" && previewUrl.trim().length > 0
+          )
+        )
+      );
+      const primaryFurnitureId = selectedFurnitureIds[0] ?? null;
+      if (!primaryFurnitureId) {
         return;
       }
       const fallbackPreview =
@@ -2186,7 +2209,10 @@ function EditorPageInner() {
       activatePasteToPlaceSource({
         type: "my_furniture",
         skuId: preparedProduct.skuId,
-        furnitureId: preparedProduct.savedFurnitureId,
+        furnitureId: primaryFurnitureId,
+        furnitureIds: selectedFurnitureIds,
+        selectionCount: selectedFurnitureIds.length,
+        selectedPreviewUrls,
         preparedProduct,
         rawPreviewUrl: null,
         normalizedPreviewUrl: options?.normalizedPreviewUrl ?? fallbackPreview,
@@ -2287,6 +2313,12 @@ function EditorPageInner() {
     (shouldHideAuthoritativeMyFurniturePreviewDuringClipboardProbe
       ? null
       : (pasteToPlaceMenuClipboardPreviewUrl ?? activePasteSourcePreviewUrl));
+  const isMyFurnitureMultiPreparedSource =
+    activePasteSource?.type === "my_furniture" && activePasteSource.selectionCount > 1;
+  const myFurniturePreparedSelectionCount =
+    activePasteSource?.type === "my_furniture" ? activePasteSource.selectionCount : 0;
+  const myFurniturePreparedSelectedPreviewUrls =
+    activePasteSource?.type === "my_furniture" ? activePasteSource.selectedPreviewUrls : [];
   const selectedVersionId =
     activeAssetId ?? versions.find((asset) => asset.is_active)?.id ?? null;
   const selectedVersion = useMemo(
@@ -4056,22 +4088,40 @@ function EditorPageInner() {
       ) {
         if (source.type === "my_furniture") {
           try {
-            const resolved = await resolveMyFurnitureForEdit(source.furnitureId);
+            const sourceFurnitureIds =
+              source.furnitureIds.length > 0 ? source.furnitureIds : [source.furnitureId];
+            let mergedEligibleSkus: VibodeEligibleSku[] = [];
+            const resolvedFurnitureIds: string[] = [];
+            for (const furnitureId of sourceFurnitureIds) {
+              const resolved = await resolveMyFurnitureForEdit(furnitureId);
+              if (!resolved) continue;
+              mergedEligibleSkus = mergeEligibleSkusForSavedFurniture(mergedEligibleSkus, resolved.eligibleSku);
+              resolvedFurnitureIds.push(furnitureId);
+            }
             if (isOperationStale("prepare_from_menu:after_my_furniture_revalidate")) {
               return { status: "failed", reason: "paste-to-place-operation-stale" };
             }
-            if (!resolved) {
+            if (resolvedFurnitureIds.length === 0 || mergedEligibleSkus.length === 0) {
               throw new Error("Saved furniture item was not found.");
             }
-
-            const preparedProduct = buildPreparedMyFurnitureProduct(resolved, source.furnitureId);
+            const primaryFurnitureId = resolvedFurnitureIds[0];
+            const preferredSku = mergedEligibleSkus.find((sku) => sku.skuId === source.skuId) ?? mergedEligibleSkus[0];
+            const preparedProduct: PasteToPlacePreparedProduct = {
+              source: "my_furniture",
+              skuId: preferredSku.skuId,
+              eligibleSkus: mergedEligibleSkus,
+              savedFurnitureId: primaryFurnitureId,
+            };
             const fallbackPreviewUrl =
-              resolved.eligibleSku.variants.find(
+              preferredSku.variants.find(
                 (variant) => typeof variant?.imageUrl === "string" && variant.imageUrl.trim().length > 0
               )?.imageUrl ?? null;
             const refreshedSource: Extract<ActivePasteSource, { type: "my_furniture" }> = {
               ...source,
               skuId: preparedProduct.skuId,
+              furnitureId: primaryFurnitureId,
+              furnitureIds: resolvedFurnitureIds,
+              selectionCount: resolvedFurnitureIds.length,
               preparedProduct,
               normalizedPreviewUrl: source.normalizedPreviewUrl ?? fallbackPreviewUrl,
             };
@@ -4131,6 +4181,10 @@ function EditorPageInner() {
   const handlePasteToPlacePlaceHere = useCallback(async () => {
     if (!pasteToPlaceMenuState) return;
     const menuStateSnapshot = pasteToPlaceMenuState;
+    if (isMyFurnitureMultiPreparedSource) {
+      pushSnack("Place here is unavailable for multi-selected My Furniture items.");
+      return;
+    }
 
     if (
       activeTool === "calibrate" ||
@@ -4160,15 +4214,21 @@ function EditorPageInner() {
     handlePasteToPlaceAdd,
     isBusy,
     isEditRunning,
+    isMyFurnitureMultiPreparedSource,
     isRotateMarkerTargeting,
     pasteToPlaceMenuState,
     preparePasteToPlaceProductFromMenu,
+    pushSnack,
     scene.baseImageUrl,
   ]);
 
   const handlePasteToPlaceSwap = useCallback(async () => {
     if (!pasteToPlaceMenuState) return;
     const menuStateSnapshot = pasteToPlaceMenuState;
+    if (isMyFurnitureMultiPreparedSource) {
+      pushSnack("Swap item is unavailable for multi-selected My Furniture items.");
+      return;
+    }
     if (
       activeTool === "calibrate" ||
       activeTool === "remove" ||
@@ -4201,9 +4261,11 @@ function EditorPageInner() {
     dismissPasteToPlaceMenu,
     isBusy,
     isEditRunning,
+    isMyFurnitureMultiPreparedSource,
     isRotateMarkerTargeting,
     pasteToPlaceMenuState,
     preparePasteToPlaceProductFromMenu,
+    pushSnack,
     runPasteToPlaceClickTargetEdit,
     scene.baseImageUrl,
   ]);
@@ -4231,6 +4293,10 @@ function EditorPageInner() {
       if (prepared.status !== "ready") return;
 
       const sourceForExecution = prepared.source;
+      const targetCount =
+        sourceForExecution.type === "my_furniture" && sourceForExecution.selectionCount > 1
+          ? sourceForExecution.selectionCount
+          : 1;
 
       if (isOperationStale("auto_place:before_stage_run")) return;
       setPasteToPlaceStatus("placing");
@@ -4238,7 +4304,7 @@ function EditorPageInner() {
         3,
         {
           eligibleSkus: sourceForExecution.preparedProduct.eligibleSkus,
-          targetCount: 1,
+          targetCount,
         },
         {
           beforeCommit: () => !isOperationStale("auto_place:before_commit"),
@@ -4337,130 +4403,102 @@ function EditorPageInner() {
     );
   }, []);
 
-  const handleApplyMyFurniturePickerAction = useCallback(
-    async (action: "add" | "swap" | "auto_place") => {
+  const handleFinishMyFurnitureSelection = useCallback(
+    async (selectedIds: string[]) => {
       if (myFurnitureMode !== "add") return;
       if (myFurnitureSelectingIds.length > 0) return;
+      const normalizedSelectedIds = Array.from(
+        new Set(selectedIds.filter((id): id is string => typeof id === "string" && id.trim().length > 0))
+      );
+      if (normalizedSelectedIds.length === 0) return;
 
-      const selectedIds = [...selectedMyFurnitureItemIds];
-      if (selectedIds.length === 0) return;
-      if ((action === "add" || action === "swap") && selectedIds.length !== 1) return;
-
-      if (action === "add" || action === "swap") {
-        const prepared = await prepareMyFurnitureSourceById(selectedIds[0]);
+      if (normalizedSelectedIds.length === 1) {
+        const prepared = await prepareMyFurnitureSourceById(normalizedSelectedIds[0]);
         if (!prepared) return;
         closeMyFurniturePicker();
-        if (action === "add") {
-          await handlePasteToPlacePlaceHere();
-        } else {
-          await handlePasteToPlaceSwap();
-        }
+        pushSnack("Saved furniture ready. Click in your room to place it.");
         return;
       }
 
-      if (selectedIds.length === 1) {
-        const prepared = await prepareMyFurnitureSourceById(selectedIds[0]);
-        if (!prepared) return;
-        closeMyFurniturePicker();
-        await handlePasteToPlaceAutoPlace();
-        return;
-      }
-
-      if (!pasteToPlaceMenuState) {
-        pushSnack("Choose a placement point first.");
-        return;
-      }
-
-      const menuStateSnapshot = pasteToPlaceMenuState;
-      if (!scene.baseImageUrl || isBusy || isEditRunning) {
-        closeMyFurniturePicker();
-        dismissPasteToPlaceMenu();
-        return;
-      }
-
-      const operationId = beginPasteToPlaceOperation();
-      const isOperationStale = (context: string): boolean => {
-        if (isPasteToPlaceOperationActive(operationId)) return false;
-        return true;
-      };
-
+      setMyFurnitureSelectingIds(normalizedSelectedIds);
       try {
-        setMyFurnitureSelectingIds(selectedIds);
-        setPasteToPlaceProgressCardState(menuStateSnapshot);
-        dismissPasteToPlaceMenu({ clearPreview: false, clearClipboardPreview: false });
-        closeMyFurniturePicker();
-
         let mergedEligibleSkus: VibodeEligibleSku[] = [];
-        let resolvedCount = 0;
-
-        for (const furnitureId of selectedIds) {
+        const resolvedFurnitureIds: string[] = [];
+        for (const furnitureId of normalizedSelectedIds) {
           try {
             const resolved = await resolveMyFurnitureForEdit(furnitureId);
             if (!resolved) continue;
             mergedEligibleSkus = mergeEligibleSkusForSavedFurniture(mergedEligibleSkus, resolved.eligibleSku);
-            resolvedCount += 1;
+            resolvedFurnitureIds.push(furnitureId);
           } catch (err) {
-            console.warn("[editor] failed resolving selected My Furniture item for auto-place:", err);
+            console.warn("[editor] failed resolving selected My Furniture item for multi-prepare:", err);
           }
         }
 
-        if (isOperationStale("my_furniture_multi_auto_place:after_resolve")) return;
-        if (resolvedCount === 0) {
+        if (resolvedFurnitureIds.length === 0 || mergedEligibleSkus.length === 0) {
           pushSnack("Selected furniture items are no longer available. Choose different items.");
           return;
         }
 
-        setPasteToPlaceStatus("placing");
-        const res = await runStage(
-          3,
-          {
-            eligibleSkus: mergedEligibleSkus,
-            targetCount: resolvedCount,
-          },
-          {
-            beforeCommit: () => !isOperationStale("my_furniture_multi_auto_place:before_commit"),
-            onImageCommitted: () => {
-              if (isOperationStale("my_furniture_multi_auto_place:on_image_committed")) return;
-              setPasteToPlaceStatus(null);
-              clearPasteToPlaceProgressPreview();
-            },
-          }
-        );
-        if (isOperationStale("my_furniture_multi_auto_place:after_stage_run")) return;
-        if (!res) return;
-
-        if (!isDevUnlockPasteToPlace) {
-          setHasUsedFreePasteToPlace(true);
+        const primaryFurnitureId = resolvedFurnitureIds[0];
+        const primarySku = mergedEligibleSkus[0];
+        if (!primarySku) {
+          pushSnack("Unable to prepare selected furniture items.");
+          return;
         }
+        const selectedPreviewUrl =
+          resolvedFurnitureIds
+            .map(
+              (furnitureId) =>
+                myFurnitureItems.find((candidate) => candidate.id === furnitureId)?.previewImageUrl ?? null
+            )
+            .find((previewUrl): previewUrl is string => !!previewUrl && previewUrl.trim().length > 0) ??
+          primarySku.variants.find(
+            (variant) => typeof variant?.imageUrl === "string" && variant.imageUrl.trim().length > 0
+          )?.imageUrl ??
+          null;
+        const selectedPreviewUrls = Array.from(
+          new Set(
+            resolvedFurnitureIds
+              .map(
+                (furnitureId) =>
+                  myFurnitureItems.find((candidate) => candidate.id === furnitureId)?.previewImageUrl ?? null
+              )
+              .filter(
+                (previewUrl): previewUrl is string =>
+                  typeof previewUrl === "string" && previewUrl.trim().length > 0
+              )
+          )
+        );
+
+        const preparedProduct: PasteToPlacePreparedProduct = {
+          source: "my_furniture",
+          skuId: primarySku.skuId,
+          eligibleSkus: mergedEligibleSkus,
+          savedFurnitureId: primaryFurnitureId,
+        };
+        activatePreparedMyFurnitureSource(preparedProduct, {
+          normalizedPreviewUrl: selectedPreviewUrl,
+          selectedFurnitureIds: resolvedFurnitureIds,
+          selectedPreviewUrls,
+        });
+        closeMyFurniturePicker();
+        pushSnack(
+          `${resolvedFurnitureIds.length} saved furniture items ready. Use Let Vibode decide placement.`
+        );
       } finally {
         setMyFurnitureSelectingIds([]);
-        if (!isOperationStale("my_furniture_multi_auto_place:finally")) {
-          setPasteToPlaceStatus(null);
-          clearPasteToPlaceProgressPreview();
-        }
       }
     },
     [
-      beginPasteToPlaceOperation,
-      clearPasteToPlaceProgressPreview,
+      activatePreparedMyFurnitureSource,
       closeMyFurniturePicker,
-      dismissPasteToPlaceMenu,
-      handlePasteToPlaceAutoPlace,
-      handlePasteToPlacePlaceHere,
-      handlePasteToPlaceSwap,
-      isBusy,
-      isDevUnlockPasteToPlace,
-      isEditRunning,
-      isPasteToPlaceOperationActive,
+      myFurnitureItems,
       myFurnitureMode,
       myFurnitureSelectingIds.length,
-      pasteToPlaceMenuState,
       prepareMyFurnitureSourceById,
       pushSnack,
       resolveMyFurnitureForEdit,
-      runStage,
-      scene.baseImageUrl,
-      selectedMyFurnitureItemIds,
     ]
   );
 
@@ -5361,6 +5399,9 @@ function EditorPageInner() {
                 pasteToPlaceStatus={pasteToPlaceStatus}
                 pasteToPlaceMenuState={pasteToPlaceMenuState}
                 pasteToPlaceMenuPreviewUrl={pasteToPlaceDisplayedPreviewUrl}
+                isPasteToPlaceMyFurnitureMultiSelect={isMyFurnitureMultiPreparedSource}
+                pasteToPlaceMyFurnitureSelectionCount={myFurniturePreparedSelectionCount}
+                pasteToPlaceMyFurnitureSelectedPreviewUrls={myFurniturePreparedSelectedPreviewUrls}
                 isPasteToPlaceMenuPreviewLoading={
                   isPasteToPlaceMenuIngesting || isPasteToPlaceMenuClipboardPreviewLoading
                 }
@@ -6914,8 +6955,8 @@ function EditorPageInner() {
           void handleSelectMyFurnitureItem(item);
         }}
         onToggleSelectedItem={handleToggleSelectedMyFurnitureItem}
-        onApplySelectionAction={(action) => {
-          void handleApplyMyFurniturePickerAction(action);
+        onFinishSelection={(ids) => {
+          void handleFinishMyFurnitureSelection(ids);
         }}
       />
 

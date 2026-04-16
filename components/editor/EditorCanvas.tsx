@@ -1,7 +1,7 @@
 // components/editor/EditorCanvas.tsx
 "use client";
 
-import React, { useEffect, useId, useMemo, useRef, useState } from "react";
+import React, { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   Stage,
   Layer,
@@ -253,6 +253,9 @@ export function EditorCanvas({
   onPasteToPlaceChooseAutoPlace,
   onDismissPasteToPlaceMenu,
   pasteToPlaceMenuPreviewUrl = null,
+  isPasteToPlaceMyFurnitureMultiSelect = false,
+  pasteToPlaceMyFurnitureSelectionCount = 0,
+  pasteToPlaceMyFurnitureSelectedPreviewUrls = [],
   isMyFurnitureLoading = false,
   isPasteToPlaceMenuPreviewLoading = false,
   pasteToPlaceProgressCardState = null,
@@ -287,6 +290,9 @@ export function EditorCanvas({
   onPasteToPlaceChooseAutoPlace?: () => void;
   onDismissPasteToPlaceMenu?: () => void;
   pasteToPlaceMenuPreviewUrl?: string | null;
+  isPasteToPlaceMyFurnitureMultiSelect?: boolean;
+  pasteToPlaceMyFurnitureSelectionCount?: number;
+  pasteToPlaceMyFurnitureSelectedPreviewUrls?: string[];
   isMyFurnitureLoading?: boolean;
   isPasteToPlaceMenuPreviewLoading?: boolean;
   pasteToPlaceProgressCardState?: PasteToPlaceMenuState;
@@ -356,6 +362,11 @@ export function EditorCanvas({
   const [pasteToPlacePulse, setPasteToPlacePulse] = useState<{ x: number; y: number } | null>(
     null
   );
+  const pasteToPlaceMenuRef = useRef<HTMLDivElement | null>(null);
+  const [pasteToPlaceMenuMeasuredSize, setPasteToPlaceMenuMeasuredSize] = useState<{
+    width: number;
+    height: number;
+  } | null>(null);
 
   const [stageSize, setStageSize] = useState<{ w: number; h: number }>({
     w: 800,
@@ -493,26 +504,76 @@ export function EditorCanvas({
   const pasteToPlaceMenuEstimatedHeight = pasteToPlaceMenuPreviewUrl
     ? PASTE_TO_PLACE_MENU_WITH_PREVIEW_ESTIMATED_HEIGHT_PX
     : PASTE_TO_PLACE_MENU_ESTIMATED_HEIGHT_PX;
+  const shouldRenderMyFurnitureMultiSelectPreview =
+    isPasteToPlaceMyFurnitureMultiSelect && pasteToPlaceMyFurnitureSelectionCount > 1;
+  const myFurnitureMultiSelectPreviewUrls = shouldRenderMyFurnitureMultiSelectPreview
+    ? Array.from(
+        new Set(
+          (pasteToPlaceMyFurnitureSelectedPreviewUrls ?? []).filter(
+            (previewUrl): previewUrl is string =>
+              typeof previewUrl === "string" && previewUrl.trim().length > 0
+          )
+        )
+      ).slice(0, 3)
+    : [];
+  const shouldRenderSinglePreview =
+    !shouldRenderMyFurnitureMultiSelectPreview &&
+    (Boolean(pasteToPlaceMenuPreviewUrl) || isPasteToPlaceMenuPreviewLoading);
+  useLayoutEffect(() => {
+    if (!pasteToPlaceMenuState) {
+      setPasteToPlaceMenuMeasuredSize(null);
+      return;
+    }
+
+    const menuEl = pasteToPlaceMenuRef.current;
+    if (!menuEl) return;
+
+    const updateMeasuredSize = () => {
+      const rect = menuEl.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) return;
+      setPasteToPlaceMenuMeasuredSize((prev) => {
+        const nextWidth = Math.ceil(rect.width);
+        const nextHeight = Math.ceil(rect.height);
+        if (prev && prev.width === nextWidth && prev.height === nextHeight) return prev;
+        return { width: nextWidth, height: nextHeight };
+      });
+    };
+
+    updateMeasuredSize();
+    const resizeObserver = new ResizeObserver(updateMeasuredSize);
+    resizeObserver.observe(menuEl);
+
+    return () => resizeObserver.disconnect();
+  }, [pasteToPlaceMenuState]);
   const clampedPasteToPlaceMenuPosition = useMemo(() => {
     if (!pasteToPlaceMenuState) return null;
 
     const requestedLeft = pasteToPlaceMenuState.anchorCssX + PASTE_TO_PLACE_MENU_OFFSET_PX;
     const requestedTop = pasteToPlaceMenuState.anchorCssY + PASTE_TO_PLACE_MENU_OFFSET_PX;
+    const menuWidth = pasteToPlaceMenuMeasuredSize?.width ?? PASTE_TO_PLACE_MENU_ESTIMATED_WIDTH_PX;
+    const menuHeight = pasteToPlaceMenuMeasuredSize?.height ?? pasteToPlaceMenuEstimatedHeight;
 
     const maxLeft = Math.max(
       PASTE_TO_PLACE_MENU_EDGE_GUTTER_PX,
-      stageSize.w - PASTE_TO_PLACE_MENU_ESTIMATED_WIDTH_PX - PASTE_TO_PLACE_MENU_EDGE_GUTTER_PX
+      stageSize.w - menuWidth - PASTE_TO_PLACE_MENU_EDGE_GUTTER_PX
     );
     const maxTop = Math.max(
       PASTE_TO_PLACE_MENU_EDGE_GUTTER_PX,
-      stageSize.h - pasteToPlaceMenuEstimatedHeight - PASTE_TO_PLACE_MENU_EDGE_GUTTER_PX
+      stageSize.h - menuHeight - PASTE_TO_PLACE_MENU_EDGE_GUTTER_PX
     );
 
     return {
       left: clamp(requestedLeft, PASTE_TO_PLACE_MENU_EDGE_GUTTER_PX, maxLeft),
       top: clamp(requestedTop, PASTE_TO_PLACE_MENU_EDGE_GUTTER_PX, maxTop),
     };
-  }, [pasteToPlaceMenuEstimatedHeight, pasteToPlaceMenuState, stageSize.h, stageSize.w]);
+  }, [
+    pasteToPlaceMenuEstimatedHeight,
+    pasteToPlaceMenuMeasuredSize?.height,
+    pasteToPlaceMenuMeasuredSize?.width,
+    pasteToPlaceMenuState,
+    stageSize.h,
+    stageSize.w,
+  ]);
   const clampedPasteToPlaceProgressCardPosition = useMemo(() => {
     if (!pasteToPlaceProgressCardState) return null;
 
@@ -1698,6 +1759,7 @@ export function EditorCanvas({
       )}
       {pasteToPlaceMenuState && (
         <div
+          ref={pasteToPlaceMenuRef}
           className="absolute z-30"
           style={{
             left:
@@ -1709,7 +1771,7 @@ export function EditorCanvas({
           }}
         >
           <div className="flex flex-col rounded-lg border border-white/10 bg-neutral-950/85 shadow-lg backdrop-blur-sm">
-            {(pasteToPlaceMenuPreviewUrl || isPasteToPlaceMenuPreviewLoading) && (
+            {shouldRenderSinglePreview && (
               <div className="relative mx-2 mt-2 mb-1 overflow-hidden rounded-md border border-white/10 bg-neutral-900/70">
                 {pasteToPlaceMenuPreviewUrl ? (
                   <img
@@ -1728,24 +1790,62 @@ export function EditorCanvas({
                 )}
               </div>
             )}
+            {shouldRenderMyFurnitureMultiSelectPreview ? (
+              <div className="mx-2 mt-2 mb-1 rounded-md border border-white/10 bg-neutral-900/70 px-3 py-2">
+                <div className="flex items-center gap-3">
+                  <div className="relative h-11 w-[74px] shrink-0">
+                    {myFurnitureMultiSelectPreviewUrls.length > 0 ? (
+                      myFurnitureMultiSelectPreviewUrls.map((previewUrl, index) => (
+                        <div
+                          key={`${previewUrl}-${index}`}
+                          className="absolute top-0 h-11 w-8 overflow-hidden rounded-md border border-white/20 bg-neutral-950 shadow-[0_2px_6px_rgba(0,0,0,0.35)]"
+                          style={{ left: `${index * 14}px`, zIndex: index + 1 }}
+                        >
+                          <img
+                            src={previewUrl}
+                            alt=""
+                            className="h-full w-full object-cover"
+                            draggable={false}
+                          />
+                        </div>
+                      ))
+                    ) : (
+                      <div className="flex h-11 w-8 items-center justify-center rounded-md border border-white/20 bg-neutral-950 text-[10px] text-neutral-400">
+                        ...
+                      </div>
+                    )}
+                  </div>
+                  <div className="min-w-0 text-xs text-blue-200">
+                    {pasteToPlaceMyFurnitureSelectionCount} items selected
+                  </div>
+                </div>
+                {isPasteToPlaceMenuPreviewLoading && (
+                  <div className="mt-2 flex items-center gap-2 text-[11px] text-neutral-400">
+                    <span className="h-3 w-3 animate-spin rounded-full border border-neutral-100/70 border-t-transparent" />
+                    <span>Refreshing clipboard preview...</span>
+                  </div>
+                )}
+              </div>
+            ) : null}
             <button
-              className="px-3 py-2 text-left text-sm text-white hover:bg-white/10"
+              className={`px-3 py-2 text-left text-sm ${
+                isPasteToPlaceMyFurnitureMultiSelect
+                  ? "cursor-not-allowed text-neutral-500"
+                  : "text-white hover:bg-white/10"
+              }`}
               onClick={onPasteToPlaceChoosePlaceHere}
+              disabled={isPasteToPlaceMyFurnitureMultiSelect}
             >
               ✨ Place here
             </button>
             <button
-              className={`px-3 py-2 text-left text-sm hover:bg-white/10 ${
-                isMyFurnitureLoading ? "cursor-not-allowed text-neutral-500" : "text-neutral-300"
+              className={`px-3 py-2 text-left text-sm ${
+                isPasteToPlaceMyFurnitureMultiSelect
+                  ? "cursor-not-allowed text-neutral-500"
+                  : "text-neutral-300 hover:bg-white/10"
               }`}
-              onClick={onPasteToPlaceChooseMyFurnitureAdd}
-              disabled={isMyFurnitureLoading || !onPasteToPlaceChooseMyFurnitureAdd}
-            >
-              {isMyFurnitureLoading ? "🪑 Loading My Furniture..." : "🪑 My Furniture"}
-            </button>
-            <button
-              className="px-3 py-2 text-left text-sm text-neutral-300 hover:bg-white/10"
               onClick={onPasteToPlaceChooseSwap}
+              disabled={isPasteToPlaceMyFurnitureMultiSelect}
             >
               🔁 Swap item
             </button>
@@ -1754,6 +1854,16 @@ export function EditorCanvas({
               onClick={onPasteToPlaceChooseAutoPlace}
             >
               🎯 Let Vibode decide placement
+            </button>
+            <div className="mx-2 my-1 h-px bg-white/10" />
+            <button
+              className={`px-3 py-2 text-left text-sm hover:bg-white/10 ${
+                isMyFurnitureLoading ? "cursor-not-allowed text-neutral-500" : "text-neutral-300"
+              }`}
+              onClick={onPasteToPlaceChooseMyFurnitureAdd}
+              disabled={isMyFurnitureLoading || !onPasteToPlaceChooseMyFurnitureAdd}
+            >
+              {isMyFurnitureLoading ? "🪑 Loading My Furniture..." : "🪑 My Furniture"}
             </button>
           </div>
         </div>
