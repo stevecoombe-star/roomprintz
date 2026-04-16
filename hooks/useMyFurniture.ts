@@ -20,6 +20,7 @@ type UseMyFurnitureResult = {
   setSort: (next: MyFurnitureSortMode) => void;
   selectedItem: MyFurnitureItem | null;
   setSelectedItem: (item: MyFurnitureItem | null) => void;
+  removeItemById: (id: string) => void;
   refresh: () => Promise<void>;
 };
 
@@ -78,6 +79,11 @@ export function useMyFurniture(): UseMyFurnitureResult {
 
   const items = useMemo(() => sortMyFurnitureItems(rawItems, sort), [rawItems, sort]);
 
+  const removeItemById = useCallback((id: string) => {
+    setRawItems((prev) => prev.filter((item) => item.id !== id));
+    setSelectedItem((prev) => (prev?.id === id ? null : prev));
+  }, []);
+
   return {
     items,
     isLoading,
@@ -88,6 +94,7 @@ export function useMyFurniture(): UseMyFurnitureResult {
     setSort,
     selectedItem,
     setSelectedItem,
+    removeItemById,
     refresh,
   };
 }

@@ -78,6 +78,11 @@ export type UpdateVibodeUserFurnitureOverridesArgs = {
   overrideCategory?: string | null;
 };
 
+export type ArchiveVibodeUserFurnitureArgs = {
+  userId: string;
+  id: string;
+};
+
 function normalizeOptionalString(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const trimmed = value.trim();
@@ -232,6 +237,29 @@ export async function getVibodeUserFurnitureById(
     throw new Error(`[my-furniture] failed reading row: ${error.message}`);
   }
   return (data as VibodeUserFurnitureRow | null) ?? null;
+}
+
+export async function archiveVibodeUserFurniture(
+  supabase: AnySupabaseClient,
+  args: ArchiveVibodeUserFurnitureArgs
+): Promise<VibodeUserFurnitureRow> {
+  const { data, error } = await supabase
+    .from("vibode_user_furniture")
+    .update({ is_archived: true })
+    .eq("id", args.id)
+    .eq("user_id", args.userId)
+    .eq("is_archived", false)
+    .select("*")
+    .maybeSingle();
+
+  if (error) {
+    throw new Error(`[my-furniture] failed archiving row: ${error.message}`);
+  }
+  if (!data) {
+    throw new Error("Saved furniture item was not found.");
+  }
+
+  return data as VibodeUserFurnitureRow;
 }
 
 export function buildEligibleSkuFromVibodeUserFurniture(

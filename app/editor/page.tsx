@@ -4045,6 +4045,40 @@ function EditorPageInner() {
           (source.type === "my_furniture" || source.type === "clipboard")
         )
       ) {
+        if (source.type === "my_furniture") {
+          try {
+            const resolved = await resolveMyFurnitureForEdit(source.furnitureId);
+            if (isOperationStale("prepare_from_menu:after_my_furniture_revalidate")) {
+              return { status: "failed", reason: "paste-to-place-operation-stale" };
+            }
+            if (!resolved) {
+              throw new Error("Saved furniture item was not found.");
+            }
+
+            const preparedProduct = buildPreparedMyFurnitureProduct(resolved, source.furnitureId);
+            const fallbackPreviewUrl =
+              resolved.eligibleSku.variants.find(
+                (variant) => typeof variant?.imageUrl === "string" && variant.imageUrl.trim().length > 0
+              )?.imageUrl ?? null;
+            const refreshedSource: Extract<ActivePasteSource, { type: "my_furniture" }> = {
+              ...source,
+              skuId: preparedProduct.skuId,
+              preparedProduct,
+              normalizedPreviewUrl: source.normalizedPreviewUrl ?? fallbackPreviewUrl,
+            };
+            activatePasteToPlaceSource(refreshedSource, "my_furniture_revalidated");
+            return { status: "ready", source: refreshedSource };
+          } catch {
+            if (isOperationStale("prepare_from_menu:my_furniture_revalidate_failed")) {
+              return { status: "failed", reason: "paste-to-place-operation-stale" };
+            }
+            clearPasteToPlaceActiveSource("my_furniture_unresolvable");
+            setPasteToPlaceStatus(null);
+            clearPasteToPlaceProgressPreview();
+            pushSnack("That saved furniture item is no longer available. Choose another item.");
+            return { status: "failed", reason: "my-furniture-source-stale" };
+          }
+        }
         return { status: "ready", source };
       }
 
@@ -4073,9 +4107,15 @@ function EditorPageInner() {
       }
     },
     [
+      activatePasteToPlaceSource,
+      buildPreparedMyFurnitureProduct,
+      clearPasteToPlaceActiveSource,
+      clearPasteToPlaceProgressPreview,
       isPasteToPlaceOperationActive,
       pasteToPlaceMenuClipboardPreviewUrl,
+      pushSnack,
       preparePasteToPlaceClipboardProduct,
+      resolveMyFurnitureForEdit,
     ]
   );
 

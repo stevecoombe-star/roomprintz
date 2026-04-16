@@ -12,7 +12,9 @@ import { MyFurnitureToolbar } from "@/components/my-furniture/MyFurnitureToolbar
 import { useMyFurniture } from "@/hooks/useMyFurniture";
 import { getMyFurniturePreferredImageUrl } from "@/lib/myFurniture";
 import {
+  clearPendingFurnitureSelection,
   clearPendingFurnitureClipboardSuppressionHash,
+  getPendingFurnitureSelection,
   getPendingFurnitureClipboardSuppressionHash,
   setPendingFurnitureSelection,
 } from "@/lib/pendingFurnitureAction";
@@ -39,6 +41,7 @@ export function MyFurniturePageClient() {
     setSort,
     selectedItem,
     setSelectedItem,
+    removeItemById,
     refresh,
   } = useMyFurniture();
   const [actingItemId, setActingItemId] = useState<string | null>(null);
@@ -79,6 +82,25 @@ export function MyFurniturePageClient() {
       router.push(nextEditorTarget);
     },
     [items, nextEditorTarget, router]
+  );
+
+  const handleDeleteItem = useCallback(
+    (itemId: string) => {
+      removeItemById(itemId);
+      if (selectedItem?.id === itemId) {
+        setSelectedItem(null);
+      }
+      setActingItemId((prev) => (prev === itemId ? null : prev));
+
+      const pendingSelection = getPendingFurnitureSelection();
+      if (pendingSelection?.furnitureId === itemId) {
+        clearPendingFurnitureSelection();
+        clearPendingFurnitureClipboardSuppressionHash();
+      }
+
+      trackMyFurnitureEvent("vibode_my_furniture_item_deleted", { itemId });
+    },
+    [removeItemById, selectedItem?.id, setSelectedItem]
   );
 
   const content = useMemo(() => {
@@ -180,6 +202,7 @@ export function MyFurniturePageClient() {
           item={selectedItem}
           onClose={() => setSelectedItem(null)}
           onUseInRoom={(itemId) => handleUseInRoom(itemId, "drawer")}
+          onDelete={handleDeleteItem}
           isActing={actingItemId === selectedItem?.id}
         />
       </div>
