@@ -1348,7 +1348,8 @@ function EditorPageInner() {
   const [myFurnitureItems, setMyFurnitureItems] = useState<MyFurniturePickerItem[]>([]);
   const [myFurnitureLoading, setMyFurnitureLoading] = useState(false);
   const [myFurnitureMode, setMyFurnitureMode] = useState<MyFurniturePickerMode | null>(null);
-  const [myFurnitureSelectingId, setMyFurnitureSelectingId] = useState<string | null>(null);
+  const [myFurnitureSelectingIds, setMyFurnitureSelectingIds] = useState<string[]>([]);
+  const [selectedMyFurnitureItemIds, setSelectedMyFurnitureItemIds] = useState<string[]>([]);
   const [isPendingFurnitureSelectionRunning, setIsPendingFurnitureSelectionRunning] = useState(false);
   const [pendingMyFurnitureReturnPreviewUrl, setPendingMyFurnitureReturnPreviewUrl] = useState<
     string | null
@@ -1524,7 +1525,8 @@ function EditorPageInner() {
     setMyFurnitureMode(null);
     setMyFurnitureItems([]);
     setMyFurnitureLoading(false);
-    setMyFurnitureSelectingId(null);
+    setMyFurnitureSelectingIds([]);
+    setSelectedMyFurnitureItemIds([]);
     setRotateToolState({
       marker: null,
       direction: "cw",
@@ -1585,37 +1587,44 @@ function EditorPageInner() {
     [setActiveAssetId, setVersions]
   );
 
-  const trackMyFurnitureUsage = useCallback(async (userFurnitureId: string, eventType: "added" | "swapped") => {
-    try {
-      const accessToken = await tryGetSupabaseAccessToken();
-      if (!accessToken) return;
-      const res = await fetch("/api/vibode/my-furniture/track", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${accessToken}`,
-        },
-        body: JSON.stringify({
-          userFurnitureId,
-          eventType,
-          roomId: vibodeRoomId,
-        }),
-      });
-      if (!res.ok) {
-        const json = (await res.json().catch(() => ({}))) as { error?: string };
-        throw new Error(json.error || `Track request failed (HTTP ${res.status})`);
+  const trackMyFurnitureUsage = useCallback(
+    async (
+      userFurnitureId: string,
+      eventType: "added" | "swapped"
+    ) => {
+      try {
+        const accessToken = await tryGetSupabaseAccessToken();
+        if (!accessToken) return;
+        const res = await fetch("/api/vibode/my-furniture/track", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${accessToken}`,
+          },
+          body: JSON.stringify({
+            userFurnitureId,
+            eventType,
+            roomId: vibodeRoomId,
+          }),
+        });
+        if (!res.ok) {
+          const json = (await res.json().catch(() => ({}))) as { error?: string };
+          throw new Error(json.error || `Track request failed (HTTP ${res.status})`);
+        }
+      } catch (err) {
+        console.warn("[editor] failed to track My Furniture usage:", err);
       }
-    } catch (err) {
-      console.warn("[editor] failed to track My Furniture usage:", err);
-    }
-  }, [vibodeRoomId]);
+    },
+    [vibodeRoomId]
+  );
 
   const openMyFurniturePicker = useCallback(
     async (mode: MyFurniturePickerMode) => {
       setMyFurnitureMode(mode);
       setMyFurnitureOpen(true);
       setMyFurnitureLoading(true);
-      setMyFurnitureSelectingId(null);
+      setMyFurnitureSelectingIds([]);
+      setSelectedMyFurnitureItemIds([]);
       try {
         const accessToken = await tryGetSupabaseAccessToken();
         if (!accessToken) {
@@ -4277,29 +4286,183 @@ function EditorPageInner() {
   const closeMyFurniturePicker = useCallback(() => {
     setMyFurnitureOpen(false);
     setMyFurnitureMode(null);
-    setMyFurnitureSelectingId(null);
+    setMyFurnitureSelectingIds([]);
+    setSelectedMyFurnitureItemIds([]);
   }, []);
 
-  const handleSelectMyFurnitureItem = async (item: MyFurniturePickerItem) => {
-    setMyFurnitureSelectingId(item.id);
-    try {
-      const resolved = await resolveMyFurnitureForEdit(item.id);
-      if (!resolved) return;
-      const preparedProduct = buildPreparedMyFurnitureProduct(resolved, item.id);
-      const fallbackPreviewUrl =
-        resolved.eligibleSku.variants.find(
-          (variant) => typeof variant?.imageUrl === "string" && variant.imageUrl.trim().length > 0
-        )?.imageUrl ?? null;
-      const previewUrl = item.previewImageUrl ?? fallbackPreviewUrl;
-      activatePreparedMyFurnitureSource(preparedProduct, { normalizedPreviewUrl: previewUrl });
+  const prepareMyFurnitureSourceById = useCallback(
+    async (itemId: string): Promise<boolean> => {
+      const item = myFurnitureItems.find((candidate) => candidate.id === itemId) ?? null;
+      setMyFurnitureSelectingIds([itemId]);
+      try {
+        const resolved = await resolveMyFurnitureForEdit(itemId);
+        if (!resolved) return false;
+        const preparedProduct = buildPreparedMyFurnitureProduct(resolved, itemId);
+        const fallbackPreviewUrl =
+          resolved.eligibleSku.variants.find(
+            (variant) => typeof variant?.imageUrl === "string" && variant.imageUrl.trim().length > 0
+          )?.imageUrl ?? null;
+        const previewUrl = item?.previewImageUrl ?? fallbackPreviewUrl;
+        activatePreparedMyFurnitureSource(preparedProduct, { normalizedPreviewUrl: previewUrl });
+        return true;
+      } catch (err: any) {
+        pushSnack(err?.message ?? "Failed to resolve saved furniture item.");
+        return false;
+      } finally {
+        setMyFurnitureSelectingIds([]);
+      }
+    },
+    [
+      activatePreparedMyFurnitureSource,
+      buildPreparedMyFurnitureProduct,
+      myFurnitureItems,
+      pushSnack,
+      resolveMyFurnitureForEdit,
+    ]
+  );
+
+  const handleSelectMyFurnitureItem = useCallback(
+    async (item: MyFurniturePickerItem) => {
+      const prepared = await prepareMyFurnitureSourceById(item.id);
+      if (!prepared) return;
       closeMyFurniturePicker();
       pushSnack("Saved furniture ready. Click in your room to place it.");
-    } catch (err: any) {
-      pushSnack(err?.message ?? "Failed to resolve saved furniture item.");
-    } finally {
-      setMyFurnitureSelectingId(null);
-    }
-  };
+    },
+    [closeMyFurniturePicker, prepareMyFurnitureSourceById, pushSnack]
+  );
+
+  const handleToggleSelectedMyFurnitureItem = useCallback((itemId: string) => {
+    setSelectedMyFurnitureItemIds((prev) =>
+      prev.includes(itemId) ? prev.filter((id) => id !== itemId) : [...prev, itemId]
+    );
+  }, []);
+
+  const handleApplyMyFurniturePickerAction = useCallback(
+    async (action: "add" | "swap" | "auto_place") => {
+      if (myFurnitureMode !== "add") return;
+      if (myFurnitureSelectingIds.length > 0) return;
+
+      const selectedIds = [...selectedMyFurnitureItemIds];
+      if (selectedIds.length === 0) return;
+      if ((action === "add" || action === "swap") && selectedIds.length !== 1) return;
+
+      if (action === "add" || action === "swap") {
+        const prepared = await prepareMyFurnitureSourceById(selectedIds[0]);
+        if (!prepared) return;
+        closeMyFurniturePicker();
+        if (action === "add") {
+          await handlePasteToPlacePlaceHere();
+        } else {
+          await handlePasteToPlaceSwap();
+        }
+        return;
+      }
+
+      if (selectedIds.length === 1) {
+        const prepared = await prepareMyFurnitureSourceById(selectedIds[0]);
+        if (!prepared) return;
+        closeMyFurniturePicker();
+        await handlePasteToPlaceAutoPlace();
+        return;
+      }
+
+      if (!pasteToPlaceMenuState) {
+        pushSnack("Choose a placement point first.");
+        return;
+      }
+
+      const menuStateSnapshot = pasteToPlaceMenuState;
+      if (!scene.baseImageUrl || isBusy || isEditRunning) {
+        closeMyFurniturePicker();
+        dismissPasteToPlaceMenu();
+        return;
+      }
+
+      const operationId = beginPasteToPlaceOperation();
+      const isOperationStale = (context: string): boolean => {
+        if (isPasteToPlaceOperationActive(operationId)) return false;
+        return true;
+      };
+
+      try {
+        setMyFurnitureSelectingIds(selectedIds);
+        setPasteToPlaceProgressCardState(menuStateSnapshot);
+        dismissPasteToPlaceMenu({ clearPreview: false, clearClipboardPreview: false });
+        closeMyFurniturePicker();
+
+        let mergedEligibleSkus: VibodeEligibleSku[] = [];
+        let resolvedCount = 0;
+
+        for (const furnitureId of selectedIds) {
+          try {
+            const resolved = await resolveMyFurnitureForEdit(furnitureId);
+            if (!resolved) continue;
+            mergedEligibleSkus = mergeEligibleSkusForSavedFurniture(mergedEligibleSkus, resolved.eligibleSku);
+            resolvedCount += 1;
+          } catch (err) {
+            console.warn("[editor] failed resolving selected My Furniture item for auto-place:", err);
+          }
+        }
+
+        if (isOperationStale("my_furniture_multi_auto_place:after_resolve")) return;
+        if (resolvedCount === 0) {
+          pushSnack("Selected furniture items are no longer available. Choose different items.");
+          return;
+        }
+
+        setPasteToPlaceStatus("placing");
+        const res = await runStage(
+          3,
+          {
+            eligibleSkus: mergedEligibleSkus,
+            targetCount: resolvedCount,
+          },
+          {
+            beforeCommit: () => !isOperationStale("my_furniture_multi_auto_place:before_commit"),
+            onImageCommitted: () => {
+              if (isOperationStale("my_furniture_multi_auto_place:on_image_committed")) return;
+              setPasteToPlaceStatus(null);
+              clearPasteToPlaceProgressPreview();
+            },
+          }
+        );
+        if (isOperationStale("my_furniture_multi_auto_place:after_stage_run")) return;
+        if (!res) return;
+
+        if (!isDevUnlockPasteToPlace) {
+          setHasUsedFreePasteToPlace(true);
+        }
+      } finally {
+        setMyFurnitureSelectingIds([]);
+        if (!isOperationStale("my_furniture_multi_auto_place:finally")) {
+          setPasteToPlaceStatus(null);
+          clearPasteToPlaceProgressPreview();
+        }
+      }
+    },
+    [
+      beginPasteToPlaceOperation,
+      clearPasteToPlaceProgressPreview,
+      closeMyFurniturePicker,
+      dismissPasteToPlaceMenu,
+      handlePasteToPlaceAutoPlace,
+      handlePasteToPlacePlaceHere,
+      handlePasteToPlaceSwap,
+      isBusy,
+      isDevUnlockPasteToPlace,
+      isEditRunning,
+      isPasteToPlaceOperationActive,
+      myFurnitureMode,
+      myFurnitureSelectingIds.length,
+      pasteToPlaceMenuState,
+      prepareMyFurnitureSourceById,
+      pushSnack,
+      resolveMyFurnitureForEdit,
+      runStage,
+      scene.baseImageUrl,
+      selectedMyFurnitureItemIds,
+    ]
+  );
 
   const clearRemoveMarker = useCallback(
     (notify = true) => {
@@ -6744,10 +6907,15 @@ function EditorPageInner() {
         mode={myFurnitureMode}
         items={myFurnitureItems}
         loading={myFurnitureLoading}
-        selectingId={myFurnitureSelectingId}
+        selectingIds={myFurnitureSelectingIds}
+        selectedItemIds={selectedMyFurnitureItemIds}
         onClose={closeMyFurniturePicker}
         onSelect={(item) => {
           void handleSelectMyFurnitureItem(item);
+        }}
+        onToggleSelectedItem={handleToggleSelectedMyFurnitureItem}
+        onApplySelectionAction={(action) => {
+          void handleApplyMyFurniturePickerAction(action);
         }}
       />
 

@@ -21,9 +21,12 @@ type MyFurniturePickerProps = {
   mode: MyFurniturePickerMode | null;
   items: MyFurniturePickerItem[];
   loading: boolean;
-  selectingId: string | null;
+  selectingIds: string[];
+  selectedItemIds: string[];
   onClose: () => void;
   onSelect: (item: MyFurniturePickerItem) => void;
+  onToggleSelectedItem: (itemId: string) => void;
+  onApplySelectionAction?: (action: "add" | "swap" | "auto_place") => void;
 };
 
 function formatTimestamp(value: string | null): string {
@@ -35,6 +38,14 @@ function formatTimestamp(value: string | null): string {
 
 export function MyFurniturePicker(props: MyFurniturePickerProps) {
   if (!props.open) return null;
+  const selectedItemIdSet = new Set(props.selectedItemIds);
+  const selectionCount = props.selectedItemIds.length;
+  const isAddMode = props.mode === "add";
+  const isApplyDisabled = props.loading || props.selectingIds.length > 0;
+
+  const canPlaceHere = isAddMode && selectionCount === 1 && !isApplyDisabled;
+  const canSwap = isAddMode && selectionCount === 1 && !isApplyDisabled;
+  const canAutoPlace = isAddMode && selectionCount >= 1 && !isApplyDisabled;
 
   return (
     <div
@@ -48,7 +59,9 @@ export function MyFurniturePicker(props: MyFurniturePickerProps) {
           <div>
             <div className="text-sm font-medium">My Furniture</div>
             <div className="text-xs text-neutral-400">
-              Pick furniture to use in your room.
+              {isAddMode
+                ? "Select furniture, then choose a placement action."
+                : "Pick furniture to use in your room."}
             </div>
           </div>
           <button
@@ -73,16 +86,27 @@ export function MyFurniturePicker(props: MyFurniturePickerProps) {
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
               {props.items.map((item) => {
                 const previewUrl = item.previewImageUrl;
-                const isSelecting = props.selectingId === item.id;
+                const isSelecting = props.selectingIds.includes(item.id);
+                const isSelected = selectedItemIdSet.has(item.id);
                 const label = item.displayName || item.userSkuId;
                 const subtitle = item.category ?? item.sourceUrl ?? "Saved item";
                 return (
                   <button
                     key={item.id}
                     type="button"
-                    className="rounded-lg border border-neutral-800 bg-neutral-900 p-3 text-left transition hover:bg-neutral-800 disabled:cursor-not-allowed disabled:opacity-60"
-                    disabled={isSelecting}
-                    onClick={() => props.onSelect(item)}
+                    className={`rounded-lg border bg-neutral-900 p-3 text-left transition disabled:cursor-not-allowed disabled:opacity-60 ${
+                      isSelected
+                        ? "border-blue-500/70 ring-1 ring-blue-500/40"
+                        : "border-neutral-800 hover:bg-neutral-800"
+                    }`}
+                    disabled={isSelecting || isApplyDisabled}
+                    onClick={() => {
+                      if (isAddMode) {
+                        props.onToggleSelectedItem(item.id);
+                        return;
+                      }
+                      props.onSelect(item);
+                    }}
                   >
                     <div className="aspect-[4/3] w-full overflow-hidden rounded-md border border-neutral-800 bg-neutral-950">
                       {previewUrl ? (
@@ -104,6 +128,11 @@ export function MyFurniturePicker(props: MyFurniturePickerProps) {
                       Used {item.timesUsed} {item.timesUsed === 1 ? "time" : "times"} •{" "}
                       Last used: {formatTimestamp(item.lastUsedAt)}
                     </div>
+                    {isAddMode ? (
+                      <div className="mt-2 text-xs text-neutral-300">
+                        {isSelected ? "Selected" : "Click to select"}
+                      </div>
+                    ) : null}
                     {isSelecting ? (
                       <div className="mt-2 text-xs text-blue-300">Preparing...</div>
                     ) : null}
@@ -113,6 +142,58 @@ export function MyFurniturePicker(props: MyFurniturePickerProps) {
             </div>
           )}
         </div>
+        {isAddMode ? (
+          <div className="border-t border-neutral-800 px-4 py-3">
+            <div className="mb-2 text-xs text-neutral-400">
+              {selectionCount === 0
+                ? "Select at least one item to continue."
+                : `${selectionCount} selected`}
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                className={`rounded-md border px-3 py-1.5 text-sm ${
+                  canPlaceHere
+                    ? "border-neutral-700 bg-neutral-900 text-neutral-100 hover:bg-neutral-800"
+                    : "cursor-not-allowed border-neutral-900 bg-neutral-950 text-neutral-500"
+                }`}
+                disabled={!canPlaceHere}
+                onClick={() => props.onApplySelectionAction?.("add")}
+              >
+                ✨ Place here
+              </button>
+              <button
+                type="button"
+                className={`rounded-md border px-3 py-1.5 text-sm ${
+                  canSwap
+                    ? "border-neutral-700 bg-neutral-900 text-neutral-100 hover:bg-neutral-800"
+                    : "cursor-not-allowed border-neutral-900 bg-neutral-950 text-neutral-500"
+                }`}
+                disabled={!canSwap}
+                onClick={() => props.onApplySelectionAction?.("swap")}
+              >
+                🔁 Swap item
+              </button>
+              <button
+                type="button"
+                className={`rounded-md border px-3 py-1.5 text-sm ${
+                  canAutoPlace
+                    ? "border-neutral-700 bg-neutral-900 text-neutral-100 hover:bg-neutral-800"
+                    : "cursor-not-allowed border-neutral-900 bg-neutral-950 text-neutral-500"
+                }`}
+                disabled={!canAutoPlace}
+                onClick={() => props.onApplySelectionAction?.("auto_place")}
+              >
+                🎯 Let Vibode decide placement
+              </button>
+            </div>
+            {selectionCount > 1 ? (
+              <div className="mt-2 text-xs text-neutral-500">
+                Select exactly one item for Place here or Swap item.
+              </div>
+            ) : null}
+          </div>
+        ) : null}
       </div>
     </div>
   );
