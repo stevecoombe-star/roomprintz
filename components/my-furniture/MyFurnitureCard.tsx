@@ -10,6 +10,10 @@ type MyFurnitureCardProps = {
   item: MyFurnitureItem;
   onOpen: (item: MyFurnitureItem) => void;
   onUseInRoom: (itemId: string) => void;
+  onMoveToFolder: (itemId: string) => void;
+  selectionMode: boolean;
+  isSelected: boolean;
+  onToggleSelected: (itemId: string) => void;
   isActing?: boolean;
 };
 
@@ -24,6 +28,10 @@ export function MyFurnitureCard({
   item,
   onOpen,
   onUseInRoom,
+  onMoveToFolder,
+  selectionMode,
+  isSelected,
+  onToggleSelected,
   isActing = false,
 }: MyFurnitureCardProps) {
   const imageUrl = getMyFurniturePreferredImageUrl(item);
@@ -55,7 +63,44 @@ export function MyFurnitureCard({
           )}
         </div>
         <div className="pointer-events-none absolute inset-x-0 top-0 h-16 rounded-t-2xl bg-gradient-to-b from-black/10 to-transparent opacity-0 transition group-hover:opacity-100" />
+        <div className="absolute left-2 top-2 flex items-center gap-2">
+          {selectionMode ? (
+            <label
+              className="pointer-events-auto inline-flex items-center gap-1 rounded-md border border-slate-700 bg-slate-950/90 px-2 py-1 text-[11px] text-slate-200"
+              onClick={(event) => event.stopPropagation()}
+            >
+              <input
+                type="checkbox"
+                checked={isSelected}
+                onChange={() => onToggleSelected(item.id)}
+                className="h-3.5 w-3.5 accent-slate-100"
+              />
+              Select
+            </label>
+          ) : null}
+        </div>
         <div className="absolute right-2 top-2 flex gap-1 opacity-0 transition group-hover:opacity-100">
+          <details
+            className="pointer-events-auto relative"
+            onClick={(event) => event.stopPropagation()}
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            <summary className="flex cursor-pointer list-none items-center rounded-md border border-slate-600 bg-slate-950/90 px-2 py-1 text-[11px] text-slate-100 transition hover:border-slate-400">
+              ...
+            </summary>
+            <div className="absolute right-0 z-10 mt-1 w-40 rounded-md border border-slate-700 bg-slate-950 p-1 shadow-xl">
+              <button
+                type="button"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  onMoveToFolder(item.id);
+                }}
+                className="w-full rounded px-2 py-1.5 text-left text-xs text-slate-200 transition hover:bg-slate-800"
+              >
+                Move to Folder
+              </button>
+            </div>
+          </details>
           <button
             type="button"
             disabled={isActing}

@@ -10,6 +10,10 @@ type MyFurnitureRowProps = {
   item: MyFurnitureItem;
   onOpen: (item: MyFurnitureItem) => void;
   onUseInRoom: (itemId: string) => void;
+  onMoveToFolder: (itemId: string) => void;
+  selectionMode: boolean;
+  isSelected: boolean;
+  onToggleSelected: (itemId: string) => void;
   isActing?: boolean;
 };
 
@@ -24,6 +28,10 @@ export function MyFurnitureRow({
   item,
   onOpen,
   onUseInRoom,
+  onMoveToFolder,
+  selectionMode,
+  isSelected,
+  onToggleSelected,
   isActing = false,
 }: MyFurnitureRowProps) {
   const imageUrl = getMyFurniturePreferredImageUrl(item);
@@ -32,7 +40,7 @@ export function MyFurnitureRow({
 
   return (
     <article
-      className="grid grid-cols-[64px_minmax(0,1fr)_auto] items-center gap-3 rounded-xl border border-slate-800 bg-slate-900/60 p-2 transition hover:border-slate-600"
+      className="grid grid-cols-[auto_64px_minmax(0,1fr)_auto] items-center gap-3 rounded-xl border border-slate-800 bg-slate-900/60 p-2 transition hover:border-slate-600"
       role="button"
       tabIndex={0}
       onClick={() => onOpen(item)}
@@ -43,6 +51,23 @@ export function MyFurnitureRow({
         }
       }}
     >
+      <div className="flex w-16 items-center justify-center">
+        {selectionMode ? (
+          <label
+            className="inline-flex items-center gap-1 rounded-md border border-slate-700 px-2 py-1 text-[11px] text-slate-300"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <input
+              type="checkbox"
+              checked={isSelected}
+              onChange={() => onToggleSelected(item.id)}
+              className="h-3.5 w-3.5 accent-slate-100"
+            />
+            Sel
+          </label>
+        ) : null}
+      </div>
+
       <div className="h-16 w-16 overflow-hidden rounded-md border border-slate-800/70 bg-[rgb(237,237,237)]">
         {imageUrl ? (
           <img src={imageUrl} alt={title} className="h-full w-full object-contain p-1.5" loading="lazy" />
@@ -62,6 +87,27 @@ export function MyFurnitureRow({
       </div>
 
       <div className="flex items-center gap-1">
+        <details
+          className="relative"
+          onClick={(event) => event.stopPropagation()}
+          onMouseDown={(event) => event.stopPropagation()}
+        >
+          <summary className="flex cursor-pointer list-none items-center rounded-md border border-slate-700 px-2 py-1 text-xs text-slate-200 transition hover:border-slate-500 hover:text-white">
+            ...
+          </summary>
+          <div className="absolute right-0 z-10 mt-1 w-40 rounded-md border border-slate-700 bg-slate-950 p-1 shadow-xl">
+            <button
+              type="button"
+              onClick={(event) => {
+                event.stopPropagation();
+                onMoveToFolder(item.id);
+              }}
+              className="w-full rounded px-2 py-1.5 text-left text-xs text-slate-200 transition hover:bg-slate-800"
+            >
+              Move to Folder
+            </button>
+          </div>
+        </details>
         <button
           type="button"
           disabled={isActing}

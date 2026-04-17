@@ -8,6 +8,8 @@ import {
 export type MyFurnitureItem = {
   id: string;
   userSkuId: string;
+  folderId: string | null;
+  sourceType: string | null;
   displayName: string;
   category: string | null;
   sourceLabel: string | null;
@@ -257,6 +259,8 @@ export function normalizeMyFurnitureItem(raw: unknown): MyFurnitureItem | null {
   return {
     id,
     userSkuId,
+    folderId: asOptionalString(row.folder_id ?? row.folderId),
+    sourceType: asOptionalString(row.source_type ?? row.sourceType),
     displayName: resolved.displayName,
     category: resolved.category,
     sourceLabel: resolved.supplier ?? asOptionalString(row.source_label ?? row.sourceLabel),

@@ -10,6 +10,8 @@ export type VibodeUserFurnitureRow = {
   id: string;
   user_id: string;
   user_sku_id: string;
+  folder_id: string | null;
+  source_type: string | null;
   display_name: string | null;
   preview_image_url: string | null;
   source_url: string | null;
@@ -132,6 +134,8 @@ export async function upsertVibodeUserFurniture(
   args: {
     userId: string;
     userSkuId: string;
+    folderId?: string | null;
+    sourceType?: string | null;
     displayName?: string | null;
     previewImageUrl?: string | null;
     sourceUrl?: string | null;
@@ -162,6 +166,12 @@ export async function upsertVibodeUserFurniture(
     category: normalizeOptionalString(args.category) ?? null,
     is_archived: false,
   };
+  if (args.folderId !== undefined) {
+    payload.folder_id = normalizeOptionalString(args.folderId) ?? null;
+  }
+  if (args.sourceType !== undefined) {
+    payload.source_type = normalizeOptionalString(args.sourceType) ?? null;
+  }
 
   if (args.parsedDisplayName !== undefined) {
     payload.parsed_display_name = normalizeOptionalString(args.parsedDisplayName) ?? null;

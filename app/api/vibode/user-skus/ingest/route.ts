@@ -23,6 +23,7 @@ type AnySupabaseClient = SupabaseClient;
 const SUPABASE_URL = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || "";
 const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "";
 const INGEST_SOURCE_HEADER = "x-roomprintz-ingest-source";
+const INGEST_SKIP_MY_FURNITURE_AUTOSAVE_HEADER = "x-roomprintz-skip-my-furniture-autosave";
 const INGEST_ROUTE = "/api/vibode/user-skus/ingest";
 
 function safeString(value: unknown): string | null {
@@ -166,6 +167,12 @@ function resolveIngestSourceType(req: NextRequest, body: IngestBody): string {
   return "unknown";
 }
 
+function shouldSkipMyFurnitureAutosave(req: NextRequest): boolean {
+  const flag = safeString(req.headers.get(INGEST_SKIP_MY_FURNITURE_AUTOSAVE_HEADER));
+  if (!flag) return false;
+  return flag === "1" || flag.toLowerCase() === "true";
+}
+
 export async function POST(req: NextRequest) {
   const requestId = createRequestId();
   const startedAtMs = Date.now();
@@ -177,6 +184,7 @@ export async function POST(req: NextRequest) {
   try {
     const body = (await req.json()) as IngestBody;
     const sourceKind = resolveIngestSourceType(req, body);
+    const skipMyFurnitureAutosave = shouldSkipMyFurnitureAutosave(req);
     const mimeType = resolveMimeType(body);
     const filename = resolveFilename(body);
     const label = safeString(body.label);
@@ -191,6 +199,7 @@ export async function POST(req: NextRequest) {
       label,
       has_image_url: hasImageUrl,
       has_image_data: hasImageData,
+      skip_my_furniture_autosave: skipMyFurnitureAutosave,
     });
 
     const compositorBase = (process.env.VIBODE_COMPOSITOR_URL ?? "http://localhost:8000").replace(
@@ -206,6 +215,7 @@ export async function POST(req: NextRequest) {
       label,
       has_image_url: hasImageUrl,
       has_image_data: hasImageData,
+      skip_my_furniture_autosave: skipMyFurnitureAutosave,
     });
 
     const upstreamRes = await fetch(upstream, {
@@ -256,7 +266,7 @@ export async function POST(req: NextRequest) {
     let preparedUserSkuPresent = false;
     let eligibleSkuPresent = false;
 
-    if (accessToken) {
+    if (accessToken && !skipMyFurnitureAutosave) {
       const userSupabase = getUserSupabaseClient(accessToken);
       if (userSupabase && isRecord(parsed)) {
         const userSkuRaw = parsed.userSku;
@@ -281,6 +291,7 @@ export async function POST(req: NextRequest) {
               const saved = await upsertVibodeUserFurniture(userSupabase, {
                 userId: userData.user.id,
                 userSkuId: preparedUserSku.userSkuId,
+                sourceType: sourceKind === "upload" ? "uploaded_image" : "pasted_image",
                 displayName: parsedDisplayName,
                 previewImageUrl: preparedUserSku.previewImageUrl,
                 sourceUrl: parsedSourceUrl,

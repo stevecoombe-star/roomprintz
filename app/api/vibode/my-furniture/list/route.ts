@@ -102,6 +102,8 @@ export async function GET(req: NextRequest) {
             return {
               id,
               user_sku_id: userSkuId,
+              folder_id: asOptionalString(item.folder_id ?? item.folderId),
+              source_type: asOptionalString(item.source_type ?? item.sourceType),
               display_name: asOptionalString(item.display_name ?? item.displayName),
               category: asOptionalString(item.category),
               source_label: asOptionalString(item.source_label ?? item.sourceLabel),
