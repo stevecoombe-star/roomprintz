@@ -6,14 +6,20 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint || true"
+    "lint": "eslint || true",
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.84.0",
+    "konva": "^10.0.12",
     "next": "^16.0.7",
     "react": "^19.2.1",
     "react-dom": "^19.2.1",
-    "stripe": "^20.1.0"
+    "react-konva": "^19.2.1",
+    "sharp": "^0.34.5",
+    "stripe": "^20.1.0",
+    "use-image": "^1.1.4",
+    "zustand": "^5.0.10"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",

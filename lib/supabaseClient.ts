@@ -1,21 +1,22 @@
 // lib/supabaseClient.ts
 "use client";
 
-import { createClient } from "@supabase/supabase-js";
+/**
+ * DEPRECATED — use `src/lib/supabaseBrowser` instead.
+ *
+ * This file is kept as a compatibility shim so older imports
+ * (`import { supabase } from "@/lib/supabaseClient"`) keep working.
+ *
+ * IMPORTANT: Do NOT create a new Supabase client here — that can lead to
+ * multiple GoTrueClient instances and undefined auth behavior.
+ */
 
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
+export { browserClient as supabase } from "@/src/lib/supabaseBrowser";
 
-if (!supabaseUrl || !supabaseAnonKey) {
-  // This will show up in the browser console
-  console.error(
-    "[supabaseClient] Missing NEXT_PUBLIC_SUPABASE_URL or NEXT_PUBLIC_SUPABASE_ANON_KEY"
+// Optional: gentle console warning in dev to help you migrate imports
+if (process.env.NODE_ENV !== "production") {
+  // eslint-disable-next-line no-console
+  console.warn(
+    "[DEPRECATED] Import `supabase` from `@/src/lib/supabaseBrowser` instead of `@/lib/supabaseClient`."
   );
 }
-
-export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
-  auth: {
-    persistSession: true,
-    autoRefreshToken: true,
-  },
-});

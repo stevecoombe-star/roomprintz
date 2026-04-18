@@ -3,6 +3,7 @@
 
 import { useEffect, useState } from "react";
 import { supabase } from "./supabaseClient";
+import { getSupabaseBrowserSession } from "./supabaseBrowser";
 import type { User } from "@supabase/supabase-js";
 
 type UseSupabaseUserResult = {
@@ -19,7 +20,7 @@ export function useSupabaseUser(): UseSupabaseUserResult {
 
     const init = async () => {
       try {
-        const { data, error } = await supabase.auth.getSession();
+        const { data, error } = await getSupabaseBrowserSession();
         if (!isMounted) return;
 
         if (error) {
