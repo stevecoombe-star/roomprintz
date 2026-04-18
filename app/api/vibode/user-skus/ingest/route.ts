@@ -202,11 +202,23 @@ export async function POST(req: NextRequest) {
       skip_my_furniture_autosave: skipMyFurnitureAutosave,
     });
 
-    const compositorBase = (process.env.VIBODE_COMPOSITOR_URL ?? "http://localhost:8000").replace(
-      /\/$/,
-      ""
-    );
-    const upstream = `${compositorBase}/api/vibode/user-skus/ingest`;
+    const endpointBase = process.env.ROOMPRINTZ_COMPOSITOR_URL?.trim();
+    if (!endpointBase) {
+      throw new Error(
+        "ROOMPRINTZ_COMPOSITOR_URL is not set in env (RoomPrintz compositor endpoint)."
+      );
+    }
+    const endpointBaseNormalized = endpointBase
+      .replace(/\/stage-room\/?$/, "")
+      .replace(/\/api\/vibode\/stage-run\/?$/, "")
+      .replace(/\/vibode\/stage-run\/?$/, "")
+      .replace(/\/vibode\/compose\/?$/, "")
+      .replace(/\/vibode\/remove\/?$/, "")
+      .replace(/\/vibode\/swap\/?$/, "")
+      .replace(/\/vibode\/rotate\/?$/, "")
+      .replace(/\/vibode\/full_vibe\/?$/, "")
+      .replace(/\/$/, "");
+    const upstream = `${endpointBaseNormalized}/api/vibode/user-skus/ingest`;
 
     logIngestEvent("info", "forwarding_request_to_compositor", requestId, {
       source_kind: sourceKind,
