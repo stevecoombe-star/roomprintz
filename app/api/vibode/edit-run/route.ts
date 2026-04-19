@@ -255,6 +255,11 @@ export async function POST(req: NextRequest) {
       roomId: existingRoom?.id ?? null,
       vibodeRoomId,
     };
+    // TEMP: refund-path test hook (remove after verification)
+    const FORCE_REFUND_TEST = true;
+    if (FORCE_REFUND_TEST) {
+      throw new Error("Forced refund test after spend");
+    }
     if (action === "remove") {
       const targetRecord = isRecord(payloadForCompositor.target)
         ? ({ ...payloadForCompositor.target } as Record<string, unknown>)
