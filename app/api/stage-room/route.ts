@@ -1,6 +1,7 @@
 // app/api/stage-room/route.ts
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
+import type { SupabaseClient } from "@supabase/supabase-js";
 import { callCompositorEngine } from "@/lib/callCompositorEngine";
 import {
   canAffordTokens,
@@ -16,6 +17,7 @@ export const runtime = "nodejs";
 
 type ModelVersion = "gemini-3" | "gemini-2.5";
 type AspectRatio = "auto" | "4:3" | "3:2" | "16:9" | "1:1";
+type AnySupabaseClient = SupabaseClient<any, "public", any>;
 
 const ALLOWED_ASPECT_RATIOS: Set<string> = new Set([
   "auto",
@@ -45,7 +47,7 @@ const SUPABASE_ANON_KEY = mustEnv(
  */
 function getUserSupabaseClient(
   req: NextRequest
-): { supabase: ReturnType<typeof createClient> | null; token: string | null } {
+): { supabase: AnySupabaseClient | null; token: string | null } {
   const authHeader = req.headers.get("authorization") || "";
   const token = authHeader.startsWith("Bearer ")
     ? authHeader.slice("Bearer ".length).trim()
@@ -53,7 +55,10 @@ function getUserSupabaseClient(
 
   if (!token) return { supabase: null, token: null };
 
-  const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+  const supabase: AnySupabaseClient = createClient(
+    SUPABASE_URL,
+    SUPABASE_ANON_KEY,
+    {
     global: {
       headers: {
         Authorization: `Bearer ${token}`,
