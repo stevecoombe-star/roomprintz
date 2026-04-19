@@ -1377,10 +1377,12 @@ function resolveGenerateActionType(freeze: unknown): TokenActionKey {
   if (!isRecord(freeze)) return "STAGE_1";
   const vibodeIntent = isRecord((freeze as any).vibodeIntent) ? (freeze as any).vibodeIntent : null;
   if (!isRecord(vibodeIntent)) return "STAGE_1";
-  if (Array.isArray(vibodeIntent?.swap?.marks) && vibodeIntent.swap.marks.length > 0) {
+  const swap = isRecord(vibodeIntent.swap) ? vibodeIntent.swap : null;
+  if (swap && Array.isArray(swap.marks) && swap.marks.length > 0) {
     return "EDIT_SWAP";
   }
-  if (Array.isArray(vibodeIntent?.rotate?.marks) && vibodeIntent.rotate.marks.length > 0) {
+  const rotate = isRecord(vibodeIntent.rotate) ? vibodeIntent.rotate : null;
+  if (rotate && Array.isArray(rotate.marks) && rotate.marks.length > 0) {
     return "EDIT_ROTATE";
   }
   if (vibodeIntent.mode === "remove" && Array.isArray(vibodeIntent.marks) && vibodeIntent.marks.length > 0) {
