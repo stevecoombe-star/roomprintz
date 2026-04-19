@@ -109,7 +109,7 @@ export async function POST(req: NextRequest) {
 
     const storageKey = `users/${authenticatedUserId}/scene_${sceneId}/base_${ts}.${ext}`;
 
-    const supabase = createClient(SUPABASE_URL, SERVICE_ROLE_KEY, {
+    const supabase: AnySupabaseClient = createClient(SUPABASE_URL, SERVICE_ROLE_KEY, {
       auth: { persistSession: false },
     });
 

@@ -2,8 +2,10 @@
 import Stripe from "stripe";
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
+import type { SupabaseClient } from "@supabase/supabase-js";
 
 export const runtime = "nodejs";
+type AnySupabaseClient = SupabaseClient<any, "public", any>;
 
 // Helper: always return JSON (prevents HTML errors leaking to client)
 function json(status: number, body: Record<string, unknown>) {
@@ -41,7 +43,7 @@ export async function POST(req: Request) {
       apiVersion: "2025-12-15.clover",
     });
 
-    const supabaseAdmin = createClient(
+    const supabaseAdmin: AnySupabaseClient = createClient(
       mustEnv("SUPABASE_URL"),
       mustEnv("SUPABASE_SERVICE_ROLE_KEY")
     );
@@ -68,7 +70,7 @@ export async function POST(req: Request) {
     if (!accessToken) return json(401, { error: "Missing access token" });
 
     // Use service role client but pass Authorization header to resolve the user
-    const supabaseUserClient = createClient(
+    const supabaseUserClient: AnySupabaseClient = createClient(
       mustEnv("SUPABASE_URL"),
       mustEnv("SUPABASE_SERVICE_ROLE_KEY"),
       {

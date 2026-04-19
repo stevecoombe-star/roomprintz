@@ -258,9 +258,11 @@ const STYLE_BAND_TO_NB_STYLE_ID: Partial<Record<StyleBand, string>> = {
   eclectic_soft: "eclectic_soft",
 };
 
+type AnySupabaseClient = SupabaseClient<any, "public", any>;
+
 function getUserSupabaseClient(
   req: NextRequest
-): { supabase: ReturnType<typeof createClient> | null; token: string | null } {
+): { supabase: AnySupabaseClient | null; token: string | null } {
   const authHeader = req.headers.get("authorization") || "";
   const token = authHeader.startsWith("Bearer ")
     ? authHeader.slice("Bearer ".length).trim()
@@ -268,20 +270,22 @@ function getUserSupabaseClient(
 
   if (!token) return { supabase: null, token: null };
 
-  const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+  const supabase: AnySupabaseClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
     global: { headers: { Authorization: `Bearer ${token}` } },
     auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
-  });
+  }) as AnySupabaseClient;
 
   return { supabase, token };
 }
 
-function getAdminSupabaseClient(): SupabaseClient | null {
+function getAdminSupabaseClient(): AnySupabaseClient | null {
   if (!SUPABASE_SERVICE_ROLE_KEY) return null;
 
-  return createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
+  const supabase: AnySupabaseClient = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
     auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
-  });
+  }) as AnySupabaseClient;
+
+  return supabase;
 }
 
 function finiteNumber(n: unknown): n is number {

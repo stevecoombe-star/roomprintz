@@ -12,7 +12,7 @@ import { upsertVibodeUserFurniture } from "@/lib/vibodeMyFurniture";
 
 export const runtime = "nodejs";
 
-type AnySupabaseClient = SupabaseClient;
+type AnySupabaseClient = SupabaseClient<any, "public", any>;
 type UnknownRecord = Record<string, unknown>;
 type ProductPageMetadata = {
   title: string | null;

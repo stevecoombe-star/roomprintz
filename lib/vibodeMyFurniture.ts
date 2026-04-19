@@ -2,7 +2,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import type { PriceConfidence, PriceSourceType } from "@/lib/attribution/parsers";
 import { buildCommercialEventMetadata } from "@/lib/commercial/billing";
 
-type AnySupabaseClient = SupabaseClient;
+type AnySupabaseClient = SupabaseClient<any, "public", any>;
 
 export type VibodeFurnitureEventType = "added" | "swapped" | "outbound_clicked";
 

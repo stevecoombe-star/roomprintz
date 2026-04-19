@@ -8,10 +8,12 @@ import { createClient, type SupabaseClient } from "@supabase/supabase-js";
  * This should be the ONLY place creating a Supabase client in the browser.
  */
 
-let _browserClient: SupabaseClient | null = null;
+type AnySupabaseClient = SupabaseClient<any, "public", any>;
+
+let _browserClient: AnySupabaseClient | null = null;
 let _authHydrationPromise: Promise<void> | null = null;
 
-export function supabaseBrowser(): SupabaseClient {
+export function supabaseBrowser(): AnySupabaseClient {
   if (_browserClient) return _browserClient;
 
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -76,4 +78,4 @@ export async function getSupabaseBrowserAccessToken(): Promise<string | null> {
  * Compatibility export for any legacy imports expecting a `browserClient`.
  * IMPORTANT: This is the SAME singleton (no second client created).
  */
-export const browserClient: SupabaseClient = supabaseBrowser();
+export const browserClient: AnySupabaseClient = supabaseBrowser();

@@ -1,6 +1,6 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 
-type AnySupabaseClient = SupabaseClient;
+type AnySupabaseClient = SupabaseClient<any, "public", any>;
 
 const SIGNED_URL_EXPIRES_IN_SEC = 60 * 60 * 24;
 const STORAGE_PATH_PATTERNS = [

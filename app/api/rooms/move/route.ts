@@ -1,6 +1,7 @@
 // app/api/rooms/move/route.ts
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
+import type { SupabaseClient } from "@supabase/supabase-js";
 
 type Body = {
   fromPropertyId: string;
@@ -15,6 +16,7 @@ type IdRow = {
 type RoomNameRow = {
   room_name: string | null;
 };
+type AnySupabaseClient = SupabaseClient<any, "public", any>;
 
 function jsonError(message: string, status = 400) {
   return NextResponse.json({ error: message }, { status });
@@ -86,7 +88,7 @@ export async function POST(req: Request) {
     return jsonError("fromPropertyId and toPropertyId must be different.");
   }
 
-  const supabase = createClient(supabaseUrl, supabaseAnonKey, {
+  const supabase: AnySupabaseClient = createClient(supabaseUrl, supabaseAnonKey, {
     global: { headers: { Authorization: `Bearer ${token}` } },
   });
 
