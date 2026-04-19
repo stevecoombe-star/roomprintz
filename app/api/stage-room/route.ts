@@ -2,52 +2,20 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import { callCompositorEngine } from "@/lib/callCompositorEngine";
+import {
+  canAffordTokens,
+  getTokenCostForAction,
+  getUserTokenWallet,
+  refundTokens,
+  spendTokens,
+} from "@/lib/vibodeTokenDomain";
+import type { TokenActionKey } from "@/lib/vibodeTokenConstants";
 
 // Ensure we run on the Node.js runtime (needed for Buffer, larger payloads, etc.)
 export const runtime = "nodejs";
 
 type ModelVersion = "gemini-3" | "gemini-2.5";
 type AspectRatio = "auto" | "4:3" | "3:2" | "16:9" | "1:1";
-
-type SpendRow = {
-  success: boolean;
-  balance: number | null;
-};
-
-type TokenLedgerInsert = {
-  user_id: string;
-  delta: number;
-  kind: string;
-  external_id: string;
-  reason: string;
-  job_id: string;
-};
-
-/**
- * Minimal Supabase Database type for this route.
- * This avoids "never" typing for rpc()/insert() without using `any`.
- */
-type Database = {
-  public: {
-    Tables: {
-      token_ledger: {
-        Row: Record<string, unknown>;
-        Insert: TokenLedgerInsert;
-        Update: Record<string, unknown>;
-        Relationships: never[];
-      };
-    };
-    Views: Record<string, never>;
-    Functions: {
-      try_spend_tokens: {
-        Args: { p_cost: number; p_external_id: string; p_reason: string };
-        Returns: SpendRow[];
-      };
-    };
-    Enums: Record<string, never>;
-    CompositeTypes: Record<string, never>;
-  };
-};
 
 const ALLOWED_ASPECT_RATIOS: Set<string> = new Set([
   "auto",
@@ -77,7 +45,7 @@ const SUPABASE_ANON_KEY = mustEnv(
  */
 function getUserSupabaseClient(
   req: NextRequest
-): { supabase: ReturnType<typeof createClient<Database>> | null; token: string | null } {
+): { supabase: ReturnType<typeof createClient> | null; token: string | null } {
   const authHeader = req.headers.get("authorization") || "";
   const token = authHeader.startsWith("Bearer ")
     ? authHeader.slice("Bearer ".length).trim()
@@ -85,7 +53,7 @@ function getUserSupabaseClient(
 
   if (!token) return { supabase: null, token: null };
 
-  const supabase = createClient<Database>(SUPABASE_URL, SUPABASE_ANON_KEY, {
+  const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
     global: {
       headers: {
         Authorization: `Bearer ${token}`,
@@ -242,34 +210,47 @@ export async function POST(req: NextRequest) {
      * Fresh uploads and continuations are both allowed to target any existing room label.
      */
 
-    const tokenCost = normalizedModelVersion === "gemini-3" ? 2 : 1;
+    const actionType: TokenActionKey = "STAGE_1";
+    const tokenCost = await getTokenCostForAction(supabase, actionType);
+    const walletBeforeSpend = await getUserTokenWallet(supabase, user.id);
+    const affordability = canAffordTokens({
+      balanceTokens: walletBeforeSpend.balance_tokens,
+      requiredTokens: tokenCost,
+    });
 
-    const { data: spendData, error: spendErr } = await supabase.rpc(
-      "try_spend_tokens",
-      {
-        p_cost: tokenCost,
-        p_external_id: jobId,
-        p_reason: `room_generation:${normalizedModelVersion}`,
-      }
-    );
-
-    if (spendErr) {
-      console.error("[stage-room] try_spend_tokens error:", spendErr);
-      return json(500, { error: "Token spend failed" });
-    }
-
-    const spendRow = Array.isArray(spendData) ? spendData[0] : null;
-    const spentOk = Boolean(spendRow?.success);
-    const balanceAfterSpend =
-      typeof spendRow?.balance === "number" ? spendRow.balance : null;
-
-    if (!spentOk) {
+    if (!affordability.allowed) {
       return json(402, {
         error: "Insufficient tokens",
         required: tokenCost,
-        tokenBalance: balanceAfterSpend ?? 0,
+        tokenBalance: affordability.balanceTokens,
       });
     }
+
+    const spendResult = await spendTokens({
+      supabase,
+      userId: user.id,
+      spendTokens: tokenCost,
+      eventType: "spend",
+      actionType,
+      modelVersion: normalizedModelVersion,
+      generationRunId: null,
+      metadata: {
+        source: "api_stage_room",
+        jobId,
+        reason: `room_generation:${normalizedModelVersion}`,
+        propertyId,
+        roomName,
+      },
+    });
+    if (!spendResult.ok) {
+      return json(402, {
+        error: "Insufficient tokens",
+        required: tokenCost,
+        tokenBalance: spendResult.balanceTokens,
+      });
+    }
+
+    const balanceAfterSpend = spendResult.balanceTokens;
 
     const arrayBuffer = await file.arrayBuffer();
     const bytes = Buffer.from(arrayBuffer);
@@ -294,17 +275,24 @@ export async function POST(req: NextRequest) {
     const originalImageUrl = result?.originalImageUrl ?? null;
 
     if (!imageUrl) {
-      const { error: refundErr } = await supabase.from("token_ledger").insert({
-        user_id: user.id,
-        delta: tokenCost,
-        kind: "refund",
-        external_id: jobId,
-        reason: "generation_failed_refund",
-        job_id: jobId,
-      });
-
-      if (refundErr) {
-        console.error("[stage-room] refund insert error:", refundErr);
+      try {
+        await refundTokens({
+          supabase,
+          userId: user.id,
+          refundTokens: tokenCost,
+          actionType,
+          modelVersion: normalizedModelVersion,
+          generationRunId: null,
+          metadata: {
+            source: "api_stage_room",
+            jobId,
+            reason: "generation_failed_refund",
+            propertyId,
+            roomName,
+          },
+        });
+      } catch (refundErr) {
+        console.error("[stage-room] refund grant failed:", refundErr);
       }
 
       return json(500, { error: "Compositor did not return an imageUrl." });

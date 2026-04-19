@@ -68,6 +68,13 @@ export type GrantTokensResult = {
   ledger: TokenLedgerRow;
 };
 
+export type RefundTokensResult = {
+  refundedTokens: number;
+  balanceTokens: number;
+  wallet: UserTokenWalletRow;
+  ledger: TokenLedgerRow;
+};
+
 function getMonthPeriodBounds(now = new Date()) {
   const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1, 0, 0, 0, 0));
   const end = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1, 0, 0, 0, 0));
@@ -425,6 +432,70 @@ export async function grantTokens(args: {
 
   return {
     grantedTokens: grantTokens,
+    balanceTokens: wallet.balance_tokens,
+    wallet,
+    ledger: ledgerData as TokenLedgerRow,
+  };
+}
+
+export async function refundTokens(args: {
+  supabase: AnySupabaseClient;
+  userId: string;
+  refundTokens: number;
+  actionType: string;
+  stageNumber?: number | null;
+  modelVersion?: string | null;
+  roomId?: string | null;
+  generationRunId?: string | null;
+  metadata?: JsonObject;
+}): Promise<RefundTokensResult> {
+  const refundTokens = ensurePositiveInt(args.refundTokens, "refundTokens");
+  const walletBefore = await getUserTokenWallet(args.supabase, args.userId);
+
+  const { data: updatedData, error: updateErr } = await args.supabase
+    .from("user_token_wallets")
+    .update({
+      balance_tokens: walletBefore.balance_tokens + refundTokens,
+      updated_at: new Date().toISOString(),
+    })
+    .eq("user_id", args.userId)
+    .eq("updated_at", walletBefore.updated_at)
+    .select("*")
+    .maybeSingle();
+
+  if (updateErr) {
+    throw new Error(`[tokens] failed to refund tokens: ${updateErr.message}`);
+  }
+  if (!updatedData) {
+    throw new Error("[tokens] token wallet changed while refunding tokens; retry request.");
+  }
+
+  const wallet = updatedData as UserTokenWalletRow;
+  const { data: ledgerData, error: ledgerErr } = await args.supabase
+    .from("token_ledger")
+    .insert({
+      user_id: args.userId,
+      room_id: args.roomId ?? null,
+      generation_run_id: args.generationRunId ?? null,
+      event_type: "refund",
+      action_type: args.actionType,
+      stage_number: args.stageNumber ?? null,
+      model_version: args.modelVersion ?? null,
+      tokens_delta: refundTokens,
+      balance_after: wallet.balance_tokens,
+      metadata: args.metadata ?? {},
+    })
+    .select("*")
+    .single();
+
+  if (ledgerErr || !ledgerData) {
+    throw new Error(
+      `[tokens] tokens refunded but failed to append ledger row: ${ledgerErr?.message ?? "unknown error"}`
+    );
+  }
+
+  return {
+    refundedTokens: refundTokens,
     balanceTokens: wallet.balance_tokens,
     wallet,
     ledger: ledgerData as TokenLedgerRow,

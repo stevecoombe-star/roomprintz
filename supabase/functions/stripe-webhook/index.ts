@@ -23,6 +23,18 @@ const stripe = new Stripe(STRIPE_SECRET_KEY, {
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
 
+type WalletRow = {
+  user_id: string;
+  balance_tokens: number;
+  lifetime_granted_tokens: number;
+  lifetime_spent_tokens: number;
+  monthly_granted_tokens: number;
+  monthly_spent_tokens: number;
+  current_period_start: string | null;
+  current_period_end: string | null;
+  updated_at: string;
+};
+
 function json(status: number, body: unknown) {
   return new Response(JSON.stringify(body), {
     status,
@@ -40,6 +52,20 @@ function getUserIdFromMetadata(obj: {
 function unixToIso(seconds: number | null | undefined): string | null {
   if (!seconds) return null;
   return new Date(seconds * 1000).toISOString();
+}
+
+function getMonthPeriodBounds(now = new Date()) {
+  const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1, 0, 0, 0, 0));
+  const end = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1, 0, 0, 0, 0));
+  return { startIso: start.toISOString(), endIso: end.toISOString() };
+}
+
+function isWalletPeriodExpired(wallet: WalletRow, now = new Date()) {
+  const periodEnd = wallet.current_period_end;
+  if (!periodEnd) return true;
+  const periodEndMs = Date.parse(periodEnd);
+  if (!Number.isFinite(periodEndMs)) return true;
+  return periodEndMs <= now.getTime();
 }
 
 async function getPlanByPriceId(priceId: string | null) {
@@ -103,6 +129,168 @@ function isDuplicateInsert(err: unknown): boolean {
   const msg =
     (err as PostgrestError | undefined)?.message?.toLowerCase?.() ?? "";
   return msg.includes("duplicate") || msg.includes("unique");
+}
+
+async function getExistingWallet(userId: string): Promise<WalletRow | null> {
+  const { data, error } = await supabase
+    .from("user_token_wallets")
+    .select("*")
+    .eq("user_id", userId)
+    .maybeSingle();
+  if (error) throw error;
+  return (data as WalletRow | null) ?? null;
+}
+
+async function rollWalletPeriodIfExpired(userId: string, wallet: WalletRow): Promise<WalletRow> {
+  if (!isWalletPeriodExpired(wallet)) return wallet;
+  const { startIso, endIso } = getMonthPeriodBounds();
+  const { data, error } = await supabase
+    .from("user_token_wallets")
+    .update({
+      current_period_start: startIso,
+      current_period_end: endIso,
+      monthly_granted_tokens: 0,
+      monthly_spent_tokens: 0,
+      updated_at: new Date().toISOString(),
+    })
+    .eq("user_id", userId)
+    .eq("updated_at", wallet.updated_at)
+    .select("*")
+    .maybeSingle();
+  if (error) throw error;
+  if (data) return data as WalletRow;
+  const raced = await getExistingWallet(userId);
+  if (raced) return raced;
+  throw new Error("Token wallet changed during period rollover.");
+}
+
+async function ensureWallet(userId: string): Promise<WalletRow> {
+  const existing = await getExistingWallet(userId);
+  if (existing) return rollWalletPeriodIfExpired(userId, existing);
+
+  const { startIso, endIso } = getMonthPeriodBounds();
+  const { data, error } = await supabase
+    .from("user_token_wallets")
+    .insert({
+      user_id: userId,
+      balance_tokens: 0,
+      lifetime_granted_tokens: 0,
+      lifetime_spent_tokens: 0,
+      monthly_granted_tokens: 0,
+      monthly_spent_tokens: 0,
+      current_period_start: startIso,
+      current_period_end: endIso,
+    })
+    .select("*")
+    .single();
+
+  if (error || !data) {
+    if (isDuplicateInsert(error)) {
+      const raced = await getExistingWallet(userId);
+      if (raced) return rollWalletPeriodIfExpired(userId, raced);
+    }
+    throw error ?? new Error("Failed to create token wallet.");
+  }
+
+  return data as WalletRow;
+}
+
+async function hasGrantLedgerEntry(args: {
+  userId: string;
+  actionType: "topup" | "subscription";
+  referenceId: string;
+}) {
+  const { data, error } = await supabase
+    .from("token_ledger")
+    .select("id")
+    .eq("user_id", args.userId)
+    .eq("event_type", "grant")
+    .eq("action_type", args.actionType)
+    .contains("metadata", { reference_id: args.referenceId })
+    .limit(1)
+    .maybeSingle();
+  if (error) throw error;
+  return Boolean(data?.id);
+}
+
+async function grantTokensCanonical(args: {
+  userId: string;
+  grantAmount: number;
+  actionType: "topup" | "subscription";
+  referenceId: string;
+  modelVersion?: string | null;
+  metadata?: Record<string, unknown>;
+}) {
+  if (!Number.isFinite(args.grantAmount) || Math.trunc(args.grantAmount) <= 0) {
+    throw new Error("grantAmount must be > 0.");
+  }
+  const grantAmount = Math.trunc(args.grantAmount);
+
+  const existingGrant = await hasGrantLedgerEntry({
+    userId: args.userId,
+    actionType: args.actionType,
+    referenceId: args.referenceId,
+  });
+  if (existingGrant) {
+    return { skipped: true as const };
+  }
+
+  const maxRetries = 3;
+  for (let attempt = 0; attempt < maxRetries; attempt += 1) {
+    const walletBefore = await ensureWallet(args.userId);
+    const { data: walletUpdated, error: walletErr } = await supabase
+      .from("user_token_wallets")
+      .update({
+        balance_tokens: walletBefore.balance_tokens + grantAmount,
+        lifetime_granted_tokens: walletBefore.lifetime_granted_tokens + grantAmount,
+        monthly_granted_tokens: walletBefore.monthly_granted_tokens + grantAmount,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("user_id", args.userId)
+      .eq("updated_at", walletBefore.updated_at)
+      .select("*")
+      .maybeSingle();
+
+    if (walletErr) throw walletErr;
+    if (!walletUpdated) continue;
+
+    const walletAfter = walletUpdated as WalletRow;
+    const metadata = {
+      ...(args.metadata ?? {}),
+      reference_id: args.referenceId,
+    };
+    const { error: ledgerErr } = await supabase.from("token_ledger").insert({
+      user_id: args.userId,
+      event_type: "grant",
+      action_type: args.actionType,
+      model_version: args.modelVersion ?? null,
+      tokens_delta: grantAmount,
+      balance_after: walletAfter.balance_tokens,
+      metadata,
+    });
+
+    if (!ledgerErr) return { skipped: false as const };
+    if (isDuplicateInsert(ledgerErr)) return { skipped: true as const };
+
+    const { error: rollbackErr } = await supabase
+      .from("user_token_wallets")
+      .update({
+        balance_tokens: walletBefore.balance_tokens,
+        lifetime_granted_tokens: walletBefore.lifetime_granted_tokens,
+        monthly_granted_tokens: walletBefore.monthly_granted_tokens,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("user_id", args.userId)
+      .eq("updated_at", walletAfter.updated_at);
+    if (rollbackErr) {
+      throw new Error(
+        `Token grant ledger insert failed and rollback failed: ${ledgerErr.message}; rollback: ${rollbackErr.message}`,
+      );
+    }
+    throw ledgerErr;
+  }
+
+  throw new Error("Token wallet changed repeatedly while granting tokens.");
 }
 
 function safeErr(err: unknown) {
@@ -222,28 +410,27 @@ Deno.serve(async (req: Request) => {
             break;
           }
 
-          // Idempotent grant (external_id = session.id)
-          const { error: ledgerErr } = await supabase.from("token_ledger").insert({
-            user_id: userId,
-            delta: topup.tokens,
-            kind: "topup",
-            external_id: session.id,
-            reason: `Stripe top-up (${topup.tokens} tokens)`,
+          const grantResult = await grantTokensCanonical({
+            userId,
+            grantAmount: topup.tokens,
+            actionType: "topup",
+            referenceId: session.id,
+            modelVersion: null,
+            metadata: {
+              source: "stripe_checkout_session_completed",
+              stripe_event_id: event.id,
+              stripe_session_id: session.id,
+              stripe_price_id: priceId,
+              note: `Stripe top-up (${topup.tokens} tokens)`,
+            },
           });
-
-          if (ledgerErr && !isDuplicateInsert(ledgerErr)) {
-            console.error("❌ token_ledger insert (topup) failed", {
-              requestId,
-              ledgerErr,
-            });
-            throw ledgerErr;
-          }
 
           console.log("✅ TOPUP GRANTED", {
             requestId,
             userId,
             tokens: topup.tokens,
             sessionId: session.id,
+            skipped: grantResult.skipped,
           });
 
           // No subscription upsert required for topups
@@ -436,16 +623,22 @@ Deno.serve(async (req: Request) => {
 
         console.log("🧩 PLAN LOOKUP (invoice)", { requestId, priceId, plan });
 
-        // ✅ 4) Grant tokens idempotently (invoice.id)
-        const { error: ledgerErr } = await supabase.from("token_ledger").insert({
-          user_id: row.user_id,
-          delta: plan.monthly_tokens,
-          kind: "monthly_grant",
-          external_id: invoice.id,
-          reason: `Monthly tokens for plan ${plan.id}`,
+        const grantResult = await grantTokensCanonical({
+          userId: row.user_id,
+          grantAmount: plan.monthly_tokens,
+          actionType: "subscription",
+          referenceId: invoice.id,
+          modelVersion: null,
+          metadata: {
+            source: "stripe_invoice_paid",
+            stripe_event_id: event.id,
+            stripe_invoice_id: invoice.id,
+            stripe_subscription_id: sub.id,
+            stripe_price_id: priceId,
+            plan_id: plan.id,
+            note: `Monthly tokens for plan ${plan.id}`,
+          },
         });
-
-        if (ledgerErr && !isDuplicateInsert(ledgerErr)) throw ledgerErr;
 
         // ✅ 5) Update subscription state
         const { error: upsertErr } = await supabase.from("subscriptions").upsert({
@@ -466,6 +659,7 @@ Deno.serve(async (req: Request) => {
           subscriptionId: sub.id,
           userId: row.user_id,
           planId: plan.id,
+          skipped: grantResult.skipped,
         });
 
         break;

@@ -46,14 +46,19 @@ export function AuthPanel({ redirectToAppOnAuth = false }: AuthPanelProps) {
     setTokenLoading(true);
     setTokenError(null);
 
-    const { data, error } = await supabase.rpc("get_token_balance");
+    const { data, error } = await supabase
+      .from("user_token_wallets")
+      .select("balance_tokens")
+      .eq("user_id", user.id)
+      .maybeSingle();
 
     if (error) {
-      console.error("[AuthPanel] get_token_balance error:", error);
+      console.error("[AuthPanel] user_token_wallets read error:", error);
       setTokenError(error.message);
       setTokenBalance(null);
     } else {
-      setTokenBalance(typeof data === "number" ? data : 0);
+      const balance = typeof data?.balance_tokens === "number" ? data.balance_tokens : 0;
+      setTokenBalance(balance);
     }
 
     setTokenLoading(false);

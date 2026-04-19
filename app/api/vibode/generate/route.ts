@@ -8,6 +8,14 @@ import { callCompositorVibodeRemove } from "@/lib/callCompositorVibodeRemove";
 import { callCompositorVibodeRotate } from "@/lib/callCompositorVibodeRotate";
 import { callCompositorVibodeVibe } from "@/lib/callCompositorVibodeVibe";
 import {
+  canAffordTokens,
+  getTokenCostForAction,
+  getUserTokenWallet,
+  refundTokens,
+  spendTokens,
+} from "@/lib/vibodeTokenDomain";
+import type { TokenActionKey } from "@/lib/vibodeTokenConstants";
+import {
   createVibodeGenerationRun,
   createVibodeRoomAsset,
   getVibodeRoomById,
@@ -28,46 +36,6 @@ export const runtime = "nodejs";
 /* =========================
    Types (Vibode v1)
 ========================= */
-
-type SpendRow = {
-  success: boolean;
-  balance: number | null;
-};
-
-type TokenLedgerInsert = {
-  user_id: string;
-  delta: number;
-  kind: string;
-  external_id: string;
-  reason: string;
-  job_id: string;
-};
-
-/**
- * Minimal Supabase Database type for this route.
- * This avoids "never" typing for rpc()/insert() without using `any`.
- */
-type Database = {
-  public: {
-    Tables: {
-      token_ledger: {
-        Row: Record<string, unknown>;
-        Insert: TokenLedgerInsert;
-        Update: Record<string, unknown>;
-        Relationships: never[];
-      };
-    };
-    Views: Record<string, never>;
-    Functions: {
-      try_spend_tokens: {
-        Args: { p_cost: number; p_external_id: string; p_reason: string };
-        Returns: SpendRow[];
-      };
-    };
-    Enums: Record<string, never>;
-    CompositeTypes: Record<string, never>;
-  };
-};
 
 type BaseImageKind = "publicUrl" | "signedUrl" | "storageKey" | "url";
 
@@ -292,7 +260,7 @@ const STYLE_BAND_TO_NB_STYLE_ID: Partial<Record<StyleBand, string>> = {
 
 function getUserSupabaseClient(
   req: NextRequest
-): { supabase: ReturnType<typeof createClient<Database>> | null; token: string | null } {
+): { supabase: ReturnType<typeof createClient> | null; token: string | null } {
   const authHeader = req.headers.get("authorization") || "";
   const token = authHeader.startsWith("Bearer ")
     ? authHeader.slice("Bearer ".length).trim()
@@ -300,7 +268,7 @@ function getUserSupabaseClient(
 
   if (!token) return { supabase: null, token: null };
 
-  const supabase = createClient<Database>(SUPABASE_URL, SUPABASE_ANON_KEY, {
+  const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
     global: { headers: { Authorization: `Bearer ${token}` } },
     auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
   });
@@ -1401,6 +1369,22 @@ function parseVibodeRotateMarks(vibodeIntent: unknown): VibodeRotateMark[] {
   return marks;
 }
 
+function resolveGenerateActionType(freeze: unknown): TokenActionKey {
+  if (!isRecord(freeze)) return "STAGE_1";
+  const vibodeIntent = isRecord((freeze as any).vibodeIntent) ? (freeze as any).vibodeIntent : null;
+  if (!isRecord(vibodeIntent)) return "STAGE_1";
+  if (Array.isArray(vibodeIntent?.swap?.marks) && vibodeIntent.swap.marks.length > 0) {
+    return "EDIT_SWAP";
+  }
+  if (Array.isArray(vibodeIntent?.rotate?.marks) && vibodeIntent.rotate.marks.length > 0) {
+    return "EDIT_ROTATE";
+  }
+  if (vibodeIntent.mode === "remove" && Array.isArray(vibodeIntent.marks) && vibodeIntent.marks.length > 0) {
+    return "EDIT_REMOVE";
+  }
+  return "STAGE_1";
+}
+
 function buildVibodeSwapReplacementAssets(marks: VibodeSwapMark[]) {
   const assets: VibodeSwapReplacement[] = [];
   const seen = new Set<string>();
@@ -1976,29 +1960,45 @@ export async function handleGenerateRequest(args: {
   }
   const user = userData.user;
 
-  const tokenCost = 1;
-
-  const { data: spendData, error: spendErr } = await supabase.rpc("try_spend_tokens", {
-    p_cost: tokenCost,
-    p_external_id: generationId,
-    p_reason: "vibode_generate:v1",
+  const tokenActionType = resolveGenerateActionType(freeze);
+  const tokenCost = await getTokenCostForAction(supabase, tokenActionType);
+  const walletBeforeSpend = await getUserTokenWallet(supabase, user.id);
+  const affordability = canAffordTokens({
+    balanceTokens: walletBeforeSpend.balance_tokens,
+    requiredTokens: tokenCost,
   });
-
-  if (spendErr) {
-    console.error("[vibode/generate] try_spend_tokens error:", spendErr);
-    return json(500, { error: "Token spend failed" });
-  }
-
-  const spendRow = Array.isArray(spendData) ? spendData[0] : null;
-  const spentOk = Boolean(spendRow?.success);
-  const balanceAfterSpend = typeof spendRow?.balance === "number" ? spendRow.balance : null;
-
-  if (!spentOk) {
+  if (!affordability.allowed) {
     return json(402, {
       error: "Insufficient tokens",
-      details: { required: tokenCost, tokenBalance: balanceAfterSpend ?? 0 },
+      details: { required: tokenCost, tokenBalance: affordability.balanceTokens },
     });
   }
+
+  const spendResult = await spendTokens({
+    supabase,
+    userId: user.id,
+    spendTokens: tokenCost,
+    eventType: "spend",
+    actionType: tokenActionType,
+    stageNumber: args.requestedStageNumber ?? null,
+    modelVersion: safeStr((payloadForModel as any)?.modelVersion),
+    roomId: isUuidLike(args.vibodeRoomId ?? null) ? args.vibodeRoomId : null,
+    generationRunId: isUuidLike(generationId) ? generationId : null,
+    metadata: {
+      source: "api_vibode_generate",
+      reason: "vibode_generate:v1",
+      generationId,
+      payloadVersion,
+    },
+  });
+
+  if (!spendResult.ok) {
+    return json(402, {
+      error: "Insufficient tokens",
+      details: { required: tokenCost, tokenBalance: spendResult.balanceTokens },
+    });
+  }
+  const balanceAfterSpend = spendResult.balanceTokens;
 
   // Resolve a model-ready base image URL (supports storageKey -> signedUrl)
   let baseImageUrlForModel = "";
@@ -2008,15 +2008,27 @@ export async function handleGenerateRequest(args: {
       throw new Error("Resolved base image URL is not valid for model mode (blob/local).");
     }
   } catch (e: any) {
-    const { error: refundErr } = await supabase.from("token_ledger").insert({
-      user_id: user.id,
-      delta: tokenCost,
-      kind: "refund",
-      external_id: generationId,
-      reason: "vibode_generation_failed_refund",
-      job_id: generationId,
-    });
-    if (refundErr) console.error("[vibode/generate] refund insert error:", refundErr);
+    try {
+      await refundTokens({
+        supabase,
+        userId: user.id,
+        refundTokens: tokenCost,
+        actionType: tokenActionType,
+        stageNumber: args.requestedStageNumber ?? null,
+        modelVersion: safeStr((payloadForModel as any)?.modelVersion),
+        roomId: isUuidLike(args.vibodeRoomId ?? null) ? args.vibodeRoomId : null,
+        generationRunId: isUuidLike(generationId) ? generationId : null,
+        metadata: {
+          source: "api_vibode_generate",
+          reason: "vibode_generation_failed_refund",
+          generationId,
+          payloadVersion,
+          step: "resolve_base_image",
+        },
+      });
+    } catch (refundErr) {
+      console.error("[vibode/generate] refund grant failed:", refundErr);
+    }
 
     return json(500, {
       error: e instanceof Error ? e.message : "Failed to prepare base image for model mode.",
@@ -2194,16 +2206,27 @@ export async function handleGenerateRequest(args: {
   } catch (modelErr: unknown) {
     console.error("[vibode/generate] model call failed:", modelErr);
 
-    const { error: refundErr } = await supabase.from("token_ledger").insert({
-      user_id: user.id,
-      delta: tokenCost,
-      kind: "refund",
-      external_id: generationId,
-      reason: "vibode_generation_failed_refund",
-      job_id: generationId,
-    });
-
-    if (refundErr) console.error("[vibode/generate] refund insert error:", refundErr);
+    try {
+      await refundTokens({
+        supabase,
+        userId: user.id,
+        refundTokens: tokenCost,
+        actionType: tokenActionType,
+        stageNumber: args.requestedStageNumber ?? null,
+        modelVersion: safeStr((payloadForModel as any)?.modelVersion),
+        roomId: isUuidLike(args.vibodeRoomId ?? null) ? args.vibodeRoomId : null,
+        generationRunId: isUuidLike(generationId) ? generationId : null,
+        metadata: {
+          source: "api_vibode_generate",
+          reason: "vibode_generation_failed_refund",
+          generationId,
+          payloadVersion,
+          step: "model_call",
+        },
+      });
+    } catch (refundErr) {
+      console.error("[vibode/generate] refund grant failed:", refundErr);
+    }
 
     if (modelErr instanceof NanoBananaError) {
       return json(modelErr.status, { error: modelErr.message });
