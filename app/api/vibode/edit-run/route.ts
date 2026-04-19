@@ -7,6 +7,15 @@ import {
   resolveVibodeOutputDimensions,
   resolveVibodeOutputStorage,
 } from "@/lib/vibodeAssetFinalization";
+import {
+  canAffordTokens,
+  getTokenCostForAction,
+  getUserTokenWallet,
+  refundTokens,
+  spendTokens,
+} from "@/lib/vibodeTokenDomain";
+import { buildTokenLedgerMetadata, getEditTokenActionKey } from "@/lib/vibodeTokenPolicy";
+import type { TokenActionKey } from "@/lib/vibodeTokenConstants";
 
 export const runtime = "nodejs";
 const VIBODE_DEFAULT_MODEL_VERSION = "NBP";
@@ -78,7 +87,30 @@ function getAdminSupabaseClient(): AnySupabaseClient | null {
   });
 }
 
+function resolveEditActionType(action: string | null): TokenActionKey | null {
+  if (!action) return null;
+  const normalized = action.trim().toLowerCase();
+  if (!normalized) return null;
+  if (normalized === "add") return "EDIT_SWAP";
+  return getEditTokenActionKey(normalized);
+}
+
 export async function POST(req: NextRequest) {
+  let spendContext:
+    | {
+        supabase: AnySupabaseClient;
+        userId: string;
+        tokenCost: number;
+        actionType: TokenActionKey;
+        stageNumber: number | null;
+        modelVersion: string;
+        roomId: string | null;
+        vibodeRoomId: string | null;
+      }
+    | null = null;
+  let tokensCharged = 0;
+  let remainingTokens: number | null = null;
+
   try {
     const bodyRaw = (await req.json()) as unknown;
     const body =
@@ -118,6 +150,111 @@ export async function POST(req: NextRequest) {
       typeof payloadForCompositor.action === "string"
         ? payloadForCompositor.action.trim().toLowerCase()
         : null;
+    const tokenActionType = resolveEditActionType(action);
+    if (!tokenActionType) {
+      return Response.json(
+        {
+          errorCode: "UNSUPPORTED_EDIT_ACTION",
+          message: "Unsupported edit action for token accounting.",
+          action,
+        },
+        { status: 400 }
+      );
+    }
+
+    const { supabase, token } = getUserSupabaseClient(req);
+    if (!token || !supabase) {
+      return Response.json(
+        {
+          error:
+            "Unauthorized: missing Authorization Bearer token. (Send Supabase access_token in the request.)",
+        },
+        { status: 401 }
+      );
+    }
+
+    const { data: userData, error: userErr } = await supabase.auth.getUser();
+    if (userErr || !userData?.user) {
+      return Response.json({ error: "Unauthorized" }, { status: 401 });
+    }
+    const authenticatedUserId = userData.user.id;
+
+    let existingRoom: NonNullable<Awaited<ReturnType<typeof getVibodeRoomById>>> | null = null;
+    if (vibodeRoomId) {
+      if (!isUuidLike(vibodeRoomId)) {
+        return Response.json({ error: "Invalid vibodeRoomId." }, { status: 400 });
+      }
+      existingRoom = await getVibodeRoomById(supabase, vibodeRoomId);
+      if (!existingRoom) {
+        return Response.json({ error: "Room not found" }, { status: 404 });
+      }
+      if (existingRoom.user_id !== authenticatedUserId) {
+        return Response.json({ error: "Forbidden" }, { status: 403 });
+      }
+    }
+
+    const tokenCost = await getTokenCostForAction(supabase, tokenActionType);
+    const walletBeforeSpend = await getUserTokenWallet(supabase, authenticatedUserId);
+    const affordability = canAffordTokens({
+      balanceTokens: walletBeforeSpend.balance_tokens,
+      requiredTokens: tokenCost,
+    });
+    if (!affordability.allowed) {
+      return Response.json(
+        {
+          errorCode: "INSUFFICIENT_TOKENS",
+          message: "Insufficient internal token balance for this edit action.",
+          requiredTokens: affordability.requiredTokens,
+          balanceTokens: affordability.balanceTokens,
+          shortfallTokens: affordability.shortfallTokens,
+          actionKey: tokenActionType,
+        },
+        { status: 402 }
+      );
+    }
+
+    const spendResult = await spendTokens({
+      supabase,
+      userId: authenticatedUserId,
+      spendTokens: tokenCost,
+      eventType: "generation_spend",
+      actionType: tokenActionType,
+      stageNumber: requestedStageNumber ?? existingRoom?.current_stage ?? null,
+      modelVersion,
+      roomId: existingRoom?.id ?? null,
+      generationRunId: null,
+      metadata: buildTokenLedgerMetadata({
+        modelVersion,
+        stageNumber: requestedStageNumber ?? existingRoom?.current_stage ?? null,
+        endpoint: "/api/vibode/edit-run",
+        requestKind: "edit_generation",
+      }),
+    });
+    if (!spendResult.ok) {
+      return Response.json(
+        {
+          errorCode: "INSUFFICIENT_TOKENS",
+          message: "Insufficient internal token balance for this edit action.",
+          requiredTokens: tokenCost,
+          balanceTokens: spendResult.balanceTokens,
+          shortfallTokens: spendResult.shortfallTokens,
+          actionKey: tokenActionType,
+        },
+        { status: 402 }
+      );
+    }
+    tokensCharged = spendResult.spentTokens;
+    remainingTokens = spendResult.balanceTokens;
+    spendContext = {
+      supabase,
+      userId: authenticatedUserId,
+      tokenCost,
+      actionType: tokenActionType,
+      stageNumber: requestedStageNumber ?? existingRoom?.current_stage ?? null,
+      modelVersion,
+      roomId: existingRoom?.id ?? null,
+      vibodeRoomId,
+    };
     if (action === "remove") {
       const targetRecord = isRecord(payloadForCompositor.target)
         ? ({ ...payloadForCompositor.target } as Record<string, unknown>)
@@ -253,10 +390,69 @@ export async function POST(req: NextRequest) {
       ? ({ ...upstreamResult } as EditRunCompositorResult)
       : ({} as EditRunCompositorResult);
     if (!upstreamRes.ok) {
+      if (spendContext) {
+        try {
+          const refundResult = await refundTokens({
+            supabase: spendContext.supabase,
+            userId: spendContext.userId,
+            refundTokens: spendContext.tokenCost,
+            actionType: spendContext.actionType,
+            stageNumber: spendContext.stageNumber,
+            modelVersion: spendContext.modelVersion,
+            roomId: spendContext.roomId,
+            generationRunId: null,
+            metadata: {
+              ...buildTokenLedgerMetadata({
+                modelVersion: spendContext.modelVersion,
+                stageNumber: spendContext.stageNumber,
+                endpoint: "/api/vibode/edit-run",
+                requestKind: "edit_generation",
+              }),
+              reason: "upstream_error",
+              upstreamStatus,
+            },
+          });
+          tokensCharged = 0;
+          remainingTokens = refundResult.balanceTokens;
+        } catch (refundErr) {
+          console.error("[vibode/edit-run] refund failed after upstream error:", refundErr);
+        } finally {
+          spendContext = null;
+        }
+      }
       return Response.json(responseRecord, { status: upstreamStatus });
     }
     const responseImageUrl = safeStr(responseRecord.imageUrl);
     if (!responseImageUrl) {
+      if (spendContext) {
+        try {
+          const refundResult = await refundTokens({
+            supabase: spendContext.supabase,
+            userId: spendContext.userId,
+            refundTokens: spendContext.tokenCost,
+            actionType: spendContext.actionType,
+            stageNumber: spendContext.stageNumber,
+            modelVersion: spendContext.modelVersion,
+            roomId: spendContext.roomId,
+            generationRunId: null,
+            metadata: {
+              ...buildTokenLedgerMetadata({
+                modelVersion: spendContext.modelVersion,
+                stageNumber: spendContext.stageNumber,
+                endpoint: "/api/vibode/edit-run",
+                requestKind: "edit_generation",
+              }),
+              reason: "missing_image_url",
+            },
+          });
+          tokensCharged = 0;
+          remainingTokens = refundResult.balanceTokens;
+        } catch (refundErr) {
+          console.error("[vibode/edit-run] refund failed after missing imageUrl:", refundErr);
+        } finally {
+          spendContext = null;
+        }
+      }
       console.warn("[vibode/edit-run] persistence skipped: successful response missing imageUrl");
       return Response.json(responseRecord, { status: upstreamStatus });
     }
@@ -266,34 +462,13 @@ export async function POST(req: NextRequest) {
     let persistenceUserId: string | null = null;
     let roomStageForPersistence: number | null = null;
 
-    if (!vibodeRoomId) {
+    if (!spendContext?.vibodeRoomId) {
       console.info("[vibode/edit-run] persistence skipped: missing vibodeRoomId");
-    } else if (!isUuidLike(vibodeRoomId)) {
-      console.warn("[vibode/edit-run] persistence skipped: invalid vibodeRoomId");
     } else {
-      const { supabase, token } = getUserSupabaseClient(req);
-      if (!token || !supabase) {
-        console.warn("[vibode/edit-run] persistence skipped: missing bearer token");
-      } else {
-        const { data: userData, error: userErr } = await supabase.auth.getUser();
-        if (userErr || !userData?.user) {
-          console.warn("[vibode/edit-run] persistence skipped: unauthorized user");
-        } else {
-          const room = await getVibodeRoomById(supabase, vibodeRoomId);
-          if (!room) {
-            console.warn("[vibode/edit-run] persistence skipped: room not found", { vibodeRoomId });
-          } else if (room.user_id !== userData.user.id) {
-            console.warn("[vibode/edit-run] persistence skipped: room does not belong to user", {
-              vibodeRoomId,
-            });
-          } else {
-            persistenceSupabase = supabase;
-            persistenceRoomId = room.id;
-            persistenceUserId = userData.user.id;
-            roomStageForPersistence = room.current_stage ?? null;
-          }
-        }
-      }
+      persistenceSupabase = spendContext.supabase;
+      persistenceRoomId = spendContext.roomId;
+      persistenceUserId = spendContext.userId;
+      roomStageForPersistence = spendContext.stageNumber;
     }
 
     const hintedStorage = resolveVibodeOutputStorage(responseRecord);
@@ -326,10 +501,45 @@ export async function POST(req: NextRequest) {
       ...(finalization.imageUrl ? { imageUrl: finalization.imageUrl } : {}),
       ...(finalization.storageBucket ? { storageBucket: finalization.storageBucket } : {}),
       ...(finalization.storagePath ? { storagePath: finalization.storagePath } : {}),
+      tokensCharged,
+      remainingTokens,
+      actionKey: tokenActionType,
     };
+    spendContext = null;
 
     return Response.json(responsePayload, { status: upstreamStatus });
   } catch (err: any) {
+    if (spendContext) {
+      try {
+        const refundResult = await refundTokens({
+          supabase: spendContext.supabase,
+          userId: spendContext.userId,
+          refundTokens: spendContext.tokenCost,
+          actionType: spendContext.actionType,
+          stageNumber: spendContext.stageNumber,
+          modelVersion: spendContext.modelVersion,
+          roomId: spendContext.roomId,
+          generationRunId: null,
+          metadata: {
+            ...buildTokenLedgerMetadata({
+              modelVersion: spendContext.modelVersion,
+              stageNumber: spendContext.stageNumber,
+              endpoint: "/api/vibode/edit-run",
+              requestKind: "edit_generation",
+            }),
+            reason: "internal_exception",
+            error: String(err?.message || err),
+          },
+        });
+        tokensCharged = 0;
+        remainingTokens = refundResult.balanceTokens;
+      } catch (refundErr) {
+        console.error("[vibode/edit-run] refund failed after internal exception:", refundErr);
+      } finally {
+        spendContext = null;
+      }
+    }
+
     const message = String(err?.message || err);
     const status = message.includes(" 400 ")
       ? 400
