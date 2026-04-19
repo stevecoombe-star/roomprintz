@@ -75,6 +75,16 @@ function getDurableImageUrl(args: { candidateUrl?: string | null; storageBucket?
 
 export async function POST(req: NextRequest) {
   try {
+    const { supabase: userSupabase, token } = getUserSupabaseClient(req);
+    if (!token || !userSupabase) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+    const { data: userData, error: userErr } = await userSupabase.auth.getUser();
+    if (userErr || !userData?.user) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+    const authenticatedUserId = userData.user.id;
+
     const formData = await req.formData();
     const file = formData.get("file");
 
@@ -97,7 +107,7 @@ export async function POST(req: NextRequest) {
     const sceneId = formData.get("sceneId") || "unknown";
     const ts = Date.now();
 
-    const storageKey = `scene_${sceneId}/base_${ts}.${ext}`;
+    const storageKey = `users/${authenticatedUserId}/scene_${sceneId}/base_${ts}.${ext}`;
 
     const supabase = createClient(SUPABASE_URL, SERVICE_ROLE_KEY, {
       auth: { persistSession: false },
@@ -144,69 +154,66 @@ export async function POST(req: NextRequest) {
 
     let vibodeRoomId: string | undefined;
     try {
-      const { supabase: userSupabase, token } = getUserSupabaseClient(req);
-      if (!token || !userSupabase) {
-        console.warn("[upload-base] vibode persistence skipped: missing bearer token");
-      } else {
-        const { data: userData, error: userErr } = await userSupabase.auth.getUser();
-        if (userErr || !userData?.user) {
-          console.warn("[upload-base] vibode persistence skipped: user lookup failed");
-        } else {
-          const aspectRatio = getOptionalFormText(formData.get("aspectRatio"));
-          const selectedModel = getOptionalFormText(formData.get("selectedModel"));
-          const room = await createVibodeRoom(userSupabase, {
-            user_id: userData.user.id,
-            title: "Untitled Room",
-            source_type: "upload",
-            aspect_ratio: aspectRatio,
-            selected_model: selectedModel,
-            status: "draft",
-          });
+      const aspectRatio = getOptionalFormText(formData.get("aspectRatio"));
+      const selectedModel = getOptionalFormText(formData.get("selectedModel"));
+      const room = await createVibodeRoom(userSupabase, {
+        user_id: authenticatedUserId,
+        title: "Untitled Room",
+        source_type: "upload",
+        aspect_ratio: aspectRatio,
+        selected_model: selectedModel,
+        status: "draft",
+      });
 
-          const baseAsset = await createVibodeRoomAsset(userSupabase, {
-            room_id: room.id,
-            user_id: userData.user.id,
-            asset_type: "base",
-            stage_number: 0,
-            storage_bucket: BUCKET,
-            storage_path: storageKey,
-            image_url:
-              getDurableImageUrl({ candidateUrl: signed.signedUrl, storageBucket: BUCKET }) ?? "",
-            width: widthPx ?? null,
-            height: heightPx ?? null,
-            is_active: true,
-          });
+      const baseAsset = await createVibodeRoomAsset(userSupabase, {
+        room_id: room.id,
+        user_id: authenticatedUserId,
+        asset_type: "base",
+        stage_number: 0,
+        storage_bucket: BUCKET,
+        storage_path: storageKey,
+        image_url: getDurableImageUrl({ candidateUrl: signed.signedUrl, storageBucket: BUCKET }) ?? "",
+        width: widthPx ?? null,
+        height: heightPx ?? null,
+        is_active: true,
+      });
 
-          try {
-            const thumbnailLocation = await createVibodeAssetThumbnail({
-              adminSupabase: supabase,
-              roomId: room.id,
-              assetId: baseAsset.id,
-              sourceStorageBucket: BUCKET,
-              sourceStoragePath: storageKey,
-              sourceImageUrl: signed.signedUrl,
-            });
-            if (thumbnailLocation) {
-              await updateVibodeRoomAsset(userSupabase, baseAsset.id, thumbnailLocation);
-            }
-          } catch (thumbnailErr) {
-            console.warn("[upload-base] thumbnail generation failed (non-blocking):", thumbnailErr);
-          }
-
-          await updateVibodeRoom(userSupabase, room.id, {
-            base_asset_id: baseAsset.id,
-            active_asset_id: baseAsset.id,
-            cover_image_url: getDurableImageUrl({
-              candidateUrl: signed.signedUrl,
-              storageBucket: BUCKET,
-            }),
-            sort_key: new Date().toISOString(),
-          });
-          vibodeRoomId = room.id;
+      try {
+        const thumbnailLocation = await createVibodeAssetThumbnail({
+          adminSupabase: supabase,
+          roomId: room.id,
+          assetId: baseAsset.id,
+          sourceStorageBucket: BUCKET,
+          sourceStoragePath: storageKey,
+          sourceImageUrl: signed.signedUrl,
+        });
+        if (thumbnailLocation) {
+          await updateVibodeRoomAsset(userSupabase, baseAsset.id, thumbnailLocation);
         }
+      } catch (thumbnailErr) {
+        console.warn("[upload-base] thumbnail generation failed (non-blocking):", thumbnailErr);
       }
+
+      await updateVibodeRoom(userSupabase, room.id, {
+        base_asset_id: baseAsset.id,
+        active_asset_id: baseAsset.id,
+        cover_image_url: getDurableImageUrl({
+          candidateUrl: signed.signedUrl,
+          storageBucket: BUCKET,
+        }),
+        sort_key: new Date().toISOString(),
+      });
+      vibodeRoomId = room.id;
     } catch (persistErr) {
-      console.error("[upload-base] vibode persistence failed (non-blocking):", persistErr);
+      console.error("[upload-base] vibode persistence failed:", persistErr);
+      const { error: cleanupErr } = await supabase.storage.from(BUCKET).remove([storageKey]);
+      if (cleanupErr) {
+        console.error("[upload-base] failed to cleanup orphaned upload:", cleanupErr);
+      }
+      return NextResponse.json(
+        { error: "Failed to persist uploaded asset" },
+        { status: 500 }
+      );
     }
 
     return NextResponse.json({
