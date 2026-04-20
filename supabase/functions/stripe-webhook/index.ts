@@ -1,6 +1,6 @@
 // supabase/functions/stripe-webhook/index.ts
 import Stripe from "stripe";
-import { createClient, type PostgrestError } from "@supabase/supabase-js";
+import { createClient } from "@supabase/supabase-js";
 import type { SupabaseClient } from "@supabase/supabase-js";
 
 const STRIPE_SECRET_KEY = Deno.env.get("STRIPE_SECRET_KEY");
@@ -23,6 +23,7 @@ const stripe = new Stripe(STRIPE_SECRET_KEY, {
 });
 
 type AnySupabaseClient = SupabaseClient<any, "public", any>;
+const TOKEN_BOOTSTRAP_STARTER_BALANCE = 40;
 
 const supabase: AnySupabaseClient = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
 
@@ -128,12 +129,6 @@ async function resolveUserIdForInvoice(
   return getUserIdFromMetadata(subscription);
 }
 
-function isDuplicateInsert(err: unknown): boolean {
-  const msg =
-    (err as PostgrestError | undefined)?.message?.toLowerCase?.() ?? "";
-  return msg.includes("duplicate") || msg.includes("unique");
-}
-
 async function getExistingWallet(userId: string): Promise<WalletRow | null> {
   const { data, error } = await supabase
     .from("user_token_wallets")
@@ -171,49 +166,17 @@ async function ensureWallet(userId: string): Promise<WalletRow> {
   const existing = await getExistingWallet(userId);
   if (existing) return rollWalletPeriodIfExpired(userId, existing);
 
-  const { startIso, endIso } = getMonthPeriodBounds();
-  const { data, error } = await supabase
-    .from("user_token_wallets")
-    .insert({
-      user_id: userId,
-      balance_tokens: 0,
-      lifetime_granted_tokens: 0,
-      lifetime_spent_tokens: 0,
-      monthly_granted_tokens: 0,
-      monthly_spent_tokens: 0,
-      current_period_start: startIso,
-      current_period_end: endIso,
-    })
-    .select("*")
-    .single();
-
-  if (error || !data) {
-    if (isDuplicateInsert(error)) {
-      const raced = await getExistingWallet(userId);
-      if (raced) return rollWalletPeriodIfExpired(userId, raced);
-    }
-    throw error ?? new Error("Failed to create token wallet.");
-  }
-
-  return data as WalletRow;
-}
-
-async function hasGrantLedgerEntry(args: {
-  userId: string;
-  actionType: "topup" | "subscription";
-  referenceId: string;
-}) {
-  const { data, error } = await supabase
-    .from("token_ledger")
-    .select("id")
-    .eq("user_id", args.userId)
-    .eq("event_type", "grant")
-    .eq("action_type", args.actionType)
-    .contains("metadata", { reference_id: args.referenceId })
-    .limit(1)
-    .maybeSingle();
+  const { data, error } = await supabase.rpc("ensure_user_token_wallet_bootstrap", {
+    p_user_id: userId,
+    p_bootstrap_tokens: TOKEN_BOOTSTRAP_STARTER_BALANCE,
+  });
   if (error) throw error;
-  return Boolean(data?.id);
+
+  const row = Array.isArray(data) ? data[0] : data;
+  if (!row || typeof row !== "object") {
+    throw new Error("ensure_user_token_wallet_bootstrap returned no result row.");
+  }
+  return row as WalletRow;
 }
 
 async function grantTokensCanonical(args: {
@@ -228,72 +191,23 @@ async function grantTokensCanonical(args: {
     throw new Error("grantAmount must be > 0.");
   }
   const grantAmount = Math.trunc(args.grantAmount);
+  await ensureWallet(args.userId);
 
-  const existingGrant = await hasGrantLedgerEntry({
-    userId: args.userId,
-    actionType: args.actionType,
-    referenceId: args.referenceId,
+  const { data, error } = await supabase.rpc("apply_stripe_token_grant", {
+    p_user_id: args.userId,
+    p_grant_amount: grantAmount,
+    p_action_type: args.actionType,
+    p_reference_id: args.referenceId,
+    p_model_version: args.modelVersion ?? null,
+    p_metadata: args.metadata ?? {},
   });
-  if (existingGrant) {
-    return { skipped: true as const };
+  if (error) throw error;
+
+  const row = Array.isArray(data) ? data[0] : data;
+  if (!row || typeof row !== "object") {
+    throw new Error("apply_stripe_token_grant returned no result row.");
   }
-
-  const maxRetries = 3;
-  for (let attempt = 0; attempt < maxRetries; attempt += 1) {
-    const walletBefore = await ensureWallet(args.userId);
-    const { data: walletUpdated, error: walletErr } = await supabase
-      .from("user_token_wallets")
-      .update({
-        balance_tokens: walletBefore.balance_tokens + grantAmount,
-        lifetime_granted_tokens: walletBefore.lifetime_granted_tokens + grantAmount,
-        monthly_granted_tokens: walletBefore.monthly_granted_tokens + grantAmount,
-        updated_at: new Date().toISOString(),
-      })
-      .eq("user_id", args.userId)
-      .eq("updated_at", walletBefore.updated_at)
-      .select("*")
-      .maybeSingle();
-
-    if (walletErr) throw walletErr;
-    if (!walletUpdated) continue;
-
-    const walletAfter = walletUpdated as WalletRow;
-    const metadata = {
-      ...(args.metadata ?? {}),
-      reference_id: args.referenceId,
-    };
-    const { error: ledgerErr } = await supabase.from("token_ledger").insert({
-      user_id: args.userId,
-      event_type: "grant",
-      action_type: args.actionType,
-      model_version: args.modelVersion ?? null,
-      tokens_delta: grantAmount,
-      balance_after: walletAfter.balance_tokens,
-      metadata,
-    });
-
-    if (!ledgerErr) return { skipped: false as const };
-    if (isDuplicateInsert(ledgerErr)) return { skipped: true as const };
-
-    const { error: rollbackErr } = await supabase
-      .from("user_token_wallets")
-      .update({
-        balance_tokens: walletBefore.balance_tokens,
-        lifetime_granted_tokens: walletBefore.lifetime_granted_tokens,
-        monthly_granted_tokens: walletBefore.monthly_granted_tokens,
-        updated_at: new Date().toISOString(),
-      })
-      .eq("user_id", args.userId)
-      .eq("updated_at", walletAfter.updated_at);
-    if (rollbackErr) {
-      throw new Error(
-        `Token grant ledger insert failed and rollback failed: ${ledgerErr.message}; rollback: ${rollbackErr.message}`,
-      );
-    }
-    throw ledgerErr;
-  }
-
-  throw new Error("Token wallet changed repeatedly while granting tokens.");
+  return { skipped: Boolean((row as { skipped?: unknown }).skipped) as const };
 }
 
 function safeErr(err: unknown) {

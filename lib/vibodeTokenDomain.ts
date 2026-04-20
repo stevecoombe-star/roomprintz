@@ -100,12 +100,6 @@ function ensurePositiveInt(value: number, name: string) {
   return normalized;
 }
 
-function getErrorCode(error: unknown): string | null {
-  if (!error || typeof error !== "object") return null;
-  const maybeCode = (error as { code?: unknown }).code;
-  return typeof maybeCode === "string" ? maybeCode : null;
-}
-
 async function getExistingWallet(
   supabase: AnySupabaseClient,
   userId: string
@@ -162,48 +156,19 @@ export async function ensureUserTokenWallet(
   const existing = await getExistingWallet(supabase, userId);
   if (existing) return rollWalletPeriodIfExpired(supabase, userId, existing);
 
-  const { startIso, endIso } = getMonthPeriodBounds();
-  const { data: inserted, error: insertErr } = await supabase
-    .from("user_token_wallets")
-    .insert({
-      user_id: userId,
-      balance_tokens: TOKEN_BOOTSTRAP_STARTER_BALANCE,
-      lifetime_granted_tokens: TOKEN_BOOTSTRAP_STARTER_BALANCE,
-      lifetime_spent_tokens: 0,
-      monthly_granted_tokens: TOKEN_BOOTSTRAP_STARTER_BALANCE,
-      monthly_spent_tokens: 0,
-      current_period_start: startIso,
-      current_period_end: endIso,
-    })
-    .select("*")
-    .single();
-
-  if (insertErr || !inserted) {
-    // Concurrent requests may race wallet creation; read back the winner.
-    if (getErrorCode(insertErr) === "23505") {
-      const racedWallet = await getExistingWallet(supabase, userId);
-      if (racedWallet) return rollWalletPeriodIfExpired(supabase, userId, racedWallet);
-    }
-    throw new Error(`[tokens] failed to create token wallet: ${insertErr?.message ?? "unknown error"}`);
-  }
-
-  const wallet = inserted as UserTokenWalletRow;
-  const { error: bootstrapLedgerErr } = await supabase.from("token_ledger").insert({
-    user_id: userId,
-    event_type: "bootstrap",
-    action_type: "BOOTSTRAP",
-    tokens_delta: TOKEN_BOOTSTRAP_STARTER_BALANCE,
-    balance_after: wallet.balance_tokens,
-    metadata: {
-      source: "beta_bootstrap",
-      note: "Initial internal starter balance",
-    },
+  const { data, error } = await supabase.rpc("ensure_user_token_wallet_bootstrap", {
+    p_user_id: userId,
+    p_bootstrap_tokens: TOKEN_BOOTSTRAP_STARTER_BALANCE,
   });
-  if (bootstrapLedgerErr) {
-    console.warn("[tokens] bootstrap ledger insert failed (non-blocking):", bootstrapLedgerErr.message);
+  if (error) {
+    throw new Error(`[tokens] failed to create token wallet: ${error.message}`);
   }
 
-  return wallet;
+  const row = Array.isArray(data) ? data[0] : data;
+  if (!row || typeof row !== "object") {
+    throw new Error("[tokens] ensure_user_token_wallet_bootstrap returned no result row.");
+  }
+  return row as UserTokenWalletRow;
 }
 
 export async function getUserTokenWallet(
