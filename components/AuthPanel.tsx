@@ -31,12 +31,12 @@ export function AuthPanel({ redirectToAppOnAuth = false }: AuthPanelProps) {
 
   const router = useRouter();
 
-  // 👇 Auto-redirect to /app after login/signup when used on landing
+  // 👇 Auto-redirect to /editor after login/signup when used on landing
   useEffect(() => {
     if (!redirectToAppOnAuth) return;
     if (loading) return;
     if (user) {
-      router.push("/app");
+      router.push("/editor");
     }
   }, [redirectToAppOnAuth, loading, user, router]);
 

@@ -27,7 +27,8 @@ export function useSupabaseUser(): UseSupabaseUserResult {
           console.error("[useSupabaseUser] getSession error:", error);
         }
 
-        setUser(data?.session?.user ?? null);
+        const session = data?.session ?? null;
+        setUser(session?.user ?? null);
       } catch (err) {
         if (!isMounted) return;
         console.error("[useSupabaseUser] unexpected getSession error:", err);

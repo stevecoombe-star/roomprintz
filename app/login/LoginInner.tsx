@@ -5,13 +5,31 @@ import { useSupabaseUser } from "@/lib/useSupabaseUser";
 import { useEffect } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 
+const DEFAULT_LOGIN_REDIRECT = "/editor";
+
+function sanitizeNextPath(rawNext: string | null): string {
+  if (!rawNext) return DEFAULT_LOGIN_REDIRECT;
+  const candidate = rawNext.trim();
+  if (!candidate.startsWith("/")) return DEFAULT_LOGIN_REDIRECT;
+  if (candidate.startsWith("//")) return DEFAULT_LOGIN_REDIRECT;
+
+  try {
+    const parsed = new URL(candidate, "http://localhost");
+    if (parsed.origin !== "http://localhost") return DEFAULT_LOGIN_REDIRECT;
+    if (!parsed.pathname.startsWith("/")) return DEFAULT_LOGIN_REDIRECT;
+    return `${parsed.pathname}${parsed.search}`;
+  } catch {
+    return DEFAULT_LOGIN_REDIRECT;
+  }
+}
+
 export default function LoginInner() {
   const { user, loading } = useSupabaseUser();
   const router = useRouter();
   const sp = useSearchParams();
 
   // Optional: allow redirect back to where user came from
-  const next = sp.get("next") || "/editor";
+  const next = sanitizeNextPath(sp.get("next"));
 
   useEffect(() => {
     if (loading) return;
