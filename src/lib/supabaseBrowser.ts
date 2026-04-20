@@ -1,7 +1,8 @@
 // src/lib/supabaseBrowser.ts
 "use client";
 
-import { createClient, type SupabaseClient } from "@supabase/supabase-js";
+import { createBrowserClient } from "@supabase/ssr";
+import type { SupabaseClient } from "@supabase/supabase-js";
 
 /**
  * Browser-side Supabase singleton.
@@ -25,13 +26,7 @@ export function supabaseBrowser(): AnySupabaseClient {
     );
   }
 
-  _browserClient = createClient(url, anon, {
-    auth: {
-      persistSession: true,
-      autoRefreshToken: true,
-      detectSessionInUrl: true,
-    },
-  });
+  _browserClient = createBrowserClient(url, anon);
 
   return _browserClient;
 }

@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { createServerClient } from "@supabase/ssr";
 
 const LOGIN_PATH = "/login";
 const PROTECTED_PREFIXES = ["/editor", "/my-rooms", "/my-furniture", "/billing", "/app"];
@@ -9,77 +10,52 @@ function isProtectedPath(pathname: string): boolean {
   );
 }
 
-function readAuthToken(req: NextRequest): string | null {
-  for (const cookie of req.cookies.getAll()) {
-    if (!cookie.name.startsWith("sb-")) continue;
-    if (!cookie.name.endsWith("-auth-token")) continue;
-
-    const raw = cookie.value?.trim();
-    if (!raw) continue;
-
-    if (raw.startsWith("base64-")) {
-      const encoded = raw.slice("base64-".length);
-      try {
-        const decoded = atob(encoded);
-        const parsed = JSON.parse(decoded) as { access_token?: unknown };
-        if (typeof parsed.access_token === "string" && parsed.access_token.length > 0) {
-          return parsed.access_token;
-        }
-      } catch {
-        continue;
-      }
-    }
-
-    try {
-      const parsed = JSON.parse(raw) as
-        | { access_token?: unknown }
-        | [{ access_token?: unknown }, unknown?];
-
-      if (Array.isArray(parsed)) {
-        const access = parsed[0]?.access_token;
-        if (typeof access === "string" && access.length > 0) return access;
-      } else if (typeof parsed.access_token === "string" && parsed.access_token.length > 0) {
-        return parsed.access_token;
-      }
-    } catch {
-      // Ignore non-JSON cookie formats.
-    }
-  }
-
-  return null;
-}
-
-function hasValidJwt(token: string | null): boolean {
-  if (!token) return false;
-
-  const parts = token.split(".");
-  if (parts.length !== 3) return false;
-
-  const payloadPart = parts[1];
-  const normalized = payloadPart.replace(/-/g, "+").replace(/_/g, "/");
-  const padded = normalized + "=".repeat((4 - (normalized.length % 4)) % 4);
-
-  try {
-    const payloadText = atob(padded);
-    const payload = JSON.parse(payloadText) as { exp?: unknown };
-    const exp = typeof payload.exp === "number" ? payload.exp : 0;
-    return exp > Math.floor(Date.now() / 1000);
-  } catch {
-    return false;
-  }
-}
-
-export function middleware(req: NextRequest) {
-  const { pathname, search } = req.nextUrl;
-  if (!isProtectedPath(pathname)) return NextResponse.next();
-
-  const token = readAuthToken(req);
-  if (hasValidJwt(token)) return NextResponse.next();
-
+function redirectToLogin(req: NextRequest, pathname: string, search: string): NextResponse {
   const loginUrl = new URL(LOGIN_PATH, req.url);
   const nextPath = `${pathname}${search}`;
   loginUrl.searchParams.set("next", nextPath);
   return NextResponse.redirect(loginUrl);
+}
+
+export async function middleware(req: NextRequest) {
+  const { pathname, search } = req.nextUrl;
+  if (!isProtectedPath(pathname)) return NextResponse.next();
+
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+  if (!supabaseUrl || !supabaseAnonKey) {
+    return redirectToLogin(req, pathname, search);
+  }
+
+  let response = NextResponse.next({ request: req });
+
+  const supabase = createServerClient(supabaseUrl, supabaseAnonKey, {
+    cookies: {
+      getAll() {
+        return req.cookies.getAll();
+      },
+      setAll(cookiesToSet) {
+        for (const cookie of cookiesToSet) {
+          req.cookies.set(cookie.name, cookie.value);
+        }
+        response = NextResponse.next({ request: req });
+        for (const cookie of cookiesToSet) {
+          response.cookies.set(cookie.name, cookie.value, cookie.options);
+        }
+      },
+    },
+  });
+
+  const {
+    data: { user },
+    error,
+  } = await supabase.auth.getUser();
+
+  if (error || !user) {
+    return redirectToLogin(req, pathname, search);
+  }
+
+  return response;
 }
 
 export const config = {
