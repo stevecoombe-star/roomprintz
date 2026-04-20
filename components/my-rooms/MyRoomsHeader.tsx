@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import type { ReactNode } from "react";
 import type { MyRoomsSortMode } from "@/components/my-rooms/types";
 
 type MyRoomsHeaderProps = {
@@ -11,6 +12,7 @@ type MyRoomsHeaderProps = {
   onSortChange: (value: MyRoomsSortMode) => void;
   onUploadNewPhoto: () => void;
   onCreateFolder: () => void;
+  tokenBadge?: ReactNode;
 };
 
 export function MyRoomsHeader({
@@ -21,6 +23,7 @@ export function MyRoomsHeader({
   onSortChange,
   onUploadNewPhoto,
   onCreateFolder,
+  tokenBadge,
 }: MyRoomsHeaderProps) {
   return (
     <header className="rounded-2xl border border-slate-800/80 bg-slate-900/55 p-4">
@@ -33,6 +36,7 @@ export function MyRoomsHeader({
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
+          {tokenBadge}
           <Link
             href="/my-furniture"
             className="rounded-lg border border-slate-700 px-3 py-2 text-xs text-slate-200 transition hover:border-slate-500 hover:text-white"

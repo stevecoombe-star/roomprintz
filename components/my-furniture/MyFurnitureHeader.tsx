@@ -1,10 +1,18 @@
+import type { ReactNode } from "react";
+
 type MyFurnitureHeaderProps = {
   onRefresh: () => void;
   isRefreshing: boolean;
   onAddItem: () => void;
+  tokenBadge?: ReactNode;
 };
 
-export function MyFurnitureHeader({ onRefresh, isRefreshing, onAddItem }: MyFurnitureHeaderProps) {
+export function MyFurnitureHeader({
+  onRefresh,
+  isRefreshing,
+  onAddItem,
+  tokenBadge,
+}: MyFurnitureHeaderProps) {
   return (
     <header className="rounded-2xl border border-slate-800/80 bg-slate-900/55 p-4">
       <div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
@@ -13,6 +21,7 @@ export function MyFurnitureHeader({ onRefresh, isRefreshing, onAddItem }: MyFurn
           <p className="mt-1 text-xs text-slate-400">Your saved items, ready to reuse instantly</p>
         </div>
         <div className="flex items-center gap-2">
+          {tokenBadge}
           <button
             type="button"
             onClick={onAddItem}

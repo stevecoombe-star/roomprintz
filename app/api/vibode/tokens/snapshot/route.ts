@@ -1,4 +1,6 @@
 import { NextRequest } from "next/server";
+import { cookies } from "next/headers";
+import { createServerClient } from "@supabase/ssr";
 import { createClient } from "@supabase/supabase-js";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { getUserTokenWalletIfExists } from "@/lib/vibodeTokenDomain";
@@ -10,43 +12,66 @@ type AnySupabaseClient = SupabaseClient<any, "public", any>;
 const SUPABASE_URL = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || "";
 const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "";
 
-function getUserSupabaseClient(
-  req: NextRequest
-): { supabase: AnySupabaseClient | null; token: string | null } {
-  if (!SUPABASE_URL || !SUPABASE_ANON_KEY) return { supabase: null, token: null };
+function getBearerSupabaseClient(req: NextRequest): AnySupabaseClient | null {
+  if (!SUPABASE_URL || !SUPABASE_ANON_KEY) return null;
 
   const authHeader = req.headers.get("authorization") || "";
   const token = authHeader.startsWith("Bearer ")
     ? authHeader.slice("Bearer ".length).trim()
     : null;
-  if (!token) return { supabase: null, token: null };
+  if (!token) return null;
 
   const supabase: AnySupabaseClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
     global: { headers: { Authorization: `Bearer ${token}` } },
     auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
   });
-  return { supabase, token };
+  return supabase;
+}
+
+async function getCookieSupabaseClient(): Promise<AnySupabaseClient | null> {
+  if (!SUPABASE_URL || !SUPABASE_ANON_KEY) return null;
+  const cookieStore = await cookies();
+  return createServerClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+    cookies: {
+      getAll() {
+        return cookieStore.getAll();
+      },
+      setAll() {
+        // No-op in this GET route; cookie writes are not required for token snapshot reads.
+      },
+    },
+  });
 }
 
 export async function GET(req: NextRequest) {
   try {
-    const { supabase, token } = getUserSupabaseClient(req);
-    if (!token || !supabase) {
-      return Response.json(
-        {
-          error:
-            "Unauthorized: missing Authorization Bearer token. (Send Supabase access_token in the request.)",
-        },
-        { status: 401 }
-      );
+    let supabase: AnySupabaseClient | null = null;
+    let userId: string | null = null;
+
+    const cookieSupabase = await getCookieSupabaseClient();
+    if (cookieSupabase) {
+      const { data, error } = await cookieSupabase.auth.getUser();
+      if (!error && data?.user) {
+        supabase = cookieSupabase;
+        userId = data.user.id;
+      }
     }
 
-    const { data: userData, error: userErr } = await supabase.auth.getUser();
-    if (userErr || !userData?.user) {
+    if (!supabase || !userId) {
+      supabase = getBearerSupabaseClient(req);
+      if (supabase) {
+        const { data, error } = await supabase.auth.getUser();
+        if (!error && data?.user) {
+          userId = data.user.id;
+        }
+      }
+    }
+
+    if (!supabase || !userId) {
       return Response.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    const wallet = await getUserTokenWalletIfExists(supabase, userData.user.id);
+    const wallet = await getUserTokenWalletIfExists(supabase, userId);
     if (!wallet) {
       return Response.json({
         balanceTokens: 0,

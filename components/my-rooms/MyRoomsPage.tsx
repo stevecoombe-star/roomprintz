@@ -9,6 +9,7 @@ import { MyRoomsGrid } from "@/components/my-rooms/MyRoomsGrid";
 import { MyRoomsHeader } from "@/components/my-rooms/MyRoomsHeader";
 import { MyRoomsLayout } from "@/components/my-rooms/MyRoomsLayout";
 import { MyRoomsSidebar } from "@/components/my-rooms/MyRoomsSidebar";
+import { TokenBalanceBadge } from "@/components/tokens/TokenBalanceBadge";
 import type {
   MyRoomsFolder,
   MyRoomsRoom,
@@ -696,6 +697,7 @@ export function MyRoomsPage() {
               if (!folderFeatureReady) return;
               setCreateDialogOpen(true);
             }}
+            tokenBadge={<TokenBalanceBadge />}
           />
         }
         contextBar={<MyRoomsContextBar label={contextLabel} count={visibleRooms.length} />}

@@ -11,6 +11,7 @@ import {
   type MyFurniturePickerItem,
   type MyFurniturePickerMode,
 } from "@/components/editor/MyFurniturePicker";
+import { TokenBalanceBadge } from "@/components/tokens/TokenBalanceBadge";
 import { SnackbarHost, type Snackbar } from "@/components/ui/SnackbarHost";
 import {
   toImageSpaceTransform,
@@ -1279,6 +1280,9 @@ function EditorPageInner() {
   const [snacks, setSnacks] = useState<Snackbar[]>([]);
   const pushSnack = useCallback((message: string) => {
     setSnacks((prev) => [...prev, { id: safeId("sn"), message }]);
+  }, []);
+  const notifyTokenBalanceChanged = useCallback(() => {
+    window.dispatchEvent(new Event("tokens:changed"));
   }, []);
   const [pasteToPlaceStatus, setPasteToPlaceStatus] = useState<PasteToPlaceStatus | null>(null);
   const [pasteToPlaceMenuState, setPasteToPlaceMenuState] = useState<PasteToPlaceMenuState>(null);
@@ -3300,6 +3304,7 @@ function EditorPageInner() {
       } else {
         pushSnack(`Stage ${stageNumber} complete.`);
       }
+      notifyTokenBalanceChanged();
       return json;
     } catch (err: any) {
       setStageStatus((prev) => ({ ...prev, [stageNumber]: "error" }));
@@ -3487,6 +3492,7 @@ function EditorPageInner() {
       clearLegacyPlacementNodes();
       lifecycle?.onImageCommitted?.(json as VibodeEditRunResponse);
       pushSnack(`Applied ${action}.`);
+      notifyTokenBalanceChanged();
       return json as VibodeEditRunResponse;
     } catch (err: any) {
       const message = err?.message ?? `Failed to ${action}.`;
@@ -5114,6 +5120,7 @@ function EditorPageInner() {
           tokenBalance != null ? ` • balance=${tokenBalance}` : ""
         }`
       );
+      notifyTokenBalanceChanged();
   
       // ─────────────────────────────────────────────
       // 6) ✅ NOW we are allowed to mutate local UI state.
@@ -5241,6 +5248,7 @@ function EditorPageInner() {
               {queuedSwaps > 0 ? `${queuedSwaps} swap${queuedSwaps === 1 ? "" : "s"} pending` : ""}
             </div>
           )}
+          <TokenBalanceBadge className="border-neutral-700 bg-neutral-900 text-neutral-200" />
 
           <div className="flex items-center gap-1.5 rounded-md border border-neutral-700 bg-neutral-900 px-2 py-1.5">
             <span className="text-xs text-neutral-400">Model</span>
