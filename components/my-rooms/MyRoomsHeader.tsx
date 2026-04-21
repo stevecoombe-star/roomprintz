@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import type { ReactNode } from "react";
+import { SignOutButton } from "@/components/auth/SignOutButton";
 import type { MyRoomsSortMode } from "@/components/my-rooms/types";
 
 type MyRoomsHeaderProps = {
@@ -58,6 +59,7 @@ export function MyRoomsHeader({
           >
             New Folder
           </button>
+          <SignOutButton className="rounded-lg border border-slate-700 px-3 py-2 text-xs text-slate-200 transition hover:border-slate-500 hover:text-white disabled:opacity-50" />
         </div>
       </div>
 

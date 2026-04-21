@@ -11,6 +11,7 @@ import {
   type MyFurniturePickerItem,
   type MyFurniturePickerMode,
 } from "@/components/editor/MyFurniturePicker";
+import { SignOutButton } from "@/components/auth/SignOutButton";
 import { TokenBalanceBadge } from "@/components/tokens/TokenBalanceBadge";
 import { SnackbarHost, type Snackbar } from "@/components/ui/SnackbarHost";
 import {
@@ -5249,6 +5250,7 @@ function EditorPageInner() {
             </div>
           )}
           <TokenBalanceBadge className="border-neutral-700 bg-neutral-900 text-neutral-200" />
+          <SignOutButton className="rounded-md border border-neutral-700 bg-neutral-900 px-3 py-1.5 text-sm text-neutral-200 transition hover:bg-neutral-800 disabled:opacity-50" />
 
           <div className="flex items-center gap-1.5 rounded-md border border-neutral-700 bg-neutral-900 px-2 py-1.5">
             <span className="text-xs text-neutral-400">Model</span>
