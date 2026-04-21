@@ -92,7 +92,7 @@ export function ProfileSettings() {
             Profile settings
           </h2>
           <p className="text-[11px] text-slate-400">
-            Update the details shown at the top of your RoomPrintz dashboard.
+            Update the details shown in your Vibode workspace profile header.
           </p>
         </div>
       </div>

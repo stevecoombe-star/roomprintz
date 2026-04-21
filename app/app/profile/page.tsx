@@ -18,7 +18,7 @@ export default function ProfilePage() {
             href="/app"
             className="text-[11px] rounded-lg border border-slate-700 px-3 py-1 hover:border-emerald-400/70 hover:text-emerald-200 transition"
           >
-            ← Back to dashboard
+            ← Back to workspace
           </Link>
         </div>
 

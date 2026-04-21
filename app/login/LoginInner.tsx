@@ -39,9 +39,10 @@ export default function LoginInner() {
   return (
     <main className="min-h-screen bg-slate-950 text-slate-50 flex items-center justify-center px-4">
       <div className="w-full max-w-2xl">
-        <h1 className="text-lg font-semibold mb-2">Log in</h1>
+        <h1 className="text-lg font-semibold mb-2">Log in to Vibode</h1>
         <p className="text-[11px] text-slate-400 mb-3">
-          Dev login (email/password). After login you’ll be sent back to the editor.
+          Use your Vibode account email and password. After login, you&apos;ll be sent to your
+          workspace.
         </p>
 
         <AuthPanel />

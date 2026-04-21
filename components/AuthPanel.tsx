@@ -11,6 +11,11 @@ type AuthPanelProps = {
   redirectToAppOnAuth?: boolean;
 };
 
+type TokenSnapshotResponse = {
+  balanceTokens?: unknown;
+  error?: unknown;
+};
+
 function errorMessageFromUnknown(err: unknown, fallback: string): string {
   if (err instanceof Error && err.message) return err.message;
   if (typeof err === "string" && err.trim().length > 0) return err;
@@ -45,20 +50,27 @@ export function AuthPanel({ redirectToAppOnAuth = false }: AuthPanelProps) {
 
     setTokenLoading(true);
     setTokenError(null);
+    try {
+      const response = await fetch("/api/vibode/tokens/snapshot", {
+        method: "GET",
+        credentials: "same-origin",
+      });
+      const payload = (await response.json().catch(() => ({}))) as TokenSnapshotResponse;
+      if (!response.ok) {
+        throw new Error(
+          typeof payload.error === "string"
+            ? payload.error
+            : `Failed to load token balance (HTTP ${response.status}).`
+        );
+      }
 
-    const { data, error } = await supabase
-      .from("user_token_wallets")
-      .select("balance_tokens")
-      .eq("user_id", user.id)
-      .maybeSingle();
-
-    if (error) {
-      console.error("[AuthPanel] user_token_wallets read error:", error);
-      setTokenError(error.message);
-      setTokenBalance(null);
-    } else {
-      const balance = typeof data?.balance_tokens === "number" ? data.balance_tokens : 0;
+      const balance = typeof payload.balanceTokens === "number" ? payload.balanceTokens : 0;
       setTokenBalance(balance);
+    } catch (err: unknown) {
+      const message = errorMessageFromUnknown(err, "Could not load token balance.");
+      console.error("[AuthPanel] token snapshot error:", err);
+      setTokenError(message);
+      setTokenBalance(null);
     }
 
     setTokenLoading(false);
@@ -236,7 +248,7 @@ export function AuthPanel({ redirectToAppOnAuth = false }: AuthPanelProps) {
                 className="w-full rounded-lg bg-slate-950 border border-slate-800 px-2 py-1 text-xs text-slate-100 outline-none focus:border-emerald-400"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
-                placeholder="agent@example.com"
+                placeholder="you@vibode.com"
               />
             </div>
 
@@ -279,7 +291,8 @@ export function AuthPanel({ redirectToAppOnAuth = false }: AuthPanelProps) {
           )}
 
           <p className="text-[11px] text-slate-500">
-            Dev note: email/password only, no email verification in this environment.
+            Sign up with email and password. If your environment requires email confirmation,
+            check your inbox before first login.
           </p>
         </>
       )}

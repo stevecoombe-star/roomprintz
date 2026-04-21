@@ -3,7 +3,7 @@ import { cookies } from "next/headers";
 import { createServerClient } from "@supabase/ssr";
 import { createClient } from "@supabase/supabase-js";
 import type { SupabaseClient } from "@supabase/supabase-js";
-import { getUserTokenWalletIfExists } from "@/lib/vibodeTokenDomain";
+import { getUserTokenWallet } from "@/lib/vibodeTokenDomain";
 
 export const runtime = "nodejs";
 
@@ -71,18 +71,9 @@ export async function GET(req: NextRequest) {
       return Response.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    const wallet = await getUserTokenWalletIfExists(supabase, userId);
-    if (!wallet) {
-      return Response.json({
-        balanceTokens: 0,
-        lifetimeGrantedTokens: 0,
-        lifetimeSpentTokens: 0,
-        monthlyGrantedTokens: 0,
-        monthlySpentTokens: 0,
-        currentPeriodStart: null,
-        currentPeriodEnd: null,
-      });
-    }
+    // Deterministic first-touch initialization:
+    // first authenticated snapshot call bootstraps wallet if missing.
+    const wallet = await getUserTokenWallet(supabase, userId);
 
     return Response.json({
       balanceTokens: wallet.balance_tokens,
