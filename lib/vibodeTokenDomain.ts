@@ -175,6 +175,9 @@ export async function getUserTokenWallet(
   supabase: AnySupabaseClient,
   userId: string
 ): Promise<UserTokenWalletRow> {
+  const existing = await getExistingWallet(supabase, userId);
+  if (existing) return existing;
+  // Keep deterministic first-touch bootstrap, but avoid periodic counter resets in read paths.
   return ensureUserTokenWallet(supabase, userId);
 }
 
@@ -242,7 +245,7 @@ export async function spendTokens(args: {
   allowNegativeBalance?: boolean;
 }): Promise<SpendTokensResult> {
   const spendAmount = ensurePositiveInt(args.spendTokens, "spendTokens");
-  const walletBefore = await getUserTokenWallet(args.supabase, args.userId);
+  const walletBefore = await ensureUserTokenWallet(args.supabase, args.userId);
   const affordability = canAffordTokens({
     balanceTokens: walletBefore.balance_tokens,
     requiredTokens: spendAmount,
@@ -348,7 +351,7 @@ export async function grantTokens(args: {
   metadata?: JsonObject;
 }): Promise<GrantTokensResult> {
   const grantTokens = ensurePositiveInt(args.grantTokens, "grantTokens");
-  const walletBefore = await getUserTokenWallet(args.supabase, args.userId);
+  const walletBefore = await ensureUserTokenWallet(args.supabase, args.userId);
 
   const { data: updatedData, error: updateErr } = await args.supabase
     .from("user_token_wallets")
@@ -415,7 +418,7 @@ export async function refundTokens(args: {
   metadata?: JsonObject;
 }): Promise<RefundTokensResult> {
   const refundTokens = ensurePositiveInt(args.refundTokens, "refundTokens");
-  const walletBefore = await getUserTokenWallet(args.supabase, args.userId);
+  const walletBefore = await ensureUserTokenWallet(args.supabase, args.userId);
 
   const { data: updatedData, error: updateErr } = await args.supabase
     .from("user_token_wallets")
