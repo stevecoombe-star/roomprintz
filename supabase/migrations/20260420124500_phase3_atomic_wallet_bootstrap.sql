@@ -75,7 +75,7 @@ begin
     v_start,
     v_end
   )
-  on conflict (user_id) do nothing
+  on conflict on constraint user_token_wallets_pkey do nothing
   returning * into v_wallet;
 
   if not found then
