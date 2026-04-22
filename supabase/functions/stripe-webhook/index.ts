@@ -288,21 +288,37 @@ Deno.serve(async (req: Request) => {
          * We grant tokens immediately on successful one-time payment.
          */
         if (session.mode === "payment") {
-          // Retrieve expanded session so we can read the Stripe price id
-          const fullSession = await stripe.checkout.sessions.retrieve(session.id, {
-            expand: ["line_items.data.price"],
-          });
+          const metadataPriceId =
+            typeof session.metadata?.price_id === "string" && session.metadata.price_id.length > 0
+              ? session.metadata.price_id
+              : null;
+          let priceId = metadataPriceId;
 
-          const line = fullSession.line_items?.data?.[0];
-          const priceId =
-            typeof line?.price === "string"
-              ? line.price
-              : (line?.price as Stripe.Price | undefined)?.id ?? null;
+          // Fallback for legacy sessions missing metadata.price_id.
+          if (!priceId) {
+            try {
+              const fullSession = await stripe.checkout.sessions.retrieve(session.id, {
+                expand: ["line_items"],
+              });
+              const line = fullSession.line_items?.data?.[0];
+              priceId =
+                typeof line?.price === "string"
+                  ? line.price
+                  : (line?.price as Stripe.Price | undefined)?.id ?? null;
+            } catch (err) {
+              console.error("❌ topup: failed to retrieve checkout line_items", {
+                requestId,
+                sessionId: session.id,
+                ...safeErr(err),
+              });
+            }
+          }
 
           console.log("🔁 TOPUP SESSION", {
             requestId,
             sessionId: session.id,
             userId,
+            metadataPriceId,
             priceId,
           });
 
