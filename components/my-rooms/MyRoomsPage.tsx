@@ -10,6 +10,7 @@ import { MyRoomsHeader } from "@/components/my-rooms/MyRoomsHeader";
 import { MyRoomsLayout } from "@/components/my-rooms/MyRoomsLayout";
 import { MyRoomsSidebar } from "@/components/my-rooms/MyRoomsSidebar";
 import { TokenBalanceBadge } from "@/components/tokens/TokenBalanceBadge";
+import { TokenStatusNotice } from "@/components/tokens/TokenStatusNotice";
 import type {
   MyRoomsFolder,
   MyRoomsRoom,
@@ -703,6 +704,7 @@ export function MyRoomsPage() {
         contextBar={<MyRoomsContextBar label={contextLabel} count={visibleRooms.length} />}
         grid={
           <>
+            <TokenStatusNotice className="mt-3" />
             {!folderFeatureReady ? (
               <div className="mt-3 rounded-xl border border-amber-700/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
                 Folder schema is unavailable. Run the latest Supabase migration to enable folders.

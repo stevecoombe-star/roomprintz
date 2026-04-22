@@ -13,6 +13,7 @@ import {
 } from "@/components/editor/MyFurniturePicker";
 import { SignOutButton } from "@/components/auth/SignOutButton";
 import { TokenBalanceBadge } from "@/components/tokens/TokenBalanceBadge";
+import { TokenStatusNotice } from "@/components/tokens/TokenStatusNotice";
 import { SnackbarHost, type Snackbar } from "@/components/ui/SnackbarHost";
 import {
   toImageSpaceTransform,
@@ -33,6 +34,7 @@ import { blobToDataUrl, readClipboardImageWithStatus } from "@/lib/readClipboard
 import { hashDataUrlForLogs } from "@/lib/pasteToPlaceDebug";
 
 import { getSupabaseBrowserAccessToken, supabaseBrowser } from "@/lib/supabaseBrowser";
+import { useTokenBalance } from "@/hooks/useTokenBalance";
 
 const DND_MIME = "application/x-roomprintz-furniture";
 const USER_SKU_MAX_INPUT_BYTES = 12 * 1024 * 1024;
@@ -42,12 +44,29 @@ const PASTE_TO_PLACE_CLIPBOARD_HEADS_UP_SESSION_KEY = "vibode:pasteToPlaceClipbo
 const VIBODE_MODEL_NBP = "NBP";
 const VIBODE_MODEL_NB2 = "NB2";
 const ROOM_PREPARING_MESSAGE = "Your room is still preparing. Try again in a moment.";
+const LOW_TOKEN_WARNING_THRESHOLD = 10;
+const DEFAULT_ACTION_TOKEN_COST = 1;
+const STAGE_TOKEN_COST = {
+  1: 2,
+  2: 2,
+  3: 2,
+  4: 4,
+  5: 5,
+} as const;
+const EDIT_TOKEN_COST = {
+  EDIT_SWAP: 1,
+  EDIT_ROTATE: 1,
+} as const;
 const VERSION_TIMESTAMP_FORMATTER = new Intl.DateTimeFormat(undefined, {
   month: "short",
   day: "numeric",
   hour: "numeric",
   minute: "2-digit",
 });
+
+function formatTokenCostLabel(tokenCost: number): string {
+  return `${tokenCost} token${tokenCost === 1 ? "" : "s"}`;
+}
 
 function safeId(prefix = "sn") {
   if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
@@ -190,6 +209,27 @@ function getFreezePayloadAccess(payload: unknown): {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object";
+}
+
+function buildTokenUsageMessage(payload: unknown, fallbackCost = DEFAULT_ACTION_TOKEN_COST): string {
+  const safeFallback = Number.isFinite(fallbackCost) ? Math.max(1, Math.round(fallbackCost)) : 1;
+  let tokenCost = safeFallback;
+  let tokenBalance: number | null = null;
+
+  if (isRecord(payload)) {
+    const costCandidate = payload.tokenCost;
+    const balanceCandidate = payload.tokenBalance;
+    if (typeof costCandidate === "number" && Number.isFinite(costCandidate) && costCandidate > 0) {
+      tokenCost = Math.round(costCandidate);
+    }
+    if (typeof balanceCandidate === "number" && Number.isFinite(balanceCandidate)) {
+      tokenBalance = Math.max(0, Math.round(balanceCandidate));
+    }
+  }
+
+  const tokenLabel = `${tokenCost} token${tokenCost === 1 ? "" : "s"} used`;
+  if (tokenBalance === null) return tokenLabel;
+  return `${tokenLabel} - ${tokenBalance.toLocaleString()} remaining`;
 }
 
 function hasValidSwapReplacement(mark: unknown): boolean {
@@ -1282,6 +1322,9 @@ function EditorPageInner() {
   const pushSnack = useCallback((message: string) => {
     setSnacks((prev) => [...prev, { id: safeId("sn"), message }]);
   }, []);
+  const { visible: tokenBalanceVisible, balance: tokenBalance } = useTokenBalance();
+  const isOutOfTokens =
+    tokenBalanceVisible && typeof tokenBalance === "number" && Number.isFinite(tokenBalance) && tokenBalance <= 0;
   const notifyTokenBalanceChanged = useCallback(() => {
     window.dispatchEvent(new Event("tokens:changed"));
   }, []);
@@ -3074,6 +3117,10 @@ function EditorPageInner() {
       beforeCommit?: () => boolean;
     }
   ) => {
+    if (isOutOfTokens) {
+      pushSnack("You're out of tokens.");
+      return null;
+    }
     if (stageNumber === 5 && !hasFurniturePass && !STAGE5_DEV_BYPASS) {
       pushSnack("Stage 5 is locked until Stage 3 furniture pass succeeds.");
       return null;
@@ -3300,10 +3347,11 @@ function EditorPageInner() {
         setHasFurniturePass(true);
       }
 
+      const tokenUsageMessage = buildTokenUsageMessage(json);
       if (stageNumber === 4) {
-        pushSnack(`Stage 4 ${STAGE4_ACTION_LABELS[stage4ActionForRun]} complete.`);
+        pushSnack(`Stage 4 ${STAGE4_ACTION_LABELS[stage4ActionForRun]} complete. ${tokenUsageMessage}.`);
       } else {
-        pushSnack(`Stage ${stageNumber} complete.`);
+        pushSnack(`Stage ${stageNumber} complete. ${tokenUsageMessage}.`);
       }
       notifyTokenBalanceChanged();
       return json;
@@ -3332,6 +3380,12 @@ function EditorPageInner() {
       beforeCommit?: () => boolean;
     }
   ): Promise<VibodeEditRunResponse | null> => {
+    if (isOutOfTokens) {
+      const message = "You're out of tokens";
+      setEditWarning(message);
+      pushSnack(message);
+      return null;
+    }
     const baseImageUrl = workingImageUrl;
     if (!baseImageUrl) {
       const message = "No working image yet. Run a stage or upload a room photo first.";
@@ -3492,7 +3546,8 @@ function EditorPageInner() {
       }
       clearLegacyPlacementNodes();
       lifecycle?.onImageCommitted?.(json as VibodeEditRunResponse);
-      pushSnack(`Applied ${action}.`);
+      const tokenUsageMessage = buildTokenUsageMessage(json);
+      pushSnack(`Applied ${action}. ${tokenUsageMessage}.`);
       notifyTokenBalanceChanged();
       return json as VibodeEditRunResponse;
     } catch (err: any) {
@@ -5163,6 +5218,15 @@ function EditorPageInner() {
   };  
 
   const stage5Locked = activeStage === 5 && !hasFurniturePass && !STAGE5_DEV_BYPASS;
+  const activeStageTokenCost = STAGE_TOKEN_COST[activeStage] ?? DEFAULT_ACTION_TOKEN_COST;
+  const activeStageTokenCostLabel = formatTokenCostLabel(activeStageTokenCost);
+  const activeEditTokenCost =
+    activeTool === "swap"
+      ? EDIT_TOKEN_COST.EDIT_SWAP
+      : activeTool === "rotate"
+        ? EDIT_TOKEN_COST.EDIT_ROTATE
+        : DEFAULT_ACTION_TOKEN_COST;
+  const activeEditTokenCostLabel = formatTokenCostLabel(activeEditTokenCost);
   const renderVersionRow = (asset: VibodeRoomAsset) => {
     const isActive = selectedVersionId === asset.id;
     const secondaryText = getVersionSecondaryLabel(asset);
@@ -5534,6 +5598,16 @@ function EditorPageInner() {
               <div className="mt-1 text-xs text-neutral-500">
                 Working image: {workingImageUrl ? "ready" : "none"}
               </div>
+              <TokenStatusNotice
+                lowThreshold={LOW_TOKEN_WARNING_THRESHOLD}
+                showGetMoreTokensCta
+                className="mt-3"
+              />
+              {isOutOfTokens ? (
+                <div className="mt-2 text-[11px] text-neutral-500">
+                  Stage and edit actions are paused until you top up.
+                </div>
+              ) : null}
 
               <div className="mt-3 rounded-md border border-neutral-800 bg-neutral-950 p-3">
                 <div className="text-sm font-medium">Stage {activeStage}</div>
@@ -5576,9 +5650,9 @@ function EditorPageInner() {
                         onClick={() =>
                           runStage(1, { enhance: stage1Enhance, declutter: stage1Declutter })
                         }
-                        disabled={stageStatus[1] === "running"}
+                        disabled={stageStatus[1] === "running" || isOutOfTokens}
                         className={`rounded-md border px-3 py-1.5 text-sm ${
-                          stageStatus[1] === "running"
+                          stageStatus[1] === "running" || isOutOfTokens
                             ? "border-neutral-900 bg-neutral-950 text-neutral-500"
                             : "border-neutral-700 bg-neutral-900 hover:bg-neutral-800"
                         }`}
@@ -5594,9 +5668,9 @@ function EditorPageInner() {
                             emptyRoom: true,
                           })
                         }
-                        disabled={stageStatus[1] === "running"}
+                        disabled={stageStatus[1] === "running" || isOutOfTokens}
                         className={`rounded-md border px-3 py-1.5 text-sm ${
-                          stageStatus[1] === "running"
+                          stageStatus[1] === "running" || isOutOfTokens
                             ? "border-neutral-900 bg-neutral-950 text-neutral-500"
                             : "border-neutral-700 bg-neutral-900 hover:bg-neutral-800"
                         }`}
@@ -5649,9 +5723,9 @@ function EditorPageInner() {
                       <button
                         type="button"
                         onClick={() => runStage(2)}
-                        disabled={stageStatus[2] === "running"}
+                        disabled={stageStatus[2] === "running" || isOutOfTokens}
                         className={`rounded-md border px-3 py-1.5 text-sm ${
-                          stageStatus[2] === "running"
+                          stageStatus[2] === "running" || isOutOfTokens
                             ? "border-neutral-900 bg-neutral-950 text-neutral-500"
                             : "border-neutral-700 bg-neutral-900 hover:bg-neutral-800"
                         }`}
@@ -5666,9 +5740,9 @@ function EditorPageInner() {
                       <button
                         type="button"
                         onClick={() => runStage(4, { stage4Action: STAGE4_PRIMARY_ACTION })}
-                        disabled={stageStatus[4] === "running"}
+                        disabled={stageStatus[4] === "running" || isOutOfTokens}
                         className={`w-full rounded-md border px-3 py-2 text-sm ${
-                          stageStatus[4] === "running"
+                          stageStatus[4] === "running" || isOutOfTokens
                             ? "border-neutral-900 bg-neutral-950 text-neutral-500"
                             : "border-sky-500/60 bg-sky-950/40 text-sky-100 hover:bg-sky-900/50"
                         }`}
@@ -5689,9 +5763,9 @@ function EditorPageInner() {
                             key={action}
                             type="button"
                             onClick={() => runStage(4, { stage4Action: action })}
-                            disabled={stageStatus[4] === "running"}
+                            disabled={stageStatus[4] === "running" || isOutOfTokens}
                             className={`rounded-md border px-2 py-1 text-xs ${
-                              stageStatus[4] === "running"
+                              stageStatus[4] === "running" || isOutOfTokens
                                 ? "border-neutral-900 bg-neutral-950 text-neutral-500"
                                 : "border-neutral-700 bg-neutral-900 text-neutral-200 hover:bg-neutral-800"
                             }`}
@@ -5717,10 +5791,12 @@ function EditorPageInner() {
                       onClick={() => runStage(activeStage)}
                       disabled={
                         stageStatus[activeStage] === "running" ||
+                        isOutOfTokens ||
                         stage5Locked
                       }
                       className={`rounded-md border px-3 py-1.5 text-sm ${
                         stageStatus[activeStage] === "running" ||
+                        isOutOfTokens ||
                         stage5Locked
                           ? "border-neutral-900 bg-neutral-950 text-neutral-500"
                           : "border-neutral-700 bg-neutral-900 hover:bg-neutral-800"
@@ -5738,6 +5814,9 @@ function EditorPageInner() {
 
                 <div className="mt-3 text-xs text-neutral-500">
                   Last output: {lastStageOutputs[activeStage] ? "available" : "none"}
+                </div>
+                <div className="mt-1 text-[11px] text-neutral-500">
+                  This will use {activeStageTokenCostLabel}.
                 </div>
               </div>
             </div>
@@ -5783,6 +5862,9 @@ function EditorPageInner() {
                       {editWarning}
                     </div>
                   )}
+                  <div className="mt-2 text-[11px] text-neutral-500">
+                    This action uses {activeEditTokenCostLabel}.
+                  </div>
 
               <div className="mt-3">
                 <div className="text-xs text-neutral-400">Remove</div>
@@ -5816,9 +5898,9 @@ function EditorPageInner() {
                       </button>
                       <button
                         type="button"
-                        disabled={isEditRunning || !workingImageUrl || !hasActiveRemoveMarker}
+                        disabled={isEditRunning || isOutOfTokens || !workingImageUrl || !hasActiveRemoveMarker}
                         className={`rounded-md border px-2 py-1.5 text-xs ${
-                          isEditRunning || !workingImageUrl || !hasActiveRemoveMarker
+                          isEditRunning || isOutOfTokens || !workingImageUrl || !hasActiveRemoveMarker
                             ? "border-neutral-900 bg-neutral-950 text-neutral-500"
                             : "border-neutral-700 bg-neutral-900 text-neutral-100 hover:bg-neutral-800"
                         }`}
@@ -5934,9 +6016,9 @@ function EditorPageInner() {
 
                 <button
                   type="button"
-                  disabled={isEditRunning || !workingImageUrl || !hasActiveRotateMarker}
+                  disabled={isEditRunning || isOutOfTokens || !workingImageUrl || !hasActiveRotateMarker}
                   className={`mt-2 w-full rounded-md border px-2 py-1.5 text-xs ${
-                    isEditRunning || !workingImageUrl || !hasActiveRotateMarker
+                    isEditRunning || isOutOfTokens || !workingImageUrl || !hasActiveRotateMarker
                       ? "border-neutral-900 bg-neutral-950 text-neutral-500"
                       : "border-violet-800/60 bg-violet-950/30 text-violet-100 hover:bg-violet-900/40"
                   }`}

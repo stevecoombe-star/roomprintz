@@ -17,6 +17,7 @@ import { MyFurnitureList } from "@/components/my-furniture/MyFurnitureList";
 import { MyFurnitureMoveToFolderDialog } from "@/components/my-furniture/MyFurnitureMoveToFolderDialog";
 import { MyFurnitureToolbar } from "@/components/my-furniture/MyFurnitureToolbar";
 import { TokenBalanceBadge } from "@/components/tokens/TokenBalanceBadge";
+import { TokenStatusNotice } from "@/components/tokens/TokenStatusNotice";
 import { useMyFurniture } from "@/hooks/useMyFurniture";
 import { getMyFurniturePreferredImageUrl } from "@/lib/myFurniture";
 import {
@@ -594,6 +595,7 @@ export function MyFurniturePageClient() {
           onAddItem={() => setIsAddItemOpen(true)}
           tokenBadge={<TokenBalanceBadge />}
         />
+        <TokenStatusNotice className="mt-3" />
         <MyFurnitureFoldersBar
           folders={folders}
           selectedScope={selectedScope}
