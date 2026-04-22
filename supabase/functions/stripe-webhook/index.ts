@@ -192,6 +192,12 @@ async function grantTokensCanonical(args: {
   }
   const grantAmount = Math.trunc(args.grantAmount);
   await ensureWallet(args.userId);
+  const grantMetadata = {
+    ...(args.metadata ?? {}),
+    event_type: "grant",
+    action_type: args.actionType,
+    reference_id: args.referenceId,
+  };
 
   const { data, error } = await supabase.rpc("apply_stripe_token_grant", {
     p_user_id: args.userId,
@@ -199,7 +205,7 @@ async function grantTokensCanonical(args: {
     p_action_type: args.actionType,
     p_reference_id: args.referenceId,
     p_model_version: args.modelVersion ?? null,
-    p_metadata: args.metadata ?? {},
+    p_metadata: grantMetadata,
   });
   if (error) throw error;
 
