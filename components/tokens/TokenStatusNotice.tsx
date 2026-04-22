@@ -36,6 +36,9 @@ export function TokenStatusNotice({
             </Link>
           ) : null}
         </div>
+        <div className="mt-1 text-[11px] text-rose-200/90">
+          Top up securely with Stripe and continue where you left off.
+        </div>
       </div>
     );
   }
@@ -46,7 +49,17 @@ export function TokenStatusNotice({
       role="status"
       aria-live="polite"
     >
-      Low on tokens - you have {balance.toLocaleString()} remaining
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <span>Low on tokens - you have {balance.toLocaleString()} remaining</span>
+        {showGetMoreTokensCta ? (
+          <Link
+            href="/billing"
+            className="rounded-md border border-amber-300/40 px-2 py-1 text-[11px] text-amber-100 transition hover:bg-amber-500/20"
+          >
+            Top up
+          </Link>
+        ) : null}
+      </div>
     </div>
   );
 }

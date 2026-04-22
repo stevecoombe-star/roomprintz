@@ -595,7 +595,7 @@ export function MyFurniturePageClient() {
           onAddItem={() => setIsAddItemOpen(true)}
           tokenBadge={<TokenBalanceBadge />}
         />
-        <TokenStatusNotice className="mt-3" />
+        <TokenStatusNotice className="mt-3" showGetMoreTokensCta />
         <MyFurnitureFoldersBar
           folders={folders}
           selectedScope={selectedScope}

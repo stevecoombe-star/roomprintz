@@ -5314,6 +5314,12 @@ function EditorPageInner() {
             </div>
           )}
           <TokenBalanceBadge className="border-neutral-700 bg-neutral-900 text-neutral-200" />
+          <Link
+            href="/billing"
+            className="rounded-md border border-neutral-700 bg-neutral-900 px-2.5 py-1 text-xs text-neutral-200 transition hover:bg-neutral-800"
+          >
+            Top up tokens
+          </Link>
           <SignOutButton className="rounded-md border border-neutral-700 bg-neutral-900 px-3 py-1.5 text-sm text-neutral-200 transition hover:bg-neutral-800 disabled:opacity-50" />
 
           <div className="flex items-center gap-1.5 rounded-md border border-neutral-700 bg-neutral-900 px-2 py-1.5">
@@ -5605,7 +5611,11 @@ function EditorPageInner() {
               />
               {isOutOfTokens ? (
                 <div className="mt-2 text-[11px] text-neutral-500">
-                  Stage and edit actions are paused until you top up.
+                  Stage and edit actions are paused until you top up.{" "}
+                  <Link href="/billing" className="text-neutral-300 underline underline-offset-2">
+                    Open billing
+                  </Link>
+                  .
                 </div>
               ) : null}
 

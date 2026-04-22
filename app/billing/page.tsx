@@ -20,18 +20,18 @@ export default function BillingPage() {
 
   return (
     <main className="max-w-3xl mx-auto px-4 py-8">
-      <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between mb-6">
+      <div className="mb-6 flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
         <div>
-          <h1 className="text-2xl font-semibold text-slate-50">Vibode billing</h1>
-          <p className="text-sm text-slate-400">
-            Buy tokens when you need more generation credits.
+          <h1 className="text-2xl font-semibold text-slate-900">Top up Vibode tokens</h1>
+          <p className="text-sm text-slate-600">
+            Tokens power generation and edit actions in the Vibode editor.
           </p>
         </div>
 
         <div className="flex gap-2">
           <Link
             href="/editor"
-            className="text-xs rounded-lg border border-slate-700 px-3 py-1 hover:border-emerald-400/70 hover:text-emerald-200 transition"
+            className="rounded-lg border border-slate-300 px-3 py-1 text-xs text-slate-700 transition hover:border-emerald-500/70 hover:text-emerald-700"
           >
             Back to editor
           </Link>
@@ -53,7 +53,7 @@ export default function BillingPage() {
         <>
           <section className="bg-slate-900 border border-slate-800 rounded-2xl p-5 mb-5">
             <p className="text-sm text-slate-300">
-              Tokens are used for Vibode generation tasks. Buy a one-time token pack any time.
+              Buy a one-time token pack whenever you need more. No subscription required.
             </p>
 
             <div className="mt-4 flex flex-wrap items-center gap-2 text-xs">
@@ -81,7 +81,7 @@ export default function BillingPage() {
           <section className="bg-slate-900 border border-slate-800 rounded-2xl p-5">
             <h2 className="text-base font-semibold text-slate-100">Token top-up</h2>
             <p className="text-xs text-slate-500 mt-1">
-              Secure checkout powered by Stripe. Tokens are added to your account after payment.
+              Secure checkout with Stripe. Tokens are added to your account right after payment.
             </p>
 
             <div className="mt-4">

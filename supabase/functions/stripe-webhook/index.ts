@@ -1,12 +1,12 @@
 // supabase/functions/stripe-webhook/index.ts
 import Stripe from "stripe";
 import { createClient } from "@supabase/supabase-js";
-import type { SupabaseClient } from "@supabase/supabase-js";
 
 const STRIPE_SECRET_KEY = Deno.env.get("STRIPE_SECRET_KEY");
 const STRIPE_WEBHOOK_SECRET = Deno.env.get("STRIPE_WEBHOOK_SECRET");
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL");
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
+const RUNTIME_FINGERPRINT = "phase3a4-env-audit-2026-04-21-v1";
 
 if (
   !STRIPE_SECRET_KEY ||
@@ -22,10 +22,9 @@ const stripe = new Stripe(STRIPE_SECRET_KEY, {
   apiVersion: "2025-02-24.acacia",
 });
 
-type AnySupabaseClient = SupabaseClient<any, "public", any>;
 const TOKEN_BOOTSTRAP_STARTER_BALANCE = 40;
 
-const supabase: AnySupabaseClient = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
+const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
 
 type WalletRow = {
   user_id: string;
@@ -197,6 +196,7 @@ async function grantTokensCanonical(args: {
     event_type: "grant",
     action_type: args.actionType,
     reference_id: args.referenceId,
+    runtime_fingerprint: RUNTIME_FINGERPRINT,
   };
 
   const { data, error } = await supabase.rpc("apply_stripe_token_grant", {
@@ -213,7 +213,7 @@ async function grantTokensCanonical(args: {
   if (!row || typeof row !== "object") {
     throw new Error("apply_stripe_token_grant returned no result row.");
   }
-  return { skipped: Boolean((row as { skipped?: unknown }).skipped) as const };
+  return { skipped: Boolean((row as { skipped?: unknown }).skipped) };
 }
 
 function safeErr(err: unknown) {
@@ -254,6 +254,17 @@ Deno.serve(async (req: Request) => {
     type: event.type,
     created: event.created,
     livemode: event.livemode,
+  });
+  console.log("🧪 WEBHOOK RUNTIME FINGERPRINT", {
+    requestId,
+    fingerprint: RUNTIME_FINGERPRINT,
+    supabaseUrlHost: (() => {
+      try {
+        return new URL(SUPABASE_URL).host;
+      } catch {
+        return "invalid-supabase-url";
+      }
+    })(),
   });
 
   try {

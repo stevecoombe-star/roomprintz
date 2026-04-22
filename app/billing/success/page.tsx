@@ -13,8 +13,8 @@ function BillingSuccessInner() {
    * Message is derived from URL state — no need for React state.
    */
   const message = sessionId
-    ? "Token purchase completed. Your Vibode balance will update shortly."
-    : "Purchase completed. (No session_id found in URL.)";
+    ? "Thanks - your payment went through. Your Vibode token balance updates automatically."
+    : "Thanks - your payment completed. Your token balance updates automatically.";
 
   useEffect(() => {
     // Webhooks apply the token grant; this page is just a friendly landing.
@@ -22,31 +22,40 @@ function BillingSuccessInner() {
 
     const t = setTimeout(() => {
       router.push("/billing");
-    }, 2000);
+    }, 2500);
 
     return () => clearTimeout(t);
   }, [router]);
 
   return (
-    <div className="max-w-xl mx-auto p-6 space-y-3">
-      <h1 className="text-2xl font-semibold">Purchase successful</h1>
-      <p>{message}</p>
+    <main className="max-w-xl mx-auto space-y-3 p-6">
+      <h1 className="text-2xl font-semibold text-slate-900">Tokens added</h1>
+      <p className="text-slate-700">{message}</p>
+      <p className="text-sm text-slate-600">
+        If your balance does not refresh immediately, reopen billing in a moment.
+      </p>
 
       {sessionId && (
-        <p className="text-sm opacity-70 break-all">
+        <p className="break-all text-xs text-slate-500">
           Checkout session: {sessionId}
         </p>
       )}
 
-      <div className="pt-2">
+      <div className="flex flex-wrap gap-2 pt-2">
         <button
-          className="px-4 py-2 rounded bg-black text-white"
+          className="rounded bg-emerald-500 px-4 py-2 font-medium text-slate-950 transition hover:bg-emerald-400"
           onClick={() => router.push("/billing")}
         >
           Return to billing
         </button>
+        <button
+          className="rounded border border-slate-300 px-4 py-2 text-slate-700 transition hover:border-slate-400 hover:bg-slate-50"
+          onClick={() => router.push("/editor")}
+        >
+          Back to editor
+        </button>
       </div>
-    </div>
+    </main>
   );
 }
 

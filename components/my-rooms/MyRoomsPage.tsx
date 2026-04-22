@@ -704,7 +704,7 @@ export function MyRoomsPage() {
         contextBar={<MyRoomsContextBar label={contextLabel} count={visibleRooms.length} />}
         grid={
           <>
-            <TokenStatusNotice className="mt-3" />
+            <TokenStatusNotice className="mt-3" showGetMoreTokensCta />
             {!folderFeatureReady ? (
               <div className="mt-3 rounded-xl border border-amber-700/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
                 Folder schema is unavailable. Run the latest Supabase migration to enable folders.
