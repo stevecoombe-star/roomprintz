@@ -3,6 +3,8 @@
 
 import { supabase } from "@/lib/supabaseClient";
 
+export const DEFAULT_TOPUP_PRICE_ID = "price_1ShhxG1nnn0IHwIjzOnYYCTo";
+
 type JsonValue =
   | string
   | number

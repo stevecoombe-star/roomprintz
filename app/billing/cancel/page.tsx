@@ -16,14 +16,14 @@ export default function BillingCancelPage() {
           className="px-4 py-2 rounded bg-black text-white"
           onClick={() => router.push("/billing")}
         >
-          Back to Billing
+          Back to billing
         </button>
 
         <button
           className="px-4 py-2 rounded border"
-          onClick={() => router.push("/")}
+          onClick={() => router.push("/editor")}
         >
-          Back to App
+          Back to editor
         </button>
       </div>
     </div>

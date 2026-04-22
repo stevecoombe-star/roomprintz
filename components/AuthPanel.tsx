@@ -5,7 +5,7 @@ import { useState, useEffect, useCallback } from "react";
 import { supabase } from "@/lib/supabaseClient";
 import { useSupabaseUser } from "@/lib/useSupabaseUser";
 import { useRouter } from "next/navigation";
-import { startTopup } from "@/lib/stripeClient";
+import { DEFAULT_TOPUP_PRICE_ID, startTopup } from "@/lib/stripeClient";
 
 type AuthPanelProps = {
   redirectToAppOnAuth?: boolean;
@@ -204,7 +204,7 @@ export function AuthPanel({ redirectToAppOnAuth = false }: AuthPanelProps) {
 
               <button
                 type="button"
-                onClick={() => startTopup("price_1ShhxG1nnn0IHwIjzOnYYCTo")}
+                onClick={() => startTopup(DEFAULT_TOPUP_PRICE_ID)}
                 className="text-[11px] rounded-md bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-medium px-2 py-0.5 transition"
                 title="Buy more tokens"
               >

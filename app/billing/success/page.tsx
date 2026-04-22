@@ -13,27 +13,23 @@ function BillingSuccessInner() {
    * Message is derived from URL state — no need for React state.
    */
   const message = sessionId
-    ? "Subscription completed ✅ You can close this tab or return to the app."
-    : "Subscription completed. (No session_id found in URL.)";
+    ? "Token purchase completed. Your Vibode balance will update shortly."
+    : "Purchase completed. (No session_id found in URL.)";
 
   useEffect(() => {
-    // In beta: we trust webhooks for token grants.
-    // This page is just a friendly landing + optional redirect.
-
-    // Nudge the app to refresh token balance when the user returns
+    // Webhooks apply the token grant; this page is just a friendly landing.
     window.dispatchEvent(new Event("tokens:changed"));
 
-    // Optional: auto-return after a short pause
     const t = setTimeout(() => {
       router.push("/billing");
-    }, 1500);
+    }, 2000);
 
     return () => clearTimeout(t);
   }, [router]);
 
   return (
     <div className="max-w-xl mx-auto p-6 space-y-3">
-      <h1 className="text-2xl font-semibold">Success</h1>
+      <h1 className="text-2xl font-semibold">Purchase successful</h1>
       <p>{message}</p>
 
       {sessionId && (
@@ -47,7 +43,7 @@ function BillingSuccessInner() {
           className="px-4 py-2 rounded bg-black text-white"
           onClick={() => router.push("/billing")}
         >
-          Return to Billing
+          Return to billing
         </button>
       </div>
     </div>
