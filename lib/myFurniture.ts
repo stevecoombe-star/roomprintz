@@ -93,6 +93,18 @@ function readOptionalNumber(row: UnknownRecord, ...keys: string[]): number | nul
   return null;
 }
 
+function hasTrustedParsedPriceConfidence(row: UnknownRecord): boolean {
+  const confidence = readOptionalString(
+    row,
+    "parsed_price_confidence",
+    "parsedPriceConfidence",
+    "price_confidence",
+    "priceConfidence"
+  );
+  const normalizedConfidence = confidence?.toLowerCase();
+  return normalizedConfidence === "high" || normalizedConfidence === "medium";
+}
+
 function formatAmountLabel(currency: string | null, amount: number): string {
   const value = Number.isInteger(amount) ? amount.toString() : amount.toString();
   return currency ? `${currency} ${value}` : value;
@@ -180,13 +192,16 @@ export function resolvePriceLabel(raw: unknown): string | null {
     return formatAmountLabel(currency, overrideAmount);
   }
 
-  const parsedText = readOptionalString(row, "parsed_price_text", "parsedPriceText");
-  if (parsedText) return parsedText;
+  // Price display is gated by confidence to avoid misleading values from weak HTML matches.
+  if (hasTrustedParsedPriceConfidence(row)) {
+    const parsedText = readOptionalString(row, "parsed_price_text", "parsedPriceText");
+    if (parsedText) return parsedText;
 
-  const parsedAmount = readOptionalNumber(row, "parsed_price_amount", "parsedPriceAmount");
-  if (parsedAmount !== null) {
-    const currency = readOptionalString(row, "parsed_price_currency", "parsedPriceCurrency");
-    return formatAmountLabel(currency, parsedAmount);
+    const parsedAmount = readOptionalNumber(row, "parsed_price_amount", "parsedPriceAmount");
+    if (parsedAmount !== null) {
+      const currency = readOptionalString(row, "parsed_price_currency", "parsedPriceCurrency");
+      return formatAmountLabel(currency, parsedAmount);
+    }
   }
 
   const direct = readOptionalString(row, "priceLabel");
