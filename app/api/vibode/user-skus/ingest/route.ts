@@ -1,4 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
+import { cookies } from "next/headers";
+import { createServerClient } from "@supabase/ssr";
 import { createClient } from "@supabase/supabase-js";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import {
@@ -98,6 +100,24 @@ function getBearerToken(req: NextRequest): string | null {
   return token.length > 0 ? token : null;
 }
 
+async function getCookieAccessToken(): Promise<string | null> {
+  if (!SUPABASE_URL || !SUPABASE_ANON_KEY) return null;
+  const cookieStore = await cookies();
+  const supabase = createServerClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+    cookies: {
+      getAll() {
+        return cookieStore.getAll();
+      },
+      setAll() {
+        // No-op in this route; auth refresh writes are not required here.
+      },
+    },
+  });
+  const { data, error } = await supabase.auth.getSession();
+  if (error) return null;
+  return safeString(data.session?.access_token) ?? null;
+}
+
 function getUserSupabaseClient(token: string): AnySupabaseClient | null {
   if (!SUPABASE_URL || !SUPABASE_ANON_KEY) return null;
   return createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
@@ -176,7 +196,7 @@ function shouldSkipMyFurnitureAutosave(req: NextRequest): boolean {
 export async function POST(req: NextRequest) {
   const requestId = createRequestId();
   const startedAtMs = Date.now();
-  const accessToken = getBearerToken(req);
+  const accessToken = getBearerToken(req) ?? (await getCookieAccessToken());
   logIngestEvent("info", "request_received", requestId, {
     user_id_present: Boolean(accessToken),
   });

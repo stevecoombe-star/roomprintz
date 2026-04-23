@@ -25,6 +25,7 @@ const PRODUCT_PAGE_FETCH_TIMEOUT_MS = 6000;
 const PRODUCT_PAGE_MAX_HTML_CHARS = 750_000;
 const INGEST_SOURCE_HEADER = "x-roomprintz-ingest-source";
 const INGEST_SKIP_MY_FURNITURE_AUTOSAVE_HEADER = "x-roomprintz-skip-my-furniture-autosave";
+const SAVE_ROUTE = "/api/vibode/my-furniture/save";
 
 function getUserSupabaseClient(
   req: NextRequest
@@ -164,6 +165,46 @@ type IngestedImageResult = {
   previewImageUrl: string | null;
 };
 
+type IngestPreviewCallResult = {
+  ok: boolean;
+  status: number;
+  ingested: IngestedImageResult | null;
+};
+
+function createRequestId(): string {
+  try {
+    return `vibode-save-${crypto.randomUUID()}`;
+  } catch {
+    return `vibode-save-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+  }
+}
+
+function logSaveEvent(
+  level: "info" | "warn" | "error",
+  event: string,
+  requestId: string,
+  fields: Record<string, unknown> = {}
+): void {
+  const payload: Record<string, unknown> = {
+    event,
+    request_id: requestId,
+    route: SAVE_ROUTE,
+  };
+  for (const [key, value] of Object.entries(fields)) {
+    if (value !== undefined) payload[key] = value;
+  }
+  const message = `[vibode/my-furniture/save] ${JSON.stringify(payload)}`;
+  if (level === "warn") {
+    console.warn(message);
+    return;
+  }
+  if (level === "error") {
+    console.error(message);
+    return;
+  }
+  console.info(message);
+}
+
 function getIngestedImageResult(payload: unknown): IngestedImageResult {
   const record = safeRecord(payload);
   if (!record) return { userSkuId: null, previewImageUrl: null };
@@ -195,9 +236,10 @@ async function ingestPreviewImageViaExistingFlow(
   req: NextRequest,
   imageUrl: string,
   label?: string | null
-): Promise<IngestedImageResult | null> {
+): Promise<IngestPreviewCallResult> {
   const ingestUrl = new URL("/api/vibode/user-skus/ingest", req.url).toString();
   const authorization = asOptionalString(req.headers.get("authorization"));
+  const cookieHeader = asOptionalString(req.headers.get("cookie"));
   const response = await fetch(ingestUrl, {
     method: "POST",
     headers: {
@@ -205,6 +247,7 @@ async function ingestPreviewImageViaExistingFlow(
       [INGEST_SOURCE_HEADER]: "product_url",
       [INGEST_SKIP_MY_FURNITURE_AUTOSAVE_HEADER]: "1",
       ...(authorization ? { Authorization: authorization } : {}),
+      ...(cookieHeader ? { Cookie: cookieHeader } : {}),
     },
     body: JSON.stringify({
       imageUrl,
@@ -212,11 +255,15 @@ async function ingestPreviewImageViaExistingFlow(
     }),
   });
   const payload = (await response.json().catch(() => null)) as unknown;
-  if (!response.ok) return null;
-  return getIngestedImageResult(payload);
+  return {
+    ok: response.ok,
+    status: response.status,
+    ingested: response.ok ? getIngestedImageResult(payload) : null,
+  };
 }
 
 export async function POST(req: NextRequest) {
+  const requestId = createRequestId();
   try {
     const { supabase, token } = getUserSupabaseClient(req);
     if (!token || !supabase) {
@@ -254,9 +301,17 @@ export async function POST(req: NextRequest) {
     let nextSourceUrl = sourceUrl;
     let nextUserSkuId = userSkuId;
     let parsedDisplayName = displayName;
+    let ingestCalled = false;
+    let ingestOk: boolean | null = null;
+    let ingestedUserSkuId: string | null = null;
+    let usedIngestedUserSkuId = false;
+    let usedPreviewFallback = false;
 
     const isProductUrlFlow = sourceType === "product_url" && Boolean(sourceUrl);
     if (isProductUrlFlow && sourceUrl) {
+      logSaveEvent("info", "product_url_flow_started", requestId, {
+        has_source_url: Boolean(sourceUrl),
+      });
       try {
         const metadata = await fetchProductPageMetadata(sourceUrl);
         const metadataTitle = asOptionalString(metadata.title);
@@ -267,23 +322,49 @@ export async function POST(req: NextRequest) {
         parsedDisplayName = nextDisplayName;
 
         if (metadataImageUrl) {
+          ingestCalled = true;
+          logSaveEvent("info", "product_url_ingest_attempt", requestId, {
+            metadata_image_present: true,
+          });
           try {
-            const ingestedImage = await ingestPreviewImageViaExistingFlow(
+            const ingestResult = await ingestPreviewImageViaExistingFlow(
               req,
               metadataImageUrl,
               metadataTitle ?? nextDisplayName ?? null
             );
-            if (ingestedImage?.userSkuId) {
-              nextUserSkuId = ingestedImage.userSkuId;
+            logSaveEvent("info", "product_url_ingest_result", requestId, {
+              ingest_called: true,
+              ingest_ok: ingestResult.ok,
+              ingest_status: ingestResult.status,
+              ingested_user_sku_id: ingestResult.ingested?.userSkuId ?? null,
+            });
+            ingestOk = ingestResult.ok;
+            ingestedUserSkuId = ingestResult.ingested?.userSkuId ?? null;
+            if (ingestResult.ingested?.userSkuId) {
+              nextUserSkuId = ingestResult.ingested.userSkuId;
+              usedIngestedUserSkuId = true;
             }
-            nextPreviewImageUrl = ingestedImage?.previewImageUrl ?? metadataImageUrl;
+            usedPreviewFallback = !ingestResult.ingested?.previewImageUrl;
+            nextPreviewImageUrl = ingestResult.ingested?.previewImageUrl ?? metadataImageUrl;
           } catch {
             // Fallback to raw metadata image; save should still succeed.
+            ingestOk = false;
+            logSaveEvent("warn", "product_url_ingest_failed", requestId, {
+              ingest_called: true,
+            });
+            usedPreviewFallback = true;
             nextPreviewImageUrl = metadataImageUrl;
           }
+        } else {
+          logSaveEvent("info", "product_url_metadata_no_image", requestId, {
+            ingest_called: false,
+          });
         }
       } catch {
         // Metadata extraction is best-effort only.
+        logSaveEvent("warn", "product_url_metadata_failed", requestId, {
+          has_source_url: Boolean(sourceUrl),
+        });
       }
     }
 
@@ -319,6 +400,17 @@ export async function POST(req: NextRequest) {
       priceConfidence: parsedPrice.confidence,
     });
 
+    logSaveEvent("info", "product_url_final_save", requestId, {
+      is_product_url_flow: isProductUrlFlow,
+      initial_user_sku_id: userSkuId,
+      final_user_sku_id: nextUserSkuId,
+      ingest_called: isProductUrlFlow ? ingestCalled : false,
+      ingest_ok: ingestOk,
+      ingested_user_sku_id: ingestedUserSkuId,
+      used_ingested_user_sku_id: isProductUrlFlow && usedIngestedUserSkuId,
+      used_preview_fallback: isProductUrlFlow && usedPreviewFallback,
+    });
+
     return Response.json({
       item: {
         id: row.id,
@@ -351,6 +443,9 @@ export async function POST(req: NextRequest) {
     });
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : "Unexpected error";
+    logSaveEvent("error", "failed", requestId, {
+      error: message,
+    });
     return Response.json({ error: message }, { status: 500 });
   }
 }
