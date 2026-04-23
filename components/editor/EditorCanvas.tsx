@@ -53,6 +53,10 @@ const PASTE_TO_PLACE_PROGRESS_COPY: Record<PasteToPlaceStatus, string> = {
   placing: "Placing it in your room...",
 };
 
+function formatSourceHostLabel(value: string): string {
+  return value.replace(/^www\./i, "").toLowerCase();
+}
+
 type VibodeDebugWindow = Window & {
   __VIBODE_DEBUG_ROOM_OPEN__?: boolean;
 };
@@ -249,6 +253,13 @@ export function EditorCanvas({
   onOpenPasteToPlaceMenu,
   onPasteToPlaceChoosePlaceHere,
   onPasteToPlaceChooseMyFurnitureAdd,
+  pasteToPlaceProductUrlInput = "",
+  onPasteToPlaceProductUrlInputChange,
+  onPasteToPlaceSubmitProductUrl,
+  isPasteToPlaceProductUrlPreparing = false,
+  pasteToPlaceProductDisplayName = null,
+  pasteToPlaceProductSupplier = null,
+  pasteToPlaceProductSourceUrl = null,
   onPasteToPlaceChooseSwap,
   onPasteToPlaceChooseAutoPlace,
   onDismissPasteToPlaceMenu,
@@ -286,6 +297,13 @@ export function EditorCanvas({
   onOpenPasteToPlaceMenu?: (state: NonNullable<PasteToPlaceMenuState>) => void;
   onPasteToPlaceChoosePlaceHere?: () => void;
   onPasteToPlaceChooseMyFurnitureAdd?: () => void;
+  pasteToPlaceProductUrlInput?: string;
+  onPasteToPlaceProductUrlInputChange?: (value: string) => void;
+  onPasteToPlaceSubmitProductUrl?: () => void;
+  isPasteToPlaceProductUrlPreparing?: boolean;
+  pasteToPlaceProductDisplayName?: string | null;
+  pasteToPlaceProductSupplier?: string | null;
+  pasteToPlaceProductSourceUrl?: string | null;
   onPasteToPlaceChooseSwap?: () => void;
   onPasteToPlaceChooseAutoPlace?: () => void;
   onDismissPasteToPlaceMenu?: () => void;
@@ -1790,6 +1808,56 @@ export function EditorCanvas({
                 )}
               </div>
             )}
+            {!isPasteToPlaceMyFurnitureMultiSelect &&
+              (pasteToPlaceProductDisplayName || pasteToPlaceProductSupplier || pasteToPlaceProductSourceUrl) && (
+                <div className="mx-2 mt-1 mb-1 rounded-md border border-white/10 bg-neutral-900/70 px-3 py-2 text-xs text-neutral-200">
+                  {pasteToPlaceProductDisplayName && (
+                    <div className="truncate font-medium text-neutral-100">{pasteToPlaceProductDisplayName}</div>
+                  )}
+                  <div className="mt-0.5 flex items-center gap-2 text-neutral-400">
+                    {pasteToPlaceProductSupplier && (
+                      <span className="truncate">{pasteToPlaceProductSupplier}</span>
+                    )}
+                    {pasteToPlaceProductSourceUrl && (
+                      <span className="truncate">
+                        {(() => {
+                          try {
+                            return formatSourceHostLabel(new URL(pasteToPlaceProductSourceUrl).hostname);
+                          } catch {
+                            return null;
+                          }
+                        })()}
+                      </span>
+                    )}
+                  </div>
+                </div>
+              )}
+            {!isPasteToPlaceMyFurnitureMultiSelect &&
+              !isPasteToPlaceMenuPreviewLoading &&
+              !pasteToPlaceMenuPreviewUrl &&
+              !pasteToPlaceProductDisplayName &&
+              !pasteToPlaceProductSupplier &&
+              !pasteToPlaceProductSourceUrl &&
+              pasteToPlaceProductUrlInput.trim().length > 0 && (
+                <div className="mx-2 mt-2 mb-1 rounded-md border border-white/10 bg-neutral-900/70 px-3 py-2 text-xs text-neutral-200">
+                  <div className="truncate font-medium text-neutral-100">Preparing from link</div>
+                  <div className="mt-0.5 truncate text-neutral-400">
+                    {(() => {
+                      try {
+                        return formatSourceHostLabel(
+                          new URL(
+                            /^[a-z][a-z0-9+.-]*:\/\//i.test(pasteToPlaceProductUrlInput.trim())
+                              ? pasteToPlaceProductUrlInput.trim()
+                              : `https://${pasteToPlaceProductUrlInput.trim()}`
+                          ).hostname
+                        );
+                      } catch {
+                        return "Paste a valid URL to prepare";
+                      }
+                    })()}
+                  </div>
+                </div>
+              )}
             {shouldRenderMyFurnitureMultiSelectPreview ? (
               <div className="mx-2 mt-2 mb-1 rounded-md border border-white/10 bg-neutral-900/70 px-3 py-2">
                 <div className="flex items-center gap-3">
@@ -1856,6 +1924,37 @@ export function EditorCanvas({
               🎯 Let Vibode decide placement
             </button>
             <div className="mx-2 my-1 h-px bg-white/10" />
+            <div className="mx-2 mb-2 mt-1 rounded-md border border-white/10 bg-neutral-900/70 p-2">
+              <div className="mb-1 text-[11px] font-medium uppercase tracking-wide text-neutral-400">
+                Paste Product Link
+              </div>
+              <div className="flex gap-1">
+                <input
+                  type="url"
+                  placeholder="https://..."
+                  value={pasteToPlaceProductUrlInput}
+                  onChange={(event) => onPasteToPlaceProductUrlInputChange?.(event.target.value)}
+                  className="h-8 flex-1 rounded border border-white/15 bg-neutral-950/70 px-2 text-xs text-neutral-100 outline-none placeholder:text-neutral-500 focus:border-blue-500/70"
+                  disabled={isPasteToPlaceProductUrlPreparing}
+                />
+                <button
+                  type="button"
+                  className={`h-8 shrink-0 rounded px-2 text-xs font-medium ${
+                    isPasteToPlaceProductUrlPreparing
+                      ? "cursor-not-allowed bg-neutral-800 text-neutral-500"
+                      : "bg-blue-600/80 text-blue-50 hover:bg-blue-500/90"
+                  }`}
+                  onClick={onPasteToPlaceSubmitProductUrl}
+                  disabled={
+                    isPasteToPlaceProductUrlPreparing ||
+                    !onPasteToPlaceSubmitProductUrl ||
+                    pasteToPlaceProductUrlInput.trim().length === 0
+                  }
+                >
+                  {isPasteToPlaceProductUrlPreparing ? "Preparing..." : "Prepare"}
+                </button>
+              </div>
+            </div>
             <button
               className={`px-3 py-2 text-left text-sm hover:bg-white/10 ${
                 isMyFurnitureLoading ? "cursor-not-allowed text-neutral-500" : "text-neutral-300"

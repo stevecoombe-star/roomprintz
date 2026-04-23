@@ -183,7 +183,7 @@ function resolveIngestSourceType(req: NextRequest, body: IngestBody): string {
   const sourceFromHeader = safeString(req.headers.get(INGEST_SOURCE_HEADER));
   if (sourceFromHeader) return sourceFromHeader.toLowerCase();
   if (safeString(body.imageBase64)) return "upload";
-  if (safeString(body.imageUrl)) return "url";
+  if (safeString(body.imageUrl)) return "product_url";
   return "unknown";
 }
 
