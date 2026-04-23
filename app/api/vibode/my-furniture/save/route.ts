@@ -159,32 +159,43 @@ async function fetchProductPageMetadata(sourceUrl: string): Promise<ProductPageM
   }
 }
 
-function getIngestedPreviewImageUrl(payload: unknown): string | null {
+type IngestedImageResult = {
+  userSkuId: string | null;
+  previewImageUrl: string | null;
+};
+
+function getIngestedImageResult(payload: unknown): IngestedImageResult {
   const record = safeRecord(payload);
-  if (!record) return null;
+  if (!record) return { userSkuId: null, previewImageUrl: null };
 
   const userSku = safeRecord(record.userSku);
+  const ingestedUserSkuId = asOptionalString(
+    userSku?.user_sku_id ?? userSku?.userSkuId ?? userSku?.id ?? userSku?.skuId
+  );
   const userSkuStatus = asOptionalString(userSku?.status)?.toLowerCase();
   if (userSkuStatus === "ready" && Array.isArray(userSku?.variants)) {
     for (const variant of userSku.variants) {
       const imageUrl = asHttpUrl(asOptionalString(variant));
-      if (imageUrl) return imageUrl;
+      if (imageUrl) return { userSkuId: ingestedUserSkuId, previewImageUrl: imageUrl };
     }
   }
 
   const savedFurniture = safeRecord(record.savedFurniture);
-  return asHttpUrl(
+  return {
+    userSkuId: ingestedUserSkuId ?? asOptionalString(savedFurniture?.userSkuId),
+    previewImageUrl: asHttpUrl(
     asOptionalString(savedFurniture?.previewImageUrl) ??
       asOptionalString(savedFurniture?.preview_image_url) ??
       null
-  );
+    ),
+  };
 }
 
 async function ingestPreviewImageViaExistingFlow(
   req: NextRequest,
   imageUrl: string,
   label?: string | null
-): Promise<string | null> {
+): Promise<IngestedImageResult | null> {
   const ingestUrl = new URL("/api/vibode/user-skus/ingest", req.url).toString();
   const authorization = asOptionalString(req.headers.get("authorization"));
   const response = await fetch(ingestUrl, {
@@ -202,7 +213,7 @@ async function ingestPreviewImageViaExistingFlow(
   });
   const payload = (await response.json().catch(() => null)) as unknown;
   if (!response.ok) return null;
-  return getIngestedPreviewImageUrl(payload);
+  return getIngestedImageResult(payload);
 }
 
 export async function POST(req: NextRequest) {
@@ -241,6 +252,7 @@ export async function POST(req: NextRequest) {
     let nextDisplayName = displayName;
     let nextPreviewImageUrl = previewImageUrl;
     let nextSourceUrl = sourceUrl;
+    let nextUserSkuId = userSkuId;
     let parsedDisplayName = displayName;
 
     const isProductUrlFlow = sourceType === "product_url" && Boolean(sourceUrl);
@@ -256,12 +268,15 @@ export async function POST(req: NextRequest) {
 
         if (metadataImageUrl) {
           try {
-            const ingestedPreview = await ingestPreviewImageViaExistingFlow(
+            const ingestedImage = await ingestPreviewImageViaExistingFlow(
               req,
               metadataImageUrl,
               metadataTitle ?? nextDisplayName ?? null
             );
-            nextPreviewImageUrl = ingestedPreview ?? metadataImageUrl;
+            if (ingestedImage?.userSkuId) {
+              nextUserSkuId = ingestedImage.userSkuId;
+            }
+            nextPreviewImageUrl = ingestedImage?.previewImageUrl ?? metadataImageUrl;
           } catch {
             // Fallback to raw metadata image; save should still succeed.
             nextPreviewImageUrl = metadataImageUrl;
@@ -280,7 +295,7 @@ export async function POST(req: NextRequest) {
 
     const row = await upsertVibodeUserFurniture(supabase, {
       userId: userData.user.id,
-      userSkuId,
+      userSkuId: nextUserSkuId,
       folderId,
       sourceType,
       displayName: nextDisplayName,
