@@ -1939,10 +1939,12 @@ export function EditorCanvas({
                 />
                 <button
                   type="button"
-                  className={`h-8 shrink-0 rounded px-2 text-xs font-medium ${
+                  className={`h-8 shrink-0 rounded px-2 text-xs font-medium transition-colors ${
                     isPasteToPlaceProductUrlPreparing
                       ? "cursor-not-allowed bg-neutral-800 text-neutral-500"
-                      : "bg-blue-600/80 text-blue-50 hover:bg-blue-500/90"
+                      : pasteToPlaceProductUrlInput.trim().length > 0
+                        ? "bg-blue-600/80 text-blue-50 hover:bg-blue-500/90"
+                        : "cursor-not-allowed bg-neutral-800 text-neutral-400"
                   }`}
                   onClick={onPasteToPlaceSubmitProductUrl}
                   disabled={
