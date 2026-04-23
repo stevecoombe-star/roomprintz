@@ -20,6 +20,7 @@ type ProductPageMetadata = {
   priceRawText: string | null;
   priceNormalizedText: string | null;
   priceSource: string | null;
+  fetchOk: boolean;
 };
 
 const SUPABASE_URL = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || "";
@@ -30,6 +31,28 @@ const PRODUCT_PAGE_SUBSTANTIAL_HTML_CHARS = 2_000;
 const INGEST_SOURCE_HEADER = "x-roomprintz-ingest-source";
 const INGEST_SKIP_MY_FURNITURE_AUTOSAVE_HEADER = "x-roomprintz-skip-my-furniture-autosave";
 const SAVE_ROUTE = "/api/vibode/my-furniture/save";
+const METADATA_FETCH_PROFILES: Array<{ id: string; headers: Record<string, string> }> = [
+  {
+    id: "browser_like",
+    headers: {
+      "User-Agent":
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+      Accept:
+        "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+      "Accept-Language": "en-US,en;q=0.9",
+      "Cache-Control": "no-cache",
+      Pragma: "no-cache",
+      "Upgrade-Insecure-Requests": "1",
+    },
+  },
+  {
+    id: "legacy_roomprintzbot",
+    headers: {
+      "User-Agent": "Mozilla/5.0 (compatible; RoomprintzBot/1.0; +https://roomprintz.com)",
+      Accept: "text/html,application/xhtml+xml",
+    },
+  },
+];
 
 function getUserSupabaseClient(
   req: NextRequest
@@ -131,6 +154,171 @@ function asHttpUrl(value: string | null, baseUrl?: string): string | null {
   } catch {
     return null;
   }
+}
+
+function asImageDataUrl(value: string | null): string | null {
+  if (!value) return null;
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  if (!/^data:image\/[a-z0-9.+-]+;base64,[a-z0-9+/=\s]+$/i.test(trimmed)) return null;
+  return trimmed;
+}
+
+function toTitleCaseToken(token: string): string {
+  if (!token) return token;
+  if (/^\d+$/.test(token)) return token;
+  return token[0].toUpperCase() + token.slice(1).toLowerCase();
+}
+
+function isSkuLikeSlugToken(token: string): boolean {
+  const normalized = token.trim().toLowerCase();
+  if (!normalized) return false;
+  return (
+    /^[a-z]{0,3}\d{6,}$/.test(normalized) ||
+    /^\d{6,}$/.test(normalized) ||
+    /^[a-z]{1,3}\d{5,}[a-z0-9]*$/.test(normalized)
+  );
+}
+
+function deriveDisplayNameFromProductUrl(sourceUrl: string): string | null {
+  const safeSourceUrl = asHttpUrl(sourceUrl);
+  if (!safeSourceUrl) return null;
+  try {
+    const parsed = new URL(safeSourceUrl);
+    const pathSegments = parsed.pathname
+      .split("/")
+      .map((segment) => segment.trim())
+      .filter(Boolean);
+    if (pathSegments.length === 0) return null;
+    const rawSlug = decodeURIComponent(pathSegments[pathSegments.length - 1] ?? "")
+      .replace(/\.[a-z0-9]+$/i, "")
+      .trim();
+    if (!rawSlug) return null;
+    const slugTokens = rawSlug.split(/[-_]+/).map((token) => token.trim()).filter(Boolean);
+    if (slugTokens.length === 0) return null;
+
+    while (slugTokens.length > 0 && isSkuLikeSlugToken(slugTokens[slugTokens.length - 1] ?? "")) {
+      slugTokens.pop();
+    }
+    if (slugTokens.length === 0) return null;
+
+    const humanized = collapseWhitespace(slugTokens.map((token) => toTitleCaseToken(token)).join(" "));
+    return humanized || null;
+  } catch {
+    return null;
+  }
+}
+
+type FallbackImageResolution = {
+  imageUrl: string | null;
+  source: string | null;
+};
+
+function resolveFallbackImageUrl(
+  sourceUrl: string | null,
+  clientPreviewImageUrl: string | null
+): FallbackImageResolution {
+  const clientImage = asHttpUrl(clientPreviewImageUrl);
+  if (clientImage) {
+    return {
+      imageUrl: clientImage,
+      source: "client_preview_image",
+    };
+  }
+
+  const safeSourceUrl = asHttpUrl(sourceUrl);
+  if (!safeSourceUrl) return { imageUrl: null, source: null };
+
+  try {
+    const parsed = new URL(safeSourceUrl);
+    const queryKeys = [
+      "img",
+      "image",
+      "image_url",
+      "imageurl",
+      "preview_image",
+      "previewimage",
+      "photo",
+      "photo_url",
+    ];
+    for (const key of queryKeys) {
+      const raw = asOptionalString(parsed.searchParams.get(key));
+      const candidate = asHttpUrl(raw, safeSourceUrl);
+      if (candidate) {
+        return {
+          imageUrl: candidate,
+          source: `source_url_query_param:${key}`,
+        };
+      }
+    }
+
+    if (/\.(?:avif|gif|jpe?g|png|webp)(?:$|\?)/i.test(parsed.pathname)) {
+      return {
+        imageUrl: safeSourceUrl,
+        source: "source_url_direct_image",
+      };
+    }
+  } catch {
+    return { imageUrl: null, source: null };
+  }
+
+  return { imageUrl: null, source: null };
+}
+
+const TRACKING_QUERY_PARAM_PREFIXES = [
+  "utm_",
+  "mtm_",
+  "pk_",
+];
+
+const TRACKING_QUERY_PARAM_KEYS = new Set([
+  "fbclid",
+  "gclid",
+  "dclid",
+  "gbraid",
+  "wbraid",
+  "msclkid",
+  "mc_cid",
+  "mc_eid",
+  "mkt_tok",
+  "igshid",
+  "srsltid",
+  "ref",
+  "ref_",
+  "refid",
+  "source",
+  "sourceid",
+  "campaign",
+  "campaignid",
+]);
+
+function stripTrackingParams(urlString: string): string {
+  const parsed = new URL(urlString);
+  parsed.hash = "";
+  const keys = Array.from(parsed.searchParams.keys());
+  for (const key of keys) {
+    const normalizedKey = key.trim().toLowerCase();
+    if (
+      TRACKING_QUERY_PARAM_KEYS.has(normalizedKey) ||
+      TRACKING_QUERY_PARAM_PREFIXES.some((prefix) => normalizedKey.startsWith(prefix))
+    ) {
+      parsed.searchParams.delete(key);
+    }
+  }
+  return parsed.toString();
+}
+
+function getMetadataFetchUrlCandidates(sourceUrl: string): string[] {
+  const safeSourceUrl = asHttpUrl(sourceUrl);
+  if (!safeSourceUrl) return [];
+  const candidates = [safeSourceUrl];
+  try {
+    const cleanedUrl = stripTrackingParams(safeSourceUrl);
+    if (cleanedUrl !== safeSourceUrl) candidates.push(cleanedUrl);
+  } catch {
+    // Best-effort cleaning; keep original URL as the only candidate.
+  }
+  return candidates;
 }
 
 function parseMetaTagAttributes(tag: string): Record<string, string> {
@@ -382,82 +570,109 @@ function getTitleFromHtml(html: string): string | null {
 }
 
 async function fetchProductPageMetadata(sourceUrl: string, requestId: string): Promise<ProductPageMetadata> {
-  const safeSourceUrl = asHttpUrl(sourceUrl);
-  if (!safeSourceUrl) {
+  const fetchCandidates = getMetadataFetchUrlCandidates(sourceUrl);
+  if (fetchCandidates.length === 0) {
     logSaveEvent("warn", "product_url_metadata_invalid_url", requestId, {
       source_url: sourceUrl,
     });
-    return { title: null, previewImageUrl: null, priceRawText: null, priceNormalizedText: null, priceSource: null };
+    return {
+      title: null,
+      previewImageUrl: null,
+      priceRawText: null,
+      priceNormalizedText: null,
+      priceSource: null,
+      fetchOk: false,
+    };
   }
 
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), PRODUCT_PAGE_FETCH_TIMEOUT_MS);
   try {
-    const response = await fetch(safeSourceUrl, {
-      method: "GET",
-      redirect: "follow",
-      signal: controller.signal,
-      headers: {
-        "User-Agent":
-          "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-        Accept:
-          "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.9",
-        "Cache-Control": "no-cache",
-        Pragma: "no-cache",
-        "Upgrade-Insecure-Requests": "1",
-      },
-      cache: "no-store",
-    });
-    const contentType = response.headers.get("content-type")?.toLowerCase() ?? "";
-    const resolvedUrl = asOptionalString(response.url) ?? safeSourceUrl;
-    logSaveEvent("info", "product_url_metadata_fetch_response", requestId, {
-      fetch_status: response.status,
-      fetch_ok: response.ok,
-      fetch_content_type: contentType,
-      fetch_resolved_url: resolvedUrl,
-    });
-    if (!response.ok) {
-      return { title: null, previewImageUrl: null, priceRawText: null, priceNormalizedText: null, priceSource: null };
-    }
-    if (!contentType.includes("text/html")) {
-      return { title: null, previewImageUrl: null, priceRawText: null, priceNormalizedText: null, priceSource: null };
+    for (let attemptIndex = 0; attemptIndex < fetchCandidates.length; attemptIndex += 1) {
+      const fetchUrl = fetchCandidates[attemptIndex];
+      for (const profile of METADATA_FETCH_PROFILES) {
+        const response = await fetch(fetchUrl, {
+          method: "GET",
+          redirect: "follow",
+          signal: controller.signal,
+          headers: profile.headers,
+          cache: "no-store",
+        });
+        const contentType = response.headers.get("content-type")?.toLowerCase() ?? "";
+        const resolvedUrl = asOptionalString(response.url) ?? fetchUrl;
+        logSaveEvent("info", "product_url_metadata_fetch_response", requestId, {
+          fetch_attempt_index: attemptIndex,
+          fetch_attempt_count: fetchCandidates.length,
+          fetch_profile: profile.id,
+          fetch_input_url: fetchUrl,
+          fetch_status: response.status,
+          fetch_ok: response.ok,
+          fetch_content_type: contentType,
+          fetch_resolved_url: resolvedUrl,
+        });
+        if (!response.ok || !contentType.includes("text/html")) {
+          continue;
+        }
+
+        const html = (await response.text()).slice(0, PRODUCT_PAGE_MAX_HTML_CHARS);
+        const htmlLength = html.length;
+        const htmlSubstantial = htmlLength >= PRODUCT_PAGE_SUBSTANTIAL_HTML_CHARS;
+        const title = getTitleFromHtml(html);
+        const previewImageCandidate =
+          getMetaContent(html, [{ key: "property", value: "og:image" }]) ??
+          getMetaContent(html, [{ key: "name", value: "twitter:image" }]) ??
+          getMetaContent(html, [
+            { key: "property", value: "og:image:url" },
+            { key: "name", value: "twitter:image:src" },
+            { key: "itemprop", value: "image" },
+          ]);
+        const previewImageUrl = asHttpUrl(previewImageCandidate, resolvedUrl);
+        const extraction = extractPriceCandidateFromHtml(html);
+        const extractedPrice = extraction.candidate;
+        logSaveEvent("info", "product_url_metadata_price_extraction_diagnostics", requestId, {
+          html_length: htmlLength,
+          html_substantial: htmlSubstantial,
+          fetch_profile: profile.id,
+          json_ld_blocks_found: extraction.diagnostics.jsonLdBlockCount > 0,
+          json_ld_block_count: extraction.diagnostics.jsonLdBlockCount,
+          json_ld_price_candidate_found: extraction.diagnostics.jsonLdCandidateFound,
+          meta_tag_price_candidate_found: extraction.diagnostics.metaTagCandidateFound,
+          script_embedded_price_candidate_found: extraction.diagnostics.scriptEmbeddedCandidateFound,
+          visible_html_price_candidate_found: extraction.diagnostics.visibleHtmlCandidateFound,
+          selected_price_source: extraction.diagnostics.selectedPriceSource,
+          extracted_price_raw: extractedPrice?.rawPriceText ?? null,
+          extracted_price_normalized: extractedPrice?.normalizedPriceText ?? null,
+        });
+        return {
+          title,
+          previewImageUrl,
+          priceRawText: extractedPrice?.rawPriceText ?? null,
+          priceNormalizedText: extractedPrice?.normalizedPriceText ?? null,
+          priceSource: extractedPrice?.source ?? null,
+          fetchOk: true,
+        };
+      }
     }
 
-    const html = (await response.text()).slice(0, PRODUCT_PAGE_MAX_HTML_CHARS);
-    const htmlLength = html.length;
-    const htmlSubstantial = htmlLength >= PRODUCT_PAGE_SUBSTANTIAL_HTML_CHARS;
-    const title = getTitleFromHtml(html);
-    const previewImageCandidate =
-      getMetaContent(html, [{ key: "property", value: "og:image" }]) ??
-      getMetaContent(html, [{ key: "name", value: "twitter:image" }]) ??
-      getMetaContent(html, [
-        { key: "property", value: "og:image:url" },
-        { key: "name", value: "twitter:image:src" },
-        { key: "itemprop", value: "image" },
-      ]);
-    const previewImageUrl = asHttpUrl(previewImageCandidate, safeSourceUrl);
-    const extraction = extractPriceCandidateFromHtml(html);
-    const extractedPrice = extraction.candidate;
-    logSaveEvent("info", "product_url_metadata_price_extraction_diagnostics", requestId, {
-      html_length: htmlLength,
-      html_substantial: htmlSubstantial,
-      json_ld_blocks_found: extraction.diagnostics.jsonLdBlockCount > 0,
-      json_ld_block_count: extraction.diagnostics.jsonLdBlockCount,
-      json_ld_price_candidate_found: extraction.diagnostics.jsonLdCandidateFound,
-      meta_tag_price_candidate_found: extraction.diagnostics.metaTagCandidateFound,
-      script_embedded_price_candidate_found: extraction.diagnostics.scriptEmbeddedCandidateFound,
-      visible_html_price_candidate_found: extraction.diagnostics.visibleHtmlCandidateFound,
-      selected_price_source: extraction.diagnostics.selectedPriceSource,
-      extracted_price_raw: extractedPrice?.rawPriceText ?? null,
-      extracted_price_normalized: extractedPrice?.normalizedPriceText ?? null,
+    return {
+      title: null,
+      previewImageUrl: null,
+      priceRawText: null,
+      priceNormalizedText: null,
+      priceSource: null,
+      fetchOk: false,
+    };
+  } catch {
+    logSaveEvent("warn", "product_url_metadata_fetch_exception", requestId, {
+      source_url: fetchCandidates[0] ?? sourceUrl,
     });
     return {
-      title,
-      previewImageUrl,
-      priceRawText: extractedPrice?.rawPriceText ?? null,
-      priceNormalizedText: extractedPrice?.normalizedPriceText ?? null,
-      priceSource: extractedPrice?.source ?? null,
+      title: null,
+      previewImageUrl: null,
+      priceRawText: null,
+      priceNormalizedText: null,
+      priceSource: null,
+      fetchOk: false,
     };
   } finally {
     clearTimeout(timeout);
@@ -538,9 +753,22 @@ function getIngestedImageResult(payload: unknown): IngestedImageResult {
 
 async function ingestPreviewImageViaExistingFlow(
   req: NextRequest,
-  imageUrl: string,
-  label?: string | null
+  args: {
+    imageUrl?: string | null;
+    imageBase64?: string | null;
+    label?: string | null;
+  }
 ): Promise<IngestPreviewCallResult> {
+  const imageUrl = asHttpUrl(args.imageUrl ?? null);
+  const imageBase64 = asImageDataUrl(args.imageBase64 ?? null);
+  const label = asOptionalString(args.label ?? null);
+  if (!imageUrl && !imageBase64) {
+    return {
+      ok: false,
+      status: 400,
+      ingested: null,
+    };
+  }
   const ingestUrl = new URL("/api/vibode/user-skus/ingest", req.url).toString();
   const authorization = asOptionalString(req.headers.get("authorization"));
   const cookieHeader = asOptionalString(req.headers.get("cookie"));
@@ -554,7 +782,8 @@ async function ingestPreviewImageViaExistingFlow(
       ...(cookieHeader ? { Cookie: cookieHeader } : {}),
     },
     body: JSON.stringify({
-      imageUrl,
+      ...(imageUrl ? { imageUrl } : {}),
+      ...(imageBase64 ? { imageBase64 } : {}),
       ...(label ? { label } : {}),
     }),
   });
@@ -593,6 +822,9 @@ export async function POST(req: NextRequest) {
 
     const displayName = asOptionalString((body as { displayName?: unknown } | null)?.displayName);
     const previewImageUrl = asOptionalString((body as { previewImageUrl?: unknown } | null)?.previewImageUrl);
+    const clientPreviewImageDataUrl = asImageDataUrl(
+      asOptionalString((body as { clientPreviewImageDataUrl?: unknown } | null)?.clientPreviewImageDataUrl)
+    );
     const sourceUrl = asOptionalString((body as { sourceUrl?: unknown } | null)?.sourceUrl);
     const sourceType = asOptionalString((body as { sourceType?: unknown } | null)?.sourceType);
     const folderId = asOptionalString((body as { folderId?: unknown } | null)?.folderId);
@@ -609,11 +841,18 @@ export async function POST(req: NextRequest) {
     let metadataPriceNormalizedText: string | null = null;
     let metadataPriceSource: string | null = null;
     let metadataPriceFound = false;
+    let metadataFetchFailed = false;
     let ingestCalled = false;
     let ingestOk: boolean | null = null;
     let ingestedUserSkuId: string | null = null;
     let usedIngestedUserSkuId = false;
     let usedPreviewFallback = false;
+    let ingestTriggeredFromClientFallbackImage = false;
+
+    logSaveEvent("info", "client_preview_candidate_received", requestId, {
+      has_client_preview_image_url: Boolean(asHttpUrl(previewImageUrl)),
+      has_client_preview_image_data: Boolean(clientPreviewImageDataUrl),
+    });
 
     const isProductUrlFlow = sourceType === "product_url" && Boolean(sourceUrl);
     if (isProductUrlFlow && sourceUrl) {
@@ -628,7 +867,9 @@ export async function POST(req: NextRequest) {
         metadataPriceNormalizedText = asOptionalString(metadata.priceNormalizedText);
         metadataPriceSource = asOptionalString(metadata.priceSource);
         metadataPriceFound = Boolean(metadataPriceRawText);
+        metadataFetchFailed = !metadata.fetchOk;
         logSaveEvent("info", "product_url_price_extraction", requestId, {
+          metadata_fetch_ok: metadata.fetchOk,
           price_found: metadataPriceFound,
           extracted_price_raw: metadataPriceRawText,
           extracted_price_normalized: metadataPriceNormalizedText,
@@ -637,18 +878,71 @@ export async function POST(req: NextRequest) {
         if (!nextDisplayName && metadataTitle) {
           nextDisplayName = metadataTitle;
         }
+        if (!nextDisplayName && !metadataTitle) {
+          const fallbackTitle = deriveDisplayNameFromProductUrl(sourceUrl);
+          if (fallbackTitle) {
+            nextDisplayName = fallbackTitle;
+            logSaveEvent("info", "fallback_title_generated", requestId, {
+              fallback_title: fallbackTitle,
+              source: "source_url_slug",
+            });
+          }
+        }
         parsedDisplayName = nextDisplayName;
 
-        if (metadataImageUrl) {
+        const fallbackImageResolution =
+          !metadataImageUrl && sourceUrl
+            ? resolveFallbackImageUrl(sourceUrl, previewImageUrl)
+            : { imageUrl: null, source: null };
+        const resolvedImageUrl = metadataImageUrl ?? fallbackImageResolution.imageUrl;
+        const resolvedImageDataUrl =
+          !metadataImageUrl && !fallbackImageResolution.imageUrl ? clientPreviewImageDataUrl : null;
+        const ingestImageSource = metadataImageUrl
+          ? "metadata"
+          : fallbackImageResolution.source ?? (resolvedImageDataUrl ? "client_preview_image_data" : null);
+        if (!metadataImageUrl) {
+          logSaveEvent("info", "fallback_image_attempted", requestId, {
+            has_metadata_image: false,
+            fallback_image_source: ingestImageSource,
+            fallback_image_found: Boolean(fallbackImageResolution.imageUrl || resolvedImageDataUrl),
+          });
+          if (fallbackImageResolution.imageUrl || resolvedImageDataUrl) {
+            logSaveEvent("info", "fallback_image_success", requestId, {
+              fallback_image_source: ingestImageSource,
+              fallback_image_url: fallbackImageResolution.imageUrl,
+              fallback_image_data_url_present: Boolean(resolvedImageDataUrl),
+            });
+          }
+        }
+
+        if (resolvedImageUrl || resolvedImageDataUrl) {
           ingestCalled = true;
+          if (!metadataImageUrl) {
+            ingestTriggeredFromClientFallbackImage =
+              fallbackImageResolution.source === "client_preview_image" || Boolean(resolvedImageDataUrl);
+            logSaveEvent("info", "ingest_called_from_fallback", requestId, {
+              fallback_image_source: ingestImageSource,
+            });
+            if (ingestTriggeredFromClientFallbackImage) {
+              logSaveEvent("info", "ingest_triggered_from_client_fallback_image", requestId, {
+                fallback_image_source: ingestImageSource,
+                fallback_image_data_url: Boolean(resolvedImageDataUrl),
+              });
+            }
+          }
           logSaveEvent("info", "product_url_ingest_attempt", requestId, {
-            metadata_image_present: true,
+            metadata_image_present: Boolean(metadataImageUrl),
+            ingest_image_source: ingestImageSource,
+            ingest_image_data_url_present: Boolean(resolvedImageDataUrl),
           });
           try {
             const ingestResult = await ingestPreviewImageViaExistingFlow(
               req,
-              metadataImageUrl,
-              metadataTitle ?? nextDisplayName ?? null
+              {
+                imageUrl: resolvedImageUrl,
+                imageBase64: resolvedImageDataUrl,
+                label: metadataTitle ?? nextDisplayName ?? null,
+              }
             );
             logSaveEvent("info", "product_url_ingest_result", requestId, {
               ingest_called: true,
@@ -663,7 +957,7 @@ export async function POST(req: NextRequest) {
               usedIngestedUserSkuId = true;
             }
             usedPreviewFallback = !ingestResult.ingested?.previewImageUrl;
-            nextPreviewImageUrl = ingestResult.ingested?.previewImageUrl ?? metadataImageUrl;
+            nextPreviewImageUrl = ingestResult.ingested?.previewImageUrl ?? resolvedImageUrl;
           } catch {
             // Fallback to raw metadata image; save should still succeed.
             ingestOk = false;
@@ -671,7 +965,7 @@ export async function POST(req: NextRequest) {
               ingest_called: true,
             });
             usedPreviewFallback = true;
-            nextPreviewImageUrl = metadataImageUrl;
+            nextPreviewImageUrl = resolvedImageUrl;
           }
         } else {
           logSaveEvent("info", "product_url_metadata_no_image", requestId, {
@@ -680,6 +974,7 @@ export async function POST(req: NextRequest) {
         }
       } catch {
         // Metadata extraction is best-effort only.
+        metadataFetchFailed = true;
         logSaveEvent("warn", "product_url_metadata_failed", requestId, {
           has_source_url: Boolean(sourceUrl),
         });
@@ -689,6 +984,36 @@ export async function POST(req: NextRequest) {
     const parsedSourceUrl = nextSourceUrl;
     const parsedSourceDomain = extractDomain(parsedSourceUrl);
     const parsedSupplierName = normalizeSupplier(parsedSourceDomain);
+    const hasUsablePreviewImage = Boolean(asHttpUrl(nextPreviewImageUrl));
+    const hasIngestBackedSku = Boolean(ingestedUserSkuId);
+    const hasMeaningfulFallbackItemData =
+      Boolean(asOptionalString(nextDisplayName)) ||
+      Boolean(asOptionalString(parsedSupplierName)) ||
+      Boolean(asOptionalString(parsedSourceDomain));
+    const shouldBlockProductUrlSave =
+      isProductUrlFlow &&
+      !hasUsablePreviewImage &&
+      !hasIngestBackedSku &&
+      !hasMeaningfulFallbackItemData;
+
+    if (shouldBlockProductUrlSave) {
+      logSaveEvent("warn", "product_url_blocked_or_unreadable", requestId, {
+        metadata_fetch_failed: metadataFetchFailed,
+        has_usable_preview_image: hasUsablePreviewImage,
+        has_ingest_backed_sku: hasIngestBackedSku,
+        has_meaningful_fallback_item_data: hasMeaningfulFallbackItemData,
+        ingest_called: ingestCalled,
+        ingest_ok: ingestOk,
+      });
+      return Response.json(
+        {
+          code: "product_url_blocked_or_unreadable",
+          error: "We couldn't read that product page right now. Try copying the product image instead.",
+        },
+        { status: 422 }
+      );
+    }
+
     const effectivePriceText = priceText ?? metadataPriceNormalizedText;
     logSaveEvent("info", "product_url_parse_price_input", requestId, {
       input_price_text: priceText,
@@ -744,9 +1069,12 @@ export async function POST(req: NextRequest) {
       final_user_sku_id: nextUserSkuId,
       ingest_called: isProductUrlFlow ? ingestCalled : false,
       ingest_ok: ingestOk,
+      metadata_fetch_failed: isProductUrlFlow ? metadataFetchFailed : null,
       ingested_user_sku_id: ingestedUserSkuId,
       used_ingested_user_sku_id: isProductUrlFlow && usedIngestedUserSkuId,
       used_preview_fallback: isProductUrlFlow && usedPreviewFallback,
+      ingest_triggered_from_client_fallback_image:
+        isProductUrlFlow && ingestTriggeredFromClientFallbackImage,
       effective_price_text: effectivePriceText,
       parsed_price_amount: parsedPrice.amount,
       parsed_price_currency: parsedPrice.currency,

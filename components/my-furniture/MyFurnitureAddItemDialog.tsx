@@ -26,6 +26,26 @@ function asOptionalString(value: unknown): string | null {
   return trimmed.length > 0 ? trimmed : null;
 }
 
+function asHttpUrl(value: string | null): string | null {
+  if (!value) return null;
+  try {
+    const parsed = new URL(value);
+    const protocol = parsed.protocol.toLowerCase();
+    if (protocol !== "http:" && protocol !== "https:") return null;
+    return parsed.toString();
+  } catch {
+    return null;
+  }
+}
+
+function extractImageUrlFromClipboardHtml(html: string): string | null {
+  const source = asOptionalString(html);
+  if (!source) return null;
+  const imgMatch = source.match(/<img\b[^>]*\bsrc\s*=\s*["']([^"']+)["'][^>]*>/i);
+  if (!imgMatch?.[1]) return null;
+  return asHttpUrl(imgMatch[1]);
+}
+
 function makeUserSkuId() {
   try {
     return `manual-${crypto.randomUUID()}`;
@@ -58,6 +78,7 @@ export function MyFurnitureAddItemDialog({
   const [productUrl, setProductUrl] = useState("");
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [pastedImageDataUrl, setPastedImageDataUrl] = useState<string | null>(null);
+  const [urlPastedImageUrl, setUrlPastedImageUrl] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
 
@@ -67,6 +88,7 @@ export function MyFurnitureAddItemDialog({
     setProductUrl("");
     setSelectedFile(null);
     setPastedImageDataUrl(null);
+    setUrlPastedImageUrl(null);
     setIsSubmitting(false);
     setSubmitError(null);
   }, [isOpen]);
@@ -95,6 +117,17 @@ export function MyFurnitureAddItemDialog({
       throw new Error("Please sign in to add an item.");
     }
 
+    const clientPreviewImageUrl = asHttpUrl(urlPastedImageUrl);
+    const clientPreviewImageDataUrl =
+      pastedImageDataUrl || (selectedFile ? await fileToDataUrl(selectedFile) : null);
+    console.info(
+      "[my-furniture/add-item] product_url_submit_image_candidates",
+      JSON.stringify({
+        has_client_preview_image_url: Boolean(clientPreviewImageUrl),
+        has_client_preview_image_data: Boolean(clientPreviewImageDataUrl),
+      })
+    );
+
     const response = await fetch("/api/vibode/my-furniture/save", {
       method: "POST",
       headers: {
@@ -105,6 +138,8 @@ export function MyFurnitureAddItemDialog({
         userSkuId: makeUserSkuId(),
         sourceUrl: nextProductUrl,
         sourceType: "product_url",
+        previewImageUrl: clientPreviewImageUrl,
+        clientPreviewImageDataUrl,
       }),
     });
     const payload = (await response.json().catch(() => ({}))) as SaveResponse;
@@ -269,6 +304,11 @@ export function MyFurnitureAddItemDialog({
             <input
               value={productUrl ?? ""}
               onChange={(event) => setProductUrl(event.target.value)}
+              onPaste={(event) => {
+                const clipboardHtml = asOptionalString(event.clipboardData.getData("text/html"));
+                const candidate = extractImageUrlFromClipboardHtml(clipboardHtml ?? "");
+                setUrlPastedImageUrl(candidate);
+              }}
               disabled={isSubmitting}
               placeholder="https://..."
               className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 outline-none transition placeholder:text-slate-500 focus:border-slate-500"
