@@ -3974,7 +3974,6 @@ function EditorPageInner() {
           userSkuId: provisionalUserSkuId,
           sourceType: "product_url",
           sourceUrl: normalizedUrl,
-          displayName: "Pasted Product",
         }),
       });
       const json = (await res.json().catch(() => ({}))) as PasteToPlaceProductUrlSaveResponse;

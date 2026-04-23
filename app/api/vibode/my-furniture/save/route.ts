@@ -28,6 +28,7 @@ const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || process.env.NEXT_PUBL
 const PRODUCT_PAGE_FETCH_TIMEOUT_MS = 6000;
 const PRODUCT_PAGE_MAX_HTML_CHARS = 750_000;
 const PRODUCT_PAGE_SUBSTANTIAL_HTML_CHARS = 2_000;
+const DEFAULT_PASTED_PRODUCT_NAME = "Pasted Product";
 const INGEST_SOURCE_HEADER = "x-roomprintz-ingest-source";
 const INGEST_SKIP_MY_FURNITURE_AUTOSAVE_HEADER = "x-roomprintz-skip-my-furniture-autosave";
 const SAVE_ROUTE = "/api/vibode/my-furniture/save";
@@ -682,6 +683,7 @@ async function fetchProductPageMetadata(sourceUrl: string, requestId: string): P
 type IngestedImageResult = {
   userSkuId: string | null;
   previewImageUrl: string | null;
+  displayName: string | null;
 };
 
 type IngestPreviewCallResult = {
@@ -726,17 +728,22 @@ function logSaveEvent(
 
 function getIngestedImageResult(payload: unknown): IngestedImageResult {
   const record = safeRecord(payload);
-  if (!record) return { userSkuId: null, previewImageUrl: null };
+  if (!record) return { userSkuId: null, previewImageUrl: null, displayName: null };
 
   const userSku = safeRecord(record.userSku);
   const ingestedUserSkuId = asOptionalString(
     userSku?.user_sku_id ?? userSku?.userSkuId ?? userSku?.id ?? userSku?.skuId
   );
+  const ingestedDisplayName = asOptionalString(
+    userSku?.display_name ?? userSku?.displayName ?? userSku?.label ?? userSku?.name
+  );
   const userSkuStatus = asOptionalString(userSku?.status)?.toLowerCase();
   if (userSkuStatus === "ready" && Array.isArray(userSku?.variants)) {
     for (const variant of userSku.variants) {
       const imageUrl = asHttpUrl(asOptionalString(variant));
-      if (imageUrl) return { userSkuId: ingestedUserSkuId, previewImageUrl: imageUrl };
+      if (imageUrl) {
+        return { userSkuId: ingestedUserSkuId, previewImageUrl: imageUrl, displayName: ingestedDisplayName };
+      }
     }
   }
 
@@ -748,6 +755,11 @@ function getIngestedImageResult(payload: unknown): IngestedImageResult {
       asOptionalString(savedFurniture?.preview_image_url) ??
       null
     ),
+    displayName:
+      ingestedDisplayName ??
+      asOptionalString(savedFurniture?.displayName) ??
+      asOptionalString(savedFurniture?.display_name) ??
+      null,
   };
 }
 
@@ -845,6 +857,7 @@ export async function POST(req: NextRequest) {
     let ingestCalled = false;
     let ingestOk: boolean | null = null;
     let ingestedUserSkuId: string | null = null;
+    let ingestedDisplayName: string | null = null;
     let usedIngestedUserSkuId = false;
     let usedPreviewFallback = false;
     let ingestTriggeredFromClientFallbackImage = false;
@@ -952,6 +965,7 @@ export async function POST(req: NextRequest) {
             });
             ingestOk = ingestResult.ok;
             ingestedUserSkuId = ingestResult.ingested?.userSkuId ?? null;
+            ingestedDisplayName = ingestResult.ingested?.displayName ?? null;
             if (ingestResult.ingested?.userSkuId) {
               nextUserSkuId = ingestResult.ingested.userSkuId;
               usedIngestedUserSkuId = true;
@@ -978,6 +992,13 @@ export async function POST(req: NextRequest) {
         logSaveEvent("warn", "product_url_metadata_failed", requestId, {
           has_source_url: Boolean(sourceUrl),
         });
+      }
+    }
+
+    if (isProductUrlFlow && !nextDisplayName) {
+      nextDisplayName = ingestedDisplayName ?? DEFAULT_PASTED_PRODUCT_NAME;
+      if (!parsedDisplayName) {
+        parsedDisplayName = nextDisplayName;
       }
     }
 
