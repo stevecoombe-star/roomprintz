@@ -262,7 +262,7 @@ export function MyRoomsPage() {
       } catch (err) {
         console.error("[MyRooms] load error:", err);
         if (!cancelled) {
-          setLoadError("Failed to load rooms. Please refresh and try again.");
+          setLoadError("We couldn't load your rooms right now. Please refresh and try again.");
         }
       } finally {
         if (!cancelled) {
@@ -344,8 +344,8 @@ export function MyRoomsPage() {
     if (rooms.length === 0) {
       return {
         title: "No rooms yet",
-        description: "Saved rooms will appear here. Create your first room in the editor to start building your library.",
-        actionLabel: "Open editor",
+        description: "Saved rooms will appear here. Open the editor to create your first room.",
+        actionLabel: "Open Editor",
         onAction: () => router.push("/editor"),
       };
     }
@@ -639,7 +639,7 @@ export function MyRoomsPage() {
     return (
       <main className="min-h-screen bg-slate-950 text-slate-100">
         <div className="mx-auto max-w-4xl px-4 py-10">
-          <div className="text-sm text-slate-400">Checking session...</div>
+          <div className="text-sm text-slate-400">Checking your session...</div>
         </div>
       </main>
     );
@@ -655,7 +655,7 @@ export function MyRoomsPage() {
             href="/login?next=/my-rooms"
             className="mt-6 inline-flex rounded-lg border border-slate-700 px-3 py-2 text-xs text-slate-200 transition hover:border-slate-500 hover:text-white"
           >
-            Go to Login
+            Go to Sign In
           </Link>
         </div>
       </main>
@@ -707,7 +707,7 @@ export function MyRoomsPage() {
             <TokenStatusNotice className="mt-3" showGetMoreTokensCta />
             {!folderFeatureReady ? (
               <div className="mt-3 rounded-xl border border-amber-700/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
-                Folder schema is unavailable. Run the latest Supabase migration to enable folders.
+                Folders are temporarily unavailable. You can still use All Rooms and Recents.
               </div>
             ) : null}
 

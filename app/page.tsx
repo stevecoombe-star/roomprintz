@@ -48,7 +48,7 @@ export default function LandingPage() {
                 Log in / Create account
               </button>
               <p className="text-[11px] text-slate-500 max-w-xs">
-                Invite-only beta. Sign in to start designing in your room.
+                Invite-only beta. Sign in to start designing your first room.
               </p>
             </div>
           </section>

@@ -14,7 +14,7 @@ function BillingSuccessInner() {
    */
   const message = sessionId
     ? "Thanks - your payment went through. Your Vibode token balance updates automatically."
-    : "Thanks - your payment completed. Your token balance updates automatically.";
+    : "Thanks - your payment completed. Your Vibode token balance updates automatically.";
 
   useEffect(() => {
     // Webhooks apply the token grant; this page is just a friendly landing.
@@ -32,7 +32,7 @@ function BillingSuccessInner() {
       <h1 className="text-2xl font-semibold text-slate-900">Tokens added</h1>
       <p className="text-slate-700">{message}</p>
       <p className="text-sm text-slate-600">
-        If your balance does not refresh immediately, reopen billing in a moment.
+        If your balance doesn't refresh right away, reopen Billing in a moment.
       </p>
 
       {sessionId && (
@@ -46,13 +46,13 @@ function BillingSuccessInner() {
           className="rounded bg-emerald-500 px-4 py-2 font-medium text-slate-950 transition hover:bg-emerald-400"
           onClick={() => router.push("/billing")}
         >
-          Return to billing
+          Back to Billing
         </button>
         <button
           className="rounded border border-slate-300 px-4 py-2 text-slate-700 transition hover:border-slate-400 hover:bg-slate-50"
           onClick={() => router.push("/editor")}
         >
-          Back to editor
+          Back to Editor
         </button>
       </div>
     </main>
@@ -61,7 +61,7 @@ function BillingSuccessInner() {
 
 export default function BillingSuccessPage() {
   return (
-    <Suspense fallback={<div className="max-w-xl mx-auto p-6">Loading…</div>}>
+    <Suspense fallback={<div className="max-w-xl mx-auto p-6 text-sm text-slate-600">Loading confirmation...</div>}>
       <BillingSuccessInner />
     </Suspense>
   );

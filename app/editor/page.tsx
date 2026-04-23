@@ -1710,7 +1710,11 @@ function EditorPageInner() {
         );
       } catch (err: any) {
         setMyFurnitureItems([]);
-        pushSnack(err?.message ?? "Failed to load My Furniture.");
+        const message =
+          err?.message === "No Supabase session."
+            ? "Please sign in again to open My Furniture."
+            : "Couldn't load My Furniture right now. Please try again.";
+        pushSnack(message);
       } finally {
         setMyFurnitureLoading(false);
       }
@@ -1943,7 +1947,7 @@ function EditorPageInner() {
             error: "no-access-token",
           });
           hydratedRoomIdRef.current = null;
-          pushSnack("No Supabase session — redirecting to login…");
+          pushSnack("Your session expired. Redirecting to sign in...");
           router.push(`/login?next=${encodeURIComponent(`/editor?roomId=${requestedRoomId}`)}`);
           return;
         }
@@ -2041,7 +2045,7 @@ function EditorPageInner() {
           isHydratingRoom: false,
           showPlaceholder: Boolean(prev.placeholderImageUrl),
         }));
-        pushSnack(`Failed to open room. (${err?.message ?? "error"})`);
+        pushSnack("We couldn't open that room right now. Please try again.");
       } finally {
         if (isRoomOpenSessionActive()) {
           if (!didApplyHydratedRoom) {
@@ -2491,7 +2495,7 @@ function EditorPageInner() {
         try {
           const accessToken = await tryGetSupabaseAccessToken();
           if (!accessToken) {
-            pushSnack("Could not sync active version right now (missing session).");
+            pushSnack("Couldn't sync versions right now. Please refresh.");
             return;
           }
           await setActiveVersionForRoom({
@@ -2501,7 +2505,7 @@ function EditorPageInner() {
           });
         } catch (err) {
           console.warn("[editor] failed to sync active version:", err);
-          pushSnack("Could not sync selected version. Refreshing versions…");
+          pushSnack("Couldn't sync that version. Refreshing your version list...");
           await refreshRoomVersions(vibodeRoomId);
         }
       })();
@@ -2529,7 +2533,7 @@ function EditorPageInner() {
     if (deletingVersionId) return;
     if (!vibodeRoomId || versions.length <= 1) {
       setDeleteVersionTarget(null);
-      pushSnack("Couldn’t delete version");
+      pushSnack("Couldn't delete that version right now.");
       return;
     }
 
@@ -2569,11 +2573,11 @@ function EditorPageInner() {
         }
       }
 
-      pushSnack("Version deleted");
+      pushSnack("Version deleted.");
       setDeleteVersionTarget(null);
     } catch (err) {
       console.warn("[editor] failed to delete room version:", err);
-      pushSnack("Couldn’t delete version");
+      pushSnack("Couldn't delete that version right now.");
     } finally {
       setDeletingVersionId(null);
     }
@@ -2606,7 +2610,7 @@ function EditorPageInner() {
 
   const handleRoomPhotoFile = async (file: File) => {
     if (!isImageFile(file)) {
-      pushSnack("Please upload an image file.");
+      pushSnack("Please choose an image file.");
       return;
     }
 
@@ -2614,7 +2618,7 @@ function EditorPageInner() {
 
     // 1) Instant preview (blob)
     setBaseImageFromFile(file);
-    pushSnack("Image loaded (local preview). Uploading to storage…");
+    pushSnack("Room photo added. Uploading securely...");
 
     // 2) Upload to storage + swap to signed URL (kills blob in payload)
     setIsUploading(true);
@@ -2632,7 +2636,7 @@ function EditorPageInner() {
           tokenLength: 0,
           authorizationHeaderAttached: false,
         });
-        pushSnack("No Supabase session — redirecting to login…");
+        pushSnack("Your session expired. Redirecting to sign in...");
         router.push(`/login?next=${encodeURIComponent("/editor")}`);
         return;
       }
@@ -2658,12 +2662,12 @@ function EditorPageInner() {
         setRoomBaseAssetId(baseAsset?.id ?? null);
         setActiveAssetId(activeAsset?.id ?? baseAsset?.id ?? null);
       }
-      pushSnack("Image uploaded ✅ (signed URL set; blob removed).");
+      pushSnack("Room photo uploaded.");
     } catch (err: any) {
       console.error(err);
       setVibodeRoomId(null);
       setRoomBaseAssetId(null);
-      pushSnack(`Upload failed — keeping local preview. (${err?.message ?? "error"})`);
+      pushSnack("Upload didn't finish. Keeping your local preview for now.");
     } finally {
       setIsUploading(false);
     }
@@ -2899,7 +2903,7 @@ function EditorPageInner() {
       if (json.userSku.status === "failed") {
         setIngestError(json.userSku.reason ?? "Normalization failed.");
       } else if (json.userSku.status === "ready" && isRecord(json.savedFurniture)) {
-        pushSnack("Saved to My Furniture ✓");
+        pushSnack("Saved to My Furniture.");
       }
     } catch (err: any) {
       setIngestError(err?.message ?? "Failed to normalize image.");
@@ -2915,7 +2919,7 @@ function EditorPageInner() {
       prev.some((sku) => sku.skuId === ingestedUserSku.skuId) ? prev : [...prev, ingestedUserSku]
     );
     setStage3SkuItems((prev) => mergeStage3SkuItems(prev, [ingestedUserSku]));
-    pushSnack("Added to Stage 3 eligible items ✅");
+    pushSnack("Added to Stage 3 items.");
   };
 
   const toggleStage3SkuItemActive = (skuId: string, active: boolean) => {
@@ -7073,7 +7077,17 @@ function EditorPageInner() {
 
 export default function EditorPage() {
   return (
-    <Suspense fallback={null}>
+    <Suspense
+      fallback={
+        <main className="min-h-screen bg-slate-950 text-slate-100">
+          <div className="mx-auto max-w-[1400px] px-4 py-8 lg:px-6">
+            <div className="rounded-xl border border-slate-800 bg-slate-900/50 p-4 text-sm text-slate-400">
+              Loading editor workspace...
+            </div>
+          </div>
+        </main>
+      }
+    >
       <EditorPageInner />
     </Suspense>
   );

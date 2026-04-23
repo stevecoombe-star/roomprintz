@@ -7,8 +7,14 @@ import { useTokenBalance } from "@/hooks/useTokenBalance";
 import { DEFAULT_TOPUP_PRICE_ID, startTopup } from "@/lib/stripeClient";
 
 function errorMessageFromUnknown(err: unknown, fallback: string): string {
-  if (err instanceof Error && err.message) return err.message;
-  if (typeof err === "string" && err.trim().length > 0) return err;
+  if (err instanceof Error && err.message) {
+    if (err.message.toLowerCase().includes("http")) return fallback;
+    return err.message;
+  }
+  if (typeof err === "string" && err.trim().length > 0) {
+    if (err.toLowerCase().includes("http")) return fallback;
+    return err;
+  }
   return fallback;
 }
 
@@ -33,20 +39,20 @@ export default function BillingPage() {
             href="/editor"
             className="rounded-lg border border-slate-300 px-3 py-1 text-xs text-slate-700 transition hover:border-emerald-500/70 hover:text-emerald-700"
           >
-            Back to editor
+            Back to Editor
           </Link>
         </div>
       </div>
 
       {loading ? (
         <section className="bg-slate-900 border border-slate-800 rounded-2xl p-4">
-          <div className="text-sm text-slate-400">Checking session…</div>
+          <div className="text-sm text-slate-400">Checking your account...</div>
         </section>
       ) : !user ? (
         <section className="bg-slate-900 border border-slate-800 rounded-2xl p-4">
-          <div className="text-sm text-slate-300">You’re not signed in.</div>
+          <div className="text-sm text-slate-300">You're not signed in.</div>
           <p className="text-xs text-slate-500 mt-1">
-            Sign in first, then come back to buy tokens.
+            Sign in first, then return here to top up tokens.
           </p>
         </section>
       ) : (
@@ -74,7 +80,9 @@ export default function BillingPage() {
             </div>
 
             {tokenError && (
-              <div className="text-[11px] text-rose-300 mt-3">{tokenError}</div>
+              <div className="mt-3 rounded-md border border-rose-500/30 bg-rose-500/10 px-2.5 py-2 text-[11px] text-rose-200">
+                We couldn't refresh your token balance right now. Please try again.
+              </div>
             )}
           </section>
 
@@ -94,7 +102,12 @@ export default function BillingPage() {
                     await startTopup(DEFAULT_TOPUP_PRICE_ID);
                   } catch (err: unknown) {
                     console.error("[BillingPage] top-up checkout error:", err);
-                    setErrorMessage(errorMessageFromUnknown(err, "Checkout failed"));
+                    setErrorMessage(
+                      errorMessageFromUnknown(
+                        err,
+                        "We couldn't open Stripe checkout right now. Please try again."
+                      )
+                    );
                   } finally {
                     setUiLoading(null);
                   }
@@ -102,7 +115,7 @@ export default function BillingPage() {
                 disabled={uiLoading !== null}
                 className="text-sm rounded-lg bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-semibold px-4 py-2 transition disabled:opacity-60"
               >
-                {uiLoading === "topup" ? "Opening Stripe checkout…" : "Buy tokens"}
+                {uiLoading === "topup" ? "Opening Stripe checkout..." : "Buy Tokens"}
               </button>
             </div>
 

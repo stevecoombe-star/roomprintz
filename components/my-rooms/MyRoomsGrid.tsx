@@ -24,20 +24,23 @@ type MyRoomsGridProps = {
 
 function LoadingSkeletonGrid() {
   return (
-    <div className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
-      {Array.from({ length: 8 }).map((_, index) => (
-        <div
-          key={index}
-          className="animate-pulse overflow-hidden rounded-2xl border border-slate-800/70 bg-slate-900/50"
-        >
-          <div className="aspect-[4/3] w-full bg-slate-800/80" />
-          <div className="px-2 pb-3 pt-2">
-            <div className="h-3 w-2/3 rounded bg-slate-800/80" />
-            <div className="mt-2 h-2.5 w-1/2 rounded bg-slate-800/70" />
-            <div className="mt-2 h-2.5 w-5/6 rounded bg-slate-800/60" />
+    <div className="mt-4">
+      <p className="mb-3 text-xs text-slate-400">Loading your saved rooms...</p>
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
+        {Array.from({ length: 8 }).map((_, index) => (
+          <div
+            key={index}
+            className="animate-pulse overflow-hidden rounded-2xl border border-slate-800/70 bg-slate-900/50"
+          >
+            <div className="aspect-[4/3] w-full bg-slate-800/80" />
+            <div className="px-2 pb-3 pt-2">
+              <div className="h-3 w-2/3 rounded bg-slate-800/80" />
+              <div className="mt-2 h-2.5 w-1/2 rounded bg-slate-800/70" />
+              <div className="mt-2 h-2.5 w-5/6 rounded bg-slate-800/60" />
+            </div>
           </div>
-        </div>
-      ))}
+        ))}
+      </div>
     </div>
   );
 }

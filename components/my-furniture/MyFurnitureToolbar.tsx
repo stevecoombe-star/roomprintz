@@ -41,7 +41,7 @@ export function MyFurnitureToolbar({
                 : "border-slate-700 text-slate-200 hover:border-slate-500 hover:text-white"
             }`}
           >
-            {selectionMode ? "Selection On" : "Select"}
+            {selectionMode ? "Selection on" : "Select"}
           </button>
           {selectionMode && selectedCount > 0 ? (
             <>

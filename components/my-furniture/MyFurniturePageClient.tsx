@@ -128,7 +128,7 @@ export function MyFurniturePageClient() {
     try {
       const accessToken = await getSupabaseBrowserAccessToken();
       if (!accessToken) {
-        throw new Error("Please sign in to view folders.");
+        throw new Error("Please sign in again to view folders.");
       }
       const response = await fetch("/api/vibode/my-furniture/folders", {
         method: "GET",
@@ -138,7 +138,7 @@ export function MyFurniturePageClient() {
       });
       const payload = (await response.json().catch(() => ({}))) as FolderListResponse;
       if (!response.ok) {
-        throw new Error(payload.error || `Failed to load folders (HTTP ${response.status}).`);
+        throw new Error(payload.error || "Couldn't load folders right now.");
       }
       const nextFolders = Array.isArray(payload.folders)
         ? payload.folders
@@ -147,7 +147,10 @@ export function MyFurniturePageClient() {
         : [];
       setFolders(nextFolders);
     } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : "Could not load folders right now.";
+      const message =
+        err instanceof Error && err.message
+          ? err.message
+          : "We couldn't load folders right now. Please try again.";
       setFolders([]);
       setFoldersError(message);
     }
@@ -236,7 +239,7 @@ export function MyFurniturePageClient() {
     async (name: string): Promise<MyFurnitureFolder | null> => {
       const accessToken = await getSupabaseBrowserAccessToken();
       if (!accessToken) {
-        throw new Error("Please sign in to manage folders.");
+        throw new Error("Please sign in again to manage folders.");
       }
       const response = await fetch("/api/vibode/my-furniture/folders", {
         method: "POST",
@@ -251,11 +254,11 @@ export function MyFurniturePageClient() {
       });
       const payload = (await response.json().catch(() => ({}))) as FolderWriteResponse;
       if (!response.ok) {
-        throw new Error(payload.error || `Failed to create folder (HTTP ${response.status}).`);
+        throw new Error(payload.error || "Couldn't create that folder right now.");
       }
       const folder = normalizeFolder(payload.folder ?? null);
       if (!folder) {
-        throw new Error("Folder was created but response was malformed.");
+        throw new Error("Folder was created, but couldn't be confirmed. Please refresh.");
       }
       setFolders((prev) => [folder, ...prev]);
       return folder;
@@ -266,7 +269,7 @@ export function MyFurniturePageClient() {
   const renameFolder = useCallback(async (folderId: string, name: string) => {
     const accessToken = await getSupabaseBrowserAccessToken();
     if (!accessToken) {
-      throw new Error("Please sign in to rename folders.");
+      throw new Error("Please sign in again to rename folders.");
     }
     const response = await fetch("/api/vibode/my-furniture/folders", {
       method: "POST",
@@ -282,11 +285,11 @@ export function MyFurniturePageClient() {
     });
     const payload = (await response.json().catch(() => ({}))) as FolderWriteResponse;
     if (!response.ok) {
-      throw new Error(payload.error || `Failed to rename folder (HTTP ${response.status}).`);
+      throw new Error(payload.error || "Couldn't rename that folder right now.");
     }
     const updated = normalizeFolder(payload.folder ?? null);
     if (!updated) {
-      throw new Error("Folder was renamed but response was malformed.");
+      throw new Error("Folder was renamed, but couldn't be confirmed. Please refresh.");
     }
     setFolders((prev) => prev.map((entry) => (entry.id === updated.id ? updated : entry)));
   }, []);
@@ -295,7 +298,7 @@ export function MyFurniturePageClient() {
     async (folderId: string) => {
       const accessToken = await getSupabaseBrowserAccessToken();
       if (!accessToken) {
-        throw new Error("Please sign in to delete folders.");
+        throw new Error("Please sign in again to delete folders.");
       }
       const response = await fetch("/api/vibode/my-furniture/folders", {
         method: "POST",
@@ -310,7 +313,7 @@ export function MyFurniturePageClient() {
       });
       const payload = (await response.json().catch(() => ({}))) as FolderWriteResponse;
       if (!response.ok) {
-        throw new Error(payload.error || `Failed to delete folder (HTTP ${response.status}).`);
+        throw new Error(payload.error || "Couldn't delete that folder right now.");
       }
       setFolders((prev) => prev.filter((entry) => entry.id !== folderId));
       if (selectedScope === `folder:${folderId}`) {
@@ -361,7 +364,7 @@ export function MyFurniturePageClient() {
     async (itemIds: string[], folderId: string | null) => {
       const accessToken = await getSupabaseBrowserAccessToken();
       if (!accessToken) {
-        throw new Error("Please sign in to move items.");
+        throw new Error("Please sign in again to move items.");
       }
       const response = await fetch("/api/vibode/my-furniture/move", {
         method: "POST",
@@ -376,7 +379,7 @@ export function MyFurniturePageClient() {
       });
       const payload = (await response.json().catch(() => ({}))) as MoveResponse;
       if (!response.ok || !payload.success) {
-        throw new Error(payload.error || `Failed to move items (HTTP ${response.status}).`);
+        throw new Error(payload.error || "Couldn't move those items right now.");
       }
       await refresh();
       setSelectedItemIds(new Set());
@@ -388,14 +391,14 @@ export function MyFurniturePageClient() {
     if (isLoading) {
       return (
         <div className="mt-4 rounded-xl border border-slate-800 bg-slate-900/40 p-4 text-sm text-slate-400">
-          Loading saved furniture...
+          Loading your saved furniture...
         </div>
       );
     }
     if (error) {
       return (
         <div className="mt-4 rounded-xl border border-rose-500/30 bg-rose-500/10 p-4 text-sm text-rose-100">
-          {error}
+          We couldn't load your saved furniture right now. Please refresh and try again.
         </div>
       );
     }
@@ -405,7 +408,7 @@ export function MyFurniturePageClient() {
     if (filteredItems.length === 0) {
       return (
         <div className="mt-4 rounded-xl border border-slate-800 bg-slate-900/40 p-4 text-sm text-slate-400">
-          No items in this folder yet.
+          No items in this folder yet. Add an item or switch folders to continue.
         </div>
       );
     }
@@ -480,7 +483,7 @@ export function MyFurniturePageClient() {
   if (authLoading) {
     return (
       <main className="min-h-screen bg-slate-950 text-slate-100">
-        <div className="mx-auto max-w-6xl px-4 py-10 text-sm text-slate-400">Checking session...</div>
+        <div className="mx-auto max-w-6xl px-4 py-10 text-sm text-slate-400">Checking your session...</div>
       </main>
     );
   }
@@ -495,7 +498,7 @@ export function MyFurniturePageClient() {
             href="/login?next=/my-furniture"
             className="mt-6 inline-flex rounded-lg border border-slate-700 px-3 py-2 text-xs text-slate-200 transition hover:border-slate-500 hover:text-white"
           >
-            Go to Login
+            Go to Sign In
           </Link>
         </div>
       </main>
@@ -544,7 +547,10 @@ export function MyFurniturePageClient() {
               await handleMoveItems(moveDialog.itemIds, folderId);
               setMoveDialog({ open: false, itemIds: [], initialFolderId: null });
             } catch (err: unknown) {
-              const message = err instanceof Error ? err.message : "Could not move item(s) right now.";
+              const message =
+                err instanceof Error && err.message
+                  ? err.message
+                  : "Couldn't move those items right now. Please try again.";
               setMoveError(message);
             } finally {
               setIsMoving(false);
@@ -582,7 +588,9 @@ export function MyFurniturePageClient() {
               setFolderDialog({ open: false, mode: "create", folder: null });
             } catch (err: unknown) {
               const message =
-                err instanceof Error ? err.message : "Could not update folder right now.";
+                err instanceof Error && err.message
+                  ? err.message
+                  : "Couldn't update that folder right now. Please try again.";
               setFoldersError(message);
             } finally {
               setIsFolderDialogSubmitting(false);
