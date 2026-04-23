@@ -1,5 +1,6 @@
 import {
   getMyFurnitureDisplayTitle,
+  getMyFurniturePriceLabel,
   getMyFurniturePreferredImageUrl,
   getMyFurnitureSubtitle,
   getMyFurnitureUsageSignal,
@@ -37,6 +38,7 @@ export function MyFurnitureRow({
   const imageUrl = getMyFurniturePreferredImageUrl(item);
   const title = getMyFurnitureDisplayTitle(item);
   const subtitle = getMyFurnitureSubtitle(item);
+  const priceLabel = getMyFurniturePriceLabel(item);
 
   return (
     <article
@@ -81,6 +83,7 @@ export function MyFurnitureRow({
       <div className="min-w-0">
         <div className="truncate text-sm font-medium text-slate-100">{title}</div>
         <div className="truncate text-xs text-slate-400">{subtitle}</div>
+        {priceLabel ? <div className="truncate text-xs text-slate-300">{priceLabel}</div> : null}
         <div className="mt-0.5 text-[11px] text-slate-500">
           {getMyFurnitureUsageSignal(item)} • Added {formatDate(item.createdAt)}
         </div>
