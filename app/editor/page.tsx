@@ -32,6 +32,7 @@ import {
 import { DEFAULT_PX_PER_IN, skuFootprintInchesFromDims } from "@/lib/ikeaSizing";
 import { blobToDataUrl, readClipboardImageWithStatus } from "@/lib/readClipboardImage";
 import { hashDataUrlForLogs } from "@/lib/pasteToPlaceDebug";
+import { PrepareRoomImageError, prepareRoomImageForUpload } from "@/lib/prepareRoomImageForUpload";
 
 import { getSupabaseBrowserAccessToken, supabaseBrowser } from "@/lib/supabaseBrowser";
 import { useTokenBalance } from "@/hooks/useTokenBalance";
@@ -1466,6 +1467,8 @@ function EditorPageInner() {
   const roomPhotoCanvasDragDepthRef = useRef(0);
 
   const [isUploading, setIsUploading] = useState(false);
+  const [isOptimizingRoomImage, setIsOptimizingRoomImage] = useState(false);
+  const [roomPhotoUploadError, setRoomPhotoUploadError] = useState<string | null>(null);
   const [isRoomHydrating, setIsRoomHydrating] = useState(false);
   const [canvasPresentation, setCanvasPresentation] = useState<CanvasPresentationState>({
     frameAspectRatio: null,
@@ -2701,6 +2704,7 @@ function EditorPageInner() {
 
   const isImageFile = (file: File | null | undefined) =>
     !!file && typeof file.type === "string" && file.type.startsWith("image/");
+  const isPreparingRoomPhotoUpload = isUploading || isOptimizingRoomImage;
 
   const hasDraggedImageFile = (dataTransfer: DataTransfer | null) => {
     if (!dataTransfer) return false;
@@ -2716,14 +2720,34 @@ function EditorPageInner() {
 
   const handleRoomPhotoFile = async (file: File) => {
     if (!isImageFile(file)) {
-      pushSnack("Please choose an image file.");
+      const message = "Please upload a JPG, PNG, or WebP image.";
+      setRoomPhotoUploadError(message);
+      pushSnack(message);
       return;
+    }
+
+    setRoomPhotoUploadError(null);
+    let uploadFile: File;
+
+    setIsOptimizingRoomImage(true);
+    try {
+      uploadFile = await prepareRoomImageForUpload(file);
+    } catch (err: unknown) {
+      const message =
+        err instanceof PrepareRoomImageError
+          ? err.message
+          : "We couldn’t process this image. Try a smaller or lower-resolution photo.";
+      setRoomPhotoUploadError(message);
+      pushSnack(message);
+      return;
+    } finally {
+      setIsOptimizingRoomImage(false);
     }
 
     resetWorkflowForIncomingImage();
 
     // 1) Instant preview (blob)
-    setBaseImageFromFile(file);
+    setBaseImageFromFile(uploadFile);
     pushSnack("Room photo added. Uploading securely...");
 
     // 2) Upload to storage + swap to signed URL (kills blob in payload)
@@ -2749,7 +2773,7 @@ function EditorPageInner() {
 
       const sceneId = useEditorStore.getState().scene.sceneId;
       const up = await uploadBaseImageToStorage({
-        file,
+        file: uploadFile,
         sceneId,
         selectedModel,
         aspectRatio: currentAspectRatioForUpload,
@@ -2773,7 +2797,9 @@ function EditorPageInner() {
       console.error(err);
       setVibodeRoomId(null);
       setRoomBaseAssetId(null);
-      pushSnack("Upload didn't finish. Keeping your local preview for now.");
+      const message = "Upload didn't finish. Keeping your local preview for now.";
+      setRoomPhotoUploadError(message);
+      pushSnack(message);
     } finally {
       setIsUploading(false);
     }
@@ -5697,9 +5723,9 @@ function EditorPageInner() {
               <input
                 ref={roomPhotoUploadInputRef}
                 type="file"
-                accept="image/*"
+                accept="image/jpeg,image/png,image/webp"
                 className="hidden"
-                disabled={isUploading}
+                disabled={isPreparingRoomPhotoUpload}
                 onChange={handleRoomPhotoInputChange}
               />
 
@@ -5868,17 +5894,24 @@ function EditorPageInner() {
                     <button
                       type="button"
                       className={`mt-6 rounded-md border px-4 py-2 text-sm font-medium transition ${
-                        isUploading
+                        isPreparingRoomPhotoUpload
                           ? "cursor-not-allowed border-neutral-700 bg-neutral-800 text-neutral-500"
                           : "border-blue-600/80 bg-blue-900/50 text-blue-100 hover:bg-blue-800/60"
                       }`}
-                      disabled={isUploading}
+                      disabled={isPreparingRoomPhotoUpload}
                       onClick={() => roomPhotoUploadInputRef.current?.click()}
                     >
-                      {isUploading ? "Uploading…" : "Upload Photo"}
+                      {isOptimizingRoomImage
+                        ? "Optimizing your image..."
+                        : isUploading
+                          ? "Uploading…"
+                          : "Upload Photo"}
                     </button>
 
                     <div className="mt-3 text-xs text-neutral-400">or drag & drop an image</div>
+                    {roomPhotoUploadError && (
+                      <div className="mt-2 text-xs text-rose-300">{roomPhotoUploadError}</div>
+                    )}
                   </div>
                 </div>
               )}
@@ -6580,7 +6613,7 @@ function EditorPageInner() {
                   <div className="text-xs text-neutral-400">Upload Image</div>
                   <input
                     type="file"
-                    accept="image/*"
+                    accept="image/jpeg,image/png,image/webp"
                     onChange={onUploadedProductImageChange}
                     className="mt-1 block w-full text-xs text-neutral-300 file:mr-3 file:rounded-md file:border file:border-neutral-800 file:bg-neutral-950 file:px-2 file:py-1.5 file:text-xs file:text-neutral-200 hover:file:bg-neutral-800"
                   />
@@ -6712,18 +6745,28 @@ function EditorPageInner() {
                 <div className="mt-1 flex items-center gap-2">
                   <label
                     className={`cursor-pointer rounded-md border px-3 py-2 text-sm ${
-                      isUploading
+                      isPreparingRoomPhotoUpload
                         ? "border-neutral-900 bg-neutral-950 text-neutral-500"
                         : "border-neutral-800 bg-neutral-950 hover:bg-neutral-800"
                     }`}
-                    title={isUploading ? "Uploading…" : "Upload"}
+                    title={
+                      isOptimizingRoomImage
+                        ? "Optimizing your image..."
+                        : isUploading
+                          ? "Uploading..."
+                          : "Upload"
+                    }
                   >
-                    {isUploading ? "Uploading…" : "Upload…"}
+                    {isOptimizingRoomImage
+                      ? "Optimizing your image..."
+                      : isUploading
+                        ? "Uploading…"
+                        : "Upload…"}
                     <input
                       type="file"
-                      accept="image/*"
+                      accept="image/jpeg,image/png,image/webp"
                       className="hidden"
-                      disabled={isUploading}
+                      disabled={isPreparingRoomPhotoUpload}
                       onChange={handleRoomPhotoInputChange}
                     />
                   </label>
@@ -6769,6 +6812,9 @@ function EditorPageInner() {
                     ? "Source: Signed URL (storage) ✅"
                     : "Source: —"}
                 </div>
+                {roomPhotoUploadError && (
+                  <div className="mt-2 text-xs text-rose-300">{roomPhotoUploadError}</div>
+                )}
               </div>
 
               {/* Viewport debug */}
