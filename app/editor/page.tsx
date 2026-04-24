@@ -4277,6 +4277,12 @@ function EditorPageInner() {
         preparedResult && preparedResult.status === "ready"
           ? preparedResult.source
           : activePasteSourceRef.current;
+      pushSnack(`DEBUG source after placement: ${resolvedSource?.type ?? "null"}`);
+      if (resolvedSource?.type === "product_url") {
+        pushSnack(
+          `DEBUG product_url source: preparedOnly=${String(resolvedSource.preparedOnly)} saved=${String(Boolean(resolvedSource.preparedProduct.savedFurnitureId))}`
+        );
+      }
       if (!resolvedSource) {
         pushSnack("Copy a product image, paste a product link, or choose an item from My Furniture first.");
         setPasteToPlaceStatus(null);
@@ -4287,12 +4293,13 @@ function EditorPageInner() {
       try {
         if (isOperationStale("execute:before_edit_run")) return false;
         setPasteToPlaceStatus("placing");
+        const sourceForPlacement = resolvedSource;
         const res = await runEdit(
           action,
           {
-            target: { skuId: resolvedSource.skuId },
+            target: { skuId: sourceForPlacement.skuId },
             params: { x: xNorm, y: yNorm },
-            eligibleSkus: resolvedSource.preparedProduct.eligibleSkus,
+            eligibleSkus: sourceForPlacement.preparedProduct.eligibleSkus,
             placements: scenePlacements,
           },
           {
@@ -4309,12 +4316,13 @@ function EditorPageInner() {
           return true;
         }
 
+        pushSnack("DEBUG reached post-placement persistence block");
         let savedFurnitureId =
-          resolvedSource.type === "product_url" && resolvedSource.preparedOnly
+          sourceForPlacement.type === "product_url" && sourceForPlacement.preparedOnly
             ? null
-            : resolvedSource.preparedProduct.savedFurnitureId ?? null;
-        if (resolvedSource.type === "product_url" && !savedFurnitureId) {
-          const persistedFurnitureId = await savePreparedProductUrlToMyFurniture(resolvedSource);
+            : sourceForPlacement.preparedProduct.savedFurnitureId ?? null;
+        if (sourceForPlacement.type === "product_url" && !savedFurnitureId) {
+          const persistedFurnitureId = await savePreparedProductUrlToMyFurniture(sourceForPlacement);
           if (persistedFurnitureId) {
             savedFurnitureId = persistedFurnitureId;
           } else {
