@@ -4127,7 +4127,6 @@ function EditorPageInner() {
 
   const savePreparedProductUrlToMyFurniture = useCallback(
     async (source: Extract<ActivePasteSource, { type: "product_url" }>): Promise<string | null> => {
-      pushSnack("DEBUG: saving product URL to My Furniture...");
       // Prepare-only product_url sources must always persist after placement, even if
       // upstream prepare payloads accidentally carry furniture identifiers.
       if (!source.preparedOnly && source.preparedProduct.savedFurnitureId) {
@@ -4143,15 +4142,6 @@ function EditorPageInner() {
           previewImageUrl: source.normalizedPreviewUrl,
           prepareOnly: false,
         };
-        console.debug("[editor][product-url-save-after-placement] request", {
-          userSkuId: source.userSkuId,
-          sourceType: requestBody.sourceType,
-          hasSourceUrl: typeof source.sourceUrl === "string" && source.sourceUrl.trim().length > 0,
-          hasDisplayName: typeof source.displayName === "string" && source.displayName.trim().length > 0,
-          hasPreviewImageUrl:
-            typeof source.normalizedPreviewUrl === "string" && source.normalizedPreviewUrl.trim().length > 0,
-          hasAccessToken: Boolean(accessToken),
-        });
         const res = await fetch("/api/vibode/my-furniture/save", {
           method: "POST",
           headers: {
@@ -4161,38 +4151,18 @@ function EditorPageInner() {
           },
           body: JSON.stringify(requestBody),
         });
-        pushSnack(`DEBUG: product URL save response ${res.status}`);
         const json = (await res.json().catch(() => ({}))) as PasteToPlaceProductUrlSaveResponse;
         const code =
           typeof json.code === "string" && json.code.trim().length > 0 ? json.code.trim() : null;
         const error =
           typeof json.error === "string" && json.error.trim().length > 0 ? json.error.trim() : null;
-        console.debug("[editor][product-url-save-after-placement] response", {
-          status: res.status,
-          ok: res.ok,
-          code,
-          error,
-        });
         if (!res.ok) {
-          console.warn("[editor][product-url-save-after-placement] save failed", {
-            status: res.status,
-            code,
-            error,
-          });
           return null;
         }
         const savedFurnitureId = parseProductUrlSaveFurnitureId(json);
-        console.debug("[editor][product-url-save-after-placement] parsed", {
-          savedFurnitureId,
-        });
         if (!savedFurnitureId) {
-          pushSnack("DEBUG: product URL save missing furniture ID");
-          console.warn("[editor][product-url-save-after-placement] missing_saved_furniture_id", {
-            responseKeys: Object.keys(json ?? {}),
-          });
           return null;
         }
-        pushSnack("DEBUG: product URL saved to My Furniture");
         const currentSource = activePasteSourceRef.current;
         if (
           currentSource?.type === "product_url" &&
@@ -4213,11 +4183,7 @@ function EditorPageInner() {
           );
         }
         return savedFurnitureId;
-      } catch (err) {
-        pushSnack("DEBUG: product URL save exception");
-        console.warn("[editor][product-url-save-after-placement] exception", {
-          message: err instanceof Error ? err.message : String(err),
-        });
+      } catch {
         return null;
       }
     },
@@ -4277,12 +4243,6 @@ function EditorPageInner() {
         preparedResult && preparedResult.status === "ready"
           ? preparedResult.source
           : activePasteSourceRef.current;
-      pushSnack(`DEBUG source after placement: ${resolvedSource?.type ?? "null"}`);
-      if (resolvedSource?.type === "product_url") {
-        pushSnack(
-          `DEBUG product_url source: preparedOnly=${String(resolvedSource.preparedOnly)} saved=${String(Boolean(resolvedSource.preparedProduct.savedFurnitureId))}`
-        );
-      }
       if (!resolvedSource) {
         pushSnack("Copy a product image, paste a product link, or choose an item from My Furniture first.");
         setPasteToPlaceStatus(null);
@@ -4311,10 +4271,7 @@ function EditorPageInner() {
             },
           }
         );
-        pushSnack(`DEBUG runEdit result: ${String(Boolean(res))}`);
-        pushSnack(`DEBUG runEdit type: ${typeof res}`);
         const isAfterEditStale = isOperationStale("execute:after_edit_run");
-        pushSnack(`DEBUG after_edit_run stale=${String(isAfterEditStale)}`);
         const shouldPersistProductUrlAfterStale =
           Boolean(res) &&
           sourceForPlacement.type === "product_url" &&
@@ -4325,7 +4282,6 @@ function EditorPageInner() {
           return true;
         }
 
-        pushSnack("DEBUG reached post-placement persistence block");
         let savedFurnitureId =
           sourceForPlacement.type === "product_url" && sourceForPlacement.preparedOnly
             ? null
