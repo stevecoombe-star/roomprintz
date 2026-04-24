@@ -445,13 +445,19 @@ type PasteToPlaceClipboardPreparationResult =
   | { status: "no-image" }
   | { status: "blocked" }
   | { status: "failed"; reason?: string };
-type PasteToPlaceProductUrlIngestResponse = {
-  status?: string;
-  reason?: string;
-  message?: string;
-  error?: string;
-  userSku?: Partial<UserSku> | null;
-  savedFurniture?: unknown;
+type PasteToPlaceProductUrlPrepareResponse = {
+  prepared?: {
+    userSkuId?: unknown;
+    previewImageUrl?: unknown;
+    displayName?: unknown;
+    sourceUrl?: unknown;
+    sourceDomain?: unknown;
+    supplierName?: unknown;
+    parsedSourceDomain?: unknown;
+    parsedSupplierName?: unknown;
+  } | null;
+  code?: unknown;
+  error?: unknown;
 };
 type PasteToPlaceProductUrlSaveResponse = {
   item?: {
@@ -3965,7 +3971,7 @@ function EditorPageInner() {
 
     try {
       const accessToken = await tryGetSupabaseAccessToken();
-      const res = await fetch("/api/vibode/user-skus/ingest", {
+      const res = await fetch("/api/vibode/my-furniture/save", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -3974,12 +3980,12 @@ function EditorPageInner() {
           ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
         },
         body: JSON.stringify({
-          imageUrl: normalizedUrl,
           sourceType: "product_url",
-          label: "Pasted Product",
+          sourceUrl: normalizedUrl,
+          prepareOnly: true,
         }),
       });
-      const json = (await res.json().catch(() => ({}))) as PasteToPlaceProductUrlIngestResponse;
+      const json = (await res.json().catch(() => ({}))) as PasteToPlaceProductUrlPrepareResponse;
       if (!res.ok) {
         pushSnack(
           "We couldn't prepare that product link. Try copying the product image instead."
@@ -3987,82 +3993,53 @@ function EditorPageInner() {
         return;
       }
 
-      const userSku = json.userSku;
-      const ingestStatus = typeof json.status === "string" ? json.status : null;
-      const failureReasonFromPayload =
-        typeof json.reason === "string" && json.reason.trim().length > 0
-          ? json.reason
-          : typeof json.message === "string" && json.message.trim().length > 0
-            ? json.message
-            : null;
-      const rawVariants = Array.isArray(userSku?.variants) ? userSku.variants : [];
-      const variants = rawVariants
-        .map((variant) => {
-          if (typeof variant === "string" && variant.trim().length > 0) return variant;
-          if (isRecord(variant) && typeof variant.imageUrl === "string" && variant.imageUrl.trim().length > 0) {
-            return variant.imageUrl;
-          }
-          return null;
-        })
-        .filter((variant): variant is string => Boolean(variant));
+      const prepared = isRecord(json.prepared) ? json.prepared : null;
       const userSkuId =
-        typeof userSku?.skuId === "string" && userSku.skuId.trim().length > 0
-          ? userSku.skuId.trim()
+        prepared && typeof prepared.userSkuId === "string" && prepared.userSkuId.trim().length > 0
+          ? prepared.userSkuId.trim()
           : null;
-      const failureReason =
-        ingestStatus === "failed"
-          ? failureReasonFromPayload ?? "ingest-status-failed"
-          : !userSku
-            ? "missing-userSku"
-            : userSku.status === "failed"
-              ? userSku.reason ?? "userSku-status-failed"
-              : userSku.status !== "ready"
-                ? `invalid-userSku-status:${String(userSku.status)}`
-                : !userSkuId
-                  ? "missing-skuId"
-                  : variants.length === 0
-                    ? "empty-variants"
-                    : null;
-      if (failureReason || !userSkuId) {
+      const normalizedPreviewUrl =
+        prepared &&
+        typeof prepared.previewImageUrl === "string" &&
+        prepared.previewImageUrl.trim().length > 0
+          ? prepared.previewImageUrl.trim()
+          : null;
+      if (!userSkuId || !normalizedPreviewUrl) {
         pushSnack(
           "We couldn't prepare that product link. Try copying the product image instead."
         );
         return;
       }
-      const readyUserSku = userSku as UserSku;
       // Product URL source replaces clipboard provisional previews immediately.
       lastSurfacedProvisionalClipboardPreviewHashRef.current = null;
       suppressedPasteToPlaceMenuClipboardPreviewHashRef.current = null;
       setPendingFurnitureClipboardSuppressionHash(null);
 
-      const normalizedPreviewUrl =
-        variants.find(
-          (imageUrl): imageUrl is string =>
-            typeof imageUrl === "string" && imageUrl.trim().length > 0
-        ) ??
-        null;
-      if (!normalizedPreviewUrl) {
-        pushSnack(
-          "We couldn't prepare that product link. Try copying the product image instead."
-        );
-        return;
-      }
-
       const sourceUrl =
-        typeof readyUserSku.sourceUrl === "string" && readyUserSku.sourceUrl.trim().length > 0
-          ? readyUserSku.sourceUrl
+        prepared && typeof prepared.sourceUrl === "string" && prepared.sourceUrl.trim().length > 0
+          ? prepared.sourceUrl.trim()
           : normalizedUrl;
-      const domain = getDomainFromUrl(sourceUrl);
-      const supplier = domain;
+      const domain =
+        prepared && typeof prepared.sourceDomain === "string" && prepared.sourceDomain.trim().length > 0
+          ? prepared.sourceDomain.trim()
+          : prepared && typeof prepared.parsedSourceDomain === "string" && prepared.parsedSourceDomain.trim().length > 0
+            ? prepared.parsedSourceDomain.trim()
+            : getDomainFromUrl(sourceUrl);
+      const supplier =
+        prepared && typeof prepared.supplierName === "string" && prepared.supplierName.trim().length > 0
+          ? prepared.supplierName.trim()
+          : prepared && typeof prepared.parsedSupplierName === "string" && prepared.parsedSupplierName.trim().length > 0
+            ? prepared.parsedSupplierName.trim()
+            : domain;
       const displayName =
-        typeof readyUserSku.label === "string" && readyUserSku.label.trim().length > 0
-          ? readyUserSku.label.trim()
+        prepared && typeof prepared.displayName === "string" && prepared.displayName.trim().length > 0
+          ? prepared.displayName.trim()
           : "Pasted Product";
       const productUrlEligibleSku: VibodeEligibleSku = {
         skuId: userSkuId,
         label: displayName,
         source: "user",
-        variants: variants.map((imageUrl) => ({ imageUrl })),
+        variants: [{ imageUrl: normalizedPreviewUrl }],
       };
 
       const preparedProduct: PasteToPlacePreparedProduct = {

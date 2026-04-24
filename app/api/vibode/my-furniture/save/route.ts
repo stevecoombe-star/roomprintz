@@ -89,6 +89,16 @@ function asOptionalNumber(value: unknown): number | null {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
+function asOptionalBoolean(value: unknown): boolean | null {
+  if (typeof value === "boolean") return value;
+  if (typeof value === "string") {
+    const trimmed = value.trim().toLowerCase();
+    if (trimmed === "1" || trimmed === "true") return true;
+    if (trimmed === "0" || trimmed === "false") return false;
+  }
+  return null;
+}
+
 function safeRecord(value: unknown): UnknownRecord | null {
   return value && typeof value === "object" ? (value as UnknownRecord) : null;
 }
@@ -726,6 +736,12 @@ function logSaveEvent(
   console.info(message);
 }
 
+function shouldSkipMyFurnitureAutosave(req: NextRequest): boolean {
+  const flag = asOptionalString(req.headers.get(INGEST_SKIP_MY_FURNITURE_AUTOSAVE_HEADER));
+  if (!flag) return false;
+  return flag === "1" || flag.toLowerCase() === "true";
+}
+
 function getIngestedImageResult(payload: unknown): IngestedImageResult {
   const record = safeRecord(payload);
   if (!record) return { userSkuId: null, previewImageUrl: null, displayName: null };
@@ -827,10 +843,10 @@ export async function POST(req: NextRequest) {
     }
 
     const body = await req.json().catch(() => null);
-    const userSkuId = asOptionalString((body as { userSkuId?: unknown } | null)?.userSkuId);
-    if (!userSkuId) {
-      return Response.json({ error: "userSkuId is required." }, { status: 400 });
-    }
+    const userSkuIdFromBody = asOptionalString((body as { userSkuId?: unknown } | null)?.userSkuId);
+    const prepareOnlyFromBody = asOptionalBoolean((body as { prepareOnly?: unknown } | null)?.prepareOnly) ?? false;
+    const skipMyFurnitureAutosave = shouldSkipMyFurnitureAutosave(req);
+    const prepareOnly = skipMyFurnitureAutosave || prepareOnlyFromBody;
 
     const displayName = asOptionalString((body as { displayName?: unknown } | null)?.displayName);
     const previewImageUrl = asOptionalString((body as { previewImageUrl?: unknown } | null)?.previewImageUrl);
@@ -847,7 +863,7 @@ export async function POST(req: NextRequest) {
     let nextDisplayName = displayName;
     let nextPreviewImageUrl = previewImageUrl;
     let nextSourceUrl = sourceUrl;
-    let nextUserSkuId = userSkuId;
+    let nextUserSkuId = userSkuIdFromBody;
     let parsedDisplayName = displayName;
     let metadataPriceRawText: string | null = null;
     let metadataPriceNormalizedText: string | null = null;
@@ -1050,6 +1066,42 @@ export async function POST(req: NextRequest) {
       parsed_price_confidence: parsedPrice.confidence,
     });
     const parsedDimensions = parseDimensions(dimensionsText);
+
+    if (!nextUserSkuId) {
+      if (prepareOnly && isProductUrlFlow) {
+        logSaveEvent("warn", "product_url_prepare_missing_user_sku_id", requestId, {
+          prepare_only: true,
+        });
+        return Response.json(
+          {
+            code: "product_url_prepare_missing_user_sku_id",
+            error: "We couldn't prepare that product link. Try copying the product image instead.",
+          },
+          { status: 422 }
+        );
+      }
+      return Response.json({ error: "userSkuId is required." }, { status: 400 });
+    }
+
+    if (prepareOnly) {
+      logSaveEvent("info", "product_url_prepare_only_completed", requestId, {
+        prepare_only: true,
+        final_user_sku_id: nextUserSkuId,
+        has_preview_image_url: Boolean(asHttpUrl(nextPreviewImageUrl)),
+      });
+      return Response.json({
+        prepared: {
+          userSkuId: nextUserSkuId,
+          previewImageUrl: asHttpUrl(nextPreviewImageUrl),
+          displayName: asOptionalString(nextDisplayName) ?? DEFAULT_PASTED_PRODUCT_NAME,
+          sourceUrl: asOptionalString(nextSourceUrl),
+          sourceDomain: asOptionalString(parsedSourceDomain),
+          parsedSourceDomain: asOptionalString(parsedSourceDomain),
+          supplierName: asOptionalString(parsedSupplierName),
+          parsedSupplierName: asOptionalString(parsedSupplierName),
+        },
+      });
+    }
 
     logSaveEvent("info", "product_url_upsert_payload", requestId, {
       upsert_user_sku_id: nextUserSkuId,
