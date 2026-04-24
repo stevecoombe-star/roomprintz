@@ -118,12 +118,12 @@ export function MyFurniturePicker(props: MyFurniturePickerProps) {
                         props.onSelect(item);
                       }}
                     >
-                      <div className="aspect-[4/3] w-full overflow-hidden rounded-md border border-neutral-800 bg-neutral-950">
+                      <div className="aspect-[4/3] w-full overflow-hidden rounded-md border border-neutral-800 bg-[rgb(237,237,237)]">
                         {previewUrl ? (
                           <img
                             src={previewUrl}
                             alt={label}
-                            className="h-full w-full object-cover"
+                            className="h-full w-full object-contain p-3"
                             loading="lazy"
                           />
                         ) : (

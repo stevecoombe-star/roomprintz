@@ -294,9 +294,9 @@ export function MyFurnitureDrawer({
           </div>
         </div>
 
-        <div className="mt-4 overflow-hidden rounded-xl border border-slate-800 bg-slate-900">
+        <div className="mt-4 overflow-hidden rounded-xl border border-slate-800 bg-[rgb(237,237,237)]">
           {imageUrl ? (
-            <img src={imageUrl} alt={title} className="h-64 w-full object-cover" />
+            <img src={imageUrl} alt={title} className="h-64 w-full object-contain p-3" />
           ) : (
             <div className="flex h-64 items-center justify-center text-xs text-slate-500">No preview</div>
           )}

@@ -26,6 +26,9 @@ const SUPABASE_URL = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABAS
 const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "";
 const INGEST_SOURCE_HEADER = "x-roomprintz-ingest-source";
 const INGEST_SKIP_MY_FURNITURE_AUTOSAVE_HEADER = "x-roomprintz-skip-my-furniture-autosave";
+const NORMALIZED_PREVIEW_BG_RGB = [237, 237, 237] as const;
+const NORMALIZED_PREVIEW_BG_HEADER = "x-roomprintz-normalized-preview-bg-rgb";
+const NORMALIZED_PREVIEW_BG_MODE_HEADER = "x-roomprintz-normalized-preview-bg-mode";
 const INGEST_ROUTE = "/api/vibode/user-skus/ingest";
 
 function safeString(value: unknown): string | null {
@@ -255,12 +258,21 @@ export async function POST(req: NextRequest) {
       headers: {
         "Content-Type": "application/json",
         "X-Request-Id": requestId,
+        [NORMALIZED_PREVIEW_BG_HEADER]: NORMALIZED_PREVIEW_BG_RGB.join(","),
+        [NORMALIZED_PREVIEW_BG_MODE_HEADER]: "fixed",
         ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
       },
       body: JSON.stringify({
         imageUrl: body.imageUrl,
         imageBase64: body.imageBase64,
         label: body.label,
+        normalization: {
+          // Explicitly request a fixed neutral canvas for normalized previews.
+          previewBackgroundMode: "fixed",
+          previewBackgroundRgb: [...NORMALIZED_PREVIEW_BG_RGB],
+          disableSampledBackground: true,
+          disableDominantBackground: true,
+        },
       }),
     });
 
