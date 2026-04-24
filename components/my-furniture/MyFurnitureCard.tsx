@@ -55,7 +55,7 @@ export function MyFurnitureCard({
       }}
     >
       <div className="relative">
-        <div className="relative aspect-[4/3] w-full overflow-hidden rounded-2xl border border-slate-800/70 bg-[rgb(237,237,237)]">
+        <div className="relative aspect-[4/3] w-full overflow-hidden rounded-xl bg-[rgb(237,237,237)] ring-1 ring-black/5">
           {imageUrl ? (
             <img src={imageUrl} alt={title} className="h-full w-full object-contain p-3" loading="lazy" />
           ) : (
@@ -64,7 +64,7 @@ export function MyFurnitureCard({
             </div>
           )}
         </div>
-        <div className="pointer-events-none absolute inset-x-0 top-0 h-16 rounded-t-2xl bg-gradient-to-b from-black/10 to-transparent opacity-0 transition group-hover:opacity-100" />
+        <div className="pointer-events-none absolute inset-x-0 top-0 h-16 rounded-t-xl bg-gradient-to-b from-black/10 to-transparent opacity-0 transition group-hover:opacity-100" />
         <div className="absolute left-2 top-2 flex items-center gap-2">
           {selectionMode ? (
             <label

@@ -294,7 +294,7 @@ export function MyFurnitureDrawer({
           </div>
         </div>
 
-        <div className="mt-4 overflow-hidden rounded-xl border border-slate-800 bg-[rgb(237,237,237)]">
+        <div className="mt-4 overflow-hidden rounded-xl bg-[rgb(237,237,237)] ring-1 ring-black/5">
           {imageUrl ? (
             <img src={imageUrl} alt={title} className="h-64 w-full object-contain p-3" />
           ) : (

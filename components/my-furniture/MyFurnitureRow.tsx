@@ -70,9 +70,9 @@ export function MyFurnitureRow({
         ) : null}
       </div>
 
-      <div className="h-16 w-16 overflow-hidden rounded-md border border-slate-800/70 bg-[rgb(237,237,237)]">
+      <div className="h-16 w-16 overflow-hidden rounded-xl bg-[rgb(237,237,237)] ring-1 ring-black/5">
         {imageUrl ? (
-          <img src={imageUrl} alt={title} className="h-full w-full object-contain p-1.5" loading="lazy" />
+          <img src={imageUrl} alt={title} className="h-full w-full object-contain p-3" loading="lazy" />
         ) : (
           <div className="flex h-full w-full items-center justify-center text-[10px] text-slate-500">
             No preview
