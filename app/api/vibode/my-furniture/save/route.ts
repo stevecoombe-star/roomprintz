@@ -884,7 +884,33 @@ export async function POST(req: NextRequest) {
     });
 
     const isProductUrlFlow = sourceType === "product_url" && Boolean(sourceUrl);
-    if (isProductUrlFlow && sourceUrl) {
+    const canPromotePreparedProductUrl =
+      isProductUrlFlow &&
+      !prepareOnly &&
+      Boolean(userSkuIdFromBody) &&
+      Boolean(asHttpUrl(previewImageUrl));
+    if (canPromotePreparedProductUrl) {
+      logSaveEvent("info", "product_url_promote_prepared_without_reingest", requestId, {
+        has_user_sku_id: Boolean(userSkuIdFromBody),
+        has_preview_image_url: Boolean(asHttpUrl(previewImageUrl)),
+        has_source_url: Boolean(sourceUrl),
+        prepare_only: prepareOnly,
+      });
+      nextUserSkuId = userSkuIdFromBody;
+      nextPreviewImageUrl = previewImageUrl;
+      nextSourceUrl = sourceUrl;
+      if (!nextDisplayName && sourceUrl) {
+        const fallbackTitle = deriveDisplayNameFromProductUrl(sourceUrl);
+        if (fallbackTitle) {
+          nextDisplayName = fallbackTitle;
+          logSaveEvent("info", "fallback_title_generated", requestId, {
+            fallback_title: fallbackTitle,
+            source: "source_url_slug",
+          });
+        }
+      }
+      parsedDisplayName = nextDisplayName;
+    } else if (isProductUrlFlow && sourceUrl) {
       logSaveEvent("info", "product_url_flow_started", requestId, {
         has_source_url: Boolean(sourceUrl),
       });

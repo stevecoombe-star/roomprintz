@@ -4311,7 +4311,16 @@ function EditorPageInner() {
             },
           }
         );
-        if (isOperationStale("execute:after_edit_run")) return false;
+        pushSnack(`DEBUG runEdit result: ${String(Boolean(res))}`);
+        pushSnack(`DEBUG runEdit type: ${typeof res}`);
+        const isAfterEditStale = isOperationStale("execute:after_edit_run");
+        pushSnack(`DEBUG after_edit_run stale=${String(isAfterEditStale)}`);
+        const shouldPersistProductUrlAfterStale =
+          Boolean(res) &&
+          sourceForPlacement.type === "product_url" &&
+          (sourceForPlacement.preparedOnly ||
+            !sourceForPlacement.preparedProduct.savedFurnitureId);
+        if (isAfterEditStale && !shouldPersistProductUrlAfterStale) return false;
         if (!res) {
           return true;
         }
@@ -4335,7 +4344,7 @@ function EditorPageInner() {
             action === "add" ? "added" : "swapped"
           );
         }
-        if (!isDevUnlockPasteToPlace) {
+        if (!isDevUnlockPasteToPlace && !isAfterEditStale) {
           setHasUsedFreePasteToPlace(true);
         }
         return true;
