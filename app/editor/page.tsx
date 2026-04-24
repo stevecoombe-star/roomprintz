@@ -401,6 +401,7 @@ type ActivePasteSource =
       type: "product_url";
       skuId: string;
       furnitureId: string | null;
+      preparedOnly: boolean;
       preparedProduct: PreparedProductLike;
       rawPreviewUrl: string | null;
       normalizedPreviewUrl: string | null;
@@ -4090,6 +4091,7 @@ function EditorPageInner() {
         type: "product_url",
         skuId: preparedProduct.skuId,
         furnitureId: null,
+        preparedOnly: true,
         preparedProduct,
         rawPreviewUrl: null,
         normalizedPreviewUrl,
@@ -4125,7 +4127,9 @@ function EditorPageInner() {
 
   const savePreparedProductUrlToMyFurniture = useCallback(
     async (source: Extract<ActivePasteSource, { type: "product_url" }>): Promise<string | null> => {
-      if (source.preparedProduct.savedFurnitureId) {
+      // Prepare-only product_url sources must always persist after placement, even if
+      // upstream prepare payloads accidentally carry furniture identifiers.
+      if (!source.preparedOnly && source.preparedProduct.savedFurnitureId) {
         return source.preparedProduct.savedFurnitureId;
       }
       try {
@@ -4195,6 +4199,7 @@ function EditorPageInner() {
             {
               ...currentSource,
               furnitureId: savedFurnitureId,
+              preparedOnly: false,
               preparedProduct: {
                 ...currentSource.preparedProduct,
                 savedFurnitureId,
@@ -4299,7 +4304,10 @@ function EditorPageInner() {
           return true;
         }
 
-        let savedFurnitureId = resolvedSource.preparedProduct.savedFurnitureId ?? null;
+        let savedFurnitureId =
+          resolvedSource.type === "product_url" && resolvedSource.preparedOnly
+            ? null
+            : resolvedSource.preparedProduct.savedFurnitureId ?? null;
         if (resolvedSource.type === "product_url" && !savedFurnitureId) {
           const persistedFurnitureId = await savePreparedProductUrlToMyFurniture(resolvedSource);
           if (persistedFurnitureId) {
