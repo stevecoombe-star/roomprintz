@@ -42,6 +42,7 @@ const USER_SKU_MAX_INPUT_BYTES = 12 * 1024 * 1024;
 const VIBODE_MODEL_STORAGE_KEY = "vibode:modelVersion";
 const FREE_PASTE_TO_PLACE_SESSION_KEY = "vibode:hasUsedFreePasteToPlace";
 const PASTE_TO_PLACE_CLIPBOARD_HEADS_UP_SESSION_KEY = "vibode:pasteToPlaceClipboardHeadsUpShown";
+const EDITOR_RIGHT_PANEL_STATE_KEY = "vibode.editor.rightPanelState.v1";
 const VIBODE_MODEL_NBP = "NBP";
 const VIBODE_MODEL_NB2 = "NB2";
 const ROOM_PREPARING_MESSAGE = "Your room is still preparing. Try again in a moment.";
@@ -212,6 +213,15 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object";
 }
 
+function isEditorRightPanelsState(value: unknown): value is EditorRightPanelsState {
+  if (!isRecord(value)) return false;
+  return (
+    typeof value.workflow === "boolean" &&
+    typeof value.editTools === "boolean" &&
+    typeof value.versions === "boolean"
+  );
+}
+
 function buildTokenUsageMessage(payload: unknown, fallbackCost = DEFAULT_ACTION_TOKEN_COST): string {
   const safeFallback = Number.isFinite(fallbackCost) ? Math.max(1, Math.round(fallbackCost)) : 1;
   let tokenCost = safeFallback;
@@ -258,6 +268,23 @@ type StageRunStatus = "idle" | "running" | "success" | "error";
 type DeclutterMode = "off" | "light" | "heavy";
 type VibodeModelVersion = typeof VIBODE_MODEL_NBP | typeof VIBODE_MODEL_NB2;
 type VibodeAspectRatio = "auto" | "4:3" | "3:2" | "16:9" | "1:1";
+type EditorRightPanelsState = {
+  workflow: boolean;
+  editTools: boolean;
+  versions: boolean;
+};
+
+const DEFAULT_PANELS_STATE: EditorRightPanelsState = {
+  workflow: false,
+  editTools: false,
+  versions: false,
+};
+
+const EXPANDED_PANELS_STATE: EditorRightPanelsState = {
+  workflow: true,
+  editTools: true,
+  versions: true,
+};
 type PasteToPlaceStatus = "reading" | "preparing" | "placing";
 type Stage4Action =
   | "style_room"
@@ -1394,8 +1421,8 @@ function EditorPageInner() {
   const [swapOpen, setSwapOpen] = useState(false);
   const [swapTargetId, setSwapTargetId] = useState<string | null>(null);
   const [swapPickerOpen, setSwapPickerOpen] = useState(false);
-  const [isEditToolsCollapsed, setIsEditToolsCollapsed] = useState(false);
-  const [isVersionsCollapsed, setIsVersionsCollapsed] = useState(false);
+  const [panels, setPanels] = useState<EditorRightPanelsState>(DEFAULT_PANELS_STATE);
+  const [hasLoadedPanelsFromStorage, setHasLoadedPanelsFromStorage] = useState(false);
   const [isPasteProductImageCollapsed, setIsPasteProductImageCollapsed] = useState(false);
   const [isSetupCollapsed, setIsSetupCollapsed] = useState(false);
   const [isCalibrationCollapsed, setIsCalibrationCollapsed] = useState(false);
@@ -1403,17 +1430,41 @@ function EditorPageInner() {
   const [selectedModel, setSelectedModel] = useState<VibodeModelVersion>(VIBODE_MODEL_NBP);
   const [deleteVersionTarget, setDeleteVersionTarget] = useState<VibodeRoomAsset | null>(null);
   const [deletingVersionId, setDeletingVersionId] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
+      const raw = window.localStorage.getItem(EDITOR_RIGHT_PANEL_STATE_KEY);
+      if (!raw) return;
+      const parsed = JSON.parse(raw) as unknown;
+      if (isEditorRightPanelsState(parsed)) {
+        setPanels(parsed);
+      }
+    } catch {
+      // Ignore storage/parse errors and keep default collapsed panel state.
+    } finally {
+      setHasLoadedPanelsFromStorage(true);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined" || !hasLoadedPanelsFromStorage) return;
+    try {
+      window.localStorage.setItem(EDITOR_RIGHT_PANEL_STATE_KEY, JSON.stringify(panels));
+    } catch {
+      // Ignore storage write errors.
+    }
+  }, [hasLoadedPanelsFromStorage, panels]);
+
   const collapseAllRightPanels = () => {
-    setIsVersionsCollapsed(true);
+    setPanels(DEFAULT_PANELS_STATE);
     setIsSetupCollapsed(true);
-    setIsEditToolsCollapsed(true);
     setIsPasteProductImageCollapsed(true);
     setIsCalibrationCollapsed(true);
   };
   const expandAllRightPanels = () => {
-    setIsVersionsCollapsed(false);
+    setPanels(EXPANDED_PANELS_STATE);
     setIsSetupCollapsed(false);
-    setIsEditToolsCollapsed(false);
     setIsPasteProductImageCollapsed(false);
     setIsCalibrationCollapsed(false);
   };
@@ -5934,55 +5985,90 @@ function EditorPageInner() {
         <aside className="h-full w-[340px] border-l border-neutral-800 bg-neutral-950">
           <div className="h-full overflow-y-auto">
             <div className="space-y-4 p-4">
+              <div className="flex justify-end gap-2 border-b border-neutral-800 pb-3">
+                <button
+                  type="button"
+                  onClick={collapseAllRightPanels}
+                  className="rounded-md border border-neutral-800 bg-neutral-900 px-2 py-1 text-xs text-neutral-300 opacity-70 hover:bg-neutral-800 hover:opacity-100"
+                >
+                  - Collapse All
+                </button>
+                <button
+                  type="button"
+                  onClick={expandAllRightPanels}
+                  className="rounded-md border border-neutral-800 bg-neutral-900 px-2 py-1 text-xs text-neutral-300 opacity-70 hover:bg-neutral-800 hover:opacity-100"
+                >
+                  + Expand All
+                </button>
+              </div>
             <div className="rounded-lg border border-neutral-800 bg-neutral-900 p-3">
-              <div className="text-sm font-medium">Workflow</div>
-              <div className="mt-1 text-xs text-neutral-400">Five-stage editor workflow skeleton.</div>
+              <div className="flex items-center justify-between">
+                <div className="text-sm font-medium">Workflow</div>
+                <button
+                  type="button"
+                  className="rounded-md border border-neutral-800 bg-neutral-950 px-2 py-1 text-xs text-neutral-300 hover:bg-neutral-800"
+                  aria-label={panels.workflow ? "Collapse Workflow panel" : "Expand Workflow panel"}
+                  aria-expanded={panels.workflow}
+                  aria-controls="workflow-panel-body"
+                  onClick={() =>
+                    setPanels((prev) => ({
+                      ...prev,
+                      workflow: !prev.workflow,
+                    }))
+                  }
+                >
+                  {panels.workflow ? "▾" : "▸"}
+                </button>
+              </div>
+              {panels.workflow ? (
+                <div id="workflow-panel-body">
+                  <div className="mt-1 text-xs text-neutral-400">Five-stage editor workflow skeleton.</div>
 
-              <div className="mt-3 grid grid-cols-5 gap-1">
-                {WORKFLOW_STAGES.map((stage) => (
-                  <button
-                    key={stage}
-                    type="button"
-                    onClick={() => {
-                      setActiveStage(stage);
-                    }}
-                    className={`rounded-md border px-2 py-1 text-xs ${
-                      activeStage === stage
-                        ? "border-neutral-600 bg-neutral-800 text-neutral-100"
-                        : "border-neutral-800 bg-neutral-950 text-neutral-300 hover:bg-neutral-800"
-                    }`}
-                  >
-                    {stage}
-                  </button>
-                ))}
-              </div>
+                  <div className="mt-3 grid grid-cols-5 gap-1">
+                    {WORKFLOW_STAGES.map((stage) => (
+                      <button
+                        key={stage}
+                        type="button"
+                        onClick={() => {
+                          setActiveStage(stage);
+                        }}
+                        className={`rounded-md border px-2 py-1 text-xs ${
+                          activeStage === stage
+                            ? "border-neutral-600 bg-neutral-800 text-neutral-100"
+                            : "border-neutral-800 bg-neutral-950 text-neutral-300 hover:bg-neutral-800"
+                        }`}
+                      >
+                        {stage}
+                      </button>
+                    ))}
+                  </div>
 
-              <div className="mt-2 text-xs text-neutral-500">
-                Status: {stageStatus[activeStage]} • Furniture pass: {hasFurniturePass ? "yes" : "no"}
-              </div>
-              <div className="mt-1 text-xs text-neutral-500">
-                Preview image: {getBaseImageLabel(previewImageUrl ?? scene.baseImageUrl)}
-              </div>
-              <div className="mt-1 text-xs text-neutral-500">
-                Working image: {workingImageUrl ? "ready" : "none"}
-              </div>
-              <TokenStatusNotice
-                lowThreshold={LOW_TOKEN_WARNING_THRESHOLD}
-                showGetMoreTokensCta
-                className="mt-3"
-              />
-              {isOutOfTokens ? (
-                <div className="mt-2 text-[11px] text-neutral-500">
-                  Stage and edit actions are paused until you top up.{" "}
-                  <Link href="/billing" className="text-neutral-300 underline underline-offset-2">
-                    Open billing
-                  </Link>
-                  .
-                </div>
-              ) : null}
+                  <div className="mt-2 text-xs text-neutral-500">
+                    Status: {stageStatus[activeStage]} • Furniture pass: {hasFurniturePass ? "yes" : "no"}
+                  </div>
+                  <div className="mt-1 text-xs text-neutral-500">
+                    Preview image: {getBaseImageLabel(previewImageUrl ?? scene.baseImageUrl)}
+                  </div>
+                  <div className="mt-1 text-xs text-neutral-500">
+                    Working image: {workingImageUrl ? "ready" : "none"}
+                  </div>
+                  <TokenStatusNotice
+                    lowThreshold={LOW_TOKEN_WARNING_THRESHOLD}
+                    showGetMoreTokensCta
+                    className="mt-3"
+                  />
+                  {isOutOfTokens ? (
+                    <div className="mt-2 text-[11px] text-neutral-500">
+                      Stage and edit actions are paused until you top up.{" "}
+                      <Link href="/billing" className="text-neutral-300 underline underline-offset-2">
+                        Open billing
+                      </Link>
+                      .
+                    </div>
+                  ) : null}
 
-              <div className="mt-3 rounded-md border border-neutral-800 bg-neutral-950 p-3">
-                <div className="text-sm font-medium">Stage {activeStage}</div>
+                  <div className="mt-3 rounded-md border border-neutral-800 bg-neutral-950 p-3">
+                    <div className="text-sm font-medium">Stage {activeStage}</div>
 
                 {activeStage === 1 ? (
                   <>
@@ -6190,23 +6276,9 @@ function EditorPageInner() {
                 <div className="mt-1 text-[11px] text-neutral-500">
                   This will use {activeStageTokenCostLabel}.
                 </div>
-              </div>
-            </div>
-            <div className="flex justify-end gap-2">
-              <button
-                type="button"
-                onClick={collapseAllRightPanels}
-                className="rounded-md border border-neutral-800 bg-neutral-900 px-2 py-1 text-xs text-neutral-300 hover:bg-neutral-800"
-              >
-                Collapse All
-              </button>
-              <button
-                type="button"
-                onClick={expandAllRightPanels}
-                className="rounded-md border border-neutral-800 bg-neutral-900 px-2 py-1 text-xs text-neutral-300 hover:bg-neutral-800"
-              >
-                Expand All
-              </button>
+                  </div>
+                </div>
+              ) : null}
             </div>
 
             <div className="rounded-lg border border-neutral-800 bg-neutral-900 p-3">
@@ -6215,19 +6287,20 @@ function EditorPageInner() {
                 <button
                   type="button"
                   className="rounded-md border border-neutral-800 bg-neutral-950 px-2 py-1 text-xs text-neutral-300 hover:bg-neutral-800"
-                  aria-label={
-                    isEditToolsCollapsed
-                      ? "Expand Edit Tools panel"
-                      : "Collapse Edit Tools panel"
-                  }
-                  aria-expanded={!isEditToolsCollapsed}
+                  aria-label={panels.editTools ? "Collapse Edit Tools panel" : "Expand Edit Tools panel"}
+                  aria-expanded={panels.editTools}
                   aria-controls="edit-tools-panel-body"
-                  onClick={() => setIsEditToolsCollapsed((prev) => !prev)}
+                  onClick={() =>
+                    setPanels((prev) => ({
+                      ...prev,
+                      editTools: !prev.editTools,
+                    }))
+                  }
                 >
-                  {isEditToolsCollapsed ? "▸" : "▾"}
+                  {panels.editTools ? "▾" : "▸"}
                 </button>
               </div>
-              {!isEditToolsCollapsed ? (
+              {panels.editTools ? (
                 <div id="edit-tools-panel-body">
                   {editWarning && (
                     <div className="mt-2 rounded-md border border-amber-900/60 bg-amber-950/30 px-2 py-1 text-xs text-amber-200">
@@ -6290,7 +6363,7 @@ function EditorPageInner() {
                     Click anywhere on the image to place the marker.
                   </div>
                 ) : null}
-              </div>
+            </div>
 
               <div className="mt-3">
                 <div className="text-xs text-neutral-400">Rotate</div>
@@ -6516,15 +6589,20 @@ function EditorPageInner() {
                 <button
                   type="button"
                   className="rounded-md border border-neutral-800 bg-neutral-950 px-2 py-1 text-xs text-neutral-300 hover:bg-neutral-800"
-                  aria-label={isVersionsCollapsed ? "Expand Versions panel" : "Collapse Versions panel"}
-                  aria-expanded={!isVersionsCollapsed}
+                  aria-label={panels.versions ? "Collapse Versions panel" : "Expand Versions panel"}
+                  aria-expanded={panels.versions}
                   aria-controls="versions-panel-body"
-                  onClick={() => setIsVersionsCollapsed((prev) => !prev)}
+                  onClick={() =>
+                    setPanels((prev) => ({
+                      ...prev,
+                      versions: !prev.versions,
+                    }))
+                  }
                 >
-                  {isVersionsCollapsed ? "▸" : "▾"}
+                  {panels.versions ? "▾" : "▸"}
                 </button>
               </div>
-              {!isVersionsCollapsed ? (
+              {panels.versions ? (
                 <div id="versions-panel-body" className="mt-3">
                   {versions.length === 0 ? (
                     <div className="rounded-md border border-dashed border-neutral-800 bg-neutral-950 px-3 py-2 text-xs text-neutral-500">
