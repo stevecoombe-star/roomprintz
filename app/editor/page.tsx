@@ -42,6 +42,7 @@ const USER_SKU_MAX_INPUT_BYTES = 12 * 1024 * 1024;
 const VIBODE_MODEL_STORAGE_KEY = "vibode:modelVersion";
 const FREE_PASTE_TO_PLACE_SESSION_KEY = "vibode:hasUsedFreePasteToPlace";
 const PASTE_TO_PLACE_CLIPBOARD_HEADS_UP_SESSION_KEY = "vibode:pasteToPlaceClipboardHeadsUpShown";
+const EDITOR_RIGHT_PANEL_STATE_KEY = "vibode.editor.rightPanelState.v1";
 const VIBODE_MODEL_NBP = "NBP";
 const VIBODE_MODEL_NB2 = "NB2";
 const ROOM_PREPARING_MESSAGE = "Your room is still preparing. Try again in a moment.";
@@ -212,6 +213,15 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object";
 }
 
+function isEditorRightPanelsState(value: unknown): value is EditorRightPanelsState {
+  if (!isRecord(value)) return false;
+  return (
+    typeof value.workflow === "boolean" &&
+    typeof value.editTools === "boolean" &&
+    typeof value.versions === "boolean"
+  );
+}
+
 function buildTokenUsageMessage(payload: unknown, fallbackCost = DEFAULT_ACTION_TOKEN_COST): string {
   const safeFallback = Number.isFinite(fallbackCost) ? Math.max(1, Math.round(fallbackCost)) : 1;
   let tokenCost = safeFallback;
@@ -258,6 +268,23 @@ type StageRunStatus = "idle" | "running" | "success" | "error";
 type DeclutterMode = "off" | "light" | "heavy";
 type VibodeModelVersion = typeof VIBODE_MODEL_NBP | typeof VIBODE_MODEL_NB2;
 type VibodeAspectRatio = "auto" | "4:3" | "3:2" | "16:9" | "1:1";
+type EditorRightPanelsState = {
+  workflow: boolean;
+  editTools: boolean;
+  versions: boolean;
+};
+
+const DEFAULT_PANELS_STATE: EditorRightPanelsState = {
+  workflow: false,
+  editTools: false,
+  versions: false,
+};
+
+const EXPANDED_PANELS_STATE: EditorRightPanelsState = {
+  workflow: true,
+  editTools: true,
+  versions: true,
+};
 type PasteToPlaceStatus = "reading" | "preparing" | "placing";
 type Stage4Action =
   | "style_room"
@@ -1394,11 +1421,8 @@ function EditorPageInner() {
   const [swapOpen, setSwapOpen] = useState(false);
   const [swapTargetId, setSwapTargetId] = useState<string | null>(null);
   const [swapPickerOpen, setSwapPickerOpen] = useState(false);
-  const [panels, setPanels] = useState({
-    workflow: true,
-    editTools: true,
-    versions: true,
-  });
+  const [panels, setPanels] = useState<EditorRightPanelsState>(DEFAULT_PANELS_STATE);
+  const [hasLoadedPanelsFromStorage, setHasLoadedPanelsFromStorage] = useState(false);
   const [isPasteProductImageCollapsed, setIsPasteProductImageCollapsed] = useState(false);
   const [isSetupCollapsed, setIsSetupCollapsed] = useState(false);
   const [isCalibrationCollapsed, setIsCalibrationCollapsed] = useState(false);
@@ -1406,22 +1430,40 @@ function EditorPageInner() {
   const [selectedModel, setSelectedModel] = useState<VibodeModelVersion>(VIBODE_MODEL_NBP);
   const [deleteVersionTarget, setDeleteVersionTarget] = useState<VibodeRoomAsset | null>(null);
   const [deletingVersionId, setDeletingVersionId] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
+      const raw = window.localStorage.getItem(EDITOR_RIGHT_PANEL_STATE_KEY);
+      if (!raw) return;
+      const parsed = JSON.parse(raw) as unknown;
+      if (isEditorRightPanelsState(parsed)) {
+        setPanels(parsed);
+      }
+    } catch {
+      // Ignore storage/parse errors and keep default collapsed panel state.
+    } finally {
+      setHasLoadedPanelsFromStorage(true);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined" || !hasLoadedPanelsFromStorage) return;
+    try {
+      window.localStorage.setItem(EDITOR_RIGHT_PANEL_STATE_KEY, JSON.stringify(panels));
+    } catch {
+      // Ignore storage write errors.
+    }
+  }, [hasLoadedPanelsFromStorage, panels]);
+
   const collapseAllRightPanels = () => {
-    setPanels({
-      workflow: false,
-      editTools: false,
-      versions: false,
-    });
+    setPanels(DEFAULT_PANELS_STATE);
     setIsSetupCollapsed(true);
     setIsPasteProductImageCollapsed(true);
     setIsCalibrationCollapsed(true);
   };
   const expandAllRightPanels = () => {
-    setPanels({
-      workflow: true,
-      editTools: true,
-      versions: true,
-    });
+    setPanels(EXPANDED_PANELS_STATE);
     setIsSetupCollapsed(false);
     setIsPasteProductImageCollapsed(false);
     setIsCalibrationCollapsed(false);
