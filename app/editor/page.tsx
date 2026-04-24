@@ -4127,6 +4127,7 @@ function EditorPageInner() {
 
   const savePreparedProductUrlToMyFurniture = useCallback(
     async (source: Extract<ActivePasteSource, { type: "product_url" }>): Promise<string | null> => {
+      pushSnack("DEBUG: saving product URL to My Furniture...");
       // Prepare-only product_url sources must always persist after placement, even if
       // upstream prepare payloads accidentally carry furniture identifiers.
       if (!source.preparedOnly && source.preparedProduct.savedFurnitureId) {
@@ -4160,6 +4161,7 @@ function EditorPageInner() {
           },
           body: JSON.stringify(requestBody),
         });
+        pushSnack(`DEBUG: product URL save response ${res.status}`);
         const json = (await res.json().catch(() => ({}))) as PasteToPlaceProductUrlSaveResponse;
         const code =
           typeof json.code === "string" && json.code.trim().length > 0 ? json.code.trim() : null;
@@ -4184,11 +4186,13 @@ function EditorPageInner() {
           savedFurnitureId,
         });
         if (!savedFurnitureId) {
+          pushSnack("DEBUG: product URL save missing furniture ID");
           console.warn("[editor][product-url-save-after-placement] missing_saved_furniture_id", {
             responseKeys: Object.keys(json ?? {}),
           });
           return null;
         }
+        pushSnack("DEBUG: product URL saved to My Furniture");
         const currentSource = activePasteSourceRef.current;
         if (
           currentSource?.type === "product_url" &&
@@ -4210,6 +4214,7 @@ function EditorPageInner() {
         }
         return savedFurnitureId;
       } catch (err) {
+        pushSnack("DEBUG: product URL save exception");
         console.warn("[editor][product-url-save-after-placement] exception", {
           message: err instanceof Error ? err.message : String(err),
         });

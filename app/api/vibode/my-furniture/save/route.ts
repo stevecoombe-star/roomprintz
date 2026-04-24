@@ -1103,6 +1103,15 @@ export async function POST(req: NextRequest) {
       });
     }
 
+    if (isProductUrlFlow) {
+      logSaveEvent("info", "product_url_durable_save_requested", requestId, {
+        prepare_only: prepareOnly,
+        has_user_sku_id: Boolean(nextUserSkuId),
+        has_preview_image_url: Boolean(asHttpUrl(nextPreviewImageUrl)),
+        has_source_url: Boolean(asOptionalString(nextSourceUrl)),
+      });
+    }
+
     logSaveEvent("info", "product_url_upsert_payload", requestId, {
       upsert_user_sku_id: nextUserSkuId,
       upsert_parsed_price_text: effectivePriceText,
