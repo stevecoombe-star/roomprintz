@@ -656,6 +656,10 @@ export function MyFurniturePageClient() {
           onClose={() => setSelectedItem(null)}
           onUseInRoom={(itemId) => handleUseInRoom(itemId, "drawer")}
           onDelete={handleDeleteItem}
+          onUpdated={async () => {
+            await refresh();
+            await fetchFolders();
+          }}
           isActing={actingItemId === selectedItem?.id}
         />
       </div>

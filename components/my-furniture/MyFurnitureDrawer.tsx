@@ -19,6 +19,7 @@ type MyFurnitureDrawerProps = {
   onClose: () => void;
   onUseInRoom: (itemId: string) => void;
   onDelete: (itemId: string) => void;
+  onUpdated?: () => Promise<void> | void;
   isActing?: boolean;
 };
 
@@ -78,6 +79,7 @@ export function MyFurnitureDrawer({
   onClose,
   onUseInRoom,
   onDelete,
+  onUpdated,
   isActing = false,
 }: MyFurnitureDrawerProps) {
   const [isEditing, setIsEditing] = useState(false);
@@ -163,6 +165,7 @@ export function MyFurnitureDrawer({
         setForm(buildFormState(normalized));
       }
 
+      await onUpdated?.();
       setIsEditing(false);
     } catch (err: unknown) {
       const message =
