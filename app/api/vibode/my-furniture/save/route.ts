@@ -1138,7 +1138,7 @@ export async function POST(req: NextRequest) {
 
     logSaveEvent("info", "product_url_final_save", requestId, {
       is_product_url_flow: isProductUrlFlow,
-      initial_user_sku_id: userSkuId,
+      initial_user_sku_id: userSkuIdFromBody,
       final_user_sku_id: nextUserSkuId,
       ingest_called: isProductUrlFlow ? ingestCalled : false,
       ingest_ok: ingestOk,
