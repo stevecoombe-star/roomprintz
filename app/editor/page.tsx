@@ -32,6 +32,10 @@ import {
 import { DEFAULT_PX_PER_IN, skuFootprintInchesFromDims } from "@/lib/ikeaSizing";
 import { blobToDataUrl, readClipboardImageWithStatus } from "@/lib/readClipboardImage";
 import { hashDataUrlForLogs } from "@/lib/pasteToPlaceDebug";
+import {
+  isPasteToPlaceCancelledResponsePayload,
+  type PasteToPlaceJobControl,
+} from "@/lib/pasteToPlaceJobControl";
 import { PrepareRoomImageError, prepareRoomImageForUpload } from "@/lib/prepareRoomImageForUpload";
 
 import { getSupabaseBrowserAccessToken, supabaseBrowser } from "@/lib/supabaseBrowser";
@@ -371,6 +375,7 @@ type VibodeEditRunRequest = {
   modelVersion?: VibodeModelVersion;
   vibodeRoomId?: string;
   stageNumber?: number;
+  pasteToPlaceControl?: PasteToPlaceJobControl;
 };
 type VibodeEditRunResponse = {
   imageUrl: string;
@@ -473,6 +478,14 @@ function isAbortError(error: unknown): boolean {
   }
   if (!isRecord(error)) return false;
   return error.name === "AbortError";
+}
+
+function isIntentionalPasteToPlaceCancellation(
+  payload: unknown,
+  options?: { suppressCancellationError?: boolean }
+): boolean {
+  if (!options?.suppressCancellationError) return false;
+  return isPasteToPlaceCancelledResponsePayload(payload);
 }
 type PasteToPlaceClipboardPreparationResult =
   | {
@@ -1505,6 +1518,8 @@ function EditorPageInner() {
   const [pasteToPlaceProgressCardState, setPasteToPlaceProgressCardState] =
     useState<PasteToPlaceMenuState>(null);
   const pasteToPlaceOperationIdRef = useRef(0);
+  const pasteToPlaceClientSessionIdRef = useRef<string>(safeId("ptp_session"));
+  const activePasteToPlaceJobControlRef = useRef<PasteToPlaceJobControl | null>(null);
   const pasteToPlaceAbortControllerRef = useRef<AbortController | null>(null);
   const stageRunOperationIdRef = useRef(0);
   const stageRunAbortControllerRef = useRef<AbortController | null>(null);
@@ -1726,6 +1741,17 @@ function EditorPageInner() {
   useEffect(() => {
     vibodeRoomIdRef.current = vibodeRoomId;
   }, [vibodeRoomId]);
+  const createPasteToPlaceJobControl = useCallback(
+    (operationId: number): PasteToPlaceJobControl => {
+      const scopeRoomPart = vibodeRoomIdRef.current ?? "no_room";
+      const scopeId = `${pasteToPlaceClientSessionIdRef.current}:${scopeRoomPart}`;
+      return {
+        scopeId,
+        jobId: `${scopeId}:${operationId}`,
+      };
+    },
+    []
+  );
   useEffect(() => {
     lastStageOutputsRef.current = lastStageOutputs;
   }, [lastStageOutputs]);
@@ -1789,8 +1815,27 @@ function EditorPageInner() {
   const cancelPasteToPlaceGeneration = useCallback(() => {
     if (isPasteToPlaceCancelling) return;
     setIsPasteToPlaceCancelling(true);
+    const activeJobControl = activePasteToPlaceJobControlRef.current;
     pasteToPlaceAbortControllerRef.current?.abort();
     pasteToPlaceAbortControllerRef.current = null;
+    activePasteToPlaceJobControlRef.current = null;
+    if (activeJobControl) {
+      void (async () => {
+        try {
+          const accessToken = await tryGetSupabaseAccessToken();
+          await fetch("/api/vibode/paste-to-place/cancel", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
+            },
+            body: JSON.stringify(activeJobControl),
+          });
+        } catch {
+          // Best-effort only: UI cancellation remains immediate even if backend cancel fails.
+        }
+      })();
+    }
     invalidatePasteToPlaceOperation();
     setPasteToPlaceStatus(null);
     clearPasteToPlaceProgressPreview();
@@ -1802,6 +1847,7 @@ function EditorPageInner() {
     invalidatePasteToPlaceOperation,
     isPasteToPlaceCancelling,
     pushSnack,
+    tryGetSupabaseAccessToken,
   ]);
   const clearPasteToPlaceMenuClipboardPreview = useCallback(() => {
     pasteToPlaceMenuClipboardPreviewTokenRef.current += 1;
@@ -3423,6 +3469,8 @@ function EditorPageInner() {
     requestOptions?: {
       signal?: AbortSignal;
       suppressAbortError?: boolean;
+      suppressCancellationError?: boolean;
+      pasteToPlaceControl?: PasteToPlaceJobControl;
     }
   ) => {
     if (isOutOfTokens) {
@@ -3457,6 +3505,7 @@ function EditorPageInner() {
         stageNumber,
         modelVersion: selectedModel,
         vibodeRoomId: vibodeRoomId ?? undefined,
+        pasteToPlaceControl: requestOptions?.pasteToPlaceControl,
       };
       const candidateUrl =
         typeof currentImageUrl === "string" && currentImageUrl.trim().length > 0
@@ -3614,6 +3663,10 @@ function EditorPageInner() {
       });
 
       const json: any = await res.json().catch(() => ({}));
+      if (isIntentionalPasteToPlaceCancellation(json, requestOptions)) {
+        setStageStatus((prev) => ({ ...prev, [stageNumber]: previousStageStatus }));
+        return null;
+      }
 
       if (!res.ok) {
         throw new Error(
@@ -3729,6 +3782,8 @@ function EditorPageInner() {
     requestOptions?: {
       signal?: AbortSignal;
       suppressAbortError?: boolean;
+      suppressCancellationError?: boolean;
+      pasteToPlaceControl?: PasteToPlaceJobControl;
     }
   ): Promise<VibodeEditRunResponse | null> => {
     if (isOutOfTokens) {
@@ -3848,6 +3903,7 @@ function EditorPageInner() {
         modelVersion: selectedModel,
         vibodeRoomId: vibodeRoomId ?? undefined,
         stageNumber: activeStage ?? undefined,
+        pasteToPlaceControl: requestOptions?.pasteToPlaceControl,
       };
 
       const res = await fetch("/api/vibode/edit-run", {
@@ -3864,6 +3920,9 @@ function EditorPageInner() {
         error?: string;
         message?: string;
       };
+      if (isIntentionalPasteToPlaceCancellation(json, requestOptions)) {
+        return null;
+      }
 
       if (!res.ok) {
         throw new Error(json.error || json.message || `Edit run failed (HTTP ${res.status})`);
@@ -4519,11 +4578,15 @@ function EditorPageInner() {
         return true;
       }
 
+      let pasteToPlaceControl: PasteToPlaceJobControl | undefined;
       try {
         if (isOperationStale("execute:before_edit_run")) return false;
         setPasteToPlaceStatus("placing");
         const sourceForPlacement = resolvedSource;
         const abortController = beginPasteToPlaceAbortController();
+        pasteToPlaceControl =
+          typeof operationId === "number" ? createPasteToPlaceJobControl(operationId) : undefined;
+        activePasteToPlaceJobControlRef.current = pasteToPlaceControl ?? null;
         const res = await runEdit(
           action,
           {
@@ -4543,6 +4606,8 @@ function EditorPageInner() {
           {
             signal: abortController.signal,
             suppressAbortError: true,
+            suppressCancellationError: true,
+            pasteToPlaceControl,
           }
         );
         clearPasteToPlaceAbortController(abortController);
@@ -4579,6 +4644,13 @@ function EditorPageInner() {
         }
         return true;
       } finally {
+        if (
+          pasteToPlaceControl &&
+          activePasteToPlaceJobControlRef.current?.jobId === pasteToPlaceControl.jobId &&
+          activePasteToPlaceJobControlRef.current?.scopeId === pasteToPlaceControl.scopeId
+        ) {
+          activePasteToPlaceJobControlRef.current = null;
+        }
         clearPasteToPlaceAbortController();
         if (!isOperationStale("execute:finally")) {
           setPasteToPlaceStatus(null);
@@ -4602,6 +4674,7 @@ function EditorPageInner() {
       trackMyFurnitureUsage,
       beginPasteToPlaceAbortController,
       clearPasteToPlaceAbortController,
+      createPasteToPlaceJobControl,
     ]
   );
 
@@ -4959,6 +5032,7 @@ function EditorPageInner() {
       return true;
     };
 
+    let pasteToPlaceControl: PasteToPlaceJobControl | undefined;
     try {
       setPasteToPlaceProgressCardState(menuStateSnapshot);
       dismissPasteToPlaceMenu({ clearPreview: false, clearClipboardPreview: false });
@@ -4976,6 +5050,8 @@ function EditorPageInner() {
       if (isOperationStale("auto_place:before_stage_run")) return;
       setPasteToPlaceStatus("placing");
       const abortController = beginPasteToPlaceAbortController();
+      pasteToPlaceControl = createPasteToPlaceJobControl(operationId);
+      activePasteToPlaceJobControlRef.current = pasteToPlaceControl;
       const res = await runStage(
         3,
         {
@@ -4993,6 +5069,8 @@ function EditorPageInner() {
         {
           signal: abortController.signal,
           suppressAbortError: true,
+          suppressCancellationError: true,
+          pasteToPlaceControl,
         }
       );
       clearPasteToPlaceAbortController(abortController);
@@ -5005,6 +5083,13 @@ function EditorPageInner() {
         setHasUsedFreePasteToPlace(true);
       }
     } finally {
+      if (
+        pasteToPlaceControl &&
+        activePasteToPlaceJobControlRef.current?.jobId === pasteToPlaceControl.jobId &&
+        activePasteToPlaceJobControlRef.current?.scopeId === pasteToPlaceControl.scopeId
+      ) {
+        activePasteToPlaceJobControlRef.current = null;
+      }
       clearPasteToPlaceAbortController();
       if (!isOperationStale("auto_place:finally")) {
         setPasteToPlaceStatus(null);
@@ -5021,6 +5106,7 @@ function EditorPageInner() {
     isPasteToPlaceOperationActive,
     pasteToPlaceMenuState,
     preparePasteToPlaceProductFromMenu,
+    createPasteToPlaceJobControl,
     runStage,
     scene.baseImageUrl,
     beginPasteToPlaceAbortController,
@@ -5031,6 +5117,7 @@ function EditorPageInner() {
     return () => {
       pasteToPlaceAbortControllerRef.current?.abort();
       pasteToPlaceAbortControllerRef.current = null;
+      activePasteToPlaceJobControlRef.current = null;
       stageRunAbortControllerRef.current?.abort();
       stageRunAbortControllerRef.current = null;
       activeStageRunRef.current = null;

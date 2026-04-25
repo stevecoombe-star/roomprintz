@@ -5,6 +5,7 @@ type VibodeStageRunResponse = {
 
 export async function callCompositorVibodeStageRun(args: {
   payload: unknown;
+  headers?: Record<string, string>;
 }): Promise<VibodeStageRunResponse> {
   const endpointBase = process.env.ROOMPRINTZ_COMPOSITOR_URL?.trim();
 
@@ -29,6 +30,7 @@ export async function callCompositorVibodeStageRun(args: {
 
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
+    ...(args.headers ?? {}),
   };
   if (apiKey) {
     headers.Authorization = `Bearer ${apiKey}`;
