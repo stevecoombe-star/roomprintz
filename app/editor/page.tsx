@@ -50,6 +50,7 @@ const EDITOR_RIGHT_PANEL_STATE_KEY = "vibode.editor.rightPanelState.v1";
 const VIBODE_MODEL_NBP = "NBP";
 const VIBODE_MODEL_NB2 = "NB2";
 const ROOM_PREPARING_MESSAGE = "Your room is still preparing. Try again in a moment.";
+const PASTE_TO_PLACE_CANCEL_SETTLE_MS = 20000;
 const LOW_TOKEN_WARNING_THRESHOLD = 10;
 const DEFAULT_ACTION_TOKEN_COST = 1;
 const STAGE_TOKEN_COST = {
@@ -799,12 +800,16 @@ function validateFreezePayloadV1(payload: unknown): { ok: true } | { ok: false; 
 
 async function tryGetSupabaseAccessToken(): Promise<string | null> {
   try {
-    return await getSupabaseBrowserAccessToken();
+    const token = await getSupabaseBrowserAccessToken();
+    lastKnownSupabaseAccessToken = token;
+    return token;
   } catch (err) {
     console.warn("[supabase] access token lookup threw:", err);
     return null;
   }
 }
+
+let lastKnownSupabaseAccessToken: string | null = null;
 
 type VibodeRoomHydrationRow = {
   id: string;
@@ -1520,7 +1525,12 @@ function EditorPageInner() {
   const pasteToPlaceOperationIdRef = useRef(0);
   const pasteToPlaceClientSessionIdRef = useRef<string>(safeId("ptp_session"));
   const activePasteToPlaceJobControlRef = useRef<PasteToPlaceJobControl | null>(null);
+  const [activePasteToPlaceJobControlUiState, setActivePasteToPlaceJobControlUiState] =
+    useState<PasteToPlaceJobControl | null>(null);
   const pasteToPlaceAbortControllerRef = useRef<AbortController | null>(null);
+  const activePasteToPlaceSettlingRequestIdRef = useRef<string | null>(null);
+  const pasteToPlaceCancelCooldownTimerRef = useRef<number | null>(null);
+  const isPasteToPlaceCancelCooldownActiveRef = useRef(false);
   const stageRunOperationIdRef = useRef(0);
   const stageRunAbortControllerRef = useRef<AbortController | null>(null);
   const activeStageRunRef = useRef<{
@@ -1533,6 +1543,7 @@ function EditorPageInner() {
     stageNumber: WorkflowStage;
   } | null>(null);
   const [isPasteToPlaceCancelling, setIsPasteToPlaceCancelling] = useState(false);
+  const [isPasteToPlaceSettling, setIsPasteToPlaceSettling] = useState(false);
   const lastObservedClipboardDataUrlHashRef = useRef<string | null>(null);
   function getBaseImageLabel(url?: string): string {
     if (!url) return "—";
@@ -1801,6 +1812,93 @@ function EditorPageInner() {
     setIsPasteToPlaceCancelling(false);
     return beginPasteToPlaceOperation();
   }, [beginPasteToPlaceOperation]);
+  const beginPasteToPlaceSettlingRequest = useCallback(() => {
+    const requestId = safeId("ptp_settle_req");
+    activePasteToPlaceSettlingRequestIdRef.current = requestId;
+    return requestId;
+  }, []);
+  const markPasteToPlaceSettling = useCallback((reason: string) => {
+    console.info("[Paste-to-Place][settling] settling set true", {
+      reason,
+      activeRequestId: activePasteToPlaceSettlingRequestIdRef.current,
+    });
+    setIsPasteToPlaceSettling(true);
+  }, []);
+  const clearPasteToPlaceCancelCooldownTimer = useCallback(() => {
+    if (pasteToPlaceCancelCooldownTimerRef.current === null) return;
+    window.clearTimeout(pasteToPlaceCancelCooldownTimerRef.current);
+    pasteToPlaceCancelCooldownTimerRef.current = null;
+  }, []);
+  const startPasteToPlaceCancelCooldown = useCallback(
+    (reason: string) => {
+      markPasteToPlaceSettling(reason);
+      isPasteToPlaceCancelCooldownActiveRef.current = true;
+      clearPasteToPlaceCancelCooldownTimer();
+      pasteToPlaceCancelCooldownTimerRef.current = window.setTimeout(() => {
+        isPasteToPlaceCancelCooldownActiveRef.current = false;
+        pasteToPlaceCancelCooldownTimerRef.current = null;
+        activePasteToPlaceSettlingRequestIdRef.current = null;
+        setIsPasteToPlaceSettling(false);
+        console.info("[Paste-to-Place][settling] cancel cooldown complete; settling cleared");
+      }, PASTE_TO_PLACE_CANCEL_SETTLE_MS);
+      console.info("[Paste-to-Place][settling] cancel cooldown started", {
+        reason,
+        cooldownMs: PASTE_TO_PLACE_CANCEL_SETTLE_MS,
+      });
+    },
+    [clearPasteToPlaceCancelCooldownTimer, markPasteToPlaceSettling]
+  );
+  const clearPasteToPlaceSettlingForRequest = useCallback(
+    (requestId: string | null | undefined, context: string) => {
+      console.info("[Paste-to-Place][settling] settling clear attempted", {
+        context,
+        requestId,
+        activeRequestId: activePasteToPlaceSettlingRequestIdRef.current,
+      });
+      if (isPasteToPlaceCancelCooldownActiveRef.current) {
+        console.info("[Paste-to-Place][settling] settling clear skipped due to cancel cooldown", {
+          context,
+          requestId,
+        });
+        return;
+      }
+      if (!requestId) return;
+      if (activePasteToPlaceSettlingRequestIdRef.current !== requestId) return;
+      activePasteToPlaceSettlingRequestIdRef.current = null;
+      setIsPasteToPlaceSettling(false);
+      console.info("[Paste-to-Place][settling] settling cleared", {
+        context,
+        requestId,
+      });
+    },
+    []
+  );
+  const isSamePasteToPlaceJobControl = useCallback(
+    (left: PasteToPlaceJobControl | null | undefined, right: PasteToPlaceJobControl | null | undefined) =>
+      Boolean(
+        left &&
+          right &&
+          left.jobId === right.jobId &&
+          left.scopeId === right.scopeId
+      ),
+    []
+  );
+  const setActivePasteToPlaceJobControl = useCallback((jobControl: PasteToPlaceJobControl | null) => {
+    activePasteToPlaceJobControlRef.current = jobControl;
+    setActivePasteToPlaceJobControlUiState(jobControl);
+  }, []);
+  const clearActivePasteToPlaceJobControlIfMatching = useCallback(
+    (jobControl: PasteToPlaceJobControl | null | undefined) => {
+      if (!jobControl) return;
+      if (isSamePasteToPlaceJobControl(activePasteToPlaceJobControlRef.current, jobControl)) {
+        activePasteToPlaceJobControlRef.current = null;
+      }
+      setActivePasteToPlaceJobControlUiState((currentJobControl) =>
+        isSamePasteToPlaceJobControl(currentJobControl, jobControl) ? null : currentJobControl
+      );
+    },
+    [isSamePasteToPlaceJobControl]
+  );
   const clearPasteToPlaceAbortController = useCallback((controller?: AbortController | null) => {
     if (!controller) {
       pasteToPlaceAbortControllerRef.current = null;
@@ -1815,27 +1913,63 @@ function EditorPageInner() {
   const cancelPasteToPlaceGeneration = useCallback(() => {
     if (isPasteToPlaceCancelling) return;
     setIsPasteToPlaceCancelling(true);
-    const activeJobControl = activePasteToPlaceJobControlRef.current;
-    pasteToPlaceAbortControllerRef.current?.abort();
-    pasteToPlaceAbortControllerRef.current = null;
-    activePasteToPlaceJobControlRef.current = null;
+    startPasteToPlaceCancelCooldown("cancel");
+    const activeJobControl =
+      activePasteToPlaceJobControlUiState ?? activePasteToPlaceJobControlRef.current;
     if (activeJobControl) {
+      console.info("[Paste-to-Place] cancel clicked", activeJobControl.jobId);
       void (async () => {
         try {
+          const buildCancelHeaders = (accessToken: string | null) => ({
+            "Content-Type": "application/json",
+            ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
+          });
+          const dispatchCancelRequest = (accessToken: string | null) =>
+            fetch("/api/vibode/paste-to-place/cancel", {
+              method: "POST",
+              headers: buildCancelHeaders(accessToken),
+              body: JSON.stringify(activeJobControl),
+            });
+          const canCancelWithCookieSessionAuth = false;
+          console.info("[Paste-to-Place] cancel auth start");
+          const cachedAccessToken = lastKnownSupabaseAccessToken;
+
+          if (cachedAccessToken) {
+            console.info("[Paste-to-Place] cancel auth ready");
+            const cancelRequest = dispatchCancelRequest(cachedAccessToken);
+            console.info("[Paste-to-Place] cancel request dispatched", activeJobControl.jobId);
+            clearActivePasteToPlaceJobControlIfMatching(activeJobControl);
+            await cancelRequest;
+            return;
+          }
+
           const accessToken = await tryGetSupabaseAccessToken();
-          await fetch("/api/vibode/paste-to-place/cancel", {
+          console.info("[Paste-to-Place] cancel auth ready");
+          if (!accessToken && canCancelWithCookieSessionAuth) {
+            const cancelRequest = dispatchCancelRequest(null);
+            console.info("[Paste-to-Place] cancel request dispatched", activeJobControl.jobId);
+            clearActivePasteToPlaceJobControlIfMatching(activeJobControl);
+            await cancelRequest;
+            return;
+          }
+          if (!accessToken) {
+            return;
+          }
+          const cancelRequest = fetch("/api/vibode/paste-to-place/cancel", {
             method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
-            },
+            headers: buildCancelHeaders(accessToken),
             body: JSON.stringify(activeJobControl),
           });
+          console.info("[Paste-to-Place] cancel request dispatched", activeJobControl.jobId);
+          clearActivePasteToPlaceJobControlIfMatching(activeJobControl);
+          await cancelRequest;
         } catch {
           // Best-effort only: UI cancellation remains immediate even if backend cancel fails.
         }
       })();
     }
+    pasteToPlaceAbortControllerRef.current?.abort();
+    pasteToPlaceAbortControllerRef.current = null;
     invalidatePasteToPlaceOperation();
     setPasteToPlaceStatus(null);
     clearPasteToPlaceProgressPreview();
@@ -1843,10 +1977,13 @@ function EditorPageInner() {
     pushSnack("Generation cancelled.");
     setIsPasteToPlaceCancelling(false);
   }, [
+    startPasteToPlaceCancelCooldown,
     clearPasteToPlaceProgressPreview,
+    clearActivePasteToPlaceJobControlIfMatching,
     invalidatePasteToPlaceOperation,
     isPasteToPlaceCancelling,
     pushSnack,
+    activePasteToPlaceJobControlUiState,
     tryGetSupabaseAccessToken,
   ]);
   const clearPasteToPlaceMenuClipboardPreview = useCallback(() => {
@@ -3471,6 +3608,7 @@ function EditorPageInner() {
       suppressAbortError?: boolean;
       suppressCancellationError?: boolean;
       pasteToPlaceControl?: PasteToPlaceJobControl;
+      pasteToPlaceSettlingRequestId?: string | null;
     }
   ) => {
     if (isOutOfTokens) {
@@ -3733,6 +3871,12 @@ function EditorPageInner() {
       }
       return null;
     } finally {
+      if (requestOptions?.pasteToPlaceSettlingRequestId) {
+        clearPasteToPlaceSettlingForRequest(
+          requestOptions.pasteToPlaceSettlingRequestId,
+          `run_stage_${stageNumber}:finally`
+        );
+      }
       if (stageNumber === 4) {
         if (!lifecycle?.beforeCommit || lifecycle.beforeCommit()) {
           setStage4RunningAction(null);
@@ -3784,6 +3928,7 @@ function EditorPageInner() {
       suppressAbortError?: boolean;
       suppressCancellationError?: boolean;
       pasteToPlaceControl?: PasteToPlaceJobControl;
+      pasteToPlaceSettlingRequestId?: string | null;
     }
   ): Promise<VibodeEditRunResponse | null> => {
     if (isOutOfTokens) {
@@ -3972,6 +4117,12 @@ function EditorPageInner() {
       return null;
     } finally {
       setIsEditRunning(false);
+      if (requestOptions?.pasteToPlaceSettlingRequestId) {
+        clearPasteToPlaceSettlingForRequest(
+          requestOptions.pasteToPlaceSettlingRequestId,
+          `run_edit_${action}:finally`
+        );
+      }
     }
   };
 
@@ -4525,10 +4676,12 @@ function EditorPageInner() {
       yNorm,
       preparedResult,
       operationId,
+      pasteToPlaceControl,
     }: PasteToPlaceClickHint & {
       action: "add" | "swap";
       preparedResult?: PasteToPlaceMenuPreparationResult;
       operationId?: number;
+      pasteToPlaceControl?: PasteToPlaceJobControl;
     }): Promise<boolean> => {
       const isOperationStale = (context: string): boolean => {
         if (typeof operationId !== "number") return false;
@@ -4536,6 +4689,12 @@ function EditorPageInner() {
         return true;
       };
       if (isOperationStale("execute:start")) return false;
+      if (isPasteToPlaceSettling) {
+        console.info("[Paste-to-Place][settling] Place blocked because settling", {
+          context: "run_paste_to_place_click_target_edit",
+        });
+        return false;
+      }
       if (
         activeTool === "calibrate" ||
         activeTool === "remove" ||
@@ -4578,15 +4737,13 @@ function EditorPageInner() {
         return true;
       }
 
-      let pasteToPlaceControl: PasteToPlaceJobControl | undefined;
+      let settlingRequestId: string | null = null;
       try {
         if (isOperationStale("execute:before_edit_run")) return false;
+        settlingRequestId = beginPasteToPlaceSettlingRequest();
         setPasteToPlaceStatus("placing");
         const sourceForPlacement = resolvedSource;
         const abortController = beginPasteToPlaceAbortController();
-        pasteToPlaceControl =
-          typeof operationId === "number" ? createPasteToPlaceJobControl(operationId) : undefined;
-        activePasteToPlaceJobControlRef.current = pasteToPlaceControl ?? null;
         const res = await runEdit(
           action,
           {
@@ -4608,6 +4765,7 @@ function EditorPageInner() {
             suppressAbortError: true,
             suppressCancellationError: true,
             pasteToPlaceControl,
+            pasteToPlaceSettlingRequestId: settlingRequestId,
           }
         );
         clearPasteToPlaceAbortController(abortController);
@@ -4644,17 +4802,11 @@ function EditorPageInner() {
         }
         return true;
       } finally {
-        if (
-          pasteToPlaceControl &&
-          activePasteToPlaceJobControlRef.current?.jobId === pasteToPlaceControl.jobId &&
-          activePasteToPlaceJobControlRef.current?.scopeId === pasteToPlaceControl.scopeId
-        ) {
-          activePasteToPlaceJobControlRef.current = null;
-        }
         clearPasteToPlaceAbortController();
         if (!isOperationStale("execute:finally")) {
           setPasteToPlaceStatus(null);
           clearPasteToPlaceProgressPreview();
+          clearActivePasteToPlaceJobControlIfMatching(pasteToPlaceControl);
         }
       }
     },
@@ -4665,6 +4817,7 @@ function EditorPageInner() {
       isBusy,
       isDevUnlockPasteToPlace,
       isEditRunning,
+      isPasteToPlaceSettling,
       isPasteToPlaceOperationActive,
       isRotateMarkerTargeting,
       pushSnack,
@@ -4673,8 +4826,10 @@ function EditorPageInner() {
       scenePlacements,
       trackMyFurnitureUsage,
       beginPasteToPlaceAbortController,
+      clearActivePasteToPlaceJobControlIfMatching,
       clearPasteToPlaceAbortController,
-      createPasteToPlaceJobControl,
+      beginPasteToPlaceSettlingRequest,
+      clearPasteToPlaceSettlingForRequest,
     ]
   );
 
@@ -4684,9 +4839,11 @@ function EditorPageInner() {
       yNorm,
       preparedResult,
       operationId,
+      pasteToPlaceControl,
     }: PasteToPlaceClickHint & {
       preparedResult?: PasteToPlaceMenuPreparationResult;
       operationId?: number;
+      pasteToPlaceControl?: PasteToPlaceJobControl;
     }): Promise<boolean> =>
       runPasteToPlaceClickTargetEdit({
         action: "add",
@@ -4694,6 +4851,7 @@ function EditorPageInner() {
         yNorm,
         preparedResult,
         operationId,
+        pasteToPlaceControl,
       }),
     [runPasteToPlaceClickTargetEdit]
   );
@@ -4701,6 +4859,12 @@ function EditorPageInner() {
   const openPasteToPlaceMenu = useCallback(
     async (state: NonNullable<PasteToPlaceMenuState>) => {
       if (isRemoveMarkerTargeting || isRotateMarkerTargeting) {
+        return;
+      }
+      if (isPasteToPlaceSettling) {
+        console.info("[Paste-to-Place][settling] Place blocked because settling", {
+          context: "open_menu",
+        });
         return;
       }
       if (pasteToPlaceStatus || isPasteToPlaceMenuIngesting || pasteToPlaceProgressCardState) {
@@ -4779,6 +4943,7 @@ function EditorPageInner() {
       isRemoveMarkerTargeting,
       isRotateMarkerTargeting,
       isPasteToPlaceMenuIngesting,
+      isPasteToPlaceSettling,
       pasteToPlaceStatus,
       pasteToPlaceProgressCardState,
     ]
@@ -4918,6 +5083,13 @@ function EditorPageInner() {
 
   const handlePasteToPlacePlaceHere = useCallback(async () => {
     if (!pasteToPlaceMenuState) return;
+    if (isPasteToPlaceSettling) {
+      console.info("[Paste-to-Place][settling] Place blocked because settling", {
+        context: "place_here",
+      });
+      dismissPasteToPlaceMenu();
+      return;
+    }
     const menuStateSnapshot = pasteToPlaceMenuState;
     if (isMyFurnitureMultiPreparedSource) {
       pushSnack("Place here is unavailable for multi-selected My Furniture items.");
@@ -4939,33 +5111,60 @@ function EditorPageInner() {
     }
 
     const operationId = beginPasteToPlacePlacementOperation();
+    const pasteToPlaceControl = createPasteToPlaceJobControl(operationId);
+    setActivePasteToPlaceJobControl(pasteToPlaceControl);
     const isOperationStale = (): boolean => !isPasteToPlaceOperationActive(operationId);
-    if (isOperationStale()) return;
-    setPasteToPlaceProgressCardState(menuStateSnapshot);
-    dismissPasteToPlaceMenu({ clearPreview: false, clearClipboardPreview: false });
-    const { xNorm, yNorm } = menuStateSnapshot;
-    if (isOperationStale()) return;
-    const preparedResult = await preparePasteToPlaceProductFromMenu({ xNorm, yNorm, operationId });
-    if (isOperationStale()) return;
-    await handlePasteToPlaceAdd({ xNorm, yNorm, preparedResult, operationId });
+    let settlingRequestId: string | null = null;
+    try {
+      if (isOperationStale()) return;
+      setPasteToPlaceProgressCardState(menuStateSnapshot);
+      dismissPasteToPlaceMenu({ clearPreview: false, clearClipboardPreview: false });
+      const { xNorm, yNorm } = menuStateSnapshot;
+      if (isOperationStale()) return;
+      const preparedResult = await preparePasteToPlaceProductFromMenu({ xNorm, yNorm, operationId });
+      if (isOperationStale()) return;
+      await handlePasteToPlaceAdd({
+        xNorm,
+        yNorm,
+        preparedResult,
+        operationId,
+        pasteToPlaceControl,
+      });
+    } finally {
+      if (pasteToPlaceStatus !== "placing") {
+        clearActivePasteToPlaceJobControlIfMatching(pasteToPlaceControl);
+      }
+    }
   }, [
     activeTool,
     beginPasteToPlacePlacementOperation,
+    clearActivePasteToPlaceJobControlIfMatching,
+    createPasteToPlaceJobControl,
     dismissPasteToPlaceMenu,
     handlePasteToPlaceAdd,
     isBusy,
     isEditRunning,
     isMyFurnitureMultiPreparedSource,
     isPasteToPlaceOperationActive,
+    isPasteToPlaceSettling,
     isRotateMarkerTargeting,
     pasteToPlaceMenuState,
+    pasteToPlaceStatus,
     preparePasteToPlaceProductFromMenu,
     pushSnack,
     scene.baseImageUrl,
+    setActivePasteToPlaceJobControl,
   ]);
 
   const handlePasteToPlaceSwap = useCallback(async () => {
     if (!pasteToPlaceMenuState) return;
+    if (isPasteToPlaceSettling) {
+      console.info("[Paste-to-Place][settling] Place blocked because settling", {
+        context: "swap",
+      });
+      dismissPasteToPlaceMenu();
+      return;
+    }
     const menuStateSnapshot = pasteToPlaceMenuState;
     if (isMyFurnitureMultiPreparedSource) {
       pushSnack("Swap item is unavailable for multi-selected My Furniture items.");
@@ -4986,39 +5185,60 @@ function EditorPageInner() {
     }
 
     const operationId = beginPasteToPlacePlacementOperation();
+    const pasteToPlaceControl = createPasteToPlaceJobControl(operationId);
+    setActivePasteToPlaceJobControl(pasteToPlaceControl);
     const isOperationStale = (): boolean => !isPasteToPlaceOperationActive(operationId);
-    if (isOperationStale()) return;
-    setPasteToPlaceProgressCardState(menuStateSnapshot);
-    dismissPasteToPlaceMenu({ clearPreview: false, clearClipboardPreview: false });
-    const { xNorm, yNorm } = menuStateSnapshot;
-    if (isOperationStale()) return;
-    const preparedResult = await preparePasteToPlaceProductFromMenu({ xNorm, yNorm, operationId });
-    if (isOperationStale()) return;
-    await runPasteToPlaceClickTargetEdit({
-      action: "swap",
-      xNorm,
-      yNorm,
-      preparedResult,
-      operationId,
-    });
+    try {
+      if (isOperationStale()) return;
+      setPasteToPlaceProgressCardState(menuStateSnapshot);
+      dismissPasteToPlaceMenu({ clearPreview: false, clearClipboardPreview: false });
+      const { xNorm, yNorm } = menuStateSnapshot;
+      if (isOperationStale()) return;
+      const preparedResult = await preparePasteToPlaceProductFromMenu({ xNorm, yNorm, operationId });
+      if (isOperationStale()) return;
+      await runPasteToPlaceClickTargetEdit({
+        action: "swap",
+        xNorm,
+        yNorm,
+        preparedResult,
+        operationId,
+        pasteToPlaceControl,
+      });
+    } finally {
+      if (pasteToPlaceStatus !== "placing") {
+        clearActivePasteToPlaceJobControlIfMatching(pasteToPlaceControl);
+      }
+    }
   }, [
     activeTool,
     beginPasteToPlacePlacementOperation,
+    clearActivePasteToPlaceJobControlIfMatching,
+    createPasteToPlaceJobControl,
     dismissPasteToPlaceMenu,
     isBusy,
     isEditRunning,
     isMyFurnitureMultiPreparedSource,
     isPasteToPlaceOperationActive,
+    isPasteToPlaceSettling,
     isRotateMarkerTargeting,
     pasteToPlaceMenuState,
+    pasteToPlaceStatus,
     preparePasteToPlaceProductFromMenu,
     pushSnack,
     runPasteToPlaceClickTargetEdit,
     scene.baseImageUrl,
+    setActivePasteToPlaceJobControl,
   ]);
 
   const handlePasteToPlaceAutoPlace = useCallback(async () => {
     if (!pasteToPlaceMenuState) return;
+    if (isPasteToPlaceSettling) {
+      console.info("[Paste-to-Place][settling] Place blocked because settling", {
+        context: "auto_place",
+      });
+      dismissPasteToPlaceMenu();
+      return;
+    }
     const menuStateSnapshot = pasteToPlaceMenuState;
     const { xNorm, yNorm } = menuStateSnapshot;
     if (!scene.baseImageUrl || isBusy || isEditRunning) {
@@ -5027,12 +5247,14 @@ function EditorPageInner() {
     }
 
     const operationId = beginPasteToPlacePlacementOperation();
+    const pasteToPlaceControl = createPasteToPlaceJobControl(operationId);
+    setActivePasteToPlaceJobControl(pasteToPlaceControl);
     const isOperationStale = (context: string): boolean => {
       if (isPasteToPlaceOperationActive(operationId)) return false;
       return true;
     };
 
-    let pasteToPlaceControl: PasteToPlaceJobControl | undefined;
+    let settlingRequestId: string | null = null;
     try {
       setPasteToPlaceProgressCardState(menuStateSnapshot);
       dismissPasteToPlaceMenu({ clearPreview: false, clearClipboardPreview: false });
@@ -5048,10 +5270,9 @@ function EditorPageInner() {
           : 1;
 
       if (isOperationStale("auto_place:before_stage_run")) return;
+      settlingRequestId = beginPasteToPlaceSettlingRequest();
       setPasteToPlaceStatus("placing");
       const abortController = beginPasteToPlaceAbortController();
-      pasteToPlaceControl = createPasteToPlaceJobControl(operationId);
-      activePasteToPlaceJobControlRef.current = pasteToPlaceControl;
       const res = await runStage(
         3,
         {
@@ -5071,6 +5292,7 @@ function EditorPageInner() {
           suppressAbortError: true,
           suppressCancellationError: true,
           pasteToPlaceControl,
+          pasteToPlaceSettlingRequestId: settlingRequestId,
         }
       );
       clearPasteToPlaceAbortController(abortController);
@@ -5083,47 +5305,53 @@ function EditorPageInner() {
         setHasUsedFreePasteToPlace(true);
       }
     } finally {
-      if (
-        pasteToPlaceControl &&
-        activePasteToPlaceJobControlRef.current?.jobId === pasteToPlaceControl.jobId &&
-        activePasteToPlaceJobControlRef.current?.scopeId === pasteToPlaceControl.scopeId
-      ) {
-        activePasteToPlaceJobControlRef.current = null;
-      }
       clearPasteToPlaceAbortController();
       if (!isOperationStale("auto_place:finally")) {
         setPasteToPlaceStatus(null);
         clearPasteToPlaceProgressPreview();
+        clearActivePasteToPlaceJobControlIfMatching(pasteToPlaceControl);
+      } else if (pasteToPlaceStatus !== "placing") {
+        clearActivePasteToPlaceJobControlIfMatching(pasteToPlaceControl);
       }
     }
   }, [
     beginPasteToPlacePlacementOperation,
+    clearActivePasteToPlaceJobControlIfMatching,
     clearPasteToPlaceProgressPreview,
+    createPasteToPlaceJobControl,
     dismissPasteToPlaceMenu,
     isBusy,
     isDevUnlockPasteToPlace,
     isEditRunning,
     isPasteToPlaceOperationActive,
+    isPasteToPlaceSettling,
     pasteToPlaceMenuState,
+    pasteToPlaceStatus,
     preparePasteToPlaceProductFromMenu,
-    createPasteToPlaceJobControl,
     runStage,
     scene.baseImageUrl,
     beginPasteToPlaceAbortController,
+    beginPasteToPlaceSettlingRequest,
     clearPasteToPlaceAbortController,
+    clearPasteToPlaceSettlingForRequest,
+    setActivePasteToPlaceJobControl,
   ]);
 
   useEffect(() => {
     return () => {
+      clearPasteToPlaceCancelCooldownTimer();
+      isPasteToPlaceCancelCooldownActiveRef.current = false;
       pasteToPlaceAbortControllerRef.current?.abort();
       pasteToPlaceAbortControllerRef.current = null;
-      activePasteToPlaceJobControlRef.current = null;
+      activePasteToPlaceSettlingRequestIdRef.current = null;
+      setIsPasteToPlaceSettling(false);
+      setActivePasteToPlaceJobControl(null);
       stageRunAbortControllerRef.current?.abort();
       stageRunAbortControllerRef.current = null;
       activeStageRunRef.current = null;
       stageRunOperationIdRef.current += 1;
     };
-  }, []);
+  }, [clearPasteToPlaceCancelCooldownTimer]);
 
   const warnEdit = (message: string) => {
     setEditWarning(message);
@@ -6217,6 +6445,7 @@ function EditorPageInner() {
                   pasteToPlaceStatus === "placing" ? cancelPasteToPlaceGeneration : undefined
                 }
                 isPasteToPlaceCancelling={isPasteToPlaceCancelling}
+                isPasteToPlaceSettling={isPasteToPlaceSettling}
                 onOpenPasteToPlaceMenu={openPasteToPlaceMenu}
                 onPasteToPlaceChoosePlaceHere={handlePasteToPlacePlaceHere}
                 onPasteToPlaceChooseMyFurnitureAdd={() => {

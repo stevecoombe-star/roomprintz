@@ -50,6 +50,15 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object";
 }
 
+function isAbortError(err: unknown): boolean {
+  if (!err || typeof err !== "object") return false;
+  const candidate = err as { name?: unknown; message?: unknown };
+  if (candidate.name === "AbortError") return true;
+  if (typeof candidate.message !== "string") return false;
+  const normalized = candidate.message.toLowerCase();
+  return normalized.includes("abort");
+}
+
 function parseOptionalStageNumber(value: unknown): number | null {
   if (typeof value !== "number" || !Number.isFinite(value)) return null;
   const n = Math.trunc(value);
@@ -106,6 +115,7 @@ function resolveEditActionType(action: string | null): TokenActionKey | null {
 }
 
 export async function POST(req: NextRequest) {
+  let pasteToPlaceControl: ReturnType<typeof parsePasteToPlaceJobControlFromBody> = null;
   let spendContext:
     | {
         supabase: AnySupabaseClient;
@@ -132,7 +142,7 @@ export async function POST(req: NextRequest) {
       typeof body.modelVersion === "string" && body.modelVersion.trim().length > 0
         ? body.modelVersion
         : VIBODE_DEFAULT_MODEL_VERSION;
-    const pasteToPlaceControl = parsePasteToPlaceJobControlFromBody(body);
+    pasteToPlaceControl = parsePasteToPlaceJobControlFromBody(body);
     if (pasteToPlaceControl) {
       markPasteToPlaceJobLatest(pasteToPlaceControl.scopeId, pasteToPlaceControl.jobId);
     }
@@ -422,6 +432,7 @@ export async function POST(req: NextRequest) {
         ...payloadForCompositor,
         modelVersion,
       }),
+      signal: req.signal,
     });
 
     const upstreamStatus = upstreamRes.status;
@@ -592,6 +603,15 @@ export async function POST(req: NextRequest) {
       } finally {
         spendContext = null;
       }
+    }
+
+    if (pasteToPlaceControl && (req.signal.aborted || isAbortError(err))) {
+      console.info("[vibode/edit-run] request aborted by client (paste-to-place)", {
+        scopeId: pasteToPlaceControl.scopeId,
+        jobId: pasteToPlaceControl.jobId,
+      });
+      const state = getPasteToPlaceJobState(pasteToPlaceControl.scopeId, pasteToPlaceControl.jobId);
+      return buildPasteToPlaceCancelledResponse(state === "stale" ? "stale" : "cancelled");
     }
 
     const message = String(err?.message || err);
