@@ -51,6 +51,7 @@ const VIBODE_MODEL_NBP = "NBP";
 const VIBODE_MODEL_NB2 = "NB2";
 const ROOM_PREPARING_MESSAGE = "Your room is still preparing. Try again in a moment.";
 const PASTE_TO_PLACE_CANCEL_SETTLE_MS = 20000;
+const STAGE_RUN_CANCEL_SETTLE_MS = 20000;
 const LOW_TOKEN_WARNING_THRESHOLD = 10;
 const DEFAULT_ACTION_TOKEN_COST = 1;
 const STAGE_TOKEN_COST = {
@@ -1531,6 +1532,8 @@ function EditorPageInner() {
   const activePasteToPlaceSettlingRequestIdRef = useRef<string | null>(null);
   const pasteToPlaceCancelCooldownTimerRef = useRef<number | null>(null);
   const isPasteToPlaceCancelCooldownActiveRef = useRef(false);
+  const stageRunCancelCooldownTimerRef = useRef<number | null>(null);
+  const isStageRunCancelCooldownActiveRef = useRef(false);
   const stageRunOperationIdRef = useRef(0);
   const stageRunAbortControllerRef = useRef<AbortController | null>(null);
   const activeStageRunRef = useRef<{
@@ -1542,6 +1545,7 @@ function EditorPageInner() {
   const [activeStageRunUiState, setActiveStageRunUiState] = useState<{
     stageNumber: WorkflowStage;
   } | null>(null);
+  const [isStageRunSettling, setIsStageRunSettling] = useState(false);
   const [isPasteToPlaceCancelling, setIsPasteToPlaceCancelling] = useState(false);
   const [isPasteToPlaceSettling, setIsPasteToPlaceSettling] = useState(false);
   const lastObservedClipboardDataUrlHashRef = useRef<string | null>(null);
@@ -1688,10 +1692,42 @@ function EditorPageInner() {
       stageRunAbortControllerRef.current = null;
     }
   }, []);
+  const markStageRunSettling = useCallback((reason: string) => {
+    console.info("[Stage-run][settling] settling set true", { reason });
+    setIsStageRunSettling(true);
+  }, []);
+  const clearStageRunCancelCooldownTimer = useCallback(() => {
+    if (stageRunCancelCooldownTimerRef.current === null) return;
+    window.clearTimeout(stageRunCancelCooldownTimerRef.current);
+    stageRunCancelCooldownTimerRef.current = null;
+  }, []);
+  const clearStageRunSettling = useCallback(() => {
+    if (isStageRunCancelCooldownActiveRef.current) return;
+    setIsStageRunSettling(false);
+  }, []);
+  const startStageRunCancelCooldown = useCallback(
+    (reason: string) => {
+      markStageRunSettling(reason);
+      isStageRunCancelCooldownActiveRef.current = true;
+      clearStageRunCancelCooldownTimer();
+      stageRunCancelCooldownTimerRef.current = window.setTimeout(() => {
+        isStageRunCancelCooldownActiveRef.current = false;
+        stageRunCancelCooldownTimerRef.current = null;
+        setIsStageRunSettling(false);
+        console.info("[Stage-run][settling] stage cancel cooldown complete");
+      }, STAGE_RUN_CANCEL_SETTLE_MS);
+      console.info("[Stage-run][settling] stage cancel cooldown started", {
+        reason,
+        cooldownMs: STAGE_RUN_CANCEL_SETTLE_MS,
+      });
+    },
+    [clearStageRunCancelCooldownTimer, markStageRunSettling]
+  );
   const cancelStageRunGeneration = useCallback(() => {
     const activeRun = activeStageRunRef.current;
     if (!activeRun) return;
     activeRun.controller.abort();
+    startStageRunCancelCooldown("cancel");
     if (stageRunAbortControllerRef.current === activeRun.controller) {
       stageRunAbortControllerRef.current = null;
     }
@@ -1703,7 +1739,7 @@ function EditorPageInner() {
       setStage4RunningAction(null);
     }
     pushSnack("Generation cancelled.");
-  }, [invalidateStageRunOperation, pushSnack]);
+  }, [invalidateStageRunOperation, pushSnack, startStageRunCancelCooldown]);
   const markPasteToPlaceClipboardHeadsUpShown = useCallback(() => {
     setHasShownPasteToPlaceClipboardHeadsUp(true);
     if (typeof window === "undefined") return;
@@ -3887,6 +3923,13 @@ function EditorPageInner() {
 
   const runStageWithCancellation = useCallback(
     async (stageNumber: WorkflowStage, options: Record<string, unknown> = {}) => {
+      if (isStageRunSettling) {
+        console.info("[Stage-run][settling] stage run blocked because settling", {
+          stageNumber,
+          cooldownActive: isStageRunCancelCooldownActiveRef.current,
+        });
+        return null;
+      }
       const previousStageStatus = stageStatus[stageNumber];
       const { operationId, controller } = beginStageRunOperation(stageNumber, previousStageStatus);
       const isOperationStale = () => !isStageRunOperationActive(operationId);
@@ -3905,11 +3948,14 @@ function EditorPageInner() {
         );
       } finally {
         clearStageRunOperation(operationId, controller);
+        clearStageRunSettling();
       }
     },
     [
       beginStageRunOperation,
+      clearStageRunSettling,
       clearStageRunOperation,
+      isStageRunSettling,
       isStageRunOperationActive,
       runStage,
       stageStatus,
@@ -5341,6 +5387,8 @@ function EditorPageInner() {
     return () => {
       clearPasteToPlaceCancelCooldownTimer();
       isPasteToPlaceCancelCooldownActiveRef.current = false;
+      clearStageRunCancelCooldownTimer();
+      isStageRunCancelCooldownActiveRef.current = false;
       pasteToPlaceAbortControllerRef.current?.abort();
       pasteToPlaceAbortControllerRef.current = null;
       activePasteToPlaceSettlingRequestIdRef.current = null;
@@ -5349,9 +5397,10 @@ function EditorPageInner() {
       stageRunAbortControllerRef.current?.abort();
       stageRunAbortControllerRef.current = null;
       activeStageRunRef.current = null;
+      setIsStageRunSettling(false);
       stageRunOperationIdRef.current += 1;
     };
-  }, [clearPasteToPlaceCancelCooldownTimer]);
+  }, [clearPasteToPlaceCancelCooldownTimer, clearStageRunCancelCooldownTimer]);
 
   const warnEdit = (message: string) => {
     setEditWarning(message);
@@ -6602,6 +6651,9 @@ function EditorPageInner() {
                   <div className="mt-2 text-xs text-neutral-500">
                     Status: {stageStatus[activeStage]} • Furniture pass: {hasFurniturePass ? "yes" : "no"}
                   </div>
+                  {isStageRunSettling ? (
+                    <div className="mt-1 text-xs text-neutral-400">Cancelling...</div>
+                  ) : null}
                   {activeStageRunUiState ? (
                     <div className="mt-2 flex items-center justify-between rounded-md border border-neutral-800 bg-neutral-950 px-2 py-1.5">
                       <div className="text-xs text-neutral-400">
@@ -6681,9 +6733,9 @@ function EditorPageInner() {
                             declutter: stage1Declutter,
                           })
                         }
-                        disabled={stageStatus[1] === "running" || isOutOfTokens}
+                        disabled={stageStatus[1] === "running" || isOutOfTokens || isStageRunSettling}
                         className={`rounded-md border px-3 py-1.5 text-sm ${
-                          stageStatus[1] === "running" || isOutOfTokens
+                          stageStatus[1] === "running" || isOutOfTokens || isStageRunSettling
                             ? "border-neutral-900 bg-neutral-950 text-neutral-500"
                             : "border-neutral-700 bg-neutral-900 hover:bg-neutral-800"
                         }`}
@@ -6699,9 +6751,9 @@ function EditorPageInner() {
                             emptyRoom: true,
                           })
                         }
-                        disabled={stageStatus[1] === "running" || isOutOfTokens}
+                        disabled={stageStatus[1] === "running" || isOutOfTokens || isStageRunSettling}
                         className={`rounded-md border px-3 py-1.5 text-sm ${
-                          stageStatus[1] === "running" || isOutOfTokens
+                          stageStatus[1] === "running" || isOutOfTokens || isStageRunSettling
                             ? "border-neutral-900 bg-neutral-950 text-neutral-500"
                             : "border-neutral-700 bg-neutral-900 hover:bg-neutral-800"
                         }`}
@@ -6754,9 +6806,9 @@ function EditorPageInner() {
                       <button
                         type="button"
                         onClick={() => runStageWithCancellation(2)}
-                        disabled={stageStatus[2] === "running" || isOutOfTokens}
+                        disabled={stageStatus[2] === "running" || isOutOfTokens || isStageRunSettling}
                         className={`rounded-md border px-3 py-1.5 text-sm ${
-                          stageStatus[2] === "running" || isOutOfTokens
+                          stageStatus[2] === "running" || isOutOfTokens || isStageRunSettling
                             ? "border-neutral-900 bg-neutral-950 text-neutral-500"
                             : "border-neutral-700 bg-neutral-900 hover:bg-neutral-800"
                         }`}
@@ -6773,9 +6825,9 @@ function EditorPageInner() {
                         onClick={() =>
                           runStageWithCancellation(4, { stage4Action: STAGE4_PRIMARY_ACTION })
                         }
-                        disabled={stageStatus[4] === "running" || isOutOfTokens}
+                        disabled={stageStatus[4] === "running" || isOutOfTokens || isStageRunSettling}
                         className={`w-full rounded-md border px-3 py-2 text-sm ${
-                          stageStatus[4] === "running" || isOutOfTokens
+                          stageStatus[4] === "running" || isOutOfTokens || isStageRunSettling
                             ? "border-neutral-900 bg-neutral-950 text-neutral-500"
                             : "border-sky-500/60 bg-sky-950/40 text-sky-100 hover:bg-sky-900/50"
                         }`}
@@ -6796,9 +6848,9 @@ function EditorPageInner() {
                             key={action}
                             type="button"
                             onClick={() => runStageWithCancellation(4, { stage4Action: action })}
-                            disabled={stageStatus[4] === "running" || isOutOfTokens}
+                            disabled={stageStatus[4] === "running" || isOutOfTokens || isStageRunSettling}
                             className={`rounded-md border px-2 py-1 text-xs ${
-                              stageStatus[4] === "running" || isOutOfTokens
+                              stageStatus[4] === "running" || isOutOfTokens || isStageRunSettling
                                 ? "border-neutral-900 bg-neutral-950 text-neutral-500"
                                 : "border-neutral-700 bg-neutral-900 text-neutral-200 hover:bg-neutral-800"
                             }`}
@@ -6825,12 +6877,14 @@ function EditorPageInner() {
                       disabled={
                         stageStatus[activeStage] === "running" ||
                         isOutOfTokens ||
-                        stage5Locked
+                        stage5Locked ||
+                        isStageRunSettling
                       }
                       className={`rounded-md border px-3 py-1.5 text-sm ${
                         stageStatus[activeStage] === "running" ||
                         isOutOfTokens ||
-                        stage5Locked
+                        stage5Locked ||
+                        isStageRunSettling
                           ? "border-neutral-900 bg-neutral-950 text-neutral-500"
                           : "border-neutral-700 bg-neutral-900 hover:bg-neutral-800"
                       }`}
