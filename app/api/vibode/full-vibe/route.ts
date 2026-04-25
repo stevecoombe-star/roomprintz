@@ -7,7 +7,7 @@ export const runtime = "nodejs";
 const VIBODE_DEFAULT_MODEL_VERSION = "NBP";
 const SUPABASE_URL = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || "";
 const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "";
-type AnySupabaseClient = SupabaseClient<any, "public", any>;
+type AnySupabaseClient = SupabaseClient;
 
 function getUserSupabaseClient(
   req: NextRequest
@@ -52,7 +52,7 @@ export async function POST(req: NextRequest) {
       },
     });
     return Response.json({ imageUrl });
-  } catch (err: any) {
-    return Response.json({ error: String(err?.message || err) }, { status: 500 });
+  } catch (err: unknown) {
+    return Response.json({ error: err instanceof Error ? err.message : String(err) }, { status: 500 });
   }
 }

@@ -6,7 +6,7 @@ export const DEFAULT_BETA_SETTINGS_ID = "global";
 export const DEFAULT_BETA_ACCESS_CODE_PLACEHOLDER = "VIBODE-BETA";
 export const DEFAULT_TOPUP_LIMIT_FALLBACK = 1;
 
-type AnySupabaseClient = SupabaseClient<any, "public", any>;
+type AnySupabaseClient = SupabaseClient;
 
 export type GlobalBetaSettings = {
   id: string;

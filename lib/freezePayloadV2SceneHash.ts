@@ -7,6 +7,7 @@
 
 import type { FreezePayloadV2, NodePayloadV2 } from "./freezePayloadV2Types";
 import { canonicalStringify, sha256Hex } from "./sceneHash";
+import type { Json } from "./sceneHash";
 
 export function stableNodeSort(a: NodePayloadV2, b: NodePayloadV2): number {
   // Deterministic ordering: zIndex then nodeId
@@ -64,6 +65,6 @@ export async function buildFreezePayloadV2SceneHash(
     })),
   } as const;
 
-  const s = canonicalStringify(hashSubset as any);
+  const s = canonicalStringify(hashSubset as unknown as Json);
   return sha256Hex(s);
 }

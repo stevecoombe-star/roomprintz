@@ -8,7 +8,7 @@ export const runtime = "nodejs";
 const SUPABASE_URL = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || "";
 const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "";
 
-type AnySupabaseClient = SupabaseClient<any, "public", any>;
+type AnySupabaseClient = SupabaseClient;
 
 function safeStr(value: unknown): string | null {
   if (typeof value !== "string") return null;
@@ -79,8 +79,8 @@ export async function POST(req: NextRequest) {
       });
     }
     return Response.json({ ok: true });
-  } catch (err: any) {
-    const message = String(err?.message || err);
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
     return Response.json({ error: message }, { status: 500 });
   }
 }

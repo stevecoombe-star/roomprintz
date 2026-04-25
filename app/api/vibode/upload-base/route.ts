@@ -25,7 +25,7 @@ const SERVICE_ROLE_KEY = mustEnv("SUPABASE_SERVICE_ROLE_KEY");
 const SUPABASE_ANON_KEY = mustEnv("SUPABASE_ANON_KEY", "NEXT_PUBLIC_SUPABASE_ANON_KEY");
 
 const BUCKET = "vibode-base-images";
-type AnySupabaseClient = SupabaseClient<any, "public", any>;
+type AnySupabaseClient = SupabaseClient;
 
 function getUserSupabaseClient(
   req: NextRequest

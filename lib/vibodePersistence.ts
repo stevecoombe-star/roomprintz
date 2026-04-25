@@ -2,7 +2,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 
 type JsonObject = Record<string, unknown>;
 
-type AnySupabaseClient = SupabaseClient<any, "public", any>;
+type AnySupabaseClient = SupabaseClient;
 
 export type VibodeRoomRow = {
   id: string;

@@ -9,7 +9,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
  * This should be the ONLY place creating a Supabase client in the browser.
  */
 
-type AnySupabaseClient = SupabaseClient<any, "public", any>;
+type AnySupabaseClient = SupabaseClient;
 
 let _browserClient: AnySupabaseClient | null = null;
 let _authHydrationPromise: Promise<void> | null = null;

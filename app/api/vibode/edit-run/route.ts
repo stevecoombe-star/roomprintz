@@ -34,7 +34,7 @@ const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || process.env.NEXT_PUBL
 const SUPABASE_SERVICE_ROLE_KEY =
   process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SERVICE_KEY || "";
 
-type AnySupabaseClient = SupabaseClient<any, "public", any>;
+type AnySupabaseClient = SupabaseClient;
 
 type EditRunCompositorResult = {
   imageUrl?: string;
@@ -573,7 +573,7 @@ export async function POST(req: NextRequest) {
     spendContext = null;
 
     return Response.json(responsePayload, { status: upstreamStatus });
-  } catch (err: any) {
+  } catch (err: unknown) {
     if (spendContext) {
       try {
         const refundResult = await refundTokens({
@@ -593,7 +593,7 @@ export async function POST(req: NextRequest) {
               requestKind: "edit_generation",
             }),
             reason: "internal_exception",
-            error: String(err?.message || err),
+            error: err instanceof Error ? err.message : String(err),
           },
         });
         tokensCharged = 0;
@@ -614,7 +614,7 @@ export async function POST(req: NextRequest) {
       return buildPasteToPlaceCancelledResponse(state === "stale" ? "stale" : "cancelled");
     }
 
-    const message = String(err?.message || err);
+    const message = err instanceof Error ? err.message : String(err);
     const status = message.includes(" 400 ")
       ? 400
       : message.includes(" 401 ")

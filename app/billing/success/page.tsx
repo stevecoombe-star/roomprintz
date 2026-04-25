@@ -32,7 +32,7 @@ function BillingSuccessInner() {
       <h1 className="text-2xl font-semibold text-slate-900">Tokens added</h1>
       <p className="text-slate-700">{message}</p>
       <p className="text-sm text-slate-600">
-        If your balance doesn't refresh right away, reopen Billing in a moment.
+        If your balance doesn&apos;t refresh right away, reopen Billing in a moment.
       </p>
 
       {sessionId && (

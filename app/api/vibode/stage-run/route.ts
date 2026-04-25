@@ -41,7 +41,7 @@ type StageRunCompositorResult = {
   appliedAspectRatio?: string | null;
 } & Record<string, unknown>;
 
-type AnySupabaseClient = SupabaseClient<any, "public", any>;
+type AnySupabaseClient = SupabaseClient;
 
 function safeStr(value: unknown): string | null {
   if (typeof value !== "string") return null;
@@ -468,7 +468,7 @@ export async function POST(req: NextRequest) {
       remainingTokens,
       actionKey: stageRunContext.actionKey,
     });
-  } catch (err: any) {
+  } catch (err: unknown) {
     if (pasteToPlaceControl && (req.signal.aborted || isAbortError(err))) {
       console.info("[vibode/stage-run] request aborted by client (paste-to-place)", {
         scopeId: pasteToPlaceControl.scopeId,
@@ -478,7 +478,7 @@ export async function POST(req: NextRequest) {
       return buildPasteToPlaceCancelledResponse(state === "stale" ? "stale" : "cancelled");
     }
 
-    const message = String(err?.message || err);
+    const message = err instanceof Error ? err.message : String(err);
     const status = message.includes(" 400 ")
       ? 400
       : message.includes(" 401 ")

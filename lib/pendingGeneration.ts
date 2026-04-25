@@ -1,6 +1,6 @@
 const LS_KEY = "vibode.pendingGeneration.v1";
 
-export function savePendingLocal(payload: any) {
+export function savePendingLocal(payload: unknown) {
   if (typeof window === "undefined" || typeof localStorage === "undefined") return;
 
   try {
@@ -10,7 +10,7 @@ export function savePendingLocal(payload: any) {
   }
 }
 
-export function loadPendingLocal(): any | null {
+export function loadPendingLocal(): unknown | null {
   if (typeof window === "undefined" || typeof localStorage === "undefined") return null;
 
   try {

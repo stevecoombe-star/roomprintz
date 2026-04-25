@@ -6,7 +6,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import { readGlobalBetaSettings } from "@/lib/betaSettings.server";
 
 export const runtime = "nodejs";
-type AnySupabaseClient = SupabaseClient<any, "public", any>;
+type AnySupabaseClient = SupabaseClient;
 
 function mustEnv(name: string): string {
   const v = process.env[name];

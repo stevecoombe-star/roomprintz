@@ -50,7 +50,7 @@ export default function BillingPage() {
         </section>
       ) : !user ? (
         <section className="bg-slate-900 border border-slate-800 rounded-2xl p-4">
-          <div className="text-sm text-slate-300">You're not signed in.</div>
+          <div className="text-sm text-slate-300">You&apos;re not signed in.</div>
           <p className="text-xs text-slate-500 mt-1">
             Sign in first, then return here to top up tokens.
           </p>
@@ -81,7 +81,7 @@ export default function BillingPage() {
 
             {tokenError && (
               <div className="mt-3 rounded-md border border-rose-500/30 bg-rose-500/10 px-2.5 py-2 text-[11px] text-rose-200">
-                We couldn't refresh your token balance right now. Please try again.
+                We couldn&apos;t refresh your token balance right now. Please try again.
               </div>
             )}
           </section>

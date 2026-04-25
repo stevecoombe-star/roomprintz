@@ -89,8 +89,15 @@ function pickBundleIdFromSqft(sqft: number): RoomSizeBundleId {
   return "large";
 }
 
-function isFiniteNumber(n: any) {
+function isFiniteNumber(n: unknown) {
   return typeof n === "number" && Number.isFinite(n);
+}
+
+function getErrorMessage(error: unknown): string | null {
+  if (error instanceof Error && typeof error.message === "string" && error.message.trim().length > 0) {
+    return error.message;
+  }
+  return null;
 }
 
 function parseFiniteNumber(value: unknown): number | null {
@@ -776,7 +783,7 @@ function validateFreezePayloadV1(payload: unknown): { ok: true } | { ok: false; 
     return { ok: false, reason: "baseImage width/height missing" };
 
   const snap = payloadRecord.sceneSnapshotImageSpace as {
-    nodes?: Array<{ id?: unknown; skuId?: unknown; transform?: any }>;
+    nodes?: Array<{ id?: unknown; skuId?: unknown; transform?: unknown }>;
   };
   if (!snap || typeof snap !== "object")
     return { ok: false, reason: "sceneSnapshotImageSpace missing" };
@@ -785,14 +792,16 @@ function validateFreezePayloadV1(payload: unknown): { ok: true } | { ok: false; 
 
   for (const n of snap.nodes) {
     if (!n?.id || !n?.skuId) return { ok: false, reason: "node missing id/skuId" };
-    const t = n.transform;
+    const t = n.transform && typeof n.transform === "object" ? (n.transform as Record<string, unknown>) : null;
     if (!t) return { ok: false, reason: `node ${n.id} missing transform` };
-    const fields = ["x", "y", "width", "height", "rotation"];
+    const fields = ["x", "y", "width", "height", "rotation"] as const;
     for (const f of fields) {
       if (!isFiniteNumber(t[f]))
         return { ok: false, reason: `node ${n.id} transform.${f} invalid` };
     }
-    if (t.width <= 0 || t.height <= 0)
+    const width = t.width as number;
+    const height = t.height as number;
+    if (width <= 0 || height <= 0)
       return { ok: false, reason: `node ${n.id} width/height must be > 0` };
   }
 
@@ -2198,10 +2207,11 @@ function EditorPageInner() {
             createdAt: item.created_at,
           }))
         );
-      } catch (err: any) {
+      } catch (err: unknown) {
         setMyFurnitureItems([]);
+        const errMessage = getErrorMessage(err);
         const message =
-          err?.message === "No Supabase session."
+          errMessage === "No Supabase session."
             ? "Please sign in again to open My Furniture."
             : "Couldn't load My Furniture right now. Please try again.";
         pushSnack(message);
@@ -2519,13 +2529,13 @@ function EditorPageInner() {
         }
 
         pushSnack("Room loaded.");
-      } catch (err: any) {
+      } catch (err: unknown) {
         if (!isRoomOpenSessionActive()) {
           return;
         }
         logEditorRoomOpen("roomHydration:failed", {
           requestedRoomId,
-          error: err?.message ?? "error",
+          error: getErrorMessage(err) ?? "error",
         });
         console.error("[editor] room hydration failed:", err);
         hydratedRoomIdRef.current = null;
@@ -3180,7 +3190,7 @@ function EditorPageInner() {
         setActiveAssetId(activeAsset?.id ?? baseAsset?.id ?? null);
       }
       pushSnack("Room photo uploaded.");
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error(err);
       setVibodeRoomId(null);
       setRoomBaseAssetId(null);
@@ -3280,11 +3290,11 @@ function EditorPageInner() {
       }
 
       pushSnack("Downloaded current preview.");
-    } catch (err: any) {
-      const message =
-        typeof err?.message === "string" && err.message.trim().length > 0
-          ? `Download failed. ${err.message}`
-          : "Download failed. Please try again.";
+    } catch (err: unknown) {
+      const errMessage = getErrorMessage(err);
+      const message = errMessage
+        ? `Download failed. ${errMessage}`
+        : "Download failed. Please try again.";
       console.warn("[download-preview] failed", err);
       pushSnack(message);
     } finally {
@@ -3318,7 +3328,25 @@ function EditorPageInner() {
 
   const swapTargetSku = useMemo(() => {
     if (!collection || !swapTargetNode) return null;
-    return (collection.catalog as any)[swapTargetNode.skuId] ?? null;
+    const rawSku = (collection.catalog as Record<string, unknown>)[swapTargetNode.skuId];
+    if (!isRecord(rawSku)) return null;
+    const skuId = safeStr(rawSku.skuId);
+    const label = safeStr(rawSku.label);
+    if (!skuId || !label) return null;
+    const variantsRaw = Array.isArray(rawSku.variants) ? rawSku.variants : [];
+    const variants = variantsRaw
+      .map((variant) => {
+        if (!isRecord(variant)) return null;
+        const variantId = safeStr(variant.variantId);
+        if (!variantId) return null;
+        return {
+          variantId,
+          label: safeStr(variant.label) ?? variantId,
+        };
+      })
+      .filter((variant): variant is { variantId: string; label: string } => Boolean(variant));
+
+    return { skuId, label, variants };
   }, [collection, swapTargetNode]);
   const ingestedSourceHost = useMemo(() => {
     if (!ingestedUserSku) return null;
@@ -3424,8 +3452,8 @@ function EditorPageInner() {
       } else if (json.userSku.status === "ready" && isRecord(json.savedFurniture)) {
         pushSnack("Saved to My Furniture.");
       }
-    } catch (err: any) {
-      setIngestError(err?.message ?? "Failed to normalize image.");
+    } catch (err: unknown) {
+      setIngestError(getErrorMessage(err) ?? "Failed to normalize image.");
     } finally {
       setIsIngesting(false);
     }
@@ -3497,11 +3525,11 @@ function EditorPageInner() {
       setUploadedImageName(file.name || "uploaded-image");
       setIngestError(null);
       setIngestedUserSku(null);
-    } catch (err: any) {
+    } catch (err: unknown) {
       setUploadedImageDataUrl(null);
       setUploadedImageName(null);
       setIngestedUserSku(null);
-      setIngestError(err?.message ?? "Failed to read uploaded image.");
+      setIngestError(getErrorMessage(err) ?? "Failed to read uploaded image.");
     } finally {
       // Allow selecting the same file again on subsequent picks.
       inputEl.value = "";
@@ -3517,7 +3545,11 @@ function EditorPageInner() {
   const hasRotateMarks = rotateMarks.length > 0;
   const showSwapReplacementPicker = activeTool === "swap" && !!selectedSwapMarkId;
   const swapReplacementOptions = useMemo(() => {
-    const eligibleIds = new Set((eligibleForDrag ?? []).map((item: any) => item.skuId));
+    const eligibleIds = new Set(
+      (eligibleForDrag ?? [])
+        .map((item) => (isRecord(item) && typeof item.skuId === "string" ? item.skuId : null))
+        .filter((skuId): skuId is string => Boolean(skuId))
+    );
     const preferred = IKEA_CA_SKUS.filter((sku) => eligibleIds.has(sku.skuId));
     const source = preferred.length > 0 ? preferred : IKEA_CA_SKUS;
     return source.slice(0, 12);
@@ -3836,7 +3868,8 @@ function EditorPageInner() {
         signal: requestOptions?.signal,
       });
 
-      const json: any = await res.json().catch(() => ({}));
+      const json: unknown = await res.json().catch(() => ({}));
+      const jsonRecord = isRecord(json) ? json : null;
       if (isIntentionalPasteToPlaceCancellation(json, requestOptions)) {
         setStageStatus((prev) => ({ ...prev, [stageNumber]: previousStageStatus }));
         return null;
@@ -3844,7 +3877,10 @@ function EditorPageInner() {
 
       if (!res.ok) {
         throw new Error(
-          json?.error || json?.message || json?.detail || `Stage ${stageNumber} failed.`
+          safeStr(jsonRecord?.error) ??
+            safeStr(jsonRecord?.message) ??
+            safeStr(jsonRecord?.detail) ??
+            `Stage ${stageNumber} failed.`
         );
       }
 
@@ -3892,14 +3928,15 @@ function EditorPageInner() {
       }
       notifyTokenBalanceChanged();
       return json;
-    } catch (err: any) {
+    } catch (err: unknown) {
       if (requestOptions?.suppressAbortError && isAbortError(err)) {
         setStageStatus((prev) => ({ ...prev, [stageNumber]: previousStageStatus }));
         return null;
       }
       setStageStatus((prev) => ({ ...prev, [stageNumber]: "error" }));
-      if (err?.message) {
-        pushSnack(err.message);
+      const errMessage = getErrorMessage(err);
+      if (errMessage) {
+        pushSnack(errMessage);
       } else if (stageNumber === 4) {
         pushSnack(`Stage 4 ${STAGE4_ACTION_LABELS[stage4ActionForRun]} failed.`);
       } else {
@@ -4152,11 +4189,11 @@ function EditorPageInner() {
       pushSnack(`Applied ${action}. ${tokenUsageMessage}.`);
       notifyTokenBalanceChanged();
       return json as VibodeEditRunResponse;
-    } catch (err: any) {
+    } catch (err: unknown) {
       if (requestOptions?.suppressAbortError && isAbortError(err)) {
         return null;
       }
-      const message = err?.message ?? `Failed to ${action}.`;
+      const message = getErrorMessage(err) ?? `Failed to ${action}.`;
       setEditWarning(message);
       console.warn("[edit-run] failed", { action, message, err });
       pushSnack(message);
@@ -5160,7 +5197,7 @@ function EditorPageInner() {
     const pasteToPlaceControl = createPasteToPlaceJobControl(operationId);
     setActivePasteToPlaceJobControl(pasteToPlaceControl);
     const isOperationStale = (): boolean => !isPasteToPlaceOperationActive(operationId);
-    let settlingRequestId: string | null = null;
+    const settlingRequestId: string | null = null;
     try {
       if (isOperationStale()) return;
       setPasteToPlaceProgressCardState(menuStateSnapshot);
@@ -5430,8 +5467,8 @@ function EditorPageInner() {
         const previewUrl = item?.previewImageUrl ?? fallbackPreviewUrl;
         activatePreparedMyFurnitureSource(preparedProduct, { normalizedPreviewUrl: previewUrl });
         return true;
-      } catch (err: any) {
-        pushSnack(err?.message ?? "Failed to resolve saved furniture item.");
+      } catch (err: unknown) {
+        pushSnack(getErrorMessage(err) ?? "Failed to resolve saved furniture item.");
         return false;
       } finally {
         setMyFurnitureSelectingIds([]);
@@ -5819,38 +5856,57 @@ function EditorPageInner() {
       const skuIds = col?.bundles[bundleId]?.skuIds ?? [];
 
       const eligible = skuIds
-        .map((id) => (col?.catalog as any)?.[id])
+        .map((id) => (col?.catalog as Record<string, unknown>)?.[id])
         .filter(Boolean)
-        .map((sku: any) => {
-          const realW = typeof sku.realWidthFt === "number" ? (sku.realWidthFt as number) : undefined;
-          const realD = typeof sku.realDepthFt === "number" ? (sku.realDepthFt as number) : undefined;
+        .map((sku) => {
+          if (!isRecord(sku)) return null;
 
-          const pxW = ppf && realW ? Math.max(1, Math.round(realW * ppf)) : (sku.defaultPxWidth as number);
-          const pxH = ppf && realD ? Math.max(1, Math.round(realD * ppf)) : (sku.defaultPxHeight as number);
+          const skuId = safeStr(sku.skuId);
+          if (!skuId) return null;
+          const label = safeStr(sku.label) ?? skuId;
+
+          const realW = typeof sku.realWidthFt === "number" ? sku.realWidthFt : undefined;
+          const realD = typeof sku.realDepthFt === "number" ? sku.realDepthFt : undefined;
+          const defaultPxWidth = typeof sku.defaultPxWidth === "number" ? sku.defaultPxWidth : 1;
+          const defaultPxHeight = typeof sku.defaultPxHeight === "number" ? sku.defaultPxHeight : 1;
+
+          const pxW = ppf && realW ? Math.max(1, Math.round(realW * ppf)) : defaultPxWidth;
+          const pxH = ppf && realD ? Math.max(1, Math.round(realD * ppf)) : defaultPxHeight;
+
+          const fallbackImage =
+            safeStr(sku.imageUrl) ?? safeStr(sku.pngUrl) ?? safeStr(sku.url) ?? safeStr(sku.src) ?? "";
+          const variantsRaw = Array.isArray(sku.variants) ? sku.variants : [];
+          const variants =
+            variantsRaw.length > 0
+              ? variantsRaw
+                  .map((variant) => {
+                    if (!isRecord(variant)) return null;
+                    const variantId = safeStr(variant.variantId) ?? skuId;
+                    const variantLabel = safeStr(variant.label) ?? label;
+                    const imageUrl =
+                      safeStr(variant.imageUrl) ??
+                      safeStr(variant.pngUrl) ??
+                      safeStr(variant.url) ??
+                      safeStr(variant.src) ??
+                      fallbackImage;
+                    return { variantId, label: variantLabel, imageUrl };
+                  })
+                  .filter((variant): variant is { variantId: string; label: string; imageUrl: string } =>
+                    Boolean(variant)
+                  )
+              : [{ variantId: skuId, label, imageUrl: fallbackImage }];
 
           return {
-            skuId: sku.skuId,
-            label: sku.label,
+            skuId,
+            label,
             defaultPxWidth: pxW,
             defaultPxHeight: pxH,
             realWidthFt: realW,
             realDepthFt: realD,
-            variants:
-              sku.variants?.length > 0
-                ? sku.variants.map((v: any) => ({
-                    variantId: v.variantId,
-                    label: v.label,
-                    imageUrl: v.imageUrl || v.pngUrl || v.url || v.src || sku.imageUrl || sku.pngUrl || sku.url || sku.src,
-                  }))
-                : [
-                    {
-                      variantId: sku.skuId,
-                      label: sku.label,
-                      imageUrl: sku.imageUrl || sku.pngUrl || sku.url || sku.src,
-                    },
-                  ],
+            variants,
           };
-        });
+        })
+        .filter((sku): sku is NonNullable<typeof sku> => sku !== null);
 
       setWorkingSet({ collectionId: collectionId ?? undefined, bundleId, eligibleSkus: eligible });
 
@@ -5881,6 +5937,10 @@ function EditorPageInner() {
       const payloadAccess = getFreezePayloadAccess(payload);
       generationId = record?.generationId ?? (payloadAccess.generationId as string | null) ?? null;
       const isSwapMode = hasSwapMarksWithReplacement(payloadAccess.vibodeIntent);
+      const pendingVibeMode =
+        sceneSnapshotForRecovery.vibeMode === "on" || sceneSnapshotForRecovery.vibeMode === "off"
+          ? sceneSnapshotForRecovery.vibeMode
+          : undefined;
       if (generationId) {
         useEditorStore.setState((s) => {
           const idx = s.history.findIndex((h) => h.generationId === generationId);
@@ -5889,7 +5949,7 @@ function EditorPageInner() {
           nextHistory[idx] = {
             ...nextHistory[idx],
             pendingMarkup: markupToPersist,
-            pendingVibeMode: sceneSnapshotForRecovery.vibeMode,
+            pendingVibeMode,
             pendingStatus: "pending",
           };
           return { ...s, history: nextHistory };
@@ -5971,11 +6031,14 @@ function EditorPageInner() {
       }
 
       if (useFreezeV2) {
+        const payloadRecord = payload as Record<string, unknown>;
+        const payloadNodes = Array.isArray(payloadRecord.nodes) ? payloadRecord.nodes : [];
+        const firstPayloadNode = payloadNodes[0];
         console.log("[V2 DEBUG before fetch]", {
-          payloadVersion: (payload as any)?.payloadVersion,
-          sceneHash: (payload as any)?.sceneHash,
-          nodesLength: (payload as any)?.nodes?.length,
-          firstNodeId: (payload as any)?.nodes?.[0]?.nodeId,
+          payloadVersion: payloadRecord.payloadVersion,
+          sceneHash: payloadRecord.sceneHash,
+          nodesLength: payloadNodes.length,
+          firstNodeId: isRecord(firstPayloadNode) ? firstPayloadNode.nodeId : undefined,
         });
       }
       
@@ -6014,23 +6077,25 @@ function EditorPageInner() {
       });
   
       // Always parse safely
-      const j: any = await res
+      const j: unknown = await res
         .json()
         .catch(async () => ({ error: await res.text().catch(() => "Bad JSON response") }));
+      const jRecord = isRecord(j) ? j : null;
+      const outputRecord = jRecord && isRecord(jRecord.output) ? jRecord.output : null;
 
       // TEMP DEBUG (remove after capturing full-vibe runtime evidence)
       console.log("[VIBODE DEBUG RAW]", {
         vibodeRoute,
         status: res.status,
-        keys: j && typeof j === "object" ? Object.keys(j) : null,
-        imageUrl: j?.imageUrl,
-        stagedImageUrl: j?.stagedImageUrl,
-        outputImageUrl: j?.output?.imageUrl,
-        widthPx: j?.widthPx,
-        heightPx: j?.heightPx,
-        outputWidthPx: j?.output?.widthPx,
-        outputHeightPx: j?.output?.heightPx,
-        generationIdFromResponse: j?.generationId,
+        keys: jRecord ? Object.keys(jRecord) : null,
+        imageUrl: jRecord?.imageUrl,
+        stagedImageUrl: jRecord?.stagedImageUrl,
+        outputImageUrl: outputRecord?.imageUrl,
+        widthPx: jRecord?.widthPx,
+        heightPx: jRecord?.heightPx,
+        outputWidthPx: outputRecord?.widthPx,
+        outputHeightPx: outputRecord?.heightPx,
+        generationIdFromResponse: jRecord?.generationId,
         generationIdLocalBeforeAdopt: generationId,
         isVibeStage,
         isRemoveMode,
@@ -6040,23 +6105,31 @@ function EditorPageInner() {
       });
   
       console.log("[VIBODE GENERATE RESPONSE]", res.status, j);
-  
-      if (!res.ok || j?.ok === false) {
+
+      const jDebug = jRecord && isRecord(jRecord.debug) ? jRecord.debug : null;
+      const jOps = jDebug && isRecord(jDebug.ops) ? jDebug.ops : null;
+      const jCounts = jDebug && isRecord(jDebug.counts) ? jDebug.counts : null;
+      const jOk = jRecord?.ok;
+      const jMode = jRecord?.mode;
+      const jCode = safeStr(jRecord?.code) ?? undefined;
+      const jMessage = safeStr(jRecord?.message) ?? safeStr(jRecord?.error) ?? undefined;
+      const jGenerationId = safeStr(jRecord?.generationId);
+
+      if (!res.ok || jOk === false) {
         useEditorStore.getState().endGenerateError({
           userMessage: "Something didn’t work that time. Please try generating again.",
-          debug: { code: j?.code, message: j?.message ?? j?.error, raw: j },
+          debug: { code: jCode, message: jMessage, raw: j },
         });
         return;
       }
   
       // Debug / ops summary
-      const ops = j?.debug?.ops;
-      const nodesTotal = j?.debug?.counts?.nodesTotal ?? 0;
-      const add = ops?.add?.length ?? 0;
-      const rm = ops?.remove?.length ?? 0;
-      const sw = ops?.swap?.length ?? 0;
+      const nodesTotal = typeof jCounts?.nodesTotal === "number" ? jCounts.nodesTotal : 0;
+      const add = Array.isArray(jOps?.add) ? jOps.add.length : 0;
+      const rm = Array.isArray(jOps?.remove) ? jOps.remove.length : 0;
+      const sw = Array.isArray(jOps?.swap) ? jOps.swap.length : 0;
   
-      if (j?.mode === "echo") {
+      if (jMode === "echo") {
         useEditorStore.getState().endGenerateError({
           userMessage: "Something didn’t work that time. Please try generating again.",
           debug: { code: "ECHO_ONLY", message: "Echo mode returned no image", raw: j },
@@ -6064,8 +6137,8 @@ function EditorPageInner() {
         return;
       }
       
-      const toFinitePosNum = (v: any) => {
-        const n = typeof v === "string" ? Number(v) : v;
+      const toFinitePosNum = (v: unknown) => {
+        const n = typeof v === "string" ? Number(v) : typeof v === "number" ? v : NaN;
         return Number.isFinite(n) && n > 0 ? n : undefined;
       };
       
@@ -6074,18 +6147,22 @@ function EditorPageInner() {
       // Canonical source: j.output.imageUrl
       // Fallbacks are kept for legacy / transitional API responses.
       // ─────────────────────────────────────────────
-      const imageUrl: string | null = j?.output?.imageUrl || j?.imageUrl || j?.stagedImageUrl || null;
-      const outW = toFinitePosNum(j?.output?.widthPx ?? j?.widthPx);
-      const outH = toFinitePosNum(j?.output?.heightPx ?? j?.heightPx);
+      const imageUrl: string | null =
+        safeStr(outputRecord?.imageUrl) ??
+        safeStr(jRecord?.imageUrl) ??
+        safeStr(jRecord?.stagedImageUrl) ??
+        null;
+      const outW = toFinitePosNum(outputRecord?.widthPx ?? jRecord?.widthPx);
+      const outH = toFinitePosNum(outputRecord?.heightPx ?? jRecord?.heightPx);
       
-      const genId = typeof j?.generationId === "string" ? j.generationId : isVibeStage ? localGenId : null;
+      const genId = jGenerationId ?? (isVibeStage ? localGenId : null);
 
       // TEMP DEBUG (remove after capturing full-vibe runtime evidence)
       console.log("[VIBODE DEBUG COMPUTED]", {
         outUrl: imageUrl,
         outW,
         outH,
-        generationIdFromResponse: j?.generationId,
+        generationIdFromResponse: jGenerationId,
         generationIdLocalBeforeAdopt: generationId,
         genId,
         gateWillFail: {
@@ -6111,12 +6188,15 @@ function EditorPageInner() {
         });
         return;
       }
+      const outputStorage = outputRecord && isRecord(outputRecord.storage)
+        ? outputRecord.storage
+        : null;
       
       useEditorStore.getState().attachOutputAndSwapBase({
         generationId: genId,
         outputImageUrl: imageUrl,
-        outputBucket: j?.output?.bucket ?? j?.output?.storage?.bucket,
-        outputStorageKey: j?.output?.storageKey ?? j?.output?.storage?.key,
+        outputBucket: safeStr(outputRecord?.bucket) ?? safeStr(outputStorage?.bucket) ?? undefined,
+        outputStorageKey: safeStr(outputRecord?.storageKey) ?? safeStr(outputStorage?.key) ?? undefined,
         outputWidthPx: outW,
         outputHeightPx: outH,
       });
@@ -6165,8 +6245,8 @@ function EditorPageInner() {
       });
       
       // Optional token info (nice UX)
-      const tokenCost = typeof j?.tokenCost === "number" ? j.tokenCost : null;
-      const tokenBalance = typeof j?.tokenBalance === "number" ? j.tokenBalance : null;
+      const tokenCost = typeof jRecord?.tokenCost === "number" ? jRecord.tokenCost : null;
+      const tokenBalance = typeof jRecord?.tokenBalance === "number" ? jRecord.tokenBalance : null;
         
       pushSnack(
         `Nano Banana OK ✅ image returned${tokenCost != null ? ` • cost=${tokenCost}` : ""}${
@@ -6179,7 +6259,7 @@ function EditorPageInner() {
       // 6) ✅ NOW we are allowed to mutate local UI state.
       //    If you still want to keep the V0 behavior, commit AFTER success.
       // ─────────────────────────────────────────────
-      if (j?.mode !== "nanobanana") {
+      if (jMode !== "nanobanana") {
         commitGenerateMock();
       }
   
@@ -6191,11 +6271,11 @@ function EditorPageInner() {
       // useEditorStore.getState().appendHistoryFromGeneration?.({ generationId: j.generationId, imageUrl });
       // useEditorStore.getState().setBaseImageFromGeneration?.({ imageUrl, generationId: j.generationId });
   
-    } catch (e: any) {
+    } catch (e: unknown) {
       console.error(e);
       useEditorStore.getState().endGenerateError({
         userMessage: "Something didn’t work that time. Please try generating again.",
-        debug: { message: e?.message ?? "API network error", raw: e },
+        debug: { message: getErrorMessage(e) ?? "API network error", raw: e },
       });
     } finally {
       clearTimeout(slowTimer);
@@ -7651,48 +7731,62 @@ function EditorPageInner() {
                     const ppf = calibration?.ppf;
 
                     const eligible = skuIds
-                      .map((skuId) => (col.catalog as any)[skuId])
+                      .map((skuId) => (col.catalog as Record<string, unknown>)[skuId])
                       .filter(Boolean)
-                      .map((sku: any) => {
-                        const realW =
-                          typeof sku.realWidthFt === "number" ? (sku.realWidthFt as number) : undefined;
-                        const realD =
-                          typeof sku.realDepthFt === "number" ? (sku.realDepthFt as number) : undefined;
+                      .map((sku) => {
+                        if (!isRecord(sku)) return null;
 
-                        const pxW = ppf && realW ? Math.max(1, Math.round(realW * ppf)) : sku.defaultPxWidth;
-                        const pxH = ppf && realD ? Math.max(1, Math.round(realD * ppf)) : sku.defaultPxHeight;
+                        const skuId = safeStr(sku.skuId);
+                        if (!skuId) return null;
+                        const label = safeStr(sku.label) ?? skuId;
+                        const realW = typeof sku.realWidthFt === "number" ? sku.realWidthFt : undefined;
+                        const realD = typeof sku.realDepthFt === "number" ? sku.realDepthFt : undefined;
+                        const defaultPxWidth =
+                          typeof sku.defaultPxWidth === "number" ? sku.defaultPxWidth : 1;
+                        const defaultPxHeight =
+                          typeof sku.defaultPxHeight === "number" ? sku.defaultPxHeight : 1;
+                        const pxW = ppf && realW ? Math.max(1, Math.round(realW * ppf)) : defaultPxWidth;
+                        const pxH = ppf && realD ? Math.max(1, Math.round(realD * ppf)) : defaultPxHeight;
+
+                        const fallbackImage =
+                          safeStr(sku.imageUrl) ??
+                          safeStr(sku.pngUrl) ??
+                          safeStr(sku.url) ??
+                          safeStr(sku.src) ??
+                          "";
+                        const variantsRaw = Array.isArray(sku.variants) ? sku.variants : [];
+                        const variants =
+                          variantsRaw.length > 0
+                            ? variantsRaw
+                                .map((variant) => {
+                                  if (!isRecord(variant)) return null;
+                                  return {
+                                    variantId: safeStr(variant.variantId) ?? skuId,
+                                    label: safeStr(variant.label) ?? label,
+                                    imageUrl:
+                                      safeStr(variant.imageUrl) ??
+                                      safeStr(variant.pngUrl) ??
+                                      safeStr(variant.url) ??
+                                      safeStr(variant.src) ??
+                                      fallbackImage,
+                                  };
+                                })
+                                .filter((variant): variant is { variantId: string; label: string; imageUrl: string } =>
+                                  Boolean(variant)
+                                )
+                            : [{ variantId: skuId, label, imageUrl: fallbackImage }];
 
                         return {
-                          skuId: sku.skuId,
-                          label: sku.label,
+                          skuId,
+                          label,
                           defaultPxWidth: pxW,
                           defaultPxHeight: pxH,
                           realWidthFt: realW,
                           realDepthFt: realD,
-                          variants:
-                            sku.variants?.length > 0
-                              ? sku.variants.map((v: any) => ({
-                                  variantId: v.variantId,
-                                  label: v.label,
-                                  imageUrl:
-                                    v.imageUrl ||
-                                    v.pngUrl ||
-                                    v.url ||
-                                    v.src ||
-                                    sku.imageUrl ||
-                                    sku.pngUrl ||
-                                    sku.url ||
-                                    sku.src,
-                                }))
-                              : [
-                                  {
-                                    variantId: sku.skuId,
-                                    label: sku.label,
-                                    imageUrl: sku.imageUrl || sku.pngUrl || sku.url || sku.src,
-                                  },
-                                ],
+                          variants,
                         };
-                      });
+                      })
+                      .filter((sku): sku is NonNullable<typeof sku> => sku !== null);
 
                     setWorkingSet({ collectionId: id, bundleId, eligibleSkus: eligible });
                     pushSnack("Collection selected. Working Set loaded — drag items onto the canvas.");
@@ -7979,13 +8073,13 @@ function EditorPageInner() {
                     {swapTargetNode.variant?.label ? ` — ${swapTargetNode.variant.label}` : ""}
                   </div>
 
-                  {swapTargetSku?.variants?.length ? (
+                  {swapTargetSku && swapTargetSku.variants.length > 0 ? (
                     <div className="mt-3">
                       <div className="text-xs font-medium text-neutral-300">
                         Swap color / material
                       </div>
                       <div className="mt-2 grid grid-cols-1 gap-2">
-                        {swapTargetSku.variants.map((v: any) => (
+                        {swapTargetSku.variants.map((v) => (
                           <button
                             key={v.variantId}
                             className="rounded-md border border-neutral-800 bg-neutral-950 px-3 py-2 text-left text-sm hover:bg-neutral-800"
@@ -8067,18 +8161,34 @@ function EditorPageInner() {
                       )
                     : []
                   : eligibleForDrag.length
-                    ? eligibleForDrag.map((x: any) => ({
-                        skuId: x.skuId,
-                        label: x.label,
-                        defaultPxWidth: x.defaultPxWidth,
-                        defaultPxHeight: x.defaultPxHeight,
-                      }))
-                    : Object.values((collection?.catalog as any) ?? {}).map((x: any) => ({
-                        skuId: x.skuId,
-                        label: x.label,
-                        defaultPxWidth: x.defaultPxWidth,
-                        defaultPxHeight: x.defaultPxHeight,
-                      }));
+                    ? eligibleForDrag
+                        .map((x) =>
+                          isRecord(x) && safeStr(x.skuId) && safeStr(x.label)
+                            ? {
+                                skuId: safeStr(x.skuId)!,
+                                label: safeStr(x.label)!,
+                                defaultPxWidth:
+                                  typeof x.defaultPxWidth === "number" ? x.defaultPxWidth : 1,
+                                defaultPxHeight:
+                                  typeof x.defaultPxHeight === "number" ? x.defaultPxHeight : 1,
+                              }
+                            : null
+                        )
+                        .filter((x): x is NonNullable<typeof x> => x !== null)
+                    : Object.values((collection?.catalog as Record<string, unknown>) ?? {})
+                        .map((x) =>
+                          isRecord(x) && safeStr(x.skuId) && safeStr(x.label)
+                            ? {
+                                skuId: safeStr(x.skuId)!,
+                                label: safeStr(x.label)!,
+                                defaultPxWidth:
+                                  typeof x.defaultPxWidth === "number" ? x.defaultPxWidth : 1,
+                                defaultPxHeight:
+                                  typeof x.defaultPxHeight === "number" ? x.defaultPxHeight : 1,
+                              }
+                            : null
+                        )
+                        .filter((x): x is NonNullable<typeof x> => x !== null);
 
                 return (
                   <div className="mt-2 grid grid-cols-1 gap-2">

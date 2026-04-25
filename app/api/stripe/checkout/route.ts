@@ -5,7 +5,7 @@ import { createClient } from "@supabase/supabase-js";
 import type { SupabaseClient } from "@supabase/supabase-js";
 
 export const runtime = "nodejs";
-type AnySupabaseClient = SupabaseClient<any, "public", any>;
+type AnySupabaseClient = SupabaseClient;
 
 // Helper: always return JSON (prevents HTML errors leaking to client)
 function json(status: number, body: Record<string, unknown>) {

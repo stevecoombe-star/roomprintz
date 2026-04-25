@@ -16,7 +16,7 @@ type IdRow = {
 type RoomNameRow = {
   room_name: string | null;
 };
-type AnySupabaseClient = SupabaseClient<any, "public", any>;
+type AnySupabaseClient = SupabaseClient;
 
 function jsonError(message: string, status = 400) {
   return NextResponse.json({ error: message }, { status });
