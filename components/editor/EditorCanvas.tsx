@@ -272,6 +272,8 @@ export function EditorCanvas({
   pasteToPlaceProgressCardState = null,
   pasteToPlaceProgressCardPreviewUrl = null,
   isPasteToPlaceProgressCardLoading = false,
+  onCancelPasteToPlaceGeneration,
+  isPasteToPlaceCancelling = false,
   markupVisible = true,
   visualMode = "blueprint",
   imageUrl,
@@ -316,6 +318,8 @@ export function EditorCanvas({
   pasteToPlaceProgressCardState?: PasteToPlaceMenuState;
   pasteToPlaceProgressCardPreviewUrl?: string | null;
   isPasteToPlaceProgressCardLoading?: boolean;
+  onCancelPasteToPlaceGeneration?: () => void;
+  isPasteToPlaceCancelling?: boolean;
   markupVisible?: boolean;
   visualMode?: VisualMode;
   imageUrl?: string | null;
@@ -1763,6 +1767,20 @@ export function EditorCanvas({
           <div className="flex items-center gap-2 rounded-full border border-white/15 bg-neutral-950/75 px-3 py-1.5 text-xs font-medium text-neutral-100 shadow-[0_8px_20px_rgba(0,0,0,0.35)] backdrop-blur-sm">
             <span className="h-3 w-3 animate-spin rounded-full border border-neutral-300/80 border-t-transparent" />
             <span>{pasteToPlaceProgressMessage}</span>
+            {pasteToPlaceStatus === "placing" && onCancelPasteToPlaceGeneration && (
+              <button
+                type="button"
+                className={`pointer-events-auto rounded border px-2 py-0.5 text-[11px] font-medium transition ${
+                  isPasteToPlaceCancelling
+                    ? "cursor-not-allowed border-white/10 text-neutral-500"
+                    : "border-white/20 text-neutral-200 hover:border-white/35 hover:text-white"
+                }`}
+                onClick={onCancelPasteToPlaceGeneration}
+                disabled={isPasteToPlaceCancelling}
+              >
+                Cancel
+              </button>
+            )}
           </div>
         </div>
       )}

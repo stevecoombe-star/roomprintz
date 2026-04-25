@@ -466,6 +466,14 @@ function getDomainFromUrl(rawUrl: string | null | undefined): string | null {
     return null;
   }
 }
+
+function isAbortError(error: unknown): boolean {
+  if (typeof DOMException !== "undefined" && error instanceof DOMException && error.name === "AbortError") {
+    return true;
+  }
+  if (!isRecord(error)) return false;
+  return error.name === "AbortError";
+}
 type PasteToPlaceClipboardPreparationResult =
   | {
       status: "ready";
@@ -1497,6 +1505,8 @@ function EditorPageInner() {
   const [pasteToPlaceProgressCardState, setPasteToPlaceProgressCardState] =
     useState<PasteToPlaceMenuState>(null);
   const pasteToPlaceOperationIdRef = useRef(0);
+  const pasteToPlaceAbortControllerRef = useRef<AbortController | null>(null);
+  const [isPasteToPlaceCancelling, setIsPasteToPlaceCancelling] = useState(false);
   const lastObservedClipboardDataUrlHashRef = useRef<string | null>(null);
   function getBaseImageLabel(url?: string): string {
     if (!url) return "—";
@@ -1686,6 +1696,41 @@ function EditorPageInner() {
     setPasteToPlaceProgressCardState(null);
     setIsPasteToPlaceMenuIngesting(false);
   }, [invalidatePasteToPlaceOperation]);
+  const beginPasteToPlaceAbortController = useCallback(() => {
+    pasteToPlaceAbortControllerRef.current?.abort();
+    const controller = new AbortController();
+    pasteToPlaceAbortControllerRef.current = controller;
+    setIsPasteToPlaceCancelling(false);
+    return controller;
+  }, []);
+  const clearPasteToPlaceAbortController = useCallback((controller?: AbortController | null) => {
+    if (!controller) {
+      pasteToPlaceAbortControllerRef.current = null;
+      setIsPasteToPlaceCancelling(false);
+      return;
+    }
+    if (pasteToPlaceAbortControllerRef.current === controller) {
+      pasteToPlaceAbortControllerRef.current = null;
+      setIsPasteToPlaceCancelling(false);
+    }
+  }, []);
+  const cancelPasteToPlaceGeneration = useCallback(() => {
+    if (isPasteToPlaceCancelling) return;
+    setIsPasteToPlaceCancelling(true);
+    pasteToPlaceAbortControllerRef.current?.abort();
+    pasteToPlaceAbortControllerRef.current = null;
+    invalidatePasteToPlaceOperation();
+    setPasteToPlaceStatus(null);
+    clearPasteToPlaceProgressPreview();
+    setPasteToPlaceMenuState(null);
+    pushSnack("Generation cancelled.");
+    setIsPasteToPlaceCancelling(false);
+  }, [
+    clearPasteToPlaceProgressPreview,
+    invalidatePasteToPlaceOperation,
+    isPasteToPlaceCancelling,
+    pushSnack,
+  ]);
   const clearPasteToPlaceMenuClipboardPreview = useCallback(() => {
     pasteToPlaceMenuClipboardPreviewTokenRef.current += 1;
     setPasteToPlaceMenuClipboardPreviewUrl(null);
@@ -3302,12 +3347,17 @@ function EditorPageInner() {
     lifecycle?: {
       onImageCommitted?: (nextImageUrl: string) => void;
       beforeCommit?: () => boolean;
+    },
+    requestOptions?: {
+      signal?: AbortSignal;
+      suppressAbortError?: boolean;
     }
   ) => {
     if (isOutOfTokens) {
       pushSnack("You're out of tokens.");
       return null;
     }
+    const previousStageStatus = stageStatus[stageNumber];
     if (stageNumber === 5 && !hasFurniturePass && !STAGE5_DEV_BYPASS) {
       pushSnack("Stage 5 is locked until Stage 3 furniture pass succeeds.");
       return null;
@@ -3488,6 +3538,7 @@ function EditorPageInner() {
           ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
         },
         body: JSON.stringify(payload),
+        signal: requestOptions?.signal,
       });
 
       const json: any = await res.json().catch(() => ({}));
@@ -3543,6 +3594,10 @@ function EditorPageInner() {
       notifyTokenBalanceChanged();
       return json;
     } catch (err: any) {
+      if (requestOptions?.suppressAbortError && isAbortError(err)) {
+        setStageStatus((prev) => ({ ...prev, [stageNumber]: previousStageStatus }));
+        return null;
+      }
       setStageStatus((prev) => ({ ...prev, [stageNumber]: "error" }));
       if (err?.message) {
         pushSnack(err.message);
@@ -3565,6 +3620,10 @@ function EditorPageInner() {
     lifecycle?: {
       onImageCommitted?: (response: VibodeEditRunResponse) => void;
       beforeCommit?: () => boolean;
+    },
+    requestOptions?: {
+      signal?: AbortSignal;
+      suppressAbortError?: boolean;
     }
   ): Promise<VibodeEditRunResponse | null> => {
     if (isOutOfTokens) {
@@ -3693,6 +3752,7 @@ function EditorPageInner() {
           ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
         },
         body: JSON.stringify(body),
+        signal: requestOptions?.signal,
       });
 
       const json = (await res.json().catch(() => ({}))) as Partial<VibodeEditRunResponse> & {
@@ -3738,6 +3798,9 @@ function EditorPageInner() {
       notifyTokenBalanceChanged();
       return json as VibodeEditRunResponse;
     } catch (err: any) {
+      if (requestOptions?.suppressAbortError && isAbortError(err)) {
+        return null;
+      }
       const message = err?.message ?? `Failed to ${action}.`;
       setEditWarning(message);
       console.warn("[edit-run] failed", { action, message, err });
@@ -4331,6 +4394,7 @@ function EditorPageInner() {
         if (isOperationStale("execute:before_edit_run")) return false;
         setPasteToPlaceStatus("placing");
         const sourceForPlacement = resolvedSource;
+        const abortController = beginPasteToPlaceAbortController();
         const res = await runEdit(
           action,
           {
@@ -4346,8 +4410,13 @@ function EditorPageInner() {
               setPasteToPlaceStatus(null);
               clearPasteToPlaceProgressPreview();
             },
+          },
+          {
+            signal: abortController.signal,
+            suppressAbortError: true,
           }
         );
+        clearPasteToPlaceAbortController(abortController);
         const isAfterEditStale = isOperationStale("execute:after_edit_run");
         const shouldPersistProductUrlAfterStale =
           Boolean(res) &&
@@ -4382,6 +4451,7 @@ function EditorPageInner() {
         }
         return true;
       } finally {
+        clearPasteToPlaceAbortController();
         if (!isOperationStale("execute:finally")) {
           setPasteToPlaceStatus(null);
           clearPasteToPlaceProgressPreview();
@@ -4402,6 +4472,8 @@ function EditorPageInner() {
       savePreparedProductUrlToMyFurniture,
       scenePlacements,
       trackMyFurnitureUsage,
+      beginPasteToPlaceAbortController,
+      clearPasteToPlaceAbortController,
     ]
   );
 
@@ -4759,6 +4831,7 @@ function EditorPageInner() {
 
       if (isOperationStale("auto_place:before_stage_run")) return;
       setPasteToPlaceStatus("placing");
+      const abortController = beginPasteToPlaceAbortController();
       const res = await runStage(
         3,
         {
@@ -4772,8 +4845,13 @@ function EditorPageInner() {
             setPasteToPlaceStatus(null);
             clearPasteToPlaceProgressPreview();
           },
+        },
+        {
+          signal: abortController.signal,
+          suppressAbortError: true,
         }
       );
+      clearPasteToPlaceAbortController(abortController);
       if (isOperationStale("auto_place:after_stage_run")) return;
       if (!res) {
         return;
@@ -4783,6 +4861,7 @@ function EditorPageInner() {
         setHasUsedFreePasteToPlace(true);
       }
     } finally {
+      clearPasteToPlaceAbortController();
       if (!isOperationStale("auto_place:finally")) {
         setPasteToPlaceStatus(null);
         clearPasteToPlaceProgressPreview();
@@ -4800,7 +4879,16 @@ function EditorPageInner() {
     preparePasteToPlaceProductFromMenu,
     runStage,
     scene.baseImageUrl,
+    beginPasteToPlaceAbortController,
+    clearPasteToPlaceAbortController,
   ]);
+
+  useEffect(() => {
+    return () => {
+      pasteToPlaceAbortControllerRef.current?.abort();
+      pasteToPlaceAbortControllerRef.current = null;
+    };
+  }, []);
 
   const warnEdit = (message: string) => {
     setEditWarning(message);
@@ -5890,6 +5978,10 @@ function EditorPageInner() {
                 isPasteToPlaceProgressCardLoading={
                   isPasteToPlaceMenuIngesting || Boolean(pasteToPlaceStatus)
                 }
+                onCancelPasteToPlaceGeneration={
+                  pasteToPlaceStatus === "placing" ? cancelPasteToPlaceGeneration : undefined
+                }
+                isPasteToPlaceCancelling={isPasteToPlaceCancelling}
                 onOpenPasteToPlaceMenu={openPasteToPlaceMenu}
                 onPasteToPlaceChoosePlaceHere={handlePasteToPlacePlaceHere}
                 onPasteToPlaceChooseMyFurnitureAdd={() => {
