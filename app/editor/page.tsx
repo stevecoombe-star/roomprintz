@@ -1506,6 +1506,17 @@ function EditorPageInner() {
     useState<PasteToPlaceMenuState>(null);
   const pasteToPlaceOperationIdRef = useRef(0);
   const pasteToPlaceAbortControllerRef = useRef<AbortController | null>(null);
+  const stageRunOperationIdRef = useRef(0);
+  const stageRunAbortControllerRef = useRef<AbortController | null>(null);
+  const activeStageRunRef = useRef<{
+    operationId: number;
+    stageNumber: WorkflowStage;
+    previousStageStatus: StageRunStatus;
+    controller: AbortController;
+  } | null>(null);
+  const [activeStageRunUiState, setActiveStageRunUiState] = useState<{
+    stageNumber: WorkflowStage;
+  } | null>(null);
   const [isPasteToPlaceCancelling, setIsPasteToPlaceCancelling] = useState(false);
   const lastObservedClipboardDataUrlHashRef = useRef<string | null>(null);
   function getBaseImageLabel(url?: string): string {
@@ -1612,6 +1623,61 @@ function EditorPageInner() {
     (operationId: number) => pasteToPlaceOperationIdRef.current === operationId,
     []
   );
+  const invalidateStageRunOperation = useCallback(() => {
+    stageRunOperationIdRef.current += 1;
+  }, []);
+  const beginStageRunOperation = useCallback(
+    (stageNumber: WorkflowStage, previousStageStatus: StageRunStatus) => {
+      stageRunAbortControllerRef.current?.abort();
+      const controller = new AbortController();
+      stageRunAbortControllerRef.current = controller;
+      const nextOperationId = stageRunOperationIdRef.current + 1;
+      stageRunOperationIdRef.current = nextOperationId;
+      activeStageRunRef.current = {
+        operationId: nextOperationId,
+        stageNumber,
+        previousStageStatus,
+        controller,
+      };
+      setActiveStageRunUiState({ stageNumber });
+      return {
+        operationId: nextOperationId,
+        controller,
+      };
+    },
+    []
+  );
+  const isStageRunOperationActive = useCallback(
+    (operationId: number) => stageRunOperationIdRef.current === operationId,
+    []
+  );
+  const clearStageRunOperation = useCallback((operationId: number, controller: AbortController) => {
+    const activeRun = activeStageRunRef.current;
+    if (!activeRun) return;
+    if (activeRun.operationId !== operationId) return;
+    if (activeRun.controller !== controller) return;
+    activeStageRunRef.current = null;
+    setActiveStageRunUiState(null);
+    if (stageRunAbortControllerRef.current === controller) {
+      stageRunAbortControllerRef.current = null;
+    }
+  }, []);
+  const cancelStageRunGeneration = useCallback(() => {
+    const activeRun = activeStageRunRef.current;
+    if (!activeRun) return;
+    activeRun.controller.abort();
+    if (stageRunAbortControllerRef.current === activeRun.controller) {
+      stageRunAbortControllerRef.current = null;
+    }
+    activeStageRunRef.current = null;
+    setActiveStageRunUiState(null);
+    invalidateStageRunOperation();
+    setStageStatus((prev) => ({ ...prev, [activeRun.stageNumber]: activeRun.previousStageStatus }));
+    if (activeRun.stageNumber === 4) {
+      setStage4RunningAction(null);
+    }
+    pushSnack("Generation cancelled.");
+  }, [invalidateStageRunOperation, pushSnack]);
   const markPasteToPlaceClipboardHeadsUpShown = useCallback(() => {
     setHasShownPasteToPlaceClipboardHeadsUp(true);
     if (typeof window === "undefined") return;
@@ -3609,10 +3675,43 @@ function EditorPageInner() {
       return null;
     } finally {
       if (stageNumber === 4) {
-        setStage4RunningAction(null);
+        if (!lifecycle?.beforeCommit || lifecycle.beforeCommit()) {
+          setStage4RunningAction(null);
+        }
       }
     }
   };
+
+  const runStageWithCancellation = useCallback(
+    async (stageNumber: WorkflowStage, options: Record<string, unknown> = {}) => {
+      const previousStageStatus = stageStatus[stageNumber];
+      const { operationId, controller } = beginStageRunOperation(stageNumber, previousStageStatus);
+      const isOperationStale = () => !isStageRunOperationActive(operationId);
+
+      try {
+        return await runStage(
+          stageNumber,
+          options,
+          {
+            beforeCommit: () => !isOperationStale(),
+          },
+          {
+            signal: controller.signal,
+            suppressAbortError: true,
+          }
+        );
+      } finally {
+        clearStageRunOperation(operationId, controller);
+      }
+    },
+    [
+      beginStageRunOperation,
+      clearStageRunOperation,
+      isStageRunOperationActive,
+      runStage,
+      stageStatus,
+    ]
+  );
 
   const runEdit = async (
     action: EditAction,
@@ -4887,6 +4986,10 @@ function EditorPageInner() {
     return () => {
       pasteToPlaceAbortControllerRef.current?.abort();
       pasteToPlaceAbortControllerRef.current = null;
+      stageRunAbortControllerRef.current?.abort();
+      stageRunAbortControllerRef.current = null;
+      activeStageRunRef.current = null;
+      stageRunOperationIdRef.current += 1;
     };
   }, []);
 
@@ -6138,6 +6241,20 @@ function EditorPageInner() {
                   <div className="mt-2 text-xs text-neutral-500">
                     Status: {stageStatus[activeStage]} • Furniture pass: {hasFurniturePass ? "yes" : "no"}
                   </div>
+                  {activeStageRunUiState ? (
+                    <div className="mt-2 flex items-center justify-between rounded-md border border-neutral-800 bg-neutral-950 px-2 py-1.5">
+                      <div className="text-xs text-neutral-400">
+                        Generating Stage {activeStageRunUiState.stageNumber}...
+                      </div>
+                      <button
+                        type="button"
+                        onClick={cancelStageRunGeneration}
+                        className="rounded-md border border-neutral-700 bg-neutral-900 px-2 py-1 text-xs text-neutral-200 hover:bg-neutral-800"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  ) : null}
                   <div className="mt-1 text-xs text-neutral-500">
                     Preview image: {getBaseImageLabel(previewImageUrl ?? scene.baseImageUrl)}
                   </div>
@@ -6198,7 +6315,10 @@ function EditorPageInner() {
                       <button
                         type="button"
                         onClick={() =>
-                          runStage(1, { enhance: stage1Enhance, declutter: stage1Declutter })
+                          runStageWithCancellation(1, {
+                            enhance: stage1Enhance,
+                            declutter: stage1Declutter,
+                          })
                         }
                         disabled={stageStatus[1] === "running" || isOutOfTokens}
                         className={`rounded-md border px-3 py-1.5 text-sm ${
@@ -6212,7 +6332,7 @@ function EditorPageInner() {
                       <button
                         type="button"
                         onClick={() =>
-                          runStage(1, {
+                          runStageWithCancellation(1, {
                             enhance: stage1Enhance,
                             declutter: stage1Declutter,
                             emptyRoom: true,
@@ -6272,7 +6392,7 @@ function EditorPageInner() {
                     <div className="mt-3">
                       <button
                         type="button"
-                        onClick={() => runStage(2)}
+                        onClick={() => runStageWithCancellation(2)}
                         disabled={stageStatus[2] === "running" || isOutOfTokens}
                         className={`rounded-md border px-3 py-1.5 text-sm ${
                           stageStatus[2] === "running" || isOutOfTokens
@@ -6289,7 +6409,9 @@ function EditorPageInner() {
                     <div className="mt-3">
                       <button
                         type="button"
-                        onClick={() => runStage(4, { stage4Action: STAGE4_PRIMARY_ACTION })}
+                        onClick={() =>
+                          runStageWithCancellation(4, { stage4Action: STAGE4_PRIMARY_ACTION })
+                        }
                         disabled={stageStatus[4] === "running" || isOutOfTokens}
                         className={`w-full rounded-md border px-3 py-2 text-sm ${
                           stageStatus[4] === "running" || isOutOfTokens
@@ -6312,7 +6434,7 @@ function EditorPageInner() {
                           <button
                             key={action}
                             type="button"
-                            onClick={() => runStage(4, { stage4Action: action })}
+                            onClick={() => runStageWithCancellation(4, { stage4Action: action })}
                             disabled={stageStatus[4] === "running" || isOutOfTokens}
                             className={`rounded-md border px-2 py-1 text-xs ${
                               stageStatus[4] === "running" || isOutOfTokens
@@ -6338,7 +6460,7 @@ function EditorPageInner() {
                   <div className="mt-3">
                     <button
                       type="button"
-                      onClick={() => runStage(activeStage)}
+                      onClick={() => runStageWithCancellation(activeStage)}
                       disabled={
                         stageStatus[activeStage] === "running" ||
                         isOutOfTokens ||
