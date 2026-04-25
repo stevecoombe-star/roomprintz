@@ -272,6 +272,9 @@ export function EditorCanvas({
   pasteToPlaceProgressCardState = null,
   pasteToPlaceProgressCardPreviewUrl = null,
   isPasteToPlaceProgressCardLoading = false,
+  onCancelPasteToPlaceGeneration,
+  isPasteToPlaceCancelling = false,
+  isPasteToPlaceSettling = false,
   markupVisible = true,
   visualMode = "blueprint",
   imageUrl,
@@ -316,6 +319,9 @@ export function EditorCanvas({
   pasteToPlaceProgressCardState?: PasteToPlaceMenuState;
   pasteToPlaceProgressCardPreviewUrl?: string | null;
   isPasteToPlaceProgressCardLoading?: boolean;
+  onCancelPasteToPlaceGeneration?: () => void;
+  isPasteToPlaceCancelling?: boolean;
+  isPasteToPlaceSettling?: boolean;
   markupVisible?: boolean;
   visualMode?: VisualMode;
   imageUrl?: string | null;
@@ -537,6 +543,7 @@ export function EditorCanvas({
   const shouldRenderSinglePreview =
     !shouldRenderMyFurnitureMultiSelectPreview &&
     (Boolean(pasteToPlaceMenuPreviewUrl) || isPasteToPlaceMenuPreviewLoading);
+  const isPasteToPlaceActionLocked = isPasteToPlaceSettling;
   useLayoutEffect(() => {
     if (!pasteToPlaceMenuState) {
       setPasteToPlaceMenuMeasuredSize(null);
@@ -988,7 +995,12 @@ export function EditorCanvas({
     }
 
     const clickedOnEmpty = e.target === stage;
-    if (clickedOnEmpty && viewport && onOpenPasteToPlaceMenu) {
+    if (clickedOnEmpty && isPasteToPlaceSettling) {
+      console.info("[Paste-to-Place][settling] Place blocked because settling", {
+        context: "canvas_open_menu",
+      });
+    }
+    if (clickedOnEmpty && viewport && onOpenPasteToPlaceMenu && !isPasteToPlaceSettling) {
       const imgPt0 = stagePointerToImage(stage, viewport);
       if (imgPt0 && isInsideImage(imgPt0, viewport)) {
         const imgPt = clampToImage(imgPt0, viewport);
@@ -1763,6 +1775,20 @@ export function EditorCanvas({
           <div className="flex items-center gap-2 rounded-full border border-white/15 bg-neutral-950/75 px-3 py-1.5 text-xs font-medium text-neutral-100 shadow-[0_8px_20px_rgba(0,0,0,0.35)] backdrop-blur-sm">
             <span className="h-3 w-3 animate-spin rounded-full border border-neutral-300/80 border-t-transparent" />
             <span>{pasteToPlaceProgressMessage}</span>
+            {pasteToPlaceStatus === "placing" && onCancelPasteToPlaceGeneration && (
+              <button
+                type="button"
+                className={`pointer-events-auto rounded border px-2 py-0.5 text-[11px] font-medium transition ${
+                  isPasteToPlaceCancelling
+                    ? "cursor-not-allowed border-white/10 text-neutral-500"
+                    : "border-white/20 text-neutral-200 hover:border-white/35 hover:text-white"
+                }`}
+                onClick={onCancelPasteToPlaceGeneration}
+                disabled={isPasteToPlaceCancelling}
+              >
+                Cancel
+              </button>
+            )}
           </div>
         </div>
       )}
@@ -1775,6 +1801,15 @@ export function EditorCanvas({
           onClick={onDismissPasteToPlaceMenu}
         />
       )}
+      {isPasteToPlaceSettling && !pasteToPlaceProgressMessage && (
+        <div className="pointer-events-none absolute bottom-4 left-1/2 z-20 -translate-x-1/2">
+          <div className="flex items-center gap-2 rounded-full border border-white/15 bg-neutral-950/75 px-3 py-1.5 text-xs font-medium text-neutral-100 shadow-[0_8px_20px_rgba(0,0,0,0.35)] backdrop-blur-sm">
+            <span className="h-3 w-3 animate-spin rounded-full border border-neutral-300/80 border-t-transparent" />
+            <span>Cancelling...</span>
+          </div>
+        </div>
+      )}
+
       {pasteToPlaceMenuState && (
         <div
           ref={pasteToPlaceMenuRef}
@@ -1897,32 +1932,40 @@ export function EditorCanvas({
             ) : null}
             <button
               className={`px-3 py-2 text-left text-sm ${
-                isPasteToPlaceMyFurnitureMultiSelect
+                isPasteToPlaceMyFurnitureMultiSelect || isPasteToPlaceActionLocked
                   ? "cursor-not-allowed text-neutral-500"
                   : "text-white hover:bg-white/10"
               }`}
               onClick={onPasteToPlaceChoosePlaceHere}
-              disabled={isPasteToPlaceMyFurnitureMultiSelect}
+              disabled={isPasteToPlaceMyFurnitureMultiSelect || isPasteToPlaceActionLocked}
             >
               ✨ Place here
             </button>
             <button
               className={`px-3 py-2 text-left text-sm ${
-                isPasteToPlaceMyFurnitureMultiSelect
+                isPasteToPlaceMyFurnitureMultiSelect || isPasteToPlaceActionLocked
                   ? "cursor-not-allowed text-neutral-500"
                   : "text-neutral-300 hover:bg-white/10"
               }`}
               onClick={onPasteToPlaceChooseSwap}
-              disabled={isPasteToPlaceMyFurnitureMultiSelect}
+              disabled={isPasteToPlaceMyFurnitureMultiSelect || isPasteToPlaceActionLocked}
             >
               🔁 Swap item
             </button>
             <button
-              className="px-3 py-2 text-left text-sm text-neutral-300 hover:bg-white/10"
+              className={`px-3 py-2 text-left text-sm ${
+                isPasteToPlaceActionLocked
+                  ? "cursor-not-allowed text-neutral-500"
+                  : "text-neutral-300 hover:bg-white/10"
+              }`}
               onClick={onPasteToPlaceChooseAutoPlace}
+              disabled={isPasteToPlaceActionLocked}
             >
               🎯 Let Vibode decide placement
             </button>
+            {isPasteToPlaceActionLocked && (
+              <div className="px-3 pb-2 text-[11px] text-neutral-400">Cancelling...</div>
+            )}
             <div className="mx-2 my-1 h-px bg-white/10" />
             <div className="mx-2 mb-2 mt-1 rounded-md border border-white/10 bg-neutral-900/70 p-2">
               <div className="mb-1 text-[11px] font-medium uppercase tracking-wide text-neutral-400">

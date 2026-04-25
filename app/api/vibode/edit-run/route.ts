@@ -16,6 +16,16 @@ import {
 } from "@/lib/vibodeTokenDomain";
 import { buildTokenLedgerMetadata, getEditTokenActionKey } from "@/lib/vibodeTokenPolicy";
 import type { TokenActionKey } from "@/lib/vibodeTokenConstants";
+import {
+  parsePasteToPlaceJobControlFromBody,
+  PASTE_TO_PLACE_JOB_ID_HEADER,
+  PASTE_TO_PLACE_SCOPE_ID_HEADER,
+} from "@/lib/pasteToPlaceJobControl";
+import {
+  buildPasteToPlaceCancelledResponse,
+  getPasteToPlaceJobState,
+  markPasteToPlaceJobLatest,
+} from "@/lib/pasteToPlaceJobRegistry";
 
 export const runtime = "nodejs";
 const VIBODE_DEFAULT_MODEL_VERSION = "NBP";
@@ -38,6 +48,15 @@ function safeStr(value: unknown): string | null {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object";
+}
+
+function isAbortError(err: unknown): boolean {
+  if (!err || typeof err !== "object") return false;
+  const candidate = err as { name?: unknown; message?: unknown };
+  if (candidate.name === "AbortError") return true;
+  if (typeof candidate.message !== "string") return false;
+  const normalized = candidate.message.toLowerCase();
+  return normalized.includes("abort");
 }
 
 function parseOptionalStageNumber(value: unknown): number | null {
@@ -96,6 +115,7 @@ function resolveEditActionType(action: string | null): TokenActionKey | null {
 }
 
 export async function POST(req: NextRequest) {
+  let pasteToPlaceControl: ReturnType<typeof parsePasteToPlaceJobControlFromBody> = null;
   let spendContext:
     | {
         supabase: AnySupabaseClient;
@@ -122,6 +142,22 @@ export async function POST(req: NextRequest) {
       typeof body.modelVersion === "string" && body.modelVersion.trim().length > 0
         ? body.modelVersion
         : VIBODE_DEFAULT_MODEL_VERSION;
+    pasteToPlaceControl = parsePasteToPlaceJobControlFromBody(body);
+    if (pasteToPlaceControl) {
+      markPasteToPlaceJobLatest(pasteToPlaceControl.scopeId, pasteToPlaceControl.jobId);
+    }
+    const isPasteToPlaceJobActive = (): boolean => {
+      if (!pasteToPlaceControl) return true;
+      return (
+        getPasteToPlaceJobState(pasteToPlaceControl.scopeId, pasteToPlaceControl.jobId) === "active"
+      );
+    };
+    const cancelledResponse = (): Response | null => {
+      if (!pasteToPlaceControl) return null;
+      const state = getPasteToPlaceJobState(pasteToPlaceControl.scopeId, pasteToPlaceControl.jobId);
+      if (state === "active" || state === "unknown") return null;
+      return buildPasteToPlaceCancelledResponse(state === "cancelled" ? "cancelled" : "stale");
+    };
 
     const endpointBase = process.env.ROOMPRINTZ_COMPOSITOR_URL?.trim();
     if (!endpointBase) {
@@ -145,6 +181,7 @@ export async function POST(req: NextRequest) {
     const payloadForCompositor = { ...body };
     delete payloadForCompositor.vibodeRoomId;
     delete payloadForCompositor.stageNumber;
+    delete payloadForCompositor.pasteToPlaceControl;
 
     const action =
       typeof payloadForCompositor.action === "string"
@@ -374,6 +411,19 @@ export async function POST(req: NextRequest) {
     if (apiKey) {
       headers.Authorization = `Bearer ${apiKey}`;
     }
+    if (pasteToPlaceControl) {
+      headers[PASTE_TO_PLACE_JOB_ID_HEADER] = pasteToPlaceControl.jobId;
+      headers[PASTE_TO_PLACE_SCOPE_ID_HEADER] = pasteToPlaceControl.scopeId;
+    }
+
+    const preCompositorCancellation = cancelledResponse();
+    if (preCompositorCancellation) {
+      console.info("[vibode/edit-run] exiting early before compositor (paste-to-place stale/cancelled)", {
+        scopeId: pasteToPlaceControl?.scopeId,
+        jobId: pasteToPlaceControl?.jobId,
+      });
+      return preCompositorCancellation;
+    }
 
     const upstreamRes = await fetch(endpoint, {
       method: "POST",
@@ -382,6 +432,7 @@ export async function POST(req: NextRequest) {
         ...payloadForCompositor,
         modelVersion,
       }),
+      signal: req.signal,
     });
 
     const upstreamStatus = upstreamRes.status;
@@ -421,6 +472,13 @@ export async function POST(req: NextRequest) {
         }
       }
       return Response.json(responseRecord, { status: upstreamStatus });
+    }
+    if (!isPasteToPlaceJobActive()) {
+      console.info("[vibode/edit-run] dropping compositor result before finalization (paste-to-place stale/cancelled)", {
+        scopeId: pasteToPlaceControl?.scopeId,
+        jobId: pasteToPlaceControl?.jobId,
+      });
+      return cancelledResponse() ?? buildPasteToPlaceCancelledResponse("stale");
     }
     const responseImageUrl = safeStr(responseRecord.imageUrl);
     if (!responseImageUrl) {
@@ -495,6 +553,13 @@ export async function POST(req: NextRequest) {
     if (finalization.assetFinalizationError) {
       console.error("[vibode/edit-run] persistence failed (non-blocking):", finalization.assetFinalizationError);
     }
+    if (!isPasteToPlaceJobActive()) {
+      console.info("[vibode/edit-run] dropping finalized response before return (paste-to-place stale/cancelled)", {
+        scopeId: pasteToPlaceControl?.scopeId,
+        jobId: pasteToPlaceControl?.jobId,
+      });
+      return cancelledResponse() ?? buildPasteToPlaceCancelledResponse("stale");
+    }
 
     const responsePayload = {
       ...responseRecord,
@@ -538,6 +603,15 @@ export async function POST(req: NextRequest) {
       } finally {
         spendContext = null;
       }
+    }
+
+    if (pasteToPlaceControl && (req.signal.aborted || isAbortError(err))) {
+      console.info("[vibode/edit-run] request aborted by client (paste-to-place)", {
+        scopeId: pasteToPlaceControl.scopeId,
+        jobId: pasteToPlaceControl.jobId,
+      });
+      const state = getPasteToPlaceJobState(pasteToPlaceControl.scopeId, pasteToPlaceControl.jobId);
+      return buildPasteToPlaceCancelledResponse(state === "stale" ? "stale" : "cancelled");
     }
 
     const message = String(err?.message || err);
