@@ -3,6 +3,7 @@ import Stripe from "stripe";
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import type { SupabaseClient } from "@supabase/supabase-js";
+import { readGlobalBetaSettings } from "@/lib/betaSettings.server";
 
 export const runtime = "nodejs";
 type AnySupabaseClient = SupabaseClient<any, "public", any>;
@@ -21,6 +22,10 @@ type TokenTopupRow = {
 
 type SubscriptionRow = {
   stripe_customer_id: string | null;
+};
+
+type BetaUserSettingsTopupLimitRow = {
+  beta_topup_limit: number | null;
 };
 
 function json(status: number, body: Record<string, unknown>) {
@@ -89,6 +94,47 @@ export async function POST(req: Request) {
       return json(401, { error: "Unauthorized" });
     }
     const user = userData.user;
+
+    // Beta top-up limit gate:
+    // Count only successful token grants in token_ledger before opening checkout.
+    const globalSettings = await readGlobalBetaSettings(supabaseAdmin, {
+      allowLocalEnvFallback: true,
+    });
+
+    const { data: userSettingsRow, error: userSettingsErr } = await supabaseAdmin
+      .from("beta_user_settings")
+      .select("beta_topup_limit")
+      .eq("user_id", user.id)
+      .maybeSingle<BetaUserSettingsTopupLimitRow>();
+
+    if (userSettingsErr) {
+      console.error("[topup] beta_user_settings lookup error:", userSettingsErr);
+      return json(500, { error: "Failed to validate top-up eligibility" });
+    }
+
+    const { count: usedTopups, error: usedErr } = await supabaseAdmin
+      .from("token_ledger")
+      .select("id", { count: "exact", head: true })
+      .eq("user_id", user.id)
+      .eq("event_type", "grant")
+      .eq("action_type", "topup");
+
+    if (usedErr) {
+      console.error("[topup] token_ledger usage lookup error:", usedErr);
+      return json(500, { error: "Failed to validate top-up eligibility" });
+    }
+
+    const fallbackLimit = Math.max(0, Math.trunc(globalSettings.defaultTopupLimit));
+    const overrideLimit =
+      typeof userSettingsRow?.beta_topup_limit === "number"
+        ? Math.max(0, Math.trunc(userSettingsRow.beta_topup_limit))
+        : null;
+    const effectiveLimit = overrideLimit ?? fallbackLimit;
+    const usedCount = usedTopups ?? 0;
+
+    if (usedCount >= effectiveLimit) {
+      return json(403, { error: "You’ve reached the beta top-up limit for this account." });
+    }
 
     // ✅ Validate priceId is one of your active top-up packs
     const { data: topupRow, error: topupErr } = await supabaseAdmin
