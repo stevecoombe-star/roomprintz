@@ -26,6 +26,7 @@ export function AuthPanel({ redirectToAppOnAuth = false }: AuthPanelProps) {
   const { user, loading } = useSupabaseUser();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [betaAccessCode, setBetaAccessCode] = useState("");
   const [authLoading, setAuthLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
@@ -103,6 +104,17 @@ export function AuthPanel({ redirectToAppOnAuth = false }: AuthPanelProps) {
     setAuthLoading(true);
     setErrorMessage(null);
     try {
+      const validateCodeResponse = await fetch("/api/auth/validate-beta-signup-code", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ code: betaAccessCode }),
+      });
+
+      if (!validateCodeResponse.ok) {
+        setErrorMessage("Invalid beta access code.");
+        return;
+      }
+
       const { error } = await supabase.auth.signUp({
         email,
         password,
@@ -238,51 +250,70 @@ export function AuthPanel({ redirectToAppOnAuth = false }: AuthPanelProps) {
         </div>
       ) : (
         <>
-          <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:gap-3">
-            <div className="flex-1">
-              <label className="block text-[11px] text-slate-400 mb-1">
-                Email
-              </label>
-              <input
-                type="email"
-                className="w-full rounded-lg bg-slate-950 border border-slate-800 px-2 py-1 text-xs text-slate-100 outline-none focus:border-emerald-400"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                placeholder="you@vibode.com"
-              />
+          <div className="flex flex-col gap-2">
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:gap-3">
+              <div className="flex-1">
+                <label className="block text-[11px] text-slate-400 mb-1">
+                  Email
+                </label>
+                <input
+                  type="email"
+                  className="w-full rounded-lg bg-slate-950 border border-slate-800 px-2 py-1 text-xs text-slate-100 outline-none focus:border-emerald-400"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  placeholder="you@vibode.com"
+                />
+              </div>
+
+              <div className="flex-1">
+                <label className="block text-[11px] text-slate-400 mb-1">
+                  Password
+                </label>
+                <input
+                  type="password"
+                  className="w-full rounded-lg bg-slate-950 border border-slate-800 px-2 py-1 text-xs text-slate-100 outline-none focus:border-emerald-400"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  placeholder="••••••••"
+                />
+              </div>
+
+              <div className="flex mt-2 sm:mt-0 sm:self-end">
+                <button
+                  type="button"
+                  onClick={handleSignIn}
+                  disabled={authLoading}
+                  className="rounded-lg bg-emerald-500 hover:bg-emerald-400 text-slate-950 text-xs font-medium px-3 py-1.5 transition"
+                >
+                  {authLoading ? "Working…" : "Log in"}
+                </button>
+              </div>
             </div>
 
-            <div className="flex-1">
-              <label className="block text-[11px] text-slate-400 mb-1">
-                Password
-              </label>
-              <input
-                type="password"
-                className="w-full rounded-lg bg-slate-950 border border-slate-800 px-2 py-1 text-xs text-slate-100 outline-none focus:border-emerald-400"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                placeholder="••••••••"
-              />
-            </div>
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:gap-3">
+              <div className="flex-1">
+                <label className="block text-[11px] text-slate-400 mb-1">
+                  Beta access code
+                </label>
+                <input
+                  type="text"
+                  className="w-full rounded-lg bg-slate-950 border border-slate-800 px-2 py-1 text-xs text-slate-100 outline-none focus:border-emerald-400"
+                  value={betaAccessCode}
+                  onChange={(e) => setBetaAccessCode(e.target.value)}
+                  placeholder="Enter your beta code"
+                />
+              </div>
 
-            <div className="flex gap-2 mt-2 sm:mt-0">
-              <button
-                type="button"
-                onClick={handleSignIn}
-                disabled={authLoading}
-                className="rounded-lg bg-emerald-500 hover:bg-emerald-400 text-slate-950 text-xs font-medium px-3 py-1.5 transition"
-              >
-                {authLoading ? "Working…" : "Log in"}
-              </button>
-
-              <button
-                type="button"
-                onClick={handleSignUp}
-                disabled={authLoading}
-                className="rounded-lg border border-slate-700 hover:border-emerald-400/70 text-slate-100 text-xs px-3 py-1.5 transition"
-              >
-                Sign up
-              </button>
+              <div className="flex mt-2 sm:mt-0 sm:self-end">
+                <button
+                  type="button"
+                  onClick={handleSignUp}
+                  disabled={authLoading}
+                  className="rounded-lg border border-slate-700 hover:border-emerald-400/70 text-slate-100 text-xs px-3 py-1.5 transition"
+                >
+                  Sign up
+                </button>
+              </div>
             </div>
           </div>
 
@@ -291,8 +322,8 @@ export function AuthPanel({ redirectToAppOnAuth = false }: AuthPanelProps) {
           )}
 
           <p className="text-[11px] text-slate-500">
-            Sign up with email and password. If your environment requires email confirmation,
-            check your inbox before first login.
+            Sign up with email, password, and your beta access code. If your environment requires
+            email confirmation, check your inbox before first login.
           </p>
         </>
       )}
