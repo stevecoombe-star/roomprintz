@@ -398,7 +398,7 @@ export function MyFurniturePageClient() {
     if (error) {
       return (
         <div className="mt-4 rounded-xl border border-rose-500/30 bg-rose-500/10 p-4 text-sm text-rose-100">
-          We couldn't load your saved furniture right now. Please refresh and try again.
+          We couldn&apos;t load your saved furniture right now. Please refresh and try again.
         </div>
       );
     }

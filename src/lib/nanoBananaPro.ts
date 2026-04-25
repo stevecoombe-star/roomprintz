@@ -58,7 +58,7 @@ export async function callNanoBananaPro(args: {
   }
 
   // Otherwise assume JSON
-  const j: any = await res.json().catch(() => ({}));
+  const j: Record<string, unknown> = await res.json().catch(() => ({}));
 
   const url = j?.imageUrl || j?.image_url || j?.url;
   if (typeof url === "string" && url.startsWith("http")) {
@@ -67,7 +67,8 @@ export async function callNanoBananaPro(args: {
 
   const b64 = j?.image_base64 || j?.base64 || j?.imageBase64;
   if (typeof b64 === "string" && b64.length > 100) {
-    return { kind: "base64", base64: b64, mime: j?.mime || j?.contentType };
+    const mime = typeof j?.mime === "string" ? j.mime : typeof j?.contentType === "string" ? j.contentType : undefined;
+    return { kind: "base64", base64: b64, mime };
   }
 
   throw new Error(`NanoBananaPro: Unrecognized response shape`);

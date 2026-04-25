@@ -113,27 +113,24 @@ function inferSilhouetteKind(node: FurnitureNode): SilhouetteKind {
 }
 
 function useSilhouetteImage(kind: SilhouetteKind) {
-  const [image, setImage] = useState<HTMLImageElement | null>(null);
+  const [, forceRefresh] = useState(0);
+  const image = getSilhouetteImage(kind);
 
   useEffect(() => {
-    const img = getSilhouetteImage(kind);
-    if (img.complete) {
-      setImage(img);
-      return;
-    }
+    if (image.complete) return;
 
     let canceled = false;
     const onLoad = () => {
-      if (!canceled) setImage(img);
+      if (!canceled) forceRefresh((v) => v + 1);
     };
-    img.addEventListener("load", onLoad);
+    image.addEventListener("load", onLoad);
     return () => {
       canceled = true;
-      img.removeEventListener("load", onLoad);
+      image.removeEventListener("load", onLoad);
     };
-  }, [kind]);
+  }, [image]);
 
-  return image;
+  return image.complete ? image : null;
 }
 
 function SilhouetteLayer({
@@ -222,6 +219,19 @@ function ThumbnailLayer({
 
 function clamp(n: number, min: number, max: number) {
   return Math.max(min, Math.min(max, n));
+}
+
+type StageViewport = {
+  imageStageX: number;
+  imageStageY: number;
+  scale: number;
+};
+
+function imageToStagePoint(pt: { x: number; y: number }, vp: StageViewport) {
+  return {
+    x: vp.imageStageX + pt.x * vp.scale,
+    y: vp.imageStageY + pt.y * vp.scale,
+  };
 }
 
 function getValidAspectRatio(value: number | null | undefined) {
@@ -425,15 +435,21 @@ export function EditorCanvas({
 
   useEffect(() => {
     if (canvasImageUrl) return;
-    setDisplayImage(null);
-    setDisplayImageUrl(null);
+    const timeoutId = window.setTimeout(() => {
+      setDisplayImage(null);
+      setDisplayImageUrl(null);
+    }, 0);
+    return () => window.clearTimeout(timeoutId);
   }, [canvasImageUrl]);
 
   useEffect(() => {
     if (!canvasImageUrl) return;
     if (imageStatus !== "loaded" || !img) return;
-    setDisplayImage(img);
-    setDisplayImageUrl(canvasImageUrl);
+    const timeoutId = window.setTimeout(() => {
+      setDisplayImage(img);
+      setDisplayImageUrl(canvasImageUrl);
+    }, 0);
+    return () => window.clearTimeout(timeoutId);
   }, [canvasImageUrl, imageStatus, img]);
 
   const loadedImageAspectRatio = useMemo(() => {
@@ -546,8 +562,10 @@ export function EditorCanvas({
   const isPasteToPlaceActionLocked = isPasteToPlaceSettling;
   useLayoutEffect(() => {
     if (!pasteToPlaceMenuState) {
-      setPasteToPlaceMenuMeasuredSize(null);
-      return;
+      const frameId = window.requestAnimationFrame(() => {
+        setPasteToPlaceMenuMeasuredSize(null);
+      });
+      return () => window.cancelAnimationFrame(frameId);
     }
 
     const menuEl = pasteToPlaceMenuRef.current;
@@ -637,7 +655,7 @@ export function EditorCanvas({
       x: clamp(anchorX, 0, 1) * viewport.imageNaturalW,
       y: clamp(anchorY, 0, 1) * viewport.imageNaturalH,
     };
-    return imageToStage(imgPt, viewport);
+    return imageToStagePoint(imgPt, viewport);
   }, [pasteToPlaceProgressCardState, viewport]);
   const pasteToPlaceProgressCardPosition = useMemo(() => {
     if (!pasteToPlaceProgressCardState) return null;
@@ -669,7 +687,7 @@ export function EditorCanvas({
       x: clamp(removeMarkerPosition.xNorm, 0, 1) * viewport.imageNaturalW,
       y: clamp(removeMarkerPosition.yNorm, 0, 1) * viewport.imageNaturalH,
     };
-    return imageToStage(imagePoint, viewport);
+    return imageToStagePoint(imagePoint, viewport);
   }, [removeMarkerPosition, viewport]);
   const rotateMarkerStagePoint = useMemo(() => {
     if (!viewport || !rotateMarkerPosition) return null;
@@ -677,7 +695,7 @@ export function EditorCanvas({
       x: clamp(rotateMarkerPosition.xNorm, 0, 1) * viewport.imageNaturalW,
       y: clamp(rotateMarkerPosition.yNorm, 0, 1) * viewport.imageNaturalH,
     };
-    return imageToStage(imagePoint, viewport);
+    return imageToStagePoint(imagePoint, viewport);
   }, [rotateMarkerPosition, viewport]);
 
   const transformerRef = useRef<Konva.Transformer | null>(null);
@@ -861,10 +879,7 @@ export function EditorCanvas({
     pt: { x: number; y: number },
     vp: NonNullable<typeof viewport>
   ) {
-    return {
-      x: vp.imageStageX + pt.x * vp.scale,
-      y: vp.imageStageY + pt.y * vp.scale,
-    };
+    return imageToStagePoint(pt, vp);
   }
 
   function stageToImage(

@@ -7,7 +7,7 @@ export type VibodeEligibleSku = {
   defaultPxHeight?: number | null;
   realWidthFt?: number | null;
   realDepthFt?: number | null;
-  variants?: Array<Record<string, any>> | null;
+  variants?: Array<Record<string, unknown>> | null;
 };
 
 export async function callCompositorVibodeVibe(args: {

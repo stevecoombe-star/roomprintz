@@ -6,7 +6,7 @@ import {
 } from "@/lib/vibodeTokenConstants";
 
 type JsonObject = Record<string, unknown>;
-type AnySupabaseClient = SupabaseClient<any, "public", any>;
+type AnySupabaseClient = SupabaseClient;
 
 export type UserTokenWalletRow = {
   user_id: string;

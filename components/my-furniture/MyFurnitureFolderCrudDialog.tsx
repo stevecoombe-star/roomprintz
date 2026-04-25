@@ -29,8 +29,11 @@ export function MyFurnitureFolderCrudDialog({
 
   useEffect(() => {
     if (!isOpen) return;
+  const timeoutId = window.setTimeout(() => {
     setName(mode === "rename" ? folder?.name ?? "" : "");
     setLocalError(null);
+  }, 0);
+  return () => window.clearTimeout(timeoutId);
   }, [folder?.name, isOpen, mode]);
 
   const title = useMemo(() => {
@@ -85,7 +88,7 @@ export function MyFurnitureFolderCrudDialog({
 
         {mode === "delete" ? (
           <p className="mt-2 text-xs text-slate-400">
-            Delete "{folder?.name ?? "this folder"}"? Any items in it will be moved to Unfiled.
+            Delete &quot;{folder?.name ?? "this folder"}&quot;? Any items in it will be moved to Unfiled.
           </p>
         ) : (
           <div className="mt-3">

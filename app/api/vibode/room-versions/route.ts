@@ -14,7 +14,7 @@ const PREVIEW_SIGNED_URL_EXPIRES_IN_SEC = Math.max(
   Number(process.env.VIBODE_PREVIEW_SIGNED_URL_EXPIRES_IN ?? 60 * 60 * 8)
 );
 
-type AnySupabaseClient = SupabaseClient<any, "public", any>;
+type AnySupabaseClient = SupabaseClient;
 
 type RoomRow = {
   id: string;

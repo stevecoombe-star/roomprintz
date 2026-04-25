@@ -11,7 +11,7 @@ export default function BillingCancelPage() {
       <h1 className="text-2xl font-semibold text-slate-900">Checkout canceled</h1>
       <p className="text-slate-700">No problem - your payment was canceled and you were not charged.</p>
       <p className="text-sm text-slate-600">
-        You can return to Billing anytime when you're ready to top up.
+        You can return to Billing anytime when you&apos;re ready to top up.
       </p>
 
       <div className="flex gap-2 pt-2">

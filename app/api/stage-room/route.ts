@@ -17,7 +17,7 @@ export const runtime = "nodejs";
 
 type ModelVersion = "gemini-3" | "gemini-2.5";
 type AspectRatio = "auto" | "4:3" | "3:2" | "16:9" | "1:1";
-type AnySupabaseClient = SupabaseClient<any, "public", any>;
+type AnySupabaseClient = SupabaseClient;
 
 const ALLOWED_ASPECT_RATIOS: Set<string> = new Set([
   "auto",

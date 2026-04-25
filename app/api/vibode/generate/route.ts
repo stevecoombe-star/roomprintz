@@ -258,7 +258,7 @@ const STYLE_BAND_TO_NB_STYLE_ID: Partial<Record<StyleBand, string>> = {
   eclectic_soft: "eclectic_soft",
 };
 
-type AnySupabaseClient = SupabaseClient<any, "public", any>;
+type AnySupabaseClient = SupabaseClient;
 
 function getUserSupabaseClient(
   req: NextRequest
@@ -319,12 +319,13 @@ function safeUrlForLogs(url?: string | null) {
   }
 }
 
-function normalizeRequestedOps(raw: any): RequestedOps {
+function normalizeRequestedOps(raw: unknown): RequestedOps {
+  const source = isRecord(raw) ? raw : {};
   return {
-    add: Array.isArray(raw?.add) ? raw.add : [],
-    remove: Array.isArray(raw?.remove) ? raw.remove : [],
-    swap: Array.isArray(raw?.swap) ? raw.swap : [],
-    transformChanged: Array.isArray(raw?.transformChanged) ? raw.transformChanged : [],
+    add: Array.isArray(source.add) ? source.add : [],
+    remove: Array.isArray(source.remove) ? source.remove : [],
+    swap: Array.isArray(source.swap) ? source.swap : [],
+    transformChanged: Array.isArray(source.transformChanged) ? source.transformChanged : [],
   };
 }
 
@@ -775,11 +776,13 @@ function resolveIkeaSkuImageUrl(skuIdRaw: string): string | null {
   const canonicalId = aliasToCanonical[skuId] ?? skuId;
 
   // IKEA_CA_SKU_BY_ID might be a Map OR a plain object depending on where/how it’s defined.
-  const byIdAny: any = IKEA_CA_SKU_BY_ID as any;
-  const found =
-    typeof byIdAny?.get === "function" ? byIdAny.get(canonicalId) : byIdAny?.[canonicalId];
-
-  const url = typeof found?.imageUrl === "string" ? found.imageUrl.trim() : "";
+  const byIdAny = IKEA_CA_SKU_BY_ID as unknown as {
+    get?: (id: string) => unknown;
+    [key: string]: unknown;
+  };
+  const found = typeof byIdAny.get === "function" ? byIdAny.get(canonicalId) : byIdAny[canonicalId];
+  const foundRecord = isRecord(found) ? found : null;
+  const url = typeof foundRecord?.imageUrl === "string" ? foundRecord.imageUrl.trim() : "";
 
   // One-time debug (comment out after you see it work)
   if (skuId === "sofa-kivik-3s-ca") {
@@ -913,17 +916,21 @@ function resolveStyleId(args: {
   let styleId: string | null = null;
 
   if (args.payloadVersion === "v2" && isRecord(args.freezeRaw)) {
-    const staging = isRecord((args.freezeRaw as any).staging) ? (args.freezeRaw as any).staging : null;
-    const styleBandRaw = typeof staging?.styleBand === "string" ? staging.styleBand.trim() : "";
+    const staging = isRecord(args.freezeRaw.staging) ? args.freezeRaw.staging : null;
+    const styleBandRaw = safeStr(staging?.styleBand) ?? "";
     if (styleBandRaw && styleBandRaw !== "custom") {
       styleId = STYLE_BAND_TO_NB_STYLE_ID[styleBandRaw as StyleBand] ?? styleBandRaw;
     }
   }
 
   if (!styleId) {
+    const payloadRecord = args.payloadV1Translated as unknown as Record<string, unknown>;
+    const requestedAction = isRecord(payloadRecord.requestedAction)
+      ? payloadRecord.requestedAction
+      : null;
     styleId =
-      safeStr((args.payloadV1Translated as any)?.requestedAction?.styleId) ??
-      safeStr((args.payloadV1Translated as any)?.styleId);
+      safeStr(requestedAction?.styleId) ??
+      safeStr(payloadRecord.styleId);
   }
 
   if (!styleId) {
@@ -936,9 +943,13 @@ function resolveStyleId(args: {
 function pickLegacyAspectRatioFromFreeze(
   payload: FreezePayloadV1
 ): LegacyStageRoomRequest["aspectRatio"] {
+  const payloadRecord = payload as unknown as Record<string, unknown>;
+  const requestedAction = isRecord(payloadRecord.requestedAction)
+    ? payloadRecord.requestedAction
+    : null;
   const a =
-    safeStr((payload as any)?.requestedAction?.aspectRatio) ??
-    safeStr((payload as any)?.aspectRatio);
+    safeStr(requestedAction?.aspectRatio) ??
+    safeStr(payloadRecord.aspectRatio);
   if (!a) return "auto";
   const v = a.toLowerCase().replace("x", ":");
   if (v === "auto" || v === "4:3" || v === "3:2" || v === "16:9" || v === "1:1") return v;
@@ -956,10 +967,8 @@ function buildVibodePrompt(args: {
   freezeRaw: unknown;
   resolvedStyleId: string;
 }) {
-  const staging =
-    args.payloadVersion === "v2" && isRecord(args.freezeRaw)
-      ? (isRecord((args.freezeRaw as any).staging) ? (args.freezeRaw as any).staging : null)
-      : null;
+  const freezeRecord = args.payloadVersion === "v2" && isRecord(args.freezeRaw) ? args.freezeRaw : null;
+  const staging = freezeRecord && isRecord(freezeRecord.staging) ? freezeRecord.staging : null;
 
   const roomType = toPromptSafeToken(staging?.roomType, "other");
   const styleBand = toPromptSafeToken(staging?.styleBand, "custom");
@@ -970,18 +979,16 @@ function buildVibodePrompt(args: {
   const vendorById = new Map<string, string>();
   const categoryById = new Map<string, string>();
 
-  if (args.payloadVersion === "v2" && isRecord(args.freezeRaw)) {
-    const nodesRaw = Array.isArray((args.freezeRaw as any).nodes) ? (args.freezeRaw as any).nodes : [];
+  if (freezeRecord) {
+    const nodesRaw = Array.isArray(freezeRecord.nodes) ? freezeRecord.nodes : [];
     for (const node of nodesRaw) {
       if (!isRecord(node)) continue;
-      const nodeId = typeof (node as any).nodeId === "string" ? (node as any).nodeId : "";
+      const nodeId = typeof node.nodeId === "string" ? node.nodeId : "";
       if (!nodeId) continue;
-      const vendor =
-        typeof (node as any)?.sku?.vendor === "string" ? (node as any).sku.vendor.trim() : "";
-      const category =
-        typeof (node as any)?.intent?.category === "string"
-          ? (node as any).intent.category.trim()
-          : "";
+      const sku = isRecord(node.sku) ? node.sku : null;
+      const intent = isRecord(node.intent) ? node.intent : null;
+      const vendor = safeStr(sku?.vendor)?.trim() ?? "";
+      const category = safeStr(intent?.category)?.trim() ?? "";
       if (vendor) vendorById.set(nodeId, vendor);
       if (category) categoryById.set(nodeId, category);
     }
@@ -1069,7 +1076,7 @@ async function callNanoBananaPro(args: {
 
   const styleId = args.styleId;
   const modelVersion =
-    safeStr((args.payload as any)?.modelVersion) ?? VIBODE_DEFAULT_MODEL_VERSION;
+    safeStr((args.payload as Record<string, unknown>)?.modelVersion) ?? VIBODE_DEFAULT_MODEL_VERSION;
   const aspectRatio = pickLegacyAspectRatioFromFreeze(args.payload);
   const vibodePrompt = safeStr(args.vibodePrompt);
   const vibodePromptTriggersWork =
@@ -1375,7 +1382,7 @@ function parseVibodeRotateMarks(vibodeIntent: unknown): VibodeRotateMark[] {
 
 function resolveGenerateActionType(freeze: unknown): TokenActionKey {
   if (!isRecord(freeze)) return "STAGE_1";
-  const vibodeIntent = isRecord((freeze as any).vibodeIntent) ? (freeze as any).vibodeIntent : null;
+  const vibodeIntent = isRecord((freeze as Record<string, unknown>).vibodeIntent) ? (freeze as Record<string, unknown>).vibodeIntent : null;
   if (!isRecord(vibodeIntent)) return "STAGE_1";
   const swap = isRecord(vibodeIntent.swap) ? vibodeIntent.swap : null;
   if (swap && Array.isArray(swap.marks) && swap.marks.length > 0) {
@@ -1561,7 +1568,7 @@ type ModeResponse = ReturnType<typeof json>;
 export type VibodeRouteMode = "compose" | "remove" | "swap" | "vibe";
 
 async function handleSwap(args: {
-  vibodeIntent: any;
+  vibodeIntent: Record<string, unknown>;
   swapMarks: VibodeSwapMark[];
   baseImageUrlForModel: string;
   payloadForModel: FreezePayloadV1;
@@ -1580,7 +1587,7 @@ async function handleSwap(args: {
     cleanBase64,
     marks: args.swapMarks,
     replacementAssets,
-    modelVersion: safeStr((args.payloadForModel as any)?.modelVersion),
+    modelVersion: safeStr((args.payloadForModel as Record<string, unknown>)?.modelVersion),
   });
   args.notes.push(
     `Vibode Swap tools mode: compositor /vibode/swap used (marks=${args.swapMarks.length}, assets=${replacementAssets.length}).`
@@ -1589,18 +1596,20 @@ async function handleSwap(args: {
 }
 
 async function handleRemove(args: {
-  vibodeIntent: any;
+  vibodeIntent: Record<string, unknown>;
   baseImageUrlForModel: string;
   payloadForModel: FreezePayloadV1;
   notes: string[];
 }): Promise<{ modelImageUrl?: string; response?: ReturnType<typeof json> }> {
-  const marks = args.vibodeIntent.marks as Array<{
-    id: string;
-    x: number;
-    y: number;
-    r: number;
-    labelIndex?: number;
-  }>;
+  const marks = Array.isArray(args.vibodeIntent.marks)
+    ? (args.vibodeIntent.marks as Array<{
+        id: string;
+        x: number;
+        y: number;
+        r: number;
+        labelIndex?: number;
+      }>)
+    : [];
 
   const cleanBytes = await fetchImageAsBytes(args.baseImageUrlForModel);
   const cleanBase64 = cleanBytes.toString("base64");
@@ -1609,12 +1618,12 @@ async function handleRemove(args: {
     const removeResult = await callCompositorVibodeRemove({
       cleanBase64,
       marks,
-      modelVersion: safeStr((args.payloadForModel as any)?.modelVersion),
+      modelVersion: safeStr((args.payloadForModel as Record<string, unknown>)?.modelVersion),
     });
     args.notes.push(`Vibode Remove v1: compositor /vibode/remove used (marks=${marks.length}).`);
     return { modelImageUrl: removeResult.imageUrl };
-  } catch (removeErr: any) {
-    const is404 = removeErr?.message?.includes("404");
+  } catch (removeErr: unknown) {
+    const is404 = removeErr instanceof Error && removeErr.message.includes("404");
     if (is404) {
       return {
         response: json(501, {
@@ -1743,7 +1752,7 @@ async function handleCompose(args: {
       roomImageBytes,
       placements,
       enhancePhoto: true,
-      modelVersion: safeStr((args.payloadForModel as any)?.modelVersion),
+      modelVersion: safeStr((args.payloadForModel as Record<string, unknown>)?.modelVersion),
       aspectRatio: pickLegacyAspectRatioFromFreeze(args.payloadForModel),
     });
     args.notes.push(`Compositor /vibode/compose used (placements=${placements.length}).`);
@@ -1987,7 +1996,7 @@ export async function handleGenerateRequest(args: {
     eventType: "spend",
     actionType: tokenActionType,
     stageNumber: args.requestedStageNumber ?? null,
-    modelVersion: safeStr((payloadForModel as any)?.modelVersion),
+    modelVersion: safeStr((payloadForModel as Record<string, unknown>)?.modelVersion),
     roomId: isUuidLike(args.vibodeRoomId ?? null) ? args.vibodeRoomId : null,
     generationRunId: isUuidLike(generationId) ? generationId : null,
     metadata: {
@@ -2013,7 +2022,7 @@ export async function handleGenerateRequest(args: {
     if (isProbablyBlobOrLocalUrl(baseImageUrlForModel)) {
       throw new Error("Resolved base image URL is not valid for model mode (blob/local).");
     }
-  } catch (e: any) {
+  } catch (e: unknown) {
     try {
       await refundTokens({
         supabase,
@@ -2021,7 +2030,7 @@ export async function handleGenerateRequest(args: {
         refundTokens: tokenCost,
         actionType: tokenActionType,
         stageNumber: args.requestedStageNumber ?? null,
-        modelVersion: safeStr((payloadForModel as any)?.modelVersion),
+        modelVersion: safeStr((payloadForModel as Record<string, unknown>)?.modelVersion),
         roomId: isUuidLike(args.vibodeRoomId ?? null) ? args.vibodeRoomId : null,
         generationRunId: isUuidLike(generationId) ? generationId : null,
         metadata: {
@@ -2048,10 +2057,10 @@ export async function handleGenerateRequest(args: {
     const freezeV2Raw =
       payloadVersion === "v2" && isRecord(freeze) ? (freeze as unknown as FreezePayloadV2) : null;
     const vibodeIntent =
-      isRecord(freeze) && isRecord((freeze as any).vibodeIntent)
-        ? (freeze as any).vibodeIntent
-        : isRecord((payloadForModel as any).vibodeIntent)
-        ? (payloadForModel as any).vibodeIntent
+      isRecord(freeze) && isRecord((freeze as Record<string, unknown>).vibodeIntent)
+        ? (freeze as Record<string, unknown>).vibodeIntent
+        : isRecord((payloadForModel as Record<string, unknown>).vibodeIntent)
+        ? (payloadForModel as Record<string, unknown>).vibodeIntent
         : null;
     const rotateMarks = parseVibodeRotateMarks(vibodeIntent);
     const isRotateMode = Boolean(freezeV2Raw && rotateMarks.length > 0);
@@ -2073,8 +2082,8 @@ export async function handleGenerateRequest(args: {
 
       const { base64: roomImageBase64Raw } = await fetchImageAsBase64(baseImageUrlForModel);
       const roomImageBase64 = `data:image/jpeg;base64,${roomImageBase64Raw}`;
-      const eligibleSkus = Array.isArray((vibeInput as any)?.eligibleSkus)
-        ? ((vibeInput as any).eligibleSkus as Array<Record<string, unknown>>)
+      const eligibleSkus = Array.isArray((vibeInput as Record<string, unknown>)?.eligibleSkus)
+        ? ((vibeInput as Record<string, unknown>).eligibleSkus as Array<Record<string, unknown>>)
         : null;
       if (!eligibleSkus) {
         return json(400, {
@@ -2083,8 +2092,8 @@ export async function handleGenerateRequest(args: {
       }
       const eligibleSkusWithImages: Array<Record<string, unknown>> = [];
       for (const sku of eligibleSkus) {
-        const variants = Array.isArray((sku as any)?.variants)
-          ? ((sku as any).variants as Array<Record<string, unknown>>)
+        const variants = Array.isArray((sku as Record<string, unknown>)?.variants)
+          ? ((sku as Record<string, unknown>).variants as Array<Record<string, unknown>>)
           : [];
         const hasVariantImage = variants.some((variant) => {
           if (!isRecord(variant)) return false;
@@ -2097,7 +2106,7 @@ export async function handleGenerateRequest(args: {
           continue;
         }
 
-        const skuId = safeStr((sku as any)?.skuId) ?? "";
+        const skuId = safeStr((sku as Record<string, unknown>)?.skuId) ?? "";
         const url = resolveIkeaSkuImageUrl(skuId);
         if (!url) {
           return json(400, {
@@ -2110,26 +2119,36 @@ export async function handleGenerateRequest(args: {
           variants: [
             {
               variantId: "default",
-              label: (sku as any)?.label ?? "default",
+              label: (sku as Record<string, unknown>)?.label ?? "default",
               imageUrl: url,
             },
           ],
         });
       }
 
-      const vibeCollectionId = safeStr((vibeInput as any)?.collectionId);
-      const vibeBundleId = safeStr((vibeInput as any)?.bundleId);
-      const wsCollectionId = safeStr((payloadForModel as any)?.workingSetSnapshot?.collectionId);
-      const wsBundleId = safeStr((payloadForModel as any)?.workingSetSnapshot?.bundleId);
-      const sceneCollectionId = safeStr(
-        (payloadForModel as any)?.sceneSnapshot?.collection?.collectionId
-      );
-      const sceneBundleId = safeStr((payloadForModel as any)?.sceneSnapshot?.collection?.bundleId);
+      const vibeInputRecord = isRecord(vibeInput) ? vibeInput : null;
+      const payloadForModelRecord = payloadForModel as unknown as Record<string, unknown>;
+      const workingSetSnapshot = isRecord(payloadForModelRecord.workingSetSnapshot)
+        ? payloadForModelRecord.workingSetSnapshot
+        : null;
+      const sceneSnapshot = isRecord(payloadForModelRecord.sceneSnapshot)
+        ? payloadForModelRecord.sceneSnapshot
+        : null;
+      const sceneCollection = sceneSnapshot && isRecord(sceneSnapshot.collection)
+        ? sceneSnapshot.collection
+        : null;
+
+      const vibeCollectionId = safeStr(vibeInputRecord?.collectionId);
+      const vibeBundleId = safeStr(vibeInputRecord?.bundleId);
+      const wsCollectionId = safeStr(workingSetSnapshot?.collectionId);
+      const wsBundleId = safeStr(workingSetSnapshot?.bundleId);
+      const sceneCollectionId = safeStr(sceneCollection?.collectionId);
+      const sceneBundleId = safeStr(sceneCollection?.bundleId);
       const collectionId = vibeCollectionId ?? wsCollectionId ?? sceneCollectionId ?? undefined;
       const bundleId = vibeBundleId ?? wsBundleId ?? sceneBundleId ?? undefined;
       const bundleForTargetCount =
         bundleId === "small" || bundleId === "medium" || bundleId === "large" ? bundleId : undefined;
-      const targetCountInput = (vibeInput as any)?.targetCount;
+      const targetCountInput = vibeInputRecord?.targetCount;
       const targetCount = finiteNumber(targetCountInput)
         ? targetCountInput
         : Math.min(eligibleSkus.length, pickAutoAddCount(bundleForTargetCount));
@@ -2145,11 +2164,11 @@ export async function handleGenerateRequest(args: {
           defaultPxHeight?: number | null;
           realWidthFt?: number | null;
           realDepthFt?: number | null;
-          variants?: Array<Record<string, any>> | null;
+          variants?: Array<Record<string, unknown>> | null;
         }>,
         targetCount,
         enhancePhoto: true,
-        modelVersion: safeStr((payloadForModel as any)?.modelVersion),
+        modelVersion: safeStr((payloadForModel as Record<string, unknown>)?.modelVersion),
         aspectRatio: pickLegacyAspectRatioFromFreeze(payloadForModel) ?? "auto",
       });
       modelImageUrl = vibeStageResult.imageUrl;
@@ -2159,13 +2178,13 @@ export async function handleGenerateRequest(args: {
         const rotateResult = await callCompositorVibodeRotate({
           freezePayload: freezeV2Raw,
           baseImageUrl: baseImageUrlForModel,
-          modelVersion: safeStr((payloadForModel as any)?.modelVersion),
+          modelVersion: safeStr((payloadForModel as Record<string, unknown>)?.modelVersion),
           aspectRatio: pickLegacyAspectRatioFromFreeze(payloadForModel),
         });
         modelImageUrl = rotateResult.imageUrl;
         notes.push(`Vibode Rotate mode: compositor /vibode/rotate used (marks=${rotateMarks.length}).`);
-      } catch (rotateErr: any) {
-        const is404 = rotateErr?.message?.includes("404");
+      } catch (rotateErr: unknown) {
+        const is404 = rotateErr instanceof Error && rotateErr.message.includes("404");
         if (is404) {
           return json(501, {
             error:
@@ -2176,7 +2195,7 @@ export async function handleGenerateRequest(args: {
       }
     } else if (isSwapMode) {
       modelImageUrl = await handleSwap({
-        vibodeIntent,
+        vibodeIntent: isRecord(vibodeIntent) ? vibodeIntent : {},
         swapMarks,
         baseImageUrlForModel,
         payloadForModel,
@@ -2184,7 +2203,7 @@ export async function handleGenerateRequest(args: {
       });
     } else if (isRemoveMode) {
       const removeResult = await handleRemove({
-        vibodeIntent,
+        vibodeIntent: isRecord(vibodeIntent) ? vibodeIntent : {},
         baseImageUrlForModel,
         payloadForModel,
         notes,
@@ -2219,7 +2238,7 @@ export async function handleGenerateRequest(args: {
         refundTokens: tokenCost,
         actionType: tokenActionType,
         stageNumber: args.requestedStageNumber ?? null,
-        modelVersion: safeStr((payloadForModel as any)?.modelVersion),
+        modelVersion: safeStr((payloadForModel as Record<string, unknown>)?.modelVersion),
         roomId: isUuidLike(args.vibodeRoomId ?? null) ? args.vibodeRoomId : null,
         generationRunId: isUuidLike(generationId) ? generationId : null,
         metadata: {
@@ -2275,7 +2294,7 @@ export async function handleGenerateRequest(args: {
             "[vibode/generate] vibode persistence skipped: missing persisted output bucket/key"
           );
         } else {
-          const persistenceClient = supabase as unknown as SupabaseClient<any, "public", any>;
+          const persistenceClient = supabase as unknown as SupabaseClient;
           const existingRoom = await getVibodeRoomById(persistenceClient, args.vibodeRoomId);
 
           if (!existingRoom) {
@@ -2293,7 +2312,7 @@ export async function handleGenerateRequest(args: {
           } else {
             const currentStageNumber =
               parseOptionalStageNumber(args.requestedStageNumber) ?? existingRoom.current_stage ?? 0;
-            const resolvedModelVersion = safeStr((payloadForModel as any)?.modelVersion);
+            const resolvedModelVersion = safeStr((payloadForModel as Record<string, unknown>)?.modelVersion);
             const resolvedAspectRatio =
               safeStr(args.requestedAspectRatio) ?? pickLegacyAspectRatioFromFreeze(payloadForModel);
             const previousActiveAssetId = existingRoom.active_asset_id ?? null;
@@ -2319,7 +2338,7 @@ export async function handleGenerateRequest(args: {
             try {
               if (admin) {
                 const thumbnailLocation = await createVibodeAssetThumbnail({
-                  adminSupabase: admin as SupabaseClient<any, "public", any>,
+                  adminSupabase: admin as SupabaseClient,
                   roomId: existingRoom.id,
                   assetId: outputAsset.id,
                   sourceStorageBucket: persisted.bucket,
@@ -2529,11 +2548,11 @@ export async function handleVibodeGeneratePost(
     // Body shape: { freeze: FreezePayloadV1 | FreezePayloadV2 }.
     // In strict mode, only FreezePayloadV2 is accepted.
     const body = (await req.json()) as unknown;
-    const bodyModelVersion = isRecord(body) ? safeStr((body as any).modelVersion) : null;
-    const bodyVibodeRoomId = isRecord(body) ? safeStr((body as any).vibodeRoomId) : null;
-    const bodyStageNumber = isRecord(body) ? parseOptionalStageNumber((body as any).stageNumber) : null;
-    const bodyAspectRatio = isRecord(body) ? safeStr((body as any).aspectRatio) : null;
-    const vibeInput = isRecord(body) ? (body as any).vibe : undefined;
+    const bodyModelVersion = isRecord(body) ? safeStr((body as Record<string, unknown>).modelVersion) : null;
+    const bodyVibodeRoomId = isRecord(body) ? safeStr((body as Record<string, unknown>).vibodeRoomId) : null;
+    const bodyStageNumber = isRecord(body) ? parseOptionalStageNumber((body as Record<string, unknown>).stageNumber) : null;
+    const bodyAspectRatio = isRecord(body) ? safeStr((body as Record<string, unknown>).aspectRatio) : null;
+    const vibeInput = isRecord(body) ? (body as Record<string, unknown>).vibe : undefined;
     const freeze = applyVibodeRouteModeOverride(
       isRecord(body) ? body.freeze : undefined,
       opts?.routeMode
@@ -2544,7 +2563,7 @@ export async function handleVibodeGeneratePost(
         payloadVersion: freeze.payloadVersion,
         sceneHash: typeof freeze.sceneHash === "string" ? freeze.sceneHash : null,
         nodesLength: Array.isArray(freeze.nodes) ? freeze.nodes.length : null,
-        firstNodeId: Array.isArray(freeze.nodes) ? (freeze.nodes[0] as any)?.nodeId : null,
+        firstNodeId: Array.isArray(freeze.nodes) ? (freeze.nodes[0] as Record<string, unknown>)?.nodeId : null,
       });
     }
 
@@ -2581,12 +2600,12 @@ export async function handleVibodeGeneratePost(
 
     const resolvedModelVersion =
       bodyModelVersion ??
-      safeStr((payload as any)?.modelVersion) ??
+      safeStr((payload as Record<string, unknown>)?.modelVersion) ??
       VIBODE_DEFAULT_MODEL_VERSION;
     const payloadWithModel = {
-      ...(payload as any),
+      ...(payload as Record<string, unknown>),
       modelVersion: resolvedModelVersion,
-    } as FreezePayloadV1;
+    } as unknown as FreezePayloadV1;
 
     return await handleGenerateRequest({
       req,

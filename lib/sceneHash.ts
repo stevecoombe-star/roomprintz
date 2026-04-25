@@ -3,7 +3,7 @@
 // Canonical JSON + SHA-256 (universal: browser + node)
 // ==============================
 
-type Json =
+export type Json =
   | null
   | boolean
   | number
@@ -61,7 +61,7 @@ function bytesToHex(bytes: Uint8Array): string {
  */
 export async function sha256Hex(input: string): Promise<string> {
   // Browser / modern runtimes with Web Crypto
-  const webCrypto = (globalThis as any).crypto;
+  const webCrypto = (globalThis as { crypto?: Crypto }).crypto;
   if (webCrypto?.subtle?.digest) {
     const enc = new TextEncoder();
     const data = enc.encode(input);
@@ -70,7 +70,6 @@ export async function sha256Hex(input: string): Promise<string> {
   }
 
   // Node fallback
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
-  const nodeCrypto = require("crypto") as typeof import("crypto");
+    const nodeCrypto = await import("crypto");
   return nodeCrypto.createHash("sha256").update(input, "utf8").digest("hex");
 }

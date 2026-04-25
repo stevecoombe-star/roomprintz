@@ -2,7 +2,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import { createVibodeAssetThumbnail } from "@/lib/vibodeAssetThumbnails";
 import { createVibodeRoomAsset, updateVibodeRoom, updateVibodeRoomAsset } from "@/lib/vibodePersistence";
 
-type AnySupabaseClient = SupabaseClient<any, "public", any>;
+type AnySupabaseClient = SupabaseClient;
 
 type ResolveStorageInput = Record<string, unknown> & {
   imageUrl?: unknown;
@@ -314,8 +314,8 @@ export async function finalizeVibodeOutputAsset(
     candidateUrl: imageUrl,
     storageBucket,
   });
-  let coverImageUrl = durableImageUrl ?? imageUrl;
-  let coverImageSource: "full" | "response" | "none" = coverImageUrl
+  const coverImageUrl = durableImageUrl ?? imageUrl;
+  const coverImageSource: "full" | "response" | "none" = coverImageUrl
     ? durableImageUrl
       ? "full"
       : "response"

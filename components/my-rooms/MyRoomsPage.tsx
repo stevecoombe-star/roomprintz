@@ -915,7 +915,7 @@ export function MyRoomsPage() {
               Delete room
             </h2>
             <p className="mt-2 text-xs text-slate-400">
-              Delete "{deleteRoom.title}"? This removes the room and its generated history.
+              Delete &quot;{deleteRoom.title}&quot;? This removes the room and its generated history.
             </p>
             <div className="mt-5 flex items-center justify-end gap-2">
               <button
@@ -956,9 +956,9 @@ export function MyRoomsPage() {
               Delete folder
             </h2>
             <p className="mt-2 text-xs text-slate-400">
-              Delete "{deleteFolder.name}"? {deleteFolderRoomCount}{" "}
+              Delete &quot;{deleteFolder.name}&quot;? {deleteFolderRoomCount}{" "}
               {deleteFolderRoomCount === 1 ? "room will" : "rooms will"} stay in your library and be moved to
-              "No folder."
+              &quot;No folder.&quot;
             </p>
             <div className="mt-5 flex items-center justify-end gap-2">
               <button

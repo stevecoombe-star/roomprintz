@@ -35,7 +35,7 @@ export type Phase = "IDLE" | "MARKUP" | "GENERATING" | "SUCCESS" | "ERROR" | "ST
 
 export type VibeMode = "on" | "off";
 
-export type MarkupLayer = { version: "v1"; items: any[] };
+export type MarkupLayer = { version: "v1"; items: unknown[] };
 
 export type GenerationUi = {
   startedAtMs?: number;
@@ -43,7 +43,7 @@ export type GenerationUi = {
   stallHintShown?: boolean;
   message?: string;
   lastErrorUserMessage?: string;
-  lastErrorDebug?: { code?: string; message?: string; raw?: any };
+  lastErrorDebug?: { code?: string; message?: string; raw?: unknown };
 };
 
 export type FurnitureVariant = {
@@ -416,13 +416,16 @@ type EditorState = {
   toggleMarkupVisible: () => void;
   recallLastMarkup: (opts?: { mode: "replace" | "append" }) => boolean;
   tryRestorePendingFromLocalStorage: () => void;
-  beginGenerate: () => { sceneSnapshotForRecovery: any; markupToPersist: MarkupLayer };
+  beginGenerate: () => {
+    sceneSnapshotForRecovery: { [key: string]: unknown };
+    markupToPersist: MarkupLayer;
+  };
   markGeneratingSlow: () => void;
   markGeneratingStall: () => void;
   endGenerateSuccess: (args: { imageUrl: string; widthPx?: number; heightPx?: number }) => void;
   endGenerateError: (args: {
     userMessage: string;
-    debug?: { code?: string; message?: string; raw?: any };
+    debug?: { code?: string; message?: string; raw?: unknown };
   }) => void;
 
   // Vibode vibe-flow flags
@@ -543,10 +546,8 @@ function deepClone<T>(value: T): T {
 
   // Prefer structuredClone when available (browser runtime)
   try {
-    // @ts-ignore
-    if (typeof structuredClone === "function") {
-      // @ts-ignore
-      return structuredClone(value);
+    if (typeof globalThis.structuredClone === "function") {
+      return globalThis.structuredClone(value);
     }
   } catch {
     // fall through
@@ -1347,6 +1348,13 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       Number.isFinite((node as { zIndex?: number }).zIndex)
         ? (node as { zIndex: number }).zIndex
         : getNextZIndexForLayer(get().scene.nodes, layerKind);
+    const statusCandidate = (node as { status?: unknown }).status;
+    const status: FurnitureNodeStatus =
+      statusCandidate === "active" ||
+      statusCandidate === "markedForDelete" ||
+      statusCandidate === "pendingSwap"
+        ? statusCandidate
+        : "active";
 
     const newNode: FurnitureNode = {
       id,
@@ -1356,7 +1364,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       variant: node.variant,
       layerKind,
       zIndex,
-      status: (node as any).status ?? "active",
+      status,
       transform: node.transform,
       provenance: node.provenance,
       pendingSwap: node.pendingSwap,
@@ -1526,20 +1534,37 @@ export const useEditorStore = create<EditorState>((set, get) => ({
 
   tryRestorePendingFromLocalStorage: () => {
     const pending = loadPendingLocal();
-    if (!pending) return;
+    if (!pending || typeof pending !== "object") return;
+    const pendingRecord = pending as Record<string, unknown>;
 
-    const draftMarkup: MarkupLayer = pending.draftMarkup ?? { version: "v1", items: [] };
+    const draftMarkup = normalizeMarkupLayer(
+      (pendingRecord.draftMarkup as MarkupLayer | undefined) ?? null
+    );
     const hasItems = Array.isArray(draftMarkup.items) && draftMarkup.items.length > 0;
-    const removeMarks = Array.isArray(pending.removeMarks) ? pending.removeMarks : [];
-    const rotateMarks = Array.isArray(pending.rotateMarks) ? pending.rotateMarks : [];
+    const removeMarks = Array.isArray(pendingRecord.removeMarks)
+      ? (pendingRecord.removeMarks as RemoveMarkV2[])
+      : [];
+    const rotateMarks = Array.isArray(pendingRecord.rotateMarks)
+      ? (pendingRecord.rotateMarks as VibodeRotateMark[])
+      : [];
+    const baseImageUrl =
+      typeof pendingRecord.baseImageUrl === "string" ? pendingRecord.baseImageUrl : undefined;
+    const baseImageWidthPx =
+      typeof pendingRecord.baseImageWidthPx === "number" ? pendingRecord.baseImageWidthPx : undefined;
+    const baseImageHeightPx =
+      typeof pendingRecord.baseImageHeightPx === "number" ? pendingRecord.baseImageHeightPx : undefined;
+    const vibeMode =
+      pendingRecord.vibeMode === "on" || pendingRecord.vibeMode === "off"
+        ? pendingRecord.vibeMode
+        : undefined;
 
     set((s) => ({
       scene: {
         ...s.scene,
-        baseImageUrl: pending.baseImageUrl ?? s.scene.baseImageUrl,
-        baseImageWidthPx: pending.baseImageWidthPx ?? s.scene.baseImageWidthPx,
-        baseImageHeightPx: pending.baseImageHeightPx ?? s.scene.baseImageHeightPx,
-        vibeMode: pending.vibeMode ?? s.scene.vibeMode,
+        baseImageUrl: baseImageUrl ?? s.scene.baseImageUrl,
+        baseImageWidthPx: baseImageWidthPx ?? s.scene.baseImageWidthPx,
+        baseImageHeightPx: baseImageHeightPx ?? s.scene.baseImageHeightPx,
+        vibeMode: vibeMode ?? s.scene.vibeMode,
         draftMarkup,
         removeMarks,
         rotateMarks,
@@ -1626,7 +1651,8 @@ export const useEditorStore = create<EditorState>((set, get) => ({
 
   endGenerateError: ({ userMessage, debug }) => {
     const pending = loadPendingLocal();
-    const restored: MarkupLayer = pending?.draftMarkup ?? { version: "v1", items: [] };
+    const pendingRecord = pending && typeof pending === "object" ? (pending as Record<string, unknown>) : null;
+    const restored = normalizeMarkupLayer((pendingRecord?.draftMarkup as MarkupLayer | undefined) ?? null);
     set((s) => ({
       scene: {
         ...s.scene,
