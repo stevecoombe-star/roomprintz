@@ -239,15 +239,6 @@ function getValidAspectRatio(value: number | null | undefined) {
   return value;
 }
 
-function getAspectRatioFromDimensions(
-  width: number | null | undefined,
-  height: number | null | undefined
-) {
-  if (typeof width !== "number" || !Number.isFinite(width) || width <= 0) return null;
-  if (typeof height !== "number" || !Number.isFinite(height) || height <= 0) return null;
-  return width / height;
-}
-
 function findSkuById(skuId: string) {
   for (const c of MOCK_COLLECTIONS) {
     const sku = c.catalog[skuId];
@@ -356,8 +347,6 @@ export function EditorCanvas({
   const containerRef = useRef<HTMLDivElement | null>(null);
 
   const baseImageUrl = useEditorStore((s) => s.scene.baseImageUrl);
-  const baseImageWidthPx = useEditorStore((s) => s.scene.baseImageWidthPx);
-  const baseImageHeightPx = useEditorStore((s) => s.scene.baseImageHeightPx);
   const canvasImageUrl = imageUrl ?? baseImageUrl;
   const nodes = useEditorStore((s) => s.scene.nodes);
   const removeMarks = useEditorStore((s) => s.scene.removeMarks ?? []);
@@ -451,23 +440,6 @@ export function EditorCanvas({
     }, 0);
     return () => window.clearTimeout(timeoutId);
   }, [canvasImageUrl, imageStatus, img]);
-
-  const loadedImageAspectRatio = useMemo(() => {
-    if (imageStatus === "loaded" && img) {
-      return getAspectRatioFromDimensions(img.width, img.height);
-    }
-    if (!displayImage) return null;
-    if (canvasImageUrl && displayImageUrl !== canvasImageUrl) return null;
-    return getAspectRatioFromDimensions(displayImage.width, displayImage.height);
-  }, [canvasImageUrl, displayImage, displayImageUrl, imageStatus, img]);
-
-  const sceneMetadataAspectRatio = useMemo(
-    () => getAspectRatioFromDimensions(baseImageWidthPx, baseImageHeightPx),
-    [baseImageHeightPx, baseImageWidthPx]
-  );
-
-  const normalizedFrameAspectRatio =
-    explicitFrameAspectRatio ?? loadedImageAspectRatio ?? sceneMetadataAspectRatio ?? 1;
 
   useEffect(() => {
     if (!canvasImageUrl) return;
@@ -1151,12 +1123,15 @@ export function EditorCanvas({
                   aspectRatio: pinnedPlaceholderAspectRatio,
                 }}
               >
-                <img
-                  src={placeholderImageUrl}
-                  alt=""
-                  className="h-full w-full object-contain blur-lg saturate-75 opacity-80"
-                  draggable={false}
-                />
+                <>
+                  {/* eslint-disable-next-line @next/next/no-img-element -- placeholder layer uses runtime room image URL with controlled blur/object-fit behavior */}
+                  <img
+                    src={placeholderImageUrl}
+                    alt=""
+                    className="h-full w-full object-contain blur-lg saturate-75 opacity-80"
+                    draggable={false}
+                  />
+                </>
               </div>
               <div className="absolute inset-0 bg-neutral-950/35" />
             </div>
@@ -1842,12 +1817,15 @@ export function EditorCanvas({
             {shouldRenderSinglePreview && (
               <div className="relative mx-2 mt-2 mb-1 overflow-hidden rounded-md border border-white/10 bg-neutral-900/70">
                 {pasteToPlaceMenuPreviewUrl ? (
-                  <img
-                    src={pasteToPlaceMenuPreviewUrl}
-                    alt="Clipboard product preview"
-                    className="h-24 w-full max-w-[220px] object-contain"
-                    draggable={false}
-                  />
+                  <>
+                    {/* eslint-disable-next-line @next/next/no-img-element -- preview can be clipboard/data URLs and must preserve current draggable/sizing behavior */}
+                    <img
+                      src={pasteToPlaceMenuPreviewUrl}
+                      alt="Clipboard product preview"
+                      className="h-24 w-full max-w-[220px] object-contain"
+                      draggable={false}
+                    />
+                  </>
                 ) : (
                   <div className="h-24 w-[220px] bg-neutral-900/70" />
                 )}
@@ -1919,12 +1897,15 @@ export function EditorCanvas({
                           className="absolute top-0 h-11 w-8 overflow-hidden rounded-md border border-white/20 bg-neutral-950 shadow-[0_2px_6px_rgba(0,0,0,0.35)]"
                           style={{ left: `${index * 14}px`, zIndex: index + 1 }}
                         >
-                          <img
-                            src={previewUrl}
-                            alt=""
-                            className="h-full w-full object-cover"
-                            draggable={false}
-                          />
+                          <>
+                            {/* eslint-disable-next-line @next/next/no-img-element -- stacked preview cards render dynamic selected-item URLs in menu UI */}
+                            <img
+                              src={previewUrl}
+                              alt=""
+                              className="h-full w-full object-cover"
+                              draggable={false}
+                            />
+                          </>
                         </div>
                       ))
                     ) : (
@@ -2044,12 +2025,15 @@ export function EditorCanvas({
             <div className="flex flex-col rounded-lg border border-white/10 bg-neutral-950/85 shadow-lg backdrop-blur-sm">
               <div className="relative mx-2 my-2 overflow-hidden rounded-md border border-white/10 bg-neutral-900/70">
                 {pasteToPlaceProgressCardPreviewUrl ? (
-                  <img
-                    src={pasteToPlaceProgressCardPreviewUrl}
-                    alt="Clipboard product preview"
-                    className="h-24 w-full max-w-[220px] object-contain"
-                    draggable={false}
-                  />
+                  <>
+                    {/* eslint-disable-next-line @next/next/no-img-element -- progress card preview uses dynamic clipboard/runtime URLs */}
+                    <img
+                      src={pasteToPlaceProgressCardPreviewUrl}
+                      alt="Clipboard product preview"
+                      className="h-24 w-full max-w-[220px] object-contain"
+                      draggable={false}
+                    />
+                  </>
                 ) : (
                   <div className="h-24 w-[220px] bg-neutral-900/70" />
                 )}

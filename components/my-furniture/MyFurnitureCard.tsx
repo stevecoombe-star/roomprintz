@@ -57,6 +57,7 @@ export function MyFurnitureCard({
       <div className="relative">
         <div className="relative aspect-[4/3] w-full overflow-hidden rounded-xl bg-[rgb(237,237,237)] ring-1 ring-black/5">
           {imageUrl ? (
+            /* eslint-disable-next-line @next/next/no-img-element -- image URLs are user/item-provided and rendered with fixed card sizing */
             <img src={imageUrl} alt={title} className="h-full w-full object-contain p-3" loading="lazy" />
           ) : (
             <div className="flex h-full w-full items-center justify-center bg-slate-100 px-4 text-xs text-slate-500">

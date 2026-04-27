@@ -41,7 +41,6 @@ import { PrepareRoomImageError, prepareRoomImageForUpload } from "@/lib/prepareR
 import { getSupabaseBrowserAccessToken, supabaseBrowser } from "@/lib/supabaseBrowser";
 import { useTokenBalance } from "@/hooks/useTokenBalance";
 
-const DND_MIME = "application/x-roomprintz-furniture";
 const USER_SKU_MAX_INPUT_BYTES = 12 * 1024 * 1024;
 const VIBODE_MODEL_STORAGE_KEY = "vibode:modelVersion";
 const FREE_PASTE_TO_PLACE_SESSION_KEY = "vibode:hasUsedFreePasteToPlace";
@@ -1405,7 +1404,6 @@ function EditorPageInner() {
   const viewport = useEditorStore((s) => s.viewport);
 
   const activeTool = useEditorStore((s) => s.ui.activeTool);
-  const selectedNodeId = useEditorStore((s) => s.ui.selectedNodeId);
   const selectedSwapMarkId = useEditorStore((s) => s.ui.selectedSwapMarkId);
 
   const workingSet = useEditorStore((s) => s.workingSet);
@@ -1431,9 +1429,6 @@ function EditorPageInner() {
 
   const applySwap = useEditorStore((s) => s.applySwap);
   const setPendingSwap = useEditorStore((s) => s.setPendingSwap);
-  const addNode = useEditorStore((s) => s.addNode);
-  const deleteNode = useEditorStore((s) => s.deleteNode);
-  const selectNode = useEditorStore((s) => s.selectNode);
   const selectSwapMark = useEditorStore((s) => s.selectSwapMark);
   const setSwapReplacement = useEditorStore((s) => s.setSwapReplacement);
 
@@ -2029,7 +2024,6 @@ function EditorPageInner() {
     isPasteToPlaceCancelling,
     pushSnack,
     activePasteToPlaceJobControlUiState,
-    tryGetSupabaseAccessToken,
   ]);
   const clearPasteToPlaceMenuClipboardPreview = useCallback(() => {
     pasteToPlaceMenuClipboardPreviewTokenRef.current += 1;
@@ -2809,26 +2803,10 @@ function EditorPageInner() {
   const roomOpenBridgeImageUrl = requestedRoomId ? requestedRoomPreviewUrl : null;
   const shouldPreferRoomOpenBridge =
     !!roomOpenBridgeImageUrl && !hasHydratedRequestedRoom;
-  const currentImageWinner = !isRequestedRoomSessionActive
-    ? "sessionInactive"
-    : workingImageUrl
-      ? "workingImageUrl"
-      : activeStageOutputImageUrl
-        ? "activeStageOutputImageUrl"
-        : scene.baseImageUrl
-          ? "scene.baseImageUrl"
-          : "none";
   const currentImageUrl =
     isRequestedRoomSessionActive
       ? workingImageUrl ?? activeStageOutputImageUrl ?? scene.baseImageUrl ?? null
       : null;
-  const previewImageWinner = shouldPreferRoomOpenBridge
-    ? "roomOpenBridgeImageUrl"
-    : currentImageUrl
-      ? currentImageWinner
-      : roomOpenBridgeImageUrl
-        ? "roomOpenBridgeImageUrl:fallback"
-        : "none";
   const previewImageUrl = shouldPreferRoomOpenBridge
     ? roomOpenBridgeImageUrl
     : currentImageUrl ?? roomOpenBridgeImageUrl;
@@ -2885,7 +2863,7 @@ function EditorPageInner() {
   );
   const activeVersionMetadataPlacements = useMemo(
     () => extractScenePlacementsFromUnknown(selectedVersion?.metadata),
-    [selectedVersion?.id, selectedVersion?.metadata]
+    [selectedVersion?.metadata]
   );
   const stage3OutputPlacements = useMemo(
     () => extractScenePlacementsFromUnknown(lastStageOutputs[3]),
@@ -2908,7 +2886,8 @@ function EditorPageInner() {
     stage3OutputPlacements,
   ]);
   const hydrateSceneNodesFromPlacements = useCallback(
-    (_placements: ScenePlacement[]) => {
+    (placements: ScenePlacement[]) => {
+      void placements;
       // Legacy placement->node hydration is intentionally disabled.
       clearLegacyPlacementNodes();
     },
@@ -3232,7 +3211,7 @@ function EditorPageInner() {
     }
   };
 
-  const handleCanvasDragLeave = (event: React.DragEvent<HTMLDivElement>) => {
+  const handleCanvasDragLeave = () => {
     if (!isCanvasEmpty) return;
     roomPhotoCanvasDragDepthRef.current = Math.max(0, roomPhotoCanvasDragDepthRef.current - 1);
     if (roomPhotoCanvasDragDepthRef.current === 0) {
@@ -3546,14 +3525,14 @@ function EditorPageInner() {
   const showSwapReplacementPicker = activeTool === "swap" && !!selectedSwapMarkId;
   const swapReplacementOptions = useMemo(() => {
     const eligibleIds = new Set(
-      (eligibleForDrag ?? [])
+      (workingSet.eligibleSkus ?? [])
         .map((item) => (isRecord(item) && typeof item.skuId === "string" ? item.skuId : null))
         .filter((skuId): skuId is string => Boolean(skuId))
     );
     const preferred = IKEA_CA_SKUS.filter((sku) => eligibleIds.has(sku.skuId));
     const source = preferred.length > 0 ? preferred : IKEA_CA_SKUS;
     return source.slice(0, 12);
-  }, [eligibleForDrag]);
+  }, [workingSet.eligibleSkus]);
   const canApplyCal =
     !!calibration?.draft?.p1 &&
     !!calibration?.draft?.p2 &&
@@ -3628,7 +3607,6 @@ function EditorPageInner() {
     return reasons;
   }, [hasFiniteConversionInputs, hasImageMapping, hasNaturalDims]);
   const isImageSpaceReady = hasNaturalDims && hasImageMapping && hasFiniteConversionInputs;
-  const vibeMode = scene.vibeMode ?? "off";
 
   const blobUrlToBase64 = async (blobUrl: string): Promise<string> => {
     const blobResponse = await fetch(blobUrl);
@@ -3958,8 +3936,10 @@ function EditorPageInner() {
     }
   };
 
-  const runStageWithCancellation = useCallback(
-    async (stageNumber: WorkflowStage, options: Record<string, unknown> = {}) => {
+  const runStageWithCancellation = async (
+    stageNumber: WorkflowStage,
+    options: Record<string, unknown> = {}
+  ) => {
       if (isStageRunSettling) {
         console.info("[Stage-run][settling] stage run blocked because settling", {
           stageNumber,
@@ -3987,17 +3967,7 @@ function EditorPageInner() {
         clearStageRunOperation(operationId, controller);
         clearStageRunSettling();
       }
-    },
-    [
-      beginStageRunOperation,
-      clearStageRunSettling,
-      clearStageRunOperation,
-      isStageRunSettling,
-      isStageRunOperationActive,
-      runStage,
-      stageStatus,
-    ]
-  );
+    };
 
   const runEdit = async (
     action: EditAction,
@@ -4387,7 +4357,8 @@ function EditorPageInner() {
       operationId?: number;
       trigger?: "menu_open_refresh" | "explicit_refresh" | "explicit_paste_flow";
     }): Promise<PasteToPlaceClipboardPreparationResult> => {
-      const isOperationStale = (context: string): boolean => {
+      const isOperationStale = (context?: string): boolean => {
+        void context;
         if (typeof operationId !== "number") return false;
         if (isPasteToPlaceOperationActive(operationId)) return false;
         return true;
@@ -4672,7 +4643,8 @@ function EditorPageInner() {
       source: Extract<ActivePasteSource, { type: "product_url" }>,
       options?: { operationId?: number }
     ): Promise<string | null> => {
-      const isOperationStale = (context: string): boolean => {
+      const isOperationStale = (context?: string): boolean => {
+        void context;
         if (typeof options?.operationId !== "number") return false;
         if (isPasteToPlaceOperationActive(options.operationId)) return false;
         return true;
@@ -4708,10 +4680,6 @@ function EditorPageInner() {
           body: JSON.stringify(requestBody),
         });
         const json = (await res.json().catch(() => ({}))) as PasteToPlaceProductUrlSaveResponse;
-        const code =
-          typeof json.code === "string" && json.code.trim().length > 0 ? json.code.trim() : null;
-        const error =
-          typeof json.error === "string" && json.error.trim().length > 0 ? json.error.trim() : null;
         if (isOperationStale("product_url_save:after_fetch")) {
           return null;
         }
@@ -4766,7 +4734,8 @@ function EditorPageInner() {
       operationId?: number;
       pasteToPlaceControl?: PasteToPlaceJobControl;
     }): Promise<boolean> => {
-      const isOperationStale = (context: string): boolean => {
+      const isOperationStale = (context?: string): boolean => {
+        void context;
         if (typeof operationId !== "number") return false;
         if (isPasteToPlaceOperationActive(operationId)) return false;
         return true;
@@ -4912,7 +4881,6 @@ function EditorPageInner() {
       clearActivePasteToPlaceJobControlIfMatching,
       clearPasteToPlaceAbortController,
       beginPasteToPlaceSettlingRequest,
-      clearPasteToPlaceSettlingForRequest,
     ]
   );
 
@@ -5055,7 +5023,8 @@ function EditorPageInner() {
     }: PasteToPlaceClickHint & {
       operationId: number;
     }): Promise<PasteToPlaceMenuPreparationResult> => {
-      const isOperationStale = (context: string): boolean => {
+      const isOperationStale = (context?: string): boolean => {
+        void context;
         if (isPasteToPlaceOperationActive(operationId)) return false;
         return true;
       };
@@ -5153,7 +5122,6 @@ function EditorPageInner() {
     },
     [
       activatePasteToPlaceSource,
-      buildPreparedMyFurnitureProduct,
       clearPasteToPlaceActiveSource,
       clearPasteToPlaceProgressPreview,
       isPasteToPlaceOperationActive,
@@ -5197,7 +5165,6 @@ function EditorPageInner() {
     const pasteToPlaceControl = createPasteToPlaceJobControl(operationId);
     setActivePasteToPlaceJobControl(pasteToPlaceControl);
     const isOperationStale = (): boolean => !isPasteToPlaceOperationActive(operationId);
-    const settlingRequestId: string | null = null;
     try {
       if (isOperationStale()) return;
       setPasteToPlaceProgressCardState(menuStateSnapshot);
@@ -5332,7 +5299,8 @@ function EditorPageInner() {
     const operationId = beginPasteToPlacePlacementOperation();
     const pasteToPlaceControl = createPasteToPlaceJobControl(operationId);
     setActivePasteToPlaceJobControl(pasteToPlaceControl);
-    const isOperationStale = (context: string): boolean => {
+    const isOperationStale = (context?: string): boolean => {
+      void context;
       if (isPasteToPlaceOperationActive(operationId)) return false;
       return true;
     };
@@ -5416,7 +5384,6 @@ function EditorPageInner() {
     beginPasteToPlaceAbortController,
     beginPasteToPlaceSettlingRequest,
     clearPasteToPlaceAbortController,
-    clearPasteToPlaceSettlingForRequest,
     setActivePasteToPlaceJobControl,
   ]);
 
@@ -5437,7 +5404,11 @@ function EditorPageInner() {
       setIsStageRunSettling(false);
       stageRunOperationIdRef.current += 1;
     };
-  }, [clearPasteToPlaceCancelCooldownTimer, clearStageRunCancelCooldownTimer]);
+  }, [
+    clearPasteToPlaceCancelCooldownTimer,
+    clearStageRunCancelCooldownTimer,
+    setActivePasteToPlaceJobControl,
+  ]);
 
   const warnEdit = (message: string) => {
     setEditWarning(message);
@@ -6106,9 +6077,6 @@ function EditorPageInner() {
   
       console.log("[VIBODE GENERATE RESPONSE]", res.status, j);
 
-      const jDebug = jRecord && isRecord(jRecord.debug) ? jRecord.debug : null;
-      const jOps = jDebug && isRecord(jDebug.ops) ? jDebug.ops : null;
-      const jCounts = jDebug && isRecord(jDebug.counts) ? jDebug.counts : null;
       const jOk = jRecord?.ok;
       const jMode = jRecord?.mode;
       const jCode = safeStr(jRecord?.code) ?? undefined;
@@ -6122,12 +6090,6 @@ function EditorPageInner() {
         });
         return;
       }
-  
-      // Debug / ops summary
-      const nodesTotal = typeof jCounts?.nodesTotal === "number" ? jCounts.nodesTotal : 0;
-      const add = Array.isArray(jOps?.add) ? jOps.add.length : 0;
-      const rm = Array.isArray(jOps?.remove) ? jOps.remove.length : 0;
-      const sw = Array.isArray(jOps?.swap) ? jOps.swap.length : 0;
   
       if (jMode === "echo") {
         useEditorStore.getState().endGenerateError({
@@ -6292,7 +6254,8 @@ function EditorPageInner() {
         });
       }
     }
-  };  
+  };
+  void onGenerate;
 
   const stage5Locked = activeStage === 5 && !hasFurniturePass && !STAGE5_DEV_BYPASS;
   const activeStageTokenCost = STAGE_TOKEN_COST[activeStage] ?? DEFAULT_ACTION_TOKEN_COST;
@@ -6323,12 +6286,15 @@ function EditorPageInner() {
               : "border-neutral-800 bg-neutral-950 hover:bg-neutral-900"
           }`}
         >
-          <img
-            src={versionPreviewUrl}
-            alt={secondaryText}
-            className="h-11 w-14 flex-none rounded bg-neutral-800 object-cover"
-            loading="lazy"
-          />
+          <>
+            {/* eslint-disable-next-line @next/next/no-img-element -- dynamic per-version preview URL and sizing must match existing editor behavior */}
+            <img
+              src={versionPreviewUrl}
+              alt={secondaryText}
+              className="h-11 w-14 flex-none rounded bg-neutral-800 object-cover"
+              loading="lazy"
+            />
+          </>
           <div className="min-w-0">
             <div className="truncate text-xs text-neutral-100">
               {formatVersionTimestamp(asset.created_at)}
@@ -6516,12 +6482,15 @@ function EditorPageInner() {
                             }}
                           >
                             <div className="flex items-center gap-3">
-                              <img
-                                src={sku.imageUrl}
-                                alt={sku.displayName}
-                                className="h-12 w-12 rounded-md bg-neutral-800 object-cover"
-                                loading="lazy"
-                              />
+                              <>
+                                {/* eslint-disable-next-line @next/next/no-img-element -- swap-option thumbnails are dynamic catalog URLs inside editor controls */}
+                                <img
+                                  src={sku.imageUrl}
+                                  alt={sku.displayName}
+                                  className="h-12 w-12 rounded-md bg-neutral-800 object-cover"
+                                  loading="lazy"
+                                />
+                              </>
                               <div className="min-w-0">
                                 <div className="truncate text-sm font-medium text-neutral-100">
                                   {sku.displayName}
@@ -7454,11 +7423,14 @@ function EditorPageInner() {
 
                   {ingestedUserSku.variants?.[0] ? (
                     <div className="mt-2 aspect-[4/3] w-full overflow-hidden rounded-md border border-neutral-800 bg-neutral-900">
-                      <img
-                        src={ingestedUserSku.variants[0]}
-                        alt={ingestedUserSku.label}
-                        className="h-full w-full object-contain"
-                      />
+                      <>
+                        {/* eslint-disable-next-line @next/next/no-img-element -- normalized preview is user-generated runtime content */}
+                        <img
+                          src={ingestedUserSku.variants[0]}
+                          alt={ingestedUserSku.label}
+                          className="h-full w-full object-contain"
+                        />
+                      </>
                     </div>
                   ) : (
                     <div className="mt-2 rounded-md border border-dashed border-neutral-700 px-3 py-2 text-xs text-neutral-500">
@@ -8216,11 +8188,14 @@ function EditorPageInner() {
                       >
                         <div className="flex items-center gap-3">
                           {opt.imageUrl ? (
-                            <img
-                              src={opt.imageUrl}
-                              alt=""
-                              className="h-12 w-12 rounded-md bg-neutral-800 object-cover"
-                            />
+                            <>
+                              {/* eslint-disable-next-line @next/next/no-img-element -- swap modal uses dynamic SKU image URLs and existing sizing behavior */}
+                              <img
+                                src={opt.imageUrl}
+                                alt=""
+                                className="h-12 w-12 rounded-md bg-neutral-800 object-cover"
+                              />
+                            </>
                           ) : null}
                           <div>
                             <div className="text-sm font-medium">{opt.label}</div>

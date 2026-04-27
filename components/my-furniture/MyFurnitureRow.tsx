@@ -72,6 +72,7 @@ export function MyFurnitureRow({
 
       <div className="h-16 w-16 overflow-hidden rounded-xl bg-[rgb(237,237,237)] ring-1 ring-black/5">
         {imageUrl ? (
+          /* eslint-disable-next-line @next/next/no-img-element -- image URLs are user/item-provided and rendered with fixed row sizing */
           <img src={imageUrl} alt={title} className="h-full w-full object-contain p-3" loading="lazy" />
         ) : (
           <div className="flex h-full w-full items-center justify-center text-[10px] text-slate-500">
