@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useCallback, useEffect, useState } from "react";
+import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 
 type BetaSettingsResponse = {
   settings?: {
@@ -20,6 +20,7 @@ type BetaUsersResponse = {
     topupsUsed: number;
     effectiveTopupLimit: number;
     betaTopupLimitOverride: number | null;
+    currentTokenBalance: number;
   }>;
   defaultTopupLimit?: unknown;
   error?: unknown;
@@ -34,6 +35,8 @@ type SaveState = {
   kind: "idle" | "saving" | "success" | "error";
   message?: string;
 };
+
+type UserSortOption = "latest_joined" | "last_sign_in" | "email";
 
 function normalizeString(value: unknown): string {
   return typeof value === "string" ? value : "";
@@ -52,6 +55,11 @@ function formatDate(value: string | null): string {
   return new Date(timestamp).toLocaleString();
 }
 
+function formatTokenBalance(value: number): string {
+  if (!Number.isFinite(value)) return "0";
+  return value.toLocaleString();
+}
+
 export default function AdminControls() {
   const [isLoading, setIsLoading] = useState(true);
   const [globalMessage, setGlobalMessage] = useState<GlobalMessage>(null);
@@ -65,6 +73,7 @@ export default function AdminControls() {
   const [overrideInputs, setOverrideInputs] = useState<Record<string, string>>({});
   const [rowSaveState, setRowSaveState] = useState<Record<string, SaveState>>({});
   const [isUserOverridesExpanded, setIsUserOverridesExpanded] = useState(false);
+  const [userSortBy, setUserSortBy] = useState<UserSortOption>("latest_joined");
 
   const loadData = useCallback(async () => {
     setIsLoading(true);
@@ -219,6 +228,42 @@ export default function AdminControls() {
     }
   };
 
+  const sortedUsers = useMemo(() => {
+    const clone = [...(users ?? [])];
+    if (userSortBy === "last_sign_in") {
+      return clone.sort((a, b) => {
+        const aTimestamp = a.lastSignInAt ? Date.parse(a.lastSignInAt) : Number.NaN;
+        const bTimestamp = b.lastSignInAt ? Date.parse(b.lastSignInAt) : Number.NaN;
+        const aIsValid = Number.isFinite(aTimestamp);
+        const bIsValid = Number.isFinite(bTimestamp);
+        if (!aIsValid && !bIsValid) return 0;
+        if (!aIsValid) return 1;
+        if (!bIsValid) return -1;
+        return bTimestamp - aTimestamp;
+      });
+    }
+    if (userSortBy === "email") {
+      return clone.sort((a, b) => {
+        const aEmail = (a.email ?? "").toLocaleLowerCase();
+        const bEmail = (b.email ?? "").toLocaleLowerCase();
+        if (!aEmail && !bEmail) return 0;
+        if (!aEmail) return 1;
+        if (!bEmail) return -1;
+        return aEmail.localeCompare(bEmail);
+      });
+    }
+    return clone.sort((a, b) => {
+      const aTimestamp = a.createdAt ? Date.parse(a.createdAt) : Number.NaN;
+      const bTimestamp = b.createdAt ? Date.parse(b.createdAt) : Number.NaN;
+      const aIsValid = Number.isFinite(aTimestamp);
+      const bIsValid = Number.isFinite(bTimestamp);
+      if (!aIsValid && !bIsValid) return 0;
+      if (!aIsValid) return 1;
+      if (!bIsValid) return -1;
+      return bTimestamp - aTimestamp;
+    });
+  }, [users, userSortBy]);
+
   return (
     <main className="min-h-screen bg-slate-950 text-slate-50 px-4 py-10">
       <div className="mx-auto w-full max-w-6xl space-y-6">
@@ -302,19 +347,33 @@ export default function AdminControls() {
           {isUserOverridesExpanded && (
             <>
               <div className="mt-4">
-                <button
-                  type="button"
-                  onClick={() => void loadData()}
-                  disabled={isLoading}
-                  className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-200 transition hover:border-emerald-400/80 hover:text-emerald-200 disabled:opacity-60"
-                >
-                  {isLoading ? "Refreshing..." : "Refresh"}
-                </button>
+                <div className="flex flex-wrap items-end gap-3">
+                  <button
+                    type="button"
+                    onClick={() => void loadData()}
+                    disabled={isLoading}
+                    className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-200 transition hover:border-emerald-400/80 hover:text-emerald-200 disabled:opacity-60"
+                  >
+                    {isLoading ? "Refreshing..." : "Refresh"}
+                  </button>
+                  <label className="flex items-center gap-2 text-xs text-slate-300">
+                    <span>Sort by:</span>
+                    <select
+                      value={userSortBy}
+                      onChange={(event) => setUserSortBy(event.target.value as UserSortOption)}
+                      className="rounded-lg border border-slate-700 bg-slate-950 px-2 py-1.5 text-xs text-slate-100 outline-none focus:border-emerald-400"
+                    >
+                      <option value="latest_joined">Latest joined</option>
+                      <option value="last_sign_in">Last sign-in</option>
+                      <option value="email">Email (A → Z)</option>
+                    </select>
+                  </label>
+                </div>
               </div>
 
               <div className="mt-4 space-y-3">
-                {users && users.length > 0 ? (
-                  users.map((user) => {
+                {sortedUsers.length > 0 ? (
+                  sortedUsers.map((user) => {
                     const save = rowSaveState[user.id] ?? { kind: "idle" as const };
                     return (
                       <article
@@ -329,6 +388,9 @@ export default function AdminControls() {
                             </p>
                             <p className="text-xs text-slate-500">
                               Joined: {formatDate(user.createdAt)} · Last sign-in: {formatDate(user.lastSignInAt)}
+                            </p>
+                            <p className="text-xs text-slate-500">
+                              Current balance: {formatTokenBalance(user.currentTokenBalance)} tokens
                             </p>
                           </div>
 

@@ -11,6 +11,11 @@ type TokenLedgerTopupGrantRow = {
   user_id: string;
 };
 
+type UserTokenWalletRow = {
+  user_id: string;
+  balance_tokens: number | null;
+};
+
 function json(status: number, body: Record<string, unknown>) {
   return NextResponse.json(body, { status });
 }
@@ -96,6 +101,15 @@ export async function GET() {
     return json(500, { error: "Failed to load top-up usage counts." });
   }
 
+  const { data: walletRows, error: walletErr } = await supabaseAdmin
+    .from("user_token_wallets")
+    .select("user_id,balance_tokens")
+    .in("user_id", userIds);
+
+  if (walletErr) {
+    return json(500, { error: "Failed to load user token balances." });
+  }
+
   const overrideByUserId = new Map<string, number | null>();
   for (const row of (userSettingsRows ?? []) as BetaUserSettingsLimitRow[]) {
     overrideByUserId.set(row.user_id, parseLimit(row.beta_topup_limit));
@@ -106,11 +120,18 @@ export async function GET() {
     topupUsedByUserId.set(row.user_id, (topupUsedByUserId.get(row.user_id) ?? 0) + 1);
   }
 
+  const balanceByUserId = new Map<string, number>();
+  for (const row of (walletRows ?? []) as UserTokenWalletRow[]) {
+    const parsedBalance = parseLimit(row.balance_tokens);
+    balanceByUserId.set(row.user_id, parsedBalance ?? 0);
+  }
+
   const normalizedUsers = users
     .map((user) => {
       const topupLimitOverride = overrideByUserId.get(user.id) ?? null;
       const effectiveTopupLimit = topupLimitOverride ?? settings.defaultTopupLimit;
       const topupsUsed = topupUsedByUserId.get(user.id) ?? 0;
+      const currentTokenBalance = balanceByUserId.get(user.id) ?? 0;
 
       return {
         id: user.id,
@@ -120,6 +141,7 @@ export async function GET() {
         topupsUsed,
         effectiveTopupLimit,
         betaTopupLimitOverride: topupLimitOverride,
+        currentTokenBalance,
       };
     })
     .sort((a, b) => {
