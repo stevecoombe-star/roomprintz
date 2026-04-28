@@ -120,6 +120,7 @@ export function MyFurniturePicker(props: MyFurniturePickerProps) {
                     >
                       <div className="aspect-[4/3] w-full overflow-hidden rounded-xl bg-[rgb(237,237,237)] ring-1 ring-black/5">
                         {previewUrl ? (
+                          /* eslint-disable-next-line @next/next/no-img-element -- picker previews are dynamic user-provided URLs with fixed card rendering */
                           <img
                             src={previewUrl}
                             alt={label}

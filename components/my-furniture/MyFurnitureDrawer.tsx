@@ -296,6 +296,7 @@ export function MyFurnitureDrawer({
 
         <div className="mt-4 overflow-hidden rounded-xl bg-[rgb(237,237,237)] ring-1 ring-black/5">
           {imageUrl ? (
+            /* eslint-disable-next-line @next/next/no-img-element -- drawer preview uses runtime item URLs with controlled object-fit behavior */
             <img src={imageUrl} alt={title} className="h-64 w-full object-contain p-3" />
           ) : (
             <div className="flex h-64 items-center justify-center text-xs text-slate-500">No preview</div>

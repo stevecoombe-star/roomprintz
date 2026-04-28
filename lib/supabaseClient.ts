@@ -15,7 +15,6 @@ export { browserClient as supabase } from "@/src/lib/supabaseBrowser";
 
 // Optional: gentle console warning in dev to help you migrate imports
 if (process.env.NODE_ENV !== "production") {
-  // eslint-disable-next-line no-console
   console.warn(
     "[DEPRECATED] Import `supabase` from `@/src/lib/supabaseBrowser` instead of `@/lib/supabaseClient`."
   );

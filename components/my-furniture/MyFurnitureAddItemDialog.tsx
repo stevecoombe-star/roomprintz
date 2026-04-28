@@ -292,6 +292,7 @@ export function MyFurnitureAddItemDialog({
             />
             {previewUrl ? (
               <div className="overflow-hidden rounded-lg border border-slate-800 bg-slate-950">
+                {/* eslint-disable-next-line @next/next/no-img-element -- preview can be data/object URLs from paste/upload and must remain raw for editor flow */}
                 <img src={previewUrl} alt="New item preview" className="max-h-48 w-full object-contain" />
               </div>
             ) : null}
