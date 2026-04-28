@@ -443,7 +443,6 @@ export async function POST(request: Request) {
     "user_token_wallets",
     "token_ledger",
     "profiles",
-    "account_entitlements",
     "subscriptions",
     "token_balance",
   ];
