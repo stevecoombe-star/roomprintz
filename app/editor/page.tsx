@@ -1532,6 +1532,7 @@ function EditorPageInner() {
   const activePasteToPlaceJobControlRef = useRef<PasteToPlaceJobControl | null>(null);
   const [activePasteToPlaceJobControlUiState, setActivePasteToPlaceJobControlUiState] =
     useState<PasteToPlaceJobControl | null>(null);
+  const inFlightProductUrlAutosavesRef = useRef<Map<string, Promise<string | null>>>(new Map());
   const pasteToPlaceAbortControllerRef = useRef<AbortController | null>(null);
   const activePasteToPlaceSettlingRequestIdRef = useRef<string | null>(null);
   const pasteToPlaceCancelCooldownTimerRef = useRef<number | null>(null);
@@ -4643,25 +4644,43 @@ function EditorPageInner() {
       source: Extract<ActivePasteSource, { type: "product_url" }>,
       options?: { operationId?: number }
     ): Promise<string | null> => {
-      const isOperationStale = (context?: string): boolean => {
-        void context;
-        if (typeof options?.operationId !== "number") return false;
-        if (isPasteToPlaceOperationActive(options.operationId)) return false;
-        return true;
-      };
-      // Prepare-only product_url sources must always persist after placement, even if
-      // upstream prepare payloads accidentally carry furniture identifiers.
-      if (!source.preparedOnly && source.preparedProduct.savedFurnitureId) {
-        return source.preparedProduct.savedFurnitureId;
+      const saveKey = [
+        source.userSkuId.trim(),
+        source.preparedProduct.skuId.trim(),
+        (source.sourceUrl ?? "").trim().toLowerCase(),
+      ].join("::");
+      const existingSavedFurnitureId =
+        source.preparedProduct.savedFurnitureId ?? source.furnitureId ?? null;
+      console.info("[Paste-to-Place][product_url_save] deciding autosave", {
+        operationId: options?.operationId ?? null,
+        saveKey,
+        userSkuId: source.userSkuId,
+        sourceUrl: source.sourceUrl,
+        preparedOnly: source.preparedOnly,
+        existingSavedFurnitureId,
+      });
+      if (existingSavedFurnitureId) {
+        console.info("[Paste-to-Place][product_url_save] skipping save (already saved)", {
+          operationId: options?.operationId ?? null,
+          saveKey,
+          savedFurnitureId: existingSavedFurnitureId,
+        });
+        return existingSavedFurnitureId;
       }
-      if (isOperationStale("product_url_save:start")) {
-        return null;
+      const existingInFlight = inFlightProductUrlAutosavesRef.current.get(saveKey);
+      if (existingInFlight) {
+        console.info("[Paste-to-Place][product_url_save] skipping save (already in-flight)", {
+          operationId: options?.operationId ?? null,
+          saveKey,
+        });
+        return existingInFlight;
       }
-      try {
+      const savePromise = (async (): Promise<string | null> => {
         const accessToken = await tryGetSupabaseAccessToken();
-        if (isOperationStale("product_url_save:before_fetch")) {
-          return null;
-        }
+        console.info("[Paste-to-Place][product_url_save] starting save", {
+          operationId: options?.operationId ?? null,
+          saveKey,
+        });
         const requestBody = {
           userSkuId: source.userSkuId,
           sourceType: "product_url",
@@ -4680,23 +4699,28 @@ function EditorPageInner() {
           body: JSON.stringify(requestBody),
         });
         const json = (await res.json().catch(() => ({}))) as PasteToPlaceProductUrlSaveResponse;
-        if (isOperationStale("product_url_save:after_fetch")) {
-          return null;
-        }
         if (!res.ok) {
+          console.warn("[Paste-to-Place][product_url_save] save failed", {
+            operationId: options?.operationId ?? null,
+            saveKey,
+            status: res.status,
+          });
           return null;
         }
         const savedFurnitureId = parseProductUrlSaveFurnitureId(json);
         if (!savedFurnitureId) {
-          return null;
-        }
-        if (isOperationStale("product_url_save:before_activate_source")) {
+          console.warn("[Paste-to-Place][product_url_save] save failed", {
+            operationId: options?.operationId ?? null,
+            saveKey,
+            reason: "missing_saved_furniture_id",
+          });
           return null;
         }
         const currentSource = activePasteSourceRef.current;
         if (
           currentSource?.type === "product_url" &&
           currentSource.userSkuId === source.userSkuId &&
+          currentSource.preparedProduct.skuId === source.preparedProduct.skuId &&
           !currentSource.preparedProduct.savedFurnitureId
         ) {
           activatePasteToPlaceSource(
@@ -4712,12 +4736,28 @@ function EditorPageInner() {
             "product_url_saved_after_placement"
           );
         }
+        console.info("[Paste-to-Place][product_url_save] save success", {
+          operationId: options?.operationId ?? null,
+          saveKey,
+          savedFurnitureId,
+        });
         return savedFurnitureId;
-      } catch {
-        return null;
-      }
+      })()
+        .catch((error) => {
+          console.warn("[Paste-to-Place][product_url_save] save failed", {
+            operationId: options?.operationId ?? null,
+            saveKey,
+            error: error instanceof Error ? error.message : String(error),
+          });
+          return null;
+        })
+        .finally(() => {
+          inFlightProductUrlAutosavesRef.current.delete(saveKey);
+        });
+      inFlightProductUrlAutosavesRef.current.set(saveKey, savePromise);
+      return savePromise;
     },
-    [activatePasteToPlaceSource, isPasteToPlaceOperationActive]
+    [activatePasteToPlaceSource]
   );
 
   const runPasteToPlaceClickTargetEdit = useCallback(
@@ -4822,21 +4862,29 @@ function EditorPageInner() {
         );
         clearPasteToPlaceAbortController(abortController);
         const isAfterEditStale = isOperationStale("execute:after_edit_run");
-        if (isAfterEditStale) return false;
         if (!res) {
           return true;
         }
+        // Placement is already committed at this point; allow product_url post-placement save
+        // to continue even when operation IDs were invalidated by preview cleanup callbacks.
+        if (isAfterEditStale && sourceForPlacement.type !== "product_url") return false;
 
         let savedFurnitureId =
-          sourceForPlacement.type === "product_url" && sourceForPlacement.preparedOnly
-            ? null
-            : sourceForPlacement.preparedProduct.savedFurnitureId ?? null;
+          sourceForPlacement.preparedProduct.savedFurnitureId ??
+          (sourceForPlacement.type === "product_url" ? sourceForPlacement.furnitureId : null) ??
+          null;
         if (sourceForPlacement.type === "product_url" && !savedFurnitureId) {
-          if (isOperationStale("execute:before_product_url_save")) return false;
+          console.info("[Paste-to-Place][product_url_save] invoking post-placement autosave", {
+            operationId: operationId ?? null,
+            preparedOnly: sourceForPlacement.preparedOnly,
+            hasSavedFurnitureId: !!sourceForPlacement.preparedProduct.savedFurnitureId,
+          });
           const persistedFurnitureId = await savePreparedProductUrlToMyFurniture(sourceForPlacement, {
             operationId,
           });
-          if (isOperationStale("execute:after_product_url_save")) return false;
+          if (isOperationStale("execute:after_product_url_save") && sourceForPlacement.type !== "product_url") {
+            return false;
+          }
           if (persistedFurnitureId) {
             savedFurnitureId = persistedFurnitureId;
           } else {

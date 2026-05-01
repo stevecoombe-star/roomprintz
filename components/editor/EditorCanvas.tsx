@@ -1803,7 +1803,7 @@ export function EditorCanvas({
       {pasteToPlaceMenuState && (
         <div
           ref={pasteToPlaceMenuRef}
-          className="absolute z-30"
+          className="absolute z-30 w-[280px] min-w-0 max-w-[calc(100vw-2rem)] overflow-hidden"
           style={{
             left:
               clampedPasteToPlaceMenuPosition?.left ??
@@ -1813,21 +1813,21 @@ export function EditorCanvas({
               pasteToPlaceMenuState.anchorCssY + PASTE_TO_PLACE_MENU_OFFSET_PX,
           }}
         >
-          <div className="flex flex-col rounded-lg border border-white/10 bg-neutral-950/85 shadow-lg backdrop-blur-sm">
+          <div className="flex w-full min-w-0 flex-col overflow-hidden rounded-lg border border-white/10 bg-neutral-950/85 shadow-lg backdrop-blur-sm">
             {shouldRenderSinglePreview && (
-              <div className="relative mx-2 mt-2 mb-1 overflow-hidden rounded-md border border-white/10 bg-neutral-900/70">
+              <div className="relative mx-2 mt-2 mb-1 flex justify-center overflow-hidden rounded-md border border-white/10 bg-neutral-900/70">
                 {pasteToPlaceMenuPreviewUrl ? (
                   <>
                     {/* eslint-disable-next-line @next/next/no-img-element -- preview can be clipboard/data URLs and must preserve current draggable/sizing behavior */}
                     <img
                       src={pasteToPlaceMenuPreviewUrl}
                       alt="Clipboard product preview"
-                      className="h-24 w-full max-w-[220px] object-contain"
+                      className="mx-auto h-24 w-full max-w-[220px] object-contain"
                       draggable={false}
                     />
                   </>
                 ) : (
-                  <div className="h-24 w-[220px] bg-neutral-900/70" />
+                  <div className="h-24 w-[220px] max-w-full bg-neutral-900/70" />
                 )}
                 {isPasteToPlaceMenuPreviewLoading && (
                   <div className="absolute inset-0 flex items-center justify-center bg-neutral-950/35">
@@ -1838,16 +1838,18 @@ export function EditorCanvas({
             )}
             {!isPasteToPlaceMyFurnitureMultiSelect &&
               (pasteToPlaceProductDisplayName || pasteToPlaceProductSupplier || pasteToPlaceProductSourceUrl) && (
-                <div className="mx-2 mt-1 mb-1 rounded-md border border-white/10 bg-neutral-900/70 px-3 py-2 text-xs text-neutral-200">
+                <div className="mx-2 mt-1 mb-1 min-w-0 overflow-hidden rounded-md border border-white/10 bg-neutral-900/70 px-3 py-2 text-xs text-neutral-200">
                   {pasteToPlaceProductDisplayName && (
-                    <div className="truncate font-medium text-neutral-100">{pasteToPlaceProductDisplayName}</div>
+                    <div className="line-clamp-2 min-w-0 break-words overflow-hidden font-medium text-neutral-100">
+                      {pasteToPlaceProductDisplayName}
+                    </div>
                   )}
-                  <div className="mt-0.5 flex items-center gap-2 text-neutral-400">
+                  <div className="mt-0.5 flex min-w-0 items-center gap-2 overflow-hidden text-neutral-400">
                     {pasteToPlaceProductSupplier && (
-                      <span className="truncate">{pasteToPlaceProductSupplier}</span>
+                      <span className="min-w-0 truncate">{pasteToPlaceProductSupplier}</span>
                     )}
                     {pasteToPlaceProductSourceUrl && (
-                      <span className="truncate">
+                      <span className="min-w-0 truncate">
                         {(() => {
                           try {
                             return formatSourceHostLabel(new URL(pasteToPlaceProductSourceUrl).hostname);
