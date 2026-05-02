@@ -37,6 +37,7 @@ import {
   type PasteToPlaceJobControl,
 } from "@/lib/pasteToPlaceJobControl";
 import { PrepareRoomImageError, prepareRoomImageForUpload } from "@/lib/prepareRoomImageForUpload";
+import type { DetectedRoomObjectLabel } from "@/lib/vibodeRoomObjectLabels";
 
 import { getSupabaseBrowserAccessToken, supabaseBrowser } from "@/lib/supabaseBrowser";
 import { useTokenBalance } from "@/hooks/useTokenBalance";
@@ -49,6 +50,8 @@ const EDITOR_RIGHT_PANEL_STATE_KEY = "vibode.editor.rightPanelState.v1";
 const VIBODE_MODEL_NBP = "NBP";
 const VIBODE_MODEL_NB2 = "NB2";
 const ROOM_PREPARING_MESSAGE = "Your room is still preparing. Try again in a moment.";
+const REMOVE_LABEL_FALLBACK = "object";
+const REMOVE_LABEL_PLACEHOLDER = "";
 const PASTE_TO_PLACE_CANCEL_SETTLE_MS = 20000;
 const STAGE_RUN_CANCEL_SETTLE_MS = 20000;
 const LOW_TOKEN_WARNING_THRESHOLD = 10;
@@ -107,11 +110,29 @@ function safeStr(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
 }
 
+function buildRemovePromptForLabel(label: string): string {
+  if (label === REMOVE_LABEL_FALLBACK) {
+    return "Remove only the object directly under the red X marker. Preserve all other furniture, walls, floors, lighting, shadows, and room details.";
+  }
+  return `Remove only the ${label} under the red X marker. Preserve all other furniture, walls, floors, lighting, shadows, and room details.`;
+}
+
 function isServerFetchableImageUrl(url: string | null | undefined): boolean {
   if (!url || typeof url !== "string") return false;
   const trimmed = url.trim();
   if (!trimmed) return false;
   return /^https?:\/\//i.test(trimmed);
+}
+
+function isDataImageUrl(url: string | null | undefined): boolean {
+  if (!url || typeof url !== "string") return false;
+  const trimmed = url.trim();
+  if (!trimmed) return false;
+  return /^data:/i.test(trimmed);
+}
+
+function isRoomReadImageUrlSupported(url: string | null | undefined): boolean {
+  return isServerFetchableImageUrl(url) || isDataImageUrl(url);
 }
 
 function readFileAsDataUrl(file: File): Promise<string> {
@@ -400,6 +421,9 @@ type RotateToolState = {
   marker: RotateMarker | null;
   direction: RotateDirection;
   amountDegrees: RotateAmount;
+};
+type RoomReadResponse = {
+  objects?: DetectedRoomObjectLabel[];
 };
 type PasteToPlacePreparedProduct = {
   source: "clipboard" | "my_furniture" | "product_url";
@@ -1625,6 +1649,13 @@ function EditorPageInner() {
   const [isEditRunning, setIsEditRunning] = useState(false);
   const [removeMarkerPosition, setRemoveMarkerPosition] = useState<PasteToPlaceClickHint | null>(null);
   const [isRemoveMarkerTargeting, setIsRemoveMarkerTargeting] = useState(false);
+  const [detectedRoomObjectLabels, setDetectedRoomObjectLabels] = useState<DetectedRoomObjectLabel[]>(
+    []
+  );
+  const [selectedRemoveLabel, setSelectedRemoveLabel] = useState<string>(REMOVE_LABEL_PLACEHOLDER);
+  const roomReadByImageKeyRef = useRef<Map<string, DetectedRoomObjectLabel[]>>(new Map());
+  const roomReadInFlightKeysRef = useRef<Set<string>>(new Set());
+  const roomReadSkipLogKeysRef = useRef<Set<string>>(new Set());
   // TODO(vibode-entitlements): replace this local free-gate stub with server entitlements.
   const [hasUsedFreePasteToPlace, setHasUsedFreePasteToPlace] = useState(() => {
     if (typeof window === "undefined") return false;
@@ -2785,6 +2816,124 @@ function EditorPageInner() {
       setWorkingImageUrl(scene.baseImageUrl);
     }
   }, [activeAssetId, requestedRoomId, scene.baseImageUrl, vibodeRoomId, versions, workingImageUrl]);
+  useEffect(() => {
+    const imageUrl = workingImageUrl?.trim();
+    const logRoomReadSkip = (reason: string) => {
+      const skipKey = `${reason}:${vibodeRoomId ?? "no_room"}:${activeAssetId ?? "no_asset"}:${imageUrl ?? "no_image"}`;
+      if (roomReadSkipLogKeysRef.current.has(skipKey)) return;
+      roomReadSkipLogKeysRef.current.add(skipKey);
+      if (roomReadSkipLogKeysRef.current.size > 300) {
+        roomReadSkipLogKeysRef.current.clear();
+      }
+      console.log(`[vibode/room-read] skipped: ${reason}`);
+    };
+
+    if (!imageUrl) {
+      logRoomReadSkip("no stable image");
+      return;
+    }
+
+    if (!isRoomReadImageUrlSupported(imageUrl)) {
+      logRoomReadSkip("non-server-fetchable imageUrl");
+      return;
+    }
+
+    const isPreparingOrHydrating =
+      isRoomHydrating || canvasPresentation.isHydratingRoom || isRoomOpenRevealSettling || isUploading || isOptimizingRoomImage;
+    if (isPreparingOrHydrating) {
+      logRoomReadSkip("editor hydrating/preparing");
+      return;
+    }
+
+    const hasStableUnversionedContext =
+      !vibodeRoomId &&
+      !requestedRoomId &&
+      typeof scene.baseImageUrl === "string" &&
+      scene.baseImageUrl.trim() === imageUrl &&
+      isRoomReadImageUrlSupported(scene.baseImageUrl);
+
+    if (!activeAssetId && !hasStableUnversionedContext) {
+      logRoomReadSkip("no stable image context");
+      return;
+    }
+
+    const unversionedImageKey = `unversioned:${imageUrl}`;
+    const imageKey = activeAssetId
+      ? `${vibodeRoomId ?? "no_room"}:${activeAssetId}:${imageUrl}`
+      : unversionedImageKey;
+    const cached = roomReadByImageKeyRef.current.get(imageKey) ??
+      roomReadByImageKeyRef.current.get(unversionedImageKey);
+    if (cached) {
+      roomReadByImageKeyRef.current.set(imageKey, cached);
+      setDetectedRoomObjectLabels(cached);
+      return;
+    }
+    if (
+      roomReadInFlightKeysRef.current.has(imageKey) ||
+      (imageKey !== unversionedImageKey && roomReadInFlightKeysRef.current.has(unversionedImageKey))
+    ) {
+      return;
+    }
+
+    roomReadInFlightKeysRef.current.add(imageKey);
+    console.log("[vibode/room-read] request started", {
+      imageKey,
+      vibodeRoomId: vibodeRoomId ?? null,
+      activeAssetId: activeAssetId ?? null,
+    });
+
+    void (async () => {
+      try {
+        const accessToken = await tryGetSupabaseAccessToken();
+        const res = await fetch("/api/vibode/room-read", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
+          },
+          body: JSON.stringify({
+            imageUrl,
+            vibodeRoomId: vibodeRoomId ?? undefined,
+            assetId: activeAssetId ?? undefined,
+          }),
+        });
+        if (!res.ok) {
+          const text = await res.text().catch(() => "");
+          throw new Error(`HTTP ${res.status} ${text}`.trim());
+        }
+        const json = (await res.json().catch(() => ({}))) as RoomReadResponse;
+        const objects = Array.isArray(json.objects) ? json.objects : [];
+        roomReadByImageKeyRef.current.set(imageKey, objects);
+        roomReadByImageKeyRef.current.set(unversionedImageKey, objects);
+        setDetectedRoomObjectLabels(objects);
+        console.log("[vibode/room-read] normalized labels returned", {
+          imageKey,
+          labels: objects.map((item) => item.label),
+        });
+      } catch (err: unknown) {
+        console.warn("[vibode/room-read] failed fallback", {
+          imageKey,
+          error: err instanceof Error ? err.message : String(err),
+        });
+        roomReadByImageKeyRef.current.set(imageKey, []);
+        roomReadByImageKeyRef.current.set(unversionedImageKey, []);
+        setDetectedRoomObjectLabels([]);
+      } finally {
+        roomReadInFlightKeysRef.current.delete(imageKey);
+      }
+    })();
+  }, [
+    activeAssetId,
+    canvasPresentation.isHydratingRoom,
+    isOptimizingRoomImage,
+    isRoomHydrating,
+    isRoomOpenRevealSettling,
+    isUploading,
+    requestedRoomId,
+    scene.baseImageUrl,
+    vibodeRoomId,
+    workingImageUrl,
+  ]);
   const isBaseImageEditReady = useMemo(() => {
     return (
       !isRoomHydrating &&
@@ -3284,6 +3433,25 @@ function EditorPageInner() {
 
   const hasActiveRemoveMarker = Boolean(removeMarkerPosition);
   const hasActiveRotateMarker = Boolean(rotateToolState.marker);
+  const removeLabelOptions = useMemo(() => {
+    const labels = Array.from(
+      new Set(
+        detectedRoomObjectLabels
+          .map((item) => item.label)
+          .filter((label) => label !== REMOVE_LABEL_FALLBACK)
+      )
+    );
+    return [...labels, REMOVE_LABEL_FALLBACK];
+  }, [detectedRoomObjectLabels]);
+
+  useEffect(() => {
+    if (selectedRemoveLabel === REMOVE_LABEL_PLACEHOLDER) {
+      return;
+    }
+    if (!removeLabelOptions.includes(selectedRemoveLabel)) {
+      setSelectedRemoveLabel(REMOVE_LABEL_PLACEHOLDER);
+    }
+  }, [removeLabelOptions, selectedRemoveLabel]);
 
   const queuedDeletes = useMemo(
     () => nodes.filter((n) => n.status === "markedForDelete").length,
@@ -4040,7 +4208,7 @@ function EditorPageInner() {
         const xNorm = Math.max(0, Math.min(1, xNormRaw));
         const yNorm = Math.max(0, Math.min(1, yNormRaw));
         normalizedTarget = { xNorm, yNorm, x: xNorm, y: yNorm };
-        normalizedParams = { xNorm, yNorm, x: xNorm, y: yNorm };
+        normalizedParams = { ...paramsRecord, xNorm, yNorm, x: xNorm, y: yNorm };
       } else if (action === "rotate") {
         const xNormRaw =
           parseFiniteNumber(payloadParts.xNorm) ??
@@ -5653,10 +5821,22 @@ function EditorPageInner() {
       warnEdit("Place a remove marker first.");
       return;
     }
+    const label = selectedRemoveLabel || REMOVE_LABEL_FALLBACK;
+    const removePrompt = buildRemovePromptForLabel(label);
+    console.log("[editor][remove] selected remove label", { label });
+    console.log("[editor][remove] final remove prompt", { prompt: removePrompt });
     const { xNorm, yNorm } = removeMarkerPosition;
     const res = await runEdit("remove", {
       target: { xNorm, yNorm },
-      params: { x: xNorm, y: yNorm, xNorm, yNorm },
+      params: {
+        x: xNorm,
+        y: yNorm,
+        xNorm,
+        yNorm,
+        removeLabel: label,
+        prompt: removePrompt,
+        instruction: removePrompt,
+      },
     });
     if (!res) return;
     clearRemoveMarker(false);
@@ -7039,6 +7219,33 @@ function EditorPageInner() {
 
               <div className="mt-3">
                 <div className="text-xs text-neutral-400">Remove</div>
+                <div className="mt-2">
+                  <label className="text-[11px] text-neutral-500" htmlFor="remove-label-select">
+                    Removing:
+                  </label>
+                  <select
+                    id="remove-label-select"
+                    value={selectedRemoveLabel}
+                    disabled={isEditRunning}
+                    className={`mt-1 w-full rounded-md border bg-neutral-950 px-2 py-1 text-xs ${
+                      isEditRunning
+                        ? "border-neutral-900 text-neutral-500"
+                        : "border-neutral-700 text-neutral-100 hover:bg-neutral-900"
+                    }`}
+                    onChange={(event) => {
+                      const nextLabel = event.target.value;
+                      setSelectedRemoveLabel(nextLabel);
+                      console.log("[editor][remove] selected remove label", { label: nextLabel });
+                    }}
+                  >
+                    <option value={REMOVE_LABEL_PLACEHOLDER}>Select item to remove</option>
+                    {removeLabelOptions.map((label) => (
+                      <option key={label} value={label}>
+                        {label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
                 <div className="mt-1 grid grid-cols-2 gap-2">
                   {!hasActiveRemoveMarker ? (
                     <button
