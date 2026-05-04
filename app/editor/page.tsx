@@ -1818,6 +1818,23 @@ function EditorPageInner() {
       ui: s.ui.selectedNodeId ? { ...s.ui, selectedNodeId: null } : s.ui,
     }));
   }, []);
+  const clearTransientInteractionOverlaysAfterImageCommit = useCallback(() => {
+    setRemoveMarkerPosition(null);
+    setIsRemoveMarkerTargeting(false);
+    setRotateToolState((prev) => (prev.marker ? { ...prev, marker: null } : prev));
+    setIsRotateMarkerTargeting(false);
+    setEditWarning(null);
+
+    setPasteToPlaceStatus(null);
+    setPasteToPlaceMenuState(null);
+    setPasteToPlaceProgressCardState(null);
+    setIsPasteToPlaceMenuIngesting(false);
+    setIsPasteToPlaceMenuClipboardPreviewLoading(false);
+    pasteToPlaceMenuClipboardPreviewTokenRef.current += 1;
+    setPasteToPlaceMenuClipboardPreviewUrl(null);
+
+    useEditorStore.getState().clearRemoveMarks();
+  }, []);
   useEffect(() => {
     requestedRoomIdRef.current = requestedRoomId;
   }, [requestedRoomId]);
@@ -2816,76 +2833,58 @@ function EditorPageInner() {
       setWorkingImageUrl(scene.baseImageUrl);
     }
   }, [activeAssetId, requestedRoomId, scene.baseImageUrl, vibodeRoomId, versions, workingImageUrl]);
-  useEffect(() => {
-    const imageUrl = workingImageUrl?.trim();
-    const logRoomReadSkip = (reason: string) => {
-      const skipKey = `${reason}:${vibodeRoomId ?? "no_room"}:${activeAssetId ?? "no_asset"}:${imageUrl ?? "no_image"}`;
-      if (roomReadSkipLogKeysRef.current.has(skipKey)) return;
-      roomReadSkipLogKeysRef.current.add(skipKey);
-      if (roomReadSkipLogKeysRef.current.size > 300) {
-        roomReadSkipLogKeysRef.current.clear();
+  const hydrateRoomImageObjects = useCallback(
+    async (args: {
+      trigger: "load" | "room-upload" | "stage-run" | "edit-run" | "paste-to-place";
+      imageUrl: string | null;
+      roomId: string | null;
+      assetId: string | null;
+      versionId?: string | null;
+      allowRoomReadOnMiss: boolean;
+    }) => {
+      const imageUrl = args.imageUrl?.trim() ?? null;
+      const versionId = args.versionId ?? args.assetId;
+      const hasStableIdentity = Boolean(args.roomId || args.assetId || versionId);
+      const skipReason = !hasStableIdentity
+        ? "no stable image identity"
+        : imageUrl && !isRoomReadImageUrlSupported(imageUrl)
+          ? "non-supported image URL"
+          : null;
+
+      if (skipReason) {
+        const skipKey = `${args.trigger}:${skipReason}:${args.roomId ?? "no_room"}:${args.assetId ?? "no_asset"}:${imageUrl ?? "no_image"}`;
+        if (!roomReadSkipLogKeysRef.current.has(skipKey)) {
+          roomReadSkipLogKeysRef.current.add(skipKey);
+          if (roomReadSkipLogKeysRef.current.size > 300) {
+            roomReadSkipLogKeysRef.current.clear();
+          }
+          console.log("[room-image-objects] skipped because no stable image identity", {
+            trigger: args.trigger,
+            reason: skipReason,
+          });
+        }
+        if (!args.allowRoomReadOnMiss) {
+          setDetectedRoomObjectLabels([]);
+        }
+        return;
       }
-      console.log(`[vibode/room-read] skipped: ${reason}`);
-    };
 
-    if (!imageUrl) {
-      logRoomReadSkip("no stable image");
-      return;
-    }
+      const imageIdentity = `${args.roomId ?? "no_room"}:${args.assetId ?? "no_asset"}:${versionId ?? "no_version"}:${imageUrl ?? "no_image"}`;
+      const cacheKey = `${imageIdentity}:${args.allowRoomReadOnMiss ? "warm" : "read"}`;
+      const cached = roomReadByImageKeyRef.current.get(cacheKey) ?? roomReadByImageKeyRef.current.get(imageIdentity);
+      if (cached) {
+        roomReadByImageKeyRef.current.set(cacheKey, cached);
+        setDetectedRoomObjectLabels(cached);
+        return;
+      }
+      if (roomReadInFlightKeysRef.current.has(cacheKey)) {
+        return;
+      }
 
-    if (!isRoomReadImageUrlSupported(imageUrl)) {
-      logRoomReadSkip("non-server-fetchable imageUrl");
-      return;
-    }
-
-    const isPreparingOrHydrating =
-      isRoomHydrating || canvasPresentation.isHydratingRoom || isRoomOpenRevealSettling || isUploading || isOptimizingRoomImage;
-    if (isPreparingOrHydrating) {
-      logRoomReadSkip("editor hydrating/preparing");
-      return;
-    }
-
-    const hasStableUnversionedContext =
-      !vibodeRoomId &&
-      !requestedRoomId &&
-      typeof scene.baseImageUrl === "string" &&
-      scene.baseImageUrl.trim() === imageUrl &&
-      isRoomReadImageUrlSupported(scene.baseImageUrl);
-
-    if (!activeAssetId && !hasStableUnversionedContext) {
-      logRoomReadSkip("no stable image context");
-      return;
-    }
-
-    const unversionedImageKey = `unversioned:${imageUrl}`;
-    const imageKey = activeAssetId
-      ? `${vibodeRoomId ?? "no_room"}:${activeAssetId}:${imageUrl}`
-      : unversionedImageKey;
-    const cached = roomReadByImageKeyRef.current.get(imageKey) ??
-      roomReadByImageKeyRef.current.get(unversionedImageKey);
-    if (cached) {
-      roomReadByImageKeyRef.current.set(imageKey, cached);
-      setDetectedRoomObjectLabels(cached);
-      return;
-    }
-    if (
-      roomReadInFlightKeysRef.current.has(imageKey) ||
-      (imageKey !== unversionedImageKey && roomReadInFlightKeysRef.current.has(unversionedImageKey))
-    ) {
-      return;
-    }
-
-    roomReadInFlightKeysRef.current.add(imageKey);
-    console.log("[vibode/room-read] request started", {
-      imageKey,
-      vibodeRoomId: vibodeRoomId ?? null,
-      activeAssetId: activeAssetId ?? null,
-    });
-
-    void (async () => {
+      roomReadInFlightKeysRef.current.add(cacheKey);
       try {
         const accessToken = await tryGetSupabaseAccessToken();
-        const res = await fetch("/api/vibode/room-read", {
+        const res = await fetch("/api/vibode/room-image-objects", {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
@@ -2893,8 +2892,10 @@ function EditorPageInner() {
           },
           body: JSON.stringify({
             imageUrl,
-            vibodeRoomId: vibodeRoomId ?? undefined,
-            assetId: activeAssetId ?? undefined,
+            vibodeRoomId: args.roomId ?? undefined,
+            assetId: args.assetId ?? undefined,
+            versionId: versionId ?? undefined,
+            allowRoomReadOnMiss: args.allowRoomReadOnMiss,
           }),
         });
         if (!res.ok) {
@@ -2903,37 +2904,35 @@ function EditorPageInner() {
         }
         const json = (await res.json().catch(() => ({}))) as RoomReadResponse;
         const objects = Array.isArray(json.objects) ? json.objects : [];
-        roomReadByImageKeyRef.current.set(imageKey, objects);
-        roomReadByImageKeyRef.current.set(unversionedImageKey, objects);
+        roomReadByImageKeyRef.current.set(imageIdentity, objects);
+        roomReadByImageKeyRef.current.set(cacheKey, objects);
         setDetectedRoomObjectLabels(objects);
-        console.log("[vibode/room-read] normalized labels returned", {
-          imageKey,
-          labels: objects.map((item) => item.label),
-        });
       } catch (err: unknown) {
-        console.warn("[vibode/room-read] failed fallback", {
-          imageKey,
+        console.warn("[room-image-objects] failed", {
+          trigger: args.trigger,
           error: err instanceof Error ? err.message : String(err),
         });
-        roomReadByImageKeyRef.current.set(imageKey, []);
-        roomReadByImageKeyRef.current.set(unversionedImageKey, []);
-        setDetectedRoomObjectLabels([]);
+        if (!args.allowRoomReadOnMiss) {
+          setDetectedRoomObjectLabels([]);
+        }
       } finally {
-        roomReadInFlightKeysRef.current.delete(imageKey);
+        roomReadInFlightKeysRef.current.delete(cacheKey);
       }
-    })();
-  }, [
-    activeAssetId,
-    canvasPresentation.isHydratingRoom,
-    isOptimizingRoomImage,
-    isRoomHydrating,
-    isRoomOpenRevealSettling,
-    isUploading,
-    requestedRoomId,
-    scene.baseImageUrl,
-    vibodeRoomId,
-    workingImageUrl,
-  ]);
+    },
+    []
+  );
+
+  useEffect(() => {
+    const imageUrl = workingImageUrl?.trim() ?? null;
+    void hydrateRoomImageObjects({
+      trigger: "load",
+      imageUrl,
+      roomId: vibodeRoomId,
+      assetId: activeAssetId,
+      versionId: activeAssetId,
+      allowRoomReadOnMiss: false,
+    });
+  }, [activeAssetId, hydrateRoomImageObjects, vibodeRoomId, workingImageUrl]);
   const isBaseImageEditReady = useMemo(() => {
     return (
       !isRoomHydrating &&
@@ -3311,13 +3310,23 @@ function EditorPageInner() {
       setWorkingImageUrl(up.signedUrl);
       setIsWorkingImageGenerated(false);
       setVibodeRoomId(up.vibodeRoomId ?? null);
+      let resolvedAssetId: string | null = null;
       if (up.vibodeRoomId) {
         const latestVersions = await refreshRoomVersions(up.vibodeRoomId);
         const baseAsset = latestVersions?.find((asset) => asset.asset_type === "base") ?? null;
         const activeAsset = latestVersions?.find((asset) => asset.is_active) ?? null;
         setRoomBaseAssetId(baseAsset?.id ?? null);
-        setActiveAssetId(activeAsset?.id ?? baseAsset?.id ?? null);
+        resolvedAssetId = activeAsset?.id ?? baseAsset?.id ?? null;
+        setActiveAssetId(resolvedAssetId);
       }
+      await hydrateRoomImageObjects({
+        trigger: "room-upload",
+        imageUrl: up.signedUrl,
+        roomId: up.vibodeRoomId ?? null,
+        assetId: resolvedAssetId,
+        versionId: resolvedAssetId,
+        allowRoomReadOnMiss: true,
+      });
       pushSnack("Room photo uploaded.");
     } catch (err: unknown) {
       console.error(err);
@@ -4049,7 +4058,9 @@ function EditorPageInner() {
       if (!isInlineImageSource(nextImageUrl)) {
         setBaseImageUrl(nextImageUrl);
       }
+      clearTransientInteractionOverlaysAfterImageCommit();
       lifecycle?.onImageCommitted?.(nextImageUrl);
+      let resolvedAssetId: string | null = activeAssetId;
       if (vibodeRoomId) {
         const latestVersions = await refreshRoomVersions(vibodeRoomId);
         if (lifecycle?.beforeCommit && !lifecycle.beforeCommit()) {
@@ -4060,8 +4071,17 @@ function EditorPageInner() {
         if (baseAsset) {
           setRoomBaseAssetId(baseAsset.id);
         }
-        setActiveAssetId(activeAsset?.id ?? latestVersions?.[0]?.id ?? null);
+        resolvedAssetId = activeAsset?.id ?? latestVersions?.[0]?.id ?? null;
+        setActiveAssetId(resolvedAssetId);
       }
+      await hydrateRoomImageObjects({
+        trigger: "stage-run",
+        imageUrl: nextImageUrl,
+        roomId: vibodeRoomId,
+        assetId: resolvedAssetId,
+        versionId: resolvedAssetId,
+        allowRoomReadOnMiss: true,
+      });
 
       if (stageNumber === 3) {
         setHasFurniturePass(true);
@@ -4298,7 +4318,14 @@ function EditorPageInner() {
         throw new Error("Edit run response missing imageUrl.");
       }
 
-      if (lifecycle?.beforeCommit && !lifecycle.beforeCommit()) {
+      const lifecycleBeforeCommit = lifecycle?.beforeCommit;
+      const lifecycleOnImageCommitted = lifecycle?.onImageCommitted;
+      const responseImageUrl = json.imageUrl.trim();
+      const roomIdForCommittedImage = vibodeRoomId;
+      const isPasteToPlaceCommit = Boolean(requestOptions?.pasteToPlaceControl);
+      const roomImageObjectsTrigger = isPasteToPlaceCommit ? "paste-to-place" : "edit-run";
+
+      if (lifecycleBeforeCommit && !lifecycleBeforeCommit()) {
         return null;
       }
       setWorkingImageUrl(json.imageUrl);
@@ -4308,22 +4335,67 @@ function EditorPageInner() {
         setScenePlacements(json.placements);
         hydrateSceneNodesFromPlacements(json.placements);
       }
-      if (vibodeRoomId) {
-        const latestVersions = await refreshRoomVersions(vibodeRoomId);
-        if (lifecycle?.beforeCommit && !lifecycle.beforeCommit()) {
+      clearLegacyPlacementNodes();
+      clearTransientInteractionOverlaysAfterImageCommit();
+      if (!isPasteToPlaceCommit) {
+        lifecycleOnImageCommitted?.(json as VibodeEditRunResponse);
+      }
+      let resolvedAssetId: string | null = null;
+      let resolvedImageUrl: string | null = responseImageUrl;
+      if (roomIdForCommittedImage) {
+        const latestVersions = await refreshRoomVersions(roomIdForCommittedImage);
+        if (lifecycleBeforeCommit && !lifecycleBeforeCommit()) {
           return null;
         }
-        const responseImageUrl = json.imageUrl.trim();
+        const activeVersion = latestVersions?.find((asset) => asset.is_active) ?? null;
         const matchingVersion =
           latestVersions?.find((asset) => asset.image_url === responseImageUrl) ??
           latestVersions?.find((asset) => asset.preview_url === responseImageUrl) ??
           null;
-        if (matchingVersion) {
-          setActiveAssetId(matchingVersion.id);
+        const resolvedVersion = matchingVersion ?? activeVersion ?? latestVersions?.[0] ?? null;
+        if (resolvedVersion) {
+          resolvedAssetId = resolvedVersion.id;
+          resolvedImageUrl =
+            resolvedVersion.image_url?.trim() ||
+            resolvedVersion.preview_url?.trim() ||
+            responseImageUrl;
+          setActiveAssetId(resolvedVersion.id);
         }
       }
-      clearLegacyPlacementNodes();
-      lifecycle?.onImageCommitted?.(json as VibodeEditRunResponse);
+      if (!resolvedAssetId) {
+        console.warn("[room-image-objects] skipped", {
+          trigger: roomImageObjectsTrigger,
+          reason: "unable to resolve durable asset/version identity",
+          roomId: roomIdForCommittedImage,
+          responseImageUrl,
+        });
+      } else if (!resolvedImageUrl) {
+        console.warn("[room-image-objects] skipped", {
+          trigger: roomImageObjectsTrigger,
+          reason: "missing final committed durable image URL",
+          roomId: roomIdForCommittedImage,
+          assetId: resolvedAssetId,
+        });
+      } else {
+        if (isPasteToPlaceCommit) {
+          console.log("[room-image-objects] paste-to-place hydration requested", {
+            imageUrl: resolvedImageUrl,
+            roomId: roomIdForCommittedImage,
+            assetId: resolvedAssetId,
+          });
+        }
+        await hydrateRoomImageObjects({
+          trigger: roomImageObjectsTrigger,
+          imageUrl: resolvedImageUrl,
+          roomId: roomIdForCommittedImage,
+          assetId: resolvedAssetId,
+          versionId: resolvedAssetId,
+          allowRoomReadOnMiss: true,
+        });
+      }
+      if (isPasteToPlaceCommit) {
+        lifecycleOnImageCommitted?.(json as VibodeEditRunResponse);
+      }
       const tokenUsageMessage = buildTokenUsageMessage(json);
       pushSnack(`Applied ${action}. ${tokenUsageMessage}.`);
       notifyTokenBalanceChanged();
@@ -6402,14 +6474,54 @@ function EditorPageInner() {
       });
       setWorkingImageUrl(imageUrl);
       setIsWorkingImageGenerated(true);
+      clearTransientInteractionOverlaysAfterImageCommit();
+      const responseImageUrl = imageUrl.trim();
+      let resolvedAssetId: string | null = null;
+      let resolvedImageUrl: string | null = responseImageUrl;
       if (vibodeRoomId) {
         const latestVersions = await refreshRoomVersions(vibodeRoomId);
         const baseAsset = latestVersions?.find((asset) => asset.asset_type === "base") ?? null;
         const activeAsset = latestVersions?.find((asset) => asset.is_active) ?? null;
+        const matchingVersion =
+          latestVersions?.find((asset) => asset.image_url === responseImageUrl) ??
+          latestVersions?.find((asset) => asset.preview_url === responseImageUrl) ??
+          null;
         if (baseAsset) {
           setRoomBaseAssetId(baseAsset.id);
         }
-        setActiveAssetId(activeAsset?.id ?? latestVersions?.[0]?.id ?? null);
+        const resolvedVersion = matchingVersion ?? activeAsset ?? latestVersions?.[0] ?? null;
+        if (resolvedVersion) {
+          resolvedAssetId = resolvedVersion.id;
+          resolvedImageUrl =
+            resolvedVersion.image_url?.trim() ||
+            resolvedVersion.preview_url?.trim() ||
+            responseImageUrl;
+          setActiveAssetId(resolvedVersion.id);
+        }
+      }
+      if (!resolvedAssetId) {
+        console.warn("[room-image-objects] skipped", {
+          trigger: "paste-to-place",
+          reason: "unable to resolve durable asset/version identity",
+          roomId: vibodeRoomId,
+          responseImageUrl,
+        });
+      } else if (!resolvedImageUrl) {
+        console.warn("[room-image-objects] skipped", {
+          trigger: "paste-to-place",
+          reason: "missing final committed durable image URL",
+          roomId: vibodeRoomId,
+          assetId: resolvedAssetId,
+        });
+      } else {
+        await hydrateRoomImageObjects({
+          trigger: "paste-to-place",
+          imageUrl: resolvedImageUrl,
+          roomId: vibodeRoomId,
+          assetId: resolvedAssetId,
+          versionId: resolvedAssetId,
+          allowRoomReadOnMiss: true,
+        });
       }
 
       clearPendingLocal();
