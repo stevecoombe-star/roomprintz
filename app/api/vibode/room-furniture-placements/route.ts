@@ -15,7 +15,9 @@ type PlacementRow = {
   room_id: string;
   furniture_id: string | null;
   thumbnail_url: string | null;
+  thumbnail_path: string | null;
   source_image_url: string;
+  source_image_path: string | null;
   // x/y are normalized canvas coordinates in [0, 1], not pixel positions.
   x: number;
   y: number;
@@ -39,6 +41,21 @@ function safeStr(value: unknown): string | null {
 function safeOptionalStr(value: unknown): string | null {
   if (value === null || value === undefined) return null;
   return safeStr(value);
+}
+
+function parseOptionalStoragePath(value: unknown): { value: string | null; error: string | null } {
+  if (value === undefined || value === null) return { value: null, error: null };
+  if (typeof value !== "string") {
+    return { value: null, error: "Path fields must be strings when provided." };
+  }
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return { value: null, error: "Path fields must be non-empty strings when provided." };
+  }
+  if (/^https?:\/\//i.test(trimmed)) {
+    return { value: null, error: "Path fields must be storage paths, not full URLs." };
+  }
+  return { value: trimmed, error: null };
 }
 
 function safeFiniteNumber(value: unknown): number | null {
@@ -152,6 +169,14 @@ export async function POST(req: NextRequest) {
 
     const furnitureId = safeOptionalStr(body.furnitureId);
     const thumbnailUrl = safeOptionalStr(body.thumbnailUrl);
+    const sourceImagePathResult = parseOptionalStoragePath(body.sourceImagePath);
+    if (sourceImagePathResult.error) {
+      return jsonError(sourceImagePathResult.error, 400, { field: "sourceImagePath" });
+    }
+    const thumbnailPathResult = parseOptionalStoragePath(body.thumbnailPath);
+    if (thumbnailPathResult.error) {
+      return jsonError(thumbnailPathResult.error, 400, { field: "thumbnailPath" });
+    }
     const scale = safeFiniteNumber(body.scale) ?? 1;
     const rotation = safeFiniteNumber(body.rotation) ?? 0;
     const isVisible = safeOptionalBoolean(body.isVisible) ?? true;
@@ -163,7 +188,9 @@ export async function POST(req: NextRequest) {
       room_id: roomId,
       furniture_id: furnitureId,
       thumbnail_url: thumbnailUrl,
+      thumbnail_path: thumbnailPathResult.value,
       source_image_url: sourceImageUrl,
+      source_image_path: sourceImagePathResult.value,
       x: normalizedX,
       y: normalizedY,
       scale,
@@ -208,6 +235,14 @@ export async function PATCH(req: NextRequest) {
     const furnitureId = safeOptionalStr(body.furnitureId);
     const thumbnailUrl = safeOptionalStr(body.thumbnailUrl);
     const sourceImageUrl = safeOptionalStr(body.sourceImageUrl);
+    const sourceImagePathResult = parseOptionalStoragePath(body.sourceImagePath);
+    if (sourceImagePathResult.error) {
+      return jsonError(sourceImagePathResult.error, 400, { field: "sourceImagePath" });
+    }
+    const thumbnailPathResult = parseOptionalStoragePath(body.thumbnailPath);
+    if (thumbnailPathResult.error) {
+      return jsonError(thumbnailPathResult.error, 400, { field: "thumbnailPath" });
+    }
     const x = safeFiniteNumber(body.x);
     const y = safeFiniteNumber(body.y);
     const scale = safeFiniteNumber(body.scale);
@@ -216,12 +251,14 @@ export async function PATCH(req: NextRequest) {
 
     if (furnitureId !== null) patch.furniture_id = furnitureId;
     if (thumbnailUrl !== null) patch.thumbnail_url = thumbnailUrl;
+    if ("thumbnailPath" in body) patch.thumbnail_path = thumbnailPathResult.value;
     if (sourceImageUrl !== null) {
       if (!isDurableImageUrl(sourceImageUrl)) {
         return jsonError("sourceImageUrl must be a durable http(s) URL.", 400);
       }
       patch.source_image_url = sourceImageUrl;
     }
+    if ("sourceImagePath" in body) patch.source_image_path = sourceImagePathResult.value;
     if (x !== null) patch.x = clampNormalizedCoordinate(x);
     if (y !== null) patch.y = clampNormalizedCoordinate(y);
     if (scale !== null) patch.scale = scale;

@@ -131,6 +131,99 @@ function isDurablePlacementSourceImageUrl(url: string | null | undefined): boole
   return !/^(https?:\/\/localhost|https?:\/\/127\.0\.0\.1|https?:\/\/0\.0\.0\.0)/i.test(trimmed);
 }
 
+const STORAGE_PATH_CANDIDATE_KEYS = [
+  "storagePath",
+  "storage_path",
+  "imagePath",
+  "image_path",
+  "previewImagePath",
+  "preview_image_path",
+  "normalizedPath",
+  "normalized_path",
+  "objectPath",
+  "object_path",
+] as const;
+
+const STORAGE_OBJECT_IMAGE_EXTENSION_RE = /\.(?:png|jpe?g|webp|gif|avif)$/i;
+const KNOWN_STORAGE_PATH_PREFIXES = [
+  "property-images/",
+  "vibode-generations/",
+  "vibode-base-images/",
+] as const;
+
+function extractSupabaseStorageObjectPathFromUrl(url: string | null | undefined): string | null {
+  if (!url || typeof url !== "string") return null;
+  const trimmed = url.trim();
+  if (!trimmed) return null;
+  let parsed: URL;
+  try {
+    parsed = new URL(trimmed);
+  } catch {
+    return null;
+  }
+  const pathname = parsed.pathname ?? "";
+  const match = pathname.match(/^\/storage\/v1\/object\/(?:sign|public)\/(.+)$/i);
+  if (!match || typeof match[1] !== "string") return null;
+  const rawPath = match[1].trim().replace(/^\/+/, "");
+  if (!rawPath) return null;
+  try {
+    return decodeURIComponent(rawPath);
+  } catch {
+    return rawPath;
+  }
+}
+
+function normalizeRawStorageObjectPathCandidate(value: string): string | null {
+  const normalized = value.trim().replace(/^\/+/, "");
+  if (!normalized) return null;
+  if (/^(https?:|data:|blob:)/i.test(normalized)) return null;
+  const pathOnly = normalized.split(/[?#]/, 1)[0]?.trim() ?? "";
+  if (!pathOnly) return null;
+  if (!pathOnly.includes("/")) return null;
+  if (!STORAGE_OBJECT_IMAGE_EXTENSION_RE.test(pathOnly)) return null;
+  const [bucket] = pathOnly.split("/", 1);
+  if (!bucket || !/^[a-z0-9][a-z0-9._-]*$/i.test(bucket)) return null;
+  const lowered = pathOnly.toLowerCase();
+  if (KNOWN_STORAGE_PATH_PREFIXES.some((prefix) => lowered.startsWith(prefix))) {
+    return pathOnly;
+  }
+  return pathOnly;
+}
+
+function normalizeStorageObjectPathCandidate(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  if (/^https?:\/\//i.test(trimmed)) {
+    return extractSupabaseStorageObjectPathFromUrl(trimmed);
+  }
+  return normalizeRawStorageObjectPathCandidate(trimmed);
+}
+
+function extractStorageObjectPathFromUnknown(value: unknown, depth = 0): string | null {
+  if (depth > 4 || value === null || value === undefined) return null;
+  if (typeof value === "string") {
+    return extractSupabaseStorageObjectPathFromUrl(value);
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const found = extractStorageObjectPathFromUnknown(item, depth + 1);
+      if (found) return found;
+    }
+    return null;
+  }
+  if (!isRecord(value)) return null;
+  for (const key of STORAGE_PATH_CANDIDATE_KEYS) {
+    const found = normalizeStorageObjectPathCandidate(value[key]);
+    if (found) return found;
+  }
+  for (const nestedValue of Object.values(value)) {
+    const found = extractStorageObjectPathFromUnknown(nestedValue, depth + 1);
+    if (found) return found;
+  }
+  return null;
+}
+
 function isDataImageUrl(url: string | null | undefined): boolean {
   if (!url || typeof url !== "string") return false;
   const trimmed = url.trim();
@@ -438,7 +531,9 @@ type PlacementLayerNode = {
   roomId: string;
   furnitureId: string | null;
   thumbnailUrl: string | null;
+  thumbnailPath: string | null;
   sourceImageUrl: string;
+  sourceImagePath: string | null;
   // x/y are normalized canvas coordinates in [0, 1], not pixel positions.
   x: number;
   y: number;
@@ -475,6 +570,8 @@ type ActivePasteSource =
       durableSavedPreviewUrl: string | null;
       rawPreviewUrl: string | null;
       normalizedPreviewUrl: string | null;
+      sourceImagePathHint: string | null;
+      thumbnailPathHint: string | null;
       clipboardDataUrlHash: string;
       requestId?: string | null;
       activatedAt: number;
@@ -489,6 +586,8 @@ type ActivePasteSource =
       preparedProduct: PreparedProductLike;
       rawPreviewUrl: string | null;
       normalizedPreviewUrl: string | null;
+      sourceImagePathHint: string | null;
+      thumbnailPathHint: string | null;
       clipboardDataUrlHash: null;
       activatedAt: number;
     }
@@ -500,6 +599,8 @@ type ActivePasteSource =
       preparedProduct: PreparedProductLike;
       rawPreviewUrl: string | null;
       normalizedPreviewUrl: string | null;
+      sourceImagePathHint: string | null;
+      thumbnailPathHint: string | null;
       displayName: string | null;
       supplier: string | null;
       domain: string | null;
@@ -638,6 +739,11 @@ function parseSavedFurnitureDurablePreviewUrl(savedFurniture: unknown): string |
     return normalizedCandidate;
   }
   return null;
+}
+
+function parseSavedFurnitureStoragePath(savedFurniture: unknown): string | null {
+  if (!isRecord(savedFurniture)) return null;
+  return extractStorageObjectPathFromUnknown(savedFurniture);
 }
 type PasteToPlaceMenuState = {
   xNorm: number;
@@ -1136,7 +1242,9 @@ function normalizePlacementLayerNode(value: unknown): PlacementLayerNode | null 
     roomId,
     furnitureId: safeStr(value.furniture_id) ?? safeStr(value.furnitureId),
     thumbnailUrl: safeStr(value.thumbnail_url) ?? safeStr(value.thumbnailUrl),
+    thumbnailPath: safeStr(value.thumbnail_path) ?? safeStr(value.thumbnailPath),
     sourceImageUrl,
+    sourceImagePath: safeStr(value.source_image_path) ?? safeStr(value.sourceImagePath),
     x,
     y,
     scale,
@@ -2901,6 +3009,14 @@ function EditorPageInner() {
         preparedProduct,
         rawPreviewUrl: null,
         normalizedPreviewUrl: options?.normalizedPreviewUrl ?? fallbackPreview,
+        sourceImagePathHint: extractStorageObjectPathFromUnknown([
+          preparedProduct,
+          options?.normalizedPreviewUrl ?? fallbackPreview,
+        ]),
+        thumbnailPathHint: extractStorageObjectPathFromUnknown([
+          preparedProduct,
+          options?.normalizedPreviewUrl ?? fallbackPreview,
+        ]),
         clipboardDataUrlHash: null,
         activatedAt: Date.now(),
       }, "my_furniture_selected");
@@ -4654,6 +4770,8 @@ function EditorPageInner() {
       userSku: UserSku;
       savedFurnitureId: string | null;
       savedFurniturePreviewUrl: string | null;
+      savedFurnitureStoragePath: string | null;
+      userSkuStoragePath: string | null;
     } | null> => {
       try {
         const accessToken = await tryGetSupabaseAccessToken();
@@ -4716,14 +4834,17 @@ function EditorPageInner() {
 
         let savedFurnitureId: string | null = null;
         let savedFurniturePreviewUrl: string | null = null;
+        let savedFurnitureStoragePath: string | null = null;
         if (isRecord(json.savedFurniture)) {
           const maybeId = (json.savedFurniture as Record<string, unknown>).id;
           if (typeof maybeId === "string" && maybeId.trim().length > 0) {
             savedFurnitureId = maybeId;
           }
           savedFurniturePreviewUrl = parseSavedFurnitureDurablePreviewUrl(json.savedFurniture);
+          savedFurnitureStoragePath = parseSavedFurnitureStoragePath(json.savedFurniture);
           pushSnack("Saved to My Furniture ✓");
         }
+        const userSkuStoragePath = extractStorageObjectPathFromUnknown(userSku);
         const readyUserSku = userSku as UserSku;
         const normalizedUserSku: UserSku = {
           skuId: readyUserSku.skuId.trim(),
@@ -4740,6 +4861,8 @@ function EditorPageInner() {
           userSku: normalizedUserSku,
           savedFurnitureId,
           savedFurniturePreviewUrl,
+          savedFurnitureStoragePath,
+          userSkuStoragePath,
         };
       } catch {
         return null;
@@ -4871,6 +4994,14 @@ function EditorPageInner() {
         durableSavedPreviewUrl: ingested.savedFurniturePreviewUrl ?? null,
         rawPreviewUrl: clipboardDataUrl,
         normalizedPreviewUrl,
+        sourceImagePathHint:
+          ingested.savedFurnitureStoragePath ??
+          ingested.userSkuStoragePath ??
+          extractStorageObjectPathFromUnknown(preparedProduct),
+        thumbnailPathHint:
+          ingested.savedFurnitureStoragePath ??
+          ingested.userSkuStoragePath ??
+          extractStorageObjectPathFromUnknown(preparedProduct),
         clipboardDataUrlHash,
         requestId,
         activatedAt: Date.now(),
@@ -5007,6 +5138,10 @@ function EditorPageInner() {
         preparedProduct,
         rawPreviewUrl: null,
         normalizedPreviewUrl,
+        sourceImagePathHint:
+          extractStorageObjectPathFromUnknown([prepared, preparedProduct, normalizedPreviewUrl]) ?? null,
+        thumbnailPathHint:
+          extractStorageObjectPathFromUnknown([prepared, preparedProduct, normalizedPreviewUrl]) ?? null,
         displayName,
         supplier,
         domain,
@@ -5165,12 +5300,16 @@ function EditorPageInner() {
       furnitureId: string | null;
       sourceImageUrl: string | null;
       thumbnailUrl: string | null;
+      sourceImagePath: string | null;
+      thumbnailPath: string | null;
       xNorm: number;
       yNorm: number;
     }) => {
       const roomId = args.roomId?.trim() ?? null;
       const sourceImageUrl = args.sourceImageUrl?.trim() ?? null;
       const thumbnailUrl = args.thumbnailUrl?.trim() ?? null;
+      const sourceImagePath = normalizeStorageObjectPathCandidate(args.sourceImagePath);
+      const thumbnailPath = normalizeStorageObjectPathCandidate(args.thumbnailPath);
       const xRaw = Number.isFinite(args.xNorm) ? args.xNorm : null;
       const yRaw = Number.isFinite(args.yNorm) ? args.yNorm : null;
       const x = xRaw === null ? null : Math.max(0, Math.min(1, xRaw));
@@ -5229,7 +5368,9 @@ function EditorPageInner() {
           roomId,
           furnitureId: args.furnitureId ?? null,
           thumbnailUrl,
+          thumbnailPath,
           sourceImageUrl,
+          sourceImagePath,
           // Persist normalized [0,1] canvas/image coordinates.
           x,
           y,
@@ -5263,6 +5404,8 @@ function EditorPageInner() {
           roomId,
           id: createdNode.id,
           furnitureId: createdNode.furnitureId,
+          hasSourceImagePath: Boolean(createdNode.sourceImagePath),
+          hasThumbnailPath: Boolean(createdNode.thumbnailPath),
           operationId,
         });
         if (operationId !== null) {
@@ -5432,6 +5575,21 @@ function EditorPageInner() {
             : null;
         const placementSourceImageUrl =
           durableSavedPreviewUrl ?? durableNormalizedPreviewUrl ?? durableRawPreviewUrl ?? null;
+        const sourceImagePath =
+          sourceForPlacement.sourceImagePathHint ??
+          extractStorageObjectPathFromUnknown([
+            sourceForPlacement.preparedProduct,
+            sourceForPlacement,
+          ]) ??
+          extractSupabaseStorageObjectPathFromUrl(placementSourceImageUrl);
+        const placementThumbnailUrl = placementSourceImageUrl;
+        const thumbnailPath =
+          sourceForPlacement.thumbnailPathHint ??
+          extractStorageObjectPathFromUnknown([
+            sourceForPlacement.preparedProduct,
+            sourceForPlacement,
+          ]) ??
+          extractSupabaseStorageObjectPathFromUrl(placementThumbnailUrl);
         void (async () => {
           try {
             await createPlacementLayerNodeAfterPasteCommit({
@@ -5439,7 +5597,9 @@ function EditorPageInner() {
               roomId: vibodeRoomId,
               furnitureId: savedFurnitureId,
               sourceImageUrl: placementSourceImageUrl,
-              thumbnailUrl: placementSourceImageUrl,
+              thumbnailUrl: placementThumbnailUrl,
+              sourceImagePath: sourceImagePath ?? null,
+              thumbnailPath: thumbnailPath ?? null,
               xNorm,
               yNorm,
             });
