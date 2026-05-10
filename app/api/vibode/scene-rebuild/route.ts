@@ -28,6 +28,7 @@ type SceneRebuildRequest = {
   modelVersion?: unknown;
   aspectRatio?: unknown;
   activate?: unknown;
+  triggerMode?: unknown;
 };
 
 type StageRoomRequest = {
@@ -44,6 +45,14 @@ type StageRoomRequest = {
 type SceneRebuildReferenceImageResult = {
   imageUrl: string;
   usedPlacementCount: number;
+};
+
+type SceneRebuildTriggerMode = "manual_test";
+
+type RequestedVersionAssetRow = {
+  id: string;
+  room_id: string;
+  user_id: string;
 };
 
 class SceneRebuildError extends Error {
@@ -85,6 +94,24 @@ function parseAspectRatio(value: unknown): StageRoomRequest["aspectRatio"] {
 function parseOptionalBoolean(value: unknown): boolean | null {
   if (typeof value === "boolean") return value;
   return null;
+}
+
+function parseTriggerMode(value: unknown): SceneRebuildTriggerMode {
+  if (typeof value === "undefined" || value === null) {
+    return "manual_test";
+  }
+  const mode = safeStr(value);
+  if (!mode) {
+    throw new SceneRebuildError("Invalid triggerMode: expected 'manual_test'.", 400, {
+      allowedTriggerModes: ["manual_test"],
+    });
+  }
+  if (mode !== "manual_test") {
+    throw new SceneRebuildError(`Unsupported triggerMode: '${mode}'.`, 400, {
+      allowedTriggerModes: ["manual_test"],
+    });
+  }
+  return mode;
 }
 
 function getBearerToken(req: NextRequest): string | null {
@@ -135,18 +162,33 @@ async function buildSceneRebuildReferenceImage(args: {
   payload: SceneRebuildPayload;
   modelVersion: string;
   aspectRatio: StageRoomRequest["aspectRatio"];
-}): Promise<SceneRebuildReferenceImageResult | null> {
-  if (!process.env.ROOMPRINTZ_COMPOSITOR_URL) return null;
+}): Promise<SceneRebuildReferenceImageResult> {
+  if (!process.env.ROOMPRINTZ_COMPOSITOR_URL) {
+    throw new SceneRebuildError(
+      "Scene rebuild reference composition is unavailable (missing ROOMPRINTZ_COMPOSITOR_URL).",
+      500
+    );
+  }
 
   const visiblePlacements = args.payload.placements.filter((placement) => placement.isVisible);
-  if (visiblePlacements.length === 0) return null;
+  if (visiblePlacements.length === 0) {
+    throw new SceneRebuildError(
+      "Scene rebuild reference composition requires at least one visible placement.",
+      400
+    );
+  }
 
   const roomImageBytes = await fetchImageAsBytes(args.baseImageUrl);
   const sharp = await import("sharp");
   const metadata = await sharp.default(roomImageBytes).metadata();
   const width = finiteNumber(metadata.width) && metadata.width > 0 ? metadata.width : null;
   const height = finiteNumber(metadata.height) && metadata.height > 0 ? metadata.height : null;
-  if (!width || !height) return null;
+  if (!width || !height) {
+    throw new SceneRebuildError(
+      "Failed to determine base image dimensions for scene rebuild reference composition.",
+      422
+    );
+  }
 
   const minDimension = Math.min(width, height);
   const baseRadius = Math.max(20, Math.round(minDimension * 0.06));
@@ -180,7 +222,12 @@ async function buildSceneRebuildReferenceImage(args: {
     }
   }
 
-  if (composePlacements.length === 0) return null;
+  if (composePlacements.length === 0) {
+    throw new SceneRebuildError(
+      "Scene rebuild reference composition failed: no placement images could be composed.",
+      422
+    );
+  }
 
   const composeResult = await callCompositorVibodeCompose({
     roomImageBytes,
@@ -191,8 +238,34 @@ async function buildSceneRebuildReferenceImage(args: {
   });
 
   const imageUrl = safeStr(composeResult.imageUrl);
-  if (!imageUrl) return null;
+  if (!imageUrl) {
+    throw new SceneRebuildError(
+      "Scene rebuild reference composition failed: compositor did not return an image URL.",
+      502
+    );
+  }
   return { imageUrl, usedPlacementCount: composePlacements.length };
+}
+
+async function fetchRequestedVersionAsset(args: {
+  supabase: AnySupabaseClient;
+  roomId: string;
+  userId: string;
+  versionId: string;
+}): Promise<RequestedVersionAssetRow | null> {
+  const { data, error } = await args.supabase
+    .from("vibode_room_assets")
+    .select("id,room_id,user_id")
+    .eq("id", args.versionId)
+    .eq("room_id", args.roomId)
+    .eq("user_id", args.userId)
+    .maybeSingle();
+  if (error) {
+    throw new SceneRebuildError("Failed to validate requested version for scene rebuild.", 500, {
+      supabaseError: error.message,
+    });
+  }
+  return (data as RequestedVersionAssetRow | null) ?? null;
 }
 
 function buildSceneRebuildPrompt(payload: SceneRebuildPayload): string {
@@ -301,6 +374,7 @@ export async function POST(req: NextRequest) {
     const modelVersion = safeStr(body.modelVersion) ?? VIBODE_DEFAULT_MODEL_VERSION;
     const aspectRatio = parseAspectRatio(body.aspectRatio);
     const activate = parseOptionalBoolean(body.activate) ?? false;
+    const triggerMode = parseTriggerMode(body.triggerMode);
 
     if (!roomId) {
       return NextResponse.json({ error: "Missing required field: roomId." }, { status: 400 });
@@ -326,6 +400,19 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Forbidden." }, { status: 403 });
     }
 
+    const sourceVersionAsset = await fetchRequestedVersionAsset({
+      supabase,
+      roomId: room.id,
+      userId,
+      versionId,
+    });
+    if (!sourceVersionAsset) {
+      return NextResponse.json(
+        { error: "Requested versionId is invalid for this room." },
+        { status: 404 }
+      );
+    }
+
     const payload = await buildSceneRebuildPayload({
       supabase,
       roomId,
@@ -335,6 +422,15 @@ export async function POST(req: NextRequest) {
     if (!payload.room.baseImageUrl) {
       return NextResponse.json({ error: "Missing base image for rebuild." }, { status: 400 });
     }
+    if (payload.room.fallbackImageUrlUsed) {
+      return NextResponse.json(
+        {
+          error:
+            "Canonical scene rebuild requires a canonical base image URL; fallback cover image URL is not allowed for this trigger mode.",
+        },
+        { status: 409 }
+      );
+    }
     if (payload.placementCount === 0) {
       return NextResponse.json(
         { error: "No resolved placements found for requested version." },
@@ -343,24 +439,19 @@ export async function POST(req: NextRequest) {
     }
 
     const prompt = buildSceneRebuildPrompt(payload);
-    let modelInputImageUrl = payload.room.baseImageUrl;
-    let referencePlacementCountUsed = 0;
-
-    try {
-      const referenceImage = await buildSceneRebuildReferenceImage({
-        baseImageUrl: payload.room.baseImageUrl,
-        payload,
-        modelVersion,
-        aspectRatio,
-      });
-      if (referenceImage?.imageUrl) {
-        modelInputImageUrl = referenceImage.imageUrl;
-        referencePlacementCountUsed = referenceImage.usedPlacementCount;
-      }
-    } catch (err) {
-      console.warn("[vibode/scene-rebuild] reference composition failed; falling back to base image", {
-        error: err instanceof Error ? err.message : String(err),
-      });
+    const referenceImage = await buildSceneRebuildReferenceImage({
+      baseImageUrl: payload.room.baseImageUrl,
+      payload,
+      modelVersion,
+      aspectRatio,
+    });
+    const modelInputImageUrl = referenceImage.imageUrl;
+    const referencePlacementCountUsed = referenceImage.usedPlacementCount;
+    if (referencePlacementCountUsed <= 0) {
+      throw new SceneRebuildError(
+        "Scene rebuild reference composition must include at least one placement.",
+        422
+      );
     }
 
     const generatedImageUrl = await callSceneRebuildModel({
@@ -401,6 +492,7 @@ export async function POST(req: NextRequest) {
 
     const rebuildMetadata = {
       generation_mode: "scene_rebuild",
+      trigger_mode: triggerMode,
       source_version_id: versionId,
       base_version_id: payload.room.baseVersionId,
       placement_count: payload.placementCount,
@@ -427,6 +519,7 @@ export async function POST(req: NextRequest) {
         room_id: room.id,
         source_version_id: versionId,
         generation_mode: "scene_rebuild",
+        trigger_mode: triggerMode,
         base_image_url: payload.room.baseImageUrl,
         model_input_image_url: modelInputImageUrl,
         base_version_id: payload.room.baseVersionId,
@@ -448,6 +541,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({
       ok: true,
       generationMode: "scene_rebuild",
+      triggerMode,
       roomId: room.id,
       sourceVersionId: versionId,
       outputVersionId: outputFinalization.outputAssetId,
@@ -457,9 +551,13 @@ export async function POST(req: NextRequest) {
       referencePlacementCount: referencePlacementCountUsed,
       fallbackImageUrlUsed: payload.room.fallbackImageUrlUsed,
       output: {
+        assetId: outputFinalization.outputAssetId,
         imageUrl: outputFinalization.imageUrl ?? generatedImageUrl,
+        durableImageUrl: outputFinalization.durableImageUrl,
         storageBucket: outputFinalization.storageBucket,
         storagePath: outputFinalization.storagePath,
+        width: outputFinalization.width,
+        height: outputFinalization.height,
       },
     });
   } catch (err) {
