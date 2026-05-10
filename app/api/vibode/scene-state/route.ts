@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import type { SupabaseClient } from "@supabase/supabase-js";
-import { resolveScenePlacements } from "@/lib/vibodeSceneState";
+import { buildSceneRebuildPayload, resolveScenePlacements } from "@/lib/vibodeSceneState";
 
 export const runtime = "nodejs";
 
@@ -23,6 +23,12 @@ function safeStr(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : null;
+}
+
+function parseBoolQueryParam(value: string | null): boolean {
+  if (!value) return false;
+  const normalized = value.trim().toLowerCase();
+  return normalized === "1" || normalized === "true" || normalized === "yes";
 }
 
 function getBearerToken(req: NextRequest): string | null {
@@ -72,8 +78,20 @@ export async function GET(req: NextRequest) {
 
     const roomId = safeStr(req.nextUrl.searchParams.get("roomId"));
     const versionId = safeStr(req.nextUrl.searchParams.get("versionId"));
+    const mode = safeStr(req.nextUrl.searchParams.get("mode"));
+    const includePayload = parseBoolQueryParam(req.nextUrl.searchParams.get("includePayload"));
     if (!roomId || !versionId) {
       return jsonError("roomId and versionId are required.", 400);
+    }
+
+    if (mode === "rebuildPayload" || includePayload) {
+      const payload = await buildSceneRebuildPayload({
+        supabase: auth.supabase,
+        roomId,
+        userId: auth.userId,
+        versionId,
+      });
+      return NextResponse.json(payload);
     }
 
     const resolved = await resolveScenePlacements({

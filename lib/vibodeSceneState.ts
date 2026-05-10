@@ -27,6 +27,16 @@ type GenerationRunEdgeRow = {
   created_at: string;
 };
 
+type VibodeRoomBaseRow = {
+  id: string;
+  user_id: string;
+  base_image_url: string | null;
+  base_storage_path: string | null;
+  base_version_id: string | null;
+  active_asset_id: string | null;
+  cover_image_url: string | null;
+};
+
 export type ResolvedScenePlacement = {
   id: string;
   room_id: string;
@@ -60,6 +70,45 @@ export type ResolveScenePlacementsResult = {
   versionId: string;
   lineageVersionIds: string[];
   resolvedPlacements: ResolvedScenePlacement[];
+};
+
+export type BuildSceneRebuildPayloadArgs = {
+  supabase: AnySupabaseClient;
+  roomId: string;
+  userId: string;
+  versionId: string;
+};
+
+export type SceneRebuildPayloadRoom = {
+  id: string;
+  userId: string;
+  requestedVersionId: string;
+  activeAssetId: string | null;
+  baseImageUrl: string;
+  baseStoragePath: string | null;
+  baseVersionId: string | null;
+  fallbackImageUrlUsed: boolean;
+};
+
+export type SceneRebuildPayloadPlacement = {
+  id: string;
+  furnitureId: string | null;
+  sourceImageUrl: string;
+  sourceStoragePath: string | null;
+  thumbnailUrl: string | null;
+  thumbnailPath: string | null;
+  x: number;
+  y: number;
+  scale: number;
+  rotation: number;
+  isVisible: boolean;
+};
+
+export type SceneRebuildPayload = {
+  room: SceneRebuildPayloadRoom;
+  placements: SceneRebuildPayloadPlacement[];
+  placementCount: number;
+  lineageVersionIds: string[];
 };
 
 function dedupeCoord(value: number): string {
@@ -173,6 +222,30 @@ async function buildLineageVersionIds(args: {
   return lineageNewestFirst.reverse();
 }
 
+async function fetchRoomBaseMetadata(args: {
+  supabase: AnySupabaseClient;
+  roomId: string;
+  userId: string;
+}): Promise<VibodeRoomBaseRow> {
+  const { data, error } = await args.supabase
+    .from("vibode_rooms")
+    .select(
+      "id,user_id,base_image_url,base_storage_path,base_version_id,active_asset_id,cover_image_url"
+    )
+    .eq("id", args.roomId)
+    .eq("user_id", args.userId)
+    .maybeSingle();
+
+  if (error) {
+    throw new Error(`[vibode] failed to load room base metadata: ${error.message}`);
+  }
+  if (!data) {
+    throw new Error("[vibode] room not found or access denied");
+  }
+
+  return data as VibodeRoomBaseRow;
+}
+
 function resolveWithSnapshotInheritance(args: {
   lineageVersionIds: string[];
   placements: PlacementRow[];
@@ -238,5 +311,52 @@ export async function resolveScenePlacements(
     versionId: args.versionId,
     lineageVersionIds: fallbackLineage,
     resolvedPlacements: resolvedRows.map(toResolvedPlacement),
+  };
+}
+
+export async function buildSceneRebuildPayload(
+  args: BuildSceneRebuildPayloadArgs
+): Promise<SceneRebuildPayload> {
+  const room = await fetchRoomBaseMetadata(args);
+  const resolved = await resolveScenePlacements(args);
+
+  const canonicalBaseImageUrl = room.base_image_url?.trim() ?? "";
+  const fallbackCoverImageUrl = room.cover_image_url?.trim() ?? "";
+  const fallbackImageUrlUsed =
+    canonicalBaseImageUrl.length === 0 && fallbackCoverImageUrl.length > 0;
+  const baseImageUrl = fallbackImageUrlUsed ? fallbackCoverImageUrl : canonicalBaseImageUrl;
+
+  if (baseImageUrl.length === 0) {
+    throw new Error("[vibode] missing base image url for rebuild payload");
+  }
+
+  const placements: SceneRebuildPayloadPlacement[] = resolved.resolvedPlacements.map((placement) => ({
+    id: placement.id,
+    furnitureId: placement.furniture_id,
+    sourceImageUrl: placement.source_image_url,
+    sourceStoragePath: placement.source_storage_path,
+    thumbnailUrl: placement.thumbnail_url,
+    thumbnailPath: placement.thumbnail_path,
+    x: placement.x,
+    y: placement.y,
+    scale: placement.scale,
+    rotation: placement.rotation,
+    isVisible: placement.is_visible,
+  }));
+
+  return {
+    room: {
+      id: room.id,
+      userId: room.user_id,
+      requestedVersionId: args.versionId,
+      activeAssetId: room.active_asset_id,
+      baseImageUrl,
+      baseStoragePath: room.base_storage_path,
+      baseVersionId: room.base_version_id,
+      fallbackImageUrlUsed,
+    },
+    placements,
+    placementCount: placements.length,
+    lineageVersionIds: resolved.lineageVersionIds,
   };
 }
