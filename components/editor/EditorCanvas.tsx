@@ -47,6 +47,14 @@ type PasteToPlaceMenuState = {
   anchorX?: number;
   anchorY?: number;
 } | null;
+type PlacementLayerNode = {
+  id: string;
+  thumbnailUrl: string | null;
+  sourceImageUrl: string;
+  x: number;
+  y: number;
+  isVisible?: boolean | null;
+};
 const PASTE_TO_PLACE_PROGRESS_COPY: Record<PasteToPlaceStatus, string> = {
   reading: "Reading copied image...",
   preparing: "Preparing product...",
@@ -294,6 +302,11 @@ export function EditorCanvas({
   onClearRemoveMarker,
   onPlaceRotateMarker,
   onClearRotateMarker,
+  furnitureLayerEnabled = false,
+  placementLayerNodes = [],
+  onMovePlacementLayerNodeLocal,
+  onCommitPlacementLayerNodeMove,
+  onDeletePlacementLayerNode,
 }: {
   className?: string;
   onRequestSwap?: (id: string) => void;
@@ -341,6 +354,17 @@ export function EditorCanvas({
   onClearRemoveMarker?: () => void;
   onPlaceRotateMarker?: (marker: { xNorm: number; yNorm: number }) => void;
   onClearRotateMarker?: () => void;
+  furnitureLayerEnabled?: boolean;
+  placementLayerNodes?: PlacementLayerNode[];
+  onMovePlacementLayerNodeLocal?: (id: string, xNorm: number, yNorm: number) => void;
+  onCommitPlacementLayerNodeMove?: (args: {
+    id: string;
+    xNorm: number;
+    yNorm: number;
+    previousXNorm: number;
+    previousYNorm: number;
+  }) => void | Promise<void>;
+  onDeletePlacementLayerNode?: (id: string) => void | Promise<void>;
 }) {
   const instanceId = useId();
   const outerShellRef = useRef<HTMLDivElement | null>(null);
@@ -382,9 +406,23 @@ export function EditorCanvas({
   const removeSwapMark = useEditorStore((s) => s.removeSwapMark);
 
   const [hoveredId, setHoveredId] = useState<string | null>(null);
+  const [hoveredPlacementLayerNodeId, setHoveredPlacementLayerNodeId] = useState<string | null>(null);
+  const [selectedPlacementLayerNodeId, setSelectedPlacementLayerNodeId] = useState<string | null>(null);
   const [pasteToPlacePulse, setPasteToPlacePulse] = useState<{ x: number; y: number } | null>(
     null
   );
+  const placementLayerDragStateRef = useRef<{
+    id: string;
+    pointerId: number;
+    startClientX: number;
+    startClientY: number;
+    startNormX: number;
+    startNormY: number;
+    currentNormX: number;
+    currentNormY: number;
+    didMove: boolean;
+  } | null>(null);
+  const placementLayerDragCleanupRef = useRef<(() => void) | null>(null);
   const pasteToPlaceMenuRef = useRef<HTMLDivElement | null>(null);
   const [pasteToPlaceMenuMeasuredSize, setPasteToPlaceMenuMeasuredSize] = useState<{
     width: number;
@@ -669,6 +707,27 @@ export function EditorCanvas({
     };
     return imageToStagePoint(imagePoint, viewport);
   }, [rotateMarkerPosition, viewport]);
+  const projectedPlacementLayerNodes = useMemo(() => {
+    if (!furnitureLayerEnabled || !viewport || placementLayerNodes.length === 0) return [];
+    const next: Array<PlacementLayerNode & { stageX: number; stageY: number }> = [];
+    for (const node of placementLayerNodes) {
+      if (!node?.id || node.isVisible === false) continue;
+      const xNorm = Number.isFinite(node.x) ? clamp(node.x, 0, 1) : null;
+      const yNorm = Number.isFinite(node.y) ? clamp(node.y, 0, 1) : null;
+      if (xNorm === null || yNorm === null) continue;
+      const imagePoint = {
+        x: xNorm * viewport.imageNaturalW,
+        y: yNorm * viewport.imageNaturalH,
+      };
+      const stagePoint = imageToStagePoint(imagePoint, viewport);
+      next.push({
+        ...node,
+        stageX: stagePoint.x,
+        stageY: stagePoint.y,
+      });
+    }
+    return next;
+  }, [furnitureLayerEnabled, placementLayerNodes, viewport]);
 
   const transformerRef = useRef<Konva.Transformer | null>(null);
   const selectedNodeRef = useRef<Konva.Group | null>(null);
@@ -898,6 +957,21 @@ export function EditorCanvas({
     return () => window.clearTimeout(timeoutId);
   }, [pasteToPlacePulse]);
 
+  useEffect(() => {
+    placementLayerDragCleanupRef.current?.();
+    placementLayerDragCleanupRef.current = null;
+    placementLayerDragStateRef.current = null;
+  }, [furnitureLayerEnabled]);
+
+  useEffect(
+    () => () => {
+      placementLayerDragCleanupRef.current?.();
+      placementLayerDragCleanupRef.current = null;
+      placementLayerDragStateRef.current = null;
+    },
+    []
+  );
+
   const handleStagePointerDown = async (
     e: Konva.KonvaEventObject<MouseEvent | TouchEvent>
   ) => {
@@ -982,6 +1056,9 @@ export function EditorCanvas({
     }
 
     const clickedOnEmpty = e.target === stage;
+    if (clickedOnEmpty && selectedPlacementLayerNodeId) {
+      setSelectedPlacementLayerNodeId(null);
+    }
     if (clickedOnEmpty && isPasteToPlaceSettling) {
       console.info("[Paste-to-Place][settling] Place blocked because settling", {
         context: "canvas_open_menu",
@@ -1024,6 +1101,88 @@ export function EditorCanvas({
       }
     }
     if (clickedOnEmpty) selectNode(null);
+  };
+
+  const handlePlacementLayerMarkerPointerDown = (
+    node: PlacementLayerNode,
+    event: React.PointerEvent<HTMLButtonElement>
+  ) => {
+    if (!furnitureLayerEnabled || !viewport) return;
+    event.preventDefault();
+    event.stopPropagation();
+    setSelectedPlacementLayerNodeId(node.id);
+    const pointerId = event.pointerId;
+    const markerEl = event.currentTarget;
+    markerEl.setPointerCapture?.(pointerId);
+    placementLayerDragCleanupRef.current?.();
+    placementLayerDragCleanupRef.current = null;
+    const startNormX = Number.isFinite(node.x) ? clamp(node.x, 0, 1) : 0;
+    const startNormY = Number.isFinite(node.y) ? clamp(node.y, 0, 1) : 0;
+    placementLayerDragStateRef.current = {
+      id: node.id,
+      pointerId,
+      startClientX: event.clientX,
+      startClientY: event.clientY,
+      startNormX,
+      startNormY,
+      currentNormX: startNormX,
+      currentNormY: startNormY,
+      didMove: false,
+    };
+    const clearListeners = () => {
+      window.removeEventListener("pointermove", handlePointerMove);
+      window.removeEventListener("pointerup", handlePointerUp);
+      window.removeEventListener("pointercancel", handlePointerUp);
+      markerEl.removeEventListener("lostpointercapture", handleLostPointerCapture);
+      placementLayerDragCleanupRef.current = null;
+    };
+    const handlePointerMove = (moveEvent: PointerEvent) => {
+      const drag = placementLayerDragStateRef.current;
+      if (!drag || moveEvent.pointerId !== drag.pointerId || !viewport) return;
+      const deltaX = moveEvent.clientX - drag.startClientX;
+      const deltaY = moveEvent.clientY - drag.startClientY;
+      if (Math.abs(deltaX) > 2 || Math.abs(deltaY) > 2) {
+        drag.didMove = true;
+      }
+      const denomX = viewport.imageNaturalW * viewport.scale;
+      const denomY = viewport.imageNaturalH * viewport.scale;
+      if (denomX <= 0 || denomY <= 0) return;
+      const nextX = clamp(drag.startNormX + deltaX / denomX, 0, 1);
+      const nextY = clamp(drag.startNormY + deltaY / denomY, 0, 1);
+      drag.currentNormX = nextX;
+      drag.currentNormY = nextY;
+      onMovePlacementLayerNodeLocal?.(drag.id, nextX, nextY);
+    };
+    const handlePointerUp = (upEvent: PointerEvent) => {
+      const drag = placementLayerDragStateRef.current;
+      if (!drag || upEvent.pointerId !== drag.pointerId) return;
+      clearListeners();
+      try {
+        markerEl.releasePointerCapture?.(pointerId);
+      } catch {
+        // no-op
+      }
+      placementLayerDragStateRef.current = null;
+      if (!drag.didMove) return;
+      void onCommitPlacementLayerNodeMove?.({
+        id: drag.id,
+        xNorm: drag.currentNormX,
+        yNorm: drag.currentNormY,
+        previousXNorm: drag.startNormX,
+        previousYNorm: drag.startNormY,
+      });
+    };
+    const handleLostPointerCapture = (lostEvent: PointerEvent) => {
+      const drag = placementLayerDragStateRef.current;
+      if (!drag || lostEvent.pointerId !== drag.pointerId) return;
+      clearListeners();
+      placementLayerDragStateRef.current = null;
+    };
+    window.addEventListener("pointermove", handlePointerMove);
+    window.addEventListener("pointerup", handlePointerUp);
+    window.addEventListener("pointercancel", handlePointerUp);
+    markerEl.addEventListener("lostpointercapture", handleLostPointerCapture);
+    placementLayerDragCleanupRef.current = clearListeners;
   };
 
   const shouldInterceptForMarkerTargeting =
@@ -1749,6 +1908,76 @@ export function EditorCanvas({
         </Layer>
       </Stage>
           </div>
+
+      {furnitureLayerEnabled && projectedPlacementLayerNodes.length > 0 && (
+        <div className="pointer-events-none absolute inset-0 z-20">
+          {projectedPlacementLayerNodes.map((node) => {
+            const markerUrl =
+              (typeof node.thumbnailUrl === "string" && node.thumbnailUrl.trim().length > 0
+                ? node.thumbnailUrl.trim()
+                : node.sourceImageUrl.trim()) || "";
+            const isSelected = selectedPlacementLayerNodeId === node.id;
+            const isHovered = hoveredPlacementLayerNodeId === node.id;
+            return (
+              <div
+                key={node.id}
+                className="absolute -translate-x-1/2 -translate-y-1/2"
+                style={{ left: `${node.stageX}px`, top: `${node.stageY}px` }}
+              >
+                <button
+                  type="button"
+                  aria-label="Select furniture marker"
+                  className={`pointer-events-auto relative h-8 w-8 overflow-hidden rounded-md border bg-neutral-900/85 shadow transition ${
+                    isSelected
+                      ? "border-blue-300 ring-2 ring-blue-400/55"
+                      : isHovered
+                        ? "border-neutral-300"
+                        : "border-white/20"
+                  }`}
+                  onPointerDown={(event) => handlePlacementLayerMarkerPointerDown(node, event)}
+                  onClick={(event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    setSelectedPlacementLayerNodeId(node.id);
+                  }}
+                  onPointerEnter={() => setHoveredPlacementLayerNodeId(node.id)}
+                  onPointerLeave={() =>
+                    setHoveredPlacementLayerNodeId((current) => (current === node.id ? null : current))
+                  }
+                >
+                  {markerUrl ? (
+                    <>
+                      {/* eslint-disable-next-line @next/next/no-img-element -- placement marker thumbnails are runtime URLs and must use simple img fallback behavior */}
+                      <img src={markerUrl} alt="" className="h-full w-full object-cover" draggable={false} />
+                    </>
+                  ) : (
+                    <span className="absolute inset-0 block bg-neutral-700/70" />
+                  )}
+                </button>
+                {isSelected && (
+                  <button
+                    type="button"
+                    aria-label="Delete selected furniture marker"
+                    className="pointer-events-auto absolute -right-2 -top-2 h-5 w-5 rounded-full border border-rose-200/80 bg-rose-600 text-[10px] font-semibold text-white shadow hover:bg-rose-500"
+                    onPointerDown={(event) => {
+                      event.preventDefault();
+                      event.stopPropagation();
+                    }}
+                    onClick={(event) => {
+                      event.preventDefault();
+                      event.stopPropagation();
+                      void onDeletePlacementLayerNode?.(node.id);
+                      setSelectedPlacementLayerNodeId((current) => (current === node.id ? null : current));
+                    }}
+                  >
+                    ×
+                  </button>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
 
       {pasteToPlacePulse && (
         <div

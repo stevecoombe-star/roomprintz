@@ -529,6 +529,7 @@ type PlacementLayerNode = {
   id: string;
   userId: string;
   roomId: string;
+  versionId: string | null;
   furnitureId: string | null;
   thumbnailUrl: string | null;
   thumbnailPath: string | null;
@@ -548,6 +549,12 @@ type PlacementLayerListResponse = {
 };
 type PlacementLayerCreateResponse = {
   node?: unknown;
+  deduped?: boolean;
+};
+type PlacementLayerInheritResponse = {
+  copiedCount?: unknown;
+  skippedCount?: unknown;
+  sourceCount?: unknown;
 };
 type PasteToPlacePreparedProduct = {
   source: "clipboard" | "my_furniture" | "product_url";
@@ -1225,6 +1232,7 @@ function normalizePlacementLayerNode(value: unknown): PlacementLayerNode | null 
   const id = safeStr(value.id);
   const userId = safeStr(value.user_id) ?? safeStr(value.userId);
   const roomId = safeStr(value.room_id) ?? safeStr(value.roomId);
+  const versionId = safeStr(value.version_id) ?? safeStr(value.versionId);
   const sourceImageUrl = safeStr(value.source_image_url) ?? safeStr(value.sourceImageUrl);
   const createdAt = safeStr(value.created_at) ?? safeStr(value.createdAt);
   const updatedAt = safeStr(value.updated_at) ?? safeStr(value.updatedAt);
@@ -1240,6 +1248,7 @@ function normalizePlacementLayerNode(value: unknown): PlacementLayerNode | null 
     id,
     userId,
     roomId,
+    versionId,
     furnitureId: safeStr(value.furniture_id) ?? safeStr(value.furnitureId),
     thumbnailUrl: safeStr(value.thumbnail_url) ?? safeStr(value.thumbnailUrl),
     thumbnailPath: safeStr(value.thumbnail_path) ?? safeStr(value.thumbnailPath),
@@ -1844,13 +1853,14 @@ function EditorPageInner() {
   const [detectedRoomObjectLabels, setDetectedRoomObjectLabels] = useState<DetectedRoomObjectLabel[]>(
     []
   );
-  const [, setPlacementLayerNodes] = useState<PlacementLayerNode[]>([]);
+  const [placementLayerNodes, setPlacementLayerNodes] = useState<PlacementLayerNode[]>([]);
+  const [isFurnitureLayerEnabled, setIsFurnitureLayerEnabled] = useState(false);
   const [selectedRemoveLabel, setSelectedRemoveLabel] = useState<string>(REMOVE_LABEL_PLACEHOLDER);
   const roomReadByImageKeyRef = useRef<Map<string, DetectedRoomObjectLabel[]>>(new Map());
   const roomReadInFlightKeysRef = useRef<Set<string>>(new Set());
   const roomReadSkipLogKeysRef = useRef<Set<string>>(new Set());
-  const placementLayerHydratedRoomIdRef = useRef<string | null>(null);
-  const placementLayerInFlightRoomIdRef = useRef<string | null>(null);
+  const placementLayerHydratedScopeKeyRef = useRef<string | null>(null);
+  const placementLayerInFlightScopeKeyRef = useRef<string | null>(null);
   // TODO(vibode-entitlements): replace this local free-gate stub with server entitlements.
   const [hasUsedFreePasteToPlace, setHasUsedFreePasteToPlace] = useState(() => {
     if (typeof window === "undefined") return false;
@@ -3128,21 +3138,38 @@ function EditorPageInner() {
     []
   );
   const hydratePlacementLayerNodes = useCallback(
-    async (args: { roomId: string | null; trigger: "load" | "room-upload" | "stage-run" | "edit-run" | "paste-to-place" }) => {
+    async (args: {
+      roomId: string | null;
+      versionId: string | null;
+      trigger: "load" | "room-upload" | "stage-run" | "edit-run" | "paste-to-place";
+    }) => {
       const roomId = args.roomId?.trim() ?? null;
-      if (!roomId) {
-        placementLayerHydratedRoomIdRef.current = null;
-        placementLayerInFlightRoomIdRef.current = null;
+      const versionId = args.versionId?.trim() ?? null;
+      const scopeKey = roomId && versionId ? `${roomId}:${versionId}` : null;
+      if (!scopeKey) {
+        placementLayerHydratedScopeKeyRef.current = null;
+        placementLayerInFlightScopeKeyRef.current = null;
         setPlacementLayerNodes([]);
-        console.log("[placement-layer] hydrated", { trigger: args.trigger, roomId: null, count: 0 });
+        console.log("[placement-layer] hydrated", {
+          trigger: args.trigger,
+          roomId: roomId ?? null,
+          versionId: versionId ?? null,
+          count: 0,
+        });
         return;
       }
-      if (placementLayerInFlightRoomIdRef.current === roomId) return;
-      placementLayerInFlightRoomIdRef.current = roomId;
+      const scopedRoomId = roomId as string;
+      const scopedVersionId = versionId as string;
+      if (placementLayerHydratedScopeKeyRef.current !== scopeKey) {
+        // Prevent stale markers from briefly showing while version-scoped nodes load.
+        setPlacementLayerNodes([]);
+      }
+      if (placementLayerInFlightScopeKeyRef.current === scopeKey) return;
+      placementLayerInFlightScopeKeyRef.current = scopeKey;
       try {
         const accessToken = await tryGetSupabaseAccessToken();
         const res = await fetch(
-          `/api/vibode/room-furniture-placements?roomId=${encodeURIComponent(roomId)}`,
+          `/api/vibode/room-furniture-placements?roomId=${encodeURIComponent(scopedRoomId)}&versionId=${encodeURIComponent(scopedVersionId)}`,
           {
             method: "GET",
             headers: {
@@ -3160,22 +3187,24 @@ function EditorPageInner() {
         const normalized = rows
           .map((row) => normalizePlacementLayerNode(row))
           .filter((row): row is PlacementLayerNode => Boolean(row));
-        placementLayerHydratedRoomIdRef.current = roomId;
+        placementLayerHydratedScopeKeyRef.current = scopeKey;
         setPlacementLayerNodes(normalized);
         console.log("[placement-layer] hydrated", {
           trigger: args.trigger,
           roomId,
+          versionId,
           count: normalized.length,
         });
       } catch (err: unknown) {
         console.warn("[placement-layer] hydrate failed", {
           trigger: args.trigger,
           roomId,
+          versionId,
           error: err instanceof Error ? err.message : String(err),
         });
       } finally {
-        if (placementLayerInFlightRoomIdRef.current === roomId) {
-          placementLayerInFlightRoomIdRef.current = null;
+        if (placementLayerInFlightScopeKeyRef.current === scopeKey) {
+          placementLayerInFlightScopeKeyRef.current = null;
         }
       }
     },
@@ -3196,6 +3225,7 @@ function EditorPageInner() {
   useEffect(() => {
     void hydratePlacementLayerNodes({
       roomId: vibodeRoomId,
+      versionId: activeAssetId,
       trigger: "load",
     });
   }, [activeAssetId, hydratePlacementLayerNodes, vibodeRoomId, workingImageUrl]);
@@ -4437,6 +4467,13 @@ function EditorPageInner() {
       suppressCancellationError?: boolean;
       pasteToPlaceControl?: PasteToPlaceJobControl;
       pasteToPlaceSettlingRequestId?: string | null;
+      onPostDurableCommit?: (args: {
+        action: EditAction;
+        roomId: string | null;
+        assetId: string | null;
+        imageUrl: string | null;
+        response: VibodeEditRunResponse;
+      }) => Promise<void> | void;
     }
   ): Promise<VibodeEditRunResponse | null> => {
     if (isOutOfTokens) {
@@ -4643,6 +4680,22 @@ function EditorPageInner() {
           assetId: resolvedAssetId,
         });
       } else {
+        if (requestOptions?.onPostDurableCommit) {
+          try {
+            await requestOptions.onPostDurableCommit({
+              action,
+              roomId: roomIdForCommittedImage,
+              assetId: resolvedAssetId,
+              imageUrl: resolvedImageUrl,
+              response: json as VibodeEditRunResponse,
+            });
+          } catch (err: unknown) {
+            console.warn("[placement-layer] post-durable-commit persistence failed", {
+              roomId: roomIdForCommittedImage,
+              error: err instanceof Error ? err.message : String(err),
+            });
+          }
+        }
         if (isPasteToPlaceCommit) {
           console.log("[room-image-objects] paste-to-place hydration requested", {
             imageUrl: resolvedImageUrl,
@@ -5293,10 +5346,95 @@ function EditorPageInner() {
     [activatePasteToPlaceSource]
   );
 
+  const inheritPlacementLayerNodesAfterPasteCommit = useCallback(
+    async (args: {
+      operationId?: number;
+      roomId: string | null;
+      fromVersionId: string | null;
+      toVersionId: string | null;
+    }) => {
+      const roomId = args.roomId?.trim() ?? null;
+      const fromVersionId = args.fromVersionId?.trim() ?? null;
+      const toVersionId = args.toVersionId?.trim() ?? null;
+      const operationId = typeof args.operationId === "number" ? args.operationId : null;
+
+      if (!roomId || !fromVersionId || !toVersionId || fromVersionId === toVersionId) {
+        console.info("[placement-layer] inherit skipped", {
+          reason: !roomId
+            ? "missing roomId"
+            : !fromVersionId
+              ? "missing fromVersionId"
+              : !toVersionId
+                ? "missing toVersionId"
+                : "same source and target version",
+          roomId: roomId ?? null,
+          fromVersionId: fromVersionId ?? null,
+          toVersionId: toVersionId ?? null,
+          operationId,
+        });
+        return;
+      }
+
+      try {
+        const accessToken = await tryGetSupabaseAccessToken();
+        if (!accessToken) {
+          console.info("[placement-layer] inherit skipped", {
+            reason: "missing access token",
+            roomId,
+            fromVersionId,
+            toVersionId,
+            operationId,
+          });
+          return;
+        }
+        const res = await fetch("/api/vibode/room-furniture-placements", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${accessToken}`,
+          },
+          body: JSON.stringify({
+            action: "inheritVersionScope",
+            roomId,
+            fromVersionId,
+            toVersionId,
+          }),
+        });
+        if (!res.ok) {
+          const text = await res.text().catch(() => "");
+          throw new Error(`HTTP ${res.status} ${text}`.trim());
+        }
+        const payload = (await res.json().catch(() => ({}))) as PlacementLayerInheritResponse;
+        const copiedCount = parseFiniteNumber(payload.copiedCount) ?? 0;
+        const skippedCount = parseFiniteNumber(payload.skippedCount) ?? 0;
+        const sourceCount = parseFiniteNumber(payload.sourceCount) ?? copiedCount + skippedCount;
+        console.log("[placement-layer] inherit complete", {
+          roomId,
+          fromVersionId,
+          toVersionId,
+          copiedCount,
+          skippedCount,
+          sourceCount,
+          operationId,
+        });
+      } catch (err: unknown) {
+        console.warn("[placement-layer] inherit failed", {
+          roomId,
+          fromVersionId,
+          toVersionId,
+          operationId,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    },
+    []
+  );
+
   const createPlacementLayerNodeAfterPasteCommit = useCallback(
     async (args: {
       operationId?: number;
       roomId: string | null;
+      versionId: string | null;
       furnitureId: string | null;
       sourceImageUrl: string | null;
       thumbnailUrl: string | null;
@@ -5304,8 +5442,10 @@ function EditorPageInner() {
       thumbnailPath: string | null;
       xNorm: number;
       yNorm: number;
+      dedupe?: boolean;
     }) => {
       const roomId = args.roomId?.trim() ?? null;
+      const versionId = args.versionId?.trim() ?? null;
       const sourceImageUrl = args.sourceImageUrl?.trim() ?? null;
       const thumbnailUrl = args.thumbnailUrl?.trim() ?? null;
       const sourceImagePath = normalizeStorageObjectPathCandidate(args.sourceImagePath);
@@ -5315,6 +5455,7 @@ function EditorPageInner() {
       const x = xRaw === null ? null : Math.max(0, Math.min(1, xRaw));
       const y = yRaw === null ? null : Math.max(0, Math.min(1, yRaw));
       const operationId = typeof args.operationId === "number" ? args.operationId : null;
+      const dedupe = args.dedupe === true;
 
       if (operationId !== null) {
         const opState = placementNodeCreateGuardByOperationRef.current.get(operationId);
@@ -5323,15 +5464,25 @@ function EditorPageInner() {
             reason: "duplicate operation create attempt",
             operationId,
             roomId,
+            versionId,
           });
           return;
         }
       }
 
-      if (!roomId || !sourceImageUrl || !isDurablePlacementSourceImageUrl(sourceImageUrl) || x === null || y === null) {
+      if (
+        !roomId ||
+        !versionId ||
+        !sourceImageUrl ||
+        !isDurablePlacementSourceImageUrl(sourceImageUrl) ||
+        x === null ||
+        y === null
+      ) {
         console.info("[placement-layer] node create skipped", {
           reason: !roomId
             ? "missing roomId"
+            : !versionId
+              ? "missing versionId"
             : !sourceImageUrl
               ? "missing sourceImageUrl"
               : !isDurablePlacementSourceImageUrl(sourceImageUrl)
@@ -5340,6 +5491,7 @@ function EditorPageInner() {
                 ? "missing coordinates"
                 : "unknown validation failure",
           roomId: roomId ?? null,
+          versionId: versionId ?? null,
           hasSourceImageUrl: Boolean(sourceImageUrl),
           hasX: xRaw !== null,
           hasY: yRaw !== null,
@@ -5366,6 +5518,7 @@ function EditorPageInner() {
         }
         const payload = {
           roomId,
+          versionId,
           furnitureId: args.furnitureId ?? null,
           thumbnailUrl,
           thumbnailPath,
@@ -5377,6 +5530,7 @@ function EditorPageInner() {
           scale: 1,
           rotation: 0,
           isVisible: true,
+          dedupe,
         };
         const res = await fetch("/api/vibode/room-furniture-placements", {
           method: "POST",
@@ -5399,9 +5553,10 @@ function EditorPageInner() {
           const withoutCurrent = prev.filter((node) => node.id !== createdNode.id);
           return [...withoutCurrent, createdNode];
         });
-        placementLayerHydratedRoomIdRef.current = roomId;
+        placementLayerHydratedScopeKeyRef.current = `${roomId}:${versionId}`;
         console.log("[placement-layer] node created", {
           roomId,
+          versionId,
           id: createdNode.id,
           furnitureId: createdNode.furnitureId,
           hasSourceImagePath: Boolean(createdNode.sourceImagePath),
@@ -5429,6 +5584,119 @@ function EditorPageInner() {
       }
     },
     []
+  );
+
+  const updatePlacementLayerNodePositionLocal = useCallback((id: string, xNorm: number, yNorm: number) => {
+    const x = Math.max(0, Math.min(1, xNorm));
+    const y = Math.max(0, Math.min(1, yNorm));
+    setPlacementLayerNodes((prev) =>
+      prev.map((node) => (node.id === id ? { ...node, x, y } : node))
+    );
+  }, []);
+
+  const persistPlacementLayerNodePosition = useCallback(
+    async (args: {
+      id: string;
+      xNorm: number;
+      yNorm: number;
+      previousXNorm: number;
+      previousYNorm: number;
+    }) => {
+      const id = args.id.trim();
+      if (!id) return;
+      const x = Math.max(0, Math.min(1, args.xNorm));
+      const y = Math.max(0, Math.min(1, args.yNorm));
+      const previousX = Math.max(0, Math.min(1, args.previousXNorm));
+      const previousY = Math.max(0, Math.min(1, args.previousYNorm));
+      let patchAttempted = false;
+      let patchFailure: { status: number; body: string } | null = null;
+      try {
+        const accessToken = await tryGetSupabaseAccessToken();
+        if (!accessToken) {
+          throw new Error("missing access token");
+        }
+        patchAttempted = true;
+        const res = await fetch("/api/vibode/room-furniture-placements", {
+          method: "PATCH",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${accessToken}`,
+          },
+          body: JSON.stringify({
+            id,
+            x,
+            y,
+          }),
+        });
+        if (!res.ok) {
+          const text = await res.text().catch(() => "");
+          patchFailure = { status: res.status, body: text };
+          throw new Error(`HTTP ${res.status} ${text}`.trim());
+        }
+        const payload = (await res.json().catch(() => ({}))) as PlacementLayerCreateResponse;
+        const patchedNode = normalizePlacementLayerNode(payload.node);
+        if (patchedNode) {
+          setPlacementLayerNodes((prev) =>
+            prev.map((node) => (node.id === patchedNode.id ? patchedNode : node))
+          );
+        }
+      } catch {
+        if (patchAttempted) {
+          setPlacementLayerNodes((prev) =>
+            prev.map((node) =>
+              node.id === id
+                ? {
+                    ...node,
+                    x: previousX,
+                    y: previousY,
+                  }
+                : node
+            )
+          );
+        }
+        if (patchFailure) {
+          console.warn("[placement-layer] node move PATCH failed", {
+            id,
+            status: patchFailure.status,
+            body: patchFailure.body,
+          });
+        }
+        pushSnack("Unable to save furniture marker position.");
+      }
+    },
+    [pushSnack]
+  );
+
+  const deletePlacementLayerNode = useCallback(
+    async (id: string) => {
+      const trimmedId = id.trim();
+      if (!trimmedId) return;
+      try {
+        const accessToken = await tryGetSupabaseAccessToken();
+        if (!accessToken) {
+          throw new Error("missing access token");
+        }
+        const res = await fetch(`/api/vibode/room-furniture-placements?id=${encodeURIComponent(trimmedId)}`, {
+          method: "DELETE",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${accessToken}`,
+          },
+        });
+        if (!res.ok) {
+          const text = await res.text().catch(() => "");
+          throw new Error(`HTTP ${res.status} ${text}`.trim());
+        }
+        setPlacementLayerNodes((prev) => prev.filter((node) => node.id !== trimmedId));
+      } catch (err: unknown) {
+        console.warn("[placement-layer] node delete failed", {
+          id: trimmedId,
+          error: err instanceof Error ? err.message : String(err),
+        });
+        pushSnack("Unable to delete furniture marker.");
+      }
+    },
+    [pushSnack]
   );
 
   const runPasteToPlaceClickTargetEdit = useCallback(
@@ -5506,6 +5774,40 @@ function EditorPageInner() {
         settlingRequestId = beginPasteToPlaceSettlingRequest();
         setPasteToPlaceStatus("placing");
         const sourceForPlacement = resolvedSource;
+        const initialSavedFurnitureId =
+          sourceForPlacement.preparedProduct.savedFurnitureId ??
+          (sourceForPlacement.type === "product_url" ? sourceForPlacement.furnitureId : null) ??
+          null;
+        const durableNormalizedPreviewUrl = isDurablePlacementSourceImageUrl(
+          sourceForPlacement.normalizedPreviewUrl
+        )
+          ? sourceForPlacement.normalizedPreviewUrl
+          : null;
+        const durableRawPreviewUrl = isDurablePlacementSourceImageUrl(sourceForPlacement.rawPreviewUrl)
+          ? sourceForPlacement.rawPreviewUrl
+          : null;
+        const durableSavedPreviewUrl =
+          sourceForPlacement.type === "clipboard"
+            ? sourceForPlacement.durableSavedPreviewUrl
+            : null;
+        const placementSourceImageUrl =
+          durableSavedPreviewUrl ?? durableNormalizedPreviewUrl ?? durableRawPreviewUrl ?? null;
+        const sourceImagePath =
+          sourceForPlacement.sourceImagePathHint ??
+          extractStorageObjectPathFromUnknown([
+            sourceForPlacement.preparedProduct,
+            sourceForPlacement,
+          ]) ??
+          extractSupabaseStorageObjectPathFromUrl(placementSourceImageUrl);
+        const placementThumbnailUrl = placementSourceImageUrl;
+        const thumbnailPath =
+          sourceForPlacement.thumbnailPathHint ??
+          extractStorageObjectPathFromUnknown([
+            sourceForPlacement.preparedProduct,
+            sourceForPlacement,
+          ]) ??
+          extractSupabaseStorageObjectPathFromUrl(placementThumbnailUrl);
+        const sourceVersionIdForPlacementInheritance = activeAssetId?.trim() ?? null;
         const abortController = beginPasteToPlaceAbortController();
         const res = await runEdit(
           action,
@@ -5529,6 +5831,34 @@ function EditorPageInner() {
             suppressCancellationError: true,
             pasteToPlaceControl,
             pasteToPlaceSettlingRequestId: settlingRequestId,
+            onPostDurableCommit: async (commit) => {
+              await inheritPlacementLayerNodesAfterPasteCommit({
+                operationId,
+                roomId: commit.roomId,
+                fromVersionId: sourceVersionIdForPlacementInheritance,
+                toVersionId: commit.assetId,
+              });
+              await createPlacementLayerNodeAfterPasteCommit({
+                operationId,
+                roomId: commit.roomId,
+                versionId: commit.assetId,
+                furnitureId: initialSavedFurnitureId,
+                sourceImageUrl: placementSourceImageUrl,
+                thumbnailUrl: placementThumbnailUrl,
+                sourceImagePath: sourceImagePath ?? null,
+                thumbnailPath: thumbnailPath ?? null,
+                xNorm,
+                yNorm,
+                dedupe: true,
+              });
+              if (commit.roomId && commit.assetId) {
+                void hydratePlacementLayerNodes({
+                  roomId: commit.roomId,
+                  versionId: commit.assetId,
+                  trigger: "paste-to-place",
+                });
+              }
+            },
           }
         );
         clearPasteToPlaceAbortController(abortController);
@@ -5561,62 +5891,6 @@ function EditorPageInner() {
             pushSnack("Placed successfully, but we couldn't save it to My Furniture.");
           }
         }
-        const durableNormalizedPreviewUrl = isDurablePlacementSourceImageUrl(
-          sourceForPlacement.normalizedPreviewUrl
-        )
-          ? sourceForPlacement.normalizedPreviewUrl
-          : null;
-        const durableRawPreviewUrl = isDurablePlacementSourceImageUrl(sourceForPlacement.rawPreviewUrl)
-          ? sourceForPlacement.rawPreviewUrl
-          : null;
-        const durableSavedPreviewUrl =
-          sourceForPlacement.type === "clipboard"
-            ? sourceForPlacement.durableSavedPreviewUrl
-            : null;
-        const placementSourceImageUrl =
-          durableSavedPreviewUrl ?? durableNormalizedPreviewUrl ?? durableRawPreviewUrl ?? null;
-        const sourceImagePath =
-          sourceForPlacement.sourceImagePathHint ??
-          extractStorageObjectPathFromUnknown([
-            sourceForPlacement.preparedProduct,
-            sourceForPlacement,
-          ]) ??
-          extractSupabaseStorageObjectPathFromUrl(placementSourceImageUrl);
-        const placementThumbnailUrl = placementSourceImageUrl;
-        const thumbnailPath =
-          sourceForPlacement.thumbnailPathHint ??
-          extractStorageObjectPathFromUnknown([
-            sourceForPlacement.preparedProduct,
-            sourceForPlacement,
-          ]) ??
-          extractSupabaseStorageObjectPathFromUrl(placementThumbnailUrl);
-        void (async () => {
-          try {
-            await createPlacementLayerNodeAfterPasteCommit({
-              operationId,
-              roomId: vibodeRoomId,
-              furnitureId: savedFurnitureId,
-              sourceImageUrl: placementSourceImageUrl,
-              thumbnailUrl: placementThumbnailUrl,
-              sourceImagePath: sourceImagePath ?? null,
-              thumbnailPath: thumbnailPath ?? null,
-              xNorm,
-              yNorm,
-            });
-            if (vibodeRoomId) {
-              await hydratePlacementLayerNodes({
-                roomId: vibodeRoomId,
-                trigger: "paste-to-place",
-              });
-            }
-          } catch (err: unknown) {
-            console.warn("[placement-layer] post-commit persistence failed", {
-              roomId: vibodeRoomId,
-              operationId: operationId ?? null,
-              error: err instanceof Error ? err.message : String(err),
-            });
-          }
-        })();
         if (savedFurnitureId) {
           void trackMyFurnitureUsage(
             savedFurnitureId,
@@ -5638,6 +5912,7 @@ function EditorPageInner() {
     },
     [
       activeTool,
+      activeAssetId,
       clearPasteToPlaceProgressPreview,
       isBaseImageEditReady,
       isBusy,
@@ -5648,6 +5923,7 @@ function EditorPageInner() {
       isRotateMarkerTargeting,
       pushSnack,
       runEdit,
+      inheritPlacementLayerNodesAfterPasteCommit,
       createPlacementLayerNodeAfterPasteCommit,
       hydratePlacementLayerNodes,
       savePreparedProductUrlToMyFurniture,
@@ -7185,6 +7461,18 @@ function EditorPageInner() {
               {queuedSwaps > 0 ? `${queuedSwaps} swap${queuedSwaps === 1 ? "" : "s"} pending` : ""}
             </div>
           )}
+          <button
+            type="button"
+            aria-pressed={isFurnitureLayerEnabled}
+            onClick={() => setIsFurnitureLayerEnabled((prev) => !prev)}
+            className={`rounded-md border px-2.5 py-1 text-xs transition ${
+              isFurnitureLayerEnabled
+                ? "border-blue-500/70 bg-blue-900/30 text-blue-100 hover:bg-blue-900/45"
+                : "border-neutral-700 bg-neutral-900 text-neutral-300 hover:bg-neutral-800"
+            }`}
+          >
+            Furniture Layer: {isFurnitureLayerEnabled ? "On" : "Off"}
+          </button>
           <TokenBalanceBadge className="border-neutral-700 bg-neutral-900 text-neutral-200" />
           <Link
             href="/billing"
@@ -7405,6 +7693,11 @@ function EditorPageInner() {
                   setSwapTargetId(id);
                   setSwapOpen(true);
                 }}
+                furnitureLayerEnabled={isFurnitureLayerEnabled}
+                placementLayerNodes={placementLayerNodes}
+                onMovePlacementLayerNodeLocal={updatePlacementLayerNodePositionLocal}
+                onCommitPlacementLayerNodeMove={persistPlacementLayerNodePosition}
+                onDeletePlacementLayerNode={deletePlacementLayerNode}
               />
 
               {shouldShowUploadOverlay && (

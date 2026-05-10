@@ -13,6 +13,7 @@ type PlacementRow = {
   id: string;
   user_id: string;
   room_id: string;
+  version_id: string | null;
   furniture_id: string | null;
   thumbnail_url: string | null;
   thumbnail_path: string | null;
@@ -26,6 +27,13 @@ type PlacementRow = {
   is_visible: boolean;
   created_at: string;
   updated_at: string;
+};
+
+type PlacementDedupeShape = {
+  furniture_id: string | null;
+  source_image_url: string;
+  x: number;
+  y: number;
 };
 
 function jsonError(message: string, status: number, details?: Record<string, unknown>) {
@@ -78,6 +86,19 @@ function clampNormalizedCoordinate(value: number): number {
   return Math.max(0, Math.min(1, value));
 }
 
+function toDedupeCoord(value: number): string {
+  return Number.isFinite(value) ? value.toFixed(6) : "NaN";
+}
+
+function buildPlacementDedupeSignature(value: PlacementDedupeShape): string {
+  return [
+    value.furniture_id ?? "",
+    value.source_image_url.trim(),
+    toDedupeCoord(value.x),
+    toDedupeCoord(value.y),
+  ].join("::");
+}
+
 function isDurableImageUrl(url: string): boolean {
   const trimmed = url.trim();
   if (!/^https?:\/\//i.test(trimmed)) return false;
@@ -123,8 +144,9 @@ export async function GET(req: NextRequest) {
     if ("errorResponse" in auth) return auth.errorResponse;
 
     const roomId = safeStr(req.nextUrl.searchParams.get("roomId"));
-    if (!roomId) {
-      return jsonError("roomId is required.", 400);
+    const versionId = safeStr(req.nextUrl.searchParams.get("versionId"));
+    if (!roomId || !versionId) {
+      return jsonError("roomId and versionId are required.", 400);
     }
 
     const { data, error } = await auth.supabase
@@ -132,10 +154,15 @@ export async function GET(req: NextRequest) {
       .select("*")
       .eq("user_id", auth.userId)
       .eq("room_id", roomId)
+      .eq("version_id", versionId)
       .order("created_at", { ascending: true });
 
     if (error) {
-      console.error("[room-furniture-placements][GET] failed", { message: error.message, roomId });
+      console.error("[room-furniture-placements][GET] failed", {
+        message: error.message,
+        roomId,
+        versionId,
+      });
       return jsonError("Failed to load placement nodes.", 500);
     }
 
@@ -155,13 +182,135 @@ export async function POST(req: NextRequest) {
     const body = (await req.json().catch(() => null)) as Record<string, unknown> | null;
     if (!body) return jsonError("Invalid JSON body.", 400);
 
+    const action = safeStr(body.action);
+    if (action === "inheritVersionScope") {
+      const roomId = safeStr(body.roomId);
+      const fromVersionId = safeStr(body.fromVersionId);
+      const toVersionId = safeStr(body.toVersionId);
+      if (!roomId || !fromVersionId || !toVersionId) {
+        return jsonError("roomId, fromVersionId, and toVersionId are required.", 400);
+      }
+      if (fromVersionId === toVersionId) {
+        return NextResponse.json({
+          copiedCount: 0,
+          skippedCount: 0,
+          sourceCount: 0,
+          reason: "source and target version are identical",
+        });
+      }
+
+      const { data: sourceRows, error: sourceError } = await auth.supabase
+        .from("room_furniture_placements")
+        .select("*")
+        .eq("user_id", auth.userId)
+        .eq("room_id", roomId)
+        .eq("version_id", fromVersionId)
+        .eq("is_visible", true)
+        .order("created_at", { ascending: true });
+      if (sourceError) {
+        console.error("[room-furniture-placements][POST inheritVersionScope] source load failed", {
+          message: sourceError.message,
+          roomId,
+          fromVersionId,
+          toVersionId,
+        });
+        return jsonError("Failed to load source placement nodes.", 500);
+      }
+
+      const typedSourceRows = (sourceRows ?? []) as PlacementRow[];
+      if (typedSourceRows.length === 0) {
+        return NextResponse.json({
+          copiedCount: 0,
+          skippedCount: 0,
+          sourceCount: 0,
+        });
+      }
+
+      const { data: targetRows, error: targetError } = await auth.supabase
+        .from("room_furniture_placements")
+        .select("furniture_id, source_image_url, x, y")
+        .eq("user_id", auth.userId)
+        .eq("room_id", roomId)
+        .eq("version_id", toVersionId);
+      if (targetError) {
+        console.error("[room-furniture-placements][POST inheritVersionScope] target load failed", {
+          message: targetError.message,
+          roomId,
+          fromVersionId,
+          toVersionId,
+        });
+        return jsonError("Failed to load target placement nodes.", 500);
+      }
+
+      const existingKeys = new Set(
+        ((targetRows ?? []) as PlacementDedupeShape[]).map((row) => buildPlacementDedupeSignature(row))
+      );
+      const rowsToInsert = typedSourceRows
+        .filter((row) => row.is_visible)
+        .filter((row) => {
+          const key = buildPlacementDedupeSignature({
+            furniture_id: row.furniture_id,
+            source_image_url: row.source_image_url,
+            x: row.x,
+            y: row.y,
+          });
+          if (existingKeys.has(key)) return false;
+          existingKeys.add(key);
+          return true;
+        })
+        .map((row) => ({
+          user_id: auth.userId,
+          room_id: roomId,
+          version_id: toVersionId,
+          furniture_id: row.furniture_id,
+          thumbnail_url: row.thumbnail_url,
+          thumbnail_path: row.thumbnail_path,
+          source_image_url: row.source_image_url,
+          source_image_path: row.source_image_path,
+          x: row.x,
+          y: row.y,
+          scale: row.scale,
+          rotation: row.rotation,
+          is_visible: row.is_visible,
+        }));
+
+      if (rowsToInsert.length === 0) {
+        return NextResponse.json({
+          copiedCount: 0,
+          skippedCount: typedSourceRows.length,
+          sourceCount: typedSourceRows.length,
+        });
+      }
+
+      const { error: insertError } = await auth.supabase
+        .from("room_furniture_placements")
+        .insert(rowsToInsert);
+      if (insertError) {
+        console.error("[room-furniture-placements][POST inheritVersionScope] insert failed", {
+          message: insertError.message,
+          roomId,
+          fromVersionId,
+          toVersionId,
+          attempted: rowsToInsert.length,
+        });
+        return jsonError("Failed to inherit placement nodes.", 500);
+      }
+
+      return NextResponse.json({
+        copiedCount: rowsToInsert.length,
+        skippedCount: typedSourceRows.length - rowsToInsert.length,
+        sourceCount: typedSourceRows.length,
+      });
+    }
+
     const roomId = safeStr(body.roomId);
+    const versionId = safeStr(body.versionId);
     const sourceImageUrl = safeStr(body.sourceImageUrl);
     const x = safeFiniteNumber(body.x);
     const y = safeFiniteNumber(body.y);
 
-    if (!roomId || !sourceImageUrl || x === null || y === null) {
-      return jsonError("roomId, sourceImageUrl, x, and y are required.", 400);
+    if (!roomId || !versionId || !sourceImageUrl || x === null || y === null) {
+      return jsonError("roomId, versionId, sourceImageUrl, x, and y are required.", 400);
     }
     if (!isDurableImageUrl(sourceImageUrl)) {
       return jsonError("sourceImageUrl must be a durable http(s) URL.", 400);
@@ -180,12 +329,43 @@ export async function POST(req: NextRequest) {
     const scale = safeFiniteNumber(body.scale) ?? 1;
     const rotation = safeFiniteNumber(body.rotation) ?? 0;
     const isVisible = safeOptionalBoolean(body.isVisible) ?? true;
+    const dedupe = safeOptionalBoolean(body.dedupe) ?? false;
     const normalizedX = clampNormalizedCoordinate(x);
     const normalizedY = clampNormalizedCoordinate(y);
+
+    if (dedupe) {
+      let existingQuery = auth.supabase
+        .from("room_furniture_placements")
+        .select("*")
+        .eq("user_id", auth.userId)
+        .eq("room_id", roomId)
+        .eq("version_id", versionId)
+        .eq("source_image_url", sourceImageUrl)
+        .eq("x", normalizedX)
+        .eq("y", normalizedY)
+        .limit(1);
+      existingQuery =
+        furnitureId === null
+          ? existingQuery.is("furniture_id", null)
+          : existingQuery.eq("furniture_id", furnitureId);
+      const { data: existingRow, error: existingError } = await existingQuery.maybeSingle();
+      if (existingError) {
+        console.error("[room-furniture-placements][POST] dedupe lookup failed", {
+          message: existingError.message,
+          roomId,
+          versionId,
+        });
+        return jsonError("Failed to dedupe placement node create.", 500);
+      }
+      if (existingRow) {
+        return NextResponse.json({ node: existingRow as PlacementRow, deduped: true });
+      }
+    }
 
     const insertPayload = {
       user_id: auth.userId,
       room_id: roomId,
+      version_id: versionId,
       furniture_id: furnitureId,
       thumbnail_url: thumbnailUrl,
       thumbnail_path: thumbnailPathResult.value,
@@ -205,7 +385,11 @@ export async function POST(req: NextRequest) {
       .single();
 
     if (error) {
-      console.error("[room-furniture-placements][POST] failed", { message: error.message, roomId });
+      console.error("[room-furniture-placements][POST] failed", {
+        message: error.message,
+        roomId,
+        versionId,
+      });
       return jsonError("Failed to create placement node.", 500);
     }
 
@@ -227,8 +411,8 @@ export async function PATCH(req: NextRequest) {
 
     const id = safeStr(body.id);
     if (!id) return jsonError("id is required.", 400);
-    if ("roomId" in body || "room_id" in body) {
-      return jsonError("roomId/room_id is immutable and cannot be patched.", 400);
+    if ("roomId" in body || "room_id" in body || "versionId" in body || "version_id" in body) {
+      return jsonError("roomId/room_id/versionId/version_id are immutable and cannot be patched.", 400);
     }
 
     const patch: Record<string, unknown> = {};
