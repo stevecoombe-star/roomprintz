@@ -19,6 +19,7 @@ const SUPABASE_SERVICE_ROLE_KEY =
 const VIBODE_ENABLE_SCENE_REBUILD =
   (process.env.VIBODE_ENABLE_SCENE_REBUILD ?? "false").trim().toLowerCase() === "true";
 const VIBODE_DEFAULT_MODEL_VERSION = "NBP";
+const VIBODE_STAGED_BUCKET = (process.env.VIBODE_STAGED_BUCKET || "vibode-generations").trim();
 
 type AnySupabaseClient = SupabaseClient;
 
@@ -126,6 +127,104 @@ function parseTriggerMode(value: unknown): SceneRebuildTriggerMode {
     });
   }
   return mode;
+}
+
+function isLikelyExpiringSignedUrl(url: string) {
+  try {
+    const parsed = new URL(url);
+    if (parsed.pathname.includes("/storage/v1/object/sign/")) return true;
+    if (parsed.searchParams.has("token")) return true;
+    if (parsed.searchParams.has("X-Amz-Signature")) return true;
+    if (parsed.searchParams.has("X-Amz-Credential")) return true;
+    return false;
+  } catch {
+    return false;
+  }
+}
+
+function getDurableImageUrl(args: { candidateUrl?: string | null; storageBucket?: string | null }) {
+  const url = safeStr(args.candidateUrl);
+  if (!url) return null;
+  const bucket = safeStr(args.storageBucket);
+  const isPrivateBucket =
+    bucket === "vibode-generations" || bucket === VIBODE_STAGED_BUCKET || bucket === "vibode-base-images";
+  if (isPrivateBucket && isLikelyExpiringSignedUrl(url)) return null;
+  return url;
+}
+
+type SceneRebuildActivationResult =
+  | { success: true }
+  | {
+      success: false;
+      step: "deactivate_previous" | "activate_output" | "update_room";
+      message: string;
+    };
+
+async function activateRebuildOutputVersion(args: {
+  supabase: AnySupabaseClient;
+  roomId: string;
+  userId: string;
+  outputVersionId: string;
+  outputImageUrl: string | null;
+  outputStorageBucket: string | null;
+}): Promise<SceneRebuildActivationResult> {
+  const nowIso = new Date().toISOString();
+  const durableCoverImageUrl = getDurableImageUrl({
+    candidateUrl: args.outputImageUrl,
+    storageBucket: args.outputStorageBucket,
+  });
+
+  const { error: deactivateErr } = await args.supabase
+    .from("vibode_room_assets")
+    .update({ is_active: false })
+    .eq("room_id", args.roomId)
+    .eq("user_id", args.userId)
+    .eq("is_active", true)
+    .neq("id", args.outputVersionId);
+  if (deactivateErr) {
+    return {
+      success: false,
+      step: "deactivate_previous",
+      message: deactivateErr.message,
+    };
+  }
+
+  const { error: activateErr } = await args.supabase
+    .from("vibode_room_assets")
+    .update({ is_active: true })
+    .eq("id", args.outputVersionId)
+    .eq("room_id", args.roomId)
+    .eq("user_id", args.userId);
+  if (activateErr) {
+    return {
+      success: false,
+      step: "activate_output",
+      message: activateErr.message,
+    };
+  }
+
+  const roomUpdatePayload: { active_asset_id: string; sort_key: string; cover_image_url?: string } = {
+    active_asset_id: args.outputVersionId,
+    sort_key: nowIso,
+  };
+  if (durableCoverImageUrl) {
+    roomUpdatePayload.cover_image_url = durableCoverImageUrl;
+  }
+
+  const { error: roomUpdateErr } = await args.supabase
+    .from("vibode_rooms")
+    .update(roomUpdatePayload)
+    .eq("id", args.roomId)
+    .eq("user_id", args.userId);
+  if (roomUpdateErr) {
+    return {
+      success: false,
+      step: "update_room",
+      message: roomUpdateErr.message,
+    };
+  }
+
+  return { success: true };
 }
 
 function getBearerToken(req: NextRequest): string | null {
@@ -512,16 +611,6 @@ export async function POST(req: NextRequest) {
     if (!versionId) {
       return NextResponse.json({ error: "Missing required field: versionId." }, { status: 400 });
     }
-    if (activate) {
-      return NextResponse.json(
-        {
-          error:
-            "activate=true is not yet supported for scene-rebuild. Activation is blocked until placement snapshot inheritance is wired for rebuild output versions.",
-        },
-        { status: 409 }
-      );
-    }
-
     const room = await getVibodeRoomById(supabase, roomId);
     if (!room) {
       return NextResponse.json({ error: "Room not found." }, { status: 404 });
@@ -606,9 +695,9 @@ export async function POST(req: NextRequest) {
       responseWidth: null,
       responseHeight: null,
       sourceImageUrlForThumbnail: generatedImageUrl,
-      markAssetActive: activate,
-      updateRoomCurrentStage: activate ? (room.current_stage ?? 0) : null,
-      updateRoomSortKey: activate ? new Date().toISOString() : null,
+      markAssetActive: false,
+      updateRoomCurrentStage: null,
+      updateRoomSortKey: null,
     });
 
     if (outputFinalization.assetFinalizationError || !outputFinalization.outputAssetId) {
@@ -626,6 +715,41 @@ export async function POST(req: NextRequest) {
       userId,
       sourceVersionId: versionId,
       outputVersionId: outputFinalization.outputAssetId,
+    });
+
+    console.info("[vibode/scene-rebuild] activation requested", {
+      sourceVersionId: versionId,
+      outputVersionId: outputFinalization.outputAssetId,
+      activateRequested: activate,
+    });
+
+    let activated = false;
+    let activationError: { step: string; message: string } | null = null;
+    if (activate) {
+      const activationResult = await activateRebuildOutputVersion({
+        supabase,
+        roomId: room.id,
+        userId,
+        outputVersionId: outputFinalization.outputAssetId,
+        outputImageUrl: outputFinalization.imageUrl ?? generatedImageUrl,
+        outputStorageBucket: outputFinalization.storageBucket,
+      });
+      if (activationResult.success) {
+        activated = true;
+      } else {
+        activationError = {
+          step: activationResult.step,
+          message: activationResult.message,
+        };
+      }
+    }
+
+    console.info("[vibode/scene-rebuild] activation result", {
+      sourceVersionId: versionId,
+      outputVersionId: outputFinalization.outputAssetId,
+      activateRequested: activate,
+      activated,
+      activationError,
     });
 
     const rebuildMetadata = {
@@ -684,7 +808,8 @@ export async function POST(req: NextRequest) {
       sourceVersionId: versionId,
       outputVersionId: outputFinalization.outputAssetId,
       generationRunId: generationRun.id,
-      activated: activate,
+      activated,
+      ...(activationError ? { activationError } : {}),
       placementCount: payload.placementCount,
       referencePlacementCount: referencePlacementCountUsed,
       fallbackImageUrlUsed: payload.room.fallbackImageUrlUsed,
