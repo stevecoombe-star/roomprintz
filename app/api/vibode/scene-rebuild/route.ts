@@ -55,6 +55,20 @@ type RequestedVersionAssetRow = {
   user_id: string;
 };
 
+type PlacementSnapshotRow = {
+  id: string;
+  user_id: string;
+  room_id: string;
+  version_id: string | null;
+  furniture_id: string | null;
+  source_image_url: string;
+  x: number;
+  y: number;
+  created_at: string;
+  updated_at: string;
+  [key: string]: unknown;
+};
+
 class SceneRebuildError extends Error {
   status: number;
   details?: unknown;
@@ -266,6 +280,122 @@ async function fetchRequestedVersionAsset(args: {
     });
   }
   return (data as RequestedVersionAssetRow | null) ?? null;
+}
+
+function toPlacementDedupeCoord(value: number): string {
+  return Number.isFinite(value) ? value.toFixed(6) : "NaN";
+}
+
+function buildPlacementSnapshotDedupeKey(
+  row: Pick<PlacementSnapshotRow, "furniture_id" | "source_image_url" | "x" | "y">
+): string {
+  return [
+    row.furniture_id ?? "",
+    row.source_image_url.trim(),
+    toPlacementDedupeCoord(row.x),
+    toPlacementDedupeCoord(row.y),
+  ].join("::");
+}
+
+async function inheritPlacementSnapshotForRebuildOutput(args: {
+  supabase: AnySupabaseClient;
+  roomId: string;
+  userId: string;
+  sourceVersionId: string;
+  outputVersionId: string;
+}): Promise<{ copiedCount: number; skippedCount: number; sourceCount: number }> {
+  if (args.sourceVersionId === args.outputVersionId) {
+    return { copiedCount: 0, skippedCount: 0, sourceCount: 0 };
+  }
+
+  const { data: sourceRows, error: sourceError } = await args.supabase
+    .from("room_furniture_placements")
+    .select("*")
+    .eq("user_id", args.userId)
+    .eq("room_id", args.roomId)
+    .eq("version_id", args.sourceVersionId)
+    .order("created_at", { ascending: true });
+
+  if (sourceError) {
+    throw new SceneRebuildError("Failed to load source placement snapshot for rebuild output.", 500, {
+      supabaseError: sourceError.message,
+      sourceVersionId: args.sourceVersionId,
+      outputVersionId: args.outputVersionId,
+    });
+  }
+
+  const typedSourceRows = (sourceRows ?? []) as PlacementSnapshotRow[];
+  if (typedSourceRows.length === 0) {
+    console.info("[vibode/scene-rebuild] placement snapshot inherited", {
+      sourceVersionId: args.sourceVersionId,
+      outputVersionId: args.outputVersionId,
+      copiedCount: 0,
+      skippedCount: 0,
+      sourceCount: 0,
+    });
+    return { copiedCount: 0, skippedCount: 0, sourceCount: 0 };
+  }
+
+  const { data: targetRows, error: targetError } = await args.supabase
+    .from("room_furniture_placements")
+    .select("furniture_id, source_image_url, x, y")
+    .eq("user_id", args.userId)
+    .eq("room_id", args.roomId)
+    .eq("version_id", args.outputVersionId);
+
+  if (targetError) {
+    throw new SceneRebuildError("Failed to load output placement snapshot for rebuild output.", 500, {
+      supabaseError: targetError.message,
+      sourceVersionId: args.sourceVersionId,
+      outputVersionId: args.outputVersionId,
+    });
+  }
+
+  const existingKeys = new Set(
+    ((targetRows ?? []) as Pick<PlacementSnapshotRow, "furniture_id" | "source_image_url" | "x" | "y">[]).map(
+      (row) => buildPlacementSnapshotDedupeKey(row)
+    )
+  );
+
+  const rowsToInsert: Record<string, unknown>[] = [];
+  for (const row of typedSourceRows) {
+    const dedupeKey = buildPlacementSnapshotDedupeKey(row);
+    if (existingKeys.has(dedupeKey)) continue;
+    existingKeys.add(dedupeKey);
+
+    const { id: _id, created_at: _createdAt, updated_at: _updatedAt, ...copyable } = row;
+    rowsToInsert.push({
+      ...copyable,
+      user_id: args.userId,
+      room_id: args.roomId,
+      version_id: args.outputVersionId,
+    });
+  }
+
+  if (rowsToInsert.length > 0) {
+    const { error: insertError } = await args.supabase.from("room_furniture_placements").insert(rowsToInsert);
+    if (insertError) {
+      throw new SceneRebuildError("Failed to persist placement snapshot for rebuild output.", 500, {
+        supabaseError: insertError.message,
+        sourceVersionId: args.sourceVersionId,
+        outputVersionId: args.outputVersionId,
+        attemptedInsertCount: rowsToInsert.length,
+      });
+    }
+  }
+
+  const copiedCount = rowsToInsert.length;
+  const sourceCount = typedSourceRows.length;
+  const skippedCount = sourceCount - copiedCount;
+  console.info("[vibode/scene-rebuild] placement snapshot inherited", {
+    sourceVersionId: args.sourceVersionId,
+    outputVersionId: args.outputVersionId,
+    copiedCount,
+    skippedCount,
+    sourceCount,
+  });
+
+  return { copiedCount, skippedCount, sourceCount };
 }
 
 function buildSceneRebuildPrompt(payload: SceneRebuildPayload): string {
@@ -489,6 +619,14 @@ export async function POST(req: NextRequest) {
             : outputFinalization.assetFinalizationError ?? null,
       });
     }
+
+    await inheritPlacementSnapshotForRebuildOutput({
+      supabase,
+      roomId: room.id,
+      userId,
+      sourceVersionId: versionId,
+      outputVersionId: outputFinalization.outputAssetId,
+    });
 
     const rebuildMetadata = {
       generation_mode: "scene_rebuild",
