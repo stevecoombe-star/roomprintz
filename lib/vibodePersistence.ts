@@ -17,6 +17,9 @@ export type VibodeRoomRow = {
   active_asset_id: string | null;
   current_stage: number;
   cover_image_url: string | null;
+  base_image_url: string | null;
+  base_storage_path: string | null;
+  base_version_id: string | null;
   last_opened_at: string | null;
   sort_key: string;
   metadata: JsonObject;
@@ -112,10 +115,47 @@ export type UpdateVibodeRoomInput = {
   active_asset_id?: string | null;
   current_stage?: number;
   cover_image_url?: string | null;
+  base_image_url?: string | null;
+  base_storage_path?: string | null;
+  base_version_id?: string | null;
   last_opened_at?: string | null;
   sort_key?: string;
   metadata?: JsonObject;
 };
+
+export async function assignVibodeRoomBaseImageIfMissing(
+  supabase: AnySupabaseClient,
+  args: {
+    roomId: string;
+    userId?: string | null;
+    baseImageUrl: string | null;
+    baseStoragePath: string | null;
+    baseVersionId: string | null;
+  }
+): Promise<boolean> {
+  let query = supabase
+    .from("vibode_rooms")
+    .update({
+      base_image_url: args.baseImageUrl,
+      base_storage_path: args.baseStoragePath,
+      base_version_id: args.baseVersionId,
+    })
+    .eq("id", args.roomId)
+    .is("base_image_url", null)
+    .is("base_storage_path", null)
+    .is("base_version_id", null);
+
+  if (args.userId) {
+    query = query.eq("user_id", args.userId);
+  }
+
+  const { data, error } = await query.select("id").maybeSingle();
+  if (error) {
+    throw new Error(`[vibode] failed assigning canonical base image: ${error.message}`);
+  }
+
+  return Boolean(data?.id);
+}
 
 export type CreateVibodeGenerationRunInput = {
   room_id: string;

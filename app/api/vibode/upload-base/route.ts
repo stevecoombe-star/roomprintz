@@ -3,6 +3,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import {
+  assignVibodeRoomBaseImageIfMissing,
   createVibodeRoom,
   createVibodeRoomAsset,
   updateVibodeRoomAsset,
@@ -176,6 +177,14 @@ export async function POST(req: NextRequest) {
         width: widthPx ?? null,
         height: heightPx ?? null,
         is_active: true,
+      });
+
+      await assignVibodeRoomBaseImageIfMissing(userSupabase, {
+        roomId: room.id,
+        userId: authenticatedUserId,
+        baseImageUrl: getDurableImageUrl({ candidateUrl: signed.signedUrl, storageBucket: BUCKET }) ?? signed.signedUrl,
+        baseStoragePath: storageKey,
+        baseVersionId: baseAsset.id,
       });
 
       try {

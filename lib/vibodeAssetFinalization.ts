@@ -1,6 +1,10 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { createVibodeAssetThumbnail } from "@/lib/vibodeAssetThumbnails";
-import { createVibodeRoomAsset, updateVibodeRoom, updateVibodeRoomAsset } from "@/lib/vibodePersistence";
+import {
+  createVibodeRoomAsset,
+  updateVibodeRoom,
+  updateVibodeRoomAsset,
+} from "@/lib/vibodePersistence";
 
 type AnySupabaseClient = SupabaseClient;
 
@@ -361,6 +365,7 @@ export async function finalizeVibodeOutputAsset(
       is_active: markAssetActive,
     });
     outputAssetId = outputAsset.id;
+
     console.info(`${args.logPrefix} asset row insert success`, {
       assetId: outputAsset.id,
       roomId: args.roomId,
