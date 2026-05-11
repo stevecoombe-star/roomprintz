@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import type { SupabaseClient } from "@supabase/supabase-js";
-import { buildSceneRebuildPayload, resolveScenePlacements } from "@/lib/vibodeSceneState";
+import { buildSceneRebuildPayload, resolveSceneBaseImage, resolveScenePlacements } from "@/lib/vibodeSceneState";
 
 export const runtime = "nodejs";
 
@@ -94,18 +94,26 @@ export async function GET(req: NextRequest) {
       return NextResponse.json(payload);
     }
 
-    const resolved = await resolveScenePlacements({
-      supabase: auth.supabase,
-      roomId,
-      userId: auth.userId,
-      versionId,
-    });
+    const [resolved, baseImage] = await Promise.all([
+      resolveScenePlacements({
+        supabase: auth.supabase,
+        roomId,
+        userId: auth.userId,
+        versionId,
+      }),
+      resolveSceneBaseImage({
+        supabase: auth.supabase,
+        roomId,
+        userId: auth.userId,
+      }),
+    ]);
 
     return NextResponse.json({
       roomId: resolved.roomId,
       versionId: resolved.versionId,
       lineageVersionIds: resolved.lineageVersionIds,
       resolvedPlacements: resolved.resolvedPlacements,
+      baseImage,
       count: resolved.resolvedPlacements.length,
     });
   } catch (err) {

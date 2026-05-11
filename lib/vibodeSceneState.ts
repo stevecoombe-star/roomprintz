@@ -111,6 +111,19 @@ export type SceneRebuildPayload = {
   lineageVersionIds: string[];
 };
 
+export type SceneBaseImageResolutionStrategy =
+  | "canonical_room_upload"
+  | "source_version_image"
+  | "fallback_version_image"
+  | "unknown";
+
+export type ResolvedSceneBaseImage = {
+  assetId: string | null;
+  imageUrl: string | null;
+  storagePath: string | null;
+  resolutionStrategy: SceneBaseImageResolutionStrategy;
+};
+
 function dedupeCoord(value: number): string {
   return Number.isFinite(value) ? value.toFixed(6) : "NaN";
 }
@@ -246,6 +259,35 @@ async function fetchRoomBaseMetadata(args: {
   return data as VibodeRoomBaseRow;
 }
 
+function resolveBaseImageFromRoomMetadata(room: VibodeRoomBaseRow): ResolvedSceneBaseImage {
+  const canonicalBaseImageUrl = room.base_image_url?.trim() ?? "";
+  if (canonicalBaseImageUrl.length > 0) {
+    return {
+      assetId: room.base_version_id,
+      imageUrl: canonicalBaseImageUrl,
+      storagePath: room.base_storage_path,
+      resolutionStrategy: "canonical_room_upload",
+    };
+  }
+
+  const fallbackCoverImageUrl = room.cover_image_url?.trim() ?? "";
+  if (fallbackCoverImageUrl.length > 0) {
+    return {
+      assetId: room.active_asset_id,
+      imageUrl: fallbackCoverImageUrl,
+      storagePath: null,
+      resolutionStrategy: "fallback_version_image",
+    };
+  }
+
+  return {
+    assetId: null,
+    imageUrl: null,
+    storagePath: null,
+    resolutionStrategy: "unknown",
+  };
+}
+
 function resolveWithSnapshotInheritance(args: {
   lineageVersionIds: string[];
   placements: PlacementRow[];
@@ -314,17 +356,23 @@ export async function resolveScenePlacements(
   };
 }
 
+export async function resolveSceneBaseImage(args: {
+  supabase: AnySupabaseClient;
+  roomId: string;
+  userId: string;
+}): Promise<ResolvedSceneBaseImage> {
+  const room = await fetchRoomBaseMetadata(args);
+  return resolveBaseImageFromRoomMetadata(room);
+}
+
 export async function buildSceneRebuildPayload(
   args: BuildSceneRebuildPayloadArgs
 ): Promise<SceneRebuildPayload> {
   const room = await fetchRoomBaseMetadata(args);
   const resolved = await resolveScenePlacements(args);
-
-  const canonicalBaseImageUrl = room.base_image_url?.trim() ?? "";
-  const fallbackCoverImageUrl = room.cover_image_url?.trim() ?? "";
-  const fallbackImageUrlUsed =
-    canonicalBaseImageUrl.length === 0 && fallbackCoverImageUrl.length > 0;
-  const baseImageUrl = fallbackImageUrlUsed ? fallbackCoverImageUrl : canonicalBaseImageUrl;
+  const resolvedBaseImage = resolveBaseImageFromRoomMetadata(room);
+  const fallbackImageUrlUsed = resolvedBaseImage.resolutionStrategy === "fallback_version_image";
+  const baseImageUrl = resolvedBaseImage.imageUrl ?? "";
 
   if (baseImageUrl.length === 0) {
     throw new Error("[vibode] missing base image url for rebuild payload");
