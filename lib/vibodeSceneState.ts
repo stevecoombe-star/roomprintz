@@ -27,6 +27,13 @@ type GenerationRunEdgeRow = {
   created_at: string;
 };
 
+type RoomAssetRow = {
+  id: string;
+  room_id: string;
+  user_id: string;
+  asset_type: string;
+};
+
 type VibodeRoomBaseRow = {
   id: string;
   user_id: string;
@@ -202,6 +209,25 @@ async function buildLineageVersionIds(args: {
   userId: string;
   versionId: string;
 }): Promise<string[]> {
+  const { data: requestedAsset, error: requestedAssetErr } = await args.supabase
+    .from("vibode_room_assets")
+    .select("id,room_id,user_id,asset_type")
+    .eq("id", args.versionId)
+    .eq("room_id", args.roomId)
+    .eq("user_id", args.userId)
+    .maybeSingle();
+
+  if (requestedAssetErr) {
+    throw new Error(
+      `[vibode] failed to validate requested scene version: ${requestedAssetErr.message}`
+    );
+  }
+
+  const typedRequestedAsset = (requestedAsset as RoomAssetRow | null) ?? null;
+  if (typedRequestedAsset?.asset_type === "base") {
+    return [args.versionId];
+  }
+
   const { data, error } = await args.supabase
     .from("vibode_generation_runs")
     .select("source_asset_id,output_asset_id,created_at")

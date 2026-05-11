@@ -551,11 +551,6 @@ type PlacementLayerCreateResponse = {
   node?: unknown;
   deduped?: boolean;
 };
-type PlacementLayerInheritResponse = {
-  copiedCount?: unknown;
-  skippedCount?: unknown;
-  sourceCount?: unknown;
-};
 type PasteToPlacePreparedProduct = {
   source: "clipboard" | "my_furniture" | "product_url";
   skuId: string;
@@ -5433,90 +5428,6 @@ function EditorPageInner() {
     [activatePasteToPlaceSource]
   );
 
-  const inheritPlacementLayerNodesAfterPasteCommit = useCallback(
-    async (args: {
-      operationId?: number;
-      roomId: string | null;
-      fromVersionId: string | null;
-      toVersionId: string | null;
-    }) => {
-      const roomId = args.roomId?.trim() ?? null;
-      const fromVersionId = args.fromVersionId?.trim() ?? null;
-      const toVersionId = args.toVersionId?.trim() ?? null;
-      const operationId = typeof args.operationId === "number" ? args.operationId : null;
-
-      if (!roomId || !fromVersionId || !toVersionId || fromVersionId === toVersionId) {
-        console.info("[placement-layer] inherit skipped", {
-          reason: !roomId
-            ? "missing roomId"
-            : !fromVersionId
-              ? "missing fromVersionId"
-              : !toVersionId
-                ? "missing toVersionId"
-                : "same source and target version",
-          roomId: roomId ?? null,
-          fromVersionId: fromVersionId ?? null,
-          toVersionId: toVersionId ?? null,
-          operationId,
-        });
-        return;
-      }
-
-      try {
-        const accessToken = await tryGetSupabaseAccessToken();
-        if (!accessToken) {
-          console.info("[placement-layer] inherit skipped", {
-            reason: "missing access token",
-            roomId,
-            fromVersionId,
-            toVersionId,
-            operationId,
-          });
-          return;
-        }
-        const res = await fetch("/api/vibode/room-furniture-placements", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${accessToken}`,
-          },
-          body: JSON.stringify({
-            action: "inheritVersionScope",
-            roomId,
-            fromVersionId,
-            toVersionId,
-          }),
-        });
-        if (!res.ok) {
-          const text = await res.text().catch(() => "");
-          throw new Error(`HTTP ${res.status} ${text}`.trim());
-        }
-        const payload = (await res.json().catch(() => ({}))) as PlacementLayerInheritResponse;
-        const copiedCount = parseFiniteNumber(payload.copiedCount) ?? 0;
-        const skippedCount = parseFiniteNumber(payload.skippedCount) ?? 0;
-        const sourceCount = parseFiniteNumber(payload.sourceCount) ?? copiedCount + skippedCount;
-        console.log("[placement-layer] inherit complete", {
-          roomId,
-          fromVersionId,
-          toVersionId,
-          copiedCount,
-          skippedCount,
-          sourceCount,
-          operationId,
-        });
-      } catch (err: unknown) {
-        console.warn("[placement-layer] inherit failed", {
-          roomId,
-          fromVersionId,
-          toVersionId,
-          operationId,
-          error: err instanceof Error ? err.message : String(err),
-        });
-      }
-    },
-    []
-  );
-
   const createPlacementLayerNodeAfterPasteCommit = useCallback(
     async (args: {
       operationId?: number;
@@ -5855,10 +5766,8 @@ function EditorPageInner() {
         return true;
       }
 
-      let settlingRequestId: string | null = null;
       try {
-        if (isOperationStale("execute:before_edit_run")) return false;
-        settlingRequestId = beginPasteToPlaceSettlingRequest();
+        if (isOperationStale("execute:before_placement_persist")) return false;
         setPasteToPlaceStatus("placing");
         const sourceForPlacement = resolvedSource;
         const initialSavedFurnitureId =
@@ -5894,67 +5803,31 @@ function EditorPageInner() {
             sourceForPlacement,
           ]) ??
           extractSupabaseStorageObjectPathFromUrl(placementThumbnailUrl);
-        const sourceVersionIdForPlacementInheritance = activeAssetId?.trim() ?? null;
-        const abortController = beginPasteToPlaceAbortController();
-        const res = await runEdit(
-          action,
-          {
-            target: { skuId: sourceForPlacement.skuId },
-            params: { x: xNorm, y: yNorm },
-            eligibleSkus: sourceForPlacement.preparedProduct.eligibleSkus,
-            placements: scenePlacements,
-          },
-          {
-            beforeCommit: () => !isOperationStale("execute:before_commit"),
-            onImageCommitted: () => {
-              if (isOperationStale("execute:on_image_committed")) return;
-              setPasteToPlaceStatus(null);
-              clearPasteToPlaceProgressPreview();
-            },
-          },
-          {
-            signal: abortController.signal,
-            suppressAbortError: true,
-            suppressCancellationError: true,
-            pasteToPlaceControl,
-            pasteToPlaceSettlingRequestId: settlingRequestId,
-            onPostDurableCommit: async (commit) => {
-              await inheritPlacementLayerNodesAfterPasteCommit({
-                operationId,
-                roomId: commit.roomId,
-                fromVersionId: sourceVersionIdForPlacementInheritance,
-                toVersionId: commit.assetId,
-              });
-              await createPlacementLayerNodeAfterPasteCommit({
-                operationId,
-                roomId: commit.roomId,
-                versionId: commit.assetId,
-                furnitureId: initialSavedFurnitureId,
-                sourceImageUrl: placementSourceImageUrl,
-                thumbnailUrl: placementThumbnailUrl,
-                sourceImagePath: sourceImagePath ?? null,
-                thumbnailPath: thumbnailPath ?? null,
-                xNorm,
-                yNorm,
-                dedupe: true,
-              });
-              if (commit.roomId && commit.assetId) {
-                void hydratePlacementLayerNodes({
-                  roomId: commit.roomId,
-                  versionId: commit.assetId,
-                  trigger: "paste-to-place",
-                });
-              }
-            },
-          }
-        );
-        clearPasteToPlaceAbortController(abortController);
-        const isAfterEditStale = isOperationStale("execute:after_edit_run");
-        if (!res) {
-          return true;
+        const roomIdForPlacement = vibodeRoomId?.trim() ?? null;
+        const versionIdForPlacement = activeAssetId?.trim() ?? null;
+
+        await createPlacementLayerNodeAfterPasteCommit({
+          operationId,
+          roomId: roomIdForPlacement,
+          versionId: versionIdForPlacement,
+          furnitureId: initialSavedFurnitureId,
+          sourceImageUrl: placementSourceImageUrl,
+          thumbnailUrl: placementThumbnailUrl,
+          sourceImagePath: sourceImagePath ?? null,
+          thumbnailPath: thumbnailPath ?? null,
+          xNorm,
+          yNorm,
+          dedupe: true,
+        });
+        if (roomIdForPlacement && versionIdForPlacement) {
+          void hydratePlacementLayerNodes({
+            roomId: roomIdForPlacement,
+            versionId: versionIdForPlacement,
+            trigger: "paste-to-place",
+          });
         }
-        // Placement is already durably committed at this point. Continue post-commit
-        // persistence even if operation IDs were invalidated by cleanup callbacks.
+
+        const isAfterEditStale = isOperationStale("execute:after_placement_persist");
 
         let savedFurnitureId =
           sourceForPlacement.preparedProduct.savedFurnitureId ??
@@ -5989,7 +5862,6 @@ function EditorPageInner() {
         }
         return true;
       } finally {
-        clearPasteToPlaceAbortController();
         if (!isOperationStale("execute:finally")) {
           setPasteToPlaceStatus(null);
           clearPasteToPlaceProgressPreview();
@@ -6009,18 +5881,12 @@ function EditorPageInner() {
       isPasteToPlaceOperationActive,
       isRotateMarkerTargeting,
       pushSnack,
-      runEdit,
-      inheritPlacementLayerNodesAfterPasteCommit,
       createPlacementLayerNodeAfterPasteCommit,
       hydratePlacementLayerNodes,
       savePreparedProductUrlToMyFurniture,
-      scenePlacements,
       trackMyFurnitureUsage,
       vibodeRoomId,
-      beginPasteToPlaceAbortController,
       clearActivePasteToPlaceJobControlIfMatching,
-      clearPasteToPlaceAbortController,
-      beginPasteToPlaceSettlingRequest,
     ]
   );
 

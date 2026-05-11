@@ -1,4 +1,4 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { buildSceneRebuildPayload, resolveSceneBaseImage, resolveScenePlacements } from "@/lib/vibodeSceneState";
@@ -15,7 +15,10 @@ const ENABLE_DEBUG_SCENE_STATE =
 
 type AnySupabaseClient = SupabaseClient;
 
-function jsonError(message: string, status: number) {
+function jsonError(message: string, status: number, details?: Record<string, unknown>) {
+  if (details) {
+    return NextResponse.json({ error: message, details }, { status });
+  }
   return NextResponse.json({ error: message }, { status });
 }
 
@@ -31,8 +34,12 @@ function parseBoolQueryParam(value: string | null): boolean {
   return normalized === "1" || normalized === "true" || normalized === "yes";
 }
 
-function getBearerToken(req: NextRequest): string | null {
-  const authHeader = req.headers.get("authorization") || "";
+function isUuid(value: string): boolean {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
+}
+
+function getBearerToken(headers: Headers): string | null {
+  const authHeader = headers.get("authorization") || "";
   if (!authHeader.toLowerCase().startsWith("bearer ")) return null;
   const token = authHeader.slice(7).trim();
   return token.length > 0 ? token : null;
@@ -45,7 +52,7 @@ function getUserSupabaseClient(token: string): AnySupabaseClient {
   });
 }
 
-async function requireUser(req: NextRequest): Promise<
+async function requireUser(req: Request): Promise<
   | { supabase: AnySupabaseClient; userId: string }
   | { errorResponse: NextResponse }
 > {
@@ -53,7 +60,7 @@ async function requireUser(req: NextRequest): Promise<
     return { errorResponse: jsonError("Server misconfigured: missing Supabase env.", 500) };
   }
 
-  const token = getBearerToken(req);
+  const token = getBearerToken(req.headers);
   if (!token) {
     return { errorResponse: jsonError("Unauthorized: missing Authorization Bearer token.", 401) };
   }
@@ -67,7 +74,7 @@ async function requireUser(req: NextRequest): Promise<
   return { supabase, userId: userData.user.id };
 }
 
-export async function GET(req: NextRequest) {
+export async function GET(req: Request) {
   try {
     if (!ENABLE_DEBUG_SCENE_STATE) {
       return jsonError("Not found.", 404);
@@ -76,12 +83,30 @@ export async function GET(req: NextRequest) {
     const auth = await requireUser(req);
     if ("errorResponse" in auth) return auth.errorResponse;
 
-    const roomId = safeStr(req.nextUrl.searchParams.get("roomId"));
-    const versionId = safeStr(req.nextUrl.searchParams.get("versionId"));
-    const mode = safeStr(req.nextUrl.searchParams.get("mode"));
-    const includePayload = parseBoolQueryParam(req.nextUrl.searchParams.get("includePayload"));
+    let requestUrl: URL;
+    try {
+      requestUrl = new URL(req.url);
+    } catch {
+      return jsonError("Invalid request URL.", 400);
+    }
+
+    const roomId = safeStr(requestUrl.searchParams.get("roomId"));
+    const versionId = safeStr(requestUrl.searchParams.get("versionId"));
+    const mode = safeStr(requestUrl.searchParams.get("mode"));
+    const includePayload = parseBoolQueryParam(requestUrl.searchParams.get("includePayload"));
     if (!roomId || !versionId) {
-      return jsonError("roomId and versionId are required.", 400);
+      return jsonError("Invalid scene-state query params.", 400, {
+        roomId: roomId ? "ok" : "missing",
+        versionId: versionId ? "ok" : "missing",
+        required: ["roomId", "versionId"],
+      });
+    }
+    if (!isUuid(roomId) || !isUuid(versionId)) {
+      return jsonError("Invalid scene-state query params.", 400, {
+        roomId: isUuid(roomId) ? "ok" : "invalid_uuid",
+        versionId: isUuid(versionId) ? "ok" : "invalid_uuid",
+        expected: "UUID strings",
+      });
     }
 
     if (mode === "rebuildPayload" || includePayload) {
