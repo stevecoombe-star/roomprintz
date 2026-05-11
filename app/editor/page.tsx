@@ -1821,6 +1821,13 @@ function EditorPageInner() {
   const devUnlockPasteToPlaceRaw = process.env.NEXT_PUBLIC_VIBODE_DEV_UNLOCK_PASTE_TO_PLACE;
   const isDevUnlockPasteToPlace =
     devUnlockPasteToPlaceRaw === "1" || devUnlockPasteToPlaceRaw?.toLowerCase() === "true";
+  const devSceneRebuildEnabledRaw = process.env.NEXT_PUBLIC_VIBODE_ENABLE_SCENE_REBUILD;
+  const isDevSceneRebuildEnabled =
+    typeof devSceneRebuildEnabledRaw === "undefined"
+      ? true
+      : devSceneRebuildEnabledRaw === "1" || devSceneRebuildEnabledRaw.toLowerCase() === "true";
+  const showDevSceneRebuildButton =
+    process.env.NODE_ENV !== "production" && isDevUnlockPasteToPlace && isDevSceneRebuildEnabled;
 
   const [activeStage, setActiveStage] = useState<WorkflowStage>(1);
   const [stageStatus, setStageStatus] = useState<StageStatusMap>(INITIAL_STAGE_STATUS);
@@ -1837,6 +1844,11 @@ function EditorPageInner() {
   const [myFurnitureSelectingIds, setMyFurnitureSelectingIds] = useState<string[]>([]);
   const [selectedMyFurnitureItemIds, setSelectedMyFurnitureItemIds] = useState<string[]>([]);
   const [isPendingFurnitureSelectionRunning, setIsPendingFurnitureSelectionRunning] = useState(false);
+  const [isDevSceneRebuildRunning, setIsDevSceneRebuildRunning] = useState(false);
+  const [devSceneRebuildFeedback, setDevSceneRebuildFeedback] = useState<{
+    tone: "success" | "error";
+    message: string;
+  } | null>(null);
   const [pendingMyFurnitureReturnPreviewUrl, setPendingMyFurnitureReturnPreviewUrl] = useState<
     string | null
   >(null);
@@ -3448,6 +3460,81 @@ function EditorPageInner() {
       versions,
     ]
   );
+
+  const handleDevRebuildActiveVersion = useCallback(async () => {
+    if (isDevSceneRebuildRunning) return;
+
+    if (!vibodeRoomId || !selectedVersionId) {
+      const missingMessage = !vibodeRoomId
+        ? "Select an active room before rebuilding."
+        : "Select an active version before rebuilding.";
+      setDevSceneRebuildFeedback({ tone: "error", message: missingMessage });
+      pushSnack(missingMessage);
+      return;
+    }
+
+    setIsDevSceneRebuildRunning(true);
+    setDevSceneRebuildFeedback(null);
+
+    try {
+      let accessToken = await tryGetSupabaseAccessToken();
+      if (!accessToken) {
+        await new Promise<void>((resolve) => setTimeout(resolve, 250));
+        accessToken = await tryGetSupabaseAccessToken();
+      }
+      if (!accessToken) {
+        throw new Error("No Supabase session.");
+      }
+
+      const res = await fetch("/api/vibode/scene-rebuild", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${accessToken}`,
+        },
+        body: JSON.stringify({
+          roomId: vibodeRoomId,
+          versionId: selectedVersionId,
+          activate: true,
+        }),
+      });
+      const json = (await res.json().catch(() => ({}))) as {
+        error?: string;
+        message?: string;
+        outputVersionId?: string;
+      };
+      if (!res.ok) {
+        throw new Error(json.error || json.message || `Scene rebuild failed (HTTP ${res.status})`);
+      }
+
+      const latestVersions = await refreshRoomVersions(vibodeRoomId);
+      const refreshedActiveVersion =
+        latestVersions?.find((asset) => asset.is_active) ??
+        latestVersions?.find((asset) => asset.id === json.outputVersionId) ??
+        latestVersions?.[0] ??
+        null;
+      if (refreshedActiveVersion && latestVersions) {
+        applyVersionToEditorState(refreshedActiveVersion, latestVersions);
+      }
+
+      const successMessage = "Scene rebuild complete.";
+      setDevSceneRebuildFeedback({ tone: "success", message: successMessage });
+      pushSnack(successMessage);
+    } catch (err) {
+      const message = getErrorMessage(err) ?? "Scene rebuild failed.";
+      setDevSceneRebuildFeedback({ tone: "error", message });
+      pushSnack(message);
+    } finally {
+      setIsDevSceneRebuildRunning(false);
+    }
+  }, [
+    applyVersionToEditorState,
+    isDevSceneRebuildRunning,
+    pushSnack,
+    refreshRoomVersions,
+    selectedVersionId,
+    vibodeRoomId,
+  ]);
 
   const handleRequestDeleteVersion = useCallback(
     (asset: VibodeRoomAsset) => {
@@ -7363,6 +7450,13 @@ function EditorPageInner() {
   void onGenerate;
 
   const stage5Locked = activeStage === 5 && !hasFurniturePass && !STAGE5_DEV_BYPASS;
+  const devSceneRebuildMissingReason = !vibodeRoomId
+    ? "Room id missing."
+    : !selectedVersionId
+      ? "Version id missing."
+      : null;
+  const isDevSceneRebuildButtonDisabled =
+    isDevSceneRebuildRunning || Boolean(devSceneRebuildMissingReason);
   const activeStageTokenCost = STAGE_TOKEN_COST[activeStage] ?? DEFAULT_ACTION_TOKEN_COST;
   const activeStageTokenCostLabel = formatTokenCostLabel(activeStageTokenCost);
   const activeEditTokenCost =
@@ -8431,6 +8525,37 @@ function EditorPageInner() {
               </div>
               {panels.versions ? (
                 <div id="versions-panel-body" className="mt-3">
+                  {showDevSceneRebuildButton ? (
+                    <div className="mb-3 rounded-md border border-amber-900/60 bg-neutral-950 p-2">
+                      <div className="text-[10px] uppercase tracking-wide text-amber-300/70">Internal dev</div>
+                      <button
+                        type="button"
+                        onClick={handleDevRebuildActiveVersion}
+                        disabled={isDevSceneRebuildButtonDisabled}
+                        className={`mt-1 rounded border px-2 py-1 text-xs ${
+                          isDevSceneRebuildButtonDisabled
+                            ? "cursor-not-allowed border-neutral-900 bg-neutral-950 text-neutral-600"
+                            : "border-amber-700/70 bg-amber-950/30 text-amber-200 hover:bg-amber-900/40"
+                        }`}
+                      >
+                        {isDevSceneRebuildRunning ? "Rebuilding..." : "Dev: Rebuild Active Version"}
+                      </button>
+                      {devSceneRebuildMissingReason ? (
+                        <div className="mt-1 text-[11px] text-neutral-500">{devSceneRebuildMissingReason}</div>
+                      ) : null}
+                      {devSceneRebuildFeedback ? (
+                        <div
+                          className={`mt-1 text-[11px] ${
+                            devSceneRebuildFeedback.tone === "success"
+                              ? "text-emerald-300"
+                              : "text-red-300"
+                          }`}
+                        >
+                          {devSceneRebuildFeedback.message}
+                        </div>
+                      ) : null}
+                    </div>
+                  ) : null}
                   {versions.length === 0 ? (
                     <div className="rounded-md border border-dashed border-neutral-800 bg-neutral-950 px-3 py-2 text-xs text-neutral-500">
                       No versions yet. Upload an image to create the original version.
