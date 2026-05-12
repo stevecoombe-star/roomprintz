@@ -1840,6 +1840,7 @@ function EditorPageInner() {
   const [selectedMyFurnitureItemIds, setSelectedMyFurnitureItemIds] = useState<string[]>([]);
   const [isPendingFurnitureSelectionRunning, setIsPendingFurnitureSelectionRunning] = useState(false);
   const [isDevSceneRebuildRunning, setIsDevSceneRebuildRunning] = useState(false);
+  const [sceneNeedsUpdate, setSceneNeedsUpdate] = useState(false);
   const [devSceneRebuildFeedback, setDevSceneRebuildFeedback] = useState<{
     tone: "success" | "error";
     message: string;
@@ -2326,6 +2327,7 @@ function EditorPageInner() {
     setLastStageOutputs((prev) => (Object.keys(prev).length === 0 ? prev : {}));
     setWorkingImageUrl(null);
     setIsWorkingImageGenerated(false);
+    setSceneNeedsUpdate(false);
     pendingPlacementNodeHydrationRef.current = null;
     store.resetSessionForIncomingImage();
     setScenePlacements([]);
@@ -2369,6 +2371,7 @@ function EditorPageInner() {
     clearPasteToPlaceActiveSource,
     clearPasteToPlaceMenuClipboardPreview,
     clearPasteToPlaceProgressPreview,
+    setSceneNeedsUpdate,
   ]);
 
   const refreshRoomVersions = useCallback(
@@ -3398,6 +3401,7 @@ function EditorPageInner() {
       const versionPlacements = extractScenePlacementsFromUnknown(asset.metadata);
 
       clearPasteToPlaceProgressPreview();
+      setSceneNeedsUpdate(false);
       setWorkingImageUrl(nextUrl);
       setIsWorkingImageGenerated(asset.asset_type === "stage_output");
       setScenePlacements(versionPlacements);
@@ -3417,6 +3421,7 @@ function EditorPageInner() {
       hydrateSceneNodesFromPlacements,
       setActiveAssetId,
       setScenePlacements,
+      setSceneNeedsUpdate,
       setVersions,
     ]
   );
@@ -3511,6 +3516,9 @@ function EditorPageInner() {
       if (refreshedActiveVersion && latestVersions) {
         applyVersionToEditorState(refreshedActiveVersion, latestVersions);
       }
+      if (latestVersions) {
+        setSceneNeedsUpdate(false);
+      }
 
       const successMessage = "Scene rebuild complete.";
       setDevSceneRebuildFeedback({ tone: "success", message: successMessage });
@@ -3527,6 +3535,7 @@ function EditorPageInner() {
     isDevSceneRebuildRunning,
     pushSnack,
     refreshRoomVersions,
+    setSceneNeedsUpdate,
     selectedVersionId,
     vibodeRoomId,
   ]);
@@ -5551,6 +5560,7 @@ function EditorPageInner() {
           const withoutCurrent = prev.filter((node) => node.id !== createdNode.id);
           return [...withoutCurrent, createdNode];
         });
+        setSceneNeedsUpdate(true);
         placementLayerHydratedScopeKeyRef.current = `${roomId}:${versionId}`;
         console.log("[placement-layer] node created", {
           roomId,
@@ -5581,7 +5591,7 @@ function EditorPageInner() {
         });
       }
     },
-    []
+    [setSceneNeedsUpdate]
   );
 
   const updatePlacementLayerNodePositionLocal = useCallback((id: string, xNorm: number, yNorm: number) => {
@@ -5638,6 +5648,7 @@ function EditorPageInner() {
             prev.map((node) => (node.id === patchedNode.id ? patchedNode : node))
           );
         }
+        setSceneNeedsUpdate(true);
       } catch {
         if (patchAttempted) {
           setPlacementLayerNodes((prev) =>
@@ -5662,7 +5673,7 @@ function EditorPageInner() {
         pushSnack("Unable to save furniture marker position.");
       }
     },
-    [pushSnack]
+    [pushSnack, setSceneNeedsUpdate]
   );
 
   const deletePlacementLayerNode = useCallback(
@@ -5686,6 +5697,7 @@ function EditorPageInner() {
           throw new Error(`HTTP ${res.status} ${text}`.trim());
         }
         setPlacementLayerNodes((prev) => prev.filter((node) => node.id !== trimmedId));
+        setSceneNeedsUpdate(true);
       } catch (err: unknown) {
         console.warn("[placement-layer] node delete failed", {
           id: trimmedId,
@@ -5694,7 +5706,7 @@ function EditorPageInner() {
         pushSnack("Unable to delete furniture marker.");
       }
     },
-    [pushSnack]
+    [pushSnack, setSceneNeedsUpdate]
   );
 
   const runPasteToPlaceClickTargetEdit = useCallback(
@@ -8391,9 +8403,15 @@ function EditorPageInner() {
               </div>
               {panels.versions ? (
                 <div id="versions-panel-body" className="mt-3">
-                  {showDevSceneRebuildButton ? (
+                  {showDevSceneRebuildButton && sceneNeedsUpdate ? (
                     <div className="mb-3 rounded-md border border-amber-900/60 bg-neutral-950 p-2">
-                      <div className="text-[10px] uppercase tracking-wide text-amber-300/70">Internal dev</div>
+                      <div className="mb-2 inline-flex items-center gap-1.5 rounded-full border border-amber-400/30 bg-amber-500/10 px-2 py-0.5 text-xs text-amber-200">
+                        <span className="h-1.5 w-1.5 rounded-full bg-amber-300" />
+                        <span>Room needs update</span>
+                      </div>
+                      <div className="text-xs text-neutral-300">
+                        Furniture changes are ready to apply to your room.
+                      </div>
                       <button
                         type="button"
                         onClick={handleDevRebuildActiveVersion}
@@ -8404,7 +8422,7 @@ function EditorPageInner() {
                             : "border-amber-700/70 bg-amber-950/30 text-amber-200 hover:bg-amber-900/40"
                         }`}
                       >
-                        {isDevSceneRebuildRunning ? "Rebuilding..." : "Dev: Rebuild Active Version"}
+                        {isDevSceneRebuildRunning ? "Updating..." : "Update Room"}
                       </button>
                       {devSceneRebuildMissingReason ? (
                         <div className="mt-1 text-[11px] text-neutral-500">{devSceneRebuildMissingReason}</div>
