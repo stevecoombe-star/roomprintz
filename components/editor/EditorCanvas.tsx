@@ -785,6 +785,18 @@ export function EditorCanvas({
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
+        const target = e.target;
+        if (target instanceof HTMLElement) {
+          const isTextInputTarget =
+            target.closest("input, textarea, select, [contenteditable='true']") !== null ||
+            target.isContentEditable;
+          if (isTextInputTarget) return;
+        }
+        if (selectedPlacementLayerNodeId) {
+          if (draggingPlacementLayerNodeId) return;
+          setSelectedPlacementLayerNodeId(null);
+          return;
+        }
         if (pasteToPlaceMenuState && onDismissPasteToPlaceMenu) {
           onDismissPasteToPlaceMenu();
           return;
@@ -851,6 +863,8 @@ export function EditorCanvas({
     onClearRotateMarker,
     pasteToPlaceMenuState,
     onDismissPasteToPlaceMenu,
+    draggingPlacementLayerNodeId,
+    selectedPlacementLayerNodeId,
     toggleDelete,
   ]);
 
