@@ -692,7 +692,7 @@ export function MyRoomsPage() {
             onSearchChange={setSearchQuery}
             onSortChange={setSortMode}
             onUploadNewPhoto={() => {
-              router.push("/editor");
+              router.push("/editor?newRoom=1");
             }}
             onCreateFolder={() => {
               if (!folderFeatureReady) return;

@@ -53,6 +53,8 @@ const VIBODE_MODEL_STORAGE_KEY = "vibode:modelVersion";
 const FREE_PASTE_TO_PLACE_SESSION_KEY = "vibode:hasUsedFreePasteToPlace";
 const PASTE_TO_PLACE_CLIPBOARD_HEADS_UP_SESSION_KEY = "vibode:pasteToPlaceClipboardHeadsUpShown";
 const EDITOR_RIGHT_PANEL_STATE_KEY = "vibode.editor.rightPanelState.v1";
+const VIBODE_EDITOR_WORKSPACE_KEY = "vibode:editor-workspace:v1";
+const VIBODE_EDITOR_WORKSPACE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 const VIBODE_MODEL_NBP = "NBP";
 const VIBODE_MODEL_NB2 = "NB2";
 const ROOM_PREPARING_MESSAGE = "Your room is still preparing. Try again in a moment.";
@@ -1058,6 +1060,17 @@ type VibodeRoomAssetHydrationRow = {
   metadata: Record<string, unknown> | null;
   created_at: string;
 };
+type VibodeEditorWorkspaceSnapshot = {
+  roomId: string | null;
+  versionId: string | null;
+  furnitureLayerEnabled: boolean;
+  timestamp: number;
+};
+type VibodeRoomRowForRecovery = {
+  id: string;
+  active_asset_id: string | null;
+  sort_key: string | null;
+};
 
 type VibodeDebugWindow = Window & {
   __VIBODE_DEBUG_ROOM_OPEN__?: boolean;
@@ -1361,6 +1374,71 @@ function logEditorRoomOpen(event: string, payload?: Record<string, unknown>) {
     return;
   }
   console.log("[editor-room-open]", event);
+}
+
+function logEditorRecovery(message: string, payload?: Record<string, unknown>) {
+  if (process.env.NODE_ENV !== "development") return;
+  if (payload) {
+    console.debug(message, payload);
+    return;
+  }
+  console.debug(message);
+}
+
+function pickMostRelevantVersion(
+  versions: VibodeRoomAsset[],
+  options?: {
+    preferredVersionId?: string | null;
+    activeVersionId?: string | null;
+  }
+): VibodeRoomAsset | null {
+  if (versions.length === 0) return null;
+  const preferredVersionId = options?.preferredVersionId ?? null;
+  const activeVersionId = options?.activeVersionId ?? null;
+  if (preferredVersionId) {
+    const preferred = versions.find((asset) => asset.id === preferredVersionId);
+    if (preferred) return preferred;
+  }
+  if (activeVersionId) {
+    const activeByRoom = versions.find((asset) => asset.id === activeVersionId);
+    if (activeByRoom) return activeByRoom;
+  }
+  const flaggedActive = versions.find((asset) => asset.is_active);
+  if (flaggedActive) return flaggedActive;
+  const newest = versions
+    .slice()
+    .sort((a, b) => {
+      const aMs = Date.parse(a.created_at);
+      const bMs = Date.parse(b.created_at);
+      const safeA = Number.isFinite(aMs) ? aMs : 0;
+      const safeB = Number.isFinite(bMs) ? bMs : 0;
+      return safeB - safeA;
+    })[0];
+  return newest ?? versions[0] ?? null;
+}
+
+function readWorkspaceSnapshot(): VibodeEditorWorkspaceSnapshot | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = window.sessionStorage.getItem(VIBODE_EDITOR_WORKSPACE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as unknown;
+    if (!isRecord(parsed)) return null;
+    const timestamp = parseFiniteNumber(parsed.timestamp);
+    if (timestamp === null) return null;
+    return {
+      roomId: safeStr(parsed.roomId),
+      versionId: safeStr(parsed.versionId),
+      furnitureLayerEnabled: parsed.furnitureLayerEnabled === true,
+      timestamp,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function hasExplicitNewRoomIntent(params: { get: (key: string) => string | null }): boolean {
+  return params.get("newRoom") === "1";
 }
 
 function hasRoomIdInCurrentLocation(): boolean {
@@ -1768,12 +1846,29 @@ function EditorPageInner() {
   const requestedRoomId = parseRoomIdFromSearch(
     searchParams.get("roomId") ?? searchParams.get("vibodeRoomId")
   );
+  const requestedNewRoomIntent = hasExplicitNewRoomIntent(searchParams);
+  const isExplicitBlankEditorIntent = !requestedRoomId && requestedNewRoomIntent;
   const requestedRoomPreviewUrl = parseRoomPreviewUrlFromSearch(
     searchParams.get("roomPreview") ?? searchParams.get("previewUrl")
   );
   const requestedRoomAspectRatio = parseRequestedRoomAspectRatioFromSearch(searchParams);
   const requestedPreviewAspectRatio = parseRequestedPreviewAspectRatioFromSearch(searchParams);
   const requestedInitialFrameAspectRatio = requestedRoomAspectRatio ?? requestedPreviewAspectRatio;
+  const [workspaceRecoveryRoomId, setWorkspaceRecoveryRoomId] = useState<string | null>(null);
+  const [workspaceRecoveryVersionId, setWorkspaceRecoveryVersionId] = useState<string | null>(null);
+  const [workspaceRecoveryFurnitureLayerEnabled, setWorkspaceRecoveryFurnitureLayerEnabled] = useState<
+    boolean | null
+  >(null);
+  const [workspaceRecoveryResolved, setWorkspaceRecoveryResolved] = useState<boolean>(
+    Boolean(requestedRoomId || isExplicitBlankEditorIntent)
+  );
+  const effectiveRequestedRoomId = requestedRoomId ?? workspaceRecoveryRoomId;
+  const effectiveRequestedRoomPreviewUrl = requestedRoomId ? requestedRoomPreviewUrl : null;
+  const effectiveRequestedInitialFrameAspectRatio = requestedRoomId
+    ? requestedInitialFrameAspectRatio
+    : null;
+  const isWorkspaceRecoveryPending =
+    !requestedRoomId && !isExplicitBlankEditorIntent && !workspaceRecoveryResolved;
   const myFurnitureReturnTo = useMemo(() => {
     if (requestedRoomId) {
       return `/editor?roomId=${encodeURIComponent(requestedRoomId)}`;
@@ -2727,6 +2822,183 @@ function EditorPageInner() {
   }, [hasUsedFreePasteToPlace]);
 
   useEffect(() => {
+    if (requestedRoomId) {
+      setWorkspaceRecoveryRoomId(null);
+      setWorkspaceRecoveryVersionId(null);
+      setWorkspaceRecoveryFurnitureLayerEnabled(null);
+      setWorkspaceRecoveryResolved(true);
+      return;
+    }
+    if (isExplicitBlankEditorIntent) {
+      setWorkspaceRecoveryRoomId(null);
+      setWorkspaceRecoveryVersionId(null);
+      setWorkspaceRecoveryFurnitureLayerEnabled(null);
+      setWorkspaceRecoveryResolved(true);
+      if (typeof window !== "undefined") {
+        try {
+          window.sessionStorage.removeItem(VIBODE_EDITOR_WORKSPACE_KEY);
+        } catch {
+          // Ignore storage write errors.
+        }
+      }
+      logEditorRecovery("[editor-recovery] explicit blank editor intent, skipped recovery");
+      return;
+    }
+
+    let cancelled = false;
+    setWorkspaceRecoveryResolved(false);
+
+    const runWorkspaceRecovery = async () => {
+      let accessToken = await tryGetSupabaseAccessToken();
+      if (!accessToken) {
+        await new Promise<void>((resolve) => setTimeout(resolve, 250));
+        accessToken = await tryGetSupabaseAccessToken();
+      }
+      if (!accessToken) {
+        if (cancelled) return;
+        logEditorRecovery("[editor-recovery] no valid room found, showing upload state", {
+          reason: "no-access-token",
+        });
+        setWorkspaceRecoveryRoomId(null);
+        setWorkspaceRecoveryVersionId(null);
+        setWorkspaceRecoveryFurnitureLayerEnabled(null);
+        setWorkspaceRecoveryResolved(true);
+        return;
+      }
+
+      const snapshot = readWorkspaceSnapshot();
+      const now = Date.now();
+      const hasFreshSnapshot =
+        snapshot && Number.isFinite(snapshot.timestamp) && now - snapshot.timestamp <= VIBODE_EDITOR_WORKSPACE_MAX_AGE_MS;
+      if (hasFreshSnapshot) {
+        logEditorRecovery("[editor-recovery] snapshot found", {
+          roomId: snapshot.roomId,
+          versionId: snapshot.versionId,
+          ageMs: now - snapshot.timestamp,
+        });
+      } else if (snapshot) {
+        logEditorRecovery("[editor-recovery] snapshot invalid, falling back", {
+          reason: "stale",
+          ageMs: now - snapshot.timestamp,
+        });
+      }
+
+      const resolveRoomCandidate = async (args: {
+        roomId: string | null;
+        preferredVersionId: string | null;
+        activeVersionId?: string | null;
+      }): Promise<{ roomId: string; versionId: string; usedPreferredVersion: boolean } | null> => {
+        const roomId = safeStr(args.roomId);
+        if (!roomId || !accessToken) return null;
+        let roomVersions: VibodeRoomAsset[] = [];
+        try {
+          roomVersions = await loadRoomVersions(roomId, accessToken);
+        } catch {
+          return null;
+        }
+        const version = pickMostRelevantVersion(roomVersions, {
+          preferredVersionId: args.preferredVersionId,
+          activeVersionId: args.activeVersionId,
+        });
+        if (!version) return null;
+        return {
+          roomId,
+          versionId: version.id,
+          usedPreferredVersion: Boolean(args.preferredVersionId && version.id === args.preferredVersionId),
+        };
+      };
+
+      if (hasFreshSnapshot) {
+        const resolvedFromSnapshot = await resolveRoomCandidate({
+          roomId: snapshot.roomId,
+          preferredVersionId: snapshot.versionId,
+        });
+        if (resolvedFromSnapshot && !cancelled) {
+          setWorkspaceRecoveryRoomId(resolvedFromSnapshot.roomId);
+          setWorkspaceRecoveryVersionId(resolvedFromSnapshot.versionId);
+          setWorkspaceRecoveryFurnitureLayerEnabled(snapshot.furnitureLayerEnabled);
+          setWorkspaceRecoveryResolved(true);
+          logEditorRecovery("[editor-recovery] snapshot restored", {
+            roomId: resolvedFromSnapshot.roomId,
+            versionId: resolvedFromSnapshot.versionId,
+            usedPreferredVersion: resolvedFromSnapshot.usedPreferredVersion,
+          });
+          return;
+        }
+        logEditorRecovery("[editor-recovery] snapshot invalid, falling back", {
+          reason: "missing-room-or-version",
+          roomId: snapshot.roomId,
+          versionId: snapshot.versionId,
+        });
+      }
+
+      const client = supabaseBrowser();
+      const { data: roomRows, error: roomError } = await client
+        .from("vibode_rooms")
+        .select("id,active_asset_id,sort_key")
+        .order("sort_key", { ascending: false })
+        .limit(25);
+      if (roomError) {
+        if (cancelled) return;
+        logEditorRecovery("[editor-recovery] no valid room found, showing upload state", {
+          reason: roomError.message,
+        });
+        setWorkspaceRecoveryRoomId(null);
+        setWorkspaceRecoveryVersionId(null);
+        setWorkspaceRecoveryFurnitureLayerEnabled(null);
+        setWorkspaceRecoveryResolved(true);
+        return;
+      }
+
+      const rooms = (Array.isArray(roomRows) ? roomRows : []) as VibodeRoomRowForRecovery[];
+      let fallbackCandidate: { roomId: string; versionId: string } | null = null;
+      for (const room of rooms) {
+        const resolved = await resolveRoomCandidate({
+          roomId: room.id,
+          preferredVersionId: null,
+          activeVersionId: room.active_asset_id,
+        });
+        if (resolved) {
+          fallbackCandidate = {
+            roomId: resolved.roomId,
+            versionId: resolved.versionId,
+          };
+          break;
+        }
+      }
+
+      if (cancelled) return;
+      if (fallbackCandidate) {
+        setWorkspaceRecoveryRoomId(fallbackCandidate.roomId);
+        setWorkspaceRecoveryVersionId(fallbackCandidate.versionId);
+        setWorkspaceRecoveryFurnitureLayerEnabled(null);
+        setWorkspaceRecoveryResolved(true);
+        logEditorRecovery("[editor-recovery] hydrated newest active room", fallbackCandidate);
+        return;
+      }
+
+      setWorkspaceRecoveryRoomId(null);
+      setWorkspaceRecoveryVersionId(null);
+      setWorkspaceRecoveryFurnitureLayerEnabled(null);
+      setWorkspaceRecoveryResolved(true);
+      logEditorRecovery("[editor-recovery] no valid room found, showing upload state");
+    };
+
+    void runWorkspaceRecovery();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [isExplicitBlankEditorIntent, requestedRoomId]);
+
+  useEffect(() => {
+    if (workspaceRecoveryFurnitureLayerEnabled === null) return;
+    setIsFurnitureLayerEnabled((prev) =>
+      prev === workspaceRecoveryFurnitureLayerEnabled ? prev : workspaceRecoveryFurnitureLayerEnabled
+    );
+  }, [workspaceRecoveryFurnitureLayerEnabled]);
+
+  useEffect(() => {
     if (didRestorePendingRef.current) return;
     if (!requestedRoomId) {
       shouldSkipPendingRestoreRef.current = true;
@@ -2826,7 +3098,10 @@ function EditorPageInner() {
   }, [clearRoomCanvasFadeTimeout, clearRoomCanvasSettleTimeout]);
 
   useEffect(() => {
-    if (!requestedRoomId) {
+    if (isWorkspaceRecoveryPending) {
+      return;
+    }
+    if (!effectiveRequestedRoomId) {
       if (!hasAppliedBlankEditorResetRef.current) {
         resetEditorToBlankState();
         hasAppliedBlankEditorResetRef.current = true;
@@ -2835,16 +3110,16 @@ function EditorPageInner() {
     }
     hasAppliedBlankEditorResetRef.current = false;
     shouldSkipPendingRestoreRef.current = true;
-    if (hydratedRoomIdRef.current === requestedRoomId) {
+    if (hydratedRoomIdRef.current === effectiveRequestedRoomId) {
       setIsRoomHydrating(false);
       return;
     }
 
-    if (inFlightRoomHydrationRoomIdRef.current === requestedRoomId) {
+    if (inFlightRoomHydrationRoomIdRef.current === effectiveRequestedRoomId) {
       return;
     }
 
-    inFlightRoomHydrationRoomIdRef.current = requestedRoomId;
+    inFlightRoomHydrationRoomIdRef.current = effectiveRequestedRoomId;
     const roomOpenSessionId = roomOpenSessionRef.current + 1;
     roomOpenSessionRef.current = roomOpenSessionId;
     let cancelled = false;
@@ -2853,7 +3128,7 @@ function EditorPageInner() {
     const clearInFlightHydrationFlag = () => {
       if (
         roomOpenSessionRef.current === roomOpenSessionId &&
-        inFlightRoomHydrationRoomIdRef.current === requestedRoomId
+        inFlightRoomHydrationRoomIdRef.current === effectiveRequestedRoomId
       ) {
         inFlightRoomHydrationRoomIdRef.current = null;
       }
@@ -2861,8 +3136,8 @@ function EditorPageInner() {
 
     const hydrateFromRoom = async () => {
       let didApplyHydratedRoom = false;
-      const roomOpenPreviewUrl = requestedRoomPreviewUrl;
-      const initialFrameAspectRatio = requestedInitialFrameAspectRatio;
+      const roomOpenPreviewUrl = effectiveRequestedRoomPreviewUrl;
+      const initialFrameAspectRatio = effectiveRequestedInitialFrameAspectRatio;
       const canvasHydrationToken = beginRoomCanvasHydration({
         aspectRatio: initialFrameAspectRatio,
         placeholderImageUrl: roomOpenPreviewUrl,
@@ -2877,7 +3152,7 @@ function EditorPageInner() {
           }));
         });
       }
-      logEditorRoomOpen("roomHydration:start", { requestedRoomId });
+      logEditorRoomOpen("roomHydration:start", { requestedRoomId: effectiveRequestedRoomId });
       hydratedRoomIdRef.current = null;
       setIsRoomHydrating(true);
       resetWorkflowForIncomingImage();
@@ -2895,30 +3170,35 @@ function EditorPageInner() {
         }
         if (!accessToken) {
           logEditorRoomOpen("roomHydration:failed", {
-            requestedRoomId,
+            requestedRoomId: effectiveRequestedRoomId,
             error: "no-access-token",
           });
           hydratedRoomIdRef.current = null;
           pushSnack("Your session expired. Redirecting to sign in...");
-          router.push(`/login?next=${encodeURIComponent(`/editor?roomId=${requestedRoomId}`)}`);
+          router.push(`/login?next=${encodeURIComponent(`/editor?roomId=${effectiveRequestedRoomId}`)}`);
           return;
         }
 
-        const hydrated = await loadRoomHydrationData(requestedRoomId, accessToken);
+        const hydrated = await loadRoomHydrationData(effectiveRequestedRoomId, accessToken);
         if (!isRoomOpenSessionActive()) {
           return;
         }
+        const shouldUseRecoveryPreferredVersion =
+          !requestedRoomId && workspaceRecoveryRoomId === effectiveRequestedRoomId;
+        const recoveryPreferredVersionId = shouldUseRecoveryPreferredVersion
+          ? workspaceRecoveryVersionId
+          : null;
 
         const hydratedActiveVersion =
-          hydrated.versions.find((asset) => asset.id === hydrated.room.active_asset_id) ??
-          hydrated.versions.find((asset) => asset.is_active) ??
-          hydrated.versions[0] ??
-          null;
+          pickMostRelevantVersion(hydrated.versions, {
+            preferredVersionId: recoveryPreferredVersionId,
+            activeVersionId: hydrated.room.active_asset_id,
+          }) ?? null;
         const hydratedImageUrl = hydrated.imageUrl ?? hydratedActiveVersion?.image_url ?? null;
 
         if (!hydratedImageUrl) {
           logEditorRoomOpen("roomHydration:failed", {
-            requestedRoomId,
+            requestedRoomId: effectiveRequestedRoomId,
             error: "missing-preview-url",
             roomId: hydrated.room.id,
           });
@@ -2946,7 +3226,7 @@ function EditorPageInner() {
         }
         setVibodeRoomId(hydrated.room.id);
         setVersions(hydrated.versions);
-        setActiveAssetId(hydrated.room.active_asset_id ?? null);
+        setActiveAssetId(hydratedActiveVersion?.id ?? hydrated.room.active_asset_id ?? null);
         const hydratedPlacements = extractScenePlacementsFromUnknown(hydratedActiveVersion?.metadata);
         setScenePlacements(hydratedPlacements);
         hydrateSceneNodesFromPlacements(hydratedPlacements);
@@ -2961,11 +3241,11 @@ function EditorPageInner() {
         if (typeof maybeStage === "number" && maybeStage >= 1 && maybeStage <= 5) {
           setActiveStage(maybeStage as WorkflowStage);
         }
-        hydratedRoomIdRef.current = requestedRoomId;
+        hydratedRoomIdRef.current = effectiveRequestedRoomId;
         didApplyHydratedRoom = true;
         setIsRoomHydrating(false);
         logEditorRoomOpen("roomHydration:finish", {
-          requestedRoomId,
+          requestedRoomId: effectiveRequestedRoomId,
           hydratedRoomId: hydrated.room.id,
           hasImageUrl: Boolean(hydratedImageUrl),
         });
@@ -2986,7 +3266,7 @@ function EditorPageInner() {
           return;
         }
         logEditorRoomOpen("roomHydration:failed", {
-          requestedRoomId,
+          requestedRoomId: effectiveRequestedRoomId,
           error: getErrorMessage(err) ?? "error",
         });
         console.error("[editor] room hydration failed:", err);
@@ -3023,16 +3303,20 @@ function EditorPageInner() {
     beginRoomCanvasHydration,
     clearRoomCanvasFadeTimeout,
     clearRoomCanvasSettleTimeout,
+    effectiveRequestedInitialFrameAspectRatio,
+    effectiveRequestedRoomId,
+    effectiveRequestedRoomPreviewUrl,
+    isWorkspaceRecoveryPending,
     pushSnack,
-    requestedInitialFrameAspectRatio,
     requestedRoomId,
-    requestedRoomPreviewUrl,
     resetEditorToBlankState,
     resetWorkflowForIncomingImage,
     router,
     setActiveAssetId,
     setBaseImageUrl,
     setVersions,
+    workspaceRecoveryRoomId,
+    workspaceRecoveryVersionId,
   ]);
 
   useEffect(() => {
@@ -3473,7 +3757,7 @@ function EditorPageInner() {
       1)
     : null;
   const isCanvasEmpty = !hasCanvasPresentationImage;
-  const isOpeningExistingRoom = Boolean(requestedRoomId);
+  const isOpeningExistingRoom = Boolean(effectiveRequestedRoomId) || isWorkspaceRecoveryPending;
   const shouldShowUploadOverlay = isCanvasEmpty && !isOpeningExistingRoom;
   const activePasteSourcePreviewUrl = activePasteSource
     ? activePasteSource.type === "my_furniture"
@@ -3506,6 +3790,86 @@ function EditorPageInner() {
     activePasteSource?.type === "product_url" ? activePasteSource.sourceUrl : null;
   const selectedVersionId =
     activeAssetId ?? versions.find((asset) => asset.is_active)?.id ?? null;
+  const lastSnapshotPersistSkipReasonRef = useRef<string | null>(null);
+  const persistWorkspaceSnapshot = useCallback(
+    (overrides?: Partial<VibodeEditorWorkspaceSnapshot>) => {
+      if (typeof window === "undefined") return;
+      const emitSkipLog = (reason: string) => {
+        if (lastSnapshotPersistSkipReasonRef.current === reason) return;
+        lastSnapshotPersistSkipReasonRef.current = reason;
+        logEditorRecovery("[editor-recovery] skipped snapshot persist", {
+          reason,
+          roomId: vibodeRoomId,
+          versionId: selectedVersionId,
+          isRoomHydrating,
+          isWorkspaceRecoveryPending,
+          versionCount: versions.length,
+          isRoomOpenRevealSettling,
+          isCanvasHydratingRoom: canvasPresentation.isHydratingRoom,
+        });
+      };
+
+      if (isRoomHydrating) {
+        emitSkipLog("room_hydrating");
+        return;
+      }
+      if (isWorkspaceRecoveryPending) {
+        emitSkipLog("workspace_recovery_pending");
+        return;
+      }
+      if (isExplicitBlankEditorIntent) {
+        emitSkipLog("explicit_blank_editor_intent");
+        return;
+      }
+      if (versions.length === 0 && (canvasPresentation.isHydratingRoom || isRoomOpenRevealSettling)) {
+        emitSkipLog("versions_empty_during_hydration_settling");
+        return;
+      }
+
+      const nextSnapshot: VibodeEditorWorkspaceSnapshot = {
+        roomId: overrides?.roomId ?? vibodeRoomId ?? null,
+        versionId: overrides?.versionId ?? selectedVersionId ?? null,
+        furnitureLayerEnabled:
+          overrides?.furnitureLayerEnabled ?? isFurnitureLayerEnabled,
+        timestamp: Date.now(),
+      };
+      if (!nextSnapshot.roomId && !nextSnapshot.versionId) {
+        emitSkipLog("missing_room_and_version");
+        return;
+      }
+      if (!nextSnapshot.roomId) {
+        emitSkipLog("missing_room");
+        return;
+      }
+
+      lastSnapshotPersistSkipReasonRef.current = null;
+      try {
+        window.sessionStorage.setItem(
+          VIBODE_EDITOR_WORKSPACE_KEY,
+          JSON.stringify(nextSnapshot)
+        );
+      } catch {
+        // Ignore storage write errors.
+      }
+    },
+    [
+      canvasPresentation.isHydratingRoom,
+      isFurnitureLayerEnabled,
+      isRoomHydrating,
+      isRoomOpenRevealSettling,
+      isExplicitBlankEditorIntent,
+      isWorkspaceRecoveryPending,
+      selectedVersionId,
+      vibodeRoomId,
+      versions.length,
+    ]
+  );
+  const persistWorkspaceSnapshotForBillingNavigation = useCallback(() => {
+    persistWorkspaceSnapshot();
+  }, [persistWorkspaceSnapshot]);
+  useEffect(() => {
+    persistWorkspaceSnapshot();
+  }, [persistWorkspaceSnapshot]);
   const selectedVersion = useMemo(
     () => versions.find((asset) => asset.id === selectedVersionId) ?? null,
     [selectedVersionId, versions]
@@ -8253,6 +8617,7 @@ function EditorPageInner() {
           <TokenBalanceBadge className="border-neutral-700 bg-neutral-900 text-neutral-200" />
           <Link
             href="/billing"
+            onClick={persistWorkspaceSnapshotForBillingNavigation}
             className="rounded-md border border-neutral-700 bg-neutral-900 px-2.5 py-1 text-xs text-neutral-200 transition hover:bg-neutral-800"
           >
             Top up tokens
@@ -8731,7 +9096,11 @@ function EditorPageInner() {
                   {isOutOfTokens ? (
                     <div className="mt-2 text-[11px] text-neutral-500">
                       Stage and edit actions are paused until you top up.{" "}
-                      <Link href="/billing" className="text-neutral-300 underline underline-offset-2">
+                      <Link
+                        href="/billing"
+                        onClick={persistWorkspaceSnapshotForBillingNavigation}
+                        className="text-neutral-300 underline underline-offset-2"
+                      >
                         Open billing
                       </Link>
                       .
