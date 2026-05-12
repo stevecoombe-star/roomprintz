@@ -8082,6 +8082,61 @@ function EditorPageInner() {
                 </div>
               )}
             </div>
+            {showDevSceneRebuildButton && sceneNeedsUpdate ? (
+              <div className="pointer-events-none absolute inset-x-0 bottom-3 z-30 flex justify-center px-3">
+                <div className="pointer-events-auto w-full max-w-[min(92vw,920px)] rounded-xl border border-neutral-500/35 bg-neutral-950/70 px-3 py-2 shadow-[0_10px_30px_rgba(0,0,0,0.35)] backdrop-blur-md">
+                  <div className="flex flex-wrap items-center justify-center gap-x-3 gap-y-2 text-center sm:justify-between sm:text-left">
+                    <div className="inline-flex items-center gap-1.5 rounded-full border border-amber-400/30 bg-amber-500/10 px-2 py-0.5 text-xs text-amber-200">
+                      <span className="h-1.5 w-1.5 rounded-full bg-amber-300" />
+                      <span>Room needs update</span>
+                    </div>
+                    <div className="text-xs text-neutral-300">Furniture changes are ready to apply.</div>
+                    <div className="flex flex-wrap items-center justify-center gap-2 sm:justify-end">
+                      {canShowRevertPlacementChangesButton ? (
+                        <button
+                          type="button"
+                          onClick={handleRevertPlacementChanges}
+                          disabled={isRevertPlacementChangesButtonDisabled}
+                          className={`rounded border px-2.5 py-1 text-xs ${
+                            isRevertPlacementChangesButtonDisabled
+                              ? "cursor-not-allowed border-neutral-900 bg-neutral-950 text-neutral-600"
+                              : "border-neutral-700 bg-neutral-900 text-neutral-300 hover:bg-neutral-800"
+                          }`}
+                        >
+                          {isRevertingPlacementChanges ? "Reverting..." : "Revert Changes"}
+                        </button>
+                      ) : null}
+                      <button
+                        type="button"
+                        onClick={handleDevRebuildActiveVersion}
+                        disabled={isDevSceneRebuildButtonDisabled}
+                        className={`rounded border px-2.5 py-1 text-xs ${
+                          isDevSceneRebuildButtonDisabled
+                            ? "cursor-not-allowed border-neutral-900 bg-neutral-950 text-neutral-600"
+                            : "border-amber-700/70 bg-amber-950/30 text-amber-200 hover:bg-amber-900/40"
+                        }`}
+                      >
+                        {isDevSceneRebuildRunning ? "Updating..." : "Update Room"}
+                      </button>
+                    </div>
+                  </div>
+                  {devSceneRebuildMissingReason ? (
+                    <div className="mt-1 text-center text-[11px] text-neutral-500 sm:text-left">
+                      {devSceneRebuildMissingReason}
+                    </div>
+                  ) : null}
+                  {devSceneRebuildFeedback ? (
+                    <div
+                      className={`mt-1 text-center text-[11px] sm:text-left ${
+                        devSceneRebuildFeedback.tone === "success" ? "text-emerald-300" : "text-red-300"
+                      }`}
+                    >
+                      {devSceneRebuildFeedback.message}
+                    </div>
+                  ) : null}
+                </div>
+              </div>
+            ) : null}
           </div>
         </main>
 
@@ -8759,64 +8814,6 @@ function EditorPageInner() {
               </div>
               {panels.versions ? (
                 <div id="versions-panel-body" className="mt-3">
-                  {showDevSceneRebuildButton && sceneNeedsUpdate ? (
-                    <div className="mb-3 rounded-md border border-amber-900/60 bg-neutral-950 p-2">
-                      <div className="mb-2 inline-flex items-center gap-1.5 rounded-full border border-amber-400/30 bg-amber-500/10 px-2 py-0.5 text-xs text-amber-200">
-                        <span className="h-1.5 w-1.5 rounded-full bg-amber-300" />
-                        <span>Room needs update</span>
-                      </div>
-                      <div className="text-xs text-neutral-300">
-                        Furniture changes are ready to apply to your room.
-                      </div>
-                      {canShowRevertPlacementChangesButton ? (
-                        <div className="mt-2 text-[11px] text-neutral-400">
-                          Discard furniture edits that haven't been applied yet.
-                        </div>
-                      ) : null}
-                      <div className="mt-1 flex items-center gap-2">
-                        <button
-                          type="button"
-                          onClick={handleDevRebuildActiveVersion}
-                          disabled={isDevSceneRebuildButtonDisabled}
-                          className={`rounded border px-2 py-1 text-xs ${
-                            isDevSceneRebuildButtonDisabled
-                              ? "cursor-not-allowed border-neutral-900 bg-neutral-950 text-neutral-600"
-                              : "border-amber-700/70 bg-amber-950/30 text-amber-200 hover:bg-amber-900/40"
-                          }`}
-                        >
-                          {isDevSceneRebuildRunning ? "Updating..." : "Update Room"}
-                        </button>
-                        {canShowRevertPlacementChangesButton ? (
-                          <button
-                            type="button"
-                            onClick={handleRevertPlacementChanges}
-                            disabled={isRevertPlacementChangesButtonDisabled}
-                            className={`rounded border px-2 py-1 text-xs ${
-                              isRevertPlacementChangesButtonDisabled
-                                ? "cursor-not-allowed border-neutral-900 bg-neutral-950 text-neutral-600"
-                                : "border-neutral-700 bg-neutral-900 text-neutral-300 hover:bg-neutral-800"
-                            }`}
-                          >
-                            {isRevertingPlacementChanges ? "Reverting..." : "Revert Changes"}
-                          </button>
-                        ) : null}
-                      </div>
-                      {devSceneRebuildMissingReason ? (
-                        <div className="mt-1 text-[11px] text-neutral-500">{devSceneRebuildMissingReason}</div>
-                      ) : null}
-                      {devSceneRebuildFeedback ? (
-                        <div
-                          className={`mt-1 text-[11px] ${
-                            devSceneRebuildFeedback.tone === "success"
-                              ? "text-emerald-300"
-                              : "text-red-300"
-                          }`}
-                        >
-                          {devSceneRebuildFeedback.message}
-                        </div>
-                      ) : null}
-                    </div>
-                  ) : null}
                   {versions.length === 0 ? (
                     <div className="rounded-md border border-dashed border-neutral-800 bg-neutral-950 px-3 py-2 text-xs text-neutral-500">
                       No versions yet. Upload an image to create the original version.
