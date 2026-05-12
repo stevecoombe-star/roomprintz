@@ -1437,6 +1437,15 @@ function readWorkspaceSnapshot(): VibodeEditorWorkspaceSnapshot | null {
   }
 }
 
+function clearWorkspaceSnapshot(): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.sessionStorage.removeItem(VIBODE_EDITOR_WORKSPACE_KEY);
+  } catch {
+    // Ignore storage write errors.
+  }
+}
+
 function hasExplicitNewRoomIntent(params: { get: (key: string) => string | null }): boolean {
   return params.get("newRoom") === "1";
 }
@@ -2829,18 +2838,17 @@ function EditorPageInner() {
       setWorkspaceRecoveryResolved(true);
       return;
     }
-    if (isExplicitBlankEditorIntent) {
+
+    const hasExplicitBlankIntentFromLocation =
+      typeof window !== "undefined" &&
+      hasExplicitNewRoomIntent(new URLSearchParams(window.location.search)) &&
+      !hasRoomIdInCurrentLocation();
+    if (isExplicitBlankEditorIntent || hasExplicitBlankIntentFromLocation) {
       setWorkspaceRecoveryRoomId(null);
       setWorkspaceRecoveryVersionId(null);
       setWorkspaceRecoveryFurnitureLayerEnabled(null);
       setWorkspaceRecoveryResolved(true);
-      if (typeof window !== "undefined") {
-        try {
-          window.sessionStorage.removeItem(VIBODE_EDITOR_WORKSPACE_KEY);
-        } catch {
-          // Ignore storage write errors.
-        }
-      }
+      clearWorkspaceSnapshot();
       logEditorRecovery("[editor-recovery] explicit blank editor intent, skipped recovery");
       return;
     }
@@ -2930,6 +2938,7 @@ function EditorPageInner() {
           roomId: snapshot.roomId,
           versionId: snapshot.versionId,
         });
+        clearWorkspaceSnapshot();
       }
 
       const client = supabaseBrowser();
