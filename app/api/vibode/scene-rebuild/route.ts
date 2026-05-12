@@ -20,6 +20,7 @@ const VIBODE_ENABLE_SCENE_REBUILD =
   (process.env.VIBODE_ENABLE_SCENE_REBUILD ?? "false").trim().toLowerCase() === "true";
 const VIBODE_DEFAULT_MODEL_VERSION = "NBP";
 const VIBODE_STAGED_BUCKET = (process.env.VIBODE_STAGED_BUCKET || "vibode-generations").trim();
+const SCENE_REBUILD_COMPOSE_TIMEOUT_MS = 120_000;
 
 type AnySupabaseClient = SupabaseClient;
 
@@ -89,6 +90,14 @@ function safeStr(value: unknown): string | null {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object";
+}
+
+function isAbortError(err: unknown): boolean {
+  if (!err || typeof err !== "object") return false;
+  const candidate = err as { name?: unknown; message?: unknown };
+  if (candidate.name === "AbortError") return true;
+  if (typeof candidate.message !== "string") return false;
+  return candidate.message.toLowerCase().includes("abort");
 }
 
 function finiteNumber(value: unknown): value is number {
@@ -248,8 +257,8 @@ function getAdminSupabaseClient(): AnySupabaseClient | null {
   });
 }
 
-async function fetchImageAsBase64(url: string): Promise<string> {
-  const res = await fetch(url);
+async function fetchImageAsBase64(url: string, signal?: AbortSignal): Promise<string> {
+  const res = await fetch(url, { signal });
   if (!res.ok) {
     throw new SceneRebuildError("Failed to fetch base image for rebuild generation.", 502, {
       upstreamStatus: res.status,
@@ -259,8 +268,8 @@ async function fetchImageAsBase64(url: string): Promise<string> {
   return buf.toString("base64");
 }
 
-async function fetchImageAsBytes(url: string): Promise<Buffer> {
-  const res = await fetch(url);
+async function fetchImageAsBytes(url: string, signal?: AbortSignal): Promise<Buffer> {
+  const res = await fetch(url, { signal });
   if (!res.ok) {
     throw new SceneRebuildError("Failed to fetch image for scene rebuild reference composition.", 502, {
       upstreamStatus: res.status,
@@ -275,6 +284,7 @@ async function buildSceneRebuildReferenceImage(args: {
   payload: SceneRebuildPayload;
   modelVersion: string;
   aspectRatio: StageRoomRequest["aspectRatio"];
+  signal?: AbortSignal;
 }): Promise<SceneRebuildReferenceImageResult> {
   if (!process.env.ROOMPRINTZ_COMPOSITOR_URL) {
     throw new SceneRebuildError(
@@ -291,7 +301,7 @@ async function buildSceneRebuildReferenceImage(args: {
     );
   }
 
-  const roomImageBytes = await fetchImageAsBytes(args.baseImageUrl);
+  const roomImageBytes = await fetchImageAsBytes(args.baseImageUrl, args.signal);
   const sharp = await import("sharp");
   const metadata = await sharp.default(roomImageBytes).metadata();
   const width = finiteNumber(metadata.width) && metadata.width > 0 ? metadata.width : null;
@@ -314,7 +324,7 @@ async function buildSceneRebuildReferenceImage(args: {
     if (!sourceUrl) continue;
 
     try {
-      const skuImageBytes = await fetchImageAsBytes(sourceUrl);
+      const skuImageBytes = await fetchImageAsBytes(sourceUrl, args.signal);
       const normalizedScale = finiteNumber(placement.scale) && placement.scale > 0 ? placement.scale : 1;
       const radiusScaled = Math.round(baseRadius * Math.max(0.4, Math.min(2.2, normalizedScale)));
       composePlacements.push({
@@ -327,6 +337,9 @@ async function buildSceneRebuildReferenceImage(args: {
         zIndex: composePlacements.length,
       });
     } catch (err) {
+      if (isAbortError(err)) {
+        throw err;
+      }
       console.warn("[vibode/scene-rebuild] placement reference image skipped", {
         placementId: placement.id,
         sourceUrl,
@@ -348,6 +361,7 @@ async function buildSceneRebuildReferenceImage(args: {
     enhancePhoto: true,
     modelVersion: args.modelVersion,
     aspectRatio: args.aspectRatio,
+    signal: args.signal,
   });
 
   const imageUrl = safeStr(composeResult.imageUrl);
@@ -524,6 +538,7 @@ async function callSceneRebuildModel(args: {
   prompt: string;
   modelVersion: string;
   aspectRatio: StageRoomRequest["aspectRatio"];
+  signal?: AbortSignal;
 }): Promise<string> {
   const endpoint = process.env.NANOBANANA_PRO_URL;
   const apiKey = process.env.NANOBANANA_PRO_API_KEY;
@@ -534,7 +549,7 @@ async function callSceneRebuildModel(args: {
     );
   }
 
-  const imageBase64 = await fetchImageAsBase64(args.baseImageUrl);
+  const imageBase64 = await fetchImageAsBase64(args.baseImageUrl, args.signal);
   const body: StageRoomRequest = {
     imageBase64,
     styleId: null,
@@ -553,6 +568,7 @@ async function callSceneRebuildModel(args: {
       authorization: `Bearer ${apiKey}`,
     },
     body: JSON.stringify(body),
+    signal: args.signal,
   });
 
   if (!res.ok) {
@@ -570,6 +586,42 @@ async function callSceneRebuildModel(args: {
   }
 
   return imageUrl;
+}
+
+async function runComposeStageWithTimeout<T>(
+  reqSignal: AbortSignal,
+  runComposeStage: (signal: AbortSignal) => Promise<T>
+): Promise<T> {
+  const composeController = new AbortController();
+  let composeTimedOut = false;
+  const onRequestAbort = () => composeController.abort();
+  reqSignal.addEventListener("abort", onRequestAbort, { once: true });
+  const timeoutHandle = setTimeout(() => {
+    composeTimedOut = true;
+    composeController.abort();
+  }, SCENE_REBUILD_COMPOSE_TIMEOUT_MS);
+  try {
+    return await runComposeStage(composeController.signal);
+  } catch (err) {
+    if (composeTimedOut) {
+      throw new SceneRebuildError("Room preparation took too long", 504, {
+        code: "compose_timeout",
+        stage: "compose",
+        timeoutMs: SCENE_REBUILD_COMPOSE_TIMEOUT_MS,
+        helper: "Vibode couldn't finish preparing your room layout. Please try again.",
+      });
+    }
+    if (reqSignal.aborted || isAbortError(err)) {
+      throw new SceneRebuildError("Room preparation cancelled.", 499, {
+        code: "compose_cancelled",
+        stage: "compose",
+      });
+    }
+    throw err;
+  } finally {
+    clearTimeout(timeoutHandle);
+    reqSignal.removeEventListener("abort", onRequestAbort);
+  }
 }
 
 export async function POST(req: NextRequest) {
@@ -658,12 +710,15 @@ export async function POST(req: NextRequest) {
     }
 
     const prompt = buildSceneRebuildPrompt(payload);
-    const referenceImage = await buildSceneRebuildReferenceImage({
-      baseImageUrl: payload.room.baseImageUrl,
-      payload,
-      modelVersion,
-      aspectRatio,
-    });
+    const referenceImage = await runComposeStageWithTimeout(req.signal, (composeSignal) =>
+      buildSceneRebuildReferenceImage({
+        baseImageUrl: payload.room.baseImageUrl,
+        payload,
+        modelVersion,
+        aspectRatio,
+        signal: composeSignal,
+      })
+    );
     const modelInputImageUrl = referenceImage.imageUrl;
     const referencePlacementCountUsed = referenceImage.usedPlacementCount;
     if (referencePlacementCountUsed <= 0) {
@@ -678,6 +733,7 @@ export async function POST(req: NextRequest) {
       prompt,
       modelVersion,
       aspectRatio,
+      signal: req.signal,
     });
 
     const outputFinalization = await finalizeVibodeOutputAsset({
@@ -826,6 +882,18 @@ export async function POST(req: NextRequest) {
   } catch (err) {
     if (err instanceof SceneRebuildError) {
       return NextResponse.json({ error: err.message, details: err.details }, { status: err.status });
+    }
+
+    if (req.signal.aborted || isAbortError(err)) {
+      return NextResponse.json(
+        {
+          error: "Scene rebuild was cancelled.",
+          details: {
+            code: "request_cancelled",
+          },
+        },
+        { status: 499 }
+      );
     }
 
     const message = err instanceof Error ? err.message : String(err);

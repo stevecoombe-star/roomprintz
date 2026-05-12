@@ -60,6 +60,9 @@ const REMOVE_LABEL_FALLBACK = "object";
 const REMOVE_LABEL_PLACEHOLDER = "";
 const PASTE_TO_PLACE_CANCEL_SETTLE_MS = 20000;
 const STAGE_RUN_CANCEL_SETTLE_MS = 20000;
+const SCENE_REBUILD_RENDERING_MESSAGE_DELAY_MS = 50_000;
+const SCENE_REBUILD_COMPOSE_WARNING_MS = 90_000;
+const SCENE_REBUILD_COMPOSE_TIMEOUT_MS = 120_000;
 const LOW_TOKEN_WARNING_THRESHOLD = 10;
 const DEFAULT_ACTION_TOKEN_COST = 1;
 const STAGE_TOKEN_COST = {
@@ -1993,6 +1996,11 @@ function EditorPageInner() {
   const [selectedMyFurnitureItemIds, setSelectedMyFurnitureItemIds] = useState<string[]>([]);
   const [isPendingFurnitureSelectionRunning, setIsPendingFurnitureSelectionRunning] = useState(false);
   const [isDevSceneRebuildRunning, setIsDevSceneRebuildRunning] = useState(false);
+  const [devSceneRebuildStage, setDevSceneRebuildStage] = useState<"compose" | "persist" | null>(
+    null
+  );
+  const [isDevSceneRebuildComposeWarningVisible, setIsDevSceneRebuildComposeWarningVisible] =
+    useState(false);
   const [isRevertingPlacementChanges, setIsRevertingPlacementChanges] = useState(false);
   const [isRestoringOriginalPlacementPositions, setIsRestoringOriginalPlacementPositions] =
     useState(false);
@@ -2002,7 +2010,16 @@ function EditorPageInner() {
   const [devSceneRebuildFeedback, setDevSceneRebuildFeedback] = useState<{
     tone: "success" | "error";
     message: string;
+    title?: string;
+    helper?: string;
   } | null>(null);
+  const sceneRebuildAbortControllerRef = useRef<AbortController | null>(null);
+  const sceneRebuildRenderingMessageTimerRef = useRef<number | null>(null);
+  const sceneRebuildComposeWarningTimerRef = useRef<number | null>(null);
+  const sceneRebuildComposeTimeoutTimerRef = useRef<number | null>(null);
+  const sceneRebuildAbortReasonRef = useRef<"user_cancel" | "compose_timeout" | null>(null);
+  const [isDevSceneRebuildRenderingMessageVisible, setIsDevSceneRebuildRenderingMessageVisible] =
+    useState(false);
   const [pendingMyFurnitureReturnPreviewUrl, setPendingMyFurnitureReturnPreviewUrl] = useState<
     string | null
   >(null);
@@ -3737,6 +3754,42 @@ function EditorPageInner() {
     ]
   );
 
+  const clearSceneRebuildComposeTimers = useCallback(() => {
+    if (sceneRebuildRenderingMessageTimerRef.current !== null) {
+      window.clearTimeout(sceneRebuildRenderingMessageTimerRef.current);
+      sceneRebuildRenderingMessageTimerRef.current = null;
+    }
+    if (sceneRebuildComposeWarningTimerRef.current !== null) {
+      window.clearTimeout(sceneRebuildComposeWarningTimerRef.current);
+      sceneRebuildComposeWarningTimerRef.current = null;
+    }
+    if (sceneRebuildComposeTimeoutTimerRef.current !== null) {
+      window.clearTimeout(sceneRebuildComposeTimeoutTimerRef.current);
+      sceneRebuildComposeTimeoutTimerRef.current = null;
+    }
+  }, []);
+
+  const clearSceneRebuildAbortController = useCallback((controller?: AbortController | null) => {
+    if (!controller) {
+      sceneRebuildAbortControllerRef.current = null;
+      return;
+    }
+    if (sceneRebuildAbortControllerRef.current === controller) {
+      sceneRebuildAbortControllerRef.current = null;
+    }
+  }, []);
+
+  const handleCancelDevSceneRebuild = useCallback(() => {
+    if (!isDevSceneRebuildRunning || devSceneRebuildStage !== "compose") {
+      return;
+    }
+    clearSceneRebuildComposeTimers();
+    setIsDevSceneRebuildRenderingMessageVisible(false);
+    setIsDevSceneRebuildComposeWarningVisible(false);
+    sceneRebuildAbortReasonRef.current = "user_cancel";
+    sceneRebuildAbortControllerRef.current?.abort();
+  }, [clearSceneRebuildComposeTimers, devSceneRebuildStage, isDevSceneRebuildRunning]);
+
   const handleDevRebuildActiveVersion = useCallback(async () => {
     if (isDevSceneRebuildRunning) return;
 
@@ -3751,7 +3804,26 @@ function EditorPageInner() {
 
     const sourceVersionIdForRenderState = selectedVersionId;
     setIsDevSceneRebuildRunning(true);
+    setDevSceneRebuildStage("compose");
+    setIsDevSceneRebuildRenderingMessageVisible(false);
+    setIsDevSceneRebuildComposeWarningVisible(false);
     setDevSceneRebuildFeedback(null);
+
+    const controller = new AbortController();
+    sceneRebuildAbortControllerRef.current?.abort();
+    sceneRebuildAbortControllerRef.current = controller;
+    sceneRebuildAbortReasonRef.current = null;
+    clearSceneRebuildComposeTimers();
+    sceneRebuildRenderingMessageTimerRef.current = window.setTimeout(() => {
+      setIsDevSceneRebuildRenderingMessageVisible(true);
+    }, SCENE_REBUILD_RENDERING_MESSAGE_DELAY_MS);
+    sceneRebuildComposeWarningTimerRef.current = window.setTimeout(() => {
+      setIsDevSceneRebuildComposeWarningVisible(true);
+    }, SCENE_REBUILD_COMPOSE_WARNING_MS);
+    sceneRebuildComposeTimeoutTimerRef.current = window.setTimeout(() => {
+      sceneRebuildAbortReasonRef.current = "compose_timeout";
+      controller.abort();
+    }, SCENE_REBUILD_COMPOSE_TIMEOUT_MS);
 
     try {
       let accessToken = await tryGetSupabaseAccessToken();
@@ -3774,16 +3846,43 @@ function EditorPageInner() {
           versionId: selectedVersionId,
           activate: true,
         }),
+        signal: controller.signal,
       });
+      clearSceneRebuildComposeTimers();
+      setIsDevSceneRebuildRenderingMessageVisible(false);
+      setIsDevSceneRebuildComposeWarningVisible(false);
       const json = (await res.json().catch(() => ({}))) as {
         error?: string;
         message?: string;
         outputVersionId?: string;
+        details?: {
+          code?: string;
+          helper?: string;
+        };
       };
       if (!res.ok) {
+        if (json.details?.code === "compose_timeout") {
+          const timeoutTitle = "Room preparation took too long";
+          const timeoutHelper =
+            json.details.helper ??
+            "Vibode couldn't finish preparing your room layout. Please try again.";
+          setDevSceneRebuildFeedback({
+            tone: "error",
+            message: timeoutTitle,
+            title: timeoutTitle,
+            helper: timeoutHelper,
+          });
+          pushSnack(timeoutTitle);
+          return;
+        }
+        if (json.details?.code === "compose_cancelled" || json.details?.code === "request_cancelled") {
+          setDevSceneRebuildFeedback(null);
+          return;
+        }
         throw new Error(json.error || json.message || `Scene rebuild failed (HTTP ${res.status})`);
       }
 
+      setDevSceneRebuildStage("persist");
       const latestVersions = await refreshRoomVersions(vibodeRoomId);
       const refreshedActiveVersion =
         latestVersions?.find((asset) => asset.is_active) ??
@@ -3882,15 +3981,42 @@ function EditorPageInner() {
       const successMessage = "Scene rebuild complete.";
       setDevSceneRebuildFeedback({ tone: "success", message: successMessage });
       pushSnack(successMessage);
-    } catch (err) {
+    } catch (err: unknown) {
+      if (isAbortError(err)) {
+        const abortReason = sceneRebuildAbortReasonRef.current;
+        if (abortReason === "compose_timeout") {
+          const timeoutTitle = "Room preparation took too long";
+          const timeoutHelper =
+            "Vibode couldn't finish preparing your room layout. Please try again.";
+          setDevSceneRebuildFeedback({
+            tone: "error",
+            message: timeoutTitle,
+            title: timeoutTitle,
+            helper: timeoutHelper,
+          });
+          pushSnack(timeoutTitle);
+        } else if (abortReason === "user_cancel") {
+          setDevSceneRebuildFeedback(null);
+          pushSnack("Update cancelled.");
+        }
+        return;
+      }
       const message = getErrorMessage(err) ?? "Scene rebuild failed.";
       setDevSceneRebuildFeedback({ tone: "error", message });
       pushSnack(message);
     } finally {
+      clearSceneRebuildComposeTimers();
+      clearSceneRebuildAbortController(controller);
+      sceneRebuildAbortReasonRef.current = null;
+      setDevSceneRebuildStage(null);
+      setIsDevSceneRebuildRenderingMessageVisible(false);
+      setIsDevSceneRebuildComposeWarningVisible(false);
       setIsDevSceneRebuildRunning(false);
     }
   }, [
     applyVersionToEditorState,
+    clearSceneRebuildAbortController,
+    clearSceneRebuildComposeTimers,
     computePlacementStateHashAndSnapshot,
     isDevSceneRebuildRunning,
     loadPlacementLayerNodesForVersion,
@@ -3899,6 +4025,7 @@ function EditorPageInner() {
     refreshRoomVersions,
     selectedVersionId,
     setVersions,
+    tryGetSupabaseAccessToken,
     vibodeRoomId,
   ]);
 
@@ -6467,6 +6594,10 @@ function EditorPageInner() {
       if (isRemoveMarkerTargeting || isRotateMarkerTargeting) {
         return;
       }
+      if (isDevSceneRebuildRunning) {
+        pushSnack("Room update is still running. You can place furniture after this finishes.");
+        return;
+      }
       if (isPasteToPlaceSettling) {
         console.info("[Paste-to-Place][settling] Place blocked because settling", {
           context: "open_menu",
@@ -6548,6 +6679,7 @@ function EditorPageInner() {
       beginPasteToPlaceOperation,
       clearPasteToPlaceMenuClipboardPreview,
       isClipboardPasteToPlaceIngestPending,
+      isDevSceneRebuildRunning,
       isRemoveMarkerTargeting,
       isRotateMarkerTargeting,
       isPasteToPlaceSettling,
@@ -6991,8 +7123,13 @@ function EditorPageInner() {
       activeStageRunRef.current = null;
       setIsStageRunSettling(false);
       stageRunOperationIdRef.current += 1;
+      clearSceneRebuildComposeTimers();
+      sceneRebuildAbortControllerRef.current?.abort();
+      sceneRebuildAbortControllerRef.current = null;
+      sceneRebuildAbortReasonRef.current = null;
     };
   }, [
+    clearSceneRebuildComposeTimers,
     clearPasteToPlaceCancelCooldownTimer,
     clearStageRunCancelCooldownTimer,
     setActivePasteToPlaceJobControl,
@@ -7905,6 +8042,37 @@ function EditorPageInner() {
       : null;
   const isDevSceneRebuildButtonDisabled =
     isDevSceneRebuildRunning || Boolean(devSceneRebuildMissingReason);
+  const canCancelDevSceneRebuild =
+    isDevSceneRebuildRunning && devSceneRebuildStage === "compose";
+  const devSceneRebuildProgressCopy = (() => {
+    if (!isDevSceneRebuildRunning || !devSceneRebuildStage) return null;
+    if (devSceneRebuildStage === "compose") {
+      if (isDevSceneRebuildComposeWarningVisible) {
+        return {
+          title: "Still updating your room...",
+          helper: "This is taking longer than usual, but Vibode is still updating your room.",
+        };
+      }
+      if (isDevSceneRebuildRenderingMessageVisible) {
+        return {
+          title: "Rendering your updated room...",
+          helper: "Vibode is generating a new version with your latest furniture layout.",
+        };
+      }
+      return {
+        title: "Updating your room...",
+        helper: "Preparing your furniture layout and rendering your updated room.",
+      };
+    }
+    if (devSceneRebuildStage === "persist") {
+      return {
+        title: "Saving your room version...",
+        helper: "Almost done.",
+      };
+    }
+    return null;
+  })();
+  // TODO(vibode-scene-rebuild): add explicit server/compositor stage events to support true compose/generate transitions.
   const canShowRevertPlacementChangesButton =
     showDevSceneRebuildButton &&
     sceneNeedsUpdate &&
@@ -8357,6 +8525,15 @@ function EditorPageInner() {
                           {isRevertingPlacementChanges ? "Reverting..." : "Revert Changes"}
                         </button>
                       ) : null}
+                      {canCancelDevSceneRebuild ? (
+                        <button
+                          type="button"
+                          onClick={handleCancelDevSceneRebuild}
+                          className="rounded border border-neutral-700 bg-neutral-900 px-2.5 py-1 text-xs text-neutral-300 transition hover:bg-neutral-800"
+                        >
+                          Cancel
+                        </button>
+                      ) : null}
                       <button
                         type="button"
                         onClick={handleDevRebuildActiveVersion}
@@ -8371,6 +8548,18 @@ function EditorPageInner() {
                       </button>
                     </div>
                   </div>
+                  {devSceneRebuildProgressCopy ? (
+                    <div className="mt-1.5 text-center sm:text-left">
+                      <div className="flex items-center justify-center gap-1.5 text-xs text-sky-100 sm:justify-start">
+                        <span
+                          aria-hidden="true"
+                          className="h-3 w-3 animate-spin rounded-full border border-sky-300/30 border-t-sky-200"
+                        />
+                        <span>{devSceneRebuildProgressCopy.title}</span>
+                      </div>
+                      <div className="text-[11px] text-neutral-300">{devSceneRebuildProgressCopy.helper}</div>
+                    </div>
+                  ) : null}
                   {devSceneRebuildMissingReason ? (
                     <div className="mt-1 text-center text-[11px] text-neutral-500 sm:text-left">
                       {devSceneRebuildMissingReason}
@@ -8382,7 +8571,10 @@ function EditorPageInner() {
                         devSceneRebuildFeedback.tone === "success" ? "text-emerald-300" : "text-red-300"
                       }`}
                     >
-                      {devSceneRebuildFeedback.message}
+                      {devSceneRebuildFeedback.title ? (
+                        <div className="text-xs">{devSceneRebuildFeedback.title}</div>
+                      ) : null}
+                      <div>{devSceneRebuildFeedback.helper ?? devSceneRebuildFeedback.message}</div>
                     </div>
                   ) : null}
                 </div>

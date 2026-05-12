@@ -24,6 +24,7 @@ export async function callCompositorVibodeCompose(args: {
   enhancePhoto?: boolean;
   modelVersion?: string | null;
   aspectRatio?: AspectRatio;
+  signal?: AbortSignal;
 }): Promise<{ imageUrl: string; appliedAspectRatio?: string | null }> {
   const endpointBase = process.env.ROOMPRINTZ_COMPOSITOR_URL?.trim();
 
@@ -37,8 +38,7 @@ export async function callCompositorVibodeCompose(args: {
     .replace(/\/stage-room\/?$/, "")
     .replace(/\/$/, "");
   const endpoint = `${endpointBaseNormalized}/vibode/compose`;
-  const { roomImageBytes, placements, enhancePhoto, modelVersion, aspectRatio } =
-    args;
+  const { roomImageBytes, placements, enhancePhoto, modelVersion, aspectRatio, signal } = args;
 
   console.log("[callCompositorVibodeCompose] request", {
     placements: placements.length,
@@ -67,6 +67,7 @@ export async function callCompositorVibodeCompose(args: {
       "Content-Type": "application/json",
     },
     body: JSON.stringify(payload),
+    signal,
   });
 
   console.log("[callCompositorVibodeCompose] response", {
