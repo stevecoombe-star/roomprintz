@@ -38,6 +38,12 @@ import {
 } from "@/lib/pasteToPlaceJobControl";
 import { PrepareRoomImageError, prepareRoomImageForUpload } from "@/lib/prepareRoomImageForUpload";
 import type { DetectedRoomObjectLabel } from "@/lib/vibodeRoomObjectLabels";
+import {
+  hashPlacementState,
+  normalizePlacementStateForHash,
+  type NormalizedPlacementStateRow,
+  type PlacementStateHashInput,
+} from "@/lib/vibodePlacementState";
 
 import { getSupabaseBrowserAccessToken, supabaseBrowser } from "@/lib/supabaseBrowser";
 import { useTokenBalance } from "@/hooks/useTokenBalance";
@@ -547,9 +553,18 @@ type PlacementLayerNode = {
 type PlacementLayerListResponse = {
   nodes?: unknown;
 };
+type PlacementLayerRevertResponse = {
+  nodes?: unknown;
+};
 type PlacementLayerCreateResponse = {
   node?: unknown;
   deduped?: boolean;
+};
+type SceneRenderStateMetadata = {
+  renderedPlacementStateHash?: unknown;
+  renderedPlacementSnapshot?: unknown;
+  renderedAt?: unknown;
+  sourceVersionId?: unknown;
 };
 type PasteToPlacePreparedProduct = {
   source: "clipboard" | "my_furniture" | "product_url";
@@ -1259,6 +1274,30 @@ function normalizePlacementLayerNode(value: unknown): PlacementLayerNode | null 
   };
 }
 
+function readSceneRenderStateMetadata(metadata: unknown): SceneRenderStateMetadata | null {
+  if (!isRecord(metadata)) return null;
+  const sceneRenderState = metadata.sceneRenderState;
+  if (!isRecord(sceneRenderState)) return null;
+  return sceneRenderState as SceneRenderStateMetadata;
+}
+
+function readRenderedPlacementStateHashFromMetadata(metadata: unknown): string | null {
+  if (!isRecord(metadata)) return null;
+  const sceneRenderState = readSceneRenderStateMetadata(metadata);
+  const nestedHash = safeStr(sceneRenderState?.renderedPlacementStateHash);
+  if (nestedHash) return nestedHash;
+  return safeStr(metadata.renderedPlacementStateHash);
+}
+
+function readRenderedPlacementSnapshotFromMetadata(metadata: unknown): NormalizedPlacementStateRow[] | null {
+  if (!isRecord(metadata)) return null;
+  const sceneRenderState = readSceneRenderStateMetadata(metadata);
+  if (!sceneRenderState) return null;
+  const snapshotRaw = sceneRenderState.renderedPlacementSnapshot;
+  if (!Array.isArray(snapshotRaw)) return null;
+  return normalizePlacementStateForHash(snapshotRaw as PlacementStateHashInput[]);
+}
+
 function extractScenePlacementsFromUnknown(value: unknown, depth = 0): ScenePlacement[] {
   if (depth > 4) return [];
   const directPlacements = normalizeScenePlacementsArray(value);
@@ -1441,6 +1480,101 @@ async function loadRoomVersions(roomId: string, accessToken: string): Promise<Vi
     normalizeRoomAssetForStore(row)
   );
   return hydratedRows.filter((row): row is VibodeRoomAsset => Boolean(row));
+}
+
+async function loadPlacementLayerNodesForVersion(args: {
+  roomId: string;
+  versionId: string;
+  accessToken: string;
+}): Promise<PlacementLayerNode[]> {
+  const res = await fetch(
+    `/api/vibode/room-furniture-placements?roomId=${encodeURIComponent(args.roomId)}&versionId=${encodeURIComponent(args.versionId)}`,
+    {
+      method: "GET",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${args.accessToken}`,
+      },
+    }
+  );
+  const payload = (await res.json().catch(() => ({}))) as PlacementLayerListResponse & { error?: unknown };
+  if (!res.ok) {
+    const message =
+      typeof payload.error === "string" && payload.error.trim().length > 0
+        ? payload.error
+        : `Failed to load placement nodes (HTTP ${res.status})`;
+    throw new Error(message);
+  }
+  const rows = Array.isArray(payload.nodes) ? payload.nodes : [];
+  return rows
+    .map((row) => normalizePlacementLayerNode(row))
+    .filter((row): row is PlacementLayerNode => Boolean(row));
+}
+
+async function persistSceneRenderStateForVersion(args: {
+  roomId: string;
+  assetId: string;
+  accessToken: string;
+  sceneRenderState: {
+    renderedPlacementStateHash: string;
+    renderedPlacementSnapshot: NormalizedPlacementStateRow[];
+    renderedAt: string;
+    sourceVersionId: string | null;
+  };
+}): Promise<Record<string, unknown> | null> {
+  const res = await fetch("/api/vibode/room-version-render-state", {
+    method: "PATCH",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${args.accessToken}`,
+    },
+    body: JSON.stringify({
+      roomId: args.roomId,
+      assetId: args.assetId,
+      sceneRenderState: args.sceneRenderState,
+    }),
+  });
+  const payload = (await res.json().catch(() => ({}))) as { error?: unknown; metadata?: unknown };
+  if (!res.ok) {
+    const message =
+      typeof payload.error === "string" && payload.error.trim().length > 0
+        ? payload.error
+        : `Failed to persist scene render state (HTTP ${res.status})`;
+    throw new Error(message);
+  }
+  return isRecord(payload.metadata) ? payload.metadata : null;
+}
+
+async function revertPlacementLayerNodesToSnapshot(args: {
+  roomId: string;
+  versionId: string;
+  accessToken: string;
+  snapshot: NormalizedPlacementStateRow[];
+}): Promise<PlacementLayerNode[]> {
+  const res = await fetch("/api/vibode/room-furniture-placements/revert", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${args.accessToken}`,
+    },
+    body: JSON.stringify({
+      roomId: args.roomId,
+      versionId: args.versionId,
+      snapshot: args.snapshot,
+    }),
+  });
+  const payload = (await res.json().catch(() => ({}))) as PlacementLayerRevertResponse & { error?: unknown };
+  if (!res.ok) {
+    const message =
+      typeof payload.error === "string" && payload.error.trim().length > 0
+        ? payload.error
+        : `Failed to revert placement nodes (HTTP ${res.status})`;
+    throw new Error(message);
+  }
+  const rows = Array.isArray(payload.nodes) ? payload.nodes : [];
+  return rows
+    .map((row) => normalizePlacementLayerNode(row))
+    .filter((row): row is PlacementLayerNode => Boolean(row));
 }
 
 function formatVersionTimestamp(value: string): string {
@@ -1840,6 +1974,7 @@ function EditorPageInner() {
   const [selectedMyFurnitureItemIds, setSelectedMyFurnitureItemIds] = useState<string[]>([]);
   const [isPendingFurnitureSelectionRunning, setIsPendingFurnitureSelectionRunning] = useState(false);
   const [isDevSceneRebuildRunning, setIsDevSceneRebuildRunning] = useState(false);
+  const [isRevertingPlacementChanges, setIsRevertingPlacementChanges] = useState(false);
   const [sceneNeedsUpdate, setSceneNeedsUpdate] = useState(false);
   const [devSceneRebuildFeedback, setDevSceneRebuildFeedback] = useState<{
     tone: "success" | "error";
@@ -1862,6 +1997,7 @@ function EditorPageInner() {
     []
   );
   const [placementLayerNodes, setPlacementLayerNodes] = useState<PlacementLayerNode[]>([]);
+  const placementLayerNodesRef = useRef<PlacementLayerNode[]>([]);
   const [isFurnitureLayerEnabled, setIsFurnitureLayerEnabled] = useState(false);
   const [selectedRemoveLabel, setSelectedRemoveLabel] = useState<string>(REMOVE_LABEL_PLACEHOLDER);
   const roomReadByImageKeyRef = useRef<Map<string, DetectedRoomObjectLabel[]>>(new Map());
@@ -1869,6 +2005,7 @@ function EditorPageInner() {
   const roomReadSkipLogKeysRef = useRef<Set<string>>(new Set());
   const placementLayerHydratedScopeKeyRef = useRef<string | null>(null);
   const placementLayerInFlightScopeKeyRef = useRef<string | null>(null);
+  const sceneDirtyLocallyConfirmedRef = useRef(false);
   // TODO(vibode-entitlements): replace this local free-gate stub with server entitlements.
   const [hasUsedFreePasteToPlace, setHasUsedFreePasteToPlace] = useState(() => {
     if (typeof window === "undefined") return false;
@@ -3316,6 +3453,55 @@ function EditorPageInner() {
     () => versions.find((asset) => asset.id === selectedVersionId) ?? null,
     [selectedVersionId, versions]
   );
+  const selectedVersionRenderedPlacementStateHash = useMemo(
+    () => readRenderedPlacementStateHashFromMetadata(selectedVersion?.metadata),
+    [selectedVersion?.metadata]
+  );
+  const selectedVersionRenderedPlacementSnapshot = useMemo(
+    () => readRenderedPlacementSnapshotFromMetadata(selectedVersion?.metadata),
+    [selectedVersion?.metadata]
+  );
+  const selectedVersionIdRef = useRef<string | null>(selectedVersionId);
+  const selectedVersionRenderedPlacementStateHashRef = useRef<string | null>(
+    selectedVersionRenderedPlacementStateHash
+  );
+  useEffect(() => {
+    selectedVersionIdRef.current = selectedVersionId;
+  }, [selectedVersionId]);
+  useEffect(() => {
+    selectedVersionRenderedPlacementStateHashRef.current = selectedVersionRenderedPlacementStateHash;
+  }, [selectedVersionRenderedPlacementStateHash]);
+  const computePlacementStateHashAndSnapshot = useCallback(async (placements: PlacementLayerNode[]) => {
+    const renderedPlacementSnapshot = normalizePlacementStateForHash(placements);
+    const placementStateHash = await hashPlacementState(placements);
+    return { renderedPlacementSnapshot, placementStateHash };
+  }, []);
+  const updateSceneNeedsUpdateFromPlacements = useCallback(
+    async (
+      placements: PlacementLayerNode[],
+      expectedVersionId: string | null = selectedVersionId,
+      options?: { missingRenderedHashMeansDirty?: boolean }
+    ) => {
+      const activeVersionId = selectedVersionIdRef.current;
+      if (!expectedVersionId || expectedVersionId !== activeVersionId) return false;
+      const missingRenderedHashMeansDirty = options?.missingRenderedHashMeansDirty === true;
+      const renderedHash = selectedVersionRenderedPlacementStateHashRef.current;
+      if (!renderedHash) {
+        if (missingRenderedHashMeansDirty || sceneDirtyLocallyConfirmedRef.current) {
+          setSceneNeedsUpdate(true);
+          return true;
+        }
+        setSceneNeedsUpdate(false);
+        return false;
+      }
+      const placementStateHash = await hashPlacementState(placements);
+      if (expectedVersionId !== selectedVersionIdRef.current) return false;
+      const isDirty = placementStateHash !== renderedHash;
+      setSceneNeedsUpdate(isDirty);
+      return isDirty;
+    },
+    [selectedVersionId]
+  );
   const activeVersionMetadataPlacements = useMemo(
     () => extractScenePlacementsFromUnknown(selectedVersion?.metadata),
     [selectedVersion?.metadata]
@@ -3394,6 +3580,37 @@ function EditorPageInner() {
   }, [nonOriginalVersions]);
   const canDeleteVersions = versions.length > 1;
 
+  useEffect(() => {
+    placementLayerNodesRef.current = placementLayerNodes;
+  }, [placementLayerNodes]);
+
+  useEffect(() => {
+    sceneDirtyLocallyConfirmedRef.current = false;
+  }, [selectedVersionId, vibodeRoomId]);
+
+  useEffect(() => {
+    if (!selectedVersionId || !vibodeRoomId) {
+      setSceneNeedsUpdate(false);
+      return;
+    }
+    const scopeKey = `${vibodeRoomId}:${selectedVersionId}`;
+    if (placementLayerHydratedScopeKeyRef.current !== scopeKey) {
+      return;
+    }
+    if (placementLayerInFlightScopeKeyRef.current === scopeKey) {
+      return;
+    }
+    void (async () => {
+      await updateSceneNeedsUpdateFromPlacements(placementLayerNodesRef.current, selectedVersionId);
+    })();
+  }, [
+    placementLayerNodes,
+    selectedVersionId,
+    selectedVersionRenderedPlacementStateHash,
+    updateSceneNeedsUpdateFromPlacements,
+    vibodeRoomId,
+  ]);
+
   const applyVersionToEditorState = useCallback(
     (asset: VibodeRoomAsset, sourceVersions: VibodeRoomAsset[]) => {
       const nextUrl = typeof asset.image_url === "string" ? asset.image_url.trim() : "";
@@ -3421,7 +3638,6 @@ function EditorPageInner() {
       hydrateSceneNodesFromPlacements,
       setActiveAssetId,
       setScenePlacements,
-      setSceneNeedsUpdate,
       setVersions,
     ]
   );
@@ -3473,6 +3689,7 @@ function EditorPageInner() {
       return;
     }
 
+    const sourceVersionIdForRenderState = selectedVersionId;
     setIsDevSceneRebuildRunning(true);
     setDevSceneRebuildFeedback(null);
 
@@ -3516,8 +3733,58 @@ function EditorPageInner() {
       if (refreshedActiveVersion && latestVersions) {
         applyVersionToEditorState(refreshedActiveVersion, latestVersions);
       }
-      if (latestVersions) {
-        setSceneNeedsUpdate(false);
+      if (latestVersions && !refreshedActiveVersion) {
+        console.warn("[scene-render-state] active output asset missing after rebuild", {
+          roomId: vibodeRoomId,
+          outputVersionId: json.outputVersionId ?? null,
+        });
+      }
+      if (latestVersions && refreshedActiveVersion) {
+        try {
+          const persistedPlacementNodes = await loadPlacementLayerNodesForVersion({
+            roomId: vibodeRoomId,
+            versionId: refreshedActiveVersion.id,
+            accessToken,
+          });
+          const { renderedPlacementSnapshot, placementStateHash } =
+            await computePlacementStateHashAndSnapshot(persistedPlacementNodes);
+          const sceneRenderState = {
+            renderedPlacementStateHash: placementStateHash,
+            renderedPlacementSnapshot,
+            renderedAt: new Date().toISOString(),
+            sourceVersionId: sourceVersionIdForRenderState ?? null,
+          };
+          // Safer long-term: move this metadata write into /api/vibode/scene-rebuild for atomicity.
+          const updatedMetadata = await persistSceneRenderStateForVersion({
+            roomId: vibodeRoomId,
+            assetId: refreshedActiveVersion.id,
+            accessToken,
+            sceneRenderState,
+          });
+          setVersions(
+            latestVersions.map((asset) =>
+              asset.id === refreshedActiveVersion.id
+                ? {
+                    ...asset,
+                    metadata:
+                      updatedMetadata ??
+                      {
+                        ...(isRecord(asset.metadata) ? asset.metadata : {}),
+                        sceneRenderState,
+                      },
+                  }
+                : asset
+            )
+          );
+          sceneDirtyLocallyConfirmedRef.current = false;
+          setSceneNeedsUpdate(false);
+        } catch (err: unknown) {
+          console.warn("[scene-render-state] metadata persistence failed", {
+            roomId: vibodeRoomId,
+            outputVersionId: refreshedActiveVersion.id,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
       }
 
       const successMessage = "Scene rebuild complete.";
@@ -3532,11 +3799,77 @@ function EditorPageInner() {
     }
   }, [
     applyVersionToEditorState,
+    computePlacementStateHashAndSnapshot,
     isDevSceneRebuildRunning,
+    loadPlacementLayerNodesForVersion,
+    persistSceneRenderStateForVersion,
     pushSnack,
     refreshRoomVersions,
-    setSceneNeedsUpdate,
     selectedVersionId,
+    setVersions,
+    vibodeRoomId,
+  ]);
+
+  const handleRevertPlacementChanges = useCallback(async () => {
+    if (isRevertingPlacementChanges) return;
+
+    const renderedSnapshot = selectedVersionRenderedPlacementSnapshot;
+    if (!vibodeRoomId || !selectedVersionId || !renderedSnapshot) {
+      const missingMessage = !vibodeRoomId
+        ? "Select an active room before reverting."
+        : !selectedVersionId
+          ? "Select an active version before reverting."
+          : "No rendered furniture snapshot is available for this version.";
+      pushSnack(missingMessage);
+      return;
+    }
+
+    const expectedVersionId = selectedVersionId;
+    setIsRevertingPlacementChanges(true);
+
+    try {
+      let accessToken = await tryGetSupabaseAccessToken();
+      if (!accessToken) {
+        await new Promise<void>((resolve) => setTimeout(resolve, 250));
+        accessToken = await tryGetSupabaseAccessToken();
+      }
+      if (!accessToken) {
+        throw new Error("No Supabase session.");
+      }
+
+      const revertedNodes = await revertPlacementLayerNodesToSnapshot({
+        roomId: vibodeRoomId,
+        versionId: expectedVersionId,
+        accessToken,
+        snapshot: renderedSnapshot,
+      });
+
+      if (selectedVersionIdRef.current !== expectedVersionId) return;
+
+      const renderedHash = selectedVersionRenderedPlacementStateHashRef.current;
+      if (renderedHash) {
+        const revertedHash = await hashPlacementState(revertedNodes);
+        if (revertedHash !== renderedHash) {
+          throw new Error("Reverted placement state hash mismatch.");
+        }
+      }
+
+      placementLayerNodesRef.current = revertedNodes;
+      setPlacementLayerNodes(revertedNodes);
+      sceneDirtyLocallyConfirmedRef.current = false;
+      setSceneNeedsUpdate(false);
+      pushSnack("Reverted furniture changes.");
+    } catch (err) {
+      console.warn("[room-furniture-placements][revert] failed", err);
+      pushSnack(getErrorMessage(err) ?? "Couldn't revert furniture changes.");
+    } finally {
+      setIsRevertingPlacementChanges(false);
+    }
+  }, [
+    isRevertingPlacementChanges,
+    pushSnack,
+    selectedVersionId,
+    selectedVersionRenderedPlacementSnapshot,
     vibodeRoomId,
   ]);
 
@@ -5556,11 +5889,16 @@ function EditorPageInner() {
         if (!createdNode) {
           throw new Error("node missing from create response");
         }
-        setPlacementLayerNodes((prev) => {
-          const withoutCurrent = prev.filter((node) => node.id !== createdNode.id);
-          return [...withoutCurrent, createdNode];
+        const nextNodes = [
+          ...placementLayerNodesRef.current.filter((node) => node.id !== createdNode.id),
+          createdNode,
+        ];
+        placementLayerNodesRef.current = nextNodes;
+        setPlacementLayerNodes(nextNodes);
+        sceneDirtyLocallyConfirmedRef.current = true;
+        await updateSceneNeedsUpdateFromPlacements(nextNodes, versionId, {
+          missingRenderedHashMeansDirty: true,
         });
-        setSceneNeedsUpdate(true);
         placementLayerHydratedScopeKeyRef.current = `${roomId}:${versionId}`;
         console.log("[placement-layer] node created", {
           roomId,
@@ -5591,7 +5929,7 @@ function EditorPageInner() {
         });
       }
     },
-    [setSceneNeedsUpdate]
+    [updateSceneNeedsUpdateFromPlacements]
   );
 
   const updatePlacementLayerNodePositionLocal = useCallback((id: string, xNorm: number, yNorm: number) => {
@@ -5643,25 +5981,30 @@ function EditorPageInner() {
         }
         const payload = (await res.json().catch(() => ({}))) as PlacementLayerCreateResponse;
         const patchedNode = normalizePlacementLayerNode(payload.node);
-        if (patchedNode) {
-          setPlacementLayerNodes((prev) =>
-            prev.map((node) => (node.id === patchedNode.id ? patchedNode : node))
-          );
-        }
-        setSceneNeedsUpdate(true);
+        const nextNodes = placementLayerNodesRef.current.map((node) => {
+          if (node.id !== id) return node;
+          if (patchedNode) return patchedNode;
+          return { ...node, x, y };
+        });
+        placementLayerNodesRef.current = nextNodes;
+        setPlacementLayerNodes(nextNodes);
+        sceneDirtyLocallyConfirmedRef.current = true;
+        await updateSceneNeedsUpdateFromPlacements(nextNodes, selectedVersionId, {
+          missingRenderedHashMeansDirty: true,
+        });
       } catch {
         if (patchAttempted) {
-          setPlacementLayerNodes((prev) =>
-            prev.map((node) =>
-              node.id === id
-                ? {
-                    ...node,
-                    x: previousX,
-                    y: previousY,
-                  }
-                : node
-            )
+          const rolledBackNodes = placementLayerNodesRef.current.map((node) =>
+            node.id === id
+              ? {
+                  ...node,
+                  x: previousX,
+                  y: previousY,
+                }
+              : node
           );
+          placementLayerNodesRef.current = rolledBackNodes;
+          setPlacementLayerNodes(rolledBackNodes);
         }
         if (patchFailure) {
           console.warn("[placement-layer] node move PATCH failed", {
@@ -5673,7 +6016,7 @@ function EditorPageInner() {
         pushSnack("Unable to save furniture marker position.");
       }
     },
-    [pushSnack, setSceneNeedsUpdate]
+    [pushSnack, selectedVersionId, updateSceneNeedsUpdateFromPlacements]
   );
 
   const deletePlacementLayerNode = useCallback(
@@ -5696,8 +6039,13 @@ function EditorPageInner() {
           const text = await res.text().catch(() => "");
           throw new Error(`HTTP ${res.status} ${text}`.trim());
         }
-        setPlacementLayerNodes((prev) => prev.filter((node) => node.id !== trimmedId));
-        setSceneNeedsUpdate(true);
+        const nextNodes = placementLayerNodesRef.current.filter((node) => node.id !== trimmedId);
+        placementLayerNodesRef.current = nextNodes;
+        setPlacementLayerNodes(nextNodes);
+        sceneDirtyLocallyConfirmedRef.current = true;
+        await updateSceneNeedsUpdateFromPlacements(nextNodes, selectedVersionId, {
+          missingRenderedHashMeansDirty: true,
+        });
       } catch (err: unknown) {
         console.warn("[placement-layer] node delete failed", {
           id: trimmedId,
@@ -5706,7 +6054,7 @@ function EditorPageInner() {
         pushSnack("Unable to delete furniture marker.");
       }
     },
-    [pushSnack, setSceneNeedsUpdate]
+    [pushSnack, selectedVersionId, updateSceneNeedsUpdateFromPlacements]
   );
 
   const runPasteToPlaceClickTargetEdit = useCallback(
@@ -7335,6 +7683,14 @@ function EditorPageInner() {
       : null;
   const isDevSceneRebuildButtonDisabled =
     isDevSceneRebuildRunning || Boolean(devSceneRebuildMissingReason);
+  const canShowRevertPlacementChangesButton =
+    showDevSceneRebuildButton &&
+    sceneNeedsUpdate &&
+    selectedVersionRenderedPlacementSnapshot !== null;
+  const isRevertPlacementChangesButtonDisabled =
+    isRevertingPlacementChanges ||
+    isDevSceneRebuildRunning ||
+    Boolean(devSceneRebuildMissingReason);
   const activeStageTokenCost = STAGE_TOKEN_COST[activeStage] ?? DEFAULT_ACTION_TOKEN_COST;
   const activeStageTokenCostLabel = formatTokenCostLabel(activeStageTokenCost);
   const activeEditTokenCost =
@@ -8412,18 +8768,39 @@ function EditorPageInner() {
                       <div className="text-xs text-neutral-300">
                         Furniture changes are ready to apply to your room.
                       </div>
-                      <button
-                        type="button"
-                        onClick={handleDevRebuildActiveVersion}
-                        disabled={isDevSceneRebuildButtonDisabled}
-                        className={`mt-1 rounded border px-2 py-1 text-xs ${
-                          isDevSceneRebuildButtonDisabled
-                            ? "cursor-not-allowed border-neutral-900 bg-neutral-950 text-neutral-600"
-                            : "border-amber-700/70 bg-amber-950/30 text-amber-200 hover:bg-amber-900/40"
-                        }`}
-                      >
-                        {isDevSceneRebuildRunning ? "Updating..." : "Update Room"}
-                      </button>
+                      {canShowRevertPlacementChangesButton ? (
+                        <div className="mt-2 text-[11px] text-neutral-400">
+                          Discard furniture edits that haven't been applied yet.
+                        </div>
+                      ) : null}
+                      <div className="mt-1 flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={handleDevRebuildActiveVersion}
+                          disabled={isDevSceneRebuildButtonDisabled}
+                          className={`rounded border px-2 py-1 text-xs ${
+                            isDevSceneRebuildButtonDisabled
+                              ? "cursor-not-allowed border-neutral-900 bg-neutral-950 text-neutral-600"
+                              : "border-amber-700/70 bg-amber-950/30 text-amber-200 hover:bg-amber-900/40"
+                          }`}
+                        >
+                          {isDevSceneRebuildRunning ? "Updating..." : "Update Room"}
+                        </button>
+                        {canShowRevertPlacementChangesButton ? (
+                          <button
+                            type="button"
+                            onClick={handleRevertPlacementChanges}
+                            disabled={isRevertPlacementChangesButtonDisabled}
+                            className={`rounded border px-2 py-1 text-xs ${
+                              isRevertPlacementChangesButtonDisabled
+                                ? "cursor-not-allowed border-neutral-900 bg-neutral-950 text-neutral-600"
+                                : "border-neutral-700 bg-neutral-900 text-neutral-300 hover:bg-neutral-800"
+                            }`}
+                          >
+                            {isRevertingPlacementChanges ? "Reverting..." : "Revert Changes"}
+                          </button>
+                        ) : null}
+                      </div>
                       {devSceneRebuildMissingReason ? (
                         <div className="mt-1 text-[11px] text-neutral-500">{devSceneRebuildMissingReason}</div>
                       ) : null}
