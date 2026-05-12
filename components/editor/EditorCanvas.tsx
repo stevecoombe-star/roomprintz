@@ -408,6 +408,7 @@ export function EditorCanvas({
   const [hoveredId, setHoveredId] = useState<string | null>(null);
   const [hoveredPlacementLayerNodeId, setHoveredPlacementLayerNodeId] = useState<string | null>(null);
   const [selectedPlacementLayerNodeId, setSelectedPlacementLayerNodeId] = useState<string | null>(null);
+  const [draggingPlacementLayerNodeId, setDraggingPlacementLayerNodeId] = useState<string | null>(null);
   const [pasteToPlacePulse, setPasteToPlacePulse] = useState<{ x: number; y: number } | null>(
     null
   );
@@ -961,6 +962,7 @@ export function EditorCanvas({
     placementLayerDragCleanupRef.current?.();
     placementLayerDragCleanupRef.current = null;
     placementLayerDragStateRef.current = null;
+    setDraggingPlacementLayerNodeId(null);
   }, [furnitureLayerEnabled]);
 
   useEffect(
@@ -968,6 +970,7 @@ export function EditorCanvas({
       placementLayerDragCleanupRef.current?.();
       placementLayerDragCleanupRef.current = null;
       placementLayerDragStateRef.current = null;
+      setDraggingPlacementLayerNodeId(null);
     },
     []
   );
@@ -1111,6 +1114,7 @@ export function EditorCanvas({
     event.preventDefault();
     event.stopPropagation();
     setSelectedPlacementLayerNodeId(node.id);
+    setDraggingPlacementLayerNodeId(node.id);
     const pointerId = event.pointerId;
     const markerEl = event.currentTarget;
     markerEl.setPointerCapture?.(pointerId);
@@ -1163,6 +1167,7 @@ export function EditorCanvas({
         // no-op
       }
       placementLayerDragStateRef.current = null;
+      setDraggingPlacementLayerNodeId((current) => (current === drag.id ? null : current));
       if (!drag.didMove) return;
       void onCommitPlacementLayerNodeMove?.({
         id: drag.id,
@@ -1177,6 +1182,7 @@ export function EditorCanvas({
       if (!drag || lostEvent.pointerId !== drag.pointerId) return;
       clearListeners();
       placementLayerDragStateRef.current = null;
+      setDraggingPlacementLayerNodeId((current) => (current === drag.id ? null : current));
     };
     window.addEventListener("pointermove", handlePointerMove);
     window.addEventListener("pointerup", handlePointerUp);
@@ -1918,21 +1924,38 @@ export function EditorCanvas({
                 : node.sourceImageUrl.trim()) || "";
             const isSelected = selectedPlacementLayerNodeId === node.id;
             const isHovered = hoveredPlacementLayerNodeId === node.id;
+            const isDragging = draggingPlacementLayerNodeId === node.id;
+            const hasMarkerInteractionFocus = Boolean(
+              hoveredPlacementLayerNodeId || selectedPlacementLayerNodeId || draggingPlacementLayerNodeId
+            );
+            const shouldDim = hasMarkerInteractionFocus && !isHovered && !isSelected && !isDragging;
+            const markerScaleClass = isDragging
+              ? "scale-[1.32]"
+              : isSelected
+                ? "scale-[1.28]"
+                : isHovered
+                  ? "scale-[1.18]"
+                  : "scale-100";
+            const markerZIndex = isDragging ? 40 : isSelected ? 30 : isHovered ? 20 : 10;
             return (
               <div
                 key={node.id}
                 className="absolute -translate-x-1/2 -translate-y-1/2"
-                style={{ left: `${node.stageX}px`, top: `${node.stageY}px` }}
+                style={{ left: `${node.stageX}px`, top: `${node.stageY}px`, zIndex: markerZIndex }}
               >
                 <button
                   type="button"
                   aria-label="Select furniture marker"
-                  className={`pointer-events-auto relative h-8 w-8 overflow-hidden rounded-md border bg-neutral-900/85 shadow transition ${
-                    isSelected
-                      ? "border-blue-300 ring-2 ring-blue-400/55"
-                      : isHovered
-                        ? "border-neutral-300"
-                        : "border-white/20"
+                  className={`pointer-events-auto relative h-8 w-8 overflow-hidden rounded-md border bg-neutral-900/85 transform-gpu will-change-transform transition-[transform,box-shadow,border-color,opacity] duration-150 ease-out cursor-grab active:cursor-grabbing ${markerScaleClass} ${
+                    isDragging
+                      ? "border-blue-100/95 ring-2 ring-blue-300/80 shadow-[0_12px_26px_rgba(59,130,246,0.5),0_0_0_1px_rgba(191,219,254,0.45)]"
+                      : isSelected
+                        ? "border-blue-200 ring-2 ring-blue-400/70 shadow-[0_10px_22px_rgba(59,130,246,0.42),0_0_0_1px_rgba(147,197,253,0.35)]"
+                        : isHovered
+                          ? "border-neutral-100/90 ring-1 ring-white/25 shadow-[0_8px_16px_rgba(0,0,0,0.4)]"
+                          : "border-white/20 shadow-[0_4px_10px_rgba(0,0,0,0.28)]"
+                  } ${
+                    shouldDim ? "opacity-80" : "opacity-100"
                   }`}
                   onPointerDown={(event) => handlePlacementLayerMarkerPointerDown(node, event)}
                   onClick={(event) => {
