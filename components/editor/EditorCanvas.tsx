@@ -303,6 +303,8 @@ export function EditorCanvas({
   onPlaceRotateMarker,
   onClearRotateMarker,
   furnitureLayerEnabled = false,
+  onToggleFurnitureLayer,
+  keyboardShortcutsBlocked = false,
   placementLayerNodes = [],
   onMovePlacementLayerNodeLocal,
   onCommitPlacementLayerNodeMove,
@@ -355,6 +357,8 @@ export function EditorCanvas({
   onPlaceRotateMarker?: (marker: { xNorm: number; yNorm: number }) => void;
   onClearRotateMarker?: () => void;
   furnitureLayerEnabled?: boolean;
+  onToggleFurnitureLayer?: () => void;
+  keyboardShortcutsBlocked?: boolean;
   placementLayerNodes?: PlacementLayerNode[];
   onMovePlacementLayerNodeLocal?: (id: string, xNorm: number, yNorm: number) => void;
   onCommitPlacementLayerNodeMove?: (args: {
@@ -425,6 +429,7 @@ export function EditorCanvas({
   } | null>(null);
   const placementLayerDragCleanupRef = useRef<(() => void) | null>(null);
   const pasteToPlaceMenuRef = useRef<HTMLDivElement | null>(null);
+  const [isEditorInteractionContextActive, setIsEditorInteractionContextActive] = useState(false);
   const [pasteToPlaceMenuMeasuredSize, setPasteToPlaceMenuMeasuredSize] = useState<{
     width: number;
     height: number;
@@ -813,6 +818,25 @@ export function EditorCanvas({
         return;
       }
 
+      const isSpaceKey = e.code === "Space" || e.key === " " || e.key === "Spacebar";
+      if (isSpaceKey) {
+        const target = e.target;
+        if (target instanceof HTMLElement) {
+          const isTextInputTarget =
+            target.closest("input, textarea, select, [contenteditable='true']") !== null ||
+            target.isContentEditable;
+          if (isTextInputTarget) return;
+        }
+        if (e.repeat) return;
+        if (!isEditorInteractionContextActive) return;
+        if (keyboardShortcutsBlocked || pasteToPlaceMenuState) return;
+        if (draggingPlacementLayerNodeId) return;
+        if (!onToggleFurnitureLayer) return;
+        e.preventDefault();
+        onToggleFurnitureLayer();
+        return;
+      }
+
       const isDeleteKey = e.key === "Backspace" || e.key === "Delete";
       if (isDeleteKey && removeMarkerPosition && onClearRemoveMarker) {
         e.preventDefault();
@@ -864,6 +888,9 @@ export function EditorCanvas({
     pasteToPlaceMenuState,
     onDismissPasteToPlaceMenu,
     draggingPlacementLayerNodeId,
+    isEditorInteractionContextActive,
+    keyboardShortcutsBlocked,
+    onToggleFurnitureLayer,
     selectedPlacementLayerNodeId,
     toggleDelete,
   ]);
@@ -978,6 +1005,29 @@ export function EditorCanvas({
     placementLayerDragStateRef.current = null;
     setDraggingPlacementLayerNodeId(null);
   }, [furnitureLayerEnabled]);
+
+  useEffect(() => {
+    const updateInteractionContext = (target: EventTarget | null) => {
+      const containerEl = containerRef.current;
+      if (!containerEl || !(target instanceof Node)) {
+        setIsEditorInteractionContextActive(false);
+        return;
+      }
+      setIsEditorInteractionContextActive(containerEl.contains(target));
+    };
+    const onPointerDownCapture = (event: PointerEvent) => {
+      updateInteractionContext(event.target);
+    };
+    const onFocusInCapture = (event: FocusEvent) => {
+      updateInteractionContext(event.target);
+    };
+    window.addEventListener("pointerdown", onPointerDownCapture, true);
+    window.addEventListener("focusin", onFocusInCapture, true);
+    return () => {
+      window.removeEventListener("pointerdown", onPointerDownCapture, true);
+      window.removeEventListener("focusin", onFocusInCapture, true);
+    };
+  }, []);
 
   useEffect(
     () => () => {

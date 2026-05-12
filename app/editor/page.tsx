@@ -1999,6 +1999,10 @@ function EditorPageInner() {
   const [placementLayerNodes, setPlacementLayerNodes] = useState<PlacementLayerNode[]>([]);
   const placementLayerNodesRef = useRef<PlacementLayerNode[]>([]);
   const [isFurnitureLayerEnabled, setIsFurnitureLayerEnabled] = useState(false);
+  const toggleFurnitureLayer = useCallback(() => {
+    setIsFurnitureLayerEnabled((prev) => !prev);
+  }, []);
+  const isEditorKeyboardShortcutBlocked = swapOpen || swapPickerOpen || myFurnitureOpen;
   const [selectedRemoveLabel, setSelectedRemoveLabel] = useState<string>(REMOVE_LABEL_PLACEHOLDER);
   const roomReadByImageKeyRef = useRef<Map<string, DetectedRoomObjectLabel[]>>(new Map());
   const roomReadInFlightKeysRef = useRef<Set<string>>(new Set());
@@ -7792,7 +7796,7 @@ function EditorPageInner() {
           <button
             type="button"
             aria-pressed={isFurnitureLayerEnabled}
-            onClick={() => setIsFurnitureLayerEnabled((prev) => !prev)}
+            onClick={toggleFurnitureLayer}
             className={`rounded-md border px-2.5 py-1 text-xs transition ${
               isFurnitureLayerEnabled
                 ? "border-blue-500/70 bg-blue-900/30 text-blue-100 hover:bg-blue-900/45"
@@ -8022,6 +8026,8 @@ function EditorPageInner() {
                   setSwapOpen(true);
                 }}
                 furnitureLayerEnabled={isFurnitureLayerEnabled}
+                onToggleFurnitureLayer={toggleFurnitureLayer}
+                keyboardShortcutsBlocked={isEditorKeyboardShortcutBlocked}
                 placementLayerNodes={placementLayerNodes}
                 onMovePlacementLayerNodeLocal={updatePlacementLayerNodePositionLocal}
                 onCommitPlacementLayerNodeMove={persistPlacementLayerNodePosition}
