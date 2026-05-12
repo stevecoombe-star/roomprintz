@@ -563,6 +563,8 @@ type PlacementLayerCreateResponse = {
 type SceneRenderStateMetadata = {
   renderedPlacementStateHash?: unknown;
   renderedPlacementSnapshot?: unknown;
+  originalPlacementStateHash?: unknown;
+  originalPlacementSnapshot?: unknown;
   renderedAt?: unknown;
   sourceVersionId?: unknown;
 };
@@ -1298,6 +1300,23 @@ function readRenderedPlacementSnapshotFromMetadata(metadata: unknown): Normalize
   return normalizePlacementStateForHash(snapshotRaw as PlacementStateHashInput[]);
 }
 
+function readOriginalPlacementStateHashFromMetadata(metadata: unknown): string | null {
+  if (!isRecord(metadata)) return null;
+  const sceneRenderState = readSceneRenderStateMetadata(metadata);
+  const nestedHash = safeStr(sceneRenderState?.originalPlacementStateHash);
+  if (nestedHash) return nestedHash;
+  return null;
+}
+
+function readOriginalPlacementSnapshotFromMetadata(metadata: unknown): NormalizedPlacementStateRow[] | null {
+  if (!isRecord(metadata)) return null;
+  const sceneRenderState = readSceneRenderStateMetadata(metadata);
+  if (!sceneRenderState) return null;
+  const snapshotRaw = sceneRenderState.originalPlacementSnapshot;
+  if (!Array.isArray(snapshotRaw)) return null;
+  return normalizePlacementStateForHash(snapshotRaw as PlacementStateHashInput[]);
+}
+
 function extractScenePlacementsFromUnknown(value: unknown, depth = 0): ScenePlacement[] {
   if (depth > 4) return [];
   const directPlacements = normalizeScenePlacementsArray(value);
@@ -1975,7 +1994,11 @@ function EditorPageInner() {
   const [isPendingFurnitureSelectionRunning, setIsPendingFurnitureSelectionRunning] = useState(false);
   const [isDevSceneRebuildRunning, setIsDevSceneRebuildRunning] = useState(false);
   const [isRevertingPlacementChanges, setIsRevertingPlacementChanges] = useState(false);
+  const [isRestoringOriginalPlacementPositions, setIsRestoringOriginalPlacementPositions] =
+    useState(false);
   const [sceneNeedsUpdate, setSceneNeedsUpdate] = useState(false);
+  const [canRestoreOriginalPlacementPositions, setCanRestoreOriginalPlacementPositions] =
+    useState(false);
   const [devSceneRebuildFeedback, setDevSceneRebuildFeedback] = useState<{
     tone: "success" | "error";
     message: string;
@@ -3468,9 +3491,23 @@ function EditorPageInner() {
     () => readRenderedPlacementSnapshotFromMetadata(selectedVersion?.metadata),
     [selectedVersion?.metadata]
   );
+  const selectedVersionOriginalPlacementStateHash = useMemo(
+    () => readOriginalPlacementStateHashFromMetadata(selectedVersion?.metadata),
+    [selectedVersion?.metadata]
+  );
+  const selectedVersionOriginalPlacementSnapshot = useMemo(
+    () => readOriginalPlacementSnapshotFromMetadata(selectedVersion?.metadata),
+    [selectedVersion?.metadata]
+  );
   const selectedVersionIdRef = useRef<string | null>(selectedVersionId);
   const selectedVersionRenderedPlacementStateHashRef = useRef<string | null>(
     selectedVersionRenderedPlacementStateHash
+  );
+  const selectedVersionOriginalPlacementStateHashRef = useRef<string | null>(
+    selectedVersionOriginalPlacementStateHash
+  );
+  const selectedVersionOriginalPlacementSnapshotRef = useRef<NormalizedPlacementStateRow[] | null>(
+    selectedVersionOriginalPlacementSnapshot
   );
   useEffect(() => {
     selectedVersionIdRef.current = selectedVersionId;
@@ -3478,6 +3515,12 @@ function EditorPageInner() {
   useEffect(() => {
     selectedVersionRenderedPlacementStateHashRef.current = selectedVersionRenderedPlacementStateHash;
   }, [selectedVersionRenderedPlacementStateHash]);
+  useEffect(() => {
+    selectedVersionOriginalPlacementStateHashRef.current = selectedVersionOriginalPlacementStateHash;
+  }, [selectedVersionOriginalPlacementStateHash]);
+  useEffect(() => {
+    selectedVersionOriginalPlacementSnapshotRef.current = selectedVersionOriginalPlacementSnapshot;
+  }, [selectedVersionOriginalPlacementSnapshot]);
   const computePlacementStateHashAndSnapshot = useCallback(async (placements: PlacementLayerNode[]) => {
     const renderedPlacementSnapshot = normalizePlacementStateForHash(placements);
     const placementStateHash = await hashPlacementState(placements);
@@ -3496,15 +3539,22 @@ function EditorPageInner() {
       if (!renderedHash) {
         if (missingRenderedHashMeansDirty || sceneDirtyLocallyConfirmedRef.current) {
           setSceneNeedsUpdate(true);
+          setCanRestoreOriginalPlacementPositions(false);
           return true;
         }
         setSceneNeedsUpdate(false);
+        setCanRestoreOriginalPlacementPositions(false);
         return false;
       }
       const placementStateHash = await hashPlacementState(placements);
       if (expectedVersionId !== selectedVersionIdRef.current) return false;
       const isDirty = placementStateHash !== renderedHash;
       setSceneNeedsUpdate(isDirty);
+      const originalHash = selectedVersionOriginalPlacementStateHashRef.current;
+      const hasOriginalSnapshot = Array.isArray(selectedVersionOriginalPlacementSnapshotRef.current);
+      setCanRestoreOriginalPlacementPositions(
+        !isDirty && !!originalHash && hasOriginalSnapshot && placementStateHash !== originalHash
+      );
       return isDirty;
     },
     [selectedVersionId]
@@ -3593,11 +3643,13 @@ function EditorPageInner() {
 
   useEffect(() => {
     sceneDirtyLocallyConfirmedRef.current = false;
+    setCanRestoreOriginalPlacementPositions(false);
   }, [selectedVersionId, vibodeRoomId]);
 
   useEffect(() => {
     if (!selectedVersionId || !vibodeRoomId) {
       setSceneNeedsUpdate(false);
+      setCanRestoreOriginalPlacementPositions(false);
       return;
     }
     const scopeKey = `${vibodeRoomId}:${selectedVersionId}`;
@@ -3613,6 +3665,7 @@ function EditorPageInner() {
   }, [
     placementLayerNodes,
     selectedVersionId,
+    selectedVersionOriginalPlacementStateHash,
     selectedVersionRenderedPlacementStateHash,
     updateSceneNeedsUpdateFromPlacements,
     vibodeRoomId,
@@ -3768,20 +3821,52 @@ function EditorPageInner() {
             accessToken,
             sceneRenderState,
           });
+          let sourceVersionUpdatedMetadata: Record<string, unknown> | null = null;
+          if (
+            sourceVersionIdForRenderState &&
+            sourceVersionIdForRenderState !== refreshedActiveVersion.id
+          ) {
+            const sourcePlacementNodes = await loadPlacementLayerNodesForVersion({
+              roomId: vibodeRoomId,
+              versionId: sourceVersionIdForRenderState,
+              accessToken,
+            });
+            const sourcePlacementRenderState =
+              await computePlacementStateHashAndSnapshot(sourcePlacementNodes);
+            const sourceSceneRenderState = {
+              renderedPlacementStateHash: sourcePlacementRenderState.placementStateHash,
+              renderedPlacementSnapshot: sourcePlacementRenderState.renderedPlacementSnapshot,
+              renderedAt: new Date().toISOString(),
+              sourceVersionId: sourceVersionIdForRenderState,
+            };
+            sourceVersionUpdatedMetadata = await persistSceneRenderStateForVersion({
+              roomId: vibodeRoomId,
+              assetId: sourceVersionIdForRenderState,
+              accessToken,
+              sceneRenderState: sourceSceneRenderState,
+            });
+          }
           setVersions(
-            latestVersions.map((asset) =>
-              asset.id === refreshedActiveVersion.id
-                ? {
-                    ...asset,
-                    metadata:
-                      updatedMetadata ??
-                      {
-                        ...(isRecord(asset.metadata) ? asset.metadata : {}),
-                        sceneRenderState,
-                      },
-                  }
-                : asset
-            )
+            latestVersions.map((asset) => {
+              if (asset.id === refreshedActiveVersion.id) {
+                return {
+                  ...asset,
+                  metadata:
+                    updatedMetadata ??
+                    {
+                      ...(isRecord(asset.metadata) ? asset.metadata : {}),
+                      sceneRenderState,
+                    },
+                };
+              }
+              if (asset.id === sourceVersionIdForRenderState && sourceVersionUpdatedMetadata) {
+                return {
+                  ...asset,
+                  metadata: sourceVersionUpdatedMetadata,
+                };
+              }
+              return asset;
+            })
           );
           sceneDirtyLocallyConfirmedRef.current = false;
           setSceneNeedsUpdate(false);
@@ -3877,6 +3962,103 @@ function EditorPageInner() {
     pushSnack,
     selectedVersionId,
     selectedVersionRenderedPlacementSnapshot,
+    vibodeRoomId,
+  ]);
+
+  const handleRestoreOriginalPlacementPositions = useCallback(async () => {
+    if (isRestoringOriginalPlacementPositions) return;
+
+    const originalSnapshot = selectedVersionOriginalPlacementSnapshot;
+    if (!vibodeRoomId || !selectedVersionId || !originalSnapshot) {
+      const missingMessage = !vibodeRoomId
+        ? "Select an active room before restoring positions."
+        : !selectedVersionId
+          ? "Select an active version before restoring positions."
+          : "Original placement positions aren't available for this version yet.";
+      pushSnack(missingMessage);
+      return;
+    }
+
+    const expectedVersionId = selectedVersionId;
+    setIsRestoringOriginalPlacementPositions(true);
+
+    try {
+      let accessToken = await tryGetSupabaseAccessToken();
+      if (!accessToken) {
+        await new Promise<void>((resolve) => setTimeout(resolve, 250));
+        accessToken = await tryGetSupabaseAccessToken();
+      }
+      if (!accessToken) {
+        throw new Error("No Supabase session.");
+      }
+
+      const restoredNodes = await revertPlacementLayerNodesToSnapshot({
+        roomId: vibodeRoomId,
+        versionId: expectedVersionId,
+        accessToken,
+        snapshot: originalSnapshot,
+      });
+      if (selectedVersionIdRef.current !== expectedVersionId) return;
+
+      const restoredRenderState = await computePlacementStateHashAndSnapshot(restoredNodes);
+      const expectedOriginalHash = selectedVersionOriginalPlacementStateHashRef.current;
+      if (
+        expectedOriginalHash &&
+        restoredRenderState.placementStateHash !== expectedOriginalHash &&
+        expectedVersionId === selectedVersionIdRef.current
+      ) {
+        throw new Error("Restored placement state hash mismatch.");
+      }
+
+      const sceneRenderState = {
+        renderedPlacementStateHash: restoredRenderState.placementStateHash,
+        renderedPlacementSnapshot: restoredRenderState.renderedPlacementSnapshot,
+        renderedAt: new Date().toISOString(),
+        sourceVersionId: expectedVersionId,
+      };
+      const updatedMetadata = await persistSceneRenderStateForVersion({
+        roomId: vibodeRoomId,
+        assetId: expectedVersionId,
+        accessToken,
+        sceneRenderState,
+      });
+      if (selectedVersionIdRef.current !== expectedVersionId) return;
+
+      placementLayerNodesRef.current = restoredNodes;
+      setPlacementLayerNodes(restoredNodes);
+      setVersions(
+        versions.map((asset) =>
+          asset.id === expectedVersionId
+            ? {
+                ...asset,
+                metadata:
+                  updatedMetadata ??
+                  {
+                    ...(isRecord(asset.metadata) ? asset.metadata : {}),
+                    sceneRenderState,
+                  },
+              }
+            : asset
+        )
+      );
+      sceneDirtyLocallyConfirmedRef.current = false;
+      setSceneNeedsUpdate(false);
+      setCanRestoreOriginalPlacementPositions(false);
+      pushSnack("Restored original placement positions.");
+    } catch (err) {
+      console.warn("[room-furniture-placements][restore-original] failed", err);
+      pushSnack(getErrorMessage(err) ?? "Couldn't restore original placement positions.");
+    } finally {
+      setIsRestoringOriginalPlacementPositions(false);
+    }
+  }, [
+    computePlacementStateHashAndSnapshot,
+    isRestoringOriginalPlacementPositions,
+    pushSnack,
+    selectedVersionId,
+    selectedVersionOriginalPlacementSnapshot,
+    setVersions,
+    versions,
     vibodeRoomId,
   ]);
 
@@ -7731,6 +7913,13 @@ function EditorPageInner() {
     isRevertingPlacementChanges ||
     isDevSceneRebuildRunning ||
     Boolean(devSceneRebuildMissingReason);
+  const canShowRestoreOriginalPlacementPositionsAction =
+    !sceneNeedsUpdate && canRestoreOriginalPlacementPositions;
+  const isRestoreOriginalPlacementPositionsButtonDisabled =
+    isRestoringOriginalPlacementPositions ||
+    isRevertingPlacementChanges ||
+    isDevSceneRebuildRunning ||
+    Boolean(devSceneRebuildMissingReason);
   const activeStageTokenCost = STAGE_TOKEN_COST[activeStage] ?? DEFAULT_ACTION_TOKEN_COST;
   const activeStageTokenCostLabel = formatTokenCostLabel(activeStageTokenCost);
   const activeEditTokenCost =
@@ -8123,6 +8312,26 @@ function EditorPageInner() {
                   ) : null}
                 </div>
               )}
+              {canShowRestoreOriginalPlacementPositionsAction ? (
+                <div className="pointer-events-none absolute inset-x-0 bottom-3 z-20 flex justify-center px-3">
+                  <div className="pointer-events-auto rounded-full border border-neutral-700/80 bg-neutral-950/70 px-3 py-1 shadow-[0_6px_18px_rgba(0,0,0,0.28)] backdrop-blur-sm">
+                    <button
+                      type="button"
+                      onClick={handleRestoreOriginalPlacementPositions}
+                      disabled={isRestoreOriginalPlacementPositionsButtonDisabled}
+                      className={`text-xs transition ${
+                        isRestoreOriginalPlacementPositionsButtonDisabled
+                          ? "cursor-not-allowed text-neutral-600"
+                          : "text-neutral-300 hover:text-neutral-100"
+                      }`}
+                    >
+                      {isRestoringOriginalPlacementPositions
+                        ? "Restoring original placement positions..."
+                        : "Restore original placement positions"}
+                    </button>
+                  </div>
+                </div>
+              ) : null}
             </div>
             {showDevSceneRebuildButton && sceneNeedsUpdate ? (
               <div className="pointer-events-none absolute inset-x-0 bottom-3 z-30 flex justify-center px-3">

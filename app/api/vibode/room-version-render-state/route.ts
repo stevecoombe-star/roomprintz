@@ -37,6 +37,16 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
+function safeOptionalString(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+function safeArray(value: unknown): unknown[] | null {
+  return Array.isArray(value) ? value : null;
+}
+
 export async function PATCH(req: NextRequest) {
   try {
     if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
@@ -95,9 +105,23 @@ export async function PATCH(req: NextRequest) {
     }
 
     const existingMetadata = isRecord(assetData.metadata) ? assetData.metadata : {};
+    const existingSceneRenderState = isRecord(existingMetadata.sceneRenderState)
+      ? existingMetadata.sceneRenderState
+      : null;
+    const nextSceneRenderState = {
+      ...sceneRenderState,
+      originalPlacementStateHash:
+        safeOptionalString(existingSceneRenderState?.originalPlacementStateHash) ??
+        safeOptionalString(existingSceneRenderState?.renderedPlacementStateHash) ??
+        safeOptionalString(sceneRenderState.renderedPlacementStateHash),
+      originalPlacementSnapshot:
+        safeArray(existingSceneRenderState?.originalPlacementSnapshot) ??
+        safeArray(existingSceneRenderState?.renderedPlacementSnapshot) ??
+        safeArray(sceneRenderState.renderedPlacementSnapshot),
+    };
     const nextMetadata = {
       ...existingMetadata,
-      sceneRenderState,
+      sceneRenderState: nextSceneRenderState,
     };
 
     const { error: updateErr } = await userSupabase
