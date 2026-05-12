@@ -476,7 +476,10 @@ async function inheritPlacementSnapshotForRebuildOutput(args: {
     if (existingKeys.has(dedupeKey)) continue;
     existingKeys.add(dedupeKey);
 
-    const { id: _id, created_at: _createdAt, updated_at: _updatedAt, ...copyable } = row;
+    const { id, created_at, updated_at, ...copyable } = row;
+    void id;
+    void created_at;
+    void updated_at;
     rowsToInsert.push({
       ...copyable,
       user_id: args.userId,

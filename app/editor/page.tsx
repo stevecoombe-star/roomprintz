@@ -111,6 +111,16 @@ function getErrorMessage(error: unknown): string | null {
   return null;
 }
 
+function isSceneRebuildGenerationFailure(message: string | null | undefined): boolean {
+  if (!message) return false;
+  const normalized = message.trim().toLowerCase();
+  if (!normalized) return false;
+  return (
+    normalized.includes("scene rebuild generation failed") ||
+    normalized.includes("scene rebuild failed (http 502)")
+  );
+}
+
 function parseFiniteNumber(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
@@ -3754,11 +3764,7 @@ function EditorPageInner() {
     ]
   );
 
-  const clearSceneRebuildComposeTimers = useCallback(() => {
-    if (sceneRebuildRenderingMessageTimerRef.current !== null) {
-      window.clearTimeout(sceneRebuildRenderingMessageTimerRef.current);
-      sceneRebuildRenderingMessageTimerRef.current = null;
-    }
+  const clearSceneRebuildComposeGuardTimers = useCallback(() => {
     if (sceneRebuildComposeWarningTimerRef.current !== null) {
       window.clearTimeout(sceneRebuildComposeWarningTimerRef.current);
       sceneRebuildComposeWarningTimerRef.current = null;
@@ -3768,6 +3774,14 @@ function EditorPageInner() {
       sceneRebuildComposeTimeoutTimerRef.current = null;
     }
   }, []);
+
+  const clearSceneRebuildComposeTimers = useCallback(() => {
+    if (sceneRebuildRenderingMessageTimerRef.current !== null) {
+      window.clearTimeout(sceneRebuildRenderingMessageTimerRef.current);
+      sceneRebuildRenderingMessageTimerRef.current = null;
+    }
+    clearSceneRebuildComposeGuardTimers();
+  }, [clearSceneRebuildComposeGuardTimers]);
 
   const clearSceneRebuildAbortController = useCallback((controller?: AbortController | null) => {
     if (!controller) {
@@ -3789,6 +3803,17 @@ function EditorPageInner() {
     sceneRebuildAbortReasonRef.current = "user_cancel";
     sceneRebuildAbortControllerRef.current?.abort();
   }, [clearSceneRebuildComposeTimers, devSceneRebuildStage, isDevSceneRebuildRunning]);
+
+  useEffect(() => {
+    if (!isDevSceneRebuildRunning || devSceneRebuildStage !== "compose") return;
+    if (!isDevSceneRebuildRenderingMessageVisible) return;
+    clearSceneRebuildComposeGuardTimers();
+  }, [
+    clearSceneRebuildComposeGuardTimers,
+    devSceneRebuildStage,
+    isDevSceneRebuildRenderingMessageVisible,
+    isDevSceneRebuildRunning,
+  ]);
 
   const handleDevRebuildActiveVersion = useCallback(async () => {
     if (isDevSceneRebuildRunning) return;
@@ -3816,6 +3841,7 @@ function EditorPageInner() {
     clearSceneRebuildComposeTimers();
     sceneRebuildRenderingMessageTimerRef.current = window.setTimeout(() => {
       setIsDevSceneRebuildRenderingMessageVisible(true);
+      clearSceneRebuildComposeGuardTimers();
     }, SCENE_REBUILD_RENDERING_MESSAGE_DELAY_MS);
     sceneRebuildComposeWarningTimerRef.current = window.setTimeout(() => {
       setIsDevSceneRebuildComposeWarningVisible(true);
@@ -3877,6 +3903,20 @@ function EditorPageInner() {
         }
         if (json.details?.code === "compose_cancelled" || json.details?.code === "request_cancelled") {
           setDevSceneRebuildFeedback(null);
+          return;
+        }
+        const generationFailureMessage = json.error ?? json.message ?? null;
+        if (res.status === 502 || isSceneRebuildGenerationFailure(generationFailureMessage)) {
+          const generationFailureTitle = "Room rendering failed";
+          const generationFailureHelper =
+            "Vibode couldn't finish generating your updated room. Please try again.";
+          setDevSceneRebuildFeedback({
+            tone: "error",
+            message: generationFailureTitle,
+            title: generationFailureTitle,
+            helper: generationFailureHelper,
+          });
+          pushSnack(generationFailureTitle);
           return;
         }
         throw new Error(json.error || json.message || `Scene rebuild failed (HTTP ${res.status})`);
@@ -4002,8 +4042,21 @@ function EditorPageInner() {
         return;
       }
       const message = getErrorMessage(err) ?? "Scene rebuild failed.";
-      setDevSceneRebuildFeedback({ tone: "error", message });
-      pushSnack(message);
+      if (isSceneRebuildGenerationFailure(message)) {
+        const generationFailureTitle = "Room rendering failed";
+        const generationFailureHelper =
+          "Vibode couldn't finish generating your updated room. Please try again.";
+        setDevSceneRebuildFeedback({
+          tone: "error",
+          message: generationFailureTitle,
+          title: generationFailureTitle,
+          helper: generationFailureHelper,
+        });
+        pushSnack(generationFailureTitle);
+      } else {
+        setDevSceneRebuildFeedback({ tone: "error", message });
+        pushSnack(message);
+      }
     } finally {
       clearSceneRebuildComposeTimers();
       clearSceneRebuildAbortController(controller);
@@ -4016,16 +4069,14 @@ function EditorPageInner() {
   }, [
     applyVersionToEditorState,
     clearSceneRebuildAbortController,
+    clearSceneRebuildComposeGuardTimers,
     clearSceneRebuildComposeTimers,
     computePlacementStateHashAndSnapshot,
     isDevSceneRebuildRunning,
-    loadPlacementLayerNodesForVersion,
-    persistSceneRenderStateForVersion,
     pushSnack,
     refreshRoomVersions,
     selectedVersionId,
     setVersions,
-    tryGetSupabaseAccessToken,
     vibodeRoomId,
   ]);
 
@@ -7099,6 +7150,7 @@ function EditorPageInner() {
     pasteToPlaceMenuState,
     pasteToPlaceStatus,
     preparePasteToPlaceProductFromMenu,
+    pushSnack,
     runStage,
     scene.baseImageUrl,
     beginPasteToPlaceAbortController,

@@ -1004,10 +1004,14 @@ export function EditorCanvas({
   }, [pasteToPlacePulse]);
 
   useEffect(() => {
+    if (furnitureLayerEnabled) return;
     placementLayerDragCleanupRef.current?.();
     placementLayerDragCleanupRef.current = null;
     placementLayerDragStateRef.current = null;
-    setDraggingPlacementLayerNodeId(null);
+    const timeoutId = window.setTimeout(() => {
+      setDraggingPlacementLayerNodeId(null);
+    }, 0);
+    return () => window.clearTimeout(timeoutId);
   }, [furnitureLayerEnabled]);
 
   useEffect(() => {
