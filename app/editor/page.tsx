@@ -8152,10 +8152,10 @@ function EditorPageInner() {
                         type="button"
                         onClick={handleDevRebuildActiveVersion}
                         disabled={isDevSceneRebuildButtonDisabled}
-                        className={`rounded border px-2.5 py-1 text-xs ${
+                        className={`rounded border px-2.5 py-1 text-xs transition ${
                           isDevSceneRebuildButtonDisabled
                             ? "cursor-not-allowed border-neutral-900 bg-neutral-950 text-neutral-600"
-                            : "border-amber-700/70 bg-amber-950/30 text-amber-200 hover:bg-amber-900/40"
+                            : "border-sky-300/40 bg-gradient-to-b from-sky-400/20 to-blue-500/20 text-sky-50 shadow-[0_0_16px_rgba(56,189,248,0.24)] hover:border-sky-200/70 hover:from-sky-300/30 hover:to-blue-500/30 hover:shadow-[0_0_22px_rgba(56,189,248,0.38)]"
                         }`}
                       >
                         {isDevSceneRebuildRunning ? "Updating..." : "Update Room"}
