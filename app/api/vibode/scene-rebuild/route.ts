@@ -914,9 +914,12 @@ async function createModelVisionInferredPlacements(args: {
   }
 
   for (const candidate of args.candidates) {
+    const sourceImageUrl = candidate.sourceImageUrl;
+    const isDuplicateSourceImage =
+      sourceImageUrl !== null && existingSourceImageUrls.has(sourceImageUrl);
     if (
       (candidate.furnitureId && existingFurnitureIds.has(candidate.furnitureId)) ||
-      existingSourceImageUrls.has(candidate.sourceImageUrl)
+      isDuplicateSourceImage
     ) {
       diagnostics.skipped_duplicate_count += 1;
       continue;
