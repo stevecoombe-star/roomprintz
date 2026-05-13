@@ -4,6 +4,8 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import { buildSceneRebuildPayload, type SceneRebuildPayload } from "@/lib/vibodeSceneState";
 import { finalizeVibodeOutputAsset } from "@/lib/vibodeAssetFinalization";
 import { callCompositorVibodeCompose, type VibodeComposePlacement } from "@/lib/callCompositorVibodeCompose";
+import { resolveRoomReadModelVersion } from "@/lib/vibodeRoomReadModelVersion";
+import type { DetectedRoomObjectLabel } from "@/lib/vibodeRoomObjectLabels";
 import {
   createVibodeGenerationRun,
   getVibodeRoomById,
@@ -31,6 +33,8 @@ type SceneRebuildRequest = {
   aspectRatio?: unknown;
   activate?: unknown;
   triggerMode?: unknown;
+  placementIntent?: unknown;
+  modelDecidedFurnitureCandidates?: unknown;
 };
 
 type StageRoomRequest = {
@@ -42,6 +46,13 @@ type StageRoomRequest = {
   isContinuation?: boolean;
   prompt?: string;
   instruction?: string;
+  referenceImageUrls?: string[];
+  referenceImageBase64s?: string[];
+  referenceImages?: Array<{
+    imageBase64: string;
+    mimeType?: string;
+    sourceUrl?: string;
+  }>;
 };
 
 type SceneRebuildReferenceImageResult = {
@@ -49,7 +60,46 @@ type SceneRebuildReferenceImageResult = {
   usedPlacementCount: number;
 };
 
-type SceneRebuildTriggerMode = "manual_test";
+type SceneRebuildTriggerMode = "manual_test" | "model_decided_auto_place";
+
+type PlacementIntent = "user_directed" | "model_decided";
+
+type ModelDecidedFurnitureCandidate = {
+  furnitureId: string | null;
+  skuId: string | null;
+  label: string | null;
+  sourceImageUrl: string | null;
+  sourceImagePath: string | null;
+  thumbnailUrl: string | null;
+  thumbnailPath: string | null;
+  placementSource: "clipboard" | "product_url" | "swap" | "my_furniture";
+};
+
+type RoomObjectWithGeometry = DetectedRoomObjectLabel & {
+  centerX?: number;
+  centerY?: number;
+};
+
+type InferenceMatcherDiagnostics = {
+  submitted_candidate_count: number;
+  detected_object_count: number;
+  assigned_inferred_marker_count: number;
+  category_matched_assignment_count: number;
+  uncategorized_fallback_assignment_count: number;
+  skipped_no_category_count: number;
+  skipped_no_match_count: number;
+  skipped_duplicate_count: number;
+  skipped_invalid_geometry_count: number;
+  skipped_low_confidence_count: number;
+  candidate_categories: string[];
+  detected_categories: string[];
+  skipped_no_category_candidates: Array<{
+    label: string | null;
+    sku_id: string | null;
+    normalized_text: string;
+    reason: string;
+  }>;
+};
 
 type RequestedVersionAssetRow = {
   id: string;
@@ -127,15 +177,62 @@ function parseTriggerMode(value: unknown): SceneRebuildTriggerMode {
   const mode = safeStr(value);
   if (!mode) {
     throw new SceneRebuildError("Invalid triggerMode: expected 'manual_test'.", 400, {
-      allowedTriggerModes: ["manual_test"],
+      allowedTriggerModes: ["manual_test", "model_decided_auto_place"],
     });
   }
-  if (mode !== "manual_test") {
+  if (mode !== "manual_test" && mode !== "model_decided_auto_place") {
     throw new SceneRebuildError(`Unsupported triggerMode: '${mode}'.`, 400, {
-      allowedTriggerModes: ["manual_test"],
+      allowedTriggerModes: ["manual_test", "model_decided_auto_place"],
     });
   }
   return mode;
+}
+
+function parsePlacementIntent(value: unknown): PlacementIntent {
+  if (value === "model_decided") return "model_decided";
+  return "user_directed";
+}
+
+function parseModelDecidedCandidate(value: unknown): ModelDecidedFurnitureCandidate | null {
+  if (!isRecord(value)) return null;
+  const placementSourceRaw = safeStr(value.placementSource);
+  const placementSource =
+    placementSourceRaw === "clipboard" ||
+    placementSourceRaw === "product_url" ||
+    placementSourceRaw === "swap" ||
+    placementSourceRaw === "my_furniture"
+      ? placementSourceRaw
+      : null;
+  const sourceImageUrl = safeStr(value.sourceImageUrl);
+  if (!placementSource || !sourceImageUrl) return null;
+  return {
+    furnitureId: safeStr(value.furnitureId),
+    skuId: safeStr(value.skuId),
+    label: safeStr(value.label),
+    sourceImageUrl,
+    sourceImagePath: safeStr(value.sourceImagePath),
+    thumbnailUrl: safeStr(value.thumbnailUrl),
+    thumbnailPath: safeStr(value.thumbnailPath),
+    placementSource,
+  };
+}
+
+function parseModelDecidedFurnitureCandidates(value: unknown): ModelDecidedFurnitureCandidate[] {
+  if (!Array.isArray(value)) return [];
+  const deduped = new Map<string, ModelDecidedFurnitureCandidate>();
+  for (const raw of value) {
+    const parsed = parseModelDecidedCandidate(raw);
+    if (!parsed) continue;
+    const key = [
+      parsed.furnitureId ?? "",
+      parsed.skuId ?? "",
+      parsed.sourceImageUrl ?? "",
+      parsed.label ?? "",
+    ].join("::");
+    if (deduped.has(key)) continue;
+    deduped.set(key, parsed);
+  }
+  return [...deduped.values()];
 }
 
 function isLikelyExpiringSignedUrl(url: string) {
@@ -514,12 +611,474 @@ async function inheritPlacementSnapshotForRebuildOutput(args: {
   return { copiedCount, skippedCount, sourceCount };
 }
 
-function buildSceneRebuildPrompt(payload: SceneRebuildPayload): string {
+function normalizeCandidateCategoryText(parts: Array<string | null | undefined>): string {
+  const joined = parts.filter((part): part is string => typeof part === "string" && part.trim().length > 0).join(" ");
+  if (!joined) return "";
+  return joined
+    .toLowerCase()
+    .replace(/['’`"]/g, " ")
+    .replace(/[_/\\|+.,:;()[\]{}!?-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function singularizeToken(token: string): string {
+  if (token.length <= 3) return token;
+  if (token.endsWith("ies") && token.length > 4) return `${token.slice(0, -3)}y`;
+  if (token.endsWith("es") && token.length > 4) return token.slice(0, -2);
+  if (token.endsWith("s") && !token.endsWith("ss")) return token.slice(0, -1);
+  return token;
+}
+
+function expandCategoryTokens(text: string): string {
+  if (!text) return "";
+  const tokens = text.split(" ").filter(Boolean);
+  const expandedTokens = new Set<string>(tokens);
+  for (const token of tokens) {
+    expandedTokens.add(singularizeToken(token));
+  }
+  return [...expandedTokens].join(" ");
+}
+
+function hasCategoryTerm(text: string, term: string): boolean {
+  const normalizedTerm = term.trim().toLowerCase().replace(/\s+/g, "\\s+");
+  if (!normalizedTerm) return false;
+  const pattern = new RegExp(`\\b${normalizedTerm}\\b`);
+  return pattern.test(text);
+}
+
+function hasAnyCategoryTerm(text: string, terms: string[]): boolean {
+  return terms.some((term) => hasCategoryTerm(text, term));
+}
+
+function inferCandidateCategory(candidate: ModelDecidedFurnitureCandidate): {
+  category: string | null;
+  normalizedText: string;
+  reason: string;
+} {
+  const normalizedText = normalizeCandidateCategoryText([candidate.label, candidate.skuId]);
+  if (!normalizedText) {
+    return { category: null, normalizedText, reason: "empty_label_and_sku" };
+  }
+
+  const expandedText = expandCategoryTokens(normalizedText);
+
+  const chairTerms = [
+    "chair",
+    "dining chair",
+    "accent chair",
+    "lounge chair",
+    "armchair",
+    "office chair",
+    "desk chair",
+    "side chair",
+    "recliner",
+  ];
+  if (hasAnyCategoryTerm(expandedText, chairTerms)) {
+    return { category: "chair", normalizedText, reason: "matched_chair_terms" };
+  }
+
+  const sofaTerms = ["sofa", "couch", "sectional", "loveseat", "chaise", "sleeper sofa"];
+  if (hasAnyCategoryTerm(expandedText, sofaTerms)) {
+    return { category: "sofa", normalizedText, reason: "matched_sofa_terms" };
+  }
+
+  const tableTerms = [
+    "table",
+    "coffee table",
+    "dining table",
+    "side table",
+    "end table",
+    "console table",
+    "desk",
+    "nightstand",
+    "bedside table",
+  ];
+  if (hasAnyCategoryTerm(expandedText, tableTerms)) {
+    return { category: "table", normalizedText, reason: "matched_table_terms" };
+  }
+
+  const storageTerms = [
+    "dresser",
+    "cabinet",
+    "credenza",
+    "sideboard",
+    "media console",
+    "bookshelf",
+    "shelving",
+    "storage",
+  ];
+  if (hasAnyCategoryTerm(expandedText, storageTerms)) {
+    return { category: "storage", normalizedText, reason: "matched_storage_terms" };
+  }
+
+  const bedTerms = ["bed", "headboard"];
+  if (hasAnyCategoryTerm(expandedText, bedTerms)) {
+    return { category: "bed", normalizedText, reason: "matched_bed_terms" };
+  }
+
+  const lightingTerms = ["lamp", "floor lamp", "table lamp", "pendant light", "lighting"];
+  if (hasAnyCategoryTerm(expandedText, lightingTerms)) {
+    return { category: "lamp", normalizedText, reason: "matched_lighting_terms" };
+  }
+
+  const rugTerms = ["rug", "carpet", "runner"];
+  if (hasAnyCategoryTerm(expandedText, rugTerms)) {
+    return { category: "rug", normalizedText, reason: "matched_rug_terms" };
+  }
+
+  return { category: null, normalizedText, reason: "no_supported_category_match" };
+}
+
+function inferDetectedCategory(label: string): string | null {
+  const normalized = label.toLowerCase();
+  if (normalized === "chair") return "chair";
+  if (normalized === "sofa") return "sofa";
+  if (normalized.includes("table")) return "table";
+  if (normalized === "lamp") return "lamp";
+  if (normalized === "rug") return "rug";
+  if (normalized === "bed") return "bed";
+  if (
+    normalized === "dresser" ||
+    normalized === "cabinet" ||
+    normalized === "bookshelf" ||
+    normalized === "tv stand"
+  ) {
+    return "storage";
+  }
+  return null;
+}
+
+function hasGeometry(objectLabel: RoomObjectWithGeometry): objectLabel is RoomObjectWithGeometry & {
+  centerX: number;
+  centerY: number;
+} {
+  return (
+    typeof objectLabel.centerX === "number" &&
+    Number.isFinite(objectLabel.centerX) &&
+    objectLabel.centerX >= 0 &&
+    objectLabel.centerX <= 1 &&
+    typeof objectLabel.centerY === "number" &&
+    Number.isFinite(objectLabel.centerY) &&
+    objectLabel.centerY >= 0 &&
+    objectLabel.centerY <= 1
+  );
+}
+
+async function fetchRoomObjectsForInference(args: {
+  req: NextRequest;
+  token: string;
+  roomId: string;
+  assetId: string;
+  imageUrl: string;
+  modelVersion: string;
+}): Promise<RoomObjectWithGeometry[]> {
+  const roomReadModelVersion = resolveRoomReadModelVersion(args.modelVersion);
+  const endpoint = new URL("/api/vibode/room-image-objects", args.req.nextUrl.origin).toString();
+  const res = await fetch(endpoint, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      authorization: `Bearer ${args.token}`,
+    },
+    body: JSON.stringify({
+      imageUrl: args.imageUrl,
+      roomId: args.roomId,
+      assetId: args.assetId,
+      versionId: args.assetId,
+      allowRoomReadOnMiss: true,
+      modelVersion: roomReadModelVersion,
+      mode: "geometry",
+    }),
+    signal: args.req.signal,
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new SceneRebuildError("Failed to fetch room object geometry for inferred markers.", 502, {
+      upstreamStatus: res.status,
+      upstreamBody: text || null,
+    });
+  }
+  const payload = (await res.json().catch(() => ({}))) as { objects?: unknown };
+  const objects = Array.isArray(payload.objects) ? payload.objects : [];
+  return objects.filter(isRecord) as RoomObjectWithGeometry[];
+}
+
+async function createModelVisionInferredPlacements(args: {
+  supabase: AnySupabaseClient;
+  roomId: string;
+  userId: string;
+  outputVersionId: string;
+  candidates: ModelDecidedFurnitureCandidate[];
+  detectedObjects: RoomObjectWithGeometry[];
+}): Promise<{ inferredPlacementCount: number; diagnostics: InferenceMatcherDiagnostics }> {
+  const MIN_CONFIDENCE = 0.65;
+  const diagnostics: InferenceMatcherDiagnostics = {
+    submitted_candidate_count: args.candidates.length,
+    detected_object_count: args.detectedObjects.length,
+    assigned_inferred_marker_count: 0,
+    category_matched_assignment_count: 0,
+    uncategorized_fallback_assignment_count: 0,
+    skipped_no_category_count: 0,
+    skipped_no_match_count: 0,
+    skipped_duplicate_count: 0,
+    skipped_invalid_geometry_count: 0,
+    skipped_low_confidence_count: 0,
+    candidate_categories: [],
+    detected_categories: [],
+    skipped_no_category_candidates: [],
+  };
+  if (args.candidates.length === 0 || args.detectedObjects.length === 0) {
+    return { inferredPlacementCount: 0, diagnostics };
+  }
+  const { data: existingRows, error: existingRowsErr } = await args.supabase
+    .from("room_furniture_placements")
+    .select("furniture_id, source_image_url, x, y")
+    .eq("user_id", args.userId)
+    .eq("room_id", args.roomId)
+    .eq("version_id", args.outputVersionId);
+  if (existingRowsErr) {
+    throw new SceneRebuildError("Failed to load existing placements for inferred-marker dedupe.", 500, {
+      supabaseError: existingRowsErr.message,
+      outputVersionId: args.outputVersionId,
+    });
+  }
+  const existingFurnitureIds = new Set<string>();
+  const existingSourceImageUrls = new Set<string>();
+  const existingPlacementPositions: Array<{ x: number; y: number }> = [];
+  for (const row of (existingRows ?? []) as Array<{
+    furniture_id?: unknown;
+    source_image_url?: unknown;
+    x?: unknown;
+    y?: unknown;
+  }>) {
+    const furnitureId = safeStr(row.furniture_id);
+    const sourceImageUrl = safeStr(row.source_image_url);
+    const x = finiteNumber(row.x) ? row.x : null;
+    const y = finiteNumber(row.y) ? row.y : null;
+    if (furnitureId) existingFurnitureIds.add(furnitureId);
+    if (sourceImageUrl) existingSourceImageUrls.add(sourceImageUrl);
+    if (x !== null && y !== null) existingPlacementPositions.push({ x, y });
+  }
+  const insertRows: Record<string, unknown>[] = [];
+  const candidateCategorySet = new Set<string>();
+  const detectedCategorySet = new Set<string>();
+  const consumedDetectedIndexes = new Set<number>();
+  const detectedByCategory = new Map<
+    string,
+    Array<{ index: number; object: RoomObjectWithGeometry & { centerX: number; centerY: number } }>
+  >();
+  const allDetectedWithGeometry: Array<{
+    index: number;
+    object: RoomObjectWithGeometry & { centerX: number; centerY: number };
+    category: string | null;
+  }> = [];
+
+  for (const [index, detected] of args.detectedObjects.entries()) {
+    if (!hasGeometry(detected)) {
+      diagnostics.skipped_invalid_geometry_count += 1;
+      continue;
+    }
+    if (!(typeof detected.confidence === "number" && detected.confidence >= MIN_CONFIDENCE)) {
+      diagnostics.skipped_low_confidence_count += 1;
+    }
+    const detectedCategory = inferDetectedCategory(detected.label);
+    if (detectedCategory) {
+      detectedCategorySet.add(detectedCategory);
+      if (typeof detected.confidence === "number" && detected.confidence >= MIN_CONFIDENCE) {
+        const bucket = detectedByCategory.get(detectedCategory) ?? [];
+        bucket.push({ index, object: detected });
+        detectedByCategory.set(detectedCategory, bucket);
+      }
+    }
+    allDetectedWithGeometry.push({ index, object: detected, category: detectedCategory });
+  }
+  for (const bucket of detectedByCategory.values()) {
+    bucket.sort((left, right) => (right.object.confidence ?? 0) - (left.object.confidence ?? 0));
+  }
+  allDetectedWithGeometry.sort((left, right) => (right.object.confidence ?? 0) - (left.object.confidence ?? 0));
+
+  const uncategorizedCandidates: Array<{
+    candidate: ModelDecidedFurnitureCandidate;
+    normalizedText: string;
+    reason: string;
+  }> = [];
+
+  function isNearExistingPlacement(x: number, y: number): boolean {
+    const MAX_DISTANCE = 0.08;
+    return existingPlacementPositions.some((position) => {
+      const dx = position.x - x;
+      const dy = position.y - y;
+      return Math.sqrt(dx * dx + dy * dy) <= MAX_DISTANCE;
+    });
+  }
+
+  for (const candidate of args.candidates) {
+    if (
+      (candidate.furnitureId && existingFurnitureIds.has(candidate.furnitureId)) ||
+      existingSourceImageUrls.has(candidate.sourceImageUrl)
+    ) {
+      diagnostics.skipped_duplicate_count += 1;
+      continue;
+    }
+    const candidateCategoryResult = inferCandidateCategory(candidate);
+    const candidateCategory = candidateCategoryResult.category;
+    if (!candidateCategory) {
+      uncategorizedCandidates.push({
+        candidate,
+        normalizedText: candidateCategoryResult.normalizedText,
+        reason: candidateCategoryResult.reason,
+      });
+      continue;
+    }
+    candidateCategorySet.add(candidateCategory);
+    const categoryDetections = detectedByCategory.get(candidateCategory) ?? [];
+    const assignment = categoryDetections.find((entry) => !consumedDetectedIndexes.has(entry.index));
+    if (!assignment) {
+      diagnostics.skipped_no_match_count += 1;
+      continue;
+    }
+    consumedDetectedIndexes.add(assignment.index);
+    const match = assignment.object;
+    diagnostics.category_matched_assignment_count += 1;
+
+    insertRows.push({
+      user_id: args.userId,
+      room_id: args.roomId,
+      version_id: args.outputVersionId,
+      furniture_id: candidate.furnitureId,
+      thumbnail_url: candidate.thumbnailUrl ?? candidate.sourceImageUrl,
+      thumbnail_path: candidate.thumbnailPath,
+      source_image_url: candidate.sourceImageUrl,
+      source_image_path: candidate.sourceImagePath,
+      x: clampUnit(match.centerX),
+      y: clampUnit(match.centerY),
+      scale: 1,
+      rotation: 0,
+      is_visible: true,
+      metadata: {
+        placementIntent: "model_decided",
+        placementSource: "model_vision_inferred",
+        ownership: "vibode",
+        confidence: typeof match.confidence === "number" ? match.confidence : null,
+      },
+    });
+  }
+
+  for (const uncategorized of uncategorizedCandidates) {
+    const fallbackDetection = allDetectedWithGeometry.find((entry) => {
+      if (consumedDetectedIndexes.has(entry.index)) return false;
+      if (isNearExistingPlacement(entry.object.centerX, entry.object.centerY)) return false;
+      return true;
+    });
+    if (!fallbackDetection) {
+      diagnostics.skipped_no_category_count += 1;
+      diagnostics.skipped_no_category_candidates.push({
+        label: uncategorized.candidate.label,
+        sku_id: uncategorized.candidate.skuId,
+        normalized_text: uncategorized.normalizedText,
+        reason: `${uncategorized.reason}:no_fallback_detection_available`,
+      });
+      continue;
+    }
+    consumedDetectedIndexes.add(fallbackDetection.index);
+    diagnostics.uncategorized_fallback_assignment_count += 1;
+
+    insertRows.push({
+      user_id: args.userId,
+      room_id: args.roomId,
+      version_id: args.outputVersionId,
+      furniture_id: uncategorized.candidate.furnitureId,
+      thumbnail_url: uncategorized.candidate.thumbnailUrl ?? uncategorized.candidate.sourceImageUrl,
+      thumbnail_path: uncategorized.candidate.thumbnailPath,
+      source_image_url: uncategorized.candidate.sourceImageUrl,
+      source_image_path: uncategorized.candidate.sourceImagePath,
+      x: clampUnit(fallbackDetection.object.centerX),
+      y: clampUnit(fallbackDetection.object.centerY),
+      scale: 1,
+      rotation: 0,
+      is_visible: true,
+      metadata: {
+        placementIntent: "model_decided",
+        placementSource: "model_vision_inferred",
+        ownership: "vibode",
+        confidence:
+          typeof fallbackDetection.object.confidence === "number"
+            ? fallbackDetection.object.confidence
+            : 0.5,
+        debug: {
+          inferenceMode: "uncategorized_best_effort",
+        },
+      },
+    });
+  }
+
+  diagnostics.assigned_inferred_marker_count = insertRows.length;
+  diagnostics.candidate_categories = [...candidateCategorySet].sort();
+  diagnostics.detected_categories = [...detectedCategorySet].sort();
+
+  console.info("[vibode/scene-rebuild] inferred marker matcher stats", {
+    candidateCount: diagnostics.submitted_candidate_count,
+    detectedObjectCount: diagnostics.detected_object_count,
+    assignedInferredMarkerCount: diagnostics.assigned_inferred_marker_count,
+    skippedNoCategoryCount: diagnostics.skipped_no_category_count,
+    skippedNoMatchCount: diagnostics.skipped_no_match_count,
+    skippedDuplicateCount: diagnostics.skipped_duplicate_count,
+    skippedInvalidGeometryCount: diagnostics.skipped_invalid_geometry_count,
+    skippedLowConfidenceCount: diagnostics.skipped_low_confidence_count,
+    categoryMatchedAssignmentCount: diagnostics.category_matched_assignment_count,
+    uncategorizedFallbackAssignmentCount: diagnostics.uncategorized_fallback_assignment_count,
+  });
+
+  if (insertRows.length === 0) return { inferredPlacementCount: 0, diagnostics };
+  const { error } = await args.supabase.from("room_furniture_placements").insert(insertRows);
+  if (error) {
+    console.warn("[vibode/scene-rebuild] failed to persist inferred model-decided placement markers", {
+      supabaseError: error.message,
+      attemptedInsertCount: insertRows.length,
+      outputVersionId: args.outputVersionId,
+    });
+    return { inferredPlacementCount: 0, diagnostics };
+  }
+  return { inferredPlacementCount: insertRows.length, diagnostics };
+}
+
+function buildSceneRebuildPrompt(args: {
+  payload: SceneRebuildPayload;
+  placementIntent: PlacementIntent;
+  modelDecidedFurnitureCandidates: ModelDecidedFurnitureCandidate[];
+  modelDecidedReferenceImageUrls: string[];
+}): string {
+  const payload = args.payload;
   const lines: string[] = [];
   lines.push("Rebuild this room image from the original base room photo.");
   lines.push(
     "Preserve room architecture, camera, lighting, colors, and background details as closely as possible."
   );
+  if (args.placementIntent === "model_decided") {
+    lines.push("Keep existing room contents stable unless required by listed candidate furniture.");
+    lines.push("Choose realistic positions for candidate furniture using room context.");
+    lines.push("You must place each listed candidate furniture item into the scene.");
+    lines.push("Do not ignore candidate references.");
+    lines.push("Candidate furniture to place (no fixed coordinates, use provided references):");
+    for (const [index, candidate] of args.modelDecidedFurnitureCandidates.entries()) {
+      const label = candidate.label ?? candidate.skuId ?? candidate.furnitureId ?? `candidate_${index + 1}`;
+      lines.push(`- item=${label} referenceImageUrl=${safeStr(candidate.sourceImageUrl) ?? "none"}`);
+      if (index >= 79) {
+        lines.push(
+          `- ... ${args.modelDecidedFurnitureCandidates.length - 80} more candidates omitted`
+        );
+        break;
+      }
+    }
+    if (args.modelDecidedReferenceImageUrls.length > 0) {
+      lines.push("Reference image URLs:");
+      for (const [index, ref] of args.modelDecidedReferenceImageUrls.entries()) {
+        lines.push(`- ref_${index + 1}=${ref}`);
+      }
+    }
+    return lines.join("\n");
+  }
   lines.push("Place only the listed furniture items using approximate normalized positions and size cues.");
   lines.push("Do not add extra furniture or decor that is not listed.");
   lines.push("Normalized placement intent (0-1 coordinates):");
@@ -541,6 +1100,8 @@ async function callSceneRebuildModel(args: {
   prompt: string;
   modelVersion: string;
   aspectRatio: StageRoomRequest["aspectRatio"];
+  placementIntent: PlacementIntent;
+  modelDecidedReferenceImageUrls?: string[];
   signal?: AbortSignal;
 }): Promise<string> {
   const endpoint = process.env.NANOBANANA_PRO_URL;
@@ -553,6 +1114,23 @@ async function callSceneRebuildModel(args: {
   }
 
   const imageBase64 = await fetchImageAsBase64(args.baseImageUrl, args.signal);
+  const referenceImages: Array<{ imageBase64: string; mimeType?: string; sourceUrl?: string }> = [];
+  for (const url of args.modelDecidedReferenceImageUrls ?? []) {
+    if (referenceImages.length >= 8) break;
+    try {
+      const res = await fetch(url, { signal: args.signal });
+      if (!res.ok) continue;
+      const mimeType = safeStr(res.headers.get("content-type")) ?? "image/jpeg";
+      const buf = Buffer.from(await res.arrayBuffer());
+      referenceImages.push({
+        imageBase64: buf.toString("base64"),
+        mimeType,
+        sourceUrl: url,
+      });
+    } catch {
+      // Best-effort only: missing candidate refs should not fail generation.
+    }
+  }
   const body: StageRoomRequest = {
     imageBase64,
     styleId: null,
@@ -562,7 +1140,53 @@ async function callSceneRebuildModel(args: {
     isContinuation: false,
     prompt: args.prompt,
     instruction: args.prompt,
+    ...(Array.isArray(args.modelDecidedReferenceImageUrls) &&
+    args.modelDecidedReferenceImageUrls.length > 0
+      ? { referenceImageUrls: args.modelDecidedReferenceImageUrls }
+      : {}),
+    ...(referenceImages.length > 0
+      ? {
+          referenceImageBase64s: referenceImages.map((item) => item.imageBase64),
+          referenceImages,
+        }
+      : {}),
   };
+
+  console.info("[vibode/scene-rebuild] model payload prepared", {
+    placementIntent: args.placementIntent,
+    modelInputImageUrlPresent: safeStr(args.baseImageUrl) !== null,
+    promptCandidateLineCount: (args.prompt.match(/referenceImageUrl=/g) ?? []).length,
+    modelVersion: args.modelVersion,
+    referenceImageUrlCount: args.modelDecidedReferenceImageUrls?.length ?? 0,
+    embeddedReferenceImageCount: referenceImages.length,
+  });
+  console.info("[vibode/scene-rebuild] outbound payload debug", {
+    placementIntent: args.placementIntent,
+    modelInputImageUrlPresent: safeStr(args.baseImageUrl) !== null,
+    promptIncludesCandidates: args.prompt.includes("Candidate furniture to place"),
+    promptCandidateLineCount: (args.prompt.match(/referenceImageUrl=/g) ?? []).length,
+    referenceImageUrlsCount: Array.isArray(body.referenceImageUrls) ? body.referenceImageUrls.length : 0,
+    referenceImageBase64sCount: Array.isArray(body.referenceImageBase64s)
+      ? body.referenceImageBase64s.length
+      : 0,
+    referenceImagesCount: Array.isArray(body.referenceImages) ? body.referenceImages.length : 0,
+    firstReferenceImage:
+      Array.isArray(body.referenceImages) && body.referenceImages.length > 0
+        ? {
+            hasImageBase64:
+              typeof body.referenceImages[0]?.imageBase64 === "string" &&
+              body.referenceImages[0].imageBase64.length > 0,
+            mimeType: body.referenceImages[0]?.mimeType ?? null,
+            sourceUrlPresent:
+              typeof body.referenceImages[0]?.sourceUrl === "string" &&
+              body.referenceImages[0].sourceUrl.length > 0,
+            imageBase64Length:
+              typeof body.referenceImages[0]?.imageBase64 === "string"
+                ? body.referenceImages[0].imageBase64.length
+                : 0,
+          }
+        : null,
+  });
 
   const res = await fetch(endpoint, {
     method: "POST",
@@ -659,6 +1283,20 @@ export async function POST(req: NextRequest) {
     const aspectRatio = parseAspectRatio(body.aspectRatio);
     const activate = parseOptionalBoolean(body.activate) ?? false;
     const triggerMode = parseTriggerMode(body.triggerMode);
+    const placementIntent = parsePlacementIntent(body.placementIntent);
+    const modelDecidedFurnitureCandidates = parseModelDecidedFurnitureCandidates(
+      body.modelDecidedFurnitureCandidates
+    );
+    const modelDecidedReferenceImageUrls =
+      placementIntent === "model_decided"
+        ? Array.from(
+            new Set(
+              modelDecidedFurnitureCandidates
+                .map((candidate) => safeStr(candidate.sourceImageUrl))
+                .filter((url): url is string => Boolean(url))
+            )
+          ).slice(0, 24)
+        : [];
 
     if (!roomId) {
       return NextResponse.json({ error: "Missing required field: roomId." }, { status: 400 });
@@ -705,30 +1343,56 @@ export async function POST(req: NextRequest) {
         { status: 409 }
       );
     }
-    if (payload.placementCount === 0) {
+    if (placementIntent !== "model_decided" && payload.placementCount === 0) {
       return NextResponse.json(
         { error: "No resolved placements found for requested version." },
         { status: 400 }
       );
     }
-
-    const prompt = buildSceneRebuildPrompt(payload);
-    const referenceImage = await runComposeStageWithTimeout(req.signal, (composeSignal) =>
-      buildSceneRebuildReferenceImage({
-        baseImageUrl: payload.room.baseImageUrl,
-        payload,
-        modelVersion,
-        aspectRatio,
-        signal: composeSignal,
-      })
-    );
-    const modelInputImageUrl = referenceImage.imageUrl;
-    const referencePlacementCountUsed = referenceImage.usedPlacementCount;
-    if (referencePlacementCountUsed <= 0) {
-      throw new SceneRebuildError(
-        "Scene rebuild reference composition must include at least one placement.",
-        422
+    if (placementIntent === "model_decided" && modelDecidedFurnitureCandidates.length === 0) {
+      return NextResponse.json(
+        { error: "Model-decided rebuild requires at least one furniture candidate." },
+        { status: 400 }
       );
+    }
+
+    const prompt = buildSceneRebuildPrompt({
+      payload,
+      placementIntent,
+      modelDecidedFurnitureCandidates,
+      modelDecidedReferenceImageUrls,
+    });
+    let modelInputImageUrl = payload.room.baseImageUrl;
+    let referencePlacementCountUsed = 0;
+    if (payload.placementCount > 0) {
+      try {
+        const referenceImage = await runComposeStageWithTimeout(req.signal, (composeSignal) =>
+          buildSceneRebuildReferenceImage({
+            baseImageUrl: payload.room.baseImageUrl,
+            payload,
+            modelVersion,
+            aspectRatio,
+            signal: composeSignal,
+          })
+        );
+        modelInputImageUrl = referenceImage.imageUrl;
+        referencePlacementCountUsed = referenceImage.usedPlacementCount;
+        if (placementIntent !== "model_decided" && referencePlacementCountUsed <= 0) {
+          throw new SceneRebuildError(
+            "Scene rebuild reference composition must include at least one placement.",
+            422
+          );
+        }
+      } catch (err) {
+        if (placementIntent !== "model_decided") {
+          throw err;
+        }
+        console.warn("[vibode/scene-rebuild] model_decided compose fallback to base image", {
+          error: err instanceof Error ? err.message : String(err),
+          roomId: room.id,
+          versionId,
+        });
+      }
     }
 
     const generatedImageUrl = await callSceneRebuildModel({
@@ -736,6 +1400,8 @@ export async function POST(req: NextRequest) {
       prompt,
       modelVersion,
       aspectRatio,
+      placementIntent,
+      modelDecidedReferenceImageUrls,
       signal: req.signal,
     });
 
@@ -776,6 +1442,52 @@ export async function POST(req: NextRequest) {
       outputVersionId: outputFinalization.outputAssetId,
     });
 
+    let inferredPlacementCount = 0;
+    let inferenceMatcherDiagnostics: InferenceMatcherDiagnostics = {
+      submitted_candidate_count: modelDecidedFurnitureCandidates.length,
+      detected_object_count: 0,
+      assigned_inferred_marker_count: 0,
+      category_matched_assignment_count: 0,
+      uncategorized_fallback_assignment_count: 0,
+      skipped_no_category_count: 0,
+      skipped_no_match_count: 0,
+      skipped_duplicate_count: 0,
+      skipped_invalid_geometry_count: 0,
+      skipped_low_confidence_count: 0,
+      candidate_categories: [],
+      detected_categories: [],
+      skipped_no_category_candidates: [],
+    };
+    if (placementIntent === "model_decided") {
+      try {
+        const roomObjects = await fetchRoomObjectsForInference({
+          req,
+          token,
+          roomId: room.id,
+          assetId: outputFinalization.outputAssetId,
+          imageUrl: outputFinalization.imageUrl ?? generatedImageUrl,
+          modelVersion,
+        });
+        const inferenceResult = await createModelVisionInferredPlacements({
+          supabase,
+          roomId: room.id,
+          userId,
+          outputVersionId: outputFinalization.outputAssetId,
+          candidates: modelDecidedFurnitureCandidates,
+          detectedObjects: roomObjects,
+        });
+        inferredPlacementCount = inferenceResult.inferredPlacementCount;
+        inferenceMatcherDiagnostics = inferenceResult.diagnostics;
+      } catch (err) {
+        console.warn("[vibode/scene-rebuild] model-decided inferred marker creation skipped", {
+          roomId: room.id,
+          outputVersionId: outputFinalization.outputAssetId,
+          error: err instanceof Error ? err.message : String(err),
+        });
+        inferredPlacementCount = 0;
+      }
+    }
+
     console.info("[vibode/scene-rebuild] activation requested", {
       sourceVersionId: versionId,
       outputVersionId: outputFinalization.outputAssetId,
@@ -814,9 +1526,15 @@ export async function POST(req: NextRequest) {
     const rebuildMetadata = {
       generation_mode: "scene_rebuild",
       trigger_mode: triggerMode,
+      placement_intent: placementIntent,
       source_version_id: versionId,
       base_version_id: payload.room.baseVersionId,
       placement_count: payload.placementCount,
+      model_decided_candidate_count:
+        placementIntent === "model_decided" ? modelDecidedFurnitureCandidates.length : 0,
+      inferred_placement_count: inferredPlacementCount,
+      inference_matcher_diagnostics:
+        placementIntent === "model_decided" ? inferenceMatcherDiagnostics : undefined,
       reference_image_mode: referencePlacementCountUsed > 0 ? "composite" : "base_only",
       reference_placement_count: referencePlacementCountUsed,
       fallback_image_url_used: payload.room.fallbackImageUrlUsed,
@@ -841,11 +1559,17 @@ export async function POST(req: NextRequest) {
         source_version_id: versionId,
         generation_mode: "scene_rebuild",
         trigger_mode: triggerMode,
+        placement_intent: placementIntent,
         base_image_url: payload.room.baseImageUrl,
         model_input_image_url: modelInputImageUrl,
         base_version_id: payload.room.baseVersionId,
         lineage_version_ids: payload.lineageVersionIds,
         placement_count: payload.placementCount,
+        model_decided_candidate_count:
+          placementIntent === "model_decided" ? modelDecidedFurnitureCandidates.length : 0,
+        inferred_placement_count: inferredPlacementCount,
+        inference_matcher_diagnostics:
+          placementIntent === "model_decided" ? inferenceMatcherDiagnostics : undefined,
         reference_placement_count: referencePlacementCountUsed,
         fallback_image_url_used: payload.room.fallbackImageUrlUsed,
         prompt_preview: prompt.slice(0, 1000),
@@ -855,6 +1579,9 @@ export async function POST(req: NextRequest) {
         storageBucket: outputFinalization.storageBucket,
         storagePath: outputFinalization.storagePath,
         generation_mode: "scene_rebuild",
+        inferred_placement_count: inferredPlacementCount,
+        inference_matcher_diagnostics:
+          placementIntent === "model_decided" ? inferenceMatcherDiagnostics : undefined,
       },
       completed_at: new Date().toISOString(),
     });
@@ -863,6 +1590,7 @@ export async function POST(req: NextRequest) {
       ok: true,
       generationMode: "scene_rebuild",
       triggerMode,
+      placementIntent,
       roomId: room.id,
       sourceVersionId: versionId,
       outputVersionId: outputFinalization.outputAssetId,
@@ -870,6 +1598,9 @@ export async function POST(req: NextRequest) {
       activated,
       ...(activationError ? { activationError } : {}),
       placementCount: payload.placementCount,
+      modelDecidedCandidateCount:
+        placementIntent === "model_decided" ? modelDecidedFurnitureCandidates.length : 0,
+      inferredPlacementCount,
       referencePlacementCount: referencePlacementCountUsed,
       fallbackImageUrlUsed: payload.room.fallbackImageUrlUsed,
       output: {

@@ -44,6 +44,12 @@ import {
   type NormalizedPlacementStateRow,
   type PlacementStateHashInput,
 } from "@/lib/vibodePlacementState";
+import {
+  defaultUserDirectedPlacementMetadata,
+  normalizePlacementMetadata,
+  type PlacementMetadata,
+  type PlacementSource,
+} from "@/lib/placementMetadata";
 
 import { getSupabaseBrowserAccessToken, supabaseBrowser } from "@/lib/supabaseBrowser";
 import { useTokenBalance } from "@/hooks/useTokenBalance";
@@ -562,8 +568,13 @@ type PlacementLayerNode = {
   scale: number;
   rotation: number;
   isVisible: boolean;
+  metadata: PlacementMetadata;
   createdAt: string;
   updatedAt: string;
+};
+type PlacementLayerDragState = {
+  nodeId: string;
+  startedAsSuggested: boolean;
 };
 type PlacementLayerListResponse = {
   nodes?: unknown;
@@ -574,6 +585,16 @@ type PlacementLayerRevertResponse = {
 type PlacementLayerCreateResponse = {
   node?: unknown;
   deduped?: boolean;
+};
+type ModelDecidedFurnitureCandidatePayload = {
+  furnitureId: string | null;
+  skuId: string | null;
+  label: string | null;
+  sourceImageUrl: string | null;
+  sourceImagePath: string | null;
+  thumbnailUrl: string | null;
+  thumbnailPath: string | null;
+  placementSource: "clipboard" | "product_url" | "swap" | "my_furniture";
 };
 type SceneRenderStateMetadata = {
   renderedPlacementStateHash?: unknown;
@@ -1297,6 +1318,10 @@ function normalizePlacementLayerNode(value: unknown): PlacementLayerNode | null 
     scale,
     rotation,
     isVisible: typeof value.is_visible === "boolean" ? value.is_visible : value.isVisible !== false,
+    metadata: normalizePlacementMetadata(
+      value.metadata,
+      defaultUserDirectedPlacementMetadata()
+    ),
     createdAt,
     updatedAt,
   };
@@ -2151,6 +2176,9 @@ function EditorPageInner() {
     []
   );
   const [placementLayerNodes, setPlacementLayerNodes] = useState<PlacementLayerNode[]>([]);
+  const [placementLayerDragState, setPlacementLayerDragState] = useState<PlacementLayerDragState | null>(
+    null
+  );
   const placementLayerNodesRef = useRef<PlacementLayerNode[]>([]);
   const [isFurnitureLayerEnabled, setIsFurnitureLayerEnabled] = useState(false);
   const toggleFurnitureLayer = useCallback(() => {
@@ -4188,7 +4216,13 @@ function EditorPageInner() {
     isDevSceneRebuildRunning,
   ]);
 
-  const handleDevRebuildActiveVersion = useCallback(async () => {
+  const handleDevRebuildActiveVersion = useCallback(
+    async (options?: {
+      placementIntent?: "user_directed" | "model_decided";
+      modelDecidedFurnitureCandidates?: ModelDecidedFurnitureCandidatePayload[];
+      successMessage?: string;
+      signal?: AbortSignal;
+    }) => {
     if (isDevSceneRebuildRunning) return;
 
     if (!vibodeRoomId || !selectedVersionId) {
@@ -4244,8 +4278,12 @@ function EditorPageInner() {
           roomId: vibodeRoomId,
           versionId: selectedVersionId,
           activate: true,
+          placementIntent: options?.placementIntent ?? "user_directed",
+          modelDecidedFurnitureCandidates: options?.modelDecidedFurnitureCandidates,
+          triggerMode:
+            options?.placementIntent === "model_decided" ? "model_decided_auto_place" : undefined,
         }),
-        signal: controller.signal,
+        signal: options?.signal ?? controller.signal,
       });
       clearSceneRebuildComposeTimers();
       setIsDevSceneRebuildRenderingMessageVisible(false);
@@ -4391,7 +4429,7 @@ function EditorPageInner() {
         }
       }
 
-      const successMessage = "Scene rebuild complete.";
+      const successMessage = options?.successMessage ?? "Scene rebuild complete.";
       setDevSceneRebuildFeedback({ tone: "success", message: successMessage });
       pushSnack(successMessage);
     } catch (err: unknown) {
@@ -4439,7 +4477,8 @@ function EditorPageInner() {
       setIsDevSceneRebuildComposeWarningVisible(false);
       setIsDevSceneRebuildRunning(false);
     }
-  }, [
+    },
+    [
     applyVersionToEditorState,
     clearSceneRebuildAbortController,
     clearSceneRebuildComposeGuardTimers,
@@ -4451,7 +4490,8 @@ function EditorPageInner() {
     selectedVersionId,
     setVersions,
     vibodeRoomId,
-  ]);
+    ]
+  );
 
   const handleRevertPlacementChanges = useCallback(async () => {
     if (isRevertingPlacementChanges) return;
@@ -6523,6 +6563,7 @@ function EditorPageInner() {
       xNorm: number;
       yNorm: number;
       dedupe?: boolean;
+      metadata?: PlacementMetadata;
     }) => {
       const roomId = args.roomId?.trim() ?? null;
       const versionId = args.versionId?.trim() ?? null;
@@ -6536,6 +6577,10 @@ function EditorPageInner() {
       const y = yRaw === null ? null : Math.max(0, Math.min(1, yRaw));
       const operationId = typeof args.operationId === "number" ? args.operationId : null;
       const dedupe = args.dedupe === true;
+      const metadata = normalizePlacementMetadata(
+        args.metadata,
+        defaultUserDirectedPlacementMetadata()
+      );
 
       if (operationId !== null) {
         const opState = placementNodeCreateGuardByOperationRef.current.get(operationId);
@@ -6611,6 +6656,7 @@ function EditorPageInner() {
           rotation: 0,
           isVisible: true,
           dedupe,
+          metadata,
         };
         const res = await fetch("/api/vibode/room-furniture-placements", {
           method: "POST",
@@ -6679,6 +6725,9 @@ function EditorPageInner() {
       prev.map((node) => (node.id === id ? { ...node, x, y } : node))
     );
   }, []);
+  const handlePlacementLayerDragStateChange = useCallback((state: PlacementLayerDragState | null) => {
+    setPlacementLayerDragState(state);
+  }, []);
 
   const persistPlacementLayerNodePosition = useCallback(
     async (args: {
@@ -6701,6 +6750,24 @@ function EditorPageInner() {
         if (!accessToken) {
           throw new Error("missing access token");
         }
+        const currentNode =
+          placementLayerNodesRef.current.find((node) => node.id === id) ?? null;
+        const shouldClaimSuggestedMarker =
+          currentNode?.metadata?.ownership === "vibode" &&
+          currentNode?.metadata?.placementSource === "model_vision_inferred";
+        const patchBody: Record<string, unknown> = {
+          id,
+          x,
+          y,
+        };
+        if (shouldClaimSuggestedMarker) {
+          patchBody.metadata = {
+            placementIntent: "model_decided",
+            placementSource: "user_adjusted",
+            ownership: "user",
+            confidence: 1,
+          };
+        }
         patchAttempted = true;
         const res = await fetch("/api/vibode/room-furniture-placements", {
           method: "PATCH",
@@ -6708,11 +6775,7 @@ function EditorPageInner() {
             "Content-Type": "application/json",
             Authorization: `Bearer ${accessToken}`,
           },
-          body: JSON.stringify({
-            id,
-            x,
-            y,
-          }),
+          body: JSON.stringify(patchBody),
         });
         if (!res.ok) {
           const text = await res.text().catch(() => "");
@@ -6728,10 +6791,61 @@ function EditorPageInner() {
         });
         placementLayerNodesRef.current = nextNodes;
         setPlacementLayerNodes(nextNodes);
-        sceneDirtyLocallyConfirmedRef.current = true;
-        await updateSceneNeedsUpdateFromPlacements(nextNodes, selectedVersionId, {
-          missingRenderedHashMeansDirty: true,
-        });
+        if (shouldClaimSuggestedMarker && selectedVersionId && vibodeRoomId) {
+          let baselineUpdated = false;
+          try {
+            const { renderedPlacementSnapshot, placementStateHash } =
+              await computePlacementStateHashAndSnapshot(nextNodes);
+            const sceneRenderState = {
+              renderedPlacementStateHash: placementStateHash,
+              renderedPlacementSnapshot,
+              renderedAt: new Date().toISOString(),
+              sourceVersionId: selectedVersionId,
+            };
+            const updatedMetadata = await persistSceneRenderStateForVersion({
+              roomId: vibodeRoomId,
+              assetId: selectedVersionId,
+              accessToken,
+              sceneRenderState,
+            });
+            setVersions(
+              versions.map((asset) => {
+                if (asset.id !== selectedVersionId) return asset;
+                return {
+                  ...asset,
+                  metadata:
+                    updatedMetadata ??
+                    {
+                      ...(isRecord(asset.metadata) ? asset.metadata : {}),
+                      sceneRenderState,
+                    },
+                };
+              })
+            );
+            sceneDirtyLocallyConfirmedRef.current = false;
+            setSceneNeedsUpdate(false);
+            setCanRestoreOriginalPlacementPositions(false);
+            baselineUpdated = true;
+          } catch (err: unknown) {
+            console.warn("[placement-layer] failed to persist clean baseline for suggested marker claim", {
+              id,
+              versionId: selectedVersionId,
+              roomId: vibodeRoomId,
+              error: err instanceof Error ? err.message : String(err),
+            });
+          }
+          if (!baselineUpdated) {
+            sceneDirtyLocallyConfirmedRef.current = true;
+            await updateSceneNeedsUpdateFromPlacements(nextNodes, selectedVersionId, {
+              missingRenderedHashMeansDirty: true,
+            });
+          }
+        } else {
+          sceneDirtyLocallyConfirmedRef.current = true;
+          await updateSceneNeedsUpdateFromPlacements(nextNodes, selectedVersionId, {
+            missingRenderedHashMeansDirty: true,
+          });
+        }
       } catch {
         if (patchAttempted) {
           const rolledBackNodes = placementLayerNodesRef.current.map((node) =>
@@ -6756,7 +6870,15 @@ function EditorPageInner() {
         pushSnack("Unable to save furniture marker position.");
       }
     },
-    [pushSnack, selectedVersionId, updateSceneNeedsUpdateFromPlacements]
+    [
+      computePlacementStateHashAndSnapshot,
+      pushSnack,
+      selectedVersionId,
+      setVersions,
+      updateSceneNeedsUpdateFromPlacements,
+      vibodeRoomId,
+      versions,
+    ]
   );
 
   const deletePlacementLayerNode = useCallback(
@@ -6905,6 +7027,15 @@ function EditorPageInner() {
           extractSupabaseStorageObjectPathFromUrl(placementThumbnailUrl);
         const roomIdForPlacement = vibodeRoomId?.trim() ?? null;
         const versionIdForPlacement = activeAssetId?.trim() ?? null;
+        const placementSource: PlacementSource =
+          action === "swap"
+            ? "swap"
+            : sourceForPlacement.type === "product_url"
+            ? "product_url"
+            : sourceForPlacement.type === "my_furniture"
+            ? "my_furniture"
+            : "clipboard";
+        const placementMetadata = defaultUserDirectedPlacementMetadata(placementSource);
 
         await createPlacementLayerNodeAfterPasteCommit({
           operationId,
@@ -6918,6 +7049,7 @@ function EditorPageInner() {
           xNorm,
           yNorm,
           dedupe: true,
+          metadata: placementMetadata,
         });
         if (roomIdForPlacement && versionIdForPlacement) {
           void hydratePlacementLayerNodes({
@@ -7414,6 +7546,68 @@ function EditorPageInner() {
     setActivePasteToPlaceJobControl,
   ]);
 
+  const buildModelDecidedFurnitureCandidates = useCallback(
+    (source: Exclude<ActivePasteSource, null>): ModelDecidedFurnitureCandidatePayload[] => {
+      const placementSource: ModelDecidedFurnitureCandidatePayload["placementSource"] =
+        source.type === "product_url"
+          ? "product_url"
+          : source.type === "my_furniture"
+          ? "my_furniture"
+          : "clipboard";
+      const fallbackSourceImageUrl =
+        (isDurablePlacementSourceImageUrl(source.normalizedPreviewUrl)
+          ? source.normalizedPreviewUrl
+          : null) ??
+        (isDurablePlacementSourceImageUrl(source.rawPreviewUrl) ? source.rawPreviewUrl : null);
+      const eligibleSkus = source.preparedProduct.eligibleSkus ?? [];
+      const candidates: ModelDecidedFurnitureCandidatePayload[] = [];
+      for (const [index, sku] of eligibleSkus.entries()) {
+        const skuImageUrl =
+          sku.variants.find(
+            (variant) => typeof variant?.imageUrl === "string" && variant.imageUrl.trim().length > 0
+          )?.imageUrl ?? null;
+        const sourceImageUrl =
+          (isDurablePlacementSourceImageUrl(skuImageUrl) ? skuImageUrl : null) ??
+          fallbackSourceImageUrl;
+        if (!sourceImageUrl) continue;
+        const furnitureId =
+          source.type === "my_furniture"
+            ? source.furnitureIds[index] ?? source.furnitureId
+            : source.preparedProduct.savedFurnitureId ?? null;
+        candidates.push({
+          furnitureId: furnitureId ?? null,
+          skuId: sku.skuId ?? null,
+          label: sku.label ?? sku.skuId ?? null,
+          sourceImageUrl,
+          sourceImagePath: extractStorageObjectPathFromUnknown(sourceImageUrl),
+          thumbnailUrl: sourceImageUrl,
+          thumbnailPath: extractStorageObjectPathFromUnknown(sourceImageUrl),
+          placementSource,
+        });
+      }
+      if (candidates.length > 0) return candidates;
+      if (!fallbackSourceImageUrl) return [];
+      return [
+        {
+          furnitureId:
+            source.type === "my_furniture"
+              ? source.furnitureId
+              : source.preparedProduct.savedFurnitureId ?? null,
+          skuId: source.skuId,
+          label: source.preparedProduct.skuId ?? source.skuId,
+          sourceImageUrl: fallbackSourceImageUrl,
+          sourceImagePath:
+            source.sourceImagePathHint ?? extractStorageObjectPathFromUnknown(fallbackSourceImageUrl),
+          thumbnailUrl: fallbackSourceImageUrl,
+          thumbnailPath:
+            source.thumbnailPathHint ?? extractStorageObjectPathFromUnknown(fallbackSourceImageUrl),
+          placementSource,
+        },
+      ];
+    },
+    []
+  );
+
   const handlePasteToPlaceAutoPlace = useCallback(async () => {
     if (!pasteToPlaceMenuState) return;
     if (isPasteToPlaceSettling) {
@@ -7458,49 +7652,37 @@ function EditorPageInner() {
       if (prepared.status !== "ready") return;
 
       const sourceForExecution = prepared.source;
-      const targetCount =
-        sourceForExecution.type === "my_furniture" && sourceForExecution.selectionCount > 1
-          ? sourceForExecution.selectionCount
-          : 1;
+      const modelDecidedFurnitureCandidates =
+        buildModelDecidedFurnitureCandidates(sourceForExecution);
+      if (modelDecidedFurnitureCandidates.length === 0) {
+        pushSnack("Couldn't prepare furniture candidates for model-decided placement.");
+        return;
+      }
 
-      if (isOperationStale("auto_place:before_stage_run")) return;
+      if (isOperationStale("auto_place:before_scene_rebuild")) return;
       settlingRequestId = beginPasteToPlaceSettlingRequest();
       setPasteToPlaceStatus("placing");
       const abortController = beginPasteToPlaceAbortController();
-      const res = await runStage(
-        3,
-        {
-          eligibleSkus: sourceForExecution.preparedProduct.eligibleSkus,
-          targetCount,
-        },
-        {
-          beforeCommit: () => !isOperationStale("auto_place:before_commit"),
-          onImageCommitted: () => {
-            if (isOperationStale("auto_place:on_image_committed")) return;
-            setPasteToPlaceStatus(null);
-            clearPasteToPlaceProgressPreview();
-          },
-        },
-        {
-          signal: abortController.signal,
-          suppressAbortError: true,
-          suppressCancellationError: true,
-          pasteToPlaceControl,
-          pasteToPlaceSettlingRequestId: settlingRequestId,
-        }
-      );
+      await handleDevRebuildActiveVersion({
+        placementIntent: "model_decided",
+        modelDecidedFurnitureCandidates,
+        successMessage: "Vibode decided placement.",
+        signal: abortController.signal,
+      });
       clearPasteToPlaceAbortController(abortController);
-      if (isOperationStale("auto_place:after_stage_run")) return;
-      if (!res) {
-        return;
-      }
+      if (isOperationStale("auto_place:after_scene_rebuild")) return;
 
       if (!isDevUnlockPasteToPlace) {
         setHasUsedFreePasteToPlace(true);
       }
     } finally {
       clearPasteToPlaceAbortController();
-      if (!isOperationStale("auto_place:finally")) {
+      clearPasteToPlaceSettlingForRequest(settlingRequestId, "auto_place:finally");
+      const shouldClearUiForThisOperation = isSamePasteToPlaceJobControl(
+        activePasteToPlaceJobControlRef.current,
+        pasteToPlaceControl
+      );
+      if (!isOperationStale("auto_place:finally") || shouldClearUiForThisOperation) {
         setPasteToPlaceStatus(null);
         clearPasteToPlaceProgressPreview();
         clearActivePasteToPlaceJobControlIfMatching(pasteToPlaceControl);
@@ -7509,9 +7691,11 @@ function EditorPageInner() {
       }
     }
   }, [
+    activePasteToPlaceJobControlRef,
     beginPasteToPlacePlacementOperation,
     clearActivePasteToPlaceJobControlIfMatching,
     clearPasteToPlaceProgressPreview,
+    clearPasteToPlaceSettlingForRequest,
     createPasteToPlaceJobControl,
     dismissPasteToPlaceMenu,
     isClipboardPasteToPlaceIngestPending,
@@ -7520,11 +7704,13 @@ function EditorPageInner() {
     isEditRunning,
     isPasteToPlaceOperationActive,
     isPasteToPlaceSettling,
+    isSamePasteToPlaceJobControl,
     pasteToPlaceMenuState,
     pasteToPlaceStatus,
     preparePasteToPlaceProductFromMenu,
     pushSnack,
-    runStage,
+    handleDevRebuildActiveVersion,
+    buildModelDecidedFurnitureCandidates,
     scene.baseImageUrl,
     beginPasteToPlaceAbortController,
     beginPasteToPlaceSettlingRequest,
@@ -8508,6 +8694,9 @@ function EditorPageInner() {
     Boolean(devSceneRebuildMissingReason);
   const canShowRestoreOriginalPlacementPositionsAction =
     !sceneNeedsUpdate && canRestoreOriginalPlacementPositions;
+  const shouldSuppressSceneNeedsUpdateOverlay = Boolean(placementLayerDragState?.startedAsSuggested);
+  const shouldShowSceneNeedsUpdateOverlay =
+    showDevSceneRebuildButton && sceneNeedsUpdate && !shouldSuppressSceneNeedsUpdateOverlay;
   const isRestoreOriginalPlacementPositionsButtonDisabled =
     isRestoringOriginalPlacementPositions ||
     isRevertingPlacementChanges ||
@@ -8851,6 +9040,7 @@ function EditorPageInner() {
                 onMovePlacementLayerNodeLocal={updatePlacementLayerNodePositionLocal}
                 onCommitPlacementLayerNodeMove={persistPlacementLayerNodePosition}
                 onDeletePlacementLayerNode={deletePlacementLayerNode}
+                onPlacementLayerDragStateChange={handlePlacementLayerDragStateChange}
               />
 
               {shouldShowUploadOverlay && (
@@ -8927,7 +9117,7 @@ function EditorPageInner() {
                 </div>
               ) : null}
             </div>
-            {showDevSceneRebuildButton && sceneNeedsUpdate ? (
+            {shouldShowSceneNeedsUpdateOverlay ? (
               <div className="pointer-events-none absolute inset-x-0 bottom-3 z-30 flex justify-center px-3">
                 <div className="pointer-events-auto w-full max-w-[min(92vw,920px)] rounded-xl border border-neutral-500/35 bg-neutral-950/70 px-3 py-2 shadow-[0_10px_30px_rgba(0,0,0,0.35)] backdrop-blur-md">
                   <div className="flex flex-wrap items-center justify-center gap-x-3 gap-y-2 text-center sm:justify-between sm:text-left">
@@ -8962,7 +9152,9 @@ function EditorPageInner() {
                       ) : null}
                       <button
                         type="button"
-                        onClick={handleDevRebuildActiveVersion}
+                        onClick={() => {
+                          void handleDevRebuildActiveVersion();
+                        }}
                         disabled={isDevSceneRebuildButtonDisabled}
                         className={`rounded border px-2.5 py-1 text-xs transition ${
                           isDevSceneRebuildButtonDisabled

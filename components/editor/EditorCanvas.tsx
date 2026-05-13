@@ -55,6 +55,22 @@ type PlacementLayerNode = {
   x: number;
   y: number;
   isVisible?: boolean | null;
+  metadata?: {
+    placementIntent?: "user_directed" | "model_decided";
+    placementSource?:
+      | "clipboard"
+      | "product_url"
+      | "swap"
+      | "my_furniture"
+      | "model_vision_inferred"
+      | "user_adjusted";
+    ownership?: "user" | "vibode";
+    confidence?: number | null;
+  } | null;
+};
+type PlacementLayerDragState = {
+  nodeId: string;
+  startedAsSuggested: boolean;
 };
 const PASTE_TO_PLACE_PROGRESS_COPY: Record<PasteToPlaceStatus, string> = {
   reading: "Reading copied image...",
@@ -310,6 +326,7 @@ export function EditorCanvas({
   onMovePlacementLayerNodeLocal,
   onCommitPlacementLayerNodeMove,
   onDeletePlacementLayerNode,
+  onPlacementLayerDragStateChange,
 }: {
   className?: string;
   onRequestSwap?: (id: string) => void;
@@ -370,6 +387,7 @@ export function EditorCanvas({
     previousYNorm: number;
   }) => void | Promise<void>;
   onDeletePlacementLayerNode?: (id: string) => void | Promise<void>;
+  onPlacementLayerDragStateChange?: (state: PlacementLayerDragState | null) => void;
 }) {
   const instanceId = useId();
   const outerShellRef = useRef<HTMLDivElement | null>(null);
@@ -1008,11 +1026,12 @@ export function EditorCanvas({
     placementLayerDragCleanupRef.current?.();
     placementLayerDragCleanupRef.current = null;
     placementLayerDragStateRef.current = null;
+    onPlacementLayerDragStateChange?.(null);
     const timeoutId = window.setTimeout(() => {
       setDraggingPlacementLayerNodeId(null);
     }, 0);
     return () => window.clearTimeout(timeoutId);
-  }, [furnitureLayerEnabled]);
+  }, [furnitureLayerEnabled, onPlacementLayerDragStateChange]);
 
   useEffect(() => {
     const updateInteractionContext = (target: EventTarget | null) => {
@@ -1043,8 +1062,9 @@ export function EditorCanvas({
       placementLayerDragCleanupRef.current = null;
       placementLayerDragStateRef.current = null;
       setDraggingPlacementLayerNodeId(null);
+      onPlacementLayerDragStateChange?.(null);
     },
-    []
+    [onPlacementLayerDragStateChange]
   );
 
   const handleStagePointerDown = async (
@@ -1187,6 +1207,12 @@ export function EditorCanvas({
     event.stopPropagation();
     setSelectedPlacementLayerNodeId(node.id);
     setDraggingPlacementLayerNodeId(node.id);
+    onPlacementLayerDragStateChange?.({
+      nodeId: node.id,
+      startedAsSuggested:
+        node.metadata?.ownership === "vibode" &&
+        node.metadata?.placementSource === "model_vision_inferred",
+    });
     const pointerId = event.pointerId;
     const markerEl = event.currentTarget;
     markerEl.setPointerCapture?.(pointerId);
@@ -1240,6 +1266,7 @@ export function EditorCanvas({
       }
       placementLayerDragStateRef.current = null;
       setDraggingPlacementLayerNodeId((current) => (current === drag.id ? null : current));
+      onPlacementLayerDragStateChange?.(null);
       if (!drag.didMove) return;
       void onCommitPlacementLayerNodeMove?.({
         id: drag.id,
@@ -1255,6 +1282,7 @@ export function EditorCanvas({
       clearListeners();
       placementLayerDragStateRef.current = null;
       setDraggingPlacementLayerNodeId((current) => (current === drag.id ? null : current));
+      onPlacementLayerDragStateChange?.(null);
     };
     window.addEventListener("pointermove", handlePointerMove);
     window.addEventListener("pointerup", handlePointerUp);
@@ -2009,6 +2037,9 @@ export function EditorCanvas({
                   ? "scale-[1.18]"
                   : "scale-100";
             const markerZIndex = isDragging ? 40 : isSelected ? 30 : isHovered ? 20 : 10;
+            const isVibodeSuggestedMarker =
+              node.metadata?.ownership === "vibode" &&
+              node.metadata?.placementSource === "model_vision_inferred";
             return (
               <div
                 key={node.id}
@@ -2018,8 +2049,15 @@ export function EditorCanvas({
                 <button
                   type="button"
                   aria-label="Select furniture marker"
+                  title={
+                    isVibodeSuggestedMarker
+                      ? "Vibode placed this here. Drag to refine."
+                      : undefined
+                  }
                   className={`pointer-events-auto relative h-8 w-8 overflow-hidden rounded-md border bg-neutral-900/85 transform-gpu will-change-transform transition-[transform,box-shadow,border-color,opacity] duration-150 ease-out cursor-grab active:cursor-grabbing ${markerScaleClass} ${
-                    isDragging
+                    isVibodeSuggestedMarker
+                      ? "border-sky-200/80 border-dashed ring-1 ring-sky-300/70 bg-sky-950/35 shadow-[0_8px_16px_rgba(56,189,248,0.24)]"
+                      : isDragging
                       ? "border-blue-100/95 ring-2 ring-blue-300/80 shadow-[0_12px_26px_rgba(59,130,246,0.5),0_0_0_1px_rgba(191,219,254,0.45)]"
                       : isSelected
                         ? "border-blue-200 ring-2 ring-blue-400/70 shadow-[0_10px_22px_rgba(59,130,246,0.42),0_0_0_1px_rgba(147,197,253,0.35)]"
@@ -2048,6 +2086,11 @@ export function EditorCanvas({
                   ) : (
                     <span className="absolute inset-0 block bg-neutral-700/70" />
                   )}
+                  {isVibodeSuggestedMarker ? (
+                    <span className="pointer-events-none absolute right-0.5 top-0.5 rounded bg-sky-500/90 px-1 text-[8px] font-semibold uppercase tracking-wide text-white">
+                      S
+                    </span>
+                  ) : null}
                 </button>
                 {isSelected && (
                   <button

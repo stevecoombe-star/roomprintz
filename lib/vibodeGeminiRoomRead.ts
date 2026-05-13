@@ -1,6 +1,6 @@
 import { normalizeDetectedRoomObjectLabels } from "@/lib/vibodeRoomObjectLabels";
 
-const ROOM_READ_PROMPT = `Analyze this room photo for visible furniture and decor items.
+const ROOM_READ_LABELS_ONLY_PROMPT = `Analyze this room photo for visible furniture and decor items.
 
 Return only furniture, decor, and removable room objects that a user may reasonably want to remove or replace.
 
@@ -14,6 +14,29 @@ Return JSON only in this shape:
     { "label": "sofa", "confidence": 0.93 }
   ]
 }`;
+
+const ROOM_READ_GEOMETRY_PROMPT = `Analyze this room photo for visible furniture and decor items.
+
+Return only furniture, decor, and removable room objects that a user may reasonably want to remove or replace.
+
+Do not include architectural features such as walls, floors, ceilings, windows, doors, trim, baseboards, outlets, or lighting reflections.
+
+Use simple consumer-friendly labels.
+
+Return JSON only in this shape:
+{
+  "objects": [
+    {
+      "label": "sofa",
+      "confidence": 0.93,
+      "center": { "x": 0.52, "y": 0.68 },
+      "bbox": { "x": 0.25, "y": 0.5, "w": 0.54, "h": 0.33 }
+    }
+  ]
+}
+
+All coordinates must be normalized 0..1 values relative to image width/height.
+If geometry is uncertain, still return label/confidence and omit center/bbox fields.`;
 
 function safeStr(value: unknown): string | null {
   if (typeof value !== "string") return null;
@@ -129,16 +152,18 @@ async function callGeminiRoomRead(args: {
 export async function runGeminiRoomReadFromImageUrl(args: {
   imageUrl: string;
   modelVersion?: string;
+  mode?: "labels_only" | "geometry";
 }) {
   const modelVersion = safeStr(args.modelVersion) ?? "gemini-3-flash-preview";
+  const mode = args.mode === "geometry" ? "geometry" : "labels_only";
   const { mime, base64 } = await fetchImageAsBase64(args.imageUrl);
   const rawPayload = await callGeminiRoomRead({
     mime,
     imageBase64: base64,
-    prompt: ROOM_READ_PROMPT,
+    prompt: mode === "geometry" ? ROOM_READ_GEOMETRY_PROMPT : ROOM_READ_LABELS_ONLY_PROMPT,
     modelVersion,
   });
   const text = extractResponseText(rawPayload);
   const parsed = text ? parseJsonFromText(text) : rawPayload;
-  return normalizeDetectedRoomObjectLabels(parsed);
+  return normalizeDetectedRoomObjectLabels(parsed, mode);
 }

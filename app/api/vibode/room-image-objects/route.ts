@@ -3,6 +3,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { runGeminiRoomReadFromImageUrl } from "@/lib/vibodeGeminiRoomRead";
+import { resolveRoomReadModelVersion } from "@/lib/vibodeRoomReadModelVersion";
 import type { DetectedRoomObjectLabel } from "@/lib/vibodeRoomObjectLabels";
 
 export const runtime = "nodejs";
@@ -16,6 +17,8 @@ type RoomImageObjectRow = {
   label: string;
   confidence: number | null;
 };
+
+type RoomReadMode = "labels_only" | "geometry";
 
 function safeStr(value: unknown): string | null {
   if (typeof value !== "string") return null;
@@ -52,6 +55,10 @@ function normalizeObjects(
   return Array.from(byLabel.entries())
     .map(([label, confidence]) => ({ label, confidence }))
     .sort((a, b) => b.confidence - a.confidence);
+}
+
+function parseRoomReadMode(value: unknown): RoomReadMode {
+  return value === "geometry" ? "geometry" : "labels_only";
 }
 
 function getUserSupabaseClient(
@@ -97,8 +104,9 @@ export async function POST(req: NextRequest) {
     const effectiveImageHash = hasVersionIdentity
       ? hashImageIdentity(`${roomId ?? ""}|${assetId ?? ""}|${versionId ?? ""}`)
       : imageHash;
-    const modelVersion = safeStr(body.modelVersion) ?? "gemini-3-flash-preview";
+    const modelVersion = resolveRoomReadModelVersion(body.modelVersion);
     const allowRoomReadOnMiss = body.allowRoomReadOnMiss === true;
+    const mode = parseRoomReadMode(body.mode);
     const source = "gemini_room_read";
 
     if (!roomId && !assetId && !versionId && !imageHash) {
@@ -126,7 +134,7 @@ export async function POST(req: NextRequest) {
     }
 
     const normalizedExisting = normalizeObjects((existingRows ?? []) as RoomImageObjectRow[]);
-    if (normalizedExisting.length > 0) {
+    if (mode === "labels_only" && normalizedExisting.length > 0) {
       console.log("[room-image-objects] fetched from Supabase", {
         count: normalizedExisting.length,
         roomId,
@@ -164,7 +172,11 @@ export async function POST(req: NextRequest) {
       modelVersion,
     });
 
-    const roomReadObjects = await runGeminiRoomReadFromImageUrl({ imageUrl, modelVersion });
+    const roomReadObjects = await runGeminiRoomReadFromImageUrl({
+      imageUrl,
+      modelVersion,
+      mode,
+    });
     const normalizedRoomReadObjects = normalizeObjects(roomReadObjects);
     if (normalizedRoomReadObjects.length > 0) {
       const rowsToInsert = normalizedRoomReadObjects.map((item) => ({
@@ -192,6 +204,9 @@ export async function POST(req: NextRequest) {
       }
     }
 
+    if (mode === "geometry") {
+      return NextResponse.json({ objects: roomReadObjects });
+    }
     console.log("[room-image-objects] returned labels", {
       labels: normalizedRoomReadObjects.map((item) => item.label),
     });

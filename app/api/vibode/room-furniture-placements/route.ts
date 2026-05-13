@@ -1,6 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import type { SupabaseClient } from "@supabase/supabase-js";
+import {
+  defaultUserDirectedPlacementMetadata,
+  normalizePlacementMetadata,
+  type PlacementMetadata,
+} from "@/lib/placementMetadata";
 
 export const runtime = "nodejs";
 
@@ -25,6 +30,7 @@ type PlacementRow = {
   scale: number;
   rotation: number;
   is_visible: boolean;
+  metadata: PlacementMetadata;
   created_at: string;
   updated_at: string;
 };
@@ -80,6 +86,13 @@ function safeFiniteNumber(value: unknown): number | null {
 function safeOptionalBoolean(value: unknown): boolean | null {
   if (typeof value === "boolean") return value;
   return null;
+}
+
+function parsePlacementMetadata(
+  value: unknown,
+  fallback?: PlacementMetadata
+): PlacementMetadata {
+  return normalizePlacementMetadata(value, fallback ?? defaultUserDirectedPlacementMetadata());
 }
 
 function clampNormalizedCoordinate(value: number): number {
@@ -272,6 +285,7 @@ export async function POST(req: NextRequest) {
           scale: row.scale,
           rotation: row.rotation,
           is_visible: row.is_visible,
+          metadata: parsePlacementMetadata(row.metadata, defaultUserDirectedPlacementMetadata()),
         }));
 
       if (rowsToInsert.length === 0) {
@@ -330,6 +344,18 @@ export async function POST(req: NextRequest) {
     const rotation = safeFiniteNumber(body.rotation) ?? 0;
     const isVisible = safeOptionalBoolean(body.isVisible) ?? true;
     const dedupe = safeOptionalBoolean(body.dedupe) ?? false;
+    const requestedPlacementSource = safeOptionalStr(body.placementSource);
+    const placementMetadata = parsePlacementMetadata(
+      body.metadata,
+      defaultUserDirectedPlacementMetadata(
+        requestedPlacementSource === "clipboard" ||
+          requestedPlacementSource === "product_url" ||
+          requestedPlacementSource === "swap" ||
+          requestedPlacementSource === "my_furniture"
+          ? requestedPlacementSource
+          : "clipboard"
+      )
+    );
     const normalizedX = clampNormalizedCoordinate(x);
     const normalizedY = clampNormalizedCoordinate(y);
 
@@ -376,6 +402,7 @@ export async function POST(req: NextRequest) {
       scale,
       rotation,
       is_visible: isVisible,
+      metadata: placementMetadata,
     };
 
     const { data, error } = await auth.supabase
@@ -432,6 +459,7 @@ export async function PATCH(req: NextRequest) {
     const scale = safeFiniteNumber(body.scale);
     const rotation = safeFiniteNumber(body.rotation);
     const isVisible = safeOptionalBoolean(body.isVisible);
+    const metadataProvided = Object.prototype.hasOwnProperty.call(body, "metadata");
 
     if (furnitureId !== null) patch.furniture_id = furnitureId;
     if (thumbnailUrl !== null) patch.thumbnail_url = thumbnailUrl;
@@ -448,6 +476,9 @@ export async function PATCH(req: NextRequest) {
     if (scale !== null) patch.scale = scale;
     if (rotation !== null) patch.rotation = rotation;
     if (isVisible !== null) patch.is_visible = isVisible;
+    if (metadataProvided) {
+      patch.metadata = parsePlacementMetadata(body.metadata);
+    }
 
     if (Object.keys(patch).length === 0) {
       return jsonError("No valid updatable fields provided.", 400);

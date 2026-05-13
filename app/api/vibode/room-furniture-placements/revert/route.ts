@@ -1,6 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import type { SupabaseClient } from "@supabase/supabase-js";
+import {
+  defaultUserDirectedPlacementMetadata,
+  normalizePlacementMetadata,
+  type PlacementMetadata,
+} from "@/lib/placementMetadata";
 
 export const runtime = "nodejs";
 
@@ -24,6 +29,7 @@ type PlacementRow = {
   scale: number;
   rotation: number;
   is_visible: boolean;
+  metadata: PlacementMetadata;
   created_at: string;
   updated_at: string;
 };
@@ -40,6 +46,7 @@ type RevertSnapshotRow = {
   scale: number;
   rotation: number;
   isVisible: boolean;
+  metadata: PlacementMetadata;
 };
 
 function jsonError(message: string, status: number, details?: Record<string, unknown>) {
@@ -125,6 +132,10 @@ function parseSnapshotRow(value: unknown): RevertSnapshotRow | null {
     scale,
     rotation,
     isVisible: typeof isVisibleRaw === "boolean" ? isVisibleRaw : true,
+    metadata: normalizePlacementMetadata(
+      value.metadata,
+      defaultUserDirectedPlacementMetadata()
+    ),
   };
 }
 
@@ -205,6 +216,7 @@ export async function POST(req: NextRequest) {
       scale: row.scale,
       rotation: row.rotation,
       is_visible: row.isVisible,
+      metadata: row.metadata,
     }));
 
     const { data: insertedRows, error: insertErr } = await auth.supabase
