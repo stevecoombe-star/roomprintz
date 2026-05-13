@@ -80,10 +80,6 @@ const STAGE_TOKEN_COST = {
   4: 4,
   5: 5,
 } as const;
-const EDIT_TOKEN_COST = {
-  EDIT_SWAP: 1,
-  EDIT_ROTATE: 1,
-} as const;
 const VERSION_TIMESTAMP_FORMATTER = new Intl.DateTimeFormat(undefined, {
   month: "short",
   day: "numeric",
@@ -424,6 +420,7 @@ function hasSwapMarksWithReplacement(vibodeIntent: unknown): boolean {
 }
 
 type WorkflowStage = 1 | 2 | 3 | 4 | 5;
+type WorkflowMode = "set" | "stage" | "style";
 type StageRunStatus = "idle" | "running" | "success" | "error";
 type DeclutterMode = "off" | "light" | "heavy";
 type VibodeModelVersion = typeof VIBODE_MODEL_NBP | typeof VIBODE_MODEL_NB2;
@@ -444,6 +441,11 @@ const EXPANDED_PANELS_STATE: EditorRightPanelsState = {
   workflow: true,
   editTools: true,
   versions: true,
+};
+const WORKFLOW_MODE_HELPER_COPY: Record<WorkflowMode, string> = {
+  set: "Prepare your room",
+  stage: "Place furniture",
+  style: "Create the vibe",
 };
 type PasteToPlaceStatus = "reading" | "preparing" | "placing";
 type Stage4Action =
@@ -829,7 +831,6 @@ type RoomCanvasHydrationTarget = {
   token: number;
 };
 
-const WORKFLOW_STAGES: WorkflowStage[] = [1, 2, 3, 4, 5];
 const STAGE4_PRIMARY_ACTION: Stage4Action = "style_room";
 const STAGE4_ADVANCED_ACTIONS: Stage4Action[] = [
   "accessories",
@@ -2119,6 +2120,7 @@ function EditorPageInner() {
   const showDevSceneRebuildButton =
     process.env.NODE_ENV !== "production" && isDevUnlockPasteToPlace && isDevSceneRebuildEnabled;
 
+  const [workflowMode, setWorkflowMode] = useState<WorkflowMode>("stage");
   const [activeStage, setActiveStage] = useState<WorkflowStage>(1);
   const [stageStatus, setStageStatus] = useState<StageStatusMap>(INITIAL_STAGE_STATUS);
   const [stage4RunningAction, setStage4RunningAction] = useState<Stage4Action | null>(null);
@@ -2168,7 +2170,7 @@ function EditorPageInner() {
     amountDegrees: 15,
   });
   const [isRotateMarkerTargeting, setIsRotateMarkerTargeting] = useState(false);
-  const [editWarning, setEditWarning] = useState<string | null>(null);
+  const [, setEditWarning] = useState<string | null>(null);
   const [isEditRunning, setIsEditRunning] = useState(false);
   const [removeMarkerPosition, setRemoveMarkerPosition] = useState<PasteToPlaceClickHint | null>(null);
   const [isRemoveMarkerTargeting, setIsRemoveMarkerTargeting] = useState(false);
@@ -4941,7 +4943,6 @@ function EditorPageInner() {
   };
 
   const hasActiveRemoveMarker = Boolean(removeMarkerPosition);
-  const hasActiveRotateMarker = Boolean(rotateToolState.marker);
   const removeLabelOptions = useMemo(() => {
     const labels = Array.from(
       new Set(
@@ -5024,38 +5025,6 @@ function EditorPageInner() {
     () => Boolean(productImageUrl.trim() || uploadedImageDataUrl),
     [productImageUrl, uploadedImageDataUrl]
   );
-  const {
-    totalCount,
-    activeCount,
-    userCount,
-    activeUserCount,
-    catalogCount,
-    activeCatalogCount,
-  } = useMemo(() => {
-    let active = 0;
-    let user = 0;
-    let activeUser = 0;
-    let catalog = 0;
-    let activeCatalog = 0;
-    for (const item of stage3SkuItems) {
-      if (item.active) active += 1;
-      if (item.source === "user") {
-        user += 1;
-        if (item.active) activeUser += 1;
-      } else {
-        catalog += 1;
-        if (item.active) activeCatalog += 1;
-      }
-    }
-    return {
-      totalCount: stage3SkuItems.length,
-      activeCount: active,
-      userCount: user,
-      activeUserCount: activeUser,
-      catalogCount: catalog,
-      activeCatalogCount: activeCatalog,
-    };
-  }, [stage3SkuItems]);
 
   const closeSwap = () => {
     if (swapTargetId) setPendingSwap(swapTargetId, false);
@@ -5126,22 +5095,6 @@ function EditorPageInner() {
     pushSnack("Added to Stage 3 items.");
   };
 
-  const toggleStage3SkuItemActive = (skuId: string, active: boolean) => {
-    setStage3SkuItems((prev) =>
-      prev.map((item) => (item.skuId === skuId ? { ...item, active } : item))
-    );
-  };
-
-  const moveStage3SkuItem = (index: number, direction: "up" | "down") => {
-    setStage3SkuItems((prev) => {
-      const targetIndex = direction === "up" ? index - 1 : index + 1;
-      if (targetIndex < 0 || targetIndex >= prev.length) return prev;
-      const next = [...prev];
-      const [moved] = next.splice(index, 1);
-      next.splice(targetIndex, 0, moved);
-      return next;
-    });
-  };
 
   const clearUploadedProductImage = () => {
     setUploadedImageDataUrl(null);
@@ -7977,14 +7930,6 @@ function EditorPageInner() {
     [isRotateMarkerTargeting, pushSnack, rotateToolState.marker]
   );
 
-  const addRotateMarker = useCallback(() => {
-    clearLegacyPlacementNodes();
-    setIsRemoveMarkerTargeting(false);
-    setIsRotateMarkerTargeting(true);
-    setEditWarning(null);
-    pushSnack("Rotate marker armed. Click anywhere on the image.");
-  }, [clearLegacyPlacementNodes, pushSnack]);
-
   const handlePlaceRotateMarker = useCallback((marker: RotateMarker) => {
     setRotateToolState((prev) => ({
       ...prev,
@@ -7996,25 +7941,6 @@ function EditorPageInner() {
     setIsRotateMarkerTargeting(false);
     setEditWarning(null);
   }, []);
-
-  const rotateSelected = async () => {
-    const marker = rotateToolState.marker;
-    if (!marker) {
-      warnEdit("Place a rotate marker first.");
-      return;
-    }
-    const rotationDegrees =
-      rotateToolState.direction === "cw"
-        ? rotateToolState.amountDegrees
-        : -rotateToolState.amountDegrees;
-    const res = await runEdit("rotate", {
-      xNorm: marker.xNorm,
-      yNorm: marker.yNorm,
-      rotationDegrees,
-    });
-    if (!res) return;
-    setEditWarning(null);
-  };
 
   const onGenerate = async () => {
     const localGenId = safeId("gen");
@@ -8645,7 +8571,6 @@ function EditorPageInner() {
   };
   void onGenerate;
 
-  const stage5Locked = activeStage === 5 && !hasFurniturePass && !STAGE5_DEV_BYPASS;
   const devSceneRebuildMissingReason = !vibodeRoomId
     ? "Room id missing."
     : !selectedVersionId
@@ -8704,13 +8629,6 @@ function EditorPageInner() {
     Boolean(devSceneRebuildMissingReason);
   const activeStageTokenCost = STAGE_TOKEN_COST[activeStage] ?? DEFAULT_ACTION_TOKEN_COST;
   const activeStageTokenCostLabel = formatTokenCostLabel(activeStageTokenCost);
-  const activeEditTokenCost =
-    activeTool === "swap"
-      ? EDIT_TOKEN_COST.EDIT_SWAP
-      : activeTool === "rotate"
-        ? EDIT_TOKEN_COST.EDIT_ROTATE
-        : DEFAULT_ACTION_TOKEN_COST;
-  const activeEditTokenCostLabel = formatTokenCostLabel(activeEditTokenCost);
   const renderVersionRow = (asset: VibodeRoomAsset) => {
     const isActive = selectedVersionId === asset.id;
     const secondaryText = getVersionSecondaryLabel(asset);
@@ -8765,6 +8683,93 @@ function EditorPageInner() {
       </div>
     );
   };
+  const isSetWorkflowMode = workflowMode === "set";
+  const isStageWorkflowMode = workflowMode === "stage";
+  const isStyleWorkflowMode = workflowMode === "style";
+  const workflowPanelStage = isStyleWorkflowMode ? 4 : activeStage;
+  const workflowPanelTokenCostLabel = isStyleWorkflowMode
+    ? formatTokenCostLabel(STAGE_TOKEN_COST[4] ?? DEFAULT_ACTION_TOKEN_COST)
+    : activeStageTokenCostLabel;
+  const renderRemoveToolEntryPoint = (className = "mt-3") => (
+    <div className={className}>
+      <div className="text-xs text-neutral-400">Remove</div>
+      <div className="mt-2">
+        <label className="text-[11px] text-neutral-500" htmlFor="remove-label-select">
+          Removing:
+        </label>
+        <select
+          id="remove-label-select"
+          value={selectedRemoveLabel}
+          disabled={isEditRunning}
+          className={`mt-1 w-full rounded-md border bg-neutral-950 px-2 py-1 text-xs ${
+            isEditRunning
+              ? "border-neutral-900 text-neutral-500"
+              : "border-neutral-700 text-neutral-100 hover:bg-neutral-900"
+          }`}
+          onChange={(event) => {
+            const nextLabel = event.target.value;
+            setSelectedRemoveLabel(nextLabel);
+            console.log("[editor][remove] selected remove label", { label: nextLabel });
+          }}
+        >
+          <option value={REMOVE_LABEL_PLACEHOLDER}>Select item to remove</option>
+          {removeLabelOptions.map((label) => (
+            <option key={label} value={label}>
+              {label}
+            </option>
+          ))}
+        </select>
+      </div>
+      <div className="mt-1 grid grid-cols-2 gap-2">
+        {!hasActiveRemoveMarker ? (
+          <button
+            type="button"
+            disabled={isEditRunning}
+            className={`col-span-2 rounded-md border px-2 py-1.5 text-xs ${
+              isEditRunning
+                ? "border-neutral-900 bg-neutral-950 text-neutral-500"
+                : "border-neutral-700 bg-neutral-900 text-neutral-100 hover:bg-neutral-800"
+            }`}
+            onClick={addRemoveMarker}
+          >
+            Add Remove Marker
+          </button>
+        ) : (
+          <>
+            <button
+              type="button"
+              disabled={isEditRunning}
+              className={`rounded-md border px-2 py-1.5 text-xs ${
+                isEditRunning
+                  ? "border-neutral-900 bg-neutral-950 text-neutral-500"
+                  : "border-neutral-700 bg-neutral-900 text-neutral-100 hover:bg-neutral-800"
+              }`}
+              onClick={() => clearRemoveMarker()}
+            >
+              Clear Marker
+            </button>
+            <button
+              type="button"
+              disabled={isEditRunning || isOutOfTokens || !workingImageUrl || !hasActiveRemoveMarker}
+              className={`rounded-md border px-2 py-1.5 text-xs ${
+                isEditRunning || isOutOfTokens || !workingImageUrl || !hasActiveRemoveMarker
+                  ? "border-neutral-900 bg-neutral-950 text-neutral-500"
+                  : "border-neutral-700 bg-neutral-900 text-neutral-100 hover:bg-neutral-800"
+              }`}
+              onClick={() => {
+                void removeSelectedMarker();
+              }}
+            >
+              Remove Selected
+            </button>
+          </>
+        )}
+      </div>
+      {isRemoveMarkerTargeting && !hasActiveRemoveMarker ? (
+        <div className="mt-1 text-[11px] text-neutral-500">Click anywhere on the image to place the marker.</div>
+      ) : null}
+    </div>
+  );
 
   return (
     <div className="h-dvh w-full overflow-hidden bg-neutral-950 text-neutral-100">
@@ -8788,6 +8793,33 @@ function EditorPageInner() {
           <div className="ml-2 rounded border border-neutral-800 px-2 py-0.5 text-xs text-neutral-300">
             V0
           </div>
+          <div className="ml-2 flex items-center gap-1 rounded-md border border-neutral-800 bg-neutral-900 p-1">
+            {(
+              [
+                { id: "set", label: "SET" },
+                { id: "stage", label: "STAGE" },
+                { id: "style", label: "STYLE" },
+              ] as const
+            ).map((mode) => {
+              const isActive = workflowMode === mode.id;
+              return (
+                <button
+                  key={mode.id}
+                  type="button"
+                  onClick={() => setWorkflowMode(mode.id)}
+                  aria-pressed={isActive}
+                  className={`rounded px-2 py-1 text-[11px] font-medium tracking-wide transition ${
+                    isActive
+                      ? "border border-neutral-600 bg-neutral-800 text-neutral-100"
+                      : "border border-transparent bg-transparent text-neutral-400 hover:bg-neutral-800 hover:text-neutral-200"
+                  }`}
+                >
+                  {mode.label}
+                </button>
+              );
+            })}
+          </div>
+          <div className="text-[11px] text-neutral-500">{WORKFLOW_MODE_HELPER_COPY[workflowMode]}</div>
         </div>
 
         <div className="flex items-center gap-2">
@@ -9223,7 +9255,7 @@ function EditorPageInner() {
               </div>
             <div className="rounded-lg border border-neutral-800 bg-neutral-900 p-3">
               <div className="flex items-center justify-between">
-                <div className="text-sm font-medium">Workflow</div>
+                <div className="text-sm font-medium">Workflow — {workflowMode.toUpperCase()}</div>
                 <button
                   type="button"
                   className="rounded-md border border-neutral-800 bg-neutral-950 px-2 py-1 text-xs text-neutral-300 hover:bg-neutral-800"
@@ -9242,26 +9274,6 @@ function EditorPageInner() {
               </div>
               {panels.workflow ? (
                 <div id="workflow-panel-body">
-                  <div className="mt-1 text-xs text-neutral-400">Five-stage editor workflow skeleton.</div>
-
-                  <div className="mt-3 grid grid-cols-5 gap-1">
-                    {WORKFLOW_STAGES.map((stage) => (
-                      <button
-                        key={stage}
-                        type="button"
-                        onClick={() => {
-                          setActiveStage(stage);
-                        }}
-                        className={`rounded-md border px-2 py-1 text-xs ${
-                          activeStage === stage
-                            ? "border-neutral-600 bg-neutral-800 text-neutral-100"
-                            : "border-neutral-800 bg-neutral-950 text-neutral-300 hover:bg-neutral-800"
-                        }`}
-                      >
-                        {stage}
-                      </button>
-                    ))}
-                  </div>
 
                   <div className="mt-2 text-xs text-neutral-500">
                     Status: {stageStatus[activeStage]} • Furniture pass: {hasFurniturePass ? "yes" : "no"}
@@ -9309,157 +9321,162 @@ function EditorPageInner() {
                   ) : null}
 
                   <div className="mt-3 rounded-md border border-neutral-800 bg-neutral-950 p-3">
-                    <div className="text-sm font-medium">Stage {activeStage}</div>
+                    <div className="text-sm font-medium">
+                      {isStyleWorkflowMode
+                        ? "Style Workspace"
+                        : isStageWorkflowMode
+                          ? "Stage Workspace"
+                          : `Stage ${activeStage}`}
+                    </div>
 
-                {activeStage === 1 ? (
-                  <>
-                    <label className="mt-3 flex cursor-pointer items-center gap-2 text-sm text-neutral-300">
-                      <input
-                        type="checkbox"
-                        checked={stage1Enhance}
-                        onChange={(e) => setStage1Enhance(e.target.checked)}
-                        className="h-4 w-4 accent-sky-400"
-                      />
-                      Enhance
-                    </label>
-
-                    <div className="mt-3">
-                      <div className="text-xs text-neutral-400">Declutter</div>
-                      <div className="mt-1 flex gap-2">
-                        {(["off", "light", "heavy"] as DeclutterMode[]).map((mode) => (
-                          <button
-                            key={mode}
-                            type="button"
-                            onClick={() => setStage1Declutter(mode)}
-                            className={`rounded-md border px-2 py-1 text-xs ${
-                              stage1Declutter === mode
-                                ? "border-neutral-600 bg-neutral-800 text-neutral-100"
-                                : "border-neutral-800 bg-neutral-900 text-neutral-300 hover:bg-neutral-800"
-                            }`}
-                          >
-                            {mode}
-                          </button>
-                        ))}
+                {isSetWorkflowMode ? (
+                  <div className="mt-3 space-y-3">
+                    <div className="rounded-md border border-neutral-800 bg-neutral-900/50 p-2.5">
+                      <div className="text-[11px] uppercase tracking-wide text-neutral-500">Prepare Room</div>
+                      <label className="mt-2 flex cursor-pointer items-center gap-2 text-sm text-neutral-300">
+                        <input
+                          type="checkbox"
+                          checked={stage1Enhance}
+                          onChange={(e) => setStage1Enhance(e.target.checked)}
+                          className="h-4 w-4 accent-sky-400"
+                        />
+                        Enhance
+                      </label>
+                      <div className="mt-2">
+                        <div className="text-xs text-neutral-400">Declutter</div>
+                        <div className="mt-1 flex gap-2">
+                          {(["off", "light", "heavy"] as DeclutterMode[]).map((mode) => (
+                            <button
+                              key={mode}
+                              type="button"
+                              onClick={() => setStage1Declutter(mode)}
+                              className={`rounded-md border px-2 py-1 text-xs ${
+                                stage1Declutter === mode
+                                  ? "border-neutral-600 bg-neutral-800 text-neutral-100"
+                                  : "border-neutral-800 bg-neutral-900 text-neutral-300 hover:bg-neutral-800"
+                              }`}
+                            >
+                              {mode}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                      <div className="mt-2 flex gap-2">
+                        <button
+                          type="button"
+                          onClick={() =>
+                            runStageWithCancellation(1, {
+                              enhance: stage1Enhance,
+                              declutter: stage1Declutter,
+                            })
+                          }
+                          disabled={stageStatus[1] === "running" || isOutOfTokens || isStageRunSettling}
+                          className={`rounded-md border px-3 py-1.5 text-sm ${
+                            stageStatus[1] === "running" || isOutOfTokens || isStageRunSettling
+                              ? "border-neutral-900 bg-neutral-950 text-neutral-500"
+                              : "border-neutral-700 bg-neutral-900 hover:bg-neutral-800"
+                          }`}
+                        >
+                          {stageStatus[1] === "running" ? "Running…" : "Run Stage"}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            runStageWithCancellation(1, {
+                              enhance: stage1Enhance,
+                              declutter: stage1Declutter,
+                              emptyRoom: true,
+                            })
+                          }
+                          disabled={stageStatus[1] === "running" || isOutOfTokens || isStageRunSettling}
+                          className={`rounded-md border px-3 py-1.5 text-sm ${
+                            stageStatus[1] === "running" || isOutOfTokens || isStageRunSettling
+                              ? "border-neutral-900 bg-neutral-950 text-neutral-500"
+                              : "border-neutral-700 bg-neutral-900 hover:bg-neutral-800"
+                          }`}
+                        >
+                          Empty Room
+                        </button>
                       </div>
                     </div>
 
-                    <div className="mt-3 flex gap-2">
-                      <button
-                        type="button"
-                        onClick={() =>
-                          runStageWithCancellation(1, {
-                            enhance: stage1Enhance,
-                            declutter: stage1Declutter,
-                          })
-                        }
-                        disabled={stageStatus[1] === "running" || isOutOfTokens || isStageRunSettling}
-                        className={`rounded-md border px-3 py-1.5 text-sm ${
-                          stageStatus[1] === "running" || isOutOfTokens || isStageRunSettling
-                            ? "border-neutral-900 bg-neutral-950 text-neutral-500"
-                            : "border-neutral-700 bg-neutral-900 hover:bg-neutral-800"
-                        }`}
-                      >
-                        {stageStatus[1] === "running" ? "Running…" : "Run Stage"}
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() =>
-                          runStageWithCancellation(1, {
-                            enhance: stage1Enhance,
-                            declutter: stage1Declutter,
-                            emptyRoom: true,
-                          })
-                        }
-                        disabled={stageStatus[1] === "running" || isOutOfTokens || isStageRunSettling}
-                        className={`rounded-md border px-3 py-1.5 text-sm ${
-                          stageStatus[1] === "running" || isOutOfTokens || isStageRunSettling
-                            ? "border-neutral-900 bg-neutral-950 text-neutral-500"
-                            : "border-neutral-700 bg-neutral-900 hover:bg-neutral-800"
-                        }`}
-                      >
-                        Empty Room
-                      </button>
-                    </div>
-                  </>
-                ) : activeStage === 2 ? (
-                  <>
-                    <label className="mt-3 flex cursor-pointer items-center gap-2 text-sm text-neutral-300">
-                      <input
-                        type="checkbox"
-                        checked={stage2Repair}
-                        onChange={(e) => setStage2Repair(e.target.checked)}
-                        className="h-4 w-4 accent-sky-400"
-                      />
-                      Repair Damage
-                    </label>
-
-                    <label className="mt-3 flex cursor-pointer items-center gap-2 text-sm text-neutral-300">
-                      <input
-                        type="checkbox"
-                        checked={stage2Repaint}
-                        onChange={(e) => setStage2Repaint(e.target.checked)}
-                        className="h-4 w-4 accent-sky-400"
-                      />
-                      Repaint Walls
-                    </label>
-
-                    <div className="mt-3">
-                      <div className="text-xs text-neutral-400">Flooring</div>
-                      <select
-                        className="mt-1 w-full rounded-md border border-neutral-800 bg-neutral-950 px-2 py-2 text-sm outline-none focus:border-neutral-600"
-                        value={stage2Flooring}
-                        onChange={(e) =>
-                          setStage2Flooring(
-                            e.target.value as "none" | "carpet" | "hardwood" | "tile"
-                          )
-                        }
-                      >
-                        <option value="none">none</option>
-                        <option value="carpet">carpet</option>
-                        <option value="hardwood">hardwood</option>
-                        <option value="tile">tile</option>
-                      </select>
+                    <div className="rounded-md border border-neutral-800 bg-neutral-900/50 p-2.5">
+                      <div className="text-[11px] uppercase tracking-wide text-neutral-500">Modify Room</div>
+                      <label className="mt-2 flex cursor-pointer items-center gap-2 text-sm text-neutral-300">
+                        <input
+                          type="checkbox"
+                          checked={stage2Repair}
+                          onChange={(e) => setStage2Repair(e.target.checked)}
+                          className="h-4 w-4 accent-sky-400"
+                        />
+                        Repair Damage
+                      </label>
+                      <label className="mt-2 flex cursor-pointer items-center gap-2 text-sm text-neutral-300">
+                        <input
+                          type="checkbox"
+                          checked={stage2Repaint}
+                          onChange={(e) => setStage2Repaint(e.target.checked)}
+                          className="h-4 w-4 accent-sky-400"
+                        />
+                        Repaint Walls
+                      </label>
+                      <div className="mt-2">
+                        <div className="text-xs text-neutral-400">Flooring</div>
+                        <select
+                          className="mt-1 w-full rounded-md border border-neutral-800 bg-neutral-950 px-2 py-2 text-sm outline-none focus:border-neutral-600"
+                          value={stage2Flooring}
+                          onChange={(e) =>
+                            setStage2Flooring(e.target.value as "none" | "carpet" | "hardwood" | "tile")
+                          }
+                        >
+                          <option value="none">none</option>
+                          <option value="carpet">carpet</option>
+                          <option value="hardwood">hardwood</option>
+                          <option value="tile">tile</option>
+                        </select>
+                      </div>
+                      <div className="mt-2">
+                        <button
+                          type="button"
+                          onClick={() => runStageWithCancellation(2)}
+                          disabled={stageStatus[2] === "running" || isOutOfTokens || isStageRunSettling}
+                          className={`rounded-md border px-3 py-1.5 text-sm ${
+                            stageStatus[2] === "running" || isOutOfTokens || isStageRunSettling
+                              ? "border-neutral-900 bg-neutral-950 text-neutral-500"
+                              : "border-neutral-700 bg-neutral-900 hover:bg-neutral-800"
+                          }`}
+                        >
+                          {stageStatus[2] === "running" ? "Running…" : "Run Stage"}
+                        </button>
+                      </div>
                     </div>
 
-                    <div className="mt-3">
-                      <button
-                        type="button"
-                        onClick={() => runStageWithCancellation(2)}
-                        disabled={stageStatus[2] === "running" || isOutOfTokens || isStageRunSettling}
-                        className={`rounded-md border px-3 py-1.5 text-sm ${
-                          stageStatus[2] === "running" || isOutOfTokens || isStageRunSettling
-                            ? "border-neutral-900 bg-neutral-950 text-neutral-500"
-                            : "border-neutral-700 bg-neutral-900 hover:bg-neutral-800"
-                        }`}
-                      >
-                        {stageStatus[2] === "running" ? "Running…" : "Run Stage"}
-                      </button>
+                    <div className="rounded-md border border-neutral-800 bg-neutral-900/50 p-2.5">
+                      <div className="text-[11px] uppercase tracking-wide text-neutral-500">Cleanup</div>
+                      {renderRemoveToolEntryPoint("mt-2")}
                     </div>
-                  </>
-                ) : activeStage === 4 ? (
-                  <>
-                    <div className="mt-3">
-                      <button
-                        type="button"
-                        onClick={() =>
-                          runStageWithCancellation(4, { stage4Action: STAGE4_PRIMARY_ACTION })
-                        }
-                        disabled={stageStatus[4] === "running" || isOutOfTokens || isStageRunSettling}
-                        className={`w-full rounded-md border px-3 py-2 text-sm ${
-                          stageStatus[4] === "running" || isOutOfTokens || isStageRunSettling
-                            ? "border-neutral-900 bg-neutral-950 text-neutral-500"
-                            : "border-sky-500/60 bg-sky-950/40 text-sky-100 hover:bg-sky-900/50"
-                        }`}
-                      >
-                        {stageStatus[4] === "running" && stage4RunningAction === STAGE4_PRIMARY_ACTION
-                          ? "Styling…"
-                          : "✨ Style Room"}
-                      </button>
-                    </div>
-
-                    <div className="mt-3 rounded-md border border-neutral-800 bg-neutral-950 p-2">
-                      <div className="text-[11px] uppercase tracking-wide text-neutral-500">
-                        Advanced Stage 4
+                  </div>
+                ) : isStyleWorkflowMode ? (
+                  <div className="mt-3 space-y-3">
+                    <div className="rounded-md border border-neutral-800 bg-neutral-900/50 p-2.5">
+                      <div className="text-[11px] uppercase tracking-wide text-neutral-500">Style Scene</div>
+                      <div className="mt-2">
+                        <button
+                          type="button"
+                          onClick={() =>
+                            runStageWithCancellation(4, { stage4Action: STAGE4_PRIMARY_ACTION })
+                          }
+                          disabled={stageStatus[4] === "running" || isOutOfTokens || isStageRunSettling}
+                          className={`w-full rounded-md border px-3 py-2 text-sm ${
+                            stageStatus[4] === "running" || isOutOfTokens || isStageRunSettling
+                              ? "border-neutral-900 bg-neutral-950 text-neutral-500"
+                              : "border-sky-500/60 bg-sky-950/40 text-sky-100 hover:bg-sky-900/50"
+                          }`}
+                        >
+                          {stageStatus[4] === "running" && stage4RunningAction === STAGE4_PRIMARY_ACTION
+                            ? "Styling…"
+                            : "✨ Style Room"}
+                        </button>
                       </div>
                       <div className="mt-2 flex flex-wrap gap-2">
                         {STAGE4_ADVANCED_ACTIONS.map((action) => (
@@ -9481,377 +9498,44 @@ function EditorPageInner() {
                         ))}
                       </div>
                     </div>
-
-                    <div className="mt-2 text-xs text-neutral-500">
+                    <div className="rounded-md border border-neutral-800 bg-neutral-900/50 p-2.5">
+                      <div className="text-[11px] uppercase tracking-wide text-neutral-500">Looks</div>
+                      <div className="mt-2 rounded-md border border-neutral-800 bg-neutral-950/60 px-2.5 py-2 text-xs text-neutral-500">
+                        Preset looks and photo adjustments coming soon.
+                      </div>
+                    </div>
+                    <div className="text-xs text-neutral-500">
                       {stageStatus[4] === "running" && stage4RunningAction
                         ? `Running: ${STAGE4_ACTION_LABELS[stage4RunningAction]}`
                         : "Image-only styling pass; Stage 3 placements stay unchanged."}
                     </div>
-                  </>
-                ) : (
-                  <div className="mt-3">
-                    <button
-                      type="button"
-                      onClick={() => runStageWithCancellation(activeStage)}
-                      disabled={
-                        stageStatus[activeStage] === "running" ||
-                        isOutOfTokens ||
-                        stage5Locked ||
-                        isStageRunSettling
-                      }
-                      className={`rounded-md border px-3 py-1.5 text-sm ${
-                        stageStatus[activeStage] === "running" ||
-                        isOutOfTokens ||
-                        stage5Locked ||
-                        isStageRunSettling
-                          ? "border-neutral-900 bg-neutral-950 text-neutral-500"
-                          : "border-neutral-700 bg-neutral-900 hover:bg-neutral-800"
-                      }`}
-                    >
-                      {stageStatus[activeStage] === "running" ? "Running…" : "Run Stage"}
-                    </button>
-                    {activeStage === 5 && !hasFurniturePass && (
-                      <div className="mt-2 text-xs text-neutral-500">
-                        Stage 5 is locked until Stage 3 succeeds.
-                      </div>
-                    )}
                   </div>
-                )}
-
-                <div className="mt-3 text-xs text-neutral-500">
-                  Last output: {lastStageOutputs[activeStage] ? "available" : "none"}
-                </div>
-                <div className="mt-1 text-[11px] text-neutral-500">
-                  This will use {activeStageTokenCostLabel}.
-                </div>
-                  </div>
-                </div>
-              ) : null}
-            </div>
-
-            <div className="rounded-lg border border-neutral-800 bg-neutral-900 p-3">
-              <div className="flex items-center justify-between">
-                <div className="text-sm font-medium">Edit Tools (All Stages)</div>
-                <button
-                  type="button"
-                  className="rounded-md border border-neutral-800 bg-neutral-950 px-2 py-1 text-xs text-neutral-300 hover:bg-neutral-800"
-                  aria-label={panels.editTools ? "Collapse Edit Tools panel" : "Expand Edit Tools panel"}
-                  aria-expanded={panels.editTools}
-                  aria-controls="edit-tools-panel-body"
-                  onClick={() =>
-                    setPanels((prev) => ({
-                      ...prev,
-                      editTools: !prev.editTools,
-                    }))
-                  }
-                >
-                  {panels.editTools ? "▾" : "▸"}
-                </button>
-              </div>
-              {panels.editTools ? (
-                <div id="edit-tools-panel-body">
-                  {editWarning && (
-                    <div className="mt-2 rounded-md border border-amber-900/60 bg-amber-950/30 px-2 py-1 text-xs text-amber-200">
-                      {editWarning}
+                ) : isStageWorkflowMode ? (
+                  <div className="mt-3 rounded-md border border-neutral-800 bg-neutral-900/50 p-2.5">
+                    <div className="text-xs text-neutral-300">
+                      Paste furniture directly into your room.
                     </div>
-                  )}
-                  <div className="mt-2 text-[11px] text-neutral-500">
-                    This action uses {activeEditTokenCostLabel}.
-                  </div>
-
-              <div className="mt-3">
-                <div className="text-xs text-neutral-400">Remove</div>
-                <div className="mt-2">
-                  <label className="text-[11px] text-neutral-500" htmlFor="remove-label-select">
-                    Removing:
-                  </label>
-                  <select
-                    id="remove-label-select"
-                    value={selectedRemoveLabel}
-                    disabled={isEditRunning}
-                    className={`mt-1 w-full rounded-md border bg-neutral-950 px-2 py-1 text-xs ${
-                      isEditRunning
-                        ? "border-neutral-900 text-neutral-500"
-                        : "border-neutral-700 text-neutral-100 hover:bg-neutral-900"
-                    }`}
-                    onChange={(event) => {
-                      const nextLabel = event.target.value;
-                      setSelectedRemoveLabel(nextLabel);
-                      console.log("[editor][remove] selected remove label", { label: nextLabel });
-                    }}
-                  >
-                    <option value={REMOVE_LABEL_PLACEHOLDER}>Select item to remove</option>
-                    {removeLabelOptions.map((label) => (
-                      <option key={label} value={label}>
-                        {label}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-                <div className="mt-1 grid grid-cols-2 gap-2">
-                  {!hasActiveRemoveMarker ? (
-                    <button
-                      type="button"
-                      disabled={isEditRunning}
-                      className={`col-span-2 rounded-md border px-2 py-1.5 text-xs ${
-                        isEditRunning
-                          ? "border-neutral-900 bg-neutral-950 text-neutral-500"
-                          : "border-neutral-700 bg-neutral-900 text-neutral-100 hover:bg-neutral-800"
-                      }`}
-                      onClick={addRemoveMarker}
-                    >
-                      Add Remove Marker
-                    </button>
-                  ) : (
-                    <>
-                      <button
-                        type="button"
-                        disabled={isEditRunning}
-                        className={`rounded-md border px-2 py-1.5 text-xs ${
-                          isEditRunning
-                            ? "border-neutral-900 bg-neutral-950 text-neutral-500"
-                            : "border-neutral-700 bg-neutral-900 text-neutral-100 hover:bg-neutral-800"
-                        }`}
-                        onClick={() => clearRemoveMarker()}
-                      >
-                        Clear Marker
-                      </button>
-                      <button
-                        type="button"
-                        disabled={isEditRunning || isOutOfTokens || !workingImageUrl || !hasActiveRemoveMarker}
-                        className={`rounded-md border px-2 py-1.5 text-xs ${
-                          isEditRunning || isOutOfTokens || !workingImageUrl || !hasActiveRemoveMarker
-                            ? "border-neutral-900 bg-neutral-950 text-neutral-500"
-                            : "border-neutral-700 bg-neutral-900 text-neutral-100 hover:bg-neutral-800"
-                        }`}
-                        onClick={() => {
-                          void removeSelectedMarker();
-                        }}
-                      >
-                        Remove Selected
-                      </button>
-                    </>
-                  )}
-                </div>
-                {isRemoveMarkerTargeting && !hasActiveRemoveMarker ? (
-                  <div className="mt-1 text-[11px] text-neutral-500">
-                    Click anywhere on the image to place the marker.
-                  </div>
-                ) : null}
-            </div>
-
-              <div className="mt-3">
-                <div className="text-xs text-neutral-400">Rotate</div>
-                <div className="mt-1 grid grid-cols-2 gap-2">
-                  <button
-                    type="button"
-                    disabled={isEditRunning}
-                    className={`rounded-md border px-2 py-1.5 text-xs ${
-                      isEditRunning
-                        ? "border-neutral-900 bg-neutral-950 text-neutral-500"
-                        : "border-neutral-700 bg-neutral-900 text-neutral-100 hover:bg-neutral-800"
-                    }`}
-                    onClick={addRotateMarker}
-                  >
-                    Add Rotate Marker
-                  </button>
-                  <button
-                    type="button"
-                    disabled={isEditRunning || (!hasActiveRotateMarker && !isRotateMarkerTargeting)}
-                    className={`rounded-md border px-2 py-1.5 text-xs ${
-                      isEditRunning || (!hasActiveRotateMarker && !isRotateMarkerTargeting)
-                        ? "border-neutral-900 bg-neutral-950 text-neutral-500"
-                        : "border-neutral-700 bg-neutral-900 text-neutral-100 hover:bg-neutral-800"
-                    }`}
-                    onClick={() => clearRotateMarker()}
-                  >
-                    Clear Marker
-                  </button>
-                </div>
-                {isRotateMarkerTargeting ? (
-                  <div className="mt-1 text-[11px] text-neutral-500">
-                    Click anywhere on the image to place the marker.
+                    <div className="mt-1 text-[11px] text-neutral-500">Copy → Click room → Paste</div>
+                    <div className="mt-2 text-[11px] text-neutral-500">
+                      Use the Furniture Layer to move, hide, or remove staged items.
+                    </div>
                   </div>
                 ) : null}
 
-                <div className="mt-3">
-                  <div className="text-xs text-neutral-400">Direction</div>
-                  <div className="mt-1 grid grid-cols-2 gap-2">
-                    <button
-                      type="button"
-                      disabled={isEditRunning}
-                      className={`rounded-md border px-2 py-1.5 text-xs ${
-                        rotateToolState.direction === "cw"
-                          ? "border-violet-600/70 bg-violet-950/40 text-violet-100"
-                          : "border-neutral-700 bg-neutral-900 text-neutral-100 hover:bg-neutral-800"
-                      }`}
-                      onClick={() => {
-                        setRotateToolState((prev) => ({ ...prev, direction: "cw" }));
-                        setEditWarning(null);
-                      }}
-                    >
-                      Clockwise
-                    </button>
-                    <button
-                      type="button"
-                      disabled={isEditRunning}
-                      className={`rounded-md border px-2 py-1.5 text-xs ${
-                        rotateToolState.direction === "ccw"
-                          ? "border-violet-600/70 bg-violet-950/40 text-violet-100"
-                          : "border-neutral-700 bg-neutral-900 text-neutral-100 hover:bg-neutral-800"
-                      }`}
-                      onClick={() => {
-                        setRotateToolState((prev) => ({ ...prev, direction: "ccw" }));
-                        setEditWarning(null);
-                      }}
-                    >
-                      Counterclockwise
-                    </button>
+                {isStageWorkflowMode ? null : (
+                  <>
+                    <div className="mt-3 text-xs text-neutral-500">
+                      Last output: {lastStageOutputs[workflowPanelStage] ? "available" : "none"}
+                    </div>
+                    <div className="mt-1 text-[11px] text-neutral-500">
+                      This will use {workflowPanelTokenCostLabel}.
+                    </div>
+                  </>
+                )}
                   </div>
                 </div>
-
-                <div className="mt-3">
-                  <div className="text-xs text-neutral-400">Amount</div>
-                  <div className="mt-1 grid grid-cols-5 gap-1">
-                    {([5, 15, 30, 45, 90] as RotateAmount[]).map((amount) => (
-                      <button
-                        key={amount}
-                        type="button"
-                        disabled={isEditRunning}
-                        className={`rounded-md border px-1 py-1 text-xs ${
-                          rotateToolState.amountDegrees === amount
-                            ? "border-violet-600/70 bg-violet-950/40 text-violet-100"
-                            : "border-neutral-700 bg-neutral-900 text-neutral-100 hover:bg-neutral-800"
-                        }`}
-                        onClick={() => {
-                          setRotateToolState((prev) => ({ ...prev, amountDegrees: amount }));
-                          setEditWarning(null);
-                        }}
-                      >
-                        {amount}°
-                      </button>
-                    ))}
-                  </div>
-                </div>
-
-                <button
-                  type="button"
-                  disabled={isEditRunning || isOutOfTokens || !workingImageUrl || !hasActiveRotateMarker}
-                  className={`mt-2 w-full rounded-md border px-2 py-1.5 text-xs ${
-                    isEditRunning || isOutOfTokens || !workingImageUrl || !hasActiveRotateMarker
-                      ? "border-neutral-900 bg-neutral-950 text-neutral-500"
-                      : "border-violet-800/60 bg-violet-950/30 text-violet-100 hover:bg-violet-900/40"
-                  }`}
-                  onClick={() => {
-                    void rotateSelected();
-                  }}
-                >
-                  Rotate Selected
-                </button>
-              </div>
-
-              </div>
               ) : null}
             </div>
-
-            {activeStage === 3 && (
-              <div className="rounded-lg border border-neutral-800 bg-neutral-900 p-3">
-                <div className="flex items-center justify-between gap-2">
-                  <div className="text-sm font-medium">Stage 3 Items</div>
-                  <label className="flex items-center gap-1 text-xs text-neutral-300">
-                    <input
-                      type="checkbox"
-                      checked={stage3ShowCatalog}
-                      onChange={(e) => setStage3ShowCatalog(e.target.checked)}
-                      className="h-4 w-4 accent-sky-400"
-                    />
-                    Show catalog
-                  </label>
-                </div>
-                <div className="mt-1 text-xs text-neutral-400">
-                  Active: {activeCount}/{totalCount} • User: {activeUserCount}/{userCount} • Catalog:{" "}
-                  {activeCatalogCount}/{catalogCount}
-                </div>
-                <div className="mt-1 text-xs text-neutral-400">
-                  Choose which SKUs are included for this generation and set order.
-                </div>
-
-                <div className="mt-3 space-y-2">
-                  {stage3SkuItems.map((item, index) => {
-                    if (item.source !== "user" && !(item.active || stage3ShowCatalog)) {
-                      return null;
-                    }
-                    return (
-                      <div
-                        key={item.skuId}
-                        className="rounded-md border border-neutral-800 bg-neutral-950 p-2"
-                      >
-                        <div className="flex items-start gap-2">
-                          <div className="min-w-0 flex-1">
-                            <div className="truncate text-sm text-neutral-100">
-                              {item.label || item.skuId}
-                            </div>
-                            <div className="mt-1 flex items-center gap-2 text-[11px]">
-                              <span
-                                className={`rounded px-1.5 py-0.5 ${
-                                  item.source === "user"
-                                    ? "border border-emerald-900/50 bg-emerald-950/30 text-emerald-300"
-                                    : "border border-neutral-700 bg-neutral-900 text-neutral-300"
-                                }`}
-                              >
-                                {item.source === "user" ? "User" : "Catalog"}
-                              </span>
-                              <span className="truncate text-neutral-500">{item.skuId}</span>
-                            </div>
-                          </div>
-
-                          <label className="flex items-center gap-1 text-xs text-neutral-300">
-                            <input
-                              type="checkbox"
-                              checked={item.active}
-                              onChange={(e) =>
-                                toggleStage3SkuItemActive(item.skuId, e.target.checked)
-                              }
-                              className="h-4 w-4 accent-sky-400"
-                            />
-                            Include
-                          </label>
-
-                          <div className="flex gap-1">
-                            <button
-                              type="button"
-                              onClick={() => moveStage3SkuItem(index, "up")}
-                              disabled={index === 0}
-                              className={`rounded border px-2 py-1 text-xs ${
-                                index === 0
-                                  ? "border-neutral-900 bg-neutral-950 text-neutral-600"
-                                  : "border-neutral-700 bg-neutral-900 text-neutral-200 hover:bg-neutral-800"
-                              }`}
-                              aria-label={`Move ${item.skuId} up`}
-                            >
-                              ↑
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => moveStage3SkuItem(index, "down")}
-                              disabled={index === stage3SkuItems.length - 1}
-                              className={`rounded border px-2 py-1 text-xs ${
-                                index === stage3SkuItems.length - 1
-                                  ? "border-neutral-900 bg-neutral-950 text-neutral-600"
-                                  : "border-neutral-700 bg-neutral-900 text-neutral-200 hover:bg-neutral-800"
-                              }`}
-                              aria-label={`Move ${item.skuId} down`}
-                            >
-                              ↓
-                            </button>
-                          </div>
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-            )}
 
             <div className="rounded-lg border border-neutral-800 bg-neutral-900 p-3">
               <div className="flex items-center justify-between">
