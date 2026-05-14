@@ -1331,9 +1331,20 @@ export async function POST(req: NextRequest) {
 
     const payload = await buildSceneRebuildPayload({
       supabase,
+      signingSupabase: getAdminSupabaseClient(),
       roomId,
       userId,
       versionId,
+    });
+    console.info("[vibode/scene-rebuild] effective base image resolved", {
+      roomId: room.id,
+      versionId,
+      activeSetVersionId: payload.room.activeSetVersionId,
+      activeSetAssetFound: payload.room.activeSetAssetFound,
+      activeSetAssetImageUrlPresent: payload.room.activeSetAssetImageUrlPresent,
+      effectiveBaseImageStrategy: payload.room.effectiveBaseImageStrategy,
+      canonicalBaseVersionId: payload.room.baseVersionId,
+      fallbackImageUrlUsed: payload.room.fallbackImageUrlUsed,
     });
     if (!payload.room.baseImageUrl) {
       return NextResponse.json({ error: "Missing base image for rebuild." }, { status: 400 });

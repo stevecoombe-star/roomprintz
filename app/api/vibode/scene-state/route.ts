@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { buildSceneRebuildPayload, resolveSceneBaseImage, resolveScenePlacements } from "@/lib/vibodeSceneState";
+import { resolveActiveSetVersionId } from "@/lib/vibode/active-set";
 
 export const runtime = "nodejs";
 
@@ -133,10 +134,39 @@ export async function GET(req: Request) {
       }),
     ]);
 
+    const [{ data: roomData, error: roomErr }, { data: versionData, error: versionErr }] = await Promise.all([
+      auth.supabase
+        .from("vibode_rooms")
+        .select("id,metadata,base_asset_id,active_asset_id")
+        .eq("id", roomId)
+        .eq("user_id", auth.userId)
+        .maybeSingle(),
+      auth.supabase
+        .from("vibode_room_assets")
+        .select("id,asset_type,is_active,metadata")
+        .eq("room_id", roomId)
+        .eq("user_id", auth.userId),
+    ]);
+    if (roomErr) {
+      throw new Error(`[vibode] failed to load room metadata for active set resolution: ${roomErr.message}`);
+    }
+    if (versionErr) {
+      throw new Error(
+        `[vibode] failed to load room versions for active set resolution: ${versionErr.message}`
+      );
+    }
+    const activeSetVersionId = resolveActiveSetVersionId({
+      roomMetadata: roomData?.metadata,
+      versions: versionData ?? [],
+      baseAssetId: safeStr(roomData?.base_asset_id) ?? null,
+      activeAssetId: safeStr(roomData?.active_asset_id) ?? null,
+    });
+
     return NextResponse.json({
       roomId: resolved.roomId,
       versionId: resolved.versionId,
       lineageVersionIds: resolved.lineageVersionIds,
+      activeSetVersionId,
       resolvedPlacements: resolved.resolvedPlacements,
       baseImage,
       count: resolved.resolvedPlacements.length,

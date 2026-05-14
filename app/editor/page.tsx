@@ -50,6 +50,11 @@ import {
   type PlacementMetadata,
   type PlacementSource,
 } from "@/lib/placementMetadata";
+import {
+  getEffectiveBaseSetVersion,
+  isVersionEligibleForActiveSet,
+  resolveActiveSetVersionId,
+} from "@/lib/vibode/active-set";
 import { getVibodeVersionKind, type VibodeVersionKind } from "@/lib/vibode/version-kind";
 
 import { getSupabaseBrowserAccessToken, supabaseBrowser } from "@/lib/supabaseBrowser";
@@ -422,7 +427,10 @@ function hasSwapMarksWithReplacement(vibodeIntent: unknown): boolean {
 
 type WorkflowStage = 1 | 2 | 3 | 4 | 5;
 type WorkflowMode = Exclude<VibodeVersionKind, "unknown">;
-type EditorVersionWithKind = VibodeRoomAsset & { versionKind: VibodeVersionKind };
+type EditorVersionWithKind = VibodeRoomAsset & {
+  versionKind: VibodeVersionKind;
+  isActiveSetEligible: boolean;
+};
 type StageRunStatus = "idle" | "running" | "success" | "error";
 type DeclutterMode = "off" | "light" | "heavy";
 type VibodeModelVersion = typeof VIBODE_MODEL_NBP | typeof VIBODE_MODEL_NB2;
@@ -1065,6 +1073,7 @@ type VibodeRoomHydrationRow = {
   current_stage: number | null;
   active_asset_id: string | null;
   base_asset_id: string | null;
+  metadata: Record<string, unknown> | null;
 };
 
 type VibodeRoomAssetHydrationRow = {
@@ -1537,6 +1546,44 @@ async function setActiveVersionForRoom(args: {
   }
 }
 
+async function setActiveSetVersionForRoom(args: {
+  roomId: string;
+  activeSetVersionId: string;
+  accessToken: string;
+}): Promise<{ activeSetVersionId: string; metadata: Record<string, unknown> | null }> {
+  const res = await fetch("/api/vibode/set-active-set", {
+    method: "PATCH",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${args.accessToken}`,
+    },
+    body: JSON.stringify({
+      roomId: args.roomId,
+      activeSetVersionId: args.activeSetVersionId,
+    }),
+  });
+
+  const payload = (await res.json().catch(() => ({}))) as {
+    error?: unknown;
+    activeSetVersionId?: unknown;
+    metadata?: unknown;
+  };
+  if (!res.ok) {
+    const message =
+      typeof payload.error === "string" && payload.error.trim().length > 0
+        ? payload.error
+        : `Failed to set Base Image (HTTP ${res.status})`;
+    throw new Error(message);
+  }
+
+  const resolvedActiveSetVersionId =
+    typeof payload.activeSetVersionId === "string" && payload.activeSetVersionId.trim().length > 0
+      ? payload.activeSetVersionId
+      : args.activeSetVersionId;
+  const metadata = isRecord(payload.metadata) ? payload.metadata : null;
+  return { activeSetVersionId: resolvedActiveSetVersionId, metadata };
+}
+
 async function deleteVersionForRoom(args: {
   roomId: string;
   assetId: string;
@@ -1751,7 +1798,7 @@ async function loadRoomHydrationData(
 
   const { data: roomData, error: roomErr } = await client
     .from("vibode_rooms")
-    .select("id,selected_model,current_stage,active_asset_id,base_asset_id")
+    .select("id,selected_model,current_stage,active_asset_id,base_asset_id,metadata")
     .eq("id", roomId)
     .maybeSingle();
   if (roomErr || !roomData) {
@@ -1967,6 +2014,7 @@ function EditorPageInner() {
   const [selectedModel, setSelectedModel] = useState<VibodeModelVersion>(VIBODE_MODEL_NBP);
   const [deleteVersionTarget, setDeleteVersionTarget] = useState<VibodeRoomAsset | null>(null);
   const [deletingVersionId, setDeletingVersionId] = useState<string | null>(null);
+  const [settingBaseImageVersionId, setSettingBaseImageVersionId] = useState<string | null>(null);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -2332,6 +2380,7 @@ function EditorPageInner() {
   const [ingestedUserSku, setIngestedUserSku] = useState<UserSku | null>(null);
   const [userSkusAddedToStage3, setUserSkusAddedToStage3] = useState<UserSku[]>([]);
   const [vibodeRoomId, setVibodeRoomId] = useState<string | null>(null);
+  const [roomMetadata, setRoomMetadata] = useState<Record<string, unknown> | null>(null);
   const [stage3SkuItems, setStage3SkuItems] = useState<Stage3SkuItem[]>([]);
   const [stage3ShowCatalog, setStage3ShowCatalog] = useState(false);
   const shouldSkipPendingRestoreRef = useRef<boolean>(hasRoomIdInCurrentLocation());
@@ -2680,6 +2729,7 @@ function EditorPageInner() {
     setPendingFurnitureClipboardSuppressionHash(null);
     setActiveStage(1);
     setVibodeRoomId(null);
+    setRoomMetadata(null);
     setRoomBaseAssetId(null);
     clearPendingLocal();
   }, [
@@ -3254,6 +3304,7 @@ function EditorPageInner() {
           return;
         }
         setVibodeRoomId(hydrated.room.id);
+        setRoomMetadata(hydrated.room.metadata ?? null);
         setVersions(hydrated.versions);
         setActiveAssetId(hydratedActiveVersion?.id ?? hydrated.room.active_asset_id ?? null);
         const hydratedPlacements = extractScenePlacementsFromUnknown(hydratedActiveVersion?.metadata);
@@ -4016,9 +4067,56 @@ function EditorPageInner() {
       versions.map((version) => ({
         ...version,
         versionKind: getVibodeVersionKind(version),
+        isActiveSetEligible: isVersionEligibleForActiveSet(version),
       })),
     [versions]
   );
+  const activeSetVersionId = useMemo(
+    () =>
+      resolveActiveSetVersionId({
+        roomMetadata,
+        versions,
+        baseAssetId: roomBaseAssetId,
+        activeAssetId,
+      }),
+    [activeAssetId, roomBaseAssetId, roomMetadata, versions]
+  );
+  const effectiveBaseSetVersion = useMemo(
+    () =>
+      getEffectiveBaseSetVersion({
+        roomMetadata,
+        versions,
+        baseAssetId: roomBaseAssetId,
+        activeAssetId,
+      }).version,
+    [activeAssetId, roomBaseAssetId, roomMetadata, versions]
+  );
+  useEffect(() => {
+    if (process.env.NODE_ENV === "production") return;
+    if (!vibodeRoomId) return;
+    const eligibleVersionIds = versionsWithKind
+      .filter((version) => version.isActiveSetEligible)
+      .map((version) => version.id);
+    console.debug("[active-set] resolution", {
+      roomId: vibodeRoomId,
+      activeSetVersionId,
+      effectiveBaseSetVersionId: effectiveBaseSetVersion?.id ?? null,
+      eligibleVersionIds,
+      selectedVersionId,
+      activeAssetId,
+      baseAssetId: roomBaseAssetId,
+      hasRoomMetadata: Boolean(roomMetadata),
+    });
+  }, [
+    activeAssetId,
+    activeSetVersionId,
+    effectiveBaseSetVersion?.id,
+    roomBaseAssetId,
+    roomMetadata,
+    selectedVersionId,
+    versionsWithKind,
+    vibodeRoomId,
+  ]);
   const originalVersion = useMemo(() => {
     if (roomBaseAssetId) {
       const byRoomBaseId = versionsWithKind.find((asset) => asset.id === roomBaseAssetId);
@@ -4164,6 +4262,48 @@ function EditorPageInner() {
       vibodeRoomId,
       versions,
     ]
+  );
+
+  const handleSetVersionAsBaseImage = useCallback(
+    async (asset: EditorVersionWithKind) => {
+      if (!vibodeRoomId) return;
+      if (!asset.isActiveSetEligible) return;
+      if (activeSetVersionId === asset.id) return;
+      if (settingBaseImageVersionId) return;
+
+      setSettingBaseImageVersionId(asset.id);
+      try {
+        let accessToken = await tryGetSupabaseAccessToken();
+        if (!accessToken) {
+          await new Promise<void>((resolve) => setTimeout(resolve, 250));
+          accessToken = await tryGetSupabaseAccessToken();
+        }
+        if (!accessToken) {
+          throw new Error("No Supabase session.");
+        }
+
+        const result = await setActiveSetVersionForRoom({
+          roomId: vibodeRoomId,
+          activeSetVersionId: asset.id,
+          accessToken,
+        });
+
+        setRoomMetadata((prev) => {
+          if (result.metadata) return result.metadata;
+          return {
+            ...(isRecord(prev) ? prev : {}),
+            activeSetVersionId: result.activeSetVersionId,
+          };
+        });
+        pushSnack("Base Image updated.");
+      } catch (err) {
+        console.warn("[editor] failed to set active set version:", err);
+        pushSnack("Couldn't set Base Image right now.");
+      } finally {
+        setSettingBaseImageVersionId(null);
+      }
+    },
+    [activeSetVersionId, pushSnack, settingBaseImageVersionId, vibodeRoomId]
   );
 
   const clearSceneRebuildComposeGuardTimers = useCallback(() => {
@@ -4832,6 +4972,7 @@ function EditorPageInner() {
     } catch (err: unknown) {
       console.error(err);
       setVibodeRoomId(null);
+      setRoomMetadata(null);
       setRoomBaseAssetId(null);
       const message = "Upload didn't finish. Keeping your local preview for now.";
       setRoomPhotoUploadError(message);
@@ -8631,11 +8772,14 @@ function EditorPageInner() {
   const renderVersionRow = (asset: EditorVersionWithKind) => {
     const isActive = selectedVersionId === asset.id;
     const secondaryText = getVersionSecondaryLabel(asset);
+    const isBaseImage = asset.isActiveSetEligible && activeSetVersionId === asset.id;
+    const canSetAsBaseImage = asset.isActiveSetEligible && !isBaseImage;
     const versionPreviewUrl =
       typeof asset.preview_url === "string" && asset.preview_url.trim().length > 0
         ? asset.preview_url
         : asset.image_url;
     const isDeleting = deletingVersionId === asset.id;
+    const isSettingAsBaseImage = settingBaseImageVersionId === asset.id;
     return (
       <div key={asset.id} className="flex items-center gap-1.5">
         <button
@@ -8661,24 +8805,45 @@ function EditorPageInner() {
               {formatVersionTimestamp(asset.created_at)}
             </div>
             <div className="truncate text-[11px] text-neutral-500">{secondaryText}</div>
+            {isBaseImage ? <div className="mt-0.5 text-[10px] text-sky-300">Base Image</div> : null}
           </div>
         </button>
-        {canDeleteVersions ? (
-          <button
-            type="button"
-            className={`rounded-md border px-2 py-1 text-[11px] transition ${
-              deletingVersionId
-                ? "cursor-not-allowed border-neutral-900 bg-neutral-950 text-neutral-600"
-                : "border-neutral-800 bg-neutral-950 text-neutral-400 hover:bg-neutral-800 hover:text-neutral-200"
-            }`}
-            disabled={Boolean(deletingVersionId)}
-            onClick={() => handleRequestDeleteVersion(asset)}
-            aria-label="Delete version"
-            title="Delete version"
-          >
-            {isDeleting ? "Deleting..." : "Delete"}
-          </button>
-        ) : null}
+        <div className="flex flex-none items-center gap-1">
+          {canSetAsBaseImage ? (
+            <button
+              type="button"
+              className={`rounded-md border px-2 py-1 text-[11px] transition ${
+                settingBaseImageVersionId
+                  ? "cursor-not-allowed border-neutral-900 bg-neutral-950 text-neutral-600"
+                  : "border-neutral-800 bg-neutral-950 text-neutral-400 hover:bg-neutral-800 hover:text-neutral-200"
+              }`}
+              disabled={Boolean(settingBaseImageVersionId)}
+              onClick={() => {
+                void handleSetVersionAsBaseImage(asset);
+              }}
+              aria-label="Set as Base Image"
+              title="Set as Base Image"
+            >
+              {isSettingAsBaseImage ? "Setting..." : "Set as Base Image"}
+            </button>
+          ) : null}
+          {canDeleteVersions ? (
+            <button
+              type="button"
+              className={`rounded-md border px-2 py-1 text-[11px] transition ${
+                deletingVersionId
+                  ? "cursor-not-allowed border-neutral-900 bg-neutral-950 text-neutral-600"
+                  : "border-neutral-800 bg-neutral-950 text-neutral-400 hover:bg-neutral-800 hover:text-neutral-200"
+              }`}
+              disabled={Boolean(deletingVersionId)}
+              onClick={() => handleRequestDeleteVersion(asset)}
+              aria-label="Delete version"
+              title="Delete version"
+            >
+              {isDeleting ? "Deleting..." : "Delete"}
+            </button>
+          ) : null}
+        </div>
       </div>
     );
   };

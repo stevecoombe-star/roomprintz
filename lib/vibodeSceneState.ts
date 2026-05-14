@@ -1,4 +1,5 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
+import { resolveActiveSetVersionId, isVersionEligibleForActiveSet } from "@/lib/vibode/active-set";
 
 type AnySupabaseClient = SupabaseClient;
 
@@ -37,11 +38,27 @@ type RoomAssetRow = {
 type VibodeRoomBaseRow = {
   id: string;
   user_id: string;
+  metadata: Record<string, unknown> | null;
+  base_asset_id: string | null;
   base_image_url: string | null;
   base_storage_path: string | null;
   base_version_id: string | null;
   active_asset_id: string | null;
   cover_image_url: string | null;
+};
+
+type RoomBaseResolutionAssetRow = {
+  id: string;
+  room_id: string;
+  user_id: string;
+  asset_type: string | null;
+  image_url: string | null;
+  storage_bucket: string | null;
+  storage_path: string | null;
+  thumbnail_storage_bucket: string | null;
+  thumbnail_storage_path: string | null;
+  is_active: boolean | null;
+  metadata: Record<string, unknown> | null;
 };
 
 export type ResolvedScenePlacement = {
@@ -81,6 +98,7 @@ export type ResolveScenePlacementsResult = {
 
 export type BuildSceneRebuildPayloadArgs = {
   supabase: AnySupabaseClient;
+  signingSupabase?: AnySupabaseClient | null;
   roomId: string;
   userId: string;
   versionId: string;
@@ -91,9 +109,13 @@ export type SceneRebuildPayloadRoom = {
   userId: string;
   requestedVersionId: string;
   activeAssetId: string | null;
+  activeSetVersionId: string | null;
+  activeSetAssetFound: boolean;
+  activeSetAssetImageUrlPresent: boolean;
   baseImageUrl: string;
   baseStoragePath: string | null;
   baseVersionId: string | null;
+  effectiveBaseImageStrategy: SceneBaseImageResolutionStrategy;
   fallbackImageUrlUsed: boolean;
 };
 
@@ -119,6 +141,7 @@ export type SceneRebuildPayload = {
 };
 
 export type SceneBaseImageResolutionStrategy =
+  | "active_set"
   | "canonical_room_upload"
   | "source_version_image"
   | "fallback_version_image"
@@ -126,6 +149,9 @@ export type SceneBaseImageResolutionStrategy =
 
 export type ResolvedSceneBaseImage = {
   assetId: string | null;
+  activeSetVersionId: string | null;
+  activeSetAssetFound: boolean;
+  activeSetAssetImageUrlPresent: boolean;
   imageUrl: string | null;
   storagePath: string | null;
   resolutionStrategy: SceneBaseImageResolutionStrategy;
@@ -269,7 +295,7 @@ async function fetchRoomBaseMetadata(args: {
   const { data, error } = await args.supabase
     .from("vibode_rooms")
     .select(
-      "id,user_id,base_image_url,base_storage_path,base_version_id,active_asset_id,cover_image_url"
+      "id,user_id,metadata,base_asset_id,base_image_url,base_storage_path,base_version_id,active_asset_id,cover_image_url"
     )
     .eq("id", args.roomId)
     .eq("user_id", args.userId)
@@ -285,11 +311,150 @@ async function fetchRoomBaseMetadata(args: {
   return data as VibodeRoomBaseRow;
 }
 
-function resolveBaseImageFromRoomMetadata(room: VibodeRoomBaseRow): ResolvedSceneBaseImage {
+async function fetchRoomAssetsForBaseResolution(args: {
+  supabase: AnySupabaseClient;
+  roomId: string;
+  userId: string;
+}): Promise<RoomBaseResolutionAssetRow[]> {
+  const { data, error } = await args.supabase
+    .from("vibode_room_assets")
+    .select(
+      "id,room_id,user_id,asset_type,image_url,storage_bucket,storage_path,thumbnail_storage_bucket,thumbnail_storage_path,is_active,metadata"
+    )
+    .eq("room_id", args.roomId)
+    .eq("user_id", args.userId)
+    .order("created_at", { ascending: false });
+  if (error) {
+    throw new Error(`[vibode] failed to load room assets for base resolution: ${error.message}`);
+  }
+  return (data ?? []) as RoomBaseResolutionAssetRow[];
+}
+
+function normalizeUsableImageUrl(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  if (!/^https?:\/\//i.test(trimmed) && !/^data:image\//i.test(trimmed)) return null;
+  return trimmed;
+}
+
+function safeStr(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+async function resolveAssetImageUrlForBaseImage(args: {
+  supabase: AnySupabaseClient;
+  signingSupabase?: AnySupabaseClient | null;
+  asset: RoomBaseResolutionAssetRow;
+}): Promise<string | null> {
+  const directImageUrl = normalizeUsableImageUrl(args.asset.image_url);
+  if (directImageUrl) return directImageUrl;
+
+  const metadata = isRecord(args.asset.metadata) ? args.asset.metadata : null;
+  if (metadata) {
+    const metadataUrlCandidates = [
+      metadata.signed_url,
+      metadata.signedUrl,
+      metadata.public_url,
+      metadata.publicUrl,
+      metadata.imageUrl,
+      metadata.image_url,
+      metadata.url,
+    ];
+    for (const candidate of metadataUrlCandidates) {
+      const usable = normalizeUsableImageUrl(candidate);
+      if (usable) return usable;
+    }
+  }
+
+  const storageBucket = safeStr(args.asset.storage_bucket);
+  const storagePath = safeStr(args.asset.storage_path);
+  if (!storageBucket || !storagePath) return null;
+
+  const signedUrlExpiresInSec = Math.max(
+    60,
+    Number(process.env.VIBODE_PREVIEW_SIGNED_URL_EXPIRES_IN ?? 60 * 60 * 8)
+  );
+  const signer = args.signingSupabase ?? args.supabase;
+  const { data: signed, error: signErr } = await signer.storage
+    .from(storageBucket)
+    .createSignedUrl(storagePath, signedUrlExpiresInSec);
+  if (signErr || !signed?.signedUrl) {
+    return null;
+  }
+  return normalizeUsableImageUrl(signed.signedUrl);
+}
+
+async function resolveBaseImageFromRoomMetadata(args: {
+  supabase: AnySupabaseClient;
+  signingSupabase?: AnySupabaseClient | null;
+  room: VibodeRoomBaseRow;
+  roomAssets: RoomBaseResolutionAssetRow[];
+}): Promise<ResolvedSceneBaseImage> {
+  const room = args.room;
+  const activeSetVersionId = resolveActiveSetVersionId({
+    roomMetadata: room.metadata,
+    versions: args.roomAssets,
+    baseAssetId: room.base_asset_id,
+    activeAssetId: room.active_asset_id,
+  });
+  let activeSetAssetFound = false;
+  let activeSetAssetImageUrlPresent = false;
+  if (activeSetVersionId) {
+    const activeSetAsset =
+      args.roomAssets.find((asset) => asset.id === activeSetVersionId && isVersionEligibleForActiveSet(asset)) ??
+      null;
+    activeSetAssetFound = Boolean(activeSetAsset);
+    if (activeSetAsset) {
+      const metadataKeys =
+        activeSetAsset.metadata && typeof activeSetAsset.metadata === "object"
+          ? Object.keys(activeSetAsset.metadata).sort()
+          : [];
+      console.info("[vibode/scene-state] active set asset row debug", {
+        id: activeSetAsset.id,
+        asset_type: activeSetAsset.asset_type,
+        storage_bucket: activeSetAsset.storage_bucket,
+        storage_path: activeSetAsset.storage_path,
+        image_url: activeSetAsset.image_url,
+        thumbnail_storage_bucket: activeSetAsset.thumbnail_storage_bucket,
+        thumbnail_storage_path: activeSetAsset.thumbnail_storage_path,
+        metadata_keys: metadataKeys,
+      });
+    }
+    const activeSetImageUrl = activeSetAsset
+      ? await resolveAssetImageUrlForBaseImage({
+          supabase: args.supabase,
+          signingSupabase: args.signingSupabase,
+          asset: activeSetAsset,
+        })
+      : null;
+    activeSetAssetImageUrlPresent = Boolean(activeSetImageUrl);
+    if (activeSetAsset && activeSetImageUrl) {
+      return {
+        assetId: activeSetAsset.id,
+        activeSetVersionId,
+        activeSetAssetFound,
+        activeSetAssetImageUrlPresent,
+        imageUrl: activeSetImageUrl,
+        storagePath: activeSetAsset.storage_path,
+        resolutionStrategy: "active_set",
+      };
+    }
+  }
+
   const canonicalBaseImageUrl = room.base_image_url?.trim() ?? "";
   if (canonicalBaseImageUrl.length > 0) {
     return {
       assetId: room.base_version_id,
+      activeSetVersionId,
+      activeSetAssetFound,
+      activeSetAssetImageUrlPresent,
       imageUrl: canonicalBaseImageUrl,
       storagePath: room.base_storage_path,
       resolutionStrategy: "canonical_room_upload",
@@ -300,6 +465,9 @@ function resolveBaseImageFromRoomMetadata(room: VibodeRoomBaseRow): ResolvedScen
   if (fallbackCoverImageUrl.length > 0) {
     return {
       assetId: room.active_asset_id,
+      activeSetVersionId,
+      activeSetAssetFound,
+      activeSetAssetImageUrlPresent,
       imageUrl: fallbackCoverImageUrl,
       storagePath: null,
       resolutionStrategy: "fallback_version_image",
@@ -308,6 +476,9 @@ function resolveBaseImageFromRoomMetadata(room: VibodeRoomBaseRow): ResolvedScen
 
   return {
     assetId: null,
+    activeSetVersionId,
+    activeSetAssetFound,
+    activeSetAssetImageUrlPresent,
     imageUrl: null,
     storagePath: null,
     resolutionStrategy: "unknown",
@@ -384,19 +555,36 @@ export async function resolveScenePlacements(
 
 export async function resolveSceneBaseImage(args: {
   supabase: AnySupabaseClient;
+  signingSupabase?: AnySupabaseClient | null;
   roomId: string;
   userId: string;
 }): Promise<ResolvedSceneBaseImage> {
-  const room = await fetchRoomBaseMetadata(args);
-  return resolveBaseImageFromRoomMetadata(room);
+  const [room, roomAssets] = await Promise.all([
+    fetchRoomBaseMetadata(args),
+    fetchRoomAssetsForBaseResolution(args),
+  ]);
+  return resolveBaseImageFromRoomMetadata({
+    supabase: args.supabase,
+    signingSupabase: args.signingSupabase,
+    room,
+    roomAssets,
+  });
 }
 
 export async function buildSceneRebuildPayload(
   args: BuildSceneRebuildPayloadArgs
 ): Promise<SceneRebuildPayload> {
-  const room = await fetchRoomBaseMetadata(args);
+  const [room, roomAssets] = await Promise.all([
+    fetchRoomBaseMetadata(args),
+    fetchRoomAssetsForBaseResolution(args),
+  ]);
   const resolved = await resolveScenePlacements(args);
-  const resolvedBaseImage = resolveBaseImageFromRoomMetadata(room);
+  const resolvedBaseImage = await resolveBaseImageFromRoomMetadata({
+    supabase: args.supabase,
+    signingSupabase: args.signingSupabase,
+    room,
+    roomAssets,
+  });
   const fallbackImageUrlUsed = resolvedBaseImage.resolutionStrategy === "fallback_version_image";
   const baseImageUrl = resolvedBaseImage.imageUrl ?? "";
 
@@ -424,9 +612,13 @@ export async function buildSceneRebuildPayload(
       userId: room.user_id,
       requestedVersionId: args.versionId,
       activeAssetId: room.active_asset_id,
+      activeSetVersionId: resolvedBaseImage.activeSetVersionId,
+      activeSetAssetFound: resolvedBaseImage.activeSetAssetFound,
+      activeSetAssetImageUrlPresent: resolvedBaseImage.activeSetAssetImageUrlPresent,
       baseImageUrl,
       baseStoragePath: room.base_storage_path,
       baseVersionId: room.base_version_id,
+      effectiveBaseImageStrategy: resolvedBaseImage.resolutionStrategy,
       fallbackImageUrlUsed,
     },
     placements,

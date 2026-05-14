@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import type { SupabaseClient } from "@supabase/supabase-js";
+import { resolveActiveSetVersionId } from "@/lib/vibode/active-set";
 
 export const runtime = "nodejs";
 
@@ -19,6 +20,9 @@ type AnySupabaseClient = SupabaseClient;
 type RoomRow = {
   id: string;
   user_id: string;
+  metadata: Record<string, unknown> | null;
+  base_asset_id: string | null;
+  active_asset_id: string | null;
 };
 
 type RoomAssetRow = {
@@ -197,7 +201,7 @@ export async function POST(req: NextRequest) {
 
     const { data: roomData, error: roomErr } = await userSupabase
       .from("vibode_rooms")
-      .select("id,user_id")
+      .select("id,user_id,metadata,base_asset_id,active_asset_id")
       .eq("id", roomId)
       .eq("user_id", userId)
       .maybeSingle();
@@ -250,7 +254,14 @@ export async function POST(req: NextRequest) {
       })
     );
 
-    return NextResponse.json({ versions });
+    const activeSetVersionId = resolveActiveSetVersionId({
+      roomMetadata: room.metadata,
+      versions: assetRows ?? [],
+      baseAssetId: room.base_asset_id,
+      activeAssetId: room.active_asset_id,
+    });
+
+    return NextResponse.json({ versions, activeSetVersionId });
   } catch (err) {
     console.error("[vibode/room-versions] unexpected error:", err);
     return jsonError("Unexpected room versions error.", 500);
