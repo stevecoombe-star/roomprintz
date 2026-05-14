@@ -447,11 +447,6 @@ const DEFAULT_PANELS_STATE: EditorRightPanelsState = {
   versions: false,
 };
 
-const EXPANDED_PANELS_STATE: EditorRightPanelsState = {
-  workflow: true,
-  editTools: true,
-  versions: true,
-};
 const WORKFLOW_MODE_HELPER_COPY: Record<WorkflowMode, string> = {
   set: "Prepare your room",
   stage: "Place furniture",
@@ -2006,6 +2001,17 @@ function EditorPageInner() {
   const [swapTargetId, setSwapTargetId] = useState<string | null>(null);
   const [swapPickerOpen, setSwapPickerOpen] = useState(false);
   const [panels, setPanels] = useState<EditorRightPanelsState>(DEFAULT_PANELS_STATE);
+  const [versionShelfExpanded, setVersionShelfExpanded] = useState<{
+    style: boolean;
+    stage: boolean;
+    set: boolean;
+    unknown: boolean;
+  }>({
+    style: false,
+    stage: false,
+    set: false,
+    unknown: false,
+  });
   const [hasLoadedPanelsFromStorage, setHasLoadedPanelsFromStorage] = useState(false);
   const [isPasteProductImageCollapsed, setIsPasteProductImageCollapsed] = useState(false);
   const [isSetupCollapsed, setIsSetupCollapsed] = useState(false);
@@ -2041,19 +2047,6 @@ function EditorPageInner() {
     }
   }, [hasLoadedPanelsFromStorage, panels]);
 
-  const collapseAllRightPanels = () => {
-    setPanels(DEFAULT_PANELS_STATE);
-    setIsSetupCollapsed(true);
-    setIsPasteProductImageCollapsed(true);
-    setIsCalibrationCollapsed(true);
-  };
-  const expandAllRightPanels = () => {
-    setPanels(EXPANDED_PANELS_STATE);
-    setIsSetupCollapsed(false);
-    setIsPasteProductImageCollapsed(false);
-    setIsCalibrationCollapsed(false);
-  };
-
   const [snacks, setSnacks] = useState<Snackbar[]>([]);
   const pushSnack = useCallback((message: string) => {
     setSnacks((prev) => [...prev, { id: safeId("sn"), message }]);
@@ -2086,6 +2079,7 @@ function EditorPageInner() {
   const activePasteToPlaceJobControlRef = useRef<PasteToPlaceJobControl | null>(null);
   const [activePasteToPlaceJobControlUiState, setActivePasteToPlaceJobControlUiState] =
     useState<PasteToPlaceJobControl | null>(null);
+  const versionRowRefs = useRef<Record<string, HTMLDivElement | null>>({});
   const inFlightProductUrlAutosavesRef = useRef<Map<string, Promise<string | null>>>(new Map());
   const pasteToPlaceAbortControllerRef = useRef<AbortController | null>(null);
   const activePasteToPlaceSettlingRequestIdRef = useRef<string | null>(null);
@@ -4124,28 +4118,23 @@ function EditorPageInner() {
     }
     return versionsWithKind.find((asset) => asset.asset_type !== "stage_output") ?? null;
   }, [roomBaseAssetId, versionsWithKind]);
-  const nonOriginalVersions = useMemo(() => {
-    const originalId = originalVersion?.id ?? null;
-    const sorted = versionsWithKind
-      .filter((asset) => asset.id !== originalId)
-      .slice()
-      .sort((a, b) => {
-        const aMs = Date.parse(a.created_at);
-        const bMs = Date.parse(b.created_at);
-        const safeA = Number.isFinite(aMs) ? aMs : 0;
-        const safeB = Number.isFinite(bMs) ? bMs : 0;
-        return safeB - safeA;
-      });
-    return sorted;
-  }, [originalVersion?.id, versionsWithKind]);
+  const versionsForShelves = useMemo(() => {
+    return versionsWithKind.slice().sort((a, b) => {
+      const aMs = Date.parse(a.created_at);
+      const bMs = Date.parse(b.created_at);
+      const safeA = Number.isFinite(aMs) ? aMs : 0;
+      const safeB = Number.isFinite(bMs) ? bMs : 0;
+      return safeB - safeA;
+    });
+  }, [versionsWithKind]);
   const groupedVersions = useMemo(() => {
     const set: EditorVersionWithKind[] = [];
     const stage: EditorVersionWithKind[] = [];
     const style: EditorVersionWithKind[] = [];
     const unknown: EditorVersionWithKind[] = [];
 
-    for (const version of nonOriginalVersions) {
-      if (version.versionKind === "set") {
+    for (const version of versionsForShelves) {
+      if (version.versionKind === "set" || version.asset_type === "base") {
         set.push(version);
         continue;
       }
@@ -4161,7 +4150,11 @@ function EditorPageInner() {
     }
 
     return { set, stage, style, unknown };
-  }, [nonOriginalVersions]);
+  }, [versionsForShelves]);
+  const selectedCanvasVersion = useMemo(
+    () => versionsWithKind.find((asset) => asset.id === selectedVersionId) ?? null,
+    [selectedVersionId, versionsWithKind]
+  );
   const canDeleteVersions = versions.length > 1;
 
   useEffect(() => {
@@ -8769,19 +8762,62 @@ function EditorPageInner() {
     Boolean(devSceneRebuildMissingReason);
   const activeStageTokenCost = STAGE_TOKEN_COST[activeStage] ?? DEFAULT_ACTION_TOKEN_COST;
   const activeStageTokenCostLabel = formatTokenCostLabel(activeStageTokenCost);
+  const getVersionPreviewUrl = useCallback((asset: EditorVersionWithKind | null): string | null => {
+    if (!asset) return null;
+    if (typeof asset.preview_url === "string" && asset.preview_url.trim().length > 0) {
+      return asset.preview_url;
+    }
+    if (typeof asset.image_url === "string" && asset.image_url.trim().length > 0) {
+      return asset.image_url;
+    }
+    return null;
+  }, []);
+  const resolveShelfForVersion = useCallback((asset: EditorVersionWithKind): "style" | "stage" | "set" | "unknown" => {
+    if (asset.versionKind === "style") return "style";
+    if (asset.versionKind === "stage") return "stage";
+    if (asset.versionKind === "set" || asset.asset_type === "base") return "set";
+    return "unknown";
+  }, []);
+  const expandOnlyVersionShelf = useCallback((shelf: "style" | "stage" | "set" | "unknown") => {
+    setVersionShelfExpanded({
+      style: shelf === "style",
+      stage: shelf === "stage",
+      set: shelf === "set",
+      unknown: shelf === "unknown",
+    });
+  }, []);
+  const scrollToVersionRow = useCallback((versionId: string) => {
+    if (typeof window === "undefined") return;
+    window.requestAnimationFrame(() => {
+      const row = versionRowRefs.current[versionId];
+      row?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    });
+  }, []);
+  const jumpToVersionViaAnchor = useCallback(
+    (asset: EditorVersionWithKind, forcedShelf?: "style" | "stage" | "set" | "unknown") => {
+      const shelf = forcedShelf ?? resolveShelfForVersion(asset);
+      expandOnlyVersionShelf(shelf);
+      handleSelectVersion(asset);
+      scrollToVersionRow(asset.id);
+    },
+    [expandOnlyVersionShelf, handleSelectVersion, resolveShelfForVersion, scrollToVersionRow]
+  );
   const renderVersionRow = (asset: EditorVersionWithKind) => {
     const isActive = selectedVersionId === asset.id;
     const secondaryText = getVersionSecondaryLabel(asset);
     const isBaseImage = asset.isActiveSetEligible && activeSetVersionId === asset.id;
     const canSetAsBaseImage = asset.isActiveSetEligible && !isBaseImage;
-    const versionPreviewUrl =
-      typeof asset.preview_url === "string" && asset.preview_url.trim().length > 0
-        ? asset.preview_url
-        : asset.image_url;
+    const versionPreviewUrl = getVersionPreviewUrl(asset) ?? "";
     const isDeleting = deletingVersionId === asset.id;
     const isSettingAsBaseImage = settingBaseImageVersionId === asset.id;
     return (
-      <div key={asset.id} className="flex items-center gap-1.5">
+      <div
+        key={asset.id}
+        ref={(node) => {
+          versionRowRefs.current[asset.id] = node;
+        }}
+        className="flex items-center gap-1.5"
+      >
         <button
           type="button"
           onClick={() => handleSelectVersion(asset)}
@@ -8812,7 +8848,7 @@ function EditorPageInner() {
           {canSetAsBaseImage ? (
             <button
               type="button"
-              className={`rounded-md border px-2 py-1 text-[11px] transition ${
+              className={`w-[68px] rounded-md border px-1.5 py-1 text-[10px] leading-tight text-center whitespace-normal transition ${
                 settingBaseImageVersionId
                   ? "cursor-not-allowed border-neutral-900 bg-neutral-950 text-neutral-600"
                   : "border-neutral-800 bg-neutral-950 text-neutral-400 hover:bg-neutral-800 hover:text-neutral-200"
@@ -8824,7 +8860,14 @@ function EditorPageInner() {
               aria-label="Set as Base Image"
               title="Set as Base Image"
             >
-              {isSettingAsBaseImage ? "Setting..." : "Set as Base Image"}
+              {isSettingAsBaseImage ? (
+                "Setting..."
+              ) : (
+                <>
+                  <span className="block">Set as</span>
+                  <span className="block">Base Image</span>
+                </>
+              )}
             </button>
           ) : null}
           {canDeleteVersions ? (
@@ -8847,6 +8890,61 @@ function EditorPageInner() {
       </div>
     );
   };
+  const renderCollapsedVersionShelf = (args: {
+    keyName: "style" | "stage" | "set" | "unknown";
+    label: string;
+    versionsInShelf: EditorVersionWithKind[];
+  }) => {
+    const { keyName, label, versionsInShelf } = args;
+    if (versionsInShelf.length === 0) return null;
+
+    const isExpanded = versionShelfExpanded[keyName];
+
+    return (
+      <div key={keyName}>
+        <button
+          type="button"
+          className="flex w-full items-center justify-between rounded-md border border-neutral-800 bg-neutral-950 px-2.5 py-1.5 text-left transition hover:bg-neutral-900"
+          aria-expanded={isExpanded}
+          onClick={() =>
+            setVersionShelfExpanded((prev) => ({
+              ...prev,
+              [keyName]: !prev[keyName],
+            }))
+          }
+        >
+          <div className="min-w-0">
+            <div className="text-[11px] uppercase tracking-wide text-neutral-400">
+              {label} ({versionsInShelf.length})
+            </div>
+          </div>
+          <span className="ml-2 text-xs text-neutral-400">{isExpanded ? "▾" : "▸"}</span>
+        </button>
+        {isExpanded ? <div className="mt-1 space-y-1">{versionsInShelf.map(renderVersionRow)}</div> : null}
+      </div>
+    );
+  };
+  const activeBasePreviewVersion =
+    versionsWithKind.find((asset) => asset.id === activeSetVersionId) ?? originalVersion;
+  const activeCanvasKindLabel = selectedCanvasVersion
+    ? resolveShelfForVersion(selectedCanvasVersion).toUpperCase()
+    : null;
+  const collapseAllVersionShelves = useCallback(() => {
+    setVersionShelfExpanded({
+      style: false,
+      stage: false,
+      set: false,
+      unknown: false,
+    });
+  }, []);
+  const expandAllVersionShelves = useCallback(() => {
+    setVersionShelfExpanded({
+      style: true,
+      stage: true,
+      set: true,
+      unknown: true,
+    });
+  }, []);
   const isSetWorkflowMode = workflowMode === "set";
   const isStageWorkflowMode = workflowMode === "stage";
   const isStyleWorkflowMode = workflowMode === "style";
@@ -9401,22 +9499,6 @@ function EditorPageInner() {
         <aside className="h-full w-[340px] border-l border-neutral-800 bg-neutral-950">
           <div className="h-full overflow-y-auto">
             <div className="space-y-4 p-4">
-              <div className="flex justify-end gap-2 border-b border-neutral-800 pb-3">
-                <button
-                  type="button"
-                  onClick={collapseAllRightPanels}
-                  className="rounded-md border border-neutral-800 bg-neutral-900 px-2 py-1 text-xs text-neutral-300 opacity-70 hover:bg-neutral-800 hover:opacity-100"
-                >
-                  - Collapse All
-                </button>
-                <button
-                  type="button"
-                  onClick={expandAllRightPanels}
-                  className="rounded-md border border-neutral-800 bg-neutral-900 px-2 py-1 text-xs text-neutral-300 opacity-70 hover:bg-neutral-800 hover:opacity-100"
-                >
-                  + Expand All
-                </button>
-              </div>
             <div className="rounded-lg border border-neutral-800 bg-neutral-900 p-3">
               <div className="flex items-center justify-between">
                 <div className="text-sm font-medium">Workflow — {workflowMode.toUpperCase()}</div>
@@ -9709,64 +9791,108 @@ function EditorPageInner() {
                     {versions.length} version{versions.length === 1 ? "" : "s"}
                   </div>
                 </div>
-                <button
-                  type="button"
-                  className="rounded-md border border-neutral-800 bg-neutral-950 px-2 py-1 text-xs text-neutral-300 hover:bg-neutral-800"
-                  aria-label={panels.versions ? "Collapse Versions panel" : "Expand Versions panel"}
-                  aria-expanded={panels.versions}
-                  aria-controls="versions-panel-body"
-                  onClick={() =>
-                    setPanels((prev) => ({
-                      ...prev,
-                      versions: !prev.versions,
-                    }))
-                  }
-                >
-                  {panels.versions ? "▾" : "▸"}
-                </button>
-              </div>
-              {panels.versions ? (
-                <div id="versions-panel-body" className="mt-3">
-                  {versions.length === 0 ? (
-                    <div className="rounded-md border border-dashed border-neutral-800 bg-neutral-950 px-3 py-2 text-xs text-neutral-500">
-                      No versions yet. Upload an image to create the original version.
-                    </div>
-                  ) : (
-                    <div className="space-y-3">
-                      {groupedVersions.style.length > 0 ? (
-                        <div>
-                          <div className="mb-1 text-[11px] uppercase tracking-wide text-neutral-500">STYLE</div>
-                          <div className="space-y-1">{groupedVersions.style.map(renderVersionRow)}</div>
-                        </div>
-                      ) : null}
-                      {groupedVersions.stage.length > 0 ? (
-                        <div>
-                          <div className="mb-1 text-[11px] uppercase tracking-wide text-neutral-500">STAGE</div>
-                          <div className="space-y-1">{groupedVersions.stage.map(renderVersionRow)}</div>
-                        </div>
-                      ) : null}
-                      {groupedVersions.set.length > 0 ? (
-                        <div>
-                          <div className="mb-1 text-[11px] uppercase tracking-wide text-neutral-500">SET</div>
-                          <div className="space-y-1">{groupedVersions.set.map(renderVersionRow)}</div>
-                        </div>
-                      ) : null}
-                      {groupedVersions.unknown.length > 0 ? (
-                        <div>
-                          <div className="mb-1 text-[11px] uppercase tracking-wide text-neutral-500">UNKNOWN</div>
-                          <div className="space-y-1">{groupedVersions.unknown.map(renderVersionRow)}</div>
-                        </div>
-                      ) : null}
-                      {originalVersion ? (
-                        <div>
-                          <div className="mb-1 text-[11px] uppercase tracking-wide text-neutral-500">Original</div>
-                          <div className="space-y-1">{renderVersionRow(originalVersion)}</div>
-                        </div>
-                      ) : null}
-                    </div>
-                  )}
+                <div className="flex items-center gap-1.5">
+                  <button
+                    type="button"
+                    className="rounded-md border border-neutral-800 bg-neutral-950 px-2 py-1 text-[11px] text-neutral-400 transition hover:bg-neutral-800 hover:text-neutral-200"
+                    onClick={collapseAllVersionShelves}
+                  >
+                    − Collapse All
+                  </button>
+                  <button
+                    type="button"
+                    className="rounded-md border border-neutral-800 bg-neutral-950 px-2 py-1 text-[11px] text-neutral-400 transition hover:bg-neutral-800 hover:text-neutral-200"
+                    onClick={expandAllVersionShelves}
+                  >
+                    + Expand All
+                  </button>
                 </div>
-              ) : null}
+              </div>
+              <div id="versions-panel-body" className="mt-3">
+                {versions.length === 0 ? (
+                  <div className="rounded-md border border-dashed border-neutral-800 bg-neutral-950 px-3 py-2 text-xs text-neutral-500">
+                    No versions yet. Upload an image to create the original version.
+                  </div>
+                ) : (
+                  <div className="space-y-2.5">
+                    {selectedCanvasVersion ? (
+                      <button
+                        type="button"
+                        className="flex w-full items-center gap-2 rounded-md border border-neutral-800 bg-neutral-950 px-2.5 py-2 text-left transition hover:bg-neutral-900"
+                        onClick={() => jumpToVersionViaAnchor(selectedCanvasVersion)}
+                      >
+                        {getVersionPreviewUrl(selectedCanvasVersion) ? (
+                          <>
+                            {/* eslint-disable-next-line @next/next/no-img-element -- anchor card uses dynamic version preview URLs */}
+                            <img
+                              src={getVersionPreviewUrl(selectedCanvasVersion) ?? ""}
+                              alt="Active Canvas Image"
+                              className="h-9 w-12 flex-none rounded bg-neutral-800 object-cover"
+                              loading="lazy"
+                            />
+                          </>
+                        ) : (
+                          <div className="h-9 w-12 flex-none rounded border border-neutral-800 bg-neutral-900" />
+                        )}
+                        <div className="min-w-0">
+                          <div className="text-[10px] uppercase tracking-wide text-neutral-500">
+                            Active Canvas Image
+                          </div>
+                          {activeCanvasKindLabel ? (
+                            <div className="text-[11px] text-neutral-300">{activeCanvasKindLabel}</div>
+                          ) : null}
+                        </div>
+                      </button>
+                    ) : null}
+                    {renderCollapsedVersionShelf({
+                      keyName: "style",
+                      label: "STYLE",
+                      versionsInShelf: groupedVersions.style,
+                    })}
+                    {renderCollapsedVersionShelf({
+                      keyName: "stage",
+                      label: "STAGE",
+                      versionsInShelf: groupedVersions.stage,
+                    })}
+                    {renderCollapsedVersionShelf({
+                      keyName: "set",
+                      label: "SET",
+                      versionsInShelf: groupedVersions.set,
+                    })}
+                    {renderCollapsedVersionShelf({
+                      keyName: "unknown",
+                      label: "UNKNOWN",
+                      versionsInShelf: groupedVersions.unknown,
+                    })}
+                    {activeBasePreviewVersion ? (
+                      <button
+                        type="button"
+                        className="flex w-full items-center gap-2 rounded-md border border-neutral-800 bg-neutral-950 px-2.5 py-2 text-left transition hover:bg-neutral-900"
+                        onClick={() => jumpToVersionViaAnchor(activeBasePreviewVersion, "set")}
+                      >
+                        {getVersionPreviewUrl(activeBasePreviewVersion) ? (
+                          <>
+                            {/* eslint-disable-next-line @next/next/no-img-element -- anchor card uses dynamic base preview URLs */}
+                            <img
+                              src={getVersionPreviewUrl(activeBasePreviewVersion) ?? ""}
+                              alt="Active Base Image"
+                              className="h-9 w-12 flex-none rounded bg-neutral-800 object-cover"
+                              loading="lazy"
+                            />
+                          </>
+                        ) : (
+                          <div className="h-9 w-12 flex-none rounded border border-neutral-800 bg-neutral-900" />
+                        )}
+                        <div className="min-w-0">
+                          <div className="text-[10px] uppercase tracking-wide text-sky-300">
+                            Active Base Image
+                          </div>
+                        </div>
+                      </button>
+                    ) : null}
+                  </div>
+                )}
+              </div>
             </div>
 
             {showObsoleteV0RightPanels ? (
