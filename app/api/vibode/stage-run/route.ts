@@ -11,6 +11,7 @@ import {
   resolveVibodeOutputDimensions,
   resolveVibodeOutputStorage,
 } from "@/lib/vibodeAssetFinalization";
+import { inferPersistedVibodeVersionKindFromStageNumber } from "@/lib/vibode/version-kind";
 import {
   canAffordTokens,
   getTokenCostForAction,
@@ -329,6 +330,7 @@ export async function POST(req: NextRequest) {
       responseWidth: hintedDimensions.width,
       responseHeight: hintedDimensions.height,
       sourceImageUrlForThumbnail: safeStr(result.imageUrl),
+      versionKind: inferPersistedVibodeVersionKindFromStageNumber(stageRunContext.resolvedStageNumber),
       markAssetActive: hasRoomPersistenceContext,
       updateRoomCurrentStage: hasRoomPersistenceContext ? stageRunContext.resolvedStageNumber : undefined,
       updateRoomSortKey: nowIso,

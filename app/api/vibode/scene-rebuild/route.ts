@@ -11,6 +11,7 @@ import {
   getVibodeRoomById,
   updateVibodeRoomAsset,
 } from "@/lib/vibodePersistence";
+import { stampVibodeVersionKindMetadata } from "@/lib/vibode/version-kind";
 
 export const runtime = "nodejs";
 
@@ -1423,6 +1424,7 @@ export async function POST(req: NextRequest) {
       responseWidth: null,
       responseHeight: null,
       sourceImageUrlForThumbnail: generatedImageUrl,
+      versionKind: "stage",
       markAssetActive: false,
       updateRoomCurrentStage: null,
       updateRoomSortKey: null,
@@ -1543,8 +1545,37 @@ export async function POST(req: NextRequest) {
       fallback_image_url_used: payload.room.fallbackImageUrlUsed,
     };
 
+    const { data: outputAssetMetadataRow, error: outputAssetMetadataErr } = await supabase
+      .from("vibode_room_assets")
+      .select("metadata")
+      .eq("id", outputFinalization.outputAssetId)
+      .eq("room_id", room.id)
+      .eq("user_id", userId)
+      .maybeSingle();
+    if (outputAssetMetadataErr) {
+      throw new SceneRebuildError("Failed to load output asset metadata for scene rebuild.", 500, {
+        supabaseError: outputAssetMetadataErr.message,
+        outputVersionId: outputFinalization.outputAssetId,
+      });
+    }
+    const existingOutputMetadata = isRecord(outputAssetMetadataRow?.metadata)
+      ? outputAssetMetadataRow.metadata
+      : {};
+    const mergedRebuildMetadata = stampVibodeVersionKindMetadata(
+      {
+        ...existingOutputMetadata,
+        ...rebuildMetadata,
+      },
+      "stage"
+    );
+
     await updateVibodeRoomAsset(supabase, outputFinalization.outputAssetId, {
-      metadata: rebuildMetadata,
+      metadata:
+        mergedRebuildMetadata ??
+        {
+          ...existingOutputMetadata,
+          ...rebuildMetadata,
+        },
     });
 
     const generationRun = await createVibodeGenerationRun(supabase, {

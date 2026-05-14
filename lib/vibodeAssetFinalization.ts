@@ -5,6 +5,7 @@ import {
   updateVibodeRoom,
   updateVibodeRoomAsset,
 } from "@/lib/vibodePersistence";
+import { stampVibodeVersionKindMetadata } from "@/lib/vibode/version-kind";
 
 type AnySupabaseClient = SupabaseClient;
 
@@ -36,6 +37,8 @@ type FinalizeVibodeOutputAssetArgs = {
   responseWidth: number | null;
   responseHeight: number | null;
   sourceImageUrlForThumbnail?: string | null;
+  metadata?: Record<string, unknown> | null;
+  versionKind?: unknown;
   markAssetActive?: boolean;
   updateRoomCurrentStage?: number | null;
   updateRoomSortKey?: string | null;
@@ -351,6 +354,7 @@ export async function finalizeVibodeOutputAsset(
   });
 
   try {
+    const outputAssetMetadata = stampVibodeVersionKindMetadata(args.metadata, args.versionKind);
     const outputAsset = await createVibodeRoomAsset(args.persistenceSupabase, {
       room_id: args.roomId,
       user_id: args.userId,
@@ -363,6 +367,7 @@ export async function finalizeVibodeOutputAsset(
       width,
       height,
       is_active: markAssetActive,
+      ...(outputAssetMetadata ? { metadata: outputAssetMetadata } : {}),
     });
     outputAssetId = outputAsset.id;
 

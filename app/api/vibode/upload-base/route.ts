@@ -10,6 +10,7 @@ import {
   updateVibodeRoom,
 } from "@/lib/vibodePersistence";
 import { createVibodeAssetThumbnail } from "@/lib/vibodeAssetThumbnails";
+import { stampVibodeVersionKindMetadata } from "@/lib/vibode/version-kind";
 
 export const runtime = "nodejs";
 
@@ -165,6 +166,7 @@ export async function POST(req: NextRequest) {
         selected_model: selectedModel,
         status: "draft",
       });
+      const baseVersionMetadata = stampVibodeVersionKindMetadata(null, "set");
 
       const baseAsset = await createVibodeRoomAsset(userSupabase, {
         room_id: room.id,
@@ -177,6 +179,7 @@ export async function POST(req: NextRequest) {
         width: widthPx ?? null,
         height: heightPx ?? null,
         is_active: true,
+        ...(baseVersionMetadata ? { metadata: baseVersionMetadata } : {}),
       });
 
       await assignVibodeRoomBaseImageIfMissing(userSupabase, {

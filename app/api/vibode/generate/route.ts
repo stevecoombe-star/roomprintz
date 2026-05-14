@@ -24,6 +24,10 @@ import {
 } from "@/lib/vibodePersistence";
 import { createVibodeAssetThumbnail } from "@/lib/vibodeAssetThumbnails";
 import {
+  inferPersistedVibodeVersionKindFromStageNumber,
+  stampVibodeVersionKindMetadata,
+} from "@/lib/vibode/version-kind";
+import {
   inferLayerKindFromSkuKind,
   ensureZIndex,
   type LayerKind,
@@ -2247,6 +2251,10 @@ export async function handleGenerateRequest(args: {
             const resolvedAspectRatio =
               safeStr(args.requestedAspectRatio) ?? pickLegacyAspectRatioFromFreeze(payloadForModel);
             const previousActiveAssetId = existingRoom.active_asset_id ?? null;
+            const outputVersionMetadata = stampVibodeVersionKindMetadata(
+              null,
+              inferPersistedVibodeVersionKindFromStageNumber(currentStageNumber)
+            );
 
             const outputAsset = await createVibodeRoomAsset(persistenceClient, {
               room_id: existingRoom.id,
@@ -2264,6 +2272,7 @@ export async function handleGenerateRequest(args: {
               width: persisted.widthPx ?? payloadForModel.baseImage.widthPx,
               height: persisted.heightPx ?? payloadForModel.baseImage.heightPx,
               is_active: true,
+              ...(outputVersionMetadata ? { metadata: outputVersionMetadata } : {}),
             });
 
             try {

@@ -50,6 +50,7 @@ import {
   type PlacementMetadata,
   type PlacementSource,
 } from "@/lib/placementMetadata";
+import { getVibodeVersionKind, type VibodeVersionKind } from "@/lib/vibode/version-kind";
 
 import { getSupabaseBrowserAccessToken, supabaseBrowser } from "@/lib/supabaseBrowser";
 import { useTokenBalance } from "@/hooks/useTokenBalance";
@@ -420,7 +421,8 @@ function hasSwapMarksWithReplacement(vibodeIntent: unknown): boolean {
 }
 
 type WorkflowStage = 1 | 2 | 3 | 4 | 5;
-type WorkflowMode = "set" | "stage" | "style";
+type WorkflowMode = Exclude<VibodeVersionKind, "unknown">;
+type EditorVersionWithKind = VibodeRoomAsset & { versionKind: VibodeVersionKind };
 type StageRunStatus = "idle" | "running" | "success" | "error";
 type DeclutterMode = "off" | "light" | "heavy";
 type VibodeModelVersion = typeof VIBODE_MODEL_NBP | typeof VIBODE_MODEL_NB2;
@@ -1739,18 +1741,6 @@ function getVersionSecondaryLabel(asset: VibodeRoomAsset): string {
       ? asset.model_version
       : "Unknown model";
   return `Stage ${stageLabel} · ${modelLabel}`;
-}
-
-function isSameLocalDay(a: Date, b: Date): boolean {
-  return (
-    a.getFullYear() === b.getFullYear() &&
-    a.getMonth() === b.getMonth() &&
-    a.getDate() === b.getDate()
-  );
-}
-
-function isSameLocalMonth(a: Date, b: Date): boolean {
-  return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth();
 }
 
 async function loadRoomHydrationData(
@@ -4021,16 +4011,24 @@ function EditorPageInner() {
     },
     [clearLegacyPlacementNodes]
   );
+  const versionsWithKind = useMemo<EditorVersionWithKind[]>(
+    () =>
+      versions.map((version) => ({
+        ...version,
+        versionKind: getVibodeVersionKind(version),
+      })),
+    [versions]
+  );
   const originalVersion = useMemo(() => {
     if (roomBaseAssetId) {
-      const byRoomBaseId = versions.find((asset) => asset.id === roomBaseAssetId);
+      const byRoomBaseId = versionsWithKind.find((asset) => asset.id === roomBaseAssetId);
       if (byRoomBaseId) return byRoomBaseId;
     }
-    return versions.find((asset) => asset.asset_type !== "stage_output") ?? null;
-  }, [roomBaseAssetId, versions]);
+    return versionsWithKind.find((asset) => asset.asset_type !== "stage_output") ?? null;
+  }, [roomBaseAssetId, versionsWithKind]);
   const nonOriginalVersions = useMemo(() => {
     const originalId = originalVersion?.id ?? null;
-    const sorted = versions
+    const sorted = versionsWithKind
       .filter((asset) => asset.id !== originalId)
       .slice()
       .sort((a, b) => {
@@ -4041,29 +4039,30 @@ function EditorPageInner() {
         return safeB - safeA;
       });
     return sorted;
-  }, [originalVersion?.id, versions]);
+  }, [originalVersion?.id, versionsWithKind]);
   const groupedVersions = useMemo(() => {
-    const today: VibodeRoomAsset[] = [];
-    const thisMonth: VibodeRoomAsset[] = [];
-    const earlier: VibodeRoomAsset[] = [];
-    const now = new Date();
+    const set: EditorVersionWithKind[] = [];
+    const stage: EditorVersionWithKind[] = [];
+    const style: EditorVersionWithKind[] = [];
+    const unknown: EditorVersionWithKind[] = [];
 
     for (const version of nonOriginalVersions) {
-      const created = new Date(version.created_at);
-      if (Number.isNaN(created.getTime())) {
-        earlier.push(version);
+      if (version.versionKind === "set") {
+        set.push(version);
         continue;
       }
-      if (isSameLocalDay(created, now)) {
-        today.push(version);
-      } else if (isSameLocalMonth(created, now)) {
-        thisMonth.push(version);
-      } else {
-        earlier.push(version);
+      if (version.versionKind === "stage") {
+        stage.push(version);
+        continue;
       }
+      if (version.versionKind === "style") {
+        style.push(version);
+        continue;
+      }
+      unknown.push(version);
     }
 
-    return { today, thisMonth, earlier };
+    return { set, stage, style, unknown };
   }, [nonOriginalVersions]);
   const canDeleteVersions = versions.length > 1;
 
@@ -8629,7 +8628,7 @@ function EditorPageInner() {
     Boolean(devSceneRebuildMissingReason);
   const activeStageTokenCost = STAGE_TOKEN_COST[activeStage] ?? DEFAULT_ACTION_TOKEN_COST;
   const activeStageTokenCostLabel = formatTokenCostLabel(activeStageTokenCost);
-  const renderVersionRow = (asset: VibodeRoomAsset) => {
+  const renderVersionRow = (asset: EditorVersionWithKind) => {
     const isActive = selectedVersionId === asset.id;
     const secondaryText = getVersionSecondaryLabel(asset);
     const versionPreviewUrl =
@@ -9569,24 +9568,28 @@ function EditorPageInner() {
                     </div>
                   ) : (
                     <div className="space-y-3">
-                      {groupedVersions.today.length > 0 ? (
+                      {groupedVersions.style.length > 0 ? (
                         <div>
-                          <div className="mb-1 text-[11px] uppercase tracking-wide text-neutral-500">Today</div>
-                          <div className="space-y-1">{groupedVersions.today.map(renderVersionRow)}</div>
+                          <div className="mb-1 text-[11px] uppercase tracking-wide text-neutral-500">STYLE</div>
+                          <div className="space-y-1">{groupedVersions.style.map(renderVersionRow)}</div>
                         </div>
                       ) : null}
-                      {groupedVersions.thisMonth.length > 0 ? (
+                      {groupedVersions.stage.length > 0 ? (
                         <div>
-                          <div className="mb-1 text-[11px] uppercase tracking-wide text-neutral-500">
-                            This month
-                          </div>
-                          <div className="space-y-1">{groupedVersions.thisMonth.map(renderVersionRow)}</div>
+                          <div className="mb-1 text-[11px] uppercase tracking-wide text-neutral-500">STAGE</div>
+                          <div className="space-y-1">{groupedVersions.stage.map(renderVersionRow)}</div>
                         </div>
                       ) : null}
-                      {groupedVersions.earlier.length > 0 ? (
+                      {groupedVersions.set.length > 0 ? (
                         <div>
-                          <div className="mb-1 text-[11px] uppercase tracking-wide text-neutral-500">Earlier</div>
-                          <div className="space-y-1">{groupedVersions.earlier.map(renderVersionRow)}</div>
+                          <div className="mb-1 text-[11px] uppercase tracking-wide text-neutral-500">SET</div>
+                          <div className="space-y-1">{groupedVersions.set.map(renderVersionRow)}</div>
+                        </div>
+                      ) : null}
+                      {groupedVersions.unknown.length > 0 ? (
+                        <div>
+                          <div className="mb-1 text-[11px] uppercase tracking-wide text-neutral-500">UNKNOWN</div>
+                          <div className="space-y-1">{groupedVersions.unknown.map(renderVersionRow)}</div>
                         </div>
                       ) : null}
                       {originalVersion ? (
