@@ -2153,6 +2153,7 @@ function EditorPageInner() {
     process.env.NODE_ENV !== "production" && isDevUnlockPasteToPlace && isDevSceneRebuildEnabled;
 
   const [workflowMode, setWorkflowMode] = useState<WorkflowMode>("stage");
+  const workflowTabSingleClickTimeoutRef = useRef<number | null>(null);
   const [activeStage, setActiveStage] = useState<WorkflowStage>(1);
   const [stageStatus, setStageStatus] = useState<StageStatusMap>(INITIAL_STAGE_STATUS);
   const [stage4RunningAction, setStage4RunningAction] = useState<Stage4Action | null>(null);
@@ -8948,6 +8949,31 @@ function EditorPageInner() {
   const isSetWorkflowMode = workflowMode === "set";
   const isStageWorkflowMode = workflowMode === "stage";
   const isStyleWorkflowMode = workflowMode === "style";
+  const handleWorkflowTabClick = useCallback((mode: WorkflowMode) => {
+    if (workflowTabSingleClickTimeoutRef.current !== null) {
+      window.clearTimeout(workflowTabSingleClickTimeoutRef.current);
+    }
+    workflowTabSingleClickTimeoutRef.current = window.setTimeout(() => {
+      setWorkflowMode(mode);
+      setPanels((prev) => (prev.workflow ? prev : { ...prev, workflow: true }));
+      workflowTabSingleClickTimeoutRef.current = null;
+    }, 180);
+  }, []);
+  const handleWorkflowTabDoubleClick = useCallback(() => {
+    if (workflowTabSingleClickTimeoutRef.current !== null) {
+      window.clearTimeout(workflowTabSingleClickTimeoutRef.current);
+      workflowTabSingleClickTimeoutRef.current = null;
+    }
+    setPanels((prev) => (prev.workflow ? { ...prev, workflow: false } : prev));
+  }, []);
+  useEffect(
+    () => () => {
+      if (workflowTabSingleClickTimeoutRef.current !== null) {
+        window.clearTimeout(workflowTabSingleClickTimeoutRef.current);
+      }
+    },
+    []
+  );
   const workflowPanelStage = isStyleWorkflowMode ? 4 : activeStage;
   const workflowPanelTokenCostLabel = isStyleWorkflowMode
     ? formatTokenCostLabel(STAGE_TOKEN_COST[4] ?? DEFAULT_ACTION_TOKEN_COST)
@@ -9055,33 +9081,6 @@ function EditorPageInner() {
           <div className="ml-2 rounded border border-neutral-800 px-2 py-0.5 text-xs text-neutral-300">
             V0
           </div>
-          <div className="ml-2 flex items-center gap-1 rounded-md border border-neutral-800 bg-neutral-900 p-1">
-            {(
-              [
-                { id: "set", label: "SET" },
-                { id: "stage", label: "STAGE" },
-                { id: "style", label: "STYLE" },
-              ] as const
-            ).map((mode) => {
-              const isActive = workflowMode === mode.id;
-              return (
-                <button
-                  key={mode.id}
-                  type="button"
-                  onClick={() => setWorkflowMode(mode.id)}
-                  aria-pressed={isActive}
-                  className={`rounded px-2 py-1 text-[11px] font-medium tracking-wide transition ${
-                    isActive
-                      ? "border border-neutral-600 bg-neutral-800 text-neutral-100"
-                      : "border border-transparent bg-transparent text-neutral-400 hover:bg-neutral-800 hover:text-neutral-200"
-                  }`}
-                >
-                  {mode.label}
-                </button>
-              );
-            })}
-          </div>
-          <div className="text-[11px] text-neutral-500">{WORKFLOW_MODE_HELPER_COPY[workflowMode]}</div>
         </div>
 
         <div className="flex items-center gap-2">
@@ -9499,27 +9498,56 @@ function EditorPageInner() {
         <aside className="h-full w-[340px] border-l border-neutral-800 bg-neutral-950">
           <div className="h-full overflow-y-auto">
             <div className="space-y-4 p-4">
-            <div className="rounded-lg border border-neutral-800 bg-neutral-900 p-3">
-              <div className="flex items-center justify-between">
-                <div className="text-sm font-medium">Workflow — {workflowMode.toUpperCase()}</div>
-                <button
-                  type="button"
-                  className="rounded-md border border-neutral-800 bg-neutral-950 px-2 py-1 text-xs text-neutral-300 hover:bg-neutral-800"
-                  aria-label={panels.workflow ? "Collapse Workflow panel" : "Expand Workflow panel"}
-                  aria-expanded={panels.workflow}
-                  aria-controls="workflow-panel-body"
-                  onClick={() =>
-                    setPanels((prev) => ({
-                      ...prev,
-                      workflow: !prev.workflow,
-                    }))
-                  }
-                >
-                  {panels.workflow ? "▾" : "▸"}
-                </button>
+            <div className="rounded-lg">
+              <div className="-mb-px flex items-end gap-1 px-2">
+                {(
+                  [
+                    { id: "set", label: "SET" },
+                    { id: "stage", label: "STAGE" },
+                    { id: "style", label: "STYLE" },
+                  ] as const
+                ).map((mode) => {
+                  const isActive = workflowMode === mode.id;
+                  return (
+                    <button
+                      key={mode.id}
+                      type="button"
+                      onClick={() => handleWorkflowTabClick(mode.id)}
+                      onDoubleClick={handleWorkflowTabDoubleClick}
+                      aria-pressed={isActive}
+                      className={`rounded-t-md border px-2.5 py-1 text-[11px] font-semibold tracking-[0.08em] transition ${
+                        isActive
+                          ? "border-neutral-700 border-b-neutral-900 bg-neutral-900 text-neutral-100"
+                          : "border-neutral-800 bg-neutral-950 text-neutral-500 hover:border-neutral-700 hover:bg-neutral-900 hover:text-neutral-200"
+                      }`}
+                    >
+                      {mode.label}
+                    </button>
+                  );
+                })}
               </div>
-              {panels.workflow ? (
-                <div id="workflow-panel-body">
+              <div className="rounded-lg border border-neutral-800 bg-neutral-900 p-3">
+                <div className="flex items-center justify-between">
+                  <div className="text-sm font-medium">Workflow — {workflowMode.toUpperCase()}</div>
+                  <button
+                    type="button"
+                    className="rounded-md border border-neutral-800 bg-neutral-950 px-2 py-1 text-xs text-neutral-300 hover:bg-neutral-800"
+                    aria-label={panels.workflow ? "Collapse Workflow panel" : "Expand Workflow panel"}
+                    aria-expanded={panels.workflow}
+                    aria-controls="workflow-panel-body"
+                    onClick={() =>
+                      setPanels((prev) => ({
+                        ...prev,
+                        workflow: !prev.workflow,
+                      }))
+                    }
+                  >
+                    {panels.workflow ? "▾" : "▸"}
+                  </button>
+                </div>
+                {panels.workflow ? (
+                  <div id="workflow-panel-body">
+                    <div className="mt-2 text-[11px] text-neutral-500">{WORKFLOW_MODE_HELPER_COPY[workflowMode]}</div>
 
                   <div className="mt-2 text-xs text-neutral-500">
                     Status: {stageStatus[activeStage]} • Furniture pass: {hasFurniturePass ? "yes" : "no"}
@@ -9779,8 +9807,9 @@ function EditorPageInner() {
                   </>
                 )}
                   </div>
-                </div>
-              ) : null}
+                  </div>
+                ) : null}
+              </div>
             </div>
 
             <div className="rounded-lg border border-neutral-800 bg-neutral-900 p-3">
