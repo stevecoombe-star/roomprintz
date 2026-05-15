@@ -210,6 +210,13 @@ export function MyFurniturePageClient() {
     [items, nextEditorTarget, router]
   );
 
+  const handleReturnToCanvas = useCallback(() => {
+    trackMyFurnitureEvent("vibode_my_furniture_return_to_canvas_clicked", {
+      destination: nextEditorTarget,
+    });
+    router.push(nextEditorTarget);
+  }, [nextEditorTarget, router]);
+
   const handleDeleteItem = useCallback(
     (itemId: string) => {
       removeItemById(itemId);
@@ -598,6 +605,7 @@ export function MyFurniturePageClient() {
           }}
         />
         <MyFurnitureHeader
+          onReturnToCanvas={handleReturnToCanvas}
           onRefresh={() => void refresh()}
           isRefreshing={isLoading}
           onAddItem={() => setIsAddItemOpen(true)}
