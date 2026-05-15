@@ -46,6 +46,29 @@ type RoomRow = {
 
 const ROOM_SELECT =
   "id,title,folder_id,current_stage,selected_model,cover_image_url,created_at,updated_at,last_opened_at,sort_key,status,source_type";
+const VIBODE_MY_ROOMS_SORT_KEY = "vibode:my-rooms-sort:v1";
+const DEFAULT_MY_ROOMS_SORT: MyRoomsSortMode = "most_recent";
+const MY_ROOMS_SORT_MODES: ReadonlySet<MyRoomsSortMode> = new Set([
+  "most_recent",
+  "oldest",
+  "title_asc",
+  "title_desc",
+]);
+
+function loadInitialMyRoomsSortMode(): MyRoomsSortMode {
+  if (typeof window === "undefined") return DEFAULT_MY_ROOMS_SORT;
+
+  try {
+    const savedSort = window.localStorage.getItem(VIBODE_MY_ROOMS_SORT_KEY);
+    if (savedSort && MY_ROOMS_SORT_MODES.has(savedSort as MyRoomsSortMode)) {
+      return savedSort as MyRoomsSortMode;
+    }
+  } catch {
+    // Ignore localStorage read failures (privacy mode, quota, etc.).
+  }
+
+  return DEFAULT_MY_ROOMS_SORT;
+}
 
 function normalizeText(value: string | null | undefined) {
   return typeof value === "string" ? value.trim() : "";
@@ -125,7 +148,7 @@ export function MyRoomsPage() {
   const [selectedScope, setSelectedScope] = useState<MyRoomsScope>("all");
   const [selectedFolderId, setSelectedFolderId] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
-  const [sortMode, setSortMode] = useState<MyRoomsSortMode>("most_recent");
+  const [sortMode, setSortMode] = useState<MyRoomsSortMode>(() => loadInitialMyRoomsSortMode());
 
   const [createDialogOpen, setCreateDialogOpen] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
@@ -287,6 +310,16 @@ export function MyRoomsPage() {
       setSelectedFolderId(null);
     }
   }, [folders, selectedFolderId, selectedScope]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+
+    try {
+      window.localStorage.setItem(VIBODE_MY_ROOMS_SORT_KEY, sortMode);
+    } catch {
+      // Ignore localStorage write failures (privacy mode, quota, etc.).
+    }
+  }, [sortMode]);
 
   const foldersWithCounts = useMemo(() => {
     const countMap = new Map<string, number>();
