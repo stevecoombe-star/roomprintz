@@ -8874,17 +8874,48 @@ function EditorPageInner() {
           {canDeleteVersions ? (
             <button
               type="button"
-              className={`rounded-md border px-2 py-1 text-[11px] transition ${
+              className={`flex h-7 w-7 items-center justify-center rounded-md border transition ${
                 deletingVersionId
-                  ? "cursor-not-allowed border-neutral-900 bg-neutral-950 text-neutral-600"
-                  : "border-neutral-800 bg-neutral-950 text-neutral-400 hover:bg-neutral-800 hover:text-neutral-200"
+                  ? "cursor-not-allowed border-red-950/60 bg-red-950/20 text-red-900/70"
+                  : "border-red-950/60 bg-red-950/10 text-red-300/80 hover:border-red-900/70 hover:bg-red-900/20 hover:text-red-200"
               }`}
               disabled={Boolean(deletingVersionId)}
               onClick={() => handleRequestDeleteVersion(asset)}
               aria-label="Delete version"
               title="Delete version"
             >
-              {isDeleting ? "Deleting..." : "Delete"}
+              {isDeleting ? (
+                <svg
+                  aria-hidden="true"
+                  viewBox="0 0 16 16"
+                  className="h-3.5 w-3.5 animate-spin"
+                  fill="none"
+                  xmlns="http://www.w3.org/2000/svg"
+                >
+                  <circle cx="8" cy="8" r="5.5" stroke="currentColor" strokeOpacity="0.3" strokeWidth="1.5" />
+                  <path d="M8 2.5a5.5 5.5 0 0 1 5.5 5.5" stroke="currentColor" strokeWidth="1.5" />
+                </svg>
+              ) : (
+                <svg
+                  aria-hidden="true"
+                  viewBox="0 0 16 16"
+                  className="h-3.5 w-3.5"
+                  fill="none"
+                  xmlns="http://www.w3.org/2000/svg"
+                >
+                  <path d="M2.5 4h11" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+                  <path d="M6.2 2.5h3.6" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+                  <path
+                    d="M4.2 4l.7 8.1a1.2 1.2 0 0 0 1.2 1.1h3.8a1.2 1.2 0 0 0 1.2-1.1L11.8 4"
+                    stroke="currentColor"
+                    strokeWidth="1.4"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  />
+                  <path d="M6.6 6.3v4.9M9.4 6.3v4.9" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
+                </svg>
+              )}
+              <span className="sr-only">{isDeleting ? "Deleting version" : "Delete version"}</span>
             </button>
           ) : null}
         </div>
@@ -9886,37 +9917,41 @@ function EditorPageInner() {
 
                     <div className="my-1 border-t border-neutral-800/70 pt-1.5" />
 
-                    {activeBasePreviewVersion ? (
-                      <button
-                        type="button"
-                        className="flex w-full items-center gap-2 rounded-md border border-neutral-800 bg-neutral-950 px-2.5 py-2 text-left transition hover:bg-neutral-900"
-                        onClick={() => jumpToVersionViaAnchor(activeBasePreviewVersion, "set")}
-                      >
-                        {getVersionPreviewUrl(activeBasePreviewVersion) ? (
-                          <>
-                            {/* eslint-disable-next-line @next/next/no-img-element -- anchor card uses dynamic base preview URLs */}
-                            <img
-                              src={getVersionPreviewUrl(activeBasePreviewVersion) ?? ""}
-                              alt="Active Base Image"
-                              className="h-9 w-12 flex-none rounded bg-neutral-800 object-cover"
-                              loading="lazy"
-                            />
-                          </>
-                        ) : (
-                          <div className="h-9 w-12 flex-none rounded border border-neutral-800 bg-neutral-900" />
-                        )}
-                        <div className="min-w-0">
-                          <div className="text-[10px] uppercase tracking-wide text-sky-300">
-                            Active Base Image
-                          </div>
-                        </div>
-                      </button>
-                    ) : null}
-                    {renderCollapsedVersionShelf({
-                      keyName: "set",
-                      label: "SET",
-                      versionsInShelf: groupedVersions.set,
-                    })}
+                    <div className="rounded-lg border border-neutral-800/40 bg-neutral-800/80 p-3 ring-1 ring-inset ring-neutral-900/15">
+                      <div className="space-y-2">
+                        {activeBasePreviewVersion ? (
+                          <button
+                            type="button"
+                            className="flex w-full items-center gap-2 rounded-md border border-neutral-800 bg-neutral-950 px-2.5 py-2 text-left transition hover:bg-neutral-900"
+                            onClick={() => jumpToVersionViaAnchor(activeBasePreviewVersion, "set")}
+                          >
+                            {getVersionPreviewUrl(activeBasePreviewVersion) ? (
+                              <>
+                                {/* eslint-disable-next-line @next/next/no-img-element -- anchor card uses dynamic base preview URLs */}
+                                <img
+                                  src={getVersionPreviewUrl(activeBasePreviewVersion) ?? ""}
+                                  alt="Active Base Image"
+                                  className="h-9 w-12 flex-none rounded bg-neutral-800 object-cover"
+                                  loading="lazy"
+                                />
+                              </>
+                            ) : (
+                              <div className="h-9 w-12 flex-none rounded border border-neutral-800 bg-neutral-900" />
+                            )}
+                            <div className="min-w-0">
+                              <div className="text-[10px] uppercase tracking-wide text-sky-300">
+                                Active Base Image
+                              </div>
+                            </div>
+                          </button>
+                        ) : null}
+                        {renderCollapsedVersionShelf({
+                          keyName: "set",
+                          label: "SET",
+                          versionsInShelf: groupedVersions.set,
+                        })}
+                      </div>
+                    </div>
                     {renderCollapsedVersionShelf({
                       keyName: "unknown",
                       label: "UNKNOWN",
