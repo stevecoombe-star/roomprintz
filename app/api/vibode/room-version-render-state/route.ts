@@ -66,8 +66,11 @@ export async function PATCH(req: NextRequest) {
     const roomId = safeStr(body.roomId);
     const assetId = safeStr(body.assetId);
     const sceneRenderState = body.sceneRenderState;
-    if (!roomId || !assetId || !isRecord(sceneRenderState)) {
-      return jsonError("roomId, assetId, and sceneRenderState are required.", 400);
+    const metadataPatch = body.metadataPatch;
+    const hasSceneRenderState = isRecord(sceneRenderState);
+    const hasMetadataPatch = isRecord(metadataPatch);
+    if (!roomId || !assetId || (!hasSceneRenderState && !hasMetadataPatch)) {
+      return jsonError("roomId, assetId, and at least one metadata payload are required.", 400);
     }
 
     const userSupabase = getUserSupabaseClient(token);
@@ -105,24 +108,35 @@ export async function PATCH(req: NextRequest) {
     }
 
     const existingMetadata = isRecord(assetData.metadata) ? assetData.metadata : {};
-    const existingSceneRenderState = isRecord(existingMetadata.sceneRenderState)
-      ? existingMetadata.sceneRenderState
-      : null;
-    const nextSceneRenderState = {
-      ...sceneRenderState,
-      originalPlacementStateHash:
-        safeOptionalString(existingSceneRenderState?.originalPlacementStateHash) ??
-        safeOptionalString(existingSceneRenderState?.renderedPlacementStateHash) ??
-        safeOptionalString(sceneRenderState.renderedPlacementStateHash),
-      originalPlacementSnapshot:
-        safeArray(existingSceneRenderState?.originalPlacementSnapshot) ??
-        safeArray(existingSceneRenderState?.renderedPlacementSnapshot) ??
-        safeArray(sceneRenderState.renderedPlacementSnapshot),
-    };
-    const nextMetadata = {
+    let nextMetadata: Record<string, unknown> = {
       ...existingMetadata,
-      sceneRenderState: nextSceneRenderState,
     };
+    if (hasSceneRenderState) {
+      const existingSceneRenderState = isRecord(existingMetadata.sceneRenderState)
+        ? existingMetadata.sceneRenderState
+        : null;
+      const nextSceneRenderState = {
+        ...sceneRenderState,
+        originalPlacementStateHash:
+          safeOptionalString(existingSceneRenderState?.originalPlacementStateHash) ??
+          safeOptionalString(existingSceneRenderState?.renderedPlacementStateHash) ??
+          safeOptionalString(sceneRenderState.renderedPlacementStateHash),
+        originalPlacementSnapshot:
+          safeArray(existingSceneRenderState?.originalPlacementSnapshot) ??
+          safeArray(existingSceneRenderState?.renderedPlacementSnapshot) ??
+          safeArray(sceneRenderState.renderedPlacementSnapshot),
+      };
+      nextMetadata = {
+        ...nextMetadata,
+        sceneRenderState: nextSceneRenderState,
+      };
+    }
+    if (hasMetadataPatch) {
+      nextMetadata = {
+        ...nextMetadata,
+        ...metadataPatch,
+      };
+    }
 
     const { error: updateErr } = await userSupabase
       .from("vibode_room_assets")
@@ -131,7 +145,7 @@ export async function PATCH(req: NextRequest) {
       .eq("room_id", roomId)
       .eq("user_id", userId);
     if (updateErr) {
-      return jsonError("Failed to persist scene render state metadata.", 500);
+      return jsonError("Failed to persist room version metadata.", 500);
     }
 
     return NextResponse.json({ success: true, metadata: nextMetadata });

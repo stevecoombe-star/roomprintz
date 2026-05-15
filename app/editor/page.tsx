@@ -1735,6 +1735,35 @@ async function persistSceneRenderStateForVersion(args: {
   return isRecord(payload.metadata) ? payload.metadata : null;
 }
 
+async function persistVersionMetadataPatchForRoom(args: {
+  roomId: string;
+  assetId: string;
+  accessToken: string;
+  metadataPatch: Record<string, unknown>;
+}): Promise<Record<string, unknown> | null> {
+  const res = await fetch("/api/vibode/room-version-render-state", {
+    method: "PATCH",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${args.accessToken}`,
+    },
+    body: JSON.stringify({
+      roomId: args.roomId,
+      assetId: args.assetId,
+      metadataPatch: args.metadataPatch,
+    }),
+  });
+  const payload = (await res.json().catch(() => ({}))) as { error?: unknown; metadata?: unknown };
+  if (!res.ok) {
+    const message =
+      typeof payload.error === "string" && payload.error.trim().length > 0
+        ? payload.error
+        : `Failed to update room version metadata (HTTP ${res.status})`;
+    throw new Error(message);
+  }
+  return isRecord(payload.metadata) ? payload.metadata : null;
+}
+
 async function revertPlacementLayerNodesToSnapshot(args: {
   roomId: string;
   versionId: string;
@@ -2022,6 +2051,8 @@ function EditorPageInner() {
   const [deleteVersionTarget, setDeleteVersionTarget] = useState<VibodeRoomAsset | null>(null);
   const [deletingVersionId, setDeletingVersionId] = useState<string | null>(null);
   const [settingBaseImageVersionId, setSettingBaseImageVersionId] = useState<string | null>(null);
+  const [togglingFavouriteVersionId, setTogglingFavouriteVersionId] = useState<string | null>(null);
+  const [isFavouritesFilterOn, setIsFavouritesFilterOn] = useState(false);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -4188,6 +4219,27 @@ function EditorPageInner() {
     [selectedVersionId, versionsWithKind]
   );
   const canDeleteVersions = versions.length > 1;
+  const isVersionEligibleForFavourite = useCallback((asset: EditorVersionWithKind): boolean => {
+    return asset.versionKind === "stage" || asset.versionKind === "style";
+  }, []);
+  const isVersionFavourited = useCallback((asset: EditorVersionWithKind): boolean => {
+    if (!isVersionEligibleForFavourite(asset)) return false;
+    const metadata = isRecord(asset.metadata) ? asset.metadata : null;
+    return metadata?.isFavourite === true;
+  }, [isVersionEligibleForFavourite]);
+  const groupedVersionsForDisplay = useMemo(() => {
+    if (!isFavouritesFilterOn) return groupedVersions;
+    return {
+      set: groupedVersions.set,
+      unknown: [] as EditorVersionWithKind[],
+      stage: groupedVersions.stage.filter((version) => isVersionFavourited(version)),
+      style: groupedVersions.style.filter((version) => isVersionFavourited(version)),
+    };
+  }, [groupedVersions, isFavouritesFilterOn, isVersionFavourited]);
+  const isFavouritesFilterEmpty =
+    isFavouritesFilterOn &&
+    groupedVersionsForDisplay.stage.length === 0 &&
+    groupedVersionsForDisplay.style.length === 0;
 
   useEffect(() => {
     placementLayerNodesRef.current = placementLayerNodes;
@@ -4892,6 +4944,91 @@ function EditorPageInner() {
     vibodeRoomId,
     versions.length,
   ]);
+  const handleToggleVersionFavourite = useCallback(
+    async (asset: EditorVersionWithKind) => {
+      if (!vibodeRoomId) {
+        pushSnack("Couldn't update favourites right now.");
+        return;
+      }
+      if (!isVersionEligibleForFavourite(asset)) return;
+      if (togglingFavouriteVersionId) return;
+
+      const currentIsFavourite = isVersionFavourited(asset);
+      const nextIsFavourite = !currentIsFavourite;
+
+      setTogglingFavouriteVersionId(asset.id);
+      const optimisticVersions = versions.map((version) =>
+        version.id === asset.id
+          ? {
+              ...version,
+              metadata: {
+                ...(isRecord(version.metadata) ? version.metadata : {}),
+                isFavourite: nextIsFavourite,
+              },
+            }
+          : version
+      );
+      setVersions(optimisticVersions);
+
+      try {
+        let accessToken = await tryGetSupabaseAccessToken();
+        if (!accessToken) {
+          await new Promise<void>((resolve) => setTimeout(resolve, 250));
+          accessToken = await tryGetSupabaseAccessToken();
+        }
+        if (!accessToken) {
+          throw new Error("No Supabase session.");
+        }
+
+        const updatedMetadata = await persistVersionMetadataPatchForRoom({
+          roomId: vibodeRoomId,
+          assetId: asset.id,
+          accessToken,
+          metadataPatch: { isFavourite: nextIsFavourite },
+        });
+
+        if (updatedMetadata) {
+          setVersions(
+            optimisticVersions.map((version) =>
+              version.id === asset.id
+                ? {
+                    ...version,
+                    metadata: updatedMetadata,
+                  }
+                : version
+            )
+          );
+        }
+      } catch (err) {
+        console.warn("[editor] failed to toggle version favourite:", err);
+        setVersions(
+          versions.map((version) =>
+            version.id === asset.id
+              ? {
+                  ...version,
+                  metadata: {
+                    ...(isRecord(version.metadata) ? version.metadata : {}),
+                    isFavourite: currentIsFavourite,
+                  },
+                }
+              : version
+          )
+        );
+        pushSnack("Couldn't update favourites right now.");
+      } finally {
+        setTogglingFavouriteVersionId(null);
+      }
+    },
+    [
+      isVersionEligibleForFavourite,
+      isVersionFavourited,
+      pushSnack,
+      setVersions,
+      togglingFavouriteVersionId,
+      vibodeRoomId,
+      versions,
+    ]
+  );
 
   const isImageFile = (file: File | null | undefined) =>
     !!file && typeof file.type === "string" && file.type.startsWith("image/");
@@ -8843,6 +8980,9 @@ function EditorPageInner() {
     const versionPreviewUrl = getVersionPreviewUrl(asset) ?? "";
     const isDeleting = deletingVersionId === asset.id;
     const isSettingAsBaseImage = settingBaseImageVersionId === asset.id;
+    const canFavourite = isVersionEligibleForFavourite(asset);
+    const isFavourite = isVersionFavourited(asset);
+    const isTogglingFavourite = togglingFavouriteVersionId === asset.id;
     return (
       <div
         key={asset.id}
@@ -8901,6 +9041,40 @@ function EditorPageInner() {
                   <span className="block">Base Image</span>
                 </>
               )}
+            </button>
+          ) : null}
+          {canFavourite ? (
+            <button
+              type="button"
+              className={`flex h-7 w-7 items-center justify-center rounded-md border transition ${
+                isTogglingFavourite
+                  ? "cursor-not-allowed border-neutral-900 bg-neutral-950 text-neutral-600"
+                  : isFavourite
+                    ? "border-pink-900/70 bg-pink-950/20 text-pink-200 hover:border-pink-800/80 hover:bg-pink-900/25"
+                    : "border-neutral-800 bg-neutral-950 text-neutral-400 hover:bg-neutral-800 hover:text-neutral-200"
+              }`}
+              disabled={Boolean(togglingFavouriteVersionId)}
+              onClick={() => {
+                void handleToggleVersionFavourite(asset);
+              }}
+              aria-label={isFavourite ? "Remove from favourites" : "Add to favourites"}
+              title={isFavourite ? "Remove from favourites" : "Add to favourites"}
+            >
+              <svg
+                aria-hidden="true"
+                viewBox="0 0 16 16"
+                className="h-3.5 w-3.5"
+                fill={isFavourite ? "currentColor" : "none"}
+                xmlns="http://www.w3.org/2000/svg"
+              >
+                <path
+                  d="M8 13.4c-.2 0-.5-.1-.6-.3C6.5 12.2 2.8 9.1 2.8 6.2c0-1.9 1.4-3.2 3.1-3.2 1 0 1.9.5 2.5 1.3.6-.8 1.5-1.3 2.5-1.3 1.7 0 3.1 1.3 3.1 3.2 0 2.9-3.7 6-4.6 6.9-.2.2-.4.3-.6.3Z"
+                  stroke="currentColor"
+                  strokeWidth="1.2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+              </svg>
             </button>
           ) : null}
           {canDeleteVersions ? (
@@ -9883,6 +10057,7 @@ function EditorPageInner() {
                     {versions.length} version{versions.length === 1 ? "" : "s"}
                   </div>
                 </div>
+              <div className="flex flex-col items-end gap-1.5">
                 <div className="flex items-center gap-1.5">
                   <button
                     type="button"
@@ -9899,6 +10074,19 @@ function EditorPageInner() {
                     + Expand All
                   </button>
                 </div>
+                <button
+                  type="button"
+                  className={`rounded-md border px-2 py-1 text-[11px] transition ${
+                    isFavouritesFilterOn
+                      ? "border-pink-900/70 bg-pink-950/20 text-pink-200 hover:border-pink-800/80 hover:bg-pink-900/25"
+                      : "border-neutral-800 bg-neutral-950 text-neutral-400 hover:bg-neutral-800 hover:text-neutral-200"
+                  }`}
+                  aria-pressed={isFavouritesFilterOn}
+                  onClick={() => setIsFavouritesFilterOn((prev) => !prev)}
+                >
+                  {isFavouritesFilterOn ? "Favourites On" : "Favourites Off"}
+                </button>
+              </div>
               </div>
               <div id="versions-panel-body" className="mt-3">
                 {versions.length === 0 ? (
@@ -9936,16 +10124,24 @@ function EditorPageInner() {
                         </div>
                       </button>
                     ) : null}
-                    {renderCollapsedVersionShelf({
-                      keyName: "style",
-                      label: "STYLE",
-                      versionsInShelf: groupedVersions.style,
-                    })}
-                    {renderCollapsedVersionShelf({
-                      keyName: "stage",
-                      label: "STAGE",
-                      versionsInShelf: groupedVersions.stage,
-                    })}
+                    {isFavouritesFilterEmpty ? (
+                      <div className="rounded-md border border-dashed border-neutral-800 bg-neutral-950 px-3 py-2 text-xs text-neutral-500">
+                        No favourite versions yet. Tap the heart on a STAGE or STYLE version to save it here.
+                      </div>
+                    ) : (
+                      <>
+                        {renderCollapsedVersionShelf({
+                          keyName: "style",
+                          label: "STYLE",
+                          versionsInShelf: groupedVersionsForDisplay.style,
+                        })}
+                        {renderCollapsedVersionShelf({
+                          keyName: "stage",
+                          label: "STAGE",
+                          versionsInShelf: groupedVersionsForDisplay.stage,
+                        })}
+                      </>
+                    )}
 
                     <div className="my-1 border-t border-neutral-800/70 pt-1.5" />
 
@@ -9955,7 +10151,13 @@ function EditorPageInner() {
                           <button
                             type="button"
                             className="flex w-full items-center gap-2 rounded-md border border-neutral-800 bg-neutral-950 px-2.5 py-2 text-left transition hover:bg-neutral-900"
-                            onClick={() => jumpToVersionViaAnchor(activeBasePreviewVersion, "set")}
+                            onClick={() => {
+                              if (isFavouritesFilterOn) {
+                                handleSelectVersion(activeBasePreviewVersion);
+                                return;
+                              }
+                              jumpToVersionViaAnchor(activeBasePreviewVersion, "set");
+                            }}
                           >
                             {getVersionPreviewUrl(activeBasePreviewVersion) ? (
                               <>
@@ -9977,18 +10179,22 @@ function EditorPageInner() {
                             </div>
                           </button>
                         ) : null}
-                        {renderCollapsedVersionShelf({
-                          keyName: "set",
-                          label: "SET",
-                          versionsInShelf: groupedVersions.set,
-                        })}
+                        {!isFavouritesFilterOn
+                          ? renderCollapsedVersionShelf({
+                              keyName: "set",
+                              label: "SET",
+                              versionsInShelf: groupedVersionsForDisplay.set,
+                            })
+                          : null}
                       </div>
                     </div>
-                    {renderCollapsedVersionShelf({
-                      keyName: "unknown",
-                      label: "UNKNOWN",
-                      versionsInShelf: groupedVersions.unknown,
-                    })}
+                    {!isFavouritesFilterOn
+                      ? renderCollapsedVersionShelf({
+                          keyName: "unknown",
+                          label: "UNKNOWN",
+                          versionsInShelf: groupedVersionsForDisplay.unknown,
+                        })
+                      : null}
                   </div>
                 )}
               </div>
