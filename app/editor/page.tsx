@@ -9854,16 +9854,9 @@ function EditorPageInner() {
                       label: "STAGE",
                       versionsInShelf: groupedVersions.stage,
                     })}
-                    {renderCollapsedVersionShelf({
-                      keyName: "set",
-                      label: "SET",
-                      versionsInShelf: groupedVersions.set,
-                    })}
-                    {renderCollapsedVersionShelf({
-                      keyName: "unknown",
-                      label: "UNKNOWN",
-                      versionsInShelf: groupedVersions.unknown,
-                    })}
+
+                    <div className="my-1 border-t border-neutral-800/70 pt-1.5" />
+
                     {activeBasePreviewVersion ? (
                       <button
                         type="button"
@@ -9890,6 +9883,16 @@ function EditorPageInner() {
                         </div>
                       </button>
                     ) : null}
+                    {renderCollapsedVersionShelf({
+                      keyName: "set",
+                      label: "SET",
+                      versionsInShelf: groupedVersions.set,
+                    })}
+                    {renderCollapsedVersionShelf({
+                      keyName: "unknown",
+                      label: "UNKNOWN",
+                      versionsInShelf: groupedVersions.unknown,
+                    })}
                   </div>
                 )}
               </div>
