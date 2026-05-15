@@ -1,4 +1,5 @@
 import { canonicalStringify, sha256Hex, type Json } from "@/lib/sceneHash";
+import { parsePlacementStorageRef } from "@/lib/furniturePlacementImageUrl";
 
 export type PlacementStateHashInput = {
   id?: unknown;
@@ -40,6 +41,20 @@ export type NormalizedPlacementStateRow = {
   isVisible: boolean;
 };
 
+type PlacementStateHashRow = {
+  id: string;
+  roomId: string | null;
+  versionId: string | null;
+  furnitureId: string | null;
+  sourceImageIdentity: string | null;
+  thumbnailIdentity: string | null;
+  x: number;
+  y: number;
+  scale: number;
+  rotation: number;
+  isVisible: boolean;
+};
+
 const ROUND_DP = 6;
 
 function safeStr(value: unknown): string | null {
@@ -60,6 +75,32 @@ function safeFinite(value: unknown): number | null {
 function roundToDp(value: number, dp: number): number {
   const factor = 10 ** dp;
   return Math.round(value * factor) / factor;
+}
+
+function normalizeUrlIdentity(value: string | null | undefined): string | null {
+  const raw = safeStr(value);
+  if (!raw) return null;
+  try {
+    const parsed = new URL(raw);
+    parsed.search = "";
+    parsed.hash = "";
+    return parsed.toString();
+  } catch {
+    return raw.split(/[?#]/, 1)[0]?.trim() || null;
+  }
+}
+
+function resolveImageIdentity(args: {
+  storagePath: string | null;
+  fallbackUrl: string | null;
+}): string | null {
+  const storageRef = parsePlacementStorageRef(args.storagePath, args.fallbackUrl);
+  if (storageRef) {
+    return `path:${storageRef.bucket}/${storageRef.path}`;
+  }
+  const normalizedUrl = normalizeUrlIdentity(args.fallbackUrl);
+  if (!normalizedUrl) return null;
+  return `url:${normalizedUrl}`;
 }
 
 function normalizeRow(value: PlacementStateHashInput): NormalizedPlacementStateRow | null {
@@ -100,8 +141,31 @@ export function normalizePlacementStateForHash(
     .sort((a, b) => a.id.localeCompare(b.id));
 }
 
+function toStableHashRows(rows: NormalizedPlacementStateRow[]): PlacementStateHashRow[] {
+  return rows.map((row) => ({
+    id: row.id,
+    roomId: row.roomId,
+    versionId: row.versionId,
+    furnitureId: row.furnitureId,
+    sourceImageIdentity: resolveImageIdentity({
+      storagePath: row.sourceImagePath,
+      fallbackUrl: row.sourceImageUrl,
+    }),
+    thumbnailIdentity: resolveImageIdentity({
+      storagePath: row.thumbnailPath,
+      fallbackUrl: row.thumbnailUrl,
+    }),
+    x: row.x,
+    y: row.y,
+    scale: row.scale,
+    rotation: row.rotation,
+    isVisible: row.isVisible,
+  }));
+}
+
 export async function hashPlacementState(placements: PlacementStateHashInput[]): Promise<string> {
   const normalized = normalizePlacementStateForHash(placements);
-  const canonical = canonicalStringify(normalized as unknown as Json);
+  const stableHashRows = toStableHashRows(normalized);
+  const canonical = canonicalStringify(stableHashRows as unknown as Json);
   return sha256Hex(canonical);
 }

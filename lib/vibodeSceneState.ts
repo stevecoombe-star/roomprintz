@@ -1,7 +1,12 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { resolveActiveSetVersionId, isVersionEligibleForActiveSet } from "@/lib/vibode/active-set";
+import { resolvePlacementDisplayImageUrl } from "@/lib/furniturePlacementImageUrl";
 
 type AnySupabaseClient = SupabaseClient;
+const PLACEMENT_IMAGE_SIGNED_URL_EXPIRES_IN_SEC = Math.max(
+  60,
+  Number(process.env.VIBODE_PREVIEW_SIGNED_URL_EXPIRES_IN ?? 60 * 60 * 8)
+);
 
 type PlacementRow = {
   id: string;
@@ -592,19 +597,39 @@ export async function buildSceneRebuildPayload(
     throw new Error("[vibode] missing base image url for rebuild payload");
   }
 
-  const placements: SceneRebuildPayloadPlacement[] = resolved.resolvedPlacements.map((placement) => ({
-    id: placement.id,
-    furnitureId: placement.furniture_id,
-    sourceImageUrl: placement.source_image_url,
-    sourceStoragePath: placement.source_storage_path,
-    thumbnailUrl: placement.thumbnail_url,
-    thumbnailPath: placement.thumbnail_path,
-    x: placement.x,
-    y: placement.y,
-    scale: placement.scale,
-    rotation: placement.rotation,
-    isVisible: placement.is_visible,
-  }));
+  const signingSupabase = args.signingSupabase ?? args.supabase;
+  const placements: SceneRebuildPayloadPlacement[] = await Promise.all(
+    resolved.resolvedPlacements.map(async (placement) => {
+      const [sourceImageUrl, thumbnailUrl] = await Promise.all([
+        resolvePlacementDisplayImageUrl({
+          supabase: signingSupabase,
+          storagePath: placement.source_storage_path,
+          candidateUrl: placement.source_image_url,
+          expiresInSeconds: PLACEMENT_IMAGE_SIGNED_URL_EXPIRES_IN_SEC,
+        }),
+        resolvePlacementDisplayImageUrl({
+          supabase: signingSupabase,
+          storagePath: placement.thumbnail_path,
+          candidateUrl: placement.thumbnail_url,
+          expiresInSeconds: PLACEMENT_IMAGE_SIGNED_URL_EXPIRES_IN_SEC,
+        }),
+      ]);
+
+      return {
+        id: placement.id,
+        furnitureId: placement.furniture_id,
+        sourceImageUrl: sourceImageUrl ?? placement.source_image_url,
+        sourceStoragePath: placement.source_storage_path,
+        thumbnailUrl: thumbnailUrl ?? placement.thumbnail_url,
+        thumbnailPath: placement.thumbnail_path,
+        x: placement.x,
+        y: placement.y,
+        scale: placement.scale,
+        rotation: placement.rotation,
+        isVisible: placement.is_visible,
+      };
+    })
+  );
 
   return {
     room: {

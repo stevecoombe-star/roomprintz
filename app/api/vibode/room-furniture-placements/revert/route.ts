@@ -6,11 +6,16 @@ import {
   normalizePlacementMetadata,
   type PlacementMetadata,
 } from "@/lib/placementMetadata";
+import { resolvePlacementDisplayImageUrl } from "@/lib/furniturePlacementImageUrl";
 
 export const runtime = "nodejs";
 
 const SUPABASE_URL = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || "";
 const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "";
+const PLACEMENT_IMAGE_SIGNED_URL_EXPIRES_IN_SEC = Math.max(
+  60,
+  Number(process.env.VIBODE_PREVIEW_SIGNED_URL_EXPIRES_IN ?? 60 * 60 * 8)
+);
 
 type AnySupabaseClient = SupabaseClient;
 
@@ -139,6 +144,32 @@ function parseSnapshotRow(value: unknown): RevertSnapshotRow | null {
   };
 }
 
+async function resolvePlacementRowDisplayUrls(
+  supabase: AnySupabaseClient,
+  row: PlacementRow
+): Promise<PlacementRow> {
+  const [resolvedSourceImageUrl, resolvedThumbnailUrl] = await Promise.all([
+    resolvePlacementDisplayImageUrl({
+      supabase,
+      storagePath: row.source_image_path,
+      candidateUrl: row.source_image_url,
+      expiresInSeconds: PLACEMENT_IMAGE_SIGNED_URL_EXPIRES_IN_SEC,
+    }),
+    resolvePlacementDisplayImageUrl({
+      supabase,
+      storagePath: row.thumbnail_path,
+      candidateUrl: row.thumbnail_url,
+      expiresInSeconds: PLACEMENT_IMAGE_SIGNED_URL_EXPIRES_IN_SEC,
+    }),
+  ]);
+
+  return {
+    ...row,
+    source_image_url: resolvedSourceImageUrl ?? row.source_image_url,
+    thumbnail_url: resolvedThumbnailUrl ?? row.thumbnail_url,
+  };
+}
+
 export async function POST(req: NextRequest) {
   try {
     const auth = await requireUser(req);
@@ -230,7 +261,10 @@ export async function POST(req: NextRequest) {
     const sortedRows = ((insertedRows ?? []) as PlacementRow[]).sort((a, b) =>
       a.created_at.localeCompare(b.created_at)
     );
-    return NextResponse.json({ nodes: sortedRows });
+    const resolvedRows = await Promise.all(
+      sortedRows.map((row) => resolvePlacementRowDisplayUrls(auth.supabase, row))
+    );
+    return NextResponse.json({ nodes: resolvedRows });
   } catch {
     return jsonError("Unexpected placement revert error.", 500);
   }

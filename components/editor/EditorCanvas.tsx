@@ -2080,8 +2080,17 @@ export function EditorCanvas({
                 >
                   {markerUrl ? (
                     <>
+                      <span className="absolute inset-0 block bg-neutral-700/70" />
                       {/* eslint-disable-next-line @next/next/no-img-element -- placement marker thumbnails are runtime URLs and must use simple img fallback behavior */}
-                      <img src={markerUrl} alt="" className="h-full w-full object-cover" draggable={false} />
+                      <img
+                        src={markerUrl}
+                        alt=""
+                        className="relative h-full w-full object-cover"
+                        draggable={false}
+                        onError={(event) => {
+                          event.currentTarget.style.display = "none";
+                        }}
+                      />
                     </>
                   ) : (
                     <span className="absolute inset-0 block bg-neutral-700/70" />

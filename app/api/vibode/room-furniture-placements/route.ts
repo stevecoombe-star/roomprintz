@@ -6,11 +6,16 @@ import {
   normalizePlacementMetadata,
   type PlacementMetadata,
 } from "@/lib/placementMetadata";
+import { resolvePlacementDisplayImageUrl } from "@/lib/furniturePlacementImageUrl";
 
 export const runtime = "nodejs";
 
 const SUPABASE_URL = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || "";
 const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "";
+const PLACEMENT_IMAGE_SIGNED_URL_EXPIRES_IN_SEC = Math.max(
+  60,
+  Number(process.env.VIBODE_PREVIEW_SIGNED_URL_EXPIRES_IN ?? 60 * 60 * 8)
+);
 
 type AnySupabaseClient = SupabaseClient;
 
@@ -118,6 +123,32 @@ function isDurableImageUrl(url: string): boolean {
   return !/^(https?:\/\/localhost|https?:\/\/127\.0\.0\.1|https?:\/\/0\.0\.0\.0)/i.test(trimmed);
 }
 
+async function resolvePlacementRowDisplayUrls(
+  supabase: AnySupabaseClient,
+  row: PlacementRow
+): Promise<PlacementRow> {
+  const [resolvedSourceImageUrl, resolvedThumbnailUrl] = await Promise.all([
+    resolvePlacementDisplayImageUrl({
+      supabase,
+      storagePath: row.source_image_path,
+      candidateUrl: row.source_image_url,
+      expiresInSeconds: PLACEMENT_IMAGE_SIGNED_URL_EXPIRES_IN_SEC,
+    }),
+    resolvePlacementDisplayImageUrl({
+      supabase,
+      storagePath: row.thumbnail_path,
+      candidateUrl: row.thumbnail_url,
+      expiresInSeconds: PLACEMENT_IMAGE_SIGNED_URL_EXPIRES_IN_SEC,
+    }),
+  ]);
+
+  return {
+    ...row,
+    source_image_url: resolvedSourceImageUrl ?? row.source_image_url,
+    thumbnail_url: resolvedThumbnailUrl ?? row.thumbnail_url,
+  };
+}
+
 function getBearerToken(req: NextRequest): string | null {
   const authHeader = req.headers.get("authorization") || "";
   if (!authHeader.toLowerCase().startsWith("bearer ")) return null;
@@ -179,7 +210,11 @@ export async function GET(req: NextRequest) {
       return jsonError("Failed to load placement nodes.", 500);
     }
 
-    return NextResponse.json({ nodes: (data ?? []) as PlacementRow[] });
+    const rows = (data ?? []) as PlacementRow[];
+    const resolvedRows = await Promise.all(
+      rows.map((row) => resolvePlacementRowDisplayUrls(auth.supabase, row))
+    );
+    return NextResponse.json({ nodes: resolvedRows });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     console.error("[room-furniture-placements][GET] unexpected error", { message });
@@ -420,7 +455,9 @@ export async function POST(req: NextRequest) {
       return jsonError("Failed to create placement node.", 500);
     }
 
-    return NextResponse.json({ node: data as PlacementRow }, { status: 201 });
+    const createdRow = data as PlacementRow;
+    const resolvedNode = await resolvePlacementRowDisplayUrls(auth.supabase, createdRow);
+    return NextResponse.json({ node: resolvedNode }, { status: 201 });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     console.error("[room-furniture-placements][POST] unexpected error", { message });
@@ -500,7 +537,9 @@ export async function PATCH(req: NextRequest) {
       return jsonError("Placement node not found.", 404);
     }
 
-    return NextResponse.json({ node: data as PlacementRow });
+    const patchedRow = data as PlacementRow;
+    const resolvedNode = await resolvePlacementRowDisplayUrls(auth.supabase, patchedRow);
+    return NextResponse.json({ node: resolvedNode });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     console.error("[room-furniture-placements][PATCH] unexpected error", { message });

@@ -7,6 +7,10 @@ import { callCompositorVibodeCompose, type VibodeComposePlacement } from "@/lib/
 import { resolveRoomReadModelVersion } from "@/lib/vibodeRoomReadModelVersion";
 import type { DetectedRoomObjectLabel } from "@/lib/vibodeRoomObjectLabels";
 import {
+  parsePlacementStorageRef,
+  resolvePlacementDisplayImageUrl,
+} from "@/lib/furniturePlacementImageUrl";
+import {
   createVibodeGenerationRun,
   getVibodeRoomById,
   updateVibodeRoomAsset,
@@ -24,6 +28,10 @@ const VIBODE_ENABLE_SCENE_REBUILD =
 const VIBODE_DEFAULT_MODEL_VERSION = "NBP";
 const VIBODE_STAGED_BUCKET = (process.env.VIBODE_STAGED_BUCKET || "vibode-generations").trim();
 const SCENE_REBUILD_COMPOSE_TIMEOUT_MS = 120_000;
+const PLACEMENT_IMAGE_SIGNED_URL_EXPIRES_IN_SEC = Math.max(
+  60,
+  Number(process.env.VIBODE_PREVIEW_SIGNED_URL_EXPIRES_IN ?? 60 * 60 * 8)
+);
 
 type AnySupabaseClient = SupabaseClient;
 
@@ -139,6 +147,32 @@ function safeStr(value: unknown): string | null {
   return trimmed.length > 0 ? trimmed : null;
 }
 
+function normalizeUrlForDuplicateKey(url: string | null | undefined): string | null {
+  const raw = safeStr(url);
+  if (!raw) return null;
+  try {
+    const parsed = new URL(raw);
+    parsed.search = "";
+    parsed.hash = "";
+    return parsed.toString();
+  } catch {
+    return raw.split(/[?#]/, 1)[0]?.trim() || null;
+  }
+}
+
+function getPlacementDuplicateKey(args: {
+  sourceImagePath?: string | null;
+  sourceImageUrl?: string | null;
+}): string | null {
+  const storageRef = parsePlacementStorageRef(args.sourceImagePath, args.sourceImageUrl);
+  if (storageRef) {
+    return `path:${storageRef.bucket}/${storageRef.path}`;
+  }
+  const normalizedUrl = normalizeUrlForDuplicateKey(args.sourceImageUrl);
+  if (!normalizedUrl) return null;
+  return `url:${normalizedUrl}`;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object";
 }
@@ -205,17 +239,47 @@ function parseModelDecidedCandidate(value: unknown): ModelDecidedFurnitureCandid
       ? placementSourceRaw
       : null;
   const sourceImageUrl = safeStr(value.sourceImageUrl);
-  if (!placementSource || !sourceImageUrl) return null;
+  const sourceImagePath = safeStr(value.sourceImagePath);
+  if (!placementSource || (!sourceImageUrl && !sourceImagePath)) return null;
   return {
     furnitureId: safeStr(value.furnitureId),
     skuId: safeStr(value.skuId),
     label: safeStr(value.label),
     sourceImageUrl,
-    sourceImagePath: safeStr(value.sourceImagePath),
+    sourceImagePath,
     thumbnailUrl: safeStr(value.thumbnailUrl),
     thumbnailPath: safeStr(value.thumbnailPath),
     placementSource,
   };
+}
+
+async function resolveModelDecidedCandidateImageUrls(args: {
+  candidates: ModelDecidedFurnitureCandidate[];
+  signingSupabase: AnySupabaseClient;
+}): Promise<ModelDecidedFurnitureCandidate[]> {
+  return Promise.all(
+    args.candidates.map(async (candidate) => {
+      const [sourceImageUrl, thumbnailUrl] = await Promise.all([
+        resolvePlacementDisplayImageUrl({
+          supabase: args.signingSupabase,
+          storagePath: candidate.sourceImagePath,
+          candidateUrl: candidate.sourceImageUrl,
+          expiresInSeconds: PLACEMENT_IMAGE_SIGNED_URL_EXPIRES_IN_SEC,
+        }),
+        resolvePlacementDisplayImageUrl({
+          supabase: args.signingSupabase,
+          storagePath: candidate.thumbnailPath,
+          candidateUrl: candidate.thumbnailUrl,
+          expiresInSeconds: PLACEMENT_IMAGE_SIGNED_URL_EXPIRES_IN_SEC,
+        }),
+      ]);
+      return {
+        ...candidate,
+        sourceImageUrl,
+        thumbnailUrl,
+      };
+    })
+  );
 }
 
 function parseModelDecidedFurnitureCandidates(value: unknown): ModelDecidedFurnitureCandidate[] {
@@ -834,7 +898,7 @@ async function createModelVisionInferredPlacements(args: {
   }
   const { data: existingRows, error: existingRowsErr } = await args.supabase
     .from("room_furniture_placements")
-    .select("furniture_id, source_image_url, x, y")
+    .select("furniture_id, source_image_url, source_image_path, x, y")
     .eq("user_id", args.userId)
     .eq("room_id", args.roomId)
     .eq("version_id", args.outputVersionId);
@@ -845,20 +909,26 @@ async function createModelVisionInferredPlacements(args: {
     });
   }
   const existingFurnitureIds = new Set<string>();
-  const existingSourceImageUrls = new Set<string>();
+  const existingSourceDuplicateKeys = new Set<string>();
   const existingPlacementPositions: Array<{ x: number; y: number }> = [];
   for (const row of (existingRows ?? []) as Array<{
     furniture_id?: unknown;
     source_image_url?: unknown;
+    source_image_path?: unknown;
     x?: unknown;
     y?: unknown;
   }>) {
     const furnitureId = safeStr(row.furniture_id);
     const sourceImageUrl = safeStr(row.source_image_url);
+    const sourceImagePath = safeStr(row.source_image_path);
     const x = finiteNumber(row.x) ? row.x : null;
     const y = finiteNumber(row.y) ? row.y : null;
     if (furnitureId) existingFurnitureIds.add(furnitureId);
-    if (sourceImageUrl) existingSourceImageUrls.add(sourceImageUrl);
+    const duplicateKey = getPlacementDuplicateKey({
+      sourceImagePath,
+      sourceImageUrl,
+    });
+    if (duplicateKey) existingSourceDuplicateKeys.add(duplicateKey);
     if (x !== null && y !== null) existingPlacementPositions.push({ x, y });
   }
   const insertRows: Record<string, unknown>[] = [];
@@ -915,9 +985,17 @@ async function createModelVisionInferredPlacements(args: {
   }
 
   for (const candidate of args.candidates) {
-    const sourceImageUrl = candidate.sourceImageUrl;
+    const sourceImageUrl = safeStr(candidate.sourceImageUrl);
+    if (!sourceImageUrl) {
+      diagnostics.skipped_no_match_count += 1;
+      continue;
+    }
+    const candidateDuplicateKey = getPlacementDuplicateKey({
+      sourceImagePath: candidate.sourceImagePath,
+      sourceImageUrl,
+    });
     const isDuplicateSourceImage =
-      sourceImageUrl !== null && existingSourceImageUrls.has(sourceImageUrl);
+      candidateDuplicateKey !== null && existingSourceDuplicateKeys.has(candidateDuplicateKey);
     if (
       (candidate.furnitureId && existingFurnitureIds.has(candidate.furnitureId)) ||
       isDuplicateSourceImage
@@ -1281,6 +1359,7 @@ export async function POST(req: NextRequest) {
 
     const bodyRaw = (await req.json().catch(() => ({}))) as SceneRebuildRequest;
     const body = isRecord(bodyRaw) ? bodyRaw : {};
+    const adminSupabase = getAdminSupabaseClient();
     const roomId = safeStr(body.roomId);
     const versionId = safeStr(body.versionId);
     const modelVersion = safeStr(body.modelVersion) ?? VIBODE_DEFAULT_MODEL_VERSION;
@@ -1288,9 +1367,13 @@ export async function POST(req: NextRequest) {
     const activate = parseOptionalBoolean(body.activate) ?? false;
     const triggerMode = parseTriggerMode(body.triggerMode);
     const placementIntent = parsePlacementIntent(body.placementIntent);
-    const modelDecidedFurnitureCandidates = parseModelDecidedFurnitureCandidates(
+    const modelDecidedFurnitureCandidatesRaw = parseModelDecidedFurnitureCandidates(
       body.modelDecidedFurnitureCandidates
     );
+    const modelDecidedFurnitureCandidates = await resolveModelDecidedCandidateImageUrls({
+      candidates: modelDecidedFurnitureCandidatesRaw,
+      signingSupabase: adminSupabase ?? supabase,
+    });
     const modelDecidedReferenceImageUrls =
       placementIntent === "model_decided"
         ? Array.from(
@@ -1331,7 +1414,7 @@ export async function POST(req: NextRequest) {
 
     const payload = await buildSceneRebuildPayload({
       supabase,
-      signingSupabase: getAdminSupabaseClient(),
+      signingSupabase: adminSupabase,
       roomId,
       userId,
       versionId,
@@ -1422,7 +1505,7 @@ export async function POST(req: NextRequest) {
 
     const outputFinalization = await finalizeVibodeOutputAsset({
       logPrefix: "[vibode/scene-rebuild]",
-      adminSupabase: getAdminSupabaseClient(),
+      adminSupabase,
       persistenceSupabase: supabase,
       roomId: room.id,
       userId,
