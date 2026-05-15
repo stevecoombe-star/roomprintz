@@ -9091,9 +9091,9 @@ function EditorPageInner() {
   );
 
   return (
-    <div className="h-dvh w-full overflow-hidden bg-neutral-950 text-neutral-100">
+    <div className="fixed inset-0 z-0 flex min-h-0 flex-col overflow-hidden bg-neutral-950 text-neutral-100">
       {/* Top bar */}
-      <header className="flex h-12 items-center justify-between border-b border-neutral-800 px-4">
+      <header className="flex h-12 shrink-0 items-center justify-between border-b border-neutral-800 px-4">
         <div className="flex items-center gap-3">
           <Link
             href="/my-rooms"
@@ -9177,9 +9177,9 @@ function EditorPageInner() {
       </header>
 
       {/* Main */}
-      <div className="flex h-[calc(100dvh-3rem)] w-full min-h-0">
+      <div className="flex min-h-0 flex-1 w-full overflow-hidden">
         {/* Canvas area */}
-        <main className="flex flex-1 items-center justify-center bg-neutral-950">
+        <main className="flex min-h-0 flex-1 items-center justify-center overflow-hidden bg-neutral-950">
           {/* OUTER: owns glow pseudo-elements (NO overflow-hidden) */}
           <div
             className="relative h-[70vh] w-[70vw] max-w-[1200px] rounded-lg precision-ring vibe-glow vibe-aura vibe-aura-animate"
@@ -9526,8 +9526,8 @@ function EditorPageInner() {
         </main>
 
         {/* Right panel */}
-        <aside className="h-full w-[340px] border-l border-neutral-800 bg-neutral-950">
-          <div className="h-full overflow-y-auto">
+        <aside className="flex h-full min-h-0 w-[340px] flex-col overflow-hidden border-l border-neutral-800 bg-neutral-950">
+          <div className="min-h-0 flex-1 overflow-y-auto">
             <div className="space-y-4 p-4">
             <div className="rounded-lg">
               <div className="-mb-px flex items-end gap-1 px-2">
