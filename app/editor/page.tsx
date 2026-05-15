@@ -65,6 +65,7 @@ const VIBODE_MODEL_STORAGE_KEY = "vibode:modelVersion";
 const FREE_PASTE_TO_PLACE_SESSION_KEY = "vibode:hasUsedFreePasteToPlace";
 const PASTE_TO_PLACE_CLIPBOARD_HEADS_UP_SESSION_KEY = "vibode:pasteToPlaceClipboardHeadsUpShown";
 const EDITOR_RIGHT_PANEL_STATE_KEY = "vibode.editor.rightPanelState.v1";
+const VIBODE_FURNITURE_LAYER_VISIBILITY_KEY = "vibode:furniture-layer-visibility:v1";
 const VIBODE_EDITOR_WORKSPACE_KEY = "vibode:editor-workspace:v1";
 const VIBODE_EDITOR_WORKSPACE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 const VIBODE_MODEL_NBP = "NBP";
@@ -2216,6 +2217,8 @@ function EditorPageInner() {
   );
   const placementLayerNodesRef = useRef<PlacementLayerNode[]>([]);
   const [isFurnitureLayerEnabled, setIsFurnitureLayerEnabled] = useState(false);
+  const [hasLoadedFurnitureLayerVisibilityFromStorage, setHasLoadedFurnitureLayerVisibilityFromStorage] =
+    useState(false);
   const toggleFurnitureLayer = useCallback(() => {
     setIsFurnitureLayerEnabled((prev) => !prev);
   }, []);
@@ -2881,6 +2884,34 @@ function EditorPageInner() {
   useEffect(() => {
     window.localStorage.setItem(VIBODE_MODEL_STORAGE_KEY, selectedModel);
   }, [selectedModel]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
+      const raw = window.localStorage.getItem(VIBODE_FURNITURE_LAYER_VISIBILITY_KEY);
+      if (raw === "1" || raw === "true") {
+        setIsFurnitureLayerEnabled(true);
+      } else if (raw === "0" || raw === "false") {
+        setIsFurnitureLayerEnabled(false);
+      }
+    } catch {
+      // Ignore storage read failures and keep current default behavior.
+    } finally {
+      setHasLoadedFurnitureLayerVisibilityFromStorage(true);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined" || !hasLoadedFurnitureLayerVisibilityFromStorage) return;
+    try {
+      window.localStorage.setItem(
+        VIBODE_FURNITURE_LAYER_VISIBILITY_KEY,
+        isFurnitureLayerEnabled ? "1" : "0"
+      );
+    } catch {
+      // Ignore storage write failures.
+    }
+  }, [hasLoadedFurnitureLayerVisibilityFromStorage, isFurnitureLayerEnabled]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -6768,6 +6799,7 @@ function EditorPageInner() {
         ];
         placementLayerNodesRef.current = nextNodes;
         setPlacementLayerNodes(nextNodes);
+        setIsFurnitureLayerEnabled(true);
         sceneDirtyLocallyConfirmedRef.current = true;
         await updateSceneNeedsUpdateFromPlacements(nextNodes, versionId, {
           missingRenderedHashMeansDirty: true,
