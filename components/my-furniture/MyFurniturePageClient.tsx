@@ -54,10 +54,33 @@ type MoveResponse = {
   error?: string;
 };
 
+const VIBODE_MY_FURNITURE_ACTIVE_COLLECTION_KEY = "vibode:my-furniture-active-collection:v1";
+
 function asOptionalString(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : null;
+}
+
+function loadInitialMyFurnitureActiveCollection(): FolderScope {
+  if (typeof window === "undefined") return "all";
+
+  try {
+    const savedCollection = window.localStorage.getItem(VIBODE_MY_FURNITURE_ACTIVE_COLLECTION_KEY);
+    if (savedCollection === "all" || savedCollection === "unfiled") {
+      return savedCollection;
+    }
+    if (savedCollection && savedCollection.startsWith("folder:")) {
+      const folderId = savedCollection.slice("folder:".length).trim();
+      if (folderId.length > 0) {
+        return `folder:${folderId}`;
+      }
+    }
+  } catch {
+    // Ignore localStorage read failures (privacy mode, quota, etc.).
+  }
+
+  return "all";
 }
 
 function normalizeFolder(raw: unknown): MyFurnitureFolder | null {
@@ -97,7 +120,10 @@ export function MyFurniturePageClient() {
   const [actingItemId, setActingItemId] = useState<string | null>(null);
   const [folders, setFolders] = useState<MyFurnitureFolder[]>([]);
   const [foldersError, setFoldersError] = useState<string | null>(null);
-  const [selectedScope, setSelectedScope] = useState<FolderScope>("all");
+  const [selectedScope, setSelectedScope] = useState<FolderScope>(() =>
+    loadInitialMyFurnitureActiveCollection()
+  );
+  const [hasLoadedFoldersOnce, setHasLoadedFoldersOnce] = useState(false);
   const [isAddItemOpen, setIsAddItemOpen] = useState(false);
   const [selectionMode, setSelectionMode] = useState(false);
   const [selectedItemIds, setSelectedItemIds] = useState<Set<string>>(new Set());
@@ -153,6 +179,8 @@ export function MyFurniturePageClient() {
           : "We couldn't load folders right now. Please try again.";
       setFolders([]);
       setFoldersError(message);
+    } finally {
+      setHasLoadedFoldersOnce(true);
     }
   }, []);
 
@@ -173,12 +201,23 @@ export function MyFurniturePageClient() {
 
   useEffect(() => {
     if (selectedScope === "all" || selectedScope === "unfiled") return;
+    if (!hasLoadedFoldersOnce) return;
     const folderId = selectedScope.slice("folder:".length);
     const exists = folders.some((folder) => folder.id === folderId);
     if (!exists) {
       setSelectedScope("all");
     }
-  }, [folders, selectedScope]);
+  }, [folders, hasLoadedFoldersOnce, selectedScope]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+
+    try {
+      window.localStorage.setItem(VIBODE_MY_FURNITURE_ACTIVE_COLLECTION_KEY, selectedScope);
+    } catch {
+      // Ignore localStorage write failures (privacy mode, quota, etc.).
+    }
+  }, [selectedScope]);
 
   const handleUseInRoom = useCallback(
     (itemId: string, source?: string) => {
