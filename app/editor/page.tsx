@@ -5446,14 +5446,7 @@ function EditorPageInner() {
         resolvedAssetId = activeAsset?.id ?? baseAsset?.id ?? null;
         setActiveAssetId(resolvedAssetId);
       }
-      await hydrateRoomImageObjects({
-        trigger: "room-upload",
-        imageUrl: up.signedUrl,
-        roomId: up.vibodeRoomId ?? null,
-        assetId: resolvedAssetId,
-        versionId: resolvedAssetId,
-        allowRoomReadOnMiss: true,
-      });
+      // Auto room-object reads deprecated. Remove Mode now triggers intentional reads on demand.
       pushSnack("Room photo uploaded.");
     } catch (err: unknown) {
       console.error(err);
@@ -6267,14 +6260,7 @@ function EditorPageInner() {
         resolvedAssetId = activeAsset?.id ?? latestVersions?.[0]?.id ?? null;
         setActiveAssetId(resolvedAssetId);
       }
-      await hydrateRoomImageObjects({
-        trigger: "stage-run",
-        imageUrl: nextImageUrl,
-        roomId: vibodeRoomId,
-        assetId: resolvedAssetId,
-        versionId: resolvedAssetId,
-        allowRoomReadOnMiss: true,
-      });
+      // Auto room-object reads deprecated. Remove Mode now triggers intentional reads on demand.
 
       if (stageNumber === 3) {
         setHasFurniturePass(true);
@@ -6607,15 +6593,17 @@ function EditorPageInner() {
             roomId: roomIdForCommittedImage,
             assetId: resolvedAssetId,
           });
+          await hydrateRoomImageObjects({
+            trigger: roomImageObjectsTrigger,
+            imageUrl: resolvedImageUrl,
+            roomId: roomIdForCommittedImage,
+            assetId: resolvedAssetId,
+            versionId: resolvedAssetId,
+            allowRoomReadOnMiss: true,
+          });
+        } else {
+          // Auto room-object reads deprecated for ordinary edit-run commits.
         }
-        await hydrateRoomImageObjects({
-          trigger: roomImageObjectsTrigger,
-          imageUrl: resolvedImageUrl,
-          roomId: roomIdForCommittedImage,
-          assetId: resolvedAssetId,
-          versionId: resolvedAssetId,
-          allowRoomReadOnMiss: true,
-        });
       }
       if (isPasteToPlaceCommit) {
         lifecycleOnImageCommitted?.(json as VibodeEditRunResponse);
