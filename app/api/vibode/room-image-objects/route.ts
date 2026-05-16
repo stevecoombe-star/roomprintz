@@ -19,6 +19,7 @@ type RoomImageObjectRow = {
 };
 
 type RoomReadMode = "labels_only" | "geometry";
+type RoomImageObjectsPurpose = "suggested-placement" | "remove-mode" | "legacy";
 
 function safeStr(value: unknown): string | null {
   if (typeof value !== "string") return null;
@@ -59,6 +60,18 @@ function normalizeObjects(
 
 function parseRoomReadMode(value: unknown): RoomReadMode {
   return value === "geometry" ? "geometry" : "labels_only";
+}
+
+function parsePurpose(value: unknown): RoomImageObjectsPurpose {
+  if (value === "suggested-placement") return "suggested-placement";
+  if (value === "remove-mode") return "remove-mode";
+  if (value === "legacy" || value == null) return "legacy";
+  if (typeof value === "string" && value.trim().length === 0) return "legacy";
+  // Keep this endpoint backward compatible by treating unknown purpose values as legacy.
+  console.warn("[room-image-objects] invalid purpose; defaulting to legacy", {
+    purpose: value,
+  });
+  return "legacy";
 }
 
 function getUserSupabaseClient(
@@ -107,14 +120,24 @@ export async function POST(req: NextRequest) {
     const modelVersion = resolveRoomReadModelVersion(body.modelVersion);
     const allowRoomReadOnMiss = body.allowRoomReadOnMiss === true;
     const mode = parseRoomReadMode(body.mode);
+    // Purpose scopes which workflow invoked room-image-objects and protects future branching.
+    const purpose = parsePurpose(body.purpose);
     const source = "gemini_room_read";
 
     if (!roomId && !assetId && !versionId && !imageHash) {
       console.log("[room-image-objects] skipped because no stable image identity", {
         hasImageUrl: Boolean(imageUrl),
+        purpose,
       });
       return NextResponse.json({ objects: [] as DetectedRoomObjectLabel[] });
     }
+
+    console.log("[room-image-objects] request scoped", {
+      purpose,
+      mode,
+      allowRoomReadOnMiss,
+      hasVersionIdentity,
+    });
 
     let query = supabase
       .from("room_image_objects")
@@ -140,6 +163,7 @@ export async function POST(req: NextRequest) {
         roomId,
         assetId,
         versionId,
+        purpose,
       });
       console.log("[room-image-objects] returned labels", {
         labels: normalizedExisting.map((item) => item.label),
@@ -152,6 +176,7 @@ export async function POST(req: NextRequest) {
         roomId,
         assetId,
         versionId,
+        purpose,
       });
       return NextResponse.json({ objects: [] as DetectedRoomObjectLabel[] });
     }
@@ -161,6 +186,7 @@ export async function POST(req: NextRequest) {
         roomId,
         assetId,
         versionId,
+        purpose,
       });
       return NextResponse.json({ objects: [] as DetectedRoomObjectLabel[] });
     }
@@ -170,6 +196,7 @@ export async function POST(req: NextRequest) {
       assetId,
       versionId,
       modelVersion,
+      purpose,
     });
 
     const roomReadObjects = await runGeminiRoomReadFromImageUrl({

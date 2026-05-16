@@ -147,6 +147,260 @@ function buildRemovePromptForLabel(label: string): string {
   return `Remove only the ${label} under the red X marker. Preserve all other furniture, walls, floors, lighting, shadows, and room details.`;
 }
 
+function formatRemoveModeMarkedCount(count: number): string {
+  if (count === 1) return "1 object marked for removal";
+  return `${count} objects marked for removal`;
+}
+
+function formatRemoveModeManualMarkerCount(count: number): string {
+  if (count === 1) return "1 manual marker";
+  return `${count} manual markers`;
+}
+
+function clampUnit(value: number): number {
+  return Math.max(0, Math.min(1, value));
+}
+
+function deriveDetectedRemoveObjectKey(object: DetectedRoomObjectLabel, index: number): string {
+  const record = object as Record<string, unknown>;
+  const id = safeStr(record.id) ?? safeStr(record.objectId) ?? safeStr(record.key);
+  if (id) return `id:${id}`;
+
+  const centerFromBbox =
+    object.bbox &&
+    Number.isFinite(object.bbox.x) &&
+    Number.isFinite(object.bbox.w) &&
+    Number.isFinite(object.bbox.y)
+      ? {
+          x: object.bbox.x + object.bbox.w / 2,
+          y: object.bbox.y,
+        }
+      : null;
+  const centerFromPoint =
+    typeof object.centerX === "number" &&
+    Number.isFinite(object.centerX) &&
+    typeof object.centerY === "number" &&
+    Number.isFinite(object.centerY)
+      ? { x: object.centerX, y: object.centerY }
+      : null;
+  const anchor = centerFromBbox ?? centerFromPoint;
+  if (anchor) {
+    const roundedX = anchor.x.toFixed(3);
+    const roundedY = anchor.y.toFixed(3);
+    return `${object.label}:${roundedX}:${roundedY}`;
+  }
+  return `idx:${index}`;
+}
+
+type RemoveModeGuidanceDetectedTarget = {
+  number: number;
+  sourceKey: string;
+  label: string;
+  xNorm: number;
+  yNorm: number;
+  bbox?: {
+    x: number;
+    y: number;
+    w: number;
+    h: number;
+  };
+};
+type RemoveModeGuidanceManualTarget = {
+  sourceKey: string;
+  xNorm: number;
+  yNorm: number;
+};
+type RemoveModeGuidanceManifest = {
+  detectedTargets: RemoveModeGuidanceDetectedTarget[];
+  manualTargets: RemoveModeGuidanceManualTarget[];
+  targetCount: number;
+};
+type RemoveModeTargetOverride = {
+  xNorm: number;
+  yNorm: number;
+};
+
+function sanitizeGuidanceLabel(raw: string | null | undefined): string {
+  const safe = (raw ?? "")
+    .toLowerCase()
+    .replace(/[^a-z0-9\s-]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  return safe || "object";
+}
+
+function deriveRemoveModeGuidanceManifest(args: {
+  removeModeObjects: DetectedRoomObjectLabel[];
+  selectedRemoveObjectKeys: string[];
+  removeModeManualMarkers: Array<{ id: string; xNorm: number; yNorm: number }>;
+  removeModeObjectTargetOverrides?: Record<string, RemoveModeTargetOverride>;
+}): RemoveModeGuidanceManifest {
+  const selectedKeySet = new Set(args.selectedRemoveObjectKeys);
+  const detectedUnnumbered: Array<Omit<RemoveModeGuidanceDetectedTarget, "number">> = [];
+
+  args.removeModeObjects.forEach((object, index) => {
+    const key = deriveDetectedRemoveObjectKey(object, index);
+    if (!selectedKeySet.has(key)) return;
+    const bbox =
+      object.bbox &&
+      Number.isFinite(object.bbox.x) &&
+      Number.isFinite(object.bbox.y) &&
+      Number.isFinite(object.bbox.w) &&
+      Number.isFinite(object.bbox.h)
+        ? {
+            x: clampUnit(object.bbox.x),
+            y: clampUnit(object.bbox.y),
+            w: clampUnit(object.bbox.w),
+            h: clampUnit(object.bbox.h),
+          }
+        : undefined;
+    const centerFromBbox = bbox
+      ? {
+          x: clampUnit(bbox.x + bbox.w / 2),
+          y: clampUnit(bbox.y + bbox.h / 2),
+        }
+      : null;
+    const centerFromPoint =
+      typeof object.centerX === "number" &&
+      Number.isFinite(object.centerX) &&
+      typeof object.centerY === "number" &&
+      Number.isFinite(object.centerY)
+        ? {
+            x: clampUnit(object.centerX),
+            y: clampUnit(object.centerY),
+          }
+        : null;
+    const override = args.removeModeObjectTargetOverrides?.[key] ?? null;
+    const centerFromOverride =
+      override &&
+      Number.isFinite(override.xNorm) &&
+      Number.isFinite(override.yNorm)
+        ? {
+            x: clampUnit(override.xNorm),
+            y: clampUnit(override.yNorm),
+          }
+        : null;
+    const center = centerFromOverride ?? centerFromBbox ?? centerFromPoint;
+    if (!center) return;
+    detectedUnnumbered.push({
+      sourceKey: key,
+      label: sanitizeGuidanceLabel(object.label),
+      xNorm: center.x,
+      yNorm: center.y,
+      ...(bbox ? { bbox } : {}),
+    });
+  });
+
+  const detectedTargets = [...detectedUnnumbered]
+    .sort((left, right) => {
+      if (left.yNorm !== right.yNorm) return left.yNorm - right.yNorm;
+      if (left.xNorm !== right.xNorm) return left.xNorm - right.xNorm;
+      return left.sourceKey.localeCompare(right.sourceKey);
+    })
+    .map((target, index) => ({
+      ...target,
+      number: index + 1,
+    }));
+
+  const manualTargets: RemoveModeGuidanceManualTarget[] = args.removeModeManualMarkers.map((marker) => ({
+      sourceKey: marker.id,
+      xNorm: clampUnit(marker.xNorm),
+      yNorm: clampUnit(marker.yNorm),
+    }));
+
+  return {
+    detectedTargets,
+    manualTargets,
+    targetCount: detectedTargets.length + manualTargets.length,
+  };
+}
+
+async function prepareRemoveGuidanceImageDataUrl(args: {
+  imageUrl: string;
+  manifest: RemoveModeGuidanceManifest;
+}): Promise<string> {
+  if (typeof window === "undefined") {
+    throw new Error("Remove guidance image preparation requires a browser environment.");
+  }
+  const imageResponse = await fetch(args.imageUrl);
+  if (!imageResponse.ok) {
+    throw new Error(`Failed to load source image (HTTP ${imageResponse.status}).`);
+  }
+  const imageBlob = await imageResponse.blob();
+  const objectUrl = URL.createObjectURL(imageBlob);
+  try {
+    const image = await new Promise<HTMLImageElement>((resolve, reject) => {
+      const nextImage = new Image();
+      nextImage.onload = () => resolve(nextImage);
+      nextImage.onerror = () => reject(new Error("Failed to decode source image."));
+      nextImage.src = objectUrl;
+    });
+    const width = Math.max(1, Math.round(image.naturalWidth || image.width || 0));
+    const height = Math.max(1, Math.round(image.naturalHeight || image.height || 0));
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) {
+      throw new Error("Unable to create drawing context for removal guidance image.");
+    }
+    ctx.drawImage(image, 0, 0, width, height);
+    const markerRadius = Math.max(10, Math.round(Math.min(width, height) * 0.02));
+    const strokeWidth = Math.max(3, Math.round(markerRadius * 0.3));
+    ctx.strokeStyle = "#dc2626";
+    ctx.lineWidth = strokeWidth;
+    ctx.lineCap = "round";
+    for (const target of args.manifest.manualTargets) {
+      const x = clampUnit(target.xNorm) * width;
+      const y = clampUnit(target.yNorm) * height;
+      ctx.beginPath();
+      ctx.moveTo(x - markerRadius, y - markerRadius);
+      ctx.lineTo(x + markerRadius, y + markerRadius);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(x - markerRadius, y + markerRadius);
+      ctx.lineTo(x + markerRadius, y - markerRadius);
+      ctx.stroke();
+    }
+    const badgeRadius = Math.max(11, Math.round(Math.min(width, height) * 0.018));
+    for (const target of args.manifest.detectedTargets) {
+      const x = clampUnit(target.xNorm) * width;
+      const y = clampUnit(target.yNorm) * height;
+      ctx.beginPath();
+      ctx.fillStyle = "#dc2626";
+      ctx.arc(x, y, badgeRadius, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.lineWidth = Math.max(2, Math.round(badgeRadius * 0.2));
+      ctx.strokeStyle = "#fee2e2";
+      ctx.stroke();
+      ctx.fillStyle = "#ffffff";
+      ctx.font = `600 ${Math.max(11, Math.round(badgeRadius * 1.05))}px system-ui, sans-serif`;
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText(String(target.number), x, y);
+    }
+    return canvas.toDataURL("image/png");
+  } finally {
+    URL.revokeObjectURL(objectUrl);
+  }
+}
+
+function buildRemoveModeGuidancePromptText(manifest: RemoveModeGuidanceManifest): string {
+  const lines: string[] = [];
+  if (manifest.detectedTargets.length > 0) {
+    lines.push("Detected furniture targets:");
+    for (const target of manifest.detectedTargets) {
+      lines.push(`- Target ${target.number}: ${target.label}`);
+    }
+  }
+  if (manifest.manualTargets.length > 0) {
+    if (lines.length > 0) lines.push("");
+    lines.push("Manual remove markers:");
+    lines.push("- Remove the objects directly under the red X markers.");
+  }
+  return lines.join("\n");
+}
+
 function isServerFetchableImageUrl(url: string | null | undefined): boolean {
   if (!url || typeof url !== "string") return false;
   const trimmed = url.trim();
@@ -540,6 +794,7 @@ type VibodeEditRunRequest = {
   vibodeRoomId?: string;
   stageNumber?: number;
   pasteToPlaceControl?: PasteToPlaceJobControl;
+  mode?: "guidance-image";
 };
 type VibodeEditRunResponse = {
   imageUrl: string;
@@ -559,6 +814,19 @@ type RotateToolState = {
 };
 type RoomReadResponse = {
   objects?: DetectedRoomObjectLabel[];
+};
+type RemoveModeOverlayTarget = {
+  key: string;
+  label: string;
+  xNorm: number;
+  yNorm: number;
+  confidence: number;
+};
+type RemoveModeManualMarker = {
+  id: string;
+  xNorm: number;
+  yNorm: number;
+  createdAt: number;
 };
 type PlacementLayerNode = {
   id: string;
@@ -2239,6 +2507,23 @@ function EditorPageInner() {
   const [isEditRunning, setIsEditRunning] = useState(false);
   const [removeMarkerPosition, setRemoveMarkerPosition] = useState<PasteToPlaceClickHint | null>(null);
   const [isRemoveMarkerTargeting, setIsRemoveMarkerTargeting] = useState(false);
+  const [isRemoveModeEnabled, setIsRemoveModeEnabled] = useState(false);
+  const [isRemoveModeReadingObjects, setIsRemoveModeReadingObjects] = useState(false);
+  const [removeModeError, setRemoveModeError] = useState<string | null>(null);
+  const [removeModeObjects, setRemoveModeObjects] = useState<DetectedRoomObjectLabel[]>([]);
+  const [selectedRemoveObjectKeys, setSelectedRemoveObjectKeys] = useState<string[]>([]);
+  const [removeModeManualMarkers, setRemoveModeManualMarkers] = useState<RemoveModeManualMarker[]>([]);
+  const [removeModeObjectTargetOverrides, setRemoveModeObjectTargetOverrides] = useState<
+    Record<string, RemoveModeTargetOverride>
+  >({});
+  const [removeModeGuidanceImageDataUrl, setRemoveModeGuidanceImageDataUrl] = useState<string | null>(null);
+  const [removeModeGuidanceManifest, setRemoveModeGuidanceManifest] =
+    useState<RemoveModeGuidanceManifest | null>(null);
+  const [removeModeGuidancePromptText, setRemoveModeGuidancePromptText] = useState<string>("");
+  const [removeModeGuidancePreparedSignature, setRemoveModeGuidancePreparedSignature] = useState<string>("");
+  const [isPreparingRemoveGuidanceImage, setIsPreparingRemoveGuidanceImage] = useState(false);
+  const [removeModeGuidanceError, setRemoveModeGuidanceError] = useState<string | null>(null);
+  const [removeModeGuidanceTargetCount, setRemoveModeGuidanceTargetCount] = useState(0);
   const [detectedRoomObjectLabels, setDetectedRoomObjectLabels] = useState<DetectedRoomObjectLabel[]>(
     []
   );
@@ -3673,15 +3958,20 @@ function EditorPageInner() {
   }, [activeAssetId, requestedRoomId, scene.baseImageUrl, vibodeRoomId, versions, workingImageUrl]);
   const hydrateRoomImageObjects = useCallback(
     async (args: {
-      trigger: "load" | "room-upload" | "stage-run" | "edit-run" | "paste-to-place";
+      trigger: "load" | "room-upload" | "stage-run" | "edit-run" | "paste-to-place" | "remove-mode";
       imageUrl: string | null;
       roomId: string | null;
       assetId: string | null;
       versionId?: string | null;
       allowRoomReadOnMiss: boolean;
-    }) => {
+      purpose?: "suggested-placement" | "remove-mode" | "legacy";
+      mode?: "labels_only" | "geometry";
+      suppressErrors?: boolean;
+    }): Promise<DetectedRoomObjectLabel[]> => {
       const imageUrl = args.imageUrl?.trim() ?? null;
       const versionId = args.versionId ?? args.assetId;
+      const purpose = args.purpose ?? "legacy";
+      const mode = args.mode ?? "labels_only";
       const hasStableIdentity = Boolean(args.roomId || args.assetId || versionId);
       const skipReason = !hasStableIdentity
         ? "no stable image identity"
@@ -3704,19 +3994,22 @@ function EditorPageInner() {
         if (!args.allowRoomReadOnMiss) {
           setDetectedRoomObjectLabels([]);
         }
-        return;
+        return [];
       }
 
       const imageIdentity = `${args.roomId ?? "no_room"}:${args.assetId ?? "no_asset"}:${versionId ?? "no_version"}:${imageUrl ?? "no_image"}`;
-      const cacheKey = `${imageIdentity}:${args.allowRoomReadOnMiss ? "warm" : "read"}`;
-      const cached = roomReadByImageKeyRef.current.get(cacheKey) ?? roomReadByImageKeyRef.current.get(imageIdentity);
+      const scopedImageIdentity = `${imageIdentity}:${purpose}:${mode}`;
+      const cacheKey = `${scopedImageIdentity}:${args.allowRoomReadOnMiss ? "warm" : "read"}`;
+      const cached =
+        roomReadByImageKeyRef.current.get(cacheKey) ??
+        roomReadByImageKeyRef.current.get(scopedImageIdentity);
       if (cached) {
         roomReadByImageKeyRef.current.set(cacheKey, cached);
         setDetectedRoomObjectLabels(cached);
-        return;
+        return cached;
       }
       if (roomReadInFlightKeysRef.current.has(cacheKey)) {
-        return;
+        return [];
       }
 
       roomReadInFlightKeysRef.current.add(cacheKey);
@@ -3733,6 +4026,8 @@ function EditorPageInner() {
             vibodeRoomId: args.roomId ?? undefined,
             assetId: args.assetId ?? undefined,
             versionId: versionId ?? undefined,
+            purpose,
+            mode,
             allowRoomReadOnMiss: args.allowRoomReadOnMiss,
           }),
         });
@@ -3742,9 +4037,10 @@ function EditorPageInner() {
         }
         const json = (await res.json().catch(() => ({}))) as RoomReadResponse;
         const objects = Array.isArray(json.objects) ? json.objects : [];
-        roomReadByImageKeyRef.current.set(imageIdentity, objects);
+        roomReadByImageKeyRef.current.set(scopedImageIdentity, objects);
         roomReadByImageKeyRef.current.set(cacheKey, objects);
         setDetectedRoomObjectLabels(objects);
+        return objects;
       } catch (err: unknown) {
         console.warn("[room-image-objects] failed", {
           trigger: args.trigger,
@@ -3753,6 +4049,10 @@ function EditorPageInner() {
         if (!args.allowRoomReadOnMiss) {
           setDetectedRoomObjectLabels([]);
         }
+        if (args.suppressErrors === false) {
+          throw err;
+        }
+        return [];
       } finally {
         roomReadInFlightKeysRef.current.delete(cacheKey);
       }
@@ -5265,6 +5565,121 @@ function EditorPageInner() {
     }
   }, [removeLabelOptions, selectedRemoveLabel]);
 
+  const removeModeOverlayTargets = useMemo<RemoveModeOverlayTarget[]>(() => {
+    const next: RemoveModeOverlayTarget[] = [];
+    removeModeObjects.forEach((object, index) => {
+      const key = deriveDetectedRemoveObjectKey(object, index);
+      const bbox = object.bbox;
+      const hasBboxAnchor =
+        bbox &&
+        Number.isFinite(bbox.x) &&
+        Number.isFinite(bbox.y) &&
+        Number.isFinite(bbox.w) &&
+        Number.isFinite(bbox.h);
+      const centerX =
+        hasBboxAnchor && bbox
+          ? bbox.x + bbox.w / 2
+          : typeof object.centerX === "number" && Number.isFinite(object.centerX)
+            ? object.centerX
+            : null;
+      const centerY =
+        hasBboxAnchor && bbox
+          ? bbox.y
+          : typeof object.centerY === "number" && Number.isFinite(object.centerY)
+            ? object.centerY
+            : null;
+      if (centerX === null || centerY === null) return;
+      const override = removeModeObjectTargetOverrides[key] ?? null;
+      const xNorm =
+        override && Number.isFinite(override.xNorm)
+          ? clampUnit(override.xNorm)
+          : Math.max(0, Math.min(1, centerX));
+      const yNorm =
+        override && Number.isFinite(override.yNorm)
+          ? clampUnit(override.yNorm)
+          : Math.max(0, Math.min(1, centerY));
+      next.push({
+        key,
+        label: object.label,
+        xNorm,
+        yNorm,
+        confidence: object.confidence,
+      });
+    });
+    return next;
+  }, [removeModeObjectTargetOverrides, removeModeObjects]);
+  const removeModeGuidanceManifestDraft = useMemo(
+    () =>
+      deriveRemoveModeGuidanceManifest({
+        removeModeObjects,
+        selectedRemoveObjectKeys,
+        removeModeManualMarkers,
+        removeModeObjectTargetOverrides,
+      }),
+    [
+      removeModeManualMarkers,
+      removeModeObjectTargetOverrides,
+      removeModeObjects,
+      selectedRemoveObjectKeys,
+    ]
+  );
+  const removeModeGuidanceDraftSignature = useMemo(
+    () =>
+      JSON.stringify({
+        detected: removeModeGuidanceManifestDraft.detectedTargets.map((target) => ({
+          sourceKey: target.sourceKey,
+          number: target.number,
+          xNorm: Number(target.xNorm.toFixed(5)),
+          yNorm: Number(target.yNorm.toFixed(5)),
+          label: target.label,
+        })),
+        manual: removeModeGuidanceManifestDraft.manualTargets.map((target) => ({
+          sourceKey: target.sourceKey,
+          xNorm: Number(target.xNorm.toFixed(5)),
+          yNorm: Number(target.yNorm.toFixed(5)),
+        })),
+      }),
+    [removeModeGuidanceManifestDraft]
+  );
+  const isRemoveModeGuidanceFresh = useMemo(
+    () =>
+      Boolean(
+        removeModeGuidanceImageDataUrl &&
+          removeModeGuidanceManifest &&
+          removeModeGuidancePromptText &&
+          removeModeGuidancePreparedSignature &&
+          removeModeGuidancePreparedSignature === removeModeGuidanceDraftSignature
+      ),
+    [
+      removeModeGuidanceDraftSignature,
+      removeModeGuidanceImageDataUrl,
+      removeModeGuidanceManifest,
+      removeModeGuidancePreparedSignature,
+      removeModeGuidancePromptText,
+    ]
+  );
+  useEffect(() => {
+    if (!removeModeGuidanceImageDataUrl) return;
+    if (!removeModeGuidancePreparedSignature) return;
+    if (removeModeGuidancePreparedSignature === removeModeGuidanceDraftSignature) return;
+    setRemoveModeGuidanceImageDataUrl(null);
+    setRemoveModeGuidanceManifest(null);
+    setRemoveModeGuidancePromptText("");
+    setRemoveModeGuidancePreparedSignature("");
+    setRemoveModeGuidanceTargetCount(0);
+  }, [
+    removeModeGuidanceDraftSignature,
+    removeModeGuidanceImageDataUrl,
+    removeModeGuidancePreparedSignature,
+  ]);
+  useEffect(() => {
+    if (!removeModeGuidancePromptText) return;
+    if (!isRoomOpenDebugEnabled()) return;
+    console.log("[remove-mode] guidance prompt preview", {
+      prompt: removeModeGuidancePromptText,
+    });
+  }, [removeModeGuidancePromptText]);
+
   const queuedDeletes = useMemo(
     () => nodes.filter((n) => n.status === "markedForDelete").length,
     [nodes]
@@ -5971,26 +6386,34 @@ function EditorPageInner() {
       let rotatePayload: { xNorm: number; yNorm: number; rotationDegrees: number } | null = null;
 
       if (action === "remove") {
-        const xNormRaw =
-          parseFiniteNumber(targetRecord.xNorm) ??
-          parseFiniteNumber(targetRecord.x) ??
-          parseFiniteNumber(paramsRecord.xNorm) ??
-          parseFiniteNumber(paramsRecord.x);
-        const yNormRaw =
-          parseFiniteNumber(targetRecord.yNorm) ??
-          parseFiniteNumber(targetRecord.y) ??
-          parseFiniteNumber(paramsRecord.yNorm) ??
-          parseFiniteNumber(paramsRecord.y);
-        if (xNormRaw === null || yNormRaw === null) {
-          const message = "remove requires finite target.xNorm and target.yNorm.";
-          setEditWarning(message);
-          pushSnack(message);
-          return null;
+        const removeMode =
+          typeof paramsRecord.mode === "string" ? paramsRecord.mode.trim().toLowerCase() : null;
+        const isGuidanceImageMode = removeMode === "guidance-image";
+        if (isGuidanceImageMode) {
+          normalizedTarget = payloadParts.target;
+          normalizedParams = { ...paramsRecord, mode: "guidance-image" };
+        } else {
+          const xNormRaw =
+            parseFiniteNumber(targetRecord.xNorm) ??
+            parseFiniteNumber(targetRecord.x) ??
+            parseFiniteNumber(paramsRecord.xNorm) ??
+            parseFiniteNumber(paramsRecord.x);
+          const yNormRaw =
+            parseFiniteNumber(targetRecord.yNorm) ??
+            parseFiniteNumber(targetRecord.y) ??
+            parseFiniteNumber(paramsRecord.yNorm) ??
+            parseFiniteNumber(paramsRecord.y);
+          if (xNormRaw === null || yNormRaw === null) {
+            const message = "remove requires finite target.xNorm and target.yNorm.";
+            setEditWarning(message);
+            pushSnack(message);
+            return null;
+          }
+          const xNorm = Math.max(0, Math.min(1, xNormRaw));
+          const yNorm = Math.max(0, Math.min(1, yNormRaw));
+          normalizedTarget = { xNorm, yNorm, x: xNorm, y: yNorm };
+          normalizedParams = { ...paramsRecord, xNorm, yNorm, x: xNorm, y: yNorm };
         }
-        const xNorm = Math.max(0, Math.min(1, xNormRaw));
-        const yNorm = Math.max(0, Math.min(1, yNormRaw));
-        normalizedTarget = { xNorm, yNorm, x: xNorm, y: yNorm };
-        normalizedParams = { ...paramsRecord, xNorm, yNorm, x: xNorm, y: yNorm };
       } else if (action === "rotate") {
         const xNormRaw =
           parseFiniteNumber(payloadParts.xNorm) ??
@@ -8219,6 +8642,365 @@ function EditorPageInner() {
     setEditWarning(null);
   };
 
+  const engageRemoveMode = useCallback(async () => {
+    if (isRemoveModeReadingObjects) return;
+    const roomId = vibodeRoomId?.trim() ?? null;
+    const assetId = activeAssetId?.trim() ?? null;
+    const imageUrl = workingImageUrl?.trim() ?? null;
+    if (!roomId || !assetId || !imageUrl) {
+      const message = "Open a room version image before engaging Remove Mode.";
+      setRemoveModeError(message);
+      pushSnack(message);
+      return;
+    }
+    if (!isRoomReadImageUrlSupported(imageUrl)) {
+      const message = "Remove Mode needs a supported room image URL.";
+      setRemoveModeError(message);
+      pushSnack(message);
+      return;
+    }
+
+    setIsRemoveModeEnabled(true);
+    setRemoveModeError(null);
+    setSelectedRemoveObjectKeys([]);
+    setRemoveModeObjects([]);
+    setRemoveModeManualMarkers([]);
+    setRemoveModeObjectTargetOverrides({});
+    setRemoveModeGuidanceImageDataUrl(null);
+    setRemoveModeGuidanceManifest(null);
+    setRemoveModeGuidancePromptText("");
+    setRemoveModeGuidancePreparedSignature("");
+    setRemoveModeGuidanceError(null);
+    setRemoveModeGuidanceTargetCount(0);
+    setIsRemoveModeReadingObjects(true);
+    try {
+      const objects = await hydrateRoomImageObjects({
+        trigger: "remove-mode",
+        imageUrl,
+        roomId,
+        assetId,
+        versionId: assetId,
+        purpose: "remove-mode",
+        mode: "geometry",
+        allowRoomReadOnMiss: true,
+        suppressErrors: false,
+      });
+      setRemoveModeObjects(objects);
+    } catch (err: unknown) {
+      const message = getErrorMessage(err) ?? "Unable to read room objects for Remove Mode.";
+      setRemoveModeError(message);
+      setRemoveModeObjects([]);
+      pushSnack(message);
+    } finally {
+      setIsRemoveModeReadingObjects(false);
+    }
+  }, [
+    activeAssetId,
+    hydrateRoomImageObjects,
+    isRemoveModeReadingObjects,
+    pushSnack,
+    vibodeRoomId,
+    workingImageUrl,
+  ]);
+
+  const exitRemoveMode = useCallback(() => {
+    setIsRemoveModeEnabled(false);
+    setIsRemoveModeReadingObjects(false);
+    setRemoveModeError(null);
+    setRemoveModeObjects([]);
+    setSelectedRemoveObjectKeys([]);
+    setRemoveModeManualMarkers([]);
+    setRemoveModeObjectTargetOverrides({});
+    setRemoveModeGuidanceImageDataUrl(null);
+    setRemoveModeGuidanceManifest(null);
+    setRemoveModeGuidancePromptText("");
+    setRemoveModeGuidancePreparedSignature("");
+    setRemoveModeGuidanceError(null);
+    setRemoveModeGuidanceTargetCount(0);
+  }, []);
+
+  const toggleRemoveModeObjectSelection = useCallback((key: string) => {
+    setSelectedRemoveObjectKeys((prev) => {
+      if (prev.includes(key)) {
+        return prev.filter((existing) => existing !== key);
+      }
+      return [...prev, key];
+    });
+  }, []);
+
+  const handlePlaceRemoveModeManualMarker = useCallback((marker: PasteToPlaceClickHint) => {
+    if (!isRemoveModeEnabled) return;
+    setRemoveModeManualMarkers((prev) => [
+      ...prev,
+      {
+        id: safeId("remove_mode_manual"),
+        xNorm: marker.xNorm,
+        yNorm: marker.yNorm,
+        createdAt: Date.now(),
+      },
+    ]);
+  }, [isRemoveModeEnabled]);
+
+  const removeRemoveModeManualMarker = useCallback((id: string) => {
+    setRemoveModeManualMarkers((prev) => prev.filter((marker) => marker.id !== id));
+  }, []);
+
+  const moveRemoveModeManualMarker = useCallback((id: string, xNorm: number, yNorm: number) => {
+    const x = clampUnit(xNorm);
+    const y = clampUnit(yNorm);
+    setRemoveModeManualMarkers((prev) =>
+      prev.map((marker) => (marker.id === id ? { ...marker, xNorm: x, yNorm: y } : marker))
+    );
+  }, []);
+
+  const updateRemoveModeObjectTargetOverride = useCallback((key: string, xNorm: number, yNorm: number) => {
+    if (!key.trim()) return;
+    const x = clampUnit(xNorm);
+    const y = clampUnit(yNorm);
+    setRemoveModeObjectTargetOverrides((prev) => ({
+      ...prev,
+      [key]: { xNorm: x, yNorm: y },
+    }));
+  }, []);
+
+  const saveRemoveGuidanceDebugImages = useCallback(
+    async (args: {
+      image1Url: string;
+      image2DataUrl: string;
+      manifest: RemoveModeGuidanceManifest;
+      promptText: string;
+    }) => {
+      if (process.env.NODE_ENV === "production") return;
+      try {
+        const res = await fetch("/api/vibode/debug-save-remove-guidance", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            image1Url: args.image1Url,
+            image2DataUrl: args.image2DataUrl,
+            roomId: vibodeRoomId ?? null,
+            versionId: activeAssetId ?? null,
+            targetCount: args.manifest.targetCount,
+            manifest: args.manifest,
+            promptText: args.promptText,
+          }),
+        });
+        if (res.status === 403 || res.status === 404) {
+          return;
+        }
+        if (!res.ok) {
+          const text = await res.text().catch(() => "");
+          throw new Error(`HTTP ${res.status} ${text}`.trim());
+        }
+        const payload = (await res.json().catch(() => ({}))) as {
+          savedFiles?: string[];
+        };
+        console.log("[remove-mode] debug images saved", {
+          fileCount: Array.isArray(payload.savedFiles) ? payload.savedFiles.length : 0,
+        });
+      } catch (debugSaveErr: unknown) {
+        console.warn("[remove-mode] debug save failed", {
+          error: debugSaveErr instanceof Error ? debugSaveErr.message : String(debugSaveErr),
+        });
+      }
+    },
+    [activeAssetId, vibodeRoomId]
+  );
+
+  const prepareRemoveGuidanceImage = useCallback(async () => {
+    if (isPreparingRemoveGuidanceImage) return;
+    if (!isRemoveModeEnabled) return;
+    if (removeModeGuidanceManifestDraft.targetCount === 0) {
+      const message = "Mark at least one object or manual remove point first.";
+      setRemoveModeGuidanceError(message);
+      pushSnack(message);
+      return;
+    }
+    const sourceImageUrl =
+      workingImageUrl?.trim() || scene.baseImageUrl?.trim() || null;
+    if (!isServerFetchableImageUrl(sourceImageUrl)) {
+      const message = "Open a valid room image before preparing removal guidance.";
+      setRemoveModeGuidanceError(message);
+      pushSnack(message);
+      return;
+    }
+    const safeSourceImageUrl = sourceImageUrl as string;
+
+    setIsPreparingRemoveGuidanceImage(true);
+    setRemoveModeGuidanceError(null);
+    try {
+      const promptText = buildRemoveModeGuidancePromptText(removeModeGuidanceManifestDraft);
+      const guidanceImageDataUrl = await prepareRemoveGuidanceImageDataUrl({
+        imageUrl: safeSourceImageUrl,
+        manifest: removeModeGuidanceManifestDraft,
+      });
+      setRemoveModeGuidanceImageDataUrl(guidanceImageDataUrl);
+      setRemoveModeGuidanceManifest(removeModeGuidanceManifestDraft);
+      setRemoveModeGuidancePromptText(promptText);
+      setRemoveModeGuidancePreparedSignature(removeModeGuidanceDraftSignature);
+      setRemoveModeGuidanceTargetCount(removeModeGuidanceManifestDraft.targetCount);
+      void saveRemoveGuidanceDebugImages({
+        image1Url: safeSourceImageUrl,
+        image2DataUrl: guidanceImageDataUrl,
+        manifest: removeModeGuidanceManifestDraft,
+        promptText,
+      });
+      pushSnack(
+        `Removal guidance prepared for ${removeModeGuidanceManifestDraft.targetCount} target${
+          removeModeGuidanceManifestDraft.targetCount === 1 ? "" : "s"
+        }.`
+      );
+    } catch (err: unknown) {
+      const message = getErrorMessage(err) ?? "Unable to prepare removal guidance image.";
+      setRemoveModeGuidanceError(message);
+      pushSnack(message);
+    } finally {
+      setIsPreparingRemoveGuidanceImage(false);
+    }
+  }, [
+    isPreparingRemoveGuidanceImage,
+    isRemoveModeEnabled,
+    pushSnack,
+    removeModeGuidanceManifestDraft,
+    removeModeGuidanceDraftSignature,
+    saveRemoveGuidanceDebugImages,
+    scene.baseImageUrl,
+    workingImageUrl,
+  ]);
+
+  const removeSelectedWithGuidedRemoveMode = useCallback(async () => {
+    if (isEditRunning || isOutOfTokens) return;
+    if (!isRemoveModeEnabled) {
+      await removeSelectedMarker();
+      return;
+    }
+    if (removeModeGuidanceManifestDraft.targetCount === 0) {
+      const message = "Mark at least one object or manual remove point first.";
+      setRemoveModeGuidanceError(message);
+      setRemoveModeError(message);
+      pushSnack(message);
+      return;
+    }
+
+    const sourceImageUrl = workingImageUrl?.trim() || scene.baseImageUrl?.trim() || null;
+    if (!isServerFetchableImageUrl(sourceImageUrl)) {
+      const message = "Open a valid room image before removing selected items.";
+      setRemoveModeError(message);
+      pushSnack(message);
+      return;
+    }
+    const safeSourceImageUrl = sourceImageUrl as string;
+
+    let guidanceImageDataUrl = removeModeGuidanceImageDataUrl;
+    let guidanceManifestForRequest = removeModeGuidanceManifest;
+    let guidancePromptText = removeModeGuidancePromptText;
+
+    if (!isRemoveModeGuidanceFresh) {
+      setIsPreparingRemoveGuidanceImage(true);
+      setRemoveModeGuidanceError(null);
+      try {
+        guidanceManifestForRequest = removeModeGuidanceManifestDraft;
+        guidancePromptText = buildRemoveModeGuidancePromptText(removeModeGuidanceManifestDraft);
+        guidanceImageDataUrl = await prepareRemoveGuidanceImageDataUrl({
+          imageUrl: safeSourceImageUrl,
+          manifest: removeModeGuidanceManifestDraft,
+        });
+        setRemoveModeGuidanceImageDataUrl(guidanceImageDataUrl);
+        setRemoveModeGuidanceManifest(removeModeGuidanceManifestDraft);
+        setRemoveModeGuidancePromptText(guidancePromptText);
+        setRemoveModeGuidancePreparedSignature(removeModeGuidanceDraftSignature);
+        setRemoveModeGuidanceTargetCount(removeModeGuidanceManifestDraft.targetCount);
+        void saveRemoveGuidanceDebugImages({
+          image1Url: safeSourceImageUrl,
+          image2DataUrl: guidanceImageDataUrl,
+          manifest: removeModeGuidanceManifestDraft,
+          promptText: guidancePromptText,
+        });
+      } catch (err: unknown) {
+        const message = getErrorMessage(err) ?? "Unable to prepare removal guidance image.";
+        setRemoveModeGuidanceError(message);
+        setRemoveModeError(message);
+        pushSnack(message);
+        return;
+      } finally {
+        setIsPreparingRemoveGuidanceImage(false);
+      }
+    }
+
+    if (!guidanceImageDataUrl || !guidanceManifestForRequest || !guidancePromptText) {
+      const message = "Unable to prepare removal guidance image.";
+      setRemoveModeGuidanceError(message);
+      setRemoveModeError(message);
+      pushSnack(message);
+      return;
+    }
+
+    const fallbackTarget =
+      guidanceManifestForRequest.detectedTargets[0] ?? guidanceManifestForRequest.manualTargets[0] ?? null;
+
+    setRemoveModeError(null);
+    setEditWarning(null);
+    pushSnack("Removing selected items…");
+    const res = await runEdit(
+      "remove",
+      {
+        mode: "guidance-image",
+        ...(fallbackTarget
+          ? {
+              target: {
+                xNorm: fallbackTarget.xNorm,
+                yNorm: fallbackTarget.yNorm,
+                x: fallbackTarget.xNorm,
+                y: fallbackTarget.yNorm,
+              },
+            }
+          : {}),
+        params: {
+          mode: "guidance-image",
+          sourceImageUrl: safeSourceImageUrl,
+          sourceVersionId: activeAssetId ?? undefined,
+          guidanceImageDataUrl,
+          guidancePromptText,
+          guidanceManifest: guidanceManifestForRequest,
+          targetCount: guidanceManifestForRequest.targetCount,
+        },
+      },
+      {
+        onImageCommitted: () => {
+          exitRemoveMode();
+        },
+      }
+    );
+    if (!res) {
+      const message = "Vibode couldn't remove those items. Please adjust the markers and try again.";
+      setRemoveModeError(message);
+      setEditWarning("Remove failed");
+      pushSnack(message);
+      return;
+    }
+    pushSnack("Items removed. Your cleaned room was saved as a SET version.");
+  }, [
+    activeAssetId,
+    exitRemoveMode,
+    isEditRunning,
+    isOutOfTokens,
+    isRemoveModeEnabled,
+    isRemoveModeGuidanceFresh,
+    pushSnack,
+    removeModeGuidanceDraftSignature,
+    removeModeGuidanceImageDataUrl,
+    removeModeGuidanceManifest,
+    removeModeGuidanceManifestDraft,
+    removeModeGuidancePromptText,
+    removeSelectedMarker,
+    runEdit,
+    saveRemoveGuidanceDebugImages,
+    scene.baseImageUrl,
+    workingImageUrl,
+  ]);
+
   const clearRotateMarker = useCallback(
     (notify = true) => {
       const hadMarker = Boolean(rotateToolState.marker);
@@ -9219,6 +10001,105 @@ function EditorPageInner() {
     <div className={className}>
       <div className="text-xs text-neutral-400">Remove</div>
       <div className="mt-2">
+        <button
+          type="button"
+          disabled={isEditRunning || isRemoveModeReadingObjects || isRemoveModeEnabled}
+          className={`w-full rounded-md border px-2 py-1.5 text-xs ${
+            isEditRunning || isRemoveModeReadingObjects
+              ? "border-neutral-900 bg-neutral-950 text-neutral-500"
+              : isRemoveModeEnabled
+                ? "border-sky-500/50 bg-sky-950/30 text-sky-200"
+                : "border-sky-500/70 bg-sky-950/40 text-sky-100 hover:bg-sky-900/50"
+          }`}
+          onClick={() => {
+            void engageRemoveMode();
+          }}
+        >
+          {isRemoveModeReadingObjects
+            ? "Reading room objects…"
+            : isRemoveModeEnabled
+              ? "Remove Mode Active"
+              : "Engage Remove Mode"}
+        </button>
+        {isRemoveModeEnabled ? (
+          <button
+            type="button"
+            disabled={isRemoveModeReadingObjects}
+            className={`mt-1 w-full rounded-md border px-2 py-1 text-[11px] ${
+              isRemoveModeReadingObjects
+                ? "border-neutral-900 bg-neutral-950 text-neutral-500"
+                : "border-neutral-700 bg-neutral-900 text-neutral-300 hover:bg-neutral-800"
+            }`}
+            onClick={exitRemoveMode}
+          >
+            Exit Remove Mode
+          </button>
+        ) : null}
+      </div>
+      <div className="mt-2 rounded-md border border-neutral-800 bg-neutral-950/70 px-2 py-1.5 text-[11px] text-neutral-400">
+        {!isRemoveModeEnabled ? (
+          <div>Use Remove Mode to identify objects before marking them for cleanup.</div>
+        ) : isRemoveModeReadingObjects ? (
+          <div>Reading room objects…</div>
+        ) : removeModeError ? (
+          <div>{removeModeError}</div>
+        ) : removeModeObjects.length > 0 ? (
+          <>
+            <div>Detected {removeModeObjects.length} removable objects.</div>
+            <div className="mt-0.5 text-neutral-500">Object selection canvas overlay coming next.</div>
+          </>
+        ) : (
+          <div>No major objects detected. Manual remove markers will still be available in the next phase.</div>
+        )}
+        {isRemoveModeEnabled ? (
+          <div className="mt-1 text-neutral-500">
+            {formatRemoveModeMarkedCount(selectedRemoveObjectKeys.length)}
+          </div>
+        ) : null}
+        {isRemoveModeEnabled ? (
+          <div className="mt-1 text-neutral-500">
+            {formatRemoveModeManualMarkerCount(removeModeManualMarkers.length)}
+          </div>
+        ) : null}
+      </div>
+      {isRemoveModeEnabled ? (
+        <div className="mt-2 rounded-md border border-neutral-800 bg-neutral-950/70 px-2 py-1.5">
+          <div className="mt-1 text-[11px] text-neutral-500">
+            Click the room to add remove markers for small items Vibode missed. Drag markers or object labels to
+            refine targets.
+          </div>
+        </div>
+      ) : null}
+      {isRemoveModeEnabled && removeModeGuidanceManifestDraft.targetCount > 0 ? (
+        <div className="mt-2 rounded-md border border-neutral-800 bg-neutral-950/70 px-2 py-1.5">
+          <button
+            type="button"
+            disabled={isPreparingRemoveGuidanceImage}
+            className={`w-full rounded-md border px-2 py-1.5 text-xs ${
+              isPreparingRemoveGuidanceImage
+                ? "border-neutral-900 bg-neutral-950 text-neutral-500"
+                : "border-neutral-700 bg-neutral-900 text-neutral-200 hover:bg-neutral-800"
+            }`}
+            onClick={() => {
+              void prepareRemoveGuidanceImage();
+            }}
+          >
+            {isPreparingRemoveGuidanceImage ? "Preparing guidance..." : "Prepare removal guidance"}
+          </button>
+          {removeModeGuidanceError ? (
+            <div className="mt-1 text-[11px] text-rose-200">{removeModeGuidanceError}</div>
+          ) : null}
+          {removeModeGuidanceImageDataUrl ? (
+            <div className="mt-1">
+              <div className="text-[11px] text-neutral-400">
+                Removal guidance prepared for {removeModeGuidanceManifest?.targetCount ?? removeModeGuidanceTargetCount} target
+                {(removeModeGuidanceManifest?.targetCount ?? removeModeGuidanceTargetCount) === 1 ? "" : "s"}.
+              </div>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+      <div className="mt-2">
         <label className="text-[11px] text-neutral-500" htmlFor="remove-label-select">
           Removing:
         </label>
@@ -9246,7 +10127,32 @@ function EditorPageInner() {
         </select>
       </div>
       <div className="mt-1 grid grid-cols-2 gap-2">
-        {!hasActiveRemoveMarker ? (
+        {isRemoveModeEnabled ? (
+          <button
+            type="button"
+            disabled={
+              isEditRunning ||
+              isPreparingRemoveGuidanceImage ||
+              isOutOfTokens ||
+              !workingImageUrl ||
+              removeModeGuidanceManifestDraft.targetCount === 0
+            }
+            className={`col-span-2 rounded-md border px-2 py-1.5 text-xs ${
+              isEditRunning ||
+              isPreparingRemoveGuidanceImage ||
+              isOutOfTokens ||
+              !workingImageUrl ||
+              removeModeGuidanceManifestDraft.targetCount === 0
+                ? "border-neutral-900 bg-neutral-950 text-neutral-500"
+                : "border-neutral-700 bg-neutral-900 text-neutral-100 hover:bg-neutral-800"
+            }`}
+            onClick={() => {
+              void removeSelectedWithGuidedRemoveMode();
+            }}
+          >
+            {isEditRunning ? "Removing selected items…" : "Remove Selected"}
+          </button>
+        ) : !hasActiveRemoveMarker ? (
           <button
             type="button"
             disabled={isEditRunning}
@@ -9282,7 +10188,7 @@ function EditorPageInner() {
                   : "border-neutral-700 bg-neutral-900 text-neutral-100 hover:bg-neutral-800"
               }`}
               onClick={() => {
-                void removeSelectedMarker();
+                void removeSelectedWithGuidedRemoveMode();
               }}
             >
               Remove Selected
@@ -9571,6 +10477,15 @@ function EditorPageInner() {
                 onCommitPlacementLayerNodeMove={persistPlacementLayerNodePosition}
                 onDeletePlacementLayerNode={deletePlacementLayerNode}
                 onPlacementLayerDragStateChange={handlePlacementLayerDragStateChange}
+                removeModeEnabled={isRemoveModeEnabled}
+                removeModeTargets={removeModeOverlayTargets}
+                selectedRemoveModeTargetKeys={selectedRemoveObjectKeys}
+                onToggleRemoveModeTarget={toggleRemoveModeObjectSelection}
+                onMoveRemoveModeTarget={updateRemoveModeObjectTargetOverride}
+                removeModeManualMarkers={removeModeManualMarkers}
+                onPlaceRemoveModeManualMarker={handlePlaceRemoveModeManualMarker}
+                onMoveRemoveModeManualMarker={moveRemoveModeManualMarker}
+                onRemoveRemoveModeManualMarker={removeRemoveModeManualMarker}
               />
 
               {shouldShowUploadOverlay && (

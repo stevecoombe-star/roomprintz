@@ -72,6 +72,19 @@ type PlacementLayerDragState = {
   nodeId: string;
   startedAsSuggested: boolean;
 };
+type RemoveModeOverlayTarget = {
+  key: string;
+  label: string;
+  xNorm: number;
+  yNorm: number;
+  confidence?: number | null;
+};
+type RemoveModeManualMarker = {
+  id: string;
+  xNorm: number;
+  yNorm: number;
+  createdAt?: number;
+};
 const PASTE_TO_PLACE_PROGRESS_COPY: Record<PasteToPlaceStatus, string> = {
   reading: "Reading copied image...",
   preparing: "Preparing product...",
@@ -327,6 +340,15 @@ export function EditorCanvas({
   onCommitPlacementLayerNodeMove,
   onDeletePlacementLayerNode,
   onPlacementLayerDragStateChange,
+  removeModeEnabled = false,
+  removeModeTargets = [],
+  selectedRemoveModeTargetKeys = [],
+  onToggleRemoveModeTarget,
+  onMoveRemoveModeTarget,
+  removeModeManualMarkers = [],
+  onPlaceRemoveModeManualMarker,
+  onMoveRemoveModeManualMarker,
+  onRemoveRemoveModeManualMarker,
 }: {
   className?: string;
   onRequestSwap?: (id: string) => void;
@@ -388,6 +410,15 @@ export function EditorCanvas({
   }) => void | Promise<void>;
   onDeletePlacementLayerNode?: (id: string) => void | Promise<void>;
   onPlacementLayerDragStateChange?: (state: PlacementLayerDragState | null) => void;
+  removeModeEnabled?: boolean;
+  removeModeTargets?: RemoveModeOverlayTarget[];
+  selectedRemoveModeTargetKeys?: string[];
+  onToggleRemoveModeTarget?: (key: string) => void;
+  onMoveRemoveModeTarget?: (key: string, xNorm: number, yNorm: number) => void;
+  removeModeManualMarkers?: RemoveModeManualMarker[];
+  onPlaceRemoveModeManualMarker?: (marker: { xNorm: number; yNorm: number }) => void;
+  onMoveRemoveModeManualMarker?: (id: string, xNorm: number, yNorm: number) => void;
+  onRemoveRemoveModeManualMarker?: (id: string) => void;
 }) {
   const instanceId = useId();
   const outerShellRef = useRef<HTMLDivElement | null>(null);
@@ -756,6 +787,48 @@ export function EditorCanvas({
     }
     return next;
   }, [furnitureLayerEnabled, placementLayerNodes, viewport]);
+  const projectedRemoveModeTargets = useMemo(() => {
+    if (!removeModeEnabled || !viewport || removeModeTargets.length === 0) return [];
+    const next: Array<RemoveModeOverlayTarget & { stageX: number; stageY: number }> = [];
+    for (const target of removeModeTargets) {
+      if (!target?.key || !target?.label) continue;
+      const xNorm = Number.isFinite(target.xNorm) ? clamp(target.xNorm, 0, 1) : null;
+      const yNorm = Number.isFinite(target.yNorm) ? clamp(target.yNorm, 0, 1) : null;
+      if (xNorm === null || yNorm === null) continue;
+      const imagePoint = {
+        x: xNorm * viewport.imageNaturalW,
+        y: yNorm * viewport.imageNaturalH,
+      };
+      const stagePoint = imageToStagePoint(imagePoint, viewport);
+      next.push({
+        ...target,
+        stageX: stagePoint.x,
+        stageY: stagePoint.y,
+      });
+    }
+    return next;
+  }, [removeModeEnabled, removeModeTargets, viewport]);
+  const projectedRemoveModeManualMarkers = useMemo(() => {
+    if (!removeModeEnabled || !viewport || removeModeManualMarkers.length === 0) return [];
+    const next: Array<RemoveModeManualMarker & { stageX: number; stageY: number }> = [];
+    for (const marker of removeModeManualMarkers) {
+      if (!marker?.id) continue;
+      const xNorm = Number.isFinite(marker.xNorm) ? clamp(marker.xNorm, 0, 1) : null;
+      const yNorm = Number.isFinite(marker.yNorm) ? clamp(marker.yNorm, 0, 1) : null;
+      if (xNorm === null || yNorm === null) continue;
+      const imagePoint = {
+        x: xNorm * viewport.imageNaturalW,
+        y: yNorm * viewport.imageNaturalH,
+      };
+      const stagePoint = imageToStagePoint(imagePoint, viewport);
+      next.push({
+        ...marker,
+        stageX: stagePoint.x,
+        stageY: stagePoint.y,
+      });
+    }
+    return next;
+  }, [removeModeEnabled, removeModeManualMarkers, viewport]);
 
   const transformerRef = useRef<Konva.Transformer | null>(null);
   const selectedNodeRef = useRef<Konva.Group | null>(null);
@@ -1149,6 +1222,16 @@ export function EditorCanvas({
       onPlaceRotateMarker?.({ xNorm: marker.x, yNorm: marker.y });
       return;
     }
+    if (removeModeEnabled) {
+      if (!viewport) return;
+      if (e.target !== stage) return;
+      const imgPt0 = stagePointerToImage(stage, viewport);
+      if (!imgPt0 || !isInsideImage(imgPt0, viewport)) return;
+      const imgPt = clampToImage(imgPt0, viewport);
+      const marker = imageToNormalized(imgPt, viewport);
+      onPlaceRemoveModeManualMarker?.({ xNorm: marker.x, yNorm: marker.y });
+      return;
+    }
 
     const clickedOnEmpty = e.target === stage;
     if (clickedOnEmpty && selectedPlacementLayerNodeId) {
@@ -1292,7 +1375,8 @@ export function EditorCanvas({
   };
 
   const shouldInterceptForMarkerTargeting =
-    removeMarkerTargetingActive || rotateMarkerTargetingActive;
+    removeMarkerTargetingActive ||
+    rotateMarkerTargetingActive;
 
   return (
     <div className={className}>
@@ -2121,6 +2205,191 @@ export function EditorCanvas({
                   </button>
                 )}
               </div>
+            );
+          })}
+        </div>
+      )}
+
+      {removeModeEnabled && projectedRemoveModeManualMarkers.length > 0 && (
+        <div className="pointer-events-none absolute inset-0 z-[31]">
+          {projectedRemoveModeManualMarkers.map((marker) => (
+            <div
+              key={marker.id}
+              className="absolute -translate-x-1/2 -translate-y-1/2"
+              style={{ left: `${marker.stageX}px`, top: `${marker.stageY}px` }}
+            >
+              <div
+                className="pointer-events-auto relative rounded-full border border-rose-100/90 bg-rose-600/85 p-1 shadow-[0_8px_16px_rgba(225,29,72,0.45)]"
+                title="Manual remove marker"
+                aria-label="Manual remove marker"
+                onPointerDown={(event) => {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  const markerEl = event.currentTarget;
+                  const pointerId = event.pointerId;
+                  markerEl.setPointerCapture?.(pointerId);
+                  const startClientX = event.clientX;
+                  const startClientY = event.clientY;
+                  const startXNorm = clamp(marker.xNorm, 0, 1);
+                  const startYNorm = clamp(marker.yNorm, 0, 1);
+                  let didMove = false;
+                  const clearListeners = () => {
+                    window.removeEventListener("pointermove", handlePointerMove);
+                    window.removeEventListener("pointerup", handlePointerUp);
+                    window.removeEventListener("pointercancel", handlePointerUp);
+                    markerEl.removeEventListener("lostpointercapture", handleLostPointerCapture);
+                  };
+                  const handlePointerMove = (moveEvent: PointerEvent) => {
+                    if (moveEvent.pointerId !== pointerId || !viewport) return;
+                    const deltaX = moveEvent.clientX - startClientX;
+                    const deltaY = moveEvent.clientY - startClientY;
+                    if (Math.abs(deltaX) > 2 || Math.abs(deltaY) > 2) {
+                      didMove = true;
+                    }
+                    const denomX = viewport.imageNaturalW * viewport.scale;
+                    const denomY = viewport.imageNaturalH * viewport.scale;
+                    if (denomX <= 0 || denomY <= 0) return;
+                    const nextXNorm = clamp(startXNorm + deltaX / denomX, 0, 1);
+                    const nextYNorm = clamp(startYNorm + deltaY / denomY, 0, 1);
+                    onMoveRemoveModeManualMarker?.(marker.id, nextXNorm, nextYNorm);
+                  };
+                  const handlePointerUp = (upEvent: PointerEvent) => {
+                    if (upEvent.pointerId !== pointerId) return;
+                    clearListeners();
+                    try {
+                      markerEl.releasePointerCapture?.(pointerId);
+                    } catch {
+                      // no-op
+                    }
+                    if (!didMove) return;
+                    upEvent.preventDefault();
+                    upEvent.stopPropagation();
+                  };
+                  const handleLostPointerCapture = (lostEvent: PointerEvent) => {
+                    if (lostEvent.pointerId !== pointerId) return;
+                    clearListeners();
+                  };
+                  window.addEventListener("pointermove", handlePointerMove);
+                  window.addEventListener("pointerup", handlePointerUp);
+                  window.addEventListener("pointercancel", handlePointerUp);
+                  markerEl.addEventListener("lostpointercapture", handleLostPointerCapture);
+                }}
+              >
+                <div className="relative h-4 w-4" aria-hidden="true">
+                  <span className="absolute left-1/2 top-1/2 h-3 w-0.5 -translate-x-1/2 -translate-y-1/2 rotate-45 rounded bg-white" />
+                  <span className="absolute left-1/2 top-1/2 h-3 w-0.5 -translate-x-1/2 -translate-y-1/2 -rotate-45 rounded bg-white" />
+                </div>
+                <button
+                  type="button"
+                  aria-label="Remove manual marker"
+                  title="Remove manual marker"
+                  className="absolute -right-1.5 -top-1.5 h-4 w-4 rounded-full border border-rose-100/95 bg-rose-700 text-[10px] leading-none text-white hover:bg-rose-600"
+                  onPointerDown={(event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                  }}
+                  onMouseDown={(event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                  }}
+                  onTouchStart={(event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                  }}
+                  onClick={(event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    onRemoveRemoveModeManualMarker?.(marker.id);
+                  }}
+                >
+                  ×
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {removeModeEnabled && projectedRemoveModeTargets.length > 0 && (
+        <div className="pointer-events-none absolute inset-0 z-30">
+          {projectedRemoveModeTargets.map((target) => {
+            const isSelected = selectedRemoveModeTargetKeys.includes(target.key);
+            const title = isSelected
+              ? `${target.label} marked for removal`
+              : `Mark ${target.label} for removal`;
+            return (
+              <button
+                key={target.key}
+                type="button"
+                aria-label={title}
+                title={title}
+                className={`pointer-events-auto absolute -translate-x-1/2 -translate-y-1/2 rounded-md border px-2 py-1 text-[11px] shadow transition ${
+                  isSelected
+                    ? "border-rose-200/95 bg-rose-600/85 text-white shadow-[0_8px_16px_rgba(225,29,72,0.45)]"
+                    : "border-rose-300/55 bg-neutral-950/75 text-rose-100 hover:border-rose-200/85 hover:bg-rose-900/45"
+                }`}
+                style={{ left: `${target.stageX}px`, top: `${target.stageY}px` }}
+                onPointerDown={(event) => {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  const markerEl = event.currentTarget;
+                  const pointerId = event.pointerId;
+                  markerEl.setPointerCapture?.(pointerId);
+                  const startClientX = event.clientX;
+                  const startClientY = event.clientY;
+                  const startXNorm = clamp(target.xNorm, 0, 1);
+                  const startYNorm = clamp(target.yNorm, 0, 1);
+                  let didMove = false;
+                  const clearListeners = () => {
+                    window.removeEventListener("pointermove", handlePointerMove);
+                    window.removeEventListener("pointerup", handlePointerUp);
+                    window.removeEventListener("pointercancel", handlePointerUp);
+                    markerEl.removeEventListener("lostpointercapture", handleLostPointerCapture);
+                  };
+                  const handlePointerMove = (moveEvent: PointerEvent) => {
+                    if (moveEvent.pointerId !== pointerId || !viewport) return;
+                    const deltaX = moveEvent.clientX - startClientX;
+                    const deltaY = moveEvent.clientY - startClientY;
+                    if (Math.abs(deltaX) > 2 || Math.abs(deltaY) > 2) {
+                      didMove = true;
+                    }
+                    const denomX = viewport.imageNaturalW * viewport.scale;
+                    const denomY = viewport.imageNaturalH * viewport.scale;
+                    if (denomX <= 0 || denomY <= 0) return;
+                    const nextXNorm = clamp(startXNorm + deltaX / denomX, 0, 1);
+                    const nextYNorm = clamp(startYNorm + deltaY / denomY, 0, 1);
+                    onMoveRemoveModeTarget?.(target.key, nextXNorm, nextYNorm);
+                  };
+                  const handlePointerUp = (upEvent: PointerEvent) => {
+                    if (upEvent.pointerId !== pointerId) return;
+                    clearListeners();
+                    try {
+                      markerEl.releasePointerCapture?.(pointerId);
+                    } catch {
+                      // no-op
+                    }
+                    if (!didMove) return;
+                    upEvent.preventDefault();
+                    upEvent.stopPropagation();
+                  };
+                  const handleLostPointerCapture = (lostEvent: PointerEvent) => {
+                    if (lostEvent.pointerId !== pointerId) return;
+                    clearListeners();
+                  };
+                  window.addEventListener("pointermove", handlePointerMove);
+                  window.addEventListener("pointerup", handlePointerUp);
+                  window.addEventListener("pointercancel", handlePointerUp);
+                  markerEl.addEventListener("lostpointercapture", handleLostPointerCapture);
+                }}
+                onClick={(event) => {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  onToggleRemoveModeTarget?.(target.key);
+                }}
+              >
+                <span className="mr-1 inline-block rounded border border-current/35 px-1 leading-none">x</span>
+                <span className="max-w-[132px] truncate align-middle inline-block">{target.label}</span>
+              </button>
             );
           })}
         </div>

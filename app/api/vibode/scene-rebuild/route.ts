@@ -851,6 +851,7 @@ async function fetchRoomObjectsForInference(args: {
       roomId: args.roomId,
       assetId: args.assetId,
       versionId: args.assetId,
+      purpose: "suggested-placement",
       allowRoomReadOnMiss: true,
       modelVersion: roomReadModelVersion,
       mode: "geometry",

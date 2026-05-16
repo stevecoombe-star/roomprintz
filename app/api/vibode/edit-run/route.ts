@@ -75,6 +75,54 @@ function clampUnit(value: number): number {
   return Math.max(0, Math.min(1, value));
 }
 
+function isPngOrJpegDataUrl(value: string): boolean {
+  return /^data:image\/(?:png|jpeg);base64,[a-z0-9+/=]+$/i.test(value.trim());
+}
+
+type GuidedRemoveManifestSummary = {
+  detectedCount: number;
+  manualCount: number;
+  labels: string[];
+};
+
+function summarizeGuidedRemoveManifest(manifest: unknown): GuidedRemoveManifestSummary {
+  if (!isRecord(manifest)) {
+    return { detectedCount: 0, manualCount: 0, labels: [] };
+  }
+  const detectedTargets = Array.isArray(manifest.detectedTargets) ? manifest.detectedTargets : [];
+  const manualTargets = Array.isArray(manifest.manualTargets) ? manifest.manualTargets : [];
+  const labels = detectedTargets
+    .map((target) => (isRecord(target) ? safeStr(target.label) : null))
+    .filter((label): label is string => Boolean(label))
+    .slice(0, 32);
+  return {
+    detectedCount: detectedTargets.length,
+    manualCount: manualTargets.length,
+    labels,
+  };
+}
+
+function buildGuidedRemovePrompt(guidancePromptText: string): string {
+  const trimmedGuidance = guidancePromptText.trim();
+  const lines = [
+    "Use Image 1 as the source room image.",
+    "Use Image 2 only to identify removal targets.",
+    "Remove the numbered furniture targets listed below.",
+    "Also remove objects directly under red X markers.",
+    "Do not keep numbers, circles, red Xs, labels, or markers in the final result.",
+    "Preserve all unmarked furniture and decor.",
+    "Preserve camera angle, room layout, lighting, materials, floor, walls, windows, and remaining objects.",
+    "Reconstruct hidden background naturally.",
+    "Do not redesign, restyle, refurnish, or add new objects.",
+    "If a marker appears on empty wall/floor because of user error, ignore it unless there is a clear object directly under it.",
+  ];
+  if (trimmedGuidance.length > 0) {
+    lines.push("");
+    lines.push(trimmedGuidance);
+  }
+  return lines.join("\n");
+}
+
 function isUuidLike(value: string | null): value is string {
   if (!value) return false;
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
@@ -117,6 +165,8 @@ function resolveEditActionType(action: string | null): TokenActionKey | null {
 
 export async function POST(req: NextRequest) {
   let pasteToPlaceControl: ReturnType<typeof parsePasteToPlaceJobControlFromBody> = null;
+  let isGuidedRemoveRequest = false;
+  let guidedRemoveUserMessage: string | null = null;
   let spendContext:
     | {
         supabase: AnySupabaseClient;
@@ -300,6 +350,63 @@ export async function POST(req: NextRequest) {
       const paramsRecord = isRecord(payloadForCompositor.params)
         ? ({ ...payloadForCompositor.params } as Record<string, unknown>)
         : {};
+      const removeModeRaw =
+        safeStr(paramsRecord.mode) ?? safeStr(payloadForCompositor.mode) ?? null;
+      const isGuidanceImageMode = removeModeRaw === "guidance-image";
+      if (isGuidanceImageMode) {
+        const guidanceImageDataUrl =
+          safeStr(paramsRecord.guidanceImageDataUrl) ??
+          safeStr(payloadForCompositor.guidanceImageDataUrl);
+        if (!guidanceImageDataUrl || !isPngOrJpegDataUrl(guidanceImageDataUrl)) {
+          return Response.json(
+            { message: "guided remove requires params.guidanceImageDataUrl as PNG/JPEG data URL." },
+            { status: 400 }
+          );
+        }
+        const guidancePromptText = safeStr(paramsRecord.guidancePromptText) ?? "";
+        const guidanceManifest = isRecord(paramsRecord.guidanceManifest)
+          ? paramsRecord.guidanceManifest
+          : isRecord(payloadForCompositor.guidanceManifest)
+          ? payloadForCompositor.guidanceManifest
+          : null;
+        const sourceImageUrl =
+          safeStr(paramsRecord.sourceImageUrl) ??
+          safeStr(payloadForCompositor.baseImageUrl) ??
+          safeStr(body.baseImageUrl);
+        const guidancePrompt = buildGuidedRemovePrompt(guidancePromptText);
+        const manifestSummary = summarizeGuidedRemoveManifest(guidanceManifest);
+        const sourceVersionId = safeStr(paramsRecord.sourceVersionId);
+
+        isGuidedRemoveRequest = true;
+        guidedRemoveUserMessage =
+          "Vibode couldn't remove those items. Please adjust the markers and try again.";
+
+        payloadForCompositor.mode = "guidance-image";
+        payloadForCompositor.params = {
+          ...paramsRecord,
+          mode: "guidance-image",
+          sourceImageUrl,
+          sourceVersionId,
+          guidanceImageDataUrl,
+          guidancePromptText,
+          guidanceManifest,
+          guidancePrompt,
+          prompt: guidancePrompt,
+          instruction: guidancePrompt,
+        };
+        payloadForCompositor.guidanceImageDataUrl = guidanceImageDataUrl;
+        payloadForCompositor.guidancePromptText = guidancePromptText;
+        payloadForCompositor.guidanceManifest = guidanceManifest;
+        payloadForCompositor.guidancePrompt = guidancePrompt;
+        payloadForCompositor.prompt = guidancePrompt;
+        payloadForCompositor.instruction = guidancePrompt;
+        payloadForCompositor.guidedRemove = {
+          detectedTargetCount: manifestSummary.detectedCount,
+          manualTargetCount: manifestSummary.manualCount,
+          labels: manifestSummary.labels,
+        };
+        delete payloadForCompositor.target;
+      } else {
       const xNormRaw =
         parseFiniteNumber(targetRecord.xNorm) ??
         parseFiniteNumber(targetRecord.x) ??
@@ -333,6 +440,7 @@ export async function POST(req: NextRequest) {
         x: xNorm,
         y: yNorm,
       };
+      }
     } else if (action === "rotate") {
       const targetRecord = isRecord(payloadForCompositor.target)
         ? ({ ...payloadForCompositor.target } as Record<string, unknown>)
@@ -442,6 +550,12 @@ export async function POST(req: NextRequest) {
       ? ({ ...upstreamResult } as EditRunCompositorResult)
       : ({} as EditRunCompositorResult);
     if (!upstreamRes.ok) {
+      if (isGuidedRemoveRequest) {
+        console.warn("[vibode/edit-run] guided remove upstream error", {
+          status: upstreamStatus,
+          response: responseRecord,
+        });
+      }
       if (spendContext) {
         try {
           const refundResult = await refundTokens({
@@ -471,6 +585,18 @@ export async function POST(req: NextRequest) {
         } finally {
           spendContext = null;
         }
+      }
+      if (isGuidedRemoveRequest) {
+        return Response.json(
+          {
+            errorCode: "REMOVE_FAILED",
+            error: "Remove failed",
+            message:
+              guidedRemoveUserMessage ??
+              "Vibode couldn't remove those items. Please adjust the markers and try again.",
+          },
+          { status: upstreamStatus >= 400 ? upstreamStatus : 502 }
+        );
       }
       return Response.json(responseRecord, { status: upstreamStatus });
     }
@@ -532,6 +658,24 @@ export async function POST(req: NextRequest) {
 
     const hintedStorage = resolveVibodeOutputStorage(responseRecord);
     const hintedDimensions = resolveVibodeOutputDimensions(responseRecord);
+    const requestParamsRecord = isRecord(payloadForCompositor.params)
+      ? (payloadForCompositor.params as Record<string, unknown>)
+      : {};
+    const sourceVersionId = safeStr(requestParamsRecord.sourceVersionId);
+    const guidanceManifest = isRecord(requestParamsRecord.guidanceManifest)
+      ? requestParamsRecord.guidanceManifest
+      : null;
+    const guidanceSummary = summarizeGuidedRemoveManifest(guidanceManifest);
+    const guidedRemoveMetadata =
+      isGuidedRemoveRequest
+        ? {
+            operation: "remove-guided",
+            sourceVersionId,
+            removeGuidedDetectedTargetCount: guidanceSummary.detectedCount,
+            removeGuidedManualTargetCount: guidanceSummary.manualCount,
+            removeGuidedTargetLabels: guidanceSummary.labels,
+          }
+        : null;
     const finalization = await finalizeVibodeOutputAsset({
       logPrefix: "[vibode/edit-run]",
       adminSupabase: getAdminSupabaseClient(),
@@ -547,9 +691,12 @@ export async function POST(req: NextRequest) {
       responseWidth: hintedDimensions.width,
       responseHeight: hintedDimensions.height,
       sourceImageUrlForThumbnail: responseImageUrl,
-      versionKind: inferPersistedVibodeVersionKindFromStageNumber(
-        requestedStageNumber ?? roomStageForPersistence
-      ),
+      metadata: guidedRemoveMetadata,
+      versionKind: isGuidedRemoveRequest
+        ? "set"
+        : inferPersistedVibodeVersionKindFromStageNumber(
+            requestedStageNumber ?? roomStageForPersistence
+          ),
       markAssetActive: Boolean(persistenceSupabase && persistenceRoomId && persistenceUserId),
       updateRoomCurrentStage: requestedStageNumber ?? roomStageForPersistence,
       updateRoomSortKey: new Date().toISOString(),
@@ -626,6 +773,19 @@ export async function POST(req: NextRequest) {
       : message.includes(" 403 ")
       ? 403
       : 500;
+    if (isGuidedRemoveRequest) {
+      console.error("[vibode/edit-run] guided remove internal failure:", err);
+      return Response.json(
+        {
+          errorCode: "REMOVE_FAILED",
+          error: "Remove failed",
+          message:
+            guidedRemoveUserMessage ??
+            "Vibode couldn't remove those items. Please adjust the markers and try again.",
+        },
+        { status }
+      );
+    }
     return Response.json({ error: message }, { status });
   }
 }
