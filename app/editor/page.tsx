@@ -2535,8 +2535,8 @@ function EditorPageInner() {
   const [removeModeGuidancePromptText, setRemoveModeGuidancePromptText] = useState<string>("");
   const [removeModeGuidancePreparedSignature, setRemoveModeGuidancePreparedSignature] = useState<string>("");
   const [isPreparingRemoveGuidanceImage, setIsPreparingRemoveGuidanceImage] = useState(false);
-  const [removeModeGuidanceError, setRemoveModeGuidanceError] = useState<string | null>(null);
-  const [removeModeGuidanceTargetCount, setRemoveModeGuidanceTargetCount] = useState(0);
+  const [, setRemoveModeGuidanceError] = useState<string | null>(null);
+  const [, setRemoveModeGuidanceTargetCount] = useState(0);
   const [detectedRoomObjectLabels, setDetectedRoomObjectLabels] = useState<DetectedRoomObjectLabel[]>(
     []
   );
@@ -5568,7 +5568,6 @@ function EditorPageInner() {
     }
   };
 
-  const hasActiveRemoveMarker = Boolean(removeMarkerPosition);
   const removeLabelOptions = useMemo(() => {
     const labels = Array.from(
       new Set(
@@ -8622,14 +8621,6 @@ function EditorPageInner() {
     [isRemoveMarkerTargeting, pushSnack, removeMarkerPosition]
   );
 
-  const addRemoveMarker = () => {
-    clearLegacyPlacementNodes();
-    setIsRotateMarkerTargeting(false);
-    setIsRemoveMarkerTargeting(true);
-    setEditWarning(null);
-    pushSnack("Remove marker armed. Click anywhere on the image.");
-  };
-
   const handlePlaceRemoveMarker = useCallback((marker: PasteToPlaceClickHint) => {
     setRemoveMarkerPosition({
       xNorm: marker.xNorm,
@@ -8644,7 +8635,10 @@ function EditorPageInner() {
       warnEdit("Place a remove marker first.");
       return;
     }
-    const label = selectedRemoveLabel || REMOVE_LABEL_FALLBACK;
+    const label =
+      selectedRemoveLabel && selectedRemoveLabel !== REMOVE_LABEL_PLACEHOLDER
+        ? selectedRemoveLabel
+        : REMOVE_LABEL_FALLBACK;
     const removePrompt = buildRemovePromptForLabel(label);
     console.log("[editor][remove] selected remove label", { label });
     console.log("[editor][remove] final remove prompt", { prompt: removePrompt });
@@ -8685,6 +8679,8 @@ function EditorPageInner() {
     }
 
     setIsRemoveModeEnabled(true);
+    setRemoveMarkerPosition(null);
+    setIsRemoveMarkerTargeting(false);
     setRemoveModeError(null);
     setSelectedRemoveObjectKeys([]);
     setRemoveModeObjects([]);
@@ -8848,67 +8844,6 @@ function EditorPageInner() {
     },
     [activeAssetId, vibodeRoomId]
   );
-
-  const prepareRemoveGuidanceImage = useCallback(async () => {
-    if (isPreparingRemoveGuidanceImage) return;
-    if (!isRemoveModeEnabled) return;
-    if (removeModeGuidanceManifestDraft.targetCount === 0) {
-      const message = "Mark at least one object or manual remove point first.";
-      setRemoveModeGuidanceError(message);
-      pushSnack(message);
-      return;
-    }
-    const sourceImageUrl =
-      workingImageUrl?.trim() || scene.baseImageUrl?.trim() || null;
-    if (!isServerFetchableImageUrl(sourceImageUrl)) {
-      const message = "Open a valid room image before preparing removal guidance.";
-      setRemoveModeGuidanceError(message);
-      pushSnack(message);
-      return;
-    }
-    const safeSourceImageUrl = sourceImageUrl as string;
-
-    setIsPreparingRemoveGuidanceImage(true);
-    setRemoveModeGuidanceError(null);
-    try {
-      const promptText = buildRemoveModeGuidancePromptText(removeModeGuidanceManifestDraft);
-      const guidanceImageDataUrl = await prepareRemoveGuidanceImageDataUrl({
-        imageUrl: safeSourceImageUrl,
-        manifest: removeModeGuidanceManifestDraft,
-      });
-      setRemoveModeGuidanceImageDataUrl(guidanceImageDataUrl);
-      setRemoveModeGuidanceManifest(removeModeGuidanceManifestDraft);
-      setRemoveModeGuidancePromptText(promptText);
-      setRemoveModeGuidancePreparedSignature(removeModeGuidanceDraftSignature);
-      setRemoveModeGuidanceTargetCount(removeModeGuidanceManifestDraft.targetCount);
-      void saveRemoveGuidanceDebugImages({
-        image1Url: safeSourceImageUrl,
-        image2DataUrl: guidanceImageDataUrl,
-        manifest: removeModeGuidanceManifestDraft,
-        promptText,
-      });
-      pushSnack(
-        `Removal guidance prepared for ${removeModeGuidanceManifestDraft.targetCount} target${
-          removeModeGuidanceManifestDraft.targetCount === 1 ? "" : "s"
-        }.`
-      );
-    } catch (err: unknown) {
-      const message = getErrorMessage(err) ?? "Unable to prepare removal guidance image.";
-      setRemoveModeGuidanceError(message);
-      pushSnack(message);
-    } finally {
-      setIsPreparingRemoveGuidanceImage(false);
-    }
-  }, [
-    isPreparingRemoveGuidanceImage,
-    isRemoveModeEnabled,
-    pushSnack,
-    removeModeGuidanceManifestDraft,
-    removeModeGuidanceDraftSignature,
-    saveRemoveGuidanceDebugImages,
-    scene.baseImageUrl,
-    workingImageUrl,
-  ]);
 
   const removeSelectedWithGuidedRemoveMode = useCallback(async () => {
     if (isEditRunning || isOutOfTokens) return;
@@ -10104,70 +10039,16 @@ function EditorPageInner() {
       </div>
       {isRemoveModeEnabled ? (
         <div className="mt-2 rounded-md border border-neutral-800 bg-neutral-950/70 px-2 py-1.5">
+          <div className="mt-1 text-[11px] text-neutral-400">
+            Click Engage Remove Mode, then select detected objects or click the room to place remove markers.
+          </div>
           <div className="mt-1 text-[11px] text-neutral-500">
-            Click the room to add remove markers for small items Vibode missed. Drag markers or object labels to
-            refine targets.
+            Drag labels or markers to refine targets before removing.
           </div>
         </div>
       ) : null}
-      {isRemoveModeEnabled && removeModeGuidanceManifestDraft.targetCount > 0 ? (
-        <div className="mt-2 rounded-md border border-neutral-800 bg-neutral-950/70 px-2 py-1.5">
-          <button
-            type="button"
-            disabled={isPreparingRemoveGuidanceImage}
-            className={`w-full rounded-md border px-2 py-1.5 text-xs ${
-              isPreparingRemoveGuidanceImage
-                ? "border-neutral-900 bg-neutral-950 text-neutral-500"
-                : "border-neutral-700 bg-neutral-900 text-neutral-200 hover:bg-neutral-800"
-            }`}
-            onClick={() => {
-              void prepareRemoveGuidanceImage();
-            }}
-          >
-            {isPreparingRemoveGuidanceImage ? "Preparing guidance..." : "Prepare removal guidance"}
-          </button>
-          {removeModeGuidanceError ? (
-            <div className="mt-1 text-[11px] text-rose-200">{removeModeGuidanceError}</div>
-          ) : null}
-          {removeModeGuidanceImageDataUrl ? (
-            <div className="mt-1">
-              <div className="text-[11px] text-neutral-400">
-                Removal guidance prepared for {removeModeGuidanceManifest?.targetCount ?? removeModeGuidanceTargetCount} target
-                {(removeModeGuidanceManifest?.targetCount ?? removeModeGuidanceTargetCount) === 1 ? "" : "s"}.
-              </div>
-            </div>
-          ) : null}
-        </div>
-      ) : null}
-      <div className="mt-2">
-        <label className="text-[11px] text-neutral-500" htmlFor="remove-label-select">
-          Removing:
-        </label>
-        <select
-          id="remove-label-select"
-          value={selectedRemoveLabel}
-          disabled={isEditRunning}
-          className={`mt-1 w-full rounded-md border bg-neutral-950 px-2 py-1 text-xs ${
-            isEditRunning
-              ? "border-neutral-900 text-neutral-500"
-              : "border-neutral-700 text-neutral-100 hover:bg-neutral-900"
-          }`}
-          onChange={(event) => {
-            const nextLabel = event.target.value;
-            setSelectedRemoveLabel(nextLabel);
-            console.log("[editor][remove] selected remove label", { label: nextLabel });
-          }}
-        >
-          <option value={REMOVE_LABEL_PLACEHOLDER}>Select item to remove</option>
-          {removeLabelOptions.map((label) => (
-            <option key={label} value={label}>
-              {label}
-            </option>
-          ))}
-        </select>
-      </div>
-      <div className="mt-1 grid grid-cols-2 gap-2">
-        {isRemoveModeEnabled ? (
+      {isRemoveModeEnabled ? (
+        <div className="mt-1 grid grid-cols-2 gap-2">
           <button
             type="button"
             disabled={
@@ -10192,52 +10073,7 @@ function EditorPageInner() {
           >
             {isEditRunning ? "Removing selected items…" : "Remove Selected"}
           </button>
-        ) : !hasActiveRemoveMarker ? (
-          <button
-            type="button"
-            disabled={isEditRunning}
-            className={`col-span-2 rounded-md border px-2 py-1.5 text-xs ${
-              isEditRunning
-                ? "border-neutral-900 bg-neutral-950 text-neutral-500"
-                : "border-neutral-700 bg-neutral-900 text-neutral-100 hover:bg-neutral-800"
-            }`}
-            onClick={addRemoveMarker}
-          >
-            Add Remove Marker
-          </button>
-        ) : (
-          <>
-            <button
-              type="button"
-              disabled={isEditRunning}
-              className={`rounded-md border px-2 py-1.5 text-xs ${
-                isEditRunning
-                  ? "border-neutral-900 bg-neutral-950 text-neutral-500"
-                  : "border-neutral-700 bg-neutral-900 text-neutral-100 hover:bg-neutral-800"
-              }`}
-              onClick={() => clearRemoveMarker()}
-            >
-              Clear Marker
-            </button>
-            <button
-              type="button"
-              disabled={isEditRunning || isOutOfTokens || !workingImageUrl || !hasActiveRemoveMarker}
-              className={`rounded-md border px-2 py-1.5 text-xs ${
-                isEditRunning || isOutOfTokens || !workingImageUrl || !hasActiveRemoveMarker
-                  ? "border-neutral-900 bg-neutral-950 text-neutral-500"
-                  : "border-neutral-700 bg-neutral-900 text-neutral-100 hover:bg-neutral-800"
-              }`}
-              onClick={() => {
-                void removeSelectedWithGuidedRemoveMode();
-              }}
-            >
-              Remove Selected
-            </button>
-          </>
-        )}
-      </div>
-      {isRemoveMarkerTargeting && !hasActiveRemoveMarker ? (
-        <div className="mt-1 text-[11px] text-neutral-500">Click anywhere on the image to place the marker.</div>
+        </div>
       ) : null}
     </div>
   );
