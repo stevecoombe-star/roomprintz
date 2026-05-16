@@ -1,4 +1,5 @@
 import { normalizeDetectedRoomObjectLabels } from "@/lib/vibodeRoomObjectLabels";
+import { withGeminiUsageAccounting } from "@/lib/vibodeGeminiUsageAccounting";
 
 const ROOM_READ_LABELS_ONLY_PROMPT = `Analyze this room photo for visible furniture and decor items.
 
@@ -108,6 +109,24 @@ async function callGeminiRoomRead(args: {
   imageBase64: string;
   prompt: string;
   modelVersion: string;
+  promptKind?: string;
+  mode?: "labels_only" | "geometry";
+  purpose?: string | null;
+  accounting?: {
+    requestId?: string | null;
+    operationId?: string | null;
+    attemptId?: string | null;
+    retryOfAttemptId?: string | null;
+    isRetry?: boolean;
+    route?: string | null;
+    sourceTrigger?: string | null;
+    workflowType?: string | null;
+    actionType?: string | null;
+    userId?: string | null;
+    roomId?: string | null;
+    versionId?: string | null;
+    assetId?: string | null;
+  };
 }): Promise<unknown> {
   const apiKey = process.env.GEMINI_API_KEY ?? process.env.GOOGLE_API_KEY;
   if (!apiKey) {
@@ -118,41 +137,93 @@ async function callGeminiRoomRead(args: {
     model
   )}:generateContent?key=${encodeURIComponent(apiKey)}`;
 
-  const res = await fetch(endpoint, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      contents: [
-        {
-          role: "user",
-          parts: [
-            { text: args.prompt },
+  return withGeminiUsageAccounting(
+    {
+      requestId: args.accounting?.requestId ?? null,
+      operationId: args.accounting?.operationId ?? null,
+      attemptId: args.accounting?.attemptId ?? null,
+      retryOfAttemptId: args.accounting?.retryOfAttemptId ?? null,
+      isRetry: args.accounting?.isRetry === true,
+      userId: args.accounting?.userId ?? null,
+      roomId: args.accounting?.roomId ?? null,
+      versionId: args.accounting?.versionId ?? null,
+      assetId: args.accounting?.assetId ?? null,
+      provider: "google_gemini",
+      model,
+      workflowType: args.accounting?.workflowType ?? "room-read",
+      actionType: args.accounting?.actionType ?? "room-read",
+      route: args.accounting?.route ?? "unknown",
+      service: "roomprintz-ui",
+      sourceTrigger: args.accounting?.sourceTrigger ?? null,
+      metadata: {
+        mime: args.mime,
+        modelVersion: model,
+        mode: args.mode ?? null,
+        purpose: args.purpose ?? null,
+        promptKind: args.promptKind ?? null,
+        endpointKind: "google_generate_content_v1beta",
+      },
+    },
+    async () => {
+      const res = await fetch(endpoint, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          contents: [
             {
-              inlineData: {
-                mimeType: args.mime,
-                data: args.imageBase64,
-              },
+              role: "user",
+              parts: [
+                { text: args.prompt },
+                {
+                  inlineData: {
+                    mimeType: args.mime,
+                    data: args.imageBase64,
+                  },
+                },
+              ],
             },
           ],
-        },
-      ],
-      generationConfig: {
-        temperature: 0.1,
-        responseMimeType: "application/json",
-      },
-    }),
-  });
-  if (!res.ok) {
-    const text = await res.text().catch(() => "");
-    throw new Error(`Gemini room-read failed (${res.status}): ${text}`);
-  }
-  return await res.json().catch(() => ({}));
+          generationConfig: {
+            temperature: 0.1,
+            responseMimeType: "application/json",
+          },
+        }),
+      });
+      if (!res.ok) {
+        const text = await res.text().catch(() => "");
+        const error = new Error(`Gemini room-read failed (${res.status}): ${text}`) as Error & {
+          code?: string;
+          status?: number;
+        };
+        error.code = `HTTP_${res.status}`;
+        error.status = res.status;
+        throw error;
+      }
+      return await res.json().catch(() => ({}));
+    }
+  );
 }
 
 export async function runGeminiRoomReadFromImageUrl(args: {
   imageUrl: string;
   modelVersion?: string;
   mode?: "labels_only" | "geometry";
+  purpose?: string | null;
+  accounting?: {
+    requestId?: string | null;
+    operationId?: string | null;
+    attemptId?: string | null;
+    retryOfAttemptId?: string | null;
+    isRetry?: boolean;
+    route?: string | null;
+    sourceTrigger?: string | null;
+    workflowType?: string | null;
+    actionType?: string | null;
+    userId?: string | null;
+    roomId?: string | null;
+    versionId?: string | null;
+    assetId?: string | null;
+  };
 }) {
   const modelVersion = safeStr(args.modelVersion) ?? "gemini-3-flash-preview";
   const mode = args.mode === "geometry" ? "geometry" : "labels_only";
@@ -162,6 +233,10 @@ export async function runGeminiRoomReadFromImageUrl(args: {
     imageBase64: base64,
     prompt: mode === "geometry" ? ROOM_READ_GEOMETRY_PROMPT : ROOM_READ_LABELS_ONLY_PROMPT,
     modelVersion,
+    promptKind: mode === "geometry" ? "room_read_geometry" : "room_read_labels_only",
+    mode,
+    purpose: args.purpose ?? null,
+    accounting: args.accounting,
   });
   const text = extractResponseText(rawPayload);
   const parsed = text ? parseJsonFromText(text) : rawPayload;

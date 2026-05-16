@@ -3,6 +3,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { runGeminiRoomReadFromImageUrl } from "@/lib/vibodeGeminiRoomRead";
+import { getRequestIdFromHeaders } from "@/lib/vibodeGeminiUsageAccounting";
 import { resolveRoomReadModelVersion } from "@/lib/vibodeRoomReadModelVersion";
 import type { DetectedRoomObjectLabel } from "@/lib/vibodeRoomObjectLabels";
 
@@ -302,6 +303,18 @@ function parsePurpose(value: unknown): RoomImageObjectsPurpose {
   return "legacy";
 }
 
+function resolveSourceTrigger(args: {
+  purpose: RoomImageObjectsPurpose;
+  mode: RoomReadMode;
+  allowRoomReadOnMiss: boolean;
+}): "remove-mode" | "suggested-placement" | "geometry-prewarm" | "labels-only" | "unknown" {
+  if (args.purpose === "remove-mode") return "remove-mode";
+  if (args.purpose === "suggested-placement") return "suggested-placement";
+  if (args.mode === "labels_only") return "labels-only";
+  if (args.mode === "geometry" && args.allowRoomReadOnMiss) return "geometry-prewarm";
+  return "unknown";
+}
+
 function getUserSupabaseClient(
   req: NextRequest
 ): { supabase: AnySupabaseClient | null; token: string | null } {
@@ -348,8 +361,14 @@ export async function POST(req: NextRequest) {
     const modelVersion = resolveRoomReadModelVersion(body.modelVersion);
     const allowRoomReadOnMiss = body.allowRoomReadOnMiss === true;
     const mode = parseRoomReadMode(body.mode);
+    const requestId = getRequestIdFromHeaders(req.headers, "room-image-objects");
     // Purpose scopes which workflow invoked room-image-objects and protects future branching.
     const purpose = parsePurpose(body.purpose);
+    const sourceTrigger = resolveSourceTrigger({
+      purpose,
+      mode,
+      allowRoomReadOnMiss,
+    });
     const source = "gemini_room_read";
     const identityLog = {
       roomId: roomId ?? null,
@@ -529,6 +548,18 @@ export async function POST(req: NextRequest) {
       imageUrl,
       modelVersion,
       mode,
+      purpose,
+      accounting: {
+        requestId,
+        route: "/api/vibode/room-image-objects",
+        sourceTrigger,
+        workflowType: "room-read",
+        actionType: "room-image-objects",
+        userId,
+        roomId: roomId ?? null,
+        versionId: versionId ?? null,
+        assetId: assetId ?? null,
+      },
     });
     const normalizedRoomReadObjects = normalizeFreshRoomReadObjects(mode, roomReadObjects);
     const normalizedGeometryCount = countGeometryObjects(normalizedRoomReadObjects);
