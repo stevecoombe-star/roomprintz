@@ -2522,6 +2522,7 @@ function EditorPageInner() {
   const [isRemoveMarkerTargeting, setIsRemoveMarkerTargeting] = useState(false);
   const [isRemoveModeEnabled, setIsRemoveModeEnabled] = useState(false);
   const [isRemoveModeReadingObjects, setIsRemoveModeReadingObjects] = useState(false);
+  const [isSetGeometryPrewarming, setIsSetGeometryPrewarming] = useState(false);
   const [removeModeError, setRemoveModeError] = useState<string | null>(null);
   const [removeModeObjects, setRemoveModeObjects] = useState<DetectedRoomObjectLabel[]>([]);
   const [selectedRemoveObjectKeys, setSelectedRemoveObjectKeys] = useState<string[]>([]);
@@ -3971,7 +3972,15 @@ function EditorPageInner() {
   }, [activeAssetId, requestedRoomId, scene.baseImageUrl, vibodeRoomId, versions, workingImageUrl]);
   const hydrateRoomImageObjects = useCallback(
     async (args: {
-      trigger: "load" | "room-upload" | "stage-run" | "edit-run" | "paste-to-place" | "remove-mode";
+      trigger:
+        | "load"
+        | "room-upload"
+        | "stage-run"
+        | "edit-run"
+        | "paste-to-place"
+        | "remove-mode"
+        | "set-base-upload"
+        | "set-remove-result";
       imageUrl: string | null;
       roomId: string | null;
       assetId: string | null;
@@ -5446,7 +5455,25 @@ function EditorPageInner() {
         resolvedAssetId = activeAsset?.id ?? baseAsset?.id ?? null;
         setActiveAssetId(resolvedAssetId);
       }
-      // Auto room-object reads deprecated. Remove Mode now triggers intentional reads on demand.
+      // Intentional SET-canonical geometry prewarm for base room images.
+      setIsSetGeometryPrewarming(true);
+      void (async () => {
+        try {
+          await hydrateRoomImageObjects({
+            trigger: "set-base-upload",
+            imageUrl: up.signedUrl,
+            roomId: up.vibodeRoomId ?? null,
+            assetId: resolvedAssetId,
+            versionId: resolvedAssetId,
+            mode: "geometry",
+            allowRoomReadOnMiss: true,
+          });
+        } catch (err) {
+          console.warn("[room-image-objects] SET geometry prewarm failed", err);
+        } finally {
+          setIsSetGeometryPrewarming(false);
+        }
+      })();
       pushSnack("Room photo uploaded.");
     } catch (err: unknown) {
       console.error(err);
@@ -8934,6 +8961,29 @@ function EditorPageInner() {
         onImageCommitted: () => {
           exitRemoveMode();
         },
+      },
+      {
+        onPostDurableCommit: (args) => {
+          // Intentional SET-canonical geometry prewarm for Remove Selected SET results.
+          setIsSetGeometryPrewarming(true);
+          void (async () => {
+            try {
+              await hydrateRoomImageObjects({
+                trigger: "set-remove-result",
+                imageUrl: args.imageUrl,
+                roomId: args.roomId,
+                assetId: args.assetId,
+                versionId: args.assetId,
+                mode: "geometry",
+                allowRoomReadOnMiss: true,
+              });
+            } catch (err) {
+              console.warn("[room-image-objects] SET geometry prewarm failed", err);
+            } finally {
+              setIsSetGeometryPrewarming(false);
+            }
+          })();
+        },
       }
     );
     if (!res) {
@@ -8951,6 +9001,7 @@ function EditorPageInner() {
     isOutOfTokens,
     isRemoveModeEnabled,
     isRemoveModeGuidanceFresh,
+    hydrateRoomImageObjects,
     pushSnack,
     removeModeGuidanceDraftSignature,
     removeModeGuidanceImageDataUrl,
@@ -9966,9 +10017,9 @@ function EditorPageInner() {
       <div className="mt-2">
         <button
           type="button"
-          disabled={isEditRunning || isRemoveModeReadingObjects || isRemoveModeEnabled}
+          disabled={isEditRunning || isRemoveModeReadingObjects || isSetGeometryPrewarming || isRemoveModeEnabled}
           className={`w-full rounded-md border px-2 py-1.5 text-xs ${
-            isEditRunning || isRemoveModeReadingObjects
+            isEditRunning || isRemoveModeReadingObjects || isSetGeometryPrewarming
               ? "border-neutral-900 bg-neutral-950 text-neutral-500"
               : isRemoveModeEnabled
                 ? "border-sky-500/50 bg-sky-950/30 text-sky-200"
@@ -9980,10 +10031,21 @@ function EditorPageInner() {
         >
           {isRemoveModeReadingObjects
             ? "Reading room objects…"
+            : isSetGeometryPrewarming
+              ? "Preparing Remove Mode..."
             : isRemoveModeEnabled
               ? "Remove Mode Active"
               : "Engage Remove Mode"}
         </button>
+        {isSetGeometryPrewarming ? (
+          <div className="mt-1 flex items-center gap-1.5 text-[11px] text-neutral-500">
+            <span
+              aria-hidden="true"
+              className="h-3 w-3 animate-spin rounded-full border border-neutral-500/30 border-t-neutral-200"
+            />
+            <span>Reading your room so Remove Mode is ready...</span>
+          </div>
+        ) : null}
         {isRemoveModeEnabled ? (
           <button
             type="button"
