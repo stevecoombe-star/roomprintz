@@ -16,10 +16,27 @@ type AnySupabaseClient = SupabaseClient;
 type RoomImageObjectRow = {
   label: string;
   confidence: number | null;
+  center_x: number | null;
+  center_y: number | null;
+  bbox: unknown;
 };
 
 type RoomReadMode = "labels_only" | "geometry";
 type RoomImageObjectsPurpose = "suggested-placement" | "remove-mode" | "legacy";
+type RoomImageObjectUpsertRow = {
+  user_id: string;
+  room_id: string | null;
+  asset_id: string | null;
+  version_id: string | null;
+  image_url: string | null;
+  image_hash: string | null;
+  label: string;
+  confidence: number;
+  center_x: number | null;
+  center_y: number | null;
+  bbox: { x: number; y: number; w: number; h: number } | null;
+  source: string;
+};
 
 function safeStr(value: unknown): string | null {
   if (typeof value !== "string") return null;
@@ -56,6 +73,217 @@ function normalizeObjects(
   return Array.from(byLabel.entries())
     .map(([label, confidence]) => ({ label, confidence }))
     .sort((a, b) => b.confidence - a.confidence);
+}
+
+function parseFiniteNumber(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string") {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return null;
+}
+
+function normalizeStoredObjects(rows: RoomImageObjectRow[]): DetectedRoomObjectLabel[] {
+  const out: DetectedRoomObjectLabel[] = [];
+  for (const row of rows) {
+    const label = normalizeLabel(row.label);
+    if (!label) continue;
+    const confidence = parseFiniteNumber(row.confidence) ?? 0.6;
+    const centerX = parseFiniteNumber(row.center_x);
+    const centerY = parseFiniteNumber(row.center_y);
+    const bboxRecord =
+      row.bbox && typeof row.bbox === "object" ? (row.bbox as Record<string, unknown>) : null;
+    const bboxX = parseFiniteNumber(bboxRecord?.x);
+    const bboxY = parseFiniteNumber(bboxRecord?.y);
+    const bboxW = parseFiniteNumber(bboxRecord?.w);
+    const bboxH = parseFiniteNumber(bboxRecord?.h);
+    out.push({
+      label,
+      confidence,
+      ...(centerX !== null ? { centerX } : {}),
+      ...(centerY !== null ? { centerY } : {}),
+      ...(bboxX !== null && bboxY !== null && bboxW !== null && bboxH !== null
+        ? {
+            bbox: {
+              x: bboxX,
+              y: bboxY,
+              w: bboxW,
+              h: bboxH,
+            },
+          }
+        : {}),
+    });
+  }
+  return out.sort((a, b) => b.confidence - a.confidence);
+}
+
+function hasGeometry(objects: DetectedRoomObjectLabel[]): boolean {
+  return objects.some(
+    (object) =>
+      Boolean(object.bbox) ||
+      (typeof object.centerX === "number" &&
+        Number.isFinite(object.centerX) &&
+        typeof object.centerY === "number" &&
+        Number.isFinite(object.centerY))
+  );
+}
+
+function countGeometryObjects(objects: DetectedRoomObjectLabel[]): number {
+  return objects.filter(
+    (object) =>
+      Boolean(object.bbox) ||
+      (typeof object.centerX === "number" &&
+        Number.isFinite(object.centerX) &&
+        typeof object.centerY === "number" &&
+        Number.isFinite(object.centerY))
+  ).length;
+}
+
+function countGeometryRows(rows: RoomImageObjectUpsertRow[]): number {
+  return rows.filter(
+    (row) =>
+      Boolean(row.bbox) ||
+      (typeof row.center_x === "number" &&
+        Number.isFinite(row.center_x) &&
+        typeof row.center_y === "number" &&
+        Number.isFinite(row.center_y))
+  ).length;
+}
+
+function hasSufficientGeometry(
+  objects: DetectedRoomObjectLabel[],
+  minCoverage = 0
+): { sufficient: boolean; geometryCount: number; totalCount: number; coverage: number } {
+  const totalCount = objects.length;
+  const geometryCount = countGeometryObjects(objects);
+  const coverage = totalCount > 0 ? geometryCount / totalCount : 0;
+  return {
+    sufficient: totalCount > 0 && geometryCount > 0 && coverage >= minCoverage,
+    geometryCount,
+    totalCount,
+    coverage,
+  };
+}
+
+function normalizeFreshRoomReadObjects(
+  mode: RoomReadMode,
+  objects: DetectedRoomObjectLabel[]
+): DetectedRoomObjectLabel[] {
+  if (mode !== "geometry") {
+    return normalizeObjects(objects);
+  }
+  const out: DetectedRoomObjectLabel[] = [];
+  for (const object of objects) {
+    const label = normalizeLabel(object.label);
+    if (!label) continue;
+    const confidence = parseFiniteNumber(object.confidence) ?? 0.6;
+    const centerX = parseFiniteNumber(object.centerX);
+    const centerY = parseFiniteNumber(object.centerY);
+    const bbox = object.bbox;
+    const bboxX = parseFiniteNumber(bbox?.x);
+    const bboxY = parseFiniteNumber(bbox?.y);
+    const bboxW = parseFiniteNumber(bbox?.w);
+    const bboxH = parseFiniteNumber(bbox?.h);
+    out.push({
+      label,
+      confidence,
+      ...(centerX !== null ? { centerX } : {}),
+      ...(centerY !== null ? { centerY } : {}),
+      ...(bboxX !== null && bboxY !== null && bboxW !== null && bboxH !== null
+        ? {
+            bbox: {
+              x: bboxX,
+              y: bboxY,
+              w: bboxW,
+              h: bboxH,
+            },
+          }
+        : {}),
+    });
+  }
+  return out.sort((a, b) => b.confidence - a.confidence);
+}
+
+function hasBboxRow(row: RoomImageObjectUpsertRow): boolean {
+  return Boolean(
+    row.bbox &&
+      Number.isFinite(row.bbox.x) &&
+      Number.isFinite(row.bbox.y) &&
+      Number.isFinite(row.bbox.w) &&
+      Number.isFinite(row.bbox.h)
+  );
+}
+
+function hasCenterRow(row: RoomImageObjectUpsertRow): boolean {
+  return (
+    typeof row.center_x === "number" &&
+    Number.isFinite(row.center_x) &&
+    typeof row.center_y === "number" &&
+    Number.isFinite(row.center_y)
+  );
+}
+
+function dedupeRoomImageObjectUpsertRows(
+  rows: RoomImageObjectUpsertRow[]
+): {
+  dedupedRows: RoomImageObjectUpsertRow[];
+  removedCount: number;
+  duplicateLabels: string[];
+  geometryCountBefore: number;
+  geometryCountAfter: number;
+} {
+  const byConflictKey = new Map<string, { row: RoomImageObjectUpsertRow; firstIndex: number }>();
+  const duplicateLabels = new Set<string>();
+  const geometryCountBefore = countGeometryRows(rows);
+
+  const buildConflictKey = (row: RoomImageObjectUpsertRow) =>
+    [
+      row.user_id,
+      row.room_id ?? "__NULL__",
+      row.asset_id ?? "__NULL__",
+      row.version_id ?? "__NULL__",
+      row.image_hash ?? "__NULL__",
+      row.label,
+      row.source,
+    ].join("|");
+
+  const isBetterRow = (candidate: RoomImageObjectUpsertRow, existing: RoomImageObjectUpsertRow) => {
+    const candidateHasBbox = hasBboxRow(candidate);
+    const existingHasBbox = hasBboxRow(existing);
+    if (candidateHasBbox !== existingHasBbox) return candidateHasBbox;
+
+    const candidateHasCenter = hasCenterRow(candidate);
+    const existingHasCenter = hasCenterRow(existing);
+    if (candidateHasCenter !== existingHasCenter) return candidateHasCenter;
+
+    if (candidate.confidence !== existing.confidence) return candidate.confidence > existing.confidence;
+    return false;
+  };
+
+  rows.forEach((row, index) => {
+    const key = buildConflictKey(row);
+    const existing = byConflictKey.get(key);
+    if (!existing) {
+      byConflictKey.set(key, { row, firstIndex: index });
+      return;
+    }
+    duplicateLabels.add(row.label);
+    if (isBetterRow(row, existing.row)) {
+      byConflictKey.set(key, { row, firstIndex: existing.firstIndex });
+    }
+  });
+
+  const dedupedRows = Array.from(byConflictKey.values())
+    .sort((a, b) => a.firstIndex - b.firstIndex)
+    .map((entry) => entry.row);
+  return {
+    dedupedRows,
+    removedCount: rows.length - dedupedRows.length,
+    duplicateLabels: Array.from(duplicateLabels).sort(),
+    geometryCountBefore,
+    geometryCountAfter: countGeometryRows(dedupedRows),
+  };
 }
 
 function parseRoomReadMode(value: unknown): RoomReadMode {
@@ -123,11 +351,19 @@ export async function POST(req: NextRequest) {
     // Purpose scopes which workflow invoked room-image-objects and protects future branching.
     const purpose = parsePurpose(body.purpose);
     const source = "gemini_room_read";
+    const identityLog = {
+      roomId: roomId ?? null,
+      assetId: assetId ?? null,
+      versionId: versionId ?? null,
+      imageHash: effectiveImageHash?.slice(0, 16) ?? null,
+      source,
+    };
 
     if (!roomId && !assetId && !versionId && !imageHash) {
       console.log("[room-image-objects] skipped because no stable image identity", {
         hasImageUrl: Boolean(imageUrl),
         purpose,
+        mode,
       });
       return NextResponse.json({ objects: [] as DetectedRoomObjectLabel[] });
     }
@@ -137,11 +373,15 @@ export async function POST(req: NextRequest) {
       mode,
       allowRoomReadOnMiss,
       hasVersionIdentity,
+      roomId: roomId ?? null,
+      assetId: assetId ?? null,
+      versionId: versionId ?? null,
+      identityHash: effectiveImageHash?.slice(0, 12) ?? null,
     });
 
     let query = supabase
       .from("room_image_objects")
-      .select("label, confidence")
+      .select("label, confidence, center_x, center_y, bbox")
       .eq("user_id", userId)
       .eq("source", source);
 
@@ -156,7 +396,93 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Failed to fetch room image objects." }, { status: 500 });
     }
 
-    const normalizedExisting = normalizeObjects((existingRows ?? []) as RoomImageObjectRow[]);
+    const storedObjects = normalizeStoredObjects((existingRows ?? []) as RoomImageObjectRow[]);
+    const normalizedExisting = normalizeObjects(storedObjects);
+    let geometryLookupDecision:
+      | "reused persisted geometry"
+      | "fresh read because missing rows"
+      | "fresh read because insufficient geometry"
+      | "fresh read because identity mismatch / no matching rows"
+      | "reused labels-only mode"
+      | "cache miss without room-read"
+      | null = null;
+    const geometryStatsForLog = hasSufficientGeometry(storedObjects);
+    if (storedObjects.length > 0) {
+      const geometryFound = hasGeometry(storedObjects);
+      const geometryStats = geometryStatsForLog;
+      const canUseStoredGeometry =
+        mode !== "geometry" || geometryStats.sufficient || !allowRoomReadOnMiss;
+      console.log("[room-image-objects] persisted lookup", {
+        roomId: roomId ?? null,
+        assetId: assetId ?? null,
+        versionId: versionId ?? null,
+        identityHash: effectiveImageHash?.slice(0, 12) ?? null,
+        rows: storedObjects.length,
+        geometryCount: geometryStats.geometryCount,
+        geometryCoverage: Number(geometryStats.coverage.toFixed(3)),
+        mode,
+        allowRoomReadOnMiss,
+      });
+      if (canUseStoredGeometry) {
+        geometryLookupDecision =
+          mode === "geometry" ? "reused persisted geometry" : "reused labels-only mode";
+        const responseObjects = mode === "geometry" ? storedObjects : normalizedExisting;
+        console.log("[room-image-objects] fetched from Supabase", {
+          count: responseObjects.length,
+          roomId,
+          assetId,
+          versionId,
+          purpose,
+          mode,
+          geometryFound,
+          geometryCount: geometryStats.geometryCount,
+          geometryCoverage: Number(geometryStats.coverage.toFixed(3)),
+        });
+        console.log("[room-image-objects] returned labels", {
+          labels: responseObjects.map((item) => item.label),
+        });
+        return NextResponse.json({ objects: responseObjects });
+      }
+      geometryLookupDecision = "fresh read because insufficient geometry";
+      console.log("[room-image-objects] geometry missing in stored rows; running room-read", {
+        roomId,
+        assetId,
+        versionId,
+        purpose,
+        rows: storedObjects.length,
+        geometryCount: geometryStats.geometryCount,
+        geometryCoverage: Number(geometryStats.coverage.toFixed(3)),
+      });
+    } else {
+      geometryLookupDecision = allowRoomReadOnMiss
+        ? "fresh read because identity mismatch / no matching rows"
+        : "cache miss without room-read";
+      console.log("[room-image-objects] persisted lookup miss", {
+        roomId: roomId ?? null,
+        assetId: assetId ?? null,
+        versionId: versionId ?? null,
+        identityHash: effectiveImageHash?.slice(0, 12) ?? null,
+        mode,
+        allowRoomReadOnMiss,
+      });
+    }
+    if (mode === "geometry") {
+      console.log({
+        event: "room_image_objects_geometry_lookup",
+        purpose,
+        mode,
+        allowRoomReadOnMiss,
+        ...identityLog,
+        rowCount: storedObjects.length,
+        geometryRowCount: geometryStatsForLog.geometryCount,
+        geometryCoverage: Number(geometryStatsForLog.coverage.toFixed(3)),
+        reuseDecision:
+          geometryLookupDecision ??
+          (allowRoomReadOnMiss
+            ? "fresh read because missing rows"
+            : "cache miss without room-read"),
+      });
+    }
     if (mode === "labels_only" && normalizedExisting.length > 0) {
       console.log("[room-image-objects] fetched from Supabase", {
         count: normalizedExisting.length,
@@ -204,30 +530,77 @@ export async function POST(req: NextRequest) {
       modelVersion,
       mode,
     });
-    const normalizedRoomReadObjects = normalizeObjects(roomReadObjects);
+    const normalizedRoomReadObjects = normalizeFreshRoomReadObjects(mode, roomReadObjects);
+    const normalizedGeometryCount = countGeometryObjects(normalizedRoomReadObjects);
     if (normalizedRoomReadObjects.length > 0) {
-      const rowsToInsert = normalizedRoomReadObjects.map((item) => ({
+      const rowsToInsertRaw: RoomImageObjectUpsertRow[] = normalizedRoomReadObjects.map((item) => ({
         user_id: userId,
-        room_id: roomId,
-        asset_id: assetId,
-        version_id: versionId,
-        image_url: imageUrl,
+        room_id: roomId ?? null,
+        asset_id: assetId ?? null,
+        version_id: versionId ?? null,
+        image_url: imageUrl ?? null,
         image_hash: effectiveImageHash,
         label: item.label,
         confidence: item.confidence,
+        center_x: typeof item.centerX === "number" && Number.isFinite(item.centerX) ? item.centerX : null,
+        center_y: typeof item.centerY === "number" && Number.isFinite(item.centerY) ? item.centerY : null,
+        bbox:
+          item.bbox &&
+          Number.isFinite(item.bbox.x) &&
+          Number.isFinite(item.bbox.y) &&
+          Number.isFinite(item.bbox.w) &&
+          Number.isFinite(item.bbox.h)
+            ? {
+                x: item.bbox.x,
+                y: item.bbox.y,
+                w: item.bbox.w,
+                h: item.bbox.h,
+              }
+            : null,
         source,
       }));
+      const deduped = dedupeRoomImageObjectUpsertRows(rowsToInsertRaw);
+      const rowsToInsert = deduped.dedupedRows;
+      if (deduped.removedCount > 0) {
+        console.log({
+          event: "room_image_objects_upsert_deduped",
+          originalCount: rowsToInsertRaw.length,
+          dedupedCount: rowsToInsert.length,
+          removedCount: deduped.removedCount,
+          duplicateLabels: deduped.duplicateLabels,
+          geometryCountBefore: deduped.geometryCountBefore,
+          geometryCountAfter: deduped.geometryCountAfter,
+        });
+      }
       const { error: insertError } = await supabase.from("room_image_objects").upsert(rowsToInsert, {
         onConflict: "user_id,room_id,asset_id,version_id,image_hash,label,source",
-        ignoreDuplicates: true,
       });
       if (insertError) {
         console.warn("[room-image-objects] store failed", { message: insertError.message });
       } else {
         console.log("[room-image-objects] stored labels", {
           count: rowsToInsert.length,
+          geometryCount: normalizedGeometryCount,
           labels: rowsToInsert.map((item) => item.label),
         });
+        if (mode === "geometry") {
+          console.log({
+            event: "room_image_objects_geometry_upsert",
+            ...identityLog,
+            labels: rowsToInsert.map((item) => item.label),
+            rowCount: rowsToInsert.length,
+            geometryRowCount: normalizedGeometryCount,
+            conflictKeyColumns: [
+              "user_id",
+              "room_id",
+              "asset_id",
+              "version_id",
+              "image_hash",
+              "label",
+              "source",
+            ],
+          });
+        }
       }
     }
 

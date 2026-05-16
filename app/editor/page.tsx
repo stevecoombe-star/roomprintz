@@ -157,6 +157,19 @@ function formatRemoveModeManualMarkerCount(count: number): string {
   return `${count} manual markers`;
 }
 
+function hasSufficientGeometryRoomObjects(objects: DetectedRoomObjectLabel[]): boolean {
+  if (objects.length === 0) return false;
+  const geometryCount = objects.filter(
+    (object) =>
+      Boolean(object.bbox) ||
+      (typeof object.centerX === "number" &&
+        Number.isFinite(object.centerX) &&
+        typeof object.centerY === "number" &&
+        Number.isFinite(object.centerY))
+  ).length;
+  return geometryCount > 0;
+}
+
 function clampUnit(value: number): number {
   return Math.max(0, Math.min(1, value));
 }
@@ -4003,7 +4016,14 @@ function EditorPageInner() {
       const cached =
         roomReadByImageKeyRef.current.get(cacheKey) ??
         roomReadByImageKeyRef.current.get(scopedImageIdentity);
-      if (cached) {
+      const shouldBypassCachedGeometryMiss =
+        Boolean(
+          cached &&
+            mode === "geometry" &&
+            args.allowRoomReadOnMiss &&
+            !hasSufficientGeometryRoomObjects(cached)
+        );
+      if (cached && !shouldBypassCachedGeometryMiss) {
         roomReadByImageKeyRef.current.set(cacheKey, cached);
         setDetectedRoomObjectLabels(cached);
         return cached;
@@ -4134,13 +4154,17 @@ function EditorPageInner() {
   );
 
   useEffect(() => {
+    const roomId = vibodeRoomId?.trim() ?? null;
+    const assetId = activeAssetId?.trim() ?? null;
     const imageUrl = workingImageUrl?.trim() ?? null;
+    if (!roomId && !assetId) return;
     void hydrateRoomImageObjects({
       trigger: "load",
       imageUrl,
-      roomId: vibodeRoomId,
-      assetId: activeAssetId,
-      versionId: activeAssetId,
+      roomId,
+      assetId,
+      versionId: assetId,
+      mode: "geometry",
       allowRoomReadOnMiss: false,
     });
   }, [activeAssetId, hydrateRoomImageObjects, vibodeRoomId, workingImageUrl]);
@@ -8672,8 +8696,24 @@ function EditorPageInner() {
     setRemoveModeGuidancePreparedSignature("");
     setRemoveModeGuidanceError(null);
     setRemoveModeGuidanceTargetCount(0);
-    setIsRemoveModeReadingObjects(true);
     try {
+      const persistedObjects = await hydrateRoomImageObjects({
+        trigger: "remove-mode",
+        imageUrl,
+        roomId,
+        assetId,
+        versionId: assetId,
+        purpose: "remove-mode",
+        mode: "geometry",
+        allowRoomReadOnMiss: false,
+        suppressErrors: false,
+      });
+      if (persistedObjects.length > 0 && hasSufficientGeometryRoomObjects(persistedObjects)) {
+        setRemoveModeObjects(persistedObjects);
+        return;
+      }
+
+      setIsRemoveModeReadingObjects(true);
       const objects = await hydrateRoomImageObjects({
         trigger: "remove-mode",
         imageUrl,
