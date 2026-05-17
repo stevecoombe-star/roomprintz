@@ -1,5 +1,9 @@
 import { NextResponse } from "next/server";
-import { fetchUsageRowsForRange, withAdminUsageRequest } from "../_lib";
+import {
+  fetchUsageRowsForRange,
+  sortGeminiUsageModels,
+  withAdminUsageRequest,
+} from "../_lib";
 
 type AggregateRow = {
   model: string;
@@ -34,7 +38,10 @@ export async function GET(request: Request) {
       byModel.set(model, current);
     }
 
-    const items = Array.from(byModel.values()).sort((a, b) => b.calls - a.calls);
+    const orderedModels = sortGeminiUsageModels(Array.from(byModel.keys()));
+    const items = orderedModels
+      .map((model) => byModel.get(model))
+      .filter((value): value is AggregateRow => Boolean(value));
     return NextResponse.json({
       items,
       from: range.fromIso,

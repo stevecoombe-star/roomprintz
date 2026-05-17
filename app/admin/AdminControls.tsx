@@ -1,6 +1,7 @@
 "use client";
 
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
+import Link from "next/link";
 
 type BetaSettingsResponse = {
   settings?: {
@@ -799,6 +800,12 @@ export default function AdminControls() {
               </p>
             </div>
             <div className="flex items-center gap-2">
+              <Link
+                href="/admin/gemini-usage"
+                className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-200 transition hover:border-emerald-400/80 hover:text-emerald-200"
+              >
+                Open analytics
+              </Link>
               <button
                 type="button"
                 onClick={() => void exportGeminiUsageCsv()}
