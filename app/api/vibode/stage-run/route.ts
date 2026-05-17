@@ -156,6 +156,12 @@ function resolveStageRunWorkflowContext(args: {
   stageNumber: number | null;
   stage4Mode: string | null;
   enhancePhoto: boolean;
+  repairDamage: boolean;
+  repaintWalls: boolean;
+  flooringPreset: string | null;
+  flooring: string | null;
+  flooringType: string | null;
+  selectedFlooring: string | null;
 }): { workflowType: string; actionType: string; sourceTrigger: string } {
   const styleModes = new Set([
     "style_room",
@@ -170,6 +176,20 @@ function resolveStageRunWorkflowContext(args: {
       workflowType: "style",
       actionType: "stage-run",
       sourceTrigger: "style-room",
+    };
+  }
+  const hasModifyRoomFlooring =
+    (args.flooringPreset !== null && args.flooringPreset !== "none") ||
+    (args.flooring !== null && args.flooring !== "none") ||
+    (args.flooringType !== null && args.flooringType !== "none") ||
+    (args.selectedFlooring !== null && args.selectedFlooring !== "none");
+  const hasModifyRoomSelection =
+    args.stageNumber === 2 && (args.repairDamage || args.repaintWalls || hasModifyRoomFlooring);
+  if (hasModifyRoomSelection) {
+    return {
+      workflowType: "set",
+      actionType: "stage-run",
+      sourceTrigger: "modify-room",
     };
   }
   if (args.stageNumber === 1 && args.enhancePhoto) {
@@ -292,6 +312,12 @@ export async function POST(req: NextRequest) {
       stageNumber: tokenStageNumber,
       stage4Mode,
       enhancePhoto: body.enhancePhoto === true,
+      repairDamage: body.repairDamage === true,
+      repaintWalls: body.repaintWalls === true,
+      flooringPreset: safeStr(body.flooringPreset),
+      flooring: safeStr(body.flooring),
+      flooringType: safeStr(body.flooringType),
+      selectedFlooring: safeStr(body.selectedFlooring),
     });
     const sourceVersionId =
       safeStr(body.versionId) ??
