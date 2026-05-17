@@ -3,6 +3,11 @@ import { createClient } from "@supabase/supabase-js";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { callCompositorVibodeStageRun } from "@/lib/callCompositorVibodeStageRun";
 import {
+  buildVibodeCompositorContextHeaders,
+  resolveVibodeOperationIdFromHeaders,
+  resolveVibodeRequestIdFromHeaders,
+} from "@/lib/vibodeCompositorContextHeaders";
+import {
   createVibodeGenerationRun,
   getVibodeRoomById,
 } from "@/lib/vibodePersistence";
@@ -147,6 +152,32 @@ function summarizeSafeResponsePayload(args: {
   };
 }
 
+function resolveStageRunWorkflowContext(args: {
+  stageNumber: number | null;
+  stage4Mode: string | null;
+  enhancePhoto: boolean;
+}): { workflowType: string; actionType: string; sourceTrigger: string } {
+  if (args.stage4Mode === "style_room") {
+    return {
+      workflowType: "style",
+      actionType: "stage-run",
+      sourceTrigger: "style-room",
+    };
+  }
+  if (args.stageNumber === 1 && args.enhancePhoto) {
+    return {
+      workflowType: "set",
+      actionType: "stage-run",
+      sourceTrigger: "enhance-run-stage",
+    };
+  }
+  return {
+    workflowType: "stage",
+    actionType: "stage-run",
+    sourceTrigger: "update-room",
+  };
+}
+
 export async function POST(req: NextRequest) {
   let pasteToPlaceControl: ReturnType<typeof parsePasteToPlaceJobControlFromBody> = null;
   try {
@@ -161,6 +192,8 @@ export async function POST(req: NextRequest) {
       typeof body?.modelVersion === "string" && body.modelVersion.trim().length > 0
         ? body.modelVersion
         : VIBODE_DEFAULT_MODEL_VERSION;
+    const requestId = resolveVibodeRequestIdFromHeaders(req.headers);
+    const operationId = resolveVibodeOperationIdFromHeaders(req.headers);
     pasteToPlaceControl = parsePasteToPlaceJobControlFromBody(body);
     if (pasteToPlaceControl) {
       markPasteToPlaceJobLatest(pasteToPlaceControl.scopeId, pasteToPlaceControl.jobId);
@@ -211,6 +244,7 @@ export async function POST(req: NextRequest) {
       return Response.json({ error: "Unauthorized" }, { status: 401 });
     }
     const authenticatedUserId = userData.user.id;
+    const authenticatedUserEmail = userData.user.email ?? null;
 
     let existingRoom: NonNullable<Awaited<ReturnType<typeof getVibodeRoomById>>> | null = null;
     if (vibodeRoomId) {
@@ -245,6 +279,19 @@ export async function POST(req: NextRequest) {
       );
     }
     const tokenStageNumber = preflightStageNumber;
+    const stage4Mode = safeStr(body.stage4Mode);
+    const stageRunContextHeaders = resolveStageRunWorkflowContext({
+      stageNumber: tokenStageNumber,
+      stage4Mode,
+      enhancePhoto: body.enhancePhoto === true,
+    });
+    const sourceVersionId =
+      safeStr(body.versionId) ??
+      safeStr(body.assetId) ??
+      safeStr(body.sourceVersionId) ??
+      existingRoom?.active_asset_id ??
+      null;
+    const sourceAssetId = safeStr(body.assetId) ?? sourceVersionId;
 
     const wallet = await getUserTokenWallet(supabase, authenticatedUserId);
     const tokenCost = await getTokenCostForAction(supabase, actionKey);
@@ -296,8 +343,31 @@ export async function POST(req: NextRequest) {
         ? {
             [PASTE_TO_PLACE_JOB_ID_HEADER]: pasteToPlaceControl.jobId,
             [PASTE_TO_PLACE_SCOPE_ID_HEADER]: pasteToPlaceControl.scopeId,
+            ...buildVibodeCompositorContextHeaders({
+              requestId,
+              operationId,
+              userId: authenticatedUserId,
+              userEmail: authenticatedUserEmail,
+              roomId: vibodeRoomId ?? existingRoom?.id ?? null,
+              versionId: sourceVersionId,
+              assetId: sourceAssetId,
+              workflowType: stageRunContextHeaders.workflowType,
+              actionType: stageRunContextHeaders.actionType,
+              sourceTrigger: stageRunContextHeaders.sourceTrigger,
+            }),
           }
-        : undefined,
+        : buildVibodeCompositorContextHeaders({
+            requestId,
+            operationId,
+            userId: authenticatedUserId,
+            userEmail: authenticatedUserEmail,
+            roomId: vibodeRoomId ?? existingRoom?.id ?? null,
+            versionId: sourceVersionId,
+            assetId: sourceAssetId,
+            workflowType: stageRunContextHeaders.workflowType,
+            actionType: stageRunContextHeaders.actionType,
+            sourceTrigger: stageRunContextHeaders.sourceTrigger,
+          }),
     })) as StageRunCompositorResult;
 
     if (!stageRunContext) {

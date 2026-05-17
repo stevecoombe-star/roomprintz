@@ -3,6 +3,11 @@ import { createClient } from "@supabase/supabase-js";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { getVibodeRoomById } from "@/lib/vibodePersistence";
 import {
+  buildVibodeCompositorContextHeaders,
+  resolveVibodeOperationIdFromHeaders,
+  resolveVibodeRequestIdFromHeaders,
+} from "@/lib/vibodeCompositorContextHeaders";
+import {
   finalizeVibodeOutputAsset,
   resolveVibodeOutputDimensions,
   resolveVibodeOutputStorage,
@@ -193,6 +198,8 @@ export async function POST(req: NextRequest) {
       typeof body.modelVersion === "string" && body.modelVersion.trim().length > 0
         ? body.modelVersion
         : VIBODE_DEFAULT_MODEL_VERSION;
+    const requestId = resolveVibodeRequestIdFromHeaders(req.headers);
+    const operationId = resolveVibodeOperationIdFromHeaders(req.headers);
     pasteToPlaceControl = parsePasteToPlaceJobControlFromBody(body);
     if (pasteToPlaceControl) {
       markPasteToPlaceJobLatest(pasteToPlaceControl.scopeId, pasteToPlaceControl.jobId);
@@ -266,6 +273,7 @@ export async function POST(req: NextRequest) {
       return Response.json({ error: "Unauthorized" }, { status: 401 });
     }
     const authenticatedUserId = userData.user.id;
+    const authenticatedUserEmail = userData.user.email ?? null;
 
     let existingRoom: NonNullable<Awaited<ReturnType<typeof getVibodeRoomById>>> | null = null;
     if (vibodeRoomId) {
@@ -524,6 +532,37 @@ export async function POST(req: NextRequest) {
       headers[PASTE_TO_PLACE_JOB_ID_HEADER] = pasteToPlaceControl.jobId;
       headers[PASTE_TO_PLACE_SCOPE_ID_HEADER] = pasteToPlaceControl.scopeId;
     }
+    const payloadParams = isRecord(payloadForCompositor.params)
+      ? (payloadForCompositor.params as Record<string, unknown>)
+      : {};
+    const contextVersionId =
+      safeStr(payloadParams.sourceVersionId) ??
+      safeStr(payloadForCompositor.versionId) ??
+      safeStr(payloadForCompositor.assetId) ??
+      existingRoom?.active_asset_id ??
+      null;
+    const contextAssetId =
+      safeStr(payloadForCompositor.assetId) ??
+      safeStr(payloadForCompositor.versionId) ??
+      contextVersionId;
+    const workflowType = isGuidedRemoveRequest ? "set" : "unknown";
+    const actionType = isGuidedRemoveRequest ? "guided-remove" : "unknown";
+    const sourceTrigger = isGuidedRemoveRequest ? "remove-selected" : "unknown";
+    Object.assign(
+      headers,
+      buildVibodeCompositorContextHeaders({
+        requestId,
+        operationId,
+        userId: authenticatedUserId,
+        userEmail: authenticatedUserEmail,
+        roomId: vibodeRoomId ?? existingRoom?.id ?? null,
+        versionId: contextVersionId,
+        assetId: contextAssetId,
+        workflowType,
+        actionType,
+        sourceTrigger,
+      })
+    );
 
     const preCompositorCancellation = cancelledResponse();
     if (preCompositorCancellation) {

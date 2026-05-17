@@ -17,6 +17,7 @@ type CallCompositorArgs = {
   modelVersion?: ModelVersion;
   aspectRatio?: AspectRatio;
   isContinuation?: boolean;
+  headers?: Record<string, string>;
 };
 
 type CompositorResponse = {
@@ -49,6 +50,7 @@ export async function callCompositorEngine({
   modelVersion = "gemini-3",
   aspectRatio = "auto",
   isContinuation = false,
+  headers: extraHeaders = {},
 }: CallCompositorArgs): Promise<{
   imageUrl: string;
   originalImageUrl?: string;
@@ -103,6 +105,7 @@ export async function callCompositorEngine({
 
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
+    ...extraHeaders,
   };
 
   // Optional shared secret for Railway / FastAPI

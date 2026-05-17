@@ -16,6 +16,11 @@ import {
   updateVibodeRoomAsset,
 } from "@/lib/vibodePersistence";
 import { stampVibodeVersionKindMetadata } from "@/lib/vibode/version-kind";
+import {
+  buildVibodeCompositorContextHeaders,
+  resolveVibodeOperationIdFromHeaders,
+  resolveVibodeRequestIdFromHeaders,
+} from "@/lib/vibodeCompositorContextHeaders";
 
 export const runtime = "nodejs";
 
@@ -446,6 +451,7 @@ async function buildSceneRebuildReferenceImage(args: {
   payload: SceneRebuildPayload;
   modelVersion: string;
   aspectRatio: StageRoomRequest["aspectRatio"];
+  headers?: Record<string, string>;
   signal?: AbortSignal;
 }): Promise<SceneRebuildReferenceImageResult> {
   if (!process.env.ROOMPRINTZ_COMPOSITOR_URL) {
@@ -523,6 +529,7 @@ async function buildSceneRebuildReferenceImage(args: {
     enhancePhoto: true,
     modelVersion: args.modelVersion,
     aspectRatio: args.aspectRatio,
+    headers: args.headers,
     signal: args.signal,
   });
 
@@ -1185,6 +1192,7 @@ async function callSceneRebuildModel(args: {
   aspectRatio: StageRoomRequest["aspectRatio"];
   placementIntent: PlacementIntent;
   modelDecidedReferenceImageUrls?: string[];
+  headers?: Record<string, string>;
   signal?: AbortSignal;
 }): Promise<string> {
   const endpoint = process.env.NANOBANANA_PRO_URL;
@@ -1276,6 +1284,7 @@ async function callSceneRebuildModel(args: {
     headers: {
       "content-type": "application/json",
       authorization: `Bearer ${apiKey}`,
+      ...(args.headers ?? {}),
     },
     body: JSON.stringify(body),
     signal: args.signal,
@@ -1357,6 +1366,9 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Unauthorized." }, { status: 401 });
     }
     const userId = userData.user.id;
+    const userEmail = userData.user.email ?? null;
+    const requestId = resolveVibodeRequestIdFromHeaders(req.headers);
+    const operationId = resolveVibodeOperationIdFromHeaders(req.headers);
 
     const bodyRaw = (await req.json().catch(() => ({}))) as SceneRebuildRequest;
     const body = isRecord(bodyRaw) ? bodyRaw : {};
@@ -1392,6 +1404,30 @@ export async function POST(req: NextRequest) {
     if (!versionId) {
       return NextResponse.json({ error: "Missing required field: versionId." }, { status: 400 });
     }
+    const composeContextHeaders = buildVibodeCompositorContextHeaders({
+      requestId,
+      operationId,
+      userId,
+      userEmail,
+      roomId,
+      versionId,
+      assetId: versionId,
+      workflowType: "stage",
+      actionType: "compose",
+      sourceTrigger: "update-room",
+    });
+    const stageRunContextHeaders = buildVibodeCompositorContextHeaders({
+      requestId,
+      operationId,
+      userId,
+      userEmail,
+      roomId,
+      versionId,
+      assetId: versionId,
+      workflowType: "stage",
+      actionType: "stage-run",
+      sourceTrigger: "update-room",
+    });
     const room = await getVibodeRoomById(supabase, roomId);
     if (!room) {
       return NextResponse.json({ error: "Room not found." }, { status: 404 });
@@ -1471,6 +1507,7 @@ export async function POST(req: NextRequest) {
             payload,
             modelVersion,
             aspectRatio,
+            headers: composeContextHeaders,
             signal: composeSignal,
           })
         );
@@ -1501,6 +1538,7 @@ export async function POST(req: NextRequest) {
       aspectRatio,
       placementIntent,
       modelDecidedReferenceImageUrls,
+      headers: stageRunContextHeaders,
       signal: req.signal,
     });
 

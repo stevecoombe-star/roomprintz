@@ -33,6 +33,11 @@ import {
   type LayerKind,
 } from "@/lib/layerKind";
 import { IKEA_CA_SKUS } from "@/data/mockIkeaCaSkus";
+import {
+  buildVibodeCompositorContextHeaders,
+  resolveVibodeOperationIdFromHeaders,
+  resolveVibodeRequestIdFromHeaders,
+} from "@/lib/vibodeCompositorContextHeaders";
 
 // Ensure we run on the Node.js runtime (needed for Buffer, larger payloads, etc.)
 export const runtime = "nodejs";
@@ -1580,6 +1585,7 @@ async function handleCompose(args: {
   shouldUseVibodePrompt: boolean;
   vibodePrompt: string | null;
   placementTestModeActive: boolean;
+  contextHeaders?: Record<string, string>;
 }): Promise<{ modelImageUrl?: string; response?: ReturnType<typeof json> }> {
   const composeEligible =
     args.payloadVersion === "v2" || args.payloadForModel.sceneSnapshotImageSpace.nodes.length > 0;
@@ -1689,6 +1695,7 @@ async function handleCompose(args: {
       enhancePhoto: true,
       modelVersion: safeStr((args.payloadForModel as Record<string, unknown>)?.modelVersion),
       aspectRatio: pickLegacyAspectRatioFromFreeze(args.payloadForModel),
+      headers: args.contextHeaders,
     });
     args.notes.push(`Compositor /vibode/compose used (placements=${placements.length}).`);
     return { modelImageUrl: composeResult.imageUrl };
@@ -1909,6 +1916,18 @@ export async function handleGenerateRequest(args: {
     return json(401, { error: "Unauthorized" });
   }
   const user = userData.user;
+  const requestId = resolveVibodeRequestIdFromHeaders(req.headers);
+  const operationId = resolveVibodeOperationIdFromHeaders(req.headers);
+  const stageRoomContextHeaders = buildVibodeCompositorContextHeaders({
+    requestId,
+    operationId,
+    userId: user.id,
+    userEmail: user.email ?? null,
+    roomId: args.vibodeRoomId ?? null,
+    workflowType: "stage",
+    actionType: "compose",
+    sourceTrigger: "update-room",
+  });
 
   const tokenActionType = resolveGenerateActionType(freeze);
   const tokenCost = await getTokenCostForAction(supabase, tokenActionType);
@@ -2157,6 +2176,7 @@ export async function handleGenerateRequest(args: {
         shouldUseVibodePrompt,
         vibodePrompt,
         placementTestModeActive,
+        contextHeaders: stageRoomContextHeaders,
       });
       if (composeResult.response) {
         return composeResult.response;

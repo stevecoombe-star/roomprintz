@@ -25,6 +25,7 @@ export async function callCompositorVibodeCompose(args: {
   modelVersion?: string | null;
   aspectRatio?: AspectRatio;
   signal?: AbortSignal;
+  headers?: Record<string, string>;
 }): Promise<{ imageUrl: string; appliedAspectRatio?: string | null }> {
   const endpointBase = process.env.ROOMPRINTZ_COMPOSITOR_URL?.trim();
 
@@ -65,6 +66,7 @@ export async function callCompositorVibodeCompose(args: {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
+      ...(args.headers ?? {}),
     },
     body: JSON.stringify(payload),
     signal,
