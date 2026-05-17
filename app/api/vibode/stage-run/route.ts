@@ -157,7 +157,15 @@ function resolveStageRunWorkflowContext(args: {
   stage4Mode: string | null;
   enhancePhoto: boolean;
 }): { workflowType: string; actionType: string; sourceTrigger: string } {
-  if (args.stage4Mode === "style_room") {
+  const styleModes = new Set([
+    "style_room",
+    "accessories",
+    "wall_art",
+    "shelves",
+    "curtains",
+    "ceiling_light",
+  ]);
+  if (args.stage4Mode && styleModes.has(args.stage4Mode)) {
     return {
       workflowType: "style",
       actionType: "stage-run",
