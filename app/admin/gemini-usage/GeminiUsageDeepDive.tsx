@@ -47,6 +47,38 @@ type DailyBreakdownData = {
   };
 };
 
+type UserModelBreakdownResponse = {
+  from?: unknown;
+  to?: unknown;
+  statusMode?: unknown;
+  models?: unknown;
+  rows?: unknown;
+  summary?: {
+    totalUsers?: unknown;
+    selectedStatusCount?: unknown;
+  };
+  error?: unknown;
+};
+
+type UserModelBreakdownRow = {
+  userId: string | null;
+  userEmail: string | null;
+  modelCounts: Record<string, number>;
+  total: number;
+};
+
+type UserModelBreakdownData = {
+  from: string;
+  to: string;
+  statusMode: GeminiStatusMode;
+  models: string[];
+  rows: UserModelBreakdownRow[];
+  summary: {
+    totalUsers: number;
+    selectedStatusCount: number;
+  };
+};
+
 const KNOWN_MODEL_COLORS: Record<string, string> = {
   "gemini-3-pro-image-preview": "#4f46e5",
   "gemini-3.1-flash-image-preview": "#0ea5e9",
@@ -225,6 +257,62 @@ function normalizeDailyBreakdownResponse(payload: DailyBreakdownResponse): Daily
   };
 }
 
+function normalizeUserModelBreakdownResponse(
+  payload: UserModelBreakdownResponse
+): UserModelBreakdownData | null {
+  const from = normalizeString(payload.from);
+  const to = normalizeString(payload.to);
+  const statusMode = payload.statusMode === "failure" ? "failure" : "success";
+  if (!from || !to) return null;
+
+  const models = Array.isArray(payload.models)
+    ? payload.models.map((model) => normalizeString(model)).filter((model) => model.length > 0)
+    : [];
+
+  const rows = Array.isArray(payload.rows)
+    ? payload.rows
+        .map((entry): UserModelBreakdownRow | null => {
+          if (!entry || typeof entry !== "object") return null;
+          const item = entry as {
+            userId?: unknown;
+            userEmail?: unknown;
+            modelCounts?: unknown;
+            total?: unknown;
+          };
+          const userId = normalizeString(item.userId) || null;
+          const userEmail = normalizeString(item.userEmail) || null;
+          const rawModelCounts =
+            item.modelCounts && typeof item.modelCounts === "object"
+              ? (item.modelCounts as Record<string, unknown>)
+              : {};
+
+          const modelCounts: Record<string, number> = {};
+          for (const model of models) {
+            modelCounts[model] = normalizeNonNegativeInt(rawModelCounts[model]);
+          }
+          return {
+            userId,
+            userEmail,
+            modelCounts,
+            total: normalizeNonNegativeInt(item.total),
+          };
+        })
+        .filter((row): row is UserModelBreakdownRow => Boolean(row))
+    : [];
+
+  return {
+    from,
+    to,
+    statusMode,
+    models,
+    rows,
+    summary: {
+      totalUsers: normalizeNonNegativeInt(payload.summary?.totalUsers),
+      selectedStatusCount: normalizeNonNegativeInt(payload.summary?.selectedStatusCount),
+    },
+  };
+}
+
 function StackedDailyChart(props: {
   rows: DailyBreakdownRow[];
   models: string[];
@@ -318,6 +406,11 @@ export default function GeminiUsageDeepDive() {
   const [isExporting, setIsExporting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [data, setData] = useState<DailyBreakdownData | null>(null);
+  const [isUserUsageLoading, setIsUserUsageLoading] = useState(false);
+  const [isUserUsageExporting, setIsUserUsageExporting] = useState(false);
+  const [userUsageError, setUserUsageError] = useState<string | null>(null);
+  const [userUsageData, setUserUsageData] = useState<UserModelBreakdownData | null>(null);
+  const [showAllUserUsage, setShowAllUserUsage] = useState(false);
 
   const modelColors = useMemo(() => resolveModelColors(data?.models ?? []), [data?.models]);
   const selectedRowsTotal = useMemo(
@@ -325,6 +418,15 @@ export default function GeminiUsageDeepDive() {
     [data]
   );
   const hasMismatch = data !== null && selectedRowsTotal !== data.summary.selectedStatusCount;
+  const visibleUserUsageRows = useMemo(
+    () =>
+      userUsageData
+        ? showAllUserUsage
+          ? userUsageData.rows
+          : userUsageData.rows.slice(0, 25)
+        : [],
+    [showAllUserUsage, userUsageData]
+  );
 
   const loadDailyBreakdown = useCallback(async () => {
     const range = resolveGeminiUsageWindow({
@@ -369,6 +471,50 @@ export default function GeminiUsageDeepDive() {
     void loadDailyBreakdown();
   }, [loadDailyBreakdown]);
 
+  const loadUserModelBreakdown = useCallback(async () => {
+    const range = resolveGeminiUsageWindow({
+      preset: windowPreset,
+      customStartDate,
+      customEndDate,
+    });
+    if ("error" in range) {
+      setUserUsageError(range.error ?? "Invalid date range.");
+      setUserUsageData(null);
+      return;
+    }
+
+    setIsUserUsageLoading(true);
+    setUserUsageError(null);
+    try {
+      const query = `?from=${encodeURIComponent(range.fromIso)}&to=${encodeURIComponent(range.toIso)}&status=${encodeURIComponent(statusMode)}`;
+      const response = await fetch(`/api/admin/gemini-usage/by-user-model${query}`, {
+        method: "GET",
+        credentials: "same-origin",
+      });
+      const payload = (await response.json().catch(() => ({}))) as UserModelBreakdownResponse;
+      if (!response.ok) {
+        throw new Error(
+          typeof payload.error === "string" ? payload.error : "Failed to load user usage by model."
+        );
+      }
+      const normalized = normalizeUserModelBreakdownResponse(payload);
+      if (!normalized) {
+        throw new Error("User usage by model response is missing required fields.");
+      }
+      setUserUsageData(normalized);
+      setShowAllUserUsage(false);
+    } catch (err: unknown) {
+      setUserUsageError(err instanceof Error ? err.message : "Failed to load user usage by model.");
+      setUserUsageData(null);
+    } finally {
+      setIsUserUsageLoading(false);
+    }
+  }, [customEndDate, customStartDate, statusMode, windowPreset]);
+
+  useEffect(() => {
+    void loadUserModelBreakdown();
+  }, [loadUserModelBreakdown]);
+
   const exportDailyCsv = useCallback(async () => {
     const range = resolveGeminiUsageWindow({
       preset: windowPreset,
@@ -408,6 +554,48 @@ export default function GeminiUsageDeepDive() {
       setError(err instanceof Error ? err.message : "Failed to export CSV.");
     } finally {
       setIsExporting(false);
+    }
+  }, [customEndDate, customStartDate, statusMode, windowPreset]);
+
+  const exportUserUsageCsv = useCallback(async () => {
+    const range = resolveGeminiUsageWindow({
+      preset: windowPreset,
+      customStartDate,
+      customEndDate,
+    });
+    if ("error" in range) {
+      setUserUsageError(range.error ?? "Invalid date range.");
+      return;
+    }
+
+    setIsUserUsageExporting(true);
+    setUserUsageError(null);
+    try {
+      const query = `?from=${encodeURIComponent(range.fromIso)}&to=${encodeURIComponent(range.toIso)}&status=${encodeURIComponent(statusMode)}`;
+      const response = await fetch(`/api/admin/gemini-usage/by-user-model/export${query}`, {
+        method: "GET",
+        credentials: "same-origin",
+      });
+      if (!response.ok) {
+        const payload = (await response.json().catch(() => ({}))) as { error?: unknown };
+        throw new Error(typeof payload.error === "string" ? payload.error : "Failed to export user usage CSV.");
+      }
+      const blob = await response.blob();
+      const contentDisposition = response.headers.get("content-disposition") || "";
+      const filenameMatch = contentDisposition.match(/filename="([^"]+)"/i);
+      const filename = filenameMatch?.[1] || `vibode-gemini-usage-by-user-model-${statusMode}.csv`;
+      const blobUrl = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = blobUrl;
+      anchor.download = filename;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      URL.revokeObjectURL(blobUrl);
+    } catch (err: unknown) {
+      setUserUsageError(err instanceof Error ? err.message : "Failed to export user usage CSV.");
+    } finally {
+      setIsUserUsageExporting(false);
     }
   }, [customEndDate, customStartDate, statusMode, windowPreset]);
 
@@ -630,6 +818,94 @@ export default function GeminiUsageDeepDive() {
                 </tbody>
               </table>
             </div>
+          )}
+        </section>
+
+        <section className="rounded-2xl border border-slate-800 bg-slate-900/70 p-4">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <h2 className="text-base font-medium text-slate-100">User Usage by Model</h2>
+              <p className="mt-1 text-xs text-slate-400">
+                Top users driving Gemini calls for the selected range and status mode.
+              </p>
+            </div>
+            <div className="flex items-center gap-2">
+              {userUsageData && userUsageData.rows.length > 25 && (
+                <button
+                  type="button"
+                  onClick={() => setShowAllUserUsage((prev) => !prev)}
+                  className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-200 transition hover:border-emerald-400/80 hover:text-emerald-200"
+                >
+                  {showAllUserUsage ? "Show top 25" : "Show all"}
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => void exportUserUsageCsv()}
+                disabled={isUserUsageExporting}
+                className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-200 transition hover:border-emerald-400/80 hover:text-emerald-200 disabled:opacity-60"
+              >
+                {isUserUsageExporting ? "Exporting..." : "Export user usage CSV"}
+              </button>
+            </div>
+          </div>
+
+          {userUsageError && <p className="mt-3 text-xs text-rose-300">{userUsageError}</p>}
+          {isUserUsageLoading && <p className="mt-3 text-xs text-slate-400">Loading user usage...</p>}
+
+          {userUsageData && (
+            <>
+              <p className="mt-2 text-[11px] text-slate-500">
+                Users: {formatMetric(userUsageData.summary.totalUsers)} | Active mode total:{" "}
+                {formatMetric(userUsageData.summary.selectedStatusCount)}
+              </p>
+              <div className="mt-3 overflow-x-auto rounded-lg border border-slate-800">
+                <table className="min-w-full border-collapse text-xs">
+                  <thead className="bg-slate-950/70 text-slate-300">
+                    <tr>
+                      <th className="border-b border-slate-800 px-3 py-2 text-left font-medium">User</th>
+                      {userUsageData.models.map((model) => (
+                        <th key={model} className="border-b border-slate-800 px-3 py-2 text-right font-medium">
+                          {model}
+                        </th>
+                      ))}
+                      <th className="border-b border-slate-800 px-3 py-2 text-right font-medium">Total</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {visibleUserUsageRows.map((row) => (
+                      <tr key={`${row.userId ?? "no-user"}:${row.userEmail ?? "no-email"}`} className="odd:bg-slate-950/30">
+                        <td className="border-b border-slate-800/80 px-3 py-2 text-slate-200">
+                          <p>{row.userEmail ?? "Unknown user"}</p>
+                          {row.userId && <p className="text-[11px] text-slate-500">{row.userId}</p>}
+                        </td>
+                        {userUsageData.models.map((model) => (
+                          <td
+                            key={`${row.userId ?? row.userEmail ?? "unknown"}:${model}`}
+                            className="border-b border-slate-800/80 px-3 py-2 text-right text-slate-300"
+                          >
+                            {formatMetric(row.modelCounts[model] ?? 0)}
+                          </td>
+                        ))}
+                        <td className="border-b border-slate-800/80 px-3 py-2 text-right font-medium text-slate-100">
+                          {formatMetric(row.total)}
+                        </td>
+                      </tr>
+                    ))}
+                    {visibleUserUsageRows.length === 0 && (
+                      <tr>
+                        <td
+                          colSpan={Math.max(2, userUsageData.models.length + 2)}
+                          className="px-3 py-4 text-center text-slate-500"
+                        >
+                          No user model usage in selected filters.
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </>
           )}
         </section>
       </div>

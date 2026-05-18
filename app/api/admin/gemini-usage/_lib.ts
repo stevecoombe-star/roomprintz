@@ -50,6 +50,25 @@ export type DailyBreakdownResult = {
   summary: DailyBreakdownSummary;
 };
 
+type UserModelBreakdownRow = {
+  userId: string | null;
+  userEmail: string | null;
+  modelCounts: Record<string, number>;
+  total: number;
+};
+
+type UserModelBreakdownSummary = {
+  totalUsers: number;
+  selectedStatusCount: number;
+};
+
+export type UserModelBreakdownResult = {
+  statusMode: UsageStatusMode;
+  models: string[];
+  rows: UserModelBreakdownRow[];
+  summary: UserModelBreakdownSummary;
+};
+
 function json(status: number, body: Record<string, unknown>) {
   return NextResponse.json(body, { status });
 }
@@ -86,6 +105,18 @@ function normalizeModel(value: unknown): string {
   if (typeof value !== "string") return "unknown";
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : "unknown";
+}
+
+function normalizeEmail(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+function extractMetadataUserEmail(metadata: unknown): string | null {
+  if (!metadata || typeof metadata !== "object") return null;
+  const raw = (metadata as Record<string, unknown>).user_email;
+  return normalizeEmail(raw);
 }
 
 export function sortGeminiUsageModels(models: string[]): string[] {
@@ -258,6 +289,94 @@ export function buildDailyBreakdown(args: {
       failureCount,
       selectedStatusCount: selectedStatusCountFromRows,
       topModel,
+    },
+  };
+}
+
+export async function buildUserModelBreakdown(args: {
+  supabaseAdmin: AnySupabaseClient;
+  rows: Array<{
+    user_id: string | null;
+    model: string | null;
+    status: "success" | "failure" | null;
+    metadata?: unknown;
+  }>;
+  statusMode: UsageStatusMode;
+}): Promise<UserModelBreakdownResult> {
+  const byUser = new Map<
+    string,
+    {
+      userId: string | null;
+      userEmail: string | null;
+      modelCounts: Map<string, number>;
+      total: number;
+    }
+  >();
+  const modelsInRange = new Set<string>();
+
+  for (const row of args.rows) {
+    if (row.status !== args.statusMode) continue;
+    const model = normalizeModel(row.model);
+    const userId = safeStr(row.user_id);
+    const metadataEmail = extractMetadataUserEmail(row.metadata);
+    const userKey = userId
+      ? `id:${userId}`
+      : metadataEmail
+        ? `email:${metadataEmail.toLowerCase()}`
+        : "unknown";
+
+    const current = byUser.get(userKey) ?? {
+      userId: userId ?? null,
+      userEmail: metadataEmail ?? null,
+      modelCounts: new Map<string, number>(),
+      total: 0,
+    };
+    if (!current.userEmail && metadataEmail) current.userEmail = metadataEmail;
+    current.modelCounts.set(model, (current.modelCounts.get(model) ?? 0) + 1);
+    current.total += 1;
+    byUser.set(userKey, current);
+    modelsInRange.add(model);
+  }
+
+  const unresolvedUserIds = Array.from(byUser.values())
+    .filter((entry) => entry.userId && !entry.userEmail)
+    .map((entry) => entry.userId as string);
+  const userEmailById = await resolveUserEmailsById(args.supabaseAdmin, unresolvedUserIds);
+  for (const value of byUser.values()) {
+    if (!value.userId || value.userEmail) continue;
+    value.userEmail = userEmailById.get(value.userId) ?? null;
+  }
+
+  const models = sortGeminiUsageModels(Array.from(modelsInRange));
+  const rows = Array.from(byUser.values())
+    .map<UserModelBreakdownRow>((entry) => {
+      const modelCounts: Record<string, number> = {};
+      for (const model of models) {
+        modelCounts[model] = entry.modelCounts.get(model) ?? 0;
+      }
+      return {
+        userId: entry.userId,
+        userEmail: entry.userEmail,
+        modelCounts,
+        total: entry.total,
+      };
+    })
+    .sort((a, b) => {
+      if (b.total !== a.total) return b.total - a.total;
+      const emailA = (a.userEmail ?? "").toLowerCase();
+      const emailB = (b.userEmail ?? "").toLowerCase();
+      if (emailA !== emailB) return emailA.localeCompare(emailB);
+      return (a.userId ?? "").localeCompare(b.userId ?? "");
+    });
+
+  const selectedStatusCount = rows.reduce((sum, row) => sum + row.total, 0);
+  return {
+    statusMode: args.statusMode,
+    models,
+    rows,
+    summary: {
+      totalUsers: rows.length,
+      selectedStatusCount,
     },
   };
 }
