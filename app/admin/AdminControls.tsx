@@ -806,6 +806,12 @@ export default function AdminControls() {
               >
                 Open analytics
               </Link>
+              <Link
+                href="/admin/gemini-usage/ledger"
+                className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-200 transition hover:border-emerald-400/80 hover:text-emerald-200"
+              >
+                Open ledger
+              </Link>
               <button
                 type="button"
                 onClick={() => void exportGeminiUsageCsv()}

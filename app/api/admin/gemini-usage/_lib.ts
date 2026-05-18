@@ -73,7 +73,7 @@ function json(status: number, body: Record<string, unknown>) {
   return NextResponse.json(body, { status });
 }
 
-function safeStr(value: unknown): string | null {
+export function safeStr(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : null;
@@ -113,7 +113,7 @@ function normalizeEmail(value: unknown): string | null {
   return trimmed.length > 0 ? trimmed : null;
 }
 
-function extractMetadataUserEmail(metadata: unknown): string | null {
+export function extractMetadataUserEmail(metadata: unknown): string | null {
   if (!metadata || typeof metadata !== "object") return null;
   const raw = (metadata as Record<string, unknown>).user_email;
   return normalizeEmail(raw);

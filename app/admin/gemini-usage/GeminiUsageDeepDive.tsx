@@ -610,12 +610,20 @@ export default function GeminiUsageDeepDive() {
                 Daily analytics for Vibode Gemini model calls.
               </p>
             </div>
-            <Link
-              href="/admin"
-              className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-200 transition hover:border-emerald-400/80 hover:text-emerald-200"
-            >
-              Back to Admin
-            </Link>
+            <div className="flex items-center gap-2">
+              <Link
+                href="/admin/gemini-usage/ledger"
+                className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-200 transition hover:border-emerald-400/80 hover:text-emerald-200"
+              >
+                Open ledger
+              </Link>
+              <Link
+                href="/admin"
+                className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-200 transition hover:border-emerald-400/80 hover:text-emerald-200"
+              >
+                Back to Admin
+              </Link>
+            </div>
           </div>
         </header>
 
