@@ -53,6 +53,7 @@ type SceneRebuildRequest = {
 
 type StageRoomRequest = {
   imageBase64: string;
+  placementIntent?: "user_directed" | "model_decided";
   styleId?: string | null;
   enhancePhoto?: boolean;
   modelVersion?: string | null;
@@ -1224,6 +1225,7 @@ async function callSceneRebuildModel(args: {
   }
   const body: StageRoomRequest = {
     imageBase64,
+    placementIntent: args.placementIntent,
     styleId: null,
     enhancePhoto: true,
     modelVersion: args.modelVersion,
@@ -1245,6 +1247,8 @@ async function callSceneRebuildModel(args: {
 
   console.info("[vibode/scene-rebuild] model payload prepared", {
     placementIntent: args.placementIntent,
+    placement_intent_forwarded_to_stage_room: true,
+    stage_room_placement_intent: args.placementIntent,
     modelInputImageUrlPresent: safeStr(args.baseImageUrl) !== null,
     promptCandidateLineCount: (args.prompt.match(/referenceImageUrl=/g) ?? []).length,
     modelVersion: args.modelVersion,
@@ -1253,6 +1257,8 @@ async function callSceneRebuildModel(args: {
   });
   console.info("[vibode/scene-rebuild] outbound payload debug", {
     placementIntent: args.placementIntent,
+    placement_intent_forwarded_to_stage_room: true,
+    stage_room_placement_intent: args.placementIntent,
     modelInputImageUrlPresent: safeStr(args.baseImageUrl) !== null,
     promptIncludesCandidates: args.prompt.includes("Candidate furniture to place"),
     promptCandidateLineCount: (args.prompt.match(/referenceImageUrl=/g) ?? []).length,
@@ -1498,9 +1504,37 @@ export async function POST(req: NextRequest) {
       modelDecidedReferenceImageUrls,
     });
     let modelInputImageUrl = payload.room.baseImageUrl;
+    let modelInputImageSource: "base" | "compose" = "base";
     let referencePlacementCountUsed = 0;
-    if (payload.placementCount > 0) {
-      try {
+    const existingManualPlacementCount = payload.placements.filter((placement) => placement.isVisible).length;
+    let composePolicy: "skipped_for_model_decided" | "attempt_for_supported_intents";
+    let composeAttempted = false;
+    let composeSucceeded = false;
+    let composeSkippedReason: string | null = null;
+    let composeRequiredReason: "existing_manual_placements" | null = null;
+    const shouldSkipComposeForModelDecided =
+      placementIntent === "model_decided" && existingManualPlacementCount === 0;
+    if (shouldSkipComposeForModelDecided) {
+      composePolicy = "skipped_for_model_decided";
+      composeSkippedReason = "placementIntent=model_decided";
+      console.info("[vibode/scene-rebuild] compose stage skipped", {
+        compose_policy: composePolicy,
+        compose_attempted: composeAttempted,
+        compose_succeeded: composeSucceeded,
+        compose_skipped_reason: composeSkippedReason,
+        model_input_image_source: modelInputImageSource,
+        existing_manual_placement_count: existingManualPlacementCount,
+        compose_required_reason: composeRequiredReason,
+        roomId: room.id,
+        versionId,
+      });
+    } else {
+      composePolicy = "attempt_for_supported_intents";
+      if (placementIntent === "model_decided" && existingManualPlacementCount > 0) {
+        composeRequiredReason = "existing_manual_placements";
+      }
+      if (payload.placementCount > 0) {
+        composeAttempted = true;
         const referenceImage = await runComposeStageWithTimeout(req.signal, (composeSignal) =>
           buildSceneRebuildReferenceImage({
             baseImageUrl: payload.room.baseImageUrl,
@@ -1512,24 +1546,29 @@ export async function POST(req: NextRequest) {
           })
         );
         modelInputImageUrl = referenceImage.imageUrl;
+        modelInputImageSource = "compose";
+        composeSucceeded = true;
         referencePlacementCountUsed = referenceImage.usedPlacementCount;
-        if (placementIntent !== "model_decided" && referencePlacementCountUsed <= 0) {
+        if (referencePlacementCountUsed <= 0) {
           throw new SceneRebuildError(
             "Scene rebuild reference composition must include at least one placement.",
             422
           );
         }
-      } catch (err) {
-        if (placementIntent !== "model_decided") {
-          throw err;
-        }
-        console.warn("[vibode/scene-rebuild] model_decided compose fallback to base image", {
-          error: err instanceof Error ? err.message : String(err),
-          roomId: room.id,
-          versionId,
-        });
       }
     }
+
+    console.info("[vibode/scene-rebuild] compose stage status", {
+      compose_policy: composePolicy,
+      compose_attempted: composeAttempted,
+      compose_succeeded: composeSucceeded,
+      compose_skipped_reason: composeSkippedReason,
+      model_input_image_source: modelInputImageSource,
+      existing_manual_placement_count: existingManualPlacementCount,
+      compose_required_reason: composeRequiredReason,
+      roomId: room.id,
+      versionId,
+    });
 
     const generatedImageUrl = await callSceneRebuildModel({
       baseImageUrl: modelInputImageUrl,
@@ -1675,6 +1714,15 @@ export async function POST(req: NextRequest) {
         placementIntent === "model_decided" ? inferenceMatcherDiagnostics : undefined,
       reference_image_mode: referencePlacementCountUsed > 0 ? "composite" : "base_only",
       reference_placement_count: referencePlacementCountUsed,
+      compose_policy: composePolicy,
+      compose_attempted: composeAttempted,
+      compose_succeeded: composeSucceeded,
+      compose_skipped_reason: composeSkippedReason,
+      model_input_image_source: modelInputImageSource,
+      placement_intent_forwarded_to_stage_room: true,
+      stage_room_placement_intent: placementIntent,
+      existing_manual_placement_count: existingManualPlacementCount,
+      compose_required_reason: composeRequiredReason,
       fallback_image_url_used: payload.room.fallbackImageUrlUsed,
     };
 
@@ -1738,6 +1786,15 @@ export async function POST(req: NextRequest) {
         inference_matcher_diagnostics:
           placementIntent === "model_decided" ? inferenceMatcherDiagnostics : undefined,
         reference_placement_count: referencePlacementCountUsed,
+        compose_policy: composePolicy,
+        compose_attempted: composeAttempted,
+        compose_succeeded: composeSucceeded,
+        compose_skipped_reason: composeSkippedReason,
+        model_input_image_source: modelInputImageSource,
+        placement_intent_forwarded_to_stage_room: true,
+        stage_room_placement_intent: placementIntent,
+        existing_manual_placement_count: existingManualPlacementCount,
+        compose_required_reason: composeRequiredReason,
         fallback_image_url_used: payload.room.fallbackImageUrlUsed,
         prompt_preview: prompt.slice(0, 1000),
       },
