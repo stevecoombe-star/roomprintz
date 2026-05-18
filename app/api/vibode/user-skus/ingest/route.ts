@@ -11,6 +11,11 @@ import {
 } from "@/lib/attribution/parsers";
 import { normalizeSupplier } from "@/lib/attribution/normalizers";
 import { upsertVibodeUserFurniture } from "@/lib/vibodeMyFurniture";
+import {
+  buildVibodeCompositorContextHeaders,
+  resolveVibodeOperationIdFromHeaders,
+  resolveVibodeRequestIdFromHeaders,
+} from "@/lib/vibodeCompositorContextHeaders";
 
 export const runtime = "nodejs";
 
@@ -129,14 +134,6 @@ function getUserSupabaseClient(token: string): AnySupabaseClient | null {
   }) as AnySupabaseClient;
 }
 
-function createRequestId(): string {
-  try {
-    return `vibode-ingest-${crypto.randomUUID()}`;
-  } catch {
-    return `vibode-ingest-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-  }
-}
-
 function resolveMimeType(body: IngestBody): string | null {
   const imageBase64 = safeString(body.imageBase64);
   if (!imageBase64) return null;
@@ -197,11 +194,30 @@ function shouldSkipMyFurnitureAutosave(req: NextRequest): boolean {
 }
 
 export async function POST(req: NextRequest) {
-  const requestId = createRequestId();
+  const requestId = resolveVibodeRequestIdFromHeaders(req.headers);
+  const operationId = resolveVibodeOperationIdFromHeaders(req.headers);
   const startedAtMs = Date.now();
   const accessToken = getBearerToken(req) ?? (await getCookieAccessToken());
+  let authenticatedUserId: string | null = null;
+  let authenticatedUserEmail: string | null = null;
+
+  if (accessToken) {
+    const contextSupabase = getUserSupabaseClient(accessToken);
+    if (contextSupabase) {
+      try {
+        const { data: userData, error: userErr } = await contextSupabase.auth.getUser();
+        if (!userErr && userData?.user) {
+          authenticatedUserId = safeString(userData.user.id);
+          authenticatedUserEmail = safeString(userData.user.email);
+        }
+      } catch {
+        // Best-effort context resolution only; ingest flow should proceed without this metadata.
+      }
+    }
+  }
+
   logIngestEvent("info", "request_received", requestId, {
-    user_id_present: Boolean(accessToken),
+    user_id_present: Boolean(authenticatedUserId),
   });
 
   try {
@@ -215,7 +231,7 @@ export async function POST(req: NextRequest) {
     const hasImageData = Boolean(safeString(body.imageBase64));
 
     logIngestEvent("info", "input_resolved", requestId, {
-      user_id_present: Boolean(accessToken),
+      user_id_present: Boolean(authenticatedUserId),
       source_kind: sourceKind,
       mime_type: mimeType,
       filename,
@@ -261,6 +277,15 @@ export async function POST(req: NextRequest) {
         [NORMALIZED_PREVIEW_BG_HEADER]: NORMALIZED_PREVIEW_BG_RGB.join(","),
         [NORMALIZED_PREVIEW_BG_MODE_HEADER]: "fixed",
         ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
+        ...buildVibodeCompositorContextHeaders({
+          requestId,
+          operationId,
+          userId: authenticatedUserId,
+          userEmail: authenticatedUserEmail,
+          workflowType: "set",
+          actionType: "user-sku-ingest",
+          sourceTrigger: "user-sku-upload",
+        }),
       },
       body: JSON.stringify({
         imageUrl: body.imageUrl,
