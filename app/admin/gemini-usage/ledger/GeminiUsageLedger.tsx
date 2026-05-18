@@ -587,6 +587,18 @@ export default function GeminiUsageLedger() {
     return ctx.measureText(text).width;
   }, []);
 
+  const getAutoFitWidthForColumn = useCallback(
+    (column: LedgerColumnConfig, font: string): number => {
+      const minWidth = Math.max(MIN_COLUMN_WIDTH, column.minWidth ?? MIN_COLUMN_WIDTH);
+      const longest = Math.max(
+        measureTextWidth(column.label, font),
+        ...rows.map((row) => measureTextWidth(column.measureText(row), font))
+      );
+      return Math.min(MAX_AUTO_FIT_WIDTH, Math.max(minWidth, Math.ceil(longest + AUTO_FIT_PADDING)));
+    },
+    [measureTextWidth, rows]
+  );
+
   const resetColumnWidths = useCallback(() => {
     const defaults = getDefaultColumnWidths();
     setColumnWidths(defaults);
@@ -595,12 +607,7 @@ export default function GeminiUsageLedger() {
 
   const handleColumnAutoFit = useCallback(
     (column: LedgerColumnConfig, font: string) => {
-      const minWidth = Math.max(MIN_COLUMN_WIDTH, column.minWidth ?? MIN_COLUMN_WIDTH);
-      const longest = Math.max(
-        measureTextWidth(column.label, font),
-        ...rows.map((row) => measureTextWidth(column.measureText(row), font))
-      );
-      const autoFitWidth = Math.min(MAX_AUTO_FIT_WIDTH, Math.max(minWidth, Math.ceil(longest + AUTO_FIT_PADDING)));
+      const autoFitWidth = getAutoFitWidthForColumn(column, font);
       const previousWidth = latestColumnWidthsRef.current[column.key] ?? column.defaultWidth;
       debugResizeLog("doubleclick-autofit", {
         column: column.key,
@@ -614,8 +621,27 @@ export default function GeminiUsageLedger() {
         return next;
       });
     },
-    [debugResizeLog, measureTextWidth, persistColumnWidths, rows, totalColumnWidth]
+    [debugResizeLog, getAutoFitWidthForColumn, persistColumnWidths, totalColumnWidth]
   );
+
+  const handleAutoFitAllColumns = useCallback(() => {
+    const nextWidths = { ...latestColumnWidthsRef.current };
+    for (const column of LEDGER_COLUMNS) {
+      let font = "500 12px sans-serif";
+      if (typeof document !== "undefined") {
+        const headerElement = document.querySelector(
+          `[data-ledger-col="${column.key}"]`
+        ) as HTMLElement | null;
+        if (headerElement) {
+          font = window.getComputedStyle(headerElement).font || font;
+        }
+      }
+      nextWidths[column.key] = getAutoFitWidthForColumn(column, font);
+    }
+    setColumnWidths(nextWidths);
+    persistColumnWidths(nextWidths);
+    debugResizeLog("autofit-all", { widths: nextWidths });
+  }, [debugResizeLog, getAutoFitWidthForColumn, persistColumnWidths]);
 
   const stopColumnResize = useCallback(() => {
     const state = dragStateRef.current;
@@ -996,6 +1022,13 @@ export default function GeminiUsageLedger() {
             <div className="flex items-center gap-2">
               <button
                 type="button"
+                onClick={handleAutoFitAllColumns}
+                className="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs text-slate-700 transition hover:border-slate-400 hover:bg-slate-100"
+              >
+                Auto-fit columns
+              </button>
+              <button
+                type="button"
                 onClick={resetColumnWidths}
                 className="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs text-slate-700 transition hover:border-slate-400 hover:bg-slate-100"
               >
@@ -1064,6 +1097,7 @@ export default function GeminiUsageLedger() {
                     return (
                       <th
                         key={column.key}
+                        data-ledger-col={column.key}
                         className={`relative border-b border-slate-200 px-3 py-2 font-medium ${alignClass}`}
                       >
                         <span>{column.label}</span>
