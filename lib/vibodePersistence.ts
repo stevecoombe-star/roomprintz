@@ -1,4 +1,5 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
+import { sanitizeGenerationRunRequestPayload } from "@/lib/vibodeGenerationRunRequestPayloadSanitizer";
 
 type JsonObject = Record<string, unknown>;
 
@@ -248,9 +249,13 @@ export async function createVibodeGenerationRun(
   supabase: AnySupabaseClient,
   input: CreateVibodeGenerationRunInput
 ): Promise<VibodeGenerationRunRow> {
+  const safeInput: CreateVibodeGenerationRunInput = {
+    ...input,
+    request_payload: sanitizeGenerationRunRequestPayload(input.request_payload ?? {}),
+  };
   const { data, error } = await supabase
     .from("vibode_generation_runs")
-    .insert(input)
+    .insert(safeInput)
     .select("*")
     .single();
   if (error || !data) {
