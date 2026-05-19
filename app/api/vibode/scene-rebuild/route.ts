@@ -1570,16 +1570,31 @@ export async function POST(req: NextRequest) {
       versionId,
     });
 
-    const generatedImageUrl = await callSceneRebuildModel({
-      baseImageUrl: modelInputImageUrl,
-      prompt,
-      modelVersion,
-      aspectRatio,
+    const stageRoomSkippedReason = "manual_compose_output_used_directly";
+    const shouldSkipStageRoomForComposedManual =
+      placementIntent !== "model_decided" && composeAttempted && composeSucceeded;
+    const stageRoomSkipped = shouldSkipStageRoomForComposedManual;
+    const finalOutputSource: "compose" | "stage_room" = stageRoomSkipped ? "compose" : "stage_room";
+
+    console.info("[vibode/scene-rebuild] stage-room decision", {
       placementIntent,
-      modelDecidedReferenceImageUrls,
-      headers: stageRunContextHeaders,
-      signal: req.signal,
+      compose_succeeded: composeSucceeded,
+      stage_room_skipped: stageRoomSkipped,
+      stage_room_skipped_reason: stageRoomSkipped ? stageRoomSkippedReason : null,
+      final_output_source: finalOutputSource,
     });
+    const generatedImageUrl = stageRoomSkipped
+      ? modelInputImageUrl
+      : await callSceneRebuildModel({
+          baseImageUrl: modelInputImageUrl,
+          prompt,
+          modelVersion,
+          aspectRatio,
+          placementIntent,
+          modelDecidedReferenceImageUrls,
+          headers: stageRunContextHeaders,
+          signal: req.signal,
+        });
 
     const outputFinalization = await finalizeVibodeOutputAsset({
       logPrefix: "[vibode/scene-rebuild]",
@@ -1719,11 +1734,14 @@ export async function POST(req: NextRequest) {
       compose_succeeded: composeSucceeded,
       compose_skipped_reason: composeSkippedReason,
       model_input_image_source: modelInputImageSource,
-      placement_intent_forwarded_to_stage_room: true,
-      stage_room_placement_intent: placementIntent,
+      placement_intent_forwarded_to_stage_room: !stageRoomSkipped,
+      stage_room_placement_intent: stageRoomSkipped ? null : placementIntent,
       existing_manual_placement_count: existingManualPlacementCount,
       compose_required_reason: composeRequiredReason,
       fallback_image_url_used: payload.room.fallbackImageUrlUsed,
+      stage_room_skipped: stageRoomSkipped,
+      stage_room_skipped_reason: stageRoomSkipped ? stageRoomSkippedReason : null,
+      final_output_source: finalOutputSource,
     };
 
     const { data: outputAssetMetadataRow, error: outputAssetMetadataErr } = await supabase
@@ -1791,11 +1809,14 @@ export async function POST(req: NextRequest) {
         compose_succeeded: composeSucceeded,
         compose_skipped_reason: composeSkippedReason,
         model_input_image_source: modelInputImageSource,
-        placement_intent_forwarded_to_stage_room: true,
-        stage_room_placement_intent: placementIntent,
+        placement_intent_forwarded_to_stage_room: !stageRoomSkipped,
+        stage_room_placement_intent: stageRoomSkipped ? null : placementIntent,
         existing_manual_placement_count: existingManualPlacementCount,
         compose_required_reason: composeRequiredReason,
         fallback_image_url_used: payload.room.fallbackImageUrlUsed,
+        stage_room_skipped: stageRoomSkipped,
+        stage_room_skipped_reason: stageRoomSkipped ? stageRoomSkippedReason : null,
+        final_output_source: finalOutputSource,
         prompt_preview: prompt.slice(0, 1000),
       },
       response_payload: {
@@ -1806,6 +1827,9 @@ export async function POST(req: NextRequest) {
         inferred_placement_count: inferredPlacementCount,
         inference_matcher_diagnostics:
           placementIntent === "model_decided" ? inferenceMatcherDiagnostics : undefined,
+        stage_room_skipped: stageRoomSkipped,
+        stage_room_skipped_reason: stageRoomSkipped ? stageRoomSkippedReason : null,
+        final_output_source: finalOutputSource,
       },
       completed_at: new Date().toISOString(),
     });
