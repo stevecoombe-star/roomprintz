@@ -1,6 +1,7 @@
 "use client";
 
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
+import Link from "next/link";
 
 type BetaSettingsResponse = {
   settings?: {
@@ -67,6 +68,33 @@ type UserAuditResponse = {
   error?: unknown;
 };
 
+type GeminiUsageSummaryResponse = {
+  summary?: {
+    from: string;
+    to: string;
+    totalCalls: number;
+    successCount: number;
+    failureCount: number;
+  };
+  error?: unknown;
+};
+
+type GeminiUsageAggregateResponse = {
+  items?: Array<{
+    model?: string;
+    userId?: string;
+    userEmail?: string | null;
+    workflowType?: string;
+    actionType?: string;
+    calls?: number;
+    successCount?: number;
+    failureCount?: number;
+  }>;
+  from?: unknown;
+  to?: unknown;
+  error?: unknown;
+};
+
 type DeleteUserResponse = {
   success?: boolean;
   deletedStorageFiles?: unknown;
@@ -92,6 +120,7 @@ type AuditLoadState = {
 };
 
 type UserSortOption = "latest_joined" | "last_sign_in" | "email";
+type GeminiUsageWindowPreset = "this-month" | "last-month" | "all-time" | "custom-range";
 
 function normalizeString(value: unknown): string {
   return typeof value === "string" ? value : "";
@@ -113,6 +142,74 @@ function formatDate(value: string | null): string {
 function formatTokenBalance(value: number): string {
   if (!Number.isFinite(value)) return "0";
   return value.toLocaleString();
+}
+
+function formatMetric(value: number): string {
+  if (!Number.isFinite(value)) return "0";
+  return Math.trunc(value).toLocaleString();
+}
+
+function toDateInputValue(date: Date): string {
+  return date.toISOString().slice(0, 10);
+}
+
+function startOfMonthUtc(date: Date): Date {
+  return new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), 1, 0, 0, 0, 0));
+}
+
+function addMonthsUtc(date: Date, delta: number): Date {
+  return new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth() + delta, 1, 0, 0, 0, 0));
+}
+
+function resolveGeminiUsageWindow(args: {
+  preset: GeminiUsageWindowPreset;
+  customStartDate: string;
+  customEndDate: string;
+}) {
+  const now = new Date();
+  if (args.preset === "this-month") {
+    return {
+      fromIso: startOfMonthUtc(now).toISOString(),
+      toIso: now.toISOString(),
+      windowKey: "this-month" as const,
+    };
+  }
+  if (args.preset === "last-month") {
+    const startCurrentMonth = startOfMonthUtc(now);
+    const startLastMonth = addMonthsUtc(startCurrentMonth, -1);
+    return {
+      fromIso: startLastMonth.toISOString(),
+      toIso: startCurrentMonth.toISOString(),
+      windowKey: "last-month" as const,
+    };
+  }
+  if (args.preset === "all-time") {
+    return {
+      fromIso: new Date(0).toISOString(),
+      toIso: now.toISOString(),
+      windowKey: "all-time" as const,
+    };
+  }
+
+  const startRaw = args.customStartDate.trim();
+  const endRaw = args.customEndDate.trim();
+  if (!startRaw || !endRaw) {
+    return { error: "Custom range requires both start and end dates." };
+  }
+  const start = new Date(`${startRaw}T00:00:00.000Z`);
+  const endExclusive = new Date(`${endRaw}T00:00:00.000Z`);
+  if (!Number.isFinite(start.getTime()) || !Number.isFinite(endExclusive.getTime())) {
+    return { error: "Invalid custom date range." };
+  }
+  endExclusive.setUTCDate(endExclusive.getUTCDate() + 1);
+  if (start.getTime() >= endExclusive.getTime()) {
+    return { error: "Custom start date must be on or before end date." };
+  }
+  return {
+    fromIso: start.toISOString(),
+    toIso: endExclusive.toISOString(),
+    windowKey: "custom-range" as const,
+  };
 }
 
 export default function AdminControls() {
@@ -140,6 +237,28 @@ export default function AdminControls() {
     kind: "idle" | "deleting" | "error";
     message?: string;
   }>({ kind: "idle" });
+  const [isGeminiUsageLoading, setIsGeminiUsageLoading] = useState(false);
+  const [geminiUsageError, setGeminiUsageError] = useState<string | null>(null);
+  const [geminiUsageSummary, setGeminiUsageSummary] =
+    useState<GeminiUsageSummaryResponse["summary"]>(undefined);
+  const [geminiUsageByModel, setGeminiUsageByModel] = useState<
+    Array<{ model: string; calls: number; successCount: number; failureCount: number }>
+  >([]);
+  const [geminiUsageByWorkflow, setGeminiUsageByWorkflow] = useState<
+    Array<{ workflowType: string; actionType: string; calls: number; successCount: number; failureCount: number }>
+  >([]);
+  const [geminiUsageByUser, setGeminiUsageByUser] = useState<
+    Array<{ userId: string; userEmail: string | null; calls: number; successCount: number; failureCount: number }>
+  >([]);
+  const [geminiUsageWindowPreset, setGeminiUsageWindowPreset] =
+    useState<GeminiUsageWindowPreset>("this-month");
+  const [geminiUsageCustomStartDate, setGeminiUsageCustomStartDate] = useState<string>(() =>
+    toDateInputValue(new Date(Date.now() - 7 * 24 * 60 * 60 * 1000))
+  );
+  const [geminiUsageCustomEndDate, setGeminiUsageCustomEndDate] = useState<string>(() =>
+    toDateInputValue(new Date())
+  );
+  const [isGeminiCsvExporting, setIsGeminiCsvExporting] = useState(false);
 
   const loadData = useCallback(async () => {
     setIsLoading(true);
@@ -200,6 +319,139 @@ export default function AdminControls() {
   useEffect(() => {
     void loadData();
   }, [loadData]);
+
+  const loadGeminiUsage = useCallback(async () => {
+    setIsGeminiUsageLoading(true);
+    setGeminiUsageError(null);
+    try {
+      const resolvedWindow = resolveGeminiUsageWindow({
+        preset: geminiUsageWindowPreset,
+        customStartDate: geminiUsageCustomStartDate,
+        customEndDate: geminiUsageCustomEndDate,
+      });
+      if ("error" in resolvedWindow) {
+        throw new Error(resolvedWindow.error);
+      }
+      const query = `?from=${encodeURIComponent(resolvedWindow.fromIso)}&to=${encodeURIComponent(
+        resolvedWindow.toIso
+      )}`;
+      const [summaryRes, byModelRes, byWorkflowRes, byUserRes] = await Promise.all([
+        fetch(`/api/admin/gemini-usage/summary${query}`, { method: "GET", credentials: "same-origin" }),
+        fetch(`/api/admin/gemini-usage/by-model${query}`, { method: "GET", credentials: "same-origin" }),
+        fetch(`/api/admin/gemini-usage/by-workflow${query}`, { method: "GET", credentials: "same-origin" }),
+        fetch(`/api/admin/gemini-usage/by-user${query}`, { method: "GET", credentials: "same-origin" }),
+      ]);
+
+      const summaryPayload = (await summaryRes.json().catch(() => ({}))) as GeminiUsageSummaryResponse;
+      const byModelPayload = (await byModelRes.json().catch(() => ({}))) as GeminiUsageAggregateResponse;
+      const byWorkflowPayload = (await byWorkflowRes.json().catch(() => ({}))) as GeminiUsageAggregateResponse;
+      const byUserPayload = (await byUserRes.json().catch(() => ({}))) as GeminiUsageAggregateResponse;
+
+      if (!summaryRes.ok || !summaryPayload.summary) {
+        throw new Error(
+          typeof summaryPayload.error === "string"
+            ? summaryPayload.error
+            : "Failed to load Gemini usage summary."
+        );
+      }
+      if (!byModelRes.ok || !byWorkflowRes.ok || !byUserRes.ok) {
+        const apiError =
+          (typeof byModelPayload.error === "string" && byModelPayload.error) ||
+          (typeof byWorkflowPayload.error === "string" && byWorkflowPayload.error) ||
+          (typeof byUserPayload.error === "string" && byUserPayload.error);
+        throw new Error(apiError || "Failed to load Gemini usage aggregates.");
+      }
+
+      setGeminiUsageSummary(summaryPayload.summary);
+      setGeminiUsageByModel(
+        (Array.isArray(byModelPayload.items) ? byModelPayload.items : []).map((item) => ({
+          model: normalizeString(item.model) || "unknown",
+          calls: normalizeNonNegativeInt(item.calls, 0),
+          successCount: normalizeNonNegativeInt(item.successCount, 0),
+          failureCount: normalizeNonNegativeInt(item.failureCount, 0),
+        }))
+      );
+      setGeminiUsageByWorkflow(
+        (Array.isArray(byWorkflowPayload.items) ? byWorkflowPayload.items : []).map((item) => ({
+          workflowType: normalizeString(item.workflowType) || "unknown",
+          actionType: normalizeString(item.actionType) || "unknown",
+          calls: normalizeNonNegativeInt(item.calls, 0),
+          successCount: normalizeNonNegativeInt(item.successCount, 0),
+          failureCount: normalizeNonNegativeInt(item.failureCount, 0),
+        }))
+      );
+      setGeminiUsageByUser(
+        (Array.isArray(byUserPayload.items) ? byUserPayload.items : []).map((item) => ({
+          userId: normalizeString(item.userId) || "anonymous",
+          userEmail:
+            item.userEmail === null
+              ? null
+              : normalizeString(item.userEmail) || null,
+          calls: normalizeNonNegativeInt(item.calls, 0),
+          successCount: normalizeNonNegativeInt(item.successCount, 0),
+          failureCount: normalizeNonNegativeInt(item.failureCount, 0),
+        }))
+      );
+    } catch (err: unknown) {
+      setGeminiUsageError(err instanceof Error ? err.message : "Failed to load Gemini usage.");
+      setGeminiUsageSummary(undefined);
+      setGeminiUsageByModel([]);
+      setGeminiUsageByWorkflow([]);
+      setGeminiUsageByUser([]);
+    } finally {
+      setIsGeminiUsageLoading(false);
+    }
+  }, [geminiUsageCustomEndDate, geminiUsageCustomStartDate, geminiUsageWindowPreset]);
+
+  useEffect(() => {
+    void loadGeminiUsage();
+  }, [loadGeminiUsage]);
+
+  const exportGeminiUsageCsv = useCallback(async () => {
+    setIsGeminiCsvExporting(true);
+    setGeminiUsageError(null);
+    try {
+      const resolvedWindow = resolveGeminiUsageWindow({
+        preset: geminiUsageWindowPreset,
+        customStartDate: geminiUsageCustomStartDate,
+        customEndDate: geminiUsageCustomEndDate,
+      });
+      if ("error" in resolvedWindow) {
+        throw new Error(resolvedWindow.error);
+      }
+      const query = `?from=${encodeURIComponent(resolvedWindow.fromIso)}&to=${encodeURIComponent(
+        resolvedWindow.toIso
+      )}&window=${encodeURIComponent(resolvedWindow.windowKey)}`;
+      const response = await fetch(`/api/admin/gemini-usage/export${query}`, {
+        method: "GET",
+        credentials: "same-origin",
+      });
+      if (!response.ok) {
+        const errorPayload = (await response.json().catch(() => ({}))) as { error?: unknown };
+        throw new Error(
+          typeof errorPayload.error === "string"
+            ? errorPayload.error
+            : "Failed to export Gemini usage CSV."
+        );
+      }
+      const blob = await response.blob();
+      const contentDisposition = response.headers.get("content-disposition") || "";
+      const filenameMatch = contentDisposition.match(/filename="([^"]+)"/i);
+      const filename = filenameMatch?.[1] || `vibode-gemini-usage-${resolvedWindow.windowKey}.csv`;
+      const blobUrl = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = blobUrl;
+      anchor.download = filename;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      URL.revokeObjectURL(blobUrl);
+    } catch (err: unknown) {
+      setGeminiUsageError(err instanceof Error ? err.message : "Failed to export Gemini usage CSV.");
+    } finally {
+      setIsGeminiCsvExporting(false);
+    }
+  }, [geminiUsageCustomEndDate, geminiUsageCustomStartDate, geminiUsageWindowPreset]);
 
   const handleSaveGlobal = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -536,6 +788,169 @@ export default function AdminControls() {
             >
               {globalMessage.text}
             </p>
+          )}
+        </section>
+
+        <section className="rounded-2xl border border-slate-800 bg-slate-900/70 p-4">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <h2 className="text-base font-medium text-slate-100">Gemini Usage</h2>
+              <p className="mt-1 text-xs text-slate-400">
+                Append-only Gemini usage accounting events captured in Vibode UI.
+              </p>
+            </div>
+            <div className="flex items-center gap-2">
+              <Link
+                href="/admin/gemini-usage"
+                className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-200 transition hover:border-emerald-400/80 hover:text-emerald-200"
+              >
+                Open analytics
+              </Link>
+              <Link
+                href="/admin/gemini-usage/ledger"
+                className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-200 transition hover:border-emerald-400/80 hover:text-emerald-200"
+              >
+                Open ledger
+              </Link>
+              <button
+                type="button"
+                onClick={() => void exportGeminiUsageCsv()}
+                disabled={isGeminiCsvExporting}
+                className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-200 transition hover:border-emerald-400/80 hover:text-emerald-200 disabled:opacity-60"
+              >
+                {isGeminiCsvExporting ? "Exporting..." : "Export CSV"}
+              </button>
+              <button
+                type="button"
+                onClick={() => void loadGeminiUsage()}
+                disabled={isGeminiUsageLoading}
+                className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-200 transition hover:border-emerald-400/80 hover:text-emerald-200 disabled:opacity-60"
+              >
+                {isGeminiUsageLoading ? "Refreshing..." : "Refresh usage"}
+              </button>
+            </div>
+          </div>
+
+          <div className="mt-3 flex flex-wrap items-end gap-3">
+            <label className="flex flex-col gap-1">
+              <span className="text-xs text-slate-400">Window</span>
+              <select
+                value={geminiUsageWindowPreset}
+                onChange={(event) =>
+                  setGeminiUsageWindowPreset(event.target.value as GeminiUsageWindowPreset)
+                }
+                className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-slate-100 outline-none focus:border-emerald-400"
+              >
+                <option value="this-month">This month</option>
+                <option value="last-month">Last month</option>
+                <option value="all-time">All time</option>
+                <option value="custom-range">Custom range</option>
+              </select>
+            </label>
+
+            {geminiUsageWindowPreset === "custom-range" && (
+              <>
+                <label className="flex flex-col gap-1">
+                  <span className="text-xs text-slate-400">Start date</span>
+                  <input
+                    type="date"
+                    value={geminiUsageCustomStartDate}
+                    onChange={(event) => setGeminiUsageCustomStartDate(event.target.value)}
+                    className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-slate-100 outline-none focus:border-emerald-400"
+                  />
+                </label>
+                <label className="flex flex-col gap-1">
+                  <span className="text-xs text-slate-400">End date</span>
+                  <input
+                    type="date"
+                    value={geminiUsageCustomEndDate}
+                    onChange={(event) => setGeminiUsageCustomEndDate(event.target.value)}
+                    className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-slate-100 outline-none focus:border-emerald-400"
+                  />
+                </label>
+              </>
+            )}
+          </div>
+
+          {geminiUsageError && <p className="mt-3 text-xs text-rose-300">{geminiUsageError}</p>}
+
+          {geminiUsageSummary && (
+            <>
+              <div className="mt-3 grid gap-2 text-xs text-slate-300 md:grid-cols-4">
+                <div className="rounded-lg border border-slate-800 bg-slate-950/60 p-2">
+                  <p className="text-slate-400">Total calls</p>
+                  <p className="mt-1 text-sm font-medium text-slate-100">
+                    {formatMetric(geminiUsageSummary.totalCalls)}
+                  </p>
+                </div>
+                <div className="rounded-lg border border-slate-800 bg-slate-950/60 p-2">
+                  <p className="text-slate-400">Success</p>
+                  <p className="mt-1 text-sm font-medium text-emerald-300">
+                    {formatMetric(geminiUsageSummary.successCount)}
+                  </p>
+                </div>
+                <div className="rounded-lg border border-slate-800 bg-slate-950/60 p-2">
+                  <p className="text-slate-400">Failure</p>
+                  <p className="mt-1 text-sm font-medium text-rose-300">
+                    {formatMetric(geminiUsageSummary.failureCount)}
+                  </p>
+                </div>
+                <div className="rounded-lg border border-slate-800 bg-slate-950/60 p-2">
+                  <p className="text-slate-400">Window</p>
+                  <p className="mt-1 text-[11px] text-slate-200">
+                    {formatDate(geminiUsageSummary.from)} - {formatDate(geminiUsageSummary.to)}
+                  </p>
+                </div>
+              </div>
+
+              <div className="mt-3 grid gap-3 md:grid-cols-3">
+                <div className="rounded-lg border border-slate-800 bg-slate-950/50 p-3">
+                  <p className="text-[11px] uppercase tracking-wide text-slate-400">By model</p>
+                  <div className="mt-2 space-y-1">
+                    {geminiUsageByModel.length === 0 && (
+                      <p className="text-xs text-slate-500">No data in selected window.</p>
+                    )}
+                    {geminiUsageByModel.slice(0, 8).map((item) => (
+                      <p key={item.model} className="text-xs text-slate-300">
+                        {item.model}: {formatMetric(item.calls)} (S {formatMetric(item.successCount)} / F{" "}
+                        {formatMetric(item.failureCount)})
+                      </p>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="rounded-lg border border-slate-800 bg-slate-950/50 p-3">
+                  <p className="text-[11px] uppercase tracking-wide text-slate-400">By workflow/action</p>
+                  <div className="mt-2 space-y-1">
+                    {geminiUsageByWorkflow.length === 0 && (
+                      <p className="text-xs text-slate-500">No data in selected window.</p>
+                    )}
+                    {geminiUsageByWorkflow.slice(0, 8).map((item) => (
+                      <p key={`${item.workflowType}:${item.actionType}`} className="text-xs text-slate-300">
+                        {item.workflowType} / {item.actionType}: {formatMetric(item.calls)}
+                      </p>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="rounded-lg border border-slate-800 bg-slate-950/50 p-3">
+                  <p className="text-[11px] uppercase tracking-wide text-slate-400">By user</p>
+                  <div className="mt-2 space-y-1">
+                    {geminiUsageByUser.length === 0 && (
+                      <p className="text-xs text-slate-500">No data in selected window.</p>
+                    )}
+                    {geminiUsageByUser.slice(0, 8).map((item) => (
+                      <div key={item.userId} className="rounded border border-slate-800 bg-slate-950/50 px-2 py-1">
+                        <p className="text-xs text-slate-300">
+                          {item.userEmail ?? "No email"}: {formatMetric(item.calls)}
+                        </p>
+                        <p className="text-[11px] text-slate-500">{item.userId}</p>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            </>
           )}
         </section>
 

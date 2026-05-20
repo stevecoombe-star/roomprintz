@@ -11,6 +11,11 @@ import {
 } from "@/lib/attribution/parsers";
 import { normalizeSupplier } from "@/lib/attribution/normalizers";
 import { upsertVibodeUserFurniture } from "@/lib/vibodeMyFurniture";
+import {
+  buildVibodeCompositorContextHeaders,
+  resolveVibodeOperationIdFromHeaders,
+  resolveVibodeRequestIdFromHeaders,
+} from "@/lib/vibodeCompositorContextHeaders";
 
 export const runtime = "nodejs";
 
@@ -26,10 +31,12 @@ const SUPABASE_URL = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABAS
 const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "";
 const INGEST_SOURCE_HEADER = "x-roomprintz-ingest-source";
 const INGEST_SKIP_MY_FURNITURE_AUTOSAVE_HEADER = "x-roomprintz-skip-my-furniture-autosave";
+const INGEST_IMAGE_MODEL_HEADER = "x-roomprintz-ingest-image-model";
 const NORMALIZED_PREVIEW_BG_RGB = [237, 237, 237] as const;
 const NORMALIZED_PREVIEW_BG_HEADER = "x-roomprintz-normalized-preview-bg-rgb";
 const NORMALIZED_PREVIEW_BG_MODE_HEADER = "x-roomprintz-normalized-preview-bg-mode";
 const INGEST_ROUTE = "/api/vibode/user-skus/ingest";
+const DEFAULT_VIBODE_INGEST_IMAGE_MODEL = "gemini-3.1-flash-image-preview";
 
 function safeString(value: unknown): string | null {
   if (typeof value !== "string") return null;
@@ -129,14 +136,6 @@ function getUserSupabaseClient(token: string): AnySupabaseClient | null {
   }) as AnySupabaseClient;
 }
 
-function createRequestId(): string {
-  try {
-    return `vibode-ingest-${crypto.randomUUID()}`;
-  } catch {
-    return `vibode-ingest-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-  }
-}
-
 function resolveMimeType(body: IngestBody): string | null {
   const imageBase64 = safeString(body.imageBase64);
   if (!imageBase64) return null;
@@ -196,12 +195,36 @@ function shouldSkipMyFurnitureAutosave(req: NextRequest): boolean {
   return flag === "1" || flag.toLowerCase() === "true";
 }
 
+function resolveVibodeIngestImageModel(): string {
+  const envModel = safeString(process.env.VIBODE_INGEST_IMAGE_MODEL)?.trim();
+  return envModel && envModel.length > 0 ? envModel : DEFAULT_VIBODE_INGEST_IMAGE_MODEL;
+}
+
 export async function POST(req: NextRequest) {
-  const requestId = createRequestId();
+  const requestId = resolveVibodeRequestIdFromHeaders(req.headers);
+  const operationId = resolveVibodeOperationIdFromHeaders(req.headers);
   const startedAtMs = Date.now();
   const accessToken = getBearerToken(req) ?? (await getCookieAccessToken());
+  let authenticatedUserId: string | null = null;
+  let authenticatedUserEmail: string | null = null;
+
+  if (accessToken) {
+    const contextSupabase = getUserSupabaseClient(accessToken);
+    if (contextSupabase) {
+      try {
+        const { data: userData, error: userErr } = await contextSupabase.auth.getUser();
+        if (!userErr && userData?.user) {
+          authenticatedUserId = safeString(userData.user.id);
+          authenticatedUserEmail = safeString(userData.user.email);
+        }
+      } catch {
+        // Best-effort context resolution only; ingest flow should proceed without this metadata.
+      }
+    }
+  }
+
   logIngestEvent("info", "request_received", requestId, {
-    user_id_present: Boolean(accessToken),
+    user_id_present: Boolean(authenticatedUserId),
   });
 
   try {
@@ -213,9 +236,10 @@ export async function POST(req: NextRequest) {
     const label = safeString(body.label);
     const hasImageUrl = Boolean(safeString(body.imageUrl));
     const hasImageData = Boolean(safeString(body.imageBase64));
+    const ingestImageModel = resolveVibodeIngestImageModel();
 
     logIngestEvent("info", "input_resolved", requestId, {
-      user_id_present: Boolean(accessToken),
+      user_id_present: Boolean(authenticatedUserId),
       source_kind: sourceKind,
       mime_type: mimeType,
       filename,
@@ -223,6 +247,7 @@ export async function POST(req: NextRequest) {
       has_image_url: hasImageUrl,
       has_image_data: hasImageData,
       skip_my_furniture_autosave: skipMyFurnitureAutosave,
+      ingest_image_model: ingestImageModel,
     });
 
     const endpointBase = process.env.ROOMPRINTZ_COMPOSITOR_URL?.trim();
@@ -251,6 +276,7 @@ export async function POST(req: NextRequest) {
       has_image_url: hasImageUrl,
       has_image_data: hasImageData,
       skip_my_furniture_autosave: skipMyFurnitureAutosave,
+      ingest_image_model: ingestImageModel,
     });
 
     const upstreamRes = await fetch(upstream, {
@@ -260,12 +286,23 @@ export async function POST(req: NextRequest) {
         "X-Request-Id": requestId,
         [NORMALIZED_PREVIEW_BG_HEADER]: NORMALIZED_PREVIEW_BG_RGB.join(","),
         [NORMALIZED_PREVIEW_BG_MODE_HEADER]: "fixed",
+        [INGEST_IMAGE_MODEL_HEADER]: ingestImageModel,
         ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
+        ...buildVibodeCompositorContextHeaders({
+          requestId,
+          operationId,
+          userId: authenticatedUserId,
+          userEmail: authenticatedUserEmail,
+          workflowType: "set",
+          actionType: "user-sku-ingest",
+          sourceTrigger: "user-sku-upload",
+        }),
       },
       body: JSON.stringify({
         imageUrl: body.imageUrl,
         imageBase64: body.imageBase64,
         label: body.label,
+        model: ingestImageModel,
         normalization: {
           // Explicitly request a fixed neutral canvas for normalized previews.
           previewBackgroundMode: "fixed",
@@ -392,6 +429,7 @@ export async function POST(req: NextRequest) {
       prepared_user_sku_present: preparedUserSkuPresent,
       eligible_sku_present: eligibleSkuPresent,
       saved_furniture_id: savedFurniture?.id,
+      ingest_image_model: ingestImageModel,
       duration_ms: Date.now() - startedAtMs,
     });
 

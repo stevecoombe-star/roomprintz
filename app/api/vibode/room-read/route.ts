@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { runGeminiRoomReadFromImageUrl } from "@/lib/vibodeGeminiRoomRead";
+import { getRequestIdFromHeaders } from "@/lib/vibodeGeminiUsageAccounting";
+import { resolveRoomReadModelVersion } from "@/lib/vibodeRoomReadModelVersion";
 
 export const runtime = "nodejs";
 
@@ -22,7 +24,9 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "imageUrl is required." }, { status: 400 });
     }
 
-    const modelVersion = safeStr(body.modelVersion) ?? "gemini-3-flash-preview";
+    const modelVersion = resolveRoomReadModelVersion(body.modelVersion);
+    const mode = body.mode === "geometry" ? "geometry" : "labels_only";
+    const requestId = getRequestIdFromHeaders(req.headers, "room-read");
     console.log("[vibode/room-read] request started", {
       hasImageUrl: true,
       vibodeRoomId: safeStr(body.vibodeRoomId),
@@ -30,7 +34,23 @@ export async function POST(req: NextRequest) {
       modelVersion,
     });
 
-    const objects = await runGeminiRoomReadFromImageUrl({ imageUrl, modelVersion });
+    const objects = await runGeminiRoomReadFromImageUrl({
+      imageUrl,
+      modelVersion,
+      mode,
+      purpose: safeStr(body.purpose) ?? null,
+      accounting: {
+        requestId,
+        route: "/api/vibode/room-read",
+        sourceTrigger: "manual-room-read",
+        workflowType: "room-read",
+        actionType: "room-read",
+        userId: null,
+        roomId: safeStr(body.vibodeRoomId) ?? safeStr(body.roomId) ?? null,
+        versionId: safeStr(body.versionId) ?? safeStr(body.assetId) ?? null,
+        assetId: safeStr(body.assetId) ?? null,
+      },
+    });
     console.log("[vibode/room-read] normalized labels returned", {
       count: objects.length,
       labels: objects.map((item) => item.label),

@@ -1,5 +1,6 @@
 // app/api/vibode/generate/route.ts
 import { NextRequest, NextResponse } from "next/server";
+import { createHash } from "node:crypto";
 import { createClient } from "@supabase/supabase-js";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { FreezePayloadV2, StyleBand } from "@/lib/freezePayloadV2Types";
@@ -24,11 +25,20 @@ import {
 } from "@/lib/vibodePersistence";
 import { createVibodeAssetThumbnail } from "@/lib/vibodeAssetThumbnails";
 import {
+  inferPersistedVibodeVersionKindFromStageNumber,
+  stampVibodeVersionKindMetadata,
+} from "@/lib/vibode/version-kind";
+import {
   inferLayerKindFromSkuKind,
   ensureZIndex,
   type LayerKind,
 } from "@/lib/layerKind";
 import { IKEA_CA_SKUS } from "@/data/mockIkeaCaSkus";
+import {
+  buildVibodeCompositorContextHeaders,
+  resolveVibodeOperationIdFromHeaders,
+  resolveVibodeRequestIdFromHeaders,
+} from "@/lib/vibodeCompositorContextHeaders";
 
 // Ensure we run on the Node.js runtime (needed for Buffer, larger payloads, etc.)
 export const runtime = "nodejs";
@@ -961,6 +971,12 @@ function toPromptSafeToken(value: unknown, fallback: string) {
   return v.length > 0 ? v : fallback;
 }
 
+function hashPromptForLogs(prompt: string | null | undefined): string | null {
+  const source = typeof prompt === "string" ? prompt.trim() : "";
+  if (!source) return null;
+  return createHash("sha256").update(source).digest("hex").slice(0, 16);
+}
+
 function buildVibodePrompt(args: {
   payload: FreezePayloadV1;
   payloadVersion: string | null;
@@ -1576,6 +1592,7 @@ async function handleCompose(args: {
   shouldUseVibodePrompt: boolean;
   vibodePrompt: string | null;
   placementTestModeActive: boolean;
+  contextHeaders?: Record<string, string>;
 }): Promise<{ modelImageUrl?: string; response?: ReturnType<typeof json> }> {
   const composeEligible =
     args.payloadVersion === "v2" || args.payloadForModel.sceneSnapshotImageSpace.nodes.length > 0;
@@ -1641,9 +1658,9 @@ async function handleCompose(args: {
       }
 
       const minDim = Math.min(w, h);
-      const rRaw = Math.round(minDim * 0.35);
-      const rMax = Math.max(20, Math.floor(minDim / 4));
-      const rPx = Math.min(Math.max(rRaw, 20), rMax);
+      const rRaw = Math.round(minDim * 0.24);
+      const rMax = Math.max(14, Math.floor(minDim / 6));
+      const rPx = Math.min(Math.max(rRaw, 14), rMax);
 
       // z-order + layer backfill for nodes missing layerKind/zIndex
       const sku = IKEA_CA_SKU_BY_ID.get(skuId);
@@ -1679,12 +1696,69 @@ async function handleCompose(args: {
 
   if (useCompose && placements.length > 0) {
     const roomImageBytes = await fetchImageAsBytes(args.baseImageUrlForModel);
+    const modelName =
+      safeStr((args.payloadForModel as Record<string, unknown>)?.modelVersion) ??
+      VIBODE_DEFAULT_MODEL_VERSION;
+    const aspectRatio = pickLegacyAspectRatioFromFreeze(args.payloadForModel);
+    const requestId =
+      args.contextHeaders?.["x-vibode-request-id"] ??
+      args.contextHeaders?.["X-Vibode-Request-Id"] ??
+      null;
+    const skuCount = new Set(placements.map((placement) => placement.skuId).filter(Boolean)).size;
+    const placementsCount = placements.length;
+    const promptChars = (args.vibodePrompt ?? "").length;
+    const promptHash = hashPromptForLogs(args.vibodePrompt);
+    const cleanWidth = Math.round(args.payloadForModel.baseImage.widthPx);
+    const cleanHeight = Math.round(args.payloadForModel.baseImage.heightPx);
+    const cleanSize =
+      Number.isFinite(cleanWidth) && cleanWidth > 0 && Number.isFinite(cleanHeight) && cleanHeight > 0
+        ? `${cleanWidth}x${cleanHeight}`
+        : null;
+    const markedSize = cleanSize;
+    const sizesMatch = Boolean(cleanSize && markedSize && cleanSize === markedSize);
+    if (!sizesMatch) {
+      console.warn("[vibode/compose]", {
+        event: "compose_payload_size_mismatch",
+        request_id: requestId,
+        clean_size: cleanSize,
+        marked_size: markedSize,
+        sizes_match: false,
+      });
+    }
+    console.info("[vibode/compose]", {
+      event: "compose_payload_sanity",
+      request_id: requestId,
+      route: "/vibode/compose",
+      clean_size: cleanSize,
+      marked_size: markedSize,
+      sizes_match: sizesMatch,
+      image_count: 2,
+      sku_count: skuCount,
+      placements_count: placementsCount,
+      prompt_chars: promptChars,
+      prompt_hash: promptHash,
+      model_name: modelName,
+      aspect_ratio: aspectRatio,
+    });
     const composeResult = await callCompositorVibodeCompose({
       roomImageBytes,
       placements,
       enhancePhoto: true,
-      modelVersion: safeStr((args.payloadForModel as Record<string, unknown>)?.modelVersion),
-      aspectRatio: pickLegacyAspectRatioFromFreeze(args.payloadForModel),
+      modelVersion: modelName,
+      aspectRatio,
+      telemetry: {
+        requestId,
+        imageCount: 2,
+        skuCount,
+        promptChars,
+        promptHash,
+        placementsCount,
+        cleanSize,
+        markedSize,
+        sizesMatch,
+        route: "/vibode/compose",
+      },
+      headers: args.contextHeaders,
     });
     args.notes.push(`Compositor /vibode/compose used (placements=${placements.length}).`);
     return { modelImageUrl: composeResult.imageUrl };
@@ -1905,6 +1979,18 @@ export async function handleGenerateRequest(args: {
     return json(401, { error: "Unauthorized" });
   }
   const user = userData.user;
+  const requestId = resolveVibodeRequestIdFromHeaders(req.headers);
+  const operationId = resolveVibodeOperationIdFromHeaders(req.headers);
+  const stageRoomContextHeaders = buildVibodeCompositorContextHeaders({
+    requestId,
+    operationId,
+    userId: user.id,
+    userEmail: user.email ?? null,
+    roomId: args.vibodeRoomId ?? null,
+    workflowType: "stage",
+    actionType: "compose",
+    sourceTrigger: "update-room",
+  });
 
   const tokenActionType = resolveGenerateActionType(freeze);
   const tokenCost = await getTokenCostForAction(supabase, tokenActionType);
@@ -2153,6 +2239,7 @@ export async function handleGenerateRequest(args: {
         shouldUseVibodePrompt,
         vibodePrompt,
         placementTestModeActive,
+        contextHeaders: stageRoomContextHeaders,
       });
       if (composeResult.response) {
         return composeResult.response;
@@ -2247,6 +2334,10 @@ export async function handleGenerateRequest(args: {
             const resolvedAspectRatio =
               safeStr(args.requestedAspectRatio) ?? pickLegacyAspectRatioFromFreeze(payloadForModel);
             const previousActiveAssetId = existingRoom.active_asset_id ?? null;
+            const outputVersionMetadata = stampVibodeVersionKindMetadata(
+              null,
+              inferPersistedVibodeVersionKindFromStageNumber(currentStageNumber)
+            );
 
             const outputAsset = await createVibodeRoomAsset(persistenceClient, {
               room_id: existingRoom.id,
@@ -2264,6 +2355,7 @@ export async function handleGenerateRequest(args: {
               width: persisted.widthPx ?? payloadForModel.baseImage.widthPx,
               height: persisted.heightPx ?? payloadForModel.baseImage.heightPx,
               is_active: true,
+              ...(outputVersionMetadata ? { metadata: outputVersionMetadata } : {}),
             });
 
             try {

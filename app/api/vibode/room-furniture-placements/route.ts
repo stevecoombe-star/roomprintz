@@ -1,0 +1,584 @@
+import { NextRequest, NextResponse } from "next/server";
+import { createClient } from "@supabase/supabase-js";
+import type { SupabaseClient } from "@supabase/supabase-js";
+import {
+  defaultUserDirectedPlacementMetadata,
+  normalizePlacementMetadata,
+  type PlacementMetadata,
+} from "@/lib/placementMetadata";
+import { resolvePlacementDisplayImageUrl } from "@/lib/furniturePlacementImageUrl";
+
+export const runtime = "nodejs";
+
+const SUPABASE_URL = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || "";
+const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "";
+const PLACEMENT_IMAGE_SIGNED_URL_EXPIRES_IN_SEC = Math.max(
+  60,
+  Number(process.env.VIBODE_PREVIEW_SIGNED_URL_EXPIRES_IN ?? 60 * 60 * 8)
+);
+
+type AnySupabaseClient = SupabaseClient;
+
+type PlacementRow = {
+  id: string;
+  user_id: string;
+  room_id: string;
+  version_id: string | null;
+  furniture_id: string | null;
+  thumbnail_url: string | null;
+  thumbnail_path: string | null;
+  source_image_url: string;
+  source_image_path: string | null;
+  // x/y are normalized canvas coordinates in [0, 1], not pixel positions.
+  x: number;
+  y: number;
+  scale: number;
+  rotation: number;
+  is_visible: boolean;
+  metadata: PlacementMetadata;
+  created_at: string;
+  updated_at: string;
+};
+
+type PlacementDedupeShape = {
+  furniture_id: string | null;
+  source_image_url: string;
+  x: number;
+  y: number;
+};
+
+function jsonError(message: string, status: number, details?: Record<string, unknown>) {
+  return NextResponse.json({ error: message, ...(details ? { details } : {}) }, { status });
+}
+
+function safeStr(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+function safeOptionalStr(value: unknown): string | null {
+  if (value === null || value === undefined) return null;
+  return safeStr(value);
+}
+
+function parseOptionalStoragePath(value: unknown): { value: string | null; error: string | null } {
+  if (value === undefined || value === null) return { value: null, error: null };
+  if (typeof value !== "string") {
+    return { value: null, error: "Path fields must be strings when provided." };
+  }
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return { value: null, error: "Path fields must be non-empty strings when provided." };
+  }
+  if (/^https?:\/\//i.test(trimmed)) {
+    return { value: null, error: "Path fields must be storage paths, not full URLs." };
+  }
+  return { value: trimmed, error: null };
+}
+
+function safeFiniteNumber(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (!trimmed) return null;
+    const parsed = Number(trimmed);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return null;
+}
+
+function safeOptionalBoolean(value: unknown): boolean | null {
+  if (typeof value === "boolean") return value;
+  return null;
+}
+
+function parsePlacementMetadata(
+  value: unknown,
+  fallback?: PlacementMetadata
+): PlacementMetadata {
+  return normalizePlacementMetadata(value, fallback ?? defaultUserDirectedPlacementMetadata());
+}
+
+function clampNormalizedCoordinate(value: number): number {
+  return Math.max(0, Math.min(1, value));
+}
+
+function toDedupeCoord(value: number): string {
+  return Number.isFinite(value) ? value.toFixed(6) : "NaN";
+}
+
+function buildPlacementDedupeSignature(value: PlacementDedupeShape): string {
+  return [
+    value.furniture_id ?? "",
+    value.source_image_url.trim(),
+    toDedupeCoord(value.x),
+    toDedupeCoord(value.y),
+  ].join("::");
+}
+
+function isDurableImageUrl(url: string): boolean {
+  const trimmed = url.trim();
+  if (!/^https?:\/\//i.test(trimmed)) return false;
+  return !/^(https?:\/\/localhost|https?:\/\/127\.0\.0\.1|https?:\/\/0\.0\.0\.0)/i.test(trimmed);
+}
+
+async function resolvePlacementRowDisplayUrls(
+  supabase: AnySupabaseClient,
+  row: PlacementRow
+): Promise<PlacementRow> {
+  const [resolvedSourceImageUrl, resolvedThumbnailUrl] = await Promise.all([
+    resolvePlacementDisplayImageUrl({
+      supabase,
+      storagePath: row.source_image_path,
+      candidateUrl: row.source_image_url,
+      expiresInSeconds: PLACEMENT_IMAGE_SIGNED_URL_EXPIRES_IN_SEC,
+    }),
+    resolvePlacementDisplayImageUrl({
+      supabase,
+      storagePath: row.thumbnail_path,
+      candidateUrl: row.thumbnail_url,
+      expiresInSeconds: PLACEMENT_IMAGE_SIGNED_URL_EXPIRES_IN_SEC,
+    }),
+  ]);
+
+  return {
+    ...row,
+    source_image_url: resolvedSourceImageUrl ?? row.source_image_url,
+    thumbnail_url: resolvedThumbnailUrl ?? row.thumbnail_url,
+  };
+}
+
+function getBearerToken(req: NextRequest): string | null {
+  const authHeader = req.headers.get("authorization") || "";
+  if (!authHeader.toLowerCase().startsWith("bearer ")) return null;
+  const token = authHeader.slice(7).trim();
+  return token.length > 0 ? token : null;
+}
+
+function getUserSupabaseClient(token: string): AnySupabaseClient {
+  return createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+    global: { headers: { Authorization: `Bearer ${token}` } },
+    auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
+  });
+}
+
+async function requireUser(req: NextRequest): Promise<
+  | { supabase: AnySupabaseClient; userId: string }
+  | { errorResponse: NextResponse }
+> {
+  if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
+    return { errorResponse: jsonError("Server misconfigured: missing Supabase env.", 500) };
+  }
+  const token = getBearerToken(req);
+  if (!token) {
+    return { errorResponse: jsonError("Unauthorized: missing Authorization Bearer token.", 401) };
+  }
+  const supabase = getUserSupabaseClient(token);
+  const { data: userData, error: userErr } = await supabase.auth.getUser();
+  if (userErr || !userData?.user) {
+    return { errorResponse: jsonError("Unauthorized.", 401) };
+  }
+  return { supabase, userId: userData.user.id };
+}
+
+export async function GET(req: NextRequest) {
+  try {
+    const auth = await requireUser(req);
+    if ("errorResponse" in auth) return auth.errorResponse;
+
+    const roomId = safeStr(req.nextUrl.searchParams.get("roomId"));
+    const versionId = safeStr(req.nextUrl.searchParams.get("versionId"));
+    if (!roomId || !versionId) {
+      return jsonError("roomId and versionId are required.", 400);
+    }
+
+    const { data, error } = await auth.supabase
+      .from("room_furniture_placements")
+      .select("*")
+      .eq("user_id", auth.userId)
+      .eq("room_id", roomId)
+      .eq("version_id", versionId)
+      .order("created_at", { ascending: true });
+
+    if (error) {
+      console.error("[room-furniture-placements][GET] failed", {
+        message: error.message,
+        roomId,
+        versionId,
+      });
+      return jsonError("Failed to load placement nodes.", 500);
+    }
+
+    const rows = (data ?? []) as PlacementRow[];
+    const resolvedRows = await Promise.all(
+      rows.map((row) => resolvePlacementRowDisplayUrls(auth.supabase, row))
+    );
+    return NextResponse.json({ nodes: resolvedRows });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error("[room-furniture-placements][GET] unexpected error", { message });
+    return jsonError("Unexpected placement fetch error.", 500);
+  }
+}
+
+export async function POST(req: NextRequest) {
+  try {
+    const auth = await requireUser(req);
+    if ("errorResponse" in auth) return auth.errorResponse;
+
+    const body = (await req.json().catch(() => null)) as Record<string, unknown> | null;
+    if (!body) return jsonError("Invalid JSON body.", 400);
+
+    const action = safeStr(body.action);
+    if (action === "inheritVersionScope") {
+      const roomId = safeStr(body.roomId);
+      const fromVersionId = safeStr(body.fromVersionId);
+      const toVersionId = safeStr(body.toVersionId);
+      if (!roomId || !fromVersionId || !toVersionId) {
+        return jsonError("roomId, fromVersionId, and toVersionId are required.", 400);
+      }
+      if (fromVersionId === toVersionId) {
+        return NextResponse.json({
+          copiedCount: 0,
+          skippedCount: 0,
+          sourceCount: 0,
+          reason: "source and target version are identical",
+        });
+      }
+
+      const { data: sourceRows, error: sourceError } = await auth.supabase
+        .from("room_furniture_placements")
+        .select("*")
+        .eq("user_id", auth.userId)
+        .eq("room_id", roomId)
+        .eq("version_id", fromVersionId)
+        .eq("is_visible", true)
+        .order("created_at", { ascending: true });
+      if (sourceError) {
+        console.error("[room-furniture-placements][POST inheritVersionScope] source load failed", {
+          message: sourceError.message,
+          roomId,
+          fromVersionId,
+          toVersionId,
+        });
+        return jsonError("Failed to load source placement nodes.", 500);
+      }
+
+      const typedSourceRows = (sourceRows ?? []) as PlacementRow[];
+      if (typedSourceRows.length === 0) {
+        return NextResponse.json({
+          copiedCount: 0,
+          skippedCount: 0,
+          sourceCount: 0,
+        });
+      }
+
+      const { data: targetRows, error: targetError } = await auth.supabase
+        .from("room_furniture_placements")
+        .select("furniture_id, source_image_url, x, y")
+        .eq("user_id", auth.userId)
+        .eq("room_id", roomId)
+        .eq("version_id", toVersionId);
+      if (targetError) {
+        console.error("[room-furniture-placements][POST inheritVersionScope] target load failed", {
+          message: targetError.message,
+          roomId,
+          fromVersionId,
+          toVersionId,
+        });
+        return jsonError("Failed to load target placement nodes.", 500);
+      }
+
+      const existingKeys = new Set(
+        ((targetRows ?? []) as PlacementDedupeShape[]).map((row) => buildPlacementDedupeSignature(row))
+      );
+      const rowsToInsert = typedSourceRows
+        .filter((row) => row.is_visible)
+        .filter((row) => {
+          const key = buildPlacementDedupeSignature({
+            furniture_id: row.furniture_id,
+            source_image_url: row.source_image_url,
+            x: row.x,
+            y: row.y,
+          });
+          if (existingKeys.has(key)) return false;
+          existingKeys.add(key);
+          return true;
+        })
+        .map((row) => ({
+          user_id: auth.userId,
+          room_id: roomId,
+          version_id: toVersionId,
+          furniture_id: row.furniture_id,
+          thumbnail_url: row.thumbnail_url,
+          thumbnail_path: row.thumbnail_path,
+          source_image_url: row.source_image_url,
+          source_image_path: row.source_image_path,
+          x: row.x,
+          y: row.y,
+          scale: row.scale,
+          rotation: row.rotation,
+          is_visible: row.is_visible,
+          metadata: parsePlacementMetadata(row.metadata, defaultUserDirectedPlacementMetadata()),
+        }));
+
+      if (rowsToInsert.length === 0) {
+        return NextResponse.json({
+          copiedCount: 0,
+          skippedCount: typedSourceRows.length,
+          sourceCount: typedSourceRows.length,
+        });
+      }
+
+      const { error: insertError } = await auth.supabase
+        .from("room_furniture_placements")
+        .insert(rowsToInsert);
+      if (insertError) {
+        console.error("[room-furniture-placements][POST inheritVersionScope] insert failed", {
+          message: insertError.message,
+          roomId,
+          fromVersionId,
+          toVersionId,
+          attempted: rowsToInsert.length,
+        });
+        return jsonError("Failed to inherit placement nodes.", 500);
+      }
+
+      return NextResponse.json({
+        copiedCount: rowsToInsert.length,
+        skippedCount: typedSourceRows.length - rowsToInsert.length,
+        sourceCount: typedSourceRows.length,
+      });
+    }
+
+    const roomId = safeStr(body.roomId);
+    const versionId = safeStr(body.versionId);
+    const sourceImageUrl = safeStr(body.sourceImageUrl);
+    const x = safeFiniteNumber(body.x);
+    const y = safeFiniteNumber(body.y);
+
+    if (!roomId || !versionId || !sourceImageUrl || x === null || y === null) {
+      return jsonError("roomId, versionId, sourceImageUrl, x, and y are required.", 400);
+    }
+    if (!isDurableImageUrl(sourceImageUrl)) {
+      return jsonError("sourceImageUrl must be a durable http(s) URL.", 400);
+    }
+
+    const furnitureId = safeOptionalStr(body.furnitureId);
+    const thumbnailUrl = safeOptionalStr(body.thumbnailUrl);
+    const sourceImagePathResult = parseOptionalStoragePath(body.sourceImagePath);
+    if (sourceImagePathResult.error) {
+      return jsonError(sourceImagePathResult.error, 400, { field: "sourceImagePath" });
+    }
+    const thumbnailPathResult = parseOptionalStoragePath(body.thumbnailPath);
+    if (thumbnailPathResult.error) {
+      return jsonError(thumbnailPathResult.error, 400, { field: "thumbnailPath" });
+    }
+    const scale = safeFiniteNumber(body.scale) ?? 1;
+    const rotation = safeFiniteNumber(body.rotation) ?? 0;
+    const isVisible = safeOptionalBoolean(body.isVisible) ?? true;
+    const dedupe = safeOptionalBoolean(body.dedupe) ?? false;
+    const requestedPlacementSource = safeOptionalStr(body.placementSource);
+    const placementMetadata = parsePlacementMetadata(
+      body.metadata,
+      defaultUserDirectedPlacementMetadata(
+        requestedPlacementSource === "clipboard" ||
+          requestedPlacementSource === "product_url" ||
+          requestedPlacementSource === "swap" ||
+          requestedPlacementSource === "my_furniture"
+          ? requestedPlacementSource
+          : "clipboard"
+      )
+    );
+    const normalizedX = clampNormalizedCoordinate(x);
+    const normalizedY = clampNormalizedCoordinate(y);
+
+    if (dedupe) {
+      let existingQuery = auth.supabase
+        .from("room_furniture_placements")
+        .select("*")
+        .eq("user_id", auth.userId)
+        .eq("room_id", roomId)
+        .eq("version_id", versionId)
+        .eq("source_image_url", sourceImageUrl)
+        .eq("x", normalizedX)
+        .eq("y", normalizedY)
+        .limit(1);
+      existingQuery =
+        furnitureId === null
+          ? existingQuery.is("furniture_id", null)
+          : existingQuery.eq("furniture_id", furnitureId);
+      const { data: existingRow, error: existingError } = await existingQuery.maybeSingle();
+      if (existingError) {
+        console.error("[room-furniture-placements][POST] dedupe lookup failed", {
+          message: existingError.message,
+          roomId,
+          versionId,
+        });
+        return jsonError("Failed to dedupe placement node create.", 500);
+      }
+      if (existingRow) {
+        return NextResponse.json({ node: existingRow as PlacementRow, deduped: true });
+      }
+    }
+
+    const insertPayload = {
+      user_id: auth.userId,
+      room_id: roomId,
+      version_id: versionId,
+      furniture_id: furnitureId,
+      thumbnail_url: thumbnailUrl,
+      thumbnail_path: thumbnailPathResult.value,
+      source_image_url: sourceImageUrl,
+      source_image_path: sourceImagePathResult.value,
+      x: normalizedX,
+      y: normalizedY,
+      scale,
+      rotation,
+      is_visible: isVisible,
+      metadata: placementMetadata,
+    };
+
+    const { data, error } = await auth.supabase
+      .from("room_furniture_placements")
+      .insert(insertPayload)
+      .select("*")
+      .single();
+
+    if (error) {
+      console.error("[room-furniture-placements][POST] failed", {
+        message: error.message,
+        roomId,
+        versionId,
+      });
+      return jsonError("Failed to create placement node.", 500);
+    }
+
+    const createdRow = data as PlacementRow;
+    const resolvedNode = await resolvePlacementRowDisplayUrls(auth.supabase, createdRow);
+    return NextResponse.json({ node: resolvedNode }, { status: 201 });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error("[room-furniture-placements][POST] unexpected error", { message });
+    return jsonError("Unexpected placement create error.", 500);
+  }
+}
+
+export async function PATCH(req: NextRequest) {
+  try {
+    const auth = await requireUser(req);
+    if ("errorResponse" in auth) return auth.errorResponse;
+
+    const body = (await req.json().catch(() => null)) as Record<string, unknown> | null;
+    if (!body) return jsonError("Invalid JSON body.", 400);
+
+    const id = safeStr(body.id);
+    if (!id) return jsonError("id is required.", 400);
+    if ("roomId" in body || "room_id" in body || "versionId" in body || "version_id" in body) {
+      return jsonError("roomId/room_id/versionId/version_id are immutable and cannot be patched.", 400);
+    }
+
+    const patch: Record<string, unknown> = {};
+    const furnitureId = safeOptionalStr(body.furnitureId);
+    const thumbnailUrl = safeOptionalStr(body.thumbnailUrl);
+    const sourceImageUrl = safeOptionalStr(body.sourceImageUrl);
+    const sourceImagePathResult = parseOptionalStoragePath(body.sourceImagePath);
+    if (sourceImagePathResult.error) {
+      return jsonError(sourceImagePathResult.error, 400, { field: "sourceImagePath" });
+    }
+    const thumbnailPathResult = parseOptionalStoragePath(body.thumbnailPath);
+    if (thumbnailPathResult.error) {
+      return jsonError(thumbnailPathResult.error, 400, { field: "thumbnailPath" });
+    }
+    const x = safeFiniteNumber(body.x);
+    const y = safeFiniteNumber(body.y);
+    const scale = safeFiniteNumber(body.scale);
+    const rotation = safeFiniteNumber(body.rotation);
+    const isVisible = safeOptionalBoolean(body.isVisible);
+    const metadataProvided = Object.prototype.hasOwnProperty.call(body, "metadata");
+
+    if (furnitureId !== null) patch.furniture_id = furnitureId;
+    if (thumbnailUrl !== null) patch.thumbnail_url = thumbnailUrl;
+    if ("thumbnailPath" in body) patch.thumbnail_path = thumbnailPathResult.value;
+    if (sourceImageUrl !== null) {
+      if (!isDurableImageUrl(sourceImageUrl)) {
+        return jsonError("sourceImageUrl must be a durable http(s) URL.", 400);
+      }
+      patch.source_image_url = sourceImageUrl;
+    }
+    if ("sourceImagePath" in body) patch.source_image_path = sourceImagePathResult.value;
+    if (x !== null) patch.x = clampNormalizedCoordinate(x);
+    if (y !== null) patch.y = clampNormalizedCoordinate(y);
+    if (scale !== null) patch.scale = scale;
+    if (rotation !== null) patch.rotation = rotation;
+    if (isVisible !== null) patch.is_visible = isVisible;
+    if (metadataProvided) {
+      patch.metadata = parsePlacementMetadata(body.metadata);
+    }
+
+    if (Object.keys(patch).length === 0) {
+      return jsonError("No valid updatable fields provided.", 400);
+    }
+
+    const { data, error } = await auth.supabase
+      .from("room_furniture_placements")
+      .update(patch)
+      .eq("id", id)
+      .eq("user_id", auth.userId)
+      .select("*")
+      .maybeSingle();
+
+    if (error) {
+      console.error("[room-furniture-placements][PATCH] failed", { message: error.message, id });
+      return jsonError("Failed to update placement node.", 500);
+    }
+    if (!data) {
+      return jsonError("Placement node not found.", 404);
+    }
+
+    const patchedRow = data as PlacementRow;
+    const resolvedNode = await resolvePlacementRowDisplayUrls(auth.supabase, patchedRow);
+    return NextResponse.json({ node: resolvedNode });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error("[room-furniture-placements][PATCH] unexpected error", { message });
+    return jsonError("Unexpected placement update error.", 500);
+  }
+}
+
+export async function DELETE(req: NextRequest) {
+  try {
+    const auth = await requireUser(req);
+    if ("errorResponse" in auth) return auth.errorResponse;
+
+    const idFromQuery = safeStr(req.nextUrl.searchParams.get("id"));
+    const body = (await req.json().catch(() => null)) as Record<string, unknown> | null;
+    const id = idFromQuery ?? safeStr(body?.id);
+    if (!id) {
+      return jsonError("id is required.", 400);
+    }
+
+    const { data, error } = await auth.supabase
+      .from("room_furniture_placements")
+      .delete()
+      .eq("id", id)
+      .eq("user_id", auth.userId)
+      .select("id")
+      .maybeSingle();
+
+    if (error) {
+      console.error("[room-furniture-placements][DELETE] failed", { message: error.message, id });
+      return jsonError("Failed to delete placement node.", 500);
+    }
+    if (!data) {
+      return jsonError("Placement node not found.", 404);
+    }
+
+    return NextResponse.json({ success: true, id });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error("[room-furniture-placements][DELETE] unexpected error", { message });
+    return jsonError("Unexpected placement delete error.", 500);
+  }
+}

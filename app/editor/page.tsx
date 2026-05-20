@@ -38,6 +38,24 @@ import {
 } from "@/lib/pasteToPlaceJobControl";
 import { PrepareRoomImageError, prepareRoomImageForUpload } from "@/lib/prepareRoomImageForUpload";
 import type { DetectedRoomObjectLabel } from "@/lib/vibodeRoomObjectLabels";
+import {
+  hashPlacementState,
+  normalizePlacementStateForHash,
+  type NormalizedPlacementStateRow,
+  type PlacementStateHashInput,
+} from "@/lib/vibodePlacementState";
+import {
+  defaultUserDirectedPlacementMetadata,
+  normalizePlacementMetadata,
+  type PlacementMetadata,
+  type PlacementSource,
+} from "@/lib/placementMetadata";
+import {
+  getEffectiveBaseSetVersion,
+  isVersionEligibleForActiveSet,
+  resolveActiveSetVersionId,
+} from "@/lib/vibode/active-set";
+import { getVibodeVersionKind, type VibodeVersionKind } from "@/lib/vibode/version-kind";
 
 import { getSupabaseBrowserAccessToken, supabaseBrowser } from "@/lib/supabaseBrowser";
 import { useTokenBalance } from "@/hooks/useTokenBalance";
@@ -47,6 +65,9 @@ const VIBODE_MODEL_STORAGE_KEY = "vibode:modelVersion";
 const FREE_PASTE_TO_PLACE_SESSION_KEY = "vibode:hasUsedFreePasteToPlace";
 const PASTE_TO_PLACE_CLIPBOARD_HEADS_UP_SESSION_KEY = "vibode:pasteToPlaceClipboardHeadsUpShown";
 const EDITOR_RIGHT_PANEL_STATE_KEY = "vibode.editor.rightPanelState.v1";
+const VIBODE_FURNITURE_LAYER_VISIBILITY_KEY = "vibode:furniture-layer-visibility:v1";
+const VIBODE_EDITOR_WORKSPACE_KEY = "vibode:editor-workspace:v1";
+const VIBODE_EDITOR_WORKSPACE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 const VIBODE_MODEL_NBP = "NBP";
 const VIBODE_MODEL_NB2 = "NB2";
 const ROOM_PREPARING_MESSAGE = "Your room is still preparing. Try again in a moment.";
@@ -54,6 +75,9 @@ const REMOVE_LABEL_FALLBACK = "object";
 const REMOVE_LABEL_PLACEHOLDER = "";
 const PASTE_TO_PLACE_CANCEL_SETTLE_MS = 20000;
 const STAGE_RUN_CANCEL_SETTLE_MS = 20000;
+const SCENE_REBUILD_RENDERING_MESSAGE_DELAY_MS = 50_000;
+const SCENE_REBUILD_COMPOSE_WARNING_MS = 90_000;
+const SCENE_REBUILD_COMPOSE_TIMEOUT_MS = 120_000;
 const LOW_TOKEN_WARNING_THRESHOLD = 10;
 const DEFAULT_ACTION_TOKEN_COST = 1;
 const STAGE_TOKEN_COST = {
@@ -62,10 +86,6 @@ const STAGE_TOKEN_COST = {
   3: 2,
   4: 4,
   5: 5,
-} as const;
-const EDIT_TOKEN_COST = {
-  EDIT_SWAP: 1,
-  EDIT_ROTATE: 1,
 } as const;
 const VERSION_TIMESTAMP_FORMATTER = new Intl.DateTimeFormat(undefined, {
   month: "short",
@@ -102,6 +122,16 @@ function getErrorMessage(error: unknown): string | null {
   return null;
 }
 
+function isSceneRebuildGenerationFailure(message: string | null | undefined): boolean {
+  if (!message) return false;
+  const normalized = message.trim().toLowerCase();
+  if (!normalized) return false;
+  return (
+    normalized.includes("scene rebuild generation failed") ||
+    normalized.includes("scene rebuild failed (http 502)")
+  );
+}
+
 function parseFiniteNumber(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
@@ -117,11 +147,378 @@ function buildRemovePromptForLabel(label: string): string {
   return `Remove only the ${label} under the red X marker. Preserve all other furniture, walls, floors, lighting, shadows, and room details.`;
 }
 
+function formatRemoveModeMarkedCount(count: number): string {
+  if (count === 1) return "1 object marked for removal";
+  return `${count} objects marked for removal`;
+}
+
+function formatRemoveModeManualMarkerCount(count: number): string {
+  if (count === 1) return "1 manual marker";
+  return `${count} manual markers`;
+}
+
+function hasSufficientGeometryRoomObjects(objects: DetectedRoomObjectLabel[]): boolean {
+  if (objects.length === 0) return false;
+  const geometryCount = objects.filter(
+    (object) =>
+      Boolean(object.bbox) ||
+      (typeof object.centerX === "number" &&
+        Number.isFinite(object.centerX) &&
+        typeof object.centerY === "number" &&
+        Number.isFinite(object.centerY))
+  ).length;
+  return geometryCount > 0;
+}
+
+function clampUnit(value: number): number {
+  return Math.max(0, Math.min(1, value));
+}
+
+function deriveDetectedRemoveObjectKey(object: DetectedRoomObjectLabel, index: number): string {
+  const record = object as Record<string, unknown>;
+  const id = safeStr(record.id) ?? safeStr(record.objectId) ?? safeStr(record.key);
+  if (id) return `id:${id}`;
+
+  const centerFromBbox =
+    object.bbox &&
+    Number.isFinite(object.bbox.x) &&
+    Number.isFinite(object.bbox.w) &&
+    Number.isFinite(object.bbox.y)
+      ? {
+          x: object.bbox.x + object.bbox.w / 2,
+          y: object.bbox.y,
+        }
+      : null;
+  const centerFromPoint =
+    typeof object.centerX === "number" &&
+    Number.isFinite(object.centerX) &&
+    typeof object.centerY === "number" &&
+    Number.isFinite(object.centerY)
+      ? { x: object.centerX, y: object.centerY }
+      : null;
+  const anchor = centerFromBbox ?? centerFromPoint;
+  if (anchor) {
+    const roundedX = anchor.x.toFixed(3);
+    const roundedY = anchor.y.toFixed(3);
+    return `${object.label}:${roundedX}:${roundedY}`;
+  }
+  return `idx:${index}`;
+}
+
+type RemoveModeGuidanceDetectedTarget = {
+  number: number;
+  sourceKey: string;
+  label: string;
+  xNorm: number;
+  yNorm: number;
+  bbox?: {
+    x: number;
+    y: number;
+    w: number;
+    h: number;
+  };
+};
+type RemoveModeGuidanceManualTarget = {
+  sourceKey: string;
+  xNorm: number;
+  yNorm: number;
+};
+type RemoveModeGuidanceManifest = {
+  detectedTargets: RemoveModeGuidanceDetectedTarget[];
+  manualTargets: RemoveModeGuidanceManualTarget[];
+  targetCount: number;
+};
+type RemoveModeTargetOverride = {
+  xNorm: number;
+  yNorm: number;
+};
+
+function sanitizeGuidanceLabel(raw: string | null | undefined): string {
+  const safe = (raw ?? "")
+    .toLowerCase()
+    .replace(/[^a-z0-9\s-]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  return safe || "object";
+}
+
+function deriveRemoveModeGuidanceManifest(args: {
+  removeModeObjects: DetectedRoomObjectLabel[];
+  selectedRemoveObjectKeys: string[];
+  removeModeManualMarkers: Array<{ id: string; xNorm: number; yNorm: number }>;
+  removeModeObjectTargetOverrides?: Record<string, RemoveModeTargetOverride>;
+}): RemoveModeGuidanceManifest {
+  const selectedKeySet = new Set(args.selectedRemoveObjectKeys);
+  const detectedUnnumbered: Array<Omit<RemoveModeGuidanceDetectedTarget, "number">> = [];
+
+  args.removeModeObjects.forEach((object, index) => {
+    const key = deriveDetectedRemoveObjectKey(object, index);
+    if (!selectedKeySet.has(key)) return;
+    const bbox =
+      object.bbox &&
+      Number.isFinite(object.bbox.x) &&
+      Number.isFinite(object.bbox.y) &&
+      Number.isFinite(object.bbox.w) &&
+      Number.isFinite(object.bbox.h)
+        ? {
+            x: clampUnit(object.bbox.x),
+            y: clampUnit(object.bbox.y),
+            w: clampUnit(object.bbox.w),
+            h: clampUnit(object.bbox.h),
+          }
+        : undefined;
+    const centerFromBbox = bbox
+      ? {
+          x: clampUnit(bbox.x + bbox.w / 2),
+          y: clampUnit(bbox.y + bbox.h / 2),
+        }
+      : null;
+    const centerFromPoint =
+      typeof object.centerX === "number" &&
+      Number.isFinite(object.centerX) &&
+      typeof object.centerY === "number" &&
+      Number.isFinite(object.centerY)
+        ? {
+            x: clampUnit(object.centerX),
+            y: clampUnit(object.centerY),
+          }
+        : null;
+    const override = args.removeModeObjectTargetOverrides?.[key] ?? null;
+    const centerFromOverride =
+      override &&
+      Number.isFinite(override.xNorm) &&
+      Number.isFinite(override.yNorm)
+        ? {
+            x: clampUnit(override.xNorm),
+            y: clampUnit(override.yNorm),
+          }
+        : null;
+    const center = centerFromOverride ?? centerFromBbox ?? centerFromPoint;
+    if (!center) return;
+    detectedUnnumbered.push({
+      sourceKey: key,
+      label: sanitizeGuidanceLabel(object.label),
+      xNorm: center.x,
+      yNorm: center.y,
+      ...(bbox ? { bbox } : {}),
+    });
+  });
+
+  const detectedTargets = [...detectedUnnumbered]
+    .sort((left, right) => {
+      if (left.yNorm !== right.yNorm) return left.yNorm - right.yNorm;
+      if (left.xNorm !== right.xNorm) return left.xNorm - right.xNorm;
+      return left.sourceKey.localeCompare(right.sourceKey);
+    })
+    .map((target, index) => ({
+      ...target,
+      number: index + 1,
+    }));
+
+  const manualTargets: RemoveModeGuidanceManualTarget[] = args.removeModeManualMarkers.map((marker) => ({
+      sourceKey: marker.id,
+      xNorm: clampUnit(marker.xNorm),
+      yNorm: clampUnit(marker.yNorm),
+    }));
+
+  return {
+    detectedTargets,
+    manualTargets,
+    targetCount: detectedTargets.length + manualTargets.length,
+  };
+}
+
+async function prepareRemoveGuidanceImageDataUrl(args: {
+  imageUrl: string;
+  manifest: RemoveModeGuidanceManifest;
+}): Promise<string> {
+  if (typeof window === "undefined") {
+    throw new Error("Remove guidance image preparation requires a browser environment.");
+  }
+  const imageResponse = await fetch(args.imageUrl);
+  if (!imageResponse.ok) {
+    throw new Error(`Failed to load source image (HTTP ${imageResponse.status}).`);
+  }
+  const imageBlob = await imageResponse.blob();
+  const objectUrl = URL.createObjectURL(imageBlob);
+  try {
+    const image = await new Promise<HTMLImageElement>((resolve, reject) => {
+      const nextImage = new Image();
+      nextImage.onload = () => resolve(nextImage);
+      nextImage.onerror = () => reject(new Error("Failed to decode source image."));
+      nextImage.src = objectUrl;
+    });
+    const width = Math.max(1, Math.round(image.naturalWidth || image.width || 0));
+    const height = Math.max(1, Math.round(image.naturalHeight || image.height || 0));
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) {
+      throw new Error("Unable to create drawing context for removal guidance image.");
+    }
+    ctx.drawImage(image, 0, 0, width, height);
+    const markerRadius = Math.max(10, Math.round(Math.min(width, height) * 0.02));
+    const strokeWidth = Math.max(3, Math.round(markerRadius * 0.3));
+    ctx.strokeStyle = "#dc2626";
+    ctx.lineWidth = strokeWidth;
+    ctx.lineCap = "round";
+    for (const target of args.manifest.manualTargets) {
+      const x = clampUnit(target.xNorm) * width;
+      const y = clampUnit(target.yNorm) * height;
+      ctx.beginPath();
+      ctx.moveTo(x - markerRadius, y - markerRadius);
+      ctx.lineTo(x + markerRadius, y + markerRadius);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(x - markerRadius, y + markerRadius);
+      ctx.lineTo(x + markerRadius, y - markerRadius);
+      ctx.stroke();
+    }
+    const badgeRadius = Math.max(11, Math.round(Math.min(width, height) * 0.018));
+    for (const target of args.manifest.detectedTargets) {
+      const x = clampUnit(target.xNorm) * width;
+      const y = clampUnit(target.yNorm) * height;
+      ctx.beginPath();
+      ctx.fillStyle = "#dc2626";
+      ctx.arc(x, y, badgeRadius, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.lineWidth = Math.max(2, Math.round(badgeRadius * 0.2));
+      ctx.strokeStyle = "#fee2e2";
+      ctx.stroke();
+      ctx.fillStyle = "#ffffff";
+      ctx.font = `600 ${Math.max(11, Math.round(badgeRadius * 1.05))}px system-ui, sans-serif`;
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText(String(target.number), x, y);
+    }
+    return canvas.toDataURL("image/png");
+  } finally {
+    URL.revokeObjectURL(objectUrl);
+  }
+}
+
+function buildRemoveModeGuidancePromptText(manifest: RemoveModeGuidanceManifest): string {
+  const lines: string[] = [];
+  if (manifest.detectedTargets.length > 0) {
+    lines.push("Detected furniture targets:");
+    for (const target of manifest.detectedTargets) {
+      lines.push(`- Target ${target.number}: ${target.label}`);
+    }
+  }
+  if (manifest.manualTargets.length > 0) {
+    if (lines.length > 0) lines.push("");
+    lines.push("Manual remove markers:");
+    lines.push("- Remove the objects directly under the red X markers.");
+  }
+  return lines.join("\n");
+}
+
 function isServerFetchableImageUrl(url: string | null | undefined): boolean {
   if (!url || typeof url !== "string") return false;
   const trimmed = url.trim();
   if (!trimmed) return false;
   return /^https?:\/\//i.test(trimmed);
+}
+
+function isDurablePlacementSourceImageUrl(url: string | null | undefined): boolean {
+  if (!isServerFetchableImageUrl(url)) return false;
+  const trimmed = url?.trim() ?? "";
+  if (!trimmed) return false;
+  return !/^(https?:\/\/localhost|https?:\/\/127\.0\.0\.1|https?:\/\/0\.0\.0\.0)/i.test(trimmed);
+}
+
+const STORAGE_PATH_CANDIDATE_KEYS = [
+  "storagePath",
+  "storage_path",
+  "imagePath",
+  "image_path",
+  "previewImagePath",
+  "preview_image_path",
+  "normalizedPath",
+  "normalized_path",
+  "objectPath",
+  "object_path",
+] as const;
+
+const STORAGE_OBJECT_IMAGE_EXTENSION_RE = /\.(?:png|jpe?g|webp|gif|avif)$/i;
+const KNOWN_STORAGE_PATH_PREFIXES = [
+  "property-images/",
+  "vibode-generations/",
+  "vibode-base-images/",
+] as const;
+
+function extractSupabaseStorageObjectPathFromUrl(url: string | null | undefined): string | null {
+  if (!url || typeof url !== "string") return null;
+  const trimmed = url.trim();
+  if (!trimmed) return null;
+  let parsed: URL;
+  try {
+    parsed = new URL(trimmed);
+  } catch {
+    return null;
+  }
+  const pathname = parsed.pathname ?? "";
+  const match = pathname.match(/^\/storage\/v1\/object\/(?:sign|public)\/(.+)$/i);
+  if (!match || typeof match[1] !== "string") return null;
+  const rawPath = match[1].trim().replace(/^\/+/, "");
+  if (!rawPath) return null;
+  try {
+    return decodeURIComponent(rawPath);
+  } catch {
+    return rawPath;
+  }
+}
+
+function normalizeRawStorageObjectPathCandidate(value: string): string | null {
+  const normalized = value.trim().replace(/^\/+/, "");
+  if (!normalized) return null;
+  if (/^(https?:|data:|blob:)/i.test(normalized)) return null;
+  const pathOnly = normalized.split(/[?#]/, 1)[0]?.trim() ?? "";
+  if (!pathOnly) return null;
+  if (!pathOnly.includes("/")) return null;
+  if (!STORAGE_OBJECT_IMAGE_EXTENSION_RE.test(pathOnly)) return null;
+  const [bucket] = pathOnly.split("/", 1);
+  if (!bucket || !/^[a-z0-9][a-z0-9._-]*$/i.test(bucket)) return null;
+  const lowered = pathOnly.toLowerCase();
+  if (KNOWN_STORAGE_PATH_PREFIXES.some((prefix) => lowered.startsWith(prefix))) {
+    return pathOnly;
+  }
+  return pathOnly;
+}
+
+function normalizeStorageObjectPathCandidate(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  if (/^https?:\/\//i.test(trimmed)) {
+    return extractSupabaseStorageObjectPathFromUrl(trimmed);
+  }
+  return normalizeRawStorageObjectPathCandidate(trimmed);
+}
+
+function extractStorageObjectPathFromUnknown(value: unknown, depth = 0): string | null {
+  if (depth > 4 || value === null || value === undefined) return null;
+  if (typeof value === "string") {
+    return extractSupabaseStorageObjectPathFromUrl(value);
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const found = extractStorageObjectPathFromUnknown(item, depth + 1);
+      if (found) return found;
+    }
+    return null;
+  }
+  if (!isRecord(value)) return null;
+  for (const key of STORAGE_PATH_CANDIDATE_KEYS) {
+    const found = normalizeStorageObjectPathCandidate(value[key]);
+    if (found) return found;
+  }
+  for (const nestedValue of Object.values(value)) {
+    const found = extractStorageObjectPathFromUnknown(nestedValue, depth + 1);
+    if (found) return found;
+  }
+  return null;
 }
 
 function isDataImageUrl(url: string | null | undefined): boolean {
@@ -297,6 +694,11 @@ function hasSwapMarksWithReplacement(vibodeIntent: unknown): boolean {
 }
 
 type WorkflowStage = 1 | 2 | 3 | 4 | 5;
+type WorkflowMode = Exclude<VibodeVersionKind, "unknown">;
+type EditorVersionWithKind = VibodeRoomAsset & {
+  versionKind: VibodeVersionKind;
+  isActiveSetEligible: boolean;
+};
 type StageRunStatus = "idle" | "running" | "success" | "error";
 type DeclutterMode = "off" | "light" | "heavy";
 type VibodeModelVersion = typeof VIBODE_MODEL_NBP | typeof VIBODE_MODEL_NB2;
@@ -313,10 +715,10 @@ const DEFAULT_PANELS_STATE: EditorRightPanelsState = {
   versions: false,
 };
 
-const EXPANDED_PANELS_STATE: EditorRightPanelsState = {
-  workflow: true,
-  editTools: true,
-  versions: true,
+const WORKFLOW_MODE_HELPER_COPY: Record<WorkflowMode, string> = {
+  set: "Prepare your room",
+  stage: "Place furniture",
+  style: "Create the vibe",
 };
 type PasteToPlaceStatus = "reading" | "preparing" | "placing";
 type Stage4Action =
@@ -405,6 +807,7 @@ type VibodeEditRunRequest = {
   vibodeRoomId?: string;
   stageNumber?: number;
   pasteToPlaceControl?: PasteToPlaceJobControl;
+  mode?: "guidance-image";
 };
 type VibodeEditRunResponse = {
   imageUrl: string;
@@ -425,6 +828,71 @@ type RotateToolState = {
 type RoomReadResponse = {
   objects?: DetectedRoomObjectLabel[];
 };
+type RemoveModeOverlayTarget = {
+  key: string;
+  label: string;
+  xNorm: number;
+  yNorm: number;
+  confidence: number;
+};
+type RemoveModeManualMarker = {
+  id: string;
+  xNorm: number;
+  yNorm: number;
+  createdAt: number;
+};
+type PlacementLayerNode = {
+  id: string;
+  userId: string;
+  roomId: string;
+  versionId: string | null;
+  furnitureId: string | null;
+  thumbnailUrl: string | null;
+  thumbnailPath: string | null;
+  sourceImageUrl: string;
+  sourceImagePath: string | null;
+  // x/y are normalized canvas coordinates in [0, 1], not pixel positions.
+  x: number;
+  y: number;
+  scale: number;
+  rotation: number;
+  isVisible: boolean;
+  metadata: PlacementMetadata;
+  createdAt: string;
+  updatedAt: string;
+};
+type PlacementLayerDragState = {
+  nodeId: string;
+  startedAsSuggested: boolean;
+};
+type PlacementLayerListResponse = {
+  nodes?: unknown;
+};
+type PlacementLayerRevertResponse = {
+  nodes?: unknown;
+};
+type PlacementLayerCreateResponse = {
+  node?: unknown;
+  deduped?: boolean;
+};
+type ModelDecidedFurnitureCandidatePayload = {
+  furnitureId: string | null;
+  skuId: string | null;
+  label: string | null;
+  sourceImageUrl: string | null;
+  sourceImagePath: string | null;
+  thumbnailUrl: string | null;
+  thumbnailPath: string | null;
+  placementSource: "clipboard" | "product_url" | "swap" | "my_furniture";
+};
+type SceneRenderStateMetadata = {
+  renderedPlacementStateHash?: unknown;
+  renderedPlacementSnapshot?: unknown;
+  originalPlacementStateHash?: unknown;
+  originalPlacementSnapshot?: unknown;
+  renderedAt?: unknown;
+  sourceVersionId?: unknown;
+};
 type PasteToPlacePreparedProduct = {
   source: "clipboard" | "my_furniture" | "product_url";
   skuId: string;
@@ -443,8 +911,11 @@ type ActivePasteSource =
       type: "clipboard";
       skuId: string;
       preparedProduct: PreparedProductLike;
+      durableSavedPreviewUrl: string | null;
       rawPreviewUrl: string | null;
       normalizedPreviewUrl: string | null;
+      sourceImagePathHint: string | null;
+      thumbnailPathHint: string | null;
       clipboardDataUrlHash: string;
       requestId?: string | null;
       activatedAt: number;
@@ -459,6 +930,8 @@ type ActivePasteSource =
       preparedProduct: PreparedProductLike;
       rawPreviewUrl: string | null;
       normalizedPreviewUrl: string | null;
+      sourceImagePathHint: string | null;
+      thumbnailPathHint: string | null;
       clipboardDataUrlHash: null;
       activatedAt: number;
     }
@@ -470,6 +943,8 @@ type ActivePasteSource =
       preparedProduct: PreparedProductLike;
       rawPreviewUrl: string | null;
       normalizedPreviewUrl: string | null;
+      sourceImagePathHint: string | null;
+      thumbnailPathHint: string | null;
       displayName: string | null;
       supplier: string | null;
       domain: string | null;
@@ -588,6 +1063,32 @@ function parseProductUrlSaveFurnitureId(payload: unknown): string | null {
   }
   return null;
 }
+
+function parseSavedFurnitureDurablePreviewUrl(savedFurniture: unknown): string | null {
+  if (!isRecord(savedFurniture)) return null;
+  const candidates: unknown[] = [
+    savedFurniture.previewImageUrl,
+    savedFurniture.preview_image_url,
+    savedFurniture.imageUrl,
+    savedFurniture.image_url,
+    savedFurniture.normalizedPreviewUrl,
+    savedFurniture.normalized_preview_url,
+    savedFurniture.thumbnailUrl,
+    savedFurniture.thumbnail_url,
+  ];
+  for (const candidate of candidates) {
+    if (typeof candidate !== "string" || candidate.trim().length === 0) continue;
+    const normalizedCandidate = candidate.trim();
+    if (!isDurablePlacementSourceImageUrl(normalizedCandidate)) continue;
+    return normalizedCandidate;
+  }
+  return null;
+}
+
+function parseSavedFurnitureStoragePath(savedFurniture: unknown): string | null {
+  if (!isRecord(savedFurniture)) return null;
+  return extractStorageObjectPathFromUnknown(savedFurniture);
+}
 type PasteToPlaceMenuState = {
   xNorm: number;
   yNorm: number;
@@ -617,7 +1118,6 @@ type RoomCanvasHydrationTarget = {
   token: number;
 };
 
-const WORKFLOW_STAGES: WorkflowStage[] = [1, 2, 3, 4, 5];
 const STAGE4_PRIMARY_ACTION: Stage4Action = "style_room";
 const STAGE4_ADVANCED_ACTIONS: Stage4Action[] = [
   "accessories",
@@ -850,6 +1350,7 @@ type VibodeRoomHydrationRow = {
   current_stage: number | null;
   active_asset_id: string | null;
   base_asset_id: string | null;
+  metadata: Record<string, unknown> | null;
 };
 
 type VibodeRoomAssetHydrationRow = {
@@ -868,6 +1369,17 @@ type VibodeRoomAssetHydrationRow = {
   is_active: boolean;
   metadata: Record<string, unknown> | null;
   created_at: string;
+};
+type VibodeEditorWorkspaceSnapshot = {
+  roomId: string | null;
+  versionId: string | null;
+  furnitureLayerEnabled: boolean;
+  timestamp: number;
+};
+type VibodeRoomRowForRecovery = {
+  id: string;
+  active_asset_id: string | null;
+  sort_key: string | null;
 };
 
 type VibodeDebugWindow = Window & {
@@ -1063,6 +1575,88 @@ function normalizeScenePlacementsArray(value: unknown): ScenePlacement[] {
   return next;
 }
 
+function normalizePlacementLayerNode(value: unknown): PlacementLayerNode | null {
+  if (!isRecord(value)) return null;
+  const id = safeStr(value.id);
+  const userId = safeStr(value.user_id) ?? safeStr(value.userId);
+  const roomId = safeStr(value.room_id) ?? safeStr(value.roomId);
+  const versionId = safeStr(value.version_id) ?? safeStr(value.versionId);
+  const sourceImageUrl = safeStr(value.source_image_url) ?? safeStr(value.sourceImageUrl);
+  const createdAt = safeStr(value.created_at) ?? safeStr(value.createdAt);
+  const updatedAt = safeStr(value.updated_at) ?? safeStr(value.updatedAt);
+  const x = parseFiniteNumber(value.x);
+  const y = parseFiniteNumber(value.y);
+  const scale = parseFiniteNumber(value.scale) ?? 1;
+  const rotation = parseFiniteNumber(value.rotation) ?? 0;
+  if (!id || !userId || !roomId || !sourceImageUrl || createdAt === null || updatedAt === null) {
+    return null;
+  }
+  if (x === null || y === null) return null;
+  return {
+    id,
+    userId,
+    roomId,
+    versionId,
+    furnitureId: safeStr(value.furniture_id) ?? safeStr(value.furnitureId),
+    thumbnailUrl: safeStr(value.thumbnail_url) ?? safeStr(value.thumbnailUrl),
+    thumbnailPath: safeStr(value.thumbnail_path) ?? safeStr(value.thumbnailPath),
+    sourceImageUrl,
+    sourceImagePath: safeStr(value.source_image_path) ?? safeStr(value.sourceImagePath),
+    x,
+    y,
+    scale,
+    rotation,
+    isVisible: typeof value.is_visible === "boolean" ? value.is_visible : value.isVisible !== false,
+    metadata: normalizePlacementMetadata(
+      value.metadata,
+      defaultUserDirectedPlacementMetadata()
+    ),
+    createdAt,
+    updatedAt,
+  };
+}
+
+function readSceneRenderStateMetadata(metadata: unknown): SceneRenderStateMetadata | null {
+  if (!isRecord(metadata)) return null;
+  const sceneRenderState = metadata.sceneRenderState;
+  if (!isRecord(sceneRenderState)) return null;
+  return sceneRenderState as SceneRenderStateMetadata;
+}
+
+function readRenderedPlacementStateHashFromMetadata(metadata: unknown): string | null {
+  if (!isRecord(metadata)) return null;
+  const sceneRenderState = readSceneRenderStateMetadata(metadata);
+  const nestedHash = safeStr(sceneRenderState?.renderedPlacementStateHash);
+  if (nestedHash) return nestedHash;
+  return safeStr(metadata.renderedPlacementStateHash);
+}
+
+function readRenderedPlacementSnapshotFromMetadata(metadata: unknown): NormalizedPlacementStateRow[] | null {
+  if (!isRecord(metadata)) return null;
+  const sceneRenderState = readSceneRenderStateMetadata(metadata);
+  if (!sceneRenderState) return null;
+  const snapshotRaw = sceneRenderState.renderedPlacementSnapshot;
+  if (!Array.isArray(snapshotRaw)) return null;
+  return normalizePlacementStateForHash(snapshotRaw as PlacementStateHashInput[]);
+}
+
+function readOriginalPlacementStateHashFromMetadata(metadata: unknown): string | null {
+  if (!isRecord(metadata)) return null;
+  const sceneRenderState = readSceneRenderStateMetadata(metadata);
+  const nestedHash = safeStr(sceneRenderState?.originalPlacementStateHash);
+  if (nestedHash) return nestedHash;
+  return null;
+}
+
+function readOriginalPlacementSnapshotFromMetadata(metadata: unknown): NormalizedPlacementStateRow[] | null {
+  if (!isRecord(metadata)) return null;
+  const sceneRenderState = readSceneRenderStateMetadata(metadata);
+  if (!sceneRenderState) return null;
+  const snapshotRaw = sceneRenderState.originalPlacementSnapshot;
+  if (!Array.isArray(snapshotRaw)) return null;
+  return normalizePlacementStateForHash(snapshotRaw as PlacementStateHashInput[]);
+}
+
 function extractScenePlacementsFromUnknown(value: unknown, depth = 0): ScenePlacement[] {
   if (depth > 4) return [];
   const directPlacements = normalizeScenePlacementsArray(value);
@@ -1094,6 +1688,80 @@ function logEditorRoomOpen(event: string, payload?: Record<string, unknown>) {
     return;
   }
   console.log("[editor-room-open]", event);
+}
+
+function logEditorRecovery(message: string, payload?: Record<string, unknown>) {
+  if (process.env.NODE_ENV !== "development") return;
+  if (payload) {
+    console.debug(message, payload);
+    return;
+  }
+  console.debug(message);
+}
+
+function pickMostRelevantVersion(
+  versions: VibodeRoomAsset[],
+  options?: {
+    preferredVersionId?: string | null;
+    activeVersionId?: string | null;
+  }
+): VibodeRoomAsset | null {
+  if (versions.length === 0) return null;
+  const preferredVersionId = options?.preferredVersionId ?? null;
+  const activeVersionId = options?.activeVersionId ?? null;
+  if (preferredVersionId) {
+    const preferred = versions.find((asset) => asset.id === preferredVersionId);
+    if (preferred) return preferred;
+  }
+  if (activeVersionId) {
+    const activeByRoom = versions.find((asset) => asset.id === activeVersionId);
+    if (activeByRoom) return activeByRoom;
+  }
+  const flaggedActive = versions.find((asset) => asset.is_active);
+  if (flaggedActive) return flaggedActive;
+  const newest = versions
+    .slice()
+    .sort((a, b) => {
+      const aMs = Date.parse(a.created_at);
+      const bMs = Date.parse(b.created_at);
+      const safeA = Number.isFinite(aMs) ? aMs : 0;
+      const safeB = Number.isFinite(bMs) ? bMs : 0;
+      return safeB - safeA;
+    })[0];
+  return newest ?? versions[0] ?? null;
+}
+
+function readWorkspaceSnapshot(): VibodeEditorWorkspaceSnapshot | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = window.sessionStorage.getItem(VIBODE_EDITOR_WORKSPACE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as unknown;
+    if (!isRecord(parsed)) return null;
+    const timestamp = parseFiniteNumber(parsed.timestamp);
+    if (timestamp === null) return null;
+    return {
+      roomId: safeStr(parsed.roomId),
+      versionId: safeStr(parsed.versionId),
+      furnitureLayerEnabled: parsed.furnitureLayerEnabled === true,
+      timestamp,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function clearWorkspaceSnapshot(): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.sessionStorage.removeItem(VIBODE_EDITOR_WORKSPACE_KEY);
+  } catch {
+    // Ignore storage write errors.
+  }
+}
+
+function hasExplicitNewRoomIntent(params: { get: (key: string) => string | null }): boolean {
+  return params.get("newRoom") === "1";
 }
 
 function hasRoomIdInCurrentLocation(): boolean {
@@ -1153,6 +1821,44 @@ async function setActiveVersionForRoom(args: {
         : `Failed to set active version (HTTP ${res.status})`;
     throw new Error(message);
   }
+}
+
+async function setActiveSetVersionForRoom(args: {
+  roomId: string;
+  activeSetVersionId: string;
+  accessToken: string;
+}): Promise<{ activeSetVersionId: string; metadata: Record<string, unknown> | null }> {
+  const res = await fetch("/api/vibode/set-active-set", {
+    method: "PATCH",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${args.accessToken}`,
+    },
+    body: JSON.stringify({
+      roomId: args.roomId,
+      activeSetVersionId: args.activeSetVersionId,
+    }),
+  });
+
+  const payload = (await res.json().catch(() => ({}))) as {
+    error?: unknown;
+    activeSetVersionId?: unknown;
+    metadata?: unknown;
+  };
+  if (!res.ok) {
+    const message =
+      typeof payload.error === "string" && payload.error.trim().length > 0
+        ? payload.error
+        : `Failed to set Base Image (HTTP ${res.status})`;
+    throw new Error(message);
+  }
+
+  const resolvedActiveSetVersionId =
+    typeof payload.activeSetVersionId === "string" && payload.activeSetVersionId.trim().length > 0
+      ? payload.activeSetVersionId
+      : args.activeSetVersionId;
+  const metadata = isRecord(payload.metadata) ? payload.metadata : null;
+  return { activeSetVersionId: resolvedActiveSetVersionId, metadata };
 }
 
 async function deleteVersionForRoom(args: {
@@ -1247,6 +1953,130 @@ async function loadRoomVersions(roomId: string, accessToken: string): Promise<Vi
   return hydratedRows.filter((row): row is VibodeRoomAsset => Boolean(row));
 }
 
+async function loadPlacementLayerNodesForVersion(args: {
+  roomId: string;
+  versionId: string;
+  accessToken: string;
+}): Promise<PlacementLayerNode[]> {
+  const res = await fetch(
+    `/api/vibode/room-furniture-placements?roomId=${encodeURIComponent(args.roomId)}&versionId=${encodeURIComponent(args.versionId)}`,
+    {
+      method: "GET",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${args.accessToken}`,
+      },
+    }
+  );
+  const payload = (await res.json().catch(() => ({}))) as PlacementLayerListResponse & { error?: unknown };
+  if (!res.ok) {
+    const message =
+      typeof payload.error === "string" && payload.error.trim().length > 0
+        ? payload.error
+        : `Failed to load placement nodes (HTTP ${res.status})`;
+    throw new Error(message);
+  }
+  const rows = Array.isArray(payload.nodes) ? payload.nodes : [];
+  return rows
+    .map((row) => normalizePlacementLayerNode(row))
+    .filter((row): row is PlacementLayerNode => Boolean(row));
+}
+
+async function persistSceneRenderStateForVersion(args: {
+  roomId: string;
+  assetId: string;
+  accessToken: string;
+  sceneRenderState: {
+    renderedPlacementStateHash: string;
+    renderedPlacementSnapshot: NormalizedPlacementStateRow[];
+    renderedAt: string;
+    sourceVersionId: string | null;
+  };
+}): Promise<Record<string, unknown> | null> {
+  const res = await fetch("/api/vibode/room-version-render-state", {
+    method: "PATCH",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${args.accessToken}`,
+    },
+    body: JSON.stringify({
+      roomId: args.roomId,
+      assetId: args.assetId,
+      sceneRenderState: args.sceneRenderState,
+    }),
+  });
+  const payload = (await res.json().catch(() => ({}))) as { error?: unknown; metadata?: unknown };
+  if (!res.ok) {
+    const message =
+      typeof payload.error === "string" && payload.error.trim().length > 0
+        ? payload.error
+        : `Failed to persist scene render state (HTTP ${res.status})`;
+    throw new Error(message);
+  }
+  return isRecord(payload.metadata) ? payload.metadata : null;
+}
+
+async function persistVersionMetadataPatchForRoom(args: {
+  roomId: string;
+  assetId: string;
+  accessToken: string;
+  metadataPatch: Record<string, unknown>;
+}): Promise<Record<string, unknown> | null> {
+  const res = await fetch("/api/vibode/room-version-render-state", {
+    method: "PATCH",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${args.accessToken}`,
+    },
+    body: JSON.stringify({
+      roomId: args.roomId,
+      assetId: args.assetId,
+      metadataPatch: args.metadataPatch,
+    }),
+  });
+  const payload = (await res.json().catch(() => ({}))) as { error?: unknown; metadata?: unknown };
+  if (!res.ok) {
+    const message =
+      typeof payload.error === "string" && payload.error.trim().length > 0
+        ? payload.error
+        : `Failed to update room version metadata (HTTP ${res.status})`;
+    throw new Error(message);
+  }
+  return isRecord(payload.metadata) ? payload.metadata : null;
+}
+
+async function revertPlacementLayerNodesToSnapshot(args: {
+  roomId: string;
+  versionId: string;
+  accessToken: string;
+  snapshot: NormalizedPlacementStateRow[];
+}): Promise<PlacementLayerNode[]> {
+  const res = await fetch("/api/vibode/room-furniture-placements/revert", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${args.accessToken}`,
+    },
+    body: JSON.stringify({
+      roomId: args.roomId,
+      versionId: args.versionId,
+      snapshot: args.snapshot,
+    }),
+  });
+  const payload = (await res.json().catch(() => ({}))) as PlacementLayerRevertResponse & { error?: unknown };
+  if (!res.ok) {
+    const message =
+      typeof payload.error === "string" && payload.error.trim().length > 0
+        ? payload.error
+        : `Failed to revert placement nodes (HTTP ${res.status})`;
+    throw new Error(message);
+  }
+  const rows = Array.isArray(payload.nodes) ? payload.nodes : [];
+  return rows
+    .map((row) => normalizePlacementLayerNode(row))
+    .filter((row): row is PlacementLayerNode => Boolean(row));
+}
+
 function formatVersionTimestamp(value: string): string {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "Unknown time";
@@ -1266,18 +2096,6 @@ function getVersionSecondaryLabel(asset: VibodeRoomAsset): string {
   return `Stage ${stageLabel} · ${modelLabel}`;
 }
 
-function isSameLocalDay(a: Date, b: Date): boolean {
-  return (
-    a.getFullYear() === b.getFullYear() &&
-    a.getMonth() === b.getMonth() &&
-    a.getDate() === b.getDate()
-  );
-}
-
-function isSameLocalMonth(a: Date, b: Date): boolean {
-  return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth();
-}
-
 async function loadRoomHydrationData(
   roomId: string,
   accessToken: string
@@ -1286,7 +2104,7 @@ async function loadRoomHydrationData(
 
   const { data: roomData, error: roomErr } = await client
     .from("vibode_rooms")
-    .select("id,selected_model,current_stage,active_asset_id,base_asset_id")
+    .select("id,selected_model,current_stage,active_asset_id,base_asset_id,metadata")
     .eq("id", roomId)
     .maybeSingle();
   if (roomErr || !roomData) {
@@ -1406,12 +2224,29 @@ function EditorPageInner() {
   const requestedRoomId = parseRoomIdFromSearch(
     searchParams.get("roomId") ?? searchParams.get("vibodeRoomId")
   );
+  const requestedNewRoomIntent = hasExplicitNewRoomIntent(searchParams);
+  const isExplicitBlankEditorIntent = !requestedRoomId && requestedNewRoomIntent;
   const requestedRoomPreviewUrl = parseRoomPreviewUrlFromSearch(
     searchParams.get("roomPreview") ?? searchParams.get("previewUrl")
   );
   const requestedRoomAspectRatio = parseRequestedRoomAspectRatioFromSearch(searchParams);
   const requestedPreviewAspectRatio = parseRequestedPreviewAspectRatioFromSearch(searchParams);
   const requestedInitialFrameAspectRatio = requestedRoomAspectRatio ?? requestedPreviewAspectRatio;
+  const [workspaceRecoveryRoomId, setWorkspaceRecoveryRoomId] = useState<string | null>(null);
+  const [workspaceRecoveryVersionId, setWorkspaceRecoveryVersionId] = useState<string | null>(null);
+  const [workspaceRecoveryFurnitureLayerEnabled, setWorkspaceRecoveryFurnitureLayerEnabled] = useState<
+    boolean | null
+  >(null);
+  const [workspaceRecoveryResolved, setWorkspaceRecoveryResolved] = useState<boolean>(
+    Boolean(requestedRoomId || isExplicitBlankEditorIntent)
+  );
+  const effectiveRequestedRoomId = requestedRoomId ?? workspaceRecoveryRoomId;
+  const effectiveRequestedRoomPreviewUrl = requestedRoomId ? requestedRoomPreviewUrl : null;
+  const effectiveRequestedInitialFrameAspectRatio = requestedRoomId
+    ? requestedInitialFrameAspectRatio
+    : null;
+  const isWorkspaceRecoveryPending =
+    !requestedRoomId && !isExplicitBlankEditorIntent && !workspaceRecoveryResolved;
   const myFurnitureReturnTo = useMemo(() => {
     if (requestedRoomId) {
       return `/editor?roomId=${encodeURIComponent(requestedRoomId)}`;
@@ -1477,6 +2312,17 @@ function EditorPageInner() {
   const [swapTargetId, setSwapTargetId] = useState<string | null>(null);
   const [swapPickerOpen, setSwapPickerOpen] = useState(false);
   const [panels, setPanels] = useState<EditorRightPanelsState>(DEFAULT_PANELS_STATE);
+  const [versionShelfExpanded, setVersionShelfExpanded] = useState<{
+    style: boolean;
+    stage: boolean;
+    set: boolean;
+    unknown: boolean;
+  }>({
+    style: false,
+    stage: false,
+    set: false,
+    unknown: false,
+  });
   const [hasLoadedPanelsFromStorage, setHasLoadedPanelsFromStorage] = useState(false);
   const [isPasteProductImageCollapsed, setIsPasteProductImageCollapsed] = useState(false);
   const [isSetupCollapsed, setIsSetupCollapsed] = useState(false);
@@ -1485,6 +2331,9 @@ function EditorPageInner() {
   const [selectedModel, setSelectedModel] = useState<VibodeModelVersion>(VIBODE_MODEL_NBP);
   const [deleteVersionTarget, setDeleteVersionTarget] = useState<VibodeRoomAsset | null>(null);
   const [deletingVersionId, setDeletingVersionId] = useState<string | null>(null);
+  const [settingBaseImageVersionId, setSettingBaseImageVersionId] = useState<string | null>(null);
+  const [togglingFavouriteVersionId, setTogglingFavouriteVersionId] = useState<string | null>(null);
+  const [isFavouritesFilterOn, setIsFavouritesFilterOn] = useState(false);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -1510,19 +2359,6 @@ function EditorPageInner() {
       // Ignore storage write errors.
     }
   }, [hasLoadedPanelsFromStorage, panels]);
-
-  const collapseAllRightPanels = () => {
-    setPanels(DEFAULT_PANELS_STATE);
-    setIsSetupCollapsed(true);
-    setIsPasteProductImageCollapsed(true);
-    setIsCalibrationCollapsed(true);
-  };
-  const expandAllRightPanels = () => {
-    setPanels(EXPANDED_PANELS_STATE);
-    setIsSetupCollapsed(false);
-    setIsPasteProductImageCollapsed(false);
-    setIsCalibrationCollapsed(false);
-  };
 
   const [snacks, setSnacks] = useState<Snackbar[]>([]);
   const pushSnack = useCallback((message: string) => {
@@ -1556,6 +2392,7 @@ function EditorPageInner() {
   const activePasteToPlaceJobControlRef = useRef<PasteToPlaceJobControl | null>(null);
   const [activePasteToPlaceJobControlUiState, setActivePasteToPlaceJobControlUiState] =
     useState<PasteToPlaceJobControl | null>(null);
+  const versionRowRefs = useRef<Record<string, HTMLDivElement | null>>({});
   const inFlightProductUrlAutosavesRef = useRef<Map<string, Promise<string | null>>>(new Map());
   const pasteToPlaceAbortControllerRef = useRef<AbortController | null>(null);
   const activePasteToPlaceSettlingRequestIdRef = useRef<string | null>(null);
@@ -1620,7 +2457,16 @@ function EditorPageInner() {
   const devUnlockPasteToPlaceRaw = process.env.NEXT_PUBLIC_VIBODE_DEV_UNLOCK_PASTE_TO_PLACE;
   const isDevUnlockPasteToPlace =
     devUnlockPasteToPlaceRaw === "1" || devUnlockPasteToPlaceRaw?.toLowerCase() === "true";
+  const devSceneRebuildEnabledRaw = process.env.NEXT_PUBLIC_VIBODE_ENABLE_SCENE_REBUILD;
+  const isDevSceneRebuildEnabled =
+    typeof devSceneRebuildEnabledRaw === "undefined"
+      ? true
+      : devSceneRebuildEnabledRaw === "1" || devSceneRebuildEnabledRaw.toLowerCase() === "true";
+  const showDevSceneRebuildButton =
+    process.env.NODE_ENV !== "production" && isDevUnlockPasteToPlace && isDevSceneRebuildEnabled;
 
+  const [workflowMode, setWorkflowMode] = useState<WorkflowMode>("stage");
+  const workflowTabSingleClickTimeoutRef = useRef<number | null>(null);
   const [activeStage, setActiveStage] = useState<WorkflowStage>(1);
   const [stageStatus, setStageStatus] = useState<StageStatusMap>(INITIAL_STAGE_STATUS);
   const [stage4RunningAction, setStage4RunningAction] = useState<Stage4Action | null>(null);
@@ -1636,6 +2482,31 @@ function EditorPageInner() {
   const [myFurnitureSelectingIds, setMyFurnitureSelectingIds] = useState<string[]>([]);
   const [selectedMyFurnitureItemIds, setSelectedMyFurnitureItemIds] = useState<string[]>([]);
   const [isPendingFurnitureSelectionRunning, setIsPendingFurnitureSelectionRunning] = useState(false);
+  const [isDevSceneRebuildRunning, setIsDevSceneRebuildRunning] = useState(false);
+  const [devSceneRebuildStage, setDevSceneRebuildStage] = useState<"compose" | "persist" | null>(
+    null
+  );
+  const [isDevSceneRebuildComposeWarningVisible, setIsDevSceneRebuildComposeWarningVisible] =
+    useState(false);
+  const [isRevertingPlacementChanges, setIsRevertingPlacementChanges] = useState(false);
+  const [isRestoringOriginalPlacementPositions, setIsRestoringOriginalPlacementPositions] =
+    useState(false);
+  const [sceneNeedsUpdate, setSceneNeedsUpdate] = useState(false);
+  const [canRestoreOriginalPlacementPositions, setCanRestoreOriginalPlacementPositions] =
+    useState(false);
+  const [devSceneRebuildFeedback, setDevSceneRebuildFeedback] = useState<{
+    tone: "success" | "error";
+    message: string;
+    title?: string;
+    helper?: string;
+  } | null>(null);
+  const sceneRebuildAbortControllerRef = useRef<AbortController | null>(null);
+  const sceneRebuildRenderingMessageTimerRef = useRef<number | null>(null);
+  const sceneRebuildComposeWarningTimerRef = useRef<number | null>(null);
+  const sceneRebuildComposeTimeoutTimerRef = useRef<number | null>(null);
+  const sceneRebuildAbortReasonRef = useRef<"user_cancel" | "compose_timeout" | null>(null);
+  const [isDevSceneRebuildRenderingMessageVisible, setIsDevSceneRebuildRenderingMessageVisible] =
+    useState(false);
   const [pendingMyFurnitureReturnPreviewUrl, setPendingMyFurnitureReturnPreviewUrl] = useState<
     string | null
   >(null);
@@ -1645,17 +2516,50 @@ function EditorPageInner() {
     amountDegrees: 15,
   });
   const [isRotateMarkerTargeting, setIsRotateMarkerTargeting] = useState(false);
-  const [editWarning, setEditWarning] = useState<string | null>(null);
+  const [, setEditWarning] = useState<string | null>(null);
   const [isEditRunning, setIsEditRunning] = useState(false);
   const [removeMarkerPosition, setRemoveMarkerPosition] = useState<PasteToPlaceClickHint | null>(null);
   const [isRemoveMarkerTargeting, setIsRemoveMarkerTargeting] = useState(false);
+  const [isRemoveModeEnabled, setIsRemoveModeEnabled] = useState(false);
+  const [isRemoveModeReadingObjects, setIsRemoveModeReadingObjects] = useState(false);
+  const [isSetGeometryPrewarming, setIsSetGeometryPrewarming] = useState(false);
+  const [removeModeError, setRemoveModeError] = useState<string | null>(null);
+  const [removeModeObjects, setRemoveModeObjects] = useState<DetectedRoomObjectLabel[]>([]);
+  const [selectedRemoveObjectKeys, setSelectedRemoveObjectKeys] = useState<string[]>([]);
+  const [removeModeManualMarkers, setRemoveModeManualMarkers] = useState<RemoveModeManualMarker[]>([]);
+  const [removeModeObjectTargetOverrides, setRemoveModeObjectTargetOverrides] = useState<
+    Record<string, RemoveModeTargetOverride>
+  >({});
+  const [removeModeGuidanceImageDataUrl, setRemoveModeGuidanceImageDataUrl] = useState<string | null>(null);
+  const [removeModeGuidanceManifest, setRemoveModeGuidanceManifest] =
+    useState<RemoveModeGuidanceManifest | null>(null);
+  const [removeModeGuidancePromptText, setRemoveModeGuidancePromptText] = useState<string>("");
+  const [removeModeGuidancePreparedSignature, setRemoveModeGuidancePreparedSignature] = useState<string>("");
+  const [isPreparingRemoveGuidanceImage, setIsPreparingRemoveGuidanceImage] = useState(false);
+  const [, setRemoveModeGuidanceError] = useState<string | null>(null);
+  const [, setRemoveModeGuidanceTargetCount] = useState(0);
   const [detectedRoomObjectLabels, setDetectedRoomObjectLabels] = useState<DetectedRoomObjectLabel[]>(
     []
   );
+  const [placementLayerNodes, setPlacementLayerNodes] = useState<PlacementLayerNode[]>([]);
+  const [placementLayerDragState, setPlacementLayerDragState] = useState<PlacementLayerDragState | null>(
+    null
+  );
+  const placementLayerNodesRef = useRef<PlacementLayerNode[]>([]);
+  const [isFurnitureLayerEnabled, setIsFurnitureLayerEnabled] = useState(false);
+  const [hasLoadedFurnitureLayerVisibilityFromStorage, setHasLoadedFurnitureLayerVisibilityFromStorage] =
+    useState(false);
+  const toggleFurnitureLayer = useCallback(() => {
+    setIsFurnitureLayerEnabled((prev) => !prev);
+  }, []);
+  const isEditorKeyboardShortcutBlocked = swapOpen || swapPickerOpen || myFurnitureOpen;
   const [selectedRemoveLabel, setSelectedRemoveLabel] = useState<string>(REMOVE_LABEL_PLACEHOLDER);
   const roomReadByImageKeyRef = useRef<Map<string, DetectedRoomObjectLabel[]>>(new Map());
   const roomReadInFlightKeysRef = useRef<Set<string>>(new Set());
   const roomReadSkipLogKeysRef = useRef<Set<string>>(new Set());
+  const placementLayerHydratedScopeKeyRef = useRef<string | null>(null);
+  const placementLayerInFlightScopeKeyRef = useRef<string | null>(null);
+  const sceneDirtyLocallyConfirmedRef = useRef(false);
   // TODO(vibode-entitlements): replace this local free-gate stub with server entitlements.
   const [hasUsedFreePasteToPlace, setHasUsedFreePasteToPlace] = useState(() => {
     if (typeof window === "undefined") return false;
@@ -1677,6 +2581,9 @@ function EditorPageInner() {
     }
   );
   const lastPasteToPlaceClipboardSnackAtRef = useRef(0);
+  const placementNodeCreateGuardByOperationRef = useRef<Map<number, "in_flight" | "done">>(
+    new Map()
+  );
   const invalidatePasteToPlaceOperation = useCallback(() => {
     pasteToPlaceOperationIdRef.current += 1;
   }, []);
@@ -1801,6 +2708,7 @@ function EditorPageInner() {
   const [ingestedUserSku, setIngestedUserSku] = useState<UserSku | null>(null);
   const [userSkusAddedToStage3, setUserSkusAddedToStage3] = useState<UserSku[]>([]);
   const [vibodeRoomId, setVibodeRoomId] = useState<string | null>(null);
+  const [roomMetadata, setRoomMetadata] = useState<Record<string, unknown> | null>(null);
   const [stage3SkuItems, setStage3SkuItems] = useState<Stage3SkuItem[]>([]);
   const [stage3ShowCatalog, setStage3ShowCatalog] = useState(false);
   const shouldSkipPendingRestoreRef = useRef<boolean>(hasRoomIdInCurrentLocation());
@@ -2111,6 +3019,7 @@ function EditorPageInner() {
     setLastStageOutputs((prev) => (Object.keys(prev).length === 0 ? prev : {}));
     setWorkingImageUrl(null);
     setIsWorkingImageGenerated(false);
+    setSceneNeedsUpdate(false);
     pendingPlacementNodeHydrationRef.current = null;
     store.resetSessionForIncomingImage();
     setScenePlacements([]);
@@ -2148,12 +3057,14 @@ function EditorPageInner() {
     setPendingFurnitureClipboardSuppressionHash(null);
     setActiveStage(1);
     setVibodeRoomId(null);
+    setRoomMetadata(null);
     setRoomBaseAssetId(null);
     clearPendingLocal();
   }, [
     clearPasteToPlaceActiveSource,
     clearPasteToPlaceMenuClipboardPreview,
     clearPasteToPlaceProgressPreview,
+    setSceneNeedsUpdate,
   ]);
 
   const refreshRoomVersions = useCallback(
@@ -2307,6 +3218,34 @@ function EditorPageInner() {
   useEffect(() => {
     if (typeof window === "undefined") return;
     try {
+      const raw = window.localStorage.getItem(VIBODE_FURNITURE_LAYER_VISIBILITY_KEY);
+      if (raw === "1" || raw === "true") {
+        setIsFurnitureLayerEnabled(true);
+      } else if (raw === "0" || raw === "false") {
+        setIsFurnitureLayerEnabled(false);
+      }
+    } catch {
+      // Ignore storage read failures and keep current default behavior.
+    } finally {
+      setHasLoadedFurnitureLayerVisibilityFromStorage(true);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined" || !hasLoadedFurnitureLayerVisibilityFromStorage) return;
+    try {
+      window.localStorage.setItem(
+        VIBODE_FURNITURE_LAYER_VISIBILITY_KEY,
+        isFurnitureLayerEnabled ? "1" : "0"
+      );
+    } catch {
+      // Ignore storage write failures.
+    }
+  }, [hasLoadedFurnitureLayerVisibilityFromStorage, isFurnitureLayerEnabled]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
       if (hasUsedFreePasteToPlace) {
         window.sessionStorage.setItem(FREE_PASTE_TO_PLACE_SESSION_KEY, "1");
       } else {
@@ -2316,6 +3255,183 @@ function EditorPageInner() {
       // Ignore sessionStorage failures; entitlements will replace this gate.
     }
   }, [hasUsedFreePasteToPlace]);
+
+  useEffect(() => {
+    if (requestedRoomId) {
+      setWorkspaceRecoveryRoomId(null);
+      setWorkspaceRecoveryVersionId(null);
+      setWorkspaceRecoveryFurnitureLayerEnabled(null);
+      setWorkspaceRecoveryResolved(true);
+      return;
+    }
+
+    const hasExplicitBlankIntentFromLocation =
+      typeof window !== "undefined" &&
+      hasExplicitNewRoomIntent(new URLSearchParams(window.location.search)) &&
+      !hasRoomIdInCurrentLocation();
+    if (isExplicitBlankEditorIntent || hasExplicitBlankIntentFromLocation) {
+      setWorkspaceRecoveryRoomId(null);
+      setWorkspaceRecoveryVersionId(null);
+      setWorkspaceRecoveryFurnitureLayerEnabled(null);
+      setWorkspaceRecoveryResolved(true);
+      clearWorkspaceSnapshot();
+      logEditorRecovery("[editor-recovery] explicit blank editor intent, skipped recovery");
+      return;
+    }
+
+    let cancelled = false;
+    setWorkspaceRecoveryResolved(false);
+
+    const runWorkspaceRecovery = async () => {
+      let accessToken = await tryGetSupabaseAccessToken();
+      if (!accessToken) {
+        await new Promise<void>((resolve) => setTimeout(resolve, 250));
+        accessToken = await tryGetSupabaseAccessToken();
+      }
+      if (!accessToken) {
+        if (cancelled) return;
+        logEditorRecovery("[editor-recovery] no valid room found, showing upload state", {
+          reason: "no-access-token",
+        });
+        setWorkspaceRecoveryRoomId(null);
+        setWorkspaceRecoveryVersionId(null);
+        setWorkspaceRecoveryFurnitureLayerEnabled(null);
+        setWorkspaceRecoveryResolved(true);
+        return;
+      }
+
+      const snapshot = readWorkspaceSnapshot();
+      const now = Date.now();
+      const hasFreshSnapshot =
+        snapshot && Number.isFinite(snapshot.timestamp) && now - snapshot.timestamp <= VIBODE_EDITOR_WORKSPACE_MAX_AGE_MS;
+      if (hasFreshSnapshot) {
+        logEditorRecovery("[editor-recovery] snapshot found", {
+          roomId: snapshot.roomId,
+          versionId: snapshot.versionId,
+          ageMs: now - snapshot.timestamp,
+        });
+      } else if (snapshot) {
+        logEditorRecovery("[editor-recovery] snapshot invalid, falling back", {
+          reason: "stale",
+          ageMs: now - snapshot.timestamp,
+        });
+      }
+
+      const resolveRoomCandidate = async (args: {
+        roomId: string | null;
+        preferredVersionId: string | null;
+        activeVersionId?: string | null;
+      }): Promise<{ roomId: string; versionId: string; usedPreferredVersion: boolean } | null> => {
+        const roomId = safeStr(args.roomId);
+        if (!roomId || !accessToken) return null;
+        let roomVersions: VibodeRoomAsset[] = [];
+        try {
+          roomVersions = await loadRoomVersions(roomId, accessToken);
+        } catch {
+          return null;
+        }
+        const version = pickMostRelevantVersion(roomVersions, {
+          preferredVersionId: args.preferredVersionId,
+          activeVersionId: args.activeVersionId,
+        });
+        if (!version) return null;
+        return {
+          roomId,
+          versionId: version.id,
+          usedPreferredVersion: Boolean(args.preferredVersionId && version.id === args.preferredVersionId),
+        };
+      };
+
+      if (hasFreshSnapshot) {
+        const resolvedFromSnapshot = await resolveRoomCandidate({
+          roomId: snapshot.roomId,
+          preferredVersionId: snapshot.versionId,
+        });
+        if (resolvedFromSnapshot && !cancelled) {
+          setWorkspaceRecoveryRoomId(resolvedFromSnapshot.roomId);
+          setWorkspaceRecoveryVersionId(resolvedFromSnapshot.versionId);
+          setWorkspaceRecoveryFurnitureLayerEnabled(snapshot.furnitureLayerEnabled);
+          setWorkspaceRecoveryResolved(true);
+          logEditorRecovery("[editor-recovery] snapshot restored", {
+            roomId: resolvedFromSnapshot.roomId,
+            versionId: resolvedFromSnapshot.versionId,
+            usedPreferredVersion: resolvedFromSnapshot.usedPreferredVersion,
+          });
+          return;
+        }
+        logEditorRecovery("[editor-recovery] snapshot invalid, falling back", {
+          reason: "missing-room-or-version",
+          roomId: snapshot.roomId,
+          versionId: snapshot.versionId,
+        });
+        clearWorkspaceSnapshot();
+      }
+
+      const client = supabaseBrowser();
+      const { data: roomRows, error: roomError } = await client
+        .from("vibode_rooms")
+        .select("id,active_asset_id,sort_key")
+        .order("sort_key", { ascending: false })
+        .limit(25);
+      if (roomError) {
+        if (cancelled) return;
+        logEditorRecovery("[editor-recovery] no valid room found, showing upload state", {
+          reason: roomError.message,
+        });
+        setWorkspaceRecoveryRoomId(null);
+        setWorkspaceRecoveryVersionId(null);
+        setWorkspaceRecoveryFurnitureLayerEnabled(null);
+        setWorkspaceRecoveryResolved(true);
+        return;
+      }
+
+      const rooms = (Array.isArray(roomRows) ? roomRows : []) as VibodeRoomRowForRecovery[];
+      let fallbackCandidate: { roomId: string; versionId: string } | null = null;
+      for (const room of rooms) {
+        const resolved = await resolveRoomCandidate({
+          roomId: room.id,
+          preferredVersionId: null,
+          activeVersionId: room.active_asset_id,
+        });
+        if (resolved) {
+          fallbackCandidate = {
+            roomId: resolved.roomId,
+            versionId: resolved.versionId,
+          };
+          break;
+        }
+      }
+
+      if (cancelled) return;
+      if (fallbackCandidate) {
+        setWorkspaceRecoveryRoomId(fallbackCandidate.roomId);
+        setWorkspaceRecoveryVersionId(fallbackCandidate.versionId);
+        setWorkspaceRecoveryFurnitureLayerEnabled(null);
+        setWorkspaceRecoveryResolved(true);
+        logEditorRecovery("[editor-recovery] hydrated newest active room", fallbackCandidate);
+        return;
+      }
+
+      setWorkspaceRecoveryRoomId(null);
+      setWorkspaceRecoveryVersionId(null);
+      setWorkspaceRecoveryFurnitureLayerEnabled(null);
+      setWorkspaceRecoveryResolved(true);
+      logEditorRecovery("[editor-recovery] no valid room found, showing upload state");
+    };
+
+    void runWorkspaceRecovery();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [isExplicitBlankEditorIntent, requestedRoomId]);
+
+  useEffect(() => {
+    if (workspaceRecoveryFurnitureLayerEnabled === null) return;
+    setIsFurnitureLayerEnabled((prev) =>
+      prev === workspaceRecoveryFurnitureLayerEnabled ? prev : workspaceRecoveryFurnitureLayerEnabled
+    );
+  }, [workspaceRecoveryFurnitureLayerEnabled]);
 
   useEffect(() => {
     if (didRestorePendingRef.current) return;
@@ -2417,7 +3533,10 @@ function EditorPageInner() {
   }, [clearRoomCanvasFadeTimeout, clearRoomCanvasSettleTimeout]);
 
   useEffect(() => {
-    if (!requestedRoomId) {
+    if (isWorkspaceRecoveryPending) {
+      return;
+    }
+    if (!effectiveRequestedRoomId) {
       if (!hasAppliedBlankEditorResetRef.current) {
         resetEditorToBlankState();
         hasAppliedBlankEditorResetRef.current = true;
@@ -2426,16 +3545,16 @@ function EditorPageInner() {
     }
     hasAppliedBlankEditorResetRef.current = false;
     shouldSkipPendingRestoreRef.current = true;
-    if (hydratedRoomIdRef.current === requestedRoomId) {
+    if (hydratedRoomIdRef.current === effectiveRequestedRoomId) {
       setIsRoomHydrating(false);
       return;
     }
 
-    if (inFlightRoomHydrationRoomIdRef.current === requestedRoomId) {
+    if (inFlightRoomHydrationRoomIdRef.current === effectiveRequestedRoomId) {
       return;
     }
 
-    inFlightRoomHydrationRoomIdRef.current = requestedRoomId;
+    inFlightRoomHydrationRoomIdRef.current = effectiveRequestedRoomId;
     const roomOpenSessionId = roomOpenSessionRef.current + 1;
     roomOpenSessionRef.current = roomOpenSessionId;
     let cancelled = false;
@@ -2444,7 +3563,7 @@ function EditorPageInner() {
     const clearInFlightHydrationFlag = () => {
       if (
         roomOpenSessionRef.current === roomOpenSessionId &&
-        inFlightRoomHydrationRoomIdRef.current === requestedRoomId
+        inFlightRoomHydrationRoomIdRef.current === effectiveRequestedRoomId
       ) {
         inFlightRoomHydrationRoomIdRef.current = null;
       }
@@ -2452,8 +3571,8 @@ function EditorPageInner() {
 
     const hydrateFromRoom = async () => {
       let didApplyHydratedRoom = false;
-      const roomOpenPreviewUrl = requestedRoomPreviewUrl;
-      const initialFrameAspectRatio = requestedInitialFrameAspectRatio;
+      const roomOpenPreviewUrl = effectiveRequestedRoomPreviewUrl;
+      const initialFrameAspectRatio = effectiveRequestedInitialFrameAspectRatio;
       const canvasHydrationToken = beginRoomCanvasHydration({
         aspectRatio: initialFrameAspectRatio,
         placeholderImageUrl: roomOpenPreviewUrl,
@@ -2468,7 +3587,7 @@ function EditorPageInner() {
           }));
         });
       }
-      logEditorRoomOpen("roomHydration:start", { requestedRoomId });
+      logEditorRoomOpen("roomHydration:start", { requestedRoomId: effectiveRequestedRoomId });
       hydratedRoomIdRef.current = null;
       setIsRoomHydrating(true);
       resetWorkflowForIncomingImage();
@@ -2486,30 +3605,35 @@ function EditorPageInner() {
         }
         if (!accessToken) {
           logEditorRoomOpen("roomHydration:failed", {
-            requestedRoomId,
+            requestedRoomId: effectiveRequestedRoomId,
             error: "no-access-token",
           });
           hydratedRoomIdRef.current = null;
           pushSnack("Your session expired. Redirecting to sign in...");
-          router.push(`/login?next=${encodeURIComponent(`/editor?roomId=${requestedRoomId}`)}`);
+          router.push(`/login?next=${encodeURIComponent(`/editor?roomId=${effectiveRequestedRoomId}`)}`);
           return;
         }
 
-        const hydrated = await loadRoomHydrationData(requestedRoomId, accessToken);
+        const hydrated = await loadRoomHydrationData(effectiveRequestedRoomId, accessToken);
         if (!isRoomOpenSessionActive()) {
           return;
         }
+        const shouldUseRecoveryPreferredVersion =
+          !requestedRoomId && workspaceRecoveryRoomId === effectiveRequestedRoomId;
+        const recoveryPreferredVersionId = shouldUseRecoveryPreferredVersion
+          ? workspaceRecoveryVersionId
+          : null;
 
         const hydratedActiveVersion =
-          hydrated.versions.find((asset) => asset.id === hydrated.room.active_asset_id) ??
-          hydrated.versions.find((asset) => asset.is_active) ??
-          hydrated.versions[0] ??
-          null;
+          pickMostRelevantVersion(hydrated.versions, {
+            preferredVersionId: recoveryPreferredVersionId,
+            activeVersionId: hydrated.room.active_asset_id,
+          }) ?? null;
         const hydratedImageUrl = hydrated.imageUrl ?? hydratedActiveVersion?.image_url ?? null;
 
         if (!hydratedImageUrl) {
           logEditorRoomOpen("roomHydration:failed", {
-            requestedRoomId,
+            requestedRoomId: effectiveRequestedRoomId,
             error: "missing-preview-url",
             roomId: hydrated.room.id,
           });
@@ -2536,8 +3660,9 @@ function EditorPageInner() {
           return;
         }
         setVibodeRoomId(hydrated.room.id);
+        setRoomMetadata(hydrated.room.metadata ?? null);
         setVersions(hydrated.versions);
-        setActiveAssetId(hydrated.room.active_asset_id ?? null);
+        setActiveAssetId(hydratedActiveVersion?.id ?? hydrated.room.active_asset_id ?? null);
         const hydratedPlacements = extractScenePlacementsFromUnknown(hydratedActiveVersion?.metadata);
         setScenePlacements(hydratedPlacements);
         hydrateSceneNodesFromPlacements(hydratedPlacements);
@@ -2552,11 +3677,11 @@ function EditorPageInner() {
         if (typeof maybeStage === "number" && maybeStage >= 1 && maybeStage <= 5) {
           setActiveStage(maybeStage as WorkflowStage);
         }
-        hydratedRoomIdRef.current = requestedRoomId;
+        hydratedRoomIdRef.current = effectiveRequestedRoomId;
         didApplyHydratedRoom = true;
         setIsRoomHydrating(false);
         logEditorRoomOpen("roomHydration:finish", {
-          requestedRoomId,
+          requestedRoomId: effectiveRequestedRoomId,
           hydratedRoomId: hydrated.room.id,
           hasImageUrl: Boolean(hydratedImageUrl),
         });
@@ -2577,7 +3702,7 @@ function EditorPageInner() {
           return;
         }
         logEditorRoomOpen("roomHydration:failed", {
-          requestedRoomId,
+          requestedRoomId: effectiveRequestedRoomId,
           error: getErrorMessage(err) ?? "error",
         });
         console.error("[editor] room hydration failed:", err);
@@ -2614,16 +3739,20 @@ function EditorPageInner() {
     beginRoomCanvasHydration,
     clearRoomCanvasFadeTimeout,
     clearRoomCanvasSettleTimeout,
+    effectiveRequestedInitialFrameAspectRatio,
+    effectiveRequestedRoomId,
+    effectiveRequestedRoomPreviewUrl,
+    isWorkspaceRecoveryPending,
     pushSnack,
-    requestedInitialFrameAspectRatio,
     requestedRoomId,
-    requestedRoomPreviewUrl,
     resetEditorToBlankState,
     resetWorkflowForIncomingImage,
     router,
     setActiveAssetId,
     setBaseImageUrl,
     setVersions,
+    workspaceRecoveryRoomId,
+    workspaceRecoveryVersionId,
   ]);
 
   useEffect(() => {
@@ -2811,6 +3940,14 @@ function EditorPageInner() {
         preparedProduct,
         rawPreviewUrl: null,
         normalizedPreviewUrl: options?.normalizedPreviewUrl ?? fallbackPreview,
+        sourceImagePathHint: extractStorageObjectPathFromUnknown([
+          preparedProduct,
+          options?.normalizedPreviewUrl ?? fallbackPreview,
+        ]),
+        thumbnailPathHint: extractStorageObjectPathFromUnknown([
+          preparedProduct,
+          options?.normalizedPreviewUrl ?? fallbackPreview,
+        ]),
         clipboardDataUrlHash: null,
         activatedAt: Date.now(),
       }, "my_furniture_selected");
@@ -2835,15 +3972,28 @@ function EditorPageInner() {
   }, [activeAssetId, requestedRoomId, scene.baseImageUrl, vibodeRoomId, versions, workingImageUrl]);
   const hydrateRoomImageObjects = useCallback(
     async (args: {
-      trigger: "load" | "room-upload" | "stage-run" | "edit-run" | "paste-to-place";
+      trigger:
+        | "load"
+        | "room-upload"
+        | "stage-run"
+        | "edit-run"
+        | "paste-to-place"
+        | "remove-mode"
+        | "set-base-upload"
+        | "set-remove-result";
       imageUrl: string | null;
       roomId: string | null;
       assetId: string | null;
       versionId?: string | null;
       allowRoomReadOnMiss: boolean;
-    }) => {
+      purpose?: "suggested-placement" | "remove-mode" | "legacy";
+      mode?: "labels_only" | "geometry";
+      suppressErrors?: boolean;
+    }): Promise<DetectedRoomObjectLabel[]> => {
       const imageUrl = args.imageUrl?.trim() ?? null;
       const versionId = args.versionId ?? args.assetId;
+      const purpose = args.purpose ?? "legacy";
+      const mode = args.mode ?? "labels_only";
       const hasStableIdentity = Boolean(args.roomId || args.assetId || versionId);
       const skipReason = !hasStableIdentity
         ? "no stable image identity"
@@ -2866,19 +4016,29 @@ function EditorPageInner() {
         if (!args.allowRoomReadOnMiss) {
           setDetectedRoomObjectLabels([]);
         }
-        return;
+        return [];
       }
 
       const imageIdentity = `${args.roomId ?? "no_room"}:${args.assetId ?? "no_asset"}:${versionId ?? "no_version"}:${imageUrl ?? "no_image"}`;
-      const cacheKey = `${imageIdentity}:${args.allowRoomReadOnMiss ? "warm" : "read"}`;
-      const cached = roomReadByImageKeyRef.current.get(cacheKey) ?? roomReadByImageKeyRef.current.get(imageIdentity);
-      if (cached) {
+      const scopedImageIdentity = `${imageIdentity}:${purpose}:${mode}`;
+      const cacheKey = `${scopedImageIdentity}:${args.allowRoomReadOnMiss ? "warm" : "read"}`;
+      const cached =
+        roomReadByImageKeyRef.current.get(cacheKey) ??
+        roomReadByImageKeyRef.current.get(scopedImageIdentity);
+      const shouldBypassCachedGeometryMiss =
+        Boolean(
+          cached &&
+            mode === "geometry" &&
+            args.allowRoomReadOnMiss &&
+            !hasSufficientGeometryRoomObjects(cached)
+        );
+      if (cached && !shouldBypassCachedGeometryMiss) {
         roomReadByImageKeyRef.current.set(cacheKey, cached);
         setDetectedRoomObjectLabels(cached);
-        return;
+        return cached;
       }
       if (roomReadInFlightKeysRef.current.has(cacheKey)) {
-        return;
+        return [];
       }
 
       roomReadInFlightKeysRef.current.add(cacheKey);
@@ -2895,6 +4055,8 @@ function EditorPageInner() {
             vibodeRoomId: args.roomId ?? undefined,
             assetId: args.assetId ?? undefined,
             versionId: versionId ?? undefined,
+            purpose,
+            mode,
             allowRoomReadOnMiss: args.allowRoomReadOnMiss,
           }),
         });
@@ -2904,9 +4066,10 @@ function EditorPageInner() {
         }
         const json = (await res.json().catch(() => ({}))) as RoomReadResponse;
         const objects = Array.isArray(json.objects) ? json.objects : [];
-        roomReadByImageKeyRef.current.set(imageIdentity, objects);
+        roomReadByImageKeyRef.current.set(scopedImageIdentity, objects);
         roomReadByImageKeyRef.current.set(cacheKey, objects);
         setDetectedRoomObjectLabels(objects);
+        return objects;
       } catch (err: unknown) {
         console.warn("[room-image-objects] failed", {
           trigger: args.trigger,
@@ -2915,24 +4078,112 @@ function EditorPageInner() {
         if (!args.allowRoomReadOnMiss) {
           setDetectedRoomObjectLabels([]);
         }
+        if (args.suppressErrors === false) {
+          throw err;
+        }
+        return [];
       } finally {
         roomReadInFlightKeysRef.current.delete(cacheKey);
       }
     },
     []
   );
+  const hydratePlacementLayerNodes = useCallback(
+    async (args: {
+      roomId: string | null;
+      versionId: string | null;
+      trigger: "load" | "room-upload" | "stage-run" | "edit-run" | "paste-to-place";
+    }) => {
+      const roomId = args.roomId?.trim() ?? null;
+      const versionId = args.versionId?.trim() ?? null;
+      const scopeKey = roomId && versionId ? `${roomId}:${versionId}` : null;
+      if (!scopeKey) {
+        placementLayerHydratedScopeKeyRef.current = null;
+        placementLayerInFlightScopeKeyRef.current = null;
+        setPlacementLayerNodes([]);
+        console.log("[placement-layer] hydrated", {
+          trigger: args.trigger,
+          roomId: roomId ?? null,
+          versionId: versionId ?? null,
+          count: 0,
+        });
+        return;
+      }
+      const scopedRoomId = roomId as string;
+      const scopedVersionId = versionId as string;
+      if (placementLayerHydratedScopeKeyRef.current !== scopeKey) {
+        // Prevent stale markers from briefly showing while version-scoped nodes load.
+        setPlacementLayerNodes([]);
+      }
+      if (placementLayerInFlightScopeKeyRef.current === scopeKey) return;
+      placementLayerInFlightScopeKeyRef.current = scopeKey;
+      try {
+        const accessToken = await tryGetSupabaseAccessToken();
+        const res = await fetch(
+          `/api/vibode/room-furniture-placements?roomId=${encodeURIComponent(scopedRoomId)}&versionId=${encodeURIComponent(scopedVersionId)}`,
+          {
+            method: "GET",
+            headers: {
+              "Content-Type": "application/json",
+              ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
+            },
+          }
+        );
+        if (!res.ok) {
+          const text = await res.text().catch(() => "");
+          throw new Error(`HTTP ${res.status} ${text}`.trim());
+        }
+        const payload = (await res.json().catch(() => ({}))) as PlacementLayerListResponse;
+        const rows = Array.isArray(payload.nodes) ? payload.nodes : [];
+        const normalized = rows
+          .map((row) => normalizePlacementLayerNode(row))
+          .filter((row): row is PlacementLayerNode => Boolean(row));
+        placementLayerHydratedScopeKeyRef.current = scopeKey;
+        setPlacementLayerNodes(normalized);
+        console.log("[placement-layer] hydrated", {
+          trigger: args.trigger,
+          roomId,
+          versionId,
+          count: normalized.length,
+        });
+      } catch (err: unknown) {
+        console.warn("[placement-layer] hydrate failed", {
+          trigger: args.trigger,
+          roomId,
+          versionId,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      } finally {
+        if (placementLayerInFlightScopeKeyRef.current === scopeKey) {
+          placementLayerInFlightScopeKeyRef.current = null;
+        }
+      }
+    },
+    []
+  );
 
   useEffect(() => {
+    const roomId = vibodeRoomId?.trim() ?? null;
+    const assetId = activeAssetId?.trim() ?? null;
     const imageUrl = workingImageUrl?.trim() ?? null;
+    if (!roomId && !assetId) return;
     void hydrateRoomImageObjects({
       trigger: "load",
       imageUrl,
-      roomId: vibodeRoomId,
-      assetId: activeAssetId,
-      versionId: activeAssetId,
+      roomId,
+      assetId,
+      versionId: assetId,
+      mode: "geometry",
       allowRoomReadOnMiss: false,
     });
   }, [activeAssetId, hydrateRoomImageObjects, vibodeRoomId, workingImageUrl]);
+  useEffect(() => {
+    void hydratePlacementLayerNodes({
+      roomId: vibodeRoomId,
+      versionId: activeAssetId,
+      trigger: "load",
+    });
+  }, [activeAssetId, hydratePlacementLayerNodes, vibodeRoomId, workingImageUrl]);
   const isBaseImageEditReady = useMemo(() => {
     return (
       !isRoomHydrating &&
@@ -2976,7 +4227,7 @@ function EditorPageInner() {
       1)
     : null;
   const isCanvasEmpty = !hasCanvasPresentationImage;
-  const isOpeningExistingRoom = Boolean(requestedRoomId);
+  const isOpeningExistingRoom = Boolean(effectiveRequestedRoomId) || isWorkspaceRecoveryPending;
   const shouldShowUploadOverlay = isCanvasEmpty && !isOpeningExistingRoom;
   const activePasteSourcePreviewUrl = activePasteSource
     ? activePasteSource.type === "my_furniture"
@@ -2998,6 +4249,9 @@ function EditorPageInner() {
     activePasteSource?.type === "my_furniture" ? activePasteSource.selectionCount : 0;
   const myFurniturePreparedSelectedPreviewUrls =
     activePasteSource?.type === "my_furniture" ? activePasteSource.selectedPreviewUrls : [];
+  const isClipboardPasteToPlaceIngestPending =
+    isPasteToPlaceMenuIngesting &&
+    (pasteToPlaceStatus === "reading" || pasteToPlaceStatus === "preparing");
   const productUrlPreparedDisplayName =
     activePasteSource?.type === "product_url" ? activePasteSource.displayName : null;
   const productUrlPreparedSupplier =
@@ -3006,9 +4260,165 @@ function EditorPageInner() {
     activePasteSource?.type === "product_url" ? activePasteSource.sourceUrl : null;
   const selectedVersionId =
     activeAssetId ?? versions.find((asset) => asset.is_active)?.id ?? null;
+  const lastSnapshotPersistSkipReasonRef = useRef<string | null>(null);
+  const persistWorkspaceSnapshot = useCallback(
+    (overrides?: Partial<VibodeEditorWorkspaceSnapshot>) => {
+      if (typeof window === "undefined") return;
+      const emitSkipLog = (reason: string) => {
+        if (lastSnapshotPersistSkipReasonRef.current === reason) return;
+        lastSnapshotPersistSkipReasonRef.current = reason;
+        logEditorRecovery("[editor-recovery] skipped snapshot persist", {
+          reason,
+          roomId: vibodeRoomId,
+          versionId: selectedVersionId,
+          isRoomHydrating,
+          isWorkspaceRecoveryPending,
+          versionCount: versions.length,
+          isRoomOpenRevealSettling,
+          isCanvasHydratingRoom: canvasPresentation.isHydratingRoom,
+        });
+      };
+
+      if (isRoomHydrating) {
+        emitSkipLog("room_hydrating");
+        return;
+      }
+      if (isWorkspaceRecoveryPending) {
+        emitSkipLog("workspace_recovery_pending");
+        return;
+      }
+      if (isExplicitBlankEditorIntent) {
+        emitSkipLog("explicit_blank_editor_intent");
+        return;
+      }
+      if (versions.length === 0 && (canvasPresentation.isHydratingRoom || isRoomOpenRevealSettling)) {
+        emitSkipLog("versions_empty_during_hydration_settling");
+        return;
+      }
+
+      const nextSnapshot: VibodeEditorWorkspaceSnapshot = {
+        roomId: overrides?.roomId ?? vibodeRoomId ?? null,
+        versionId: overrides?.versionId ?? selectedVersionId ?? null,
+        furnitureLayerEnabled:
+          overrides?.furnitureLayerEnabled ?? isFurnitureLayerEnabled,
+        timestamp: Date.now(),
+      };
+      if (!nextSnapshot.roomId && !nextSnapshot.versionId) {
+        emitSkipLog("missing_room_and_version");
+        return;
+      }
+      if (!nextSnapshot.roomId) {
+        emitSkipLog("missing_room");
+        return;
+      }
+
+      lastSnapshotPersistSkipReasonRef.current = null;
+      try {
+        window.sessionStorage.setItem(
+          VIBODE_EDITOR_WORKSPACE_KEY,
+          JSON.stringify(nextSnapshot)
+        );
+      } catch {
+        // Ignore storage write errors.
+      }
+    },
+    [
+      canvasPresentation.isHydratingRoom,
+      isFurnitureLayerEnabled,
+      isRoomHydrating,
+      isRoomOpenRevealSettling,
+      isExplicitBlankEditorIntent,
+      isWorkspaceRecoveryPending,
+      selectedVersionId,
+      vibodeRoomId,
+      versions.length,
+    ]
+  );
+  const persistWorkspaceSnapshotForBillingNavigation = useCallback(() => {
+    persistWorkspaceSnapshot();
+  }, [persistWorkspaceSnapshot]);
+  useEffect(() => {
+    persistWorkspaceSnapshot();
+  }, [persistWorkspaceSnapshot]);
   const selectedVersion = useMemo(
     () => versions.find((asset) => asset.id === selectedVersionId) ?? null,
     [selectedVersionId, versions]
+  );
+  const selectedVersionRenderedPlacementStateHash = useMemo(
+    () => readRenderedPlacementStateHashFromMetadata(selectedVersion?.metadata),
+    [selectedVersion?.metadata]
+  );
+  const selectedVersionRenderedPlacementSnapshot = useMemo(
+    () => readRenderedPlacementSnapshotFromMetadata(selectedVersion?.metadata),
+    [selectedVersion?.metadata]
+  );
+  const selectedVersionOriginalPlacementStateHash = useMemo(
+    () => readOriginalPlacementStateHashFromMetadata(selectedVersion?.metadata),
+    [selectedVersion?.metadata]
+  );
+  const selectedVersionOriginalPlacementSnapshot = useMemo(
+    () => readOriginalPlacementSnapshotFromMetadata(selectedVersion?.metadata),
+    [selectedVersion?.metadata]
+  );
+  const selectedVersionIdRef = useRef<string | null>(selectedVersionId);
+  const selectedVersionRenderedPlacementStateHashRef = useRef<string | null>(
+    selectedVersionRenderedPlacementStateHash
+  );
+  const selectedVersionOriginalPlacementStateHashRef = useRef<string | null>(
+    selectedVersionOriginalPlacementStateHash
+  );
+  const selectedVersionOriginalPlacementSnapshotRef = useRef<NormalizedPlacementStateRow[] | null>(
+    selectedVersionOriginalPlacementSnapshot
+  );
+  useEffect(() => {
+    selectedVersionIdRef.current = selectedVersionId;
+  }, [selectedVersionId]);
+  useEffect(() => {
+    selectedVersionRenderedPlacementStateHashRef.current = selectedVersionRenderedPlacementStateHash;
+  }, [selectedVersionRenderedPlacementStateHash]);
+  useEffect(() => {
+    selectedVersionOriginalPlacementStateHashRef.current = selectedVersionOriginalPlacementStateHash;
+  }, [selectedVersionOriginalPlacementStateHash]);
+  useEffect(() => {
+    selectedVersionOriginalPlacementSnapshotRef.current = selectedVersionOriginalPlacementSnapshot;
+  }, [selectedVersionOriginalPlacementSnapshot]);
+  const computePlacementStateHashAndSnapshot = useCallback(async (placements: PlacementLayerNode[]) => {
+    const renderedPlacementSnapshot = normalizePlacementStateForHash(placements);
+    const placementStateHash = await hashPlacementState(placements);
+    return { renderedPlacementSnapshot, placementStateHash };
+  }, []);
+  const updateSceneNeedsUpdateFromPlacements = useCallback(
+    async (
+      placements: PlacementLayerNode[],
+      expectedVersionId: string | null = selectedVersionId,
+      options?: { missingRenderedHashMeansDirty?: boolean }
+    ) => {
+      const activeVersionId = selectedVersionIdRef.current;
+      if (!expectedVersionId || expectedVersionId !== activeVersionId) return false;
+      const missingRenderedHashMeansDirty = options?.missingRenderedHashMeansDirty === true;
+      const renderedHash = selectedVersionRenderedPlacementStateHashRef.current;
+      if (!renderedHash) {
+        if (missingRenderedHashMeansDirty || sceneDirtyLocallyConfirmedRef.current) {
+          setSceneNeedsUpdate(true);
+          setCanRestoreOriginalPlacementPositions(false);
+          return true;
+        }
+        setSceneNeedsUpdate(false);
+        setCanRestoreOriginalPlacementPositions(false);
+        return false;
+      }
+      const placementStateHash = await hashPlacementState(placements);
+      if (expectedVersionId !== selectedVersionIdRef.current) return false;
+      const isDirty = placementStateHash !== renderedHash;
+      setSceneNeedsUpdate(isDirty);
+      const originalHash = selectedVersionOriginalPlacementStateHashRef.current;
+      const hasOriginalSnapshot = Array.isArray(selectedVersionOriginalPlacementSnapshotRef.current);
+      setCanRestoreOriginalPlacementPositions(
+        !isDirty && !!originalHash && hasOriginalSnapshot && placementStateHash !== originalHash
+      );
+      return isDirty;
+    },
+    [selectedVersionId]
   );
   const activeVersionMetadataPlacements = useMemo(
     () => extractScenePlacementsFromUnknown(selectedVersion?.metadata),
@@ -3042,51 +4452,161 @@ function EditorPageInner() {
     },
     [clearLegacyPlacementNodes]
   );
+  const versionsWithKind = useMemo<EditorVersionWithKind[]>(
+    () =>
+      versions.map((version) => ({
+        ...version,
+        versionKind: getVibodeVersionKind(version),
+        isActiveSetEligible: isVersionEligibleForActiveSet(version),
+      })),
+    [versions]
+  );
+  const activeSetVersionId = useMemo(
+    () =>
+      resolveActiveSetVersionId({
+        roomMetadata,
+        versions,
+        baseAssetId: roomBaseAssetId,
+        activeAssetId,
+      }),
+    [activeAssetId, roomBaseAssetId, roomMetadata, versions]
+  );
+  const effectiveBaseSetVersion = useMemo(
+    () =>
+      getEffectiveBaseSetVersion({
+        roomMetadata,
+        versions,
+        baseAssetId: roomBaseAssetId,
+        activeAssetId,
+      }).version,
+    [activeAssetId, roomBaseAssetId, roomMetadata, versions]
+  );
+  useEffect(() => {
+    if (process.env.NODE_ENV === "production") return;
+    if (!vibodeRoomId) return;
+    const eligibleVersionIds = versionsWithKind
+      .filter((version) => version.isActiveSetEligible)
+      .map((version) => version.id);
+    console.debug("[active-set] resolution", {
+      roomId: vibodeRoomId,
+      activeSetVersionId,
+      effectiveBaseSetVersionId: effectiveBaseSetVersion?.id ?? null,
+      eligibleVersionIds,
+      selectedVersionId,
+      activeAssetId,
+      baseAssetId: roomBaseAssetId,
+      hasRoomMetadata: Boolean(roomMetadata),
+    });
+  }, [
+    activeAssetId,
+    activeSetVersionId,
+    effectiveBaseSetVersion?.id,
+    roomBaseAssetId,
+    roomMetadata,
+    selectedVersionId,
+    versionsWithKind,
+    vibodeRoomId,
+  ]);
   const originalVersion = useMemo(() => {
     if (roomBaseAssetId) {
-      const byRoomBaseId = versions.find((asset) => asset.id === roomBaseAssetId);
+      const byRoomBaseId = versionsWithKind.find((asset) => asset.id === roomBaseAssetId);
       if (byRoomBaseId) return byRoomBaseId;
     }
-    return versions.find((asset) => asset.asset_type !== "stage_output") ?? null;
-  }, [roomBaseAssetId, versions]);
-  const nonOriginalVersions = useMemo(() => {
-    const originalId = originalVersion?.id ?? null;
-    const sorted = versions
-      .filter((asset) => asset.id !== originalId)
-      .slice()
-      .sort((a, b) => {
-        const aMs = Date.parse(a.created_at);
-        const bMs = Date.parse(b.created_at);
-        const safeA = Number.isFinite(aMs) ? aMs : 0;
-        const safeB = Number.isFinite(bMs) ? bMs : 0;
-        return safeB - safeA;
-      });
-    return sorted;
-  }, [originalVersion?.id, versions]);
+    return versionsWithKind.find((asset) => asset.asset_type !== "stage_output") ?? null;
+  }, [roomBaseAssetId, versionsWithKind]);
+  const versionsForShelves = useMemo(() => {
+    return versionsWithKind.slice().sort((a, b) => {
+      const aMs = Date.parse(a.created_at);
+      const bMs = Date.parse(b.created_at);
+      const safeA = Number.isFinite(aMs) ? aMs : 0;
+      const safeB = Number.isFinite(bMs) ? bMs : 0;
+      return safeB - safeA;
+    });
+  }, [versionsWithKind]);
   const groupedVersions = useMemo(() => {
-    const today: VibodeRoomAsset[] = [];
-    const thisMonth: VibodeRoomAsset[] = [];
-    const earlier: VibodeRoomAsset[] = [];
-    const now = new Date();
+    const set: EditorVersionWithKind[] = [];
+    const stage: EditorVersionWithKind[] = [];
+    const style: EditorVersionWithKind[] = [];
+    const unknown: EditorVersionWithKind[] = [];
 
-    for (const version of nonOriginalVersions) {
-      const created = new Date(version.created_at);
-      if (Number.isNaN(created.getTime())) {
-        earlier.push(version);
+    for (const version of versionsForShelves) {
+      if (version.versionKind === "set" || version.asset_type === "base") {
+        set.push(version);
         continue;
       }
-      if (isSameLocalDay(created, now)) {
-        today.push(version);
-      } else if (isSameLocalMonth(created, now)) {
-        thisMonth.push(version);
-      } else {
-        earlier.push(version);
+      if (version.versionKind === "stage") {
+        stage.push(version);
+        continue;
       }
+      if (version.versionKind === "style") {
+        style.push(version);
+        continue;
+      }
+      unknown.push(version);
     }
 
-    return { today, thisMonth, earlier };
-  }, [nonOriginalVersions]);
+    return { set, stage, style, unknown };
+  }, [versionsForShelves]);
+  const selectedCanvasVersion = useMemo(
+    () => versionsWithKind.find((asset) => asset.id === selectedVersionId) ?? null,
+    [selectedVersionId, versionsWithKind]
+  );
   const canDeleteVersions = versions.length > 1;
+  const isVersionEligibleForFavourite = useCallback((asset: EditorVersionWithKind): boolean => {
+    return asset.versionKind === "stage" || asset.versionKind === "style";
+  }, []);
+  const isVersionFavourited = useCallback((asset: EditorVersionWithKind): boolean => {
+    if (!isVersionEligibleForFavourite(asset)) return false;
+    const metadata = isRecord(asset.metadata) ? asset.metadata : null;
+    return metadata?.isFavourite === true;
+  }, [isVersionEligibleForFavourite]);
+  const groupedVersionsForDisplay = useMemo(() => {
+    if (!isFavouritesFilterOn) return groupedVersions;
+    return {
+      set: groupedVersions.set,
+      unknown: [] as EditorVersionWithKind[],
+      stage: groupedVersions.stage.filter((version) => isVersionFavourited(version)),
+      style: groupedVersions.style.filter((version) => isVersionFavourited(version)),
+    };
+  }, [groupedVersions, isFavouritesFilterOn, isVersionFavourited]);
+  const isFavouritesFilterEmpty =
+    isFavouritesFilterOn &&
+    groupedVersionsForDisplay.stage.length === 0 &&
+    groupedVersionsForDisplay.style.length === 0;
+
+  useEffect(() => {
+    placementLayerNodesRef.current = placementLayerNodes;
+  }, [placementLayerNodes]);
+
+  useEffect(() => {
+    sceneDirtyLocallyConfirmedRef.current = false;
+    setCanRestoreOriginalPlacementPositions(false);
+  }, [selectedVersionId, vibodeRoomId]);
+
+  useEffect(() => {
+    if (!selectedVersionId || !vibodeRoomId) {
+      setSceneNeedsUpdate(false);
+      setCanRestoreOriginalPlacementPositions(false);
+      return;
+    }
+    const scopeKey = `${vibodeRoomId}:${selectedVersionId}`;
+    if (placementLayerHydratedScopeKeyRef.current !== scopeKey) {
+      return;
+    }
+    if (placementLayerInFlightScopeKeyRef.current === scopeKey) {
+      return;
+    }
+    void (async () => {
+      await updateSceneNeedsUpdateFromPlacements(placementLayerNodesRef.current, selectedVersionId);
+    })();
+  }, [
+    placementLayerNodes,
+    selectedVersionId,
+    selectedVersionOriginalPlacementStateHash,
+    selectedVersionRenderedPlacementStateHash,
+    updateSceneNeedsUpdateFromPlacements,
+    vibodeRoomId,
+  ]);
 
   const applyVersionToEditorState = useCallback(
     (asset: VibodeRoomAsset, sourceVersions: VibodeRoomAsset[]) => {
@@ -3095,6 +4615,7 @@ function EditorPageInner() {
       const versionPlacements = extractScenePlacementsFromUnknown(asset.metadata);
 
       clearPasteToPlaceProgressPreview();
+      setSceneNeedsUpdate(false);
       setWorkingImageUrl(nextUrl);
       setIsWorkingImageGenerated(asset.asset_type === "stage_output");
       setScenePlacements(versionPlacements);
@@ -3152,6 +4673,536 @@ function EditorPageInner() {
       versions,
     ]
   );
+
+  const handleSetVersionAsBaseImage = useCallback(
+    async (asset: EditorVersionWithKind) => {
+      if (!vibodeRoomId) return;
+      if (!asset.isActiveSetEligible) return;
+      if (activeSetVersionId === asset.id) return;
+      if (settingBaseImageVersionId) return;
+
+      setSettingBaseImageVersionId(asset.id);
+      try {
+        let accessToken = await tryGetSupabaseAccessToken();
+        if (!accessToken) {
+          await new Promise<void>((resolve) => setTimeout(resolve, 250));
+          accessToken = await tryGetSupabaseAccessToken();
+        }
+        if (!accessToken) {
+          throw new Error("No Supabase session.");
+        }
+
+        const result = await setActiveSetVersionForRoom({
+          roomId: vibodeRoomId,
+          activeSetVersionId: asset.id,
+          accessToken,
+        });
+
+        setRoomMetadata((prev) => {
+          if (result.metadata) return result.metadata;
+          return {
+            ...(isRecord(prev) ? prev : {}),
+            activeSetVersionId: result.activeSetVersionId,
+          };
+        });
+        pushSnack("Base Image updated.");
+      } catch (err) {
+        console.warn("[editor] failed to set active set version:", err);
+        pushSnack("Couldn't set Base Image right now.");
+      } finally {
+        setSettingBaseImageVersionId(null);
+      }
+    },
+    [activeSetVersionId, pushSnack, settingBaseImageVersionId, vibodeRoomId]
+  );
+
+  const clearSceneRebuildComposeGuardTimers = useCallback(() => {
+    if (sceneRebuildComposeWarningTimerRef.current !== null) {
+      window.clearTimeout(sceneRebuildComposeWarningTimerRef.current);
+      sceneRebuildComposeWarningTimerRef.current = null;
+    }
+    if (sceneRebuildComposeTimeoutTimerRef.current !== null) {
+      window.clearTimeout(sceneRebuildComposeTimeoutTimerRef.current);
+      sceneRebuildComposeTimeoutTimerRef.current = null;
+    }
+  }, []);
+
+  const clearSceneRebuildComposeTimers = useCallback(() => {
+    if (sceneRebuildRenderingMessageTimerRef.current !== null) {
+      window.clearTimeout(sceneRebuildRenderingMessageTimerRef.current);
+      sceneRebuildRenderingMessageTimerRef.current = null;
+    }
+    clearSceneRebuildComposeGuardTimers();
+  }, [clearSceneRebuildComposeGuardTimers]);
+
+  const clearSceneRebuildAbortController = useCallback((controller?: AbortController | null) => {
+    if (!controller) {
+      sceneRebuildAbortControllerRef.current = null;
+      return;
+    }
+    if (sceneRebuildAbortControllerRef.current === controller) {
+      sceneRebuildAbortControllerRef.current = null;
+    }
+  }, []);
+
+  const handleCancelDevSceneRebuild = useCallback(() => {
+    if (!isDevSceneRebuildRunning || devSceneRebuildStage !== "compose") {
+      return;
+    }
+    clearSceneRebuildComposeTimers();
+    setIsDevSceneRebuildRenderingMessageVisible(false);
+    setIsDevSceneRebuildComposeWarningVisible(false);
+    sceneRebuildAbortReasonRef.current = "user_cancel";
+    sceneRebuildAbortControllerRef.current?.abort();
+  }, [clearSceneRebuildComposeTimers, devSceneRebuildStage, isDevSceneRebuildRunning]);
+
+  useEffect(() => {
+    if (!isDevSceneRebuildRunning || devSceneRebuildStage !== "compose") return;
+    if (!isDevSceneRebuildRenderingMessageVisible) return;
+    clearSceneRebuildComposeGuardTimers();
+  }, [
+    clearSceneRebuildComposeGuardTimers,
+    devSceneRebuildStage,
+    isDevSceneRebuildRenderingMessageVisible,
+    isDevSceneRebuildRunning,
+  ]);
+
+  const handleDevRebuildActiveVersion = useCallback(
+    async (options?: {
+      placementIntent?: "user_directed" | "model_decided";
+      modelDecidedFurnitureCandidates?: ModelDecidedFurnitureCandidatePayload[];
+      successMessage?: string;
+      signal?: AbortSignal;
+    }) => {
+    if (isDevSceneRebuildRunning) return;
+
+    if (!vibodeRoomId || !selectedVersionId) {
+      const missingMessage = !vibodeRoomId
+        ? "Select an active room before rebuilding."
+        : "Select an active version before rebuilding.";
+      setDevSceneRebuildFeedback({ tone: "error", message: missingMessage });
+      pushSnack(missingMessage);
+      return;
+    }
+
+    const sourceVersionIdForRenderState = selectedVersionId;
+    setIsDevSceneRebuildRunning(true);
+    setDevSceneRebuildStage("compose");
+    setIsDevSceneRebuildRenderingMessageVisible(false);
+    setIsDevSceneRebuildComposeWarningVisible(false);
+    setDevSceneRebuildFeedback(null);
+
+    const controller = new AbortController();
+    sceneRebuildAbortControllerRef.current?.abort();
+    sceneRebuildAbortControllerRef.current = controller;
+    sceneRebuildAbortReasonRef.current = null;
+    clearSceneRebuildComposeTimers();
+    sceneRebuildRenderingMessageTimerRef.current = window.setTimeout(() => {
+      setIsDevSceneRebuildRenderingMessageVisible(true);
+      clearSceneRebuildComposeGuardTimers();
+    }, SCENE_REBUILD_RENDERING_MESSAGE_DELAY_MS);
+    sceneRebuildComposeWarningTimerRef.current = window.setTimeout(() => {
+      setIsDevSceneRebuildComposeWarningVisible(true);
+    }, SCENE_REBUILD_COMPOSE_WARNING_MS);
+    sceneRebuildComposeTimeoutTimerRef.current = window.setTimeout(() => {
+      sceneRebuildAbortReasonRef.current = "compose_timeout";
+      controller.abort();
+    }, SCENE_REBUILD_COMPOSE_TIMEOUT_MS);
+
+    try {
+      let accessToken = await tryGetSupabaseAccessToken();
+      if (!accessToken) {
+        await new Promise<void>((resolve) => setTimeout(resolve, 250));
+        accessToken = await tryGetSupabaseAccessToken();
+      }
+      if (!accessToken) {
+        throw new Error("No Supabase session.");
+      }
+
+      const res = await fetch("/api/vibode/scene-rebuild", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${accessToken}`,
+        },
+        body: JSON.stringify({
+          roomId: vibodeRoomId,
+          versionId: selectedVersionId,
+          activate: true,
+          placementIntent: options?.placementIntent ?? "user_directed",
+          modelDecidedFurnitureCandidates: options?.modelDecidedFurnitureCandidates,
+          triggerMode:
+            options?.placementIntent === "model_decided" ? "model_decided_auto_place" : undefined,
+        }),
+        signal: options?.signal ?? controller.signal,
+      });
+      clearSceneRebuildComposeTimers();
+      setIsDevSceneRebuildRenderingMessageVisible(false);
+      setIsDevSceneRebuildComposeWarningVisible(false);
+      const json = (await res.json().catch(() => ({}))) as {
+        error?: string;
+        message?: string;
+        outputVersionId?: string;
+        details?: {
+          code?: string;
+          helper?: string;
+        };
+      };
+      if (!res.ok) {
+        if (json.details?.code === "compose_timeout") {
+          const timeoutTitle = "Room preparation took too long";
+          const timeoutHelper =
+            json.details.helper ??
+            "Vibode couldn't finish preparing your room layout. Please try again.";
+          setDevSceneRebuildFeedback({
+            tone: "error",
+            message: timeoutTitle,
+            title: timeoutTitle,
+            helper: timeoutHelper,
+          });
+          pushSnack(timeoutTitle);
+          return;
+        }
+        if (json.details?.code === "compose_cancelled" || json.details?.code === "request_cancelled") {
+          setDevSceneRebuildFeedback(null);
+          return;
+        }
+        const generationFailureMessage = json.error ?? json.message ?? null;
+        if (res.status === 502 || isSceneRebuildGenerationFailure(generationFailureMessage)) {
+          const generationFailureTitle = "Room rendering failed";
+          const generationFailureHelper =
+            "Vibode couldn't finish generating your updated room. Please try again.";
+          setDevSceneRebuildFeedback({
+            tone: "error",
+            message: generationFailureTitle,
+            title: generationFailureTitle,
+            helper: generationFailureHelper,
+          });
+          pushSnack(generationFailureTitle);
+          return;
+        }
+        throw new Error(json.error || json.message || `Scene rebuild failed (HTTP ${res.status})`);
+      }
+
+      setDevSceneRebuildStage("persist");
+      const latestVersions = await refreshRoomVersions(vibodeRoomId);
+      const refreshedActiveVersion =
+        latestVersions?.find((asset) => asset.is_active) ??
+        latestVersions?.find((asset) => asset.id === json.outputVersionId) ??
+        latestVersions?.[0] ??
+        null;
+      if (refreshedActiveVersion && latestVersions) {
+        applyVersionToEditorState(refreshedActiveVersion, latestVersions);
+      }
+      if (latestVersions && !refreshedActiveVersion) {
+        console.warn("[scene-render-state] active output asset missing after rebuild", {
+          roomId: vibodeRoomId,
+          outputVersionId: json.outputVersionId ?? null,
+        });
+      }
+      if (latestVersions && refreshedActiveVersion) {
+        try {
+          const persistedPlacementNodes = await loadPlacementLayerNodesForVersion({
+            roomId: vibodeRoomId,
+            versionId: refreshedActiveVersion.id,
+            accessToken,
+          });
+          const { renderedPlacementSnapshot, placementStateHash } =
+            await computePlacementStateHashAndSnapshot(persistedPlacementNodes);
+          const sceneRenderState = {
+            renderedPlacementStateHash: placementStateHash,
+            renderedPlacementSnapshot,
+            renderedAt: new Date().toISOString(),
+            sourceVersionId: sourceVersionIdForRenderState ?? null,
+          };
+          // Safer long-term: move this metadata write into /api/vibode/scene-rebuild for atomicity.
+          const updatedMetadata = await persistSceneRenderStateForVersion({
+            roomId: vibodeRoomId,
+            assetId: refreshedActiveVersion.id,
+            accessToken,
+            sceneRenderState,
+          });
+          let sourceVersionUpdatedMetadata: Record<string, unknown> | null = null;
+          if (
+            sourceVersionIdForRenderState &&
+            sourceVersionIdForRenderState !== refreshedActiveVersion.id
+          ) {
+            const sourcePlacementNodes = await loadPlacementLayerNodesForVersion({
+              roomId: vibodeRoomId,
+              versionId: sourceVersionIdForRenderState,
+              accessToken,
+            });
+            const sourcePlacementRenderState =
+              await computePlacementStateHashAndSnapshot(sourcePlacementNodes);
+            const sourceSceneRenderState = {
+              renderedPlacementStateHash: sourcePlacementRenderState.placementStateHash,
+              renderedPlacementSnapshot: sourcePlacementRenderState.renderedPlacementSnapshot,
+              renderedAt: new Date().toISOString(),
+              sourceVersionId: sourceVersionIdForRenderState,
+            };
+            sourceVersionUpdatedMetadata = await persistSceneRenderStateForVersion({
+              roomId: vibodeRoomId,
+              assetId: sourceVersionIdForRenderState,
+              accessToken,
+              sceneRenderState: sourceSceneRenderState,
+            });
+          }
+          setVersions(
+            latestVersions.map((asset) => {
+              if (asset.id === refreshedActiveVersion.id) {
+                return {
+                  ...asset,
+                  metadata:
+                    updatedMetadata ??
+                    {
+                      ...(isRecord(asset.metadata) ? asset.metadata : {}),
+                      sceneRenderState,
+                    },
+                };
+              }
+              if (asset.id === sourceVersionIdForRenderState && sourceVersionUpdatedMetadata) {
+                return {
+                  ...asset,
+                  metadata: sourceVersionUpdatedMetadata,
+                };
+              }
+              return asset;
+            })
+          );
+          sceneDirtyLocallyConfirmedRef.current = false;
+          setSceneNeedsUpdate(false);
+        } catch (err: unknown) {
+          console.warn("[scene-render-state] metadata persistence failed", {
+            roomId: vibodeRoomId,
+            outputVersionId: refreshedActiveVersion.id,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
+      }
+
+      const successMessage = options?.successMessage ?? "Scene rebuild complete.";
+      setDevSceneRebuildFeedback({ tone: "success", message: successMessage });
+      pushSnack(successMessage);
+    } catch (err: unknown) {
+      if (isAbortError(err)) {
+        const abortReason = sceneRebuildAbortReasonRef.current;
+        if (abortReason === "compose_timeout") {
+          const timeoutTitle = "Room preparation took too long";
+          const timeoutHelper =
+            "Vibode couldn't finish preparing your room layout. Please try again.";
+          setDevSceneRebuildFeedback({
+            tone: "error",
+            message: timeoutTitle,
+            title: timeoutTitle,
+            helper: timeoutHelper,
+          });
+          pushSnack(timeoutTitle);
+        } else if (abortReason === "user_cancel") {
+          setDevSceneRebuildFeedback(null);
+          pushSnack("Update cancelled.");
+        }
+        return;
+      }
+      const message = getErrorMessage(err) ?? "Scene rebuild failed.";
+      if (isSceneRebuildGenerationFailure(message)) {
+        const generationFailureTitle = "Room rendering failed";
+        const generationFailureHelper =
+          "Vibode couldn't finish generating your updated room. Please try again.";
+        setDevSceneRebuildFeedback({
+          tone: "error",
+          message: generationFailureTitle,
+          title: generationFailureTitle,
+          helper: generationFailureHelper,
+        });
+        pushSnack(generationFailureTitle);
+      } else {
+        setDevSceneRebuildFeedback({ tone: "error", message });
+        pushSnack(message);
+      }
+    } finally {
+      clearSceneRebuildComposeTimers();
+      clearSceneRebuildAbortController(controller);
+      sceneRebuildAbortReasonRef.current = null;
+      setDevSceneRebuildStage(null);
+      setIsDevSceneRebuildRenderingMessageVisible(false);
+      setIsDevSceneRebuildComposeWarningVisible(false);
+      setIsDevSceneRebuildRunning(false);
+    }
+    },
+    [
+    applyVersionToEditorState,
+    clearSceneRebuildAbortController,
+    clearSceneRebuildComposeGuardTimers,
+    clearSceneRebuildComposeTimers,
+    computePlacementStateHashAndSnapshot,
+    isDevSceneRebuildRunning,
+    pushSnack,
+    refreshRoomVersions,
+    selectedVersionId,
+    setVersions,
+    vibodeRoomId,
+    ]
+  );
+
+  const handleRevertPlacementChanges = useCallback(async () => {
+    if (isRevertingPlacementChanges) return;
+
+    const renderedSnapshot = selectedVersionRenderedPlacementSnapshot;
+    if (!vibodeRoomId || !selectedVersionId || !renderedSnapshot) {
+      const missingMessage = !vibodeRoomId
+        ? "Select an active room before reverting."
+        : !selectedVersionId
+          ? "Select an active version before reverting."
+          : "No rendered furniture snapshot is available for this version.";
+      pushSnack(missingMessage);
+      return;
+    }
+
+    const expectedVersionId = selectedVersionId;
+    setIsRevertingPlacementChanges(true);
+
+    try {
+      let accessToken = await tryGetSupabaseAccessToken();
+      if (!accessToken) {
+        await new Promise<void>((resolve) => setTimeout(resolve, 250));
+        accessToken = await tryGetSupabaseAccessToken();
+      }
+      if (!accessToken) {
+        throw new Error("No Supabase session.");
+      }
+
+      const revertedNodes = await revertPlacementLayerNodesToSnapshot({
+        roomId: vibodeRoomId,
+        versionId: expectedVersionId,
+        accessToken,
+        snapshot: renderedSnapshot,
+      });
+
+      if (selectedVersionIdRef.current !== expectedVersionId) return;
+
+      const renderedHash = selectedVersionRenderedPlacementStateHashRef.current;
+      if (renderedHash) {
+        const revertedHash = await hashPlacementState(revertedNodes);
+        if (revertedHash !== renderedHash) {
+          throw new Error("Reverted placement state hash mismatch.");
+        }
+      }
+
+      placementLayerNodesRef.current = revertedNodes;
+      setPlacementLayerNodes(revertedNodes);
+      sceneDirtyLocallyConfirmedRef.current = false;
+      setSceneNeedsUpdate(false);
+      pushSnack("Reverted furniture changes.");
+    } catch (err) {
+      console.warn("[room-furniture-placements][revert] failed", err);
+      pushSnack(getErrorMessage(err) ?? "Couldn't revert furniture changes.");
+    } finally {
+      setIsRevertingPlacementChanges(false);
+    }
+  }, [
+    isRevertingPlacementChanges,
+    pushSnack,
+    selectedVersionId,
+    selectedVersionRenderedPlacementSnapshot,
+    vibodeRoomId,
+  ]);
+
+  const handleRestoreOriginalPlacementPositions = useCallback(async () => {
+    if (isRestoringOriginalPlacementPositions) return;
+
+    const originalSnapshot = selectedVersionOriginalPlacementSnapshot;
+    if (!vibodeRoomId || !selectedVersionId || !originalSnapshot) {
+      const missingMessage = !vibodeRoomId
+        ? "Select an active room before restoring positions."
+        : !selectedVersionId
+          ? "Select an active version before restoring positions."
+          : "Original placement positions aren't available for this version yet.";
+      pushSnack(missingMessage);
+      return;
+    }
+
+    const expectedVersionId = selectedVersionId;
+    setIsRestoringOriginalPlacementPositions(true);
+
+    try {
+      let accessToken = await tryGetSupabaseAccessToken();
+      if (!accessToken) {
+        await new Promise<void>((resolve) => setTimeout(resolve, 250));
+        accessToken = await tryGetSupabaseAccessToken();
+      }
+      if (!accessToken) {
+        throw new Error("No Supabase session.");
+      }
+
+      const restoredNodes = await revertPlacementLayerNodesToSnapshot({
+        roomId: vibodeRoomId,
+        versionId: expectedVersionId,
+        accessToken,
+        snapshot: originalSnapshot,
+      });
+      if (selectedVersionIdRef.current !== expectedVersionId) return;
+
+      const restoredRenderState = await computePlacementStateHashAndSnapshot(restoredNodes);
+      const expectedOriginalHash = selectedVersionOriginalPlacementStateHashRef.current;
+      if (
+        expectedOriginalHash &&
+        restoredRenderState.placementStateHash !== expectedOriginalHash &&
+        expectedVersionId === selectedVersionIdRef.current
+      ) {
+        throw new Error("Restored placement state hash mismatch.");
+      }
+
+      const sceneRenderState = {
+        renderedPlacementStateHash: restoredRenderState.placementStateHash,
+        renderedPlacementSnapshot: restoredRenderState.renderedPlacementSnapshot,
+        renderedAt: new Date().toISOString(),
+        sourceVersionId: expectedVersionId,
+      };
+      const updatedMetadata = await persistSceneRenderStateForVersion({
+        roomId: vibodeRoomId,
+        assetId: expectedVersionId,
+        accessToken,
+        sceneRenderState,
+      });
+      if (selectedVersionIdRef.current !== expectedVersionId) return;
+
+      placementLayerNodesRef.current = restoredNodes;
+      setPlacementLayerNodes(restoredNodes);
+      setVersions(
+        versions.map((asset) =>
+          asset.id === expectedVersionId
+            ? {
+                ...asset,
+                metadata:
+                  updatedMetadata ??
+                  {
+                    ...(isRecord(asset.metadata) ? asset.metadata : {}),
+                    sceneRenderState,
+                  },
+              }
+            : asset
+        )
+      );
+      sceneDirtyLocallyConfirmedRef.current = false;
+      setSceneNeedsUpdate(false);
+      setCanRestoreOriginalPlacementPositions(false);
+      pushSnack("Restored original placement positions.");
+    } catch (err) {
+      console.warn("[room-furniture-placements][restore-original] failed", err);
+      pushSnack(getErrorMessage(err) ?? "Couldn't restore original placement positions.");
+    } finally {
+      setIsRestoringOriginalPlacementPositions(false);
+    }
+  }, [
+    computePlacementStateHashAndSnapshot,
+    isRestoringOriginalPlacementPositions,
+    pushSnack,
+    selectedVersionId,
+    selectedVersionOriginalPlacementSnapshot,
+    setVersions,
+    versions,
+    vibodeRoomId,
+  ]);
 
   const handleRequestDeleteVersion = useCallback(
     (asset: VibodeRoomAsset) => {
@@ -3226,6 +5277,91 @@ function EditorPageInner() {
     vibodeRoomId,
     versions.length,
   ]);
+  const handleToggleVersionFavourite = useCallback(
+    async (asset: EditorVersionWithKind) => {
+      if (!vibodeRoomId) {
+        pushSnack("Couldn't update favourites right now.");
+        return;
+      }
+      if (!isVersionEligibleForFavourite(asset)) return;
+      if (togglingFavouriteVersionId) return;
+
+      const currentIsFavourite = isVersionFavourited(asset);
+      const nextIsFavourite = !currentIsFavourite;
+
+      setTogglingFavouriteVersionId(asset.id);
+      const optimisticVersions = versions.map((version) =>
+        version.id === asset.id
+          ? {
+              ...version,
+              metadata: {
+                ...(isRecord(version.metadata) ? version.metadata : {}),
+                isFavourite: nextIsFavourite,
+              },
+            }
+          : version
+      );
+      setVersions(optimisticVersions);
+
+      try {
+        let accessToken = await tryGetSupabaseAccessToken();
+        if (!accessToken) {
+          await new Promise<void>((resolve) => setTimeout(resolve, 250));
+          accessToken = await tryGetSupabaseAccessToken();
+        }
+        if (!accessToken) {
+          throw new Error("No Supabase session.");
+        }
+
+        const updatedMetadata = await persistVersionMetadataPatchForRoom({
+          roomId: vibodeRoomId,
+          assetId: asset.id,
+          accessToken,
+          metadataPatch: { isFavourite: nextIsFavourite },
+        });
+
+        if (updatedMetadata) {
+          setVersions(
+            optimisticVersions.map((version) =>
+              version.id === asset.id
+                ? {
+                    ...version,
+                    metadata: updatedMetadata,
+                  }
+                : version
+            )
+          );
+        }
+      } catch (err) {
+        console.warn("[editor] failed to toggle version favourite:", err);
+        setVersions(
+          versions.map((version) =>
+            version.id === asset.id
+              ? {
+                  ...version,
+                  metadata: {
+                    ...(isRecord(version.metadata) ? version.metadata : {}),
+                    isFavourite: currentIsFavourite,
+                  },
+                }
+              : version
+          )
+        );
+        pushSnack("Couldn't update favourites right now.");
+      } finally {
+        setTogglingFavouriteVersionId(null);
+      }
+    },
+    [
+      isVersionEligibleForFavourite,
+      isVersionFavourited,
+      pushSnack,
+      setVersions,
+      togglingFavouriteVersionId,
+      vibodeRoomId,
+      versions,
+    ]
+  );
 
   const isImageFile = (file: File | null | undefined) =>
     !!file && typeof file.type === "string" && file.type.startsWith("image/");
@@ -3319,18 +5455,30 @@ function EditorPageInner() {
         resolvedAssetId = activeAsset?.id ?? baseAsset?.id ?? null;
         setActiveAssetId(resolvedAssetId);
       }
-      await hydrateRoomImageObjects({
-        trigger: "room-upload",
-        imageUrl: up.signedUrl,
-        roomId: up.vibodeRoomId ?? null,
-        assetId: resolvedAssetId,
-        versionId: resolvedAssetId,
-        allowRoomReadOnMiss: true,
-      });
+      // Intentional SET-canonical geometry prewarm for base room images.
+      setIsSetGeometryPrewarming(true);
+      void (async () => {
+        try {
+          await hydrateRoomImageObjects({
+            trigger: "set-base-upload",
+            imageUrl: up.signedUrl,
+            roomId: up.vibodeRoomId ?? null,
+            assetId: resolvedAssetId,
+            versionId: resolvedAssetId,
+            mode: "geometry",
+            allowRoomReadOnMiss: true,
+          });
+        } catch (err) {
+          console.warn("[room-image-objects] SET geometry prewarm failed", err);
+        } finally {
+          setIsSetGeometryPrewarming(false);
+        }
+      })();
       pushSnack("Room photo uploaded.");
     } catch (err: unknown) {
       console.error(err);
       setVibodeRoomId(null);
+      setRoomMetadata(null);
       setRoomBaseAssetId(null);
       const message = "Upload didn't finish. Keeping your local preview for now.";
       setRoomPhotoUploadError(message);
@@ -3440,8 +5588,6 @@ function EditorPageInner() {
     }
   };
 
-  const hasActiveRemoveMarker = Boolean(removeMarkerPosition);
-  const hasActiveRotateMarker = Boolean(rotateToolState.marker);
   const removeLabelOptions = useMemo(() => {
     const labels = Array.from(
       new Set(
@@ -3461,6 +5607,121 @@ function EditorPageInner() {
       setSelectedRemoveLabel(REMOVE_LABEL_PLACEHOLDER);
     }
   }, [removeLabelOptions, selectedRemoveLabel]);
+
+  const removeModeOverlayTargets = useMemo<RemoveModeOverlayTarget[]>(() => {
+    const next: RemoveModeOverlayTarget[] = [];
+    removeModeObjects.forEach((object, index) => {
+      const key = deriveDetectedRemoveObjectKey(object, index);
+      const bbox = object.bbox;
+      const hasBboxAnchor =
+        bbox &&
+        Number.isFinite(bbox.x) &&
+        Number.isFinite(bbox.y) &&
+        Number.isFinite(bbox.w) &&
+        Number.isFinite(bbox.h);
+      const centerX =
+        hasBboxAnchor && bbox
+          ? bbox.x + bbox.w / 2
+          : typeof object.centerX === "number" && Number.isFinite(object.centerX)
+            ? object.centerX
+            : null;
+      const centerY =
+        hasBboxAnchor && bbox
+          ? bbox.y
+          : typeof object.centerY === "number" && Number.isFinite(object.centerY)
+            ? object.centerY
+            : null;
+      if (centerX === null || centerY === null) return;
+      const override = removeModeObjectTargetOverrides[key] ?? null;
+      const xNorm =
+        override && Number.isFinite(override.xNorm)
+          ? clampUnit(override.xNorm)
+          : Math.max(0, Math.min(1, centerX));
+      const yNorm =
+        override && Number.isFinite(override.yNorm)
+          ? clampUnit(override.yNorm)
+          : Math.max(0, Math.min(1, centerY));
+      next.push({
+        key,
+        label: object.label,
+        xNorm,
+        yNorm,
+        confidence: object.confidence,
+      });
+    });
+    return next;
+  }, [removeModeObjectTargetOverrides, removeModeObjects]);
+  const removeModeGuidanceManifestDraft = useMemo(
+    () =>
+      deriveRemoveModeGuidanceManifest({
+        removeModeObjects,
+        selectedRemoveObjectKeys,
+        removeModeManualMarkers,
+        removeModeObjectTargetOverrides,
+      }),
+    [
+      removeModeManualMarkers,
+      removeModeObjectTargetOverrides,
+      removeModeObjects,
+      selectedRemoveObjectKeys,
+    ]
+  );
+  const removeModeGuidanceDraftSignature = useMemo(
+    () =>
+      JSON.stringify({
+        detected: removeModeGuidanceManifestDraft.detectedTargets.map((target) => ({
+          sourceKey: target.sourceKey,
+          number: target.number,
+          xNorm: Number(target.xNorm.toFixed(5)),
+          yNorm: Number(target.yNorm.toFixed(5)),
+          label: target.label,
+        })),
+        manual: removeModeGuidanceManifestDraft.manualTargets.map((target) => ({
+          sourceKey: target.sourceKey,
+          xNorm: Number(target.xNorm.toFixed(5)),
+          yNorm: Number(target.yNorm.toFixed(5)),
+        })),
+      }),
+    [removeModeGuidanceManifestDraft]
+  );
+  const isRemoveModeGuidanceFresh = useMemo(
+    () =>
+      Boolean(
+        removeModeGuidanceImageDataUrl &&
+          removeModeGuidanceManifest &&
+          removeModeGuidancePromptText &&
+          removeModeGuidancePreparedSignature &&
+          removeModeGuidancePreparedSignature === removeModeGuidanceDraftSignature
+      ),
+    [
+      removeModeGuidanceDraftSignature,
+      removeModeGuidanceImageDataUrl,
+      removeModeGuidanceManifest,
+      removeModeGuidancePreparedSignature,
+      removeModeGuidancePromptText,
+    ]
+  );
+  useEffect(() => {
+    if (!removeModeGuidanceImageDataUrl) return;
+    if (!removeModeGuidancePreparedSignature) return;
+    if (removeModeGuidancePreparedSignature === removeModeGuidanceDraftSignature) return;
+    setRemoveModeGuidanceImageDataUrl(null);
+    setRemoveModeGuidanceManifest(null);
+    setRemoveModeGuidancePromptText("");
+    setRemoveModeGuidancePreparedSignature("");
+    setRemoveModeGuidanceTargetCount(0);
+  }, [
+    removeModeGuidanceDraftSignature,
+    removeModeGuidanceImageDataUrl,
+    removeModeGuidancePreparedSignature,
+  ]);
+  useEffect(() => {
+    if (!removeModeGuidancePromptText) return;
+    if (!isRoomOpenDebugEnabled()) return;
+    console.log("[remove-mode] guidance prompt preview", {
+      prompt: removeModeGuidancePromptText,
+    });
+  }, [removeModeGuidancePromptText]);
 
   const queuedDeletes = useMemo(
     () => nodes.filter((n) => n.status === "markedForDelete").length,
@@ -3524,38 +5785,6 @@ function EditorPageInner() {
     () => Boolean(productImageUrl.trim() || uploadedImageDataUrl),
     [productImageUrl, uploadedImageDataUrl]
   );
-  const {
-    totalCount,
-    activeCount,
-    userCount,
-    activeUserCount,
-    catalogCount,
-    activeCatalogCount,
-  } = useMemo(() => {
-    let active = 0;
-    let user = 0;
-    let activeUser = 0;
-    let catalog = 0;
-    let activeCatalog = 0;
-    for (const item of stage3SkuItems) {
-      if (item.active) active += 1;
-      if (item.source === "user") {
-        user += 1;
-        if (item.active) activeUser += 1;
-      } else {
-        catalog += 1;
-        if (item.active) activeCatalog += 1;
-      }
-    }
-    return {
-      totalCount: stage3SkuItems.length,
-      activeCount: active,
-      userCount: user,
-      activeUserCount: activeUser,
-      catalogCount: catalog,
-      activeCatalogCount: activeCatalog,
-    };
-  }, [stage3SkuItems]);
 
   const closeSwap = () => {
     if (swapTargetId) setPendingSwap(swapTargetId, false);
@@ -3626,22 +5855,6 @@ function EditorPageInner() {
     pushSnack("Added to Stage 3 items.");
   };
 
-  const toggleStage3SkuItemActive = (skuId: string, active: boolean) => {
-    setStage3SkuItems((prev) =>
-      prev.map((item) => (item.skuId === skuId ? { ...item, active } : item))
-    );
-  };
-
-  const moveStage3SkuItem = (index: number, direction: "up" | "down") => {
-    setStage3SkuItems((prev) => {
-      const targetIndex = direction === "up" ? index - 1 : index + 1;
-      if (targetIndex < 0 || targetIndex >= prev.length) return prev;
-      const next = [...prev];
-      const [moved] = next.splice(index, 1);
-      next.splice(targetIndex, 0, moved);
-      return next;
-    });
-  };
 
   const clearUploadedProductImage = () => {
     setUploadedImageDataUrl(null);
@@ -4074,14 +6287,7 @@ function EditorPageInner() {
         resolvedAssetId = activeAsset?.id ?? latestVersions?.[0]?.id ?? null;
         setActiveAssetId(resolvedAssetId);
       }
-      await hydrateRoomImageObjects({
-        trigger: "stage-run",
-        imageUrl: nextImageUrl,
-        roomId: vibodeRoomId,
-        assetId: resolvedAssetId,
-        versionId: resolvedAssetId,
-        allowRoomReadOnMiss: true,
-      });
+      // Auto room-object reads deprecated. Remove Mode now triggers intentional reads on demand.
 
       if (stageNumber === 3) {
         setHasFurniturePass(true);
@@ -4171,6 +6377,13 @@ function EditorPageInner() {
       suppressCancellationError?: boolean;
       pasteToPlaceControl?: PasteToPlaceJobControl;
       pasteToPlaceSettlingRequestId?: string | null;
+      onPostDurableCommit?: (args: {
+        action: EditAction;
+        roomId: string | null;
+        assetId: string | null;
+        imageUrl: string | null;
+        response: VibodeEditRunResponse;
+      }) => Promise<void> | void;
     }
   ): Promise<VibodeEditRunResponse | null> => {
     if (isOutOfTokens) {
@@ -4209,26 +6422,34 @@ function EditorPageInner() {
       let rotatePayload: { xNorm: number; yNorm: number; rotationDegrees: number } | null = null;
 
       if (action === "remove") {
-        const xNormRaw =
-          parseFiniteNumber(targetRecord.xNorm) ??
-          parseFiniteNumber(targetRecord.x) ??
-          parseFiniteNumber(paramsRecord.xNorm) ??
-          parseFiniteNumber(paramsRecord.x);
-        const yNormRaw =
-          parseFiniteNumber(targetRecord.yNorm) ??
-          parseFiniteNumber(targetRecord.y) ??
-          parseFiniteNumber(paramsRecord.yNorm) ??
-          parseFiniteNumber(paramsRecord.y);
-        if (xNormRaw === null || yNormRaw === null) {
-          const message = "remove requires finite target.xNorm and target.yNorm.";
-          setEditWarning(message);
-          pushSnack(message);
-          return null;
+        const removeMode =
+          typeof paramsRecord.mode === "string" ? paramsRecord.mode.trim().toLowerCase() : null;
+        const isGuidanceImageMode = removeMode === "guidance-image";
+        if (isGuidanceImageMode) {
+          normalizedTarget = payloadParts.target;
+          normalizedParams = { ...paramsRecord, mode: "guidance-image" };
+        } else {
+          const xNormRaw =
+            parseFiniteNumber(targetRecord.xNorm) ??
+            parseFiniteNumber(targetRecord.x) ??
+            parseFiniteNumber(paramsRecord.xNorm) ??
+            parseFiniteNumber(paramsRecord.x);
+          const yNormRaw =
+            parseFiniteNumber(targetRecord.yNorm) ??
+            parseFiniteNumber(targetRecord.y) ??
+            parseFiniteNumber(paramsRecord.yNorm) ??
+            parseFiniteNumber(paramsRecord.y);
+          if (xNormRaw === null || yNormRaw === null) {
+            const message = "remove requires finite target.xNorm and target.yNorm.";
+            setEditWarning(message);
+            pushSnack(message);
+            return null;
+          }
+          const xNorm = Math.max(0, Math.min(1, xNormRaw));
+          const yNorm = Math.max(0, Math.min(1, yNormRaw));
+          normalizedTarget = { xNorm, yNorm, x: xNorm, y: yNorm };
+          normalizedParams = { ...paramsRecord, xNorm, yNorm, x: xNorm, y: yNorm };
         }
-        const xNorm = Math.max(0, Math.min(1, xNormRaw));
-        const yNorm = Math.max(0, Math.min(1, yNormRaw));
-        normalizedTarget = { xNorm, yNorm, x: xNorm, y: yNorm };
-        normalizedParams = { ...paramsRecord, xNorm, yNorm, x: xNorm, y: yNorm };
       } else if (action === "rotate") {
         const xNormRaw =
           parseFiniteNumber(payloadParts.xNorm) ??
@@ -4377,21 +6598,39 @@ function EditorPageInner() {
           assetId: resolvedAssetId,
         });
       } else {
+        if (requestOptions?.onPostDurableCommit) {
+          try {
+            await requestOptions.onPostDurableCommit({
+              action,
+              roomId: roomIdForCommittedImage,
+              assetId: resolvedAssetId,
+              imageUrl: resolvedImageUrl,
+              response: json as VibodeEditRunResponse,
+            });
+          } catch (err: unknown) {
+            console.warn("[placement-layer] post-durable-commit persistence failed", {
+              roomId: roomIdForCommittedImage,
+              error: err instanceof Error ? err.message : String(err),
+            });
+          }
+        }
         if (isPasteToPlaceCommit) {
           console.log("[room-image-objects] paste-to-place hydration requested", {
             imageUrl: resolvedImageUrl,
             roomId: roomIdForCommittedImage,
             assetId: resolvedAssetId,
           });
+          await hydrateRoomImageObjects({
+            trigger: roomImageObjectsTrigger,
+            imageUrl: resolvedImageUrl,
+            roomId: roomIdForCommittedImage,
+            assetId: resolvedAssetId,
+            versionId: resolvedAssetId,
+            allowRoomReadOnMiss: true,
+          });
+        } else {
+          // Auto room-object reads deprecated for ordinary edit-run commits.
         }
-        await hydrateRoomImageObjects({
-          trigger: roomImageObjectsTrigger,
-          imageUrl: resolvedImageUrl,
-          roomId: roomIdForCommittedImage,
-          assetId: resolvedAssetId,
-          versionId: resolvedAssetId,
-          allowRoomReadOnMiss: true,
-        });
       }
       if (isPasteToPlaceCommit) {
         lifecycleOnImageCommitted?.(json as VibodeEditRunResponse);
@@ -4500,7 +6739,13 @@ function EditorPageInner() {
     }: {
       imageBase64: string;
       ingestSource?: "clipboard" | "product_url" | "upload";
-    }): Promise<{ userSku: UserSku; savedFurnitureId: string | null } | null> => {
+    }): Promise<{
+      userSku: UserSku;
+      savedFurnitureId: string | null;
+      savedFurniturePreviewUrl: string | null;
+      savedFurnitureStoragePath: string | null;
+      userSkuStoragePath: string | null;
+    } | null> => {
       try {
         const accessToken = await tryGetSupabaseAccessToken();
         const res = await fetch("/api/vibode/user-skus/ingest", {
@@ -4561,13 +6806,18 @@ function EditorPageInner() {
         }
 
         let savedFurnitureId: string | null = null;
+        let savedFurniturePreviewUrl: string | null = null;
+        let savedFurnitureStoragePath: string | null = null;
         if (isRecord(json.savedFurniture)) {
           const maybeId = (json.savedFurniture as Record<string, unknown>).id;
           if (typeof maybeId === "string" && maybeId.trim().length > 0) {
             savedFurnitureId = maybeId;
           }
+          savedFurniturePreviewUrl = parseSavedFurnitureDurablePreviewUrl(json.savedFurniture);
+          savedFurnitureStoragePath = parseSavedFurnitureStoragePath(json.savedFurniture);
           pushSnack("Saved to My Furniture ✓");
         }
+        const userSkuStoragePath = extractStorageObjectPathFromUnknown(userSku);
         const readyUserSku = userSku as UserSku;
         const normalizedUserSku: UserSku = {
           skuId: readyUserSku.skuId.trim(),
@@ -4583,6 +6833,9 @@ function EditorPageInner() {
         return {
           userSku: normalizedUserSku,
           savedFurnitureId,
+          savedFurniturePreviewUrl,
+          savedFurnitureStoragePath,
+          userSkuStoragePath,
         };
       } catch {
         return null;
@@ -4711,8 +6964,17 @@ function EditorPageInner() {
         type: "clipboard",
         skuId: preparedProduct.skuId,
         preparedProduct,
+        durableSavedPreviewUrl: ingested.savedFurniturePreviewUrl ?? null,
         rawPreviewUrl: clipboardDataUrl,
         normalizedPreviewUrl,
+        sourceImagePathHint:
+          ingested.savedFurnitureStoragePath ??
+          ingested.userSkuStoragePath ??
+          extractStorageObjectPathFromUnknown(preparedProduct),
+        thumbnailPathHint:
+          ingested.savedFurnitureStoragePath ??
+          ingested.userSkuStoragePath ??
+          extractStorageObjectPathFromUnknown(preparedProduct),
         clipboardDataUrlHash,
         requestId,
         activatedAt: Date.now(),
@@ -4849,6 +7111,10 @@ function EditorPageInner() {
         preparedProduct,
         rawPreviewUrl: null,
         normalizedPreviewUrl,
+        sourceImagePathHint:
+          extractStorageObjectPathFromUnknown([prepared, preparedProduct, normalizedPreviewUrl]) ?? null,
+        thumbnailPathHint:
+          extractStorageObjectPathFromUnknown([prepared, preparedProduct, normalizedPreviewUrl]) ?? null,
         displayName,
         supplier,
         domain,
@@ -5000,6 +7266,376 @@ function EditorPageInner() {
     [activatePasteToPlaceSource]
   );
 
+  const createPlacementLayerNodeAfterPasteCommit = useCallback(
+    async (args: {
+      operationId?: number;
+      roomId: string | null;
+      versionId: string | null;
+      furnitureId: string | null;
+      sourceImageUrl: string | null;
+      thumbnailUrl: string | null;
+      sourceImagePath: string | null;
+      thumbnailPath: string | null;
+      xNorm: number;
+      yNorm: number;
+      dedupe?: boolean;
+      metadata?: PlacementMetadata;
+    }) => {
+      const roomId = args.roomId?.trim() ?? null;
+      const versionId = args.versionId?.trim() ?? null;
+      const sourceImageUrl = args.sourceImageUrl?.trim() ?? null;
+      const thumbnailUrl = args.thumbnailUrl?.trim() ?? null;
+      const sourceImagePath = normalizeStorageObjectPathCandidate(args.sourceImagePath);
+      const thumbnailPath = normalizeStorageObjectPathCandidate(args.thumbnailPath);
+      const xRaw = Number.isFinite(args.xNorm) ? args.xNorm : null;
+      const yRaw = Number.isFinite(args.yNorm) ? args.yNorm : null;
+      const x = xRaw === null ? null : Math.max(0, Math.min(1, xRaw));
+      const y = yRaw === null ? null : Math.max(0, Math.min(1, yRaw));
+      const operationId = typeof args.operationId === "number" ? args.operationId : null;
+      const dedupe = args.dedupe === true;
+      const metadata = normalizePlacementMetadata(
+        args.metadata,
+        defaultUserDirectedPlacementMetadata()
+      );
+
+      if (operationId !== null) {
+        const opState = placementNodeCreateGuardByOperationRef.current.get(operationId);
+        if (opState === "in_flight" || opState === "done") {
+          console.info("[placement-layer] node create skipped", {
+            reason: "duplicate operation create attempt",
+            operationId,
+            roomId,
+            versionId,
+          });
+          return;
+        }
+      }
+
+      if (
+        !roomId ||
+        !versionId ||
+        !sourceImageUrl ||
+        !isDurablePlacementSourceImageUrl(sourceImageUrl) ||
+        x === null ||
+        y === null
+      ) {
+        console.info("[placement-layer] node create skipped", {
+          reason: !roomId
+            ? "missing roomId"
+            : !versionId
+              ? "missing versionId"
+            : !sourceImageUrl
+              ? "missing sourceImageUrl"
+              : !isDurablePlacementSourceImageUrl(sourceImageUrl)
+                ? "sourceImageUrl is transient or invalid"
+                : xRaw === null || yRaw === null
+                ? "missing coordinates"
+                : "unknown validation failure",
+          roomId: roomId ?? null,
+          versionId: versionId ?? null,
+          hasSourceImageUrl: Boolean(sourceImageUrl),
+          hasX: xRaw !== null,
+          hasY: yRaw !== null,
+          operationId,
+        });
+        return;
+      }
+
+      try {
+        if (operationId !== null) {
+          placementNodeCreateGuardByOperationRef.current.set(operationId, "in_flight");
+        }
+        const accessToken = await tryGetSupabaseAccessToken();
+        if (!accessToken) {
+          console.info("[placement-layer] node create skipped", {
+            reason: "missing access token",
+            roomId,
+            operationId,
+          });
+          if (operationId !== null) {
+            placementNodeCreateGuardByOperationRef.current.delete(operationId);
+          }
+          return;
+        }
+        const payload = {
+          roomId,
+          versionId,
+          furnitureId: args.furnitureId ?? null,
+          thumbnailUrl,
+          thumbnailPath,
+          sourceImageUrl,
+          sourceImagePath,
+          // Persist normalized [0,1] canvas/image coordinates.
+          x,
+          y,
+          scale: 1,
+          rotation: 0,
+          isVisible: true,
+          dedupe,
+          metadata,
+        };
+        const res = await fetch("/api/vibode/room-furniture-placements", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${accessToken}`,
+          },
+          body: JSON.stringify(payload),
+        });
+        if (!res.ok) {
+          const text = await res.text().catch(() => "");
+          throw new Error(`HTTP ${res.status} ${text}`.trim());
+        }
+        const json = (await res.json().catch(() => ({}))) as PlacementLayerCreateResponse;
+        const createdNode = normalizePlacementLayerNode(json.node);
+        if (!createdNode) {
+          throw new Error("node missing from create response");
+        }
+        const nextNodes = [
+          ...placementLayerNodesRef.current.filter((node) => node.id !== createdNode.id),
+          createdNode,
+        ];
+        placementLayerNodesRef.current = nextNodes;
+        setPlacementLayerNodes(nextNodes);
+        setIsFurnitureLayerEnabled(true);
+        sceneDirtyLocallyConfirmedRef.current = true;
+        await updateSceneNeedsUpdateFromPlacements(nextNodes, versionId, {
+          missingRenderedHashMeansDirty: true,
+        });
+        placementLayerHydratedScopeKeyRef.current = `${roomId}:${versionId}`;
+        console.log("[placement-layer] node created", {
+          roomId,
+          versionId,
+          id: createdNode.id,
+          furnitureId: createdNode.furnitureId,
+          hasSourceImagePath: Boolean(createdNode.sourceImagePath),
+          hasThumbnailPath: Boolean(createdNode.thumbnailPath),
+          operationId,
+        });
+        if (operationId !== null) {
+          placementNodeCreateGuardByOperationRef.current.set(operationId, "done");
+          if (placementNodeCreateGuardByOperationRef.current.size > 200) {
+            const firstKey = placementNodeCreateGuardByOperationRef.current.keys().next().value;
+            if (typeof firstKey === "number") {
+              placementNodeCreateGuardByOperationRef.current.delete(firstKey);
+            }
+          }
+        }
+      } catch (err: unknown) {
+        if (operationId !== null) {
+          placementNodeCreateGuardByOperationRef.current.delete(operationId);
+        }
+        console.warn("[placement-layer] node create failed", {
+          roomId,
+          operationId,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    },
+    [updateSceneNeedsUpdateFromPlacements]
+  );
+
+  const updatePlacementLayerNodePositionLocal = useCallback((id: string, xNorm: number, yNorm: number) => {
+    const x = Math.max(0, Math.min(1, xNorm));
+    const y = Math.max(0, Math.min(1, yNorm));
+    setPlacementLayerNodes((prev) =>
+      prev.map((node) => (node.id === id ? { ...node, x, y } : node))
+    );
+  }, []);
+  const handlePlacementLayerDragStateChange = useCallback((state: PlacementLayerDragState | null) => {
+    setPlacementLayerDragState(state);
+  }, []);
+
+  const persistPlacementLayerNodePosition = useCallback(
+    async (args: {
+      id: string;
+      xNorm: number;
+      yNorm: number;
+      previousXNorm: number;
+      previousYNorm: number;
+    }) => {
+      const id = args.id.trim();
+      if (!id) return;
+      const x = Math.max(0, Math.min(1, args.xNorm));
+      const y = Math.max(0, Math.min(1, args.yNorm));
+      const previousX = Math.max(0, Math.min(1, args.previousXNorm));
+      const previousY = Math.max(0, Math.min(1, args.previousYNorm));
+      let patchAttempted = false;
+      let patchFailure: { status: number; body: string } | null = null;
+      try {
+        const accessToken = await tryGetSupabaseAccessToken();
+        if (!accessToken) {
+          throw new Error("missing access token");
+        }
+        const currentNode =
+          placementLayerNodesRef.current.find((node) => node.id === id) ?? null;
+        const shouldClaimSuggestedMarker =
+          currentNode?.metadata?.ownership === "vibode" &&
+          currentNode?.metadata?.placementSource === "model_vision_inferred";
+        const patchBody: Record<string, unknown> = {
+          id,
+          x,
+          y,
+        };
+        if (shouldClaimSuggestedMarker) {
+          patchBody.metadata = {
+            placementIntent: "model_decided",
+            placementSource: "user_adjusted",
+            ownership: "user",
+            confidence: 1,
+          };
+        }
+        patchAttempted = true;
+        const res = await fetch("/api/vibode/room-furniture-placements", {
+          method: "PATCH",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${accessToken}`,
+          },
+          body: JSON.stringify(patchBody),
+        });
+        if (!res.ok) {
+          const text = await res.text().catch(() => "");
+          patchFailure = { status: res.status, body: text };
+          throw new Error(`HTTP ${res.status} ${text}`.trim());
+        }
+        const payload = (await res.json().catch(() => ({}))) as PlacementLayerCreateResponse;
+        const patchedNode = normalizePlacementLayerNode(payload.node);
+        const nextNodes = placementLayerNodesRef.current.map((node) => {
+          if (node.id !== id) return node;
+          if (patchedNode) return patchedNode;
+          return { ...node, x, y };
+        });
+        placementLayerNodesRef.current = nextNodes;
+        setPlacementLayerNodes(nextNodes);
+        if (shouldClaimSuggestedMarker && selectedVersionId && vibodeRoomId) {
+          let baselineUpdated = false;
+          try {
+            const { renderedPlacementSnapshot, placementStateHash } =
+              await computePlacementStateHashAndSnapshot(nextNodes);
+            const sceneRenderState = {
+              renderedPlacementStateHash: placementStateHash,
+              renderedPlacementSnapshot,
+              renderedAt: new Date().toISOString(),
+              sourceVersionId: selectedVersionId,
+            };
+            const updatedMetadata = await persistSceneRenderStateForVersion({
+              roomId: vibodeRoomId,
+              assetId: selectedVersionId,
+              accessToken,
+              sceneRenderState,
+            });
+            setVersions(
+              versions.map((asset) => {
+                if (asset.id !== selectedVersionId) return asset;
+                return {
+                  ...asset,
+                  metadata:
+                    updatedMetadata ??
+                    {
+                      ...(isRecord(asset.metadata) ? asset.metadata : {}),
+                      sceneRenderState,
+                    },
+                };
+              })
+            );
+            sceneDirtyLocallyConfirmedRef.current = false;
+            setSceneNeedsUpdate(false);
+            setCanRestoreOriginalPlacementPositions(false);
+            baselineUpdated = true;
+          } catch (err: unknown) {
+            console.warn("[placement-layer] failed to persist clean baseline for suggested marker claim", {
+              id,
+              versionId: selectedVersionId,
+              roomId: vibodeRoomId,
+              error: err instanceof Error ? err.message : String(err),
+            });
+          }
+          if (!baselineUpdated) {
+            sceneDirtyLocallyConfirmedRef.current = true;
+            await updateSceneNeedsUpdateFromPlacements(nextNodes, selectedVersionId, {
+              missingRenderedHashMeansDirty: true,
+            });
+          }
+        } else {
+          sceneDirtyLocallyConfirmedRef.current = true;
+          await updateSceneNeedsUpdateFromPlacements(nextNodes, selectedVersionId, {
+            missingRenderedHashMeansDirty: true,
+          });
+        }
+      } catch {
+        if (patchAttempted) {
+          const rolledBackNodes = placementLayerNodesRef.current.map((node) =>
+            node.id === id
+              ? {
+                  ...node,
+                  x: previousX,
+                  y: previousY,
+                }
+              : node
+          );
+          placementLayerNodesRef.current = rolledBackNodes;
+          setPlacementLayerNodes(rolledBackNodes);
+        }
+        if (patchFailure) {
+          console.warn("[placement-layer] node move PATCH failed", {
+            id,
+            status: patchFailure.status,
+            body: patchFailure.body,
+          });
+        }
+        pushSnack("Unable to save furniture marker position.");
+      }
+    },
+    [
+      computePlacementStateHashAndSnapshot,
+      pushSnack,
+      selectedVersionId,
+      setVersions,
+      updateSceneNeedsUpdateFromPlacements,
+      vibodeRoomId,
+      versions,
+    ]
+  );
+
+  const deletePlacementLayerNode = useCallback(
+    async (id: string) => {
+      const trimmedId = id.trim();
+      if (!trimmedId) return;
+      try {
+        const accessToken = await tryGetSupabaseAccessToken();
+        if (!accessToken) {
+          throw new Error("missing access token");
+        }
+        const res = await fetch(`/api/vibode/room-furniture-placements?id=${encodeURIComponent(trimmedId)}`, {
+          method: "DELETE",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${accessToken}`,
+          },
+        });
+        if (!res.ok) {
+          const text = await res.text().catch(() => "");
+          throw new Error(`HTTP ${res.status} ${text}`.trim());
+        }
+        const nextNodes = placementLayerNodesRef.current.filter((node) => node.id !== trimmedId);
+        placementLayerNodesRef.current = nextNodes;
+        setPlacementLayerNodes(nextNodes);
+        sceneDirtyLocallyConfirmedRef.current = true;
+        await updateSceneNeedsUpdateFromPlacements(nextNodes, selectedVersionId, {
+          missingRenderedHashMeansDirty: true,
+        });
+      } catch (err: unknown) {
+        console.warn("[placement-layer] node delete failed", {
+          id: trimmedId,
+          error: err instanceof Error ? err.message : String(err),
+        });
+        pushSnack("Unable to delete furniture marker.");
+      }
+    },
+    [pushSnack, selectedVersionId, updateSceneNeedsUpdateFromPlacements]
+  );
+
   const runPasteToPlaceClickTargetEdit = useCallback(
     async ({
       action,
@@ -5069,45 +7705,78 @@ function EditorPageInner() {
         return true;
       }
 
-      let settlingRequestId: string | null = null;
       try {
-        if (isOperationStale("execute:before_edit_run")) return false;
-        settlingRequestId = beginPasteToPlaceSettlingRequest();
+        if (isOperationStale("execute:before_placement_persist")) return false;
         setPasteToPlaceStatus("placing");
         const sourceForPlacement = resolvedSource;
-        const abortController = beginPasteToPlaceAbortController();
-        const res = await runEdit(
-          action,
-          {
-            target: { skuId: sourceForPlacement.skuId },
-            params: { x: xNorm, y: yNorm },
-            eligibleSkus: sourceForPlacement.preparedProduct.eligibleSkus,
-            placements: scenePlacements,
-          },
-          {
-            beforeCommit: () => !isOperationStale("execute:before_commit"),
-            onImageCommitted: () => {
-              if (isOperationStale("execute:on_image_committed")) return;
-              setPasteToPlaceStatus(null);
-              clearPasteToPlaceProgressPreview();
-            },
-          },
-          {
-            signal: abortController.signal,
-            suppressAbortError: true,
-            suppressCancellationError: true,
-            pasteToPlaceControl,
-            pasteToPlaceSettlingRequestId: settlingRequestId,
-          }
-        );
-        clearPasteToPlaceAbortController(abortController);
-        const isAfterEditStale = isOperationStale("execute:after_edit_run");
-        if (!res) {
-          return true;
+        const initialSavedFurnitureId =
+          sourceForPlacement.preparedProduct.savedFurnitureId ??
+          (sourceForPlacement.type === "product_url" ? sourceForPlacement.furnitureId : null) ??
+          null;
+        const durableNormalizedPreviewUrl = isDurablePlacementSourceImageUrl(
+          sourceForPlacement.normalizedPreviewUrl
+        )
+          ? sourceForPlacement.normalizedPreviewUrl
+          : null;
+        const durableRawPreviewUrl = isDurablePlacementSourceImageUrl(sourceForPlacement.rawPreviewUrl)
+          ? sourceForPlacement.rawPreviewUrl
+          : null;
+        const durableSavedPreviewUrl =
+          sourceForPlacement.type === "clipboard"
+            ? sourceForPlacement.durableSavedPreviewUrl
+            : null;
+        const placementSourceImageUrl =
+          durableSavedPreviewUrl ?? durableNormalizedPreviewUrl ?? durableRawPreviewUrl ?? null;
+        const sourceImagePath =
+          sourceForPlacement.sourceImagePathHint ??
+          extractStorageObjectPathFromUnknown([
+            sourceForPlacement.preparedProduct,
+            sourceForPlacement,
+          ]) ??
+          extractSupabaseStorageObjectPathFromUrl(placementSourceImageUrl);
+        const placementThumbnailUrl = placementSourceImageUrl;
+        const thumbnailPath =
+          sourceForPlacement.thumbnailPathHint ??
+          extractStorageObjectPathFromUnknown([
+            sourceForPlacement.preparedProduct,
+            sourceForPlacement,
+          ]) ??
+          extractSupabaseStorageObjectPathFromUrl(placementThumbnailUrl);
+        const roomIdForPlacement = vibodeRoomId?.trim() ?? null;
+        const versionIdForPlacement = activeAssetId?.trim() ?? null;
+        const placementSource: PlacementSource =
+          action === "swap"
+            ? "swap"
+            : sourceForPlacement.type === "product_url"
+            ? "product_url"
+            : sourceForPlacement.type === "my_furniture"
+            ? "my_furniture"
+            : "clipboard";
+        const placementMetadata = defaultUserDirectedPlacementMetadata(placementSource);
+
+        await createPlacementLayerNodeAfterPasteCommit({
+          operationId,
+          roomId: roomIdForPlacement,
+          versionId: versionIdForPlacement,
+          furnitureId: initialSavedFurnitureId,
+          sourceImageUrl: placementSourceImageUrl,
+          thumbnailUrl: placementThumbnailUrl,
+          sourceImagePath: sourceImagePath ?? null,
+          thumbnailPath: thumbnailPath ?? null,
+          xNorm,
+          yNorm,
+          dedupe: true,
+          metadata: placementMetadata,
+        });
+        if (roomIdForPlacement && versionIdForPlacement) {
+          void hydratePlacementLayerNodes({
+            roomId: roomIdForPlacement,
+            versionId: versionIdForPlacement,
+            trigger: "paste-to-place",
+          });
         }
-        // Placement is already committed at this point; allow product_url post-placement save
-        // to continue even when operation IDs were invalidated by preview cleanup callbacks.
-        if (isAfterEditStale && sourceForPlacement.type !== "product_url") return false;
+
+        const isAfterEditStale = isOperationStale("execute:after_placement_persist");
 
         let savedFurnitureId =
           sourceForPlacement.preparedProduct.savedFurnitureId ??
@@ -5142,7 +7811,6 @@ function EditorPageInner() {
         }
         return true;
       } finally {
-        clearPasteToPlaceAbortController();
         if (!isOperationStale("execute:finally")) {
           setPasteToPlaceStatus(null);
           clearPasteToPlaceProgressPreview();
@@ -5152,6 +7820,7 @@ function EditorPageInner() {
     },
     [
       activeTool,
+      activeAssetId,
       clearPasteToPlaceProgressPreview,
       isBaseImageEditReady,
       isBusy,
@@ -5161,14 +7830,12 @@ function EditorPageInner() {
       isPasteToPlaceOperationActive,
       isRotateMarkerTargeting,
       pushSnack,
-      runEdit,
+      createPlacementLayerNodeAfterPasteCommit,
+      hydratePlacementLayerNodes,
       savePreparedProductUrlToMyFurniture,
-      scenePlacements,
       trackMyFurnitureUsage,
-      beginPasteToPlaceAbortController,
+      vibodeRoomId,
       clearActivePasteToPlaceJobControlIfMatching,
-      clearPasteToPlaceAbortController,
-      beginPasteToPlaceSettlingRequest,
     ]
   );
 
@@ -5200,23 +7867,28 @@ function EditorPageInner() {
       if (isRemoveMarkerTargeting || isRotateMarkerTargeting) {
         return;
       }
+      if (isDevSceneRebuildRunning) {
+        pushSnack("Room update is still running. You can place furniture after this finishes.");
+        return;
+      }
       if (isPasteToPlaceSettling) {
         console.info("[Paste-to-Place][settling] Place blocked because settling", {
           context: "open_menu",
         });
         return;
       }
-      if (pasteToPlaceStatus || isPasteToPlaceMenuIngesting || pasteToPlaceProgressCardState) {
+      if (isClipboardPasteToPlaceIngestPending) {
+        pushSnack("Furniture is still saving. You can place it after this finishes.");
         return;
       }
       beginPasteToPlaceOperation();
       setPasteToPlaceProgressCardState(null);
+      setIsPasteToPlaceMenuIngesting(false);
       setPasteToPlaceMenuState({
         ...state,
         anchorX: state.anchorX ?? state.xNorm,
         anchorY: state.anchorY ?? state.yNorm,
       });
-      setIsPasteToPlaceMenuIngesting(false);
       const currentSource = activePasteSourceRef.current;
       if (currentSource?.type === "product_url") {
         clearPasteToPlaceMenuClipboardPreview();
@@ -5279,12 +7951,12 @@ function EditorPageInner() {
     [
       beginPasteToPlaceOperation,
       clearPasteToPlaceMenuClipboardPreview,
+      isClipboardPasteToPlaceIngestPending,
+      isDevSceneRebuildRunning,
       isRemoveMarkerTargeting,
       isRotateMarkerTargeting,
-      isPasteToPlaceMenuIngesting,
       isPasteToPlaceSettling,
-      pasteToPlaceStatus,
-      pasteToPlaceProgressCardState,
+      pushSnack,
     ]
   );
 
@@ -5309,10 +7981,11 @@ function EditorPageInner() {
       yNorm,
       operationId,
     }: PasteToPlaceClickHint & {
-      operationId: number;
+      operationId?: number;
     }): Promise<PasteToPlaceMenuPreparationResult> => {
       const isOperationStale = (context?: string): boolean => {
         void context;
+        if (typeof operationId !== "number") return false;
         if (isPasteToPlaceOperationActive(operationId)) return false;
         return true;
       };
@@ -5403,9 +8076,7 @@ function EditorPageInner() {
           source: prepared.source,
         };
       } finally {
-        if (!isOperationStale("prepare_from_menu:finally")) {
-          setIsPasteToPlaceMenuIngesting(false);
-        }
+        setIsPasteToPlaceMenuIngesting(false);
       }
     },
     [
@@ -5434,6 +8105,13 @@ function EditorPageInner() {
       pushSnack("Place here is unavailable for multi-selected My Furniture items.");
       return;
     }
+    const sourceSnapshot = activePasteSourceRef.current;
+    if (isClipboardPasteToPlaceIngestPending && sourceSnapshot?.type !== "my_furniture") {
+      pushSnack("Clipboard item is still preparing. Choose My Furniture while it finishes.");
+      return;
+    }
+    const shouldRunWithoutClipboardOperation =
+      isClipboardPasteToPlaceIngestPending && sourceSnapshot?.type === "my_furniture";
 
     if (
       activeTool === "calibrate" ||
@@ -5449,10 +8127,14 @@ function EditorPageInner() {
       return;
     }
 
-    const operationId = beginPasteToPlacePlacementOperation();
-    const pasteToPlaceControl = createPasteToPlaceJobControl(operationId);
-    setActivePasteToPlaceJobControl(pasteToPlaceControl);
-    const isOperationStale = (): boolean => !isPasteToPlaceOperationActive(operationId);
+    const operationId = shouldRunWithoutClipboardOperation ? undefined : beginPasteToPlacePlacementOperation();
+    const pasteToPlaceControl =
+      typeof operationId === "number" ? createPasteToPlaceJobControl(operationId) : undefined;
+    if (pasteToPlaceControl) {
+      setActivePasteToPlaceJobControl(pasteToPlaceControl);
+    }
+    const isOperationStale = (): boolean =>
+      typeof operationId === "number" ? !isPasteToPlaceOperationActive(operationId) : false;
     try {
       if (isOperationStale()) return;
       setPasteToPlaceProgressCardState(menuStateSnapshot);
@@ -5469,7 +8151,7 @@ function EditorPageInner() {
         pasteToPlaceControl,
       });
     } finally {
-      if (pasteToPlaceStatus !== "placing") {
+      if (pasteToPlaceControl && pasteToPlaceStatus !== "placing") {
         clearActivePasteToPlaceJobControlIfMatching(pasteToPlaceControl);
       }
     }
@@ -5480,6 +8162,7 @@ function EditorPageInner() {
     createPasteToPlaceJobControl,
     dismissPasteToPlaceMenu,
     handlePasteToPlaceAdd,
+    isClipboardPasteToPlaceIngestPending,
     isBusy,
     isEditRunning,
     isMyFurnitureMultiPreparedSource,
@@ -5508,6 +8191,13 @@ function EditorPageInner() {
       pushSnack("Swap item is unavailable for multi-selected My Furniture items.");
       return;
     }
+    const sourceSnapshot = activePasteSourceRef.current;
+    if (isClipboardPasteToPlaceIngestPending && sourceSnapshot?.type !== "my_furniture") {
+      pushSnack("Clipboard item is still preparing. Choose My Furniture while it finishes.");
+      return;
+    }
+    const shouldRunWithoutClipboardOperation =
+      isClipboardPasteToPlaceIngestPending && sourceSnapshot?.type === "my_furniture";
     if (
       activeTool === "calibrate" ||
       activeTool === "remove" ||
@@ -5522,10 +8212,14 @@ function EditorPageInner() {
       return;
     }
 
-    const operationId = beginPasteToPlacePlacementOperation();
-    const pasteToPlaceControl = createPasteToPlaceJobControl(operationId);
-    setActivePasteToPlaceJobControl(pasteToPlaceControl);
-    const isOperationStale = (): boolean => !isPasteToPlaceOperationActive(operationId);
+    const operationId = shouldRunWithoutClipboardOperation ? undefined : beginPasteToPlacePlacementOperation();
+    const pasteToPlaceControl =
+      typeof operationId === "number" ? createPasteToPlaceJobControl(operationId) : undefined;
+    if (pasteToPlaceControl) {
+      setActivePasteToPlaceJobControl(pasteToPlaceControl);
+    }
+    const isOperationStale = (): boolean =>
+      typeof operationId === "number" ? !isPasteToPlaceOperationActive(operationId) : false;
     try {
       if (isOperationStale()) return;
       setPasteToPlaceProgressCardState(menuStateSnapshot);
@@ -5543,7 +8237,7 @@ function EditorPageInner() {
         pasteToPlaceControl,
       });
     } finally {
-      if (pasteToPlaceStatus !== "placing") {
+      if (pasteToPlaceControl && pasteToPlaceStatus !== "placing") {
         clearActivePasteToPlaceJobControlIfMatching(pasteToPlaceControl);
       }
     }
@@ -5553,6 +8247,7 @@ function EditorPageInner() {
     clearActivePasteToPlaceJobControlIfMatching,
     createPasteToPlaceJobControl,
     dismissPasteToPlaceMenu,
+    isClipboardPasteToPlaceIngestPending,
     isBusy,
     isEditRunning,
     isMyFurnitureMultiPreparedSource,
@@ -5568,6 +8263,68 @@ function EditorPageInner() {
     setActivePasteToPlaceJobControl,
   ]);
 
+  const buildModelDecidedFurnitureCandidates = useCallback(
+    (source: Exclude<ActivePasteSource, null>): ModelDecidedFurnitureCandidatePayload[] => {
+      const placementSource: ModelDecidedFurnitureCandidatePayload["placementSource"] =
+        source.type === "product_url"
+          ? "product_url"
+          : source.type === "my_furniture"
+          ? "my_furniture"
+          : "clipboard";
+      const fallbackSourceImageUrl =
+        (isDurablePlacementSourceImageUrl(source.normalizedPreviewUrl)
+          ? source.normalizedPreviewUrl
+          : null) ??
+        (isDurablePlacementSourceImageUrl(source.rawPreviewUrl) ? source.rawPreviewUrl : null);
+      const eligibleSkus = source.preparedProduct.eligibleSkus ?? [];
+      const candidates: ModelDecidedFurnitureCandidatePayload[] = [];
+      for (const [index, sku] of eligibleSkus.entries()) {
+        const skuImageUrl =
+          sku.variants.find(
+            (variant) => typeof variant?.imageUrl === "string" && variant.imageUrl.trim().length > 0
+          )?.imageUrl ?? null;
+        const sourceImageUrl =
+          (isDurablePlacementSourceImageUrl(skuImageUrl) ? skuImageUrl : null) ??
+          fallbackSourceImageUrl;
+        if (!sourceImageUrl) continue;
+        const furnitureId =
+          source.type === "my_furniture"
+            ? source.furnitureIds[index] ?? source.furnitureId
+            : source.preparedProduct.savedFurnitureId ?? null;
+        candidates.push({
+          furnitureId: furnitureId ?? null,
+          skuId: sku.skuId ?? null,
+          label: sku.label ?? sku.skuId ?? null,
+          sourceImageUrl,
+          sourceImagePath: extractStorageObjectPathFromUnknown(sourceImageUrl),
+          thumbnailUrl: sourceImageUrl,
+          thumbnailPath: extractStorageObjectPathFromUnknown(sourceImageUrl),
+          placementSource,
+        });
+      }
+      if (candidates.length > 0) return candidates;
+      if (!fallbackSourceImageUrl) return [];
+      return [
+        {
+          furnitureId:
+            source.type === "my_furniture"
+              ? source.furnitureId
+              : source.preparedProduct.savedFurnitureId ?? null,
+          skuId: source.skuId,
+          label: source.preparedProduct.skuId ?? source.skuId,
+          sourceImageUrl: fallbackSourceImageUrl,
+          sourceImagePath:
+            source.sourceImagePathHint ?? extractStorageObjectPathFromUnknown(fallbackSourceImageUrl),
+          thumbnailUrl: fallbackSourceImageUrl,
+          thumbnailPath:
+            source.thumbnailPathHint ?? extractStorageObjectPathFromUnknown(fallbackSourceImageUrl),
+          placementSource,
+        },
+      ];
+    },
+    []
+  );
+
   const handlePasteToPlaceAutoPlace = useCallback(async () => {
     if (!pasteToPlaceMenuState) return;
     if (isPasteToPlaceSettling) {
@@ -5579,6 +8336,15 @@ function EditorPageInner() {
     }
     const menuStateSnapshot = pasteToPlaceMenuState;
     const { xNorm, yNorm } = menuStateSnapshot;
+    const sourceSnapshot = activePasteSourceRef.current;
+    if (isClipboardPasteToPlaceIngestPending) {
+      if (sourceSnapshot?.type === "my_furniture") {
+        pushSnack("Choose Place here or Swap item while clipboard prep finishes.");
+      } else {
+        pushSnack("Clipboard item is still preparing. Choose My Furniture while it finishes.");
+      }
+      return;
+    }
     if (!scene.baseImageUrl || isBusy || isEditRunning) {
       dismissPasteToPlaceMenu();
       return;
@@ -5603,49 +8369,37 @@ function EditorPageInner() {
       if (prepared.status !== "ready") return;
 
       const sourceForExecution = prepared.source;
-      const targetCount =
-        sourceForExecution.type === "my_furniture" && sourceForExecution.selectionCount > 1
-          ? sourceForExecution.selectionCount
-          : 1;
+      const modelDecidedFurnitureCandidates =
+        buildModelDecidedFurnitureCandidates(sourceForExecution);
+      if (modelDecidedFurnitureCandidates.length === 0) {
+        pushSnack("Couldn't prepare furniture candidates for model-decided placement.");
+        return;
+      }
 
-      if (isOperationStale("auto_place:before_stage_run")) return;
+      if (isOperationStale("auto_place:before_scene_rebuild")) return;
       settlingRequestId = beginPasteToPlaceSettlingRequest();
       setPasteToPlaceStatus("placing");
       const abortController = beginPasteToPlaceAbortController();
-      const res = await runStage(
-        3,
-        {
-          eligibleSkus: sourceForExecution.preparedProduct.eligibleSkus,
-          targetCount,
-        },
-        {
-          beforeCommit: () => !isOperationStale("auto_place:before_commit"),
-          onImageCommitted: () => {
-            if (isOperationStale("auto_place:on_image_committed")) return;
-            setPasteToPlaceStatus(null);
-            clearPasteToPlaceProgressPreview();
-          },
-        },
-        {
-          signal: abortController.signal,
-          suppressAbortError: true,
-          suppressCancellationError: true,
-          pasteToPlaceControl,
-          pasteToPlaceSettlingRequestId: settlingRequestId,
-        }
-      );
+      await handleDevRebuildActiveVersion({
+        placementIntent: "model_decided",
+        modelDecidedFurnitureCandidates,
+        successMessage: "Vibode decided placement.",
+        signal: abortController.signal,
+      });
       clearPasteToPlaceAbortController(abortController);
-      if (isOperationStale("auto_place:after_stage_run")) return;
-      if (!res) {
-        return;
-      }
+      if (isOperationStale("auto_place:after_scene_rebuild")) return;
 
       if (!isDevUnlockPasteToPlace) {
         setHasUsedFreePasteToPlace(true);
       }
     } finally {
       clearPasteToPlaceAbortController();
-      if (!isOperationStale("auto_place:finally")) {
+      clearPasteToPlaceSettlingForRequest(settlingRequestId, "auto_place:finally");
+      const shouldClearUiForThisOperation = isSamePasteToPlaceJobControl(
+        activePasteToPlaceJobControlRef.current,
+        pasteToPlaceControl
+      );
+      if (!isOperationStale("auto_place:finally") || shouldClearUiForThisOperation) {
         setPasteToPlaceStatus(null);
         clearPasteToPlaceProgressPreview();
         clearActivePasteToPlaceJobControlIfMatching(pasteToPlaceControl);
@@ -5654,20 +8408,26 @@ function EditorPageInner() {
       }
     }
   }, [
+    activePasteToPlaceJobControlRef,
     beginPasteToPlacePlacementOperation,
     clearActivePasteToPlaceJobControlIfMatching,
     clearPasteToPlaceProgressPreview,
+    clearPasteToPlaceSettlingForRequest,
     createPasteToPlaceJobControl,
     dismissPasteToPlaceMenu,
+    isClipboardPasteToPlaceIngestPending,
     isBusy,
     isDevUnlockPasteToPlace,
     isEditRunning,
     isPasteToPlaceOperationActive,
     isPasteToPlaceSettling,
+    isSamePasteToPlaceJobControl,
     pasteToPlaceMenuState,
     pasteToPlaceStatus,
     preparePasteToPlaceProductFromMenu,
-    runStage,
+    pushSnack,
+    handleDevRebuildActiveVersion,
+    buildModelDecidedFurnitureCandidates,
     scene.baseImageUrl,
     beginPasteToPlaceAbortController,
     beginPasteToPlaceSettlingRequest,
@@ -5691,8 +8451,13 @@ function EditorPageInner() {
       activeStageRunRef.current = null;
       setIsStageRunSettling(false);
       stageRunOperationIdRef.current += 1;
+      clearSceneRebuildComposeTimers();
+      sceneRebuildAbortControllerRef.current?.abort();
+      sceneRebuildAbortControllerRef.current = null;
+      sceneRebuildAbortReasonRef.current = null;
     };
   }, [
+    clearSceneRebuildComposeTimers,
     clearPasteToPlaceCancelCooldownTimer,
     clearStageRunCancelCooldownTimer,
     setActivePasteToPlaceJobControl,
@@ -5871,14 +8636,6 @@ function EditorPageInner() {
     [isRemoveMarkerTargeting, pushSnack, removeMarkerPosition]
   );
 
-  const addRemoveMarker = () => {
-    clearLegacyPlacementNodes();
-    setIsRotateMarkerTargeting(false);
-    setIsRemoveMarkerTargeting(true);
-    setEditWarning(null);
-    pushSnack("Remove marker armed. Click anywhere on the image.");
-  };
-
   const handlePlaceRemoveMarker = useCallback((marker: PasteToPlaceClickHint) => {
     setRemoveMarkerPosition({
       xNorm: marker.xNorm,
@@ -5893,7 +8650,10 @@ function EditorPageInner() {
       warnEdit("Place a remove marker first.");
       return;
     }
-    const label = selectedRemoveLabel || REMOVE_LABEL_FALLBACK;
+    const label =
+      selectedRemoveLabel && selectedRemoveLabel !== REMOVE_LABEL_PLACEHOLDER
+        ? selectedRemoveLabel
+        : REMOVE_LABEL_FALLBACK;
     const removePrompt = buildRemovePromptForLabel(label);
     console.log("[editor][remove] selected remove label", { label });
     console.log("[editor][remove] final remove prompt", { prompt: removePrompt });
@@ -5915,6 +8675,346 @@ function EditorPageInner() {
     setEditWarning(null);
   };
 
+  const engageRemoveMode = useCallback(async () => {
+    if (isRemoveModeReadingObjects) return;
+    const roomId = vibodeRoomId?.trim() ?? null;
+    const assetId = activeAssetId?.trim() ?? null;
+    const imageUrl = workingImageUrl?.trim() ?? null;
+    if (!roomId || !assetId || !imageUrl) {
+      const message = "Open a room version image before engaging Remove Mode.";
+      setRemoveModeError(message);
+      pushSnack(message);
+      return;
+    }
+    if (!isRoomReadImageUrlSupported(imageUrl)) {
+      const message = "Remove Mode needs a supported room image URL.";
+      setRemoveModeError(message);
+      pushSnack(message);
+      return;
+    }
+
+    setIsRemoveModeEnabled(true);
+    setRemoveMarkerPosition(null);
+    setIsRemoveMarkerTargeting(false);
+    setRemoveModeError(null);
+    setSelectedRemoveObjectKeys([]);
+    setRemoveModeObjects([]);
+    setRemoveModeManualMarkers([]);
+    setRemoveModeObjectTargetOverrides({});
+    setRemoveModeGuidanceImageDataUrl(null);
+    setRemoveModeGuidanceManifest(null);
+    setRemoveModeGuidancePromptText("");
+    setRemoveModeGuidancePreparedSignature("");
+    setRemoveModeGuidanceError(null);
+    setRemoveModeGuidanceTargetCount(0);
+    try {
+      const persistedObjects = await hydrateRoomImageObjects({
+        trigger: "remove-mode",
+        imageUrl,
+        roomId,
+        assetId,
+        versionId: assetId,
+        purpose: "remove-mode",
+        mode: "geometry",
+        allowRoomReadOnMiss: false,
+        suppressErrors: false,
+      });
+      if (persistedObjects.length > 0 && hasSufficientGeometryRoomObjects(persistedObjects)) {
+        setRemoveModeObjects(persistedObjects);
+        return;
+      }
+
+      setIsRemoveModeReadingObjects(true);
+      const objects = await hydrateRoomImageObjects({
+        trigger: "remove-mode",
+        imageUrl,
+        roomId,
+        assetId,
+        versionId: assetId,
+        purpose: "remove-mode",
+        mode: "geometry",
+        allowRoomReadOnMiss: true,
+        suppressErrors: false,
+      });
+      setRemoveModeObjects(objects);
+    } catch (err: unknown) {
+      const message = getErrorMessage(err) ?? "Unable to read room objects for Remove Mode.";
+      setRemoveModeError(message);
+      setRemoveModeObjects([]);
+      pushSnack(message);
+    } finally {
+      setIsRemoveModeReadingObjects(false);
+    }
+  }, [
+    activeAssetId,
+    hydrateRoomImageObjects,
+    isRemoveModeReadingObjects,
+    pushSnack,
+    vibodeRoomId,
+    workingImageUrl,
+  ]);
+
+  const exitRemoveMode = useCallback(() => {
+    setIsRemoveModeEnabled(false);
+    setIsRemoveModeReadingObjects(false);
+    setRemoveModeError(null);
+    setRemoveModeObjects([]);
+    setSelectedRemoveObjectKeys([]);
+    setRemoveModeManualMarkers([]);
+    setRemoveModeObjectTargetOverrides({});
+    setRemoveModeGuidanceImageDataUrl(null);
+    setRemoveModeGuidanceManifest(null);
+    setRemoveModeGuidancePromptText("");
+    setRemoveModeGuidancePreparedSignature("");
+    setRemoveModeGuidanceError(null);
+    setRemoveModeGuidanceTargetCount(0);
+  }, []);
+
+  const toggleRemoveModeObjectSelection = useCallback((key: string) => {
+    setSelectedRemoveObjectKeys((prev) => {
+      if (prev.includes(key)) {
+        return prev.filter((existing) => existing !== key);
+      }
+      return [...prev, key];
+    });
+  }, []);
+
+  const handlePlaceRemoveModeManualMarker = useCallback((marker: PasteToPlaceClickHint) => {
+    if (!isRemoveModeEnabled) return;
+    setRemoveModeManualMarkers((prev) => [
+      ...prev,
+      {
+        id: safeId("remove_mode_manual"),
+        xNorm: marker.xNorm,
+        yNorm: marker.yNorm,
+        createdAt: Date.now(),
+      },
+    ]);
+  }, [isRemoveModeEnabled]);
+
+  const removeRemoveModeManualMarker = useCallback((id: string) => {
+    setRemoveModeManualMarkers((prev) => prev.filter((marker) => marker.id !== id));
+  }, []);
+
+  const moveRemoveModeManualMarker = useCallback((id: string, xNorm: number, yNorm: number) => {
+    const x = clampUnit(xNorm);
+    const y = clampUnit(yNorm);
+    setRemoveModeManualMarkers((prev) =>
+      prev.map((marker) => (marker.id === id ? { ...marker, xNorm: x, yNorm: y } : marker))
+    );
+  }, []);
+
+  const updateRemoveModeObjectTargetOverride = useCallback((key: string, xNorm: number, yNorm: number) => {
+    if (!key.trim()) return;
+    const x = clampUnit(xNorm);
+    const y = clampUnit(yNorm);
+    setRemoveModeObjectTargetOverrides((prev) => ({
+      ...prev,
+      [key]: { xNorm: x, yNorm: y },
+    }));
+  }, []);
+
+  const saveRemoveGuidanceDebugImages = useCallback(
+    async (args: {
+      image1Url: string;
+      image2DataUrl: string;
+      manifest: RemoveModeGuidanceManifest;
+      promptText: string;
+    }) => {
+      if (process.env.NODE_ENV === "production") return;
+      try {
+        const res = await fetch("/api/vibode/debug-save-remove-guidance", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            image1Url: args.image1Url,
+            image2DataUrl: args.image2DataUrl,
+            roomId: vibodeRoomId ?? null,
+            versionId: activeAssetId ?? null,
+            targetCount: args.manifest.targetCount,
+            manifest: args.manifest,
+            promptText: args.promptText,
+          }),
+        });
+        if (res.status === 403 || res.status === 404) {
+          return;
+        }
+        if (!res.ok) {
+          const text = await res.text().catch(() => "");
+          throw new Error(`HTTP ${res.status} ${text}`.trim());
+        }
+        const payload = (await res.json().catch(() => ({}))) as {
+          savedFiles?: string[];
+        };
+        console.log("[remove-mode] debug images saved", {
+          fileCount: Array.isArray(payload.savedFiles) ? payload.savedFiles.length : 0,
+        });
+      } catch (debugSaveErr: unknown) {
+        console.warn("[remove-mode] debug save failed", {
+          error: debugSaveErr instanceof Error ? debugSaveErr.message : String(debugSaveErr),
+        });
+      }
+    },
+    [activeAssetId, vibodeRoomId]
+  );
+
+  const removeSelectedWithGuidedRemoveMode = useCallback(async () => {
+    if (isEditRunning || isOutOfTokens) return;
+    if (!isRemoveModeEnabled) {
+      await removeSelectedMarker();
+      return;
+    }
+    if (removeModeGuidanceManifestDraft.targetCount === 0) {
+      const message = "Mark at least one object or manual remove point first.";
+      setRemoveModeGuidanceError(message);
+      setRemoveModeError(message);
+      pushSnack(message);
+      return;
+    }
+
+    const sourceImageUrl = workingImageUrl?.trim() || scene.baseImageUrl?.trim() || null;
+    if (!isServerFetchableImageUrl(sourceImageUrl)) {
+      const message = "Open a valid room image before removing selected items.";
+      setRemoveModeError(message);
+      pushSnack(message);
+      return;
+    }
+    const safeSourceImageUrl = sourceImageUrl as string;
+
+    let guidanceImageDataUrl = removeModeGuidanceImageDataUrl;
+    let guidanceManifestForRequest = removeModeGuidanceManifest;
+    let guidancePromptText = removeModeGuidancePromptText;
+
+    if (!isRemoveModeGuidanceFresh) {
+      setIsPreparingRemoveGuidanceImage(true);
+      setRemoveModeGuidanceError(null);
+      try {
+        guidanceManifestForRequest = removeModeGuidanceManifestDraft;
+        guidancePromptText = buildRemoveModeGuidancePromptText(removeModeGuidanceManifestDraft);
+        guidanceImageDataUrl = await prepareRemoveGuidanceImageDataUrl({
+          imageUrl: safeSourceImageUrl,
+          manifest: removeModeGuidanceManifestDraft,
+        });
+        setRemoveModeGuidanceImageDataUrl(guidanceImageDataUrl);
+        setRemoveModeGuidanceManifest(removeModeGuidanceManifestDraft);
+        setRemoveModeGuidancePromptText(guidancePromptText);
+        setRemoveModeGuidancePreparedSignature(removeModeGuidanceDraftSignature);
+        setRemoveModeGuidanceTargetCount(removeModeGuidanceManifestDraft.targetCount);
+        void saveRemoveGuidanceDebugImages({
+          image1Url: safeSourceImageUrl,
+          image2DataUrl: guidanceImageDataUrl,
+          manifest: removeModeGuidanceManifestDraft,
+          promptText: guidancePromptText,
+        });
+      } catch (err: unknown) {
+        const message = getErrorMessage(err) ?? "Unable to prepare removal guidance image.";
+        setRemoveModeGuidanceError(message);
+        setRemoveModeError(message);
+        pushSnack(message);
+        return;
+      } finally {
+        setIsPreparingRemoveGuidanceImage(false);
+      }
+    }
+
+    if (!guidanceImageDataUrl || !guidanceManifestForRequest || !guidancePromptText) {
+      const message = "Unable to prepare removal guidance image.";
+      setRemoveModeGuidanceError(message);
+      setRemoveModeError(message);
+      pushSnack(message);
+      return;
+    }
+
+    const fallbackTarget =
+      guidanceManifestForRequest.detectedTargets[0] ?? guidanceManifestForRequest.manualTargets[0] ?? null;
+
+    setRemoveModeError(null);
+    setEditWarning(null);
+    pushSnack("Removing selected items…");
+    const res = await runEdit(
+      "remove",
+      {
+        mode: "guidance-image",
+        ...(fallbackTarget
+          ? {
+              target: {
+                xNorm: fallbackTarget.xNorm,
+                yNorm: fallbackTarget.yNorm,
+                x: fallbackTarget.xNorm,
+                y: fallbackTarget.yNorm,
+              },
+            }
+          : {}),
+        params: {
+          mode: "guidance-image",
+          sourceImageUrl: safeSourceImageUrl,
+          sourceVersionId: activeAssetId ?? undefined,
+          guidanceImageDataUrl,
+          guidancePromptText,
+          guidanceManifest: guidanceManifestForRequest,
+          targetCount: guidanceManifestForRequest.targetCount,
+        },
+      },
+      {
+        onImageCommitted: () => {
+          exitRemoveMode();
+        },
+      },
+      {
+        onPostDurableCommit: (args) => {
+          // Intentional SET-canonical geometry prewarm for Remove Selected SET results.
+          setIsSetGeometryPrewarming(true);
+          void (async () => {
+            try {
+              await hydrateRoomImageObjects({
+                trigger: "set-remove-result",
+                imageUrl: args.imageUrl,
+                roomId: args.roomId,
+                assetId: args.assetId,
+                versionId: args.assetId,
+                mode: "geometry",
+                allowRoomReadOnMiss: true,
+              });
+            } catch (err) {
+              console.warn("[room-image-objects] SET geometry prewarm failed", err);
+            } finally {
+              setIsSetGeometryPrewarming(false);
+            }
+          })();
+        },
+      }
+    );
+    if (!res) {
+      const message = "Vibode couldn't remove those items. Please adjust the markers and try again.";
+      setRemoveModeError(message);
+      setEditWarning("Remove failed");
+      pushSnack(message);
+      return;
+    }
+    pushSnack("Items removed. Your cleaned room was saved as a SET version.");
+  }, [
+    activeAssetId,
+    exitRemoveMode,
+    isEditRunning,
+    isOutOfTokens,
+    isRemoveModeEnabled,
+    isRemoveModeGuidanceFresh,
+    hydrateRoomImageObjects,
+    pushSnack,
+    removeModeGuidanceDraftSignature,
+    removeModeGuidanceImageDataUrl,
+    removeModeGuidanceManifest,
+    removeModeGuidanceManifestDraft,
+    removeModeGuidancePromptText,
+    removeSelectedMarker,
+    runEdit,
+    saveRemoveGuidanceDebugImages,
+    scene.baseImageUrl,
+    workingImageUrl,
+  ]);
+
   const clearRotateMarker = useCallback(
     (notify = true) => {
       const hadMarker = Boolean(rotateToolState.marker);
@@ -5929,14 +9029,6 @@ function EditorPageInner() {
     [isRotateMarkerTargeting, pushSnack, rotateToolState.marker]
   );
 
-  const addRotateMarker = useCallback(() => {
-    clearLegacyPlacementNodes();
-    setIsRemoveMarkerTargeting(false);
-    setIsRotateMarkerTargeting(true);
-    setEditWarning(null);
-    pushSnack("Rotate marker armed. Click anywhere on the image.");
-  }, [clearLegacyPlacementNodes, pushSnack]);
-
   const handlePlaceRotateMarker = useCallback((marker: RotateMarker) => {
     setRotateToolState((prev) => ({
       ...prev,
@@ -5948,25 +9040,6 @@ function EditorPageInner() {
     setIsRotateMarkerTargeting(false);
     setEditWarning(null);
   }, []);
-
-  const rotateSelected = async () => {
-    const marker = rotateToolState.marker;
-    if (!marker) {
-      warnEdit("Place a rotate marker first.");
-      return;
-    }
-    const rotationDegrees =
-      rotateToolState.direction === "cw"
-        ? rotateToolState.amountDegrees
-        : -rotateToolState.amountDegrees;
-    const res = await runEdit("rotate", {
-      xNorm: marker.xNorm,
-      yNorm: marker.yNorm,
-      rotationDegrees,
-    });
-    if (!res) return;
-    setEditWarning(null);
-  };
 
   const onGenerate = async () => {
     const localGenId = safeId("gen");
@@ -6597,26 +9670,123 @@ function EditorPageInner() {
   };
   void onGenerate;
 
-  const stage5Locked = activeStage === 5 && !hasFurniturePass && !STAGE5_DEV_BYPASS;
+  const devSceneRebuildMissingReason = !vibodeRoomId
+    ? "Room id missing."
+    : !selectedVersionId
+      ? "Version id missing."
+      : null;
+  const isDevSceneRebuildButtonDisabled =
+    isDevSceneRebuildRunning || Boolean(devSceneRebuildMissingReason);
+  const canCancelDevSceneRebuild =
+    isDevSceneRebuildRunning && devSceneRebuildStage === "compose";
+  const devSceneRebuildProgressCopy = (() => {
+    if (!isDevSceneRebuildRunning || !devSceneRebuildStage) return null;
+    if (devSceneRebuildStage === "compose") {
+      if (isDevSceneRebuildComposeWarningVisible) {
+        return {
+          title: "Still updating your room...",
+          helper: "This is taking longer than usual, but Vibode is still updating your room.",
+        };
+      }
+      if (isDevSceneRebuildRenderingMessageVisible) {
+        return {
+          title: "Rendering your updated room...",
+          helper: "Vibode is generating a new version with your latest furniture layout.",
+        };
+      }
+      return {
+        title: "Updating your room...",
+        helper: "Preparing your furniture layout and rendering your updated room.",
+      };
+    }
+    if (devSceneRebuildStage === "persist") {
+      return {
+        title: "Saving your room version...",
+        helper: "Almost done.",
+      };
+    }
+    return null;
+  })();
+  // TODO(vibode-scene-rebuild): add explicit server/compositor stage events to support true compose/generate transitions.
+  const canShowRevertPlacementChangesButton =
+    showDevSceneRebuildButton &&
+    sceneNeedsUpdate &&
+    selectedVersionRenderedPlacementSnapshot !== null;
+  const isRevertPlacementChangesButtonDisabled =
+    isRevertingPlacementChanges ||
+    isDevSceneRebuildRunning ||
+    Boolean(devSceneRebuildMissingReason);
+  const canShowRestoreOriginalPlacementPositionsAction =
+    !sceneNeedsUpdate && canRestoreOriginalPlacementPositions;
+  const shouldSuppressSceneNeedsUpdateOverlay = Boolean(placementLayerDragState?.startedAsSuggested);
+  const shouldShowSceneNeedsUpdateOverlay =
+    showDevSceneRebuildButton && sceneNeedsUpdate && !shouldSuppressSceneNeedsUpdateOverlay;
+  const isRestoreOriginalPlacementPositionsButtonDisabled =
+    isRestoringOriginalPlacementPositions ||
+    isRevertingPlacementChanges ||
+    isDevSceneRebuildRunning ||
+    Boolean(devSceneRebuildMissingReason);
   const activeStageTokenCost = STAGE_TOKEN_COST[activeStage] ?? DEFAULT_ACTION_TOKEN_COST;
   const activeStageTokenCostLabel = formatTokenCostLabel(activeStageTokenCost);
-  const activeEditTokenCost =
-    activeTool === "swap"
-      ? EDIT_TOKEN_COST.EDIT_SWAP
-      : activeTool === "rotate"
-        ? EDIT_TOKEN_COST.EDIT_ROTATE
-        : DEFAULT_ACTION_TOKEN_COST;
-  const activeEditTokenCostLabel = formatTokenCostLabel(activeEditTokenCost);
-  const renderVersionRow = (asset: VibodeRoomAsset) => {
+  const getVersionPreviewUrl = useCallback((asset: EditorVersionWithKind | null): string | null => {
+    if (!asset) return null;
+    if (typeof asset.preview_url === "string" && asset.preview_url.trim().length > 0) {
+      return asset.preview_url;
+    }
+    if (typeof asset.image_url === "string" && asset.image_url.trim().length > 0) {
+      return asset.image_url;
+    }
+    return null;
+  }, []);
+  const resolveShelfForVersion = useCallback((asset: EditorVersionWithKind): "style" | "stage" | "set" | "unknown" => {
+    if (asset.versionKind === "style") return "style";
+    if (asset.versionKind === "stage") return "stage";
+    if (asset.versionKind === "set" || asset.asset_type === "base") return "set";
+    return "unknown";
+  }, []);
+  const expandOnlyVersionShelf = useCallback((shelf: "style" | "stage" | "set" | "unknown") => {
+    setVersionShelfExpanded({
+      style: shelf === "style",
+      stage: shelf === "stage",
+      set: shelf === "set",
+      unknown: shelf === "unknown",
+    });
+  }, []);
+  const scrollToVersionRow = useCallback((versionId: string) => {
+    if (typeof window === "undefined") return;
+    window.requestAnimationFrame(() => {
+      const row = versionRowRefs.current[versionId];
+      row?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    });
+  }, []);
+  const jumpToVersionViaAnchor = useCallback(
+    (asset: EditorVersionWithKind, forcedShelf?: "style" | "stage" | "set" | "unknown") => {
+      const shelf = forcedShelf ?? resolveShelfForVersion(asset);
+      expandOnlyVersionShelf(shelf);
+      handleSelectVersion(asset);
+      scrollToVersionRow(asset.id);
+    },
+    [expandOnlyVersionShelf, handleSelectVersion, resolveShelfForVersion, scrollToVersionRow]
+  );
+  const renderVersionRow = (asset: EditorVersionWithKind) => {
     const isActive = selectedVersionId === asset.id;
     const secondaryText = getVersionSecondaryLabel(asset);
-    const versionPreviewUrl =
-      typeof asset.preview_url === "string" && asset.preview_url.trim().length > 0
-        ? asset.preview_url
-        : asset.image_url;
+    const isBaseImage = asset.isActiveSetEligible && activeSetVersionId === asset.id;
+    const canSetAsBaseImage = asset.isActiveSetEligible && !isBaseImage;
+    const versionPreviewUrl = getVersionPreviewUrl(asset) ?? "";
     const isDeleting = deletingVersionId === asset.id;
+    const isSettingAsBaseImage = settingBaseImageVersionId === asset.id;
+    const canFavourite = isVersionEligibleForFavourite(asset);
+    const isFavourite = isVersionFavourited(asset);
+    const isTogglingFavourite = togglingFavouriteVersionId === asset.id;
     return (
-      <div key={asset.id} className="flex items-center gap-1.5">
+      <div
+        key={asset.id}
+        ref={(node) => {
+          versionRowRefs.current[asset.id] = node;
+        }}
+        className="flex items-center gap-1.5"
+      >
         <button
           type="button"
           onClick={() => handleSelectVersion(asset)}
@@ -6640,32 +9810,328 @@ function EditorPageInner() {
               {formatVersionTimestamp(asset.created_at)}
             </div>
             <div className="truncate text-[11px] text-neutral-500">{secondaryText}</div>
+            {isBaseImage ? <div className="mt-0.5 text-[10px] text-sky-300">Base Image</div> : null}
           </div>
         </button>
-        {canDeleteVersions ? (
-          <button
-            type="button"
-            className={`rounded-md border px-2 py-1 text-[11px] transition ${
-              deletingVersionId
-                ? "cursor-not-allowed border-neutral-900 bg-neutral-950 text-neutral-600"
-                : "border-neutral-800 bg-neutral-950 text-neutral-400 hover:bg-neutral-800 hover:text-neutral-200"
-            }`}
-            disabled={Boolean(deletingVersionId)}
-            onClick={() => handleRequestDeleteVersion(asset)}
-            aria-label="Delete version"
-            title="Delete version"
-          >
-            {isDeleting ? "Deleting..." : "Delete"}
-          </button>
-        ) : null}
+        <div className="flex flex-none items-center gap-1">
+          {canSetAsBaseImage ? (
+            <button
+              type="button"
+              className={`w-[68px] rounded-md border px-1.5 py-1 text-[10px] leading-tight text-center whitespace-normal transition ${
+                settingBaseImageVersionId
+                  ? "cursor-not-allowed border-neutral-900 bg-neutral-950 text-neutral-600"
+                  : "border-neutral-800 bg-neutral-950 text-neutral-400 hover:bg-neutral-800 hover:text-neutral-200"
+              }`}
+              disabled={Boolean(settingBaseImageVersionId)}
+              onClick={() => {
+                void handleSetVersionAsBaseImage(asset);
+              }}
+              aria-label="Set as Base Image"
+              title="Set as Base Image"
+            >
+              {isSettingAsBaseImage ? (
+                "Setting..."
+              ) : (
+                <>
+                  <span className="block">Set as</span>
+                  <span className="block">Base Image</span>
+                </>
+              )}
+            </button>
+          ) : null}
+          {canFavourite ? (
+            <button
+              type="button"
+              className={`flex h-7 w-7 items-center justify-center rounded-md border transition ${
+                isTogglingFavourite
+                  ? "cursor-not-allowed border-neutral-900 bg-neutral-950 text-neutral-600"
+                  : isFavourite
+                    ? "border-pink-900/70 bg-pink-950/20 text-pink-200 hover:border-pink-800/80 hover:bg-pink-900/25"
+                    : "border-neutral-800 bg-neutral-950 text-neutral-400 hover:bg-neutral-800 hover:text-neutral-200"
+              }`}
+              disabled={Boolean(togglingFavouriteVersionId)}
+              onClick={() => {
+                void handleToggleVersionFavourite(asset);
+              }}
+              aria-label={isFavourite ? "Remove from favourites" : "Add to favourites"}
+              title={isFavourite ? "Remove from favourites" : "Add to favourites"}
+            >
+              <svg
+                aria-hidden="true"
+                viewBox="0 0 16 16"
+                className="h-3.5 w-3.5"
+                fill={isFavourite ? "currentColor" : "none"}
+                xmlns="http://www.w3.org/2000/svg"
+              >
+                <path
+                  d="M8 13.4c-.2 0-.5-.1-.6-.3C6.5 12.2 2.8 9.1 2.8 6.2c0-1.9 1.4-3.2 3.1-3.2 1 0 1.9.5 2.5 1.3.6-.8 1.5-1.3 2.5-1.3 1.7 0 3.1 1.3 3.1 3.2 0 2.9-3.7 6-4.6 6.9-.2.2-.4.3-.6.3Z"
+                  stroke="currentColor"
+                  strokeWidth="1.2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+              </svg>
+            </button>
+          ) : null}
+          {canDeleteVersions ? (
+            <button
+              type="button"
+              className={`flex h-7 w-7 items-center justify-center rounded-md border transition ${
+                deletingVersionId
+                  ? "cursor-not-allowed border-red-950/60 bg-red-950/20 text-red-900/70"
+                  : "border-red-950/60 bg-red-950/10 text-red-300/80 hover:border-red-900/70 hover:bg-red-900/20 hover:text-red-200"
+              }`}
+              disabled={Boolean(deletingVersionId)}
+              onClick={() => handleRequestDeleteVersion(asset)}
+              aria-label="Delete version"
+              title="Delete version"
+            >
+              {isDeleting ? (
+                <svg
+                  aria-hidden="true"
+                  viewBox="0 0 16 16"
+                  className="h-3.5 w-3.5 animate-spin"
+                  fill="none"
+                  xmlns="http://www.w3.org/2000/svg"
+                >
+                  <circle cx="8" cy="8" r="5.5" stroke="currentColor" strokeOpacity="0.3" strokeWidth="1.5" />
+                  <path d="M8 2.5a5.5 5.5 0 0 1 5.5 5.5" stroke="currentColor" strokeWidth="1.5" />
+                </svg>
+              ) : (
+                <svg
+                  aria-hidden="true"
+                  viewBox="0 0 16 16"
+                  className="h-3.5 w-3.5"
+                  fill="none"
+                  xmlns="http://www.w3.org/2000/svg"
+                >
+                  <path d="M2.5 4h11" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+                  <path d="M6.2 2.5h3.6" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+                  <path
+                    d="M4.2 4l.7 8.1a1.2 1.2 0 0 0 1.2 1.1h3.8a1.2 1.2 0 0 0 1.2-1.1L11.8 4"
+                    stroke="currentColor"
+                    strokeWidth="1.4"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  />
+                  <path d="M6.6 6.3v4.9M9.4 6.3v4.9" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
+                </svg>
+              )}
+              <span className="sr-only">{isDeleting ? "Deleting version" : "Delete version"}</span>
+            </button>
+          ) : null}
+        </div>
       </div>
     );
   };
+  const renderCollapsedVersionShelf = (args: {
+    keyName: "style" | "stage" | "set" | "unknown";
+    label: string;
+    versionsInShelf: EditorVersionWithKind[];
+  }) => {
+    const { keyName, label, versionsInShelf } = args;
+    if (versionsInShelf.length === 0) return null;
+
+    const isExpanded = versionShelfExpanded[keyName];
+
+    return (
+      <div key={keyName}>
+        <button
+          type="button"
+          className="flex w-full items-center justify-between rounded-md border border-neutral-800 bg-neutral-950 px-2.5 py-1.5 text-left transition hover:bg-neutral-900"
+          aria-expanded={isExpanded}
+          onClick={() =>
+            setVersionShelfExpanded((prev) => ({
+              ...prev,
+              [keyName]: !prev[keyName],
+            }))
+          }
+        >
+          <div className="min-w-0">
+            <div className="text-[11px] uppercase tracking-wide text-neutral-400">
+              {label} ({versionsInShelf.length})
+            </div>
+          </div>
+          <span className="ml-2 text-xs text-neutral-400">{isExpanded ? "▾" : "▸"}</span>
+        </button>
+        {isExpanded ? <div className="mt-1 space-y-1">{versionsInShelf.map(renderVersionRow)}</div> : null}
+      </div>
+    );
+  };
+  const activeBasePreviewVersion =
+    versionsWithKind.find((asset) => asset.id === activeSetVersionId) ?? originalVersion;
+  const activeCanvasKindLabel = selectedCanvasVersion
+    ? resolveShelfForVersion(selectedCanvasVersion).toUpperCase()
+    : null;
+  const collapseAllVersionShelves = useCallback(() => {
+    setVersionShelfExpanded({
+      style: false,
+      stage: false,
+      set: false,
+      unknown: false,
+    });
+  }, []);
+  const expandAllVersionShelves = useCallback(() => {
+    setVersionShelfExpanded({
+      style: true,
+      stage: true,
+      set: true,
+      unknown: true,
+    });
+  }, []);
+  const isSetWorkflowMode = workflowMode === "set";
+  const isStageWorkflowMode = workflowMode === "stage";
+  const isStyleWorkflowMode = workflowMode === "style";
+  const handleWorkflowTabClick = useCallback((mode: WorkflowMode) => {
+    if (workflowTabSingleClickTimeoutRef.current !== null) {
+      window.clearTimeout(workflowTabSingleClickTimeoutRef.current);
+    }
+    workflowTabSingleClickTimeoutRef.current = window.setTimeout(() => {
+      setWorkflowMode(mode);
+      setPanels((prev) => (prev.workflow ? prev : { ...prev, workflow: true }));
+      workflowTabSingleClickTimeoutRef.current = null;
+    }, 180);
+  }, []);
+  const handleWorkflowTabDoubleClick = useCallback(() => {
+    if (workflowTabSingleClickTimeoutRef.current !== null) {
+      window.clearTimeout(workflowTabSingleClickTimeoutRef.current);
+      workflowTabSingleClickTimeoutRef.current = null;
+    }
+    setPanels((prev) => (prev.workflow ? { ...prev, workflow: false } : prev));
+  }, []);
+  useEffect(
+    () => () => {
+      if (workflowTabSingleClickTimeoutRef.current !== null) {
+        window.clearTimeout(workflowTabSingleClickTimeoutRef.current);
+      }
+    },
+    []
+  );
+  const workflowPanelStage = isStyleWorkflowMode ? 4 : activeStage;
+  const workflowPanelTokenCostLabel = isStyleWorkflowMode
+    ? formatTokenCostLabel(STAGE_TOKEN_COST[4] ?? DEFAULT_ACTION_TOKEN_COST)
+    : activeStageTokenCostLabel;
+  const renderRemoveToolEntryPoint = (className = "mt-3") => (
+    <div className={className}>
+      <div className="text-xs text-neutral-400">Remove</div>
+      <div className="mt-2">
+        <button
+          type="button"
+          disabled={isEditRunning || isRemoveModeReadingObjects || isSetGeometryPrewarming || isRemoveModeEnabled}
+          className={`w-full rounded-md border px-2 py-1.5 text-xs ${
+            isEditRunning || isRemoveModeReadingObjects || isSetGeometryPrewarming
+              ? "border-neutral-900 bg-neutral-950 text-neutral-500"
+              : isRemoveModeEnabled
+                ? "border-sky-500/50 bg-sky-950/30 text-sky-200"
+                : "border-sky-500/70 bg-sky-950/40 text-sky-100 hover:bg-sky-900/50"
+          }`}
+          onClick={() => {
+            void engageRemoveMode();
+          }}
+        >
+          {isRemoveModeReadingObjects
+            ? "Reading room objects…"
+            : isSetGeometryPrewarming
+              ? "Preparing Remove Mode..."
+            : isRemoveModeEnabled
+              ? "Remove Mode Active"
+              : "Engage Remove Mode"}
+        </button>
+        {isSetGeometryPrewarming ? (
+          <div className="mt-1 flex items-center gap-1.5 text-[11px] text-neutral-500">
+            <span
+              aria-hidden="true"
+              className="h-3 w-3 animate-spin rounded-full border border-neutral-500/30 border-t-neutral-200"
+            />
+            <span>Reading your room so Remove Mode is ready...</span>
+          </div>
+        ) : null}
+        {isRemoveModeEnabled ? (
+          <button
+            type="button"
+            disabled={isRemoveModeReadingObjects}
+            className={`mt-1 w-full rounded-md border px-2 py-1 text-[11px] ${
+              isRemoveModeReadingObjects
+                ? "border-neutral-900 bg-neutral-950 text-neutral-500"
+                : "border-neutral-700 bg-neutral-900 text-neutral-300 hover:bg-neutral-800"
+            }`}
+            onClick={exitRemoveMode}
+          >
+            Exit Remove Mode
+          </button>
+        ) : null}
+      </div>
+      <div className="mt-2 rounded-md border border-neutral-800 bg-neutral-950/70 px-2 py-1.5 text-[11px] text-neutral-400">
+        {!isRemoveModeEnabled ? (
+          <div>Use Remove Mode to identify objects before marking them for cleanup.</div>
+        ) : isRemoveModeReadingObjects ? (
+          <div>Reading room objects…</div>
+        ) : removeModeError ? (
+          <div>{removeModeError}</div>
+        ) : removeModeObjects.length > 0 ? (
+          <>
+            <div>Detected {removeModeObjects.length} removable objects.</div>
+            <div className="mt-0.5 text-neutral-500">Object selection canvas overlay coming next.</div>
+          </>
+        ) : (
+          <div>No major objects detected. Manual remove markers will still be available in the next phase.</div>
+        )}
+        {isRemoveModeEnabled ? (
+          <div className="mt-1 text-neutral-500">
+            {formatRemoveModeMarkedCount(selectedRemoveObjectKeys.length)}
+          </div>
+        ) : null}
+        {isRemoveModeEnabled ? (
+          <div className="mt-1 text-neutral-500">
+            {formatRemoveModeManualMarkerCount(removeModeManualMarkers.length)}
+          </div>
+        ) : null}
+      </div>
+      {isRemoveModeEnabled ? (
+        <div className="mt-2 rounded-md border border-neutral-800 bg-neutral-950/70 px-2 py-1.5">
+          <div className="mt-1 text-[11px] text-neutral-400">
+            Click Engage Remove Mode, then select detected objects or click the room to place remove markers.
+          </div>
+          <div className="mt-1 text-[11px] text-neutral-500">
+            Drag labels or markers to refine targets before removing.
+          </div>
+        </div>
+      ) : null}
+      {isRemoveModeEnabled ? (
+        <div className="mt-1 grid grid-cols-2 gap-2">
+          <button
+            type="button"
+            disabled={
+              isEditRunning ||
+              isPreparingRemoveGuidanceImage ||
+              isOutOfTokens ||
+              !workingImageUrl ||
+              removeModeGuidanceManifestDraft.targetCount === 0
+            }
+            className={`col-span-2 rounded-md border px-2 py-1.5 text-xs ${
+              isEditRunning ||
+              isPreparingRemoveGuidanceImage ||
+              isOutOfTokens ||
+              !workingImageUrl ||
+              removeModeGuidanceManifestDraft.targetCount === 0
+                ? "border-neutral-900 bg-neutral-950 text-neutral-500"
+                : "border-neutral-700 bg-neutral-900 text-neutral-100 hover:bg-neutral-800"
+            }`}
+            onClick={() => {
+              void removeSelectedWithGuidedRemoveMode();
+            }}
+          >
+            {isEditRunning ? "Removing selected items…" : "Remove Selected"}
+          </button>
+        </div>
+      ) : null}
+    </div>
+  );
 
   return (
-    <div className="h-dvh w-full overflow-hidden bg-neutral-950 text-neutral-100">
+    <div className="fixed inset-0 z-0 flex min-h-0 flex-col overflow-hidden bg-neutral-950 text-neutral-100">
       {/* Top bar */}
-      <header className="flex h-12 items-center justify-between border-b border-neutral-800 px-4">
+      <header className="flex h-12 shrink-0 items-center justify-between border-b border-neutral-800 px-4">
         <div className="flex items-center gap-3">
           <Link
             href="/my-rooms"
@@ -6696,9 +10162,22 @@ function EditorPageInner() {
               {queuedSwaps > 0 ? `${queuedSwaps} swap${queuedSwaps === 1 ? "" : "s"} pending` : ""}
             </div>
           )}
+          <button
+            type="button"
+            aria-pressed={isFurnitureLayerEnabled}
+            onClick={toggleFurnitureLayer}
+            className={`rounded-md border px-2.5 py-1 text-xs transition ${
+              isFurnitureLayerEnabled
+                ? "border-blue-500/70 bg-blue-900/30 text-blue-100 hover:bg-blue-900/45"
+                : "border-neutral-700 bg-neutral-900 text-neutral-300 hover:bg-neutral-800"
+            }`}
+          >
+            Furniture Layer: {isFurnitureLayerEnabled ? "On" : "Off"}
+          </button>
           <TokenBalanceBadge className="border-neutral-700 bg-neutral-900 text-neutral-200" />
           <Link
             href="/billing"
+            onClick={persistWorkspaceSnapshotForBillingNavigation}
             className="rounded-md border border-neutral-700 bg-neutral-900 px-2.5 py-1 text-xs text-neutral-200 transition hover:bg-neutral-800"
           >
             Top up tokens
@@ -6736,9 +10215,9 @@ function EditorPageInner() {
       </header>
 
       {/* Main */}
-      <div className="flex h-[calc(100dvh-3rem)] w-full min-h-0">
+      <div className="flex min-h-0 flex-1 w-full overflow-hidden">
         {/* Canvas area */}
-        <main className="flex flex-1 items-center justify-center bg-neutral-950">
+        <main className="flex min-h-0 flex-1 items-center justify-center overflow-hidden bg-neutral-950">
           {/* OUTER: owns glow pseudo-elements (NO overflow-hidden) */}
           <div
             className="relative h-[70vh] w-[70vw] max-w-[1200px] rounded-lg precision-ring vibe-glow vibe-aura vibe-aura-animate"
@@ -6916,6 +10395,23 @@ function EditorPageInner() {
                   setSwapTargetId(id);
                   setSwapOpen(true);
                 }}
+                furnitureLayerEnabled={isFurnitureLayerEnabled}
+                onToggleFurnitureLayer={toggleFurnitureLayer}
+                keyboardShortcutsBlocked={isEditorKeyboardShortcutBlocked}
+                placementLayerNodes={placementLayerNodes}
+                onMovePlacementLayerNodeLocal={updatePlacementLayerNodePositionLocal}
+                onCommitPlacementLayerNodeMove={persistPlacementLayerNodePosition}
+                onDeletePlacementLayerNode={deletePlacementLayerNode}
+                onPlacementLayerDragStateChange={handlePlacementLayerDragStateChange}
+                removeModeEnabled={isRemoveModeEnabled}
+                removeModeTargets={removeModeOverlayTargets}
+                selectedRemoveModeTargetKeys={selectedRemoveObjectKeys}
+                onToggleRemoveModeTarget={toggleRemoveModeObjectSelection}
+                onMoveRemoveModeTarget={updateRemoveModeObjectTargetOverride}
+                removeModeManualMarkers={removeModeManualMarkers}
+                onPlaceRemoveModeManualMarker={handlePlaceRemoveModeManualMarker}
+                onMoveRemoveModeManualMarker={moveRemoveModeManualMarker}
+                onRemoveRemoveModeManualMarker={removeRemoveModeManualMarker}
               />
 
               {shouldShowUploadOverlay && (
@@ -6971,71 +10467,165 @@ function EditorPageInner() {
                   ) : null}
                 </div>
               )}
+              {canShowRestoreOriginalPlacementPositionsAction ? (
+                <div className="pointer-events-none absolute inset-x-0 bottom-3 z-20 flex justify-center px-3">
+                  <div className="pointer-events-auto rounded-full border border-neutral-700/80 bg-neutral-950/70 px-3 py-1 shadow-[0_6px_18px_rgba(0,0,0,0.28)] backdrop-blur-sm">
+                    <button
+                      type="button"
+                      onClick={handleRestoreOriginalPlacementPositions}
+                      disabled={isRestoreOriginalPlacementPositionsButtonDisabled}
+                      className={`text-xs transition ${
+                        isRestoreOriginalPlacementPositionsButtonDisabled
+                          ? "cursor-not-allowed text-neutral-600"
+                          : "text-neutral-300 hover:text-neutral-100"
+                      }`}
+                    >
+                      {isRestoringOriginalPlacementPositions
+                        ? "Restoring original placement positions..."
+                        : "Restore original placement positions"}
+                    </button>
+                  </div>
+                </div>
+              ) : null}
             </div>
+            {shouldShowSceneNeedsUpdateOverlay ? (
+              <div className="pointer-events-none absolute inset-x-0 bottom-3 z-30 flex justify-center px-3">
+                <div className="pointer-events-auto w-full max-w-[min(92vw,920px)] rounded-xl border border-neutral-500/35 bg-neutral-950/70 px-3 py-2 shadow-[0_10px_30px_rgba(0,0,0,0.35)] backdrop-blur-md">
+                  <div className="flex flex-wrap items-center justify-center gap-x-3 gap-y-2 text-center sm:justify-between sm:text-left">
+                    <div className="inline-flex items-center gap-1.5 rounded-full border border-amber-400/30 bg-amber-500/10 px-2 py-0.5 text-xs text-amber-200">
+                      <span className="h-1.5 w-1.5 rounded-full bg-amber-300" />
+                      <span>Room needs update</span>
+                    </div>
+                    <div className="text-xs text-neutral-300">Furniture changes are ready to apply.</div>
+                    <div className="flex flex-wrap items-center justify-center gap-2 sm:justify-end">
+                      {canShowRevertPlacementChangesButton ? (
+                        <button
+                          type="button"
+                          onClick={handleRevertPlacementChanges}
+                          disabled={isRevertPlacementChangesButtonDisabled}
+                          className={`rounded border px-2.5 py-1 text-xs ${
+                            isRevertPlacementChangesButtonDisabled
+                              ? "cursor-not-allowed border-neutral-900 bg-neutral-950 text-neutral-600"
+                              : "border-neutral-700 bg-neutral-900 text-neutral-300 hover:bg-neutral-800"
+                          }`}
+                        >
+                          {isRevertingPlacementChanges ? "Reverting..." : "Revert Changes"}
+                        </button>
+                      ) : null}
+                      {canCancelDevSceneRebuild ? (
+                        <button
+                          type="button"
+                          onClick={handleCancelDevSceneRebuild}
+                          className="rounded border border-neutral-700 bg-neutral-900 px-2.5 py-1 text-xs text-neutral-300 transition hover:bg-neutral-800"
+                        >
+                          Cancel
+                        </button>
+                      ) : null}
+                      <button
+                        type="button"
+                        onClick={() => {
+                          void handleDevRebuildActiveVersion();
+                        }}
+                        disabled={isDevSceneRebuildButtonDisabled}
+                        className={`rounded border px-2.5 py-1 text-xs transition ${
+                          isDevSceneRebuildButtonDisabled
+                            ? "cursor-not-allowed border-neutral-900 bg-neutral-950 text-neutral-600"
+                            : "border-sky-300/40 bg-gradient-to-b from-sky-400/20 to-blue-500/20 text-sky-50 shadow-[0_0_16px_rgba(56,189,248,0.24)] hover:border-sky-200/70 hover:from-sky-300/30 hover:to-blue-500/30 hover:shadow-[0_0_22px_rgba(56,189,248,0.38)]"
+                        }`}
+                      >
+                        {isDevSceneRebuildRunning ? "Updating..." : "Update Room"}
+                      </button>
+                    </div>
+                  </div>
+                  {devSceneRebuildProgressCopy ? (
+                    <div className="mt-1.5 text-center sm:text-left">
+                      <div className="flex items-center justify-center gap-1.5 text-xs text-sky-100 sm:justify-start">
+                        <span
+                          aria-hidden="true"
+                          className="h-3 w-3 animate-spin rounded-full border border-sky-300/30 border-t-sky-200"
+                        />
+                        <span>{devSceneRebuildProgressCopy.title}</span>
+                      </div>
+                      <div className="text-[11px] text-neutral-300">{devSceneRebuildProgressCopy.helper}</div>
+                    </div>
+                  ) : null}
+                  {devSceneRebuildMissingReason ? (
+                    <div className="mt-1 text-center text-[11px] text-neutral-500 sm:text-left">
+                      {devSceneRebuildMissingReason}
+                    </div>
+                  ) : null}
+                  {devSceneRebuildFeedback ? (
+                    <div
+                      className={`mt-1 text-center text-[11px] sm:text-left ${
+                        devSceneRebuildFeedback.tone === "success" ? "text-emerald-300" : "text-red-300"
+                      }`}
+                    >
+                      {devSceneRebuildFeedback.title ? (
+                        <div className="text-xs">{devSceneRebuildFeedback.title}</div>
+                      ) : null}
+                      <div>{devSceneRebuildFeedback.helper ?? devSceneRebuildFeedback.message}</div>
+                    </div>
+                  ) : null}
+                </div>
+              </div>
+            ) : null}
           </div>
         </main>
 
         {/* Right panel */}
-        <aside className="h-full w-[340px] border-l border-neutral-800 bg-neutral-950">
-          <div className="h-full overflow-y-auto">
+        <aside className="flex h-full min-h-0 w-[340px] flex-col overflow-hidden border-l border-neutral-800 bg-neutral-950">
+          <div className="min-h-0 flex-1 overflow-y-auto">
             <div className="space-y-4 p-4">
-              <div className="flex justify-end gap-2 border-b border-neutral-800 pb-3">
-                <button
-                  type="button"
-                  onClick={collapseAllRightPanels}
-                  className="rounded-md border border-neutral-800 bg-neutral-900 px-2 py-1 text-xs text-neutral-300 opacity-70 hover:bg-neutral-800 hover:opacity-100"
-                >
-                  - Collapse All
-                </button>
-                <button
-                  type="button"
-                  onClick={expandAllRightPanels}
-                  className="rounded-md border border-neutral-800 bg-neutral-900 px-2 py-1 text-xs text-neutral-300 opacity-70 hover:bg-neutral-800 hover:opacity-100"
-                >
-                  + Expand All
-                </button>
+            <div className="rounded-lg">
+              <div className="-mb-px flex items-end gap-1 px-2">
+                {(
+                  [
+                    { id: "set", label: "SET" },
+                    { id: "stage", label: "STAGE" },
+                    { id: "style", label: "STYLE" },
+                  ] as const
+                ).map((mode) => {
+                  const isActive = workflowMode === mode.id;
+                  return (
+                    <button
+                      key={mode.id}
+                      type="button"
+                      onClick={() => handleWorkflowTabClick(mode.id)}
+                      onDoubleClick={handleWorkflowTabDoubleClick}
+                      aria-pressed={isActive}
+                      className={`rounded-t-md border px-2.5 py-1 text-[11px] font-semibold tracking-[0.08em] transition ${
+                        isActive
+                          ? "border-neutral-700 border-b-neutral-900 bg-neutral-900 text-neutral-100"
+                          : "border-neutral-800 bg-neutral-950 text-neutral-500 hover:border-neutral-700 hover:bg-neutral-900 hover:text-neutral-200"
+                      }`}
+                    >
+                      {mode.label}
+                    </button>
+                  );
+                })}
               </div>
-            <div className="rounded-lg border border-neutral-800 bg-neutral-900 p-3">
-              <div className="flex items-center justify-between">
-                <div className="text-sm font-medium">Workflow</div>
-                <button
-                  type="button"
-                  className="rounded-md border border-neutral-800 bg-neutral-950 px-2 py-1 text-xs text-neutral-300 hover:bg-neutral-800"
-                  aria-label={panels.workflow ? "Collapse Workflow panel" : "Expand Workflow panel"}
-                  aria-expanded={panels.workflow}
-                  aria-controls="workflow-panel-body"
-                  onClick={() =>
-                    setPanels((prev) => ({
-                      ...prev,
-                      workflow: !prev.workflow,
-                    }))
-                  }
-                >
-                  {panels.workflow ? "▾" : "▸"}
-                </button>
-              </div>
-              {panels.workflow ? (
-                <div id="workflow-panel-body">
-                  <div className="mt-1 text-xs text-neutral-400">Five-stage editor workflow skeleton.</div>
-
-                  <div className="mt-3 grid grid-cols-5 gap-1">
-                    {WORKFLOW_STAGES.map((stage) => (
-                      <button
-                        key={stage}
-                        type="button"
-                        onClick={() => {
-                          setActiveStage(stage);
-                        }}
-                        className={`rounded-md border px-2 py-1 text-xs ${
-                          activeStage === stage
-                            ? "border-neutral-600 bg-neutral-800 text-neutral-100"
-                            : "border-neutral-800 bg-neutral-950 text-neutral-300 hover:bg-neutral-800"
-                        }`}
-                      >
-                        {stage}
-                      </button>
-                    ))}
-                  </div>
+              <div className="rounded-lg border border-neutral-800 bg-neutral-900 p-3">
+                <div className="flex items-center justify-between">
+                  <div className="text-sm font-medium">Workflow — {workflowMode.toUpperCase()}</div>
+                  <button
+                    type="button"
+                    className="rounded-md border border-neutral-800 bg-neutral-950 px-2 py-1 text-xs text-neutral-300 hover:bg-neutral-800"
+                    aria-label={panels.workflow ? "Collapse Workflow panel" : "Expand Workflow panel"}
+                    aria-expanded={panels.workflow}
+                    aria-controls="workflow-panel-body"
+                    onClick={() =>
+                      setPanels((prev) => ({
+                        ...prev,
+                        workflow: !prev.workflow,
+                      }))
+                    }
+                  >
+                    {panels.workflow ? "▾" : "▸"}
+                  </button>
+                </div>
+                {panels.workflow ? (
+                  <div id="workflow-panel-body">
+                    <div className="mt-2 text-[11px] text-neutral-500">{WORKFLOW_MODE_HELPER_COPY[workflowMode]}</div>
 
                   <div className="mt-2 text-xs text-neutral-500">
                     Status: {stageStatus[activeStage]} • Furniture pass: {hasFurniturePass ? "yes" : "no"}
@@ -7071,7 +10661,11 @@ function EditorPageInner() {
                   {isOutOfTokens ? (
                     <div className="mt-2 text-[11px] text-neutral-500">
                       Stage and edit actions are paused until you top up.{" "}
-                      <Link href="/billing" className="text-neutral-300 underline underline-offset-2">
+                      <Link
+                        href="/billing"
+                        onClick={persistWorkspaceSnapshotForBillingNavigation}
+                        className="text-neutral-300 underline underline-offset-2"
+                      >
                         Open billing
                       </Link>
                       .
@@ -7079,157 +10673,162 @@ function EditorPageInner() {
                   ) : null}
 
                   <div className="mt-3 rounded-md border border-neutral-800 bg-neutral-950 p-3">
-                    <div className="text-sm font-medium">Stage {activeStage}</div>
+                    <div className="text-sm font-medium">
+                      {isStyleWorkflowMode
+                        ? "Style Workspace"
+                        : isStageWorkflowMode
+                          ? "Stage Workspace"
+                          : `Stage ${activeStage}`}
+                    </div>
 
-                {activeStage === 1 ? (
-                  <>
-                    <label className="mt-3 flex cursor-pointer items-center gap-2 text-sm text-neutral-300">
-                      <input
-                        type="checkbox"
-                        checked={stage1Enhance}
-                        onChange={(e) => setStage1Enhance(e.target.checked)}
-                        className="h-4 w-4 accent-sky-400"
-                      />
-                      Enhance
-                    </label>
-
-                    <div className="mt-3">
-                      <div className="text-xs text-neutral-400">Declutter</div>
-                      <div className="mt-1 flex gap-2">
-                        {(["off", "light", "heavy"] as DeclutterMode[]).map((mode) => (
-                          <button
-                            key={mode}
-                            type="button"
-                            onClick={() => setStage1Declutter(mode)}
-                            className={`rounded-md border px-2 py-1 text-xs ${
-                              stage1Declutter === mode
-                                ? "border-neutral-600 bg-neutral-800 text-neutral-100"
-                                : "border-neutral-800 bg-neutral-900 text-neutral-300 hover:bg-neutral-800"
-                            }`}
-                          >
-                            {mode}
-                          </button>
-                        ))}
+                {isSetWorkflowMode ? (
+                  <div className="mt-3 space-y-3">
+                    <div className="rounded-md border border-neutral-800 bg-neutral-900/50 p-2.5">
+                      <div className="text-[11px] uppercase tracking-wide text-neutral-500">Prepare Room</div>
+                      <label className="mt-2 flex cursor-pointer items-center gap-2 text-sm text-neutral-300">
+                        <input
+                          type="checkbox"
+                          checked={stage1Enhance}
+                          onChange={(e) => setStage1Enhance(e.target.checked)}
+                          className="h-4 w-4 accent-sky-400"
+                        />
+                        Enhance
+                      </label>
+                      <div className="mt-2">
+                        <div className="text-xs text-neutral-400">Declutter</div>
+                        <div className="mt-1 flex gap-2">
+                          {(["off", "light", "heavy"] as DeclutterMode[]).map((mode) => (
+                            <button
+                              key={mode}
+                              type="button"
+                              onClick={() => setStage1Declutter(mode)}
+                              className={`rounded-md border px-2 py-1 text-xs ${
+                                stage1Declutter === mode
+                                  ? "border-neutral-600 bg-neutral-800 text-neutral-100"
+                                  : "border-neutral-800 bg-neutral-900 text-neutral-300 hover:bg-neutral-800"
+                              }`}
+                            >
+                              {mode}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                      <div className="mt-2 flex gap-2">
+                        <button
+                          type="button"
+                          onClick={() =>
+                            runStageWithCancellation(1, {
+                              enhance: stage1Enhance,
+                              declutter: stage1Declutter,
+                            })
+                          }
+                          disabled={stageStatus[1] === "running" || isOutOfTokens || isStageRunSettling}
+                          className={`rounded-md border px-3 py-1.5 text-sm ${
+                            stageStatus[1] === "running" || isOutOfTokens || isStageRunSettling
+                              ? "border-neutral-900 bg-neutral-950 text-neutral-500"
+                              : "border-neutral-700 bg-neutral-900 hover:bg-neutral-800"
+                          }`}
+                        >
+                          {stageStatus[1] === "running" ? "Running…" : "Run Stage"}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            runStageWithCancellation(1, {
+                              enhance: stage1Enhance,
+                              declutter: stage1Declutter,
+                              emptyRoom: true,
+                            })
+                          }
+                          disabled={stageStatus[1] === "running" || isOutOfTokens || isStageRunSettling}
+                          className={`rounded-md border px-3 py-1.5 text-sm ${
+                            stageStatus[1] === "running" || isOutOfTokens || isStageRunSettling
+                              ? "border-neutral-900 bg-neutral-950 text-neutral-500"
+                              : "border-neutral-700 bg-neutral-900 hover:bg-neutral-800"
+                          }`}
+                        >
+                          Empty Room
+                        </button>
                       </div>
                     </div>
 
-                    <div className="mt-3 flex gap-2">
-                      <button
-                        type="button"
-                        onClick={() =>
-                          runStageWithCancellation(1, {
-                            enhance: stage1Enhance,
-                            declutter: stage1Declutter,
-                          })
-                        }
-                        disabled={stageStatus[1] === "running" || isOutOfTokens || isStageRunSettling}
-                        className={`rounded-md border px-3 py-1.5 text-sm ${
-                          stageStatus[1] === "running" || isOutOfTokens || isStageRunSettling
-                            ? "border-neutral-900 bg-neutral-950 text-neutral-500"
-                            : "border-neutral-700 bg-neutral-900 hover:bg-neutral-800"
-                        }`}
-                      >
-                        {stageStatus[1] === "running" ? "Running…" : "Run Stage"}
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() =>
-                          runStageWithCancellation(1, {
-                            enhance: stage1Enhance,
-                            declutter: stage1Declutter,
-                            emptyRoom: true,
-                          })
-                        }
-                        disabled={stageStatus[1] === "running" || isOutOfTokens || isStageRunSettling}
-                        className={`rounded-md border px-3 py-1.5 text-sm ${
-                          stageStatus[1] === "running" || isOutOfTokens || isStageRunSettling
-                            ? "border-neutral-900 bg-neutral-950 text-neutral-500"
-                            : "border-neutral-700 bg-neutral-900 hover:bg-neutral-800"
-                        }`}
-                      >
-                        Empty Room
-                      </button>
-                    </div>
-                  </>
-                ) : activeStage === 2 ? (
-                  <>
-                    <label className="mt-3 flex cursor-pointer items-center gap-2 text-sm text-neutral-300">
-                      <input
-                        type="checkbox"
-                        checked={stage2Repair}
-                        onChange={(e) => setStage2Repair(e.target.checked)}
-                        className="h-4 w-4 accent-sky-400"
-                      />
-                      Repair Damage
-                    </label>
-
-                    <label className="mt-3 flex cursor-pointer items-center gap-2 text-sm text-neutral-300">
-                      <input
-                        type="checkbox"
-                        checked={stage2Repaint}
-                        onChange={(e) => setStage2Repaint(e.target.checked)}
-                        className="h-4 w-4 accent-sky-400"
-                      />
-                      Repaint Walls
-                    </label>
-
-                    <div className="mt-3">
-                      <div className="text-xs text-neutral-400">Flooring</div>
-                      <select
-                        className="mt-1 w-full rounded-md border border-neutral-800 bg-neutral-950 px-2 py-2 text-sm outline-none focus:border-neutral-600"
-                        value={stage2Flooring}
-                        onChange={(e) =>
-                          setStage2Flooring(
-                            e.target.value as "none" | "carpet" | "hardwood" | "tile"
-                          )
-                        }
-                      >
-                        <option value="none">none</option>
-                        <option value="carpet">carpet</option>
-                        <option value="hardwood">hardwood</option>
-                        <option value="tile">tile</option>
-                      </select>
+                    <div className="rounded-md border border-neutral-800 bg-neutral-900/50 p-2.5">
+                      <div className="text-[11px] uppercase tracking-wide text-neutral-500">Modify Room</div>
+                      <label className="mt-2 flex cursor-pointer items-center gap-2 text-sm text-neutral-300">
+                        <input
+                          type="checkbox"
+                          checked={stage2Repair}
+                          onChange={(e) => setStage2Repair(e.target.checked)}
+                          className="h-4 w-4 accent-sky-400"
+                        />
+                        Repair Damage
+                      </label>
+                      <label className="mt-2 flex cursor-pointer items-center gap-2 text-sm text-neutral-300">
+                        <input
+                          type="checkbox"
+                          checked={stage2Repaint}
+                          onChange={(e) => setStage2Repaint(e.target.checked)}
+                          className="h-4 w-4 accent-sky-400"
+                        />
+                        Repaint Walls
+                      </label>
+                      <div className="mt-2">
+                        <div className="text-xs text-neutral-400">Flooring</div>
+                        <select
+                          className="mt-1 w-full rounded-md border border-neutral-800 bg-neutral-950 px-2 py-2 text-sm outline-none focus:border-neutral-600"
+                          value={stage2Flooring}
+                          onChange={(e) =>
+                            setStage2Flooring(e.target.value as "none" | "carpet" | "hardwood" | "tile")
+                          }
+                        >
+                          <option value="none">none</option>
+                          <option value="carpet">carpet</option>
+                          <option value="hardwood">hardwood</option>
+                          <option value="tile">tile</option>
+                        </select>
+                      </div>
+                      <div className="mt-2">
+                        <button
+                          type="button"
+                          onClick={() => runStageWithCancellation(2)}
+                          disabled={stageStatus[2] === "running" || isOutOfTokens || isStageRunSettling}
+                          className={`rounded-md border px-3 py-1.5 text-sm ${
+                            stageStatus[2] === "running" || isOutOfTokens || isStageRunSettling
+                              ? "border-neutral-900 bg-neutral-950 text-neutral-500"
+                              : "border-neutral-700 bg-neutral-900 hover:bg-neutral-800"
+                          }`}
+                        >
+                          {stageStatus[2] === "running" ? "Running…" : "Run Stage"}
+                        </button>
+                      </div>
                     </div>
 
-                    <div className="mt-3">
-                      <button
-                        type="button"
-                        onClick={() => runStageWithCancellation(2)}
-                        disabled={stageStatus[2] === "running" || isOutOfTokens || isStageRunSettling}
-                        className={`rounded-md border px-3 py-1.5 text-sm ${
-                          stageStatus[2] === "running" || isOutOfTokens || isStageRunSettling
-                            ? "border-neutral-900 bg-neutral-950 text-neutral-500"
-                            : "border-neutral-700 bg-neutral-900 hover:bg-neutral-800"
-                        }`}
-                      >
-                        {stageStatus[2] === "running" ? "Running…" : "Run Stage"}
-                      </button>
+                    <div className="rounded-md border border-neutral-800 bg-neutral-900/50 p-2.5">
+                      <div className="text-[11px] uppercase tracking-wide text-neutral-500">Cleanup</div>
+                      {renderRemoveToolEntryPoint("mt-2")}
                     </div>
-                  </>
-                ) : activeStage === 4 ? (
-                  <>
-                    <div className="mt-3">
-                      <button
-                        type="button"
-                        onClick={() =>
-                          runStageWithCancellation(4, { stage4Action: STAGE4_PRIMARY_ACTION })
-                        }
-                        disabled={stageStatus[4] === "running" || isOutOfTokens || isStageRunSettling}
-                        className={`w-full rounded-md border px-3 py-2 text-sm ${
-                          stageStatus[4] === "running" || isOutOfTokens || isStageRunSettling
-                            ? "border-neutral-900 bg-neutral-950 text-neutral-500"
-                            : "border-sky-500/60 bg-sky-950/40 text-sky-100 hover:bg-sky-900/50"
-                        }`}
-                      >
-                        {stageStatus[4] === "running" && stage4RunningAction === STAGE4_PRIMARY_ACTION
-                          ? "Styling…"
-                          : "✨ Style Room"}
-                      </button>
-                    </div>
-
-                    <div className="mt-3 rounded-md border border-neutral-800 bg-neutral-950 p-2">
-                      <div className="text-[11px] uppercase tracking-wide text-neutral-500">
-                        Advanced Stage 4
+                  </div>
+                ) : isStyleWorkflowMode ? (
+                  <div className="mt-3 space-y-3">
+                    <div className="rounded-md border border-neutral-800 bg-neutral-900/50 p-2.5">
+                      <div className="text-[11px] uppercase tracking-wide text-neutral-500">Style Scene</div>
+                      <div className="mt-2">
+                        <button
+                          type="button"
+                          onClick={() =>
+                            runStageWithCancellation(4, { stage4Action: STAGE4_PRIMARY_ACTION })
+                          }
+                          disabled={stageStatus[4] === "running" || isOutOfTokens || isStageRunSettling}
+                          className={`w-full rounded-md border px-3 py-2 text-sm ${
+                            stageStatus[4] === "running" || isOutOfTokens || isStageRunSettling
+                              ? "border-neutral-900 bg-neutral-950 text-neutral-500"
+                              : "border-sky-500/60 bg-sky-950/40 text-sky-100 hover:bg-sky-900/50"
+                          }`}
+                        >
+                          {stageStatus[4] === "running" && stage4RunningAction === STAGE4_PRIMARY_ACTION
+                            ? "Styling…"
+                            : "✨ Style Room"}
+                        </button>
                       </div>
                       <div className="mt-2 flex flex-wrap gap-2">
                         {STAGE4_ADVANCED_ACTIONS.map((action) => (
@@ -7251,377 +10850,45 @@ function EditorPageInner() {
                         ))}
                       </div>
                     </div>
-
-                    <div className="mt-2 text-xs text-neutral-500">
+                    <div className="rounded-md border border-neutral-800 bg-neutral-900/50 p-2.5">
+                      <div className="text-[11px] uppercase tracking-wide text-neutral-500">Looks</div>
+                      <div className="mt-2 rounded-md border border-neutral-800 bg-neutral-950/60 px-2.5 py-2 text-xs text-neutral-500">
+                        Preset looks and photo adjustments coming soon.
+                      </div>
+                    </div>
+                    <div className="text-xs text-neutral-500">
                       {stageStatus[4] === "running" && stage4RunningAction
                         ? `Running: ${STAGE4_ACTION_LABELS[stage4RunningAction]}`
                         : "Image-only styling pass; Stage 3 placements stay unchanged."}
                     </div>
-                  </>
-                ) : (
-                  <div className="mt-3">
-                    <button
-                      type="button"
-                      onClick={() => runStageWithCancellation(activeStage)}
-                      disabled={
-                        stageStatus[activeStage] === "running" ||
-                        isOutOfTokens ||
-                        stage5Locked ||
-                        isStageRunSettling
-                      }
-                      className={`rounded-md border px-3 py-1.5 text-sm ${
-                        stageStatus[activeStage] === "running" ||
-                        isOutOfTokens ||
-                        stage5Locked ||
-                        isStageRunSettling
-                          ? "border-neutral-900 bg-neutral-950 text-neutral-500"
-                          : "border-neutral-700 bg-neutral-900 hover:bg-neutral-800"
-                      }`}
-                    >
-                      {stageStatus[activeStage] === "running" ? "Running…" : "Run Stage"}
-                    </button>
-                    {activeStage === 5 && !hasFurniturePass && (
-                      <div className="mt-2 text-xs text-neutral-500">
-                        Stage 5 is locked until Stage 3 succeeds.
-                      </div>
-                    )}
                   </div>
-                )}
-
-                <div className="mt-3 text-xs text-neutral-500">
-                  Last output: {lastStageOutputs[activeStage] ? "available" : "none"}
-                </div>
-                <div className="mt-1 text-[11px] text-neutral-500">
-                  This will use {activeStageTokenCostLabel}.
-                </div>
-                  </div>
-                </div>
-              ) : null}
-            </div>
-
-            <div className="rounded-lg border border-neutral-800 bg-neutral-900 p-3">
-              <div className="flex items-center justify-between">
-                <div className="text-sm font-medium">Edit Tools (All Stages)</div>
-                <button
-                  type="button"
-                  className="rounded-md border border-neutral-800 bg-neutral-950 px-2 py-1 text-xs text-neutral-300 hover:bg-neutral-800"
-                  aria-label={panels.editTools ? "Collapse Edit Tools panel" : "Expand Edit Tools panel"}
-                  aria-expanded={panels.editTools}
-                  aria-controls="edit-tools-panel-body"
-                  onClick={() =>
-                    setPanels((prev) => ({
-                      ...prev,
-                      editTools: !prev.editTools,
-                    }))
-                  }
-                >
-                  {panels.editTools ? "▾" : "▸"}
-                </button>
-              </div>
-              {panels.editTools ? (
-                <div id="edit-tools-panel-body">
-                  {editWarning && (
-                    <div className="mt-2 rounded-md border border-amber-900/60 bg-amber-950/30 px-2 py-1 text-xs text-amber-200">
-                      {editWarning}
+                ) : isStageWorkflowMode ? (
+                  <div className="mt-3 rounded-md border border-neutral-800 bg-neutral-900/50 p-2.5">
+                    <div className="text-xs text-neutral-300">
+                      Paste furniture directly into your room.
                     </div>
-                  )}
-                  <div className="mt-2 text-[11px] text-neutral-500">
-                    This action uses {activeEditTokenCostLabel}.
-                  </div>
-
-              <div className="mt-3">
-                <div className="text-xs text-neutral-400">Remove</div>
-                <div className="mt-2">
-                  <label className="text-[11px] text-neutral-500" htmlFor="remove-label-select">
-                    Removing:
-                  </label>
-                  <select
-                    id="remove-label-select"
-                    value={selectedRemoveLabel}
-                    disabled={isEditRunning}
-                    className={`mt-1 w-full rounded-md border bg-neutral-950 px-2 py-1 text-xs ${
-                      isEditRunning
-                        ? "border-neutral-900 text-neutral-500"
-                        : "border-neutral-700 text-neutral-100 hover:bg-neutral-900"
-                    }`}
-                    onChange={(event) => {
-                      const nextLabel = event.target.value;
-                      setSelectedRemoveLabel(nextLabel);
-                      console.log("[editor][remove] selected remove label", { label: nextLabel });
-                    }}
-                  >
-                    <option value={REMOVE_LABEL_PLACEHOLDER}>Select item to remove</option>
-                    {removeLabelOptions.map((label) => (
-                      <option key={label} value={label}>
-                        {label}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-                <div className="mt-1 grid grid-cols-2 gap-2">
-                  {!hasActiveRemoveMarker ? (
-                    <button
-                      type="button"
-                      disabled={isEditRunning}
-                      className={`col-span-2 rounded-md border px-2 py-1.5 text-xs ${
-                        isEditRunning
-                          ? "border-neutral-900 bg-neutral-950 text-neutral-500"
-                          : "border-neutral-700 bg-neutral-900 text-neutral-100 hover:bg-neutral-800"
-                      }`}
-                      onClick={addRemoveMarker}
-                    >
-                      Add Remove Marker
-                    </button>
-                  ) : (
-                    <>
-                      <button
-                        type="button"
-                        disabled={isEditRunning}
-                        className={`rounded-md border px-2 py-1.5 text-xs ${
-                          isEditRunning
-                            ? "border-neutral-900 bg-neutral-950 text-neutral-500"
-                            : "border-neutral-700 bg-neutral-900 text-neutral-100 hover:bg-neutral-800"
-                        }`}
-                        onClick={() => clearRemoveMarker()}
-                      >
-                        Clear Marker
-                      </button>
-                      <button
-                        type="button"
-                        disabled={isEditRunning || isOutOfTokens || !workingImageUrl || !hasActiveRemoveMarker}
-                        className={`rounded-md border px-2 py-1.5 text-xs ${
-                          isEditRunning || isOutOfTokens || !workingImageUrl || !hasActiveRemoveMarker
-                            ? "border-neutral-900 bg-neutral-950 text-neutral-500"
-                            : "border-neutral-700 bg-neutral-900 text-neutral-100 hover:bg-neutral-800"
-                        }`}
-                        onClick={() => {
-                          void removeSelectedMarker();
-                        }}
-                      >
-                        Remove Selected
-                      </button>
-                    </>
-                  )}
-                </div>
-                {isRemoveMarkerTargeting && !hasActiveRemoveMarker ? (
-                  <div className="mt-1 text-[11px] text-neutral-500">
-                    Click anywhere on the image to place the marker.
-                  </div>
-                ) : null}
-            </div>
-
-              <div className="mt-3">
-                <div className="text-xs text-neutral-400">Rotate</div>
-                <div className="mt-1 grid grid-cols-2 gap-2">
-                  <button
-                    type="button"
-                    disabled={isEditRunning}
-                    className={`rounded-md border px-2 py-1.5 text-xs ${
-                      isEditRunning
-                        ? "border-neutral-900 bg-neutral-950 text-neutral-500"
-                        : "border-neutral-700 bg-neutral-900 text-neutral-100 hover:bg-neutral-800"
-                    }`}
-                    onClick={addRotateMarker}
-                  >
-                    Add Rotate Marker
-                  </button>
-                  <button
-                    type="button"
-                    disabled={isEditRunning || (!hasActiveRotateMarker && !isRotateMarkerTargeting)}
-                    className={`rounded-md border px-2 py-1.5 text-xs ${
-                      isEditRunning || (!hasActiveRotateMarker && !isRotateMarkerTargeting)
-                        ? "border-neutral-900 bg-neutral-950 text-neutral-500"
-                        : "border-neutral-700 bg-neutral-900 text-neutral-100 hover:bg-neutral-800"
-                    }`}
-                    onClick={() => clearRotateMarker()}
-                  >
-                    Clear Marker
-                  </button>
-                </div>
-                {isRotateMarkerTargeting ? (
-                  <div className="mt-1 text-[11px] text-neutral-500">
-                    Click anywhere on the image to place the marker.
+                    <div className="mt-1 text-[11px] text-neutral-500">Copy → Click room → Paste</div>
+                    <div className="mt-2 text-[11px] text-neutral-500">
+                      Use the Furniture Layer to move, hide, or remove staged items.
+                    </div>
                   </div>
                 ) : null}
 
-                <div className="mt-3">
-                  <div className="text-xs text-neutral-400">Direction</div>
-                  <div className="mt-1 grid grid-cols-2 gap-2">
-                    <button
-                      type="button"
-                      disabled={isEditRunning}
-                      className={`rounded-md border px-2 py-1.5 text-xs ${
-                        rotateToolState.direction === "cw"
-                          ? "border-violet-600/70 bg-violet-950/40 text-violet-100"
-                          : "border-neutral-700 bg-neutral-900 text-neutral-100 hover:bg-neutral-800"
-                      }`}
-                      onClick={() => {
-                        setRotateToolState((prev) => ({ ...prev, direction: "cw" }));
-                        setEditWarning(null);
-                      }}
-                    >
-                      Clockwise
-                    </button>
-                    <button
-                      type="button"
-                      disabled={isEditRunning}
-                      className={`rounded-md border px-2 py-1.5 text-xs ${
-                        rotateToolState.direction === "ccw"
-                          ? "border-violet-600/70 bg-violet-950/40 text-violet-100"
-                          : "border-neutral-700 bg-neutral-900 text-neutral-100 hover:bg-neutral-800"
-                      }`}
-                      onClick={() => {
-                        setRotateToolState((prev) => ({ ...prev, direction: "ccw" }));
-                        setEditWarning(null);
-                      }}
-                    >
-                      Counterclockwise
-                    </button>
+                {isStageWorkflowMode ? null : (
+                  <>
+                    <div className="mt-3 text-xs text-neutral-500">
+                      Last output: {lastStageOutputs[workflowPanelStage] ? "available" : "none"}
+                    </div>
+                    <div className="mt-1 text-[11px] text-neutral-500">
+                      This will use {workflowPanelTokenCostLabel}.
+                    </div>
+                  </>
+                )}
                   </div>
-                </div>
-
-                <div className="mt-3">
-                  <div className="text-xs text-neutral-400">Amount</div>
-                  <div className="mt-1 grid grid-cols-5 gap-1">
-                    {([5, 15, 30, 45, 90] as RotateAmount[]).map((amount) => (
-                      <button
-                        key={amount}
-                        type="button"
-                        disabled={isEditRunning}
-                        className={`rounded-md border px-1 py-1 text-xs ${
-                          rotateToolState.amountDegrees === amount
-                            ? "border-violet-600/70 bg-violet-950/40 text-violet-100"
-                            : "border-neutral-700 bg-neutral-900 text-neutral-100 hover:bg-neutral-800"
-                        }`}
-                        onClick={() => {
-                          setRotateToolState((prev) => ({ ...prev, amountDegrees: amount }));
-                          setEditWarning(null);
-                        }}
-                      >
-                        {amount}°
-                      </button>
-                    ))}
                   </div>
-                </div>
-
-                <button
-                  type="button"
-                  disabled={isEditRunning || isOutOfTokens || !workingImageUrl || !hasActiveRotateMarker}
-                  className={`mt-2 w-full rounded-md border px-2 py-1.5 text-xs ${
-                    isEditRunning || isOutOfTokens || !workingImageUrl || !hasActiveRotateMarker
-                      ? "border-neutral-900 bg-neutral-950 text-neutral-500"
-                      : "border-violet-800/60 bg-violet-950/30 text-violet-100 hover:bg-violet-900/40"
-                  }`}
-                  onClick={() => {
-                    void rotateSelected();
-                  }}
-                >
-                  Rotate Selected
-                </button>
+                ) : null}
               </div>
-
-              </div>
-              ) : null}
             </div>
-
-            {activeStage === 3 && (
-              <div className="rounded-lg border border-neutral-800 bg-neutral-900 p-3">
-                <div className="flex items-center justify-between gap-2">
-                  <div className="text-sm font-medium">Stage 3 Items</div>
-                  <label className="flex items-center gap-1 text-xs text-neutral-300">
-                    <input
-                      type="checkbox"
-                      checked={stage3ShowCatalog}
-                      onChange={(e) => setStage3ShowCatalog(e.target.checked)}
-                      className="h-4 w-4 accent-sky-400"
-                    />
-                    Show catalog
-                  </label>
-                </div>
-                <div className="mt-1 text-xs text-neutral-400">
-                  Active: {activeCount}/{totalCount} • User: {activeUserCount}/{userCount} • Catalog:{" "}
-                  {activeCatalogCount}/{catalogCount}
-                </div>
-                <div className="mt-1 text-xs text-neutral-400">
-                  Choose which SKUs are included for this generation and set order.
-                </div>
-
-                <div className="mt-3 space-y-2">
-                  {stage3SkuItems.map((item, index) => {
-                    if (item.source !== "user" && !(item.active || stage3ShowCatalog)) {
-                      return null;
-                    }
-                    return (
-                      <div
-                        key={item.skuId}
-                        className="rounded-md border border-neutral-800 bg-neutral-950 p-2"
-                      >
-                        <div className="flex items-start gap-2">
-                          <div className="min-w-0 flex-1">
-                            <div className="truncate text-sm text-neutral-100">
-                              {item.label || item.skuId}
-                            </div>
-                            <div className="mt-1 flex items-center gap-2 text-[11px]">
-                              <span
-                                className={`rounded px-1.5 py-0.5 ${
-                                  item.source === "user"
-                                    ? "border border-emerald-900/50 bg-emerald-950/30 text-emerald-300"
-                                    : "border border-neutral-700 bg-neutral-900 text-neutral-300"
-                                }`}
-                              >
-                                {item.source === "user" ? "User" : "Catalog"}
-                              </span>
-                              <span className="truncate text-neutral-500">{item.skuId}</span>
-                            </div>
-                          </div>
-
-                          <label className="flex items-center gap-1 text-xs text-neutral-300">
-                            <input
-                              type="checkbox"
-                              checked={item.active}
-                              onChange={(e) =>
-                                toggleStage3SkuItemActive(item.skuId, e.target.checked)
-                              }
-                              className="h-4 w-4 accent-sky-400"
-                            />
-                            Include
-                          </label>
-
-                          <div className="flex gap-1">
-                            <button
-                              type="button"
-                              onClick={() => moveStage3SkuItem(index, "up")}
-                              disabled={index === 0}
-                              className={`rounded border px-2 py-1 text-xs ${
-                                index === 0
-                                  ? "border-neutral-900 bg-neutral-950 text-neutral-600"
-                                  : "border-neutral-700 bg-neutral-900 text-neutral-200 hover:bg-neutral-800"
-                              }`}
-                              aria-label={`Move ${item.skuId} up`}
-                            >
-                              ↑
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => moveStage3SkuItem(index, "down")}
-                              disabled={index === stage3SkuItems.length - 1}
-                              className={`rounded border px-2 py-1 text-xs ${
-                                index === stage3SkuItems.length - 1
-                                  ? "border-neutral-900 bg-neutral-950 text-neutral-600"
-                                  : "border-neutral-700 bg-neutral-900 text-neutral-200 hover:bg-neutral-800"
-                              }`}
-                              aria-label={`Move ${item.skuId} down`}
-                            >
-                              ↓
-                            </button>
-                          </div>
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-            )}
 
             <div className="rounded-lg border border-neutral-800 bg-neutral-900 p-3">
               <div className="flex items-center justify-between">
@@ -7631,60 +10898,147 @@ function EditorPageInner() {
                     {versions.length} version{versions.length === 1 ? "" : "s"}
                   </div>
                 </div>
+              <div className="flex flex-col items-end gap-1.5">
+                <div className="flex items-center gap-1.5">
+                  <button
+                    type="button"
+                    className="rounded-md border border-neutral-800 bg-neutral-950 px-2 py-1 text-[11px] text-neutral-400 transition hover:bg-neutral-800 hover:text-neutral-200"
+                    onClick={collapseAllVersionShelves}
+                  >
+                    − Collapse All
+                  </button>
+                  <button
+                    type="button"
+                    className="rounded-md border border-neutral-800 bg-neutral-950 px-2 py-1 text-[11px] text-neutral-400 transition hover:bg-neutral-800 hover:text-neutral-200"
+                    onClick={expandAllVersionShelves}
+                  >
+                    + Expand All
+                  </button>
+                </div>
                 <button
                   type="button"
-                  className="rounded-md border border-neutral-800 bg-neutral-950 px-2 py-1 text-xs text-neutral-300 hover:bg-neutral-800"
-                  aria-label={panels.versions ? "Collapse Versions panel" : "Expand Versions panel"}
-                  aria-expanded={panels.versions}
-                  aria-controls="versions-panel-body"
-                  onClick={() =>
-                    setPanels((prev) => ({
-                      ...prev,
-                      versions: !prev.versions,
-                    }))
-                  }
+                  className={`rounded-md border px-2 py-1 text-[11px] transition ${
+                    isFavouritesFilterOn
+                      ? "border-pink-900/70 bg-pink-950/20 text-pink-200 hover:border-pink-800/80 hover:bg-pink-900/25"
+                      : "border-neutral-800 bg-neutral-950 text-neutral-400 hover:bg-neutral-800 hover:text-neutral-200"
+                  }`}
+                  aria-pressed={isFavouritesFilterOn}
+                  onClick={() => setIsFavouritesFilterOn((prev) => !prev)}
                 >
-                  {panels.versions ? "▾" : "▸"}
+                  {isFavouritesFilterOn ? "Favourites On" : "Favourites Off"}
                 </button>
               </div>
-              {panels.versions ? (
-                <div id="versions-panel-body" className="mt-3">
-                  {versions.length === 0 ? (
-                    <div className="rounded-md border border-dashed border-neutral-800 bg-neutral-950 px-3 py-2 text-xs text-neutral-500">
-                      No versions yet. Upload an image to create the original version.
-                    </div>
-                  ) : (
-                    <div className="space-y-3">
-                      {groupedVersions.today.length > 0 ? (
-                        <div>
-                          <div className="mb-1 text-[11px] uppercase tracking-wide text-neutral-500">Today</div>
-                          <div className="space-y-1">{groupedVersions.today.map(renderVersionRow)}</div>
-                        </div>
-                      ) : null}
-                      {groupedVersions.thisMonth.length > 0 ? (
-                        <div>
-                          <div className="mb-1 text-[11px] uppercase tracking-wide text-neutral-500">
-                            This month
+              </div>
+              <div id="versions-panel-body" className="mt-3">
+                {versions.length === 0 ? (
+                  <div className="rounded-md border border-dashed border-neutral-800 bg-neutral-950 px-3 py-2 text-xs text-neutral-500">
+                    No versions yet. Upload an image to create the original version.
+                  </div>
+                ) : (
+                  <div className="space-y-2.5">
+                    {selectedCanvasVersion ? (
+                      <button
+                        type="button"
+                        className="flex w-full items-center gap-2 rounded-md border border-neutral-800 bg-neutral-950 px-2.5 py-2 text-left transition hover:bg-neutral-900"
+                        onClick={() => jumpToVersionViaAnchor(selectedCanvasVersion)}
+                      >
+                        {getVersionPreviewUrl(selectedCanvasVersion) ? (
+                          <>
+                            {/* eslint-disable-next-line @next/next/no-img-element -- anchor card uses dynamic version preview URLs */}
+                            <img
+                              src={getVersionPreviewUrl(selectedCanvasVersion) ?? ""}
+                              alt="Active Canvas Image"
+                              className="h-9 w-12 flex-none rounded bg-neutral-800 object-cover"
+                              loading="lazy"
+                            />
+                          </>
+                        ) : (
+                          <div className="h-9 w-12 flex-none rounded border border-neutral-800 bg-neutral-900" />
+                        )}
+                        <div className="min-w-0">
+                          <div className="text-[10px] uppercase tracking-wide text-neutral-500">
+                            Active Canvas Image
                           </div>
-                          <div className="space-y-1">{groupedVersions.thisMonth.map(renderVersionRow)}</div>
+                          {activeCanvasKindLabel ? (
+                            <div className="text-[11px] text-neutral-300">{activeCanvasKindLabel}</div>
+                          ) : null}
                         </div>
-                      ) : null}
-                      {groupedVersions.earlier.length > 0 ? (
-                        <div>
-                          <div className="mb-1 text-[11px] uppercase tracking-wide text-neutral-500">Earlier</div>
-                          <div className="space-y-1">{groupedVersions.earlier.map(renderVersionRow)}</div>
-                        </div>
-                      ) : null}
-                      {originalVersion ? (
-                        <div>
-                          <div className="mb-1 text-[11px] uppercase tracking-wide text-neutral-500">Original</div>
-                          <div className="space-y-1">{renderVersionRow(originalVersion)}</div>
-                        </div>
-                      ) : null}
+                      </button>
+                    ) : null}
+                    {isFavouritesFilterEmpty ? (
+                      <div className="rounded-md border border-dashed border-neutral-800 bg-neutral-950 px-3 py-2 text-xs text-neutral-500">
+                        No favourite versions yet. Tap the heart on a STAGE or STYLE version to save it here.
+                      </div>
+                    ) : (
+                      <>
+                        {renderCollapsedVersionShelf({
+                          keyName: "style",
+                          label: "STYLE",
+                          versionsInShelf: groupedVersionsForDisplay.style,
+                        })}
+                        {renderCollapsedVersionShelf({
+                          keyName: "stage",
+                          label: "STAGE",
+                          versionsInShelf: groupedVersionsForDisplay.stage,
+                        })}
+                      </>
+                    )}
+
+                    <div className="my-1 border-t border-neutral-800/70 pt-1.5" />
+
+                    <div className="rounded-lg border border-neutral-800/40 bg-neutral-800/80 p-3 ring-1 ring-inset ring-neutral-900/15">
+                      <div className="space-y-2">
+                        {activeBasePreviewVersion ? (
+                          <button
+                            type="button"
+                            className="flex w-full items-center gap-2 rounded-md border border-neutral-800 bg-neutral-950 px-2.5 py-2 text-left transition hover:bg-neutral-900"
+                            onClick={() => {
+                              if (isFavouritesFilterOn) {
+                                handleSelectVersion(activeBasePreviewVersion);
+                                return;
+                              }
+                              jumpToVersionViaAnchor(activeBasePreviewVersion, "set");
+                            }}
+                          >
+                            {getVersionPreviewUrl(activeBasePreviewVersion) ? (
+                              <>
+                                {/* eslint-disable-next-line @next/next/no-img-element -- anchor card uses dynamic base preview URLs */}
+                                <img
+                                  src={getVersionPreviewUrl(activeBasePreviewVersion) ?? ""}
+                                  alt="Active Base Image"
+                                  className="h-9 w-12 flex-none rounded bg-neutral-800 object-cover"
+                                  loading="lazy"
+                                />
+                              </>
+                            ) : (
+                              <div className="h-9 w-12 flex-none rounded border border-neutral-800 bg-neutral-900" />
+                            )}
+                            <div className="min-w-0">
+                              <div className="text-[10px] uppercase tracking-wide text-sky-300">
+                                Active Base Image
+                              </div>
+                            </div>
+                          </button>
+                        ) : null}
+                        {!isFavouritesFilterOn
+                          ? renderCollapsedVersionShelf({
+                              keyName: "set",
+                              label: "SET",
+                              versionsInShelf: groupedVersionsForDisplay.set,
+                            })
+                          : null}
+                      </div>
                     </div>
-                  )}
-                </div>
-              ) : null}
+                    {!isFavouritesFilterOn
+                      ? renderCollapsedVersionShelf({
+                          keyName: "unknown",
+                          label: "UNKNOWN",
+                          versionsInShelf: groupedVersionsForDisplay.unknown,
+                        })
+                      : null}
+                  </div>
+                )}
+              </div>
             </div>
 
             {showObsoleteV0RightPanels ? (

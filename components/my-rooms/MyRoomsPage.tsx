@@ -46,6 +46,53 @@ type RoomRow = {
 
 const ROOM_SELECT =
   "id,title,folder_id,current_stage,selected_model,cover_image_url,created_at,updated_at,last_opened_at,sort_key,status,source_type";
+const VIBODE_MY_ROOMS_SORT_KEY = "vibode:my-rooms-sort:v1";
+const VIBODE_MY_ROOMS_ACTIVE_COLLECTION_KEY = "vibode:my-rooms-active-collection:v1";
+const DEFAULT_MY_ROOMS_SORT: MyRoomsSortMode = "most_recent";
+const MY_ROOMS_SORT_MODES: ReadonlySet<MyRoomsSortMode> = new Set([
+  "most_recent",
+  "oldest",
+  "title_asc",
+  "title_desc",
+]);
+
+function loadInitialMyRoomsSortMode(): MyRoomsSortMode {
+  if (typeof window === "undefined") return DEFAULT_MY_ROOMS_SORT;
+
+  try {
+    const savedSort = window.localStorage.getItem(VIBODE_MY_ROOMS_SORT_KEY);
+    if (savedSort && MY_ROOMS_SORT_MODES.has(savedSort as MyRoomsSortMode)) {
+      return savedSort as MyRoomsSortMode;
+    }
+  } catch {
+    // Ignore localStorage read failures (privacy mode, quota, etc.).
+  }
+
+  return DEFAULT_MY_ROOMS_SORT;
+}
+
+type MyRoomsActiveCollection = "all" | "recents" | `folder:${string}`;
+
+function loadInitialMyRoomsActiveCollection(): MyRoomsActiveCollection {
+  if (typeof window === "undefined") return "all";
+
+  try {
+    const savedCollection = window.localStorage.getItem(VIBODE_MY_ROOMS_ACTIVE_COLLECTION_KEY);
+    if (savedCollection === "all" || savedCollection === "recents") {
+      return savedCollection;
+    }
+    if (savedCollection && savedCollection.startsWith("folder:")) {
+      const folderId = savedCollection.slice("folder:".length).trim();
+      if (folderId.length > 0) {
+        return `folder:${folderId}`;
+      }
+    }
+  } catch {
+    // Ignore localStorage read failures (privacy mode, quota, etc.).
+  }
+
+  return "all";
+}
 
 function normalizeText(value: string | null | undefined) {
   return typeof value === "string" ? value.trim() : "";
@@ -122,10 +169,20 @@ export function MyRoomsPage() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [folderFeatureReady, setFolderFeatureReady] = useState(true);
 
-  const [selectedScope, setSelectedScope] = useState<MyRoomsScope>("all");
-  const [selectedFolderId, setSelectedFolderId] = useState<string | null>(null);
+  const [selectedScope, setSelectedScope] = useState<MyRoomsScope>(() => {
+    const initialActiveCollection = loadInitialMyRoomsActiveCollection();
+    return initialActiveCollection === "all" || initialActiveCollection === "recents"
+      ? initialActiveCollection
+      : "folder";
+  });
+  const [selectedFolderId, setSelectedFolderId] = useState<string | null>(() => {
+    const initialActiveCollection = loadInitialMyRoomsActiveCollection();
+    return initialActiveCollection.startsWith("folder:")
+      ? initialActiveCollection.slice("folder:".length)
+      : null;
+  });
   const [searchQuery, setSearchQuery] = useState("");
-  const [sortMode, setSortMode] = useState<MyRoomsSortMode>("most_recent");
+  const [sortMode, setSortMode] = useState<MyRoomsSortMode>(() => loadInitialMyRoomsSortMode());
 
   const [createDialogOpen, setCreateDialogOpen] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
@@ -280,13 +337,42 @@ export function MyRoomsPage() {
 
   useEffect(() => {
     if (selectedScope !== "folder") return;
+    if (isLoading) return;
+    if (!folderFeatureReady) {
+      setSelectedScope("all");
+      setSelectedFolderId(null);
+      return;
+    }
     if (!selectedFolderId) return;
     const exists = folders.some((folder) => folder.id === selectedFolderId);
     if (!exists) {
       setSelectedScope("all");
       setSelectedFolderId(null);
     }
-  }, [folders, selectedFolderId, selectedScope]);
+  }, [folderFeatureReady, folders, isLoading, selectedFolderId, selectedScope]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+
+    try {
+      window.localStorage.setItem(VIBODE_MY_ROOMS_SORT_KEY, sortMode);
+    } catch {
+      // Ignore localStorage write failures (privacy mode, quota, etc.).
+    }
+  }, [sortMode]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+
+    const collectionToPersist =
+      selectedScope === "folder" && selectedFolderId ? `folder:${selectedFolderId}` : selectedScope;
+
+    try {
+      window.localStorage.setItem(VIBODE_MY_ROOMS_ACTIVE_COLLECTION_KEY, collectionToPersist);
+    } catch {
+      // Ignore localStorage write failures (privacy mode, quota, etc.).
+    }
+  }, [selectedFolderId, selectedScope]);
 
   const foldersWithCounts = useMemo(() => {
     const countMap = new Map<string, number>();
@@ -692,7 +778,7 @@ export function MyRoomsPage() {
             onSearchChange={setSearchQuery}
             onSortChange={setSortMode}
             onUploadNewPhoto={() => {
-              router.push("/editor");
+              router.push("/editor?newRoom=1");
             }}
             onCreateFolder={() => {
               if (!folderFeatureReady) return;

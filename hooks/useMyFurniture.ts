@@ -10,6 +10,14 @@ import {
   sortMyFurnitureItems,
 } from "@/lib/myFurniture";
 
+const VIBODE_MY_FURNITURE_SORT_KEY = "vibode:my-furniture-sort:v1";
+const DEFAULT_MY_FURNITURE_SORT: MyFurnitureSortMode = "recent";
+const MY_FURNITURE_SORT_MODES: ReadonlySet<MyFurnitureSortMode> = new Set([
+  "recent",
+  "used",
+  "oldest",
+]);
+
 type UseMyFurnitureResult = {
   items: MyFurnitureItem[];
   isLoading: boolean;
@@ -29,12 +37,27 @@ type MyFurnitureListResponse = {
   error?: string;
 };
 
+function loadInitialMyFurnitureSort(): MyFurnitureSortMode {
+  if (typeof window === "undefined") return DEFAULT_MY_FURNITURE_SORT;
+
+  try {
+    const savedSort = window.localStorage.getItem(VIBODE_MY_FURNITURE_SORT_KEY);
+    if (savedSort && MY_FURNITURE_SORT_MODES.has(savedSort as MyFurnitureSortMode)) {
+      return savedSort as MyFurnitureSortMode;
+    }
+  } catch {
+    // Ignore localStorage read failures (privacy mode, quota, etc.).
+  }
+
+  return DEFAULT_MY_FURNITURE_SORT;
+}
+
 export function useMyFurniture(): UseMyFurnitureResult {
   const [rawItems, setRawItems] = useState<MyFurnitureItem[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<MyFurnitureViewMode>("grid");
-  const [sort, setSort] = useState<MyFurnitureSortMode>("recent");
+  const [sort, setSort] = useState<MyFurnitureSortMode>(() => loadInitialMyFurnitureSort());
   const [selectedItem, setSelectedItem] = useState<MyFurnitureItem | null>(null);
 
   const refresh = useCallback(async () => {
@@ -76,6 +99,16 @@ export function useMyFurniture(): UseMyFurnitureResult {
   useEffect(() => {
     void refresh();
   }, [refresh]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+
+    try {
+      window.localStorage.setItem(VIBODE_MY_FURNITURE_SORT_KEY, sort);
+    } catch {
+      // Ignore localStorage write failures (privacy mode, quota, etc.).
+    }
+  }, [sort]);
 
   const items = useMemo(() => sortMyFurnitureItems(rawItems, sort), [rawItems, sort]);
 

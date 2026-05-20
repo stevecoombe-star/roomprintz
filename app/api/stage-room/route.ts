@@ -4,6 +4,11 @@ import { createClient } from "@supabase/supabase-js";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { callCompositorEngine } from "@/lib/callCompositorEngine";
 import {
+  buildVibodeCompositorContextHeaders,
+  resolveVibodeOperationIdFromHeaders,
+  resolveVibodeRequestIdFromHeaders,
+} from "@/lib/vibodeCompositorContextHeaders";
+import {
   canAffordTokens,
   getTokenCostForAction,
   getUserTokenWallet,
@@ -95,6 +100,8 @@ export async function POST(req: NextRequest) {
       return json(401, { error: "Unauthorized" });
     }
     const user = userData.user;
+    const requestId = resolveVibodeRequestIdFromHeaders(req.headers);
+    const operationId = resolveVibodeOperationIdFromHeaders(req.headers);
 
     const formData = await req.formData();
     const file = formData.get("file");
@@ -274,6 +281,15 @@ export async function POST(req: NextRequest) {
       modelVersion: normalizedModelVersion,
       aspectRatio: normalizedAspectRatio,
       isContinuation,
+      headers: buildVibodeCompositorContextHeaders({
+        requestId,
+        operationId,
+        userId: user.id,
+        userEmail: user.email ?? null,
+        workflowType: "stage",
+        actionType: "stage-room",
+        sourceTrigger: "update-room",
+      }),
     });
 
     const imageUrl = result?.imageUrl ?? null;
