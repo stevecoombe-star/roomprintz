@@ -2462,6 +2462,7 @@ function EditorPageInner() {
     typeof devSceneRebuildEnabledRaw === "undefined"
       ? true
       : devSceneRebuildEnabledRaw === "1" || devSceneRebuildEnabledRaw.toLowerCase() === "true";
+  const isSceneRebuildOverlayEnabled = process.env.NEXT_PUBLIC_VIBODE_ENABLE_SCENE_REBUILD === "true";
   const showDevSceneRebuildButton =
     process.env.NODE_ENV !== "production" && isDevUnlockPasteToPlace && isDevSceneRebuildEnabled;
 
@@ -9720,7 +9721,7 @@ function EditorPageInner() {
     !sceneNeedsUpdate && canRestoreOriginalPlacementPositions;
   const shouldSuppressSceneNeedsUpdateOverlay = Boolean(placementLayerDragState?.startedAsSuggested);
   const shouldShowSceneNeedsUpdateOverlay =
-    showDevSceneRebuildButton && sceneNeedsUpdate && !shouldSuppressSceneNeedsUpdateOverlay;
+    isSceneRebuildOverlayEnabled && sceneNeedsUpdate && !shouldSuppressSceneNeedsUpdateOverlay;
   const isRestoreOriginalPlacementPositionsButtonDisabled =
     isRestoringOriginalPlacementPositions ||
     isRevertingPlacementChanges ||
