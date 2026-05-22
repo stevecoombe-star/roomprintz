@@ -292,6 +292,7 @@ export function EditorCanvas({
   onOpenPasteToPlaceMenu,
   onPasteToPlaceChoosePlaceHere,
   onPasteToPlaceChooseMyFurnitureAdd,
+  pasteToPlaceAwaitingPasteMessage = null,
   pasteToPlaceProductUrlInput = "",
   onPasteToPlaceProductUrlInputChange,
   onPasteToPlaceSubmitProductUrl,
@@ -356,6 +357,7 @@ export function EditorCanvas({
   onOpenPasteToPlaceMenu?: (state: NonNullable<PasteToPlaceMenuState>) => void;
   onPasteToPlaceChoosePlaceHere?: () => void;
   onPasteToPlaceChooseMyFurnitureAdd?: () => void;
+  pasteToPlaceAwaitingPasteMessage?: string | null;
   pasteToPlaceProductUrlInput?: string;
   onPasteToPlaceProductUrlInputChange?: (value: string) => void;
   onPasteToPlaceSubmitProductUrl?: () => void;
@@ -1290,11 +1292,12 @@ export function EditorCanvas({
     event.stopPropagation();
     setSelectedPlacementLayerNodeId(node.id);
     setDraggingPlacementLayerNodeId(node.id);
+    const startedAsSuggested =
+      node.metadata?.ownership === "vibode" &&
+      node.metadata?.placementSource === "model_vision_inferred";
     onPlacementLayerDragStateChange?.({
       nodeId: node.id,
-      startedAsSuggested:
-        node.metadata?.ownership === "vibode" &&
-        node.metadata?.placementSource === "model_vision_inferred",
+      startedAsSuggested,
     });
     const pointerId = event.pointerId;
     const markerEl = event.currentTarget;
@@ -2507,6 +2510,11 @@ export function EditorCanvas({
                   </div>
                 </div>
               )}
+            {pasteToPlaceAwaitingPasteMessage && (
+              <div className="mx-2 mt-2 mb-1 rounded-md border border-blue-500/30 bg-blue-950/25 px-3 py-2 text-xs text-blue-100">
+                {pasteToPlaceAwaitingPasteMessage}
+              </div>
+            )}
             {!isPasteToPlaceMyFurnitureMultiSelect &&
               !isPasteToPlaceMenuPreviewLoading &&
               !pasteToPlaceMenuPreviewUrl &&
