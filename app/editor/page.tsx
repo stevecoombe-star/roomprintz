@@ -4326,6 +4326,20 @@ function EditorPageInner() {
     activePasteSource?.type === "product_url" ? activePasteSource.sourceUrl : null;
   useEffect(() => {
     const onWindowPaste = (event: ClipboardEvent) => {
+      if (pasteToPlaceMenuState && !isPasteToPlaceSettling) {
+        const pastedText = event.clipboardData?.getData("text/plain") ?? "";
+        const normalizedPastedUrl = normalizeLikelyUrl(pastedText);
+        if (normalizedPastedUrl) {
+          event.preventDefault();
+          setPasteToPlaceProductUrlInput(normalizedPastedUrl);
+          const activeSession = awaitingPasteToPlaceSessionRef.current;
+          if (activeSession) {
+            clearAwaitingPasteToPlaceSession(activeSession.operationId);
+            clearPasteEventClipboardImagePayload(activeSession.operationId);
+          }
+          return;
+        }
+      }
       const activeSession = awaitingPasteToPlaceSessionRef.current;
       if (!activeSession) return;
       if (!isPasteToPlaceOperationActive(activeSession.operationId)) {
@@ -4392,6 +4406,7 @@ function EditorPageInner() {
     clearAwaitingPasteToPlaceSession,
     clearPasteEventClipboardImagePayload,
     isPasteToPlaceOperationActive,
+    isPasteToPlaceSettling,
     pasteToPlaceMenuState,
     pushSnack,
   ]);
