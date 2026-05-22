@@ -302,6 +302,7 @@ export function EditorCanvas({
   pasteToPlaceProductSourceUrl = null,
   onPasteToPlaceChooseSwap,
   onPasteToPlaceChooseAutoPlace,
+  onPasteToPlaceRefreshCopiedItem,
   onDismissPasteToPlaceMenu,
   pasteToPlaceMenuPreviewUrl = null,
   isPasteToPlaceMyFurnitureMultiSelect = false,
@@ -315,6 +316,7 @@ export function EditorCanvas({
   onCancelPasteToPlaceGeneration,
   isPasteToPlaceCancelling = false,
   isPasteToPlaceSettling = false,
+  isPasteToPlaceRefreshInteractionLocked = false,
   markupVisible = true,
   visualMode = "blueprint",
   imageUrl,
@@ -367,6 +369,7 @@ export function EditorCanvas({
   pasteToPlaceProductSourceUrl?: string | null;
   onPasteToPlaceChooseSwap?: () => void;
   onPasteToPlaceChooseAutoPlace?: () => void;
+  onPasteToPlaceRefreshCopiedItem?: () => void;
   onDismissPasteToPlaceMenu?: () => void;
   pasteToPlaceMenuPreviewUrl?: string | null;
   isPasteToPlaceMyFurnitureMultiSelect?: boolean;
@@ -380,6 +383,7 @@ export function EditorCanvas({
   onCancelPasteToPlaceGeneration?: () => void;
   isPasteToPlaceCancelling?: boolean;
   isPasteToPlaceSettling?: boolean;
+  isPasteToPlaceRefreshInteractionLocked?: boolean;
   markupVisible?: boolean;
   visualMode?: VisualMode;
   imageUrl?: string | null;
@@ -627,7 +631,10 @@ export function EditorCanvas({
   const shouldRenderSinglePreview =
     !shouldRenderMyFurnitureMultiSelectPreview &&
     (Boolean(pasteToPlaceMenuPreviewUrl) || isPasteToPlaceMenuPreviewLoading);
-  const isPasteToPlaceActionLocked = isPasteToPlaceSettling;
+  const shouldShowRefreshCopiedItemButton =
+    Boolean(pasteToPlaceMenuPreviewUrl) || shouldRenderMyFurnitureMultiSelectPreview;
+  const isPasteToPlaceActionLocked =
+    isPasteToPlaceSettling || isPasteToPlaceRefreshInteractionLocked;
   useLayoutEffect(() => {
     if (!pasteToPlaceMenuState) {
       const frameId = window.requestAnimationFrame(() => {
@@ -2482,6 +2489,28 @@ export function EditorCanvas({
                     <span className="h-4 w-4 animate-spin rounded-full border border-neutral-100/85 border-t-transparent" />
                   </div>
                 )}
+                {shouldShowRefreshCopiedItemButton && (
+                  <div className="absolute top-1.5 right-1.5 z-10" title="Refresh copied item">
+                    <button
+                      type="button"
+                      aria-label="Refresh copied item"
+                      title="Refresh copied item"
+                      className={`h-6 w-6 rounded-full border text-xs transition-colors ${
+                        isPasteToPlaceActionLocked || isPasteToPlaceMenuPreviewLoading
+                          ? "cursor-not-allowed border-white/15 bg-neutral-900/80 text-neutral-500"
+                          : "border-white/25 bg-neutral-950/80 text-neutral-200 hover:bg-neutral-800"
+                      }`}
+                      onClick={onPasteToPlaceRefreshCopiedItem}
+                      disabled={
+                        isPasteToPlaceActionLocked ||
+                        isPasteToPlaceMenuPreviewLoading ||
+                        !onPasteToPlaceRefreshCopiedItem
+                      }
+                    >
+                      ↻
+                    </button>
+                  </div>
+                )}
               </div>
             )}
             {!isPasteToPlaceMyFurnitureMultiSelect &&
@@ -2542,7 +2571,29 @@ export function EditorCanvas({
                 </div>
               )}
             {shouldRenderMyFurnitureMultiSelectPreview ? (
-              <div className="mx-2 mt-2 mb-1 rounded-md border border-white/10 bg-neutral-900/70 px-3 py-2">
+              <div className="relative mx-2 mt-2 mb-1 rounded-md border border-white/10 bg-neutral-900/70 px-3 py-2">
+                {shouldShowRefreshCopiedItemButton && (
+                  <div className="absolute top-1.5 right-1.5 z-10" title="Refresh copied item">
+                    <button
+                      type="button"
+                      aria-label="Refresh copied item"
+                      title="Refresh copied item"
+                      className={`h-6 w-6 rounded-full border text-xs transition-colors ${
+                        isPasteToPlaceActionLocked || isPasteToPlaceMenuPreviewLoading
+                          ? "cursor-not-allowed border-white/15 bg-neutral-900/80 text-neutral-500"
+                          : "border-white/25 bg-neutral-950/80 text-neutral-200 hover:bg-neutral-800"
+                      }`}
+                      onClick={onPasteToPlaceRefreshCopiedItem}
+                      disabled={
+                        isPasteToPlaceActionLocked ||
+                        isPasteToPlaceMenuPreviewLoading ||
+                        !onPasteToPlaceRefreshCopiedItem
+                      }
+                    >
+                      ↻
+                    </button>
+                  </div>
+                )}
                 <div className="flex items-center gap-3">
                   <div className="relative h-11 w-[74px] shrink-0">
                     {myFurnitureMultiSelectPreviewUrls.length > 0 ? (

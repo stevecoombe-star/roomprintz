@@ -1111,7 +1111,10 @@ type PasteToPlaceMenuState = {
   anchorX?: number;
   anchorY?: number;
 } | null;
-type AwaitingPasteToPlaceReason = "safari" | "clipboard_access_unavailable";
+type AwaitingPasteToPlaceReason =
+  | "safari"
+  | "clipboard_access_unavailable"
+  | "refresh_copied_item";
 type AwaitingPasteToPlaceSession = {
   operationId: number;
   reason: AwaitingPasteToPlaceReason;
@@ -2411,6 +2414,8 @@ function EditorPageInner() {
   const lastSurfacedProvisionalClipboardPreviewHashRef = useRef<string | null>(null);
   const suppressedPasteToPlaceMenuClipboardPreviewHashRef = useRef<string | null>(null);
   const [isPasteToPlaceMenuIngesting, setIsPasteToPlaceMenuIngesting] = useState(false);
+  const isRefreshingCopiedItemRef = useRef(false);
+  const [isRefreshingCopiedItem, setIsRefreshingCopiedItem] = useState(false);
   const [pasteToPlaceProductUrlInput, setPasteToPlaceProductUrlInput] = useState("");
   const [pasteToPlaceProgressCardState, setPasteToPlaceProgressCardState] =
     useState<PasteToPlaceMenuState>(null);
@@ -4313,10 +4318,25 @@ function EditorPageInner() {
   const isClipboardPasteToPlaceIngestPending =
     isPasteToPlaceMenuIngesting &&
     (pasteToPlaceStatus === "reading" || pasteToPlaceStatus === "preparing");
+  const isAwaitingRefreshCopiedItem =
+    awaitingPasteToPlaceSessionUiState?.reason === "refresh_copied_item";
+  const isRefreshClipboardCandidateReady = Boolean(
+    awaitingPasteToPlaceSessionUiState &&
+      awaitingPasteToPlaceSessionUiState.reason === "refresh_copied_item" &&
+      pasteEventClipboardImagePayloadRef.current &&
+      pasteEventClipboardImagePayloadRef.current.operationId ===
+        awaitingPasteToPlaceSessionUiState.operationId
+  );
+  const isPasteToPlaceRefreshInteractionLocked =
+    isRefreshingCopiedItem || (isAwaitingRefreshCopiedItem && !isRefreshClipboardCandidateReady);
   const pasteToPlaceAwaitingPasteMessage = awaitingPasteToPlaceSessionUiState
-    ? awaitingPasteToPlaceSessionUiState.reason === "clipboard_access_unavailable"
-      ? "Clipboard access is blocked. Press ⌘V to paste instead."
-      : "Press ⌘V to paste furniture image."
+    ? awaitingPasteToPlaceSessionUiState.reason === "refresh_copied_item"
+      ? isRefreshClipboardCandidateReady
+        ? null
+        : "Press ⌘V to refresh copied item."
+      : awaitingPasteToPlaceSessionUiState.reason === "clipboard_access_unavailable"
+        ? "Clipboard access is blocked. Press ⌘V to paste instead."
+        : "Press ⌘V to paste furniture image."
     : null;
   const productUrlPreparedDisplayName =
     activePasteSource?.type === "product_url" ? activePasteSource.displayName : null;
@@ -4396,6 +4416,16 @@ function EditorPageInner() {
         };
         setPasteToPlaceMenuClipboardPreviewUrl(clipboardDataUrl);
         setIsPasteToPlaceMenuClipboardPreviewLoading(false);
+        if (activeSession.reason === "refresh_copied_item") {
+          clearPasteToPlaceActiveSource("refresh_copied_item_preview_ready");
+          setAwaitingPasteToPlaceSession({
+            operationId: activeSession.operationId,
+            reason: "refresh_copied_item",
+            createdAt: activeSession.createdAt,
+          });
+          pushSnack("Copied item refreshed.");
+          return;
+        }
         setIsPasteToPlaceMenuIngesting(false);
         pushSnack("Pasted image ready. Choose Place here or Swap item.");
       })();
@@ -4405,10 +4435,12 @@ function EditorPageInner() {
   }, [
     clearAwaitingPasteToPlaceSession,
     clearPasteEventClipboardImagePayload,
+    clearPasteToPlaceActiveSource,
     isPasteToPlaceOperationActive,
     isPasteToPlaceSettling,
     pasteToPlaceMenuState,
     pushSnack,
+    setAwaitingPasteToPlaceSession,
   ]);
   const selectedVersionId =
     activeAssetId ?? versions.find((asset) => asset.is_active)?.id ?? null;
@@ -6999,6 +7031,7 @@ function EditorPageInner() {
   const preparePasteToPlaceClipboardProduct = useCallback(
     async ({
       operationId,
+      trigger,
     }: PasteToPlaceClickHint & {
       operationId?: number;
       trigger?: "menu_open_refresh" | "explicit_refresh" | "explicit_paste_flow";
@@ -7110,10 +7143,12 @@ function EditorPageInner() {
       const currentSource = activePasteSourceRef.current;
       const hasSeenClipboardHashBefore =
         lastObservedClipboardDataUrlHashRef.current === clipboardDataUrlHash;
+      const shouldBypassUnchangedGuard = trigger === "explicit_refresh";
       if (
-        hasSeenClipboardHashBefore ||
-        (currentSource?.type === "clipboard" &&
-          currentSource.clipboardDataUrlHash === clipboardDataUrlHash)
+        !shouldBypassUnchangedGuard &&
+        (hasSeenClipboardHashBefore ||
+          (currentSource?.type === "clipboard" &&
+            currentSource.clipboardDataUrlHash === clipboardDataUrlHash))
       ) {
         setPasteToPlaceStatus(null);
         return { status: "failed", reason: "clipboard-source-unchanged" };
@@ -7205,6 +7240,89 @@ function EditorPageInner() {
       stage3SkuItemsActive,
     ]
   );
+  const beginAwaitingPasteToPlaceSession = useCallback(
+    (operationId: number, reason: AwaitingPasteToPlaceReason) => {
+      setAwaitingPasteToPlaceSession({
+        operationId,
+        reason,
+        createdAt: Date.now(),
+      });
+      setPasteToPlaceMenuClipboardPreviewUrl(null);
+      setIsPasteToPlaceMenuClipboardPreviewLoading(false);
+      setIsPasteToPlaceMenuIngesting(false);
+    },
+    [setAwaitingPasteToPlaceSession]
+  );
+  const refreshPasteToPlaceCopiedItem = useCallback(async () => {
+    if (!pasteToPlaceMenuState) return;
+    if (isPasteToPlaceSettling) return;
+    if (isPasteToPlaceRefreshInteractionLocked) return;
+    if (isRefreshingCopiedItemRef.current) return;
+    if (isClipboardPasteToPlaceIngestPending) {
+      pushSnack("Clipboard item is still preparing. Try again in a moment.");
+      return;
+    }
+    isRefreshingCopiedItemRef.current = true;
+    setIsRefreshingCopiedItem(true);
+    try {
+      const operationId = beginPasteToPlaceOperation();
+      clearAwaitingPasteToPlaceSession();
+      clearPasteEventClipboardImagePayload();
+      if (isLikelySafariBrowser()) {
+        beginAwaitingPasteToPlaceSession(operationId, "refresh_copied_item");
+        return;
+      }
+      const clipboardReadResult = await readClipboardImageWithStatus();
+      if (clipboardReadResult.status === "access-unavailable") {
+        beginAwaitingPasteToPlaceSession(operationId, "refresh_copied_item");
+        return;
+      }
+      if (!clipboardReadResult.image) {
+        setPasteToPlaceStatus(null);
+        setIsPasteToPlaceMenuIngesting(false);
+        pushSnack("Clipboard did not contain an image. Copy a furniture image and try again.");
+        return;
+      }
+      const clipboardDataUrl = await blobToDataUrl(clipboardReadResult.image.blob);
+      if (!clipboardDataUrl || !clipboardDataUrl.startsWith("data:image/")) {
+        setPasteToPlaceStatus(null);
+        setIsPasteToPlaceMenuIngesting(false);
+        pushSnack("Clipboard image could not be read. Copy the image again and try refresh.");
+        return;
+      }
+      setAwaitingPasteToPlaceSession({
+        operationId,
+        reason: "refresh_copied_item",
+        createdAt: Date.now(),
+      });
+      pasteEventClipboardImagePayloadRef.current = {
+        operationId,
+        file: clipboardReadResult.image.blob,
+        dataUrl: clipboardDataUrl,
+        dataUrlHash: hashDataUrlForLogs(clipboardDataUrl),
+        createdAt: Date.now(),
+      };
+      setPasteToPlaceMenuClipboardPreviewUrl(clipboardDataUrl);
+      setIsPasteToPlaceMenuClipboardPreviewLoading(false);
+      clearPasteToPlaceActiveSource("refresh_copied_item_preview_ready");
+      pushSnack("Copied item refreshed.");
+    } finally {
+      isRefreshingCopiedItemRef.current = false;
+      setIsRefreshingCopiedItem(false);
+    }
+  }, [
+    beginAwaitingPasteToPlaceSession,
+    beginPasteToPlaceOperation,
+    clearAwaitingPasteToPlaceSession,
+    clearPasteEventClipboardImagePayload,
+    clearPasteToPlaceActiveSource,
+    isClipboardPasteToPlaceIngestPending,
+    isPasteToPlaceRefreshInteractionLocked,
+    isPasteToPlaceSettling,
+    pasteToPlaceMenuState,
+    pushSnack,
+    setAwaitingPasteToPlaceSession,
+  ]);
   const resolveAwaitingPasteToPlaceOperationIdForMenuAction = useCallback((): number | null => {
     const awaitingSession = awaitingPasteToPlaceSessionRef.current;
     if (!awaitingSession) return null;
@@ -8142,22 +8260,13 @@ function EditorPageInner() {
         anchorX: state.anchorX ?? state.xNorm,
         anchorY: state.anchorY ?? state.yNorm,
       });
-      const beginAwaitingPasteToPlaceSession = (reason: AwaitingPasteToPlaceReason) => {
-        setAwaitingPasteToPlaceSession({
-          operationId,
-          reason,
-          createdAt: Date.now(),
-        });
-        setPasteToPlaceMenuClipboardPreviewUrl(null);
-        setIsPasteToPlaceMenuClipboardPreviewLoading(false);
-      };
       const currentSource = activePasteSourceRef.current;
       if (currentSource?.type === "product_url") {
         clearPasteToPlaceMenuClipboardPreview();
         return;
       }
       if (isLikelySafariBrowser()) {
-        beginAwaitingPasteToPlaceSession("safari");
+        beginAwaitingPasteToPlaceSession(operationId, "safari");
         return;
       }
       const previewToken = pasteToPlaceMenuClipboardPreviewTokenRef.current + 1;
@@ -8170,7 +8279,7 @@ function EditorPageInner() {
         const clipboardImage = clipboardReadResult.image;
         if (!clipboardImage) {
           if (clipboardReadResult.status === "access-unavailable") {
-            beginAwaitingPasteToPlaceSession("clipboard_access_unavailable");
+            beginAwaitingPasteToPlaceSession(operationId, "clipboard_access_unavailable");
             return;
           }
           setPasteToPlaceMenuClipboardPreviewUrl(null);
@@ -8229,7 +8338,7 @@ function EditorPageInner() {
       isRotateMarkerTargeting,
       isPasteToPlaceSettling,
       pushSnack,
-      setAwaitingPasteToPlaceSession,
+      beginAwaitingPasteToPlaceSession,
     ]
   );
 
@@ -8380,6 +8489,14 @@ function EditorPageInner() {
 
   const handlePasteToPlacePlaceHere = useCallback(async () => {
     if (!pasteToPlaceMenuState) return;
+    if (isPasteToPlaceRefreshInteractionLocked || isRefreshingCopiedItemRef.current) {
+      pushSnack(
+        isAwaitingRefreshCopiedItem
+          ? "Press ⌘V to finish refreshing copied item."
+          : "Refreshing copied item. Try again in a moment."
+      );
+      return;
+    }
     if (isPasteToPlaceSettling) {
       console.info("[Paste-to-Place][settling] Place blocked because settling", {
         context: "place_here",
@@ -8459,8 +8576,10 @@ function EditorPageInner() {
     isClipboardPasteToPlaceIngestPending,
     isBusy,
     isEditRunning,
+    isAwaitingRefreshCopiedItem,
     isMyFurnitureMultiPreparedSource,
     isPasteToPlaceOperationActive,
+    isPasteToPlaceRefreshInteractionLocked,
     isPasteToPlaceSettling,
     isRotateMarkerTargeting,
     pasteToPlaceMenuState,
@@ -8474,6 +8593,14 @@ function EditorPageInner() {
 
   const handlePasteToPlaceSwap = useCallback(async () => {
     if (!pasteToPlaceMenuState) return;
+    if (isPasteToPlaceRefreshInteractionLocked || isRefreshingCopiedItemRef.current) {
+      pushSnack(
+        isAwaitingRefreshCopiedItem
+          ? "Press ⌘V to finish refreshing copied item."
+          : "Refreshing copied item. Try again in a moment."
+      );
+      return;
+    }
     if (isPasteToPlaceSettling) {
       console.info("[Paste-to-Place][settling] Place blocked because settling", {
         context: "swap",
@@ -8552,8 +8679,10 @@ function EditorPageInner() {
     isClipboardPasteToPlaceIngestPending,
     isBusy,
     isEditRunning,
+    isAwaitingRefreshCopiedItem,
     isMyFurnitureMultiPreparedSource,
     isPasteToPlaceOperationActive,
+    isPasteToPlaceRefreshInteractionLocked,
     isPasteToPlaceSettling,
     isRotateMarkerTargeting,
     pasteToPlaceMenuState,
@@ -8630,6 +8759,14 @@ function EditorPageInner() {
 
   const handlePasteToPlaceAutoPlace = useCallback(async () => {
     if (!pasteToPlaceMenuState) return;
+    if (isPasteToPlaceRefreshInteractionLocked || isRefreshingCopiedItemRef.current) {
+      pushSnack(
+        isAwaitingRefreshCopiedItem
+          ? "Press ⌘V to finish refreshing copied item."
+          : "Refreshing copied item. Try again in a moment."
+      );
+      return;
+    }
     if (isPasteToPlaceSettling) {
       console.info("[Paste-to-Place][settling] Place blocked because settling", {
         context: "auto_place",
@@ -8727,7 +8864,9 @@ function EditorPageInner() {
     isBusy,
     isDevUnlockPasteToPlace,
     isEditRunning,
+    isAwaitingRefreshCopiedItem,
     isPasteToPlaceOperationActive,
+    isPasteToPlaceRefreshInteractionLocked,
     isPasteToPlaceSettling,
     isSamePasteToPlaceJobControl,
     pasteToPlaceMenuState,
@@ -10675,6 +10814,7 @@ function EditorPageInner() {
                 }
                 isPasteToPlaceCancelling={isPasteToPlaceCancelling}
                 isPasteToPlaceSettling={isPasteToPlaceSettling}
+                isPasteToPlaceRefreshInteractionLocked={isPasteToPlaceRefreshInteractionLocked}
                 onOpenPasteToPlaceMenu={openPasteToPlaceMenu}
                 onPasteToPlaceChoosePlaceHere={handlePasteToPlacePlaceHere}
                 onPasteToPlaceChooseMyFurnitureAdd={() => {
@@ -10689,6 +10829,7 @@ function EditorPageInner() {
                 isPasteToPlaceProductUrlPreparing={isPasteToPlaceMenuIngesting && pasteToPlaceStatus === "preparing"}
                 onPasteToPlaceChooseSwap={handlePasteToPlaceSwap}
                 onPasteToPlaceChooseAutoPlace={handlePasteToPlaceAutoPlace}
+                onPasteToPlaceRefreshCopiedItem={refreshPasteToPlaceCopiedItem}
                 onDismissPasteToPlaceMenu={dismissPasteToPlaceMenu}
                 isMyFurnitureLoading={myFurnitureLoading}
                 removeMarkerPosition={removeMarkerPosition}
