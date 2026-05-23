@@ -7617,7 +7617,7 @@ function EditorPageInner() {
       clearAwaitingPasteToPlaceSession();
       clearPasteEventClipboardImagePayload();
       if (isLikelySafariBrowser()) {
-        if (isOperationStale()) return;
+        if (isOperationStale()) return null;
         beginAwaitingPasteToPlaceSession(operationId, "refresh_copied_item");
         return;
       }
@@ -7629,7 +7629,7 @@ function EditorPageInner() {
       }
       if (!clipboardReadResult.image) {
         const clipboardTextResult = await readClipboardTextWithStatus();
-        if (isOperationStale()) return;
+        if (isOperationStale()) return null;
         if (clipboardTextResult.status === "ok") {
           const normalizedClipboardUrl = normalizeLikelyUrl(clipboardTextResult.text ?? "");
           if (normalizedClipboardUrl) {
@@ -7731,7 +7731,7 @@ function EditorPageInner() {
     }: {
       imageUrl: string;
       operationId?: number;
-    }): Promise<void> => {
+    }): Promise<Extract<ActivePasteSource, { type: "product_url" }> | null> => {
       const operationId = initialOperationId ?? beginPasteToPlaceOperation();
       const isOperationStale = () => !isPasteToPlaceOperationActive(operationId);
       const classified = classifyPasteToPlaceUrl(imageUrl);
@@ -7739,27 +7739,27 @@ function EditorPageInner() {
         if (!isOperationStale()) {
           pushSnack("We couldn't load that copied image address. Try copying the product image instead.");
         }
-        return;
+        return null;
       }
       if (!canUseFreePasteToPlace) {
         if (!isOperationStale()) {
           pushSnack("Free preview used — unlock more placements to keep Viboding.");
         }
-        return;
+        return null;
       }
       setPasteToPlaceStatus("preparing");
       setIsPasteToPlaceMenuIngesting(true);
       try {
-        if (isOperationStale()) return;
+        if (isOperationStale()) return null;
         const ingested = await ingestClipboardUserSku({
           imageUrl: classified.normalizedUrl,
           ingestSource: "product_url",
           label: "Pasted Product",
         });
-        if (isOperationStale()) return;
+        if (isOperationStale()) return null;
         if (!ingested) {
           pushSnack("We couldn't load that copied image address. Try copying the product image instead.");
-          return;
+          return null;
         }
         const normalizedPreviewUrl =
           ingested.userSku.variants.find(
@@ -7767,7 +7767,7 @@ function EditorPageInner() {
           ) ?? null;
         if (!normalizedPreviewUrl) {
           pushSnack("We couldn't load that copied image address. Try copying the product image instead.");
-          return;
+          return null;
         }
         const domain = getDomainFromUrl(classified.normalizedUrl);
         const displayName =
@@ -7822,10 +7822,12 @@ function EditorPageInner() {
         clearPasteToPlaceUrlCandidatePreview();
         setPasteToPlaceProductUrlInput("");
         pushSnack("Image link ready. Click in your room to place it.");
+        return nextSource;
       } catch {
         if (!isOperationStale()) {
           pushSnack("We couldn't load that copied image address. Try copying the product image instead.");
         }
+        return null;
       } finally {
         if (!isOperationStale()) {
           setPasteToPlaceStatus(null);
@@ -7847,21 +7849,24 @@ function EditorPageInner() {
   );
 
   const preparePasteToPlaceProductUrlSource = useCallback(
-    async (options?: { operationId?: number }): Promise<void> => {
+    async (options?: {
+      operationId?: number;
+      sourceUrl?: string;
+    }): Promise<Extract<ActivePasteSource, { type: "product_url" }> | null> => {
       const operationId = options?.operationId ?? beginPasteToPlaceOperation();
       const isOperationStale = () => !isPasteToPlaceOperationActive(operationId);
-      const normalizedUrl = normalizeLikelyUrl(pasteToPlaceProductUrlInput);
+      const normalizedUrl = normalizeLikelyUrl(options?.sourceUrl ?? pasteToPlaceProductUrlInput);
       if (!normalizedUrl) {
         if (!isOperationStale()) {
           pushSnack("Paste a valid product URL first.");
         }
-        return;
+        return null;
       }
       if (!canUseFreePasteToPlace) {
         if (!isOperationStale()) {
           pushSnack("Free preview used — unlock more placements to keep Viboding.");
         }
-        return;
+        return null;
       }
 
       setPasteToPlaceStatus("preparing");
@@ -7869,7 +7874,7 @@ function EditorPageInner() {
 
       try {
         const accessToken = await tryGetSupabaseAccessToken();
-        if (isOperationStale()) return;
+        if (isOperationStale()) return null;
         const res = await fetch("/api/vibode/my-furniture/save", {
           method: "POST",
           headers: {
@@ -7885,14 +7890,14 @@ function EditorPageInner() {
           }),
         });
         const json = (await res.json().catch(() => ({}))) as PasteToPlaceProductUrlPrepareResponse;
-        if (isOperationStale()) return;
+        if (isOperationStale()) return null;
         if (!res.ok) {
           if (!isOperationStale()) {
             pushSnack(
               "We couldn't prepare that product link. Try copying the product image instead."
             );
           }
-          return;
+          return null;
         }
 
         const prepared = isRecord(json.prepared) ? json.prepared : null;
@@ -7912,9 +7917,9 @@ function EditorPageInner() {
               "We couldn't prepare that product link. Try copying the product image instead."
             );
           }
-          return;
+          return null;
         }
-        if (isOperationStale()) return;
+        if (isOperationStale()) return null;
         // Product URL source replaces clipboard provisional previews immediately.
         lastSurfacedProvisionalClipboardPreviewHashRef.current = null;
         suppressedPasteToPlaceMenuClipboardPreviewHashRef.current = null;
@@ -7985,18 +7990,20 @@ function EditorPageInner() {
           activatedAt: Date.now(),
         };
 
-        if (isOperationStale()) return;
+        if (isOperationStale()) return null;
         activatePasteToPlaceSource(nextSource, "product_url_prepare_success");
         clearPasteToPlaceMenuClipboardPreview();
         clearPasteToPlaceUrlCandidatePreview();
         setPasteToPlaceProductUrlInput("");
         pushSnack("Product link ready. Click in your room to place it.");
+        return nextSource;
       } catch {
         if (!isOperationStale()) {
           pushSnack(
             "We couldn't prepare that product link. Try copying the product image instead."
           );
         }
+        return null;
       } finally {
         if (!isOperationStale()) {
           setPasteToPlaceStatus(null);
@@ -9094,14 +9101,13 @@ function EditorPageInner() {
           if (isPasteToPlaceMenuIngesting && pasteToPlaceStatus === "preparing") {
             return { status: "failed", reason: "product-url-prepare-in-progress" };
           }
-          await preparePasteToPlaceDirectImageUrlSource({
+          const preparedDirectImageSource = await preparePasteToPlaceDirectImageUrlSource({
             imageUrl: directImageCandidateUrl,
             operationId,
           });
           if (isOperationStale("prepare_from_menu:after_direct_image_prepare")) {
             return { status: "failed", reason: "paste-to-place-operation-stale" };
           }
-          const preparedDirectImageSource = activePasteSourceRef.current;
           if (
             preparedDirectImageSource?.type === "product_url" &&
             preparedDirectImageSource.urlKind === "direct_image_url"
@@ -9119,11 +9125,16 @@ function EditorPageInner() {
         if (isPasteToPlaceMenuIngesting && pasteToPlaceStatus === "preparing") {
           return { status: "failed", reason: "product-url-prepare-in-progress" };
         }
-        await preparePasteToPlaceProductUrlSource({ operationId });
+        const preparedUrlSource = await preparePasteToPlaceProductUrlSource({
+          operationId,
+          sourceUrl:
+            classifiedProductUrlInput?.kind === "product_page_url"
+              ? classifiedProductUrlInput.normalizedUrl
+              : undefined,
+        });
         if (isOperationStale("prepare_from_menu:after_product_url_prepare")) {
           return { status: "failed", reason: "paste-to-place-operation-stale" };
         }
-        const preparedUrlSource = activePasteSourceRef.current;
         if (preparedUrlSource?.type === "product_url") {
           return { status: "ready", source: preparedUrlSource };
         }
@@ -9633,6 +9644,7 @@ function EditorPageInner() {
       sceneRebuildAbortControllerRef.current?.abort();
       sceneRebuildAbortControllerRef.current = null;
       sceneRebuildAbortReasonRef.current = null;
+      pendingPasteToPlacePlacementSnapshotRef.current = null;
     };
   }, [
     clearSceneRebuildComposeTimers,
