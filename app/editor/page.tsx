@@ -2689,6 +2689,10 @@ function EditorPageInner() {
   const getPendingPasteToPlaceCommitContext = useCallback((operationId: number) => {
     return pendingPasteToPlaceCommitRegistryRef.current.get(operationId) ?? null;
   }, []);
+  const isPendingPasteToPlaceCommitOperationActive = useCallback(
+    (operationId: number) => pendingPasteToPlaceCommitRegistryRef.current.has(operationId),
+    []
+  );
   const getPendingPasteToPlacePlacementSnapshotForOperation = useCallback(
     (operationId: number): PendingPasteToPlacePlacementSnapshot | null => {
       const contextSnapshot = getPendingPasteToPlaceCommitContext(operationId)?.snapshot ?? null;
@@ -3104,20 +3108,26 @@ function EditorPageInner() {
     ]
   );
   const clearPendingPasteToPlacePlacementSnapshot = useCallback((operationId?: number) => {
-    const currentSnapshot = pendingPasteToPlacePlacementSnapshotRef.current;
-    if (!currentSnapshot && typeof operationId !== "number") {
-      clearPendingPasteToPlaceCommitContext();
+    if (typeof operationId === "number") {
+      clearPendingPasteToPlaceCommitContext(operationId);
       return;
     }
-    if (!currentSnapshot) {
-      if (typeof operationId === "number") {
-        clearPendingPasteToPlaceCommitContext(operationId);
-      }
-      return;
-    }
-    if (typeof operationId === "number" && currentSnapshot.operationId !== operationId) return;
-    clearPendingPasteToPlaceCommitContext(currentSnapshot.operationId);
+    clearPendingPasteToPlaceCommitContext();
   }, [clearPendingPasteToPlaceCommitContext]);
+  const clearPasteToPlaceProgressPreviewForOperation = useCallback(
+    (operationId?: number) => {
+      if (typeof operationId !== "number") {
+        clearPasteToPlaceProgressPreview();
+        return;
+      }
+      const mirroredOperationId = pendingPasteToPlacePlacementSnapshotRef.current?.operationId;
+      if (mirroredOperationId !== operationId) return;
+      setPasteToPlaceProgressCardState(null);
+      setPasteToPlaceProgressCardPreviewUrl(null);
+      setIsPasteToPlaceMenuIngesting(false);
+    },
+    [clearPasteToPlaceProgressPreview]
+  );
   const beginPasteToPlaceSettlingRequest = useCallback(() => {
     const requestId = safeId("ptp_settle_req");
     activePasteToPlaceSettlingRequestIdRef.current = requestId;
@@ -3216,6 +3226,29 @@ function EditorPageInner() {
       );
     },
     [isSamePasteToPlaceJobControl, updatePendingPasteToPlaceCommitContext]
+  );
+  const finalizePasteToPlaceCommitOperation = useCallback(
+    ({
+      operationId,
+      pasteToPlaceControl,
+      clearUi = false,
+    }: {
+      operationId?: number;
+      pasteToPlaceControl?: PasteToPlaceJobControl | null;
+      clearUi?: boolean;
+    }) => {
+      if (clearUi) {
+        setPasteToPlaceStatus(null);
+        clearPasteToPlaceProgressPreviewForOperation(operationId);
+      }
+      clearActivePasteToPlaceJobControlIfMatching(pasteToPlaceControl);
+      clearPendingPasteToPlacePlacementSnapshot(operationId);
+    },
+    [
+      clearActivePasteToPlaceJobControlIfMatching,
+      clearPendingPasteToPlacePlacementSnapshot,
+      clearPasteToPlaceProgressPreviewForOperation,
+    ]
   );
   const hasPendingPasteToPlaceCommit = useCallback(
     () =>
@@ -7578,7 +7611,7 @@ function EditorPageInner() {
       const isOperationStale = (context?: string): boolean => {
         void context;
         if (typeof operationId !== "number") return false;
-        if (isPasteToPlaceOperationActive(operationId)) return false;
+        if (isPendingPasteToPlaceCommitOperationActive(operationId)) return false;
         return true;
       };
 
@@ -7775,6 +7808,7 @@ function EditorPageInner() {
       clearPasteToPlaceUrlCandidatePreview,
       hasShownPasteToPlaceClipboardHeadsUp,
       ingestClipboardUserSku,
+      isPendingPasteToPlaceCommitOperationActive,
       isPasteToPlaceOperationActive,
       markPasteToPlaceClipboardHeadsUpShown,
       pushSnack,
@@ -8795,7 +8829,7 @@ function EditorPageInner() {
       const isOperationStale = (context?: string): boolean => {
         void context;
         if (typeof resolvedOperationId !== "number") return false;
-        if (isPasteToPlaceOperationActive(resolvedOperationId)) return false;
+        if (isPendingPasteToPlaceCommitOperationActive(resolvedOperationId)) return false;
         return true;
       };
       if (isOperationStale("execute:start")) {
@@ -8830,21 +8864,27 @@ function EditorPageInner() {
       }
 
       if (preparedResult && preparedResult.status === "no-image") {
-        setPasteToPlaceStatus(null);
-        clearPasteToPlaceProgressPreview();
-        clearPendingPasteToPlacePlacementSnapshot(resolvedOperationId);
+        finalizePasteToPlaceCommitOperation({
+          operationId: resolvedOperationId,
+          pasteToPlaceControl: resolvedPasteToPlaceControl,
+          clearUi: true,
+        });
         return false;
       }
       if (preparedResult && preparedResult.status === "blocked") {
-        setPasteToPlaceStatus(null);
-        clearPasteToPlaceProgressPreview();
-        clearPendingPasteToPlacePlacementSnapshot(resolvedOperationId);
+        finalizePasteToPlaceCommitOperation({
+          operationId: resolvedOperationId,
+          pasteToPlaceControl: resolvedPasteToPlaceControl,
+          clearUi: true,
+        });
         return true;
       }
       if (preparedResult && preparedResult.status === "failed") {
-        setPasteToPlaceStatus(null);
-        clearPasteToPlaceProgressPreview();
-        clearPendingPasteToPlacePlacementSnapshot(resolvedOperationId);
+        finalizePasteToPlaceCommitOperation({
+          operationId: resolvedOperationId,
+          pasteToPlaceControl: resolvedPasteToPlaceControl,
+          clearUi: true,
+        });
         return true;
       }
 
@@ -8854,9 +8894,11 @@ function EditorPageInner() {
           : snapshotForOperation?.sourceAtCommit ?? activePasteSourceRef.current;
       if (!resolvedSource) {
         pushSnack("Copy a product image, paste a product link, or choose an item from My Furniture first.");
-        setPasteToPlaceStatus(null);
-        clearPasteToPlaceProgressPreview();
-        clearPendingPasteToPlacePlacementSnapshot(resolvedOperationId);
+        finalizePasteToPlaceCommitOperation({
+          operationId: resolvedOperationId,
+          pasteToPlaceControl: resolvedPasteToPlaceControl,
+          clearUi: true,
+        });
         return true;
       }
 
@@ -8974,7 +9016,7 @@ function EditorPageInner() {
       } finally {
         if (!isOperationStale("execute:finally")) {
           setPasteToPlaceStatus(null);
-          clearPasteToPlaceProgressPreview();
+          clearPasteToPlaceProgressPreviewForOperation(resolvedOperationId);
           clearActivePasteToPlaceJobControlIfMatching(resolvedPasteToPlaceControl);
           clearPendingPasteToPlacePlacementSnapshot(resolvedOperationId);
         }
@@ -8984,13 +9026,14 @@ function EditorPageInner() {
       activeTool,
       activeAssetId,
       clearPendingPasteToPlacePlacementSnapshot,
-      clearPasteToPlaceProgressPreview,
+      clearPasteToPlaceProgressPreviewForOperation,
+      finalizePasteToPlaceCommitOperation,
       isBaseImageEditReady,
       isBusy,
       isDevUnlockPasteToPlace,
       isEditRunning,
       isPasteToPlaceSettling,
-      isPasteToPlaceOperationActive,
+      isPendingPasteToPlaceCommitOperationActive,
       getPendingPasteToPlacePlacementSnapshotForOperation,
       isRotateMarkerTargeting,
       pushSnack,
@@ -9207,7 +9250,7 @@ function EditorPageInner() {
       const isOperationStale = (context?: string): boolean => {
         void context;
         if (typeof operationId !== "number") return false;
-        if (isPasteToPlaceOperationActive(operationId)) return false;
+        if (isPendingPasteToPlaceCommitOperationActive(operationId)) return false;
         return true;
       };
 
@@ -9284,7 +9327,7 @@ function EditorPageInner() {
             }
             clearPasteToPlaceActiveSource("my_furniture_unresolvable");
             setPasteToPlaceStatus(null);
-            clearPasteToPlaceProgressPreview();
+            clearPasteToPlaceProgressPreviewForOperation(operationId);
             pushSnack("That saved furniture item is no longer available. Choose another item.");
             return { status: "failed", reason: "my-furniture-source-stale" };
           }
@@ -9370,9 +9413,9 @@ function EditorPageInner() {
     [
       activatePasteToPlaceSource,
       clearPasteToPlaceActiveSource,
-      clearPasteToPlaceProgressPreview,
+      clearPasteToPlaceProgressPreviewForOperation,
       getPendingPasteToPlacePlacementSnapshotForOperation,
-      isPasteToPlaceOperationActive,
+      isPendingPasteToPlaceCommitOperationActive,
       isPasteToPlaceMenuIngesting,
       pasteToPlaceMenuClipboardPreviewUrl,
       pasteToPlaceUrlCandidatePreview,
@@ -9437,7 +9480,7 @@ function EditorPageInner() {
       pasteToPlaceControl,
     });
     const progressPreviewUrl = getPasteToPlaceProgressCardPreviewUrlFromSnapshot(placementSnapshot);
-    const isOperationStale = (): boolean => !isPasteToPlaceOperationActive(operationId);
+    const isOperationStale = (): boolean => !isPendingPasteToPlaceCommitOperationActive(operationId);
     try {
       if (isOperationStale()) return;
       setPasteToPlaceProgressCardState(menuStateSnapshot);
@@ -9487,7 +9530,7 @@ function EditorPageInner() {
     isEditRunning,
     isAwaitingRefreshCopiedItem,
     isMyFurnitureMultiPreparedSource,
-    isPasteToPlaceOperationActive,
+    isPendingPasteToPlaceCommitOperationActive,
     isPasteToPlaceRefreshInteractionLocked,
     isPasteToPlaceSettling,
     isRotateMarkerTargeting,
@@ -9551,7 +9594,7 @@ function EditorPageInner() {
       pasteToPlaceControl,
     });
     const progressPreviewUrl = getPasteToPlaceProgressCardPreviewUrlFromSnapshot(placementSnapshot);
-    const isOperationStale = (): boolean => !isPasteToPlaceOperationActive(operationId);
+    const isOperationStale = (): boolean => !isPendingPasteToPlaceCommitOperationActive(operationId);
     try {
       if (isOperationStale()) return;
       setPasteToPlaceProgressCardState(menuStateSnapshot);
@@ -9601,7 +9644,7 @@ function EditorPageInner() {
     isEditRunning,
     isAwaitingRefreshCopiedItem,
     isMyFurnitureMultiPreparedSource,
-    isPasteToPlaceOperationActive,
+    isPendingPasteToPlaceCommitOperationActive,
     isPasteToPlaceRefreshInteractionLocked,
     isPasteToPlaceSettling,
     isRotateMarkerTargeting,
@@ -9718,7 +9761,7 @@ function EditorPageInner() {
     const progressPreviewUrl = getPasteToPlaceProgressCardPreviewUrlFromSnapshot(placementSnapshot);
     const isOperationStale = (context?: string): boolean => {
       void context;
-      if (isPasteToPlaceOperationActive(operationId)) return false;
+      if (isPendingPasteToPlaceCommitOperationActive(operationId)) return false;
       return true;
     };
 
@@ -9774,7 +9817,7 @@ function EditorPageInner() {
       );
       if (!isOperationStale("auto_place:finally") || shouldClearUiForThisOperation) {
         setPasteToPlaceStatus(null);
-        clearPasteToPlaceProgressPreview();
+        clearPasteToPlaceProgressPreviewForOperation(operationId);
         clearActivePasteToPlaceJobControlIfMatching(pasteToPlaceControl);
         clearPendingPasteToPlacePlacementSnapshot(operationId);
       } else if (pasteToPlaceStatus !== "placing") {
@@ -9788,7 +9831,7 @@ function EditorPageInner() {
     activePasteToPlaceJobControlRef,
     beginPasteToPlacePlacementOperation,
     clearActivePasteToPlaceJobControlIfMatching,
-    clearPasteToPlaceProgressPreview,
+    clearPasteToPlaceProgressPreviewForOperation,
     clearPasteToPlaceSettlingForRequest,
     clearPendingPasteToPlacePlacementSnapshot,
     createPasteToPlaceJobControl,
@@ -9800,7 +9843,7 @@ function EditorPageInner() {
     isDevUnlockPasteToPlace,
     isEditRunning,
     isAwaitingRefreshCopiedItem,
-    isPasteToPlaceOperationActive,
+    isPendingPasteToPlaceCommitOperationActive,
     isPasteToPlaceRefreshInteractionLocked,
     isPasteToPlaceSettling,
     isSamePasteToPlaceJobControl,
