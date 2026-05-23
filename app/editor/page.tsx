@@ -1127,6 +1127,13 @@ type PasteEventClipboardImagePayload = {
   dataUrlHash: string | null;
   createdAt: number;
 };
+type PasteToPlaceUrlCandidatePreview = {
+  normalizedUrl: string;
+  previewImageUrl: string;
+  title: string | null;
+  domain: string | null;
+  operationId: number;
+};
 type PendingStage3Payload = {
   skuItems?: unknown;
   showCatalog?: unknown;
@@ -2417,6 +2424,11 @@ function EditorPageInner() {
   const isRefreshingCopiedItemRef = useRef(false);
   const [isRefreshingCopiedItem, setIsRefreshingCopiedItem] = useState(false);
   const [pasteToPlaceProductUrlInput, setPasteToPlaceProductUrlInput] = useState("");
+  const [pasteToPlaceUrlCandidatePreview, setPasteToPlaceUrlCandidatePreview] =
+    useState<PasteToPlaceUrlCandidatePreview | null>(null);
+  const [isPasteToPlaceUrlCandidatePreviewLoading, setIsPasteToPlaceUrlCandidatePreviewLoading] =
+    useState(false);
+  const pasteToPlaceUrlCandidatePreviewTokenRef = useRef(0);
   const [pasteToPlaceProgressCardState, setPasteToPlaceProgressCardState] =
     useState<PasteToPlaceMenuState>(null);
   const awaitingPasteToPlaceSessionRef = useRef<AwaitingPasteToPlaceSession | null>(null);
@@ -2798,6 +2810,9 @@ function EditorPageInner() {
     clearPasteEventClipboardImagePayload();
     pasteToPlaceMenuClipboardPreviewTokenRef.current += 1;
     setPasteToPlaceMenuClipboardPreviewUrl(null);
+    pasteToPlaceUrlCandidatePreviewTokenRef.current += 1;
+    setPasteToPlaceUrlCandidatePreview(null);
+    setIsPasteToPlaceUrlCandidatePreviewLoading(false);
 
     useEditorStore.getState().clearRemoveMarks();
   }, [clearAwaitingPasteToPlaceSession, clearPasteEventClipboardImagePayload]);
@@ -3049,6 +3064,135 @@ function EditorPageInner() {
     setPasteToPlaceMenuClipboardPreviewUrl(null);
     setIsPasteToPlaceMenuClipboardPreviewLoading(false);
   }, []);
+  const clearPasteToPlaceUrlCandidatePreview = useCallback(() => {
+    pasteToPlaceUrlCandidatePreviewTokenRef.current += 1;
+    setPasteToPlaceUrlCandidatePreview(null);
+    setIsPasteToPlaceUrlCandidatePreviewLoading(false);
+  }, []);
+  const handlePasteToPlaceProductUrlInputChange = useCallback(
+    (nextValue: string) => {
+      setPasteToPlaceProductUrlInput(nextValue);
+      const normalizedNextValue = normalizeLikelyUrl(nextValue);
+      setPasteToPlaceUrlCandidatePreview((currentCandidate) => {
+        if (!currentCandidate) return currentCandidate;
+        if (!normalizedNextValue || currentCandidate.normalizedUrl !== normalizedNextValue) {
+          return null;
+        }
+        return currentCandidate;
+      });
+    },
+    []
+  );
+  const readClipboardTextWithStatus = useCallback(async (): Promise<{
+    text: string | null;
+    status: "ok" | "access-unavailable" | "failed";
+  }> => {
+    if (typeof navigator === "undefined") return { text: null, status: "access-unavailable" };
+    if (!navigator.clipboard || typeof navigator.clipboard.readText !== "function") {
+      return { text: null, status: "access-unavailable" };
+    }
+    try {
+      const text = await navigator.clipboard.readText();
+      return {
+        text: typeof text === "string" ? text : null,
+        status: "ok",
+      };
+    } catch {
+      return { text: null, status: "failed" };
+    }
+  }, []);
+  const requestPasteToPlaceUrlCandidatePreview = useCallback(
+    async ({
+      sourceUrl,
+      operationId,
+      showFailureSnack = true,
+    }: {
+      sourceUrl: string;
+      operationId?: number;
+      showFailureSnack?: boolean;
+    }): Promise<PasteToPlaceUrlCandidatePreview | null> => {
+      const normalizedUrl = normalizeLikelyUrl(sourceUrl);
+      if (!normalizedUrl) {
+        setPasteToPlaceUrlCandidatePreview(null);
+        return null;
+      }
+      const previewToken = pasteToPlaceUrlCandidatePreviewTokenRef.current + 1;
+      pasteToPlaceUrlCandidatePreviewTokenRef.current = previewToken;
+      setIsPasteToPlaceUrlCandidatePreviewLoading(true);
+      try {
+        const res = await fetch("/api/vibode/product-url/preview", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            sourceUrl: normalizedUrl,
+          }),
+        });
+        const payload = (await res.json().catch(() => ({}))) as {
+          ok?: unknown;
+          normalizedUrl?: unknown;
+          title?: unknown;
+          previewImageUrl?: unknown;
+          domain?: unknown;
+        };
+        if (previewToken !== pasteToPlaceUrlCandidatePreviewTokenRef.current) return null;
+        if (typeof operationId === "number" && !isPasteToPlaceOperationActive(operationId)) return null;
+        if (!res.ok || payload.ok !== true) {
+          setPasteToPlaceUrlCandidatePreview(null);
+          if (showFailureSnack) {
+            pushSnack("We couldn't prepare that product link. Try copying the product image instead.");
+          }
+          return null;
+        }
+        const normalizedPayloadUrl =
+          typeof payload.normalizedUrl === "string" && payload.normalizedUrl.trim().length > 0
+            ? payload.normalizedUrl.trim()
+            : normalizedUrl;
+        const previewImageUrl =
+          typeof payload.previewImageUrl === "string" && payload.previewImageUrl.trim().length > 0
+            ? payload.previewImageUrl.trim()
+            : null;
+        if (!previewImageUrl) {
+          setPasteToPlaceUrlCandidatePreview(null);
+          if (showFailureSnack) {
+            pushSnack("We couldn't prepare that product link. Try copying the product image instead.");
+          }
+          return null;
+        }
+        setPasteToPlaceProductUrlInput(normalizedPayloadUrl);
+        setPendingMyFurnitureReturnPreviewUrl(null);
+        const candidate: PasteToPlaceUrlCandidatePreview = {
+          normalizedUrl: normalizedPayloadUrl,
+          previewImageUrl,
+          title:
+            typeof payload.title === "string" && payload.title.trim().length > 0
+              ? payload.title.trim()
+              : null,
+          domain:
+            typeof payload.domain === "string" && payload.domain.trim().length > 0
+              ? payload.domain.trim()
+              : null,
+          operationId: typeof operationId === "number" ? operationId : pasteToPlaceOperationIdRef.current,
+        };
+        setPasteToPlaceUrlCandidatePreview(candidate);
+        return candidate;
+      } catch {
+        if (previewToken !== pasteToPlaceUrlCandidatePreviewTokenRef.current) return null;
+        if (typeof operationId === "number" && !isPasteToPlaceOperationActive(operationId)) return null;
+        setPasteToPlaceUrlCandidatePreview(null);
+        if (showFailureSnack) {
+          pushSnack("We couldn't prepare that product link. Try copying the product image instead.");
+        }
+        return null;
+      } finally {
+        if (previewToken === pasteToPlaceUrlCandidatePreviewTokenRef.current) {
+          setIsPasteToPlaceUrlCandidatePreviewLoading(false);
+        }
+      }
+    },
+    [isPasteToPlaceOperationActive, pushSnack]
+  );
 
   const currentAspectRatioForUpload: VibodeAspectRatio = useMemo(() => {
     const width = scene.baseImageWidthPx;
@@ -3112,6 +3256,7 @@ function EditorPageInner() {
     setPendingMyFurnitureReturnPreviewUrl(null);
     clearPasteToPlaceProgressPreview();
     clearPasteToPlaceMenuClipboardPreview();
+    clearPasteToPlaceUrlCandidatePreview();
     clearAwaitingPasteToPlaceSession();
     clearPasteEventClipboardImagePayload();
     clearPasteToPlaceActiveSource("workflow_reset");
@@ -3129,6 +3274,7 @@ function EditorPageInner() {
     clearAwaitingPasteToPlaceSession,
     clearPasteEventClipboardImagePayload,
     clearPasteToPlaceMenuClipboardPreview,
+    clearPasteToPlaceUrlCandidatePreview,
     clearPasteToPlaceProgressPreview,
     setSceneNeedsUpdate,
   ]);
@@ -3996,6 +4142,7 @@ function EditorPageInner() {
       setPendingMyFurnitureReturnPreviewUrl(null);
       clearPasteToPlaceProgressPreview();
       clearPasteToPlaceMenuClipboardPreview();
+      clearPasteToPlaceUrlCandidatePreview();
       activatePasteToPlaceSource({
         type: "my_furniture",
         skuId: preparedProduct.skuId,
@@ -4021,6 +4168,7 @@ function EditorPageInner() {
     [
       activatePasteToPlaceSource,
       clearPasteToPlaceMenuClipboardPreview,
+      clearPasteToPlaceUrlCandidatePreview,
       clearPasteToPlaceProgressPreview,
     ]
   );
@@ -4300,15 +4448,18 @@ function EditorPageInner() {
       ? activePasteSource.rawPreviewUrl ?? activePasteSource.normalizedPreviewUrl
       : activePasteSource.normalizedPreviewUrl ?? activePasteSource.rawPreviewUrl
     : null;
+  const pasteToPlaceUrlCandidatePreviewUrl = pasteToPlaceUrlCandidatePreview?.previewImageUrl ?? null;
+  const activePasteToPlaceCandidatePreviewUrl =
+    pasteToPlaceMenuClipboardPreviewUrl ?? pasteToPlaceUrlCandidatePreviewUrl;
   const shouldHideAuthoritativeMyFurniturePreviewDuringClipboardProbe =
     activePasteSource?.type === "my_furniture" &&
     !pasteToPlaceMenuClipboardPreviewUrl &&
     isPasteToPlaceMenuClipboardPreviewLoading;
   const pasteToPlaceDisplayedPreviewUrl =
-    pendingMyFurnitureReturnPreviewUrl ??
+    activePasteToPlaceCandidatePreviewUrl ??
     (shouldHideAuthoritativeMyFurniturePreviewDuringClipboardProbe
       ? null
-      : (pasteToPlaceMenuClipboardPreviewUrl ?? activePasteSourcePreviewUrl));
+      : (pendingMyFurnitureReturnPreviewUrl ?? activePasteSourcePreviewUrl));
   const isMyFurnitureMultiPreparedSource =
     activePasteSource?.type === "my_furniture" && activePasteSource.selectionCount > 1;
   const myFurniturePreparedSelectionCount =
@@ -4352,6 +4503,14 @@ function EditorPageInner() {
         if (normalizedPastedUrl) {
           event.preventDefault();
           setPasteToPlaceProductUrlInput(normalizedPastedUrl);
+          const activeOperationId = pasteToPlaceOperationIdRef.current;
+          if (isPasteToPlaceOperationActive(activeOperationId)) {
+            void requestPasteToPlaceUrlCandidatePreview({
+              sourceUrl: normalizedPastedUrl,
+              operationId: activeOperationId,
+              showFailureSnack: true,
+            });
+          }
           const activeSession = awaitingPasteToPlaceSessionRef.current;
           if (
             activeSession &&
@@ -4446,6 +4605,7 @@ function EditorPageInner() {
     isPasteToPlaceSettling,
     pasteToPlaceMenuState,
     pushSnack,
+    requestPasteToPlaceUrlCandidatePreview,
     setAwaitingPasteToPlaceSession,
   ]);
   const selectedVersionId =
@@ -6884,6 +7044,7 @@ function EditorPageInner() {
         // Standalone "Use in Room" return can carry a stale provisional clipboard preview.
         // Clear + invalidate it eagerly so the selected My Furniture preview remains authoritative.
         clearPasteToPlaceMenuClipboardPreview();
+        clearPasteToPlaceUrlCandidatePreview();
         activatePreparedMyFurnitureSource(preparedProduct, {
           normalizedPreviewUrl: previewUrl,
           suppressedClipboardPreviewHash: pending.suppressedClipboardPreviewHash ?? null,
@@ -6912,6 +7073,7 @@ function EditorPageInner() {
     activatePreparedMyFurnitureSource,
     buildPreparedMyFurnitureProduct,
     clearPasteToPlaceMenuClipboardPreview,
+    clearPasteToPlaceUrlCandidatePreview,
     isBusy,
     isEditRunning,
     isPendingFurnitureSelectionRunning,
@@ -7221,6 +7383,7 @@ function EditorPageInner() {
       suppressedPasteToPlaceMenuClipboardPreviewHashRef.current = null;
       setPendingFurnitureClipboardSuppressionHash(null);
       clearPasteToPlaceMenuClipboardPreview();
+      clearPasteToPlaceUrlCandidatePreview();
       lastObservedClipboardDataUrlHashRef.current = clipboardDataUrlHash;
       if (awaitingSessionMatchesOperation) {
         clearAwaitingPasteToPlaceSession(operationId);
@@ -7238,6 +7401,7 @@ function EditorPageInner() {
       clearAwaitingPasteToPlaceSession,
       clearPasteEventClipboardImagePayload,
       clearPasteToPlaceMenuClipboardPreview,
+      clearPasteToPlaceUrlCandidatePreview,
       hasShownPasteToPlaceClipboardHeadsUp,
       ingestClipboardUserSku,
       isPasteToPlaceOperationActive,
@@ -7287,11 +7451,33 @@ function EditorPageInner() {
         return;
       }
       if (!clipboardReadResult.image) {
+        const clipboardTextResult = await readClipboardTextWithStatus();
+        if (isOperationStale()) return;
+        if (clipboardTextResult.status === "ok") {
+          const normalizedClipboardUrl = normalizeLikelyUrl(clipboardTextResult.text ?? "");
+          if (normalizedClipboardUrl) {
+            setPasteToPlaceProductUrlInput(normalizedClipboardUrl);
+            clearPasteToPlaceMenuClipboardPreview();
+            const urlCandidate = await requestPasteToPlaceUrlCandidatePreview({
+              sourceUrl: normalizedClipboardUrl,
+              operationId,
+              showFailureSnack: true,
+            });
+            if (isOperationStale()) return;
+            if (urlCandidate) {
+              setPendingMyFurnitureReturnPreviewUrl(null);
+              clearPasteToPlaceActiveSource("refresh_copied_item_url_preview_ready");
+              pushSnack("Copied item refreshed.");
+              return;
+            }
+            return;
+          }
+        }
         if (!isOperationStale()) {
           setPasteToPlaceStatus(null);
           setIsPasteToPlaceMenuIngesting(false);
         }
-        pushSnack("Clipboard did not contain an image. Copy a furniture image and try again.");
+        pushSnack("Clipboard did not contain a furniture image or product link. Copy one and try again.");
         return;
       }
       const clipboardDataUrl = await blobToDataUrl(clipboardReadResult.image.blob);
@@ -7305,6 +7491,8 @@ function EditorPageInner() {
         return;
       }
       if (isOperationStale()) return;
+      clearPasteToPlaceUrlCandidatePreview();
+      setPendingMyFurnitureReturnPreviewUrl(null);
       setAwaitingPasteToPlaceSession({
         operationId,
         reason: "refresh_copied_item",
@@ -7332,12 +7520,16 @@ function EditorPageInner() {
     clearAwaitingPasteToPlaceSession,
     clearPasteEventClipboardImagePayload,
     clearPasteToPlaceActiveSource,
+    clearPasteToPlaceMenuClipboardPreview,
+    clearPasteToPlaceUrlCandidatePreview,
     isClipboardPasteToPlaceIngestPending,
     isPasteToPlaceOperationActive,
     isPasteToPlaceRefreshInteractionLocked,
     isPasteToPlaceSettling,
     pasteToPlaceMenuState,
     pushSnack,
+    readClipboardTextWithStatus,
+    requestPasteToPlaceUrlCandidatePreview,
     setAwaitingPasteToPlaceSession,
   ]);
   const resolveAwaitingPasteToPlaceOperationIdForMenuAction = useCallback((): number | null => {
@@ -7496,6 +7688,7 @@ function EditorPageInner() {
         if (isOperationStale()) return;
         activatePasteToPlaceSource(nextSource, "product_url_prepare_success");
         clearPasteToPlaceMenuClipboardPreview();
+        clearPasteToPlaceUrlCandidatePreview();
         setPasteToPlaceProductUrlInput("");
         pushSnack("Product link ready. Click in your room to place it.");
       } catch {
@@ -7516,6 +7709,7 @@ function EditorPageInner() {
       beginPasteToPlaceOperation,
       canUseFreePasteToPlace,
       clearPasteToPlaceMenuClipboardPreview,
+      clearPasteToPlaceUrlCandidatePreview,
       isPasteToPlaceOperationActive,
       pasteToPlaceProductUrlInput,
       pushSnack,
@@ -8304,9 +8498,11 @@ function EditorPageInner() {
         anchorX: state.anchorX ?? state.xNorm,
         anchorY: state.anchorY ?? state.yNorm,
       });
+      clearPasteToPlaceUrlCandidatePreview();
       const currentSource = activePasteSourceRef.current;
       if (currentSource?.type === "product_url") {
         clearPasteToPlaceMenuClipboardPreview();
+        clearPasteToPlaceUrlCandidatePreview();
         return;
       }
       if (isLikelySafariBrowser()) {
@@ -8327,8 +8523,21 @@ function EditorPageInner() {
             return;
           }
           setPasteToPlaceMenuClipboardPreviewUrl(null);
+          const clipboardTextResult = await readClipboardTextWithStatus();
+          if (previewToken !== pasteToPlaceMenuClipboardPreviewTokenRef.current) return;
+          if (!isPasteToPlaceOperationActive(operationId)) return;
+          if (clipboardTextResult.status !== "ok") return;
+          const normalizedClipboardUrl = normalizeLikelyUrl(clipboardTextResult.text ?? "");
+          if (!normalizedClipboardUrl) return;
+          setPasteToPlaceProductUrlInput(normalizedClipboardUrl);
+          await requestPasteToPlaceUrlCandidatePreview({
+            sourceUrl: normalizedClipboardUrl,
+            operationId,
+            showFailureSnack: true,
+          });
           return;
         }
+        clearPasteToPlaceUrlCandidatePreview();
         const clipboardPreviewDataUrl = await blobToDataUrl(clipboardImage.blob);
         if (previewToken !== pasteToPlaceMenuClipboardPreviewTokenRef.current) return;
         if (!clipboardPreviewDataUrl || !clipboardPreviewDataUrl.startsWith("data:image/")) {
@@ -8376,6 +8585,8 @@ function EditorPageInner() {
       clearAwaitingPasteToPlaceSession,
       clearPasteEventClipboardImagePayload,
       clearPasteToPlaceMenuClipboardPreview,
+      clearPasteToPlaceUrlCandidatePreview,
+      isPasteToPlaceOperationActive,
       isClipboardPasteToPlaceIngestPending,
       isDevSceneRebuildRunning,
       isRemoveMarkerTargeting,
@@ -8383,6 +8594,8 @@ function EditorPageInner() {
       isPasteToPlaceSettling,
       pushSnack,
       beginAwaitingPasteToPlaceSession,
+      readClipboardTextWithStatus,
+      requestPasteToPlaceUrlCandidatePreview,
     ]
   );
 
@@ -8402,6 +8615,7 @@ function EditorPageInner() {
       }
       if (clearClipboardPreview) {
         clearPasteToPlaceMenuClipboardPreview();
+        clearPasteToPlaceUrlCandidatePreview();
       }
       if (clearPreview) {
         clearPasteToPlaceProgressPreview();
@@ -8411,6 +8625,7 @@ function EditorPageInner() {
       clearAwaitingPasteToPlaceSession,
       clearPasteEventClipboardImagePayload,
       clearPasteToPlaceMenuClipboardPreview,
+      clearPasteToPlaceUrlCandidatePreview,
       clearPasteToPlaceProgressPreview,
     ]
   );
@@ -8435,6 +8650,7 @@ function EditorPageInner() {
       }
       const source = activePasteSourceRef.current;
       const hasProvisionalClipboardPreview = Boolean(pasteToPlaceMenuClipboardPreviewUrl);
+      const normalizedProductUrlInput = normalizeLikelyUrl(pasteToPlaceProductUrlInput);
       if (source && !hasProvisionalClipboardPreview) {
         if (source.type === "my_furniture") {
           try {
@@ -8496,6 +8712,20 @@ function EditorPageInner() {
         }
         return { status: "ready", source };
       }
+      if (!source && !hasProvisionalClipboardPreview && normalizedProductUrlInput) {
+        if (isPasteToPlaceMenuIngesting && pasteToPlaceStatus === "preparing") {
+          return { status: "failed", reason: "product-url-prepare-in-progress" };
+        }
+        await preparePasteToPlaceProductUrlSource({ operationId });
+        if (isOperationStale("prepare_from_menu:after_product_url_prepare")) {
+          return { status: "failed", reason: "paste-to-place-operation-stale" };
+        }
+        const preparedUrlSource = activePasteSourceRef.current;
+        if (preparedUrlSource?.type === "product_url") {
+          return { status: "ready", source: preparedUrlSource };
+        }
+        return { status: "failed", reason: "product-url-prepare-failed" };
+      }
 
       setIsPasteToPlaceMenuIngesting(true);
       try {
@@ -8526,7 +8756,11 @@ function EditorPageInner() {
       clearPasteToPlaceActiveSource,
       clearPasteToPlaceProgressPreview,
       isPasteToPlaceOperationActive,
+      isPasteToPlaceMenuIngesting,
       pasteToPlaceMenuClipboardPreviewUrl,
+      pasteToPlaceProductUrlInput,
+      pasteToPlaceStatus,
+      preparePasteToPlaceProductUrlSource,
       pushSnack,
       preparePasteToPlaceClipboardProduct,
       resolveMyFurnitureForEdit,
@@ -10839,7 +11073,9 @@ function EditorPageInner() {
                 pasteToPlaceProductSupplier={productUrlPreparedSupplier}
                 pasteToPlaceProductSourceUrl={productUrlPreparedSourceUrl}
                 isPasteToPlaceMenuPreviewLoading={
-                  isPasteToPlaceMenuIngesting || isPasteToPlaceMenuClipboardPreviewLoading
+                  isPasteToPlaceMenuIngesting ||
+                  isPasteToPlaceMenuClipboardPreviewLoading ||
+                  isPasteToPlaceUrlCandidatePreviewLoading
                 }
                 pasteToPlaceProgressCardState={pasteToPlaceProgressCardState}
                 pasteToPlaceProgressCardPreviewUrl={pasteToPlaceDisplayedPreviewUrl}
@@ -10859,7 +11095,7 @@ function EditorPageInner() {
                 }}
                 pasteToPlaceAwaitingPasteMessage={pasteToPlaceAwaitingPasteMessage}
                 pasteToPlaceProductUrlInput={pasteToPlaceProductUrlInput}
-                onPasteToPlaceProductUrlInputChange={setPasteToPlaceProductUrlInput}
+                onPasteToPlaceProductUrlInputChange={handlePasteToPlaceProductUrlInputChange}
                 onPasteToPlaceSubmitProductUrl={() => {
                   void preparePasteToPlaceProductUrlSource();
                 }}
@@ -11760,6 +11996,7 @@ function EditorPageInner() {
                         setPendingMyFurnitureReturnPreviewUrl(null);
                         clearPasteToPlaceProgressPreview();
                         clearPasteToPlaceMenuClipboardPreview();
+                        clearPasteToPlaceUrlCandidatePreview();
                         clearAwaitingPasteToPlaceSession();
                         clearPasteEventClipboardImagePayload();
                         clearPasteToPlaceActiveSource("base_image_cleared");
