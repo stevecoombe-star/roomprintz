@@ -700,6 +700,7 @@ type IngestPreviewCallResult = {
   ok: boolean;
   status: number;
   ingested: IngestedImageResult | null;
+  failureDetail: Record<string, unknown> | string | null;
 };
 
 function createRequestId(): string {
@@ -734,6 +735,38 @@ function logSaveEvent(
     return;
   }
   console.info(message);
+}
+
+function sanitizeIngestFailureDetail(payload: unknown): Record<string, unknown> | string | null {
+  if (!payload) return null;
+  if (typeof payload === "string") {
+    const trimmed = payload.trim();
+    if (!trimmed) return null;
+    return trimmed.slice(0, 600);
+  }
+  const record = safeRecord(payload);
+  if (!record) {
+    return {
+      kind: typeof payload,
+    };
+  }
+  const detailRecord = safeRecord(record.detail);
+  const detail =
+    typeof record.detail === "string"
+      ? record.detail.slice(0, 600)
+      : detailRecord
+      ? {
+          code: asOptionalString(detailRecord.code),
+          error: asOptionalString(detailRecord.error),
+          message: asOptionalString(detailRecord.message),
+        }
+      : null;
+  return {
+    code: asOptionalString(record.code),
+    error: asOptionalString(record.error),
+    message: asOptionalString(record.message),
+    detail,
+  };
 }
 
 function shouldSkipMyFurnitureAutosave(req: NextRequest): boolean {
@@ -795,6 +828,7 @@ async function ingestPreviewImageViaExistingFlow(
       ok: false,
       status: 400,
       ingested: null,
+      failureDetail: null,
     };
   }
   const ingestUrl = new URL("/api/vibode/user-skus/ingest", req.url).toString();
@@ -820,6 +854,7 @@ async function ingestPreviewImageViaExistingFlow(
     ok: response.ok,
     status: response.status,
     ingested: response.ok ? getIngestedImageResult(payload) : null,
+    failureDetail: response.ok ? null : sanitizeIngestFailureDetail(payload),
   };
 }
 
@@ -872,6 +907,7 @@ export async function POST(req: NextRequest) {
     let metadataFetchFailed = false;
     let ingestCalled = false;
     let ingestOk: boolean | null = null;
+    let ingestStatus: number | null = null;
     let ingestedUserSkuId: string | null = null;
     let ingestedDisplayName: string | null = null;
     let usedIngestedUserSkuId = false;
@@ -1004,8 +1040,10 @@ export async function POST(req: NextRequest) {
               ingest_ok: ingestResult.ok,
               ingest_status: ingestResult.status,
               ingested_user_sku_id: ingestResult.ingested?.userSkuId ?? null,
+              ingest_failure_detail: ingestResult.failureDetail,
             });
             ingestOk = ingestResult.ok;
+            ingestStatus = ingestResult.status;
             ingestedUserSkuId = ingestResult.ingested?.userSkuId ?? null;
             ingestedDisplayName = ingestResult.ingested?.displayName ?? null;
             if (ingestResult.ingested?.userSkuId) {
@@ -1017,6 +1055,7 @@ export async function POST(req: NextRequest) {
           } catch {
             // Fallback to raw metadata image; save should still succeed.
             ingestOk = false;
+            ingestStatus = null;
             logSaveEvent("warn", "product_url_ingest_failed", requestId, {
               ingest_called: true,
             });
@@ -1060,6 +1099,16 @@ export async function POST(req: NextRequest) {
       !hasMeaningfulFallbackItemData;
 
     if (shouldBlockProductUrlSave) {
+      logSaveEvent("warn", "product_url_prepare_422", requestId, {
+        code: "product_url_blocked_or_unreadable",
+        source_url_domain: parsedSourceDomain,
+        metadata_fetch_failed: metadataFetchFailed,
+        has_preview_image: hasUsablePreviewImage,
+        ingest_called: ingestCalled,
+        ingest_ok: ingestOk,
+        ingest_status: ingestStatus,
+        has_next_user_sku_id: Boolean(nextUserSkuId),
+      });
       logSaveEvent("warn", "product_url_blocked_or_unreadable", requestId, {
         metadata_fetch_failed: metadataFetchFailed,
         has_usable_preview_image: hasUsablePreviewImage,
@@ -1070,6 +1119,7 @@ export async function POST(req: NextRequest) {
       });
       return Response.json(
         {
+          requestId,
           code: "product_url_blocked_or_unreadable",
           error: "We couldn't read that product page right now. Try copying the product image instead.",
         },
@@ -1095,11 +1145,22 @@ export async function POST(req: NextRequest) {
 
     if (!nextUserSkuId) {
       if (prepareOnly && isProductUrlFlow) {
+        logSaveEvent("warn", "product_url_prepare_422", requestId, {
+          code: "product_url_prepare_missing_user_sku_id",
+          source_url_domain: parsedSourceDomain,
+          metadata_fetch_failed: metadataFetchFailed,
+          has_preview_image: hasUsablePreviewImage,
+          ingest_called: ingestCalled,
+          ingest_ok: ingestOk,
+          ingest_status: ingestStatus,
+          has_next_user_sku_id: Boolean(nextUserSkuId),
+        });
         logSaveEvent("warn", "product_url_prepare_missing_user_sku_id", requestId, {
           prepare_only: true,
         });
         return Response.json(
           {
+            requestId,
             code: "product_url_prepare_missing_user_sku_id",
             error: "We couldn't prepare that product link. Try copying the product image instead.",
           },
