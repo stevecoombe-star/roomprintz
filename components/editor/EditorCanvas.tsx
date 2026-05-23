@@ -1,7 +1,7 @@
 // components/editor/EditorCanvas.tsx
 "use client";
 
-import React, { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   Stage,
   Layer,
@@ -48,6 +48,16 @@ type PasteToPlaceMenuState = {
   anchorX?: number;
   anchorY?: number;
 } | null;
+export type PasteToPlaceProgressOperationView = {
+  operationId: number;
+  anchor: NonNullable<PasteToPlaceMenuState>;
+  previewUrl: string | null;
+  mode: "place_here" | "swap_item" | "auto_place";
+  status: PasteToPlaceStatus | "cancelling" | "settling" | null;
+  isLoading: boolean;
+  isCancelling: boolean;
+  canCancel: boolean;
+};
 type PlacementLayerNode = {
   id: string;
   thumbnailUrl: string | null;
@@ -309,6 +319,7 @@ export function EditorCanvas({
   pasteToPlaceProgressCardState = null,
   pasteToPlaceProgressCardPreviewUrl = null,
   isPasteToPlaceProgressCardLoading = false,
+  pasteToPlaceProgressOperations = [],
   onCancelPasteToPlaceGeneration,
   isPasteToPlaceCancelling = false,
   isPasteToPlaceSettling = false,
@@ -376,6 +387,7 @@ export function EditorCanvas({
   pasteToPlaceProgressCardState?: PasteToPlaceMenuState;
   pasteToPlaceProgressCardPreviewUrl?: string | null;
   isPasteToPlaceProgressCardLoading?: boolean;
+  pasteToPlaceProgressOperations?: PasteToPlaceProgressOperationView[];
   onCancelPasteToPlaceGeneration?: () => void;
   isPasteToPlaceCancelling?: boolean;
   isPasteToPlaceSettling?: boolean;
@@ -631,6 +643,50 @@ export function EditorCanvas({
     Boolean(pasteToPlaceMenuPreviewUrl) || shouldRenderMyFurnitureMultiSelectPreview;
   const isPasteToPlaceActionLocked =
     isPasteToPlaceSettling || isPasteToPlaceRefreshInteractionLocked;
+  const getPasteToPlaceProgressCardPositionForAnchor = useCallback(
+    (anchor: NonNullable<PasteToPlaceMenuState>) => {
+      if (viewport) {
+        const { anchorX, anchorY } = anchor;
+        if (
+          typeof anchorX === "number" &&
+          Number.isFinite(anchorX) &&
+          typeof anchorY === "number" &&
+          Number.isFinite(anchorY) &&
+          viewport.imageNaturalW > 0 &&
+          viewport.imageNaturalH > 0
+        ) {
+          const imgPt = {
+            x: clamp(anchorX, 0, 1) * viewport.imageNaturalW,
+            y: clamp(anchorY, 0, 1) * viewport.imageNaturalH,
+          };
+          const projectedAnchor = imageToStagePoint(imgPt, viewport);
+          return {
+            left: projectedAnchor.x,
+            top: projectedAnchor.y,
+            centerOnAnchor: true,
+          } as const;
+        }
+      }
+      const requestedLeft = anchor.anchorCssX + PASTE_TO_PLACE_MENU_OFFSET_PX;
+      const requestedTop = anchor.anchorCssY + PASTE_TO_PLACE_MENU_OFFSET_PX;
+      const maxLeft = Math.max(
+        PASTE_TO_PLACE_MENU_EDGE_GUTTER_PX,
+        stageSize.w - PASTE_TO_PLACE_MENU_ESTIMATED_WIDTH_PX - PASTE_TO_PLACE_MENU_EDGE_GUTTER_PX
+      );
+      const maxTop = Math.max(
+        PASTE_TO_PLACE_MENU_EDGE_GUTTER_PX,
+        stageSize.h -
+          PASTE_TO_PLACE_PROGRESS_CARD_ESTIMATED_HEIGHT_PX -
+          PASTE_TO_PLACE_MENU_EDGE_GUTTER_PX
+      );
+      return {
+        left: clamp(requestedLeft, PASTE_TO_PLACE_MENU_EDGE_GUTTER_PX, maxLeft),
+        top: clamp(requestedTop, PASTE_TO_PLACE_MENU_EDGE_GUTTER_PX, maxTop),
+        centerOnAnchor: false,
+      } as const;
+    },
+    [stageSize.h, stageSize.w, viewport]
+  );
   useLayoutEffect(() => {
     if (!pasteToPlaceMenuState) {
       const frameId = window.requestAnimationFrame(() => {
@@ -2655,6 +2711,7 @@ export function EditorCanvas({
         </div>
       )}
       {pasteToPlaceProgressCardState &&
+        pasteToPlaceProgressOperations.length === 0 &&
         (pasteToPlaceProgressCardPreviewUrl || isPasteToPlaceProgressCardLoading) && (
           <div
             className={`pointer-events-none absolute z-30 ${
@@ -2707,6 +2764,63 @@ export function EditorCanvas({
             </div>
           </div>
         )}
+      {pasteToPlaceProgressOperations.length > 0 &&
+        pasteToPlaceProgressOperations.map((operation) => {
+          if (!operation.previewUrl && !operation.isLoading) return null;
+          const progressCardPosition = getPasteToPlaceProgressCardPositionForAnchor(operation.anchor);
+          const canceling = operation.isCancelling || isPasteToPlaceCancelling;
+          return (
+            <div
+              key={operation.operationId}
+              className={`pointer-events-none absolute z-30 ${
+                progressCardPosition.centerOnAnchor ? "-translate-x-1/2 -translate-y-1/2" : ""
+              }`}
+              style={{
+                left: progressCardPosition.left,
+                top: progressCardPosition.top,
+              }}
+            >
+              <div className="flex flex-col rounded-lg border border-white/10 bg-neutral-950/85 shadow-lg backdrop-blur-sm">
+                <div className="relative mx-2 my-2 overflow-hidden rounded-md border border-white/10 bg-neutral-900/70">
+                  {operation.previewUrl ? (
+                    <>
+                      {/* eslint-disable-next-line @next/next/no-img-element -- progress card preview uses dynamic clipboard/runtime URLs */}
+                      <img
+                        src={operation.previewUrl}
+                        alt="Clipboard product preview"
+                        className="h-24 w-full max-w-[220px] object-contain"
+                        draggable={false}
+                      />
+                    </>
+                  ) : (
+                    <div className="h-24 w-[220px] bg-neutral-900/70" />
+                  )}
+                  {operation.isLoading && (
+                    <div className="absolute inset-0 flex items-center justify-center bg-neutral-950/35">
+                      <span className="h-4 w-4 animate-spin rounded-full border border-neutral-100/85 border-t-transparent" />
+                    </div>
+                  )}
+                </div>
+                {operation.canCancel && onCancelPasteToPlaceGeneration && (
+                  <div className="mx-2 mb-2 flex justify-end">
+                    <button
+                      type="button"
+                      className={`pointer-events-auto rounded border px-2 py-0.5 text-[11px] font-medium transition ${
+                        canceling
+                          ? "cursor-not-allowed border-white/10 text-neutral-500"
+                          : "border-white/20 text-neutral-200 hover:border-white/35 hover:text-white"
+                      }`}
+                      onClick={onCancelPasteToPlaceGeneration}
+                      disabled={canceling}
+                    >
+                      {canceling ? "Cancelling..." : "Cancel"}
+                    </button>
+                  </div>
+                )}
+              </div>
+            </div>
+          );
+        })}
 
       {/* Tiny HUD (temporary) */}
       <div className="pointer-events-none absolute left-3 top-3 flex flex-col gap-1 rounded bg-neutral-950/60 px-2 py-1 text-xs text-neutral-300">

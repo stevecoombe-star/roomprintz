@@ -5,7 +5,10 @@ import React, { Suspense, useCallback, useEffect, useMemo, useRef, useState } fr
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 
-import { EditorCanvas } from "@/components/editor/EditorCanvas";
+import {
+  EditorCanvas,
+  type PasteToPlaceProgressOperationView,
+} from "@/components/editor/EditorCanvas";
 import {
   MyFurniturePicker,
   type MyFurniturePickerItem,
@@ -4789,6 +4792,48 @@ function EditorPageInner() {
     !isCommittedPasteToPlacePending &&
     isPasteToPlaceMenuIngesting &&
     pasteToPlaceStatus === "preparing";
+  const pasteToPlaceProgressOperations: PasteToPlaceProgressOperationView[] = (() => {
+    if (!pasteToPlaceProgressCardState) return [];
+    const isLoading = isPasteToPlaceMenuIngesting || Boolean(pasteToPlaceStatus);
+    if (!pasteToPlaceProgressCardPreviewUrl && !isLoading) return [];
+
+    const preferredOperationId = pendingPasteToPlacePlacementSnapshotRef.current?.operationId;
+    const activeJobControl =
+      activePasteToPlaceJobControlUiState ?? activePasteToPlaceJobControlRef.current ?? null;
+
+    let context: PendingPasteToPlaceCommitContext | null = null;
+    if (typeof preferredOperationId === "number") {
+      context = getPendingPasteToPlaceCommitContext(preferredOperationId);
+    }
+    if (!context && activeJobControl) {
+      for (const candidateContext of pendingPasteToPlaceCommitRegistryRef.current.values()) {
+        if (isSamePasteToPlaceJobControl(candidateContext.pasteToPlaceControl, activeJobControl)) {
+          context = candidateContext;
+          break;
+        }
+      }
+    }
+    if (!context) return [];
+
+    const status: PasteToPlaceProgressOperationView["status"] = isPasteToPlaceCancelling
+      ? "cancelling"
+      : isPasteToPlaceSettling && !pasteToPlaceStatus
+      ? "settling"
+      : pasteToPlaceStatus;
+
+    return [
+      {
+        operationId: context.operationId,
+        anchor: pasteToPlaceProgressCardState,
+        previewUrl: pasteToPlaceProgressCardPreviewUrl,
+        mode: context.snapshot.mode,
+        status,
+        isLoading,
+        isCancelling: isPasteToPlaceCancelling,
+        canCancel: hasPendingPasteToPlaceCommit(),
+      },
+    ];
+  })();
   const isAwaitingRefreshCopiedItem =
     awaitingPasteToPlaceSessionUiState?.reason === "refresh_copied_item";
   const isRefreshClipboardCandidateReady = Boolean(
@@ -11699,6 +11744,7 @@ function EditorPageInner() {
                 isPasteToPlaceProgressCardLoading={
                   isPasteToPlaceMenuIngesting || Boolean(pasteToPlaceStatus)
                 }
+                pasteToPlaceProgressOperations={pasteToPlaceProgressOperations}
                 onCancelPasteToPlaceGeneration={
                   hasPendingPasteToPlaceCommit() ? cancelPasteToPlaceGeneration : undefined
                 }
