@@ -969,6 +969,20 @@ function normalizeLikelyUrl(raw: string): string | null {
   }
 }
 
+function isLikelySafariBrowser(): boolean {
+  if (typeof navigator === "undefined") return false;
+  const ua = navigator.userAgent.toLowerCase();
+  const looksLikeSafari = ua.includes("safari");
+  const isKnownNonSafari =
+    ua.includes("chrome") ||
+    ua.includes("chromium") ||
+    ua.includes("crios") ||
+    ua.includes("edg") ||
+    ua.includes("opr") ||
+    ua.includes("fxios");
+  return looksLikeSafari && !isKnownNonSafari;
+}
+
 function getDomainFromUrl(rawUrl: string | null | undefined): string | null {
   if (!rawUrl) return null;
   try {
@@ -1097,6 +1111,29 @@ type PasteToPlaceMenuState = {
   anchorX?: number;
   anchorY?: number;
 } | null;
+type AwaitingPasteToPlaceReason =
+  | "safari"
+  | "clipboard_access_unavailable"
+  | "refresh_copied_item";
+type AwaitingPasteToPlaceSession = {
+  operationId: number;
+  reason: AwaitingPasteToPlaceReason;
+  createdAt: number;
+};
+type PasteEventClipboardImagePayload = {
+  operationId: number;
+  file: Blob | File;
+  dataUrl: string;
+  dataUrlHash: string | null;
+  createdAt: number;
+};
+type PasteToPlaceUrlCandidatePreview = {
+  normalizedUrl: string;
+  previewImageUrl: string;
+  title: string | null;
+  domain: string | null;
+  operationId: number;
+};
 type PendingStage3Payload = {
   skuItems?: unknown;
   showCatalog?: unknown;
@@ -2384,9 +2421,20 @@ function EditorPageInner() {
   const lastSurfacedProvisionalClipboardPreviewHashRef = useRef<string | null>(null);
   const suppressedPasteToPlaceMenuClipboardPreviewHashRef = useRef<string | null>(null);
   const [isPasteToPlaceMenuIngesting, setIsPasteToPlaceMenuIngesting] = useState(false);
+  const isRefreshingCopiedItemRef = useRef(false);
+  const [isRefreshingCopiedItem, setIsRefreshingCopiedItem] = useState(false);
   const [pasteToPlaceProductUrlInput, setPasteToPlaceProductUrlInput] = useState("");
+  const [pasteToPlaceUrlCandidatePreview, setPasteToPlaceUrlCandidatePreview] =
+    useState<PasteToPlaceUrlCandidatePreview | null>(null);
+  const [isPasteToPlaceUrlCandidatePreviewLoading, setIsPasteToPlaceUrlCandidatePreviewLoading] =
+    useState(false);
+  const pasteToPlaceUrlCandidatePreviewTokenRef = useRef(0);
   const [pasteToPlaceProgressCardState, setPasteToPlaceProgressCardState] =
     useState<PasteToPlaceMenuState>(null);
+  const awaitingPasteToPlaceSessionRef = useRef<AwaitingPasteToPlaceSession | null>(null);
+  const [awaitingPasteToPlaceSessionUiState, setAwaitingPasteToPlaceSessionUiState] =
+    useState<AwaitingPasteToPlaceSession | null>(null);
+  const pasteEventClipboardImagePayloadRef = useRef<PasteEventClipboardImagePayload | null>(null);
   const pasteToPlaceOperationIdRef = useRef(0);
   const pasteToPlaceClientSessionIdRef = useRef<string>(safeId("ptp_session"));
   const activePasteToPlaceJobControlRef = useRef<PasteToPlaceJobControl | null>(null);
@@ -2462,7 +2510,7 @@ function EditorPageInner() {
     typeof devSceneRebuildEnabledRaw === "undefined"
       ? true
       : devSceneRebuildEnabledRaw === "1" || devSceneRebuildEnabledRaw.toLowerCase() === "true";
-  const isSceneRebuildOverlayEnabled = process.env.NEXT_PUBLIC_VIBODE_ENABLE_SCENE_REBUILD === "true";
+  const isSceneRebuildOverlayEnabled = isDevSceneRebuildEnabled;
   const showDevSceneRebuildButton =
     process.env.NODE_ENV !== "production" && isDevUnlockPasteToPlace && isDevSceneRebuildEnabled;
 
@@ -2596,6 +2644,25 @@ function EditorPageInner() {
   const isPasteToPlaceOperationActive = useCallback(
     (operationId: number) => pasteToPlaceOperationIdRef.current === operationId,
     []
+  );
+  const setAwaitingPasteToPlaceSession = useCallback((session: AwaitingPasteToPlaceSession | null) => {
+    awaitingPasteToPlaceSessionRef.current = session;
+    setAwaitingPasteToPlaceSessionUiState(session);
+  }, []);
+  const clearPasteEventClipboardImagePayload = useCallback((operationId?: number) => {
+    const currentPayload = pasteEventClipboardImagePayloadRef.current;
+    if (typeof operationId === "number" && currentPayload?.operationId !== operationId) return;
+    pasteEventClipboardImagePayloadRef.current = null;
+  }, []);
+  const clearAwaitingPasteToPlaceSession = useCallback(
+    (operationId?: number) => {
+      const currentSession = awaitingPasteToPlaceSessionRef.current;
+      if (typeof operationId === "number" && currentSession?.operationId !== operationId) return;
+      awaitingPasteToPlaceSessionRef.current = null;
+      setAwaitingPasteToPlaceSessionUiState(null);
+      clearPasteEventClipboardImagePayload(operationId);
+    },
+    [clearPasteEventClipboardImagePayload]
   );
   const invalidateStageRunOperation = useCallback(() => {
     stageRunOperationIdRef.current += 1;
@@ -2739,11 +2806,16 @@ function EditorPageInner() {
     setPasteToPlaceProgressCardState(null);
     setIsPasteToPlaceMenuIngesting(false);
     setIsPasteToPlaceMenuClipboardPreviewLoading(false);
+    clearAwaitingPasteToPlaceSession();
+    clearPasteEventClipboardImagePayload();
     pasteToPlaceMenuClipboardPreviewTokenRef.current += 1;
     setPasteToPlaceMenuClipboardPreviewUrl(null);
+    pasteToPlaceUrlCandidatePreviewTokenRef.current += 1;
+    setPasteToPlaceUrlCandidatePreview(null);
+    setIsPasteToPlaceUrlCandidatePreviewLoading(false);
 
     useEditorStore.getState().clearRemoveMarks();
-  }, []);
+  }, [clearAwaitingPasteToPlaceSession, clearPasteEventClipboardImagePayload]);
   useEffect(() => {
     requestedRoomIdRef.current = requestedRoomId;
   }, [requestedRoomId]);
@@ -2972,9 +3044,13 @@ function EditorPageInner() {
     setPasteToPlaceStatus(null);
     clearPasteToPlaceProgressPreview();
     setPasteToPlaceMenuState(null);
+    clearAwaitingPasteToPlaceSession();
+    clearPasteEventClipboardImagePayload();
     pushSnack("Generation cancelled.");
     setIsPasteToPlaceCancelling(false);
   }, [
+    clearAwaitingPasteToPlaceSession,
+    clearPasteEventClipboardImagePayload,
     startPasteToPlaceCancelCooldown,
     clearPasteToPlaceProgressPreview,
     clearActivePasteToPlaceJobControlIfMatching,
@@ -2988,6 +3064,135 @@ function EditorPageInner() {
     setPasteToPlaceMenuClipboardPreviewUrl(null);
     setIsPasteToPlaceMenuClipboardPreviewLoading(false);
   }, []);
+  const clearPasteToPlaceUrlCandidatePreview = useCallback(() => {
+    pasteToPlaceUrlCandidatePreviewTokenRef.current += 1;
+    setPasteToPlaceUrlCandidatePreview(null);
+    setIsPasteToPlaceUrlCandidatePreviewLoading(false);
+  }, []);
+  const handlePasteToPlaceProductUrlInputChange = useCallback(
+    (nextValue: string) => {
+      setPasteToPlaceProductUrlInput(nextValue);
+      const normalizedNextValue = normalizeLikelyUrl(nextValue);
+      setPasteToPlaceUrlCandidatePreview((currentCandidate) => {
+        if (!currentCandidate) return currentCandidate;
+        if (!normalizedNextValue || currentCandidate.normalizedUrl !== normalizedNextValue) {
+          return null;
+        }
+        return currentCandidate;
+      });
+    },
+    []
+  );
+  const readClipboardTextWithStatus = useCallback(async (): Promise<{
+    text: string | null;
+    status: "ok" | "access-unavailable" | "failed";
+  }> => {
+    if (typeof navigator === "undefined") return { text: null, status: "access-unavailable" };
+    if (!navigator.clipboard || typeof navigator.clipboard.readText !== "function") {
+      return { text: null, status: "access-unavailable" };
+    }
+    try {
+      const text = await navigator.clipboard.readText();
+      return {
+        text: typeof text === "string" ? text : null,
+        status: "ok",
+      };
+    } catch {
+      return { text: null, status: "failed" };
+    }
+  }, []);
+  const requestPasteToPlaceUrlCandidatePreview = useCallback(
+    async ({
+      sourceUrl,
+      operationId,
+      showFailureSnack = true,
+    }: {
+      sourceUrl: string;
+      operationId?: number;
+      showFailureSnack?: boolean;
+    }): Promise<PasteToPlaceUrlCandidatePreview | null> => {
+      const normalizedUrl = normalizeLikelyUrl(sourceUrl);
+      if (!normalizedUrl) {
+        setPasteToPlaceUrlCandidatePreview(null);
+        return null;
+      }
+      const previewToken = pasteToPlaceUrlCandidatePreviewTokenRef.current + 1;
+      pasteToPlaceUrlCandidatePreviewTokenRef.current = previewToken;
+      setIsPasteToPlaceUrlCandidatePreviewLoading(true);
+      try {
+        const res = await fetch("/api/vibode/product-url/preview", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            sourceUrl: normalizedUrl,
+          }),
+        });
+        const payload = (await res.json().catch(() => ({}))) as {
+          ok?: unknown;
+          normalizedUrl?: unknown;
+          title?: unknown;
+          previewImageUrl?: unknown;
+          domain?: unknown;
+        };
+        if (previewToken !== pasteToPlaceUrlCandidatePreviewTokenRef.current) return null;
+        if (typeof operationId === "number" && !isPasteToPlaceOperationActive(operationId)) return null;
+        if (!res.ok || payload.ok !== true) {
+          setPasteToPlaceUrlCandidatePreview(null);
+          if (showFailureSnack) {
+            pushSnack("We couldn't prepare that product link. Try copying the product image instead.");
+          }
+          return null;
+        }
+        const normalizedPayloadUrl =
+          typeof payload.normalizedUrl === "string" && payload.normalizedUrl.trim().length > 0
+            ? payload.normalizedUrl.trim()
+            : normalizedUrl;
+        const previewImageUrl =
+          typeof payload.previewImageUrl === "string" && payload.previewImageUrl.trim().length > 0
+            ? payload.previewImageUrl.trim()
+            : null;
+        if (!previewImageUrl) {
+          setPasteToPlaceUrlCandidatePreview(null);
+          if (showFailureSnack) {
+            pushSnack("We couldn't prepare that product link. Try copying the product image instead.");
+          }
+          return null;
+        }
+        setPasteToPlaceProductUrlInput(normalizedPayloadUrl);
+        setPendingMyFurnitureReturnPreviewUrl(null);
+        const candidate: PasteToPlaceUrlCandidatePreview = {
+          normalizedUrl: normalizedPayloadUrl,
+          previewImageUrl,
+          title:
+            typeof payload.title === "string" && payload.title.trim().length > 0
+              ? payload.title.trim()
+              : null,
+          domain:
+            typeof payload.domain === "string" && payload.domain.trim().length > 0
+              ? payload.domain.trim()
+              : null,
+          operationId: typeof operationId === "number" ? operationId : pasteToPlaceOperationIdRef.current,
+        };
+        setPasteToPlaceUrlCandidatePreview(candidate);
+        return candidate;
+      } catch {
+        if (previewToken !== pasteToPlaceUrlCandidatePreviewTokenRef.current) return null;
+        if (typeof operationId === "number" && !isPasteToPlaceOperationActive(operationId)) return null;
+        setPasteToPlaceUrlCandidatePreview(null);
+        if (showFailureSnack) {
+          pushSnack("We couldn't prepare that product link. Try copying the product image instead.");
+        }
+        return null;
+      } finally {
+        if (previewToken === pasteToPlaceUrlCandidatePreviewTokenRef.current) {
+          setIsPasteToPlaceUrlCandidatePreviewLoading(false);
+        }
+      }
+    },
+    [isPasteToPlaceOperationActive, pushSnack]
+  );
 
   const currentAspectRatioForUpload: VibodeAspectRatio = useMemo(() => {
     const width = scene.baseImageWidthPx;
@@ -3051,6 +3256,9 @@ function EditorPageInner() {
     setPendingMyFurnitureReturnPreviewUrl(null);
     clearPasteToPlaceProgressPreview();
     clearPasteToPlaceMenuClipboardPreview();
+    clearPasteToPlaceUrlCandidatePreview();
+    clearAwaitingPasteToPlaceSession();
+    clearPasteEventClipboardImagePayload();
     clearPasteToPlaceActiveSource("workflow_reset");
     lastObservedClipboardDataUrlHashRef.current = null;
     lastSurfacedProvisionalClipboardPreviewHashRef.current = null;
@@ -3063,7 +3271,10 @@ function EditorPageInner() {
     clearPendingLocal();
   }, [
     clearPasteToPlaceActiveSource,
+    clearAwaitingPasteToPlaceSession,
+    clearPasteEventClipboardImagePayload,
     clearPasteToPlaceMenuClipboardPreview,
+    clearPasteToPlaceUrlCandidatePreview,
     clearPasteToPlaceProgressPreview,
     setSceneNeedsUpdate,
   ]);
@@ -3931,6 +4142,7 @@ function EditorPageInner() {
       setPendingMyFurnitureReturnPreviewUrl(null);
       clearPasteToPlaceProgressPreview();
       clearPasteToPlaceMenuClipboardPreview();
+      clearPasteToPlaceUrlCandidatePreview();
       activatePasteToPlaceSource({
         type: "my_furniture",
         skuId: preparedProduct.skuId,
@@ -3956,6 +4168,7 @@ function EditorPageInner() {
     [
       activatePasteToPlaceSource,
       clearPasteToPlaceMenuClipboardPreview,
+      clearPasteToPlaceUrlCandidatePreview,
       clearPasteToPlaceProgressPreview,
     ]
   );
@@ -4235,15 +4448,18 @@ function EditorPageInner() {
       ? activePasteSource.rawPreviewUrl ?? activePasteSource.normalizedPreviewUrl
       : activePasteSource.normalizedPreviewUrl ?? activePasteSource.rawPreviewUrl
     : null;
+  const pasteToPlaceUrlCandidatePreviewUrl = pasteToPlaceUrlCandidatePreview?.previewImageUrl ?? null;
+  const activePasteToPlaceCandidatePreviewUrl =
+    pasteToPlaceMenuClipboardPreviewUrl ?? pasteToPlaceUrlCandidatePreviewUrl;
   const shouldHideAuthoritativeMyFurniturePreviewDuringClipboardProbe =
     activePasteSource?.type === "my_furniture" &&
     !pasteToPlaceMenuClipboardPreviewUrl &&
     isPasteToPlaceMenuClipboardPreviewLoading;
   const pasteToPlaceDisplayedPreviewUrl =
-    pendingMyFurnitureReturnPreviewUrl ??
+    activePasteToPlaceCandidatePreviewUrl ??
     (shouldHideAuthoritativeMyFurniturePreviewDuringClipboardProbe
       ? null
-      : (pasteToPlaceMenuClipboardPreviewUrl ?? activePasteSourcePreviewUrl));
+      : (pendingMyFurnitureReturnPreviewUrl ?? activePasteSourcePreviewUrl));
   const isMyFurnitureMultiPreparedSource =
     activePasteSource?.type === "my_furniture" && activePasteSource.selectionCount > 1;
   const myFurniturePreparedSelectionCount =
@@ -4253,12 +4469,145 @@ function EditorPageInner() {
   const isClipboardPasteToPlaceIngestPending =
     isPasteToPlaceMenuIngesting &&
     (pasteToPlaceStatus === "reading" || pasteToPlaceStatus === "preparing");
+  const isAwaitingRefreshCopiedItem =
+    awaitingPasteToPlaceSessionUiState?.reason === "refresh_copied_item";
+  const isRefreshClipboardCandidateReady = Boolean(
+    awaitingPasteToPlaceSessionUiState &&
+      awaitingPasteToPlaceSessionUiState.reason === "refresh_copied_item" &&
+      pasteEventClipboardImagePayloadRef.current &&
+      pasteEventClipboardImagePayloadRef.current.operationId ===
+        awaitingPasteToPlaceSessionUiState.operationId
+  );
+  const isPasteToPlaceRefreshInteractionLocked =
+    isRefreshingCopiedItem || (isAwaitingRefreshCopiedItem && !isRefreshClipboardCandidateReady);
+  const pasteToPlaceAwaitingPasteMessage = awaitingPasteToPlaceSessionUiState
+    ? awaitingPasteToPlaceSessionUiState.reason === "refresh_copied_item"
+      ? isRefreshClipboardCandidateReady
+        ? null
+        : "Press ⌘V to refresh copied item."
+      : awaitingPasteToPlaceSessionUiState.reason === "clipboard_access_unavailable"
+        ? "Clipboard access is blocked. Press ⌘V to paste instead."
+        : "Press ⌘V to paste furniture image."
+    : null;
   const productUrlPreparedDisplayName =
     activePasteSource?.type === "product_url" ? activePasteSource.displayName : null;
   const productUrlPreparedSupplier =
     activePasteSource?.type === "product_url" ? activePasteSource.supplier : null;
   const productUrlPreparedSourceUrl =
     activePasteSource?.type === "product_url" ? activePasteSource.sourceUrl : null;
+  useEffect(() => {
+    const onWindowPaste = (event: ClipboardEvent) => {
+      if (pasteToPlaceMenuState && !isPasteToPlaceSettling) {
+        const pastedText = event.clipboardData?.getData("text/plain") ?? "";
+        const normalizedPastedUrl = normalizeLikelyUrl(pastedText);
+        if (normalizedPastedUrl) {
+          event.preventDefault();
+          setPasteToPlaceProductUrlInput(normalizedPastedUrl);
+          const activeOperationId = pasteToPlaceOperationIdRef.current;
+          if (isPasteToPlaceOperationActive(activeOperationId)) {
+            void requestPasteToPlaceUrlCandidatePreview({
+              sourceUrl: normalizedPastedUrl,
+              operationId: activeOperationId,
+              showFailureSnack: true,
+            });
+          }
+          const activeSession = awaitingPasteToPlaceSessionRef.current;
+          if (
+            activeSession &&
+            isPasteToPlaceOperationActive(activeSession.operationId) &&
+            !isClipboardPasteToPlaceIngestPending &&
+            activeSession.reason !== "refresh_copied_item"
+          ) {
+            clearAwaitingPasteToPlaceSession(activeSession.operationId);
+            clearPasteEventClipboardImagePayload(activeSession.operationId);
+          }
+          return;
+        }
+      }
+      const activeSession = awaitingPasteToPlaceSessionRef.current;
+      if (!activeSession) return;
+      if (!isPasteToPlaceOperationActive(activeSession.operationId)) {
+        clearAwaitingPasteToPlaceSession(activeSession.operationId);
+        clearPasteEventClipboardImagePayload(activeSession.operationId);
+        return;
+      }
+      if (!pasteToPlaceMenuState) {
+        clearAwaitingPasteToPlaceSession(activeSession.operationId);
+        clearPasteEventClipboardImagePayload(activeSession.operationId);
+        return;
+      }
+      const clipboardData = event.clipboardData;
+      const clipboardItems = clipboardData?.items ?? null;
+      let clipboardImageFile: File | null = null;
+      if (clipboardItems) {
+        for (const item of clipboardItems) {
+          if (item.kind !== "file") continue;
+          if (!item.type.startsWith("image/")) continue;
+          clipboardImageFile = item.getAsFile();
+          if (clipboardImageFile) break;
+        }
+      }
+      if (!clipboardImageFile) {
+        pushSnack("Clipboard did not contain an image. Copy a furniture image and press ⌘V.");
+        clearAwaitingPasteToPlaceSession(activeSession.operationId);
+        clearPasteEventClipboardImagePayload(activeSession.operationId);
+        return;
+      }
+      event.preventDefault();
+      void (async () => {
+        const clipboardDataUrl = await blobToDataUrl(clipboardImageFile);
+        if (!clipboardDataUrl || !clipboardDataUrl.startsWith("data:image/")) {
+          pushSnack("Clipboard image could not be read. Copy the image again and press ⌘V.");
+          clearAwaitingPasteToPlaceSession(activeSession.operationId);
+          clearPasteEventClipboardImagePayload(activeSession.operationId);
+          return;
+        }
+        if (!isPasteToPlaceOperationActive(activeSession.operationId)) {
+          clearAwaitingPasteToPlaceSession(activeSession.operationId);
+          clearPasteEventClipboardImagePayload(activeSession.operationId);
+          return;
+        }
+        const latestSession = awaitingPasteToPlaceSessionRef.current;
+        if (!latestSession || latestSession.operationId !== activeSession.operationId) {
+          return;
+        }
+        pasteEventClipboardImagePayloadRef.current = {
+          operationId: activeSession.operationId,
+          file: clipboardImageFile,
+          dataUrl: clipboardDataUrl,
+          dataUrlHash: hashDataUrlForLogs(clipboardDataUrl),
+          createdAt: Date.now(),
+        };
+        setPasteToPlaceMenuClipboardPreviewUrl(clipboardDataUrl);
+        setIsPasteToPlaceMenuClipboardPreviewLoading(false);
+        if (activeSession.reason === "refresh_copied_item") {
+          clearPasteToPlaceActiveSource("refresh_copied_item_preview_ready");
+          setAwaitingPasteToPlaceSession({
+            operationId: activeSession.operationId,
+            reason: "refresh_copied_item",
+            createdAt: activeSession.createdAt,
+          });
+          pushSnack("Copied item refreshed.");
+          return;
+        }
+        setIsPasteToPlaceMenuIngesting(false);
+        pushSnack("Pasted image ready. Choose Place here or Swap item.");
+      })();
+    };
+    window.addEventListener("paste", onWindowPaste);
+    return () => window.removeEventListener("paste", onWindowPaste);
+  }, [
+    clearAwaitingPasteToPlaceSession,
+    clearPasteEventClipboardImagePayload,
+    clearPasteToPlaceActiveSource,
+    isClipboardPasteToPlaceIngestPending,
+    isPasteToPlaceOperationActive,
+    isPasteToPlaceSettling,
+    pasteToPlaceMenuState,
+    pushSnack,
+    requestPasteToPlaceUrlCandidatePreview,
+    setAwaitingPasteToPlaceSession,
+  ]);
   const selectedVersionId =
     activeAssetId ?? versions.find((asset) => asset.is_active)?.id ?? null;
   const lastSnapshotPersistSkipReasonRef = useRef<string | null>(null);
@@ -6695,6 +7044,7 @@ function EditorPageInner() {
         // Standalone "Use in Room" return can carry a stale provisional clipboard preview.
         // Clear + invalidate it eagerly so the selected My Furniture preview remains authoritative.
         clearPasteToPlaceMenuClipboardPreview();
+        clearPasteToPlaceUrlCandidatePreview();
         activatePreparedMyFurnitureSource(preparedProduct, {
           normalizedPreviewUrl: previewUrl,
           suppressedClipboardPreviewHash: pending.suppressedClipboardPreviewHash ?? null,
@@ -6723,6 +7073,7 @@ function EditorPageInner() {
     activatePreparedMyFurnitureSource,
     buildPreparedMyFurnitureProduct,
     clearPasteToPlaceMenuClipboardPreview,
+    clearPasteToPlaceUrlCandidatePreview,
     isBusy,
     isEditRunning,
     isPendingFurnitureSelectionRunning,
@@ -6848,6 +7199,7 @@ function EditorPageInner() {
   const preparePasteToPlaceClipboardProduct = useCallback(
     async ({
       operationId,
+      trigger,
     }: PasteToPlaceClickHint & {
       operationId?: number;
       trigger?: "menu_open_refresh" | "explicit_refresh" | "explicit_paste_flow";
@@ -6860,6 +7212,8 @@ function EditorPageInner() {
       };
 
       if (isOperationStale("clipboard_prepare:start")) {
+        clearAwaitingPasteToPlaceSession(operationId);
+        clearPasteEventClipboardImagePayload(operationId);
         return { status: "failed", reason: "paste-to-place-operation-stale" };
       }
       if (!hasShownPasteToPlaceClipboardHeadsUp) {
@@ -6870,25 +7224,73 @@ function EditorPageInner() {
       }
 
       const requestId = safeId("ptp_req");
-      setPasteToPlaceStatus("reading");
-      const clipboardReadResult = await readClipboardImageWithStatus();
-      if (isOperationStale("clipboard_prepare:after_read")) {
+      const awaitingSession = awaitingPasteToPlaceSessionRef.current;
+      const awaitingSessionReason = awaitingSession?.reason;
+      const hasActiveAwaitingSession = Boolean(
+        awaitingSession && isPasteToPlaceOperationActive(awaitingSession.operationId)
+      );
+      const awaitingSessionMatchesOperation =
+        hasActiveAwaitingSession &&
+        typeof operationId === "number" &&
+        awaitingSession?.operationId === operationId;
+      const pastedImagePayload = hasActiveAwaitingSession
+        ? pasteEventClipboardImagePayloadRef.current
+        : null;
+      if (hasActiveAwaitingSession && !awaitingSessionMatchesOperation) {
         setPasteToPlaceStatus(null);
-        return { status: "failed", reason: "paste-to-place-operation-stale" };
+        pushSnack(
+          awaitingSessionReason === "clipboard_access_unavailable"
+            ? "Clipboard access is blocked. Press ⌘V to paste instead."
+            : "Press ⌘V to paste furniture image."
+        );
+        return { status: "failed", reason: "awaiting-paste-operation-mismatch" };
       }
-      const clipboardImage = clipboardReadResult.image;
-      if (!clipboardImage) {
-        const now = Date.now();
-        if (now - lastPasteToPlaceClipboardSnackAtRef.current > 3000) {
-          pushSnack(
-            clipboardReadResult.status === "access-unavailable"
-              ? "Clipboard access was blocked or unavailable. Allow access and try again."
-              : "Couldn't read copied image. Try copying it again."
-          );
-          lastPasteToPlaceClipboardSnackAtRef.current = now;
-        }
+      if (awaitingSessionMatchesOperation && (!pastedImagePayload || pastedImagePayload.operationId !== operationId)) {
         setPasteToPlaceStatus(null);
+        pushSnack(
+          awaitingSessionReason === "clipboard_access_unavailable"
+            ? "Clipboard access is blocked. Press ⌘V to paste instead."
+            : "Press ⌘V to paste furniture image."
+        );
         return { status: "no-image" };
+      }
+
+      setPasteToPlaceStatus("reading");
+      let clipboardDataUrl: string | null = null;
+      let clipboardDataUrlHash: string | null = null;
+      if (awaitingSessionMatchesOperation && pastedImagePayload && pastedImagePayload.operationId === operationId) {
+        clipboardDataUrl = pastedImagePayload.dataUrl;
+        clipboardDataUrlHash = pastedImagePayload.dataUrlHash ?? hashDataUrlForLogs(pastedImagePayload.dataUrl);
+      } else {
+        const clipboardReadResult = await readClipboardImageWithStatus();
+        if (isOperationStale("clipboard_prepare:after_read")) {
+          clearAwaitingPasteToPlaceSession(operationId);
+          clearPasteEventClipboardImagePayload(operationId);
+          setPasteToPlaceStatus(null);
+          return { status: "failed", reason: "paste-to-place-operation-stale" };
+        }
+        const clipboardImage = clipboardReadResult.image;
+        if (!clipboardImage) {
+          const now = Date.now();
+          if (now - lastPasteToPlaceClipboardSnackAtRef.current > 3000) {
+            pushSnack(
+              clipboardReadResult.status === "access-unavailable"
+                ? "Clipboard access was blocked or unavailable. Allow access and try again."
+                : "Couldn't read copied image. Try copying it again."
+            );
+            lastPasteToPlaceClipboardSnackAtRef.current = now;
+          }
+          setPasteToPlaceStatus(null);
+          return { status: "no-image" };
+        }
+        clipboardDataUrl = await blobToDataUrl(clipboardImage.blob);
+        if (isOperationStale("clipboard_prepare:after_data_url")) {
+          clearAwaitingPasteToPlaceSession(operationId);
+          clearPasteEventClipboardImagePayload(operationId);
+          setPasteToPlaceStatus(null);
+          return { status: "failed", reason: "paste-to-place-operation-stale" };
+        }
+        clipboardDataUrlHash = hashDataUrlForLogs(clipboardDataUrl);
       }
 
       if (!canUseFreePasteToPlace) {
@@ -6897,16 +7299,10 @@ function EditorPageInner() {
         return { status: "blocked" };
       }
 
-      const clipboardDataUrl = await blobToDataUrl(clipboardImage.blob);
-      if (isOperationStale("clipboard_prepare:after_data_url")) {
-        setPasteToPlaceStatus(null);
-        return { status: "failed", reason: "paste-to-place-operation-stale" };
-      }
       if (!clipboardDataUrl || !clipboardDataUrl.startsWith("data:image/")) {
         setPasteToPlaceStatus(null);
         return { status: "failed", reason: "clipboard-data-url-unavailable" };
       }
-      const clipboardDataUrlHash = hashDataUrlForLogs(clipboardDataUrl);
       if (!clipboardDataUrlHash) {
         setPasteToPlaceStatus(null);
         return { status: "failed", reason: "clipboard-hash-unavailable" };
@@ -6915,10 +7311,12 @@ function EditorPageInner() {
       const currentSource = activePasteSourceRef.current;
       const hasSeenClipboardHashBefore =
         lastObservedClipboardDataUrlHashRef.current === clipboardDataUrlHash;
+      const shouldBypassUnchangedGuard = trigger === "explicit_refresh";
       if (
-        hasSeenClipboardHashBefore ||
-        (currentSource?.type === "clipboard" &&
-          currentSource.clipboardDataUrlHash === clipboardDataUrlHash)
+        !shouldBypassUnchangedGuard &&
+        (hasSeenClipboardHashBefore ||
+          (currentSource?.type === "clipboard" &&
+            currentSource.clipboardDataUrlHash === clipboardDataUrlHash))
       ) {
         setPasteToPlaceStatus(null);
         return { status: "failed", reason: "clipboard-source-unchanged" };
@@ -6985,7 +7383,12 @@ function EditorPageInner() {
       suppressedPasteToPlaceMenuClipboardPreviewHashRef.current = null;
       setPendingFurnitureClipboardSuppressionHash(null);
       clearPasteToPlaceMenuClipboardPreview();
+      clearPasteToPlaceUrlCandidatePreview();
       lastObservedClipboardDataUrlHashRef.current = clipboardDataUrlHash;
+      if (awaitingSessionMatchesOperation) {
+        clearAwaitingPasteToPlaceSession(operationId);
+        clearPasteEventClipboardImagePayload(operationId);
+      }
       setPasteToPlaceStatus(null);
       return {
         status: "ready",
@@ -6995,7 +7398,10 @@ function EditorPageInner() {
     [
       activatePasteToPlaceSource,
       canUseFreePasteToPlace,
+      clearAwaitingPasteToPlaceSession,
+      clearPasteEventClipboardImagePayload,
       clearPasteToPlaceMenuClipboardPreview,
+      clearPasteToPlaceUrlCandidatePreview,
       hasShownPasteToPlaceClipboardHeadsUp,
       ingestClipboardUserSku,
       isPasteToPlaceOperationActive,
@@ -7004,147 +7410,312 @@ function EditorPageInner() {
       stage3SkuItemsActive,
     ]
   );
-
-  const preparePasteToPlaceProductUrlSource = useCallback(async (): Promise<void> => {
-    const normalizedUrl = normalizeLikelyUrl(pasteToPlaceProductUrlInput);
-    if (!normalizedUrl) {
-      pushSnack("Paste a valid product URL first.");
-      return;
-    }
-    if (!canUseFreePasteToPlace) {
-      pushSnack("Free preview used — unlock more placements to keep Viboding.");
-      return;
-    }
-
-    setPasteToPlaceStatus("preparing");
-    setIsPasteToPlaceMenuIngesting(true);
-
-    try {
-      const accessToken = await tryGetSupabaseAccessToken();
-      const res = await fetch("/api/vibode/my-furniture/save", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "x-roomprintz-ingest-source": "product_url",
-          "x-roomprintz-skip-my-furniture-autosave": "1",
-          ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
-        },
-        body: JSON.stringify({
-          sourceType: "product_url",
-          sourceUrl: normalizedUrl,
-          prepareOnly: true,
-        }),
+  const beginAwaitingPasteToPlaceSession = useCallback(
+    (operationId: number, reason: AwaitingPasteToPlaceReason) => {
+      setAwaitingPasteToPlaceSession({
+        operationId,
+        reason,
+        createdAt: Date.now(),
       });
-      const json = (await res.json().catch(() => ({}))) as PasteToPlaceProductUrlPrepareResponse;
-      if (!res.ok) {
-        pushSnack(
-          "We couldn't prepare that product link. Try copying the product image instead."
-        );
-        return;
-      }
-
-      const prepared = isRecord(json.prepared) ? json.prepared : null;
-      const userSkuId =
-        prepared && typeof prepared.userSkuId === "string" && prepared.userSkuId.trim().length > 0
-          ? prepared.userSkuId.trim()
-          : null;
-      const normalizedPreviewUrl =
-        prepared &&
-        typeof prepared.previewImageUrl === "string" &&
-        prepared.previewImageUrl.trim().length > 0
-          ? prepared.previewImageUrl.trim()
-          : null;
-      if (!userSkuId || !normalizedPreviewUrl) {
-        pushSnack(
-          "We couldn't prepare that product link. Try copying the product image instead."
-        );
-        return;
-      }
-      // Product URL source replaces clipboard provisional previews immediately.
-      lastSurfacedProvisionalClipboardPreviewHashRef.current = null;
-      suppressedPasteToPlaceMenuClipboardPreviewHashRef.current = null;
-      setPendingFurnitureClipboardSuppressionHash(null);
-
-      const sourceUrl =
-        prepared && typeof prepared.sourceUrl === "string" && prepared.sourceUrl.trim().length > 0
-          ? prepared.sourceUrl.trim()
-          : normalizedUrl;
-      const domain =
-        prepared && typeof prepared.sourceDomain === "string" && prepared.sourceDomain.trim().length > 0
-          ? prepared.sourceDomain.trim()
-          : prepared && typeof prepared.parsedSourceDomain === "string" && prepared.parsedSourceDomain.trim().length > 0
-            ? prepared.parsedSourceDomain.trim()
-            : getDomainFromUrl(sourceUrl);
-      const supplier =
-        prepared && typeof prepared.supplierName === "string" && prepared.supplierName.trim().length > 0
-          ? prepared.supplierName.trim()
-          : prepared && typeof prepared.parsedSupplierName === "string" && prepared.parsedSupplierName.trim().length > 0
-            ? prepared.parsedSupplierName.trim()
-            : domain;
-      const displayName =
-        prepared && typeof prepared.displayName === "string" && prepared.displayName.trim().length > 0
-          ? prepared.displayName.trim()
-          : "Pasted Product";
-      const productUrlEligibleSku: VibodeEligibleSku = {
-        skuId: userSkuId,
-        label: displayName,
-        source: "user",
-        variants: [{ imageUrl: normalizedPreviewUrl }],
-      };
-
-      const preparedProduct: PasteToPlacePreparedProduct = {
-        source: "product_url",
-        skuId: userSkuId,
-        eligibleSkus: [...stage3SkuItemsActive, productUrlEligibleSku],
-        savedFurnitureId: null,
-        sourceMeta: {
-          inputType: "url",
-          domain,
-          classification: null,
-          confidence: null,
-        },
-      };
-      const nextSource: Extract<ActivePasteSource, { type: "product_url" }> = {
-        type: "product_url",
-        skuId: preparedProduct.skuId,
-        furnitureId: null,
-        preparedOnly: true,
-        preparedProduct,
-        rawPreviewUrl: null,
-        normalizedPreviewUrl,
-        sourceImagePathHint:
-          extractStorageObjectPathFromUnknown([prepared, preparedProduct, normalizedPreviewUrl]) ?? null,
-        thumbnailPathHint:
-          extractStorageObjectPathFromUnknown([prepared, preparedProduct, normalizedPreviewUrl]) ?? null,
-        displayName,
-        supplier,
-        domain,
-        sourceUrl,
-        userSkuId,
-        clipboardDataUrlHash: null,
-        activatedAt: Date.now(),
-      };
-
-      activatePasteToPlaceSource(nextSource, "product_url_prepare_success");
-      clearPasteToPlaceMenuClipboardPreview();
-      setPasteToPlaceProductUrlInput("");
-      pushSnack("Product link ready. Click in your room to place it.");
-    } catch {
-      pushSnack(
-        "We couldn't prepare that product link. Try copying the product image instead."
-      );
-    } finally {
-      setPasteToPlaceStatus(null);
+      setPasteToPlaceMenuClipboardPreviewUrl(null);
+      setIsPasteToPlaceMenuClipboardPreviewLoading(false);
       setIsPasteToPlaceMenuIngesting(false);
+    },
+    [setAwaitingPasteToPlaceSession]
+  );
+  const refreshPasteToPlaceCopiedItem = useCallback(async () => {
+    if (!pasteToPlaceMenuState) return;
+    if (isPasteToPlaceSettling) return;
+    if (isPasteToPlaceRefreshInteractionLocked) return;
+    if (isRefreshingCopiedItemRef.current) return;
+    if (isClipboardPasteToPlaceIngestPending) {
+      pushSnack("Clipboard item is still preparing. Try again in a moment.");
+      return;
+    }
+    isRefreshingCopiedItemRef.current = true;
+    setIsRefreshingCopiedItem(true);
+    try {
+      const operationId = beginPasteToPlaceOperation();
+      const isOperationStale = () => !isPasteToPlaceOperationActive(operationId);
+      clearAwaitingPasteToPlaceSession();
+      clearPasteEventClipboardImagePayload();
+      if (isLikelySafariBrowser()) {
+        if (isOperationStale()) return;
+        beginAwaitingPasteToPlaceSession(operationId, "refresh_copied_item");
+        return;
+      }
+      const clipboardReadResult = await readClipboardImageWithStatus();
+      if (isOperationStale()) return;
+      if (clipboardReadResult.status === "access-unavailable") {
+        beginAwaitingPasteToPlaceSession(operationId, "refresh_copied_item");
+        return;
+      }
+      if (!clipboardReadResult.image) {
+        const clipboardTextResult = await readClipboardTextWithStatus();
+        if (isOperationStale()) return;
+        if (clipboardTextResult.status === "ok") {
+          const normalizedClipboardUrl = normalizeLikelyUrl(clipboardTextResult.text ?? "");
+          if (normalizedClipboardUrl) {
+            setPasteToPlaceProductUrlInput(normalizedClipboardUrl);
+            clearPasteToPlaceMenuClipboardPreview();
+            const urlCandidate = await requestPasteToPlaceUrlCandidatePreview({
+              sourceUrl: normalizedClipboardUrl,
+              operationId,
+              showFailureSnack: true,
+            });
+            if (isOperationStale()) return;
+            if (urlCandidate) {
+              setPendingMyFurnitureReturnPreviewUrl(null);
+              clearPasteToPlaceActiveSource("refresh_copied_item_url_preview_ready");
+              pushSnack("Copied item refreshed.");
+              return;
+            }
+            return;
+          }
+        }
+        if (!isOperationStale()) {
+          setPasteToPlaceStatus(null);
+          setIsPasteToPlaceMenuIngesting(false);
+        }
+        pushSnack("Clipboard did not contain a furniture image or product link. Copy one and try again.");
+        return;
+      }
+      const clipboardDataUrl = await blobToDataUrl(clipboardReadResult.image.blob);
+      if (isOperationStale()) return;
+      if (!clipboardDataUrl || !clipboardDataUrl.startsWith("data:image/")) {
+        if (!isOperationStale()) {
+          setPasteToPlaceStatus(null);
+          setIsPasteToPlaceMenuIngesting(false);
+        }
+        pushSnack("Clipboard image could not be read. Copy the image again and try refresh.");
+        return;
+      }
+      if (isOperationStale()) return;
+      clearPasteToPlaceUrlCandidatePreview();
+      setPendingMyFurnitureReturnPreviewUrl(null);
+      setAwaitingPasteToPlaceSession({
+        operationId,
+        reason: "refresh_copied_item",
+        createdAt: Date.now(),
+      });
+      pasteEventClipboardImagePayloadRef.current = {
+        operationId,
+        file: clipboardReadResult.image.blob,
+        dataUrl: clipboardDataUrl,
+        dataUrlHash: hashDataUrlForLogs(clipboardDataUrl),
+        createdAt: Date.now(),
+      };
+      if (isOperationStale()) return;
+      setPasteToPlaceMenuClipboardPreviewUrl(clipboardDataUrl);
+      setIsPasteToPlaceMenuClipboardPreviewLoading(false);
+      clearPasteToPlaceActiveSource("refresh_copied_item_preview_ready");
+      pushSnack("Copied item refreshed.");
+    } finally {
+      isRefreshingCopiedItemRef.current = false;
+      setIsRefreshingCopiedItem(false);
     }
   }, [
-    activatePasteToPlaceSource,
-    canUseFreePasteToPlace,
+    beginAwaitingPasteToPlaceSession,
+    beginPasteToPlaceOperation,
+    clearAwaitingPasteToPlaceSession,
+    clearPasteEventClipboardImagePayload,
+    clearPasteToPlaceActiveSource,
     clearPasteToPlaceMenuClipboardPreview,
-    pasteToPlaceProductUrlInput,
+    clearPasteToPlaceUrlCandidatePreview,
+    isClipboardPasteToPlaceIngestPending,
+    isPasteToPlaceOperationActive,
+    isPasteToPlaceRefreshInteractionLocked,
+    isPasteToPlaceSettling,
+    pasteToPlaceMenuState,
     pushSnack,
-    stage3SkuItemsActive,
+    readClipboardTextWithStatus,
+    requestPasteToPlaceUrlCandidatePreview,
+    setAwaitingPasteToPlaceSession,
   ]);
+  const resolveAwaitingPasteToPlaceOperationIdForMenuAction = useCallback((): number | null => {
+    const awaitingSession = awaitingPasteToPlaceSessionRef.current;
+    if (!awaitingSession) return null;
+    if (!isPasteToPlaceOperationActive(awaitingSession.operationId)) {
+      clearAwaitingPasteToPlaceSession(awaitingSession.operationId);
+      clearPasteEventClipboardImagePayload(awaitingSession.operationId);
+      return null;
+    }
+    return awaitingSession.operationId;
+  }, [
+    clearAwaitingPasteToPlaceSession,
+    clearPasteEventClipboardImagePayload,
+    isPasteToPlaceOperationActive,
+  ]);
+
+  const preparePasteToPlaceProductUrlSource = useCallback(
+    async (options?: { operationId?: number }): Promise<void> => {
+      const operationId = options?.operationId ?? beginPasteToPlaceOperation();
+      const isOperationStale = () => !isPasteToPlaceOperationActive(operationId);
+      const normalizedUrl = normalizeLikelyUrl(pasteToPlaceProductUrlInput);
+      if (!normalizedUrl) {
+        if (!isOperationStale()) {
+          pushSnack("Paste a valid product URL first.");
+        }
+        return;
+      }
+      if (!canUseFreePasteToPlace) {
+        if (!isOperationStale()) {
+          pushSnack("Free preview used — unlock more placements to keep Viboding.");
+        }
+        return;
+      }
+
+      setPasteToPlaceStatus("preparing");
+      setIsPasteToPlaceMenuIngesting(true);
+
+      try {
+        const accessToken = await tryGetSupabaseAccessToken();
+        if (isOperationStale()) return;
+        const res = await fetch("/api/vibode/my-furniture/save", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "x-roomprintz-ingest-source": "product_url",
+            "x-roomprintz-skip-my-furniture-autosave": "1",
+            ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
+          },
+          body: JSON.stringify({
+            sourceType: "product_url",
+            sourceUrl: normalizedUrl,
+            prepareOnly: true,
+          }),
+        });
+        const json = (await res.json().catch(() => ({}))) as PasteToPlaceProductUrlPrepareResponse;
+        if (isOperationStale()) return;
+        if (!res.ok) {
+          if (!isOperationStale()) {
+            pushSnack(
+              "We couldn't prepare that product link. Try copying the product image instead."
+            );
+          }
+          return;
+        }
+
+        const prepared = isRecord(json.prepared) ? json.prepared : null;
+        const userSkuId =
+          prepared && typeof prepared.userSkuId === "string" && prepared.userSkuId.trim().length > 0
+            ? prepared.userSkuId.trim()
+            : null;
+        const normalizedPreviewUrl =
+          prepared &&
+          typeof prepared.previewImageUrl === "string" &&
+          prepared.previewImageUrl.trim().length > 0
+            ? prepared.previewImageUrl.trim()
+            : null;
+        if (!userSkuId || !normalizedPreviewUrl) {
+          if (!isOperationStale()) {
+            pushSnack(
+              "We couldn't prepare that product link. Try copying the product image instead."
+            );
+          }
+          return;
+        }
+        if (isOperationStale()) return;
+        // Product URL source replaces clipboard provisional previews immediately.
+        lastSurfacedProvisionalClipboardPreviewHashRef.current = null;
+        suppressedPasteToPlaceMenuClipboardPreviewHashRef.current = null;
+        setPendingFurnitureClipboardSuppressionHash(null);
+
+        const sourceUrl =
+          prepared && typeof prepared.sourceUrl === "string" && prepared.sourceUrl.trim().length > 0
+            ? prepared.sourceUrl.trim()
+            : normalizedUrl;
+        const domain =
+          prepared && typeof prepared.sourceDomain === "string" && prepared.sourceDomain.trim().length > 0
+            ? prepared.sourceDomain.trim()
+            : prepared &&
+                typeof prepared.parsedSourceDomain === "string" &&
+                prepared.parsedSourceDomain.trim().length > 0
+              ? prepared.parsedSourceDomain.trim()
+              : getDomainFromUrl(sourceUrl);
+        const supplier =
+          prepared && typeof prepared.supplierName === "string" && prepared.supplierName.trim().length > 0
+            ? prepared.supplierName.trim()
+            : prepared &&
+                typeof prepared.parsedSupplierName === "string" &&
+                prepared.parsedSupplierName.trim().length > 0
+              ? prepared.parsedSupplierName.trim()
+              : domain;
+        const displayName =
+          prepared && typeof prepared.displayName === "string" && prepared.displayName.trim().length > 0
+            ? prepared.displayName.trim()
+            : "Pasted Product";
+        const productUrlEligibleSku: VibodeEligibleSku = {
+          skuId: userSkuId,
+          label: displayName,
+          source: "user",
+          variants: [{ imageUrl: normalizedPreviewUrl }],
+        };
+
+        const preparedProduct: PasteToPlacePreparedProduct = {
+          source: "product_url",
+          skuId: userSkuId,
+          eligibleSkus: [...stage3SkuItemsActive, productUrlEligibleSku],
+          savedFurnitureId: null,
+          sourceMeta: {
+            inputType: "url",
+            domain,
+            classification: null,
+            confidence: null,
+          },
+        };
+        const nextSource: Extract<ActivePasteSource, { type: "product_url" }> = {
+          type: "product_url",
+          skuId: preparedProduct.skuId,
+          furnitureId: null,
+          preparedOnly: true,
+          preparedProduct,
+          rawPreviewUrl: null,
+          normalizedPreviewUrl,
+          sourceImagePathHint:
+            extractStorageObjectPathFromUnknown([prepared, preparedProduct, normalizedPreviewUrl]) ?? null,
+          thumbnailPathHint:
+            extractStorageObjectPathFromUnknown([prepared, preparedProduct, normalizedPreviewUrl]) ?? null,
+          displayName,
+          supplier,
+          domain,
+          sourceUrl,
+          userSkuId,
+          clipboardDataUrlHash: null,
+          activatedAt: Date.now(),
+        };
+
+        if (isOperationStale()) return;
+        activatePasteToPlaceSource(nextSource, "product_url_prepare_success");
+        clearPasteToPlaceMenuClipboardPreview();
+        clearPasteToPlaceUrlCandidatePreview();
+        setPasteToPlaceProductUrlInput("");
+        pushSnack("Product link ready. Click in your room to place it.");
+      } catch {
+        if (!isOperationStale()) {
+          pushSnack(
+            "We couldn't prepare that product link. Try copying the product image instead."
+          );
+        }
+      } finally {
+        if (!isOperationStale()) {
+          setPasteToPlaceStatus(null);
+          setIsPasteToPlaceMenuIngesting(false);
+        }
+      }
+    },
+    [
+      activatePasteToPlaceSource,
+      beginPasteToPlaceOperation,
+      canUseFreePasteToPlace,
+      clearPasteToPlaceMenuClipboardPreview,
+      clearPasteToPlaceUrlCandidatePreview,
+      isPasteToPlaceOperationActive,
+      pasteToPlaceProductUrlInput,
+      pushSnack,
+      stage3SkuItemsActive,
+    ]
+  );
 
   const savePreparedProductUrlToMyFurniture = useCallback(
     async (
@@ -7392,9 +7963,29 @@ function EditorPageInner() {
         if (!createdNode) {
           throw new Error("node missing from create response");
         }
+        const shouldEnforceUserDirectedMetadata =
+          metadata.placementIntent === "user_directed" &&
+          (metadata.placementSource === "clipboard" ||
+            metadata.placementSource === "product_url" ||
+            metadata.placementSource === "my_furniture" ||
+            metadata.placementSource === "swap");
+        const localCreatedNode = shouldEnforceUserDirectedMetadata
+          ? {
+              ...createdNode,
+              metadata: normalizePlacementMetadata(
+                {
+                  ...createdNode.metadata,
+                  ...metadata,
+                  ownership: "user",
+                  placementSource: metadata.placementSource,
+                },
+                createdNode.metadata
+              ),
+            }
+          : createdNode;
         const nextNodes = [
-          ...placementLayerNodesRef.current.filter((node) => node.id !== createdNode.id),
-          createdNode,
+          ...placementLayerNodesRef.current.filter((node) => node.id !== localCreatedNode.id),
+          localCreatedNode,
         ];
         placementLayerNodesRef.current = nextNodes;
         setPlacementLayerNodes(nextNodes);
@@ -7407,10 +7998,10 @@ function EditorPageInner() {
         console.log("[placement-layer] node created", {
           roomId,
           versionId,
-          id: createdNode.id,
-          furnitureId: createdNode.furnitureId,
-          hasSourceImagePath: Boolean(createdNode.sourceImagePath),
-          hasThumbnailPath: Boolean(createdNode.thumbnailPath),
+          id: localCreatedNode.id,
+          furnitureId: localCreatedNode.furnitureId,
+          hasSourceImagePath: Boolean(localCreatedNode.sourceImagePath),
+          hasThumbnailPath: Boolean(localCreatedNode.thumbnailPath),
           operationId,
         });
         if (operationId !== null) {
@@ -7505,7 +8096,22 @@ function EditorPageInner() {
         const nextNodes = placementLayerNodesRef.current.map((node) => {
           if (node.id !== id) return node;
           if (patchedNode) return patchedNode;
-          return { ...node, x, y };
+          if (!shouldClaimSuggestedMarker) {
+            return { ...node, x, y };
+          }
+          return {
+            ...node,
+            x,
+            y,
+            metadata: normalizePlacementMetadata(
+              {
+                ...node.metadata,
+                ownership: "user",
+                placementSource: "user_adjusted",
+              },
+              node.metadata
+            ),
+          };
         });
         placementLayerNodesRef.current = nextNodes;
         setPlacementLayerNodes(nextNodes);
@@ -7792,7 +8398,7 @@ function EditorPageInner() {
           const persistedFurnitureId = await savePreparedProductUrlToMyFurniture(sourceForPlacement, {
             operationId,
           });
-          if (isOperationStale("execute:after_product_url_save") && sourceForPlacement.type !== "product_url") {
+          if (isOperationStale("execute:after_product_url_save")) {
             return false;
           }
           if (persistedFurnitureId) {
@@ -7882,7 +8488,9 @@ function EditorPageInner() {
         pushSnack("Furniture is still saving. You can place it after this finishes.");
         return;
       }
-      beginPasteToPlaceOperation();
+      const operationId = beginPasteToPlaceOperation();
+      clearAwaitingPasteToPlaceSession();
+      clearPasteEventClipboardImagePayload();
       setPasteToPlaceProgressCardState(null);
       setIsPasteToPlaceMenuIngesting(false);
       setPasteToPlaceMenuState({
@@ -7890,9 +8498,15 @@ function EditorPageInner() {
         anchorX: state.anchorX ?? state.xNorm,
         anchorY: state.anchorY ?? state.yNorm,
       });
+      clearPasteToPlaceUrlCandidatePreview();
       const currentSource = activePasteSourceRef.current;
       if (currentSource?.type === "product_url") {
         clearPasteToPlaceMenuClipboardPreview();
+        clearPasteToPlaceUrlCandidatePreview();
+        return;
+      }
+      if (isLikelySafariBrowser()) {
+        beginAwaitingPasteToPlaceSession(operationId, "safari");
         return;
       }
       const previewToken = pasteToPlaceMenuClipboardPreviewTokenRef.current + 1;
@@ -7904,9 +8518,26 @@ function EditorPageInner() {
         if (previewToken !== pasteToPlaceMenuClipboardPreviewTokenRef.current) return;
         const clipboardImage = clipboardReadResult.image;
         if (!clipboardImage) {
+          if (clipboardReadResult.status === "access-unavailable") {
+            beginAwaitingPasteToPlaceSession(operationId, "clipboard_access_unavailable");
+            return;
+          }
           setPasteToPlaceMenuClipboardPreviewUrl(null);
+          const clipboardTextResult = await readClipboardTextWithStatus();
+          if (previewToken !== pasteToPlaceMenuClipboardPreviewTokenRef.current) return;
+          if (!isPasteToPlaceOperationActive(operationId)) return;
+          if (clipboardTextResult.status !== "ok") return;
+          const normalizedClipboardUrl = normalizeLikelyUrl(clipboardTextResult.text ?? "");
+          if (!normalizedClipboardUrl) return;
+          setPasteToPlaceProductUrlInput(normalizedClipboardUrl);
+          await requestPasteToPlaceUrlCandidatePreview({
+            sourceUrl: normalizedClipboardUrl,
+            operationId,
+            showFailureSnack: true,
+          });
           return;
         }
+        clearPasteToPlaceUrlCandidatePreview();
         const clipboardPreviewDataUrl = await blobToDataUrl(clipboardImage.blob);
         if (previewToken !== pasteToPlaceMenuClipboardPreviewTokenRef.current) return;
         if (!clipboardPreviewDataUrl || !clipboardPreviewDataUrl.startsWith("data:image/")) {
@@ -7951,29 +8582,52 @@ function EditorPageInner() {
     },
     [
       beginPasteToPlaceOperation,
+      clearAwaitingPasteToPlaceSession,
+      clearPasteEventClipboardImagePayload,
       clearPasteToPlaceMenuClipboardPreview,
+      clearPasteToPlaceUrlCandidatePreview,
+      isPasteToPlaceOperationActive,
       isClipboardPasteToPlaceIngestPending,
       isDevSceneRebuildRunning,
       isRemoveMarkerTargeting,
       isRotateMarkerTargeting,
       isPasteToPlaceSettling,
       pushSnack,
+      beginAwaitingPasteToPlaceSession,
+      readClipboardTextWithStatus,
+      requestPasteToPlaceUrlCandidatePreview,
     ]
   );
 
   const dismissPasteToPlaceMenu = useCallback(
-    (options?: { clearPreview?: boolean; clearClipboardPreview?: boolean }) => {
+    (options?: {
+      clearPreview?: boolean;
+      clearClipboardPreview?: boolean;
+      preserveAwaitingPasteSession?: boolean;
+    }) => {
       const clearPreview = options?.clearPreview ?? true;
       const clearClipboardPreview = options?.clearClipboardPreview ?? true;
+      const preserveAwaitingPasteSession = options?.preserveAwaitingPasteSession === true;
       setPasteToPlaceMenuState(null);
+      if (!preserveAwaitingPasteSession) {
+        clearAwaitingPasteToPlaceSession();
+        clearPasteEventClipboardImagePayload();
+      }
       if (clearClipboardPreview) {
         clearPasteToPlaceMenuClipboardPreview();
+        clearPasteToPlaceUrlCandidatePreview();
       }
       if (clearPreview) {
         clearPasteToPlaceProgressPreview();
       }
     },
-    [clearPasteToPlaceMenuClipboardPreview, clearPasteToPlaceProgressPreview]
+    [
+      clearAwaitingPasteToPlaceSession,
+      clearPasteEventClipboardImagePayload,
+      clearPasteToPlaceMenuClipboardPreview,
+      clearPasteToPlaceUrlCandidatePreview,
+      clearPasteToPlaceProgressPreview,
+    ]
   );
 
   const preparePasteToPlaceProductFromMenu = useCallback(
@@ -7996,6 +8650,7 @@ function EditorPageInner() {
       }
       const source = activePasteSourceRef.current;
       const hasProvisionalClipboardPreview = Boolean(pasteToPlaceMenuClipboardPreviewUrl);
+      const normalizedProductUrlInput = normalizeLikelyUrl(pasteToPlaceProductUrlInput);
       if (source && !hasProvisionalClipboardPreview) {
         if (source.type === "my_furniture") {
           try {
@@ -8057,6 +8712,20 @@ function EditorPageInner() {
         }
         return { status: "ready", source };
       }
+      if (!source && !hasProvisionalClipboardPreview && normalizedProductUrlInput) {
+        if (isPasteToPlaceMenuIngesting && pasteToPlaceStatus === "preparing") {
+          return { status: "failed", reason: "product-url-prepare-in-progress" };
+        }
+        await preparePasteToPlaceProductUrlSource({ operationId });
+        if (isOperationStale("prepare_from_menu:after_product_url_prepare")) {
+          return { status: "failed", reason: "paste-to-place-operation-stale" };
+        }
+        const preparedUrlSource = activePasteSourceRef.current;
+        if (preparedUrlSource?.type === "product_url") {
+          return { status: "ready", source: preparedUrlSource };
+        }
+        return { status: "failed", reason: "product-url-prepare-failed" };
+      }
 
       setIsPasteToPlaceMenuIngesting(true);
       try {
@@ -8077,7 +8746,9 @@ function EditorPageInner() {
           source: prepared.source,
         };
       } finally {
-        setIsPasteToPlaceMenuIngesting(false);
+        if (!isOperationStale("prepare_from_menu:finally")) {
+          setIsPasteToPlaceMenuIngesting(false);
+        }
       }
     },
     [
@@ -8085,7 +8756,11 @@ function EditorPageInner() {
       clearPasteToPlaceActiveSource,
       clearPasteToPlaceProgressPreview,
       isPasteToPlaceOperationActive,
+      isPasteToPlaceMenuIngesting,
       pasteToPlaceMenuClipboardPreviewUrl,
+      pasteToPlaceProductUrlInput,
+      pasteToPlaceStatus,
+      preparePasteToPlaceProductUrlSource,
       pushSnack,
       preparePasteToPlaceClipboardProduct,
       resolveMyFurnitureForEdit,
@@ -8094,6 +8769,14 @@ function EditorPageInner() {
 
   const handlePasteToPlacePlaceHere = useCallback(async () => {
     if (!pasteToPlaceMenuState) return;
+    if (isPasteToPlaceRefreshInteractionLocked || isRefreshingCopiedItemRef.current) {
+      pushSnack(
+        isAwaitingRefreshCopiedItem
+          ? "Press ⌘V to finish refreshing copied item."
+          : "Refreshing copied item. Try again in a moment."
+      );
+      return;
+    }
     if (isPasteToPlaceSettling) {
       console.info("[Paste-to-Place][settling] Place blocked because settling", {
         context: "place_here",
@@ -8111,9 +8794,6 @@ function EditorPageInner() {
       pushSnack("Clipboard item is still preparing. Choose My Furniture while it finishes.");
       return;
     }
-    const shouldRunWithoutClipboardOperation =
-      isClipboardPasteToPlaceIngestPending && sourceSnapshot?.type === "my_furniture";
-
     if (
       activeTool === "calibrate" ||
       activeTool === "remove" ||
@@ -8128,18 +8808,23 @@ function EditorPageInner() {
       return;
     }
 
-    const operationId = shouldRunWithoutClipboardOperation ? undefined : beginPasteToPlacePlacementOperation();
-    const pasteToPlaceControl =
-      typeof operationId === "number" ? createPasteToPlaceJobControl(operationId) : undefined;
-    if (pasteToPlaceControl) {
-      setActivePasteToPlaceJobControl(pasteToPlaceControl);
-    }
-    const isOperationStale = (): boolean =>
-      typeof operationId === "number" ? !isPasteToPlaceOperationActive(operationId) : false;
+    const awaitingOperationId = resolveAwaitingPasteToPlaceOperationIdForMenuAction();
+    const operationId =
+      awaitingOperationId ??
+      (isClipboardPasteToPlaceIngestPending && sourceSnapshot?.type === "my_furniture"
+        ? pasteToPlaceOperationIdRef.current || beginPasteToPlacePlacementOperation()
+        : beginPasteToPlacePlacementOperation());
+    const pasteToPlaceControl = createPasteToPlaceJobControl(operationId);
+    setActivePasteToPlaceJobControl(pasteToPlaceControl);
+    const isOperationStale = (): boolean => !isPasteToPlaceOperationActive(operationId);
     try {
       if (isOperationStale()) return;
       setPasteToPlaceProgressCardState(menuStateSnapshot);
-      dismissPasteToPlaceMenu({ clearPreview: false, clearClipboardPreview: false });
+      dismissPasteToPlaceMenu({
+        clearPreview: false,
+        clearClipboardPreview: false,
+        preserveAwaitingPasteSession: true,
+      });
       const { xNorm, yNorm } = menuStateSnapshot;
       if (isOperationStale()) return;
       const preparedResult = await preparePasteToPlaceProductFromMenu({ xNorm, yNorm, operationId });
@@ -8152,7 +8837,7 @@ function EditorPageInner() {
         pasteToPlaceControl,
       });
     } finally {
-      if (pasteToPlaceControl && pasteToPlaceStatus !== "placing") {
+      if (!isOperationStale() && pasteToPlaceStatus !== "placing") {
         clearActivePasteToPlaceJobControlIfMatching(pasteToPlaceControl);
       }
     }
@@ -8166,8 +8851,10 @@ function EditorPageInner() {
     isClipboardPasteToPlaceIngestPending,
     isBusy,
     isEditRunning,
+    isAwaitingRefreshCopiedItem,
     isMyFurnitureMultiPreparedSource,
     isPasteToPlaceOperationActive,
+    isPasteToPlaceRefreshInteractionLocked,
     isPasteToPlaceSettling,
     isRotateMarkerTargeting,
     pasteToPlaceMenuState,
@@ -8176,10 +8863,19 @@ function EditorPageInner() {
     pushSnack,
     scene.baseImageUrl,
     setActivePasteToPlaceJobControl,
+    resolveAwaitingPasteToPlaceOperationIdForMenuAction,
   ]);
 
   const handlePasteToPlaceSwap = useCallback(async () => {
     if (!pasteToPlaceMenuState) return;
+    if (isPasteToPlaceRefreshInteractionLocked || isRefreshingCopiedItemRef.current) {
+      pushSnack(
+        isAwaitingRefreshCopiedItem
+          ? "Press ⌘V to finish refreshing copied item."
+          : "Refreshing copied item. Try again in a moment."
+      );
+      return;
+    }
     if (isPasteToPlaceSettling) {
       console.info("[Paste-to-Place][settling] Place blocked because settling", {
         context: "swap",
@@ -8197,8 +8893,6 @@ function EditorPageInner() {
       pushSnack("Clipboard item is still preparing. Choose My Furniture while it finishes.");
       return;
     }
-    const shouldRunWithoutClipboardOperation =
-      isClipboardPasteToPlaceIngestPending && sourceSnapshot?.type === "my_furniture";
     if (
       activeTool === "calibrate" ||
       activeTool === "remove" ||
@@ -8213,18 +8907,23 @@ function EditorPageInner() {
       return;
     }
 
-    const operationId = shouldRunWithoutClipboardOperation ? undefined : beginPasteToPlacePlacementOperation();
-    const pasteToPlaceControl =
-      typeof operationId === "number" ? createPasteToPlaceJobControl(operationId) : undefined;
-    if (pasteToPlaceControl) {
-      setActivePasteToPlaceJobControl(pasteToPlaceControl);
-    }
-    const isOperationStale = (): boolean =>
-      typeof operationId === "number" ? !isPasteToPlaceOperationActive(operationId) : false;
+    const awaitingOperationId = resolveAwaitingPasteToPlaceOperationIdForMenuAction();
+    const operationId =
+      awaitingOperationId ??
+      (isClipboardPasteToPlaceIngestPending && sourceSnapshot?.type === "my_furniture"
+        ? pasteToPlaceOperationIdRef.current || beginPasteToPlacePlacementOperation()
+        : beginPasteToPlacePlacementOperation());
+    const pasteToPlaceControl = createPasteToPlaceJobControl(operationId);
+    setActivePasteToPlaceJobControl(pasteToPlaceControl);
+    const isOperationStale = (): boolean => !isPasteToPlaceOperationActive(operationId);
     try {
       if (isOperationStale()) return;
       setPasteToPlaceProgressCardState(menuStateSnapshot);
-      dismissPasteToPlaceMenu({ clearPreview: false, clearClipboardPreview: false });
+      dismissPasteToPlaceMenu({
+        clearPreview: false,
+        clearClipboardPreview: false,
+        preserveAwaitingPasteSession: true,
+      });
       const { xNorm, yNorm } = menuStateSnapshot;
       if (isOperationStale()) return;
       const preparedResult = await preparePasteToPlaceProductFromMenu({ xNorm, yNorm, operationId });
@@ -8238,7 +8937,7 @@ function EditorPageInner() {
         pasteToPlaceControl,
       });
     } finally {
-      if (pasteToPlaceControl && pasteToPlaceStatus !== "placing") {
+      if (!isOperationStale() && pasteToPlaceStatus !== "placing") {
         clearActivePasteToPlaceJobControlIfMatching(pasteToPlaceControl);
       }
     }
@@ -8251,8 +8950,10 @@ function EditorPageInner() {
     isClipboardPasteToPlaceIngestPending,
     isBusy,
     isEditRunning,
+    isAwaitingRefreshCopiedItem,
     isMyFurnitureMultiPreparedSource,
     isPasteToPlaceOperationActive,
+    isPasteToPlaceRefreshInteractionLocked,
     isPasteToPlaceSettling,
     isRotateMarkerTargeting,
     pasteToPlaceMenuState,
@@ -8262,6 +8963,7 @@ function EditorPageInner() {
     runPasteToPlaceClickTargetEdit,
     scene.baseImageUrl,
     setActivePasteToPlaceJobControl,
+    resolveAwaitingPasteToPlaceOperationIdForMenuAction,
   ]);
 
   const buildModelDecidedFurnitureCandidates = useCallback(
@@ -8328,6 +9030,14 @@ function EditorPageInner() {
 
   const handlePasteToPlaceAutoPlace = useCallback(async () => {
     if (!pasteToPlaceMenuState) return;
+    if (isPasteToPlaceRefreshInteractionLocked || isRefreshingCopiedItemRef.current) {
+      pushSnack(
+        isAwaitingRefreshCopiedItem
+          ? "Press ⌘V to finish refreshing copied item."
+          : "Refreshing copied item. Try again in a moment."
+      );
+      return;
+    }
     if (isPasteToPlaceSettling) {
       console.info("[Paste-to-Place][settling] Place blocked because settling", {
         context: "auto_place",
@@ -8351,7 +9061,8 @@ function EditorPageInner() {
       return;
     }
 
-    const operationId = beginPasteToPlacePlacementOperation();
+    const operationId =
+      resolveAwaitingPasteToPlaceOperationIdForMenuAction() ?? beginPasteToPlacePlacementOperation();
     const pasteToPlaceControl = createPasteToPlaceJobControl(operationId);
     setActivePasteToPlaceJobControl(pasteToPlaceControl);
     const isOperationStale = (context?: string): boolean => {
@@ -8363,7 +9074,11 @@ function EditorPageInner() {
     let settlingRequestId: string | null = null;
     try {
       setPasteToPlaceProgressCardState(menuStateSnapshot);
-      dismissPasteToPlaceMenu({ clearPreview: false, clearClipboardPreview: false });
+      dismissPasteToPlaceMenu({
+        clearPreview: false,
+        clearClipboardPreview: false,
+        preserveAwaitingPasteSession: true,
+      });
       if (isOperationStale("auto_place:before_prepare")) return;
       const prepared = await preparePasteToPlaceProductFromMenu({ xNorm, yNorm, operationId });
       if (isOperationStale("auto_place:after_prepare")) return;
@@ -8420,7 +9135,9 @@ function EditorPageInner() {
     isBusy,
     isDevUnlockPasteToPlace,
     isEditRunning,
+    isAwaitingRefreshCopiedItem,
     isPasteToPlaceOperationActive,
+    isPasteToPlaceRefreshInteractionLocked,
     isPasteToPlaceSettling,
     isSamePasteToPlaceJobControl,
     pasteToPlaceMenuState,
@@ -8434,6 +9151,7 @@ function EditorPageInner() {
     beginPasteToPlaceSettlingRequest,
     clearPasteToPlaceAbortController,
     setActivePasteToPlaceJobControl,
+    resolveAwaitingPasteToPlaceOperationIdForMenuAction,
   ]);
 
   useEffect(() => {
@@ -8447,6 +9165,9 @@ function EditorPageInner() {
       activePasteToPlaceSettlingRequestIdRef.current = null;
       setIsPasteToPlaceSettling(false);
       setActivePasteToPlaceJobControl(null);
+      awaitingPasteToPlaceSessionRef.current = null;
+      pasteEventClipboardImagePayloadRef.current = null;
+      setAwaitingPasteToPlaceSessionUiState(null);
       stageRunAbortControllerRef.current?.abort();
       stageRunAbortControllerRef.current = null;
       activeStageRunRef.current = null;
@@ -10352,7 +11073,9 @@ function EditorPageInner() {
                 pasteToPlaceProductSupplier={productUrlPreparedSupplier}
                 pasteToPlaceProductSourceUrl={productUrlPreparedSourceUrl}
                 isPasteToPlaceMenuPreviewLoading={
-                  isPasteToPlaceMenuIngesting || isPasteToPlaceMenuClipboardPreviewLoading
+                  isPasteToPlaceMenuIngesting ||
+                  isPasteToPlaceMenuClipboardPreviewLoading ||
+                  isPasteToPlaceUrlCandidatePreviewLoading
                 }
                 pasteToPlaceProgressCardState={pasteToPlaceProgressCardState}
                 pasteToPlaceProgressCardPreviewUrl={pasteToPlaceDisplayedPreviewUrl}
@@ -10364,19 +11087,22 @@ function EditorPageInner() {
                 }
                 isPasteToPlaceCancelling={isPasteToPlaceCancelling}
                 isPasteToPlaceSettling={isPasteToPlaceSettling}
+                isPasteToPlaceRefreshInteractionLocked={isPasteToPlaceRefreshInteractionLocked}
                 onOpenPasteToPlaceMenu={openPasteToPlaceMenu}
                 onPasteToPlaceChoosePlaceHere={handlePasteToPlacePlaceHere}
                 onPasteToPlaceChooseMyFurnitureAdd={() => {
                   void openMyFurniturePicker("add");
                 }}
+                pasteToPlaceAwaitingPasteMessage={pasteToPlaceAwaitingPasteMessage}
                 pasteToPlaceProductUrlInput={pasteToPlaceProductUrlInput}
-                onPasteToPlaceProductUrlInputChange={setPasteToPlaceProductUrlInput}
+                onPasteToPlaceProductUrlInputChange={handlePasteToPlaceProductUrlInputChange}
                 onPasteToPlaceSubmitProductUrl={() => {
                   void preparePasteToPlaceProductUrlSource();
                 }}
                 isPasteToPlaceProductUrlPreparing={isPasteToPlaceMenuIngesting && pasteToPlaceStatus === "preparing"}
                 onPasteToPlaceChooseSwap={handlePasteToPlaceSwap}
                 onPasteToPlaceChooseAutoPlace={handlePasteToPlaceAutoPlace}
+                onPasteToPlaceRefreshCopiedItem={refreshPasteToPlaceCopiedItem}
                 onDismissPasteToPlaceMenu={dismissPasteToPlaceMenu}
                 isMyFurnitureLoading={myFurnitureLoading}
                 removeMarkerPosition={removeMarkerPosition}
@@ -11270,6 +11996,9 @@ function EditorPageInner() {
                         setPendingMyFurnitureReturnPreviewUrl(null);
                         clearPasteToPlaceProgressPreview();
                         clearPasteToPlaceMenuClipboardPreview();
+                        clearPasteToPlaceUrlCandidatePreview();
+                        clearAwaitingPasteToPlaceSession();
+                        clearPasteEventClipboardImagePayload();
                         clearPasteToPlaceActiveSource("base_image_cleared");
                         lastObservedClipboardDataUrlHashRef.current = null;
                         lastSurfacedProvisionalClipboardPreviewHashRef.current = null;

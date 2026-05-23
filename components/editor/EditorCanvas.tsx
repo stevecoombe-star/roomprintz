@@ -292,15 +292,13 @@ export function EditorCanvas({
   onOpenPasteToPlaceMenu,
   onPasteToPlaceChoosePlaceHere,
   onPasteToPlaceChooseMyFurnitureAdd,
-  pasteToPlaceProductUrlInput = "",
-  onPasteToPlaceProductUrlInputChange,
-  onPasteToPlaceSubmitProductUrl,
-  isPasteToPlaceProductUrlPreparing = false,
+  pasteToPlaceAwaitingPasteMessage = null,
   pasteToPlaceProductDisplayName = null,
   pasteToPlaceProductSupplier = null,
   pasteToPlaceProductSourceUrl = null,
   onPasteToPlaceChooseSwap,
   onPasteToPlaceChooseAutoPlace,
+  onPasteToPlaceRefreshCopiedItem,
   onDismissPasteToPlaceMenu,
   pasteToPlaceMenuPreviewUrl = null,
   isPasteToPlaceMyFurnitureMultiSelect = false,
@@ -314,6 +312,7 @@ export function EditorCanvas({
   onCancelPasteToPlaceGeneration,
   isPasteToPlaceCancelling = false,
   isPasteToPlaceSettling = false,
+  isPasteToPlaceRefreshInteractionLocked = false,
   markupVisible = true,
   visualMode = "blueprint",
   imageUrl,
@@ -356,6 +355,7 @@ export function EditorCanvas({
   onOpenPasteToPlaceMenu?: (state: NonNullable<PasteToPlaceMenuState>) => void;
   onPasteToPlaceChoosePlaceHere?: () => void;
   onPasteToPlaceChooseMyFurnitureAdd?: () => void;
+  pasteToPlaceAwaitingPasteMessage?: string | null;
   pasteToPlaceProductUrlInput?: string;
   onPasteToPlaceProductUrlInputChange?: (value: string) => void;
   onPasteToPlaceSubmitProductUrl?: () => void;
@@ -365,6 +365,7 @@ export function EditorCanvas({
   pasteToPlaceProductSourceUrl?: string | null;
   onPasteToPlaceChooseSwap?: () => void;
   onPasteToPlaceChooseAutoPlace?: () => void;
+  onPasteToPlaceRefreshCopiedItem?: () => void;
   onDismissPasteToPlaceMenu?: () => void;
   pasteToPlaceMenuPreviewUrl?: string | null;
   isPasteToPlaceMyFurnitureMultiSelect?: boolean;
@@ -378,6 +379,7 @@ export function EditorCanvas({
   onCancelPasteToPlaceGeneration?: () => void;
   isPasteToPlaceCancelling?: boolean;
   isPasteToPlaceSettling?: boolean;
+  isPasteToPlaceRefreshInteractionLocked?: boolean;
   markupVisible?: boolean;
   visualMode?: VisualMode;
   imageUrl?: string | null;
@@ -625,7 +627,10 @@ export function EditorCanvas({
   const shouldRenderSinglePreview =
     !shouldRenderMyFurnitureMultiSelectPreview &&
     (Boolean(pasteToPlaceMenuPreviewUrl) || isPasteToPlaceMenuPreviewLoading);
-  const isPasteToPlaceActionLocked = isPasteToPlaceSettling;
+  const shouldShowRefreshCopiedItemButton =
+    Boolean(pasteToPlaceMenuPreviewUrl) || shouldRenderMyFurnitureMultiSelectPreview;
+  const isPasteToPlaceActionLocked =
+    isPasteToPlaceSettling || isPasteToPlaceRefreshInteractionLocked;
   useLayoutEffect(() => {
     if (!pasteToPlaceMenuState) {
       const frameId = window.requestAnimationFrame(() => {
@@ -1290,11 +1295,12 @@ export function EditorCanvas({
     event.stopPropagation();
     setSelectedPlacementLayerNodeId(node.id);
     setDraggingPlacementLayerNodeId(node.id);
+    const startedAsSuggested =
+      node.metadata?.ownership === "vibode" &&
+      node.metadata?.placementSource === "model_vision_inferred";
     onPlacementLayerDragStateChange?.({
       nodeId: node.id,
-      startedAsSuggested:
-        node.metadata?.ownership === "vibode" &&
-        node.metadata?.placementSource === "model_vision_inferred",
+      startedAsSuggested,
     });
     const pointerId = event.pointerId;
     const markerEl = event.currentTarget;
@@ -2479,6 +2485,28 @@ export function EditorCanvas({
                     <span className="h-4 w-4 animate-spin rounded-full border border-neutral-100/85 border-t-transparent" />
                   </div>
                 )}
+                {shouldShowRefreshCopiedItemButton && (
+                  <div className="absolute top-1.5 right-1.5 z-10" title="Refresh copied item">
+                    <button
+                      type="button"
+                      aria-label="Refresh copied item"
+                      title="Refresh copied item"
+                      className={`h-6 w-6 rounded-full border text-xs transition-colors ${
+                        isPasteToPlaceActionLocked || isPasteToPlaceMenuPreviewLoading
+                          ? "cursor-not-allowed border-white/15 bg-neutral-900/80 text-neutral-500"
+                          : "border-white/25 bg-neutral-950/80 text-neutral-200 hover:bg-neutral-800"
+                      }`}
+                      onClick={onPasteToPlaceRefreshCopiedItem}
+                      disabled={
+                        isPasteToPlaceActionLocked ||
+                        isPasteToPlaceMenuPreviewLoading ||
+                        !onPasteToPlaceRefreshCopiedItem
+                      }
+                    >
+                      ↻
+                    </button>
+                  </div>
+                )}
               </div>
             )}
             {!isPasteToPlaceMyFurnitureMultiSelect &&
@@ -2507,34 +2535,35 @@ export function EditorCanvas({
                   </div>
                 </div>
               )}
-            {!isPasteToPlaceMyFurnitureMultiSelect &&
-              !isPasteToPlaceMenuPreviewLoading &&
-              !pasteToPlaceMenuPreviewUrl &&
-              !pasteToPlaceProductDisplayName &&
-              !pasteToPlaceProductSupplier &&
-              !pasteToPlaceProductSourceUrl &&
-              pasteToPlaceProductUrlInput.trim().length > 0 && (
-                <div className="mx-2 mt-2 mb-1 rounded-md border border-white/10 bg-neutral-900/70 px-3 py-2 text-xs text-neutral-200">
-                  <div className="truncate font-medium text-neutral-100">Preparing from link</div>
-                  <div className="mt-0.5 truncate text-neutral-400">
-                    {(() => {
-                      try {
-                        return formatSourceHostLabel(
-                          new URL(
-                            /^[a-z][a-z0-9+.-]*:\/\//i.test(pasteToPlaceProductUrlInput.trim())
-                              ? pasteToPlaceProductUrlInput.trim()
-                              : `https://${pasteToPlaceProductUrlInput.trim()}`
-                          ).hostname
-                        );
-                      } catch {
-                        return "Paste a valid URL to prepare";
-                      }
-                    })()}
-                  </div>
-                </div>
-              )}
+            {pasteToPlaceAwaitingPasteMessage && (
+              <div className="mx-2 mt-2 mb-1 rounded-md border border-blue-500/30 bg-blue-950/25 px-3 py-2 text-xs text-blue-100">
+                {pasteToPlaceAwaitingPasteMessage}
+              </div>
+            )}
             {shouldRenderMyFurnitureMultiSelectPreview ? (
-              <div className="mx-2 mt-2 mb-1 rounded-md border border-white/10 bg-neutral-900/70 px-3 py-2">
+              <div className="relative mx-2 mt-2 mb-1 rounded-md border border-white/10 bg-neutral-900/70 px-3 py-2">
+                {shouldShowRefreshCopiedItemButton && (
+                  <div className="absolute top-1.5 right-1.5 z-10" title="Refresh copied item">
+                    <button
+                      type="button"
+                      aria-label="Refresh copied item"
+                      title="Refresh copied item"
+                      className={`h-6 w-6 rounded-full border text-xs transition-colors ${
+                        isPasteToPlaceActionLocked || isPasteToPlaceMenuPreviewLoading
+                          ? "cursor-not-allowed border-white/15 bg-neutral-900/80 text-neutral-500"
+                          : "border-white/25 bg-neutral-950/80 text-neutral-200 hover:bg-neutral-800"
+                      }`}
+                      onClick={onPasteToPlaceRefreshCopiedItem}
+                      disabled={
+                        isPasteToPlaceActionLocked ||
+                        isPasteToPlaceMenuPreviewLoading ||
+                        !onPasteToPlaceRefreshCopiedItem
+                      }
+                    >
+                      ↻
+                    </button>
+                  </div>
+                )}
                 <div className="flex items-center gap-3">
                   <div className="relative h-11 w-[74px] shrink-0">
                     {myFurnitureMultiSelectPreviewUrls.length > 0 ? (
@@ -2610,38 +2639,8 @@ export function EditorCanvas({
               <div className="px-3 pb-2 text-[11px] text-neutral-400">Cancelling...</div>
             )}
             <div className="mx-2 my-1 h-px bg-white/10" />
-            <div className="mx-2 mb-2 mt-1 rounded-md border border-white/10 bg-neutral-900/70 p-2">
-              <div className="mb-1 text-[11px] font-medium uppercase tracking-wide text-neutral-400">
-                Paste Product Link
-              </div>
-              <div className="flex gap-1">
-                <input
-                  type="url"
-                  placeholder="https://..."
-                  value={pasteToPlaceProductUrlInput}
-                  onChange={(event) => onPasteToPlaceProductUrlInputChange?.(event.target.value)}
-                  className="h-8 flex-1 rounded border border-white/15 bg-neutral-950/70 px-2 text-xs text-neutral-100 outline-none placeholder:text-neutral-500 focus:border-blue-500/70"
-                  disabled={isPasteToPlaceProductUrlPreparing}
-                />
-                <button
-                  type="button"
-                  className={`h-8 shrink-0 rounded px-2 text-xs font-medium transition-colors ${
-                    isPasteToPlaceProductUrlPreparing
-                      ? "cursor-not-allowed bg-neutral-800 text-neutral-500"
-                      : pasteToPlaceProductUrlInput.trim().length > 0
-                        ? "bg-blue-600/80 text-blue-50 hover:bg-blue-500/90"
-                        : "cursor-not-allowed bg-neutral-800 text-neutral-400"
-                  }`}
-                  onClick={onPasteToPlaceSubmitProductUrl}
-                  disabled={
-                    isPasteToPlaceProductUrlPreparing ||
-                    !onPasteToPlaceSubmitProductUrl ||
-                    pasteToPlaceProductUrlInput.trim().length === 0
-                  }
-                >
-                  {isPasteToPlaceProductUrlPreparing ? "Preparing..." : "Prepare"}
-                </button>
-              </div>
+            <div className="mx-3 mb-2 mt-1 text-[11px] text-neutral-400">
+              Copy a furniture image, paste a product link, or select from My Furniture.
             </div>
             <button
               className={`px-3 py-2 text-left text-sm hover:bg-white/10 ${
