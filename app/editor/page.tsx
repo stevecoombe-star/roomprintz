@@ -1158,6 +1158,13 @@ type PendingPasteToPlacePlacementSnapshot = Readonly<{
   productUrlInputAtCommit: string;
   pasteToPlaceControl: PasteToPlaceJobControl | null;
 }>;
+type PendingPasteToPlaceCommitContext = Readonly<{
+  operationId: number;
+  snapshot: PendingPasteToPlacePlacementSnapshot;
+  pasteToPlaceControl: PasteToPlaceJobControl | null;
+  abortController: AbortController | null;
+  registeredAtMs: number;
+}>;
 type PendingStage3Payload = {
   skuItems?: unknown;
   showCatalog?: unknown;
@@ -2464,6 +2471,9 @@ function EditorPageInner() {
   const pasteToPlaceOperationIdRef = useRef(0);
   const pendingPasteToPlacePlacementSnapshotRef =
     useRef<PendingPasteToPlacePlacementSnapshot | null>(null);
+  const pendingPasteToPlaceCommitRegistryRef = useRef<Map<number, PendingPasteToPlaceCommitContext>>(
+    new Map()
+  );
   const pasteToPlaceClientSessionIdRef = useRef<string>(safeId("ptp_session"));
   const activePasteToPlaceJobControlRef = useRef<PasteToPlaceJobControl | null>(null);
   const [activePasteToPlaceJobControlUiState, setActivePasteToPlaceJobControlUiState] =
@@ -2673,6 +2683,68 @@ function EditorPageInner() {
     (operationId: number) => pasteToPlaceOperationIdRef.current === operationId,
     []
   );
+  const getPendingPasteToPlaceCommitContext = useCallback((operationId: number) => {
+    return pendingPasteToPlaceCommitRegistryRef.current.get(operationId) ?? null;
+  }, []);
+  const getPendingPasteToPlacePlacementSnapshotForOperation = useCallback(
+    (operationId: number): PendingPasteToPlacePlacementSnapshot | null => {
+      const contextSnapshot = getPendingPasteToPlaceCommitContext(operationId)?.snapshot ?? null;
+      if (contextSnapshot) return contextSnapshot;
+      const mirroredSnapshot = pendingPasteToPlacePlacementSnapshotRef.current;
+      return mirroredSnapshot?.operationId === operationId ? mirroredSnapshot : null;
+    },
+    [getPendingPasteToPlaceCommitContext]
+  );
+  const registerPendingPasteToPlaceCommitContext = useCallback(
+    ({
+      snapshot,
+      pasteToPlaceControl,
+      abortController,
+    }: {
+      snapshot: PendingPasteToPlacePlacementSnapshot;
+      pasteToPlaceControl?: PasteToPlaceJobControl | null;
+      abortController?: AbortController | null;
+    }): PendingPasteToPlaceCommitContext => {
+      const nextContext = Object.freeze({
+        operationId: snapshot.operationId,
+        snapshot,
+        pasteToPlaceControl: pasteToPlaceControl ?? snapshot.pasteToPlaceControl ?? null,
+        abortController: abortController ?? null,
+        registeredAtMs: Date.now(),
+      });
+      pendingPasteToPlaceCommitRegistryRef.current.set(snapshot.operationId, nextContext);
+      // Phase 6A compatibility mirror: singleton snapshot ref remains source for unchanged paths.
+      pendingPasteToPlacePlacementSnapshotRef.current = snapshot;
+      return nextContext;
+    },
+    []
+  );
+  const updatePendingPasteToPlaceCommitContext = useCallback(
+    (
+      operationId: number,
+      updates: Partial<Pick<PendingPasteToPlaceCommitContext, "pasteToPlaceControl" | "abortController">>
+    ) => {
+      const existingContext = pendingPasteToPlaceCommitRegistryRef.current.get(operationId);
+      if (!existingContext) return;
+      const nextContext = Object.freeze({
+        ...existingContext,
+        ...updates,
+      });
+      pendingPasteToPlaceCommitRegistryRef.current.set(operationId, nextContext);
+    },
+    []
+  );
+  const clearPendingPasteToPlaceCommitContext = useCallback((operationId?: number) => {
+    if (typeof operationId === "number") {
+      pendingPasteToPlaceCommitRegistryRef.current.delete(operationId);
+      if (pendingPasteToPlacePlacementSnapshotRef.current?.operationId === operationId) {
+        pendingPasteToPlacePlacementSnapshotRef.current = null;
+      }
+      return;
+    }
+    pendingPasteToPlaceCommitRegistryRef.current.clear();
+    pendingPasteToPlacePlacementSnapshotRef.current = null;
+  }, []);
   const setAwaitingPasteToPlaceSession = useCallback((session: AwaitingPasteToPlaceSession | null) => {
     awaitingPasteToPlaceSessionRef.current = session;
     setAwaitingPasteToPlaceSessionUiState(session);
@@ -2903,9 +2975,15 @@ function EditorPageInner() {
     pasteToPlaceAbortControllerRef.current?.abort();
     const controller = new AbortController();
     pasteToPlaceAbortControllerRef.current = controller;
+    const pendingOperationId = pendingPasteToPlacePlacementSnapshotRef.current?.operationId;
+    if (typeof pendingOperationId === "number") {
+      updatePendingPasteToPlaceCommitContext(pendingOperationId, {
+        abortController: controller,
+      });
+    }
     setIsPasteToPlaceCancelling(false);
     return controller;
-  }, []);
+  }, [updatePendingPasteToPlaceCommitContext]);
   const beginPasteToPlacePlacementOperation = useCallback(() => {
     pasteToPlaceAbortControllerRef.current?.abort();
     pasteToPlaceAbortControllerRef.current = null;
@@ -3005,7 +3083,10 @@ function EditorPageInner() {
         productUrlInputAtCommit: pasteToPlaceProductUrlInput,
         pasteToPlaceControl: args.pasteToPlaceControl ?? null,
       });
-      pendingPasteToPlacePlacementSnapshotRef.current = snapshot;
+      registerPendingPasteToPlaceCommitContext({
+        snapshot,
+        pasteToPlaceControl: args.pasteToPlaceControl ?? null,
+      });
       return snapshot;
     },
     [
@@ -3015,15 +3096,25 @@ function EditorPageInner() {
       pasteToPlaceMenuClipboardPreviewUrl,
       pasteToPlaceProductUrlInput,
       pasteToPlaceUrlCandidatePreview,
+      registerPendingPasteToPlaceCommitContext,
       vibodeRoomId,
     ]
   );
   const clearPendingPasteToPlacePlacementSnapshot = useCallback((operationId?: number) => {
     const currentSnapshot = pendingPasteToPlacePlacementSnapshotRef.current;
-    if (!currentSnapshot) return;
+    if (!currentSnapshot && typeof operationId !== "number") {
+      clearPendingPasteToPlaceCommitContext();
+      return;
+    }
+    if (!currentSnapshot) {
+      if (typeof operationId === "number") {
+        clearPendingPasteToPlaceCommitContext(operationId);
+      }
+      return;
+    }
     if (typeof operationId === "number" && currentSnapshot.operationId !== operationId) return;
-    pendingPasteToPlacePlacementSnapshotRef.current = null;
-  }, []);
+    clearPendingPasteToPlaceCommitContext(currentSnapshot.operationId);
+  }, [clearPendingPasteToPlaceCommitContext]);
   const beginPasteToPlaceSettlingRequest = useCallback(() => {
     const requestId = safeId("ptp_settle_req");
     activePasteToPlaceSettlingRequestIdRef.current = requestId;
@@ -3096,20 +3187,32 @@ function EditorPageInner() {
     []
   );
   const setActivePasteToPlaceJobControl = useCallback((jobControl: PasteToPlaceJobControl | null) => {
+    const pendingOperationId = pendingPasteToPlacePlacementSnapshotRef.current?.operationId;
+    if (typeof pendingOperationId === "number") {
+      updatePendingPasteToPlaceCommitContext(pendingOperationId, {
+        pasteToPlaceControl: jobControl,
+      });
+    }
     activePasteToPlaceJobControlRef.current = jobControl;
     setActivePasteToPlaceJobControlUiState(jobControl);
-  }, []);
+  }, [updatePendingPasteToPlaceCommitContext]);
   const clearActivePasteToPlaceJobControlIfMatching = useCallback(
     (jobControl: PasteToPlaceJobControl | null | undefined) => {
       if (!jobControl) return;
       if (isSamePasteToPlaceJobControl(activePasteToPlaceJobControlRef.current, jobControl)) {
+        const pendingOperationId = pendingPasteToPlacePlacementSnapshotRef.current?.operationId;
+        if (typeof pendingOperationId === "number") {
+          updatePendingPasteToPlaceCommitContext(pendingOperationId, {
+            pasteToPlaceControl: null,
+          });
+        }
         activePasteToPlaceJobControlRef.current = null;
       }
       setActivePasteToPlaceJobControlUiState((currentJobControl) =>
         isSamePasteToPlaceJobControl(currentJobControl, jobControl) ? null : currentJobControl
       );
     },
-    [isSamePasteToPlaceJobControl]
+    [isSamePasteToPlaceJobControl, updatePendingPasteToPlaceCommitContext]
   );
   const hasPendingPasteToPlaceCommit = useCallback(
     () =>
@@ -3120,15 +3223,27 @@ function EditorPageInner() {
   );
   const clearPasteToPlaceAbortController = useCallback((controller?: AbortController | null) => {
     if (!controller) {
+      const pendingOperationId = pendingPasteToPlacePlacementSnapshotRef.current?.operationId;
+      if (typeof pendingOperationId === "number") {
+        updatePendingPasteToPlaceCommitContext(pendingOperationId, {
+          abortController: null,
+        });
+      }
       pasteToPlaceAbortControllerRef.current = null;
       setIsPasteToPlaceCancelling(false);
       return;
     }
     if (pasteToPlaceAbortControllerRef.current === controller) {
+      const pendingOperationId = pendingPasteToPlacePlacementSnapshotRef.current?.operationId;
+      if (typeof pendingOperationId === "number") {
+        updatePendingPasteToPlaceCommitContext(pendingOperationId, {
+          abortController: null,
+        });
+      }
       pasteToPlaceAbortControllerRef.current = null;
       setIsPasteToPlaceCancelling(false);
     }
-  }, []);
+  }, [updatePendingPasteToPlaceCommitContext]);
   const cancelPasteToPlaceGeneration = useCallback(() => {
     if (isPasteToPlaceCancelling) return;
     setIsPasteToPlaceCancelling(true);
@@ -8626,9 +8741,8 @@ function EditorPageInner() {
       const snapshotForOperation =
         placementSnapshot && placementSnapshot.operationId === operationId
           ? placementSnapshot
-          : typeof operationId === "number" &&
-              pendingPasteToPlacePlacementSnapshotRef.current?.operationId === operationId
-            ? pendingPasteToPlacePlacementSnapshotRef.current
+          : typeof operationId === "number"
+            ? getPendingPasteToPlacePlacementSnapshotForOperation(operationId)
             : null;
       const resolvedOperationId = snapshotForOperation?.operationId ?? operationId;
       const resolvedPasteToPlaceControl = snapshotForOperation?.pasteToPlaceControl ?? pasteToPlaceControl;
@@ -8832,6 +8946,7 @@ function EditorPageInner() {
       isEditRunning,
       isPasteToPlaceSettling,
       isPasteToPlaceOperationActive,
+      getPendingPasteToPlacePlacementSnapshotForOperation,
       isRotateMarkerTargeting,
       pushSnack,
       createPlacementLayerNodeAfterPasteCommit,
@@ -9057,9 +9172,8 @@ function EditorPageInner() {
       const snapshotForOperation =
         placementSnapshot && placementSnapshot.operationId === operationId
           ? placementSnapshot
-          : typeof operationId === "number" &&
-              pendingPasteToPlacePlacementSnapshotRef.current?.operationId === operationId
-            ? pendingPasteToPlacePlacementSnapshotRef.current
+          : typeof operationId === "number"
+            ? getPendingPasteToPlacePlacementSnapshotForOperation(operationId)
             : null;
       const source = snapshotForOperation?.sourceAtCommit ?? activePasteSourceRef.current;
       const hasProvisionalClipboardPreview = Boolean(
@@ -9212,6 +9326,7 @@ function EditorPageInner() {
       activatePasteToPlaceSource,
       clearPasteToPlaceActiveSource,
       clearPasteToPlaceProgressPreview,
+      getPendingPasteToPlacePlacementSnapshotForOperation,
       isPasteToPlaceOperationActive,
       isPasteToPlaceMenuIngesting,
       pasteToPlaceMenuClipboardPreviewUrl,
@@ -9681,9 +9796,10 @@ function EditorPageInner() {
       sceneRebuildAbortControllerRef.current?.abort();
       sceneRebuildAbortControllerRef.current = null;
       sceneRebuildAbortReasonRef.current = null;
-      pendingPasteToPlacePlacementSnapshotRef.current = null;
+      clearPendingPasteToPlaceCommitContext();
     };
   }, [
+    clearPendingPasteToPlaceCommitContext,
     clearSceneRebuildComposeTimers,
     clearPasteToPlaceCancelCooldownTimer,
     clearStageRunCancelCooldownTimer,
