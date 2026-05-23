@@ -1166,7 +1166,9 @@ type PendingPasteToPlaceCommitContext = Readonly<{
   snapshot: PendingPasteToPlacePlacementSnapshot;
   pasteToPlaceControl: PasteToPlaceJobControl | null;
   abortController: AbortController | null;
+  progressAnchor: Readonly<NonNullable<PasteToPlaceMenuState>>;
   registeredAtMs: number;
+  updatedAtMs: number;
 }>;
 type PendingStage3Payload = {
   skuItems?: unknown;
@@ -2707,17 +2709,22 @@ function EditorPageInner() {
       snapshot,
       pasteToPlaceControl,
       abortController,
+      progressAnchor,
     }: {
       snapshot: PendingPasteToPlacePlacementSnapshot;
       pasteToPlaceControl?: PasteToPlaceJobControl | null;
       abortController?: AbortController | null;
+      progressAnchor: Readonly<NonNullable<PasteToPlaceMenuState>>;
     }): PendingPasteToPlaceCommitContext => {
+      const now = Date.now();
       const nextContext = Object.freeze({
         operationId: snapshot.operationId,
         snapshot,
         pasteToPlaceControl: pasteToPlaceControl ?? snapshot.pasteToPlaceControl ?? null,
         abortController: abortController ?? null,
-        registeredAtMs: Date.now(),
+        progressAnchor,
+        registeredAtMs: now,
+        updatedAtMs: now,
       });
       pendingPasteToPlaceCommitRegistryRef.current.set(snapshot.operationId, nextContext);
       // Phase 6A compatibility mirror: singleton snapshot ref remains source for unchanged paths.
@@ -2729,13 +2736,19 @@ function EditorPageInner() {
   const updatePendingPasteToPlaceCommitContext = useCallback(
     (
       operationId: number,
-      updates: Partial<Pick<PendingPasteToPlaceCommitContext, "pasteToPlaceControl" | "abortController">>
+      updates: Partial<
+        Pick<
+          PendingPasteToPlaceCommitContext,
+          "pasteToPlaceControl" | "abortController" | "progressAnchor"
+        >
+      >
     ) => {
       const existingContext = pendingPasteToPlaceCommitRegistryRef.current.get(operationId);
       if (!existingContext) return;
       const nextContext = Object.freeze({
         ...existingContext,
         ...updates,
+        updatedAtMs: Date.now(),
       });
       pendingPasteToPlaceCommitRegistryRef.current.set(operationId, nextContext);
     },
@@ -3093,6 +3106,7 @@ function EditorPageInner() {
       registerPendingPasteToPlaceCommitContext({
         snapshot,
         pasteToPlaceControl: args.pasteToPlaceControl ?? null,
+        progressAnchor: point,
       });
       return snapshot;
     },
@@ -4826,9 +4840,7 @@ function EditorPageInner() {
     isPasteToPlaceMenuIngesting &&
     pasteToPlaceStatus === "preparing";
   const pasteToPlaceProgressOperations: PasteToPlaceProgressOperationView[] = (() => {
-    if (!pasteToPlaceProgressCardState) return [];
     const isLoading = isPasteToPlaceMenuIngesting || Boolean(pasteToPlaceStatus);
-    if (!pasteToPlaceProgressCardPreviewUrl && !isLoading) return [];
 
     const preferredOperationId = pendingPasteToPlacePlacementSnapshotRef.current?.operationId;
     const activeJobControl =
@@ -4846,7 +4858,16 @@ function EditorPageInner() {
         }
       }
     }
+    if (!context) {
+      for (const candidateContext of pendingPasteToPlaceCommitRegistryRef.current.values()) {
+        context = candidateContext;
+        break;
+      }
+    }
     if (!context) return [];
+
+    const previewUrl = getPasteToPlaceProgressCardPreviewUrlFromSnapshot(context.snapshot);
+    if (!previewUrl && !isLoading) return [];
 
     const status: PasteToPlaceProgressOperationView["status"] = isPasteToPlaceCancelling
       ? "cancelling"
@@ -4857,8 +4878,8 @@ function EditorPageInner() {
     return [
       {
         operationId: context.operationId,
-        anchor: pasteToPlaceProgressCardState,
-        previewUrl: pasteToPlaceProgressCardPreviewUrl,
+        anchor: context.progressAnchor,
+        previewUrl,
         mode: context.snapshot.mode,
         status,
         isLoading,
