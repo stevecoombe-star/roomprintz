@@ -2688,6 +2688,22 @@ export function EditorCanvas({
                   </div>
                 )}
               </div>
+              {onCancelPasteToPlaceGeneration && (
+                <div className="mx-2 mb-2 flex justify-end">
+                  <button
+                    type="button"
+                    className={`pointer-events-auto rounded border px-2 py-0.5 text-[11px] font-medium transition ${
+                      isPasteToPlaceCancelling
+                        ? "cursor-not-allowed border-white/10 text-neutral-500"
+                        : "border-white/20 text-neutral-200 hover:border-white/35 hover:text-white"
+                    }`}
+                    onClick={onCancelPasteToPlaceGeneration}
+                    disabled={isPasteToPlaceCancelling}
+                  >
+                    {isPasteToPlaceCancelling ? "Cancelling..." : "Cancel"}
+                  </button>
+                </div>
+              )}
             </div>
           </div>
         )}

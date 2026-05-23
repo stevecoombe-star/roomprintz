@@ -11700,7 +11700,7 @@ function EditorPageInner() {
                   isPasteToPlaceMenuIngesting || Boolean(pasteToPlaceStatus)
                 }
                 onCancelPasteToPlaceGeneration={
-                  pasteToPlaceStatus === "placing" ? cancelPasteToPlaceGeneration : undefined
+                  hasPendingPasteToPlaceCommit() ? cancelPasteToPlaceGeneration : undefined
                 }
                 isPasteToPlaceCancelling={isPasteToPlaceCancelling}
                 isPasteToPlaceSettling={isPasteToPlaceSettling}
