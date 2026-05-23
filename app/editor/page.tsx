@@ -2455,6 +2455,8 @@ function EditorPageInner() {
   const pasteToPlaceUrlCandidatePreviewTokenRef = useRef(0);
   const [pasteToPlaceProgressCardState, setPasteToPlaceProgressCardState] =
     useState<PasteToPlaceMenuState>(null);
+  const [pasteToPlaceProgressCardPreviewUrl, setPasteToPlaceProgressCardPreviewUrl] =
+    useState<string | null>(null);
   const awaitingPasteToPlaceSessionRef = useRef<AwaitingPasteToPlaceSession | null>(null);
   const [awaitingPasteToPlaceSessionUiState, setAwaitingPasteToPlaceSessionUiState] =
     useState<AwaitingPasteToPlaceSession | null>(null);
@@ -2830,6 +2832,7 @@ function EditorPageInner() {
     setPasteToPlaceStatus(null);
     setPasteToPlaceMenuState(null);
     setPasteToPlaceProgressCardState(null);
+    setPasteToPlaceProgressCardPreviewUrl(null);
     setIsPasteToPlaceMenuIngesting(false);
     setIsPasteToPlaceMenuClipboardPreviewLoading(false);
     clearAwaitingPasteToPlaceSession();
@@ -2893,6 +2896,7 @@ function EditorPageInner() {
   const clearPasteToPlaceProgressPreview = useCallback(() => {
     invalidatePasteToPlaceOperation();
     setPasteToPlaceProgressCardState(null);
+    setPasteToPlaceProgressCardPreviewUrl(null);
     setIsPasteToPlaceMenuIngesting(false);
   }, [invalidatePasteToPlaceOperation]);
   const beginPasteToPlaceAbortController = useCallback(() => {
@@ -2956,6 +2960,20 @@ function EditorPageInner() {
       return Object.freeze({ ...candidate });
     },
     []
+  );
+  const getPasteToPlaceSourcePreviewUrl = useCallback((source: ActivePasteSource): string | null => {
+    if (!source) return null;
+    if (source.type === "my_furniture") {
+      return source.rawPreviewUrl ?? source.normalizedPreviewUrl ?? null;
+    }
+    return source.normalizedPreviewUrl ?? source.rawPreviewUrl ?? null;
+  }, []);
+  const getPasteToPlaceProgressCardPreviewUrlFromSnapshot = useCallback(
+    (snapshot: PendingPasteToPlacePlacementSnapshot): string | null =>
+      snapshot.provisionalClipboardPreviewUrlAtCommit ??
+      snapshot.urlCandidatePreviewAtCommit?.previewImageUrl ??
+      getPasteToPlaceSourcePreviewUrl(snapshot.sourceAtCommit),
+    [getPasteToPlaceSourcePreviewUrl]
   );
   const createPendingPasteToPlacePlacementSnapshot = useCallback(
     (args: {
@@ -3092,6 +3110,13 @@ function EditorPageInner() {
       );
     },
     [isSamePasteToPlaceJobControl]
+  );
+  const hasPendingPasteToPlaceCommit = useCallback(
+    () =>
+      Boolean(
+        activePasteToPlaceJobControlRef.current || activePasteToPlaceJobControlUiState
+      ),
+    [activePasteToPlaceJobControlUiState]
   );
   const clearPasteToPlaceAbortController = useCallback((controller?: AbortController | null) => {
     if (!controller) {
@@ -4640,6 +4665,15 @@ function EditorPageInner() {
   const isClipboardPasteToPlaceIngestPending =
     isPasteToPlaceMenuIngesting &&
     (pasteToPlaceStatus === "reading" || pasteToPlaceStatus === "preparing");
+  const isCommittedPasteToPlacePending = hasPendingPasteToPlaceCommit();
+  const isPasteToPlaceMenuPreviewLoading =
+    (!isCommittedPasteToPlacePending && isPasteToPlaceMenuIngesting) ||
+    isPasteToPlaceMenuClipboardPreviewLoading ||
+    isPasteToPlaceUrlCandidatePreviewLoading;
+  const isPasteToPlaceProductUrlPreparing =
+    !isCommittedPasteToPlacePending &&
+    isPasteToPlaceMenuIngesting &&
+    pasteToPlaceStatus === "preparing";
   const isAwaitingRefreshCopiedItem =
     awaitingPasteToPlaceSessionUiState?.reason === "refresh_copied_item";
   const isRefreshClipboardCandidateReady = Boolean(
@@ -7605,8 +7639,8 @@ function EditorPageInner() {
     if (isPasteToPlaceSettling) return;
     if (isPasteToPlaceRefreshInteractionLocked) return;
     if (isRefreshingCopiedItemRef.current) return;
-    if (isClipboardPasteToPlaceIngestPending) {
-      pushSnack("Clipboard item is still preparing. Try again in a moment.");
+    if (hasPendingPasteToPlaceCommit()) {
+      pushSnack("Furniture is still saving. You can place it after this finishes.");
       return;
     }
     isRefreshingCopiedItemRef.current = true;
@@ -7699,7 +7733,7 @@ function EditorPageInner() {
     clearPasteToPlaceActiveSource,
     clearPasteToPlaceMenuClipboardPreview,
     clearPasteToPlaceUrlCandidatePreview,
-    isClipboardPasteToPlaceIngestPending,
+    hasPendingPasteToPlaceCommit,
     isPasteToPlaceOperationActive,
     isPasteToPlaceRefreshInteractionLocked,
     isPasteToPlaceSettling,
@@ -8146,6 +8180,10 @@ function EditorPageInner() {
   );
 
   const handlePasteToPlaceSubmitUrlInput = useCallback(() => {
+    if (hasPendingPasteToPlaceCommit()) {
+      pushSnack("Furniture is still saving. You can place it after this finishes.");
+      return;
+    }
     const classified = classifyPasteToPlaceUrl(pasteToPlaceProductUrlInput);
     if (!classified) {
       pushSnack("Paste a valid product URL first.");
@@ -8157,6 +8195,7 @@ function EditorPageInner() {
     }
     void preparePasteToPlaceProductUrlSource();
   }, [
+    hasPendingPasteToPlaceCommit,
     pasteToPlaceProductUrlInput,
     preparePasteToPlaceDirectImageUrlSource,
     preparePasteToPlaceProductUrlSource,
@@ -8845,15 +8884,17 @@ function EditorPageInner() {
         });
         return;
       }
-      if (isClipboardPasteToPlaceIngestPending) {
-        pushSnack("Furniture is still saving. You can place it after this finishes.");
-        return;
-      }
-      const operationId = beginPasteToPlaceOperation();
+      const isCommittedOperationPending = hasPendingPasteToPlaceCommit();
+      const operationId = isCommittedOperationPending
+        ? pasteToPlaceOperationIdRef.current
+        : beginPasteToPlaceOperation();
       clearAwaitingPasteToPlaceSession();
       clearPasteEventClipboardImagePayload();
-      setPasteToPlaceProgressCardState(null);
-      setIsPasteToPlaceMenuIngesting(false);
+      if (!isCommittedOperationPending) {
+        setPasteToPlaceProgressCardState(null);
+        setPasteToPlaceProgressCardPreviewUrl(null);
+        setIsPasteToPlaceMenuIngesting(false);
+      }
       setPasteToPlaceMenuState({
         ...state,
         anchorX: state.anchorX ?? state.xNorm,
@@ -8947,8 +8988,8 @@ function EditorPageInner() {
       clearPasteEventClipboardImagePayload,
       clearPasteToPlaceMenuClipboardPreview,
       clearPasteToPlaceUrlCandidatePreview,
+      hasPendingPasteToPlaceCommit,
       isPasteToPlaceOperationActive,
-      isClipboardPasteToPlaceIngestPending,
       isDevSceneRebuildRunning,
       isRemoveMarkerTargeting,
       isRotateMarkerTargeting,
@@ -8966,7 +9007,8 @@ function EditorPageInner() {
       clearClipboardPreview?: boolean;
       preserveAwaitingPasteSession?: boolean;
     }) => {
-      const clearPreview = options?.clearPreview ?? true;
+      const isCommittedOperationPending = hasPendingPasteToPlaceCommit();
+      const clearPreview = options?.clearPreview ?? !isCommittedOperationPending;
       const clearClipboardPreview = options?.clearClipboardPreview ?? true;
       const preserveAwaitingPasteSession = options?.preserveAwaitingPasteSession === true;
       setPasteToPlaceMenuState(null);
@@ -8988,6 +9030,7 @@ function EditorPageInner() {
       clearPasteToPlaceMenuClipboardPreview,
       clearPasteToPlaceUrlCandidatePreview,
       clearPasteToPlaceProgressPreview,
+      hasPendingPasteToPlaceCommit,
     ]
   );
 
@@ -9205,9 +9248,8 @@ function EditorPageInner() {
       pushSnack("Place here is unavailable for multi-selected My Furniture items.");
       return;
     }
-    const sourceSnapshot = activePasteSourceRef.current;
-    if (isClipboardPasteToPlaceIngestPending && sourceSnapshot?.type !== "my_furniture") {
-      pushSnack("Clipboard item is still preparing. Choose My Furniture while it finishes.");
+    if (hasPendingPasteToPlaceCommit()) {
+      pushSnack("Furniture is still saving. You can place it after this finishes.");
       return;
     }
     if (
@@ -9225,11 +9267,7 @@ function EditorPageInner() {
     }
 
     const awaitingOperationId = resolveAwaitingPasteToPlaceOperationIdForMenuAction();
-    const operationId =
-      awaitingOperationId ??
-      (isClipboardPasteToPlaceIngestPending && sourceSnapshot?.type === "my_furniture"
-        ? pasteToPlaceOperationIdRef.current || beginPasteToPlacePlacementOperation()
-        : beginPasteToPlacePlacementOperation());
+    const operationId = awaitingOperationId ?? beginPasteToPlacePlacementOperation();
     const pasteToPlaceControl = createPasteToPlaceJobControl(operationId);
     setActivePasteToPlaceJobControl(pasteToPlaceControl);
     const placementSnapshot = createPendingPasteToPlacePlacementSnapshot({
@@ -9238,10 +9276,12 @@ function EditorPageInner() {
       menuStateSnapshot,
       pasteToPlaceControl,
     });
+    const progressPreviewUrl = getPasteToPlaceProgressCardPreviewUrlFromSnapshot(placementSnapshot);
     const isOperationStale = (): boolean => !isPasteToPlaceOperationActive(operationId);
     try {
       if (isOperationStale()) return;
       setPasteToPlaceProgressCardState(menuStateSnapshot);
+      setPasteToPlaceProgressCardPreviewUrl(progressPreviewUrl);
       dismissPasteToPlaceMenu({
         clearPreview: false,
         clearClipboardPreview: false,
@@ -9278,10 +9318,11 @@ function EditorPageInner() {
     clearActivePasteToPlaceJobControlIfMatching,
     createPasteToPlaceJobControl,
     createPendingPasteToPlacePlacementSnapshot,
+    getPasteToPlaceProgressCardPreviewUrlFromSnapshot,
     clearPendingPasteToPlacePlacementSnapshot,
     dismissPasteToPlaceMenu,
     handlePasteToPlaceAdd,
-    isClipboardPasteToPlaceIngestPending,
+    hasPendingPasteToPlaceCommit,
     isBusy,
     isEditRunning,
     isAwaitingRefreshCopiedItem,
@@ -9321,9 +9362,8 @@ function EditorPageInner() {
       pushSnack("Swap item is unavailable for multi-selected My Furniture items.");
       return;
     }
-    const sourceSnapshot = activePasteSourceRef.current;
-    if (isClipboardPasteToPlaceIngestPending && sourceSnapshot?.type !== "my_furniture") {
-      pushSnack("Clipboard item is still preparing. Choose My Furniture while it finishes.");
+    if (hasPendingPasteToPlaceCommit()) {
+      pushSnack("Furniture is still saving. You can place it after this finishes.");
       return;
     }
     if (
@@ -9341,11 +9381,7 @@ function EditorPageInner() {
     }
 
     const awaitingOperationId = resolveAwaitingPasteToPlaceOperationIdForMenuAction();
-    const operationId =
-      awaitingOperationId ??
-      (isClipboardPasteToPlaceIngestPending && sourceSnapshot?.type === "my_furniture"
-        ? pasteToPlaceOperationIdRef.current || beginPasteToPlacePlacementOperation()
-        : beginPasteToPlacePlacementOperation());
+    const operationId = awaitingOperationId ?? beginPasteToPlacePlacementOperation();
     const pasteToPlaceControl = createPasteToPlaceJobControl(operationId);
     setActivePasteToPlaceJobControl(pasteToPlaceControl);
     const placementSnapshot = createPendingPasteToPlacePlacementSnapshot({
@@ -9354,10 +9390,12 @@ function EditorPageInner() {
       menuStateSnapshot,
       pasteToPlaceControl,
     });
+    const progressPreviewUrl = getPasteToPlaceProgressCardPreviewUrlFromSnapshot(placementSnapshot);
     const isOperationStale = (): boolean => !isPasteToPlaceOperationActive(operationId);
     try {
       if (isOperationStale()) return;
       setPasteToPlaceProgressCardState(menuStateSnapshot);
+      setPasteToPlaceProgressCardPreviewUrl(progressPreviewUrl);
       dismissPasteToPlaceMenu({
         clearPreview: false,
         clearClipboardPreview: false,
@@ -9395,9 +9433,10 @@ function EditorPageInner() {
     clearActivePasteToPlaceJobControlIfMatching,
     createPasteToPlaceJobControl,
     createPendingPasteToPlacePlacementSnapshot,
+    getPasteToPlaceProgressCardPreviewUrlFromSnapshot,
     clearPendingPasteToPlacePlacementSnapshot,
     dismissPasteToPlaceMenu,
-    isClipboardPasteToPlaceIngestPending,
+    hasPendingPasteToPlaceCommit,
     isBusy,
     isEditRunning,
     isAwaitingRefreshCopiedItem,
@@ -9497,13 +9536,8 @@ function EditorPageInner() {
     }
     const menuStateSnapshot = pasteToPlaceMenuState;
     const { xNorm, yNorm } = menuStateSnapshot;
-    const sourceSnapshot = activePasteSourceRef.current;
-    if (isClipboardPasteToPlaceIngestPending) {
-      if (sourceSnapshot?.type === "my_furniture") {
-        pushSnack("Choose Place here or Swap item while clipboard prep finishes.");
-      } else {
-        pushSnack("Clipboard item is still preparing. Choose My Furniture while it finishes.");
-      }
+    if (hasPendingPasteToPlaceCommit()) {
+      pushSnack("Furniture is still saving. You can place it after this finishes.");
       return;
     }
     if (!scene.baseImageUrl || isBusy || isEditRunning) {
@@ -9521,6 +9555,7 @@ function EditorPageInner() {
       menuStateSnapshot,
       pasteToPlaceControl,
     });
+    const progressPreviewUrl = getPasteToPlaceProgressCardPreviewUrlFromSnapshot(placementSnapshot);
     const isOperationStale = (context?: string): boolean => {
       void context;
       if (isPasteToPlaceOperationActive(operationId)) return false;
@@ -9530,6 +9565,7 @@ function EditorPageInner() {
     let settlingRequestId: string | null = null;
     try {
       setPasteToPlaceProgressCardState(menuStateSnapshot);
+      setPasteToPlaceProgressCardPreviewUrl(progressPreviewUrl);
       dismissPasteToPlaceMenu({
         clearPreview: false,
         clearClipboardPreview: false,
@@ -9597,8 +9633,9 @@ function EditorPageInner() {
     clearPendingPasteToPlacePlacementSnapshot,
     createPasteToPlaceJobControl,
     createPendingPasteToPlacePlacementSnapshot,
+    getPasteToPlaceProgressCardPreviewUrlFromSnapshot,
     dismissPasteToPlaceMenu,
-    isClipboardPasteToPlaceIngestPending,
+    hasPendingPasteToPlaceCommit,
     isBusy,
     isDevUnlockPasteToPlace,
     isEditRunning,
@@ -11540,13 +11577,9 @@ function EditorPageInner() {
                 pasteToPlaceProductDisplayName={productUrlPreparedDisplayName}
                 pasteToPlaceProductSupplier={productUrlPreparedSupplier}
                 pasteToPlaceProductSourceUrl={productUrlPreparedSourceUrl}
-                isPasteToPlaceMenuPreviewLoading={
-                  isPasteToPlaceMenuIngesting ||
-                  isPasteToPlaceMenuClipboardPreviewLoading ||
-                  isPasteToPlaceUrlCandidatePreviewLoading
-                }
+                isPasteToPlaceMenuPreviewLoading={isPasteToPlaceMenuPreviewLoading}
                 pasteToPlaceProgressCardState={pasteToPlaceProgressCardState}
-                pasteToPlaceProgressCardPreviewUrl={pasteToPlaceDisplayedPreviewUrl}
+                pasteToPlaceProgressCardPreviewUrl={pasteToPlaceProgressCardPreviewUrl}
                 isPasteToPlaceProgressCardLoading={
                   isPasteToPlaceMenuIngesting || Boolean(pasteToPlaceStatus)
                 }
@@ -11565,7 +11598,7 @@ function EditorPageInner() {
                 pasteToPlaceProductUrlInput={pasteToPlaceProductUrlInput}
                 onPasteToPlaceProductUrlInputChange={handlePasteToPlaceProductUrlInputChange}
                 onPasteToPlaceSubmitProductUrl={handlePasteToPlaceSubmitUrlInput}
-                isPasteToPlaceProductUrlPreparing={isPasteToPlaceMenuIngesting && pasteToPlaceStatus === "preparing"}
+                isPasteToPlaceProductUrlPreparing={isPasteToPlaceProductUrlPreparing}
                 onPasteToPlaceChooseSwap={handlePasteToPlaceSwap}
                 onPasteToPlaceChooseAutoPlace={handlePasteToPlaceAutoPlace}
                 onPasteToPlaceRefreshCopiedItem={refreshPasteToPlaceCopiedItem}

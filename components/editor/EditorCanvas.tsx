@@ -2655,7 +2655,6 @@ export function EditorCanvas({
         </div>
       )}
       {pasteToPlaceProgressCardState &&
-        !pasteToPlaceMenuState &&
         (pasteToPlaceProgressCardPreviewUrl || isPasteToPlaceProgressCardLoading) && (
           <div
             className={`pointer-events-none absolute z-30 ${
