@@ -96,7 +96,7 @@ export async function resolveProductUrlMetadata(
   };
 
   const resolvedDomain = resolveDomainFromUrl(resolvedUrl);
-  const adapters = resolveDomainAdaptersForHost(resolvedDomain);
+  const adapters = resolveDomainAdaptersForHost(resolvedDomain, normalizedSourceUrl);
   for (const adapter of adapters) {
     if (!adapter.extract) continue;
     const output = await adapter.extract({

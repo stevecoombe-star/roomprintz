@@ -2,6 +2,7 @@ import type {
   DomainAdapter,
   DomainAdapterExtractResult,
 } from "@/lib/productUrlMetadata/adapters/types";
+import { templeAndWebsterAdapter } from "@/lib/productUrlMetadata/adapters/templeAndWebster";
 import { normalizeHost } from "@/lib/productUrlMetadata/url";
 
 function hostMatchesDomain(host: string, domain: string): boolean {
@@ -19,9 +20,10 @@ function createNoopAdapter(id: string, domains: string[]): DomainAdapter {
 const ADAPTERS: DomainAdapter[] = [
   createNoopAdapter("crateandbarrel", ["crateandbarrel.com", "crateandbarrel.ca"]),
   createNoopAdapter("cb2", ["cb2.com", "cb2.ca"]),
+  templeAndWebsterAdapter,
 ];
 
-export function resolveDomainAdaptersForHost(host: string | null): DomainAdapter[] {
+export function resolveDomainAdaptersForHost(host: string | null, sourceUrl: string = ""): DomainAdapter[] {
   if (!host) return [];
   const normalized = normalizeHost(host);
   return ADAPTERS.filter((adapter) => {
@@ -31,7 +33,7 @@ export function resolveDomainAdaptersForHost(host: string | null): DomainAdapter
     return adapter.matches({
       host,
       normalizedHost: normalized,
-      sourceUrl: "",
+      sourceUrl,
     });
   });
 }
