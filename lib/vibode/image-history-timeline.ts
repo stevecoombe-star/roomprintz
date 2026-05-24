@@ -6,6 +6,7 @@ export type ImageHistoryTimelineVersion = {
   id: string;
   parentVersionId?: string | null;
   normalizedVersionKind?: ImageHistoryTimelineKind | null;
+  asset_type?: string | null;
   created_at?: string | null;
 };
 
@@ -52,12 +53,28 @@ export type ImageHistoryWorkflowGroupsResult<TVersion extends ImageHistoryTimeli
   };
 };
 
+type ImageHistoryWorkflowKind = "original" | "set" | "stage" | "style" | "unknown";
+
+function isOriginalVersion<TVersion extends ImageHistoryTimelineVersion>(version: TVersion): boolean {
+  return version.asset_type === "base";
+}
+
+function getWorkflowKind<TVersion extends ImageHistoryTimelineVersion>(
+  version: TVersion
+): ImageHistoryWorkflowKind {
+  if (isOriginalVersion(version)) return "original";
+  const kind = normalizeKind(version);
+  if (kind === "set" || kind === "stage" || kind === "style") return kind;
+  return "unknown";
+}
+
 function getTargetChildKindForActiveKind(
-  activeKind: ImageHistoryTimelineKind
+  activeKind: ImageHistoryWorkflowKind
 ): ImageHistoryTimelineKind | null {
-  if (activeKind === "unknown" || activeKind === "style") return null;
+  if (activeKind === "style" || activeKind === "unknown") return null;
   if (activeKind === "stage") return "style";
   if (activeKind === "set") return "stage";
+  if (activeKind === "original") return "set";
   return "set";
 }
 
@@ -262,15 +279,20 @@ export function getImageHistoryWorkflowGroups<TVersion extends ImageHistoryTimel
 
   const chain = [...timeline.ancestors, timeline.active];
   const root = chain[0] ?? timeline.active;
-  const activeKind = normalizeKind(timeline.active);
+  const activeWorkflowKind = getWorkflowKind(timeline.active);
   const setNode =
-    activeKind === "set" ? timeline.active : firstFromEnd(chain, (version) => normalizeKind(version) === "set");
+    activeWorkflowKind === "set"
+      ? timeline.active
+      : firstFromEnd(
+          chain,
+          (version) => !isOriginalVersion(version) && normalizeKind(version) === "set"
+        );
   const stageNode =
-    activeKind === "stage"
+    activeWorkflowKind === "stage"
       ? timeline.active
       : firstFromEnd(chain, (version) => normalizeKind(version) === "stage");
   const styleNode =
-    activeKind === "style"
+    activeWorkflowKind === "style"
       ? timeline.active
       : firstFromEnd(chain, (version) => normalizeKind(version) === "style");
 
@@ -320,14 +342,13 @@ export function getImageHistoryWorkflowGroups<TVersion extends ImageHistoryTimel
   });
   if (styleGroup) groups.push(styleGroup);
 
-  const directChildren = sortByCreatedAtAsc(childrenByParentId.get(timeline.active.id) ?? []);
-
   let groupedChildren: ImageHistoryChildSummaryGroup<TVersion>[] = [];
   let displayKind: ImageHistoryTimelineKind | null = null;
   let representative: TVersion | null = null;
   let isExpandable = false;
+  let totalChildren = 0;
 
-  const targetKind = getTargetChildKindForActiveKind(activeKind);
+  const targetKind = getTargetChildKindForActiveKind(activeWorkflowKind);
   if (targetKind === null) {
     const groupedChildrenAllKinds: ImageHistoryChildSummaryGroup<TVersion>[] = [
       { kind: "set", items: timeline.childrenByKind.set },
@@ -340,6 +361,7 @@ export function getImageHistoryWorkflowGroups<TVersion extends ImageHistoryTimel
       const visibleChildren = sortByCreatedAtAsc(groupedChildren.flatMap((entry) => entry.items));
       representative = visibleChildren.length > 0 ? visibleChildren[visibleChildren.length - 1] : null;
       isExpandable = groupedChildren.length > 1 || groupedChildren.some((entry) => entry.items.length > 1);
+      totalChildren = visibleChildren.length;
     }
   } else {
     displayKind = targetKind;
@@ -359,9 +381,8 @@ export function getImageHistoryWorkflowGroups<TVersion extends ImageHistoryTimel
     representative =
       sortedTargetChildren.length > 0 ? sortedTargetChildren[sortedTargetChildren.length - 1] : null;
     isExpandable = sortedTargetChildren.length > 1;
+    totalChildren = sortedTargetChildren.length;
   }
-
-  const totalChildren = directChildren.length;
 
   return {
     groups,

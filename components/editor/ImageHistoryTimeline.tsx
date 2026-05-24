@@ -8,6 +8,7 @@ import type { VibodeRoomAsset } from "@/stores/editorStore";
 type ImageHistoryTimelineProps = {
   activeVersionId: string | null;
   versions: VibodeRoomAsset[];
+  onSelectVersion?: (versionId: string) => void;
   className?: string;
 };
 
@@ -63,19 +64,24 @@ function TimelineVersionCard(props: {
   version: VibodeRoomAsset;
   isActive?: boolean;
   isRepresentative?: boolean;
+  onSelectVersion?: (versionId: string) => void;
 }) {
   const previewUrl = getPreviewUrl(props.version);
   const versionLabel = getVersionLabel(props.version);
-  return (
-    <div
-      className={`flex min-w-[52px] items-center justify-center gap-2 rounded-md border bg-neutral-950/60 px-1.5 py-1.5 ${
-        props.isActive
-          ? "border-sky-400/70 ring-1 ring-sky-400/50"
-          : props.isRepresentative
-            ? "border-neutral-500/80 ring-1 ring-neutral-400/55"
-          : "border-neutral-800"
-      }`}
-    >
+  const isClickable = typeof props.onSelectVersion === "function";
+  const cardClassName = `flex min-w-[52px] items-center justify-center gap-2 rounded-md border bg-neutral-950/60 px-1.5 py-1.5 transition ${
+    props.isActive
+      ? "border-sky-400/70 ring-1 ring-sky-400/50"
+      : props.isRepresentative
+        ? "border-neutral-500/80 ring-1 ring-neutral-400/55"
+      : "border-neutral-800"
+  } ${
+    isClickable
+      ? "cursor-pointer hover:border-neutral-600 hover:bg-neutral-900/70"
+      : ""
+  }`;
+  const cardContent = (
+    <>
       <div className="h-9 w-9 shrink-0 overflow-hidden rounded border border-neutral-800 bg-neutral-900">
         {previewUrl ? (
           <>
@@ -91,13 +97,29 @@ function TimelineVersionCard(props: {
           On canvas
         </div>
       ) : null}
-    </div>
+    </>
+  );
+
+  if (!isClickable) {
+    return <div className={cardClassName}>{cardContent}</div>;
+  }
+
+  return (
+    <button
+      type="button"
+      className={cardClassName}
+      onClick={() => props.onSelectVersion?.(props.version.id)}
+      aria-label={props.isActive ? `${versionLabel} (On canvas)` : versionLabel}
+    >
+      {cardContent}
+    </button>
   );
 }
 
 export function ImageHistoryTimeline({
   activeVersionId,
   versions,
+  onSelectVersion,
   className,
 }: ImageHistoryTimelineProps) {
   const timeline = useMemo(
@@ -136,9 +158,10 @@ export function ImageHistoryTimeline({
                     {group.isExpandable ? (
                       <button
                         type="button"
-                        onClick={() =>
+                        onClick={(event) => {
+                          event.stopPropagation();
                           setExpandedByKey((prev) => ({ ...prev, [group.key]: !prev[group.key] }))
-                        }
+                        }}
                         aria-label={expandedByKey[group.key] ? `Collapse ${group.label}` : `Expand ${group.label}`}
                         aria-expanded={expandedByKey[group.key] === true}
                         className="rounded border border-neutral-700 bg-neutral-900 px-1 text-[10px] text-neutral-300"
@@ -154,6 +177,7 @@ export function ImageHistoryTimeline({
                           key={`${group.key}-${version.id}`}
                           version={version}
                           isActive={version.id === timeline.active.id}
+                          onSelectVersion={onSelectVersion}
                           isRepresentative={
                             expandedByKey[group.key] === true &&
                             group.isExpandable &&
@@ -178,7 +202,10 @@ export function ImageHistoryTimeline({
                   {timeline.childSummary.isExpandable && timeline.childSummary.totalChildren > 0 ? (
                     <button
                       type="button"
-                      onClick={() => setExpandedByKey((prev) => ({ ...prev, children: !prev.children }))}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        setExpandedByKey((prev) => ({ ...prev, children: !prev.children }));
+                      }}
                       aria-label={isChildSummaryExpanded ? "Collapse direct children" : "Expand direct children"}
                       aria-expanded={isChildSummaryExpanded}
                       className="rounded border border-neutral-700 bg-neutral-900 px-1 text-[10px] text-neutral-300"
@@ -192,10 +219,15 @@ export function ImageHistoryTimeline({
                         key={`children-expanded-${version.id}`}
                         version={version}
                         isActive={version.id === timeline.active.id}
+                        onSelectVersion={onSelectVersion}
                       />
                     ))
                   ) : timeline.childSummary.representative ? (
-                    <TimelineVersionCard version={timeline.childSummary.representative} isActive={false} />
+                    <TimelineVersionCard
+                      version={timeline.childSummary.representative}
+                      isActive={false}
+                      onSelectVersion={onSelectVersion}
+                    />
                   ) : (
                     <div className="rounded border border-neutral-800 bg-neutral-900 px-2 py-1 text-[10px] text-neutral-500">
                       {formatChildZeroState(timeline.childSummary.displayKind)}

@@ -5462,6 +5462,17 @@ function EditorPageInner() {
       versions,
     ]
   );
+  const handleSelectVersionFromTimeline = useCallback(
+    (versionId: string) => {
+      const nextId = versionId.trim();
+      if (!nextId) return;
+      if (nextId === selectedVersionId) return;
+      const asset = versions.find((candidate) => candidate.id === nextId);
+      if (!asset) return;
+      handleSelectVersion(asset);
+    },
+    [handleSelectVersion, selectedVersionId, versions]
+  );
 
   const handleSetVersionAsBaseImage = useCallback(
     async (asset: EditorVersionWithKind) => {
@@ -12077,6 +12088,7 @@ function EditorPageInner() {
             className="w-[70vw] max-w-[1200px]"
             activeVersionId={selectedVersionId}
             versions={versions}
+            onSelectVersion={handleSelectVersionFromTimeline}
           />
           </div>
         </main>
