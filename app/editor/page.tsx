@@ -1441,6 +1441,9 @@ type VibodeRoomAssetHydrationRow = {
   model_version: string | null;
   is_active: boolean;
   metadata: Record<string, unknown> | null;
+  parentVersionId?: string | null;
+  lineageSource?: "generation_run" | "metadata" | "none" | null;
+  normalizedVersionKind?: VibodeVersionKind | null;
   created_at: string;
 };
 type VibodeEditorWorkspaceSnapshot = {
@@ -1994,6 +1997,23 @@ function normalizeRoomAssetForStore(row: VibodeRoomAssetHydrationRow): VibodeRoo
     model_version: row.model_version,
     is_active: row.is_active === true,
     metadata: row.metadata ?? {},
+    parentVersionId:
+      typeof row.parentVersionId === "string" && row.parentVersionId.trim().length > 0
+        ? row.parentVersionId
+        : null,
+    lineageSource:
+      row.lineageSource === "generation_run" ||
+      row.lineageSource === "metadata" ||
+      row.lineageSource === "none"
+        ? row.lineageSource
+        : "none",
+    normalizedVersionKind:
+      row.normalizedVersionKind === "set" ||
+      row.normalizedVersionKind === "stage" ||
+      row.normalizedVersionKind === "style" ||
+      row.normalizedVersionKind === "unknown"
+        ? row.normalizedVersionKind
+        : getVibodeVersionKind(row),
     created_at: row.created_at,
   };
 }

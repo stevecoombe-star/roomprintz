@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { resolveActiveSetVersionId } from "@/lib/vibode/active-set";
+import { buildRoomVersionLineageGraph } from "@/lib/vibode/version-lineage";
 
 export const runtime = "nodejs";
 
@@ -41,6 +42,12 @@ type RoomAssetRow = {
   model_version: string | null;
   is_active: boolean | null;
   metadata: Record<string, unknown> | null;
+  created_at: string | null;
+};
+
+type GenerationRunRow = {
+  output_asset_id: string | null;
+  source_asset_id: string | null;
   created_at: string | null;
 };
 
@@ -227,9 +234,33 @@ export async function POST(req: NextRequest) {
       return jsonError("Failed to load room versions.", 500);
     }
 
+    const { data: generationRunRows, error: generationRunsErr } = await userSupabase
+      .from("vibode_generation_runs")
+      .select("output_asset_id,source_asset_id,created_at")
+      .eq("room_id", room.id)
+      .eq("user_id", userId)
+      .not("output_asset_id", "is", null)
+      .order("created_at", { ascending: false });
+    if (generationRunsErr) {
+      console.error("[vibode/room-versions] generation run lookup failed:", generationRunsErr);
+      return jsonError("Failed to load room versions.", 500);
+    }
+
+    const typedAssetRows = (assetRows ?? []) as RoomAssetRow[];
+    const lineageGraph = buildRoomVersionLineageGraph(
+      typedAssetRows.map((asset) => ({
+        id: asset.id,
+        metadata: asset.metadata ?? {},
+      })),
+      ((generationRunRows ?? []) as GenerationRunRow[]).map((run) => ({
+        output_asset_id: run.output_asset_id,
+        source_asset_id: run.source_asset_id,
+      }))
+    );
+
     const adminSupabase = getAdminSupabaseClient();
     const versions = await Promise.all(
-      ((assetRows ?? []) as RoomAssetRow[]).map(async (asset) => {
+      typedAssetRows.map(async (asset) => {
         const imageUrl = await resolveAssetPreviewUrl(asset, adminSupabase);
         const thumbnailPreviewUrl = await resolveAssetThumbnailPreviewUrl(asset, adminSupabase);
         return {
@@ -249,6 +280,10 @@ export async function POST(req: NextRequest) {
           model_version: asset.model_version,
           is_active: asset.is_active === true,
           metadata: asset.metadata ?? {},
+          parentVersionId: lineageGraph.parentByVersionId.get(asset.id) ?? null,
+          lineageSource: lineageGraph.lineageSourceByVersionId.get(asset.id) ?? "none",
+          normalizedVersionKind:
+            lineageGraph.normalizedVersionKindByVersionId.get(asset.id) ?? "unknown",
           created_at: asset.created_at ?? "",
         };
       })
@@ -256,7 +291,7 @@ export async function POST(req: NextRequest) {
 
     const activeSetVersionId = resolveActiveSetVersionId({
       roomMetadata: room.metadata,
-      versions: assetRows ?? [],
+      versions: typedAssetRows,
       baseAssetId: room.base_asset_id,
       activeAssetId: room.active_asset_id,
     });
