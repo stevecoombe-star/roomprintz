@@ -9,6 +9,9 @@ const PLACEMENT_IMAGE_SIGNED_URL_EXPIRES_IN_SEC = Math.max(
   60,
   Number(process.env.VIBODE_PREVIEW_SIGNED_URL_EXPIRES_IN ?? 60 * 60 * 8)
 );
+const ENABLE_TIMELINE_DERIVED_BASE = ["1", "true", "yes", "on"].includes(
+  (process.env.VIBODE_TIMELINE_DERIVED_BASE_ENABLED ?? "").trim().toLowerCase()
+);
 const ENABLE_TIMELINE_DERIVED_BASE_AUDIT = ["1", "true", "yes", "on"].includes(
   (process.env.VIBODE_TIMELINE_DERIVED_BASE_AUDIT ?? "").trim().toLowerCase()
 );
@@ -153,6 +156,10 @@ export type SceneRebuildPayload = {
 export type SceneBaseImageResolutionStrategy =
   | "active_set"
   | "canonical_room_upload"
+  | "timeline_selected_original"
+  | "timeline_selected_set"
+  | "timeline_nearest_set_ancestor"
+  | "timeline_nearest_original_ancestor"
   | "source_version_image"
   | "fallback_version_image"
   | "unknown";
@@ -340,7 +347,7 @@ async function fetchRoomAssetsForBaseResolution(args: {
   return (data ?? []) as RoomBaseResolutionAssetRow[];
 }
 
-async function fetchGenerationRunEdgesForLineageAudit(args: {
+async function fetchGenerationRunEdgesForLineage(args: {
   supabase: AnySupabaseClient;
   roomId: string;
   userId: string;
@@ -356,6 +363,15 @@ async function fetchGenerationRunEdgesForLineageAudit(args: {
     throw new Error(`[vibode] failed to load lineage edges for timeline base audit: ${error.message}`);
   }
   return (data ?? []) as GenerationRunEdgeRow[];
+}
+
+function mapTimelineStrategyToSceneBaseStrategy(
+  strategy: "selected_original" | "selected_set" | "nearest_set_ancestor" | "nearest_original_ancestor"
+): SceneBaseImageResolutionStrategy {
+  if (strategy === "selected_original") return "timeline_selected_original";
+  if (strategy === "selected_set") return "timeline_selected_set";
+  if (strategy === "nearest_set_ancestor") return "timeline_nearest_set_ancestor";
+  return "timeline_nearest_original_ancestor";
 }
 
 function normalizeUsableImageUrl(value: unknown): string | null {
@@ -613,89 +629,213 @@ export async function buildSceneRebuildPayload(
     room,
     roomAssets,
   });
-  if (ENABLE_TIMELINE_DERIVED_BASE_AUDIT) {
-    const selectedVersionId = safeStr(args.versionId);
-    if (selectedVersionId) {
-      try {
-        const generationRunEdges = await fetchGenerationRunEdgesForLineageAudit({
+  const selectedVersionId = safeStr(args.versionId);
+  let timelineDerivedBaseResult:
+    | ReturnType<typeof resolveTimelineDerivedBaseVersionId>
+    | null = null;
+  let timelineLineageError: string | null = null;
+  let timelineBaseAsset:
+    | (RoomBaseResolutionAssetRow & { resolvedImageUrl: string })
+    | null = null;
+  if (selectedVersionId && (ENABLE_TIMELINE_DERIVED_BASE_AUDIT || ENABLE_TIMELINE_DERIVED_BASE)) {
+    try {
+      const generationRunEdges = await fetchGenerationRunEdgesForLineage({
+        supabase: args.supabase,
+        roomId: args.roomId,
+        userId: args.userId,
+      });
+      const lineageGraph = buildRoomVersionLineageGraph(
+        roomAssets.map((asset) => ({
+          id: asset.id,
+          metadata: asset.metadata ?? {},
+        })),
+        generationRunEdges.map((edge) => ({
+          output_asset_id: edge.output_asset_id,
+          source_asset_id: edge.source_asset_id,
+        }))
+      );
+      timelineDerivedBaseResult = resolveTimelineDerivedBaseVersionId({
+        versions: roomAssets.map((asset) => ({
+          id: asset.id,
+          parentVersionId: lineageGraph.parentByVersionId.get(asset.id) ?? null,
+          normalizedVersionKind: lineageGraph.normalizedVersionKindByVersionId.get(asset.id) ?? "unknown",
+          asset_type: asset.asset_type,
+        })),
+        selectedVersionId,
+      });
+    } catch (err) {
+      timelineLineageError = err instanceof Error ? err.message : String(err);
+    }
+  }
+
+  let effectiveResolvedBaseImage = resolvedBaseImage;
+  let timelineDerivedFallbackReason: string | null = null;
+  if (ENABLE_TIMELINE_DERIVED_BASE && selectedVersionId) {
+    if (timelineLineageError) {
+      timelineDerivedFallbackReason = "lineage_build_failed";
+      console.warn("[TimelineDerivedBaseEnabled]", {
+        roomId: args.roomId,
+        selectedVersionId,
+        resolvedBaseVersionId: safeStr(effectiveResolvedBaseImage.assetId),
+        timelineStrategy: null,
+        fallbackUsed: true,
+        fallbackReason: timelineDerivedFallbackReason,
+        baseStrategyUsed: effectiveResolvedBaseImage.resolutionStrategy,
+      });
+    } else if (!timelineDerivedBaseResult) {
+      timelineDerivedFallbackReason = "timeline_resolution_missing";
+      console.warn("[TimelineDerivedBaseEnabled]", {
+        roomId: args.roomId,
+        selectedVersionId,
+        resolvedBaseVersionId: safeStr(effectiveResolvedBaseImage.assetId),
+        timelineStrategy: null,
+        fallbackUsed: true,
+        fallbackReason: timelineDerivedFallbackReason,
+        baseStrategyUsed: effectiveResolvedBaseImage.resolutionStrategy,
+      });
+    } else if (!timelineDerivedBaseResult.ok) {
+      timelineDerivedFallbackReason = timelineDerivedBaseResult.reason;
+      console.warn("[TimelineDerivedBaseEnabled]", {
+        roomId: args.roomId,
+        selectedVersionId,
+        resolvedBaseVersionId: safeStr(effectiveResolvedBaseImage.assetId),
+        timelineStrategy: null,
+        fallbackUsed: true,
+        fallbackReason: timelineDerivedFallbackReason,
+        baseStrategyUsed: effectiveResolvedBaseImage.resolutionStrategy,
+      });
+    } else {
+      const matchingAsset =
+        roomAssets.find((asset) => asset.id === timelineDerivedBaseResult.baseVersionId) ?? null;
+      if (!matchingAsset) {
+        timelineDerivedFallbackReason = "timeline_base_asset_not_found";
+        console.warn("[TimelineDerivedBaseEnabled]", {
+          roomId: args.roomId,
+          selectedVersionId,
+          resolvedBaseVersionId: safeStr(effectiveResolvedBaseImage.assetId),
+          timelineStrategy: timelineDerivedBaseResult.strategy,
+          fallbackUsed: true,
+          fallbackReason: timelineDerivedFallbackReason,
+          baseStrategyUsed: effectiveResolvedBaseImage.resolutionStrategy,
+        });
+      } else {
+        const resolvedImageUrl = await resolveAssetImageUrlForBaseImage({
           supabase: args.supabase,
-          roomId: args.roomId,
-          userId: args.userId,
+          signingSupabase: args.signingSupabase,
+          asset: matchingAsset,
         });
-        const lineageGraph = buildRoomVersionLineageGraph(
-          roomAssets.map((asset) => ({
-            id: asset.id,
-            metadata: asset.metadata ?? {},
-          })),
-          generationRunEdges.map((edge) => ({
-            output_asset_id: edge.output_asset_id,
-            source_asset_id: edge.source_asset_id,
-          }))
-        );
-        const timelineDerivedBase = resolveTimelineDerivedBaseVersionId({
-          versions: roomAssets.map((asset) => ({
-            id: asset.id,
-            parentVersionId: lineageGraph.parentByVersionId.get(asset.id) ?? null,
-            normalizedVersionKind: lineageGraph.normalizedVersionKindByVersionId.get(asset.id) ?? "unknown",
-            asset_type: asset.asset_type,
-          })),
-          selectedVersionId,
-        });
-
-        const currentBaseVersionId = safeStr(resolvedBaseImage.assetId);
-        const hasSelectedVersion = roomAssets.some((asset) => asset.id === selectedVersionId);
-        const canCompareVersionIds = Boolean(currentBaseVersionId && timelineDerivedBase.ok);
-        const matchesCurrentBaseVersionId =
-          canCompareVersionIds && timelineDerivedBase.ok
-            ? timelineDerivedBase.baseVersionId === currentBaseVersionId
-            : false;
-        const wouldChangeBaseVersion =
-          canCompareVersionIds && timelineDerivedBase.ok
-            ? timelineDerivedBase.baseVersionId !== currentBaseVersionId
-            : false;
-        const comparisonInconclusiveReason =
-          !hasSelectedVersion
-            ? "selected_version_missing_from_room_assets"
-            : !currentBaseVersionId
-              ? "current_base_version_id_unavailable"
-              : !timelineDerivedBase.ok
-                ? `timeline_resolver_${timelineDerivedBase.reason}`
-                : null;
-        const logPayload = {
-          roomId: args.roomId,
-          selectedVersionId,
-          currentBaseVersionId,
-          currentBaseStrategy: resolvedBaseImage.resolutionStrategy,
-          timelineBaseVersionId: timelineDerivedBase.ok ? timelineDerivedBase.baseVersionId : null,
-          timelineStrategy: timelineDerivedBase.ok ? timelineDerivedBase.strategy : null,
-          timelineReason: timelineDerivedBase.ok ? null : timelineDerivedBase.reason,
-          ancestorPath: timelineDerivedBase.ancestorPath,
-          matchesCurrentBaseVersionId,
-          wouldChangeBaseVersion,
-          ...(comparisonInconclusiveReason ? { comparisonInconclusiveReason } : {}),
-        };
-
-        if (!hasSelectedVersion || comparisonInconclusiveReason || !timelineDerivedBase.ok) {
-          console.warn("[TimelineDerivedBaseAudit]", logPayload);
+        if (!resolvedImageUrl) {
+          timelineDerivedFallbackReason = "timeline_base_image_url_unavailable";
+          console.warn("[TimelineDerivedBaseEnabled]", {
+            roomId: args.roomId,
+            selectedVersionId,
+            resolvedBaseVersionId: safeStr(effectiveResolvedBaseImage.assetId),
+            timelineStrategy: timelineDerivedBaseResult.strategy,
+            fallbackUsed: true,
+            fallbackReason: timelineDerivedFallbackReason,
+            baseStrategyUsed: effectiveResolvedBaseImage.resolutionStrategy,
+          });
         } else {
-          console.info("[TimelineDerivedBaseAudit]", logPayload);
+          timelineBaseAsset = {
+            ...matchingAsset,
+            resolvedImageUrl,
+          };
+          effectiveResolvedBaseImage = {
+            ...effectiveResolvedBaseImage,
+            assetId: timelineBaseAsset.id,
+            imageUrl: timelineBaseAsset.resolvedImageUrl,
+            storagePath: timelineBaseAsset.storage_path,
+            resolutionStrategy: mapTimelineStrategyToSceneBaseStrategy(timelineDerivedBaseResult.strategy),
+          };
+          console.info("[TimelineDerivedBaseEnabled]", {
+            roomId: args.roomId,
+            selectedVersionId,
+            resolvedBaseVersionId: timelineBaseAsset.id,
+            timelineStrategy: timelineDerivedBaseResult.strategy,
+            fallbackUsed: false,
+            fallbackReason: null,
+            baseStrategyUsed: effectiveResolvedBaseImage.resolutionStrategy,
+          });
         }
-      } catch (err) {
-        console.warn("[TimelineDerivedBaseAudit]", {
-          roomId: args.roomId,
-          selectedVersionId,
-          currentBaseVersionId: safeStr(resolvedBaseImage.assetId),
-          currentBaseStrategy: resolvedBaseImage.resolutionStrategy,
-          timelineReason: "audit_error",
-          matchesCurrentBaseVersionId: false,
-          wouldChangeBaseVersion: false,
-          comparisonInconclusiveReason: err instanceof Error ? err.message : String(err),
-        });
       }
     }
   }
-  const fallbackImageUrlUsed = resolvedBaseImage.resolutionStrategy === "fallback_version_image";
-  const baseImageUrl = resolvedBaseImage.imageUrl ?? "";
+
+  if (ENABLE_TIMELINE_DERIVED_BASE_AUDIT && selectedVersionId) {
+    if (timelineLineageError) {
+      console.warn("[TimelineDerivedBaseAudit]", {
+        roomId: args.roomId,
+        selectedVersionId,
+        currentBaseVersionId: safeStr(resolvedBaseImage.assetId),
+        currentBaseStrategy: resolvedBaseImage.resolutionStrategy,
+        timelineReason: "audit_error",
+        matchesCurrentBaseVersionId: false,
+        wouldChangeBaseVersion: false,
+        comparisonInconclusiveReason: timelineLineageError,
+      });
+    } else if (!timelineDerivedBaseResult) {
+      console.warn("[TimelineDerivedBaseAudit]", {
+        roomId: args.roomId,
+        selectedVersionId,
+        currentBaseVersionId: safeStr(resolvedBaseImage.assetId),
+        currentBaseStrategy: resolvedBaseImage.resolutionStrategy,
+        timelineReason: "audit_error",
+        matchesCurrentBaseVersionId: false,
+        wouldChangeBaseVersion: false,
+        comparisonInconclusiveReason: "timeline_resolution_missing",
+      });
+    } else {
+      const currentBaseVersionId = safeStr(resolvedBaseImage.assetId);
+      const hasSelectedVersion = roomAssets.some((asset) => asset.id === selectedVersionId);
+      const canCompareVersionIds = Boolean(currentBaseVersionId && timelineDerivedBaseResult.ok);
+      const matchesCurrentBaseVersionId =
+        canCompareVersionIds && timelineDerivedBaseResult.ok
+          ? timelineDerivedBaseResult.baseVersionId === currentBaseVersionId
+          : false;
+      const wouldChangeBaseVersion =
+        canCompareVersionIds && timelineDerivedBaseResult.ok
+          ? timelineDerivedBaseResult.baseVersionId !== currentBaseVersionId
+          : false;
+      const comparisonInconclusiveReason =
+        !hasSelectedVersion
+          ? "selected_version_missing_from_room_assets"
+          : !currentBaseVersionId
+            ? "current_base_version_id_unavailable"
+            : !timelineDerivedBaseResult.ok
+              ? `timeline_resolver_${timelineDerivedBaseResult.reason}`
+              : null;
+      const logPayload = {
+        roomId: args.roomId,
+        selectedVersionId,
+        currentBaseVersionId,
+        currentBaseStrategy: resolvedBaseImage.resolutionStrategy,
+        timelineBaseVersionId: timelineDerivedBaseResult.ok ? timelineDerivedBaseResult.baseVersionId : null,
+        timelineStrategy: timelineDerivedBaseResult.ok ? timelineDerivedBaseResult.strategy : null,
+        timelineReason: timelineDerivedBaseResult.ok ? null : timelineDerivedBaseResult.reason,
+        ancestorPath: timelineDerivedBaseResult.ancestorPath,
+        matchesCurrentBaseVersionId,
+        wouldChangeBaseVersion,
+        ...(comparisonInconclusiveReason ? { comparisonInconclusiveReason } : {}),
+      };
+
+      if (!hasSelectedVersion || comparisonInconclusiveReason || !timelineDerivedBaseResult.ok) {
+        console.warn("[TimelineDerivedBaseAudit]", logPayload);
+      } else {
+        console.info("[TimelineDerivedBaseAudit]", logPayload);
+      }
+    }
+  }
+
+  const fallbackImageUrlUsed = effectiveResolvedBaseImage.resolutionStrategy === "fallback_version_image";
+  const baseImageUrl = effectiveResolvedBaseImage.imageUrl ?? "";
+  const effectiveBaseVersionId =
+    ENABLE_TIMELINE_DERIVED_BASE && timelineDerivedBaseResult?.ok && timelineBaseAsset
+      ? timelineDerivedBaseResult.baseVersionId
+      : room.base_version_id;
+  const effectiveBaseStoragePath =
+    ENABLE_TIMELINE_DERIVED_BASE && timelineBaseAsset
+      ? timelineBaseAsset.storage_path
+      : room.base_storage_path;
 
   if (baseImageUrl.length === 0) {
     throw new Error("[vibode] missing base image url for rebuild payload");
@@ -745,9 +885,9 @@ export async function buildSceneRebuildPayload(
       activeSetAssetFound: resolvedBaseImage.activeSetAssetFound,
       activeSetAssetImageUrlPresent: resolvedBaseImage.activeSetAssetImageUrlPresent,
       baseImageUrl,
-      baseStoragePath: room.base_storage_path,
-      baseVersionId: room.base_version_id,
-      effectiveBaseImageStrategy: resolvedBaseImage.resolutionStrategy,
+      baseStoragePath: effectiveBaseStoragePath,
+      baseVersionId: effectiveBaseVersionId,
+      effectiveBaseImageStrategy: effectiveResolvedBaseImage.resolutionStrategy,
       fallbackImageUrlUsed,
     },
     placements,
