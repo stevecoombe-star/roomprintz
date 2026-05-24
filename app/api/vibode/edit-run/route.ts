@@ -1,7 +1,7 @@
 import { NextRequest } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import type { SupabaseClient } from "@supabase/supabase-js";
-import { getVibodeRoomById } from "@/lib/vibodePersistence";
+import { createVibodeGenerationRun, getVibodeRoomById } from "@/lib/vibodePersistence";
 import {
   buildVibodeCompositorContextHeaders,
   resolveVibodeOperationIdFromHeaders,
@@ -701,6 +701,7 @@ export async function POST(req: NextRequest) {
       ? (payloadForCompositor.params as Record<string, unknown>)
       : {};
     const sourceVersionId = safeStr(requestParamsRecord.sourceVersionId);
+    const lineageSourceAssetId = sourceVersionId ?? existingRoom?.active_asset_id ?? null;
     const guidanceManifest = isRecord(requestParamsRecord.guidanceManifest)
       ? requestParamsRecord.guidanceManifest
       : null;
@@ -742,6 +743,39 @@ export async function POST(req: NextRequest) {
     });
     if (finalization.assetFinalizationError) {
       console.error("[vibode/edit-run] persistence failed (non-blocking):", finalization.assetFinalizationError);
+    }
+    if (
+      persistenceSupabase &&
+      persistenceRoomId &&
+      persistenceUserId &&
+      finalization.outputAssetId
+    ) {
+      try {
+        await createVibodeGenerationRun(persistenceSupabase, {
+          room_id: persistenceRoomId,
+          user_id: persistenceUserId,
+          run_type: "edit",
+          stage_number: requestedStageNumber ?? roomStageForPersistence,
+          source_asset_id: lineageSourceAssetId,
+          output_asset_id: finalization.outputAssetId,
+          model_version: modelVersion,
+          status: "completed",
+          request_payload: {
+            action,
+            source_asset_id: lineageSourceAssetId,
+            source_version_id: sourceVersionId,
+            stage_number: requestedStageNumber ?? roomStageForPersistence,
+            guided_remove: isGuidedRemoveRequest,
+          },
+          response_payload: {
+            output_asset_id: finalization.outputAssetId,
+            output_image_url: finalization.imageUrl ?? responseImageUrl,
+          },
+          completed_at: new Date().toISOString(),
+        });
+      } catch (generationRunErr) {
+        console.warn("[vibode/edit-run] generation run logging failed (non-blocking):", generationRunErr);
+      }
     }
     if (!isPasteToPlaceJobActive()) {
       console.info("[vibode/edit-run] dropping finalized response before return (paste-to-place stale/cancelled)", {
