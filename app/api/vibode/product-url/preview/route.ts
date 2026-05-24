@@ -136,7 +136,7 @@ export async function POST(req: NextRequest) {
         {
           ok: false,
           code: "product_url_blocked_or_unreadable",
-          error: "We couldn't prepare that product link. Try copying the product image instead.",
+          error: "We couldn’t preview this product link. Copy the product image instead.",
           requestId,
         },
         { status: 422 }
@@ -148,7 +148,7 @@ export async function POST(req: NextRequest) {
         {
           ok: false,
           code: "product_url_blocked_or_unreadable",
-          error: "We couldn't prepare that product link. Try copying the product image instead.",
+          error: "We couldn’t preview this product link. Copy the product image instead.",
           requestId,
         },
         { status: 422 }
@@ -167,7 +167,7 @@ export async function POST(req: NextRequest) {
         {
           ok: false,
           code: "product_url_blocked_or_unreadable",
-          error: "We couldn't prepare that product link. Try copying the product image instead.",
+          error: "We couldn’t preview this product link. Copy the product image instead.",
           requestId,
         },
         { status: 422 }
@@ -205,7 +205,7 @@ export async function POST(req: NextRequest) {
       {
         ok: false,
         code: "product_url_blocked_or_unreadable",
-        error: "We couldn't prepare that product link. Try copying the product image instead.",
+        error: "We couldn’t preview this product link. Copy the product image instead.",
         requestId,
       },
       { status: 422 }

@@ -74,7 +74,7 @@ const VIBODE_EDITOR_WORKSPACE_KEY = "vibode:editor-workspace:v1";
 const VIBODE_EDITOR_WORKSPACE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 const VIBODE_MODEL_NBP = "NBP";
 const VIBODE_MODEL_NB2 = "NB2";
-const ROOM_PREPARING_MESSAGE = "Your room is still preparing. Try again in a moment.";
+const ROOM_PREPARING_MESSAGE = "Your room is still getting ready. Try again in a moment.";
 const REMOVE_LABEL_FALLBACK = "object";
 const REMOVE_LABEL_PLACEHOLDER = "";
 const PASTE_TO_PLACE_CANCEL_SETTLE_MS = 20000;
@@ -2887,7 +2887,7 @@ function EditorPageInner() {
     if (activeRun.stageNumber === 4) {
       setStage4RunningAction(null);
     }
-    pushSnack("Generation cancelled.");
+    pushSnack("Placement cancelled.");
   }, [invalidateStageRunOperation, pushSnack, startStageRunCancelCooldown]);
   const markPasteToPlaceClipboardHeadsUpShown = useCallback(() => {
     setHasShownPasteToPlaceClipboardHeadsUp(true);
@@ -3380,7 +3380,7 @@ function EditorPageInner() {
     clearPendingPasteToPlacePlacementSnapshot();
     clearAwaitingPasteToPlaceSession();
     clearPasteEventClipboardImagePayload();
-    pushSnack("Generation cancelled.");
+    pushSnack("Placement cancelled.");
     setIsPasteToPlaceCancelling(false);
   }, [
     clearAwaitingPasteToPlaceSession,
@@ -3478,7 +3478,7 @@ function EditorPageInner() {
           if (!canLoadImage) {
             setPasteToPlaceUrlCandidatePreview(null);
             if (showFailureSnack) {
-              pushSnack("We couldn't load that copied image address. Try copying the product image instead.");
+              pushSnack("We couldn’t load this image link. Copy the product image instead.");
             }
             return null;
           }
@@ -3519,7 +3519,7 @@ function EditorPageInner() {
         if (!res.ok || payload.ok !== true) {
           setPasteToPlaceUrlCandidatePreview(null);
           if (showFailureSnack) {
-            pushSnack("We couldn't prepare that product link. Try copying the product image instead.");
+            pushSnack("We couldn’t preview this product link. Copy the product image instead.");
           }
           return null;
         }
@@ -3534,7 +3534,7 @@ function EditorPageInner() {
         if (!previewImageUrl) {
           setPasteToPlaceUrlCandidatePreview(null);
           if (showFailureSnack) {
-            pushSnack("We couldn't prepare that product link. Try copying the product image instead.");
+            pushSnack("We couldn’t preview this product link. Copy the product image instead.");
           }
           return null;
         }
@@ -3562,7 +3562,7 @@ function EditorPageInner() {
         if (typeof operationId === "number" && !isPasteToPlaceOperationActive(operationId)) return null;
         setPasteToPlaceUrlCandidatePreview(null);
         if (showFailureSnack) {
-          pushSnack("We couldn't prepare that product link. Try copying the product image instead.");
+          pushSnack("We couldn’t preview this product link. Copy the product image instead.");
         }
         return null;
       } finally {
@@ -4902,10 +4902,10 @@ function EditorPageInner() {
     ? awaitingPasteToPlaceSessionUiState.reason === "refresh_copied_item"
       ? isRefreshClipboardCandidateReady
         ? null
-        : "Press ⌘V to refresh copied item."
+        : "Copied something new? Press ⌘V to refresh preview."
       : awaitingPasteToPlaceSessionUiState.reason === "clipboard_access_unavailable"
-        ? "Clipboard access is blocked. Press ⌘V to paste instead."
-        : "Press ⌘V to paste furniture image."
+        ? "Clipboard preview is off. Press ⌘V to paste."
+        : "Press ⌘V to paste your copied image."
     : null;
   const productUrlPreparedDisplayName =
     activePasteSource?.type === "product_url" ? activePasteSource.displayName : null;
@@ -4966,7 +4966,7 @@ function EditorPageInner() {
         }
       }
       if (!clipboardImageFile) {
-        pushSnack("Clipboard did not contain an image. Copy a furniture image and press ⌘V.");
+        pushSnack("No image found. Copy a product image, then press ⌘V.");
         clearAwaitingPasteToPlaceSession(activeSession.operationId);
         clearPasteEventClipboardImagePayload(activeSession.operationId);
         return;
@@ -4975,7 +4975,7 @@ function EditorPageInner() {
       void (async () => {
         const clipboardDataUrl = await blobToDataUrl(clipboardImageFile);
         if (!clipboardDataUrl || !clipboardDataUrl.startsWith("data:image/")) {
-          pushSnack("Clipboard image could not be read. Copy the image again and press ⌘V.");
+          pushSnack("We couldn’t read that image. Copy it again, then press ⌘V.");
           clearAwaitingPasteToPlaceSession(activeSession.operationId);
           clearPasteEventClipboardImagePayload(activeSession.operationId);
           return;
@@ -5005,11 +5005,11 @@ function EditorPageInner() {
             reason: "refresh_copied_item",
             createdAt: activeSession.createdAt,
           });
-          pushSnack("Copied item refreshed.");
+          pushSnack("Preview refreshed.");
           return;
         }
         setIsPasteToPlaceMenuIngesting(false);
-        pushSnack("Pasted image ready. Choose Place here or Swap item.");
+        pushSnack("Preview ready. Choose Place here or Swap item.");
       })();
     };
     window.addEventListener("paste", onWindowPaste);
@@ -7642,7 +7642,7 @@ function EditorPageInner() {
       }
       if (!hasShownPasteToPlaceClipboardHeadsUp) {
         pushSnack(
-          "Paste-to-Place needs clipboard access to read your copied product image. If your browser asks, click Allow."
+          "For instant preview, allow clipboard access when your browser asks."
         );
         markPasteToPlaceClipboardHeadsUpShown();
       }
@@ -7664,8 +7664,8 @@ function EditorPageInner() {
         setPasteToPlaceStatus(null);
         pushSnack(
           awaitingSessionReason === "clipboard_access_unavailable"
-            ? "Clipboard access is blocked. Press ⌘V to paste instead."
-            : "Press ⌘V to paste furniture image."
+            ? "Clipboard preview is off. Press ⌘V to paste."
+            : "Press ⌘V to paste your copied image."
         );
         return { status: "failed", reason: "awaiting-paste-operation-mismatch" };
       }
@@ -7673,8 +7673,8 @@ function EditorPageInner() {
         setPasteToPlaceStatus(null);
         pushSnack(
           awaitingSessionReason === "clipboard_access_unavailable"
-            ? "Clipboard access is blocked. Press ⌘V to paste instead."
-            : "Press ⌘V to paste furniture image."
+            ? "Clipboard preview is off. Press ⌘V to paste."
+            : "Press ⌘V to paste your copied image."
         );
         return { status: "no-image" };
       }
@@ -7699,8 +7699,8 @@ function EditorPageInner() {
           if (now - lastPasteToPlaceClipboardSnackAtRef.current > 3000) {
             pushSnack(
               clipboardReadResult.status === "access-unavailable"
-                ? "Clipboard access was blocked or unavailable. Allow access and try again."
-                : "Couldn't read copied image. Try copying it again."
+                ? "Clipboard preview is unavailable. Press ⌘V, or allow clipboard access and try again."
+                : "We couldn’t read that copied image. Copy it again and retry."
             );
             lastPasteToPlaceClipboardSnackAtRef.current = now;
           }
@@ -7760,7 +7760,7 @@ function EditorPageInner() {
       }
       if (!ingested) {
         pushSnack(
-          "Couldn't isolate the copied product clearly. Try copying a cleaner product image."
+          "We couldn’t use that image yet. Try copying a clear product image."
         );
         setPasteToPlaceStatus(null);
         return { status: "failed", reason: "clipboard-sku-ingest-failed" };
@@ -7854,7 +7854,7 @@ function EditorPageInner() {
     if (isPasteToPlaceRefreshInteractionLocked) return;
     if (isRefreshingCopiedItemRef.current) return;
     if (hasPendingPasteToPlaceCommit()) {
-      pushSnack("Furniture is still saving. You can place it after this finishes.");
+      pushSnack("Refresh is available after saving finishes.");
       return;
     }
     isRefreshingCopiedItemRef.current = true;
@@ -7892,7 +7892,7 @@ function EditorPageInner() {
             if (urlCandidate) {
               setPendingMyFurnitureReturnPreviewUrl(null);
               clearPasteToPlaceActiveSource("refresh_copied_item_url_preview_ready");
-              pushSnack("Copied item refreshed.");
+              pushSnack("Preview refreshed.");
               return;
             }
             return;
@@ -7902,7 +7902,7 @@ function EditorPageInner() {
           setPasteToPlaceStatus(null);
           setIsPasteToPlaceMenuIngesting(false);
         }
-        pushSnack("Clipboard did not contain a furniture image or product link. Copy one and try again.");
+        pushSnack("No product image or link found. Copy one, then refresh.");
         return;
       }
       const clipboardDataUrl = await blobToDataUrl(clipboardReadResult.image.blob);
@@ -7934,7 +7934,7 @@ function EditorPageInner() {
       setPasteToPlaceMenuClipboardPreviewUrl(clipboardDataUrl);
       setIsPasteToPlaceMenuClipboardPreviewLoading(false);
       clearPasteToPlaceActiveSource("refresh_copied_item_preview_ready");
-      pushSnack("Copied item refreshed.");
+      pushSnack("Preview refreshed.");
     } finally {
       isRefreshingCopiedItemRef.current = false;
       setIsRefreshingCopiedItem(false);
@@ -7985,7 +7985,7 @@ function EditorPageInner() {
       const classified = classifyPasteToPlaceUrl(imageUrl);
       if (!classified || classified.kind !== "direct_image_url") {
         if (!isOperationStale()) {
-          pushSnack("We couldn't load that copied image address. Try copying the product image instead.");
+          pushSnack("We couldn’t load this image link. Copy the product image instead.");
         }
         return null;
       }
@@ -8006,7 +8006,7 @@ function EditorPageInner() {
         });
         if (isOperationStale()) return null;
         if (!ingested) {
-          pushSnack("We couldn't load that copied image address. Try copying the product image instead.");
+          pushSnack("We couldn’t load this image link. Copy the product image instead.");
           return null;
         }
         const normalizedPreviewUrl =
@@ -8014,7 +8014,7 @@ function EditorPageInner() {
             (candidate): candidate is string => typeof candidate === "string" && candidate.trim().length > 0
           ) ?? null;
         if (!normalizedPreviewUrl) {
-          pushSnack("We couldn't load that copied image address. Try copying the product image instead.");
+          pushSnack("We couldn’t load this image link. Copy the product image instead.");
           return null;
         }
         const domain = getDomainFromUrl(classified.normalizedUrl);
@@ -8069,11 +8069,11 @@ function EditorPageInner() {
         clearPasteToPlaceMenuClipboardPreview();
         clearPasteToPlaceUrlCandidatePreview();
         setPasteToPlaceProductUrlInput("");
-        pushSnack("Image link ready. Click in your room to place it.");
+        pushSnack("Image link ready. Click where you want to place it.");
         return nextSource;
       } catch {
         if (!isOperationStale()) {
-          pushSnack("We couldn't load that copied image address. Try copying the product image instead.");
+          pushSnack("We couldn’t load this image link. Copy the product image instead.");
         }
         return null;
       } finally {
@@ -8106,7 +8106,7 @@ function EditorPageInner() {
       const normalizedUrl = normalizeLikelyUrl(options?.sourceUrl ?? pasteToPlaceProductUrlInput);
       if (!normalizedUrl) {
         if (!isOperationStale()) {
-          pushSnack("Paste a valid product URL first.");
+          pushSnack("Paste a product link to continue.");
         }
         return null;
       }
@@ -8142,7 +8142,7 @@ function EditorPageInner() {
         if (!res.ok) {
           if (!isOperationStale()) {
             pushSnack(
-              "We couldn't prepare that product link. Try copying the product image instead."
+              "We couldn’t preview this product link. Copy the product image instead."
             );
           }
           return null;
@@ -8162,7 +8162,7 @@ function EditorPageInner() {
         if (!userSkuId || !normalizedPreviewUrl) {
           if (!isOperationStale()) {
             pushSnack(
-              "We couldn't prepare that product link. Try copying the product image instead."
+              "We couldn’t preview this product link. Copy the product image instead."
             );
           }
           return null;
@@ -8243,12 +8243,12 @@ function EditorPageInner() {
         clearPasteToPlaceMenuClipboardPreview();
         clearPasteToPlaceUrlCandidatePreview();
         setPasteToPlaceProductUrlInput("");
-        pushSnack("Product link ready. Click in your room to place it.");
+        pushSnack("Product link ready. Click where you want to place it.");
         return nextSource;
       } catch {
         if (!isOperationStale()) {
           pushSnack(
-            "We couldn't prepare that product link. Try copying the product image instead."
+            "We couldn’t preview this product link. Copy the product image instead."
           );
         }
         return null;
@@ -8395,12 +8395,12 @@ function EditorPageInner() {
 
   const handlePasteToPlaceSubmitUrlInput = useCallback(() => {
     if (hasPendingPasteToPlaceCommit()) {
-      pushSnack("Furniture is still saving. You can place it after this finishes.");
+      pushSnack("Product links are available after saving finishes.");
       return;
     }
     const classified = classifyPasteToPlaceUrl(pasteToPlaceProductUrlInput);
     if (!classified) {
-      pushSnack("Paste a valid product URL first.");
+      pushSnack("Paste a product link to continue.");
       return;
     }
     if (classified.kind === "direct_image_url") {
@@ -8913,7 +8913,7 @@ function EditorPageInner() {
           ? preparedResult.source
           : snapshotForOperation?.sourceAtCommit ?? activePasteSourceRef.current;
       if (!resolvedSource) {
-        pushSnack("Copy a product image, paste a product link, or choose an item from My Furniture first.");
+        pushSnack("Start by copying a product image or link, or choose from My Furniture.");
         finalizePasteToPlaceCommitOperation({
           operationId: resolvedOperationId,
           pasteToPlaceControl: resolvedPasteToPlaceControl,
@@ -9020,7 +9020,7 @@ function EditorPageInner() {
           if (persistedFurnitureId) {
             savedFurnitureId = persistedFurnitureId;
           } else {
-            pushSnack("Placed successfully, but we couldn't save it to My Furniture.");
+            pushSnack("Placed successfully. We couldn’t save it to My Furniture this time.");
           }
         }
         if (savedFurnitureId) {
@@ -9098,7 +9098,7 @@ function EditorPageInner() {
         return;
       }
       if (isDevSceneRebuildRunning) {
-        pushSnack("Room update is still running. You can place furniture after this finishes.");
+        pushSnack("Room update is still running. Paste-to-Place will be ready in a moment.");
         return;
       }
       if (isPasteToPlaceSettling) {
@@ -9452,8 +9452,8 @@ function EditorPageInner() {
     if (isPasteToPlaceRefreshInteractionLocked || isRefreshingCopiedItemRef.current) {
       pushSnack(
         isAwaitingRefreshCopiedItem
-          ? "Press ⌘V to finish refreshing copied item."
-          : "Refreshing copied item. Try again in a moment."
+          ? "Press ⌘V to finish refreshing your preview."
+          : "Refreshing your copied item. Try again in a moment."
       );
       return;
     }
@@ -9466,12 +9466,12 @@ function EditorPageInner() {
     }
     const menuStateSnapshot = pasteToPlaceMenuState;
     if (isMyFurnitureMultiPreparedSource) {
-      pushSnack("Place here is unavailable for multi-selected My Furniture items.");
+      pushSnack("Place here works with one selected item.");
       return;
     }
     const pendingCountAtStart = getPendingPasteToPlaceCommitCount();
     if (!canStartPasteToPlaceCommit({ mode: "place_here", pendingCount: pendingCountAtStart })) {
-      pushSnack("Furniture is still saving. You can place another after this finishes.");
+      pushSnack("Two items are saving. Wait for one to finish before placing another.");
       return;
     }
     if (
@@ -9527,7 +9527,7 @@ function EditorPageInner() {
             pasteToPlaceControl,
             clearUi: true,
           });
-          pushSnack("Furniture is still saving. You can place another after this finishes.");
+          pushSnack("Two items are saving. Wait for one to finish before placing another.");
           return;
         }
         if (
@@ -9543,7 +9543,7 @@ function EditorPageInner() {
             pasteToPlaceControl,
             clearUi: true,
           });
-          pushSnack("Furniture is still saving. You can place another after this finishes.");
+          pushSnack("One item is still saving. You can place one more copied image.");
           return;
         }
       }
@@ -9598,8 +9598,8 @@ function EditorPageInner() {
     if (isPasteToPlaceRefreshInteractionLocked || isRefreshingCopiedItemRef.current) {
       pushSnack(
         isAwaitingRefreshCopiedItem
-          ? "Press ⌘V to finish refreshing copied item."
-          : "Refreshing copied item. Try again in a moment."
+          ? "Press ⌘V to finish refreshing your preview."
+          : "Refreshing your copied item. Try again in a moment."
       );
       return;
     }
@@ -9612,11 +9612,11 @@ function EditorPageInner() {
     }
     const menuStateSnapshot = pasteToPlaceMenuState;
     if (isMyFurnitureMultiPreparedSource) {
-      pushSnack("Swap item is unavailable for multi-selected My Furniture items.");
+      pushSnack("Swap works with one selected item.");
       return;
     }
     if (hasPendingPasteToPlaceCommit()) {
-      pushSnack("Furniture is still saving. You can place another after this finishes.");
+      pushSnack("Swap is available after saving finishes.");
       return;
     }
     if (
@@ -9775,8 +9775,8 @@ function EditorPageInner() {
     if (isPasteToPlaceRefreshInteractionLocked || isRefreshingCopiedItemRef.current) {
       pushSnack(
         isAwaitingRefreshCopiedItem
-          ? "Press ⌘V to finish refreshing copied item."
-          : "Refreshing copied item. Try again in a moment."
+          ? "Press ⌘V to finish refreshing your preview."
+          : "Refreshing your copied item. Try again in a moment."
       );
       return;
     }
@@ -9790,7 +9790,7 @@ function EditorPageInner() {
     const menuStateSnapshot = pasteToPlaceMenuState;
     const { xNorm, yNorm } = menuStateSnapshot;
     if (hasPendingPasteToPlaceCommit()) {
-      pushSnack("Furniture is still saving. You can place another after this finishes.");
+      pushSnack("Let Vibode decide is available after saving finishes.");
       return;
     }
     if (!scene.baseImageUrl || isBusy || isEditRunning) {
@@ -9838,7 +9838,7 @@ function EditorPageInner() {
       const modelDecidedFurnitureCandidates =
         buildModelDecidedFurnitureCandidates(sourceForExecution);
       if (modelDecidedFurnitureCandidates.length === 0) {
-        pushSnack("Couldn't prepare furniture candidates for model-decided placement.");
+        pushSnack("Couldn’t decide placement right now. Try Place here or Swap item.");
         return;
       }
 
@@ -9849,7 +9849,7 @@ function EditorPageInner() {
       await handleDevRebuildActiveVersion({
         placementIntent: "model_decided",
         modelDecidedFurnitureCandidates,
-        successMessage: "Vibode decided placement.",
+        successMessage: "Vibode placed it for you.",
         signal: abortController.signal,
       });
       clearPasteToPlaceAbortController(abortController);
@@ -10085,7 +10085,7 @@ function EditorPageInner() {
         });
         closeMyFurniturePicker();
         pushSnack(
-          `${resolvedFurnitureIds.length} saved furniture items ready. Use Let Vibode decide placement.`
+          `${resolvedFurnitureIds.length} items ready. Use Let Vibode decide.`
         );
       } finally {
         setMyFurnitureSelectingIds([]);

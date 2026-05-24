@@ -96,8 +96,8 @@ type RemoveModeManualMarker = {
   createdAt?: number;
 };
 const PASTE_TO_PLACE_PROGRESS_COPY: Record<PasteToPlaceStatus, string> = {
-  reading: "Reading copied image...",
-  preparing: "Preparing product...",
+  reading: "Reading your copied image...",
+  preparing: "Getting it ready...",
   placing: "Placing it in your room...",
 };
 
@@ -435,6 +435,7 @@ export function EditorCanvas({
   onRemoveRemoveModeManualMarker?: (id: string) => void;
 }) {
   const instanceId = useId();
+  const pasteToPlaceHelpTooltipId = `${instanceId}-ptp-help-tooltip`;
   const outerShellRef = useRef<HTMLDivElement | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
 
@@ -2502,7 +2503,7 @@ export function EditorCanvas({
         <div className="pointer-events-none absolute bottom-4 left-1/2 z-20 -translate-x-1/2">
           <div className="flex items-center gap-2 rounded-full border border-white/15 bg-neutral-950/75 px-3 py-1.5 text-xs font-medium text-neutral-100 shadow-[0_8px_20px_rgba(0,0,0,0.35)] backdrop-blur-sm">
             <span className="h-3 w-3 animate-spin rounded-full border border-neutral-300/80 border-t-transparent" />
-            <span>Cancelling...</span>
+            <span>Cancelling... this may take a moment.</span>
           </div>
         </div>
       )}
@@ -2542,11 +2543,11 @@ export function EditorCanvas({
                   </div>
                 )}
                 {shouldShowRefreshCopiedItemButton && (
-                  <div className="absolute top-1.5 right-1.5 z-10" title="Refresh copied item">
+                  <div className="absolute top-1.5 right-1.5 z-10" title="Refresh preview">
                     <button
                       type="button"
-                      aria-label="Refresh copied item"
-                      title="Refresh copied item"
+                      aria-label="Refresh preview"
+                      title="Refresh preview"
                       className={`h-6 w-6 rounded-full border text-xs transition-colors ${
                         isPasteToPlaceActionLocked || isPasteToPlaceMenuPreviewLoading
                           ? "cursor-not-allowed border-white/15 bg-neutral-900/80 text-neutral-500"
@@ -2599,11 +2600,11 @@ export function EditorCanvas({
             {shouldRenderMyFurnitureMultiSelectPreview ? (
               <div className="relative mx-2 mt-2 mb-1 rounded-md border border-white/10 bg-neutral-900/70 px-3 py-2">
                 {shouldShowRefreshCopiedItemButton && (
-                  <div className="absolute top-1.5 right-1.5 z-10" title="Refresh copied item">
+                  <div className="absolute top-1.5 right-1.5 z-10" title="Refresh preview">
                     <button
                       type="button"
-                      aria-label="Refresh copied item"
-                      title="Refresh copied item"
+                      aria-label="Refresh preview"
+                      title="Refresh preview"
                       className={`h-6 w-6 rounded-full border text-xs transition-colors ${
                         isPasteToPlaceActionLocked || isPasteToPlaceMenuPreviewLoading
                           ? "cursor-not-allowed border-white/15 bg-neutral-900/80 text-neutral-500"
@@ -2653,7 +2654,7 @@ export function EditorCanvas({
                 {isPasteToPlaceMenuPreviewLoading && (
                   <div className="mt-2 flex items-center gap-2 text-[11px] text-neutral-400">
                     <span className="h-3 w-3 animate-spin rounded-full border border-neutral-100/70 border-t-transparent" />
-                    <span>Refreshing clipboard preview...</span>
+                    <span>Refreshing preview...</span>
                   </div>
                 )}
               </div>
@@ -2667,7 +2668,7 @@ export function EditorCanvas({
               onClick={onPasteToPlaceChoosePlaceHere}
               disabled={isPasteToPlaceMyFurnitureMultiSelect || isPasteToPlaceActionLocked}
             >
-              ✨ Place here
+              Place here
             </button>
             <button
               className={`px-3 py-2 text-left text-sm ${
@@ -2678,7 +2679,7 @@ export function EditorCanvas({
               onClick={onPasteToPlaceChooseSwap}
               disabled={isPasteToPlaceMyFurnitureMultiSelect || isPasteToPlaceActionLocked}
             >
-              🔁 Swap item
+              Swap item
             </button>
             <button
               className={`px-3 py-2 text-left text-sm ${
@@ -2689,14 +2690,40 @@ export function EditorCanvas({
               onClick={onPasteToPlaceChooseAutoPlace}
               disabled={isPasteToPlaceActionLocked}
             >
-              🎯 Let Vibode decide placement
+              Let Vibode decide
             </button>
             {isPasteToPlaceActionLocked && (
-              <div className="px-3 pb-2 text-[11px] text-neutral-400">Cancelling...</div>
+              <div className="px-3 pb-2 text-[11px] text-neutral-400">
+                Cancelling... this may take a moment.
+              </div>
             )}
             <div className="mx-2 my-1 h-px bg-white/10" />
             <div className="mx-3 mb-2 mt-1 text-[11px] text-neutral-400">
-              Copy a furniture image, paste a product link, or select from My Furniture.
+              <div className="inline-flex items-start gap-1.5">
+                <span>
+                  Copy a furniture image, paste a product link, or select from My Furniture. Then click
+                  where you want it.
+                </span>
+                <span className="group relative inline-flex shrink-0 items-center">
+                  <button
+                    type="button"
+                    aria-label="Paste-to-Place help"
+                    aria-describedby={pasteToPlaceHelpTooltipId}
+                    className="h-4 w-4 rounded-full border border-white/25 text-[10px] font-semibold leading-none text-neutral-300 transition hover:border-white/40 hover:text-white focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-blue-300/70"
+                  >
+                    ?
+                  </button>
+                  <span
+                    id={pasteToPlaceHelpTooltipId}
+                    role="tooltip"
+                    className="pointer-events-none absolute bottom-full right-0 z-40 mb-2 w-56 max-w-[min(16rem,calc(100vw-2rem))] rounded-md border border-white/15 bg-neutral-900/95 px-2.5 py-2 text-[10px] leading-relaxed text-neutral-200 opacity-0 shadow-lg transition-opacity duration-150 group-hover:opacity-100 group-focus-within:opacity-100"
+                  >
+                    Best in Chrome or Edge for instant preview. In Safari, or if clipboard preview is
+                    off, press ⌘V to paste. Copied furniture images are the most reliable. Product links
+                    work when retailers allow preview. You can upload furniture images in My Furniture area.
+                  </span>
+                </span>
+              </div>
             </div>
             <button
               className={`px-3 py-2 text-left text-sm hover:bg-white/10 ${
@@ -2705,7 +2732,7 @@ export function EditorCanvas({
               onClick={onPasteToPlaceChooseMyFurnitureAdd}
               disabled={isMyFurnitureLoading || !onPasteToPlaceChooseMyFurnitureAdd}
             >
-              {isMyFurnitureLoading ? "🪑 Loading My Furniture..." : "🪑 My Furniture"}
+              {isMyFurnitureLoading ? "Loading My Furniture..." : "My Furniture"}
             </button>
           </div>
         </div>
