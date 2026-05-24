@@ -120,6 +120,10 @@ function isFiniteNumber(n: unknown) {
   return typeof n === "number" && Number.isFinite(n);
 }
 
+function isEnabledEnvValue(value: string | undefined): boolean {
+  return ["1", "true", "yes", "on"].includes(String(value ?? "").trim().toLowerCase());
+}
+
 function getErrorMessage(error: unknown): string | null {
   if (error instanceof Error && typeof error.message === "string" && error.message.trim().length > 0) {
     return error.message;
@@ -2566,6 +2570,9 @@ function EditorPageInner() {
   const [isDownloading, setIsDownloading] = useState(false);
   const [isCanvasDragOver, setIsCanvasDragOver] = useState(false);
   const useFreezeV2 = process.env.NEXT_PUBLIC_VIBODE_FREEZE_V2 === "1";
+  const isTimelineDerivedBaseUiEnabled = isEnabledEnvValue(
+    process.env.NEXT_PUBLIC_VIBODE_TIMELINE_DERIVED_BASE_UI
+  );
   const devUnlockPasteToPlaceRaw = process.env.NEXT_PUBLIC_VIBODE_DEV_UNLOCK_PASTE_TO_PLACE;
   const isDevUnlockPasteToPlace =
     devUnlockPasteToPlaceRaw === "1" || devUnlockPasteToPlaceRaw?.toLowerCase() === "true";
@@ -11284,8 +11291,10 @@ function EditorPageInner() {
   const renderVersionRow = (asset: EditorVersionWithKind) => {
     const isActive = selectedVersionId === asset.id;
     const secondaryText = getVersionSecondaryLabel(asset);
-    const isBaseImage = asset.isActiveSetEligible && activeSetVersionId === asset.id;
-    const canSetAsBaseImage = asset.isActiveSetEligible && !isBaseImage;
+    const isBaseImage =
+      !isTimelineDerivedBaseUiEnabled && asset.isActiveSetEligible && activeSetVersionId === asset.id;
+    const canSetAsBaseImage =
+      !isTimelineDerivedBaseUiEnabled && asset.isActiveSetEligible && !isBaseImage;
     const versionPreviewUrl = getVersionPreviewUrl(asset) ?? "";
     const isDeleting = deletingVersionId === asset.id;
     const isSettingAsBaseImage = settingBaseImageVersionId === asset.id;
@@ -11472,7 +11481,9 @@ function EditorPageInner() {
     );
   };
   const activeBasePreviewVersion =
-    versionsWithKind.find((asset) => asset.id === activeSetVersionId) ?? originalVersion;
+    !isTimelineDerivedBaseUiEnabled
+      ? versionsWithKind.find((asset) => asset.id === activeSetVersionId) ?? originalVersion
+      : null;
   const activeCanvasKindLabel = selectedCanvasVersion
     ? resolveShelfForVersion(selectedCanvasVersion).toUpperCase()
     : null;
