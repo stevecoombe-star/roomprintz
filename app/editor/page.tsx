@@ -2695,6 +2695,24 @@ function EditorPageInner() {
     (operationId: number) => pendingPasteToPlaceCommitRegistryRef.current.has(operationId),
     []
   );
+  const getPendingPasteToPlaceCommitCount = useCallback(
+    () => pendingPasteToPlaceCommitRegistryRef.current.size,
+    []
+  );
+  const canStartPasteToPlaceCommit = useCallback(
+    (args: {
+      mode: PendingPasteToPlacePlacementSnapshot["mode"];
+      pendingCount: number;
+      sourceType?: NonNullable<ActivePasteSource>["type"];
+    }): boolean => {
+      if (args.pendingCount <= 0) return true;
+      if (args.pendingCount >= 2) return false;
+      if (args.mode !== "place_here") return false;
+      if (typeof args.sourceType === "undefined") return true;
+      return args.sourceType === "clipboard";
+    },
+    []
+  );
   const getPendingPasteToPlacePlacementSnapshotForOperation = useCallback(
     (operationId: number): PendingPasteToPlacePlacementSnapshot | null => {
       const contextSnapshot = getPendingPasteToPlaceCommitContext(operationId)?.snapshot ?? null;
@@ -3267,9 +3285,10 @@ function EditorPageInner() {
   const hasPendingPasteToPlaceCommit = useCallback(
     () =>
       Boolean(
+        getPendingPasteToPlaceCommitCount() > 0 ||
         activePasteToPlaceJobControlRef.current || activePasteToPlaceJobControlUiState
       ),
-    [activePasteToPlaceJobControlUiState]
+    [activePasteToPlaceJobControlUiState, getPendingPasteToPlaceCommitCount]
   );
   const clearPasteToPlaceAbortController = useCallback((controller?: AbortController | null) => {
     if (!controller) {
@@ -4840,34 +4859,12 @@ function EditorPageInner() {
     isPasteToPlaceMenuIngesting &&
     pasteToPlaceStatus === "preparing";
   const pasteToPlaceProgressOperations: PasteToPlaceProgressOperationView[] = (() => {
+    const contexts = Array.from(pendingPasteToPlaceCommitRegistryRef.current.values()).sort(
+      (left, right) => left.registeredAtMs - right.registeredAtMs
+    );
+    if (contexts.length === 0) return [];
     const isLoading = isPasteToPlaceMenuIngesting || Boolean(pasteToPlaceStatus);
-
-    const preferredOperationId = pendingPasteToPlacePlacementSnapshotRef.current?.operationId;
-    const activeJobControl =
-      activePasteToPlaceJobControlUiState ?? activePasteToPlaceJobControlRef.current ?? null;
-
-    let context: PendingPasteToPlaceCommitContext | null = null;
-    if (typeof preferredOperationId === "number") {
-      context = getPendingPasteToPlaceCommitContext(preferredOperationId);
-    }
-    if (!context && activeJobControl) {
-      for (const candidateContext of pendingPasteToPlaceCommitRegistryRef.current.values()) {
-        if (isSamePasteToPlaceJobControl(candidateContext.pasteToPlaceControl, activeJobControl)) {
-          context = candidateContext;
-          break;
-        }
-      }
-    }
-    if (!context) {
-      for (const candidateContext of pendingPasteToPlaceCommitRegistryRef.current.values()) {
-        context = candidateContext;
-        break;
-      }
-    }
-    if (!context) return [];
-
-    const previewUrl = getPasteToPlaceProgressCardPreviewUrlFromSnapshot(context.snapshot);
-    if (!previewUrl && !isLoading) return [];
+    const canCancel = contexts.length === 1 && hasPendingPasteToPlaceCommit();
 
     const status: PasteToPlaceProgressOperationView["status"] = isPasteToPlaceCancelling
       ? "cancelling"
@@ -4875,19 +4872,21 @@ function EditorPageInner() {
       ? "settling"
       : pasteToPlaceStatus;
 
-    return [
-      {
+    return contexts
+      .map((context) => ({
         operationId: context.operationId,
         anchor: context.progressAnchor,
-        previewUrl,
+        previewUrl: getPasteToPlaceProgressCardPreviewUrlFromSnapshot(context.snapshot),
         mode: context.snapshot.mode,
         status,
         isLoading,
         isCancelling: isPasteToPlaceCancelling,
-        canCancel: hasPendingPasteToPlaceCommit(),
-      },
-    ];
+        canCancel,
+      }))
+      .filter((operation) => Boolean(operation.previewUrl) || operation.isLoading);
   })();
+  const canShowSingletonPasteToPlaceCancel =
+    hasPendingPasteToPlaceCommit() && getPendingPasteToPlaceCommitCount() === 1;
   const isAwaitingRefreshCopiedItem =
     awaitingPasteToPlaceSessionUiState?.reason === "refresh_copied_item";
   const isRefreshClipboardCandidateReady = Boolean(
@@ -9109,9 +9108,7 @@ function EditorPageInner() {
         return;
       }
       const isCommittedOperationPending = hasPendingPasteToPlaceCommit();
-      const operationId = isCommittedOperationPending
-        ? pasteToPlaceOperationIdRef.current
-        : beginPasteToPlaceOperation();
+      const operationId = beginPasteToPlaceOperation();
       clearAwaitingPasteToPlaceSession();
       clearPasteEventClipboardImagePayload();
       if (!isCommittedOperationPending) {
@@ -9472,8 +9469,9 @@ function EditorPageInner() {
       pushSnack("Place here is unavailable for multi-selected My Furniture items.");
       return;
     }
-    if (hasPendingPasteToPlaceCommit()) {
-      pushSnack("Furniture is still saving. You can place it after this finishes.");
+    const pendingCountAtStart = getPendingPasteToPlaceCommitCount();
+    if (!canStartPasteToPlaceCommit({ mode: "place_here", pendingCount: pendingCountAtStart })) {
+      pushSnack("Furniture is still saving. You can place another after this finishes.");
       return;
     }
     if (
@@ -9490,7 +9488,8 @@ function EditorPageInner() {
       return;
     }
 
-    const awaitingOperationId = resolveAwaitingPasteToPlaceOperationIdForMenuAction();
+    const awaitingOperationId =
+      pendingCountAtStart > 0 ? null : resolveAwaitingPasteToPlaceOperationIdForMenuAction();
     const operationId = awaitingOperationId ?? beginPasteToPlacePlacementOperation();
     const pasteToPlaceControl = createPasteToPlaceJobControl(operationId);
     setActivePasteToPlaceJobControl(pasteToPlaceControl);
@@ -9520,6 +9519,34 @@ function EditorPageInner() {
         placementSnapshot,
       });
       if (isOperationStale()) return;
+      if (preparedResult.status === "ready") {
+        const pendingCountAfterPrepare = getPendingPasteToPlaceCommitCount();
+        if (pendingCountAfterPrepare > 2) {
+          finalizePasteToPlaceCommitOperation({
+            operationId,
+            pasteToPlaceControl,
+            clearUi: true,
+          });
+          pushSnack("Furniture is still saving. You can place another after this finishes.");
+          return;
+        }
+        if (
+          pendingCountAtStart > 0 &&
+          !canStartPasteToPlaceCommit({
+            mode: "place_here",
+            pendingCount: pendingCountAtStart,
+            sourceType: preparedResult.source.type,
+          })
+        ) {
+          finalizePasteToPlaceCommitOperation({
+            operationId,
+            pasteToPlaceControl,
+            clearUi: true,
+          });
+          pushSnack("Furniture is still saving. You can place another after this finishes.");
+          return;
+        }
+      }
       await handlePasteToPlaceAdd({
         xNorm,
         yNorm,
@@ -9542,11 +9569,13 @@ function EditorPageInner() {
     clearActivePasteToPlaceJobControlIfMatching,
     createPasteToPlaceJobControl,
     createPendingPasteToPlacePlacementSnapshot,
+    canStartPasteToPlaceCommit,
+    finalizePasteToPlaceCommitOperation,
+    getPendingPasteToPlaceCommitCount,
     getPasteToPlaceProgressCardPreviewUrlFromSnapshot,
     clearPendingPasteToPlacePlacementSnapshot,
     dismissPasteToPlaceMenu,
     handlePasteToPlaceAdd,
-    hasPendingPasteToPlaceCommit,
     isBusy,
     isEditRunning,
     isAwaitingRefreshCopiedItem,
@@ -9587,7 +9616,7 @@ function EditorPageInner() {
       return;
     }
     if (hasPendingPasteToPlaceCommit()) {
-      pushSnack("Furniture is still saving. You can place it after this finishes.");
+      pushSnack("Furniture is still saving. You can place another after this finishes.");
       return;
     }
     if (
@@ -9761,7 +9790,7 @@ function EditorPageInner() {
     const menuStateSnapshot = pasteToPlaceMenuState;
     const { xNorm, yNorm } = menuStateSnapshot;
     if (hasPendingPasteToPlaceCommit()) {
-      pushSnack("Furniture is still saving. You can place it after this finishes.");
+      pushSnack("Furniture is still saving. You can place another after this finishes.");
       return;
     }
     if (!scene.baseImageUrl || isBusy || isEditRunning) {
@@ -11810,7 +11839,7 @@ function EditorPageInner() {
                 }
                 pasteToPlaceProgressOperations={pasteToPlaceProgressOperations}
                 onCancelPasteToPlaceGeneration={
-                  hasPendingPasteToPlaceCommit() ? cancelPasteToPlaceGeneration : undefined
+                  canShowSingletonPasteToPlaceCancel ? cancelPasteToPlaceGeneration : undefined
                 }
                 isPasteToPlaceCancelling={isPasteToPlaceCancelling}
                 isPasteToPlaceSettling={isPasteToPlaceSettling}
