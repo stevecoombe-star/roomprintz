@@ -9,6 +9,7 @@ import {
   EditorCanvas,
   type PasteToPlaceProgressOperationView,
 } from "@/components/editor/EditorCanvas";
+import { ImageHistoryTimeline } from "@/components/editor/ImageHistoryTimeline";
 import {
   MyFurniturePicker,
   type MyFurniturePickerItem,
@@ -11719,6 +11720,7 @@ function EditorPageInner() {
       <div className="flex min-h-0 flex-1 w-full overflow-hidden">
         {/* Canvas area */}
         <main className="flex min-h-0 flex-1 items-center justify-center overflow-hidden bg-neutral-950">
+          <div className="flex w-full flex-col items-center justify-center gap-3 px-3">
           {/* OUTER: owns glow pseudo-elements (NO overflow-hidden) */}
           <div
             className="relative h-[70vh] w-[70vw] max-w-[1200px] rounded-lg precision-ring vibe-glow vibe-aura vibe-aura-animate"
@@ -12070,6 +12072,12 @@ function EditorPageInner() {
                 </div>
               </div>
             ) : null}
+          </div>
+          <ImageHistoryTimeline
+            className="w-[70vw] max-w-[1200px]"
+            activeVersionId={selectedVersionId}
+            versions={versions}
+          />
           </div>
         </main>
 
