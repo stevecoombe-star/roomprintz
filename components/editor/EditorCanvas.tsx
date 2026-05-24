@@ -1,7 +1,7 @@
 // components/editor/EditorCanvas.tsx
 "use client";
 
-import React, { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   Stage,
   Layer,
@@ -48,6 +48,16 @@ type PasteToPlaceMenuState = {
   anchorX?: number;
   anchorY?: number;
 } | null;
+export type PasteToPlaceProgressOperationView = {
+  operationId: number;
+  anchor: NonNullable<PasteToPlaceMenuState>;
+  previewUrl: string | null;
+  mode: "place_here" | "swap_item" | "auto_place";
+  status: PasteToPlaceStatus | "cancelling" | "settling" | null;
+  isLoading: boolean;
+  isCancelling: boolean;
+  canCancel: boolean;
+};
 type PlacementLayerNode = {
   id: string;
   thumbnailUrl: string | null;
@@ -86,8 +96,8 @@ type RemoveModeManualMarker = {
   createdAt?: number;
 };
 const PASTE_TO_PLACE_PROGRESS_COPY: Record<PasteToPlaceStatus, string> = {
-  reading: "Reading copied image...",
-  preparing: "Preparing product...",
+  reading: "Reading your copied image...",
+  preparing: "Getting it ready...",
   placing: "Placing it in your room...",
 };
 
@@ -309,6 +319,7 @@ export function EditorCanvas({
   pasteToPlaceProgressCardState = null,
   pasteToPlaceProgressCardPreviewUrl = null,
   isPasteToPlaceProgressCardLoading = false,
+  pasteToPlaceProgressOperations = [],
   onCancelPasteToPlaceGeneration,
   isPasteToPlaceCancelling = false,
   isPasteToPlaceSettling = false,
@@ -376,6 +387,7 @@ export function EditorCanvas({
   pasteToPlaceProgressCardState?: PasteToPlaceMenuState;
   pasteToPlaceProgressCardPreviewUrl?: string | null;
   isPasteToPlaceProgressCardLoading?: boolean;
+  pasteToPlaceProgressOperations?: PasteToPlaceProgressOperationView[];
   onCancelPasteToPlaceGeneration?: () => void;
   isPasteToPlaceCancelling?: boolean;
   isPasteToPlaceSettling?: boolean;
@@ -423,6 +435,7 @@ export function EditorCanvas({
   onRemoveRemoveModeManualMarker?: (id: string) => void;
 }) {
   const instanceId = useId();
+  const pasteToPlaceHelpTooltipId = `${instanceId}-ptp-help-tooltip`;
   const outerShellRef = useRef<HTMLDivElement | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
 
@@ -631,6 +644,50 @@ export function EditorCanvas({
     Boolean(pasteToPlaceMenuPreviewUrl) || shouldRenderMyFurnitureMultiSelectPreview;
   const isPasteToPlaceActionLocked =
     isPasteToPlaceSettling || isPasteToPlaceRefreshInteractionLocked;
+  const getPasteToPlaceProgressCardPositionForAnchor = useCallback(
+    (anchor: NonNullable<PasteToPlaceMenuState>) => {
+      if (viewport) {
+        const { anchorX, anchorY } = anchor;
+        if (
+          typeof anchorX === "number" &&
+          Number.isFinite(anchorX) &&
+          typeof anchorY === "number" &&
+          Number.isFinite(anchorY) &&
+          viewport.imageNaturalW > 0 &&
+          viewport.imageNaturalH > 0
+        ) {
+          const imgPt = {
+            x: clamp(anchorX, 0, 1) * viewport.imageNaturalW,
+            y: clamp(anchorY, 0, 1) * viewport.imageNaturalH,
+          };
+          const projectedAnchor = imageToStagePoint(imgPt, viewport);
+          return {
+            left: projectedAnchor.x,
+            top: projectedAnchor.y,
+            centerOnAnchor: true,
+          } as const;
+        }
+      }
+      const requestedLeft = anchor.anchorCssX + PASTE_TO_PLACE_MENU_OFFSET_PX;
+      const requestedTop = anchor.anchorCssY + PASTE_TO_PLACE_MENU_OFFSET_PX;
+      const maxLeft = Math.max(
+        PASTE_TO_PLACE_MENU_EDGE_GUTTER_PX,
+        stageSize.w - PASTE_TO_PLACE_MENU_ESTIMATED_WIDTH_PX - PASTE_TO_PLACE_MENU_EDGE_GUTTER_PX
+      );
+      const maxTop = Math.max(
+        PASTE_TO_PLACE_MENU_EDGE_GUTTER_PX,
+        stageSize.h -
+          PASTE_TO_PLACE_PROGRESS_CARD_ESTIMATED_HEIGHT_PX -
+          PASTE_TO_PLACE_MENU_EDGE_GUTTER_PX
+      );
+      return {
+        left: clamp(requestedLeft, PASTE_TO_PLACE_MENU_EDGE_GUTTER_PX, maxLeft),
+        top: clamp(requestedTop, PASTE_TO_PLACE_MENU_EDGE_GUTTER_PX, maxTop),
+        centerOnAnchor: false,
+      } as const;
+    },
+    [stageSize.h, stageSize.w, viewport]
+  );
   useLayoutEffect(() => {
     if (!pasteToPlaceMenuState) {
       const frameId = window.requestAnimationFrame(() => {
@@ -2446,7 +2503,7 @@ export function EditorCanvas({
         <div className="pointer-events-none absolute bottom-4 left-1/2 z-20 -translate-x-1/2">
           <div className="flex items-center gap-2 rounded-full border border-white/15 bg-neutral-950/75 px-3 py-1.5 text-xs font-medium text-neutral-100 shadow-[0_8px_20px_rgba(0,0,0,0.35)] backdrop-blur-sm">
             <span className="h-3 w-3 animate-spin rounded-full border border-neutral-300/80 border-t-transparent" />
-            <span>Cancelling...</span>
+            <span>Cancelling... this may take a moment.</span>
           </div>
         </div>
       )}
@@ -2486,11 +2543,11 @@ export function EditorCanvas({
                   </div>
                 )}
                 {shouldShowRefreshCopiedItemButton && (
-                  <div className="absolute top-1.5 right-1.5 z-10" title="Refresh copied item">
+                  <div className="absolute top-1.5 right-1.5 z-10" title="Refresh preview">
                     <button
                       type="button"
-                      aria-label="Refresh copied item"
-                      title="Refresh copied item"
+                      aria-label="Refresh preview"
+                      title="Refresh preview"
                       className={`h-6 w-6 rounded-full border text-xs transition-colors ${
                         isPasteToPlaceActionLocked || isPasteToPlaceMenuPreviewLoading
                           ? "cursor-not-allowed border-white/15 bg-neutral-900/80 text-neutral-500"
@@ -2543,11 +2600,11 @@ export function EditorCanvas({
             {shouldRenderMyFurnitureMultiSelectPreview ? (
               <div className="relative mx-2 mt-2 mb-1 rounded-md border border-white/10 bg-neutral-900/70 px-3 py-2">
                 {shouldShowRefreshCopiedItemButton && (
-                  <div className="absolute top-1.5 right-1.5 z-10" title="Refresh copied item">
+                  <div className="absolute top-1.5 right-1.5 z-10" title="Refresh preview">
                     <button
                       type="button"
-                      aria-label="Refresh copied item"
-                      title="Refresh copied item"
+                      aria-label="Refresh preview"
+                      title="Refresh preview"
                       className={`h-6 w-6 rounded-full border text-xs transition-colors ${
                         isPasteToPlaceActionLocked || isPasteToPlaceMenuPreviewLoading
                           ? "cursor-not-allowed border-white/15 bg-neutral-900/80 text-neutral-500"
@@ -2597,7 +2654,7 @@ export function EditorCanvas({
                 {isPasteToPlaceMenuPreviewLoading && (
                   <div className="mt-2 flex items-center gap-2 text-[11px] text-neutral-400">
                     <span className="h-3 w-3 animate-spin rounded-full border border-neutral-100/70 border-t-transparent" />
-                    <span>Refreshing clipboard preview...</span>
+                    <span>Refreshing preview...</span>
                   </div>
                 )}
               </div>
@@ -2611,7 +2668,7 @@ export function EditorCanvas({
               onClick={onPasteToPlaceChoosePlaceHere}
               disabled={isPasteToPlaceMyFurnitureMultiSelect || isPasteToPlaceActionLocked}
             >
-              ✨ Place here
+              Place here
             </button>
             <button
               className={`px-3 py-2 text-left text-sm ${
@@ -2622,7 +2679,7 @@ export function EditorCanvas({
               onClick={onPasteToPlaceChooseSwap}
               disabled={isPasteToPlaceMyFurnitureMultiSelect || isPasteToPlaceActionLocked}
             >
-              🔁 Swap item
+              Swap item
             </button>
             <button
               className={`px-3 py-2 text-left text-sm ${
@@ -2633,14 +2690,40 @@ export function EditorCanvas({
               onClick={onPasteToPlaceChooseAutoPlace}
               disabled={isPasteToPlaceActionLocked}
             >
-              🎯 Let Vibode decide placement
+              Let Vibode decide
             </button>
             {isPasteToPlaceActionLocked && (
-              <div className="px-3 pb-2 text-[11px] text-neutral-400">Cancelling...</div>
+              <div className="px-3 pb-2 text-[11px] text-neutral-400">
+                Cancelling... this may take a moment.
+              </div>
             )}
             <div className="mx-2 my-1 h-px bg-white/10" />
             <div className="mx-3 mb-2 mt-1 text-[11px] text-neutral-400">
-              Copy a furniture image, paste a product link, or select from My Furniture.
+              <div className="inline-flex items-start gap-1.5">
+                <span>
+                  Copy a furniture image, paste a product link, or select from My Furniture. Then click
+                  where you want it.
+                </span>
+                <span className="group relative inline-flex shrink-0 items-center">
+                  <button
+                    type="button"
+                    aria-label="Paste-to-Place help"
+                    aria-describedby={pasteToPlaceHelpTooltipId}
+                    className="h-4 w-4 rounded-full border border-white/25 text-[10px] font-semibold leading-none text-neutral-300 transition hover:border-white/40 hover:text-white focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-blue-300/70"
+                  >
+                    ?
+                  </button>
+                  <span
+                    id={pasteToPlaceHelpTooltipId}
+                    role="tooltip"
+                    className="pointer-events-none absolute bottom-full right-0 z-40 mb-2 w-56 max-w-[min(16rem,calc(100vw-2rem))] rounded-md border border-white/15 bg-neutral-900/95 px-2.5 py-2 text-[10px] leading-relaxed text-neutral-200 opacity-0 shadow-lg transition-opacity duration-150 group-hover:opacity-100 group-focus-within:opacity-100"
+                  >
+                    Best in Chrome or Edge for instant preview. In Safari, or if clipboard preview is
+                    off, press ⌘V to paste. Copied furniture images are the most reliable. Product links
+                    work when retailers allow preview. You can upload furniture images in My Furniture area.
+                  </span>
+                </span>
+              </div>
             </div>
             <button
               className={`px-3 py-2 text-left text-sm hover:bg-white/10 ${
@@ -2649,13 +2732,13 @@ export function EditorCanvas({
               onClick={onPasteToPlaceChooseMyFurnitureAdd}
               disabled={isMyFurnitureLoading || !onPasteToPlaceChooseMyFurnitureAdd}
             >
-              {isMyFurnitureLoading ? "🪑 Loading My Furniture..." : "🪑 My Furniture"}
+              {isMyFurnitureLoading ? "Loading My Furniture..." : "My Furniture"}
             </button>
           </div>
         </div>
       )}
       {pasteToPlaceProgressCardState &&
-        !pasteToPlaceMenuState &&
+        pasteToPlaceProgressOperations.length === 0 &&
         (pasteToPlaceProgressCardPreviewUrl || isPasteToPlaceProgressCardLoading) && (
           <div
             className={`pointer-events-none absolute z-30 ${
@@ -2689,9 +2772,82 @@ export function EditorCanvas({
                   </div>
                 )}
               </div>
+              {onCancelPasteToPlaceGeneration && (
+                <div className="mx-2 mb-2 flex justify-end">
+                  <button
+                    type="button"
+                    className={`pointer-events-auto rounded border px-2 py-0.5 text-[11px] font-medium transition ${
+                      isPasteToPlaceCancelling
+                        ? "cursor-not-allowed border-white/10 text-neutral-500"
+                        : "border-white/20 text-neutral-200 hover:border-white/35 hover:text-white"
+                    }`}
+                    onClick={onCancelPasteToPlaceGeneration}
+                    disabled={isPasteToPlaceCancelling}
+                  >
+                    {isPasteToPlaceCancelling ? "Cancelling..." : "Cancel"}
+                  </button>
+                </div>
+              )}
             </div>
           </div>
         )}
+      {pasteToPlaceProgressOperations.length > 0 &&
+        pasteToPlaceProgressOperations.map((operation) => {
+          if (!operation.previewUrl && !operation.isLoading) return null;
+          const progressCardPosition = getPasteToPlaceProgressCardPositionForAnchor(operation.anchor);
+          const canceling = operation.isCancelling || isPasteToPlaceCancelling;
+          return (
+            <div
+              key={operation.operationId}
+              className={`pointer-events-none absolute z-30 ${
+                progressCardPosition.centerOnAnchor ? "-translate-x-1/2 -translate-y-1/2" : ""
+              }`}
+              style={{
+                left: progressCardPosition.left,
+                top: progressCardPosition.top,
+              }}
+            >
+              <div className="flex flex-col rounded-lg border border-white/10 bg-neutral-950/85 shadow-lg backdrop-blur-sm">
+                <div className="relative mx-2 my-2 overflow-hidden rounded-md border border-white/10 bg-neutral-900/70">
+                  {operation.previewUrl ? (
+                    <>
+                      {/* eslint-disable-next-line @next/next/no-img-element -- progress card preview uses dynamic clipboard/runtime URLs */}
+                      <img
+                        src={operation.previewUrl}
+                        alt="Clipboard product preview"
+                        className="h-24 w-full max-w-[220px] object-contain"
+                        draggable={false}
+                      />
+                    </>
+                  ) : (
+                    <div className="h-24 w-[220px] bg-neutral-900/70" />
+                  )}
+                  {operation.isLoading && (
+                    <div className="absolute inset-0 flex items-center justify-center bg-neutral-950/35">
+                      <span className="h-4 w-4 animate-spin rounded-full border border-neutral-100/85 border-t-transparent" />
+                    </div>
+                  )}
+                </div>
+                {operation.canCancel && onCancelPasteToPlaceGeneration && (
+                  <div className="mx-2 mb-2 flex justify-end">
+                    <button
+                      type="button"
+                      className={`pointer-events-auto rounded border px-2 py-0.5 text-[11px] font-medium transition ${
+                        canceling
+                          ? "cursor-not-allowed border-white/10 text-neutral-500"
+                          : "border-white/20 text-neutral-200 hover:border-white/35 hover:text-white"
+                      }`}
+                      onClick={onCancelPasteToPlaceGeneration}
+                      disabled={canceling}
+                    >
+                      {canceling ? "Cancelling..." : "Cancel"}
+                    </button>
+                  </div>
+                )}
+              </div>
+            </div>
+          );
+        })}
 
       {/* Tiny HUD (temporary) */}
       <div className="pointer-events-none absolute left-3 top-3 flex flex-col gap-1 rounded bg-neutral-950/60 px-2 py-1 text-xs text-neutral-300">

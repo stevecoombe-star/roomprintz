@@ -751,7 +751,7 @@ export async function POST(req: NextRequest) {
           {
             requestId,
             code: "product_url_prepare_missing_user_sku_id",
-            error: "We couldn't prepare that product link. Try copying the product image instead.",
+            error: "We couldn’t preview this product link. Copy the product image instead.",
           },
           { status: 422 }
         );

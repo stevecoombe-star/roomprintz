@@ -56,7 +56,7 @@ export function MyFurniturePicker(props: MyFurniturePickerProps) {
             <div className="text-sm font-medium">My Furniture</div>
             <div className="text-xs text-neutral-400">
               {isAddMode
-                ? "Click a card to prepare instantly, or use checkboxes for multi-select."
+                ? "Click a card to use it now, or select multiple for Let Vibode decide."
                 : "Pick furniture to use in your room."}
             </div>
           </div>
@@ -76,7 +76,7 @@ export function MyFurniturePicker(props: MyFurniturePickerProps) {
             </div>
           ) : props.items.length === 0 ? (
             <div className="rounded-lg border border-dashed border-neutral-700 bg-neutral-900/60 p-6 text-sm text-neutral-400">
-              No saved furniture yet. Ingest an item first, then it will appear here.
+              No saved furniture yet. Save one from Paste-to-Place and it’ll appear here.
             </div>
           ) : (
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
@@ -141,7 +141,7 @@ export function MyFurniturePicker(props: MyFurniturePickerProps) {
                       </div>
                       {isAddMode ? (
                         <div className="mt-2 text-xs text-neutral-300">
-                          Click card to prepare now, or checkbox for multi-select
+                          Click to use now, or select multiple.
                         </div>
                       ) : null}
                       {isSelecting ? (
