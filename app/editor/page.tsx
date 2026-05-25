@@ -5349,7 +5349,7 @@ function EditorPageInner() {
   );
   const canDeleteVersions = versions.length > 1;
   const isVersionEligibleForFavourite = useCallback((asset: EditorVersionWithKind): boolean => {
-    return asset.versionKind === "stage" || asset.versionKind === "style";
+    return asset.versionKind === "set" || asset.versionKind === "stage" || asset.versionKind === "style";
   }, []);
   const isVersionFavourited = useCallback((asset: EditorVersionWithKind): boolean => {
     if (!isVersionEligibleForFavourite(asset)) return false;
@@ -5359,7 +5359,7 @@ function EditorPageInner() {
   const groupedVersionsForDisplay = useMemo(() => {
     if (!isFavouritesFilterOn) return groupedVersions;
     return {
-      set: groupedVersions.set,
+      set: groupedVersions.set.filter((version) => isVersionFavourited(version)),
       unknown: [] as EditorVersionWithKind[],
       stage: groupedVersions.stage.filter((version) => isVersionFavourited(version)),
       style: groupedVersions.style.filter((version) => isVersionFavourited(version)),
@@ -5367,6 +5367,7 @@ function EditorPageInner() {
   }, [groupedVersions, isFavouritesFilterOn, isVersionFavourited]);
   const isFavouritesFilterEmpty =
     isFavouritesFilterOn &&
+    groupedVersionsForDisplay.set.length === 0 &&
     groupedVersionsForDisplay.stage.length === 0 &&
     groupedVersionsForDisplay.style.length === 0;
 
@@ -12524,7 +12525,7 @@ function EditorPageInner() {
                     ) : null}
                     {isFavouritesFilterEmpty ? (
                       <div className="rounded-md border border-dashed border-neutral-800 bg-neutral-950 px-3 py-2 text-xs text-neutral-500">
-                        No favourite versions yet. Tap the heart on a STAGE or STYLE version to save it here.
+                        No favourite versions yet. Tap the heart on a SET, STAGE, or STYLE version to save it here.
                       </div>
                     ) : (
                       <>
@@ -12573,13 +12574,11 @@ function EditorPageInner() {
                         </div>
                       </button>
                     ) : null}
-                    {!isFavouritesFilterOn
-                      ? renderCollapsedVersionShelf({
-                          keyName: "set",
-                          label: "SET",
-                          versionsInShelf: groupedVersionsForDisplay.set,
-                        })
-                      : null}
+                    {renderCollapsedVersionShelf({
+                      keyName: "set",
+                      label: "SET",
+                      versionsInShelf: groupedVersionsForDisplay.set,
+                    })}
                     {!isFavouritesFilterOn
                       ? renderCollapsedVersionShelf({
                           keyName: "unknown",
