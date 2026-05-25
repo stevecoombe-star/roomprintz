@@ -9,6 +9,7 @@ import {
   EditorCanvas,
   type PasteToPlaceProgressOperationView,
 } from "@/components/editor/EditorCanvas";
+import { ImageHistoryTimeline } from "@/components/editor/ImageHistoryTimeline";
 import {
   MyFurniturePicker,
   type MyFurniturePickerItem,
@@ -117,6 +118,10 @@ function pickBundleIdFromSqft(sqft: number): RoomSizeBundleId {
 
 function isFiniteNumber(n: unknown) {
   return typeof n === "number" && Number.isFinite(n);
+}
+
+function isEnabledEnvValue(value: string | undefined): boolean {
+  return ["1", "true", "yes", "on"].includes(String(value ?? "").trim().toLowerCase());
 }
 
 function getErrorMessage(error: unknown): string | null {
@@ -1441,6 +1446,9 @@ type VibodeRoomAssetHydrationRow = {
   model_version: string | null;
   is_active: boolean;
   metadata: Record<string, unknown> | null;
+  parentVersionId?: string | null;
+  lineageSource?: "generation_run" | "metadata" | "none" | null;
+  normalizedVersionKind?: VibodeVersionKind | null;
   created_at: string;
 };
 type VibodeEditorWorkspaceSnapshot = {
@@ -1994,6 +2002,23 @@ function normalizeRoomAssetForStore(row: VibodeRoomAssetHydrationRow): VibodeRoo
     model_version: row.model_version,
     is_active: row.is_active === true,
     metadata: row.metadata ?? {},
+    parentVersionId:
+      typeof row.parentVersionId === "string" && row.parentVersionId.trim().length > 0
+        ? row.parentVersionId
+        : null,
+    lineageSource:
+      row.lineageSource === "generation_run" ||
+      row.lineageSource === "metadata" ||
+      row.lineageSource === "none"
+        ? row.lineageSource
+        : "none",
+    normalizedVersionKind:
+      row.normalizedVersionKind === "set" ||
+      row.normalizedVersionKind === "stage" ||
+      row.normalizedVersionKind === "style" ||
+      row.normalizedVersionKind === "unknown"
+        ? row.normalizedVersionKind
+        : getVibodeVersionKind(row),
     created_at: row.created_at,
   };
 }
@@ -2545,6 +2570,9 @@ function EditorPageInner() {
   const [isDownloading, setIsDownloading] = useState(false);
   const [isCanvasDragOver, setIsCanvasDragOver] = useState(false);
   const useFreezeV2 = process.env.NEXT_PUBLIC_VIBODE_FREEZE_V2 === "1";
+  const isTimelineDerivedBaseUiEnabled = isEnabledEnvValue(
+    process.env.NEXT_PUBLIC_VIBODE_TIMELINE_DERIVED_BASE_UI
+  );
   const devUnlockPasteToPlaceRaw = process.env.NEXT_PUBLIC_VIBODE_DEV_UNLOCK_PASTE_TO_PLACE;
   const isDevUnlockPasteToPlace =
     devUnlockPasteToPlaceRaw === "1" || devUnlockPasteToPlaceRaw?.toLowerCase() === "true";
@@ -5321,7 +5349,7 @@ function EditorPageInner() {
   );
   const canDeleteVersions = versions.length > 1;
   const isVersionEligibleForFavourite = useCallback((asset: EditorVersionWithKind): boolean => {
-    return asset.versionKind === "stage" || asset.versionKind === "style";
+    return asset.versionKind === "set" || asset.versionKind === "stage" || asset.versionKind === "style";
   }, []);
   const isVersionFavourited = useCallback((asset: EditorVersionWithKind): boolean => {
     if (!isVersionEligibleForFavourite(asset)) return false;
@@ -5331,7 +5359,7 @@ function EditorPageInner() {
   const groupedVersionsForDisplay = useMemo(() => {
     if (!isFavouritesFilterOn) return groupedVersions;
     return {
-      set: groupedVersions.set,
+      set: groupedVersions.set.filter((version) => isVersionFavourited(version)),
       unknown: [] as EditorVersionWithKind[],
       stage: groupedVersions.stage.filter((version) => isVersionFavourited(version)),
       style: groupedVersions.style.filter((version) => isVersionFavourited(version)),
@@ -5339,6 +5367,7 @@ function EditorPageInner() {
   }, [groupedVersions, isFavouritesFilterOn, isVersionFavourited]);
   const isFavouritesFilterEmpty =
     isFavouritesFilterOn &&
+    groupedVersionsForDisplay.set.length === 0 &&
     groupedVersionsForDisplay.stage.length === 0 &&
     groupedVersionsForDisplay.style.length === 0;
 
@@ -5440,6 +5469,17 @@ function EditorPageInner() {
       vibodeRoomId,
       versions,
     ]
+  );
+  const handleSelectVersionFromTimeline = useCallback(
+    (versionId: string) => {
+      const nextId = versionId.trim();
+      if (!nextId) return;
+      if (nextId === selectedVersionId) return;
+      const asset = versions.find((candidate) => candidate.id === nextId);
+      if (!asset) return;
+      handleSelectVersion(asset);
+    },
+    [handleSelectVersion, selectedVersionId, versions]
   );
 
   const handleSetVersionAsBaseImage = useCallback(
@@ -11241,19 +11281,42 @@ function EditorPageInner() {
     });
   }, []);
   const jumpToVersionViaAnchor = useCallback(
-    (asset: EditorVersionWithKind, forcedShelf?: "style" | "stage" | "set" | "unknown") => {
+    (
+      asset: EditorVersionWithKind,
+      forcedShelf?: "style" | "stage" | "set" | "unknown",
+      options?: { toggleIfAlreadyFocused?: boolean }
+    ) => {
       const shelf = forcedShelf ?? resolveShelfForVersion(asset);
+      const isOnlyFocusedShelfOpen =
+        versionShelfExpanded[shelf] &&
+        (shelf === "style" ? !versionShelfExpanded.stage && !versionShelfExpanded.set && !versionShelfExpanded.unknown : true) &&
+        (shelf === "stage" ? !versionShelfExpanded.style && !versionShelfExpanded.set && !versionShelfExpanded.unknown : true) &&
+        (shelf === "set" ? !versionShelfExpanded.style && !versionShelfExpanded.stage && !versionShelfExpanded.unknown : true) &&
+        (shelf === "unknown" ? !versionShelfExpanded.style && !versionShelfExpanded.stage && !versionShelfExpanded.set : true);
+
+      if (options?.toggleIfAlreadyFocused && isOnlyFocusedShelfOpen) {
+        setVersionShelfExpanded({
+          style: false,
+          stage: false,
+          set: false,
+          unknown: false,
+        });
+        return;
+      }
+
       expandOnlyVersionShelf(shelf);
       handleSelectVersion(asset);
       scrollToVersionRow(asset.id);
     },
-    [expandOnlyVersionShelf, handleSelectVersion, resolveShelfForVersion, scrollToVersionRow]
+    [expandOnlyVersionShelf, handleSelectVersion, resolveShelfForVersion, scrollToVersionRow, versionShelfExpanded]
   );
   const renderVersionRow = (asset: EditorVersionWithKind) => {
     const isActive = selectedVersionId === asset.id;
     const secondaryText = getVersionSecondaryLabel(asset);
-    const isBaseImage = asset.isActiveSetEligible && activeSetVersionId === asset.id;
-    const canSetAsBaseImage = asset.isActiveSetEligible && !isBaseImage;
+    const isBaseImage =
+      !isTimelineDerivedBaseUiEnabled && asset.isActiveSetEligible && activeSetVersionId === asset.id;
+    const canSetAsBaseImage =
+      !isTimelineDerivedBaseUiEnabled && asset.isActiveSetEligible && !isBaseImage;
     const versionPreviewUrl = getVersionPreviewUrl(asset) ?? "";
     const isDeleting = deletingVersionId === asset.id;
     const isSettingAsBaseImage = settingBaseImageVersionId === asset.id;
@@ -11440,7 +11503,9 @@ function EditorPageInner() {
     );
   };
   const activeBasePreviewVersion =
-    versionsWithKind.find((asset) => asset.id === activeSetVersionId) ?? originalVersion;
+    !isTimelineDerivedBaseUiEnabled
+      ? versionsWithKind.find((asset) => asset.id === activeSetVersionId) ?? originalVersion
+      : null;
   const activeCanvasKindLabel = selectedCanvasVersion
     ? resolveShelfForVersion(selectedCanvasVersion).toUpperCase()
     : null;
@@ -11699,6 +11764,7 @@ function EditorPageInner() {
       <div className="flex min-h-0 flex-1 w-full overflow-hidden">
         {/* Canvas area */}
         <main className="flex min-h-0 flex-1 items-center justify-center overflow-hidden bg-neutral-950">
+          <div className="flex w-full flex-col items-center justify-center gap-3 px-3">
           {/* OUTER: owns glow pseudo-elements (NO overflow-hidden) */}
           <div
             className="relative h-[70vh] w-[70vw] max-w-[1200px] rounded-lg precision-ring vibe-glow vibe-aura vibe-aura-animate"
@@ -12050,6 +12116,13 @@ function EditorPageInner() {
                 </div>
               </div>
             ) : null}
+          </div>
+          <ImageHistoryTimeline
+            className="w-[70vw] max-w-[1200px]"
+            activeVersionId={selectedVersionId}
+            versions={versions}
+            onSelectVersion={handleSelectVersionFromTimeline}
+          />
           </div>
         </main>
 
@@ -12421,7 +12494,11 @@ function EditorPageInner() {
                       <button
                         type="button"
                         className="flex w-full items-center gap-2 rounded-md border border-neutral-800 bg-neutral-950 px-2.5 py-2 text-left transition hover:bg-neutral-900"
-                        onClick={() => jumpToVersionViaAnchor(selectedCanvasVersion)}
+                        onClick={() =>
+                          jumpToVersionViaAnchor(selectedCanvasVersion, undefined, {
+                            toggleIfAlreadyFocused: true,
+                          })
+                        }
                       >
                         {getVersionPreviewUrl(selectedCanvasVersion) ? (
                           <>
@@ -12448,7 +12525,7 @@ function EditorPageInner() {
                     ) : null}
                     {isFavouritesFilterEmpty ? (
                       <div className="rounded-md border border-dashed border-neutral-800 bg-neutral-950 px-3 py-2 text-xs text-neutral-500">
-                        No favourite versions yet. Tap the heart on a STAGE or STYLE version to save it here.
+                        No favourite versions yet. Tap the heart on a SET, STAGE, or STYLE version to save it here.
                       </div>
                     ) : (
                       <>
@@ -12465,51 +12542,43 @@ function EditorPageInner() {
                       </>
                     )}
 
-                    <div className="my-1 border-t border-neutral-800/70 pt-1.5" />
-
-                    <div className="rounded-lg border border-neutral-800/40 bg-neutral-800/80 p-3 ring-1 ring-inset ring-neutral-900/15">
-                      <div className="space-y-2">
-                        {activeBasePreviewVersion ? (
-                          <button
-                            type="button"
-                            className="flex w-full items-center gap-2 rounded-md border border-neutral-800 bg-neutral-950 px-2.5 py-2 text-left transition hover:bg-neutral-900"
-                            onClick={() => {
-                              if (isFavouritesFilterOn) {
-                                handleSelectVersion(activeBasePreviewVersion);
-                                return;
-                              }
-                              jumpToVersionViaAnchor(activeBasePreviewVersion, "set");
-                            }}
-                          >
-                            {getVersionPreviewUrl(activeBasePreviewVersion) ? (
-                              <>
-                                {/* eslint-disable-next-line @next/next/no-img-element -- anchor card uses dynamic base preview URLs */}
-                                <img
-                                  src={getVersionPreviewUrl(activeBasePreviewVersion) ?? ""}
-                                  alt="Active Base Image"
-                                  className="h-9 w-12 flex-none rounded bg-neutral-800 object-cover"
-                                  loading="lazy"
-                                />
-                              </>
-                            ) : (
-                              <div className="h-9 w-12 flex-none rounded border border-neutral-800 bg-neutral-900" />
-                            )}
-                            <div className="min-w-0">
-                              <div className="text-[10px] uppercase tracking-wide text-sky-300">
-                                Active Base Image
-                              </div>
-                            </div>
-                          </button>
-                        ) : null}
-                        {!isFavouritesFilterOn
-                          ? renderCollapsedVersionShelf({
-                              keyName: "set",
-                              label: "SET",
-                              versionsInShelf: groupedVersionsForDisplay.set,
-                            })
-                          : null}
-                      </div>
-                    </div>
+                    {activeBasePreviewVersion ? (
+                      <button
+                        type="button"
+                        className="flex w-full items-center gap-2 rounded-md border border-neutral-800 bg-neutral-950 px-2.5 py-2 text-left transition hover:bg-neutral-900"
+                        onClick={() => {
+                          if (isFavouritesFilterOn) {
+                            handleSelectVersion(activeBasePreviewVersion);
+                            return;
+                          }
+                          jumpToVersionViaAnchor(activeBasePreviewVersion, "set");
+                        }}
+                      >
+                        {getVersionPreviewUrl(activeBasePreviewVersion) ? (
+                          <>
+                            {/* eslint-disable-next-line @next/next/no-img-element -- anchor card uses dynamic base preview URLs */}
+                            <img
+                              src={getVersionPreviewUrl(activeBasePreviewVersion) ?? ""}
+                              alt="Active Base Image"
+                              className="h-9 w-12 flex-none rounded bg-neutral-800 object-cover"
+                              loading="lazy"
+                            />
+                          </>
+                        ) : (
+                          <div className="h-9 w-12 flex-none rounded border border-neutral-800 bg-neutral-900" />
+                        )}
+                        <div className="min-w-0">
+                          <div className="text-[10px] uppercase tracking-wide text-sky-300">
+                            Active Base Image
+                          </div>
+                        </div>
+                      </button>
+                    ) : null}
+                    {renderCollapsedVersionShelf({
+                      keyName: "set",
+                      label: "SET",
+                      versionsInShelf: groupedVersionsForDisplay.set,
+                    })}
                     {!isFavouritesFilterOn
                       ? renderCollapsedVersionShelf({
                           keyName: "unknown",

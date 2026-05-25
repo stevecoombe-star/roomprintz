@@ -289,6 +289,9 @@ export type VibodeRoomAsset = {
   model_version: string | null;
   is_active: boolean;
   metadata: Record<string, unknown>;
+  parentVersionId?: string | null;
+  lineageSource?: "generation_run" | "metadata" | "none";
+  normalizedVersionKind?: "set" | "stage" | "style" | "unknown";
   created_at: string;
 };
 
