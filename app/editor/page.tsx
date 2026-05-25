@@ -11280,13 +11280,34 @@ function EditorPageInner() {
     });
   }, []);
   const jumpToVersionViaAnchor = useCallback(
-    (asset: EditorVersionWithKind, forcedShelf?: "style" | "stage" | "set" | "unknown") => {
+    (
+      asset: EditorVersionWithKind,
+      forcedShelf?: "style" | "stage" | "set" | "unknown",
+      options?: { toggleIfAlreadyFocused?: boolean }
+    ) => {
       const shelf = forcedShelf ?? resolveShelfForVersion(asset);
+      const isOnlyFocusedShelfOpen =
+        versionShelfExpanded[shelf] &&
+        (shelf === "style" ? !versionShelfExpanded.stage && !versionShelfExpanded.set && !versionShelfExpanded.unknown : true) &&
+        (shelf === "stage" ? !versionShelfExpanded.style && !versionShelfExpanded.set && !versionShelfExpanded.unknown : true) &&
+        (shelf === "set" ? !versionShelfExpanded.style && !versionShelfExpanded.stage && !versionShelfExpanded.unknown : true) &&
+        (shelf === "unknown" ? !versionShelfExpanded.style && !versionShelfExpanded.stage && !versionShelfExpanded.set : true);
+
+      if (options?.toggleIfAlreadyFocused && isOnlyFocusedShelfOpen) {
+        setVersionShelfExpanded({
+          style: false,
+          stage: false,
+          set: false,
+          unknown: false,
+        });
+        return;
+      }
+
       expandOnlyVersionShelf(shelf);
       handleSelectVersion(asset);
       scrollToVersionRow(asset.id);
     },
-    [expandOnlyVersionShelf, handleSelectVersion, resolveShelfForVersion, scrollToVersionRow]
+    [expandOnlyVersionShelf, handleSelectVersion, resolveShelfForVersion, scrollToVersionRow, versionShelfExpanded]
   );
   const renderVersionRow = (asset: EditorVersionWithKind) => {
     const isActive = selectedVersionId === asset.id;
@@ -12472,7 +12493,11 @@ function EditorPageInner() {
                       <button
                         type="button"
                         className="flex w-full items-center gap-2 rounded-md border border-neutral-800 bg-neutral-950 px-2.5 py-2 text-left transition hover:bg-neutral-900"
-                        onClick={() => jumpToVersionViaAnchor(selectedCanvasVersion)}
+                        onClick={() =>
+                          jumpToVersionViaAnchor(selectedCanvasVersion, undefined, {
+                            toggleIfAlreadyFocused: true,
+                          })
+                        }
                       >
                         {getVersionPreviewUrl(selectedCanvasVersion) ? (
                           <>
@@ -12516,51 +12541,45 @@ function EditorPageInner() {
                       </>
                     )}
 
-                    <div className="my-1 border-t border-neutral-800/70 pt-1.5" />
-
-                    <div className="rounded-lg border border-neutral-800/40 bg-neutral-800/80 p-3 ring-1 ring-inset ring-neutral-900/15">
-                      <div className="space-y-2">
-                        {activeBasePreviewVersion ? (
-                          <button
-                            type="button"
-                            className="flex w-full items-center gap-2 rounded-md border border-neutral-800 bg-neutral-950 px-2.5 py-2 text-left transition hover:bg-neutral-900"
-                            onClick={() => {
-                              if (isFavouritesFilterOn) {
-                                handleSelectVersion(activeBasePreviewVersion);
-                                return;
-                              }
-                              jumpToVersionViaAnchor(activeBasePreviewVersion, "set");
-                            }}
-                          >
-                            {getVersionPreviewUrl(activeBasePreviewVersion) ? (
-                              <>
-                                {/* eslint-disable-next-line @next/next/no-img-element -- anchor card uses dynamic base preview URLs */}
-                                <img
-                                  src={getVersionPreviewUrl(activeBasePreviewVersion) ?? ""}
-                                  alt="Active Base Image"
-                                  className="h-9 w-12 flex-none rounded bg-neutral-800 object-cover"
-                                  loading="lazy"
-                                />
-                              </>
-                            ) : (
-                              <div className="h-9 w-12 flex-none rounded border border-neutral-800 bg-neutral-900" />
-                            )}
-                            <div className="min-w-0">
-                              <div className="text-[10px] uppercase tracking-wide text-sky-300">
-                                Active Base Image
-                              </div>
-                            </div>
-                          </button>
-                        ) : null}
-                        {!isFavouritesFilterOn
-                          ? renderCollapsedVersionShelf({
-                              keyName: "set",
-                              label: "SET",
-                              versionsInShelf: groupedVersionsForDisplay.set,
-                            })
-                          : null}
-                      </div>
-                    </div>
+                    {activeBasePreviewVersion ? (
+                      <button
+                        type="button"
+                        className="flex w-full items-center gap-2 rounded-md border border-neutral-800 bg-neutral-950 px-2.5 py-2 text-left transition hover:bg-neutral-900"
+                        onClick={() => {
+                          if (isFavouritesFilterOn) {
+                            handleSelectVersion(activeBasePreviewVersion);
+                            return;
+                          }
+                          jumpToVersionViaAnchor(activeBasePreviewVersion, "set");
+                        }}
+                      >
+                        {getVersionPreviewUrl(activeBasePreviewVersion) ? (
+                          <>
+                            {/* eslint-disable-next-line @next/next/no-img-element -- anchor card uses dynamic base preview URLs */}
+                            <img
+                              src={getVersionPreviewUrl(activeBasePreviewVersion) ?? ""}
+                              alt="Active Base Image"
+                              className="h-9 w-12 flex-none rounded bg-neutral-800 object-cover"
+                              loading="lazy"
+                            />
+                          </>
+                        ) : (
+                          <div className="h-9 w-12 flex-none rounded border border-neutral-800 bg-neutral-900" />
+                        )}
+                        <div className="min-w-0">
+                          <div className="text-[10px] uppercase tracking-wide text-sky-300">
+                            Active Base Image
+                          </div>
+                        </div>
+                      </button>
+                    ) : null}
+                    {!isFavouritesFilterOn
+                      ? renderCollapsedVersionShelf({
+                          keyName: "set",
+                          label: "SET",
+                          versionsInShelf: groupedVersionsForDisplay.set,
+                        })
+                      : null}
                     {!isFavouritesFilterOn
                       ? renderCollapsedVersionShelf({
                           keyName: "unknown",
