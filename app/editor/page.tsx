@@ -16,6 +16,7 @@ import {
   type MyFurniturePickerMode,
 } from "@/components/editor/MyFurniturePicker";
 import { SignOutButton } from "@/components/auth/SignOutButton";
+import { LatestFurnitureCollectionImportBanner } from "@/components/LatestFurnitureCollectionImportBanner";
 import { TokenBalanceBadge } from "@/components/tokens/TokenBalanceBadge";
 import { TokenStatusNotice } from "@/components/tokens/TokenStatusNotice";
 import { SnackbarHost, type Snackbar } from "@/components/ui/SnackbarHost";
@@ -11759,6 +11760,10 @@ function EditorPageInner() {
 
         </div>
       </header>
+
+      <div className="shrink-0 border-b border-neutral-900 bg-neutral-950 px-4 py-2">
+        <LatestFurnitureCollectionImportBanner />
+      </div>
 
       {/* Main */}
       <div className="flex min-h-0 flex-1 w-full overflow-hidden">

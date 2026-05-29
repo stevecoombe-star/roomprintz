@@ -3,6 +3,7 @@
 
 import { useState } from "react";
 import { AuthPanel } from "@/components/AuthPanel";
+import { LatestFurnitureCollectionImportBanner } from "@/components/LatestFurnitureCollectionImportBanner";
 
 export default function LandingPage() {
   const [selectedPath, setSelectedPath] = useState<"upload" | "product" | "sample" | null>(null);
@@ -52,6 +53,8 @@ export default function LandingPage() {
               </p>
             </div>
           </section>
+
+          <LatestFurnitureCollectionImportBanner />
 
           <section className="grid grid-cols-1 md:grid-cols-3 gap-4">
             <article className="rounded-2xl border border-slate-800 bg-slate-900/60 p-4 space-y-3">
