@@ -70,6 +70,17 @@ export async function GET() {
     .eq("status", "active");
   if (itemCountError) return json(500, { error: "Failed to resolve Furniture Collection item count." });
 
+  const { data: items, error: itemsError } = await supabaseAdmin
+    .from("vibode_furniture_collection_items")
+    .select(
+      "id,collection_id,product_name,product_url,image_url,brand,category,price_amount,price_currency,sort_order,created_at"
+    )
+    .eq("collection_id", collection.id)
+    .eq("status", "active")
+    .order("sort_order", { ascending: true })
+    .order("created_at", { ascending: true });
+  if (itemsError) return json(500, { error: "Failed to resolve Furniture Collection items." });
+
   return json(200, {
     collectionImport: {
       import: {
@@ -93,6 +104,7 @@ export async function GET() {
         hero_image_url: collection.hero_image_url,
       },
       itemCount: itemCount ?? 0,
+      items: items ?? [],
       publicUrl: `/furniture-collections/${partner.slug}/${collection.slug}`,
     },
   });

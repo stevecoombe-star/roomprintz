@@ -17,6 +17,7 @@ import {
 } from "@/components/editor/MyFurniturePicker";
 import { SignOutButton } from "@/components/auth/SignOutButton";
 import { LatestFurnitureCollectionImportBanner } from "@/components/LatestFurnitureCollectionImportBanner";
+import { LatestFurnitureCollectionItemsPreview } from "@/components/LatestFurnitureCollectionItemsPreview";
 import { TokenBalanceBadge } from "@/components/tokens/TokenBalanceBadge";
 import { TokenStatusNotice } from "@/components/tokens/TokenStatusNotice";
 import { SnackbarHost, type Snackbar } from "@/components/ui/SnackbarHost";
@@ -11763,6 +11764,9 @@ function EditorPageInner() {
 
       <div className="shrink-0 border-b border-neutral-900 bg-neutral-950 px-4 py-2">
         <LatestFurnitureCollectionImportBanner />
+        <div className="mt-2">
+          <LatestFurnitureCollectionItemsPreview />
+        </div>
       </div>
 
       {/* Main */}
