@@ -1,8 +1,8 @@
-import Link from "next/link";
 import type { Metadata } from "next";
 import { headers } from "next/headers";
 import { notFound } from "next/navigation";
 import RemoteImage from "./RemoteImage";
+import CollectionImportCta from "./CollectionImportCta";
 
 type PublicPartner = {
   name?: string | null;
@@ -226,17 +226,14 @@ export default async function FurnitureCollectionLandingPage({
             space.
           </p>
           <div className="flex flex-wrap gap-3">
-            <Link
-              href="/"
-              className="inline-flex items-center justify-center rounded-lg bg-emerald-500 px-4 py-2 text-sm font-medium text-slate-950 hover:bg-emerald-400"
-            >
-              Try these in your room
-            </Link>
+            <CollectionImportCta
+              partnerSlug={partner.slug?.trim() || partnerSlug}
+              collectionSlug={collection.slug?.trim() || collectionSlug}
+            />
             <span className="text-xs text-slate-300">
               Start from Vibode home, then upload your room to continue.
             </span>
           </div>
-          {/* TODO(vibode-furniture-collections): wire this CTA to collection import in a later phase. */}
         </section>
       </div>
     </main>
