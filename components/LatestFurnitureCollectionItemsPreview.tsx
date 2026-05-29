@@ -26,6 +26,11 @@ type CollectionImportResponse = {
   } | null;
 };
 
+type MaterializeState = {
+  status: "idle" | "loading" | "success" | "error";
+  message: string | null;
+};
+
 function formatPrice(item: CollectionImportItem): string | null {
   if (typeof item.price_amount !== "number" || !Number.isFinite(item.price_amount)) return null;
   const currency =
@@ -38,6 +43,7 @@ function formatPrice(item: CollectionImportItem): string | null {
 export function LatestFurnitureCollectionItemsPreview() {
   const [isLoading, setIsLoading] = useState(true);
   const [isExpanded, setIsExpanded] = useState(false);
+  const [materializeByItemId, setMaterializeByItemId] = useState<Record<string, MaterializeState>>({});
   const [collectionImport, setCollectionImport] = useState<
     NonNullable<CollectionImportResponse["collectionImport"]> | null
   >(null);
@@ -71,6 +77,39 @@ export function LatestFurnitureCollectionItemsPreview() {
   const collectionName = collectionImport.collection?.name?.trim() || "Furniture Collection";
   const itemCountLabel = `${items.length} item${items.length === 1 ? "" : "s"}`;
 
+  async function handleMaterializeItem(itemId: string) {
+    setMaterializeByItemId((current) => ({
+      ...current,
+      [itemId]: { status: "loading", message: null },
+    }));
+    try {
+      const response = await fetch(`/api/vibode/furniture-collections/items/${itemId}/materialize`, {
+        method: "POST",
+        credentials: "same-origin",
+      });
+      const payload = (await response.json().catch(() => ({}))) as { error?: string; message?: string };
+      if (!response.ok) {
+        throw new Error(payload.error || "Could not add this item yet. Please try again.");
+      }
+      setMaterializeByItemId((current) => ({
+        ...current,
+        [itemId]: {
+          status: "success",
+          message: payload.message || "Added to My Furniture.",
+        },
+      }));
+    } catch (error: unknown) {
+      const message =
+        error instanceof Error && error.message
+          ? error.message
+          : "Could not add this item yet. Please try again.";
+      setMaterializeByItemId((current) => ({
+        ...current,
+        [itemId]: { status: "error", message },
+      }));
+    }
+  }
+
   return (
     <section className="relative z-20 rounded-xl border border-neutral-800 bg-neutral-900/70 px-3 py-2">
       <div className="flex flex-wrap items-center justify-between gap-2">
@@ -97,13 +136,23 @@ export function LatestFurnitureCollectionItemsPreview() {
       {isExpanded ? (
         <div className="absolute left-0 right-0 top-full z-30 mt-2 rounded-xl border border-neutral-700 bg-neutral-900/95 p-3 shadow-2xl backdrop-blur-sm">
           <p className="text-xs text-neutral-400">
-            These pieces came from a Furniture Collection. Paste-to-Place support is coming next.
+            These pieces came from a Furniture Collection. Add one to My Furniture to use it in Paste-to-Place.
           </p>
 
           <div className="mt-2 grid max-h-[55vh] grid-cols-1 gap-2 overflow-y-auto pr-1 md:grid-cols-2 xl:grid-cols-3">
             {items.map((item) => {
               const title = item.product_name?.trim() || "Furniture item";
               const price = formatPrice(item);
+              const itemId = typeof item.id === "string" && item.id.trim().length > 0 ? item.id : null;
+              const materializeState = itemId ? materializeByItemId[itemId] : undefined;
+              const isAdding = materializeState?.status === "loading";
+              const isAdded = materializeState?.status === "success";
+              const hasError = materializeState?.status === "error";
+              const actionLabel = isAdding
+                ? "Adding..."
+                : isAdded
+                  ? "Added to My Furniture"
+                  : "Use in Paste-to-Place";
               return (
                 <article
                   key={item.id ?? `${title}-${item.sort_order ?? 0}`}
@@ -140,10 +189,32 @@ export function LatestFurnitureCollectionItemsPreview() {
                         View product
                       </a>
                     ) : null}
-                    <span className="rounded border border-neutral-800 px-2 py-0.5 text-[11px] text-neutral-500">
-                      Coming next
-                    </span>
+                    <button
+                      type="button"
+                      disabled={!itemId || isAdding || isAdded}
+                      onClick={() => {
+                        if (!itemId || isAdding || isAdded) return;
+                        void handleMaterializeItem(itemId);
+                      }}
+                      className={`rounded border px-2 py-0.5 text-[11px] ${
+                        !itemId || isAdded
+                          ? "border-neutral-700 bg-neutral-800/60 text-neutral-300"
+                          : "border-neutral-600 text-neutral-200 hover:border-neutral-500"
+                      } disabled:cursor-not-allowed disabled:opacity-80`}
+                    >
+                      {actionLabel}
+                    </button>
                   </div>
+                  {hasError ? (
+                    <p className="mt-2 text-[11px] text-rose-300">
+                      {materializeState?.message || "Could not add this item yet. Please try again."}
+                    </p>
+                  ) : null}
+                  {isAdded ? (
+                    <p className="mt-2 text-[11px] text-emerald-300">
+                      Open My Furniture to place it.
+                    </p>
+                  ) : null}
                 </article>
               );
             })}
