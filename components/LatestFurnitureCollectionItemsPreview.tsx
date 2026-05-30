@@ -18,9 +18,11 @@ type CollectionImportResponse = {
   collectionImport?: {
     partner?: {
       name?: string | null;
+      slug?: string | null;
     };
     collection?: {
       name?: string | null;
+      slug?: string | null;
     };
     items?: CollectionImportItem[];
   } | null;
@@ -45,6 +47,9 @@ export function LatestFurnitureCollectionItemsPreview() {
   const [isExpanded, setIsExpanded] = useState(false);
   const [materializeByItemId, setMaterializeByItemId] = useState<Record<string, MaterializeState>>({});
   const [failedImageByItemId, setFailedImageByItemId] = useState<Record<string, boolean>>({});
+  const [isAddingAll, setIsAddingAll] = useState(false);
+  const [addAllMessage, setAddAllMessage] = useState<string | null>(null);
+  const [addAllError, setAddAllError] = useState<string | null>(null);
   const [collectionImport, setCollectionImport] = useState<
     NonNullable<CollectionImportResponse["collectionImport"]> | null
   >(null);
@@ -76,9 +81,13 @@ export function LatestFurnitureCollectionItemsPreview() {
 
   const partnerName = collectionImport.partner?.name?.trim() || "Furniture Partner";
   const collectionName = collectionImport.collection?.name?.trim() || "Furniture Collection";
+  const partnerSlug = collectionImport.partner?.slug?.trim() || null;
+  const collectionSlug = collectionImport.collection?.slug?.trim() || null;
   const itemCountLabel = `${items.length} item${items.length === 1 ? "" : "s"}`;
 
   async function handleMaterializeItem(itemId: string) {
+    setAddAllMessage(null);
+    setAddAllError(null);
     setMaterializeByItemId((current) => ({
       ...current,
       [itemId]: { status: "loading", message: null },
@@ -118,6 +127,110 @@ export function LatestFurnitureCollectionItemsPreview() {
     }
   }
 
+  async function handleMaterializeAll() {
+    if (!partnerSlug || !collectionSlug) {
+      setAddAllError("Could not add this collection yet. Please refresh and try again.");
+      return;
+    }
+    setIsAddingAll(true);
+    setAddAllMessage(null);
+    setAddAllError(null);
+    try {
+      const response = await fetch(
+        `/api/vibode/furniture-collections/${partnerSlug}/${collectionSlug}/materialize-all`,
+        {
+          method: "POST",
+          credentials: "same-origin",
+        }
+      );
+      const payload = (await response.json().catch(() => ({}))) as {
+        error?: string;
+        totalCount?: number;
+        addedCount?: number;
+        alreadyExistedCount?: number;
+        failedCount?: number;
+        results?: Array<{
+          itemId?: string;
+          ok?: boolean;
+          alreadyExisted?: boolean;
+          error?: string;
+        }>;
+      };
+      if (!response.ok) {
+        throw new Error(payload.error || "Could not add this collection yet. Please try again.");
+      }
+
+      const totalCount = Number(payload.totalCount ?? 0);
+      const addedCount = Number(payload.addedCount ?? 0);
+      const alreadyExistedCount = Number(payload.alreadyExistedCount ?? 0);
+      const failedCount = Number(payload.failedCount ?? 0);
+
+      if (failedCount > 0) {
+        setAddAllMessage(
+          `Added ${addedCount} item${addedCount === 1 ? "" : "s"}. ${alreadyExistedCount} ${
+            alreadyExistedCount === 1 ? "was" : "were"
+          } already there. ${failedCount} failed.`
+        );
+      } else if (addedCount > 0 && alreadyExistedCount === 0) {
+        setAddAllMessage(`Added ${addedCount} item${addedCount === 1 ? "" : "s"} to My Furniture.`);
+      } else if (addedCount > 0 && alreadyExistedCount > 0) {
+        setAddAllMessage(
+          `Added ${addedCount} item${addedCount === 1 ? "" : "s"}. ${alreadyExistedCount} ${
+            alreadyExistedCount === 1 ? "was" : "were"
+          } already there.`
+        );
+      } else if (totalCount > 0 && alreadyExistedCount === totalCount) {
+        setAddAllMessage("All items already in My Furniture.");
+      } else {
+        setAddAllMessage("Added all to My Furniture.");
+      }
+
+      const resultsById = new Map<
+        string,
+        { ok: boolean; alreadyExisted: boolean; error: string | null }
+      >();
+      for (const result of payload.results ?? []) {
+        const resultItemId = typeof result.itemId === "string" ? result.itemId.trim() : "";
+        if (!resultItemId) continue;
+        resultsById.set(resultItemId, {
+          ok: Boolean(result.ok),
+          alreadyExisted: Boolean(result.alreadyExisted),
+          error: typeof result.error === "string" ? result.error : null,
+        });
+      }
+
+      setMaterializeByItemId((current) => {
+        const next = { ...current };
+        for (const item of items) {
+          const itemId = typeof item.id === "string" ? item.id.trim() : "";
+          if (!itemId) continue;
+          const result = resultsById.get(itemId);
+          if (!result) continue;
+          if (result.ok) {
+            next[itemId] = {
+              status: "success",
+              message: result.alreadyExisted ? "Already in My Furniture" : "Added to My Furniture",
+            };
+          } else {
+            next[itemId] = {
+              status: "error",
+              message: result.error || "Could not add this item yet. Please try again.",
+            };
+          }
+        }
+        return next;
+      });
+    } catch (error: unknown) {
+      const message =
+        error instanceof Error && error.message
+          ? error.message
+          : "Could not add this collection yet. Please try again.";
+      setAddAllError(message);
+    } finally {
+      setIsAddingAll(false);
+    }
+  }
+
   return (
     <section className="relative z-20 rounded-xl border border-neutral-800 bg-neutral-900/70 px-3 py-2">
       <div className="flex flex-wrap items-center justify-between gap-2">
@@ -143,9 +256,33 @@ export function LatestFurnitureCollectionItemsPreview() {
 
       {isExpanded ? (
         <div className="absolute left-0 right-0 top-full z-30 mt-2 rounded-xl border border-neutral-700 bg-neutral-900/95 p-3 shadow-2xl backdrop-blur-sm">
-          <p className="text-xs text-neutral-400">
-            These pieces came from a Furniture Collection. Add one to My Furniture to use it in Paste-to-Place.
-          </p>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <p className="text-xs text-neutral-400">
+              Add individual pieces or add the full collection to My Furniture, then use them with Paste-to-Place.
+            </p>
+            <div className="flex items-center gap-1.5">
+              <span className="rounded border border-neutral-800 px-2 py-0.5 text-[11px] text-neutral-400">
+                {itemCountLabel}
+              </span>
+              <button
+                type="button"
+                onClick={() => void handleMaterializeAll()}
+                disabled={isAddingAll}
+                className="rounded border border-neutral-600 px-2 py-0.5 text-[11px] text-neutral-200 hover:border-neutral-500 disabled:cursor-not-allowed disabled:opacity-80"
+              >
+                {isAddingAll ? "Adding all..." : "Add all to My Furniture"}
+              </button>
+              <button
+                type="button"
+                onClick={() => setIsExpanded(false)}
+                className="rounded border border-neutral-700 px-2 py-0.5 text-[11px] text-neutral-300 hover:border-neutral-500"
+              >
+                Hide items
+              </button>
+            </div>
+          </div>
+          {addAllMessage ? <p className="mt-1.5 text-[11px] text-emerald-300">{addAllMessage}</p> : null}
+          {addAllError ? <p className="mt-1.5 text-[11px] text-rose-300">{addAllError}</p> : null}
 
           <div className="mt-2 grid max-h-[55vh] grid-cols-1 gap-1.5 overflow-y-auto pr-1 md:[grid-template-columns:repeat(auto-fill,minmax(220px,280px))] md:justify-start">
             {items.map((item) => {
@@ -161,7 +298,7 @@ export function LatestFurnitureCollectionItemsPreview() {
                 ? "Adding..."
                 : isAdded
                   ? "Added to My Furniture"
-                  : "Use in Paste-to-Place";
+                  : "Add to My Furniture";
               return (
                 <article
                   key={item.id ?? `${title}-${item.sort_order ?? 0}`}
