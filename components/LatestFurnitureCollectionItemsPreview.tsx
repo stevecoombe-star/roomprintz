@@ -44,6 +44,7 @@ export function LatestFurnitureCollectionItemsPreview() {
   const [isLoading, setIsLoading] = useState(true);
   const [isExpanded, setIsExpanded] = useState(false);
   const [materializeByItemId, setMaterializeByItemId] = useState<Record<string, MaterializeState>>({});
+  const [failedImageByItemId, setFailedImageByItemId] = useState<Record<string, boolean>>({});
   const [collectionImport, setCollectionImport] = useState<
     NonNullable<CollectionImportResponse["collectionImport"]> | null
   >(null);
@@ -87,15 +88,22 @@ export function LatestFurnitureCollectionItemsPreview() {
         method: "POST",
         credentials: "same-origin",
       });
-      const payload = (await response.json().catch(() => ({}))) as { error?: string; message?: string };
+      const payload = (await response.json().catch(() => ({}))) as {
+        error?: string;
+        message?: string;
+        alreadyExisted?: boolean;
+      };
       if (!response.ok) {
         throw new Error(payload.error || "Could not add this item yet. Please try again.");
       }
+      const successMessage = payload.alreadyExisted
+        ? "Already in My Furniture"
+        : (payload.message ?? "Added to My Furniture.");
       setMaterializeByItemId((current) => ({
         ...current,
         [itemId]: {
           status: "success",
-          message: payload.message || "Added to My Furniture.",
+          message: successMessage,
         },
       }));
     } catch (error: unknown) {
@@ -139,12 +147,13 @@ export function LatestFurnitureCollectionItemsPreview() {
             These pieces came from a Furniture Collection. Add one to My Furniture to use it in Paste-to-Place.
           </p>
 
-          <div className="mt-2 grid max-h-[55vh] grid-cols-1 gap-2 overflow-y-auto pr-1 md:grid-cols-2 xl:grid-cols-3">
+          <div className="mt-2 grid max-h-[55vh] grid-cols-1 gap-1.5 overflow-y-auto pr-1 md:[grid-template-columns:repeat(auto-fill,minmax(220px,280px))] md:justify-start">
             {items.map((item) => {
               const title = item.product_name?.trim() || "Furniture item";
               const price = formatPrice(item);
               const itemId = typeof item.id === "string" && item.id.trim().length > 0 ? item.id : null;
               const materializeState = itemId ? materializeByItemId[itemId] : undefined;
+              const hasImageFailed = itemId ? Boolean(failedImageByItemId[itemId]) : false;
               const isAdding = materializeState?.status === "loading";
               const isAdded = materializeState?.status === "success";
               const hasError = materializeState?.status === "error";
@@ -156,21 +165,27 @@ export function LatestFurnitureCollectionItemsPreview() {
               return (
                 <article
                   key={item.id ?? `${title}-${item.sort_order ?? 0}`}
-                  className="rounded-lg border border-neutral-800 bg-neutral-950/70 p-2"
+                  className="rounded-lg border border-neutral-800 bg-neutral-950/70 p-1.5 transition hover:border-neutral-700"
                 >
-                  {item.image_url ? (
-                    // eslint-disable-next-line @next/next/no-img-element
-                    <img
-                      src={item.image_url}
-                      alt={title}
-                      className="h-24 w-full rounded border border-neutral-800 object-cover"
-                    />
+                  {item.image_url && !hasImageFailed ? (
+                    <div className="aspect-[4/3] w-full overflow-hidden rounded border border-neutral-800 bg-neutral-900">
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img
+                        src={item.image_url}
+                        alt={title}
+                        onError={() => {
+                          if (!itemId) return;
+                          setFailedImageByItemId((current) => ({ ...current, [itemId]: true }));
+                        }}
+                        className="h-full w-full object-contain"
+                      />
+                    </div>
                   ) : (
-                    <div className="flex h-24 w-full items-center justify-center rounded border border-neutral-800 text-[11px] text-neutral-500">
-                      No image
+                    <div className="flex aspect-[4/3] w-full items-center justify-center rounded border border-neutral-800 bg-neutral-900 text-[11px] text-neutral-500">
+                      Image unavailable
                     </div>
                   )}
-                  <div className="mt-2 space-y-1">
+                  <div className="mt-1.5 space-y-1">
                     <p className="text-xs font-medium text-neutral-100">{title}</p>
                     <p className="text-[11px] text-neutral-400">
                       {item.brand?.trim() || "Unknown brand"}
@@ -178,7 +193,7 @@ export function LatestFurnitureCollectionItemsPreview() {
                     </p>
                     {price ? <p className="text-[11px] text-emerald-300">{price}</p> : null}
                   </div>
-                  <div className="mt-2 flex items-center gap-2">
+                  <div className="mt-1.5 flex items-center gap-1.5">
                     {item.product_url ? (
                       <a
                         href={item.product_url}
@@ -206,12 +221,12 @@ export function LatestFurnitureCollectionItemsPreview() {
                     </button>
                   </div>
                   {hasError ? (
-                    <p className="mt-2 text-[11px] text-rose-300">
+                    <p className="mt-1.5 text-[11px] text-rose-300">
                       {materializeState?.message || "Could not add this item yet. Please try again."}
                     </p>
                   ) : null}
                   {isAdded ? (
-                    <p className="mt-2 text-[11px] text-emerald-300">
+                    <p className="mt-1.5 text-[11px] text-emerald-300">
                       Open My Furniture to place it.
                     </p>
                   ) : null}
