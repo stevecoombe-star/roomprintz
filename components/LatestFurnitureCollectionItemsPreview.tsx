@@ -38,6 +38,7 @@ type MaterializeState = {
 };
 
 const PREVIEW_DISMISS_KEY_PREFIX = "vibode:dismissedFurnitureCollectionPreview";
+const SHOW_ITEMS_SEEN_KEY_PREFIX = "vibode:partnerCollectionShowItemsSeen";
 
 function asOptionalString(value: unknown): string | null {
   if (typeof value !== "string") return null;
@@ -48,6 +49,11 @@ function asOptionalString(value: unknown): string | null {
 function buildDismissKey(importId: string | null, updatedAt: string | null): string | null {
   if (!importId || !updatedAt) return null;
   return `${PREVIEW_DISMISS_KEY_PREFIX}:${encodeURIComponent(importId)}:${encodeURIComponent(updatedAt)}`;
+}
+
+function buildShowItemsSeenKey(importId: string | null, updatedAt: string | null): string {
+  if (!importId || !updatedAt) return SHOW_ITEMS_SEEN_KEY_PREFIX;
+  return `${SHOW_ITEMS_SEEN_KEY_PREFIX}:${encodeURIComponent(importId)}:${encodeURIComponent(updatedAt)}`;
 }
 
 function formatPrice(item: CollectionImportItem): string | null {
@@ -69,6 +75,7 @@ export function LatestFurnitureCollectionItemsPreview() {
   const [addAllError, setAddAllError] = useState<string | null>(null);
   const [isDismissed, setIsDismissed] = useState(false);
   const [showDismissConfirm, setShowDismissConfirm] = useState(false);
+  const [hasSeenShowItems, setHasSeenShowItems] = useState(false);
   const [collectionImport, setCollectionImport] = useState<
     NonNullable<CollectionImportResponse["collectionImport"]> | null
   >(null);
@@ -101,6 +108,7 @@ export function LatestFurnitureCollectionItemsPreview() {
   const importId = asOptionalString(collectionImport?.import?.id);
   const importUpdatedAt = asOptionalString(collectionImport?.import?.updated_at);
   const dismissKey = buildDismissKey(importId, importUpdatedAt);
+  const showItemsSeenKey = buildShowItemsSeenKey(importId, importUpdatedAt);
   const itemCountLabel = `${items.length} item${items.length === 1 ? "" : "s"}`;
   const materializableItemIds = items
     .map((item) => (typeof item.id === "string" ? item.id.trim() : ""))
@@ -125,6 +133,23 @@ export function LatestFurnitureCollectionItemsPreview() {
     setShowDismissConfirm(false);
   }, [dismissKey]);
 
+  useEffect(() => {
+    try {
+      setHasSeenShowItems(window.localStorage.getItem(showItemsSeenKey) === "1");
+    } catch {
+      setHasSeenShowItems(false);
+    }
+  }, [showItemsSeenKey]);
+
+  function markShowItemsSeen() {
+    try {
+      window.localStorage.setItem(showItemsSeenKey, "1");
+    } catch {
+      // Ignore localStorage write failures.
+    }
+    setHasSeenShowItems(true);
+  }
+
   function persistDismiss() {
     if (dismissKey) {
       try {
@@ -143,6 +168,16 @@ export function LatestFurnitureCollectionItemsPreview() {
       return;
     }
     setShowDismissConfirm(true);
+  }
+
+  function toggleExpanded() {
+    setIsExpanded((current) => {
+      const next = !current;
+      if (next) {
+        markShowItemsSeen();
+      }
+      return next;
+    });
   }
 
   async function handleMaterializeItem(itemId: string) {
@@ -312,10 +347,15 @@ export function LatestFurnitureCollectionItemsPreview() {
           </span>
           <button
             type="button"
-            onClick={() => setIsExpanded((value) => !value)}
-            className="rounded border border-neutral-700 px-2 py-1 text-[11px] text-neutral-200 hover:border-neutral-500"
+            onClick={toggleExpanded}
+            className={`rounded border px-2 py-1 text-[11px] ${
+              !isExpanded && !hasSeenShowItems
+                ? "border-emerald-400/70 bg-emerald-500/10 text-emerald-100 shadow-[0_0_0_1px_rgba(16,185,129,0.25)] hover:border-emerald-300"
+                : "border-neutral-700 text-neutral-200 hover:border-neutral-500"
+            }`}
           >
             {isExpanded ? "Hide items" : "Show items"}
+            {!isExpanded && !hasSeenShowItems ? " • New" : ""}
           </button>
           <button
             type="button"
@@ -349,6 +389,13 @@ export function LatestFurnitureCollectionItemsPreview() {
             >
               Dismiss anyway
             </button>
+            <button
+              type="button"
+              onClick={() => setShowDismissConfirm(false)}
+              className="rounded border border-neutral-700 px-2 py-0.5 text-[11px] text-neutral-300 hover:border-neutral-500"
+            >
+              Cancel
+            </button>
           </div>
         </div>
       ) : null}
@@ -370,13 +417,6 @@ export function LatestFurnitureCollectionItemsPreview() {
                 className="rounded border border-neutral-600 px-2 py-0.5 text-[11px] text-neutral-200 hover:border-neutral-500 disabled:cursor-not-allowed disabled:opacity-80"
               >
                 {isAddingAll ? "Adding all..." : "Add all to My Furniture"}
-              </button>
-              <button
-                type="button"
-                onClick={() => setIsExpanded(false)}
-                className="rounded border border-neutral-700 px-2 py-0.5 text-[11px] text-neutral-300 hover:border-neutral-500"
-              >
-                Hide items
               </button>
             </div>
           </div>
