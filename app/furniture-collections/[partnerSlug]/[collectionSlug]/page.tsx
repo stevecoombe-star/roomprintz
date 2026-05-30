@@ -123,20 +123,23 @@ export default async function FurnitureCollectionLandingPage({
   const partner = payload.partner as PublicPartner;
   const collection = payload.collection as PublicCollection;
   const items = Array.isArray(payload.items) ? payload.items : [];
-  const showReturnToMyFurniture = query?.returnTo === "my-furniture";
-  const returnHref = "/my-furniture";
+  const returnMode = query?.returnTo;
+  const showReturnToMyFurniture = returnMode === "my-furniture";
+  const showReturnToEditor = returnMode === "editor";
+  const returnHref = showReturnToMyFurniture ? "/my-furniture" : "/editor";
+  const returnLabel = showReturnToMyFurniture ? "← Return to My Furniture" : "← Return to Canvas";
 
   return (
     <main className="min-h-screen bg-slate-950 text-slate-50">
       <div className="mx-auto w-full max-w-6xl px-4 py-8 md:py-12 space-y-8">
-        {showReturnToMyFurniture ? (
+        {showReturnToMyFurniture || showReturnToEditor ? (
           <section className="rounded-xl border border-slate-800 bg-slate-900/70 px-4 py-2.5">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <Link
                 href={returnHref}
                 className="inline-flex items-center text-sm text-slate-100 hover:text-emerald-200"
               >
-                ← Return to My Furniture
+                {returnLabel}
               </Link>
               <p className="text-xs text-slate-400">You&apos;re viewing the original Furniture Collection.</p>
             </div>

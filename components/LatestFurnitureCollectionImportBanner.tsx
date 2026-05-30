@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
+import { usePathname } from "next/navigation";
 
 type CollectionImportResponse = {
   collectionImport?: {
@@ -35,6 +36,7 @@ function buildDismissKey(importId: string | null, updatedAt: string | null): str
 }
 
 export function LatestFurnitureCollectionImportBanner() {
+  const pathname = usePathname();
   const [isLoading, setIsLoading] = useState(true);
   const [isDismissed, setIsDismissed] = useState(false);
   const [collectionImport, setCollectionImport] = useState<
@@ -95,6 +97,14 @@ export function LatestFurnitureCollectionImportBanner() {
 
   const partnerName = collectionImport.partner?.name?.trim() || "Furniture Partner";
   const collectionName = collectionImport.collection?.name?.trim() || "Furniture Collection";
+  const isEditorContext = pathname === "/editor";
+  const viewCollectionHref = collectionImport.publicUrl
+    ? isEditorContext
+      ? `${collectionImport.publicUrl}${
+          collectionImport.publicUrl.includes("?") ? "&" : "?"
+        }returnTo=editor`
+      : collectionImport.publicUrl
+    : null;
   const itemCount =
     typeof collectionImport.itemCount === "number" && Number.isFinite(collectionImport.itemCount)
       ? Math.max(0, Math.trunc(collectionImport.itemCount))
@@ -115,20 +125,29 @@ export function LatestFurnitureCollectionImportBanner() {
             Upload or select a room to try these pieces.
           </p>
           <div className="flex flex-wrap items-center gap-2 pt-1">
-            {collectionImport.publicUrl ? (
+            {viewCollectionHref ? (
               <Link
-                href={collectionImport.publicUrl}
+                href={viewCollectionHref}
                 className="rounded-lg border border-emerald-400/60 px-2.5 py-1 text-xs text-emerald-100 hover:border-emerald-300 hover:text-white"
               >
                 View collection
               </Link>
             ) : null}
-            <a
-              href="#auth-panel"
-              className="rounded-lg border border-emerald-400/60 px-2.5 py-1 text-xs text-emerald-100 hover:border-emerald-300 hover:text-white"
-            >
-              Upload your room
-            </a>
+            {isEditorContext ? (
+              <Link
+                href="/editor?newRoom=1"
+                className="rounded-lg border border-emerald-400/60 px-2.5 py-1 text-xs text-emerald-100 hover:border-emerald-300 hover:text-white"
+              >
+                Upload your room
+              </Link>
+            ) : (
+              <a
+                href="#auth-panel"
+                className="rounded-lg border border-emerald-400/60 px-2.5 py-1 text-xs text-emerald-100 hover:border-emerald-300 hover:text-white"
+              >
+                Upload your room
+              </a>
+            )}
           </div>
         </div>
         <button
