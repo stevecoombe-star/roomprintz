@@ -283,6 +283,7 @@ export function LatestFurnitureCollectionItemsPreview({
           message: "Ready to place",
         },
       }));
+      setIsExpanded(false);
     } catch (error: unknown) {
       const message =
         error instanceof Error && error.message
