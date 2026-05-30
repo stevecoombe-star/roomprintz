@@ -334,20 +334,40 @@ export function LatestFurnitureCollectionItemsPreview() {
 
   return (
     <section className="relative z-20 rounded-xl border border-neutral-800 bg-neutral-900/70 px-3 py-2">
-      <div className="flex flex-wrap items-center justify-between gap-2">
+      <div
+        role="button"
+        tabIndex={0}
+        onClick={toggleExpanded}
+        onKeyDown={(event) => {
+          if (event.key !== "Enter" && event.key !== " ") return;
+          event.preventDefault();
+          toggleExpanded();
+        }}
+        className="flex cursor-pointer flex-wrap items-center justify-between gap-2 rounded-md px-1 py-1 transition hover:bg-neutral-800/40"
+      >
         <div className="min-w-0">
           <p className="text-xs font-medium uppercase tracking-wide text-neutral-300">Partner Collection</p>
           <p className="truncate text-sm text-neutral-100">
-            {collectionName} by {partnerName}
+            {collectionName} by {partnerName} · {itemCountLabel}
           </p>
         </div>
-        <div className="flex items-center gap-2">
-          <span className="rounded border border-neutral-800 px-2 py-0.5 text-[11px] text-neutral-400">
-            {itemCountLabel}
-          </span>
+        <div className="ml-auto flex items-center gap-2">
           <button
             type="button"
-            onClick={toggleExpanded}
+            onClick={(event) => {
+              event.stopPropagation();
+              dismissPreview();
+            }}
+            className="rounded border border-neutral-700 px-2 py-1 text-[11px] text-neutral-300 hover:border-neutral-500"
+          >
+            Dismiss
+          </button>
+          <button
+            type="button"
+            onClick={(event) => {
+              event.stopPropagation();
+              toggleExpanded();
+            }}
             className={`rounded border px-2 py-1 text-[11px] ${
               !isExpanded && !hasSeenShowItems
                 ? "border-emerald-400/70 bg-emerald-500/10 text-emerald-100 shadow-[0_0_0_1px_rgba(16,185,129,0.25)] hover:border-emerald-300"
@@ -356,13 +376,6 @@ export function LatestFurnitureCollectionItemsPreview() {
           >
             {isExpanded ? "Hide items" : "Show items"}
             {!isExpanded && !hasSeenShowItems ? " • New" : ""}
-          </button>
-          <button
-            type="button"
-            onClick={dismissPreview}
-            className="rounded border border-neutral-700 px-2 py-1 text-[11px] text-neutral-300 hover:border-neutral-500"
-          >
-            Dismiss
           </button>
         </div>
       </div>
