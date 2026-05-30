@@ -16,6 +16,10 @@ type CollectionImportItem = {
 
 type CollectionImportResponse = {
   collectionImport?: {
+    import?: {
+      id?: string | null;
+      updated_at?: string | null;
+    };
     partner?: {
       name?: string | null;
       slug?: string | null;
@@ -32,6 +36,19 @@ type MaterializeState = {
   status: "idle" | "loading" | "success" | "error";
   message: string | null;
 };
+
+const PREVIEW_DISMISS_KEY_PREFIX = "vibode:dismissedFurnitureCollectionPreview";
+
+function asOptionalString(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+function buildDismissKey(importId: string | null, updatedAt: string | null): string | null {
+  if (!importId || !updatedAt) return null;
+  return `${PREVIEW_DISMISS_KEY_PREFIX}:${encodeURIComponent(importId)}:${encodeURIComponent(updatedAt)}`;
+}
 
 function formatPrice(item: CollectionImportItem): string | null {
   if (typeof item.price_amount !== "number" || !Number.isFinite(item.price_amount)) return null;
@@ -50,6 +67,8 @@ export function LatestFurnitureCollectionItemsPreview() {
   const [isAddingAll, setIsAddingAll] = useState(false);
   const [addAllMessage, setAddAllMessage] = useState<string | null>(null);
   const [addAllError, setAddAllError] = useState<string | null>(null);
+  const [isDismissed, setIsDismissed] = useState(false);
+  const [showDismissConfirm, setShowDismissConfirm] = useState(false);
   const [collectionImport, setCollectionImport] = useState<
     NonNullable<CollectionImportResponse["collectionImport"]> | null
   >(null);
@@ -74,18 +93,60 @@ export function LatestFurnitureCollectionItemsPreview() {
     };
   }, []);
 
-  if (isLoading || !collectionImport) return null;
-
-  const items = Array.isArray(collectionImport.items) ? collectionImport.items : [];
-  if (items.length === 0) return null;
-
-  const partnerName = collectionImport.partner?.name?.trim() || "Furniture Partner";
-  const collectionName = collectionImport.collection?.name?.trim() || "Furniture Collection";
-  const partnerSlug = collectionImport.partner?.slug?.trim() || null;
-  const collectionSlug = collectionImport.collection?.slug?.trim() || null;
+  const items = Array.isArray(collectionImport?.items) ? collectionImport.items : [];
+  const partnerName = collectionImport?.partner?.name?.trim() || "Furniture Partner";
+  const collectionName = collectionImport?.collection?.name?.trim() || "Furniture Collection";
+  const partnerSlug = collectionImport?.partner?.slug?.trim() || null;
+  const collectionSlug = collectionImport?.collection?.slug?.trim() || null;
+  const importId = asOptionalString(collectionImport?.import?.id);
+  const importUpdatedAt = asOptionalString(collectionImport?.import?.updated_at);
+  const dismissKey = buildDismissKey(importId, importUpdatedAt);
   const itemCountLabel = `${items.length} item${items.length === 1 ? "" : "s"}`;
+  const materializableItemIds = items
+    .map((item) => (typeof item.id === "string" ? item.id.trim() : ""))
+    .filter((id) => id.length > 0);
+  const remainingItemsCount = materializableItemIds.filter(
+    (itemId) => materializeByItemId[itemId]?.status !== "success"
+  ).length;
+
+  useEffect(() => {
+    if (!dismissKey) {
+      setIsDismissed(false);
+      return;
+    }
+    try {
+      setIsDismissed(window.localStorage.getItem(dismissKey) === "1");
+    } catch {
+      setIsDismissed(false);
+    }
+  }, [dismissKey]);
+
+  useEffect(() => {
+    setShowDismissConfirm(false);
+  }, [dismissKey]);
+
+  function persistDismiss() {
+    if (dismissKey) {
+      try {
+        window.localStorage.setItem(dismissKey, "1");
+      } catch {
+        // Ignore localStorage write failures and still hide in this view.
+      }
+    }
+    setIsDismissed(true);
+    setShowDismissConfirm(false);
+  }
+
+  function dismissPreview() {
+    if (remainingItemsCount === 0) {
+      persistDismiss();
+      return;
+    }
+    setShowDismissConfirm(true);
+  }
 
   async function handleMaterializeItem(itemId: string) {
+    setShowDismissConfirm(false);
     setAddAllMessage(null);
     setAddAllError(null);
     setMaterializeByItemId((current) => ({
@@ -132,6 +193,7 @@ export function LatestFurnitureCollectionItemsPreview() {
       setAddAllError("Could not add this collection yet. Please refresh and try again.");
       return;
     }
+    setShowDismissConfirm(false);
     setIsAddingAll(true);
     setAddAllMessage(null);
     setAddAllError(null);
@@ -231,6 +293,10 @@ export function LatestFurnitureCollectionItemsPreview() {
     }
   }
 
+  if (isLoading || !collectionImport) return null;
+  if (items.length === 0) return null;
+  if (isDismissed) return null;
+
   return (
     <section className="relative z-20 rounded-xl border border-neutral-800 bg-neutral-900/70 px-3 py-2">
       <div className="flex flex-wrap items-center justify-between gap-2">
@@ -251,8 +317,41 @@ export function LatestFurnitureCollectionItemsPreview() {
           >
             {isExpanded ? "Hide items" : "Show items"}
           </button>
+          <button
+            type="button"
+            onClick={dismissPreview}
+            className="rounded border border-neutral-700 px-2 py-1 text-[11px] text-neutral-300 hover:border-neutral-500"
+          >
+            Dismiss
+          </button>
         </div>
       </div>
+      {showDismissConfirm ? (
+        <div className="mt-2 rounded border border-amber-500/40 bg-amber-500/10 p-2">
+          <p className="text-[11px] text-amber-100">
+            {remainingItemsCount === 1
+              ? "1 item hasn't been added to My Furniture yet."
+              : `${remainingItemsCount} items haven't been added to My Furniture yet.`}
+          </p>
+          <div className="mt-1.5 flex items-center gap-1.5">
+            <button
+              type="button"
+              onClick={() => void handleMaterializeAll()}
+              disabled={isAddingAll}
+              className="rounded border border-amber-400/60 px-2 py-0.5 text-[11px] text-amber-100 hover:border-amber-300 disabled:cursor-not-allowed disabled:opacity-80"
+            >
+              {isAddingAll ? "Adding all..." : "Add remaining"}
+            </button>
+            <button
+              type="button"
+              onClick={persistDismiss}
+              className="rounded border border-neutral-600 px-2 py-0.5 text-[11px] text-neutral-200 hover:border-neutral-500"
+            >
+              Dismiss anyway
+            </button>
+          </div>
+        </div>
+      ) : null}
 
       {isExpanded ? (
         <div className="absolute left-0 right-0 top-full z-30 mt-2 rounded-xl border border-neutral-700 bg-neutral-900/95 p-3 shadow-2xl backdrop-blur-sm">

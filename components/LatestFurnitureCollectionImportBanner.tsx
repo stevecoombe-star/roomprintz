@@ -5,6 +5,10 @@ import { useEffect, useState } from "react";
 
 type CollectionImportResponse = {
   collectionImport?: {
+    import?: {
+      id?: string | null;
+      updated_at?: string | null;
+    };
     partner?: {
       name?: string | null;
       logo_url?: string | null;
@@ -16,6 +20,19 @@ type CollectionImportResponse = {
     publicUrl?: string;
   } | null;
 };
+
+const BANNER_DISMISS_KEY_PREFIX = "vibode:dismissedFurnitureCollectionBanner";
+
+function asOptionalString(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+function buildDismissKey(importId: string | null, updatedAt: string | null): string | null {
+  if (!importId || !updatedAt) return null;
+  return `${BANNER_DISMISS_KEY_PREFIX}:${encodeURIComponent(importId)}:${encodeURIComponent(updatedAt)}`;
+}
 
 export function LatestFurnitureCollectionImportBanner() {
   const [isLoading, setIsLoading] = useState(true);
@@ -46,6 +63,33 @@ export function LatestFurnitureCollectionImportBanner() {
       cancelled = true;
     };
   }, []);
+
+  const importId = asOptionalString(collectionImport?.import?.id);
+  const importUpdatedAt = asOptionalString(collectionImport?.import?.updated_at);
+  const dismissKey = buildDismissKey(importId, importUpdatedAt);
+
+  useEffect(() => {
+    if (!dismissKey) {
+      setIsDismissed(false);
+      return;
+    }
+    try {
+      setIsDismissed(window.localStorage.getItem(dismissKey) === "1");
+    } catch {
+      setIsDismissed(false);
+    }
+  }, [dismissKey]);
+
+  function dismissBanner() {
+    if (dismissKey) {
+      try {
+        window.localStorage.setItem(dismissKey, "1");
+      } catch {
+        // Ignore localStorage write failures and still hide in this view.
+      }
+    }
+    setIsDismissed(true);
+  }
 
   if (isLoading || isDismissed || !collectionImport) return null;
 
@@ -89,7 +133,7 @@ export function LatestFurnitureCollectionImportBanner() {
         </div>
         <button
           type="button"
-          onClick={() => setIsDismissed(true)}
+          onClick={dismissBanner}
           className="self-start rounded border border-slate-600 px-2 py-1 text-[11px] text-slate-300 hover:border-slate-500 hover:text-slate-100"
         >
           Dismiss
