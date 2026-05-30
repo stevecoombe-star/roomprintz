@@ -183,7 +183,7 @@ export default async function FurnitureCollectionLandingPage({
           <RemoteImage
             src={collection.hero_image_url}
             alt={`${collection.name ?? "Furniture Collection"} hero`}
-            className="h-64 rounded-2xl border border-slate-800 bg-slate-900"
+            className="h-64 w-full overflow-hidden rounded-2xl border border-slate-800 bg-slate-900 object-cover"
             placeholderLabel="No hero image"
           />
         </section>
