@@ -2,6 +2,10 @@
 
 import { useEffect, useState } from "react";
 
+type LatestFurnitureCollectionItemsPreviewProps = {
+  collapseSignal?: number;
+};
+
 type CollectionImportItem = {
   id?: string;
   product_name?: string | null;
@@ -65,7 +69,9 @@ function formatPrice(item: CollectionImportItem): string | null {
   return `${currency} ${item.price_amount.toFixed(2)}`;
 }
 
-export function LatestFurnitureCollectionItemsPreview() {
+export function LatestFurnitureCollectionItemsPreview({
+  collapseSignal = 0,
+}: LatestFurnitureCollectionItemsPreviewProps) {
   const [isLoading, setIsLoading] = useState(true);
   const [isExpanded, setIsExpanded] = useState(false);
   const [materializeByItemId, setMaterializeByItemId] = useState<Record<string, MaterializeState>>({});
@@ -140,6 +146,11 @@ export function LatestFurnitureCollectionItemsPreview() {
       setHasSeenShowItems(false);
     }
   }, [showItemsSeenKey]);
+
+  useEffect(() => {
+    if (collapseSignal <= 0) return;
+    setIsExpanded(false);
+  }, [collapseSignal]);
 
   function markShowItemsSeen() {
     try {

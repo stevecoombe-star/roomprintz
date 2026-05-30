@@ -2472,6 +2472,7 @@ function EditorPageInner() {
   }, []);
   const [pasteToPlaceStatus, setPasteToPlaceStatus] = useState<PasteToPlaceStatus | null>(null);
   const [pasteToPlaceMenuState, setPasteToPlaceMenuState] = useState<PasteToPlaceMenuState>(null);
+  const [partnerCollectionCollapseSignal, setPartnerCollectionCollapseSignal] = useState(0);
   const [activePasteSource, setActivePasteSource] = useState<ActivePasteSource>(null);
   const activePasteSourceRef = useRef<ActivePasteSource>(null);
   const [pasteToPlaceMenuClipboardPreviewUrl, setPasteToPlaceMenuClipboardPreviewUrl] =
@@ -9158,6 +9159,7 @@ function EditorPageInner() {
         setPasteToPlaceProgressCardPreviewUrl(null);
         setIsPasteToPlaceMenuIngesting(false);
       }
+      setPartnerCollectionCollapseSignal((current) => current + 1);
       setPasteToPlaceMenuState({
         ...state,
         anchorX: state.anchorX ?? state.xNorm,
@@ -11765,7 +11767,7 @@ function EditorPageInner() {
       <div className="shrink-0 border-b border-neutral-900 bg-neutral-950 px-4 py-2">
         <LatestFurnitureCollectionImportBanner />
         <div className="mt-2">
-          <LatestFurnitureCollectionItemsPreview />
+          <LatestFurnitureCollectionItemsPreview collapseSignal={partnerCollectionCollapseSignal} />
         </div>
       </div>
 
