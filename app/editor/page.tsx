@@ -16,6 +16,8 @@ import {
   type MyFurniturePickerMode,
 } from "@/components/editor/MyFurniturePicker";
 import { SignOutButton } from "@/components/auth/SignOutButton";
+import { LatestFurnitureCollectionImportBanner } from "@/components/LatestFurnitureCollectionImportBanner";
+import { LatestFurnitureCollectionItemsPreview } from "@/components/LatestFurnitureCollectionItemsPreview";
 import { TokenBalanceBadge } from "@/components/tokens/TokenBalanceBadge";
 import { TokenStatusNotice } from "@/components/tokens/TokenStatusNotice";
 import { SnackbarHost, type Snackbar } from "@/components/ui/SnackbarHost";
@@ -2470,6 +2472,7 @@ function EditorPageInner() {
   }, []);
   const [pasteToPlaceStatus, setPasteToPlaceStatus] = useState<PasteToPlaceStatus | null>(null);
   const [pasteToPlaceMenuState, setPasteToPlaceMenuState] = useState<PasteToPlaceMenuState>(null);
+  const [partnerCollectionCollapseSignal, setPartnerCollectionCollapseSignal] = useState(0);
   const [activePasteSource, setActivePasteSource] = useState<ActivePasteSource>(null);
   const activePasteSourceRef = useRef<ActivePasteSource>(null);
   const [pasteToPlaceMenuClipboardPreviewUrl, setPasteToPlaceMenuClipboardPreviewUrl] =
@@ -9156,6 +9159,7 @@ function EditorPageInner() {
         setPasteToPlaceProgressCardPreviewUrl(null);
         setIsPasteToPlaceMenuIngesting(false);
       }
+      setPartnerCollectionCollapseSignal((current) => current + 1);
       setPasteToPlaceMenuState({
         ...state,
         anchorX: state.anchorX ?? state.xNorm,
@@ -10036,6 +10040,16 @@ function EditorPageInner() {
       pushSnack("Saved furniture ready. Click in your room to place it.");
     },
     [closeMyFurniturePicker, prepareMyFurnitureSourceById, pushSnack]
+  );
+
+  const handleUseMyFurnitureItemForPasteToPlace = useCallback(
+    async (itemId: string): Promise<boolean> => {
+      const prepared = await prepareMyFurnitureSourceById(itemId);
+      if (!prepared) return false;
+      pushSnack("Saved furniture ready. Click in your room to place it.");
+      return true;
+    },
+    [prepareMyFurnitureSourceById, pushSnack]
   );
 
   const handleToggleSelectedMyFurnitureItem = useCallback((itemId: string) => {
@@ -11759,6 +11773,16 @@ function EditorPageInner() {
 
         </div>
       </header>
+
+      <div className="shrink-0 border-b border-neutral-900 bg-neutral-950 px-4 py-2">
+        <LatestFurnitureCollectionImportBanner />
+        <div className="mt-2">
+          <LatestFurnitureCollectionItemsPreview
+            collapseSignal={partnerCollectionCollapseSignal}
+            onUseMyFurnitureItemForPasteToPlace={handleUseMyFurnitureItemForPasteToPlace}
+          />
+        </div>
+      </div>
 
       {/* Main */}
       <div className="flex min-h-0 flex-1 w-full overflow-hidden">

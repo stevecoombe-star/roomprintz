@@ -54,6 +54,26 @@ type MoveResponse = {
   error?: string;
 };
 
+type FolderCollectionContextResponse = {
+  context?: {
+    partner?: {
+      name?: string | null;
+      slug?: string | null;
+      logo_url?: string | null;
+      website_url?: string | null;
+    };
+    collection?: {
+      name?: string | null;
+      slug?: string | null;
+    };
+    itemCount?: number;
+    publicUrl?: string | null;
+    multiCollection?: boolean;
+    collectionCount?: number;
+  } | null;
+  error?: string;
+};
+
 const VIBODE_MY_FURNITURE_ACTIVE_COLLECTION_KEY = "vibode:my-furniture-active-collection:v1";
 
 function asOptionalString(value: unknown): string | null {
@@ -140,6 +160,9 @@ export function MyFurniturePageClient() {
     folder: MyFurnitureFolder | null;
   }>({ open: false, mode: "create", folder: null });
   const [isFolderDialogSubmitting, setIsFolderDialogSubmitting] = useState(false);
+  const [folderCollectionContext, setFolderCollectionContext] = useState<
+    NonNullable<FolderCollectionContextResponse["context"]> | null
+  >(null);
 
   useEffect(() => {
     trackMyFurnitureEvent("vibode_my_furniture_page_viewed");
@@ -378,6 +401,58 @@ export function MyFurniturePageClient() {
     const folderId = selectedScope.slice("folder:".length);
     return items.filter((item) => item.folderId === folderId);
   }, [items, selectedScope]);
+
+  const selectedFolderId = useMemo(() => {
+    if (!selectedScope.startsWith("folder:")) return null;
+    return selectedScope.slice("folder:".length).trim() || null;
+  }, [selectedScope]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    if (!user || !selectedFolderId) {
+      setFolderCollectionContext(null);
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    void (async () => {
+      try {
+        const accessToken = await getSupabaseBrowserAccessToken();
+        if (!accessToken) {
+          if (!cancelled) setFolderCollectionContext(null);
+          return;
+        }
+
+        const response = await fetch(
+          `/api/vibode/my-furniture/folder-collection-context?folderId=${encodeURIComponent(
+            selectedFolderId
+          )}`,
+          {
+            method: "GET",
+            headers: {
+              Authorization: `Bearer ${accessToken}`,
+            },
+          }
+        );
+        if (!response.ok) {
+          if (!cancelled) setFolderCollectionContext(null);
+          return;
+        }
+        const payload = (await response.json().catch(() => ({}))) as FolderCollectionContextResponse;
+        if (!cancelled) {
+          setFolderCollectionContext(payload.context ?? null);
+        }
+      } catch {
+        if (!cancelled) setFolderCollectionContext(null);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [refresh, selectedFolderId, user]);
 
   const folderCounts = useMemo(() => {
     const byId: Record<string, number> = {};
@@ -696,6 +771,44 @@ export function MyFurniturePageClient() {
             openMoveDialog([...selectedItemIds], null);
           }}
         />
+        {selectedFolderId && folderCollectionContext ? (
+          <section className="mt-3 rounded-xl border border-emerald-500/35 bg-emerald-500/10 px-3 py-2">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <p className="text-[11px] font-medium uppercase tracking-wide text-emerald-200">
+                  From a Furniture Collection
+                </p>
+                <p className="text-xs text-slate-100">
+                  {folderCollectionContext.multiCollection
+                    ? `These pieces include items from multiple Furniture Collections by ${
+                        folderCollectionContext.partner?.name?.trim() || "Furniture Partner"
+                      }.`
+                    : `These pieces came from ${
+                        folderCollectionContext.collection?.name?.trim() || "Furniture Collection"
+                      } by ${folderCollectionContext.partner?.name?.trim() || "Furniture Partner"}.`}
+                </p>
+                {typeof folderCollectionContext.itemCount === "number" &&
+                Number.isFinite(folderCollectionContext.itemCount) ? (
+                  <p className="text-[11px] text-emerald-100/90">
+                    {Math.max(0, Math.trunc(folderCollectionContext.itemCount))} item
+                    {Math.max(0, Math.trunc(folderCollectionContext.itemCount)) === 1 ? "" : "s"} from
+                    this collection
+                  </p>
+                ) : null}
+              </div>
+              {folderCollectionContext.publicUrl ? (
+                <Link
+                  href={`${folderCollectionContext.publicUrl}${
+                    folderCollectionContext.publicUrl.includes("?") ? "&" : "?"
+                  }returnTo=my-furniture`}
+                  className="rounded-md border border-emerald-400/60 px-2 py-1 text-[11px] text-emerald-100 transition hover:border-emerald-300 hover:text-white"
+                >
+                  View collection
+                </Link>
+              ) : null}
+            </div>
+          </section>
+        ) : null}
         {content}
 
         <MyFurnitureDrawer
