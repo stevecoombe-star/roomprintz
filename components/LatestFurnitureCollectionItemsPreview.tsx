@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 
 type LatestFurnitureCollectionItemsPreviewProps = {
   collapseSignal?: number;
+  onUseMyFurnitureItemForPasteToPlace?: (userFurnitureId: string) => Promise<boolean> | boolean;
 };
 
 type CollectionImportItem = {
@@ -36,7 +37,7 @@ type CollectionImportResponse = {
   } | null;
 };
 
-type MaterializeState = {
+type ItemActionState = {
   status: "idle" | "loading" | "success" | "error";
   message: string | null;
 };
@@ -71,10 +72,13 @@ function formatPrice(item: CollectionImportItem): string | null {
 
 export function LatestFurnitureCollectionItemsPreview({
   collapseSignal = 0,
+  onUseMyFurnitureItemForPasteToPlace,
 }: LatestFurnitureCollectionItemsPreviewProps) {
   const [isLoading, setIsLoading] = useState(true);
   const [isExpanded, setIsExpanded] = useState(false);
-  const [materializeByItemId, setMaterializeByItemId] = useState<Record<string, MaterializeState>>({});
+  const [addByItemId, setAddByItemId] = useState<Record<string, ItemActionState>>({});
+  const [placeByItemId, setPlaceByItemId] = useState<Record<string, ItemActionState>>({});
+  const [addedToMyFurnitureByItemId, setAddedToMyFurnitureByItemId] = useState<Record<string, boolean>>({});
   const [failedImageByItemId, setFailedImageByItemId] = useState<Record<string, boolean>>({});
   const [isAddingAll, setIsAddingAll] = useState(false);
   const [addAllMessage, setAddAllMessage] = useState<string | null>(null);
@@ -119,9 +123,7 @@ export function LatestFurnitureCollectionItemsPreview({
   const materializableItemIds = items
     .map((item) => (typeof item.id === "string" ? item.id.trim() : ""))
     .filter((id) => id.length > 0);
-  const remainingItemsCount = materializableItemIds.filter(
-    (itemId) => materializeByItemId[itemId]?.status !== "success"
-  ).length;
+  const remainingItemsCount = materializableItemIds.filter((itemId) => !addedToMyFurnitureByItemId[itemId]).length;
 
   useEffect(() => {
     if (!dismissKey) {
@@ -191,35 +193,50 @@ export function LatestFurnitureCollectionItemsPreview({
     });
   }
 
-  async function handleMaterializeItem(itemId: string) {
+  async function materializeItem(itemId: string): Promise<{
+    userFurnitureId: string;
+    alreadyExisted: boolean;
+  }> {
+    const response = await fetch(`/api/vibode/furniture-collections/items/${itemId}/materialize`, {
+      method: "POST",
+      credentials: "same-origin",
+    });
+    const payload = (await response.json().catch(() => ({}))) as {
+      error?: string;
+      alreadyExisted?: boolean;
+      userFurniture?: {
+        id?: string | null;
+      } | null;
+    };
+    if (!response.ok) {
+      throw new Error(payload.error || "Could not add this item yet. Please try again.");
+    }
+    const userFurnitureId = typeof payload.userFurniture?.id === "string" ? payload.userFurniture.id.trim() : "";
+    if (!userFurnitureId) {
+      throw new Error("Could not prepare this item. Please try again.");
+    }
+    return {
+      userFurnitureId,
+      alreadyExisted: Boolean(payload.alreadyExisted),
+    };
+  }
+
+  async function handleAddToMyFurniture(itemId: string) {
     setShowDismissConfirm(false);
     setAddAllMessage(null);
     setAddAllError(null);
-    setMaterializeByItemId((current) => ({
+    setAddByItemId((current) => ({
       ...current,
       [itemId]: { status: "loading", message: null },
     }));
     try {
-      const response = await fetch(`/api/vibode/furniture-collections/items/${itemId}/materialize`, {
-        method: "POST",
-        credentials: "same-origin",
-      });
-      const payload = (await response.json().catch(() => ({}))) as {
-        error?: string;
-        message?: string;
-        alreadyExisted?: boolean;
-      };
-      if (!response.ok) {
-        throw new Error(payload.error || "Could not add this item yet. Please try again.");
-      }
-      const successMessage = payload.alreadyExisted
-        ? "Already in My Furniture"
-        : (payload.message ?? "Added to My Furniture.");
-      setMaterializeByItemId((current) => ({
+      const result = await materializeItem(itemId);
+      setAddedToMyFurnitureByItemId((current) => ({ ...current, [itemId]: true }));
+      setAddByItemId((current) => ({
         ...current,
         [itemId]: {
           status: "success",
-          message: successMessage,
+          message: result.alreadyExisted ? "Already in My Furniture" : "Added to My Furniture",
         },
       }));
     } catch (error: unknown) {
@@ -227,7 +244,51 @@ export function LatestFurnitureCollectionItemsPreview({
         error instanceof Error && error.message
           ? error.message
           : "Could not add this item yet. Please try again.";
-      setMaterializeByItemId((current) => ({
+      setAddByItemId((current) => ({
+        ...current,
+        [itemId]: { status: "error", message },
+      }));
+    }
+  }
+
+  async function handlePlaceInRoom(itemId: string) {
+    setShowDismissConfirm(false);
+    setAddAllMessage(null);
+    setAddAllError(null);
+    setPlaceByItemId((current) => ({
+      ...current,
+      [itemId]: { status: "loading", message: null },
+    }));
+    try {
+      const result = await materializeItem(itemId);
+      setAddedToMyFurnitureByItemId((current) => ({ ...current, [itemId]: true }));
+      setAddByItemId((current) => ({
+        ...current,
+        [itemId]: {
+          status: "success",
+          message: result.alreadyExisted ? "Already in My Furniture" : "Added to My Furniture",
+        },
+      }));
+      let isReadyForPasteToPlace = true;
+      if (onUseMyFurnitureItemForPasteToPlace) {
+        isReadyForPasteToPlace = Boolean(await onUseMyFurnitureItemForPasteToPlace(result.userFurnitureId));
+      }
+      if (!isReadyForPasteToPlace) {
+        throw new Error("Could not prepare this item. Please try again.");
+      }
+      setPlaceByItemId((current) => ({
+        ...current,
+        [itemId]: {
+          status: "success",
+          message: "Ready to place",
+        },
+      }));
+    } catch (error: unknown) {
+      const message =
+        error instanceof Error && error.message
+          ? error.message
+          : "Could not prepare this item. Please try again.";
+      setPlaceByItemId((current) => ({
         ...current,
         [itemId]: { status: "error", message },
       }));
@@ -307,7 +368,7 @@ export function LatestFurnitureCollectionItemsPreview({
         });
       }
 
-      setMaterializeByItemId((current) => {
+      setAddByItemId((current) => {
         const next = { ...current };
         for (const item of items) {
           const itemId = typeof item.id === "string" ? item.id.trim() : "";
@@ -325,6 +386,17 @@ export function LatestFurnitureCollectionItemsPreview({
               message: result.error || "Could not add this item yet. Please try again.",
             };
           }
+        }
+        return next;
+      });
+      setAddedToMyFurnitureByItemId((current) => {
+        const next = { ...current };
+        for (const item of items) {
+          const itemId = typeof item.id === "string" ? item.id.trim() : "";
+          if (!itemId) continue;
+          const result = resultsById.get(itemId);
+          if (!result?.ok) continue;
+          next[itemId] = true;
         }
         return next;
       });
@@ -452,22 +524,60 @@ export function LatestFurnitureCollectionItemsPreview({
               const title = item.product_name?.trim() || "Furniture item";
               const price = formatPrice(item);
               const itemId = typeof item.id === "string" && item.id.trim().length > 0 ? item.id : null;
-              const materializeState = itemId ? materializeByItemId[itemId] : undefined;
+              const addState = itemId ? addByItemId[itemId] : undefined;
+              const placeState = itemId ? placeByItemId[itemId] : undefined;
               const hasImageFailed = itemId ? Boolean(failedImageByItemId[itemId]) : false;
-              const isAdding = materializeState?.status === "loading";
-              const isAdded = materializeState?.status === "success";
-              const hasError = materializeState?.status === "error";
-              const actionLabel = isAdding
+              const isAdding = addState?.status === "loading";
+              const isPreparing = placeState?.status === "loading";
+              const isItemBusy = isAdding || isPreparing;
+              const hasPlaceError = placeState?.status === "error";
+              const hasAddError = addState?.status === "error";
+              const isPlaceReady = placeState?.status === "success";
+              const productUrl =
+                typeof item.product_url === "string" && item.product_url.trim().length > 0
+                  ? item.product_url.trim()
+                  : null;
+              const addActionLabel = isAdding
                 ? "Adding..."
-                : isAdded
-                  ? "Added to My Furniture"
+                : addState?.status === "success"
+                  ? (addState.message ?? "Added to My Furniture")
                   : "Add to My Furniture";
+              const placeActionLabel = isPreparing ? "Preparing..." : "Place in room";
               return (
                 <article
                   key={item.id ?? `${title}-${item.sort_order ?? 0}`}
                   className="rounded-lg border border-neutral-800 bg-neutral-950/70 p-1.5 transition hover:border-neutral-700"
                 >
-                  {item.image_url && !hasImageFailed ? (
+                  {productUrl ? (
+                    <a
+                      href={productUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="group/image relative block rounded border border-neutral-800 bg-neutral-900 transition hover:border-neutral-600"
+                    >
+                      {item.image_url && !hasImageFailed ? (
+                        <div className="aspect-[4/3] w-full overflow-hidden rounded">
+                          {/* eslint-disable-next-line @next/next/no-img-element */}
+                          <img
+                            src={item.image_url}
+                            alt={title}
+                            onError={() => {
+                              if (!itemId) return;
+                              setFailedImageByItemId((current) => ({ ...current, [itemId]: true }));
+                            }}
+                            className="h-full w-full object-contain"
+                          />
+                        </div>
+                      ) : (
+                        <div className="flex aspect-[4/3] w-full items-center justify-center rounded text-[11px] text-neutral-500">
+                          Image unavailable
+                        </div>
+                      )}
+                      <span className="pointer-events-none absolute right-1.5 top-1.5 rounded border border-neutral-600 bg-neutral-900/90 px-1.5 py-0.5 text-[10px] text-neutral-200 opacity-80 transition group-hover/image:opacity-100">
+                        View product ↗
+                      </span>
+                    </a>
+                  ) : item.image_url && !hasImageFailed ? (
                     <div className="aspect-[4/3] w-full overflow-hidden rounded border border-neutral-800 bg-neutral-900">
                       {/* eslint-disable-next-line @next/next/no-img-element */}
                       <img
@@ -494,40 +604,46 @@ export function LatestFurnitureCollectionItemsPreview({
                     {price ? <p className="text-[11px] text-emerald-300">{price}</p> : null}
                   </div>
                   <div className="mt-1.5 flex items-center gap-1.5">
-                    {item.product_url ? (
-                      <a
-                        href={item.product_url}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="rounded border border-neutral-700 px-2 py-0.5 text-[11px] text-neutral-200 hover:border-neutral-500"
-                      >
-                        View product
-                      </a>
-                    ) : null}
                     <button
                       type="button"
-                      disabled={!itemId || isAdding || isAdded}
+                      disabled={!itemId || isItemBusy}
                       onClick={() => {
-                        if (!itemId || isAdding || isAdded) return;
-                        void handleMaterializeItem(itemId);
+                        if (!itemId || isItemBusy) return;
+                        void handleAddToMyFurniture(itemId);
                       }}
                       className={`rounded border px-2 py-0.5 text-[11px] ${
-                        !itemId || isAdded
+                        !itemId
                           ? "border-neutral-700 bg-neutral-800/60 text-neutral-300"
                           : "border-neutral-600 text-neutral-200 hover:border-neutral-500"
                       } disabled:cursor-not-allowed disabled:opacity-80`}
                     >
-                      {actionLabel}
+                      {addActionLabel}
+                    </button>
+                    <button
+                      type="button"
+                      disabled={!itemId || isItemBusy}
+                      onClick={() => {
+                        if (!itemId || isItemBusy) return;
+                        void handlePlaceInRoom(itemId);
+                      }}
+                      className="rounded border border-neutral-300 bg-neutral-100 px-2 py-0.5 text-[11px] font-medium text-neutral-900 hover:bg-white disabled:cursor-not-allowed disabled:opacity-80"
+                    >
+                      {placeActionLabel}
                     </button>
                   </div>
-                  {hasError ? (
+                  {hasPlaceError ? (
                     <p className="mt-1.5 text-[11px] text-rose-300">
-                      {materializeState?.message || "Could not add this item yet. Please try again."}
+                      {placeState?.message || "Could not prepare this item. Please try again."}
                     </p>
                   ) : null}
-                  {isAdded ? (
+                  {!hasPlaceError && hasAddError ? (
+                    <p className="mt-1.5 text-[11px] text-rose-300">
+                      {addState?.message || "Could not add this item yet. Please try again."}
+                    </p>
+                  ) : null}
+                  {isPlaceReady ? (
                     <p className="mt-1.5 text-[11px] text-emerald-300">
-                      Open My Furniture to place it.
+                      {placeState?.message || "Ready to place"}
                     </p>
                   ) : null}
                 </article>

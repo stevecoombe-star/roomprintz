@@ -10042,6 +10042,16 @@ function EditorPageInner() {
     [closeMyFurniturePicker, prepareMyFurnitureSourceById, pushSnack]
   );
 
+  const handleUseMyFurnitureItemForPasteToPlace = useCallback(
+    async (itemId: string): Promise<boolean> => {
+      const prepared = await prepareMyFurnitureSourceById(itemId);
+      if (!prepared) return false;
+      pushSnack("Saved furniture ready. Click in your room to place it.");
+      return true;
+    },
+    [prepareMyFurnitureSourceById, pushSnack]
+  );
+
   const handleToggleSelectedMyFurnitureItem = useCallback((itemId: string) => {
     setSelectedMyFurnitureItemIds((prev) =>
       prev.includes(itemId) ? prev.filter((id) => id !== itemId) : [...prev, itemId]
@@ -11767,7 +11777,10 @@ function EditorPageInner() {
       <div className="shrink-0 border-b border-neutral-900 bg-neutral-950 px-4 py-2">
         <LatestFurnitureCollectionImportBanner />
         <div className="mt-2">
-          <LatestFurnitureCollectionItemsPreview collapseSignal={partnerCollectionCollapseSignal} />
+          <LatestFurnitureCollectionItemsPreview
+            collapseSignal={partnerCollectionCollapseSignal}
+            onUseMyFurnitureItemForPasteToPlace={handleUseMyFurnitureItemForPasteToPlace}
+          />
         </div>
       </div>
 
