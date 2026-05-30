@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { headers } from "next/headers";
 import { notFound } from "next/navigation";
+import Link from "next/link";
 import RemoteImage from "./RemoteImage";
 import CollectionImportCta from "./CollectionImportCta";
 
@@ -104,10 +105,13 @@ export async function generateMetadata({
 
 export default async function FurnitureCollectionLandingPage({
   params,
+  searchParams,
 }: {
   params: Promise<{ partnerSlug: string; collectionSlug: string }>;
+  searchParams: Promise<{ returnTo?: string; folderId?: string }>;
 }) {
   const { partnerSlug, collectionSlug } = await params;
+  const query = await searchParams;
   const result = await fetchPublicCollection({ partnerSlug, collectionSlug });
 
   if (result.status === 404) notFound();
@@ -119,10 +123,26 @@ export default async function FurnitureCollectionLandingPage({
   const partner = payload.partner as PublicPartner;
   const collection = payload.collection as PublicCollection;
   const items = Array.isArray(payload.items) ? payload.items : [];
+  const showReturnToMyFurniture = query?.returnTo === "my-furniture";
+  const returnHref = "/my-furniture";
 
   return (
     <main className="min-h-screen bg-slate-950 text-slate-50">
       <div className="mx-auto w-full max-w-6xl px-4 py-8 md:py-12 space-y-8">
+        {showReturnToMyFurniture ? (
+          <section className="rounded-xl border border-slate-800 bg-slate-900/70 px-4 py-2.5">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <Link
+                href={returnHref}
+                className="inline-flex items-center text-sm text-slate-100 hover:text-emerald-200"
+              >
+                ← Return to My Furniture
+              </Link>
+              <p className="text-xs text-slate-400">You&apos;re viewing the original Furniture Collection.</p>
+            </div>
+          </section>
+        ) : null}
+
         <section className="rounded-2xl border border-slate-800 bg-slate-900/70 p-5">
           <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
             <div className="flex items-center gap-3">

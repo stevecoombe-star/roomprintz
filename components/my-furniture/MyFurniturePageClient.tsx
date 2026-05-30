@@ -798,7 +798,9 @@ export function MyFurniturePageClient() {
               </div>
               {folderCollectionContext.publicUrl ? (
                 <Link
-                  href={folderCollectionContext.publicUrl}
+                  href={`${folderCollectionContext.publicUrl}${
+                    folderCollectionContext.publicUrl.includes("?") ? "&" : "?"
+                  }returnTo=my-furniture`}
                   className="rounded-md border border-emerald-400/60 px-2 py-1 text-[11px] text-emerald-100 transition hover:border-emerald-300 hover:text-white"
                 >
                   View collection
