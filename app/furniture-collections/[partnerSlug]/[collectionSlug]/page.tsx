@@ -207,7 +207,7 @@ export default async function FurnitureCollectionLandingPage({
                     <RemoteImage
                       src={item.image_url}
                       alt={title}
-                      className="h-44 w-full rounded-lg border border-slate-700 bg-slate-900"
+                      className="aspect-[4/3] w-full overflow-hidden rounded-lg border border-slate-700 bg-slate-900 object-contain"
                       placeholderLabel="Image unavailable"
                     />
                     <div className="space-y-1">
