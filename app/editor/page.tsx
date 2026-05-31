@@ -10111,20 +10111,19 @@ function EditorPageInner() {
   }, []);
 
   const handleFinishMyFurnitureSelection = useCallback(
-    async (selectedIds: string[]) => {
-      if (myFurnitureMode !== "add") return;
-      if (myFurnitureSelectingIds.length > 0) return;
+    async (selectedIds: string[]): Promise<boolean> => {
+      if (myFurnitureSelectingIds.length > 0) return false;
       const normalizedSelectedIds = Array.from(
         new Set(selectedIds.filter((id): id is string => typeof id === "string" && id.trim().length > 0))
       );
-      if (normalizedSelectedIds.length === 0) return;
+      if (normalizedSelectedIds.length === 0) return false;
 
       if (normalizedSelectedIds.length === 1) {
         const prepared = await prepareMyFurnitureSourceById(normalizedSelectedIds[0]);
-        if (!prepared) return;
+        if (!prepared) return false;
         closeMyFurniturePicker();
         pushSnack("Saved furniture ready. Click in your room to place it.");
-        return;
+        return true;
       }
 
       setMyFurnitureSelectingIds(normalizedSelectedIds);
@@ -10144,14 +10143,14 @@ function EditorPageInner() {
 
         if (resolvedFurnitureIds.length === 0 || mergedEligibleSkus.length === 0) {
           pushSnack("Selected furniture items are no longer available. Choose different items.");
-          return;
+          return false;
         }
 
         const primaryFurnitureId = resolvedFurnitureIds[0];
         const primarySku = mergedEligibleSkus[0];
         if (!primarySku) {
           pushSnack("Unable to prepare selected furniture items.");
-          return;
+          return false;
         }
         const selectedPreviewUrl =
           resolvedFurnitureIds
@@ -10193,6 +10192,7 @@ function EditorPageInner() {
         pushSnack(
           `${resolvedFurnitureIds.length} items ready. Use Let Vibode decide.`
         );
+        return true;
       } finally {
         setMyFurnitureSelectingIds([]);
       }
@@ -10201,12 +10201,18 @@ function EditorPageInner() {
       activatePreparedMyFurnitureSource,
       closeMyFurniturePicker,
       myFurnitureItems,
-      myFurnitureMode,
       myFurnitureSelectingIds.length,
       prepareMyFurnitureSourceById,
       pushSnack,
       resolveMyFurnitureForEdit,
     ]
+  );
+
+  const handleUseMyFurnitureItemsForLetVibodeDecide = useCallback(
+    async (itemIds: string[]): Promise<boolean> => {
+      return handleFinishMyFurnitureSelection(itemIds);
+    },
+    [handleFinishMyFurnitureSelection]
   );
 
   const clearRemoveMarker = useCallback(
@@ -11832,6 +11838,7 @@ function EditorPageInner() {
           <LatestFurnitureCollectionItemsPreview
             collapseSignal={partnerCollectionCollapseSignal}
             onUseMyFurnitureItemForPasteToPlace={handleUseMyFurnitureItemForPasteToPlace}
+            onUseMyFurnitureItemsForLetVibodeDecide={handleUseMyFurnitureItemsForLetVibodeDecide}
           />
         </div>
       </div>
