@@ -41,6 +41,38 @@ const SUPABASE_URL = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABAS
 const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "";
 const SUPABASE_SERVICE_ROLE_KEY =
   process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SERVICE_KEY || "";
+const STAGE4_STYLE_MODE_ORDER = [
+  "style_room",
+  "accessories",
+  "wall_art",
+  "shelves",
+  "curtains",
+  "ceiling_light",
+] as const;
+type Stage4StyleIntent = (typeof STAGE4_STYLE_MODE_ORDER)[number];
+const STAGE4_STYLE_MODES = new Set<Stage4StyleIntent>(STAGE4_STYLE_MODE_ORDER);
+const STAGE4_DEFAULT_STYLE_MODE: Stage4StyleIntent = "style_room";
+const STAGE4_INTENT_LABELS: Record<Stage4StyleIntent, string> = {
+  style_room: "Overall room style",
+  accessories: "Accessories",
+  wall_art: "Wall art",
+  shelves: "Shelves",
+  curtains: "Curtains",
+  ceiling_light: "Ceiling light",
+};
+const STAGE4_INTENT_PROMPT_LINES: Record<Stage4StyleIntent, string> = {
+  style_room:
+    "Apply a cohesive overall interior design style and vibe to the room while preserving architecture, camera angle, and core layout.",
+  accessories:
+    "Add or refine tasteful decor accessories such as cushions, throws, rugs, tabletop items, plants, books, trays, and small decorative accents where appropriate.",
+  wall_art: "Add or refine wall art that fits the room style, scale, and natural wall placement.",
+  shelves:
+    "Add or refine shelving or shelf styling where architecturally plausible, including naturally styled objects on shelves.",
+  curtains:
+    "Add or refine curtains or window treatments where windows are present or clearly implied, matching the overall style.",
+  ceiling_light:
+    "Add or refine a ceiling light or overhead fixture where architecturally plausible, with lighting that stays coherent with the scene.",
+};
 
 type StageRunCompositorResult = {
   imageUrl: string;
@@ -65,6 +97,50 @@ function parseOptionalStageNumber(value: unknown): number | null {
   const n = Math.trunc(value);
   if (n < 0 || n > 32767) return null;
   return n;
+}
+
+function isStage4StyleIntent(value: unknown): value is Stage4StyleIntent {
+  return typeof value === "string" && STAGE4_STYLE_MODES.has(value as Stage4StyleIntent);
+}
+
+function parseStage4Modes(value: unknown): Stage4StyleIntent[] {
+  if (!Array.isArray(value)) return [];
+  const seen = new Set<Stage4StyleIntent>();
+  for (const candidate of value) {
+    const normalized = safeStr(candidate);
+    if (!isStage4StyleIntent(normalized)) continue;
+    seen.add(normalized);
+  }
+  return Array.from(seen);
+}
+
+function resolveStage4SelectedIntents(body: Record<string, unknown>): Stage4StyleIntent[] {
+  const selectedFromIntents = parseStage4Modes(body.stage4Intents);
+  if (selectedFromIntents.length > 0) return selectedFromIntents;
+  const selectedFromModes = parseStage4Modes(body.stage4Modes);
+  if (selectedFromModes.length > 0) return selectedFromModes;
+  const singleMode = safeStr(body.stage4Mode);
+  if (isStage4StyleIntent(singleMode)) return [singleMode];
+  return [STAGE4_DEFAULT_STYLE_MODE];
+}
+
+function buildStage4CombinedPrompt(selectedIntents: Stage4StyleIntent[]): string {
+  const sections = selectedIntents.map((intent, idx) => {
+    const label = STAGE4_INTENT_LABELS[intent];
+    const detail = STAGE4_INTENT_PROMPT_LINES[intent];
+    return `${idx + 1}. ${label}: ${detail}`;
+  });
+  return [
+    "Apply the selected STYLE updates in one cohesive interior design pass.",
+    "Do not treat these as separate edits. Integrate all requested changes into a single natural result.",
+    "Preserve the room's architecture, camera angle, perspective, core layout, scene realism, and existing furniture placement.",
+    "Keep lighting coherent and physically plausible across all changes.",
+    "",
+    "Selected STYLE updates:",
+    ...sections,
+    "",
+    "The final image should feel like one professionally styled room, not separate unrelated edits.",
+  ].join("\n");
 }
 
 function isAbortError(err: unknown): boolean {
@@ -111,8 +187,12 @@ function summarizeSafeRequestPayload(args: {
   body: Record<string, unknown>;
   stageNumber: number | null;
   modelVersion: string;
+  resolvedStage4Intents: Stage4StyleIntent[];
+  stage4CombinedPrompt: string | null;
 }) {
   const eligibleSkus = Array.isArray(args.body.eligibleSkus) ? args.body.eligibleSkus : [];
+  const stage4Modes = parseStage4Modes(args.body.stage4Modes);
+  const stage4Intents = parseStage4Modes(args.body.stage4Intents);
   return {
     stageNumber: args.stageNumber,
     modelVersion: args.modelVersion,
@@ -126,6 +206,11 @@ function summarizeSafeRequestPayload(args: {
         : null,
     eligibleSkusCount: eligibleSkus.length,
     stage4Mode: safeStr(args.body.stage4Mode),
+    stage4Modes,
+    stage4Intents,
+    stage4ResolvedIntents: args.resolvedStage4Intents,
+    stage4PromptMode: args.stage4CombinedPrompt ? "combined" : "single_or_legacy",
+    stage4PromptChars: args.stage4CombinedPrompt?.length ?? 0,
     stage1Mode: safeStr(args.body.stage1Mode),
   };
 }
@@ -155,6 +240,7 @@ function summarizeSafeResponsePayload(args: {
 function resolveStageRunWorkflowContext(args: {
   stageNumber: number | null;
   stage4Mode: string | null;
+  stage4Modes: Stage4StyleIntent[];
   enhancePhoto: boolean;
   repairDamage: boolean;
   repaintWalls: boolean;
@@ -163,15 +249,10 @@ function resolveStageRunWorkflowContext(args: {
   flooringType: string | null;
   selectedFlooring: string | null;
 }): { workflowType: string; actionType: string; sourceTrigger: string } {
-  const styleModes = new Set([
-    "style_room",
-    "accessories",
-    "wall_art",
-    "shelves",
-    "curtains",
-    "ceiling_light",
-  ]);
-  if (args.stage4Mode && styleModes.has(args.stage4Mode)) {
+  const hasStyleSelection =
+    (args.stage4Mode ? isStage4StyleIntent(args.stage4Mode) : false) ||
+    args.stage4Modes.some((mode) => STAGE4_STYLE_MODES.has(mode));
+  if (hasStyleSelection) {
     return {
       workflowType: "style",
       actionType: "stage-run",
@@ -307,10 +388,41 @@ export async function POST(req: NextRequest) {
       );
     }
     const tokenStageNumber = preflightStageNumber;
-    const stage4Mode = safeStr(body.stage4Mode);
+    const resolvedStage4Intents =
+      tokenStageNumber === 4 ? resolveStage4SelectedIntents(body) : [];
+    const stage4Mode =
+      tokenStageNumber === 4
+        ? (resolvedStage4Intents[0] ?? STAGE4_DEFAULT_STYLE_MODE)
+        : safeStr(body.stage4Mode);
+    const stage4Modes =
+      tokenStageNumber === 4 ? resolvedStage4Intents : parseStage4Modes(body.stage4Modes);
+    const stage4CombinedPrompt =
+      tokenStageNumber === 4 && resolvedStage4Intents.length > 1
+        ? buildStage4CombinedPrompt(resolvedStage4Intents)
+        : null;
+    if (tokenStageNumber === 4) {
+      payloadForCompositor.stage4Mode = stage4Mode;
+      payloadForCompositor.stage4Modes = stage4Modes;
+      payloadForCompositor.stage4Intents = resolvedStage4Intents;
+      payloadForCompositor.stage4IntentLabels = resolvedStage4Intents.map(
+        (intent) => STAGE4_INTENT_LABELS[intent]
+      );
+      if (stage4CombinedPrompt) {
+        payloadForCompositor.stage4Prompt = stage4CombinedPrompt;
+        payloadForCompositor.prompt = stage4CombinedPrompt;
+        payloadForCompositor.instruction = stage4CombinedPrompt;
+      }
+      console.info("[vibode/stage-run] resolved Stage 4 style intents", {
+        stage4Mode,
+        stage4Modes,
+        stage4Intents: resolvedStage4Intents,
+        promptMode: stage4CombinedPrompt ? "combined" : "single_or_legacy",
+      });
+    }
     const stageRunContextHeaders = resolveStageRunWorkflowContext({
       stageNumber: tokenStageNumber,
       stage4Mode,
+      stage4Modes,
       enhancePhoto: body.enhancePhoto === true,
       repairDamage: body.repairDamage === true,
       repaintWalls: body.repaintWalls === true,
@@ -528,6 +640,8 @@ export async function POST(req: NextRequest) {
           body,
           stageNumber: resolvedStageNumber,
           modelVersion,
+          resolvedStage4Intents,
+          stage4CombinedPrompt,
         }),
         response_payload: summarizeSafeResponsePayload({
           result: responseResult,

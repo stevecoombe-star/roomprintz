@@ -1217,8 +1217,9 @@ const STAGE4_ADVANCED_ACTIONS: Stage4Action[] = [
   "curtains",
   "ceiling_light",
 ];
+const STAGE4_ACTIONS: Stage4Action[] = [STAGE4_PRIMARY_ACTION, ...STAGE4_ADVANCED_ACTIONS];
 const STAGE4_ACTION_LABELS: Record<Stage4Action, string> = {
-  style_room: "Style Room",
+  style_room: "Overall room style",
   accessories: "Accessories",
   wall_art: "Wall Art",
   shelves: "Shelves",
@@ -1238,6 +1239,16 @@ const ROOM_OPEN_REVEAL_SETTLE_MS = 180;
 function isStage4Action(value: unknown): value is Stage4Action {
   if (typeof value !== "string") return false;
   return Object.prototype.hasOwnProperty.call(STAGE4_ACTION_LABELS, value);
+}
+
+function normalizeStage4Actions(actions: unknown): Stage4Action[] {
+  if (!Array.isArray(actions)) return [];
+  const selected = new Set<Stage4Action>();
+  for (const action of actions) {
+    if (!isStage4Action(action)) continue;
+    selected.add(action);
+  }
+  return STAGE4_ACTIONS.filter((action) => selected.has(action));
 }
 
 function mergeStage3SkuItems(prev: Stage3SkuItem[], userSkus: UserSku[]): Stage3SkuItem[] {
@@ -2603,7 +2614,13 @@ function EditorPageInner() {
   const workflowTabSingleClickTimeoutRef = useRef<number | null>(null);
   const [activeStage, setActiveStage] = useState<WorkflowStage>(1);
   const [stageStatus, setStageStatus] = useState<StageStatusMap>(INITIAL_STAGE_STATUS);
-  const [stage4RunningAction, setStage4RunningAction] = useState<Stage4Action | null>(null);
+  const [selectedStage4Actions, setSelectedStage4Actions] = useState<Stage4Action[]>([
+    STAGE4_PRIMARY_ACTION,
+  ]);
+  const [stage4SelectionValidationMessage, setStage4SelectionValidationMessage] = useState<
+    string | null
+  >(null);
+  const [stage4RunningActions, setStage4RunningActions] = useState<Stage4Action[]>([]);
   const [hasFurniturePass, setHasFurniturePass] = useState(false);
   const [lastStageOutputs, setLastStageOutputs] = useState<StageOutputMap>({});
   const [workingImageUrl, setWorkingImageUrl] = useState<string | null>(null);
@@ -2927,7 +2944,7 @@ function EditorPageInner() {
     invalidateStageRunOperation();
     setStageStatus((prev) => ({ ...prev, [activeRun.stageNumber]: activeRun.previousStageStatus }));
     if (activeRun.stageNumber === 4) {
-      setStage4RunningAction(null);
+      setStage4RunningActions([]);
     }
     pushSnack("Placement cancelled.");
   }, [invalidateStageRunOperation, pushSnack, startStageRunCancelCooldown]);
@@ -2978,6 +2995,10 @@ function EditorPageInner() {
     stage1EmptyRoomSelected;
   const hasMeaningfulStage2SetupSelection =
     stage2Repair || stage2Repaint || stage2Flooring !== "none";
+  const stage4RunSelectionLabel = useMemo(() => {
+    if (stage4RunningActions.length === 0) return null;
+    return stage4RunningActions.map((action) => STAGE4_ACTION_LABELS[action]).join(", ");
+  }, [stage4RunningActions]);
   const [productImageUrl, setProductImageUrl] = useState("");
   const [productLabel, setProductLabel] = useState("User Upload");
   const [uploadedImageDataUrl, setUploadedImageDataUrl] = useState<string | null>(null);
@@ -3675,7 +3696,9 @@ function EditorPageInner() {
     const store = useEditorStore.getState();
     setHasFurniturePass(false);
     setStageStatus(INITIAL_STAGE_STATUS);
-    setStage4RunningAction(null);
+    setSelectedStage4Actions([STAGE4_PRIMARY_ACTION]);
+    setStage4SelectionValidationMessage(null);
+    setStage4RunningActions([]);
     setLastStageOutputs((prev) => (Object.keys(prev).length === 0 ? prev : {}));
     setWorkingImageUrl(null);
     setIsWorkingImageGenerated(false);
@@ -6953,20 +6976,26 @@ function EditorPageInner() {
       return null;
     }
 
-    const stage4ActionForRun: Stage4Action =
+    const stage4ActionsForRun: Stage4Action[] =
       stageNumber === 4
-        ? isStage4Action(options.stage4Action)
-          ? options.stage4Action
-          : isStage4Action(options.mode)
-            ? options.mode
-            : isStage4Action(options.action)
-              ? options.action
-              : STAGE4_PRIMARY_ACTION
-        : STAGE4_PRIMARY_ACTION;
+        ? (() => {
+            const actionsFromStage4Actions = normalizeStage4Actions(options.stage4Actions);
+            if (actionsFromStage4Actions.length > 0) return actionsFromStage4Actions;
+            const actionsFromStage4Modes = normalizeStage4Actions(options.stage4Modes);
+            if (actionsFromStage4Modes.length > 0) return actionsFromStage4Modes;
+            const actionsFromStage4Intents = normalizeStage4Actions(options.stage4Intents);
+            if (actionsFromStage4Intents.length > 0) return actionsFromStage4Intents;
+            if (isStage4Action(options.stage4Action)) return [options.stage4Action];
+            if (isStage4Action(options.mode)) return [options.mode];
+            if (isStage4Action(options.action)) return [options.action];
+            return [STAGE4_PRIMARY_ACTION];
+          })()
+        : [STAGE4_PRIMARY_ACTION];
+    const stage4PrimaryActionForRun = stage4ActionsForRun[0] ?? STAGE4_PRIMARY_ACTION;
 
     setStageStatus((prev) => ({ ...prev, [stageNumber]: "running" }));
     if (stageNumber === 4) {
-      setStage4RunningAction(stage4ActionForRun);
+      setStage4RunningActions(stage4ActionsForRun);
     }
 
     try {
@@ -7047,7 +7076,10 @@ function EditorPageInner() {
             : defaultEligibleSkus;
           payload.targetCount = hasTargetCountOverride ? options.targetCount : 8;
         } else if (stageNumber === 4) {
-          payload.stage4Mode = stage4ActionForRun;
+          payload.stage4Mode = stage4PrimaryActionForRun;
+          payload.stage4Modes = stage4ActionsForRun;
+          payload.stage4Intents = stage4ActionsForRun;
+          payload.stage4IntentLabels = stage4ActionsForRun.map((action) => STAGE4_ACTION_LABELS[action]);
         }
       }
 
@@ -7190,7 +7222,8 @@ function EditorPageInner() {
 
       const tokenUsageMessage = buildTokenUsageMessage(json);
       if (stageNumber === 4) {
-        pushSnack(`Stage 4 ${STAGE4_ACTION_LABELS[stage4ActionForRun]} complete. ${tokenUsageMessage}.`);
+        const stage4Summary = stage4ActionsForRun.map((action) => STAGE4_ACTION_LABELS[action]).join(", ");
+        pushSnack(`Stage 4 ${stage4Summary} complete. ${tokenUsageMessage}.`);
       } else {
         pushSnack(`Stage ${stageNumber} complete. ${tokenUsageMessage}.`);
       }
@@ -7206,7 +7239,8 @@ function EditorPageInner() {
       if (errMessage) {
         pushSnack(errMessage);
       } else if (stageNumber === 4) {
-        pushSnack(`Stage 4 ${STAGE4_ACTION_LABELS[stage4ActionForRun]} failed.`);
+        const stage4Summary = stage4ActionsForRun.map((action) => STAGE4_ACTION_LABELS[action]).join(", ");
+        pushSnack(`Stage 4 ${stage4Summary} failed.`);
       } else {
         pushSnack(`Stage ${stageNumber} failed.`);
       }
@@ -7220,7 +7254,7 @@ function EditorPageInner() {
       }
       if (stageNumber === 4) {
         if (!lifecycle?.beforeCommit || lifecycle.beforeCommit()) {
-          setStage4RunningAction(null);
+          setStage4RunningActions([]);
         }
       }
     }
@@ -7258,6 +7292,27 @@ function EditorPageInner() {
         clearStageRunSettling();
       }
     };
+
+  const toggleStage4ActionSelection = (action: Stage4Action, selected: boolean) => {
+    setSelectedStage4Actions((prev) => {
+      const next = selected ? [...prev, action] : prev.filter((item) => item !== action);
+      const deduped = Array.from(new Set(next));
+      return STAGE4_ACTIONS.filter((stage4Action) => deduped.includes(stage4Action));
+    });
+    setStage4SelectionValidationMessage(null);
+  };
+
+  const runSelectedStyleActions = () => {
+    const selectedActions = normalizeStage4Actions(selectedStage4Actions);
+    if (selectedActions.length === 0) {
+      const message = "Choose at least one STYLE option to run.";
+      setStage4SelectionValidationMessage(message);
+      pushSnack(message);
+      return;
+    }
+    setStage4SelectionValidationMessage(null);
+    void runStageWithCancellation(4, { stage4Actions: selectedActions });
+  };
 
   const runEdit = async (
     action: EditAction,
@@ -12491,12 +12546,36 @@ function EditorPageInner() {
                   <div className="mt-3 space-y-3">
                     <div className="rounded-md border border-neutral-800 bg-neutral-900/50 p-2.5">
                       <div className="text-[11px] uppercase tracking-wide text-neutral-500">Style Scene</div>
+                      <div className="mt-2 text-xs text-neutral-400">
+                        Select one or more style updates, then run them together in a single STYLE pass.
+                      </div>
+                      <div className="mt-2 space-y-1.5">
+                        {STAGE4_ACTIONS.map((action) => (
+                          <label
+                            key={action}
+                            className={`flex items-center gap-2 text-sm ${
+                              stageStatus[4] === "running" || isOutOfTokens || isStageRunSettling
+                                ? "cursor-not-allowed text-neutral-500"
+                                : "cursor-pointer text-neutral-300"
+                            }`}
+                          >
+                            <input
+                              type="checkbox"
+                              checked={selectedStage4Actions.includes(action)}
+                              onChange={(event) =>
+                                toggleStage4ActionSelection(action, event.currentTarget.checked)
+                              }
+                              disabled={stageStatus[4] === "running" || isOutOfTokens || isStageRunSettling}
+                              className="h-4 w-4 accent-sky-400"
+                            />
+                            {STAGE4_ACTION_LABELS[action]}
+                          </label>
+                        ))}
+                      </div>
                       <div className="mt-2">
                         <button
                           type="button"
-                          onClick={() =>
-                            runStageWithCancellation(4, { stage4Action: STAGE4_PRIMARY_ACTION })
-                          }
+                          onClick={runSelectedStyleActions}
                           disabled={stageStatus[4] === "running" || isOutOfTokens || isStageRunSettling}
                           className={`w-full rounded-md border px-3 py-2 text-sm ${
                             stageStatus[4] === "running" || isOutOfTokens || isStageRunSettling
@@ -12504,30 +12583,12 @@ function EditorPageInner() {
                               : "border-sky-500/60 bg-sky-950/40 text-sky-100 hover:bg-sky-900/50"
                           }`}
                         >
-                          {stageStatus[4] === "running" && stage4RunningAction === STAGE4_PRIMARY_ACTION
-                            ? "Styling…"
-                            : "✨ Style Room"}
+                          {stageStatus[4] === "running" ? "Running STYLE…" : "Run STYLE"}
                         </button>
                       </div>
-                      <div className="mt-2 flex flex-wrap gap-2">
-                        {STAGE4_ADVANCED_ACTIONS.map((action) => (
-                          <button
-                            key={action}
-                            type="button"
-                            onClick={() => runStageWithCancellation(4, { stage4Action: action })}
-                            disabled={stageStatus[4] === "running" || isOutOfTokens || isStageRunSettling}
-                            className={`rounded-md border px-2 py-1 text-xs ${
-                              stageStatus[4] === "running" || isOutOfTokens || isStageRunSettling
-                                ? "border-neutral-900 bg-neutral-950 text-neutral-500"
-                                : "border-neutral-700 bg-neutral-900 text-neutral-200 hover:bg-neutral-800"
-                            }`}
-                          >
-                            {stageStatus[4] === "running" && stage4RunningAction === action
-                              ? "Running…"
-                              : STAGE4_ACTION_LABELS[action]}
-                          </button>
-                        ))}
-                      </div>
+                      {stage4SelectionValidationMessage ? (
+                        <div className="mt-2 text-xs text-amber-300">{stage4SelectionValidationMessage}</div>
+                      ) : null}
                     </div>
                     <div className="rounded-md border border-neutral-800 bg-neutral-900/50 p-2.5">
                       <div className="text-[11px] uppercase tracking-wide text-neutral-500">Looks</div>
@@ -12536,8 +12597,8 @@ function EditorPageInner() {
                       </div>
                     </div>
                     <div className="text-xs text-neutral-500">
-                      {stageStatus[4] === "running" && stage4RunningAction
-                        ? `Running: ${STAGE4_ACTION_LABELS[stage4RunningAction]}`
+                      {stageStatus[4] === "running" && stage4RunSelectionLabel
+                        ? `Running: ${stage4RunSelectionLabel}`
                         : "Image-only styling pass; Stage 3 placements stay unchanged."}
                     </div>
                   </div>
