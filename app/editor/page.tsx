@@ -44,6 +44,12 @@ import {
   type PasteToPlaceJobControl,
 } from "@/lib/pasteToPlaceJobControl";
 import { PrepareRoomImageError, prepareRoomImageForUpload } from "@/lib/prepareRoomImageForUpload";
+import {
+  isHeicLikeFile,
+  isLivePhotoMovCompanion,
+  isSupportedStillImageFile,
+  SUPPORTED_STILL_IMAGE_ACCEPT_ATTR,
+} from "@/lib/uploadImageFileTypes";
 import type { DetectedRoomObjectLabel } from "@/lib/vibodeRoomObjectLabels";
 import {
   hashPlacementState,
@@ -2940,6 +2946,7 @@ function EditorPageInner() {
   const [productLabel, setProductLabel] = useState("User Upload");
   const [uploadedImageDataUrl, setUploadedImageDataUrl] = useState<string | null>(null);
   const [uploadedImageName, setUploadedImageName] = useState<string | null>(null);
+  const [uploadedImageFilename, setUploadedImageFilename] = useState<string | null>(null);
   const [isIngesting, setIsIngesting] = useState(false);
   const [ingestError, setIngestError] = useState<string | null>(null);
   const [ingestedUserSku, setIngestedUserSku] = useState<UserSku | null>(null);
@@ -3658,6 +3665,7 @@ function EditorPageInner() {
     setProductLabel("User Upload");
     setUploadedImageDataUrl(null);
     setUploadedImageName(null);
+    setUploadedImageFilename(null);
     setIsIngesting(false);
     setIngestError(null);
     setIngestedUserSku(null);
@@ -6174,46 +6182,61 @@ function EditorPageInner() {
     ]
   );
 
-  const isImageFile = (file: File | null | undefined) =>
-    !!file && typeof file.type === "string" && file.type.startsWith("image/");
+  const isImageFile = (file: File | null | undefined) => isSupportedStillImageFile(file);
   const isPreparingRoomPhotoUpload = isUploading || isOptimizingRoomImage;
 
   const hasDraggedImageFile = (dataTransfer: DataTransfer | null) => {
     if (!dataTransfer) return false;
 
     const items = Array.from(dataTransfer.items ?? []);
-    if (items.some((item) => item.kind === "file" && item.type.startsWith("image/"))) {
+    if (
+      items.some(
+        (item) =>
+          item.kind === "file" &&
+          (isSupportedStillImageFile({ name: null, type: item.type }) ||
+            isLivePhotoMovCompanion({ name: null, type: item.type }))
+      )
+    ) {
       return true;
     }
 
     const files = Array.from(dataTransfer.files ?? []);
-    return files.some((file) => isImageFile(file));
+    return files.some((file) => isImageFile(file) || isLivePhotoMovCompanion(file));
   };
 
   const handleRoomPhotoFile = async (file: File) => {
+    if (isLivePhotoMovCompanion(file)) {
+      const message = "Live Photo video detected. Vibode needs the still image, not the video clip.";
+      setRoomPhotoUploadError(message);
+      pushSnack(message);
+      return;
+    }
+
     if (!isImageFile(file)) {
-      const message = "Please upload a JPG, PNG, or WebP image.";
+      const message = "Please upload a JPG, PNG, WebP, or HEIC/HEIF still image.";
       setRoomPhotoUploadError(message);
       pushSnack(message);
       return;
     }
 
     setRoomPhotoUploadError(null);
-    let uploadFile: File;
+    let uploadFile: File = file;
 
-    setIsOptimizingRoomImage(true);
-    try {
-      uploadFile = await prepareRoomImageForUpload(file);
-    } catch (err: unknown) {
-      const message =
-        err instanceof PrepareRoomImageError
-          ? err.message
-          : "We couldn’t process this image. Try a smaller or lower-resolution photo.";
-      setRoomPhotoUploadError(message);
-      pushSnack(message);
-      return;
-    } finally {
-      setIsOptimizingRoomImage(false);
+    if (!isHeicLikeFile(file)) {
+      setIsOptimizingRoomImage(true);
+      try {
+        uploadFile = await prepareRoomImageForUpload(file);
+      } catch (err: unknown) {
+        const message =
+          err instanceof PrepareRoomImageError
+            ? err.message
+            : "We couldn’t process this image. Try a smaller or lower-resolution photo.";
+        setRoomPhotoUploadError(message);
+        pushSnack(message);
+        return;
+      } finally {
+        setIsOptimizingRoomImage(false);
+      }
     }
 
     resetWorkflowForIncomingImage();
@@ -6342,10 +6365,19 @@ function EditorPageInner() {
     roomPhotoCanvasDragDepthRef.current = 0;
     setIsCanvasDragOver(false);
 
-    const imageFile = Array.from(event.dataTransfer.files ?? []).find((file) => isImageFile(file));
-    if (!imageFile) return;
-
     event.preventDefault();
+    const droppedFiles = Array.from(event.dataTransfer.files ?? []);
+    const imageFile = droppedFiles.find((file) => isImageFile(file)) ?? null;
+    const onlyMovFile = droppedFiles.length > 0 && droppedFiles.every((file) => isLivePhotoMovCompanion(file));
+    if (!imageFile) {
+      if (onlyMovFile) {
+        const message = "Live Photo video detected. Vibode needs the still image, not the video clip.";
+        setRoomPhotoUploadError(message);
+        pushSnack(message);
+      }
+      return;
+    }
+
     await handleRoomPhotoFile(imageFile);
   };
 
@@ -6626,6 +6658,7 @@ function EditorPageInner() {
         },
         body: JSON.stringify({
           ...(imageBase64 ? { imageBase64 } : { imageUrl }),
+          ...(imageBase64 && uploadedImageFilename ? { imageFilename: uploadedImageFilename } : {}),
           label: productLabel.trim() || "User Upload",
         }),
       });
@@ -6670,6 +6703,7 @@ function EditorPageInner() {
   const clearUploadedProductImage = () => {
     setUploadedImageDataUrl(null);
     setUploadedImageName(null);
+    setUploadedImageFilename(null);
     setIngestError(null);
     setIngestedUserSku(null);
   };
@@ -6679,11 +6713,22 @@ function EditorPageInner() {
     const file = inputEl.files?.[0];
     if (!file) return;
 
-    if (!file.type.startsWith("image/")) {
+    if (isLivePhotoMovCompanion(file)) {
       setUploadedImageDataUrl(null);
       setUploadedImageName(null);
+      setUploadedImageFilename(null);
       setIngestedUserSku(null);
-      setIngestError("Please select an image file (.jpg/.png).");
+      setIngestError("Live Photo video detected. Vibode needs the still image, not the video clip.");
+      inputEl.value = "";
+      return;
+    }
+
+    if (!isSupportedStillImageFile(file)) {
+      setUploadedImageDataUrl(null);
+      setUploadedImageName(null);
+      setUploadedImageFilename(null);
+      setIngestedUserSku(null);
+      setIngestError("Please select a still image file (.jpg/.png/.webp/.heic/.heif).");
       inputEl.value = "";
       return;
     }
@@ -6691,6 +6736,7 @@ function EditorPageInner() {
     if (file.size > USER_SKU_MAX_INPUT_BYTES) {
       setUploadedImageDataUrl(null);
       setUploadedImageName(null);
+      setUploadedImageFilename(null);
       setIngestedUserSku(null);
       setIngestError("Image is too large. Please upload a file up to 12MB.");
       inputEl.value = "";
@@ -6699,16 +6745,18 @@ function EditorPageInner() {
 
     try {
       const dataUrl = await readFileAsDataUrl(file);
-      if (!dataUrl.startsWith("data:image/")) {
+      if (!/^data:[^;]*;base64,/i.test(dataUrl)) {
         throw new Error("Please select a valid image file.");
       }
       setUploadedImageDataUrl(dataUrl);
       setUploadedImageName(file.name || "uploaded-image");
+      setUploadedImageFilename(file.name || "uploaded-image");
       setIngestError(null);
       setIngestedUserSku(null);
     } catch (err: unknown) {
       setUploadedImageDataUrl(null);
       setUploadedImageName(null);
+      setUploadedImageFilename(null);
       setIngestedUserSku(null);
       setIngestError(getErrorMessage(err) ?? "Failed to read uploaded image.");
     } finally {
@@ -11810,7 +11858,7 @@ function EditorPageInner() {
               <input
                 ref={roomPhotoUploadInputRef}
                 type="file"
-                accept="image/jpeg,image/png,image/webp"
+                accept={SUPPORTED_STILL_IMAGE_ACCEPT_ATTR}
                 className="hidden"
                 disabled={isPreparingRoomPhotoUpload}
                 onChange={handleRoomPhotoInputChange}
@@ -12664,12 +12712,12 @@ function EditorPageInner() {
                   <div className="text-xs text-neutral-400">Upload Image</div>
                   <input
                     type="file"
-                    accept="image/jpeg,image/png,image/webp"
+                    accept={SUPPORTED_STILL_IMAGE_ACCEPT_ATTR}
                     onChange={onUploadedProductImageChange}
                     className="mt-1 block w-full text-xs text-neutral-300 file:mr-3 file:rounded-md file:border file:border-neutral-800 file:bg-neutral-950 file:px-2 file:py-1.5 file:text-xs file:text-neutral-200 hover:file:bg-neutral-800"
                   />
                   <div className="mt-1 text-[11px] text-neutral-500">
-                    Upload a product photo/screenshot (.jpg/.png).
+                    HEIC/iPhone photos supported. Live Photos use the still image only.
                   </div>
                   {uploadedImageName && (
                     <div className="mt-1 flex items-center gap-2 text-xs text-neutral-300">
@@ -12818,7 +12866,7 @@ function EditorPageInner() {
                         : "Upload…"}
                     <input
                       type="file"
-                      accept="image/jpeg,image/png,image/webp"
+                      accept={SUPPORTED_STILL_IMAGE_ACCEPT_ATTR}
                       className="hidden"
                       disabled={isPreparingRoomPhotoUpload}
                       onChange={handleRoomPhotoInputChange}
