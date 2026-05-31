@@ -722,6 +722,7 @@ type EditorVersionWithKind = VibodeRoomAsset & {
 };
 type StageRunStatus = "idle" | "running" | "success" | "error";
 type DeclutterMode = "off" | "light" | "heavy";
+type SetupRoomPreparationMode = "keep" | "light" | "heavy" | "empty";
 type VibodeModelVersion = typeof VIBODE_MODEL_NBP | typeof VIBODE_MODEL_NB2;
 type VibodeAspectRatio = "auto" | "4:3" | "3:2" | "16:9" | "1:1";
 type EditorRightPanelsState = {
@@ -2941,11 +2942,42 @@ function EditorPageInner() {
   }, []);
   const [stage1Enhance, setStage1Enhance] = useState(false);
   const [stage1Declutter, setStage1Declutter] = useState<DeclutterMode>("off");
+  const [stage1EmptyRoomSelected, setStage1EmptyRoomSelected] = useState(false);
+  const stage1RoomPreparationMode = useMemo<SetupRoomPreparationMode>(() => {
+    if (stage1EmptyRoomSelected) return "empty";
+    if (stage1Declutter === "light") return "light";
+    if (stage1Declutter === "heavy") return "heavy";
+    return "keep";
+  }, [stage1Declutter, stage1EmptyRoomSelected]);
+  const setStage1RoomPreparationMode = useCallback((mode: SetupRoomPreparationMode) => {
+    if (mode === "empty") {
+      setStage1Declutter("off");
+      setStage1EmptyRoomSelected(true);
+      return;
+    }
+    setStage1EmptyRoomSelected(false);
+    if (mode === "light") {
+      setStage1Declutter("light");
+      return;
+    }
+    if (mode === "heavy") {
+      setStage1Declutter("heavy");
+      return;
+    }
+    setStage1Declutter("off");
+  }, []);
   const [stage2Repair, setStage2Repair] = useState(false);
   const [stage2Repaint, setStage2Repaint] = useState(false);
   const [stage2Flooring, setStage2Flooring] = useState<"none" | "carpet" | "hardwood" | "tile">(
     "none"
   );
+  const hasMeaningfulStage1SetupSelection =
+    stage1Enhance ||
+    stage1Declutter === "light" ||
+    stage1Declutter === "heavy" ||
+    stage1EmptyRoomSelected;
+  const hasMeaningfulStage2SetupSelection =
+    stage2Repair || stage2Repaint || stage2Flooring !== "none";
   const [productImageUrl, setProductImageUrl] = useState("");
   const [productLabel, setProductLabel] = useState("User Upload");
   const [uploadedImageDataUrl, setUploadedImageDataUrl] = useState<string | null>(null);
@@ -12312,18 +12344,18 @@ function EditorPageInner() {
                   ) : null}
 
                   <div className="mt-3 rounded-md border border-neutral-800 bg-neutral-950 p-3">
-                    <div className="text-sm font-medium">
-                      {isStyleWorkflowMode
-                        ? "Style Workspace"
-                        : isStageWorkflowMode
-                          ? "Stage Workspace"
-                          : `Stage ${activeStage}`}
-                    </div>
+                    {isStyleWorkflowMode || isStageWorkflowMode ? (
+                      <div className="text-sm font-medium">
+                        {isStyleWorkflowMode ? "Style Workspace" : "Stage Workspace"}
+                      </div>
+                    ) : null}
 
                 {isSetWorkflowMode ? (
                   <div className="mt-3 space-y-3">
                     <div className="rounded-md border border-neutral-800 bg-neutral-900/50 p-2.5">
-                      <div className="text-[11px] uppercase tracking-wide text-neutral-500">Prepare Room</div>
+                      <div className="text-[11px] uppercase tracking-wide text-neutral-500">
+                        Prepare Room
+                      </div>
                       <label className="mt-2 flex cursor-pointer items-center gap-2 text-sm text-neutral-300">
                         <input
                           type="checkbox"
@@ -12334,65 +12366,71 @@ function EditorPageInner() {
                         Enhance
                       </label>
                       <div className="mt-2">
-                        <div className="text-xs text-neutral-400">Declutter</div>
-                        <div className="mt-1 flex gap-2">
-                          {(["off", "light", "heavy"] as DeclutterMode[]).map((mode) => (
+                        <div className="text-xs text-neutral-400">Room preparation</div>
+                        <div className="mt-1 flex flex-wrap gap-2">
+                          {(
+                            [
+                              { id: "keep", label: "Keep as-is" },
+                              { id: "light", label: "Light declutter" },
+                              { id: "heavy", label: "Heavy declutter" },
+                              { id: "empty", label: "Empty room" },
+                            ] as const
+                          ).map((mode) => (
                             <button
-                              key={mode}
+                              key={mode.id}
                               type="button"
-                              onClick={() => setStage1Declutter(mode)}
+                              onClick={() => setStage1RoomPreparationMode(mode.id)}
                               className={`rounded-md border px-2 py-1 text-xs ${
-                                stage1Declutter === mode
+                                stage1RoomPreparationMode === mode.id
                                   ? "border-neutral-600 bg-neutral-800 text-neutral-100"
                                   : "border-neutral-800 bg-neutral-900 text-neutral-300 hover:bg-neutral-800"
                               }`}
                             >
-                              {mode}
+                              {mode.label}
                             </button>
                           ))}
                         </div>
                       </div>
-                      <div className="mt-2 flex gap-2">
+                      <div className="mt-2">
                         <button
                           type="button"
-                          onClick={() =>
+                          onClick={() => {
+                            if (!hasMeaningfulStage1SetupSelection) return;
                             runStageWithCancellation(1, {
                               enhance: stage1Enhance,
                               declutter: stage1Declutter,
-                            })
+                              emptyRoom: stage1EmptyRoomSelected,
+                            });
+                          }}
+                          disabled={
+                            stageStatus[1] === "running" ||
+                            isOutOfTokens ||
+                            isStageRunSettling ||
+                            !hasMeaningfulStage1SetupSelection
                           }
-                          disabled={stageStatus[1] === "running" || isOutOfTokens || isStageRunSettling}
                           className={`rounded-md border px-3 py-1.5 text-sm ${
-                            stageStatus[1] === "running" || isOutOfTokens || isStageRunSettling
-                              ? "border-neutral-900 bg-neutral-950 text-neutral-500"
+                            stageStatus[1] === "running" ||
+                            isOutOfTokens ||
+                            isStageRunSettling ||
+                            !hasMeaningfulStage1SetupSelection
+                              ? "cursor-not-allowed border-neutral-900 bg-neutral-950 text-neutral-500"
                               : "border-neutral-700 bg-neutral-900 hover:bg-neutral-800"
                           }`}
                         >
-                          {stageStatus[1] === "running" ? "Running…" : "Run Stage"}
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() =>
-                            runStageWithCancellation(1, {
-                              enhance: stage1Enhance,
-                              declutter: stage1Declutter,
-                              emptyRoom: true,
-                            })
-                          }
-                          disabled={stageStatus[1] === "running" || isOutOfTokens || isStageRunSettling}
-                          className={`rounded-md border px-3 py-1.5 text-sm ${
-                            stageStatus[1] === "running" || isOutOfTokens || isStageRunSettling
-                              ? "border-neutral-900 bg-neutral-950 text-neutral-500"
-                              : "border-neutral-700 bg-neutral-900 hover:bg-neutral-800"
-                          }`}
-                        >
-                          Empty Room
+                          {stageStatus[1] === "running" ? "Running…" : "Run SETUP"}
                         </button>
                       </div>
                     </div>
 
                     <div className="rounded-md border border-neutral-800 bg-neutral-900/50 p-2.5">
-                      <div className="text-[11px] uppercase tracking-wide text-neutral-500">Modify Room</div>
+                      <div className="text-[11px] uppercase tracking-wide text-neutral-500">Cleanup</div>
+                      {renderRemoveToolEntryPoint("mt-2")}
+                    </div>
+
+                    <div className="rounded-md border border-neutral-800 bg-neutral-900/50 p-2.5">
+                      <div className="text-[11px] uppercase tracking-wide text-neutral-500">
+                        Modify Room
+                      </div>
                       <label className="mt-2 flex cursor-pointer items-center gap-2 text-sm text-neutral-300">
                         <input
                           type="checkbox"
@@ -12429,22 +12467,28 @@ function EditorPageInner() {
                       <div className="mt-2">
                         <button
                           type="button"
-                          onClick={() => runStageWithCancellation(2)}
-                          disabled={stageStatus[2] === "running" || isOutOfTokens || isStageRunSettling}
+                          onClick={() => {
+                            if (!hasMeaningfulStage2SetupSelection) return;
+                            runStageWithCancellation(2);
+                          }}
+                          disabled={
+                            stageStatus[2] === "running" ||
+                            isOutOfTokens ||
+                            isStageRunSettling ||
+                            !hasMeaningfulStage2SetupSelection
+                          }
                           className={`rounded-md border px-3 py-1.5 text-sm ${
-                            stageStatus[2] === "running" || isOutOfTokens || isStageRunSettling
-                              ? "border-neutral-900 bg-neutral-950 text-neutral-500"
+                            stageStatus[2] === "running" ||
+                            isOutOfTokens ||
+                            isStageRunSettling ||
+                            !hasMeaningfulStage2SetupSelection
+                              ? "cursor-not-allowed border-neutral-900 bg-neutral-950 text-neutral-500"
                               : "border-neutral-700 bg-neutral-900 hover:bg-neutral-800"
                           }`}
                         >
-                          {stageStatus[2] === "running" ? "Running…" : "Run Stage"}
+                          {stageStatus[2] === "running" ? "Running…" : "Run SETUP"}
                         </button>
                       </div>
-                    </div>
-
-                    <div className="rounded-md border border-neutral-800 bg-neutral-900/50 p-2.5">
-                      <div className="text-[11px] uppercase tracking-wide text-neutral-500">Cleanup</div>
-                      {renderRemoveToolEntryPoint("mt-2")}
                     </div>
                   </div>
                 ) : isStyleWorkflowMode ? (
