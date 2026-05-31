@@ -2939,7 +2939,7 @@ function EditorPageInner() {
       // no-op
     }
   }, []);
-  const [stage1Enhance, setStage1Enhance] = useState(true);
+  const [stage1Enhance, setStage1Enhance] = useState(false);
   const [stage1Declutter, setStage1Declutter] = useState<DeclutterMode>("off");
   const [stage2Repair, setStage2Repair] = useState(false);
   const [stage2Repaint, setStage2Repaint] = useState(false);
