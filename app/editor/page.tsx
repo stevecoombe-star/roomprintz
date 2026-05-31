@@ -68,7 +68,11 @@ import {
   isVersionEligibleForActiveSet,
   resolveActiveSetVersionId,
 } from "@/lib/vibode/active-set";
-import { getVibodeVersionKind, type VibodeVersionKind } from "@/lib/vibode/version-kind";
+import {
+  getVibodeVersionKind,
+  getWorkflowStepDisplayLabel,
+  type VibodeVersionKind,
+} from "@/lib/vibode/version-kind";
 
 import { getSupabaseBrowserAccessToken, supabaseBrowser } from "@/lib/supabaseBrowser";
 import { useTokenBalance } from "@/hooks/useTokenBalance";
@@ -10576,7 +10580,7 @@ function EditorPageInner() {
       pushSnack(message);
       return;
     }
-    pushSnack("Items removed. Your cleaned room was saved as a SET version.");
+    pushSnack("Items removed. Your cleaned room was saved as a SETUP version.");
   }, [
     activeAssetId,
     exitRemoveMode,
@@ -11569,7 +11573,7 @@ function EditorPageInner() {
       ? versionsWithKind.find((asset) => asset.id === activeSetVersionId) ?? originalVersion
       : null;
   const activeCanvasKindLabel = selectedCanvasVersion
-    ? resolveShelfForVersion(selectedCanvasVersion).toUpperCase()
+    ? getWorkflowStepDisplayLabel(resolveShelfForVersion(selectedCanvasVersion))
     : null;
   const collapseAllVersionShelves = useCallback(() => {
     setVersionShelfExpanded({
@@ -12206,9 +12210,9 @@ function EditorPageInner() {
               <div className="-mb-px flex items-end gap-1 px-2">
                 {(
                   [
-                    { id: "set", label: "SET" },
-                    { id: "stage", label: "STAGE" },
-                    { id: "style", label: "STYLE" },
+                    { id: "set", label: getWorkflowStepDisplayLabel("set") },
+                    { id: "stage", label: getWorkflowStepDisplayLabel("stage") },
+                    { id: "style", label: getWorkflowStepDisplayLabel("style") },
                   ] as const
                 ).map((mode) => {
                   const isActive = workflowMode === mode.id;
@@ -12232,7 +12236,9 @@ function EditorPageInner() {
               </div>
               <div className="rounded-lg border border-neutral-800 bg-neutral-900 p-3">
                 <div className="flex items-center justify-between">
-                  <div className="text-sm font-medium">Workflow — {workflowMode.toUpperCase()}</div>
+                  <div className="text-sm font-medium">
+                    Workflow — {getWorkflowStepDisplayLabel(workflowMode)}
+                  </div>
                   <button
                     type="button"
                     className="rounded-md border border-neutral-800 bg-neutral-950 px-2 py-1 text-xs text-neutral-300 hover:bg-neutral-800"
@@ -12597,18 +12603,19 @@ function EditorPageInner() {
                     ) : null}
                     {isFavouritesFilterEmpty ? (
                       <div className="rounded-md border border-dashed border-neutral-800 bg-neutral-950 px-3 py-2 text-xs text-neutral-500">
-                        No favourite versions yet. Tap the heart on a SET, STAGE, or STYLE version to save it here.
+                        No favourite versions yet. Tap the heart on a SETUP, STAGE, or STYLE version to save it
+                        here.
                       </div>
                     ) : (
                       <>
                         {renderCollapsedVersionShelf({
                           keyName: "style",
-                          label: "STYLE",
+                          label: getWorkflowStepDisplayLabel("style"),
                           versionsInShelf: groupedVersionsForDisplay.style,
                         })}
                         {renderCollapsedVersionShelf({
                           keyName: "stage",
-                          label: "STAGE",
+                          label: getWorkflowStepDisplayLabel("stage"),
                           versionsInShelf: groupedVersionsForDisplay.stage,
                         })}
                       </>
@@ -12648,7 +12655,7 @@ function EditorPageInner() {
                     ) : null}
                     {renderCollapsedVersionShelf({
                       keyName: "set",
-                      label: "SET",
+                      label: getWorkflowStepDisplayLabel("set"),
                       versionsInShelf: groupedVersionsForDisplay.set,
                     })}
                     {!isFavouritesFilterOn
