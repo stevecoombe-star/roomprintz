@@ -12344,11 +12344,7 @@ function EditorPageInner() {
                   ) : null}
 
                   <div className="mt-3 rounded-md border border-neutral-800 bg-neutral-950 p-3">
-                    {isStyleWorkflowMode || isStageWorkflowMode ? (
-                      <div className="text-sm font-medium">
-                        {isStyleWorkflowMode ? "Style Workspace" : "Stage Workspace"}
-                      </div>
-                    ) : null}
+                    <div className="text-sm font-medium">{WORKFLOW_MODE_HELPER_COPY[workflowMode]}</div>
 
                 {isSetWorkflowMode ? (
                   <div className="mt-3 space-y-3">
