@@ -44,6 +44,12 @@ import {
   type PasteToPlaceJobControl,
 } from "@/lib/pasteToPlaceJobControl";
 import { PrepareRoomImageError, prepareRoomImageForUpload } from "@/lib/prepareRoomImageForUpload";
+import {
+  isHeicLikeFile,
+  isLivePhotoMovCompanion,
+  isSupportedStillImageFile,
+  SUPPORTED_STILL_IMAGE_ACCEPT_ATTR,
+} from "@/lib/uploadImageFileTypes";
 import type { DetectedRoomObjectLabel } from "@/lib/vibodeRoomObjectLabels";
 import {
   hashPlacementState,
@@ -62,7 +68,11 @@ import {
   isVersionEligibleForActiveSet,
   resolveActiveSetVersionId,
 } from "@/lib/vibode/active-set";
-import { getVibodeVersionKind, type VibodeVersionKind } from "@/lib/vibode/version-kind";
+import {
+  getVibodeVersionKind,
+  getWorkflowStepDisplayLabel,
+  type VibodeVersionKind,
+} from "@/lib/vibode/version-kind";
 
 import { getSupabaseBrowserAccessToken, supabaseBrowser } from "@/lib/supabaseBrowser";
 import { useTokenBalance } from "@/hooks/useTokenBalance";
@@ -712,6 +722,7 @@ type EditorVersionWithKind = VibodeRoomAsset & {
 };
 type StageRunStatus = "idle" | "running" | "success" | "error";
 type DeclutterMode = "off" | "light" | "heavy";
+type SetupRoomPreparationMode = "keep" | "light" | "heavy" | "empty";
 type VibodeModelVersion = typeof VIBODE_MODEL_NBP | typeof VIBODE_MODEL_NB2;
 type VibodeAspectRatio = "auto" | "4:3" | "3:2" | "16:9" | "1:1";
 type EditorRightPanelsState = {
@@ -1206,8 +1217,9 @@ const STAGE4_ADVANCED_ACTIONS: Stage4Action[] = [
   "curtains",
   "ceiling_light",
 ];
+const STAGE4_ACTIONS: Stage4Action[] = [STAGE4_PRIMARY_ACTION, ...STAGE4_ADVANCED_ACTIONS];
 const STAGE4_ACTION_LABELS: Record<Stage4Action, string> = {
-  style_room: "Style Room",
+  style_room: "Overall room style",
   accessories: "Accessories",
   wall_art: "Wall Art",
   shelves: "Shelves",
@@ -1227,6 +1239,16 @@ const ROOM_OPEN_REVEAL_SETTLE_MS = 180;
 function isStage4Action(value: unknown): value is Stage4Action {
   if (typeof value !== "string") return false;
   return Object.prototype.hasOwnProperty.call(STAGE4_ACTION_LABELS, value);
+}
+
+function normalizeStage4Actions(actions: unknown): Stage4Action[] {
+  if (!Array.isArray(actions)) return [];
+  const selected = new Set<Stage4Action>();
+  for (const action of actions) {
+    if (!isStage4Action(action)) continue;
+    selected.add(action);
+  }
+  return STAGE4_ACTIONS.filter((action) => selected.has(action));
 }
 
 function mergeStage3SkuItems(prev: Stage3SkuItem[], userSkus: UserSku[]): Stage3SkuItem[] {
@@ -2592,7 +2614,13 @@ function EditorPageInner() {
   const workflowTabSingleClickTimeoutRef = useRef<number | null>(null);
   const [activeStage, setActiveStage] = useState<WorkflowStage>(1);
   const [stageStatus, setStageStatus] = useState<StageStatusMap>(INITIAL_STAGE_STATUS);
-  const [stage4RunningAction, setStage4RunningAction] = useState<Stage4Action | null>(null);
+  const [selectedStage4Actions, setSelectedStage4Actions] = useState<Stage4Action[]>([
+    STAGE4_PRIMARY_ACTION,
+  ]);
+  const [stage4SelectionValidationMessage, setStage4SelectionValidationMessage] = useState<
+    string | null
+  >(null);
+  const [stage4RunningActions, setStage4RunningActions] = useState<Stage4Action[]>([]);
   const [hasFurniturePass, setHasFurniturePass] = useState(false);
   const [lastStageOutputs, setLastStageOutputs] = useState<StageOutputMap>({});
   const [workingImageUrl, setWorkingImageUrl] = useState<string | null>(null);
@@ -2916,7 +2944,7 @@ function EditorPageInner() {
     invalidateStageRunOperation();
     setStageStatus((prev) => ({ ...prev, [activeRun.stageNumber]: activeRun.previousStageStatus }));
     if (activeRun.stageNumber === 4) {
-      setStage4RunningAction(null);
+      setStage4RunningActions([]);
     }
     pushSnack("Placement cancelled.");
   }, [invalidateStageRunOperation, pushSnack, startStageRunCancelCooldown]);
@@ -2929,17 +2957,53 @@ function EditorPageInner() {
       // no-op
     }
   }, []);
-  const [stage1Enhance, setStage1Enhance] = useState(true);
+  const [stage1Enhance, setStage1Enhance] = useState(false);
   const [stage1Declutter, setStage1Declutter] = useState<DeclutterMode>("off");
+  const [stage1EmptyRoomSelected, setStage1EmptyRoomSelected] = useState(false);
+  const stage1RoomPreparationMode = useMemo<SetupRoomPreparationMode>(() => {
+    if (stage1EmptyRoomSelected) return "empty";
+    if (stage1Declutter === "light") return "light";
+    if (stage1Declutter === "heavy") return "heavy";
+    return "keep";
+  }, [stage1Declutter, stage1EmptyRoomSelected]);
+  const setStage1RoomPreparationMode = useCallback((mode: SetupRoomPreparationMode) => {
+    if (mode === "empty") {
+      setStage1Declutter("off");
+      setStage1EmptyRoomSelected(true);
+      return;
+    }
+    setStage1EmptyRoomSelected(false);
+    if (mode === "light") {
+      setStage1Declutter("light");
+      return;
+    }
+    if (mode === "heavy") {
+      setStage1Declutter("heavy");
+      return;
+    }
+    setStage1Declutter("off");
+  }, []);
   const [stage2Repair, setStage2Repair] = useState(false);
   const [stage2Repaint, setStage2Repaint] = useState(false);
   const [stage2Flooring, setStage2Flooring] = useState<"none" | "carpet" | "hardwood" | "tile">(
     "none"
   );
+  const hasMeaningfulStage1SetupSelection =
+    stage1Enhance ||
+    stage1Declutter === "light" ||
+    stage1Declutter === "heavy" ||
+    stage1EmptyRoomSelected;
+  const hasMeaningfulStage2SetupSelection =
+    stage2Repair || stage2Repaint || stage2Flooring !== "none";
+  const stage4RunSelectionLabel = useMemo(() => {
+    if (stage4RunningActions.length === 0) return null;
+    return stage4RunningActions.map((action) => STAGE4_ACTION_LABELS[action]).join(", ");
+  }, [stage4RunningActions]);
   const [productImageUrl, setProductImageUrl] = useState("");
   const [productLabel, setProductLabel] = useState("User Upload");
   const [uploadedImageDataUrl, setUploadedImageDataUrl] = useState<string | null>(null);
   const [uploadedImageName, setUploadedImageName] = useState<string | null>(null);
+  const [uploadedImageFilename, setUploadedImageFilename] = useState<string | null>(null);
   const [isIngesting, setIsIngesting] = useState(false);
   const [ingestError, setIngestError] = useState<string | null>(null);
   const [ingestedUserSku, setIngestedUserSku] = useState<UserSku | null>(null);
@@ -3632,7 +3696,9 @@ function EditorPageInner() {
     const store = useEditorStore.getState();
     setHasFurniturePass(false);
     setStageStatus(INITIAL_STAGE_STATUS);
-    setStage4RunningAction(null);
+    setSelectedStage4Actions([STAGE4_PRIMARY_ACTION]);
+    setStage4SelectionValidationMessage(null);
+    setStage4RunningActions([]);
     setLastStageOutputs((prev) => (Object.keys(prev).length === 0 ? prev : {}));
     setWorkingImageUrl(null);
     setIsWorkingImageGenerated(false);
@@ -3658,6 +3724,7 @@ function EditorPageInner() {
     setProductLabel("User Upload");
     setUploadedImageDataUrl(null);
     setUploadedImageName(null);
+    setUploadedImageFilename(null);
     setIsIngesting(false);
     setIngestError(null);
     setIngestedUserSku(null);
@@ -6174,46 +6241,61 @@ function EditorPageInner() {
     ]
   );
 
-  const isImageFile = (file: File | null | undefined) =>
-    !!file && typeof file.type === "string" && file.type.startsWith("image/");
+  const isImageFile = (file: File | null | undefined) => isSupportedStillImageFile(file);
   const isPreparingRoomPhotoUpload = isUploading || isOptimizingRoomImage;
 
   const hasDraggedImageFile = (dataTransfer: DataTransfer | null) => {
     if (!dataTransfer) return false;
 
     const items = Array.from(dataTransfer.items ?? []);
-    if (items.some((item) => item.kind === "file" && item.type.startsWith("image/"))) {
+    if (
+      items.some(
+        (item) =>
+          item.kind === "file" &&
+          (isSupportedStillImageFile({ name: null, type: item.type }) ||
+            isLivePhotoMovCompanion({ name: null, type: item.type }))
+      )
+    ) {
       return true;
     }
 
     const files = Array.from(dataTransfer.files ?? []);
-    return files.some((file) => isImageFile(file));
+    return files.some((file) => isImageFile(file) || isLivePhotoMovCompanion(file));
   };
 
   const handleRoomPhotoFile = async (file: File) => {
+    if (isLivePhotoMovCompanion(file)) {
+      const message = "Live Photo video detected. Vibode needs the still image, not the video clip.";
+      setRoomPhotoUploadError(message);
+      pushSnack(message);
+      return;
+    }
+
     if (!isImageFile(file)) {
-      const message = "Please upload a JPG, PNG, or WebP image.";
+      const message = "Please upload a JPG, PNG, WebP, or HEIC/HEIF still image.";
       setRoomPhotoUploadError(message);
       pushSnack(message);
       return;
     }
 
     setRoomPhotoUploadError(null);
-    let uploadFile: File;
+    let uploadFile: File = file;
 
-    setIsOptimizingRoomImage(true);
-    try {
-      uploadFile = await prepareRoomImageForUpload(file);
-    } catch (err: unknown) {
-      const message =
-        err instanceof PrepareRoomImageError
-          ? err.message
-          : "We couldn’t process this image. Try a smaller or lower-resolution photo.";
-      setRoomPhotoUploadError(message);
-      pushSnack(message);
-      return;
-    } finally {
-      setIsOptimizingRoomImage(false);
+    if (!isHeicLikeFile(file)) {
+      setIsOptimizingRoomImage(true);
+      try {
+        uploadFile = await prepareRoomImageForUpload(file);
+      } catch (err: unknown) {
+        const message =
+          err instanceof PrepareRoomImageError
+            ? err.message
+            : "We couldn’t process this image. Try a smaller or lower-resolution photo.";
+        setRoomPhotoUploadError(message);
+        pushSnack(message);
+        return;
+      } finally {
+        setIsOptimizingRoomImage(false);
+      }
     }
 
     resetWorkflowForIncomingImage();
@@ -6342,10 +6424,19 @@ function EditorPageInner() {
     roomPhotoCanvasDragDepthRef.current = 0;
     setIsCanvasDragOver(false);
 
-    const imageFile = Array.from(event.dataTransfer.files ?? []).find((file) => isImageFile(file));
-    if (!imageFile) return;
-
     event.preventDefault();
+    const droppedFiles = Array.from(event.dataTransfer.files ?? []);
+    const imageFile = droppedFiles.find((file) => isImageFile(file)) ?? null;
+    const onlyMovFile = droppedFiles.length > 0 && droppedFiles.every((file) => isLivePhotoMovCompanion(file));
+    if (!imageFile) {
+      if (onlyMovFile) {
+        const message = "Live Photo video detected. Vibode needs the still image, not the video clip.";
+        setRoomPhotoUploadError(message);
+        pushSnack(message);
+      }
+      return;
+    }
+
     await handleRoomPhotoFile(imageFile);
   };
 
@@ -6626,6 +6717,7 @@ function EditorPageInner() {
         },
         body: JSON.stringify({
           ...(imageBase64 ? { imageBase64 } : { imageUrl }),
+          ...(imageBase64 && uploadedImageFilename ? { imageFilename: uploadedImageFilename } : {}),
           label: productLabel.trim() || "User Upload",
         }),
       });
@@ -6670,6 +6762,7 @@ function EditorPageInner() {
   const clearUploadedProductImage = () => {
     setUploadedImageDataUrl(null);
     setUploadedImageName(null);
+    setUploadedImageFilename(null);
     setIngestError(null);
     setIngestedUserSku(null);
   };
@@ -6679,11 +6772,22 @@ function EditorPageInner() {
     const file = inputEl.files?.[0];
     if (!file) return;
 
-    if (!file.type.startsWith("image/")) {
+    if (isLivePhotoMovCompanion(file)) {
       setUploadedImageDataUrl(null);
       setUploadedImageName(null);
+      setUploadedImageFilename(null);
       setIngestedUserSku(null);
-      setIngestError("Please select an image file (.jpg/.png).");
+      setIngestError("Live Photo video detected. Vibode needs the still image, not the video clip.");
+      inputEl.value = "";
+      return;
+    }
+
+    if (!isSupportedStillImageFile(file)) {
+      setUploadedImageDataUrl(null);
+      setUploadedImageName(null);
+      setUploadedImageFilename(null);
+      setIngestedUserSku(null);
+      setIngestError("Please select a still image file (.jpg/.png/.webp/.heic/.heif).");
       inputEl.value = "";
       return;
     }
@@ -6691,6 +6795,7 @@ function EditorPageInner() {
     if (file.size > USER_SKU_MAX_INPUT_BYTES) {
       setUploadedImageDataUrl(null);
       setUploadedImageName(null);
+      setUploadedImageFilename(null);
       setIngestedUserSku(null);
       setIngestError("Image is too large. Please upload a file up to 12MB.");
       inputEl.value = "";
@@ -6699,16 +6804,18 @@ function EditorPageInner() {
 
     try {
       const dataUrl = await readFileAsDataUrl(file);
-      if (!dataUrl.startsWith("data:image/")) {
+      if (!/^data:[^;]*;base64,/i.test(dataUrl)) {
         throw new Error("Please select a valid image file.");
       }
       setUploadedImageDataUrl(dataUrl);
       setUploadedImageName(file.name || "uploaded-image");
+      setUploadedImageFilename(file.name || "uploaded-image");
       setIngestError(null);
       setIngestedUserSku(null);
     } catch (err: unknown) {
       setUploadedImageDataUrl(null);
       setUploadedImageName(null);
+      setUploadedImageFilename(null);
       setIngestedUserSku(null);
       setIngestError(getErrorMessage(err) ?? "Failed to read uploaded image.");
     } finally {
@@ -6869,20 +6976,26 @@ function EditorPageInner() {
       return null;
     }
 
-    const stage4ActionForRun: Stage4Action =
+    const stage4ActionsForRun: Stage4Action[] =
       stageNumber === 4
-        ? isStage4Action(options.stage4Action)
-          ? options.stage4Action
-          : isStage4Action(options.mode)
-            ? options.mode
-            : isStage4Action(options.action)
-              ? options.action
-              : STAGE4_PRIMARY_ACTION
-        : STAGE4_PRIMARY_ACTION;
+        ? (() => {
+            const actionsFromStage4Actions = normalizeStage4Actions(options.stage4Actions);
+            if (actionsFromStage4Actions.length > 0) return actionsFromStage4Actions;
+            const actionsFromStage4Modes = normalizeStage4Actions(options.stage4Modes);
+            if (actionsFromStage4Modes.length > 0) return actionsFromStage4Modes;
+            const actionsFromStage4Intents = normalizeStage4Actions(options.stage4Intents);
+            if (actionsFromStage4Intents.length > 0) return actionsFromStage4Intents;
+            if (isStage4Action(options.stage4Action)) return [options.stage4Action];
+            if (isStage4Action(options.mode)) return [options.mode];
+            if (isStage4Action(options.action)) return [options.action];
+            return [STAGE4_PRIMARY_ACTION];
+          })()
+        : [STAGE4_PRIMARY_ACTION];
+    const stage4PrimaryActionForRun = stage4ActionsForRun[0] ?? STAGE4_PRIMARY_ACTION;
 
     setStageStatus((prev) => ({ ...prev, [stageNumber]: "running" }));
     if (stageNumber === 4) {
-      setStage4RunningAction(stage4ActionForRun);
+      setStage4RunningActions(stage4ActionsForRun);
     }
 
     try {
@@ -6963,7 +7076,10 @@ function EditorPageInner() {
             : defaultEligibleSkus;
           payload.targetCount = hasTargetCountOverride ? options.targetCount : 8;
         } else if (stageNumber === 4) {
-          payload.stage4Mode = stage4ActionForRun;
+          payload.stage4Mode = stage4PrimaryActionForRun;
+          payload.stage4Modes = stage4ActionsForRun;
+          payload.stage4Intents = stage4ActionsForRun;
+          payload.stage4IntentLabels = stage4ActionsForRun.map((action) => STAGE4_ACTION_LABELS[action]);
         }
       }
 
@@ -7106,7 +7222,8 @@ function EditorPageInner() {
 
       const tokenUsageMessage = buildTokenUsageMessage(json);
       if (stageNumber === 4) {
-        pushSnack(`Stage 4 ${STAGE4_ACTION_LABELS[stage4ActionForRun]} complete. ${tokenUsageMessage}.`);
+        const stage4Summary = stage4ActionsForRun.map((action) => STAGE4_ACTION_LABELS[action]).join(", ");
+        pushSnack(`Stage 4 ${stage4Summary} complete. ${tokenUsageMessage}.`);
       } else {
         pushSnack(`Stage ${stageNumber} complete. ${tokenUsageMessage}.`);
       }
@@ -7122,7 +7239,8 @@ function EditorPageInner() {
       if (errMessage) {
         pushSnack(errMessage);
       } else if (stageNumber === 4) {
-        pushSnack(`Stage 4 ${STAGE4_ACTION_LABELS[stage4ActionForRun]} failed.`);
+        const stage4Summary = stage4ActionsForRun.map((action) => STAGE4_ACTION_LABELS[action]).join(", ");
+        pushSnack(`Stage 4 ${stage4Summary} failed.`);
       } else {
         pushSnack(`Stage ${stageNumber} failed.`);
       }
@@ -7136,7 +7254,7 @@ function EditorPageInner() {
       }
       if (stageNumber === 4) {
         if (!lifecycle?.beforeCommit || lifecycle.beforeCommit()) {
-          setStage4RunningAction(null);
+          setStage4RunningActions([]);
         }
       }
     }
@@ -7174,6 +7292,27 @@ function EditorPageInner() {
         clearStageRunSettling();
       }
     };
+
+  const toggleStage4ActionSelection = (action: Stage4Action, selected: boolean) => {
+    setSelectedStage4Actions((prev) => {
+      const next = selected ? [...prev, action] : prev.filter((item) => item !== action);
+      const deduped = Array.from(new Set(next));
+      return STAGE4_ACTIONS.filter((stage4Action) => deduped.includes(stage4Action));
+    });
+    setStage4SelectionValidationMessage(null);
+  };
+
+  const runSelectedStyleActions = () => {
+    const selectedActions = normalizeStage4Actions(selectedStage4Actions);
+    if (selectedActions.length === 0) {
+      const message = "Choose at least one STYLE option to run.";
+      setStage4SelectionValidationMessage(message);
+      pushSnack(message);
+      return;
+    }
+    setStage4SelectionValidationMessage(null);
+    void runStageWithCancellation(4, { stage4Actions: selectedActions });
+  };
 
   const runEdit = async (
     action: EditAction,
@@ -10059,20 +10198,19 @@ function EditorPageInner() {
   }, []);
 
   const handleFinishMyFurnitureSelection = useCallback(
-    async (selectedIds: string[]) => {
-      if (myFurnitureMode !== "add") return;
-      if (myFurnitureSelectingIds.length > 0) return;
+    async (selectedIds: string[]): Promise<boolean> => {
+      if (myFurnitureSelectingIds.length > 0) return false;
       const normalizedSelectedIds = Array.from(
         new Set(selectedIds.filter((id): id is string => typeof id === "string" && id.trim().length > 0))
       );
-      if (normalizedSelectedIds.length === 0) return;
+      if (normalizedSelectedIds.length === 0) return false;
 
       if (normalizedSelectedIds.length === 1) {
         const prepared = await prepareMyFurnitureSourceById(normalizedSelectedIds[0]);
-        if (!prepared) return;
+        if (!prepared) return false;
         closeMyFurniturePicker();
         pushSnack("Saved furniture ready. Click in your room to place it.");
-        return;
+        return true;
       }
 
       setMyFurnitureSelectingIds(normalizedSelectedIds);
@@ -10092,14 +10230,14 @@ function EditorPageInner() {
 
         if (resolvedFurnitureIds.length === 0 || mergedEligibleSkus.length === 0) {
           pushSnack("Selected furniture items are no longer available. Choose different items.");
-          return;
+          return false;
         }
 
         const primaryFurnitureId = resolvedFurnitureIds[0];
         const primarySku = mergedEligibleSkus[0];
         if (!primarySku) {
           pushSnack("Unable to prepare selected furniture items.");
-          return;
+          return false;
         }
         const selectedPreviewUrl =
           resolvedFurnitureIds
@@ -10141,6 +10279,7 @@ function EditorPageInner() {
         pushSnack(
           `${resolvedFurnitureIds.length} items ready. Use Let Vibode decide.`
         );
+        return true;
       } finally {
         setMyFurnitureSelectingIds([]);
       }
@@ -10149,12 +10288,18 @@ function EditorPageInner() {
       activatePreparedMyFurnitureSource,
       closeMyFurniturePicker,
       myFurnitureItems,
-      myFurnitureMode,
       myFurnitureSelectingIds.length,
       prepareMyFurnitureSourceById,
       pushSnack,
       resolveMyFurnitureForEdit,
     ]
+  );
+
+  const handleUseMyFurnitureItemsForLetVibodeDecide = useCallback(
+    async (itemIds: string[]): Promise<boolean> => {
+      return handleFinishMyFurnitureSelection(itemIds);
+    },
+    [handleFinishMyFurnitureSelection]
   );
 
   const clearRemoveMarker = useCallback(
@@ -10528,7 +10673,7 @@ function EditorPageInner() {
       pushSnack(message);
       return;
     }
-    pushSnack("Items removed. Your cleaned room was saved as a SET version.");
+    pushSnack("Items removed. Your cleaned room was saved as a SETUP version.");
   }, [
     activeAssetId,
     exitRemoveMode,
@@ -11521,7 +11666,7 @@ function EditorPageInner() {
       ? versionsWithKind.find((asset) => asset.id === activeSetVersionId) ?? originalVersion
       : null;
   const activeCanvasKindLabel = selectedCanvasVersion
-    ? resolveShelfForVersion(selectedCanvasVersion).toUpperCase()
+    ? getWorkflowStepDisplayLabel(resolveShelfForVersion(selectedCanvasVersion))
     : null;
   const collapseAllVersionShelves = useCallback(() => {
     setVersionShelfExpanded({
@@ -11780,6 +11925,7 @@ function EditorPageInner() {
           <LatestFurnitureCollectionItemsPreview
             collapseSignal={partnerCollectionCollapseSignal}
             onUseMyFurnitureItemForPasteToPlace={handleUseMyFurnitureItemForPasteToPlace}
+            onUseMyFurnitureItemsForLetVibodeDecide={handleUseMyFurnitureItemsForLetVibodeDecide}
           />
         </div>
       </div>
@@ -11810,7 +11956,7 @@ function EditorPageInner() {
               <input
                 ref={roomPhotoUploadInputRef}
                 type="file"
-                accept="image/jpeg,image/png,image/webp"
+                accept={SUPPORTED_STILL_IMAGE_ACCEPT_ATTR}
                 className="hidden"
                 disabled={isPreparingRoomPhotoUpload}
                 onChange={handleRoomPhotoInputChange}
@@ -12158,9 +12304,9 @@ function EditorPageInner() {
               <div className="-mb-px flex items-end gap-1 px-2">
                 {(
                   [
-                    { id: "set", label: "SET" },
-                    { id: "stage", label: "STAGE" },
-                    { id: "style", label: "STYLE" },
+                    { id: "set", label: getWorkflowStepDisplayLabel("set") },
+                    { id: "stage", label: getWorkflowStepDisplayLabel("stage") },
+                    { id: "style", label: getWorkflowStepDisplayLabel("style") },
                   ] as const
                 ).map((mode) => {
                   const isActive = workflowMode === mode.id;
@@ -12184,7 +12330,9 @@ function EditorPageInner() {
               </div>
               <div className="rounded-lg border border-neutral-800 bg-neutral-900 p-3">
                 <div className="flex items-center justify-between">
-                  <div className="text-sm font-medium">Workflow — {workflowMode.toUpperCase()}</div>
+                  <div className="text-sm font-medium">
+                    Workflow — {getWorkflowStepDisplayLabel(workflowMode)}
+                  </div>
                   <button
                     type="button"
                     className="rounded-md border border-neutral-800 bg-neutral-950 px-2 py-1 text-xs text-neutral-300 hover:bg-neutral-800"
@@ -12251,18 +12399,14 @@ function EditorPageInner() {
                   ) : null}
 
                   <div className="mt-3 rounded-md border border-neutral-800 bg-neutral-950 p-3">
-                    <div className="text-sm font-medium">
-                      {isStyleWorkflowMode
-                        ? "Style Workspace"
-                        : isStageWorkflowMode
-                          ? "Stage Workspace"
-                          : `Stage ${activeStage}`}
-                    </div>
+                    <div className="text-sm font-medium">{WORKFLOW_MODE_HELPER_COPY[workflowMode]}</div>
 
                 {isSetWorkflowMode ? (
                   <div className="mt-3 space-y-3">
                     <div className="rounded-md border border-neutral-800 bg-neutral-900/50 p-2.5">
-                      <div className="text-[11px] uppercase tracking-wide text-neutral-500">Prepare Room</div>
+                      <div className="text-[11px] uppercase tracking-wide text-neutral-500">
+                        Prepare Room
+                      </div>
                       <label className="mt-2 flex cursor-pointer items-center gap-2 text-sm text-neutral-300">
                         <input
                           type="checkbox"
@@ -12273,65 +12417,71 @@ function EditorPageInner() {
                         Enhance
                       </label>
                       <div className="mt-2">
-                        <div className="text-xs text-neutral-400">Declutter</div>
-                        <div className="mt-1 flex gap-2">
-                          {(["off", "light", "heavy"] as DeclutterMode[]).map((mode) => (
+                        <div className="text-xs text-neutral-400">Room preparation</div>
+                        <div className="mt-1 flex flex-wrap gap-2">
+                          {(
+                            [
+                              { id: "keep", label: "Keep as-is" },
+                              { id: "light", label: "Light declutter" },
+                              { id: "heavy", label: "Heavy declutter" },
+                              { id: "empty", label: "Empty room" },
+                            ] as const
+                          ).map((mode) => (
                             <button
-                              key={mode}
+                              key={mode.id}
                               type="button"
-                              onClick={() => setStage1Declutter(mode)}
+                              onClick={() => setStage1RoomPreparationMode(mode.id)}
                               className={`rounded-md border px-2 py-1 text-xs ${
-                                stage1Declutter === mode
+                                stage1RoomPreparationMode === mode.id
                                   ? "border-neutral-600 bg-neutral-800 text-neutral-100"
                                   : "border-neutral-800 bg-neutral-900 text-neutral-300 hover:bg-neutral-800"
                               }`}
                             >
-                              {mode}
+                              {mode.label}
                             </button>
                           ))}
                         </div>
                       </div>
-                      <div className="mt-2 flex gap-2">
+                      <div className="mt-2">
                         <button
                           type="button"
-                          onClick={() =>
+                          onClick={() => {
+                            if (!hasMeaningfulStage1SetupSelection) return;
                             runStageWithCancellation(1, {
                               enhance: stage1Enhance,
                               declutter: stage1Declutter,
-                            })
+                              emptyRoom: stage1EmptyRoomSelected,
+                            });
+                          }}
+                          disabled={
+                            stageStatus[1] === "running" ||
+                            isOutOfTokens ||
+                            isStageRunSettling ||
+                            !hasMeaningfulStage1SetupSelection
                           }
-                          disabled={stageStatus[1] === "running" || isOutOfTokens || isStageRunSettling}
                           className={`rounded-md border px-3 py-1.5 text-sm ${
-                            stageStatus[1] === "running" || isOutOfTokens || isStageRunSettling
-                              ? "border-neutral-900 bg-neutral-950 text-neutral-500"
+                            stageStatus[1] === "running" ||
+                            isOutOfTokens ||
+                            isStageRunSettling ||
+                            !hasMeaningfulStage1SetupSelection
+                              ? "cursor-not-allowed border-neutral-900 bg-neutral-950 text-neutral-500"
                               : "border-neutral-700 bg-neutral-900 hover:bg-neutral-800"
                           }`}
                         >
-                          {stageStatus[1] === "running" ? "Running…" : "Run Stage"}
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() =>
-                            runStageWithCancellation(1, {
-                              enhance: stage1Enhance,
-                              declutter: stage1Declutter,
-                              emptyRoom: true,
-                            })
-                          }
-                          disabled={stageStatus[1] === "running" || isOutOfTokens || isStageRunSettling}
-                          className={`rounded-md border px-3 py-1.5 text-sm ${
-                            stageStatus[1] === "running" || isOutOfTokens || isStageRunSettling
-                              ? "border-neutral-900 bg-neutral-950 text-neutral-500"
-                              : "border-neutral-700 bg-neutral-900 hover:bg-neutral-800"
-                          }`}
-                        >
-                          Empty Room
+                          {stageStatus[1] === "running" ? "Running…" : "Run SETUP"}
                         </button>
                       </div>
                     </div>
 
                     <div className="rounded-md border border-neutral-800 bg-neutral-900/50 p-2.5">
-                      <div className="text-[11px] uppercase tracking-wide text-neutral-500">Modify Room</div>
+                      <div className="text-[11px] uppercase tracking-wide text-neutral-500">Cleanup</div>
+                      {renderRemoveToolEntryPoint("mt-2")}
+                    </div>
+
+                    <div className="rounded-md border border-neutral-800 bg-neutral-900/50 p-2.5">
+                      <div className="text-[11px] uppercase tracking-wide text-neutral-500">
+                        Modify Room
+                      </div>
                       <label className="mt-2 flex cursor-pointer items-center gap-2 text-sm text-neutral-300">
                         <input
                           type="checkbox"
@@ -12368,34 +12518,64 @@ function EditorPageInner() {
                       <div className="mt-2">
                         <button
                           type="button"
-                          onClick={() => runStageWithCancellation(2)}
-                          disabled={stageStatus[2] === "running" || isOutOfTokens || isStageRunSettling}
+                          onClick={() => {
+                            if (!hasMeaningfulStage2SetupSelection) return;
+                            runStageWithCancellation(2);
+                          }}
+                          disabled={
+                            stageStatus[2] === "running" ||
+                            isOutOfTokens ||
+                            isStageRunSettling ||
+                            !hasMeaningfulStage2SetupSelection
+                          }
                           className={`rounded-md border px-3 py-1.5 text-sm ${
-                            stageStatus[2] === "running" || isOutOfTokens || isStageRunSettling
-                              ? "border-neutral-900 bg-neutral-950 text-neutral-500"
+                            stageStatus[2] === "running" ||
+                            isOutOfTokens ||
+                            isStageRunSettling ||
+                            !hasMeaningfulStage2SetupSelection
+                              ? "cursor-not-allowed border-neutral-900 bg-neutral-950 text-neutral-500"
                               : "border-neutral-700 bg-neutral-900 hover:bg-neutral-800"
                           }`}
                         >
-                          {stageStatus[2] === "running" ? "Running…" : "Run Stage"}
+                          {stageStatus[2] === "running" ? "Running…" : "Run SETUP"}
                         </button>
                       </div>
-                    </div>
-
-                    <div className="rounded-md border border-neutral-800 bg-neutral-900/50 p-2.5">
-                      <div className="text-[11px] uppercase tracking-wide text-neutral-500">Cleanup</div>
-                      {renderRemoveToolEntryPoint("mt-2")}
                     </div>
                   </div>
                 ) : isStyleWorkflowMode ? (
                   <div className="mt-3 space-y-3">
                     <div className="rounded-md border border-neutral-800 bg-neutral-900/50 p-2.5">
                       <div className="text-[11px] uppercase tracking-wide text-neutral-500">Style Scene</div>
+                      <div className="mt-2 text-xs text-neutral-400">
+                        Select one or more style updates, then run them together in a single STYLE pass.
+                      </div>
+                      <div className="mt-2 space-y-1.5">
+                        {STAGE4_ACTIONS.map((action) => (
+                          <label
+                            key={action}
+                            className={`flex items-center gap-2 text-sm ${
+                              stageStatus[4] === "running" || isOutOfTokens || isStageRunSettling
+                                ? "cursor-not-allowed text-neutral-500"
+                                : "cursor-pointer text-neutral-300"
+                            }`}
+                          >
+                            <input
+                              type="checkbox"
+                              checked={selectedStage4Actions.includes(action)}
+                              onChange={(event) =>
+                                toggleStage4ActionSelection(action, event.currentTarget.checked)
+                              }
+                              disabled={stageStatus[4] === "running" || isOutOfTokens || isStageRunSettling}
+                              className="h-4 w-4 accent-sky-400"
+                            />
+                            {STAGE4_ACTION_LABELS[action]}
+                          </label>
+                        ))}
+                      </div>
                       <div className="mt-2">
                         <button
                           type="button"
-                          onClick={() =>
-                            runStageWithCancellation(4, { stage4Action: STAGE4_PRIMARY_ACTION })
-                          }
+                          onClick={runSelectedStyleActions}
                           disabled={stageStatus[4] === "running" || isOutOfTokens || isStageRunSettling}
                           className={`w-full rounded-md border px-3 py-2 text-sm ${
                             stageStatus[4] === "running" || isOutOfTokens || isStageRunSettling
@@ -12403,30 +12583,12 @@ function EditorPageInner() {
                               : "border-sky-500/60 bg-sky-950/40 text-sky-100 hover:bg-sky-900/50"
                           }`}
                         >
-                          {stageStatus[4] === "running" && stage4RunningAction === STAGE4_PRIMARY_ACTION
-                            ? "Styling…"
-                            : "✨ Style Room"}
+                          {stageStatus[4] === "running" ? "Running STYLE…" : "Run STYLE"}
                         </button>
                       </div>
-                      <div className="mt-2 flex flex-wrap gap-2">
-                        {STAGE4_ADVANCED_ACTIONS.map((action) => (
-                          <button
-                            key={action}
-                            type="button"
-                            onClick={() => runStageWithCancellation(4, { stage4Action: action })}
-                            disabled={stageStatus[4] === "running" || isOutOfTokens || isStageRunSettling}
-                            className={`rounded-md border px-2 py-1 text-xs ${
-                              stageStatus[4] === "running" || isOutOfTokens || isStageRunSettling
-                                ? "border-neutral-900 bg-neutral-950 text-neutral-500"
-                                : "border-neutral-700 bg-neutral-900 text-neutral-200 hover:bg-neutral-800"
-                            }`}
-                          >
-                            {stageStatus[4] === "running" && stage4RunningAction === action
-                              ? "Running…"
-                              : STAGE4_ACTION_LABELS[action]}
-                          </button>
-                        ))}
-                      </div>
+                      {stage4SelectionValidationMessage ? (
+                        <div className="mt-2 text-xs text-amber-300">{stage4SelectionValidationMessage}</div>
+                      ) : null}
                     </div>
                     <div className="rounded-md border border-neutral-800 bg-neutral-900/50 p-2.5">
                       <div className="text-[11px] uppercase tracking-wide text-neutral-500">Looks</div>
@@ -12435,8 +12597,8 @@ function EditorPageInner() {
                       </div>
                     </div>
                     <div className="text-xs text-neutral-500">
-                      {stageStatus[4] === "running" && stage4RunningAction
-                        ? `Running: ${STAGE4_ACTION_LABELS[stage4RunningAction]}`
+                      {stageStatus[4] === "running" && stage4RunSelectionLabel
+                        ? `Running: ${stage4RunSelectionLabel}`
                         : "Image-only styling pass; Stage 3 placements stay unchanged."}
                     </div>
                   </div>
@@ -12549,18 +12711,19 @@ function EditorPageInner() {
                     ) : null}
                     {isFavouritesFilterEmpty ? (
                       <div className="rounded-md border border-dashed border-neutral-800 bg-neutral-950 px-3 py-2 text-xs text-neutral-500">
-                        No favourite versions yet. Tap the heart on a SET, STAGE, or STYLE version to save it here.
+                        No favourite versions yet. Tap the heart on a SETUP, STAGE, or STYLE version to save it
+                        here.
                       </div>
                     ) : (
                       <>
                         {renderCollapsedVersionShelf({
                           keyName: "style",
-                          label: "STYLE",
+                          label: getWorkflowStepDisplayLabel("style"),
                           versionsInShelf: groupedVersionsForDisplay.style,
                         })}
                         {renderCollapsedVersionShelf({
                           keyName: "stage",
-                          label: "STAGE",
+                          label: getWorkflowStepDisplayLabel("stage"),
                           versionsInShelf: groupedVersionsForDisplay.stage,
                         })}
                       </>
@@ -12600,7 +12763,7 @@ function EditorPageInner() {
                     ) : null}
                     {renderCollapsedVersionShelf({
                       keyName: "set",
-                      label: "SET",
+                      label: getWorkflowStepDisplayLabel("set"),
                       versionsInShelf: groupedVersionsForDisplay.set,
                     })}
                     {!isFavouritesFilterOn
@@ -12664,12 +12827,12 @@ function EditorPageInner() {
                   <div className="text-xs text-neutral-400">Upload Image</div>
                   <input
                     type="file"
-                    accept="image/jpeg,image/png,image/webp"
+                    accept={SUPPORTED_STILL_IMAGE_ACCEPT_ATTR}
                     onChange={onUploadedProductImageChange}
                     className="mt-1 block w-full text-xs text-neutral-300 file:mr-3 file:rounded-md file:border file:border-neutral-800 file:bg-neutral-950 file:px-2 file:py-1.5 file:text-xs file:text-neutral-200 hover:file:bg-neutral-800"
                   />
                   <div className="mt-1 text-[11px] text-neutral-500">
-                    Upload a product photo/screenshot (.jpg/.png).
+                    HEIC/iPhone photos supported. Live Photos use the still image only.
                   </div>
                   {uploadedImageName && (
                     <div className="mt-1 flex items-center gap-2 text-xs text-neutral-300">
@@ -12818,7 +12981,7 @@ function EditorPageInner() {
                         : "Upload…"}
                     <input
                       type="file"
-                      accept="image/jpeg,image/png,image/webp"
+                      accept={SUPPORTED_STILL_IMAGE_ACCEPT_ATTR}
                       className="hidden"
                       disabled={isPreparingRoomPhotoUpload}
                       onChange={handleRoomPhotoInputChange}

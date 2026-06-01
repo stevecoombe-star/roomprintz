@@ -1,4 +1,9 @@
-import { getVibodeVersionKind, type VibodeVersionKind } from "@/lib/vibode/version-kind";
+import {
+  getVibodeVersionKind,
+  getWorkflowStepDisplayLabel,
+  type VibodeVersionKind,
+  type WorkflowStepDisplayLabel,
+} from "@/lib/vibode/version-kind";
 
 export type ImageHistoryTimelineKind = VibodeVersionKind;
 
@@ -29,7 +34,7 @@ export type ImageHistoryWorkflowGroupKey = "original" | "set" | "stage" | "style
 
 export type ImageHistoryWorkflowGroup<TVersion extends ImageHistoryTimelineVersion> = {
   key: ImageHistoryWorkflowGroupKey;
-  label: "ORIGINAL" | "SET" | "STAGE" | "STYLE";
+  label: "ORIGINAL" | WorkflowStepDisplayLabel;
   representative: TVersion;
   items: TVersion[];
   isActiveGroup: boolean;
@@ -311,7 +316,7 @@ export function getImageHistoryWorkflowGroups<TVersion extends ImageHistoryTimel
 
   const setGroup = buildWorkflowGroup({
     key: "set",
-    label: "SET",
+    label: getWorkflowStepDisplayLabel("set"),
     representative: setNode,
     siblings: setNode
       ? getChildrenOfKind(childrenByParentId, getParentId(setNode), "set")
@@ -322,7 +327,7 @@ export function getImageHistoryWorkflowGroups<TVersion extends ImageHistoryTimel
 
   const stageGroup = buildWorkflowGroup({
     key: "stage",
-    label: "STAGE",
+    label: getWorkflowStepDisplayLabel("stage"),
     representative: stageNode,
     siblings: stageNode
       ? getChildrenOfKind(childrenByParentId, getParentId(stageNode), "stage")
@@ -333,7 +338,7 @@ export function getImageHistoryWorkflowGroups<TVersion extends ImageHistoryTimel
 
   const styleGroup = buildWorkflowGroup({
     key: "style",
-    label: "STYLE",
+    label: getWorkflowStepDisplayLabel("style"),
     representative: styleNode,
     siblings: styleNode
       ? getChildrenOfKind(childrenByParentId, getParentId(styleNode), "style")

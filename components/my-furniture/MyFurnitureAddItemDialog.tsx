@@ -2,6 +2,11 @@
 
 import { useEffect, useMemo, useState, type ClipboardEvent } from "react";
 import { getSupabaseBrowserAccessToken } from "@/lib/supabaseBrowser";
+import {
+  isLivePhotoMovCompanion,
+  isSupportedStillImageFile,
+  SUPPORTED_STILL_IMAGE_ACCEPT_ATTR,
+} from "@/lib/uploadImageFileTypes";
 
 type AddItemMode = "image" | "url";
 
@@ -77,6 +82,7 @@ export function MyFurnitureAddItemDialog({
   const [mode, setMode] = useState<AddItemMode>("image");
   const [productUrl, setProductUrl] = useState("");
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [selectedFileName, setSelectedFileName] = useState<string | null>(null);
   const [pastedImageDataUrl, setPastedImageDataUrl] = useState<string | null>(null);
   const [urlPastedImageUrl, setUrlPastedImageUrl] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -87,6 +93,7 @@ export function MyFurnitureAddItemDialog({
     setMode("image");
     setProductUrl("");
     setSelectedFile(null);
+    setSelectedFileName(null);
     setPastedImageDataUrl(null);
     setUrlPastedImageUrl(null);
     setIsSubmitting(false);
@@ -140,6 +147,7 @@ export function MyFurnitureAddItemDialog({
         sourceType: "product_url",
         previewImageUrl: clientPreviewImageUrl,
         clientPreviewImageDataUrl,
+        clientPreviewImageFilename: selectedFileName,
       }),
     });
     const payload = (await response.json().catch(() => ({}))) as SaveResponse;
@@ -170,6 +178,7 @@ export function MyFurnitureAddItemDialog({
       },
       body: JSON.stringify({
         imageBase64,
+        imageFilename: selectedFileName,
       }),
     });
 
@@ -207,11 +216,13 @@ export function MyFurnitureAddItemDialog({
     if (!imageItem) return;
     const file = imageItem.getAsFile();
     if (!file) return;
+    if (!isSupportedStillImageFile(file) || isLivePhotoMovCompanion(file)) return;
     event.preventDefault();
     const dataUrl = await fileToDataUrl(file).catch(() => null);
     if (!dataUrl) return;
     setPastedImageDataUrl(dataUrl);
     setSelectedFile(null);
+    setSelectedFileName(null);
   }
 
   return (
@@ -274,15 +285,38 @@ export function MyFurnitureAddItemDialog({
           >
             <input
               type="file"
-              accept="image/*"
+              accept={SUPPORTED_STILL_IMAGE_ACCEPT_ATTR}
               disabled={isSubmitting}
               onChange={(event) => {
                 const file = event.target.files?.[0] ?? null;
+                if (file && isLivePhotoMovCompanion(file)) {
+                  setSelectedFile(null);
+                  setSelectedFileName(null);
+                  setPastedImageDataUrl(null);
+                  setSubmitError(
+                    "Live Photo video detected. Vibode needs the still image, not the video clip."
+                  );
+                  return;
+                }
+                if (file && !isSupportedStillImageFile(file)) {
+                  setSelectedFile(null);
+                  setSelectedFileName(null);
+                  setPastedImageDataUrl(null);
+                  setSubmitError(
+                    "Please select a JPG, PNG, WebP, or HEIC/HEIF still image."
+                  );
+                  return;
+                }
                 setSelectedFile(file);
+                setSelectedFileName(file?.name ?? null);
                 setPastedImageDataUrl(null);
+                setSubmitError(null);
               }}
               className="w-full rounded-lg border border-slate-700 bg-slate-950 px-2 py-2 text-xs text-slate-200 file:mr-3 file:rounded-md file:border-0 file:bg-slate-100 file:px-2.5 file:py-1.5 file:text-xs file:font-medium file:text-slate-900"
             />
+            <p className="text-[11px] text-slate-500">
+              HEIC/iPhone photos supported. Live Photos use the still image only.
+            </p>
             <textarea
               rows={3}
               disabled={isSubmitting}

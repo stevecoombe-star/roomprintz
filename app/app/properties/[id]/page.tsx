@@ -14,6 +14,11 @@ import Link from "next/link";
 import { supabase } from "@/lib/supabaseClient";
 import { useSupabaseUser } from "@/lib/useSupabaseUser";
 import { ROOM_STYLES } from "@/components/StyleSelector";
+import {
+  isLivePhotoMovCompanion,
+  isSupportedStillImageFile,
+  SUPPORTED_STILL_IMAGE_ACCEPT_ATTR,
+} from "@/lib/uploadImageFileTypes";
 
 type Property = {
   id: string;
@@ -383,7 +388,21 @@ export default function PropertyPage() {
       return;
     }
 
-    const files = Array.from(fileList);
+    const selectedFiles = Array.from(fileList);
+    const files = selectedFiles.filter((file) => isSupportedStillImageFile(file));
+    const ignoredMovCount = selectedFiles.filter((file) => isLivePhotoMovCompanion(file)).length;
+    const ignoredUnsupportedCount = selectedFiles.length - files.length - ignoredMovCount;
+    if (ignoredMovCount > 0) {
+      alert("Live Photo video detected. Vibode needs the still image, not the video clip.");
+    }
+    if (ignoredUnsupportedCount > 0) {
+      alert("Some files were skipped. Upload JPG, PNG, WebP, or HEIC/HEIF still images only.");
+    }
+    if (files.length === 0) {
+      e.target.value = "";
+      setBulkUploading(false);
+      return;
+    }
 
     setBulkUploading(true);
     setErrorMessage(null);
@@ -993,6 +1012,16 @@ export default function PropertyPage() {
   const handleMainImageUpload = async (e: ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file || !property || !user) return;
+    if (isLivePhotoMovCompanion(file)) {
+      setErrorMessage("Live Photo video detected. Vibode needs the still image, not the video clip.");
+      e.target.value = "";
+      return;
+    }
+    if (!isSupportedStillImageFile(file)) {
+      setErrorMessage("Upload JPG, PNG, WebP, or HEIC/HEIF still images only.");
+      e.target.value = "";
+      return;
+    }
 
     setUploadingMainImage(true);
     setErrorMessage(null);
@@ -1606,7 +1635,7 @@ export default function PropertyPage() {
           <input
             ref={fileInputRef}
             type="file"
-            accept="image/*"
+            accept={SUPPORTED_STILL_IMAGE_ACCEPT_ATTR}
             className="hidden"
             onChange={handleMainImageUpload}
           />
@@ -1615,7 +1644,7 @@ export default function PropertyPage() {
           <input
             ref={bulkFileInputRef}
             type="file"
-            accept="image/*"
+            accept={SUPPORTED_STILL_IMAGE_ACCEPT_ATTR}
             multiple
             className="hidden"
             onChange={handleBulkOriginalsSelected}

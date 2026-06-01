@@ -1,5 +1,6 @@
 export type VibodeVersionKind = "set" | "stage" | "style" | "unknown";
 export type PersistedVibodeVersionKind = Exclude<VibodeVersionKind, "unknown">;
+export type WorkflowStepDisplayLabel = "SETUP" | "STAGE" | "STYLE" | "UNKNOWN";
 
 const KNOWN_VERSION_KINDS = new Set<VibodeVersionKind>(["set", "stage", "style", "unknown"]);
 
@@ -81,4 +82,11 @@ export function isStageVersion(version: unknown): boolean {
 
 export function isStyleVersion(version: unknown): boolean {
   return getVibodeVersionKind(version) === "style";
+}
+
+export function getWorkflowStepDisplayLabel(kind: VibodeVersionKind): WorkflowStepDisplayLabel {
+  if (kind === "set") return "SETUP";
+  if (kind === "stage") return "STAGE";
+  if (kind === "style") return "STYLE";
+  return "UNKNOWN";
 }

@@ -2,7 +2,7 @@
 
 import { useMemo, useState } from "react";
 import { getImageHistoryWorkflowGroups, type ImageHistoryTimelineKind } from "@/lib/vibode/image-history-timeline";
-import { getVibodeVersionKind } from "@/lib/vibode/version-kind";
+import { getVibodeVersionKind, getWorkflowStepDisplayLabel } from "@/lib/vibode/version-kind";
 import type { VibodeRoomAsset } from "@/stores/editorStore";
 
 type ImageHistoryTimelineProps = {
@@ -28,17 +28,11 @@ function getVersionKind(version: VibodeRoomAsset): ImageHistoryTimelineKind {
 function getVersionLabel(version: VibodeRoomAsset): string {
   if (version.asset_type === "base") return "ORIGINAL";
   const kind = getVersionKind(version);
-  if (kind === "set") return "SET";
-  if (kind === "stage") return "STAGE";
-  if (kind === "style") return "STYLE";
-  return "UNKNOWN";
+  return getWorkflowStepDisplayLabel(kind);
 }
 
-function kindToWorkflowLabel(kind: ImageHistoryTimelineKind): "SET" | "STAGE" | "STYLE" | "UNKNOWN" {
-  if (kind === "set") return "SET";
-  if (kind === "stage") return "STAGE";
-  if (kind === "style") return "STYLE";
-  return "UNKNOWN";
+function kindToWorkflowLabel(kind: ImageHistoryTimelineKind) {
+  return getWorkflowStepDisplayLabel(kind);
 }
 
 function getPreviewUrl(version: VibodeRoomAsset): string | null {
@@ -54,7 +48,7 @@ function formatChildSummaryLabel(kind: ImageHistoryTimelineKind, count: number):
 }
 
 function formatChildZeroState(kind: ImageHistoryTimelineKind | null): string {
-  if (kind === "set") return "No SET images yet";
+  if (kind === "set") return "No SETUP images yet";
   if (kind === "stage") return "No STAGE images yet";
   if (kind === "style") return "No STYLE images yet";
   return "No images yet";

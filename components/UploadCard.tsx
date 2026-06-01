@@ -7,6 +7,11 @@ import {
   DragEvent,
   useState,
 } from "react";
+import {
+  isLivePhotoMovCompanion,
+  isSupportedStillImageFile,
+  SUPPORTED_STILL_IMAGE_ACCEPT_ATTR,
+} from "@/lib/uploadImageFileTypes";
 
 type UploadCardProps = {
   file: File | null;
@@ -19,6 +24,18 @@ export function UploadCard({ file, previewUrl, onFileChange }: UploadCardProps) 
 
   const handleInputChange = (e: ChangeEvent<HTMLInputElement>) => {
     const nextFile = e.target.files?.[0] ?? null;
+    if (nextFile && isLivePhotoMovCompanion(nextFile)) {
+      alert("Live Photo video detected. Vibode needs the still image, not the video clip.");
+      onFileChange(null);
+      e.target.value = "";
+      return;
+    }
+    if (nextFile && !isSupportedStillImageFile(nextFile)) {
+      alert("Please upload a JPG, PNG, WebP, or HEIC/HEIF still image.");
+      onFileChange(null);
+      e.target.value = "";
+      return;
+    }
     onFileChange(nextFile);
   };
 
@@ -52,15 +69,20 @@ export function UploadCard({ file, previewUrl, onFileChange }: UploadCardProps) 
     e.stopPropagation();
     setIsDragging(false);
 
-    const droppedFile = e.dataTransfer.files?.[0];
-    if (!droppedFile) return;
+    const droppedFiles = Array.from(e.dataTransfer.files ?? []);
+    if (droppedFiles.length === 0) return;
 
-    if (!droppedFile.type.startsWith("image/")) {
-      alert("Please drop an image file.");
+    const droppedStill = droppedFiles.find((file) => isSupportedStillImageFile(file));
+    if (!droppedStill) {
+      if (droppedFiles.every((file) => isLivePhotoMovCompanion(file))) {
+        alert("Live Photo video detected. Vibode needs the still image, not the video clip.");
+        return;
+      }
+      alert("Please drop a JPG, PNG, WebP, or HEIC/HEIF still image.");
       return;
     }
 
-    onFileChange(droppedFile);
+    onFileChange(droppedStill);
   };
 
   const borderClasses = isDragging
@@ -80,7 +102,7 @@ export function UploadCard({ file, previewUrl, onFileChange }: UploadCardProps) 
       <input
         id="room-upload-input"
         type="file"
-        accept="image/*"
+        accept={SUPPORTED_STILL_IMAGE_ACCEPT_ATTR}
         className="hidden"
         onChange={handleInputChange}
       />
@@ -109,7 +131,7 @@ export function UploadCard({ file, previewUrl, onFileChange }: UploadCardProps) 
                 or <span className="text-emerald-300">click to browse</span>
               </div>
               <div className="mt-2 text-[10px] text-slate-500">
-                JPG or PNG · Recommended &gt; 1280px wide
+                JPG/PNG/WebP/HEIC supported · Live Photos use still image only
               </div>
             </div>
           ) : (

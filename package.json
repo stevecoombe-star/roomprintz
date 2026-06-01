@@ -12,6 +12,7 @@
   "dependencies": {
     "@supabase/ssr": "^0.10.2",
     "@supabase/supabase-js": "^2.104.0",
+    "heic-convert": "^2.1.0",
     "konva": "^10.0.12",
     "next": "^16.0.7",
     "react": "^19.2.1",

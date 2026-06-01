@@ -11,6 +11,13 @@ import {
 } from "@/lib/vibodePersistence";
 import { createVibodeAssetThumbnail } from "@/lib/vibodeAssetThumbnails";
 import { stampVibodeVersionKindMetadata } from "@/lib/vibode/version-kind";
+import { convertHeicBufferToJpeg, HeicConversionError } from "@/lib/heicServerConversion";
+import {
+  getFileExtensionFromName,
+  isHeicLikeFile,
+  isLivePhotoMovCompanion,
+  isSupportedStillImageFile,
+} from "@/lib/uploadImageFileTypes";
 
 export const runtime = "nodejs";
 
@@ -94,17 +101,93 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Missing file" }, { status: 400 });
     }
 
-    const arrayBuffer = await file.arrayBuffer();
-    const bytes = Buffer.from(arrayBuffer);
+    const fileName =
+      typeof (file as File).name === "string" && (file as File).name.trim().length > 0
+        ? (file as File).name.trim()
+        : "upload";
+    const fileType = typeof file.type === "string" ? file.type : "";
+    const detectedExtension = getFileExtensionFromName(fileName);
+    const heicLike = isHeicLikeFile({ name: fileName, type: fileType });
 
-    // Attempt to infer extension
-    const mime = file.type || "image/jpeg";
-    const ext =
-      mime === "image/png"
-        ? "png"
-        : mime === "image/webp"
-        ? "webp"
-        : "jpg";
+    if (isLivePhotoMovCompanion({ name: fileName, type: fileType })) {
+      return NextResponse.json(
+        {
+          error: "Live Photo video detected. Vibode needs the still image, not the video clip.",
+        },
+        { status: 400 }
+      );
+    }
+
+    if (!isSupportedStillImageFile({ name: fileName, type: fileType })) {
+      return NextResponse.json(
+        {
+          error:
+            "Unsupported image format. Please upload JPG, PNG, WebP, or HEIC/HEIF still images.",
+        },
+        { status: 400 }
+      );
+    }
+
+    const arrayBuffer = await file.arrayBuffer();
+    let bytes = Buffer.from(arrayBuffer);
+    let mime = fileType.toLowerCase();
+    let ext = getFileExtensionFromName(fileName) ?? "jpg";
+
+    if (heicLike) {
+      console.info("[upload-base][heic] normalization-start", {
+        route: "/api/vibode/upload-base",
+        fileName,
+        fileType,
+        fileSize: file.size,
+        detectedExtension,
+      });
+
+      try {
+        const converted = await convertHeicBufferToJpeg({ inputBuffer: bytes });
+        bytes = Buffer.from(converted.outputBuffer);
+        mime = "image/jpeg";
+        ext = "jpg";
+      } catch (error) {
+        const conversionCode = error instanceof HeicConversionError ? error.code : "UNKNOWN";
+        const conversionCauseMessage =
+          error instanceof HeicConversionError ? error.causeMessage : error instanceof Error ? error.message : String(error);
+        const conversionCauseName = error instanceof HeicConversionError ? error.causeName : null;
+        const conversionCauseCode = error instanceof HeicConversionError ? error.causeCode : null;
+        console.error("[upload-base][heic] conversion-failed", {
+          route: "/api/vibode/upload-base",
+          fileName,
+          fileType,
+          fileSize: file.size,
+          detectedExtension,
+          conversionCode,
+          conversionCauseMessage,
+          conversionCauseName,
+          conversionCauseCode,
+          errorName: error instanceof Error ? error.name : "UnknownError",
+          errorMessage: error instanceof Error ? error.message : String(error),
+          errorCode:
+            error && typeof error === "object" && typeof (error as { code?: unknown }).code === "string"
+              ? (error as { code: string }).code
+              : null,
+        });
+        return NextResponse.json(
+          {
+            error:
+              "This iPhone photo format could not be converted. Please try exporting it as JPEG and upload again.",
+          },
+          { status: 422 }
+        );
+      }
+    } else if (mime === "image/png" || ext === "png") {
+      mime = "image/png";
+      ext = "png";
+    } else if (mime === "image/webp" || ext === "webp") {
+      mime = "image/webp";
+      ext = "webp";
+    } else {
+      mime = "image/jpeg";
+      ext = "jpg";
+    }
 
     const sceneId = formData.get("sceneId") || "unknown";
     const ts = Date.now();

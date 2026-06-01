@@ -88,7 +88,7 @@ function asImageDataUrl(value: string | null): string | null {
   if (!value) return null;
   const trimmed = value.trim();
   if (!trimmed) return null;
-  if (!/^data:image\/[a-z0-9.+-]+;base64,[a-z0-9+/=\s]+$/i.test(trimmed)) return null;
+  if (!/^data:[^;]+;base64,[a-z0-9+/=\s]+$/i.test(trimmed)) return null;
   return trimmed;
 }
 
@@ -406,11 +406,13 @@ async function ingestPreviewImageViaExistingFlow(
   args: {
     imageUrl?: string | null;
     imageBase64?: string | null;
+    imageFilename?: string | null;
     label?: string | null;
   }
 ): Promise<IngestPreviewCallResult> {
   const imageUrl = asHttpUrl(args.imageUrl ?? null);
   const imageBase64 = asImageDataUrl(args.imageBase64 ?? null);
+  const imageFilename = asOptionalString(args.imageFilename ?? null);
   const label = asOptionalString(args.label ?? null);
   if (!imageUrl && !imageBase64) {
     return {
@@ -435,6 +437,7 @@ async function ingestPreviewImageViaExistingFlow(
     body: JSON.stringify({
       ...(imageUrl ? { imageUrl } : {}),
       ...(imageBase64 ? { imageBase64 } : {}),
+      ...(imageFilename ? { imageFilename } : {}),
       ...(label ? { label } : {}),
     }),
   });
@@ -476,6 +479,9 @@ export async function POST(req: NextRequest) {
     const previewImageUrl = asOptionalString((body as { previewImageUrl?: unknown } | null)?.previewImageUrl);
     const clientPreviewImageDataUrl = asImageDataUrl(
       asOptionalString((body as { clientPreviewImageDataUrl?: unknown } | null)?.clientPreviewImageDataUrl)
+    );
+    const clientPreviewImageFilename = asOptionalString(
+      (body as { clientPreviewImageFilename?: unknown } | null)?.clientPreviewImageFilename
     );
     const sourceUrl = asOptionalString((body as { sourceUrl?: unknown } | null)?.sourceUrl);
     const sourceType = asOptionalString((body as { sourceType?: unknown } | null)?.sourceType);
@@ -621,6 +627,7 @@ export async function POST(req: NextRequest) {
               {
                 imageUrl: resolvedImageUrl,
                 imageBase64: resolvedImageDataUrl,
+                imageFilename: resolvedImageDataUrl ? clientPreviewImageFilename : null,
                 label: metadataTitle ?? nextDisplayName ?? null,
               }
             );

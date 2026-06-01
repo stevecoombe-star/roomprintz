@@ -3,11 +3,17 @@ import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { callCompositorEngine } from "@/lib/callCompositorEngine";
+import { convertHeicBufferToJpeg, HeicConversionError } from "@/lib/heicServerConversion";
 import {
   buildVibodeCompositorContextHeaders,
   resolveVibodeOperationIdFromHeaders,
   resolveVibodeRequestIdFromHeaders,
 } from "@/lib/vibodeCompositorContextHeaders";
+import {
+  isHeicLikeFile,
+  isLivePhotoMovCompanion,
+  isSupportedStillImageFile,
+} from "@/lib/uploadImageFileTypes";
 import {
   canAffordTokens,
   getTokenCostForAction,
@@ -109,6 +115,23 @@ export async function POST(req: NextRequest) {
     if (!(file instanceof Blob)) {
       return json(400, {
         error: "Missing or invalid file in form-data (expected 'file').",
+      });
+    }
+
+    const fileName =
+      typeof (file as File).name === "string" && (file as File).name.trim().length > 0
+        ? (file as File).name.trim()
+        : "upload";
+    const fileType = typeof file.type === "string" ? file.type : "";
+
+    if (isLivePhotoMovCompanion({ name: fileName, type: fileType })) {
+      return json(400, {
+        error: "Live Photo video detected. Vibode needs the still image, not the video clip.",
+      });
+    }
+    if (!isSupportedStillImageFile({ name: fileName, type: fileType })) {
+      return json(400, {
+        error: "Unsupported image format. Please upload JPG, PNG, WebP, or HEIC/HEIF still images.",
       });
     }
 
@@ -265,7 +288,31 @@ export async function POST(req: NextRequest) {
     const balanceAfterSpend = spendResult.balanceTokens;
 
     const arrayBuffer = await file.arrayBuffer();
-    const bytes = Buffer.from(arrayBuffer);
+    let bytes = Buffer.from(arrayBuffer);
+    if (isHeicLikeFile({ name: fileName, type: fileType })) {
+      try {
+        const converted = await convertHeicBufferToJpeg({ inputBuffer: bytes });
+        bytes = Buffer.from(converted.outputBuffer);
+      } catch (error) {
+        const conversionCode = error instanceof HeicConversionError ? error.code : "UNKNOWN";
+        const conversionCause =
+          error instanceof HeicConversionError
+            ? error.causeMessage
+            : error instanceof Error
+            ? error.message
+            : String(error);
+        console.error("[stage-room] heic conversion failed", {
+          fileName,
+          fileType,
+          conversionCode,
+          conversionCause,
+        });
+        return json(422, {
+          error:
+            "This iPhone photo format could not be converted. Please try exporting it as JPEG and upload again.",
+        });
+      }
+    }
 
     const result = await callCompositorEngine({
       imageBytes: bytes,

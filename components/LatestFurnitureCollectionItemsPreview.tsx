@@ -5,6 +5,7 @@ import { useEffect, useState } from "react";
 type LatestFurnitureCollectionItemsPreviewProps = {
   collapseSignal?: number;
   onUseMyFurnitureItemForPasteToPlace?: (userFurnitureId: string) => Promise<boolean> | boolean;
+  onUseMyFurnitureItemsForLetVibodeDecide?: (userFurnitureIds: string[]) => Promise<boolean> | boolean;
 };
 
 type CollectionImportItem = {
@@ -73,6 +74,7 @@ function formatPrice(item: CollectionImportItem): string | null {
 export function LatestFurnitureCollectionItemsPreview({
   collapseSignal = 0,
   onUseMyFurnitureItemForPasteToPlace,
+  onUseMyFurnitureItemsForLetVibodeDecide,
 }: LatestFurnitureCollectionItemsPreviewProps) {
   const [isLoading, setIsLoading] = useState(true);
   const [isExpanded, setIsExpanded] = useState(false);
@@ -81,8 +83,11 @@ export function LatestFurnitureCollectionItemsPreview({
   const [addedToMyFurnitureByItemId, setAddedToMyFurnitureByItemId] = useState<Record<string, boolean>>({});
   const [failedImageByItemId, setFailedImageByItemId] = useState<Record<string, boolean>>({});
   const [isAddingAll, setIsAddingAll] = useState(false);
+  const [isPreparingCollectionPlacement, setIsPreparingCollectionPlacement] = useState(false);
   const [addAllMessage, setAddAllMessage] = useState<string | null>(null);
   const [addAllError, setAddAllError] = useState<string | null>(null);
+  const [collectionPlacementError, setCollectionPlacementError] = useState<string | null>(null);
+  const [collectionPlacementMessage, setCollectionPlacementMessage] = useState<string | null>(null);
   const [isDismissed, setIsDismissed] = useState(false);
   const [showDismissConfirm, setShowDismissConfirm] = useState(false);
   const [hasSeenShowItems, setHasSeenShowItems] = useState(false);
@@ -225,6 +230,8 @@ export function LatestFurnitureCollectionItemsPreview({
     setShowDismissConfirm(false);
     setAddAllMessage(null);
     setAddAllError(null);
+    setCollectionPlacementError(null);
+    setCollectionPlacementMessage(null);
     setAddByItemId((current) => ({
       ...current,
       [itemId]: { status: "loading", message: null },
@@ -255,6 +262,8 @@ export function LatestFurnitureCollectionItemsPreview({
     setShowDismissConfirm(false);
     setAddAllMessage(null);
     setAddAllError(null);
+    setCollectionPlacementError(null);
+    setCollectionPlacementMessage(null);
     setPlaceByItemId((current) => ({
       ...current,
       [itemId]: { status: "loading", message: null },
@@ -296,6 +305,52 @@ export function LatestFurnitureCollectionItemsPreview({
     }
   }
 
+  async function materializeAllCollectionItems(): Promise<{
+    totalCount: number;
+    addedCount: number;
+    alreadyExistedCount: number;
+    failedCount: number;
+    results: Array<{
+      itemId?: string;
+      ok?: boolean;
+      alreadyExisted?: boolean;
+      error?: string;
+      userFurnitureId?: string;
+    }>;
+  }> {
+    const response = await fetch(
+      `/api/vibode/furniture-collections/${partnerSlug}/${collectionSlug}/materialize-all`,
+      {
+        method: "POST",
+        credentials: "same-origin",
+      }
+    );
+    const payload = (await response.json().catch(() => ({}))) as {
+      error?: string;
+      totalCount?: number;
+      addedCount?: number;
+      alreadyExistedCount?: number;
+      failedCount?: number;
+      results?: Array<{
+        itemId?: string;
+        ok?: boolean;
+        alreadyExisted?: boolean;
+        error?: string;
+        userFurnitureId?: string;
+      }>;
+    };
+    if (!response.ok) {
+      throw new Error(payload.error || "Could not add this collection yet. Please try again.");
+    }
+    return {
+      totalCount: Number(payload.totalCount ?? 0),
+      addedCount: Number(payload.addedCount ?? 0),
+      alreadyExistedCount: Number(payload.alreadyExistedCount ?? 0),
+      failedCount: Number(payload.failedCount ?? 0),
+      results: Array.isArray(payload.results) ? payload.results : [],
+    };
+  }
+
   async function handleMaterializeAll() {
     if (!partnerSlug || !collectionSlug) {
       setAddAllError("Could not add this collection yet. Please refresh and try again.");
@@ -305,35 +360,14 @@ export function LatestFurnitureCollectionItemsPreview({
     setIsAddingAll(true);
     setAddAllMessage(null);
     setAddAllError(null);
+    setCollectionPlacementError(null);
+    setCollectionPlacementMessage(null);
     try {
-      const response = await fetch(
-        `/api/vibode/furniture-collections/${partnerSlug}/${collectionSlug}/materialize-all`,
-        {
-          method: "POST",
-          credentials: "same-origin",
-        }
-      );
-      const payload = (await response.json().catch(() => ({}))) as {
-        error?: string;
-        totalCount?: number;
-        addedCount?: number;
-        alreadyExistedCount?: number;
-        failedCount?: number;
-        results?: Array<{
-          itemId?: string;
-          ok?: boolean;
-          alreadyExisted?: boolean;
-          error?: string;
-        }>;
-      };
-      if (!response.ok) {
-        throw new Error(payload.error || "Could not add this collection yet. Please try again.");
-      }
-
-      const totalCount = Number(payload.totalCount ?? 0);
-      const addedCount = Number(payload.addedCount ?? 0);
-      const alreadyExistedCount = Number(payload.alreadyExistedCount ?? 0);
-      const failedCount = Number(payload.failedCount ?? 0);
+      const payload = await materializeAllCollectionItems();
+      const totalCount = payload.totalCount;
+      const addedCount = payload.addedCount;
+      const alreadyExistedCount = payload.alreadyExistedCount;
+      const failedCount = payload.failedCount;
 
       if (failedCount > 0) {
         setAddAllMessage(
@@ -412,6 +446,103 @@ export function LatestFurnitureCollectionItemsPreview({
     }
   }
 
+  async function handleLetVibodeDecidePlacement() {
+    if (!partnerSlug || !collectionSlug) {
+      setCollectionPlacementError("Could not prepare this collection. Please try again.");
+      return;
+    }
+    setShowDismissConfirm(false);
+    setIsPreparingCollectionPlacement(true);
+    setAddAllMessage(null);
+    setAddAllError(null);
+    setCollectionPlacementError(null);
+    setCollectionPlacementMessage(null);
+    try {
+      const payload = await materializeAllCollectionItems();
+      const resultsById = new Map<
+        string,
+        { ok: boolean; alreadyExisted: boolean; error: string | null; userFurnitureId: string | null }
+      >();
+      for (const result of payload.results ?? []) {
+        const resultItemId = typeof result.itemId === "string" ? result.itemId.trim() : "";
+        if (!resultItemId) continue;
+        const userFurnitureId =
+          typeof result.userFurnitureId === "string" && result.userFurnitureId.trim().length > 0
+            ? result.userFurnitureId.trim()
+            : null;
+        resultsById.set(resultItemId, {
+          ok: Boolean(result.ok),
+          alreadyExisted: Boolean(result.alreadyExisted),
+          error: typeof result.error === "string" ? result.error : null,
+          userFurnitureId,
+        });
+      }
+
+      setAddByItemId((current) => {
+        const next = { ...current };
+        for (const item of items) {
+          const itemId = typeof item.id === "string" ? item.id.trim() : "";
+          if (!itemId) continue;
+          const result = resultsById.get(itemId);
+          if (!result) continue;
+          if (result.ok) {
+            next[itemId] = {
+              status: "success",
+              message: result.alreadyExisted ? "Already in My Furniture" : "Added to My Furniture",
+            };
+          } else {
+            next[itemId] = {
+              status: "error",
+              message: result.error || "Could not add this item yet. Please try again.",
+            };
+          }
+        }
+        return next;
+      });
+      setAddedToMyFurnitureByItemId((current) => {
+        const next = { ...current };
+        for (const item of items) {
+          const itemId = typeof item.id === "string" ? item.id.trim() : "";
+          if (!itemId) continue;
+          const result = resultsById.get(itemId);
+          if (!result?.ok) continue;
+          next[itemId] = true;
+        }
+        return next;
+      });
+
+      const successfulUserFurnitureIds = Array.from(
+        new Set(
+          payload.results
+            .map((result) =>
+              typeof result.userFurnitureId === "string" ? result.userFurnitureId.trim() : ""
+            )
+            .filter((id) => id.length > 0)
+        )
+      );
+      if (successfulUserFurnitureIds.length === 0) {
+        throw new Error("Could not prepare this collection. Please try again.");
+      }
+      if (!onUseMyFurnitureItemsForLetVibodeDecide) {
+        throw new Error("Could not prepare this collection. Please try again.");
+      }
+      const prepared = await onUseMyFurnitureItemsForLetVibodeDecide(successfulUserFurnitureIds);
+      if (!prepared) {
+        throw new Error("Could not prepare this collection. Please try again.");
+      }
+      setCollectionPlacementMessage("Collection ready — click in your room and choose Let Vibode decide.");
+      setIsExpanded(false);
+    } catch (error: unknown) {
+      const message =
+        error instanceof Error && error.message
+          ? error.message
+          : "Could not prepare this collection. Please try again.";
+      setCollectionPlacementError(message);
+    } finally {
+      setIsPreparingCollectionPlacement(false);
+    }
+  }
+
   if (isLoading || !collectionImport) return null;
   if (items.length === 0) return null;
   if (isDismissed) return null;
@@ -463,6 +594,9 @@ export function LatestFurnitureCollectionItemsPreview({
           </button>
         </div>
       </div>
+      {collectionPlacementMessage ? (
+        <p className="mt-1 text-[11px] text-emerald-300">{collectionPlacementMessage}</p>
+      ) : null}
       {showDismissConfirm ? (
         <div className="mt-2 rounded border border-amber-500/40 bg-amber-500/10 p-2">
           <p className="text-[11px] text-amber-100">
@@ -510,15 +644,26 @@ export function LatestFurnitureCollectionItemsPreview({
               <button
                 type="button"
                 onClick={() => void handleMaterializeAll()}
-                disabled={isAddingAll}
+                disabled={isAddingAll || isPreparingCollectionPlacement}
                 className="rounded border border-neutral-600 px-2 py-0.5 text-[11px] text-neutral-200 hover:border-neutral-500 disabled:cursor-not-allowed disabled:opacity-80"
               >
                 {isAddingAll ? "Adding all..." : "Add all to My Furniture"}
+              </button>
+              <button
+                type="button"
+                onClick={() => void handleLetVibodeDecidePlacement()}
+                disabled={isPreparingCollectionPlacement || isAddingAll}
+                className="rounded border border-neutral-300 bg-neutral-100 px-2 py-0.5 text-[11px] font-medium text-neutral-900 hover:bg-white disabled:cursor-not-allowed disabled:opacity-80"
+              >
+                {isPreparingCollectionPlacement ? "Preparing collection..." : "Place collection"}
               </button>
             </div>
           </div>
           {addAllMessage ? <p className="mt-1.5 text-[11px] text-emerald-300">{addAllMessage}</p> : null}
           {addAllError ? <p className="mt-1.5 text-[11px] text-rose-300">{addAllError}</p> : null}
+          {collectionPlacementError ? (
+            <p className="mt-1.5 text-[11px] text-rose-300">{collectionPlacementError}</p>
+          ) : null}
 
           <div className="mt-2 grid max-h-[55vh] grid-cols-1 gap-1.5 overflow-y-auto pr-1 md:[grid-template-columns:repeat(auto-fill,minmax(220px,280px))] md:justify-start">
             {items.map((item) => {

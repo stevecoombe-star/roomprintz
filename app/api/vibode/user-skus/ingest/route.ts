@@ -16,12 +16,19 @@ import {
   resolveVibodeOperationIdFromHeaders,
   resolveVibodeRequestIdFromHeaders,
 } from "@/lib/vibodeCompositorContextHeaders";
+import { convertHeicBufferToJpeg, HeicConversionError } from "@/lib/heicServerConversion";
+import {
+  isHeicLikeExtension,
+  isHeicLikeMimeType,
+  isLivePhotoMovCompanion,
+} from "@/lib/uploadImageFileTypes";
 
 export const runtime = "nodejs";
 
 type IngestBody = {
   imageUrl?: string;
   imageBase64?: string;
+  imageFilename?: string;
   label?: string;
 };
 
@@ -139,11 +146,14 @@ function getUserSupabaseClient(token: string): AnySupabaseClient | null {
 function resolveMimeType(body: IngestBody): string | null {
   const imageBase64 = safeString(body.imageBase64);
   if (!imageBase64) return null;
-  const dataUrlMatch = imageBase64.match(/^data:([^;,]+);base64,/i);
-  return dataUrlMatch?.[1]?.toLowerCase() ?? null;
+  const dataUrlMatch = imageBase64.match(/^data:([^;,]*);base64,/i);
+  const mimeType = dataUrlMatch?.[1]?.toLowerCase() ?? "";
+  return mimeType.length > 0 ? mimeType : null;
 }
 
 function resolveFilename(body: IngestBody): string | null {
+  const explicitName = safeString(body.imageFilename);
+  if (explicitName) return explicitName;
   const imageUrl = safeString(body.imageUrl);
   if (!imageUrl) return null;
   try {
@@ -153,6 +163,20 @@ function resolveFilename(body: IngestBody): string | null {
   } catch {
     return null;
   }
+}
+
+function resolveBase64Payload(body: IngestBody): string | null {
+  const imageBase64 = safeString(body.imageBase64);
+  if (!imageBase64) return null;
+  const dataPrefixMatch = imageBase64.match(/^data:[^;]*;base64,/i);
+  if (dataPrefixMatch?.[0]) {
+    return imageBase64.slice(dataPrefixMatch[0].length).replace(/\s+/g, "");
+  }
+  return imageBase64.replace(/\s+/g, "");
+}
+
+function toDataUrl(mimeType: string, base64Payload: string): string {
+  return `data:${mimeType};base64,${base64Payload}`;
 }
 
 function logIngestEvent(
@@ -250,6 +274,66 @@ export async function POST(req: NextRequest) {
       ingest_image_model: ingestImageModel,
     });
 
+    if (isLivePhotoMovCompanion({ name: filename, type: mimeType })) {
+      return NextResponse.json(
+        {
+          error: "Live Photo video detected. Vibode needs the still image, not the video clip.",
+        },
+        { status: 400 }
+      );
+    }
+
+    let normalizedImageBase64 = safeString(body.imageBase64);
+    if (normalizedImageBase64 && (isHeicLikeMimeType(mimeType) || isHeicLikeExtension(filename))) {
+      const encodedPayload = resolveBase64Payload(body);
+      if (!encodedPayload) {
+        logIngestEvent("warn", "heic_payload_parse_failed", requestId, {
+          source_kind: sourceKind,
+          mime_type: mimeType,
+          filename,
+        });
+        return NextResponse.json(
+          {
+            error:
+              "This iPhone photo format could not be converted. Please try exporting it as JPEG and upload again.",
+          },
+          { status: 422 }
+        );
+      }
+
+      try {
+        const converted = await convertHeicBufferToJpeg({
+          inputBuffer: Buffer.from(encodedPayload, "base64"),
+        });
+        normalizedImageBase64 = toDataUrl(
+          "image/jpeg",
+          Buffer.from(converted.outputBuffer).toString("base64")
+        );
+      } catch (error) {
+        const conversionCode = error instanceof HeicConversionError ? error.code : "UNKNOWN";
+        const conversionCause =
+          error instanceof HeicConversionError
+            ? error.causeMessage
+            : error instanceof Error
+            ? error.message
+            : String(error);
+        logIngestEvent("error", "heic_conversion_failed", requestId, {
+          source_kind: sourceKind,
+          mime_type: mimeType,
+          filename,
+          conversion_code: conversionCode,
+          conversion_cause: conversionCause,
+        });
+        return NextResponse.json(
+          {
+            error:
+              "This iPhone photo format could not be converted. Please try exporting it as JPEG and upload again.",
+          },
+          { status: 422 }
+        );
+      }
+    }
+
     const endpointBase = process.env.ROOMPRINTZ_COMPOSITOR_URL?.trim();
     if (!endpointBase) {
       throw new Error(
@@ -300,7 +384,7 @@ export async function POST(req: NextRequest) {
       },
       body: JSON.stringify({
         imageUrl: body.imageUrl,
-        imageBase64: body.imageBase64,
+        imageBase64: normalizedImageBase64,
         label: body.label,
         model: ingestImageModel,
         normalization: {
