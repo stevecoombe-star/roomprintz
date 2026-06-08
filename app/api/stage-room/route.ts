@@ -15,13 +15,14 @@ import {
   isSupportedStillImageFile,
 } from "@/lib/uploadImageFileTypes";
 import {
+  chargeVibodeTokensForOperation,
   canAffordTokens,
-  getTokenCostForAction,
+  getTokenCostForOperation,
   getUserTokenWallet,
-  refundTokens,
-  spendTokens,
+  recordTokenChargeFailure,
 } from "@/lib/vibodeTokenDomain";
 import type { TokenActionKey } from "@/lib/vibodeTokenConstants";
+import { TOKEN_DEFAULT_COSTS } from "@/lib/vibodeTokenConstants";
 
 // Ensure we run on the Node.js runtime (needed for Buffer, larger payloads, etc.)
 export const runtime = "nodejs";
@@ -51,6 +52,8 @@ const SUPABASE_ANON_KEY = mustEnv(
   "SUPABASE_ANON_KEY",
   "NEXT_PUBLIC_SUPABASE_ANON_KEY"
 );
+const SUPABASE_SERVICE_ROLE_KEY =
+  process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SERVICE_KEY || "";
 
 /**
  * Creates a user-scoped Supabase client using the Authorization Bearer token.
@@ -89,6 +92,35 @@ function json(status: number, body: unknown) {
   return NextResponse.json(body, { status });
 }
 
+function getAdminSupabaseClient(): AnySupabaseClient | null {
+  if (!SUPABASE_SERVICE_ROLE_KEY) return null;
+  return createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
+    auth: {
+      persistSession: false,
+      autoRefreshToken: false,
+      detectSessionInUrl: false,
+    },
+  });
+}
+
+function buildOperationIdempotencyKey(args: {
+  userId: string;
+  operationKey: string;
+  routeKey: string;
+  operationId: string | null;
+  requestId: string | null;
+  fallbackId: string;
+}) {
+  return [
+    args.userId,
+    args.operationKey,
+    args.routeKey,
+    args.operationId ?? "no-operation-id",
+    args.requestId ?? "no-request-id",
+    args.fallbackId,
+  ].join(":");
+}
+
 export async function POST(req: NextRequest) {
   try {
     const { supabase, token } = getUserSupabaseClient(req);
@@ -108,6 +140,12 @@ export async function POST(req: NextRequest) {
     const user = userData.user;
     const requestId = resolveVibodeRequestIdFromHeaders(req.headers);
     const operationId = resolveVibodeOperationIdFromHeaders(req.headers);
+    const adminSupabase = getAdminSupabaseClient();
+    if (!adminSupabase) {
+      return json(500, {
+        error: "Server configuration missing service role Supabase for token charging.",
+      });
+    }
 
     const formData = await req.formData();
     const file = formData.get("file");
@@ -246,7 +284,12 @@ export async function POST(req: NextRequest) {
      */
 
     const actionType: TokenActionKey = "STAGE_1";
-    const tokenCost = await getTokenCostForAction(supabase, actionType);
+    const operationKey = "SETUP_PREPARE_ROOM";
+    const tokenCost = await getTokenCostForOperation(
+      supabase,
+      operationKey,
+      TOKEN_DEFAULT_COSTS[actionType]
+    );
     const walletBeforeSpend = await getUserTokenWallet(supabase, user.id);
     const affordability = canAffordTokens({
       balanceTokens: walletBeforeSpend.balance_tokens,
@@ -260,32 +303,6 @@ export async function POST(req: NextRequest) {
         tokenBalance: affordability.balanceTokens,
       });
     }
-
-    const spendResult = await spendTokens({
-      supabase,
-      userId: user.id,
-      spendTokens: tokenCost,
-      eventType: "spend",
-      actionType,
-      modelVersion: normalizedModelVersion,
-      generationRunId: null,
-      metadata: {
-        source: "api_stage_room",
-        jobId,
-        reason: `room_generation:${normalizedModelVersion}`,
-        propertyId,
-        roomName,
-      },
-    });
-    if (!spendResult.ok) {
-      return json(402, {
-        error: "Insufficient tokens",
-        required: tokenCost,
-        tokenBalance: spendResult.balanceTokens,
-      });
-    }
-
-    const balanceAfterSpend = spendResult.balanceTokens;
 
     const arrayBuffer = await file.arrayBuffer();
     let bytes = Buffer.from(arrayBuffer);
@@ -343,36 +360,79 @@ export async function POST(req: NextRequest) {
     const originalImageUrl = result?.originalImageUrl ?? null;
 
     if (!imageUrl) {
-      try {
-        await refundTokens({
-          supabase,
-          userId: user.id,
-          refundTokens: tokenCost,
-          actionType,
-          modelVersion: normalizedModelVersion,
-          generationRunId: null,
-          metadata: {
-            source: "api_stage_room",
-            jobId,
-            reason: "generation_failed_refund",
-            propertyId,
-            roomName,
-          },
-        });
-      } catch (refundErr) {
-        console.error("[stage-room] refund grant failed:", refundErr);
-      }
-
       return json(500, { error: "Compositor did not return an imageUrl." });
+    }
+
+    let tokensCharged = 0;
+    let tokenBalanceAfterCharge = walletBeforeSpend.balance_tokens;
+    try {
+      const chargeResult = await chargeVibodeTokensForOperation({
+        supabase: adminSupabase,
+        userId: user.id,
+        operationKey,
+        idempotencyKey: buildOperationIdempotencyKey({
+          userId: user.id,
+          operationKey,
+          routeKey: "/api/stage-room",
+          operationId,
+          requestId,
+          fallbackId: jobId,
+        }),
+        operationId,
+        requestId,
+        modelVersion: normalizedModelVersion,
+        chargePhase: "success",
+        metadata: {
+          source: "api_stage_room",
+          jobId,
+          reason: `room_generation:${normalizedModelVersion}`,
+          propertyId,
+          roomName,
+          legacyActionKey: actionType,
+        },
+      });
+      tokensCharged = chargeResult.skipped ? 0 : chargeResult.chargedTokens;
+      tokenBalanceAfterCharge = chargeResult.balanceTokens ?? tokenBalanceAfterCharge;
+    } catch (chargeErr) {
+      console.error("[stage-room] token charge failed after successful generation:", chargeErr);
+      await recordTokenChargeFailure({
+        supabase: adminSupabase,
+        userId: user.id,
+        operationKey,
+        operationId,
+        requestId,
+        idempotencyKey: buildOperationIdempotencyKey({
+          userId: user.id,
+          operationKey,
+          routeKey: "/api/stage-room",
+          operationId,
+          requestId,
+          fallbackId: jobId,
+        }),
+        route: "/api/stage-room",
+        chargePhase: "success",
+        expectedTokens: tokenCost,
+        modelVersion: normalizedModelVersion,
+        errorMessage: chargeErr instanceof Error ? chargeErr.message : String(chargeErr),
+        metadata: {
+          source: "api_stage_room",
+          jobId,
+          propertyId,
+          roomName,
+          legacyActionKey: actionType,
+        },
+      });
     }
 
     return json(200, {
       imageUrl,
       originalImageUrl,
-      tokenCost,
-      tokenBalance: balanceAfterSpend,
+      tokenCost: tokensCharged,
+      tokenBalance: tokenBalanceAfterCharge,
       propertyId,
       roomName,
+      actionKey: actionType,
+      operationKey,
     });
   } catch (err: unknown) {
     console.error("[stage-room] unexpected error:", err);

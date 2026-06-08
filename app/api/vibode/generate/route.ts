@@ -9,13 +9,13 @@ import { callCompositorVibodeRemove } from "@/lib/callCompositorVibodeRemove";
 import { callCompositorVibodeRotate } from "@/lib/callCompositorVibodeRotate";
 import { callCompositorVibodeVibe } from "@/lib/callCompositorVibodeVibe";
 import {
+  chargeVibodeTokensForOperation,
   canAffordTokens,
-  getTokenCostForAction,
+  getTokenCostForOperation,
   getUserTokenWallet,
-  refundTokens,
-  spendTokens,
+  recordTokenChargeFailure,
 } from "@/lib/vibodeTokenDomain";
-import type { TokenActionKey } from "@/lib/vibodeTokenConstants";
+import { TOKEN_DEFAULT_COSTS, type TokenActionKey } from "@/lib/vibodeTokenConstants";
 import {
   createVibodeGenerationRun,
   createVibodeRoomAsset,
@@ -1345,6 +1345,24 @@ function resolveGenerateActionType(freeze: unknown): TokenActionKey {
   return "STAGE_1";
 }
 
+function resolveGenerateOperationKey(actionType: TokenActionKey): string {
+  if (actionType === "STAGE_1") return "SETUP_PREPARE_ROOM";
+  if (actionType === "STAGE_2") return "SETUP_CLEANUP";
+  if (actionType === "STAGE_3") return "STAGE_PASTE_TO_PLACE";
+  if (actionType === "STAGE_4") return "STYLE_RUN";
+  if (actionType === "STAGE_5") return "STAGE_LET_VIBODE_DECIDE";
+  return actionType;
+}
+
+function buildOperationIdempotencyKey(args: {
+  userId: string;
+  operationKey: string;
+  routeKey: string;
+  chargeAnchor: string;
+}) {
+  return [args.userId, args.operationKey, args.routeKey, args.chargeAnchor].join(":");
+}
+
 function buildVibodeSwapReplacementAssets(marks: VibodeSwapMark[]) {
   const assets: VibodeSwapReplacement[] = [];
   const seen = new Set<string>();
@@ -1979,6 +1997,10 @@ export async function handleGenerateRequest(args: {
     return json(401, { error: "Unauthorized" });
   }
   const user = userData.user;
+  const adminSupabase = getAdminSupabaseClient();
+  if (!adminSupabase) {
+    return json(500, { error: "Server configuration missing service role Supabase for token charging." });
+  }
   const requestId = resolveVibodeRequestIdFromHeaders(req.headers);
   const operationId = resolveVibodeOperationIdFromHeaders(req.headers);
   const stageRoomContextHeaders = buildVibodeCompositorContextHeaders({
@@ -1993,7 +2015,12 @@ export async function handleGenerateRequest(args: {
   });
 
   const tokenActionType = resolveGenerateActionType(freeze);
-  const tokenCost = await getTokenCostForAction(supabase, tokenActionType);
+  const operationKey = resolveGenerateOperationKey(tokenActionType);
+  const tokenCost = await getTokenCostForOperation(
+    supabase,
+    operationKey,
+    TOKEN_DEFAULT_COSTS[tokenActionType]
+  );
   const walletBeforeSpend = await getUserTokenWallet(supabase, user.id);
   const affordability = canAffordTokens({
     balanceTokens: walletBeforeSpend.balance_tokens,
@@ -2005,32 +2032,7 @@ export async function handleGenerateRequest(args: {
       details: { required: tokenCost, tokenBalance: affordability.balanceTokens },
     });
   }
-
-  const spendResult = await spendTokens({
-    supabase,
-    userId: user.id,
-    spendTokens: tokenCost,
-    eventType: "spend",
-    actionType: tokenActionType,
-    stageNumber: args.requestedStageNumber ?? null,
-    modelVersion: safeStr((payloadForModel as Record<string, unknown>)?.modelVersion),
-    roomId: isUuidLike(args.vibodeRoomId ?? null) ? args.vibodeRoomId : null,
-    generationRunId: isUuidLike(generationId) ? generationId : null,
-    metadata: {
-      source: "api_vibode_generate",
-      reason: "vibode_generate:v1",
-      generationId,
-      payloadVersion,
-    },
-  });
-
-  if (!spendResult.ok) {
-    return json(402, {
-      error: "Insufficient tokens",
-      details: { required: tokenCost, tokenBalance: spendResult.balanceTokens },
-    });
-  }
-  const balanceAfterSpend = spendResult.balanceTokens;
+  let tokenBalanceAfterCharge = walletBeforeSpend.balance_tokens;
 
   // Resolve a model-ready base image URL (supports storageKey -> signedUrl)
   let baseImageUrlForModel = "";
@@ -2040,28 +2042,6 @@ export async function handleGenerateRequest(args: {
       throw new Error("Resolved base image URL is not valid for model mode (blob/local).");
     }
   } catch (e: unknown) {
-    try {
-      await refundTokens({
-        supabase,
-        userId: user.id,
-        refundTokens: tokenCost,
-        actionType: tokenActionType,
-        stageNumber: args.requestedStageNumber ?? null,
-        modelVersion: safeStr((payloadForModel as Record<string, unknown>)?.modelVersion),
-        roomId: isUuidLike(args.vibodeRoomId ?? null) ? args.vibodeRoomId : null,
-        generationRunId: isUuidLike(generationId) ? generationId : null,
-        metadata: {
-          source: "api_vibode_generate",
-          reason: "vibode_generation_failed_refund",
-          generationId,
-          payloadVersion,
-          step: "resolve_base_image",
-        },
-      });
-    } catch (refundErr) {
-      console.error("[vibode/generate] refund grant failed:", refundErr);
-    }
-
     return json(500, {
       error: e instanceof Error ? e.message : "Failed to prepare base image for model mode.",
     });
@@ -2249,28 +2229,6 @@ export async function handleGenerateRequest(args: {
   } catch (modelErr: unknown) {
     console.error("[vibode/generate] model call failed:", modelErr);
 
-    try {
-      await refundTokens({
-        supabase,
-        userId: user.id,
-        refundTokens: tokenCost,
-        actionType: tokenActionType,
-        stageNumber: args.requestedStageNumber ?? null,
-        modelVersion: safeStr((payloadForModel as Record<string, unknown>)?.modelVersion),
-        roomId: isUuidLike(args.vibodeRoomId ?? null) ? args.vibodeRoomId : null,
-        generationRunId: isUuidLike(generationId) ? generationId : null,
-        metadata: {
-          source: "api_vibode_generate",
-          reason: "vibode_generation_failed_refund",
-          generationId,
-          payloadVersion,
-          step: "model_call",
-        },
-      });
-    } catch (refundErr) {
-      console.error("[vibode/generate] refund grant failed:", refundErr);
-    }
-
     if (modelErr instanceof NanoBananaError) {
       return json(modelErr.status, { error: modelErr.message });
     }
@@ -2286,12 +2244,51 @@ export async function handleGenerateRequest(args: {
   notes.push("Model call succeeded.");
 
   // Persist staged output to Supabase Storage (preferred for editor history)
-  const admin = getAdminSupabaseClient();
   const sceneId = payloadForModel.sceneSnapshotImageSpace.sceneId;
+  let chargeGenerationRunId: string | null = null;
+  let chargeOutputAssetId: string | null = null;
+  const chargeOnSuccess = async (successOutput: {
+    storageKey: string | undefined;
+    imageUrl: string;
+  }) => {
+    const chargeAnchor =
+      operationId ??
+      requestId ??
+      chargeGenerationRunId ??
+      chargeOutputAssetId ??
+      successOutput.storageKey ??
+      generationId;
+    const chargeResult = await chargeVibodeTokensForOperation({
+      supabase: adminSupabase,
+      userId: user.id,
+      operationKey,
+      idempotencyKey: buildOperationIdempotencyKey({
+        userId: user.id,
+        operationKey,
+        routeKey: "/api/vibode/generate",
+        chargeAnchor,
+      }),
+      operationId,
+      requestId,
+      modelVersion: safeStr((payloadForModel as Record<string, unknown>)?.modelVersion),
+      chargePhase: "success",
+      roomId: isUuidLike(args.vibodeRoomId ?? null) ? args.vibodeRoomId : null,
+      generationRunId: chargeGenerationRunId,
+      metadata: {
+        source: "api_vibode_generate",
+        reason: "vibode_generate:v1",
+        generationId,
+        payloadVersion,
+        actionType: tokenActionType,
+        imageUrlKind: isDataUrl(successOutput.imageUrl) ? "data_url" : "url",
+      },
+    });
+    tokenBalanceAfterCharge = chargeResult.balanceTokens ?? tokenBalanceAfterCharge;
+  };
 
   try {
     const persisted = await persistModelImageToStorage({
-      admin,
+      admin: adminSupabase,
       userId: user.id,
       sceneId,
       generationId,
@@ -2299,7 +2296,7 @@ export async function handleGenerateRequest(args: {
       notes,
     });
 
-    if (admin && isDataUrl(persisted.imageUrl)) {
+    if (adminSupabase && isDataUrl(persisted.imageUrl)) {
       throw new Error("Persistence failed; refusing to return data URL with admin client.");
     }
 
@@ -2357,11 +2354,12 @@ export async function handleGenerateRequest(args: {
               is_active: true,
               ...(outputVersionMetadata ? { metadata: outputVersionMetadata } : {}),
             });
+            chargeOutputAssetId = outputAsset.id;
 
             try {
-              if (admin) {
+              if (adminSupabase) {
                 const thumbnailLocation = await createVibodeAssetThumbnail({
-                  adminSupabase: admin as SupabaseClient,
+                  adminSupabase: adminSupabase as SupabaseClient,
                   roomId: existingRoom.id,
                   assetId: outputAsset.id,
                   sourceStorageBucket: persisted.bucket,
@@ -2399,7 +2397,7 @@ export async function handleGenerateRequest(args: {
               sort_key: new Date().toISOString(),
             });
 
-            await createVibodeGenerationRun(persistenceClient, {
+            const generationRun = await createVibodeGenerationRun(persistenceClient, {
               room_id: existingRoom.id,
               user_id: user.id,
               run_type: "stage",
@@ -2432,11 +2430,56 @@ export async function handleGenerateRequest(args: {
               },
               completed_at: new Date().toISOString(),
             });
+            chargeGenerationRunId = generationRun.id;
           }
         }
       } catch (persistDbErr) {
         console.error("[vibode/generate] vibode db persistence failed (non-blocking):", persistDbErr);
       }
+    }
+
+    try {
+      await chargeOnSuccess({
+        storageKey: persisted.storageKey,
+        imageUrl: persisted.imageUrl,
+      });
+    } catch (tokenChargeErr) {
+      console.error("[vibode/generate] token charge failed after successful generation:", tokenChargeErr);
+      await recordTokenChargeFailure({
+        supabase: adminSupabase,
+        userId: user.id,
+        operationKey,
+        operationId,
+        requestId,
+        idempotencyKey: buildOperationIdempotencyKey({
+          userId: user.id,
+          operationKey,
+          routeKey: "/api/vibode/generate",
+          chargeAnchor:
+            operationId ??
+            requestId ??
+            chargeGenerationRunId ??
+            chargeOutputAssetId ??
+            persisted.storageKey ??
+            generationId,
+        }),
+        route: "/api/vibode/generate",
+        chargePhase: "success",
+        expectedTokens: tokenCost,
+        modelVersion: safeStr((payloadForModel as Record<string, unknown>)?.modelVersion),
+        roomId: isUuidLike(args.vibodeRoomId ?? null) ? args.vibodeRoomId : null,
+        generationRunId: chargeGenerationRunId,
+        outputAssetId: chargeOutputAssetId,
+        errorMessage: tokenChargeErr instanceof Error ? tokenChargeErr.message : String(tokenChargeErr),
+        metadata: {
+          source: "api_vibode_generate",
+          reason: "vibode_generate:v1",
+          generationId,
+          payloadVersion,
+          actionType: tokenActionType,
+          path: "persisted",
+        },
+      });
     }
 
     return json(200, {
@@ -2452,7 +2495,7 @@ export async function handleGenerateRequest(args: {
         heightPx: persisted.heightPx ?? payloadForModel.baseImage.heightPx,
       },
       tokenCost,
-      tokenBalance: balanceAfterSpend ?? 0,
+      tokenBalance: tokenBalanceAfterCharge ?? 0,
       debug: {
         payloadVersion: "v1",
         baseImage: {
@@ -2480,11 +2523,54 @@ export async function handleGenerateRequest(args: {
     });
   } catch (persistErr: unknown) {
     console.error("[vibode/generate] persist staged image failed:", persistErr);
-    if (admin) {
+    if (adminSupabase) {
       return json(500, { error: "Failed to persist staged image." });
     }
 
     notes.push("Persist staged image failed; returning raw model imageUrl.");
+    try {
+      await chargeOnSuccess({
+        storageKey: undefined,
+        imageUrl: modelImageUrl,
+      });
+    } catch (tokenChargeErr) {
+      console.error("[vibode/generate] token charge failed after successful generation:", tokenChargeErr);
+      await recordTokenChargeFailure({
+        supabase: adminSupabase,
+        userId: user.id,
+        operationKey,
+        operationId,
+        requestId,
+        idempotencyKey: buildOperationIdempotencyKey({
+          userId: user.id,
+          operationKey,
+          routeKey: "/api/vibode/generate",
+          chargeAnchor:
+            operationId ??
+            requestId ??
+            chargeGenerationRunId ??
+            chargeOutputAssetId ??
+            generationId,
+        }),
+        route: "/api/vibode/generate",
+        chargePhase: "success",
+        expectedTokens: tokenCost,
+        modelVersion: safeStr((payloadForModel as Record<string, unknown>)?.modelVersion),
+        roomId: isUuidLike(args.vibodeRoomId ?? null) ? args.vibodeRoomId : null,
+        generationRunId: chargeGenerationRunId,
+        outputAssetId: chargeOutputAssetId,
+        errorMessage: tokenChargeErr instanceof Error ? tokenChargeErr.message : String(tokenChargeErr),
+        metadata: {
+          source: "api_vibode_generate",
+          reason: "vibode_generate:v1",
+          generationId,
+          payloadVersion,
+          actionType: tokenActionType,
+          path: "raw_model_image_fallback",
+        },
+      });
+    }
+
     return json(200, {
       ok: true,
       generationId,
@@ -2498,7 +2584,7 @@ export async function handleGenerateRequest(args: {
         heightPx: payloadForModel.baseImage.heightPx,
       },
       tokenCost,
-      tokenBalance: balanceAfterSpend ?? 0,
+      tokenBalance: tokenBalanceAfterCharge ?? 0,
       debug: {
         payloadVersion: "v1",
         baseImage: {
