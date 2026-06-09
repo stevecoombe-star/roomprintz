@@ -5861,6 +5861,7 @@ function EditorPageInner() {
       const successMessage = options?.successMessage ?? "Scene rebuild complete.";
       setDevSceneRebuildFeedback({ tone: "success", message: successMessage });
       pushSnack(successMessage);
+      notifyTokenBalanceChanged();
     } catch (err: unknown) {
       if (isAbortError(err)) {
         const abortReason = sceneRebuildAbortReasonRef.current;
@@ -5914,6 +5915,7 @@ function EditorPageInner() {
     clearSceneRebuildComposeTimers,
     computePlacementStateHashAndSnapshot,
     isDevSceneRebuildRunning,
+    notifyTokenBalanceChanged,
     pushSnack,
     refreshRoomVersions,
     selectedVersionId,
@@ -6740,6 +6742,9 @@ function EditorPageInner() {
         setIngestError(json.userSku.reason ?? "Normalization failed.");
       } else if (json.userSku.status === "ready" && isRecord(json.savedFurniture)) {
         pushSnack("Saved to My Furniture.");
+      }
+      if (json.userSku.status === "ready") {
+        notifyTokenBalanceChanged();
       }
     } catch (err: unknown) {
       setIngestError(getErrorMessage(err) ?? "Failed to normalize image.");
@@ -7788,6 +7793,7 @@ function EditorPageInner() {
           status: "ready",
           reason: typeof readyUserSku.reason === "string" ? readyUserSku.reason : null,
         };
+        notifyTokenBalanceChanged();
         return {
           userSku: normalizedUserSku,
           savedFurnitureId,
@@ -7799,7 +7805,7 @@ function EditorPageInner() {
         return null;
       }
     },
-    [pushSnack]
+    [notifyTokenBalanceChanged, pushSnack]
   );
 
   const preparePasteToPlaceClipboardProduct = useCallback(
