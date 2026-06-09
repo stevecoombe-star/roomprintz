@@ -15,6 +15,20 @@ const EDIT_ACTION_MAP: Record<string, TokenActionKey> = {
   rotate: "EDIT_ROTATE",
 };
 
+const STAGE_OPERATION_KEY_MAP: Record<number, string> = {
+  1: "SETUP_PREPARE_ROOM",
+  2: "SETUP_CLEANUP",
+  3: "STAGE_PASTE_TO_PLACE",
+  4: "STYLE_RUN",
+};
+
+const EDIT_OPERATION_KEY_MAP: Record<string, string> = {
+  remove: "EDIT_REMOVE",
+  swap: "EDIT_SWAP",
+  add: "EDIT_SWAP",
+  rotate: "EDIT_ROTATE",
+};
+
 export function getStageTokenActionKey(stageNumber: number | null | undefined): TokenActionKey | null {
   if (typeof stageNumber !== "number" || !Number.isFinite(stageNumber)) return null;
   const normalized = Math.trunc(stageNumber);
@@ -26,6 +40,19 @@ export function getEditTokenActionKey(toolName: string | null | undefined): Toke
   const normalized = toolName.trim().toLowerCase();
   if (!normalized) return null;
   return EDIT_ACTION_MAP[normalized] ?? null;
+}
+
+export function getStageTokenOperationKey(stageNumber: number | null | undefined): string | null {
+  if (typeof stageNumber !== "number" || !Number.isFinite(stageNumber)) return null;
+  const normalized = Math.trunc(stageNumber);
+  return STAGE_OPERATION_KEY_MAP[normalized] ?? null;
+}
+
+export function getEditTokenOperationKey(toolName: string | null | undefined): string | null {
+  if (typeof toolName !== "string") return null;
+  const normalized = toolName.trim().toLowerCase();
+  if (!normalized) return null;
+  return EDIT_OPERATION_KEY_MAP[normalized] ?? null;
 }
 
 export function buildTokenLedgerMetadata(args: {

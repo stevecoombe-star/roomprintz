@@ -18,12 +18,18 @@ import {
 } from "@/lib/vibodeAssetFinalization";
 import { inferPersistedVibodeVersionKindFromStageNumber } from "@/lib/vibode/version-kind";
 import {
+  chargeVibodeTokensForOperation,
   canAffordTokens,
-  getTokenCostForAction,
+  getTokenCostForOperation,
   getUserTokenWallet,
-  spendTokens,
+  recordTokenChargeFailure,
 } from "@/lib/vibodeTokenDomain";
-import { buildTokenLedgerMetadata, getStageTokenActionKey } from "@/lib/vibodeTokenPolicy";
+import {
+  buildTokenLedgerMetadata,
+  getStageTokenActionKey,
+  getStageTokenOperationKey,
+} from "@/lib/vibodeTokenPolicy";
+import { TOKEN_DEFAULT_COSTS } from "@/lib/vibodeTokenConstants";
 import {
   parsePasteToPlaceJobControlFromBody,
   PASTE_TO_PLACE_JOB_ID_HEADER,
@@ -287,6 +293,24 @@ function resolveStageRunWorkflowContext(args: {
   };
 }
 
+function buildOperationIdempotencyKey(args: {
+  userId: string;
+  operationKey: string;
+  routeKey: string;
+  operationId: string | null;
+  requestId: string | null;
+  fallbackId: string;
+}) {
+  return [
+    args.userId,
+    args.operationKey,
+    args.routeKey,
+    args.operationId ?? "no-operation-id",
+    args.requestId ?? "no-request-id",
+    args.fallbackId,
+  ].join(":");
+}
+
 export async function POST(req: NextRequest) {
   let pasteToPlaceControl: ReturnType<typeof parsePasteToPlaceJobControlFromBody> = null;
   try {
@@ -330,6 +354,7 @@ export async function POST(req: NextRequest) {
           userId: string;
           room: NonNullable<Awaited<ReturnType<typeof getVibodeRoomById>>> | null;
           actionKey: NonNullable<ReturnType<typeof getStageTokenActionKey>>;
+          operationKey: NonNullable<ReturnType<typeof getStageTokenOperationKey>>;
           tokenCost: number;
           walletBalanceBefore: number;
           resolvedStageNumber: number;
@@ -351,6 +376,12 @@ export async function POST(req: NextRequest) {
     const { data: userData, error: userErr } = await supabase.auth.getUser();
     if (userErr || !userData?.user) {
       return Response.json({ error: "Unauthorized" }, { status: 401 });
+    }
+    if (!getAdminSupabaseClient()) {
+      return Response.json(
+        { error: "Server configuration missing service role Supabase for token charging." },
+        { status: 500 }
+      );
     }
     const authenticatedUserId = userData.user.id;
     const authenticatedUserEmail = userData.user.email ?? null;
@@ -377,7 +408,8 @@ export async function POST(req: NextRequest) {
         ? Math.trunc(preflightStageNumberCandidate)
         : null;
     const actionKey = getStageTokenActionKey(preflightStageNumber);
-    if (!actionKey || preflightStageNumber === null) {
+    const operationKey = getStageTokenOperationKey(preflightStageNumber);
+    if (!actionKey || !operationKey || preflightStageNumber === null) {
       return Response.json(
         {
           errorCode: "UNSUPPORTED_STAGE_ACTION",
@@ -440,7 +472,11 @@ export async function POST(req: NextRequest) {
     const sourceAssetId = safeStr(body.assetId) ?? sourceVersionId;
 
     const wallet = await getUserTokenWallet(supabase, authenticatedUserId);
-    const tokenCost = await getTokenCostForAction(supabase, actionKey);
+    const tokenCost = await getTokenCostForOperation(
+      supabase,
+      operationKey,
+      TOKEN_DEFAULT_COSTS[actionKey]
+    );
     const affordability = canAffordTokens({
       balanceTokens: wallet.balance_tokens,
       requiredTokens: tokenCost,
@@ -454,6 +490,7 @@ export async function POST(req: NextRequest) {
           balanceTokens: affordability.balanceTokens,
           shortfallTokens: affordability.shortfallTokens,
           actionKey,
+          operationKey,
           stageNumber: tokenStageNumber,
         },
         { status: 402 }
@@ -464,6 +501,7 @@ export async function POST(req: NextRequest) {
       userId: authenticatedUserId,
       room: existingRoom,
       actionKey,
+      operationKey,
       tokenCost,
       walletBalanceBefore: wallet.balance_tokens,
       resolvedStageNumber: tokenStageNumber,
@@ -569,17 +607,33 @@ export async function POST(req: NextRequest) {
       console.info("[vibode/stage-run] persistence skipped: missing vibodeRoomId");
       let tokensCharged = 0;
       let remainingTokens: number | null = stageRunContext.walletBalanceBefore;
+      const roomlessChargeFallbackId =
+        outputFinalization.outputAssetId ??
+        outputFinalization.storagePath ??
+        outputFinalization.durableImageUrl ??
+        safeStr(responseResult.imageUrl) ??
+        `stage-run:${stageRunContext.resolvedStageNumber}:${sourceVersionId ?? "no-source-version"}`;
       try {
-        const spendResult = await spendTokens({
-          supabase: stageRunContext.supabase,
+        const adminSupabase = getAdminSupabaseClient();
+        if (!adminSupabase) {
+          throw new Error("[vibode/stage-run] service role Supabase unavailable for token charge.");
+        }
+        const chargeResult = await chargeVibodeTokensForOperation({
+          supabase: adminSupabase,
           userId: stageRunContext.userId,
-          spendTokens: stageRunContext.tokenCost,
-          eventType: "generation_spend",
-          actionType: stageRunContext.actionKey,
-          stageNumber: stageRunContext.resolvedStageNumber,
+          operationKey: stageRunContext.operationKey,
+          idempotencyKey: buildOperationIdempotencyKey({
+            userId: stageRunContext.userId,
+            operationKey: stageRunContext.operationKey,
+            routeKey: "/api/vibode/stage-run",
+            operationId,
+            requestId,
+            fallbackId: roomlessChargeFallbackId,
+          }),
+          operationId,
+          requestId,
           modelVersion,
-          roomId: null,
-          generationRunId: null,
+          chargePhase: "success",
           metadata: buildTokenLedgerMetadata({
             modelVersion,
             stageNumber: stageRunContext.resolvedStageNumber,
@@ -587,15 +641,43 @@ export async function POST(req: NextRequest) {
             requestKind: "stage_generation",
           }),
         });
-        if (spendResult.ok) {
-          tokensCharged = spendResult.spentTokens;
-          remainingTokens = spendResult.balanceTokens;
-        }
+        tokensCharged = chargeResult.skipped ? 0 : chargeResult.chargedTokens;
+        remainingTokens = chargeResult.balanceTokens ?? remainingTokens;
       } catch (tokenSpendErr) {
         console.error(
-          "[vibode/stage-run] token spend failed after successful generation (no room context):",
+          "[vibode/stage-run] token charge failed after successful generation (no room context):",
           tokenSpendErr
         );
+        const failureSupabase = getAdminSupabaseClient();
+        if (failureSupabase) {
+          await recordTokenChargeFailure({
+            supabase: failureSupabase,
+            userId: stageRunContext.userId,
+            operationKey: stageRunContext.operationKey,
+            operationId,
+            requestId,
+            idempotencyKey: buildOperationIdempotencyKey({
+              userId: stageRunContext.userId,
+              operationKey: stageRunContext.operationKey,
+              routeKey: "/api/vibode/stage-run",
+              operationId,
+              requestId,
+              fallbackId: roomlessChargeFallbackId,
+            }),
+            route: "/api/vibode/stage-run",
+            chargePhase: "success",
+            expectedTokens: stageRunContext.tokenCost,
+            modelVersion,
+            roomId: stageRunContext.room?.id ?? null,
+            outputAssetId: outputFinalization.outputAssetId,
+            errorMessage: tokenSpendErr instanceof Error ? tokenSpendErr.message : String(tokenSpendErr),
+            metadata: {
+              stageNumber: stageRunContext.resolvedStageNumber,
+              requestKind: "stage_generation_no_room_context",
+              fallbackId: roomlessChargeFallbackId,
+            },
+          });
+        }
       }
 
       return Response.json({
@@ -653,14 +735,26 @@ export async function POST(req: NextRequest) {
       });
 
       try {
-        const spendResult = await spendTokens({
-          supabase: stageRunContext.supabase,
+        const adminSupabase = getAdminSupabaseClient();
+        if (!adminSupabase) {
+          throw new Error("[vibode/stage-run] service role Supabase unavailable for token charge.");
+        }
+        const chargeResult = await chargeVibodeTokensForOperation({
+          supabase: adminSupabase,
           userId,
-          spendTokens: stageRunContext.tokenCost,
-          eventType: "generation_spend",
-          actionType: stageRunContext.actionKey,
-          stageNumber: resolvedStageNumber,
+          operationKey: stageRunContext.operationKey,
+          idempotencyKey: buildOperationIdempotencyKey({
+            userId,
+            operationKey: stageRunContext.operationKey,
+            routeKey: "/api/vibode/stage-run",
+            operationId,
+            requestId,
+            fallbackId: generationRun.id,
+          }),
+          operationId,
+          requestId,
           modelVersion,
+          chargePhase: "success",
           roomId: room.id,
           generationRunId: generationRun.id,
           metadata: buildTokenLedgerMetadata({
@@ -670,13 +764,41 @@ export async function POST(req: NextRequest) {
             requestKind: "stage_generation",
           }),
         });
-        if (spendResult.ok) {
-          tokensCharged = spendResult.spentTokens;
-          remainingTokens = spendResult.balanceTokens;
-        }
+        tokensCharged = chargeResult.skipped ? 0 : chargeResult.chargedTokens;
+        remainingTokens = chargeResult.balanceTokens ?? remainingTokens;
       } catch (tokenSpendErr) {
-        // TODO: move stage persistence + token spend into a transactional/compensation flow.
-        console.error("[vibode/stage-run] token spend failed after successful generation:", tokenSpendErr);
+        // TODO: move stage persistence + token charge into a transactional/compensation flow.
+        console.error("[vibode/stage-run] token charge failed after successful generation:", tokenSpendErr);
+        const failureSupabase = getAdminSupabaseClient();
+        if (failureSupabase) {
+          await recordTokenChargeFailure({
+            supabase: failureSupabase,
+            userId,
+            operationKey: stageRunContext.operationKey,
+            operationId,
+            requestId,
+            idempotencyKey: buildOperationIdempotencyKey({
+              userId,
+              operationKey: stageRunContext.operationKey,
+              routeKey: "/api/vibode/stage-run",
+              operationId,
+              requestId,
+              fallbackId: generationRun.id,
+            }),
+            route: "/api/vibode/stage-run",
+            chargePhase: "success",
+            expectedTokens: stageRunContext.tokenCost,
+            modelVersion,
+            roomId: room.id,
+            generationRunId: generationRun.id,
+            outputAssetId: outputFinalization.outputAssetId,
+            errorMessage: tokenSpendErr instanceof Error ? tokenSpendErr.message : String(tokenSpendErr),
+            metadata: {
+              stageNumber: resolvedStageNumber,
+              requestKind: "stage_generation",
+            },
+          });
+        }
       }
     } catch (persistErr) {
       console.error("[vibode/stage-run] persistence failed (non-blocking):", persistErr);

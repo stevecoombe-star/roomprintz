@@ -19,7 +19,7 @@ export const METADATA_FETCH_PROFILES: Array<{ id: string; headers: Record<string
   {
     id: "legacy_roomprintzbot",
     headers: {
-      "User-Agent": "Mozilla/5.0 (compatible; RoomprintzBot/1.0; +https://roomprintz.com)",
+      "User-Agent": "Mozilla/5.0 (compatible; VibodeBot/1.0; +https://www.vibode.com)",
       Accept: "text/html,application/xhtml+xml",
     },
   },

@@ -287,7 +287,6 @@ export default function AdminControls() {
             : "Failed to load beta user data."
         );
       }
-
       const loadedBetaCode = normalizeString(settingsPayload.settings?.betaAccessCode);
       const loadedDefaultLimit = normalizeNonNegativeInt(
         settingsPayload.settings?.defaultTopupLimit,
@@ -546,6 +545,7 @@ export default function AdminControls() {
     }
   };
 
+
   const loadUserAudit = useCallback(
     async (userId: string) => {
       if (auditCacheByUserId[userId]) return;
@@ -736,6 +736,23 @@ export default function AdminControls() {
             Closed beta controls for access code and Stripe token top-up limits.
           </p>
         </header>
+
+        <section className="rounded-2xl border border-slate-800 bg-slate-900/70 p-4">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <h2 className="text-base font-medium text-slate-100">Token Management</h2>
+              <p className="mt-1 text-xs text-slate-400">
+                Token pricing, adjustments, audit, charge-failure reconciliation, and room-read observation moved here.
+              </p>
+            </div>
+            <Link
+              href="/admin/token-management"
+              className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-200 transition hover:border-emerald-400/80 hover:text-emerald-200"
+            >
+              Open Token Management
+            </Link>
+          </div>
+        </section>
 
         <section className="rounded-2xl border border-slate-800 bg-slate-900/70 p-4">
           <h2 className="text-base font-medium text-slate-100">Global Beta Controls</h2>

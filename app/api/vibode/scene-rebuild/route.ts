@@ -17,6 +17,13 @@ import {
 } from "@/lib/vibodePersistence";
 import { stampVibodeVersionKindMetadata } from "@/lib/vibode/version-kind";
 import {
+  canAffordTokens,
+  chargeVibodeTokensForOperation,
+  getTokenCostForOperation,
+  getUserTokenWallet,
+  recordTokenChargeFailure,
+} from "@/lib/vibodeTokenDomain";
+import {
   buildVibodeCompositorContextHeaders,
   resolveVibodeOperationIdFromHeaders,
   resolveVibodeRequestIdFromHeaders,
@@ -78,6 +85,16 @@ type SceneRebuildReferenceImageResult = {
 type SceneRebuildTriggerMode = "manual_test" | "model_decided_auto_place";
 
 type PlacementIntent = "user_directed" | "model_decided";
+
+const SCENE_REBUILD_OPERATION_COST_FALLBACK: Record<PlacementIntent, number> = {
+  user_directed: 4,
+  model_decided: 5,
+};
+
+const SCENE_REBUILD_OPERATION_KEY: Record<PlacementIntent, string> = {
+  user_directed: "SCENE_REBUILD_USER_DIRECTED",
+  model_decided: "STAGE_LET_VIBODE_DECIDE",
+};
 
 type ModelDecidedFurnitureCandidate = {
   furnitureId: string | null;
@@ -232,6 +249,15 @@ function parseTriggerMode(value: unknown): SceneRebuildTriggerMode {
 function parsePlacementIntent(value: unknown): PlacementIntent {
   if (value === "model_decided") return "model_decided";
   return "user_directed";
+}
+
+function buildOperationIdempotencyKey(args: {
+  userId: string;
+  operationKey: string;
+  routeKey: string;
+  chargeAnchor: string;
+}) {
+  return [args.userId, args.operationKey, args.routeKey, args.chargeAnchor].join(":");
 }
 
 function parseModelDecidedCandidate(value: unknown): ModelDecidedFurnitureCandidate | null {
@@ -1403,6 +1429,8 @@ export async function POST(req: NextRequest) {
             )
           ).slice(0, 24)
         : [];
+    const tokenOperationKey = SCENE_REBUILD_OPERATION_KEY[placementIntent];
+    const tokenCostFallback = SCENE_REBUILD_OPERATION_COST_FALLBACK[placementIntent];
 
     if (!roomId) {
       return NextResponse.json({ error: "Missing required field: roomId." }, { status: 400 });
@@ -1452,6 +1480,31 @@ export async function POST(req: NextRequest) {
       return NextResponse.json(
         { error: "Requested versionId is invalid for this room." },
         { status: 404 }
+      );
+    }
+    if (!adminSupabase) {
+      return NextResponse.json(
+        { error: "Server misconfigured: missing service role Supabase for token charging." },
+        { status: 500 }
+      );
+    }
+    const tokenCost = await getTokenCostForOperation(supabase, tokenOperationKey, tokenCostFallback);
+    const wallet = await getUserTokenWallet(supabase, userId);
+    const affordability = canAffordTokens({
+      balanceTokens: wallet.balance_tokens,
+      requiredTokens: tokenCost,
+    });
+    if (!affordability.allowed) {
+      return NextResponse.json(
+        {
+          errorCode: "INSUFFICIENT_TOKENS",
+          message: "Insufficient token balance for scene rebuild.",
+          requiredTokens: affordability.requiredTokens,
+          balanceTokens: affordability.balanceTokens,
+          shortfallTokens: affordability.shortfallTokens,
+          operationKey: tokenOperationKey,
+        },
+        { status: 402 }
       );
     }
 
@@ -1833,6 +1886,77 @@ export async function POST(req: NextRequest) {
       },
       completed_at: new Date().toISOString(),
     });
+    let tokensCharged = 0;
+    let remainingTokens: number | null = wallet.balance_tokens;
+    try {
+      const chargeAnchor =
+        operationId ??
+        requestId ??
+        generationRun.id ??
+        outputFinalization.outputAssetId ??
+        outputFinalization.storagePath ??
+        outputFinalization.imageUrl ??
+        versionId;
+      const chargeResult = await chargeVibodeTokensForOperation({
+        supabase: adminSupabase,
+        userId,
+        operationKey: tokenOperationKey,
+        idempotencyKey: buildOperationIdempotencyKey({
+          userId,
+          operationKey: tokenOperationKey,
+          routeKey: "/api/vibode/scene-rebuild",
+          chargeAnchor,
+        }),
+        operationId,
+        requestId,
+        modelVersion,
+        chargePhase: "success",
+        roomId: room.id,
+        generationRunId: generationRun.id,
+        metadata: {
+          generationMode: "scene_rebuild",
+          placementIntent,
+          sourceVersionId: versionId,
+        },
+      });
+      tokensCharged = chargeResult.skipped ? 0 : chargeResult.chargedTokens;
+      remainingTokens = chargeResult.balanceTokens ?? remainingTokens;
+    } catch (chargeErr) {
+      console.error("[vibode/scene-rebuild] token charge failed after successful rebuild:", chargeErr);
+      await recordTokenChargeFailure({
+        supabase: adminSupabase,
+        userId,
+        operationKey: tokenOperationKey,
+        operationId,
+        requestId,
+        idempotencyKey: buildOperationIdempotencyKey({
+          userId,
+          operationKey: tokenOperationKey,
+          routeKey: "/api/vibode/scene-rebuild",
+          chargeAnchor:
+            operationId ??
+            requestId ??
+            generationRun.id ??
+            outputFinalization.outputAssetId ??
+            outputFinalization.storagePath ??
+            outputFinalization.imageUrl ??
+            versionId,
+        }),
+        route: "/api/vibode/scene-rebuild",
+        chargePhase: "success",
+        expectedTokens: tokenCost,
+        modelVersion,
+        roomId: room.id,
+        generationRunId: generationRun.id,
+        outputAssetId: outputFinalization.outputAssetId,
+        errorMessage: chargeErr instanceof Error ? chargeErr.message : String(chargeErr),
+        metadata: {
+          generationMode: "scene_rebuild",
+          placementIntent,
+          sourceVersionId: versionId,
+        },
+      });
+    }
 
     return NextResponse.json({
       ok: true,
@@ -1846,6 +1970,8 @@ export async function POST(req: NextRequest) {
       activated,
       ...(activationError ? { activationError } : {}),
       placementCount: payload.placementCount,
+      tokensCharged,
+      remainingTokens,
       modelDecidedCandidateCount:
         placementIntent === "model_decided" ? modelDecidedFurnitureCandidates.length : 0,
       inferredPlacementCount,

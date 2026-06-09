@@ -22,6 +22,13 @@ import {
   isHeicLikeMimeType,
   isLivePhotoMovCompanion,
 } from "@/lib/uploadImageFileTypes";
+import {
+  canAffordTokens,
+  chargeVibodeTokensForOperation,
+  getTokenCostForOperation,
+  getUserTokenWallet,
+  recordTokenChargeFailure,
+} from "@/lib/vibodeTokenDomain";
 
 export const runtime = "nodejs";
 
@@ -36,6 +43,8 @@ type AnySupabaseClient = SupabaseClient;
 
 const SUPABASE_URL = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || "";
 const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "";
+const SUPABASE_SERVICE_ROLE_KEY =
+  process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SERVICE_KEY || "";
 const INGEST_SOURCE_HEADER = "x-roomprintz-ingest-source";
 const INGEST_SKIP_MY_FURNITURE_AUTOSAVE_HEADER = "x-roomprintz-skip-my-furniture-autosave";
 const INGEST_IMAGE_MODEL_HEADER = "x-roomprintz-ingest-image-model";
@@ -143,6 +152,13 @@ function getUserSupabaseClient(token: string): AnySupabaseClient | null {
   }) as AnySupabaseClient;
 }
 
+function getAdminSupabaseClient(): AnySupabaseClient | null {
+  if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) return null;
+  return createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
+    auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
+  }) as AnySupabaseClient;
+}
+
 function resolveMimeType(body: IngestBody): string | null {
   const imageBase64 = safeString(body.imageBase64);
   if (!imageBase64) return null;
@@ -213,6 +229,23 @@ function resolveIngestSourceType(req: NextRequest, body: IngestBody): string {
   return "unknown";
 }
 
+function resolveIngestOperationKey(sourceKind: string): string {
+  return sourceKind === "product_url" ? "INGEST_PRODUCT_URL" : "INGEST_IMAGE";
+}
+
+function resolveIngestOperationFallbackCost(sourceKind: string): number {
+  return sourceKind === "product_url" ? 1 : 1;
+}
+
+function buildOperationIdempotencyKey(args: {
+  userId: string;
+  operationKey: string;
+  routeKey: string;
+  chargeAnchor: string;
+}) {
+  return [args.userId, args.operationKey, args.routeKey, args.chargeAnchor].join(":");
+}
+
 function shouldSkipMyFurnitureAutosave(req: NextRequest): boolean {
   const flag = safeString(req.headers.get(INGEST_SKIP_MY_FURNITURE_AUTOSAVE_HEADER));
   if (!flag) return false;
@@ -254,6 +287,8 @@ export async function POST(req: NextRequest) {
   try {
     const body = (await req.json()) as IngestBody;
     const sourceKind = resolveIngestSourceType(req, body);
+    const operationKey = resolveIngestOperationKey(sourceKind);
+    const operationFallbackCost = resolveIngestOperationFallbackCost(sourceKind);
     const skipMyFurnitureAutosave = shouldSkipMyFurnitureAutosave(req);
     const mimeType = resolveMimeType(body);
     const filename = resolveFilename(body);
@@ -273,6 +308,50 @@ export async function POST(req: NextRequest) {
       skip_my_furniture_autosave: skipMyFurnitureAutosave,
       ingest_image_model: ingestImageModel,
     });
+    if (!accessToken) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+    const userSupabase = getUserSupabaseClient(accessToken);
+    if (!userSupabase) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+    const adminSupabase = getAdminSupabaseClient();
+    if (!adminSupabase) {
+      return NextResponse.json(
+        { error: "Server misconfigured: missing service role Supabase for token charging." },
+        { status: 500 }
+      );
+    }
+    let resolvedUserId = authenticatedUserId;
+    if (!resolvedUserId) {
+      const { data: verifiedUserData, error: verifiedUserErr } = await userSupabase.auth.getUser();
+      if (verifiedUserErr || !verifiedUserData?.user?.id) {
+        return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+      }
+      resolvedUserId = verifiedUserData.user.id;
+    }
+    if (!resolvedUserId) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+    const tokenCost = await getTokenCostForOperation(userSupabase, operationKey, operationFallbackCost);
+    const wallet = await getUserTokenWallet(userSupabase, resolvedUserId);
+    const affordability = canAffordTokens({
+      balanceTokens: wallet.balance_tokens,
+      requiredTokens: tokenCost,
+    });
+    if (!affordability.allowed) {
+      return NextResponse.json(
+        {
+          errorCode: "INSUFFICIENT_TOKENS",
+          message: "Insufficient token balance for ingest.",
+          requiredTokens: affordability.requiredTokens,
+          balanceTokens: affordability.balanceTokens,
+          shortfallTokens: affordability.shortfallTokens,
+          operationKey,
+        },
+        { status: 402 }
+      );
+    }
 
     if (isLivePhotoMovCompanion({ name: filename, type: mimeType })) {
       return NextResponse.json(
@@ -428,6 +507,77 @@ export async function POST(req: NextRequest) {
     let savedFurniture: Record<string, unknown> | null =
       isRecord(parsed) && isRecord(parsed.savedFurniture) ? (parsed.savedFurniture as Record<string, unknown>) : null;
     let preparedUserSku: ReturnType<typeof extractAutosaveCandidate> | null = null;
+    let tokensCharged = 0;
+    let remainingTokens: number | null = wallet.balance_tokens;
+    const parsedUserSkuCandidate =
+      isRecord(parsed) && isRecord(parsed.userSku) ? extractAutosaveCandidate(parsed.userSku) : null;
+    const isUsableUserSku =
+      Boolean(parsedUserSkuCandidate?.userSkuId) &&
+      (parsedUserSkuCandidate?.status?.trim().toLowerCase() ?? null) === "ready";
+    if (isUsableUserSku && parsedUserSkuCandidate) {
+      try {
+        const chargeAnchor =
+          operationId ??
+          requestId ??
+          parsedUserSkuCandidate.userSkuId ??
+          safeString(body.imageUrl) ??
+          "ingest-success";
+        const chargeResult = await chargeVibodeTokensForOperation({
+          supabase: adminSupabase,
+          userId: resolvedUserId,
+          operationKey,
+          idempotencyKey: buildOperationIdempotencyKey({
+            userId: resolvedUserId,
+            operationKey,
+            routeKey: INGEST_ROUTE,
+            chargeAnchor,
+          }),
+          operationId,
+          requestId,
+          modelVersion: ingestImageModel,
+          chargePhase: "success",
+          metadata: {
+            sourceKind,
+            userSkuId: parsedUserSkuCandidate.userSkuId,
+          },
+        });
+        tokensCharged = chargeResult.skipped ? 0 : chargeResult.chargedTokens;
+        remainingTokens = chargeResult.balanceTokens ?? remainingTokens;
+      } catch (chargeErr) {
+        logIngestEvent("error", "token_charge_failed", requestId, {
+          operation_key: operationKey,
+          error: chargeErr instanceof Error ? chargeErr.message : String(chargeErr),
+        });
+        await recordTokenChargeFailure({
+          supabase: adminSupabase,
+          userId: resolvedUserId,
+          operationKey,
+          operationId,
+          requestId,
+          idempotencyKey: buildOperationIdempotencyKey({
+            userId: resolvedUserId,
+            operationKey,
+            routeKey: INGEST_ROUTE,
+            chargeAnchor:
+              operationId ??
+              requestId ??
+              parsedUserSkuCandidate.userSkuId ??
+              safeString(body.imageUrl) ??
+              "ingest-success",
+          }),
+          route: INGEST_ROUTE,
+          chargePhase: "success",
+          expectedTokens: tokenCost,
+          modelVersion: ingestImageModel,
+          errorMessage: chargeErr instanceof Error ? chargeErr.message : String(chargeErr),
+          metadata: {
+            sourceKind,
+            userSkuId: parsedUserSkuCandidate.userSkuId,
+          },
+        });
+      }
+    }
+
     let preparedUserSkuPresent = false;
     let eligibleSkuPresent = false;
 
@@ -518,9 +668,12 @@ export async function POST(req: NextRequest) {
     });
 
     if (savedFurniture && isRecord(parsed)) {
-      return NextResponse.json({ ...parsed, savedFurniture });
+      return NextResponse.json({ ...parsed, savedFurniture, tokensCharged, remainingTokens, operationKey });
     }
 
+    if (isRecord(parsed)) {
+      return NextResponse.json({ ...parsed, tokensCharged, remainingTokens, operationKey });
+    }
     return NextResponse.json(parsed ?? {});
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : "Unknown error";

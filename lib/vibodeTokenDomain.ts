@@ -29,6 +29,11 @@ export type TokenLedgerRow = {
   event_type: string;
   action_type: string;
   stage_number: number | null;
+  operation_key?: string | null;
+  operation_id?: string | null;
+  request_id?: string | null;
+  idempotency_key?: string | null;
+  charge_phase?: string | null;
   model_version: string | null;
   tokens_delta: number;
   balance_after: number | null;
@@ -40,6 +45,12 @@ type TokenPriceConfigRow = {
   key: string;
   token_cost: number;
   is_active: boolean;
+};
+
+type TokenOperationCostRow = {
+  operation_key: string;
+  token_cost: number;
+  active: boolean;
 };
 
 export type TokenAffordabilityResult = {
@@ -73,6 +84,36 @@ export type RefundTokensResult = {
   balanceTokens: number;
   wallet: UserTokenWalletRow;
   ledger: TokenLedgerRow;
+};
+
+export type ChargeVibodeTokensForOperationResult = {
+  skipped: boolean;
+  chargedTokens: number;
+  balanceTokens: number | null;
+  ledgerId: string | null;
+};
+
+export type AdminTokenAdjustmentResult = {
+  balanceTokens: number;
+  ledgerId: string | null;
+};
+
+export type RecordTokenChargeFailureArgs = {
+  supabase: AnySupabaseClient;
+  userId: string;
+  operationKey: string;
+  operationId?: string | null;
+  requestId?: string | null;
+  idempotencyKey?: string | null;
+  route?: string | null;
+  chargePhase?: string | null;
+  expectedTokens?: number | null;
+  modelVersion?: string | null;
+  roomId?: string | null;
+  generationRunId?: string | null;
+  outputAssetId?: string | null;
+  errorMessage?: string | null;
+  metadata?: JsonObject;
 };
 
 function getMonthPeriodBounds(now = new Date()) {
@@ -213,6 +254,40 @@ export async function getTokenCostForAction(
   if (!Number.isFinite(row.token_cost) || Math.trunc(row.token_cost) <= 0) {
     return fallback;
   }
+  return Math.trunc(row.token_cost);
+}
+
+export async function getTokenCostForOperation(
+  supabase: AnySupabaseClient,
+  operationKey: string,
+  fallbackCost: number
+): Promise<number> {
+  const normalizedFallback = Math.max(0, Math.trunc(fallbackCost));
+  const normalizedOperationKey = operationKey.trim();
+  if (!normalizedOperationKey) return normalizedFallback;
+
+  const { data, error } = await supabase
+    .from("vibode_token_operation_costs")
+    .select("operation_key, token_cost, active")
+    .eq("operation_key", normalizedOperationKey)
+    .eq("active", true)
+    .maybeSingle();
+
+  if (error || !data) {
+    if (error) {
+      console.warn(
+        `[tokens] vibode_token_operation_costs read failed for ${normalizedOperationKey}; using fallback`,
+        error.message
+      );
+    }
+    return normalizedFallback;
+  }
+
+  const row = data as TokenOperationCostRow;
+  if (!Number.isFinite(row.token_cost) || Math.trunc(row.token_cost) < 0) {
+    return normalizedFallback;
+  }
+
   return Math.trunc(row.token_cost);
 }
 
@@ -468,4 +543,149 @@ export async function refundTokens(args: {
     wallet,
     ledger: ledgerData as TokenLedgerRow,
   };
+}
+
+export async function chargeVibodeTokensForOperation(args: {
+  supabase: AnySupabaseClient;
+  userId: string;
+  operationKey: string;
+  idempotencyKey: string;
+  operationId?: string | null;
+  requestId?: string | null;
+  modelVersion?: string | null;
+  chargePhase?: string | null;
+  roomId?: string | null;
+  generationRunId?: string | null;
+  metadata?: JsonObject;
+}): Promise<ChargeVibodeTokensForOperationResult> {
+  const { data, error } = await args.supabase.rpc("charge_vibode_tokens_for_operation", {
+    p_user_id: args.userId,
+    p_operation_key: args.operationKey,
+    p_idempotency_key: args.idempotencyKey,
+    p_operation_id: args.operationId ?? null,
+    p_request_id: args.requestId ?? null,
+    p_model_version: args.modelVersion ?? null,
+    p_charge_phase: args.chargePhase ?? "success",
+    p_room_id: args.roomId ?? null,
+    p_generation_run_id: args.generationRunId ?? null,
+    p_metadata: args.metadata ?? {},
+  });
+
+  if (error) {
+    throw new Error(`[tokens] failed to charge tokens for operation: ${error.message}`);
+  }
+
+  const row = Array.isArray(data) ? data[0] : data;
+  if (!row || typeof row !== "object") {
+    throw new Error("[tokens] charge_vibode_tokens_for_operation returned no result row.");
+  }
+
+  return {
+    skipped: Boolean((row as Record<string, unknown>).skipped),
+    chargedTokens: Math.max(0, Math.trunc(Number((row as Record<string, unknown>).charged_tokens ?? 0))),
+    balanceTokens:
+      (row as Record<string, unknown>).balance_tokens == null
+        ? null
+        : Math.trunc(Number((row as Record<string, unknown>).balance_tokens)),
+    ledgerId:
+      typeof (row as Record<string, unknown>).ledger_id === "string"
+        ? ((row as Record<string, unknown>).ledger_id as string)
+        : null,
+  };
+}
+
+export async function applyAdminTokenAdjustment(args: {
+  supabase: AnySupabaseClient;
+  userId: string;
+  tokensDelta: number;
+  reason: string;
+  adminUserId: string;
+  operationId?: string | null;
+  requestId?: string | null;
+  idempotencyKey?: string | null;
+  metadata?: JsonObject;
+}): Promise<AdminTokenAdjustmentResult> {
+  const trimmedReason = args.reason.trim();
+  if (!trimmedReason) {
+    throw new Error("[tokens] reason is required for admin token adjustment.");
+  }
+  const normalizedDelta = Math.trunc(args.tokensDelta);
+  if (!Number.isFinite(normalizedDelta) || normalizedDelta === 0) {
+    throw new Error("[tokens] tokensDelta must be a non-zero integer.");
+  }
+
+  const { data, error } = await args.supabase.rpc("apply_admin_token_adjustment", {
+    p_user_id: args.userId,
+    p_tokens_delta: normalizedDelta,
+    p_reason: trimmedReason,
+    p_admin_user_id: args.adminUserId,
+    p_operation_id: args.operationId ?? null,
+    p_request_id: args.requestId ?? null,
+    p_idempotency_key: args.idempotencyKey ?? null,
+    p_metadata: args.metadata ?? {},
+  });
+
+  if (error) {
+    throw new Error(`[tokens] failed to apply admin token adjustment: ${error.message}`);
+  }
+
+  const row = Array.isArray(data) ? data[0] : data;
+  if (!row || typeof row !== "object") {
+    throw new Error("[tokens] apply_admin_token_adjustment returned no result row.");
+  }
+
+  return {
+    balanceTokens: Math.trunc(Number((row as Record<string, unknown>).balance_tokens ?? 0)),
+    ledgerId:
+      typeof (row as Record<string, unknown>).ledger_id === "string"
+        ? ((row as Record<string, unknown>).ledger_id as string)
+        : null,
+  };
+}
+
+function safeNullableString(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+function safeNullableUuid(value: unknown): string | null {
+  const parsed = safeNullableString(value);
+  if (!parsed) return null;
+  const uuidRe = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+  return uuidRe.test(parsed) ? parsed : null;
+}
+
+export async function recordTokenChargeFailure(args: RecordTokenChargeFailureArgs): Promise<void> {
+  try {
+    const expectedTokens =
+      args.expectedTokens == null || !Number.isFinite(args.expectedTokens)
+        ? null
+        : Math.max(0, Math.trunc(args.expectedTokens));
+    const payload = {
+      user_id: args.userId,
+      operation_key: args.operationKey,
+      operation_id: safeNullableString(args.operationId),
+      request_id: safeNullableString(args.requestId),
+      idempotency_key: safeNullableString(args.idempotencyKey),
+      route: safeNullableString(args.route),
+      charge_phase: safeNullableString(args.chargePhase),
+      expected_tokens: expectedTokens,
+      model_version: safeNullableString(args.modelVersion),
+      room_id: safeNullableUuid(args.roomId),
+      generation_run_id: safeNullableUuid(args.generationRunId),
+      output_asset_id: safeNullableUuid(args.outputAssetId),
+      error_message: safeNullableString(args.errorMessage),
+      metadata: args.metadata ?? {},
+    };
+    const { error } = await args.supabase.from("vibode_token_charge_failures").insert(payload);
+    if (error) {
+      console.error("[tokens] failed to persist token charge failure record:", error.message);
+    }
+  } catch (err: unknown) {
+    console.error(
+      "[tokens] unexpected error while persisting token charge failure:",
+      err instanceof Error ? err.message : String(err)
+    );
+  }
 }
