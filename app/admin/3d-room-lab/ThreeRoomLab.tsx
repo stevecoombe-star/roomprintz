@@ -10,6 +10,14 @@ const DEFAULT_ROOM_IMAGE_URL =
 
 type ImageLoadState = "idle" | "loading" | "loaded" | "error";
 type ModelLoadState = "idle" | "loading" | "loaded" | "fallback" | "error";
+type ActiveObjectKind = "gltf" | "fallback" | null;
+type TransformState = {
+  positionX: number;
+  positionY: number;
+  positionZ: number;
+  rotationYDeg: number;
+  uniformScale: number;
+};
 
 const MATERIAL_TEXTURE_KEYS = [
   "map",
@@ -25,6 +33,38 @@ const MATERIAL_TEXTURE_KEYS = [
   "roughnessMap",
   "specularMap",
 ] as const;
+
+const GLB_DEFAULT_TRANSFORM: TransformState = {
+  positionX: 0,
+  positionY: -0.85,
+  positionZ: 0,
+  rotationYDeg: 0,
+  uniformScale: 1.15,
+};
+
+const FALLBACK_DEFAULT_TRANSFORM: TransformState = {
+  positionX: 0,
+  positionY: -0.35,
+  positionZ: 0,
+  rotationYDeg: 0,
+  uniformScale: 1,
+};
+
+const TRANSFORM_LIMITS = {
+  positionX: { min: -5, max: 5, step: 0.01 },
+  positionY: { min: -5, max: 5, step: 0.01 },
+  positionZ: { min: -10, max: 10, step: 0.01 },
+  rotationYDeg: { min: -180, max: 180, step: 1 },
+  uniformScale: { min: 0.1, max: 4, step: 0.01 },
+} as const;
+
+function clampValue(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, value));
+}
+
+function formatNumber(value: number): string {
+  return Number.isFinite(value) ? value.toFixed(2) : "0.00";
+}
 
 function disposeMaterial(material: THREE.Material) {
   const materialRecord = material as unknown as Record<string, unknown>;
@@ -56,6 +96,57 @@ function formatModelStatus(state: ModelLoadState, errorMessage: string | null): 
   return state;
 }
 
+function defaultTransformForKind(kind: ActiveObjectKind): TransformState {
+  if (kind === "fallback") return FALLBACK_DEFAULT_TRANSFORM;
+  return GLB_DEFAULT_TRANSFORM;
+}
+
+function TransformControlRow({
+  label,
+  value,
+  min,
+  max,
+  step,
+  onChange,
+}: {
+  label: string;
+  value: number;
+  min: number;
+  max: number;
+  step: number;
+  onChange: (value: number) => void;
+}) {
+  return (
+    <div className="rounded-lg border border-slate-800 bg-slate-950/60 p-2">
+      <div className="flex items-center justify-between gap-2">
+        <label className="text-xs text-slate-300">{label}</label>
+        <input
+          type="number"
+          min={min}
+          max={max}
+          step={step}
+          value={value}
+          onChange={(event) => {
+            const next = Number.parseFloat(event.target.value);
+            if (!Number.isFinite(next)) return;
+            onChange(clampValue(next, min, max));
+          }}
+          className="w-24 rounded border border-slate-700 bg-slate-950 px-2 py-1 text-xs text-slate-100 outline-none focus:border-emerald-400"
+        />
+      </div>
+      <input
+        type="range"
+        min={min}
+        max={max}
+        step={step}
+        value={value}
+        onChange={(event) => onChange(clampValue(Number.parseFloat(event.target.value), min, max))}
+        className="mt-2 w-full accent-emerald-400"
+      />
+    </div>
+  );
+}
+
 export default function ThreeRoomLab() {
   const envEnabled = process.env.NEXT_PUBLIC_VIBODE_ENABLE_3D_ROOM_LAB === "1";
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -63,6 +154,9 @@ export default function ThreeRoomLab() {
   const animationFrameRef = useRef<number | null>(null);
   const activeObjectRef = useRef<THREE.Object3D | null>(null);
   const resizeObserverRef = useRef<ResizeObserver | null>(null);
+  const transformRef = useRef<TransformState>(GLB_DEFAULT_TRANSFORM);
+  const autoRotateEnabledRef = useRef(false);
+  const autoRotateOffsetDegRef = useRef(0);
 
   const [roomImageInput, setRoomImageInput] = useState(DEFAULT_ROOM_IMAGE_URL);
   const [roomImageUrl, setRoomImageUrl] = useState(DEFAULT_ROOM_IMAGE_URL);
@@ -72,6 +166,34 @@ export default function ThreeRoomLab() {
   const [modelLoadState, setModelLoadState] = useState<ModelLoadState>("idle");
   const [modelLoadError, setModelLoadError] = useState<string | null>(null);
   const [rendererSize, setRendererSize] = useState({ width: 0, height: 0 });
+  const [activeObjectKind, setActiveObjectKind] = useState<ActiveObjectKind>(null);
+  const [autoRotateEnabled, setAutoRotateEnabled] = useState(false);
+  const [transform, setTransform] = useState<TransformState>(GLB_DEFAULT_TRANSFORM);
+
+  useEffect(() => {
+    transformRef.current = transform;
+  }, [transform]);
+
+  useEffect(() => {
+    autoRotateEnabledRef.current = autoRotateEnabled;
+    if (!autoRotateEnabled) {
+      autoRotateOffsetDegRef.current = 0;
+    }
+  }, [autoRotateEnabled]);
+
+  const applyTransformToActiveObject = () => {
+    const object = activeObjectRef.current;
+    if (!object) return;
+    const currentTransform = transformRef.current;
+    object.position.set(currentTransform.positionX, currentTransform.positionY, currentTransform.positionZ);
+    const finalRotationDeg = currentTransform.rotationYDeg + autoRotateOffsetDegRef.current;
+    object.rotation.y = THREE.MathUtils.degToRad(finalRotationDeg);
+    object.scale.setScalar(currentTransform.uniformScale);
+  };
+
+  useEffect(() => {
+    applyTransformToActiveObject();
+  }, [transform, autoRotateEnabled]);
 
   const debugRows = useMemo(
     () => [
@@ -79,10 +201,43 @@ export default function ThreeRoomLab() {
       { label: "image", value: imageLoadState },
       { label: "model", value: formatModelStatus(modelLoadState, modelLoadError) },
       { label: "renderer", value: `${rendererSize.width} x ${rendererSize.height}` },
+      {
+        label: "transform",
+        value: `x:${formatNumber(transform.positionX)} y:${formatNumber(transform.positionY)} z:${formatNumber(
+          transform.positionZ
+        )} ry:${formatNumber(transform.rotationYDeg)}deg s:${formatNumber(transform.uniformScale)}`,
+      },
+      { label: "auto-rotate", value: autoRotateEnabled ? "on" : "off" },
+      { label: "active object", value: activeObjectKind ?? "none" },
       { label: "glb path", value: LAB_GLB_PATH },
     ],
-    [envEnabled, imageLoadState, modelLoadError, modelLoadState, rendererSize.height, rendererSize.width]
+    [
+      activeObjectKind,
+      autoRotateEnabled,
+      envEnabled,
+      imageLoadState,
+      modelLoadError,
+      modelLoadState,
+      rendererSize.height,
+      rendererSize.width,
+      transform.positionX,
+      transform.positionY,
+      transform.positionZ,
+      transform.rotationYDeg,
+      transform.uniformScale,
+    ]
   );
+
+  const updateTransformField = (field: keyof TransformState, value: number) => {
+    const limits = TRANSFORM_LIMITS[field];
+    const clamped = clampValue(value, limits.min, limits.max);
+    setTransform((prev) => ({ ...prev, [field]: clamped }));
+  };
+
+  const handleResetTransform = () => {
+    autoRotateOffsetDegRef.current = 0;
+    setTransform(defaultTransformForKind(activeObjectKind));
+  };
 
   useEffect(() => {
     if (!envEnabled) return;
@@ -93,6 +248,8 @@ export default function ThreeRoomLab() {
     let isDisposed = false;
     setModelLoadState("loading");
     setModelLoadError(null);
+    setActiveObjectKind(null);
+    autoRotateOffsetDegRef.current = 0;
 
     const scene = new THREE.Scene();
     const camera = new THREE.PerspectiveCamera(50, 1, 0.1, 100);
@@ -140,9 +297,10 @@ export default function ThreeRoomLab() {
         roughness: 0.6,
       });
       const cube = new THREE.Mesh(geometry, material);
-      cube.position.set(0, -0.35, 0);
       scene.add(cube);
       activeObjectRef.current = cube;
+      setActiveObjectKind("fallback");
+      setTransform(FALLBACK_DEFAULT_TRANSFORM);
     };
 
     const loader = new GLTFLoader();
@@ -157,6 +315,8 @@ export default function ThreeRoomLab() {
         gltf.scene.position.set(0, -0.85, 0);
         scene.add(gltf.scene);
         activeObjectRef.current = gltf.scene;
+        setActiveObjectKind("gltf");
+        setTransform(GLB_DEFAULT_TRANSFORM);
         setModelLoadState("loaded");
       },
       undefined,
@@ -170,9 +330,10 @@ export default function ThreeRoomLab() {
     const animate = () => {
       if (isDisposed) return;
       animationFrameRef.current = window.requestAnimationFrame(animate);
-      if (activeObjectRef.current) {
-        activeObjectRef.current.rotation.y += 0.005;
+      if (autoRotateEnabledRef.current) {
+        autoRotateOffsetDegRef.current = (autoRotateOffsetDegRef.current + 0.3) % 360;
       }
+      applyTransformToActiveObject();
       renderer.render(scene, camera);
     };
 
@@ -252,6 +413,72 @@ export default function ThreeRoomLab() {
               Load Image
             </button>
           </form>
+        </section>
+
+        <section className="rounded-2xl border border-slate-800 bg-slate-900/70 p-4">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <h2 className="text-sm font-medium text-slate-100">Manual Transform Controls</h2>
+            <div className="flex items-center gap-2">
+              <label className="flex items-center gap-2 text-xs text-slate-300">
+                <input
+                  type="checkbox"
+                  checked={autoRotateEnabled}
+                  onChange={(event) => setAutoRotateEnabled(event.target.checked)}
+                  className="accent-emerald-400"
+                />
+                Auto-rotate
+              </label>
+              <button
+                type="button"
+                onClick={handleResetTransform}
+                className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-200 transition hover:border-emerald-400/80 hover:text-emerald-200"
+              >
+                Reset transform
+              </button>
+            </div>
+          </div>
+          <div className="mt-3 grid gap-2 md:grid-cols-2">
+            <TransformControlRow
+              label="Position X"
+              value={transform.positionX}
+              min={TRANSFORM_LIMITS.positionX.min}
+              max={TRANSFORM_LIMITS.positionX.max}
+              step={TRANSFORM_LIMITS.positionX.step}
+              onChange={(value) => updateTransformField("positionX", value)}
+            />
+            <TransformControlRow
+              label="Position Y"
+              value={transform.positionY}
+              min={TRANSFORM_LIMITS.positionY.min}
+              max={TRANSFORM_LIMITS.positionY.max}
+              step={TRANSFORM_LIMITS.positionY.step}
+              onChange={(value) => updateTransformField("positionY", value)}
+            />
+            <TransformControlRow
+              label="Position Z"
+              value={transform.positionZ}
+              min={TRANSFORM_LIMITS.positionZ.min}
+              max={TRANSFORM_LIMITS.positionZ.max}
+              step={TRANSFORM_LIMITS.positionZ.step}
+              onChange={(value) => updateTransformField("positionZ", value)}
+            />
+            <TransformControlRow
+              label="Rotation Y (deg)"
+              value={transform.rotationYDeg}
+              min={TRANSFORM_LIMITS.rotationYDeg.min}
+              max={TRANSFORM_LIMITS.rotationYDeg.max}
+              step={TRANSFORM_LIMITS.rotationYDeg.step}
+              onChange={(value) => updateTransformField("rotationYDeg", value)}
+            />
+            <TransformControlRow
+              label="Uniform Scale"
+              value={transform.uniformScale}
+              min={TRANSFORM_LIMITS.uniformScale.min}
+              max={TRANSFORM_LIMITS.uniformScale.max}
+              step={TRANSFORM_LIMITS.uniformScale.step}
+              onChange={(value) => updateTransformField("uniformScale", value)}
+            />
+          </div>
         </section>
 
         <section className="rounded-2xl border border-slate-800 bg-slate-900/70 p-4">
