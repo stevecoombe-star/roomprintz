@@ -6,11 +6,16 @@ type SceneJsonPanelProps = {
   exportStatus: SceneJsonStatus;
   importTextValue: string;
   importStatus: SceneJsonStatus;
+  localDraftStatus: SceneJsonStatus;
+  localDraftLastSavedAt: string | null;
   onCopySceneJson: () => void | Promise<void>;
   onDownloadSceneJson: () => void;
   onImportTextChange: (value: string) => void;
   onApplyImport: () => void;
   onClearImport: () => void;
+  onSaveLocalDraft: () => void;
+  onRestoreLocalDraft: () => void;
+  onClearLocalDraft: () => void;
 };
 
 export default function SceneJsonPanel({
@@ -19,11 +24,16 @@ export default function SceneJsonPanel({
   exportStatus,
   importTextValue,
   importStatus,
+  localDraftStatus,
+  localDraftLastSavedAt,
   onCopySceneJson,
   onDownloadSceneJson,
   onImportTextChange,
   onApplyImport,
   onClearImport,
+  onSaveLocalDraft,
+  onRestoreLocalDraft,
+  onClearLocalDraft,
 }: SceneJsonPanelProps) {
   return (
     <section className="rounded-2xl border border-slate-800 bg-slate-900/70 p-4">
@@ -103,6 +113,49 @@ export default function SceneJsonPanel({
           className="mt-3 h-56 w-full rounded-lg border border-slate-800 bg-slate-950/80 p-3 font-mono text-xs text-slate-200 outline-none focus:border-emerald-400"
           aria-label="Import Scene JSON"
         />
+      </div>
+
+      <div className="mt-5 border-t border-slate-800 pt-4">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <h3 className="text-sm font-medium text-slate-100">Local draft persistence</h3>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={onSaveLocalDraft}
+              className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-200 transition hover:border-emerald-400/80 hover:text-emerald-200"
+            >
+              Save local draft
+            </button>
+            <button
+              type="button"
+              onClick={onRestoreLocalDraft}
+              className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-200 transition hover:border-emerald-400/80 hover:text-emerald-200"
+            >
+              Restore local draft
+            </button>
+            <button
+              type="button"
+              onClick={onClearLocalDraft}
+              className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-200 transition hover:border-slate-500 hover:text-slate-100"
+            >
+              Clear local draft
+            </button>
+          </div>
+        </div>
+        <p
+          className={`mt-2 text-xs ${
+            localDraftStatus.kind === "error"
+              ? "text-rose-300"
+              : localDraftStatus.kind === "success"
+                ? "text-emerald-300"
+                : "text-slate-400"
+          }`}
+        >
+          {localDraftStatus.message}
+        </p>
+        <p className="mt-1 text-[11px] text-slate-500">
+          Last local draft save: {localDraftLastSavedAt ?? "none"}
+        </p>
       </div>
     </section>
   );

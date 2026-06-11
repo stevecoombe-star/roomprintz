@@ -21,11 +21,13 @@ import {
   validateImportedSceneJson,
   type FloorMappingState,
   type FloorPoint,
+  type ImportedSceneValidated,
   type PerspectiveDepthScalingState,
   type TransformState,
 } from "./scene-state";
 
 const LAB_GLB_PATH = "/3d-lab/furniture-test-chair.glb";
+const LOCAL_DRAFT_STORAGE_KEY = "vibode:3d-room-lab:scene-state:v0";
 const DEFAULT_ROOM_IMAGE_URL =
   "https://images.unsplash.com/photo-1505693314120-0d443867891c?auto=format&fit=crop&w=1600&q=80";
 
@@ -232,6 +234,11 @@ export default function ThreeRoomLab() {
     kind: "idle",
     message: "Paste exported scene JSON to restore state.",
   });
+  const [localDraftStatus, setLocalDraftStatus] = useState<SceneJsonStatus>({
+    kind: "idle",
+    message: "Save or restore a browser-local draft.",
+  });
+  const [localDraftLastSavedAt, setLocalDraftLastSavedAt] = useState<string | null>(null);
 
   useEffect(() => {
     transformRef.current = transform;
@@ -251,6 +258,31 @@ export default function ThreeRoomLab() {
   useEffect(() => {
     perspectiveDepthScalingRef.current = perspectiveDepthScaling;
   }, [perspectiveDepthScaling]);
+
+  useEffect(() => {
+    try {
+      const stored = window.localStorage.getItem(LOCAL_DRAFT_STORAGE_KEY);
+      if (!stored) {
+        setLocalDraftLastSavedAt(null);
+        return;
+      }
+      const parsed = JSON.parse(stored);
+      const exportedAtRaw =
+        typeof parsed === "object" && parsed !== null
+          ? (parsed as Record<string, unknown>).exportedAt
+          : null;
+      if (
+        typeof exportedAtRaw === "string" &&
+        exportedAtRaw.trim().length > 0
+      ) {
+        setLocalDraftLastSavedAt(exportedAtRaw);
+        return;
+      }
+      setLocalDraftLastSavedAt(null);
+    } catch {
+      setLocalDraftLastSavedAt(null);
+    }
+  }, []);
 
   const applyTransformToActiveObject = () => {
     const object = activeObjectRef.current;
@@ -709,6 +741,40 @@ export default function ThreeRoomLab() {
     }
   };
 
+  const applyValidatedSceneState = (validated: ImportedSceneValidated, nextExportedAt: string) => {
+    const nextRoomImageUrl = validated.roomImageUrl ?? "";
+    setRoomImageInput(nextRoomImageUrl);
+    setRoomImageUrl(nextRoomImageUrl);
+    setImageLoadState(nextRoomImageUrl ? "loading" : "idle");
+
+    updateTransformState(
+      {
+        positionX: validated.transform.positionX,
+        positionY: validated.transform.positionY,
+        positionZ: validated.transform.positionZ,
+        rotationYDeg: validated.transform.rotationYDeg,
+        uniformScale: validated.transform.uniformScale,
+      },
+      { markOwned: true }
+    );
+    setAutoRotateEnabled(validated.transform.autoRotate);
+
+    setFloorPolygon(validated.floor.polygon);
+    setShowFloorOverlay(validated.floor.overlayVisible);
+    setIsFloorClickPlacementEnabled(validated.floor.placementModeEnabled);
+    setLastAcceptedFloorClick(validated.floor.lastAcceptedClick);
+    setLastRejectedFloorClick(validated.floor.lastRejectedClick);
+    setFloorMapping(validated.floor.mapping);
+    setPerspectiveDepthScaling(validated.floor.perspectiveDepthScaling);
+    setWasLastAnchorDragMoveRejected(false);
+    setIsFloorAnchorDragActive(false);
+    setActiveFloorHandleIndex(null);
+    dragPointerIdRef.current = null;
+    floorAnchorDragPointerIdRef.current = null;
+
+    setSceneStateExportedAt(nextExportedAt);
+  };
+
   const handleApplyImportedSceneJson = () => {
     if (!importSceneJsonInput.trim()) {
       setImportSceneStatus({
@@ -745,34 +811,7 @@ export default function ThreeRoomLab() {
       return;
     }
 
-    const nextRoomImageUrl = validated.roomImageUrl ?? "";
-    setRoomImageInput(nextRoomImageUrl);
-    setRoomImageUrl(nextRoomImageUrl);
-    setImageLoadState(nextRoomImageUrl ? "loading" : "idle");
-
-    updateTransformState({
-      positionX: validated.transform.positionX,
-      positionY: validated.transform.positionY,
-      positionZ: validated.transform.positionZ,
-      rotationYDeg: validated.transform.rotationYDeg,
-      uniformScale: validated.transform.uniformScale,
-    }, { markOwned: true });
-    setAutoRotateEnabled(validated.transform.autoRotate);
-
-    setFloorPolygon(validated.floor.polygon);
-    setShowFloorOverlay(validated.floor.overlayVisible);
-    setIsFloorClickPlacementEnabled(validated.floor.placementModeEnabled);
-    setLastAcceptedFloorClick(validated.floor.lastAcceptedClick);
-    setLastRejectedFloorClick(validated.floor.lastRejectedClick);
-    setFloorMapping(validated.floor.mapping);
-    setPerspectiveDepthScaling(validated.floor.perspectiveDepthScaling);
-    setWasLastAnchorDragMoveRejected(false);
-    setIsFloorAnchorDragActive(false);
-    setActiveFloorHandleIndex(null);
-    dragPointerIdRef.current = null;
-    floorAnchorDragPointerIdRef.current = null;
-
-    setSceneStateExportedAt(validated.exportedAt ?? "imported-scene");
+    applyValidatedSceneState(validated, validated.exportedAt ?? "imported-scene");
     setImportSceneStatus({
       kind: "success",
       message: "Imported scene JSON applied successfully.",
@@ -785,6 +824,100 @@ export default function ThreeRoomLab() {
       kind: "idle",
       message: "Paste exported scene JSON to restore state.",
     });
+  };
+
+  const handleSaveLocalDraft = () => {
+    const exportedAtIso = new Date().toISOString();
+    const payload = buildCurrentSceneStatePayload(exportedAtIso);
+    const jsonText = JSON.stringify(payload);
+    try {
+      window.localStorage.setItem(LOCAL_DRAFT_STORAGE_KEY, jsonText);
+      setLocalDraftLastSavedAt(exportedAtIso);
+      setLocalDraftStatus({
+        kind: "success",
+        message: "Local draft saved successfully.",
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "localStorage write failed.";
+      setLocalDraftStatus({
+        kind: "error",
+        message: `Save failed: ${message}`,
+      });
+    }
+  };
+
+  const handleRestoreLocalDraft = () => {
+    let stored: string | null = null;
+    try {
+      stored = window.localStorage.getItem(LOCAL_DRAFT_STORAGE_KEY);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "localStorage read failed.";
+      setLocalDraftStatus({
+        kind: "error",
+        message: `Restore failed: ${message}`,
+      });
+      return;
+    }
+
+    if (!stored) {
+      setLocalDraftStatus({
+        kind: "error",
+        message: "No local draft found.",
+      });
+      setLocalDraftLastSavedAt(null);
+      return;
+    }
+
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(stored);
+    } catch {
+      setLocalDraftStatus({
+        kind: "error",
+        message: "Invalid/corrupt local draft.",
+      });
+      return;
+    }
+
+    const validated = validateImportedSceneJson(parsed, {
+      transformLimits: TRANSFORM_LIMITS,
+      floorMappingLimits: FLOOR_MAPPING_LIMITS,
+      perspectiveDepthScalingLimits: PERSPECTIVE_DEPTH_SCALING_LIMITS,
+      defaultFloorMapping: DEFAULT_FLOOR_MAPPING,
+      defaultPerspectiveDepthScaling: DEFAULT_PERSPECTIVE_DEPTH_SCALING,
+    });
+    if (typeof validated === "string") {
+      setLocalDraftStatus({
+        kind: "error",
+        message: "Invalid/corrupt local draft.",
+      });
+      return;
+    }
+
+    const restoredAt = validated.exportedAt ?? "restored-local-draft";
+    applyValidatedSceneState(validated, restoredAt);
+    setLocalDraftLastSavedAt(validated.exportedAt ?? null);
+    setLocalDraftStatus({
+      kind: "success",
+      message: "Local draft restored successfully.",
+    });
+  };
+
+  const handleClearLocalDraft = () => {
+    try {
+      window.localStorage.removeItem(LOCAL_DRAFT_STORAGE_KEY);
+      setLocalDraftLastSavedAt(null);
+      setLocalDraftStatus({
+        kind: "success",
+        message: "Local draft cleared successfully.",
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "localStorage remove failed.";
+      setLocalDraftStatus({
+        kind: "error",
+        message: `Clear failed: ${message}`,
+      });
+    }
   };
 
   useEffect(() => {
@@ -1302,11 +1435,16 @@ export default function ThreeRoomLab() {
           exportStatus={sceneJsonStatus}
           importTextValue={importSceneJsonInput}
           importStatus={importSceneStatus}
+          localDraftStatus={localDraftStatus}
+          localDraftLastSavedAt={localDraftLastSavedAt}
           onCopySceneJson={handleCopySceneJson}
           onDownloadSceneJson={handleDownloadSceneJson}
           onImportTextChange={setImportSceneJsonInput}
           onApplyImport={handleApplyImportedSceneJson}
           onClearImport={handleClearImportedSceneJson}
+          onSaveLocalDraft={handleSaveLocalDraft}
+          onRestoreLocalDraft={handleRestoreLocalDraft}
+          onClearLocalDraft={handleClearLocalDraft}
         />
       </div>
     </main>
