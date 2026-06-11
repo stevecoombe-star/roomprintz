@@ -22,6 +22,7 @@ import {
   type FloorMappingState,
   type FloorPoint,
   type ImportedSceneValidated,
+  type ModelNormalizationState,
   type PerspectiveDepthScalingState,
   type TransformState,
 } from "./scene-state";
@@ -41,6 +42,18 @@ type TransformStateUpdater = TransformState | ((prev: TransformState) => Transfo
 const OBJECT_HANDLE_ROTATE_DEADZONE_PX = 14;
 const OBJECT_HANDLE_SCALE_MIN_START_DISTANCE_PX = 10;
 const OBJECT_HANDLE_HEIGHT_PIXELS_PER_UNIT = 120;
+
+const DEFAULT_MODEL_NORMALIZATION: ModelNormalizationState = {
+  modelYOffset: 0,
+  modelYawOffsetDeg: 0,
+  modelScaleMultiplier: 1,
+};
+
+const MODEL_NORMALIZATION_LIMITS = {
+  modelYOffset: { min: -2, max: 2, step: 0.01 },
+  modelYawOffsetDeg: { min: -180, max: 180, step: 1 },
+  modelScaleMultiplier: { min: 0.1, max: 5, step: 0.01 },
+} as const;
 
 const MATERIAL_TEXTURE_KEYS = [
   "map",
@@ -192,11 +205,14 @@ export default function ThreeRoomLab() {
   const canvasHostRef = useRef<HTMLDivElement | null>(null);
   const floorOverlayRef = useRef<SVGSVGElement | null>(null);
   const animationFrameRef = useRef<number | null>(null);
+  const placementGroupRef = useRef<THREE.Group | null>(null);
+  const modelNormalizationGroupRef = useRef<THREE.Group | null>(null);
   const activeObjectRef = useRef<THREE.Object3D | null>(null);
   const resizeObserverRef = useRef<ResizeObserver | null>(null);
   const loadModelFromPathRef = useRef<((path: string) => void) | null>(null);
   const useFallbackCubeRef = useRef<(() => void) | null>(null);
   const transformRef = useRef<TransformState>(GLB_DEFAULT_TRANSFORM);
+  const modelNormalizationRef = useRef<ModelNormalizationState>(DEFAULT_MODEL_NORMALIZATION);
   const transformOwnedRef = useRef(false);
   const autoRotateEnabledRef = useRef(false);
   const autoRotateOffsetDegRef = useRef(0);
@@ -227,6 +243,8 @@ export default function ThreeRoomLab() {
   const [activeObjectKind, setActiveObjectKind] = useState<ActiveObjectKind>(null);
   const [autoRotateEnabled, setAutoRotateEnabled] = useState(false);
   const [transform, setTransform] = useState<TransformState>(GLB_DEFAULT_TRANSFORM);
+  const [modelNormalization, setModelNormalization] =
+    useState<ModelNormalizationState>(DEFAULT_MODEL_NORMALIZATION);
   const [showFloorOverlay, setShowFloorOverlay] = useState(true);
   const [floorPolygon, setFloorPolygon] = useState<FloorPoint[]>(DEFAULT_FLOOR_POLYGON);
   const [activeFloorHandleIndex, setActiveFloorHandleIndex] = useState<number | null>(null);
@@ -265,6 +283,10 @@ export default function ThreeRoomLab() {
   useEffect(() => {
     transformRef.current = transform;
   }, [transform]);
+
+  useEffect(() => {
+    modelNormalizationRef.current = modelNormalization;
+  }, [modelNormalization]);
 
   useEffect(() => {
     autoRotateEnabledRef.current = autoRotateEnabled;
@@ -324,20 +346,29 @@ export default function ThreeRoomLab() {
     }
   }, []);
 
-  const applyTransformToActiveObject = () => {
-    const object = activeObjectRef.current;
-    if (!object) return;
+  const applyPlacementTransform = () => {
+    const placementGroup = placementGroupRef.current;
+    if (!placementGroup) return;
     const currentTransform = transformRef.current;
-    object.position.set(currentTransform.positionX, currentTransform.positionY, currentTransform.positionZ);
+    placementGroup.position.set(currentTransform.positionX, currentTransform.positionY, currentTransform.positionZ);
     const finalRotationDeg = currentTransform.rotationYDeg + autoRotateOffsetDegRef.current;
-    object.rotation.y = THREE.MathUtils.degToRad(finalRotationDeg);
-    object.scale.setScalar(
+    placementGroup.rotation.y = THREE.MathUtils.degToRad(finalRotationDeg);
+    placementGroup.scale.setScalar(
       getEffectiveObjectScale(
         currentTransform.uniformScale,
         lastAcceptedFloorClickRef.current,
         perspectiveDepthScalingRef.current
       )
     );
+  };
+
+  const applyModelNormalization = () => {
+    const modelNormalizationGroup = modelNormalizationGroupRef.current;
+    if (!modelNormalizationGroup) return;
+    const currentNormalization = modelNormalizationRef.current;
+    modelNormalizationGroup.position.set(0, currentNormalization.modelYOffset, 0);
+    modelNormalizationGroup.rotation.y = THREE.MathUtils.degToRad(currentNormalization.modelYawOffsetDeg);
+    modelNormalizationGroup.scale.setScalar(currentNormalization.modelScaleMultiplier);
   };
 
   const updateTransformState = (
@@ -355,8 +386,12 @@ export default function ThreeRoomLab() {
   };
 
   useEffect(() => {
-    applyTransformToActiveObject();
+    applyPlacementTransform();
   }, [transform, autoRotateEnabled, lastAcceptedFloorClick, perspectiveDepthScaling]);
+
+  useEffect(() => {
+    applyModelNormalization();
+  }, [modelNormalization]);
 
   const currentDepthScaleMultiplier = useMemo(
     () => getDepthScaleMultiplier(lastAcceptedFloorClick?.y ?? null, perspectiveDepthScaling),
@@ -366,6 +401,14 @@ export default function ThreeRoomLab() {
   const currentEffectiveObjectScale = useMemo(
     () => getEffectiveObjectScale(transform.uniformScale, lastAcceptedFloorClick, perspectiveDepthScaling),
     [lastAcceptedFloorClick, perspectiveDepthScaling, transform.uniformScale]
+  );
+
+  const isModelNormalizationAdjusted = useMemo(
+    () =>
+      Math.abs(modelNormalization.modelYOffset - DEFAULT_MODEL_NORMALIZATION.modelYOffset) > 0.0001 ||
+      Math.abs(modelNormalization.modelYawOffsetDeg - DEFAULT_MODEL_NORMALIZATION.modelYawOffsetDeg) > 0.0001 ||
+      Math.abs(modelNormalization.modelScaleMultiplier - DEFAULT_MODEL_NORMALIZATION.modelScaleMultiplier) > 0.0001,
+    [modelNormalization.modelScaleMultiplier, modelNormalization.modelYOffset, modelNormalization.modelYawOffsetDeg]
   );
 
   const { isValid: isDepthNearFarOrderValid, warning: depthNearFarOrderingWarning } =
@@ -399,6 +442,10 @@ export default function ThreeRoomLab() {
           transform.positionZ
         )} ry:${formatNumber(transform.rotationYDeg)}deg s:${formatNumber(transform.uniformScale)}`,
       },
+      { label: "model normalization adjusted", value: isModelNormalizationAdjusted ? "yes" : "no" },
+      { label: "model y offset", value: formatNumber(modelNormalization.modelYOffset) },
+      { label: "model yaw offset", value: `${formatNumber(modelNormalization.modelYawOffsetDeg)}deg` },
+      { label: "model scale multiplier", value: formatNumber(modelNormalization.modelScaleMultiplier) },
       { label: "auto-rotate", value: autoRotateEnabled ? "on" : "off" },
       { label: "active object", value: currentActiveObjectType },
       { label: "floor overlay", value: showFloorOverlay ? "on" : "off" },
@@ -481,6 +528,7 @@ export default function ThreeRoomLab() {
       imageLoadState,
       currentDepthScaleMultiplier,
       currentEffectiveObjectScale,
+      isModelNormalizationAdjusted,
       depthNearFarOrderingWarning,
       isDepthNearFarOrderValid,
       isObject2DHandlesEnabled,
@@ -496,6 +544,9 @@ export default function ThreeRoomLab() {
       modelLoadError,
       modelLoadState,
       modelPath,
+      modelNormalization.modelScaleMultiplier,
+      modelNormalization.modelYOffset,
+      modelNormalization.modelYawOffsetDeg,
       perspectiveDepthScaling.enabled,
       perspectiveDepthScaling.farFloorY,
       perspectiveDepthScaling.farScaleMultiplier,
@@ -518,6 +569,12 @@ export default function ThreeRoomLab() {
     const limits = TRANSFORM_LIMITS[field];
     const clamped = clampValue(value, limits.min, limits.max);
     updateTransformState((prev) => ({ ...prev, [field]: clamped }), { markOwned: true });
+  };
+
+  const updateModelNormalizationField = (field: keyof ModelNormalizationState, value: number) => {
+    const limits = MODEL_NORMALIZATION_LIMITS[field];
+    const clamped = clampValue(value, limits.min, limits.max);
+    setModelNormalization((prev) => ({ ...prev, [field]: clamped }));
   };
 
   const updateFloorMappingField = (
@@ -580,6 +637,10 @@ export default function ThreeRoomLab() {
     updateTransformState(defaultTransformForKind(activeObjectKind), { markOwned: true });
   };
 
+  const handleResetModelNormalization = () => {
+    setModelNormalization(DEFAULT_MODEL_NORMALIZATION);
+  };
+
   const floorPolygonPointsAttribute = useMemo(
     () => floorPolygon.map((point) => `${point.x * 100},${point.y * 100}`).join(" "),
     [floorPolygon]
@@ -592,6 +653,7 @@ export default function ThreeRoomLab() {
       modelPath,
       activeObjectType: currentActiveObjectType,
       glbLoadStatus: modelLoadState,
+      modelNormalization,
       transform: {
         positionX: transform.positionX,
         positionY: transform.positionY,
@@ -638,6 +700,9 @@ export default function ThreeRoomLab() {
     modelLoadError,
     modelLoadState,
     modelPath,
+    modelNormalization.modelScaleMultiplier,
+    modelNormalization.modelYOffset,
+    modelNormalization.modelYawOffsetDeg,
     rendererSize,
     roomImageUrl,
     sceneStateExportedAt,
@@ -983,6 +1048,7 @@ export default function ThreeRoomLab() {
       setModelPathInput(validated.modelPath);
       setModelPath(validated.modelPath);
     }
+    setModelNormalization(validated.modelNormalization);
     const nextRoomImageUrl = validated.roomImageUrl ?? "";
     setRoomImageInput(nextRoomImageUrl);
     setRoomImageUrl(nextRoomImageUrl);
@@ -1045,8 +1111,10 @@ export default function ThreeRoomLab() {
 
     const validated = validateImportedSceneJson(parsed, {
       transformLimits: TRANSFORM_LIMITS,
+      modelNormalizationLimits: MODEL_NORMALIZATION_LIMITS,
       floorMappingLimits: FLOOR_MAPPING_LIMITS,
       perspectiveDepthScalingLimits: PERSPECTIVE_DEPTH_SCALING_LIMITS,
+      defaultModelNormalization: DEFAULT_MODEL_NORMALIZATION,
       defaultFloorMapping: DEFAULT_FLOOR_MAPPING,
       defaultPerspectiveDepthScaling: DEFAULT_PERSPECTIVE_DEPTH_SCALING,
     });
@@ -1128,8 +1196,10 @@ export default function ThreeRoomLab() {
 
     const validated = validateImportedSceneJson(parsed, {
       transformLimits: TRANSFORM_LIMITS,
+      modelNormalizationLimits: MODEL_NORMALIZATION_LIMITS,
       floorMappingLimits: FLOOR_MAPPING_LIMITS,
       perspectiveDepthScalingLimits: PERSPECTIVE_DEPTH_SCALING_LIMITS,
+      defaultModelNormalization: DEFAULT_MODEL_NORMALIZATION,
       defaultFloorMapping: DEFAULT_FLOOR_MAPPING,
       defaultPerspectiveDepthScaling: DEFAULT_PERSPECTIVE_DEPTH_SCALING,
     });
@@ -1210,6 +1280,14 @@ export default function ThreeRoomLab() {
     keyLight.position.set(3, 6, 5);
     scene.add(ambient);
     scene.add(keyLight);
+    const placementGroup = new THREE.Group();
+    const modelNormalizationGroup = new THREE.Group();
+    placementGroup.add(modelNormalizationGroup);
+    scene.add(placementGroup);
+    placementGroupRef.current = placementGroup;
+    modelNormalizationGroupRef.current = modelNormalizationGroup;
+    applyPlacementTransform();
+    applyModelNormalization();
 
     const renderer = new THREE.WebGLRenderer({ alpha: true, antialias: true });
     renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
@@ -1240,20 +1318,21 @@ export default function ThreeRoomLab() {
     const removeActiveObject = () => {
       const current = activeObjectRef.current;
       if (!current) return;
-      scene.remove(current);
+      modelNormalizationGroup.remove(current);
       disposeObject3D(current);
       activeObjectRef.current = null;
     };
 
     const setActiveObject = (object: THREE.Object3D, kind: ActiveObjectKind) => {
       removeActiveObject();
-      scene.add(object);
+      modelNormalizationGroup.add(object);
       activeObjectRef.current = object;
       setActiveObjectKind(kind);
-      applyTransformToActiveObject();
+      applyPlacementTransform();
+      applyModelNormalization();
     };
 
-    const addFallbackCube = (reason: string, options?: { preserveTransform?: boolean }) => {
+    const addFallbackCube = (reason: string) => {
       setModelLoadState("fallback");
       setModelLoadError(reason);
       const geometry = new THREE.BoxGeometry(0.8, 0.8, 0.8);
@@ -1264,10 +1343,8 @@ export default function ThreeRoomLab() {
       });
       const cube = new THREE.Mesh(geometry, material);
       setActiveObject(cube, "fallback");
-      if (!options?.preserveTransform && !transformOwnedRef.current) {
-        updateTransformState(FALLBACK_DEFAULT_TRANSFORM);
-      }
-      applyTransformToActiveObject();
+      applyPlacementTransform();
+      applyModelNormalization();
     };
 
     const loader = new GLTFLoader();
@@ -1275,7 +1352,7 @@ export default function ThreeRoomLab() {
     const loadModelFromPath = (path: string) => {
       const trimmedPath = path.trim();
       if (!trimmedPath) {
-        addFallbackCube("Model path is empty.", { preserveTransform: true });
+        addFallbackCube("Model path is empty.");
         return;
       }
 
@@ -1289,15 +1366,11 @@ export default function ThreeRoomLab() {
             disposeObject3D(gltf.scene);
             return;
           }
-          gltf.scene.scale.set(1.15, 1.15, 1.15);
-          gltf.scene.position.set(0, -0.85, 0);
           setActiveObject(gltf.scene, "gltf");
-          if (!transformOwnedRef.current) {
-            updateTransformState(GLB_DEFAULT_TRANSFORM);
-          }
           setModelLoadState("loaded");
           setModelLoadError(null);
-          applyTransformToActiveObject();
+          applyPlacementTransform();
+          applyModelNormalization();
         },
         undefined,
         (error) => {
@@ -1310,7 +1383,7 @@ export default function ThreeRoomLab() {
 
     loadModelFromPathRef.current = loadModelFromPath;
     useFallbackCubeRef.current = () => {
-      addFallbackCube("Manual fallback cube.", { preserveTransform: true });
+      addFallbackCube("Manual fallback cube.");
     };
     loadModelFromPath(modelPath);
 
@@ -1320,7 +1393,7 @@ export default function ThreeRoomLab() {
       if (autoRotateEnabledRef.current) {
         autoRotateOffsetDegRef.current = (autoRotateOffsetDegRef.current + 0.3) % 360;
       }
-      applyTransformToActiveObject();
+      applyPlacementTransform();
       renderer.render(scene, camera);
     };
 
@@ -1337,10 +1410,13 @@ export default function ThreeRoomLab() {
       loadModelFromPathRef.current = null;
       useFallbackCubeRef.current = null;
       if (activeObjectRef.current) {
-        scene.remove(activeObjectRef.current);
+        modelNormalizationGroup.remove(activeObjectRef.current);
         disposeObject3D(activeObjectRef.current);
         activeObjectRef.current = null;
       }
+      placementGroupRef.current = null;
+      modelNormalizationGroupRef.current = null;
+      scene.remove(placementGroup);
       scene.remove(ambient);
       scene.remove(keyLight);
       renderer.dispose();
@@ -1614,6 +1690,48 @@ export default function ThreeRoomLab() {
               step={TRANSFORM_LIMITS.uniformScale.step}
               onChange={(value) => updateTransformField("uniformScale", value)}
             />
+          </div>
+          <div className="mt-4 border-t border-slate-800 pt-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <h3 className="text-xs font-medium text-slate-200">Model normalization</h3>
+              <button
+                type="button"
+                onClick={handleResetModelNormalization}
+                className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-200 transition hover:border-emerald-400/80 hover:text-emerald-200"
+              >
+                Reset normalization
+              </button>
+            </div>
+            <p className="mt-2 text-xs text-slate-400">
+              Normalization corrects the loaded model itself (floor contact, facing, native scale). Transform controls
+              still place the object in the room.
+            </p>
+            <div className="mt-2 grid gap-2 md:grid-cols-3">
+              <TransformControlRow
+                label="Model Y offset"
+                value={modelNormalization.modelYOffset}
+                min={MODEL_NORMALIZATION_LIMITS.modelYOffset.min}
+                max={MODEL_NORMALIZATION_LIMITS.modelYOffset.max}
+                step={MODEL_NORMALIZATION_LIMITS.modelYOffset.step}
+                onChange={(value) => updateModelNormalizationField("modelYOffset", value)}
+              />
+              <TransformControlRow
+                label="Model yaw offset (deg)"
+                value={modelNormalization.modelYawOffsetDeg}
+                min={MODEL_NORMALIZATION_LIMITS.modelYawOffsetDeg.min}
+                max={MODEL_NORMALIZATION_LIMITS.modelYawOffsetDeg.max}
+                step={MODEL_NORMALIZATION_LIMITS.modelYawOffsetDeg.step}
+                onChange={(value) => updateModelNormalizationField("modelYawOffsetDeg", value)}
+              />
+              <TransformControlRow
+                label="Model scale multiplier"
+                value={modelNormalization.modelScaleMultiplier}
+                min={MODEL_NORMALIZATION_LIMITS.modelScaleMultiplier.min}
+                max={MODEL_NORMALIZATION_LIMITS.modelScaleMultiplier.max}
+                step={MODEL_NORMALIZATION_LIMITS.modelScaleMultiplier.step}
+                onChange={(value) => updateModelNormalizationField("modelScaleMultiplier", value)}
+              />
+            </div>
           </div>
           <div className="mt-4 border-t border-slate-800 pt-3">
             <h3 className="text-xs font-medium text-slate-200">Floor mapping tuning</h3>

@@ -24,9 +24,16 @@ export type PerspectiveDepthScalingState = {
   farFloorY: number;
 };
 
+export type ModelNormalizationState = {
+  modelYOffset: number;
+  modelYawOffsetDeg: number;
+  modelScaleMultiplier: number;
+};
+
 export type ImportedSceneValidated = {
   roomImageUrl: string | null;
   modelPath: string | null;
+  modelNormalization: ModelNormalizationState;
   transform: {
     positionX: number;
     positionY: number;
@@ -51,11 +58,13 @@ type NumberRange = { min: number; max: number };
 
 export type SceneStateValidationConfig = {
   transformLimits: Record<keyof TransformState, NumberRange>;
+  modelNormalizationLimits: Record<keyof ModelNormalizationState, NumberRange>;
   floorMappingLimits: Record<keyof FloorMappingState, NumberRange>;
   perspectiveDepthScalingLimits: Record<
     keyof Omit<PerspectiveDepthScalingState, "enabled">,
     NumberRange
   >;
+  defaultModelNormalization: ModelNormalizationState;
   defaultFloorMapping: FloorMappingState;
   defaultPerspectiveDepthScaling: PerspectiveDepthScalingState;
 };
@@ -66,6 +75,7 @@ export type SceneStatePayloadInput = {
   modelPath: string;
   activeObjectType: "glb" | "fallbackCube" | "none";
   glbLoadStatus: string;
+  modelNormalization: ModelNormalizationState;
   transform: {
     positionX: number;
     positionY: number;
@@ -151,6 +161,11 @@ export function buildSceneStatePayload(input: SceneStatePayloadInput) {
       modelPath: input.modelPath,
       activeObjectType: input.activeObjectType,
       glbLoadStatus: input.glbLoadStatus,
+      normalization: {
+        yOffset: input.modelNormalization.modelYOffset,
+        yawOffsetDeg: input.modelNormalization.modelYawOffsetDeg,
+        scaleMultiplier: input.modelNormalization.modelScaleMultiplier,
+      },
     },
     transform: {
       positionX: input.transform.positionX,
@@ -204,6 +219,7 @@ export function validateImportedSceneJson(
   const modelRaw = (raw as Record<string, unknown>).model;
   const modelPath =
     isRecord(modelRaw) && typeof modelRaw.modelPath === "string" ? modelRaw.modelPath.trim() : null;
+  const modelNormalizationRaw = isRecord(modelRaw) ? modelRaw.normalization : undefined;
   const roomImageUrl =
     roomImageUrlRaw === null
       ? null
@@ -212,6 +228,36 @@ export function validateImportedSceneJson(
         : null;
   if (roomImageUrlRaw !== null && typeof roomImageUrlRaw !== "string") {
     return "roomImageUrl must be a string or null.";
+  }
+
+  let modelNormalization = config.defaultModelNormalization;
+  if (typeof modelNormalizationRaw !== "undefined") {
+    if (!isRecord(modelNormalizationRaw)) {
+      return "model.normalization must be an object with yOffset/yawOffsetDeg/scaleMultiplier.";
+    }
+    const yOffset = parseFiniteNumber(modelNormalizationRaw.yOffset);
+    const yawOffsetDeg = parseFiniteNumber(modelNormalizationRaw.yawOffsetDeg);
+    const scaleMultiplier = parseFiniteNumber(modelNormalizationRaw.scaleMultiplier);
+    if (yOffset === null || yawOffsetDeg === null || scaleMultiplier === null) {
+      return "model.normalization values must be numeric.";
+    }
+    modelNormalization = {
+      modelYOffset: clampValue(
+        yOffset,
+        config.modelNormalizationLimits.modelYOffset.min,
+        config.modelNormalizationLimits.modelYOffset.max
+      ),
+      modelYawOffsetDeg: clampValue(
+        yawOffsetDeg,
+        config.modelNormalizationLimits.modelYawOffsetDeg.min,
+        config.modelNormalizationLimits.modelYawOffsetDeg.max
+      ),
+      modelScaleMultiplier: clampValue(
+        scaleMultiplier,
+        config.modelNormalizationLimits.modelScaleMultiplier.min,
+        config.modelNormalizationLimits.modelScaleMultiplier.max
+      ),
+    };
   }
 
   const transformRaw = (raw as Record<string, unknown>).transform;
@@ -334,6 +380,7 @@ export function validateImportedSceneJson(
   return {
     roomImageUrl,
     modelPath,
+    modelNormalization,
     transform: {
       positionX: clampValue(
         positionX,
