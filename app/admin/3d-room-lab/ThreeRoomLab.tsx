@@ -34,6 +34,7 @@ const DEFAULT_ROOM_IMAGE_URL =
 type ImageLoadState = "idle" | "loading" | "loaded" | "error";
 type ModelLoadState = "idle" | "loading" | "loaded" | "fallback" | "error";
 type ActiveObjectKind = "gltf" | "fallback" | null;
+type ObjectHandleMode = "move" | null;
 type SceneJsonStatus = { kind: "idle" | "success" | "error"; message: string };
 type TransformStateUpdater = TransformState | ((prev: TransformState) => TransformState);
 
@@ -196,6 +197,7 @@ export default function ThreeRoomLab() {
   const autoRotateEnabledRef = useRef(false);
   const autoRotateOffsetDegRef = useRef(0);
   const dragPointerIdRef = useRef<number | null>(null);
+  const objectHandleDragPointerIdRef = useRef<number | null>(null);
   const floorAnchorDragPointerIdRef = useRef<number | null>(null);
   const lastAcceptedFloorClickRef = useRef<FloorPoint | null>(null);
   const perspectiveDepthScalingRef = useRef<PerspectiveDepthScalingState>(
@@ -221,6 +223,9 @@ export default function ThreeRoomLab() {
   const [isFloorClickPlacementEnabled, setIsFloorClickPlacementEnabled] = useState(false);
   const [isFloorAnchorDragEnabled, setIsFloorAnchorDragEnabled] = useState(false);
   const [isFloorAnchorDragActive, setIsFloorAnchorDragActive] = useState(false);
+  const [isObject2DHandlesEnabled, setIsObject2DHandlesEnabled] = useState(false);
+  const [activeObjectHandleMode, setActiveObjectHandleMode] = useState<ObjectHandleMode>(null);
+  const [wasLastObjectHandleMoveRejected, setWasLastObjectHandleMoveRejected] = useState(false);
   const [wasLastAnchorDragMoveRejected, setWasLastAnchorDragMoveRejected] = useState(false);
   const [lastAcceptedFloorClick, setLastAcceptedFloorClick] = useState<FloorPoint | null>(null);
   const [lastRejectedFloorClick, setLastRejectedFloorClick] = useState<FloorPoint | null>(null);
@@ -262,6 +267,21 @@ export default function ThreeRoomLab() {
   useEffect(() => {
     perspectiveDepthScalingRef.current = perspectiveDepthScaling;
   }, [perspectiveDepthScaling]);
+
+  useEffect(() => {
+    if (isObject2DHandlesEnabled) return;
+    const pointerId = objectHandleDragPointerIdRef.current;
+    if (pointerId !== null) {
+      try {
+        floorOverlayRef.current?.releasePointerCapture(pointerId);
+      } catch {
+        // Ignore release failures when capture is already cleared.
+      }
+    }
+    objectHandleDragPointerIdRef.current = null;
+    setActiveObjectHandleMode(null);
+    setWasLastObjectHandleMoveRejected(false);
+  }, [isObject2DHandlesEnabled]);
 
   useEffect(() => {
     try {
@@ -337,11 +357,19 @@ export default function ThreeRoomLab() {
   const currentActiveObjectType = toSceneActiveObjectType(activeObjectKind);
   const floorInteractionModeSummary = isFloorClickPlacementEnabled
     ? isFloorAnchorDragEnabled
-      ? "place + drag-anchor"
+      ? isObject2DHandlesEnabled
+        ? "place + drag-anchor + object-handle"
+        : "place + drag-anchor"
+      : isObject2DHandlesEnabled
+        ? "place + object-handle"
       : "place"
     : isFloorAnchorDragEnabled
-      ? "drag-anchor"
-      : "none";
+      ? isObject2DHandlesEnabled
+        ? "drag-anchor + object-handle"
+        : "drag-anchor"
+      : isObject2DHandlesEnabled
+        ? "object-handle"
+        : "none";
 
   const debugRows = useMemo(
     () => [
@@ -363,7 +391,10 @@ export default function ThreeRoomLab() {
       { label: "floor polygon", value: JSON.stringify(floorPolygon.map(roundPoint)) },
       { label: "floor placement mode", value: isFloorClickPlacementEnabled ? "on" : "off" },
       { label: "floor interaction mode", value: floorInteractionModeSummary },
-      { label: "pointer precedence", value: "handles > anchor > floor background" },
+      { label: "pointer precedence", value: "polygon handles > object handle > anchor > floor background" },
+      { label: "object 2d handles", value: isObject2DHandlesEnabled ? "on" : "off" },
+      { label: "active object handle mode", value: activeObjectHandleMode ?? "none" },
+      { label: "last object handle move rejected", value: wasLastObjectHandleMoveRejected ? "yes" : "no" },
       { label: "depth auto-scale", value: perspectiveDepthScaling.enabled ? "on" : "off" },
       { label: "depth scale multiplier", value: formatNumber(currentDepthScaleMultiplier) },
       { label: "effective object scale", value: formatNumber(currentEffectiveObjectScale) },
@@ -424,6 +455,8 @@ export default function ThreeRoomLab() {
       currentEffectiveObjectScale,
       depthNearFarOrderingWarning,
       isDepthNearFarOrderValid,
+      isObject2DHandlesEnabled,
+      activeObjectHandleMode,
       isFloorAnchorDragActive,
       isFloorAnchorDragEnabled,
       isFloorClickPlacementEnabled,
@@ -445,6 +478,7 @@ export default function ThreeRoomLab() {
       transform.positionZ,
       transform.rotationYDeg,
       transform.uniformScale,
+      wasLastObjectHandleMoveRejected,
       wasLastAnchorDragMoveRejected,
     ]
   );
@@ -614,6 +648,20 @@ export default function ThreeRoomLab() {
     );
   };
 
+  const handleObjectMoveHandlePointerDown = (event: PointerEvent<SVGCircleElement>) => {
+    if (!isObject2DHandlesEnabled || !lastAcceptedFloorClick) return;
+    event.preventDefault();
+    event.stopPropagation();
+    objectHandleDragPointerIdRef.current = event.pointerId;
+    setActiveObjectHandleMode("move");
+    setWasLastObjectHandleMoveRejected(false);
+    try {
+      floorOverlayRef.current?.setPointerCapture(event.pointerId);
+    } catch {
+      // Pointer capture can fail in edge cases; move still works while pointer remains in bounds.
+    }
+  };
+
   const handleFloorHandlePointerDown = (index: number, event: PointerEvent<SVGCircleElement>) => {
     event.preventDefault();
     event.stopPropagation();
@@ -634,6 +682,20 @@ export default function ThreeRoomLab() {
       return;
     }
 
+    if (activeObjectHandleMode === "move" && objectHandleDragPointerIdRef.current === event.pointerId) {
+      event.preventDefault();
+      const normalizedPoint = getNormalizedOverlayPointFromClient(event.clientX, event.clientY);
+      if (!normalizedPoint) return;
+      const isInside = isPointInsidePolygon(normalizedPoint, floorPolygon);
+      if (!isInside) {
+        setWasLastObjectHandleMoveRejected(true);
+        return;
+      }
+      setWasLastObjectHandleMoveRejected(false);
+      applyFloorPlacement(normalizedPoint);
+      return;
+    }
+
     if (!isFloorAnchorDragActive || floorAnchorDragPointerIdRef.current !== event.pointerId) return;
     event.preventDefault();
     const normalizedPoint = getNormalizedOverlayPointFromClient(event.clientX, event.clientY);
@@ -650,6 +712,7 @@ export default function ThreeRoomLab() {
   const handleFloorOverlayPointerDown = (event: PointerEvent<SVGSVGElement>) => {
     if (!showFloorOverlay || !isFloorClickPlacementEnabled) return;
     if (activeFloorHandleIndex !== null) return;
+    if (activeObjectHandleMode !== null) return;
     const normalizedPoint = getNormalizedOverlayPointFromClient(event.clientX, event.clientY);
     if (!normalizedPoint) return;
     const isInside = isPointInsidePolygon(normalizedPoint, floorPolygon);
@@ -688,6 +751,17 @@ export default function ThreeRoomLab() {
     }
     dragPointerIdRef.current = null;
     setActiveFloorHandleIndex(null);
+
+    const objectHandlePointerId = event?.pointerId ?? objectHandleDragPointerIdRef.current;
+    if (objectHandlePointerId !== null) {
+      try {
+        floorOverlayRef.current?.releasePointerCapture(objectHandlePointerId);
+      } catch {
+        // Ignore release failures when capture is already cleared.
+      }
+    }
+    objectHandleDragPointerIdRef.current = null;
+    setActiveObjectHandleMode(null);
 
     const anchorPointerId = event?.pointerId ?? floorAnchorDragPointerIdRef.current;
     if (anchorPointerId !== null) {
@@ -779,9 +853,12 @@ export default function ThreeRoomLab() {
     setFloorMapping(validated.floor.mapping);
     setPerspectiveDepthScaling(validated.floor.perspectiveDepthScaling);
     setWasLastAnchorDragMoveRejected(false);
+    setWasLastObjectHandleMoveRejected(false);
     setIsFloorAnchorDragActive(false);
     setActiveFloorHandleIndex(null);
     dragPointerIdRef.current = null;
+    objectHandleDragPointerIdRef.current = null;
+    setActiveObjectHandleMode(null);
     floorAnchorDragPointerIdRef.current = null;
 
     setSceneStateExportedAt(nextExportedAt);
@@ -1238,6 +1315,15 @@ export default function ThreeRoomLab() {
               <label className="flex items-center gap-2 text-xs text-slate-300">
                 <input
                   type="checkbox"
+                  checked={isObject2DHandlesEnabled}
+                  onChange={(event) => setIsObject2DHandlesEnabled(event.target.checked)}
+                  className="accent-emerald-400"
+                />
+                Enable object 2D handles
+              </label>
+              <label className="flex items-center gap-2 text-xs text-slate-300">
+                <input
+                  type="checkbox"
                   checked={autoRotateEnabled}
                   onChange={(event) => setAutoRotateEnabled(event.target.checked)}
                   className="accent-emerald-400"
@@ -1257,6 +1343,9 @@ export default function ThreeRoomLab() {
                   setFloorPolygon(DEFAULT_FLOOR_POLYGON);
                   setActiveFloorHandleIndex(null);
                   dragPointerIdRef.current = null;
+                  objectHandleDragPointerIdRef.current = null;
+                  setActiveObjectHandleMode(null);
+                  setWasLastObjectHandleMoveRejected(false);
                   floorAnchorDragPointerIdRef.current = null;
                   setIsFloorAnchorDragActive(false);
                   setWasLastAnchorDragMoveRejected(false);
@@ -1286,6 +1375,11 @@ export default function ThreeRoomLab() {
               Click inside the floor polygon first to create an anchor marker, then drag it to move the object.
             </p>
           )}
+          {isObject2DHandlesEnabled && !lastAcceptedFloorClick && (
+            <p className="mt-1 text-xs text-amber-300">
+              Enable object 2D handles is on. Click inside the floor polygon first to create an anchor.
+            </p>
+          )}
           <div className="mt-2 rounded-lg border border-slate-800 bg-slate-950/50 p-2 text-[11px] text-slate-300">
             <p>
               <span className="text-slate-400">Click floor to place object:</span> click the floor background inside
@@ -1293,6 +1387,9 @@ export default function ThreeRoomLab() {
             </p>
             <p className="mt-1">
               <span className="text-slate-400">Drag floor anchor to move object:</span> drag the pink anchor marker.
+            </p>
+            <p className="mt-1">
+              <span className="text-slate-400">Object 2D move handle:</span> drag the blue move handle near the anchor.
             </p>
             {isFloorClickPlacementEnabled && isFloorAnchorDragEnabled && (
               <p className="mt-1 text-amber-200">
@@ -1511,6 +1608,41 @@ export default function ThreeRoomLab() {
                     aria-label="Object floor anchor marker"
                     onPointerDown={handleFloorAnchorPointerDown}
                   />
+                )}
+                {isObject2DHandlesEnabled && lastAcceptedFloorClick && (
+                  <g>
+                    <line
+                      x1={lastAcceptedFloorClick.x * 100}
+                      y1={lastAcceptedFloorClick.y * 100}
+                      x2={lastAcceptedFloorClick.x * 100 + 4.2}
+                      y2={lastAcceptedFloorClick.y * 100 - 4.2}
+                      stroke="#38bdf8"
+                      strokeWidth={0.65}
+                      strokeOpacity={0.95}
+                      pointerEvents="none"
+                    />
+                    <circle
+                      cx={lastAcceptedFloorClick.x * 100 + 4.2}
+                      cy={lastAcceptedFloorClick.y * 100 - 4.2}
+                      r={activeObjectHandleMode === "move" ? 1.9 : 1.6}
+                      fill={activeObjectHandleMode === "move" ? "#0ea5e9" : "#38bdf8"}
+                      stroke="#ffffff"
+                      strokeWidth={0.6}
+                      className="cursor-move"
+                      pointerEvents="all"
+                      aria-label="Move object handle"
+                      onPointerDown={handleObjectMoveHandlePointerDown}
+                    />
+                    <text
+                      x={lastAcceptedFloorClick.x * 100 + 5.8}
+                      y={lastAcceptedFloorClick.y * 100 - 5.3}
+                      fill="#7dd3fc"
+                      fontSize="2.2"
+                      pointerEvents="none"
+                    >
+                      Move object
+                    </text>
+                  </g>
                 )}
               </svg>
             )}
