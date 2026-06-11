@@ -427,6 +427,12 @@ export default function ThreeRoomLab() {
     [lastAcceptedFloorClick, perspectiveDepthScaling, transform.uniformScale]
   );
 
+  const isDepthNearFarOrderValid =
+    perspectiveDepthScaling.nearFloorY >= perspectiveDepthScaling.farFloorY;
+  const depthNearFarOrderingWarning = isDepthNearFarOrderValid
+    ? null
+    : "Near floor Y is above Far floor Y. This inverts depth scaling semantics.";
+
   const debugRows = useMemo(
     () => [
       { label: "env", value: envEnabled ? "enabled" : "disabled" },
@@ -460,6 +466,11 @@ export default function ThreeRoomLab() {
         value: `${formatNumber(perspectiveDepthScaling.nearFloorY)} / ${formatNumber(
           perspectiveDepthScaling.farFloorY
         )}`,
+      },
+      { label: "near/far ordering valid", value: isDepthNearFarOrderValid ? "yes" : "no" },
+      {
+        label: "depth scaling warning",
+        value: depthNearFarOrderingWarning ?? "none",
       },
       { label: "floor anchor dragging", value: isFloorAnchorDragEnabled ? "on" : "off" },
       { label: "active anchor drag", value: isFloorAnchorDragActive ? "yes" : "no" },
@@ -497,6 +508,8 @@ export default function ThreeRoomLab() {
       imageLoadState,
       currentDepthScaleMultiplier,
       currentEffectiveObjectScale,
+      depthNearFarOrderingWarning,
+      isDepthNearFarOrderValid,
       isFloorAnchorDragActive,
       isFloorAnchorDragEnabled,
       isFloorClickPlacementEnabled,
@@ -572,6 +585,14 @@ export default function ThreeRoomLab() {
 
   const handleResetPerspectiveDepthScaling = () => {
     setPerspectiveDepthScaling(DEFAULT_PERSPECTIVE_DEPTH_SCALING);
+  };
+
+  const handleFixPerspectiveNearFarOrder = () => {
+    setPerspectiveDepthScaling((prev) => ({
+      ...prev,
+      nearFloorY: Math.max(prev.nearFloorY, prev.farFloorY),
+      farFloorY: Math.min(prev.nearFloorY, prev.farFloorY),
+    }));
   };
 
   const handleResetTransform = () => {
@@ -1424,6 +1445,18 @@ export default function ThreeRoomLab() {
               <p className="mt-2 text-xs text-amber-300">
                 Click inside the floor polygon to set an anchor so depth scaling can be applied.
               </p>
+            )}
+            {depthNearFarOrderingWarning && (
+              <div className="mt-2 flex flex-wrap items-center gap-2">
+                <p className="text-xs text-amber-300">{depthNearFarOrderingWarning}</p>
+                <button
+                  type="button"
+                  onClick={handleFixPerspectiveNearFarOrder}
+                  className="rounded-lg border border-amber-500/70 px-2 py-1 text-[11px] text-amber-200 transition hover:border-amber-300 hover:text-amber-100"
+                >
+                  Fix near/far order
+                </button>
+              </div>
             )}
             <div className="mt-2 grid gap-2 md:grid-cols-2">
               <TransformControlRow
