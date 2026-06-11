@@ -3,6 +3,7 @@
 import { FormEvent, PointerEvent, useEffect, useMemo, useRef, useState } from "react";
 import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
+import SceneJsonPanel from "./SceneJsonPanel";
 import {
   DEFAULT_FLOOR_MAPPING,
   DEFAULT_PERSPECTIVE_DEPTH_SCALING,
@@ -1295,85 +1296,18 @@ export default function ThreeRoomLab() {
           </p>
         </section>
 
-        <section className="rounded-2xl border border-slate-800 bg-slate-900/70 p-4">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <h2 className="text-sm font-medium text-slate-100">Scene State JSON</h2>
-            <div className="flex items-center gap-2">
-              <button
-                type="button"
-                onClick={() => void handleCopySceneJson()}
-                className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-200 transition hover:border-emerald-400/80 hover:text-emerald-200"
-              >
-                Copy scene JSON
-              </button>
-              <button
-                type="button"
-                onClick={handleDownloadSceneJson}
-                className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-200 transition hover:border-emerald-400/80 hover:text-emerald-200"
-              >
-                Download scene JSON
-              </button>
-            </div>
-          </div>
-          <p
-            className={`mt-2 text-xs ${
-              sceneJsonStatus.kind === "error"
-                ? "text-rose-300"
-                : sceneJsonStatus.kind === "success"
-                  ? "text-emerald-300"
-                  : "text-slate-400"
-            }`}
-          >
-            {sceneJsonStatus.message}
-          </p>
-          <p className="mt-1 text-[11px] text-slate-500">Exported at: {sceneStateExportedAt}</p>
-          <textarea
-            readOnly
-            value={sceneStateJson}
-            className="mt-3 h-80 w-full rounded-lg border border-slate-800 bg-slate-950/80 p-3 font-mono text-xs text-slate-200 outline-none"
-            aria-label="Scene State JSON"
-          />
-
-          <div className="mt-5 border-t border-slate-800 pt-4">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <h3 className="text-sm font-medium text-slate-100">Import Scene JSON</h3>
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={handleApplyImportedSceneJson}
-                  className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-200 transition hover:border-emerald-400/80 hover:text-emerald-200"
-                >
-                  Apply imported JSON
-                </button>
-                <button
-                  type="button"
-                  onClick={handleClearImportedSceneJson}
-                  className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-200 transition hover:border-slate-500 hover:text-slate-100"
-                >
-                  Clear import
-                </button>
-              </div>
-            </div>
-            <p
-              className={`mt-2 text-xs ${
-                importSceneStatus.kind === "error"
-                  ? "text-rose-300"
-                  : importSceneStatus.kind === "success"
-                    ? "text-emerald-300"
-                    : "text-slate-400"
-              }`}
-            >
-              {importSceneStatus.message}
-            </p>
-            <textarea
-              value={importSceneJsonInput}
-              onChange={(event) => setImportSceneJsonInput(event.target.value)}
-              placeholder='Paste a payload with schemaVersion "vibode-3d-room-lab-scene-state/v0"'
-              className="mt-3 h-56 w-full rounded-lg border border-slate-800 bg-slate-950/80 p-3 font-mono text-xs text-slate-200 outline-none focus:border-emerald-400"
-              aria-label="Import Scene JSON"
-            />
-          </div>
-        </section>
+        <SceneJsonPanel
+          sceneJsonPreview={sceneStateJson}
+          sceneStateExportedAt={sceneStateExportedAt}
+          exportStatus={sceneJsonStatus}
+          importTextValue={importSceneJsonInput}
+          importStatus={importSceneStatus}
+          onCopySceneJson={handleCopySceneJson}
+          onDownloadSceneJson={handleDownloadSceneJson}
+          onImportTextChange={setImportSceneJsonInput}
+          onApplyImport={handleApplyImportedSceneJson}
+          onClearImport={handleClearImportedSceneJson}
+        />
       </div>
     </main>
   );
