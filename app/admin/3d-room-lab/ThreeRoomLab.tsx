@@ -34,12 +34,13 @@ const DEFAULT_ROOM_IMAGE_URL =
 type ImageLoadState = "idle" | "loading" | "loaded" | "error";
 type ModelLoadState = "idle" | "loading" | "loaded" | "fallback" | "error";
 type ActiveObjectKind = "gltf" | "fallback" | null;
-type ObjectHandleMode = "move" | "rotate" | "scale" | null;
+type ObjectHandleMode = "move" | "rotate" | "scale" | "height" | null;
 type SceneJsonStatus = { kind: "idle" | "success" | "error"; message: string };
 type TransformStateUpdater = TransformState | ((prev: TransformState) => TransformState);
 
 const OBJECT_HANDLE_ROTATE_DEADZONE_PX = 14;
 const OBJECT_HANDLE_SCALE_MIN_START_DISTANCE_PX = 10;
+const OBJECT_HANDLE_HEIGHT_PIXELS_PER_UNIT = 120;
 
 const MATERIAL_TEXTURE_KEYS = [
   "map",
@@ -205,6 +206,8 @@ export default function ThreeRoomLab() {
   const objectHandleRotateStartRotationDegRef = useRef(0);
   const objectHandleScaleStartDistancePxRef = useRef(OBJECT_HANDLE_SCALE_MIN_START_DISTANCE_PX);
   const objectHandleScaleStartUniformScaleRef = useRef(1);
+  const objectHandleHeightStartClientYRef = useRef(0);
+  const objectHandleHeightStartPositionYRef = useRef(0);
   const floorAnchorDragPointerIdRef = useRef<number | null>(null);
   const lastAcceptedFloorClickRef = useRef<FloorPoint | null>(null);
   const perspectiveDepthScalingRef = useRef<PerspectiveDepthScalingState>(
@@ -235,6 +238,7 @@ export default function ThreeRoomLab() {
   const [wasLastObjectHandleMoveRejected, setWasLastObjectHandleMoveRejected] = useState(false);
   const [lastObjectHandleRotateDeltaDeg, setLastObjectHandleRotateDeltaDeg] = useState<number | null>(null);
   const [lastObjectHandleScaleMultiplier, setLastObjectHandleScaleMultiplier] = useState<number | null>(null);
+  const [lastObjectHandleHeightDeltaYUnits, setLastObjectHandleHeightDeltaYUnits] = useState<number | null>(null);
   const [wasLastAnchorDragMoveRejected, setWasLastAnchorDragMoveRejected] = useState(false);
   const [lastAcceptedFloorClick, setLastAcceptedFloorClick] = useState<FloorPoint | null>(null);
   const [lastRejectedFloorClick, setLastRejectedFloorClick] = useState<FloorPoint | null>(null);
@@ -292,6 +296,7 @@ export default function ThreeRoomLab() {
     setWasLastObjectHandleMoveRejected(false);
     setLastObjectHandleRotateDeltaDeg(null);
     setLastObjectHandleScaleMultiplier(null);
+    setLastObjectHandleHeightDeltaYUnits(null);
   }, [isObject2DHandlesEnabled]);
 
   useEffect(() => {
@@ -402,17 +407,21 @@ export default function ThreeRoomLab() {
       { label: "floor polygon", value: JSON.stringify(floorPolygon.map(roundPoint)) },
       { label: "floor placement mode", value: isFloorClickPlacementEnabled ? "on" : "off" },
       { label: "floor interaction mode", value: floorInteractionModeSummary },
-      { label: "pointer precedence", value: "polygon handles > object handle > anchor > floor background" },
+      { label: "pointer precedence", value: "polygon handles > object handles > anchor drag > floor background" },
       { label: "object 2d handles", value: isObject2DHandlesEnabled ? "on" : "off" },
       { label: "active object handle mode", value: activeObjectHandleMode ?? "none" },
       { label: "last object handle move rejected", value: wasLastObjectHandleMoveRejected ? "yes" : "no" },
       {
-        label: "last rotate delta deg",
+        label: "last rotate delta (deg)",
         value: lastObjectHandleRotateDeltaDeg === null ? "none" : formatNumber(lastObjectHandleRotateDeltaDeg),
       },
       {
-        label: "last scale multiplier",
+        label: "last scale drag multiplier",
         value: lastObjectHandleScaleMultiplier === null ? "none" : formatNumber(lastObjectHandleScaleMultiplier),
+      },
+      {
+        label: "last height delta y",
+        value: lastObjectHandleHeightDeltaYUnits === null ? "none" : formatNumber(lastObjectHandleHeightDeltaYUnits),
       },
       { label: "depth auto-scale", value: perspectiveDepthScaling.enabled ? "on" : "off" },
       { label: "depth scale multiplier", value: formatNumber(currentDepthScaleMultiplier) },
@@ -478,6 +487,7 @@ export default function ThreeRoomLab() {
       activeObjectHandleMode,
       lastObjectHandleRotateDeltaDeg,
       lastObjectHandleScaleMultiplier,
+      lastObjectHandleHeightDeltaYUnits,
       isFloorAnchorDragActive,
       isFloorAnchorDragEnabled,
       isFloorClickPlacementEnabled,
@@ -738,6 +748,23 @@ export default function ThreeRoomLab() {
     }
   };
 
+  const handleObjectHeightHandlePointerDown = (event: PointerEvent<SVGElement>) => {
+    if (!isObject2DHandlesEnabled || !lastAcceptedFloorClick) return;
+    event.preventDefault();
+    event.stopPropagation();
+    objectHandleDragPointerIdRef.current = event.pointerId;
+    setActiveObjectHandleMode("height");
+    setWasLastObjectHandleMoveRejected(false);
+    objectHandleHeightStartClientYRef.current = event.clientY;
+    objectHandleHeightStartPositionYRef.current = transformRef.current.positionY;
+    setLastObjectHandleHeightDeltaYUnits(0);
+    try {
+      floorOverlayRef.current?.setPointerCapture(event.pointerId);
+    } catch {
+      // Pointer capture can fail in edge cases; height adjust still works while pointer remains in bounds.
+    }
+  };
+
   const handleFloorHandlePointerDown = (index: number, event: PointerEvent<SVGCircleElement>) => {
     event.preventDefault();
     event.stopPropagation();
@@ -807,6 +834,20 @@ export default function ThreeRoomLab() {
       );
       setLastObjectHandleScaleMultiplier(multiplier);
       updateTransformState((prev) => ({ ...prev, uniformScale: nextScale }), { markOwned: true });
+      return;
+    }
+
+    if (activeObjectHandleMode === "height" && objectHandleDragPointerIdRef.current === event.pointerId) {
+      event.preventDefault();
+      const deltaYPx = event.clientY - objectHandleHeightStartClientYRef.current;
+      const deltaYUnits = -deltaYPx / OBJECT_HANDLE_HEIGHT_PIXELS_PER_UNIT;
+      const nextPositionY = clampValue(
+        objectHandleHeightStartPositionYRef.current + deltaYUnits,
+        TRANSFORM_LIMITS.positionY.min,
+        TRANSFORM_LIMITS.positionY.max
+      );
+      setLastObjectHandleHeightDeltaYUnits(deltaYUnits);
+      updateTransformState((prev) => ({ ...prev, positionY: nextPositionY }), { markOwned: true });
       return;
     }
 
@@ -970,6 +1011,7 @@ export default function ThreeRoomLab() {
     setWasLastObjectHandleMoveRejected(false);
     setLastObjectHandleRotateDeltaDeg(null);
     setLastObjectHandleScaleMultiplier(null);
+    setLastObjectHandleHeightDeltaYUnits(null);
     setIsFloorAnchorDragActive(false);
     setActiveFloorHandleIndex(null);
     dragPointerIdRef.current = null;
@@ -1464,6 +1506,7 @@ export default function ThreeRoomLab() {
                   setWasLastObjectHandleMoveRejected(false);
                   setLastObjectHandleRotateDeltaDeg(null);
                   setLastObjectHandleScaleMultiplier(null);
+                  setLastObjectHandleHeightDeltaYUnits(null);
                   floorAnchorDragPointerIdRef.current = null;
                   setIsFloorAnchorDragActive(false);
                   setWasLastAnchorDragMoveRejected(false);
@@ -1498,6 +1541,12 @@ export default function ThreeRoomLab() {
               Enable object 2D handles is on. Click inside the floor polygon first to create an anchor.
             </p>
           )}
+          {isObject2DHandlesEnabled && lastAcceptedFloorClick && (
+            <p className="mt-1 text-xs text-sky-200">
+              Overlay handles are attached to the active object anchor. Drag Move/Height/Rotate/Scale handles to manipulate the
+              active 3D object.
+            </p>
+          )}
           <div className="mt-2 rounded-lg border border-slate-800 bg-slate-950/50 p-2 text-[11px] text-slate-300">
             <p>
               <span className="text-slate-400">Click floor to place object:</span> click the floor background inside
@@ -1508,6 +1557,9 @@ export default function ThreeRoomLab() {
             </p>
             <p className="mt-1">
               <span className="text-slate-400">Object 2D move handle:</span> drag the blue move handle near the anchor.
+            </p>
+            <p className="mt-1">
+              <span className="text-slate-400">Object 2D height handle:</span> drag the violet handle up/down to adjust Position Y.
             </p>
             <p className="mt-1">
               <span className="text-slate-400">Object 2D rotate handle:</span> drag the amber handle around the anchor.
@@ -1735,14 +1787,55 @@ export default function ThreeRoomLab() {
                 )}
                 {isObject2DHandlesEnabled && lastAcceptedFloorClick && (
                   <g>
+                    <circle
+                      cx={lastAcceptedFloorClick.x * 100}
+                      cy={lastAcceptedFloorClick.y * 100}
+                      r={2.95}
+                      fill="#0f172a"
+                      fillOpacity={0.45}
+                      stroke="#e2e8f0"
+                      strokeOpacity={0.45}
+                      strokeWidth={0.35}
+                      pointerEvents="none"
+                    />
                     <line
                       x1={lastAcceptedFloorClick.x * 100}
                       y1={lastAcceptedFloorClick.y * 100}
                       x2={lastAcceptedFloorClick.x * 100 + 4.2}
                       y2={lastAcceptedFloorClick.y * 100 - 4.2}
-                      stroke="#38bdf8"
-                      strokeWidth={0.65}
-                      strokeOpacity={0.95}
+                      stroke={activeObjectHandleMode === "move" ? "#0ea5e9" : "#38bdf8"}
+                      strokeWidth={activeObjectHandleMode === "move" ? 0.9 : 0.65}
+                      strokeOpacity={activeObjectHandleMode === "move" ? 1 : 0.95}
+                      pointerEvents="none"
+                    />
+                    <line
+                      x1={lastAcceptedFloorClick.x * 100}
+                      y1={lastAcceptedFloorClick.y * 100}
+                      x2={lastAcceptedFloorClick.x * 100 - 4.4}
+                      y2={lastAcceptedFloorClick.y * 100 - 4.2}
+                      stroke={activeObjectHandleMode === "rotate" ? "#d97706" : "#f59e0b"}
+                      strokeWidth={activeObjectHandleMode === "rotate" ? 0.9 : 0.65}
+                      strokeOpacity={activeObjectHandleMode === "rotate" ? 1 : 0.95}
+                      pointerEvents="none"
+                    />
+                    <line
+                      x1={lastAcceptedFloorClick.x * 100}
+                      y1={lastAcceptedFloorClick.y * 100}
+                      x2={lastAcceptedFloorClick.x * 100 + 4.3}
+                      y2={lastAcceptedFloorClick.y * 100 + 3.75}
+                      stroke={activeObjectHandleMode === "scale" ? "#16a34a" : "#22c55e"}
+                      strokeWidth={activeObjectHandleMode === "scale" ? 0.9 : 0.65}
+                      strokeOpacity={activeObjectHandleMode === "scale" ? 1 : 0.95}
+                      pointerEvents="none"
+                    />
+                    <line
+                      x1={lastAcceptedFloorClick.x * 100}
+                      y1={lastAcceptedFloorClick.y * 100}
+                      x2={lastAcceptedFloorClick.x * 100}
+                      y2={lastAcceptedFloorClick.y * 100 - 5.8}
+                      stroke={activeObjectHandleMode === "height" ? "#7c3aed" : "#8b5cf6"}
+                      strokeWidth={activeObjectHandleMode === "height" ? 0.9 : 0.65}
+                      strokeOpacity={activeObjectHandleMode === "height" ? 1 : 0.95}
                       pointerEvents="none"
                     />
                     <circle
@@ -1756,12 +1849,24 @@ export default function ThreeRoomLab() {
                       pointerEvents="all"
                       aria-label="Move object handle"
                       onPointerDown={handleObjectMoveHandlePointerDown}
+                    >
+                      <title>Move</title>
+                    </circle>
+                    <rect
+                      x={lastAcceptedFloorClick.x * 100 + 5.3}
+                      y={lastAcceptedFloorClick.y * 100 - 6.9}
+                      width={5.9}
+                      height={2.2}
+                      rx={0.55}
+                      fill="#0c4a6e"
+                      fillOpacity={activeObjectHandleMode === "move" ? 0.95 : 0.82}
+                      pointerEvents="none"
                     />
                     <text
                       x={lastAcceptedFloorClick.x * 100 + 5.8}
                       y={lastAcceptedFloorClick.y * 100 - 5.3}
-                      fill="#7dd3fc"
-                      fontSize="2.2"
+                      fill="#e0f2fe"
+                      fontSize="2.05"
                       pointerEvents="none"
                     >
                       Move
@@ -1774,16 +1879,28 @@ export default function ThreeRoomLab() {
                       fill={activeObjectHandleMode === "rotate" ? "#d97706" : "#f59e0b"}
                       stroke="#ffffff"
                       strokeWidth={0.6}
-                      className="cursor-alias"
+                      className="cursor-crosshair"
                       pointerEvents="all"
                       aria-label="Rotate object handle"
                       onPointerDown={handleObjectRotateHandlePointerDown}
+                    >
+                      <title>Rotate</title>
+                    </circle>
+                    <rect
+                      x={lastAcceptedFloorClick.x * 100 - 10.6}
+                      y={lastAcceptedFloorClick.y * 100 - 6.9}
+                      width={6.9}
+                      height={2.2}
+                      rx={0.55}
+                      fill="#78350f"
+                      fillOpacity={activeObjectHandleMode === "rotate" ? 0.95 : 0.82}
+                      pointerEvents="none"
                     />
                     <text
-                      x={lastAcceptedFloorClick.x * 100 - 8.7}
+                      x={lastAcceptedFloorClick.x * 100 - 10.1}
                       y={lastAcceptedFloorClick.y * 100 - 5.3}
-                      fill="#fcd34d"
-                      fontSize="2.2"
+                      fill="#fef3c7"
+                      fontSize="2.05"
                       pointerEvents="none"
                     >
                       Rotate
@@ -1802,15 +1919,63 @@ export default function ThreeRoomLab() {
                       pointerEvents="all"
                       aria-label="Scale object handle"
                       onPointerDown={handleObjectScaleHandlePointerDown}
+                    >
+                      <title>Scale</title>
+                    </rect>
+                    <rect
+                      x={lastAcceptedFloorClick.x * 100 + 6.4}
+                      y={lastAcceptedFloorClick.y * 100 + 5}
+                      width={5.9}
+                      height={2.2}
+                      rx={0.55}
+                      fill="#14532d"
+                      fillOpacity={activeObjectHandleMode === "scale" ? 0.95 : 0.82}
+                      pointerEvents="none"
                     />
                     <text
                       x={lastAcceptedFloorClick.x * 100 + 6.8}
                       y={lastAcceptedFloorClick.y * 100 + 6.6}
-                      fill="#86efac"
-                      fontSize="2.2"
+                      fill="#dcfce7"
+                      fontSize="2.05"
                       pointerEvents="none"
                     >
                       Scale
+                    </text>
+
+                    <polygon
+                      points={`${lastAcceptedFloorClick.x * 100 - 1.15},${lastAcceptedFloorClick.y * 100 - 6.05} ${
+                        lastAcceptedFloorClick.x * 100 + 1.15
+                      },${lastAcceptedFloorClick.y * 100 - 6.05} ${lastAcceptedFloorClick.x * 100},${
+                        lastAcceptedFloorClick.y * 100 - 8.15
+                      }`}
+                      fill={activeObjectHandleMode === "height" ? "#7c3aed" : "#8b5cf6"}
+                      stroke="#ffffff"
+                      strokeWidth={0.6}
+                      className="cursor-ns-resize"
+                      pointerEvents="all"
+                      aria-label="Height object handle"
+                      onPointerDown={handleObjectHeightHandlePointerDown}
+                    >
+                      <title>Adjust height / Position Y</title>
+                    </polygon>
+                    <rect
+                      x={lastAcceptedFloorClick.x * 100 + 1.3}
+                      y={lastAcceptedFloorClick.y * 100 - 9.4}
+                      width={6.9}
+                      height={2.2}
+                      rx={0.55}
+                      fill="#4c1d95"
+                      fillOpacity={activeObjectHandleMode === "height" ? 0.95 : 0.82}
+                      pointerEvents="none"
+                    />
+                    <text
+                      x={lastAcceptedFloorClick.x * 100 + 1.75}
+                      y={lastAcceptedFloorClick.y * 100 - 7.8}
+                      fill="#ede9fe"
+                      fontSize="2.05"
+                      pointerEvents="none"
+                    >
+                      Height
                     </text>
                   </g>
                 )}
