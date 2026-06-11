@@ -20,6 +20,11 @@ type TransformState = {
   rotationYDeg: number;
   uniformScale: number;
 };
+type FloorMappingState = {
+  worldWidth: number;
+  worldDepth: number;
+  depthCenterY: number;
+};
 type TransformStateUpdater = TransformState | ((prev: TransformState) => TransformState);
 type ImportedSceneValidated = {
   roomImageUrl: string | null;
@@ -37,6 +42,7 @@ type ImportedSceneValidated = {
     placementModeEnabled: boolean;
     lastAcceptedClick: FloorPoint | null;
     lastRejectedClick: FloorPoint | null;
+    mapping: FloorMappingState;
   };
   exportedAt: string | null;
 };
@@ -79,10 +85,17 @@ const DEFAULT_FLOOR_POLYGON: FloorPoint[] = [
   { x: 0.38, y: 0.95 },
 ];
 
-// Phase 0D temporary mapping constants (normalized floor click -> world-ish transform).
-const FLOOR_PLACEMENT_WORLD_WIDTH = 4;
-const FLOOR_PLACEMENT_WORLD_DEPTH = 4;
-const FLOOR_PLACEMENT_DEPTH_CENTER_Y = 0.75;
+const DEFAULT_FLOOR_MAPPING: FloorMappingState = {
+  worldWidth: 4,
+  worldDepth: 4,
+  depthCenterY: 0.75,
+};
+
+const FLOOR_MAPPING_LIMITS = {
+  worldWidth: { min: 0.5, max: 12, step: 0.1 },
+  worldDepth: { min: 0.5, max: 12, step: 0.1 },
+  depthCenterY: { min: 0, max: 1, step: 0.01 },
+} as const;
 
 const TRANSFORM_LIMITS = {
   positionX: { min: -5, max: 5, step: 0.01 },
@@ -286,6 +299,7 @@ export default function ThreeRoomLab() {
   const [wasLastAnchorDragMoveRejected, setWasLastAnchorDragMoveRejected] = useState(false);
   const [lastAcceptedFloorClick, setLastAcceptedFloorClick] = useState<FloorPoint | null>(null);
   const [lastRejectedFloorClick, setLastRejectedFloorClick] = useState<FloorPoint | null>(null);
+  const [floorMapping, setFloorMapping] = useState<FloorMappingState>(DEFAULT_FLOOR_MAPPING);
   const [sceneStateExportedAt, setSceneStateExportedAt] = useState<string>("not-exported-yet");
   const [sceneJsonStatus, setSceneJsonStatus] = useState<SceneJsonStatus>({
     kind: "idle",
@@ -373,7 +387,9 @@ export default function ThreeRoomLab() {
       { label: "mapped object x/z", value: `${formatNumber(transform.positionX)} / ${formatNumber(transform.positionZ)}` },
       {
         label: "floor mapping constants",
-        value: `width=${FLOOR_PLACEMENT_WORLD_WIDTH}, depth=${FLOOR_PLACEMENT_WORLD_DEPTH}, depthCenterY=${FLOOR_PLACEMENT_DEPTH_CENTER_Y}`,
+        value: `width=${formatNumber(floorMapping.worldWidth)}, depth=${formatNumber(
+          floorMapping.worldDepth
+        )}, depthCenterY=${formatNumber(floorMapping.depthCenterY)}`,
       },
       { label: "glb path", value: LAB_GLB_PATH },
     ],
@@ -382,6 +398,9 @@ export default function ThreeRoomLab() {
       activeObjectKind,
       autoRotateEnabled,
       envEnabled,
+      floorMapping.depthCenterY,
+      floorMapping.worldDepth,
+      floorMapping.worldWidth,
       floorPolygon,
       imageLoadState,
       isFloorAnchorDragActive,
@@ -407,6 +426,37 @@ export default function ThreeRoomLab() {
     const limits = TRANSFORM_LIMITS[field];
     const clamped = clampValue(value, limits.min, limits.max);
     updateTransformState((prev) => ({ ...prev, [field]: clamped }), { markOwned: true });
+  };
+
+  const updateFloorMappingField = (
+    field: keyof FloorMappingState,
+    value: number,
+    options?: { fromImport?: boolean }
+  ) => {
+    const limits = FLOOR_MAPPING_LIMITS[field];
+    const clamped = clampValue(value, limits.min, limits.max);
+    const nextMapping = { ...floorMapping, [field]: clamped };
+    setFloorMapping(nextMapping);
+    if (!options?.fromImport && lastAcceptedFloorClick) {
+      const mapped = mapFloorPointToObjectTransform(lastAcceptedFloorClick, nextMapping);
+      updateTransformState((current) => ({
+        ...current,
+        positionX: mapped.positionX,
+        positionZ: mapped.positionZ,
+      }), { markOwned: true });
+    }
+  };
+
+  const handleResetFloorMapping = () => {
+    setFloorMapping(DEFAULT_FLOOR_MAPPING);
+    if (lastAcceptedFloorClick) {
+      const mapped = mapFloorPointToObjectTransform(lastAcceptedFloorClick, DEFAULT_FLOOR_MAPPING);
+      updateTransformState((current) => ({
+        ...current,
+        positionX: mapped.positionX,
+        positionZ: mapped.positionZ,
+      }), { markOwned: true });
+    }
   };
 
   const handleResetTransform = () => {
@@ -443,9 +493,9 @@ export default function ThreeRoomLab() {
       lastAcceptedClick: lastAcceptedFloorClick ? roundPoint(lastAcceptedFloorClick) : null,
       lastRejectedClick: lastRejectedFloorClick ? roundPoint(lastRejectedFloorClick) : null,
       mapping: {
-        worldWidth: FLOOR_PLACEMENT_WORLD_WIDTH,
-        worldDepth: FLOOR_PLACEMENT_WORLD_DEPTH,
-        depthCenterY: FLOOR_PLACEMENT_DEPTH_CENTER_Y,
+        worldWidth: floorMapping.worldWidth,
+        worldDepth: floorMapping.worldDepth,
+        depthCenterY: floorMapping.depthCenterY,
       },
     },
     debug: {
@@ -465,6 +515,9 @@ export default function ThreeRoomLab() {
   }, [
     activeObjectKind,
     autoRotateEnabled,
+    floorMapping.depthCenterY,
+    floorMapping.worldDepth,
+    floorMapping.worldWidth,
     floorPolygon,
     imageLoadState,
     isFloorClickPlacementEnabled,
@@ -494,9 +547,9 @@ export default function ThreeRoomLab() {
     };
   };
 
-  const mapFloorPointToObjectTransform = (point: FloorPoint) => ({
-    positionX: (point.x - 0.5) * FLOOR_PLACEMENT_WORLD_WIDTH,
-    positionZ: (point.y - FLOOR_PLACEMENT_DEPTH_CENTER_Y) * FLOOR_PLACEMENT_WORLD_DEPTH,
+  const mapFloorPointToObjectTransform = (point: FloorPoint, mapping: FloorMappingState = floorMapping) => ({
+    positionX: (point.x - 0.5) * mapping.worldWidth,
+    positionZ: (point.y - mapping.depthCenterY) * mapping.worldDepth,
   });
 
   const applyFloorPlacement = (point: FloorPoint) => {
@@ -694,6 +747,7 @@ export default function ThreeRoomLab() {
     }
 
     const polygon = parseFloorPolygon(floorRaw.polygon);
+    const mappingRaw = floorRaw.mapping;
     const overlayVisible = parseBoolean(floorRaw.overlayVisible);
     const placementModeEnabled = parseBoolean(floorRaw.placementModeEnabled);
     const lastAcceptedClick = parseOptionalFloorPoint(floorRaw.lastAcceptedClick);
@@ -709,6 +763,36 @@ export default function ThreeRoomLab() {
     }
     if (floorRaw.lastRejectedClick !== null && typeof floorRaw.lastRejectedClick !== "undefined" && !lastRejectedClick) {
       return "floor.lastRejectedClick must be null or a valid {x,y} point.";
+    }
+
+    let mapping: FloorMappingState = DEFAULT_FLOOR_MAPPING;
+    if (typeof mappingRaw !== "undefined") {
+      if (!isRecord(mappingRaw)) {
+        return "floor.mapping must be an object with worldWidth/worldDepth/depthCenterY.";
+      }
+      const worldWidth = parseFiniteNumber(mappingRaw.worldWidth);
+      const worldDepth = parseFiniteNumber(mappingRaw.worldDepth);
+      const depthCenterY = parseFiniteNumber(mappingRaw.depthCenterY);
+      if (worldWidth === null || worldDepth === null || depthCenterY === null) {
+        return "floor.mapping values must be numeric.";
+      }
+      mapping = {
+        worldWidth: clampValue(
+          worldWidth,
+          FLOOR_MAPPING_LIMITS.worldWidth.min,
+          FLOOR_MAPPING_LIMITS.worldWidth.max
+        ),
+        worldDepth: clampValue(
+          worldDepth,
+          FLOOR_MAPPING_LIMITS.worldDepth.min,
+          FLOOR_MAPPING_LIMITS.worldDepth.max
+        ),
+        depthCenterY: clampValue(
+          depthCenterY,
+          FLOOR_MAPPING_LIMITS.depthCenterY.min,
+          FLOOR_MAPPING_LIMITS.depthCenterY.max
+        ),
+      };
     }
 
     return {
@@ -735,6 +819,7 @@ export default function ThreeRoomLab() {
         placementModeEnabled,
         lastAcceptedClick,
         lastRejectedClick,
+        mapping,
       },
       exportedAt: parseOptionalString((raw as Record<string, unknown>).exportedAt),
     };
@@ -789,6 +874,7 @@ export default function ThreeRoomLab() {
     setIsFloorClickPlacementEnabled(validated.floor.placementModeEnabled);
     setLastAcceptedFloorClick(validated.floor.lastAcceptedClick);
     setLastRejectedFloorClick(validated.floor.lastRejectedClick);
+    setFloorMapping(validated.floor.mapping);
     setWasLastAnchorDragMoveRejected(false);
     setIsFloorAnchorDragActive(false);
     setActiveFloorHandleIndex(null);
@@ -1053,6 +1139,13 @@ export default function ThreeRoomLab() {
               >
                 Reset floor polygon
               </button>
+              <button
+                type="button"
+                onClick={handleResetFloorMapping}
+                className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-200 transition hover:border-emerald-400/80 hover:text-emerald-200"
+              >
+                Reset mapping
+              </button>
             </div>
           </div>
           {isFloorAnchorDragEnabled && !lastAcceptedFloorClick && (
@@ -1101,6 +1194,35 @@ export default function ThreeRoomLab() {
               step={TRANSFORM_LIMITS.uniformScale.step}
               onChange={(value) => updateTransformField("uniformScale", value)}
             />
+          </div>
+          <div className="mt-4 border-t border-slate-800 pt-3">
+            <h3 className="text-xs font-medium text-slate-200">Floor mapping tuning</h3>
+            <div className="mt-2 grid gap-2 md:grid-cols-3">
+              <TransformControlRow
+                label="World width"
+                value={floorMapping.worldWidth}
+                min={FLOOR_MAPPING_LIMITS.worldWidth.min}
+                max={FLOOR_MAPPING_LIMITS.worldWidth.max}
+                step={FLOOR_MAPPING_LIMITS.worldWidth.step}
+                onChange={(value) => updateFloorMappingField("worldWidth", value)}
+              />
+              <TransformControlRow
+                label="World depth"
+                value={floorMapping.worldDepth}
+                min={FLOOR_MAPPING_LIMITS.worldDepth.min}
+                max={FLOOR_MAPPING_LIMITS.worldDepth.max}
+                step={FLOOR_MAPPING_LIMITS.worldDepth.step}
+                onChange={(value) => updateFloorMappingField("worldDepth", value)}
+              />
+              <TransformControlRow
+                label="Depth center Y"
+                value={floorMapping.depthCenterY}
+                min={FLOOR_MAPPING_LIMITS.depthCenterY.min}
+                max={FLOOR_MAPPING_LIMITS.depthCenterY.max}
+                step={FLOOR_MAPPING_LIMITS.depthCenterY.step}
+                onChange={(value) => updateFloorMappingField("depthCenterY", value)}
+              />
+            </div>
           </div>
         </section>
 
