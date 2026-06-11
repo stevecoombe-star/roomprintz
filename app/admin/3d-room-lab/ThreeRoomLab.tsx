@@ -26,7 +26,7 @@ import {
   type TransformState,
 } from "./scene-state";
 
-const LAB_GLB_PATH = "/3d-lab/furniture-test-chair.glb";
+const DEFAULT_MODEL_GLB_PATH = "/3d-lab/furniture-test-chair.glb";
 const LOCAL_DRAFT_STORAGE_KEY = "vibode:3d-room-lab:scene-state:v0";
 const DEFAULT_ROOM_IMAGE_URL =
   "https://images.unsplash.com/photo-1505693314120-0d443867891c?auto=format&fit=crop&w=1600&q=80";
@@ -189,6 +189,8 @@ export default function ThreeRoomLab() {
   const animationFrameRef = useRef<number | null>(null);
   const activeObjectRef = useRef<THREE.Object3D | null>(null);
   const resizeObserverRef = useRef<ResizeObserver | null>(null);
+  const loadModelFromPathRef = useRef<((path: string) => void) | null>(null);
+  const useFallbackCubeRef = useRef<(() => void) | null>(null);
   const transformRef = useRef<TransformState>(GLB_DEFAULT_TRANSFORM);
   const transformOwnedRef = useRef(false);
   const autoRotateEnabledRef = useRef(false);
@@ -207,6 +209,8 @@ export default function ThreeRoomLab() {
   );
   const [modelLoadState, setModelLoadState] = useState<ModelLoadState>("idle");
   const [modelLoadError, setModelLoadError] = useState<string | null>(null);
+  const [modelPathInput, setModelPathInput] = useState(DEFAULT_MODEL_GLB_PATH);
+  const [modelPath, setModelPath] = useState(DEFAULT_MODEL_GLB_PATH);
   const [rendererSize, setRendererSize] = useState({ width: 0, height: 0 });
   const [activeObjectKind, setActiveObjectKind] = useState<ActiveObjectKind>(null);
   const [autoRotateEnabled, setAutoRotateEnabled] = useState(false);
@@ -330,6 +334,7 @@ export default function ThreeRoomLab() {
 
   const { isValid: isDepthNearFarOrderValid, warning: depthNearFarOrderingWarning } =
     getDepthNearFarOrderingInfo(perspectiveDepthScaling);
+  const currentActiveObjectType = toSceneActiveObjectType(activeObjectKind);
   const floorInteractionModeSummary = isFloorClickPlacementEnabled
     ? isFloorAnchorDragEnabled
       ? "place + drag-anchor"
@@ -351,7 +356,7 @@ export default function ThreeRoomLab() {
         )} ry:${formatNumber(transform.rotationYDeg)}deg s:${formatNumber(transform.uniformScale)}`,
       },
       { label: "auto-rotate", value: autoRotateEnabled ? "on" : "off" },
-      { label: "active object", value: activeObjectKind ?? "none" },
+      { label: "active object", value: currentActiveObjectType },
       { label: "floor overlay", value: showFloorOverlay ? "on" : "off" },
       { label: "floor points", value: String(floorPolygon.length) },
       { label: "active floor handle", value: activeFloorHandleIndex === null ? "none" : String(activeFloorHandleIndex) },
@@ -401,12 +406,13 @@ export default function ThreeRoomLab() {
           floorMapping.worldDepth
         )}, depthCenterY=${formatNumber(floorMapping.depthCenterY)}`,
       },
-      { label: "glb path", value: LAB_GLB_PATH },
+      { label: "model path", value: modelPath || "(empty)" },
     ],
     [
       activeFloorHandleIndex,
       activeObjectKind,
       autoRotateEnabled,
+      currentActiveObjectType,
       envEnabled,
       floorMapping.depthCenterY,
       floorMapping.worldDepth,
@@ -425,6 +431,7 @@ export default function ThreeRoomLab() {
       lastRejectedFloorClick,
       modelLoadError,
       modelLoadState,
+      modelPath,
       perspectiveDepthScaling.enabled,
       perspectiveDepthScaling.farFloorY,
       perspectiveDepthScaling.farScaleMultiplier,
@@ -517,8 +524,8 @@ export default function ThreeRoomLab() {
     buildSceneStatePayload({
       exportedAtIso,
       roomImageUrl,
-      modelPath: LAB_GLB_PATH,
-      activeObjectType: toSceneActiveObjectType(activeObjectKind),
+      modelPath,
+      activeObjectType: currentActiveObjectType,
       glbLoadStatus: modelLoadState,
       transform: {
         positionX: transform.positionX,
@@ -565,6 +572,7 @@ export default function ThreeRoomLab() {
     lastRejectedFloorClick,
     modelLoadError,
     modelLoadState,
+    modelPath,
     rendererSize,
     roomImageUrl,
     sceneStateExportedAt,
@@ -742,6 +750,10 @@ export default function ThreeRoomLab() {
   };
 
   const applyValidatedSceneState = (validated: ImportedSceneValidated, nextExportedAt: string) => {
+    if (validated.modelPath !== null) {
+      setModelPathInput(validated.modelPath);
+      setModelPath(validated.modelPath);
+    }
     const nextRoomImageUrl = validated.roomImageUrl ?? "";
     setRoomImageInput(nextRoomImageUrl);
     setRoomImageUrl(nextRoomImageUrl);
@@ -920,6 +932,28 @@ export default function ThreeRoomLab() {
     }
   };
 
+  const handleLoadModelFromInput = () => {
+    const nextPath = modelPathInput.trim();
+    setModelPath(nextPath);
+    const loadModel = loadModelFromPathRef.current;
+    if (!loadModel) {
+      setModelLoadState("error");
+      setModelLoadError("Renderer is not ready yet.");
+      return;
+    }
+    loadModel(nextPath);
+  };
+
+  const handleUseFallbackCube = () => {
+    const useFallbackCube = useFallbackCubeRef.current;
+    if (!useFallbackCube) {
+      setModelLoadState("error");
+      setModelLoadError("Renderer is not ready yet.");
+      return;
+    }
+    useFallbackCube();
+  };
+
   useEffect(() => {
     if (!envEnabled) return;
     const container = containerRef.current;
@@ -968,7 +1002,23 @@ export default function ThreeRoomLab() {
     resizeObserver.observe(container);
     resizeObserverRef.current = resizeObserver;
 
-    const addFallbackCube = (reason: string) => {
+    const removeActiveObject = () => {
+      const current = activeObjectRef.current;
+      if (!current) return;
+      scene.remove(current);
+      disposeObject3D(current);
+      activeObjectRef.current = null;
+    };
+
+    const setActiveObject = (object: THREE.Object3D, kind: ActiveObjectKind) => {
+      removeActiveObject();
+      scene.add(object);
+      activeObjectRef.current = object;
+      setActiveObjectKind(kind);
+      applyTransformToActiveObject();
+    };
+
+    const addFallbackCube = (reason: string, options?: { preserveTransform?: boolean }) => {
       setModelLoadState("fallback");
       setModelLoadError(reason);
       const geometry = new THREE.BoxGeometry(0.8, 0.8, 0.8);
@@ -978,41 +1028,56 @@ export default function ThreeRoomLab() {
         roughness: 0.6,
       });
       const cube = new THREE.Mesh(geometry, material);
-      scene.add(cube);
-      activeObjectRef.current = cube;
-      setActiveObjectKind("fallback");
-      if (!transformOwnedRef.current) {
+      setActiveObject(cube, "fallback");
+      if (!options?.preserveTransform && !transformOwnedRef.current) {
         updateTransformState(FALLBACK_DEFAULT_TRANSFORM);
       }
       applyTransformToActiveObject();
     };
 
     const loader = new GLTFLoader();
-    loader.load(
-      LAB_GLB_PATH,
-      (gltf) => {
-        if (isDisposed) {
-          disposeObject3D(gltf.scene);
-          return;
-        }
-        gltf.scene.scale.set(1.15, 1.15, 1.15);
-        gltf.scene.position.set(0, -0.85, 0);
-        scene.add(gltf.scene);
-        activeObjectRef.current = gltf.scene;
-        setActiveObjectKind("gltf");
-        if (!transformOwnedRef.current) {
-          updateTransformState(GLB_DEFAULT_TRANSFORM);
-        }
-        setModelLoadState("loaded");
-        applyTransformToActiveObject();
-      },
-      undefined,
-      (error) => {
-        if (isDisposed) return;
-        const message = error instanceof Error ? error.message : "Unable to load GLB asset.";
-        addFallbackCube(message);
+    let activeLoadToken = 0;
+    const loadModelFromPath = (path: string) => {
+      const trimmedPath = path.trim();
+      if (!trimmedPath) {
+        addFallbackCube("Model path is empty.", { preserveTransform: true });
+        return;
       }
-    );
+
+      setModelLoadState("loading");
+      setModelLoadError(null);
+      const loadToken = ++activeLoadToken;
+      loader.load(
+        trimmedPath,
+        (gltf) => {
+          if (isDisposed || loadToken !== activeLoadToken) {
+            disposeObject3D(gltf.scene);
+            return;
+          }
+          gltf.scene.scale.set(1.15, 1.15, 1.15);
+          gltf.scene.position.set(0, -0.85, 0);
+          setActiveObject(gltf.scene, "gltf");
+          if (!transformOwnedRef.current) {
+            updateTransformState(GLB_DEFAULT_TRANSFORM);
+          }
+          setModelLoadState("loaded");
+          setModelLoadError(null);
+          applyTransformToActiveObject();
+        },
+        undefined,
+        (error) => {
+          if (isDisposed || loadToken !== activeLoadToken) return;
+          const message = error instanceof Error ? error.message : "Unable to load GLB asset.";
+          addFallbackCube(message);
+        }
+      );
+    };
+
+    loadModelFromPathRef.current = loadModelFromPath;
+    useFallbackCubeRef.current = () => {
+      addFallbackCube("Manual fallback cube.", { preserveTransform: true });
+    };
+    loadModelFromPath(modelPath);
 
     const animate = () => {
       if (isDisposed) return;
@@ -1034,6 +1099,8 @@ export default function ThreeRoomLab() {
       if (animationFrameRef.current !== null) {
         window.cancelAnimationFrame(animationFrameRef.current);
       }
+      loadModelFromPathRef.current = null;
+      useFallbackCubeRef.current = null;
       if (activeObjectRef.current) {
         scene.remove(activeObjectRef.current);
         disposeObject3D(activeObjectRef.current);
@@ -1100,6 +1167,41 @@ export default function ThreeRoomLab() {
               Load Image
             </button>
           </form>
+        </section>
+
+        <section className="rounded-2xl border border-slate-800 bg-slate-900/70 p-4">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <h2 className="text-sm font-medium text-slate-100">Model source</h2>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={handleLoadModelFromInput}
+                className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-200 transition hover:border-emerald-400/80 hover:text-emerald-200"
+              >
+                Load model
+              </button>
+              <button
+                type="button"
+                onClick={handleUseFallbackCube}
+                className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-200 transition hover:border-slate-500 hover:text-slate-100"
+              >
+                Use fallback cube
+              </button>
+            </div>
+          </div>
+          <label className="mt-3 block">
+            <span className="text-xs text-slate-400">Local/public GLB path</span>
+            <input
+              type="text"
+              value={modelPathInput}
+              onChange={(event) => setModelPathInput(event.target.value)}
+              placeholder="/3d-lab/furniture-test-chair.glb"
+              className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm outline-none focus:border-emerald-400"
+            />
+          </label>
+          <p className="mt-2 text-xs text-slate-400">Active object type: {currentActiveObjectType}</p>
+          <p className="mt-1 text-xs text-slate-400">Current model path: {modelPath || "(empty)"}</p>
+          <p className="mt-1 text-xs text-slate-400">Model status: {formatModelStatus(modelLoadState, modelLoadError)}</p>
         </section>
 
         <section className="rounded-2xl border border-slate-800 bg-slate-900/70 p-4">
@@ -1425,7 +1527,7 @@ export default function ThreeRoomLab() {
             ))}
           </div>
           <p className="mt-3 text-xs text-slate-500">
-            Expected local asset path: <code>{LAB_GLB_PATH}</code>
+            Default local asset path: <code>{DEFAULT_MODEL_GLB_PATH}</code>
           </p>
         </section>
 

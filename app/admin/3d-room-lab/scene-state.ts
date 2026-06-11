@@ -26,6 +26,7 @@ export type PerspectiveDepthScalingState = {
 
 export type ImportedSceneValidated = {
   roomImageUrl: string | null;
+  modelPath: string | null;
   transform: {
     positionX: number;
     positionY: number;
@@ -200,6 +201,9 @@ export function validateImportedSceneJson(
   }
 
   const roomImageUrlRaw = (raw as Record<string, unknown>).roomImageUrl;
+  const modelRaw = (raw as Record<string, unknown>).model;
+  const modelPath =
+    isRecord(modelRaw) && typeof modelRaw.modelPath === "string" ? modelRaw.modelPath.trim() : null;
   const roomImageUrl =
     roomImageUrlRaw === null
       ? null
@@ -329,6 +333,7 @@ export function validateImportedSceneJson(
 
   return {
     roomImageUrl,
+    modelPath,
     transform: {
       positionX: clampValue(
         positionX,
