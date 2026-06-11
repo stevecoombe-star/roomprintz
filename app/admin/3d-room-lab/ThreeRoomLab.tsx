@@ -3,6 +3,14 @@
 import { FormEvent, PointerEvent, useEffect, useMemo, useRef, useState } from "react";
 import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
+import {
+  buildSceneStatePayload,
+  validateImportedSceneJson,
+  type FloorMappingState,
+  type FloorPoint,
+  type PerspectiveDepthScalingState,
+  type TransformState,
+} from "./scene-state";
 
 const LAB_GLB_PATH = "/3d-lab/furniture-test-chair.glb";
 const DEFAULT_ROOM_IMAGE_URL =
@@ -11,49 +19,8 @@ const DEFAULT_ROOM_IMAGE_URL =
 type ImageLoadState = "idle" | "loading" | "loaded" | "error";
 type ModelLoadState = "idle" | "loading" | "loaded" | "fallback" | "error";
 type ActiveObjectKind = "gltf" | "fallback" | null;
-type FloorPoint = { x: number; y: number };
 type SceneJsonStatus = { kind: "idle" | "success" | "error"; message: string };
-type TransformState = {
-  positionX: number;
-  positionY: number;
-  positionZ: number;
-  rotationYDeg: number;
-  uniformScale: number;
-};
-type FloorMappingState = {
-  worldWidth: number;
-  worldDepth: number;
-  depthCenterY: number;
-};
-type PerspectiveDepthScalingState = {
-  enabled: boolean;
-  nearScaleMultiplier: number;
-  farScaleMultiplier: number;
-  nearFloorY: number;
-  farFloorY: number;
-};
 type TransformStateUpdater = TransformState | ((prev: TransformState) => TransformState);
-type ImportedSceneValidated = {
-  roomImageUrl: string | null;
-  transform: {
-    positionX: number;
-    positionY: number;
-    positionZ: number;
-    rotationYDeg: number;
-    uniformScale: number;
-    autoRotate: boolean;
-  };
-  floor: {
-    polygon: FloorPoint[];
-    overlayVisible: boolean;
-    placementModeEnabled: boolean;
-    lastAcceptedClick: FloorPoint | null;
-    lastRejectedClick: FloorPoint | null;
-    mapping: FloorMappingState;
-    perspectiveDepthScaling: PerspectiveDepthScalingState;
-  };
-  exportedAt: string | null;
-};
 
 const MATERIAL_TEXTURE_KEYS = [
   "map",
@@ -141,47 +108,6 @@ function roundPoint(point: FloorPoint): FloorPoint {
     x: Number(point.x.toFixed(3)),
     y: Number(point.y.toFixed(3)),
   };
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
-}
-
-function parseFiniteNumber(value: unknown): number | null {
-  return typeof value === "number" && Number.isFinite(value) ? value : null;
-}
-
-function parseBoolean(value: unknown): boolean | null {
-  return typeof value === "boolean" ? value : null;
-}
-
-function parseOptionalString(value: unknown): string | null {
-  if (value === null || typeof value === "undefined") return null;
-  if (typeof value !== "string") return null;
-  const trimmed = value.trim();
-  return trimmed.length > 0 ? trimmed : null;
-}
-
-function parseFloorPoint(value: unknown): FloorPoint | null {
-  if (!isRecord(value)) return null;
-  const x = parseFiniteNumber(value.x);
-  const y = parseFiniteNumber(value.y);
-  if (x === null || y === null) return null;
-  return {
-    x: clampValue(x, 0, 1),
-    y: clampValue(y, 0, 1),
-  };
-}
-
-function parseOptionalFloorPoint(value: unknown): FloorPoint | null {
-  if (value === null || typeof value === "undefined") return null;
-  return parseFloorPoint(value);
-}
-
-function parseFloorPolygon(value: unknown): FloorPoint[] | null {
-  if (!Array.isArray(value)) return null;
-  const points = value.map(parseFloorPoint).filter((point): point is FloorPoint => point !== null);
-  return points.length >= 3 ? points : null;
 }
 
 function isPointInsidePolygon(point: FloorPoint, polygon: FloorPoint[]): boolean {
@@ -615,55 +541,39 @@ export default function ThreeRoomLab() {
     [floorPolygon]
   );
 
-  const buildSceneStatePayload = (exportedAtIso: string) => ({
-    schemaVersion: "vibode-3d-room-lab-scene-state/v0",
-    exportedAt: exportedAtIso,
-    roomImageUrl: roomImageUrl || null,
-    model: {
+  const buildCurrentSceneStatePayload = (exportedAtIso: string) =>
+    buildSceneStatePayload({
+      exportedAtIso,
+      roomImageUrl,
       modelPath: LAB_GLB_PATH,
       activeObjectType: toSceneActiveObjectType(activeObjectKind),
       glbLoadStatus: modelLoadState,
-    },
-    transform: {
-      positionX: transform.positionX,
-      positionY: transform.positionY,
-      positionZ: transform.positionZ,
-      rotationYDegrees: transform.rotationYDeg,
-      scale: transform.uniformScale,
-      autoRotate: autoRotateEnabled,
-    },
-    floor: {
-      polygon: floorPolygon.map(roundPoint),
-      overlayVisible: showFloorOverlay,
-      placementModeEnabled: isFloorClickPlacementEnabled,
-      lastAcceptedClick: lastAcceptedFloorClick ? roundPoint(lastAcceptedFloorClick) : null,
-      lastRejectedClick: lastRejectedFloorClick ? roundPoint(lastRejectedFloorClick) : null,
-      mapping: {
-        worldWidth: floorMapping.worldWidth,
-        worldDepth: floorMapping.worldDepth,
-        depthCenterY: floorMapping.depthCenterY,
+      transform: {
+        positionX: transform.positionX,
+        positionY: transform.positionY,
+        positionZ: transform.positionZ,
+        rotationYDeg: transform.rotationYDeg,
+        uniformScale: transform.uniformScale,
+        autoRotate: autoRotateEnabled,
       },
-      perspectiveDepthScaling: {
-        enabled: perspectiveDepthScaling.enabled,
-        nearScaleMultiplier: perspectiveDepthScaling.nearScaleMultiplier,
-        farScaleMultiplier: perspectiveDepthScaling.farScaleMultiplier,
-        nearFloorY: perspectiveDepthScaling.nearFloorY,
-        farFloorY: perspectiveDepthScaling.farFloorY,
+      floor: {
+        polygon: floorPolygon,
+        overlayVisible: showFloorOverlay,
+        placementModeEnabled: isFloorClickPlacementEnabled,
+        lastAcceptedClick: lastAcceptedFloorClick,
+        lastRejectedClick: lastRejectedFloorClick,
+        mapping: floorMapping,
+        perspectiveDepthScaling,
       },
-    },
-    debug: {
-      rendererSize,
-      imageStatus: imageLoadState,
-      modelStatus: formatModelStatus(modelLoadState, modelLoadError),
-    },
-    notes: [
-      "Floor polygon points are normalized to the displayed container, not true uncropped source image pixels.",
-      "Phase 0D floor click placement uses temporary linear mapping constants and is not perspective-calibrated.",
-    ],
-  });
+      debug: {
+        rendererSize,
+        imageStatus: imageLoadState,
+        modelStatus: formatModelStatus(modelLoadState, modelLoadError),
+      },
+    });
 
   const sceneStateJson = useMemo(() => {
-    const payload = buildSceneStatePayload(sceneStateExportedAt);
+    const payload = buildCurrentSceneStatePayload(sceneStateExportedAt);
     return JSON.stringify(payload, null, 2);
   }, [
     activeObjectKind,
@@ -818,7 +728,7 @@ export default function ThreeRoomLab() {
 
   const handleCopySceneJson = async () => {
     const exportedAtIso = new Date().toISOString();
-    const payload = buildSceneStatePayload(exportedAtIso);
+    const payload = buildCurrentSceneStatePayload(exportedAtIso);
     const jsonText = JSON.stringify(payload, null, 2);
     setSceneStateExportedAt(exportedAtIso);
     try {
@@ -838,7 +748,7 @@ export default function ThreeRoomLab() {
 
   const handleDownloadSceneJson = () => {
     const exportedAtIso = new Date().toISOString();
-    const payload = buildSceneStatePayload(exportedAtIso);
+    const payload = buildCurrentSceneStatePayload(exportedAtIso);
     const jsonText = JSON.stringify(payload, null, 2);
     setSceneStateExportedAt(exportedAtIso);
     try {
@@ -864,171 +774,6 @@ export default function ThreeRoomLab() {
     }
   };
 
-  const validateImportedSceneJson = (raw: unknown): ImportedSceneValidated | string => {
-    if (!isRecord(raw)) return "Imported payload must be a JSON object.";
-    if (raw.schemaVersion !== "vibode-3d-room-lab-scene-state/v0") {
-      return "Unsupported schemaVersion. Expected vibode-3d-room-lab-scene-state/v0.";
-    }
-
-    const roomImageUrlRaw = (raw as Record<string, unknown>).roomImageUrl;
-    const roomImageUrl =
-      roomImageUrlRaw === null
-        ? null
-        : typeof roomImageUrlRaw === "string"
-          ? roomImageUrlRaw.trim()
-          : null;
-    if (roomImageUrlRaw !== null && typeof roomImageUrlRaw !== "string") {
-      return "roomImageUrl must be a string or null.";
-    }
-
-    const transformRaw = (raw as Record<string, unknown>).transform;
-    const floorRaw = (raw as Record<string, unknown>).floor;
-    if (!isRecord(transformRaw) || !isRecord(floorRaw)) {
-      return "Imported payload must include transform and floor objects.";
-    }
-
-    const positionX = parseFiniteNumber(transformRaw.positionX);
-    const positionY = parseFiniteNumber(transformRaw.positionY);
-    const positionZ = parseFiniteNumber(transformRaw.positionZ);
-    const rotationYDeg = parseFiniteNumber(transformRaw.rotationYDegrees);
-    const uniformScale = parseFiniteNumber(transformRaw.scale);
-    const autoRotate = parseBoolean(transformRaw.autoRotate);
-    if (
-      positionX === null ||
-      positionY === null ||
-      positionZ === null ||
-      rotationYDeg === null ||
-      uniformScale === null ||
-      autoRotate === null
-    ) {
-      return "transform fields are invalid. Expected numeric position/rotation/scale and boolean autoRotate.";
-    }
-
-    const polygon = parseFloorPolygon(floorRaw.polygon);
-    const mappingRaw = floorRaw.mapping;
-    const perspectiveDepthScalingRaw = floorRaw.perspectiveDepthScaling;
-    const overlayVisible = parseBoolean(floorRaw.overlayVisible);
-    const placementModeEnabled = parseBoolean(floorRaw.placementModeEnabled);
-    const lastAcceptedClick = parseOptionalFloorPoint(floorRaw.lastAcceptedClick);
-    const lastRejectedClick = parseOptionalFloorPoint(floorRaw.lastRejectedClick);
-    if (!polygon) {
-      return "floor.polygon must include at least 3 valid {x,y} points.";
-    }
-    if (overlayVisible === null || placementModeEnabled === null) {
-      return "floor.overlayVisible and floor.placementModeEnabled must be booleans.";
-    }
-    if (floorRaw.lastAcceptedClick !== null && typeof floorRaw.lastAcceptedClick !== "undefined" && !lastAcceptedClick) {
-      return "floor.lastAcceptedClick must be null or a valid {x,y} point.";
-    }
-    if (floorRaw.lastRejectedClick !== null && typeof floorRaw.lastRejectedClick !== "undefined" && !lastRejectedClick) {
-      return "floor.lastRejectedClick must be null or a valid {x,y} point.";
-    }
-
-    let mapping: FloorMappingState = DEFAULT_FLOOR_MAPPING;
-    if (typeof mappingRaw !== "undefined") {
-      if (!isRecord(mappingRaw)) {
-        return "floor.mapping must be an object with worldWidth/worldDepth/depthCenterY.";
-      }
-      const worldWidth = parseFiniteNumber(mappingRaw.worldWidth);
-      const worldDepth = parseFiniteNumber(mappingRaw.worldDepth);
-      const depthCenterY = parseFiniteNumber(mappingRaw.depthCenterY);
-      if (worldWidth === null || worldDepth === null || depthCenterY === null) {
-        return "floor.mapping values must be numeric.";
-      }
-      mapping = {
-        worldWidth: clampValue(
-          worldWidth,
-          FLOOR_MAPPING_LIMITS.worldWidth.min,
-          FLOOR_MAPPING_LIMITS.worldWidth.max
-        ),
-        worldDepth: clampValue(
-          worldDepth,
-          FLOOR_MAPPING_LIMITS.worldDepth.min,
-          FLOOR_MAPPING_LIMITS.worldDepth.max
-        ),
-        depthCenterY: clampValue(
-          depthCenterY,
-          FLOOR_MAPPING_LIMITS.depthCenterY.min,
-          FLOOR_MAPPING_LIMITS.depthCenterY.max
-        ),
-      };
-    }
-
-    let perspectiveDepthScaling = DEFAULT_PERSPECTIVE_DEPTH_SCALING;
-    if (typeof perspectiveDepthScalingRaw !== "undefined") {
-      if (!isRecord(perspectiveDepthScalingRaw)) {
-        return "floor.perspectiveDepthScaling must be an object.";
-      }
-      const enabled = parseBoolean(perspectiveDepthScalingRaw.enabled);
-      const nearScaleMultiplier = parseFiniteNumber(perspectiveDepthScalingRaw.nearScaleMultiplier);
-      const farScaleMultiplier = parseFiniteNumber(perspectiveDepthScalingRaw.farScaleMultiplier);
-      const nearFloorY = parseFiniteNumber(perspectiveDepthScalingRaw.nearFloorY);
-      const farFloorY = parseFiniteNumber(perspectiveDepthScalingRaw.farFloorY);
-      if (
-        enabled === null ||
-        nearScaleMultiplier === null ||
-        farScaleMultiplier === null ||
-        nearFloorY === null ||
-        farFloorY === null
-      ) {
-        return "floor.perspectiveDepthScaling fields must be boolean/numeric.";
-      }
-      perspectiveDepthScaling = {
-        enabled,
-        nearScaleMultiplier: clampValue(
-          nearScaleMultiplier,
-          PERSPECTIVE_DEPTH_SCALING_LIMITS.nearScaleMultiplier.min,
-          PERSPECTIVE_DEPTH_SCALING_LIMITS.nearScaleMultiplier.max
-        ),
-        farScaleMultiplier: clampValue(
-          farScaleMultiplier,
-          PERSPECTIVE_DEPTH_SCALING_LIMITS.farScaleMultiplier.min,
-          PERSPECTIVE_DEPTH_SCALING_LIMITS.farScaleMultiplier.max
-        ),
-        nearFloorY: clampValue(
-          nearFloorY,
-          PERSPECTIVE_DEPTH_SCALING_LIMITS.nearFloorY.min,
-          PERSPECTIVE_DEPTH_SCALING_LIMITS.nearFloorY.max
-        ),
-        farFloorY: clampValue(
-          farFloorY,
-          PERSPECTIVE_DEPTH_SCALING_LIMITS.farFloorY.min,
-          PERSPECTIVE_DEPTH_SCALING_LIMITS.farFloorY.max
-        ),
-      };
-    }
-
-    return {
-      roomImageUrl,
-      transform: {
-        positionX: clampValue(positionX, TRANSFORM_LIMITS.positionX.min, TRANSFORM_LIMITS.positionX.max),
-        positionY: clampValue(positionY, TRANSFORM_LIMITS.positionY.min, TRANSFORM_LIMITS.positionY.max),
-        positionZ: clampValue(positionZ, TRANSFORM_LIMITS.positionZ.min, TRANSFORM_LIMITS.positionZ.max),
-        rotationYDeg: clampValue(
-          rotationYDeg,
-          TRANSFORM_LIMITS.rotationYDeg.min,
-          TRANSFORM_LIMITS.rotationYDeg.max
-        ),
-        uniformScale: clampValue(
-          uniformScale,
-          TRANSFORM_LIMITS.uniformScale.min,
-          TRANSFORM_LIMITS.uniformScale.max
-        ),
-        autoRotate,
-      },
-      floor: {
-        polygon,
-        overlayVisible,
-        placementModeEnabled,
-        lastAcceptedClick,
-        lastRejectedClick,
-        mapping,
-        perspectiveDepthScaling,
-      },
-      exportedAt: parseOptionalString((raw as Record<string, unknown>).exportedAt),
-    };
-  };
-
   const handleApplyImportedSceneJson = () => {
     if (!importSceneJsonInput.trim()) {
       setImportSceneStatus({
@@ -1050,7 +795,13 @@ export default function ThreeRoomLab() {
       return;
     }
 
-    const validated = validateImportedSceneJson(parsed);
+    const validated = validateImportedSceneJson(parsed, {
+      transformLimits: TRANSFORM_LIMITS,
+      floorMappingLimits: FLOOR_MAPPING_LIMITS,
+      perspectiveDepthScalingLimits: PERSPECTIVE_DEPTH_SCALING_LIMITS,
+      defaultFloorMapping: DEFAULT_FLOOR_MAPPING,
+      defaultPerspectiveDepthScaling: DEFAULT_PERSPECTIVE_DEPTH_SCALING,
+    });
     if (typeof validated === "string") {
       setImportSceneStatus({
         kind: "error",
