@@ -4,6 +4,18 @@ import { FormEvent, PointerEvent, useEffect, useMemo, useRef, useState } from "r
 import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import {
+  DEFAULT_FLOOR_MAPPING,
+  DEFAULT_PERSPECTIVE_DEPTH_SCALING,
+  FLOOR_MAPPING_LIMITS,
+  PERSPECTIVE_DEPTH_SCALING_LIMITS,
+  clampValue,
+  getDepthNearFarOrderingInfo,
+  getDepthScaleMultiplier,
+  getEffectiveObjectScale,
+  isPointInsidePolygon,
+  mapFloorPointToObjectTransform,
+} from "./floor-math";
+import {
   buildSceneStatePayload,
   validateImportedSceneJson,
   type FloorMappingState,
@@ -60,33 +72,6 @@ const DEFAULT_FLOOR_POLYGON: FloorPoint[] = [
   { x: 0.38, y: 0.95 },
 ];
 
-const DEFAULT_FLOOR_MAPPING: FloorMappingState = {
-  worldWidth: 4,
-  worldDepth: 4,
-  depthCenterY: 0.75,
-};
-
-const FLOOR_MAPPING_LIMITS = {
-  worldWidth: { min: 0.5, max: 12, step: 0.1 },
-  worldDepth: { min: 0.5, max: 12, step: 0.1 },
-  depthCenterY: { min: 0, max: 1, step: 0.01 },
-} as const;
-
-const DEFAULT_PERSPECTIVE_DEPTH_SCALING: PerspectiveDepthScalingState = {
-  enabled: false,
-  nearScaleMultiplier: 1.25,
-  farScaleMultiplier: 0.75,
-  nearFloorY: 0.95,
-  farFloorY: 0.72,
-};
-
-const PERSPECTIVE_DEPTH_SCALING_LIMITS = {
-  nearScaleMultiplier: { min: 0.5, max: 2.5, step: 0.05 },
-  farScaleMultiplier: { min: 0.25, max: 1.5, step: 0.05 },
-  nearFloorY: { min: 0, max: 1, step: 0.01 },
-  farFloorY: { min: 0, max: 1, step: 0.01 },
-} as const;
-
 const TRANSFORM_LIMITS = {
   positionX: { min: -5, max: 5, step: 0.01 },
   positionY: { min: -5, max: 5, step: 0.01 },
@@ -94,10 +79,6 @@ const TRANSFORM_LIMITS = {
   rotationYDeg: { min: -180, max: 180, step: 1 },
   uniformScale: { min: 0.1, max: 4, step: 0.01 },
 } as const;
-
-function clampValue(value: number, min: number, max: number): number {
-  return Math.max(min, Math.min(max, value));
-}
 
 function formatNumber(value: number): string {
   return Number.isFinite(value) ? value.toFixed(2) : "0.00";
@@ -108,22 +89,6 @@ function roundPoint(point: FloorPoint): FloorPoint {
     x: Number(point.x.toFixed(3)),
     y: Number(point.y.toFixed(3)),
   };
-}
-
-function isPointInsidePolygon(point: FloorPoint, polygon: FloorPoint[]): boolean {
-  if (polygon.length < 3) return false;
-  let inside = false;
-  for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
-    const xi = polygon[i].x;
-    const yi = polygon[i].y;
-    const xj = polygon[j].x;
-    const yj = polygon[j].y;
-    const intersects =
-      yi > point.y !== yj > point.y &&
-      point.x < ((xj - xi) * (point.y - yi)) / (yj - yi + Number.EPSILON) + xi;
-    if (intersects) inside = !inside;
-  }
-  return inside;
 }
 
 function disposeMaterial(material: THREE.Material) {
@@ -165,29 +130,6 @@ function toSceneActiveObjectType(kind: ActiveObjectKind): "glb" | "fallbackCube"
   if (kind === "gltf") return "glb";
   if (kind === "fallback") return "fallbackCube";
   return "none";
-}
-
-function getDepthScaleMultiplier(
-  anchorY: number | null,
-  settings: PerspectiveDepthScalingState
-): number {
-  if (!settings.enabled) return 1;
-  if (anchorY === null || !Number.isFinite(anchorY)) return 1;
-  const denominator = settings.nearFloorY - settings.farFloorY;
-  if (!Number.isFinite(denominator) || Math.abs(denominator) < Number.EPSILON) {
-    return settings.nearScaleMultiplier;
-  }
-  const rawT = (anchorY - settings.farFloorY) / denominator;
-  const t = clampValue(rawT, 0, 1);
-  return settings.farScaleMultiplier + t * (settings.nearScaleMultiplier - settings.farScaleMultiplier);
-}
-
-function getEffectiveObjectScale(
-  baseScale: number,
-  anchor: FloorPoint | null,
-  settings: PerspectiveDepthScalingState
-): number {
-  return baseScale * getDepthScaleMultiplier(anchor?.y ?? null, settings);
 }
 
 function TransformControlRow({
@@ -353,11 +295,8 @@ export default function ThreeRoomLab() {
     [lastAcceptedFloorClick, perspectiveDepthScaling, transform.uniformScale]
   );
 
-  const isDepthNearFarOrderValid =
-    perspectiveDepthScaling.nearFloorY >= perspectiveDepthScaling.farFloorY;
-  const depthNearFarOrderingWarning = isDepthNearFarOrderValid
-    ? null
-    : "Near floor Y is above Far floor Y. This inverts depth scaling semantics.";
+  const { isValid: isDepthNearFarOrderValid, warning: depthNearFarOrderingWarning } =
+    getDepthNearFarOrderingInfo(perspectiveDepthScaling);
   const floorInteractionModeSummary = isFloorClickPlacementEnabled
     ? isFloorAnchorDragEnabled
       ? "place + drag-anchor"
@@ -615,13 +554,8 @@ export default function ThreeRoomLab() {
     };
   };
 
-  const mapFloorPointToObjectTransform = (point: FloorPoint, mapping: FloorMappingState = floorMapping) => ({
-    positionX: (point.x - 0.5) * mapping.worldWidth,
-    positionZ: (point.y - mapping.depthCenterY) * mapping.worldDepth,
-  });
-
   const applyFloorPlacement = (point: FloorPoint) => {
-    const mapped = mapFloorPointToObjectTransform(point);
+    const mapped = mapFloorPointToObjectTransform(point, floorMapping);
     updateTransformState((prev) => ({ ...prev, positionX: mapped.positionX, positionZ: mapped.positionZ }), {
       markOwned: true,
     });
