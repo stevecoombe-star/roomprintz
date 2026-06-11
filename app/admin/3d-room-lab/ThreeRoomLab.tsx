@@ -262,6 +262,7 @@ export default function ThreeRoomLab() {
   const autoRotateEnabledRef = useRef(false);
   const autoRotateOffsetDegRef = useRef(0);
   const dragPointerIdRef = useRef<number | null>(null);
+  const floorAnchorDragPointerIdRef = useRef<number | null>(null);
 
   const [roomImageInput, setRoomImageInput] = useState(DEFAULT_ROOM_IMAGE_URL);
   const [roomImageUrl, setRoomImageUrl] = useState(DEFAULT_ROOM_IMAGE_URL);
@@ -278,6 +279,9 @@ export default function ThreeRoomLab() {
   const [floorPolygon, setFloorPolygon] = useState<FloorPoint[]>(DEFAULT_FLOOR_POLYGON);
   const [activeFloorHandleIndex, setActiveFloorHandleIndex] = useState<number | null>(null);
   const [isFloorClickPlacementEnabled, setIsFloorClickPlacementEnabled] = useState(false);
+  const [isFloorAnchorDragEnabled, setIsFloorAnchorDragEnabled] = useState(false);
+  const [isFloorAnchorDragActive, setIsFloorAnchorDragActive] = useState(false);
+  const [wasLastAnchorDragMoveRejected, setWasLastAnchorDragMoveRejected] = useState(false);
   const [lastAcceptedFloorClick, setLastAcceptedFloorClick] = useState<FloorPoint | null>(null);
   const [lastRejectedFloorClick, setLastRejectedFloorClick] = useState<FloorPoint | null>(null);
   const [sceneStateExportedAt, setSceneStateExportedAt] = useState<string>("not-exported-yet");
@@ -335,6 +339,13 @@ export default function ThreeRoomLab() {
       { label: "active floor handle", value: activeFloorHandleIndex === null ? "none" : String(activeFloorHandleIndex) },
       { label: "floor polygon", value: JSON.stringify(floorPolygon.map(roundPoint)) },
       { label: "floor placement mode", value: isFloorClickPlacementEnabled ? "on" : "off" },
+      { label: "floor anchor dragging", value: isFloorAnchorDragEnabled ? "on" : "off" },
+      { label: "active anchor drag", value: isFloorAnchorDragActive ? "yes" : "no" },
+      {
+        label: "floor anchor point",
+        value: lastAcceptedFloorClick ? JSON.stringify(roundPoint(lastAcceptedFloorClick)) : "none",
+      },
+      { label: "last anchor drag outside reject", value: wasLastAnchorDragMoveRejected ? "yes" : "no" },
       {
         label: "last accepted floor click",
         value: lastAcceptedFloorClick ? JSON.stringify(roundPoint(lastAcceptedFloorClick)) : "none",
@@ -357,6 +368,8 @@ export default function ThreeRoomLab() {
       envEnabled,
       floorPolygon,
       imageLoadState,
+      isFloorAnchorDragActive,
+      isFloorAnchorDragEnabled,
       isFloorClickPlacementEnabled,
       lastAcceptedFloorClick,
       lastRejectedFloorClick,
@@ -370,6 +383,7 @@ export default function ThreeRoomLab() {
       transform.positionZ,
       transform.rotationYDeg,
       transform.uniformScale,
+      wasLastAnchorDragMoveRejected,
     ]
   );
 
@@ -464,6 +478,18 @@ export default function ThreeRoomLab() {
     };
   };
 
+  const mapFloorPointToObjectTransform = (point: FloorPoint) => ({
+    positionX: (point.x - 0.5) * FLOOR_PLACEMENT_WORLD_WIDTH,
+    positionZ: (point.y - FLOOR_PLACEMENT_DEPTH_CENTER_Y) * FLOOR_PLACEMENT_WORLD_DEPTH,
+  });
+
+  const applyFloorPlacement = (point: FloorPoint) => {
+    const mapped = mapFloorPointToObjectTransform(point);
+    setTransform((prev) => ({ ...prev, positionX: mapped.positionX, positionZ: mapped.positionZ }));
+    setLastAcceptedFloorClick(point);
+    setLastRejectedFloorClick(null);
+  };
+
   const updateFloorHandleFromClientPoint = (clientX: number, clientY: number) => {
     const activeIndex = activeFloorHandleIndex;
     if (activeIndex === null) return;
@@ -488,10 +514,23 @@ export default function ThreeRoomLab() {
   };
 
   const handleFloorOverlayPointerMove = (event: PointerEvent<SVGSVGElement>) => {
-    if (activeFloorHandleIndex === null) return;
-    if (dragPointerIdRef.current !== event.pointerId) return;
+    if (activeFloorHandleIndex !== null && dragPointerIdRef.current === event.pointerId) {
+      event.preventDefault();
+      updateFloorHandleFromClientPoint(event.clientX, event.clientY);
+      return;
+    }
+
+    if (!isFloorAnchorDragActive || floorAnchorDragPointerIdRef.current !== event.pointerId) return;
     event.preventDefault();
-    updateFloorHandleFromClientPoint(event.clientX, event.clientY);
+    const normalizedPoint = getNormalizedOverlayPointFromClient(event.clientX, event.clientY);
+    if (!normalizedPoint) return;
+    const isInside = isPointInsidePolygon(normalizedPoint, floorPolygon);
+    if (!isInside) {
+      setWasLastAnchorDragMoveRejected(true);
+      return;
+    }
+    setWasLastAnchorDragMoveRejected(false);
+    applyFloorPlacement(normalizedPoint);
   };
 
   const handleFloorOverlayPointerDown = (event: PointerEvent<SVGSVGElement>) => {
@@ -504,11 +543,24 @@ export default function ThreeRoomLab() {
       setLastRejectedFloorClick(normalizedPoint);
       return;
     }
-    const mappedX = (normalizedPoint.x - 0.5) * FLOOR_PLACEMENT_WORLD_WIDTH;
-    const mappedZ = (normalizedPoint.y - FLOOR_PLACEMENT_DEPTH_CENTER_Y) * FLOOR_PLACEMENT_WORLD_DEPTH;
-    setTransform((prev) => ({ ...prev, positionX: mappedX, positionZ: mappedZ }));
-    setLastAcceptedFloorClick(normalizedPoint);
-    setLastRejectedFloorClick(null);
+    setWasLastAnchorDragMoveRejected(false);
+    applyFloorPlacement(normalizedPoint);
+  };
+
+  const handleFloorAnchorPointerDown = (event: PointerEvent<SVGCircleElement>) => {
+    if (!isFloorAnchorDragEnabled) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const acceptedPoint = lastAcceptedFloorClick;
+    if (!acceptedPoint) return;
+    floorAnchorDragPointerIdRef.current = event.pointerId;
+    setIsFloorAnchorDragActive(true);
+    setWasLastAnchorDragMoveRejected(false);
+    try {
+      floorOverlayRef.current?.setPointerCapture(event.pointerId);
+    } catch {
+      // Pointer capture is optional in this lab; drag continues while pointer remains in bounds.
+    }
   };
 
   const stopFloorHandleDrag = (event?: PointerEvent<SVGSVGElement>) => {
@@ -522,6 +574,17 @@ export default function ThreeRoomLab() {
     }
     dragPointerIdRef.current = null;
     setActiveFloorHandleIndex(null);
+
+    const anchorPointerId = event?.pointerId ?? floorAnchorDragPointerIdRef.current;
+    if (anchorPointerId !== null) {
+      try {
+        floorOverlayRef.current?.releasePointerCapture(anchorPointerId);
+      } catch {
+        // Ignore release failures when capture is already cleared.
+      }
+    }
+    floorAnchorDragPointerIdRef.current = null;
+    setIsFloorAnchorDragActive(false);
   };
 
   const handleCopySceneJson = async () => {
@@ -708,8 +771,11 @@ export default function ThreeRoomLab() {
     setIsFloorClickPlacementEnabled(validated.floor.placementModeEnabled);
     setLastAcceptedFloorClick(validated.floor.lastAcceptedClick);
     setLastRejectedFloorClick(validated.floor.lastRejectedClick);
+    setWasLastAnchorDragMoveRejected(false);
+    setIsFloorAnchorDragActive(false);
     setActiveFloorHandleIndex(null);
     dragPointerIdRef.current = null;
+    floorAnchorDragPointerIdRef.current = null;
 
     setSceneStateExportedAt(validated.exportedAt ?? "imported-scene");
     setImportSceneStatus({
@@ -927,6 +993,15 @@ export default function ThreeRoomLab() {
               <label className="flex items-center gap-2 text-xs text-slate-300">
                 <input
                   type="checkbox"
+                  checked={isFloorAnchorDragEnabled}
+                  onChange={(event) => setIsFloorAnchorDragEnabled(event.target.checked)}
+                  className="accent-emerald-400"
+                />
+                Drag floor anchor to move object
+              </label>
+              <label className="flex items-center gap-2 text-xs text-slate-300">
+                <input
+                  type="checkbox"
                   checked={autoRotateEnabled}
                   onChange={(event) => setAutoRotateEnabled(event.target.checked)}
                   className="accent-emerald-400"
@@ -946,6 +1021,9 @@ export default function ThreeRoomLab() {
                   setFloorPolygon(DEFAULT_FLOOR_POLYGON);
                   setActiveFloorHandleIndex(null);
                   dragPointerIdRef.current = null;
+                  floorAnchorDragPointerIdRef.current = null;
+                  setIsFloorAnchorDragActive(false);
+                  setWasLastAnchorDragMoveRejected(false);
                 }}
                 className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-200 transition hover:border-emerald-400/80 hover:text-emerald-200"
               >
@@ -953,6 +1031,11 @@ export default function ThreeRoomLab() {
               </button>
             </div>
           </div>
+          {isFloorAnchorDragEnabled && !lastAcceptedFloorClick && (
+            <p className="mt-2 text-xs text-amber-300">
+              Click inside the floor polygon first to create an anchor marker, then drag it to move the object.
+            </p>
+          )}
           <div className="mt-3 grid gap-2 md:grid-cols-2">
             <TransformControlRow
               label="Position X"
@@ -1058,11 +1141,13 @@ export default function ThreeRoomLab() {
                   <circle
                     cx={lastAcceptedFloorClick.x * 100}
                     cy={lastAcceptedFloorClick.y * 100}
-                    r={1.1}
-                    fill="#f43f5e"
+                    r={isFloorAnchorDragActive ? 1.7 : 1.45}
+                    fill={isFloorAnchorDragActive ? "#fb7185" : "#f43f5e"}
                     stroke="#ffffff"
-                    strokeWidth={0.45}
-                    pointerEvents="none"
+                    strokeWidth={0.6}
+                    className={isFloorAnchorDragEnabled ? "cursor-move" : undefined}
+                    pointerEvents={isFloorAnchorDragEnabled ? "all" : "none"}
+                    onPointerDown={handleFloorAnchorPointerDown}
                   />
                 )}
               </svg>
