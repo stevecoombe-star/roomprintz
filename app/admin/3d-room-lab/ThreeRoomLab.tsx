@@ -432,6 +432,13 @@ export default function ThreeRoomLab() {
   const depthNearFarOrderingWarning = isDepthNearFarOrderValid
     ? null
     : "Near floor Y is above Far floor Y. This inverts depth scaling semantics.";
+  const floorInteractionModeSummary = isFloorClickPlacementEnabled
+    ? isFloorAnchorDragEnabled
+      ? "place + drag-anchor"
+      : "place"
+    : isFloorAnchorDragEnabled
+      ? "drag-anchor"
+      : "none";
 
   const debugRows = useMemo(
     () => [
@@ -452,6 +459,8 @@ export default function ThreeRoomLab() {
       { label: "active floor handle", value: activeFloorHandleIndex === null ? "none" : String(activeFloorHandleIndex) },
       { label: "floor polygon", value: JSON.stringify(floorPolygon.map(roundPoint)) },
       { label: "floor placement mode", value: isFloorClickPlacementEnabled ? "on" : "off" },
+      { label: "floor interaction mode", value: floorInteractionModeSummary },
+      { label: "pointer precedence", value: "handles > anchor > floor background" },
       { label: "depth auto-scale", value: perspectiveDepthScaling.enabled ? "on" : "off" },
       { label: "depth scale multiplier", value: formatNumber(currentDepthScaleMultiplier) },
       { label: "effective object scale", value: formatNumber(currentEffectiveObjectScale) },
@@ -505,6 +514,7 @@ export default function ThreeRoomLab() {
       floorMapping.worldDepth,
       floorMapping.worldWidth,
       floorPolygon,
+      floorInteractionModeSummary,
       imageLoadState,
       currentDepthScaleMultiplier,
       currentEffectiveObjectScale,
@@ -1355,6 +1365,20 @@ export default function ThreeRoomLab() {
               Click inside the floor polygon first to create an anchor marker, then drag it to move the object.
             </p>
           )}
+          <div className="mt-2 rounded-lg border border-slate-800 bg-slate-950/50 p-2 text-[11px] text-slate-300">
+            <p>
+              <span className="text-slate-400">Click floor to place object:</span> click the floor background inside
+              the polygon to set the object anchor.
+            </p>
+            <p className="mt-1">
+              <span className="text-slate-400">Drag floor anchor to move object:</span> drag the pink anchor marker.
+            </p>
+            {isFloorClickPlacementEnabled && isFloorAnchorDragEnabled && (
+              <p className="mt-1 text-amber-200">
+                Anchor drag takes precedence on the marker; background floor clicks still place the object.
+              </p>
+            )}
+          </div>
           <div className="mt-3 grid gap-2 md:grid-cols-2">
             <TransformControlRow
               label="Position X"
@@ -1549,6 +1573,7 @@ export default function ThreeRoomLab() {
                     strokeWidth={0.75}
                     className="cursor-grab active:cursor-grabbing"
                     pointerEvents="all"
+                    aria-label={`Floor polygon handle ${index + 1}`}
                     onPointerDown={(event) => handleFloorHandlePointerDown(index, event)}
                   />
                 ))}
@@ -1562,6 +1587,7 @@ export default function ThreeRoomLab() {
                     strokeWidth={0.6}
                     className={isFloorAnchorDragEnabled ? "cursor-move" : undefined}
                     pointerEvents={isFloorAnchorDragEnabled ? "all" : "none"}
+                    aria-label="Object floor anchor marker"
                     onPointerDown={handleFloorAnchorPointerDown}
                   />
                 )}
