@@ -20,6 +20,7 @@ type TransformState = {
   rotationYDeg: number;
   uniformScale: number;
 };
+type TransformStateUpdater = TransformState | ((prev: TransformState) => TransformState);
 type ImportedSceneValidated = {
   roomImageUrl: string | null;
   transform: {
@@ -259,6 +260,7 @@ export default function ThreeRoomLab() {
   const activeObjectRef = useRef<THREE.Object3D | null>(null);
   const resizeObserverRef = useRef<ResizeObserver | null>(null);
   const transformRef = useRef<TransformState>(GLB_DEFAULT_TRANSFORM);
+  const transformOwnedRef = useRef(false);
   const autoRotateEnabledRef = useRef(false);
   const autoRotateOffsetDegRef = useRef(0);
   const dragPointerIdRef = useRef<number | null>(null);
@@ -314,6 +316,20 @@ export default function ThreeRoomLab() {
     const finalRotationDeg = currentTransform.rotationYDeg + autoRotateOffsetDegRef.current;
     object.rotation.y = THREE.MathUtils.degToRad(finalRotationDeg);
     object.scale.setScalar(currentTransform.uniformScale);
+  };
+
+  const updateTransformState = (
+    updater: TransformStateUpdater,
+    options?: { markOwned?: boolean }
+  ) => {
+    if (options?.markOwned) {
+      transformOwnedRef.current = true;
+    }
+    setTransform((prev) => {
+      const next = typeof updater === "function" ? (updater as (prev: TransformState) => TransformState)(prev) : updater;
+      transformRef.current = next;
+      return next;
+    });
   };
 
   useEffect(() => {
@@ -390,12 +406,12 @@ export default function ThreeRoomLab() {
   const updateTransformField = (field: keyof TransformState, value: number) => {
     const limits = TRANSFORM_LIMITS[field];
     const clamped = clampValue(value, limits.min, limits.max);
-    setTransform((prev) => ({ ...prev, [field]: clamped }));
+    updateTransformState((prev) => ({ ...prev, [field]: clamped }), { markOwned: true });
   };
 
   const handleResetTransform = () => {
     autoRotateOffsetDegRef.current = 0;
-    setTransform(defaultTransformForKind(activeObjectKind));
+    updateTransformState(defaultTransformForKind(activeObjectKind), { markOwned: true });
   };
 
   const floorPolygonPointsAttribute = useMemo(
@@ -485,7 +501,9 @@ export default function ThreeRoomLab() {
 
   const applyFloorPlacement = (point: FloorPoint) => {
     const mapped = mapFloorPointToObjectTransform(point);
-    setTransform((prev) => ({ ...prev, positionX: mapped.positionX, positionZ: mapped.positionZ }));
+    updateTransformState((prev) => ({ ...prev, positionX: mapped.positionX, positionZ: mapped.positionZ }), {
+      markOwned: true,
+    });
     setLastAcceptedFloorClick(point);
     setLastRejectedFloorClick(null);
   };
@@ -757,13 +775,13 @@ export default function ThreeRoomLab() {
     setRoomImageUrl(nextRoomImageUrl);
     setImageLoadState(nextRoomImageUrl ? "loading" : "idle");
 
-    setTransform({
+    updateTransformState({
       positionX: validated.transform.positionX,
       positionY: validated.transform.positionY,
       positionZ: validated.transform.positionZ,
       rotationYDeg: validated.transform.rotationYDeg,
       uniformScale: validated.transform.uniformScale,
-    });
+    }, { markOwned: true });
     setAutoRotateEnabled(validated.transform.autoRotate);
 
     setFloorPolygon(validated.floor.polygon);
@@ -853,7 +871,10 @@ export default function ThreeRoomLab() {
       scene.add(cube);
       activeObjectRef.current = cube;
       setActiveObjectKind("fallback");
-      setTransform(FALLBACK_DEFAULT_TRANSFORM);
+      if (!transformOwnedRef.current) {
+        updateTransformState(FALLBACK_DEFAULT_TRANSFORM);
+      }
+      applyTransformToActiveObject();
     };
 
     const loader = new GLTFLoader();
@@ -869,8 +890,11 @@ export default function ThreeRoomLab() {
         scene.add(gltf.scene);
         activeObjectRef.current = gltf.scene;
         setActiveObjectKind("gltf");
-        setTransform(GLB_DEFAULT_TRANSFORM);
+        if (!transformOwnedRef.current) {
+          updateTransformState(GLB_DEFAULT_TRANSFORM);
+        }
         setModelLoadState("loaded");
+        applyTransformToActiveObject();
       },
       undefined,
       (error) => {
