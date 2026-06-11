@@ -20,6 +20,25 @@ type TransformState = {
   rotationYDeg: number;
   uniformScale: number;
 };
+type ImportedSceneValidated = {
+  roomImageUrl: string | null;
+  transform: {
+    positionX: number;
+    positionY: number;
+    positionZ: number;
+    rotationYDeg: number;
+    uniformScale: number;
+    autoRotate: boolean;
+  };
+  floor: {
+    polygon: FloorPoint[];
+    overlayVisible: boolean;
+    placementModeEnabled: boolean;
+    lastAcceptedClick: FloorPoint | null;
+    lastRejectedClick: FloorPoint | null;
+  };
+  exportedAt: string | null;
+};
 
 const MATERIAL_TEXTURE_KEYS = [
   "map",
@@ -85,6 +104,47 @@ function roundPoint(point: FloorPoint): FloorPoint {
     x: Number(point.x.toFixed(3)),
     y: Number(point.y.toFixed(3)),
   };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function parseFiniteNumber(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function parseBoolean(value: unknown): boolean | null {
+  return typeof value === "boolean" ? value : null;
+}
+
+function parseOptionalString(value: unknown): string | null {
+  if (value === null || typeof value === "undefined") return null;
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+function parseFloorPoint(value: unknown): FloorPoint | null {
+  if (!isRecord(value)) return null;
+  const x = parseFiniteNumber(value.x);
+  const y = parseFiniteNumber(value.y);
+  if (x === null || y === null) return null;
+  return {
+    x: clampValue(x, 0, 1),
+    y: clampValue(y, 0, 1),
+  };
+}
+
+function parseOptionalFloorPoint(value: unknown): FloorPoint | null {
+  if (value === null || typeof value === "undefined") return null;
+  return parseFloorPoint(value);
+}
+
+function parseFloorPolygon(value: unknown): FloorPoint[] | null {
+  if (!Array.isArray(value)) return null;
+  const points = value.map(parseFloorPoint).filter((point): point is FloorPoint => point !== null);
+  return points.length >= 3 ? points : null;
 }
 
 function isPointInsidePolygon(point: FloorPoint, polygon: FloorPoint[]): boolean {
@@ -224,6 +284,11 @@ export default function ThreeRoomLab() {
   const [sceneJsonStatus, setSceneJsonStatus] = useState<SceneJsonStatus>({
     kind: "idle",
     message: "Ready to copy or download scene JSON.",
+  });
+  const [importSceneJsonInput, setImportSceneJsonInput] = useState("");
+  const [importSceneStatus, setImportSceneStatus] = useState<SceneJsonStatus>({
+    kind: "idle",
+    message: "Paste exported scene JSON to restore state.",
   });
 
   useEffect(() => {
@@ -505,6 +570,160 @@ export default function ThreeRoomLab() {
         message: `Download failed: ${message}`,
       });
     }
+  };
+
+  const validateImportedSceneJson = (raw: unknown): ImportedSceneValidated | string => {
+    if (!isRecord(raw)) return "Imported payload must be a JSON object.";
+    if (raw.schemaVersion !== "vibode-3d-room-lab-scene-state/v0") {
+      return "Unsupported schemaVersion. Expected vibode-3d-room-lab-scene-state/v0.";
+    }
+
+    const roomImageUrlRaw = (raw as Record<string, unknown>).roomImageUrl;
+    const roomImageUrl =
+      roomImageUrlRaw === null
+        ? null
+        : typeof roomImageUrlRaw === "string"
+          ? roomImageUrlRaw.trim()
+          : null;
+    if (roomImageUrlRaw !== null && typeof roomImageUrlRaw !== "string") {
+      return "roomImageUrl must be a string or null.";
+    }
+
+    const transformRaw = (raw as Record<string, unknown>).transform;
+    const floorRaw = (raw as Record<string, unknown>).floor;
+    if (!isRecord(transformRaw) || !isRecord(floorRaw)) {
+      return "Imported payload must include transform and floor objects.";
+    }
+
+    const positionX = parseFiniteNumber(transformRaw.positionX);
+    const positionY = parseFiniteNumber(transformRaw.positionY);
+    const positionZ = parseFiniteNumber(transformRaw.positionZ);
+    const rotationYDeg = parseFiniteNumber(transformRaw.rotationYDegrees);
+    const uniformScale = parseFiniteNumber(transformRaw.scale);
+    const autoRotate = parseBoolean(transformRaw.autoRotate);
+    if (
+      positionX === null ||
+      positionY === null ||
+      positionZ === null ||
+      rotationYDeg === null ||
+      uniformScale === null ||
+      autoRotate === null
+    ) {
+      return "transform fields are invalid. Expected numeric position/rotation/scale and boolean autoRotate.";
+    }
+
+    const polygon = parseFloorPolygon(floorRaw.polygon);
+    const overlayVisible = parseBoolean(floorRaw.overlayVisible);
+    const placementModeEnabled = parseBoolean(floorRaw.placementModeEnabled);
+    const lastAcceptedClick = parseOptionalFloorPoint(floorRaw.lastAcceptedClick);
+    const lastRejectedClick = parseOptionalFloorPoint(floorRaw.lastRejectedClick);
+    if (!polygon) {
+      return "floor.polygon must include at least 3 valid {x,y} points.";
+    }
+    if (overlayVisible === null || placementModeEnabled === null) {
+      return "floor.overlayVisible and floor.placementModeEnabled must be booleans.";
+    }
+    if (floorRaw.lastAcceptedClick !== null && typeof floorRaw.lastAcceptedClick !== "undefined" && !lastAcceptedClick) {
+      return "floor.lastAcceptedClick must be null or a valid {x,y} point.";
+    }
+    if (floorRaw.lastRejectedClick !== null && typeof floorRaw.lastRejectedClick !== "undefined" && !lastRejectedClick) {
+      return "floor.lastRejectedClick must be null or a valid {x,y} point.";
+    }
+
+    return {
+      roomImageUrl,
+      transform: {
+        positionX: clampValue(positionX, TRANSFORM_LIMITS.positionX.min, TRANSFORM_LIMITS.positionX.max),
+        positionY: clampValue(positionY, TRANSFORM_LIMITS.positionY.min, TRANSFORM_LIMITS.positionY.max),
+        positionZ: clampValue(positionZ, TRANSFORM_LIMITS.positionZ.min, TRANSFORM_LIMITS.positionZ.max),
+        rotationYDeg: clampValue(
+          rotationYDeg,
+          TRANSFORM_LIMITS.rotationYDeg.min,
+          TRANSFORM_LIMITS.rotationYDeg.max
+        ),
+        uniformScale: clampValue(
+          uniformScale,
+          TRANSFORM_LIMITS.uniformScale.min,
+          TRANSFORM_LIMITS.uniformScale.max
+        ),
+        autoRotate,
+      },
+      floor: {
+        polygon,
+        overlayVisible,
+        placementModeEnabled,
+        lastAcceptedClick,
+        lastRejectedClick,
+      },
+      exportedAt: parseOptionalString((raw as Record<string, unknown>).exportedAt),
+    };
+  };
+
+  const handleApplyImportedSceneJson = () => {
+    if (!importSceneJsonInput.trim()) {
+      setImportSceneStatus({
+        kind: "error",
+        message: "Paste scene JSON before applying.",
+      });
+      return;
+    }
+
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(importSceneJsonInput);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Invalid JSON syntax.";
+      setImportSceneStatus({
+        kind: "error",
+        message: `Invalid JSON: ${message}`,
+      });
+      return;
+    }
+
+    const validated = validateImportedSceneJson(parsed);
+    if (typeof validated === "string") {
+      setImportSceneStatus({
+        kind: "error",
+        message: validated,
+      });
+      return;
+    }
+
+    const nextRoomImageUrl = validated.roomImageUrl ?? "";
+    setRoomImageInput(nextRoomImageUrl);
+    setRoomImageUrl(nextRoomImageUrl);
+    setImageLoadState(nextRoomImageUrl ? "loading" : "idle");
+
+    setTransform({
+      positionX: validated.transform.positionX,
+      positionY: validated.transform.positionY,
+      positionZ: validated.transform.positionZ,
+      rotationYDeg: validated.transform.rotationYDeg,
+      uniformScale: validated.transform.uniformScale,
+    });
+    setAutoRotateEnabled(validated.transform.autoRotate);
+
+    setFloorPolygon(validated.floor.polygon);
+    setShowFloorOverlay(validated.floor.overlayVisible);
+    setIsFloorClickPlacementEnabled(validated.floor.placementModeEnabled);
+    setLastAcceptedFloorClick(validated.floor.lastAcceptedClick);
+    setLastRejectedFloorClick(validated.floor.lastRejectedClick);
+    setActiveFloorHandleIndex(null);
+    dragPointerIdRef.current = null;
+
+    setSceneStateExportedAt(validated.exportedAt ?? "imported-scene");
+    setImportSceneStatus({
+      kind: "success",
+      message: "Imported scene JSON applied successfully.",
+    });
+  };
+
+  const handleClearImportedSceneJson = () => {
+    setImportSceneJsonInput("");
+    setImportSceneStatus({
+      kind: "idle",
+      message: "Paste exported scene JSON to restore state.",
+    });
   };
 
   useEffect(() => {
@@ -903,6 +1122,46 @@ export default function ThreeRoomLab() {
             className="mt-3 h-80 w-full rounded-lg border border-slate-800 bg-slate-950/80 p-3 font-mono text-xs text-slate-200 outline-none"
             aria-label="Scene State JSON"
           />
+
+          <div className="mt-5 border-t border-slate-800 pt-4">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <h3 className="text-sm font-medium text-slate-100">Import Scene JSON</h3>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={handleApplyImportedSceneJson}
+                  className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-200 transition hover:border-emerald-400/80 hover:text-emerald-200"
+                >
+                  Apply imported JSON
+                </button>
+                <button
+                  type="button"
+                  onClick={handleClearImportedSceneJson}
+                  className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-200 transition hover:border-slate-500 hover:text-slate-100"
+                >
+                  Clear import
+                </button>
+              </div>
+            </div>
+            <p
+              className={`mt-2 text-xs ${
+                importSceneStatus.kind === "error"
+                  ? "text-rose-300"
+                  : importSceneStatus.kind === "success"
+                    ? "text-emerald-300"
+                    : "text-slate-400"
+              }`}
+            >
+              {importSceneStatus.message}
+            </p>
+            <textarea
+              value={importSceneJsonInput}
+              onChange={(event) => setImportSceneJsonInput(event.target.value)}
+              placeholder='Paste a payload with schemaVersion "vibode-3d-room-lab-scene-state/v0"'
+              className="mt-3 h-56 w-full rounded-lg border border-slate-800 bg-slate-950/80 p-3 font-mono text-xs text-slate-200 outline-none focus:border-emerald-400"
+              aria-label="Import Scene JSON"
+            />
+          </div>
         </section>
       </div>
     </main>
