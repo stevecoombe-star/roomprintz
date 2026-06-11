@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import { FormEvent, PointerEvent, useEffect, useMemo, useRef, useState } from "react";
 import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 
@@ -11,6 +11,7 @@ const DEFAULT_ROOM_IMAGE_URL =
 type ImageLoadState = "idle" | "loading" | "loaded" | "error";
 type ModelLoadState = "idle" | "loading" | "loaded" | "fallback" | "error";
 type ActiveObjectKind = "gltf" | "fallback" | null;
+type FloorPoint = { x: number; y: number };
 type TransformState = {
   positionX: number;
   positionY: number;
@@ -50,6 +51,13 @@ const FALLBACK_DEFAULT_TRANSFORM: TransformState = {
   uniformScale: 1,
 };
 
+const DEFAULT_FLOOR_POLYGON: FloorPoint[] = [
+  { x: 0.18, y: 0.76 },
+  { x: 0.82, y: 0.76 },
+  { x: 0.62, y: 0.95 },
+  { x: 0.38, y: 0.95 },
+];
+
 const TRANSFORM_LIMITS = {
   positionX: { min: -5, max: 5, step: 0.01 },
   positionY: { min: -5, max: 5, step: 0.01 },
@@ -64,6 +72,13 @@ function clampValue(value: number, min: number, max: number): number {
 
 function formatNumber(value: number): string {
   return Number.isFinite(value) ? value.toFixed(2) : "0.00";
+}
+
+function roundPoint(point: FloorPoint): FloorPoint {
+  return {
+    x: Number(point.x.toFixed(3)),
+    y: Number(point.y.toFixed(3)),
+  };
 }
 
 function disposeMaterial(material: THREE.Material) {
@@ -151,12 +166,14 @@ export default function ThreeRoomLab() {
   const envEnabled = process.env.NEXT_PUBLIC_VIBODE_ENABLE_3D_ROOM_LAB === "1";
   const containerRef = useRef<HTMLDivElement | null>(null);
   const canvasHostRef = useRef<HTMLDivElement | null>(null);
+  const floorOverlayRef = useRef<SVGSVGElement | null>(null);
   const animationFrameRef = useRef<number | null>(null);
   const activeObjectRef = useRef<THREE.Object3D | null>(null);
   const resizeObserverRef = useRef<ResizeObserver | null>(null);
   const transformRef = useRef<TransformState>(GLB_DEFAULT_TRANSFORM);
   const autoRotateEnabledRef = useRef(false);
   const autoRotateOffsetDegRef = useRef(0);
+  const dragPointerIdRef = useRef<number | null>(null);
 
   const [roomImageInput, setRoomImageInput] = useState(DEFAULT_ROOM_IMAGE_URL);
   const [roomImageUrl, setRoomImageUrl] = useState(DEFAULT_ROOM_IMAGE_URL);
@@ -169,6 +186,9 @@ export default function ThreeRoomLab() {
   const [activeObjectKind, setActiveObjectKind] = useState<ActiveObjectKind>(null);
   const [autoRotateEnabled, setAutoRotateEnabled] = useState(false);
   const [transform, setTransform] = useState<TransformState>(GLB_DEFAULT_TRANSFORM);
+  const [showFloorOverlay, setShowFloorOverlay] = useState(true);
+  const [floorPolygon, setFloorPolygon] = useState<FloorPoint[]>(DEFAULT_FLOOR_POLYGON);
+  const [activeFloorHandleIndex, setActiveFloorHandleIndex] = useState<number | null>(null);
 
   useEffect(() => {
     transformRef.current = transform;
@@ -209,17 +229,24 @@ export default function ThreeRoomLab() {
       },
       { label: "auto-rotate", value: autoRotateEnabled ? "on" : "off" },
       { label: "active object", value: activeObjectKind ?? "none" },
+      { label: "floor overlay", value: showFloorOverlay ? "on" : "off" },
+      { label: "floor points", value: String(floorPolygon.length) },
+      { label: "active floor handle", value: activeFloorHandleIndex === null ? "none" : String(activeFloorHandleIndex) },
+      { label: "floor polygon", value: JSON.stringify(floorPolygon.map(roundPoint)) },
       { label: "glb path", value: LAB_GLB_PATH },
     ],
     [
+      activeFloorHandleIndex,
       activeObjectKind,
       autoRotateEnabled,
       envEnabled,
+      floorPolygon,
       imageLoadState,
       modelLoadError,
       modelLoadState,
       rendererSize.height,
       rendererSize.width,
+      showFloorOverlay,
       transform.positionX,
       transform.positionY,
       transform.positionZ,
@@ -237,6 +264,57 @@ export default function ThreeRoomLab() {
   const handleResetTransform = () => {
     autoRotateOffsetDegRef.current = 0;
     setTransform(defaultTransformForKind(activeObjectKind));
+  };
+
+  const floorPolygonPointsAttribute = useMemo(
+    () => floorPolygon.map((point) => `${point.x * 100},${point.y * 100}`).join(" "),
+    [floorPolygon]
+  );
+
+  const updateFloorHandleFromClientPoint = (clientX: number, clientY: number) => {
+    const activeIndex = activeFloorHandleIndex;
+    const overlay = floorOverlayRef.current;
+    if (activeIndex === null || !overlay) return;
+    const rect = overlay.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return;
+    const nextX = clampValue((clientX - rect.left) / rect.width, 0, 1);
+    const nextY = clampValue((clientY - rect.top) / rect.height, 0, 1);
+    setFloorPolygon((prev) =>
+      prev.map((point, index) => (index === activeIndex ? { x: nextX, y: nextY } : point))
+    );
+  };
+
+  const handleFloorHandlePointerDown = (index: number, event: PointerEvent<SVGCircleElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+    dragPointerIdRef.current = event.pointerId;
+    setActiveFloorHandleIndex(index);
+    updateFloorHandleFromClientPoint(event.clientX, event.clientY);
+    try {
+      floorOverlayRef.current?.setPointerCapture(event.pointerId);
+    } catch {
+      // Pointer capture can fail in some edge cases; dragging still works while pointer stays in bounds.
+    }
+  };
+
+  const handleFloorOverlayPointerMove = (event: PointerEvent<SVGSVGElement>) => {
+    if (activeFloorHandleIndex === null) return;
+    if (dragPointerIdRef.current !== event.pointerId) return;
+    event.preventDefault();
+    updateFloorHandleFromClientPoint(event.clientX, event.clientY);
+  };
+
+  const stopFloorHandleDrag = (event?: PointerEvent<SVGSVGElement>) => {
+    const pointerId = event?.pointerId ?? dragPointerIdRef.current;
+    if (pointerId !== null) {
+      try {
+        floorOverlayRef.current?.releasePointerCapture(pointerId);
+      } catch {
+        // Ignore release failures when capture is already cleared.
+      }
+    }
+    dragPointerIdRef.current = null;
+    setActiveFloorHandleIndex(null);
   };
 
   useEffect(() => {
@@ -422,6 +500,15 @@ export default function ThreeRoomLab() {
               <label className="flex items-center gap-2 text-xs text-slate-300">
                 <input
                   type="checkbox"
+                  checked={showFloorOverlay}
+                  onChange={(event) => setShowFloorOverlay(event.target.checked)}
+                  className="accent-emerald-400"
+                />
+                Show floor polygon
+              </label>
+              <label className="flex items-center gap-2 text-xs text-slate-300">
+                <input
+                  type="checkbox"
                   checked={autoRotateEnabled}
                   onChange={(event) => setAutoRotateEnabled(event.target.checked)}
                   className="accent-emerald-400"
@@ -434,6 +521,17 @@ export default function ThreeRoomLab() {
                 className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-200 transition hover:border-emerald-400/80 hover:text-emerald-200"
               >
                 Reset transform
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setFloorPolygon(DEFAULT_FLOOR_POLYGON);
+                  setActiveFloorHandleIndex(null);
+                  dragPointerIdRef.current = null;
+                }}
+                className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-200 transition hover:border-emerald-400/80 hover:text-emerald-200"
+              >
+                Reset floor polygon
               </button>
             </div>
           </div>
@@ -491,16 +589,54 @@ export default function ThreeRoomLab() {
               <img
                 src={roomImageUrl}
                 alt="Room base"
-                className="absolute inset-0 h-full w-full object-cover"
+                className="absolute inset-0 z-0 h-full w-full object-cover"
                 onLoad={() => setImageLoadState("loaded")}
                 onError={() => setImageLoadState("error")}
               />
             ) : (
-              <div className="absolute inset-0 flex items-center justify-center text-xs text-slate-500">
+              <div className="absolute inset-0 z-0 flex items-center justify-center text-xs text-slate-500">
                 Paste a room image URL and click Load Image.
               </div>
             )}
-            <div ref={canvasHostRef} className="pointer-events-none absolute inset-0" />
+            <div ref={canvasHostRef} className="pointer-events-none absolute inset-0 z-10" />
+            {showFloorOverlay && (
+              <svg
+                ref={floorOverlayRef}
+                className="absolute inset-0 z-20 h-full w-full"
+                viewBox="0 0 100 100"
+                preserveAspectRatio="none"
+                onPointerMove={handleFloorOverlayPointerMove}
+                onPointerUp={stopFloorHandleDrag}
+                onPointerCancel={stopFloorHandleDrag}
+                onPointerLeave={stopFloorHandleDrag}
+                style={{ touchAction: "none" }}
+              >
+                <polygon
+                  points={floorPolygonPointsAttribute}
+                  fill="#ffffff"
+                  fillOpacity={0.08}
+                  stroke="#facc15"
+                  strokeOpacity={1}
+                  strokeWidth={1.2}
+                  pointerEvents="none"
+                />
+                {floorPolygon.map((point, index) => (
+                  <circle
+                    key={`floor-handle-${index}`}
+                    cx={point.x * 100}
+                    cy={point.y * 100}
+                    r={2.1}
+                    fill={activeFloorHandleIndex === index ? "#f97316" : "#22d3ee"}
+                    stroke="#020617"
+                    strokeOpacity={1}
+                    strokeWidth={0.75}
+                    className="cursor-grab active:cursor-grabbing"
+                    pointerEvents="all"
+                    onPointerDown={(event) => handleFloorHandlePointerDown(index, event)}
+                  />
+                ))}
+              </svg>
+            )}
           </div>
         </section>
 
