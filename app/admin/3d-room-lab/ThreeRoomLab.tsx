@@ -25,6 +25,13 @@ type FloorMappingState = {
   worldDepth: number;
   depthCenterY: number;
 };
+type PerspectiveDepthScalingState = {
+  enabled: boolean;
+  nearScaleMultiplier: number;
+  farScaleMultiplier: number;
+  nearFloorY: number;
+  farFloorY: number;
+};
 type TransformStateUpdater = TransformState | ((prev: TransformState) => TransformState);
 type ImportedSceneValidated = {
   roomImageUrl: string | null;
@@ -43,6 +50,7 @@ type ImportedSceneValidated = {
     lastAcceptedClick: FloorPoint | null;
     lastRejectedClick: FloorPoint | null;
     mapping: FloorMappingState;
+    perspectiveDepthScaling: PerspectiveDepthScalingState;
   };
   exportedAt: string | null;
 };
@@ -95,6 +103,21 @@ const FLOOR_MAPPING_LIMITS = {
   worldWidth: { min: 0.5, max: 12, step: 0.1 },
   worldDepth: { min: 0.5, max: 12, step: 0.1 },
   depthCenterY: { min: 0, max: 1, step: 0.01 },
+} as const;
+
+const DEFAULT_PERSPECTIVE_DEPTH_SCALING: PerspectiveDepthScalingState = {
+  enabled: false,
+  nearScaleMultiplier: 1.25,
+  farScaleMultiplier: 0.75,
+  nearFloorY: 0.95,
+  farFloorY: 0.72,
+};
+
+const PERSPECTIVE_DEPTH_SCALING_LIMITS = {
+  nearScaleMultiplier: { min: 0.5, max: 2.5, step: 0.05 },
+  farScaleMultiplier: { min: 0.25, max: 1.5, step: 0.05 },
+  nearFloorY: { min: 0, max: 1, step: 0.01 },
+  farFloorY: { min: 0, max: 1, step: 0.01 },
 } as const;
 
 const TRANSFORM_LIMITS = {
@@ -218,6 +241,29 @@ function toSceneActiveObjectType(kind: ActiveObjectKind): "glb" | "fallbackCube"
   return "none";
 }
 
+function getDepthScaleMultiplier(
+  anchorY: number | null,
+  settings: PerspectiveDepthScalingState
+): number {
+  if (!settings.enabled) return 1;
+  if (anchorY === null || !Number.isFinite(anchorY)) return 1;
+  const denominator = settings.nearFloorY - settings.farFloorY;
+  if (!Number.isFinite(denominator) || Math.abs(denominator) < Number.EPSILON) {
+    return settings.nearScaleMultiplier;
+  }
+  const rawT = (anchorY - settings.farFloorY) / denominator;
+  const t = clampValue(rawT, 0, 1);
+  return settings.farScaleMultiplier + t * (settings.nearScaleMultiplier - settings.farScaleMultiplier);
+}
+
+function getEffectiveObjectScale(
+  baseScale: number,
+  anchor: FloorPoint | null,
+  settings: PerspectiveDepthScalingState
+): number {
+  return baseScale * getDepthScaleMultiplier(anchor?.y ?? null, settings);
+}
+
 function TransformControlRow({
   label,
   value,
@@ -278,6 +324,10 @@ export default function ThreeRoomLab() {
   const autoRotateOffsetDegRef = useRef(0);
   const dragPointerIdRef = useRef<number | null>(null);
   const floorAnchorDragPointerIdRef = useRef<number | null>(null);
+  const lastAcceptedFloorClickRef = useRef<FloorPoint | null>(null);
+  const perspectiveDepthScalingRef = useRef<PerspectiveDepthScalingState>(
+    DEFAULT_PERSPECTIVE_DEPTH_SCALING
+  );
 
   const [roomImageInput, setRoomImageInput] = useState(DEFAULT_ROOM_IMAGE_URL);
   const [roomImageUrl, setRoomImageUrl] = useState(DEFAULT_ROOM_IMAGE_URL);
@@ -300,6 +350,9 @@ export default function ThreeRoomLab() {
   const [lastAcceptedFloorClick, setLastAcceptedFloorClick] = useState<FloorPoint | null>(null);
   const [lastRejectedFloorClick, setLastRejectedFloorClick] = useState<FloorPoint | null>(null);
   const [floorMapping, setFloorMapping] = useState<FloorMappingState>(DEFAULT_FLOOR_MAPPING);
+  const [perspectiveDepthScaling, setPerspectiveDepthScaling] = useState<PerspectiveDepthScalingState>(
+    DEFAULT_PERSPECTIVE_DEPTH_SCALING
+  );
   const [sceneStateExportedAt, setSceneStateExportedAt] = useState<string>("not-exported-yet");
   const [sceneJsonStatus, setSceneJsonStatus] = useState<SceneJsonStatus>({
     kind: "idle",
@@ -322,6 +375,14 @@ export default function ThreeRoomLab() {
     }
   }, [autoRotateEnabled]);
 
+  useEffect(() => {
+    lastAcceptedFloorClickRef.current = lastAcceptedFloorClick;
+  }, [lastAcceptedFloorClick]);
+
+  useEffect(() => {
+    perspectiveDepthScalingRef.current = perspectiveDepthScaling;
+  }, [perspectiveDepthScaling]);
+
   const applyTransformToActiveObject = () => {
     const object = activeObjectRef.current;
     if (!object) return;
@@ -329,7 +390,13 @@ export default function ThreeRoomLab() {
     object.position.set(currentTransform.positionX, currentTransform.positionY, currentTransform.positionZ);
     const finalRotationDeg = currentTransform.rotationYDeg + autoRotateOffsetDegRef.current;
     object.rotation.y = THREE.MathUtils.degToRad(finalRotationDeg);
-    object.scale.setScalar(currentTransform.uniformScale);
+    object.scale.setScalar(
+      getEffectiveObjectScale(
+        currentTransform.uniformScale,
+        lastAcceptedFloorClickRef.current,
+        perspectiveDepthScalingRef.current
+      )
+    );
   };
 
   const updateTransformState = (
@@ -348,7 +415,17 @@ export default function ThreeRoomLab() {
 
   useEffect(() => {
     applyTransformToActiveObject();
-  }, [transform, autoRotateEnabled]);
+  }, [transform, autoRotateEnabled, lastAcceptedFloorClick, perspectiveDepthScaling]);
+
+  const currentDepthScaleMultiplier = useMemo(
+    () => getDepthScaleMultiplier(lastAcceptedFloorClick?.y ?? null, perspectiveDepthScaling),
+    [lastAcceptedFloorClick?.y, perspectiveDepthScaling]
+  );
+
+  const currentEffectiveObjectScale = useMemo(
+    () => getEffectiveObjectScale(transform.uniformScale, lastAcceptedFloorClick, perspectiveDepthScaling),
+    [lastAcceptedFloorClick, perspectiveDepthScaling, transform.uniformScale]
+  );
 
   const debugRows = useMemo(
     () => [
@@ -369,6 +446,21 @@ export default function ThreeRoomLab() {
       { label: "active floor handle", value: activeFloorHandleIndex === null ? "none" : String(activeFloorHandleIndex) },
       { label: "floor polygon", value: JSON.stringify(floorPolygon.map(roundPoint)) },
       { label: "floor placement mode", value: isFloorClickPlacementEnabled ? "on" : "off" },
+      { label: "depth auto-scale", value: perspectiveDepthScaling.enabled ? "on" : "off" },
+      { label: "depth scale multiplier", value: formatNumber(currentDepthScaleMultiplier) },
+      { label: "effective object scale", value: formatNumber(currentEffectiveObjectScale) },
+      {
+        label: "near/far scale",
+        value: `${formatNumber(perspectiveDepthScaling.nearScaleMultiplier)} / ${formatNumber(
+          perspectiveDepthScaling.farScaleMultiplier
+        )}`,
+      },
+      {
+        label: "near/far floor y",
+        value: `${formatNumber(perspectiveDepthScaling.nearFloorY)} / ${formatNumber(
+          perspectiveDepthScaling.farFloorY
+        )}`,
+      },
       { label: "floor anchor dragging", value: isFloorAnchorDragEnabled ? "on" : "off" },
       { label: "active anchor drag", value: isFloorAnchorDragActive ? "yes" : "no" },
       {
@@ -403,6 +495,8 @@ export default function ThreeRoomLab() {
       floorMapping.worldWidth,
       floorPolygon,
       imageLoadState,
+      currentDepthScaleMultiplier,
+      currentEffectiveObjectScale,
       isFloorAnchorDragActive,
       isFloorAnchorDragEnabled,
       isFloorClickPlacementEnabled,
@@ -410,6 +504,11 @@ export default function ThreeRoomLab() {
       lastRejectedFloorClick,
       modelLoadError,
       modelLoadState,
+      perspectiveDepthScaling.enabled,
+      perspectiveDepthScaling.farFloorY,
+      perspectiveDepthScaling.farScaleMultiplier,
+      perspectiveDepthScaling.nearFloorY,
+      perspectiveDepthScaling.nearScaleMultiplier,
       rendererSize.height,
       rendererSize.width,
       showFloorOverlay,
@@ -459,6 +558,22 @@ export default function ThreeRoomLab() {
     }
   };
 
+  const updatePerspectiveDepthScalingField = (
+    field: keyof Omit<PerspectiveDepthScalingState, "enabled">,
+    value: number
+  ) => {
+    const limits = PERSPECTIVE_DEPTH_SCALING_LIMITS[field];
+    const clamped = clampValue(value, limits.min, limits.max);
+    setPerspectiveDepthScaling((prev) => ({
+      ...prev,
+      [field]: clamped,
+    }));
+  };
+
+  const handleResetPerspectiveDepthScaling = () => {
+    setPerspectiveDepthScaling(DEFAULT_PERSPECTIVE_DEPTH_SCALING);
+  };
+
   const handleResetTransform = () => {
     autoRotateOffsetDegRef.current = 0;
     updateTransformState(defaultTransformForKind(activeObjectKind), { markOwned: true });
@@ -497,6 +612,13 @@ export default function ThreeRoomLab() {
         worldDepth: floorMapping.worldDepth,
         depthCenterY: floorMapping.depthCenterY,
       },
+      perspectiveDepthScaling: {
+        enabled: perspectiveDepthScaling.enabled,
+        nearScaleMultiplier: perspectiveDepthScaling.nearScaleMultiplier,
+        farScaleMultiplier: perspectiveDepthScaling.farScaleMultiplier,
+        nearFloorY: perspectiveDepthScaling.nearFloorY,
+        farFloorY: perspectiveDepthScaling.farFloorY,
+      },
     },
     debug: {
       rendererSize,
@@ -518,6 +640,11 @@ export default function ThreeRoomLab() {
     floorMapping.depthCenterY,
     floorMapping.worldDepth,
     floorMapping.worldWidth,
+    perspectiveDepthScaling.enabled,
+    perspectiveDepthScaling.farFloorY,
+    perspectiveDepthScaling.farScaleMultiplier,
+    perspectiveDepthScaling.nearFloorY,
+    perspectiveDepthScaling.nearScaleMultiplier,
     floorPolygon,
     imageLoadState,
     isFloorClickPlacementEnabled,
@@ -748,6 +875,7 @@ export default function ThreeRoomLab() {
 
     const polygon = parseFloorPolygon(floorRaw.polygon);
     const mappingRaw = floorRaw.mapping;
+    const perspectiveDepthScalingRaw = floorRaw.perspectiveDepthScaling;
     const overlayVisible = parseBoolean(floorRaw.overlayVisible);
     const placementModeEnabled = parseBoolean(floorRaw.placementModeEnabled);
     const lastAcceptedClick = parseOptionalFloorPoint(floorRaw.lastAcceptedClick);
@@ -795,6 +923,50 @@ export default function ThreeRoomLab() {
       };
     }
 
+    let perspectiveDepthScaling = DEFAULT_PERSPECTIVE_DEPTH_SCALING;
+    if (typeof perspectiveDepthScalingRaw !== "undefined") {
+      if (!isRecord(perspectiveDepthScalingRaw)) {
+        return "floor.perspectiveDepthScaling must be an object.";
+      }
+      const enabled = parseBoolean(perspectiveDepthScalingRaw.enabled);
+      const nearScaleMultiplier = parseFiniteNumber(perspectiveDepthScalingRaw.nearScaleMultiplier);
+      const farScaleMultiplier = parseFiniteNumber(perspectiveDepthScalingRaw.farScaleMultiplier);
+      const nearFloorY = parseFiniteNumber(perspectiveDepthScalingRaw.nearFloorY);
+      const farFloorY = parseFiniteNumber(perspectiveDepthScalingRaw.farFloorY);
+      if (
+        enabled === null ||
+        nearScaleMultiplier === null ||
+        farScaleMultiplier === null ||
+        nearFloorY === null ||
+        farFloorY === null
+      ) {
+        return "floor.perspectiveDepthScaling fields must be boolean/numeric.";
+      }
+      perspectiveDepthScaling = {
+        enabled,
+        nearScaleMultiplier: clampValue(
+          nearScaleMultiplier,
+          PERSPECTIVE_DEPTH_SCALING_LIMITS.nearScaleMultiplier.min,
+          PERSPECTIVE_DEPTH_SCALING_LIMITS.nearScaleMultiplier.max
+        ),
+        farScaleMultiplier: clampValue(
+          farScaleMultiplier,
+          PERSPECTIVE_DEPTH_SCALING_LIMITS.farScaleMultiplier.min,
+          PERSPECTIVE_DEPTH_SCALING_LIMITS.farScaleMultiplier.max
+        ),
+        nearFloorY: clampValue(
+          nearFloorY,
+          PERSPECTIVE_DEPTH_SCALING_LIMITS.nearFloorY.min,
+          PERSPECTIVE_DEPTH_SCALING_LIMITS.nearFloorY.max
+        ),
+        farFloorY: clampValue(
+          farFloorY,
+          PERSPECTIVE_DEPTH_SCALING_LIMITS.farFloorY.min,
+          PERSPECTIVE_DEPTH_SCALING_LIMITS.farFloorY.max
+        ),
+      };
+    }
+
     return {
       roomImageUrl,
       transform: {
@@ -820,6 +992,7 @@ export default function ThreeRoomLab() {
         lastAcceptedClick,
         lastRejectedClick,
         mapping,
+        perspectiveDepthScaling,
       },
       exportedAt: parseOptionalString((raw as Record<string, unknown>).exportedAt),
     };
@@ -875,6 +1048,7 @@ export default function ThreeRoomLab() {
     setLastAcceptedFloorClick(validated.floor.lastAcceptedClick);
     setLastRejectedFloorClick(validated.floor.lastRejectedClick);
     setFloorMapping(validated.floor.mapping);
+    setPerspectiveDepthScaling(validated.floor.perspectiveDepthScaling);
     setWasLastAnchorDragMoveRejected(false);
     setIsFloorAnchorDragActive(false);
     setActiveFloorHandleIndex(null);
@@ -1146,6 +1320,13 @@ export default function ThreeRoomLab() {
               >
                 Reset mapping
               </button>
+              <button
+                type="button"
+                onClick={handleResetPerspectiveDepthScaling}
+                className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-200 transition hover:border-emerald-400/80 hover:text-emerald-200"
+              >
+                Reset depth scaling
+              </button>
             </div>
           </div>
           {isFloorAnchorDragEnabled && !lastAcceptedFloorClick && (
@@ -1221,6 +1402,61 @@ export default function ThreeRoomLab() {
                 max={FLOOR_MAPPING_LIMITS.depthCenterY.max}
                 step={FLOOR_MAPPING_LIMITS.depthCenterY.step}
                 onChange={(value) => updateFloorMappingField("depthCenterY", value)}
+              />
+            </div>
+          </div>
+          <div className="mt-4 border-t border-slate-800 pt-3">
+            <div className="flex items-center justify-between gap-2">
+              <h3 className="text-xs font-medium text-slate-200">Perspective depth scaling</h3>
+              <label className="flex items-center gap-2 text-xs text-slate-300">
+                <input
+                  type="checkbox"
+                  checked={perspectiveDepthScaling.enabled}
+                  onChange={(event) =>
+                    setPerspectiveDepthScaling((prev) => ({ ...prev, enabled: event.target.checked }))
+                  }
+                  className="accent-emerald-400"
+                />
+                Auto-scale by floor depth
+              </label>
+            </div>
+            {perspectiveDepthScaling.enabled && !lastAcceptedFloorClick && (
+              <p className="mt-2 text-xs text-amber-300">
+                Click inside the floor polygon to set an anchor so depth scaling can be applied.
+              </p>
+            )}
+            <div className="mt-2 grid gap-2 md:grid-cols-2">
+              <TransformControlRow
+                label="Near scale multiplier"
+                value={perspectiveDepthScaling.nearScaleMultiplier}
+                min={PERSPECTIVE_DEPTH_SCALING_LIMITS.nearScaleMultiplier.min}
+                max={PERSPECTIVE_DEPTH_SCALING_LIMITS.nearScaleMultiplier.max}
+                step={PERSPECTIVE_DEPTH_SCALING_LIMITS.nearScaleMultiplier.step}
+                onChange={(value) => updatePerspectiveDepthScalingField("nearScaleMultiplier", value)}
+              />
+              <TransformControlRow
+                label="Far scale multiplier"
+                value={perspectiveDepthScaling.farScaleMultiplier}
+                min={PERSPECTIVE_DEPTH_SCALING_LIMITS.farScaleMultiplier.min}
+                max={PERSPECTIVE_DEPTH_SCALING_LIMITS.farScaleMultiplier.max}
+                step={PERSPECTIVE_DEPTH_SCALING_LIMITS.farScaleMultiplier.step}
+                onChange={(value) => updatePerspectiveDepthScalingField("farScaleMultiplier", value)}
+              />
+              <TransformControlRow
+                label="Near floor Y"
+                value={perspectiveDepthScaling.nearFloorY}
+                min={PERSPECTIVE_DEPTH_SCALING_LIMITS.nearFloorY.min}
+                max={PERSPECTIVE_DEPTH_SCALING_LIMITS.nearFloorY.max}
+                step={PERSPECTIVE_DEPTH_SCALING_LIMITS.nearFloorY.step}
+                onChange={(value) => updatePerspectiveDepthScalingField("nearFloorY", value)}
+              />
+              <TransformControlRow
+                label="Far floor Y"
+                value={perspectiveDepthScaling.farFloorY}
+                min={PERSPECTIVE_DEPTH_SCALING_LIMITS.farFloorY.min}
+                max={PERSPECTIVE_DEPTH_SCALING_LIMITS.farFloorY.max}
+                step={PERSPECTIVE_DEPTH_SCALING_LIMITS.farFloorY.step}
+                onChange={(value) => updatePerspectiveDepthScalingField("farFloorY", value)}
               />
             </div>
           </div>
