@@ -58,6 +58,11 @@ const DEFAULT_FLOOR_POLYGON: FloorPoint[] = [
   { x: 0.38, y: 0.95 },
 ];
 
+// Phase 0D temporary mapping constants (normalized floor click -> world-ish transform).
+const FLOOR_PLACEMENT_WORLD_WIDTH = 4;
+const FLOOR_PLACEMENT_WORLD_DEPTH = 4;
+const FLOOR_PLACEMENT_DEPTH_CENTER_Y = 0.75;
+
 const TRANSFORM_LIMITS = {
   positionX: { min: -5, max: 5, step: 0.01 },
   positionY: { min: -5, max: 5, step: 0.01 },
@@ -79,6 +84,22 @@ function roundPoint(point: FloorPoint): FloorPoint {
     x: Number(point.x.toFixed(3)),
     y: Number(point.y.toFixed(3)),
   };
+}
+
+function isPointInsidePolygon(point: FloorPoint, polygon: FloorPoint[]): boolean {
+  if (polygon.length < 3) return false;
+  let inside = false;
+  for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+    const xi = polygon[i].x;
+    const yi = polygon[i].y;
+    const xj = polygon[j].x;
+    const yj = polygon[j].y;
+    const intersects =
+      yi > point.y !== yj > point.y &&
+      point.x < ((xj - xi) * (point.y - yi)) / (yj - yi + Number.EPSILON) + xi;
+    if (intersects) inside = !inside;
+  }
+  return inside;
 }
 
 function disposeMaterial(material: THREE.Material) {
@@ -189,6 +210,9 @@ export default function ThreeRoomLab() {
   const [showFloorOverlay, setShowFloorOverlay] = useState(true);
   const [floorPolygon, setFloorPolygon] = useState<FloorPoint[]>(DEFAULT_FLOOR_POLYGON);
   const [activeFloorHandleIndex, setActiveFloorHandleIndex] = useState<number | null>(null);
+  const [isFloorClickPlacementEnabled, setIsFloorClickPlacementEnabled] = useState(false);
+  const [lastAcceptedFloorClick, setLastAcceptedFloorClick] = useState<FloorPoint | null>(null);
+  const [lastRejectedFloorClick, setLastRejectedFloorClick] = useState<FloorPoint | null>(null);
 
   useEffect(() => {
     transformRef.current = transform;
@@ -233,6 +257,20 @@ export default function ThreeRoomLab() {
       { label: "floor points", value: String(floorPolygon.length) },
       { label: "active floor handle", value: activeFloorHandleIndex === null ? "none" : String(activeFloorHandleIndex) },
       { label: "floor polygon", value: JSON.stringify(floorPolygon.map(roundPoint)) },
+      { label: "floor placement mode", value: isFloorClickPlacementEnabled ? "on" : "off" },
+      {
+        label: "last accepted floor click",
+        value: lastAcceptedFloorClick ? JSON.stringify(roundPoint(lastAcceptedFloorClick)) : "none",
+      },
+      {
+        label: "last rejected floor click",
+        value: lastRejectedFloorClick ? JSON.stringify(roundPoint(lastRejectedFloorClick)) : "none",
+      },
+      { label: "mapped object x/z", value: `${formatNumber(transform.positionX)} / ${formatNumber(transform.positionZ)}` },
+      {
+        label: "floor mapping constants",
+        value: `width=${FLOOR_PLACEMENT_WORLD_WIDTH}, depth=${FLOOR_PLACEMENT_WORLD_DEPTH}, depthCenterY=${FLOOR_PLACEMENT_DEPTH_CENTER_Y}`,
+      },
       { label: "glb path", value: LAB_GLB_PATH },
     ],
     [
@@ -242,6 +280,9 @@ export default function ThreeRoomLab() {
       envEnabled,
       floorPolygon,
       imageLoadState,
+      isFloorClickPlacementEnabled,
+      lastAcceptedFloorClick,
+      lastRejectedFloorClick,
       modelLoadError,
       modelLoadState,
       rendererSize.height,
@@ -271,16 +312,24 @@ export default function ThreeRoomLab() {
     [floorPolygon]
   );
 
+  const getNormalizedOverlayPointFromClient = (clientX: number, clientY: number): FloorPoint | null => {
+    const overlay = floorOverlayRef.current;
+    if (!overlay) return null;
+    const rect = overlay.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return null;
+    return {
+      x: clampValue((clientX - rect.left) / rect.width, 0, 1),
+      y: clampValue((clientY - rect.top) / rect.height, 0, 1),
+    };
+  };
+
   const updateFloorHandleFromClientPoint = (clientX: number, clientY: number) => {
     const activeIndex = activeFloorHandleIndex;
-    const overlay = floorOverlayRef.current;
-    if (activeIndex === null || !overlay) return;
-    const rect = overlay.getBoundingClientRect();
-    if (rect.width <= 0 || rect.height <= 0) return;
-    const nextX = clampValue((clientX - rect.left) / rect.width, 0, 1);
-    const nextY = clampValue((clientY - rect.top) / rect.height, 0, 1);
+    if (activeIndex === null) return;
+    const normalizedPoint = getNormalizedOverlayPointFromClient(clientX, clientY);
+    if (!normalizedPoint) return;
     setFloorPolygon((prev) =>
-      prev.map((point, index) => (index === activeIndex ? { x: nextX, y: nextY } : point))
+      prev.map((point, index) => (index === activeIndex ? normalizedPoint : point))
     );
   };
 
@@ -302,6 +351,23 @@ export default function ThreeRoomLab() {
     if (dragPointerIdRef.current !== event.pointerId) return;
     event.preventDefault();
     updateFloorHandleFromClientPoint(event.clientX, event.clientY);
+  };
+
+  const handleFloorOverlayPointerDown = (event: PointerEvent<SVGSVGElement>) => {
+    if (!showFloorOverlay || !isFloorClickPlacementEnabled) return;
+    if (activeFloorHandleIndex !== null) return;
+    const normalizedPoint = getNormalizedOverlayPointFromClient(event.clientX, event.clientY);
+    if (!normalizedPoint) return;
+    const isInside = isPointInsidePolygon(normalizedPoint, floorPolygon);
+    if (!isInside) {
+      setLastRejectedFloorClick(normalizedPoint);
+      return;
+    }
+    const mappedX = (normalizedPoint.x - 0.5) * FLOOR_PLACEMENT_WORLD_WIDTH;
+    const mappedZ = (normalizedPoint.y - FLOOR_PLACEMENT_DEPTH_CENTER_Y) * FLOOR_PLACEMENT_WORLD_DEPTH;
+    setTransform((prev) => ({ ...prev, positionX: mappedX, positionZ: mappedZ }));
+    setLastAcceptedFloorClick(normalizedPoint);
+    setLastRejectedFloorClick(null);
   };
 
   const stopFloorHandleDrag = (event?: PointerEvent<SVGSVGElement>) => {
@@ -509,6 +575,15 @@ export default function ThreeRoomLab() {
               <label className="flex items-center gap-2 text-xs text-slate-300">
                 <input
                   type="checkbox"
+                  checked={isFloorClickPlacementEnabled}
+                  onChange={(event) => setIsFloorClickPlacementEnabled(event.target.checked)}
+                  className="accent-emerald-400"
+                />
+                Click floor to place object
+              </label>
+              <label className="flex items-center gap-2 text-xs text-slate-300">
+                <input
+                  type="checkbox"
                   checked={autoRotateEnabled}
                   onChange={(event) => setAutoRotateEnabled(event.target.checked)}
                   className="accent-emerald-400"
@@ -605,6 +680,7 @@ export default function ThreeRoomLab() {
                 className="absolute inset-0 z-20 h-full w-full"
                 viewBox="0 0 100 100"
                 preserveAspectRatio="none"
+                onPointerDown={handleFloorOverlayPointerDown}
                 onPointerMove={handleFloorOverlayPointerMove}
                 onPointerUp={stopFloorHandleDrag}
                 onPointerCancel={stopFloorHandleDrag}
@@ -635,6 +711,17 @@ export default function ThreeRoomLab() {
                     onPointerDown={(event) => handleFloorHandlePointerDown(index, event)}
                   />
                 ))}
+                {lastAcceptedFloorClick && (
+                  <circle
+                    cx={lastAcceptedFloorClick.x * 100}
+                    cy={lastAcceptedFloorClick.y * 100}
+                    r={1.1}
+                    fill="#f43f5e"
+                    stroke="#ffffff"
+                    strokeWidth={0.45}
+                    pointerEvents="none"
+                  />
+                )}
               </svg>
             )}
           </div>
