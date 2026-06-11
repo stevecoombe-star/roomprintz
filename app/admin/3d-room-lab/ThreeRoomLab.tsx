@@ -12,6 +12,7 @@ type ImageLoadState = "idle" | "loading" | "loaded" | "error";
 type ModelLoadState = "idle" | "loading" | "loaded" | "fallback" | "error";
 type ActiveObjectKind = "gltf" | "fallback" | null;
 type FloorPoint = { x: number; y: number };
+type SceneJsonStatus = { kind: "idle" | "success" | "error"; message: string };
 type TransformState = {
   positionX: number;
   positionY: number;
@@ -137,6 +138,12 @@ function defaultTransformForKind(kind: ActiveObjectKind): TransformState {
   return GLB_DEFAULT_TRANSFORM;
 }
 
+function toSceneActiveObjectType(kind: ActiveObjectKind): "glb" | "fallbackCube" | "none" {
+  if (kind === "gltf") return "glb";
+  if (kind === "fallback") return "fallbackCube";
+  return "none";
+}
+
 function TransformControlRow({
   label,
   value,
@@ -213,6 +220,11 @@ export default function ThreeRoomLab() {
   const [isFloorClickPlacementEnabled, setIsFloorClickPlacementEnabled] = useState(false);
   const [lastAcceptedFloorClick, setLastAcceptedFloorClick] = useState<FloorPoint | null>(null);
   const [lastRejectedFloorClick, setLastRejectedFloorClick] = useState<FloorPoint | null>(null);
+  const [sceneStateExportedAt, setSceneStateExportedAt] = useState<string>("not-exported-yet");
+  const [sceneJsonStatus, setSceneJsonStatus] = useState<SceneJsonStatus>({
+    kind: "idle",
+    message: "Ready to copy or download scene JSON.",
+  });
 
   useEffect(() => {
     transformRef.current = transform;
@@ -312,6 +324,70 @@ export default function ThreeRoomLab() {
     [floorPolygon]
   );
 
+  const buildSceneStatePayload = (exportedAtIso: string) => ({
+    schemaVersion: "vibode-3d-room-lab-scene-state/v0",
+    exportedAt: exportedAtIso,
+    roomImageUrl: roomImageUrl || null,
+    model: {
+      modelPath: LAB_GLB_PATH,
+      activeObjectType: toSceneActiveObjectType(activeObjectKind),
+      glbLoadStatus: modelLoadState,
+    },
+    transform: {
+      positionX: transform.positionX,
+      positionY: transform.positionY,
+      positionZ: transform.positionZ,
+      rotationYDegrees: transform.rotationYDeg,
+      scale: transform.uniformScale,
+      autoRotate: autoRotateEnabled,
+    },
+    floor: {
+      polygon: floorPolygon.map(roundPoint),
+      overlayVisible: showFloorOverlay,
+      placementModeEnabled: isFloorClickPlacementEnabled,
+      lastAcceptedClick: lastAcceptedFloorClick ? roundPoint(lastAcceptedFloorClick) : null,
+      lastRejectedClick: lastRejectedFloorClick ? roundPoint(lastRejectedFloorClick) : null,
+      mapping: {
+        worldWidth: FLOOR_PLACEMENT_WORLD_WIDTH,
+        worldDepth: FLOOR_PLACEMENT_WORLD_DEPTH,
+        depthCenterY: FLOOR_PLACEMENT_DEPTH_CENTER_Y,
+      },
+    },
+    debug: {
+      rendererSize,
+      imageStatus: imageLoadState,
+      modelStatus: formatModelStatus(modelLoadState, modelLoadError),
+    },
+    notes: [
+      "Floor polygon points are normalized to the displayed container, not true uncropped source image pixels.",
+      "Phase 0D floor click placement uses temporary linear mapping constants and is not perspective-calibrated.",
+    ],
+  });
+
+  const sceneStateJson = useMemo(() => {
+    const payload = buildSceneStatePayload(sceneStateExportedAt);
+    return JSON.stringify(payload, null, 2);
+  }, [
+    activeObjectKind,
+    autoRotateEnabled,
+    floorPolygon,
+    imageLoadState,
+    isFloorClickPlacementEnabled,
+    lastAcceptedFloorClick,
+    lastRejectedFloorClick,
+    modelLoadError,
+    modelLoadState,
+    rendererSize,
+    roomImageUrl,
+    sceneStateExportedAt,
+    showFloorOverlay,
+    transform.positionX,
+    transform.positionY,
+    transform.positionZ,
+    transform.rotationYDeg,
+    transform.uniformScale,
+  ]);
+
   const getNormalizedOverlayPointFromClient = (clientX: number, clientY: number): FloorPoint | null => {
     const overlay = floorOverlayRef.current;
     if (!overlay) return null;
@@ -381,6 +457,54 @@ export default function ThreeRoomLab() {
     }
     dragPointerIdRef.current = null;
     setActiveFloorHandleIndex(null);
+  };
+
+  const handleCopySceneJson = async () => {
+    const exportedAtIso = new Date().toISOString();
+    const payload = buildSceneStatePayload(exportedAtIso);
+    const jsonText = JSON.stringify(payload, null, 2);
+    setSceneStateExportedAt(exportedAtIso);
+    try {
+      await navigator.clipboard.writeText(jsonText);
+      setSceneJsonStatus({
+        kind: "success",
+        message: "Scene JSON copied to clipboard.",
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Clipboard write failed.";
+      setSceneJsonStatus({
+        kind: "error",
+        message: `Copy failed: ${message}`,
+      });
+    }
+  };
+
+  const handleDownloadSceneJson = () => {
+    const exportedAtIso = new Date().toISOString();
+    const payload = buildSceneStatePayload(exportedAtIso);
+    const jsonText = JSON.stringify(payload, null, 2);
+    setSceneStateExportedAt(exportedAtIso);
+    try {
+      const blob = new Blob([jsonText], { type: "application/json" });
+      const objectUrl = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = objectUrl;
+      anchor.download = "vibode-3d-room-lab-scene-state.json";
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      URL.revokeObjectURL(objectUrl);
+      setSceneJsonStatus({
+        kind: "success",
+        message: "Scene JSON download started.",
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Download failed.";
+      setSceneJsonStatus({
+        kind: "error",
+        message: `Download failed: ${message}`,
+      });
+    }
   };
 
   useEffect(() => {
@@ -739,6 +863,46 @@ export default function ThreeRoomLab() {
           <p className="mt-3 text-xs text-slate-500">
             Expected local asset path: <code>{LAB_GLB_PATH}</code>
           </p>
+        </section>
+
+        <section className="rounded-2xl border border-slate-800 bg-slate-900/70 p-4">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <h2 className="text-sm font-medium text-slate-100">Scene State JSON</h2>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => void handleCopySceneJson()}
+                className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-200 transition hover:border-emerald-400/80 hover:text-emerald-200"
+              >
+                Copy scene JSON
+              </button>
+              <button
+                type="button"
+                onClick={handleDownloadSceneJson}
+                className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-200 transition hover:border-emerald-400/80 hover:text-emerald-200"
+              >
+                Download scene JSON
+              </button>
+            </div>
+          </div>
+          <p
+            className={`mt-2 text-xs ${
+              sceneJsonStatus.kind === "error"
+                ? "text-rose-300"
+                : sceneJsonStatus.kind === "success"
+                  ? "text-emerald-300"
+                  : "text-slate-400"
+            }`}
+          >
+            {sceneJsonStatus.message}
+          </p>
+          <p className="mt-1 text-[11px] text-slate-500">Exported at: {sceneStateExportedAt}</p>
+          <textarea
+            readOnly
+            value={sceneStateJson}
+            className="mt-3 h-80 w-full rounded-lg border border-slate-800 bg-slate-950/80 p-3 font-mono text-xs text-slate-200 outline-none"
+            aria-label="Scene State JSON"
+          />
         </section>
       </div>
     </main>
