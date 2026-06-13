@@ -10,6 +10,8 @@ import {
   FLOOR_MAPPING_LIMITS,
   PERSPECTIVE_DEPTH_SCALING_LIMITS,
   clampValue,
+  deriveDepthScalingFromPolygon,
+  deriveFloorMappingFromPolygon,
   getDepthNearFarOrderingInfo,
   getDepthScaleMultiplier,
   getEffectiveObjectScale,
@@ -70,9 +72,16 @@ const MATERIAL_TEXTURE_KEYS = [
   "specularMap",
 ] as const;
 
+// Neutral placement baseline. Model-local vertical correction now belongs to
+// model normalization (Phase 0O-A), so default placement Y sits near 0 to keep
+// freshly placed objects centered in the fixed camera framing instead of the
+// legacy negative offsets that rendered objects off the bottom of the frame.
+const GLB_DEFAULT_PLACEMENT_Y = 0;
+const FALLBACK_DEFAULT_PLACEMENT_Y = 0;
+
 const GLB_DEFAULT_TRANSFORM: TransformState = {
   positionX: 0,
-  positionY: -0.85,
+  positionY: GLB_DEFAULT_PLACEMENT_Y,
   positionZ: 0,
   rotationYDeg: 0,
   uniformScale: 1.15,
@@ -80,7 +89,7 @@ const GLB_DEFAULT_TRANSFORM: TransformState = {
 
 const FALLBACK_DEFAULT_TRANSFORM: TransformState = {
   positionX: 0,
-  positionY: -0.35,
+  positionY: FALLBACK_DEFAULT_PLACEMENT_Y,
   positionZ: 0,
   rotationYDeg: 0,
   uniformScale: 1,
@@ -279,6 +288,10 @@ export default function ThreeRoomLab() {
     message: "Save or restore a browser-local draft.",
   });
   const [localDraftLastSavedAt, setLocalDraftLastSavedAt] = useState<string | null>(null);
+  const [autoFitStatus, setAutoFitStatus] = useState<SceneJsonStatus>({
+    kind: "idle",
+    message: "Auto-fit reads your floor outline to set mapping and depth scaling.",
+  });
 
   useEffect(() => {
     transformRef.current = transform;
@@ -622,6 +635,68 @@ export default function ThreeRoomLab() {
 
   const handleResetPerspectiveDepthScaling = () => {
     setPerspectiveDepthScaling(DEFAULT_PERSPECTIVE_DEPTH_SCALING);
+  };
+
+  const handleAutoFitFromFloor = () => {
+    const mappingResult = deriveFloorMappingFromPolygon(floorPolygon);
+    const depthResult = deriveDepthScalingFromPolygon(floorPolygon);
+
+    let mappingApplied = false;
+    if (mappingResult.ok) {
+      const nextMapping = mappingResult.value;
+      setFloorMapping(nextMapping);
+      mappingApplied = true;
+      if (lastAcceptedFloorClick) {
+        const mapped = mapFloorPointToObjectTransform(lastAcceptedFloorClick, nextMapping);
+        updateTransformState(
+          (current) => ({ ...current, positionX: mapped.positionX, positionZ: mapped.positionZ }),
+          { markOwned: true }
+        );
+      }
+    }
+
+    let depthApplied = false;
+    if (depthResult.ok) {
+      setPerspectiveDepthScaling(depthResult.value);
+      depthApplied = true;
+    }
+
+    if (!mappingApplied && !depthApplied) {
+      const reason = !mappingResult.ok
+        ? mappingResult.reason
+        : !depthResult.ok
+          ? depthResult.reason
+          : "Auto-fit could not derive values.";
+      setAutoFitStatus({ kind: "error", message: `Auto-fit failed: ${reason} Existing values kept.` });
+      return;
+    }
+
+    const notes: string[] = [];
+    if (mappingResult.ok && mappingResult.note) notes.push(mappingResult.note);
+    if (depthResult.ok && depthResult.note) notes.push(depthResult.note);
+    const lowConfidence =
+      (mappingResult.ok && mappingResult.confidence === "low") ||
+      (depthResult.ok && depthResult.confidence === "low");
+    const suffix = notes.length ? ` ${notes.join(" ")}` : "";
+
+    if (mappingApplied && depthApplied) {
+      const base = lowConfidence
+        ? "Auto-fit applied (low confidence) to floor mapping and depth scaling."
+        : "Auto-fit applied to floor mapping and depth scaling.";
+      setAutoFitStatus({ kind: "success", message: `${base}${suffix}` });
+    } else if (mappingApplied) {
+      const reason = depthResult.ok ? "" : ` ${depthResult.reason}`;
+      setAutoFitStatus({
+        kind: "success",
+        message: `Auto-fit applied to floor mapping. Depth scaling kept (not derived):${reason || " skipped."}${suffix}`,
+      });
+    } else {
+      const reason = mappingResult.ok ? "" : ` ${mappingResult.reason}`;
+      setAutoFitStatus({
+        kind: "success",
+        message: `Auto-fit applied to depth scaling. Floor mapping kept (not derived):${reason || " skipped."}${suffix}`,
+      });
+    }
   };
 
   const handleFixPerspectiveNearFarOrder = () => {
@@ -1734,8 +1809,31 @@ export default function ThreeRoomLab() {
             </div>
           </div>
           <div className="mt-4 border-t border-slate-800 pt-3">
-            <h3 className="text-xs font-medium text-slate-200">Floor mapping tuning</h3>
-            <div className="mt-2 grid gap-2 md:grid-cols-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <h3 className="text-xs font-medium text-slate-200">Floor mapping tuning</h3>
+              <button
+                type="button"
+                onClick={handleAutoFitFromFloor}
+                className="rounded-lg border border-emerald-500/70 px-3 py-1.5 text-xs text-emerald-200 transition hover:border-emerald-300 hover:text-emerald-100"
+              >
+                Auto-fit from floor
+              </button>
+            </div>
+            <p className="mt-2 text-xs text-slate-400">
+              Estimates world size and depth scaling from the floor outline. Manual controls below can still override it.
+            </p>
+            <p
+              className={`mt-1 text-xs ${
+                autoFitStatus.kind === "error"
+                  ? "text-rose-300"
+                  : autoFitStatus.kind === "success"
+                    ? "text-emerald-300"
+                    : "text-slate-500"
+              }`}
+            >
+              {autoFitStatus.message}
+            </p>
+            <div className="mt-3 grid gap-2 md:grid-cols-3">
               <TransformControlRow
                 label="World width"
                 value={floorMapping.worldWidth}
