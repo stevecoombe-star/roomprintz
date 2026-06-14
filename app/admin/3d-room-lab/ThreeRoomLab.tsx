@@ -28,6 +28,10 @@ import {
   type PerspectiveDepthScalingState,
   type TransformState,
 } from "./scene-state";
+import {
+  computeAutoBoundsNormalization,
+  type AutoBoundsNormalization,
+} from "./model-bounds";
 
 const DEFAULT_MODEL_GLB_PATH = "/3d-lab/furniture-test-chair.glb";
 const LOCAL_DRAFT_STORAGE_KEY = "vibode:3d-room-lab:scene-state:v0";
@@ -84,7 +88,9 @@ const GLB_DEFAULT_TRANSFORM: TransformState = {
   positionY: GLB_DEFAULT_PLACEMENT_Y,
   positionZ: 0,
   rotationYDeg: 0,
-  uniformScale: 1.15,
+  // Auto-bounds normalization (Phase 0P-B) scales models to a known target
+  // size, so uniformScale of 1 means "exactly the normalized target size".
+  uniformScale: 1,
 };
 
 const FALLBACK_DEFAULT_TRANSFORM: TransformState = {
@@ -216,6 +222,9 @@ export default function ThreeRoomLab() {
   const animationFrameRef = useRef<number | null>(null);
   const placementGroupRef = useRef<THREE.Group | null>(null);
   const modelNormalizationGroupRef = useRef<THREE.Group | null>(null);
+  const autoBoundsGroupRef = useRef<THREE.Group | null>(null);
+  const autoNormalizeBoundsEnabledRef = useRef(true);
+  const lastAutoBoundsRef = useRef<AutoBoundsNormalization | null>(null);
   const activeObjectRef = useRef<THREE.Object3D | null>(null);
   const resizeObserverRef = useRef<ResizeObserver | null>(null);
   const loadModelFromPathRef = useRef<((path: string) => void) | null>(null);
@@ -254,6 +263,8 @@ export default function ThreeRoomLab() {
   const [transform, setTransform] = useState<TransformState>(GLB_DEFAULT_TRANSFORM);
   const [modelNormalization, setModelNormalization] =
     useState<ModelNormalizationState>(DEFAULT_MODEL_NORMALIZATION);
+  const [autoNormalizeBoundsEnabled, setAutoNormalizeBoundsEnabled] = useState(true);
+  const [autoBoundsInfo, setAutoBoundsInfo] = useState<AutoBoundsNormalization | null>(null);
   const [showFloorOverlay, setShowFloorOverlay] = useState(true);
   const [floorPolygon, setFloorPolygon] = useState<FloorPoint[]>(DEFAULT_FLOOR_POLYGON);
   const [activeFloorHandleIndex, setActiveFloorHandleIndex] = useState<number | null>(null);
@@ -384,6 +395,20 @@ export default function ThreeRoomLab() {
     modelNormalizationGroup.scale.setScalar(currentNormalization.modelScaleMultiplier);
   };
 
+  const applyAutoBoundsNormalization = () => {
+    const autoBoundsGroup = autoBoundsGroupRef.current;
+    if (!autoBoundsGroup) return;
+    const info = lastAutoBoundsRef.current;
+    autoBoundsGroup.rotation.set(0, 0, 0);
+    if (autoNormalizeBoundsEnabledRef.current && info && info.ok) {
+      autoBoundsGroup.scale.setScalar(info.scale);
+      autoBoundsGroup.position.set(info.offset.x, info.offset.y, info.offset.z);
+    } else {
+      autoBoundsGroup.scale.setScalar(1);
+      autoBoundsGroup.position.set(0, 0, 0);
+    }
+  };
+
   const updateTransformState = (
     updater: TransformStateUpdater,
     options?: { markOwned?: boolean }
@@ -405,6 +430,11 @@ export default function ThreeRoomLab() {
   useEffect(() => {
     applyModelNormalization();
   }, [modelNormalization]);
+
+  useEffect(() => {
+    autoNormalizeBoundsEnabledRef.current = autoNormalizeBoundsEnabled;
+    applyAutoBoundsNormalization();
+  }, [autoNormalizeBoundsEnabled]);
 
   const currentDepthScaleMultiplier = useMemo(
     () => getDepthScaleMultiplier(lastAcceptedFloorClick?.y ?? null, perspectiveDepthScaling),
@@ -459,6 +489,40 @@ export default function ThreeRoomLab() {
       { label: "model y offset", value: formatNumber(modelNormalization.modelYOffset) },
       { label: "model yaw offset", value: `${formatNumber(modelNormalization.modelYawOffsetDeg)}deg` },
       { label: "model scale multiplier", value: formatNumber(modelNormalization.modelScaleMultiplier) },
+      { label: "auto-normalize bounds", value: autoNormalizeBoundsEnabled ? "on" : "off" },
+      {
+        label: "auto-normalization status",
+        value: !autoNormalizeBoundsEnabled
+          ? "off"
+          : autoBoundsInfo?.ok
+            ? "applied"
+            : `skipped (${autoBoundsInfo?.reason ?? "none"})`,
+      },
+      {
+        label: "measured size",
+        value: autoBoundsInfo
+          ? `${formatNumber(autoBoundsInfo.measuredSize.x)} / ${formatNumber(
+              autoBoundsInfo.measuredSize.y
+            )} / ${formatNumber(autoBoundsInfo.measuredSize.z)}`
+          : "none",
+      },
+      {
+        label: "measured center",
+        value: autoBoundsInfo
+          ? `${formatNumber(autoBoundsInfo.measuredCenter.x)} / ${formatNumber(
+              autoBoundsInfo.measuredCenter.y
+            )} / ${formatNumber(autoBoundsInfo.measuredCenter.z)}`
+          : "none",
+      },
+      {
+        label: "auto offset",
+        value: autoBoundsInfo
+          ? `${formatNumber(autoBoundsInfo.offset.x)} / ${formatNumber(
+              autoBoundsInfo.offset.y
+            )} / ${formatNumber(autoBoundsInfo.offset.z)}`
+          : "none",
+      },
+      { label: "auto scale", value: autoBoundsInfo ? formatNumber(autoBoundsInfo.scale) : "none" },
       { label: "auto-rotate", value: autoRotateEnabled ? "on" : "off" },
       { label: "active object", value: currentActiveObjectType },
       { label: "floor overlay", value: showFloorOverlay ? "on" : "off" },
@@ -542,6 +606,8 @@ export default function ThreeRoomLab() {
       currentDepthScaleMultiplier,
       currentEffectiveObjectScale,
       isModelNormalizationAdjusted,
+      autoNormalizeBoundsEnabled,
+      autoBoundsInfo,
       depthNearFarOrderingWarning,
       isDepthNearFarOrderValid,
       isObject2DHandlesEnabled,
@@ -1357,12 +1423,16 @@ export default function ThreeRoomLab() {
     scene.add(keyLight);
     const placementGroup = new THREE.Group();
     const modelNormalizationGroup = new THREE.Group();
+    const autoBoundsGroup = new THREE.Group();
+    modelNormalizationGroup.add(autoBoundsGroup);
     placementGroup.add(modelNormalizationGroup);
     scene.add(placementGroup);
     placementGroupRef.current = placementGroup;
     modelNormalizationGroupRef.current = modelNormalizationGroup;
+    autoBoundsGroupRef.current = autoBoundsGroup;
     applyPlacementTransform();
     applyModelNormalization();
+    applyAutoBoundsNormalization();
 
     const renderer = new THREE.WebGLRenderer({ alpha: true, antialias: true });
     renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
@@ -1393,16 +1463,23 @@ export default function ThreeRoomLab() {
     const removeActiveObject = () => {
       const current = activeObjectRef.current;
       if (!current) return;
-      modelNormalizationGroup.remove(current);
+      autoBoundsGroup.remove(current);
       disposeObject3D(current);
       activeObjectRef.current = null;
     };
 
     const setActiveObject = (object: THREE.Object3D, kind: ActiveObjectKind) => {
       removeActiveObject();
-      modelNormalizationGroup.add(object);
+      // Measure the raw object before parenting under transformed groups so
+      // ancestor scale/position never contaminate the bounds, and recompute
+      // from scratch on every load/swap to avoid compounding normalization.
+      const normalization = computeAutoBoundsNormalization(object);
+      lastAutoBoundsRef.current = normalization;
+      setAutoBoundsInfo(normalization);
+      autoBoundsGroup.add(object);
       activeObjectRef.current = object;
       setActiveObjectKind(kind);
+      applyAutoBoundsNormalization();
       applyPlacementTransform();
       applyModelNormalization();
     };
@@ -1485,12 +1562,13 @@ export default function ThreeRoomLab() {
       loadModelFromPathRef.current = null;
       useFallbackCubeRef.current = null;
       if (activeObjectRef.current) {
-        modelNormalizationGroup.remove(activeObjectRef.current);
+        autoBoundsGroup.remove(activeObjectRef.current);
         disposeObject3D(activeObjectRef.current);
         activeObjectRef.current = null;
       }
       placementGroupRef.current = null;
       modelNormalizationGroupRef.current = null;
+      autoBoundsGroupRef.current = null;
       scene.remove(placementGroup);
       scene.remove(ambient);
       scene.remove(keyLight);
@@ -1769,17 +1847,29 @@ export default function ThreeRoomLab() {
           <div className="mt-4 border-t border-slate-800 pt-3">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <h3 className="text-xs font-medium text-slate-200">Model normalization</h3>
-              <button
-                type="button"
-                onClick={handleResetModelNormalization}
-                className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-200 transition hover:border-emerald-400/80 hover:text-emerald-200"
-              >
-                Reset normalization
-              </button>
+              <div className="flex flex-wrap items-center gap-3">
+                <label className="flex items-center gap-2 text-xs text-slate-300">
+                  <input
+                    type="checkbox"
+                    checked={autoNormalizeBoundsEnabled}
+                    onChange={(event) => setAutoNormalizeBoundsEnabled(event.target.checked)}
+                    className="accent-emerald-400"
+                  />
+                  Auto-normalize model bounds
+                </label>
+                <button
+                  type="button"
+                  onClick={handleResetModelNormalization}
+                  className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-200 transition hover:border-emerald-400/80 hover:text-emerald-200"
+                >
+                  Reset normalization
+                </button>
+              </div>
             </div>
             <p className="mt-2 text-xs text-slate-400">
               Normalization corrects the loaded model itself (floor contact, facing, native scale). Transform controls
-              still place the object in the room.
+              still place the object in the room. Auto-normalize measures each loaded model&apos;s bounds and applies
+              floor contact, X/Z centering, and target-size scaling automatically; the sliders below layer on top.
             </p>
             <div className="mt-2 grid gap-2 md:grid-cols-3">
               <TransformControlRow
