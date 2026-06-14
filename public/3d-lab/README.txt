@@ -12,8 +12,14 @@ Tip: after drawing the floor outline, use "Auto-fit from floor" in the Floor
 mapping tuning section to estimate world size and perspective depth scaling
 from the polygon. Manual mapping/depth controls still override it.
 
-Tip: "Auto-normalize model bounds" (on by default, in the Model normalization
+Tip: "Auto-normalize model bounds" (on by default, in the Advanced calibration
 section) measures each loaded model's bounding box and auto-applies floor
 contact, X/Z centering, and target-size scaling so arbitrary GLBs start in a
 sensible state. Turn it off to inspect a model's raw bounds; the manual
 normalization sliders still layer on top either way.
+
+Layout: the lab UI is organized into Basic controls (always visible),
+Advanced calibration, Scene state & local draft, and Debug status. The
+Advanced/Scene/Debug sections are collapsible and start collapsed; click a
+section header to expand it. The viewport sits above the controls so you can
+see placement changes immediately.

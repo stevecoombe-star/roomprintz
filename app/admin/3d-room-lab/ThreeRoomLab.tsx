@@ -4,6 +4,7 @@ import { FormEvent, PointerEvent, useEffect, useMemo, useRef, useState } from "r
 import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import SceneJsonPanel from "./SceneJsonPanel";
+import CollapsibleSection from "./CollapsibleSection";
 import {
   DEFAULT_FLOOR_MAPPING,
   DEFAULT_PERSPECTIVE_DEPTH_SCALING,
@@ -265,6 +266,10 @@ export default function ThreeRoomLab() {
     useState<ModelNormalizationState>(DEFAULT_MODEL_NORMALIZATION);
   const [autoNormalizeBoundsEnabled, setAutoNormalizeBoundsEnabled] = useState(true);
   const [autoBoundsInfo, setAutoBoundsInfo] = useState<AutoBoundsNormalization | null>(null);
+  // Phase 0P-C: local-only UI collapse state (not persisted, not in scene JSON).
+  const [isAdvancedControlsOpen, setIsAdvancedControlsOpen] = useState(false);
+  const [isSceneStateOpen, setIsSceneStateOpen] = useState(false);
+  const [isDebugOpen, setIsDebugOpen] = useState(false);
   const [showFloorOverlay, setShowFloorOverlay] = useState(true);
   const [floorPolygon, setFloorPolygon] = useState<FloorPoint[]>(DEFAULT_FLOOR_POLYGON);
   const [activeFloorHandleIndex, setActiveFloorHandleIndex] = useState<number | null>(null);
@@ -1606,7 +1611,7 @@ export default function ThreeRoomLab() {
     <main className="min-h-screen bg-slate-950 text-slate-50 px-4 py-10">
       <div className="mx-auto w-full max-w-6xl space-y-6">
         <header className="space-y-2">
-          <h1 className="text-2xl font-semibold tracking-tight">3D Room Lab (Phase 0A)</h1>
+          <h1 className="text-2xl font-semibold tracking-tight">3D Room Lab — Research Prototype</h1>
           <p className="text-sm text-slate-400">
             Static proof: room image base layer with transparent Three.js overlay and one local GLB test asset.
           </p>
@@ -1666,357 +1671,6 @@ export default function ThreeRoomLab() {
           <p className="mt-2 text-xs text-slate-400">Active object type: {currentActiveObjectType}</p>
           <p className="mt-1 text-xs text-slate-400">Current model path: {modelPath || "(empty)"}</p>
           <p className="mt-1 text-xs text-slate-400">Model status: {formatModelStatus(modelLoadState, modelLoadError)}</p>
-        </section>
-
-        <section className="rounded-2xl border border-slate-800 bg-slate-900/70 p-4">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <h2 className="text-sm font-medium text-slate-100">Manual Transform Controls</h2>
-            <div className="flex items-center gap-2">
-              <label className="flex items-center gap-2 text-xs text-slate-300">
-                <input
-                  type="checkbox"
-                  checked={showFloorOverlay}
-                  onChange={(event) => setShowFloorOverlay(event.target.checked)}
-                  className="accent-emerald-400"
-                />
-                Show floor polygon
-              </label>
-              <label className="flex items-center gap-2 text-xs text-slate-300">
-                <input
-                  type="checkbox"
-                  checked={isFloorClickPlacementEnabled}
-                  onChange={(event) => setIsFloorClickPlacementEnabled(event.target.checked)}
-                  className="accent-emerald-400"
-                />
-                Click floor to place object
-              </label>
-              <label className="flex items-center gap-2 text-xs text-slate-300">
-                <input
-                  type="checkbox"
-                  checked={isFloorAnchorDragEnabled}
-                  onChange={(event) => setIsFloorAnchorDragEnabled(event.target.checked)}
-                  className="accent-emerald-400"
-                />
-                Drag floor anchor to move object
-              </label>
-              <label className="flex items-center gap-2 text-xs text-slate-300">
-                <input
-                  type="checkbox"
-                  checked={isObject2DHandlesEnabled}
-                  onChange={(event) => setIsObject2DHandlesEnabled(event.target.checked)}
-                  className="accent-emerald-400"
-                />
-                Enable object 2D handles
-              </label>
-              <label className="flex items-center gap-2 text-xs text-slate-300">
-                <input
-                  type="checkbox"
-                  checked={autoRotateEnabled}
-                  onChange={(event) => setAutoRotateEnabled(event.target.checked)}
-                  className="accent-emerald-400"
-                />
-                Auto-rotate
-              </label>
-              <button
-                type="button"
-                onClick={handleResetTransform}
-                className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-200 transition hover:border-emerald-400/80 hover:text-emerald-200"
-              >
-                Reset transform
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setFloorPolygon(DEFAULT_FLOOR_POLYGON);
-                  setActiveFloorHandleIndex(null);
-                  dragPointerIdRef.current = null;
-                  objectHandleDragPointerIdRef.current = null;
-                  setActiveObjectHandleMode(null);
-                  setWasLastObjectHandleMoveRejected(false);
-                  setLastObjectHandleRotateDeltaDeg(null);
-                  setLastObjectHandleScaleMultiplier(null);
-                  setLastObjectHandleHeightDeltaYUnits(null);
-                  floorAnchorDragPointerIdRef.current = null;
-                  setIsFloorAnchorDragActive(false);
-                  setWasLastAnchorDragMoveRejected(false);
-                }}
-                className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-200 transition hover:border-emerald-400/80 hover:text-emerald-200"
-              >
-                Reset floor polygon
-              </button>
-              <button
-                type="button"
-                onClick={handleResetFloorMapping}
-                className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-200 transition hover:border-emerald-400/80 hover:text-emerald-200"
-              >
-                Reset mapping
-              </button>
-              <button
-                type="button"
-                onClick={handleResetPerspectiveDepthScaling}
-                className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-200 transition hover:border-emerald-400/80 hover:text-emerald-200"
-              >
-                Reset depth scaling
-              </button>
-            </div>
-          </div>
-          {isFloorAnchorDragEnabled && !lastAcceptedFloorClick && (
-            <p className="mt-2 text-xs text-amber-300">
-              Click inside the floor polygon first to create an anchor marker, then drag it to move the object.
-            </p>
-          )}
-          {isObject2DHandlesEnabled && !lastAcceptedFloorClick && (
-            <p className="mt-1 text-xs text-amber-300">
-              Enable object 2D handles is on. Click inside the floor polygon first to create an anchor.
-            </p>
-          )}
-          {isObject2DHandlesEnabled && lastAcceptedFloorClick && (
-            <p className="mt-1 text-xs text-sky-200">
-              Overlay handles are attached to the active object anchor. Drag Move/Height/Rotate/Scale handles to manipulate the
-              active 3D object.
-            </p>
-          )}
-          <div className="mt-2 rounded-lg border border-slate-800 bg-slate-950/50 p-2 text-[11px] text-slate-300">
-            <p>
-              <span className="text-slate-400">Click floor to place object:</span> click the floor background inside
-              the polygon to set the object anchor.
-            </p>
-            <p className="mt-1">
-              <span className="text-slate-400">Drag floor anchor to move object:</span> drag the pink anchor marker.
-            </p>
-            <p className="mt-1">
-              <span className="text-slate-400">Object 2D move handle:</span> drag the blue move handle near the anchor.
-            </p>
-            <p className="mt-1">
-              <span className="text-slate-400">Object 2D height handle:</span> drag the violet handle up/down to adjust Position Y.
-            </p>
-            <p className="mt-1">
-              <span className="text-slate-400">Object 2D rotate handle:</span> drag the amber handle around the anchor.
-            </p>
-            <p className="mt-1">
-              <span className="text-slate-400">Object 2D scale handle:</span> drag the green handle away/toward the anchor.
-            </p>
-            {isFloorClickPlacementEnabled && isFloorAnchorDragEnabled && (
-              <p className="mt-1 text-amber-200">
-                Anchor drag takes precedence on the marker; background floor clicks still place the object.
-              </p>
-            )}
-          </div>
-          <div className="mt-3 grid gap-2 md:grid-cols-2">
-            <TransformControlRow
-              label="Position X"
-              value={transform.positionX}
-              min={TRANSFORM_LIMITS.positionX.min}
-              max={TRANSFORM_LIMITS.positionX.max}
-              step={TRANSFORM_LIMITS.positionX.step}
-              onChange={(value) => updateTransformField("positionX", value)}
-            />
-            <TransformControlRow
-              label="Position Y"
-              value={transform.positionY}
-              min={TRANSFORM_LIMITS.positionY.min}
-              max={TRANSFORM_LIMITS.positionY.max}
-              step={TRANSFORM_LIMITS.positionY.step}
-              onChange={(value) => updateTransformField("positionY", value)}
-            />
-            <TransformControlRow
-              label="Position Z"
-              value={transform.positionZ}
-              min={TRANSFORM_LIMITS.positionZ.min}
-              max={TRANSFORM_LIMITS.positionZ.max}
-              step={TRANSFORM_LIMITS.positionZ.step}
-              onChange={(value) => updateTransformField("positionZ", value)}
-            />
-            <TransformControlRow
-              label="Rotation Y (deg)"
-              value={transform.rotationYDeg}
-              min={TRANSFORM_LIMITS.rotationYDeg.min}
-              max={TRANSFORM_LIMITS.rotationYDeg.max}
-              step={TRANSFORM_LIMITS.rotationYDeg.step}
-              onChange={(value) => updateTransformField("rotationYDeg", value)}
-            />
-            <TransformControlRow
-              label="Uniform Scale"
-              value={transform.uniformScale}
-              min={TRANSFORM_LIMITS.uniformScale.min}
-              max={TRANSFORM_LIMITS.uniformScale.max}
-              step={TRANSFORM_LIMITS.uniformScale.step}
-              onChange={(value) => updateTransformField("uniformScale", value)}
-            />
-          </div>
-          <div className="mt-4 border-t border-slate-800 pt-3">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <h3 className="text-xs font-medium text-slate-200">Model normalization</h3>
-              <div className="flex flex-wrap items-center gap-3">
-                <label className="flex items-center gap-2 text-xs text-slate-300">
-                  <input
-                    type="checkbox"
-                    checked={autoNormalizeBoundsEnabled}
-                    onChange={(event) => setAutoNormalizeBoundsEnabled(event.target.checked)}
-                    className="accent-emerald-400"
-                  />
-                  Auto-normalize model bounds
-                </label>
-                <button
-                  type="button"
-                  onClick={handleResetModelNormalization}
-                  className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-200 transition hover:border-emerald-400/80 hover:text-emerald-200"
-                >
-                  Reset normalization
-                </button>
-              </div>
-            </div>
-            <p className="mt-2 text-xs text-slate-400">
-              Normalization corrects the loaded model itself (floor contact, facing, native scale). Transform controls
-              still place the object in the room. Auto-normalize measures each loaded model&apos;s bounds and applies
-              floor contact, X/Z centering, and target-size scaling automatically; the sliders below layer on top.
-            </p>
-            <div className="mt-2 grid gap-2 md:grid-cols-3">
-              <TransformControlRow
-                label="Model Y offset"
-                value={modelNormalization.modelYOffset}
-                min={MODEL_NORMALIZATION_LIMITS.modelYOffset.min}
-                max={MODEL_NORMALIZATION_LIMITS.modelYOffset.max}
-                step={MODEL_NORMALIZATION_LIMITS.modelYOffset.step}
-                onChange={(value) => updateModelNormalizationField("modelYOffset", value)}
-              />
-              <TransformControlRow
-                label="Model yaw offset (deg)"
-                value={modelNormalization.modelYawOffsetDeg}
-                min={MODEL_NORMALIZATION_LIMITS.modelYawOffsetDeg.min}
-                max={MODEL_NORMALIZATION_LIMITS.modelYawOffsetDeg.max}
-                step={MODEL_NORMALIZATION_LIMITS.modelYawOffsetDeg.step}
-                onChange={(value) => updateModelNormalizationField("modelYawOffsetDeg", value)}
-              />
-              <TransformControlRow
-                label="Model scale multiplier"
-                value={modelNormalization.modelScaleMultiplier}
-                min={MODEL_NORMALIZATION_LIMITS.modelScaleMultiplier.min}
-                max={MODEL_NORMALIZATION_LIMITS.modelScaleMultiplier.max}
-                step={MODEL_NORMALIZATION_LIMITS.modelScaleMultiplier.step}
-                onChange={(value) => updateModelNormalizationField("modelScaleMultiplier", value)}
-              />
-            </div>
-          </div>
-          <div className="mt-4 border-t border-slate-800 pt-3">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <h3 className="text-xs font-medium text-slate-200">Floor mapping tuning</h3>
-              <button
-                type="button"
-                onClick={handleAutoFitFromFloor}
-                className="rounded-lg border border-emerald-500/70 px-3 py-1.5 text-xs text-emerald-200 transition hover:border-emerald-300 hover:text-emerald-100"
-              >
-                Auto-fit from floor
-              </button>
-            </div>
-            <p className="mt-2 text-xs text-slate-400">
-              Estimates world size and depth scaling from the floor outline. Manual controls below can still override it.
-            </p>
-            <p
-              className={`mt-1 text-xs ${
-                autoFitStatus.kind === "error"
-                  ? "text-rose-300"
-                  : autoFitStatus.kind === "success"
-                    ? "text-emerald-300"
-                    : "text-slate-500"
-              }`}
-            >
-              {autoFitStatus.message}
-            </p>
-            <div className="mt-3 grid gap-2 md:grid-cols-3">
-              <TransformControlRow
-                label="World width"
-                value={floorMapping.worldWidth}
-                min={FLOOR_MAPPING_LIMITS.worldWidth.min}
-                max={FLOOR_MAPPING_LIMITS.worldWidth.max}
-                step={FLOOR_MAPPING_LIMITS.worldWidth.step}
-                onChange={(value) => updateFloorMappingField("worldWidth", value)}
-              />
-              <TransformControlRow
-                label="World depth"
-                value={floorMapping.worldDepth}
-                min={FLOOR_MAPPING_LIMITS.worldDepth.min}
-                max={FLOOR_MAPPING_LIMITS.worldDepth.max}
-                step={FLOOR_MAPPING_LIMITS.worldDepth.step}
-                onChange={(value) => updateFloorMappingField("worldDepth", value)}
-              />
-              <TransformControlRow
-                label="Depth center Y"
-                value={floorMapping.depthCenterY}
-                min={FLOOR_MAPPING_LIMITS.depthCenterY.min}
-                max={FLOOR_MAPPING_LIMITS.depthCenterY.max}
-                step={FLOOR_MAPPING_LIMITS.depthCenterY.step}
-                onChange={(value) => updateFloorMappingField("depthCenterY", value)}
-              />
-            </div>
-          </div>
-          <div className="mt-4 border-t border-slate-800 pt-3">
-            <div className="flex items-center justify-between gap-2">
-              <h3 className="text-xs font-medium text-slate-200">Perspective depth scaling</h3>
-              <label className="flex items-center gap-2 text-xs text-slate-300">
-                <input
-                  type="checkbox"
-                  checked={perspectiveDepthScaling.enabled}
-                  onChange={(event) =>
-                    setPerspectiveDepthScaling((prev) => ({ ...prev, enabled: event.target.checked }))
-                  }
-                  className="accent-emerald-400"
-                />
-                Auto-scale by floor depth
-              </label>
-            </div>
-            {perspectiveDepthScaling.enabled && !lastAcceptedFloorClick && (
-              <p className="mt-2 text-xs text-amber-300">
-                Click inside the floor polygon to set an anchor so depth scaling can be applied.
-              </p>
-            )}
-            {depthNearFarOrderingWarning && (
-              <div className="mt-2 flex flex-wrap items-center gap-2">
-                <p className="text-xs text-amber-300">{depthNearFarOrderingWarning}</p>
-                <button
-                  type="button"
-                  onClick={handleFixPerspectiveNearFarOrder}
-                  className="rounded-lg border border-amber-500/70 px-2 py-1 text-[11px] text-amber-200 transition hover:border-amber-300 hover:text-amber-100"
-                >
-                  Fix near/far order
-                </button>
-              </div>
-            )}
-            <div className="mt-2 grid gap-2 md:grid-cols-2">
-              <TransformControlRow
-                label="Near scale multiplier"
-                value={perspectiveDepthScaling.nearScaleMultiplier}
-                min={PERSPECTIVE_DEPTH_SCALING_LIMITS.nearScaleMultiplier.min}
-                max={PERSPECTIVE_DEPTH_SCALING_LIMITS.nearScaleMultiplier.max}
-                step={PERSPECTIVE_DEPTH_SCALING_LIMITS.nearScaleMultiplier.step}
-                onChange={(value) => updatePerspectiveDepthScalingField("nearScaleMultiplier", value)}
-              />
-              <TransformControlRow
-                label="Far scale multiplier"
-                value={perspectiveDepthScaling.farScaleMultiplier}
-                min={PERSPECTIVE_DEPTH_SCALING_LIMITS.farScaleMultiplier.min}
-                max={PERSPECTIVE_DEPTH_SCALING_LIMITS.farScaleMultiplier.max}
-                step={PERSPECTIVE_DEPTH_SCALING_LIMITS.farScaleMultiplier.step}
-                onChange={(value) => updatePerspectiveDepthScalingField("farScaleMultiplier", value)}
-              />
-              <TransformControlRow
-                label="Near floor Y"
-                value={perspectiveDepthScaling.nearFloorY}
-                min={PERSPECTIVE_DEPTH_SCALING_LIMITS.nearFloorY.min}
-                max={PERSPECTIVE_DEPTH_SCALING_LIMITS.nearFloorY.max}
-                step={PERSPECTIVE_DEPTH_SCALING_LIMITS.nearFloorY.step}
-                onChange={(value) => updatePerspectiveDepthScalingField("nearFloorY", value)}
-              />
-              <TransformControlRow
-                label="Far floor Y"
-                value={perspectiveDepthScaling.farFloorY}
-                min={PERSPECTIVE_DEPTH_SCALING_LIMITS.farFloorY.min}
-                max={PERSPECTIVE_DEPTH_SCALING_LIMITS.farFloorY.max}
-                step={PERSPECTIVE_DEPTH_SCALING_LIMITS.farFloorY.step}
-                onChange={(value) => updatePerspectiveDepthScalingField("farFloorY", value)}
-              />
-            </div>
-          </div>
         </section>
 
         <section className="rounded-2xl border border-slate-800 bg-slate-900/70 p-4">
@@ -2291,8 +1945,429 @@ export default function ThreeRoomLab() {
         </section>
 
         <section className="rounded-2xl border border-slate-800 bg-slate-900/70 p-4">
-          <h2 className="text-sm font-medium text-slate-100">Debug status</h2>
-          <div className="mt-2 grid gap-2 text-xs text-slate-300 md:grid-cols-2">
+          <h2 className="text-sm font-medium text-slate-100">Lab status</h2>
+          <div className="mt-2 flex flex-wrap gap-2 text-[11px] text-slate-300">
+            <span className="rounded border border-slate-800 bg-slate-950/70 px-2 py-1">
+              <span className="text-slate-500">model:</span> {formatModelStatus(modelLoadState, modelLoadError)}
+            </span>
+            <span className="rounded border border-slate-800 bg-slate-950/70 px-2 py-1">
+              <span className="text-slate-500">object:</span> {currentActiveObjectType}
+            </span>
+            <span className="rounded border border-slate-800 bg-slate-950/70 px-2 py-1">
+              <span className="text-slate-500">renderer:</span> {rendererSize.width} x {rendererSize.height}
+            </span>
+            <span className="rounded border border-slate-800 bg-slate-950/70 px-2 py-1">
+              <span className="text-slate-500">auto-normalize:</span>{" "}
+              {!autoNormalizeBoundsEnabled
+                ? "off"
+                : autoBoundsInfo?.ok
+                  ? "applied"
+                  : `skipped (${autoBoundsInfo?.reason ?? "none"})`}
+            </span>
+            <span className="rounded border border-slate-800 bg-slate-950/70 px-2 py-1">
+              <span className="text-slate-500">auto-fit:</span> {autoFitStatus.message}
+            </span>
+          </div>
+        </section>
+
+        <section className="rounded-2xl border border-slate-800 bg-slate-900/70 p-4">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <h2 className="text-sm font-medium text-slate-100">Basic controls</h2>
+            <div className="flex flex-wrap items-center gap-2">
+              <label className="flex items-center gap-2 text-xs text-slate-300">
+                <input
+                  type="checkbox"
+                  checked={showFloorOverlay}
+                  onChange={(event) => setShowFloorOverlay(event.target.checked)}
+                  className="accent-emerald-400"
+                />
+                Show floor polygon
+              </label>
+              <label className="flex items-center gap-2 text-xs text-slate-300">
+                <input
+                  type="checkbox"
+                  checked={isFloorClickPlacementEnabled}
+                  onChange={(event) => setIsFloorClickPlacementEnabled(event.target.checked)}
+                  className="accent-emerald-400"
+                />
+                Click floor to place object
+              </label>
+              <label className="flex items-center gap-2 text-xs text-slate-300">
+                <input
+                  type="checkbox"
+                  checked={isFloorAnchorDragEnabled}
+                  onChange={(event) => setIsFloorAnchorDragEnabled(event.target.checked)}
+                  className="accent-emerald-400"
+                />
+                Drag floor anchor to move object
+              </label>
+              <label className="flex items-center gap-2 text-xs text-slate-300">
+                <input
+                  type="checkbox"
+                  checked={isObject2DHandlesEnabled}
+                  onChange={(event) => setIsObject2DHandlesEnabled(event.target.checked)}
+                  className="accent-emerald-400"
+                />
+                Enable object 2D handles
+              </label>
+              <button
+                type="button"
+                onClick={handleAutoFitFromFloor}
+                className="rounded-lg border border-emerald-500/70 px-3 py-1.5 text-xs text-emerald-200 transition hover:border-emerald-300 hover:text-emerald-100"
+              >
+                Auto-fit from floor
+              </button>
+              <button
+                type="button"
+                onClick={handleResetTransform}
+                className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-200 transition hover:border-emerald-400/80 hover:text-emerald-200"
+              >
+                Reset transform
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setFloorPolygon(DEFAULT_FLOOR_POLYGON);
+                  setActiveFloorHandleIndex(null);
+                  dragPointerIdRef.current = null;
+                  objectHandleDragPointerIdRef.current = null;
+                  setActiveObjectHandleMode(null);
+                  setWasLastObjectHandleMoveRejected(false);
+                  setLastObjectHandleRotateDeltaDeg(null);
+                  setLastObjectHandleScaleMultiplier(null);
+                  setLastObjectHandleHeightDeltaYUnits(null);
+                  floorAnchorDragPointerIdRef.current = null;
+                  setIsFloorAnchorDragActive(false);
+                  setWasLastAnchorDragMoveRejected(false);
+                }}
+                className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-200 transition hover:border-emerald-400/80 hover:text-emerald-200"
+              >
+                Reset floor polygon
+              </button>
+            </div>
+          </div>
+          <p
+            className={`mt-2 text-xs ${
+              autoFitStatus.kind === "error"
+                ? "text-rose-300"
+                : autoFitStatus.kind === "success"
+                  ? "text-emerald-300"
+                  : "text-slate-500"
+            }`}
+          >
+            {autoFitStatus.message}
+          </p>
+          {isFloorAnchorDragEnabled && !lastAcceptedFloorClick && (
+            <p className="mt-2 text-xs text-amber-300">
+              Click inside the floor polygon first to create an anchor marker, then drag it to move the object.
+            </p>
+          )}
+          {isObject2DHandlesEnabled && !lastAcceptedFloorClick && (
+            <p className="mt-1 text-xs text-amber-300">
+              Enable object 2D handles is on. Click inside the floor polygon first to create an anchor.
+            </p>
+          )}
+          {isObject2DHandlesEnabled && lastAcceptedFloorClick && (
+            <p className="mt-1 text-xs text-sky-200">
+              Overlay handles are attached to the active object anchor. Drag Move/Height/Rotate/Scale handles to manipulate the
+              active 3D object.
+            </p>
+          )}
+          <div className="mt-2 rounded-lg border border-slate-800 bg-slate-950/50 p-2 text-[11px] text-slate-300">
+            <p>
+              <span className="text-slate-400">Click floor to place object:</span> click the floor background inside
+              the polygon to set the object anchor.
+            </p>
+            <p className="mt-1">
+              <span className="text-slate-400">Drag floor anchor to move object:</span> drag the pink anchor marker.
+            </p>
+            <p className="mt-1">
+              <span className="text-slate-400">Object 2D move handle:</span> drag the blue move handle near the anchor.
+            </p>
+            <p className="mt-1">
+              <span className="text-slate-400">Object 2D height handle:</span> drag the violet handle up/down to adjust Position Y.
+            </p>
+            <p className="mt-1">
+              <span className="text-slate-400">Object 2D rotate handle:</span> drag the amber handle around the anchor.
+            </p>
+            <p className="mt-1">
+              <span className="text-slate-400">Object 2D scale handle:</span> drag the green handle away/toward the anchor.
+            </p>
+            {isFloorClickPlacementEnabled && isFloorAnchorDragEnabled && (
+              <p className="mt-1 text-amber-200">
+                Anchor drag takes precedence on the marker; background floor clicks still place the object.
+              </p>
+            )}
+          </div>
+        </section>
+
+        <CollapsibleSection
+          title="Advanced calibration"
+          description="Manual transform, model normalization, floor mapping, and perspective depth scaling."
+          open={isAdvancedControlsOpen}
+          onToggle={() => setIsAdvancedControlsOpen((prev) => !prev)}
+        >
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <h3 className="text-xs font-medium text-slate-200">Manual transform</h3>
+            <label className="flex items-center gap-2 text-xs text-slate-300">
+              <input
+                type="checkbox"
+                checked={autoRotateEnabled}
+                onChange={(event) => setAutoRotateEnabled(event.target.checked)}
+                className="accent-emerald-400"
+              />
+              Auto-rotate
+            </label>
+          </div>
+          <div className="mt-3 grid gap-2 md:grid-cols-2">
+            <TransformControlRow
+              label="Position X"
+              value={transform.positionX}
+              min={TRANSFORM_LIMITS.positionX.min}
+              max={TRANSFORM_LIMITS.positionX.max}
+              step={TRANSFORM_LIMITS.positionX.step}
+              onChange={(value) => updateTransformField("positionX", value)}
+            />
+            <TransformControlRow
+              label="Position Y"
+              value={transform.positionY}
+              min={TRANSFORM_LIMITS.positionY.min}
+              max={TRANSFORM_LIMITS.positionY.max}
+              step={TRANSFORM_LIMITS.positionY.step}
+              onChange={(value) => updateTransformField("positionY", value)}
+            />
+            <TransformControlRow
+              label="Position Z"
+              value={transform.positionZ}
+              min={TRANSFORM_LIMITS.positionZ.min}
+              max={TRANSFORM_LIMITS.positionZ.max}
+              step={TRANSFORM_LIMITS.positionZ.step}
+              onChange={(value) => updateTransformField("positionZ", value)}
+            />
+            <TransformControlRow
+              label="Rotation Y (deg)"
+              value={transform.rotationYDeg}
+              min={TRANSFORM_LIMITS.rotationYDeg.min}
+              max={TRANSFORM_LIMITS.rotationYDeg.max}
+              step={TRANSFORM_LIMITS.rotationYDeg.step}
+              onChange={(value) => updateTransformField("rotationYDeg", value)}
+            />
+            <TransformControlRow
+              label="Uniform Scale"
+              value={transform.uniformScale}
+              min={TRANSFORM_LIMITS.uniformScale.min}
+              max={TRANSFORM_LIMITS.uniformScale.max}
+              step={TRANSFORM_LIMITS.uniformScale.step}
+              onChange={(value) => updateTransformField("uniformScale", value)}
+            />
+          </div>
+          <div className="mt-4 border-t border-slate-800 pt-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <h3 className="text-xs font-medium text-slate-200">Model normalization</h3>
+              <div className="flex flex-wrap items-center gap-3">
+                <label className="flex items-center gap-2 text-xs text-slate-300">
+                  <input
+                    type="checkbox"
+                    checked={autoNormalizeBoundsEnabled}
+                    onChange={(event) => setAutoNormalizeBoundsEnabled(event.target.checked)}
+                    className="accent-emerald-400"
+                  />
+                  Auto-normalize model bounds
+                </label>
+                <button
+                  type="button"
+                  onClick={handleResetModelNormalization}
+                  className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-200 transition hover:border-emerald-400/80 hover:text-emerald-200"
+                >
+                  Reset normalization
+                </button>
+              </div>
+            </div>
+            <p className="mt-2 text-xs text-slate-400">
+              Normalization corrects the loaded model itself (floor contact, facing, native scale). Transform controls
+              still place the object in the room. Auto-normalize measures each loaded model&apos;s bounds and applies
+              floor contact, X/Z centering, and target-size scaling automatically; the sliders below layer on top.
+            </p>
+            <div className="mt-2 grid gap-2 md:grid-cols-3">
+              <TransformControlRow
+                label="Model Y offset"
+                value={modelNormalization.modelYOffset}
+                min={MODEL_NORMALIZATION_LIMITS.modelYOffset.min}
+                max={MODEL_NORMALIZATION_LIMITS.modelYOffset.max}
+                step={MODEL_NORMALIZATION_LIMITS.modelYOffset.step}
+                onChange={(value) => updateModelNormalizationField("modelYOffset", value)}
+              />
+              <TransformControlRow
+                label="Model yaw offset (deg)"
+                value={modelNormalization.modelYawOffsetDeg}
+                min={MODEL_NORMALIZATION_LIMITS.modelYawOffsetDeg.min}
+                max={MODEL_NORMALIZATION_LIMITS.modelYawOffsetDeg.max}
+                step={MODEL_NORMALIZATION_LIMITS.modelYawOffsetDeg.step}
+                onChange={(value) => updateModelNormalizationField("modelYawOffsetDeg", value)}
+              />
+              <TransformControlRow
+                label="Model scale multiplier"
+                value={modelNormalization.modelScaleMultiplier}
+                min={MODEL_NORMALIZATION_LIMITS.modelScaleMultiplier.min}
+                max={MODEL_NORMALIZATION_LIMITS.modelScaleMultiplier.max}
+                step={MODEL_NORMALIZATION_LIMITS.modelScaleMultiplier.step}
+                onChange={(value) => updateModelNormalizationField("modelScaleMultiplier", value)}
+              />
+            </div>
+          </div>
+          <div className="mt-4 border-t border-slate-800 pt-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <h3 className="text-xs font-medium text-slate-200">Floor mapping tuning</h3>
+              <button
+                type="button"
+                onClick={handleResetFloorMapping}
+                className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-200 transition hover:border-emerald-400/80 hover:text-emerald-200"
+              >
+                Reset mapping
+              </button>
+            </div>
+            <p className="mt-2 text-xs text-slate-400">
+              World size and depth center used to map floor clicks to 3D placement. Use Auto-fit from floor in Basic
+              controls to estimate these from the polygon.
+            </p>
+            <div className="mt-3 grid gap-2 md:grid-cols-3">
+              <TransformControlRow
+                label="World width"
+                value={floorMapping.worldWidth}
+                min={FLOOR_MAPPING_LIMITS.worldWidth.min}
+                max={FLOOR_MAPPING_LIMITS.worldWidth.max}
+                step={FLOOR_MAPPING_LIMITS.worldWidth.step}
+                onChange={(value) => updateFloorMappingField("worldWidth", value)}
+              />
+              <TransformControlRow
+                label="World depth"
+                value={floorMapping.worldDepth}
+                min={FLOOR_MAPPING_LIMITS.worldDepth.min}
+                max={FLOOR_MAPPING_LIMITS.worldDepth.max}
+                step={FLOOR_MAPPING_LIMITS.worldDepth.step}
+                onChange={(value) => updateFloorMappingField("worldDepth", value)}
+              />
+              <TransformControlRow
+                label="Depth center Y"
+                value={floorMapping.depthCenterY}
+                min={FLOOR_MAPPING_LIMITS.depthCenterY.min}
+                max={FLOOR_MAPPING_LIMITS.depthCenterY.max}
+                step={FLOOR_MAPPING_LIMITS.depthCenterY.step}
+                onChange={(value) => updateFloorMappingField("depthCenterY", value)}
+              />
+            </div>
+          </div>
+          <div className="mt-4 border-t border-slate-800 pt-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <h3 className="text-xs font-medium text-slate-200">Perspective depth scaling</h3>
+              <div className="flex flex-wrap items-center gap-3">
+                <label className="flex items-center gap-2 text-xs text-slate-300">
+                  <input
+                    type="checkbox"
+                    checked={perspectiveDepthScaling.enabled}
+                    onChange={(event) =>
+                      setPerspectiveDepthScaling((prev) => ({ ...prev, enabled: event.target.checked }))
+                    }
+                    className="accent-emerald-400"
+                  />
+                  Auto-scale by floor depth
+                </label>
+                <button
+                  type="button"
+                  onClick={handleResetPerspectiveDepthScaling}
+                  className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-200 transition hover:border-emerald-400/80 hover:text-emerald-200"
+                >
+                  Reset depth scaling
+                </button>
+              </div>
+            </div>
+            {perspectiveDepthScaling.enabled && !lastAcceptedFloorClick && (
+              <p className="mt-2 text-xs text-amber-300">
+                Click inside the floor polygon to set an anchor so depth scaling can be applied.
+              </p>
+            )}
+            {depthNearFarOrderingWarning && (
+              <div className="mt-2 flex flex-wrap items-center gap-2">
+                <p className="text-xs text-amber-300">{depthNearFarOrderingWarning}</p>
+                <button
+                  type="button"
+                  onClick={handleFixPerspectiveNearFarOrder}
+                  className="rounded-lg border border-amber-500/70 px-2 py-1 text-[11px] text-amber-200 transition hover:border-amber-300 hover:text-amber-100"
+                >
+                  Fix near/far order
+                </button>
+              </div>
+            )}
+            <div className="mt-2 grid gap-2 md:grid-cols-2">
+              <TransformControlRow
+                label="Near scale multiplier"
+                value={perspectiveDepthScaling.nearScaleMultiplier}
+                min={PERSPECTIVE_DEPTH_SCALING_LIMITS.nearScaleMultiplier.min}
+                max={PERSPECTIVE_DEPTH_SCALING_LIMITS.nearScaleMultiplier.max}
+                step={PERSPECTIVE_DEPTH_SCALING_LIMITS.nearScaleMultiplier.step}
+                onChange={(value) => updatePerspectiveDepthScalingField("nearScaleMultiplier", value)}
+              />
+              <TransformControlRow
+                label="Far scale multiplier"
+                value={perspectiveDepthScaling.farScaleMultiplier}
+                min={PERSPECTIVE_DEPTH_SCALING_LIMITS.farScaleMultiplier.min}
+                max={PERSPECTIVE_DEPTH_SCALING_LIMITS.farScaleMultiplier.max}
+                step={PERSPECTIVE_DEPTH_SCALING_LIMITS.farScaleMultiplier.step}
+                onChange={(value) => updatePerspectiveDepthScalingField("farScaleMultiplier", value)}
+              />
+              <TransformControlRow
+                label="Near floor Y"
+                value={perspectiveDepthScaling.nearFloorY}
+                min={PERSPECTIVE_DEPTH_SCALING_LIMITS.nearFloorY.min}
+                max={PERSPECTIVE_DEPTH_SCALING_LIMITS.nearFloorY.max}
+                step={PERSPECTIVE_DEPTH_SCALING_LIMITS.nearFloorY.step}
+                onChange={(value) => updatePerspectiveDepthScalingField("nearFloorY", value)}
+              />
+              <TransformControlRow
+                label="Far floor Y"
+                value={perspectiveDepthScaling.farFloorY}
+                min={PERSPECTIVE_DEPTH_SCALING_LIMITS.farFloorY.min}
+                max={PERSPECTIVE_DEPTH_SCALING_LIMITS.farFloorY.max}
+                step={PERSPECTIVE_DEPTH_SCALING_LIMITS.farFloorY.step}
+                onChange={(value) => updatePerspectiveDepthScalingField("farFloorY", value)}
+              />
+            </div>
+          </div>
+        </CollapsibleSection>
+
+        <CollapsibleSection
+          title="Scene state & local draft"
+          description="Export, import, and local draft persistence."
+          open={isSceneStateOpen}
+          onToggle={() => setIsSceneStateOpen((prev) => !prev)}
+          contentClassName="px-3 pb-3"
+        >
+          <SceneJsonPanel
+            sceneJsonPreview={sceneStateJson}
+            sceneStateExportedAt={sceneStateExportedAt}
+            exportStatus={sceneJsonStatus}
+            importTextValue={importSceneJsonInput}
+            importStatus={importSceneStatus}
+            localDraftStatus={localDraftStatus}
+            localDraftLastSavedAt={localDraftLastSavedAt}
+            onCopySceneJson={handleCopySceneJson}
+            onDownloadSceneJson={handleDownloadSceneJson}
+            onImportTextChange={setImportSceneJsonInput}
+            onApplyImport={handleApplyImportedSceneJson}
+            onClearImport={handleClearImportedSceneJson}
+            onSaveLocalDraft={handleSaveLocalDraft}
+            onRestoreLocalDraft={handleRestoreLocalDraft}
+            onClearLocalDraft={handleClearLocalDraft}
+          />
+        </CollapsibleSection>
+
+        <CollapsibleSection
+          title="Debug status"
+          description="Full diagnostic rows and default asset path."
+          open={isDebugOpen}
+          onToggle={() => setIsDebugOpen((prev) => !prev)}
+        >
+          <div className="grid gap-2 text-xs text-slate-300 md:grid-cols-2">
             {debugRows.map((row) => (
               <p key={row.label} className="rounded border border-slate-800 bg-slate-950/70 px-2 py-1">
                 <span className="text-slate-500">{row.label}:</span> {row.value}
@@ -2302,25 +2377,7 @@ export default function ThreeRoomLab() {
           <p className="mt-3 text-xs text-slate-500">
             Default local asset path: <code>{DEFAULT_MODEL_GLB_PATH}</code>
           </p>
-        </section>
-
-        <SceneJsonPanel
-          sceneJsonPreview={sceneStateJson}
-          sceneStateExportedAt={sceneStateExportedAt}
-          exportStatus={sceneJsonStatus}
-          importTextValue={importSceneJsonInput}
-          importStatus={importSceneStatus}
-          localDraftStatus={localDraftStatus}
-          localDraftLastSavedAt={localDraftLastSavedAt}
-          onCopySceneJson={handleCopySceneJson}
-          onDownloadSceneJson={handleDownloadSceneJson}
-          onImportTextChange={setImportSceneJsonInput}
-          onApplyImport={handleApplyImportedSceneJson}
-          onClearImport={handleClearImportedSceneJson}
-          onSaveLocalDraft={handleSaveLocalDraft}
-          onRestoreLocalDraft={handleRestoreLocalDraft}
-          onClearLocalDraft={handleClearLocalDraft}
-        />
+        </CollapsibleSection>
       </div>
     </main>
   );
