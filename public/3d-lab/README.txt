@@ -8,6 +8,13 @@ The default 3D Room Lab model path is:
 You can add additional GLBs anywhere under /public and load them from the
 Model source controls using a local/public path (for example /3d-lab/other.glb).
 
+Room images:
+- Put your own room images in: public/3d-lab/room-images/
+- Reference them in the lab's "Room image URL" field as:
+    /3d-lab/room-images/<filename>
+- Example:
+    /3d-lab/room-images/steve-living-room.jpg
+
 Tip: after drawing the floor outline, use "Auto-fit from floor" in the Floor
 mapping tuning section to estimate world size and perspective depth scaling
 from the polygon. Manual mapping/depth controls still override it.
