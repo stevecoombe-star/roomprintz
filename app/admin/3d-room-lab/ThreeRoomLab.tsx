@@ -33,11 +33,11 @@ import {
 import { normToPixels, type ImageFrameSize, type ImageIntrinsicSize } from "./image-space";
 import {
   applyHomography,
-  applyInverseHomography,
   computeReprojectionError,
   floorVec3ToPlane2D,
   getFloorRectCorners,
   type HomographyMatrix,
+  invertHomography,
   orderFloorCorners,
   solvePlaneHomography,
 } from "./perspective-solve";
@@ -494,13 +494,12 @@ export default function ThreeRoomLab() {
 
   const homographyDebug = useMemo(() => {
     const rows: { label: string; value: string }[] = [];
-    const gridPolylinesNorm: FloorPoint[][] = [];
+    let gridPolylinesNorm: FloorPoint[][] = [];
     const frameSize: ImageFrameSize | null =
       rendererSize.width > 0 && rendererSize.height > 0
         ? { width: rendererSize.width, height: rendererSize.height }
         : null;
     let orderedCornersNorm: [FloorPoint, FloorPoint, FloorPoint, FloorPoint] | null = null;
-    let solvedHomography: HomographyMatrix | null = null;
 
     rows.push({
       label: "homography diagnostic",
@@ -591,7 +590,6 @@ export default function ThreeRoomLab() {
       });
       return { rows, orderedCornersNorm, gridPolylinesNorm };
     }
-    solvedHomography = solveResult.value;
 
     rows.push({
       label: "homography solve",
@@ -626,23 +624,22 @@ export default function ThreeRoomLab() {
       });
     }
 
-    if (!lastAcceptedFloorClick) {
-      rows.push({
-        label: "homography anchor compare",
-        value: "no accepted floor anchor",
-      });
+    const buildGridPolylinesNorm = (
+      inverseHomography: HomographyMatrix,
+      renderSize: ImageFrameSize
+    ): FloorPoint[][] => {
       const halfWidth = floorMapping.worldWidth / 2;
       const halfDepth = floorMapping.worldDepth / 2;
       const gridLineCount = 7;
       const samplesPerLine = 20;
+      const lines: FloorPoint[][] = [];
 
       const projectFloorToOverlayNorm = (x: number, z: number): FloorPoint | null => {
-        if (!solvedHomography || !frameSize) return null;
-        const projectedPx = applyInverseHomography(solvedHomography, { x, y: z });
+        const projectedPx = applyHomography(inverseHomography, { x, y: z });
         if (!projectedPx) return null;
         if (!Number.isFinite(projectedPx.x) || !Number.isFinite(projectedPx.y)) return null;
-        const normalizedX = projectedPx.x / frameSize.width;
-        const normalizedY = projectedPx.y / frameSize.height;
+        const normalizedX = projectedPx.x / renderSize.width;
+        const normalizedY = projectedPx.y / renderSize.height;
         if (
           !Number.isFinite(normalizedX) ||
           !Number.isFinite(normalizedY) ||
@@ -657,7 +654,7 @@ export default function ThreeRoomLab() {
       };
 
       const pushLineSegments = (points: FloorPoint[]) => {
-        if (points.length >= 2) gridPolylinesNorm.push(points);
+        if (points.length >= 2) lines.push(points);
       };
 
       const sampleGridLine = (
@@ -695,6 +692,21 @@ export default function ThreeRoomLab() {
         sampleGridLine("z", z, -halfWidth, halfWidth);
       }
 
+      return lines;
+    };
+
+    if (showHomographyDebugOverlay && frameSize) {
+      const inverseHomography = invertHomography(solveResult.value);
+      if (inverseHomography) {
+        gridPolylinesNorm = buildGridPolylinesNorm(inverseHomography, frameSize);
+      }
+    }
+
+    if (!lastAcceptedFloorClick) {
+      rows.push({
+        label: "homography anchor compare",
+        value: "no accepted floor anchor",
+      });
       return { rows, orderedCornersNorm, gridPolylinesNorm };
     }
 
@@ -724,69 +736,6 @@ export default function ThreeRoomLab() {
         ? `${formatNumber(homographyMapped.x)} / ${formatNumber(homographyMapped.y)} (diagnostic only — not applied)`
         : "unavailable (homography apply failed)",
     });
-    const halfWidth = floorMapping.worldWidth / 2;
-    const halfDepth = floorMapping.worldDepth / 2;
-    const gridLineCount = 7;
-    const samplesPerLine = 20;
-
-    const projectFloorToOverlayNorm = (x: number, z: number): FloorPoint | null => {
-      if (!solvedHomography || !frameSize) return null;
-      const projectedPx = applyInverseHomography(solvedHomography, { x, y: z });
-      if (!projectedPx) return null;
-      if (!Number.isFinite(projectedPx.x) || !Number.isFinite(projectedPx.y)) return null;
-      const normalizedX = projectedPx.x / frameSize.width;
-      const normalizedY = projectedPx.y / frameSize.height;
-      if (
-        !Number.isFinite(normalizedX) ||
-        !Number.isFinite(normalizedY) ||
-        normalizedX < 0 ||
-        normalizedX > 1 ||
-        normalizedY < 0 ||
-        normalizedY > 1
-      ) {
-        return null;
-      }
-      return { x: normalizedX, y: normalizedY };
-    };
-
-    const pushLineSegments = (points: FloorPoint[]) => {
-      if (points.length >= 2) gridPolylinesNorm.push(points);
-    };
-
-    const sampleGridLine = (
-      axis: "x" | "z",
-      fixedValue: number,
-      variableMin: number,
-      variableMax: number
-    ) => {
-      let currentSegment: FloorPoint[] = [];
-      for (let sampleIndex = 0; sampleIndex <= samplesPerLine; sampleIndex += 1) {
-        const t = sampleIndex / samplesPerLine;
-        const variable = variableMin + (variableMax - variableMin) * t;
-        const point =
-          axis === "x"
-            ? projectFloorToOverlayNorm(fixedValue, variable)
-            : projectFloorToOverlayNorm(variable, fixedValue);
-        if (!point) {
-          pushLineSegments(currentSegment);
-          currentSegment = [];
-          continue;
-        }
-        currentSegment.push(point);
-      }
-      pushLineSegments(currentSegment);
-    };
-
-    for (let i = 0; i < gridLineCount; i += 1) {
-      const t = i / (gridLineCount - 1);
-      const x = -halfWidth + (halfWidth * 2) * t;
-      sampleGridLine("x", x, -halfDepth, halfDepth);
-    }
-    for (let i = 0; i < gridLineCount; i += 1) {
-      const t = i / (gridLineCount - 1);
-      const z = -halfDepth + (halfDepth * 2) * t;
-      sampleGridLine("z", z, -halfWidth, halfWidth);
-    }
 
     return { rows, orderedCornersNorm, gridPolylinesNorm };
   }, [
@@ -797,6 +746,7 @@ export default function ThreeRoomLab() {
     lastAcceptedFloorClick,
     rendererSize.height,
     rendererSize.width,
+    showHomographyDebugOverlay,
   ]);
 
   const debugRows = useMemo(
