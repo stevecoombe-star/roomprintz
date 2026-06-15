@@ -20,6 +20,7 @@ import {
   mapFloorPointToObjectTransform,
 } from "./floor-math";
 import {
+  SCENE_IMAGE_COORDINATE_SPACE_V0,
   buildSceneStatePayload,
   validateImportedSceneJson,
   type FloorMappingState,
@@ -29,6 +30,7 @@ import {
   type PerspectiveDepthScalingState,
   type TransformState,
 } from "./scene-state";
+import type { ImageIntrinsicSize } from "./image-space";
 import {
   computeAutoBoundsNormalization,
   type AutoBoundsNormalization,
@@ -254,6 +256,7 @@ export default function ThreeRoomLab() {
   const [imageLoadState, setImageLoadState] = useState<ImageLoadState>(
     DEFAULT_ROOM_IMAGE_URL ? "loading" : "idle"
   );
+  const [imageIntrinsicSize, setImageIntrinsicSize] = useState<ImageIntrinsicSize | null>(null);
   const [modelLoadState, setModelLoadState] = useState<ModelLoadState>("idle");
   const [modelLoadError, setModelLoadError] = useState<string | null>(null);
   const [modelPathInput, setModelPathInput] = useState(DEFAULT_MODEL_GLB_PATH);
@@ -482,6 +485,12 @@ export default function ThreeRoomLab() {
     () => [
       { label: "env", value: envEnabled ? "enabled" : "disabled" },
       { label: "image", value: imageLoadState },
+      {
+        label: "image intrinsic size",
+        value: imageIntrinsicSize ? `${imageIntrinsicSize.width} x ${imageIntrinsicSize.height}` : "none",
+      },
+      { label: "image frame size", value: `${rendererSize.width} x ${rendererSize.height}` },
+      { label: "image coordinate space", value: SCENE_IMAGE_COORDINATE_SPACE_V0 },
       { label: "model", value: formatModelStatus(modelLoadState, modelLoadError) },
       { label: "renderer", value: `${rendererSize.width} x ${rendererSize.height}` },
       {
@@ -607,6 +616,7 @@ export default function ThreeRoomLab() {
       floorMapping.worldWidth,
       floorPolygon,
       floorInteractionModeSummary,
+      imageIntrinsicSize,
       imageLoadState,
       currentDepthScaleMultiplier,
       currentEffectiveObjectScale,
@@ -817,6 +827,13 @@ export default function ThreeRoomLab() {
         mapping: floorMapping,
         perspectiveDepthScaling,
       },
+      image: imageIntrinsicSize
+        ? {
+            intrinsicWidth: imageIntrinsicSize.width,
+            intrinsicHeight: imageIntrinsicSize.height,
+            coordinateSpace: SCENE_IMAGE_COORDINATE_SPACE_V0,
+          }
+        : null,
       debug: {
         rendererSize,
         imageStatus: imageLoadState,
@@ -839,6 +856,7 @@ export default function ThreeRoomLab() {
     perspectiveDepthScaling.nearFloorY,
     perspectiveDepthScaling.nearScaleMultiplier,
     floorPolygon,
+    imageIntrinsicSize,
     imageLoadState,
     isFloorClickPlacementEnabled,
     lastAcceptedFloorClick,
@@ -1199,6 +1217,14 @@ export default function ThreeRoomLab() {
     setRoomImageInput(nextRoomImageUrl);
     setRoomImageUrl(nextRoomImageUrl);
     setImageLoadState(nextRoomImageUrl ? "loading" : "idle");
+    setImageIntrinsicSize(
+      validated.image
+        ? {
+            width: validated.image.intrinsicWidth,
+            height: validated.image.intrinsicHeight,
+          }
+        : null
+    );
 
     updateTransformState(
       {
@@ -1591,6 +1617,7 @@ export default function ThreeRoomLab() {
     const nextUrl = roomImageInput.trim();
     setRoomImageUrl(nextUrl);
     setImageLoadState(nextUrl ? "loading" : "idle");
+    setImageIntrinsicSize(null);
   };
 
   if (!envEnabled) {
@@ -1684,8 +1711,16 @@ export default function ThreeRoomLab() {
                 src={roomImageUrl}
                 alt="Room base"
                 className="absolute inset-0 z-0 h-full w-full object-cover"
-                onLoad={() => setImageLoadState("loaded")}
-                onError={() => setImageLoadState("error")}
+                onLoad={(event) => {
+                  const width = event.currentTarget.naturalWidth;
+                  const height = event.currentTarget.naturalHeight;
+                  setImageIntrinsicSize(width > 0 && height > 0 ? { width, height } : null);
+                  setImageLoadState("loaded");
+                }}
+                onError={() => {
+                  setImageIntrinsicSize(null);
+                  setImageLoadState("error");
+                }}
               />
             ) : (
               <div className="absolute inset-0 z-0 flex items-center justify-center text-xs text-slate-500">

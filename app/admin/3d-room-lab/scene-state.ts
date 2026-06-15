@@ -1,4 +1,5 @@
 export const SCENE_STATE_SCHEMA_VERSION = "vibode-3d-room-lab-scene-state/v0";
+export const SCENE_IMAGE_COORDINATE_SPACE_V0 = "container-normalized-v0";
 
 export type FloorPoint = { x: number; y: number };
 
@@ -30,6 +31,12 @@ export type ModelNormalizationState = {
   modelScaleMultiplier: number;
 };
 
+export type SceneImageMetadata = {
+  intrinsicWidth: number;
+  intrinsicHeight: number;
+  coordinateSpace: typeof SCENE_IMAGE_COORDINATE_SPACE_V0;
+};
+
 export type ImportedSceneValidated = {
   roomImageUrl: string | null;
   modelPath: string | null;
@@ -51,6 +58,7 @@ export type ImportedSceneValidated = {
     mapping: FloorMappingState;
     perspectiveDepthScaling: PerspectiveDepthScalingState;
   };
+  image: SceneImageMetadata | null;
   exportedAt: string | null;
 };
 
@@ -98,6 +106,7 @@ export type SceneStatePayloadInput = {
     imageStatus: string;
     modelStatus: string;
   };
+  image?: SceneImageMetadata | null;
 };
 
 function clampValue(value: number, min: number, max: number): number {
@@ -157,6 +166,13 @@ export function buildSceneStatePayload(input: SceneStatePayloadInput) {
     schemaVersion: SCENE_STATE_SCHEMA_VERSION,
     exportedAt: input.exportedAtIso,
     roomImageUrl: input.roomImageUrl || null,
+    image: input.image
+      ? {
+          intrinsicWidth: input.image.intrinsicWidth,
+          intrinsicHeight: input.image.intrinsicHeight,
+          coordinateSpace: input.image.coordinateSpace,
+        }
+      : undefined,
     model: {
       modelPath: input.modelPath,
       activeObjectType: input.activeObjectType,
@@ -216,6 +232,7 @@ export function validateImportedSceneJson(
   }
 
   const roomImageUrlRaw = (raw as Record<string, unknown>).roomImageUrl;
+  const imageRaw = (raw as Record<string, unknown>).image;
   const modelRaw = (raw as Record<string, unknown>).model;
   const modelPath =
     isRecord(modelRaw) && typeof modelRaw.modelPath === "string" ? modelRaw.modelPath.trim() : null;
@@ -228,6 +245,26 @@ export function validateImportedSceneJson(
         : null;
   if (roomImageUrlRaw !== null && typeof roomImageUrlRaw !== "string") {
     return "roomImageUrl must be a string or null.";
+  }
+
+  let image: SceneImageMetadata | null = null;
+  if (typeof imageRaw !== "undefined") {
+    if (!isRecord(imageRaw)) {
+      return "image must be an object when provided.";
+    }
+    const intrinsicWidth = parseFiniteNumber(imageRaw.intrinsicWidth);
+    const intrinsicHeight = parseFiniteNumber(imageRaw.intrinsicHeight);
+    if (intrinsicWidth === null || intrinsicHeight === null || intrinsicWidth <= 0 || intrinsicHeight <= 0) {
+      return "image.intrinsicWidth and image.intrinsicHeight must be positive numbers.";
+    }
+    if (imageRaw.coordinateSpace !== SCENE_IMAGE_COORDINATE_SPACE_V0) {
+      return `image.coordinateSpace must be ${SCENE_IMAGE_COORDINATE_SPACE_V0}.`;
+    }
+    image = {
+      intrinsicWidth,
+      intrinsicHeight,
+      coordinateSpace: SCENE_IMAGE_COORDINATE_SPACE_V0,
+    };
   }
 
   let modelNormalization = config.defaultModelNormalization;
@@ -418,6 +455,7 @@ export function validateImportedSceneJson(
       mapping,
       perspectiveDepthScaling,
     },
+    image,
     exportedAt: parseOptionalString((raw as Record<string, unknown>).exportedAt),
   };
 }
