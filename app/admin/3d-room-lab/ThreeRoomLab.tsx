@@ -57,6 +57,7 @@ type ActiveObjectKind = "gltf" | "fallback" | null;
 type ObjectHandleMode = "move" | "rotate" | "scale" | "height" | null;
 type SceneJsonStatus = { kind: "idle" | "success" | "error"; message: string };
 type TransformStateUpdater = TransformState | ((prev: TransformState) => TransformState);
+type FloorClickMappingMode = "legacy" | "homography-experimental";
 
 const OBJECT_HANDLE_ROTATE_DEADZONE_PX = 14;
 const OBJECT_HANDLE_SCALE_MIN_START_DISTANCE_PX = 10;
@@ -284,6 +285,8 @@ export default function ThreeRoomLab() {
   const [isSceneStateOpen, setIsSceneStateOpen] = useState(false);
   const [isDebugOpen, setIsDebugOpen] = useState(false);
   const [showHomographyDebugOverlay, setShowHomographyDebugOverlay] = useState(false);
+  const [floorClickMappingMode, setFloorClickMappingMode] = useState<FloorClickMappingMode>("legacy");
+  const [lastFloorClickMappingResult, setLastFloorClickMappingResult] = useState<string>("legacy");
   const [showFloorOverlay, setShowFloorOverlay] = useState(true);
   const [floorPolygon, setFloorPolygon] = useState<FloorPoint[]>(DEFAULT_FLOOR_POLYGON);
   const [activeFloorHandleIndex, setActiveFloorHandleIndex] = useState<number | null>(null);
@@ -500,6 +503,11 @@ export default function ThreeRoomLab() {
         ? { width: rendererSize.width, height: rendererSize.height }
         : null;
     let orderedCornersNorm: [FloorPoint, FloorPoint, FloorPoint, FloorPoint] | null = null;
+    let cornerOrderStatus: "ok" | "fail" = "fail";
+    let cornerOrderConfidence: "high" | "low" | null = null;
+    let homographySolveStatus: "ok" | "fail" = "fail";
+    let placementFallbackReason = "homography solve not attempted";
+    let homographyMatrixForPlacement: HomographyMatrix | null = null;
 
     rows.push({
       label: "homography diagnostic",
@@ -519,7 +527,18 @@ export default function ThreeRoomLab() {
         label: "homography corner order",
         value: `fail (expected 4 points, got ${floorPolygon.length})`,
       });
-      return { rows, orderedCornersNorm, gridPolylinesNorm };
+      placementFallbackReason = `floor polygon requires 4 points (got ${floorPolygon.length})`;
+      return {
+        rows,
+        orderedCornersNorm,
+        gridPolylinesNorm,
+        frameSize,
+        cornerOrderStatus,
+        cornerOrderConfidence,
+        homographySolveStatus,
+        placementFallbackReason,
+        homographyMatrixForPlacement,
+      };
     }
 
     const orderedCornersResult = orderFloorCorners(floorPolygon);
@@ -528,8 +547,21 @@ export default function ThreeRoomLab() {
         label: "homography corner order",
         value: `fail (${orderedCornersResult.reason})`,
       });
-      return { rows, orderedCornersNorm, gridPolylinesNorm };
+      placementFallbackReason = `corner ordering failed: ${orderedCornersResult.reason}`;
+      return {
+        rows,
+        orderedCornersNorm,
+        gridPolylinesNorm,
+        frameSize,
+        cornerOrderStatus,
+        cornerOrderConfidence,
+        homographySolveStatus,
+        placementFallbackReason,
+        homographyMatrixForPlacement,
+      };
     }
+    cornerOrderStatus = "ok";
+    cornerOrderConfidence = orderedCornersResult.confidence;
     orderedCornersNorm = orderedCornersResult.value.asArray;
 
     rows.push({
@@ -553,7 +585,18 @@ export default function ThreeRoomLab() {
         label: "homography solve",
         value: "fail (frame pixel size unavailable)",
       });
-      return { rows, orderedCornersNorm, gridPolylinesNorm };
+      placementFallbackReason = "frame size unavailable";
+      return {
+        rows,
+        orderedCornersNorm,
+        gridPolylinesNorm,
+        frameSize,
+        cornerOrderStatus,
+        cornerOrderConfidence,
+        homographySolveStatus,
+        placementFallbackReason,
+        homographyMatrixForPlacement,
+      };
     }
 
     const sourceImagePointsPx: { x: number; y: number }[] = [];
@@ -564,7 +607,18 @@ export default function ThreeRoomLab() {
           label: "homography solve",
           value: "fail (could not convert corners from normalized -> pixels)",
         });
-        return { rows, orderedCornersNorm, gridPolylinesNorm };
+        placementFallbackReason = "could not convert ordered corners to frame pixels";
+        return {
+          rows,
+          orderedCornersNorm,
+          gridPolylinesNorm,
+          frameSize,
+          cornerOrderStatus,
+          cornerOrderConfidence,
+          homographySolveStatus,
+          placementFallbackReason,
+          homographyMatrixForPlacement,
+        };
       }
       sourceImagePointsPx.push(pixels);
     }
@@ -578,7 +632,18 @@ export default function ThreeRoomLab() {
         label: "homography solve",
         value: `fail (${floorRectResult.reason})`,
       });
-      return { rows, orderedCornersNorm, gridPolylinesNorm };
+      placementFallbackReason = `floor rect assumption invalid: ${floorRectResult.reason}`;
+      return {
+        rows,
+        orderedCornersNorm,
+        gridPolylinesNorm,
+        frameSize,
+        cornerOrderStatus,
+        cornerOrderConfidence,
+        homographySolveStatus,
+        placementFallbackReason,
+        homographyMatrixForPlacement,
+      };
     }
 
     const targetFloorPoints2D = floorRectResult.value.asArray.map((point) => floorVec3ToPlane2D(point));
@@ -588,8 +653,22 @@ export default function ThreeRoomLab() {
         label: "homography solve",
         value: `fail (${solveResult.reason})`,
       });
-      return { rows, orderedCornersNorm, gridPolylinesNorm };
+      placementFallbackReason = `homography solve failed: ${solveResult.reason}`;
+      return {
+        rows,
+        orderedCornersNorm,
+        gridPolylinesNorm,
+        frameSize,
+        cornerOrderStatus,
+        cornerOrderConfidence,
+        homographySolveStatus,
+        placementFallbackReason,
+        homographyMatrixForPlacement,
+      };
     }
+    homographySolveStatus = "ok";
+    homographyMatrixForPlacement = solveResult.value;
+    placementFallbackReason = "none";
 
     rows.push({
       label: "homography solve",
@@ -707,7 +786,17 @@ export default function ThreeRoomLab() {
         label: "homography anchor compare",
         value: "no accepted floor anchor",
       });
-      return { rows, orderedCornersNorm, gridPolylinesNorm };
+      return {
+        rows,
+        orderedCornersNorm,
+        gridPolylinesNorm,
+        frameSize,
+        cornerOrderStatus,
+        cornerOrderConfidence,
+        homographySolveStatus,
+        placementFallbackReason,
+        homographyMatrixForPlacement,
+      };
     }
 
     const legacyMapped = mapFloorPointToObjectTransform(lastAcceptedFloorClick, {
@@ -726,7 +815,17 @@ export default function ThreeRoomLab() {
         label: "homography anchor mapped X/Z",
         value: "unavailable (anchor pixel conversion failed)",
       });
-      return { rows, orderedCornersNorm, gridPolylinesNorm };
+      return {
+        rows,
+        orderedCornersNorm,
+        gridPolylinesNorm,
+        frameSize,
+        cornerOrderStatus,
+        cornerOrderConfidence,
+        homographySolveStatus,
+        placementFallbackReason,
+        homographyMatrixForPlacement,
+      };
     }
 
     const homographyMapped = applyHomography(solveResult.value, anchorPixels);
@@ -737,7 +836,17 @@ export default function ThreeRoomLab() {
         : "unavailable (homography apply failed)",
     });
 
-    return { rows, orderedCornersNorm, gridPolylinesNorm };
+    return {
+      rows,
+      orderedCornersNorm,
+      gridPolylinesNorm,
+      frameSize,
+      cornerOrderStatus,
+      cornerOrderConfidence,
+      homographySolveStatus,
+      placementFallbackReason,
+      homographyMatrixForPlacement,
+    };
   }, [
     floorMapping.depthCenterY,
     floorMapping.worldDepth,
@@ -812,6 +921,15 @@ export default function ThreeRoomLab() {
       { label: "active floor handle", value: activeFloorHandleIndex === null ? "none" : String(activeFloorHandleIndex) },
       { label: "floor polygon", value: JSON.stringify(floorPolygon.map(roundPoint)) },
       { label: "floor placement mode", value: isFloorClickPlacementEnabled ? "on" : "off" },
+      { label: "floor-click mapping mode", value: floorClickMappingMode },
+      { label: "last floor-click mapping result", value: lastFloorClickMappingResult },
+      {
+        label: "mapping caution",
+        value:
+          floorClickMappingMode === "homography-experimental" && perspectiveDepthScaling.enabled
+            ? "Homography mapping + depth scaling can double-count perspective. Consider disabling depth scaling while testing."
+            : "none",
+      },
       { label: "floor interaction mode", value: floorInteractionModeSummary },
       { label: "pointer precedence", value: "polygon handles > object handles > anchor drag > floor background" },
       { label: "object 2d handles", value: isObject2DHandlesEnabled ? "on" : "off" },
@@ -902,6 +1020,8 @@ export default function ThreeRoomLab() {
       isFloorAnchorDragActive,
       isFloorAnchorDragEnabled,
       isFloorClickPlacementEnabled,
+      floorClickMappingMode,
+      lastFloorClickMappingResult,
       lastAcceptedFloorClick,
       lastRejectedFloorClick,
       modelLoadError,
@@ -1159,8 +1279,45 @@ export default function ThreeRoomLab() {
     };
   };
 
-  const applyFloorPlacement = (point: FloorPoint) => {
-    const mapped = mapFloorPointToObjectTransform(point, floorMapping);
+  const applyFloorPlacement = (point: FloorPoint, options?: { source?: "floor-click" | "other" }) => {
+    let mapped = mapFloorPointToObjectTransform(point, floorMapping);
+    let mappingResultForDebug = "legacy";
+
+    if (options?.source === "floor-click" && floorClickMappingMode === "homography-experimental") {
+      const fallbackToLegacy = (reason: string) => {
+        mappingResultForDebug = `homography unavailable — fell back to legacy: ${reason}`;
+      };
+
+      if (homographyDebug.cornerOrderStatus !== "ok") {
+        fallbackToLegacy("corner ordering unavailable");
+      } else if (homographyDebug.cornerOrderConfidence !== "high") {
+        fallbackToLegacy("corner order confidence is not high");
+      } else if (!homographyDebug.frameSize) {
+        fallbackToLegacy("frame size is invalid");
+      } else if (homographyDebug.homographySolveStatus !== "ok" || !homographyDebug.homographyMatrixForPlacement) {
+        fallbackToLegacy(homographyDebug.placementFallbackReason);
+      } else {
+        const pointPixels = normToPixels(point, homographyDebug.frameSize);
+        if (!pointPixels) {
+          fallbackToLegacy("floor click could not convert to frame pixels");
+        } else {
+          const mappedHomography = applyHomography(homographyDebug.homographyMatrixForPlacement, pointPixels);
+          if (!mappedHomography || !Number.isFinite(mappedHomography.x) || !Number.isFinite(mappedHomography.y)) {
+            fallbackToLegacy("homography projection returned invalid coordinates");
+          } else {
+            mapped = {
+              positionX: mappedHomography.x,
+              positionZ: mappedHomography.y,
+            };
+            mappingResultForDebug = "homography";
+          }
+        }
+      }
+      setLastFloorClickMappingResult(mappingResultForDebug);
+    } else if (options?.source === "floor-click") {
+      setLastFloorClickMappingResult("legacy");
+    }
+
     updateTransformState((prev) => ({ ...prev, positionX: mapped.positionX, positionZ: mapped.positionZ }), {
       markOwned: true,
     });
@@ -1360,7 +1517,7 @@ export default function ThreeRoomLab() {
       return;
     }
     setWasLastAnchorDragMoveRejected(false);
-    applyFloorPlacement(normalizedPoint);
+    applyFloorPlacement(normalizedPoint, { source: "other" });
   };
 
   const handleFloorOverlayPointerDown = (event: PointerEvent<SVGSVGElement>) => {
@@ -1375,7 +1532,7 @@ export default function ThreeRoomLab() {
       return;
     }
     setWasLastAnchorDragMoveRejected(false);
-    applyFloorPlacement(normalizedPoint);
+    applyFloorPlacement(normalizedPoint, { source: "floor-click" });
   };
 
   const handleFloorAnchorPointerDown = (event: PointerEvent<SVGCircleElement>) => {
@@ -2711,6 +2868,31 @@ export default function ThreeRoomLab() {
           open={isDebugOpen}
           onToggle={() => setIsDebugOpen((prev) => !prev)}
         >
+          <div className="mb-3 flex flex-wrap items-center gap-3 text-xs text-slate-300">
+            <span className="text-slate-400">Floor-click mapping</span>
+            <label className="flex items-center gap-1.5">
+              <input
+                type="radio"
+                name="floor-click-mapping-mode"
+                value="legacy"
+                checked={floorClickMappingMode === "legacy"}
+                onChange={() => setFloorClickMappingMode("legacy")}
+                className="accent-emerald-400"
+              />
+              Legacy (default)
+            </label>
+            <label className="flex items-center gap-1.5">
+              <input
+                type="radio"
+                name="floor-click-mapping-mode"
+                value="homography-experimental"
+                checked={floorClickMappingMode === "homography-experimental"}
+                onChange={() => setFloorClickMappingMode("homography-experimental")}
+                className="accent-emerald-400"
+              />
+              Homography (experimental)
+            </label>
+          </div>
           <label className="mb-3 flex items-center gap-2 text-xs text-slate-300">
             <input
               type="checkbox"
