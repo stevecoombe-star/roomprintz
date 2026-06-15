@@ -75,6 +75,36 @@ function polygonSignedArea2D(points: Vec2[]): number {
   return area / 2;
 }
 
+function crossZ(a: Vec2, b: Vec2, c: Vec2): number {
+  return (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
+}
+
+function segmentsIntersect(a1: Vec2, a2: Vec2, b1: Vec2, b2: Vec2): boolean {
+  const o1 = crossZ(a1, a2, b1);
+  const o2 = crossZ(a1, a2, b2);
+  const o3 = crossZ(b1, b2, a1);
+  const o4 = crossZ(b1, b2, a2);
+  return o1 * o2 < -EPSILON && o3 * o4 < -EPSILON;
+}
+
+function isConvexOrderedQuad(points: [Vec2, Vec2, Vec2, Vec2]): boolean {
+  let sign = 0;
+  for (let i = 0; i < 4; i += 1) {
+    const a = points[i];
+    const b = points[(i + 1) % 4];
+    const c = points[(i + 2) % 4];
+    const cross = crossZ(a, b, c);
+    if (Math.abs(cross) < EPSILON) continue;
+    const currentSign = cross > 0 ? 1 : -1;
+    if (sign === 0) {
+      sign = currentSign;
+    } else if (currentSign !== sign) {
+      return false;
+    }
+  }
+  return sign !== 0;
+}
+
 function hasDuplicatePoints(points: Vec2[]): boolean {
   for (let i = 0; i < points.length; i += 1) {
     for (let j = i + 1; j < points.length; j += 1) {
@@ -131,6 +161,10 @@ function determinant3x3(m: HomographyMatrix): number {
   );
 }
 
+/**
+ * Orders a 4-point floor polygon in visible-frame/container normalized coordinates.
+ * Assumes image-space y-down (larger y is nearer/front).
+ */
 export function orderFloorCorners(polygon: FloorPoint[]): SolveResult<OrderedFloorCorners<FloorPoint>> {
   if (!Array.isArray(polygon) || polygon.length !== 4) {
     return { ok: false, reason: "Expected exactly 4 floor polygon points." };
@@ -159,6 +193,14 @@ export function orderFloorCorners(polygon: FloorPoint[]): SolveResult<OrderedFlo
   const farAvgY = (farLeft.y + farRight.y) / 2;
   const nearWidth = Math.abs(nearRight.x - nearLeft.x);
   const farWidth = Math.abs(farRight.x - farLeft.x);
+  const orderedQuad: [FloorPoint, FloorPoint, FloorPoint, FloorPoint] = [
+    nearLeft,
+    nearRight,
+    farRight,
+    farLeft,
+  ];
+  const hasBowTie = segmentsIntersect(nearLeft, nearRight, farRight, farLeft);
+  const isConvex = isConvexOrderedQuad(orderedQuad);
 
   let confidence: "high" | "low" = "high";
   let note: string | undefined;
@@ -166,6 +208,12 @@ export function orderFloorCorners(polygon: FloorPoint[]): SolveResult<OrderedFlo
   if (nearAvgY <= farAvgY || nearWidth < EPSILON || farWidth < EPSILON) {
     confidence = "low";
     note = "Near/far ordering is weak or edge widths are narrow.";
+  }
+  if (hasBowTie || !isConvex) {
+    confidence = "low";
+    note = note
+      ? `${note} Quad appears non-convex or self-intersecting.`
+      : "Quad appears non-convex or self-intersecting.";
   }
 
   return {
@@ -182,6 +230,11 @@ export function orderFloorCorners(polygon: FloorPoint[]): SolveResult<OrderedFlo
   };
 }
 
+/**
+ * Builds floor-rectangle corners on the world floor plane (Y=0),
+ * ordered as near-left, near-right, far-right, far-left.
+ * Units are meters (or consistent relative floor units).
+ */
 export function getFloorRectCorners(rect: FloorRectAssumption): SolveResult<OrderedFloorCorners<Vec3>> {
   if (
     !isFiniteNumber(rect.widthMeters) ||
@@ -213,6 +266,20 @@ export function getFloorRectCorners(rect: FloorRectAssumption): SolveResult<Orde
   };
 }
 
+/**
+ * Projects a world-space floor point onto 2D floor-plane coordinates for homography targets.
+ * Uses X/Z plane convention: Vec3.x -> Vec2.x, Vec3.z -> Vec2.y.
+ */
+export function floorVec3ToPlane2D(point: Vec3): Vec2 {
+  return { x: point.x, y: point.z };
+}
+
+/**
+ * Solves image-to-floor planar homography H from exactly 4 correspondences.
+ * - sourceImagePointsPx: image/frame pixel coordinates.
+ * - targetFloorPoints2D: floor-plane 2D coordinates (typically X/Z via floorVec3ToPlane2D).
+ * Output matrix is row-major with h33 fixed to 1, mapping image pixels -> floor-plane coordinates.
+ */
 export function solvePlaneHomography(
   sourceImagePointsPx: Vec2[],
   targetFloorPoints2D: Vec2[]
@@ -274,28 +341,16 @@ export function solvePlaneHomography(
     return { ok: false, reason: "Solved homography is singular." };
   }
 
-  const normalized: HomographyMatrix =
-    Math.abs(matrix[8]) > EPSILON
-      ? [
-          matrix[0] / matrix[8],
-          matrix[1] / matrix[8],
-          matrix[2] / matrix[8],
-          matrix[3] / matrix[8],
-          matrix[4] / matrix[8],
-          matrix[5] / matrix[8],
-          matrix[6] / matrix[8],
-          matrix[7] / matrix[8],
-          1,
-        ]
-      : matrix;
-
   return {
     ok: true,
-    value: normalized,
+    value: matrix,
     confidence: "high",
   };
 }
 
+/**
+ * Applies forward homography H to map image/frame pixel coordinates -> floor-plane 2D coordinates.
+ */
 export function applyHomography(matrix: HomographyMatrix, point: Vec2): Vec2 | null {
   if (!isValidVec2(point)) return null;
   const x = point.x;
@@ -330,12 +385,20 @@ export function invertHomography(matrix: HomographyMatrix): HomographyMatrix | n
   return [m00, m01, m02, m10, m11, m12, m20, m21, m22];
 }
 
+/**
+ * Applies inverse homography to map floor-plane 2D coordinates -> image/frame pixel coordinates.
+ */
 export function applyInverseHomography(matrix: HomographyMatrix, point: Vec2): Vec2 | null {
   const inverse = invertHomography(matrix);
   if (!inverse) return null;
   return applyHomography(inverse, point);
 }
 
+/**
+ * Computes reprojection diagnostics for paired correspondences.
+ * - average/max target error are in target floor-plane units.
+ * - average/max source error are in image/frame pixels (when inverse is valid).
+ */
 export function computeReprojectionError(
   matrix: HomographyMatrix,
   sourceImagePointsPx: Vec2[],
