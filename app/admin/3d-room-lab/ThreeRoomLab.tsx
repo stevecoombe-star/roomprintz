@@ -30,7 +30,15 @@ import {
   type PerspectiveDepthScalingState,
   type TransformState,
 } from "./scene-state";
-import type { ImageIntrinsicSize } from "./image-space";
+import { normToPixels, type ImageFrameSize, type ImageIntrinsicSize } from "./image-space";
+import {
+  applyHomography,
+  computeReprojectionError,
+  floorVec3ToPlane2D,
+  getFloorRectCorners,
+  orderFloorCorners,
+  solvePlaneHomography,
+} from "./perspective-solve";
 import {
   computeAutoBoundsNormalization,
   type AutoBoundsNormalization,
@@ -481,6 +489,181 @@ export default function ThreeRoomLab() {
         ? "object-handle"
         : "none";
 
+  const homographyDebugRows = useMemo(() => {
+    const rows: { label: string; value: string }[] = [];
+    const frameSize: ImageFrameSize | null =
+      rendererSize.width > 0 && rendererSize.height > 0
+        ? { width: rendererSize.width, height: rendererSize.height }
+        : null;
+
+    rows.push({
+      label: "homography diagnostic",
+      value: "diagnostic only (not applied)",
+    });
+    rows.push({
+      label: "homography frame px",
+      value: frameSize ? `${frameSize.width} x ${frameSize.height}` : "unavailable",
+    });
+    rows.push({
+      label: "homography floor rect",
+      value: `width=${formatNumber(floorMapping.worldWidth)}, depth=${formatNumber(floorMapping.worldDepth)}`,
+    });
+
+    if (floorPolygon.length !== 4) {
+      rows.push({
+        label: "homography corner order",
+        value: `fail (expected 4 points, got ${floorPolygon.length})`,
+      });
+      return rows;
+    }
+
+    const orderedCornersResult = orderFloorCorners(floorPolygon);
+    if (!orderedCornersResult.ok) {
+      rows.push({
+        label: "homography corner order",
+        value: `fail (${orderedCornersResult.reason})`,
+      });
+      return rows;
+    }
+
+    rows.push({
+      label: "homography corner order",
+      value: `ok (${orderedCornersResult.confidence})${
+        orderedCornersResult.note ? ` — ${orderedCornersResult.note}` : ""
+      }`,
+    });
+    rows.push({
+      label: "homography corners NL/NR/FR/FL",
+      value: orderedCornersResult.value.asArray
+        .map((point, index) => {
+          const label = index === 0 ? "NL" : index === 1 ? "NR" : index === 2 ? "FR" : "FL";
+          return `${label}(${formatNumber(point.x)},${formatNumber(point.y)})`;
+        })
+        .join(" "),
+    });
+
+    if (!frameSize) {
+      rows.push({
+        label: "homography solve",
+        value: "fail (frame pixel size unavailable)",
+      });
+      return rows;
+    }
+
+    const sourceImagePointsPx: { x: number; y: number }[] = [];
+    for (const point of orderedCornersResult.value.asArray) {
+      const pixels = normToPixels(point, frameSize);
+      if (!pixels) {
+        rows.push({
+          label: "homography solve",
+          value: "fail (could not convert corners from normalized -> pixels)",
+        });
+        return rows;
+      }
+      sourceImagePointsPx.push(pixels);
+    }
+
+    const floorRectResult = getFloorRectCorners({
+      widthMeters: floorMapping.worldWidth,
+      depthMeters: floorMapping.worldDepth,
+    });
+    if (!floorRectResult.ok) {
+      rows.push({
+        label: "homography solve",
+        value: `fail (${floorRectResult.reason})`,
+      });
+      return rows;
+    }
+
+    const targetFloorPoints2D = floorRectResult.value.asArray.map((point) => floorVec3ToPlane2D(point));
+    const solveResult = solvePlaneHomography(sourceImagePointsPx, targetFloorPoints2D);
+    if (!solveResult.ok) {
+      rows.push({
+        label: "homography solve",
+        value: `fail (${solveResult.reason})`,
+      });
+      return rows;
+    }
+
+    rows.push({
+      label: "homography solve",
+      value: `ok (${solveResult.confidence})${solveResult.note ? ` — ${solveResult.note}` : ""}`,
+    });
+
+    const reprojection = computeReprojectionError(
+      solveResult.value,
+      sourceImagePointsPx,
+      targetFloorPoints2D
+    );
+    if (reprojection.ok) {
+      rows.push({
+        label: "homography reprojection (target units)",
+        value: `avg=${formatNumber(reprojection.value.averageTargetUnits)} max=${formatNumber(
+          reprojection.value.maxTargetUnits
+        )}`,
+      });
+      rows.push({
+        label: "homography reprojection (source px)",
+        value:
+          reprojection.value.averageSourcePixels === null || reprojection.value.maxSourcePixels === null
+            ? "unavailable"
+            : `avg=${formatNumber(reprojection.value.averageSourcePixels)} max=${formatNumber(
+                reprojection.value.maxSourcePixels
+              )}`,
+      });
+    } else {
+      rows.push({
+        label: "homography reprojection",
+        value: `fail (${reprojection.reason})`,
+      });
+    }
+
+    if (!lastAcceptedFloorClick) {
+      rows.push({
+        label: "homography anchor compare",
+        value: "no accepted floor anchor",
+      });
+      return rows;
+    }
+
+    const legacyMapped = mapFloorPointToObjectTransform(lastAcceptedFloorClick, {
+      worldWidth: floorMapping.worldWidth,
+      worldDepth: floorMapping.worldDepth,
+      depthCenterY: floorMapping.depthCenterY,
+    });
+    rows.push({
+      label: "homography anchor legacy X/Z",
+      value: `${formatNumber(legacyMapped.positionX)} / ${formatNumber(legacyMapped.positionZ)}`,
+    });
+
+    const anchorPixels = normToPixels(lastAcceptedFloorClick, frameSize);
+    if (!anchorPixels) {
+      rows.push({
+        label: "homography anchor mapped X/Z",
+        value: "unavailable (anchor pixel conversion failed)",
+      });
+      return rows;
+    }
+
+    const homographyMapped = applyHomography(solveResult.value, anchorPixels);
+    rows.push({
+      label: "homography anchor mapped X/Z",
+      value: homographyMapped
+        ? `${formatNumber(homographyMapped.x)} / ${formatNumber(homographyMapped.y)} (diagnostic only — not applied)`
+        : "unavailable (homography apply failed)",
+    });
+
+    return rows;
+  }, [
+    floorMapping.depthCenterY,
+    floorMapping.worldDepth,
+    floorMapping.worldWidth,
+    floorPolygon,
+    lastAcceptedFloorClick,
+    rendererSize.height,
+    rendererSize.width,
+  ]);
+
   const debugRows = useMemo(
     () => [
       { label: "env", value: envEnabled ? "enabled" : "disabled" },
@@ -603,6 +786,7 @@ export default function ThreeRoomLab() {
           floorMapping.worldDepth
         )}, depthCenterY=${formatNumber(floorMapping.depthCenterY)}`,
       },
+      ...homographyDebugRows,
       { label: "model path", value: modelPath || "(empty)" },
     ],
     [
@@ -638,6 +822,7 @@ export default function ThreeRoomLab() {
       modelLoadError,
       modelLoadState,
       modelPath,
+      homographyDebugRows,
       modelNormalization.modelScaleMultiplier,
       modelNormalization.modelYOffset,
       modelNormalization.modelYawOffsetDeg,
