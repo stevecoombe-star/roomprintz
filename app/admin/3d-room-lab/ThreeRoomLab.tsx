@@ -33,7 +33,9 @@ import {
 import { normToPixels, type ImageFrameSize, type ImageIntrinsicSize } from "./image-space";
 import {
   applyHomography,
+  buildCameraIntrinsicsFromFov,
   computeReprojectionError,
+  decomposeHomographyToCameraPose,
   floorVec3ToPlane2D,
   getFloorRectCorners,
   type HomographyMatrix,
@@ -285,6 +287,7 @@ export default function ThreeRoomLab() {
   const [isSceneStateOpen, setIsSceneStateOpen] = useState(false);
   const [isDebugOpen, setIsDebugOpen] = useState(false);
   const [showHomographyDebugOverlay, setShowHomographyDebugOverlay] = useState(false);
+  const [cameraPoseFovYDeg, setCameraPoseFovYDeg] = useState(50);
   const [floorClickMappingMode, setFloorClickMappingMode] = useState<FloorClickMappingMode>("legacy");
   const [lastFloorClickMappingResult, setLastFloorClickMappingResult] = useState<string>("legacy");
   const [showFloorOverlay, setShowFloorOverlay] = useState(true);
@@ -858,6 +861,114 @@ export default function ThreeRoomLab() {
     showHomographyDebugOverlay,
   ]);
 
+  const cameraPoseDebug = useMemo(() => {
+    const rows: { label: string; value: string }[] = [];
+    rows.push({
+      label: "camera pose note",
+      value: "Debug only — derived pose is not applied to the live Three.js camera.",
+    });
+    rows.push({
+      label: "camera pose FOV",
+      value: `${formatNumber(cameraPoseFovYDeg)}deg`,
+    });
+
+    if (!homographyDebug.frameSize) {
+      rows.push({
+        label: "camera pose diagnostic",
+        value: "fail (frame pixel size unavailable)",
+      });
+      return { rows };
+    }
+    if (homographyDebug.homographySolveStatus !== "ok" || !homographyDebug.homographyMatrixForPlacement) {
+      rows.push({
+        label: "camera pose diagnostic",
+        value: `fail (${homographyDebug.placementFallbackReason})`,
+      });
+      return { rows };
+    }
+
+    const intrinsicsResult = buildCameraIntrinsicsFromFov(homographyDebug.frameSize, cameraPoseFovYDeg);
+    if (!intrinsicsResult.ok) {
+      rows.push({
+        label: "camera pose diagnostic",
+        value: `fail (${intrinsicsResult.reason})`,
+      });
+      return { rows };
+    }
+
+    const decompositionResult = decomposeHomographyToCameraPose(
+      homographyDebug.homographyMatrixForPlacement,
+      homographyDebug.frameSize,
+      { verticalFovDeg: cameraPoseFovYDeg }
+    );
+    if (!decompositionResult.ok) {
+      rows.push({
+        label: "camera pose diagnostic",
+        value: `fail (${decompositionResult.reason})`,
+      });
+      return { rows };
+    }
+
+    rows.push({
+      label: "camera pose diagnostic",
+      value: `ok (${decompositionResult.confidence})${decompositionResult.note ? ` — ${decompositionResult.note}` : ""}`,
+    });
+    rows.push({
+      label: "camera pose position",
+      value: `${formatNumber(decompositionResult.value.pose.position.x)} / ${formatNumber(
+        decompositionResult.value.pose.position.y
+      )} / ${formatNumber(decompositionResult.value.pose.position.z)}`,
+    });
+    rows.push({
+      label: "camera pose lookAt",
+      value: `${formatNumber(decompositionResult.value.pose.lookAt.x)} / ${formatNumber(
+        decompositionResult.value.pose.lookAt.y
+      )} / ${formatNumber(decompositionResult.value.pose.lookAt.z)}`,
+    });
+    rows.push({
+      label: "camera pose up",
+      value: `${formatNumber(decompositionResult.value.pose.up.x)} / ${formatNumber(
+        decompositionResult.value.pose.up.y
+      )} / ${formatNumber(decompositionResult.value.pose.up.z)}`,
+    });
+    rows.push({
+      label: "camera pose height",
+      value: formatNumber(decompositionResult.value.diagnostics.cameraHeight),
+    });
+    rows.push({
+      label: "camera pose z",
+      value: formatNumber(decompositionResult.value.diagnostics.cameraZ),
+    });
+    rows.push({
+      label: "camera pose focal px",
+      value: formatNumber(intrinsicsResult.value.fy),
+    });
+    rows.push({
+      label: "camera pose lambda",
+      value: formatNumber(decompositionResult.value.diagnostics.lambda),
+    });
+    rows.push({
+      label: "camera pose scale ratio",
+      value: formatNumber(decompositionResult.value.diagnostics.columnScaleRatio),
+    });
+    rows.push({
+      label: "camera pose determinant",
+      value: formatNumber(decompositionResult.value.diagnostics.determinant),
+    });
+    rows.push({
+      label: "camera pose orthonormality error",
+      value: formatNumber(decompositionResult.value.diagnostics.orthonormalityError),
+    });
+
+    return { rows };
+  }, [
+    cameraPoseFovYDeg,
+    homographyDebug.frameSize,
+    homographyDebug.homographyMatrixForPlacement,
+    homographyDebug.homographySolveStatus,
+    homographyDebug.placementFallbackReason,
+  ]);
+
   const debugRows = useMemo(
     () => [
       { label: "env", value: envEnabled ? "enabled" : "disabled" },
@@ -930,6 +1041,13 @@ export default function ThreeRoomLab() {
             ? "Homography mapping + depth scaling can double-count perspective. Consider disabling depth scaling while testing."
             : "none",
       },
+      {
+        label: "mapping note",
+        value:
+          floorClickMappingMode === "homography-experimental"
+            ? "Experimental: homography floor-click mapping may not visually improve until camera pose is applied."
+            : "none",
+      },
       { label: "floor interaction mode", value: floorInteractionModeSummary },
       { label: "pointer precedence", value: "polygon handles > object handles > anchor drag > floor background" },
       { label: "object 2d handles", value: isObject2DHandlesEnabled ? "on" : "off" },
@@ -990,6 +1108,7 @@ export default function ThreeRoomLab() {
         )}, depthCenterY=${formatNumber(floorMapping.depthCenterY)}`,
       },
       ...homographyDebug.rows,
+      ...cameraPoseDebug.rows,
       { label: "model path", value: modelPath || "(empty)" },
     ],
     [
@@ -1022,6 +1141,7 @@ export default function ThreeRoomLab() {
       isFloorClickPlacementEnabled,
       floorClickMappingMode,
       lastFloorClickMappingResult,
+      cameraPoseDebug.rows,
       lastAcceptedFloorClick,
       lastRejectedFloorClick,
       modelLoadError,
@@ -2893,6 +3013,26 @@ export default function ThreeRoomLab() {
               Homography (experimental)
             </label>
           </div>
+          <p className="mb-3 text-xs text-amber-300/80">
+            Experimental: homography floor-click mapping may not visually improve until camera pose is applied.
+          </p>
+          <label className="mb-3 flex flex-wrap items-center gap-2 text-xs text-slate-300">
+            <span className="text-slate-400">Camera pose FOV</span>
+            <input
+              type="number"
+              min={20}
+              max={90}
+              step={1}
+              value={cameraPoseFovYDeg}
+              onChange={(event) => {
+                const parsed = Number.parseFloat(event.target.value);
+                if (!Number.isFinite(parsed)) return;
+                setCameraPoseFovYDeg(clampValue(parsed, 20, 90));
+              }}
+              className="w-20 rounded border border-slate-700 bg-slate-900 px-2 py-1 text-slate-100"
+            />
+            <span className="text-slate-500">(20-90)</span>
+          </label>
           <label className="mb-3 flex items-center gap-2 text-xs text-slate-300">
             <input
               type="checkbox"
