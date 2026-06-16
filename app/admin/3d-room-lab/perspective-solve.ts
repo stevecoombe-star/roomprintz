@@ -44,11 +44,15 @@ export type CameraPose = {
 export type CameraPoseDiagnostics = {
   focalLengthPx: number;
   lambda: number;
+  selectedScaleSign: 1 | -1;
+  selectedNormalSign: 1 | -1;
   columnScaleRatio: number;
   determinant: number;
   orthonormalityError: number;
   cameraHeight: number;
   cameraZ: number;
+  averageCameraPoseReprojectionPx: number;
+  maxCameraPoseReprojectionPx: number;
   reason?: string;
 };
 
@@ -78,6 +82,8 @@ const MAX_COLUMN_SCALE_RATIO_HARD = 10;
 const MAX_COLUMN_SCALE_RATIO_LOW_CONFIDENCE = 2.5;
 const MAX_ORTHONORMALITY_ERROR_HARD = 0.25;
 const MAX_ORTHONORMALITY_ERROR_LOW_CONFIDENCE = 0.05;
+const MAX_CAMERA_POSE_REPROJECTION_HARD_PX = 400;
+const MAX_CAMERA_POSE_REPROJECTION_LOW_CONFIDENCE_PX = 24;
 
 type Matrix3x3 = [number, number, number, number, number, number, number, number, number];
 
@@ -323,6 +329,82 @@ export function buildCameraIntrinsicsFromFov(
     value: { fx, fy, cx, cy, matrix, inverse },
     confidence: "high",
   };
+}
+
+function projectFloorPointThroughPoseWithCameraIntrinsics(
+  pose: CameraPose,
+  cameraIntrinsics: CameraIntrinsics,
+  floorPoint2D: Vec2
+): SolveResult<Vec2> {
+  if (
+    !isValidVec2(floorPoint2D) ||
+    ![pose.position.x, pose.position.y, pose.position.z, pose.lookAt.x, pose.lookAt.y, pose.lookAt.z, pose.up.x, pose.up.y, pose.up.z].every(
+      isFiniteNumber
+    )
+  ) {
+    return { ok: false, reason: "Pose projection failed: input values must be finite." };
+  }
+
+  const zAxis = normalizeVec3(subtractVec3(pose.position, pose.lookAt));
+  if (!zAxis) {
+    return { ok: false, reason: "Pose projection failed: camera position and lookAt are degenerate." };
+  }
+  const xAxis = normalizeVec3(crossVec3(pose.up, zAxis));
+  if (!xAxis) {
+    return { ok: false, reason: "Pose projection failed: camera up vector is degenerate." };
+  }
+  const yAxis = normalizeVec3(crossVec3(zAxis, xAxis));
+  if (!yAxis) {
+    return { ok: false, reason: "Pose projection failed: could not build camera view basis." };
+  }
+
+  // floorPoint2D uses floor-plane coordinates: {x, y} => world {x, y:0, z:y}
+  const worldPoint: Vec3 = { x: floorPoint2D.x, y: 0, z: floorPoint2D.y };
+  const worldFromCamera = subtractVec3(worldPoint, pose.position);
+  const xCam = dotVec3(worldFromCamera, xAxis);
+  const yCam = dotVec3(worldFromCamera, yAxis);
+  const zCam = dotVec3(worldFromCamera, zAxis);
+  if (!isFiniteNumber(xCam) || !isFiniteNumber(yCam) || !isFiniteNumber(zCam)) {
+    return { ok: false, reason: "Pose projection failed: non-finite camera-space coordinates." };
+  }
+  if (zCam >= -EPSILON) {
+    return { ok: false, reason: "Pose projection failed: point is behind camera." };
+  }
+
+  const perspectiveScale = 1 / -zCam;
+  const xPx = cameraIntrinsics.fx * (xCam * perspectiveScale) + cameraIntrinsics.cx;
+  // Camera y is up while image y increases downward, so projected y is inverted.
+  const yPx = cameraIntrinsics.cy - cameraIntrinsics.fy * (yCam * perspectiveScale);
+  if (!isFiniteNumber(xPx) || !isFiniteNumber(yPx)) {
+    return { ok: false, reason: "Pose projection failed: non-finite projected pixel coordinates." };
+  }
+
+  return {
+    ok: true,
+    value: { x: xPx, y: yPx },
+    confidence: "high",
+  };
+}
+
+/**
+ * Projects a floor-plane 2D point through a camera pose into visible-frame pixel coordinates.
+ * Conventions:
+ * - floorPoint2D uses floor-plane {x, y} where y corresponds to world Z.
+ * - pose uses world-space vectors with Y-up.
+ * - image/frame pixels are y-down.
+ * - projection uses a pinhole model from vertical FOV and frame size.
+ */
+export function projectFloorPointThroughPose(
+  pose: CameraPose,
+  frameSize: { width: number; height: number },
+  intrinsics: CameraIntrinsicsAssumption,
+  floorPoint2D: Vec2
+): SolveResult<Vec2> {
+  const intrinsicsResult = buildCameraIntrinsicsFromFov(frameSize, intrinsics.verticalFovDeg);
+  if (!intrinsicsResult.ok) {
+    return { ok: false, reason: intrinsicsResult.reason };
+  }
+  return projectFloorPointThroughPoseWithCameraIntrinsics(pose, intrinsicsResult.value, floorPoint2D);
 }
 
 /**
@@ -638,6 +720,7 @@ export function decomposeHomographyToCameraPose(
   if (!intrinsicsResult.ok) {
     return { ok: false, reason: intrinsicsResult.reason };
   }
+  const cameraIntrinsics = intrinsicsResult.value;
   const kInverse = intrinsicsResult.value.inverse;
 
   const floorToImage = invertHomography(imageToFloorHomography);
@@ -661,92 +744,200 @@ export function decomposeHomographyToCameraPose(
     return { ok: false, reason: "Homography decomposition failed: severe column scale mismatch." };
   }
 
-  const lambda = 2 / (m1Norm + m2Norm);
-  if (!isFiniteNumber(lambda) || lambda <= EPSILON) {
+  const lambdaMagnitude = 2 / (m1Norm + m2Norm);
+  if (!isFiniteNumber(lambdaMagnitude) || lambdaMagnitude <= EPSILON) {
     return { ok: false, reason: "Homography decomposition failed: invalid lambda scale." };
   }
 
-  const r1Raw = scaleVec3(m1, lambda);
-  const r2Raw = scaleVec3(m2, lambda);
-  const t = scaleVec3(m3, lambda);
-
-  const u1 = normalizeVec3(r1Raw);
-  if (!u1) return { ok: false, reason: "Homography decomposition failed: first rotation axis is degenerate." };
-  const r2Ortho = subtractVec3(r2Raw, scaleVec3(u1, dotVec3(r2Raw, u1)));
-  const u2 = normalizeVec3(r2Ortho);
-  if (!u2) return { ok: false, reason: "Homography decomposition failed: second rotation axis is degenerate." };
-
-  const rawCross = crossVec3(r1Raw, r2Raw);
-  const u3Unaligned = crossVec3(u1, u2);
-  const u3Aligned = dotVec3(u3Unaligned, rawCross) < 0 ? scaleVec3(u3Unaligned, -1) : u3Unaligned;
-  const u3 = normalizeVec3(u3Aligned);
-  if (!u3) return { ok: false, reason: "Homography decomposition failed: third rotation axis is degenerate." };
-
-  const rotationPlaneBasis = matrixFromColumns(u1, u2, u3);
-  const determinant = determinant3x3(rotationPlaneBasis);
-  if (!isFiniteNumber(determinant) || determinant <= EPSILON) {
-    return { ok: false, reason: "Homography decomposition failed: non right-handed rotation basis." };
+  // Build a 4-corner comparison set in floor-plane coordinates by mapping image frame corners
+  // through H(image->floor). This lets us compare sign/cheirality candidates via reprojection.
+  const imageFrameCornersPx: [Vec2, Vec2, Vec2, Vec2] = [
+    { x: 0, y: 0 },
+    { x: frameSize.width, y: 0 },
+    { x: frameSize.width, y: frameSize.height },
+    { x: 0, y: frameSize.height },
+  ];
+  const floorComparisonCorners2D: Vec2[] = [];
+  for (const cornerPx of imageFrameCornersPx) {
+    const floorPoint = applyHomography(imageToFloorHomography, cornerPx);
+    if (!floorPoint) {
+      return { ok: false, reason: "Homography decomposition failed: could not map frame corners into floor-plane coordinates." };
+    }
+    floorComparisonCorners2D.push(floorPoint);
   }
 
-  const orthoError = orthonormalityError([u1, u2, u3]);
-  if (!isFiniteNumber(orthoError) || orthoError > MAX_ORTHONORMALITY_ERROR_HARD) {
-    return { ok: false, reason: "Homography decomposition failed: orthonormality error is too high." };
-  }
-
-  const rotationTranspose = matrixTranspose3x3(rotationPlaneBasis);
-  const cameraCenterPlaneBasis = scaleVec3(multiplyMatrixVec3(rotationTranspose, t), -1);
-  if (![cameraCenterPlaneBasis.x, cameraCenterPlaneBasis.y, cameraCenterPlaneBasis.z].every(isFiniteNumber)) {
-    return { ok: false, reason: "Homography decomposition failed: non-finite camera center in plane basis." };
-  }
-
-  // Plane basis -> world basis conversion:
-  // plane x -> world X, plane y -> world Z, plane normal -> world Y.
-  const cameraPositionWorld: Vec3 = {
-    x: cameraCenterPlaneBasis.x,
-    y: cameraCenterPlaneBasis.z,
-    z: cameraCenterPlaneBasis.y,
+  type Candidate = {
+    pose: CameraPose;
+    diagnostics: CameraPoseDiagnostics;
   };
-  if (![cameraPositionWorld.x, cameraPositionWorld.y, cameraPositionWorld.z].every(isFiniteNumber)) {
-    return { ok: false, reason: "Homography decomposition failed: non-finite world-space camera position." };
-  }
-  if (cameraPositionWorld.y <= MIN_CAMERA_HEIGHT) {
-    return { ok: false, reason: "Homography decomposition failed: derived camera is not above the floor plane." };
-  }
 
+  const candidateFailures: string[] = [];
+  const candidates: Candidate[] = [];
   const lookAt: Vec3 = { x: 0, y: 0, z: 0 };
   const up: Vec3 = { x: 0, y: 1, z: 0 };
-  const toFloorCenter = subtractVec3(lookAt, cameraPositionWorld);
-  if (dotVec3(toFloorCenter, up) >= 0) {
-    return { ok: false, reason: "Homography decomposition failed: camera orientation implies floor center is not below camera." };
+
+  // Homography decomposition has a scale-sign ambiguity: ±lambda produce mathematically valid
+  // candidates. Evaluate both and choose by cheirality + reprojection error.
+  for (const scaleSign of [1, -1] as const) {
+    for (const normalSign of [1, -1] as const) {
+      const signedLambda = lambdaMagnitude * scaleSign;
+      const r1Raw = scaleVec3(m1, signedLambda);
+      const r2Raw = scaleVec3(m2, signedLambda);
+      const t = scaleVec3(m3, signedLambda);
+
+      const u1 = normalizeVec3(r1Raw);
+      if (!u1) {
+        candidateFailures.push(`scale ${scaleSign}, normal ${normalSign}: first rotation axis is degenerate`);
+        continue;
+      }
+      const r2Ortho = subtractVec3(r2Raw, scaleVec3(u1, dotVec3(r2Raw, u1)));
+      const u2 = normalizeVec3(r2Ortho);
+      if (!u2) {
+        candidateFailures.push(`scale ${scaleSign}, normal ${normalSign}: second rotation axis is degenerate`);
+        continue;
+      }
+
+      const rawCross = crossVec3(r1Raw, r2Raw);
+      const u3Unaligned = crossVec3(u1, u2);
+      const u3Aligned = dotVec3(u3Unaligned, rawCross) < 0 ? scaleVec3(u3Unaligned, -1) : u3Unaligned;
+      const u3 = normalizeVec3(u3Aligned);
+      if (!u3) {
+        candidateFailures.push(`scale ${scaleSign}, normal ${normalSign}: third rotation axis is degenerate`);
+        continue;
+      }
+
+      const rotationPlaneBasis = matrixFromColumns(u1, u2, u3);
+      const determinant = determinant3x3(rotationPlaneBasis);
+      if (!isFiniteNumber(determinant) || determinant <= EPSILON) {
+        candidateFailures.push(`scale ${scaleSign}, normal ${normalSign}: non right-handed rotation basis`);
+        continue;
+      }
+
+      const orthoError = orthonormalityError([u1, u2, u3]);
+      if (!isFiniteNumber(orthoError) || orthoError > MAX_ORTHONORMALITY_ERROR_HARD) {
+        candidateFailures.push(`scale ${scaleSign}, normal ${normalSign}: orthonormality error too high`);
+        continue;
+      }
+
+      const rotationTranspose = matrixTranspose3x3(rotationPlaneBasis);
+      const cameraCenterPlaneBasis = scaleVec3(multiplyMatrixVec3(rotationTranspose, t), -1);
+      if (![cameraCenterPlaneBasis.x, cameraCenterPlaneBasis.y, cameraCenterPlaneBasis.z].every(isFiniteNumber)) {
+        candidateFailures.push(`scale ${scaleSign}, normal ${normalSign}: non-finite camera center`);
+        continue;
+      }
+
+      // plane x -> world X, plane y -> world Z. normalSign disambiguates plane normal orientation
+      // when lifting into world Y for cheirality selection.
+      const cameraPositionWorld: Vec3 = {
+        x: cameraCenterPlaneBasis.x,
+        y: normalSign * cameraCenterPlaneBasis.z,
+        z: cameraCenterPlaneBasis.y,
+      };
+      if (![cameraPositionWorld.x, cameraPositionWorld.y, cameraPositionWorld.z].every(isFiniteNumber)) {
+        candidateFailures.push(`scale ${scaleSign}, normal ${normalSign}: non-finite world camera position`);
+        continue;
+      }
+      if (cameraPositionWorld.y <= MIN_CAMERA_HEIGHT) {
+        candidateFailures.push(`scale ${scaleSign}, normal ${normalSign}: camera not above floor`);
+        continue;
+      }
+
+      const pose: CameraPose = {
+        position: cameraPositionWorld,
+        // Conservative Phase 1 assumptions: use floor origin + Y-up and defer roll/quaternion.
+        lookAt,
+        up,
+      };
+
+      let totalReprojectionErrorPx = 0;
+      let maxReprojectionErrorPx = 0;
+      let cheiralityValid = true;
+      for (let i = 0; i < floorComparisonCorners2D.length; i += 1) {
+        const projected = projectFloorPointThroughPoseWithCameraIntrinsics(
+          pose,
+          cameraIntrinsics,
+          floorComparisonCorners2D[i]
+        );
+        if (!projected.ok) {
+          cheiralityValid = false;
+          candidateFailures.push(`scale ${scaleSign}, normal ${normalSign}: ${projected.reason}`);
+          break;
+        }
+        const error = distance2(projected.value, imageFrameCornersPx[i]);
+        totalReprojectionErrorPx += error;
+        if (error > maxReprojectionErrorPx) maxReprojectionErrorPx = error;
+      }
+      if (!cheiralityValid) continue;
+
+      const averageReprojectionErrorPx = totalReprojectionErrorPx / floorComparisonCorners2D.length;
+      if (
+        !isFiniteNumber(averageReprojectionErrorPx) ||
+        !isFiniteNumber(maxReprojectionErrorPx) ||
+        maxReprojectionErrorPx > MAX_CAMERA_POSE_REPROJECTION_HARD_PX
+      ) {
+        candidateFailures.push(`scale ${scaleSign}, normal ${normalSign}: reprojection error too high`);
+        continue;
+      }
+
+      candidates.push({
+        pose,
+        diagnostics: {
+          focalLengthPx: cameraIntrinsics.fy,
+          lambda: signedLambda,
+          selectedScaleSign: scaleSign,
+          selectedNormalSign: normalSign,
+          columnScaleRatio,
+          determinant,
+          orthonormalityError: orthoError,
+          cameraHeight: cameraPositionWorld.y,
+          cameraZ: cameraPositionWorld.z,
+          averageCameraPoseReprojectionPx: averageReprojectionErrorPx,
+          maxCameraPoseReprojectionPx: maxReprojectionErrorPx,
+        },
+      });
+    }
   }
 
-  const diagnostics: CameraPoseDiagnostics = {
-    focalLengthPx: intrinsicsResult.value.fy,
-    lambda,
-    columnScaleRatio,
-    determinant,
-    orthonormalityError: orthoError,
-    cameraHeight: cameraPositionWorld.y,
-    cameraZ: cameraPositionWorld.z,
-  };
+  if (candidates.length === 0) {
+    return {
+      ok: false,
+      reason: `Homography decomposition failed: no candidate passed cheirality/reprojection checks${
+        candidateFailures.length > 0 ? ` (${candidateFailures[0]})` : "."
+      }`,
+    };
+  }
+
+  const bestCandidate = candidates.reduce((best, current) => {
+    if (current.diagnostics.averageCameraPoseReprojectionPx < best.diagnostics.averageCameraPoseReprojectionPx) {
+      return current;
+    }
+    if (
+      current.diagnostics.averageCameraPoseReprojectionPx === best.diagnostics.averageCameraPoseReprojectionPx &&
+      current.diagnostics.maxCameraPoseReprojectionPx < best.diagnostics.maxCameraPoseReprojectionPx
+    ) {
+      return current;
+    }
+    return best;
+  });
 
   let confidence: "high" | "low" = "high";
   let note: string | undefined;
-  if (columnScaleRatio > MAX_COLUMN_SCALE_RATIO_LOW_CONFIDENCE || orthoError > MAX_ORTHONORMALITY_ERROR_LOW_CONFIDENCE) {
+  if (
+    bestCandidate.diagnostics.columnScaleRatio > MAX_COLUMN_SCALE_RATIO_LOW_CONFIDENCE ||
+    bestCandidate.diagnostics.orthonormalityError > MAX_ORTHONORMALITY_ERROR_LOW_CONFIDENCE ||
+    bestCandidate.diagnostics.maxCameraPoseReprojectionPx > MAX_CAMERA_POSE_REPROJECTION_LOW_CONFIDENCE_PX
+  ) {
     confidence = "low";
-    note = "Pose solved but is numerically weak (column-scale mismatch or orthonormality drift).";
-    diagnostics.reason = note;
+    note =
+      "Pose solved but is numerically weak (column-scale mismatch, orthonormality drift, or elevated reprojection error).";
+    bestCandidate.diagnostics.reason = note;
   }
 
   return {
     ok: true,
     value: {
-      pose: {
-        position: cameraPositionWorld,
-        lookAt,
-        up,
-      },
-      diagnostics,
+      pose: bestCandidate.pose,
+      diagnostics: bestCandidate.diagnostics,
     },
     confidence,
     note,
