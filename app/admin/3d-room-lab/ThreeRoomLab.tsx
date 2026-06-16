@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, PointerEvent, useEffect, useMemo, useRef, useState } from "react";
+import { FormEvent, PointerEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import SceneJsonPanel from "./SceneJsonPanel";
@@ -389,6 +389,7 @@ export default function ThreeRoomLab() {
   );
   const calibratedCameraActiveRef = useRef(false);
   const calibratedCameraSnapshotRef = useRef<CalibratedCameraSnapshot | null>(null);
+  const preCalibratedDepthScalingRef = useRef<PerspectiveDepthScalingState | null>(null);
 
   const [roomImageInput, setRoomImageInput] = useState(DEFAULT_ROOM_IMAGE_URL);
   const [roomImageUrl, setRoomImageUrl] = useState(DEFAULT_ROOM_IMAGE_URL);
@@ -489,18 +490,41 @@ export default function ThreeRoomLab() {
     calibratedCameraSnapshotRef.current = calibratedCameraSnapshot;
   }, [calibratedCameraSnapshot]);
 
+  const captureAndNeutralizeDepthScalingForCalibratedMode = useCallback(() => {
+    if (!preCalibratedDepthScalingRef.current) {
+      preCalibratedDepthScalingRef.current = { ...perspectiveDepthScalingRef.current };
+    }
+    setPerspectiveDepthScaling((prev) => ({ ...prev, enabled: false }));
+  }, []);
+
+  const restoreDepthScalingAfterCalibratedMode = useCallback(() => {
+    const preCalibratedDepthScaling = preCalibratedDepthScalingRef.current;
+    if (preCalibratedDepthScaling) {
+      setPerspectiveDepthScaling({ ...preCalibratedDepthScaling });
+    }
+    preCalibratedDepthScalingRef.current = null;
+  }, []);
+
+  const deactivateCalibratedCameraMode = useCallback((options?: { clearAutoRevertReason?: boolean }) => {
+    setIsCalibratedCameraActive(false);
+    setCalibratedCameraSnapshot(null);
+    restoreDepthScalingAfterCalibratedMode();
+    if (options?.clearAutoRevertReason) {
+      setLastCalibratedCameraAutoRevertReason(null);
+    }
+  }, [restoreDepthScalingAfterCalibratedMode]);
+
   useEffect(() => {
     if (!isCalibratedCameraActive || !calibratedCameraSnapshot) return;
     const diagnostics = computeFrameMatchDiagnostics(calibratedCameraSnapshot.frameSize, rendererSize);
     if (!diagnostics?.isAutoRevertStale) return;
-    setIsCalibratedCameraActive(false);
-    setCalibratedCameraSnapshot(null);
+    deactivateCalibratedCameraMode();
     setLastCalibratedCameraAutoRevertReason(
       `reverted — frame changed too much (dw=${formatNumber(diagnostics.widthDeltaPercent)}%, dh=${formatNumber(
         diagnostics.heightDeltaPercent
       )}%, da=${formatNumber(diagnostics.aspectDeltaPercent)}%)`
     );
-  }, [isCalibratedCameraActive, calibratedCameraSnapshot, rendererSize.height, rendererSize.width]);
+  }, [calibratedCameraSnapshot, deactivateCalibratedCameraMode, isCalibratedCameraActive, rendererSize.height, rendererSize.width]);
 
   useEffect(() => {
     if (!isCalibratedCameraActive) return;
@@ -628,6 +652,14 @@ export default function ThreeRoomLab() {
     () => getEffectiveObjectScale(transform.uniformScale, lastAcceptedFloorClick, perspectiveDepthScaling),
     [lastAcceptedFloorClick, perspectiveDepthScaling, transform.uniformScale]
   );
+  const calibratedDepthScalingStatus = useMemo(() => {
+    if (!isCalibratedCameraActive) return "not active";
+    if (!preCalibratedDepthScalingRef.current) return "neutralized (no restore snapshot)";
+    if (perspectiveDepthScaling.enabled) {
+      return "manual override while calibrated — will restore pre-calibrated state on revert";
+    }
+    return "neutralized — will restore on revert";
+  }, [isCalibratedCameraActive, perspectiveDepthScaling.enabled]);
 
   const isModelNormalizationAdjusted = useMemo(
     () =>
@@ -1620,10 +1652,11 @@ export default function ThreeRoomLab() {
   ]);
 
   const objectProjectionDiagnostic = useMemo(() => {
+    const expectedCameraMode = isCalibratedCameraActive && calibratedCameraSnapshot ? "calibrated" : "legacy";
     const camera = cameraRef.current;
     if (!camera) {
       return {
-        status: "camera unavailable",
+        status: `camera unavailable (${expectedCameraMode})`,
         projectedNorm: null as FloorPoint | null,
         projectedPx: null as { x: number; y: number } | null,
         anchorNorm: lastAcceptedFloorClick,
@@ -1694,6 +1727,8 @@ export default function ThreeRoomLab() {
       largeDelta,
     };
   }, [
+    calibratedCameraSnapshot,
+    isCalibratedCameraActive,
     lastAcceptedFloorClick,
     rendererSize.height,
     rendererSize.width,
@@ -1896,11 +1931,14 @@ export default function ThreeRoomLab() {
         value: isCalibratedCameraActive ? "yes" : "no",
       },
       {
+        label: "calibrated depth scaling",
+        value: calibratedDepthScalingStatus,
+      },
+      {
         label: "calibrated depth scaling warning",
-        value:
-          isCalibratedCameraActive && perspectiveDepthScaling.enabled
-            ? "Calibrated camera active: depth scaling may double-count perspective. Consider setting depth scaling to neutral."
-            : "none",
+        value: isCalibratedCameraActive
+          ? "Depth scaling is neutralized while calibrated camera is active; pre-calibrated setting will restore on revert."
+          : "none",
       },
       {
         label: "calibrated camera resize note",
@@ -1955,6 +1993,7 @@ export default function ThreeRoomLab() {
       cameraPoseFovScanDebug.rows,
       calibratedCameraApplyStatus.available,
       calibratedCameraApplyStatus.reason,
+      calibratedDepthScalingStatus,
       calibratedCameraFrameMatchStatus.value,
       isCalibratedCameraActive,
       calibratedCameraSnapshot,
@@ -3948,6 +3987,7 @@ export default function ThreeRoomLab() {
               onClick={() => {
                 const candidate = cameraPoseDebug.applyCandidate;
                 if (!candidate || !calibratedCameraApplyStatus.available) return;
+                captureAndNeutralizeDepthScalingForCalibratedMode();
                 setLastCalibratedCameraAutoRevertReason(null);
                 setCalibratedCameraSnapshot({
                   pose: candidate.pose,
@@ -3966,9 +4006,7 @@ export default function ThreeRoomLab() {
             <button
               type="button"
               onClick={() => {
-                setIsCalibratedCameraActive(false);
-                setCalibratedCameraSnapshot(null);
-                setLastCalibratedCameraAutoRevertReason(null);
+                deactivateCalibratedCameraMode({ clearAutoRevertReason: true });
               }}
               disabled={!isCalibratedCameraActive && !calibratedCameraSnapshot}
               className="rounded border border-slate-700 px-2 py-1 text-slate-200 transition hover:border-rose-400/80 hover:text-rose-200 disabled:cursor-not-allowed disabled:opacity-50"
