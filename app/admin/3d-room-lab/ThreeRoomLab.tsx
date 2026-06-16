@@ -41,6 +41,8 @@ import {
   type HomographyMatrix,
   invertHomography,
   orderFloorCorners,
+  projectFloorPointThroughCameraPoseCv,
+  projectFloorPointThroughPose,
   solvePlaneHomography,
 } from "./perspective-solve";
 import {
@@ -863,6 +865,21 @@ export default function ThreeRoomLab() {
 
   const cameraPoseDebug = useMemo(() => {
     const rows: { label: string; value: string }[] = [];
+    let decomposition:
+      | {
+          confidence: "high" | "low";
+          frameSize: ImageFrameSize;
+          cvProjection: {
+            rotationPlaneToCv: [number, number, number, number, number, number, number, number, number];
+            translationCv: { x: number; y: number; z: number };
+          };
+          pose: {
+            position: { x: number; y: number; z: number };
+            lookAt: { x: number; y: number; z: number };
+            up: { x: number; y: number; z: number };
+          };
+        }
+      | null = null;
     rows.push({
       label: "camera pose note",
       value: "Debug only — derived pose is not applied to the live Three.js camera.",
@@ -877,14 +894,14 @@ export default function ThreeRoomLab() {
         label: "camera pose diagnostic",
         value: "fail (frame pixel size unavailable)",
       });
-      return { rows };
+      return { rows, decomposition };
     }
     if (homographyDebug.homographySolveStatus !== "ok" || !homographyDebug.homographyMatrixForPlacement) {
       rows.push({
         label: "camera pose diagnostic",
         value: `fail (${homographyDebug.placementFallbackReason})`,
       });
-      return { rows };
+      return { rows, decomposition };
     }
 
     const intrinsicsResult = buildCameraIntrinsicsFromFov(homographyDebug.frameSize, cameraPoseFovYDeg);
@@ -893,20 +910,56 @@ export default function ThreeRoomLab() {
         label: "camera pose diagnostic",
         value: `fail (${intrinsicsResult.reason})`,
       });
-      return { rows };
+      return { rows, decomposition };
     }
+
+    if (!homographyDebug.orderedCornersNorm) {
+      rows.push({
+        label: "camera pose diagnostic",
+        value: "fail (ordered homography corners unavailable)",
+      });
+      return { rows, decomposition };
+    }
+    const imagePointsPx: { x: number; y: number }[] = [];
+    for (const point of homographyDebug.orderedCornersNorm) {
+      const pixels = normToPixels(point, homographyDebug.frameSize);
+      if (!pixels) {
+        rows.push({
+          label: "camera pose diagnostic",
+          value: "fail (could not convert ordered corners from normalized -> pixels)",
+        });
+        return { rows, decomposition };
+      }
+      imagePointsPx.push(pixels);
+    }
+    const floorRectResult = getFloorRectCorners({
+      widthMeters: floorMapping.worldWidth,
+      depthMeters: floorMapping.worldDepth,
+    });
+    if (!floorRectResult.ok) {
+      rows.push({
+        label: "camera pose diagnostic",
+        value: `fail (${floorRectResult.reason})`,
+      });
+      return { rows, decomposition };
+    }
+    const floorPlanePoints2D = floorRectResult.value.asArray.map((point) => floorVec3ToPlane2D(point));
 
     const decompositionResult = decomposeHomographyToCameraPose(
       homographyDebug.homographyMatrixForPlacement,
       homographyDebug.frameSize,
-      { verticalFovDeg: cameraPoseFovYDeg }
+      { verticalFovDeg: cameraPoseFovYDeg },
+      {
+        floorPlanePoints2D,
+        imagePointsPx,
+      }
     );
     if (!decompositionResult.ok) {
       rows.push({
         label: "camera pose diagnostic",
         value: `fail (${decompositionResult.reason})`,
       });
-      return { rows };
+      return { rows, decomposition };
     }
 
     rows.push({
@@ -914,22 +967,22 @@ export default function ThreeRoomLab() {
       value: `ok (${decompositionResult.confidence})${decompositionResult.note ? ` — ${decompositionResult.note}` : ""}`,
     });
     rows.push({
-      label: "camera pose position",
-      value: `${formatNumber(decompositionResult.value.pose.position.x)} / ${formatNumber(
-        decompositionResult.value.pose.position.y
-      )} / ${formatNumber(decompositionResult.value.pose.position.z)}`,
-    });
-    rows.push({
-      label: "camera pose lookAt",
+      label: "camera pose lookAt (assumed)",
       value: `${formatNumber(decompositionResult.value.pose.lookAt.x)} / ${formatNumber(
         decompositionResult.value.pose.lookAt.y
       )} / ${formatNumber(decompositionResult.value.pose.lookAt.z)}`,
     });
     rows.push({
-      label: "camera pose up",
+      label: "camera pose up (assumed)",
       value: `${formatNumber(decompositionResult.value.pose.up.x)} / ${formatNumber(
         decompositionResult.value.pose.up.y
       )} / ${formatNumber(decompositionResult.value.pose.up.z)}`,
+    });
+    rows.push({
+      label: "camera pose position",
+      value: `${formatNumber(decompositionResult.value.pose.position.x)} / ${formatNumber(
+        decompositionResult.value.pose.position.y
+      )} / ${formatNumber(decompositionResult.value.pose.position.z)}`,
     });
     rows.push({
       label: "camera pose height",
@@ -952,6 +1005,10 @@ export default function ThreeRoomLab() {
       value: formatNumber(decompositionResult.value.diagnostics.columnScaleRatio),
     });
     rows.push({
+      label: "camera pose scale ratio note",
+      value: "Closer to 1 is better; high values suggest floor rect aspect/polygon mismatch.",
+    });
+    rows.push({
       label: "camera pose determinant",
       value: formatNumber(decompositionResult.value.diagnostics.determinant),
     });
@@ -959,14 +1016,164 @@ export default function ThreeRoomLab() {
       label: "camera pose orthonormality error",
       value: formatNumber(decompositionResult.value.diagnostics.orthonormalityError),
     });
+    rows.push({
+      label: "camera pose CV reprojection avg px",
+      value: formatNumber(decompositionResult.value.diagnostics.averageCameraPoseReprojectionPx),
+    });
+    rows.push({
+      label: "camera pose CV reprojection max px",
+      value: formatNumber(decompositionResult.value.diagnostics.maxCameraPoseReprojectionPx),
+    });
 
-    return { rows };
+    let displayReprojectionTotal = 0;
+    let displayReprojectionMax = 0;
+    let displayReprojectionCount = 0;
+    for (let i = 0; i < floorPlanePoints2D.length; i += 1) {
+      const projected = projectFloorPointThroughPose(
+        decompositionResult.value.pose,
+        homographyDebug.frameSize,
+        { verticalFovDeg: cameraPoseFovYDeg },
+        floorPlanePoints2D[i]
+      );
+      if (!projected.ok) continue;
+      const error = Math.hypot(projected.value.x - imagePointsPx[i].x, projected.value.y - imagePointsPx[i].y);
+      if (!Number.isFinite(error)) continue;
+      displayReprojectionTotal += error;
+      if (error > displayReprojectionMax) displayReprojectionMax = error;
+      displayReprojectionCount += 1;
+    }
+    rows.push({
+      label: "camera pose display reprojection avg px",
+      value:
+        displayReprojectionCount > 0
+          ? formatNumber(displayReprojectionTotal / displayReprojectionCount)
+          : "unavailable",
+    });
+    rows.push({
+      label: "camera pose display reprojection max px",
+      value: displayReprojectionCount > 0 ? formatNumber(displayReprojectionMax) : "unavailable",
+    });
+    rows.push({
+      label: "camera pose selected scale sign",
+      value: String(decompositionResult.value.diagnostics.selectedScaleSign),
+    });
+    rows.push({
+      label: "camera pose normal lift",
+      value: "deterministic (-worldY normal)",
+    });
+    rows.push({
+      label: "grid legend",
+      value: "homography grid = inverse-H (green), camera pose grid = derived pose projection (cyan, dashed, diagnostic only)",
+    });
+    rows.push({
+      label: "camera pose grid status",
+      value:
+        decompositionResult.confidence === "high"
+          ? "eligible to render when homography debug overlay is on"
+          : "skipped (low confidence)",
+    });
+
+    decomposition = {
+      confidence: decompositionResult.confidence,
+      frameSize: homographyDebug.frameSize,
+      cvProjection: decompositionResult.value.cvProjection,
+      pose: decompositionResult.value.pose,
+    };
+
+    return { rows, decomposition };
   }, [
     cameraPoseFovYDeg,
     homographyDebug.frameSize,
+    homographyDebug.orderedCornersNorm,
     homographyDebug.homographyMatrixForPlacement,
     homographyDebug.homographySolveStatus,
     homographyDebug.placementFallbackReason,
+    floorMapping.worldDepth,
+    floorMapping.worldWidth,
+  ]);
+
+  const cameraPoseGridPolylinesNorm = useMemo(() => {
+    if (!showHomographyDebugOverlay) return [] as FloorPoint[][];
+    if (!cameraPoseDebug.decomposition) return [] as FloorPoint[][];
+    if (cameraPoseDebug.decomposition.confidence !== "high") return [] as FloorPoint[][];
+
+    const renderSize = cameraPoseDebug.decomposition.frameSize;
+    const halfWidth = floorMapping.worldWidth / 2;
+    const halfDepth = floorMapping.worldDepth / 2;
+    const gridLineCount = 7;
+    const samplesPerLine = 20;
+    const lines: FloorPoint[][] = [];
+
+    const projectFloorToOverlayNorm = (x: number, z: number): FloorPoint | null => {
+      const projected = projectFloorPointThroughCameraPoseCv(
+        cameraPoseDebug.decomposition.cvProjection,
+        renderSize,
+        { verticalFovDeg: cameraPoseFovYDeg },
+        { x, y: z }
+      );
+      if (!projected.ok) return null;
+      if (!Number.isFinite(projected.value.x) || !Number.isFinite(projected.value.y)) return null;
+      const normalizedX = projected.value.x / renderSize.width;
+      const normalizedY = projected.value.y / renderSize.height;
+      if (
+        !Number.isFinite(normalizedX) ||
+        !Number.isFinite(normalizedY) ||
+        normalizedX < 0 ||
+        normalizedX > 1 ||
+        normalizedY < 0 ||
+        normalizedY > 1
+      ) {
+        return null;
+      }
+      return { x: normalizedX, y: normalizedY };
+    };
+
+    const pushLineSegments = (points: FloorPoint[]) => {
+      if (points.length >= 2) lines.push(points);
+    };
+
+    const sampleGridLine = (
+      axis: "x" | "z",
+      fixedValue: number,
+      variableMin: number,
+      variableMax: number
+    ) => {
+      let currentSegment: FloorPoint[] = [];
+      for (let sampleIndex = 0; sampleIndex <= samplesPerLine; sampleIndex += 1) {
+        const t = sampleIndex / samplesPerLine;
+        const variable = variableMin + (variableMax - variableMin) * t;
+        const point =
+          axis === "x"
+            ? projectFloorToOverlayNorm(fixedValue, variable)
+            : projectFloorToOverlayNorm(variable, fixedValue);
+        if (!point) {
+          pushLineSegments(currentSegment);
+          currentSegment = [];
+          continue;
+        }
+        currentSegment.push(point);
+      }
+      pushLineSegments(currentSegment);
+    };
+
+    for (let i = 0; i < gridLineCount; i += 1) {
+      const t = i / (gridLineCount - 1);
+      const x = -halfWidth + (halfWidth * 2) * t;
+      sampleGridLine("x", x, -halfDepth, halfDepth);
+    }
+    for (let i = 0; i < gridLineCount; i += 1) {
+      const t = i / (gridLineCount - 1);
+      const z = -halfDepth + (halfDepth * 2) * t;
+      sampleGridLine("z", z, -halfWidth, halfWidth);
+    }
+
+    return lines;
+  }, [
+    cameraPoseDebug.decomposition,
+    cameraPoseFovYDeg,
+    floorMapping.worldDepth,
+    floorMapping.worldWidth,
+    showHomographyDebugOverlay,
   ]);
 
   const debugRows = useMemo(
@@ -2309,6 +2516,17 @@ export default function ThreeRoomLab() {
                         strokeWidth={0.35}
                       />
                     ))}
+                    {cameraPoseGridPolylinesNorm.map((line, index) => (
+                      <polyline
+                        key={`camera-pose-grid-${index}`}
+                        points={line.map((point) => `${point.x * 100},${point.y * 100}`).join(" ")}
+                        fill="none"
+                        stroke="#22d3ee"
+                        strokeOpacity={0.5}
+                        strokeWidth={0.35}
+                        strokeDasharray="1.2 0.8"
+                      />
+                    ))}
                     {homographyDebug.orderedCornersNorm?.map((point, index) => {
                       const label = index === 0 ? "NL" : index === 1 ? "NR" : index === 2 ? "FR" : "FL";
                       return (
@@ -3033,6 +3251,10 @@ export default function ThreeRoomLab() {
             />
             <span className="text-slate-500">(20-90)</span>
           </label>
+          <p className="mb-3 text-xs text-slate-500">
+            Experimental: tune FOV until the camera pose diagnostic reads high and the cyan grid aligns with the
+            green grid. A valid pose may exist only in a narrow FOV band.
+          </p>
           <label className="mb-3 flex items-center gap-2 text-xs text-slate-300">
             <input
               type="checkbox"
