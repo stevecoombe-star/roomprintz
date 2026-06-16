@@ -1092,6 +1092,160 @@ export default function ThreeRoomLab() {
     floorMapping.worldWidth,
   ]);
 
+  const cameraPoseFovScanDebug = useMemo(() => {
+    const rows: { label: string; value: string }[] = [];
+    const scanMinFov = 20;
+    const scanMaxFov = 90;
+    const scanStepDeg = 1;
+    let bestFov: number | null = null;
+
+    if (!homographyDebug.frameSize) {
+      rows.push({ label: "camera pose FOV scan", value: "unavailable (frame pixel size unavailable)" });
+      return { rows, bestFov };
+    }
+    if (homographyDebug.homographySolveStatus !== "ok" || !homographyDebug.homographyMatrixForPlacement) {
+      rows.push({
+        label: "camera pose FOV scan",
+        value: `unavailable (${homographyDebug.placementFallbackReason})`,
+      });
+      return { rows, bestFov };
+    }
+    if (!homographyDebug.orderedCornersNorm) {
+      rows.push({ label: "camera pose FOV scan", value: "unavailable (ordered homography corners unavailable)" });
+      return { rows, bestFov };
+    }
+
+    const imagePointsPx: { x: number; y: number }[] = [];
+    for (const point of homographyDebug.orderedCornersNorm) {
+      const pixels = normToPixels(point, homographyDebug.frameSize);
+      if (!pixels) {
+        rows.push({
+          label: "camera pose FOV scan",
+          value: "unavailable (could not convert ordered corners from normalized -> pixels)",
+        });
+        return { rows, bestFov };
+      }
+      imagePointsPx.push(pixels);
+    }
+    const floorRectResult = getFloorRectCorners({
+      widthMeters: floorMapping.worldWidth,
+      depthMeters: floorMapping.worldDepth,
+    });
+    if (!floorRectResult.ok) {
+      rows.push({
+        label: "camera pose FOV scan",
+        value: `unavailable (${floorRectResult.reason})`,
+      });
+      return { rows, bestFov };
+    }
+    const floorPlanePoints2D = floorRectResult.value.asArray.map((point) => floorVec3ToPlane2D(point));
+
+    const samples: Array<{
+      fov: number;
+      ok: boolean;
+      confidence?: "high" | "low";
+      avgPx?: number;
+      maxPx?: number;
+      scaleRatio?: number;
+      reason?: string;
+    }> = [];
+
+    for (let fov = scanMinFov; fov <= scanMaxFov; fov += scanStepDeg) {
+      const decompositionResult = decomposeHomographyToCameraPose(
+        homographyDebug.homographyMatrixForPlacement,
+        homographyDebug.frameSize,
+        { verticalFovDeg: fov },
+        {
+          floorPlanePoints2D,
+          imagePointsPx,
+        }
+      );
+      if (!decompositionResult.ok) {
+        samples.push({
+          fov,
+          ok: false,
+          reason: decompositionResult.reason,
+        });
+        continue;
+      }
+      samples.push({
+        fov,
+        ok: true,
+        confidence: decompositionResult.confidence,
+        avgPx: decompositionResult.value.diagnostics.averageCameraPoseReprojectionPx,
+        maxPx: decompositionResult.value.diagnostics.maxCameraPoseReprojectionPx,
+        scaleRatio: decompositionResult.value.diagnostics.columnScaleRatio,
+      });
+    }
+
+    const validSamples = samples.filter((sample) => sample.ok && sample.avgPx !== undefined && sample.maxPx !== undefined);
+    const highConfidenceSamples = validSamples.filter((sample) => sample.confidence === "high");
+
+    rows.push({
+      label: "camera pose FOV scan",
+      value: `ok (range ${scanMinFov}-${scanMaxFov} step ${scanStepDeg})`,
+    });
+    rows.push({
+      label: "camera pose scan samples",
+      value: `${samples.length} tested, ${validSamples.length} valid, ${highConfidenceSamples.length} high`,
+    });
+
+    if (validSamples.length === 0) {
+      const firstFailure = samples.find((sample) => !sample.ok)?.reason ?? "all samples failed";
+      rows.push({
+        label: "camera pose best FOV",
+        value: `none (no valid decomposition results — ${firstFailure})`,
+      });
+      return { rows, bestFov };
+    }
+
+    const sortedByBest = [...validSamples].sort((a, b) => {
+      if (a.confidence !== b.confidence) return a.confidence === "high" ? -1 : 1;
+      if (a.avgPx! !== b.avgPx!) return a.avgPx! - b.avgPx!;
+      return a.maxPx! - b.maxPx!;
+    });
+    const bestSample = sortedByBest[0];
+    bestFov = bestSample.fov;
+
+    const validFovs = validSamples.map((sample) => sample.fov);
+    const highFovs = highConfidenceSamples.map((sample) => sample.fov);
+    const formatRange = (values: number[]) =>
+      values.length === 0
+        ? "none"
+        : `${Math.min(...values)}deg-${Math.max(...values)}deg`;
+
+    rows.push({
+      label: "camera pose best FOV",
+      value: `${bestSample.fov}deg (${bestSample.confidence})`,
+    });
+    rows.push({
+      label: "camera pose best reprojection",
+      value: `avg=${formatNumber(bestSample.avgPx!)} max=${formatNumber(bestSample.maxPx!)}`,
+    });
+    rows.push({
+      label: "camera pose best scale ratio",
+      value: formatNumber(bestSample.scaleRatio ?? 0),
+    });
+    rows.push({
+      label: "camera pose valid FOV range",
+      value: formatRange(validFovs),
+    });
+    rows.push({
+      label: "camera pose high-confidence FOV range",
+      value: formatRange(highFovs),
+    });
+
+    return { rows, bestFov };
+  }, [
+    floorMapping.worldDepth,
+    floorMapping.worldWidth,
+    homographyDebug.frameSize,
+    homographyDebug.homographyMatrixForPlacement,
+    homographyDebug.homographySolveStatus,
+    homographyDebug.orderedCornersNorm,
+    homographyDebug.placementFallbackReason,
+  ]);
+
   const cameraPoseGridPolylinesNorm = useMemo(() => {
     if (!showHomographyDebugOverlay) return [] as FloorPoint[][];
     if (!cameraPoseDebug.decomposition) return [] as FloorPoint[][];
@@ -1316,6 +1470,7 @@ export default function ThreeRoomLab() {
       },
       ...homographyDebug.rows,
       ...cameraPoseDebug.rows,
+      ...cameraPoseFovScanDebug.rows,
       { label: "model path", value: modelPath || "(empty)" },
     ],
     [
@@ -1349,6 +1504,7 @@ export default function ThreeRoomLab() {
       floorClickMappingMode,
       lastFloorClickMappingResult,
       cameraPoseDebug.rows,
+      cameraPoseFovScanDebug.rows,
       lastAcceptedFloorClick,
       lastRejectedFloorClick,
       modelLoadError,
@@ -3255,6 +3411,22 @@ export default function ThreeRoomLab() {
             Experimental: tune FOV until the camera pose diagnostic reads high and the cyan grid aligns with the
             green grid. A valid pose may exist only in a narrow FOV band.
           </p>
+          <div className="mb-3 flex items-center gap-2 text-xs">
+            <button
+              type="button"
+              onClick={() => {
+                if (cameraPoseFovScanDebug.bestFov === null) return;
+                setCameraPoseFovYDeg(cameraPoseFovScanDebug.bestFov);
+              }}
+              disabled={cameraPoseFovScanDebug.bestFov === null}
+              className="rounded border border-slate-700 px-2 py-1 text-slate-200 transition hover:border-emerald-400/80 hover:text-emerald-200 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              Use best scanned FOV
+            </button>
+            <span className="text-slate-500">
+              FOV scan is diagnostic only; use it to find a range where the cyan grid aligns with the green grid.
+            </span>
+          </div>
           <label className="mb-3 flex items-center gap-2 text-xs text-slate-300">
             <input
               type="checkbox"
