@@ -93,6 +93,7 @@ const CALIBRATED_CAMERA_AUTO_REVERT_SIZE_DELTA_PERCENT = 5;
 const CALIBRATED_CAMERA_AUTO_REVERT_ASPECT_DELTA_PERCENT = 3;
 const PROJECTED_ANCHOR_WARNING_MAX_PIXEL_DISTANCE = 24;
 const PROJECTED_ANCHOR_WARNING_MAX_NORMALIZED_DISTANCE = 0.03;
+const RAY_FLOOR_HOMOGRAPHY_WARNING_WORLD_DISTANCE = 0.05;
 
 const DEFAULT_MODEL_NORMALIZATION: ModelNormalizationState = {
   modelYOffset: 0,
@@ -221,6 +222,62 @@ type WorldProjectionResult = {
   inFront: boolean;
   isVisibleInView: boolean;
 };
+
+type RayFloorIntersectionResult =
+  | {
+      ok: true;
+      worldPoint: { x: number; y: number; z: number };
+      floorPlane2D: { x: number; y: number };
+    }
+  | { ok: false; reason: string };
+
+function intersectOverlayRayWithFloorPlane(
+  normalizedPoint: FloorPoint,
+  camera: THREE.PerspectiveCamera | null,
+  floorPlaneY = 0
+): RayFloorIntersectionResult {
+  if (!camera) return { ok: false, reason: "camera unavailable" };
+  if (
+    !Number.isFinite(normalizedPoint.x) ||
+    !Number.isFinite(normalizedPoint.y) ||
+    !Number.isFinite(floorPlaneY)
+  ) {
+    return { ok: false, reason: "non-finite input" };
+  }
+  camera.updateMatrixWorld(true);
+  const rayOrigin = camera.getWorldPosition(new THREE.Vector3());
+  const ndcPoint = new THREE.Vector3(normalizedPoint.x * 2 - 1, 1 - normalizedPoint.y * 2, 0.5);
+  const rayPoint = ndcPoint.unproject(camera);
+  const rayDirection = rayPoint.sub(rayOrigin);
+  const rayDirectionLength = rayDirection.length();
+  if (!Number.isFinite(rayDirectionLength) || rayDirectionLength <= 1e-9) {
+    return { ok: false, reason: "invalid ray direction" };
+  }
+  rayDirection.multiplyScalar(1 / rayDirectionLength);
+  if (!Number.isFinite(rayDirection.y) || Math.abs(rayDirection.y) <= 1e-9) {
+    return { ok: false, reason: "ray parallel to floor" };
+  }
+  const intersectionDistance = (floorPlaneY - rayOrigin.y) / rayDirection.y;
+  if (!Number.isFinite(intersectionDistance)) {
+    return { ok: false, reason: "invalid intersection distance" };
+  }
+  if (intersectionDistance <= 1e-9) {
+    return { ok: false, reason: "intersection behind camera" };
+  }
+  const intersectionPoint = rayOrigin.clone().addScaledVector(rayDirection, intersectionDistance);
+  if (
+    !Number.isFinite(intersectionPoint.x) ||
+    !Number.isFinite(intersectionPoint.y) ||
+    !Number.isFinite(intersectionPoint.z)
+  ) {
+    return { ok: false, reason: "non-finite intersection point" };
+  }
+  return {
+    ok: true,
+    worldPoint: { x: intersectionPoint.x, y: intersectionPoint.y, z: intersectionPoint.z },
+    floorPlane2D: { x: intersectionPoint.x, y: intersectionPoint.z },
+  };
+}
 
 function projectWorldPointToOverlayNormalized(
   camera: THREE.PerspectiveCamera,
@@ -1737,6 +1794,94 @@ export default function ThreeRoomLab() {
     transform.positionZ,
   ]);
 
+  const rayFloorHomographyComparisonDebug = useMemo(() => {
+    const rows: { label: string; value: string }[] = [];
+    const camera = cameraRef.current;
+    const frameSize = homographyDebug.frameSize;
+    const homographyMatrix = homographyDebug.homographyMatrixForPlacement;
+    const expectedCameraMode = isCalibratedCameraActive && calibratedCameraSnapshot ? "calibrated" : "legacy";
+    let hasLargeDifference = false;
+
+    rows.push({
+      label: "ray-floor diagnostic",
+      value: "Ray-floor comparison is most meaningful in calibrated camera mode.",
+    });
+    rows.push({
+      label: "ray-floor camera mode",
+      value: `${expectedCameraMode} (FOV ${formatNumber(cameraPoseFovYDeg)}deg)`,
+    });
+
+    const compareTarget = (targetPointNorm: FloorPoint | null): string => {
+      if (!targetPointNorm) return "unavailable (target point unavailable)";
+      const rayResult = intersectOverlayRayWithFloorPlane(targetPointNorm, camera, 0);
+
+      let homographyFailureReason: string | null = null;
+      let homographyPoint: { x: number; y: number } | null = null;
+      if (!frameSize) {
+        homographyFailureReason = "frame unavailable";
+      } else if (homographyDebug.homographySolveStatus !== "ok" || !homographyMatrix) {
+        homographyFailureReason = homographyDebug.placementFallbackReason;
+      } else {
+        const sourcePx = normToPixels(targetPointNorm, frameSize);
+        if (!sourcePx) {
+          homographyFailureReason = "normalized->pixel conversion failed";
+        } else {
+          const mapped = applyHomography(homographyMatrix, sourcePx);
+          if (!mapped || !Number.isFinite(mapped.x) || !Number.isFinite(mapped.y)) {
+            homographyFailureReason = "homography projection failed";
+          } else {
+            homographyPoint = mapped;
+          }
+        }
+      }
+
+      if (!rayResult.ok || !homographyPoint) {
+        const rayReason = rayResult.ok ? "ok" : rayResult.reason;
+        const homographyReason = homographyPoint ? "ok" : homographyFailureReason ?? "unknown";
+        return `fail (ray=${rayReason}; homography=${homographyReason})`;
+      }
+
+      const deltaX = rayResult.floorPlane2D.x - homographyPoint.x;
+      const deltaZ = rayResult.floorPlane2D.y - homographyPoint.y;
+      const worldDistance = Math.hypot(deltaX, deltaZ);
+      if (worldDistance > RAY_FLOOR_HOMOGRAPHY_WARNING_WORLD_DISTANCE) {
+        hasLargeDifference = true;
+      }
+      return `ray ${formatNumber(rayResult.floorPlane2D.x)}/${formatNumber(rayResult.floorPlane2D.y)} vs H ${formatNumber(
+        homographyPoint.x
+      )}/${formatNumber(homographyPoint.y)} Δx=${formatNumber(deltaX)} Δz=${formatNumber(deltaZ)} dist=${formatNumber(
+        worldDistance
+      )}`;
+    };
+
+    rows.push({
+      label: "ray-floor click vs homography",
+      value: compareTarget(lastAcceptedFloorClick),
+    });
+    rows.push({
+      label: "ray-floor object-projection vs homography",
+      value: compareTarget(objectProjectionDiagnostic.projectedNorm),
+    });
+    rows.push({
+      label: "ray-floor warning",
+      value: hasLargeDifference
+        ? "ray-floor differs from homography; keep calibrated placement on homography until unified."
+        : "none",
+    });
+
+    return { rows };
+  }, [
+    calibratedCameraSnapshot,
+    cameraPoseFovYDeg,
+    homographyDebug.frameSize,
+    homographyDebug.homographyMatrixForPlacement,
+    homographyDebug.homographySolveStatus,
+    homographyDebug.placementFallbackReason,
+    isCalibratedCameraActive,
+    lastAcceptedFloorClick,
+    objectProjectionDiagnostic.projectedNorm,
+  ]);
+
   const debugRows = useMemo(
     () => [
       { label: "env", value: envEnabled ? "enabled" : "disabled" },
@@ -1903,6 +2048,7 @@ export default function ThreeRoomLab() {
         )}, depthCenterY=${formatNumber(floorMapping.depthCenterY)}`,
       },
       ...homographyDebug.rows,
+      ...rayFloorHomographyComparisonDebug.rows,
       ...cameraPoseDebug.rows,
       ...cameraPoseFovScanDebug.rows,
       { label: "camera mode", value: isCalibratedCameraActive ? "Calibrated snapshot" : "Legacy" },
@@ -1991,6 +2137,7 @@ export default function ThreeRoomLab() {
       lastFloorClickMappingResult,
       cameraPoseDebug.rows,
       cameraPoseFovScanDebug.rows,
+      rayFloorHomographyComparisonDebug.rows,
       calibratedCameraApplyStatus.available,
       calibratedCameraApplyStatus.reason,
       calibratedDepthScalingStatus,
