@@ -371,6 +371,7 @@ function TransformControlRow({
   max,
   step,
   onChange,
+  disabled = false,
 }: {
   label: string;
   value: number;
@@ -378,6 +379,7 @@ function TransformControlRow({
   max: number;
   step: number;
   onChange: (value: number) => void;
+  disabled?: boolean;
 }) {
   return (
     <div className="rounded-lg border border-slate-800 bg-slate-950/60 p-2">
@@ -389,12 +391,13 @@ function TransformControlRow({
           max={max}
           step={step}
           value={value}
+          disabled={disabled}
           onChange={(event) => {
             const next = Number.parseFloat(event.target.value);
             if (!Number.isFinite(next)) return;
             onChange(clampValue(next, min, max));
           }}
-          className="w-24 rounded border border-slate-700 bg-slate-950 px-2 py-1 text-xs text-slate-100 outline-none focus:border-emerald-400"
+          className="w-24 rounded border border-slate-700 bg-slate-950 px-2 py-1 text-xs text-slate-100 outline-none focus:border-emerald-400 disabled:cursor-not-allowed disabled:opacity-50"
         />
       </div>
       <input
@@ -403,8 +406,9 @@ function TransformControlRow({
         max={max}
         step={step}
         value={value}
+        disabled={disabled}
         onChange={(event) => onChange(clampValue(Number.parseFloat(event.target.value), min, max))}
-        className="mt-2 w-full accent-emerald-400"
+        className="mt-2 w-full accent-emerald-400 disabled:cursor-not-allowed disabled:opacity-50"
       />
     </div>
   );
@@ -493,6 +497,9 @@ export default function ThreeRoomLab() {
   const [lastObjectHandleHeightDeltaYUnits, setLastObjectHandleHeightDeltaYUnits] = useState<number | null>(null);
   const [lastCalibratedMoveStatus, setLastCalibratedMoveStatus] = useState<string>("none");
   const [wasLastAnchorDragMoveRejected, setWasLastAnchorDragMoveRejected] = useState(false);
+  // Compatibility marker only (Phase 1AE): legacy paths treat this as the accepted
+  // screen click, while calibrated click/move update it to the derived projected
+  // floor-contact marker. Future canonical anchor should be floor-plane world X/Z.
   const [lastAcceptedFloorClick, setLastAcceptedFloorClick] = useState<FloorPoint | null>(null);
   const [lastRejectedFloorClick, setLastRejectedFloorClick] = useState<FloorPoint | null>(null);
   const [floorMapping, setFloorMapping] = useState<FloorMappingState>(DEFAULT_FLOOR_MAPPING);
@@ -518,6 +525,8 @@ export default function ThreeRoomLab() {
     kind: "idle",
     message: "Auto-fit reads your floor outline to set mapping and depth scaling.",
   });
+  const LEGACY_FLOOR_MAPPING_DISABLED_MESSAGE =
+    "Legacy floor mapping controls are disabled while calibrated camera is active. Revert to legacy camera to edit these mapping values.";
 
   useEffect(() => {
     transformRef.current = transform;
@@ -2132,6 +2141,18 @@ export default function ThreeRoomLab() {
       { label: "floor anchor dragging", value: isFloorAnchorDragEffectivelyEnabled ? "on" : "off" },
       { label: "active anchor drag", value: isFloorAnchorDragActive ? "yes" : "no" },
       {
+        label: "floor anchor model",
+        value: isCalibratedCameraActive
+          ? "floor-plane X/Z drives placement; screen marker is derived"
+          : "screen marker drives legacy mapping",
+      },
+      {
+        label: "stored floor marker",
+        value: lastAcceptedFloorClick
+          ? `${JSON.stringify(roundPoint(lastAcceptedFloorClick))} (screen-normalized marker; not canonical calibrated truth)`
+          : "none",
+      },
+      {
         label: "floor anchor point",
         value: lastAcceptedFloorClick ? JSON.stringify(roundPoint(lastAcceptedFloorClick)) : "none",
       },
@@ -2151,6 +2172,10 @@ export default function ThreeRoomLab() {
       {
         label: "stored floor anchor point",
         value: objectProjectionDiagnostic.anchorNorm ? JSON.stringify(roundPoint(objectProjectionDiagnostic.anchorNorm)) : "none",
+      },
+      {
+        label: "legacy mapping controls",
+        value: isCalibratedCameraActive ? "disabled while calibrated camera is active" : "enabled",
       },
       {
         label: "projected-vs-anchor delta",
@@ -2344,11 +2369,14 @@ export default function ThreeRoomLab() {
     value: number,
     options?: { fromImport?: boolean }
   ) => {
+    if (isCalibratedCameraActive && !options?.fromImport) {
+      return;
+    }
     const limits = FLOOR_MAPPING_LIMITS[field];
     const clamped = clampValue(value, limits.min, limits.max);
     const nextMapping = { ...floorMapping, [field]: clamped };
     setFloorMapping(nextMapping);
-    if (!options?.fromImport && lastAcceptedFloorClick) {
+    if (!isCalibratedCameraActive && !options?.fromImport && lastAcceptedFloorClick) {
       const mapped = mapFloorPointToObjectTransform(lastAcceptedFloorClick, nextMapping);
       updateTransformState((current) => ({
         ...current,
@@ -2359,6 +2387,9 @@ export default function ThreeRoomLab() {
   };
 
   const handleResetFloorMapping = () => {
+    if (isCalibratedCameraActive) {
+      return;
+    }
     setFloorMapping(DEFAULT_FLOOR_MAPPING);
     if (lastAcceptedFloorClick) {
       const mapped = mapFloorPointToObjectTransform(lastAcceptedFloorClick, DEFAULT_FLOOR_MAPPING);
@@ -2387,6 +2418,10 @@ export default function ThreeRoomLab() {
   };
 
   const handleAutoFitFromFloor = () => {
+    if (isCalibratedCameraActive) {
+      setAutoFitStatus({ kind: "idle", message: LEGACY_FLOOR_MAPPING_DISABLED_MESSAGE });
+      return;
+    }
     const mappingResult = deriveFloorMappingFromPolygon(floorPolygon);
     const depthResult = deriveDepthScalingFromPolygon(floorPolygon);
 
@@ -2630,7 +2665,7 @@ export default function ThreeRoomLab() {
             mapped = homographyMapping.mapped;
             mappingResultForDebug = "Calibrated ray-floor fallback to homography";
           } else {
-            mappingResultForDebug = `Calibrated ray-floor unavailable; homography unavailable — fell back to legacy: ${homographyMapping.reason}`;
+            mappingResultForDebug = `Calibrated ray-floor unavailable; homography unavailable — fell back to legacy (weak fallback): ${homographyMapping.reason}`;
           }
         }
       } else if (floorClickMappingMode === "homography-experimental") {
@@ -4089,7 +4124,8 @@ export default function ThreeRoomLab() {
               <button
                 type="button"
                 onClick={handleAutoFitFromFloor}
-                className="rounded-lg border border-emerald-500/70 px-3 py-1.5 text-xs text-emerald-200 transition hover:border-emerald-300 hover:text-emerald-100"
+                disabled={isCalibratedCameraActive}
+                className="rounded-lg border border-emerald-500/70 px-3 py-1.5 text-xs text-emerald-200 transition hover:border-emerald-300 hover:text-emerald-100 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 Auto-fit from floor
               </button>
@@ -4133,6 +4169,9 @@ export default function ThreeRoomLab() {
           >
             {autoFitStatus.message}
           </p>
+          {isCalibratedCameraActive && (
+            <p className="mt-1 text-xs text-amber-300">{LEGACY_FLOOR_MAPPING_DISABLED_MESSAGE}</p>
+          )}
           {isFloorAnchorDragEffectivelyEnabled && !lastAcceptedFloorClick && (
             <p className="mt-2 text-xs text-amber-300">
               Click inside the floor polygon first to create an anchor marker, then drag it to move the object.
@@ -4297,7 +4336,8 @@ export default function ThreeRoomLab() {
               <button
                 type="button"
                 onClick={handleResetFloorMapping}
-                className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-200 transition hover:border-emerald-400/80 hover:text-emerald-200"
+                disabled={isCalibratedCameraActive}
+                className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-200 transition hover:border-emerald-400/80 hover:text-emerald-200 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 Reset mapping
               </button>
@@ -4306,6 +4346,9 @@ export default function ThreeRoomLab() {
               World size and depth center used to map floor clicks to 3D placement. Use Auto-fit from floor in Basic
               controls to estimate these from the polygon.
             </p>
+            {isCalibratedCameraActive && (
+              <p className="mt-1 text-xs text-amber-300">{LEGACY_FLOOR_MAPPING_DISABLED_MESSAGE}</p>
+            )}
             <div className="mt-3 grid gap-2 md:grid-cols-3">
               <TransformControlRow
                 label="World width"
@@ -4313,6 +4356,7 @@ export default function ThreeRoomLab() {
                 min={FLOOR_MAPPING_LIMITS.worldWidth.min}
                 max={FLOOR_MAPPING_LIMITS.worldWidth.max}
                 step={FLOOR_MAPPING_LIMITS.worldWidth.step}
+                disabled={isCalibratedCameraActive}
                 onChange={(value) => updateFloorMappingField("worldWidth", value)}
               />
               <TransformControlRow
@@ -4321,6 +4365,7 @@ export default function ThreeRoomLab() {
                 min={FLOOR_MAPPING_LIMITS.worldDepth.min}
                 max={FLOOR_MAPPING_LIMITS.worldDepth.max}
                 step={FLOOR_MAPPING_LIMITS.worldDepth.step}
+                disabled={isCalibratedCameraActive}
                 onChange={(value) => updateFloorMappingField("worldDepth", value)}
               />
               <TransformControlRow
@@ -4329,6 +4374,7 @@ export default function ThreeRoomLab() {
                 min={FLOOR_MAPPING_LIMITS.depthCenterY.min}
                 max={FLOOR_MAPPING_LIMITS.depthCenterY.max}
                 step={FLOOR_MAPPING_LIMITS.depthCenterY.step}
+                disabled={isCalibratedCameraActive}
                 onChange={(value) => updateFloorMappingField("depthCenterY", value)}
               />
             </div>
