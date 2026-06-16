@@ -439,6 +439,8 @@ export default function ThreeRoomLab() {
   const objectHandleScaleStartUniformScaleRef = useRef(1);
   const objectHandleHeightStartClientYRef = useRef(0);
   const objectHandleHeightStartPositionYRef = useRef(0);
+  const calibratedMoveDragPointerIdRef = useRef<number | null>(null);
+  const calibratedMoveGrabOffsetRef = useRef<{ offsetX: number; offsetZ: number } | null>(null);
   const floorAnchorDragPointerIdRef = useRef<number | null>(null);
   const lastAcceptedFloorClickRef = useRef<FloorPoint | null>(null);
   const perspectiveDepthScalingRef = useRef<PerspectiveDepthScalingState>(
@@ -489,6 +491,7 @@ export default function ThreeRoomLab() {
   const [lastObjectHandleRotateDeltaDeg, setLastObjectHandleRotateDeltaDeg] = useState<number | null>(null);
   const [lastObjectHandleScaleMultiplier, setLastObjectHandleScaleMultiplier] = useState<number | null>(null);
   const [lastObjectHandleHeightDeltaYUnits, setLastObjectHandleHeightDeltaYUnits] = useState<number | null>(null);
+  const [lastCalibratedMoveStatus, setLastCalibratedMoveStatus] = useState<string>("none");
   const [wasLastAnchorDragMoveRejected, setWasLastAnchorDragMoveRejected] = useState(false);
   const [lastAcceptedFloorClick, setLastAcceptedFloorClick] = useState<FloorPoint | null>(null);
   const [lastRejectedFloorClick, setLastRejectedFloorClick] = useState<FloorPoint | null>(null);
@@ -565,6 +568,9 @@ export default function ThreeRoomLab() {
   const deactivateCalibratedCameraMode = useCallback((options?: { clearAutoRevertReason?: boolean }) => {
     setIsCalibratedCameraActive(false);
     setCalibratedCameraSnapshot(null);
+    calibratedMoveDragPointerIdRef.current = null;
+    calibratedMoveGrabOffsetRef.current = null;
+    setLastCalibratedMoveStatus("none");
     restoreDepthScalingAfterCalibratedMode();
     if (options?.clearAutoRevertReason) {
       setLastCalibratedCameraAutoRevertReason(null);
@@ -586,9 +592,12 @@ export default function ThreeRoomLab() {
   useEffect(() => {
     if (!isCalibratedCameraActive) return;
     objectHandleDragPointerIdRef.current = null;
+    calibratedMoveDragPointerIdRef.current = null;
+    calibratedMoveGrabOffsetRef.current = null;
     floorAnchorDragPointerIdRef.current = null;
     setActiveObjectHandleMode(null);
     setIsFloorAnchorDragActive(false);
+    setLastCalibratedMoveStatus("none");
   }, [isCalibratedCameraActive]);
 
   useEffect(() => {
@@ -1811,8 +1820,15 @@ export default function ThreeRoomLab() {
       value: `${expectedCameraMode} (FOV ${formatNumber(cameraPoseFovYDeg)}deg)`,
     });
 
-    const compareTarget = (targetPointNorm: FloorPoint | null): string => {
-      if (!targetPointNorm) return "unavailable (target point unavailable)";
+    const compareTarget = (targetPointNorm: FloorPoint | null) => {
+      if (!targetPointNorm) {
+        return {
+          summary: "unavailable (target point unavailable)",
+          available: false,
+          worldDistance: null as number | null,
+          reason: "target point unavailable",
+        };
+      }
       const rayResult = intersectOverlayRayWithFloorPlane(targetPointNorm, camera, 0);
 
       let homographyFailureReason: string | null = null;
@@ -1838,7 +1854,12 @@ export default function ThreeRoomLab() {
       if (!rayResult.ok || !homographyPoint) {
         const rayReason = rayResult.ok ? "ok" : rayResult.reason;
         const homographyReason = homographyPoint ? "ok" : homographyFailureReason ?? "unknown";
-        return `fail (ray=${rayReason}; homography=${homographyReason})`;
+        return {
+          summary: `fail (ray=${rayReason}; homography=${homographyReason})`,
+          available: false,
+          worldDistance: null as number | null,
+          reason: `ray=${rayReason}; homography=${homographyReason}`,
+        };
       }
 
       const deltaX = rayResult.floorPlane2D.x - homographyPoint.x;
@@ -1847,20 +1868,28 @@ export default function ThreeRoomLab() {
       if (worldDistance > RAY_FLOOR_HOMOGRAPHY_WARNING_WORLD_DISTANCE) {
         hasLargeDifference = true;
       }
-      return `ray ${formatNumber(rayResult.floorPlane2D.x)}/${formatNumber(rayResult.floorPlane2D.y)} vs H ${formatNumber(
-        homographyPoint.x
-      )}/${formatNumber(homographyPoint.y)} Δx=${formatNumber(deltaX)} Δz=${formatNumber(deltaZ)} dist=${formatNumber(
-        worldDistance
-      )}`;
+      return {
+        summary: `ray ${formatNumber(rayResult.floorPlane2D.x)}/${formatNumber(rayResult.floorPlane2D.y)} vs H ${formatNumber(
+          homographyPoint.x
+        )}/${formatNumber(homographyPoint.y)} Δx=${formatNumber(deltaX)} Δz=${formatNumber(deltaZ)} dist=${formatNumber(
+          worldDistance
+        )}`,
+        available: true,
+        worldDistance,
+        reason: null as string | null,
+      };
     };
+
+    const clickComparison = compareTarget(lastAcceptedFloorClick);
+    const objectProjectionComparison = compareTarget(objectProjectionDiagnostic.projectedNorm);
 
     rows.push({
       label: "ray-floor click vs homography",
-      value: compareTarget(lastAcceptedFloorClick),
+      value: clickComparison.summary,
     });
     rows.push({
       label: "ray-floor object-projection vs homography",
-      value: compareTarget(objectProjectionDiagnostic.projectedNorm),
+      value: objectProjectionComparison.summary,
     });
     rows.push({
       label: "ray-floor warning",
@@ -1869,7 +1898,7 @@ export default function ThreeRoomLab() {
         : "none",
     });
 
-    return { rows };
+    return { rows, clickComparison, objectProjectionComparison };
   }, [
     calibratedCameraSnapshot,
     cameraPoseFovYDeg,
@@ -1880,6 +1909,108 @@ export default function ThreeRoomLab() {
     isCalibratedCameraActive,
     lastAcceptedFloorClick,
     objectProjectionDiagnostic.projectedNorm,
+  ]);
+
+  const calibratedMoveHandleAnchorProjection = useMemo(() => {
+    const camera = cameraRef.current;
+    const frameSize: ImageFrameSize | null =
+      rendererSize.width > 0 && rendererSize.height > 0
+        ? { width: rendererSize.width, height: rendererSize.height }
+        : null;
+    if (!camera || !frameSize) {
+      return {
+        ok: false,
+        reason: "camera or frame unavailable",
+        normalized: null as FloorPoint | null,
+      };
+    }
+    const projected = projectWorldPointToOverlayNormalized(camera, frameSize, {
+      x: transform.positionX,
+      y: 0,
+      z: transform.positionZ,
+    });
+    if (!projected || !projected.inFront) {
+      return {
+        ok: false,
+        reason: "floor-contact projection unavailable",
+        normalized: null as FloorPoint | null,
+      };
+    }
+    const normalized = projected.normalized;
+    if (
+      !Number.isFinite(normalized.x) ||
+      !Number.isFinite(normalized.y) ||
+      normalized.x < 0 ||
+      normalized.x > 1 ||
+      normalized.y < 0 ||
+      normalized.y > 1
+    ) {
+      return {
+        ok: false,
+        reason: "floor-contact projection is off-screen",
+        normalized: null as FloorPoint | null,
+      };
+    }
+    return {
+      ok: true,
+      reason: "ok",
+      normalized,
+    };
+  }, [
+    rendererSize.height,
+    rendererSize.width,
+    transform.positionX,
+    transform.positionZ,
+  ]);
+
+  const calibratedMoveHandleStatus = useMemo(() => {
+    if (!isCalibratedCameraActive) {
+      return { available: false, reason: "calibrated camera is not active" };
+    }
+    if (!calibratedCameraSnapshot) {
+      return { available: false, reason: "calibrated camera snapshot is missing" };
+    }
+    if (!cameraRef.current) {
+      return { available: false, reason: "camera unavailable" };
+    }
+    if (
+      !calibratedCameraFrameMatchStatus.diagnostics ||
+      calibratedCameraFrameMatchStatus.diagnostics.isWarningStale
+    ) {
+      return { available: false, reason: "calibrated frame match is stale" };
+    }
+    if (
+      !objectProjectionDiagnostic.projectedNorm ||
+      !objectProjectionDiagnostic.status.startsWith("ok")
+    ) {
+      return { available: false, reason: "object projection diagnostic is not ok" };
+    }
+    if (!rayFloorHomographyComparisonDebug.objectProjectionComparison.available) {
+      return { available: false, reason: "ray-floor object comparison unavailable" };
+    }
+    const objectProjectionDistance = rayFloorHomographyComparisonDebug.objectProjectionComparison.worldDistance;
+    if (objectProjectionDistance === null || objectProjectionDistance > RAY_FLOOR_HOMOGRAPHY_WARNING_WORLD_DISTANCE) {
+      return { available: false, reason: "ray-floor vs homography distance exceeds threshold" };
+    }
+    if (perspectiveDepthScaling.enabled) {
+      return { available: false, reason: "depth scaling is not neutralized" };
+    }
+    if (!calibratedMoveHandleAnchorProjection.ok || !calibratedMoveHandleAnchorProjection.normalized) {
+      return { available: false, reason: calibratedMoveHandleAnchorProjection.reason };
+    }
+    return { available: true, reason: "available" };
+  }, [
+    calibratedCameraFrameMatchStatus.diagnostics,
+    calibratedCameraSnapshot,
+    calibratedMoveHandleAnchorProjection.normalized,
+    calibratedMoveHandleAnchorProjection.ok,
+    calibratedMoveHandleAnchorProjection.reason,
+    isCalibratedCameraActive,
+    objectProjectionDiagnostic.projectedNorm,
+    objectProjectionDiagnostic.status,
+    perspectiveDepthScaling.enabled,
+    rayFloorHomographyComparisonDebug.objectProjectionComparison.available,
+    rayFloorHomographyComparisonDebug.objectProjectionComparison.worldDistance,
   ]);
 
   const debugRows = useMemo(
@@ -2087,6 +2218,22 @@ export default function ThreeRoomLab() {
           : "none",
       },
       {
+        label: "calibrated move handle",
+        value: calibratedMoveHandleStatus.available
+          ? "available"
+          : `unavailable — ${calibratedMoveHandleStatus.reason}`,
+      },
+      {
+        label: "calibrated move mapping",
+        value: isCalibratedCameraActive
+          ? "Calibrated move handle uses camera ray-floor mapping."
+          : "not active",
+      },
+      {
+        label: "calibrated move status",
+        value: lastCalibratedMoveStatus,
+      },
+      {
         label: "calibrated camera resize note",
         value: isCalibratedCameraActive
           ? "Re-apply calibrated camera snapshot after significant viewport resize."
@@ -2141,9 +2288,12 @@ export default function ThreeRoomLab() {
       calibratedCameraApplyStatus.available,
       calibratedCameraApplyStatus.reason,
       calibratedDepthScalingStatus,
+      calibratedMoveHandleStatus.available,
+      calibratedMoveHandleStatus.reason,
       calibratedCameraFrameMatchStatus.value,
       isCalibratedCameraActive,
       calibratedCameraSnapshot,
+      lastCalibratedMoveStatus,
       lastAcceptedFloorClick,
       objectProjectionDiagnostic.anchorNorm,
       objectProjectionDiagnostic.deltaNorm,
@@ -2495,6 +2645,34 @@ export default function ThreeRoomLab() {
     }
   };
 
+  const handleCalibratedMoveHandlePointerDown = (event: PointerEvent<SVGCircleElement>) => {
+    if (!calibratedMoveHandleStatus.available) return;
+    const normalizedPoint = getNormalizedOverlayPointFromClient(event.clientX, event.clientY);
+    if (!normalizedPoint) {
+      setLastCalibratedMoveStatus("rejected — pointer normalization unavailable");
+      return;
+    }
+    const rayResult = intersectOverlayRayWithFloorPlane(normalizedPoint, cameraRef.current, 0);
+    if (!rayResult.ok) {
+      setLastCalibratedMoveStatus(`rejected — ${rayResult.reason}`);
+      return;
+    }
+    const currentTransform = transformRef.current;
+    calibratedMoveGrabOffsetRef.current = {
+      offsetX: currentTransform.positionX - rayResult.floorPlane2D.x,
+      offsetZ: currentTransform.positionZ - rayResult.floorPlane2D.y,
+    };
+    calibratedMoveDragPointerIdRef.current = event.pointerId;
+    setLastCalibratedMoveStatus("dragging");
+    event.preventDefault();
+    event.stopPropagation();
+    try {
+      floorOverlayRef.current?.setPointerCapture(event.pointerId);
+    } catch {
+      // Pointer capture can fail in edge cases; drag can continue while pointer stays in bounds.
+    }
+  };
+
   const handleObjectRotateHandlePointerDown = (event: PointerEvent<SVGElement>) => {
     if (!isObject2DHandlesEffectivelyEnabled || !lastAcceptedFloorClick) return;
     const vector = getAnchorClientVector(event.clientX, event.clientY);
@@ -2584,6 +2762,68 @@ export default function ThreeRoomLab() {
       }
       setWasLastObjectHandleMoveRejected(false);
       applyFloorPlacement(normalizedPoint);
+      return;
+    }
+
+    if (calibratedMoveDragPointerIdRef.current === event.pointerId) {
+      event.preventDefault();
+      const normalizedPoint = getNormalizedOverlayPointFromClient(event.clientX, event.clientY);
+      if (!normalizedPoint) {
+        setLastCalibratedMoveStatus("rejected — pointer normalization unavailable");
+        return;
+      }
+      const rayResult = intersectOverlayRayWithFloorPlane(normalizedPoint, cameraRef.current, 0);
+      if (!rayResult.ok) {
+        setLastCalibratedMoveStatus(`rejected — ${rayResult.reason}`);
+        return;
+      }
+      const grabOffset = calibratedMoveGrabOffsetRef.current;
+      if (!grabOffset) {
+        setLastCalibratedMoveStatus("rejected — grab offset unavailable");
+        return;
+      }
+      const nextX = rayResult.floorPlane2D.x + grabOffset.offsetX;
+      const nextZ = rayResult.floorPlane2D.y + grabOffset.offsetZ;
+      const frameSize: ImageFrameSize | null =
+        rendererSize.width > 0 && rendererSize.height > 0
+          ? { width: rendererSize.width, height: rendererSize.height }
+          : null;
+      if (!frameSize || !cameraRef.current) {
+        setLastCalibratedMoveStatus("rejected — camera or frame unavailable");
+        return;
+      }
+      const projectedFloorContact = projectWorldPointToOverlayNormalized(cameraRef.current, frameSize, {
+        x: nextX,
+        y: 0,
+        z: nextZ,
+      });
+      if (!projectedFloorContact || !projectedFloorContact.inFront) {
+        setLastCalibratedMoveStatus("rejected — floor-contact projection unavailable");
+        return;
+      }
+      const projectedNormalized = projectedFloorContact.normalized;
+      if (
+        !Number.isFinite(projectedNormalized.x) ||
+        !Number.isFinite(projectedNormalized.y) ||
+        projectedNormalized.x < 0 ||
+        projectedNormalized.x > 1 ||
+        projectedNormalized.y < 0 ||
+        projectedNormalized.y > 1
+      ) {
+        setLastCalibratedMoveStatus("rejected — floor-contact projection is off-screen");
+        return;
+      }
+      const isInside = isPointInsidePolygon(projectedNormalized, floorPolygon);
+      if (!isInside) {
+        setLastCalibratedMoveStatus("rejected — outside floor polygon");
+        return;
+      }
+      updateTransformState((prev) => ({ ...prev, positionX: nextX, positionZ: nextZ }), {
+        markOwned: true,
+      });
+      setLastAcceptedFloorClick(projectedNormalized);
+      setLastRejectedFloorClick(null);
+      setLastCalibratedMoveStatus("ok");
       return;
     }
 
@@ -2705,6 +2945,17 @@ export default function ThreeRoomLab() {
     }
     objectHandleDragPointerIdRef.current = null;
     setActiveObjectHandleMode(null);
+
+    const calibratedMovePointerId = event?.pointerId ?? calibratedMoveDragPointerIdRef.current;
+    if (calibratedMovePointerId !== null) {
+      try {
+        floorOverlayRef.current?.releasePointerCapture(calibratedMovePointerId);
+      } catch {
+        // Ignore release failures when capture is already cleared.
+      }
+    }
+    calibratedMoveDragPointerIdRef.current = null;
+    calibratedMoveGrabOffsetRef.current = null;
 
     const anchorPointerId = event?.pointerId ?? floorAnchorDragPointerIdRef.current;
     if (anchorPointerId !== null) {
@@ -3460,6 +3711,64 @@ export default function ThreeRoomLab() {
                     aria-label="Object floor anchor marker"
                     onPointerDown={handleFloorAnchorPointerDown}
                   />
+                )}
+                {calibratedMoveHandleStatus.available && calibratedMoveHandleAnchorProjection.normalized && (
+                  <g>
+                    <circle
+                      cx={calibratedMoveHandleAnchorProjection.normalized.x * 100}
+                      cy={calibratedMoveHandleAnchorProjection.normalized.y * 100}
+                      r={2.1}
+                      fill="#0f172a"
+                      fillOpacity={0.5}
+                      stroke="#bae6fd"
+                      strokeOpacity={0.8}
+                      strokeWidth={0.4}
+                      pointerEvents="none"
+                    />
+                    <line
+                      x1={calibratedMoveHandleAnchorProjection.normalized.x * 100}
+                      y1={calibratedMoveHandleAnchorProjection.normalized.y * 100}
+                      x2={calibratedMoveHandleAnchorProjection.normalized.x * 100 + 4.2}
+                      y2={calibratedMoveHandleAnchorProjection.normalized.y * 100 - 4.2}
+                      stroke="#38bdf8"
+                      strokeWidth={0.8}
+                      strokeOpacity={0.95}
+                      pointerEvents="none"
+                    />
+                    <circle
+                      cx={calibratedMoveHandleAnchorProjection.normalized.x * 100 + 4.2}
+                      cy={calibratedMoveHandleAnchorProjection.normalized.y * 100 - 4.2}
+                      r={1.85}
+                      fill="#38bdf8"
+                      stroke="#ffffff"
+                      strokeWidth={0.6}
+                      className="cursor-move"
+                      pointerEvents="all"
+                      aria-label="Calibrated move handle"
+                      onPointerDown={handleCalibratedMoveHandlePointerDown}
+                    >
+                      <title>Move (calibrated ray-floor)</title>
+                    </circle>
+                    <rect
+                      x={calibratedMoveHandleAnchorProjection.normalized.x * 100 + 5.3}
+                      y={calibratedMoveHandleAnchorProjection.normalized.y * 100 - 6.9}
+                      width={9.8}
+                      height={2.2}
+                      rx={0.55}
+                      fill="#0c4a6e"
+                      fillOpacity={0.88}
+                      pointerEvents="none"
+                    />
+                    <text
+                      x={calibratedMoveHandleAnchorProjection.normalized.x * 100 + 5.8}
+                      y={calibratedMoveHandleAnchorProjection.normalized.y * 100 - 5.3}
+                      fill="#e0f2fe"
+                      fontSize="2.05"
+                      pointerEvents="none"
+                    >
+                      Move (ray)
+                    </text>
+                  </g>
                 )}
                 {isObject2DHandlesEffectivelyEnabled && lastAcceptedFloorClick && (
                   <g>
