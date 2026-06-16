@@ -87,6 +87,12 @@ const CALIBRATED_CAMERA_APPLY_MAX_AVG_DELTA_PX = 1;
 const CALIBRATED_CAMERA_APPLY_MAX_MAX_DELTA_PX = 1;
 const CALIBRATED_CAMERA_APPLY_MIN_SCALE_RATIO = 0.85;
 const CALIBRATED_CAMERA_APPLY_MAX_SCALE_RATIO = 1.18;
+const CALIBRATED_CAMERA_STALE_WARN_SIZE_DELTA_PERCENT = 2;
+const CALIBRATED_CAMERA_STALE_WARN_ASPECT_DELTA_PERCENT = 1;
+const CALIBRATED_CAMERA_AUTO_REVERT_SIZE_DELTA_PERCENT = 5;
+const CALIBRATED_CAMERA_AUTO_REVERT_ASPECT_DELTA_PERCENT = 3;
+const PROJECTED_ANCHOR_WARNING_MAX_PIXEL_DISTANCE = 24;
+const PROJECTED_ANCHOR_WARNING_MAX_NORMALIZED_DISTANCE = 0.03;
 
 const DEFAULT_MODEL_NORMALIZATION: ModelNormalizationState = {
   modelYOffset: 0,
@@ -163,6 +169,100 @@ function roundPoint(point: FloorPoint): FloorPoint {
   return {
     x: Number(point.x.toFixed(3)),
     y: Number(point.y.toFixed(3)),
+  };
+}
+
+type FrameMatchDiagnostics = {
+  widthDeltaPercent: number;
+  heightDeltaPercent: number;
+  aspectDeltaPercent: number;
+  isWarningStale: boolean;
+  isAutoRevertStale: boolean;
+};
+
+function computeFrameMatchDiagnostics(
+  snapshotFrameSize: ImageFrameSize,
+  liveFrameSize: ImageFrameSize
+): FrameMatchDiagnostics | null {
+  if (
+    snapshotFrameSize.width <= 0 ||
+    snapshotFrameSize.height <= 0 ||
+    liveFrameSize.width <= 0 ||
+    liveFrameSize.height <= 0
+  ) {
+    return null;
+  }
+  const widthDeltaPercent = (Math.abs(liveFrameSize.width - snapshotFrameSize.width) / snapshotFrameSize.width) * 100;
+  const heightDeltaPercent = (Math.abs(liveFrameSize.height - snapshotFrameSize.height) / snapshotFrameSize.height) * 100;
+  const snapshotAspect = snapshotFrameSize.width / snapshotFrameSize.height;
+  const liveAspect = liveFrameSize.width / liveFrameSize.height;
+  const aspectDeltaPercent = (Math.abs(liveAspect - snapshotAspect) / snapshotAspect) * 100;
+  const isWarningStale =
+    widthDeltaPercent > CALIBRATED_CAMERA_STALE_WARN_SIZE_DELTA_PERCENT ||
+    heightDeltaPercent > CALIBRATED_CAMERA_STALE_WARN_SIZE_DELTA_PERCENT ||
+    aspectDeltaPercent > CALIBRATED_CAMERA_STALE_WARN_ASPECT_DELTA_PERCENT;
+  const isAutoRevertStale =
+    widthDeltaPercent > CALIBRATED_CAMERA_AUTO_REVERT_SIZE_DELTA_PERCENT ||
+    heightDeltaPercent > CALIBRATED_CAMERA_AUTO_REVERT_SIZE_DELTA_PERCENT ||
+    aspectDeltaPercent > CALIBRATED_CAMERA_AUTO_REVERT_ASPECT_DELTA_PERCENT;
+  return {
+    widthDeltaPercent,
+    heightDeltaPercent,
+    aspectDeltaPercent,
+    isWarningStale,
+    isAutoRevertStale,
+  };
+}
+
+type WorldProjectionResult = {
+  normalized: FloorPoint;
+  pixels: { x: number; y: number };
+  ndc: { x: number; y: number; z: number };
+  inFront: boolean;
+  isVisibleInView: boolean;
+};
+
+function projectWorldPointToOverlayNormalized(
+  camera: THREE.PerspectiveCamera,
+  frameSize: ImageFrameSize,
+  worldPoint: { x: number; y: number; z: number }
+): WorldProjectionResult | null {
+  if (
+    !Number.isFinite(worldPoint.x) ||
+    !Number.isFinite(worldPoint.y) ||
+    !Number.isFinite(worldPoint.z) ||
+    frameSize.width <= 0 ||
+    frameSize.height <= 0
+  ) {
+    return null;
+  }
+  camera.updateMatrixWorld(true);
+  const pointWorld = new THREE.Vector3(worldPoint.x, worldPoint.y, worldPoint.z);
+  const pointCamera = pointWorld.clone().applyMatrix4(camera.matrixWorldInverse);
+  const pointNdc = pointWorld.clone().project(camera);
+  if (!Number.isFinite(pointNdc.x) || !Number.isFinite(pointNdc.y) || !Number.isFinite(pointNdc.z)) {
+    return null;
+  }
+  const normalizedX = (pointNdc.x + 1) / 2;
+  const normalizedY = (1 - pointNdc.y) / 2;
+  const inFront = pointCamera.z < 0;
+  const isVisibleInView =
+    inFront &&
+    pointNdc.x >= -1 &&
+    pointNdc.x <= 1 &&
+    pointNdc.y >= -1 &&
+    pointNdc.y <= 1 &&
+    pointNdc.z >= -1 &&
+    pointNdc.z <= 1;
+  return {
+    normalized: { x: normalizedX, y: normalizedY },
+    pixels: {
+      x: normalizedX * frameSize.width,
+      y: normalizedY * frameSize.height,
+    },
+    ndc: { x: pointNdc.x, y: pointNdc.y, z: pointNdc.z },
+    inFront,
+    isVisibleInView,
   };
 }
 
@@ -316,6 +416,7 @@ export default function ThreeRoomLab() {
   const [cameraPoseFovYDeg, setCameraPoseFovYDeg] = useState(50);
   const [isCalibratedCameraActive, setIsCalibratedCameraActive] = useState(false);
   const [calibratedCameraSnapshot, setCalibratedCameraSnapshot] = useState<CalibratedCameraSnapshot | null>(null);
+  const [lastCalibratedCameraAutoRevertReason, setLastCalibratedCameraAutoRevertReason] = useState<string | null>(null);
   const [floorClickMappingMode, setFloorClickMappingMode] = useState<FloorClickMappingMode>("legacy");
   const [lastFloorClickMappingResult, setLastFloorClickMappingResult] = useState<string>("legacy");
   const [showFloorOverlay, setShowFloorOverlay] = useState(true);
@@ -387,6 +488,19 @@ export default function ThreeRoomLab() {
   useEffect(() => {
     calibratedCameraSnapshotRef.current = calibratedCameraSnapshot;
   }, [calibratedCameraSnapshot]);
+
+  useEffect(() => {
+    if (!isCalibratedCameraActive || !calibratedCameraSnapshot) return;
+    const diagnostics = computeFrameMatchDiagnostics(calibratedCameraSnapshot.frameSize, rendererSize);
+    if (!diagnostics?.isAutoRevertStale) return;
+    setIsCalibratedCameraActive(false);
+    setCalibratedCameraSnapshot(null);
+    setLastCalibratedCameraAutoRevertReason(
+      `reverted — frame changed too much (dw=${formatNumber(diagnostics.widthDeltaPercent)}%, dh=${formatNumber(
+        diagnostics.heightDeltaPercent
+      )}%, da=${formatNumber(diagnostics.aspectDeltaPercent)}%)`
+    );
+  }, [isCalibratedCameraActive, calibratedCameraSnapshot, rendererSize.height, rendererSize.width]);
 
   useEffect(() => {
     if (!isCalibratedCameraActive) return;
@@ -1464,6 +1578,130 @@ export default function ThreeRoomLab() {
     showHomographyDebugOverlay,
   ]);
 
+  const calibratedCameraFrameMatchStatus = useMemo(() => {
+    if (lastCalibratedCameraAutoRevertReason && !isCalibratedCameraActive && !calibratedCameraSnapshot) {
+      return {
+        value: lastCalibratedCameraAutoRevertReason,
+        diagnostics: null as FrameMatchDiagnostics | null,
+      };
+    }
+    if (!isCalibratedCameraActive || !calibratedCameraSnapshot) {
+      return {
+        value: "none",
+        diagnostics: null as FrameMatchDiagnostics | null,
+      };
+    }
+    const diagnostics = computeFrameMatchDiagnostics(calibratedCameraSnapshot.frameSize, rendererSize);
+    if (!diagnostics) {
+      return {
+        value: "unavailable (invalid frame size)",
+        diagnostics: null as FrameMatchDiagnostics | null,
+      };
+    }
+    if (diagnostics.isWarningStale) {
+      return {
+        value: `stale — re-apply recommended (dw=${formatNumber(diagnostics.widthDeltaPercent)}%, dh=${formatNumber(
+          diagnostics.heightDeltaPercent
+        )}%, da=${formatNumber(diagnostics.aspectDeltaPercent)}%)`,
+        diagnostics,
+      };
+    }
+    return {
+      value: `ok (dw=${formatNumber(diagnostics.widthDeltaPercent)}%, dh=${formatNumber(
+        diagnostics.heightDeltaPercent
+      )}%, da=${formatNumber(diagnostics.aspectDeltaPercent)}%)`,
+      diagnostics,
+    };
+  }, [
+    calibratedCameraSnapshot,
+    isCalibratedCameraActive,
+    lastCalibratedCameraAutoRevertReason,
+    rendererSize,
+  ]);
+
+  const objectProjectionDiagnostic = useMemo(() => {
+    const camera = cameraRef.current;
+    if (!camera) {
+      return {
+        status: "camera unavailable",
+        projectedNorm: null as FloorPoint | null,
+        projectedPx: null as { x: number; y: number } | null,
+        anchorNorm: lastAcceptedFloorClick,
+        deltaNorm: null as { dx: number; dy: number; distance: number } | null,
+        deltaPx: null as { dx: number; dy: number; distance: number } | null,
+        largeDelta: false,
+      };
+    }
+    const frameSize: ImageFrameSize = { width: rendererSize.width, height: rendererSize.height };
+    const projected = projectWorldPointToOverlayNormalized(camera, frameSize, {
+      x: transform.positionX,
+      y: transform.positionY,
+      z: transform.positionZ,
+    });
+    if (!projected) {
+      return {
+        status: "projection unavailable",
+        projectedNorm: null as FloorPoint | null,
+        projectedPx: null as { x: number; y: number } | null,
+        anchorNorm: lastAcceptedFloorClick,
+        deltaNorm: null as { dx: number; dy: number; distance: number } | null,
+        deltaPx: null as { dx: number; dy: number; distance: number } | null,
+        largeDelta: false,
+      };
+    }
+    if (!projected.inFront) {
+      return {
+        status: "object behind camera",
+        projectedNorm: projected.normalized,
+        projectedPx: projected.pixels,
+        anchorNorm: lastAcceptedFloorClick,
+        deltaNorm: null as { dx: number; dy: number; distance: number } | null,
+        deltaPx: null as { dx: number; dy: number; distance: number } | null,
+        largeDelta: false,
+      };
+    }
+    if (!lastAcceptedFloorClick) {
+      return {
+        status: projected.isVisibleInView ? "ok (no floor anchor)" : "off-screen (no floor anchor)",
+        projectedNorm: projected.normalized,
+        projectedPx: projected.pixels,
+        anchorNorm: null as FloorPoint | null,
+        deltaNorm: null as { dx: number; dy: number; distance: number } | null,
+        deltaPx: null as { dx: number; dy: number; distance: number } | null,
+        largeDelta: false,
+      };
+    }
+    const deltaNorm = {
+      dx: projected.normalized.x - lastAcceptedFloorClick.x,
+      dy: projected.normalized.y - lastAcceptedFloorClick.y,
+      distance: Math.hypot(projected.normalized.x - lastAcceptedFloorClick.x, projected.normalized.y - lastAcceptedFloorClick.y),
+    };
+    const deltaPx = {
+      dx: deltaNorm.dx * frameSize.width,
+      dy: deltaNorm.dy * frameSize.height,
+      distance: Math.hypot(deltaNorm.dx * frameSize.width, deltaNorm.dy * frameSize.height),
+    };
+    const largeDelta =
+      deltaPx.distance > PROJECTED_ANCHOR_WARNING_MAX_PIXEL_DISTANCE ||
+      deltaNorm.distance > PROJECTED_ANCHOR_WARNING_MAX_NORMALIZED_DISTANCE;
+    return {
+      status: projected.isVisibleInView ? "ok" : "off-screen",
+      projectedNorm: projected.normalized,
+      projectedPx: projected.pixels,
+      anchorNorm: lastAcceptedFloorClick,
+      deltaNorm,
+      deltaPx,
+      largeDelta,
+    };
+  }, [
+    lastAcceptedFloorClick,
+    rendererSize.height,
+    rendererSize.width,
+    transform.positionX,
+    transform.positionY,
+    transform.positionZ,
+  ]);
+
   const debugRows = useMemo(
     () => [
       { label: "env", value: envEnabled ? "enabled" : "disabled" },
@@ -1592,6 +1830,33 @@ export default function ThreeRoomLab() {
         value: lastAcceptedFloorClick ? JSON.stringify(roundPoint(lastAcceptedFloorClick)) : "none",
       },
       {
+        label: "object projected screen point",
+        value: objectProjectionDiagnostic.projectedNorm
+          ? `x=${formatNumber(objectProjectionDiagnostic.projectedNorm.x)} y=${formatNumber(
+              objectProjectionDiagnostic.projectedNorm.y
+            )}`
+          : "none",
+      },
+      {
+        label: "stored floor anchor point",
+        value: objectProjectionDiagnostic.anchorNorm ? JSON.stringify(roundPoint(objectProjectionDiagnostic.anchorNorm)) : "none",
+      },
+      {
+        label: "projected-vs-anchor delta",
+        value:
+          objectProjectionDiagnostic.deltaNorm && objectProjectionDiagnostic.deltaPx
+            ? `dx=${formatNumber(objectProjectionDiagnostic.deltaNorm.dx)} dy=${formatNumber(
+                objectProjectionDiagnostic.deltaNorm.dy
+              )} distNorm=${formatNumber(objectProjectionDiagnostic.deltaNorm.distance)} distPx=${formatNumber(
+                objectProjectionDiagnostic.deltaPx.distance
+              )}`
+            : "none",
+      },
+      {
+        label: "projection diagnostic",
+        value: objectProjectionDiagnostic.status,
+      },
+      {
         label: "last rejected floor click",
         value: lastRejectedFloorClick ? JSON.stringify(roundPoint(lastRejectedFloorClick)) : "none",
       },
@@ -1643,6 +1908,17 @@ export default function ThreeRoomLab() {
           ? "Re-apply calibrated camera snapshot after significant viewport resize."
           : "none",
       },
+      {
+        label: "calibrated camera frame match",
+        value: calibratedCameraFrameMatchStatus.value,
+      },
+      {
+        label: "projected-vs-anchor warning",
+        value:
+          isCalibratedCameraActive && objectProjectionDiagnostic.largeDelta
+            ? "Projected object differs from stored floor anchor; overlay handles remain disabled until projection is unified."
+            : "none",
+      },
       { label: "model path", value: modelPath || "(empty)" },
     ],
     [
@@ -1679,9 +1955,16 @@ export default function ThreeRoomLab() {
       cameraPoseFovScanDebug.rows,
       calibratedCameraApplyStatus.available,
       calibratedCameraApplyStatus.reason,
+      calibratedCameraFrameMatchStatus.value,
       isCalibratedCameraActive,
       calibratedCameraSnapshot,
       lastAcceptedFloorClick,
+      objectProjectionDiagnostic.anchorNorm,
+      objectProjectionDiagnostic.deltaNorm,
+      objectProjectionDiagnostic.deltaPx,
+      objectProjectionDiagnostic.largeDelta,
+      objectProjectionDiagnostic.projectedNorm,
+      objectProjectionDiagnostic.status,
       lastRejectedFloorClick,
       modelLoadError,
       modelLoadState,
@@ -2915,6 +3198,51 @@ export default function ThreeRoomLab() {
                         </g>
                       );
                     })}
+                    {objectProjectionDiagnostic.projectedNorm && (
+                      <g>
+                        {objectProjectionDiagnostic.anchorNorm && (
+                          <line
+                            x1={objectProjectionDiagnostic.anchorNorm.x * 100}
+                            y1={objectProjectionDiagnostic.anchorNorm.y * 100}
+                            x2={objectProjectionDiagnostic.projectedNorm.x * 100}
+                            y2={objectProjectionDiagnostic.projectedNorm.y * 100}
+                            stroke="#e879f9"
+                            strokeOpacity={0.65}
+                            strokeWidth={0.35}
+                            strokeDasharray="0.9 0.7"
+                          />
+                        )}
+                        <circle
+                          cx={objectProjectionDiagnostic.projectedNorm.x * 100}
+                          cy={objectProjectionDiagnostic.projectedNorm.y * 100}
+                          r={1.05}
+                          fill="#e879f9"
+                          fillOpacity={0.85}
+                          stroke="#831843"
+                          strokeWidth={0.45}
+                        />
+                        <text
+                          x={objectProjectionDiagnostic.projectedNorm.x * 100 + 1.1}
+                          y={objectProjectionDiagnostic.projectedNorm.y * 100 + 2.1}
+                          fill="#f5d0fe"
+                          fontSize="1.9"
+                          fontWeight="600"
+                        >
+                          projected object
+                        </text>
+                        {objectProjectionDiagnostic.anchorNorm && (
+                          <text
+                            x={objectProjectionDiagnostic.anchorNorm.x * 100 + 1.1}
+                            y={objectProjectionDiagnostic.anchorNorm.y * 100 + 2.1}
+                            fill="#fecdd3"
+                            fontSize="1.9"
+                            fontWeight="600"
+                          >
+                            stored anchor
+                          </text>
+                        )}
+                      </g>
+                    )}
                   </g>
                 )}
                 {floorPolygon.map((point, index) => (
@@ -3620,6 +3948,7 @@ export default function ThreeRoomLab() {
               onClick={() => {
                 const candidate = cameraPoseDebug.applyCandidate;
                 if (!candidate || !calibratedCameraApplyStatus.available) return;
+                setLastCalibratedCameraAutoRevertReason(null);
                 setCalibratedCameraSnapshot({
                   pose: candidate.pose,
                   fovDeg: cameraPoseFovYDeg,
@@ -3639,6 +3968,7 @@ export default function ThreeRoomLab() {
               onClick={() => {
                 setIsCalibratedCameraActive(false);
                 setCalibratedCameraSnapshot(null);
+                setLastCalibratedCameraAutoRevertReason(null);
               }}
               disabled={!isCalibratedCameraActive && !calibratedCameraSnapshot}
               className="rounded border border-slate-700 px-2 py-1 text-slate-200 transition hover:border-rose-400/80 hover:text-rose-200 disabled:cursor-not-allowed disabled:opacity-50"
