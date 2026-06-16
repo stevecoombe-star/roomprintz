@@ -2559,51 +2559,97 @@ export default function ThreeRoomLab() {
 
   const applyFloorPlacement = (point: FloorPoint, options?: { source?: "floor-click" | "other" }) => {
     let mapped = mapFloorPointToObjectTransform(point, floorMapping);
-    let mappingResultForDebug = "legacy";
+    let markerPointForAcceptedClick = point;
 
-    if (
-      options?.source === "floor-click" &&
-      (floorClickMappingMode === "homography-experimental" || isCalibratedCameraActive)
-    ) {
-      const fallbackToLegacy = (reason: string) => {
-        const prefix = isCalibratedCameraActive ? "calibrated camera requires homography mapping" : "homography unavailable";
-        mappingResultForDebug = `${prefix} — fell back to legacy: ${reason}`;
-      };
-
-      if (homographyDebug.cornerOrderStatus !== "ok") {
-        fallbackToLegacy("corner ordering unavailable");
-      } else if (homographyDebug.cornerOrderConfidence !== "high") {
-        fallbackToLegacy("corner order confidence is not high");
-      } else if (!homographyDebug.frameSize) {
-        fallbackToLegacy("frame size is invalid");
-      } else if (homographyDebug.homographySolveStatus !== "ok" || !homographyDebug.homographyMatrixForPlacement) {
-        fallbackToLegacy(homographyDebug.placementFallbackReason);
-      } else {
+    if (options?.source === "floor-click") {
+      let mappingResultForDebug = "Legacy";
+      const tryHomographyMapping = (): { ok: true; mapped: { positionX: number; positionZ: number } } | { ok: false; reason: string } => {
+        if (homographyDebug.cornerOrderStatus !== "ok") {
+          return { ok: false, reason: "corner ordering unavailable" };
+        }
+        if (homographyDebug.cornerOrderConfidence !== "high") {
+          return { ok: false, reason: "corner order confidence is not high" };
+        }
+        if (!homographyDebug.frameSize) {
+          return { ok: false, reason: "frame size is invalid" };
+        }
+        if (homographyDebug.homographySolveStatus !== "ok" || !homographyDebug.homographyMatrixForPlacement) {
+          return { ok: false, reason: homographyDebug.placementFallbackReason };
+        }
         const pointPixels = normToPixels(point, homographyDebug.frameSize);
         if (!pointPixels) {
-          fallbackToLegacy("floor click could not convert to frame pixels");
+          return { ok: false, reason: "floor click could not convert to frame pixels" };
+        }
+        const mappedHomography = applyHomography(homographyDebug.homographyMatrixForPlacement, pointPixels);
+        if (!mappedHomography || !Number.isFinite(mappedHomography.x) || !Number.isFinite(mappedHomography.y)) {
+          return { ok: false, reason: "homography projection returned invalid coordinates" };
+        }
+        return {
+          ok: true,
+          mapped: {
+            positionX: mappedHomography.x,
+            positionZ: mappedHomography.y,
+          },
+        };
+      };
+
+      if (isCalibratedCameraActive) {
+        const rayFloorResult = intersectOverlayRayWithFloorPlane(point, cameraRef.current, 0);
+        if (rayFloorResult.ok) {
+          mapped = {
+            positionX: rayFloorResult.floorPlane2D.x,
+            positionZ: rayFloorResult.floorPlane2D.y,
+          };
+          mappingResultForDebug = "Calibrated ray-floor";
+          const frameSize: ImageFrameSize | null =
+            rendererSize.width > 0 && rendererSize.height > 0
+              ? { width: rendererSize.width, height: rendererSize.height }
+              : null;
+          if (frameSize && cameraRef.current) {
+            const projectedFloorContact = projectWorldPointToOverlayNormalized(cameraRef.current, frameSize, {
+              x: mapped.positionX,
+              y: 0,
+              z: mapped.positionZ,
+            });
+            if (
+              projectedFloorContact &&
+              projectedFloorContact.inFront &&
+              Number.isFinite(projectedFloorContact.normalized.x) &&
+              Number.isFinite(projectedFloorContact.normalized.y) &&
+              projectedFloorContact.normalized.x >= 0 &&
+              projectedFloorContact.normalized.x <= 1 &&
+              projectedFloorContact.normalized.y >= 0 &&
+              projectedFloorContact.normalized.y <= 1
+            ) {
+              markerPointForAcceptedClick = projectedFloorContact.normalized;
+            }
+          }
         } else {
-          const mappedHomography = applyHomography(homographyDebug.homographyMatrixForPlacement, pointPixels);
-          if (!mappedHomography || !Number.isFinite(mappedHomography.x) || !Number.isFinite(mappedHomography.y)) {
-            fallbackToLegacy("homography projection returned invalid coordinates");
+          const homographyMapping = tryHomographyMapping();
+          if (homographyMapping.ok) {
+            mapped = homographyMapping.mapped;
+            mappingResultForDebug = "Calibrated ray-floor fallback to homography";
           } else {
-            mapped = {
-              positionX: mappedHomography.x,
-              positionZ: mappedHomography.y,
-            };
-            mappingResultForDebug = isCalibratedCameraActive ? "homography (calibrated-camera)" : "homography";
+            mappingResultForDebug = `Calibrated ray-floor unavailable; homography unavailable — fell back to legacy: ${homographyMapping.reason}`;
           }
         }
+      } else if (floorClickMappingMode === "homography-experimental") {
+        const homographyMapping = tryHomographyMapping();
+        if (homographyMapping.ok) {
+          mapped = homographyMapping.mapped;
+          mappingResultForDebug = "Homography experimental";
+        } else {
+          mappingResultForDebug = `Homography experimental unavailable — fell back to legacy: ${homographyMapping.reason}`;
+        }
       }
+
       setLastFloorClickMappingResult(mappingResultForDebug);
-    } else if (options?.source === "floor-click") {
-      setLastFloorClickMappingResult("legacy");
     }
 
     updateTransformState((prev) => ({ ...prev, positionX: mapped.positionX, positionZ: mapped.positionZ }), {
       markOwned: true,
     });
-    setLastAcceptedFloorClick(point);
+    setLastAcceptedFloorClick(markerPointForAcceptedClick);
     setLastRejectedFloorClick(null);
   };
 
@@ -2766,6 +2812,11 @@ export default function ThreeRoomLab() {
     }
 
     if (calibratedMoveDragPointerIdRef.current === event.pointerId) {
+      if (!calibratedCameraActiveRef.current) {
+        calibratedMoveDragPointerIdRef.current = null;
+        calibratedMoveGrabOffsetRef.current = null;
+        return;
+      }
       event.preventDefault();
       const normalizedPoint = getNormalizedOverlayPointFromClient(event.clientX, event.clientY);
       if (!normalizedPoint) {
