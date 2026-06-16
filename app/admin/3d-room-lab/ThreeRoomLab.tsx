@@ -62,10 +62,31 @@ type ObjectHandleMode = "move" | "rotate" | "scale" | "height" | null;
 type SceneJsonStatus = { kind: "idle" | "success" | "error"; message: string };
 type TransformStateUpdater = TransformState | ((prev: TransformState) => TransformState);
 type FloorClickMappingMode = "legacy" | "homography-experimental";
+type CalibratedCameraSnapshot = {
+  pose: {
+    position: { x: number; y: number; z: number };
+    lookAt: { x: number; y: number; z: number };
+    up: { x: number; y: number; z: number };
+  };
+  fovDeg: number;
+  frameSize: ImageFrameSize;
+  diagnosticsSummary: string;
+  appliedAtIso: string;
+};
 
 const OBJECT_HANDLE_ROTATE_DEADZONE_PX = 14;
 const OBJECT_HANDLE_SCALE_MIN_START_DISTANCE_PX = 10;
 const OBJECT_HANDLE_HEIGHT_PIXELS_PER_UNIT = 120;
+const LEGACY_CAMERA_FOV_DEG = 50;
+const LEGACY_CAMERA_POSITION: [number, number, number] = [0, 1.1, 3.2];
+const CALIBRATED_CAMERA_APPLY_MAX_CV_AVG_PX = 4;
+const CALIBRATED_CAMERA_APPLY_MAX_CV_MAX_PX = 10;
+const CALIBRATED_CAMERA_APPLY_MAX_DISPLAY_AVG_PX = 10;
+const CALIBRATED_CAMERA_APPLY_MAX_DISPLAY_MAX_PX = 10;
+const CALIBRATED_CAMERA_APPLY_MAX_AVG_DELTA_PX = 1;
+const CALIBRATED_CAMERA_APPLY_MAX_MAX_DELTA_PX = 1;
+const CALIBRATED_CAMERA_APPLY_MIN_SCALE_RATIO = 0.85;
+const CALIBRATED_CAMERA_APPLY_MAX_SCALE_RATIO = 1.18;
 
 const DEFAULT_MODEL_NORMALIZATION: ModelNormalizationState = {
   modelYOffset: 0,
@@ -241,6 +262,7 @@ export default function ThreeRoomLab() {
   const placementGroupRef = useRef<THREE.Group | null>(null);
   const modelNormalizationGroupRef = useRef<THREE.Group | null>(null);
   const autoBoundsGroupRef = useRef<THREE.Group | null>(null);
+  const cameraRef = useRef<THREE.PerspectiveCamera | null>(null);
   const autoNormalizeBoundsEnabledRef = useRef(true);
   const lastAutoBoundsRef = useRef<AutoBoundsNormalization | null>(null);
   const activeObjectRef = useRef<THREE.Object3D | null>(null);
@@ -265,6 +287,8 @@ export default function ThreeRoomLab() {
   const perspectiveDepthScalingRef = useRef<PerspectiveDepthScalingState>(
     DEFAULT_PERSPECTIVE_DEPTH_SCALING
   );
+  const calibratedCameraActiveRef = useRef(false);
+  const calibratedCameraSnapshotRef = useRef<CalibratedCameraSnapshot | null>(null);
 
   const [roomImageInput, setRoomImageInput] = useState(DEFAULT_ROOM_IMAGE_URL);
   const [roomImageUrl, setRoomImageUrl] = useState(DEFAULT_ROOM_IMAGE_URL);
@@ -290,6 +314,8 @@ export default function ThreeRoomLab() {
   const [isDebugOpen, setIsDebugOpen] = useState(false);
   const [showHomographyDebugOverlay, setShowHomographyDebugOverlay] = useState(false);
   const [cameraPoseFovYDeg, setCameraPoseFovYDeg] = useState(50);
+  const [isCalibratedCameraActive, setIsCalibratedCameraActive] = useState(false);
+  const [calibratedCameraSnapshot, setCalibratedCameraSnapshot] = useState<CalibratedCameraSnapshot | null>(null);
   const [floorClickMappingMode, setFloorClickMappingMode] = useState<FloorClickMappingMode>("legacy");
   const [lastFloorClickMappingResult, setLastFloorClickMappingResult] = useState<string>("legacy");
   const [showFloorOverlay, setShowFloorOverlay] = useState(true);
@@ -353,6 +379,22 @@ export default function ThreeRoomLab() {
   useEffect(() => {
     perspectiveDepthScalingRef.current = perspectiveDepthScaling;
   }, [perspectiveDepthScaling]);
+
+  useEffect(() => {
+    calibratedCameraActiveRef.current = isCalibratedCameraActive;
+  }, [isCalibratedCameraActive]);
+
+  useEffect(() => {
+    calibratedCameraSnapshotRef.current = calibratedCameraSnapshot;
+  }, [calibratedCameraSnapshot]);
+
+  useEffect(() => {
+    if (!isCalibratedCameraActive) return;
+    objectHandleDragPointerIdRef.current = null;
+    floorAnchorDragPointerIdRef.current = null;
+    setActiveObjectHandleMode(null);
+    setIsFloorAnchorDragActive(false);
+  }, [isCalibratedCameraActive]);
 
   useEffect(() => {
     if (isObject2DHandlesEnabled) return;
@@ -484,19 +526,21 @@ export default function ThreeRoomLab() {
   const { isValid: isDepthNearFarOrderValid, warning: depthNearFarOrderingWarning } =
     getDepthNearFarOrderingInfo(perspectiveDepthScaling);
   const currentActiveObjectType = toSceneActiveObjectType(activeObjectKind);
+  const isFloorAnchorDragEffectivelyEnabled = isFloorAnchorDragEnabled && !isCalibratedCameraActive;
+  const isObject2DHandlesEffectivelyEnabled = isObject2DHandlesEnabled && !isCalibratedCameraActive;
   const floorInteractionModeSummary = isFloorClickPlacementEnabled
-    ? isFloorAnchorDragEnabled
-      ? isObject2DHandlesEnabled
+    ? isFloorAnchorDragEffectivelyEnabled
+      ? isObject2DHandlesEffectivelyEnabled
         ? "place + drag-anchor + object-handle"
         : "place + drag-anchor"
-      : isObject2DHandlesEnabled
+      : isObject2DHandlesEffectivelyEnabled
         ? "place + object-handle"
       : "place"
-    : isFloorAnchorDragEnabled
-      ? isObject2DHandlesEnabled
+    : isFloorAnchorDragEffectivelyEnabled
+      ? isObject2DHandlesEffectivelyEnabled
         ? "drag-anchor + object-handle"
         : "drag-anchor"
-      : isObject2DHandlesEnabled
+      : isObject2DHandlesEffectivelyEnabled
         ? "object-handle"
         : "none";
 
@@ -865,6 +909,24 @@ export default function ThreeRoomLab() {
 
   const cameraPoseDebug = useMemo(() => {
     const rows: { label: string; value: string }[] = [];
+    let unavailableReason: string | null = null;
+    let applyCandidate:
+      | {
+          confidence: "high" | "low";
+          cvAvgPx: number;
+          cvMaxPx: number;
+          displayAvgPx: number | null;
+          displayMaxPx: number | null;
+          scaleRatio: number;
+          diagnosticsSummary: string;
+          pose: {
+            position: { x: number; y: number; z: number };
+            lookAt: { x: number; y: number; z: number };
+            up: { x: number; y: number; z: number };
+          };
+          frameSize: ImageFrameSize;
+        }
+      | null = null;
     let decomposition:
       | {
           confidence: "high" | "low";
@@ -890,45 +952,50 @@ export default function ThreeRoomLab() {
     });
 
     if (!homographyDebug.frameSize) {
+      unavailableReason = "frame pixel size unavailable";
       rows.push({
         label: "camera pose diagnostic",
         value: "fail (frame pixel size unavailable)",
       });
-      return { rows, decomposition };
+      return { rows, decomposition, applyCandidate, unavailableReason };
     }
     if (homographyDebug.homographySolveStatus !== "ok" || !homographyDebug.homographyMatrixForPlacement) {
+      unavailableReason = homographyDebug.placementFallbackReason;
       rows.push({
         label: "camera pose diagnostic",
         value: `fail (${homographyDebug.placementFallbackReason})`,
       });
-      return { rows, decomposition };
+      return { rows, decomposition, applyCandidate, unavailableReason };
     }
 
     const intrinsicsResult = buildCameraIntrinsicsFromFov(homographyDebug.frameSize, cameraPoseFovYDeg);
     if (!intrinsicsResult.ok) {
+      unavailableReason = intrinsicsResult.reason;
       rows.push({
         label: "camera pose diagnostic",
         value: `fail (${intrinsicsResult.reason})`,
       });
-      return { rows, decomposition };
+      return { rows, decomposition, applyCandidate, unavailableReason };
     }
 
     if (!homographyDebug.orderedCornersNorm) {
+      unavailableReason = "ordered homography corners unavailable";
       rows.push({
         label: "camera pose diagnostic",
         value: "fail (ordered homography corners unavailable)",
       });
-      return { rows, decomposition };
+      return { rows, decomposition, applyCandidate, unavailableReason };
     }
     const imagePointsPx: { x: number; y: number }[] = [];
     for (const point of homographyDebug.orderedCornersNorm) {
       const pixels = normToPixels(point, homographyDebug.frameSize);
       if (!pixels) {
+        unavailableReason = "could not convert ordered corners from normalized -> pixels";
         rows.push({
           label: "camera pose diagnostic",
           value: "fail (could not convert ordered corners from normalized -> pixels)",
         });
-        return { rows, decomposition };
+        return { rows, decomposition, applyCandidate, unavailableReason };
       }
       imagePointsPx.push(pixels);
     }
@@ -937,11 +1004,12 @@ export default function ThreeRoomLab() {
       depthMeters: floorMapping.worldDepth,
     });
     if (!floorRectResult.ok) {
+      unavailableReason = floorRectResult.reason;
       rows.push({
         label: "camera pose diagnostic",
         value: `fail (${floorRectResult.reason})`,
       });
-      return { rows, decomposition };
+      return { rows, decomposition, applyCandidate, unavailableReason };
     }
     const floorPlanePoints2D = floorRectResult.value.asArray.map((point) => floorVec3ToPlane2D(point));
 
@@ -955,11 +1023,12 @@ export default function ThreeRoomLab() {
       }
     );
     if (!decompositionResult.ok) {
+      unavailableReason = decompositionResult.reason;
       rows.push({
         label: "camera pose diagnostic",
         value: `fail (${decompositionResult.reason})`,
       });
-      return { rows, decomposition };
+      return { rows, decomposition, applyCandidate, unavailableReason };
     }
 
     rows.push({
@@ -967,13 +1036,13 @@ export default function ThreeRoomLab() {
       value: `ok (${decompositionResult.confidence})${decompositionResult.note ? ` — ${decompositionResult.note}` : ""}`,
     });
     rows.push({
-      label: "camera pose lookAt (assumed)",
+      label: "camera pose lookAt (derived)",
       value: `${formatNumber(decompositionResult.value.pose.lookAt.x)} / ${formatNumber(
         decompositionResult.value.pose.lookAt.y
       )} / ${formatNumber(decompositionResult.value.pose.lookAt.z)}`,
     });
     rows.push({
-      label: "camera pose up (assumed)",
+      label: "camera pose up (derived)",
       value: `${formatNumber(decompositionResult.value.pose.up.x)} / ${formatNumber(
         decompositionResult.value.pose.up.y
       )} / ${formatNumber(decompositionResult.value.pose.up.z)}`,
@@ -1073,6 +1142,22 @@ export default function ThreeRoomLab() {
           : "skipped (low confidence)",
     });
 
+    applyCandidate = {
+      confidence: decompositionResult.confidence,
+      cvAvgPx: decompositionResult.value.diagnostics.averageCameraPoseReprojectionPx,
+      cvMaxPx: decompositionResult.value.diagnostics.maxCameraPoseReprojectionPx,
+      displayAvgPx: displayReprojectionCount > 0 ? displayReprojectionTotal / displayReprojectionCount : null,
+      displayMaxPx: displayReprojectionCount > 0 ? displayReprojectionMax : null,
+      scaleRatio: decompositionResult.value.diagnostics.columnScaleRatio,
+      diagnosticsSummary: `cv avg=${formatNumber(
+        decompositionResult.value.diagnostics.averageCameraPoseReprojectionPx
+      )} max=${formatNumber(decompositionResult.value.diagnostics.maxCameraPoseReprojectionPx)} scale=${formatNumber(
+        decompositionResult.value.diagnostics.columnScaleRatio
+      )}`,
+      pose: decompositionResult.value.pose,
+      frameSize: homographyDebug.frameSize,
+    };
+
     decomposition = {
       confidence: decompositionResult.confidence,
       frameSize: homographyDebug.frameSize,
@@ -1080,7 +1165,7 @@ export default function ThreeRoomLab() {
       pose: decompositionResult.value.pose,
     };
 
-    return { rows, decomposition };
+    return { rows, decomposition, applyCandidate, unavailableReason };
   }, [
     cameraPoseFovYDeg,
     homographyDebug.frameSize,
@@ -1245,6 +1330,55 @@ export default function ThreeRoomLab() {
     homographyDebug.orderedCornersNorm,
     homographyDebug.placementFallbackReason,
   ]);
+
+  const calibratedCameraApplyStatus = useMemo(() => {
+    const candidate = cameraPoseDebug.applyCandidate;
+    if (!candidate) {
+      return {
+        available: false,
+        reason: cameraPoseDebug.unavailableReason ?? "camera pose diagnostics unavailable",
+      };
+    }
+    if (candidate.confidence !== "high") {
+      return { available: false, reason: "camera pose confidence is not high" };
+    }
+    if (candidate.cvAvgPx >= CALIBRATED_CAMERA_APPLY_MAX_CV_AVG_PX) {
+      return { available: false, reason: "CV reprojection average is too high" };
+    }
+    if (candidate.cvMaxPx >= CALIBRATED_CAMERA_APPLY_MAX_CV_MAX_PX) {
+      return { available: false, reason: "CV reprojection max is too high" };
+    }
+    if (
+      candidate.displayAvgPx === null ||
+      candidate.displayMaxPx === null ||
+      !Number.isFinite(candidate.displayAvgPx) ||
+      !Number.isFinite(candidate.displayMaxPx)
+    ) {
+      return { available: false, reason: "display reprojection diagnostics are unavailable" };
+    }
+    if (candidate.displayAvgPx >= CALIBRATED_CAMERA_APPLY_MAX_DISPLAY_AVG_PX) {
+      return { available: false, reason: "display reprojection average is too high" };
+    }
+    if (candidate.displayMaxPx >= CALIBRATED_CAMERA_APPLY_MAX_DISPLAY_MAX_PX) {
+      return { available: false, reason: "display reprojection max is too high" };
+    }
+    if (Math.abs(candidate.displayAvgPx - candidate.cvAvgPx) > CALIBRATED_CAMERA_APPLY_MAX_AVG_DELTA_PX) {
+      return { available: false, reason: "display/CV average reprojection mismatch is too high" };
+    }
+    if (Math.abs(candidate.displayMaxPx - candidate.cvMaxPx) > CALIBRATED_CAMERA_APPLY_MAX_MAX_DELTA_PX) {
+      return { available: false, reason: "display/CV max reprojection mismatch is too high" };
+    }
+    if (
+      candidate.scaleRatio < CALIBRATED_CAMERA_APPLY_MIN_SCALE_RATIO ||
+      candidate.scaleRatio > CALIBRATED_CAMERA_APPLY_MAX_SCALE_RATIO
+    ) {
+      return { available: false, reason: "camera pose scale ratio is outside apply bounds" };
+    }
+    if (candidate.frameSize.width <= 0 || candidate.frameSize.height <= 0) {
+      return { available: false, reason: "frame size is invalid for apply snapshot" };
+    }
+    return { available: true, reason: "available" };
+  }, [cameraPoseDebug.applyCandidate, cameraPoseDebug.unavailableReason]);
 
   const cameraPoseGridPolylinesNorm = useMemo(() => {
     if (!showHomographyDebugOverlay) return [] as FloorPoint[][];
@@ -1411,7 +1545,7 @@ export default function ThreeRoomLab() {
       },
       { label: "floor interaction mode", value: floorInteractionModeSummary },
       { label: "pointer precedence", value: "polygon handles > object handles > anchor drag > floor background" },
-      { label: "object 2d handles", value: isObject2DHandlesEnabled ? "on" : "off" },
+      { label: "object 2d handles", value: isObject2DHandlesEffectivelyEnabled ? "on" : "off" },
       { label: "active object handle mode", value: activeObjectHandleMode ?? "none" },
       { label: "last object handle move rejected", value: wasLastObjectHandleMoveRejected ? "yes" : "no" },
       {
@@ -1446,7 +1580,7 @@ export default function ThreeRoomLab() {
         label: "depth scaling warning",
         value: depthNearFarOrderingWarning ?? "none",
       },
-      { label: "floor anchor dragging", value: isFloorAnchorDragEnabled ? "on" : "off" },
+      { label: "floor anchor dragging", value: isFloorAnchorDragEffectivelyEnabled ? "on" : "off" },
       { label: "active anchor drag", value: isFloorAnchorDragActive ? "yes" : "no" },
       {
         label: "floor anchor point",
@@ -1471,6 +1605,44 @@ export default function ThreeRoomLab() {
       ...homographyDebug.rows,
       ...cameraPoseDebug.rows,
       ...cameraPoseFovScanDebug.rows,
+      { label: "camera mode", value: isCalibratedCameraActive ? "Calibrated snapshot" : "Legacy" },
+      {
+        label: "calibrated camera apply",
+        value: calibratedCameraApplyStatus.available
+          ? "available"
+          : `unavailable — ${calibratedCameraApplyStatus.reason}`,
+      },
+      {
+        label: "calibrated camera snapshot FOV",
+        value: calibratedCameraSnapshot ? `${formatNumber(calibratedCameraSnapshot.fovDeg)}deg` : "none",
+      },
+      {
+        label: "calibrated camera snapshot diagnostics",
+        value: calibratedCameraSnapshot ? calibratedCameraSnapshot.diagnosticsSummary : "none",
+      },
+      {
+        label: "calibrated camera warning",
+        value: isCalibratedCameraActive
+          ? "Experimental: calibrated camera can shift apparent placement/scale. Revert to legacy if alignment regresses."
+          : "none",
+      },
+      {
+        label: "object handles disabled while calibrated camera is active",
+        value: isCalibratedCameraActive ? "yes" : "no",
+      },
+      {
+        label: "calibrated depth scaling warning",
+        value:
+          isCalibratedCameraActive && perspectiveDepthScaling.enabled
+            ? "Calibrated camera active: depth scaling may double-count perspective. Consider setting depth scaling to neutral."
+            : "none",
+      },
+      {
+        label: "calibrated camera resize note",
+        value: isCalibratedCameraActive
+          ? "Re-apply calibrated camera snapshot after significant viewport resize."
+          : "none",
+      },
       { label: "model path", value: modelPath || "(empty)" },
     ],
     [
@@ -1493,18 +1665,22 @@ export default function ThreeRoomLab() {
       autoBoundsInfo,
       depthNearFarOrderingWarning,
       isDepthNearFarOrderValid,
-      isObject2DHandlesEnabled,
+      isObject2DHandlesEffectivelyEnabled,
       activeObjectHandleMode,
       lastObjectHandleRotateDeltaDeg,
       lastObjectHandleScaleMultiplier,
       lastObjectHandleHeightDeltaYUnits,
       isFloorAnchorDragActive,
-      isFloorAnchorDragEnabled,
+      isFloorAnchorDragEffectivelyEnabled,
       isFloorClickPlacementEnabled,
       floorClickMappingMode,
       lastFloorClickMappingResult,
       cameraPoseDebug.rows,
       cameraPoseFovScanDebug.rows,
+      calibratedCameraApplyStatus.available,
+      calibratedCameraApplyStatus.reason,
+      isCalibratedCameraActive,
+      calibratedCameraSnapshot,
       lastAcceptedFloorClick,
       lastRejectedFloorClick,
       modelLoadError,
@@ -1766,9 +1942,13 @@ export default function ThreeRoomLab() {
     let mapped = mapFloorPointToObjectTransform(point, floorMapping);
     let mappingResultForDebug = "legacy";
 
-    if (options?.source === "floor-click" && floorClickMappingMode === "homography-experimental") {
+    if (
+      options?.source === "floor-click" &&
+      (floorClickMappingMode === "homography-experimental" || isCalibratedCameraActive)
+    ) {
       const fallbackToLegacy = (reason: string) => {
-        mappingResultForDebug = `homography unavailable — fell back to legacy: ${reason}`;
+        const prefix = isCalibratedCameraActive ? "calibrated camera requires homography mapping" : "homography unavailable";
+        mappingResultForDebug = `${prefix} — fell back to legacy: ${reason}`;
       };
 
       if (homographyDebug.cornerOrderStatus !== "ok") {
@@ -1792,7 +1972,7 @@ export default function ThreeRoomLab() {
               positionX: mappedHomography.x,
               positionZ: mappedHomography.y,
             };
-            mappingResultForDebug = "homography";
+            mappingResultForDebug = isCalibratedCameraActive ? "homography (calibrated-camera)" : "homography";
           }
         }
       }
@@ -1833,7 +2013,7 @@ export default function ThreeRoomLab() {
   };
 
   const handleObjectMoveHandlePointerDown = (event: PointerEvent<SVGCircleElement>) => {
-    if (!isObject2DHandlesEnabled || !lastAcceptedFloorClick) return;
+    if (!isObject2DHandlesEffectivelyEnabled || !lastAcceptedFloorClick) return;
     event.preventDefault();
     event.stopPropagation();
     objectHandleDragPointerIdRef.current = event.pointerId;
@@ -1847,7 +2027,7 @@ export default function ThreeRoomLab() {
   };
 
   const handleObjectRotateHandlePointerDown = (event: PointerEvent<SVGElement>) => {
-    if (!isObject2DHandlesEnabled || !lastAcceptedFloorClick) return;
+    if (!isObject2DHandlesEffectivelyEnabled || !lastAcceptedFloorClick) return;
     const vector = getAnchorClientVector(event.clientX, event.clientY);
     if (!vector) return;
     event.preventDefault();
@@ -1866,7 +2046,7 @@ export default function ThreeRoomLab() {
   };
 
   const handleObjectScaleHandlePointerDown = (event: PointerEvent<SVGElement>) => {
-    if (!isObject2DHandlesEnabled || !lastAcceptedFloorClick) return;
+    if (!isObject2DHandlesEffectivelyEnabled || !lastAcceptedFloorClick) return;
     const vector = getAnchorClientVector(event.clientX, event.clientY);
     if (!vector) return;
     event.preventDefault();
@@ -1888,7 +2068,7 @@ export default function ThreeRoomLab() {
   };
 
   const handleObjectHeightHandlePointerDown = (event: PointerEvent<SVGElement>) => {
-    if (!isObject2DHandlesEnabled || !lastAcceptedFloorClick) return;
+    if (!isObject2DHandlesEffectivelyEnabled || !lastAcceptedFloorClick) return;
     event.preventDefault();
     event.stopPropagation();
     objectHandleDragPointerIdRef.current = event.pointerId;
@@ -2019,7 +2199,7 @@ export default function ThreeRoomLab() {
   };
 
   const handleFloorAnchorPointerDown = (event: PointerEvent<SVGCircleElement>) => {
-    if (!isFloorAnchorDragEnabled) return;
+    if (!isFloorAnchorDragEffectivelyEnabled) return;
     event.preventDefault();
     event.stopPropagation();
     const acceptedPoint = lastAcceptedFloorClick;
@@ -2354,8 +2534,31 @@ export default function ThreeRoomLab() {
     autoRotateOffsetDegRef.current = 0;
 
     const scene = new THREE.Scene();
-    const camera = new THREE.PerspectiveCamera(50, 1, 0.1, 100);
-    camera.position.set(0, 1.1, 3.2);
+    const camera = new THREE.PerspectiveCamera(LEGACY_CAMERA_FOV_DEG, 1, 0.1, 100);
+    camera.position.set(...LEGACY_CAMERA_POSITION);
+    cameraRef.current = camera;
+
+    const applyActiveCameraState = () => {
+      const activeSnapshot =
+        calibratedCameraActiveRef.current && calibratedCameraSnapshotRef.current
+          ? calibratedCameraSnapshotRef.current
+          : null;
+      if (!activeSnapshot) {
+        camera.fov = LEGACY_CAMERA_FOV_DEG;
+        camera.position.set(...LEGACY_CAMERA_POSITION);
+        camera.up.set(0, 1, 0);
+        camera.rotation.set(0, 0, 0);
+        return;
+      }
+      camera.fov = activeSnapshot.fovDeg;
+      camera.position.set(
+        activeSnapshot.pose.position.x,
+        activeSnapshot.pose.position.y,
+        activeSnapshot.pose.position.z
+      );
+      camera.up.set(activeSnapshot.pose.up.x, activeSnapshot.pose.up.y, activeSnapshot.pose.up.z);
+      camera.lookAt(activeSnapshot.pose.lookAt.x, activeSnapshot.pose.lookAt.y, activeSnapshot.pose.lookAt.z);
+    };
 
     const ambient = new THREE.AmbientLight(0xffffff, 0.8);
     const keyLight = new THREE.DirectionalLight(0xffffff, 1.0);
@@ -2390,6 +2593,7 @@ export default function ThreeRoomLab() {
       const width = Math.max(1, Math.floor(rect.width));
       const height = Math.max(1, Math.floor(rect.height));
       renderer.setSize(width, height, false);
+      applyActiveCameraState();
       camera.aspect = width / height;
       camera.updateProjectionMatrix();
       setRendererSize((prev) => (prev.width === width && prev.height === height ? prev : { width, height }));
@@ -2486,6 +2690,8 @@ export default function ThreeRoomLab() {
       if (autoRotateEnabledRef.current) {
         autoRotateOffsetDegRef.current = (autoRotateOffsetDegRef.current + 0.3) % 360;
       }
+      applyActiveCameraState();
+      camera.updateProjectionMatrix();
       applyPlacementTransform();
       renderer.render(scene, camera);
     };
@@ -2502,6 +2708,7 @@ export default function ThreeRoomLab() {
       }
       loadModelFromPathRef.current = null;
       useFallbackCubeRef.current = null;
+      cameraRef.current = null;
       if (activeObjectRef.current) {
         autoBoundsGroup.remove(activeObjectRef.current);
         disposeObject3D(activeObjectRef.current);
@@ -2734,13 +2941,13 @@ export default function ThreeRoomLab() {
                     fill={isFloorAnchorDragActive ? "#fb7185" : "#f43f5e"}
                     stroke="#ffffff"
                     strokeWidth={0.6}
-                    className={isFloorAnchorDragEnabled ? "cursor-move" : undefined}
-                    pointerEvents={isFloorAnchorDragEnabled ? "all" : "none"}
+                    className={isFloorAnchorDragEffectivelyEnabled ? "cursor-move" : undefined}
+                    pointerEvents={isFloorAnchorDragEffectivelyEnabled ? "all" : "none"}
                     aria-label="Object floor anchor marker"
                     onPointerDown={handleFloorAnchorPointerDown}
                   />
                 )}
-                {isObject2DHandlesEnabled && lastAcceptedFloorClick && (
+                {isObject2DHandlesEffectivelyEnabled && lastAcceptedFloorClick && (
                   <g>
                     <circle
                       cx={lastAcceptedFloorClick.x * 100}
@@ -3052,17 +3259,17 @@ export default function ThreeRoomLab() {
           >
             {autoFitStatus.message}
           </p>
-          {isFloorAnchorDragEnabled && !lastAcceptedFloorClick && (
+          {isFloorAnchorDragEffectivelyEnabled && !lastAcceptedFloorClick && (
             <p className="mt-2 text-xs text-amber-300">
               Click inside the floor polygon first to create an anchor marker, then drag it to move the object.
             </p>
           )}
-          {isObject2DHandlesEnabled && !lastAcceptedFloorClick && (
+          {isObject2DHandlesEffectivelyEnabled && !lastAcceptedFloorClick && (
             <p className="mt-1 text-xs text-amber-300">
               Enable object 2D handles is on. Click inside the floor polygon first to create an anchor.
             </p>
           )}
-          {isObject2DHandlesEnabled && lastAcceptedFloorClick && (
+          {isObject2DHandlesEffectivelyEnabled && lastAcceptedFloorClick && (
             <p className="mt-1 text-xs text-sky-200">
               Overlay handles are attached to the active object anchor. Drag Move/Height/Rotate/Scale handles to manipulate the
               active 3D object.
@@ -3088,7 +3295,7 @@ export default function ThreeRoomLab() {
             <p className="mt-1">
               <span className="text-slate-400">Object 2D scale handle:</span> drag the green handle away/toward the anchor.
             </p>
-            {isFloorClickPlacementEnabled && isFloorAnchorDragEnabled && (
+            {isFloorClickPlacementEnabled && isFloorAnchorDragEffectivelyEnabled && (
               <p className="mt-1 text-amber-200">
                 Anchor drag takes precedence on the marker; background floor clicks still place the object.
               </p>
@@ -3407,6 +3614,43 @@ export default function ThreeRoomLab() {
             />
             <span className="text-slate-500">(20-90)</span>
           </label>
+          <div className="mb-3 flex flex-wrap items-center gap-2 text-xs">
+            <button
+              type="button"
+              onClick={() => {
+                const candidate = cameraPoseDebug.applyCandidate;
+                if (!candidate || !calibratedCameraApplyStatus.available) return;
+                setCalibratedCameraSnapshot({
+                  pose: candidate.pose,
+                  fovDeg: cameraPoseFovYDeg,
+                  frameSize: candidate.frameSize,
+                  diagnosticsSummary: candidate.diagnosticsSummary,
+                  appliedAtIso: new Date().toISOString(),
+                });
+                setIsCalibratedCameraActive(true);
+              }}
+              disabled={!calibratedCameraApplyStatus.available}
+              className="rounded border border-slate-700 px-2 py-1 text-slate-200 transition hover:border-cyan-400/80 hover:text-cyan-200 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              Apply calibrated camera
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setIsCalibratedCameraActive(false);
+                setCalibratedCameraSnapshot(null);
+              }}
+              disabled={!isCalibratedCameraActive && !calibratedCameraSnapshot}
+              className="rounded border border-slate-700 px-2 py-1 text-slate-200 transition hover:border-rose-400/80 hover:text-rose-200 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              Revert to legacy camera
+            </button>
+            <span className="text-slate-500">
+              {calibratedCameraApplyStatus.available
+                ? "Calibrated camera apply is available."
+                : `Calibrated camera apply unavailable: ${calibratedCameraApplyStatus.reason}`}
+            </span>
+          </div>
           <p className="mb-3 text-xs text-slate-500">
             Experimental: tune FOV until the camera pose diagnostic reads high and the cyan grid aligns with the
             green grid. A valid pose may exist only in a narrow FOV band.
