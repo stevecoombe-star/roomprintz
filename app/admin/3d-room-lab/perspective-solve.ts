@@ -36,7 +36,25 @@ export type CameraIntrinsicsAssumption = {
 
 export type CameraPose = {
   position: Vec3;
-  quaternion: { x: number; y: number; z: number; w: number };
+  lookAt: Vec3;
+  up: Vec3;
+  quaternion?: [number, number, number, number];
+};
+
+export type CameraPoseDiagnostics = {
+  focalLengthPx: number;
+  lambda: number;
+  columnScaleRatio: number;
+  determinant: number;
+  orthonormalityError: number;
+  cameraHeight: number;
+  cameraZ: number;
+  reason?: string;
+};
+
+export type CameraPoseDecomposition = {
+  pose: CameraPose;
+  diagnostics: CameraPoseDiagnostics;
 };
 
 export type SolveResult<T> =
@@ -52,6 +70,25 @@ export type ReprojectionError = {
 };
 
 const EPSILON = 1e-9;
+const MIN_FOV_DEG = 20;
+const MAX_FOV_DEG = 90;
+const MIN_CAMERA_HEIGHT = 0.05;
+const MIN_COLUMN_NORM = 1e-6;
+const MAX_COLUMN_SCALE_RATIO_HARD = 10;
+const MAX_COLUMN_SCALE_RATIO_LOW_CONFIDENCE = 2.5;
+const MAX_ORTHONORMALITY_ERROR_HARD = 0.25;
+const MAX_ORTHONORMALITY_ERROR_LOW_CONFIDENCE = 0.05;
+
+type Matrix3x3 = [number, number, number, number, number, number, number, number, number];
+
+type CameraIntrinsics = {
+  fx: number;
+  fy: number;
+  cx: number;
+  cy: number;
+  matrix: Matrix3x3;
+  inverse: Matrix3x3;
+};
 
 function isFiniteNumber(value: number): boolean {
   return Number.isFinite(value);
@@ -159,6 +196,133 @@ function determinant3x3(m: HomographyMatrix): number {
     m[1] * (m[3] * m[8] - m[5] * m[6]) +
     m[2] * (m[3] * m[7] - m[4] * m[6])
   );
+}
+
+function vec3Length(value: Vec3): number {
+  return Math.sqrt(value.x * value.x + value.y * value.y + value.z * value.z);
+}
+
+function normalizeVec3(value: Vec3): Vec3 | null {
+  const length = vec3Length(value);
+  if (!isFiniteNumber(length) || length < EPSILON) return null;
+  return { x: value.x / length, y: value.y / length, z: value.z / length };
+}
+
+function dotVec3(a: Vec3, b: Vec3): number {
+  return a.x * b.x + a.y * b.y + a.z * b.z;
+}
+
+function subtractVec3(a: Vec3, b: Vec3): Vec3 {
+  return { x: a.x - b.x, y: a.y - b.y, z: a.z - b.z };
+}
+
+function scaleVec3(value: Vec3, scalar: number): Vec3 {
+  return { x: value.x * scalar, y: value.y * scalar, z: value.z * scalar };
+}
+
+function crossVec3(a: Vec3, b: Vec3): Vec3 {
+  return {
+    x: a.y * b.z - a.z * b.y,
+    y: a.z * b.x - a.x * b.z,
+    z: a.x * b.y - a.y * b.x,
+  };
+}
+
+function getColumn(matrix: Matrix3x3, index: 0 | 1 | 2): Vec3 {
+  return {
+    x: matrix[index],
+    y: matrix[index + 3],
+    z: matrix[index + 6],
+  };
+}
+
+function matrixFromColumns(c0: Vec3, c1: Vec3, c2: Vec3): Matrix3x3 {
+  return [c0.x, c1.x, c2.x, c0.y, c1.y, c2.y, c0.z, c1.z, c2.z];
+}
+
+function matrixMultiply3x3(a: Matrix3x3, b: Matrix3x3): Matrix3x3 {
+  const out: number[] = new Array(9).fill(0);
+  for (let row = 0; row < 3; row += 1) {
+    for (let col = 0; col < 3; col += 1) {
+      out[row * 3 + col] =
+        a[row * 3] * b[col] + a[row * 3 + 1] * b[col + 3] + a[row * 3 + 2] * b[col + 6];
+    }
+  }
+  return out as Matrix3x3;
+}
+
+function matrixTranspose3x3(matrix: Matrix3x3): Matrix3x3 {
+  return [
+    matrix[0],
+    matrix[3],
+    matrix[6],
+    matrix[1],
+    matrix[4],
+    matrix[7],
+    matrix[2],
+    matrix[5],
+    matrix[8],
+  ];
+}
+
+function multiplyMatrixVec3(matrix: Matrix3x3, vector: Vec3): Vec3 {
+  return {
+    x: matrix[0] * vector.x + matrix[1] * vector.y + matrix[2] * vector.z,
+    y: matrix[3] * vector.x + matrix[4] * vector.y + matrix[5] * vector.z,
+    z: matrix[6] * vector.x + matrix[7] * vector.y + matrix[8] * vector.z,
+  };
+}
+
+function orthonormalityError(columns: [Vec3, Vec3, Vec3]): number {
+  const [c0, c1, c2] = columns;
+  const d00 = Math.abs(dotVec3(c0, c0) - 1);
+  const d11 = Math.abs(dotVec3(c1, c1) - 1);
+  const d22 = Math.abs(dotVec3(c2, c2) - 1);
+  const d01 = Math.abs(dotVec3(c0, c1));
+  const d02 = Math.abs(dotVec3(c0, c2));
+  const d12 = Math.abs(dotVec3(c1, c2));
+  return d00 + d11 + d22 + d01 + d02 + d12;
+}
+
+function sanitizeHomographyMatrix(matrix: HomographyMatrix): Matrix3x3 {
+  return [matrix[0], matrix[1], matrix[2], matrix[3], matrix[4], matrix[5], matrix[6], matrix[7], matrix[8]];
+}
+
+/**
+ * Builds a pinhole intrinsics approximation from visible frame size and vertical FOV.
+ * Assumptions:
+ * - square pixels (fx = fy),
+ * - no skew,
+ * - principal point at the visible frame center.
+ */
+export function buildCameraIntrinsicsFromFov(
+  frameSize: { width: number; height: number },
+  verticalFovDeg: number
+): SolveResult<CameraIntrinsics> {
+  if (!isFiniteNumber(frameSize.width) || !isFiniteNumber(frameSize.height) || frameSize.width <= 0 || frameSize.height <= 0) {
+    return { ok: false, reason: "Frame size must be positive finite values." };
+  }
+  if (!isFiniteNumber(verticalFovDeg) || verticalFovDeg < MIN_FOV_DEG || verticalFovDeg > MAX_FOV_DEG) {
+    return { ok: false, reason: `verticalFovDeg must be within ${MIN_FOV_DEG}-${MAX_FOV_DEG} degrees.` };
+  }
+
+  const fovRad = (verticalFovDeg * Math.PI) / 180;
+  const fy = frameSize.height / (2 * Math.tan(fovRad / 2));
+  const fx = fy;
+  const cx = frameSize.width / 2;
+  const cy = frameSize.height / 2;
+  if (![fx, fy, cx, cy].every(isFiniteNumber) || fx <= 0 || fy <= 0) {
+    return { ok: false, reason: "Could not derive a valid focal length from the provided FOV/frame." };
+  }
+
+  const matrix: Matrix3x3 = [fx, 0, cx, 0, fy, cy, 0, 0, 1];
+  const inverse: Matrix3x3 = [1 / fx, 0, -cx / fx, 0, 1 / fy, -cy / fy, 0, 0, 1];
+
+  return {
+    ok: true,
+    value: { fx, fy, cx, cy, matrix, inverse },
+    confidence: "high",
+  };
 }
 
 /**
@@ -454,9 +618,137 @@ export function computeReprojectionError(
   };
 }
 
-export function decomposeHomographyToCameraPose(): SolveResult<CameraPose> {
+/**
+ * Decomposes an image->floor homography into an approximate camera pose in Three.js world convention.
+ *
+ * Inputs:
+ * - imageToFloorHomography maps image/frame pixels -> floor-plane 2D coordinates (X/Z plane units).
+ * - frameSize is the visible render frame in pixels (same space used to solve homography).
+ * - intrinsics.verticalFovDeg defines the pinhole camera intrinsics approximation.
+ *
+ * Internally this function inverts image->floor H to floor->image H, then applies planar decomposition.
+ * The plane basis is {axis0=world +X, axis1=world +Z, normal=world +Y}.
+ */
+export function decomposeHomographyToCameraPose(
+  imageToFloorHomography: HomographyMatrix,
+  frameSize: { width: number; height: number },
+  intrinsics: CameraIntrinsicsAssumption
+): SolveResult<CameraPoseDecomposition> {
+  const intrinsicsResult = buildCameraIntrinsicsFromFov(frameSize, intrinsics.verticalFovDeg);
+  if (!intrinsicsResult.ok) {
+    return { ok: false, reason: intrinsicsResult.reason };
+  }
+  const kInverse = intrinsicsResult.value.inverse;
+
+  const floorToImage = invertHomography(imageToFloorHomography);
+  if (!floorToImage) {
+    return { ok: false, reason: "Could not invert image->floor homography for pose decomposition." };
+  }
+
+  const m = matrixMultiply3x3(kInverse, sanitizeHomographyMatrix(floorToImage));
+  const m1 = getColumn(m, 0);
+  const m2 = getColumn(m, 1);
+  const m3 = getColumn(m, 2);
+
+  const m1Norm = vec3Length(m1);
+  const m2Norm = vec3Length(m2);
+  if (!isFiniteNumber(m1Norm) || !isFiniteNumber(m2Norm) || m1Norm < MIN_COLUMN_NORM || m2Norm < MIN_COLUMN_NORM) {
+    return { ok: false, reason: "Homography decomposition failed: invalid normalized column magnitudes." };
+  }
+
+  const columnScaleRatio = Math.max(m1Norm / m2Norm, m2Norm / m1Norm);
+  if (!isFiniteNumber(columnScaleRatio) || columnScaleRatio > MAX_COLUMN_SCALE_RATIO_HARD) {
+    return { ok: false, reason: "Homography decomposition failed: severe column scale mismatch." };
+  }
+
+  const lambda = 2 / (m1Norm + m2Norm);
+  if (!isFiniteNumber(lambda) || lambda <= EPSILON) {
+    return { ok: false, reason: "Homography decomposition failed: invalid lambda scale." };
+  }
+
+  const r1Raw = scaleVec3(m1, lambda);
+  const r2Raw = scaleVec3(m2, lambda);
+  const t = scaleVec3(m3, lambda);
+
+  const u1 = normalizeVec3(r1Raw);
+  if (!u1) return { ok: false, reason: "Homography decomposition failed: first rotation axis is degenerate." };
+  const r2Ortho = subtractVec3(r2Raw, scaleVec3(u1, dotVec3(r2Raw, u1)));
+  const u2 = normalizeVec3(r2Ortho);
+  if (!u2) return { ok: false, reason: "Homography decomposition failed: second rotation axis is degenerate." };
+
+  const rawCross = crossVec3(r1Raw, r2Raw);
+  const u3Unaligned = crossVec3(u1, u2);
+  const u3Aligned = dotVec3(u3Unaligned, rawCross) < 0 ? scaleVec3(u3Unaligned, -1) : u3Unaligned;
+  const u3 = normalizeVec3(u3Aligned);
+  if (!u3) return { ok: false, reason: "Homography decomposition failed: third rotation axis is degenerate." };
+
+  const rotationPlaneBasis = matrixFromColumns(u1, u2, u3);
+  const determinant = determinant3x3(rotationPlaneBasis);
+  if (!isFiniteNumber(determinant) || determinant <= EPSILON) {
+    return { ok: false, reason: "Homography decomposition failed: non right-handed rotation basis." };
+  }
+
+  const orthoError = orthonormalityError([u1, u2, u3]);
+  if (!isFiniteNumber(orthoError) || orthoError > MAX_ORTHONORMALITY_ERROR_HARD) {
+    return { ok: false, reason: "Homography decomposition failed: orthonormality error is too high." };
+  }
+
+  const rotationTranspose = matrixTranspose3x3(rotationPlaneBasis);
+  const cameraCenterPlaneBasis = scaleVec3(multiplyMatrixVec3(rotationTranspose, t), -1);
+  if (![cameraCenterPlaneBasis.x, cameraCenterPlaneBasis.y, cameraCenterPlaneBasis.z].every(isFiniteNumber)) {
+    return { ok: false, reason: "Homography decomposition failed: non-finite camera center in plane basis." };
+  }
+
+  // Plane basis -> world basis conversion:
+  // plane x -> world X, plane y -> world Z, plane normal -> world Y.
+  const cameraPositionWorld: Vec3 = {
+    x: cameraCenterPlaneBasis.x,
+    y: cameraCenterPlaneBasis.z,
+    z: cameraCenterPlaneBasis.y,
+  };
+  if (![cameraPositionWorld.x, cameraPositionWorld.y, cameraPositionWorld.z].every(isFiniteNumber)) {
+    return { ok: false, reason: "Homography decomposition failed: non-finite world-space camera position." };
+  }
+  if (cameraPositionWorld.y <= MIN_CAMERA_HEIGHT) {
+    return { ok: false, reason: "Homography decomposition failed: derived camera is not above the floor plane." };
+  }
+
+  const lookAt: Vec3 = { x: 0, y: 0, z: 0 };
+  const up: Vec3 = { x: 0, y: 1, z: 0 };
+  const toFloorCenter = subtractVec3(lookAt, cameraPositionWorld);
+  if (dotVec3(toFloorCenter, up) >= 0) {
+    return { ok: false, reason: "Homography decomposition failed: camera orientation implies floor center is not below camera." };
+  }
+
+  const diagnostics: CameraPoseDiagnostics = {
+    focalLengthPx: intrinsicsResult.value.fy,
+    lambda,
+    columnScaleRatio,
+    determinant,
+    orthonormalityError: orthoError,
+    cameraHeight: cameraPositionWorld.y,
+    cameraZ: cameraPositionWorld.z,
+  };
+
+  let confidence: "high" | "low" = "high";
+  let note: string | undefined;
+  if (columnScaleRatio > MAX_COLUMN_SCALE_RATIO_LOW_CONFIDENCE || orthoError > MAX_ORTHONORMALITY_ERROR_LOW_CONFIDENCE) {
+    confidence = "low";
+    note = "Pose solved but is numerically weak (column-scale mismatch or orthonormality drift).";
+    diagnostics.reason = note;
+  }
+
   return {
-    ok: false,
-    reason: "Deferred: homography-to-camera decomposition is planned for a later phase.",
+    ok: true,
+    value: {
+      pose: {
+        position: cameraPositionWorld,
+        lookAt,
+        up,
+      },
+      diagnostics,
+    },
+    confidence,
+    note,
   };
 }
