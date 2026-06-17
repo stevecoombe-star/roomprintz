@@ -49,6 +49,11 @@ import {
   computeAutoBoundsNormalization,
   type AutoBoundsNormalization,
 } from "./model-bounds";
+import {
+  createMockAutoFloorDetectionResult,
+  getSelectedAutoFloorCandidate,
+  type AutoFloorDetectionResult,
+} from "./auto-floor-detection";
 
 const DEFAULT_MODEL_GLB_PATH = "/3d-lab/furniture-test-chair.glb";
 const LOCAL_DRAFT_STORAGE_KEY = "vibode:3d-room-lab:scene-state:v0";
@@ -486,6 +491,13 @@ export default function ThreeRoomLab() {
   const [showFloorOverlay, setShowFloorOverlay] = useState(true);
   const [floorPolygon, setFloorPolygon] = useState<FloorPoint[]>(DEFAULT_FLOOR_POLYGON);
   const [activeFloorHandleIndex, setActiveFloorHandleIndex] = useState<number | null>(null);
+  // Phase 2B: auto floor detection mock harness. These do not mutate the manual
+  // floor polygon, scene-state, or any calibrated camera behavior.
+  const [autoFloorDetectionResult, setAutoFloorDetectionResult] =
+    useState<AutoFloorDetectionResult | null>(null);
+  const [selectedAutoFloorCandidateId, setSelectedAutoFloorCandidateId] = useState<string | null>(
+    null
+  );
   const [isFloorClickPlacementEnabled, setIsFloorClickPlacementEnabled] = useState(false);
   const [isFloorAnchorDragEnabled, setIsFloorAnchorDragEnabled] = useState(false);
   const [isFloorAnchorDragActive, setIsFloorAnchorDragActive] = useState(false);
@@ -2022,6 +2034,13 @@ export default function ThreeRoomLab() {
     rayFloorHomographyComparisonDebug.objectProjectionComparison.worldDistance,
   ]);
 
+  // Phase 2B: preview-only selected suggestion. Read-only derived value; never
+  // mutates the manual floor polygon.
+  const selectedAutoFloorCandidate = useMemo(
+    () => getSelectedAutoFloorCandidate(autoFloorDetectionResult, selectedAutoFloorCandidateId),
+    [autoFloorDetectionResult, selectedAutoFloorCandidateId]
+  );
+
   const debugRows = useMemo(
     () => [
       { label: "env", value: envEnabled ? "enabled" : "disabled" },
@@ -2084,6 +2103,34 @@ export default function ThreeRoomLab() {
       { label: "floor points", value: String(floorPolygon.length) },
       { label: "active floor handle", value: activeFloorHandleIndex === null ? "none" : String(activeFloorHandleIndex) },
       { label: "floor polygon", value: JSON.stringify(floorPolygon.map(roundPoint)) },
+      { label: "auto floor status", value: autoFloorDetectionResult?.status ?? "idle" },
+      { label: "auto floor candidate count", value: String(autoFloorDetectionResult?.candidates.length ?? 0) },
+      {
+        label: "auto floor selected candidate",
+        value: selectedAutoFloorCandidate ? `${selectedAutoFloorCandidate.label} (${selectedAutoFloorCandidate.id})` : "none",
+      },
+      {
+        label: "auto floor selected confidence",
+        value: selectedAutoFloorCandidate ? selectedAutoFloorCandidate.confidence : "none",
+      },
+      {
+        label: "auto floor selected confidence score",
+        value: selectedAutoFloorCandidate ? formatNumber(selectedAutoFloorCandidate.confidenceScore) : "none",
+      },
+      {
+        label: "auto floor selected notes",
+        value:
+          selectedAutoFloorCandidate && selectedAutoFloorCandidate.notes.length > 0
+            ? selectedAutoFloorCandidate.notes.join(" | ")
+            : "none",
+      },
+      {
+        label: "auto floor selected risks",
+        value:
+          selectedAutoFloorCandidate && selectedAutoFloorCandidate.risks.length > 0
+            ? selectedAutoFloorCandidate.risks.join(" | ")
+            : "none",
+      },
       { label: "floor placement mode", value: isFloorClickPlacementEnabled ? "on" : "off" },
       { label: "floor-click mapping mode", value: floorClickMappingMode },
       { label: "last floor-click mapping result", value: lastFloorClickMappingResult },
@@ -2281,6 +2328,8 @@ export default function ThreeRoomLab() {
       activeFloorHandleIndex,
       activeObjectKind,
       autoRotateEnabled,
+      autoFloorDetectionResult,
+      selectedAutoFloorCandidate,
       currentActiveObjectType,
       envEnabled,
       floorMapping.depthCenterY,
@@ -2504,6 +2553,19 @@ export default function ThreeRoomLab() {
     () => floorPolygon.map((point) => `${point.x * 100},${point.y * 100}`).join(" "),
     [floorPolygon]
   );
+
+  const autoFloorSuggestionPointsAttribute = useMemo(() => {
+    if (!selectedAutoFloorCandidate) return null;
+    return selectedAutoFloorCandidate.quadNorm
+      .map((point) => `${point.x * 100},${point.y * 100}`)
+      .join(" ");
+  }, [selectedAutoFloorCandidate]);
+
+  const handleGenerateMockFloorSuggestions = useCallback(() => {
+    const result = createMockAutoFloorDetectionResult(floorPolygon);
+    setAutoFloorDetectionResult(result);
+    setSelectedAutoFloorCandidateId(result.selectedCandidateId);
+  }, [floorPolygon]);
 
   const buildCurrentSceneStatePayload = (exportedAtIso: string) =>
     buildSceneStatePayload({
@@ -3673,6 +3735,28 @@ export default function ThreeRoomLab() {
                   strokeWidth={1.2}
                   pointerEvents="none"
                 />
+                {autoFloorSuggestionPointsAttribute && selectedAutoFloorCandidate && (
+                  <g pointerEvents="none" aria-hidden="true">
+                    <polygon
+                      points={autoFloorSuggestionPointsAttribute}
+                      fill="#a855f7"
+                      fillOpacity={0.1}
+                      stroke="#c084fc"
+                      strokeOpacity={0.95}
+                      strokeWidth={1}
+                      strokeDasharray="2 1.4"
+                    />
+                    <text
+                      x={selectedAutoFloorCandidate.quadNorm[3].x * 100 + 0.8}
+                      y={selectedAutoFloorCandidate.quadNorm[3].y * 100 - 1}
+                      fill="#e9d5ff"
+                      fontSize="2.2"
+                      fontWeight="600"
+                    >
+                      suggestion (preview)
+                    </text>
+                  </g>
+                )}
                 {showHomographyDebugOverlay && (
                   <g pointerEvents="none" aria-hidden="true">
                     {homographyDebug.gridPolylinesNorm.map((line, index) => (
@@ -4214,6 +4298,80 @@ export default function ThreeRoomLab() {
               </p>
             )}
           </div>
+        </section>
+
+        <section className="rounded-2xl border border-slate-800 bg-slate-900/70 p-4">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="min-w-0">
+              <h2 className="text-sm font-medium text-slate-100">Auto Floor Detection</h2>
+              <p className="mt-1 text-xs text-slate-400">
+                Phase 2B mock harness. Suggestions are preview-only and never modify the manual floor polygon or camera.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={handleGenerateMockFloorSuggestions}
+              className="rounded-lg border border-fuchsia-500/70 px-3 py-1.5 text-xs text-fuchsia-200 transition hover:border-fuchsia-300 hover:text-fuchsia-100"
+            >
+              Generate mock floor suggestions
+            </button>
+          </div>
+          {autoFloorDetectionResult ? (
+            <div className="mt-3 space-y-3">
+              <div className="text-xs text-slate-400">
+                <span className="text-slate-500">status:</span> {autoFloorDetectionResult.status}
+                <span className="ml-3 text-slate-500">candidates:</span> {autoFloorDetectionResult.candidates.length}
+              </div>
+              <div className="flex flex-col gap-2">
+                {autoFloorDetectionResult.candidates.map((candidate) => {
+                  const isSelected = selectedAutoFloorCandidate?.id === candidate.id;
+                  return (
+                    <label
+                      key={candidate.id}
+                      className={`flex cursor-pointer items-start gap-2 rounded-lg border px-3 py-2 text-xs transition ${
+                        isSelected
+                          ? "border-fuchsia-400/80 bg-fuchsia-500/10 text-fuchsia-100"
+                          : "border-slate-800 bg-slate-950/50 text-slate-300 hover:border-slate-600"
+                      }`}
+                    >
+                      <input
+                        type="radio"
+                        name="auto-floor-candidate"
+                        value={candidate.id}
+                        checked={isSelected}
+                        onChange={() => setSelectedAutoFloorCandidateId(candidate.id)}
+                        className="mt-0.5 accent-fuchsia-400"
+                      />
+                      <span className="min-w-0">
+                        <span className="flex flex-wrap items-center gap-2">
+                          <span className="font-medium text-slate-100">{candidate.label}</span>
+                          <span className="rounded bg-slate-800/80 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-slate-300">
+                            {candidate.confidence} · {candidate.confidenceScore.toFixed(2)}
+                          </span>
+                        </span>
+                        {candidate.notes.length > 0 && (
+                          <span className="mt-1 block text-[11px] text-slate-400">{candidate.notes.join(" ")}</span>
+                        )}
+                        {candidate.risks.length > 0 && (
+                          <span className="mt-1 block text-[11px] text-amber-300/90">
+                            Risks: {candidate.risks.join(" ")}
+                          </span>
+                        )}
+                      </span>
+                    </label>
+                  );
+                })}
+              </div>
+              <p className="text-[11px] text-slate-500">
+                Selecting a candidate only updates the dashed preview overlay and debug readouts. Apply is not available in
+                Phase 2B.
+              </p>
+            </div>
+          ) : (
+            <p className="mt-3 text-xs text-slate-500">
+              No suggestions yet. Click “Generate mock floor suggestions” to create deterministic mock candidate quads.
+            </p>
+          )}
         </section>
 
         <CollapsibleSection
