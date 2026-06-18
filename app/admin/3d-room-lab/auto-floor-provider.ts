@@ -206,7 +206,7 @@ export const AUTO_FLOOR_DETECTION_PROVIDERS: Record<
   "vision-model": reservedProvider(
     "vision-model",
     "Vision model",
-    "Reserved: future direct vision-model floor detection."
+    "Gemini floor-plane proposal provider. Disabled until lab-only server flag and route are enabled."
   ),
   segmentation: reservedProvider(
     "segmentation",
