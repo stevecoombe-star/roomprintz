@@ -30,16 +30,23 @@ export type AutoFloorDetectionInput = {
     height: number;
   } | null;
   currentFloorPolygon?: Vec2[];
+  // Phase 2F-C (additive, optional): floor rectangle assumption needed by the
+  // server-side mapper to run geometry scoring. mock-local safely ignores it.
+  floorRect?: { widthMeters: number; depthMeters: number } | null;
 };
 
 export type AutoFloorDetectionProvider = {
   id: AutoFloorDetectionProviderId;
   label: string;
   description: string;
-  // Whether this provider is wired up and selectable in Phase 2E.
+  // Whether this provider is wired up and selectable in the lab UI.
   available: boolean;
   run(input: AutoFloorDetectionInput): Promise<AutoFloorDetectionResult>;
 };
+
+// Lab-only mock API route (admin-gated; canned data; no AI/external calls).
+export const MOCK_AUTO_FLOOR_API_ROUTE = "/api/admin/3d-room-lab/auto-floor/detect";
+const MOCK_API_TIMEOUT_MS = 15000;
 
 function buildUnsupportedResult(
   providerId: AutoFloorDetectionProviderId,
@@ -85,6 +92,97 @@ const mockLocalProvider: AutoFloorDetectionProvider = {
   },
 };
 
+// Minimal trust check on the route's JSON. The route already runs the Phase
+// 2F-B mapper, so this only guards against transport/shape corruption.
+function coerceDetectionResult(value: unknown): AutoFloorDetectionResult | null {
+  if (typeof value !== "object" || value === null) return null;
+  const record = value as Record<string, unknown>;
+  const validStatuses = ["idle", "mock_ready", "ok", "needs_review", "failed"];
+  if (typeof record.status !== "string" || !validStatuses.includes(record.status)) return null;
+  if (!Array.isArray(record.candidates)) return null;
+  if (!Array.isArray(record.notes)) return null;
+  if (!Array.isArray(record.failureReasons)) return null;
+  if (record.selectedCandidateId !== null && typeof record.selectedCandidateId !== "string") return null;
+  return value as AutoFloorDetectionResult;
+}
+
+function transportFailedResult(reason: string): AutoFloorDetectionResult {
+  return {
+    status: "failed",
+    candidates: [],
+    selectedCandidateId: null,
+    notes: ["Provider: mock-api (lab-only route; canned data, no AI/external API)."],
+    failureReasons: [reason],
+  };
+}
+
+// Mock-api provider: POSTs to the lab-only route, which returns canned
+// vision-shaped data already mapped to AutoFloorDetectionResult by the Phase
+// 2F-B validator. Never throws into the UI; all failures become a failed result.
+const mockApiProvider: AutoFloorDetectionProvider = {
+  id: "mock-api",
+  label: "Mock API",
+  description:
+    "Exercises the lab API boundary using canned vision-model-shaped data. No AI or external API is called.",
+  available: true,
+  async run(input: AutoFloorDetectionInput): Promise<AutoFloorDetectionResult> {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), MOCK_API_TIMEOUT_MS);
+    try {
+      const response = await fetch(MOCK_AUTO_FLOOR_API_ROUTE, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          imageUrl: input.imageUrl ?? null,
+          frameSize: input.frameSize ?? null,
+          currentFloorPolygon: input.currentFloorPolygon ?? null,
+          floorRect: input.floorRect ?? null,
+          requestId:
+            typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : null,
+        }),
+        signal: controller.signal,
+      });
+
+      let payload: unknown = null;
+      try {
+        payload = await response.json();
+      } catch {
+        return transportFailedResult(`Mock API returned a non-JSON response (HTTP ${response.status}).`);
+      }
+
+      const coerced = coerceDetectionResult(payload);
+      if (!coerced) {
+        // The route returns a failed AutoFloorDetectionResult even on handled
+        // errors; surface its reasons if present, otherwise a generic message.
+        const reasons =
+          typeof payload === "object" && payload !== null && Array.isArray((payload as Record<string, unknown>).failureReasons)
+            ? ((payload as Record<string, unknown>).failureReasons as unknown[]).filter(
+                (r): r is string => typeof r === "string"
+              )
+            : [];
+        return transportFailedResult(
+          reasons.length > 0
+            ? reasons.join(" ")
+            : `Mock API returned an unexpected payload (HTTP ${response.status}).`
+        );
+      }
+
+      if (!response.ok && coerced.status !== "failed") {
+        return transportFailedResult(`Mock API responded with HTTP ${response.status}.`);
+      }
+
+      return coerced;
+    } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") {
+        return transportFailedResult("Mock API request timed out or was aborted.");
+      }
+      return transportFailedResult(error instanceof Error ? error.message : "Mock API transport failed.");
+    } finally {
+      clearTimeout(timeout);
+    }
+  },
+};
+
 const reservedProvider = (
   id: AutoFloorDetectionProviderId,
   label: string,
@@ -104,11 +202,7 @@ export const AUTO_FLOOR_DETECTION_PROVIDERS: Record<
   AutoFloorDetectionProvider
 > = {
   "mock-local": mockLocalProvider,
-  "mock-api": reservedProvider(
-    "mock-api",
-    "Mock API",
-    "Reserved: future lab-only API-backed mock provider."
-  ),
+  "mock-api": mockApiProvider,
   "vision-model": reservedProvider(
     "vision-model",
     "Vision model",
@@ -127,6 +221,11 @@ export function getAutoFloorDetectionProvider(
   providerId: AutoFloorDetectionProviderId
 ): AutoFloorDetectionProvider | null {
   return AUTO_FLOOR_DETECTION_PROVIDERS[providerId] ?? null;
+}
+
+/** Providers that are wired up and may be exposed in the lab UI. */
+export function getAvailableAutoFloorDetectionProviders(): AutoFloorDetectionProvider[] {
+  return Object.values(AUTO_FLOOR_DETECTION_PROVIDERS).filter((provider) => provider.available);
 }
 
 /**

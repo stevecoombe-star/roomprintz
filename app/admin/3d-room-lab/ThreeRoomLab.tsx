@@ -59,14 +59,13 @@ import {
 } from "./auto-floor-scoring";
 import {
   ACTIVE_AUTO_FLOOR_DETECTION_PROVIDER_ID,
-  getAutoFloorDetectionProvider,
+  getAvailableAutoFloorDetectionProviders,
   runAutoFloorDetection,
   type AutoFloorDetectionInput,
+  type AutoFloorDetectionProviderId,
 } from "./auto-floor-provider";
 
-const ACTIVE_AUTO_FLOOR_PROVIDER = getAutoFloorDetectionProvider(ACTIVE_AUTO_FLOOR_DETECTION_PROVIDER_ID);
-const ACTIVE_AUTO_FLOOR_PROVIDER_LABEL =
-  ACTIVE_AUTO_FLOOR_PROVIDER?.label ?? ACTIVE_AUTO_FLOOR_DETECTION_PROVIDER_ID;
+const AVAILABLE_AUTO_FLOOR_PROVIDERS = getAvailableAutoFloorDetectionProviders();
 
 const DEFAULT_MODEL_GLB_PATH = "/3d-lab/furniture-test-chair.glb";
 const LOCAL_DRAFT_STORAGE_KEY = "vibode:3d-room-lab:scene-state:v0";
@@ -517,11 +516,16 @@ export default function ThreeRoomLab() {
   // status only and never feed back into scoring or the candidate objects.
   const [appliedAutoFloorCandidateId, setAppliedAutoFloorCandidateId] = useState<string | null>(null);
   const [lastAutoFloorApplyMessage, setLastAutoFloorApplyMessage] = useState<string>("none");
-  // Phase 2E: async detection run state through the provider boundary. Only the
-  // mock-local provider is active; this models async for future real providers.
+  // Phase 2E: async detection run state through the provider boundary.
+  // Phase 2F-C: selectable provider (mock-local default; mock-api adds the
+  // lab-only route boundary). ACTIVE_AUTO_FLOOR_DETECTION_PROVIDER_ID stays the
+  // default; switching providers does not auto-run detection.
   const [autoFloorDetectionRunState, setAutoFloorDetectionRunState] =
     useState<AutoFloorDetectionRunState>("idle");
   const [autoFloorDetectionFailureReasons, setAutoFloorDetectionFailureReasons] = useState<string[]>([]);
+  const [selectedAutoFloorProviderId, setSelectedAutoFloorProviderId] =
+    useState<AutoFloorDetectionProviderId>(ACTIVE_AUTO_FLOOR_DETECTION_PROVIDER_ID);
+  const autoFloorDetectionInFlightRef = useRef(false);
   const [isFloorClickPlacementEnabled, setIsFloorClickPlacementEnabled] = useState(false);
   const [isFloorAnchorDragEnabled, setIsFloorAnchorDragEnabled] = useState(false);
   const [isFloorAnchorDragActive, setIsFloorAnchorDragActive] = useState(false);
@@ -2243,7 +2247,14 @@ export default function ThreeRoomLab() {
       { label: "auto floor apply status", value: lastAutoFloorApplyMessage },
       {
         label: "auto floor provider",
-        value: `${ACTIVE_AUTO_FLOOR_DETECTION_PROVIDER_ID} (${ACTIVE_AUTO_FLOOR_PROVIDER_LABEL})`,
+        value: `${selectedAutoFloorProviderId} (default: ${ACTIVE_AUTO_FLOOR_DETECTION_PROVIDER_ID})`,
+      },
+      {
+        label: "auto floor provider detail",
+        value:
+          selectedAutoFloorProviderId === "mock-api"
+            ? "mock-api: canned lab-route response (no AI/external API)"
+            : "mock-local: deterministic in-app mock (no network)",
       },
       { label: "auto floor detection run state", value: autoFloorDetectionRunState },
       {
@@ -2454,6 +2465,7 @@ export default function ThreeRoomLab() {
       lastAutoFloorApplyMessage,
       autoFloorDetectionRunState,
       autoFloorDetectionFailureReasons,
+      selectedAutoFloorProviderId,
       currentActiveObjectType,
       envEnabled,
       floorMapping.depthCenterY,
@@ -2738,9 +2750,13 @@ export default function ThreeRoomLab() {
     }
   }, [selectedAutoFloorCandidateScore?.scoreBand]);
 
-  // Phase 2E: run detection through the provider boundary. Structured as async
-  // for future real providers even though mock-local resolves immediately.
+  // Phase 2E/2F-C: run detection through the selected provider boundary.
+  // Structured as async; mock-local resolves immediately, mock-api round-trips
+  // the lab-only route. Guards against duplicate concurrent runs. Never mutates
+  // floorPolygon or calibrated camera state (results flow to preview/apply only).
   const handleDetectFloor = useCallback(async () => {
+    if (autoFloorDetectionInFlightRef.current) return;
+    autoFloorDetectionInFlightRef.current = true;
     setAutoFloorDetectionRunState("detecting");
     setAutoFloorDetectionFailureReasons([]);
 
@@ -2751,22 +2767,35 @@ export default function ThreeRoomLab() {
           ? { width: rendererSize.width, height: rendererSize.height }
           : null,
       currentFloorPolygon: floorPolygon,
+      floorRect: { widthMeters: floorMapping.worldWidth, depthMeters: floorMapping.worldDepth },
     };
 
-    const result = await runAutoFloorDetection(ACTIVE_AUTO_FLOOR_DETECTION_PROVIDER_ID, input);
+    try {
+      const result = await runAutoFloorDetection(selectedAutoFloorProviderId, input);
 
-    if (result.status === "failed") {
-      setAutoFloorDetectionRunState("failed");
-      setAutoFloorDetectionFailureReasons(
-        result.failureReasons.length > 0 ? result.failureReasons : ["Detection failed for an unknown reason."]
-      );
-      return;
+      if (result.status === "failed") {
+        setAutoFloorDetectionRunState("failed");
+        setAutoFloorDetectionFailureReasons(
+          result.failureReasons.length > 0 ? result.failureReasons : ["Detection failed for an unknown reason."]
+        );
+        return;
+      }
+
+      setAutoFloorDetectionResult(result);
+      setSelectedAutoFloorCandidateId(result.selectedCandidateId);
+      setAutoFloorDetectionRunState("completed");
+    } finally {
+      autoFloorDetectionInFlightRef.current = false;
     }
-
-    setAutoFloorDetectionResult(result);
-    setSelectedAutoFloorCandidateId(result.selectedCandidateId);
-    setAutoFloorDetectionRunState("completed");
-  }, [floorPolygon, roomImageUrl, rendererSize.width, rendererSize.height]);
+  }, [
+    floorPolygon,
+    roomImageUrl,
+    rendererSize.width,
+    rendererSize.height,
+    floorMapping.worldWidth,
+    floorMapping.worldDepth,
+    selectedAutoFloorProviderId,
+  ]);
 
   // Phase 2D: explicit, user-controlled apply of the selected suggestion into the
   // editable manual floor polygon. Never auto-applies; only invalid geometry is
@@ -4571,10 +4600,42 @@ export default function ThreeRoomLab() {
                 {autoFloorDetectionRunState === "detecting" ? "Detecting floor…" : "Detect floor"}
               </button>
               <span className="text-[10px] uppercase tracking-wide text-slate-500">
-                {ACTIVE_AUTO_FLOOR_PROVIDER_LABEL} provider (mock)
+                using {selectedAutoFloorProviderId} (mock)
               </span>
             </div>
           </div>
+          {AVAILABLE_AUTO_FLOOR_PROVIDERS.length > 1 && (
+            <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-slate-300">
+              <span className="text-slate-500">Provider</span>
+              <div className="flex flex-wrap gap-1">
+                {AVAILABLE_AUTO_FLOOR_PROVIDERS.map((provider) => {
+                  const isSelected = provider.id === selectedAutoFloorProviderId;
+                  return (
+                    <button
+                      key={provider.id}
+                      type="button"
+                      onClick={() => setSelectedAutoFloorProviderId(provider.id)}
+                      disabled={autoFloorDetectionRunState === "detecting"}
+                      aria-pressed={isSelected}
+                      title={provider.description}
+                      className={`rounded-md border px-2 py-1 text-[11px] transition disabled:cursor-not-allowed disabled:opacity-50 ${
+                        isSelected
+                          ? "border-fuchsia-400/80 bg-fuchsia-500/10 text-fuchsia-100"
+                          : "border-slate-700 text-slate-300 hover:border-slate-500"
+                      }`}
+                    >
+                      {provider.label}
+                    </button>
+                  );
+                })}
+              </div>
+              {selectedAutoFloorProviderId === "mock-api" && (
+                <span className="basis-full text-[11px] text-slate-500">
+                  Exercises the lab API boundary using canned vision-model-shaped data. No AI or external API is called.
+                </span>
+              )}
+            </div>
+          )}
           {autoFloorDetectionRunState === "failed" && (
             <p className="mt-3 rounded-lg border border-rose-500/50 bg-rose-500/10 px-3 py-2 text-[11px] text-rose-200">
               Detection failed.
