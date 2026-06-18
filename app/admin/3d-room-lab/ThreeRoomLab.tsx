@@ -502,6 +502,11 @@ export default function ThreeRoomLab() {
   const [selectedAutoFloorCandidateId, setSelectedAutoFloorCandidateId] = useState<string | null>(
     null
   );
+  // Phase 2D: explicit "Apply suggested quad" readout state. The apply action
+  // copies the candidate quad into the editable floor polygon; these are debug/
+  // status only and never feed back into scoring or the candidate objects.
+  const [appliedAutoFloorCandidateId, setAppliedAutoFloorCandidateId] = useState<string | null>(null);
+  const [lastAutoFloorApplyMessage, setLastAutoFloorApplyMessage] = useState<string>("none");
   const [isFloorClickPlacementEnabled, setIsFloorClickPlacementEnabled] = useState(false);
   const [isFloorAnchorDragEnabled, setIsFloorAnchorDragEnabled] = useState(false);
   const [isFloorAnchorDragActive, setIsFloorAnchorDragActive] = useState(false);
@@ -2219,6 +2224,8 @@ export default function ThreeRoomLab() {
             ? selectedAutoFloorCandidateScore.risks.join(" | ")
             : "none",
       },
+      { label: "auto floor applied candidate", value: appliedAutoFloorCandidateId ?? "none" },
+      { label: "auto floor apply status", value: lastAutoFloorApplyMessage },
       { label: "floor placement mode", value: isFloorClickPlacementEnabled ? "on" : "off" },
       { label: "floor-click mapping mode", value: floorClickMappingMode },
       { label: "last floor-click mapping result", value: lastFloorClickMappingResult },
@@ -2419,6 +2426,8 @@ export default function ThreeRoomLab() {
       autoFloorDetectionResult,
       selectedAutoFloorCandidate,
       selectedAutoFloorCandidateScore,
+      appliedAutoFloorCandidateId,
+      lastAutoFloorApplyMessage,
       currentActiveObjectType,
       envEnabled,
       floorMapping.depthCenterY,
@@ -2708,6 +2717,57 @@ export default function ThreeRoomLab() {
     setAutoFloorDetectionResult(result);
     setSelectedAutoFloorCandidateId(result.selectedCandidateId);
   }, [floorPolygon]);
+
+  // Phase 2D: explicit, user-controlled apply of the selected suggestion into the
+  // editable manual floor polygon. Never auto-applies; only invalid geometry is
+  // blocked. Copies the quad (does not mutate the candidate object) and clears
+  // in-progress floor interaction state so the manual editor stays consistent.
+  const canApplyAutoFloorCandidate =
+    !!selectedAutoFloorCandidate &&
+    !!selectedAutoFloorCandidateScore &&
+    selectedAutoFloorCandidateScore.scoreBand !== "invalid";
+
+  const handleApplySuggestedQuad = useCallback(() => {
+    if (
+      !selectedAutoFloorCandidate ||
+      !selectedAutoFloorCandidateScore ||
+      selectedAutoFloorCandidateScore.scoreBand === "invalid"
+    ) {
+      return;
+    }
+
+    const appliedPolygon: FloorPoint[] = selectedAutoFloorCandidate.quadNorm.map((point) => ({
+      x: point.x,
+      y: point.y,
+    }));
+    setFloorPolygon(appliedPolygon);
+
+    // Clear in-progress floor interaction state (mirrors the reset workflow).
+    setActiveFloorHandleIndex(null);
+    dragPointerIdRef.current = null;
+    objectHandleDragPointerIdRef.current = null;
+    setActiveObjectHandleMode(null);
+    setWasLastObjectHandleMoveRejected(false);
+    setLastObjectHandleRotateDeltaDeg(null);
+    setLastObjectHandleScaleMultiplier(null);
+    setLastObjectHandleHeightDeltaYUnits(null);
+    floorAnchorDragPointerIdRef.current = null;
+    setIsFloorAnchorDragActive(false);
+    setWasLastAnchorDragMoveRejected(false);
+
+    // Applying a new polygon invalidates any active calibrated camera snapshot.
+    const wasCalibratedCameraActive = calibratedCameraActiveRef.current;
+    if (wasCalibratedCameraActive) {
+      deactivateCalibratedCameraMode({ clearAutoRevertReason: true });
+    }
+
+    setAppliedAutoFloorCandidateId(selectedAutoFloorCandidate.id);
+    setLastAutoFloorApplyMessage(
+      wasCalibratedCameraActive
+        ? "Applied suggested quad; calibrated camera was reverted because the floor polygon changed."
+        : `Applied suggested quad "${selectedAutoFloorCandidate.label}" to the editable floor polygon.`
+    );
+  }, [deactivateCalibratedCameraMode, selectedAutoFloorCandidate, selectedAutoFloorCandidateScore]);
 
   const buildCurrentSceneStatePayload = (exportedAtIso: string) =>
     buildSceneStatePayload({
@@ -4447,7 +4507,7 @@ export default function ThreeRoomLab() {
             <div className="min-w-0">
               <h2 className="text-sm font-medium text-slate-100">Auto Floor Detection</h2>
               <p className="mt-1 text-xs text-slate-400">
-                Phase 2B mock harness. Suggestions are preview-only and never modify the manual floor polygon or camera.
+                Mock harness. Suggestions stay preview-only until you explicitly click Apply suggested quad.
               </p>
             </div>
             <button
@@ -4577,10 +4637,39 @@ export default function ThreeRoomLab() {
                   )}
                 </div>
               )}
-              <p className="text-[11px] text-slate-500">
-                Selecting a candidate only updates the dashed preview overlay, geometry score, and debug readouts. Apply is
-                not available yet.
-              </p>
+              <div className="space-y-2">
+                <div className="flex flex-wrap items-center gap-3">
+                  <button
+                    type="button"
+                    onClick={handleApplySuggestedQuad}
+                    disabled={!canApplyAutoFloorCandidate}
+                    className="rounded-lg border border-emerald-500/70 px-3 py-1.5 text-xs text-emerald-200 transition hover:border-emerald-300 hover:text-emerald-100 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    Apply suggested quad
+                  </button>
+                  {appliedAutoFloorCandidateId && selectedAutoFloorCandidate?.id === appliedAutoFloorCandidateId && (
+                    <span className="rounded bg-emerald-500/15 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-emerald-200">
+                      applied
+                    </span>
+                  )}
+                </div>
+                {selectedAutoFloorCandidateScore?.scoreBand === "invalid" ? (
+                  <p className="text-[11px] text-rose-300">
+                    This suggestion cannot be applied because its geometry score is invalid.
+                  </p>
+                ) : selectedAutoFloorCandidateScore?.scoreBand === "low" ? (
+                  <p className="text-[11px] text-amber-300">
+                    Low-confidence suggestion — adjust manually after applying.
+                  </p>
+                ) : null}
+                <p className="text-[11px] text-slate-500">
+                  Applies the selected suggestion to the editable floor polygon. You can adjust corners manually after
+                  applying.
+                </p>
+                {lastAutoFloorApplyMessage !== "none" && (
+                  <p className="text-[11px] text-emerald-300/90">{lastAutoFloorApplyMessage}</p>
+                )}
+              </div>
             </div>
           ) : (
             <p className="mt-3 text-xs text-slate-500">
