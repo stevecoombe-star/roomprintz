@@ -54,6 +54,10 @@ import {
   getSelectedAutoFloorCandidate,
   type AutoFloorDetectionResult,
 } from "./auto-floor-detection";
+import {
+  scoreAutoFloorCandidateGeometry,
+  type AutoFloorCandidateGeometryScore,
+} from "./auto-floor-scoring";
 
 const DEFAULT_MODEL_GLB_PATH = "/3d-lab/furniture-test-chair.glb";
 const LOCAL_DRAFT_STORAGE_KEY = "vibode:3d-room-lab:scene-state:v0";
@@ -2041,6 +2045,30 @@ export default function ThreeRoomLab() {
     [autoFloorDetectionResult, selectedAutoFloorCandidateId]
   );
 
+  // Phase 2C: preview-only geometry scoring for the selected suggestion. Uses
+  // the same frame/floor-rect assumptions as the existing homography diagnostic.
+  // Read-only; never mutates floorPolygon or any calibrated camera state.
+  const selectedAutoFloorCandidateScore = useMemo<AutoFloorCandidateGeometryScore | null>(() => {
+    if (!selectedAutoFloorCandidate) return null;
+    const frameSize: ImageFrameSize | null =
+      rendererSize.width > 0 && rendererSize.height > 0
+        ? { width: rendererSize.width, height: rendererSize.height }
+        : null;
+    return scoreAutoFloorCandidateGeometry(selectedAutoFloorCandidate, {
+      frameSize,
+      floorRect: {
+        widthMeters: floorMapping.worldWidth,
+        depthMeters: floorMapping.worldDepth,
+      },
+    });
+  }, [
+    selectedAutoFloorCandidate,
+    rendererSize.width,
+    rendererSize.height,
+    floorMapping.worldWidth,
+    floorMapping.worldDepth,
+  ]);
+
   const debugRows = useMemo(
     () => [
       { label: "env", value: envEnabled ? "enabled" : "disabled" },
@@ -2129,6 +2157,66 @@ export default function ThreeRoomLab() {
         value:
           selectedAutoFloorCandidate && selectedAutoFloorCandidate.risks.length > 0
             ? selectedAutoFloorCandidate.risks.join(" | ")
+            : "none",
+      },
+      {
+        label: "auto floor geometry score",
+        value: selectedAutoFloorCandidateScore ? formatNumber(selectedAutoFloorCandidateScore.score) : "none",
+      },
+      {
+        label: "auto floor score band",
+        value: selectedAutoFloorCandidateScore ? selectedAutoFloorCandidateScore.scoreBand : "none",
+      },
+      {
+        label: "auto floor polygon sanity",
+        value: selectedAutoFloorCandidateScore
+          ? `ok=${selectedAutoFloorCandidateScore.polygon.ok ? "yes" : "no"} area=${
+              selectedAutoFloorCandidateScore.polygon.areaNorm === null
+                ? "n/a"
+                : formatNumber(selectedAutoFloorCandidateScore.polygon.areaNorm)
+            } convex=${selectedAutoFloorCandidateScore.polygon.convex ? "yes" : "no"} selfInt=${
+              selectedAutoFloorCandidateScore.polygon.selfIntersecting ? "yes" : "no"
+            } nearFar=${selectedAutoFloorCandidateScore.polygon.nearFarOrderingOk ? "ok" : "weak"} skinny=${
+              selectedAutoFloorCandidateScore.polygon.skinnyRisk ? "yes" : "no"
+            }`
+          : "none",
+      },
+      {
+        label: "auto floor corner ordering",
+        value: selectedAutoFloorCandidateScore
+          ? `ok=${selectedAutoFloorCandidateScore.cornerOrdering.ok ? "yes" : "no"} confidence=${
+              selectedAutoFloorCandidateScore.cornerOrdering.confidence ?? "n/a"
+            }`
+          : "none",
+      },
+      {
+        label: "auto floor homography status",
+        value: selectedAutoFloorCandidateScore
+          ? `ok=${selectedAutoFloorCandidateScore.homography.ok ? "yes" : "no"} reprojPx=${
+              selectedAutoFloorCandidateScore.homography.sourceReprojectionErrorPx === null ||
+              selectedAutoFloorCandidateScore.homography.sourceReprojectionErrorPx === undefined
+                ? "n/a"
+                : formatNumber(selectedAutoFloorCandidateScore.homography.sourceReprojectionErrorPx)
+            } reprojTarget=${
+              selectedAutoFloorCandidateScore.homography.targetReprojectionError === null ||
+              selectedAutoFloorCandidateScore.homography.targetReprojectionError === undefined
+                ? "n/a"
+                : formatNumber(selectedAutoFloorCandidateScore.homography.targetReprojectionError)
+            }`
+          : "none",
+      },
+      {
+        label: "auto floor scoring notes",
+        value:
+          selectedAutoFloorCandidateScore && selectedAutoFloorCandidateScore.overallNotes.length > 0
+            ? selectedAutoFloorCandidateScore.overallNotes.join(" | ")
+            : "none",
+      },
+      {
+        label: "auto floor scoring risks",
+        value:
+          selectedAutoFloorCandidateScore && selectedAutoFloorCandidateScore.risks.length > 0
+            ? selectedAutoFloorCandidateScore.risks.join(" | ")
             : "none",
       },
       { label: "floor placement mode", value: isFloorClickPlacementEnabled ? "on" : "off" },
@@ -2330,6 +2418,7 @@ export default function ThreeRoomLab() {
       autoRotateEnabled,
       autoFloorDetectionResult,
       selectedAutoFloorCandidate,
+      selectedAutoFloorCandidateScore,
       currentActiveObjectType,
       envEnabled,
       floorMapping.depthCenterY,
@@ -2560,6 +2649,59 @@ export default function ThreeRoomLab() {
       .map((point) => `${point.x * 100},${point.y * 100}`)
       .join(" ");
   }, [selectedAutoFloorCandidate]);
+
+  // Phase 2C optional enhancement: preview overlay styling reflects the geometry
+  // score band. Still purely preview-only and non-interactive.
+  const autoFloorSuggestionStyle = useMemo(() => {
+    const band = selectedAutoFloorCandidateScore?.scoreBand ?? "medium";
+    switch (band) {
+      case "high":
+        return {
+          fill: "#34d399",
+          fillOpacity: 0.12,
+          stroke: "#34d399",
+          strokeOpacity: 1,
+          strokeWidth: 1.2,
+          strokeDasharray: "2.4 1.2",
+          textFill: "#bbf7d0",
+          label: "suggestion (preview · high)",
+        };
+      case "low":
+        return {
+          fill: "#f59e0b",
+          fillOpacity: 0.08,
+          stroke: "#f59e0b",
+          strokeOpacity: 0.7,
+          strokeWidth: 0.85,
+          strokeDasharray: "1.4 1.6",
+          textFill: "#fde68a",
+          label: "suggestion (preview · low)",
+        };
+      case "invalid":
+        return {
+          fill: "#f43f5e",
+          fillOpacity: 0.08,
+          stroke: "#f43f5e",
+          strokeOpacity: 0.7,
+          strokeWidth: 0.85,
+          strokeDasharray: "1 1.8",
+          textFill: "#fecdd3",
+          label: "suggestion (preview · invalid)",
+        };
+      case "medium":
+      default:
+        return {
+          fill: "#a855f7",
+          fillOpacity: 0.1,
+          stroke: "#c084fc",
+          strokeOpacity: 0.95,
+          strokeWidth: 1,
+          strokeDasharray: "2 1.4",
+          textFill: "#e9d5ff",
+          label: "suggestion (preview · medium)",
+        };
+    }
+  }, [selectedAutoFloorCandidateScore?.scoreBand]);
 
   const handleGenerateMockFloorSuggestions = useCallback(() => {
     const result = createMockAutoFloorDetectionResult(floorPolygon);
@@ -3739,21 +3881,21 @@ export default function ThreeRoomLab() {
                   <g pointerEvents="none" aria-hidden="true">
                     <polygon
                       points={autoFloorSuggestionPointsAttribute}
-                      fill="#a855f7"
-                      fillOpacity={0.1}
-                      stroke="#c084fc"
-                      strokeOpacity={0.95}
-                      strokeWidth={1}
-                      strokeDasharray="2 1.4"
+                      fill={autoFloorSuggestionStyle.fill}
+                      fillOpacity={autoFloorSuggestionStyle.fillOpacity}
+                      stroke={autoFloorSuggestionStyle.stroke}
+                      strokeOpacity={autoFloorSuggestionStyle.strokeOpacity}
+                      strokeWidth={autoFloorSuggestionStyle.strokeWidth}
+                      strokeDasharray={autoFloorSuggestionStyle.strokeDasharray}
                     />
                     <text
                       x={selectedAutoFloorCandidate.quadNorm[3].x * 100 + 0.8}
                       y={selectedAutoFloorCandidate.quadNorm[3].y * 100 - 1}
-                      fill="#e9d5ff"
+                      fill={autoFloorSuggestionStyle.textFill}
                       fontSize="2.2"
                       fontWeight="600"
                     >
-                      suggestion (preview)
+                      {autoFloorSuggestionStyle.label}
                     </text>
                   </g>
                 )}
@@ -4362,9 +4504,82 @@ export default function ThreeRoomLab() {
                   );
                 })}
               </div>
+              {selectedAutoFloorCandidate && selectedAutoFloorCandidateScore && (
+                <div
+                  className={`rounded-lg border px-3 py-2 text-[11px] ${
+                    selectedAutoFloorCandidateScore.scoreBand === "high"
+                      ? "border-emerald-500/60 bg-emerald-500/10 text-emerald-100"
+                      : selectedAutoFloorCandidateScore.scoreBand === "medium"
+                        ? "border-sky-500/50 bg-sky-500/10 text-sky-100"
+                        : selectedAutoFloorCandidateScore.scoreBand === "low"
+                          ? "border-amber-500/50 bg-amber-500/10 text-amber-100"
+                          : "border-rose-500/60 bg-rose-500/10 text-rose-100"
+                  }`}
+                >
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <span className="font-medium">Geometry score (preview)</span>
+                    <span className="flex items-center gap-2">
+                      <span className="rounded bg-slate-900/60 px-1.5 py-0.5 uppercase tracking-wide">
+                        {selectedAutoFloorCandidateScore.scoreBand}
+                      </span>
+                      <span className="tabular-nums">{selectedAutoFloorCandidateScore.score.toFixed(2)}</span>
+                    </span>
+                  </div>
+                  <dl className="mt-2 grid grid-cols-1 gap-x-3 gap-y-1 sm:grid-cols-2">
+                    <div className="flex justify-between gap-2">
+                      <dt className="text-slate-300/80">polygon sanity</dt>
+                      <dd>{selectedAutoFloorCandidateScore.polygon.ok ? "ok" : "issues"}</dd>
+                    </div>
+                    <div className="flex justify-between gap-2">
+                      <dt className="text-slate-300/80">normalized area</dt>
+                      <dd>
+                        {selectedAutoFloorCandidateScore.polygon.areaNorm === null
+                          ? "n/a"
+                          : selectedAutoFloorCandidateScore.polygon.areaNorm.toFixed(4)}
+                      </dd>
+                    </div>
+                    <div className="flex justify-between gap-2">
+                      <dt className="text-slate-300/80">convex / self-int</dt>
+                      <dd>
+                        {selectedAutoFloorCandidateScore.polygon.convex ? "convex" : "non-convex"} /{" "}
+                        {selectedAutoFloorCandidateScore.polygon.selfIntersecting ? "self-int" : "clean"}
+                      </dd>
+                    </div>
+                    <div className="flex justify-between gap-2">
+                      <dt className="text-slate-300/80">near/far ordering</dt>
+                      <dd>{selectedAutoFloorCandidateScore.polygon.nearFarOrderingOk ? "ok" : "weak"}</dd>
+                    </div>
+                    <div className="flex justify-between gap-2">
+                      <dt className="text-slate-300/80">corner ordering</dt>
+                      <dd>
+                        {selectedAutoFloorCandidateScore.cornerOrdering.ok ? "ok" : "fail"}
+                        {selectedAutoFloorCandidateScore.cornerOrdering.confidence !== null
+                          ? ` (${selectedAutoFloorCandidateScore.cornerOrdering.confidence})`
+                          : ""}
+                      </dd>
+                    </div>
+                    <div className="flex justify-between gap-2">
+                      <dt className="text-slate-300/80">homography</dt>
+                      <dd>
+                        {selectedAutoFloorCandidateScore.homography.ok ? "ok" : "fail/none"}
+                        {selectedAutoFloorCandidateScore.homography.sourceReprojectionErrorPx !== null &&
+                        selectedAutoFloorCandidateScore.homography.sourceReprojectionErrorPx !== undefined
+                          ? ` (reproj ${selectedAutoFloorCandidateScore.homography.sourceReprojectionErrorPx.toFixed(2)}px)`
+                          : ""}
+                      </dd>
+                    </div>
+                  </dl>
+                  {selectedAutoFloorCandidateScore.overallNotes.length > 0 && (
+                    <p className="mt-2 text-slate-200/80">{selectedAutoFloorCandidateScore.overallNotes.join(" ")}</p>
+                  )}
+                  {selectedAutoFloorCandidateScore.risks.length > 0 && (
+                    <p className="mt-1 text-amber-200/90">Risks: {selectedAutoFloorCandidateScore.risks.join(" ")}</p>
+                  )}
+                </div>
+              )}
               <p className="text-[11px] text-slate-500">
-                Selecting a candidate only updates the dashed preview overlay and debug readouts. Apply is not available in
-                Phase 2B.
+                Selecting a candidate only updates the dashed preview overlay, geometry score, and debug readouts. Apply is
+                not available yet.
               </p>
             </div>
           ) : (
