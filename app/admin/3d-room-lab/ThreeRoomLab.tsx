@@ -50,7 +50,6 @@ import {
   type AutoBoundsNormalization,
 } from "./model-bounds";
 import {
-  createMockAutoFloorDetectionResult,
   getSelectedAutoFloorCandidate,
   type AutoFloorDetectionResult,
 } from "./auto-floor-detection";
@@ -58,6 +57,16 @@ import {
   scoreAutoFloorCandidateGeometry,
   type AutoFloorCandidateGeometryScore,
 } from "./auto-floor-scoring";
+import {
+  ACTIVE_AUTO_FLOOR_DETECTION_PROVIDER_ID,
+  getAutoFloorDetectionProvider,
+  runAutoFloorDetection,
+  type AutoFloorDetectionInput,
+} from "./auto-floor-provider";
+
+const ACTIVE_AUTO_FLOOR_PROVIDER = getAutoFloorDetectionProvider(ACTIVE_AUTO_FLOOR_DETECTION_PROVIDER_ID);
+const ACTIVE_AUTO_FLOOR_PROVIDER_LABEL =
+  ACTIVE_AUTO_FLOOR_PROVIDER?.label ?? ACTIVE_AUTO_FLOOR_DETECTION_PROVIDER_ID;
 
 const DEFAULT_MODEL_GLB_PATH = "/3d-lab/furniture-test-chair.glb";
 const LOCAL_DRAFT_STORAGE_KEY = "vibode:3d-room-lab:scene-state:v0";
@@ -67,6 +76,7 @@ const DEFAULT_ROOM_IMAGE_URL =
 type ImageLoadState = "idle" | "loading" | "loaded" | "error";
 type ModelLoadState = "idle" | "loading" | "loaded" | "fallback" | "error";
 type ActiveObjectKind = "gltf" | "fallback" | null;
+type AutoFloorDetectionRunState = "idle" | "detecting" | "completed" | "failed";
 type ObjectHandleMode = "move" | "rotate" | "scale" | "height" | null;
 type SceneJsonStatus = { kind: "idle" | "success" | "error"; message: string };
 type TransformStateUpdater = TransformState | ((prev: TransformState) => TransformState);
@@ -507,6 +517,11 @@ export default function ThreeRoomLab() {
   // status only and never feed back into scoring or the candidate objects.
   const [appliedAutoFloorCandidateId, setAppliedAutoFloorCandidateId] = useState<string | null>(null);
   const [lastAutoFloorApplyMessage, setLastAutoFloorApplyMessage] = useState<string>("none");
+  // Phase 2E: async detection run state through the provider boundary. Only the
+  // mock-local provider is active; this models async for future real providers.
+  const [autoFloorDetectionRunState, setAutoFloorDetectionRunState] =
+    useState<AutoFloorDetectionRunState>("idle");
+  const [autoFloorDetectionFailureReasons, setAutoFloorDetectionFailureReasons] = useState<string[]>([]);
   const [isFloorClickPlacementEnabled, setIsFloorClickPlacementEnabled] = useState(false);
   const [isFloorAnchorDragEnabled, setIsFloorAnchorDragEnabled] = useState(false);
   const [isFloorAnchorDragActive, setIsFloorAnchorDragActive] = useState(false);
@@ -2226,6 +2241,15 @@ export default function ThreeRoomLab() {
       },
       { label: "auto floor applied candidate", value: appliedAutoFloorCandidateId ?? "none" },
       { label: "auto floor apply status", value: lastAutoFloorApplyMessage },
+      {
+        label: "auto floor provider",
+        value: `${ACTIVE_AUTO_FLOOR_DETECTION_PROVIDER_ID} (${ACTIVE_AUTO_FLOOR_PROVIDER_LABEL})`,
+      },
+      { label: "auto floor detection run state", value: autoFloorDetectionRunState },
+      {
+        label: "auto floor detection failure reasons",
+        value: autoFloorDetectionFailureReasons.length > 0 ? autoFloorDetectionFailureReasons.join(" | ") : "none",
+      },
       { label: "floor placement mode", value: isFloorClickPlacementEnabled ? "on" : "off" },
       { label: "floor-click mapping mode", value: floorClickMappingMode },
       { label: "last floor-click mapping result", value: lastFloorClickMappingResult },
@@ -2428,6 +2452,8 @@ export default function ThreeRoomLab() {
       selectedAutoFloorCandidateScore,
       appliedAutoFloorCandidateId,
       lastAutoFloorApplyMessage,
+      autoFloorDetectionRunState,
+      autoFloorDetectionFailureReasons,
       currentActiveObjectType,
       envEnabled,
       floorMapping.depthCenterY,
@@ -2712,11 +2738,35 @@ export default function ThreeRoomLab() {
     }
   }, [selectedAutoFloorCandidateScore?.scoreBand]);
 
-  const handleGenerateMockFloorSuggestions = useCallback(() => {
-    const result = createMockAutoFloorDetectionResult(floorPolygon);
+  // Phase 2E: run detection through the provider boundary. Structured as async
+  // for future real providers even though mock-local resolves immediately.
+  const handleDetectFloor = useCallback(async () => {
+    setAutoFloorDetectionRunState("detecting");
+    setAutoFloorDetectionFailureReasons([]);
+
+    const input: AutoFloorDetectionInput = {
+      imageUrl: roomImageUrl || null,
+      frameSize:
+        rendererSize.width > 0 && rendererSize.height > 0
+          ? { width: rendererSize.width, height: rendererSize.height }
+          : null,
+      currentFloorPolygon: floorPolygon,
+    };
+
+    const result = await runAutoFloorDetection(ACTIVE_AUTO_FLOOR_DETECTION_PROVIDER_ID, input);
+
+    if (result.status === "failed") {
+      setAutoFloorDetectionRunState("failed");
+      setAutoFloorDetectionFailureReasons(
+        result.failureReasons.length > 0 ? result.failureReasons : ["Detection failed for an unknown reason."]
+      );
+      return;
+    }
+
     setAutoFloorDetectionResult(result);
     setSelectedAutoFloorCandidateId(result.selectedCandidateId);
-  }, [floorPolygon]);
+    setAutoFloorDetectionRunState("completed");
+  }, [floorPolygon, roomImageUrl, rendererSize.width, rendererSize.height]);
 
   // Phase 2D: explicit, user-controlled apply of the selected suggestion into the
   // editable manual floor polygon. Never auto-applies; only invalid geometry is
@@ -4507,17 +4557,33 @@ export default function ThreeRoomLab() {
             <div className="min-w-0">
               <h2 className="text-sm font-medium text-slate-100">Auto Floor Detection</h2>
               <p className="mt-1 text-xs text-slate-400">
-                Mock harness. Suggestions stay preview-only until you explicitly click Apply suggested quad.
+                Runs through a mockable detection provider. Suggestions stay preview-only until you explicitly click Apply
+                suggested quad.
               </p>
             </div>
-            <button
-              type="button"
-              onClick={handleGenerateMockFloorSuggestions}
-              className="rounded-lg border border-fuchsia-500/70 px-3 py-1.5 text-xs text-fuchsia-200 transition hover:border-fuchsia-300 hover:text-fuchsia-100"
-            >
-              Generate mock floor suggestions
-            </button>
+            <div className="flex flex-col items-end gap-1">
+              <button
+                type="button"
+                onClick={handleDetectFloor}
+                disabled={autoFloorDetectionRunState === "detecting"}
+                className="rounded-lg border border-fuchsia-500/70 px-3 py-1.5 text-xs text-fuchsia-200 transition hover:border-fuchsia-300 hover:text-fuchsia-100 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {autoFloorDetectionRunState === "detecting" ? "Detecting floor…" : "Detect floor"}
+              </button>
+              <span className="text-[10px] uppercase tracking-wide text-slate-500">
+                {ACTIVE_AUTO_FLOOR_PROVIDER_LABEL} provider (mock)
+              </span>
+            </div>
           </div>
+          {autoFloorDetectionRunState === "failed" && (
+            <p className="mt-3 rounded-lg border border-rose-500/50 bg-rose-500/10 px-3 py-2 text-[11px] text-rose-200">
+              Detection failed.
+              {autoFloorDetectionFailureReasons.length > 0
+                ? ` ${autoFloorDetectionFailureReasons.join(" ")}`
+                : ""}{" "}
+              The manual floor polygon was not changed.
+            </p>
+          )}
           {autoFloorDetectionResult ? (
             <div className="mt-3 space-y-3">
               <div className="text-xs text-slate-400">
@@ -4673,7 +4739,8 @@ export default function ThreeRoomLab() {
             </div>
           ) : (
             <p className="mt-3 text-xs text-slate-500">
-              No suggestions yet. Click “Generate mock floor suggestions” to create deterministic mock candidate quads.
+              No suggestions yet. Click “Detect floor” to run the mock-local provider and create deterministic candidate
+              quads.
             </p>
           )}
         </section>
