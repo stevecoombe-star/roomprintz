@@ -59,13 +59,11 @@ import {
 } from "./auto-floor-scoring";
 import {
   ACTIVE_AUTO_FLOOR_DETECTION_PROVIDER_ID,
-  getAvailableAutoFloorDetectionProviders,
+  getSelectableAutoFloorDetectionProviders,
   runAutoFloorDetection,
   type AutoFloorDetectionInput,
   type AutoFloorDetectionProviderId,
 } from "./auto-floor-provider";
-
-const AVAILABLE_AUTO_FLOOR_PROVIDERS = getAvailableAutoFloorDetectionProviders();
 
 const DEFAULT_MODEL_GLB_PATH = "/3d-lab/furniture-test-chair.glb";
 const LOCAL_DRAFT_STORAGE_KEY = "vibode:3d-room-lab:scene-state:v0";
@@ -432,8 +430,19 @@ function TransformControlRow({
   );
 }
 
-export default function ThreeRoomLab() {
+type ThreeRoomLabProps = {
+  // Server-derived (AUTO_FLOOR_VISION_ENABLED). Controls whether the experimental
+  // Gemini vision provider is offered in the provider selector. The route remains
+  // the hard security gate regardless of this value.
+  visionEnabled?: boolean;
+};
+
+export default function ThreeRoomLab({ visionEnabled = false }: ThreeRoomLabProps) {
   const envEnabled = process.env.NEXT_PUBLIC_VIBODE_ENABLE_3D_ROOM_LAB === "1";
+  const availableAutoFloorProviders = useMemo(
+    () => getSelectableAutoFloorDetectionProviders(visionEnabled),
+    [visionEnabled]
+  );
   const containerRef = useRef<HTMLDivElement | null>(null);
   const canvasHostRef = useRef<HTMLDivElement | null>(null);
   const floorOverlayRef = useRef<SVGSVGElement | null>(null);
@@ -2768,6 +2777,9 @@ export default function ThreeRoomLab() {
           : null,
       currentFloorPolygon: floorPolygon,
       floorRect: { widthMeters: floorMapping.worldWidth, depthMeters: floorMapping.worldDepth },
+      intrinsicSize: imageIntrinsicSize
+        ? { width: imageIntrinsicSize.width, height: imageIntrinsicSize.height }
+        : null,
     };
 
     try {
@@ -2795,6 +2807,7 @@ export default function ThreeRoomLab() {
     floorMapping.worldWidth,
     floorMapping.worldDepth,
     selectedAutoFloorProviderId,
+    imageIntrinsicSize,
   ]);
 
   // Phase 2D: explicit, user-controlled apply of the selected suggestion into the
@@ -4604,11 +4617,11 @@ export default function ThreeRoomLab() {
               </span>
             </div>
           </div>
-          {AVAILABLE_AUTO_FLOOR_PROVIDERS.length > 1 && (
+          {availableAutoFloorProviders.length > 1 && (
             <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-slate-300">
               <span className="text-slate-500">Provider</span>
               <div className="flex flex-wrap gap-1">
-                {AVAILABLE_AUTO_FLOOR_PROVIDERS.map((provider) => {
+                {availableAutoFloorProviders.map((provider) => {
                   const isSelected = provider.id === selectedAutoFloorProviderId;
                   return (
                     <button
@@ -4632,6 +4645,11 @@ export default function ThreeRoomLab() {
               {selectedAutoFloorProviderId === "mock-api" && (
                 <span className="basis-full text-[11px] text-slate-500">
                   Exercises the lab API boundary using canned vision-model-shaped data. No AI or external API is called.
+                </span>
+              )}
+              {selectedAutoFloorProviderId === "vision-model" && (
+                <span className="basis-full text-[11px] text-amber-400/80">
+                  Experimental lab provider. Gemini proposes candidates; Vibode validates geometry before preview.
                 </span>
               )}
             </div>

@@ -106,6 +106,42 @@ export function sourceNormToContainerNorm(
   };
 }
 
+/**
+ * Like sourceNormToContainerNorm, but DOES NOT clamp inputs or outputs to [0,1].
+ * Uses the exact same object-cover crop math (getCoverCrop) so it is consistent
+ * with the clamping variant, but preserves out-of-frame magnitude.
+ *
+ * This is intended ONLY for converting untrusted model raw coordinates (Phase
+ * 2F vision) BEFORE the Phase 2F-B validator applies its own clamp/reject
+ * policy. It must NOT be used for UI/manual overlay conversion, which relies on
+ * the clamping sourceNormToContainerNorm to stay inside the frame.
+ *
+ * Returns null for invalid/non-finite dimensions or points.
+ */
+export function sourceNormToContainerNormUnclamped(
+  point: FloorPoint,
+  intrinsic: ImageIntrinsicSize,
+  frame: ImageFrameSize
+): FloorPoint | null {
+  const crop = getCoverCrop(intrinsic, frame);
+  if (!crop) return null;
+  if (!Number.isFinite(point.x) || !Number.isFinite(point.y)) return null;
+
+  // No clamp on the source-normalized input.
+  const sourceX = point.x * intrinsic.width;
+  const sourceY = point.y * intrinsic.height;
+
+  const frameX = sourceX * crop.scale + crop.offsetX;
+  const frameY = sourceY * crop.scale + crop.offsetY;
+
+  // No clamp on the container-normalized output; magnitude outside [0,1] is
+  // preserved so downstream validation can distinguish mild vs gross off-frame.
+  return {
+    x: frameX / frame.width,
+    y: frameY / frame.height,
+  };
+}
+
 export function normToPixels(point: FloorPoint, size: ImageIntrinsicSize | ImageFrameSize): PixelPoint | null {
   if (!isValidImageSize(size)) return null;
   return {

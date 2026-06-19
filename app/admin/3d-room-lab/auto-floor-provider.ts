@@ -33,6 +33,10 @@ export type AutoFloorDetectionInput = {
   // Phase 2F-C (additive, optional): floor rectangle assumption needed by the
   // server-side mapper to run geometry scoring. mock-local safely ignores it.
   floorRect?: { widthMeters: number; depthMeters: number } | null;
+  // Phase 2F-F (additive, optional): original/intrinsic image dimensions, needed
+  // by the real vision route to convert model source-normalized coordinates into
+  // container-normalized-v0. mock providers safely ignore it.
+  intrinsicSize?: { width: number; height: number } | null;
 };
 
 export type AutoFloorDetectionProvider = {
@@ -47,6 +51,12 @@ export type AutoFloorDetectionProvider = {
 // Lab-only mock API route (admin-gated; canned data; no AI/external calls).
 export const MOCK_AUTO_FLOOR_API_ROUTE = "/api/admin/3d-room-lab/auto-floor/detect";
 const MOCK_API_TIMEOUT_MS = 15000;
+
+// Lab-only REAL Gemini vision route (admin-gated + server feature-flag-gated).
+export const VISION_AUTO_FLOOR_API_ROUTE = "/api/admin/3d-room-lab/auto-floor/detect-vision";
+// Slightly above the server budget (image fetch ~10s + Gemini ~25s) so the
+// client doesn't abort a request the server is still legitimately working on.
+const VISION_API_TIMEOUT_MS = 40000;
 
 function buildUnsupportedResult(
   providerId: AutoFloorDetectionProviderId,
@@ -183,6 +193,91 @@ const mockApiProvider: AutoFloorDetectionProvider = {
   },
 };
 
+function visionTransportFailedResult(reason: string): AutoFloorDetectionResult {
+  return {
+    status: "failed",
+    candidates: [],
+    selectedCandidateId: null,
+    notes: ["Provider: vision-model (Gemini lab route; admin + server flag gated)."],
+    failureReasons: [reason],
+  };
+}
+
+// Vision-model provider: POSTs to the REAL, flag-gated Gemini route. The route
+// performs auth, the feature-flag check, SSRF-safe image fetch, the Gemini call,
+// coordinate conversion, and Phase 2F-B validation/mapping. This client provider
+// only handles transport and never throws into the UI. It sends NO API key and
+// NO image bytes (URL-first). `available: true` means it is wired; UI exposure is
+// gated separately by the server-derived visionEnabled flag (see
+// getSelectableAutoFloorDetectionProviders).
+const visionModelProvider: AutoFloorDetectionProvider = {
+  id: "vision-model",
+  label: "Gemini vision (lab)",
+  description:
+    "Experimental lab provider. Gemini proposes candidates; Vibode validates geometry before preview. Admin + server flag gated.",
+  available: true,
+  async run(input: AutoFloorDetectionInput): Promise<AutoFloorDetectionResult> {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), VISION_API_TIMEOUT_MS);
+    try {
+      const response = await fetch(VISION_AUTO_FLOOR_API_ROUTE, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          imageUrl: input.imageUrl ?? null,
+          frameSize: input.frameSize ?? null,
+          intrinsicSize: input.intrinsicSize ?? null,
+          floorRect: input.floorRect ?? null,
+          // Sent only as an optional weak hint; the route may ignore it.
+          currentFloorPolygon: input.currentFloorPolygon ?? null,
+          requestId:
+            typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : null,
+        }),
+        signal: controller.signal,
+      });
+
+      let payload: unknown = null;
+      try {
+        payload = await response.json();
+      } catch {
+        return visionTransportFailedResult(
+          `Vision route returned a non-JSON response (HTTP ${response.status}).`
+        );
+      }
+
+      const coerced = coerceDetectionResult(payload);
+      if (!coerced) {
+        const reasons =
+          typeof payload === "object" && payload !== null && Array.isArray((payload as Record<string, unknown>).failureReasons)
+            ? ((payload as Record<string, unknown>).failureReasons as unknown[]).filter(
+                (r): r is string => typeof r === "string"
+              )
+            : [];
+        return visionTransportFailedResult(
+          reasons.length > 0
+            ? reasons.join(" ")
+            : `Vision route returned an unexpected payload (HTTP ${response.status}).`
+        );
+      }
+
+      if (!response.ok && coerced.status !== "failed") {
+        return visionTransportFailedResult(`Vision route responded with HTTP ${response.status}.`);
+      }
+
+      return coerced;
+    } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") {
+        return visionTransportFailedResult("Vision request timed out or was aborted.");
+      }
+      return visionTransportFailedResult(
+        error instanceof Error ? error.message : "Vision transport failed."
+      );
+    } finally {
+      clearTimeout(timeout);
+    }
+  },
+};
+
 const reservedProvider = (
   id: AutoFloorDetectionProviderId,
   label: string,
@@ -203,11 +298,7 @@ export const AUTO_FLOOR_DETECTION_PROVIDERS: Record<
 > = {
   "mock-local": mockLocalProvider,
   "mock-api": mockApiProvider,
-  "vision-model": reservedProvider(
-    "vision-model",
-    "Vision model",
-    "Gemini floor-plane proposal provider. Disabled until lab-only server flag and route are enabled."
-  ),
+  "vision-model": visionModelProvider,
   segmentation: reservedProvider(
     "segmentation",
     "Segmentation",
@@ -223,9 +314,24 @@ export function getAutoFloorDetectionProvider(
   return AUTO_FLOOR_DETECTION_PROVIDERS[providerId] ?? null;
 }
 
-/** Providers that are wired up and may be exposed in the lab UI. */
+/** Providers that are wired up (selectable in principle). */
 export function getAvailableAutoFloorDetectionProviders(): AutoFloorDetectionProvider[] {
   return Object.values(AUTO_FLOOR_DETECTION_PROVIDERS).filter((provider) => provider.available);
+}
+
+/**
+ * Providers to actually expose in the lab UI. The real "vision-model" provider
+ * is wired but must only be shown when the server-derived feature flag is on
+ * (the route itself remains the hard security gate). mock-local/mock-api are
+ * always shown.
+ */
+export function getSelectableAutoFloorDetectionProviders(
+  visionEnabled: boolean
+): AutoFloorDetectionProvider[] {
+  return getAvailableAutoFloorDetectionProviders().filter((provider) => {
+    if (provider.id === "vision-model") return visionEnabled;
+    return true;
+  });
 }
 
 /**

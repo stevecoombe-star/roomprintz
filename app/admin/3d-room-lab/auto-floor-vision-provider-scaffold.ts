@@ -1,7 +1,7 @@
 import type { Vec2 } from "./perspective-solve";
 import {
   isValidImageSize,
-  sourceNormToContainerNorm,
+  sourceNormToContainerNormUnclamped,
   type ImageFrameSize,
   type ImageIntrinsicSize,
 } from "./image-space";
@@ -46,7 +46,10 @@ import type { AutoFloorDetectionResult } from "./auto-floor-detection";
 // 1. Future model configuration / request types
 // ---------------------------------------------------------------------------
 
-export type AutoFloorVisionModelId = "gemini-2.5-flash" | "gemini-3-flash-preview";
+export type AutoFloorVisionModelId =
+  | "gemini-3.5-flash"
+  | "gemini-2.5-flash"
+  | "gemini-3-flash-preview";
 
 export type AutoFloorVisionCoordinateSpace = "intrinsic-source-normalized-v0";
 
@@ -69,8 +72,10 @@ export type AutoFloorVisionPromptInput = {
   maxCandidates: number;
 };
 
-// Phase 2F-D decision: stable GA baseline + preview comparison model.
-export const DEFAULT_AUTO_FLOOR_VISION_MODEL: AutoFloorVisionModelId = "gemini-2.5-flash";
+// Phase 2F-F3: baseline moved to gemini-3.5-flash. gemini-2.5-flash remains a
+// valid server-only AUTO_FLOOR_VISION_MODEL override; gemini-3-flash-preview is
+// kept as an optional future comparison model.
+export const DEFAULT_AUTO_FLOOR_VISION_MODEL: AutoFloorVisionModelId = "gemini-3.5-flash";
 export const COMPARISON_AUTO_FLOOR_VISION_MODEL: AutoFloorVisionModelId = "gemini-3-flash-preview";
 
 // Mirrors existing room-read conventions (low temperature, JSON output) and the
@@ -155,6 +160,9 @@ export const AUTO_FLOOR_VISION_RESPONSE_SCHEMA = {
       type: "object",
       nullable: true,
       description: "Advisory only; ignored by the current mapper.",
+      properties: {
+        yNorm: { type: "number", nullable: true },
+      },
     },
     modelNotes: { type: "array", items: { type: "string" }, nullable: true },
     failureReasons: { type: "array", items: { type: "string" }, nullable: true },
@@ -229,17 +237,15 @@ export type SourceToContainerQuadInput = {
 
 /**
  * Converts a 4-corner quad from intrinsic-source-normalized-v0 into
- * container-normalized-v0 using the existing cover-crop helper
- * (sourceNormToContainerNorm). Returns null if dimensions are invalid or any
- * point fails to convert, so callers fail closed.
+ * container-normalized-v0 using the NON-CLAMPING cover-crop helper
+ * (sourceNormToContainerNormUnclamped). Returns null if dimensions are invalid
+ * or any point fails to convert, so callers fail closed.
  *
- * NOTE (clamping): sourceNormToContainerNorm clamps inputs/outputs to [0,1].
- * This means mildly/grossly out-of-frame model coordinates lose their
- * out-of-range magnitude here, which weakens the Phase 2F-B mapper's
- * clamp-vs-reject range logic for converted points.
- * TODO(Phase 2F-F): when the real route is wired and exercised against real
- * images, decide whether to switch to a non-clamping getCoverCrop-based affine
- * so the mapper's GROSS_BOUND_MIN/MAX rejection stays meaningful end to end.
+ * Non-clamping is required (Phase 2F-F): out-of-frame magnitude must be
+ * preserved so the Phase 2F-B mapper can distinguish mildly out-of-frame
+ * corners (clamp + risk) from grossly invalid ones (reject) using its own
+ * GROSS_BOUND_MIN/MAX policy. Converting through a clamping helper would hide
+ * that signal.
  */
 export function sourceNormalizedQuadToContainerNormalizedQuad(
   quad: [Vec2, Vec2, Vec2, Vec2],
@@ -251,7 +257,7 @@ export function sourceNormalizedQuadToContainerNormalizedQuad(
 
   const converted: Vec2[] = [];
   for (const point of quad) {
-    const next = sourceNormToContainerNorm(point, input.sourceSize, input.containerSize);
+    const next = sourceNormToContainerNormUnclamped(point, input.sourceSize, input.containerSize);
     if (!next) return null;
     converted.push({ x: next.x, y: next.y });
   }
@@ -292,7 +298,9 @@ function convertRawPoint(
   if (typeof x !== "number" || typeof y !== "number" || !Number.isFinite(x) || !Number.isFinite(y)) {
     return value;
   }
-  const next = sourceNormToContainerNorm({ x, y }, input.sourceSize, input.containerSize);
+  // Non-clamping conversion preserves out-of-frame magnitude so the Phase 2F-B
+  // mapper can apply its own clamp-vs-reject policy on the converted point.
+  const next = sourceNormToContainerNormUnclamped({ x, y }, input.sourceSize, input.containerSize);
   if (!next) return value;
   return { ...value, x: next.x, y: next.y };
 }
