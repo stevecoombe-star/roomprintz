@@ -383,6 +383,9 @@ export async function POST(request: Request) {
   });
 
   let raw: unknown;
+  let geminiFinishReason: string | null = null;
+  let geminiCandidatesTokenCount: number | null = null;
+  let geminiThoughtsTokenCount: number | null = null;
   try {
     const call = await callGeminiAutoFloorDetection({
       apiKey,
@@ -393,6 +396,7 @@ export async function POST(request: Request) {
       mime: image.mime,
       temperature: DEFAULT_AUTO_FLOOR_VISION_CONFIG.temperature,
       maxOutputTokens: DEFAULT_AUTO_FLOOR_VISION_CONFIG.maxOutputTokens,
+      thinkingLevel: DEFAULT_AUTO_FLOOR_VISION_CONFIG.thinkingLevel,
       timeoutMs: getAutoFloorVisionGeminiTimeoutMs(),
       accounting: {
         requestId,
@@ -401,9 +405,12 @@ export async function POST(request: Request) {
       },
     });
     raw = call.raw;
+    geminiFinishReason = call.meta.finishReason;
+    geminiCandidatesTokenCount = call.meta.candidatesTokenCount;
+    geminiThoughtsTokenCount = call.meta.thoughtsTokenCount;
   } catch (error) {
     const info = classifyGeminiAutoFloorFailure(error);
-    logVisionFailure({
+    const baseLog: Record<string, unknown> = {
       requestId,
       route: VISION_ROUTE,
       model,
@@ -416,7 +423,31 @@ export async function POST(request: Request) {
       imageMime: image.mime,
       imageBytes: image.byteCount,
       schemaSent: true,
-    });
+      configuredThinkingLevel: DEFAULT_AUTO_FLOOR_VISION_CONFIG.thinkingLevel ?? null,
+      configuredMaxOutputTokens: DEFAULT_AUTO_FLOOR_VISION_CONFIG.maxOutputTokens,
+    };
+    // Sanitized response-shape diagnostics + a hard-truncated text excerpt are
+    // only emitted for parse/extraction failures AND only when the server-only
+    // debug flag is enabled.
+    if (
+      isAutoFloorVisionDebugLog() &&
+      (info.stage === "json_parse" || info.stage === "response_extraction")
+    ) {
+      logVisionFailure({
+        ...baseLog,
+        finishReason: info.diagnostics?.finishReason ?? null,
+        topLevelKeys: info.diagnostics?.topLevelKeys ?? null,
+        candidateCount: info.diagnostics?.candidateCount ?? null,
+        contentPartCount: info.diagnostics?.contentPartCount ?? null,
+        hadThoughtPart: info.diagnostics?.hadThoughtPart ?? null,
+        hasTextPart: info.diagnostics?.hasTextPart ?? null,
+        usedDirectTextField: info.diagnostics?.usedDirectTextField ?? null,
+        extractedTextLength: info.diagnostics?.extractedTextLength ?? null,
+        textExcerpt: info.debugExcerpt ?? null,
+      });
+    } else {
+      logVisionFailure(baseLog);
+    }
     return NextResponse.json(failed(info.uiReason), { status: 200 });
   }
 
@@ -462,6 +493,11 @@ export async function POST(request: Request) {
     imageHost: image.host,
     imageMime: image.mime,
     imageBytes: image.byteCount,
+      configuredThinkingLevel: DEFAULT_AUTO_FLOOR_VISION_CONFIG.thinkingLevel ?? null,
+      configuredMaxOutputTokens: DEFAULT_AUTO_FLOOR_VISION_CONFIG.maxOutputTokens,
+      finishReason: geminiFinishReason,
+      candidatesTokenCount: geminiCandidatesTokenCount,
+      thoughtsTokenCount: geminiThoughtsTokenCount,
     candidateCount: result.candidates.length,
     status: result.status,
     selectedConfidence: selected?.confidence ?? null,

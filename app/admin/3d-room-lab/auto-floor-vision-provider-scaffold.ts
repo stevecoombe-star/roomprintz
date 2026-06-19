@@ -60,6 +60,9 @@ export type AutoFloorVisionModelConfig = {
   maxCandidates: number;
   temperature: number;
   maxOutputTokens: number;
+  // Gemini 3.5-only tuning for structured JSON completion. Omit for other
+  // models unless explicitly needed.
+  thinkingLevel?: "minimal";
   coordinateSpace: AutoFloorVisionCoordinateSpace;
 };
 
@@ -78,13 +81,15 @@ export type AutoFloorVisionPromptInput = {
 export const DEFAULT_AUTO_FLOOR_VISION_MODEL: AutoFloorVisionModelId = "gemini-3.5-flash";
 export const COMPARISON_AUTO_FLOOR_VISION_MODEL: AutoFloorVisionModelId = "gemini-3-flash-preview";
 
-// Mirrors existing room-read conventions (low temperature, JSON output) and the
-// Phase 2F-B candidate cap (3).
+// Auto-floor expects short structured JSON, and Vibode geometry scoring (not
+// long model reasoning) is the authority. For gemini-3.5-flash we therefore
+// prefer minimal thinking and a larger output budget so JSON can complete.
 export const DEFAULT_AUTO_FLOOR_VISION_CONFIG: AutoFloorVisionModelConfig = {
   model: DEFAULT_AUTO_FLOOR_VISION_MODEL,
   maxCandidates: 3,
   temperature: 0.1,
-  maxOutputTokens: 1024,
+  maxOutputTokens: 4096,
+  thinkingLevel: "minimal",
   coordinateSpace: "intrinsic-source-normalized-v0",
 };
 

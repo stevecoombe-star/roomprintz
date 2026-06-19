@@ -25,29 +25,99 @@ function safeStr(value: unknown): string | null {
   return trimmed.length > 0 ? trimmed : null;
 }
 
-function extractResponseText(payload: unknown): string | null {
-  if (!payload || typeof payload !== "object") return null;
+/** Safe, high-level shape facts for debug logging only (no raw content). */
+export type GeminiResponseDiagnostics = {
+  finishReason: string | null;
+  topLevelKeys: string[];
+  candidateCount: number | null;
+  contentPartCount: number | null;
+  hasTextPart: boolean;
+  hadThoughtPart: boolean;
+  usedDirectTextField: boolean;
+  extractedTextLength: number;
+};
+
+/**
+ * Extracts model output text and high-level diagnostics.
+ *
+ * Phase 2F-F4: Gemini 3.x models emit "thinking" parts (`thought: true`) whose
+ * `text` is prose reasoning, not the structured answer. The previous extractor
+ * returned the FIRST text part, which could be a thought part → JSON.parse
+ * failure. We now SKIP thought parts and CONCATENATE all remaining text parts of
+ * the first candidate (the API's intended way to reassemble multi-part text).
+ */
+function extractModelText(payload: unknown): {
+  text: string | null;
+  diagnostics: GeminiResponseDiagnostics;
+} {
+  const diagnostics: GeminiResponseDiagnostics = {
+    finishReason: null,
+    topLevelKeys: [],
+    candidateCount: null,
+    contentPartCount: null,
+    hasTextPart: false,
+    hadThoughtPart: false,
+    usedDirectTextField: false,
+    extractedTextLength: 0,
+  };
+
+  if (!payload || typeof payload !== "object") {
+    return { text: null, diagnostics };
+  }
   const record = payload as Record<string, unknown>;
+  diagnostics.topLevelKeys = Object.keys(record).slice(0, 20);
 
   const directText = safeStr(record.text) ?? safeStr(record.outputText);
-  if (directText) return directText;
 
-  const candidates = Array.isArray(record.candidates) ? record.candidates : [];
-  for (const candidate of candidates) {
-    if (!candidate || typeof candidate !== "object") continue;
-    const content = (candidate as Record<string, unknown>).content;
-    if (!content || typeof content !== "object") continue;
-    const parts = Array.isArray((content as Record<string, unknown>).parts)
-      ? ((content as Record<string, unknown>).parts as unknown[])
-      : [];
-    for (const part of parts) {
-      if (!part || typeof part !== "object") continue;
-      const text = safeStr((part as Record<string, unknown>).text);
-      if (text) return text;
+  const candidates = Array.isArray(record.candidates) ? (record.candidates as unknown[]) : null;
+  diagnostics.candidateCount = candidates ? candidates.length : null;
+
+  let collected = "";
+  const first = candidates && candidates.length > 0 ? candidates[0] : null;
+  if (first && typeof first === "object") {
+    const firstRecord = first as Record<string, unknown>;
+    diagnostics.finishReason =
+      typeof firstRecord.finishReason === "string" ? firstRecord.finishReason : null;
+    const content = firstRecord.content;
+    if (content && typeof content === "object") {
+      const parts = Array.isArray((content as Record<string, unknown>).parts)
+        ? ((content as Record<string, unknown>).parts as unknown[])
+        : [];
+      diagnostics.contentPartCount = parts.length;
+      for (const part of parts) {
+        if (!part || typeof part !== "object") continue;
+        if ((part as Record<string, unknown>).thought === true) {
+          diagnostics.hadThoughtPart = true;
+          continue;
+        }
+        const t = (part as Record<string, unknown>).text;
+        if (typeof t === "string" && t.length > 0) {
+          collected += t;
+        }
+      }
     }
   }
 
-  return null;
+  let text: string | null = null;
+  if (collected.trim().length > 0) {
+    text = collected;
+    diagnostics.hasTextPart = true;
+  } else if (directText) {
+    text = directText;
+    diagnostics.usedDirectTextField = true;
+  }
+
+  diagnostics.extractedTextLength = text ? text.length : 0;
+  return { text, diagnostics };
+}
+
+/** Whitespace-collapsed, key-redacted, hard-truncated excerpt for debug logs. */
+function sanitizeExcerpt(value: string, max: number): string {
+  return value
+    .replace(/key=[^&\s"']+/gi, "key=REDACTED")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, max);
 }
 
 function parseJsonFromText(text: string): unknown {
@@ -62,16 +132,6 @@ function parseJsonFromText(text: string): unknown {
     }
     throw new Error("Failed to parse vision floor JSON response.");
   }
-}
-
-function extractFinishReason(payload: unknown): string | null {
-  if (!payload || typeof payload !== "object") return null;
-  const candidates = (payload as Record<string, unknown>).candidates;
-  if (!Array.isArray(candidates) || candidates.length === 0) return null;
-  const first = candidates[0];
-  if (!first || typeof first !== "object") return null;
-  const fr = (first as Record<string, unknown>).finishReason;
-  return typeof fr === "string" ? fr : null;
 }
 
 /** Strips control chars/newlines, redacts any key= token, and truncates. */
@@ -126,6 +186,10 @@ export class GeminiAutoFloorError extends Error {
   readonly httpStatus: number | null;
   readonly upstreamStatus: string | null;
   readonly sanitizedMessage: string | null;
+  // Debug-only extras. These are never logged unless AUTO_FLOOR_VISION_DEBUG_LOG
+  // is on (the route enforces that gate). debugExcerpt is pre-sanitized.
+  readonly diagnostics: GeminiResponseDiagnostics | null;
+  readonly debugExcerpt: string | null;
 
   constructor(args: {
     code: string;
@@ -133,6 +197,8 @@ export class GeminiAutoFloorError extends Error {
     httpStatus?: number | null;
     upstreamStatus?: string | null;
     sanitizedMessage?: string | null;
+    diagnostics?: GeminiResponseDiagnostics | null;
+    debugExcerpt?: string | null;
     message?: string;
   }) {
     super(args.message ?? args.code);
@@ -142,6 +208,8 @@ export class GeminiAutoFloorError extends Error {
     this.httpStatus = args.httpStatus ?? null;
     this.upstreamStatus = args.upstreamStatus ?? null;
     this.sanitizedMessage = args.sanitizedMessage ?? null;
+    this.diagnostics = args.diagnostics ?? null;
+    this.debugExcerpt = args.debugExcerpt ?? null;
   }
 }
 
@@ -152,6 +220,8 @@ export type GeminiAutoFloorFailureInfo = {
   httpStatus: number | null;
   upstreamStatus: string | null;
   sanitizedMessage: string | null;
+  diagnostics: GeminiResponseDiagnostics | null;
+  debugExcerpt: string | null;
 };
 
 /**
@@ -161,11 +231,16 @@ export type GeminiAutoFloorFailureInfo = {
  */
 export function classifyGeminiAutoFloorFailure(error: unknown): GeminiAutoFloorFailureInfo {
   if (error instanceof GeminiAutoFloorError) {
-    const { code, stage, httpStatus, upstreamStatus, sanitizedMessage } = error;
+    const { code, stage, httpStatus, upstreamStatus, sanitizedMessage, diagnostics, debugExcerpt } =
+      error;
     let uiReason = "Gemini request failed.";
     if (code === "GEMINI_TIMEOUT") {
       uiReason = "Gemini vision request timed out.";
-    } else if (stage === "response_extraction" || stage === "json_parse") {
+    } else if (code === "RESPONSE_TRUNCATED") {
+      uiReason = "Gemini response was truncated before valid JSON.";
+    } else if (stage === "response_extraction") {
+      uiReason = "Gemini returned no usable content.";
+    } else if (stage === "json_parse") {
       uiReason = "Gemini returned an invalid structured response.";
     } else if (typeof httpStatus === "number") {
       if (httpStatus === 400) {
@@ -178,7 +253,16 @@ export function classifyGeminiAutoFloorFailure(error: unknown): GeminiAutoFloorF
         uiReason = "Gemini vision service returned an error (HTTP 5xx).";
       }
     }
-    return { uiReason, stage, code, httpStatus, upstreamStatus, sanitizedMessage };
+    return {
+      uiReason,
+      stage,
+      code,
+      httpStatus,
+      upstreamStatus,
+      sanitizedMessage,
+      diagnostics,
+      debugExcerpt,
+    };
   }
   return {
     uiReason: "Gemini request failed.",
@@ -187,6 +271,8 @@ export function classifyGeminiAutoFloorFailure(error: unknown): GeminiAutoFloorF
     httpStatus: null,
     upstreamStatus: null,
     sanitizedMessage: null,
+    diagnostics: null,
+    debugExcerpt: null,
   };
 }
 
@@ -206,14 +292,58 @@ export type GeminiAutoFloorCallArgs = {
   mime: string;
   temperature: number;
   maxOutputTokens: number;
+  thinkingLevel?: "minimal";
   timeoutMs: number;
   accounting?: GeminiAutoFloorAccounting;
+};
+
+export type GeminiAutoFloorResponseMeta = {
+  finishReason: string | null;
+  candidatesTokenCount: number | null;
+  thoughtsTokenCount: number | null;
 };
 
 export type GeminiAutoFloorCallResult = {
   /** Parsed but UNTRUSTED raw JSON from the model. */
   raw: unknown;
+  meta: GeminiAutoFloorResponseMeta;
 };
+
+function isGemini35FlashModel(model: string): boolean {
+  return /(?:^|\/)gemini-3\.5-flash$/i.test(model.trim());
+}
+
+function asFiniteNumber(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function extractResponseMeta(
+  envelope: unknown,
+  diagnostics: GeminiResponseDiagnostics
+): GeminiAutoFloorResponseMeta {
+  if (!envelope || typeof envelope !== "object") {
+    return {
+      finishReason: diagnostics.finishReason,
+      candidatesTokenCount: null,
+      thoughtsTokenCount: null,
+    };
+  }
+  const usageMetadata = (envelope as Record<string, unknown>).usageMetadata;
+  if (!usageMetadata || typeof usageMetadata !== "object") {
+    return {
+      finishReason: diagnostics.finishReason,
+      candidatesTokenCount: null,
+      thoughtsTokenCount: null,
+    };
+  }
+  const usage = usageMetadata as Record<string, unknown>;
+  return {
+    finishReason: diagnostics.finishReason,
+    candidatesTokenCount:
+      asFiniteNumber(usage.candidatesTokenCount) ?? asFiniteNumber(usage.outputTokenCount),
+    thoughtsTokenCount: asFiniteNumber(usage.thoughtsTokenCount),
+  };
+}
 
 /**
  * Calls Gemini for floor calibration quads and returns the parsed raw JSON.
@@ -228,7 +358,7 @@ export async function callGeminiAutoFloorDetection(
     args.apiKey
   )}`;
 
-  const parsed = await withGeminiUsageAccounting(
+  const result = await withGeminiUsageAccounting(
     {
       requestId: args.accounting?.requestId ?? null,
       userId: args.accounting?.userId ?? null,
@@ -246,12 +376,22 @@ export async function callGeminiAutoFloorDetection(
         purpose: "auto-floor-vision",
       },
     },
-    async (): Promise<unknown> => {
+    async (): Promise<GeminiAutoFloorCallResult> => {
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), args.timeoutMs);
       try {
         let res: Response;
         try {
+          const generationConfig: Record<string, unknown> = {
+            temperature: args.temperature,
+            maxOutputTokens: args.maxOutputTokens,
+            responseMimeType: "application/json",
+            responseSchema: args.responseSchema,
+          };
+          if (args.thinkingLevel === "minimal" && isGemini35FlashModel(args.model)) {
+            generationConfig.thinkingConfig = { thinkingLevel: "minimal" };
+          }
+
           res = await fetch(endpoint, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -266,12 +406,7 @@ export async function callGeminiAutoFloorDetection(
                   ],
                 },
               ],
-              generationConfig: {
-                temperature: args.temperature,
-                maxOutputTokens: args.maxOutputTokens,
-                responseMimeType: "application/json",
-                responseSchema: args.responseSchema,
-              },
+              generationConfig,
             }),
           });
         } catch (transportError) {
@@ -306,23 +441,34 @@ export async function callGeminiAutoFloorDetection(
         }
 
         const envelope = (await res.json().catch(() => ({}))) as unknown;
-        const text = extractResponseText(envelope);
+        const { text, diagnostics } = extractModelText(envelope);
         if (!text) {
-          const finishReason = extractFinishReason(envelope);
           throw new GeminiAutoFloorError({
             code: "NO_OUTPUT_TEXT",
             stage: "response_extraction",
-            sanitizedMessage: finishReason ? `finishReason=${finishReason}` : null,
+            sanitizedMessage: diagnostics.finishReason
+              ? `finishReason=${diagnostics.finishReason}`
+              : null,
+            diagnostics,
             message: "Gemini returned no usable output text.",
           });
         }
 
         try {
-          return parseJsonFromText(text);
+          return {
+            raw: parseJsonFromText(text),
+            meta: extractResponseMeta(envelope, diagnostics),
+          };
         } catch {
+          const truncated = diagnostics.finishReason === "MAX_TOKENS";
           throw new GeminiAutoFloorError({
-            code: "PARSE_ERROR",
+            code: truncated ? "RESPONSE_TRUNCATED" : "PARSE_ERROR",
             stage: "json_parse",
+            sanitizedMessage: diagnostics.finishReason
+              ? `finishReason=${diagnostics.finishReason}`
+              : null,
+            diagnostics,
+            debugExcerpt: sanitizeExcerpt(text, 800),
             message: "Gemini returned non-JSON output.",
           });
         }
@@ -332,5 +478,5 @@ export async function callGeminiAutoFloorDetection(
     }
   );
 
-  return { raw: parsed };
+  return result;
 }
