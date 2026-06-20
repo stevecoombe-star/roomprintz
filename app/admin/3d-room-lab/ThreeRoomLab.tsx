@@ -64,6 +64,14 @@ import {
   type AutoFloorDetectionInput,
   type AutoFloorDetectionProviderId,
 } from "./auto-floor-provider";
+import { DEFAULT_AUTO_FLOOR_VISION_MODEL } from "./auto-floor-vision-provider-scaffold";
+import {
+  AUTO_FLOOR_FIXTURES,
+  getAutoFloorFixtureById,
+  type AutoFloorFixtureHumanAssessment,
+  type AutoFloorFixtureManualCorrection,
+  type AutoFloorFixtureObservation,
+} from "./auto-floor-fixtures";
 
 const DEFAULT_MODEL_GLB_PATH = "/3d-lab/furniture-test-chair.glb";
 const LOCAL_DRAFT_STORAGE_KEY = "vibode:3d-room-lab:scene-state:v0";
@@ -535,6 +543,20 @@ export default function ThreeRoomLab({ visionEnabled = false }: ThreeRoomLabProp
   const [selectedAutoFloorProviderId, setSelectedAutoFloorProviderId] =
     useState<AutoFloorDetectionProviderId>(ACTIVE_AUTO_FLOOR_DETECTION_PROVIDER_ID);
   const autoFloorDetectionInFlightRef = useRef(false);
+  // Phase 2F-G1: lab-only fixture harness + observation recorder. Everything
+  // here is local React state; nothing is persisted to DB/scene-state and no
+  // automatic Gemini batch calls are made. Loading a fixture only sets the room
+  // image URL; the user must explicitly run detection and record observations.
+  const [selectedFixtureId, setSelectedFixtureId] = useState<string>(
+    AUTO_FLOOR_FIXTURES[0]?.id ?? ""
+  );
+  const [fixtureObservations, setFixtureObservations] = useState<AutoFloorFixtureObservation[]>([]);
+  const [fixtureHumanAssessment, setFixtureHumanAssessment] =
+    useState<AutoFloorFixtureHumanAssessment>("good");
+  const [fixtureManualCorrection, setFixtureManualCorrection] =
+    useState<AutoFloorFixtureManualCorrection>("none");
+  const [fixtureObservationNotes, setFixtureObservationNotes] = useState<string>("");
+  const [fixtureHarnessMessage, setFixtureHarnessMessage] = useState<string>("none");
   const [isFloorClickPlacementEnabled, setIsFloorClickPlacementEnabled] = useState(false);
   const [isFloorAnchorDragEnabled, setIsFloorAnchorDragEnabled] = useState(false);
   const [isFloorAnchorDragActive, setIsFloorAnchorDragActive] = useState(false);
@@ -3899,6 +3921,113 @@ export default function ThreeRoomLab({ visionEnabled = false }: ThreeRoomLabProp
     setImageIntrinsicSize(null);
   };
 
+  // --- Phase 2F-G1: fixture harness helpers --------------------------------
+  const selectedFixture = getAutoFloorFixtureById(selectedFixtureId);
+  const fixtureObservationCount = fixtureObservations.filter(
+    (observation) => observation.fixtureId === selectedFixtureId
+  ).length;
+
+  // Reuse existing debug readouts rather than recomputing any geometry.
+  const findDebugValue = (label: string): string | null => {
+    const row = debugRows.find((entry) => entry.label === label);
+    return row ? String(row.value) : null;
+  };
+
+  const resolveFixtureImageUrl = (imageUrl: string): string => {
+    if (imageUrl.startsWith("/")) {
+      return new URL(imageUrl, window.location.origin).toString();
+    }
+    if (imageUrl.startsWith("http://") || imageUrl.startsWith("https://")) {
+      return imageUrl;
+    }
+    return imageUrl;
+  };
+
+  // Loading a fixture only swaps the room image URL/input. It intentionally does
+  // NOT run detection, mutate floorPolygon, or touch calibrated camera state.
+  const handleLoadFixtureImage = () => {
+    if (!selectedFixture) {
+      setFixtureHarnessMessage("No fixture selected.");
+      return;
+    }
+    const nextUrl = resolveFixtureImageUrl(selectedFixture.imageUrl);
+    setRoomImageInput(nextUrl);
+    setRoomImageUrl(nextUrl);
+    setImageLoadState(nextUrl ? "loading" : "idle");
+    setImageIntrinsicSize(null);
+    setFixtureHarnessMessage(
+      `Loaded fixture "${selectedFixture.label}". Detection not run; manual polygon preserved.`
+    );
+  };
+
+  // Runs detection with the currently selected provider against the current room
+  // image. Reuses the existing handleDetectFloor flow; no fixture auto-loading.
+  const handleRunFixtureDetection = () => {
+    setFixtureHarnessMessage(
+      `Running detection (${selectedAutoFloorProviderId}) for "${selectedFixture?.label ?? "current image"}".`
+    );
+    void handleDetectFloor();
+  };
+
+  const handleRecordFixtureObservation = () => {
+    if (!selectedFixture) {
+      setFixtureHarnessMessage("No fixture selected; nothing recorded.");
+      return;
+    }
+    const detectionStatus: AutoFloorFixtureObservation["detectionStatus"] =
+      autoFloorDetectionRunState === "failed"
+        ? "failed"
+        : autoFloorDetectionResult?.status === "ok"
+          ? "ok"
+          : autoFloorDetectionResult?.status === "failed"
+            ? "failed"
+            : "needs_review";
+
+    const observation: AutoFloorFixtureObservation = {
+      fixtureId: selectedFixture.id,
+      fixtureCategory: selectedFixture.category,
+      providerId: selectedAutoFloorProviderId,
+      model: selectedAutoFloorProviderId === "vision-model" ? DEFAULT_AUTO_FLOOR_VISION_MODEL : null,
+      timestamp: new Date().toISOString(),
+      detectionStatus,
+      candidateCount: autoFloorDetectionResult?.candidates.length ?? 0,
+      selectedCandidateId: selectedAutoFloorCandidate?.id ?? null,
+      selectedScoreBand: selectedAutoFloorCandidateScore?.scoreBand ?? null,
+      selectedScore: selectedAutoFloorCandidateScore?.score ?? null,
+      homographyStatus: findDebugValue("homography solve"),
+      cameraPoseStatus: findDebugValue("camera pose grid status"),
+      fovScanStatus: findDebugValue("camera pose FOV scan"),
+      rayHomographyAgreement: null,
+      latestFailureReason:
+        autoFloorDetectionFailureReasons.length > 0
+          ? autoFloorDetectionFailureReasons.join(" | ")
+          : null,
+      manualCorrectionAssessment: fixtureManualCorrection,
+      humanAssessment: fixtureHumanAssessment,
+      notes: fixtureObservationNotes.trim(),
+    };
+
+    setFixtureObservations((previous) => [...previous, observation]);
+    setFixtureObservationNotes("");
+    setFixtureHarnessMessage(
+      `Recorded observation for "${selectedFixture.label}" (local only, not persisted).`
+    );
+  };
+
+  const handleCopyFixtureObservations = async () => {
+    try {
+      await navigator.clipboard.writeText(JSON.stringify(fixtureObservations, null, 2));
+      setFixtureHarnessMessage(`Copied ${fixtureObservations.length} observation(s) to clipboard.`);
+    } catch {
+      setFixtureHarnessMessage("Copy failed (clipboard unavailable in this context).");
+    }
+  };
+
+  const handleClearFixtureObservations = () => {
+    setFixtureObservations([]);
+    setFixtureHarnessMessage("Cleared all fixture observations.");
+  };
+
   if (!envEnabled) {
     return (
       <main className="min-h-screen bg-slate-950 text-slate-50 px-4 py-10">
@@ -4821,6 +4950,218 @@ export default function ThreeRoomLab({ visionEnabled = false }: ThreeRoomLabProp
               No suggestions yet. Click “Detect floor” to run the mock-local provider and create deterministic candidate
               quads.
             </p>
+          )}
+        </section>
+
+        <section className="rounded-2xl border border-fuchsia-500/30 bg-slate-900/70 p-4">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <h2 className="text-sm font-medium text-slate-100">Fixture Harness</h2>
+            <span className="rounded bg-fuchsia-500/15 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-fuchsia-200">
+              lab-only · local · not persisted
+            </span>
+          </div>
+          <p className="mt-1 text-[11px] text-slate-500">
+            Deliberate, human-driven testing of known room-image categories. Fixture images are local/dev-only
+            and are never committed or persisted. No automatic batch runs.
+          </p>
+
+          <div className="mt-3 flex flex-col gap-2 md:flex-row md:items-end">
+            <label className="flex-1">
+              <span className="text-xs text-slate-400">Fixture</span>
+              <select
+                value={selectedFixtureId}
+                onChange={(event) => setSelectedFixtureId(event.target.value)}
+                className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm outline-none focus:border-fuchsia-400"
+              >
+                {AUTO_FLOOR_FIXTURES.map((fixture) => (
+                  <option key={fixture.id} value={fixture.id}>
+                    {fixture.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={handleLoadFixtureImage}
+                className="rounded-lg border border-fuchsia-500/70 px-3 py-2 text-xs text-fuchsia-200 transition hover:border-fuchsia-300 hover:text-fuchsia-100"
+              >
+                Load fixture image
+              </button>
+              <button
+                type="button"
+                onClick={handleRunFixtureDetection}
+                disabled={autoFloorDetectionRunState === "detecting"}
+                className="rounded-lg border border-emerald-500/70 px-3 py-2 text-xs text-emerald-200 transition hover:border-emerald-300 hover:text-emerald-100 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                Run detection for current fixture
+              </button>
+            </div>
+          </div>
+
+          {selectedFixture && (
+            <div className="mt-3 flex flex-wrap items-center gap-2 text-[11px]">
+              <span className="rounded bg-slate-800 px-1.5 py-0.5 text-slate-300">
+                category: {selectedFixture.category}
+              </span>
+              <span className="rounded bg-slate-800 px-1.5 py-0.5 text-slate-300">
+                expected: {selectedFixture.expectedBehavior}
+              </span>
+              <span className="text-slate-500">{selectedFixture.imageUrl}</span>
+            </div>
+          )}
+          {selectedFixture && selectedFixture.notes.length > 0 && (
+            <p className="mt-1 text-[11px] text-slate-400">{selectedFixture.notes.join(" ")}</p>
+          )}
+          {imageLoadState === "error" && (
+            <p className="mt-2 text-[11px] text-rose-300">
+              Image failed to load. If this is a fixture, drop the file into{" "}
+              <code>public/3d-lab/fixtures/</code> (local/dev-only).
+            </p>
+          )}
+
+          {/* Compact metrics readout, reusing existing diagnostics */}
+          <div className="mt-3 rounded-lg border border-slate-800 bg-slate-950/60 p-3 text-[11px]">
+            <div className="mb-1 font-medium text-slate-200">Latest detection readout</div>
+            <dl className="grid grid-cols-1 gap-x-3 gap-y-1 sm:grid-cols-2">
+              <div className="flex justify-between gap-2">
+                <dt className="text-slate-400">fixture</dt>
+                <dd className="text-slate-200">
+                  {selectedFixture ? `${selectedFixture.label}` : "—"}
+                </dd>
+              </div>
+              <div className="flex justify-between gap-2">
+                <dt className="text-slate-400">provider / model</dt>
+                <dd className="text-slate-200">
+                  {selectedAutoFloorProviderId}
+                  {selectedAutoFloorProviderId === "vision-model" ? ` · ${DEFAULT_AUTO_FLOOR_VISION_MODEL}` : ""}
+                </dd>
+              </div>
+              <div className="flex justify-between gap-2">
+                <dt className="text-slate-400">detection status</dt>
+                <dd className="text-slate-200">
+                  {autoFloorDetectionRunState}
+                  {autoFloorDetectionResult ? ` · ${autoFloorDetectionResult.status}` : ""}
+                </dd>
+              </div>
+              <div className="flex justify-between gap-2">
+                <dt className="text-slate-400">candidates</dt>
+                <dd className="text-slate-200">{autoFloorDetectionResult?.candidates.length ?? 0}</dd>
+              </div>
+              <div className="flex justify-between gap-2">
+                <dt className="text-slate-400">selected score / band</dt>
+                <dd className="text-slate-200">
+                  {selectedAutoFloorCandidateScore
+                    ? `${selectedAutoFloorCandidateScore.score.toFixed(2)} · ${selectedAutoFloorCandidateScore.scoreBand}`
+                    : "—"}
+                </dd>
+              </div>
+              <div className="flex justify-between gap-2">
+                <dt className="text-slate-400">homography</dt>
+                <dd className="text-slate-200">{findDebugValue("homography solve") ?? "—"}</dd>
+              </div>
+              <div className="flex justify-between gap-2">
+                <dt className="text-slate-400">calibrated camera</dt>
+                <dd className="text-slate-200">{findDebugValue("camera pose grid status") ?? "—"}</dd>
+              </div>
+              <div className="flex justify-between gap-2">
+                <dt className="text-slate-400">FOV scan</dt>
+                <dd className="text-slate-200">{findDebugValue("camera pose FOV scan") ?? "—"}</dd>
+              </div>
+              <div className="flex justify-between gap-2">
+                <dt className="text-slate-400">ray-floor vs homography</dt>
+                <dd className="text-slate-200">{findDebugValue("ray-floor click vs homography") ?? "—"}</dd>
+              </div>
+              <div className="flex justify-between gap-2">
+                <dt className="text-slate-400">observations (this fixture)</dt>
+                <dd className="text-slate-200">{fixtureObservationCount}</dd>
+              </div>
+            </dl>
+            {selectedAutoFloorCandidateScore && selectedAutoFloorCandidateScore.risks.length > 0 && (
+              <p className="mt-2 text-amber-200/90">Risks: {selectedAutoFloorCandidateScore.risks.join(" ")}</p>
+            )}
+            {autoFloorDetectionFailureReasons.length > 0 && (
+              <p className="mt-2 text-rose-300">
+                Latest failure: {autoFloorDetectionFailureReasons.join(" | ")}
+              </p>
+            )}
+          </div>
+
+          {/* Manual observation capture (explicit; never automatic) */}
+          <div className="mt-3 space-y-2 rounded-lg border border-slate-800 bg-slate-950/60 p-3">
+            <div className="text-[11px] font-medium text-slate-200">Record observation</div>
+            <div className="flex flex-col gap-2 md:flex-row">
+              <label className="flex-1">
+                <span className="text-[11px] text-slate-400">Human assessment</span>
+                <select
+                  value={fixtureHumanAssessment}
+                  onChange={(event) =>
+                    setFixtureHumanAssessment(event.target.value as AutoFloorFixtureHumanAssessment)
+                  }
+                  className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-2 py-1.5 text-xs outline-none focus:border-fuchsia-400"
+                >
+                  <option value="good">Good</option>
+                  <option value="needs_review">Needs review</option>
+                  <option value="bad">Bad</option>
+                  <option value="expected_failure">Expected failure</option>
+                </select>
+              </label>
+              <label className="flex-1">
+                <span className="text-[11px] text-slate-400">Manual correction</span>
+                <select
+                  value={fixtureManualCorrection}
+                  onChange={(event) =>
+                    setFixtureManualCorrection(event.target.value as AutoFloorFixtureManualCorrection)
+                  }
+                  className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-2 py-1.5 text-xs outline-none focus:border-fuchsia-400"
+                >
+                  <option value="none">None</option>
+                  <option value="minor">Minor</option>
+                  <option value="major">Major</option>
+                  <option value="manual_required">Manual required</option>
+                  <option value="not_applicable">Not applicable</option>
+                </select>
+              </label>
+            </div>
+            <label className="block">
+              <span className="text-[11px] text-slate-400">Notes (optional)</span>
+              <input
+                type="text"
+                value={fixtureObservationNotes}
+                onChange={(event) => setFixtureObservationNotes(event.target.value)}
+                placeholder="Short note for later analysis"
+                className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-2 py-1.5 text-xs outline-none focus:border-fuchsia-400"
+              />
+            </label>
+            <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={handleRecordFixtureObservation}
+                className="rounded-lg border border-fuchsia-500/70 px-3 py-1.5 text-xs text-fuchsia-200 transition hover:border-fuchsia-300 hover:text-fuchsia-100"
+              >
+                Record observation
+              </button>
+              <button
+                type="button"
+                onClick={handleCopyFixtureObservations}
+                disabled={fixtureObservations.length === 0}
+                className="rounded-lg border border-slate-600 px-3 py-1.5 text-xs text-slate-200 transition hover:border-slate-400 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                Copy observations JSON ({fixtureObservations.length})
+              </button>
+              <button
+                type="button"
+                onClick={handleClearFixtureObservations}
+                disabled={fixtureObservations.length === 0}
+                className="rounded-lg border border-rose-500/60 px-3 py-1.5 text-xs text-rose-200 transition hover:border-rose-300 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                Clear observations
+              </button>
+            </div>
+          </div>
+
+          {fixtureHarnessMessage !== "none" && (
+            <p className="mt-2 text-[11px] text-slate-400">{fixtureHarnessMessage}</p>
           )}
         </section>
 

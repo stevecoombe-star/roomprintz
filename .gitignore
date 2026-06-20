@@ -95,3 +95,6 @@ qa-assets/
 public/3d-lab/furniture-test-chair.glb
 public/3d-lab/room-images/*
 !public/3d-lab/room-images/README.txt
+# Phase 2F-G1: local-only auto-floor fixture images (do not commit room photos)
+public/3d-lab/fixtures/*
+!public/3d-lab/fixtures/README.txt
