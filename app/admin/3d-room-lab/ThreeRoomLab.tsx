@@ -17,7 +17,10 @@ import {
   getDepthScaleMultiplier,
   getEffectiveObjectScale,
   isPointInsidePolygon,
+  isWithinViewportBounds,
   mapFloorPointToObjectTransform,
+  mapPointerTravelToWorldYDelta,
+  selectViewportSafeHandleOffset,
 } from "./floor-math";
 import {
   SCENE_IMAGE_COORDINATE_SPACE_V0,
@@ -247,6 +250,41 @@ const OBJECT_HANDLE_SCALE_MIN_START_DISTANCE_PX = 10;
 // computed placement-frame local floor-contact Y is within this band, so no
 // vertical compensation is needed in this slice.
 const CALIBRATED_SCALE_GROUNDED_LOCAL_Y_EPSILON = 1e-4;
+// Phase 2I-C1: positionY band treated as "resting on the floor" for calibrated
+// Lift. Drag-down and Drop-to-floor snap positionY to exactly 0 within this band,
+// and calibrated Scale is only offered while resting. Slightly looser than the
+// grounded local-Y epsilon since it absorbs camera-aware drag accumulation.
+const CALIBRATED_LIFT_RESTING_SNAP_EPSILON = 1e-3;
+// Phase 2I-C1B: the overlay SVG viewBox is 0..100 on both axes. The Lift handle
+// is grabbable only when its center stays this far inside the actual frame (room
+// for the ~1.85r handle plus a touch of slop). This is a HANDLE-placement inset
+// only — it is NOT applied to the resting floor anchor baseline test.
+const CALIBRATED_LIFT_OVERLAY_VIEWBOX_SIZE = 100;
+const CALIBRATED_LIFT_HANDLE_VIEWPORT_INSET = 3.0;
+// Tiny normalized tolerance for the baseline floor-anchor viewport test (FP slop
+// at the exact edge). The baseline uses the ACTUAL viewport [0,1], not an inset.
+const CALIBRATED_LIFT_BASELINE_VIEWPORT_TOLERANCE = 1e-4;
+// Upward scan resolution (world units) and the minimum useful headroom required
+// before calibrated Lift is offered at all (else it fails closed).
+const CALIBRATED_LIFT_SCAN_STEP_Y = 0.05;
+const CALIBRATED_LIFT_MIN_USEFUL_RANGE_Y = 0.1;
+// Adaptive Lift-handle placement (SVG viewBox units, 0..100). Preferred-first
+// candidate offsets. The first (lower-left) is the established default; the rest
+// provide inward fallbacks for EVERY edge so a near-edge anchor can still place a
+// visible, reachable handle. Min center-to-center separation keeps the ~1.85r
+// handles from materially overlapping the MOVE/Rotate/Scale targets.
+const CALIBRATED_LIFT_HANDLE_CANDIDATE_OFFSETS: { x: number; y: number }[] = [
+  { x: -4.3, y: 3.75 }, // lower-left (preferred default)
+  { x: -6.0, y: 1.4 }, // left, slightly down
+  { x: -6.0, y: -1.4 }, // left, slightly up
+  { x: 6.0, y: -1.4 }, // right, slightly up
+  { x: 6.0, y: 1.4 }, // right, slightly down
+  { x: -4.3, y: -3.75 }, // upper-left
+  { x: 4.3, y: -3.75 }, // upper-right
+  { x: 0, y: -5.8 }, // straight up (inward near bottom)
+  { x: 0, y: 5.8 }, // straight down (inward near top)
+];
+const CALIBRATED_LIFT_HANDLE_MIN_SEPARATION = 4.6;
 const OBJECT_HANDLE_HEIGHT_PIXELS_PER_UNIT = 120;
 const LEGACY_CAMERA_FOV_DEG = 50;
 const LEGACY_CAMERA_POSITION: [number, number, number] = [0, 1.1, 3.2];
@@ -647,6 +685,12 @@ export default function ThreeRoomLab({
   const calibratedScaleStartDistancePxRef = useRef(OBJECT_HANDLE_SCALE_MIN_START_DISTANCE_PX);
   const calibratedScaleStartUniformScaleRef = useRef(1);
   const calibratedScaleStartTransformRef = useRef<TransformState | null>(null);
+  // Phase 2I-C1: dedicated calibrated Lift drag identity/start-state refs. Isolated
+  // from legacy object-handle height refs and from calibrated MOVE/Rotate/Scale.
+  const calibratedLiftDragPointerIdRef = useRef<number | null>(null);
+  const calibratedLiftStartPositionYRef = useRef(0);
+  const calibratedLiftStartClientPointRef = useRef<{ x: number; y: number } | null>(null);
+  const calibratedLiftStartTransformRef = useRef<TransformState | null>(null);
   const floorAnchorDragPointerIdRef = useRef<number | null>(null);
   const lastAcceptedFloorClickRef = useRef<FloorPoint | null>(null);
   const perspectiveDepthScalingRef = useRef<PerspectiveDepthScalingState>(
@@ -750,6 +794,9 @@ export default function ThreeRoomLab({
   // Phase 2I-B1: calibrated Scale status/diagnostics (independent of MOVE/Rotate).
   const [lastCalibratedScaleStatus, setLastCalibratedScaleStatus] = useState<string>("none");
   const [lastCalibratedScaleMultiplier, setLastCalibratedScaleMultiplier] = useState<number | null>(null);
+  // Phase 2I-C1: calibrated Lift status/diagnostics (independent of MOVE/Rotate/Scale).
+  const [lastCalibratedLiftStatus, setLastCalibratedLiftStatus] = useState<string>("none");
+  const [lastCalibratedLiftDeltaY, setLastCalibratedLiftDeltaY] = useState<number | null>(null);
   const [wasLastAnchorDragMoveRejected, setWasLastAnchorDragMoveRejected] = useState(false);
   // Compatibility marker only (Phase 1AE): legacy paths treat this as the accepted
   // screen click, while calibrated click/move update it to the derived projected
@@ -842,6 +889,11 @@ export default function ThreeRoomLab({
     calibratedScaleStartTransformRef.current = null;
     setLastCalibratedScaleStatus("none");
     setLastCalibratedScaleMultiplier(null);
+    calibratedLiftDragPointerIdRef.current = null;
+    calibratedLiftStartClientPointRef.current = null;
+    calibratedLiftStartTransformRef.current = null;
+    setLastCalibratedLiftStatus("none");
+    setLastCalibratedLiftDeltaY(null);
     restoreDepthScalingAfterCalibratedMode();
     if (options?.clearAutoRevertReason) {
       setLastCalibratedCameraAutoRevertReason(null);
@@ -869,6 +921,9 @@ export default function ThreeRoomLab({
     calibratedRotateStartTransformRef.current = null;
     calibratedScaleDragPointerIdRef.current = null;
     calibratedScaleStartTransformRef.current = null;
+    calibratedLiftDragPointerIdRef.current = null;
+    calibratedLiftStartClientPointRef.current = null;
+    calibratedLiftStartTransformRef.current = null;
     floorAnchorDragPointerIdRef.current = null;
     setActiveObjectHandleMode(null);
     setIsFloorAnchorDragActive(false);
@@ -877,6 +932,8 @@ export default function ThreeRoomLab({
     setLastCalibratedRotateDeltaDeg(null);
     setLastCalibratedScaleStatus("none");
     setLastCalibratedScaleMultiplier(null);
+    setLastCalibratedLiftStatus("none");
+    setLastCalibratedLiftDeltaY(null);
   }, [isCalibratedCameraActive]);
 
   // Phase 2I-A: component-teardown safety net for calibrated Rotate drag state.
@@ -888,23 +945,40 @@ export default function ThreeRoomLab({
       calibratedRotateStartTransformRef.current = null;
       calibratedScaleDragPointerIdRef.current = null;
       calibratedScaleStartTransformRef.current = null;
+      calibratedLiftDragPointerIdRef.current = null;
+      calibratedLiftStartClientPointRef.current = null;
+      calibratedLiftStartTransformRef.current = null;
     };
   }, []);
 
-  // Phase 2I-B1: disabling auto-normalization mid-gesture invalidates the grounded
-  // eligibility, so any in-flight calibrated Scale drag must stop immediately.
+  // Phase 2I-B1 / 2I-C1: disabling auto-normalization mid-gesture invalidates the
+  // grounded eligibility, so any in-flight calibrated Scale or Lift drag must stop
+  // immediately.
   useEffect(() => {
     if (autoNormalizeBoundsEnabled) return;
-    if (calibratedScaleDragPointerIdRef.current === null) return;
-    const pointerId = calibratedScaleDragPointerIdRef.current;
-    try {
-      floorOverlayRef.current?.releasePointerCapture(pointerId);
-    } catch {
-      // Ignore release failures when capture is already cleared.
+    if (calibratedScaleDragPointerIdRef.current !== null) {
+      const pointerId = calibratedScaleDragPointerIdRef.current;
+      try {
+        floorOverlayRef.current?.releasePointerCapture(pointerId);
+      } catch {
+        // Ignore release failures when capture is already cleared.
+      }
+      calibratedScaleDragPointerIdRef.current = null;
+      calibratedScaleStartTransformRef.current = null;
+      setLastCalibratedScaleStatus("none");
     }
-    calibratedScaleDragPointerIdRef.current = null;
-    calibratedScaleStartTransformRef.current = null;
-    setLastCalibratedScaleStatus("none");
+    if (calibratedLiftDragPointerIdRef.current !== null) {
+      const pointerId = calibratedLiftDragPointerIdRef.current;
+      try {
+        floorOverlayRef.current?.releasePointerCapture(pointerId);
+      } catch {
+        // Ignore release failures when capture is already cleared.
+      }
+      calibratedLiftDragPointerIdRef.current = null;
+      calibratedLiftStartClientPointRef.current = null;
+      calibratedLiftStartTransformRef.current = null;
+      setLastCalibratedLiftStatus("none");
+    }
   }, [autoNormalizeBoundsEnabled]);
 
   useEffect(() => {
@@ -2145,8 +2219,27 @@ export default function ThreeRoomLab({
       };
     };
 
+    // Phase 2I-C1A: ray-floor↔homography consistency measured at the authoritative
+    // FLOOR footprint anchor { x, y:0, z } (projected through the active camera),
+    // independent of transform.positionY. This is what MOVE/Rotate/Lift placement
+    // eligibility should depend on so a lifted object body never strands the floor
+    // controls. At rest (positionY=0) it equals objectProjectionComparison.
+    const overlayFrameSizeForAnchor: ImageFrameSize | null =
+      rendererSize.width > 0 && rendererSize.height > 0
+        ? { width: rendererSize.width, height: rendererSize.height }
+        : null;
+    const floorFootprintNorm =
+      camera && overlayFrameSizeForAnchor
+        ? projectWorldPointToOverlayNormalized(camera, overlayFrameSizeForAnchor, {
+            x: transform.positionX,
+            y: 0,
+            z: transform.positionZ,
+          })?.normalized ?? null
+        : null;
+
     const clickComparison = compareTarget(lastAcceptedFloorClick);
     const objectProjectionComparison = compareTarget(objectProjectionDiagnostic.projectedNorm);
+    const floorAnchorComparison = compareTarget(floorFootprintNorm);
 
     rows.push({
       label: "ray-floor click vs homography",
@@ -2163,7 +2256,7 @@ export default function ThreeRoomLab({
         : "none",
     });
 
-    return { rows, clickComparison, objectProjectionComparison };
+    return { rows, clickComparison, objectProjectionComparison, floorAnchorComparison };
   }, [
     calibratedCameraSnapshot,
     cameraPoseFovYDeg,
@@ -2174,6 +2267,10 @@ export default function ThreeRoomLab({
     isCalibratedCameraActive,
     lastAcceptedFloorClick,
     objectProjectionDiagnostic.projectedNorm,
+    rendererSize.width,
+    rendererSize.height,
+    transform.positionX,
+    transform.positionZ,
   ]);
 
   const calibratedMoveHandleAnchorProjection = useMemo(() => {
@@ -2244,24 +2341,24 @@ export default function ThreeRoomLab({
     ) {
       return { available: false, reason: "calibrated frame match is stale" };
     }
-    if (
-      !objectProjectionDiagnostic.projectedNorm ||
-      !objectProjectionDiagnostic.status.startsWith("ok")
-    ) {
-      return { available: false, reason: "object projection diagnostic is not ok" };
-    }
-    if (!rayFloorHomographyComparisonDebug.objectProjectionComparison.available) {
-      return { available: false, reason: "ray-floor object comparison unavailable" };
-    }
-    const objectProjectionDistance = rayFloorHomographyComparisonDebug.objectProjectionComparison.worldDistance;
-    if (objectProjectionDistance === null || objectProjectionDistance > RAY_FLOOR_HOMOGRAPHY_WARNING_WORLD_DISTANCE) {
-      return { available: false, reason: "ray-floor vs homography distance exceeds threshold" };
-    }
     if (perspectiveDepthScaling.enabled) {
       return { available: false, reason: "depth scaling is not neutralized" };
     }
+    // Phase 2I-C1A: eligibility is anchored to the authoritative FLOOR footprint
+    // { x, y:0, z } — the point MOVE/Rotate actually operate on — NOT the object
+    // body at y=positionY. At rest these coincide, so resting behavior is
+    // unchanged; while lifted, a high object body no longer strands the floor
+    // controls. Camera/frame/depth/ray-floor safety requirements are unchanged;
+    // only the projection target switched from object body to floor anchor.
     if (!calibratedMoveHandleAnchorProjection.ok || !calibratedMoveHandleAnchorProjection.normalized) {
       return { available: false, reason: calibratedMoveHandleAnchorProjection.reason };
+    }
+    if (!rayFloorHomographyComparisonDebug.floorAnchorComparison.available) {
+      return { available: false, reason: "ray-floor floor-anchor comparison unavailable" };
+    }
+    const floorAnchorDistance = rayFloorHomographyComparisonDebug.floorAnchorComparison.worldDistance;
+    if (floorAnchorDistance === null || floorAnchorDistance > RAY_FLOOR_HOMOGRAPHY_WARNING_WORLD_DISTANCE) {
+      return { available: false, reason: "ray-floor vs homography distance exceeds threshold" };
     }
     return { available: true, reason: "available" };
   }, [
@@ -2271,11 +2368,9 @@ export default function ThreeRoomLab({
     calibratedMoveHandleAnchorProjection.ok,
     calibratedMoveHandleAnchorProjection.reason,
     isCalibratedCameraActive,
-    objectProjectionDiagnostic.projectedNorm,
-    objectProjectionDiagnostic.status,
     perspectiveDepthScaling.enabled,
-    rayFloorHomographyComparisonDebug.objectProjectionComparison.available,
-    rayFloorHomographyComparisonDebug.objectProjectionComparison.worldDistance,
+    rayFloorHomographyComparisonDebug.floorAnchorComparison.available,
+    rayFloorHomographyComparisonDebug.floorAnchorComparison.worldDistance,
   ]);
 
   // Phase 2I-A: dedicated calibrated Rotate availability. It inherits the entire
@@ -2335,6 +2430,15 @@ export default function ThreeRoomLab({
         reason: "object must be grounded at the placement origin for calibrated scale",
       };
     }
+    // Phase 2I-C1 containment: a lifted object's Scale semantics are undefined in
+    // this slice (no compensation), and the Scale handle anchors at the floor, so
+    // Scale is only offered while the object is resting on the floor.
+    if (Math.abs(transform.positionY) > CALIBRATED_LIFT_RESTING_SNAP_EPSILON) {
+      return {
+        available: false,
+        reason: "object must be resting on the floor for calibrated scale",
+      };
+    }
     return { available: true, reason: "available" };
   }, [
     autoNormalizeBoundsEnabled,
@@ -2342,6 +2446,303 @@ export default function ThreeRoomLab({
     calibratedMoveHandleStatus.available,
     calibratedMoveHandleStatus.reason,
     calibratedScaleLocalFloorContact,
+    transform.positionY,
+  ]);
+
+  // Phase 2I-C1B: camera-aware safe Lift bound, split into two independent
+  // concerns so a near-edge resting placement no longer disables Lift:
+  //
+  //  • Baseline eligibility — the resting floor anchor { x, y:0, z } only needs
+  //    to be finite, in front of the camera, and inside the ACTUAL viewport
+  //    [0,1] (tiny FP tolerance). No conservative inset is applied to y=0.
+  //  • Upper bound — safeMaxLiftY is the highest sampled world Y whose projected
+  //    lifted anchor is still on-screen AND admits at least one usable Lift-handle
+  //    placement (the SAME viewport-safe selector the renderer uses), so the
+  //    range can never disagree with what is actually drawable.
+  //
+  // Independent of the current positionY (depends only on the vertical line +
+  // camera/frame), so a lifted object can always be brought back down.
+  const calibratedLiftSafeRange = useMemo(() => {
+    const camera = cameraRef.current;
+    const frameSize: ImageFrameSize | null =
+      rendererSize.width > 0 && rendererSize.height > 0
+        ? { width: rendererSize.width, height: rendererSize.height }
+        : null;
+    if (!camera || !frameSize) {
+      return {
+        ok: false as const,
+        safeMaxLiftY: 0,
+        floorAnchorVisible: false,
+        reason: "camera or frame unavailable",
+      };
+    }
+    const projectNorm = (y: number) =>
+      projectWorldPointToOverlayNormalized(camera, frameSize, {
+        x: transform.positionX,
+        y,
+        z: transform.positionZ,
+      });
+
+    // Baseline: resting floor anchor must be visible in the real viewport.
+    const baseline = projectNorm(0);
+    const floorAnchorVisible =
+      !!baseline &&
+      baseline.inFront &&
+      isWithinViewportBounds(baseline.normalized, CALIBRATED_LIFT_BASELINE_VIEWPORT_TOLERANCE);
+    if (!baseline || !baseline.inFront) {
+      return {
+        ok: false as const,
+        safeMaxLiftY: 0,
+        floorAnchorVisible: false,
+        reason: "floor anchor is behind the camera",
+      };
+    }
+    if (!floorAnchorVisible) {
+      return {
+        ok: false as const,
+        safeMaxLiftY: 0,
+        floorAnchorVisible: false,
+        reason: "floor anchor is outside the viewport",
+      };
+    }
+
+    // Obstacles for a LIFTED handle (Scale is hidden while lifted, so it is not
+    // an obstacle here). MOVE/Rotate use the floor footprint anchor.
+    const footprint = {
+      x: baseline.normalized.x * CALIBRATED_LIFT_OVERLAY_VIEWBOX_SIZE,
+      y: baseline.normalized.y * CALIBRATED_LIFT_OVERLAY_VIEWBOX_SIZE,
+    };
+    const obstacles: { x: number; y: number }[] = [footprint];
+    if (calibratedMoveHandleStatus.available) obstacles.push({ x: footprint.x + 4.2, y: footprint.y - 4.2 });
+    if (calibratedRotateHandleStatus.available) obstacles.push({ x: footprint.x - 4.2, y: footprint.y - 4.2 });
+
+    const hasUsableHandle = (y: number) => {
+      const projected = projectNorm(y);
+      if (
+        !projected ||
+        !projected.inFront ||
+        !isWithinViewportBounds(projected.normalized, CALIBRATED_LIFT_BASELINE_VIEWPORT_TOLERANCE)
+      ) {
+        return false;
+      }
+      const placement = selectViewportSafeHandleOffset({
+        anchor: {
+          x: projected.normalized.x * CALIBRATED_LIFT_OVERLAY_VIEWBOX_SIZE,
+          y: projected.normalized.y * CALIBRATED_LIFT_OVERLAY_VIEWBOX_SIZE,
+        },
+        candidateOffsets: CALIBRATED_LIFT_HANDLE_CANDIDATE_OFFSETS,
+        obstacles,
+        minSeparation: CALIBRATED_LIFT_HANDLE_MIN_SEPARATION,
+        viewportSize: CALIBRATED_LIFT_OVERLAY_VIEWBOX_SIZE,
+        viewportInset: CALIBRATED_LIFT_HANDLE_VIEWPORT_INSET,
+      });
+      return placement.available;
+    };
+
+    const hardMax = TRANSFORM_LIMITS.positionY.max;
+    let safeMaxLiftY = 0;
+    for (let y = CALIBRATED_LIFT_SCAN_STEP_Y; y <= hardMax + 1e-9; y += CALIBRATED_LIFT_SCAN_STEP_Y) {
+      if (!hasUsableHandle(y)) break;
+      safeMaxLiftY = y;
+    }
+    if (safeMaxLiftY < CALIBRATED_LIFT_MIN_USEFUL_RANGE_Y) {
+      return {
+        ok: false as const,
+        safeMaxLiftY,
+        floorAnchorVisible: true,
+        reason: "insufficient safe lift headroom",
+      };
+    }
+    return { ok: true as const, safeMaxLiftY, floorAnchorVisible: true, reason: "ok" };
+  }, [
+    rendererSize.width,
+    rendererSize.height,
+    transform.positionX,
+    transform.positionZ,
+    calibratedMoveHandleStatus.available,
+    calibratedRotateHandleStatus.available,
+  ]);
+
+  // Phase 2I-C1: resting vs lifted derived state (grounded-only slice; positionY
+  // is the authoritative lift height because |yLocal| <= grounded epsilon).
+  const isCalibratedObjectLifted = useMemo(
+    () =>
+      calibratedScaleLocalFloorContact.ok &&
+      Math.abs(calibratedScaleLocalFloorContact.yLocal) <= CALIBRATED_SCALE_GROUNDED_LOCAL_Y_EPSILON &&
+      transform.positionY > CALIBRATED_LIFT_RESTING_SNAP_EPSILON,
+    [calibratedScaleLocalFloorContact, transform.positionY]
+  );
+
+  // Phase 2I-C1A: Drop-to-floor recovery is intentionally decoupled from the
+  // safe-range gate (it only ever sets positionY = 0, an always-safe operation),
+  // so a lifted object can always be returned to the floor even if the camera
+  // geometry later collapses the safe lift headroom.
+  const calibratedDropToFloorAvailable = useMemo(() => {
+    if (!calibratedMoveHandleStatus.available) return false;
+    if (autoRotateEnabled) return false;
+    if (!autoNormalizeBoundsEnabled) return false;
+    if (!calibratedScaleLocalFloorContact.ok) return false;
+    if (Math.abs(calibratedScaleLocalFloorContact.yLocal) > CALIBRATED_SCALE_GROUNDED_LOCAL_Y_EPSILON) return false;
+    return isCalibratedObjectLifted;
+  }, [
+    autoNormalizeBoundsEnabled,
+    autoRotateEnabled,
+    calibratedMoveHandleStatus.available,
+    calibratedScaleLocalFloorContact,
+    isCalibratedObjectLifted,
+  ]);
+
+  // Phase 2I-C1: projection of the lifted placement anchor { x, positionY, z }.
+  // The Lift handle renders from this, distinct from the floor footprint anchor
+  // (calibratedMoveHandleAnchorProjection at y = 0) used by MOVE/Rotate/Scale.
+  const calibratedLiftHandleAnchorProjection = useMemo(() => {
+    const camera = cameraRef.current;
+    const frameSize: ImageFrameSize | null =
+      rendererSize.width > 0 && rendererSize.height > 0
+        ? { width: rendererSize.width, height: rendererSize.height }
+        : null;
+    if (!camera || !frameSize) {
+      return { ok: false, reason: "camera or frame unavailable", normalized: null as FloorPoint | null };
+    }
+    const projected = projectWorldPointToOverlayNormalized(camera, frameSize, {
+      x: transform.positionX,
+      y: transform.positionY,
+      z: transform.positionZ,
+    });
+    if (!projected || !projected.inFront) {
+      return { ok: false, reason: "lifted-anchor projection unavailable", normalized: null as FloorPoint | null };
+    }
+    const normalized = projected.normalized;
+    if (
+      !Number.isFinite(normalized.x) ||
+      !Number.isFinite(normalized.y) ||
+      normalized.x < 0 ||
+      normalized.x > 1 ||
+      normalized.y < 0 ||
+      normalized.y > 1
+    ) {
+      return { ok: false, reason: "lifted-anchor projection is off-screen", normalized: null as FloorPoint | null };
+    }
+    return { ok: true, reason: "ok", normalized };
+  }, [rendererSize.height, rendererSize.width, transform.positionX, transform.positionY, transform.positionZ]);
+
+  // Phase 2I-C1B: viewport-aware adaptive Lift-handle offset. The handle stays
+  // semantically at the lifted anchor (the tether endpoint is unchanged), but its
+  // grabbable offset is chosen deterministically (preferred-first) so the handle
+  // center stays on-screen AND, where possible, clear of the visible
+  // MOVE/Rotate/Scale hit targets. If no candidate keeps the handle center
+  // visible/reachable, `available` is false (the handle is then hidden and the
+  // reason is surfaced). Pure selection => the preferred offset is retained
+  // whenever it stays usable, so there is no visual jitter.
+  const calibratedLiftHandlePlacement = useMemo(() => {
+    const lifted = calibratedLiftHandleAnchorProjection.normalized;
+    const footprint = calibratedMoveHandleAnchorProjection.normalized;
+    const fallback = CALIBRATED_LIFT_HANDLE_CANDIDATE_OFFSETS[0];
+    if (!lifted) {
+      return {
+        offset: fallback,
+        ideal: false,
+        separation: 0,
+        available: false,
+        reason: "lifted anchor unavailable",
+      };
+    }
+    const anchor = {
+      x: lifted.x * CALIBRATED_LIFT_OVERLAY_VIEWBOX_SIZE,
+      y: lifted.y * CALIBRATED_LIFT_OVERLAY_VIEWBOX_SIZE,
+    };
+    const obstacles: { x: number; y: number }[] = [];
+    if (footprint) {
+      const fx = footprint.x * CALIBRATED_LIFT_OVERLAY_VIEWBOX_SIZE;
+      const fy = footprint.y * CALIBRATED_LIFT_OVERLAY_VIEWBOX_SIZE;
+      // Footprint anchor dot.
+      obstacles.push({ x: fx, y: fy });
+      if (calibratedMoveHandleStatus.available) obstacles.push({ x: fx + 4.2, y: fy - 4.2 });
+      if (calibratedRotateHandleStatus.available) obstacles.push({ x: fx - 4.2, y: fy - 4.2 });
+      if (calibratedScaleHandleStatus.available) obstacles.push({ x: fx + 4.3, y: fy + 3.75 });
+    }
+    const selection = selectViewportSafeHandleOffset({
+      anchor,
+      candidateOffsets: CALIBRATED_LIFT_HANDLE_CANDIDATE_OFFSETS,
+      obstacles,
+      minSeparation: CALIBRATED_LIFT_HANDLE_MIN_SEPARATION,
+      viewportSize: CALIBRATED_LIFT_OVERLAY_VIEWBOX_SIZE,
+      viewportInset: CALIBRATED_LIFT_HANDLE_VIEWPORT_INSET,
+    });
+    return {
+      offset: selection.offset,
+      ideal: selection.ideal,
+      separation: selection.separation,
+      available: selection.available,
+      reason: selection.reason,
+    };
+  }, [
+    calibratedLiftHandleAnchorProjection.normalized,
+    calibratedMoveHandleAnchorProjection.normalized,
+    calibratedMoveHandleStatus.available,
+    calibratedRotateHandleStatus.available,
+    calibratedScaleHandleStatus.available,
+  ]);
+
+  // Phase 2I-C1: dedicated calibrated Lift availability. Inherits the full MOVE
+  // gate chain by direct reference (like Rotate/Scale), then adds Lift-specific
+  // gates: auto-rotate off, auto-bounds enabled, valid + grounded local contact
+  // (so positionY is an exact contact-height proxy), finite positionY within
+  // transform limits, and (Phase 2I-C1A) a derivable camera-aware safe range.
+  // Lift does NOT require resting; it is the control that lifts. It also does NOT
+  // block when positionY currently exceeds the safe max, so an object can always
+  // be lowered (the gesture clamps and Drop-to-floor remains available).
+  //
+  // Phase 2I-C1C: final display-availability alignment gate. Lift is never
+  // reported available unless the current handle placement is actually on-screen
+  // and grabbable.
+  const calibratedLiftHandleStatus = useMemo(() => {
+    if (!calibratedMoveHandleStatus.available) {
+      return { available: false, reason: calibratedMoveHandleStatus.reason };
+    }
+    if (autoRotateEnabled) {
+      return { available: false, reason: "auto-rotate must be off for calibrated lift" };
+    }
+    if (!autoNormalizeBoundsEnabled) {
+      return {
+        available: false,
+        reason: "auto-bounds normalization must be enabled for calibrated lift",
+      };
+    }
+    if (!calibratedScaleLocalFloorContact.ok) {
+      return { available: false, reason: calibratedScaleLocalFloorContact.reason };
+    }
+    if (Math.abs(calibratedScaleLocalFloorContact.yLocal) > CALIBRATED_SCALE_GROUNDED_LOCAL_Y_EPSILON) {
+      return {
+        available: false,
+        reason: "object must be grounded at the placement origin for calibrated lift",
+      };
+    }
+    if (
+      !Number.isFinite(transform.positionY) ||
+      transform.positionY < TRANSFORM_LIMITS.positionY.min ||
+      transform.positionY > TRANSFORM_LIMITS.positionY.max
+    ) {
+      return { available: false, reason: "positionY is out of range for calibrated lift" };
+    }
+    if (!calibratedLiftSafeRange.ok) {
+      return { available: false, reason: calibratedLiftSafeRange.reason };
+    }
+    if (!calibratedLiftHandlePlacement.available) {
+      return { available: false, reason: calibratedLiftHandlePlacement.reason };
+    }
+    return { available: true, reason: "available" };
+  }, [
+    autoNormalizeBoundsEnabled,
+    autoRotateEnabled,
+    calibratedLiftHandlePlacement.available,
+    calibratedLiftHandlePlacement.reason,
+    calibratedLiftSafeRange.ok,
+    calibratedLiftSafeRange.reason,
+    calibratedMoveHandleStatus.available,
+    calibratedMoveHandleStatus.reason,
+    calibratedScaleLocalFloorContact,
+    transform.positionY,
   ]);
 
   // Phase 2B: preview-only selected suggestion. Read-only derived value; never
@@ -2752,6 +3153,70 @@ export default function ThreeRoomLab({
         value: lastCalibratedScaleMultiplier === null ? "none" : formatNumber(lastCalibratedScaleMultiplier),
       },
       {
+        label: "calibrated lift handle",
+        value: calibratedLiftHandleStatus.available
+          ? "available"
+          : `unavailable — ${calibratedLiftHandleStatus.reason}`,
+      },
+      {
+        label: "calibrated lift status",
+        value: lastCalibratedLiftStatus,
+      },
+      {
+        label: "calibrated lift state",
+        value: isCalibratedObjectLifted ? "lifted" : "resting",
+      },
+      {
+        label: "calibrated lift positionY",
+        value: formatNumber(transform.positionY),
+      },
+      {
+        label: "last calibrated lift delta Y",
+        value: lastCalibratedLiftDeltaY === null ? "none" : formatNumber(lastCalibratedLiftDeltaY),
+      },
+      {
+        label: "calibrated floor-anchor viewport status",
+        value: calibratedLiftSafeRange.floorAnchorVisible
+          ? "floor anchor visible in viewport"
+          : `floor anchor not visible — ${calibratedLiftSafeRange.reason}`,
+      },
+      {
+        label: "calibrated safe max lift Y",
+        value: calibratedLiftSafeRange.ok ? formatNumber(calibratedLiftSafeRange.safeMaxLiftY) : "n/a",
+      },
+      {
+        label: "calibrated lift safe-range status",
+        value: calibratedLiftSafeRange.ok
+          ? `ok (max ${formatNumber(calibratedLiftSafeRange.safeMaxLiftY)})`
+          : `fail closed — ${calibratedLiftSafeRange.reason}`,
+      },
+      {
+        label: "calibrated lift-handle placement status",
+        value: calibratedLiftHandlePlacement.available
+          ? calibratedLiftHandlePlacement.ideal
+            ? `dx=${formatNumber(calibratedLiftHandlePlacement.offset.x)} dy=${formatNumber(
+                calibratedLiftHandlePlacement.offset.y
+              )} (clear, sep=${
+                Number.isFinite(calibratedLiftHandlePlacement.separation)
+                  ? formatNumber(calibratedLiftHandlePlacement.separation)
+                  : "n/a"
+              })`
+            : `floor anchor visible; Lift handle offset inward (dx=${formatNumber(
+                calibratedLiftHandlePlacement.offset.x
+              )} dy=${formatNumber(calibratedLiftHandlePlacement.offset.y)}, sep=${
+                Number.isFinite(calibratedLiftHandlePlacement.separation)
+                  ? formatNumber(calibratedLiftHandlePlacement.separation)
+                  : "n/a"
+              })`
+          : `unavailable — ${calibratedLiftHandlePlacement.reason}`,
+      },
+      {
+        label: "calibrated floor marker meaning",
+        value: isCalibratedObjectLifted
+          ? "footprint / floor reference (object is lifted; not active contact)"
+          : "active floor contact",
+      },
+      {
         label: "calibrated camera resize note",
         value: isCalibratedCameraActive
           ? "Re-apply calibrated camera snapshot after significant viewport resize."
@@ -2825,6 +3290,21 @@ export default function ThreeRoomLab({
       calibratedScaleLocalFloorContact,
       lastCalibratedScaleStatus,
       lastCalibratedScaleMultiplier,
+      calibratedLiftHandleStatus.available,
+      calibratedLiftHandleStatus.reason,
+      isCalibratedObjectLifted,
+      lastCalibratedLiftStatus,
+      lastCalibratedLiftDeltaY,
+      calibratedLiftSafeRange.ok,
+      calibratedLiftSafeRange.safeMaxLiftY,
+      calibratedLiftSafeRange.reason,
+      calibratedLiftSafeRange.floorAnchorVisible,
+      calibratedLiftHandlePlacement.available,
+      calibratedLiftHandlePlacement.ideal,
+      calibratedLiftHandlePlacement.offset,
+      calibratedLiftHandlePlacement.separation,
+      calibratedLiftHandlePlacement.reason,
+      transform.positionY,
       calibratedCameraFrameMatchStatus.value,
       isCalibratedCameraActive,
       calibratedCameraSnapshot,
@@ -3539,6 +4019,58 @@ export default function ThreeRoomLab({
     }
   };
 
+  const clearCalibratedLiftDragState = (event?: PointerEvent<SVGSVGElement>) => {
+    const pointerId = event?.pointerId ?? calibratedLiftDragPointerIdRef.current;
+    if (pointerId !== null) {
+      try {
+        floorOverlayRef.current?.releasePointerCapture(pointerId);
+      } catch {
+        // Ignore release failures when capture is already cleared.
+      }
+    }
+    calibratedLiftDragPointerIdRef.current = null;
+    calibratedLiftStartClientPointRef.current = null;
+    calibratedLiftStartTransformRef.current = null;
+  };
+
+  const handleCalibratedLiftHandlePointerDown = (event: PointerEvent<SVGElement>) => {
+    if (!calibratedLiftHandleStatus.available) return;
+    event.preventDefault();
+    event.stopPropagation();
+    calibratedLiftDragPointerIdRef.current = event.pointerId;
+    calibratedLiftStartPositionYRef.current = transformRef.current.positionY;
+    calibratedLiftStartClientPointRef.current = { x: event.clientX, y: event.clientY };
+    // Capture the full starting transform so the move path can prove only
+    // positionY changes (strict Lift invariant).
+    calibratedLiftStartTransformRef.current = transformRef.current;
+    setLastCalibratedLiftStatus("dragging");
+    setLastCalibratedLiftDeltaY(0);
+    try {
+      floorOverlayRef.current?.setPointerCapture(event.pointerId);
+    } catch {
+      // Pointer capture can fail in edge cases; lift still works while pointer remains in bounds.
+    }
+  };
+
+  // Phase 2I-C1: explicit return-to-floor. Sets positionY to exactly 0 while
+  // preserving every other transform field and all calibrated/depth state.
+  const handleCalibratedDropToFloor = () => {
+    if (!calibratedDropToFloorAvailable) return;
+    if (transformRef.current.positionY <= CALIBRATED_LIFT_RESTING_SNAP_EPSILON) return;
+    updateTransformState(
+      (prev) => ({
+        positionX: prev.positionX,
+        positionY: 0,
+        positionZ: prev.positionZ,
+        rotationYDeg: prev.rotationYDeg,
+        uniformScale: prev.uniformScale,
+      }),
+      { markOwned: true }
+    );
+    setLastCalibratedLiftDeltaY(null);
+    setLastCalibratedLiftStatus("dropped to floor");
+  };
+
   const handleObjectRotateHandlePointerDown = (event: PointerEvent<SVGElement>) => {
     if (!isObject2DHandlesEffectivelyEnabled || !lastAcceptedFloorClick) return;
     const vector = getAnchorClientVector(event.clientX, event.clientY);
@@ -3788,6 +4320,97 @@ export default function ThreeRoomLab({
       return;
     }
 
+    if (calibratedLiftDragPointerIdRef.current === event.pointerId) {
+      // Calibrated Lift is only valid while calibrated camera is active, auto-rotate
+      // is off, and grounded eligibility still holds; otherwise bail and clear to
+      // avoid stale drags. A mid-gesture eligibility loss must not mutate transform.
+      if (
+        !calibratedCameraActiveRef.current ||
+        autoRotateEnabledRef.current ||
+        !calibratedLiftHandleStatus.available
+      ) {
+        clearCalibratedLiftDragState();
+        setLastCalibratedLiftStatus("none");
+        return;
+      }
+      const startClientPoint = calibratedLiftStartClientPointRef.current;
+      if (!startClientPoint) {
+        setLastCalibratedLiftStatus("rejected — lift start point unavailable");
+        return;
+      }
+      const camera = cameraRef.current;
+      const frameSize: ImageFrameSize | null =
+        rendererSize.width > 0 && rendererSize.height > 0
+          ? { width: rendererSize.width, height: rendererSize.height }
+          : null;
+      if (!camera || !frameSize) {
+        setLastCalibratedLiftStatus("rejected — camera or frame unavailable");
+        return;
+      }
+      // Camera-aware vertical mapping: project a 1-unit world-Y reference segment
+      // along the object's vertical line (centered at the current lift height) and
+      // map pointer travel along that screen direction to a world-Y delta.
+      const refLow = projectWorldPointToOverlayNormalized(camera, frameSize, {
+        x: transform.positionX,
+        y: calibratedLiftStartPositionYRef.current,
+        z: transform.positionZ,
+      });
+      const refHigh = projectWorldPointToOverlayNormalized(camera, frameSize, {
+        x: transform.positionX,
+        y: calibratedLiftStartPositionYRef.current + 1,
+        z: transform.positionZ,
+      });
+      if (!refLow || !refLow.inFront || !refHigh || !refHigh.inFront) {
+        setLastCalibratedLiftStatus("rejected — vertical reference unavailable");
+        return;
+      }
+      event.preventDefault();
+      const mapping = mapPointerTravelToWorldYDelta({
+        refLowScreenPx: refLow.pixels,
+        refHighScreenPx: refHigh.pixels,
+        refWorldYSpan: 1,
+        startPointerPx: startClientPoint,
+        currentPointerPx: { x: event.clientX, y: event.clientY },
+      });
+      if (!mapping.ok) {
+        setLastCalibratedLiftStatus(`rejected — ${mapping.reason}`);
+        return;
+      }
+      // Phase 2I-C1A: cap the gesture at the camera-aware safe maximum so the
+      // lifted anchor/handle can never rise to a stranding (off-screen) height.
+      const effectiveMaxLiftY = calibratedLiftSafeRange.ok
+        ? Math.min(TRANSFORM_LIMITS.positionY.max, calibratedLiftSafeRange.safeMaxLiftY)
+        : 0;
+      const rawNextPositionY = calibratedLiftStartPositionYRef.current + mapping.deltaWorldY;
+      let nextPositionY = clampValue(rawNextPositionY, 0, effectiveMaxLiftY);
+      const cappedBySafeMax = rawNextPositionY > effectiveMaxLiftY && nextPositionY === effectiveMaxLiftY;
+      if (nextPositionY <= CALIBRATED_LIFT_RESTING_SNAP_EPSILON) {
+        nextPositionY = 0;
+      }
+      setLastCalibratedLiftDeltaY(nextPositionY - calibratedLiftStartPositionYRef.current);
+      // Strict Lift invariant guard: write ONLY positionY. Every other transform
+      // field is carried over unchanged from current state; depth scaling /
+      // calibrated snapshot / mode / lastAcceptedFloorClick are untouched.
+      updateTransformState(
+        (prev) => ({
+          positionX: prev.positionX,
+          positionY: nextPositionY,
+          positionZ: prev.positionZ,
+          rotationYDeg: prev.rotationYDeg,
+          uniformScale: prev.uniformScale,
+        }),
+        { markOwned: true }
+      );
+      setLastCalibratedLiftStatus(
+        nextPositionY === 0
+          ? "resting"
+          : cappedBySafeMax
+            ? "lift capped at calibrated safe viewport height"
+            : "ok"
+      );
+      return;
+    }
+
     if (activeObjectHandleMode === "rotate" && objectHandleDragPointerIdRef.current === event.pointerId) {
       event.preventDefault();
       const vector = getAnchorClientVector(event.clientX, event.clientY);
@@ -3939,6 +4562,18 @@ export default function ThreeRoomLab({
     }
     calibratedScaleDragPointerIdRef.current = null;
     calibratedScaleStartTransformRef.current = null;
+
+    const calibratedLiftPointerId = event?.pointerId ?? calibratedLiftDragPointerIdRef.current;
+    if (calibratedLiftPointerId !== null) {
+      try {
+        floorOverlayRef.current?.releasePointerCapture(calibratedLiftPointerId);
+      } catch {
+        // Ignore release failures when capture is already cleared.
+      }
+    }
+    calibratedLiftDragPointerIdRef.current = null;
+    calibratedLiftStartClientPointRef.current = null;
+    calibratedLiftStartTransformRef.current = null;
 
     const anchorPointerId = event?.pointerId ?? floorAnchorDragPointerIdRef.current;
     if (anchorPointerId !== null) {
@@ -5158,6 +5793,95 @@ export default function ThreeRoomLab({
                       pointerEvents="none"
                     >
                       Scale (cal)
+                    </text>
+                  </g>
+                )}
+                {calibratedLiftHandleStatus.available &&
+                  calibratedLiftHandleAnchorProjection.normalized &&
+                  calibratedLiftHandlePlacement.available && (
+                  <g>
+                    {calibratedMoveHandleAnchorProjection.normalized && (
+                      <line
+                        x1={calibratedMoveHandleAnchorProjection.normalized.x * 100}
+                        y1={calibratedMoveHandleAnchorProjection.normalized.y * 100}
+                        x2={calibratedLiftHandleAnchorProjection.normalized.x * 100}
+                        y2={calibratedLiftHandleAnchorProjection.normalized.y * 100}
+                        stroke="#a78bfa"
+                        strokeWidth={0.6}
+                        strokeOpacity={isCalibratedObjectLifted ? 0.95 : 0.5}
+                        strokeDasharray="1.6 1.2"
+                        pointerEvents="none"
+                      />
+                    )}
+                    <circle
+                      cx={calibratedLiftHandleAnchorProjection.normalized.x * 100}
+                      cy={calibratedLiftHandleAnchorProjection.normalized.y * 100}
+                      r={1.0}
+                      fill="#8b5cf6"
+                      fillOpacity={0.7}
+                      stroke="#ede9fe"
+                      strokeOpacity={0.85}
+                      strokeWidth={0.35}
+                      pointerEvents="none"
+                    />
+                    <line
+                      x1={calibratedLiftHandleAnchorProjection.normalized.x * 100}
+                      y1={calibratedLiftHandleAnchorProjection.normalized.y * 100}
+                      x2={calibratedLiftHandleAnchorProjection.normalized.x * 100 + calibratedLiftHandlePlacement.offset.x}
+                      y2={calibratedLiftHandleAnchorProjection.normalized.y * 100 + calibratedLiftHandlePlacement.offset.y}
+                      stroke={calibratedLiftDragPointerIdRef.current !== null ? "#7c3aed" : "#8b5cf6"}
+                      strokeWidth={calibratedLiftDragPointerIdRef.current !== null ? 0.9 : 0.8}
+                      strokeOpacity={0.95}
+                      pointerEvents="none"
+                    />
+                    <circle
+                      cx={calibratedLiftHandleAnchorProjection.normalized.x * 100 + calibratedLiftHandlePlacement.offset.x}
+                      cy={calibratedLiftHandleAnchorProjection.normalized.y * 100 + calibratedLiftHandlePlacement.offset.y}
+                      r={1.85}
+                      fill="#8b5cf6"
+                      stroke="#ffffff"
+                      strokeWidth={0.6}
+                      className="cursor-ns-resize"
+                      pointerEvents="all"
+                      aria-label="Calibrated lift handle"
+                      onPointerDown={handleCalibratedLiftHandlePointerDown}
+                    >
+                      <title>Lift (calibrated, grounded, upward-only)</title>
+                    </circle>
+                    <rect
+                      x={
+                        calibratedLiftHandleAnchorProjection.normalized.x * 100 +
+                        calibratedLiftHandlePlacement.offset.x -
+                        12.0
+                      }
+                      y={
+                        calibratedLiftHandleAnchorProjection.normalized.y * 100 +
+                        calibratedLiftHandlePlacement.offset.y -
+                        1.15
+                      }
+                      width={11.4}
+                      height={2.2}
+                      rx={0.55}
+                      fill="#4c1d95"
+                      fillOpacity={0.88}
+                      pointerEvents="none"
+                    />
+                    <text
+                      x={
+                        calibratedLiftHandleAnchorProjection.normalized.x * 100 +
+                        calibratedLiftHandlePlacement.offset.x -
+                        11.5
+                      }
+                      y={
+                        calibratedLiftHandleAnchorProjection.normalized.y * 100 +
+                        calibratedLiftHandlePlacement.offset.y +
+                        0.45
+                      }
+                      fill="#ede9fe"
+                      fontSize="2.05"
+                      pointerEvents="none"
+                    >
+                      Lift (cal)
                     </text>
                   </g>
                 )}
@@ -6702,6 +7426,14 @@ export default function ThreeRoomLab({
               className="rounded border border-slate-700 px-2 py-1 text-slate-200 transition hover:border-rose-400/80 hover:text-rose-200 disabled:cursor-not-allowed disabled:opacity-50"
             >
               Revert to legacy camera
+            </button>
+            <button
+              type="button"
+              onClick={handleCalibratedDropToFloor}
+              disabled={!calibratedDropToFloorAvailable}
+              className="rounded border border-slate-700 px-2 py-1 text-slate-200 transition hover:border-violet-400/80 hover:text-violet-200 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              Drop to floor
             </button>
             <span className="text-slate-500">
               {calibratedCameraApplyStatus.available

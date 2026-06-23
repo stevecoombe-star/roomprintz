@@ -35,6 +35,201 @@ export function clampValue(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
 }
 
+// --- Phase 2I-C1: calibrated vertical lift mapping -------------------------
+// Pure, camera-aware mapping for calibrated Height/Lift. The caller projects a
+// world-vertical reference segment (both endpoints share the object's X/Z and
+// differ only in world Y by `refWorldYSpan`) through the active camera and passes
+// the resulting screen-pixel endpoints. This helper derives the screen-space
+// "up in world" direction + sensitivity from that segment and maps pointer travel
+// projected onto that direction to a delta in world Y. Motion is therefore
+// constrained to the world Y axis (never free ray movement). Pure; never throws.
+
+export type ScreenPoint = { x: number; y: number };
+
+export type CalibratedVerticalLiftMappingResult =
+  | { ok: true; deltaWorldY: number }
+  | { ok: false; reason: string };
+
+export type CalibratedVerticalLiftMappingInput = {
+  // Screen-pixel projection of the lower world-Y reference endpoint.
+  refLowScreenPx: ScreenPoint;
+  // Screen-pixel projection of the higher world-Y reference endpoint.
+  refHighScreenPx: ScreenPoint;
+  // World-Y span between the two reference endpoints (refHigh - refLow). Must be
+  // finite and > 0; this calibrates world-units-per-screen-pixel.
+  refWorldYSpan: number;
+  // Pointer screen-pixel position captured at gesture start.
+  startPointerPx: ScreenPoint;
+  // Pointer screen-pixel position at the current move event.
+  currentPointerPx: ScreenPoint;
+  // Smallest acceptable projected segment length (px) before the projection is
+  // treated as degenerate (camera nearly aligned with the world vertical axis).
+  minScreenSegmentPx?: number;
+};
+
+// --- Phase 2I-C1A/C1B: calibrated Lift viewport eligibility + handle placement
+// Pure helpers for keeping the calibrated Lift handle on-screen and clear of the
+// other calibrated handles. No THREE / DOM dependencies; never throw.
+
+export type Vec2 = { x: number; y: number };
+
+// Phase 2I-C1B: baseline visibility test. A projected normalized point is
+// "visible" when it is finite and inside the ACTUAL viewport [0,1] (with an
+// optional tiny tolerance for floating-point stability). This is intentionally
+// NOT a conservative inset — a floor anchor near the viewport edge is still a
+// valid placement and must not, by itself, disable Lift.
+export function isWithinViewportBounds(normalized: Vec2 | null, tolerance = 0): boolean {
+  if (!normalized) return false;
+  if (!Number.isFinite(normalized.x) || !Number.isFinite(normalized.y)) return false;
+  const t = Number.isFinite(tolerance) && tolerance >= 0 ? tolerance : 0;
+  return (
+    normalized.x >= -t &&
+    normalized.x <= 1 + t &&
+    normalized.y >= -t &&
+    normalized.y <= 1 + t
+  );
+}
+
+export type ViewportSafeHandleSelection = {
+  offset: Vec2;
+  center: Vec2;
+  separation: number;
+  withinViewport: boolean;
+  ideal: boolean;
+  available: boolean;
+  reason: string;
+};
+
+// Phase 2I-C1B: deterministic, viewport-aware handle-offset selection. A
+// candidate is *usable* only when its resulting handle center lies inside the
+// safe on-screen interaction inset [inset, viewportSize - inset]. Among usable
+// candidates we prefer (in preferred-first order) the first that is also clear
+// of every obstacle by `minSeparation`; otherwise we keep the usable candidate
+// with the greatest obstacle separation (so the handle stays reachable even in a
+// crowded corner). If NO candidate is usable (handle center can't be made
+// visible/reachable), the result is `available: false` with a precise reason.
+// Pure + deterministic => the preferred offset is retained whenever it stays
+// usable, so there is no per-frame jitter.
+export function selectViewportSafeHandleOffset(input: {
+  anchor: Vec2; // handle anchor in viewBox units (0..viewportSize)
+  candidateOffsets: Vec2[];
+  obstacles: Vec2[];
+  minSeparation: number;
+  viewportSize: number;
+  viewportInset: number;
+}): ViewportSafeHandleSelection {
+  const { anchor, candidateOffsets, obstacles, minSeparation, viewportSize, viewportInset } = input;
+  const fallbackOffset = candidateOffsets[0] ?? { x: 0, y: 0 };
+  const lo = viewportInset;
+  const hi = viewportSize - viewportInset;
+
+  let bestUsable:
+    | { offset: Vec2; center: Vec2; separation: number }
+    | null = null;
+
+  for (const offset of candidateOffsets) {
+    const center = { x: anchor.x + offset.x, y: anchor.y + offset.y };
+    const withinViewport = center.x >= lo && center.x <= hi && center.y >= lo && center.y <= hi;
+    if (!withinViewport) continue;
+    let minDist = Number.POSITIVE_INFINITY;
+    for (const obstacle of obstacles) {
+      const dist = Math.hypot(center.x - obstacle.x, center.y - obstacle.y);
+      if (dist < minDist) minDist = dist;
+    }
+    if (minDist >= minSeparation) {
+      return {
+        offset,
+        center,
+        separation: minDist,
+        withinViewport: true,
+        ideal: true,
+        available: true,
+        reason: "clear",
+      };
+    }
+    if (!bestUsable || minDist > bestUsable.separation) {
+      bestUsable = { offset, center, separation: minDist };
+    }
+  }
+
+  if (bestUsable) {
+    return {
+      offset: bestUsable.offset,
+      center: bestUsable.center,
+      separation: bestUsable.separation,
+      withinViewport: true,
+      ideal: false,
+      available: true,
+      reason: "inward (best separation)",
+    };
+  }
+
+  return {
+    offset: fallbackOffset,
+    center: { x: anchor.x + fallbackOffset.x, y: anchor.y + fallbackOffset.y },
+    separation: 0,
+    withinViewport: false,
+    ideal: false,
+    available: false,
+    reason: "no on-screen handle placement",
+  };
+}
+
+export function mapPointerTravelToWorldYDelta(
+  input: CalibratedVerticalLiftMappingInput
+): CalibratedVerticalLiftMappingResult {
+  const {
+    refLowScreenPx,
+    refHighScreenPx,
+    refWorldYSpan,
+    startPointerPx,
+    currentPointerPx,
+    minScreenSegmentPx = 1e-3,
+  } = input;
+
+  const allFinite = [
+    refLowScreenPx.x,
+    refLowScreenPx.y,
+    refHighScreenPx.x,
+    refHighScreenPx.y,
+    refWorldYSpan,
+    startPointerPx.x,
+    startPointerPx.y,
+    currentPointerPx.x,
+    currentPointerPx.y,
+  ].every((value) => Number.isFinite(value));
+  if (!allFinite) {
+    return { ok: false, reason: "non-finite mapping geometry" };
+  }
+  if (refWorldYSpan <= 0) {
+    return { ok: false, reason: "invalid world-Y reference span" };
+  }
+
+  // Screen vector pointing in the direction of increasing world Y.
+  const screenVecX = refHighScreenPx.x - refLowScreenPx.x;
+  const screenVecY = refHighScreenPx.y - refLowScreenPx.y;
+  const screenLen = Math.hypot(screenVecX, screenVecY);
+  if (!Number.isFinite(screenLen) || screenLen < minScreenSegmentPx) {
+    return { ok: false, reason: "degenerate vertical projection" };
+  }
+
+  const unitX = screenVecX / screenLen;
+  const unitY = screenVecY / screenLen;
+  const worldPerScreenPixel = refWorldYSpan / screenLen;
+
+  const pointerDx = currentPointerPx.x - startPointerPx.x;
+  const pointerDy = currentPointerPx.y - startPointerPx.y;
+  // Signed pointer travel along the world-up screen direction.
+  const travelAlongUp = pointerDx * unitX + pointerDy * unitY;
+  const deltaWorldY = travelAlongUp * worldPerScreenPixel;
+
+  if (!Number.isFinite(deltaWorldY)) {
+    return { ok: false, reason: "non-finite world-Y delta" };
+  }
+
+  return { ok: true, deltaWorldY };
+}
+
 export function isPointInsidePolygon(point: FloorPoint, polygon: FloorPoint[]): boolean {
   if (polygon.length < 3) return false;
   let inside = false;
