@@ -626,6 +626,13 @@ export default function ThreeRoomLab({
   const objectHandleHeightStartPositionYRef = useRef(0);
   const calibratedMoveDragPointerIdRef = useRef<number | null>(null);
   const calibratedMoveGrabOffsetRef = useRef<{ offsetX: number; offsetZ: number } | null>(null);
+  // Phase 2I-A: dedicated calibrated Rotate drag identity/start-state refs. These
+  // are intentionally separate from the legacy object-handle rotate refs so the
+  // calibrated path never routes through the disabled legacy handle system.
+  const calibratedRotateDragPointerIdRef = useRef<number | null>(null);
+  const calibratedRotateStartAngleRadRef = useRef(0);
+  const calibratedRotateStartRotationDegRef = useRef(0);
+  const calibratedRotateStartTransformRef = useRef<TransformState | null>(null);
   const floorAnchorDragPointerIdRef = useRef<number | null>(null);
   const lastAcceptedFloorClickRef = useRef<FloorPoint | null>(null);
   const perspectiveDepthScalingRef = useRef<PerspectiveDepthScalingState>(
@@ -723,6 +730,9 @@ export default function ThreeRoomLab({
   const [lastObjectHandleScaleMultiplier, setLastObjectHandleScaleMultiplier] = useState<number | null>(null);
   const [lastObjectHandleHeightDeltaYUnits, setLastObjectHandleHeightDeltaYUnits] = useState<number | null>(null);
   const [lastCalibratedMoveStatus, setLastCalibratedMoveStatus] = useState<string>("none");
+  // Phase 2I-A: calibrated Rotate status/diagnostics (independent of MOVE state).
+  const [lastCalibratedRotateStatus, setLastCalibratedRotateStatus] = useState<string>("none");
+  const [lastCalibratedRotateDeltaDeg, setLastCalibratedRotateDeltaDeg] = useState<number | null>(null);
   const [wasLastAnchorDragMoveRejected, setWasLastAnchorDragMoveRejected] = useState(false);
   // Compatibility marker only (Phase 1AE): legacy paths treat this as the accepted
   // screen click, while calibrated click/move update it to the derived projected
@@ -807,6 +817,10 @@ export default function ThreeRoomLab({
     calibratedMoveDragPointerIdRef.current = null;
     calibratedMoveGrabOffsetRef.current = null;
     setLastCalibratedMoveStatus("none");
+    calibratedRotateDragPointerIdRef.current = null;
+    calibratedRotateStartTransformRef.current = null;
+    setLastCalibratedRotateStatus("none");
+    setLastCalibratedRotateDeltaDeg(null);
     restoreDepthScalingAfterCalibratedMode();
     if (options?.clearAutoRevertReason) {
       setLastCalibratedCameraAutoRevertReason(null);
@@ -830,11 +844,25 @@ export default function ThreeRoomLab({
     objectHandleDragPointerIdRef.current = null;
     calibratedMoveDragPointerIdRef.current = null;
     calibratedMoveGrabOffsetRef.current = null;
+    calibratedRotateDragPointerIdRef.current = null;
+    calibratedRotateStartTransformRef.current = null;
     floorAnchorDragPointerIdRef.current = null;
     setActiveObjectHandleMode(null);
     setIsFloorAnchorDragActive(false);
     setLastCalibratedMoveStatus("none");
+    setLastCalibratedRotateStatus("none");
+    setLastCalibratedRotateDeltaDeg(null);
   }, [isCalibratedCameraActive]);
+
+  // Phase 2I-A: component-teardown safety net for calibrated Rotate drag state.
+  // MOVE relies on refs being garbage-collected on unmount; this mirrors that for
+  // Rotate without touching any MOVE teardown path.
+  useEffect(() => {
+    return () => {
+      calibratedRotateDragPointerIdRef.current = null;
+      calibratedRotateStartTransformRef.current = null;
+    };
+  }, []);
 
   useEffect(() => {
     if (isObject2DHandlesEnabled) return;
@@ -2207,6 +2235,24 @@ export default function ThreeRoomLab({
     rayFloorHomographyComparisonDebug.objectProjectionComparison.worldDistance,
   ]);
 
+  // Phase 2I-A: dedicated calibrated Rotate availability. It inherits the entire
+  // calibrated MOVE gate chain (gates 1-9: calibrated camera active + snapshot +
+  // Three.js camera ref + non-stale frame match + projected/ok object projection +
+  // ray-floor↔homography comparison available + within distance threshold + depth
+  // scaling neutralized + valid in-front/on-screen floor-contact anchor) so the
+  // two paths share identical gate semantics. Reusing calibratedMoveHandleStatus
+  // here guarantees we never loosen or diverge from the MOVE gate. The only added
+  // gate is rotate-only: auto-rotate must be off (gate 10).
+  const calibratedRotateHandleStatus = useMemo(() => {
+    if (!calibratedMoveHandleStatus.available) {
+      return { available: false, reason: calibratedMoveHandleStatus.reason };
+    }
+    if (autoRotateEnabled) {
+      return { available: false, reason: "auto-rotate must be off for calibrated rotate" };
+    }
+    return { available: true, reason: "available" };
+  }, [autoRotateEnabled, calibratedMoveHandleStatus.available, calibratedMoveHandleStatus.reason]);
+
   // Phase 2B: preview-only selected suggestion. Read-only derived value; never
   // mutates the manual floor polygon.
   const selectedAutoFloorCandidate = useMemo(
@@ -2581,6 +2627,20 @@ export default function ThreeRoomLab({
         value: lastCalibratedMoveStatus,
       },
       {
+        label: "calibrated rotate handle",
+        value: calibratedRotateHandleStatus.available
+          ? "available"
+          : `unavailable — ${calibratedRotateHandleStatus.reason}`,
+      },
+      {
+        label: "calibrated rotate status",
+        value: lastCalibratedRotateStatus,
+      },
+      {
+        label: "last calibrated rotate delta (deg)",
+        value: lastCalibratedRotateDeltaDeg === null ? "none" : formatNumber(lastCalibratedRotateDeltaDeg),
+      },
+      {
         label: "calibrated camera resize note",
         value: isCalibratedCameraActive
           ? "Re-apply calibrated camera snapshot after significant viewport resize."
@@ -2645,6 +2705,10 @@ export default function ThreeRoomLab({
       calibratedDepthScalingStatus,
       calibratedMoveHandleStatus.available,
       calibratedMoveHandleStatus.reason,
+      calibratedRotateHandleStatus.available,
+      calibratedRotateHandleStatus.reason,
+      lastCalibratedRotateStatus,
+      lastCalibratedRotateDeltaDeg,
       calibratedCameraFrameMatchStatus.value,
       isCalibratedCameraActive,
       calibratedCameraSnapshot,
@@ -3246,6 +3310,61 @@ export default function ThreeRoomLab({
     }
   };
 
+  // Phase 2I-A: client-space vector from the authoritative calibrated floor-contact
+  // anchor (projected { x: positionX, y: 0, z: positionZ }) to the pointer. This is
+  // deliberately NOT sourced from lastAcceptedFloorClick.
+  const getCalibratedRotateAnchorClientVector = (clientX: number, clientY: number) => {
+    const anchor = calibratedMoveHandleAnchorProjection.normalized;
+    if (!anchor) return null;
+    const overlay = floorOverlayRef.current;
+    if (!overlay) return null;
+    const rect = overlay.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return null;
+    const anchorClientX = rect.left + anchor.x * rect.width;
+    const anchorClientY = rect.top + anchor.y * rect.height;
+    const dx = clientX - anchorClientX;
+    const dy = clientY - anchorClientY;
+    const distance = Math.hypot(dx, dy);
+    return { dx, dy, distance };
+  };
+
+  const clearCalibratedRotateDragState = (event?: PointerEvent<SVGSVGElement>) => {
+    const pointerId = event?.pointerId ?? calibratedRotateDragPointerIdRef.current;
+    if (pointerId !== null) {
+      try {
+        floorOverlayRef.current?.releasePointerCapture(pointerId);
+      } catch {
+        // Ignore release failures when capture is already cleared.
+      }
+    }
+    calibratedRotateDragPointerIdRef.current = null;
+    calibratedRotateStartTransformRef.current = null;
+  };
+
+  const handleCalibratedRotateHandlePointerDown = (event: PointerEvent<SVGElement>) => {
+    if (!calibratedRotateHandleStatus.available) return;
+    const vector = getCalibratedRotateAnchorClientVector(event.clientX, event.clientY);
+    if (!vector) {
+      setLastCalibratedRotateStatus("rejected — rotate anchor unavailable");
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    calibratedRotateDragPointerIdRef.current = event.pointerId;
+    calibratedRotateStartAngleRadRef.current = Math.atan2(vector.dy, vector.dx);
+    calibratedRotateStartRotationDegRef.current = transformRef.current.rotationYDeg;
+    // Capture the full starting transform so the move path can prove only
+    // rotationYDeg changes (strict Rotate invariant).
+    calibratedRotateStartTransformRef.current = transformRef.current;
+    setLastCalibratedRotateStatus("dragging");
+    setLastCalibratedRotateDeltaDeg(0);
+    try {
+      floorOverlayRef.current?.setPointerCapture(event.pointerId);
+    } catch {
+      // Pointer capture can fail in edge cases; rotate still works while pointer remains in bounds.
+    }
+  };
+
   const handleObjectRotateHandlePointerDown = (event: PointerEvent<SVGElement>) => {
     if (!isObject2DHandlesEffectivelyEnabled || !lastAcceptedFloorClick) return;
     const vector = getAnchorClientVector(event.clientX, event.clientY);
@@ -3405,6 +3524,48 @@ export default function ThreeRoomLab({
       return;
     }
 
+    if (calibratedRotateDragPointerIdRef.current === event.pointerId) {
+      // Calibrated Rotate is only valid while calibrated camera is active and
+      // auto-rotate is off; otherwise bail and clear to avoid stale drags.
+      if (!calibratedCameraActiveRef.current || autoRotateEnabledRef.current) {
+        clearCalibratedRotateDragState();
+        setLastCalibratedRotateStatus("none");
+        return;
+      }
+      event.preventDefault();
+      const vector = getCalibratedRotateAnchorClientVector(event.clientX, event.clientY);
+      if (!vector) {
+        setLastCalibratedRotateStatus("rejected — rotate anchor unavailable");
+        return;
+      }
+      if (vector.distance < OBJECT_HANDLE_ROTATE_DEADZONE_PX) return;
+      const currentAngle = Math.atan2(vector.dy, vector.dx);
+      const rawDelta = currentAngle - calibratedRotateStartAngleRadRef.current;
+      const normalizedDelta = Math.atan2(Math.sin(rawDelta), Math.cos(rawDelta));
+      const deltaDeg = THREE.MathUtils.radToDeg(normalizedDelta);
+      const nextRotation = clampValue(
+        calibratedRotateStartRotationDegRef.current + deltaDeg,
+        TRANSFORM_LIMITS.rotationYDeg.min,
+        TRANSFORM_LIMITS.rotationYDeg.max
+      );
+      setLastCalibratedRotateDeltaDeg(deltaDeg);
+      // Strict Rotate invariant guard: write ONLY rotationYDeg. Every other
+      // transform field is carried over unchanged from current state, and depth
+      // scaling / calibrated snapshot / mode are never touched here.
+      updateTransformState(
+        (prev) => ({
+          positionX: prev.positionX,
+          positionY: prev.positionY,
+          positionZ: prev.positionZ,
+          uniformScale: prev.uniformScale,
+          rotationYDeg: nextRotation,
+        }),
+        { markOwned: true }
+      );
+      setLastCalibratedRotateStatus("ok");
+      return;
+    }
+
     if (activeObjectHandleMode === "rotate" && objectHandleDragPointerIdRef.current === event.pointerId) {
       event.preventDefault();
       const vector = getAnchorClientVector(event.clientX, event.clientY);
@@ -3534,6 +3695,17 @@ export default function ThreeRoomLab({
     }
     calibratedMoveDragPointerIdRef.current = null;
     calibratedMoveGrabOffsetRef.current = null;
+
+    const calibratedRotatePointerId = event?.pointerId ?? calibratedRotateDragPointerIdRef.current;
+    if (calibratedRotatePointerId !== null) {
+      try {
+        floorOverlayRef.current?.releasePointerCapture(calibratedRotatePointerId);
+      } catch {
+        // Ignore release failures when capture is already cleared.
+      }
+    }
+    calibratedRotateDragPointerIdRef.current = null;
+    calibratedRotateStartTransformRef.current = null;
 
     const anchorPointerId = event?.pointerId ?? floorAnchorDragPointerIdRef.current;
     if (anchorPointerId !== null) {
@@ -4659,6 +4831,53 @@ export default function ThreeRoomLab({
                       pointerEvents="none"
                     >
                       Move (ray)
+                    </text>
+                  </g>
+                )}
+                {calibratedRotateHandleStatus.available && calibratedMoveHandleAnchorProjection.normalized && (
+                  <g>
+                    <line
+                      x1={calibratedMoveHandleAnchorProjection.normalized.x * 100}
+                      y1={calibratedMoveHandleAnchorProjection.normalized.y * 100}
+                      x2={calibratedMoveHandleAnchorProjection.normalized.x * 100 - 4.2}
+                      y2={calibratedMoveHandleAnchorProjection.normalized.y * 100 - 4.2}
+                      stroke={calibratedRotateDragPointerIdRef.current !== null ? "#d97706" : "#f59e0b"}
+                      strokeWidth={calibratedRotateDragPointerIdRef.current !== null ? 0.9 : 0.8}
+                      strokeOpacity={0.95}
+                      pointerEvents="none"
+                    />
+                    <circle
+                      cx={calibratedMoveHandleAnchorProjection.normalized.x * 100 - 4.2}
+                      cy={calibratedMoveHandleAnchorProjection.normalized.y * 100 - 4.2}
+                      r={1.85}
+                      fill="#f59e0b"
+                      stroke="#ffffff"
+                      strokeWidth={0.6}
+                      className="cursor-crosshair"
+                      pointerEvents="all"
+                      aria-label="Calibrated rotate handle"
+                      onPointerDown={handleCalibratedRotateHandlePointerDown}
+                    >
+                      <title>Rotate (calibrated floor-contact)</title>
+                    </circle>
+                    <rect
+                      x={calibratedMoveHandleAnchorProjection.normalized.x * 100 - 16.3}
+                      y={calibratedMoveHandleAnchorProjection.normalized.y * 100 - 6.9}
+                      width={11.6}
+                      height={2.2}
+                      rx={0.55}
+                      fill="#78350f"
+                      fillOpacity={0.88}
+                      pointerEvents="none"
+                    />
+                    <text
+                      x={calibratedMoveHandleAnchorProjection.normalized.x * 100 - 15.8}
+                      y={calibratedMoveHandleAnchorProjection.normalized.y * 100 - 5.3}
+                      fill="#fef3c7"
+                      fontSize="2.05"
+                      pointerEvents="none"
+                    >
+                      Rotate (cal)
                     </text>
                   </g>
                 )}
