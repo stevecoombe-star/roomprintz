@@ -40,6 +40,9 @@ export type RawVisionCandidate = {
   notes?: unknown;
   risks?: unknown;
   occluded?: unknown;
+  // Phase 2H-J: advisory, untrusted extent intent. Sanitized like other strings;
+  // never trusted for selection/scoring.
+  intent?: unknown;
 };
 
 // ---------------------------------------------------------------------------
@@ -56,6 +59,8 @@ export type ValidatedVisionFloorCandidate = {
   modelConfidenceBand: AutoFloorCandidateConfidence | null;
   notes: string[];
   risks: string[];
+  // Phase 2H-J: advisory, untrusted extent intent (diagnostic metadata only).
+  intent: string | null;
 };
 
 export type VisionCandidateValidation =
@@ -266,6 +271,7 @@ export function validateRawVisionCandidate(
       modelConfidenceBand,
       notes,
       risks,
+      intent: sanitizeString(candidate.intent),
     },
   };
 }
@@ -358,6 +364,8 @@ export function mapValidatedVisionCandidatesToAutoFloorDetectionResult(
         score.scoreBand === "invalid"
           ? [...candidate.risks, "geometry-score-invalid"]
           : candidate.risks,
+      // Advisory diagnostic metadata only (Phase 2H-J); never affects selection.
+      intent: candidate.intent,
     };
 
     return { mapped, scoreBand: score.scoreBand, score: score.score };

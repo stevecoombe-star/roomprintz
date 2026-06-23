@@ -48,6 +48,9 @@ export type AutoFloorCalibrationCandidate = {
   quadNorm: [Vec2, Vec2, Vec2, Vec2];
   notes: string[];
   risks: string[];
+  // Phase 2H-J: advisory, untrusted candidate extent intent carried as diagnostic
+  // metadata only (e.g. "maximal_main_floor"). NEVER used for selection/scoring.
+  intent?: string | null;
 };
 
 export type AutoFloorDetectionResult = {

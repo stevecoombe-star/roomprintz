@@ -153,6 +153,77 @@ export type AutoFloorFixtureHumanAssessment =
   | "bad"
   | "expected_failure";
 
+// Phase 2H-D: empty-room-PRIMARY run provenance/outcome (local-only).
+// Empty-primary policy taxonomy (replaces the Phase 2H-B original-as-truth set).
+export type AutoFloorAssistRecommendationProvenance =
+  | "empty_primary_verified"
+  | "empty_primary_review"
+  | "empty_primary_blocked"
+  | "original_fallback"
+  | "manual_required";
+
+export type AutoFloorAssistObservationFields = {
+  emptyRoomAssistStatus: string | null;
+  emptyRoomCacheStatus: "hit" | "miss" | "unavailable" | "not_used" | null;
+  originalDetectionStatus: string | null;
+  emptyDetectionStatus: string | null;
+  coordinateCompatibilityStatus: "ok" | "incompatible" | "not_evaluated" | null;
+  // Phase 2H-E: NBP aspect-tolerant compatibility tier + relative aspect error.
+  compatibilityTier:
+    | "exact_grid_compatible"
+    | "aspect_compatible_rescaled"
+    | "incompatible"
+    | null;
+  relativeAspectError: number | null;
+  quadAgreementBand: string | null;
+  agreementIou: number | null;
+  agreementMeanCornerDistance: number | null;
+  agreementAreaAgreement: number | null;
+  recommendationProvenance: AutoFloorAssistRecommendationProvenance | null;
+  // Phase 2H-D: which detection was surfaced + empty-primary diagnostics.
+  surfacedSource: "empty" | "original" | null;
+  confidenceCeiling: "high" | "medium" | "low" | null;
+  emptyQuadSelfValidityBand: string | null;
+  emptyCameraPoseOk: boolean | null;
+  emptyCameraPoseConfidence: "high" | "low" | null;
+  // Phase 2H-F: FOV-scan camera self-validity diagnostics.
+  emptyCameraPoseBestFovDeg: number | null;
+  emptyCameraPoseValidFovCount: number | null;
+  // Downgrade-only structural-preservation heuristic (lab-tunable).
+  structuralPreservationBand: string | null;
+  structuralPreservationScore: number | null;
+  // Phase 2H-J: read-only candidate extent / opening-ambiguity diagnostics +
+  // human floor-extent assessment. Diagnostic-only; no selection/scoring effect.
+  emptyCandidateCount: number | null;
+  originalCandidateCount: number | null;
+  selectedCandidateRank: number | null;
+  selectedCandidateIntent: string | null;
+  selectedCandidateArea: number | null;
+  largestValidCandidateArea: number | null;
+  selectedVsLargestAreaRatio: number | null;
+  openingAmbiguityFlag: boolean | null;
+  retryOccurred: boolean | null;
+  retryReason: string | null;
+  // Human floor-extent assessment (manually set; never auto-recorded).
+  stoppedEarlyAtDoorway: boolean | null;
+  stoppedEarlyAtCloset: boolean | null;
+  overExtendedAdjacentRoom: boolean | null;
+  correctMainRoomExtent: boolean | null;
+  // Phase 2H-JF: read-only multi-candidate same-plane FOV-consensus diagnostics.
+  // Derived from independent per-candidate FOV scans; diagnostic-only.
+  multiCandidatePoseValidCount: number | null;
+  samePlaneConsensusStatus: string | null;
+  sharedFovRange: [number, number] | null;
+  bestFovSpreadDeg: number | null;
+  consensusCandidateIndexes: number[] | null;
+  consensusHasClampedCandidate: boolean | null;
+  advisoryPreferredAnchorIndex: number | null;
+  advisoryPreferredAnchorReason: string | null;
+  // Human same-plane assessment (manually set; never auto-recorded).
+  baysAppearCoplanar: boolean | null;
+  advisoryAnchorLooksCorrect: boolean | null;
+};
+
 export type AutoFloorFixtureObservation = {
   fixtureId: string;
   fixtureCategory: AutoFloorFixtureCategory | null;
@@ -169,6 +240,8 @@ export type AutoFloorFixtureObservation = {
   fovScanStatus: string | null;
   rayHomographyAgreement?: number | null;
   latestFailureReason: string | null;
+  // Phase 2H-B: assisted-run outcomes (null when no assist run was performed).
+  assist?: AutoFloorAssistObservationFields | null;
   manualCorrectionAssessment: AutoFloorFixtureManualCorrection;
   humanAssessment: AutoFloorFixtureHumanAssessment;
   notes: string;

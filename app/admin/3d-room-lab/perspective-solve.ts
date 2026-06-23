@@ -1117,3 +1117,133 @@ export function decomposeHomographyToCameraPose(
     note,
   };
 }
+
+// --- Canonical FOV scan (shared, pure) ---------------------------------------
+// The 3D Room Lab calibration path does NOT assume a single FOV: it scans a
+// plausible vertical-FOV range and accepts calibration when ANY scanned FOV
+// yields a valid camera-pose decomposition, selecting the best by
+// (confidence high-first, then lowest average reprojection, then lowest max).
+//
+// This helper extracts that exact scan + selection so multiple call sites (the
+// lab debug panel and the lab-only empty-room-assist validity gate) share ONE
+// implementation rather than duplicating divergent camera/FOV math. It is pure
+// and side-effect free.
+
+export const DEFAULT_FOV_SCAN_MIN_DEG = 20;
+export const DEFAULT_FOV_SCAN_MAX_DEG = 90;
+export const DEFAULT_FOV_SCAN_STEP_DEG = 1;
+
+export type FovScanOptions = {
+  minFovDeg?: number;
+  maxFovDeg?: number;
+  stepDeg?: number;
+};
+
+export type FovScanSample = {
+  fov: number;
+  ok: boolean;
+  confidence?: "high" | "low";
+  avgPx?: number;
+  maxPx?: number;
+  scaleRatio?: number;
+  reason?: string;
+};
+
+export type FovScanResult = {
+  // True when at least one scanned FOV produced a valid decomposition.
+  ok: boolean;
+  samples: FovScanSample[];
+  validCount: number;
+  highConfidenceCount: number;
+  // Best valid candidate (confidence high-first, then lowest avg/max reproj).
+  bestFovDeg: number | null;
+  bestConfidence: "high" | "low" | null;
+  bestAvgPx: number | null;
+  bestMaxPx: number | null;
+  bestScaleRatio: number | null;
+  bestPose: CameraPoseDecomposition | null;
+  // Inclusive [min,max] FOV ranges (degrees) of valid / high-confidence samples.
+  validFovRange: [number, number] | null;
+  highConfidenceFovRange: [number, number] | null;
+  // First failing sample reason (useful when no FOV is valid).
+  firstFailureReason: string | null;
+};
+
+function rangeOf(values: number[]): [number, number] | null {
+  if (values.length === 0) return null;
+  return [Math.min(...values), Math.max(...values)];
+}
+
+/**
+ * Scans plausible vertical FOVs and decomposes the image->floor homography at
+ * each, returning the best valid camera pose. Selection matches the lab
+ * calibration path exactly: confidence high-first, then lowest average
+ * reprojection, then lowest max reprojection.
+ *
+ * The gate is NOT relaxed: each FOV still runs the full
+ * decomposeHomographyToCameraPose validity checks (cheirality, reprojection,
+ * scale/orthonormality). A pass simply means at least one physically plausible
+ * FOV in the scanned range yields a valid pose.
+ */
+export function scanCameraPoseOverFov(
+  imageToFloorHomography: HomographyMatrix,
+  frameSize: { width: number; height: number },
+  correspondences: { floorPlanePoints2D: Vec2[]; imagePointsPx: Vec2[] },
+  options?: FovScanOptions
+): FovScanResult {
+  const minFov = options?.minFovDeg ?? DEFAULT_FOV_SCAN_MIN_DEG;
+  const maxFov = options?.maxFovDeg ?? DEFAULT_FOV_SCAN_MAX_DEG;
+  const step = options?.stepDeg ?? DEFAULT_FOV_SCAN_STEP_DEG;
+
+  const samples: FovScanSample[] = [];
+  const poseByFov = new Map<number, CameraPoseDecomposition>();
+
+  for (let fov = minFov; fov <= maxFov; fov += step) {
+    const decomposition = decomposeHomographyToCameraPose(
+      imageToFloorHomography,
+      frameSize,
+      { verticalFovDeg: fov },
+      correspondences
+    );
+    if (!decomposition.ok) {
+      samples.push({ fov, ok: false, reason: decomposition.reason });
+      continue;
+    }
+    poseByFov.set(fov, decomposition.value);
+    samples.push({
+      fov,
+      ok: true,
+      confidence: decomposition.confidence,
+      avgPx: decomposition.value.diagnostics.averageCameraPoseReprojectionPx,
+      maxPx: decomposition.value.diagnostics.maxCameraPoseReprojectionPx,
+      scaleRatio: decomposition.value.diagnostics.columnScaleRatio,
+    });
+  }
+
+  const valid = samples.filter((s) => s.ok && s.avgPx !== undefined && s.maxPx !== undefined);
+  const high = valid.filter((s) => s.confidence === "high");
+
+  const sorted = [...valid].sort((a, b) => {
+    if (a.confidence !== b.confidence) return a.confidence === "high" ? -1 : 1;
+    if (a.avgPx! !== b.avgPx!) return a.avgPx! - b.avgPx!;
+    return a.maxPx! - b.maxPx!;
+  });
+  const best = sorted[0] ?? null;
+  const firstFailureReason = samples.find((s) => !s.ok)?.reason ?? null;
+
+  return {
+    ok: !!best,
+    samples,
+    validCount: valid.length,
+    highConfidenceCount: high.length,
+    bestFovDeg: best?.fov ?? null,
+    bestConfidence: best?.confidence ?? null,
+    bestAvgPx: best?.avgPx ?? null,
+    bestMaxPx: best?.maxPx ?? null,
+    bestScaleRatio: best?.scaleRatio ?? null,
+    bestPose: best ? poseByFov.get(best.fov) ?? null : null,
+    validFovRange: rangeOf(valid.map((s) => s.fov)),
+    highConfidenceFovRange: rangeOf(high.map((s) => s.fov)),
+    firstFailureReason,
+  };
+}

@@ -43,6 +43,7 @@ import {
   orderFloorCorners,
   projectFloorPointThroughCameraPoseCv,
   projectFloorPointThroughPose,
+  scanCameraPoseOverFov,
   solvePlaneHomography,
 } from "./perspective-solve";
 import {
@@ -68,10 +69,149 @@ import { DEFAULT_AUTO_FLOOR_VISION_MODEL } from "./auto-floor-vision-provider-sc
 import {
   AUTO_FLOOR_FIXTURES,
   getAutoFloorFixtureById,
+  type AutoFloorAssistObservationFields,
   type AutoFloorFixtureHumanAssessment,
   type AutoFloorFixtureManualCorrection,
   type AutoFloorFixtureObservation,
 } from "./auto-floor-fixtures";
+
+// Phase 2H-B: client-side shape of the lab-only empty-room-assist route reply.
+// Mirrors app/api/admin/3d-room-lab/empty-room-assist/run AssistResponse. Only
+// safe derived fields are present (no prompts/keys/bytes/raw responses).
+type EmptyRoomAssistApiResponse = {
+  assist: {
+    enabled: boolean;
+    requestId: string;
+    durationMs: number;
+    generateOnly: boolean;
+    emptyRoomAssistStatus: "completed" | "generated" | "unavailable" | "blocked" | "failed";
+    emptyRoomCacheStatus: "hit" | "miss" | "unavailable" | "not_used";
+    coordinateCompatibility: {
+      ok: boolean;
+      tier: "exact_grid_compatible" | "aspect_compatible_rescaled" | "incompatible";
+      transferMode: "exact_grid" | "aspect_rescaled" | "none";
+      reason: string | null;
+      originalSize: { width: number; height: number } | null;
+      emptySize: { width: number; height: number } | null;
+      originalOrientation: number | null;
+      emptyOrientation: number | null;
+      originalAspect: number | null;
+      emptyAspect: number | null;
+      relativeAspectError: number | null;
+    };
+    originalDetectionStatus: "ok" | "needs_review" | "failed" | "skipped";
+    emptyDetectionStatus: "ok" | "needs_review" | "failed" | "skipped";
+    emptyDetectionFailureReason: string | null;
+    agreement: {
+      band: "strong_agreement" | "review_agreement" | "weak_agreement" | "incompatible" | "unavailable";
+      meanCornerDistance: number | null;
+      maxCornerDistance: number | null;
+      iou: number | null;
+      areaA: number | null;
+      areaB: number | null;
+      areaRatio: number | null;
+      areaAgreement: number | null;
+      reason: string | null;
+    } | null;
+    emptyQuadSelfValidity: {
+      band: string | null;
+      cameraPoseOk: boolean;
+      cameraPoseConfidence: "high" | "low" | null;
+      cameraPoseBestFovDeg: number | null;
+      cameraPoseValidFovCount: number;
+      cameraPoseValidFovRange: [number, number] | null;
+      cameraPoseReason: string | null;
+    } | null;
+    structuralPreservation: {
+      ok: boolean;
+      score: number | null;
+      band: "strong" | "ok" | "uncertain" | "weak" | "unavailable";
+      regionsUsed: string[];
+      excludedRegions: string[];
+      heuristic: true;
+      reason: string | null;
+      note: string;
+    } | null;
+    poseCompatSummary: {
+      originalSelectedConfidence: string | null;
+      originalSelectedScore: number | null;
+      emptySelectedConfidence: string | null;
+      emptySelectedScore: number | null;
+      bothGeometryConfident: boolean;
+    } | null;
+    recommendationProvenance:
+      | "empty_primary_verified"
+      | "empty_primary_review"
+      | "empty_primary_blocked"
+      | "original_fallback"
+      | "manual_required";
+    extentDiagnostics: {
+      emptyCandidateCount: number;
+      originalCandidateCount: number;
+      selectedCandidateRank: number | null;
+      selectedCandidateIntent: string | null;
+      selectedCandidateArea: number | null;
+      largestValidCandidateArea: number | null;
+      selectedVsLargestAreaRatio: number | null;
+      openingAmbiguityFlag: boolean;
+      retryOccurred: boolean;
+      retryReason: string | null;
+    };
+    multiCandidateConsensus: {
+      eligibleCandidateCount: number;
+      poseValidCandidateCount: number;
+      samePlaneConsensusStatus:
+        | "not_applicable"
+        | "insufficient_candidates"
+        | "no_joint_pose_validity"
+        | "fov_ranges_overlap"
+        | "fov_ranges_disjoint"
+        | "inconclusive";
+      consensusCandidateIndexes: number[];
+      bestFovSpreadDeg: number | null;
+      sharedFovRange: [number, number] | null;
+      hasClampedCandidateInConsensus: boolean;
+      advisoryPreferredAnchorIndex: number | null;
+      advisoryPreferredAnchorReason: string | null;
+      candidates: {
+        rank: number;
+        intent: string | null;
+        geometryBand: "high" | "medium" | "low";
+        hasClampedCorner: boolean;
+        clampedCornerCount: number | null;
+        poseScanOk: boolean;
+        bestFovDeg: number | null;
+        bestConfidence: "high" | "low" | null;
+        validFovRange: [number, number] | null;
+        validFovCount: number;
+        bestAvgReprojPx: number | null;
+        bestMaxReprojPx: number | null;
+        failureReason: string | null;
+      }[];
+      note: string | null;
+    };
+    surfacedSource: "empty" | "original" | null;
+    confidenceCeiling: "high" | "medium" | "low" | null;
+    calibratedCameraEligible: boolean;
+    policyReasons: string[];
+    failureReason: string | null;
+  };
+  surfacedResult: AutoFloorDetectionResult | null;
+  originalResult: AutoFloorDetectionResult | null;
+  emptyResult: AutoFloorDetectionResult | null;
+};
+
+type EmptyRoomAssistUiStatus =
+  | "idle"
+  | "generating"
+  | "validating"
+  | "detecting_original"
+  | "detecting_empty"
+  | "comparing"
+  | "completed"
+  | "unavailable"
+  | "blocked"
+  | "failed";
 
 const DEFAULT_MODEL_GLB_PATH = "/3d-lab/furniture-test-chair.glb";
 const LOCAL_DRAFT_STORAGE_KEY = "vibode:3d-room-lab:scene-state:v0";
@@ -443,9 +583,15 @@ type ThreeRoomLabProps = {
   // Gemini vision provider is offered in the provider selector. The route remains
   // the hard security gate regardless of this value.
   visionEnabled?: boolean;
+  // Server-derived (EMPTY_ROOM_ASSIST_ENABLED). Controls whether the lab-only
+  // Empty-Room assist panel is offered. The route remains the hard gate.
+  emptyRoomAssistEnabled?: boolean;
 };
 
-export default function ThreeRoomLab({ visionEnabled = false }: ThreeRoomLabProps) {
+export default function ThreeRoomLab({
+  visionEnabled = false,
+  emptyRoomAssistEnabled = false,
+}: ThreeRoomLabProps) {
   const envEnabled = process.env.NEXT_PUBLIC_VIBODE_ENABLE_3D_ROOM_LAB === "1";
   const availableAutoFloorProviders = useMemo(
     () => getSelectableAutoFloorDetectionProviders(visionEnabled),
@@ -557,6 +703,16 @@ export default function ThreeRoomLab({ visionEnabled = false }: ThreeRoomLabProp
     useState<AutoFloorFixtureManualCorrection>("none");
   const [fixtureObservationNotes, setFixtureObservationNotes] = useState<string>("");
   const [fixtureHarnessMessage, setFixtureHarnessMessage] = useState<string>("none");
+  // Phase 2H-B: lab-only empty-room assist. All local state; the route does the
+  // hidden generation + dual detection. Generation/detection never auto-run, never
+  // auto-apply, and never mutate floorPolygon or calibrated camera state.
+  const [emptyRoomAssistUiStatus, setEmptyRoomAssistUiStatus] =
+    useState<EmptyRoomAssistUiStatus>("idle");
+  const [emptyRoomAssistResult, setEmptyRoomAssistResult] =
+    useState<EmptyRoomAssistApiResponse | null>(null);
+  const [emptyRoomAssistMessage, setEmptyRoomAssistMessage] = useState<string>("none");
+  const [showEmptyRoomAssistDebug, setShowEmptyRoomAssistDebug] = useState(false);
+  const emptyRoomAssistInFlightRef = useRef(false);
   const [isFloorClickPlacementEnabled, setIsFloorClickPlacementEnabled] = useState(false);
   const [isFloorAnchorDragEnabled, setIsFloorAnchorDragEnabled] = useState(false);
   const [isFloorAnchorDragActive, setIsFloorAnchorDragActive] = useState(false);
@@ -1517,46 +1673,14 @@ export default function ThreeRoomLab({ visionEnabled = false }: ThreeRoomLabProp
     }
     const floorPlanePoints2D = floorRectResult.value.asArray.map((point) => floorVec3ToPlane2D(point));
 
-    const samples: Array<{
-      fov: number;
-      ok: boolean;
-      confidence?: "high" | "low";
-      avgPx?: number;
-      maxPx?: number;
-      scaleRatio?: number;
-      reason?: string;
-    }> = [];
-
-    for (let fov = scanMinFov; fov <= scanMaxFov; fov += scanStepDeg) {
-      const decompositionResult = decomposeHomographyToCameraPose(
-        homographyDebug.homographyMatrixForPlacement,
-        homographyDebug.frameSize,
-        { verticalFovDeg: fov },
-        {
-          floorPlanePoints2D,
-          imagePointsPx,
-        }
-      );
-      if (!decompositionResult.ok) {
-        samples.push({
-          fov,
-          ok: false,
-          reason: decompositionResult.reason,
-        });
-        continue;
-      }
-      samples.push({
-        fov,
-        ok: true,
-        confidence: decompositionResult.confidence,
-        avgPx: decompositionResult.value.diagnostics.averageCameraPoseReprojectionPx,
-        maxPx: decompositionResult.value.diagnostics.maxCameraPoseReprojectionPx,
-        scaleRatio: decompositionResult.value.diagnostics.columnScaleRatio,
-      });
-    }
-
-    const validSamples = samples.filter((sample) => sample.ok && sample.avgPx !== undefined && sample.maxPx !== undefined);
-    const highConfidenceSamples = validSamples.filter((sample) => sample.confidence === "high");
+    // Shared, pure FOV scan (same range/step/selection used by the empty-room
+    // assist camera self-validity gate). See scanCameraPoseOverFov.
+    const scan = scanCameraPoseOverFov(
+      homographyDebug.homographyMatrixForPlacement,
+      homographyDebug.frameSize,
+      { floorPlanePoints2D, imagePointsPx },
+      { minFovDeg: scanMinFov, maxFovDeg: scanMaxFov, stepDeg: scanStepDeg }
+    );
 
     rows.push({
       label: "camera pose FOV scan",
@@ -1564,11 +1688,11 @@ export default function ThreeRoomLab({ visionEnabled = false }: ThreeRoomLabProp
     });
     rows.push({
       label: "camera pose scan samples",
-      value: `${samples.length} tested, ${validSamples.length} valid, ${highConfidenceSamples.length} high`,
+      value: `${scan.samples.length} tested, ${scan.validCount} valid, ${scan.highConfidenceCount} high`,
     });
 
-    if (validSamples.length === 0) {
-      const firstFailure = samples.find((sample) => !sample.ok)?.reason ?? "all samples failed";
+    if (!scan.ok) {
+      const firstFailure = scan.firstFailureReason ?? "all samples failed";
       rows.push({
         label: "camera pose best FOV",
         value: `none (no valid decomposition results — ${firstFailure})`,
@@ -1576,40 +1700,30 @@ export default function ThreeRoomLab({ visionEnabled = false }: ThreeRoomLabProp
       return { rows, bestFov };
     }
 
-    const sortedByBest = [...validSamples].sort((a, b) => {
-      if (a.confidence !== b.confidence) return a.confidence === "high" ? -1 : 1;
-      if (a.avgPx! !== b.avgPx!) return a.avgPx! - b.avgPx!;
-      return a.maxPx! - b.maxPx!;
-    });
-    const bestSample = sortedByBest[0];
-    bestFov = bestSample.fov;
+    bestFov = scan.bestFovDeg;
 
-    const validFovs = validSamples.map((sample) => sample.fov);
-    const highFovs = highConfidenceSamples.map((sample) => sample.fov);
-    const formatRange = (values: number[]) =>
-      values.length === 0
-        ? "none"
-        : `${Math.min(...values)}deg-${Math.max(...values)}deg`;
+    const formatRange = (range: [number, number] | null) =>
+      range === null ? "none" : `${range[0]}deg-${range[1]}deg`;
 
     rows.push({
       label: "camera pose best FOV",
-      value: `${bestSample.fov}deg (${bestSample.confidence})`,
+      value: `${scan.bestFovDeg}deg (${scan.bestConfidence})`,
     });
     rows.push({
       label: "camera pose best reprojection",
-      value: `avg=${formatNumber(bestSample.avgPx!)} max=${formatNumber(bestSample.maxPx!)}`,
+      value: `avg=${formatNumber(scan.bestAvgPx ?? 0)} max=${formatNumber(scan.bestMaxPx ?? 0)}`,
     });
     rows.push({
       label: "camera pose best scale ratio",
-      value: formatNumber(bestSample.scaleRatio ?? 0),
+      value: formatNumber(scan.bestScaleRatio ?? 0),
     });
     rows.push({
       label: "camera pose valid FOV range",
-      value: formatRange(validFovs),
+      value: formatRange(scan.validFovRange),
     });
     rows.push({
       label: "camera pose high-confidence FOV range",
-      value: formatRange(highFovs),
+      value: formatRange(scan.highConfidenceFovRange),
     });
 
     return { rows, bestFov };
@@ -4002,6 +4116,7 @@ export default function ThreeRoomLab({ visionEnabled = false }: ThreeRoomLabProp
         autoFloorDetectionFailureReasons.length > 0
           ? autoFloorDetectionFailureReasons.join(" | ")
           : null,
+      assist: buildAssistObservationFields(),
       manualCorrectionAssessment: fixtureManualCorrection,
       humanAssessment: fixtureHumanAssessment,
       notes: fixtureObservationNotes.trim(),
@@ -4026,6 +4141,190 @@ export default function ThreeRoomLab({ visionEnabled = false }: ThreeRoomLabProp
   const handleClearFixtureObservations = () => {
     setFixtureObservations([]);
     setFixtureHarnessMessage("Cleared all fixture observations.");
+  };
+
+  // --- Phase 2H-B: empty-room assist orchestration -------------------------
+  function buildEmptyRoomAssistMessage(
+    assist: EmptyRoomAssistApiResponse["assist"],
+    generateOnly: boolean
+  ): string {
+    if (assist.emptyRoomAssistStatus === "unavailable") {
+      return `Unavailable: ${assist.failureReason ?? "empty-room assist is not available."}`;
+    }
+    if (assist.emptyRoomAssistStatus === "generated") {
+      return `Empty-room ready (cache ${assist.emptyRoomCacheStatus}). Now click “Run assisted detection”.`;
+    }
+    if (generateOnly) return "Empty-room generation completed.";
+    const structural = assist.structuralPreservation?.band ?? "unavailable";
+    const transfer =
+      assist.coordinateCompatibility.transferMode === "aspect_rescaled"
+        ? "aspect-rescaled transfer"
+        : "exact-grid transfer";
+    switch (assist.recommendationProvenance) {
+      case "empty_primary_verified":
+        return `Completed — empty-room quad surfaced as primary (verified; ${transfer}; structural ${structural}).`;
+      case "empty_primary_review": {
+        const cameraNote = assist.calibratedCameraEligible
+          ? ""
+          : " — floor proposal valid, but calibrated camera unavailable (camera pose needs manual adjustment)";
+        return `Completed — empty-room quad surfaced for review (${transfer}; structural ${structural})${cameraNote}.`;
+      }
+      case "empty_primary_blocked":
+        return `Blocked — empty quad failed a hard gate (${assist.coordinateCompatibility.reason ?? assist.failureReason ?? "self-validity/compatibility"}). Showing original as review-only fallback.`;
+      case "original_fallback": {
+        const why =
+          assist.emptyDetectionStatus === "failed" && assist.emptyDetectionFailureReason
+            ? ` (empty detection failed: ${assist.emptyDetectionFailureReason})`
+            : "";
+        return `Completed — empty-room unusable; original quad surfaced as review-only fallback.${why}`;
+      }
+      case "manual_required":
+      default:
+        return `Manual setup required — ${assist.failureReason ?? "no usable floor candidate was produced."}`;
+    }
+  }
+
+  function buildAssistObservationFields(): AutoFloorAssistObservationFields | null {
+    if (!emptyRoomAssistResult) return null;
+    const a = emptyRoomAssistResult.assist;
+    const compat: "ok" | "incompatible" | "not_evaluated" = a.coordinateCompatibility.ok
+      ? "ok"
+      : a.coordinateCompatibility.emptySize
+        ? "incompatible"
+        : "not_evaluated";
+    return {
+      emptyRoomAssistStatus: a.emptyRoomAssistStatus,
+      emptyRoomCacheStatus: a.emptyRoomCacheStatus,
+      originalDetectionStatus: a.originalDetectionStatus,
+      emptyDetectionStatus: a.emptyDetectionStatus,
+      coordinateCompatibilityStatus: compat,
+      compatibilityTier: a.coordinateCompatibility.tier,
+      relativeAspectError: a.coordinateCompatibility.relativeAspectError,
+      quadAgreementBand: a.agreement?.band ?? null,
+      agreementIou: a.agreement?.iou ?? null,
+      agreementMeanCornerDistance: a.agreement?.meanCornerDistance ?? null,
+      agreementAreaAgreement: a.agreement?.areaAgreement ?? null,
+      recommendationProvenance: a.recommendationProvenance,
+      surfacedSource: a.surfacedSource,
+      confidenceCeiling: a.confidenceCeiling,
+      emptyQuadSelfValidityBand: a.emptyQuadSelfValidity?.band ?? null,
+      emptyCameraPoseOk: a.emptyQuadSelfValidity?.cameraPoseOk ?? null,
+      emptyCameraPoseConfidence: a.emptyQuadSelfValidity?.cameraPoseConfidence ?? null,
+      emptyCameraPoseBestFovDeg: a.emptyQuadSelfValidity?.cameraPoseBestFovDeg ?? null,
+      emptyCameraPoseValidFovCount: a.emptyQuadSelfValidity?.cameraPoseValidFovCount ?? null,
+      structuralPreservationBand: a.structuralPreservation?.band ?? null,
+      structuralPreservationScore: a.structuralPreservation?.score ?? null,
+      // Phase 2H-J: read-only extent diagnostics carried from the assist response.
+      emptyCandidateCount: a.extentDiagnostics?.emptyCandidateCount ?? null,
+      originalCandidateCount: a.extentDiagnostics?.originalCandidateCount ?? null,
+      selectedCandidateRank: a.extentDiagnostics?.selectedCandidateRank ?? null,
+      selectedCandidateIntent: a.extentDiagnostics?.selectedCandidateIntent ?? null,
+      selectedCandidateArea: a.extentDiagnostics?.selectedCandidateArea ?? null,
+      largestValidCandidateArea: a.extentDiagnostics?.largestValidCandidateArea ?? null,
+      selectedVsLargestAreaRatio: a.extentDiagnostics?.selectedVsLargestAreaRatio ?? null,
+      openingAmbiguityFlag: a.extentDiagnostics?.openingAmbiguityFlag ?? null,
+      retryOccurred: a.extentDiagnostics?.retryOccurred ?? null,
+      retryReason: a.extentDiagnostics?.retryReason ?? null,
+      // Phase 2H-JF: read-only multi-candidate same-plane consensus diagnostics.
+      multiCandidatePoseValidCount: a.multiCandidateConsensus?.poseValidCandidateCount ?? null,
+      samePlaneConsensusStatus: a.multiCandidateConsensus?.samePlaneConsensusStatus ?? null,
+      sharedFovRange: a.multiCandidateConsensus?.sharedFovRange ?? null,
+      bestFovSpreadDeg: a.multiCandidateConsensus?.bestFovSpreadDeg ?? null,
+      consensusCandidateIndexes: a.multiCandidateConsensus?.consensusCandidateIndexes ?? null,
+      consensusHasClampedCandidate: a.multiCandidateConsensus?.hasClampedCandidateInConsensus ?? null,
+      advisoryPreferredAnchorIndex: a.multiCandidateConsensus?.advisoryPreferredAnchorIndex ?? null,
+      advisoryPreferredAnchorReason: a.multiCandidateConsensus?.advisoryPreferredAnchorReason ?? null,
+      // Human floor-extent assessment is manual-only; never auto-recorded here.
+      stoppedEarlyAtDoorway: null,
+      stoppedEarlyAtCloset: null,
+      overExtendedAdjacentRoom: null,
+      correctMainRoomExtent: null,
+      // Human same-plane assessment is manual-only; never auto-recorded here.
+      baysAppearCoplanar: null,
+      advisoryAnchorLooksCorrect: null,
+    };
+  }
+
+  const runEmptyRoomAssist = async (generateOnly: boolean) => {
+    if (!emptyRoomAssistEnabled) {
+      setEmptyRoomAssistMessage("Empty-room assist is disabled on the server.");
+      setEmptyRoomAssistUiStatus("unavailable");
+      return;
+    }
+    if (emptyRoomAssistInFlightRef.current) return;
+    const imageUrl = (roomImageUrl ?? "").trim();
+    if (!imageUrl) {
+      setEmptyRoomAssistMessage("Load a room image first.");
+      return;
+    }
+    if (!imageIntrinsicSize || rendererSize.width <= 0 || rendererSize.height <= 0) {
+      setEmptyRoomAssistMessage("Image is not fully loaded yet — wait for it to render, then retry.");
+      return;
+    }
+
+    emptyRoomAssistInFlightRef.current = true;
+    setEmptyRoomAssistUiStatus(generateOnly ? "generating" : "detecting_original");
+    setEmptyRoomAssistMessage(
+      generateOnly ? "Generating empty-room assist…" : "Running assisted detection…"
+    );
+
+    try {
+      const res = await fetch("/api/admin/3d-room-lab/empty-room-assist/run", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          imageUrl,
+          intrinsicSize: { width: imageIntrinsicSize.width, height: imageIntrinsicSize.height },
+          frameSize: { width: rendererSize.width, height: rendererSize.height },
+          floorRect: { widthMeters: floorMapping.worldWidth, depthMeters: floorMapping.worldDepth },
+          generateOnly,
+        }),
+      });
+      const data = (await res.json()) as EmptyRoomAssistApiResponse | { error?: string };
+      if (!("assist" in data) || !data.assist) {
+        setEmptyRoomAssistUiStatus("failed");
+        setEmptyRoomAssistMessage("Assist request was rejected by the server.");
+        return;
+      }
+
+      const typed = data as EmptyRoomAssistApiResponse;
+      setEmptyRoomAssistResult(typed);
+      const assist = typed.assist;
+      const ui: EmptyRoomAssistUiStatus =
+        assist.emptyRoomAssistStatus === "unavailable"
+          ? "unavailable"
+          : assist.emptyRoomAssistStatus === "blocked"
+            ? "blocked"
+            : assist.emptyRoomAssistStatus === "failed"
+              ? "failed"
+              : "completed";
+      setEmptyRoomAssistUiStatus(ui);
+
+      // Surface the policy-chosen candidate (empty-primary when promoted) into
+      // the existing preview/Apply flow. Never on generate-only, never
+      // auto-applied (Apply remains a separate explicit action), never mutates
+      // floorPolygon here.
+      if (!generateOnly && typed.surfacedResult && typed.surfacedResult.candidates.length > 0) {
+        setAutoFloorDetectionResult(typed.surfacedResult);
+        setSelectedAutoFloorCandidateId(typed.surfacedResult.selectedCandidateId);
+        setAutoFloorDetectionFailureReasons([]);
+        setAutoFloorDetectionRunState("completed");
+      }
+
+      setEmptyRoomAssistMessage(buildEmptyRoomAssistMessage(assist, generateOnly));
+    } catch {
+      setEmptyRoomAssistUiStatus("failed");
+      setEmptyRoomAssistMessage("Assist request failed (network or server error).");
+    } finally {
+      emptyRoomAssistInFlightRef.current = false;
+    }
+  };
+
+  const handleGenerateEmptyRoomAssist = () => {
+    void runEmptyRoomAssist(true);
+  };
+  const handleRunAssistedDetection = () => {
+    void runEmptyRoomAssist(false);
   };
 
   if (!envEnabled) {
@@ -5162,6 +5461,396 @@ export default function ThreeRoomLab({ visionEnabled = false }: ThreeRoomLabProp
 
           {fixtureHarnessMessage !== "none" && (
             <p className="mt-2 text-[11px] text-slate-400">{fixtureHarnessMessage}</p>
+          )}
+        </section>
+
+        <section className="rounded-2xl border border-indigo-500/30 bg-slate-900/70 p-4">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <h2 className="text-sm font-medium text-slate-100">Empty-Room Assist (lab)</h2>
+            <span
+              className={`rounded px-1.5 py-0.5 text-[10px] uppercase tracking-wide ${
+                emptyRoomAssistEnabled
+                  ? "bg-indigo-500/15 text-indigo-200"
+                  : "bg-slate-700/40 text-slate-400"
+              }`}
+            >
+              {emptyRoomAssistEnabled ? "available · lab-only" : "disabled on server"}
+            </span>
+          </div>
+          <p className="mt-1 text-[11px] text-slate-500">
+            Empty-room PRIMARY policy (lab): when coordinate-compatible and the empty quad is self-valid with a
+            solvable camera pose, the empty-room quad is surfaced as the primary candidate. The original detector is
+            diagnostic-only (disagreement never vetoes). A static-region structural-preservation heuristic can only
+            downgrade confidence (verified → review) — it never approves, promotes, or auto-applies. Near-standard NBP
+            grids (small aspect-ratio drift) are accepted via a narrow aspect-tolerant normalized transfer, which is
+            capped at review/medium (never verified). No tokens are charged and nothing is persisted.
+          </p>
+
+          <div className="mt-3 flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={handleGenerateEmptyRoomAssist}
+              disabled={!emptyRoomAssistEnabled || emptyRoomAssistUiStatus === "generating"}
+              className="rounded-lg border border-indigo-500/70 px-3 py-1.5 text-xs text-indigo-200 transition hover:border-indigo-300 hover:text-indigo-100 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              Generate empty-room assist
+            </button>
+            <button
+              type="button"
+              onClick={handleRunAssistedDetection}
+              disabled={
+                !emptyRoomAssistEnabled ||
+                emptyRoomAssistUiStatus === "generating" ||
+                emptyRoomAssistUiStatus === "detecting_original" ||
+                emptyRoomAssistUiStatus === "detecting_empty" ||
+                emptyRoomAssistUiStatus === "validating" ||
+                emptyRoomAssistUiStatus === "comparing"
+              }
+              className="rounded-lg border border-emerald-500/70 px-3 py-1.5 text-xs text-emerald-200 transition hover:border-emerald-300 hover:text-emerald-100 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              Run assisted detection
+            </button>
+            <label className="ml-auto flex items-center gap-1.5 text-[11px] text-slate-400">
+              <input
+                type="checkbox"
+                checked={showEmptyRoomAssistDebug}
+                onChange={(event) => setShowEmptyRoomAssistDebug(event.target.checked)}
+              />
+              Show empty-room assist debug
+            </label>
+          </div>
+
+          <div className="mt-2 flex flex-wrap items-center gap-2 text-[11px]">
+            <span className="rounded bg-slate-800 px-1.5 py-0.5 text-slate-300">status: {emptyRoomAssistUiStatus}</span>
+            {emptyRoomAssistResult && (
+              <>
+                <span className="rounded bg-slate-800 px-1.5 py-0.5 text-slate-300">
+                  provenance: {emptyRoomAssistResult.assist.recommendationProvenance}
+                </span>
+                <span className="rounded bg-slate-800 px-1.5 py-0.5 text-slate-300">
+                  tier: {emptyRoomAssistResult.assist.coordinateCompatibility.tier}
+                </span>
+                <span className="rounded bg-slate-800 px-1.5 py-0.5 text-slate-300">
+                  surfaced: {emptyRoomAssistResult.assist.surfacedSource ?? "none"}
+                </span>
+                <span
+                  className={`rounded px-1.5 py-0.5 ${
+                    emptyRoomAssistResult.assist.calibratedCameraEligible
+                      ? "bg-emerald-500/15 text-emerald-200"
+                      : "bg-amber-500/15 text-amber-200"
+                  }`}
+                >
+                  calibrated camera:{" "}
+                  {emptyRoomAssistResult.assist.calibratedCameraEligible ? "available" : "unavailable"}
+                </span>
+                <span className="rounded bg-slate-800 px-1.5 py-0.5 text-slate-300">
+                  structural: {emptyRoomAssistResult.assist.structuralPreservation?.band ?? "n/a"}
+                </span>
+                <span className="rounded bg-slate-800 px-1.5 py-0.5 text-slate-300">
+                  agreement: {emptyRoomAssistResult.assist.agreement?.band ?? "n/a"}
+                </span>
+                <span className="rounded bg-slate-800 px-1.5 py-0.5 text-slate-300">
+                  cache: {emptyRoomAssistResult.assist.emptyRoomCacheStatus}
+                </span>
+              </>
+            )}
+          </div>
+          {emptyRoomAssistMessage !== "none" && (
+            <p className="mt-2 text-[11px] text-slate-400">{emptyRoomAssistMessage}</p>
+          )}
+
+          {showEmptyRoomAssistDebug && emptyRoomAssistResult && (
+            <div className="mt-3 rounded-lg border border-slate-800 bg-slate-950/60 p-3 text-[11px]">
+              <div className="mb-1 font-medium text-slate-200">Assist debug</div>
+              <dl className="grid grid-cols-1 gap-x-3 gap-y-1 sm:grid-cols-2">
+                <div className="flex justify-between gap-2">
+                  <dt className="text-slate-400">compatibility tier</dt>
+                  <dd className="text-slate-200">
+                    {emptyRoomAssistResult.assist.coordinateCompatibility.tier} (
+                    {emptyRoomAssistResult.assist.coordinateCompatibility.transferMode})
+                  </dd>
+                </div>
+                <div className="flex justify-between gap-2">
+                  <dt className="text-slate-400">aspect (orig / empty)</dt>
+                  <dd className="text-slate-200">
+                    {emptyRoomAssistResult.assist.coordinateCompatibility.originalAspect != null
+                      ? emptyRoomAssistResult.assist.coordinateCompatibility.originalAspect.toFixed(4)
+                      : "—"}{" "}
+                    /{" "}
+                    {emptyRoomAssistResult.assist.coordinateCompatibility.emptyAspect != null
+                      ? emptyRoomAssistResult.assist.coordinateCompatibility.emptyAspect.toFixed(4)
+                      : "—"}
+                  </dd>
+                </div>
+                <div className="flex justify-between gap-2">
+                  <dt className="text-slate-400">relative aspect error</dt>
+                  <dd className="text-slate-200">
+                    {emptyRoomAssistResult.assist.coordinateCompatibility.relativeAspectError != null
+                      ? `${(emptyRoomAssistResult.assist.coordinateCompatibility.relativeAspectError * 100).toFixed(2)}%`
+                      : "—"}
+                  </dd>
+                </div>
+                <div className="flex justify-between gap-2">
+                  <dt className="text-slate-400">original size</dt>
+                  <dd className="text-slate-200">
+                    {emptyRoomAssistResult.assist.coordinateCompatibility.originalSize
+                      ? `${emptyRoomAssistResult.assist.coordinateCompatibility.originalSize.width}×${emptyRoomAssistResult.assist.coordinateCompatibility.originalSize.height}`
+                      : "—"}
+                  </dd>
+                </div>
+                <div className="flex justify-between gap-2">
+                  <dt className="text-slate-400">empty size</dt>
+                  <dd className="text-slate-200">
+                    {emptyRoomAssistResult.assist.coordinateCompatibility.emptySize
+                      ? `${emptyRoomAssistResult.assist.coordinateCompatibility.emptySize.width}×${emptyRoomAssistResult.assist.coordinateCompatibility.emptySize.height}`
+                      : "—"}
+                  </dd>
+                </div>
+                <div className="flex justify-between gap-2">
+                  <dt className="text-slate-400">original / empty detection</dt>
+                  <dd className="text-slate-200">
+                    {emptyRoomAssistResult.assist.originalDetectionStatus} /{" "}
+                    {emptyRoomAssistResult.assist.emptyDetectionStatus}
+                  </dd>
+                </div>
+                {emptyRoomAssistResult.assist.emptyDetectionStatus === "failed" &&
+                  emptyRoomAssistResult.assist.emptyDetectionFailureReason && (
+                    <div className="flex justify-between gap-2 sm:col-span-2">
+                      <dt className="text-slate-400">empty detection failure</dt>
+                      <dd className="text-right text-amber-200">
+                        {emptyRoomAssistResult.assist.emptyDetectionFailureReason}
+                      </dd>
+                    </div>
+                  )}
+                <div className="flex justify-between gap-2">
+                  <dt className="text-slate-400">candidates (empty / orig)</dt>
+                  <dd className="text-slate-200">
+                    {emptyRoomAssistResult.assist.extentDiagnostics.emptyCandidateCount} /{" "}
+                    {emptyRoomAssistResult.assist.extentDiagnostics.originalCandidateCount}
+                  </dd>
+                </div>
+                <div className="flex justify-between gap-2">
+                  <dt className="text-slate-400">selected rank / intent</dt>
+                  <dd className="text-right text-slate-200">
+                    {emptyRoomAssistResult.assist.extentDiagnostics.selectedCandidateRank != null
+                      ? `#${emptyRoomAssistResult.assist.extentDiagnostics.selectedCandidateRank}`
+                      : "—"}{" "}
+                    / {emptyRoomAssistResult.assist.extentDiagnostics.selectedCandidateIntent ?? "—"}
+                  </dd>
+                </div>
+                <div className="flex justify-between gap-2">
+                  <dt className="text-slate-400">selected / largest area ratio</dt>
+                  <dd className="text-slate-200">
+                    {emptyRoomAssistResult.assist.extentDiagnostics.selectedVsLargestAreaRatio != null
+                      ? emptyRoomAssistResult.assist.extentDiagnostics.selectedVsLargestAreaRatio.toFixed(3)
+                      : "—"}
+                  </dd>
+                </div>
+                <div className="flex justify-between gap-2">
+                  <dt className="text-slate-400">opening ambiguity</dt>
+                  <dd className="text-slate-200">
+                    {emptyRoomAssistResult.assist.extentDiagnostics.openingAmbiguityFlag ? "yes" : "no"}
+                  </dd>
+                </div>
+                <div className="flex justify-between gap-2">
+                  <dt className="text-slate-400">retry</dt>
+                  <dd className="text-slate-200">
+                    {emptyRoomAssistResult.assist.extentDiagnostics.retryOccurred
+                      ? emptyRoomAssistResult.assist.extentDiagnostics.retryReason ?? "yes"
+                      : "none"}
+                  </dd>
+                </div>
+                <div className="mt-1 border-t border-slate-700/60 pt-1 text-[10px] uppercase tracking-wide text-slate-500">
+                  same-plane consensus (diagnostic only)
+                </div>
+                <div className="flex justify-between gap-2">
+                  <dt className="text-slate-400">pose-scan (eligible / valid)</dt>
+                  <dd className="text-slate-200">
+                    {emptyRoomAssistResult.assist.multiCandidateConsensus.eligibleCandidateCount} /{" "}
+                    {emptyRoomAssistResult.assist.multiCandidateConsensus.poseValidCandidateCount}
+                  </dd>
+                </div>
+                <div className="flex justify-between gap-2">
+                  <dt className="text-slate-400">consensus status</dt>
+                  <dd className="text-right text-slate-200">
+                    {emptyRoomAssistResult.assist.multiCandidateConsensus.samePlaneConsensusStatus}
+                  </dd>
+                </div>
+                <div className="flex justify-between gap-2">
+                  <dt className="text-slate-400">shared FOV range</dt>
+                  <dd className="text-slate-200">
+                    {emptyRoomAssistResult.assist.multiCandidateConsensus.sharedFovRange
+                      ? `${emptyRoomAssistResult.assist.multiCandidateConsensus.sharedFovRange[0]}–${emptyRoomAssistResult.assist.multiCandidateConsensus.sharedFovRange[1]}°`
+                      : "—"}
+                  </dd>
+                </div>
+                <div className="flex justify-between gap-2">
+                  <dt className="text-slate-400">best-FOV spread</dt>
+                  <dd className="text-slate-200">
+                    {emptyRoomAssistResult.assist.multiCandidateConsensus.bestFovSpreadDeg != null
+                      ? `${emptyRoomAssistResult.assist.multiCandidateConsensus.bestFovSpreadDeg}°`
+                      : "—"}
+                  </dd>
+                </div>
+                <div className="flex justify-between gap-2">
+                  <dt className="text-slate-400">consensus indexes</dt>
+                  <dd className="text-right text-slate-200">
+                    {emptyRoomAssistResult.assist.multiCandidateConsensus.consensusCandidateIndexes.length > 0
+                      ? emptyRoomAssistResult.assist.multiCandidateConsensus.consensusCandidateIndexes
+                          .map((i) => `#${i}`)
+                          .join(", ")
+                      : "—"}
+                  </dd>
+                </div>
+                <div className="flex justify-between gap-2">
+                  <dt className="text-slate-400">clamped in consensus</dt>
+                  <dd className="text-slate-200">
+                    {emptyRoomAssistResult.assist.multiCandidateConsensus.hasClampedCandidateInConsensus
+                      ? "yes (cautioned)"
+                      : "no"}
+                  </dd>
+                </div>
+                <div className="flex justify-between gap-2">
+                  <dt className="text-slate-400">advisory anchor</dt>
+                  <dd className="text-right text-slate-200">
+                    {emptyRoomAssistResult.assist.multiCandidateConsensus.advisoryPreferredAnchorIndex != null
+                      ? `#${emptyRoomAssistResult.assist.multiCandidateConsensus.advisoryPreferredAnchorIndex}`
+                      : "—"}
+                  </dd>
+                </div>
+                {emptyRoomAssistResult.assist.multiCandidateConsensus.advisoryPreferredAnchorReason ? (
+                  <div className="text-[11px] text-slate-400">
+                    advisory: {emptyRoomAssistResult.assist.multiCandidateConsensus.advisoryPreferredAnchorReason}
+                  </div>
+                ) : null}
+                {emptyRoomAssistResult.assist.multiCandidateConsensus.note ? (
+                  <div className="text-[11px] text-slate-500">
+                    {emptyRoomAssistResult.assist.multiCandidateConsensus.note}
+                  </div>
+                ) : null}
+                <div className="mt-1 border-t border-slate-700/60 pt-1 text-[10px] uppercase tracking-wide text-slate-500">
+                  agreement (diagnostic)
+                </div>
+                <div className="flex justify-between gap-2">
+                  <dt className="text-slate-400">IoU</dt>
+                  <dd className="text-slate-200">
+                    {emptyRoomAssistResult.assist.agreement?.iou != null
+                      ? emptyRoomAssistResult.assist.agreement.iou.toFixed(3)
+                      : "—"}
+                  </dd>
+                </div>
+                <div className="flex justify-between gap-2">
+                  <dt className="text-slate-400">mean / max corner dist</dt>
+                  <dd className="text-slate-200">
+                    {emptyRoomAssistResult.assist.agreement?.meanCornerDistance != null
+                      ? emptyRoomAssistResult.assist.agreement.meanCornerDistance.toFixed(4)
+                      : "—"}{" "}
+                    /{" "}
+                    {emptyRoomAssistResult.assist.agreement?.maxCornerDistance != null
+                      ? emptyRoomAssistResult.assist.agreement.maxCornerDistance.toFixed(4)
+                      : "—"}
+                  </dd>
+                </div>
+                <div className="flex justify-between gap-2">
+                  <dt className="text-slate-400">area agreement</dt>
+                  <dd className="text-slate-200">
+                    {emptyRoomAssistResult.assist.agreement?.areaAgreement != null
+                      ? emptyRoomAssistResult.assist.agreement.areaAgreement.toFixed(3)
+                      : "—"}
+                  </dd>
+                </div>
+                <div className="flex justify-between gap-2">
+                  <dt className="text-slate-400">geometry-confident (both)</dt>
+                  <dd className="text-slate-200">
+                    {emptyRoomAssistResult.assist.poseCompatSummary
+                      ? emptyRoomAssistResult.assist.poseCompatSummary.bothGeometryConfident
+                        ? "yes"
+                        : "no"
+                      : "—"}
+                  </dd>
+                </div>
+                <div className="flex justify-between gap-2">
+                  <dt className="text-slate-400">surfaced / ceiling</dt>
+                  <dd className="text-slate-200">
+                    {emptyRoomAssistResult.assist.surfacedSource ?? "none"} /{" "}
+                    {emptyRoomAssistResult.assist.confidenceCeiling ?? "—"}
+                  </dd>
+                </div>
+                <div className="flex justify-between gap-2">
+                  <dt className="text-slate-400">floor proposal / calibrated camera</dt>
+                  <dd className="text-slate-200">
+                    {emptyRoomAssistResult.assist.surfacedSource === "empty" ? "valid" : "—"} /{" "}
+                    {emptyRoomAssistResult.assist.calibratedCameraEligible
+                      ? "available"
+                      : emptyRoomAssistResult.assist.surfacedSource === "empty"
+                        ? "camera pose needs adjustment"
+                        : "unavailable"}
+                  </dd>
+                </div>
+                <div className="flex justify-between gap-2">
+                  <dt className="text-slate-400">empty self-validity</dt>
+                  <dd className="text-slate-200">
+                    {emptyRoomAssistResult.assist.emptyQuadSelfValidity
+                      ? `band ${emptyRoomAssistResult.assist.emptyQuadSelfValidity.band ?? "—"} · pose ${
+                          emptyRoomAssistResult.assist.emptyQuadSelfValidity.cameraPoseOk ? "ok" : "fail"
+                        } (${emptyRoomAssistResult.assist.emptyQuadSelfValidity.cameraPoseConfidence ?? "—"})`
+                      : "—"}
+                  </dd>
+                </div>
+                <div className="flex justify-between gap-2">
+                  <dt className="text-slate-400">camera pose FOV scan</dt>
+                  <dd className="text-slate-200">
+                    {emptyRoomAssistResult.assist.emptyQuadSelfValidity
+                      ? `best ${
+                          emptyRoomAssistResult.assist.emptyQuadSelfValidity.cameraPoseBestFovDeg != null
+                            ? `${emptyRoomAssistResult.assist.emptyQuadSelfValidity.cameraPoseBestFovDeg}°`
+                            : "—"
+                        } · ${emptyRoomAssistResult.assist.emptyQuadSelfValidity.cameraPoseValidFovCount} valid${
+                          emptyRoomAssistResult.assist.emptyQuadSelfValidity.cameraPoseValidFovRange
+                            ? ` (${emptyRoomAssistResult.assist.emptyQuadSelfValidity.cameraPoseValidFovRange[0]}–${emptyRoomAssistResult.assist.emptyQuadSelfValidity.cameraPoseValidFovRange[1]}°)`
+                            : ""
+                        }`
+                      : "—"}
+                  </dd>
+                </div>
+                {emptyRoomAssistResult.assist.emptyQuadSelfValidity?.cameraPoseReason && (
+                  <div className="flex justify-between gap-2 sm:col-span-2">
+                    <dt className="text-slate-400">camera pose reason</dt>
+                    <dd className="text-right text-slate-200">
+                      {emptyRoomAssistResult.assist.emptyQuadSelfValidity.cameraPoseReason}
+                    </dd>
+                  </div>
+                )}
+                <div className="flex justify-between gap-2">
+                  <dt className="text-slate-400">structural heuristic</dt>
+                  <dd className="text-slate-200">
+                    {emptyRoomAssistResult.assist.structuralPreservation
+                      ? `${emptyRoomAssistResult.assist.structuralPreservation.band}${
+                          emptyRoomAssistResult.assist.structuralPreservation.score != null
+                            ? ` (${emptyRoomAssistResult.assist.structuralPreservation.score.toFixed(3)})`
+                            : ""
+                        }`
+                      : "—"}
+                  </dd>
+                </div>
+              </dl>
+              {emptyRoomAssistResult.assist.policyReasons.length > 0 && (
+                <div className="mt-2">
+                  <div className="text-slate-400">policy reasons</div>
+                  <ul className="mt-1 list-disc pl-4 text-slate-300">
+                    {emptyRoomAssistResult.assist.policyReasons.map((reason, idx) => (
+                      <li key={idx}>{reason}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+              <p className="mt-2 text-[11px] text-slate-500">
+                Structural-preservation is a lab-tunable heuristic over static room-shell regions (upper wall/ceiling,
+                side-wall strips, far-wall band; lower-center floor excluded). It is downgrade-only — never an approval
+                gate. Empty-room preview is intentionally withheld: the generated image is server-side only with no
+                lab-only safe-serving mechanism yet. Only derived metadata/statuses are shown.
+              </p>
+            </div>
           )}
         </section>
 

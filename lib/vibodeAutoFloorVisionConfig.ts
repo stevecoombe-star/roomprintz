@@ -104,3 +104,53 @@ export function isAutoFloorVisionAllowLocalhostHttp(): boolean {
   if (process.env.NODE_ENV === "production") return false;
   return readBoolEnv("AUTO_FLOOR_VISION_ALLOW_LOCALHOST_HTTP");
 }
+
+// --- Phase 2H-B: Empty-Room-Assisted floor calibration (lab-only) ------------
+// Independent, default-OFF gate. Turning this on does NOT change
+// AUTO_FLOOR_VISION_ENABLED semantics; assisted detection additionally requires
+// the existing vision route prerequisites (Gemini key, etc.). Server-only.
+
+/**
+ * Master gate for the lab-only Empty-Room assist workflow. Disabled unless
+ * EMPTY_ROOM_ASSIST_ENABLED is explicitly truthy. The admin route is the hard
+ * security gate regardless of this value.
+ */
+export function isEmptyRoomAssistEnabled(): boolean {
+  return readBoolEnv("EMPTY_ROOM_ASSIST_ENABLED");
+}
+
+/**
+ * Allowlist of hosts the server may fetch the GENERATED empty-room image from.
+ *
+ * The empty-room image is produced by the external compositor; its result URL
+ * host is generally distinct from the room-image allowlist. If
+ * EMPTY_ROOM_ASSIST_RESULT_HOSTS is set (comma-separated) it is authoritative.
+ * Otherwise we default to the vision room-image allowlist PLUS the configured
+ * compositor host and Supabase storage host (when derivable). data: results are
+ * decoded in-process and never go through this allowlist.
+ */
+export function getEmptyRoomAssistResultAllowedHosts(): string[] {
+  const configured = safeStr(process.env.EMPTY_ROOM_ASSIST_RESULT_HOSTS);
+  if (configured) {
+    return configured
+      .split(",")
+      .map((h) => h.trim().toLowerCase())
+      .filter((h) => h.length > 0);
+  }
+
+  const hosts = new Set<string>(getAutoFloorVisionAllowedImageHosts());
+  const compositorUrl = safeStr(process.env.ROOMPRINTZ_COMPOSITOR_URL);
+  if (compositorUrl) {
+    try {
+      hosts.add(new URL(compositorUrl).hostname.toLowerCase());
+    } catch {
+      // ignore malformed compositor URL
+    }
+  }
+  return [...hosts];
+}
+
+/** Compositor model version used for the lab empty-room generation. */
+export function getEmptyRoomAssistModelVersion(): string {
+  return safeStr(process.env.EMPTY_ROOM_ASSIST_MODEL_VERSION) ?? "NBP";
+}
