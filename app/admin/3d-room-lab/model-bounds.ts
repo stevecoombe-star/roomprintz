@@ -40,6 +40,79 @@ function isFiniteVector(vector: THREE.Vector3): boolean {
   return Number.isFinite(vector.x) && Number.isFinite(vector.y) && Number.isFinite(vector.z);
 }
 
+// --- Phase 2I-B1: placement-frame local floor-contact ---------------------
+// Pure helper that computes the model's true floor-contact Y in the
+// placementGroup local frame (the coordinate that placementGroup.scale scales).
+// This is read-only metadata math; it never mutates objects or React state and
+// never throws. Calibrated Scale uses it only to gate the "grounded at origin"
+// eligibility (it does NOT bake in the yLocal === modelYOffset shortcut so the
+// general normalization order stays auditable here).
+
+// Structural subset of scene-state's ModelNormalizationState. Kept local so
+// model-bounds.ts stays free of component/scene-state imports.
+export type ModelNormalizationLike = {
+  modelScaleMultiplier: number;
+  modelYOffset: number;
+};
+
+export type PlacementLocalFloorContactInput = {
+  autoBoundsInfo: AutoBoundsNormalization | null;
+  autoNormalizeBoundsEnabled: boolean;
+  modelNormalization: ModelNormalizationLike;
+};
+
+export type PlacementLocalFloorContactResult =
+  | { ok: true; yLocal: number; reason: "available" }
+  | { ok: false; yLocal: null; reason: string };
+
+export function computePlacementLocalFloorContactY(
+  input: PlacementLocalFloorContactInput
+): PlacementLocalFloorContactResult {
+  const { autoBoundsInfo, autoNormalizeBoundsEnabled, modelNormalization } = input;
+
+  if (!autoBoundsInfo) {
+    return { ok: false, yLocal: null, reason: "auto-bounds metadata unavailable" };
+  }
+  if (!autoBoundsInfo.ok) {
+    return { ok: false, yLocal: null, reason: "auto-bounds metadata invalid" };
+  }
+
+  const { measuredSize, measuredCenter, scale, offset } = autoBoundsInfo;
+  const candidateValues = [
+    measuredSize.x,
+    measuredSize.y,
+    measuredSize.z,
+    measuredCenter.x,
+    measuredCenter.y,
+    measuredCenter.z,
+    scale,
+    offset.x,
+    offset.y,
+    offset.z,
+    modelNormalization.modelScaleMultiplier,
+    modelNormalization.modelYOffset,
+  ];
+  if (!candidateValues.every((value) => Number.isFinite(value))) {
+    return { ok: false, yLocal: null, reason: "non-finite contact metadata" };
+  }
+
+  const minYraw = measuredCenter.y - measuredSize.y / 2;
+  // When auto-bounds normalization is currently applied, the autoBoundsGroup
+  // contributes its own scale/offset.y; otherwise it is identity (scale 1, 0).
+  const appliedAutoScale = autoNormalizeBoundsEnabled ? scale : 1;
+  const appliedAutoOffsetY = autoNormalizeBoundsEnabled ? offset.y : 0;
+  const contactInModelNormSpace = appliedAutoScale * minYraw + appliedAutoOffsetY;
+  const yLocal =
+    modelNormalization.modelScaleMultiplier * contactInModelNormSpace +
+    modelNormalization.modelYOffset;
+
+  if (!Number.isFinite(yLocal)) {
+    return { ok: false, yLocal: null, reason: "non-finite local floor-contact" };
+  }
+
+  return { ok: true, yLocal, reason: "available" };
+}
+
 export function computeAutoBoundsNormalization(object: THREE.Object3D): AutoBoundsNormalization {
   try {
     object.updateMatrixWorld(true);

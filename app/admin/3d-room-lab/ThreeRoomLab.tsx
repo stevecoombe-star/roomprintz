@@ -48,6 +48,7 @@ import {
 } from "./perspective-solve";
 import {
   computeAutoBoundsNormalization,
+  computePlacementLocalFloorContactY,
   type AutoBoundsNormalization,
 } from "./model-bounds";
 import {
@@ -240,6 +241,12 @@ type CalibratedCameraSnapshot = {
 
 const OBJECT_HANDLE_ROTATE_DEADZONE_PX = 14;
 const OBJECT_HANDLE_SCALE_MIN_START_DISTANCE_PX = 10;
+// Phase 2I-B1: tight tolerance for "object floor-contact sits at the placement
+// origin". Normalization math is float-accumulated, so this is a small epsilon
+// rather than an exact === 0 check. Calibrated Scale is only offered when the
+// computed placement-frame local floor-contact Y is within this band, so no
+// vertical compensation is needed in this slice.
+const CALIBRATED_SCALE_GROUNDED_LOCAL_Y_EPSILON = 1e-4;
 const OBJECT_HANDLE_HEIGHT_PIXELS_PER_UNIT = 120;
 const LEGACY_CAMERA_FOV_DEG = 50;
 const LEGACY_CAMERA_POSITION: [number, number, number] = [0, 1.1, 3.2];
@@ -633,6 +640,13 @@ export default function ThreeRoomLab({
   const calibratedRotateStartAngleRadRef = useRef(0);
   const calibratedRotateStartRotationDegRef = useRef(0);
   const calibratedRotateStartTransformRef = useRef<TransformState | null>(null);
+  // Phase 2I-B1: dedicated calibrated Scale drag identity/start-state refs. These
+  // are intentionally separate from the legacy object-handle scale refs and from
+  // the calibrated MOVE/Rotate refs so the Scale path has its own pointer identity.
+  const calibratedScaleDragPointerIdRef = useRef<number | null>(null);
+  const calibratedScaleStartDistancePxRef = useRef(OBJECT_HANDLE_SCALE_MIN_START_DISTANCE_PX);
+  const calibratedScaleStartUniformScaleRef = useRef(1);
+  const calibratedScaleStartTransformRef = useRef<TransformState | null>(null);
   const floorAnchorDragPointerIdRef = useRef<number | null>(null);
   const lastAcceptedFloorClickRef = useRef<FloorPoint | null>(null);
   const perspectiveDepthScalingRef = useRef<PerspectiveDepthScalingState>(
@@ -733,6 +747,9 @@ export default function ThreeRoomLab({
   // Phase 2I-A: calibrated Rotate status/diagnostics (independent of MOVE state).
   const [lastCalibratedRotateStatus, setLastCalibratedRotateStatus] = useState<string>("none");
   const [lastCalibratedRotateDeltaDeg, setLastCalibratedRotateDeltaDeg] = useState<number | null>(null);
+  // Phase 2I-B1: calibrated Scale status/diagnostics (independent of MOVE/Rotate).
+  const [lastCalibratedScaleStatus, setLastCalibratedScaleStatus] = useState<string>("none");
+  const [lastCalibratedScaleMultiplier, setLastCalibratedScaleMultiplier] = useState<number | null>(null);
   const [wasLastAnchorDragMoveRejected, setWasLastAnchorDragMoveRejected] = useState(false);
   // Compatibility marker only (Phase 1AE): legacy paths treat this as the accepted
   // screen click, while calibrated click/move update it to the derived projected
@@ -821,6 +838,10 @@ export default function ThreeRoomLab({
     calibratedRotateStartTransformRef.current = null;
     setLastCalibratedRotateStatus("none");
     setLastCalibratedRotateDeltaDeg(null);
+    calibratedScaleDragPointerIdRef.current = null;
+    calibratedScaleStartTransformRef.current = null;
+    setLastCalibratedScaleStatus("none");
+    setLastCalibratedScaleMultiplier(null);
     restoreDepthScalingAfterCalibratedMode();
     if (options?.clearAutoRevertReason) {
       setLastCalibratedCameraAutoRevertReason(null);
@@ -846,23 +867,45 @@ export default function ThreeRoomLab({
     calibratedMoveGrabOffsetRef.current = null;
     calibratedRotateDragPointerIdRef.current = null;
     calibratedRotateStartTransformRef.current = null;
+    calibratedScaleDragPointerIdRef.current = null;
+    calibratedScaleStartTransformRef.current = null;
     floorAnchorDragPointerIdRef.current = null;
     setActiveObjectHandleMode(null);
     setIsFloorAnchorDragActive(false);
     setLastCalibratedMoveStatus("none");
     setLastCalibratedRotateStatus("none");
     setLastCalibratedRotateDeltaDeg(null);
+    setLastCalibratedScaleStatus("none");
+    setLastCalibratedScaleMultiplier(null);
   }, [isCalibratedCameraActive]);
 
   // Phase 2I-A: component-teardown safety net for calibrated Rotate drag state.
   // MOVE relies on refs being garbage-collected on unmount; this mirrors that for
-  // Rotate without touching any MOVE teardown path.
+  // Rotate (and Phase 2I-B1 Scale) without touching any MOVE teardown path.
   useEffect(() => {
     return () => {
       calibratedRotateDragPointerIdRef.current = null;
       calibratedRotateStartTransformRef.current = null;
+      calibratedScaleDragPointerIdRef.current = null;
+      calibratedScaleStartTransformRef.current = null;
     };
   }, []);
+
+  // Phase 2I-B1: disabling auto-normalization mid-gesture invalidates the grounded
+  // eligibility, so any in-flight calibrated Scale drag must stop immediately.
+  useEffect(() => {
+    if (autoNormalizeBoundsEnabled) return;
+    if (calibratedScaleDragPointerIdRef.current === null) return;
+    const pointerId = calibratedScaleDragPointerIdRef.current;
+    try {
+      floorOverlayRef.current?.releasePointerCapture(pointerId);
+    } catch {
+      // Ignore release failures when capture is already cleared.
+    }
+    calibratedScaleDragPointerIdRef.current = null;
+    calibratedScaleStartTransformRef.current = null;
+    setLastCalibratedScaleStatus("none");
+  }, [autoNormalizeBoundsEnabled]);
 
   useEffect(() => {
     if (isObject2DHandlesEnabled) return;
@@ -2253,6 +2296,54 @@ export default function ThreeRoomLab({
     return { available: true, reason: "available" };
   }, [autoRotateEnabled, calibratedMoveHandleStatus.available, calibratedMoveHandleStatus.reason]);
 
+  // Phase 2I-B1: placement-frame local floor-contact Y (read-only metadata math).
+  // Used solely to gate "grounded at placement origin" Scale eligibility.
+  const calibratedScaleLocalFloorContact = useMemo(
+    () =>
+      computePlacementLocalFloorContactY({
+        autoBoundsInfo,
+        autoNormalizeBoundsEnabled,
+        modelNormalization,
+      }),
+    [autoBoundsInfo, autoNormalizeBoundsEnabled, modelNormalization]
+  );
+
+  // Phase 2I-B1: dedicated calibrated Scale availability. It inherits the full
+  // calibrated MOVE gate chain by direct reference (identical to Rotate), then adds
+  // only Scale-specific gates: auto-rotate off, auto-bounds normalization enabled,
+  // valid local floor-contact metadata, and grounded-at-origin (|yLocal| <= eps).
+  // This slice never compensates positionY, so the grounded gate is mandatory.
+  const calibratedScaleHandleStatus = useMemo(() => {
+    if (!calibratedMoveHandleStatus.available) {
+      return { available: false, reason: calibratedMoveHandleStatus.reason };
+    }
+    if (autoRotateEnabled) {
+      return { available: false, reason: "auto-rotate must be off for calibrated scale" };
+    }
+    if (!autoNormalizeBoundsEnabled) {
+      return {
+        available: false,
+        reason: "auto-bounds normalization must be enabled for calibrated scale",
+      };
+    }
+    if (!calibratedScaleLocalFloorContact.ok) {
+      return { available: false, reason: calibratedScaleLocalFloorContact.reason };
+    }
+    if (Math.abs(calibratedScaleLocalFloorContact.yLocal) > CALIBRATED_SCALE_GROUNDED_LOCAL_Y_EPSILON) {
+      return {
+        available: false,
+        reason: "object must be grounded at the placement origin for calibrated scale",
+      };
+    }
+    return { available: true, reason: "available" };
+  }, [
+    autoNormalizeBoundsEnabled,
+    autoRotateEnabled,
+    calibratedMoveHandleStatus.available,
+    calibratedMoveHandleStatus.reason,
+    calibratedScaleLocalFloorContact,
+  ]);
+
   // Phase 2B: preview-only selected suggestion. Read-only derived value; never
   // mutates the manual floor polygon.
   const selectedAutoFloorCandidate = useMemo(
@@ -2641,6 +2732,26 @@ export default function ThreeRoomLab({
         value: lastCalibratedRotateDeltaDeg === null ? "none" : formatNumber(lastCalibratedRotateDeltaDeg),
       },
       {
+        label: "calibrated scale handle",
+        value: calibratedScaleHandleStatus.available
+          ? "available"
+          : `unavailable — ${calibratedScaleHandleStatus.reason}`,
+      },
+      {
+        label: "calibrated scale status",
+        value: lastCalibratedScaleStatus,
+      },
+      {
+        label: "calibrated scale local floor contact Y",
+        value: calibratedScaleLocalFloorContact.ok
+          ? formatNumber(calibratedScaleLocalFloorContact.yLocal)
+          : `n/a (${calibratedScaleLocalFloorContact.reason})`,
+      },
+      {
+        label: "last calibrated scale multiplier",
+        value: lastCalibratedScaleMultiplier === null ? "none" : formatNumber(lastCalibratedScaleMultiplier),
+      },
+      {
         label: "calibrated camera resize note",
         value: isCalibratedCameraActive
           ? "Re-apply calibrated camera snapshot after significant viewport resize."
@@ -2709,6 +2820,11 @@ export default function ThreeRoomLab({
       calibratedRotateHandleStatus.reason,
       lastCalibratedRotateStatus,
       lastCalibratedRotateDeltaDeg,
+      calibratedScaleHandleStatus.available,
+      calibratedScaleHandleStatus.reason,
+      calibratedScaleLocalFloorContact,
+      lastCalibratedScaleStatus,
+      lastCalibratedScaleMultiplier,
       calibratedCameraFrameMatchStatus.value,
       isCalibratedCameraActive,
       calibratedCameraSnapshot,
@@ -3365,6 +3481,64 @@ export default function ThreeRoomLab({
     }
   };
 
+  // Phase 2I-B1: client-space vector from the authoritative calibrated floor-contact
+  // anchor (projected { x: positionX, y: 0, z: positionZ }) to the pointer. Same
+  // anchor source as MOVE/Rotate; deliberately NOT lastAcceptedFloorClick.
+  const getCalibratedScaleAnchorClientVector = (clientX: number, clientY: number) => {
+    const anchor = calibratedMoveHandleAnchorProjection.normalized;
+    if (!anchor) return null;
+    const overlay = floorOverlayRef.current;
+    if (!overlay) return null;
+    const rect = overlay.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return null;
+    const anchorClientX = rect.left + anchor.x * rect.width;
+    const anchorClientY = rect.top + anchor.y * rect.height;
+    const dx = clientX - anchorClientX;
+    const dy = clientY - anchorClientY;
+    const distance = Math.hypot(dx, dy);
+    return { dx, dy, distance };
+  };
+
+  const clearCalibratedScaleDragState = (event?: PointerEvent<SVGSVGElement>) => {
+    const pointerId = event?.pointerId ?? calibratedScaleDragPointerIdRef.current;
+    if (pointerId !== null) {
+      try {
+        floorOverlayRef.current?.releasePointerCapture(pointerId);
+      } catch {
+        // Ignore release failures when capture is already cleared.
+      }
+    }
+    calibratedScaleDragPointerIdRef.current = null;
+    calibratedScaleStartTransformRef.current = null;
+  };
+
+  const handleCalibratedScaleHandlePointerDown = (event: PointerEvent<SVGElement>) => {
+    if (!calibratedScaleHandleStatus.available) return;
+    const vector = getCalibratedScaleAnchorClientVector(event.clientX, event.clientY);
+    if (!vector) {
+      setLastCalibratedScaleStatus("rejected — scale anchor unavailable");
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    calibratedScaleDragPointerIdRef.current = event.pointerId;
+    calibratedScaleStartDistancePxRef.current = Math.max(
+      vector.distance,
+      OBJECT_HANDLE_SCALE_MIN_START_DISTANCE_PX
+    );
+    calibratedScaleStartUniformScaleRef.current = transformRef.current.uniformScale;
+    // Capture the full starting transform so the move path can prove only
+    // uniformScale changes (strict Scale invariant).
+    calibratedScaleStartTransformRef.current = transformRef.current;
+    setLastCalibratedScaleStatus("dragging");
+    setLastCalibratedScaleMultiplier(1);
+    try {
+      floorOverlayRef.current?.setPointerCapture(event.pointerId);
+    } catch {
+      // Pointer capture can fail in edge cases; scale still works while pointer remains in bounds.
+    }
+  };
+
   const handleObjectRotateHandlePointerDown = (event: PointerEvent<SVGElement>) => {
     if (!isObject2DHandlesEffectivelyEnabled || !lastAcceptedFloorClick) return;
     const vector = getAnchorClientVector(event.clientX, event.clientY);
@@ -3566,6 +3740,54 @@ export default function ThreeRoomLab({
       return;
     }
 
+    if (calibratedScaleDragPointerIdRef.current === event.pointerId) {
+      // Calibrated Scale is only valid while calibrated camera is active, auto-rotate
+      // is off, and grounded eligibility still holds; otherwise bail and clear to
+      // avoid stale drags. A mid-gesture eligibility loss must not mutate transform.
+      if (
+        !calibratedCameraActiveRef.current ||
+        autoRotateEnabledRef.current ||
+        !calibratedScaleHandleStatus.available
+      ) {
+        clearCalibratedScaleDragState();
+        setLastCalibratedScaleStatus("none");
+        return;
+      }
+      event.preventDefault();
+      const vector = getCalibratedScaleAnchorClientVector(event.clientX, event.clientY);
+      if (!vector) {
+        setLastCalibratedScaleStatus("rejected — scale anchor unavailable");
+        return;
+      }
+      const startDistance = Math.max(
+        calibratedScaleStartDistancePxRef.current,
+        OBJECT_HANDLE_SCALE_MIN_START_DISTANCE_PX
+      );
+      const multiplier = Math.max(vector.distance, OBJECT_HANDLE_SCALE_MIN_START_DISTANCE_PX) / startDistance;
+      const nextScale = clampValue(
+        calibratedScaleStartUniformScaleRef.current * multiplier,
+        TRANSFORM_LIMITS.uniformScale.min,
+        TRANSFORM_LIMITS.uniformScale.max
+      );
+      setLastCalibratedScaleMultiplier(multiplier);
+      // Strict Scale invariant guard: write ONLY uniformScale. Every other
+      // transform field is carried over unchanged from current state, and depth
+      // scaling / calibrated snapshot / mode / lastAcceptedFloorClick are untouched.
+      // No positionY compensation in this grounded-only slice.
+      updateTransformState(
+        (prev) => ({
+          positionX: prev.positionX,
+          positionY: prev.positionY,
+          positionZ: prev.positionZ,
+          rotationYDeg: prev.rotationYDeg,
+          uniformScale: nextScale,
+        }),
+        { markOwned: true }
+      );
+      setLastCalibratedScaleStatus("ok");
+      return;
+    }
+
     if (activeObjectHandleMode === "rotate" && objectHandleDragPointerIdRef.current === event.pointerId) {
       event.preventDefault();
       const vector = getAnchorClientVector(event.clientX, event.clientY);
@@ -3706,6 +3928,17 @@ export default function ThreeRoomLab({
     }
     calibratedRotateDragPointerIdRef.current = null;
     calibratedRotateStartTransformRef.current = null;
+
+    const calibratedScalePointerId = event?.pointerId ?? calibratedScaleDragPointerIdRef.current;
+    if (calibratedScalePointerId !== null) {
+      try {
+        floorOverlayRef.current?.releasePointerCapture(calibratedScalePointerId);
+      } catch {
+        // Ignore release failures when capture is already cleared.
+      }
+    }
+    calibratedScaleDragPointerIdRef.current = null;
+    calibratedScaleStartTransformRef.current = null;
 
     const anchorPointerId = event?.pointerId ?? floorAnchorDragPointerIdRef.current;
     if (anchorPointerId !== null) {
@@ -4878,6 +5111,53 @@ export default function ThreeRoomLab({
                       pointerEvents="none"
                     >
                       Rotate (cal)
+                    </text>
+                  </g>
+                )}
+                {calibratedScaleHandleStatus.available && calibratedMoveHandleAnchorProjection.normalized && (
+                  <g>
+                    <line
+                      x1={calibratedMoveHandleAnchorProjection.normalized.x * 100}
+                      y1={calibratedMoveHandleAnchorProjection.normalized.y * 100}
+                      x2={calibratedMoveHandleAnchorProjection.normalized.x * 100 + 4.3}
+                      y2={calibratedMoveHandleAnchorProjection.normalized.y * 100 + 3.75}
+                      stroke={calibratedScaleDragPointerIdRef.current !== null ? "#16a34a" : "#22c55e"}
+                      strokeWidth={calibratedScaleDragPointerIdRef.current !== null ? 0.9 : 0.8}
+                      strokeOpacity={0.95}
+                      pointerEvents="none"
+                    />
+                    <circle
+                      cx={calibratedMoveHandleAnchorProjection.normalized.x * 100 + 4.3}
+                      cy={calibratedMoveHandleAnchorProjection.normalized.y * 100 + 3.75}
+                      r={1.85}
+                      fill="#22c55e"
+                      stroke="#ffffff"
+                      strokeWidth={0.6}
+                      className="cursor-nwse-resize"
+                      pointerEvents="all"
+                      aria-label="Calibrated scale handle"
+                      onPointerDown={handleCalibratedScaleHandlePointerDown}
+                    >
+                      <title>Scale (calibrated, grounded)</title>
+                    </circle>
+                    <rect
+                      x={calibratedMoveHandleAnchorProjection.normalized.x * 100 + 5.4}
+                      y={calibratedMoveHandleAnchorProjection.normalized.y * 100 + 2.6}
+                      width={10.4}
+                      height={2.2}
+                      rx={0.55}
+                      fill="#14532d"
+                      fillOpacity={0.88}
+                      pointerEvents="none"
+                    />
+                    <text
+                      x={calibratedMoveHandleAnchorProjection.normalized.x * 100 + 5.9}
+                      y={calibratedMoveHandleAnchorProjection.normalized.y * 100 + 4.2}
+                      fill="#dcfce7"
+                      fontSize="2.05"
+                      pointerEvents="none"
+                    >
+                      Scale (cal)
                     </text>
                   </g>
                 )}
