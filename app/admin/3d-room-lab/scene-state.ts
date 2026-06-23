@@ -1,5 +1,9 @@
 export const SCENE_STATE_SCHEMA_VERSION = "vibode-3d-room-lab-scene-state/v0";
 export const SCENE_IMAGE_COORDINATE_SPACE_V0 = "container-normalized-v0";
+export const CALIBRATED_SCENE_STATE_CALIBRATION_VERSION_V1 = "calibrated-camera/v1";
+export const CALIBRATED_SCENE_STATE_SOLVER_V1 = "homography-planar-cv/v1";
+export const CALIBRATED_SCENE_STATE_MIN_VERTICAL_FOV_DEG = 20;
+export const CALIBRATED_SCENE_STATE_MAX_VERTICAL_FOV_DEG = 90;
 
 export type FloorPoint = { x: number; y: number };
 
@@ -37,6 +41,111 @@ export type SceneImageMetadata = {
   coordinateSpace: typeof SCENE_IMAGE_COORDINATE_SPACE_V0;
 };
 
+export type CalibratedSceneStateCalibrationV1 = {
+  calibrationVersion: typeof CALIBRATED_SCENE_STATE_CALIBRATION_VERSION_V1;
+  solver: typeof CALIBRATED_SCENE_STATE_SOLVER_V1;
+  intrinsics: {
+    verticalFovDeg: number;
+  };
+  frameAspect: number;
+  source: {
+    imageUrl: string;
+    intrinsicWidth: number;
+    intrinsicHeight: number;
+  };
+};
+
+export type ValidatedCalibrationBlock =
+  | {
+      kind: "valid";
+      value: CalibratedSceneStateCalibrationV1;
+    }
+  | {
+      kind: "absent";
+    }
+  | {
+      kind: "ignored";
+      reason: string;
+    };
+
+// Phase 2J-B3: pure provenance compatibility check used during deferred
+// calibrated-camera restore. It compares a persisted (already B1-validated)
+// calibration block against the currently usable image/frame context. It does
+// NOT evaluate solver/apply confidence gates (those live with the live camera
+// pose diagnostics) and it never compares raw viewport pixels — only the
+// persisted frameAspect vs. the current usable renderer aspect. Aspect
+// thresholds are passed in by the caller so the existing calibrated frame-match
+// constants remain the single source of truth (no second threshold system).
+export type CalibrationRestoreCompatibility =
+  | { ok: true; aspectDeltaPercent: number; warning: string | null }
+  | { ok: false; reason: string };
+
+export function evaluateCalibrationRestoreCompatibility(input: {
+  calibration: CalibratedSceneStateCalibrationV1;
+  currentRoomImageUrl: string;
+  currentIntrinsicWidth: number | null;
+  currentIntrinsicHeight: number | null;
+  currentFrameAspect: number;
+  aspectWarnDeltaPercent: number;
+  aspectAutoRevertDeltaPercent: number;
+}): CalibrationRestoreCompatibility {
+  const { calibration } = input;
+
+  // Remain fail-closed even though B1 validation already guarantees these.
+  if (calibration.calibrationVersion !== CALIBRATED_SCENE_STATE_CALIBRATION_VERSION_V1) {
+    return { ok: false, reason: "unsupported calibration version" };
+  }
+  if (calibration.solver !== CALIBRATED_SCENE_STATE_SOLVER_V1) {
+    return { ok: false, reason: "unsupported solver" };
+  }
+
+  const persistedUrl = calibration.source.imageUrl.trim();
+  const currentUrl = input.currentRoomImageUrl.trim();
+  if (persistedUrl.length === 0 || currentUrl.length === 0 || persistedUrl !== currentUrl) {
+    return { ok: false, reason: "room image URL differs from calibration source" };
+  }
+
+  if (
+    input.currentIntrinsicWidth === null ||
+    input.currentIntrinsicHeight === null ||
+    !Number.isFinite(input.currentIntrinsicWidth) ||
+    !Number.isFinite(input.currentIntrinsicHeight) ||
+    input.currentIntrinsicWidth <= 0 ||
+    input.currentIntrinsicHeight <= 0
+  ) {
+    return { ok: false, reason: "current intrinsic image dimensions unavailable" };
+  }
+  if (
+    input.currentIntrinsicWidth !== calibration.source.intrinsicWidth ||
+    input.currentIntrinsicHeight !== calibration.source.intrinsicHeight
+  ) {
+    return { ok: false, reason: "intrinsic image dimensions differ from calibration source" };
+  }
+
+  const persistedAspect = calibration.frameAspect;
+  if (!Number.isFinite(persistedAspect) || persistedAspect <= 0) {
+    return { ok: false, reason: "persisted frame aspect invalid" };
+  }
+  if (!Number.isFinite(input.currentFrameAspect) || input.currentFrameAspect <= 0) {
+    return { ok: false, reason: "current frame aspect unavailable" };
+  }
+
+  const aspectDeltaPercent =
+    (Math.abs(input.currentFrameAspect - persistedAspect) / persistedAspect) * 100;
+  if (aspectDeltaPercent >= input.aspectAutoRevertDeltaPercent) {
+    return {
+      ok: false,
+      reason: `frame aspect changed too much (da=${aspectDeltaPercent.toFixed(2)}%)`,
+    };
+  }
+
+  const warning =
+    aspectDeltaPercent > input.aspectWarnDeltaPercent
+      ? `frame aspect drift within tolerance (da=${aspectDeltaPercent.toFixed(2)}%)`
+      : null;
+  return { ok: true, aspectDeltaPercent, warning };
+}
+
 export type ImportedSceneValidated = {
   roomImageUrl: string | null;
   modelPath: string | null;
@@ -59,6 +168,7 @@ export type ImportedSceneValidated = {
     perspectiveDepthScaling: PerspectiveDepthScalingState;
   };
   image: SceneImageMetadata | null;
+  calibration: ValidatedCalibrationBlock;
   exportedAt: string | null;
 };
 
@@ -107,6 +217,7 @@ export type SceneStatePayloadInput = {
     modelStatus: string;
   };
   image?: SceneImageMetadata | null;
+  calibration?: CalibratedSceneStateCalibrationV1;
 };
 
 function clampValue(value: number, min: number, max: number): number {
@@ -139,6 +250,12 @@ function parseOptionalString(value: unknown): string | null {
   return trimmed.length > 0 ? trimmed : null;
 }
 
+function parseRequiredTrimmedString(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
 function parseFloorPoint(value: unknown): FloorPoint | null {
   if (!isRecord(value)) return null;
   const x = parseFiniteNumber(value.x);
@@ -161,6 +278,90 @@ function parseFloorPolygon(value: unknown): FloorPoint[] | null {
   return points.length >= 3 ? points : null;
 }
 
+function parseValidatedCalibrationBlock(rawCalibration: unknown): ValidatedCalibrationBlock {
+  if (typeof rawCalibration === "undefined") {
+    return { kind: "absent" };
+  }
+  if (!isRecord(rawCalibration)) {
+    return { kind: "ignored", reason: "calibration must be an object when provided." };
+  }
+
+  const calibrationVersion = parseRequiredTrimmedString(rawCalibration.calibrationVersion);
+  if (!calibrationVersion) {
+    return { kind: "ignored", reason: "calibration.calibrationVersion is required." };
+  }
+  if (calibrationVersion !== CALIBRATED_SCENE_STATE_CALIBRATION_VERSION_V1) {
+    return {
+      kind: "ignored",
+      reason: `Unsupported calibration.calibrationVersion. Expected ${CALIBRATED_SCENE_STATE_CALIBRATION_VERSION_V1}.`,
+    };
+  }
+
+  const solver = parseRequiredTrimmedString(rawCalibration.solver);
+  if (!solver) {
+    return { kind: "ignored", reason: "calibration.solver is required." };
+  }
+  if (solver !== CALIBRATED_SCENE_STATE_SOLVER_V1) {
+    return {
+      kind: "ignored",
+      reason: `Unsupported calibration.solver. Expected ${CALIBRATED_SCENE_STATE_SOLVER_V1}.`,
+    };
+  }
+
+  if (!isRecord(rawCalibration.intrinsics)) {
+    return { kind: "ignored", reason: "calibration.intrinsics must be an object." };
+  }
+  const verticalFovDeg = parseFiniteNumber(rawCalibration.intrinsics.verticalFovDeg);
+  if (
+    verticalFovDeg === null ||
+    verticalFovDeg < CALIBRATED_SCENE_STATE_MIN_VERTICAL_FOV_DEG ||
+    verticalFovDeg > CALIBRATED_SCENE_STATE_MAX_VERTICAL_FOV_DEG
+  ) {
+    return {
+      kind: "ignored",
+      reason: `calibration.intrinsics.verticalFovDeg must be within ${CALIBRATED_SCENE_STATE_MIN_VERTICAL_FOV_DEG}-${CALIBRATED_SCENE_STATE_MAX_VERTICAL_FOV_DEG}.`,
+    };
+  }
+
+  const frameAspect = parseFiniteNumber(rawCalibration.frameAspect);
+  if (frameAspect === null || frameAspect <= 0) {
+    return { kind: "ignored", reason: "calibration.frameAspect must be a positive number." };
+  }
+
+  if (!isRecord(rawCalibration.source)) {
+    return { kind: "ignored", reason: "calibration.source must be an object." };
+  }
+  const imageUrl = parseRequiredTrimmedString(rawCalibration.source.imageUrl);
+  const intrinsicWidth = parseFiniteNumber(rawCalibration.source.intrinsicWidth);
+  const intrinsicHeight = parseFiniteNumber(rawCalibration.source.intrinsicHeight);
+  if (!imageUrl) {
+    return { kind: "ignored", reason: "calibration.source.imageUrl must be a non-empty string." };
+  }
+  if (intrinsicWidth === null || intrinsicHeight === null || intrinsicWidth <= 0 || intrinsicHeight <= 0) {
+    return {
+      kind: "ignored",
+      reason: "calibration.source.intrinsicWidth and calibration.source.intrinsicHeight must be positive numbers.",
+    };
+  }
+
+  return {
+    kind: "valid",
+    value: {
+      calibrationVersion: CALIBRATED_SCENE_STATE_CALIBRATION_VERSION_V1,
+      solver: CALIBRATED_SCENE_STATE_SOLVER_V1,
+      intrinsics: {
+        verticalFovDeg,
+      },
+      frameAspect,
+      source: {
+        imageUrl,
+        intrinsicWidth,
+        intrinsicHeight,
+      },
+    },
+  };
+}
+
 export function buildSceneStatePayload(input: SceneStatePayloadInput) {
   return {
     schemaVersion: SCENE_STATE_SCHEMA_VERSION,
@@ -171,6 +372,21 @@ export function buildSceneStatePayload(input: SceneStatePayloadInput) {
           intrinsicWidth: input.image.intrinsicWidth,
           intrinsicHeight: input.image.intrinsicHeight,
           coordinateSpace: input.image.coordinateSpace,
+        }
+      : undefined,
+    calibration: input.calibration
+      ? {
+          calibrationVersion: input.calibration.calibrationVersion,
+          solver: input.calibration.solver,
+          intrinsics: {
+            verticalFovDeg: input.calibration.intrinsics.verticalFovDeg,
+          },
+          frameAspect: input.calibration.frameAspect,
+          source: {
+            imageUrl: input.calibration.source.imageUrl,
+            intrinsicWidth: input.calibration.source.intrinsicWidth,
+            intrinsicHeight: input.calibration.source.intrinsicHeight,
+          },
         }
       : undefined,
     model: {
@@ -233,7 +449,9 @@ export function validateImportedSceneJson(
 
   const roomImageUrlRaw = (raw as Record<string, unknown>).roomImageUrl;
   const imageRaw = (raw as Record<string, unknown>).image;
+  const calibrationRaw = (raw as Record<string, unknown>).calibration;
   const modelRaw = (raw as Record<string, unknown>).model;
+  const calibration = parseValidatedCalibrationBlock(calibrationRaw);
   const modelPath =
     isRecord(modelRaw) && typeof modelRaw.modelPath === "string" ? modelRaw.modelPath.trim() : null;
   const modelNormalizationRaw = isRecord(modelRaw) ? modelRaw.normalization : undefined;
@@ -456,6 +674,7 @@ export function validateImportedSceneJson(
       perspectiveDepthScaling,
     },
     image,
+    calibration,
     exportedAt: parseOptionalString((raw as Record<string, unknown>).exportedAt),
   };
 }

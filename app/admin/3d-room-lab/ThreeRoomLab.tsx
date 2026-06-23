@@ -23,9 +23,15 @@ import {
   selectViewportSafeHandleOffset,
 } from "./floor-math";
 import {
+  CALIBRATED_SCENE_STATE_CALIBRATION_VERSION_V1,
+  CALIBRATED_SCENE_STATE_MAX_VERTICAL_FOV_DEG,
+  CALIBRATED_SCENE_STATE_MIN_VERTICAL_FOV_DEG,
+  CALIBRATED_SCENE_STATE_SOLVER_V1,
   SCENE_IMAGE_COORDINATE_SPACE_V0,
   buildSceneStatePayload,
+  evaluateCalibrationRestoreCompatibility,
   validateImportedSceneJson,
+  type CalibratedSceneStateCalibrationV1,
   type FloorMappingState,
   type FloorPoint,
   type ImportedSceneValidated,
@@ -706,6 +712,10 @@ export default function ThreeRoomLab({
     DEFAULT_ROOM_IMAGE_URL ? "loading" : "idle"
   );
   const [imageIntrinsicSize, setImageIntrinsicSize] = useState<ImageIntrinsicSize | null>(null);
+  // Phase 2J-B3R: identity of the room image URL that actually finished loading
+  // with valid intrinsic dimensions. Readiness checks use this to distinguish
+  // "same URL already loaded" from "same URL still loading/error".
+  const [loadedImageUrl, setLoadedImageUrl] = useState<string | null>(null);
   const [modelLoadState, setModelLoadState] = useState<ModelLoadState>("idle");
   const [modelLoadError, setModelLoadError] = useState<string | null>(null);
   const [modelPathInput, setModelPathInput] = useState(DEFAULT_MODEL_GLB_PATH);
@@ -727,6 +737,19 @@ export default function ThreeRoomLab({
   const [isCalibratedCameraActive, setIsCalibratedCameraActive] = useState(false);
   const [calibratedCameraSnapshot, setCalibratedCameraSnapshot] = useState<CalibratedCameraSnapshot | null>(null);
   const [lastCalibratedCameraAutoRevertReason, setLastCalibratedCameraAutoRevertReason] = useState<string | null>(null);
+  // Phase 2J-B3: deferred calibrated-camera restore. A scene import always
+  // restores generic state, but a persisted calibration block is only an
+  // optional re-solve REQUEST. We stash the validated block as a pending request
+  // and wait for the imported image + frame to become usable before attempting a
+  // fresh, compatible solve. `calibrationRestoreRequestIdRef` is the monotonic
+  // generation used to cancel stale requests when a newer import/image change
+  // arrives, so an old pending request can never apply out of order.
+  const [pendingCalibrationRestore, setPendingCalibrationRestore] = useState<{
+    requestId: number;
+    calibration: CalibratedSceneStateCalibrationV1;
+  } | null>(null);
+  const calibrationRestoreRequestIdRef = useRef(0);
+  const [calibratedRestoreStatus, setCalibratedRestoreStatus] = useState<string>("none");
   const [floorClickMappingMode, setFloorClickMappingMode] = useState<FloorClickMappingMode>("legacy");
   const [lastFloorClickMappingResult, setLastFloorClickMappingResult] = useState<string>("legacy");
   const [showFloorOverlay, setShowFloorOverlay] = useState(true);
@@ -860,6 +883,65 @@ export default function ThreeRoomLab({
     calibratedCameraSnapshotRef.current = calibratedCameraSnapshot;
   }, [calibratedCameraSnapshot]);
 
+  const hasValidIntrinsicDimensions = useCallback(
+    (size: ImageIntrinsicSize | null): size is ImageIntrinsicSize =>
+      !!size &&
+      Number.isFinite(size.width) &&
+      Number.isFinite(size.height) &&
+      size.width > 0 &&
+      size.height > 0,
+    []
+  );
+
+  const isRoomImageReadyForUrl = useCallback(
+    (candidateUrl: string) => {
+      const trimmedCandidateUrl = candidateUrl.trim();
+      if (!trimmedCandidateUrl) return false;
+      if (imageLoadState !== "loaded") return false;
+      if (loadedImageUrl !== trimmedCandidateUrl) return false;
+      return hasValidIntrinsicDimensions(imageIntrinsicSize);
+    },
+    [hasValidIntrinsicDimensions, imageIntrinsicSize, imageLoadState, loadedImageUrl]
+  );
+
+  const applyRoomImageRequest = useCallback(
+    (requestedUrl: string) => {
+      const trimmedRequestedUrl = requestedUrl.trim();
+      const trimmedCurrentRoomImageUrl = roomImageUrl.trim();
+      if (!trimmedRequestedUrl) {
+        setImageLoadState("idle");
+        setImageIntrinsicSize(null);
+        setLoadedImageUrl(null);
+        return;
+      }
+      if (isRoomImageReadyForUrl(trimmedRequestedUrl)) {
+        setImageLoadState("loaded");
+        return;
+      }
+      if (trimmedRequestedUrl === trimmedCurrentRoomImageUrl && imageLoadState === "error") {
+        // Same URL remains errored until the URL actually changes or a real load
+        // event occurs; do not force a synthetic "loading" state that can hang.
+        setImageLoadState("error");
+        setImageIntrinsicSize(null);
+        setLoadedImageUrl(null);
+        return;
+      }
+      setImageLoadState("loading");
+      setImageIntrinsicSize(null);
+      setLoadedImageUrl(null);
+    },
+    [imageLoadState, isRoomImageReadyForUrl, roomImageUrl]
+  );
+
+  const cancelPendingCalibrationRestoreAfterManualGeometryChange = useCallback(() => {
+    if (!pendingCalibrationRestore) return;
+    calibrationRestoreRequestIdRef.current += 1;
+    setPendingCalibrationRestore(null);
+    setCalibratedRestoreStatus(
+      "Pending calibrated restore cancelled after manual scene geometry change."
+    );
+  }, [pendingCalibrationRestore]);
+
   const captureAndNeutralizeDepthScalingForCalibratedMode = useCallback(() => {
     if (!preCalibratedDepthScalingRef.current) {
       preCalibratedDepthScalingRef.current = { ...perspectiveDepthScalingRef.current };
@@ -899,6 +981,34 @@ export default function ThreeRoomLab({
       setLastCalibratedCameraAutoRevertReason(null);
     }
   }, [restoreDepthScalingAfterCalibratedMode]);
+
+  // Phase 2J-B3: single established calibrated-camera apply path. Both the manual
+  // "Apply calibrated camera" button and the deferred restore effect funnel
+  // through here so there is no parallel application mechanism. The camera pose
+  // is always taken from a freshly derived candidate; it is never reconstructed
+  // from a persisted snapshot.
+  const applyCalibratedCameraSnapshotFromCandidate = useCallback(
+    (
+      candidate: {
+        pose: CalibratedCameraSnapshot["pose"];
+        frameSize: ImageFrameSize;
+        diagnosticsSummary: string;
+      },
+      fovDeg: number
+    ) => {
+      captureAndNeutralizeDepthScalingForCalibratedMode();
+      setLastCalibratedCameraAutoRevertReason(null);
+      setCalibratedCameraSnapshot({
+        pose: candidate.pose,
+        fovDeg,
+        frameSize: candidate.frameSize,
+        diagnosticsSummary: candidate.diagnosticsSummary,
+        appliedAtIso: new Date().toISOString(),
+      });
+      setIsCalibratedCameraActive(true);
+    },
+    [captureAndNeutralizeDepthScalingForCalibratedMode]
+  );
 
   useEffect(() => {
     if (!isCalibratedCameraActive || !calibratedCameraSnapshot) return;
@@ -1930,6 +2040,125 @@ export default function ThreeRoomLab({
     }
     return { available: true, reason: "available" };
   }, [cameraPoseDebug.applyCandidate, cameraPoseDebug.unavailableReason]);
+
+  // Phase 2J-B3: deferred calibrated-camera restore. This runs reactively, not
+  // in a render loop: while a request is pending it simply waits (no side
+  // effects) until the imported image + frame become usable, then makes a single
+  // terminal decision and clears the request. A newer import/image change bumps
+  // calibrationRestoreRequestIdRef so a superseded request is dropped, never
+  // applied. Calibrated mode is only ever activated here through the same fresh
+  // candidate + apply path used by the manual button.
+  useEffect(() => {
+    const pending = pendingCalibrationRestore;
+    if (!pending) return;
+
+    // Cancellation guard: a newer import/image change invalidated this request.
+    if (pending.requestId !== calibrationRestoreRequestIdRef.current) {
+      setPendingCalibrationRestore(null);
+      return;
+    }
+
+    const finish = (status: string) => {
+      setPendingCalibrationRestore(null);
+      setCalibratedRestoreStatus(status);
+    };
+
+    if (roomImageUrl.trim().length === 0) {
+      finish("Calibration not restored: imported scene has no room image.");
+      return;
+    }
+    if (imageLoadState === "error") {
+      finish("Calibration not restored: room image failed to load.");
+      return;
+    }
+
+    // Not ready yet — wait for the image to finish loading, ensure that the
+    // loaded-image identity matches the current URL, and require valid
+    // intrinsic dimensions.
+    const roomImageUrlTrimmed = roomImageUrl.trim();
+    if (imageLoadState !== "loaded") return;
+    if (!roomImageUrlTrimmed || loadedImageUrl !== roomImageUrlTrimmed) return;
+    if (!hasValidIntrinsicDimensions(imageIntrinsicSize)) {
+      finish("Calibration not restored: current intrinsic image dimensions unavailable.");
+      return;
+    }
+    const hasUsableFrame =
+      Number.isFinite(rendererSize.width) &&
+      Number.isFinite(rendererSize.height) &&
+      rendererSize.width > 0 &&
+      rendererSize.height > 0;
+    if (!hasUsableFrame) return;
+
+    // The persisted FOV assumption must already be synced into the solver input
+    // before the derived candidate can be trusted as a fresh re-solve.
+    const persistedFovDeg = clampValue(
+      pending.calibration.intrinsics.verticalFovDeg,
+      CALIBRATED_SCENE_STATE_MIN_VERTICAL_FOV_DEG,
+      CALIBRATED_SCENE_STATE_MAX_VERTICAL_FOV_DEG
+    );
+    if (cameraPoseFovYDeg !== persistedFovDeg) {
+      setCameraPoseFovYDeg(persistedFovDeg);
+      return;
+    }
+
+    // ----- Terminal decision: clear the pending request exactly once. -----
+
+    // PositionY below the resting floor blocks calibrated mode (generic
+    // transform is still restored).
+    if (transform.positionY < -CALIBRATED_LIFT_RESTING_SNAP_EPSILON) {
+      finish("Calibration blocked: imported object sits below the calibrated floor.");
+      return;
+    }
+
+    // Provenance + aspect compatibility (trimmed URL / intrinsic dims / persisted
+    // vs. current frame aspect, using the existing aspect thresholds).
+    const compat = evaluateCalibrationRestoreCompatibility({
+      calibration: pending.calibration,
+      currentRoomImageUrl: roomImageUrlTrimmed,
+      currentIntrinsicWidth: imageIntrinsicSize.width,
+      currentIntrinsicHeight: imageIntrinsicSize.height,
+      currentFrameAspect: rendererSize.width / rendererSize.height,
+      aspectWarnDeltaPercent: CALIBRATED_CAMERA_STALE_WARN_ASPECT_DELTA_PERCENT,
+      aspectAutoRevertDeltaPercent: CALIBRATED_CAMERA_AUTO_REVERT_ASPECT_DELTA_PERCENT,
+    });
+    if (!compat.ok) {
+      finish(`Calibration not restored: ${compat.reason}`);
+      return;
+    }
+
+    // Fresh solve must clear the existing calibrated-camera apply safety gates.
+    const candidate = cameraPoseDebug.applyCandidate;
+    if (!candidate || !calibratedCameraApplyStatus.available) {
+      const reason = candidate
+        ? calibratedCameraApplyStatus.reason
+        : cameraPoseDebug.unavailableReason ?? "no pose candidate";
+      finish(`Calibration not restored: re-solve/apply gate failed (${reason}).`);
+      return;
+    }
+
+    applyCalibratedCameraSnapshotFromCandidate(candidate, persistedFovDeg);
+    finish(
+      compat.warning
+        ? `Calibrated camera restored (warning: ${compat.warning}).`
+        : "Calibrated camera restored from imported scene."
+    );
+  }, [
+    pendingCalibrationRestore,
+    roomImageUrl,
+    loadedImageUrl,
+    imageLoadState,
+    imageIntrinsicSize,
+    rendererSize.width,
+    rendererSize.height,
+    cameraPoseFovYDeg,
+    transform.positionY,
+    cameraPoseDebug.applyCandidate,
+    cameraPoseDebug.unavailableReason,
+    calibratedCameraApplyStatus.available,
+    calibratedCameraApplyStatus.reason,
+    hasValidIntrinsicDimensions,
+    applyCalibratedCameraSnapshotFromCandidate,
+  ]);
 
   const cameraPoseGridPolylinesNorm = useMemo(() => {
     if (!showHomographyDebugOverlay) return [] as FloorPoint[][];
@@ -3227,6 +3456,10 @@ export default function ThreeRoomLab({
         value: calibratedCameraFrameMatchStatus.value,
       },
       {
+        label: "calibrated camera restore",
+        value: calibratedRestoreStatus,
+      },
+      {
         label: "projected-vs-anchor warning",
         value:
           isCalibratedCameraActive && objectProjectionDiagnostic.largeDelta
@@ -3306,6 +3539,7 @@ export default function ThreeRoomLab({
       calibratedLiftHandlePlacement.reason,
       transform.positionY,
       calibratedCameraFrameMatchStatus.value,
+      calibratedRestoreStatus,
       isCalibratedCameraActive,
       calibratedCameraSnapshot,
       lastCalibratedMoveStatus,
@@ -3482,11 +3716,13 @@ export default function ThreeRoomLab({
   };
 
   const handleResetTransform = () => {
+    cancelPendingCalibrationRestoreAfterManualGeometryChange();
     autoRotateOffsetDegRef.current = 0;
     updateTransformState(defaultTransformForKind(activeObjectKind), { markOwned: true });
   };
 
   const handleResetModelNormalization = () => {
+    cancelPendingCalibrationRestoreAfterManualGeometryChange();
     setModelNormalization(DEFAULT_MODEL_NORMALIZATION);
   };
 
@@ -3658,43 +3894,86 @@ export default function ThreeRoomLab({
   }, [deactivateCalibratedCameraMode, selectedAutoFloorCandidate, selectedAutoFloorCandidateScore]);
 
   const buildCurrentSceneStatePayload = (exportedAtIso: string) =>
-    buildSceneStatePayload({
-      exportedAtIso,
-      roomImageUrl,
-      modelPath,
-      activeObjectType: currentActiveObjectType,
-      glbLoadStatus: modelLoadState,
-      modelNormalization,
-      transform: {
-        positionX: transform.positionX,
-        positionY: transform.positionY,
-        positionZ: transform.positionZ,
-        rotationYDeg: transform.rotationYDeg,
-        uniformScale: transform.uniformScale,
-        autoRotate: autoRotateEnabled,
-      },
-      floor: {
-        polygon: floorPolygon,
-        overlayVisible: showFloorOverlay,
-        placementModeEnabled: isFloorClickPlacementEnabled,
-        lastAcceptedClick: lastAcceptedFloorClick,
-        lastRejectedClick: lastRejectedFloorClick,
-        mapping: floorMapping,
-        perspectiveDepthScaling,
-      },
-      image: imageIntrinsicSize
-        ? {
-            intrinsicWidth: imageIntrinsicSize.width,
-            intrinsicHeight: imageIntrinsicSize.height,
-            coordinateSpace: SCENE_IMAGE_COORDINATE_SPACE_V0,
-          }
-        : null,
-      debug: {
-        rendererSize,
-        imageStatus: imageLoadState,
-        modelStatus: formatModelStatus(modelLoadState, modelLoadError),
-      },
-    });
+    {
+      const roomImageUrlTrimmed = roomImageUrl.trim();
+      const hasValidIntrinsicImageSize =
+        !!imageIntrinsicSize &&
+        Number.isFinite(imageIntrinsicSize.width) &&
+        Number.isFinite(imageIntrinsicSize.height) &&
+        imageIntrinsicSize.width > 0 &&
+        imageIntrinsicSize.height > 0;
+      const hasValidRendererSize =
+        Number.isFinite(rendererSize.width) &&
+        Number.isFinite(rendererSize.height) &&
+        rendererSize.width > 0 &&
+        rendererSize.height > 0;
+      const authoritativeCalibrationFovDeg = calibratedCameraSnapshot?.fovDeg ?? null;
+      const hasValidAuthoritativeFov =
+        authoritativeCalibrationFovDeg !== null &&
+        Number.isFinite(authoritativeCalibrationFovDeg) &&
+        authoritativeCalibrationFovDeg >= CALIBRATED_SCENE_STATE_MIN_VERTICAL_FOV_DEG &&
+        authoritativeCalibrationFovDeg <= CALIBRATED_SCENE_STATE_MAX_VERTICAL_FOV_DEG;
+      const calibrationForExport: CalibratedSceneStateCalibrationV1 | undefined =
+        isCalibratedCameraActive &&
+        !!calibratedCameraSnapshot &&
+        roomImageUrlTrimmed.length > 0 &&
+        hasValidIntrinsicImageSize &&
+        hasValidRendererSize &&
+        hasValidAuthoritativeFov
+          ? {
+              calibrationVersion: CALIBRATED_SCENE_STATE_CALIBRATION_VERSION_V1,
+              solver: CALIBRATED_SCENE_STATE_SOLVER_V1,
+              intrinsics: {
+                verticalFovDeg: authoritativeCalibrationFovDeg,
+              },
+              frameAspect: rendererSize.width / rendererSize.height,
+              source: {
+                imageUrl: roomImageUrlTrimmed,
+                intrinsicWidth: imageIntrinsicSize.width,
+                intrinsicHeight: imageIntrinsicSize.height,
+              },
+            }
+          : undefined;
+
+      return buildSceneStatePayload({
+        exportedAtIso,
+        roomImageUrl,
+        modelPath,
+        activeObjectType: currentActiveObjectType,
+        glbLoadStatus: modelLoadState,
+        modelNormalization,
+        transform: {
+          positionX: transform.positionX,
+          positionY: transform.positionY,
+          positionZ: transform.positionZ,
+          rotationYDeg: transform.rotationYDeg,
+          uniformScale: transform.uniformScale,
+          autoRotate: autoRotateEnabled,
+        },
+        floor: {
+          polygon: floorPolygon,
+          overlayVisible: showFloorOverlay,
+          placementModeEnabled: isFloorClickPlacementEnabled,
+          lastAcceptedClick: lastAcceptedFloorClick,
+          lastRejectedClick: lastRejectedFloorClick,
+          mapping: floorMapping,
+          perspectiveDepthScaling,
+        },
+        image: imageIntrinsicSize
+          ? {
+              intrinsicWidth: imageIntrinsicSize.width,
+              intrinsicHeight: imageIntrinsicSize.height,
+              coordinateSpace: SCENE_IMAGE_COORDINATE_SPACE_V0,
+            }
+          : null,
+        calibration: calibrationForExport,
+        debug: {
+          rendererSize,
+          imageStatus: imageLoadState,
+          modelStatus: formatModelStatus(modelLoadState, modelLoadError),
+        },
+      });
+    };
 
   const sceneStateJson = useMemo(() => {
     const payload = buildCurrentSceneStatePayload(sceneStateExportedAt);
@@ -3722,6 +4001,8 @@ export default function ThreeRoomLab({
     modelNormalization.modelScaleMultiplier,
     modelNormalization.modelYOffset,
     modelNormalization.modelYawOffsetDeg,
+    calibratedCameraSnapshot,
+    isCalibratedCameraActive,
     rendererSize,
     roomImageUrl,
     sceneStateExportedAt,
@@ -4636,28 +4917,35 @@ export default function ThreeRoomLab({
   };
 
   const applyValidatedSceneState = (validated: ImportedSceneValidated, nextExportedAt: string) => {
+    // Phase 2J-B3: any prior calibrated-camera mode/snapshot must not survive an
+    // import. We always drop back to legacy first so a stale pre-import snapshot
+    // can never leak into the restored scene; calibrated mode is only ever
+    // re-established below through a fresh, compatible solve.
+    deactivateCalibratedCameraMode({ clearAutoRevertReason: true });
+
     if (validated.modelPath !== null) {
       setModelPathInput(validated.modelPath);
       setModelPath(validated.modelPath);
     }
     setModelNormalization(validated.modelNormalization);
     const nextRoomImageUrl = validated.roomImageUrl ?? "";
+    const nextRoomImageUrlTrimmed = nextRoomImageUrl.trim();
     setRoomImageInput(nextRoomImageUrl);
     setRoomImageUrl(nextRoomImageUrl);
-    setImageLoadState(nextRoomImageUrl ? "loading" : "idle");
-    setImageIntrinsicSize(
-      validated.image
-        ? {
-            width: validated.image.intrinsicWidth,
-            height: validated.image.intrinsicHeight,
-          }
-        : null
-    );
+    applyRoomImageRequest(nextRoomImageUrlTrimmed);
+
+    // Phase 2J-B3: positionY resting-band normalization. Within the resting
+    // epsilon we snap to exactly 0; values above the band stay lifted; values
+    // below -epsilon are preserved as generic transform but will block
+    // calibrated restore in the deferred effect below.
+    const importedPositionY = validated.transform.positionY;
+    const normalizedPositionY =
+      Math.abs(importedPositionY) <= CALIBRATED_LIFT_RESTING_SNAP_EPSILON ? 0 : importedPositionY;
 
     updateTransformState(
       {
         positionX: validated.transform.positionX,
-        positionY: validated.transform.positionY,
+        positionY: normalizedPositionY,
         positionZ: validated.transform.positionZ,
         rotationYDeg: validated.transform.rotationYDeg,
         uniformScale: validated.transform.uniformScale,
@@ -4684,6 +4972,39 @@ export default function ThreeRoomLab({
     objectHandleDragPointerIdRef.current = null;
     setActiveObjectHandleMode(null);
     floorAnchorDragPointerIdRef.current = null;
+
+    // Phase 2J-B3: treat the optional calibration block as a deferred re-solve
+    // request. Bumping the monotonic generation invalidates any older pending
+    // request (e.g. a previous import whose image had not finished loading).
+    const nextRestoreRequestId = calibrationRestoreRequestIdRef.current + 1;
+    calibrationRestoreRequestIdRef.current = nextRestoreRequestId;
+    if (validated.calibration.kind === "valid") {
+      // Restore the persisted FOV assumption so the existing camera-pose
+      // derivation re-solves against the imported floor + current frame.
+      setCameraPoseFovYDeg(
+        clampValue(
+          validated.calibration.value.intrinsics.verticalFovDeg,
+          CALIBRATED_SCENE_STATE_MIN_VERTICAL_FOV_DEG,
+          CALIBRATED_SCENE_STATE_MAX_VERTICAL_FOV_DEG
+        )
+      );
+      setPendingCalibrationRestore({
+        requestId: nextRestoreRequestId,
+        calibration: validated.calibration.value,
+      });
+      setCalibratedRestoreStatus(
+        isRoomImageReadyForUrl(nextRoomImageUrlTrimmed)
+          ? "Calibration pending: image ready; waiting for compatible frame/solve."
+          : "Calibration pending: waiting for image and frame to become usable."
+      );
+    } else {
+      setPendingCalibrationRestore(null);
+      if (validated.calibration.kind === "ignored") {
+        setCalibratedRestoreStatus(`Calibration ignored: ${validated.calibration.reason}`);
+      } else {
+        setCalibratedRestoreStatus("Imported scene has no calibrated camera provenance.");
+      }
+    }
 
     setSceneStateExportedAt(nextExportedAt);
   };
@@ -5071,8 +5392,14 @@ export default function ThreeRoomLab({
     event.preventDefault();
     const nextUrl = roomImageInput.trim();
     setRoomImageUrl(nextUrl);
-    setImageLoadState(nextUrl ? "loading" : "idle");
-    setImageIntrinsicSize(null);
+    applyRoomImageRequest(nextUrl);
+    // Phase 2J-B3: a manual image change supersedes any pending calibrated
+    // restore (cancellation-safe via the monotonic generation bump).
+    if (pendingCalibrationRestore) {
+      calibrationRestoreRequestIdRef.current += 1;
+      setPendingCalibrationRestore(null);
+      setCalibratedRestoreStatus("Calibration restore cancelled: room image changed before restore.");
+    }
   };
 
   // --- Phase 2F-G1: fixture harness helpers --------------------------------
@@ -5107,8 +5434,13 @@ export default function ThreeRoomLab({
     const nextUrl = resolveFixtureImageUrl(selectedFixture.imageUrl);
     setRoomImageInput(nextUrl);
     setRoomImageUrl(nextUrl);
-    setImageLoadState(nextUrl ? "loading" : "idle");
-    setImageIntrinsicSize(null);
+    applyRoomImageRequest(nextUrl);
+    // Phase 2J-B3: swapping the fixture image supersedes any pending restore.
+    if (pendingCalibrationRestore) {
+      calibrationRestoreRequestIdRef.current += 1;
+      setPendingCalibrationRestore(null);
+      setCalibratedRestoreStatus("Calibration restore cancelled: room image changed before restore.");
+    }
     setFixtureHarnessMessage(
       `Loaded fixture "${selectedFixture.label}". Detection not run; manual polygon preserved.`
     );
@@ -5459,13 +5791,22 @@ export default function ThreeRoomLab({
                 alt="Room base"
                 className="absolute inset-0 z-0 h-full w-full object-cover"
                 onLoad={(event) => {
+                  const loadedUrl = roomImageUrl.trim();
                   const width = event.currentTarget.naturalWidth;
                   const height = event.currentTarget.naturalHeight;
-                  setImageIntrinsicSize(width > 0 && height > 0 ? { width, height } : null);
-                  setImageLoadState("loaded");
+                  if (width > 0 && height > 0) {
+                    setImageIntrinsicSize({ width, height });
+                    setLoadedImageUrl(loadedUrl || null);
+                    setImageLoadState("loaded");
+                    return;
+                  }
+                  setImageIntrinsicSize(null);
+                  setLoadedImageUrl(null);
+                  setImageLoadState("error");
                 }}
                 onError={() => {
                   setImageIntrinsicSize(null);
+                  setLoadedImageUrl(null);
                   setImageLoadState("error");
                 }}
               />
@@ -6168,6 +6509,7 @@ export default function ThreeRoomLab({
               <button
                 type="button"
                 onClick={() => {
+                  cancelPendingCalibrationRestoreAfterManualGeometryChange();
                   setFloorPolygon(DEFAULT_FLOOR_POLYGON);
                   setActiveFloorHandleIndex(null);
                   dragPointerIdRef.current = null;
@@ -7401,16 +7743,7 @@ export default function ThreeRoomLab({
               onClick={() => {
                 const candidate = cameraPoseDebug.applyCandidate;
                 if (!candidate || !calibratedCameraApplyStatus.available) return;
-                captureAndNeutralizeDepthScalingForCalibratedMode();
-                setLastCalibratedCameraAutoRevertReason(null);
-                setCalibratedCameraSnapshot({
-                  pose: candidate.pose,
-                  fovDeg: cameraPoseFovYDeg,
-                  frameSize: candidate.frameSize,
-                  diagnosticsSummary: candidate.diagnosticsSummary,
-                  appliedAtIso: new Date().toISOString(),
-                });
-                setIsCalibratedCameraActive(true);
+                applyCalibratedCameraSnapshotFromCandidate(candidate, cameraPoseFovYDeg);
               }}
               disabled={!calibratedCameraApplyStatus.available}
               className="rounded border border-slate-700 px-2 py-1 text-slate-200 transition hover:border-cyan-400/80 hover:text-cyan-200 disabled:cursor-not-allowed disabled:opacity-50"
