@@ -729,6 +729,7 @@ export default function ThreeRoomLab({
   const [autoNormalizeBoundsEnabled, setAutoNormalizeBoundsEnabled] = useState(true);
   const [autoBoundsInfo, setAutoBoundsInfo] = useState<AutoBoundsNormalization | null>(null);
   // Phase 0P-C: local-only UI collapse state (not persisted, not in scene JSON).
+  const [isCalibratedCameraOpen, setIsCalibratedCameraOpen] = useState(true);
   const [isAdvancedControlsOpen, setIsAdvancedControlsOpen] = useState(false);
   const [isSceneStateOpen, setIsSceneStateOpen] = useState(false);
   const [isDebugOpen, setIsDebugOpen] = useState(false);
@@ -1886,21 +1887,40 @@ export default function ThreeRoomLab({
     const scanMaxFov = 90;
     const scanStepDeg = 1;
     let bestFov: number | null = null;
+    // Phase 2K-A: surface the already-computed scan outputs (no math change) so
+    // the user-facing Calibration readiness panel can recommend a lens. This is
+    // a presentation-only addition; ranking/selection in scanCameraPoseOverFov is
+    // untouched.
+    let recommendation: {
+      bestFov: number | null;
+      bestConfidence: "high" | "low" | null;
+      validFovRange: [number, number] | null;
+      highConfidenceFovRange: [number, number] | null;
+      bestAvgPx: number | null;
+      bestMaxPx: number | null;
+    } = {
+      bestFov: null,
+      bestConfidence: null,
+      validFovRange: null,
+      highConfidenceFovRange: null,
+      bestAvgPx: null,
+      bestMaxPx: null,
+    };
 
     if (!homographyDebug.frameSize) {
       rows.push({ label: "camera pose FOV scan", value: "unavailable (frame pixel size unavailable)" });
-      return { rows, bestFov };
+      return { rows, bestFov, recommendation };
     }
     if (homographyDebug.homographySolveStatus !== "ok" || !homographyDebug.homographyMatrixForPlacement) {
       rows.push({
         label: "camera pose FOV scan",
         value: `unavailable (${homographyDebug.placementFallbackReason})`,
       });
-      return { rows, bestFov };
+      return { rows, bestFov, recommendation };
     }
     if (!homographyDebug.orderedCornersNorm) {
       rows.push({ label: "camera pose FOV scan", value: "unavailable (ordered homography corners unavailable)" });
-      return { rows, bestFov };
+      return { rows, bestFov, recommendation };
     }
 
     const imagePointsPx: { x: number; y: number }[] = [];
@@ -1911,7 +1931,7 @@ export default function ThreeRoomLab({
           label: "camera pose FOV scan",
           value: "unavailable (could not convert ordered corners from normalized -> pixels)",
         });
-        return { rows, bestFov };
+        return { rows, bestFov, recommendation };
       }
       imagePointsPx.push(pixels);
     }
@@ -1924,7 +1944,7 @@ export default function ThreeRoomLab({
         label: "camera pose FOV scan",
         value: `unavailable (${floorRectResult.reason})`,
       });
-      return { rows, bestFov };
+      return { rows, bestFov, recommendation };
     }
     const floorPlanePoints2D = floorRectResult.value.asArray.map((point) => floorVec3ToPlane2D(point));
 
@@ -1952,10 +1972,18 @@ export default function ThreeRoomLab({
         label: "camera pose best FOV",
         value: `none (no valid decomposition results — ${firstFailure})`,
       });
-      return { rows, bestFov };
+      return { rows, bestFov, recommendation };
     }
 
     bestFov = scan.bestFovDeg;
+    recommendation = {
+      bestFov: scan.bestFovDeg,
+      bestConfidence: scan.bestConfidence,
+      validFovRange: scan.validFovRange,
+      highConfidenceFovRange: scan.highConfidenceFovRange,
+      bestAvgPx: scan.bestAvgPx,
+      bestMaxPx: scan.bestMaxPx,
+    };
 
     const formatRange = (range: [number, number] | null) =>
       range === null ? "none" : `${range[0]}deg-${range[1]}deg`;
@@ -1981,7 +2009,7 @@ export default function ThreeRoomLab({
       value: formatRange(scan.highConfidenceFovRange),
     });
 
-    return { rows, bestFov };
+    return { rows, bestFov, recommendation };
   }, [
     floorMapping.worldDepth,
     floorMapping.worldWidth,
@@ -2283,6 +2311,246 @@ export default function ThreeRoomLab({
     isCalibratedCameraActive,
     lastCalibratedCameraAutoRevertReason,
     rendererSize,
+  ]);
+
+  // Phase 2K-A: user-facing calibration readiness. This is a PRESENTATION layer
+  // only — it reads existing diagnostics (cameraPoseDebug.applyCandidate, the FOV
+  // scan recommendation, homography status, and frame-match status) and the same
+  // apply-gate constants to explain state. It never recomputes or relaxes any
+  // gate; the single source of truth for apply-ability remains
+  // calibratedCameraApplyStatus.available.
+  const calibrationReadiness = useMemo(() => {
+    const candidate = cameraPoseDebug.applyCandidate;
+    const scan = cameraPoseFovScanDebug.recommendation;
+    const recommendedFov = scan.bestFov;
+    const apply = calibratedCameraApplyStatus;
+
+    type ReadinessState = "pass" | "attention" | "fail" | "idle";
+    const checklist: { key: string; label: string; state: ReadinessState; detail: string }[] = [];
+
+    // Floor shape (homography validity / corner ordering confidence).
+    if (homographyDebug.homographySolveStatus === "ok") {
+      checklist.push(
+        homographyDebug.cornerOrderConfidence === "low"
+          ? {
+              key: "floor-shape",
+              label: "Floor shape",
+              state: "attention",
+              detail: "floor outline looks weak or non-convex — check the four corners do not cross",
+            }
+          : {
+              key: "floor-shape",
+              label: "Floor shape",
+              state: "pass",
+              detail: "four corners form a valid floor outline",
+            }
+      );
+    } else {
+      checklist.push({
+        key: "floor-shape",
+        label: "Floor shape",
+        state: "fail",
+        detail: "adjust the four floor corners so they outline one flat floor area and do not cross",
+      });
+    }
+
+    // Floor dimensions (world width/depth used together with corners).
+    checklist.push({
+      key: "floor-dimensions",
+      label: "Floor dimensions",
+      state: "pass",
+      detail: `${formatNumber(floorMapping.worldWidth)} x ${formatNumber(
+        floorMapping.worldDepth
+      )} m (width x depth) — used with the corners for the recommendation`,
+    });
+
+    // Camera fit (confidence + scale ratio + CV reprojection apply gates).
+    if (!candidate) {
+      checklist.push({
+        key: "camera-fit",
+        label: "Camera fit",
+        state: recommendedFov === null ? "fail" : "attention",
+        detail:
+          recommendedFov === null
+            ? "no valid camera fit yet — fix the floor shape, then it will recompute"
+            : "use the recommended FOV to evaluate camera fit",
+      });
+    } else if (candidate.confidence !== "high") {
+      checklist.push({
+        key: "camera-fit",
+        label: "Camera fit",
+        state: "attention",
+        detail: "camera fit confidence is low at this FOV — use the recommended FOV",
+      });
+    } else if (
+      candidate.scaleRatio < CALIBRATED_CAMERA_APPLY_MIN_SCALE_RATIO ||
+      candidate.scaleRatio > CALIBRATED_CAMERA_APPLY_MAX_SCALE_RATIO
+    ) {
+      checklist.push({
+        key: "camera-fit",
+        label: "Camera fit",
+        state: "fail",
+        detail: `scale ratio ${formatNumber(candidate.scaleRatio)} — needs ${CALIBRATED_CAMERA_APPLY_MIN_SCALE_RATIO}-${CALIBRATED_CAMERA_APPLY_MAX_SCALE_RATIO}. Check that floor width and depth describe the same floor area with a realistic proportion`,
+      });
+    } else if (candidate.cvAvgPx >= CALIBRATED_CAMERA_APPLY_MAX_CV_AVG_PX) {
+      checklist.push({
+        key: "camera-fit",
+        label: "Camera fit",
+        state: "fail",
+        detail: `reprojection average ${formatNumber(candidate.cvAvgPx)} px — needs under ${CALIBRATED_CAMERA_APPLY_MAX_CV_AVG_PX} px. Refine the corners, especially the one furthest from the visible floor edge`,
+      });
+    } else if (candidate.cvMaxPx >= CALIBRATED_CAMERA_APPLY_MAX_CV_MAX_PX) {
+      checklist.push({
+        key: "camera-fit",
+        label: "Camera fit",
+        state: "fail",
+        detail: `reprojection max ${formatNumber(candidate.cvMaxPx)} px — needs under ${CALIBRATED_CAMERA_APPLY_MAX_CV_MAX_PX} px. Refine the corners, especially the one furthest from the visible floor edge`,
+      });
+    } else {
+      checklist.push({
+        key: "camera-fit",
+        label: "Camera fit",
+        state: "pass",
+        detail: `scale ratio ${formatNumber(candidate.scaleRatio)}, reprojection avg ${formatNumber(
+          candidate.cvAvgPx
+        )} px`,
+      });
+    }
+
+    // Projection agreement (display vs CV reprojection apply gates).
+    if (!candidate) {
+      checklist.push({
+        key: "projection-agreement",
+        label: "Projection agreement",
+        state: recommendedFov === null ? "fail" : "attention",
+        detail:
+          recommendedFov === null
+            ? "no projection to compare yet — fix the floor shape, then it will recompute"
+            : "use the recommended FOV to evaluate projection agreement",
+      });
+    } else if (
+      candidate.displayAvgPx === null ||
+      candidate.displayMaxPx === null ||
+      !Number.isFinite(candidate.displayAvgPx) ||
+      !Number.isFinite(candidate.displayMaxPx)
+    ) {
+      checklist.push({
+        key: "projection-agreement",
+        label: "Projection agreement",
+        state: "attention",
+        detail: "projection diagnostics unavailable at this FOV — use the recommended FOV",
+      });
+    } else if (
+      candidate.displayAvgPx >= CALIBRATED_CAMERA_APPLY_MAX_DISPLAY_AVG_PX ||
+      candidate.displayMaxPx >= CALIBRATED_CAMERA_APPLY_MAX_DISPLAY_MAX_PX
+    ) {
+      checklist.push({
+        key: "projection-agreement",
+        label: "Projection agreement",
+        state: "fail",
+        detail: `display reprojection ${formatNumber(
+          Math.max(candidate.displayAvgPx, candidate.displayMaxPx)
+        )} px — needs under ${CALIBRATED_CAMERA_APPLY_MAX_DISPLAY_MAX_PX} px. Refine floor corners and use the recommended FOV`,
+      });
+    } else {
+      const avgDelta = Math.abs(candidate.displayAvgPx - candidate.cvAvgPx);
+      const maxDelta = Math.abs(candidate.displayMaxPx - candidate.cvMaxPx);
+      const worstDelta = Math.max(avgDelta, maxDelta);
+      checklist.push(
+        avgDelta > CALIBRATED_CAMERA_APPLY_MAX_AVG_DELTA_PX ||
+          maxDelta > CALIBRATED_CAMERA_APPLY_MAX_MAX_DELTA_PX
+          ? {
+              key: "projection-agreement",
+              label: "Projection agreement",
+              state: "fail",
+              detail: `disagreement ${formatNumber(
+                worstDelta
+              )} px — needs ${CALIBRATED_CAMERA_APPLY_MAX_AVG_DELTA_PX} px or less. Refine floor corners and use the recommended FOV`,
+            }
+          : {
+              key: "projection-agreement",
+              label: "Projection agreement",
+              state: "pass",
+              detail: `agreement within ${formatNumber(worstDelta)} px`,
+            }
+      );
+    }
+
+    // Frame readiness (frame size validity + post-apply staleness warning).
+    if (!homographyDebug.frameSize) {
+      checklist.push({
+        key: "frame-readiness",
+        label: "Frame readiness",
+        state: "fail",
+        detail: "room view size unavailable — keep the room visible",
+      });
+    } else if (candidate && (candidate.frameSize.width <= 0 || candidate.frameSize.height <= 0)) {
+      checklist.push({
+        key: "frame-readiness",
+        label: "Frame readiness",
+        state: "fail",
+        detail: "frame size is invalid for calibration",
+      });
+    } else if (isCalibratedCameraActive && calibratedCameraFrameMatchStatus.diagnostics?.isWarningStale) {
+      checklist.push({
+        key: "frame-readiness",
+        label: "Frame readiness",
+        state: "attention",
+        detail:
+          "the room view changed since apply — keep it stable; resizing or changing the image requires calibrating again",
+      });
+    } else {
+      checklist.push({
+        key: "frame-readiness",
+        label: "Frame readiness",
+        state: "pass",
+        detail: "room view is stable",
+      });
+    }
+
+    let overall: "ready" | "adjust" | "none";
+    let overallLabel: string;
+    if (apply.available) {
+      overall = "ready";
+      overallLabel = "Ready to apply";
+    } else if (recommendedFov === null && !candidate) {
+      overall = "none";
+      overallLabel = "No valid calibration found";
+    } else {
+      overall = "adjust";
+      overallLabel = "Needs adjustment";
+    }
+
+    let recommendationText: string;
+    if (recommendedFov !== null) {
+      const range = scan.highConfidenceFovRange ?? scan.validFovRange;
+      recommendationText =
+        range && range[0] !== range[1]
+          ? `Recommended lens: ${recommendedFov}° (valid range ${range[0]}°-${range[1]}°)`
+          : `Recommended lens: ${recommendedFov}°`;
+    } else {
+      recommendationText =
+        "No usable lens recommendation yet — refine the floor corners or floor dimensions, then it will recompute.";
+    }
+
+    return {
+      overall,
+      overallLabel,
+      checklist,
+      recommendedFov,
+      recommendationText,
+    };
+  }, [
+    cameraPoseDebug.applyCandidate,
+    cameraPoseFovScanDebug.recommendation,
+    calibratedCameraApplyStatus,
+    homographyDebug.homographySolveStatus,
+    homographyDebug.cornerOrderConfidence,
+    homographyDebug.frameSize,
+    calibratedCameraFrameMatchStatus.diagnostics,
+    isCalibratedCameraActive,
+    floorMapping.worldWidth,
+    floorMapping.worldDepth,
   ]);
 
   const objectProjectionDiagnostic = useMemo(() => {
@@ -7420,6 +7688,145 @@ export default function ThreeRoomLab({
         </section>
 
         <CollapsibleSection
+          title="Calibrated camera"
+          description="Scan-first camera calibration from your floor corners."
+          open={isCalibratedCameraOpen}
+          onToggle={() => setIsCalibratedCameraOpen((prev) => !prev)}
+        >
+          <div className="rounded-lg border border-slate-700 bg-slate-950/60 p-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <h3 className="text-xs font-medium text-slate-200">Calibration readiness</h3>
+              <span
+                className={
+                  calibrationReadiness.overall === "ready"
+                    ? "rounded-full border border-emerald-500/60 bg-emerald-500/10 px-2 py-0.5 text-xs font-medium text-emerald-300"
+                    : calibrationReadiness.overall === "adjust"
+                      ? "rounded-full border border-amber-500/60 bg-amber-500/10 px-2 py-0.5 text-xs font-medium text-amber-300"
+                      : "rounded-full border border-rose-500/60 bg-rose-500/10 px-2 py-0.5 text-xs font-medium text-rose-300"
+                }
+              >
+                {calibrationReadiness.overallLabel}
+              </span>
+            </div>
+            <ul className="mt-3 space-y-1.5">
+              {calibrationReadiness.checklist.map((item) => (
+                <li key={item.key} className="flex items-start gap-2 text-xs">
+                  <span
+                    aria-hidden="true"
+                    className={
+                      item.state === "pass"
+                        ? "mt-0.5 text-emerald-400"
+                        : item.state === "attention"
+                          ? "mt-0.5 text-amber-400"
+                          : item.state === "fail"
+                            ? "mt-0.5 text-rose-400"
+                            : "mt-0.5 text-slate-500"
+                    }
+                  >
+                    ●
+                  </span>
+                  <span className="shrink-0 text-slate-400">{item.label}:</span>
+                  <span className="text-slate-200">{item.detail}</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+
+          <div className="mt-3 rounded-lg border border-slate-700 bg-slate-950/60 p-3">
+            <h3 className="text-xs font-medium text-slate-200">Recommended lens (FOV)</h3>
+            <p className="mt-1 text-sm text-slate-100">{calibrationReadiness.recommendationText}</p>
+            <p className="mt-1 text-xs text-slate-500">
+              Calculated from the current floor corners and floor dimensions.
+            </p>
+            <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
+              <button
+                type="button"
+                onClick={() => {
+                  if (calibrationReadiness.recommendedFov === null) return;
+                  setCameraPoseFovYDeg(calibrationReadiness.recommendedFov);
+                }}
+                disabled={calibrationReadiness.recommendedFov === null}
+                className="rounded border border-emerald-500/70 px-2 py-1 font-medium text-emerald-200 transition hover:border-emerald-300 hover:text-emerald-100 disabled:cursor-not-allowed disabled:border-slate-700 disabled:text-slate-500 disabled:opacity-60"
+              >
+                Use recommended FOV
+              </button>
+              {calibrationReadiness.recommendedFov === null ? (
+                <span className="text-slate-500">No recommendation yet — refine the floor corners or dimensions.</span>
+              ) : cameraPoseFovYDeg === calibrationReadiness.recommendedFov ? (
+                <span className="text-emerald-300">
+                  Using recommended FOV: {calibrationReadiness.recommendedFov}°
+                </span>
+              ) : (
+                <span className="text-slate-500">
+                  Current FOV {formatNumber(cameraPoseFovYDeg)}° — click to use{" "}
+                  {calibrationReadiness.recommendedFov}°.
+                </span>
+              )}
+            </div>
+          </div>
+
+          <div className="mt-3 flex flex-wrap items-center gap-2 text-xs">
+            <button
+              type="button"
+              onClick={() => {
+                const candidate = cameraPoseDebug.applyCandidate;
+                if (!candidate || !calibratedCameraApplyStatus.available) return;
+                applyCalibratedCameraSnapshotFromCandidate(candidate, cameraPoseFovYDeg);
+              }}
+              disabled={!calibratedCameraApplyStatus.available}
+              className="rounded border border-slate-700 px-2 py-1 text-slate-200 transition hover:border-cyan-400/80 hover:text-cyan-200 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              Apply calibration
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                deactivateCalibratedCameraMode({ clearAutoRevertReason: true });
+              }}
+              disabled={!isCalibratedCameraActive && !calibratedCameraSnapshot}
+              className="rounded border border-slate-700 px-2 py-1 text-slate-200 transition hover:border-rose-400/80 hover:text-rose-200 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              Revert to legacy camera
+            </button>
+            <button
+              type="button"
+              onClick={handleCalibratedDropToFloor}
+              disabled={!calibratedDropToFloorAvailable}
+              className="rounded border border-slate-700 px-2 py-1 text-slate-200 transition hover:border-violet-400/80 hover:text-violet-200 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              Drop to floor
+            </button>
+          </div>
+          <p
+            className={
+              calibratedCameraApplyStatus.available
+                ? "mt-2 text-xs text-emerald-300"
+                : "mt-2 text-xs text-amber-300/90"
+            }
+          >
+            {calibratedCameraApplyStatus.available
+              ? "Calibration is ready to apply."
+              : `Not ready: ${calibratedCameraApplyStatus.reason}`}
+          </p>
+          {(isCalibratedCameraActive || calibratedCameraSnapshot) && (
+            <p className="mt-1 text-xs text-slate-500">
+              Frame match: {calibratedCameraFrameMatchStatus.value}
+            </p>
+          )}
+
+          <ol className="mt-3 list-decimal space-y-1 pl-5 text-xs text-slate-400">
+            <li>Set the four floor corners.</li>
+            <li>Confirm the green floor grid follows the visible floor.</li>
+            <li>Use the recommended FOV.</li>
+            <li>Review readiness, then apply calibration.</li>
+          </ol>
+          <p className="mt-2 text-xs text-slate-500">
+            The floor fit preview checks the floor mapping. Camera calibration also checks lens fit and
+            projection agreement, so a matching grid alone does not prove calibration is ready.
+          </p>
+        </CollapsibleSection>
+
+        <CollapsibleSection
           title="Advanced calibration"
           description="Manual transform, model normalization, floor mapping, and perspective depth scaling."
           open={isAdvancedControlsOpen}
@@ -7721,7 +8128,7 @@ export default function ThreeRoomLab({
             Experimental: homography floor-click mapping may not visually improve until camera pose is applied.
           </p>
           <label className="mb-3 flex flex-wrap items-center gap-2 text-xs text-slate-300">
-            <span className="text-slate-400">Camera pose FOV</span>
+            <span className="text-slate-400">Manual FOV override (advanced)</span>
             <input
               type="number"
               min={20}
@@ -7737,63 +8144,11 @@ export default function ThreeRoomLab({
             />
             <span className="text-slate-500">(20-90)</span>
           </label>
-          <div className="mb-3 flex flex-wrap items-center gap-2 text-xs">
-            <button
-              type="button"
-              onClick={() => {
-                const candidate = cameraPoseDebug.applyCandidate;
-                if (!candidate || !calibratedCameraApplyStatus.available) return;
-                applyCalibratedCameraSnapshotFromCandidate(candidate, cameraPoseFovYDeg);
-              }}
-              disabled={!calibratedCameraApplyStatus.available}
-              className="rounded border border-slate-700 px-2 py-1 text-slate-200 transition hover:border-cyan-400/80 hover:text-cyan-200 disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              Apply calibrated camera
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                deactivateCalibratedCameraMode({ clearAutoRevertReason: true });
-              }}
-              disabled={!isCalibratedCameraActive && !calibratedCameraSnapshot}
-              className="rounded border border-slate-700 px-2 py-1 text-slate-200 transition hover:border-rose-400/80 hover:text-rose-200 disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              Revert to legacy camera
-            </button>
-            <button
-              type="button"
-              onClick={handleCalibratedDropToFloor}
-              disabled={!calibratedDropToFloorAvailable}
-              className="rounded border border-slate-700 px-2 py-1 text-slate-200 transition hover:border-violet-400/80 hover:text-violet-200 disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              Drop to floor
-            </button>
-            <span className="text-slate-500">
-              {calibratedCameraApplyStatus.available
-                ? "Calibrated camera apply is available."
-                : `Calibrated camera apply unavailable: ${calibratedCameraApplyStatus.reason}`}
-            </span>
-          </div>
           <p className="mb-3 text-xs text-slate-500">
-            Experimental: tune FOV until the camera pose diagnostic reads high and the cyan grid aligns with the
-            green grid. A valid pose may exist only in a narrow FOV band.
+            Advanced/debug only. For the normal workflow use the Calibrated camera panel above (Use recommended FOV,
+            then Apply calibration). The camera-pose FOV scan and reprojection rows below are diagnostics; the
+            cyan/green overlays alone do not prove calibration is ready.
           </p>
-          <div className="mb-3 flex items-center gap-2 text-xs">
-            <button
-              type="button"
-              onClick={() => {
-                if (cameraPoseFovScanDebug.bestFov === null) return;
-                setCameraPoseFovYDeg(cameraPoseFovScanDebug.bestFov);
-              }}
-              disabled={cameraPoseFovScanDebug.bestFov === null}
-              className="rounded border border-slate-700 px-2 py-1 text-slate-200 transition hover:border-emerald-400/80 hover:text-emerald-200 disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              Use best scanned FOV
-            </button>
-            <span className="text-slate-500">
-              FOV scan is diagnostic only; use it to find a range where the cyan grid aligns with the green grid.
-            </span>
-          </div>
           <label className="mb-3 flex items-center gap-2 text-xs text-slate-300">
             <input
               type="checkbox"
