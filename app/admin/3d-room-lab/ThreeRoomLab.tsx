@@ -2533,15 +2533,31 @@ export default function ThreeRoomLab({
         "No usable lens recommendation yet — refine the floor corners or floor dimensions, then it will recompute.";
     }
 
+    // Phase 2K-B: truthful preview-availability flags. These describe whether a
+    // preview CAN be shown, independent of the overlay toggle, and are distinct
+    // from apply-readiness:
+    // - floor-fit (green) viability is the existing homography solve status;
+    // - camera-pose (cyan) preview viability is the exact condition that makes
+    //   cameraPoseGridPolylinesNorm render (decomposition exists + high confidence);
+    // - apply-readiness remains solely calibratedCameraApplyStatus.available.
+    const floorFitPreviewAvailable = homographyDebug.homographySolveStatus === "ok";
+    const cameraPosePreviewAvailable =
+      !!cameraPoseDebug.decomposition && cameraPoseDebug.decomposition.confidence === "high";
+
     return {
       overall,
       overallLabel,
       checklist,
       recommendedFov,
       recommendationText,
+      floorFitPreviewAvailable,
+      cameraPosePreviewAvailable,
+      applyReady: apply.available,
+      applyReason: apply.reason,
     };
   }, [
     cameraPoseDebug.applyCandidate,
+    cameraPoseDebug.decomposition,
     cameraPoseFovScanDebug.recommendation,
     calibratedCameraApplyStatus,
     homographyDebug.homographySolveStatus,
@@ -7733,6 +7749,103 @@ export default function ThreeRoomLab({
           </div>
 
           <div className="mt-3 rounded-lg border border-slate-700 bg-slate-950/60 p-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <h3 className="text-xs font-medium text-slate-200">Visual preview</h3>
+              <label className="flex items-center gap-2 text-xs text-slate-300">
+                <input
+                  type="checkbox"
+                  checked={showHomographyDebugOverlay}
+                  onChange={(event) => setShowHomographyDebugOverlay(event.target.checked)}
+                  className="accent-emerald-400"
+                />
+                Show floor fit preview
+              </label>
+            </div>
+            <p className="mt-1 text-xs text-slate-500">
+              Shows how the selected floor corners map onto the visible floor. This is a floor-mapping preview only —
+              it does not confirm camera calibration or that Apply is ready.
+            </p>
+
+            <ul className="mt-3 space-y-1.5">
+              <li className="flex items-start gap-2 text-xs">
+                <span
+                  aria-hidden="true"
+                  className={
+                    calibrationReadiness.floorFitPreviewAvailable ? "mt-0.5 text-emerald-400" : "mt-0.5 text-slate-600"
+                  }
+                >
+                  ●
+                </span>
+                <span className="text-slate-200">
+                  Floor fit preview {calibrationReadiness.floorFitPreviewAvailable ? "available" : "unavailable"}
+                </span>
+                <span className="text-slate-500">— green solid grid</span>
+              </li>
+              <li className="flex items-start gap-2 text-xs">
+                <span
+                  aria-hidden="true"
+                  className={
+                    calibrationReadiness.cameraPosePreviewAvailable ? "mt-0.5 text-cyan-300" : "mt-0.5 text-slate-600"
+                  }
+                >
+                  ●
+                </span>
+                <span className="text-slate-200">
+                  Camera pose preview {calibrationReadiness.cameraPosePreviewAvailable ? "available" : "unavailable"}
+                </span>
+                <span className="text-slate-500">— cyan dashed grid (current FOV)</span>
+              </li>
+              <li className="flex items-start gap-2 text-xs">
+                <span
+                  aria-hidden="true"
+                  className={calibrationReadiness.applyReady ? "mt-0.5 text-emerald-400" : "mt-0.5 text-slate-600"}
+                >
+                  ●
+                </span>
+                <span className="text-slate-200">
+                  Calibration {calibrationReadiness.applyReady ? "ready to apply" : "not ready to apply"}
+                </span>
+                <span className="text-slate-500">— all safety checks</span>
+              </li>
+            </ul>
+
+            {calibrationReadiness.cameraPosePreviewAvailable && !calibrationReadiness.applyReady ? (
+              <div className="mt-3 rounded border border-amber-500/60 bg-amber-500/10 px-2 py-1.5 text-xs text-amber-200">
+                Camera pose preview is visible, but calibration still needs additional checks:{" "}
+                {calibrationReadiness.applyReason}
+              </div>
+            ) : (
+              <p className="mt-3 text-xs text-slate-500">
+                The cyan grid previews the current camera pose. It is not confirmation that calibration is ready to
+                apply.
+              </p>
+            )}
+
+            {showHomographyDebugOverlay && (
+              <div className="mt-3 space-y-1 border-t border-slate-800 pt-2 text-xs">
+                <div className="flex items-start gap-2">
+                  <span className="mt-0.5 shrink-0 font-medium text-emerald-400">Green solid grid</span>
+                  <span className="text-slate-400">
+                    Floor fit preview — the floor mapping is valid enough to preview.
+                  </span>
+                </div>
+                <div className="flex items-start gap-2">
+                  <span className="mt-0.5 shrink-0 font-medium text-cyan-300">Cyan dashed grid</span>
+                  <span className="text-slate-400">
+                    Camera pose preview — a camera-pose candidate exists at the current FOV.
+                  </span>
+                </div>
+                <div className="flex items-start gap-2">
+                  <span className="mt-0.5 shrink-0 font-medium text-emerald-300">Emerald indicator</span>
+                  <span className="text-slate-400">
+                    Ready to apply — all existing calibrated-camera safety checks pass.
+                  </span>
+                </div>
+              </div>
+            )}
+          </div>
+
+          <div className="mt-3 rounded-lg border border-slate-700 bg-slate-950/60 p-3">
             <h3 className="text-xs font-medium text-slate-200">Recommended lens (FOV)</h3>
             <p className="mt-1 text-sm text-slate-100">{calibrationReadiness.recommendationText}</p>
             <p className="mt-1 text-xs text-slate-500">
@@ -8149,15 +8262,19 @@ export default function ThreeRoomLab({
             then Apply calibration). The camera-pose FOV scan and reprojection rows below are diagnostics; the
             cyan/green overlays alone do not prove calibration is ready.
           </p>
-          <label className="mb-3 flex items-center gap-2 text-xs text-slate-300">
+          <label className="mb-1 flex items-center gap-2 text-xs text-slate-300">
             <input
               type="checkbox"
               checked={showHomographyDebugOverlay}
               onChange={(event) => setShowHomographyDebugOverlay(event.target.checked)}
               className="accent-emerald-400"
             />
-            Show homography debug overlay
+            Calibration preview overlays (floor fit + camera pose)
           </label>
+          <p className="mb-3 text-xs text-slate-500">
+            Same overlay state as &quot;Show floor fit preview&quot; in the Calibrated camera panel above; the two
+            controls stay in sync. Green = floor fit; cyan dashed = camera-pose preview at the current FOV.
+          </p>
           <div className="grid gap-2 text-xs text-slate-300 md:grid-cols-2">
             {debugRows.map((row) => (
               <p key={row.label} className="rounded border border-slate-800 bg-slate-950/70 px-2 py-1">
