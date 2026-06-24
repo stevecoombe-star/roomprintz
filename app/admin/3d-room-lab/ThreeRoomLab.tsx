@@ -736,6 +736,16 @@ export default function ThreeRoomLab({
   const [showHomographyDebugOverlay, setShowHomographyDebugOverlay] = useState(false);
   const [cameraPoseFovYDeg, setCameraPoseFovYDeg] = useState(50);
   const [isCalibratedCameraActive, setIsCalibratedCameraActive] = useState(false);
+  // Phase 2K-C: one-click "Scan & apply" pending action. This arms a single
+  // deferred apply attempt: the click sets the recommended FOV and records the
+  // pending FOV; a controlled effect then applies ONLY through the unchanged
+  // calibratedCameraApplyStatus gate + applyCalibratedCameraSnapshotFromCandidate
+  // path once diagnostics have recomputed. It never introduces a second
+  // eligibility path or a scan-confidence-based apply.
+  const [pendingScanAndApplyFov, setPendingScanAndApplyFov] = useState<number | null>(null);
+  const [scanAndApplyResult, setScanAndApplyResult] = useState<
+    { kind: "applied"; fov: number } | { kind: "blocked"; fov: number } | null
+  >(null);
   const [calibratedCameraSnapshot, setCalibratedCameraSnapshot] = useState<CalibratedCameraSnapshot | null>(null);
   const [lastCalibratedCameraAutoRevertReason, setLastCalibratedCameraAutoRevertReason] = useState<string | null>(null);
   // Phase 2J-B3: deferred calibrated-camera restore. A scene import always
@@ -2567,6 +2577,57 @@ export default function ThreeRoomLab({
     isCalibratedCameraActive,
     floorMapping.worldWidth,
     floorMapping.worldDepth,
+  ]);
+
+  // Phase 2K-C: controlled resolver for the one-click Scan & apply action. Runs
+  // after render (so cameraPoseDebug / calibratedCameraApplyStatus have already
+  // recomputed for the just-applied recommended FOV), then makes a single
+  // terminal decision. It applies ONLY via the unchanged apply path + gate, and
+  // cancels conservatively. It never retries automatically.
+  useEffect(() => {
+    if (pendingScanAndApplyFov === null) return;
+
+    // Cancel: recommendation became unavailable or changed (e.g. floor corners /
+    // dimensions changed and the scan recomputed a different/no recommendation).
+    if (calibrationReadiness.recommendedFov !== pendingScanAndApplyFov) {
+      setPendingScanAndApplyFov(null);
+      return;
+    }
+    // Cancel: the manual FOV no longer matches the pending recommendation
+    // (manual override, reset, or any state that moved the FOV).
+    if (cameraPoseFovYDeg !== pendingScanAndApplyFov) {
+      setPendingScanAndApplyFov(null);
+      return;
+    }
+    // Cancel: calibrated mode became active through another path — never
+    // double-apply on top of an active calibration.
+    if (isCalibratedCameraActive) {
+      setPendingScanAndApplyFov(null);
+      return;
+    }
+
+    const candidate = cameraPoseDebug.applyCandidate;
+    if (candidate && calibratedCameraApplyStatus.available) {
+      // Clear pending atomically with the single apply attempt so a re-render
+      // cannot trigger a second application.
+      setPendingScanAndApplyFov(null);
+      setScanAndApplyResult({ kind: "applied", fov: pendingScanAndApplyFov });
+      applyCalibratedCameraSnapshotFromCandidate(candidate, pendingScanAndApplyFov);
+      return;
+    }
+
+    // Gate is blocked after the FOV update: do not apply, surface the existing
+    // readiness reason, leave calibrated mode inactive.
+    setScanAndApplyResult({ kind: "blocked", fov: pendingScanAndApplyFov });
+    setPendingScanAndApplyFov(null);
+  }, [
+    pendingScanAndApplyFov,
+    cameraPoseFovYDeg,
+    isCalibratedCameraActive,
+    calibratedCameraApplyStatus,
+    cameraPoseDebug.applyCandidate,
+    calibrationReadiness.recommendedFov,
+    applyCalibratedCameraSnapshotFromCandidate,
   ]);
 
   const objectProjectionDiagnostic = useMemo(() => {
@@ -7856,9 +7917,10 @@ export default function ThreeRoomLab({
                 type="button"
                 onClick={() => {
                   if (calibrationReadiness.recommendedFov === null) return;
+                  setScanAndApplyResult(null);
                   setCameraPoseFovYDeg(calibrationReadiness.recommendedFov);
                 }}
-                disabled={calibrationReadiness.recommendedFov === null}
+                disabled={calibrationReadiness.recommendedFov === null || pendingScanAndApplyFov !== null}
                 className="rounded border border-emerald-500/70 px-2 py-1 font-medium text-emerald-200 transition hover:border-emerald-300 hover:text-emerald-100 disabled:cursor-not-allowed disabled:border-slate-700 disabled:text-slate-500 disabled:opacity-60"
               >
                 Use recommended FOV
@@ -7878,15 +7940,67 @@ export default function ThreeRoomLab({
             </div>
           </div>
 
+          <div className="mt-3 rounded-lg border border-slate-700 bg-slate-950/60 p-3">
+            <div className="flex flex-wrap items-center gap-2 text-xs">
+              <button
+                type="button"
+                onClick={() => {
+                  if (
+                    calibrationReadiness.recommendedFov === null ||
+                    isCalibratedCameraActive ||
+                    pendingScanAndApplyFov !== null
+                  ) {
+                    return;
+                  }
+                  setScanAndApplyResult(null);
+                  setCameraPoseFovYDeg(calibrationReadiness.recommendedFov);
+                  setPendingScanAndApplyFov(calibrationReadiness.recommendedFov);
+                }}
+                disabled={
+                  calibrationReadiness.recommendedFov === null ||
+                  isCalibratedCameraActive ||
+                  pendingScanAndApplyFov !== null
+                }
+                className="rounded border border-cyan-500/70 px-2 py-1 font-medium text-cyan-200 transition hover:border-cyan-300 hover:text-cyan-100 disabled:cursor-not-allowed disabled:border-slate-700 disabled:text-slate-500 disabled:opacity-60"
+              >
+                {pendingScanAndApplyFov !== null ? "Checking recommended FOV…" : "Scan & apply calibration"}
+              </button>
+              <span className="text-slate-500">
+                {calibrationReadiness.recommendedFov === null
+                  ? "No recommendation yet — refine the floor corners or dimensions."
+                  : isCalibratedCameraActive
+                    ? "Calibrated camera is already active."
+                    : "Uses the recommended FOV, then applies only if all existing safety checks pass."}
+              </span>
+            </div>
+            <p className="mt-1 text-xs text-slate-500">
+              Scan &amp; apply uses the same checks as Apply calibration. It never applies based on the scan result
+              alone.
+            </p>
+            {scanAndApplyResult?.kind === "applied" && isCalibratedCameraActive && (
+              <p className="mt-2 text-xs text-emerald-300">
+                Calibration applied using recommended FOV: {scanAndApplyResult.fov}°
+              </p>
+            )}
+            {scanAndApplyResult?.kind === "blocked" &&
+              !isCalibratedCameraActive &&
+              !calibratedCameraApplyStatus.available && (
+                <p className="mt-2 text-xs text-amber-300/90">
+                  Recommended FOV applied, but calibration was not applied: {calibratedCameraApplyStatus.reason}
+                </p>
+              )}
+          </div>
+
           <div className="mt-3 flex flex-wrap items-center gap-2 text-xs">
             <button
               type="button"
               onClick={() => {
                 const candidate = cameraPoseDebug.applyCandidate;
                 if (!candidate || !calibratedCameraApplyStatus.available) return;
+                setScanAndApplyResult(null);
                 applyCalibratedCameraSnapshotFromCandidate(candidate, cameraPoseFovYDeg);
               }}
-              disabled={!calibratedCameraApplyStatus.available}
+              disabled={!calibratedCameraApplyStatus.available || pendingScanAndApplyFov !== null}
               className="rounded border border-slate-700 px-2 py-1 text-slate-200 transition hover:border-cyan-400/80 hover:text-cyan-200 disabled:cursor-not-allowed disabled:opacity-50"
             >
               Apply calibration
