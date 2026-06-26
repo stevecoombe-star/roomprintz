@@ -2337,6 +2337,32 @@ export default function ThreeRoomLab({
 
     type ReadinessState = "pass" | "attention" | "fail" | "idle";
     const checklist: { key: string; label: string; state: ReadinessState; detail: string }[] = [];
+    const formatMetricPx = (value: number | null) =>
+      value !== null && Number.isFinite(value) ? `${formatNumber(value)} px` : "Unavailable";
+    const readinessMetrics =
+      candidate &&
+      candidate.displayAvgPx !== null &&
+      candidate.displayMaxPx !== null &&
+      Number.isFinite(candidate.displayAvgPx) &&
+      Number.isFinite(candidate.displayMaxPx)
+        ? {
+            cvAvgPx: candidate.cvAvgPx,
+            cvMaxPx: candidate.cvMaxPx,
+            displayAvgPx: candidate.displayAvgPx,
+            displayMaxPx: candidate.displayMaxPx,
+            avgDeltaPx: Math.abs(candidate.displayAvgPx - candidate.cvAvgPx),
+            maxDeltaPx: Math.abs(candidate.displayMaxPx - candidate.cvMaxPx),
+          }
+        : candidate
+          ? {
+              cvAvgPx: candidate.cvAvgPx,
+              cvMaxPx: candidate.cvMaxPx,
+              displayAvgPx: null,
+              displayMaxPx: null,
+              avgDeltaPx: null,
+              maxDeltaPx: null,
+            }
+          : null;
 
     // Floor shape (homography validity / corner ordering confidence).
     if (homographyDebug.homographySolveStatus === "ok") {
@@ -2378,7 +2404,7 @@ export default function ThreeRoomLab({
     if (!candidate) {
       checklist.push({
         key: "camera-fit",
-        label: "Camera fit",
+        label: "Camera fit (CV reprojection)",
         state: recommendedFov === null ? "fail" : "attention",
         detail:
           recommendedFov === null
@@ -2388,9 +2414,9 @@ export default function ThreeRoomLab({
     } else if (candidate.confidence !== "high") {
       checklist.push({
         key: "camera-fit",
-        label: "Camera fit",
+        label: "Camera fit (CV reprojection)",
         state: "attention",
-        detail: "camera fit confidence is low at this FOV — use the recommended FOV",
+        detail: `Average: ${formatMetricPx(candidate.cvAvgPx)} · Maximum: ${formatMetricPx(candidate.cvMaxPx)} · confidence is low at this FOV — use the recommended FOV`,
       });
     } else if (
       candidate.scaleRatio < CALIBRATED_CAMERA_APPLY_MIN_SCALE_RATIO ||
@@ -2398,92 +2424,119 @@ export default function ThreeRoomLab({
     ) {
       checklist.push({
         key: "camera-fit",
-        label: "Camera fit",
+        label: "Camera fit (CV reprojection)",
         state: "fail",
-        detail: `scale ratio ${formatNumber(candidate.scaleRatio)} — needs ${CALIBRATED_CAMERA_APPLY_MIN_SCALE_RATIO}-${CALIBRATED_CAMERA_APPLY_MAX_SCALE_RATIO}. Check that floor width and depth describe the same floor area with a realistic proportion`,
+        detail: `Average: ${formatMetricPx(candidate.cvAvgPx)} · Maximum: ${formatMetricPx(candidate.cvMaxPx)} · scale ratio ${formatNumber(candidate.scaleRatio)} — needs ${CALIBRATED_CAMERA_APPLY_MIN_SCALE_RATIO}-${CALIBRATED_CAMERA_APPLY_MAX_SCALE_RATIO}. Check that floor width and depth describe the same floor area with a realistic proportion`,
       });
     } else if (candidate.cvAvgPx >= CALIBRATED_CAMERA_APPLY_MAX_CV_AVG_PX) {
       checklist.push({
         key: "camera-fit",
-        label: "Camera fit",
+        label: "Camera fit (CV reprojection)",
         state: "fail",
-        detail: `reprojection average ${formatNumber(candidate.cvAvgPx)} px — needs under ${CALIBRATED_CAMERA_APPLY_MAX_CV_AVG_PX} px. Refine the corners, especially the one furthest from the visible floor edge`,
+        detail: `Average: ${formatMetricPx(candidate.cvAvgPx)} · Maximum: ${formatMetricPx(candidate.cvMaxPx)} · needs under ${formatNumber(CALIBRATED_CAMERA_APPLY_MAX_CV_AVG_PX)} px average. Refine the corners, especially the one furthest from the visible floor edge`,
       });
     } else if (candidate.cvMaxPx >= CALIBRATED_CAMERA_APPLY_MAX_CV_MAX_PX) {
       checklist.push({
         key: "camera-fit",
-        label: "Camera fit",
+        label: "Camera fit (CV reprojection)",
         state: "fail",
-        detail: `reprojection max ${formatNumber(candidate.cvMaxPx)} px — needs under ${CALIBRATED_CAMERA_APPLY_MAX_CV_MAX_PX} px. Refine the corners, especially the one furthest from the visible floor edge`,
+        detail: `Average: ${formatMetricPx(candidate.cvAvgPx)} · Maximum: ${formatMetricPx(candidate.cvMaxPx)} · needs under ${formatNumber(CALIBRATED_CAMERA_APPLY_MAX_CV_MAX_PX)} px maximum. Refine the corners, especially the one furthest from the visible floor edge`,
       });
     } else {
       checklist.push({
         key: "camera-fit",
-        label: "Camera fit",
+        label: "Camera fit (CV reprojection)",
         state: "pass",
-        detail: `scale ratio ${formatNumber(candidate.scaleRatio)}, reprojection avg ${formatNumber(
-          candidate.cvAvgPx
-        )} px`,
+        detail: `Average: ${formatMetricPx(candidate.cvAvgPx)} · Maximum: ${formatMetricPx(candidate.cvMaxPx)}`,
       });
     }
 
-    // Projection agreement (display vs CV reprojection apply gates).
+    // Rendered-camera reprojection (display reprojection apply gates).
     if (!candidate) {
       checklist.push({
-        key: "projection-agreement",
-        label: "Projection agreement",
+        key: "rendered-camera-reprojection",
+        label: "Rendered-camera reprojection",
         state: recommendedFov === null ? "fail" : "attention",
         detail:
           recommendedFov === null
-            ? "no projection to compare yet — fix the floor shape, then it will recompute"
-            : "use the recommended FOV to evaluate projection agreement",
+            ? "Average: Unavailable · Maximum: Unavailable — no projection to compare yet; fix the floor shape, then it will recompute"
+            : "Average: Unavailable · Maximum: Unavailable — use the recommended FOV to evaluate rendered-camera reprojection",
       });
-    } else if (
-      candidate.displayAvgPx === null ||
-      candidate.displayMaxPx === null ||
-      !Number.isFinite(candidate.displayAvgPx) ||
-      !Number.isFinite(candidate.displayMaxPx)
-    ) {
+    } else if (!readinessMetrics || readinessMetrics.displayAvgPx === null || readinessMetrics.displayMaxPx === null) {
       checklist.push({
-        key: "projection-agreement",
-        label: "Projection agreement",
+        key: "rendered-camera-reprojection",
+        label: "Rendered-camera reprojection",
         state: "attention",
-        detail: "projection diagnostics unavailable at this FOV — use the recommended FOV",
+        detail: "Average: Unavailable · Maximum: Unavailable — rendered-camera diagnostics unavailable at this FOV; use the recommended FOV",
       });
     } else if (
-      candidate.displayAvgPx >= CALIBRATED_CAMERA_APPLY_MAX_DISPLAY_AVG_PX ||
-      candidate.displayMaxPx >= CALIBRATED_CAMERA_APPLY_MAX_DISPLAY_MAX_PX
+      readinessMetrics.displayAvgPx >= CALIBRATED_CAMERA_APPLY_MAX_DISPLAY_AVG_PX ||
+      readinessMetrics.displayMaxPx >= CALIBRATED_CAMERA_APPLY_MAX_DISPLAY_MAX_PX
     ) {
       checklist.push({
-        key: "projection-agreement",
-        label: "Projection agreement",
+        key: "rendered-camera-reprojection",
+        label: "Rendered-camera reprojection",
         state: "fail",
-        detail: `display reprojection ${formatNumber(
-          Math.max(candidate.displayAvgPx, candidate.displayMaxPx)
-        )} px — needs under ${CALIBRATED_CAMERA_APPLY_MAX_DISPLAY_MAX_PX} px. Refine floor corners and use the recommended FOV`,
+        detail: `Average: ${formatMetricPx(readinessMetrics.displayAvgPx)} · Maximum: ${formatMetricPx(readinessMetrics.displayMaxPx)} · needs under ${formatNumber(
+          readinessMetrics.displayAvgPx >= CALIBRATED_CAMERA_APPLY_MAX_DISPLAY_AVG_PX
+            ? CALIBRATED_CAMERA_APPLY_MAX_DISPLAY_AVG_PX
+            : CALIBRATED_CAMERA_APPLY_MAX_DISPLAY_MAX_PX
+        )} px on the failing aggregate. Refine floor corners and use the recommended FOV`,
       });
     } else {
-      const avgDelta = Math.abs(candidate.displayAvgPx - candidate.cvAvgPx);
-      const maxDelta = Math.abs(candidate.displayMaxPx - candidate.cvMaxPx);
-      const worstDelta = Math.max(avgDelta, maxDelta);
-      checklist.push(
-        avgDelta > CALIBRATED_CAMERA_APPLY_MAX_AVG_DELTA_PX ||
-          maxDelta > CALIBRATED_CAMERA_APPLY_MAX_MAX_DELTA_PX
-          ? {
-              key: "projection-agreement",
-              label: "Projection agreement",
-              state: "fail",
-              detail: `disagreement ${formatNumber(
-                worstDelta
-              )} px — needs ${CALIBRATED_CAMERA_APPLY_MAX_AVG_DELTA_PX} px or less. Refine floor corners and use the recommended FOV`,
-            }
-          : {
-              key: "projection-agreement",
-              label: "Projection agreement",
-              state: "pass",
-              detail: `agreement within ${formatNumber(worstDelta)} px`,
-            }
-      );
+      checklist.push({
+        key: "rendered-camera-reprojection",
+        label: "Rendered-camera reprojection",
+        state: "pass",
+        detail: `Average: ${formatMetricPx(readinessMetrics.displayAvgPx)} · Maximum: ${formatMetricPx(readinessMetrics.displayMaxPx)}`,
+      });
+    }
+
+    // CV ↔ rendered-camera difference (display/CV delta apply gates).
+    if (!candidate) {
+      checklist.push({
+        key: "cv-rendered-difference",
+        label: "CV ↔ rendered-camera difference",
+        state: recommendedFov === null ? "fail" : "attention",
+        detail:
+          recommendedFov === null
+            ? "Average: Unavailable · Maximum: Unavailable — no projection to compare yet; fix the floor shape, then it will recompute"
+            : "Average: Unavailable · Maximum: Unavailable — use the recommended FOV to evaluate CV ↔ rendered-camera difference",
+      });
+    } else if (!readinessMetrics || readinessMetrics.avgDeltaPx === null || readinessMetrics.maxDeltaPx === null) {
+      checklist.push({
+        key: "cv-rendered-difference",
+        label: "CV ↔ rendered-camera difference",
+        state: "attention",
+        detail: "Average: Unavailable · Maximum: Unavailable — CV ↔ rendered-camera diagnostics unavailable at this FOV; use the recommended FOV",
+      });
+    } else if (readinessMetrics.avgDeltaPx > CALIBRATED_CAMERA_APPLY_MAX_AVG_DELTA_PX) {
+      checklist.push({
+        key: "cv-rendered-difference",
+        label: "CV ↔ rendered-camera difference",
+        state: "fail",
+        detail: `Average: ${formatMetricPx(readinessMetrics.avgDeltaPx)} · Maximum: ${formatMetricPx(
+          readinessMetrics.maxDeltaPx
+        )} · needs under ${formatNumber(CALIBRATED_CAMERA_APPLY_MAX_AVG_DELTA_PX)} px average difference. Refine floor corners and use the recommended FOV`,
+      });
+    } else if (readinessMetrics.maxDeltaPx > CALIBRATED_CAMERA_APPLY_MAX_MAX_DELTA_PX) {
+      checklist.push({
+        key: "cv-rendered-difference",
+        label: "CV ↔ rendered-camera difference",
+        state: "fail",
+        detail: `Average: ${formatMetricPx(readinessMetrics.avgDeltaPx)} · Maximum: ${formatMetricPx(
+          readinessMetrics.maxDeltaPx
+        )} · needs under ${formatNumber(CALIBRATED_CAMERA_APPLY_MAX_MAX_DELTA_PX)} px maximum difference. Refine floor corners and use the recommended FOV`,
+      });
+    } else {
+      checklist.push({
+        key: "cv-rendered-difference",
+        label: "CV ↔ rendered-camera difference",
+        state: "pass",
+        detail: `Average: ${formatMetricPx(readinessMetrics.avgDeltaPx)} · Maximum: ${formatMetricPx(
+          readinessMetrics.maxDeltaPx
+        )}`,
+      });
     }
 
     // Frame readiness (frame size validity + post-apply staleness warning).
@@ -2553,6 +2606,45 @@ export default function ThreeRoomLab({
     const floorFitPreviewAvailable = homographyDebug.homographySolveStatus === "ok";
     const cameraPosePreviewAvailable =
       !!cameraPoseDebug.decomposition && cameraPoseDebug.decomposition.confidence === "high";
+    let applyReasonPresentation = apply.reason;
+    if (!apply.available && candidate) {
+      if (candidate.confidence !== "high") {
+        applyReasonPresentation = apply.reason;
+      } else if (
+        candidate.scaleRatio < CALIBRATED_CAMERA_APPLY_MIN_SCALE_RATIO ||
+        candidate.scaleRatio > CALIBRATED_CAMERA_APPLY_MAX_SCALE_RATIO
+      ) {
+        applyReasonPresentation = apply.reason;
+      } else if (candidate.cvAvgPx >= CALIBRATED_CAMERA_APPLY_MAX_CV_AVG_PX) {
+        applyReasonPresentation = `Calibration is not Apply-safe: CV average reprojection is ${formatNumber(candidate.cvAvgPx)} px (limit: ${formatNumber(
+          CALIBRATED_CAMERA_APPLY_MAX_CV_AVG_PX
+        )} px).`;
+      } else if (candidate.cvMaxPx >= CALIBRATED_CAMERA_APPLY_MAX_CV_MAX_PX) {
+        applyReasonPresentation = `Calibration is not Apply-safe: CV maximum reprojection is ${formatNumber(candidate.cvMaxPx)} px (limit: ${formatNumber(
+          CALIBRATED_CAMERA_APPLY_MAX_CV_MAX_PX
+        )} px).`;
+      } else if (!readinessMetrics || readinessMetrics.displayAvgPx === null || readinessMetrics.displayMaxPx === null) {
+        applyReasonPresentation = apply.reason;
+      } else if (readinessMetrics.displayAvgPx >= CALIBRATED_CAMERA_APPLY_MAX_DISPLAY_AVG_PX) {
+        applyReasonPresentation = `Calibration is not Apply-safe: rendered-camera average reprojection is ${formatNumber(
+          readinessMetrics.displayAvgPx
+        )} px (limit: ${formatNumber(CALIBRATED_CAMERA_APPLY_MAX_DISPLAY_AVG_PX)} px).`;
+      } else if (readinessMetrics.displayMaxPx >= CALIBRATED_CAMERA_APPLY_MAX_DISPLAY_MAX_PX) {
+        applyReasonPresentation = `Calibration is not Apply-safe: rendered-camera maximum reprojection is ${formatNumber(
+          readinessMetrics.displayMaxPx
+        )} px (limit: ${formatNumber(CALIBRATED_CAMERA_APPLY_MAX_DISPLAY_MAX_PX)} px).`;
+      } else if (readinessMetrics.avgDeltaPx !== null && readinessMetrics.avgDeltaPx > CALIBRATED_CAMERA_APPLY_MAX_AVG_DELTA_PX) {
+        applyReasonPresentation = `Calibration is not Apply-safe: CV↔rendered-camera average difference is ${formatNumber(
+          readinessMetrics.avgDeltaPx
+        )} px (limit: ${formatNumber(CALIBRATED_CAMERA_APPLY_MAX_AVG_DELTA_PX)} px).`;
+      } else if (readinessMetrics.maxDeltaPx !== null && readinessMetrics.maxDeltaPx > CALIBRATED_CAMERA_APPLY_MAX_MAX_DELTA_PX) {
+        applyReasonPresentation = `Calibration is not Apply-safe: CV↔rendered-camera maximum difference is ${formatNumber(
+          readinessMetrics.maxDeltaPx
+        )} px (limit: ${formatNumber(CALIBRATED_CAMERA_APPLY_MAX_MAX_DELTA_PX)} px).`;
+      } else if (candidate.frameSize.width <= 0 || candidate.frameSize.height <= 0) {
+        applyReasonPresentation = apply.reason;
+      }
+    }
 
     return {
       overall,
@@ -2563,7 +2655,7 @@ export default function ThreeRoomLab({
       floorFitPreviewAvailable,
       cameraPosePreviewAvailable,
       applyReady: apply.available,
-      applyReason: apply.reason,
+      applyReason: applyReasonPresentation,
     };
   }, [
     cameraPoseDebug.applyCandidate,
