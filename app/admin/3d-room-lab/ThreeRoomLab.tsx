@@ -84,6 +84,17 @@ import {
   type AutoFloorFixtureManualCorrection,
   type AutoFloorFixtureObservation,
 } from "./auto-floor-fixtures";
+import {
+  CALIBRATED_CAMERA_APPLY_MAX_AVG_DELTA_PX,
+  CALIBRATED_CAMERA_APPLY_MAX_CV_AVG_PX,
+  CALIBRATED_CAMERA_APPLY_MAX_CV_MAX_PX,
+  CALIBRATED_CAMERA_APPLY_MAX_DISPLAY_AVG_PX,
+  CALIBRATED_CAMERA_APPLY_MAX_DISPLAY_MAX_PX,
+  CALIBRATED_CAMERA_APPLY_MAX_MAX_DELTA_PX,
+  CALIBRATED_CAMERA_APPLY_MAX_SCALE_RATIO,
+  CALIBRATED_CAMERA_APPLY_MIN_SCALE_RATIO,
+  evaluateCalibratedCameraApply,
+} from "./calibrated-camera-apply";
 
 // Phase 2H-B: client-side shape of the lab-only empty-room-assist route reply.
 // Mirrors app/api/admin/3d-room-lab/empty-room-assist/run AssistResponse. Only
@@ -294,14 +305,6 @@ const CALIBRATED_LIFT_HANDLE_MIN_SEPARATION = 4.6;
 const OBJECT_HANDLE_HEIGHT_PIXELS_PER_UNIT = 120;
 const LEGACY_CAMERA_FOV_DEG = 50;
 const LEGACY_CAMERA_POSITION: [number, number, number] = [0, 1.1, 3.2];
-const CALIBRATED_CAMERA_APPLY_MAX_CV_AVG_PX = 4;
-const CALIBRATED_CAMERA_APPLY_MAX_CV_MAX_PX = 10;
-const CALIBRATED_CAMERA_APPLY_MAX_DISPLAY_AVG_PX = 10;
-const CALIBRATED_CAMERA_APPLY_MAX_DISPLAY_MAX_PX = 10;
-const CALIBRATED_CAMERA_APPLY_MAX_AVG_DELTA_PX = 1;
-const CALIBRATED_CAMERA_APPLY_MAX_MAX_DELTA_PX = 1;
-const CALIBRATED_CAMERA_APPLY_MIN_SCALE_RATIO = 0.85;
-const CALIBRATED_CAMERA_APPLY_MAX_SCALE_RATIO = 1.18;
 const CALIBRATION_CORNER_LABELS = ["NL", "NR", "FR", "FL"] as const;
 const CALIBRATED_CAMERA_STALE_WARN_SIZE_DELTA_PERCENT = 2;
 const CALIBRATED_CAMERA_STALE_WARN_ASPECT_DELTA_PERCENT = 1;
@@ -2105,52 +2108,7 @@ export default function ThreeRoomLab({
   ]);
 
   const calibratedCameraApplyStatus = useMemo(() => {
-    const candidate = cameraPoseDebug.applyCandidate;
-    if (!candidate) {
-      return {
-        available: false,
-        reason: cameraPoseDebug.unavailableReason ?? "camera pose diagnostics unavailable",
-      };
-    }
-    if (candidate.confidence !== "high") {
-      return { available: false, reason: "camera pose confidence is not high" };
-    }
-    if (candidate.cvAvgPx >= CALIBRATED_CAMERA_APPLY_MAX_CV_AVG_PX) {
-      return { available: false, reason: "CV reprojection average is too high" };
-    }
-    if (candidate.cvMaxPx >= CALIBRATED_CAMERA_APPLY_MAX_CV_MAX_PX) {
-      return { available: false, reason: "CV reprojection max is too high" };
-    }
-    if (
-      candidate.displayAvgPx === null ||
-      candidate.displayMaxPx === null ||
-      !Number.isFinite(candidate.displayAvgPx) ||
-      !Number.isFinite(candidate.displayMaxPx)
-    ) {
-      return { available: false, reason: "display reprojection diagnostics are unavailable" };
-    }
-    if (candidate.displayAvgPx >= CALIBRATED_CAMERA_APPLY_MAX_DISPLAY_AVG_PX) {
-      return { available: false, reason: "display reprojection average is too high" };
-    }
-    if (candidate.displayMaxPx >= CALIBRATED_CAMERA_APPLY_MAX_DISPLAY_MAX_PX) {
-      return { available: false, reason: "display reprojection max is too high" };
-    }
-    if (Math.abs(candidate.displayAvgPx - candidate.cvAvgPx) > CALIBRATED_CAMERA_APPLY_MAX_AVG_DELTA_PX) {
-      return { available: false, reason: "display/CV average reprojection mismatch is too high" };
-    }
-    if (Math.abs(candidate.displayMaxPx - candidate.cvMaxPx) > CALIBRATED_CAMERA_APPLY_MAX_MAX_DELTA_PX) {
-      return { available: false, reason: "display/CV max reprojection mismatch is too high" };
-    }
-    if (
-      candidate.scaleRatio < CALIBRATED_CAMERA_APPLY_MIN_SCALE_RATIO ||
-      candidate.scaleRatio > CALIBRATED_CAMERA_APPLY_MAX_SCALE_RATIO
-    ) {
-      return { available: false, reason: "camera pose scale ratio is outside apply bounds" };
-    }
-    if (candidate.frameSize.width <= 0 || candidate.frameSize.height <= 0) {
-      return { available: false, reason: "frame size is invalid for apply snapshot" };
-    }
-    return { available: true, reason: "available" };
+    return evaluateCalibratedCameraApply(cameraPoseDebug.applyCandidate, cameraPoseDebug.unavailableReason);
   }, [cameraPoseDebug.applyCandidate, cameraPoseDebug.unavailableReason]);
 
   // Phase 2J-B3: deferred calibrated-camera restore. This runs reactively, not
@@ -2477,44 +2435,7 @@ export default function ThreeRoomLab({
       }
       return best;
     })();
-    type FirstFailingGate =
-      | "no-candidate"
-      | "confidence"
-      | "cv-avg"
-      | "cv-max"
-      | "display-unavailable"
-      | "display-avg"
-      | "display-max"
-      | "delta-avg"
-      | "delta-max"
-      | "scale-ratio"
-      | "frame-size"
-      | "none";
-    const firstFailingGate: FirstFailingGate = (() => {
-      if (!candidate) return "no-candidate";
-      if (candidate.confidence !== "high") return "confidence";
-      if (candidate.cvAvgPx >= CALIBRATED_CAMERA_APPLY_MAX_CV_AVG_PX) return "cv-avg";
-      if (candidate.cvMaxPx >= CALIBRATED_CAMERA_APPLY_MAX_CV_MAX_PX) return "cv-max";
-      if (!readinessMetrics || readinessMetrics.displayAvgPx === null || readinessMetrics.displayMaxPx === null) {
-        return "display-unavailable";
-      }
-      if (readinessMetrics.displayAvgPx >= CALIBRATED_CAMERA_APPLY_MAX_DISPLAY_AVG_PX) return "display-avg";
-      if (readinessMetrics.displayMaxPx >= CALIBRATED_CAMERA_APPLY_MAX_DISPLAY_MAX_PX) return "display-max";
-      if (readinessMetrics.avgDeltaPx !== null && readinessMetrics.avgDeltaPx > CALIBRATED_CAMERA_APPLY_MAX_AVG_DELTA_PX) {
-        return "delta-avg";
-      }
-      if (readinessMetrics.maxDeltaPx !== null && readinessMetrics.maxDeltaPx > CALIBRATED_CAMERA_APPLY_MAX_MAX_DELTA_PX) {
-        return "delta-max";
-      }
-      if (
-        candidate.scaleRatio < CALIBRATED_CAMERA_APPLY_MIN_SCALE_RATIO ||
-        candidate.scaleRatio > CALIBRATED_CAMERA_APPLY_MAX_SCALE_RATIO
-      ) {
-        return "scale-ratio";
-      }
-      if (candidate.frameSize.width <= 0 || candidate.frameSize.height <= 0) return "frame-size";
-      return "none";
-    })();
+    const firstFailingGate = apply.firstFailingGate;
 
     // Floor shape (homography validity / corner ordering confidence).
     if (homographyDebug.homographySolveStatus === "ok") {
