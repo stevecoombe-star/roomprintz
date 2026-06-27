@@ -53,6 +53,7 @@ export type CameraPoseDiagnostics = {
   cameraZ: number;
   averageCameraPoseReprojectionPx: number;
   maxCameraPoseReprojectionPx: number;
+  perCornerCvReprojectionPx?: number[];
   candidatesPassingCheirality?: number;
   bestCandidateSummary?: string;
   candidateSummaries?: string[];
@@ -867,6 +868,7 @@ export function decomposeHomographyToCameraPose(
     cvProjection: CameraPoseCvProjection;
     averageReprojectionErrorPx: number | null;
     maxReprojectionErrorPx: number | null;
+    perCornerCvReprojectionPx: number[] | null;
     summary: string;
   };
 
@@ -956,11 +958,13 @@ export function decomposeHomographyToCameraPose(
     let maxDepthZ = Number.NEGATIVE_INFINITY;
     let averageReprojectionErrorPx: number | null = null;
     let maxReprojectionErrorPx: number | null = null;
+    let perCornerCvReprojectionPx: number[] | null = null;
 
     if (hasValidationCorrespondences && floorValidationPoints && imageValidationPoints) {
       let totalReprojectionErrorPx = 0;
       let maxErrorPx = 0;
       let cheiralityValid = true;
+      perCornerCvReprojectionPx = [];
       for (let i = 0; i < floorValidationPoints.length; i += 1) {
         const projected = projectFloorPointWithRtCv(rotationPlaneBasis, t, cameraIntrinsics, floorValidationPoints[i]);
         if (!projected.ok) {
@@ -971,6 +975,7 @@ export function decomposeHomographyToCameraPose(
         minDepthZ = Math.min(minDepthZ, projected.value.depthZ);
         maxDepthZ = Math.max(maxDepthZ, projected.value.depthZ);
         const error = distance2(projected.value.pointPx, imageValidationPoints[i]);
+        perCornerCvReprojectionPx.push(error);
         totalReprojectionErrorPx += error;
         if (error > maxErrorPx) maxErrorPx = error;
       }
@@ -1034,6 +1039,7 @@ export function decomposeHomographyToCameraPose(
         cameraZ: cameraPositionWorld.z,
         averageCameraPoseReprojectionPx: averageReprojectionErrorPx ?? 0,
         maxCameraPoseReprojectionPx: maxReprojectionErrorPx ?? 0,
+        ...(perCornerCvReprojectionPx !== null ? { perCornerCvReprojectionPx } : {}),
       },
       cvProjection: {
         rotationPlaneToCv: rotationPlaneBasis,
@@ -1041,6 +1047,7 @@ export function decomposeHomographyToCameraPose(
       },
       averageReprojectionErrorPx,
       maxReprojectionErrorPx,
+      perCornerCvReprojectionPx,
       summary,
     });
   }

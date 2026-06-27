@@ -302,6 +302,7 @@ const CALIBRATED_CAMERA_APPLY_MAX_AVG_DELTA_PX = 1;
 const CALIBRATED_CAMERA_APPLY_MAX_MAX_DELTA_PX = 1;
 const CALIBRATED_CAMERA_APPLY_MIN_SCALE_RATIO = 0.85;
 const CALIBRATED_CAMERA_APPLY_MAX_SCALE_RATIO = 1.18;
+const CALIBRATION_CORNER_LABELS = ["NL", "NR", "FR", "FL"] as const;
 const CALIBRATED_CAMERA_STALE_WARN_SIZE_DELTA_PERCENT = 2;
 const CALIBRATED_CAMERA_STALE_WARN_ASPECT_DELTA_PERCENT = 1;
 const CALIBRATED_CAMERA_AUTO_REVERT_SIZE_DELTA_PERCENT = 5;
@@ -1624,6 +1625,12 @@ export default function ThreeRoomLab({
   const cameraPoseDebug = useMemo(() => {
     const rows: { label: string; value: string }[] = [];
     let unavailableReason: string | null = null;
+    let cornerResidualDiagnostics:
+      | {
+          perCornerCvResidualPx: (number | null)[] | null;
+          perCornerRenderedResidualPx: (number | null)[] | null;
+        }
+      | null = null;
     let applyCandidate:
       | {
           confidence: "high" | "low";
@@ -1656,6 +1663,7 @@ export default function ThreeRoomLab({
           };
         }
       | null = null;
+    const makeResult = () => ({ rows, decomposition, applyCandidate, unavailableReason, cornerResidualDiagnostics });
     rows.push({
       label: "camera pose note",
       value: "Debug only — derived pose is not applied to the live Three.js camera.",
@@ -1671,7 +1679,7 @@ export default function ThreeRoomLab({
         label: "camera pose diagnostic",
         value: "fail (frame pixel size unavailable)",
       });
-      return { rows, decomposition, applyCandidate, unavailableReason };
+      return makeResult();
     }
     if (homographyDebug.homographySolveStatus !== "ok" || !homographyDebug.homographyMatrixForPlacement) {
       unavailableReason = homographyDebug.placementFallbackReason;
@@ -1679,7 +1687,7 @@ export default function ThreeRoomLab({
         label: "camera pose diagnostic",
         value: `fail (${homographyDebug.placementFallbackReason})`,
       });
-      return { rows, decomposition, applyCandidate, unavailableReason };
+      return makeResult();
     }
 
     const intrinsicsResult = buildCameraIntrinsicsFromFov(homographyDebug.frameSize, cameraPoseFovYDeg);
@@ -1689,7 +1697,7 @@ export default function ThreeRoomLab({
         label: "camera pose diagnostic",
         value: `fail (${intrinsicsResult.reason})`,
       });
-      return { rows, decomposition, applyCandidate, unavailableReason };
+      return makeResult();
     }
 
     if (!homographyDebug.orderedCornersNorm) {
@@ -1698,7 +1706,7 @@ export default function ThreeRoomLab({
         label: "camera pose diagnostic",
         value: "fail (ordered homography corners unavailable)",
       });
-      return { rows, decomposition, applyCandidate, unavailableReason };
+      return makeResult();
     }
     const imagePointsPx: { x: number; y: number }[] = [];
     for (const point of homographyDebug.orderedCornersNorm) {
@@ -1709,7 +1717,7 @@ export default function ThreeRoomLab({
           label: "camera pose diagnostic",
           value: "fail (could not convert ordered corners from normalized -> pixels)",
         });
-        return { rows, decomposition, applyCandidate, unavailableReason };
+        return makeResult();
       }
       imagePointsPx.push(pixels);
     }
@@ -1723,7 +1731,7 @@ export default function ThreeRoomLab({
         label: "camera pose diagnostic",
         value: `fail (${floorRectResult.reason})`,
       });
-      return { rows, decomposition, applyCandidate, unavailableReason };
+      return makeResult();
     }
     const floorPlanePoints2D = floorRectResult.value.asArray.map((point) => floorVec3ToPlane2D(point));
 
@@ -1742,7 +1750,7 @@ export default function ThreeRoomLab({
         label: "camera pose diagnostic",
         value: `fail (${decompositionResult.reason})`,
       });
-      return { rows, decomposition, applyCandidate, unavailableReason };
+      return makeResult();
     }
 
     rows.push({
@@ -1811,6 +1819,7 @@ export default function ThreeRoomLab({
     let displayReprojectionTotal = 0;
     let displayReprojectionMax = 0;
     let displayReprojectionCount = 0;
+    const perCornerRenderedResidualPx: (number | null)[] = new Array(floorPlanePoints2D.length).fill(null);
     for (let i = 0; i < floorPlanePoints2D.length; i += 1) {
       const projected = projectFloorPointThroughPose(
         decompositionResult.value.pose,
@@ -1821,10 +1830,20 @@ export default function ThreeRoomLab({
       if (!projected.ok) continue;
       const error = Math.hypot(projected.value.x - imagePointsPx[i].x, projected.value.y - imagePointsPx[i].y);
       if (!Number.isFinite(error)) continue;
+      perCornerRenderedResidualPx[i] = error;
       displayReprojectionTotal += error;
       if (error > displayReprojectionMax) displayReprojectionMax = error;
       displayReprojectionCount += 1;
     }
+    const cvPerCornerDiagnostics = decompositionResult.value.diagnostics.perCornerCvReprojectionPx;
+    const perCornerCvResidualPx: (number | null)[] | null =
+      Array.isArray(cvPerCornerDiagnostics) && cvPerCornerDiagnostics.length === floorPlanePoints2D.length
+        ? cvPerCornerDiagnostics.map((value) => (Number.isFinite(value) ? value : null))
+        : null;
+    cornerResidualDiagnostics = {
+      perCornerCvResidualPx,
+      perCornerRenderedResidualPx,
+    };
     rows.push({
       label: "camera pose display reprojection avg px",
       value:
@@ -1879,7 +1898,7 @@ export default function ThreeRoomLab({
       pose: decompositionResult.value.pose,
     };
 
-    return { rows, decomposition, applyCandidate, unavailableReason };
+    return makeResult();
   }, [
     cameraPoseFovYDeg,
     homographyDebug.frameSize,
@@ -2203,7 +2222,8 @@ export default function ThreeRoomLab({
     if (!cameraPoseDebug.decomposition) return [] as FloorPoint[][];
     if (cameraPoseDebug.decomposition.confidence !== "high") return [] as FloorPoint[][];
 
-    const renderSize = cameraPoseDebug.decomposition.frameSize;
+    const decomposition = cameraPoseDebug.decomposition;
+    const renderSize = decomposition.frameSize;
     const halfWidth = floorMapping.worldWidth / 2;
     const halfDepth = floorMapping.worldDepth / 2;
     const gridLineCount = 7;
@@ -2212,7 +2232,7 @@ export default function ThreeRoomLab({
 
     const projectFloorToOverlayNorm = (x: number, z: number): FloorPoint | null => {
       const projected = projectFloorPointThroughCameraPoseCv(
-        cameraPoseDebug.decomposition.cvProjection,
+        decomposition.cvProjection,
         renderSize,
         { verticalFovDeg: cameraPoseFovYDeg },
         { x, y: z }
@@ -2339,6 +2359,18 @@ export default function ThreeRoomLab({
     const checklist: { key: string; label: string; state: ReadinessState; detail: string }[] = [];
     const formatMetricPx = (value: number | null) =>
       value !== null && Number.isFinite(value) ? `${formatNumber(value)} px` : "Unavailable";
+    const pickLargestFiniteCorner = (values: (number | null)[] | null): { index: number; value: number } | null => {
+      if (!values) return null;
+      let best: { index: number; value: number } | null = null;
+      for (let i = 0; i < values.length; i += 1) {
+        const value = values[i];
+        if (value === null || !Number.isFinite(value)) continue;
+        if (!best || value > best.value) {
+          best = { index: i, value };
+        }
+      }
+      return best;
+    };
     const readinessMetrics =
       candidate &&
       candidate.displayAvgPx !== null &&
@@ -2363,6 +2395,71 @@ export default function ThreeRoomLab({
               maxDeltaPx: null,
             }
           : null;
+    const perCornerDiagnostics = cameraPoseDebug.cornerResidualDiagnostics;
+    const worstCvCorner = pickLargestFiniteCorner(perCornerDiagnostics?.perCornerCvResidualPx ?? null);
+    const worstRenderedCorner = pickLargestFiniteCorner(perCornerDiagnostics?.perCornerRenderedResidualPx ?? null);
+    const largestPerCornerDifference = (() => {
+      if (!perCornerDiagnostics?.perCornerCvResidualPx || !perCornerDiagnostics.perCornerRenderedResidualPx) return null;
+      const cvValues = perCornerDiagnostics.perCornerCvResidualPx;
+      const renderedValues = perCornerDiagnostics.perCornerRenderedResidualPx;
+      const count = Math.min(cvValues.length, renderedValues.length);
+      let best: { index: number; value: number } | null = null;
+      for (let i = 0; i < count; i += 1) {
+        const cvResidual = cvValues[i];
+        const renderedResidual = renderedValues[i];
+        if (
+          cvResidual === null ||
+          renderedResidual === null ||
+          !Number.isFinite(cvResidual) ||
+          !Number.isFinite(renderedResidual)
+        ) {
+          continue;
+        }
+        const difference = Math.abs(renderedResidual - cvResidual);
+        if (!best || difference > best.value) {
+          best = { index: i, value: difference };
+        }
+      }
+      return best;
+    })();
+    type FirstFailingGate =
+      | "no-candidate"
+      | "confidence"
+      | "cv-avg"
+      | "cv-max"
+      | "display-unavailable"
+      | "display-avg"
+      | "display-max"
+      | "delta-avg"
+      | "delta-max"
+      | "scale-ratio"
+      | "frame-size"
+      | "none";
+    const firstFailingGate: FirstFailingGate = (() => {
+      if (!candidate) return "no-candidate";
+      if (candidate.confidence !== "high") return "confidence";
+      if (candidate.cvAvgPx >= CALIBRATED_CAMERA_APPLY_MAX_CV_AVG_PX) return "cv-avg";
+      if (candidate.cvMaxPx >= CALIBRATED_CAMERA_APPLY_MAX_CV_MAX_PX) return "cv-max";
+      if (!readinessMetrics || readinessMetrics.displayAvgPx === null || readinessMetrics.displayMaxPx === null) {
+        return "display-unavailable";
+      }
+      if (readinessMetrics.displayAvgPx >= CALIBRATED_CAMERA_APPLY_MAX_DISPLAY_AVG_PX) return "display-avg";
+      if (readinessMetrics.displayMaxPx >= CALIBRATED_CAMERA_APPLY_MAX_DISPLAY_MAX_PX) return "display-max";
+      if (readinessMetrics.avgDeltaPx !== null && readinessMetrics.avgDeltaPx > CALIBRATED_CAMERA_APPLY_MAX_AVG_DELTA_PX) {
+        return "delta-avg";
+      }
+      if (readinessMetrics.maxDeltaPx !== null && readinessMetrics.maxDeltaPx > CALIBRATED_CAMERA_APPLY_MAX_MAX_DELTA_PX) {
+        return "delta-max";
+      }
+      if (
+        candidate.scaleRatio < CALIBRATED_CAMERA_APPLY_MIN_SCALE_RATIO ||
+        candidate.scaleRatio > CALIBRATED_CAMERA_APPLY_MAX_SCALE_RATIO
+      ) {
+        return "scale-ratio";
+      }
+      if (candidate.frameSize.width <= 0 || candidate.frameSize.height <= 0) return "frame-size";
+      return "none";
+    })();
 
     // Floor shape (homography validity / corner ordering confidence).
     if (homographyDebug.homographySolveStatus === "ok") {
@@ -2433,14 +2530,14 @@ export default function ThreeRoomLab({
         key: "camera-fit",
         label: "Camera fit (CV reprojection)",
         state: "fail",
-        detail: `Average: ${formatMetricPx(candidate.cvAvgPx)} · Maximum: ${formatMetricPx(candidate.cvMaxPx)} · needs under ${formatNumber(CALIBRATED_CAMERA_APPLY_MAX_CV_AVG_PX)} px average. Refine the corners, especially the one furthest from the visible floor edge`,
+        detail: `Average: ${formatMetricPx(candidate.cvAvgPx)} · Maximum: ${formatMetricPx(candidate.cvMaxPx)} · needs under ${formatNumber(CALIBRATED_CAMERA_APPLY_MAX_CV_AVG_PX)} px average. Refine the floor corners and re-check calibration`,
       });
     } else if (candidate.cvMaxPx >= CALIBRATED_CAMERA_APPLY_MAX_CV_MAX_PX) {
       checklist.push({
         key: "camera-fit",
         label: "Camera fit (CV reprojection)",
         state: "fail",
-        detail: `Average: ${formatMetricPx(candidate.cvAvgPx)} · Maximum: ${formatMetricPx(candidate.cvMaxPx)} · needs under ${formatNumber(CALIBRATED_CAMERA_APPLY_MAX_CV_MAX_PX)} px maximum. Refine the corners, especially the one furthest from the visible floor edge`,
+        detail: `Average: ${formatMetricPx(candidate.cvAvgPx)} · Maximum: ${formatMetricPx(candidate.cvMaxPx)} · needs under ${formatNumber(CALIBRATED_CAMERA_APPLY_MAX_CV_MAX_PX)} px maximum. Refine the floor corners and re-check calibration`,
       });
     } else {
       checklist.push({
@@ -2608,42 +2705,71 @@ export default function ThreeRoomLab({
       !!cameraPoseDebug.decomposition && cameraPoseDebug.decomposition.confidence === "high";
     let applyReasonPresentation = apply.reason;
     if (!apply.available && candidate) {
-      if (candidate.confidence !== "high") {
-        applyReasonPresentation = apply.reason;
-      } else if (
-        candidate.scaleRatio < CALIBRATED_CAMERA_APPLY_MIN_SCALE_RATIO ||
-        candidate.scaleRatio > CALIBRATED_CAMERA_APPLY_MAX_SCALE_RATIO
-      ) {
-        applyReasonPresentation = apply.reason;
-      } else if (candidate.cvAvgPx >= CALIBRATED_CAMERA_APPLY_MAX_CV_AVG_PX) {
-        applyReasonPresentation = `Calibration is not Apply-safe: CV average reprojection is ${formatNumber(candidate.cvAvgPx)} px (limit: ${formatNumber(
-          CALIBRATED_CAMERA_APPLY_MAX_CV_AVG_PX
-        )} px).`;
-      } else if (candidate.cvMaxPx >= CALIBRATED_CAMERA_APPLY_MAX_CV_MAX_PX) {
-        applyReasonPresentation = `Calibration is not Apply-safe: CV maximum reprojection is ${formatNumber(candidate.cvMaxPx)} px (limit: ${formatNumber(
-          CALIBRATED_CAMERA_APPLY_MAX_CV_MAX_PX
-        )} px).`;
-      } else if (!readinessMetrics || readinessMetrics.displayAvgPx === null || readinessMetrics.displayMaxPx === null) {
-        applyReasonPresentation = apply.reason;
-      } else if (readinessMetrics.displayAvgPx >= CALIBRATED_CAMERA_APPLY_MAX_DISPLAY_AVG_PX) {
-        applyReasonPresentation = `Calibration is not Apply-safe: rendered-camera average reprojection is ${formatNumber(
-          readinessMetrics.displayAvgPx
-        )} px (limit: ${formatNumber(CALIBRATED_CAMERA_APPLY_MAX_DISPLAY_AVG_PX)} px).`;
-      } else if (readinessMetrics.displayMaxPx >= CALIBRATED_CAMERA_APPLY_MAX_DISPLAY_MAX_PX) {
-        applyReasonPresentation = `Calibration is not Apply-safe: rendered-camera maximum reprojection is ${formatNumber(
-          readinessMetrics.displayMaxPx
-        )} px (limit: ${formatNumber(CALIBRATED_CAMERA_APPLY_MAX_DISPLAY_MAX_PX)} px).`;
-      } else if (readinessMetrics.avgDeltaPx !== null && readinessMetrics.avgDeltaPx > CALIBRATED_CAMERA_APPLY_MAX_AVG_DELTA_PX) {
-        applyReasonPresentation = `Calibration is not Apply-safe: CV↔rendered-camera average difference is ${formatNumber(
-          readinessMetrics.avgDeltaPx
-        )} px (limit: ${formatNumber(CALIBRATED_CAMERA_APPLY_MAX_AVG_DELTA_PX)} px).`;
-      } else if (readinessMetrics.maxDeltaPx !== null && readinessMetrics.maxDeltaPx > CALIBRATED_CAMERA_APPLY_MAX_MAX_DELTA_PX) {
-        applyReasonPresentation = `Calibration is not Apply-safe: CV↔rendered-camera maximum difference is ${formatNumber(
-          readinessMetrics.maxDeltaPx
-        )} px (limit: ${formatNumber(CALIBRATED_CAMERA_APPLY_MAX_MAX_DELTA_PX)} px).`;
-      } else if (candidate.frameSize.width <= 0 || candidate.frameSize.height <= 0) {
-        applyReasonPresentation = apply.reason;
+      switch (firstFailingGate) {
+        case "cv-avg":
+          applyReasonPresentation = `Calibration is not Apply-safe: CV average reprojection is ${formatNumber(candidate.cvAvgPx)} px (limit: ${formatNumber(
+            CALIBRATED_CAMERA_APPLY_MAX_CV_AVG_PX
+          )} px).`;
+          break;
+        case "cv-max":
+          applyReasonPresentation = `Calibration is not Apply-safe: CV maximum reprojection is ${formatNumber(candidate.cvMaxPx)} px (limit: ${formatNumber(
+            CALIBRATED_CAMERA_APPLY_MAX_CV_MAX_PX
+          )} px).`;
+          break;
+        case "display-avg":
+          applyReasonPresentation = `Calibration is not Apply-safe: rendered-camera average reprojection is ${formatNumber(
+            readinessMetrics!.displayAvgPx!
+          )} px (limit: ${formatNumber(CALIBRATED_CAMERA_APPLY_MAX_DISPLAY_AVG_PX)} px).`;
+          break;
+        case "display-max":
+          applyReasonPresentation = `Calibration is not Apply-safe: rendered-camera maximum reprojection is ${formatNumber(
+            readinessMetrics!.displayMaxPx!
+          )} px (limit: ${formatNumber(CALIBRATED_CAMERA_APPLY_MAX_DISPLAY_MAX_PX)} px).`;
+          break;
+        case "delta-avg":
+          applyReasonPresentation = `Calibration is not Apply-safe: CV↔rendered-camera average difference is ${formatNumber(
+            readinessMetrics!.avgDeltaPx!
+          )} px (limit: ${formatNumber(CALIBRATED_CAMERA_APPLY_MAX_AVG_DELTA_PX)} px).`;
+          break;
+        case "delta-max":
+          applyReasonPresentation = `Calibration is not Apply-safe: CV↔rendered-camera maximum difference is ${formatNumber(
+            readinessMetrics!.maxDeltaPx!
+          )} px (limit: ${formatNumber(CALIBRATED_CAMERA_APPLY_MAX_MAX_DELTA_PX)} px).`;
+          break;
+        default:
+          applyReasonPresentation = apply.reason;
+          break;
       }
+    }
+    const formatCornerDiagnostic = (entry: { index: number; value: number } | null) =>
+      entry ? `${CALIBRATION_CORNER_LABELS[entry.index] ?? "Unavailable"} — ${formatNumber(entry.value)} px` : "Unavailable";
+    const largestCvResidualText = `Largest CV residual: ${formatCornerDiagnostic(worstCvCorner)}`;
+    const largestRenderedResidualText = `Largest rendered-camera residual: ${formatCornerDiagnostic(worstRenderedCorner)}`;
+    const largestDifferenceText = `Largest CV ↔ rendered-camera difference: ${formatCornerDiagnostic(
+      largestPerCornerDifference
+    )}`;
+    let mainBlockingContributorTitle: string;
+    let mainBlockingContributorDetail: string | null = null;
+    if (apply.available) {
+      mainBlockingContributorTitle = "No corner-specific Apply blocker.";
+    } else if (firstFailingGate === "cv-max" && worstCvCorner) {
+      const label = CALIBRATION_CORNER_LABELS[worstCvCorner.index] ?? "Unavailable";
+      mainBlockingContributorTitle = `Worst CV corner: ${label}`;
+      mainBlockingContributorDetail = `Residual: ${formatNumber(
+        worstCvCorner.value
+      )} px. This is the largest CV residual and exceeds the maximum limit of ${formatNumber(
+        CALIBRATED_CAMERA_APPLY_MAX_CV_MAX_PX
+      )} px.`;
+    } else if (firstFailingGate === "display-max" && worstRenderedCorner) {
+      const label = CALIBRATION_CORNER_LABELS[worstRenderedCorner.index] ?? "Unavailable";
+      mainBlockingContributorTitle = `Worst rendered-camera corner: ${label}`;
+      mainBlockingContributorDetail = `Residual: ${formatNumber(
+        worstRenderedCorner.value
+      )} px. This is the largest rendered-camera residual and exceeds the maximum limit of ${formatNumber(
+        CALIBRATED_CAMERA_APPLY_MAX_DISPLAY_MAX_PX
+      )} px.`;
+    } else {
+      mainBlockingContributorTitle = "No single corner is identified for this blocker.";
     }
 
     return {
@@ -2656,9 +2782,16 @@ export default function ThreeRoomLab({
       cameraPosePreviewAvailable,
       applyReady: apply.available,
       applyReason: applyReasonPresentation,
+      largestCvResidualText,
+      largestRenderedResidualText,
+      largestDifferenceText,
+      differenceDiagnosticNote: "Diagnostic only: Apply limits compare aggregate values, not this per-corner difference.",
+      mainBlockingContributorTitle,
+      mainBlockingContributorDetail,
     };
   }, [
     cameraPoseDebug.applyCandidate,
+    cameraPoseDebug.cornerResidualDiagnostics,
     cameraPoseDebug.decomposition,
     cameraPoseFovScanDebug.recommendation,
     calibratedCameraApplyStatus,
@@ -7899,6 +8032,16 @@ export default function ThreeRoomLab({
                 </li>
               ))}
             </ul>
+            <div className="mt-3 border-t border-slate-800 pt-2 text-xs">
+              <p className="text-slate-300">{calibrationReadiness.largestCvResidualText}</p>
+              <p className="mt-1 text-slate-300">{calibrationReadiness.largestRenderedResidualText}</p>
+              <p className="mt-1 text-slate-300">{calibrationReadiness.largestDifferenceText}</p>
+              <p className="mt-1 text-slate-500">{calibrationReadiness.differenceDiagnosticNote}</p>
+              <p className="mt-2 text-slate-200">{calibrationReadiness.mainBlockingContributorTitle}</p>
+              {calibrationReadiness.mainBlockingContributorDetail ? (
+                <p className="mt-1 text-slate-400">{calibrationReadiness.mainBlockingContributorDetail}</p>
+              ) : null}
+            </div>
           </div>
 
           <div className="mt-3 rounded-lg border border-slate-700 bg-slate-950/60 p-3">
