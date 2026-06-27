@@ -3390,7 +3390,7 @@ export default function ThreeRoomLab({
     floorMapping.worldDepth,
   ]);
 
-  const assistedCandidateSolvabilityContext = useMemo(() => {
+  const assistedCandidateIdentity = useMemo(() => {
     const normalizedQuadMatchEpsilon = 1e-4;
     const selectedCandidateQuad = selectedAutoFloorCandidate?.quadNorm ?? null;
     const activeFloorMatchesSelectedCandidate =
@@ -3405,104 +3405,161 @@ export default function ThreeRoomLab({
           Math.abs(point.y - candidatePoint.y) <= normalizedQuadMatchEpsilon
         );
       });
-    const candidateStatusLabel = !selectedAutoFloorCandidate
-      ? "No assisted candidate selected"
-      : appliedAutoFloorCandidateId === selectedAutoFloorCandidate.id && activeFloorMatchesSelectedCandidate
-        ? "Applied to active floor quad"
-        : "Selected — not applied or edited after applying";
-    const metricsScopeText =
-      selectedAutoFloorCandidate &&
+    const isAppliedAndIdentical =
+      !!selectedAutoFloorCandidate &&
       appliedAutoFloorCandidateId === selectedAutoFloorCandidate.id &&
-      activeFloorMatchesSelectedCandidate
-        ? "Metrics below reflect the applied assisted candidate and current manual FOV."
-        : "Metrics below reflect the active floor quad and current manual FOV.";
+      activeFloorMatchesSelectedCandidate;
+    const wasAppliedButNowDifferent =
+      !!selectedAutoFloorCandidate &&
+      appliedAutoFloorCandidateId === selectedAutoFloorCandidate.id &&
+      !activeFloorMatchesSelectedCandidate;
+    return {
+      activeFloorMatchesSelectedCandidate,
+      isAppliedAndIdentical,
+      wasAppliedButNowDifferent,
+    };
+  }, [appliedAutoFloorCandidateId, floorPolygon, selectedAutoFloorCandidate]);
 
-    const candidate = cameraPoseDebug.applyCandidate;
+  const selectedAssistedCandidateSolvability = useMemo(() => {
+    if (!selectedAutoFloorCandidate) return null;
+    if (assistedCandidateIdentity.isAppliedAndIdentical) return null;
+    return evaluateQuadSolvability({
+      quadNorm: selectedAutoFloorCandidate.quadNorm,
+      frameSize: homographyDebug.frameSize,
+      floorDimensions: {
+        worldWidth: floorMapping.worldWidth,
+        worldDepth: floorMapping.worldDepth,
+      },
+      currentVerticalFovDeg: cameraPoseFovYDeg,
+      fovScanConfig: { minFovDeg: 20, maxFovDeg: 90, stepDeg: 1 },
+    });
+  }, [
+    assistedCandidateIdentity.isAppliedAndIdentical,
+    cameraPoseFovYDeg,
+    floorMapping.worldDepth,
+    floorMapping.worldWidth,
+    homographyDebug.frameSize,
+    selectedAutoFloorCandidate,
+  ]);
+
+  const assistedCandidateSolvabilityContext = useMemo(() => {
+    if (!selectedAutoFloorCandidate) {
+      return {
+        state: "no-selected" as const,
+        primaryText: "No assisted candidate selected.",
+      };
+    }
+    if (assistedCandidateIdentity.isAppliedAndIdentical) {
+      return {
+        state: "identical-active" as const,
+        primaryText: "Applied to active floor quad.",
+        secondaryText: "Candidate diagnostics match the active floor quad and are shown in Calibration Readiness.",
+      };
+    }
+
+    const result = selectedAssistedCandidateSolvability;
     const formatMetricPx = (value: number | null) =>
       value !== null && Number.isFinite(value) ? `${formatNumber(value)} px` : "Unavailable";
-    const hasRenderableDiagnostics =
-      !!candidate &&
-      candidate.displayAvgPx !== null &&
-      candidate.displayMaxPx !== null &&
-      Number.isFinite(candidate.displayAvgPx) &&
-      Number.isFinite(candidate.displayMaxPx);
-    const cvAverageText = formatMetricPx(candidate?.cvAvgPx ?? null);
-    const cvMaximumText = formatMetricPx(candidate?.cvMaxPx ?? null);
-    const renderedAverageText = formatMetricPx(hasRenderableDiagnostics ? candidate!.displayAvgPx : null);
-    const renderedMaximumText = formatMetricPx(hasRenderableDiagnostics ? candidate!.displayMaxPx : null);
-    const deltaAverageText = formatMetricPx(
-      hasRenderableDiagnostics ? Math.abs(candidate!.displayAvgPx! - candidate!.cvAvgPx) : null
-    );
-    const deltaMaximumText = formatMetricPx(
-      hasRenderableDiagnostics ? Math.abs(candidate!.displayMaxPx! - candidate!.cvMaxPx) : null
-    );
+    const formatFovIntervals = (intervals: [number, number][] | null) => {
+      if (!intervals) return "Unavailable";
+      if (intervals.length === 0) return "None found";
+      return intervals
+        .map(([start, end]) => (start === end ? `${start}°` : `${start}°–${end}°`))
+        .join(", ");
+    };
+    const formatCornerDiagnostic = (entry: { index: number; value: number } | null) =>
+      entry ? `${CALIBRATION_CORNER_LABELS[entry.index] ?? "Unavailable"} — ${formatNumber(entry.value)} px` : "Unavailable";
 
-    const evaluationPrerequisitesAvailable =
-      !!homographyDebug.frameSize &&
-      homographyDebug.homographySolveStatus === "ok" &&
-      !!homographyDebug.homographyMatrixForPlacement &&
-      !!homographyDebug.orderedCornersNorm;
-    const cameraSolvableText = candidate ? "Yes" : evaluationPrerequisitesAvailable ? "No" : "Unavailable";
-    const poseAvailableText = candidate ? "Yes" : evaluationPrerequisitesAvailable ? "No" : "Unavailable";
-    const cheiralityText = candidate ? "Pass" : "Unavailable";
-    const scaleRatioText = candidate ? formatNumber(candidate.scaleRatio) : "Unavailable";
-    const applySafeLabel =
-      calibrationReadiness.applySafeAtCurrentFovText === "Unavailable"
-        ? "Apply-safe at current FOV"
-        : `Apply-safe at current FOV (${formatNumber(cameraPoseFovYDeg)}°)`;
-    const mainBlockerText = candidate
-      ? calibrationReadiness.mainBlockingContributorTitle
-      : `Main blocker: ${cameraPoseDebug.unavailableReason ?? "camera pose diagnostics unavailable"}`;
+    const cameraSolvableText = !result
+      ? "Unavailable"
+      : result.poseAvailable && !!result.applyCandidate
+        ? "Yes"
+        : result.prerequisitesAvailable
+          ? "No"
+          : "Unavailable";
+    const highConfidenceText = !result
+      ? "Unavailable"
+      : result.decomposition
+        ? result.decomposition.confidence === "high"
+          ? "Yes"
+          : "No"
+        : "Unavailable";
+    const applySafeText = !result
+      ? "Unavailable"
+      : result.applyEvaluation.available
+        ? "Yes"
+        : `No — ${result.applyEvaluation.reason}`;
+
+    const validFovSampleText =
+      !result || result.fovScan.sampleCount === 0
+        ? "Unavailable"
+        : result.fovScan.validSampleCount > 0
+          ? `${formatFovIntervals(result.fovScan.validSampleIntervals)} (${result.fovScan.validSampleCount} of ${
+              result.fovScan.sampleCount
+            } sampled FOVs)`
+          : "None found";
+    const highConfidenceFovSampleText =
+      !result || result.fovScan.sampleCount === 0
+        ? "Unavailable"
+        : result.fovScan.validSampleCount === 0
+          ? "Unavailable"
+          : result.fovScan.highConfidenceSampleCount > 0
+            ? `${formatFovIntervals(result.fovScan.highConfidenceSampleIntervals)} (${
+                result.fovScan.highConfidenceSampleCount
+              } of ${result.fovScan.sampleCount} sampled FOVs)`
+            : "None found";
+
+    const mainBlockerReason = result?.applyEvaluation.reason ?? "candidate diagnostics unavailable";
+    const firstFailingGate = result?.applyEvaluation.firstFailingGate ?? "no-candidate";
+    let mainBlockerText = `Main blocker: ${mainBlockerReason}`;
+    let mainBlockingContributorDetail: string | null = null;
+    if (result?.applyEvaluation.available) {
+      mainBlockerText = "Main blocker: none (candidate is Apply-safe at current FOV).";
+    } else if (firstFailingGate === "cv-max" && result?.worstCorner.cv) {
+      const label = CALIBRATION_CORNER_LABELS[result.worstCorner.cv.index] ?? "Unavailable";
+      mainBlockingContributorDetail = `Worst CV corner: ${label} — ${formatNumber(result.worstCorner.cv.value)} px.`;
+    } else if (firstFailingGate === "display-max" && result?.worstCorner.rendered) {
+      const label = CALIBRATION_CORNER_LABELS[result.worstCorner.rendered.index] ?? "Unavailable";
+      mainBlockingContributorDetail = `Worst rendered-camera corner: ${label} — ${formatNumber(
+        result.worstCorner.rendered.value
+      )} px.`;
+    }
 
     return {
-      candidateStatusLabel,
-      metricsScopeText,
+      state: "evaluated" as const,
+      primaryText: "Evaluated without applying to the active floor quad.",
+      editedAfterApplyingText: assistedCandidateIdentity.wasAppliedButNowDifferent
+        ? "The active floor quad now differs from this selected candidate."
+        : null,
       cameraSolvableText,
-      poseAvailableText,
-      cheiralityText,
-      scaleRatioText,
-      cvAverageText,
-      cvMaximumText,
-      renderedAverageText,
-      renderedMaximumText,
-      deltaAverageText,
-      deltaMaximumText,
-      validFovSampleText: calibrationReadiness.validFovSampleText,
-      highConfidenceFovSampleText: calibrationReadiness.highConfidenceFovSampleText,
-      applySafeLabel,
-      applySafeAtCurrentFovText: calibrationReadiness.applySafeAtCurrentFovText,
-      largestCvResidualText: calibrationReadiness.largestCvResidualText,
-      largestRenderedResidualText: calibrationReadiness.largestRenderedResidualText,
-      largestDifferenceText: calibrationReadiness.largestDifferenceText,
-      differenceDiagnosticNote: calibrationReadiness.differenceDiagnosticNote,
+      highConfidenceText,
+      applySafeLabel: `Apply-safe at current FOV (${formatNumber(cameraPoseFovYDeg)}°)`,
+      applySafeText,
+      cvAverageText: formatMetricPx(result?.cv.averagePx ?? null),
+      cvMaximumText: formatMetricPx(result?.cv.maximumPx ?? null),
+      renderedAverageText: formatMetricPx(result?.rendered.averagePx ?? null),
+      renderedMaximumText: formatMetricPx(result?.rendered.maximumPx ?? null),
+      deltaAverageText: formatMetricPx(result?.delta.averagePx ?? null),
+      deltaMaximumText: formatMetricPx(result?.delta.maximumPx ?? null),
+      validFovSampleText,
+      highConfidenceFovSampleText,
+      largestCvResidualText: `Largest CV residual: ${formatCornerDiagnostic(result?.worstCorner.cv ?? null)}`,
+      largestRenderedResidualText: `Largest rendered-camera residual: ${formatCornerDiagnostic(
+        result?.worstCorner.rendered ?? null
+      )}`,
+      largestDifferenceText: `Largest CV ↔ rendered-camera difference: ${formatCornerDiagnostic(
+        result?.worstCorner.difference ?? null
+      )}`,
+      differenceDiagnosticNote: "Diagnostic only: Apply limits compare aggregate values, not this per-corner difference.",
       mainBlockerText,
-      mainBlockingContributorDetail: candidate ? calibrationReadiness.mainBlockingContributorDetail : null,
-      candidateIdentityWarning:
-        selectedAutoFloorCandidate &&
-        !(appliedAutoFloorCandidateId === selectedAutoFloorCandidate.id && activeFloorMatchesSelectedCandidate)
-          ? "Metrics below reflect the active floor quad, not this selected candidate."
-          : null,
-      applySafetyScopeNote: "Apply-safety is evaluated for the active floor quad at the current FOV only.",
+      mainBlockingContributorDetail,
+      diagnosticOnlyText: "Evaluation is diagnostic only. This does not apply or modify the selected candidate.",
     };
   }, [
-    appliedAutoFloorCandidateId,
-    calibrationReadiness.applySafeAtCurrentFovText,
-    calibrationReadiness.differenceDiagnosticNote,
-    calibrationReadiness.highConfidenceFovSampleText,
-    calibrationReadiness.largestCvResidualText,
-    calibrationReadiness.largestDifferenceText,
-    calibrationReadiness.largestRenderedResidualText,
-    calibrationReadiness.mainBlockingContributorDetail,
-    calibrationReadiness.mainBlockingContributorTitle,
-    calibrationReadiness.validFovSampleText,
-    cameraPoseDebug.applyCandidate,
-    cameraPoseDebug.unavailableReason,
+    assistedCandidateIdentity.isAppliedAndIdentical,
+    assistedCandidateIdentity.wasAppliedButNowDifferent,
     cameraPoseFovYDeg,
-    floorPolygon,
-    homographyDebug.frameSize,
-    homographyDebug.homographyMatrixForPlacement,
-    homographyDebug.homographySolveStatus,
-    homographyDebug.orderedCornersNorm,
+    selectedAssistedCandidateSolvability,
     selectedAutoFloorCandidate,
   ]);
 
@@ -7311,44 +7368,45 @@ export default function ThreeRoomLab({
               </div>
               <div className="rounded-lg border border-slate-800 bg-slate-950/60 p-3 text-[11px]">
                 <p className="font-medium text-slate-200">Assisted candidate solvability</p>
-                <p className="mt-1 text-slate-300">Candidate status: {assistedCandidateSolvabilityContext.candidateStatusLabel}</p>
-                {assistedCandidateSolvabilityContext.candidateIdentityWarning ? (
-                  <p className="mt-1 text-slate-400">{assistedCandidateSolvabilityContext.candidateIdentityWarning}</p>
+                <p className="mt-1 text-slate-300">{assistedCandidateSolvabilityContext.primaryText}</p>
+                {assistedCandidateSolvabilityContext.state === "identical-active" ? (
+                  <p className="mt-1 text-slate-500">{assistedCandidateSolvabilityContext.secondaryText}</p>
                 ) : null}
-                <p className="mt-1 text-slate-500">{assistedCandidateSolvabilityContext.metricsScopeText}</p>
-                <div className="mt-2 space-y-1 text-slate-300">
-                  <p>Camera-solvable: {assistedCandidateSolvabilityContext.cameraSolvableText}</p>
-                  <p>Pose available: {assistedCandidateSolvabilityContext.poseAvailableText}</p>
-                  <p>Cheirality: {assistedCandidateSolvabilityContext.cheiralityText}</p>
-                  <p>Scale ratio: {assistedCandidateSolvabilityContext.scaleRatioText}</p>
-                  <p>
-                    CV reprojection: Average: {assistedCandidateSolvabilityContext.cvAverageText} · Maximum:{" "}
-                    {assistedCandidateSolvabilityContext.cvMaximumText}
-                  </p>
-                  <p>
-                    Rendered-camera reprojection: Average: {assistedCandidateSolvabilityContext.renderedAverageText} ·
-                    Maximum: {assistedCandidateSolvabilityContext.renderedMaximumText}
-                  </p>
-                  <p>
-                    CV ↔ rendered-camera difference: Average: {assistedCandidateSolvabilityContext.deltaAverageText} ·
-                    Maximum: {assistedCandidateSolvabilityContext.deltaMaximumText}
-                  </p>
-                  <p>Valid pose samples: {assistedCandidateSolvabilityContext.validFovSampleText}</p>
-                  <p>High-confidence samples: {assistedCandidateSolvabilityContext.highConfidenceFovSampleText}</p>
-                  <p>
-                    {assistedCandidateSolvabilityContext.applySafeLabel}:{" "}
-                    {assistedCandidateSolvabilityContext.applySafeAtCurrentFovText}
-                  </p>
-                  <p>{assistedCandidateSolvabilityContext.largestCvResidualText}</p>
-                  <p>{assistedCandidateSolvabilityContext.largestRenderedResidualText}</p>
-                  <p>{assistedCandidateSolvabilityContext.largestDifferenceText}</p>
-                  <p className="text-slate-500">{assistedCandidateSolvabilityContext.differenceDiagnosticNote}</p>
-                  <p>{assistedCandidateSolvabilityContext.mainBlockerText}</p>
-                  {assistedCandidateSolvabilityContext.mainBlockingContributorDetail ? (
-                    <p className="text-slate-400">{assistedCandidateSolvabilityContext.mainBlockingContributorDetail}</p>
-                  ) : null}
-                  <p className="text-slate-500">{assistedCandidateSolvabilityContext.applySafetyScopeNote}</p>
-                </div>
+                {assistedCandidateSolvabilityContext.state === "evaluated" ? (
+                  <div className="mt-2 space-y-1 text-slate-300">
+                    {assistedCandidateSolvabilityContext.editedAfterApplyingText ? (
+                      <p className="text-slate-400">{assistedCandidateSolvabilityContext.editedAfterApplyingText}</p>
+                    ) : null}
+                    <p>Camera-solvable: {assistedCandidateSolvabilityContext.cameraSolvableText}</p>
+                    <p>High confidence: {assistedCandidateSolvabilityContext.highConfidenceText}</p>
+                    <p>
+                      {assistedCandidateSolvabilityContext.applySafeLabel}: {assistedCandidateSolvabilityContext.applySafeText}
+                    </p>
+                    <p>
+                      CV reprojection: Average: {assistedCandidateSolvabilityContext.cvAverageText} · Maximum:{" "}
+                      {assistedCandidateSolvabilityContext.cvMaximumText}
+                    </p>
+                    <p>
+                      Rendered-camera reprojection: Average: {assistedCandidateSolvabilityContext.renderedAverageText} ·
+                      Maximum: {assistedCandidateSolvabilityContext.renderedMaximumText}
+                    </p>
+                    <p>
+                      CV ↔ rendered-camera difference: Average: {assistedCandidateSolvabilityContext.deltaAverageText} ·
+                      Maximum: {assistedCandidateSolvabilityContext.deltaMaximumText}
+                    </p>
+                    <p>FOV scan (valid pose sampled intervals): {assistedCandidateSolvabilityContext.validFovSampleText}</p>
+                    <p>FOV scan (high-confidence sampled intervals): {assistedCandidateSolvabilityContext.highConfidenceFovSampleText}</p>
+                    <p>{assistedCandidateSolvabilityContext.largestCvResidualText}</p>
+                    <p>{assistedCandidateSolvabilityContext.largestRenderedResidualText}</p>
+                    <p>{assistedCandidateSolvabilityContext.largestDifferenceText}</p>
+                    <p className="text-slate-500">{assistedCandidateSolvabilityContext.differenceDiagnosticNote}</p>
+                    <p>{assistedCandidateSolvabilityContext.mainBlockerText}</p>
+                    {assistedCandidateSolvabilityContext.mainBlockingContributorDetail ? (
+                      <p className="text-slate-400">{assistedCandidateSolvabilityContext.mainBlockingContributorDetail}</p>
+                    ) : null}
+                    <p className="text-slate-500">{assistedCandidateSolvabilityContext.diagnosticOnlyText}</p>
+                  </div>
+                ) : null}
               </div>
             </div>
           ) : (
