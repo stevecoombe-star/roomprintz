@@ -1927,6 +1927,12 @@ export default function ThreeRoomLab({
       highConfidenceFovRange: [number, number] | null;
       bestAvgPx: number | null;
       bestMaxPx: number | null;
+      validSampleIntervals: [number, number][] | null;
+      highConfidenceSampleIntervals: [number, number][] | null;
+      validSampleCount: number;
+      highConfidenceSampleCount: number;
+      sampleCount: number;
+      sampleStepDeg: number;
     } = {
       bestFov: null,
       bestConfidence: null,
@@ -1934,6 +1940,12 @@ export default function ThreeRoomLab({
       highConfidenceFovRange: null,
       bestAvgPx: null,
       bestMaxPx: null,
+      validSampleIntervals: null,
+      highConfidenceSampleIntervals: null,
+      validSampleCount: 0,
+      highConfidenceSampleCount: 0,
+      sampleCount: 0,
+      sampleStepDeg: scanStepDeg,
     };
 
     if (!homographyDebug.frameSize) {
@@ -1994,6 +2006,57 @@ export default function ThreeRoomLab({
       label: "camera pose scan samples",
       value: `${scan.samples.length} tested, ${scan.validCount} valid, ${scan.highConfidenceCount} high`,
     });
+    const buildContiguousIntervals = (
+      values: typeof scan.samples,
+      qualifies: (sample: (typeof scan.samples)[number]) => boolean
+    ): [number, number][] => {
+      const intervals: [number, number][] = [];
+      let startFov: number | null = null;
+      let previousFov: number | null = null;
+      for (const sample of values) {
+        if (!qualifies(sample)) {
+          if (startFov !== null && previousFov !== null) intervals.push([startFov, previousFov]);
+          startFov = null;
+          previousFov = null;
+          continue;
+        }
+        if (startFov === null) {
+          startFov = sample.fov;
+          previousFov = sample.fov;
+          continue;
+        }
+        const isContiguous =
+          previousFov !== null && Math.abs(sample.fov - previousFov - scanStepDeg) <= Number.EPSILON * 8;
+        if (!isContiguous) {
+          intervals.push([startFov, previousFov ?? startFov]);
+          startFov = sample.fov;
+        }
+        previousFov = sample.fov;
+      }
+      if (startFov !== null && previousFov !== null) intervals.push([startFov, previousFov]);
+      return intervals;
+    };
+    const isValidSample = (sample: (typeof scan.samples)[number]) =>
+      sample.ok && sample.avgPx !== undefined && sample.maxPx !== undefined;
+    const validSampleIntervals = buildContiguousIntervals(scan.samples, isValidSample);
+    const highConfidenceSampleIntervals = buildContiguousIntervals(
+      scan.samples,
+      (sample) => isValidSample(sample) && sample.confidence === "high"
+    );
+    recommendation = {
+      bestFov: scan.bestFovDeg,
+      bestConfidence: scan.bestConfidence,
+      validFovRange: scan.validFovRange,
+      highConfidenceFovRange: scan.highConfidenceFovRange,
+      bestAvgPx: scan.bestAvgPx,
+      bestMaxPx: scan.bestMaxPx,
+      validSampleIntervals,
+      highConfidenceSampleIntervals,
+      validSampleCount: scan.validCount,
+      highConfidenceSampleCount: scan.highConfidenceCount,
+      sampleCount: scan.samples.length,
+      sampleStepDeg: scanStepDeg,
+    };
 
     if (!scan.ok) {
       const firstFailure = scan.firstFailureReason ?? "all samples failed";
@@ -2005,14 +2068,6 @@ export default function ThreeRoomLab({
     }
 
     bestFov = scan.bestFovDeg;
-    recommendation = {
-      bestFov: scan.bestFovDeg,
-      bestConfidence: scan.bestConfidence,
-      validFovRange: scan.validFovRange,
-      highConfidenceFovRange: scan.highConfidenceFovRange,
-      bestAvgPx: scan.bestAvgPx,
-      bestMaxPx: scan.bestMaxPx,
-    };
 
     const formatRange = (range: [number, number] | null) =>
       range === null ? "none" : `${range[0]}deg-${range[1]}deg`;
@@ -2741,6 +2796,49 @@ export default function ThreeRoomLab({
           break;
       }
     }
+    const formatFovIntervals = (intervals: [number, number][] | null) => {
+      if (!intervals) return "Unavailable";
+      if (intervals.length === 0) return "None found";
+      return intervals
+        .map(([start, end]) => (start === end ? `${start}°` : `${start}°–${end}°`))
+        .join(", ");
+    };
+    const fovFallsInIntervals = (fov: number, intervals: [number, number][] | null) =>
+      !!intervals && intervals.some(([start, end]) => fov >= start && fov <= end);
+    const hasScanSamples = scan.sampleCount > 0;
+    const hasValidScanSamples = hasScanSamples && scan.validSampleCount > 0;
+    const hasHighConfidenceSamples = hasValidScanSamples && scan.highConfidenceSampleCount > 0;
+    const validFovSampleText = hasScanSamples
+      ? scan.validSampleCount > 0
+        ? `${formatFovIntervals(scan.validSampleIntervals)} (${scan.validSampleCount} of ${scan.sampleCount} sampled FOVs)`
+        : "None found"
+      : "Unavailable";
+    const highConfidenceFovSampleText = hasScanSamples
+      ? hasValidScanSamples
+        ? scan.highConfidenceSampleCount > 0
+          ? `${formatFovIntervals(scan.highConfidenceSampleIntervals)} (${scan.highConfidenceSampleCount} of ${scan.sampleCount} sampled FOVs)`
+          : "None found"
+        : "Unavailable"
+      : "Unavailable";
+    const applySafeAtCurrentFovText = hasValidScanSamples
+      ? apply.available
+        ? `Yes`
+        : `No — ${applyReasonPresentation}`
+      : "Unavailable";
+    const currentFovMembershipText = hasScanSamples
+      ? hasValidScanSamples
+        ? (() => {
+            const currentFovLabel = formatNumber(cameraPoseFovYDeg);
+            const withinValid = fovFallsInIntervals(cameraPoseFovYDeg, scan.validSampleIntervals);
+            const withinHighConfidence = fovFallsInIntervals(cameraPoseFovYDeg, scan.highConfidenceSampleIntervals);
+            if (!withinValid) return `Current FOV: ${currentFovLabel}° — outside valid pose samples.`;
+            if (hasHighConfidenceSamples && withinHighConfidence) {
+              return `Current FOV: ${currentFovLabel}° — within valid pose and high-confidence samples.`;
+            }
+            return `Current FOV: ${currentFovLabel}° — within valid pose samples, outside high-confidence samples.`;
+          })()
+        : "Current FOV: Unavailable"
+      : "Current FOV: Unavailable";
     const formatCornerDiagnostic = (entry: { index: number; value: number } | null) =>
       entry ? `${CALIBRATION_CORNER_LABELS[entry.index] ?? "Unavailable"} — ${formatNumber(entry.value)} px` : "Unavailable";
     const largestCvResidualText = `Largest CV residual: ${formatCornerDiagnostic(worstCvCorner)}`;
@@ -2788,8 +2886,16 @@ export default function ThreeRoomLab({
       differenceDiagnosticNote: "Diagnostic only: Apply limits compare aggregate values, not this per-corner difference.",
       mainBlockingContributorTitle,
       mainBlockingContributorDetail,
+      fovScanRangesTitle: `FOV scan ranges (sampled at ${scan.sampleStepDeg}° steps)`,
+      validFovSampleText,
+      highConfidenceFovSampleText,
+      applySafeAtCurrentFovText,
+      currentFovMembershipText,
+      fovScanApplySafetyNote:
+        "Apply-safety is evaluated for the current FOV; scan intervals describe pose availability and confidence only.",
     };
   }, [
+    cameraPoseFovYDeg,
     cameraPoseDebug.applyCandidate,
     cameraPoseDebug.cornerResidualDiagnostics,
     cameraPoseDebug.decomposition,
@@ -8172,6 +8278,22 @@ export default function ThreeRoomLab({
                   {calibrationReadiness.recommendedFov}°.
                 </span>
               )}
+            </div>
+            <div className="mt-3 border-t border-slate-800 pt-2 text-xs">
+              <p className="text-slate-300">{calibrationReadiness.fovScanRangesTitle}</p>
+              <p className="mt-1 text-slate-300">Valid pose samples: {calibrationReadiness.validFovSampleText}</p>
+              <p className="mt-1 text-slate-300">
+                High-confidence samples: {calibrationReadiness.highConfidenceFovSampleText}
+              </p>
+              <p className="mt-1 text-slate-300">
+                {calibrationReadiness.applySafeAtCurrentFovText === "Unavailable"
+                  ? "Apply-safe at current FOV"
+                  : `Apply-safe at current FOV (${formatNumber(cameraPoseFovYDeg)}°)`}
+                :{" "}
+                {calibrationReadiness.applySafeAtCurrentFovText}
+              </p>
+              <p className="mt-1 text-slate-500">{calibrationReadiness.currentFovMembershipText}</p>
+              <p className="mt-1 text-slate-500">{calibrationReadiness.fovScanApplySafetyNote}</p>
             </div>
           </div>
 
