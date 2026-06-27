@@ -42,17 +42,13 @@ import {
 import { normToPixels, type ImageFrameSize, type ImageIntrinsicSize } from "./image-space";
 import {
   applyHomography,
-  buildCameraIntrinsicsFromFov,
   computeReprojectionError,
-  decomposeHomographyToCameraPose,
   floorVec3ToPlane2D,
   getFloorRectCorners,
   type HomographyMatrix,
   invertHomography,
   orderFloorCorners,
   projectFloorPointThroughCameraPoseCv,
-  projectFloorPointThroughPose,
-  scanCameraPoseOverFov,
   solvePlaneHomography,
 } from "./perspective-solve";
 import {
@@ -95,6 +91,7 @@ import {
   CALIBRATED_CAMERA_APPLY_MIN_SCALE_RATIO,
   evaluateCalibratedCameraApply,
 } from "./calibrated-camera-apply";
+import { evaluateQuadSolvability } from "./quad-solvability";
 
 // Phase 2H-B: client-side shape of the lab-only empty-room-assist route reply.
 // Mirrors app/api/admin/3d-room-lab/empty-room-assist/run AssistResponse. Only
@@ -1625,6 +1622,35 @@ export default function ThreeRoomLab({
     showHomographyDebugOverlay,
   ]);
 
+  const activeQuadSolvability = useMemo(() => {
+    return evaluateQuadSolvability({
+      quadNorm: floorPolygon,
+      frameSize: homographyDebug.frameSize,
+      floorDimensions: {
+        worldWidth: floorMapping.worldWidth,
+        worldDepth: floorMapping.worldDepth,
+      },
+      currentVerticalFovDeg: cameraPoseFovYDeg,
+      fovScanConfig: { minFovDeg: 20, maxFovDeg: 90, stepDeg: 1 },
+      precomputedHomography: {
+        orderedCornersNorm: homographyDebug.orderedCornersNorm,
+        homographyMatrixForPlacement: homographyDebug.homographyMatrixForPlacement,
+        homographySolveStatus: homographyDebug.homographySolveStatus,
+        placementFallbackReason: homographyDebug.placementFallbackReason,
+      },
+    });
+  }, [
+    cameraPoseFovYDeg,
+    floorMapping.worldDepth,
+    floorMapping.worldWidth,
+    floorPolygon,
+    homographyDebug.frameSize,
+    homographyDebug.homographyMatrixForPlacement,
+    homographyDebug.homographySolveStatus,
+    homographyDebug.orderedCornersNorm,
+    homographyDebug.placementFallbackReason,
+  ]);
+
   const cameraPoseDebug = useMemo(() => {
     const rows: { label: string; value: string }[] = [];
     let unavailableReason: string | null = null;
@@ -1675,128 +1701,58 @@ export default function ThreeRoomLab({
       label: "camera pose FOV",
       value: `${formatNumber(cameraPoseFovYDeg)}deg`,
     });
-
-    if (!homographyDebug.frameSize) {
-      unavailableReason = "frame pixel size unavailable";
+    if (!activeQuadSolvability.poseAvailable || !activeQuadSolvability.decomposition || !activeQuadSolvability.applyCandidate) {
+      unavailableReason = activeQuadSolvability.unavailableReason ?? "camera pose diagnostics unavailable";
       rows.push({
         label: "camera pose diagnostic",
-        value: "fail (frame pixel size unavailable)",
+        value: `fail (${unavailableReason})`,
       });
       return makeResult();
     }
-    if (homographyDebug.homographySolveStatus !== "ok" || !homographyDebug.homographyMatrixForPlacement) {
-      unavailableReason = homographyDebug.placementFallbackReason;
-      rows.push({
-        label: "camera pose diagnostic",
-        value: `fail (${homographyDebug.placementFallbackReason})`,
-      });
-      return makeResult();
-    }
-
-    const intrinsicsResult = buildCameraIntrinsicsFromFov(homographyDebug.frameSize, cameraPoseFovYDeg);
-    if (!intrinsicsResult.ok) {
-      unavailableReason = intrinsicsResult.reason;
-      rows.push({
-        label: "camera pose diagnostic",
-        value: `fail (${intrinsicsResult.reason})`,
-      });
-      return makeResult();
-    }
-
-    if (!homographyDebug.orderedCornersNorm) {
-      unavailableReason = "ordered homography corners unavailable";
-      rows.push({
-        label: "camera pose diagnostic",
-        value: "fail (ordered homography corners unavailable)",
-      });
-      return makeResult();
-    }
-    const imagePointsPx: { x: number; y: number }[] = [];
-    for (const point of homographyDebug.orderedCornersNorm) {
-      const pixels = normToPixels(point, homographyDebug.frameSize);
-      if (!pixels) {
-        unavailableReason = "could not convert ordered corners from normalized -> pixels";
-        rows.push({
-          label: "camera pose diagnostic",
-          value: "fail (could not convert ordered corners from normalized -> pixels)",
-        });
-        return makeResult();
-      }
-      imagePointsPx.push(pixels);
-    }
-    const floorRectResult = getFloorRectCorners({
-      widthMeters: floorMapping.worldWidth,
-      depthMeters: floorMapping.worldDepth,
-    });
-    if (!floorRectResult.ok) {
-      unavailableReason = floorRectResult.reason;
-      rows.push({
-        label: "camera pose diagnostic",
-        value: `fail (${floorRectResult.reason})`,
-      });
-      return makeResult();
-    }
-    const floorPlanePoints2D = floorRectResult.value.asArray.map((point) => floorVec3ToPlane2D(point));
-
-    const decompositionResult = decomposeHomographyToCameraPose(
-      homographyDebug.homographyMatrixForPlacement,
-      homographyDebug.frameSize,
-      { verticalFovDeg: cameraPoseFovYDeg },
-      {
-        floorPlanePoints2D,
-        imagePointsPx,
-      }
-    );
-    if (!decompositionResult.ok) {
-      unavailableReason = decompositionResult.reason;
-      rows.push({
-        label: "camera pose diagnostic",
-        value: `fail (${decompositionResult.reason})`,
-      });
-      return makeResult();
-    }
+    const decompositionData = activeQuadSolvability.decomposition;
+    const decompositionDiagnostics = decompositionData.diagnostics;
 
     rows.push({
       label: "camera pose diagnostic",
-      value: `ok (${decompositionResult.confidence})${decompositionResult.note ? ` — ${decompositionResult.note}` : ""}`,
+      value: `ok (${decompositionData.confidence})${decompositionData.note ? ` — ${decompositionData.note}` : ""}`,
     });
     rows.push({
       label: "camera pose lookAt (derived)",
-      value: `${formatNumber(decompositionResult.value.pose.lookAt.x)} / ${formatNumber(
-        decompositionResult.value.pose.lookAt.y
-      )} / ${formatNumber(decompositionResult.value.pose.lookAt.z)}`,
+      value: `${formatNumber(decompositionData.pose.lookAt.x)} / ${formatNumber(decompositionData.pose.lookAt.y)} / ${formatNumber(
+        decompositionData.pose.lookAt.z
+      )}`,
     });
     rows.push({
       label: "camera pose up (derived)",
-      value: `${formatNumber(decompositionResult.value.pose.up.x)} / ${formatNumber(
-        decompositionResult.value.pose.up.y
-      )} / ${formatNumber(decompositionResult.value.pose.up.z)}`,
+      value: `${formatNumber(decompositionData.pose.up.x)} / ${formatNumber(decompositionData.pose.up.y)} / ${formatNumber(
+        decompositionData.pose.up.z
+      )}`,
     });
     rows.push({
       label: "camera pose position",
-      value: `${formatNumber(decompositionResult.value.pose.position.x)} / ${formatNumber(
-        decompositionResult.value.pose.position.y
-      )} / ${formatNumber(decompositionResult.value.pose.position.z)}`,
+      value: `${formatNumber(decompositionData.pose.position.x)} / ${formatNumber(
+        decompositionData.pose.position.y
+      )} / ${formatNumber(decompositionData.pose.position.z)}`,
     });
     rows.push({
       label: "camera pose height",
-      value: formatNumber(decompositionResult.value.diagnostics.cameraHeight),
+      value: formatNumber(decompositionDiagnostics.cameraHeight),
     });
     rows.push({
       label: "camera pose z",
-      value: formatNumber(decompositionResult.value.diagnostics.cameraZ),
+      value: formatNumber(decompositionDiagnostics.cameraZ),
     });
     rows.push({
       label: "camera pose focal px",
-      value: formatNumber(intrinsicsResult.value.fy),
+      value: formatNumber(decompositionDiagnostics.focalLengthPx),
     });
     rows.push({
       label: "camera pose lambda",
-      value: formatNumber(decompositionResult.value.diagnostics.lambda),
+      value: formatNumber(decompositionDiagnostics.lambda),
     });
     rows.push({
       label: "camera pose scale ratio",
-      value: formatNumber(decompositionResult.value.diagnostics.columnScaleRatio),
+      value: formatNumber(decompositionDiagnostics.columnScaleRatio),
     });
     rows.push({
       label: "camera pose scale ratio note",
@@ -1804,63 +1760,37 @@ export default function ThreeRoomLab({
     });
     rows.push({
       label: "camera pose determinant",
-      value: formatNumber(decompositionResult.value.diagnostics.determinant),
+      value: formatNumber(decompositionDiagnostics.determinant),
     });
     rows.push({
       label: "camera pose orthonormality error",
-      value: formatNumber(decompositionResult.value.diagnostics.orthonormalityError),
+      value: formatNumber(decompositionDiagnostics.orthonormalityError),
     });
     rows.push({
       label: "camera pose CV reprojection avg px",
-      value: formatNumber(decompositionResult.value.diagnostics.averageCameraPoseReprojectionPx),
+      value: formatNumber(decompositionDiagnostics.averageCameraPoseReprojectionPx),
     });
     rows.push({
       label: "camera pose CV reprojection max px",
-      value: formatNumber(decompositionResult.value.diagnostics.maxCameraPoseReprojectionPx),
+      value: formatNumber(decompositionDiagnostics.maxCameraPoseReprojectionPx),
     });
-
-    let displayReprojectionTotal = 0;
-    let displayReprojectionMax = 0;
-    let displayReprojectionCount = 0;
-    const perCornerRenderedResidualPx: (number | null)[] = new Array(floorPlanePoints2D.length).fill(null);
-    for (let i = 0; i < floorPlanePoints2D.length; i += 1) {
-      const projected = projectFloorPointThroughPose(
-        decompositionResult.value.pose,
-        homographyDebug.frameSize,
-        { verticalFovDeg: cameraPoseFovYDeg },
-        floorPlanePoints2D[i]
-      );
-      if (!projected.ok) continue;
-      const error = Math.hypot(projected.value.x - imagePointsPx[i].x, projected.value.y - imagePointsPx[i].y);
-      if (!Number.isFinite(error)) continue;
-      perCornerRenderedResidualPx[i] = error;
-      displayReprojectionTotal += error;
-      if (error > displayReprojectionMax) displayReprojectionMax = error;
-      displayReprojectionCount += 1;
-    }
-    const cvPerCornerDiagnostics = decompositionResult.value.diagnostics.perCornerCvReprojectionPx;
-    const perCornerCvResidualPx: (number | null)[] | null =
-      Array.isArray(cvPerCornerDiagnostics) && cvPerCornerDiagnostics.length === floorPlanePoints2D.length
-        ? cvPerCornerDiagnostics.map((value) => (Number.isFinite(value) ? value : null))
-        : null;
+    const perCornerRenderedResidualPx = activeQuadSolvability.rendered.perCornerResidualPx;
+    const perCornerCvResidualPx = activeQuadSolvability.cv.perCornerResidualPx;
     cornerResidualDiagnostics = {
       perCornerCvResidualPx,
       perCornerRenderedResidualPx,
     };
     rows.push({
       label: "camera pose display reprojection avg px",
-      value:
-        displayReprojectionCount > 0
-          ? formatNumber(displayReprojectionTotal / displayReprojectionCount)
-          : "unavailable",
+      value: activeQuadSolvability.rendered.count > 0 ? formatNumber(activeQuadSolvability.rendered.averagePx ?? 0) : "unavailable",
     });
     rows.push({
       label: "camera pose display reprojection max px",
-      value: displayReprojectionCount > 0 ? formatNumber(displayReprojectionMax) : "unavailable",
+      value: activeQuadSolvability.rendered.count > 0 ? formatNumber(activeQuadSolvability.rendered.maximumPx ?? 0) : "unavailable",
     });
     rows.push({
       label: "camera pose selected scale sign",
-      value: String(decompositionResult.value.diagnostics.selectedScaleSign),
+      value: String(decompositionDiagnostics.selectedScaleSign),
     });
     rows.push({
       label: "camera pose normal lift",
@@ -1873,51 +1803,42 @@ export default function ThreeRoomLab({
     rows.push({
       label: "camera pose grid status",
       value:
-        decompositionResult.confidence === "high"
+        decompositionData.confidence === "high"
           ? "eligible to render when homography debug overlay is on"
           : "skipped (low confidence)",
     });
 
     applyCandidate = {
-      confidence: decompositionResult.confidence,
-      cvAvgPx: decompositionResult.value.diagnostics.averageCameraPoseReprojectionPx,
-      cvMaxPx: decompositionResult.value.diagnostics.maxCameraPoseReprojectionPx,
-      displayAvgPx: displayReprojectionCount > 0 ? displayReprojectionTotal / displayReprojectionCount : null,
-      displayMaxPx: displayReprojectionCount > 0 ? displayReprojectionMax : null,
-      scaleRatio: decompositionResult.value.diagnostics.columnScaleRatio,
+      confidence: activeQuadSolvability.applyCandidate.confidence,
+      cvAvgPx: activeQuadSolvability.applyCandidate.cvAvgPx,
+      cvMaxPx: activeQuadSolvability.applyCandidate.cvMaxPx,
+      displayAvgPx: activeQuadSolvability.applyCandidate.displayAvgPx,
+      displayMaxPx: activeQuadSolvability.applyCandidate.displayMaxPx,
+      scaleRatio: activeQuadSolvability.applyCandidate.scaleRatio,
       diagnosticsSummary: `cv avg=${formatNumber(
-        decompositionResult.value.diagnostics.averageCameraPoseReprojectionPx
-      )} max=${formatNumber(decompositionResult.value.diagnostics.maxCameraPoseReprojectionPx)} scale=${formatNumber(
-        decompositionResult.value.diagnostics.columnScaleRatio
+        activeQuadSolvability.applyCandidate.cvAvgPx
+      )} max=${formatNumber(activeQuadSolvability.applyCandidate.cvMaxPx)} scale=${formatNumber(
+        activeQuadSolvability.applyCandidate.scaleRatio
       )}`,
-      pose: decompositionResult.value.pose,
-      frameSize: homographyDebug.frameSize,
+      pose: activeQuadSolvability.applyCandidate.pose,
+      frameSize: activeQuadSolvability.applyCandidate.frameSize,
     };
 
     decomposition = {
-      confidence: decompositionResult.confidence,
-      frameSize: homographyDebug.frameSize,
-      cvProjection: decompositionResult.value.cvProjection,
-      pose: decompositionResult.value.pose,
+      confidence: decompositionData.confidence,
+      frameSize: decompositionData.frameSize,
+      cvProjection: decompositionData.cvProjection,
+      pose: decompositionData.pose,
     };
 
     return makeResult();
-  }, [
-    cameraPoseFovYDeg,
-    homographyDebug.frameSize,
-    homographyDebug.orderedCornersNorm,
-    homographyDebug.homographyMatrixForPlacement,
-    homographyDebug.homographySolveStatus,
-    homographyDebug.placementFallbackReason,
-    floorMapping.worldDepth,
-    floorMapping.worldWidth,
-  ]);
+  }, [activeQuadSolvability, cameraPoseFovYDeg]);
 
   const cameraPoseFovScanDebug = useMemo(() => {
     const rows: { label: string; value: string }[] = [];
     const scanMinFov = 20;
     const scanMaxFov = 90;
-    const scanStepDeg = 1;
+    const scanStepDeg = activeQuadSolvability.fovScan.sampleStepDeg;
     let bestFov: number | null = null;
     // Phase 2K-A: surface the already-computed scan outputs (no math change) so
     // the user-facing Calibration readiness panel can recommend a lens. This is
@@ -1951,55 +1872,16 @@ export default function ThreeRoomLab({
       sampleStepDeg: scanStepDeg,
     };
 
-    if (!homographyDebug.frameSize) {
-      rows.push({ label: "camera pose FOV scan", value: "unavailable (frame pixel size unavailable)" });
+    const scanUnavailableReason = activeQuadSolvability.fovScan.unavailableReason;
+    if (scanUnavailableReason) {
+      rows.push({ label: "camera pose FOV scan", value: `unavailable (${scanUnavailableReason})` });
       return { rows, bestFov, recommendation };
     }
-    if (homographyDebug.homographySolveStatus !== "ok" || !homographyDebug.homographyMatrixForPlacement) {
-      rows.push({
-        label: "camera pose FOV scan",
-        value: `unavailable (${homographyDebug.placementFallbackReason})`,
-      });
+    const scan = activeQuadSolvability.fovScan.scan;
+    if (!scan) {
+      rows.push({ label: "camera pose FOV scan", value: "unavailable (camera pose scan unavailable)" });
       return { rows, bestFov, recommendation };
     }
-    if (!homographyDebug.orderedCornersNorm) {
-      rows.push({ label: "camera pose FOV scan", value: "unavailable (ordered homography corners unavailable)" });
-      return { rows, bestFov, recommendation };
-    }
-
-    const imagePointsPx: { x: number; y: number }[] = [];
-    for (const point of homographyDebug.orderedCornersNorm) {
-      const pixels = normToPixels(point, homographyDebug.frameSize);
-      if (!pixels) {
-        rows.push({
-          label: "camera pose FOV scan",
-          value: "unavailable (could not convert ordered corners from normalized -> pixels)",
-        });
-        return { rows, bestFov, recommendation };
-      }
-      imagePointsPx.push(pixels);
-    }
-    const floorRectResult = getFloorRectCorners({
-      widthMeters: floorMapping.worldWidth,
-      depthMeters: floorMapping.worldDepth,
-    });
-    if (!floorRectResult.ok) {
-      rows.push({
-        label: "camera pose FOV scan",
-        value: `unavailable (${floorRectResult.reason})`,
-      });
-      return { rows, bestFov, recommendation };
-    }
-    const floorPlanePoints2D = floorRectResult.value.asArray.map((point) => floorVec3ToPlane2D(point));
-
-    // Shared, pure FOV scan (same range/step/selection used by the empty-room
-    // assist camera self-validity gate). See scanCameraPoseOverFov.
-    const scan = scanCameraPoseOverFov(
-      homographyDebug.homographyMatrixForPlacement,
-      homographyDebug.frameSize,
-      { floorPlanePoints2D, imagePointsPx },
-      { minFovDeg: scanMinFov, maxFovDeg: scanMaxFov, stepDeg: scanStepDeg }
-    );
 
     rows.push({
       label: "camera pose FOV scan",
@@ -2009,43 +1891,6 @@ export default function ThreeRoomLab({
       label: "camera pose scan samples",
       value: `${scan.samples.length} tested, ${scan.validCount} valid, ${scan.highConfidenceCount} high`,
     });
-    const buildContiguousIntervals = (
-      values: typeof scan.samples,
-      qualifies: (sample: (typeof scan.samples)[number]) => boolean
-    ): [number, number][] => {
-      const intervals: [number, number][] = [];
-      let startFov: number | null = null;
-      let previousFov: number | null = null;
-      for (const sample of values) {
-        if (!qualifies(sample)) {
-          if (startFov !== null && previousFov !== null) intervals.push([startFov, previousFov]);
-          startFov = null;
-          previousFov = null;
-          continue;
-        }
-        if (startFov === null) {
-          startFov = sample.fov;
-          previousFov = sample.fov;
-          continue;
-        }
-        const isContiguous =
-          previousFov !== null && Math.abs(sample.fov - previousFov - scanStepDeg) <= Number.EPSILON * 8;
-        if (!isContiguous) {
-          intervals.push([startFov, previousFov ?? startFov]);
-          startFov = sample.fov;
-        }
-        previousFov = sample.fov;
-      }
-      if (startFov !== null && previousFov !== null) intervals.push([startFov, previousFov]);
-      return intervals;
-    };
-    const isValidSample = (sample: (typeof scan.samples)[number]) =>
-      sample.ok && sample.avgPx !== undefined && sample.maxPx !== undefined;
-    const validSampleIntervals = buildContiguousIntervals(scan.samples, isValidSample);
-    const highConfidenceSampleIntervals = buildContiguousIntervals(
-      scan.samples,
-      (sample) => isValidSample(sample) && sample.confidence === "high"
-    );
     recommendation = {
       bestFov: scan.bestFovDeg,
       bestConfidence: scan.bestConfidence,
@@ -2053,11 +1898,11 @@ export default function ThreeRoomLab({
       highConfidenceFovRange: scan.highConfidenceFovRange,
       bestAvgPx: scan.bestAvgPx,
       bestMaxPx: scan.bestMaxPx,
-      validSampleIntervals,
-      highConfidenceSampleIntervals,
-      validSampleCount: scan.validCount,
-      highConfidenceSampleCount: scan.highConfidenceCount,
-      sampleCount: scan.samples.length,
+      validSampleIntervals: activeQuadSolvability.fovScan.validSampleIntervals,
+      highConfidenceSampleIntervals: activeQuadSolvability.fovScan.highConfidenceSampleIntervals,
+      validSampleCount: activeQuadSolvability.fovScan.validSampleCount,
+      highConfidenceSampleCount: activeQuadSolvability.fovScan.highConfidenceSampleCount,
+      sampleCount: activeQuadSolvability.fovScan.sampleCount,
       sampleStepDeg: scanStepDeg,
     };
 
@@ -2097,15 +1942,7 @@ export default function ThreeRoomLab({
     });
 
     return { rows, bestFov, recommendation };
-  }, [
-    floorMapping.worldDepth,
-    floorMapping.worldWidth,
-    homographyDebug.frameSize,
-    homographyDebug.homographyMatrixForPlacement,
-    homographyDebug.homographySolveStatus,
-    homographyDebug.orderedCornersNorm,
-    homographyDebug.placementFallbackReason,
-  ]);
+  }, [activeQuadSolvability]);
 
   const calibratedCameraApplyStatus = useMemo(() => {
     return evaluateCalibratedCameraApply(cameraPoseDebug.applyCandidate, cameraPoseDebug.unavailableReason);
@@ -2372,69 +2209,20 @@ export default function ThreeRoomLab({
     const checklist: { key: string; label: string; state: ReadinessState; detail: string }[] = [];
     const formatMetricPx = (value: number | null) =>
       value !== null && Number.isFinite(value) ? `${formatNumber(value)} px` : "Unavailable";
-    const pickLargestFiniteCorner = (values: (number | null)[] | null): { index: number; value: number } | null => {
-      if (!values) return null;
-      let best: { index: number; value: number } | null = null;
-      for (let i = 0; i < values.length; i += 1) {
-        const value = values[i];
-        if (value === null || !Number.isFinite(value)) continue;
-        if (!best || value > best.value) {
-          best = { index: i, value };
-        }
-      }
-      return best;
-    };
     const readinessMetrics =
-      candidate &&
-      candidate.displayAvgPx !== null &&
-      candidate.displayMaxPx !== null &&
-      Number.isFinite(candidate.displayAvgPx) &&
-      Number.isFinite(candidate.displayMaxPx)
+      candidate
         ? {
             cvAvgPx: candidate.cvAvgPx,
             cvMaxPx: candidate.cvMaxPx,
             displayAvgPx: candidate.displayAvgPx,
             displayMaxPx: candidate.displayMaxPx,
-            avgDeltaPx: Math.abs(candidate.displayAvgPx - candidate.cvAvgPx),
-            maxDeltaPx: Math.abs(candidate.displayMaxPx - candidate.cvMaxPx),
+            avgDeltaPx: activeQuadSolvability.delta.averagePx,
+            maxDeltaPx: activeQuadSolvability.delta.maximumPx,
           }
-        : candidate
-          ? {
-              cvAvgPx: candidate.cvAvgPx,
-              cvMaxPx: candidate.cvMaxPx,
-              displayAvgPx: null,
-              displayMaxPx: null,
-              avgDeltaPx: null,
-              maxDeltaPx: null,
-            }
-          : null;
-    const perCornerDiagnostics = cameraPoseDebug.cornerResidualDiagnostics;
-    const worstCvCorner = pickLargestFiniteCorner(perCornerDiagnostics?.perCornerCvResidualPx ?? null);
-    const worstRenderedCorner = pickLargestFiniteCorner(perCornerDiagnostics?.perCornerRenderedResidualPx ?? null);
-    const largestPerCornerDifference = (() => {
-      if (!perCornerDiagnostics?.perCornerCvResidualPx || !perCornerDiagnostics.perCornerRenderedResidualPx) return null;
-      const cvValues = perCornerDiagnostics.perCornerCvResidualPx;
-      const renderedValues = perCornerDiagnostics.perCornerRenderedResidualPx;
-      const count = Math.min(cvValues.length, renderedValues.length);
-      let best: { index: number; value: number } | null = null;
-      for (let i = 0; i < count; i += 1) {
-        const cvResidual = cvValues[i];
-        const renderedResidual = renderedValues[i];
-        if (
-          cvResidual === null ||
-          renderedResidual === null ||
-          !Number.isFinite(cvResidual) ||
-          !Number.isFinite(renderedResidual)
-        ) {
-          continue;
-        }
-        const difference = Math.abs(renderedResidual - cvResidual);
-        if (!best || difference > best.value) {
-          best = { index: i, value: difference };
-        }
-      }
-      return best;
-    })();
+        : null;
+    const worstCvCorner = activeQuadSolvability.worstCorner.cv;
+    const worstRenderedCorner = activeQuadSolvability.worstCorner.rendered;
+    const largestPerCornerDifference = activeQuadSolvability.worstCorner.difference;
     const firstFailingGate = apply.firstFailingGate;
 
     // Floor shape (homography validity / corner ordering confidence).
@@ -2817,8 +2605,8 @@ export default function ThreeRoomLab({
     };
   }, [
     cameraPoseFovYDeg,
+    activeQuadSolvability,
     cameraPoseDebug.applyCandidate,
-    cameraPoseDebug.cornerResidualDiagnostics,
     cameraPoseDebug.decomposition,
     cameraPoseFovScanDebug.recommendation,
     calibratedCameraApplyStatus,
