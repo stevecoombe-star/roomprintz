@@ -113,6 +113,12 @@ import {
   type SourceNormPoint,
 } from "./manual-floor-support-types";
 import { validateManualFloorSupportAnnotation } from "./manual-floor-support-validation";
+import {
+  generateManualFloorSupportTrials,
+  type TrialGenerationCandidate,
+} from "./manual-floor-support-trial-generation";
+import { evaluateManualFloorSupportTrialSet } from "./manual-floor-support-trial-evaluation";
+import type { ManualFloorSupportTrialSet } from "./manual-floor-support-trial-types";
 
 // Phase 2H-B: client-side shape of the lab-only empty-room-assist route reply.
 // Mirrors app/api/admin/3d-room-lab/empty-room-assist/run AssistResponse. Only
@@ -828,6 +834,13 @@ export default function ThreeRoomLab({
   const manualDraggingVertexRef = useRef<{ seamId: string; index: number; pointerId: number } | null>(null);
   const manualAnnotationPrevImageRef = useRef<string | null>(loadedImageUrl);
   const manualAnnotationPrevCandidateRef = useRef<string | null>(selectedAutoFloorCandidateId);
+  // --- Phase 2O-D: constrained diagnostic trial state -----------------------
+  // Ephemeral local diagnostic records only. Never applied, promoted, selected,
+  // or written to floorPolygon / candidate / FOV / snapshot / scene state.
+  const [isManualTrialsOpen, setIsManualTrialsOpen] = useState(false);
+  const [manualTrialSet, setManualTrialSet] = useState<ManualFloorSupportTrialSet | null>(null);
+  const [manualTrialNotice, setManualTrialNotice] = useState<string | null>(null);
+  const manualTrialSetRef = useRef<ManualFloorSupportTrialSet | null>(null);
   // Phase 2F-G1: lab-only fixture harness + observation recorder. Everything
   // here is local React state; nothing is persisted to DB/scene-state and no
   // automatic Gemini batch calls are made. Loading a fixture only sets the room
@@ -3984,6 +3997,143 @@ export default function ThreeRoomLab({
       setManualAnnotationResetReason("Annotation cleared: selected candidate changed.");
     }
   }, [selectedAutoFloorCandidateId, manualAnnotation, clearManualAnnotationInteractionState]);
+
+  // --- Phase 2O-D: constrained diagnostic trial generation ------------------
+  // Pure generation + a thin solver wrapper live in dedicated modules. This
+  // component only wires eligibility, generation, invalidation, and the
+  // diagnostic readout. Nothing here mutates floorPolygon, candidate geometry,
+  // selection/ranking, FOV, floor dimensions, Apply, snapshot, or scene state.
+
+  const manualTrialEligibility = useMemo<{ canGenerate: boolean; reason: string | null }>(() => {
+    if (!selectedAutoFloorCandidate) {
+      return { canGenerate: false, reason: "Select an Auto Floor candidate first." };
+    }
+    if (!manualAnnotation) {
+      return { canGenerate: false, reason: "Begin a manual annotation first." };
+    }
+    if (!manualAnnotationCoordsReady) {
+      return { canGenerate: false, reason: "Image / frame display size is not ready yet." };
+    }
+    if (!manualAnnotationValidation || !manualAnnotationValidation.ok) {
+      return { canGenerate: false, reason: "Annotation must pass integrity validation first." };
+    }
+    const mode = manualAnnotation.mode;
+    if (mode === "abstain") {
+      return { canGenerate: false, reason: "Operator selected abstention — no trials are generated." };
+    }
+    const authority = manualAnnotation.adjustmentAuthority;
+    if (mode === "single_corner_constrained") {
+      if (authority.kind !== "single_corner") {
+        return { canGenerate: false, reason: "Single-corner mode requires single-corner adjustment authority." };
+      }
+      if (!manualAnnotation.seams.some((seam) => seam.id === authority.seamId)) {
+        return { canGenerate: false, reason: "Authority references a seam that does not exist." };
+      }
+    }
+    if (mode === "coupled_far_edge_constrained") {
+      if (authority.kind !== "coupled_far_edge") {
+        return { canGenerate: false, reason: "Coupled mode requires coupled far-edge adjustment authority." };
+      }
+      if (!manualAnnotation.seams.some((seam) => seam.id === authority.seamId)) {
+        return { canGenerate: false, reason: "Authority references a seam that does not exist." };
+      }
+    }
+    return { canGenerate: true, reason: null };
+  }, [selectedAutoFloorCandidate, manualAnnotation, manualAnnotationCoordsReady, manualAnnotationValidation]);
+
+  const handleGenerateManualTrials = useCallback(() => {
+    if (!selectedAutoFloorCandidate || !manualAnnotation || !imageIntrinsicSize || !manualFrameSize) {
+      return;
+    }
+    const candidateInput: TrialGenerationCandidate = {
+      id: selectedAutoFloorCandidate.id,
+      quadNorm: [
+        { x: selectedAutoFloorCandidate.quadNorm[0].x, y: selectedAutoFloorCandidate.quadNorm[0].y },
+        { x: selectedAutoFloorCandidate.quadNorm[1].x, y: selectedAutoFloorCandidate.quadNorm[1].y },
+        { x: selectedAutoFloorCandidate.quadNorm[2].x, y: selectedAutoFloorCandidate.quadNorm[2].y },
+        { x: selectedAutoFloorCandidate.quadNorm[3].x, y: selectedAutoFloorCandidate.quadNorm[3].y },
+      ],
+    };
+    const generated = generateManualFloorSupportTrials({
+      candidate: candidateInput,
+      annotation: manualAnnotation,
+      intrinsic: imageIntrinsicSize,
+      frame: manualFrameSize,
+    });
+    if (!generated) {
+      manualTrialSetRef.current = null;
+      setManualTrialSet(null);
+      setManualTrialNotice(
+        manualAnnotation.mode === "abstain"
+          ? "Operator selected abstention — no diagnostic trials were generated."
+          : "No diagnostic trial run was produced for the current annotation."
+      );
+      return;
+    }
+    const evaluated = evaluateManualFloorSupportTrialSet(generated, {
+      frame: manualFrameSize,
+      floorDimensions: {
+        worldWidth: floorMapping.worldWidth,
+        worldDepth: floorMapping.worldDepth,
+      },
+      currentVerticalFovDeg: cameraPoseFovYDeg,
+      fovScanConfig: { minFovDeg: 20, maxFovDeg: 90, stepDeg: 1 },
+    });
+    manualTrialSetRef.current = evaluated;
+    setManualTrialSet(evaluated);
+    setManualTrialNotice(null);
+  }, [
+    selectedAutoFloorCandidate,
+    manualAnnotation,
+    imageIntrinsicSize,
+    manualFrameSize,
+    floorMapping.worldWidth,
+    floorMapping.worldDepth,
+    cameraPoseFovYDeg,
+  ]);
+
+  const handleClearManualTrials = useCallback(() => {
+    manualTrialSetRef.current = null;
+    setManualTrialSet(null);
+    setManualTrialNotice(null);
+  }, []);
+
+  // Invalidation: ephemeral trials clear whenever the source image, selected
+  // candidate, frame/display size, or manual annotation changes. A short notice
+  // is surfaced so stale comparisons are never silently retained.
+  useEffect(() => {
+    if (manualTrialSetRef.current !== null) {
+      manualTrialSetRef.current = null;
+      setManualTrialSet(null);
+      setManualTrialNotice(
+        "Trials cleared: context changed (source image, selected candidate, frame size, or annotation)."
+      );
+    }
+  }, [
+    loadedImageUrl,
+    selectedAutoFloorCandidateId,
+    rendererSize.width,
+    rendererSize.height,
+    manualAnnotation,
+  ]);
+
+  const formatTrialPx = useCallback(
+    (value: number | null | undefined) =>
+      value === null || value === undefined || !Number.isFinite(value)
+        ? "—"
+        : `${formatNumber(value)}px`,
+    []
+  );
+
+  const manualTrialView = useMemo(() => {
+    if (!manualTrialSet) return null;
+    const baseline = manualTrialSet.trials.find((trial) => trial.kind === "baseline") ?? null;
+    const movement = manualTrialSet.trials.filter((trial) => trial.kind !== "baseline");
+    const evaluable = movement.filter((trial) => trial.constraint.canEvaluate);
+    const rejected = movement.filter((trial) => !trial.constraint.canEvaluate);
+    const baselineCvAvgPx = baseline?.solver?.cv.averagePx ?? null;
+    return { baseline, evaluable, rejected, baselineCvAvgPx };
+  }, [manualTrialSet]);
 
   const assistedCandidateSolvabilityContext = useMemo(() => {
     if (!selectedAutoFloorCandidate) {
@@ -8475,6 +8625,179 @@ export default function ThreeRoomLab({
                   </div>
                 )}
               </>
+            )}
+          </div>
+        </CollapsibleSection>
+
+        <CollapsibleSection
+          title="Constrained Diagnostic Trials — Diagnostic Only"
+          open={isManualTrialsOpen}
+          onToggle={() => setIsManualTrialsOpen((open) => !open)}
+          description="Temporary, operator-evidence-bounded trial quads for solver comparison only. Nothing is selected, applied, or written to calibration state."
+          meta={
+            <span className="rounded bg-cyan-500/15 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-cyan-200">
+              lab-only · local · not persisted
+            </span>
+          }
+        >
+          <div className="space-y-3 text-[11px] text-slate-300">
+            <p className="rounded-lg border border-cyan-500/30 bg-cyan-500/5 px-3 py-2 text-cyan-100/90">
+              Baseline candidate is unchanged. Trials are temporary diagnostic records. Nothing is selected, applied,
+              or written to calibration state. Trials are constrained by operator-approved seam evidence — this does
+              not claim the current corner&apos;s true position is known.
+            </p>
+
+            {manualTrialNotice && (
+              <p className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-amber-200">
+                {manualTrialNotice}
+              </p>
+            )}
+
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={handleGenerateManualTrials}
+                disabled={!manualTrialEligibility.canGenerate}
+                className="rounded-lg border border-cyan-500/70 px-3 py-1.5 text-cyan-200 transition enabled:hover:border-cyan-300 enabled:hover:text-cyan-100 disabled:cursor-not-allowed disabled:border-slate-700 disabled:text-slate-500"
+              >
+                Generate diagnostic trials
+              </button>
+              <button
+                type="button"
+                onClick={handleClearManualTrials}
+                disabled={!manualTrialSet}
+                className="rounded-lg border border-slate-600 px-3 py-1.5 text-slate-200 transition enabled:hover:border-slate-400 disabled:cursor-not-allowed disabled:border-slate-800 disabled:text-slate-600"
+              >
+                Clear trials
+              </button>
+            </div>
+
+            {!manualTrialEligibility.canGenerate && manualTrialEligibility.reason && (
+              <p className="text-slate-400">Generation unavailable: {manualTrialEligibility.reason}</p>
+            )}
+
+            {manualTrialSet && manualTrialView && (
+              <div className="space-y-2">
+                <div className="flex flex-wrap items-center gap-2 text-slate-400">
+                  <span>
+                    Run mode: <span className="text-slate-200">{manualTrialSet.generatedFor.mode}</span>
+                  </span>
+                  <span>·</span>
+                  <span>
+                    Authority: <span className="text-slate-200">{manualTrialSet.generatedFor.authorityKind}</span>
+                  </span>
+                  {manualTrialSet.truncated && (
+                    <span className="rounded bg-amber-500/15 px-1.5 py-0.5 text-amber-200">
+                      sample family truncated to cap
+                    </span>
+                  )}
+                </div>
+
+                {manualTrialSet.notes.length > 0 && (
+                  <ul className="space-y-0.5 text-amber-200/90">
+                    {manualTrialSet.notes.map((note, index) => (
+                      <li key={`trial-note-${index}`}>• {note}</li>
+                    ))}
+                  </ul>
+                )}
+
+                {manualTrialView.baseline && (
+                  <div className="rounded-lg border border-slate-700 bg-slate-900/60 p-3">
+                    <p className="font-medium text-slate-100">Baseline — selected candidate unchanged</p>
+                    <p className="mt-1 text-slate-400">
+                      pose: {manualTrialView.baseline.solver?.poseAvailable ? "available" : "unavailable"} · CV avg{" "}
+                      {formatTrialPx(manualTrialView.baseline.solver?.cv.averagePx)} · CV max{" "}
+                      {formatTrialPx(manualTrialView.baseline.solver?.cv.maximumPx)} · rendered avg{" "}
+                      {formatTrialPx(manualTrialView.baseline.solver?.rendered.averagePx)}
+                    </p>
+                    {!manualTrialView.baseline.constraint.canEvaluate && (
+                      <p className="mt-1 text-rose-300">
+                        Baseline not solver-evaluable: {manualTrialView.baseline.constraint.hardReasons.join("; ")}
+                      </p>
+                    )}
+                  </div>
+                )}
+
+                {manualTrialView.evaluable.length > 0 && (
+                  <div className="space-y-1.5">
+                    <p className="font-medium text-slate-200">
+                      Evaluable trials ({manualTrialView.evaluable.length}) — generation order, no metric ranking
+                    </p>
+                    {manualTrialView.evaluable.map((trial) => {
+                      const deltaCv =
+                        trial.solver?.cv.averagePx != null && manualTrialView.baselineCvAvgPx != null
+                          ? trial.solver.cv.averagePx - manualTrialView.baselineCvAvgPx
+                          : null;
+                      return (
+                        <div
+                          key={trial.trialId}
+                          className="rounded-lg border border-slate-700/70 bg-slate-900/40 p-2.5"
+                        >
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <span className="text-slate-100">
+                              {trial.kind} · corners [{trial.changedCorners.join(", ")}] · sample{" "}
+                              {trial.generation.sampleIndex}
+                            </span>
+                            <span className="text-emerald-300">evaluable</span>
+                          </div>
+                          <p className="mt-1 text-slate-400">
+                            CV avg {formatTrialPx(trial.solver?.cv.averagePx)} · CV max{" "}
+                            {formatTrialPx(trial.solver?.cv.maximumPx)} · rendered avg{" "}
+                            {formatTrialPx(trial.solver?.rendered.averagePx)} · Δavg vs baseline{" "}
+                            {deltaCv === null
+                              ? "—"
+                              : `${deltaCv >= 0 ? "+" : ""}${formatNumber(deltaCv)}px`}
+                          </p>
+                          <p className="mt-0.5 text-slate-500">
+                            seam {trial.evidenceRefs.seamId ?? "—"}
+                            {trial.generation.sharedDeltaSourcePx != null
+                              ? ` · shared Δ ${formatNumber(trial.generation.sharedDeltaSourcePx)}px`
+                              : trial.generation.tAlongUsableSpan != null
+                                ? ` · t ${formatNumber(trial.generation.tAlongUsableSpan)}`
+                                : ""}{" "}
+                            · Apply-gate diagnostic:{" "}
+                            {trial.solver?.applyGateAvailable ? "available" : "unavailable"} (
+                            {trial.solver?.applyGateReason ?? "—"})
+                          </p>
+                          {trial.constraint.warnings.length > 0 && (
+                            <p className="mt-0.5 text-amber-200/90">
+                              warnings: {trial.constraint.warnings.join("; ")}
+                            </p>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+
+                {manualTrialView.rejected.length > 0 && (
+                  <div className="space-y-1.5">
+                    <p className="font-medium text-rose-200">
+                      Rejected trials ({manualTrialView.rejected.length}) — never passed to the solver
+                    </p>
+                    {manualTrialView.rejected.map((trial) => (
+                      <div
+                        key={trial.trialId}
+                        className="rounded-lg border border-rose-500/40 bg-rose-500/5 p-2.5 text-rose-100/90"
+                      >
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <span>
+                            {trial.kind} · corners [{trial.changedCorners.join(", ")}] · sample{" "}
+                            {trial.generation.sampleIndex}
+                          </span>
+                          <span className="text-rose-300">rejected</span>
+                        </div>
+                        <p className="mt-1">hard reasons: {trial.constraint.hardReasons.join("; ")}</p>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                <p className="text-slate-500">
+                  Apply-gate values above are diagnostic only and are never used to sort, recommend, select, or apply a
+                  trial. No trial may be applied, promoted, or set as the floor.
+                </p>
+              </div>
             )}
           </div>
         </CollapsibleSection>

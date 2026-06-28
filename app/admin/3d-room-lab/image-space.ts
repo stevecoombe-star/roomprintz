@@ -173,6 +173,63 @@ export function corridorHalfWidthToOverlayStrokeWidth(
   return fullWidthContainerPx * avgUnitsPerPx;
 }
 
+// --- Phase 2O-D: unclamped diagnostic source -> container conversion ---------
+// Additive, pure helper used ONLY by the constrained diagnostic trial pipeline.
+// It converts a source-image-normalized point into container-normalized space
+// using the SAME object-cover crop math (getCoverCrop) as the clamping helpers,
+// but DOES NOT clamp. This lets the trial pre-solver gate distinguish an
+// off-frame sample (which must be hard-rejected before the solver) from a valid
+// in-frame sample, instead of silently snapping it to the frame edge.
+//
+// This must NOT replace sourceNormToContainerNorm for UI/interaction/display
+// conversion, which intentionally clamps to keep overlays inside the frame.
+export type SourceToContainerDiagnostic = {
+  // Unclamped container-normalized coordinate (may be outside [0,1]).
+  container: FloorPoint;
+  // True only if both x and y land within [0,1].
+  visibleInFrame: boolean;
+  // Non-negative worst-axis overshoot beyond [0,1]; 0 when visibleInFrame.
+  maxOvershoot: number;
+};
+
+export function sourceNormToContainerNormDiagnostic(
+  point: FloorPoint,
+  intrinsic: ImageIntrinsicSize,
+  frame: ImageFrameSize
+): SourceToContainerDiagnostic | null {
+  const crop = getCoverCrop(intrinsic, frame);
+  if (!crop) return null;
+  if (!point || !Number.isFinite(point.x) || !Number.isFinite(point.y)) return null;
+
+  // No clamp on the source-normalized input.
+  const sourceX = point.x * intrinsic.width;
+  const sourceY = point.y * intrinsic.height;
+
+  const frameX = sourceX * crop.scale + crop.offsetX;
+  const frameY = sourceY * crop.scale + crop.offsetY;
+
+  // No clamp on the container-normalized output.
+  const container: FloorPoint = {
+    x: frameX / frame.width,
+    y: frameY / frame.height,
+  };
+
+  const overshoot = Math.max(
+    0,
+    -container.x,
+    container.x - 1,
+    -container.y,
+    container.y - 1
+  );
+  const visibleInFrame = overshoot === 0;
+
+  return {
+    container,
+    visibleInFrame,
+    maxOvershoot: overshoot,
+  };
+}
+
 export function normToPixels(point: FloorPoint, size: ImageIntrinsicSize | ImageFrameSize): PixelPoint | null {
   if (!isValidImageSize(size)) return null;
   return {

@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   corridorHalfWidthToOverlayStrokeWidth,
   getCoverCrop,
+  sourceNormToContainerNormDiagnostic,
   type ImageFrameSize,
   type ImageIntrinsicSize,
 } from "./image-space";
@@ -52,4 +53,50 @@ test("conversion matches the documented source-px -> container-px -> viewBox pip
   const actual = corridorHalfWidthToOverlayStrokeWidth(halfWidth, INTRINSIC, FRAME);
   assert.ok(actual !== null);
   assert.ok(Math.abs((actual as number) - expected) < 1e-9);
+});
+
+// --- Phase 2O-D: sourceNormToContainerNormDiagnostic ------------------------
+// INTRINSIC (1600x1000) and FRAME (800x500) share the same aspect ratio, so the
+// object-cover crop has zero offset and source-normalized maps 1:1 into
+// container-normalized space, which makes the expected values easy to reason
+// about while still exercising the real getCoverCrop math.
+
+test("diagnostic conversion: valid inside-frame point is visible with zero overshoot", () => {
+  const result = sourceNormToContainerNormDiagnostic({ x: 0.5, y: 0.5 }, INTRINSIC, FRAME);
+  assert.ok(result);
+  assert.ok(Math.abs(result.container.x - 0.5) < 1e-9);
+  assert.ok(Math.abs(result.container.y - 0.5) < 1e-9);
+  assert.equal(result.visibleInFrame, true);
+  assert.equal(result.maxOvershoot, 0);
+});
+
+test("diagnostic conversion: near-edge inside-frame point stays visible", () => {
+  const result = sourceNormToContainerNormDiagnostic({ x: 0.995, y: 0.01 }, INTRINSIC, FRAME);
+  assert.ok(result);
+  assert.equal(result.visibleInFrame, true);
+  assert.equal(result.maxOvershoot, 0);
+  assert.ok(result.container.x <= 1 && result.container.x >= 0);
+  assert.ok(result.container.y <= 1 && result.container.y >= 0);
+});
+
+test("diagnostic conversion: off-frame point is not visible and reports overshoot", () => {
+  const result = sourceNormToContainerNormDiagnostic({ x: 1.3, y: 0.5 }, INTRINSIC, FRAME);
+  assert.ok(result);
+  assert.equal(result.visibleInFrame, false);
+  // Equal-aspect mapping: source x 1.3 -> container x 1.3 -> overshoot 0.3.
+  assert.ok(result.maxOvershoot > 0);
+  assert.ok(Math.abs(result.maxOvershoot - 0.3) < 1e-9);
+});
+
+test("diagnostic conversion: negative off-frame point reports overshoot below zero edge", () => {
+  const result = sourceNormToContainerNormDiagnostic({ x: 0.5, y: -0.2 }, INTRINSIC, FRAME);
+  assert.ok(result);
+  assert.equal(result.visibleInFrame, false);
+  assert.ok(Math.abs(result.maxOvershoot - 0.2) < 1e-9);
+});
+
+test("diagnostic conversion: invalid dimensions or non-finite point return null", () => {
+  assert.equal(sourceNormToContainerNormDiagnostic({ x: 0.5, y: 0.5 }, { width: 0, height: 0 }, FRAME), null);
+  assert.equal(sourceNormToContainerNormDiagnostic({ x: 0.5, y: 0.5 }, INTRINSIC, { width: 0, height: 0 }), null);
+  assert.equal(sourceNormToContainerNormDiagnostic({ x: Number.NaN, y: 0.5 }, INTRINSIC, FRAME), null);
 });
