@@ -92,6 +92,7 @@ import {
   evaluateCalibratedCameraApply,
 } from "./calibrated-camera-apply";
 import { evaluateQuadSolvability } from "./quad-solvability";
+import { classifyAutoFloorSupport } from "./auto-floor-support-classification";
 
 // Phase 2H-B: client-side shape of the lab-only empty-room-assist route reply.
 // Mirrors app/api/admin/3d-room-lab/empty-room-assist/run AssistResponse. Only
@@ -3441,6 +3442,46 @@ export default function ThreeRoomLab({
     homographyDebug.frameSize,
     selectedAutoFloorCandidate,
   ]);
+
+  // Phase 2O-A: read-only, diagnostic-only support classification. Consumes only
+  // existing evidence (candidate quad, existing geometry score, the Phase 2N
+  // solvability result incl. its shared Apply evaluation, and pure frame-edge
+  // proximity). It NEVER moves a corner, defines a search corridor, changes
+  // candidate scoring/selection, or touches Apply/FOV/snapshot/scene state.
+  const selectedAssistedCandidateSupport = useMemo(() => {
+    if (!selectedAutoFloorCandidate || !selectedAutoFloorCandidateScore) return null;
+    return classifyAutoFloorSupport({
+      quadNorm: selectedAutoFloorCandidate.quadNorm,
+      geometryScore: selectedAutoFloorCandidateScore,
+      solvability: selectedAssistedCandidateSolvability,
+    });
+  }, [selectedAutoFloorCandidate, selectedAutoFloorCandidateScore, selectedAssistedCandidateSolvability]);
+
+  const assistedCandidateSupportReadout = useMemo(() => {
+    const classification = selectedAssistedCandidateSupport;
+    if (!classification) return null;
+    const classLabel =
+      classification.supportClass === "directly_supported"
+        ? "Directly supported (diagnostic)"
+        : classification.supportClass === "under_support_suspected"
+          ? "Under-support suspected (diagnostic)"
+          : "Insufficient visual evidence";
+    const target = classification.underSupportTarget;
+    const targetText =
+      target === null
+        ? "None"
+        : target.kind === "corner"
+          ? `Corner ${target.corner}`
+          : `Paired-corner pattern: ${target.corners.join("–")}`;
+    const frameEdgeText =
+      classification.frameEdgeContacts.length > 0 ? classification.frameEdgeContacts.join(", ") : "None";
+    return {
+      classLabel,
+      targetText,
+      frameEdgeText,
+      reasons: classification.reasons,
+    };
+  }, [selectedAssistedCandidateSupport]);
 
   const assistedCandidateSolvabilityContext = useMemo(() => {
     if (!selectedAutoFloorCandidate) {
@@ -7408,6 +7449,25 @@ export default function ThreeRoomLab({
                   </div>
                 ) : null}
               </div>
+              {assistedCandidateSupportReadout ? (
+                <div className="rounded-lg border border-slate-800 bg-slate-950/60 p-3 text-[11px]">
+                  <p className="font-medium text-slate-200">Support classification (diagnostic only)</p>
+                  <p className="mt-1 text-slate-300">Classification: {assistedCandidateSupportReadout.classLabel}</p>
+                  <p className="text-slate-300">Suspected target: {assistedCandidateSupportReadout.targetText}</p>
+                  <p className="text-slate-300">
+                    Frame-edge contacts (geometry only): {assistedCandidateSupportReadout.frameEdgeText}
+                  </p>
+                  <p className="text-slate-400">Corridor available: No — physical seam evidence unavailable</p>
+                  <div className="mt-1 space-y-1 text-slate-500">
+                    {assistedCandidateSupportReadout.reasons.map((reason, index) => (
+                      <p key={`support-reason-${index}`}>• {reason}</p>
+                    ))}
+                  </div>
+                  <p className="mt-1 text-slate-500">
+                    Diagnostic only — does not move corners, change candidate selection, or enable any geometry search.
+                  </p>
+                </div>
+              ) : null}
             </div>
           ) : (
             <p className="mt-3 text-xs text-slate-500">
