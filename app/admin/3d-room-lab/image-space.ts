@@ -142,6 +142,37 @@ export function sourceNormToContainerNormUnclamped(
   };
 }
 
+/**
+ * Converts a source-image-pixel corridor half-width into the SVG overlay
+ * stroke width used by the manual seam corridor band.
+ *
+ * The manual overlay SVG uses viewBox "0 0 100 100" with
+ * preserveAspectRatio="none", so a stroke expressed in user units renders
+ * non-uniformly across x/y. For Phase 2O-B1 a wide translucent stroke that
+ * tracks the polyline and is PROPORTIONAL to the source-pixel width is the
+ * accepted representation (no offset-curve geometry).
+ *
+ * Pipeline: full band width in source px (2 * halfWidth) -> container px via the
+ * object-cover scale (getCoverCrop) -> viewBox units using the average
+ * per-pixel unit scale across both axes (so the isotropic SVG stroke
+ * approximates the intended band on a non-square viewBox). The result is linear
+ * in halfWidthSourcePx for a fixed image/frame context.
+ *
+ * Returns null for invalid dimensions or a non-positive/non-finite half-width.
+ */
+export function corridorHalfWidthToOverlayStrokeWidth(
+  halfWidthSourcePx: number,
+  intrinsic: ImageIntrinsicSize,
+  frame: ImageFrameSize
+): number | null {
+  if (!Number.isFinite(halfWidthSourcePx) || halfWidthSourcePx <= 0) return null;
+  const crop = getCoverCrop(intrinsic, frame);
+  if (!crop) return null;
+  const fullWidthContainerPx = 2 * halfWidthSourcePx * crop.scale;
+  const avgUnitsPerPx = (100 / frame.width + 100 / frame.height) / 2;
+  return fullWidthContainerPx * avgUnitsPerPx;
+}
+
 export function normToPixels(point: FloorPoint, size: ImageIntrinsicSize | ImageFrameSize): PixelPoint | null {
   if (!isValidImageSize(size)) return null;
   return {

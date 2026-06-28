@@ -39,7 +39,14 @@ import {
   type PerspectiveDepthScalingState,
   type TransformState,
 } from "./scene-state";
-import { normToPixels, type ImageFrameSize, type ImageIntrinsicSize } from "./image-space";
+import {
+  containerNormToSourceNorm,
+  corridorHalfWidthToOverlayStrokeWidth,
+  normToPixels,
+  sourceNormToContainerNorm,
+  type ImageFrameSize,
+  type ImageIntrinsicSize,
+} from "./image-space";
 import {
   applyHomography,
   computeReprojectionError,
@@ -93,6 +100,19 @@ import {
 } from "./calibrated-camera-apply";
 import { evaluateQuadSolvability } from "./quad-solvability";
 import { classifyAutoFloorSupport } from "./auto-floor-support-classification";
+import {
+  createEmptyManualFloorSupportAnnotation,
+  DEFAULT_COUPLED_MAX_RELATIVE_DELTA_SOURCE_PX,
+  DEFAULT_SEAM_CORRIDOR_HALF_WIDTH_SOURCE_PX,
+  FLOOR_CORNER_LABELS,
+  type FloorCornerLabel,
+  type ManualCornerSupportState,
+  type ManualFloorSupportAnnotation,
+  type ManualPhysicalSeam,
+  type ManualSearchMode,
+  type SourceNormPoint,
+} from "./manual-floor-support-types";
+import { validateManualFloorSupportAnnotation } from "./manual-floor-support-validation";
 
 // Phase 2H-B: client-side shape of the lab-only empty-room-assist route reply.
 // Mirrors app/api/admin/3d-room-lab/empty-room-assist/run AssistResponse. Only
@@ -790,6 +810,24 @@ export default function ThreeRoomLab({
   const [selectedAutoFloorProviderId, setSelectedAutoFloorProviderId] =
     useState<AutoFloorDetectionProviderId>(ACTIVE_AUTO_FLOOR_DETECTION_PROVIDER_ID);
   const autoFloorDetectionInFlightRef = useRef(false);
+  // Phase 2O-B1: manual seam / support annotation harness. LAB-ONLY,
+  // DIAGNOSTIC-ONLY, NON-PERSISTENT. This local React state never mutates
+  // floorPolygon, candidate geometry/selection, solver math, FOV scanning,
+  // Apply / Scan & Apply, snapshot, or scene-state/JSON persistence. It is
+  // deliberately ephemeral and reset whenever the loaded source image or the
+  // selected Auto Floor candidate changes (see the invalidation effects below).
+  const [isManualAnnotationOpen, setIsManualAnnotationOpen] = useState(false);
+  const [manualAnnotation, setManualAnnotation] = useState<ManualFloorSupportAnnotation | null>(null);
+  const [selectedManualSeamId, setSelectedManualSeamId] = useState<string | null>(null);
+  const [manualSeamDraftPoints, setManualSeamDraftPoints] = useState<SourceNormPoint[]>([]);
+  const [isPlacingManualSeam, setIsPlacingManualSeam] = useState(false);
+  const [isDraggingManualVertex, setIsDraggingManualVertex] = useState(false);
+  const [manualAnnotationResetReason, setManualAnnotationResetReason] = useState<string | null>(null);
+  const manualOverlayRef = useRef<SVGSVGElement | null>(null);
+  const manualSeamIdCounterRef = useRef(0);
+  const manualDraggingVertexRef = useRef<{ seamId: string; index: number; pointerId: number } | null>(null);
+  const manualAnnotationPrevImageRef = useRef<string | null>(loadedImageUrl);
+  const manualAnnotationPrevCandidateRef = useRef<string | null>(selectedAutoFloorCandidateId);
   // Phase 2F-G1: lab-only fixture harness + observation recorder. Everything
   // here is local React state; nothing is persisted to DB/scene-state and no
   // automatic Gemini batch calls are made. Loading a fixture only sets the room
@@ -3482,6 +3520,470 @@ export default function ThreeRoomLab({
       reasons: classification.reasons,
     };
   }, [selectedAssistedCandidateSupport]);
+
+  // --- Phase 2O-B1: manual seam / support annotation harness ----------------
+  // All helpers below operate ONLY on the ephemeral local annotation state.
+  // They never touch floorPolygon, candidate state, solver/FOV/Apply paths, or
+  // any persistence. The dense integrity checking lives in the pure module
+  // validateManualFloorSupportAnnotation(...); this component only wires state,
+  // events, rendering, and diagnostics.
+
+  const manualFrameSize = useMemo<ImageFrameSize | null>(
+    () =>
+      rendererSize.width > 0 && rendererSize.height > 0
+        ? { width: rendererSize.width, height: rendererSize.height }
+        : null,
+    [rendererSize.width, rendererSize.height]
+  );
+
+  const manualAnnotationCoordsReady = !!imageIntrinsicSize && !!manualFrameSize;
+
+  const clearManualAnnotationInteractionState = useCallback(() => {
+    setSelectedManualSeamId(null);
+    setManualSeamDraftPoints([]);
+    setIsPlacingManualSeam(false);
+    setIsDraggingManualVertex(false);
+    manualDraggingVertexRef.current = null;
+  }, []);
+
+  const updateManualAnnotation = useCallback(
+    (mutator: (current: ManualFloorSupportAnnotation) => ManualFloorSupportAnnotation) => {
+      setManualAnnotation((current) => (current ? mutator(current) : current));
+    },
+    []
+  );
+
+  const handleBeginManualAnnotation = useCallback(() => {
+    manualSeamIdCounterRef.current = 0;
+    clearManualAnnotationInteractionState();
+    setManualAnnotationResetReason(null);
+    setManualAnnotation(createEmptyManualFloorSupportAnnotation());
+  }, [clearManualAnnotationInteractionState]);
+
+  const handleClearManualAnnotation = useCallback(() => {
+    clearManualAnnotationInteractionState();
+    setManualAnnotationResetReason(null);
+    setManualAnnotation(null);
+  }, [clearManualAnnotationInteractionState]);
+
+  const handleStartAddSeam = useCallback(() => {
+    setManualSeamDraftPoints([]);
+    setIsPlacingManualSeam(true);
+  }, []);
+
+  const handleCancelSeamDraft = useCallback(() => {
+    setManualSeamDraftPoints([]);
+    setIsPlacingManualSeam(false);
+  }, []);
+
+  const handleFinishSeam = useCallback(() => {
+    setManualSeamDraftPoints((draft) => {
+      if (draft.length < 2) return draft;
+      manualSeamIdCounterRef.current += 1;
+      const id = `manual-seam-${manualSeamIdCounterRef.current}`;
+      const newSeam: ManualPhysicalSeam = {
+        id,
+        kind: "physical_floor_wall_seam",
+        points: draft.map((point) => ({ x: point.x, y: point.y })),
+        usableSpan: { startVertexIndex: 0, endVertexIndex: draft.length - 1 },
+        corridor: { halfWidthSourcePx: DEFAULT_SEAM_CORRIDOR_HALF_WIDTH_SOURCE_PX },
+      };
+      updateManualAnnotation((current) => ({ ...current, seams: [...current.seams, newSeam] }));
+      setSelectedManualSeamId(id);
+      return [];
+    });
+    setIsPlacingManualSeam(false);
+  }, [updateManualAnnotation]);
+
+  const handleDeleteSeam = useCallback(
+    (seamId: string) => {
+      updateManualAnnotation((current) => {
+        const seams = current.seams.filter((seam) => seam.id !== seamId);
+        // Cascade: drop dangling references so the annotation stays valid.
+        const cornerSupport: ManualFloorSupportAnnotation["cornerSupport"] = {};
+        for (const label of FLOOR_CORNER_LABELS) {
+          const support = current.cornerSupport[label];
+          if (!support) continue;
+          cornerSupport[label] =
+            support.linkedSeamId === seamId ? { ...support, linkedSeamId: undefined } : support;
+        }
+        const authorityReferencesSeam =
+          current.adjustmentAuthority.kind !== "none" && current.adjustmentAuthority.seamId === seamId;
+        const adjustmentAuthority = authorityReferencesSeam
+          ? ({ kind: "none" } as const)
+          : current.adjustmentAuthority;
+        const mode: ManualSearchMode = authorityReferencesSeam ? "direct" : current.mode;
+        const determiningEdge =
+          current.determiningEdge && current.determiningEdge.seamId === seamId
+            ? null
+            : current.determiningEdge;
+        return { ...current, seams, cornerSupport, adjustmentAuthority, mode, determiningEdge };
+      });
+      setSelectedManualSeamId((current) => (current === seamId ? null : current));
+    },
+    [updateManualAnnotation]
+  );
+
+  const handleSetSeamCorridor = useCallback(
+    (seamId: string, halfWidthSourcePx: number) => {
+      updateManualAnnotation((current) => ({
+        ...current,
+        seams: current.seams.map((seam) =>
+          seam.id === seamId ? { ...seam, corridor: { halfWidthSourcePx } } : seam
+        ),
+      }));
+    },
+    [updateManualAnnotation]
+  );
+
+  const handleSetSeamNote = useCallback(
+    (seamId: string, note: string) => {
+      updateManualAnnotation((current) => ({
+        ...current,
+        seams: current.seams.map((seam) =>
+          seam.id === seamId ? { ...seam, notes: note.length > 0 ? note : undefined } : seam
+        ),
+      }));
+    },
+    [updateManualAnnotation]
+  );
+
+  const handleSetCornerSupportState = useCallback(
+    (corner: FloorCornerLabel, state: ManualCornerSupportState | "unset") => {
+      updateManualAnnotation((current) => {
+        const next = { ...current.cornerSupport };
+        if (state === "unset") {
+          delete next[corner];
+        } else {
+          next[corner] = { ...(next[corner] ?? {}), state };
+        }
+        return { ...current, cornerSupport: next };
+      });
+    },
+    [updateManualAnnotation]
+  );
+
+  const handleSetCornerSupportLinkedSeam = useCallback(
+    (corner: FloorCornerLabel, seamId: string) => {
+      updateManualAnnotation((current) => {
+        const existing = current.cornerSupport[corner];
+        if (!existing) return current;
+        return {
+          ...current,
+          cornerSupport: {
+            ...current.cornerSupport,
+            [corner]: { ...existing, linkedSeamId: seamId.length > 0 ? seamId : undefined },
+          },
+        };
+      });
+    },
+    [updateManualAnnotation]
+  );
+
+  // Rebuilds the explicit authority block from the chosen mode. Default ranges
+  // span the full usable seam (0 -> 1). Authority metadata is captured/validated
+  // only; it is NOT consumed for any trial generation or mutation in this phase.
+  const handleSetManualMode = useCallback(
+    (mode: ManualSearchMode) => {
+      updateManualAnnotation((current) => {
+        const firstSeamId = current.seams[0]?.id ?? "";
+        if (mode === "direct" || mode === "abstain") {
+          return { ...current, mode, adjustmentAuthority: { kind: "none" } };
+        }
+        if (mode === "single_corner_constrained") {
+          const seamId =
+            current.adjustmentAuthority.kind !== "none" ? current.adjustmentAuthority.seamId : firstSeamId;
+          const corner =
+            current.adjustmentAuthority.kind === "single_corner"
+              ? current.adjustmentAuthority.corner
+              : "FL";
+          return {
+            ...current,
+            mode,
+            adjustmentAuthority: {
+              kind: "single_corner",
+              corner,
+              seamId,
+              allowedSpan: { startT: 0, endT: 1 },
+            },
+          };
+        }
+        // coupled_far_edge_constrained
+        const seamId =
+          current.adjustmentAuthority.kind !== "none" ? current.adjustmentAuthority.seamId : firstSeamId;
+        return {
+          ...current,
+          mode,
+          adjustmentAuthority: {
+            kind: "coupled_far_edge",
+            corners: ["FL", "FR"],
+            seamId,
+            flAllowedSpan: { startT: 0, endT: 1 },
+            frAllowedSpan: { startT: 0, endT: 1 },
+            coupling: {
+              preserveOrder: true,
+              preserveEdgeDirection: true,
+              maxRelativeAlongSeamDeltaSourcePx: DEFAULT_COUPLED_MAX_RELATIVE_DELTA_SOURCE_PX,
+            },
+          },
+        };
+      });
+    },
+    [updateManualAnnotation]
+  );
+
+  const handleSetAuthorityCorner = useCallback(
+    (corner: FloorCornerLabel) => {
+      updateManualAnnotation((current) => {
+        if (current.adjustmentAuthority.kind !== "single_corner") return current;
+        return {
+          ...current,
+          adjustmentAuthority: { ...current.adjustmentAuthority, corner },
+        };
+      });
+    },
+    [updateManualAnnotation]
+  );
+
+  const handleSetAuthoritySeam = useCallback(
+    (seamId: string) => {
+      updateManualAnnotation((current) => {
+        if (current.adjustmentAuthority.kind === "none") return current;
+        return {
+          ...current,
+          adjustmentAuthority: { ...current.adjustmentAuthority, seamId },
+        };
+      });
+    },
+    [updateManualAnnotation]
+  );
+
+  const handleSetDeterminingEdgeSeam = useCallback(
+    (seamId: string) => {
+      updateManualAnnotation((current) => {
+        if (seamId.length === 0) {
+          return { ...current, determiningEdge: null };
+        }
+        const existing = current.determiningEdge;
+        return {
+          ...current,
+          determiningEdge: {
+            seamId,
+            role: existing?.role ?? "rear_floor_wall_edge",
+            intendedCanonicalSupport: existing?.intendedCanonicalSupport ?? ["FL", "FR"],
+          },
+        };
+      });
+    },
+    [updateManualAnnotation]
+  );
+
+  const handleSetDeterminingEdgeRole = useCallback(
+    (role: "rear_floor_wall_edge" | "other_visible_floor_boundary") => {
+      updateManualAnnotation((current) => {
+        if (!current.determiningEdge) return current;
+        const intendedCanonicalSupport: FloorCornerLabel[] =
+          role === "rear_floor_wall_edge" ? ["FL", "FR"] : current.determiningEdge.intendedCanonicalSupport;
+        return {
+          ...current,
+          determiningEdge: { ...current.determiningEdge, role, intendedCanonicalSupport },
+        };
+      });
+    },
+    [updateManualAnnotation]
+  );
+
+  const handleToggleDeterminingEdgeCorner = useCallback(
+    (corner: FloorCornerLabel) => {
+      updateManualAnnotation((current) => {
+        if (!current.determiningEdge) return current;
+        const present = current.determiningEdge.intendedCanonicalSupport.includes(corner);
+        const intendedCanonicalSupport = present
+          ? current.determiningEdge.intendedCanonicalSupport.filter((label) => label !== corner)
+          : FLOOR_CORNER_LABELS.filter(
+              (label) =>
+                label === corner || current.determiningEdge!.intendedCanonicalSupport.includes(label)
+            );
+        return {
+          ...current,
+          determiningEdge: { ...current.determiningEdge, intendedCanonicalSupport },
+        };
+      });
+    },
+    [updateManualAnnotation]
+  );
+
+  // Converts a pointer client position to source-normalized image coordinates
+  // using the SAME object-cover crop helpers as the rest of the lab so manual
+  // seams stay aligned across resize and cover-crop.
+  const clientToManualSourceNorm = useCallback(
+    (clientX: number, clientY: number): SourceNormPoint | null => {
+      const overlay = manualOverlayRef.current;
+      if (!overlay || !imageIntrinsicSize || !manualFrameSize) return null;
+      const rect = overlay.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) return null;
+      const containerNorm = {
+        x: clampValue((clientX - rect.left) / rect.width, 0, 1),
+        y: clampValue((clientY - rect.top) / rect.height, 0, 1),
+      };
+      return containerNormToSourceNorm(containerNorm, imageIntrinsicSize, manualFrameSize);
+    },
+    [imageIntrinsicSize, manualFrameSize]
+  );
+
+  const handleManualOverlayPointerDown = useCallback(
+    (event: PointerEvent<SVGSVGElement>) => {
+      if (!isPlacingManualSeam) return;
+      const sourcePoint = clientToManualSourceNorm(event.clientX, event.clientY);
+      if (!sourcePoint) return;
+      setManualSeamDraftPoints((draft) => [...draft, sourcePoint]);
+    },
+    [clientToManualSourceNorm, isPlacingManualSeam]
+  );
+
+  const handleManualVertexPointerDown = useCallback(
+    (event: PointerEvent<SVGCircleElement>, seamId: string, index: number) => {
+      event.stopPropagation();
+      event.preventDefault();
+      manualDraggingVertexRef.current = { seamId, index, pointerId: event.pointerId };
+      setIsDraggingManualVertex(true);
+      try {
+        manualOverlayRef.current?.setPointerCapture(event.pointerId);
+      } catch {
+        // Pointer capture is optional; dragging continues while pointer stays in bounds.
+      }
+    },
+    []
+  );
+
+  const handleManualOverlayPointerMove = useCallback(
+    (event: PointerEvent<SVGSVGElement>) => {
+      const dragging = manualDraggingVertexRef.current;
+      if (!dragging) return;
+      const sourcePoint = clientToManualSourceNorm(event.clientX, event.clientY);
+      if (!sourcePoint) return;
+      updateManualAnnotation((current) => ({
+        ...current,
+        seams: current.seams.map((seam) =>
+          seam.id === dragging.seamId
+            ? {
+                ...seam,
+                points: seam.points.map((point, i) => (i === dragging.index ? sourcePoint : point)),
+              }
+            : seam
+        ),
+      }));
+    },
+    [clientToManualSourceNorm, updateManualAnnotation]
+  );
+
+  const handleManualOverlayPointerUp = useCallback(
+    (event: PointerEvent<SVGSVGElement>) => {
+      const dragging = manualDraggingVertexRef.current;
+      if (dragging && dragging.pointerId === event.pointerId) {
+        try {
+          manualOverlayRef.current?.releasePointerCapture(event.pointerId);
+        } catch {
+          // Ignore release failures when capture is already cleared.
+        }
+        manualDraggingVertexRef.current = null;
+        setIsDraggingManualVertex(false);
+      }
+    },
+    []
+  );
+
+  // Diagnostic-only annotation validation. Pure; never blocks or alters any
+  // calibration/solver behavior.
+  const manualAnnotationValidation = useMemo(
+    () => (manualAnnotation ? validateManualFloorSupportAnnotation(manualAnnotation) : null),
+    [manualAnnotation]
+  );
+
+  // Per-seam measured source-pixel length (diagnostic display only). NEVER used
+  // to auto-select the determining edge — that remains an operator assertion.
+  const manualSeamLengths = useMemo<Record<string, number>>(() => {
+    const lengths: Record<string, number> = {};
+    if (!manualAnnotation || !imageIntrinsicSize) return lengths;
+    const { width, height } = imageIntrinsicSize;
+    for (const seam of manualAnnotation.seams) {
+      let total = 0;
+      for (let i = 1; i < seam.points.length; i += 1) {
+        const a = seam.points[i - 1];
+        const b = seam.points[i];
+        total += Math.hypot((b.x - a.x) * width, (b.y - a.y) * height);
+      }
+      lengths[seam.id] = total;
+    }
+    return lengths;
+  }, [manualAnnotation, imageIntrinsicSize]);
+
+  const longestManualSeamId = useMemo<string | null>(() => {
+    let bestId: string | null = null;
+    let bestLength = -1;
+    for (const [seamId, length] of Object.entries(manualSeamLengths)) {
+      if (length > bestLength) {
+        bestLength = length;
+        bestId = seamId;
+      }
+    }
+    return bestId;
+  }, [manualSeamLengths]);
+
+  // Renders source-normalized seam points into container-normalized polyline
+  // attribute strings (viewBox 0..100) using the shared cover-crop helper.
+  const manualSeamRenderData = useMemo(() => {
+    if (!manualAnnotation || !imageIntrinsicSize || !manualFrameSize) return null;
+    const toContainerPct = (point: SourceNormPoint): { x: number; y: number } | null => {
+      const containerNorm = sourceNormToContainerNorm(point, imageIntrinsicSize, manualFrameSize);
+      if (!containerNorm) return null;
+      return { x: containerNorm.x * 100, y: containerNorm.y * 100 };
+    };
+    const seams = manualAnnotation.seams.map((seam) => {
+      const projected = seam.points
+        .map((point) => toContainerPct(point))
+        .filter((point): point is { x: number; y: number } => point !== null);
+      // Corridor band stroke width derived from the source-pixel half-width so
+      // the translucent band visibly reflects halfWidthSourcePx. Centerline is
+      // rendered separately with its own fixed width and is not affected.
+      const corridorStrokeWidth =
+        corridorHalfWidthToOverlayStrokeWidth(
+          seam.corridor.halfWidthSourcePx,
+          imageIntrinsicSize,
+          manualFrameSize
+        ) ?? 0;
+      return { id: seam.id, projected, corridorStrokeWidth };
+    });
+    const draft = manualSeamDraftPoints
+      .map((point) => toContainerPct(point))
+      .filter((point): point is { x: number; y: number } => point !== null);
+    return { seams, draft };
+  }, [manualAnnotation, imageIntrinsicSize, manualFrameSize, manualSeamDraftPoints]);
+
+  // Invalidation: clear the ephemeral annotation when the loaded source image
+  // changes. A small reason is surfaced so stale evidence is never retained
+  // silently.
+  useEffect(() => {
+    if (manualAnnotationPrevImageRef.current === loadedImageUrl) return;
+    manualAnnotationPrevImageRef.current = loadedImageUrl;
+    if (manualAnnotation !== null) {
+      clearManualAnnotationInteractionState();
+      setManualAnnotation(null);
+      setManualAnnotationResetReason("Annotation cleared: source image changed.");
+    }
+  }, [loadedImageUrl, manualAnnotation, clearManualAnnotationInteractionState]);
+
+  // Invalidation: clear the ephemeral annotation when the selected Auto Floor
+  // candidate changes.
+  useEffect(() => {
+    if (manualAnnotationPrevCandidateRef.current === selectedAutoFloorCandidateId) return;
+    manualAnnotationPrevCandidateRef.current = selectedAutoFloorCandidateId;
+    if (manualAnnotation !== null) {
+      clearManualAnnotationInteractionState();
+      setManualAnnotation(null);
+      setManualAnnotationResetReason("Annotation cleared: selected candidate changed.");
+    }
+  }, [selectedAutoFloorCandidateId, manualAnnotation, clearManualAnnotationInteractionState]);
 
   const assistedCandidateSolvabilityContext = useMemo(() => {
     if (!selectedAutoFloorCandidate) {
@@ -7021,6 +7523,105 @@ export default function ThreeRoomLab({
                 )}
               </svg>
             )}
+            {manualAnnotation && manualSeamRenderData && (
+              <svg
+                ref={manualOverlayRef}
+                className="absolute inset-0 z-30 h-full w-full"
+                viewBox="0 0 100 100"
+                preserveAspectRatio="none"
+                onPointerDown={handleManualOverlayPointerDown}
+                onPointerMove={handleManualOverlayPointerMove}
+                onPointerUp={handleManualOverlayPointerUp}
+                onPointerCancel={handleManualOverlayPointerUp}
+                style={{
+                  touchAction: "none",
+                  pointerEvents: isPlacingManualSeam || isDraggingManualVertex ? "auto" : "none",
+                  cursor: isPlacingManualSeam ? "crosshair" : "default",
+                }}
+                aria-label="Manual seam annotation overlay (diagnostic only)"
+              >
+                {manualSeamRenderData.seams.map(({ id, projected, corridorStrokeWidth }) => {
+                  if (projected.length === 0) return null;
+                  const isSelected = id === selectedManualSeamId;
+                  const pointsAttr = projected.map((point) => `${point.x},${point.y}`).join(" ");
+                  return (
+                    <g key={`manual-seam-${id}`}>
+                      {projected.length >= 2 && corridorStrokeWidth > 0 && (
+                        /* Subtle corridor band beneath the centerline; its width
+                           tracks the seam's source-pixel half-width. */
+                        <polyline
+                          points={pointsAttr}
+                          fill="none"
+                          stroke="#f472b6"
+                          strokeOpacity={0.18}
+                          strokeWidth={corridorStrokeWidth}
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                          pointerEvents="none"
+                        />
+                      )}
+                      {projected.length >= 2 && (
+                        <polyline
+                          points={pointsAttr}
+                          fill="none"
+                          stroke={isSelected ? "#f472b6" : "#fb7185"}
+                          strokeOpacity={isSelected ? 1 : 0.85}
+                          strokeWidth={isSelected ? 0.9 : 0.7}
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                          pointerEvents="none"
+                        />
+                      )}
+                      {projected.map((point, index) => (
+                        <circle
+                          key={`manual-vertex-${id}-${index}`}
+                          cx={point.x}
+                          cy={point.y}
+                          r={isSelected ? 1.15 : 0.95}
+                          fill={isSelected ? "#f472b6" : "#fb7185"}
+                          stroke="#1f0612"
+                          strokeWidth={0.4}
+                          className="cursor-grab"
+                          pointerEvents="all"
+                          onPointerDown={(event) => handleManualVertexPointerDown(event, id, index)}
+                        >
+                          <title>{`Seam ${id} · vertex ${index}`}</title>
+                        </circle>
+                      ))}
+                    </g>
+                  );
+                })}
+                {manualSeamRenderData.draft.length > 0 && (
+                  <g aria-hidden="true">
+                    {manualSeamRenderData.draft.length >= 2 && (
+                      <polyline
+                        points={manualSeamRenderData.draft.map((point) => `${point.x},${point.y}`).join(" ")}
+                        fill="none"
+                        stroke="#fbbf24"
+                        strokeOpacity={0.95}
+                        strokeWidth={0.7}
+                        strokeDasharray="1.4 1"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        pointerEvents="none"
+                      />
+                    )}
+                    {manualSeamRenderData.draft.map((point, index) => (
+                      <circle
+                        key={`manual-draft-${index}`}
+                        cx={point.x}
+                        cy={point.y}
+                        r={0.95}
+                        fill="#fbbf24"
+                        stroke="#3b2a05"
+                        strokeWidth={0.4}
+                        pointerEvents="none"
+                      />
+                    ))}
+                  </g>
+                )}
+              </svg>
+            )}
           </div>
         </section>
 
@@ -7476,6 +8077,407 @@ export default function ThreeRoomLab({
             </p>
           )}
         </section>
+
+        <CollapsibleSection
+          title="Manual Seam / Support Annotation — Diagnostic Only"
+          open={isManualAnnotationOpen}
+          onToggle={() => setIsManualAnnotationOpen((open) => !open)}
+          description="Records visible image evidence only. Does not move corners, change FOV, apply calibration, or affect Scan & Apply."
+          meta={
+            <span className="rounded bg-rose-500/15 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-rose-200">
+              lab-only · local · not persisted
+            </span>
+          }
+        >
+          <div className="space-y-3 text-[11px] text-slate-300">
+            <p className="rounded-lg border border-rose-500/30 bg-rose-500/5 px-3 py-2 text-rose-100/90">
+              Operator declaration of visible image evidence only. This layer is independent of the green/dashed/grid
+              guide geometry and never derives, implies, or claims physical seam truth, crop truth, occlusion
+              continuation, solver correctness, or permission to move a corner.
+            </p>
+            {manualAnnotationResetReason && (
+              <p className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-amber-200">
+                {manualAnnotationResetReason}
+              </p>
+            )}
+
+            <div className="flex flex-wrap items-center gap-2">
+              {!manualAnnotation ? (
+                <button
+                  type="button"
+                  onClick={handleBeginManualAnnotation}
+                  className="rounded-lg border border-rose-500/70 px-3 py-1.5 text-rose-200 transition hover:border-rose-300 hover:text-rose-100"
+                >
+                  Begin annotation
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={handleClearManualAnnotation}
+                  className="rounded-lg border border-slate-600 px-3 py-1.5 text-slate-200 transition hover:border-slate-400"
+                >
+                  Clear annotation
+                </button>
+              )}
+            </div>
+
+            {manualAnnotation && !manualAnnotationCoordsReady && (
+              <p className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-amber-200">
+                Source image dimensions or renderer size are not yet available. Load an image so seam coordinates can be
+                stored in source-normalized space.
+              </p>
+            )}
+
+            {manualAnnotation && (
+              <>
+                {/* Seam capture controls */}
+                <div className="rounded-lg border border-slate-800 bg-slate-950/60 p-3">
+                  <div className="flex flex-wrap items-center gap-2">
+                    {!isPlacingManualSeam ? (
+                      <button
+                        type="button"
+                        onClick={handleStartAddSeam}
+                        disabled={!manualAnnotationCoordsReady}
+                        className="rounded-lg border border-rose-500/70 px-3 py-1.5 text-rose-200 transition hover:border-rose-300 hover:text-rose-100 disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        Add visible floor-wall seam
+                      </button>
+                    ) : (
+                      <>
+                        <button
+                          type="button"
+                          onClick={handleFinishSeam}
+                          disabled={manualSeamDraftPoints.length < 2}
+                          className="rounded-lg border border-emerald-500/70 px-3 py-1.5 text-emerald-200 transition hover:border-emerald-300 hover:text-emerald-100 disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                          Finish seam
+                        </button>
+                        <button
+                          type="button"
+                          onClick={handleCancelSeamDraft}
+                          className="rounded-lg border border-slate-600 px-3 py-1.5 text-slate-200 transition hover:border-slate-400"
+                        >
+                          Cancel
+                        </button>
+                        <span className="text-slate-400">
+                          Click on the image to place vertices ({manualSeamDraftPoints.length} placed). Minimum two
+                          points.
+                        </span>
+                      </>
+                    )}
+                  </div>
+                </div>
+
+                {/* Seam list */}
+                <div className="rounded-lg border border-slate-800 bg-slate-950/60 p-3">
+                  <p className="font-medium text-slate-200">Seams ({manualAnnotation.seams.length})</p>
+                  {manualAnnotation.seams.length === 0 ? (
+                    <p className="mt-1 text-slate-500">No seams yet. Use “Add visible floor-wall seam”.</p>
+                  ) : (
+                    <ul className="mt-2 space-y-2">
+                      {manualAnnotation.seams.map((seam) => {
+                        const isSelected = seam.id === selectedManualSeamId;
+                        const lengthPx = manualSeamLengths[seam.id];
+                        const isLongest = seam.id === longestManualSeamId && manualAnnotation.seams.length > 1;
+                        return (
+                          <li
+                            key={seam.id}
+                            className={`rounded-lg border px-3 py-2 ${
+                              isSelected
+                                ? "border-rose-500/60 bg-rose-500/10"
+                                : "border-slate-800 bg-slate-900/60"
+                            }`}
+                          >
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                              <button
+                                type="button"
+                                onClick={() => setSelectedManualSeamId(isSelected ? null : seam.id)}
+                                className="text-left font-medium text-slate-100"
+                              >
+                                {seam.id} · {seam.points.length} pts
+                              </button>
+                              <div className="flex items-center gap-2">
+                                {typeof lengthPx === "number" && (
+                                  <span className="rounded bg-slate-900/70 px-1.5 py-0.5 text-[10px] text-slate-400">
+                                    {lengthPx.toFixed(1)} src px{isLongest ? " · longest (measured)" : ""}
+                                  </span>
+                                )}
+                                <button
+                                  type="button"
+                                  onClick={() => handleDeleteSeam(seam.id)}
+                                  className="rounded border border-rose-500/50 px-2 py-0.5 text-[10px] text-rose-200 transition hover:border-rose-300"
+                                >
+                                  Delete
+                                </button>
+                              </div>
+                            </div>
+                            {isSelected && (
+                              <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-2">
+                                <label className="flex flex-col gap-1">
+                                  <span className="text-slate-400">Corridor half-width (source px)</span>
+                                  <input
+                                    type="number"
+                                    min={0.5}
+                                    step={0.5}
+                                    value={seam.corridor.halfWidthSourcePx}
+                                    onChange={(event) => {
+                                      const parsed = Number.parseFloat(event.target.value);
+                                      if (Number.isFinite(parsed)) handleSetSeamCorridor(seam.id, parsed);
+                                    }}
+                                    className="rounded-lg border border-slate-700 bg-slate-950 px-2 py-1 text-slate-100 outline-none focus:border-rose-400"
+                                  />
+                                </label>
+                                <label className="flex flex-col gap-1">
+                                  <span className="text-slate-400">Note (optional)</span>
+                                  <input
+                                    type="text"
+                                    value={seam.notes ?? ""}
+                                    onChange={(event) => handleSetSeamNote(seam.id, event.target.value)}
+                                    placeholder="e.g. clear baseboard line under window"
+                                    className="rounded-lg border border-slate-700 bg-slate-950 px-2 py-1 text-slate-100 outline-none focus:border-rose-400"
+                                  />
+                                </label>
+                              </div>
+                            )}
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  )}
+                </div>
+
+                {/* Per-corner support */}
+                <div className="rounded-lg border border-slate-800 bg-slate-950/60 p-3">
+                  <p className="font-medium text-slate-200">Per-corner support (operator-declared evidence)</p>
+                  <p className="mt-1 text-slate-500">
+                    Declares what is visibly evident at each canonical corner. Not crop/occlusion truth and not
+                    permission to move a corner.
+                  </p>
+                  <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-2">
+                    {FLOOR_CORNER_LABELS.map((corner) => {
+                      const support = manualAnnotation.cornerSupport[corner];
+                      return (
+                        <div key={`corner-${corner}`} className="rounded-lg border border-slate-800 bg-slate-900/60 p-2">
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="font-medium text-slate-100">{corner}</span>
+                            <select
+                              value={support?.state ?? "unset"}
+                              onChange={(event) =>
+                                handleSetCornerSupportState(
+                                  corner,
+                                  event.target.value as ManualCornerSupportState | "unset"
+                                )
+                              }
+                              className="rounded border border-slate-700 bg-slate-950 px-2 py-1 text-slate-100 outline-none focus:border-rose-400"
+                            >
+                              <option value="unset">—</option>
+                              <option value="trustworthy">trustworthy</option>
+                              <option value="frame_truncated">frame_truncated</option>
+                              <option value="occluded">occluded</option>
+                              <option value="uncertain">uncertain</option>
+                            </select>
+                          </div>
+                          {support && (
+                            <label className="mt-2 flex flex-col gap-1">
+                              <span className="text-slate-400">Linked seam (optional)</span>
+                              <select
+                                value={support.linkedSeamId ?? ""}
+                                onChange={(event) => handleSetCornerSupportLinkedSeam(corner, event.target.value)}
+                                className="rounded border border-slate-700 bg-slate-950 px-2 py-1 text-slate-100 outline-none focus:border-rose-400"
+                              >
+                                <option value="">none</option>
+                                {manualAnnotation.seams.map((seam) => (
+                                  <option key={`${corner}-link-${seam.id}`} value={seam.id}>
+                                    {seam.id}
+                                  </option>
+                                ))}
+                              </select>
+                            </label>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* Mode + authority */}
+                <div className="rounded-lg border border-slate-800 bg-slate-950/60 p-3">
+                  <p className="font-medium text-slate-200">Search / authority mode (diagnostic only)</p>
+                  <p className="mt-1 text-slate-500">No mode alters calibration, candidate selection, or any geometry search.</p>
+                  <label className="mt-2 flex flex-col gap-1">
+                    <span className="text-slate-400">Mode</span>
+                    <select
+                      value={manualAnnotation.mode}
+                      onChange={(event) => handleSetManualMode(event.target.value as ManualSearchMode)}
+                      className="rounded-lg border border-slate-700 bg-slate-950 px-2 py-1 text-slate-100 outline-none focus:border-rose-400"
+                    >
+                      <option value="direct">Direct — no adjustment authority</option>
+                      <option value="single_corner_constrained">Single-corner constrained</option>
+                      <option value="coupled_far_edge_constrained">Coupled far edge constrained (FL + FR)</option>
+                      <option value="abstain">Insufficient support / abstain</option>
+                    </select>
+                  </label>
+
+                  {manualAnnotation.adjustmentAuthority.kind === "single_corner" && (
+                    <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-2">
+                      <label className="flex flex-col gap-1">
+                        <span className="text-slate-400">Corner</span>
+                        <select
+                          value={manualAnnotation.adjustmentAuthority.corner}
+                          onChange={(event) => handleSetAuthorityCorner(event.target.value as FloorCornerLabel)}
+                          className="rounded-lg border border-slate-700 bg-slate-950 px-2 py-1 text-slate-100 outline-none focus:border-rose-400"
+                        >
+                          {FLOOR_CORNER_LABELS.map((corner) => (
+                            <option key={`auth-corner-${corner}`} value={corner}>
+                              {corner}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <label className="flex flex-col gap-1">
+                        <span className="text-slate-400">Seam</span>
+                        <select
+                          value={manualAnnotation.adjustmentAuthority.seamId}
+                          onChange={(event) => handleSetAuthoritySeam(event.target.value)}
+                          className="rounded-lg border border-slate-700 bg-slate-950 px-2 py-1 text-slate-100 outline-none focus:border-rose-400"
+                        >
+                          <option value="">select seam…</option>
+                          {manualAnnotation.seams.map((seam) => (
+                            <option key={`auth-seam-${seam.id}`} value={seam.id}>
+                              {seam.id}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <p className="text-slate-500 sm:col-span-2">Allowed span: full usable seam (0 → 1).</p>
+                    </div>
+                  )}
+
+                  {manualAnnotation.adjustmentAuthority.kind === "coupled_far_edge" && (
+                    <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-2">
+                      <p className="text-slate-300 sm:col-span-2">Corners: FL + FR (structurally fixed).</p>
+                      <label className="flex flex-col gap-1">
+                        <span className="text-slate-400">Seam</span>
+                        <select
+                          value={manualAnnotation.adjustmentAuthority.seamId}
+                          onChange={(event) => handleSetAuthoritySeam(event.target.value)}
+                          className="rounded-lg border border-slate-700 bg-slate-950 px-2 py-1 text-slate-100 outline-none focus:border-rose-400"
+                        >
+                          <option value="">select seam…</option>
+                          {manualAnnotation.seams.map((seam) => (
+                            <option key={`coupled-seam-${seam.id}`} value={seam.id}>
+                              {seam.id}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <p className="text-slate-500 sm:col-span-2">
+                        FL/FR allowed spans: full usable seam (0 → 1). Coupling preserves order and edge direction. No
+                        trial generation or mutation is performed in this phase.
+                      </p>
+                    </div>
+                  )}
+                </div>
+
+                {/* Determining edge */}
+                <div className="rounded-lg border border-slate-800 bg-slate-950/60 p-3">
+                  <p className="font-medium text-slate-200">Longest Determining Edge (operator assertion)</p>
+                  <p className="mt-1 text-slate-500">
+                    Never auto-selected from measured length. This is an operator assertion of the strongest truthful
+                    visible support span; measured lengths above are diagnostic only.
+                  </p>
+                  <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-2">
+                    <label className="flex flex-col gap-1">
+                      <span className="text-slate-400">Determining seam</span>
+                      <select
+                        value={manualAnnotation.determiningEdge?.seamId ?? ""}
+                        onChange={(event) => handleSetDeterminingEdgeSeam(event.target.value)}
+                        className="rounded-lg border border-slate-700 bg-slate-950 px-2 py-1 text-slate-100 outline-none focus:border-rose-400"
+                      >
+                        <option value="">none</option>
+                        {manualAnnotation.seams.map((seam) => (
+                          <option key={`det-seam-${seam.id}`} value={seam.id}>
+                            {seam.id}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    {manualAnnotation.determiningEdge && (
+                      <label className="flex flex-col gap-1">
+                        <span className="text-slate-400">Role</span>
+                        <select
+                          value={manualAnnotation.determiningEdge.role}
+                          onChange={(event) =>
+                            handleSetDeterminingEdgeRole(
+                              event.target.value as "rear_floor_wall_edge" | "other_visible_floor_boundary"
+                            )
+                          }
+                          className="rounded-lg border border-slate-700 bg-slate-950 px-2 py-1 text-slate-100 outline-none focus:border-rose-400"
+                        >
+                          <option value="rear_floor_wall_edge">rear_floor_wall_edge (FL → FR)</option>
+                          <option value="other_visible_floor_boundary">other_visible_floor_boundary</option>
+                        </select>
+                      </label>
+                    )}
+                  </div>
+                  {manualAnnotation.determiningEdge &&
+                    manualAnnotation.determiningEdge.role === "other_visible_floor_boundary" && (
+                      <div className="mt-2 flex flex-wrap items-center gap-3">
+                        <span className="text-slate-400">Intended canonical support:</span>
+                        {FLOOR_CORNER_LABELS.map((corner) => (
+                          <label key={`det-corner-${corner}`} className="flex items-center gap-1 text-slate-200">
+                            <input
+                              type="checkbox"
+                              checked={manualAnnotation.determiningEdge!.intendedCanonicalSupport.includes(corner)}
+                              onChange={() => handleToggleDeterminingEdgeCorner(corner)}
+                            />
+                            {corner}
+                          </label>
+                        ))}
+                      </div>
+                    )}
+                  {manualAnnotation.determiningEdge &&
+                    manualAnnotation.determiningEdge.role === "rear_floor_wall_edge" && (
+                      <p className="mt-2 text-slate-500">Intended canonical support: FL + FR (rear floor-wall edge).</p>
+                    )}
+                </div>
+
+                {/* Validation / completeness */}
+                {manualAnnotationValidation && (
+                  <div
+                    className={`rounded-lg border p-3 ${
+                      manualAnnotationValidation.ok
+                        ? "border-emerald-500/50 bg-emerald-500/10 text-emerald-100"
+                        : "border-rose-500/60 bg-rose-500/10 text-rose-100"
+                    }`}
+                  >
+                    <p className="font-medium">
+                      Annotation validation: {manualAnnotationValidation.ok ? "valid" : "invalid"} (pure integrity check)
+                    </p>
+                    {manualAnnotationValidation.errors.length > 0 && (
+                      <ul className="mt-1 space-y-0.5">
+                        {manualAnnotationValidation.errors.map((error, index) => (
+                          <li key={`manual-error-${index}`}>• {error}</li>
+                        ))}
+                      </ul>
+                    )}
+                    {manualAnnotationValidation.warnings.length > 0 && (
+                      <ul className="mt-1 space-y-0.5 text-amber-200/90">
+                        {manualAnnotationValidation.warnings.map((warning, index) => (
+                          <li key={`manual-warning-${index}`}>• {warning}</li>
+                        ))}
+                      </ul>
+                    )}
+                    <p className="mt-1 text-slate-400">
+                      Integrity-only: warnings never block, and validation has no dependency on solver, FOV, Apply, or
+                      candidate solvability.
+                    </p>
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+        </CollapsibleSection>
 
         <section className="rounded-2xl border border-fuchsia-500/30 bg-slate-900/70 p-4">
           <div className="flex flex-wrap items-center justify-between gap-2">
