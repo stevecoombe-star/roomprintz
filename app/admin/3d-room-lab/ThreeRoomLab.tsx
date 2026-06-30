@@ -877,6 +877,12 @@ export default function ThreeRoomLab({
     liveAspectRatio: number;
   } | null>(null);
   const coupledSearchResultSetRef = useRef<CoupledSearchResultSet | null>(null);
+  // Phase 2O-I: single active coupled-search preview (separate from the Phase
+  // 2O-E manual-trial preview). View-state only; never written to candidate /
+  // floor polygon / FOV / dimensions / calibration. The signature binds the
+  // preview to the source evidence so a stale tuple can never render.
+  const [coupledSearchPreviewTrialId, setCoupledSearchPreviewTrialId] = useState<string | null>(null);
+  const [coupledSearchPreviewSignature, setCoupledSearchPreviewSignature] = useState<string | null>(null);
   // Phase 2F-G1: lab-only fixture harness + observation recorder. Everything
   // here is local React state; nothing is persisted to DB/scene-state and no
   // automatic Gemini batch calls are made. Loading a fixture only sets the room
@@ -4181,6 +4187,11 @@ export default function ThreeRoomLab({
   }, [manualTrialSet]);
 
   const handlePreviewTrial = useCallback((trialId: string) => {
+    // Single active diagnostic preview across both systems: activating the
+    // manual-trial preview clears any active coupled-search preview. (Manual
+    // preview's own behavior is otherwise unchanged.)
+    setCoupledSearchPreviewTrialId(null);
+    setCoupledSearchPreviewSignature(null);
     setPreviewTrialId(trialId);
   }, []);
 
@@ -4374,6 +4385,8 @@ export default function ThreeRoomLab({
     setCoupledSearchResultSet(null);
     setCoupledSearchSnapshot(null);
     setCoupledSearchNotice(null);
+    setCoupledSearchPreviewTrialId(null);
+    setCoupledSearchPreviewSignature(null);
   }, []);
 
   // Invalidation: coupled-search results clear whenever any source evidence
@@ -4452,6 +4465,117 @@ export default function ThreeRoomLab({
     }));
     return { groups, total: coupledSearchResultSet.trials.length };
   }, [coupledSearchResultSet]);
+
+  // --- Phase 2O-I: coupled-search exact preview -----------------------------
+  // Live source-evidence signature. The active preview stores the signature in
+  // effect at activation; the preview memo refuses to render when it no longer
+  // matches, so a stale tuple cannot draw even before invalidation effects run.
+  const coupledSearchEvidenceSignature = useMemo(
+    () =>
+      JSON.stringify({
+        image: loadedImageUrl,
+        intrinsic: imageIntrinsicSize,
+        frameW: rendererSize.width,
+        frameH: rendererSize.height,
+        candidateId: selectedAutoFloorCandidateId,
+        candidateQuad: selectedCoupledCandidateQuadSignature,
+        annotation: manualAnnotation,
+        worldWidth: floorMapping.worldWidth,
+        worldDepth: floorMapping.worldDepth,
+        fovDeg: cameraPoseFovYDeg,
+      }),
+    [
+      loadedImageUrl,
+      imageIntrinsicSize,
+      rendererSize.width,
+      rendererSize.height,
+      selectedAutoFloorCandidateId,
+      selectedCoupledCandidateQuadSignature,
+      manualAnnotation,
+      floorMapping.worldWidth,
+      floorMapping.worldDepth,
+      cameraPoseFovYDeg,
+    ]
+  );
+
+  // A coupled tuple is previewable only when it passed the pre-solver geometry
+  // gate (so invalid-geometry / off-frame tuples are excluded) AND its exact
+  // stored quad is fully in-frame [0,1]. Pose availability is irrelevant —
+  // preview is geometry inspection only, never a solver endorsement.
+  const isCoupledTrialPreviewable = useCallback(
+    (trial: CoupledSearchResultSet["trials"][number]) => {
+      if (!trial.constraint.canEvaluate) return false;
+      return trial.quadNorm.every(
+        (point) =>
+          Number.isFinite(point.x) &&
+          Number.isFinite(point.y) &&
+          point.x >= 0 &&
+          point.x <= 1 &&
+          point.y >= 0 &&
+          point.y <= 1
+      );
+    },
+    []
+  );
+
+  const handlePreviewCoupledTrial = useCallback(
+    (trialId: string) => {
+      // Single active diagnostic preview across both systems: activating a
+      // coupled preview clears the manual-trial preview.
+      setPreviewTrialId(null);
+      setCoupledSearchPreviewTrialId(trialId);
+      setCoupledSearchPreviewSignature(coupledSearchEvidenceSignature);
+    },
+    [coupledSearchEvidenceSignature]
+  );
+
+  const handleClearCoupledPreview = useCallback(() => {
+    setCoupledSearchPreviewTrialId(null);
+    setCoupledSearchPreviewSignature(null);
+  }, []);
+
+  // Invalidation: any change to the coupled result-set identity (clear, rerun,
+  // or any source-evidence change that clears the set via the 2O-H effect) drops
+  // the active coupled preview so a stale tuple can never remain attached to
+  // changed evidence. Previewing does not touch coupledSearchResultSet, so the
+  // preview persists while the operator studies the current set.
+  useEffect(() => {
+    setCoupledSearchPreviewTrialId(null);
+    setCoupledSearchPreviewSignature(null);
+  }, [coupledSearchResultSet]);
+
+  // Pure temporary view geometry for the previewed coupled tuple. Draws ONLY
+  // from the stored result record (exact quadNorm + sampledCornerMoves); never
+  // recomputes tNear/aspect, never reruns the solver, never reads live FOV/dims.
+  // Returns null defensively when the set/id/source-signature no longer match or
+  // the tuple is not previewable.
+  const coupledSearchPreview = useMemo(() => {
+    if (!coupledSearchResultSet || !coupledSearchPreviewTrialId) return null;
+    if (coupledSearchPreviewSignature !== coupledSearchEvidenceSignature) return null;
+    const trial = coupledSearchResultSet.trials.find(
+      (candidate) => candidate.trialId === coupledSearchPreviewTrialId
+    );
+    if (!trial) return null;
+    if (!isCoupledTrialPreviewable(trial)) return null;
+    const cornerLabels: FloorCornerLabel[] = ["NL", "NR", "FR", "FL"];
+    const movedCornerSet = new Set(trial.changedCorners);
+    const pointsAttribute = trial.quadNorm
+      .map((point) => `${point.x * 100},${point.y * 100}`)
+      .join(" ");
+    const cornerMarkers = trial.quadNorm.map((point, index) => ({
+      label: cornerLabels[index],
+      x: point.x * 100,
+      y: point.y * 100,
+      moved: movedCornerSet.has(cornerLabels[index]),
+    }));
+    return { trial, pointsAttribute, cornerMarkers };
+  }, [
+    coupledSearchResultSet,
+    coupledSearchPreviewTrialId,
+    coupledSearchPreviewSignature,
+    coupledSearchEvidenceSignature,
+    isCoupledTrialPreviewable,
+  ]);
 
   const assistedCandidateSolvabilityContext = useMemo(() => {
     if (!selectedAutoFloorCandidate) {
@@ -8137,6 +8261,61 @@ export default function ThreeRoomLab({
                 ))}
               </svg>
             )}
+            {coupledSearchPreview && (
+              <>
+                <div className="pointer-events-none absolute left-2 top-2 z-40 rounded border border-violet-400/70 bg-violet-950/80 px-2 py-0.5 text-[10px] font-medium text-violet-100">
+                  Coupled diagnostic preview — temporary
+                </div>
+                <svg
+                  className="pointer-events-none absolute inset-0 z-40 h-full w-full"
+                  viewBox="0 0 100 100"
+                  preserveAspectRatio="none"
+                  aria-label="Type A coupled-search diagnostic preview overlay (temporary, diagnostic only)"
+                  aria-hidden="true"
+                >
+                  {/* Temporary preview of the EXACT stored coupled-search trial
+                      quad. Read-only view-state; it never mutates floorPolygon,
+                      candidate, FOV, dimensions, or calibration. The baseline /
+                      selected candidate stays drawn in the floor overlay above and
+                      is intentionally left unchanged. Violet dashed treatment is
+                      deliberately distinct from the baseline overlay and from the
+                      cyan Phase 2O-E manual-trial preview. */}
+                  <polygon
+                    points={coupledSearchPreview.pointsAttribute}
+                    fill="#8b5cf6"
+                    fillOpacity={0.1}
+                    stroke="#c084fc"
+                    strokeOpacity={0.95}
+                    strokeWidth={0.9}
+                    strokeDasharray="1.4 1.4"
+                    strokeLinejoin="round"
+                  />
+                  {coupledSearchPreview.cornerMarkers.map((marker) => (
+                    <g key={`coupled-preview-corner-${marker.label}`}>
+                      <circle
+                        cx={marker.x}
+                        cy={marker.y}
+                        r={marker.moved ? 1.25 : 0.85}
+                        fill={marker.moved ? "#c084fc" : "#6d28d9"}
+                        fillOpacity={marker.moved ? 0.95 : 0.7}
+                        stroke="#2e1065"
+                        strokeWidth={0.4}
+                      />
+                      <text
+                        x={marker.x + 1.1}
+                        y={marker.y - 0.9}
+                        fill="#ddd6fe"
+                        fontSize="2"
+                        fontWeight="600"
+                      >
+                        {marker.label}
+                        {marker.moved ? "*" : ""}
+                      </text>
+                    </g>
+                  ))}
+                </svg>
+              </>
+            )}
           </div>
         </section>
 
@@ -9357,12 +9536,117 @@ export default function ThreeRoomLab({
                   )}
                 </div>
 
+                {coupledSearchPreview && (
+                  <div className="rounded-lg border border-violet-500/40 bg-violet-500/5 p-3">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <p className="font-medium text-violet-100">
+                        Active coupled preview (temporary diagnostic geometry)
+                      </p>
+                      <button
+                        type="button"
+                        onClick={handleClearCoupledPreview}
+                        className="rounded border border-slate-600 px-2 py-0.5 text-slate-300 transition hover:border-slate-400 hover:text-slate-100"
+                      >
+                        Clear preview
+                      </button>
+                    </div>
+                    <p className="mt-1 text-violet-200/80">
+                      All values below are result-record diagnostics from the stored coupled-search result, not live
+                      calibration values.
+                    </p>
+                    <div className="mt-1.5 grid grid-cols-1 gap-x-4 gap-y-0.5 text-slate-400 sm:grid-cols-2">
+                      <span>
+                        state:{" "}
+                        <span className={describeCoupledState(coupledSearchPreview.trial.state).tone}>
+                          {describeCoupledState(coupledSearchPreview.trial.state).label}
+                        </span>
+                      </span>
+                      <span>
+                        movable corner:{" "}
+                        <span className="text-slate-200">{coupledSearchPreview.trial.movableCorner}</span>
+                      </span>
+                      <span>
+                        approved seam: <span className="text-slate-200">{coupledSearchPreview.trial.seamId}</span>
+                      </span>
+                      <span>
+                        exact tNear:{" "}
+                        <span className="text-slate-200">{formatTrialExact(coupledSearchPreview.trial.tuple.tNear)}</span>
+                      </span>
+                      <span>
+                        aspect ratio:{" "}
+                        <span className="text-slate-200">
+                          {formatTrialExact(coupledSearchPreview.trial.tuple.aspectRatio)}
+                        </span>
+                      </span>
+                      <span>
+                        fixed width (diagnostic):{" "}
+                        <span className="text-slate-200">{formatNumber(coupledSearchPreview.trial.worldWidth)}</span>
+                      </span>
+                      <span>
+                        derived depth (diagnostic):{" "}
+                        <span className="text-slate-200">{formatNumber(coupledSearchPreview.trial.worldDepth)}</span>
+                      </span>
+                      <span>
+                        probe FOV:{" "}
+                        <span className="text-slate-200">
+                          {coupledSearchPreview.trial.tuple.fovDeg === null
+                            ? "—"
+                            : `${formatNumber(coupledSearchPreview.trial.tuple.fovDeg)}°`}
+                        </span>
+                      </span>
+                      <span>
+                        valid FOV corridor:{" "}
+                        <span className="text-slate-200">
+                          {formatFovCorridor(coupledSearchPreview.trial.fovCorridors?.valid)}
+                        </span>
+                      </span>
+                      <span>
+                        high-confidence FOV corridor:{" "}
+                        <span className="text-slate-200">
+                          {formatFovCorridor(coupledSearchPreview.trial.fovCorridors?.highConfidence)}
+                        </span>
+                      </span>
+                      <span>
+                        pose:{" "}
+                        <span className="text-slate-200">
+                          {coupledSearchPreview.trial.solver
+                            ? coupledSearchPreview.trial.solver.poseAvailable
+                              ? "available"
+                              : "unavailable"
+                            : "—"}
+                        </span>
+                      </span>
+                      <span>
+                        confidence:{" "}
+                        <span className="text-slate-200">{coupledSearchPreview.trial.solver?.confidence ?? "—"}</span>
+                      </span>
+                      <span>
+                        Apply-gate diagnostic:{" "}
+                        <span className="text-slate-200">
+                          {coupledSearchPreview.trial.solver
+                            ? `${
+                                coupledSearchPreview.trial.solver.applyGateAvailable ? "available" : "unavailable"
+                              } (${coupledSearchPreview.trial.solver.applyGateReason})`
+                            : "—"}
+                        </span>
+                      </span>
+                    </div>
+                    <p className="mt-1.5 text-slate-500">
+                      Drawn from exact stored geometry (quadNorm + sampledCornerMoves). The baseline candidate and floor
+                      overlay remain unchanged beneath this temporary overlay. Preview is geometry inspection only — not a
+                      selection, recommendation, or apply.
+                    </p>
+                  </div>
+                )}
+
                 {coupledSearchView.groups.map((group) => {
                   if (group.trials.length === 0) return null;
                   const meta = describeCoupledState(group.state);
                   const collapsedByDefault = group.state === "no_pose" || group.state === "invalid_geometry";
                   const rows = group.trials.map((trial) => {
                     const rowMeta = describeCoupledState(trial.state);
+                    const previewable = isCoupledTrialPreviewable(trial);
+                    const isPreviewing = coupledSearchPreviewTrialId === trial.trialId;
                     return (
                       <div
                         key={trial.trialId}
@@ -9402,6 +9686,37 @@ export default function ThreeRoomLab({
                         )}
                         {trial.constraint.warnings.length > 0 && (
                           <p className="mt-0.5 text-amber-200/90">warnings: {trial.constraint.warnings.join("; ")}</p>
+                        )}
+                        {previewable ? (
+                          <div className="mt-2 flex flex-wrap items-center gap-2">
+                            {isPreviewing ? (
+                              <>
+                                <span className="rounded border border-violet-400/60 bg-violet-500/10 px-2 py-0.5 text-violet-200">
+                                  Previewing (temporary)
+                                </span>
+                                <button
+                                  type="button"
+                                  onClick={handleClearCoupledPreview}
+                                  className="rounded border border-slate-600 px-2 py-0.5 text-slate-300 transition hover:border-slate-400 hover:text-slate-100"
+                                >
+                                  Clear preview
+                                </button>
+                              </>
+                            ) : (
+                              <button
+                                type="button"
+                                onClick={() => handlePreviewCoupledTrial(trial.trialId)}
+                                className="rounded border border-violet-500/60 px-2 py-0.5 text-violet-200 transition hover:border-violet-300 hover:text-violet-100"
+                              >
+                                Preview tuple
+                              </button>
+                            )}
+                            <span className="text-slate-500">Exact stored geometry · temporary diagnostic preview</span>
+                          </div>
+                        ) : (
+                          <p className="mt-2 text-slate-600">
+                            Preview unavailable — exact quad is not in-frame for drawing.
+                          </p>
                         )}
                       </div>
                     );
