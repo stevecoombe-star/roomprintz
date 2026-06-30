@@ -71,20 +71,152 @@ export const DEFAULT_LOCAL_REFINEMENT_FOV_PROBES_DEG: readonly number[] = [
 // tuple probed all 9 FOVs that would be 405, so this cap is meaningful.
 export const DEFAULT_LOCAL_REFINEMENT_MAX_PROBE_EVALUATIONS = 128;
 
+// Phase 2O-L-B: truthful provenance of how the aspect band / FOV-probe envelope
+// for a config was produced. "seed_centered" means the bands were derived from
+// the explicit operator-chosen coarse seed (see createSeedCenteredLocalRefinementConfig);
+// "explicit_override" means a caller supplied the config directly.
+export type LocalRefinementAspectBandSource = "seed_centered" | "explicit_override";
+export type LocalRefinementFovProbeSource = "seed_high_confidence_corridor" | "explicit_override";
+
 export type LocalRefinementConfig = {
   // Offsets ADDED to the seed tNear (not absolute t values).
   tNearOffsets: number[];
   aspectRatios: number[];
   fovProbesDeg: number[];
   maxProbeEvaluations: number;
+  // --- Phase 2O-L-B provenance (optional; populated by the seed-centered
+  // builder so the K-B readout can show truthful envelope sources). Older
+  // explicit-override callers may omit these. ---
+  aspectBandSource?: LocalRefinementAspectBandSource;
+  // The exact normalized multiplier set applied to the seed aspect ratio.
+  aspectMultipliers?: number[];
+  fovProbeSource?: LocalRefinementFovProbeSource;
 };
 
+// Phase 2O-L-B: deterministic, seed-CENTERED multiplicative aspect band. The
+// center multiplier 1.0 reproduces the EXACT stored seed aspect ratio. Applied
+// as localAspectRatio = seed.aspectRatio × multiplier.
+export const LOCAL_REFINEMENT_ASPECT_MULTIPLIERS: readonly number[] = [
+  0.9, 0.925, 0.95, 0.975, 1.0, 1.025, 1.05, 1.075, 1.1,
+];
+
+// Stable rounding precision for derived public aspect ratios. 4 decimals matches
+// the coupled-search band style (e.g. 0.8333). The center value is kept EXACT
+// (never rounded) so the explicit seed ratio is always reproduced verbatim.
+const LOCAL_REFINEMENT_ASPECT_DECIMALS = 4;
+const ASPECT_ROUND_SCALE = 10 ** LOCAL_REFINEMENT_ASPECT_DECIMALS;
+const FOV_DEGREE_EPS = 1e-9;
+
+function roundAspect(value: number): number {
+  return Math.round(value * ASPECT_ROUND_SCALE) / ASPECT_ROUND_SCALE;
+}
+
+/**
+ * Seed-centered aspect ratios: each multiplier × seed aspect ratio, rounded
+ * deterministically to a stable precision (center kept exact), ascending and
+ * de-duplicated after rounding. Non-finite / non-positive derived ratios are
+ * dropped (never clamped). Returns [] for an invalid seed aspect ratio.
+ */
+export function deriveSeedCenteredAspectRatios(seedAspectRatio: number): number[] {
+  if (!Number.isFinite(seedAspectRatio) || seedAspectRatio <= 0) return [];
+  const derived: number[] = [];
+  for (const multiplier of LOCAL_REFINEMENT_ASPECT_MULTIPLIERS) {
+    // Multiplier 1.0 reproduces the exact stored seed ratio (no rounding).
+    const value = multiplier === 1 ? seedAspectRatio : roundAspect(seedAspectRatio * multiplier);
+    if (Number.isFinite(value) && value > 0) derived.push(value);
+  }
+  derived.sort((a, b) => a - b);
+  const out: number[] = [];
+  let lastKey: number | null = null;
+  for (const value of derived) {
+    const key = Math.round(value * ASPECT_ROUND_SCALE);
+    if (lastKey === null || key !== lastKey) {
+      out.push(value);
+      lastKey = key;
+    }
+  }
+  return out;
+}
+
+/**
+ * Every whole-degree FOV within the stored high-confidence corridor (inclusive),
+ * across all intervals, ascending and de-duplicated. Rejects (returns []) for an
+ * absent/empty corridor or any non-finite or reversed interval. Never uses live
+ * FOV, the broad seed probe FOV, or solver-inferred corridors.
+ */
+export function deriveSeedCorridorFovProbes(
+  corridor: ReadonlyArray<readonly [number, number]> | null | undefined
+): number[] {
+  if (!corridor || corridor.length === 0) return [];
+  const degrees = new Set<number>();
+  for (const interval of corridor) {
+    if (!interval || interval.length !== 2) return [];
+    const [start, end] = interval;
+    if (!Number.isFinite(start) || !Number.isFinite(end)) return [];
+    if (end < start) return [];
+    const lo = Math.ceil(start - FOV_DEGREE_EPS);
+    const hi = Math.floor(end + FOV_DEGREE_EPS);
+    for (let degree = lo; degree <= hi; degree += 1) degrees.add(degree);
+  }
+  return Array.from(degrees).sort((a, b) => a - b);
+}
+
+/**
+ * Phase 2O-L-B: the runtime default local-refinement config, derived ENTIRELY
+ * from the explicit operator-chosen coarse seed:
+ * - aspect band: seed-centered multiplicative band (deriveSeedCenteredAspectRatios);
+ * - direct FOV probes: whole degrees of the seed's stored high-confidence FOV
+ *   corridor (deriveSeedCorridorFovProbes);
+ * - tNear offsets + probe cap: the existing constants (unchanged).
+ *
+ * Returns null (safe reject; no fabricated fallback) when the seed is absent or
+ * any required band cannot be derived: invalid/non-positive aspect ratio or
+ * width, absent/empty/non-finite/reversed high-confidence corridor, or an empty
+ * resolved aspect or FOV list. Never falls back to live state, the probe FOV,
+ * residuals, or the legacy fixed defaults.
+ */
+export function createSeedCenteredLocalRefinementConfig(
+  seed: LocalRefinementSeed | null | undefined
+): LocalRefinementConfig | null {
+  if (!seed) return null;
+  const tuple = seed.coarseTuple;
+  if (!tuple) return null;
+  if (!Number.isFinite(tuple.aspectRatio) || tuple.aspectRatio <= 0) return null;
+  if (!Number.isFinite(tuple.fixedWorldWidth) || tuple.fixedWorldWidth <= 0) return null;
+
+  const highConfidence = tuple.coarseFovCorridors?.highConfidence ?? null;
+  if (!highConfidence || highConfidence.length === 0) return null;
+
+  const aspectRatios = deriveSeedCenteredAspectRatios(tuple.aspectRatio);
+  if (aspectRatios.length === 0) return null;
+
+  const fovProbesDeg = deriveSeedCorridorFovProbes(highConfidence);
+  if (fovProbesDeg.length === 0) return null;
+
+  return {
+    tNearOffsets: [...DEFAULT_LOCAL_REFINEMENT_TNEAR_OFFSETS],
+    aspectRatios,
+    fovProbesDeg,
+    maxProbeEvaluations: DEFAULT_LOCAL_REFINEMENT_MAX_PROBE_EVALUATIONS,
+    aspectBandSource: "seed_centered",
+    aspectMultipliers: [...LOCAL_REFINEMENT_ASPECT_MULTIPLIERS],
+    fovProbeSource: "seed_high_confidence_corridor",
+  };
+}
+
+// Phase 2O-L-A legacy fixed config. As of Phase 2O-L-B this is NO LONGER the
+// runtime default (generation uses createSeedCenteredLocalRefinementConfig when
+// no explicit override is supplied). Retained only as a convenient base for
+// explicit caller-supplied overrides and tests; the fixed 0.72–0.90 / 34–42
+// bands here never drive production refinement.
 export function createDefaultLocalRefinementConfig(): LocalRefinementConfig {
   return {
     tNearOffsets: [...DEFAULT_LOCAL_REFINEMENT_TNEAR_OFFSETS],
     aspectRatios: [...DEFAULT_LOCAL_REFINEMENT_ASPECT_RATIOS],
     fovProbesDeg: [...DEFAULT_LOCAL_REFINEMENT_FOV_PROBES_DEG],
     maxProbeEvaluations: DEFAULT_LOCAL_REFINEMENT_MAX_PROBE_EVALUATIONS,
+    aspectBandSource: "explicit_override",
+    fovProbeSource: "explicit_override",
   };
 }
 

@@ -42,7 +42,7 @@ import {
 import type { CoupledSearchCandidate } from "./manual-floor-support-coupled-search-generation";
 import type { CoupledSearchMovableCorner } from "./manual-floor-support-coupled-search-types";
 import {
-  createDefaultLocalRefinementConfig,
+  createSeedCenteredLocalRefinementConfig,
   TYPE_A_LOCAL_REFINEMENT_SET_SCHEMA,
   type LocalRefinementConfig,
   type LocalRefinementGeometryTuple,
@@ -112,6 +112,9 @@ function normalizeConfig(config: LocalRefinementConfig): LocalRefinementConfig {
     new Set(config.fovProbesDeg.filter((v) => Number.isFinite(v) && v > 0))
   ).sort((a, b) => a - b);
   return {
+    // Carry through any provenance fields (aspectBandSource / aspectMultipliers /
+    // fovProbeSource) so an explicit override config keeps its truthful source.
+    ...config,
     tNearOffsets: config.tNearOffsets.filter((v) => Number.isFinite(v)),
     aspectRatios: normalizeAspectRatios(config.aspectRatios),
     fovProbesDeg,
@@ -146,7 +149,10 @@ function seedTupleValid(seed: LocalRefinementSeed): boolean {
  * - authorized corner is not a Type A near corner (NL or NR);
  * - authority seam is missing or yields an invalid usable span;
  * - the explicit seed is invalid or does not match the candidate/authority
- *   (sourceCandidateId, movableCorner, or seamId mismatch).
+ *   (sourceCandidateId, movableCorner, or seamId mismatch);
+ * - no explicit config override is supplied AND the seed-centered envelope
+ *   cannot be derived (Phase 2O-L-B: invalid aspect/width, or an absent/empty/
+ *   non-finite/reversed high-confidence FOV corridor on the seed).
  *
  * Tuples are NOT yet evaluated: solver/state/probes are left for the evaluation
  * module. Gate-rejected (off-frame / degenerate) tuples carry state
@@ -179,7 +185,19 @@ export function generateTypeALocalRefinement(
   const usable = buildUsableSeam(seam, intrinsic);
   if (!usable) return null;
 
-  const config = normalizeConfig(input.config ?? createDefaultLocalRefinementConfig());
+  // Phase 2O-L-B: when no explicit override is supplied, the envelope is derived
+  // ENTIRELY from the explicit operator-chosen seed (seed-centered aspect band +
+  // seed high-confidence-corridor FOV probes). If that derivation cannot be made
+  // (no valid aspect/width or no usable high-confidence corridor) we reject
+  // safely rather than fabricating a fallback or reusing legacy fixed defaults.
+  let config: LocalRefinementConfig;
+  if (input.config) {
+    config = normalizeConfig(input.config);
+  } else {
+    const seedCentered = createSeedCenteredLocalRefinementConfig(seed);
+    if (!seedCentered) return null;
+    config = seedCentered;
+  }
 
   const movableCorner: CoupledSearchMovableCorner = authority.corner;
   const seamId = authority.seamId;

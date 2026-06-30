@@ -19,6 +19,10 @@ import { generateTypeACoupledSearch } from "./manual-floor-support-coupled-searc
 import type { CoupledSearchCandidate } from "./manual-floor-support-coupled-search-generation";
 import {
   createDefaultLocalRefinementConfig,
+  createSeedCenteredLocalRefinementConfig,
+  deriveSeedCenteredAspectRatios,
+  deriveSeedCorridorFovProbes,
+  LOCAL_REFINEMENT_ASPECT_MULTIPLIERS,
   TYPE_A_LOCAL_REFINEMENT_SET_SCHEMA,
   type LocalRefinementConfig,
   type LocalRefinementSeed,
@@ -115,7 +119,9 @@ function nlSeed(overrides: Partial<LocalRefinementSeed> = {}): LocalRefinementSe
       fixedWorldWidth: 4,
       worldDepth: 3.3332,
       probeFovDeg: 36,
-      coarseFovCorridors: null,
+      // Phase 2O-L-B: the seed-centered default config requires a stored
+      // high-confidence FOV corridor. This Room-1-style basin sits at 34°–42°.
+      coarseFovCorridors: { valid: [[20, 80]], highConfidence: [[34, 42]] },
     },
     ...overrides,
   };
@@ -687,4 +693,239 @@ test("12. real-solver end-to-end: bounded probes wired through the default evalu
       assert.ok(fovProbesIntersectingHighConfidence({ fovCorridors: g.fovCorridors }, [p.fovDeg]).length === 1);
     }
   }
+});
+
+// --- Phase 2O-L-B: seed-centered envelope -----------------------------------
+
+test("13. seed-centered aspect band: center exact, ascending, deterministic dedupe", () => {
+  // Exact normalized multiplier set (provenance).
+  assert.deepEqual(
+    [...LOCAL_REFINEMENT_ASPECT_MULTIPLIERS],
+    [0.9, 0.925, 0.95, 0.975, 1.0, 1.025, 1.05, 1.075, 1.1]
+  );
+
+  // Room-1-style seed aspect 0.7500: band centered on and includes exact 0.7500.
+  const band075 = deriveSeedCenteredAspectRatios(0.75);
+  assert.equal(band075.length, 9);
+  assert.ok(band075.some((v) => v === 0.75), "exact seed ratio 0.75 preserved at center");
+  for (let i = 1; i < band075.length; i += 1) {
+    assert.ok(band075[i] > band075[i - 1], `strictly ascending @${i}`);
+  }
+  assert.ok(Math.abs(band075[0] - 0.675) < 1e-9, `low ${band075[0]}`);
+  assert.ok(Math.abs(band075[band075.length - 1] - 0.825) < 1e-9, `high ${band075[band075.length - 1]}`);
+
+  // Room-2-style seed aspect 1.3000: includes exact 1.3000; spans ~1.1700–1.4300.
+  const band13 = deriveSeedCenteredAspectRatios(1.3);
+  assert.equal(band13.length, 9);
+  assert.ok(band13.some((v) => v === 1.3), "exact seed ratio 1.3 preserved at center");
+  assert.ok(Math.abs(band13[0] - 1.17) < 1e-9, `low ${band13[0]}`);
+  assert.ok(Math.abs(band13[band13.length - 1] - 1.43) < 1e-9, `high ${band13[band13.length - 1]}`);
+  for (let i = 1; i < band13.length; i += 1) {
+    assert.ok(band13[i] > band13[i - 1], `strictly ascending @${i}`);
+  }
+
+  // Deterministic dedupe after rounding: a tiny seed collapses all 9 multipliers
+  // to a single 4-dp value, returned once (no duplicates).
+  assert.deepEqual(deriveSeedCenteredAspectRatios(0.0002), [0.0002]);
+
+  // Pure: identical input => identical output.
+  assert.deepEqual(deriveSeedCenteredAspectRatios(1.3), band13);
+  // Reject invalid seed aspect (never clamped to validity).
+  assert.deepEqual(deriveSeedCenteredAspectRatios(0), []);
+  assert.deepEqual(deriveSeedCenteredAspectRatios(-1), []);
+  assert.deepEqual(deriveSeedCenteredAspectRatios(Number.NaN), []);
+});
+
+test("14. seed-centered FOV band: whole degrees of stored high-confidence corridor only", () => {
+  assert.deepEqual(deriveSeedCorridorFovProbes([[36, 42]]), [36, 37, 38, 39, 40, 41, 42]);
+  assert.deepEqual(deriveSeedCorridorFovProbes([[44, 46]]), [44, 45, 46]);
+  // Multiple intervals: union, ascending, de-duplicated.
+  assert.deepEqual(deriveSeedCorridorFovProbes([[36, 38], [37, 40]]), [36, 37, 38, 39, 40]);
+  // Fractional endpoints: inclusive whole degrees within.
+  assert.deepEqual(deriveSeedCorridorFovProbes([[35.2, 38.9]]), [36, 37, 38]);
+
+  // The config's direct FOV probes come from the seed corridor ONLY — never the
+  // broad seed probe FOV (36 here) and never live FOV.
+  const seed = nlSeed({
+    coarseTuple: {
+      tNear: 0.5,
+      aspectRatio: 1.3,
+      fixedWorldWidth: 4,
+      worldDepth: 5.2,
+      probeFovDeg: 36,
+      coarseFovCorridors: { valid: [[20, 80]], highConfidence: [[44, 46]] },
+    },
+  });
+  const config = createSeedCenteredLocalRefinementConfig(seed)!;
+  assert.ok(config);
+  assert.deepEqual(config.fovProbesDeg, [44, 45, 46]);
+  assert.ok(!config.fovProbesDeg.includes(36), "broad seed probe FOV is not used as a substitute");
+  assert.equal(config.fovProbeSource, "seed_high_confidence_corridor");
+  assert.equal(config.aspectBandSource, "seed_centered");
+  assert.deepEqual(config.aspectMultipliers, [...LOCAL_REFINEMENT_ASPECT_MULTIPLIERS]);
+  assert.ok(config.aspectRatios.some((v) => v === 1.3));
+});
+
+test("15. failure behavior: invalid seed/corridor rejects safely; no fabricated fallback", () => {
+  const valid = nlSeed().coarseTuple;
+  // Absent seed.
+  assert.equal(createSeedCenteredLocalRefinementConfig(null), null);
+  assert.equal(createSeedCenteredLocalRefinementConfig(undefined), null);
+  // Absent / empty / reversed / non-finite high-confidence corridor.
+  assert.equal(
+    createSeedCenteredLocalRefinementConfig(nlSeed({ coarseTuple: { ...valid, coarseFovCorridors: null } })),
+    null
+  );
+  assert.equal(
+    createSeedCenteredLocalRefinementConfig(
+      nlSeed({ coarseTuple: { ...valid, coarseFovCorridors: { valid: null, highConfidence: [] } } })
+    ),
+    null
+  );
+  assert.equal(
+    createSeedCenteredLocalRefinementConfig(
+      nlSeed({ coarseTuple: { ...valid, coarseFovCorridors: { valid: null, highConfidence: [[46, 44]] } } })
+    ),
+    null
+  );
+  assert.equal(
+    createSeedCenteredLocalRefinementConfig(
+      nlSeed({ coarseTuple: { ...valid, coarseFovCorridors: { valid: null, highConfidence: [[Number.NaN, 46]] } } })
+    ),
+    null
+  );
+  // Invalid aspect / width.
+  assert.equal(
+    createSeedCenteredLocalRefinementConfig(nlSeed({ coarseTuple: { ...valid, aspectRatio: 0 } })),
+    null
+  );
+  assert.equal(
+    createSeedCenteredLocalRefinementConfig(nlSeed({ coarseTuple: { ...valid, fixedWorldWidth: 0 } })),
+    null
+  );
+
+  // Corridor with no whole-degree value rejects safely.
+  assert.deepEqual(deriveSeedCorridorFovProbes([[44.2, 44.8]]), []);
+
+  // No-override generation with a corridor-less seed yields no fabricated
+  // fallback envelope — it rejects (null).
+  const noCorridorSeed = nlSeed({ coarseTuple: { ...valid, coarseFovCorridors: null } });
+  assert.equal(
+    generateTypeALocalRefinement({
+      candidate: candidate(),
+      annotation: nlAnnotation({ startT: 0, endT: 1 }),
+      seed: noCorridorSeed,
+      intrinsic: INTRINSIC,
+      frame: FRAME,
+    }),
+    null
+  );
+});
+
+test("16. local-generation integration: seed-centered band drives count, order, depths", () => {
+  const seed = nlSeed({
+    coarseTuple: {
+      tNear: 0.5,
+      aspectRatio: 1.3,
+      fixedWorldWidth: 4,
+      worldDepth: 5.2,
+      probeFovDeg: 45,
+      coarseFovCorridors: { valid: [[20, 80]], highConfidence: [[44, 46]] },
+    },
+  });
+  const set = generateTypeALocalRefinement({
+    candidate: candidate(),
+    annotation: nlAnnotation({ startT: 0, endT: 1 }),
+    seed,
+    intrinsic: INTRINSIC,
+    frame: FRAME,
+  })!;
+  const resolvedAspects = deriveSeedCenteredAspectRatios(1.3);
+  const tCount = uniqueAscending(set.geometryTuples.map((g) => g.tNear)).length;
+  // Count = tNear samples × resolved aspect samples.
+  assert.equal(set.geometryTuples.length, tCount * resolvedAspects.length);
+  assert.deepEqual(set.config.aspectRatios, resolvedAspects);
+  assert.deepEqual(set.config.fovProbesDeg, [44, 45, 46]);
+
+  // Order: ascending tNear, then ascending aspect; depth = aspect × fixed width.
+  let prevT = -Infinity;
+  for (const g of set.geometryTuples) {
+    assert.ok(g.tNear >= prevT - 1e-12);
+    if (Math.abs(g.tNear - prevT) > 1e-12) prevT = g.tNear;
+    assert.equal(g.aspectRatio, resolvedAspects[g.generation.aspectIndex]);
+    assert.equal(g.worldWidth, 4);
+    assert.ok(Math.abs(g.worldDepth - g.aspectRatio * 4) < 1e-12);
+  }
+});
+
+test("17. evaluation policy unchanged under seed-centered default config", () => {
+  // No explicit override: config is seed-centered (FOV probes 34..42 here). A
+  // tight tNear span keeps the grid (3 tNear × 9 aspect = 27 tuples, 108 probes)
+  // under the deterministic probe cap so the policy is asserted without
+  // truncation noise.
+  const set = generateTypeALocalRefinement({
+    candidate: candidate(),
+    annotation: nlAnnotation({ startT: 0.3, endT: 0.36 }),
+    seed: nlSeed(),
+    intrinsic: INTRINSIC,
+    frame: FRAME,
+  })!;
+  assert.deepEqual(set.config.fovProbesDeg, [34, 35, 36, 37, 38, 39, 40, 41, 42]);
+  const evaluableCount = set.geometryTuples.filter((g) => g.constraint.canEvaluate).length;
+  assert.ok(evaluableCount > 0);
+  assert.ok(evaluableCount * 4 <= set.config.maxProbeEvaluations, "stay under probe cap");
+
+  // Each tuple earns its OWN high-confidence corridor [35,38]; intersecting
+  // configured probes are 35,36,37,38.
+  const { evaluator, calls } = recordingEvaluator(
+    () => makeSolverResult({ poseAvailable: true, confidence: "high", applyAvailable: false, highConfIntervals: [[35, 38]] }),
+    (fov) => makeSolverResult({ poseAvailable: true, confidence: "high", applyAvailable: fov === 36 })
+  );
+  const evaluated = evaluateLocalRefinementResultSet(set, LOCAL_EVAL_CONTEXT, evaluator);
+
+  // Exactly one full scan per evaluable tuple, at the seed probe FOV.
+  const fullScanCalls = calls.filter((c) => !c.isProbe);
+  assert.equal(fullScanCalls.length, evaluableCount);
+  for (const c of fullScanCalls) {
+    assert.notEqual(c.scan.minFovDeg, c.scan.maxFovDeg);
+    assert.equal(c.fov, 36);
+  }
+  // Probes only intersect the tuple's own corridor, ascending, narrow.
+  for (const g of evaluated.geometryTuples) {
+    assert.deepEqual(g.probes.map((p) => p.fovDeg), [35, 36, 37, 38]);
+  }
+  assert.equal(evaluated.probeEvaluationCount, evaluableCount * 4);
+  assert.equal(evaluated.truncatedProbes, false);
+});
+
+test("18. isolation: coarse defaults untouched; seed-centered config is a pure fn of the seed", () => {
+  // Broad coupled-search default band remains exactly the Phase 2O-J set.
+  assert.deepEqual(
+    [...DEFAULT_COUPLED_SEARCH_ASPECT_RATIOS],
+    [0.75, 0.8, 0.8333, 0.9, 1.0, 1.1, 1.3, 1.4, 1.55]
+  );
+  // Pure function of the explicit seed (no automatic selection, no live state):
+  // identical seed => identical config; different seed => different envelope.
+  const room1 = createSeedCenteredLocalRefinementConfig(nlSeed())!;
+  const room1Again = createSeedCenteredLocalRefinementConfig(nlSeed())!;
+  assert.deepEqual(room1, room1Again);
+  const room2 = createSeedCenteredLocalRefinementConfig(
+    nlSeed({
+      movableCorner: "NR",
+      seamId: "seam-right",
+      coarseTuple: {
+        tNear: 0.5,
+        aspectRatio: 1.3,
+        fixedWorldWidth: 4,
+        worldDepth: 5.2,
+        probeFovDeg: 45,
+        coarseFovCorridors: { valid: [[20, 80]], highConfidence: [[44, 46]] },
+      },
+    })
+  )!;
+  assert.notDeepEqual(room1.aspectRatios, room2.aspectRatios);
+  assert.notDeepEqual(room1.fovProbesDeg, room2.fovProbesDeg);
+  // tNear offsets + probe cap are the preserved existing constants (unchanged).
+  assert.deepEqual(room1.tNearOffsets, room2.tNearOffsets);
+  assert.equal(room1.maxProbeEvaluations, room2.maxProbeEvaluations);
 });
