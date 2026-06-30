@@ -119,6 +119,20 @@ import {
 } from "./manual-floor-support-trial-generation";
 import { evaluateManualFloorSupportTrialSet } from "./manual-floor-support-trial-evaluation";
 import type { ManualFloorSupportTrialSet } from "./manual-floor-support-trial-types";
+// Phase 2O-H: Type A coupled diagnostic search readout. Wires the committed
+// Phase 2O-G pure helper (generate + solver-boundary evaluate) into a read-only
+// lab diagnostic table. No preview, apply, promote, select, ranking, or
+// persistence; never mutates candidate/polygon/FOV/dimensions/calibration.
+import type { CoupledSearchCandidate } from "./manual-floor-support-coupled-search-generation";
+import {
+  DEFAULT_COUPLED_SEARCH_FOV_SCAN_CONFIG,
+  runTypeACoupledSearch,
+} from "./manual-floor-support-coupled-search-evaluation";
+import {
+  createDefaultCoupledSearchConfig,
+  type CoupledSearchPrimaryState,
+  type CoupledSearchResultSet,
+} from "./manual-floor-support-coupled-search-types";
 
 // Phase 2H-B: client-side shape of the lab-only empty-room-assist route reply.
 // Mirrors app/api/admin/3d-room-lab/empty-room-assist/run AssistResponse. Only
@@ -844,6 +858,25 @@ export default function ThreeRoomLab({
   // Phase 2O-E: id of the single trial currently previewed on the room overlay.
   // Pure temporary view-state; never written to floor polygon / candidate / FOV.
   const [previewTrialId, setPreviewTrialId] = useState<string | null>(null);
+  // --- Phase 2O-H: Type A coupled diagnostic search readout -----------------
+  // Ephemeral, lab-only, NON-PERSISTENT diagnostic result set from the committed
+  // Phase 2O-G pure helper. Distinct state path from manualTrialSet. Never
+  // previewed/selected/applied; never mutates candidate/polygon/FOV/dimensions/
+  // calibration/scene state. Cleared whenever source evidence changes.
+  const [isCoupledSearchOpen, setIsCoupledSearchOpen] = useState(false);
+  const [coupledSearchResultSet, setCoupledSearchResultSet] =
+    useState<CoupledSearchResultSet | null>(null);
+  const [coupledSearchNotice, setCoupledSearchNotice] = useState<string | null>(null);
+  const [coupledSearchSnapshot, setCoupledSearchSnapshot] = useState<{
+    movableCorner: "NL" | "NR";
+    approvedSeamId: string;
+    determiningEdgeSeamId: string;
+    determiningEdgeRole: string;
+    fixedWorldWidth: number;
+    probeFovDeg: number;
+    liveAspectRatio: number;
+  } | null>(null);
+  const coupledSearchResultSetRef = useRef<CoupledSearchResultSet | null>(null);
   // Phase 2F-G1: lab-only fixture harness + observation recorder. Everything
   // here is local React state; nothing is persisted to DB/scene-state and no
   // automatic Gemini batch calls are made. Loading a fixture only sets the room
@@ -4183,6 +4216,242 @@ export default function ThreeRoomLab({
     }));
     return { trial, pointsAttribute, cornerMarkers };
   }, [manualTrialSet, previewTrialId]);
+
+  // --- Phase 2O-H: Type A coupled diagnostic search wiring ------------------
+  // Pure generation + solver-boundary evaluation live entirely in the committed
+  // Phase 2O-G modules. This component only wires eligibility, a snapshot, the
+  // run/clear actions, stale-state invalidation, and a read-only grouped table.
+  // Nothing here mutates candidate geometry/selection, floorPolygon, FOV, floor
+  // dimensions, Apply, snapshot, or scene state, and no result is ever previewed,
+  // selected, promoted, applied, ranked, or persisted.
+
+  // Geometry-change signature so coupled results clear if the selected candidate
+  // quad changes even when its id does not.
+  const selectedCoupledCandidateQuadSignature = useMemo(
+    () =>
+      selectedAutoFloorCandidate
+        ? JSON.stringify(selectedAutoFloorCandidate.quadNorm)
+        : null,
+    [selectedAutoFloorCandidate]
+  );
+
+  const coupledSearchEligibility = useMemo<{ canRun: boolean; reason: string | null }>(() => {
+    if (!selectedAutoFloorCandidate) {
+      return { canRun: false, reason: "Select an Auto Floor candidate first." };
+    }
+    if (
+      Array.isArray(selectedAutoFloorCandidate.quadNorm) === false ||
+      selectedAutoFloorCandidate.quadNorm.length !== 4
+    ) {
+      return { canRun: false, reason: "Selected candidate has no usable floor quad." };
+    }
+    if (!manualAnnotationCoordsReady || !imageIntrinsicSize || !manualFrameSize) {
+      return { canRun: false, reason: "Image / frame display size is not ready yet." };
+    }
+    if (!manualAnnotation) {
+      return { canRun: false, reason: "Begin a manual annotation first." };
+    }
+    if (!manualAnnotationValidation || !manualAnnotationValidation.ok) {
+      return { canRun: false, reason: "Annotation must pass integrity validation first." };
+    }
+    if (manualAnnotation.mode !== "single_corner_constrained") {
+      return { canRun: false, reason: "Type A coupled search requires single-corner constrained mode." };
+    }
+    const authority = manualAnnotation.adjustmentAuthority;
+    if (authority.kind !== "single_corner") {
+      return { canRun: false, reason: "Type A coupled search requires single-corner adjustment authority." };
+    }
+    if (authority.corner !== "NL" && authority.corner !== "NR") {
+      return { canRun: false, reason: "Type A scope adjusts only a near corner (NL or NR)." };
+    }
+    if (!manualAnnotation.seams.some((seam) => seam.id === authority.seamId)) {
+      return { canRun: false, reason: "Authority references a seam that does not exist." };
+    }
+    const support = manualAnnotation.cornerSupport[authority.corner];
+    if (!support || support.state !== "frame_truncated") {
+      return { canRun: false, reason: `Movable corner ${authority.corner} must be marked frame_truncated.` };
+    }
+    if (!manualAnnotation.determiningEdge) {
+      return { canRun: false, reason: "An operator-declared determining edge is required (never auto-inferred)." };
+    }
+    if (!Number.isFinite(floorMapping.worldWidth) || floorMapping.worldWidth <= 0) {
+      return { canRun: false, reason: "Lab floor width must be positive to use as the fixed diagnostic dimension." };
+    }
+    if (!Number.isFinite(cameraPoseFovYDeg)) {
+      return { canRun: false, reason: "Current FOV is unavailable for the diagnostic probe." };
+    }
+    return { canRun: true, reason: null };
+  }, [
+    selectedAutoFloorCandidate,
+    manualAnnotationCoordsReady,
+    imageIntrinsicSize,
+    manualFrameSize,
+    manualAnnotation,
+    manualAnnotationValidation,
+    floorMapping.worldWidth,
+    cameraPoseFovYDeg,
+  ]);
+
+  const handleRunCoupledSearch = useCallback(() => {
+    if (!coupledSearchEligibility.canRun) return;
+    if (!selectedAutoFloorCandidate || !manualAnnotation || !imageIntrinsicSize || !manualFrameSize) {
+      return;
+    }
+    const authority = manualAnnotation.adjustmentAuthority;
+    if (authority.kind !== "single_corner") return;
+
+    const candidateInput: CoupledSearchCandidate = {
+      id: selectedAutoFloorCandidate.id,
+      quadNorm: [
+        { x: selectedAutoFloorCandidate.quadNorm[0].x, y: selectedAutoFloorCandidate.quadNorm[0].y },
+        { x: selectedAutoFloorCandidate.quadNorm[1].x, y: selectedAutoFloorCandidate.quadNorm[1].y },
+        { x: selectedAutoFloorCandidate.quadNorm[2].x, y: selectedAutoFloorCandidate.quadNorm[2].y },
+        { x: selectedAutoFloorCandidate.quadNorm[3].x, y: selectedAutoFloorCandidate.quadNorm[3].y },
+      ],
+    };
+
+    // Live lab width is the canonical fixed worldWidth for this run; depth is
+    // derived per tuple from the default aspect-ratio grid (diagnostic inputs,
+    // not asserted measurements). Live aspect ratio is captured only as source
+    // identity, never as a search restriction.
+    const config = {
+      ...createDefaultCoupledSearchConfig(),
+      fixedWorldWidth: floorMapping.worldWidth,
+    };
+
+    const result = runTypeACoupledSearch(
+      {
+        candidate: candidateInput,
+        annotation: manualAnnotation,
+        intrinsic: imageIntrinsicSize,
+        frame: manualFrameSize,
+        config,
+      },
+      {
+        frame: manualFrameSize,
+        currentVerticalFovDeg: cameraPoseFovYDeg,
+        fovScanConfig: DEFAULT_COUPLED_SEARCH_FOV_SCAN_CONFIG,
+      }
+    );
+
+    if (!result) {
+      coupledSearchResultSetRef.current = null;
+      setCoupledSearchResultSet(null);
+      setCoupledSearchSnapshot(null);
+      setCoupledSearchNotice(
+        "No coupled diagnostic search was produced for the current Type A annotation."
+      );
+      return;
+    }
+
+    const determining = manualAnnotation.determiningEdge;
+    coupledSearchResultSetRef.current = result;
+    setCoupledSearchResultSet(result);
+    setCoupledSearchSnapshot({
+      movableCorner: result.movableCorner,
+      approvedSeamId: result.seamId,
+      determiningEdgeSeamId: determining?.seamId ?? "—",
+      determiningEdgeRole: determining?.role ?? "—",
+      fixedWorldWidth: config.fixedWorldWidth,
+      probeFovDeg: cameraPoseFovYDeg,
+      liveAspectRatio:
+        floorMapping.worldWidth > 0 ? floorMapping.worldDepth / floorMapping.worldWidth : Number.NaN,
+    });
+    setCoupledSearchNotice(null);
+  }, [
+    coupledSearchEligibility.canRun,
+    selectedAutoFloorCandidate,
+    manualAnnotation,
+    imageIntrinsicSize,
+    manualFrameSize,
+    floorMapping.worldWidth,
+    floorMapping.worldDepth,
+    cameraPoseFovYDeg,
+  ]);
+
+  const handleClearCoupledSearch = useCallback(() => {
+    coupledSearchResultSetRef.current = null;
+    setCoupledSearchResultSet(null);
+    setCoupledSearchSnapshot(null);
+    setCoupledSearchNotice(null);
+  }, []);
+
+  // Invalidation: coupled-search results clear whenever any source evidence
+  // changes — source image, intrinsic size, render frame/crop, selected
+  // candidate (id or geometry), manual annotation (seam/support/authority/
+  // determining-edge are all captured by the annotation object identity), live
+  // floor width/depth, or live FOV. A stale result set must never survive a
+  // changed-evidence transition. Mirrors the established manualTrialSet model
+  // (the Phase 2O-G result set carries no embedded evidence signature).
+  useEffect(() => {
+    if (coupledSearchResultSetRef.current !== null) {
+      coupledSearchResultSetRef.current = null;
+      setCoupledSearchResultSet(null);
+      setCoupledSearchSnapshot(null);
+      setCoupledSearchNotice(
+        "Coupled diagnostics cleared: source evidence changed (image, candidate, frame, annotation, dimensions, or FOV)."
+      );
+    }
+  }, [
+    loadedImageUrl,
+    imageIntrinsicSize,
+    rendererSize.width,
+    rendererSize.height,
+    selectedAutoFloorCandidateId,
+    selectedCoupledCandidateQuadSignature,
+    manualAnnotation,
+    floorMapping.worldWidth,
+    floorMapping.worldDepth,
+    cameraPoseFovYDeg,
+  ]);
+
+  const formatFovCorridor = useCallback(
+    (intervals: [number, number][] | null | undefined) => {
+      if (!intervals) return "—";
+      if (intervals.length === 0) return "none found";
+      return intervals.map(([start, end]) => (start === end ? `${start}°` : `${start}°–${end}°`)).join(", ");
+    },
+    []
+  );
+
+  // Neutral, categorical (NOT ranked) labels/tones per truthful primary state.
+  const describeCoupledState = useCallback(
+    (state: CoupledSearchPrimaryState | null): { label: string; tone: string; heading: string } => {
+      switch (state) {
+        case "apply_safe_diagnostic":
+          return { label: "Apply-safe diagnostic", tone: "text-emerald-300", heading: "border-emerald-500/40 bg-emerald-500/5" };
+        case "high_confidence_not_apply_safe":
+          return { label: "high-confidence diagnostic", tone: "text-cyan-300", heading: "border-cyan-500/40 bg-cyan-500/5" };
+        case "pose_poor":
+          return { label: "pose available", tone: "text-amber-300", heading: "border-amber-500/40 bg-amber-500/5" };
+        case "no_pose":
+          return { label: "no pose", tone: "text-slate-300", heading: "border-slate-600/60 bg-slate-900/40" };
+        case "invalid_geometry":
+          return { label: "rejected geometry", tone: "text-rose-300", heading: "border-rose-500/40 bg-rose-500/5" };
+        default:
+          return { label: "unevaluated", tone: "text-slate-400", heading: "border-slate-700 bg-slate-900/40" };
+      }
+    },
+    []
+  );
+
+  // Fixed display state grouping. Within each group, generation order is
+  // preserved by the filter (no metric sort, no ranking).
+  const coupledSearchView = useMemo(() => {
+    if (!coupledSearchResultSet) return null;
+    const order: CoupledSearchPrimaryState[] = [
+      "apply_safe_diagnostic",
+      "high_confidence_not_apply_safe",
+      "pose_poor",
+      "no_pose",
+      "invalid_geometry",
+    ];
+    const groups = order.map((state) => ({
+      state,
+      trials: coupledSearchResultSet.trials.filter((trial) => trial.state === state),
+    }));
+    return { groups, total: coupledSearchResultSet.trials.length };
+  }, [coupledSearchResultSet]);
 
   const assistedCandidateSolvabilityContext = useMemo(() => {
     if (!selectedAutoFloorCandidate) {
@@ -8989,6 +9258,179 @@ export default function ThreeRoomLab({
                 <p className="text-slate-500">
                   Apply-gate values above are diagnostic only and are never used to sort, recommend, select, or apply a
                   trial. No trial may be applied, promoted, or set as the floor.
+                </p>
+              </div>
+            )}
+          </div>
+        </CollapsibleSection>
+
+        <CollapsibleSection
+          title="Type A Coupled Diagnostic Search"
+          open={isCoupledSearchOpen}
+          onToggle={() => setIsCoupledSearchOpen((open) => !open)}
+          description="Diagnostic-only bounded search over approved near-corner position, floor aspect ratio, and solver FOV corridors. Does not change the candidate, FOV, dimensions, or calibration."
+          meta={
+            <span className="rounded bg-cyan-500/15 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-cyan-200">
+              lab-only · local · not persisted
+            </span>
+          }
+        >
+          <div className="space-y-3 text-[11px] text-slate-300">
+            <p className="rounded-lg border border-cyan-500/30 bg-cyan-500/5 px-3 py-2 text-cyan-100/90">
+              Read-only diagnostics. Width/depth are diagnostic solver inputs (not actual room measurements);
+              aspectRatio = depth / width. Nothing here is previewed, selected, applied, promoted, ranked, or written to
+              calibration state.
+            </p>
+
+            {coupledSearchNotice && (
+              <p className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-amber-200">
+                {coupledSearchNotice}
+              </p>
+            )}
+
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={handleRunCoupledSearch}
+                disabled={!coupledSearchEligibility.canRun}
+                className="rounded-lg border border-cyan-500/70 px-3 py-1.5 text-cyan-200 transition enabled:hover:border-cyan-300 enabled:hover:text-cyan-100 disabled:cursor-not-allowed disabled:border-slate-700 disabled:text-slate-500"
+              >
+                Run Type A coupled diagnostics
+              </button>
+              <button
+                type="button"
+                onClick={handleClearCoupledSearch}
+                disabled={!coupledSearchResultSet}
+                className="rounded-lg border border-slate-600 px-3 py-1.5 text-slate-200 transition enabled:hover:border-slate-400 disabled:cursor-not-allowed disabled:border-slate-800 disabled:text-slate-600"
+              >
+                Clear coupled diagnostics
+              </button>
+            </div>
+
+            {!coupledSearchEligibility.canRun && coupledSearchEligibility.reason && (
+              <p className="text-slate-400">Unavailable: {coupledSearchEligibility.reason}</p>
+            )}
+
+            {coupledSearchResultSet && coupledSearchView && coupledSearchSnapshot && (
+              <div className="space-y-2">
+                <div className="rounded-lg border border-slate-700 bg-slate-900/60 p-3">
+                  <p className="font-medium text-slate-100">Run snapshot</p>
+                  <div className="mt-1 grid grid-cols-1 gap-x-4 gap-y-0.5 text-slate-400 sm:grid-cols-2">
+                    <span>
+                      movable corner: <span className="text-slate-200">{coupledSearchSnapshot.movableCorner}</span>
+                    </span>
+                    <span>
+                      approved seam: <span className="text-slate-200">{coupledSearchSnapshot.approvedSeamId}</span>
+                    </span>
+                    <span>
+                      determining seam:{" "}
+                      <span className="text-slate-200">
+                        {coupledSearchSnapshot.determiningEdgeSeamId} ({coupledSearchSnapshot.determiningEdgeRole})
+                      </span>
+                    </span>
+                    <span>
+                      fixed width (diagnostic):{" "}
+                      <span className="text-slate-200">{formatNumber(coupledSearchSnapshot.fixedWorldWidth)}</span>
+                    </span>
+                    <span>
+                      probe FOV: <span className="text-slate-200">{formatNumber(coupledSearchSnapshot.probeFovDeg)}°</span>
+                    </span>
+                    <span>
+                      live aspect (source identity):{" "}
+                      <span className="text-slate-200">{formatTrialExact(coupledSearchSnapshot.liveAspectRatio)}</span>
+                    </span>
+                    <span>
+                      tuples: <span className="text-slate-200">{coupledSearchView.total}</span>
+                    </span>
+                    {coupledSearchResultSet.truncated && (
+                      <span className="rounded bg-amber-500/15 px-1.5 py-0.5 text-amber-200">
+                        truncated to evaluation cap
+                      </span>
+                    )}
+                  </div>
+                  {coupledSearchResultSet.notes.length > 0 && (
+                    <ul className="mt-1 space-y-0.5 text-amber-200/90">
+                      {coupledSearchResultSet.notes.map((note, index) => (
+                        <li key={`coupled-note-${index}`}>• {note}</li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+
+                {coupledSearchView.groups.map((group) => {
+                  if (group.trials.length === 0) return null;
+                  const meta = describeCoupledState(group.state);
+                  const collapsedByDefault = group.state === "no_pose" || group.state === "invalid_geometry";
+                  const rows = group.trials.map((trial) => {
+                    const rowMeta = describeCoupledState(trial.state);
+                    return (
+                      <div
+                        key={trial.trialId}
+                        className={`rounded-lg border p-2.5 ${meta.heading}`}
+                      >
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <span className="text-slate-100">
+                            {trial.movableCorner} · seam {trial.seamId} · tNear{" "}
+                            {formatTrialExact(trial.tuple.tNear)} · aspect {formatTrialExact(trial.tuple.aspectRatio)}
+                          </span>
+                          <span className={rowMeta.tone}>{rowMeta.label}</span>
+                        </div>
+                        <p className="mt-1 text-slate-400">
+                          width {formatNumber(trial.worldWidth)} · depth {formatNumber(trial.worldDepth)} · probe FOV{" "}
+                          {trial.tuple.fovDeg === null ? "—" : `${formatNumber(trial.tuple.fovDeg)}°`} · pose{" "}
+                          {trial.solver ? (trial.solver.poseAvailable ? "available" : "unavailable") : "—"} · confidence{" "}
+                          {trial.solver?.confidence ?? "—"}
+                        </p>
+                        <p className="mt-0.5 text-slate-500">
+                          valid FOV corridor: {formatFovCorridor(trial.fovCorridors?.valid)} · high-confidence FOV
+                          corridor: {formatFovCorridor(trial.fovCorridors?.highConfidence)}
+                        </p>
+                        {trial.solver && (
+                          <p className="mt-0.5 text-slate-500">
+                            CV avg {formatTrialPx(trial.solver.cv.averagePx)} · CV max{" "}
+                            {formatTrialPx(trial.solver.cv.maximumPx)} · rendered avg{" "}
+                            {formatTrialPx(trial.solver.rendered.averagePx)} · rendered max{" "}
+                            {formatTrialPx(trial.solver.rendered.maximumPx)} · Apply-gate diagnostic:{" "}
+                            {trial.solver.applyGateAvailable ? "available" : "unavailable"} (
+                            {trial.solver.applyGateReason})
+                          </p>
+                        )}
+                        {!trial.constraint.canEvaluate && trial.constraint.hardReasons.length > 0 && (
+                          <p className="mt-0.5 text-rose-300">
+                            geometry rejection: {trial.constraint.hardReasons.join("; ")}
+                          </p>
+                        )}
+                        {trial.constraint.warnings.length > 0 && (
+                          <p className="mt-0.5 text-amber-200/90">warnings: {trial.constraint.warnings.join("; ")}</p>
+                        )}
+                      </div>
+                    );
+                  });
+                  return (
+                    <div key={`coupled-group-${group.state}`} className="space-y-1.5">
+                      {collapsedByDefault ? (
+                        <details>
+                          <summary className={`cursor-pointer font-medium ${meta.tone}`}>
+                            {meta.label} ({group.trials.length}) — generation order, no ranking
+                          </summary>
+                          <div className="mt-1.5 space-y-1.5">{rows}</div>
+                        </details>
+                      ) : (
+                        <>
+                          <p className={`font-medium ${meta.tone}`}>
+                            {meta.label} ({group.trials.length}) — generation order, no ranking
+                          </p>
+                          {rows}
+                        </>
+                      )}
+                    </div>
+                  );
+                })}
+
+                <p className="text-slate-500">
+                  States are truthful classifications, not rankings. Apply-gate, FOV corridor, and confidence values are
+                  diagnostic only and are never used to recommend, select, or apply a tuple. No tuple may be previewed,
+                  selected, promoted, or applied.
                 </p>
               </div>
             )}
