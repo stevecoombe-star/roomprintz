@@ -133,6 +133,20 @@ import {
   type CoupledSearchPrimaryState,
   type CoupledSearchResultSet,
 } from "./manual-floor-support-coupled-search-types";
+// Phase 2O-K-B: Type A local refinement readout. Wires the committed Phase
+// 2O-K-A pure helper (seeded generate + solver-boundary evaluate) into a
+// read-only lab diagnostic table. Seeded ONLY by an explicit operator action on
+// a stored coarse coupled-search row. No preview (deferred to 2O-K-C), apply,
+// promote, select, ranking, recommendation, or persistence; never mutates
+// candidate/polygon/FOV/dimensions/calibration/scene state.
+import {
+  DEFAULT_LOCAL_REFINEMENT_FOV_SCAN_CONFIG,
+  runTypeALocalRefinement,
+} from "./manual-floor-support-local-refinement-evaluation";
+import type {
+  LocalRefinementResultSet,
+  LocalRefinementSeed,
+} from "./manual-floor-support-local-refinement-types";
 
 // Phase 2H-B: client-side shape of the lab-only empty-room-assist route reply.
 // Mirrors app/api/admin/3d-room-lab/empty-room-assist/run AssistResponse. Only
@@ -883,6 +897,22 @@ export default function ThreeRoomLab({
   // preview to the source evidence so a stale tuple can never render.
   const [coupledSearchPreviewTrialId, setCoupledSearchPreviewTrialId] = useState<string | null>(null);
   const [coupledSearchPreviewSignature, setCoupledSearchPreviewSignature] = useState<string | null>(null);
+  // --- Phase 2O-K-B: Type A local refinement readout ------------------------
+  // Ephemeral, lab-only, NON-PERSISTENT diagnostic result set from the committed
+  // Phase 2O-K-A pure helper. Seeded ONLY by an explicit operator action on a
+  // stored coarse coupled-search row (no auto-seed, no "best tuple"). Distinct
+  // state path from manualTrialSet / coupledSearchResultSet / both preview
+  // systems. Never previewed/selected/applied; never mutates candidate / polygon
+  // / FOV / dimensions / calibration / scene. Cleared whenever source evidence
+  // or the broad coupled result-set identity changes. The signature + seed-row
+  // id bind it to current evidence so a stale local result can never render.
+  const [isLocalRefinementOpen, setIsLocalRefinementOpen] = useState(false);
+  const [localRefinementResultSet, setLocalRefinementResultSet] =
+    useState<LocalRefinementResultSet | null>(null);
+  const [localRefinementNotice, setLocalRefinementNotice] = useState<string | null>(null);
+  const [localRefinementSignature, setLocalRefinementSignature] = useState<string | null>(null);
+  const [localRefinementSeedTrialId, setLocalRefinementSeedTrialId] = useState<string | null>(null);
+  const localRefinementResultSetRef = useRef<LocalRefinementResultSet | null>(null);
   // Phase 2F-G1: lab-only fixture harness + observation recorder. Everything
   // here is local React state; nothing is persisted to DB/scene-state and no
   // automatic Gemini batch calls are made. Loading a fixture only sets the room
@@ -4575,6 +4605,197 @@ export default function ThreeRoomLab({
     coupledSearchPreviewSignature,
     coupledSearchEvidenceSignature,
     isCoupledTrialPreviewable,
+  ]);
+
+  // --- Phase 2O-K-B: explicit-seed local refinement -------------------------
+  // Per coarse row, whether it may offer the explicit "Refine around this tuple"
+  // action. Requires current Type A authority/prereqs ready, valid in-frame
+  // geometry with an exact stored quad + sampled corner move, an exact stored
+  // probe FOV, and a NON-EMPTY high-confidence FOV corridor. Never marks any row
+  // as preferred; rows without a high-confidence corridor never offer the action.
+  const coupledRowSeedEligibility = useCallback(
+    (trial: CoupledSearchResultSet["trials"][number]): { canSeed: boolean; reason: string | null } => {
+      if (!coupledSearchEligibility.canRun) {
+        return { canSeed: false, reason: "Type A authority/prerequisites not ready" };
+      }
+      if (!isCoupledTrialPreviewable(trial)) {
+        return { canSeed: false, reason: "row geometry is not valid/in-frame" };
+      }
+      if (trial.sampledCornerMoves.length === 0) {
+        return { canSeed: false, reason: "row has no exact sampled corner move" };
+      }
+      if (trial.tuple.fovDeg === null || !Number.isFinite(trial.tuple.fovDeg)) {
+        return { canSeed: false, reason: "row has no stored probe FOV" };
+      }
+      const highConf = trial.fovCorridors?.highConfidence ?? null;
+      if (!highConf || highConf.length === 0) {
+        return { canSeed: false, reason: "no high-confidence FOV corridor" };
+      }
+      return { canSeed: true, reason: null };
+    },
+    [coupledSearchEligibility.canRun, isCoupledTrialPreviewable]
+  );
+
+  // Explicit operator action: seed a bounded local refinement from ONE stored
+  // coarse row. Builds the K-A seed from the EXACT stored coarse record (never
+  // recomputed), runs the committed helper with its default bounded config, and
+  // stores ONLY the returned diagnostic set. Does NOT touch the coupled set,
+  // manual trials, or either preview system, and never auto-previews.
+  const handleRunLocalRefinement = useCallback(
+    (trial: CoupledSearchResultSet["trials"][number]) => {
+      if (!coupledSearchResultSet) return;
+      if (!coupledRowSeedEligibility(trial).canSeed) return;
+      if (!selectedAutoFloorCandidate || !manualAnnotation || !imageIntrinsicSize || !manualFrameSize) {
+        return;
+      }
+      const authority = manualAnnotation.adjustmentAuthority;
+      if (authority.kind !== "single_corner") return;
+      // Defensive: the chosen row must still belong to the current authority.
+      if (trial.movableCorner !== authority.corner || trial.seamId !== authority.seamId) {
+        setLocalRefinementNotice("Selected coarse row no longer matches the current Type A authority.");
+        return;
+      }
+      if (trial.tuple.fovDeg === null) return;
+
+      const candidateInput: CoupledSearchCandidate = {
+        id: selectedAutoFloorCandidate.id,
+        quadNorm: [
+          { x: selectedAutoFloorCandidate.quadNorm[0].x, y: selectedAutoFloorCandidate.quadNorm[0].y },
+          { x: selectedAutoFloorCandidate.quadNorm[1].x, y: selectedAutoFloorCandidate.quadNorm[1].y },
+          { x: selectedAutoFloorCandidate.quadNorm[2].x, y: selectedAutoFloorCandidate.quadNorm[2].y },
+          { x: selectedAutoFloorCandidate.quadNorm[3].x, y: selectedAutoFloorCandidate.quadNorm[3].y },
+        ],
+      };
+
+      // Seed = EXACT stored coarse provenance (tNear/aspect/width/depth/probe FOV
+      // /corridors/corner/seam), plus the operator-declared determining edge.
+      const seed: LocalRefinementSeed = {
+        sourceCandidateId: trial.sourceCandidateId,
+        movableCorner: trial.movableCorner,
+        seamId: trial.seamId,
+        determiningEdge: manualAnnotation.determiningEdge,
+        coarseTuple: {
+          tNear: trial.tuple.tNear,
+          aspectRatio: trial.tuple.aspectRatio,
+          fixedWorldWidth: trial.worldWidth,
+          worldDepth: trial.worldDepth,
+          probeFovDeg: trial.tuple.fovDeg,
+          coarseFovCorridors: trial.fovCorridors,
+        },
+      };
+
+      const result = runTypeALocalRefinement(
+        {
+          candidate: candidateInput,
+          annotation: manualAnnotation,
+          seed,
+          intrinsic: imageIntrinsicSize,
+          frame: manualFrameSize,
+        },
+        {
+          frame: manualFrameSize,
+          fovScanConfig: DEFAULT_LOCAL_REFINEMENT_FOV_SCAN_CONFIG,
+        }
+      );
+
+      if (!result) {
+        localRefinementResultSetRef.current = null;
+        setLocalRefinementResultSet(null);
+        setLocalRefinementSeedTrialId(null);
+        setLocalRefinementSignature(null);
+        setLocalRefinementNotice(
+          "No local refinement was produced for the selected coarse tuple."
+        );
+        return;
+      }
+
+      localRefinementResultSetRef.current = result;
+      setLocalRefinementResultSet(result);
+      setLocalRefinementSeedTrialId(trial.trialId);
+      setLocalRefinementSignature(coupledSearchEvidenceSignature);
+      setLocalRefinementNotice(null);
+      setIsLocalRefinementOpen(true);
+    },
+    [
+      coupledSearchResultSet,
+      coupledRowSeedEligibility,
+      selectedAutoFloorCandidate,
+      manualAnnotation,
+      imageIntrinsicSize,
+      manualFrameSize,
+      coupledSearchEvidenceSignature,
+    ]
+  );
+
+  const handleClearLocalRefinement = useCallback(() => {
+    localRefinementResultSetRef.current = null;
+    setLocalRefinementResultSet(null);
+    setLocalRefinementSeedTrialId(null);
+    setLocalRefinementSignature(null);
+    setLocalRefinementNotice(null);
+  }, []);
+
+  // Invalidation: local refinement clears whenever any source evidence changes
+  // (same evidence set as the coupled-search invalidation) OR the broad coupled
+  // result-set identity changes (broad clear/rerun). The seed is provenance from
+  // a specific coarse set; if that set is replaced or evidence shifts, the local
+  // result is stale and must not survive the transition.
+  useEffect(() => {
+    if (localRefinementResultSetRef.current !== null) {
+      localRefinementResultSetRef.current = null;
+      setLocalRefinementResultSet(null);
+      setLocalRefinementSeedTrialId(null);
+      setLocalRefinementSignature(null);
+      setLocalRefinementNotice(
+        "Local refinement cleared: source evidence or broad coupled diagnostics changed."
+      );
+    }
+  }, [
+    loadedImageUrl,
+    imageIntrinsicSize,
+    rendererSize.width,
+    rendererSize.height,
+    selectedAutoFloorCandidateId,
+    selectedCoupledCandidateQuadSignature,
+    manualAnnotation,
+    floorMapping.worldWidth,
+    floorMapping.worldDepth,
+    cameraPoseFovYDeg,
+    coupledSearchResultSet,
+  ]);
+
+  // Defensive render-time guard + fixed-order grouping for the local geometry
+  // tuples. Returns null when the local result is stale: signature mismatch, the
+  // broad coupled set is gone, or the chosen seed row no longer exists in it.
+  // This blocks a stale local result from rendering even before effects flush.
+  const localRefinementView = useMemo(() => {
+    if (!localRefinementResultSet) return null;
+    if (localRefinementSignature !== coupledSearchEvidenceSignature) return null;
+    if (!coupledSearchResultSet) return null;
+    if (
+      localRefinementSeedTrialId &&
+      !coupledSearchResultSet.trials.some((trial) => trial.trialId === localRefinementSeedTrialId)
+    ) {
+      return null;
+    }
+    const order: CoupledSearchPrimaryState[] = [
+      "apply_safe_diagnostic",
+      "high_confidence_not_apply_safe",
+      "pose_poor",
+      "no_pose",
+      "invalid_geometry",
+    ];
+    const groups = order.map((state) => ({
+      state,
+      tuples: localRefinementResultSet.geometryTuples.filter((tuple) => tuple.state === state),
+    }));
+    return { groups, total: localRefinementResultSet.geometryTuples.length };
+  }, [
+    localRefinementResultSet,
+    localRefinementSignature,
+    coupledSearchEvidenceSignature,
+    coupledSearchResultSet,
+    localRefinementSeedTrialId,
   ]);
 
   const assistedCandidateSolvabilityContext = useMemo(() => {
@@ -9647,6 +9868,7 @@ export default function ThreeRoomLab({
                     const rowMeta = describeCoupledState(trial.state);
                     const previewable = isCoupledTrialPreviewable(trial);
                     const isPreviewing = coupledSearchPreviewTrialId === trial.trialId;
+                    const rowSeed = coupledRowSeedEligibility(trial);
                     return (
                       <div
                         key={trial.trialId}
@@ -9688,30 +9910,48 @@ export default function ThreeRoomLab({
                           <p className="mt-0.5 text-amber-200/90">warnings: {trial.constraint.warnings.join("; ")}</p>
                         )}
                         {previewable ? (
-                          <div className="mt-2 flex flex-wrap items-center gap-2">
-                            {isPreviewing ? (
-                              <>
-                                <span className="rounded border border-violet-400/60 bg-violet-500/10 px-2 py-0.5 text-violet-200">
-                                  Previewing (temporary)
-                                </span>
+                          <div className="mt-2 space-y-1.5">
+                            <div className="flex flex-wrap items-center gap-2">
+                              {isPreviewing ? (
+                                <>
+                                  <span className="rounded border border-violet-400/60 bg-violet-500/10 px-2 py-0.5 text-violet-200">
+                                    Previewing (temporary)
+                                  </span>
+                                  <button
+                                    type="button"
+                                    onClick={handleClearCoupledPreview}
+                                    className="rounded border border-slate-600 px-2 py-0.5 text-slate-300 transition hover:border-slate-400 hover:text-slate-100"
+                                  >
+                                    Clear preview
+                                  </button>
+                                </>
+                              ) : (
                                 <button
                                   type="button"
-                                  onClick={handleClearCoupledPreview}
-                                  className="rounded border border-slate-600 px-2 py-0.5 text-slate-300 transition hover:border-slate-400 hover:text-slate-100"
+                                  onClick={() => handlePreviewCoupledTrial(trial.trialId)}
+                                  className="rounded border border-violet-500/60 px-2 py-0.5 text-violet-200 transition hover:border-violet-300 hover:text-violet-100"
                                 >
-                                  Clear preview
+                                  Preview tuple
                                 </button>
-                              </>
+                              )}
+                              <span className="text-slate-500">Exact stored geometry · temporary diagnostic preview</span>
+                            </div>
+                            {rowSeed.canSeed ? (
+                              <div className="flex flex-wrap items-center gap-2">
+                                <button
+                                  type="button"
+                                  onClick={() => handleRunLocalRefinement(trial)}
+                                  className="rounded border border-teal-500/60 px-2 py-0.5 text-teal-200 transition hover:border-teal-300 hover:text-teal-100"
+                                >
+                                  Refine around this tuple
+                                </button>
+                                <span className="text-slate-500">
+                                  Seeds a bounded local diagnostic search (provenance only)
+                                </span>
+                              </div>
                             ) : (
-                              <button
-                                type="button"
-                                onClick={() => handlePreviewCoupledTrial(trial.trialId)}
-                                className="rounded border border-violet-500/60 px-2 py-0.5 text-violet-200 transition hover:border-violet-300 hover:text-violet-100"
-                              >
-                                Preview tuple
-                              </button>
+                              <p className="text-slate-600">Local refinement unavailable — {rowSeed.reason}.</p>
                             )}
-                            <span className="text-slate-500">Exact stored geometry · temporary diagnostic preview</span>
                           </div>
                         ) : (
                           <p className="mt-2 text-slate-600">
@@ -9746,6 +9986,280 @@ export default function ThreeRoomLab({
                   States are truthful classifications, not rankings. Apply-gate, FOV corridor, and confidence values are
                   diagnostic only and are never used to recommend, select, or apply a tuple. No tuple may be previewed,
                   selected, promoted, or applied.
+                </p>
+              </div>
+            )}
+          </div>
+        </CollapsibleSection>
+
+        <CollapsibleSection
+          title="Type A Local Refinement Diagnostics"
+          open={isLocalRefinementOpen}
+          onToggle={() => setIsLocalRefinementOpen((open) => !open)}
+          description="Explicitly seeded, bounded local diagnostic search around one coarse tuple. Refines approved near-corner position, diagnostic aspect ratio, and direct FOV probes. Does not alter the candidate, FOV, dimensions, calibration, or scene state."
+          meta={
+            <span className="rounded bg-teal-500/15 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-teal-200">
+              lab-only · local · not persisted
+            </span>
+          }
+        >
+          <div className="space-y-3 text-[11px] text-slate-300">
+            <p className="rounded-lg border border-teal-500/30 bg-teal-500/5 px-3 py-2 text-teal-100/90">
+              Read-only diagnostics. Seeded ONLY by an explicit “Refine around this tuple” action on a coarse
+              coupled-search row (no auto-seed, no “best tuple”). Width/depth are diagnostic solver inputs (not actual
+              room measurements); aspectRatio = depth / width. Nothing here is previewed, selected, applied, promoted,
+              ranked, or written to calibration state.
+            </p>
+
+            {localRefinementNotice && (
+              <p className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-amber-200">
+                {localRefinementNotice}
+              </p>
+            )}
+
+            {!coupledSearchResultSet ? (
+              <p className="text-slate-400">
+                No coarse coupled-search result set. Run Type A coupled diagnostics, then choose a coarse tuple to refine.
+              </p>
+            ) : !localRefinementView ? (
+              <p className="text-slate-400">
+                No eligible seed selected. Use “Refine around this tuple” on an eligible coarse row (valid in-frame
+                geometry with a high-confidence FOV corridor) above.
+              </p>
+            ) : null}
+
+            {localRefinementResultSet && localRefinementView && (
+              <div className="space-y-2">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <p className="font-medium text-slate-100">Local refinement ready (seeded provenance)</p>
+                  <button
+                    type="button"
+                    onClick={handleClearLocalRefinement}
+                    className="rounded border border-slate-600 px-2 py-0.5 text-slate-300 transition hover:border-slate-400 hover:text-slate-100"
+                  >
+                    Clear local refinement
+                  </button>
+                </div>
+
+                <div className="rounded-lg border border-slate-700 bg-slate-900/60 p-3">
+                  <p className="font-medium text-slate-100">Seed snapshot (exact stored coarse provenance)</p>
+                  <div className="mt-1 grid grid-cols-1 gap-x-4 gap-y-0.5 text-slate-400 sm:grid-cols-2">
+                    <span>
+                      movable corner:{" "}
+                      <span className="text-slate-200">{localRefinementResultSet.seed.movableCorner}</span>
+                    </span>
+                    <span>
+                      approved seam: <span className="text-slate-200">{localRefinementResultSet.seed.seamId}</span>
+                    </span>
+                    <span>
+                      determining seam:{" "}
+                      <span className="text-slate-200">
+                        {localRefinementResultSet.seed.determiningEdge
+                          ? `${localRefinementResultSet.seed.determiningEdge.seamId} (${localRefinementResultSet.seed.determiningEdge.role})`
+                          : "—"}
+                      </span>
+                    </span>
+                    <span>
+                      source candidate:{" "}
+                      <span className="text-slate-200">{localRefinementResultSet.seed.sourceCandidateId}</span>
+                    </span>
+                    <span>
+                      seed tNear:{" "}
+                      <span className="text-slate-200">
+                        {formatTrialExact(localRefinementResultSet.seed.coarseTuple.tNear)}
+                      </span>
+                    </span>
+                    <span>
+                      seed aspect ratio:{" "}
+                      <span className="text-slate-200">
+                        {formatTrialExact(localRefinementResultSet.seed.coarseTuple.aspectRatio)}
+                      </span>
+                    </span>
+                    <span>
+                      seed fixed width:{" "}
+                      <span className="text-slate-200">
+                        {formatNumber(localRefinementResultSet.seed.coarseTuple.fixedWorldWidth)}
+                      </span>
+                    </span>
+                    <span>
+                      seed derived depth:{" "}
+                      <span className="text-slate-200">
+                        {formatNumber(localRefinementResultSet.seed.coarseTuple.worldDepth)}
+                      </span>
+                    </span>
+                    <span>
+                      seed probe FOV:{" "}
+                      <span className="text-slate-200">
+                        {formatNumber(localRefinementResultSet.seed.coarseTuple.probeFovDeg)}°
+                      </span>
+                    </span>
+                    <span>
+                      seed valid FOV corridor:{" "}
+                      <span className="text-slate-200">
+                        {formatFovCorridor(localRefinementResultSet.seed.coarseTuple.coarseFovCorridors?.valid)}
+                      </span>
+                    </span>
+                    <span>
+                      seed high-confidence FOV corridor:{" "}
+                      <span className="text-slate-200">
+                        {formatFovCorridor(
+                          localRefinementResultSet.seed.coarseTuple.coarseFovCorridors?.highConfidence
+                        )}
+                      </span>
+                    </span>
+                  </div>
+                  <div className="mt-1.5 grid grid-cols-1 gap-x-4 gap-y-0.5 text-slate-500 sm:grid-cols-2">
+                    <span>
+                      t offsets:{" "}
+                      <span className="text-slate-300">[{localRefinementResultSet.config.tNearOffsets.join(", ")}]</span>
+                    </span>
+                    <span>
+                      aspect-ratio range:{" "}
+                      <span className="text-slate-300">
+                        {localRefinementResultSet.config.aspectRatios[0]} –{" "}
+                        {
+                          localRefinementResultSet.config.aspectRatios[
+                            localRefinementResultSet.config.aspectRatios.length - 1
+                          ]
+                        }{" "}
+                        ({localRefinementResultSet.config.aspectRatios.length})
+                      </span>
+                    </span>
+                    <span>
+                      FOV probe range:{" "}
+                      <span className="text-slate-300">
+                        {localRefinementResultSet.config.fovProbesDeg[0]}° –{" "}
+                        {
+                          localRefinementResultSet.config.fovProbesDeg[
+                            localRefinementResultSet.config.fovProbesDeg.length - 1
+                          ]
+                        }
+                        ° ({localRefinementResultSet.config.fovProbesDeg.length})
+                      </span>
+                    </span>
+                    <span>
+                      geometry tuples: <span className="text-slate-300">{localRefinementView.total}</span>
+                    </span>
+                    <span>
+                      direct probes evaluated:{" "}
+                      <span className="text-slate-300">{localRefinementResultSet.probeEvaluationCount}</span>
+                      {localRefinementResultSet.truncatedProbes && (
+                        <span className="ml-1 rounded bg-amber-500/15 px-1.5 py-0.5 text-amber-200">
+                          truncated at probe cap
+                        </span>
+                      )}
+                    </span>
+                  </div>
+                  {localRefinementResultSet.notes.length > 0 && (
+                    <ul className="mt-1 space-y-0.5 text-amber-200/90">
+                      {localRefinementResultSet.notes.map((note, index) => (
+                        <li key={`localref-note-${index}`}>• {note}</li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+
+                {localRefinementView.groups.map((group) => {
+                  if (group.tuples.length === 0) return null;
+                  const meta = describeCoupledState(group.state);
+                  const collapsedByDefault = group.state === "no_pose" || group.state === "invalid_geometry";
+                  const rows = group.tuples.map((tuple) => {
+                    const rowMeta = describeCoupledState(tuple.state);
+                    const move = tuple.sampledCornerMoves[0];
+                    return (
+                      <div key={tuple.geometryTupleId} className={`rounded-lg border p-2.5 ${meta.heading}`}>
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <span className="text-slate-100">
+                            {tuple.movableCorner} · seam {tuple.seamId} · tNear {formatTrialExact(tuple.tNear)} · aspect{" "}
+                            {formatTrialExact(tuple.aspectRatio)}
+                          </span>
+                          <span className={rowMeta.tone}>{rowMeta.label}</span>
+                        </div>
+                        {move && (
+                          <p className="mt-1 text-slate-500">
+                            img-norm({formatTrialExact(move.sourceNorm.x)}, {formatTrialExact(move.sourceNorm.y)}) ·
+                            img-px({formatTrialExact(move.sourcePx.x, 1)}, {formatTrialExact(move.sourcePx.y, 1)}) ·
+                            container({formatTrialExact(move.containerNorm.x)}, {formatTrialExact(move.containerNorm.y)})
+                          </p>
+                        )}
+                        <p className="mt-0.5 text-slate-400">
+                          width {formatNumber(tuple.worldWidth)} · depth {formatNumber(tuple.worldDepth)} · pose{" "}
+                          {tuple.solver ? (tuple.solver.poseAvailable ? "available" : "unavailable") : "—"} · confidence{" "}
+                          {tuple.solver?.confidence ?? "—"}
+                        </p>
+                        <p className="mt-0.5 text-slate-500">
+                          valid FOV corridor: {formatFovCorridor(tuple.fovCorridors?.valid)} · high-confidence FOV
+                          corridor: {formatFovCorridor(tuple.fovCorridors?.highConfidence)}
+                        </p>
+                        {tuple.solver && (
+                          <p className="mt-0.5 text-slate-500">
+                            CV avg {formatTrialPx(tuple.solver.cv.averagePx)} · CV max{" "}
+                            {formatTrialPx(tuple.solver.cv.maximumPx)} · rendered avg{" "}
+                            {formatTrialPx(tuple.solver.rendered.averagePx)} · rendered max{" "}
+                            {formatTrialPx(tuple.solver.rendered.maximumPx)}
+                          </p>
+                        )}
+                        {!tuple.constraint.canEvaluate && tuple.constraint.hardReasons.length > 0 && (
+                          <p className="mt-0.5 text-rose-300">
+                            geometry rejection: {tuple.constraint.hardReasons.join("; ")}
+                          </p>
+                        )}
+                        {tuple.constraint.warnings.length > 0 && (
+                          <p className="mt-0.5 text-amber-200/90">warnings: {tuple.constraint.warnings.join("; ")}</p>
+                        )}
+                        <p className="mt-1 text-slate-500">
+                          direct FOV probes: {tuple.probes.length}
+                          {localRefinementResultSet.truncatedProbes && tuple.probes.length === 0
+                            ? " (none — probe cap reached)"
+                            : ""}
+                        </p>
+                        {tuple.probes.length > 0 && (
+                          <div className="mt-1 space-y-1 border-l border-slate-700 pl-2">
+                            {tuple.probes.map((probe) => {
+                              const probeMeta = describeCoupledState(probe.state);
+                              return (
+                                <div key={probe.probeId} className="text-slate-400">
+                                  <span className="text-slate-300">direct FOV probe {formatNumber(probe.fovDeg)}°</span>{" "}
+                                  · <span className={probeMeta.tone}>{probeMeta.label}</span> · pose{" "}
+                                  {probe.poseAvailable ? "available" : "unavailable"} · confidence{" "}
+                                  {probe.confidence ?? "—"} · CV avg {formatTrialPx(probe.cv.averagePx)} · CV max{" "}
+                                  {formatTrialPx(probe.cv.maximumPx)} · rendered avg{" "}
+                                  {formatTrialPx(probe.rendered.averagePx)} · Apply-gate{" "}
+                                  {probe.applyGateAvailable ? "available" : "unavailable"}
+                                  {probe.applyGateReason ? ` (${probe.applyGateReason})` : ""}
+                                </div>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  });
+                  return (
+                    <div key={`localref-group-${group.state}`} className="space-y-1.5">
+                      {collapsedByDefault ? (
+                        <details>
+                          <summary className={`cursor-pointer font-medium ${meta.tone}`}>
+                            {meta.label} ({group.tuples.length}) — generation order, no ranking
+                          </summary>
+                          <div className="mt-1.5 space-y-1.5">{rows}</div>
+                        </details>
+                      ) : (
+                        <>
+                          <p className={`font-medium ${meta.tone}`}>
+                            {meta.label} ({group.tuples.length}) — generation order, no ranking
+                          </p>
+                          {rows}
+                        </>
+                      )}
+                    </div>
+                  );
+                })}
+
+                <p className="text-slate-500">
+                  States are truthful classifications, not rankings. Geometry-level FOV corridors are kept distinct from
+                  per-probe Apply-gate diagnostics; a high-confidence corridor never implies Apply-safe. Nothing here is
+                  previewed, selected, promoted, applied, or written to calibration.
                 </p>
               </div>
             )}
