@@ -8500,7 +8500,11 @@ export default function ThreeRoomLab({
                     permission to move a corner.
                   </p>
                   <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-2">
-                    {FLOOR_CORNER_LABELS.map((corner) => {
+                    {/* Phase 2O-E1: visual render order only — display far/rear (FL,
+                        FR) on the top row and near/front (NL, NR) on the bottom row to
+                        match room-overlay perspective. Canonical identifiers,
+                        support-state keys, handlers, and bindings are unchanged. */}
+                    {(["FL", "FR", "NL", "NR"] as const).map((corner) => {
                       const support = manualAnnotation.cornerSupport[corner];
                       return (
                         <div key={`corner-${corner}`} className="rounded-lg border border-slate-800 bg-slate-900/60 p-2">
