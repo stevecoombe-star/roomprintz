@@ -164,6 +164,7 @@ export function generateManualFloorSupportTrials(
     changedCorners: [],
     quadNorm: baselineQuad,
     generation: { sampleIndex: 0 },
+    sampledCornerMoves: [],
     evidenceRefs: {
       seamId: null,
       mode: evidenceMode,
@@ -249,6 +250,16 @@ export function generateManualFloorSupportTrials(
         changedCorners: [corner],
         quadNorm: quad,
         generation: { sampleIndex: i, tAlongUsableSpan: t, perpendicularOffsetSourcePx: 0 },
+        sampledCornerMoves: [
+          {
+            corner,
+            seamId: authority.seamId,
+            t,
+            sourceNorm: { x: srcPt.x, y: srcPt.y },
+            sourcePx: { x: srcPt.x * intrinsic.width, y: srcPt.y * intrinsic.height },
+            containerNorm: { x: quad[cornerIndex].x, y: quad[cornerIndex].y },
+          },
+        ],
         evidenceRefs: {
           seamId: authority.seamId,
           mode: evidenceMode,
@@ -386,16 +397,36 @@ export function generateManualFloorSupportTrials(
       }
 
       const changedCorners: FloorCornerLabel[] = ["FL", "FR"];
+      const tFLsample = tAtArcPx(usable, arcFL);
+      const tFRsample = tAtArcPx(usable, arcFR);
       trials.push({
         trialId: `${baseId}::coupled::FL-FR::${i}`,
         sourceCandidateId: baseId,
         kind: "coupled_far_edge",
         changedCorners,
         quadNorm: quad,
+        sampledCornerMoves: [
+          {
+            corner: "FL",
+            seamId: authority.seamId,
+            t: tFLsample,
+            sourceNorm: { x: srcFL.x, y: srcFL.y },
+            sourcePx: { x: srcFL.x * intrinsic.width, y: srcFL.y * intrinsic.height },
+            containerNorm: { x: quad[flIndex].x, y: quad[flIndex].y },
+          },
+          {
+            corner: "FR",
+            seamId: authority.seamId,
+            t: tFRsample,
+            sourceNorm: { x: srcFR.x, y: srcFR.y },
+            sourcePx: { x: srcFR.x * intrinsic.width, y: srcFR.y * intrinsic.height },
+            containerNorm: { x: quad[frIndex].x, y: quad[frIndex].y },
+          },
+        ],
         generation: {
           sampleIndex: i,
           sharedDeltaSourcePx: delta,
-          tAlongUsableSpan: tAtArcPx(usable, arcFL),
+          tAlongUsableSpan: tFLsample,
           perpendicularOffsetSourcePx: 0,
         },
         evidenceRefs: {

@@ -841,6 +841,9 @@ export default function ThreeRoomLab({
   const [manualTrialSet, setManualTrialSet] = useState<ManualFloorSupportTrialSet | null>(null);
   const [manualTrialNotice, setManualTrialNotice] = useState<string | null>(null);
   const manualTrialSetRef = useRef<ManualFloorSupportTrialSet | null>(null);
+  // Phase 2O-E: id of the single trial currently previewed on the room overlay.
+  // Pure temporary view-state; never written to floor polygon / candidate / FOV.
+  const [previewTrialId, setPreviewTrialId] = useState<string | null>(null);
   // Phase 2F-G1: lab-only fixture harness + observation recorder. Everything
   // here is local React state; nothing is persisted to DB/scene-state and no
   // automatic Gemini batch calls are made. Loading a fixture only sets the room
@@ -4125,6 +4128,15 @@ export default function ThreeRoomLab({
     []
   );
 
+  // High-precision read-only formatter for exact sampled trial coordinates.
+  const formatTrialExact = useCallback(
+    (value: number | null | undefined, digits = 4) =>
+      value === null || value === undefined || !Number.isFinite(value)
+        ? "—"
+        : value.toFixed(digits),
+    []
+  );
+
   const manualTrialView = useMemo(() => {
     if (!manualTrialSet) return null;
     const baseline = manualTrialSet.trials.find((trial) => trial.kind === "baseline") ?? null;
@@ -4134,6 +4146,43 @@ export default function ThreeRoomLab({
     const baselineCvAvgPx = baseline?.solver?.cv.averagePx ?? null;
     return { baseline, evaluable, rejected, baselineCvAvgPx };
   }, [manualTrialSet]);
+
+  const handlePreviewTrial = useCallback((trialId: string) => {
+    setPreviewTrialId(trialId);
+  }, []);
+
+  const handleClearTrialPreview = useCallback(() => {
+    setPreviewTrialId(null);
+  }, []);
+
+  // Invalidation: any change to the trial set identity (regenerate / clear /
+  // image / candidate / frame / annotation invalidation) drops the active
+  // preview so a stale trial quad can never remain attached to changed evidence.
+  // Previewing does not touch manualTrialSet, so the preview persists while the
+  // operator studies the current set.
+  useEffect(() => {
+    setPreviewTrialId(null);
+  }, [manualTrialSet]);
+
+  // Pure temporary view geometry for the previewed trial. Uses the EXACT
+  // generated trial quad (container-normalized) — never a reconstruction.
+  const manualTrialPreview = useMemo(() => {
+    if (!manualTrialSet || !previewTrialId) return null;
+    const trial = manualTrialSet.trials.find((candidate) => candidate.trialId === previewTrialId);
+    if (!trial) return null;
+    const cornerLabels: FloorCornerLabel[] = ["NL", "NR", "FR", "FL"];
+    const movedCornerSet = new Set(trial.changedCorners);
+    const pointsAttribute = trial.quadNorm
+      .map((point) => `${point.x * 100},${point.y * 100}`)
+      .join(" ");
+    const cornerMarkers = trial.quadNorm.map((point, index) => ({
+      label: cornerLabels[index],
+      x: point.x * 100,
+      y: point.y * 100,
+      moved: movedCornerSet.has(cornerLabels[index]),
+    }));
+    return { trial, pointsAttribute, cornerMarkers };
+  }, [manualTrialSet, previewTrialId]);
 
   const assistedCandidateSolvabilityContext = useMemo(() => {
     if (!selectedAutoFloorCandidate) {
@@ -7772,6 +7821,53 @@ export default function ThreeRoomLab({
                 )}
               </svg>
             )}
+            {manualTrialPreview && (
+              <svg
+                className="pointer-events-none absolute inset-0 z-40 h-full w-full"
+                viewBox="0 0 100 100"
+                preserveAspectRatio="none"
+                aria-label="Constrained diagnostic trial preview overlay (temporary, diagnostic only)"
+                aria-hidden="true"
+              >
+                {/* Temporary preview of the EXACT generated trial quad. Read-only
+                    view-state; it never mutates floorPolygon, candidate, FOV, or
+                    calibration. The baseline/selected candidate stays drawn in the
+                    floor overlay above and is intentionally left unchanged. */}
+                <polygon
+                  points={manualTrialPreview.pointsAttribute}
+                  fill="#06b6d4"
+                  fillOpacity={0.12}
+                  stroke="#22d3ee"
+                  strokeOpacity={0.95}
+                  strokeWidth={0.9}
+                  strokeDasharray="2 1.2"
+                  strokeLinejoin="round"
+                />
+                {manualTrialPreview.cornerMarkers.map((marker) => (
+                  <g key={`trial-preview-corner-${marker.label}`}>
+                    <circle
+                      cx={marker.x}
+                      cy={marker.y}
+                      r={marker.moved ? 1.25 : 0.85}
+                      fill={marker.moved ? "#22d3ee" : "#0e7490"}
+                      fillOpacity={marker.moved ? 0.95 : 0.7}
+                      stroke="#082f49"
+                      strokeWidth={0.4}
+                    />
+                    <text
+                      x={marker.x + 1.1}
+                      y={marker.y - 0.9}
+                      fill="#a5f3fc"
+                      fontSize="2"
+                      fontWeight="600"
+                    >
+                      {marker.label}
+                      {marker.moved ? "*" : ""}
+                    </text>
+                  </g>
+                ))}
+              </svg>
+            )}
           </div>
         </section>
 
@@ -8718,6 +8814,46 @@ export default function ThreeRoomLab({
                   </div>
                 )}
 
+                {manualTrialPreview && (
+                  <div className="rounded-lg border border-cyan-400/60 bg-cyan-500/10 p-3 text-cyan-100">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <p className="font-medium">
+                        Active preview (temporary, diagnostic-only): {manualTrialPreview.trial.kind} · sample{" "}
+                        {manualTrialPreview.trial.generation.sampleIndex}
+                      </p>
+                      <button
+                        type="button"
+                        onClick={handleClearTrialPreview}
+                        className="rounded border border-cyan-300/70 px-2 py-0.5 text-[10px] text-cyan-100 transition hover:border-cyan-200"
+                      >
+                        Clear preview
+                      </button>
+                    </div>
+                    <p className="mt-1 text-cyan-200/90">
+                      corners [{manualTrialPreview.trial.changedCorners.join(", ")}] · seam{" "}
+                      {manualTrialPreview.trial.evidenceRefs.seamId ?? "—"}
+                    </p>
+                    {manualTrialPreview.trial.sampledCornerMoves.length > 0 ? (
+                      <div className="mt-1 space-y-0.5 font-mono text-[10px] text-cyan-200/80">
+                        {manualTrialPreview.trial.sampledCornerMoves.map((move) => (
+                          <p key={`preview-move-${manualTrialPreview.trial.trialId}-${move.corner}`}>
+                            {move.corner} · t={formatTrialExact(move.t)} · img-norm(
+                            {formatTrialExact(move.sourceNorm.x)}, {formatTrialExact(move.sourceNorm.y)}) · container(
+                            {formatTrialExact(move.containerNorm.x)}, {formatTrialExact(move.containerNorm.y)}) · px(
+                            {formatTrialExact(move.sourcePx.x, 1)}, {formatTrialExact(move.sourcePx.y, 1)})
+                          </p>
+                        ))}
+                      </div>
+                    ) : (
+                      <p className="mt-1 text-cyan-200/70">No corner moved (baseline geometry).</p>
+                    )}
+                    <p className="mt-1 text-cyan-200/70">
+                      Temporary preview only — the baseline/selected candidate is unchanged; nothing is applied,
+                      selected, or written to calibration state.
+                    </p>
+                  </div>
+                )}
+
                 {manualTrialView.evaluable.length > 0 && (
                   <div className="space-y-1.5">
                     <p className="font-medium text-slate-200">
@@ -8728,10 +8864,15 @@ export default function ThreeRoomLab({
                         trial.solver?.cv.averagePx != null && manualTrialView.baselineCvAvgPx != null
                           ? trial.solver.cv.averagePx - manualTrialView.baselineCvAvgPx
                           : null;
+                      const isPreviewing = previewTrialId === trial.trialId;
                       return (
                         <div
                           key={trial.trialId}
-                          className="rounded-lg border border-slate-700/70 bg-slate-900/40 p-2.5"
+                          className={`rounded-lg border p-2.5 ${
+                            isPreviewing
+                              ? "border-cyan-400/70 bg-cyan-500/10"
+                              : "border-slate-700/70 bg-slate-900/40"
+                          }`}
                         >
                           <div className="flex flex-wrap items-center justify-between gap-2">
                             <span className="text-slate-100">
@@ -8759,11 +8900,47 @@ export default function ThreeRoomLab({
                             {trial.solver?.applyGateAvailable ? "available" : "unavailable"} (
                             {trial.solver?.applyGateReason ?? "—"})
                           </p>
+                          {trial.sampledCornerMoves.length > 0 ? (
+                            <div className="mt-1 space-y-0.5 font-mono text-[10px] text-slate-500">
+                              {trial.sampledCornerMoves.map((move) => (
+                                <p key={`move-${trial.trialId}-${move.corner}`}>
+                                  {move.corner} · t={formatTrialExact(move.t)} · img-norm(
+                                  {formatTrialExact(move.sourceNorm.x)}, {formatTrialExact(move.sourceNorm.y)}) · px(
+                                  {formatTrialExact(move.sourcePx.x, 1)}, {formatTrialExact(move.sourcePx.y, 1)})
+                                </p>
+                              ))}
+                            </div>
+                          ) : (
+                            <p className="mt-1 text-slate-600">no corner moved</p>
+                          )}
                           {trial.constraint.warnings.length > 0 && (
                             <p className="mt-0.5 text-amber-200/90">
                               warnings: {trial.constraint.warnings.join("; ")}
                             </p>
                           )}
+                          <div className="mt-1.5 flex flex-wrap items-center gap-2">
+                            <button
+                              type="button"
+                              onClick={() => handlePreviewTrial(trial.trialId)}
+                              aria-pressed={isPreviewing}
+                              className={`rounded border px-2 py-0.5 text-[10px] transition ${
+                                isPreviewing
+                                  ? "border-cyan-300 bg-cyan-500/20 text-cyan-100"
+                                  : "border-cyan-500/60 text-cyan-200 hover:border-cyan-300 hover:text-cyan-100"
+                              }`}
+                            >
+                              {isPreviewing ? "Previewing" : "Preview trial"}
+                            </button>
+                            {isPreviewing && (
+                              <button
+                                type="button"
+                                onClick={handleClearTrialPreview}
+                                className="rounded border border-slate-600 px-2 py-0.5 text-[10px] text-slate-300 transition hover:border-slate-400"
+                              >
+                                Clear preview
+                              </button>
+                            )}
+                          </div>
                         </div>
                       );
                     })}
@@ -8788,6 +8965,18 @@ export default function ThreeRoomLab({
                           <span className="text-rose-300">rejected</span>
                         </div>
                         <p className="mt-1">hard reasons: {trial.constraint.hardReasons.join("; ")}</p>
+                        {trial.sampledCornerMoves.length > 0 && (
+                          <div className="mt-1 space-y-0.5 font-mono text-[10px] text-rose-200/70">
+                            {trial.sampledCornerMoves.map((move) => (
+                              <p key={`rej-move-${trial.trialId}-${move.corner}`}>
+                                {move.corner} · t={formatTrialExact(move.t)} · img-norm(
+                                {formatTrialExact(move.sourceNorm.x)}, {formatTrialExact(move.sourceNorm.y)}) ·
+                                container({formatTrialExact(move.containerNorm.x)},{" "}
+                                {formatTrialExact(move.containerNorm.y)})
+                              </p>
+                            ))}
+                          </div>
+                        )}
                       </div>
                     ))}
                   </div>

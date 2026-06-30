@@ -85,6 +85,22 @@ export type ManualFloorSupportTrialKind =
   | "single_corner"
   | "coupled_far_edge";
 
+// --- Phase 2O-E: exact preview-ready sampled-corner metadata ----------------
+// Records the EXACT sampled geometry for each corner a trial moves, captured at
+// generation time so the preview/readout uses the true sampled values and never
+// recomputes an approximation. `sourceNorm` is source-image normalized (the
+// seam space), `sourcePx` is source pixels, and `containerNorm` is the resulting
+// container-normalized corner placed into the trial quad (may be outside [0,1]
+// for an off-frame, hard-rejected sample — preserved faithfully, never clamped).
+export type ManualTrialSampledCornerMove = {
+  corner: FloorCornerLabel;
+  seamId: string;
+  t: number;
+  sourceNorm: { x: number; y: number };
+  sourcePx: { x: number; y: number };
+  containerNorm: { x: number; y: number };
+};
+
 export type ManualFloorSupportTrial = {
   trialId: string;
   sourceCandidateId: string;
@@ -104,6 +120,10 @@ export type ManualFloorSupportTrial = {
     sharedDeltaSourcePx?: number;
     perpendicularOffsetSourcePx?: number;
   };
+
+  // Exact preview-ready sampled geometry, one entry per moved corner. Empty for
+  // baseline (no corner moves). Phase 2O-E.
+  sampledCornerMoves: ManualTrialSampledCornerMove[];
 
   evidenceRefs: {
     seamId: string | null;
