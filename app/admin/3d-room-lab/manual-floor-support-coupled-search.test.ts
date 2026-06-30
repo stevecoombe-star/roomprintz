@@ -16,6 +16,9 @@ import type { QuadSolvabilitySummary, TrialQuadNorm } from "./manual-floor-suppo
 import type { QuadSolvabilityResult } from "./quad-solvability";
 import {
   createDefaultCoupledSearchConfig,
+  DEFAULT_COUPLED_SEARCH_ASPECT_RATIOS,
+  DEFAULT_COUPLED_SEARCH_MAX_EVALUATIONS,
+  DEFAULT_COUPLED_SEARCH_TNEAR_SAMPLES,
   type CoupledSearchConfig,
 } from "./manual-floor-support-coupled-search-types";
 import {
@@ -413,6 +416,53 @@ test("9b. maxEvaluations cap truncates deterministically (trailing tuples droppe
     set.trials.map((t) => `${t.generation.tIndex}-${t.generation.aspectIndex}`),
     ["0-0", "0-1", "0-2", "1-0"]
   );
+});
+
+test("9c. Phase 2O-J default aspect band: exact ordered values, 63 tuples, no truncation, 0.8333 depth", () => {
+  const EXPECTED_BAND = [0.75, 0.8, 0.8333, 0.9, 1.0, 1.1, 1.3, 1.4, 1.55];
+
+  // (1) Centralized default band is exactly the corrected ordered set, spanning
+  // both the sub-1.0 and above-1.0 regions, and the default config exposes it.
+  assert.deepEqual([...DEFAULT_COUPLED_SEARCH_ASPECT_RATIOS], EXPECTED_BAND);
+  const config = createDefaultCoupledSearchConfig();
+  assert.deepEqual(config.aspectRatios, EXPECTED_BAND);
+  assert.equal(config.tNearSamples, DEFAULT_COUPLED_SEARCH_TNEAR_SAMPLES);
+  assert.equal(config.tNearSamples, 7);
+  assert.equal(config.maxEvaluations, DEFAULT_COUPLED_SEARCH_MAX_EVALUATIONS);
+  assert.equal(config.maxEvaluations, 64);
+
+  // (2) + (3) 7 tNear × 9 aspects = 63 tuples, below the deterministic cap of 64,
+  // so the default configuration does NOT truncate.
+  const set = generateTypeACoupledSearch({
+    candidate: candidate(),
+    annotation: nlAnnotation({ startT: 0, endT: 0.3 }),
+    intrinsic: INTRINSIC,
+    frame: FRAME,
+  })!; // default config
+  assert.equal(set.trials.length, 63);
+  assert.equal(set.truncated, false);
+
+  // (5) Generation order remains ascending tNear, then ascending aspect ratio.
+  let prevT = -Infinity;
+  for (const t of set.trials) {
+    assert.ok(t.tuple.tNear >= prevT - 1e-12);
+    if (Math.abs(t.tuple.tNear - prevT) > 1e-12) prevT = t.tuple.tNear;
+    assert.equal(t.tuple.aspectRatio, EXPECTED_BAND[t.generation.aspectIndex]);
+  }
+
+  // (4) The verified manual-oracle ratio 0.8333 derives depth correctly:
+  // worldDepth = aspectRatio × worldWidth = 0.8333 × 4.00 = 3.3332 (fp-exact to tol).
+  const wideSet = generateTypeACoupledSearch({
+    candidate: candidate(),
+    annotation: nlAnnotation({ startT: 0, endT: 0.3 }),
+    intrinsic: INTRINSIC,
+    frame: FRAME,
+    config: { ...createDefaultCoupledSearchConfig(), fixedWorldWidth: 4 },
+  })!;
+  const oracle = wideSet.trials.find((t) => t.tuple.aspectRatio === 0.8333);
+  assert.ok(oracle, "expected a 0.8333 aspect tuple in the default band");
+  assert.equal(oracle!.worldWidth, 4);
+  assert.ok(Math.abs(oracle!.worldDepth - 3.3332) < 1e-9, `depth ${oracle!.worldDepth}`);
 });
 
 test("10. baseline candidate is never mutated or aliased", () => {

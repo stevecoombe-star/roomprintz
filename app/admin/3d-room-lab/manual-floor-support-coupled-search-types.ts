@@ -49,8 +49,16 @@ export const COUPLED_SEARCH_MOVABLE_CORNERS: readonly CoupledSearchMovableCorner
 // --- Default bounded configuration (constants, NOT user-facing controls) -----
 // Conservative coarse defaults. Easy to tune later; never exposed in UI.
 export const DEFAULT_COUPLED_SEARCH_TNEAR_SAMPLES = 7;
+// Phase 2O-J: aspect-band coverage correction. The band now spans both the
+// sub-1.0 region (diagnostic depth < fixed width) and the previously studied
+// above-1.0 region. This is a COVERAGE fix, not a formula change:
+// aspectRatio = worldDepth / worldWidth is unchanged. The sub-1.0 entries are
+// required because a real-room Type A manual oracle verified a successful
+// diagnostic configuration near aspectRatio ≈ 0.8333 (width 4.00, depth ≈ 3.33),
+// which the old band (starting at 1.10) never tested. 7 tNear × 9 aspects = 63
+// tuples, still below the deterministic cap of 64.
 export const DEFAULT_COUPLED_SEARCH_ASPECT_RATIOS: readonly number[] = [
-  1.1, 1.2, 1.3, 1.4, 1.55,
+  0.75, 0.8, 0.8333, 0.9, 1.0, 1.1, 1.3, 1.4, 1.55,
 ];
 // Canonical fixed dimension. worldWidth is held constant; worldDepth is derived
 // as aspectRatio * worldWidth. Image-derived dimensions are diagnostic solver
