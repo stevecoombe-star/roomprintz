@@ -925,6 +925,24 @@ export default function ThreeRoomLab({
   const [localRefinementPreviewGeometryId, setLocalRefinementPreviewGeometryId] = useState<string | null>(null);
   const [localRefinementPreviewProbeId, setLocalRefinementPreviewProbeId] = useState<string | null>(null);
   const [localRefinementPreviewSignature, setLocalRefinementPreviewSignature] = useState<string | null>(null);
+  // --- Phase 2O-L-A: local tuple → live controls load receipt ---------------
+  // Ephemeral, NON-PERSISTENT informational receipt for the controlled
+  // convenience action that copies ONE exact, currently-previewed, Apply-safe
+  // local-refinement direct probe into the live floor/FOV controls. This is NOT
+  // calibration authority: calibration stays unapplied; the operator must still
+  // inspect Calibration readiness and click the existing Apply control. The
+  // `signature` pins the receipt to the exact live values written at load time
+  // so it clears on the next unrelated live-control/evidence change. Nothing
+  // here re-runs the solver, search, or refinement, or persists.
+  const [localTupleLoadReceipt, setLocalTupleLoadReceipt] = useState<{
+    width: number;
+    depth: number;
+    fovDeg: number;
+    tNear: number;
+    aspectRatio: number;
+    probeState: CoupledSearchPrimaryState;
+    signature: string;
+  } | null>(null);
   // Phase 2F-G1: lab-only fixture harness + observation recorder. Everything
   // here is local React state; nothing is persisted to DB/scene-state and no
   // automatic Gemini batch calls are made. Loading a fixture only sets the room
@@ -4938,6 +4956,174 @@ export default function ThreeRoomLab({
     localRefinementSeedTrialId,
     isLocalTuplePreviewable,
   ]);
+
+  // --- Phase 2O-L-A: controlled load of one stored tuple into live controls --
+  // Signature of the exact live values a load writes. Used to keep the success
+  // receipt only while the live controls still equal the loaded tuple/probe; any
+  // later live-control or evidence change diverges and clears the receipt. Key
+  // order MUST match the signature built in handleLoadLocalProbeIntoLiveControls.
+  const localTupleLoadLiveSignature = useMemo(
+    () =>
+      JSON.stringify({
+        polygon: floorPolygon,
+        width: floorMapping.worldWidth,
+        depth: floorMapping.worldDepth,
+        fov: cameraPoseFovYDeg,
+        candidateId: selectedAutoFloorCandidateId,
+        candidateQuad: selectedCoupledCandidateQuadSignature,
+        annotation: manualAnnotation,
+        image: loadedImageUrl,
+        intrinsic: imageIntrinsicSize,
+        frameW: rendererSize.width,
+        frameH: rendererSize.height,
+        calibratedActive: isCalibratedCameraActive,
+      }),
+    [
+      floorPolygon,
+      floorMapping.worldWidth,
+      floorMapping.worldDepth,
+      cameraPoseFovYDeg,
+      selectedAutoFloorCandidateId,
+      selectedCoupledCandidateQuadSignature,
+      manualAnnotation,
+      loadedImageUrl,
+      imageIntrinsicSize,
+      rendererSize.width,
+      rendererSize.height,
+      isCalibratedCameraActive,
+    ]
+  );
+
+  // Clear the informational receipt as soon as the live controls/evidence no
+  // longer match what was loaded (image/frame/intrinsic, candidate/geometry,
+  // annotation/seam/support/authority, live width/depth/FOV, revert to legacy
+  // camera, or a later load that writes a new signature). Independent of the
+  // local result set, so it survives the normal post-load diagnostic clear.
+  useEffect(() => {
+    if (localTupleLoadReceipt && localTupleLoadReceipt.signature !== localTupleLoadLiveSignature) {
+      setLocalTupleLoadReceipt(null);
+    }
+  }, [localTupleLoadLiveSignature, localTupleLoadReceipt]);
+
+  // Controlled convenience action: copy ONE exact, currently-previewed,
+  // Apply-safe local direct probe into the live editable controls. The handler
+  // RE-CHECKS every safety condition before writing any live state (no bypass):
+  // calibrated camera inactive; an active local preview that is exactly the
+  // clicked tuple+probe; probe state apply_safe_diagnostic with Apply-gate
+  // available and finite FOV; parent geometry exact, finite, fully in-frame. It
+  // writes only floor polygon / world width / world depth / live FOV (each from
+  // the EXACT stored record), never calibration, candidate, annotation, scene,
+  // or persistence. It does NOT apply calibration or invoke Scan & Apply.
+  const handleLoadLocalProbeIntoLiveControls = useCallback(
+    (geometryTupleId: string, probeId: string) => {
+      if (isCalibratedCameraActive) return;
+      const preview = localRefinementPreview;
+      if (!preview) return;
+      if (preview.tuple.geometryTupleId !== geometryTupleId) return;
+      if (preview.probe.probeId !== probeId) return;
+      const { tuple, probe } = preview;
+      if (probe.state !== "apply_safe_diagnostic") return;
+      if (!probe.applyGateAvailable) return;
+      if (!Number.isFinite(probe.fovDeg)) return;
+      if (!tuple.constraint.canEvaluate) return;
+      if (tuple.sampledCornerMoves.length === 0) return;
+      const quadInFrame = tuple.quadNorm.every(
+        (point) =>
+          Number.isFinite(point.x) &&
+          Number.isFinite(point.y) &&
+          point.x >= 0 &&
+          point.x <= 1 &&
+          point.y >= 0 &&
+          point.y <= 1
+      );
+      if (!quadInFrame) return;
+
+      // Clear all three temporary previews before the controlled live writes.
+      setPreviewTrialId(null);
+      setCoupledSearchPreviewTrialId(null);
+      setCoupledSearchPreviewSignature(null);
+      setLocalRefinementPreviewGeometryId(null);
+      setLocalRefinementPreviewProbeId(null);
+      setLocalRefinementPreviewSignature(null);
+
+      // Mirror manual-geometry-change safety (cancel any pending calibration
+      // restore), exactly as the manual polygon-reset path does.
+      cancelPendingCalibrationRestoreAfterManualGeometryChange();
+
+      // floor polygon <- EXACT stored local tuple quad (clone; canonical
+      // [NL, NR, FR, FL], same as the existing "Apply suggested quad" path).
+      const loadedPolygon: FloorPoint[] = tuple.quadNorm.map((point) => ({ x: point.x, y: point.y }));
+      setFloorPolygon(loadedPolygon);
+      setActiveFloorHandleIndex(null);
+
+      // live width/depth <- EXACT stored diagnostic dims, clamped to the SAME
+      // limits a manual edit uses (no new thresholds introduced).
+      const loadedWidth = clampValue(
+        tuple.worldWidth,
+        FLOOR_MAPPING_LIMITS.worldWidth.min,
+        FLOOR_MAPPING_LIMITS.worldWidth.max
+      );
+      const loadedDepth = clampValue(
+        tuple.worldDepth,
+        FLOOR_MAPPING_LIMITS.worldDepth.min,
+        FLOOR_MAPPING_LIMITS.worldDepth.max
+      );
+      const nextMapping = { ...floorMapping, worldWidth: loadedWidth, worldDepth: loadedDepth };
+      setFloorMapping(nextMapping);
+      if (lastAcceptedFloorClick) {
+        const mapped = mapFloorPointToObjectTransform(lastAcceptedFloorClick, nextMapping);
+        updateTransformState(
+          (current) => ({ ...current, positionX: mapped.positionX, positionZ: mapped.positionZ }),
+          { markOwned: true }
+        );
+      }
+
+      // live FOV <- EXACT stored probe FOV (direct set, mirroring the existing
+      // "Use recommended FOV" control; never the live FOV).
+      setCameraPoseFovYDeg(probe.fovDeg);
+
+      // Informational receipt only. Its signature is computed from the values
+      // just written so it persists through this load but clears on the next
+      // unrelated change. Key order MUST match localTupleLoadLiveSignature.
+      const signature = JSON.stringify({
+        polygon: loadedPolygon,
+        width: loadedWidth,
+        depth: loadedDepth,
+        fov: probe.fovDeg,
+        candidateId: selectedAutoFloorCandidateId,
+        candidateQuad: selectedCoupledCandidateQuadSignature,
+        annotation: manualAnnotation,
+        image: loadedImageUrl,
+        intrinsic: imageIntrinsicSize,
+        frameW: rendererSize.width,
+        frameH: rendererSize.height,
+        calibratedActive: false,
+      });
+      setLocalTupleLoadReceipt({
+        width: loadedWidth,
+        depth: loadedDepth,
+        fovDeg: probe.fovDeg,
+        tNear: tuple.tNear,
+        aspectRatio: tuple.aspectRatio,
+        probeState: probe.state,
+        signature,
+      });
+    },
+    [
+      isCalibratedCameraActive,
+      localRefinementPreview,
+      cancelPendingCalibrationRestoreAfterManualGeometryChange,
+      floorMapping,
+      lastAcceptedFloorClick,
+      selectedAutoFloorCandidateId,
+      selectedCoupledCandidateQuadSignature,
+      manualAnnotation,
+      loadedImageUrl,
+      imageIntrinsicSize,
+      rendererSize.width,
+      rendererSize.height,
+    ]
+  );
 
   const assistedCandidateSolvabilityContext = useMemo(() => {
     if (!selectedAutoFloorCandidate) {
@@ -10215,6 +10401,44 @@ export default function ThreeRoomLab({
               </p>
             )}
 
+            {localTupleLoadReceipt && (
+              <div className="rounded-lg border border-emerald-500/40 bg-emerald-500/5 px-3 py-2 text-emerald-100/90">
+                <p className="font-medium text-emerald-100">
+                  Exact local diagnostic tuple loaded into live controls. Calibration has not been applied.
+                </p>
+                <div className="mt-1 grid grid-cols-1 gap-x-4 gap-y-0.5 text-slate-400 sm:grid-cols-2">
+                  <span>
+                    width: <span className="text-slate-200">{formatNumber(localTupleLoadReceipt.width)}</span>
+                  </span>
+                  <span>
+                    depth: <span className="text-slate-200">{formatNumber(localTupleLoadReceipt.depth)}</span>
+                  </span>
+                  <span>
+                    FOV: <span className="text-slate-200">{formatNumber(localTupleLoadReceipt.fovDeg)}°</span>
+                  </span>
+                  <span>
+                    local tNear:{" "}
+                    <span className="text-slate-200">{formatTrialExact(localTupleLoadReceipt.tNear)}</span>
+                  </span>
+                  <span>
+                    aspect ratio:{" "}
+                    <span className="text-slate-200">{formatTrialExact(localTupleLoadReceipt.aspectRatio)}</span>
+                  </span>
+                  <span>
+                    direct probe state:{" "}
+                    <span className={describeCoupledState(localTupleLoadReceipt.probeState).tone}>
+                      {describeCoupledState(localTupleLoadReceipt.probeState).label}
+                    </span>
+                  </span>
+                </div>
+                <p className="mt-1 text-slate-500">
+                  Informational only — not persisted and not a source of calibration authority. Inspect Calibration
+                  readiness and click the existing Apply calibration control to activate. This receipt clears on the
+                  next live-control or evidence change.
+                </p>
+              </div>
+            )}
+
             {!coupledSearchResultSet ? (
               <p className="text-slate-400">
                 No coarse coupled-search result set. Run Type A coupled diagnostics, then choose a coarse tuple to refine.
@@ -10557,6 +10781,12 @@ export default function ThreeRoomLab({
                                 localRefinementPreviewGeometryId === tuple.geometryTupleId &&
                                 localRefinementPreviewProbeId === probe.probeId;
                               const probeFovFinite = Number.isFinite(probe.fovDeg);
+                              // Phase 2O-L-A: the controlled live-controls load is
+                              // offered ONLY for an Apply-safe + Apply-gate probe
+                              // whose exact geometry is the active local preview,
+                              // and only while calibrated camera is inactive.
+                              const probeApplySafe =
+                                probe.state === "apply_safe_diagnostic" && probe.applyGateAvailable;
                               return (
                                 <div key={probe.probeId} className="text-slate-400">
                                   <span className="text-slate-300">direct FOV probe {formatNumber(probe.fovDeg)}°</span>{" "}
@@ -10601,6 +10831,35 @@ export default function ThreeRoomLab({
                                       </span>
                                     )}
                                   </span>
+                                  {probeApplySafe && (
+                                    <span className="ml-2 inline-flex flex-wrap items-center gap-2 align-middle">
+                                      {isCalibratedCameraActive ? (
+                                        <span className="text-slate-600">
+                                          Revert to legacy camera before loading a diagnostic tuple.
+                                        </span>
+                                      ) : isPreviewingProbe && localRefinementPreview ? (
+                                        <>
+                                          <button
+                                            type="button"
+                                            onClick={() =>
+                                              handleLoadLocalProbeIntoLiveControls(tuple.geometryTupleId, probe.probeId)
+                                            }
+                                            className="rounded border border-slate-600 px-1.5 py-0.5 text-slate-300 transition hover:border-slate-400 hover:text-slate-100"
+                                          >
+                                            Load exact tuple into live controls
+                                          </button>
+                                          <span className="text-slate-600">
+                                            Copies this exact stored diagnostic tuple into the editable live floor/FOV
+                                            controls. Calibration is not applied.
+                                          </span>
+                                        </>
+                                      ) : (
+                                        <span className="text-slate-600">
+                                          Preview this exact probe geometry before loading it into live controls.
+                                        </span>
+                                      )}
+                                    </span>
+                                  )}
                                 </div>
                               );
                             })}
