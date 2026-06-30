@@ -913,6 +913,18 @@ export default function ThreeRoomLab({
   const [localRefinementSignature, setLocalRefinementSignature] = useState<string | null>(null);
   const [localRefinementSeedTrialId, setLocalRefinementSeedTrialId] = useState<string | null>(null);
   const localRefinementResultSetRef = useRef<LocalRefinementResultSet | null>(null);
+  // --- Phase 2O-K-C: Type A local refinement exact preview ------------------
+  // One temporary, inspection-only preview of ONE stored local-refinement direct
+  // FOV probe and its parent stored geometry tuple. Identified by stored ids
+  // only (geometry tuple + probe); the exact geometry is always looked up from
+  // the stored result set, never copied as mutable authority. Bound to the
+  // coupled-search evidence signature so a stale tuple can never draw. Shares the
+  // single-active-preview policy with manual (previewTrialId) and coupled
+  // (coupledSearchPreview*) previews: activating any one clears the other two.
+  // NEVER mutates candidate / polygon / FOV / dimensions / calibration / scene.
+  const [localRefinementPreviewGeometryId, setLocalRefinementPreviewGeometryId] = useState<string | null>(null);
+  const [localRefinementPreviewProbeId, setLocalRefinementPreviewProbeId] = useState<string | null>(null);
+  const [localRefinementPreviewSignature, setLocalRefinementPreviewSignature] = useState<string | null>(null);
   // Phase 2F-G1: lab-only fixture harness + observation recorder. Everything
   // here is local React state; nothing is persisted to DB/scene-state and no
   // automatic Gemini batch calls are made. Loading a fixture only sets the room
@@ -4217,11 +4229,15 @@ export default function ThreeRoomLab({
   }, [manualTrialSet]);
 
   const handlePreviewTrial = useCallback((trialId: string) => {
-    // Single active diagnostic preview across both systems: activating the
-    // manual-trial preview clears any active coupled-search preview. (Manual
-    // preview's own behavior is otherwise unchanged.)
+    // Single active diagnostic preview across all three systems: activating the
+    // manual-trial preview clears any active coupled-search preview AND any
+    // active local-refinement preview. (Manual preview's own behavior is
+    // otherwise unchanged.)
     setCoupledSearchPreviewTrialId(null);
     setCoupledSearchPreviewSignature(null);
+    setLocalRefinementPreviewGeometryId(null);
+    setLocalRefinementPreviewProbeId(null);
+    setLocalRefinementPreviewSignature(null);
     setPreviewTrialId(trialId);
   }, []);
 
@@ -4550,9 +4566,13 @@ export default function ThreeRoomLab({
 
   const handlePreviewCoupledTrial = useCallback(
     (trialId: string) => {
-      // Single active diagnostic preview across both systems: activating a
-      // coupled preview clears the manual-trial preview.
+      // Single active diagnostic preview across all three systems: activating a
+      // coupled preview clears the manual-trial preview AND the local-refinement
+      // preview.
       setPreviewTrialId(null);
+      setLocalRefinementPreviewGeometryId(null);
+      setLocalRefinementPreviewProbeId(null);
+      setLocalRefinementPreviewSignature(null);
       setCoupledSearchPreviewTrialId(trialId);
       setCoupledSearchPreviewSignature(coupledSearchEvidenceSignature);
     },
@@ -4796,6 +4816,127 @@ export default function ThreeRoomLab({
     coupledSearchEvidenceSignature,
     coupledSearchResultSet,
     localRefinementSeedTrialId,
+  ]);
+
+  // --- Phase 2O-K-C: local refinement exact preview -------------------------
+  // A stored local geometry tuple is previewable only when it passed the
+  // pre-solver geometry gate AND its exact stored quad is fully in-frame [0,1].
+  // Pose/probe availability is irrelevant — preview is geometry inspection only,
+  // never a solver endorsement and never an Apply-safe privilege.
+  const isLocalTuplePreviewable = useCallback(
+    (tuple: LocalRefinementResultSet["geometryTuples"][number]) => {
+      if (!tuple.constraint.canEvaluate) return false;
+      if (tuple.sampledCornerMoves.length === 0) return false;
+      return tuple.quadNorm.every(
+        (point) =>
+          Number.isFinite(point.x) &&
+          Number.isFinite(point.y) &&
+          point.x >= 0 &&
+          point.x <= 1 &&
+          point.y >= 0 &&
+          point.y <= 1
+      );
+    },
+    []
+  );
+
+  // Explicit operator action: preview ONE stored local direct FOV probe. Clears
+  // the manual and coupled previews (single active preview policy) and pins the
+  // local preview to the current evidence signature. Stores ONLY ids; the exact
+  // geometry/probe are always resolved from the stored result set below.
+  const handlePreviewLocalProbe = useCallback(
+    (geometryTupleId: string, probeId: string) => {
+      setPreviewTrialId(null);
+      setCoupledSearchPreviewTrialId(null);
+      setCoupledSearchPreviewSignature(null);
+      setLocalRefinementPreviewGeometryId(geometryTupleId);
+      setLocalRefinementPreviewProbeId(probeId);
+      setLocalRefinementPreviewSignature(coupledSearchEvidenceSignature);
+    },
+    [coupledSearchEvidenceSignature]
+  );
+
+  const handleClearLocalPreview = useCallback(() => {
+    setLocalRefinementPreviewGeometryId(null);
+    setLocalRefinementPreviewProbeId(null);
+    setLocalRefinementPreviewSignature(null);
+  }, []);
+
+  // Invalidation: drop the active local preview on any source-evidence change
+  // (same set as the local-refinement invalidation), on broad coupled set
+  // identity change (clear/rerun), and on local result-set identity change
+  // (local clear/rerun). The render-time resolver below additionally guards the
+  // window before this effect flushes, so a stale overlay/detail can never draw.
+  useEffect(() => {
+    setLocalRefinementPreviewGeometryId(null);
+    setLocalRefinementPreviewProbeId(null);
+    setLocalRefinementPreviewSignature(null);
+  }, [
+    loadedImageUrl,
+    imageIntrinsicSize,
+    rendererSize.width,
+    rendererSize.height,
+    selectedAutoFloorCandidateId,
+    selectedCoupledCandidateQuadSignature,
+    manualAnnotation,
+    floorMapping.worldWidth,
+    floorMapping.worldDepth,
+    cameraPoseFovYDeg,
+    coupledSearchResultSet,
+    localRefinementResultSet,
+  ]);
+
+  // Pure temporary view geometry for the previewed local probe. Resolves ONLY
+  // from stored records (parent tuple exact quadNorm + sampledCornerMoves, and
+  // the selected stored probe). Never resamples a seam, reruns the solver, reads
+  // live FOV/dims, or derives a new quad. Returns null defensively when the
+  // local set / seed row / evidence signature no longer match, the parent tuple
+  // or probe is missing, or the parent geometry is not previewable.
+  const localRefinementPreview = useMemo(() => {
+    if (!localRefinementResultSet) return null;
+    if (!localRefinementPreviewGeometryId || !localRefinementPreviewProbeId) return null;
+    // Preview must match BOTH the evidence at activation and the evidence that
+    // produced the stored local set.
+    if (localRefinementPreviewSignature !== coupledSearchEvidenceSignature) return null;
+    if (localRefinementSignature !== coupledSearchEvidenceSignature) return null;
+    // The stored local result is provenance from a specific coarse set + row.
+    if (!coupledSearchResultSet) return null;
+    if (
+      localRefinementSeedTrialId &&
+      !coupledSearchResultSet.trials.some((trial) => trial.trialId === localRefinementSeedTrialId)
+    ) {
+      return null;
+    }
+    const tuple = localRefinementResultSet.geometryTuples.find(
+      (candidate) => candidate.geometryTupleId === localRefinementPreviewGeometryId
+    );
+    if (!tuple) return null;
+    const probe = tuple.probes.find((candidate) => candidate.probeId === localRefinementPreviewProbeId);
+    if (!probe) return null;
+    if (!Number.isFinite(probe.fovDeg)) return null;
+    if (!isLocalTuplePreviewable(tuple)) return null;
+    const cornerLabels: FloorCornerLabel[] = ["NL", "NR", "FR", "FL"];
+    const movedCornerSet = new Set(tuple.changedCorners);
+    const pointsAttribute = tuple.quadNorm
+      .map((point) => `${point.x * 100},${point.y * 100}`)
+      .join(" ");
+    const cornerMarkers = tuple.quadNorm.map((point, index) => ({
+      label: cornerLabels[index],
+      x: point.x * 100,
+      y: point.y * 100,
+      moved: movedCornerSet.has(cornerLabels[index]),
+    }));
+    return { tuple, probe, pointsAttribute, cornerMarkers };
+  }, [
+    localRefinementResultSet,
+    localRefinementPreviewGeometryId,
+    localRefinementPreviewProbeId,
+    localRefinementPreviewSignature,
+    localRefinementSignature,
+    coupledSearchEvidenceSignature,
+    coupledSearchResultSet,
+    localRefinementSeedTrialId,
+    isLocalTuplePreviewable,
   ]);
 
   const assistedCandidateSolvabilityContext = useMemo(() => {
@@ -8537,6 +8678,63 @@ export default function ThreeRoomLab({
                 </svg>
               </>
             )}
+            {localRefinementPreview && (
+              <>
+                <div className="pointer-events-none absolute left-2 top-2 z-40 rounded border border-rose-400/70 bg-rose-950/80 px-2 py-0.5 text-[10px] font-medium text-rose-100">
+                  Local refinement preview — temporary
+                </div>
+                <svg
+                  className="pointer-events-none absolute inset-0 z-40 h-full w-full"
+                  viewBox="0 0 100 100"
+                  preserveAspectRatio="none"
+                  aria-label="Type A local-refinement diagnostic preview overlay (temporary, diagnostic only)"
+                  aria-hidden="true"
+                >
+                  {/* Temporary preview of the EXACT stored local-refinement parent
+                      tuple quad for one stored direct FOV probe. Read-only
+                      view-state; it never mutates floorPolygon, candidate, FOV,
+                      dimensions, or calibration. The baseline / selected candidate
+                      stays drawn in the floor overlay above and is intentionally
+                      left unchanged. The rose dotted treatment is deliberately
+                      distinct from the cyan Phase 2O-E manual-trial preview, the
+                      violet Phase 2O-I coupled preview, the green floor-fit grid,
+                      and the cyan camera-pose grid. */}
+                  <polygon
+                    points={localRefinementPreview.pointsAttribute}
+                    fill="#f43f5e"
+                    fillOpacity={0.1}
+                    stroke="#fb7185"
+                    strokeOpacity={0.95}
+                    strokeWidth={0.9}
+                    strokeDasharray="0.6 1.3"
+                    strokeLinejoin="round"
+                  />
+                  {localRefinementPreview.cornerMarkers.map((marker) => (
+                    <g key={`localref-preview-corner-${marker.label}`}>
+                      <circle
+                        cx={marker.x}
+                        cy={marker.y}
+                        r={marker.moved ? 1.25 : 0.85}
+                        fill={marker.moved ? "#fb7185" : "#9f1239"}
+                        fillOpacity={marker.moved ? 0.95 : 0.7}
+                        stroke="#4c0519"
+                        strokeWidth={0.4}
+                      />
+                      <text
+                        x={marker.x + 1.1}
+                        y={marker.y - 0.9}
+                        fill="#fecdd3"
+                        fontSize="2"
+                        fontWeight="600"
+                      >
+                        {marker.label}
+                        {marker.moved ? "*" : ""}
+                      </text>
+                    </g>
+                  ))}
+                </svg>
+              </>
+            )}
           </div>
         </section>
 
@@ -10159,6 +10357,143 @@ export default function ThreeRoomLab({
                   )}
                 </div>
 
+                {localRefinementPreview && (
+                  <div className="rounded-lg border border-rose-500/40 bg-rose-500/5 p-3 text-rose-100/90">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <p className="font-medium text-rose-100">
+                        Active local refinement preview (temporary diagnostic geometry)
+                      </p>
+                      <button
+                        type="button"
+                        onClick={handleClearLocalPreview}
+                        className="rounded border border-slate-600 px-2 py-0.5 text-slate-300 transition hover:border-slate-400 hover:text-slate-100"
+                      >
+                        Clear preview
+                      </button>
+                    </div>
+                    <p className="mt-1 text-rose-200/80">
+                      All values below are exact stored local-result and direct-probe diagnostics. They are not live
+                      candidate, FOV, floor-dimension, or calibration values.
+                    </p>
+                    <div className="mt-2 grid grid-cols-1 gap-x-4 gap-y-0.5 text-slate-400 sm:grid-cols-2">
+                      <span>
+                        geometry state:{" "}
+                        <span className={describeCoupledState(localRefinementPreview.tuple.state).tone}>
+                          {describeCoupledState(localRefinementPreview.tuple.state).label}
+                        </span>
+                      </span>
+                      <span>
+                        probe state:{" "}
+                        <span className={describeCoupledState(localRefinementPreview.probe.state).tone}>
+                          {describeCoupledState(localRefinementPreview.probe.state).label}
+                        </span>
+                      </span>
+                      <span>
+                        movable corner:{" "}
+                        <span className="text-slate-200">{localRefinementPreview.tuple.movableCorner}</span>
+                      </span>
+                      <span>
+                        approved seam: <span className="text-slate-200">{localRefinementPreview.tuple.seamId}</span>
+                      </span>
+                      <span>
+                        determining seam:{" "}
+                        <span className="text-slate-200">
+                          {localRefinementResultSet.seed.determiningEdge
+                            ? `${localRefinementResultSet.seed.determiningEdge.seamId} (${localRefinementResultSet.seed.determiningEdge.role})`
+                            : "—"}
+                        </span>
+                      </span>
+                      <span>
+                        source candidate:{" "}
+                        <span className="text-slate-200">{localRefinementPreview.tuple.sourceCandidateId}</span>
+                      </span>
+                      <span>
+                        local tNear:{" "}
+                        <span className="text-slate-200">{formatTrialExact(localRefinementPreview.tuple.tNear)}</span>
+                      </span>
+                      <span>
+                        local aspect ratio:{" "}
+                        <span className="text-slate-200">
+                          {formatTrialExact(localRefinementPreview.tuple.aspectRatio)}
+                        </span>
+                      </span>
+                      <span>
+                        fixed width (diagnostic):{" "}
+                        <span className="text-slate-200">{formatNumber(localRefinementPreview.tuple.worldWidth)}</span>
+                      </span>
+                      <span>
+                        derived depth (diagnostic):{" "}
+                        <span className="text-slate-200">{formatNumber(localRefinementPreview.tuple.worldDepth)}</span>
+                      </span>
+                      <span>
+                        selected direct probe FOV:{" "}
+                        <span className="text-slate-200">{formatNumber(localRefinementPreview.probe.fovDeg)}°</span>
+                      </span>
+                      <span>
+                        parent valid FOV corridor:{" "}
+                        <span className="text-slate-200">
+                          {formatFovCorridor(localRefinementPreview.tuple.fovCorridors?.valid)}
+                        </span>
+                      </span>
+                      <span>
+                        parent high-confidence FOV corridor:{" "}
+                        <span className="text-slate-200">
+                          {formatFovCorridor(localRefinementPreview.tuple.fovCorridors?.highConfidence)}
+                        </span>
+                      </span>
+                      <span>
+                        probe pose:{" "}
+                        <span className="text-slate-200">
+                          {localRefinementPreview.probe.poseAvailable ? "available" : "unavailable"}
+                        </span>
+                      </span>
+                      <span>
+                        probe confidence:{" "}
+                        <span className="text-slate-200">{localRefinementPreview.probe.confidence ?? "—"}</span>
+                      </span>
+                      <span>
+                        probe CV avg / max:{" "}
+                        <span className="text-slate-200">
+                          {formatTrialPx(localRefinementPreview.probe.cv.averagePx)} /{" "}
+                          {formatTrialPx(localRefinementPreview.probe.cv.maximumPx)}
+                        </span>
+                      </span>
+                      <span>
+                        probe rendered avg / max:{" "}
+                        <span className="text-slate-200">
+                          {formatTrialPx(localRefinementPreview.probe.rendered.averagePx)} /{" "}
+                          {formatTrialPx(localRefinementPreview.probe.rendered.maximumPx)}
+                        </span>
+                      </span>
+                      <span>
+                        probe Apply-gate:{" "}
+                        <span className="text-slate-200">
+                          {localRefinementPreview.probe.applyGateAvailable ? "available" : "unavailable"}
+                          {localRefinementPreview.probe.applyGateReason
+                            ? ` (${localRefinementPreview.probe.applyGateReason})`
+                            : ""}
+                        </span>
+                      </span>
+                    </div>
+                    {!localRefinementPreview.tuple.constraint.canEvaluate &&
+                      localRefinementPreview.tuple.constraint.hardReasons.length > 0 && (
+                        <p className="mt-1 text-rose-300">
+                          geometry rejection: {localRefinementPreview.tuple.constraint.hardReasons.join("; ")}
+                        </p>
+                      )}
+                    {localRefinementPreview.tuple.constraint.warnings.length > 0 && (
+                      <p className="mt-1 text-amber-200/90">
+                        warnings: {localRefinementPreview.tuple.constraint.warnings.join("; ")}
+                      </p>
+                    )}
+                    <p className="mt-1.5 text-slate-500">
+                      Drawn from exact stored local geometry. Preview is temporary; the baseline candidate and floor
+                      overlay remain unchanged. No live FOV, dimensions, candidate, calibration, or scene state changes —
+                      geometry inspection only. This is not a recommendation, selection, or apply.
+                    </p>
+                  </div>
+                )}
+
                 {localRefinementView.groups.map((group) => {
                   if (group.tuples.length === 0) return null;
                   const meta = describeCoupledState(group.state);
@@ -10166,6 +10501,7 @@ export default function ThreeRoomLab({
                   const rows = group.tuples.map((tuple) => {
                     const rowMeta = describeCoupledState(tuple.state);
                     const move = tuple.sampledCornerMoves[0];
+                    const tuplePreviewable = isLocalTuplePreviewable(tuple);
                     return (
                       <div key={tuple.geometryTupleId} className={`rounded-lg border p-2.5 ${meta.heading}`}>
                         <div className="flex flex-wrap items-center justify-between gap-2">
@@ -10217,6 +10553,10 @@ export default function ThreeRoomLab({
                           <div className="mt-1 space-y-1 border-l border-slate-700 pl-2">
                             {tuple.probes.map((probe) => {
                               const probeMeta = describeCoupledState(probe.state);
+                              const isPreviewingProbe =
+                                localRefinementPreviewGeometryId === tuple.geometryTupleId &&
+                                localRefinementPreviewProbeId === probe.probeId;
+                              const probeFovFinite = Number.isFinite(probe.fovDeg);
                               return (
                                 <div key={probe.probeId} className="text-slate-400">
                                   <span className="text-slate-300">direct FOV probe {formatNumber(probe.fovDeg)}°</span>{" "}
@@ -10227,6 +10567,40 @@ export default function ThreeRoomLab({
                                   {formatTrialPx(probe.rendered.averagePx)} · Apply-gate{" "}
                                   {probe.applyGateAvailable ? "available" : "unavailable"}
                                   {probe.applyGateReason ? ` (${probe.applyGateReason})` : ""}
+                                  <span className="ml-2 inline-flex flex-wrap items-center gap-2 align-middle">
+                                    {tuplePreviewable && probeFovFinite ? (
+                                      isPreviewingProbe ? (
+                                        <>
+                                          <span className="rounded border border-rose-400/60 bg-rose-500/10 px-1.5 py-0.5 text-rose-200">
+                                            Previewing (temporary)
+                                          </span>
+                                          <button
+                                            type="button"
+                                            onClick={handleClearLocalPreview}
+                                            className="rounded border border-slate-600 px-1.5 py-0.5 text-slate-300 transition hover:border-slate-400 hover:text-slate-100"
+                                          >
+                                            Clear preview
+                                          </button>
+                                        </>
+                                      ) : (
+                                        <button
+                                          type="button"
+                                          onClick={() => handlePreviewLocalProbe(tuple.geometryTupleId, probe.probeId)}
+                                          className="rounded border border-rose-500/60 px-1.5 py-0.5 text-rose-200 transition hover:border-rose-300 hover:text-rose-100"
+                                        >
+                                          Preview probe geometry
+                                        </button>
+                                      )
+                                    ) : !probeFovFinite ? (
+                                      <span className="text-slate-600">
+                                        Preview unavailable — direct probe record is incomplete.
+                                      </span>
+                                    ) : (
+                                      <span className="text-slate-600">
+                                        Preview unavailable — exact local geometry is not in-frame for drawing.
+                                      </span>
+                                    )}
+                                  </span>
                                 </div>
                               );
                             })}
