@@ -119,6 +119,8 @@ import { validateManualFloorSupportAnnotation } from "./manual-floor-support-val
 // modes, never runs search/solver/local refinement, and never implements Type B.
 import { qualifyTypeASupport } from "./manual-floor-support-qualification";
 import type {
+  SupportQualificationAdvisoryFact,
+  SupportQualificationBroadSearchViability,
   SupportQualificationClassification,
   TypeASupportQualification,
 } from "./manual-floor-support-qualification-types";
@@ -725,13 +727,45 @@ const SUPPORT_QUALIFICATION_TONES: Record<SupportQualificationClassification, st
   type_a_exhausted_type_b_candidate: "border-violet-500/40 bg-violet-500/5 text-violet-200",
 };
 
-// Human-readable weak-support indicator labels (advisory evidence facts only).
+// SUBSTANTIVE weak-support indicator labels ONLY. `determining_endpoint_near_frame`
+// is intentionally absent — it is advisory evidence (see the advisory map) and
+// never appears in this list.
 const SUPPORT_QUALIFICATION_WEAK_LABELS: Record<string, string> = {
-  short_determining_span_absolute: "Determining span short (absolute pixels)",
-  short_determining_span_image_diagonal: "Determining span small vs image diagonal",
-  severe_determining_to_movable_span_imbalance: "Severe determining/movable span imbalance",
-  determining_endpoint_near_frame: "Determining endpoint near frame edge",
-  determining_seam_frame_edge_collapsed: "Determining seam frame-edge collapsed",
+  short_determining_span_absolute: "Determining-side span is short",
+  short_determining_span_image_diagonal: "Determining-side span is small relative to image scale",
+  severe_determining_to_movable_span_imbalance:
+    "Determining side is small relative to movable-side support",
+  determining_seam_frame_edge_collapsed: "Determining side is short and frame-edge-collapsed",
+};
+
+// Phase 2O-O-B: second axis — current bounded broad-search viability. Descriptive
+// status labels/tones, visually distinct from the support-sufficiency verdict.
+// No label implies an action, mode switch, best/recommended tuple, or Type B.
+const SUPPORT_QUALIFICATION_VIABILITY_LABELS: Record<SupportQualificationBroadSearchViability, string> = {
+  broad_search_not_run_or_unknown: "Broad search not run or unknown",
+  broad_search_usable_basin_found: "Usable basin found under current coverage",
+  broad_search_no_usable_basin_current_coverage: "No usable basin under current coverage",
+};
+
+const SUPPORT_QUALIFICATION_VIABILITY_TONES: Record<SupportQualificationBroadSearchViability, string> = {
+  broad_search_not_run_or_unknown: "border-slate-600/70 bg-slate-900/40 text-slate-300",
+  broad_search_usable_basin_found: "border-sky-500/50 bg-sky-500/5 text-sky-200",
+  broad_search_no_usable_basin_current_coverage: "border-orange-500/50 bg-orange-500/5 text-orange-200",
+};
+
+const SUPPORT_QUALIFICATION_VIABILITY_NOTES: Record<SupportQualificationBroadSearchViability, string> = {
+  broad_search_not_run_or_unknown:
+    "No current complete broad-search conclusion is available. Absence, stale evidence, truncation, incomplete results, or an unknown local-seed observation are not treated as a Type A failure.",
+  broad_search_usable_basin_found:
+    "At least one current broad-search result has a usable high-confidence path under the current coverage.",
+  broad_search_no_usable_basin_current_coverage:
+    "This means the current bounded Type A broad-search coverage did not identify a usable basin. It does not by itself imply Type B.",
+};
+
+// Phase 2O-O-B: non-routing advisory evidence facts (rendered separately from
+// substantive weak-support indicators).
+const SUPPORT_QUALIFICATION_ADVISORY_LABELS: Record<SupportQualificationAdvisoryFact, string> = {
+  determining_endpoint_near_frame: "Determining endpoint near source-image frame edge",
 };
 
 function formatQualPx(value: number | null | undefined): string {
@@ -10178,7 +10212,7 @@ export default function ThreeRoomLab({
           title="Type A Support Qualification"
           open={isSupportQualificationOpen}
           onToggle={() => setIsSupportQualificationOpen((open) => !open)}
-          description="Read-only support sufficiency diagnostics for the current Type A annotation and evidence. This does not change movement authority, run diagnostics, switch modes, load controls, or apply calibration."
+          description="Read-only support sufficiency and broad-search viability diagnostics for the current Type A annotation and evidence. This does not change movement authority, run diagnostics, choose a seed, switch modes, load controls, or apply calibration."
           meta={
             <span className="rounded bg-slate-500/15 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-slate-200">
               lab-only · read-only · not persisted
@@ -10205,40 +10239,89 @@ export default function ThreeRoomLab({
                   choose a seed, load controls, or apply calibration.
                 </p>
 
-                {/* 1. Status + reasons */}
+                {/* A. Support-sufficiency axis (primary verdict) */}
                 <div className={`rounded-lg border px-3 py-2 ${SUPPORT_QUALIFICATION_TONES[q.classification]}`}>
-                  <p className="text-[10px] uppercase tracking-wide opacity-70">Classification (diagnostic)</p>
+                  <p className="text-[10px] uppercase tracking-wide opacity-70">Type A support sufficiency</p>
                   <p className="mt-0.5 text-sm font-medium">{SUPPORT_QUALIFICATION_LABELS[q.classification]}</p>
                   {q.classification === "type_a_exhausted_type_b_candidate" && (
                     <p className="mt-1 text-[11px] text-violet-100/90">
-                      Conditional diagnostic handoff candidate based on the current completed Type A broad-search
-                      coverage. This does not switch modes or implement Type B.
+                      Conditional diagnostic handoff candidate. This depends on current completed Type A
+                      broad-search coverage and does not switch modes or implement Type B.
                     </p>
                   )}
                 </div>
 
-                {q.reasons.length > 0 && (
-                  <div className="rounded-lg border border-slate-700 bg-slate-900/60 p-3">
-                    <p className="font-medium text-slate-100">Reasons</p>
-                    <ol className="mt-1 list-decimal space-y-0.5 pl-4 text-slate-300">
-                      {q.reasons.map((reason, index) => (
-                        <li key={index}>{reason}</li>
-                      ))}
-                    </ol>
-                  </div>
-                )}
+                {/* B. Broad-search viability axis (separate, distinct treatment) */}
+                <div
+                  className={`rounded-lg border border-dashed px-3 py-2 ${SUPPORT_QUALIFICATION_VIABILITY_TONES[q.broadSearchViability]}`}
+                >
+                  <p className="text-[10px] uppercase tracking-wide opacity-70">
+                    Current Type A broad-search viability
+                  </p>
+                  <p className="mt-0.5 text-sm font-medium">
+                    {SUPPORT_QUALIFICATION_VIABILITY_LABELS[q.broadSearchViability]}
+                  </p>
+                  <p className="mt-1 text-[11px] opacity-90">
+                    {SUPPORT_QUALIFICATION_VIABILITY_NOTES[q.broadSearchViability]}
+                  </p>
+                  <p className="mt-1 text-[10px] opacity-70">
+                    Separate axis from support sufficiency. Broad-search viability never changes the support
+                    verdict and never implies a mode switch.
+                  </p>
+                </div>
 
-                {q.weakSupportIndicators.length > 0 && (
-                  <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 p-3">
-                    <p className="font-medium text-amber-100">Weak-support indicators (advisory evidence facts)</p>
+                {/* C. Advisory evidence facts (non-routing) */}
+                <div className="rounded-lg border border-slate-700 bg-slate-900/60 p-3">
+                  <p className="font-medium text-slate-100">Advisory evidence facts</p>
+                  {q.advisoryEvidenceFacts.length > 0 ? (
+                    <ul className="mt-1 list-disc space-y-0.5 pl-4 text-slate-300">
+                      {q.advisoryEvidenceFacts.map((fact) => (
+                        <li key={fact}>{SUPPORT_QUALIFICATION_ADVISORY_LABELS[fact] ?? fact}</li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <p className="mt-1 text-slate-400">No advisory evidence facts currently reported.</p>
+                  )}
+                  <p className="mt-1 text-[10px] text-slate-500">
+                    Advisory facts are visible evidence notes only. They do not change movement authority and
+                    do not independently weaken Type A support.
+                  </p>
+                </div>
+
+                {/* D. Substantive weak-support indicators (drive the support verdict) */}
+                <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 p-3">
+                  <p className="font-medium text-amber-100">Substantive weak-support indicators</p>
+                  {q.weakSupportIndicators.length > 0 ? (
                     <ul className="mt-1 list-disc space-y-0.5 pl-4 text-amber-200/90">
                       {q.weakSupportIndicators.map((indicator) => (
                         <li key={indicator}>{SUPPORT_QUALIFICATION_WEAK_LABELS[indicator] ?? indicator}</li>
                       ))}
                     </ul>
-                    <p className="mt-1 text-[10px] text-amber-200/70">
-                      Advisory only. These evidence facts never change the declared movement authority.
+                  ) : (
+                    <p className="mt-1 text-amber-200/70">
+                      No substantive weak-support indicators currently reported.
                     </p>
+                  )}
+                  <p className="mt-1 text-[10px] text-amber-200/70">
+                    These substantive support facts never change the declared movement authority. A near-frame
+                    endpoint is not listed here; it is advisory evidence only.
+                  </p>
+                </div>
+
+                {/* E. Ordered classifier reasons */}
+                {q.reasons.length > 0 && (
+                  <div className="rounded-lg border border-slate-700 bg-slate-900/60 p-3">
+                    <p className="font-medium text-slate-100">Reasons</p>
+                    <p className="mt-0.5 text-[10px] text-slate-500">
+                      Ordered classifier output. Lines are prefixed to distinguish support-sufficiency
+                      explanation, advisory endpoint-frame facts, broad-search viability, and any conditional
+                      handoff explanation.
+                    </p>
+                    <ol className="mt-1 list-decimal space-y-0.5 pl-4 text-slate-300">
+                      {q.reasons.map((reason, index) => (
+                        <li key={index}>{reason}</li>
+                      ))}
+                    </ol>
                   </div>
                 )}
 
@@ -10334,8 +10417,9 @@ export default function ThreeRoomLab({
                     </span>
                   </div>
                   <p className="mt-1 text-[10px] text-slate-500">
-                    Frame-edge collapse is a support-evidence fact only. It does not change the declared movement
-                    authority.
+                    A near-frame endpoint is advisory evidence only. Frame-edge collapse requires a short/weak
+                    determining span together with near-frame support loss. Frame-edge facts never change the
+                    declared movement authority.
                   </p>
                 </div>
 
@@ -10372,6 +10456,11 @@ export default function ThreeRoomLab({
                 {/* 6. Broad-search / exhaustion facts */}
                 <div className="rounded-lg border border-slate-700 bg-slate-900/60 p-3">
                   <p className="font-medium text-slate-100">Broad-search &amp; exhaustion facts</p>
+                  <p className="mt-0.5 text-[10px] text-slate-500">
+                    Underlying evidence for the “Current Type A broad-search viability” axis above. A stale,
+                    absent, truncated, incomplete, or unknown-seed result reads as viability unknown/not-run and
+                    never implies exhaustion or a Type B handoff.
+                  </p>
                   {!f.broadSearchRun ? (
                     <p className="mt-1 text-slate-400">
                       No Type A broad coupled-search result set is present for the current evidence. Absent broad
