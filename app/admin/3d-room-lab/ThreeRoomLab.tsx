@@ -42,6 +42,7 @@ import {
 import {
   containerNormToSourceNorm,
   corridorHalfWidthToOverlayStrokeWidth,
+  isValidImageSize,
   normToPixels,
   sourceNormToContainerNorm,
   type ImageFrameSize,
@@ -124,6 +125,42 @@ import type {
   SupportQualificationClassification,
   TypeASupportQualification,
 } from "./manual-floor-support-qualification-types";
+// --- Phase B2: read-only Type B Operator Evidence Panel (lab-only) ----------
+// Uses the committed pure Phase B1 modules as the single source of truth for
+// facts + qualification, and a small pure Phase B2 state helper for lifecycle,
+// invalidation, the read-only Type A -> Type B context mapping, coordinate
+// sanitization, and declared-only overlay geometry. NOTHING here runs a solver /
+// FOV / search / preview / load / Apply, mutates candidate / floor polygon /
+// dimensions / FOV / calibration / readiness, routes / switches modes, or
+// persists. It only records declared visible evidence and displays the pure
+// B1 qualification.
+import { deriveTypeBGeometryFacts } from "./type-b-evidence-facts";
+import { qualifyTypeBEvidence } from "./type-b-qualification";
+import type {
+  TypeBQualificationReason,
+  TypeBQualificationStatus,
+} from "./type-b-qualification";
+import type {
+  TypeBDeclaredLineEvidence,
+  TypeBEndpointStatus,
+  TypeBFrameContactStatus,
+  TypeBLatentNearCornerCondition,
+  TypeBOcclusionStatus,
+  TypeBStructuralLineRole,
+} from "./type-b-evidence-types";
+import {
+  applyDeclaredLinePatch,
+  beginTypeBReview,
+  buildTypeBDeclaredSegments,
+  computeTypeBReviewGeometryContext,
+  createEmptyTypeBReviewState,
+  findTypeBSharedJunctionEndpoints,
+  mapTypeATypeBContext,
+  reconcileTypeBReviewGeometry,
+  sanitizeNormComponent,
+  typeBReviewHasDeclaredGeometry,
+  type TypeBEvidenceReviewState,
+} from "./type-b-evidence-review";
 import {
   generateManualFloorSupportTrials,
   type TrialGenerationCandidate,
@@ -768,6 +805,138 @@ const SUPPORT_QUALIFICATION_ADVISORY_LABELS: Record<SupportQualificationAdvisory
   determining_endpoint_near_frame: "Determining endpoint near source-image frame edge",
 };
 
+// --- Phase B2: Type B Operator Evidence Panel display maps ------------------
+// Neutral, diagnostic language ONLY. No label implies a search, preview, load,
+// Apply, calibration, mode switch, or "recommended/best/use Type B" action.
+const TYPE_B_STATUS_LABELS: Record<TypeBQualificationStatus, string> = {
+  not_assessed: "Type B evidence not assessed",
+  type_a_investigation_preferred: "Type A investigation remains preferred",
+  type_b_evidence_insufficient: "Type B evidence insufficient",
+  type_b_evidence_incompatible: "Type B evidence incompatible with this family",
+  type_b_evidence_candidate: "Type B evidence candidate",
+  type_b_diagnostic_eligible: "Type B diagnostic eligibility established",
+};
+
+// Collapsed one-line status summary (neutral; never calibration-readiness).
+const TYPE_B_COLLAPSED_STATUS_LABELS: Record<TypeBQualificationStatus, string> = {
+  not_assessed: "Type B evidence not reviewed",
+  type_a_investigation_preferred: "Type A investigation remains preferred",
+  type_b_evidence_insufficient: "Type B evidence insufficient",
+  type_b_evidence_incompatible: "Type B evidence incompatible",
+  type_b_evidence_candidate: "Type B evidence candidate",
+  type_b_diagnostic_eligible: "Type B diagnostic eligibility established",
+};
+
+// Deliberately understated tones. Eligibility uses a calm sky/slate treatment,
+// NOT an emerald "ready/apply" success style, so it can never be mistaken for
+// calibration readiness.
+const TYPE_B_STATUS_TONES: Record<TypeBQualificationStatus, string> = {
+  not_assessed: "border-slate-700 bg-slate-900/40 text-slate-300",
+  type_a_investigation_preferred: "border-slate-600/70 bg-slate-900/50 text-slate-200",
+  type_b_evidence_insufficient: "border-amber-500/40 bg-amber-500/5 text-amber-200",
+  type_b_evidence_incompatible: "border-rose-500/40 bg-rose-500/5 text-rose-200",
+  type_b_evidence_candidate: "border-sky-500/40 bg-sky-500/5 text-sky-200",
+  type_b_diagnostic_eligible: "border-sky-400/50 bg-slate-900/50 text-sky-100",
+};
+
+const TYPE_B_REASON_LABELS: Record<TypeBQualificationReason, string> = {
+  missing_source_frame: "No valid source frame is available.",
+  invalid_source_frame: "The source frame is invalid.",
+  missing_rear_seam: "No rear seam has been declared.",
+  missing_strong_side_seam: "No strong side support seam has been declared.",
+  rear_seam_role_unresolved: "Rear seam identity is unresolved.",
+  side_seam_role_unresolved: "Strong side support identity is unresolved.",
+  rear_seam_geometry_invalid: "Rear seam geometry is invalid or non-finite.",
+  side_seam_geometry_invalid: "Strong side support geometry is invalid or non-finite.",
+  rear_seam_support_insufficient: "Rear seam visible support is insufficient.",
+  side_seam_support_insufficient: "Strong side support visible support is insufficient.",
+  rear_side_geometry_degenerate:
+    "Rear and side support geometry is too degenerate for this family.",
+  rear_side_junction_unresolved: "A shared visible junction is not established.",
+  rear_side_junction_incompatible:
+    "Declared rear and side endpoints do not share a visible junction.",
+  latent_near_corner_not_bounded: "Latent near-corner condition is not bounded.",
+  latent_near_corner_unresolved: "Latent near-corner condition is unresolved.",
+  crop_or_frame_contact_ambiguous: "Required frame-contact evidence is ambiguous.",
+  material_occlusion_on_required_support:
+    "A required support seam is materially obstructed.",
+  type_a_support_still_investigable: "Type A remains the current investigation path.",
+  type_a_investigation_preferred: "Type A investigation remains preferred.",
+  type_a_exhaustion_not_established: "Type A exhaustion is not established.",
+  type_b_evidence_present_but_incomplete:
+    "Type B evidence is incomplete under the current declarations.",
+  type_b_evidence_family_eligible:
+    "Declared evidence meets this Type B family's bounded eligibility conditions.",
+};
+
+const TYPE_B_ENDPOINT_STATUS_OPTIONS: { value: TypeBEndpointStatus; label: string }[] = [
+  { value: "visible", label: "Visible" },
+  { value: "near_frame", label: "Near frame (advisory)" },
+  { value: "frame_truncated", label: "Frame-truncated" },
+  { value: "occluded", label: "Occluded" },
+  { value: "unresolved", label: "Unresolved" },
+];
+
+const TYPE_B_FRAME_CONTACT_OPTIONS: { value: TypeBFrameContactStatus; label: string }[] = [
+  { value: "no_frame_contact", label: "No frame contact" },
+  { value: "contacts_frame", label: "Contacts frame (visibility only)" },
+  { value: "frame_contact_ambiguous", label: "Frame contact ambiguous" },
+  { value: "unknown", label: "Unknown" },
+];
+
+const TYPE_B_OCCLUSION_OPTIONS: { value: TypeBOcclusionStatus; label: string }[] = [
+  { value: "none_observed", label: "None observed" },
+  { value: "partial_obstruction", label: "Partial obstruction" },
+  { value: "material_obstruction", label: "Material obstruction" },
+  { value: "unknown", label: "Unknown" },
+];
+
+const TYPE_B_SIDE_ROLE_OPTIONS: { value: TypeBStructuralLineRole; label: string }[] = [
+  { value: "side_floor_boundary", label: "Side floor boundary" },
+  { value: "side_wall_floor_seam", label: "Side wall-floor seam" },
+  { value: "unresolved", label: "Unresolved" },
+];
+
+const TYPE_B_LATENT_OPTIONS: { value: TypeBLatentNearCornerCondition; label: string }[] = [
+  { value: "frame_truncated", label: "Frame-truncated" },
+  { value: "occluded", label: "Occluded" },
+  { value: "not_needed_visible", label: "Visible / not needed" },
+  { value: "unresolved", label: "Unresolved" },
+];
+
+// Compact endpoint-status glyph for the diagnostic overlay markers.
+const TYPE_B_ENDPOINT_STATUS_GLYPH: Record<TypeBEndpointStatus, string> = {
+  visible: "V",
+  near_frame: "N",
+  frame_truncated: "T",
+  occluded: "O",
+  unresolved: "?",
+};
+
+function formatTypeBBool(value: boolean | null | undefined): string {
+  if (value === true) return "Yes";
+  if (value === false) return "No";
+  return "Unknown";
+}
+
+function formatTypeBPx(value: number | null | undefined): string {
+  return value === null || value === undefined || !Number.isFinite(value)
+    ? "—"
+    : `${value.toFixed(1)} source px`;
+}
+
+function formatTypeBRatio(value: number | null | undefined): string {
+  return value === null || value === undefined || !Number.isFinite(value)
+    ? "—"
+    : value.toFixed(3);
+}
+
+function formatTypeBAngle(value: number | null | undefined): string {
+  return value === null || value === undefined || !Number.isFinite(value)
+    ? "—"
+    : `${value.toFixed(1)}°`;
+}
+
 function formatQualPx(value: number | null | undefined): string {
   return typeof value === "number" && Number.isFinite(value) ? `${value.toFixed(1)} px` : "unavailable";
 }
@@ -966,6 +1135,20 @@ export default function ThreeRoomLab({
   // calibration/scene state. Cleared whenever source evidence changes.
   // Phase 2O-O: read-only support qualification panel open state (display only).
   const [isSupportQualificationOpen, setIsSupportQualificationOpen] = useState(false);
+  // --- Phase B2: read-only Type B Operator Evidence Panel state -------------
+  // LAB-ONLY, DIAGNOSTIC-ONLY, NON-PERSISTENT. Ephemeral local state only. It
+  // NEVER mutates floorPolygon, candidate geometry/selection, FOV, dimensions,
+  // Apply / readiness / calibration, or scene-state, and never runs a Type B
+  // solver / FOV / search / preview / load. Declarations are cleared whenever
+  // the underlying room-geometry basis changes (see the invalidation effect).
+  const [isTypeBReviewOpen, setIsTypeBReviewOpen] = useState(false);
+  const [typeBReview, setTypeBReview] = useState<TypeBEvidenceReviewState>(
+    createEmptyTypeBReviewState
+  );
+  const [typeBOverlayVisible, setTypeBOverlayVisible] = useState(false);
+  const [typeBReviewNote, setTypeBReviewNote] = useState<string | null>(null);
+  const typeBReviewRef = useRef<TypeBEvidenceReviewState>(typeBReview);
+  const typeBPrevTypeAContextRef = useRef<string | null>(null);
   const [isCoupledSearchOpen, setIsCoupledSearchOpen] = useState(false);
   const [coupledSearchResultSet, setCoupledSearchResultSet] =
     useState<CoupledSearchResultSet | null>(null);
@@ -4833,6 +5016,206 @@ export default function ThreeRoomLab({
     coupledSearchEvidenceSignature,
     coupledRowSeedEligibility,
   ]);
+
+  // --- Phase B2: read-only Type B Operator Evidence Panel wiring ------------
+  // Everything below only shapes ephemeral Type B review state and DERIVES the
+  // pure B1 facts/qualification. It never runs a solver / FOV / search /
+  // preview / load / Apply, never mutates candidate / floorPolygon / dimensions
+  // / FOV / calibration / readiness / scene state, and never routes / switches
+  // modes / persists.
+
+  // Read-only Type A -> Type B context (descriptive only; no Type A change).
+  const typeBTypeAContext = useMemo(
+    () =>
+      mapTypeATypeBContext(
+        supportQualification.classification,
+        supportQualification.broadSearchViability
+      ),
+    [supportQualification.classification, supportQualification.broadSearchViability]
+  );
+
+  // Type B source frame is the INTRINSIC source image (frame-stable; unaffected
+  // by display-only container resize). Null until a valid image is loaded.
+  const typeBSourceFrame = useMemo(
+    () =>
+      imageIntrinsicSize && isValidImageSize(imageIntrinsicSize)
+        ? { width: imageIntrinsicSize.width, height: imageIntrinsicSize.height }
+        : null,
+    [imageIntrinsicSize]
+  );
+
+  // Derived image-space facts (pure B1 helper). Never stored as editable state.
+  const typeBGeometryFacts = useMemo(
+    () =>
+      deriveTypeBGeometryFacts({
+        sourceFrame: typeBSourceFrame,
+        rearSeam: typeBReview.rearSeam,
+        strongSideSeam: typeBReview.strongSideSeam,
+      }),
+    [typeBSourceFrame, typeBReview.rearSeam, typeBReview.strongSideSeam]
+  );
+
+  // Pure B1 qualification. Recomputes when declarations OR the read-only Type A
+  // context change; declarations are never mutated by re-qualification.
+  const typeBQualification = useMemo(
+    () =>
+      qualifyTypeBEvidence({
+        family: "rear_seam_plus_strong_side_seam",
+        sourceFrame: typeBSourceFrame,
+        rearSeam: typeBReview.rearSeam,
+        strongSideSeam: typeBReview.strongSideSeam,
+        latentNearCornerCondition: typeBReview.latentNearCornerCondition,
+        typeAContext: typeBTypeAContext,
+        geometryFacts: typeBGeometryFacts,
+      }),
+    [
+      typeBSourceFrame,
+      typeBReview.rearSeam,
+      typeBReview.strongSideSeam,
+      typeBReview.latentNearCornerCondition,
+      typeBTypeAContext,
+      typeBGeometryFacts,
+    ]
+  );
+
+  // Live room-geometry basis identity for invalidation (image / source frame /
+  // candidate / floor polygon). Type A context and display size are excluded.
+  const typeBGeometryContext = useMemo(
+    () =>
+      computeTypeBReviewGeometryContext({
+        loadedImageUrl,
+        intrinsicSize: imageIntrinsicSize,
+        candidateId: selectedAutoFloorCandidateId,
+        floorPolygon,
+      }),
+    [loadedImageUrl, imageIntrinsicSize, selectedAutoFloorCandidateId, floorPolygon]
+  );
+
+  useEffect(() => {
+    typeBReviewRef.current = typeBReview;
+  }, [typeBReview]);
+
+  // Invalidation: clear an active review when the underlying room-geometry basis
+  // changes. When the basis is unchanged the pure reconcile returns the same
+  // state reference, so this effect is a stable no-op (no update loop).
+  useEffect(() => {
+    const result = reconcileTypeBReviewGeometry(typeBReviewRef.current, typeBGeometryContext);
+    if (result.cleared) {
+      typeBReviewRef.current = result.next;
+      setTypeBReview(result.next);
+      setTypeBOverlayVisible(false);
+      setTypeBReviewNote(
+        "Type B evidence review cleared because the underlying room geometry context changed."
+      );
+    }
+  }, [typeBGeometryContext]);
+
+  // Type A context change: retain declarations, re-qualify (handled by the memo
+  // above), and surface a small note only when declarations exist.
+  useEffect(() => {
+    const prev = typeBPrevTypeAContextRef.current;
+    typeBPrevTypeAContextRef.current = typeBTypeAContext;
+    if (prev === null || prev === typeBTypeAContext) return;
+    const current = typeBReviewRef.current;
+    if (current.rearSeam !== null || current.strongSideSeam !== null) {
+      setTypeBReviewNote(
+        "Type A context changed. Type B qualification was re-evaluated from the same declared evidence."
+      );
+    }
+  }, [typeBTypeAContext]);
+
+  const handleBeginTypeBReview = useCallback(() => {
+    const started = beginTypeBReview(
+      computeTypeBReviewGeometryContext({
+        loadedImageUrl,
+        intrinsicSize: imageIntrinsicSize,
+        candidateId: selectedAutoFloorCandidateId,
+        floorPolygon,
+      })
+    );
+    typeBReviewRef.current = started;
+    setTypeBReview(started);
+    setTypeBReviewNote(null);
+  }, [loadedImageUrl, imageIntrinsicSize, selectedAutoFloorCandidateId, floorPolygon]);
+
+  const handleClearTypeBReview = useCallback(() => {
+    const empty = createEmptyTypeBReviewState();
+    typeBReviewRef.current = empty;
+    setTypeBReview(empty);
+    setTypeBOverlayVisible(false);
+    setTypeBReviewNote("Type B evidence review cleared.");
+  }, []);
+
+  const updateTypeBRearSeam = useCallback(
+    (patch: Partial<TypeBDeclaredLineEvidence>) => {
+      setTypeBReview((s) => ({
+        ...s,
+        rearSeam: applyDeclaredLinePatch(s.rearSeam, "rear_floor_wall_seam", patch),
+      }));
+    },
+    []
+  );
+
+  const updateTypeBSideSeam = useCallback(
+    (patch: Partial<TypeBDeclaredLineEvidence>) => {
+      setTypeBReview((s) => ({
+        ...s,
+        strongSideSeam: applyDeclaredLinePatch(s.strongSideSeam, null, patch),
+      }));
+    },
+    []
+  );
+
+  const setTypeBLatentCondition = useCallback(
+    (condition: TypeBLatentNearCornerCondition) => {
+      setTypeBReview((s) => ({ ...s, latentNearCornerCondition: condition }));
+    },
+    []
+  );
+
+  // Declared-only overlay geometry projected into container-normalized viewBox
+  // percentages. Uses ONLY declared endpoints (never extended / intersected).
+  const typeBOverlayRender = useMemo(() => {
+    if (!imageIntrinsicSize || !manualFrameSize) return null;
+    const segments = buildTypeBDeclaredSegments(
+      typeBReview.rearSeam,
+      typeBReview.strongSideSeam
+    );
+    if (segments.length === 0) return null;
+    const toPct = (point: { x: number; y: number }) => {
+      const container = sourceNormToContainerNorm(point, imageIntrinsicSize, manualFrameSize);
+      return container ? { x: container.x * 100, y: container.y * 100 } : null;
+    };
+    const lines = segments
+      .map((seg) => {
+        const seam = seg.role === "rear" ? typeBReview.rearSeam : typeBReview.strongSideSeam;
+        const start = toPct(seg.start);
+        const end = toPct(seg.end);
+        if (!start || !end || !seam) return null;
+        return {
+          role: seg.role,
+          start,
+          end,
+          startStatus: seam.startEndpointStatus,
+          endStatus: seam.endEndpointStatus,
+        };
+      })
+      .filter((line): line is NonNullable<typeof line> => line !== null);
+    const junctionPts = findTypeBSharedJunctionEndpoints(
+      typeBReview.rearSeam,
+      typeBReview.strongSideSeam
+    );
+    let junction: { a: { x: number; y: number }; b: { x: number; y: number } } | null = null;
+    if (junctionPts) {
+      const a = toPct(junctionPts.a);
+      const b = toPct(junctionPts.b);
+      if (a && b) junction = { a, b };
+    }
+    return { lines, junction };
+  }, [imageIntrinsicSize, manualFrameSize, typeBReview.rearSeam, typeBReview.strongSideSeam]);
+
+  const typeBReviewActive = typeBReview.begun;
+  const typeBHasDeclaredGeometry = typeBReviewHasDeclaredGeometry(typeBReview);
 
   // Explicit operator action: seed a bounded local refinement from ONE stored
   // coarse row. Builds the K-A seed from the EXACT stored coarse record (never
@@ -9081,6 +9464,80 @@ export default function ThreeRoomLab({
                 </svg>
               </>
             )}
+            {typeBOverlayVisible && typeBOverlayRender && (
+              <>
+                <div className="pointer-events-none absolute right-2 top-2 z-40 rounded border border-amber-400/70 bg-amber-950/80 px-2 py-0.5 text-[10px] font-medium text-amber-100">
+                  Type B declared visible observations
+                </div>
+                <svg
+                  className="pointer-events-none absolute inset-0 z-40 h-full w-full"
+                  viewBox="0 0 100 100"
+                  preserveAspectRatio="none"
+                  aria-label="Type B declared evidence overlay (diagnostic only)"
+                  aria-hidden="true"
+                >
+                  {/* Declared visible observations ONLY. Amber dashed treatment is
+                      deliberately distinct from every Type A overlay, the floor
+                      polygon, the selected candidate, and every preview. It draws
+                      exactly the operator-declared endpoints/segments: it never
+                      extends a seam, intersects the seams, draws an off-frame
+                      corner / quadrilateral / wall plane / vanishing point /
+                      camera pose / FOV corridor / preview geometry, and never
+                      mutates the floor polygon. */}
+                  {typeBOverlayRender.junction && (
+                    <line
+                      x1={typeBOverlayRender.junction.a.x}
+                      y1={typeBOverlayRender.junction.a.y}
+                      x2={typeBOverlayRender.junction.b.x}
+                      y2={typeBOverlayRender.junction.b.y}
+                      stroke="#fcd34d"
+                      strokeOpacity={0.7}
+                      strokeWidth={0.5}
+                      strokeDasharray="0.6 0.9"
+                    />
+                  )}
+                  {typeBOverlayRender.lines.map((line) => (
+                    <g key={`type-b-line-${line.role}`}>
+                      <line
+                        x1={line.start.x}
+                        y1={line.start.y}
+                        x2={line.end.x}
+                        y2={line.end.y}
+                        stroke={line.role === "rear" ? "#f59e0b" : "#fbbf24"}
+                        strokeOpacity={0.95}
+                        strokeWidth={0.8}
+                        strokeDasharray="2 1.2"
+                        strokeLinecap="round"
+                      />
+                      {[
+                        { p: line.start, status: line.startStatus, key: "start" },
+                        { p: line.end, status: line.endStatus, key: "end" },
+                      ].map((endpoint) => (
+                        <g key={`type-b-${line.role}-${endpoint.key}`}>
+                          <circle
+                            cx={endpoint.p.x}
+                            cy={endpoint.p.y}
+                            r={1.0}
+                            fill={line.role === "rear" ? "#f59e0b" : "#fbbf24"}
+                            stroke="#451a03"
+                            strokeWidth={0.35}
+                          />
+                          <text
+                            x={endpoint.p.x + 1.1}
+                            y={endpoint.p.y - 0.9}
+                            fill="#fde68a"
+                            fontSize="2"
+                            fontWeight="600"
+                          >
+                            {`${line.role === "rear" ? "R" : "S"}·${TYPE_B_ENDPOINT_STATUS_GLYPH[endpoint.status]}`}
+                          </text>
+                        </g>
+                      ))}
+                    </g>
+                  ))}
+                </svg>
+              </>
+            )}
           </div>
         </section>
 
@@ -11441,6 +11898,374 @@ export default function ThreeRoomLab({
               </div>
             )}
           </div>
+        </CollapsibleSection>
+
+        <CollapsibleSection
+          title="TYPE B EVIDENCE REVIEW"
+          open={isTypeBReviewOpen}
+          onToggle={() => setIsTypeBReviewOpen((open) => !open)}
+          description="Record visible support evidence for a future bounded Type B diagnostic. This does not change calibration."
+          meta={
+            <span className="rounded bg-slate-500/15 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-slate-200">
+              {TYPE_B_COLLAPSED_STATUS_LABELS[typeBQualification.status]}
+            </span>
+          }
+        >
+          {(() => {
+            const q = typeBQualification;
+            const facts = typeBGeometryFacts;
+            const rear = typeBReview.rearSeam;
+            const side = typeBReview.strongSideSeam;
+
+            const numField = (
+              value: number | "",
+              onNum: (n: number) => void,
+              ariaLabel: string
+            ) => (
+              <input
+                type="number"
+                min={0}
+                max={1}
+                step={0.01}
+                value={value}
+                aria-label={ariaLabel}
+                onChange={(event) => {
+                  const parsed = sanitizeNormComponent(Number.parseFloat(event.target.value));
+                  if (parsed !== null) onNum(parsed);
+                }}
+                className="w-full rounded border border-slate-700 bg-slate-950 px-2 py-1 text-[11px] text-slate-100 outline-none focus:border-sky-500"
+              />
+            );
+
+            const selectField = <T extends string>(
+              value: T,
+              options: { value: T; label: string }[],
+              onSel: (value: T) => void,
+              ariaLabel: string
+            ) => (
+              <select
+                value={value}
+                aria-label={ariaLabel}
+                onChange={(event) => onSel(event.target.value as T)}
+                className="w-full rounded border border-slate-700 bg-slate-950 px-2 py-1 text-[11px] text-slate-100 outline-none focus:border-sky-500"
+              >
+                {options.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            );
+
+            const lineEditor = (
+              kind: "rear" | "side",
+              seam: TypeBDeclaredLineEvidence | null,
+              update: (patch: Partial<TypeBDeclaredLineEvidence>) => void
+            ) => (
+              <div className="space-y-2 rounded-lg border border-slate-700 bg-slate-900/60 p-3">
+                <p className="font-medium text-slate-100">
+                  {kind === "rear" ? "Rear seam" : "Strong side support seam"}
+                </p>
+                {kind === "rear" ? (
+                  <p className="text-[11px] text-slate-400">
+                    Role: <span className="text-slate-200">Rear floor-wall seam</span> (fixed)
+                  </p>
+                ) : (
+                  <label className="block">
+                    <span className="text-[10px] uppercase tracking-wide text-slate-500">Role</span>
+                    {selectField<TypeBStructuralLineRole>(
+                      (seam?.role as TypeBStructuralLineRole) ?? "unresolved",
+                      TYPE_B_SIDE_ROLE_OPTIONS,
+                      (value) => update({ role: value }),
+                      "Strong side support role"
+                    )}
+                  </label>
+                )}
+                <div className="grid grid-cols-2 gap-2">
+                  <label className="block">
+                    <span className="text-[10px] uppercase tracking-wide text-slate-500">Start x (source-norm)</span>
+                    {numField(
+                      seam ? seam.startNorm.x : "",
+                      (n) => update({ startNorm: { x: n, y: seam?.startNorm.y ?? 0 } }),
+                      `${kind} start x`
+                    )}
+                  </label>
+                  <label className="block">
+                    <span className="text-[10px] uppercase tracking-wide text-slate-500">Start y (source-norm)</span>
+                    {numField(
+                      seam ? seam.startNorm.y : "",
+                      (n) => update({ startNorm: { x: seam?.startNorm.x ?? 0, y: n } }),
+                      `${kind} start y`
+                    )}
+                  </label>
+                  <label className="block">
+                    <span className="text-[10px] uppercase tracking-wide text-slate-500">End x (source-norm)</span>
+                    {numField(
+                      seam ? seam.endNorm.x : "",
+                      (n) => update({ endNorm: { x: n, y: seam?.endNorm.y ?? 0 } }),
+                      `${kind} end x`
+                    )}
+                  </label>
+                  <label className="block">
+                    <span className="text-[10px] uppercase tracking-wide text-slate-500">End y (source-norm)</span>
+                    {numField(
+                      seam ? seam.endNorm.y : "",
+                      (n) => update({ endNorm: { x: seam?.endNorm.x ?? 0, y: n } }),
+                      `${kind} end y`
+                    )}
+                  </label>
+                  <label className="block">
+                    <span className="text-[10px] uppercase tracking-wide text-slate-500">Start endpoint</span>
+                    {selectField<TypeBEndpointStatus>(
+                      seam?.startEndpointStatus ?? "unresolved",
+                      TYPE_B_ENDPOINT_STATUS_OPTIONS,
+                      (value) => update({ startEndpointStatus: value }),
+                      `${kind} start endpoint status`
+                    )}
+                  </label>
+                  <label className="block">
+                    <span className="text-[10px] uppercase tracking-wide text-slate-500">End endpoint</span>
+                    {selectField<TypeBEndpointStatus>(
+                      seam?.endEndpointStatus ?? "unresolved",
+                      TYPE_B_ENDPOINT_STATUS_OPTIONS,
+                      (value) => update({ endEndpointStatus: value }),
+                      `${kind} end endpoint status`
+                    )}
+                  </label>
+                  <label className="block">
+                    <span className="text-[10px] uppercase tracking-wide text-slate-500">Start frame contact</span>
+                    {selectField<TypeBFrameContactStatus>(
+                      seam?.startFrameContact ?? "unknown",
+                      TYPE_B_FRAME_CONTACT_OPTIONS,
+                      (value) => update({ startFrameContact: value }),
+                      `${kind} start frame contact`
+                    )}
+                  </label>
+                  <label className="block">
+                    <span className="text-[10px] uppercase tracking-wide text-slate-500">End frame contact</span>
+                    {selectField<TypeBFrameContactStatus>(
+                      seam?.endFrameContact ?? "unknown",
+                      TYPE_B_FRAME_CONTACT_OPTIONS,
+                      (value) => update({ endFrameContact: value }),
+                      `${kind} end frame contact`
+                    )}
+                  </label>
+                  <label className="block">
+                    <span className="text-[10px] uppercase tracking-wide text-slate-500">Occlusion</span>
+                    {selectField<TypeBOcclusionStatus>(
+                      seam?.occlusionStatus ?? "unknown",
+                      TYPE_B_OCCLUSION_OPTIONS,
+                      (value) => update({ occlusionStatus: value }),
+                      `${kind} occlusion status`
+                    )}
+                  </label>
+                </div>
+                <label className="block">
+                  <span className="text-[10px] uppercase tracking-wide text-slate-500">Note (optional)</span>
+                  <input
+                    type="text"
+                    value={seam?.notes ?? ""}
+                    aria-label={`${kind} note`}
+                    onChange={(event) => update({ notes: event.target.value })}
+                    className="w-full rounded border border-slate-700 bg-slate-950 px-2 py-1 text-[11px] text-slate-100 outline-none focus:border-sky-500"
+                  />
+                </label>
+              </div>
+            );
+
+            return (
+              <div className="space-y-3 text-[11px] text-slate-300">
+                <p className="rounded-lg border border-slate-600/40 bg-slate-800/40 px-3 py-2 text-slate-200">
+                  Diagnostic only. This panel records declared visible support evidence for a possible future
+                  bounded Type B diagnostic. It does not run any search, solver, FOV probe, preview, load, or
+                  calibration, and it never changes the floor polygon, selected candidate, FOV, readiness, or
+                  applied calibration.
+                </p>
+
+                {/* Primary Type B qualification status */}
+                <div className={`rounded-lg border px-3 py-2 ${TYPE_B_STATUS_TONES[q.status]}`}>
+                  <p className="text-[10px] uppercase tracking-wide opacity-70">Type B qualification</p>
+                  <p className="mt-0.5 text-sm font-medium">{TYPE_B_STATUS_LABELS[q.status]}</p>
+                  {q.status === "type_b_diagnostic_eligible" && (
+                    <p className="mt-1 text-[11px] opacity-90">
+                      A future bounded Type B diagnostic may be considered. No search, preview, load, or
+                      calibration action is available here.
+                    </p>
+                  )}
+                </div>
+
+                {/* Type A context (read-only) */}
+                <div className="rounded-lg border border-slate-700 bg-slate-900/60 p-3">
+                  <p className="font-medium text-slate-100">Type A context (read-only)</p>
+                  <p className="mt-0.5 text-slate-300">{q.typeAContext}</p>
+                  <p className="mt-1 text-[10px] text-slate-500">
+                    Type A context is descriptive only. It does not grant Type B authority.
+                  </p>
+                </div>
+
+                {!typeBReviewActive ? (
+                  <button
+                    type="button"
+                    onClick={handleBeginTypeBReview}
+                    className="rounded-lg border border-sky-600/50 bg-sky-600/10 px-3 py-1.5 text-sm font-medium text-sky-100 transition hover:bg-sky-600/20"
+                  >
+                    Begin evidence review
+                  </button>
+                ) : (
+                  <>
+                    {/* Declared visible evidence */}
+                    <div className="space-y-2">
+                      <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">
+                        Declared visible evidence
+                      </p>
+                      {lineEditor("rear", rear, updateTypeBRearSeam)}
+                      {lineEditor("side", side, updateTypeBSideSeam)}
+                      <p className="text-[10px] text-slate-500">
+                        “Contacts frame” describes image visibility only. It does not establish a physical
+                        continuation.
+                      </p>
+
+                      {/* Latent near-corner condition */}
+                      <div className="space-y-1 rounded-lg border border-slate-700 bg-slate-900/60 p-3">
+                        <p className="font-medium text-slate-100">Latent near-corner condition</p>
+                        {selectField<TypeBLatentNearCornerCondition>(
+                          typeBReview.latentNearCornerCondition,
+                          TYPE_B_LATENT_OPTIONS,
+                          setTypeBLatentCondition,
+                          "Latent near-corner condition"
+                        )}
+                        <p className="text-[10px] text-slate-500">
+                          This records what is visible or unavailable. It does not create an off-frame corner.
+                        </p>
+                      </div>
+                    </div>
+
+                    {/* Derived image-space facts */}
+                    <div className="rounded-lg border border-slate-700 bg-slate-900/60 p-3">
+                      <p className="font-medium text-slate-100">Derived image-space facts</p>
+                      <div className="mt-1 grid grid-cols-1 gap-x-4 gap-y-0.5 text-slate-400 sm:grid-cols-2">
+                        <span>
+                          Rear seam visible span: <span className="text-slate-200">{formatTypeBPx(facts.rearSpanSourcePx)}</span>
+                        </span>
+                        <span>
+                          Side support visible span: <span className="text-slate-200">{formatTypeBPx(facts.sideSpanSourcePx)}</span>
+                        </span>
+                        <span>
+                          Rear-to-side span ratio: <span className="text-slate-200">{formatTypeBRatio(facts.rearToSideSpanRatio)}</span>
+                        </span>
+                        <span>
+                          Rear-to-side angle: <span className="text-slate-200">{formatTypeBAngle(facts.rearSideAngleDeg)}</span>
+                        </span>
+                        <span>
+                          Rear start frame distance: <span className="text-slate-200">{formatTypeBPx(facts.rearStartDistanceToFramePx)}</span>
+                        </span>
+                        <span>
+                          Rear end frame distance: <span className="text-slate-200">{formatTypeBPx(facts.rearEndDistanceToFramePx)}</span>
+                        </span>
+                        <span>
+                          Side start frame distance: <span className="text-slate-200">{formatTypeBPx(facts.sideStartDistanceToFramePx)}</span>
+                        </span>
+                        <span>
+                          Side end frame distance: <span className="text-slate-200">{formatTypeBPx(facts.sideEndDistanceToFramePx)}</span>
+                        </span>
+                        <span>
+                          Shared endpoint proximity: <span className="text-slate-200">{formatTypeBPx(facts.sharedJunctionDistanceSourcePx)}</span>
+                        </span>
+                        <span>
+                          Shared visible junction: <span className="text-slate-200">{formatTypeBBool(facts.sharedJunctionPresent)}</span>
+                        </span>
+                        <span>
+                          Source frame valid: <span className="text-slate-200">{formatTypeBBool(facts.validSourceFrame)}</span>
+                        </span>
+                        <span>
+                          Declared geometry finite: <span className="text-slate-200">{formatTypeBBool(facts.finiteDeclaredGeometry)}</span>
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* Evidence summary */}
+                    <div className="rounded-lg border border-slate-700 bg-slate-900/60 p-3">
+                      <p className="font-medium text-slate-100">Evidence summary</p>
+                      <div className="mt-1 grid grid-cols-1 gap-x-4 gap-y-0.5 text-slate-400 sm:grid-cols-2">
+                        <span>
+                          Rear seam usable: <span className="text-slate-200">{formatTypeBBool(q.evidenceSummary.rearSeamUsable)}</span>
+                        </span>
+                        <span>
+                          Strong side support usable: <span className="text-slate-200">{formatTypeBBool(q.evidenceSummary.strongSideSeamUsable)}</span>
+                        </span>
+                        <span>
+                          Rear-side relationship usable: <span className="text-slate-200">{formatTypeBBool(q.evidenceSummary.rearSideRelationshipUsable)}</span>
+                        </span>
+                        <span>
+                          Latent near-corner bounded: <span className="text-slate-200">{formatTypeBBool(q.evidenceSummary.latentNearCornerBounded)}</span>
+                        </span>
+                        <span>
+                          Crop interpretation usable: <span className="text-slate-200">{formatTypeBBool(q.evidenceSummary.cropInterpretationUsable)}</span>
+                        </span>
+                      </div>
+                      <p className="mt-1 text-[10px] text-slate-500">
+                        This is a declared-evidence summary only. It is not calibration readiness.
+                      </p>
+                    </div>
+
+                    {/* Blocking evidence gaps */}
+                    <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 p-3">
+                      <p className="font-medium text-amber-100">Blocking evidence gaps</p>
+                      {q.blockingReasons.length > 0 ? (
+                        <ul className="mt-1 list-disc space-y-0.5 pl-4 text-amber-200/90">
+                          {q.blockingReasons.map((reason) => (
+                            <li key={reason}>{TYPE_B_REASON_LABELS[reason]}</li>
+                          ))}
+                        </ul>
+                      ) : (
+                        <p className="mt-1 text-amber-200/70">No blocking evidence gaps.</p>
+                      )}
+                    </div>
+
+                    {/* Advisory observations */}
+                    <div className="rounded-lg border border-slate-700 bg-slate-900/60 p-3">
+                      <p className="font-medium text-slate-100">Advisory observations</p>
+                      {q.advisoryReasons.length > 0 ? (
+                        <ul className="mt-1 list-disc space-y-0.5 pl-4 text-slate-300">
+                          {q.advisoryReasons.map((reason) => (
+                            <li key={reason}>{TYPE_B_REASON_LABELS[reason]}</li>
+                          ))}
+                        </ul>
+                      ) : (
+                        <p className="mt-1 text-slate-400">No advisory observations.</p>
+                      )}
+                    </div>
+
+                    {/* Overlay toggle + clear */}
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <label className="flex items-center gap-2 text-slate-300">
+                        <input
+                          type="checkbox"
+                          checked={typeBOverlayVisible}
+                          onChange={(event) => setTypeBOverlayVisible(event.target.checked)}
+                          disabled={!typeBHasDeclaredGeometry}
+                        />
+                        <span>Show Type B evidence overlay</span>
+                      </label>
+                      <button
+                        type="button"
+                        onClick={handleClearTypeBReview}
+                        className="rounded-lg border border-slate-600 bg-slate-800/60 px-3 py-1.5 text-xs font-medium text-slate-200 transition hover:bg-slate-800"
+                      >
+                        Clear Type B evidence review
+                      </button>
+                    </div>
+                  </>
+                )}
+
+                {typeBReviewNote && (
+                  <p className="rounded-lg border border-slate-700 bg-slate-900/60 px-3 py-2 text-[11px] text-slate-300">
+                    {typeBReviewNote}
+                  </p>
+                )}
+              </div>
+            );
+          })()}
         </CollapsibleSection>
 
         <section className="rounded-2xl border border-fuchsia-500/30 bg-slate-900/70 p-4">
