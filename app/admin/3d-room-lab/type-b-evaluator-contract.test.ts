@@ -19,11 +19,22 @@ import {
   TYPE_B_EVALUATOR_JUNCTION_TOLERANCE_MIN_PX,
   TYPE_B_EVALUATOR_JUNCTION_TOLERANCE_RATIO,
   TYPE_B_EVIDENCE_SNAPSHOT_SCHEMA,
+  TYPE_B_LATENT_DEPTH_PRODUCT_FORMULA,
+  TYPE_B_POSE_COMPARISON_REFERENCE_FRAME,
+  TYPE_B_PROVISIONAL_MIN_LATENT_DEPTH_PRODUCT,
+  TYPE_B_PROVISIONAL_MIN_WORLD_TRIANGLE_ANGLE_DEG,
   compareTypeBEvidenceSnapshotBasis,
+  isTypeBLatentDepthProductConditioned,
+  makeTypeBLatentDepthEquivalenceClassKey,
+  makeTypeBPoseProbeEquivalenceKey,
   resolveTypeBEvaluatorJunctionTolerancePx,
+  resolveTypeBLatentDepthProduct,
+  type TypeBDiagnosticRecord,
   type TypeBDiagnosticTuple,
   type TypeBEvidenceSnapshot,
   type TypeBEvidenceSnapshotBasis,
+  type TypeBLatentDepthEquivalenceClass,
+  type TypeBPoseProbeEquivalence,
 } from "./type-b-evaluator-contract";
 
 // --- Fixtures ---------------------------------------------------------------
@@ -307,9 +318,10 @@ test("14: a representative exact tuple contains only the four authorized fields"
 // --- 15. No solver / React / UI / calibration runtime surface ---------------
 
 test("15: the contract module's runtime surface is only pure constants + helpers", () => {
-  // Types are erased at runtime; the ONLY runtime exports are the six
-  // identifier/constant values and the two pure helpers. Any accidental solver /
-  // React / UI / calibration runtime import would surface as extra exports here.
+  // Types are erased at runtime; the ONLY runtime exports are the identifier /
+  // constant values and the pure helpers (B3A + the B3B-R additions). Any
+  // accidental solver / React / UI / calibration runtime import would surface as
+  // an extra export here.
   const runtimeKeys = Object.keys(contract).sort();
   assert.deepEqual(runtimeKeys, [
     "TYPE_B_EVALUATOR_FAMILY",
@@ -318,9 +330,217 @@ test("15: the contract module's runtime surface is only pure constants + helpers
     "TYPE_B_EVALUATOR_JUNCTION_TOLERANCE_MIN_PX",
     "TYPE_B_EVALUATOR_JUNCTION_TOLERANCE_RATIO",
     "TYPE_B_EVIDENCE_SNAPSHOT_SCHEMA",
+    "TYPE_B_LATENT_DEPTH_PRODUCT_FORMULA",
+    "TYPE_B_POSE_COMPARISON_REFERENCE_FRAME",
+    "TYPE_B_PROVISIONAL_MIN_LATENT_DEPTH_PRODUCT",
+    "TYPE_B_PROVISIONAL_MIN_WORLD_TRIANGLE_ANGLE_DEG",
     "compareTypeBEvidenceSnapshotBasis",
+    "isTypeBLatentDepthProductConditioned",
+    "makeTypeBLatentDepthEquivalenceClassKey",
+    "makeTypeBPoseProbeEquivalenceKey",
     "resolveTypeBEvaluatorJunctionTolerancePx",
+    "resolveTypeBLatentDepthProduct",
   ]);
   assert.equal(typeof resolveTypeBEvaluatorJunctionTolerancePx, "function");
   assert.equal(typeof compareTypeBEvidenceSnapshotBasis, "function");
+  assert.equal(typeof resolveTypeBLatentDepthProduct, "function");
+  assert.equal(typeof isTypeBLatentDepthProductConditioned, "function");
+  assert.equal(typeof makeTypeBLatentDepthEquivalenceClassKey, "function");
+  assert.equal(typeof makeTypeBPoseProbeEquivalenceKey, "function");
+});
+
+// --- B3B-R: latent-depth product identifiability contract -------------------
+
+test("B3B-R 1: latent-depth product formula identifier is exact", () => {
+  assert.equal(
+    TYPE_B_LATENT_DEPTH_PRODUCT_FORMULA,
+    "latent_side_extent_times_floor_aspect_ratio/v0"
+  );
+});
+
+test("B3B-R 2: junction-anchored reference-frame identifier is exact", () => {
+  assert.equal(TYPE_B_POSE_COMPARISON_REFERENCE_FRAME, "junction_anchored/v0");
+});
+
+test("B3B-R 3: provisional world-triangle angle constant is 12", () => {
+  assert.equal(TYPE_B_PROVISIONAL_MIN_WORLD_TRIANGLE_ANGLE_DEG, 12);
+});
+
+test("B3B-R 4: provisional product threshold equals tan(12 deg)", () => {
+  const expected = Math.tan((12 * Math.PI) / 180);
+  assert.ok(
+    Math.abs(TYPE_B_PROVISIONAL_MIN_LATENT_DEPTH_PRODUCT - expected) < 1e-12
+  );
+});
+
+test("B3B-R 5: valid product derivation returns exact product + formula id", () => {
+  const product = resolveTypeBLatentDepthProduct(0.5, 1.5);
+  assert.ok(product !== null);
+  assert.equal(product.formulaId, TYPE_B_LATENT_DEPTH_PRODUCT_FORMULA);
+  assert.equal(product.value, 0.75);
+});
+
+test("B3B-R 6: constant-product member pairs derive equal product values", () => {
+  const a = resolveTypeBLatentDepthProduct(0.5, 1.5);
+  const b = resolveTypeBLatentDepthProduct(0.75, 1.0);
+  assert.ok(a !== null && b !== null);
+  assert.equal(a.value, 0.75);
+  assert.equal(b.value, 0.75);
+  assert.equal(a.value, b.value);
+});
+
+test("B3B-R 7: non-finite, zero, negative, and >1 extent inputs return null", () => {
+  assert.equal(resolveTypeBLatentDepthProduct(Number.NaN, 1.0), null);
+  assert.equal(
+    resolveTypeBLatentDepthProduct(0.5, Number.POSITIVE_INFINITY),
+    null
+  );
+  assert.equal(resolveTypeBLatentDepthProduct(0, 1.0), null);
+  assert.equal(resolveTypeBLatentDepthProduct(-0.2, 1.0), null);
+  assert.equal(resolveTypeBLatentDepthProduct(1.0001, 1.0), null);
+  // floorAspectRatio must be strictly positive.
+  assert.equal(resolveTypeBLatentDepthProduct(0.5, 0), null);
+  assert.equal(resolveTypeBLatentDepthProduct(0.5, -1.0), null);
+  // Upper extent bound is inclusive of exactly 1.
+  const atOne = resolveTypeBLatentDepthProduct(1, 0.8);
+  assert.ok(atOne !== null);
+  assert.equal(atOne.value, 0.8);
+});
+
+test("B3B-R 8: product conditioning accepts the threshold and above", () => {
+  const atThreshold = {
+    formulaId: TYPE_B_LATENT_DEPTH_PRODUCT_FORMULA,
+    value: TYPE_B_PROVISIONAL_MIN_LATENT_DEPTH_PRODUCT,
+  } as const;
+  assert.equal(isTypeBLatentDepthProductConditioned(atThreshold), true);
+  const above = resolveTypeBLatentDepthProduct(0.75, 1.0); // 0.75 >> tan(12)
+  assert.ok(above !== null);
+  assert.equal(isTypeBLatentDepthProductConditioned(above), true);
+});
+
+test("B3B-R 9: product conditioning rejects below-threshold, null, non-finite", () => {
+  const below = {
+    formulaId: TYPE_B_LATENT_DEPTH_PRODUCT_FORMULA,
+    value: TYPE_B_PROVISIONAL_MIN_LATENT_DEPTH_PRODUCT - 1e-6,
+  } as const;
+  assert.equal(isTypeBLatentDepthProductConditioned(below), false);
+  assert.equal(isTypeBLatentDepthProductConditioned(null), false);
+  assert.equal(
+    isTypeBLatentDepthProductConditioned({
+      formulaId: TYPE_B_LATENT_DEPTH_PRODUCT_FORMULA,
+      value: Number.NaN,
+    }),
+    false
+  );
+});
+
+test("B3B-R 10: equivalence-class key helper is deterministic + null-guarded", () => {
+  const a = makeTypeBLatentDepthEquivalenceClassKey("p=0.750000");
+  const b = makeTypeBLatentDepthEquivalenceClassKey("p=0.750000");
+  assert.equal(a, b);
+  assert.ok(typeof a === "string" && a.length > 0);
+  // Namespaced under the product formula (not fuzzy).
+  assert.ok(a.startsWith(`${TYPE_B_LATENT_DEPTH_PRODUCT_FORMULA}#`));
+  // Invalid identities return null.
+  assert.equal(makeTypeBLatentDepthEquivalenceClassKey(""), null);
+  assert.equal(makeTypeBLatentDepthEquivalenceClassKey("   "), null);
+});
+
+test("B3B-R 11: pose-probe key helper is deterministic for exact class + FOV", () => {
+  const classKey = makeTypeBLatentDepthEquivalenceClassKey("p=0.750000");
+  assert.ok(classKey !== null);
+  const a = makeTypeBPoseProbeEquivalenceKey(classKey, 55);
+  const b = makeTypeBPoseProbeEquivalenceKey(classKey, 55);
+  assert.equal(a, b);
+  assert.ok(typeof a === "string" && a.length > 0);
+  // Different FOV probes yield different keys.
+  assert.notEqual(a, makeTypeBPoseProbeEquivalenceKey(classKey, 56));
+});
+
+test("B3B-R 12: invalid class / FOV input returns null", () => {
+  assert.equal(makeTypeBPoseProbeEquivalenceKey("", 55), null);
+  assert.equal(makeTypeBPoseProbeEquivalenceKey("   ", 55), null);
+  assert.equal(makeTypeBPoseProbeEquivalenceKey("class", Number.NaN), null);
+  assert.equal(
+    makeTypeBPoseProbeEquivalenceKey("class", Number.POSITIVE_INFINITY),
+    null
+  );
+});
+
+test("B3B-R 13: no key helper performs fuzzy near-equality grouping", () => {
+  // Near-equal but distinct explicit identities must NOT collapse to one key.
+  const near1 = makeTypeBLatentDepthEquivalenceClassKey("0.75");
+  const near2 = makeTypeBLatentDepthEquivalenceClassKey("0.7500000001");
+  assert.notEqual(near1, near2);
+  // Near-equal but distinct exact FOV probes must NOT collapse to one key.
+  const classKey = makeTypeBLatentDepthEquivalenceClassKey("p=0.750000");
+  assert.ok(classKey !== null);
+  assert.notEqual(
+    makeTypeBPoseProbeEquivalenceKey(classKey, 55),
+    makeTypeBPoseProbeEquivalenceKey(classKey, 55.0000001)
+  );
+});
+
+test("B3B-R 14: a future diagnostic record requires both equivalence fields", () => {
+  const product = resolveTypeBLatentDepthProduct(0.5, 1.5);
+  assert.ok(product !== null);
+  const classKey = makeTypeBLatentDepthEquivalenceClassKey("p=0.750000");
+  assert.ok(classKey !== null);
+  const latentDepthEquivalence: TypeBLatentDepthEquivalenceClass = {
+    formulaId: TYPE_B_LATENT_DEPTH_PRODUCT_FORMULA,
+    latentDepthProduct: product,
+    equivalenceClassKey: classKey,
+    poseComparisonReferenceFrame: TYPE_B_POSE_COMPARISON_REFERENCE_FRAME,
+  };
+  const probeKey = makeTypeBPoseProbeEquivalenceKey(classKey, 55);
+  assert.ok(probeKey !== null);
+  const poseProbeEquivalence: TypeBPoseProbeEquivalence = {
+    latentDepthEquivalenceClassKey: classKey,
+    fovProbeDeg: 55,
+    poseProbeEquivalenceKey: probeKey,
+  };
+  const record: TypeBDiagnosticRecord = {
+    snapshotSchema: TYPE_B_EVIDENCE_SNAPSHOT_SCHEMA,
+    evidenceFamily: "rear_seam_plus_strong_side_seam",
+    evaluatorFamily: TYPE_B_EVALUATOR_FAMILY,
+    tuple: {
+      evaluatorFamily: TYPE_B_EVALUATOR_FAMILY,
+      latentSideExtent: 0.5,
+      floorAspectRatio: 1.5,
+      fovProbeDeg: 55,
+    },
+    latentDepthEquivalence,
+    poseProbeEquivalence,
+    poseStageResult: { kind: "pose_hypotheses", hypotheses: [] },
+    constructionObservations: [],
+    probeClassification: "not_evaluated",
+    fovCorridors: null,
+    refusalReasons: [],
+  };
+  // Both equivalence groupings are present and internally consistent.
+  assert.equal(record.latentDepthEquivalence.latentDepthProduct.value, 0.75);
+  assert.equal(
+    record.latentDepthEquivalence.poseComparisonReferenceFrame,
+    "junction_anchored/v0"
+  );
+  assert.equal(
+    record.poseProbeEquivalence.latentDepthEquivalenceClassKey,
+    record.latentDepthEquivalence.equivalenceClassKey
+  );
+  assert.equal(record.poseProbeEquivalence.fovProbeDeg, 55);
+});
+
+test("B3B-R 15: TypeBDiagnosticTuple still has exactly its four runtime keys", () => {
+  const tuple: TypeBDiagnosticTuple = {
+    evaluatorFamily: TYPE_B_EVALUATOR_FAMILY,
+    latentSideExtent: 0.5,
+    floorAspectRatio: 1.5,
+    fovProbeDeg: 55,
+  };
+  assert.deepEqual(Object.keys(tuple).sort(), [
+    "evaluatorFamily",
+    "floorAspectRatio",
+    "fovProbeDeg",
+    "latentSideExtent",
+  ]);
 });

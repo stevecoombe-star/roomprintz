@@ -100,6 +100,159 @@ export function resolveTypeBEvaluatorJunctionTolerancePx(
   );
 }
 
+// --- 1b. Latent-depth product identifiability contract (B3B-R) --------------
+// A read-only B3B feasibility study proved that, at a fixed FOV probe, the
+// minimal (P3P) pose geometry of this first evaluator family depends ONLY on the
+// PRODUCT of the two authorized tuple scalars:
+//
+//   p = latentSideExtent × floorAspectRatio
+//
+// Distinct (latentSideExtent, floorAspectRatio) pairs sharing the same `p`
+// produce EQUIVALENT pose geometry in a junction-anchored world frame. Aspect is
+// therefore NOT independently pose-identifiable here; it may still matter later
+// as a frame-truncation compatibility hypothesis (an occluded side terminus
+// provides no crop-based aspect discriminator in v0). This section adds the
+// derived vocabulary that lets a FUTURE B3C enumerate the identifiable product
+// axis first and treat aspect only as a member-level hypothesis. It implements
+// NO P3P, NO pose solver, NO crop check, and NO tuple generation.
+
+// Identity of the derived latent-depth product formula. This is a DERIVED
+// evaluator contract, not new observed evidence, so it does NOT bump the
+// evidence-snapshot schema. The `/v0` suffix makes a future redefinition an
+// explicit new identifier rather than a silent change.
+export const TYPE_B_LATENT_DEPTH_PRODUCT_FORMULA =
+  "latent_side_extent_times_floor_aspect_ratio/v0" as const;
+
+// Identity of the required cross-tuple pose-comparison reference frame. The
+// committed floor rectangle is CENTERED in world coordinates, so a camera's
+// world position can appear to shift across aspect values even when the pose
+// geometry is equivalent relative to the evidence. A FUTURE branch/stability
+// layer must therefore compare poses in a junction-anchored frame. This is a
+// documentation-level identity only: B3B-R adds NO pose-comparison logic.
+export const TYPE_B_POSE_COMPARISON_REFERENCE_FRAME =
+  "junction_anchored/v0" as const;
+
+// Provisional first-family world-triangle conditioning angle (degrees). The
+// world triangle's minimum internal angle equals atan(p); requiring it to be at
+// least this angle is the provisional conditioning standard, chosen to mirror
+// B1's committed image-space angular floor. It is a PROVISIONAL contract value
+// for FUTURE B3C tuple-generation refusal semantics, NOT a calibrated final
+// threshold.
+export const TYPE_B_PROVISIONAL_MIN_WORLD_TRIANGLE_ANGLE_DEG = 12;
+
+// Provisional minimum latent-depth product = tan(min world-triangle angle).
+// Because the triangle's minimum internal angle is atan(p), requiring
+// p >= tan(angle) is equivalent to requiring that minimum angle. Derived from
+// the angle constant above; empirical/calibration-pending like that angle.
+export const TYPE_B_PROVISIONAL_MIN_LATENT_DEPTH_PRODUCT = Math.tan(
+  (TYPE_B_PROVISIONAL_MIN_WORLD_TRIANGLE_ANGLE_DEG * Math.PI) / 180
+);
+
+// The derived identifiable pose axis for the first evaluator family. `value` is
+// p = latentSideExtent × floorAspectRatio. It is an ENUMERATED diagnostic
+// hypothesis, never a solved output or a recovered physical-room truth.
+export type TypeBLatentDepthProduct = {
+  readonly formulaId: typeof TYPE_B_LATENT_DEPTH_PRODUCT_FORMULA;
+  readonly value: number;
+};
+
+// Pure resolver for the latent-depth product. It never generates tuples and does
+// NOT validate future authorized-aspect membership. Returns null for a
+// non-finite input, a non-positive / >1 `latentSideExtent` (the contract's
+// bounded (0, 1] extent interval), or a non-positive `floorAspectRatio`.
+// Otherwise it returns the EXACT product (no rounding, no clamping) beside the
+// formula identity. It never mutates its inputs.
+export function resolveTypeBLatentDepthProduct(
+  latentSideExtent: number,
+  floorAspectRatio: number
+): TypeBLatentDepthProduct | null {
+  if (
+    !Number.isFinite(latentSideExtent) ||
+    !Number.isFinite(floorAspectRatio)
+  ) {
+    return null;
+  }
+  if (latentSideExtent <= 0 || latentSideExtent > 1) return null;
+  if (floorAspectRatio <= 0) return null;
+  return {
+    formulaId: TYPE_B_LATENT_DEPTH_PRODUCT_FORMULA,
+    value: latentSideExtent * floorAspectRatio,
+  };
+}
+
+// Pure product-conditioning test. Returns true ONLY when the product meets or
+// exceeds the provisional floor. A FUTURE B3C phase will use this as a tuple-
+// generation refusal condition (a failing product yields no tuple). The
+// threshold is provisional and calibration-pending; this helper never mutates
+// its input and returns false for null / non-finite / below-threshold values.
+export function isTypeBLatentDepthProductConditioned(
+  latentDepthProduct: TypeBLatentDepthProduct | null
+): boolean {
+  if (!latentDepthProduct) return false;
+  const value = latentDepthProduct.value;
+  if (!Number.isFinite(value)) return false;
+  return value >= TYPE_B_PROVISIONAL_MIN_LATENT_DEPTH_PRODUCT;
+}
+
+// --- 1c. Latent-depth equivalence-class + pose-probe identity (B3B-R) -------
+// FUTURE-ONLY grouping/reporting vocabulary. A FUTURE B3C phase must enumerate
+// EXACT primary product values FIRST, build a class from each such value, and
+// only then derive aspect/member tuples for that class. B3C must NEVER group
+// arbitrary floating-point products with a tolerance; the class key is created
+// from an EXPLICITLY supplied primary-class identity, not from fuzzy float
+// bucketing. These are the identifiable pose-axis grouping types; the tuple
+// stays a member-level hypothesis (see TypeBDiagnosticTuple).
+
+export type TypeBLatentDepthEquivalenceClass = {
+  readonly formulaId: typeof TYPE_B_LATENT_DEPTH_PRODUCT_FORMULA;
+  readonly latentDepthProduct: TypeBLatentDepthProduct;
+
+  // Stable identifier created from a FUTURE explicitly enumerated primary
+  // product value. B3C must not group arbitrary floating-point products with a
+  // tolerance.
+  readonly equivalenceClassKey: string;
+
+  readonly poseComparisonReferenceFrame: typeof TYPE_B_POSE_COMPARISON_REFERENCE_FRAME;
+};
+
+export type TypeBPoseProbeEquivalence = {
+  readonly latentDepthEquivalenceClassKey: string;
+  readonly fovProbeDeg: number;
+
+  // Identity for branch-aware pose comparison at one exact FOV probe. It is NOT
+  // a rank, score, confidence, or selection key.
+  readonly poseProbeEquivalenceKey: string;
+};
+
+// Deterministic latent-depth equivalence-class key from an EXPLICITLY supplied
+// primary product-class identity (e.g. an enumeration token or an exact decimal
+// string chosen by B3C). It performs NO fuzzy near-equality grouping: it
+// namespaces the caller's exact identity under the product formula. Returns null
+// for a non-string / empty / whitespace-only identity.
+export function makeTypeBLatentDepthEquivalenceClassKey(
+  primaryProductClassKey: string
+): string | null {
+  if (typeof primaryProductClassKey !== "string") return null;
+  const trimmed = primaryProductClassKey.trim();
+  if (trimmed.length === 0) return null;
+  return `${TYPE_B_LATENT_DEPTH_PRODUCT_FORMULA}#${trimmed}`;
+}
+
+// Deterministic per-probe pose-equivalence key from an EXACT class key plus an
+// EXACT FOV probe. It performs NO fuzzy float grouping (the FOV is stringified
+// exactly, never rounded or bucketed) and NO ranking. Returns null for a
+// non-string / empty class key or a non-finite FOV probe.
+export function makeTypeBPoseProbeEquivalenceKey(
+  latentDepthEquivalenceClassKey: string,
+  fovProbeDeg: number
+): string | null {
+  if (typeof latentDepthEquivalenceClassKey !== "string") return null;
+  const trimmed = latentDepthEquivalenceClassKey.trim();
+  if (trimmed.length === 0) return null;
+  if (!Number.isFinite(fovProbeDeg)) return null;
+  return `${trimmed}@fovProbeDeg=${fovProbeDeg}`;
+}
+
 // --- 2. Evidence family versus evaluator family -----------------------------
 // evidence family  = WHAT the operator declared and observed (committed B1
 //                    literal "rear_seam_plus_strong_side_seam").
@@ -255,11 +408,11 @@ export type TypeBEvaluatorEligibilityRefusal =
 // --- 5. Exact tuple contract ------------------------------------------------
 
 // Exact one-latent diagnostic tuple for ONE future fixed-FOV probe. Semantic
-// constraints (NOT enforced or generated in B3A):
+// constraints (NOT enforced or generated in B3A/B3B-R):
 //   - `latentSideExtent` is normalized against the tuple's assumed floor depth;
-//     intended interval is (0, 1]; values near zero are potentially degenerate
-//     and will be addressed in B3B. It is an ENUMERATED bounded candidate only —
-//     never a solved output or a recovered physical-room truth.
+//     intended interval is (0, 1]; values near zero are potentially degenerate.
+//     It is an ENUMERATED bounded candidate only — never a solved output or a
+//     recovered physical-room truth.
 //   - `floorAspectRatio` must later be one of the frozen snapshot's authorized
 //     aspect ratios.
 //   - `fovProbeDeg` is the single exact probe for this one diagnostic evaluation.
@@ -267,6 +420,22 @@ export type TypeBEvaluatorEligibilityRefusal =
 //     corner coordinate — a second latent / free near-corner / virtual
 //     quadrilateral would turn an exactly determined system into unconstrained
 //     geometry invention, which this family forbids.
+//
+// B3B-R identifiability note (derived from the B3B feasibility study):
+//   - `latentSideExtent` and `floorAspectRatio` are NOT independently pose-
+//     identifiable in this evaluator family; the minimal (P3P) pose geometry at a
+//     fixed FOV depends only on their product p = latentSideExtent ×
+//     floorAspectRatio (see TypeBLatentDepthProduct).
+//   - A FUTURE B3C phase must enumerate `latentDepthProduct` as the PRIMARY pose
+//     axis, then derive member tuples; aspect is only a member-level
+//     (frame-truncation) compatibility hypothesis, never independent pose truth.
+//   - For a FIXED product and FOV, constant-product members produce equivalent
+//     pose geometry and must NEVER be treated as independent pose corroboration.
+//   - Product conditioning is assessed on `latentDepthProduct`
+//     (isTypeBLatentDepthProductConditioned), NOT on `latentSideExtent` alone.
+//   - No second latent dimension is permitted. The tuple keeps exactly its four
+//     runtime fields; the equivalence class is a separate grouping/reporting
+//     layer and is NOT added to the tuple.
 export type TypeBDiagnosticTuple = {
   readonly evaluatorFamily: typeof TYPE_B_EVALUATOR_FAMILY;
   readonly latentSideExtent: number;
@@ -349,6 +518,14 @@ export type TypeBPoseStage = (
 
 // --- 7. Construction-satisfying residual vocabulary -------------------------
 
+// B3B-R clarification of `side_chord_alignment`: for this v0 evaluator family the
+// side chord is construction-satisfying and VACUOUS as independent evidence — a
+// straight declared chord is mapped onto the image line through the recovered
+// junction and terminus projections by construction. The side chord contributes
+// only (1) operator identification of the junction and terminus image points and
+// (2) a FUTURE frame-truncation continuation compatibility check. It must NOT be
+// counted as an additional independent residual or confidence signal. The enum
+// literal is retained.
 export type TypeBConstructionObservationKind =
   | "junction_rear_point"
   | "non_junction_rear_point"
@@ -442,8 +619,29 @@ export type TypeBContiguousFovInterval = {
   readonly probeCount: number;
 };
 
+// FUTURE-ONLY crop-compatibility state for the side terminus. It is NOT a score
+// or confidence measure and B3B-R implements NO crop test.
+//   - `frame_truncated` may LATER produce a one-sided compatibility inequality
+//     (project the assumed side-edge continuation and test it against the source-
+//     frame boundary), reported as latent compatibility, never a recovered
+//     corner.
+//   - `occluded` uses `not_applicable` in v0 because B1/B2 record NO occluder-
+//     boundary geometry, so no meaningful check exists.
+export type TypeBCropCompatibilityState =
+  | "not_evaluated"
+  | "compatible"
+  | "incompatible"
+  | "not_applicable";
+
 // `highConfidence` is INHERITED vocabulary from the Type A corridor shape only.
-// B3A defines NO confidence logic and classifies nothing as high confidence.
+// B3A/B3B-R define NO confidence logic and classify nothing as high confidence.
+// B3B-R note: `highConfidence` must remain EMPTY in v0 because Type A's
+// confidence-bearing signals (homography column-scale ratio and overdetermined
+// reprojection agreement) do NOT transfer to an exactly determined minimal pose.
+// A FUTURE B3D branch-aware corridor extension will be versioned SEPARATELY, and
+// branch identity must use junction-anchored pose comparison
+// (TYPE_B_POSE_COMPARISON_REFERENCE_FRAME). No branch comparison or corridor
+// logic is implemented here or shaped into this type.
 export type TypeBFovCorridors = {
   readonly valid: readonly TypeBContiguousFovInterval[];
   readonly highConfidence: readonly TypeBContiguousFovInterval[];
@@ -454,11 +652,21 @@ export type TypeBFovCorridors = {
 // classification, corridor vocabulary where applicable, and refusal reasons.
 // It has NO ranking, winner, recommendation, selection, preview, load, or Apply
 // field by contract.
+//
+// B3B-R: the record is FUTURE-ONLY (B3A/B3B-R create NO records at runtime) and
+// now stores an equivalence GROUPING identity. `latentDepthEquivalence` records
+// which identifiable product class the member tuple belongs to, and
+// `poseProbeEquivalence` records the per-probe pose-comparison identity. Storing
+// them does NOT imply a selected or preferred hypothesis: aspects within one
+// product class may differ ONLY in crop-compatibility state, never in pose
+// evidence.
 export type TypeBDiagnosticRecord = {
   readonly snapshotSchema: typeof TYPE_B_EVIDENCE_SNAPSHOT_SCHEMA;
   readonly evidenceFamily: TypeBEvidenceFamily;
   readonly evaluatorFamily: typeof TYPE_B_EVALUATOR_FAMILY;
   readonly tuple: TypeBDiagnosticTuple;
+  readonly latentDepthEquivalence: TypeBLatentDepthEquivalenceClass;
+  readonly poseProbeEquivalence: TypeBPoseProbeEquivalence;
   readonly poseStageResult: TypeBPoseStageResult;
   readonly constructionObservations: readonly TypeBConstructionObservation[];
   readonly probeClassification: TypeBFovProbeClassification;
@@ -485,6 +693,18 @@ export type TypeBBasinClassification =
 // reasons. Union members are disjoint (no duplicate literals): note
 // eligibility's `crop_or_occlusion_incompatible` (evidence-level) is distinct
 // from the tuple-level `crop_evidence_incompatible` below.
+// B3B-R clarifications (existing literals retained; NO new literal added):
+//   - `pose_multiplicity_unresolved` is a CORRIDOR/RUN-scope reason, NEVER a
+//     per-probe selection signal (the pose stage returns all surviving
+//     hypotheses unranked; multiplicity is assessed only at corridor/basin
+//     level).
+//   - `instability_across_neighboring_tuples` must treat a smooth constant-
+//     product ridge as PARAMETER DEGENERACY (aspect is not pose-identifiable),
+//     never as corroborating stability evidence.
+//   - `crop_evidence_incompatible` applies ONLY where future evidence geometry
+//     supports a real check (a `frame_truncated` continuation inequality); for a
+//     v0 occluded side terminus crop compatibility is `not_applicable`, not
+//     inferred (see TypeBCropCompatibilityState).
 export type TypeBDiagnosticRefusalReason =
   | TypeBEvaluatorEligibilityRefusal
   | "evidence_snapshot_stale"
