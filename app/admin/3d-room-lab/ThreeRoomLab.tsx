@@ -162,6 +162,11 @@ import {
   type TypeBEvidenceReviewState,
 } from "./type-b-evidence-review";
 import {
+  patchTypeBReviewEndpoint,
+  type TypeBEndpointTarget,
+  type TypeBPlacementTarget,
+} from "./type-b-direct-edit";
+import {
   generateManualFloorSupportTrials,
   type TrialGenerationCandidate,
 } from "./manual-floor-support-trial-generation";
@@ -913,6 +918,14 @@ const TYPE_B_ENDPOINT_STATUS_GLYPH: Record<TypeBEndpointStatus, string> = {
   unresolved: "?",
 };
 
+// Phase B2A: labels for the four direct-placement / drag endpoint targets.
+const TYPE_B_PLACEMENT_TARGET_LABELS: Record<TypeBEndpointTarget, string> = {
+  rear_start: "rear seam start",
+  rear_end: "rear seam end",
+  side_start: "side seam start",
+  side_end: "side seam end",
+};
+
 function formatTypeBBool(value: boolean | null | undefined): string {
   if (value === true) return "Yes";
   if (value === false) return "No";
@@ -1149,6 +1162,19 @@ export default function ThreeRoomLab({
   const [typeBReviewNote, setTypeBReviewNote] = useState<string | null>(null);
   const typeBReviewRef = useRef<TypeBEvidenceReviewState>(typeBReview);
   const typeBPrevTypeAContextRef = useRef<string | null>(null);
+  // --- Phase B2A: transient direct-overlay edit UI state -------------------
+  // Placement-target arming (which single declared endpoint the NEXT valid
+  // image click declares) and drag state. Both are ephemeral UI state only:
+  // never persisted, cleared on completion, clear, invalidation, or teardown.
+  const [typeBPlacementTarget, setTypeBPlacementTarget] =
+    useState<TypeBPlacementTarget>(null);
+  const typeBPlacementTargetRef = useRef<TypeBPlacementTarget>(null);
+  const [typeBDraggingTarget, setTypeBDraggingTarget] =
+    useState<TypeBEndpointTarget | null>(null);
+  const typeBDraggingRef = useRef<{ target: TypeBEndpointTarget; pointerId: number } | null>(
+    null
+  );
+  const typeBOverlayRef = useRef<SVGSVGElement | null>(null);
   const [isCoupledSearchOpen, setIsCoupledSearchOpen] = useState(false);
   const [coupledSearchResultSet, setCoupledSearchResultSet] =
     useState<CoupledSearchResultSet | null>(null);
@@ -5095,6 +5121,17 @@ export default function ThreeRoomLab({
     typeBReviewRef.current = typeBReview;
   }, [typeBReview]);
 
+  // --- Phase B2A: cancel ALL transient Type B interaction (armed placement +
+  // active drag). Called on completion, clear, invalidation, and when review
+  // goes inactive. Declared here (before the invalidation effect) so the effect
+  // can depend on it without a temporal-dead-zone reference.
+  const resetTypeBInteraction = useCallback(() => {
+    typeBPlacementTargetRef.current = null;
+    setTypeBPlacementTarget(null);
+    typeBDraggingRef.current = null;
+    setTypeBDraggingTarget(null);
+  }, []);
+
   // Invalidation: clear an active review when the underlying room-geometry basis
   // changes. When the basis is unchanged the pure reconcile returns the same
   // state reference, so this effect is a stable no-op (no update loop).
@@ -5104,11 +5141,12 @@ export default function ThreeRoomLab({
       typeBReviewRef.current = result.next;
       setTypeBReview(result.next);
       setTypeBOverlayVisible(false);
+      resetTypeBInteraction();
       setTypeBReviewNote(
         "Type B evidence review cleared because the underlying room geometry context changed."
       );
     }
-  }, [typeBGeometryContext]);
+  }, [typeBGeometryContext, resetTypeBInteraction]);
 
   // Type A context change: retain declarations, re-qualify (handled by the memo
   // above), and surface a small note only when declarations exist.
@@ -5143,8 +5181,9 @@ export default function ThreeRoomLab({
     typeBReviewRef.current = empty;
     setTypeBReview(empty);
     setTypeBOverlayVisible(false);
+    resetTypeBInteraction();
     setTypeBReviewNote("Type B evidence review cleared.");
-  }, []);
+  }, [resetTypeBInteraction]);
 
   const updateTypeBRearSeam = useCallback(
     (patch: Partial<TypeBDeclaredLineEvidence>) => {
@@ -5172,6 +5211,115 @@ export default function ThreeRoomLab({
     },
     []
   );
+
+  // --- Phase B2A: direct-overlay placement / drag interaction --------------
+  // Keep the placement-target ref in sync so pointer handlers read a stable
+  // value without being re-created on every arm/disarm.
+  useEffect(() => {
+    typeBPlacementTargetRef.current = typeBPlacementTarget;
+  }, [typeBPlacementTarget]);
+
+  // Arm / toggle a single placement target. Only one target may be armed; the
+  // same button toggles it off. Arming NEVER alters any declaration.
+  const armTypeBPlacementTarget = useCallback((target: TypeBEndpointTarget) => {
+    setTypeBPlacementTarget((current) => (current === target ? null : target));
+  }, []);
+
+  const cancelTypeBPlacement = useCallback(() => {
+    setTypeBPlacementTarget(null);
+  }, []);
+
+  // Converts a pointer client position to source-normalized image coordinates
+  // using the SAME object-cover crop helpers as the manual (Type A) overlay, so
+  // stored Type B endpoints stay aligned across resize / cover-crop and are
+  // never viewport-relative. Returns null on invalid geometry / non-finite.
+  const clientToTypeBSourceNorm = useCallback(
+    (clientX: number, clientY: number): SourceNormPoint | null => {
+      const overlay = typeBOverlayRef.current;
+      if (!overlay || !imageIntrinsicSize || !manualFrameSize) return null;
+      const rect = overlay.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) return null;
+      const containerNorm = {
+        x: clampValue((clientX - rect.left) / rect.width, 0, 1),
+        y: clampValue((clientY - rect.top) / rect.height, 0, 1),
+      };
+      return containerNormToSourceNorm(containerNorm, imageIntrinsicSize, manualFrameSize);
+    },
+    [imageIntrinsicSize, manualFrameSize]
+  );
+
+  // Armed placement: the next valid overlay click declares ONLY the armed
+  // endpoint, then placement exits immediately (one click). An invalid/non-
+  // finite conversion never mutates evidence (still consumes the click).
+  const handleTypeBOverlayPointerDown = useCallback(
+    (event: PointerEvent<SVGSVGElement>) => {
+      const target = typeBPlacementTargetRef.current;
+      if (!target) return;
+      event.stopPropagation();
+      event.preventDefault();
+      setTypeBPlacementTarget(null);
+      const point = clientToTypeBSourceNorm(event.clientX, event.clientY);
+      if (!point) return;
+      setTypeBReview((s) => patchTypeBReviewEndpoint(s, target, point).next);
+    },
+    [clientToTypeBSourceNorm]
+  );
+
+  // Begin dragging a declared endpoint handle. Takes precedence over floor /
+  // background interaction via stopPropagation + pointer capture.
+  const handleTypeBHandlePointerDown = useCallback(
+    (event: PointerEvent<SVGCircleElement>, target: TypeBEndpointTarget) => {
+      if (typeBPlacementTargetRef.current) return;
+      event.stopPropagation();
+      event.preventDefault();
+      typeBDraggingRef.current = { target, pointerId: event.pointerId };
+      setTypeBDraggingTarget(target);
+      try {
+        typeBOverlayRef.current?.setPointerCapture(event.pointerId);
+      } catch {
+        // Pointer capture is optional; dragging continues while in bounds.
+      }
+    },
+    []
+  );
+
+  const handleTypeBOverlayPointerMove = useCallback(
+    (event: PointerEvent<SVGSVGElement>) => {
+      const dragging = typeBDraggingRef.current;
+      if (!dragging) return;
+      const point = clientToTypeBSourceNorm(event.clientX, event.clientY);
+      if (!point) return;
+      setTypeBReview((s) => patchTypeBReviewEndpoint(s, dragging.target, point).next);
+    },
+    [clientToTypeBSourceNorm]
+  );
+
+  const handleTypeBOverlayPointerUp = useCallback(
+    (event: PointerEvent<SVGSVGElement>) => {
+      const dragging = typeBDraggingRef.current;
+      if (dragging && dragging.pointerId === event.pointerId) {
+        try {
+          typeBOverlayRef.current?.releasePointerCapture(event.pointerId);
+        } catch {
+          // Ignore release failures when capture is already cleared.
+        }
+        typeBDraggingRef.current = null;
+        setTypeBDraggingTarget(null);
+      }
+    },
+    []
+  );
+
+  // When the review becomes inactive (never begun / cleared) cancel any lingering
+  // armed placement or drag so transient interaction can never outlive the review.
+  useEffect(() => {
+    if (!typeBReview.begun) {
+      resetTypeBInteraction();
+    }
+  }, [typeBReview.begun, resetTypeBInteraction]);
+
+  // Panel teardown / unmount: drop transient interaction (never persisted).
+  useEffect(() => resetTypeBInteraction, [resetTypeBInteraction]);
 
   // Declared-only overlay geometry projected into container-normalized viewBox
   // percentages. Uses ONLY declared endpoints (never extended / intersected).
@@ -5212,6 +5360,48 @@ export default function ThreeRoomLab({
       if (a && b) junction = { a, b };
     }
     return { lines, junction };
+  }, [imageIntrinsicSize, manualFrameSize, typeBReview.rearSeam, typeBReview.strongSideSeam]);
+
+  // --- Phase B2A: draggable handle positions for DECLARED endpoints ONLY.
+  // One handle per exactly-declared, finite endpoint (never a virtual/inferred
+  // endpoint). Projected into container-normalized viewBox percentages with the
+  // shared cover-crop helper so handles track the stored source-space coords.
+  const typeBEndpointHandles = useMemo(() => {
+    if (!imageIntrinsicSize || !manualFrameSize) {
+      return [] as {
+        target: TypeBEndpointTarget;
+        role: "rear" | "side";
+        x: number;
+        y: number;
+      }[];
+    }
+    const toPct = (point: { x: number; y: number }) => {
+      const container = sourceNormToContainerNorm(point, imageIntrinsicSize, manualFrameSize);
+      return container ? { x: container.x * 100, y: container.y * 100 } : null;
+    };
+    const isFiniteVec = (p: { x: number; y: number } | undefined | null) =>
+      !!p && Number.isFinite(p.x) && Number.isFinite(p.y);
+    const handles: {
+      target: TypeBEndpointTarget;
+      role: "rear" | "side";
+      x: number;
+      y: number;
+    }[] = [];
+    const pushEndpoint = (
+      seam: TypeBDeclaredLineEvidence | null,
+      role: "rear" | "side",
+      startTarget: TypeBEndpointTarget,
+      endTarget: TypeBEndpointTarget
+    ) => {
+      if (!seam || !isFiniteVec(seam.startNorm) || !isFiniteVec(seam.endNorm)) return;
+      const start = toPct(seam.startNorm);
+      const end = toPct(seam.endNorm);
+      if (start) handles.push({ target: startTarget, role, x: start.x, y: start.y });
+      if (end) handles.push({ target: endTarget, role, x: end.x, y: end.y });
+    };
+    pushEndpoint(typeBReview.rearSeam, "rear", "rear_start", "rear_end");
+    pushEndpoint(typeBReview.strongSideSeam, "side", "side_start", "side_end");
+    return handles;
   }, [imageIntrinsicSize, manualFrameSize, typeBReview.rearSeam, typeBReview.strongSideSeam]);
 
   const typeBReviewActive = typeBReview.begun;
@@ -9464,77 +9654,127 @@ export default function ThreeRoomLab({
                 </svg>
               </>
             )}
-            {typeBOverlayVisible && typeBOverlayRender && (
+            {/* Phase B2A: Type B direct-edit overlay. Mounted whenever a Type B
+                review is active so an armed placement click can be captured even
+                before the display overlay is shown. The SVG ROOT only captures
+                pointer events while a placement target is armed or an endpoint
+                drag is active; otherwise it stays pointer-events:none so unarmed
+                Type B never blocks floor/manual/background interaction. Declared
+                endpoint handles opt back IN with pointer-events:all (only while
+                the overlay is visible and nothing is armed) so a handle drag
+                takes precedence over floor clicks. It draws ONLY operator-
+                declared endpoints/segments: it never extends a seam, intersects
+                the seams, or synthesizes an off-frame corner / quadrilateral /
+                wall plane / vanishing point / camera pose / FOV corridor /
+                preview / calibration-ready treatment. */}
+            {typeBReviewActive && imageIntrinsicSize && manualFrameSize && (
               <>
-                <div className="pointer-events-none absolute right-2 top-2 z-40 rounded border border-amber-400/70 bg-amber-950/80 px-2 py-0.5 text-[10px] font-medium text-amber-100">
-                  Type B declared visible observations
-                </div>
+                {typeBOverlayVisible && (
+                  <div className="pointer-events-none absolute right-2 top-2 z-40 rounded border border-amber-400/70 bg-amber-950/80 px-2 py-0.5 text-[10px] font-medium text-amber-100">
+                    Type B declared visible observations
+                  </div>
+                )}
+                {typeBPlacementTarget && (
+                  <div className="pointer-events-none absolute left-2 top-2 z-40 rounded border border-emerald-400/70 bg-emerald-950/85 px-2 py-0.5 text-[10px] font-medium text-emerald-100">
+                    {`Placing ${TYPE_B_PLACEMENT_TARGET_LABELS[typeBPlacementTarget]} — click on the image`}
+                  </div>
+                )}
                 <svg
-                  className="pointer-events-none absolute inset-0 z-40 h-full w-full"
+                  ref={typeBOverlayRef}
+                  className="absolute inset-0 z-40 h-full w-full"
                   viewBox="0 0 100 100"
                   preserveAspectRatio="none"
-                  aria-label="Type B declared evidence overlay (diagnostic only)"
-                  aria-hidden="true"
+                  onPointerDown={handleTypeBOverlayPointerDown}
+                  onPointerMove={handleTypeBOverlayPointerMove}
+                  onPointerUp={handleTypeBOverlayPointerUp}
+                  onPointerCancel={handleTypeBOverlayPointerUp}
+                  style={{
+                    touchAction: "none",
+                    pointerEvents:
+                      typeBPlacementTarget || typeBDraggingTarget ? "auto" : "none",
+                    cursor: typeBPlacementTarget ? "crosshair" : "default",
+                  }}
+                  aria-label="Type B declared evidence overlay (diagnostic only, operator-declared)"
                 >
-                  {/* Declared visible observations ONLY. Amber dashed treatment is
-                      deliberately distinct from every Type A overlay, the floor
-                      polygon, the selected candidate, and every preview. It draws
-                      exactly the operator-declared endpoints/segments: it never
-                      extends a seam, intersects the seams, draws an off-frame
-                      corner / quadrilateral / wall plane / vanishing point /
-                      camera pose / FOV corridor / preview geometry, and never
-                      mutates the floor polygon. */}
-                  {typeBOverlayRender.junction && (
-                    <line
-                      x1={typeBOverlayRender.junction.a.x}
-                      y1={typeBOverlayRender.junction.a.y}
-                      x2={typeBOverlayRender.junction.b.x}
-                      y2={typeBOverlayRender.junction.b.y}
-                      stroke="#fcd34d"
-                      strokeOpacity={0.7}
-                      strokeWidth={0.5}
-                      strokeDasharray="0.6 0.9"
-                    />
-                  )}
-                  {typeBOverlayRender.lines.map((line) => (
-                    <g key={`type-b-line-${line.role}`}>
-                      <line
-                        x1={line.start.x}
-                        y1={line.start.y}
-                        x2={line.end.x}
-                        y2={line.end.y}
-                        stroke={line.role === "rear" ? "#f59e0b" : "#fbbf24"}
-                        strokeOpacity={0.95}
-                        strokeWidth={0.8}
-                        strokeDasharray="2 1.2"
-                        strokeLinecap="round"
-                      />
-                      {[
-                        { p: line.start, status: line.startStatus, key: "start" },
-                        { p: line.end, status: line.endStatus, key: "end" },
-                      ].map((endpoint) => (
-                        <g key={`type-b-${line.role}-${endpoint.key}`}>
-                          <circle
-                            cx={endpoint.p.x}
-                            cy={endpoint.p.y}
-                            r={1.0}
-                            fill={line.role === "rear" ? "#f59e0b" : "#fbbf24"}
-                            stroke="#451a03"
-                            strokeWidth={0.35}
+                  {typeBOverlayVisible && typeBOverlayRender && (
+                    <g aria-hidden="true" pointerEvents="none">
+                      {typeBOverlayRender.junction && (
+                        <line
+                          x1={typeBOverlayRender.junction.a.x}
+                          y1={typeBOverlayRender.junction.a.y}
+                          x2={typeBOverlayRender.junction.b.x}
+                          y2={typeBOverlayRender.junction.b.y}
+                          stroke="#fcd34d"
+                          strokeOpacity={0.7}
+                          strokeWidth={0.5}
+                          strokeDasharray="0.6 0.9"
+                          pointerEvents="none"
+                        />
+                      )}
+                      {typeBOverlayRender.lines.map((line) => (
+                        <g key={`type-b-line-${line.role}`} pointerEvents="none">
+                          <line
+                            x1={line.start.x}
+                            y1={line.start.y}
+                            x2={line.end.x}
+                            y2={line.end.y}
+                            stroke={line.role === "rear" ? "#f59e0b" : "#fbbf24"}
+                            strokeOpacity={0.95}
+                            strokeWidth={0.8}
+                            strokeDasharray="2 1.2"
+                            strokeLinecap="round"
+                            pointerEvents="none"
                           />
-                          <text
-                            x={endpoint.p.x + 1.1}
-                            y={endpoint.p.y - 0.9}
-                            fill="#fde68a"
-                            fontSize="2"
-                            fontWeight="600"
-                          >
-                            {`${line.role === "rear" ? "R" : "S"}·${TYPE_B_ENDPOINT_STATUS_GLYPH[endpoint.status]}`}
-                          </text>
+                          {[
+                            { p: line.start, status: line.startStatus, key: "start" },
+                            { p: line.end, status: line.endStatus, key: "end" },
+                          ].map((endpoint) => (
+                            <text
+                              key={`type-b-${line.role}-${endpoint.key}`}
+                              x={endpoint.p.x + 1.1}
+                              y={endpoint.p.y - 0.9}
+                              fill="#fde68a"
+                              fontSize="2"
+                              fontWeight="600"
+                              pointerEvents="none"
+                            >
+                              {`${line.role === "rear" ? "R" : "S"}·${TYPE_B_ENDPOINT_STATUS_GLYPH[endpoint.status]}`}
+                            </text>
+                          ))}
                         </g>
                       ))}
                     </g>
-                  ))}
+                  )}
+                  {/* Draggable handles for DECLARED endpoints only. Hollow amber
+                      rings are deliberately distinct from Type A's filled pink
+                      vertices, the floor-polygon handles, candidates, previews,
+                      and any readiness/calibration treatment. They opt into
+                      pointer events only while the overlay is visible and no
+                      placement is armed (placement clicks take the whole overlay). */}
+                  {typeBOverlayVisible &&
+                    typeBEndpointHandles.map((handle) => {
+                      const isDragging = typeBDraggingTarget === handle.target;
+                      const color = handle.role === "rear" ? "#f59e0b" : "#fbbf24";
+                      return (
+                        <circle
+                          key={`type-b-handle-${handle.target}`}
+                          cx={handle.x}
+                          cy={handle.y}
+                          r={isDragging ? 2.1 : 1.7}
+                          fill={isDragging ? color : "transparent"}
+                          fillOpacity={isDragging ? 0.35 : 1}
+                          stroke={color}
+                          strokeWidth={isDragging ? 0.9 : 0.7}
+                          className="cursor-grab"
+                          pointerEvents={typeBPlacementTarget ? "none" : "all"}
+                          onPointerDown={(event) =>
+                            handleTypeBHandlePointerDown(event, handle.target)
+                          }
+                        >
+                          <title>{`Type B ${TYPE_B_PLACEMENT_TARGET_LABELS[handle.target]} (drag to adjust)`}</title>
+                        </circle>
+                      );
+                    })}
                 </svg>
               </>
             )}
@@ -12118,6 +12358,59 @@ export default function ThreeRoomLab({
                       <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">
                         Declared visible evidence
                       </p>
+
+                      {/* Phase B2A: direct on-image placement controls. Arming a
+                          target lets the operator declare ONLY that endpoint with
+                          the next image click; placement exits after one click.
+                          Numeric fields below remain an exact fallback and stay
+                          synchronized with direct placement / drag. */}
+                      <div className="space-y-2 rounded-lg border border-slate-700 bg-slate-900/60 p-3">
+                        <div className="flex items-center justify-between gap-2">
+                          <p className="font-medium text-slate-100">Place / drag on image</p>
+                          {typeBPlacementTarget && (
+                            <button
+                              type="button"
+                              onClick={cancelTypeBPlacement}
+                              className="rounded border border-slate-600 bg-slate-800/60 px-2 py-0.5 text-[10px] font-medium text-slate-200 transition hover:bg-slate-800"
+                            >
+                              Cancel placement
+                            </button>
+                          )}
+                        </div>
+                        <div className="grid grid-cols-2 gap-1.5">
+                          {(
+                            [
+                              "rear_start",
+                              "rear_end",
+                              "side_start",
+                              "side_end",
+                            ] as TypeBEndpointTarget[]
+                          ).map((target) => {
+                            const armed = typeBPlacementTarget === target;
+                            return (
+                              <button
+                                key={`type-b-place-${target}`}
+                                type="button"
+                                aria-pressed={armed}
+                                onClick={() => armTypeBPlacementTarget(target)}
+                                className={`rounded border px-2 py-1 text-[11px] font-medium transition ${
+                                  armed
+                                    ? "border-emerald-400/70 bg-emerald-500/15 text-emerald-100"
+                                    : "border-slate-600 bg-slate-800/50 text-slate-200 hover:bg-slate-800"
+                                }`}
+                              >
+                                {`Place ${TYPE_B_PLACEMENT_TARGET_LABELS[target]}`}
+                              </button>
+                            );
+                          })}
+                        </div>
+                        <p className="text-[10px] text-slate-500">
+                          {typeBPlacementTarget
+                            ? `Click on the room image to declare the ${TYPE_B_PLACEMENT_TARGET_LABELS[typeBPlacementTarget]}.`
+                            : "Arm a target, then click the room image. Enable the overlay below to see and drag declared endpoints."}
+                        </p>
+                      </div>
+
                       {lineEditor("rear", rear, updateTypeBRearSeam)}
                       {lineEditor("side", side, updateTypeBSideSeam)}
                       <p className="text-[10px] text-slate-500">
