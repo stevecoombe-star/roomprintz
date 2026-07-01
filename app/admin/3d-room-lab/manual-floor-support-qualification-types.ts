@@ -70,13 +70,30 @@ export const DEFAULT_SUPPORT_QUALIFICATION_THRESHOLDS: SupportQualificationThres
   weakDeterminingToMovableSpanRatio: 0.15,
 };
 
-// Stable weak-support indicator identifiers (advisory facts, never authority).
+// Phase 2O-O-A: SUBSTANTIVE support-geometry concerns only. A near-frame
+// endpoint by itself is NOT here — it is an advisory evidence fact (see
+// SupportQualificationAdvisoryFact) and never alone weakens support. Frame-edge
+// collapse remains substantive because it already requires BOTH a short/weak
+// span and a near-frame endpoint.
 export type SupportQualificationWeakIndicator =
   | "short_determining_span_absolute"
   | "short_determining_span_image_diagonal"
   | "severe_determining_to_movable_span_imbalance"
-  | "determining_endpoint_near_frame"
   | "determining_seam_frame_edge_collapsed";
+
+// Phase 2O-O-A: NON-ROUTING advisory evidence facts. Reported even when support
+// is strong. These never by themselves cause type_a_weak_support or
+// type_a_exhausted_type_b_candidate and never change movement authority.
+export type SupportQualificationAdvisoryFact = "determining_endpoint_near_frame";
+
+// Phase 2O-O-A: second diagnostic axis — current bounded broad-search viability.
+// This is a facts/provenance-driven DESCRIPTION, never a routing action. The
+// "no usable basin" value is always conditional on the current broad-search
+// coverage/config provenance.
+export type SupportQualificationBroadSearchViability =
+  | "broad_search_not_run_or_unknown"
+  | "broad_search_usable_basin_found"
+  | "broad_search_no_usable_basin_current_coverage";
 
 // --- Input contract ---------------------------------------------------------
 // Everything is explicit and caller-supplied. The classifier NEVER reads UI /
@@ -181,9 +198,18 @@ export type TypeASupportQualification = {
 
   classification: SupportQualificationClassification;
 
+  // Phase 2O-O-A: second independent axis — current broad-search viability.
+  // Reported for every result (independent of the support verdict).
+  broadSearchViability: SupportQualificationBroadSearchViability;
+
   facts: SupportQualificationFacts;
 
+  // SUBSTANTIVE support-geometry concerns only (drive the support verdict).
   weakSupportIndicators: SupportQualificationWeakIndicator[];
+
+  // Phase 2O-O-A: non-routing advisory evidence facts (e.g. endpoint near
+  // frame). Present even when support is strong; never a verdict trigger.
+  advisoryEvidenceFacts: SupportQualificationAdvisoryFact[];
 
   exhaustion: SupportQualificationExhaustion | null;
 

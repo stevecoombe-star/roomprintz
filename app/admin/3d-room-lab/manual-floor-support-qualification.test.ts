@@ -74,6 +74,34 @@ function determiningTiny(): ManualPhysicalSeam {
   ]);
 }
 
+// Fixture A (successful near-frame room, Phase 2O-O-A regression). On a
+// 3000x3000 intrinsic: determining span ~866.97 px (dx 45, dy 865.8) with ONE
+// endpoint ~15 px from the frame edge (margin 45 px) and the other interior,
+// plus a long movable side giving determining/movable ratio ~0.318. Healthy
+// span, healthy diagonal ratio, healthy side ratio, NOT collapsed.
+const INTRINSIC_A: ImageIntrinsicSize = { width: 3000, height: 3000 };
+const FRAME_A: ImageFrameSize = { width: 3000, height: 3000 };
+
+function determiningNearFrameHealthy(): ManualPhysicalSeam {
+  return seam("seam-det", [
+    { x: 0.995, y: 0.1 },
+    { x: 0.98, y: 0.3886 },
+  ]);
+}
+
+function movableVeryLong(): ManualPhysicalSeam {
+  return seam("seam-move", [
+    { x: 0.05, y: 0.05 },
+    { x: 0.05, y: 0.9575 },
+  ]);
+}
+
+// A coupled trial with an explicitly unevaluated (null) state, for incomplete
+// broad-run tests. state is `CoupledSearchPrimaryState | null` in the schema.
+function coupledTrialUnevaluated(): CoupledSearchTrial {
+  return { ...coupledTrial("no_pose"), state: null };
+}
+
 function typeAAnnotation(opts: {
   movableSeam?: ManualPhysicalSeam;
   determiningSeam: ManualPhysicalSeam;
@@ -241,9 +269,38 @@ test("3: healthy interior determining seam, no broad search => strong support", 
   const out = qualifyTypeASupport(baseInput({ annotation: ann }));
   assert.equal(out.classification, "type_a_strong_support");
   assert.deepEqual(out.weakSupportIndicators, []);
+  assert.deepEqual(out.advisoryEvidenceFacts, []);
+  assert.equal(out.broadSearchViability, "broad_search_not_run_or_unknown");
   assert.equal(out.exhaustion, null);
   assert.equal(out.facts.determiningSeamFrameEdgeCollapsed, false);
   assert.ok((out.facts.determiningSideSpanSourcePx ?? 0) > 600);
+});
+
+// Phase 2O-O-A regression (fixture A): a near-frame endpoint with an otherwise
+// healthy determining seam must remain STRONG support. Near-frame is an
+// advisory fact only and must never appear as a substantive weak indicator, and
+// broad search is not required to conclude strong support.
+test("3-nf: successful near-frame fixture => strong support, advisory only", () => {
+  const ann = typeAAnnotation({
+    movableSeam: movableVeryLong(),
+    determiningSeam: determiningNearFrameHealthy(),
+  });
+  const out = qualifyTypeASupport(
+    baseInput({ annotation: ann, intrinsicSize: INTRINSIC_A, frameSize: FRAME_A })
+  );
+  assert.equal(out.classification, "type_a_strong_support");
+  assert.equal(out.facts.determiningSeamFrameEdgeCollapsed, false);
+  assert.deepEqual(out.weakSupportIndicators, []);
+  assert.deepEqual(out.advisoryEvidenceFacts, ["determining_endpoint_near_frame"]);
+  assert.ok(
+    !(out.weakSupportIndicators as string[]).includes("determining_endpoint_near_frame")
+  );
+  // Fixture numbers: determining span ~866.97 px, ratio ~0.318, one near / one interior.
+  assert.ok(Math.abs((out.facts.determiningSideSpanSourcePx ?? 0) - 866.97) < 2);
+  assert.ok(Math.abs((out.facts.spanRatioDeterminingToMovable ?? 0) - 0.318) < 0.01);
+  assert.deepEqual(out.facts.determiningEndpointNearFrame, [true, false]);
+  // Strong support requires no broad-search run.
+  assert.equal(out.broadSearchViability, "broad_search_not_run_or_unknown");
 });
 
 // --- 4. type_a_weak_support -------------------------------------------------
@@ -274,7 +331,10 @@ test("4b: severe span imbalance alone => weak support", () => {
   ]);
 });
 
-test("4c: near-frame endpoint without collapse => weak support (not collapsed)", () => {
+test("4c: near-frame endpoint with healthy span => STRONG support (advisory only)", () => {
+  // ~195 px span, one endpoint ~5 px from the frame, one interior. Healthy on
+  // every substantive axis => strong under the two-axis policy; near-frame is
+  // reported only as an advisory fact.
   const ann = typeAAnnotation({
     determiningSeam: seam("seam-det", [
       { x: 0.995, y: 0.5 },
@@ -282,9 +342,10 @@ test("4c: near-frame endpoint without collapse => weak support (not collapsed)",
     ]),
   });
   const out = qualifyTypeASupport(baseInput({ annotation: ann }));
-  assert.equal(out.classification, "type_a_weak_support");
+  assert.equal(out.classification, "type_a_strong_support");
   assert.equal(out.facts.determiningSeamFrameEdgeCollapsed, false);
-  assert.deepEqual(out.weakSupportIndicators, ["determining_endpoint_near_frame"]);
+  assert.deepEqual(out.weakSupportIndicators, []);
+  assert.deepEqual(out.advisoryEvidenceFacts, ["determining_endpoint_near_frame"]);
 });
 
 test("4d: frame-edge collapse WITHOUT broad search => weak support (not candidate)", () => {
@@ -292,7 +353,54 @@ test("4d: frame-edge collapse WITHOUT broad search => weak support (not candidat
   const out = qualifyTypeASupport(baseInput({ annotation: ann }));
   assert.equal(out.classification, "type_a_weak_support");
   assert.equal(out.facts.determiningSeamFrameEdgeCollapsed, true);
+  assert.ok(out.weakSupportIndicators.includes("determining_seam_frame_edge_collapsed"));
+  // Near-frame endpoint is advisory, never a substantive weak indicator.
+  assert.deepEqual(out.advisoryEvidenceFacts, ["determining_endpoint_near_frame"]);
+  assert.ok(
+    !(out.weakSupportIndicators as string[]).includes("determining_endpoint_near_frame")
+  );
+  assert.equal(out.broadSearchViability, "broad_search_not_run_or_unknown");
   assert.ok(out.exhaustion && out.exhaustion.missing.includes("no_broad_search"));
+});
+
+// Strong support + current, complete no-usable-basin broad search must remain
+// strong and must NEVER become a Type B candidate.
+test("4e: strong support + current no-basin broad search => strong, not a candidate", () => {
+  const ann = typeAAnnotation({ determiningSeam: determiningHealthy() });
+  const out = qualifyTypeASupport(
+    baseInput({
+      annotation: ann,
+      broadSearch: broadSearch(exhaustedTrials(), false),
+      broadSearchEvidenceSignature: "sig-1",
+      currentEvidenceSignature: "sig-1",
+      localSeedEligible: false,
+    })
+  );
+  assert.equal(out.classification, "type_a_strong_support");
+  assert.equal(
+    out.broadSearchViability,
+    "broad_search_no_usable_basin_current_coverage"
+  );
+  assert.equal(out.exhaustion, null);
+  assert.ok(out.reasons.some((r) => r.includes("does not imply Type B")));
+});
+
+// Strong support + usable basin.
+test("4f: strong support + usable basin => strong, usable viability", () => {
+  const trials = exhaustedTrials();
+  trials.push(coupledTrial("apply_safe_diagnostic"));
+  const ann = typeAAnnotation({ determiningSeam: determiningHealthy() });
+  const out = qualifyTypeASupport(
+    baseInput({
+      annotation: ann,
+      broadSearch: broadSearch(trials, false),
+      broadSearchEvidenceSignature: "sig-1",
+      currentEvidenceSignature: "sig-1",
+      localSeedEligible: false,
+    })
+  );
+  assert.equal(out.classification, "type_a_strong_support");
+  assert.equal(out.broadSearchViability, "broad_search_usable_basin_found");
 });
 
 // --- 5. frame-edge collapse facts -------------------------------------------
@@ -350,6 +458,10 @@ test("6: weak/collapsed support + current complete exhausted search => candidate
     })
   );
   assert.equal(out.classification, "type_a_exhausted_type_b_candidate");
+  assert.equal(
+    out.broadSearchViability,
+    "broad_search_no_usable_basin_current_coverage"
+  );
   assert.ok(out.exhaustion);
   assert.equal(out.exhaustion!.eligible, true);
   assert.equal(out.exhaustion!.noUsableBasin, true);
@@ -357,6 +469,10 @@ test("6: weak/collapsed support + current complete exhausted search => candidate
   assert.equal(out.facts.broadSearchStateCounts!.no_pose, 54);
   assert.equal(out.facts.broadSearchStateCounts!.invalid_geometry, 9);
   assert.ok(out.reasons.some((r) => r.toLowerCase().includes("conditional")));
+  // Reason must remain explicitly conditional on current broad coverage.
+  assert.ok(
+    out.reasons.some((r) => r.toLowerCase().includes("current broad-search coverage"))
+  );
 });
 
 // --- 7. no false handoff (each remains weak) --------------------------------
@@ -421,8 +537,19 @@ test("7f: weak + apply-safe count > 0 => weak", () => {
 test("7g: weak + unknown local-seed eligibility => weak (basin unknown)", () => {
   const out = qualifyTypeASupport(collapsedInputWith({ localSeedEligible: null }));
   assert.equal(out.classification, "type_a_weak_support");
+  assert.equal(out.broadSearchViability, "broad_search_not_run_or_unknown");
   assert.equal(out.exhaustion!.noUsableBasin, null);
   assert.ok(out.exhaustion!.missing.includes("local_seed_eligibility_unknown"));
+});
+
+test("7h: weak support + usable basin => weak, usable viability, not a candidate", () => {
+  const trials = exhaustedTrials();
+  trials.push(coupledTrial("apply_safe_diagnostic"));
+  const out = qualifyTypeASupport(
+    collapsedInputWith({ broadSearch: broadSearch(trials, false) })
+  );
+  assert.equal(out.classification, "type_a_weak_support");
+  assert.equal(out.broadSearchViability, "broad_search_usable_basin_found");
 });
 
 // --- 8. evidence / config provenance ----------------------------------------
@@ -449,6 +576,58 @@ test("8b: provenance is null when no broad search supplied", () => {
   const ann = typeAAnnotation({ determiningSeam: determiningHealthy() });
   const out = qualifyTypeASupport(baseInput({ annotation: ann }));
   assert.equal(out.broadSearchProvenance, null);
+});
+
+// Viability truthfulness: absent, stale, truncated, incomplete, or unknown
+// local-seed broad results must NEVER be reported as a no-usable-basin result.
+test("8c: viability is not_run_or_unknown for absent/stale/truncated/incomplete/unknown-seed", () => {
+  const ann = typeAAnnotation({ determiningSeam: determiningHealthy() });
+  const mk = (o: Partial<QualifyTypeASupportInput>) =>
+    qualifyTypeASupport(baseInput({ annotation: ann, ...o }))
+      .broadSearchViability;
+
+  // absent
+  assert.equal(mk({}), "broad_search_not_run_or_unknown");
+  // stale / signature-mismatched
+  assert.equal(
+    mk({
+      broadSearch: broadSearch(exhaustedTrials(), false),
+      broadSearchEvidenceSignature: "old",
+      currentEvidenceSignature: "sig-1",
+      localSeedEligible: false,
+    }),
+    "broad_search_not_run_or_unknown"
+  );
+  // truncated
+  assert.equal(
+    mk({
+      broadSearch: broadSearch(exhaustedTrials(), true),
+      broadSearchEvidenceSignature: "sig-1",
+      currentEvidenceSignature: "sig-1",
+      localSeedEligible: false,
+    }),
+    "broad_search_not_run_or_unknown"
+  );
+  // incomplete (a trial with a null/unevaluated state)
+  assert.equal(
+    mk({
+      broadSearch: broadSearch([...exhaustedTrials(), coupledTrialUnevaluated()], false),
+      broadSearchEvidenceSignature: "sig-1",
+      currentEvidenceSignature: "sig-1",
+      localSeedEligible: false,
+    }),
+    "broad_search_not_run_or_unknown"
+  );
+  // unknown local-seed eligibility
+  assert.equal(
+    mk({
+      broadSearch: broadSearch(exhaustedTrials(), false),
+      broadSearchEvidenceSignature: "sig-1",
+      currentEvidenceSignature: "sig-1",
+      localSeedEligible: null,
+    }),
+    "broad_search_not_run_or_unknown"
+  );
 });
 
 // --- 9. authority containment -----------------------------------------------

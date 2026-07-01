@@ -28,7 +28,9 @@ import {
   DEFAULT_SUPPORT_QUALIFICATION_THRESHOLDS,
   TYPE_A_SUPPORT_QUALIFICATION_SCHEMA,
   type QualifyTypeASupportInput,
+  type SupportQualificationAdvisoryFact,
   type SupportQualificationBroadSearchStateCounts,
+  type SupportQualificationBroadSearchViability,
   type SupportQualificationExhaustion,
   type SupportQualificationFacts,
   type SupportQualificationThresholds,
@@ -288,6 +290,7 @@ export function qualifyTypeASupport(
   const facts = emptyFacts();
   const reasons: string[] = [];
   const weakSupportIndicators: SupportQualificationWeakIndicator[] = [];
+  const advisoryEvidenceFacts: SupportQualificationAdvisoryFact[] = [];
 
   // Broad-search facts + provenance are read-only and computed regardless of the
   // structural verdict, so a readout can always show what evidence exists.
@@ -308,14 +311,28 @@ export function qualifyTypeASupport(
     broad.broadSearchTruncated
   );
 
+  // Phase 2O-O-A: the broad-search axis is computed ONCE and independently of the
+  // support axis. `noUsableBasin` is the single source of truth; viability is a
+  // faithful projection of it (true => no basin, false => usable basin, null =>
+  // not determinable). The classifier never runs the search itself.
+  const broadExhaustion = computeExhaustion(input, broad);
+  const broadSearchViability: SupportQualificationBroadSearchViability =
+    broadExhaustion.noUsableBasin === true
+      ? "broad_search_no_usable_basin_current_coverage"
+      : broadExhaustion.noUsableBasin === false
+        ? "broad_search_usable_basin_found"
+        : "broad_search_not_run_or_unknown";
+
   const finalize = (
     classification: TypeASupportQualification["classification"],
     exhaustion: SupportQualificationExhaustion | null
   ): TypeASupportQualification => ({
     schema: TYPE_A_SUPPORT_QUALIFICATION_SCHEMA,
     classification,
+    broadSearchViability,
     facts,
     weakSupportIndicators,
+    advisoryEvidenceFacts,
     exhaustion,
     thresholdsUsed: thresholds,
     broadSearchProvenance,
@@ -453,55 +470,89 @@ export function qualifyTypeASupport(
   const collapsed = (shortAbsolute || shortDiagonal) && nearFrameAny;
   facts.determiningSeamFrameEdgeCollapsed = collapsed;
 
+  // SUBSTANTIVE support-geometry concerns (drive the support verdict).
   if (shortAbsolute) {
     weakSupportIndicators.push("short_determining_span_absolute");
     reasons.push(
-      `Determining span ${determiningSpanPx.toFixed(1)}px is short (< ${thresholds.weakDeterminingSpanPx}px).`
+      `Support concern: determining span ${determiningSpanPx.toFixed(1)}px is short ` +
+        `(< ${thresholds.weakDeterminingSpanPx}px).`
     );
   }
   if (shortDiagonal) {
     weakSupportIndicators.push("short_determining_span_image_diagonal");
     reasons.push(
-      `Determining span is a small fraction of the image diagonal ` +
+      `Support concern: determining span is a small fraction of the image diagonal ` +
         `(< ${thresholds.weakDeterminingSpanImageDiagonalRatio}).`
     );
   }
   if (severeImbalance) {
     weakSupportIndicators.push("severe_determining_to_movable_span_imbalance");
     reasons.push(
-      `Severe determining/movable span imbalance ` +
+      `Support concern: severe determining/movable span imbalance ` +
         `(< ${thresholds.weakDeterminingToMovableSpanRatio}).`
     );
   }
-  if (nearFrameAny) {
-    weakSupportIndicators.push("determining_endpoint_near_frame");
-    reasons.push("At least one determining endpoint is near the source-image frame edge.");
-  }
   if (collapsed) {
     weakSupportIndicators.push("determining_seam_frame_edge_collapsed");
-    reasons.push("Determining seam is frame-edge-collapsed (short span with a near-frame endpoint).");
+    reasons.push(
+      "Support concern: determining seam is frame-edge-collapsed (short/weak span with a near-frame endpoint)."
+    );
+  }
+
+  // ADVISORY, NON-ROUTING evidence fact. A near-frame endpoint alone never
+  // weakens support and never implies Type B — it is reported for context only.
+  if (nearFrameAny) {
+    advisoryEvidenceFacts.push("determining_endpoint_near_frame");
+    reasons.push(
+      "Advisory: at least one determining endpoint is near the source-image frame edge. " +
+        "This is an evidence fact only; it does not by itself weaken support or imply Type B."
+    );
+  }
+
+  // Broad-search axis reason (independent of the support verdict).
+  if (broadSearchViability === "broad_search_usable_basin_found") {
+    reasons.push("Broad search: the current bounded Type A broad search found a usable basin.");
+  } else if (broadSearchViability === "broad_search_no_usable_basin_current_coverage") {
+    reasons.push(
+      "Broad search: the current bounded Type A broad search found no usable basin, " +
+        "conditional on current broad-search coverage/config."
+    );
+  } else {
+    reasons.push(
+      "Broad search: no current, complete broad-search basin evidence is available " +
+        "(absent/stale/partial/unknown); broad-search viability is unknown."
+    );
   }
 
   // --- 3. type_a_strong_support ----------------------------------------------
+  // Strong whenever there is NO substantive support concern, regardless of a
+  // near-frame advisory and regardless of broad-search viability.
   if (weakSupportIndicators.length === 0) {
-    reasons.push("Valid Type A support with a healthy, interior determining seam; no weak indicators.");
+    reasons.push("Support: valid Type A support with a healthy determining seam; no substantive support concerns.");
+    if (broadSearchViability === "broad_search_no_usable_basin_current_coverage") {
+      reasons.push(
+        "Type A support is strong, but the current bounded broad search found no usable basin. " +
+          "This does not imply Type B."
+      );
+    }
     return finalize("type_a_strong_support", null);
   }
 
   // --- 4 / 5. weak vs exhausted Type B candidate -----------------------------
-  const exhaustion = computeExhaustion(input, broad);
-  if (exhaustion.eligible) {
+  // Substantive concern(s) present. The Type B handoff candidate requires the
+  // second axis to be a current, completed no-usable-basin result.
+  if (broadSearchViability === "broad_search_no_usable_basin_current_coverage") {
     reasons.push(
-      "Weak Type A support AND a completed, current, bounded broad search with no usable basin. " +
-        "This is a CONDITIONAL Type B handoff candidate, contingent on the current broad-search " +
-        "coverage/config; broader future Type A coverage could change this outcome."
+      "Weak Type A support AND the current bounded broad search found no usable basin. " +
+        "CONDITIONAL Type B handoff candidate, conditional on current broad-search coverage/config; " +
+        "broader future Type A coverage could change this outcome."
     );
-    return finalize("type_a_exhausted_type_b_candidate", exhaustion);
+    return finalize("type_a_exhausted_type_b_candidate", broadExhaustion);
   }
 
   reasons.push(
-    "Weak Type A support present, but exhaustion is not satisfied " +
-      `(unmet: ${exhaustion.missing.join(", ") || "none"}). Remaining a diagnostic Type A weak-support case.`
+    "Weak Type A support present; broad-search viability is not a current no-usable-basin result " +
+      `(unmet: ${broadExhaustion.missing.join(", ") || "none"}). This is not a Type B candidate under current coverage.`
   );
-  return finalize("type_a_weak_support", exhaustion);
+  return finalize("type_a_weak_support", broadExhaustion);
 }

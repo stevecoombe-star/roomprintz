@@ -113,6 +113,15 @@ import {
   type SourceNormPoint,
 } from "./manual-floor-support-types";
 import { validateManualFloorSupportAnnotation } from "./manual-floor-support-validation";
+// Phase 2O-O: read-only Type A Support Qualification panel. Wires the committed
+// Phase 2O-N PURE classifier into a diagnostic-only readout. Never mutates
+// annotation/candidate/polygon/FOV/dimensions/calibration/scene, never switches
+// modes, never runs search/solver/local refinement, and never implements Type B.
+import { qualifyTypeASupport } from "./manual-floor-support-qualification";
+import type {
+  SupportQualificationClassification,
+  TypeASupportQualification,
+} from "./manual-floor-support-qualification-types";
 import {
   generateManualFloorSupportTrials,
   type TrialGenerationCandidate,
@@ -695,6 +704,50 @@ type ThreeRoomLabProps = {
   emptyRoomAssistEnabled?: boolean;
 };
 
+// --- Phase 2O-O: neutral, descriptive support-qualification presentation -----
+// Status/readout labels + tones ONLY. These are never recommendation styling
+// and never imply an action or mode switch. There is intentionally no label
+// containing "switch", "use", "recommended", "best", "auto-route", or "requires
+// Type B".
+const SUPPORT_QUALIFICATION_LABELS: Record<SupportQualificationClassification, string> = {
+  qualification_not_run: "Qualification not run",
+  insufficient_support_or_unknown: "Insufficient support or unknown",
+  type_a_strong_support: "Type A strong support",
+  type_a_weak_support: "Type A weak support",
+  type_a_exhausted_type_b_candidate: "Type A exhausted — Type B handoff candidate",
+};
+
+const SUPPORT_QUALIFICATION_TONES: Record<SupportQualificationClassification, string> = {
+  qualification_not_run: "border-slate-700 bg-slate-900/40 text-slate-300",
+  insufficient_support_or_unknown: "border-slate-600/60 bg-slate-900/50 text-slate-200",
+  type_a_strong_support: "border-emerald-500/40 bg-emerald-500/5 text-emerald-200",
+  type_a_weak_support: "border-amber-500/40 bg-amber-500/5 text-amber-200",
+  type_a_exhausted_type_b_candidate: "border-violet-500/40 bg-violet-500/5 text-violet-200",
+};
+
+// Human-readable weak-support indicator labels (advisory evidence facts only).
+const SUPPORT_QUALIFICATION_WEAK_LABELS: Record<string, string> = {
+  short_determining_span_absolute: "Determining span short (absolute pixels)",
+  short_determining_span_image_diagonal: "Determining span small vs image diagonal",
+  severe_determining_to_movable_span_imbalance: "Severe determining/movable span imbalance",
+  determining_endpoint_near_frame: "Determining endpoint near frame edge",
+  determining_seam_frame_edge_collapsed: "Determining seam frame-edge collapsed",
+};
+
+function formatQualPx(value: number | null | undefined): string {
+  return typeof value === "number" && Number.isFinite(value) ? `${value.toFixed(1)} px` : "unavailable";
+}
+
+function formatQualRatio(value: number | null | undefined): string {
+  return typeof value === "number" && Number.isFinite(value) ? value.toFixed(3) : "unavailable";
+}
+
+function formatQualBool(value: boolean | null | undefined): string {
+  if (value === true) return "yes";
+  if (value === false) return "no";
+  return "unavailable";
+}
+
 export default function ThreeRoomLab({
   visionEnabled = false,
   emptyRoomAssistEnabled = false,
@@ -877,6 +930,8 @@ export default function ThreeRoomLab({
   // Phase 2O-G pure helper. Distinct state path from manualTrialSet. Never
   // previewed/selected/applied; never mutates candidate/polygon/FOV/dimensions/
   // calibration/scene state. Cleared whenever source evidence changes.
+  // Phase 2O-O: read-only support qualification panel open state (display only).
+  const [isSupportQualificationOpen, setIsSupportQualificationOpen] = useState(false);
   const [isCoupledSearchOpen, setIsCoupledSearchOpen] = useState(false);
   const [coupledSearchResultSet, setCoupledSearchResultSet] =
     useState<CoupledSearchResultSet | null>(null);
@@ -891,6 +946,13 @@ export default function ThreeRoomLab({
     liveAspectRatio: number;
   } | null>(null);
   const coupledSearchResultSetRef = useRef<CoupledSearchResultSet | null>(null);
+  // Phase 2O-O: generation-time evidence signature for the current broad result
+  // set. Stamped when a set is produced and cleared when it is absent/cleared/
+  // invalidated. Read-only provenance used ONLY to let the pure qualification
+  // classifier detect a stale broad search (a changed live signature reads as
+  // NON-current until the set is regenerated). Never drives any search/mutation.
+  const [coupledSearchResultSignature, setCoupledSearchResultSignature] = useState<string | null>(null);
+  const coupledSearchEvidenceSignatureRef = useRef<string | null>(null);
   // Phase 2O-I: single active coupled-search preview (separate from the Phase
   // 2O-E manual-trial preview). View-state only; never written to candidate /
   // floor polygon / FOV / dimensions / calibration. The signature binds the
@@ -4412,6 +4474,7 @@ export default function ThreeRoomLab({
     if (!result) {
       coupledSearchResultSetRef.current = null;
       setCoupledSearchResultSet(null);
+      setCoupledSearchResultSignature(null);
       setCoupledSearchSnapshot(null);
       setCoupledSearchNotice(
         "No coupled diagnostic search was produced for the current Type A annotation."
@@ -4422,6 +4485,9 @@ export default function ThreeRoomLab({
     const determining = manualAnnotation.determiningEdge;
     coupledSearchResultSetRef.current = result;
     setCoupledSearchResultSet(result);
+    // Stamp the CURRENT evidence signature (via ref, so it is not re-stamped on
+    // later evidence changes) as this set's generation provenance.
+    setCoupledSearchResultSignature(coupledSearchEvidenceSignatureRef.current);
     setCoupledSearchSnapshot({
       movableCorner: result.movableCorner,
       approvedSeamId: result.seamId,
@@ -4447,6 +4513,7 @@ export default function ThreeRoomLab({
   const handleClearCoupledSearch = useCallback(() => {
     coupledSearchResultSetRef.current = null;
     setCoupledSearchResultSet(null);
+    setCoupledSearchResultSignature(null);
     setCoupledSearchSnapshot(null);
     setCoupledSearchNotice(null);
     setCoupledSearchPreviewTrialId(null);
@@ -4464,6 +4531,7 @@ export default function ThreeRoomLab({
     if (coupledSearchResultSetRef.current !== null) {
       coupledSearchResultSetRef.current = null;
       setCoupledSearchResultSet(null);
+      setCoupledSearchResultSignature(null);
       setCoupledSearchSnapshot(null);
       setCoupledSearchNotice(
         "Coupled diagnostics cleared: source evidence changed (image, candidate, frame, annotation, dimensions, or FOV)."
@@ -4561,6 +4629,13 @@ export default function ThreeRoomLab({
       cameraPoseFovYDeg,
     ]
   );
+
+  // Phase 2O-O: keep a ref mirror of the current evidence signature so the
+  // generation-time stamp in handleRunCoupledSearch reads the value at run time
+  // without re-stamping on later evidence changes (which must read as stale).
+  useEffect(() => {
+    coupledSearchEvidenceSignatureRef.current = coupledSearchEvidenceSignature;
+  }, [coupledSearchEvidenceSignature]);
 
   // A coupled tuple is previewable only when it passed the pre-solver geometry
   // gate (so invalid-geometry / off-frame tuples are excluded) AND its exact
@@ -4673,6 +4748,57 @@ export default function ThreeRoomLab({
     },
     [coupledSearchEligibility.canRun, isCoupledTrialPreviewable]
   );
+
+  // --- Phase 2O-O: read-only Type A support qualification -------------------
+  // Pure, memoized invocation of the committed Phase 2O-N classifier from the
+  // CURRENT live evidence. This computes NOTHING itself beyond marshaling
+  // read-only inputs: it never runs broad search / local refinement / solver,
+  // never mutates any state, and never derives a Type B candidate independently
+  // of the pure classifier.
+  //
+  // localSeedEligible is passed as an OBSERVED fact only when a current broad
+  // result set exists (any stored coarse row that currently qualifies to seed
+  // local refinement). When no current set exists it is left null (unknown) —
+  // never fabricated. broadSearchEvidenceSignature is the generation-time stamp
+  // (null unless a set is present), so a stale/absent set can never imply
+  // exhaustion.
+  const supportQualification = useMemo<TypeASupportQualification>(() => {
+    const localSeedEligible = coupledSearchResultSet
+      ? coupledSearchResultSet.trials.some((trial) => coupledRowSeedEligibility(trial).canSeed)
+      : null;
+    const candidateQuadNorm = selectedAutoFloorCandidate
+      ? ([
+          { x: selectedAutoFloorCandidate.quadNorm[0].x, y: selectedAutoFloorCandidate.quadNorm[0].y },
+          { x: selectedAutoFloorCandidate.quadNorm[1].x, y: selectedAutoFloorCandidate.quadNorm[1].y },
+          { x: selectedAutoFloorCandidate.quadNorm[2].x, y: selectedAutoFloorCandidate.quadNorm[2].y },
+          { x: selectedAutoFloorCandidate.quadNorm[3].x, y: selectedAutoFloorCandidate.quadNorm[3].y },
+        ] as [
+          { x: number; y: number },
+          { x: number; y: number },
+          { x: number; y: number },
+          { x: number; y: number }
+        ])
+      : null;
+    return qualifyTypeASupport({
+      annotation: manualAnnotation,
+      candidateQuadNorm,
+      intrinsicSize: imageIntrinsicSize,
+      frameSize: manualFrameSize,
+      broadSearch: coupledSearchResultSet,
+      broadSearchEvidenceSignature: coupledSearchResultSignature,
+      currentEvidenceSignature: coupledSearchEvidenceSignature,
+      localSeedEligible,
+    });
+  }, [
+    manualAnnotation,
+    selectedAutoFloorCandidate,
+    imageIntrinsicSize,
+    manualFrameSize,
+    coupledSearchResultSet,
+    coupledSearchResultSignature,
+    coupledSearchEvidenceSignature,
+    coupledRowSeedEligibility,
+  ]);
 
   // Explicit operator action: seed a bounded local refinement from ONE stored
   // coarse row. Builds the K-A seed from the EXACT stored coarse record (never
@@ -10046,6 +10172,335 @@ export default function ThreeRoomLab({
               </div>
             )}
           </div>
+        </CollapsibleSection>
+
+        <CollapsibleSection
+          title="Type A Support Qualification"
+          open={isSupportQualificationOpen}
+          onToggle={() => setIsSupportQualificationOpen((open) => !open)}
+          description="Read-only support sufficiency diagnostics for the current Type A annotation and evidence. This does not change movement authority, run diagnostics, switch modes, load controls, or apply calibration."
+          meta={
+            <span className="rounded bg-slate-500/15 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-slate-200">
+              lab-only · read-only · not persisted
+            </span>
+          }
+        >
+          {(() => {
+            const q = supportQualification;
+            const f = q.facts;
+            const ann = manualAnnotation;
+            const cornerLabels: FloorCornerLabel[] = ["NL", "NR", "FR", "FL"];
+            const signatureStatus = !q.broadSearchProvenance
+              ? "unavailable"
+              : f.broadSearchCurrent
+                ? "current"
+                : f.broadSearchRun
+                  ? "stale"
+                  : "unavailable";
+            return (
+              <div className="space-y-3 text-[11px] text-slate-300">
+                <p className="rounded-lg border border-slate-600/40 bg-slate-800/40 px-3 py-2 text-slate-200">
+                  Diagnostic only. This panel describes support sufficiency for the current Type A annotation and
+                  evidence. It does not alter the Type A workflow, switch modes, authorize movement, run diagnostics,
+                  choose a seed, load controls, or apply calibration.
+                </p>
+
+                {/* 1. Status + reasons */}
+                <div className={`rounded-lg border px-3 py-2 ${SUPPORT_QUALIFICATION_TONES[q.classification]}`}>
+                  <p className="text-[10px] uppercase tracking-wide opacity-70">Classification (diagnostic)</p>
+                  <p className="mt-0.5 text-sm font-medium">{SUPPORT_QUALIFICATION_LABELS[q.classification]}</p>
+                  {q.classification === "type_a_exhausted_type_b_candidate" && (
+                    <p className="mt-1 text-[11px] text-violet-100/90">
+                      Conditional diagnostic handoff candidate based on the current completed Type A broad-search
+                      coverage. This does not switch modes or implement Type B.
+                    </p>
+                  )}
+                </div>
+
+                {q.reasons.length > 0 && (
+                  <div className="rounded-lg border border-slate-700 bg-slate-900/60 p-3">
+                    <p className="font-medium text-slate-100">Reasons</p>
+                    <ol className="mt-1 list-decimal space-y-0.5 pl-4 text-slate-300">
+                      {q.reasons.map((reason, index) => (
+                        <li key={index}>{reason}</li>
+                      ))}
+                    </ol>
+                  </div>
+                )}
+
+                {q.weakSupportIndicators.length > 0 && (
+                  <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 p-3">
+                    <p className="font-medium text-amber-100">Weak-support indicators (advisory evidence facts)</p>
+                    <ul className="mt-1 list-disc space-y-0.5 pl-4 text-amber-200/90">
+                      {q.weakSupportIndicators.map((indicator) => (
+                        <li key={indicator}>{SUPPORT_QUALIFICATION_WEAK_LABELS[indicator] ?? indicator}</li>
+                      ))}
+                    </ul>
+                    <p className="mt-1 text-[10px] text-amber-200/70">
+                      Advisory only. These evidence facts never change the declared movement authority.
+                    </p>
+                  </div>
+                )}
+
+                {/* 2. Declared Type A evidence */}
+                <div className="rounded-lg border border-slate-700 bg-slate-900/60 p-3">
+                  <p className="font-medium text-slate-100">Declared Type A evidence (read-only)</p>
+                  <div className="mt-1 grid grid-cols-1 gap-x-4 gap-y-0.5 text-slate-400 sm:grid-cols-2">
+                    <span>
+                      annotation: <span className="text-slate-200">{f.annotationValid ? "valid" : "invalid / not evaluated"}</span>
+                    </span>
+                    <span>
+                      authority mode: <span className="text-slate-200">{ann?.mode ?? "—"}</span>
+                    </span>
+                    <span>
+                      movable corner: <span className="text-slate-200">{f.movableCorner ?? "—"}</span>
+                    </span>
+                    <span>
+                      movable seam id: <span className="text-slate-200">{f.movableSeamId ?? "—"}</span>
+                    </span>
+                    <span>
+                      determining seam id: <span className="text-slate-200">{f.determiningSeamId ?? "—"}</span>
+                    </span>
+                    <span>
+                      authority kind: <span className="text-slate-200">{ann?.adjustmentAuthority?.kind ?? "—"}</span>
+                    </span>
+                  </div>
+                  {ann && (
+                    <div className="mt-1 flex flex-wrap gap-x-3 gap-y-0.5 text-slate-400">
+                      {cornerLabels.map((corner) => (
+                        <span key={corner}>
+                          {corner}: <span className="text-slate-200">{ann.cornerSupport?.[corner]?.state ?? "—"}</span>
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                {/* 3. Seam-support geometry facts */}
+                <div className="rounded-lg border border-slate-700 bg-slate-900/60 p-3">
+                  <p className="font-medium text-slate-100">Seam-support geometry</p>
+                  <div className="mt-1 grid grid-cols-1 gap-x-4 gap-y-0.5 text-slate-400 sm:grid-cols-2">
+                    <span>
+                      Movable-side span: <span className="text-slate-200">{formatQualPx(f.movableSideSpanSourcePx)}</span>
+                    </span>
+                    <span>
+                      Determining-side span:{" "}
+                      <span className="text-slate-200">{formatQualPx(f.determiningSideSpanSourcePx)}</span>
+                    </span>
+                    <span>
+                      Rear-seam span: <span className="text-slate-200">{formatQualPx(f.rearSeamSpanSourcePx)}</span>
+                    </span>
+                    <span>
+                      Determining / movable ratio:{" "}
+                      <span className="text-slate-200">{formatQualRatio(f.spanRatioDeterminingToMovable)}</span>
+                    </span>
+                    <span>
+                      Image diagonal: <span className="text-slate-200">{formatQualPx(f.imageDiagonalSourcePx)}</span>
+                    </span>
+                  </div>
+                  <p className="mt-1 text-[10px] text-slate-500">
+                    Spans are measured source-pixel evidence facts. Measured span never creates or changes movement
+                    authority.
+                  </p>
+                </div>
+
+                {/* 4. Frame-edge evidence */}
+                <div className="rounded-lg border border-slate-700 bg-slate-900/60 p-3">
+                  <p className="font-medium text-slate-100">Frame-edge evidence</p>
+                  <div className="mt-1 grid grid-cols-1 gap-x-4 gap-y-0.5 text-slate-400 sm:grid-cols-2">
+                    <span>
+                      Endpoint A nearest frame-edge distance:{" "}
+                      <span className="text-slate-200">
+                        {formatQualPx(f.determiningEndpointMinEdgeDistanceSourcePx?.[0])}
+                      </span>
+                    </span>
+                    <span>
+                      Endpoint B nearest frame-edge distance:{" "}
+                      <span className="text-slate-200">
+                        {formatQualPx(f.determiningEndpointMinEdgeDistanceSourcePx?.[1])}
+                      </span>
+                    </span>
+                    <span>
+                      Endpoint A near frame:{" "}
+                      <span className="text-slate-200">{formatQualBool(f.determiningEndpointNearFrame?.[0])}</span>
+                    </span>
+                    <span>
+                      Endpoint B near frame:{" "}
+                      <span className="text-slate-200">{formatQualBool(f.determiningEndpointNearFrame?.[1])}</span>
+                    </span>
+                    <span>
+                      Determining seam frame-edge collapsed:{" "}
+                      <span className="text-slate-200">{formatQualBool(f.determiningSeamFrameEdgeCollapsed)}</span>
+                    </span>
+                  </div>
+                  <p className="mt-1 text-[10px] text-slate-500">
+                    Frame-edge collapse is a support-evidence fact only. It does not change the declared movement
+                    authority.
+                  </p>
+                </div>
+
+                {/* 5. Threshold provenance */}
+                <div className="rounded-lg border border-slate-700 bg-slate-900/60 p-3">
+                  <p className="font-medium text-slate-100">Active thresholds</p>
+                  <div className="mt-1 grid grid-cols-1 gap-x-4 gap-y-0.5 text-slate-400 sm:grid-cols-2">
+                    <span>
+                      Minimum usable determining span:{" "}
+                      <span className="text-slate-200">{q.thresholdsUsed.minUsableDeterminingSpanPx} px</span>
+                    </span>
+                    <span>
+                      Weak determining span:{" "}
+                      <span className="text-slate-200">{q.thresholdsUsed.weakDeterminingSpanPx} px</span>
+                    </span>
+                    <span>
+                      Weak determining / image-diagonal ratio:{" "}
+                      <span className="text-slate-200">{q.thresholdsUsed.weakDeterminingSpanImageDiagonalRatio}</span>
+                    </span>
+                    <span>
+                      Frame-edge margin ratio:{" "}
+                      <span className="text-slate-200">{q.thresholdsUsed.frameEdgeMarginRatio}</span>
+                    </span>
+                    <span>
+                      Weak determining-to-movable ratio:{" "}
+                      <span className="text-slate-200">{q.thresholdsUsed.weakDeterminingToMovableSpanRatio}</span>
+                    </span>
+                  </div>
+                  <p className="mt-1 text-[10px] text-slate-500">
+                    These are lab-only, adjustable diagnostic thresholds, not final physical truth.
+                  </p>
+                </div>
+
+                {/* 6. Broad-search / exhaustion facts */}
+                <div className="rounded-lg border border-slate-700 bg-slate-900/60 p-3">
+                  <p className="font-medium text-slate-100">Broad-search &amp; exhaustion facts</p>
+                  {!f.broadSearchRun ? (
+                    <p className="mt-1 text-slate-400">
+                      No Type A broad coupled-search result set is present for the current evidence. Absent broad
+                      diagnostics are not treated as a failed Type A.
+                    </p>
+                  ) : (
+                    <>
+                      <div className="mt-1 grid grid-cols-1 gap-x-4 gap-y-0.5 text-slate-400 sm:grid-cols-2">
+                        <span>
+                          broad search run: <span className="text-slate-200">{formatQualBool(f.broadSearchRun)}</span>
+                        </span>
+                        <span>
+                          broad search current:{" "}
+                          <span className="text-slate-200">{formatQualBool(f.broadSearchCurrent)}</span>
+                        </span>
+                        <span>
+                          broad search complete:{" "}
+                          <span className="text-slate-200">{formatQualBool(f.broadSearchComplete)}</span>
+                        </span>
+                        <span>
+                          broad search truncated:{" "}
+                          <span className="text-slate-200">{formatQualBool(f.broadSearchTruncated)}</span>
+                        </span>
+                        <span>
+                          tuple count: <span className="text-slate-200">{f.broadSearchTupleCount ?? "—"}</span>
+                        </span>
+                        <span>
+                          any high-confidence corridor:{" "}
+                          <span className="text-slate-200">{formatQualBool(f.anyTupleHasHighConfidenceCorridor)}</span>
+                        </span>
+                        <span>
+                          eligible local seed exists:{" "}
+                          <span className="text-slate-200">{formatQualBool(f.eligibleLocalSeedExists)}</span>
+                        </span>
+                      </div>
+                      {f.broadSearchStateCounts && (
+                        <div className="mt-1 grid grid-cols-1 gap-x-4 gap-y-0.5 text-slate-400 sm:grid-cols-2">
+                          <span>
+                            invalid geometry:{" "}
+                            <span className="text-slate-200">{f.broadSearchStateCounts.invalid_geometry}</span>
+                          </span>
+                          <span>
+                            no pose: <span className="text-slate-200">{f.broadSearchStateCounts.no_pose}</span>
+                          </span>
+                          <span>
+                            pose poor: <span className="text-slate-200">{f.broadSearchStateCounts.pose_poor}</span>
+                          </span>
+                          <span>
+                            high-confidence not Apply-safe:{" "}
+                            <span className="text-slate-200">
+                              {f.broadSearchStateCounts.high_confidence_not_apply_safe}
+                            </span>
+                          </span>
+                          <span>
+                            Apply-safe diagnostic:{" "}
+                            <span className="text-slate-200">{f.broadSearchStateCounts.apply_safe_diagnostic}</span>
+                          </span>
+                        </div>
+                      )}
+                    </>
+                  )}
+
+                  {q.exhaustion && (
+                    <div className="mt-2 border-t border-slate-700/70 pt-2">
+                      <p className="text-slate-300">Exhaustion (no-usable-basin) assessment</p>
+                      <div className="mt-1 grid grid-cols-1 gap-x-4 gap-y-0.5 text-slate-400 sm:grid-cols-2">
+                        <span>
+                          no usable basin:{" "}
+                          <span className="text-slate-200">{formatQualBool(q.exhaustion.noUsableBasin)}</span>
+                        </span>
+                        <span>
+                          exhaustion eligible:{" "}
+                          <span className="text-slate-200">{formatQualBool(q.exhaustion.eligible)}</span>
+                        </span>
+                      </div>
+                      {q.exhaustion.missing.length > 0 && (
+                        <p className="mt-1 text-slate-400">
+                          unmet requirements:{" "}
+                          <span className="text-slate-200">{q.exhaustion.missing.join(", ")}</span>
+                        </p>
+                      )}
+                    </div>
+                  )}
+
+                  {q.broadSearchProvenance && (
+                    <div className="mt-2 border-t border-slate-700/70 pt-2">
+                      <p className="text-slate-300">Coverage provenance</p>
+                      <div className="mt-1 grid grid-cols-1 gap-x-4 gap-y-0.5 text-slate-400 sm:grid-cols-2">
+                        <span>
+                          evidence signature: <span className="text-slate-200">{signatureStatus}</span>
+                        </span>
+                        <span>
+                          tuple count: <span className="text-slate-200">{q.broadSearchProvenance.tupleCount ?? "—"}</span>
+                        </span>
+                        <span>
+                          truncated: <span className="text-slate-200">{formatQualBool(q.broadSearchProvenance.truncated)}</span>
+                        </span>
+                        {q.broadSearchProvenance.configSummary && (
+                          <>
+                            <span>
+                              tNear sample count:{" "}
+                              <span className="text-slate-200">
+                                {q.broadSearchProvenance.configSummary.tNearSampleCount ?? "—"}
+                              </span>
+                            </span>
+                            <span>
+                              aspect-ratio count:{" "}
+                              <span className="text-slate-200">
+                                {q.broadSearchProvenance.configSummary.aspectRatioCount ?? "—"}
+                              </span>
+                            </span>
+                            <span>
+                              max evaluations:{" "}
+                              <span className="text-slate-200">
+                                {q.broadSearchProvenance.configSummary.maxEvaluations ?? "—"}
+                              </span>
+                            </span>
+                          </>
+                        )}
+                      </div>
+                      <p className="mt-1 text-[10px] text-slate-500">
+                        Current coverage only. A future Type A search envelope could produce a different outcome.
+                      </p>
+                    </div>
+                  )}
+                </div>
+              </div>
+            );
+          })()}
         </CollapsibleSection>
 
         <CollapsibleSection
