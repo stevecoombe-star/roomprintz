@@ -53,11 +53,14 @@ import type { TypeBQualificationReason } from "./type-b-qualification";
 
 // --- 1. Required identifiers and constants ----------------------------------
 
-// Versioned schema identity for a frozen Type B evidence snapshot. The `/v0`
-// suffix makes future migrations explicit: a later formula/shape change is a new
-// schema string, never a silent redefinition of this one.
+// Versioned schema identity for a frozen Type B evidence snapshot. The version
+// suffix makes migrations explicit: a shape change is a new schema string, never
+// a silent redefinition. B3D-R bumped this to `/v1` for the mandatory frozen
+// `endpointRoles` map (see TypeBFrozenEndpointRoleMap). This is a LAB-ONLY
+// contract migration: NO v0 hydration, migration, or compatibility handling is
+// implemented (v0 snapshots are not produced anywhere in the lab yet).
 export const TYPE_B_EVIDENCE_SNAPSHOT_SCHEMA =
-  "vibode-type-b-evidence-snapshot/v0" as const;
+  "vibode-type-b-evidence-snapshot/v1" as const;
 
 // The evaluator family: HOW a bounded mathematical evaluator interprets the
 // declared evidence (two rear points + one side line + ONE bounded latent side
@@ -335,6 +338,59 @@ export type TypeBFrozenJunctionEvidence = {
   readonly established: true;
 };
 
+// --- 3b. Frozen endpoint-role map (B3D-R) -----------------------------------
+// B3D-A found that the frozen snapshot recorded the junction DISTANCE/tolerance
+// but NOT which declared endpoints form the junction. Re-deriving the closest
+// declared pair at diagnostic time is deterministic EXCEPT under exact ties and
+// can drift from what capture-time eligibility validated. B3D-R therefore
+// freezes the endpoint roles ONCE, at a FUTURE snapshot-capture phase, so no
+// later diagnostic phase (B3D-1 P3P enumeration, B3D-2 association) re-derives
+// them.
+
+// Identity of the rule a FUTURE capture phase uses to resolve endpoint roles:
+// the unique closest declared rear/side endpoint pair, refusing on an exact tie.
+// The `/v0` suffix makes a future rule change an explicit new identifier.
+export const TYPE_B_ENDPOINT_ROLE_RESOLUTION_RULE =
+  "closest_declared_endpoint_pair_non_tied/v0" as const;
+
+// Which declared endpoint of a two-point seam ("start" or "end") plays a role.
+export type TypeBDeclaredEndpointRole = "start" | "end";
+
+// Frozen endpoint-role map. Captured ONCE at a FUTURE snapshot-capture phase and
+// NEVER re-derived by later diagnostic phases. The selected rear/side pair is
+// the unique closest declared endpoint pair under the resolution rule; exact
+// closest-pair ties MUST refuse at capture time (see
+// TypeBEndpointRoleCaptureRefusalReason). B3D-R implements NO capture,
+// re-derivation, or validation logic and adds NO capture helper.
+export type TypeBFrozenEndpointRoleMap = {
+  // The rule under which the roles were resolved (stored for reproducibility).
+  readonly resolutionRuleId: typeof TYPE_B_ENDPOINT_ROLE_RESOLUTION_RULE;
+
+  // The rear-seam endpoint participating in the frozen shared junction.
+  readonly junctionRearEndpoint: TypeBDeclaredEndpointRole;
+
+  // The strong-side-seam endpoint participating in the frozen shared junction.
+  readonly junctionSideEndpoint: TypeBDeclaredEndpointRole;
+};
+
+// Refusal vocabulary for the FUTURE snapshot-capture phase that resolves endpoint
+// roles. Type-only; B3D-R evaluates NOTHING. Documented capture rules the future
+// phase MUST enforce (NO logic here):
+//   - endpoint roles are determined ONLY at future snapshot capture, never later;
+//   - an exact closest-pair tie refuses (`junction_endpoint_pair_tied`) rather
+//     than silently choosing an arbitrary endpoint;
+//   - both junction endpoints (rear + side) must be POSITION-CERTAIN (`visible`
+//     / `near_frame`), else `junction_endpoint_not_position_certain`;
+//   - the NON-junction rear endpoint must be POSITION-CERTAIN, else
+//     `non_junction_rear_endpoint_not_position_certain`;
+//   - the NON-junction side endpoint (the side terminus) must be
+//     `frame_truncated` / `occluded`, else `side_terminus_not_latent`.
+export type TypeBEndpointRoleCaptureRefusalReason =
+  | "junction_endpoint_pair_tied"
+  | "junction_endpoint_not_position_certain"
+  | "non_junction_rear_endpoint_not_position_certain"
+  | "side_terminus_not_latent";
+
 // The versioned, value-oriented, immutable-by-contract Type B evidence snapshot.
 // It is the fixed input to every future tuple evaluation and depends on NO
 // mutable live B2 review / React state. (Capturing one from live state is a
@@ -363,6 +419,10 @@ export type TypeBEvidenceSnapshot = {
   readonly b1Qualification: TypeBFrozenB1QualificationFingerprint;
 
   readonly junction: TypeBFrozenJunctionEvidence;
+
+  // B3D-R: frozen endpoint-role map. Captured once (a FUTURE phase) and never
+  // re-derived by later diagnostic phases. Mandatory in the `/v1` schema.
+  readonly endpointRoles: TypeBFrozenEndpointRoleMap;
 
   readonly capturedAtIso: string;
 };
@@ -467,12 +527,34 @@ export type TypeBRotationMatrix3 = readonly [
   number
 ];
 
-// Per-hypothesis plausibility observation. `checkId` is a free-form identifier
-// on purpose: WHICH specific plausibility checks (cheirality, orthonormality,
-// handedness, scale-ratio, camera-above-floor, ...) apply — and which existing
-// Type A gates transfer — is a B3B decision, deliberately NOT fixed here.
+// B3D-R plausibility-check registry. B3A intentionally left `checkId` free-form;
+// B3D pins the first stable registry so recorded observations share exact,
+// versioned identifiers. These are IDENTIFIERS only — NOT scores, confidence
+// states, or root-selection filters. No plausibility check is evaluated in
+// B3D-R. Policy pinned by the B3D-A study:
+//   - positive P3P distance / cheirality is a FUTURE HARD BRANCH FILTER (removes
+//     a root before it becomes a hypothesis), NOT a plausibility observation;
+//   - construction residuals stay separately typed `construction_satisfying`
+//     (see TypeBConstructionObservation), never a plausibility observation;
+//   - world-triangle conditioning stays UPSTREAM B3C coverage policy
+//     (isTypeBLatentDepthProductConditioned), not a per-root observation here;
+//   - `camera_above_floor` and `camera_near_side_of_rear_seam` are OBSERVATIONS
+//     ONLY in v0 — they annotate a root, they never remove or select one.
+export const TYPE_B_PLAUSIBILITY_CHECK_IDS = {
+  rotationNumericalHealth: "rotation_numerical_health/v0",
+  imageRayConditioning: "image_ray_conditioning/v0",
+  cameraAboveFloor: "camera_above_floor/v0",
+  cameraNearSideOfRearSeam: "camera_near_side_of_rear_seam/v0",
+  rootSeparation: "root_separation/v0",
+} as const;
+
+export type TypeBPlausibilityCheckId =
+  (typeof TYPE_B_PLAUSIBILITY_CHECK_IDS)[keyof typeof TYPE_B_PLAUSIBILITY_CHECK_IDS];
+
+// Per-hypothesis plausibility observation. B3D-R tightens `checkId` from B3A's
+// free-form string to the pinned `TypeBPlausibilityCheckId` registry.
 export type TypeBPlausibilityObservation = {
-  readonly checkId: string;
+  readonly checkId: TypeBPlausibilityCheckId;
   readonly state: TypeBPosePlausibilityState;
 };
 
@@ -480,8 +562,18 @@ export type TypeBPlausibilityObservation = {
 // a stable enumeration index, NOT a score / rank / preference. There is
 // intentionally no score, rank, confidence, recommended, selected, winner, or
 // camera-FOV-recommendation field, and no recovered-corner field.
+//
+// B3D-R: `poseComparisonReferenceFrame` pins the frame of the recovered pose.
+//   - `cameraPositionWorld` is expressed in the JUNCTION-ANCHORED Type B world
+//     frame (not the committed CENTERED floor-rectangle frame);
+//   - `worldToCameraRotation` maps that same junction-anchored world frame into
+//     CV camera coordinates;
+//   - all later branch association and cross-probe / cross-class pose comparison
+//     MUST use this frame; the centered floor-rectangle frame must NOT be used
+//     for Type B pose comparison.
 export type TypeBPoseHypothesis = {
   readonly hypothesisIndex: number;
+  readonly poseComparisonReferenceFrame: typeof TYPE_B_POSE_COMPARISON_REFERENCE_FRAME;
   readonly cameraPositionWorld: TypeBVec3;
   readonly worldToCameraRotation: TypeBRotationMatrix3;
   readonly constructionObservations: readonly TypeBConstructionObservation[];
@@ -705,6 +797,18 @@ export type TypeBBasinClassification =
 //     supports a real check (a `frame_truncated` continuation inequality); for a
 //     v0 occluded side terminus crop compatibility is `not_applicable`, not
 //     inferred (see TypeBCropCompatibilityState).
+// B3D-R additions (existing literals retained; two new literals added):
+//   - `invalid_tuple_generation_linkage` is a FUTURE RUN-level refusal for
+//     malformed B3C class/member/probe linkage, empty pose-probe keys,
+//     inconsistent product/FOV identity across a shared key, or a snapshot-basis
+//     mismatch between the snapshot and the supplied B3C result.
+//   - `fov_topology_unresolved` means per-probe P3P evaluation may still be
+//     valid, but branch-CORRIDOR formation is NOT assessed (no valid ascending
+//     lattice declaration). Future association ambiguity / near-coincident
+//     unresolved multiplicity at corridor or run scope continues to use the
+//     EXISTING `pose_multiplicity_unresolved` — B3D-R adds NO separate
+//     branch-association refusal literal.
+// Neither new literal is a ranking, selection, or calibration signal.
 export type TypeBDiagnosticRefusalReason =
   | TypeBEvaluatorEligibilityRefusal
   | "evidence_snapshot_stale"
@@ -719,4 +823,6 @@ export type TypeBDiagnosticRefusalReason =
   | "instability_across_neighboring_tuples"
   | "boundary_dependent_only"
   | "no_usable_basin_under_current_coverage"
-  | "multiple_incompatible_bounded_basins";
+  | "multiple_incompatible_bounded_basins"
+  | "invalid_tuple_generation_linkage"
+  | "fov_topology_unresolved";

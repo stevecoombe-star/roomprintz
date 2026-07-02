@@ -12,6 +12,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  TYPE_B_ENDPOINT_ROLE_RESOLUTION_RULE,
   TYPE_B_EVALUATOR_FAMILY,
   TYPE_B_EVIDENCE_SNAPSHOT_SCHEMA,
   TYPE_B_EVALUATOR_JUNCTION_TOLERANCE_FORMULA,
@@ -89,6 +90,11 @@ function snapshotFixture(
       toleranceFormulaId: TYPE_B_EVALUATOR_JUNCTION_TOLERANCE_FORMULA,
       resolvedToleranceSourcePx: 20,
       established: true,
+    },
+    endpointRoles: {
+      resolutionRuleId: TYPE_B_ENDPOINT_ROLE_RESOLUTION_RULE,
+      junctionRearEndpoint: "start",
+      junctionSideEndpoint: "start",
     },
     capturedAtIso: "2026-07-01T00:00:00.000Z",
     ...overrides,

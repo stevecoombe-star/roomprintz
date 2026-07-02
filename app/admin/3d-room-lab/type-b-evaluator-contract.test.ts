@@ -13,6 +13,7 @@ import test from "node:test";
 
 import * as contract from "./type-b-evaluator-contract";
 import {
+  TYPE_B_ENDPOINT_ROLE_RESOLUTION_RULE,
   TYPE_B_EVALUATOR_FAMILY,
   TYPE_B_EVALUATOR_JUNCTION_TOLERANCE_FORMULA,
   TYPE_B_EVALUATOR_JUNCTION_TOLERANCE_MAX_PX,
@@ -20,6 +21,7 @@ import {
   TYPE_B_EVALUATOR_JUNCTION_TOLERANCE_RATIO,
   TYPE_B_EVIDENCE_SNAPSHOT_SCHEMA,
   TYPE_B_LATENT_DEPTH_PRODUCT_FORMULA,
+  TYPE_B_PLAUSIBILITY_CHECK_IDS,
   TYPE_B_POSE_COMPARISON_REFERENCE_FRAME,
   TYPE_B_PROVISIONAL_MIN_LATENT_DEPTH_PRODUCT,
   TYPE_B_PROVISIONAL_MIN_WORLD_TRIANGLE_ANGLE_DEG,
@@ -29,11 +31,18 @@ import {
   makeTypeBPoseProbeEquivalenceKey,
   resolveTypeBEvaluatorJunctionTolerancePx,
   resolveTypeBLatentDepthProduct,
+  type TypeBDeclaredEndpointRole,
   type TypeBDiagnosticRecord,
+  type TypeBDiagnosticRefusalReason,
   type TypeBDiagnosticTuple,
+  type TypeBEndpointRoleCaptureRefusalReason,
   type TypeBEvidenceSnapshot,
   type TypeBEvidenceSnapshotBasis,
+  type TypeBFrozenEndpointRoleMap,
   type TypeBLatentDepthEquivalenceClass,
+  type TypeBPlausibilityCheckId,
+  type TypeBPlausibilityObservation,
+  type TypeBPoseHypothesis,
   type TypeBPoseProbeEquivalence,
 } from "./type-b-evaluator-contract";
 
@@ -105,6 +114,11 @@ function snapshotFixture(): TypeBEvidenceSnapshot {
       toleranceFormulaId: TYPE_B_EVALUATOR_JUNCTION_TOLERANCE_FORMULA,
       resolvedToleranceSourcePx: 20,
       established: true,
+    },
+    endpointRoles: {
+      resolutionRuleId: TYPE_B_ENDPOINT_ROLE_RESOLUTION_RULE,
+      junctionRearEndpoint: "start",
+      junctionSideEndpoint: "start",
     },
     capturedAtIso: "2026-07-01T00:00:00.000Z",
   };
@@ -248,7 +262,7 @@ test("11: basis comparison does not mutate either input", () => {
 test("12: required identifiers equal the exact agreed values", () => {
   assert.equal(
     TYPE_B_EVIDENCE_SNAPSHOT_SCHEMA,
-    "vibode-type-b-evidence-snapshot/v0"
+    "vibode-type-b-evidence-snapshot/v1"
   );
   assert.equal(TYPE_B_EVALUATOR_FAMILY, "rear_points_side_line_one_latent");
   assert.equal(
@@ -289,6 +303,13 @@ test("13: a representative Type B snapshot fixture is declarable + self-consiste
     compareTypeBEvidenceSnapshotBasis(snapshot.basis, snapshot.basis).kind,
     "fresh"
   );
+  // B3D-R: the frozen endpoint-role map is present and reproducible.
+  assert.equal(
+    snapshot.endpointRoles.resolutionRuleId,
+    TYPE_B_ENDPOINT_ROLE_RESOLUTION_RULE
+  );
+  assert.equal(snapshot.endpointRoles.junctionRearEndpoint, "start");
+  assert.equal(snapshot.endpointRoles.junctionSideEndpoint, "start");
 });
 
 // --- 14. Representative exact tuple -----------------------------------------
@@ -324,6 +345,7 @@ test("15: the contract module's runtime surface is only pure constants + helpers
   // an extra export here.
   const runtimeKeys = Object.keys(contract).sort();
   assert.deepEqual(runtimeKeys, [
+    "TYPE_B_ENDPOINT_ROLE_RESOLUTION_RULE",
     "TYPE_B_EVALUATOR_FAMILY",
     "TYPE_B_EVALUATOR_JUNCTION_TOLERANCE_FORMULA",
     "TYPE_B_EVALUATOR_JUNCTION_TOLERANCE_MAX_PX",
@@ -331,6 +353,7 @@ test("15: the contract module's runtime surface is only pure constants + helpers
     "TYPE_B_EVALUATOR_JUNCTION_TOLERANCE_RATIO",
     "TYPE_B_EVIDENCE_SNAPSHOT_SCHEMA",
     "TYPE_B_LATENT_DEPTH_PRODUCT_FORMULA",
+    "TYPE_B_PLAUSIBILITY_CHECK_IDS",
     "TYPE_B_POSE_COMPARISON_REFERENCE_FRAME",
     "TYPE_B_PROVISIONAL_MIN_LATENT_DEPTH_PRODUCT",
     "TYPE_B_PROVISIONAL_MIN_WORLD_TRIANGLE_ANGLE_DEG",
@@ -543,4 +566,124 @@ test("B3B-R 15: TypeBDiagnosticTuple still has exactly its four runtime keys", (
     "fovProbeDeg",
     "latentSideExtent",
   ]);
+});
+
+// --- B3D-R: contract amendment ---------------------------------------------
+
+test("B3D-R 1: endpoint-role resolution rule identifier is exact", () => {
+  assert.equal(
+    TYPE_B_ENDPOINT_ROLE_RESOLUTION_RULE,
+    "closest_declared_endpoint_pair_non_tied/v0"
+  );
+});
+
+test("B3D-R 2: a frozen endpoint-role map is declarable + preserves roles", () => {
+  const roles: TypeBFrozenEndpointRoleMap = {
+    resolutionRuleId: TYPE_B_ENDPOINT_ROLE_RESOLUTION_RULE,
+    junctionRearEndpoint: "start",
+    junctionSideEndpoint: "end",
+  };
+  assert.equal(roles.resolutionRuleId, TYPE_B_ENDPOINT_ROLE_RESOLUTION_RULE);
+  assert.equal(roles.junctionRearEndpoint, "start");
+  assert.equal(roles.junctionSideEndpoint, "end");
+  // The snapshot fixture carries the map and it is fresh against itself.
+  const snapshot = snapshotFixture();
+  assert.equal(
+    snapshot.endpointRoles.resolutionRuleId,
+    TYPE_B_ENDPOINT_ROLE_RESOLUTION_RULE
+  );
+});
+
+test("B3D-R 3: endpoint-role values allow only start / end", () => {
+  const values: TypeBDeclaredEndpointRole[] = ["start", "end"];
+  assert.deepEqual(values.sort(), ["end", "start"]);
+  // Every allowed role is usable in both junction positions.
+  for (const role of values) {
+    const roles: TypeBFrozenEndpointRoleMap = {
+      resolutionRuleId: TYPE_B_ENDPOINT_ROLE_RESOLUTION_RULE,
+      junctionRearEndpoint: role,
+      junctionSideEndpoint: role,
+    };
+    assert.ok(
+      roles.junctionRearEndpoint === "start" ||
+        roles.junctionRearEndpoint === "end"
+    );
+  }
+});
+
+test("B3D-R 4: capture-refusal vocabulary is exact + exhaustive", () => {
+  // An exhaustive mapping over the union: adding/removing a literal would fail
+  // the compile-time exhaustiveness of this record's key set.
+  const documented: Record<TypeBEndpointRoleCaptureRefusalReason, true> = {
+    junction_endpoint_pair_tied: true,
+    junction_endpoint_not_position_certain: true,
+    non_junction_rear_endpoint_not_position_certain: true,
+    side_terminus_not_latent: true,
+  };
+  assert.deepEqual(Object.keys(documented).sort(), [
+    "junction_endpoint_not_position_certain",
+    "junction_endpoint_pair_tied",
+    "non_junction_rear_endpoint_not_position_certain",
+    "side_terminus_not_latent",
+  ]);
+});
+
+test("B3D-R 5: a pose hypothesis requires the junction-anchored frame", () => {
+  const hypothesis: TypeBPoseHypothesis = {
+    hypothesisIndex: 0,
+    poseComparisonReferenceFrame: TYPE_B_POSE_COMPARISON_REFERENCE_FRAME,
+    cameraPositionWorld: { x: 0.45, y: 1.3, z: 1.6 },
+    worldToCameraRotation: [1, 0, 0, 0, 1, 0, 0, 0, 1],
+    constructionObservations: [],
+    plausibility: [],
+  };
+  assert.equal(
+    hypothesis.poseComparisonReferenceFrame,
+    "junction_anchored/v0"
+  );
+  // hypothesisIndex is an enumeration index, not a rank.
+  assert.equal(hypothesis.hypothesisIndex, 0);
+});
+
+test("B3D-R 6: plausibility registry values are exact", () => {
+  assert.deepEqual(TYPE_B_PLAUSIBILITY_CHECK_IDS, {
+    rotationNumericalHealth: "rotation_numerical_health/v0",
+    imageRayConditioning: "image_ray_conditioning/v0",
+    cameraAboveFloor: "camera_above_floor/v0",
+    cameraNearSideOfRearSeam: "camera_near_side_of_rear_seam/v0",
+    rootSeparation: "root_separation/v0",
+  });
+});
+
+test("B3D-R 7: a plausibility observation accepts every registry check id", () => {
+  const ids: TypeBPlausibilityCheckId[] = Object.values(
+    TYPE_B_PLAUSIBILITY_CHECK_IDS
+  );
+  const observations: TypeBPlausibilityObservation[] = ids.map((checkId) => ({
+    checkId,
+    state: "not_evaluated",
+  }));
+  assert.equal(observations.length, 5);
+  for (const observation of observations) {
+    assert.ok(
+      Object.values(TYPE_B_PLAUSIBILITY_CHECK_IDS).includes(observation.checkId)
+    );
+    assert.equal(observation.state, "not_evaluated");
+  }
+});
+
+test("B3D-R 8: the two new diagnostic refusal literals are available", () => {
+  const refusals: TypeBDiagnosticRefusalReason[] = [
+    "invalid_tuple_generation_linkage",
+    "fov_topology_unresolved",
+  ];
+  assert.deepEqual(refusals, [
+    "invalid_tuple_generation_linkage",
+    "fov_topology_unresolved",
+  ]);
+  // The existing corridor/run-scope multiplicity literal is still available and
+  // is NOT replaced by a new branch-association literal.
+  const multiplicity: TypeBDiagnosticRefusalReason =
+    "pose_multiplicity_unresolved";
+  assert.equal(multiplicity, "pose_multiplicity_unresolved");
 });
