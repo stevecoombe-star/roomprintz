@@ -879,6 +879,7 @@ function parseCaptureRefusalOrder(): string[] {
 // order for readability; membership, not order, is asserted here).
 const EXPECTED_CAPTURE_REFUSAL_MEMBERS = [
   "invalid_snapshot_basis",
+  "invalid_world_width",
   "latent_condition_not_authorized",
   "type_a_context_not_exhausted_handoff",
   "type_b_not_qualified",
@@ -1033,6 +1034,94 @@ test("resolver results are unchanged by the vocabulary extension", () => {
         "type_a_context_not_exhausted_handoff" as never
       )
     );
+  }
+});
+
+// --- B3D-5A3: capture world-width refusal completion -------------------------
+
+test("TypeBCaptureRefusalReason includes the invalid_world_width literal", () => {
+  // Compile-time membership: only compiles if the literal is a union member.
+  const w: captureModule.TypeBCaptureRefusalReason = "invalid_world_width";
+  assert.equal(w, "invalid_world_width");
+});
+
+test("module-private ordering contains invalid_world_width exactly once", () => {
+  const order = parseCaptureRefusalOrder();
+  const count = order.filter((entry) => entry === "invalid_world_width").length;
+  assert.equal(count, 1);
+});
+
+test("invalid_world_width is placed after invalid_snapshot_basis and before all later facts", () => {
+  const order = parseCaptureRefusalOrder();
+  const idxWorldWidth = order.indexOf("invalid_world_width");
+  const idxBasis = order.indexOf("invalid_snapshot_basis");
+  assert.ok(idxBasis >= 0 && idxWorldWidth >= 0);
+  // Immediately governed placement: after invalid_snapshot_basis.
+  assert.ok(idxBasis < idxWorldWidth);
+  // Before latent-authorization, Type A handoff, B1 qualification, and every
+  // junction / role / latent / coverage fact.
+  const laterFacts = [
+    "latent_condition_not_authorized",
+    "type_a_context_not_exhausted_handoff",
+    "type_b_not_qualified",
+    "junction_endpoint_pair_tied",
+    "shared_junction_not_visibly_established",
+    "junction_endpoint_not_position_certain",
+    "non_junction_rear_endpoint_not_position_certain",
+    "side_terminus_not_latent",
+    "latent_condition_side_terminus_status_mismatch",
+    "frame_truncated_side_terminus_not_contacts_frame",
+    "no_authorized_aspect_ratios",
+    "duplicate_authorized_aspect_ratio",
+    "no_primary_product_classes",
+    "duplicate_primary_product_class_identity",
+    "duplicate_primary_latent_depth_product",
+    "invalid_primary_product_class",
+    "no_fov_probes",
+    "invalid_fov_probe",
+    "duplicate_fov_probe",
+  ];
+  for (const fact of laterFacts) {
+    const idx = order.indexOf(fact);
+    assert.ok(idx >= 0, `${fact} missing from order`);
+    assert.ok(
+      idxWorldWidth < idx,
+      `invalid_world_width should precede ${fact}`
+    );
+  }
+});
+
+test("resolver never emits invalid_world_width (no world-width input)", () => {
+  // The resolver's own fixtures never surface the world-width literal, since the
+  // resolver has no worldWidth input at all.
+  const fixtures = [
+    baseInput(),
+    baseInput({
+      rearSeam: seam(REAR_BASE, {
+        startNorm: { x: 0.5, y: 0.5 },
+        endNorm: { x: 0.6, y: 0.5 },
+      }),
+      strongSideSeam: seam(SIDE_BASE, {
+        startNorm: { x: 0.5, y: 0.5 },
+        endNorm: { x: 0.6, y: 0.5 },
+      }),
+    }),
+    baseInput({
+      strongSideSeam: seam(SIDE_BASE, {
+        startNorm: { x: 0.5, y: 0.55 },
+        endNorm: { x: 0.5, y: 0.95 },
+      }),
+    }),
+    baseInput({ sourceFrame: { width: 0, height: 800 } as never }),
+  ];
+  for (const fixture of fixtures) {
+    const result = resolveTypeBCapturedEndpointRoles(fixture);
+    if (result.status === "refused") {
+      assert.ok(
+        !result.refusalReasons.includes("invalid_world_width" as never),
+        "resolver must never emit invalid_world_width"
+      );
+    }
   }
 });
 

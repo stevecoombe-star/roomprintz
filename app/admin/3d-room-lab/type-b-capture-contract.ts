@@ -120,6 +120,7 @@ export type TypeBCaptureRefusalReason =
     >
   // New capture-only literals.
   | "invalid_snapshot_basis"
+  | "invalid_world_width"
   | "latent_condition_not_authorized"
   | "latent_condition_side_terminus_status_mismatch"
   | "frame_truncated_side_terminus_not_contacts_frame"
@@ -149,6 +150,10 @@ export type TypeBCaptureRefusalReason =
 const TYPE_B_CAPTURE_REFUSAL_ORDER = [
   // Global / invalid-basis facts.
   "invalid_snapshot_basis",
+  // Explicit Type B world-width validity (a FUTURE B3D-5B capture-eligibility
+  // fact; the endpoint-role resolver receives no world width and never raises
+  // it).
+  "invalid_world_width",
   "latent_condition_not_authorized",
   // Type A handoff-context fact (a FUTURE B3D-5B capture-eligibility fact; the
   // endpoint-role resolver receives no Type A context and never raises it).
