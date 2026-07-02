@@ -860,6 +860,182 @@ test("data-shape imports are import type only", () => {
   assert.equal(valueImports.length, 1);
 });
 
+// --- B3D-5A2: capture eligibility refusal completion ------------------------
+
+// Parses the module-private TYPE_B_CAPTURE_REFUSAL_ORDER literal array from the
+// module source (the array is intentionally NOT exported). Comments in the block
+// carry no double-quoted tokens, so only the literal entries are captured.
+function parseCaptureRefusalOrder(): string[] {
+  const start = MODULE_SOURCE.indexOf("const TYPE_B_CAPTURE_REFUSAL_ORDER = [");
+  assert.ok(start >= 0, "ordering array declaration not found");
+  const end = MODULE_SOURCE.indexOf("] as const", start);
+  assert.ok(end > start, "ordering array terminator not found");
+  const body = MODULE_SOURCE.slice(start, end);
+  const matches = body.match(/"([a-z_]+)"/g) ?? [];
+  return matches.map((token) => token.slice(1, -1));
+}
+
+// The full expected TypeBCaptureRefusalReason membership (kept in test-declared
+// order for readability; membership, not order, is asserted here).
+const EXPECTED_CAPTURE_REFUSAL_MEMBERS = [
+  "invalid_snapshot_basis",
+  "latent_condition_not_authorized",
+  "type_a_context_not_exhausted_handoff",
+  "type_b_not_qualified",
+  "junction_endpoint_pair_tied",
+  "shared_junction_not_visibly_established",
+  "junction_endpoint_not_position_certain",
+  "non_junction_rear_endpoint_not_position_certain",
+  "side_terminus_not_latent",
+  "latent_condition_side_terminus_status_mismatch",
+  "frame_truncated_side_terminus_not_contacts_frame",
+  "no_authorized_aspect_ratios",
+  "duplicate_authorized_aspect_ratio",
+  "no_primary_product_classes",
+  "duplicate_primary_product_class_identity",
+  "duplicate_primary_latent_depth_product",
+  "invalid_primary_product_class",
+  "no_fov_probes",
+  "invalid_fov_probe",
+  "duplicate_fov_probe",
+] as const;
+
+test("TypeBCaptureRefusalReason includes both new capture-eligibility literals", () => {
+  // Compile-time membership: these assignments only compile if the literals are
+  // members of the union.
+  const a: captureModule.TypeBCaptureRefusalReason = "type_b_not_qualified";
+  const b: captureModule.TypeBCaptureRefusalReason =
+    "type_a_context_not_exhausted_handoff";
+  assert.equal(a, "type_b_not_qualified");
+  assert.equal(b, "type_a_context_not_exhausted_handoff");
+});
+
+test("module-private ordering contains both new literals exactly once", () => {
+  const order = parseCaptureRefusalOrder();
+  for (const literal of [
+    "type_b_not_qualified",
+    "type_a_context_not_exhausted_handoff",
+  ]) {
+    const count = order.filter((entry) => entry === literal).length;
+    assert.equal(count, 1, `${literal} should appear exactly once`);
+  }
+});
+
+test("module-private ordering is exhaustive for the full capture union with no duplicates", () => {
+  const order = parseCaptureRefusalOrder();
+  // No duplicate entries.
+  assert.equal(new Set(order).size, order.length);
+  // Exhaustive: exactly the expected membership (order-independent).
+  assert.deepEqual(
+    [...order].sort(),
+    [...EXPECTED_CAPTURE_REFUSAL_MEMBERS].sort()
+  );
+});
+
+test("both new literals precede junction/role/latent/coverage facts in the stable order", () => {
+  const order = parseCaptureRefusalOrder();
+  const idxTypeA = order.indexOf("type_a_context_not_exhausted_handoff");
+  const idxTypeB = order.indexOf("type_b_not_qualified");
+  // Type A handoff context precedes B1 qualification.
+  assert.ok(idxTypeA >= 0 && idxTypeB >= 0);
+  assert.ok(idxTypeA < idxTypeB);
+  // Both precede the first junction, role, latent, and coverage facts.
+  const laterFacts = [
+    "junction_endpoint_pair_tied",
+    "shared_junction_not_visibly_established",
+    "junction_endpoint_not_position_certain",
+    "non_junction_rear_endpoint_not_position_certain",
+    "side_terminus_not_latent",
+    "latent_condition_side_terminus_status_mismatch",
+    "frame_truncated_side_terminus_not_contacts_frame",
+    "no_authorized_aspect_ratios",
+    "duplicate_authorized_aspect_ratio",
+    "no_primary_product_classes",
+    "duplicate_primary_product_class_identity",
+    "duplicate_primary_latent_depth_product",
+    "invalid_primary_product_class",
+    "no_fov_probes",
+    "invalid_fov_probe",
+    "duplicate_fov_probe",
+  ];
+  for (const fact of laterFacts) {
+    const idx = order.indexOf(fact);
+    assert.ok(idx >= 0, `${fact} missing from order`);
+    assert.ok(idxTypeA < idx, `type_a should precede ${fact}`);
+    assert.ok(idxTypeB < idx, `type_b should precede ${fact}`);
+  }
+});
+
+test("resolver results are unchanged by the vocabulary extension", () => {
+  // Valid resolve.
+  const valid = resolveTypeBCapturedEndpointRoles(baseInput());
+  assert.equal(valid.status, "resolved");
+
+  // Tie.
+  const tie = resolveTypeBCapturedEndpointRoles(
+    baseInput({
+      rearSeam: seam(REAR_BASE, {
+        startNorm: { x: 0.5, y: 0.5 },
+        endNorm: { x: 0.6, y: 0.5 },
+      }),
+      strongSideSeam: seam(SIDE_BASE, {
+        startNorm: { x: 0.5, y: 0.5 },
+        endNorm: { x: 0.6, y: 0.5 },
+      }),
+    })
+  );
+  assert.equal(tie.status, "refused");
+  if (tie.status === "refused") {
+    assert.deepEqual(tie.refusalReasons, ["junction_endpoint_pair_tied"]);
+  }
+
+  // Beyond tolerance.
+  const far = resolveTypeBCapturedEndpointRoles(
+    baseInput({
+      strongSideSeam: seam(SIDE_BASE, {
+        startNorm: { x: 0.5, y: 0.55 },
+        endNorm: { x: 0.5, y: 0.95 },
+      }),
+    })
+  );
+  assert.equal(far.status, "refused");
+  if (far.status === "refused") {
+    assert.deepEqual(far.refusalReasons, [
+      "shared_junction_not_visibly_established",
+    ]);
+  }
+
+  // Certainty + latent multi-reason ordering unchanged (no new literal appears).
+  const multi = resolveTypeBCapturedEndpointRoles(
+    baseInput({
+      rearSeam: seam(REAR_BASE, {
+        startEndpointStatus: "occluded",
+        endEndpointStatus: "occluded",
+      }),
+      strongSideSeam: seam(SIDE_BASE, {
+        startEndpointStatus: "occluded",
+        endEndpointStatus: "occluded",
+        endFrameContact: "no_frame_contact",
+      }),
+    })
+  );
+  assert.equal(multi.status, "refused");
+  if (multi.status === "refused") {
+    assert.deepEqual(multi.refusalReasons, [
+      "junction_endpoint_not_position_certain",
+      "non_junction_rear_endpoint_not_position_certain",
+      "latent_condition_side_terminus_status_mismatch",
+    ]);
+    // The resolver never fabricates the capture-eligibility literals.
+    assert.ok(!multi.refusalReasons.includes("type_b_not_qualified" as never));
+    assert.ok(
+      !multi.refusalReasons.includes(
+        "type_a_context_not_exhausted_handoff" as never
+      )
+    );
+  }
+});
+
 test("committed B3A/B3C/B3D schema strings remain untouched", () => {
   // Reading the upstream constants proves the exact literals are unchanged.
   assert.equal(TYPE_B_EVIDENCE_SNAPSHOT_SCHEMA, "vibode-type-b-evidence-snapshot/v1");

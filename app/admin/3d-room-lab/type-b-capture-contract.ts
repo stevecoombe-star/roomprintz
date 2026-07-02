@@ -100,15 +100,24 @@ export type TypeBExplicitCaptureInputs = {
 // Composition (all reused literals are proven present at compile time via the
 // source union or `Extract`, so a typo cannot silently invent a literal):
 //   - four frozen endpoint-role literals (TypeBEndpointRoleCaptureRefusalReason);
-//   - one evidence/eligibility literal (shared_junction_not_visibly_established);
+//   - three reused evidence/eligibility literals (B3D-5A2 adds
+//     `type_b_not_qualified` + `type_a_context_not_exhausted_handoff` beside the
+//     existing `shared_junction_not_visibly_established`), all drawn from
+//     TypeBEvaluatorEligibilityRefusal — these are capture-time eligibility
+//     facts a FUTURE B3D-5B evaluator raises; the resolver never raises them;
 //   - four NEW capture-only literals;
 //   - nine reused B3C run-level coverage-shape literals (class-level B3C reasons
 //     are deliberately EXCLUDED so B3D-5B can keep them visible in B3C).
 export type TypeBCaptureRefusalReason =
   // Reused frozen endpoint-role literals.
   | TypeBEndpointRoleCaptureRefusalReason
-  // Reused evidence/eligibility literal.
-  | Extract<TypeBEvaluatorEligibilityRefusal, "shared_junction_not_visibly_established">
+  // Reused evidence/eligibility literals.
+  | Extract<
+      TypeBEvaluatorEligibilityRefusal,
+      | "type_b_not_qualified"
+      | "type_a_context_not_exhausted_handoff"
+      | "shared_junction_not_visibly_established"
+    >
   // New capture-only literals.
   | "invalid_snapshot_basis"
   | "latent_condition_not_authorized"
@@ -129,18 +138,28 @@ export type TypeBCaptureRefusalReason =
     >;
 
 // The single immutable declared order for capture refusal reasons. It orders
-// global / basis facts before junction facts, then role facts, then latent-
-// condition consistency, then coverage-shape facts. The resolver returns all
-// genuinely evaluable applicable reasons in exactly this order (no first-
-// failure-only behavior). This is a module-private ordering: it is NOT exported.
-const TYPE_B_CAPTURE_REFUSAL_ORDER: readonly TypeBCaptureRefusalReason[] = [
-  // Global / basis facts.
+// global / invalid-basis facts, then the Type A handoff-context fact, then the
+// B1 qualification fact, then junction-visibility facts, then endpoint-role
+// certainty facts, then latent-condition consistency facts, then coverage-shape
+// facts. The resolver returns all genuinely evaluable applicable reasons in
+// exactly this order (no first-failure-only behavior). This is a module-private
+// ordering: it is NOT exported. `as const satisfies` keeps the exact literal
+// tuple (so the completeness assertion below sees each element) while proving
+// every element is a valid TypeBCaptureRefusalReason.
+const TYPE_B_CAPTURE_REFUSAL_ORDER = [
+  // Global / invalid-basis facts.
   "invalid_snapshot_basis",
   "latent_condition_not_authorized",
-  // Junction facts.
+  // Type A handoff-context fact (a FUTURE B3D-5B capture-eligibility fact; the
+  // endpoint-role resolver receives no Type A context and never raises it).
+  "type_a_context_not_exhausted_handoff",
+  // B1 qualification fact (a FUTURE B3D-5B capture-eligibility fact; the
+  // endpoint-role resolver receives no B1 qualification and never raises it).
+  "type_b_not_qualified",
+  // Junction-visibility facts.
   "junction_endpoint_pair_tied",
   "shared_junction_not_visibly_established",
-  // Role facts.
+  // Endpoint-role certainty facts.
   "junction_endpoint_not_position_certain",
   "non_junction_rear_endpoint_not_position_certain",
   // Latent-condition consistency facts.
@@ -159,7 +178,16 @@ const TYPE_B_CAPTURE_REFUSAL_ORDER: readonly TypeBCaptureRefusalReason[] = [
   "no_fov_probes",
   "invalid_fov_probe",
   "duplicate_fov_probe",
-];
+] as const satisfies readonly TypeBCaptureRefusalReason[];
+
+// Compile-time completeness guard. If a literal is ever added to
+// `TypeBCaptureRefusalReason` without being placed in the ordering above,
+// `Exclude<...>` stops being `never` and this alias fails its `extends never`
+// constraint, breaking the typecheck. It has no runtime footprint.
+type _AssertNever<T extends never> = T;
+type _CaptureRefusalOrderIsExhaustive = _AssertNever<
+  Exclude<TypeBCaptureRefusalReason, (typeof TYPE_B_CAPTURE_REFUSAL_ORDER)[number]>
+>;
 
 // --- 4. Endpoint-role resolution contract types -----------------------------
 
