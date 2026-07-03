@@ -1,4 +1,4 @@
-// --- Phase B3G-3: Branch Association Observation Matrix -------------------------
+// --- Phase B3G-4: Per-Class, Per-Probe, and Per-Component Observation Records ----
 // LAB-ONLY, DIAGNOSTIC-ONLY, READ-ONLY, DETERMINISTIC, NON-MUTATING,
 // NON-AUTHORITATIVE. A pure, React-free derivation that condenses the B3E safe
 // presentation boundary (`TypeBDiagnosticRunPresentation`) into a versioned,
@@ -40,6 +40,31 @@
 // judgment, and an "associated" annotation stays a raw matrix tally and never
 // becomes a matched / validated / preferred-branch claim.
 //
+// B3G-4 organizes the SAME already-projected literal facts at three additional
+// observation levels, without creating any new dimension, verdict, or
+// authority:
+//   * `run.classObservations` — one source-ordered record per projected tuple
+//     / product class (opaque `classIdentityRef` only; a refused class keeps
+//     its verbatim refusal literals and fabricates NO member / tuple / probe /
+//     hypothesis / compatibility fact);
+//   * `run.probeObservations` — one source-ordered record per projected pose
+//     probe (a refused stage keeps its verbatim literals and fabricates NO
+//     census / hypothesis / partition fact; an enumerated stage carries the
+//     four independent raw root-census counts VERBATIM — a monotonic
+//     mathematical census that is never summed or read as quality);
+//   * `association.componentObservations` — one source-ordered anonymous
+//     record per evaluated branch component (literal `referenceCount` /
+//     `annotationCount` plus the closed five-state matrix; never an identity,
+//     index, label, root reference, endpoint, FOV, topology, policy, span, or
+//     size fact, and never a sort / promotion input).
+// Class-scoped frame-truncation observations exist ONLY when the global
+// frame-truncation condition is genuinely `evaluated` (safe linkage via the
+// already-projected opaque class identity). B3E projects NO probe linkage for
+// frame-truncation records (they carry only a raw pose-probe equivalence key
+// that the probe presentation does not expose), so NO probe-scoped
+// compatibility observation is fabricated. No record at any level carries a
+// cross-dimension composite, ordinal, rank, or "best / usable / ready" fact.
+//
 // Structural containment: its ONLY import is a type-only alias of the B3E
 // presentation contract. It has NO runtime dependency on the raw B3D modules
 // (`type-b-diagnostic-run-assembly`, `type-b-p3p-diagnostic-evaluation`,
@@ -59,13 +84,14 @@ import type { TypeBDiagnosticRunPresentation } from "./type-b-diagnostic-run-pre
 
 // --- 1. Schema ----------------------------------------------------------------
 
-// B3G-3 materially expands the committed B3G-2 `/v1` contract (evaluated
-// association arm gains the literal observation matrix), so the schema version
-// is minted forward. Neither the `/v0` nor the `/v1` shape is ever returned.
+// B3G-4 materially expands the committed B3G-3 `/v2` contract (the assembled
+// run arm gains `classObservations` / `probeObservations` and the evaluated
+// association arm gains `componentObservations`), so the schema version is
+// minted forward. No `/v0`, `/v1`, or `/v2` shape is ever returned.
 // Repository search confirms no non-test consumer exists, so no compatibility
 // adapter is needed.
 export const TYPE_B_OBSERVATION_SUMMARY_SCHEMA =
-  "vibode-type-b-observation-summary/v2" as const;
+  "vibode-type-b-observation-summary/v3" as const;
 
 export type TypeBObservationSummarySchema =
   typeof TYPE_B_OBSERVATION_SUMMARY_SCHEMA;
@@ -163,8 +189,87 @@ export type TypeBObservationPlausibilityPartition = {
   readonly states: TypeBObservationPlausibilityStates;
 };
 
+// B3G-4 scoped frame-truncation observation. It exists ONLY where the GLOBAL
+// frame-truncation condition is genuinely "evaluated" and safe linkage is
+// projected by B3E (the opaque class identity). `recordCount` is the explicit
+// scoped denominator; all four compatibility states are always present,
+// including zero-count states. An unknown future compatibility state stays in
+// the denominator but in no known count, so reconciliation fails loudly. It
+// is never intersected with plausibility, association, or any other
+// dimension, and it is never a proportion, recommendation, or readiness
+// signal.
+export type TypeBObservationScopedFrameTruncationObservation = {
+  readonly recordCount: number;
+  readonly states: TypeBObservationFrameTruncationStates;
+};
+
+// B3G-4 per-class observation record. `classIdentityRef` is an OPAQUE
+// identity reference only (never a sort, rank, or selection input). A refused
+// class stays represented with its verbatim, source-ordered,
+// duplicate-preserving refusal literals and STRUCTURALLY cannot carry any
+// member / tuple / probe / hypothesis / partition / compatibility fact. A
+// generated class carries literal counts of already-projected records only.
+// Class-level compatibility (`frameTruncationObservation`, null unless the
+// GLOBAL frame-truncation condition is "evaluated") is independent of
+// class-level plausibility; no combined "viable / valid / best / usable /
+// ready" verdict exists. A class whose projected status is an unknown future
+// literal appears in NO record here while remaining inside the
+// `requestedProductClassCount` denominator, so reconciliation fails loudly.
+export type TypeBObservationClassObservation =
+  | {
+      readonly classIdentityRef: string;
+      readonly condition: "refused";
+      readonly refusalLiterals: readonly string[];
+    }
+  | {
+      readonly classIdentityRef: string;
+      readonly condition: "generated";
+      readonly refusalLiterals: readonly string[];
+      readonly memberCount: number;
+      readonly tupleCount: number;
+      readonly poseProbeCount: number;
+      readonly enumeratedHypothesisCount: number;
+      readonly plausibilityPartitions: readonly TypeBObservationPlausibilityPartition[];
+      readonly frameTruncationObservation: TypeBObservationScopedFrameTruncationObservation | null;
+    };
+
+// The four independent raw root-census counts, copied VERBATIM where B3E
+// provides them. They are a monotonic mathematical census of one probe's
+// polynomial root pipeline — NOT partitions of one denominator. They are
+// never summed, never combined, and never presented as a quality signal.
+export type TypeBObservationProbeRootCensusObservation = {
+  readonly algebraicCandidateCount: number;
+  readonly realRootCount: number;
+  readonly positiveDistanceRootCount: number;
+  readonly deduplicatedRootCount: number;
+};
+
+// B3G-4 per-probe observation record. Deliberately ANONYMOUS: no FOV value,
+// pose-probe equivalence key, root ID, hypothesis ID, camera value, pose,
+// rotation, residual, branch link, topology, ordinal, rank, or priority is
+// ever emitted — the list itself preserves exact B3E source order. A refused
+// pose stage keeps its verbatim literal reasons and STRUCTURALLY cannot carry
+// a census, hypothesis count, or plausibility partition. B3E projects no safe
+// probe linkage for frame-truncation records, so no probe-scoped
+// compatibility observation exists. A probe whose projected stage kind is an
+// unknown future literal appears in NO record here while remaining inside the
+// `poseProbeCount` denominator, so reconciliation fails loudly.
+export type TypeBObservationProbeObservation =
+  | {
+      readonly poseStageCondition: "refused";
+      readonly stageRefusalLiterals: readonly string[];
+    }
+  | {
+      readonly poseStageCondition: "enumerated";
+      readonly rootCensus: TypeBObservationProbeRootCensusObservation | null;
+      readonly enumeratedHypothesisCount: number;
+      readonly plausibilityPartitions: readonly TypeBObservationPlausibilityPartition[];
+    };
+
 // Run section. `assembled` carries opaque schema references, the verbatim
-// manifest provenance echo, and the B3G-2 run-level literal facts.
+// manifest provenance echo, the B3G-2 run-level literal facts, and the B3G-4
+// per-class / per-probe observation records (exact source order, no sorting,
+// no ranking field).
 export type TypeBObservationRunSection =
   | { readonly condition: "absent" }
   | {
@@ -178,6 +283,8 @@ export type TypeBObservationRunSection =
       readonly tupleGeneration: TypeBObservationTupleGenerationFacts;
       readonly probeFacts: TypeBObservationProbeFacts;
       readonly plausibilityPartitions: readonly TypeBObservationPlausibilityPartition[];
+      readonly classObservations: readonly TypeBObservationClassObservation[];
+      readonly probeObservations: readonly TypeBObservationProbeObservation[];
       readonly refusalLiterals: readonly string[];
     };
 
@@ -220,17 +327,37 @@ export type TypeBObservationAssociatedAnnotationObservation =
   | "none_observed"
   | "one_or_more_observed";
 
-// B3G-3 evaluated-association observation matrix. Each B3E-presented branch
-// corridor is one ANONYMOUS diagnostic component: no component identifier,
-// branch index, root reference, probe identity, component size, span,
-// topology, policy value, or per-component row is ever emitted. A component
-// counts as "with associated annotations" only when at least one of its
-// annotations carries the exact raw literal state "associated"; ambiguity /
-// unresolved annotations never make a component associated.
-// `annotationCount` is the literal total of source annotations (unknown
-// future states INCLUDED, so a foreign state surfaces as a loud
+// B3G-4 per-component observation record. Each B3E-presented branch corridor
+// is one ANONYMOUS diagnostic component in exact source order: no branch
+// index, branch label, enumeration number, root reference, endpoint
+// reference, FOV, topology, policy, span, length, or component-size ranking
+// signal is ever emitted. `referenceCount` is a literal diagnostic count only
+// — never a "longest / strongest / primary / best" fact or a sort criterion.
+// The five-state matrix keeps its fixed vocabulary order with zero-count
+// states included, and the component's `annotationCount` is the literal
+// source total (unknown future states INCLUDED, so reconciliation fails
+// loudly). `one_or_more_observed` arises ONLY from at least one exact raw
+// "associated" annotation on THIS component.
+export type TypeBObservationComponentObservation = {
+  readonly referenceCount: number;
+  readonly annotationCount: number;
+  readonly associatedAnnotationObservation: TypeBObservationAssociatedAnnotationObservation;
+  readonly annotationStateCounts: readonly TypeBObservationAssociationAnnotationStateCount[];
+};
+
+// B3G-3 evaluated-association observation matrix, extended by the B3G-4
+// per-component records. Each B3E-presented branch corridor is one ANONYMOUS
+// diagnostic component: no component identifier, branch index, root
+// reference, probe identity, component size, span, topology, or policy value
+// is ever emitted. A component counts as "with associated annotations" only
+// when at least one of its annotations carries the exact raw literal state
+// "associated"; ambiguity / unresolved annotations never make a component
+// associated. `annotationCount` is the literal total of source annotations
+// (unknown future states INCLUDED, so a foreign state surfaces as a loud
 // reconciliation mismatch against the five-state sum instead of silently
-// vanishing or being coerced).
+// vanishing or being coerced). `componentObservations` exists ONLY on this
+// evaluated arm — never for absent, not_requested, or not_assessed
+// association.
 export type TypeBObservationAssociationSection =
   | { readonly condition: "absent" }
   | { readonly condition: "not_requested" }
@@ -246,6 +373,7 @@ export type TypeBObservationAssociationSection =
       readonly annotationCount: number;
       readonly associatedAnnotationObservation: TypeBObservationAssociatedAnnotationObservation;
       readonly annotationStateCounts: readonly TypeBObservationAssociationAnnotationStateCount[];
+      readonly componentObservations: readonly TypeBObservationComponentObservation[];
     };
 
 export type TypeBObservationFrameTruncationCondition =
@@ -529,11 +657,173 @@ function derivePlausibilityPartitions(
   return [...partitions.values()];
 }
 
+// Closed four-state tally over literal crop-compatibility discriminants. An
+// unknown future state gains no known count (its record still counts in the
+// caller's explicit denominator, so reconciliation fails loudly).
+function tallyCropCompatibilityStates(
+  records: readonly Record<string, unknown>[]
+): TypeBObservationFrameTruncationStates {
+  const states = {
+    compatible: 0,
+    incompatible: 0,
+    not_evaluated: 0,
+    not_applicable: 0,
+  };
+  for (const record of records) {
+    const state = record.cropCompatibility;
+    if (
+      state === "compatible" ||
+      state === "incompatible" ||
+      state === "not_evaluated" ||
+      state === "not_applicable"
+    ) {
+      states[state] += 1;
+    }
+  }
+  return states;
+}
+
+// Class-scoped frame-truncation observation via the ONLY safe linkage B3E
+// projects: the opaque class identity carried verbatim on each record. It is
+// null (never a fabricated zero partition) unless the GLOBAL frame-truncation
+// condition is genuinely "evaluated"; global non-assessment literals stay at
+// the global level and never become a class-scoped failure.
+function deriveScopedFrameTruncationObservation(
+  classIdentityRef: string,
+  frameTruncation: unknown
+): TypeBObservationScopedFrameTruncationObservation | null {
+  if (!isRecord(frameTruncation)) return null;
+  if (frameTruncation.status !== "evaluated") return null;
+  const scopedRecords = asArray(frameTruncation.records)
+    .map(asRecord)
+    .filter(
+      (record) =>
+        String(record.primaryProductClassIdentity) === classIdentityRef
+    );
+  return {
+    recordCount: scopedRecords.length,
+    states: tallyCropCompatibilityStates(scopedRecords),
+  };
+}
+
+// One source-ordered observation record per already-projected tuple class.
+// Class → probe linkage uses ONLY the already-projected product equivalence
+// key, which is never emitted itself. A class with an unknown future status
+// literal is represented by NO record (it stays inside the
+// requestedProductClassCount denominator so reconciliation fails loudly, and
+// it is never coerced into "generated" or "refused").
+function deriveClassObservations(
+  tupleClasses: unknown,
+  poseProbeOutcomes: unknown,
+  frameTruncation: unknown
+): TypeBObservationClassObservation[] {
+  const observations: TypeBObservationClassObservation[] = [];
+  const probes = asArray(poseProbeOutcomes).map(asRecord);
+
+  for (const classEntry of asArray(tupleClasses)) {
+    const cls = asRecord(classEntry);
+    const classIdentityRef = String(cls.primaryProductClassIdentity);
+
+    if (cls.status === "refused") {
+      // Refusal facts VERBATIM only. No member, tuple, probe, hypothesis,
+      // partition, or compatibility fact is fabricated for a refused class.
+      observations.push({
+        classIdentityRef,
+        condition: "refused",
+        refusalLiterals: copyStringLiterals(cls.refusalLiterals),
+      });
+      continue;
+    }
+    if (cls.status !== "generated") continue;
+
+    const members = asArray(cls.members).map(asRecord);
+    let tupleCount = 0;
+    for (const member of members) {
+      tupleCount += asArray(member.probeListDeg).length;
+    }
+    const equivalenceKey = asString(cls.productEquivalenceKey);
+    const classProbes =
+      equivalenceKey === null
+        ? []
+        : probes.filter(
+            (probe) => probe.productEquivalenceKey === equivalenceKey
+          );
+    let enumeratedHypothesisCount = 0;
+    for (const probe of classProbes) {
+      enumeratedHypothesisCount += asArray(probe.hypotheses).length;
+    }
+
+    observations.push({
+      classIdentityRef,
+      condition: "generated",
+      refusalLiterals: copyStringLiterals(cls.refusalLiterals),
+      memberCount: members.length,
+      tupleCount,
+      poseProbeCount: classProbes.length,
+      enumeratedHypothesisCount,
+      plausibilityPartitions: derivePlausibilityPartitions(classProbes),
+      frameTruncationObservation: deriveScopedFrameTruncationObservation(
+        classIdentityRef,
+        frameTruncation
+      ),
+    });
+  }
+  return observations;
+}
+
+// One source-ordered, ANONYMOUS observation record per already-projected pose
+// probe. No FOV value, equivalence key, root ID, hypothesis ID, camera value,
+// pose, rotation, residual, branch link, topology, ordinal, or rank is ever
+// copied. A probe with an unknown future stage-kind literal is represented by
+// NO record (it stays inside the poseProbeCount denominator so reconciliation
+// fails loudly). B3E projects no safe probe linkage for frame-truncation
+// records, so no probe-scoped compatibility observation exists.
+function deriveProbeObservations(
+  poseProbeOutcomes: unknown
+): TypeBObservationProbeObservation[] {
+  const observations: TypeBObservationProbeObservation[] = [];
+
+  for (const probeEntry of asArray(poseProbeOutcomes)) {
+    const probe = asRecord(probeEntry);
+    if (probe.poseStageKind === "refusal") {
+      // Refusal facts VERBATIM only. No census, hypothesis count, or
+      // plausibility partition is fabricated for a refused pose stage.
+      observations.push({
+        poseStageCondition: "refused",
+        stageRefusalLiterals: copyStringLiterals(probe.stageRefusalLiterals),
+      });
+      continue;
+    }
+    if (probe.poseStageKind !== "pose_hypotheses") continue;
+
+    // The four raw census counts are copied VERBATIM where B3E provides them
+    // (null otherwise, never a fabricated zero census). They are independent
+    // monotonic census facts, never summed or combined.
+    const census = isRecord(probe.rootCensus) ? probe.rootCensus : null;
+    observations.push({
+      poseStageCondition: "enumerated",
+      rootCensus: census
+        ? {
+            algebraicCandidateCount: census.algebraicCandidateCount as number,
+            realRootCount: census.realRootCount as number,
+            positiveDistanceRootCount:
+              census.positiveDistanceRootCount as number,
+            deduplicatedRootCount: census.deduplicatedRootCount as number,
+          }
+        : null,
+      enumeratedHypothesisCount: asArray(probe.hypotheses).length,
+      plausibilityPartitions: derivePlausibilityPartitions([probe]),
+    });
+  }
+  return observations;
+}
+
 function summarizeRun(
   runManifest: unknown,
   capture: unknown,
   tupleClasses: unknown,
-  poseProbeOutcomes: unknown
+  poseProbeOutcomes: unknown,
+  frameTruncation: unknown
 ): TypeBObservationRunSection {
   if (!isRecord(runManifest)) return { condition: "absent" };
   return {
@@ -547,6 +837,12 @@ function summarizeRun(
     tupleGeneration: deriveTupleGenerationFacts(runManifest, tupleClasses),
     probeFacts: deriveProbeFacts(capture, poseProbeOutcomes),
     plausibilityPartitions: derivePlausibilityPartitions(poseProbeOutcomes),
+    classObservations: deriveClassObservations(
+      tupleClasses,
+      poseProbeOutcomes,
+      frameTruncation
+    ),
+    probeObservations: deriveProbeObservations(poseProbeOutcomes),
     refusalLiterals: copyStringLiterals(runManifest.runRefusalLiterals),
   };
 }
@@ -583,8 +879,10 @@ function summarizeAssociation(
     };
   }
 
-  // B3G-3 literal observation matrix. Each B3E-presented branch corridor is
-  // one anonymous diagnostic component; only aggregate tallies are derived.
+  // B3G-3 literal observation matrix plus B3G-4 per-component records. Each
+  // B3E-presented branch corridor is one anonymous diagnostic component in
+  // exact source order; aggregate tallies are plain sums of the per-component
+  // tallies.
   const stateCounts = {
     associated: 0,
     tied_ambiguous: 0,
@@ -595,36 +893,67 @@ function summarizeAssociation(
   let componentCount = 0;
   let componentsWithAssociatedAnnotations = 0;
   // Literal total of source annotations. An unknown future state is INCLUDED
-  // in this denominator but tallied under no known state, so it surfaces as a
-  // loud reconciliation mismatch against the five-state sum instead of being
-  // silently coerced or dropped — and it never collapses a valid displayed
-  // run into a fabricated no-presentation result.
+  // in this denominator (globally and per component) but tallied under no
+  // known state, so it surfaces as a loud reconciliation mismatch against the
+  // five-state sum instead of being silently coerced or dropped — and it
+  // never collapses a valid displayed run into a fabricated no-presentation
+  // result.
   let annotationCount = 0;
+  const componentObservations: TypeBObservationComponentObservation[] = [];
 
   for (const branchEntry of asArray(branchCorridors.branches)) {
     componentCount += 1;
-    let componentHasAssociatedAnnotation = false;
-    for (const annotationEntry of asArray(asRecord(branchEntry).annotations)) {
-      annotationCount += 1;
+    const branch = asRecord(branchEntry);
+    const componentStateCounts = {
+      associated: 0,
+      tied_ambiguous: 0,
+      unmatched_terminated: 0,
+      unmatched_born: 0,
+      near_coincident_unresolved: 0,
+    };
+    let componentAnnotationCount = 0;
+    for (const annotationEntry of asArray(branch.annotations)) {
+      componentAnnotationCount += 1;
       const state = asRecord(annotationEntry).state;
       // Exact raw literal comparison only: no renaming, no normalization, no
       // coercion of an unknown state into a known one.
       if (state === "associated") {
-        componentHasAssociatedAnnotation = true;
-        stateCounts.associated += 1;
+        componentStateCounts.associated += 1;
       } else if (state === "tied_ambiguous") {
-        stateCounts.tied_ambiguous += 1;
+        componentStateCounts.tied_ambiguous += 1;
       } else if (state === "unmatched_terminated") {
-        stateCounts.unmatched_terminated += 1;
+        componentStateCounts.unmatched_terminated += 1;
       } else if (state === "unmatched_born") {
-        stateCounts.unmatched_born += 1;
+        componentStateCounts.unmatched_born += 1;
       } else if (state === "near_coincident_unresolved") {
-        stateCounts.near_coincident_unresolved += 1;
+        componentStateCounts.near_coincident_unresolved += 1;
       }
     }
-    if (componentHasAssociatedAnnotation) {
+    annotationCount += componentAnnotationCount;
+    for (const state of ASSOCIATION_ANNOTATION_STATE_VOCABULARY) {
+      stateCounts[state] += componentStateCounts[state];
+    }
+    // Only an exact raw "associated" annotation on THIS component yields the
+    // descriptive one_or_more_observed observation; ambiguity / unresolved /
+    // unmatched states alone never do.
+    if (componentStateCounts.associated > 0) {
       componentsWithAssociatedAnnotations += 1;
     }
+    // Anonymous per-component record: a literal reference count, a literal
+    // annotation denominator, and the closed five-state matrix in fixed
+    // vocabulary order. No identity, index, label, root reference, endpoint,
+    // FOV, topology, policy, span, or ordering field of any kind.
+    componentObservations.push({
+      referenceCount: asArray(branch.rootReferences).length,
+      annotationCount: componentAnnotationCount,
+      associatedAnnotationObservation:
+        componentStateCounts.associated > 0
+          ? "one_or_more_observed"
+          : "none_observed",
+      annotationStateCounts: ASSOCIATION_ANNOTATION_STATE_VOCABULARY.map(
+        (state) => ({ state, count: componentStateCounts[state] })
+      ),
+    });
   }
 
   return {
@@ -639,6 +968,7 @@ function summarizeAssociation(
     annotationStateCounts: ASSOCIATION_ANNOTATION_STATE_VOCABULARY.map(
       (state) => ({ state, count: stateCounts[state] })
     ),
+    componentObservations,
   };
 }
 
@@ -661,27 +991,10 @@ function summarizeFrameTruncation(
   }
 
   const records = asArray(frameTruncation.records).map(asRecord);
-  const states = {
-    compatible: 0,
-    incompatible: 0,
-    not_evaluated: 0,
-    not_applicable: 0,
-  };
-  for (const record of records) {
-    const state = record.cropCompatibility;
-    if (
-      state === "compatible" ||
-      state === "incompatible" ||
-      state === "not_evaluated" ||
-      state === "not_applicable"
-    ) {
-      states[state] += 1;
-    }
-  }
   return {
     condition: "evaluated",
     recordCount: records.length,
-    states,
+    states: tallyCropCompatibilityStates(records),
   };
 }
 
@@ -709,16 +1022,19 @@ function summarizeSourceReferences(
 // --- 6. Main derivation ---------------------------------------------------------
 
 /**
- * Pure, deterministic, non-mutating derivation of the B3G-3 observation
+ * Pure, deterministic, non-mutating derivation of the B3G-4 observation
  * summary from the B3E safe presentation boundary. `null`, `undefined`, or a
  * malformed runtime value NEVER throws and yields the stable no-presentation
  * shape. Equal inputs produce deeply equal (frozen) output. It exposes ONLY
  * closed neutral condition literals, verbatim provenance / refusal /
  * non-assessment facts, literal tallies with explicit denominators, closed
  * four-state partitions, the closed five-state association annotation matrix
- * (evaluated arm only), and opaque source references — never a percentage,
- * ratio, score, rank, composite, pose, coordinate, residual, FOV value,
- * ordering signal, match / validation verdict, or authority claim.
+ * (evaluated arm only), source-ordered per-class / per-probe / per-component
+ * observation records built from the same already-projected facts, and
+ * opaque source references — never a percentage, ratio, score, rank,
+ * composite, pose, coordinate, residual, FOV value, root identifier,
+ * hypothesis identifier, ordering signal, match / validation verdict, or
+ * authority claim.
  */
 export function deriveTypeBObservationSummary(
   presentation: TypeBDiagnosticRunPresentation | null | undefined
@@ -735,7 +1051,8 @@ export function deriveTypeBObservationSummary(
         source.runManifest,
         source.capture,
         source.tupleClasses,
-        source.poseProbeOutcomes
+        source.poseProbeOutcomes,
+        source.frameTruncation
       ),
       association: summarizeAssociation(
         source.runManifest,

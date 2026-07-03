@@ -1,4 +1,4 @@
-// --- Phase B3G-3: Branch Association Observation Matrix tests -------------------
+// --- Phase B3G-4: Per-Class, Per-Probe, and Per-Component Observation tests ------
 // Pure unit tests (node:test) for the LAB-ONLY, DIAGNOSTIC-ONLY, READ-ONLY,
 // NON-AUTHORITATIVE observation-summary derivation. Fixtures are produced
 // through the REAL B3E presentation boundary (`presentTypeBDiagnosticRun`)
@@ -7,16 +7,20 @@
 // summary is proven against the presentation layer only — no raw B3D
 // envelope is handed to the summary directly.
 //
-// B3G-3 retains every B3G-1/B3G-2 guard (type-only import boundary,
+// B3G-4 retains every B3G-1/B3G-2/B3G-3 guard (type-only import boundary,
 // determinism, non-mutation, deep freezing, source-order preservation,
 // verbatim refusal / non-assessment preservation, closed four-state
-// partitions, forbidden-key and forbidden-copy containment) and adds: /v2
-// schema evolution with consumer-safety proof, the closed five-state
-// association annotation matrix (fixed vocabulary order, zero counts
-// visible, loud unknown-state reconciliation), component-aggregate
-// reconciliation, strict raw-literal containment (the five raw annotation
-// state values are allowed ONLY at annotationStateCounts[].state), and
-// extended structural authority guards.
+// partitions, the closed five-state association matrix, forbidden-key and
+// forbidden-copy containment) and adds: /v3 schema evolution with
+// consumer-safety proof, source-ordered per-class / per-probe /
+// per-component observation records with full reconciliation identities,
+// class-scoped frame-truncation observations under genuine global
+// evaluation only, loud unknown-state reconciliation at every new level,
+// and extended path-based raw-literal containment (the five raw annotation
+// state values are allowed ONLY at the two matrix paths
+// association.annotationStateCounts[].state and
+// association.componentObservations[].annotationStateCounts[].state, and
+// raw plausibility check IDs only at explicit checkId paths).
 
 import assert from "node:assert/strict";
 import { readFileSync, readdirSync, statSync } from "node:fs";
@@ -539,6 +543,228 @@ function evaluatedAssociation(summary: TypeBObservationSummary) {
   return summary.association;
 }
 
+// --- B3G-4 multi-class / multi-probe fixtures ---------------------------------
+
+// Raw B3C-shaped generated product class fed through the REAL B3E boundary.
+function buildRawGeneratedClass(
+  identity: string,
+  equivalenceKey: string,
+  members: readonly {
+    aspect: number;
+    extent: number;
+    tuples: readonly number[];
+  }[]
+) {
+  return {
+    primaryProductClassIdentity: identity,
+    latentDepthEquivalence: {
+      formulaId: TYPE_B_LATENT_DEPTH_PRODUCT_FORMULA,
+      latentDepthProduct: {
+        formulaId: TYPE_B_LATENT_DEPTH_PRODUCT_FORMULA,
+        value: 0.5,
+      },
+      equivalenceClassKey: equivalenceKey,
+      poseComparisonReferenceFrame: "type_b_junction_anchored/v0",
+    },
+    status: "generated",
+    refusalReasons: [],
+    members: members.map((member) => ({
+      floorAspectRatio: member.aspect,
+      latentSideExtent: member.extent,
+      cropCompatibility: "not_evaluated",
+      tuples: member.tuples.map((fovProbeDeg) => ({
+        tuple: { fovProbeDeg },
+      })),
+    })),
+  };
+}
+
+function buildRawRefusedClass(
+  identity: string,
+  refusalReasons: readonly string[]
+) {
+  return {
+    primaryProductClassIdentity: identity,
+    latentDepthEquivalence: null,
+    status: "refused",
+    refusalReasons: [...refusalReasons],
+    members: [],
+  };
+}
+
+// Raw pose-probe result whose B3E projection carries the given equivalence
+// class key. Realistic raw pose facts (positions, rotations) are present so
+// B3G's refusal to surface them is proven against real-shaped inputs.
+function buildRawProbe(
+  classKey: string,
+  fovProbeDeg: number,
+  poseStageResult: Record<string, unknown>,
+  census: {
+    algebraicCandidateCount: number;
+    realRootCount: number;
+    positiveDistanceRootCount: number;
+    deduplicatedRootCount: number;
+  } | null
+) {
+  return {
+    poseProbeEquivalence: {
+      latentDepthEquivalenceClassKey: classKey,
+      fovProbeDeg,
+      poseProbeEquivalenceKey: `ppk-${classKey}-${fovProbeDeg}`,
+    },
+    latentDepthEquivalence: {
+      equivalenceClassKey: classKey,
+      poseComparisonReferenceFrame: "type_b_junction_anchored/v0",
+      latentDepthProduct: {
+        formulaId: TYPE_B_LATENT_DEPTH_PRODUCT_FORMULA,
+        value: 0.5,
+      },
+    },
+    latentDepthProduct: {
+      formulaId: TYPE_B_LATENT_DEPTH_PRODUCT_FORMULA,
+      value: 0.5,
+    },
+    poseStageResult,
+    rootCensus: census,
+  };
+}
+
+function buildHypothesesStage(
+  perHypothesisPlausibility: readonly (readonly {
+    checkId: string;
+    state: string;
+  }[])[]
+) {
+  return {
+    kind: "pose_hypotheses",
+    hypotheses: perHypothesisPlausibility.map(
+      (plausibility, hypothesisIndex) => ({
+        hypothesisIndex,
+        poseComparisonReferenceFrame: "type_b_junction_anchored/v0",
+        cameraPositionWorld: { x: 0.4, y: 1.6, z: -0.7 },
+        worldToCameraRotation: [1, 0, 0, 0, 1, 0, 0, 0, 1],
+        constructionObservations: [],
+        plausibility,
+      })
+    ),
+  };
+}
+
+const CHECK_A = "positive_root_distance/v0";
+const CHECK_B = "camera_above_floor/v0";
+
+// Two generated classes (with distinct probe sets and per-class check
+// orders), one refused class with duplicate literals, one refused probe, and
+// class-linked frame-truncation records — all fed through the REAL B3E
+// boundary.
+function buildMultiClassRunOverrides(): Record<string, unknown> {
+  const base = buildDiagnosticRun();
+  return {
+    tupleGeneration: {
+      ...(base.tupleGeneration as Record<string, unknown>),
+      productClasses: [
+        buildRawGeneratedClass("p-050", "class-050", [
+          { aspect: 1.0, extent: 0.5, tuples: [40, 50] },
+        ]),
+        buildRawRefusedClass("p-dup", ["reason_x", "reason_x", "reason_a"]),
+        buildRawGeneratedClass("p-075", "class-075", [
+          { aspect: 1.5, extent: 0.75, tuples: [40] },
+          { aspect: 2.0, extent: 0.9, tuples: [50, 60] },
+        ]),
+      ],
+    },
+    poseProbeResults: [
+      buildRawProbe(
+        "class-050",
+        40,
+        buildHypothesesStage([
+          [
+            { checkId: CHECK_A, state: "passed" },
+            { checkId: CHECK_B, state: "failed" },
+          ],
+          [{ checkId: CHECK_A, state: "not_evaluated" }],
+        ]),
+        {
+          algebraicCandidateCount: 4,
+          realRootCount: 3,
+          positiveDistanceRootCount: 2,
+          deduplicatedRootCount: 2,
+        }
+      ),
+      buildRawProbe(
+        "class-050",
+        50,
+        { kind: "refusal", reason: "latent_depth_product_not_positive" },
+        null
+      ),
+      buildRawProbe(
+        "class-075",
+        40,
+        buildHypothesesStage([
+          [
+            { checkId: CHECK_B, state: "not_applicable" },
+            { checkId: CHECK_A, state: "passed" },
+          ],
+        ]),
+        {
+          algebraicCandidateCount: 4,
+          realRootCount: 2,
+          positiveDistanceRootCount: 1,
+          deduplicatedRootCount: 1,
+        }
+      ),
+    ],
+  };
+}
+
+function buildMultiClassFrameTruncationRecords() {
+  const record = (
+    primaryProductClassIdentity: string,
+    cropCompatibility: string,
+    position: number
+  ) => ({
+    primaryProductClassIdentity,
+    floorAspectRatio: 1.0,
+    latentSideExtent: 0.5,
+    poseProbeEquivalenceKey: `ppk-${primaryProductClassIdentity}-40`,
+    hypothesisIndex: position,
+    cropCompatibility,
+  });
+  return [
+    record("p-050", "compatible", 0),
+    record("p-050", "incompatible", 1),
+    record("p-075", "not_applicable", 0),
+  ];
+}
+
+function multiClassPresentation(options?: {
+  frameTruncationOverrides?: Record<string, unknown>;
+}): TypeBDiagnosticRunPresentation {
+  return fullPresentation({
+    requested: false,
+    runOverrides: buildMultiClassRunOverrides(),
+    frameTruncationOverrides: options?.frameTruncationOverrides ?? {
+      status: "evaluated",
+      notAssessedReasons: [],
+      records: buildMultiClassFrameTruncationRecords(),
+    },
+  });
+}
+
+function generatedClassObservation(
+  summary: TypeBObservationSummary,
+  classIdentityRef: string
+) {
+  const run = assembledRun(summary);
+  const record = run.classObservations.find(
+    (candidate) => candidate.classIdentityRef === classIdentityRef
+  );
+  assert.ok(record, `class observation for ${classIdentityRef} must exist`);
+  assert.equal(record.condition, "generated");
+  if (record.condition !== "generated") throw new Error("unreachable");
+  return record;
+}
+
 // --- Shared guard helpers -----------------------------------------------------
 
 // Case-insensitive forbidden key fragments for the B3G summary output ONLY.
@@ -586,8 +812,10 @@ const FORBIDDEN_COPY = [
 ];
 
 // Explicit composite / selection field names whose absence is asserted
-// against the lowercased serialized summary. B3G-3 extends the list with the
-// prohibited association composites and branch-authority names.
+// against the lowercased serialized summary. B3G-3 added the prohibited
+// association composites and branch-authority names; B3G-4 extends the list
+// with the prohibited class / probe / component authority names and
+// cross-dimension composites.
 const FORBIDDEN_EXPLICIT_STRINGS = [
   "passedallchecks",
   "allcheckspassed",
@@ -607,6 +835,18 @@ const FORBIDDEN_EXPLICIT_STRINGS = [
   "branchscore",
   "branchconfidence",
   "componentranking",
+  "bestclass",
+  "bestprobe",
+  "bestcomponent",
+  "selectedprobe",
+  "selectedcomponent",
+  "previewprobe",
+  "compatibleandpassed",
+  "usablesolution",
+  "validsolution",
+  "successfulprobe",
+  "strongestcomponent",
+  "longestcomponent",
 ];
 
 // The closed five-state raw association annotation vocabulary in its single
@@ -620,40 +860,76 @@ const CONTROLLED_ANNOTATION_STATES = [
   "near_coincident_unresolved",
 ] as const;
 
-// The single permitted location of the controlled raw annotation-state
-// literals inside the B3G summary.
+// The ONLY two permitted locations of the controlled raw annotation-state
+// literals inside the B3G summary: the B3G-3 run-level matrix and the B3G-4
+// per-component matrices. Exact paths only — never a global serialized-value
+// exemption.
 const MATRIX_STATE_PATH_PATTERN =
-  /^\$\.association\.annotationStateCounts\[\d+\]\.state$/;
+  /^\$\.association\.(?:componentObservations\[\d+\]\.)?annotationStateCounts\[\d+\]\.state$/;
+
+// The ONLY permitted locations of raw plausibility check-ID literals (e.g. a
+// raw "camera_above_floor/v0"-style identity): the run-level partitions and
+// the B3G-4 class / probe partition lists. Exact paths only.
+const CHECK_ID_PATH_PATTERN =
+  /^\$\.run\.(?:classObservations\[\d+\]\.|probeObservations\[\d+\]\.)?plausibilityPartitions\[\d+\]\.checkId$/;
+
+// Raw check-ID literals whose containment to the checkId paths is asserted.
+const CONTROLLED_CHECK_ID_LITERALS = [
+  "camera_above_floor",
+  "positive_root_distance",
+  "rotation_numerical_health",
+];
 
 // Serializes a summary with the five KNOWN controlled raw annotation-state
-// literals redacted at their single permitted matrix location ONLY. This is
-// deliberately NOT a generic allow-list: nothing outside
-// association.annotationStateCounts[].state is ever redacted, and an unknown
-// state value at the matrix location is left untouched, so prohibited
-// authority language anywhere else (or a foreign state) still fails the copy
-// scan.
+// literals redacted at their two permitted matrix locations ONLY. This is
+// deliberately NOT a generic allow-list: nothing outside the exact
+// annotationStateCounts[].state paths is ever redacted, and an unknown state
+// value at a matrix location is left untouched, so prohibited authority
+// language anywhere else (or a foreign state) still fails the copy scan.
 function serializeWithControlledMatrixRedaction(
   summary: TypeBObservationSummary
 ): string {
+  type MutableStateCount = { state?: unknown; count?: unknown };
+  const redactMatrix = (
+    entries: MutableStateCount[] | undefined
+  ): MutableStateCount[] | undefined =>
+    Array.isArray(entries)
+      ? entries.map((entry, position) =>
+          typeof entry?.state === "string" &&
+          (CONTROLLED_ANNOTATION_STATES as readonly string[]).includes(
+            entry.state
+          )
+            ? { ...entry, state: `controlled_state_${position}` }
+            : entry
+        )
+      : entries;
   const clone = structuredClone(summary) as unknown as {
     association?: {
       condition?: string;
-      annotationStateCounts?: { state?: unknown; count?: unknown }[];
+      annotationStateCounts?: MutableStateCount[];
+      componentObservations?: {
+        annotationStateCounts?: MutableStateCount[];
+      }[];
     };
   };
   const association = clone.association;
-  if (
-    association &&
-    association.condition === "evaluated" &&
-    Array.isArray(association.annotationStateCounts)
-  ) {
-    association.annotationStateCounts = association.annotationStateCounts.map(
-      (entry, position) =>
-        typeof entry?.state === "string" &&
-        (CONTROLLED_ANNOTATION_STATES as readonly string[]).includes(entry.state)
-          ? { ...entry, state: `controlled_state_${position}` }
-          : entry
+  if (association && association.condition === "evaluated") {
+    association.annotationStateCounts = redactMatrix(
+      association.annotationStateCounts
     );
+    if (Array.isArray(association.componentObservations)) {
+      association.componentObservations =
+        association.componentObservations.map((component) =>
+          component && typeof component === "object"
+            ? {
+                ...component,
+                annotationStateCounts: redactMatrix(
+                  component.annotationStateCounts
+                ),
+              }
+            : component
+        );
+    }
   }
   return JSON.stringify(clone).toLowerCase();
 }
@@ -680,10 +956,13 @@ function collectStringValuesWithPaths(
   return out;
 }
 
-// Proves the controlled raw annotation-state literals live ONLY at the single
-// permitted matrix location: every string VALUE containing "associated" or
-// "unmatched" must sit exactly at annotationStateCounts[].state and be one of
-// the five known vocabulary values, and no key is a raw state literal.
+// Proves the controlled raw annotation-state literals live ONLY at the two
+// permitted matrix locations: every string VALUE containing "associated" or
+// "unmatched" must sit exactly at an annotationStateCounts[].state path (run
+// level or per component) and be one of the five known vocabulary values;
+// every string AT a matrix path must belong to the closed vocabulary (a
+// tampered unknown state at an allowed path fails); raw check-ID literals
+// live ONLY at the explicit checkId paths; and no key is a raw literal.
 function assertControlledLiteralContainment(summary: TypeBObservationSummary) {
   for (const { path: valuePath, value } of collectStringValuesWithPaths(
     summary
@@ -699,9 +978,24 @@ function assertControlledLiteralContainment(summary: TypeBObservationSummary) {
         MATRIX_STATE_PATH_PATTERN,
         `raw association literal "${value}" leaked outside the matrix at ${valuePath}`
       );
+    }
+    // Controlled-vocabulary guard: EVERY string sitting at a matrix path must
+    // be one of the five known raw literals — unknown states never pass.
+    if (MATRIX_STATE_PATH_PATTERN.test(valuePath)) {
       assert.ok(
         (CONTROLLED_ANNOTATION_STATES as readonly string[]).includes(value),
         `matrix state "${value}" must be one of the five known raw literals`
+      );
+    }
+    // Raw plausibility check-ID literals are permitted ONLY at the explicit
+    // checkId paths (run-level, class-level, probe-level partitions).
+    if (
+      CONTROLLED_CHECK_ID_LITERALS.some((literal) => lower.includes(literal))
+    ) {
+      assert.match(
+        valuePath,
+        CHECK_ID_PATH_PATTERN,
+        `raw check-ID literal "${value}" leaked outside checkId paths at ${valuePath}`
       );
     }
   }
@@ -791,7 +1085,7 @@ function assembledRun(summary: TypeBObservationSummary) {
 }
 
 const EXPECTED_EMPTY: TypeBObservationSummary = {
-  schema: "vibode-type-b-observation-summary/v2",
+  schema: "vibode-type-b-observation-summary/v3",
   status: "no_presentation",
   capture: { condition: "absent" },
   run: { condition: "absent" },
@@ -806,10 +1100,10 @@ const EXPECTED_EMPTY: TypeBObservationSummary = {
 
 // --- 1. Schema and empty behavior --------------------------------------------
 
-test("schema literal is the /v2 contract, exported verbatim, and never a prior shape", () => {
+test("schema literal is the /v3 contract, exported verbatim, and never a prior shape", () => {
   assert.equal(
     TYPE_B_OBSERVATION_SUMMARY_SCHEMA,
-    "vibode-type-b-observation-summary/v2"
+    "vibode-type-b-observation-summary/v3"
   );
   const summaries = [
     deriveTypeBObservationSummary(null),
@@ -818,17 +1112,18 @@ test("schema literal is the /v2 contract, exported verbatim, and never a prior s
     deriveTypeBObservationSummary(associationPresentation([["associated"]])),
   ];
   for (const summary of summaries) {
-    assert.equal(summary.schema, "vibode-type-b-observation-summary/v2");
+    assert.equal(summary.schema, "vibode-type-b-observation-summary/v3");
+    assert.notEqual(summary.schema, "vibode-type-b-observation-summary/v2");
     assert.notEqual(summary.schema, "vibode-type-b-observation-summary/v1");
     assert.notEqual(summary.schema, "vibode-type-b-observation-summary/v0");
   }
 });
 
-test("no non-test consumer imports the summary module, so /v2 needs no compatibility adapter", () => {
+test("no non-test consumer imports the summary module, so /v3 needs no compatibility adapter", () => {
   // Repository-level consumer-safety proof: outside this test file, no source
   // module in the repository references the observation-summary module or its
-  // schema family, so minting /v2 (and never returning /v1) breaks no
-  // consumer and requires no compatibility adapter.
+  // schema family, so minting /v3 (and never returning /v2, /v1, or /v0)
+  // breaks no consumer and requires no compatibility adapter.
   const repoRoot = path.resolve(
     path.dirname(fileURLToPath(import.meta.url)),
     "..",
@@ -897,6 +1192,11 @@ test("no-presentation shape manufactures no evaluated-looking fact", () => {
     "associatedannotationobservation",
     "associated",
     "unmatched",
+    "classobservations",
+    "probeobservations",
+    "componentobservations",
+    "rootcensus",
+    "posestagecondition",
   ]) {
     assert.ok(
       !serialized.includes(phrase),
@@ -904,6 +1204,25 @@ test("no-presentation shape manufactures no evaluated-looking fact", () => {
     );
   }
   assertDeepFrozen(summary);
+});
+
+test("top-level shape stays exactly the seven B3G-1 keys", () => {
+  for (const summary of [
+    deriveTypeBObservationSummary(null),
+    deriveTypeBObservationSummary(fullPresentation()),
+    deriveTypeBObservationSummary(mixedPresentation()),
+    deriveTypeBObservationSummary(associationPresentation([["associated"]])),
+  ]) {
+    assert.deepEqual(Object.keys(summary), [
+      "schema",
+      "status",
+      "capture",
+      "run",
+      "association",
+      "frameTruncation",
+      "sourceReferences",
+    ]);
+  }
 });
 
 test("runtime export surface is the schema literal plus deriveTypeBObservationSummary only", () => {
@@ -928,6 +1247,9 @@ test("run-level B3G-2 facts appear only for an actual assembled diagnostic prese
     "plausibilitypartitions",
     "denominator",
     "recordcount",
+    "classobservations",
+    "probeobservations",
+    "componentobservations",
   ]) {
     assert.ok(
       !serialized.includes(phrase),
@@ -1001,6 +1323,12 @@ test("summary output is deeply frozen for empty and full derivations", () => {
   assertDeepFrozen(deriveTypeBObservationSummary(null));
   assertDeepFrozen(deriveTypeBObservationSummary(fullPresentation()));
   assertDeepFrozen(deriveTypeBObservationSummary(mixedPresentation()));
+  assertDeepFrozen(deriveTypeBObservationSummary(multiClassPresentation()));
+  assertDeepFrozen(
+    deriveTypeBObservationSummary(
+      associationPresentation([["associated"], ["unmatched_born"]])
+    )
+  );
 });
 
 // --- 4. Type-only safe boundary --------------------------------------------------
@@ -1160,6 +1488,10 @@ test("summary output keys contain no forbidden score/recommendation/action fragm
     deriveTypeBObservationSummary(fullPresentation({ requested: true })),
     deriveTypeBObservationSummary(fullPresentation({ override: true })),
     deriveTypeBObservationSummary(mixedPresentation()),
+    deriveTypeBObservationSummary(multiClassPresentation()),
+    deriveTypeBObservationSummary(
+      associationPresentation([["associated"], ["unmatched_terminated"]])
+    ),
   ]) {
     assertNoForbiddenKeys(summary);
   }
@@ -1172,6 +1504,13 @@ test("serialized summary copy contains no prohibited authority language", () => 
     deriveTypeBObservationSummary(fullPresentation({ requested: true })),
     deriveTypeBObservationSummary(fullPresentation({ override: true })),
     deriveTypeBObservationSummary(mixedPresentation()),
+    deriveTypeBObservationSummary(multiClassPresentation()),
+    deriveTypeBObservationSummary(
+      associationPresentation([
+        ["associated", "tied_ambiguous"],
+        ["unmatched_terminated", "unmatched_born"],
+      ])
+    ),
     deriveTypeBObservationSummary(
       fullPresentation({
         requested: true,
@@ -1636,8 +1975,18 @@ test("authored FOV-probe facts are counts only and no FOV value or identifier le
     key.toLowerCase().includes("fov")
   );
   assert.deepEqual(fovKeys, ["authoredFovProbeCount"]);
-  // No root / equivalence / degree identifier keys exist.
+  // No root / equivalence / degree identifier keys exist. The ONLY tolerated
+  // "root"-containing keys are the four B3G-4 raw census COUNT keys plus
+  // their `rootCensus` container — literal counts, never identifiers.
+  const CENSUS_COUNT_KEYS = new Set([
+    "rootCensus",
+    "algebraicCandidateCount",
+    "realRootCount",
+    "positiveDistanceRootCount",
+    "deduplicatedRootCount",
+  ]);
   for (const key of collectKeysDeep(summary)) {
+    if (CENSUS_COUNT_KEYS.has(key)) continue;
     const lower = key.toLowerCase();
     for (const fragment of ["root", "equivalence", "deg", "residual", "pose_"]) {
       assert.ok(
@@ -1874,6 +2223,7 @@ test("association arms expose exactly their closed contract keys", () => {
     "annotationCount",
     "associatedAnnotationObservation",
     "annotationStateCounts",
+    "componentObservations",
   ]);
 
   const notRequested = deriveTypeBObservationSummary(
@@ -1953,6 +2303,32 @@ test("association condition matrix: evaluated with only non-associated annotatio
       { state: "unmatched_born", count: 1 },
       { state: "near_coincident_unresolved", count: 1 },
     ],
+    componentObservations: [
+      {
+        referenceCount: 1,
+        annotationCount: 2,
+        associatedAnnotationObservation: "none_observed",
+        annotationStateCounts: [
+          { state: "associated", count: 0 },
+          { state: "tied_ambiguous", count: 1 },
+          { state: "unmatched_terminated", count: 0 },
+          { state: "unmatched_born", count: 0 },
+          { state: "near_coincident_unresolved", count: 1 },
+        ],
+      },
+      {
+        referenceCount: 1,
+        annotationCount: 2,
+        associatedAnnotationObservation: "none_observed",
+        annotationStateCounts: [
+          { state: "associated", count: 0 },
+          { state: "tied_ambiguous", count: 0 },
+          { state: "unmatched_terminated", count: 1 },
+          { state: "unmatched_born", count: 1 },
+          { state: "near_coincident_unresolved", count: 0 },
+        ],
+      },
+    ],
   });
 });
 
@@ -1975,6 +2351,20 @@ test("association condition matrix: evaluated with one or more associated annota
       { state: "unmatched_terminated", count: 0 },
       { state: "unmatched_born", count: 0 },
       { state: "near_coincident_unresolved", count: 0 },
+    ],
+    componentObservations: [
+      {
+        referenceCount: 1,
+        annotationCount: 2,
+        associatedAnnotationObservation: "one_or_more_observed",
+        annotationStateCounts: [
+          { state: "associated", count: 2 },
+          { state: "tied_ambiguous", count: 0 },
+          { state: "unmatched_terminated", count: 0 },
+          { state: "unmatched_born", count: 0 },
+          { state: "near_coincident_unresolved", count: 0 },
+        ],
+      },
     ],
   });
 });
@@ -2001,6 +2391,44 @@ test("association condition matrix: evaluated with mixed raw states counts each 
       { state: "unmatched_terminated", count: 1 },
       { state: "unmatched_born", count: 1 },
       { state: "near_coincident_unresolved", count: 1 },
+    ],
+    componentObservations: [
+      {
+        referenceCount: 1,
+        annotationCount: 2,
+        associatedAnnotationObservation: "one_or_more_observed",
+        annotationStateCounts: [
+          { state: "associated", count: 1 },
+          { state: "tied_ambiguous", count: 1 },
+          { state: "unmatched_terminated", count: 0 },
+          { state: "unmatched_born", count: 0 },
+          { state: "near_coincident_unresolved", count: 0 },
+        ],
+      },
+      {
+        referenceCount: 1,
+        annotationCount: 1,
+        associatedAnnotationObservation: "none_observed",
+        annotationStateCounts: [
+          { state: "associated", count: 0 },
+          { state: "tied_ambiguous", count: 0 },
+          { state: "unmatched_terminated", count: 1 },
+          { state: "unmatched_born", count: 0 },
+          { state: "near_coincident_unresolved", count: 0 },
+        ],
+      },
+      {
+        referenceCount: 1,
+        annotationCount: 3,
+        associatedAnnotationObservation: "one_or_more_observed",
+        annotationStateCounts: [
+          { state: "associated", count: 1 },
+          { state: "tied_ambiguous", count: 0 },
+          { state: "unmatched_terminated", count: 0 },
+          { state: "unmatched_born", count: 1 },
+          { state: "near_coincident_unresolved", count: 1 },
+        ],
+      },
     ],
   });
   // No authority semantics ride along with the mixed matrix.
@@ -2234,10 +2662,13 @@ test("component aggregates expose no identity, index, root, FOV, topology, polic
     ])
   );
   const association = evaluatedAssociation(summary);
-  // Aggregate numbers only: no per-component rows exist. The only array in
-  // the association section is the fixed five-entry matrix.
+  // Aggregate matrix stays the fixed five-entry vocabulary; the B3G-4
+  // per-component records are anonymous literal tallies only. The ONLY
+  // tolerated "ref"-containing key is the exact literal diagnostic count
+  // `referenceCount` — never a root/endpoint reference or a sort criterion.
   assert.equal(association.annotationStateCounts.length, 5);
   for (const key of collectKeysDeep(association)) {
+    if (key === "referenceCount") continue;
     const lower = key.toLowerCase();
     for (const fragment of [
       "identity",
@@ -2367,6 +2798,8 @@ test("no association matrix fact is fabricated for any non-evaluated arm", () =>
       "annotationcount",
       "annotationstatecounts",
       "associatedannotationobservation",
+      "componentobservations",
+      "referencecount",
       "count",
     ]) {
       assert.ok(
@@ -2460,4 +2893,1148 @@ test("no cross-dimension composite, intersection, or ranking-friendly fact exist
   assert.ok(
     !JSON.stringify(run.plausibilityPartitions).toLowerCase().includes("compat")
   );
+});
+
+// --- 18. Class observation records (B3G-4) -----------------------------------------
+
+test("class observations preserve exact source class order with closed condition arms", () => {
+  const summary = deriveTypeBObservationSummary(multiClassPresentation());
+  const run = assembledRun(summary);
+  assert.deepEqual(
+    run.classObservations.map((record) => record.classIdentityRef),
+    ["p-050", "p-dup", "p-075"]
+  );
+  assert.deepEqual(
+    run.classObservations.map((record) => record.condition),
+    ["generated", "refused", "generated"]
+  );
+  // A refused class earlier in source order is never displaced by a
+  // "favorable-looking" generated class later in source order and vice versa.
+  const overrides = buildMultiClassRunOverrides();
+  const tupleGeneration = overrides.tupleGeneration as {
+    productClasses: unknown[];
+  };
+  tupleGeneration.productClasses = [
+    ...tupleGeneration.productClasses,
+  ].reverse();
+  const reversed = assembledRun(
+    deriveTypeBObservationSummary(
+      fullPresentation({ requested: false, runOverrides: overrides })
+    )
+  );
+  assert.deepEqual(
+    reversed.classObservations.map((record) => record.classIdentityRef),
+    ["p-075", "p-dup", "p-050"]
+  );
+});
+
+test("a refused class keeps verbatim duplicate-preserving literals and fabricates nothing", () => {
+  const run = assembledRun(
+    deriveTypeBObservationSummary(multiClassPresentation())
+  );
+  const refused = run.classObservations[1];
+  assert.equal(refused.condition, "refused");
+  if (refused.condition !== "refused") return;
+  // Verbatim, source ordered, undeduplicated.
+  assert.deepEqual(refused.refusalLiterals, [
+    "reason_x",
+    "reason_x",
+    "reason_a",
+  ]);
+  // The refused arm STRUCTURALLY carries no member, tuple, probe, hypothesis,
+  // partition, or compatibility fact — and no numeric field at all.
+  assert.deepEqual(Object.keys(refused), [
+    "classIdentityRef",
+    "condition",
+    "refusalLiterals",
+  ]);
+  assertNumericFree(refused);
+  const serialized = JSON.stringify(refused).toLowerCase();
+  for (const phrase of [
+    "membercount",
+    "tuplecount",
+    "probecount",
+    "hypothesis",
+    "plausibility",
+    "truncation",
+    "compat",
+  ]) {
+    assert.ok(
+      !serialized.includes(phrase),
+      `refused class record must not fabricate "${phrase}"`
+    );
+  }
+});
+
+test("generated class counts reconcile exactly to the B3E presentation records", () => {
+  const presentation = multiClassPresentation();
+  const summary = deriveTypeBObservationSummary(presentation);
+  for (const [classIdentityRef, expected] of [
+    ["p-050", { memberCount: 1, tupleCount: 2, poseProbeCount: 2, enumeratedHypothesisCount: 2 }],
+    ["p-075", { memberCount: 2, tupleCount: 3, poseProbeCount: 1, enumeratedHypothesisCount: 1 }],
+  ] as const) {
+    const record = generatedClassObservation(summary, classIdentityRef);
+    assert.equal(record.memberCount, expected.memberCount);
+    assert.equal(record.tupleCount, expected.tupleCount);
+    assert.equal(record.poseProbeCount, expected.poseProbeCount);
+    assert.equal(
+      record.enumeratedHypothesisCount,
+      expected.enumeratedHypothesisCount
+    );
+    // Independent recount straight from the presentation records.
+    const sourceClass = presentation.tupleClasses.find(
+      (cls) => cls.primaryProductClassIdentity === classIdentityRef
+    );
+    assert.ok(sourceClass);
+    if (!sourceClass) continue;
+    assert.equal(record.memberCount, sourceClass.members.length);
+    assert.equal(
+      record.tupleCount,
+      sourceClass.members.reduce(
+        (total, member) => total + member.probeListDeg.length,
+        0
+      )
+    );
+    const classProbes = presentation.poseProbeOutcomes.filter(
+      (probe) => probe.productEquivalenceKey === sourceClass.productEquivalenceKey
+    );
+    assert.equal(record.poseProbeCount, classProbes.length);
+    assert.equal(
+      record.enumeratedHypothesisCount,
+      classProbes.reduce((total, probe) => total + probe.hypotheses.length, 0)
+    );
+    assert.deepEqual(record.refusalLiterals, []);
+  }
+});
+
+test("class plausibility partitions are closed, per-class source-check ordered, and reconcile", () => {
+  const summary = deriveTypeBObservationSummary(multiClassPresentation());
+  const first = generatedClassObservation(summary, "p-050");
+  assert.deepEqual(first.plausibilityPartitions, [
+    {
+      checkId: CHECK_A,
+      denominator: 2,
+      states: { passed: 1, failed: 0, not_evaluated: 1, not_applicable: 0 },
+    },
+    {
+      checkId: CHECK_B,
+      denominator: 1,
+      states: { passed: 0, failed: 1, not_evaluated: 0, not_applicable: 0 },
+    },
+  ]);
+  // The second class saw CHECK_B first, so ITS partition order differs from
+  // both the run-level order and the first class's order: per-class
+  // first-appearance source order, never a shared or favorability order.
+  const second = generatedClassObservation(summary, "p-075");
+  assert.deepEqual(
+    second.plausibilityPartitions.map((partition) => partition.checkId),
+    [CHECK_B, CHECK_A]
+  );
+  for (const record of [first, second]) {
+    for (const partition of record.plausibilityPartitions) {
+      const states = partition.states;
+      assert.deepEqual(Object.keys(states), [
+        "passed",
+        "failed",
+        "not_evaluated",
+        "not_applicable",
+      ]);
+      assert.equal(
+        states.passed +
+          states.failed +
+          states.not_evaluated +
+          states.not_applicable,
+        partition.denominator
+      );
+    }
+  }
+});
+
+test("class-scoped frame-truncation observations exist only under genuine global evaluation and reconcile", () => {
+  const summary = deriveTypeBObservationSummary(multiClassPresentation());
+  assert.equal(summary.frameTruncation.condition, "evaluated");
+  assert.deepEqual(
+    generatedClassObservation(summary, "p-050").frameTruncationObservation,
+    {
+      recordCount: 2,
+      states: {
+        compatible: 1,
+        incompatible: 1,
+        not_evaluated: 0,
+        not_applicable: 0,
+      },
+    }
+  );
+  assert.deepEqual(
+    generatedClassObservation(summary, "p-075").frameTruncationObservation,
+    {
+      recordCount: 1,
+      states: {
+        compatible: 0,
+        incompatible: 0,
+        not_evaluated: 0,
+        not_applicable: 1,
+      },
+    }
+  );
+  // Scoped states always reconcile exactly to the explicit scoped
+  // denominator, and the scoped denominators recompose the global one.
+  const run = assembledRun(summary);
+  let scopedTotal = 0;
+  for (const record of run.classObservations) {
+    if (record.condition !== "generated") continue;
+    const scoped = record.frameTruncationObservation;
+    assert.ok(scoped);
+    if (!scoped) continue;
+    assert.equal(
+      scoped.states.compatible +
+        scoped.states.incompatible +
+        scoped.states.not_evaluated +
+        scoped.states.not_applicable,
+      scoped.recordCount
+    );
+    scopedTotal += scoped.recordCount;
+  }
+  if (summary.frameTruncation.condition === "evaluated") {
+    assert.equal(scopedTotal, summary.frameTruncation.recordCount);
+  }
+
+  // Global non-assessment: NO scoped partition is fabricated and the
+  // verbatim literals stay at the global level only.
+  const notAssessed = deriveTypeBObservationSummary(
+    multiClassPresentation({
+      frameTruncationOverrides: {
+        status: "not_assessed",
+        notAssessedReasons: ["diagnostic_run_missing_pose_hypotheses"],
+        records: [],
+      },
+    })
+  );
+  assert.deepEqual(notAssessed.frameTruncation, {
+    condition: "not_assessed",
+    notAssessedLiterals: ["diagnostic_run_missing_pose_hypotheses"],
+  });
+  for (const record of assembledRun(notAssessed).classObservations) {
+    if (record.condition !== "generated") continue;
+    assert.equal(record.frameTruncationObservation, null);
+  }
+  const serializedClasses = JSON.stringify(
+    assembledRun(notAssessed).classObservations
+  ).toLowerCase();
+  for (const phrase of ["compat", "recordcount", "missing_pose"]) {
+    assert.ok(
+      !serializedClasses.includes(phrase),
+      `non-assessed scoped observation must not fabricate "${phrase}"`
+    );
+  }
+});
+
+test("an unknown scoped compatibility state stays in the scoped denominator with a loud mismatch", () => {
+  const summary = deriveTypeBObservationSummary(
+    multiClassPresentation({
+      frameTruncationOverrides: {
+        status: "evaluated",
+        notAssessedReasons: [],
+        records: [
+          {
+            primaryProductClassIdentity: "p-050",
+            floorAspectRatio: 1.0,
+            latentSideExtent: 0.5,
+            poseProbeEquivalenceKey: "ppk-class-050-40",
+            hypothesisIndex: 0,
+            cropCompatibility: "compatible",
+          },
+          {
+            primaryProductClassIdentity: "p-050",
+            floorAspectRatio: 1.0,
+            latentSideExtent: 0.5,
+            poseProbeEquivalenceKey: "ppk-class-050-40",
+            hypothesisIndex: 1,
+            cropCompatibility: "future_compatibility_state/v9",
+          },
+        ],
+      },
+    })
+  );
+  // The run remains diagnostic-only and present.
+  assert.equal(summary.status, "presentation_observed");
+  const scoped = generatedClassObservation(
+    summary,
+    "p-050"
+  ).frameTruncationObservation;
+  assert.ok(scoped);
+  if (!scoped) return;
+  // Denominator includes the unknown record; no known state absorbs it.
+  assert.equal(scoped.recordCount, 2);
+  const knownSum =
+    scoped.states.compatible +
+    scoped.states.incompatible +
+    scoped.states.not_evaluated +
+    scoped.states.not_applicable;
+  assert.equal(knownSum, 1);
+  assert.notEqual(
+    knownSum,
+    scoped.recordCount,
+    "a foreign compatibility state must surface as a reconciliation mismatch"
+  );
+});
+
+test("an unknown future class status stays in the requested denominator but yields no class record", () => {
+  const overrides = buildMultiClassRunOverrides();
+  const tupleGeneration = overrides.tupleGeneration as {
+    productClasses: unknown[];
+  };
+  tupleGeneration.productClasses = [
+    ...tupleGeneration.productClasses,
+    {
+      primaryProductClassIdentity: "p-future",
+      latentDepthEquivalence: null,
+      status: "future_class_status/v9",
+      refusalReasons: [],
+      members: [],
+    },
+  ];
+  const summary = deriveTypeBObservationSummary(
+    fullPresentation({ requested: false, runOverrides: overrides })
+  );
+  // Never coerced, never dropped from the denominator, never a fabricated
+  // no-presentation collapse.
+  assert.equal(summary.status, "presentation_observed");
+  const run = assembledRun(summary);
+  assert.equal(run.tupleGeneration.requestedProductClassCount, 4);
+  assert.equal(run.tupleGeneration.generatedProductClassCount, 2);
+  assert.equal(run.tupleGeneration.refusedProductClassCount, 1);
+  assert.equal(run.classObservations.length, 3);
+  assert.ok(
+    !run.classObservations.some(
+      (record) => record.classIdentityRef === "p-future"
+    )
+  );
+  // Both reconciliation identities fail loudly.
+  assert.notEqual(
+    run.tupleGeneration.generatedProductClassCount +
+      run.tupleGeneration.refusedProductClassCount,
+    run.tupleGeneration.requestedProductClassCount
+  );
+  assert.notEqual(
+    run.classObservations.length,
+    run.tupleGeneration.requestedProductClassCount
+  );
+  // The unknown status literal itself is never copied into the summary.
+  assert.ok(!JSON.stringify(summary).includes("future_class_status/v9"));
+});
+
+test("class records expose closed key sets and leak no equivalence key, price, FOV, or member geometry", () => {
+  const summary = deriveTypeBObservationSummary(multiClassPresentation());
+  const run = assembledRun(summary);
+  for (const record of run.classObservations) {
+    if (record.condition === "generated") {
+      assert.deepEqual(Object.keys(record), [
+        "classIdentityRef",
+        "condition",
+        "refusalLiterals",
+        "memberCount",
+        "tupleCount",
+        "poseProbeCount",
+        "enumeratedHypothesisCount",
+        "plausibilityPartitions",
+        "frameTruncationObservation",
+      ]);
+    }
+  }
+  const serialized = JSON.stringify(run.classObservations).toLowerCase();
+  // The internal linkage key and all raw member/probe identities stay out.
+  for (const leaked of [
+    "class-050",
+    "class-075",
+    "ppk-",
+    "aspect",
+    "extent",
+    "price",
+    "fovprobedeg",
+    "equivalence",
+    "junction_anchored",
+  ]) {
+    assert.ok(
+      !serialized.includes(leaked),
+      `class observations must not leak "${leaked}"`
+    );
+  }
+});
+
+// --- 19. Probe observation records (B3G-4) -----------------------------------------
+
+test("probe observations preserve exact source probe order with closed stage arms", () => {
+  const presentation = multiClassPresentation();
+  const run = assembledRun(deriveTypeBObservationSummary(presentation));
+  assert.equal(
+    run.probeObservations.length,
+    presentation.poseProbeOutcomes.length
+  );
+  assert.deepEqual(
+    run.probeObservations.map((record) => record.poseStageCondition),
+    ["enumerated", "refused", "enumerated"]
+  );
+});
+
+test("a refused pose stage keeps verbatim literals and fabricates no census, count, or partition", () => {
+  const run = assembledRun(
+    deriveTypeBObservationSummary(multiClassPresentation())
+  );
+  const refused = run.probeObservations[1];
+  assert.equal(refused.poseStageCondition, "refused");
+  if (refused.poseStageCondition !== "refused") return;
+  assert.deepEqual(refused.stageRefusalLiterals, [
+    "latent_depth_product_not_positive",
+  ]);
+  assert.deepEqual(Object.keys(refused), [
+    "poseStageCondition",
+    "stageRefusalLiterals",
+  ]);
+  assertNumericFree(refused);
+  const serialized = JSON.stringify(refused).toLowerCase();
+  for (const phrase of ["census", "hypothesis", "plausibility", "denominator"]) {
+    assert.ok(
+      !serialized.includes(phrase),
+      `refused probe record must not fabricate "${phrase}"`
+    );
+  }
+});
+
+test("root census counts are copied verbatim as four independent facts and never summed", () => {
+  const run = assembledRun(
+    deriveTypeBObservationSummary(multiClassPresentation())
+  );
+  const first = run.probeObservations[0];
+  assert.equal(first.poseStageCondition, "enumerated");
+  if (first.poseStageCondition !== "enumerated") return;
+  assert.deepEqual(first.rootCensus, {
+    algebraicCandidateCount: 4,
+    realRootCount: 3,
+    positiveDistanceRootCount: 2,
+    deduplicatedRootCount: 2,
+  });
+  assert.deepEqual(Object.keys(first.rootCensus ?? {}), [
+    "algebraicCandidateCount",
+    "realRootCount",
+    "positiveDistanceRootCount",
+    "deduplicatedRootCount",
+  ]);
+  // No summed / combined census fact exists anywhere.
+  const serialized = JSON.stringify(run.probeObservations).toLowerCase();
+  for (const phrase of ["total", "sum", "combined", "overall"]) {
+    assert.ok(
+      !serialized.includes(phrase),
+      `census must not be presented via "${phrase}"`
+    );
+  }
+});
+
+test("an enumerated stage without a projected census carries null, never a fabricated zero census", () => {
+  const run = assembledRun(
+    deriveTypeBObservationSummary(
+      fullPresentation({
+        requested: false,
+        runOverrides: {
+          poseProbeResults: [
+            buildRawProbe(
+              "class-050",
+              40,
+              buildHypothesesStage([[{ checkId: CHECK_A, state: "passed" }]]),
+              null
+            ),
+          ],
+        },
+      })
+    )
+  );
+  const record = run.probeObservations[0];
+  assert.equal(record.poseStageCondition, "enumerated");
+  if (record.poseStageCondition !== "enumerated") return;
+  assert.equal(record.rootCensus, null);
+  assert.equal(record.enumeratedHypothesisCount, 1);
+});
+
+test("per-probe hypothesis totals and plausibility partitions reconcile to the presentation", () => {
+  const presentation = multiClassPresentation();
+  const run = assembledRun(deriveTypeBObservationSummary(presentation));
+  let enumeratedTotal = 0;
+  run.probeObservations.forEach((record, position) => {
+    if (record.poseStageCondition !== "enumerated") return;
+    assert.equal(
+      record.enumeratedHypothesisCount,
+      presentation.poseProbeOutcomes[position].hypotheses.length
+    );
+    enumeratedTotal += record.enumeratedHypothesisCount;
+    for (const partition of record.plausibilityPartitions) {
+      const states = partition.states;
+      assert.equal(
+        states.passed +
+          states.failed +
+          states.not_evaluated +
+          states.not_applicable,
+        partition.denominator
+      );
+    }
+  });
+  assert.equal(enumeratedTotal, run.probeFacts.enumeratedHypothesisCount);
+  // Exact expected partitions, in per-probe first-appearance source order.
+  const first = run.probeObservations[0];
+  if (first.poseStageCondition === "enumerated") {
+    assert.deepEqual(first.plausibilityPartitions, [
+      {
+        checkId: CHECK_A,
+        denominator: 2,
+        states: { passed: 1, failed: 0, not_evaluated: 1, not_applicable: 0 },
+      },
+      {
+        checkId: CHECK_B,
+        denominator: 1,
+        states: { passed: 0, failed: 1, not_evaluated: 0, not_applicable: 0 },
+      },
+    ]);
+  }
+  const third = run.probeObservations[2];
+  if (third.poseStageCondition === "enumerated") {
+    assert.deepEqual(
+      third.plausibilityPartitions.map((partition) => partition.checkId),
+      [CHECK_B, CHECK_A]
+    );
+  }
+});
+
+test("an unknown pose-stage kind stays in the probe denominator but yields no probe record", () => {
+  const overrides = buildMultiClassRunOverrides();
+  (overrides.poseProbeResults as unknown[]).push(
+    buildRawProbe("class-050", 60, { kind: "future_stage_kind/v9" }, null)
+  );
+  const summary = deriveTypeBObservationSummary(
+    fullPresentation({ requested: false, runOverrides: overrides })
+  );
+  assert.equal(summary.status, "presentation_observed");
+  const run = assembledRun(summary);
+  assert.equal(run.probeFacts.poseProbeCount, 4);
+  assert.equal(run.probeObservations.length, 3);
+  assert.notEqual(
+    run.probeObservations.length,
+    run.probeFacts.poseProbeCount,
+    "an unknown stage kind must surface as a reconciliation mismatch"
+  );
+  assert.ok(!JSON.stringify(summary).includes("future_stage_kind/v9"));
+});
+
+test("an unknown plausibility state stays in the check denominator but in no known count", () => {
+  const summary = deriveTypeBObservationSummary(
+    fullPresentation({
+      requested: false,
+      runOverrides: {
+        poseProbeResults: [
+          buildRawProbe(
+            "class-050",
+            40,
+            buildHypothesesStage([
+              [
+                { checkId: CHECK_A, state: "passed" },
+                { checkId: CHECK_A, state: "future_check_state/v9" },
+              ],
+            ]),
+            null
+          ),
+        ],
+      },
+    })
+  );
+  assert.equal(summary.status, "presentation_observed");
+  const run = assembledRun(summary);
+  // Both the run-level and the per-probe partitions carry the loud mismatch.
+  const partitions = [
+    run.plausibilityPartitions[0],
+    (() => {
+      const record = run.probeObservations[0];
+      assert.equal(record.poseStageCondition, "enumerated");
+      return record.poseStageCondition === "enumerated"
+        ? record.plausibilityPartitions[0]
+        : undefined;
+    })(),
+  ];
+  for (const partition of partitions) {
+    assert.ok(partition);
+    if (!partition) continue;
+    assert.equal(partition.checkId, CHECK_A);
+    assert.equal(partition.denominator, 2);
+    const knownSum =
+      partition.states.passed +
+      partition.states.failed +
+      partition.states.not_evaluated +
+      partition.states.not_applicable;
+    assert.equal(knownSum, 1);
+    assert.notEqual(
+      knownSum,
+      partition.denominator,
+      "a foreign plausibility state must surface as a reconciliation mismatch"
+    );
+  }
+  assert.ok(!JSON.stringify(summary).includes("future_check_state/v9"));
+});
+
+test("probe records expose closed key sets and leak no FOV, key, ID, pose, or ordering fact", () => {
+  const run = assembledRun(
+    deriveTypeBObservationSummary(multiClassPresentation())
+  );
+  for (const record of run.probeObservations) {
+    if (record.poseStageCondition === "enumerated") {
+      assert.deepEqual(Object.keys(record), [
+        "poseStageCondition",
+        "rootCensus",
+        "enumeratedHypothesisCount",
+        "plausibilityPartitions",
+      ]);
+    } else {
+      assert.deepEqual(Object.keys(record), [
+        "poseStageCondition",
+        "stageRefusalLiterals",
+      ]);
+    }
+  }
+  const serialized = JSON.stringify(run.probeObservations).toLowerCase();
+  for (const leaked of [
+    "ppk-",
+    "class-050",
+    "class-075",
+    "fovprobedeg",
+    "hypothesisindex",
+    "residual",
+    "rotation_numerical", // absent from this fixture's checks
+    "cameraposition",
+    "worldtocamera",
+    "equivalence",
+    "rank",
+    "ordinal",
+    "priority",
+  ]) {
+    assert.ok(
+      !serialized.includes(leaked),
+      `probe observations must not leak "${leaked}"`
+    );
+  }
+});
+
+// --- 20. Component observation records (B3G-4) --------------------------------------
+
+test("component observations exist only inside the evaluated association arm", () => {
+  const evaluated = evaluatedAssociation(
+    deriveTypeBObservationSummary(
+      associationPresentation([["associated"], ["unmatched_terminated"]])
+    )
+  );
+  assert.equal(evaluated.componentObservations.length, 2);
+  assert.equal(evaluated.componentObservations.length, evaluated.componentCount);
+  for (const summary of [
+    deriveTypeBObservationSummary(null),
+    deriveTypeBObservationSummary(fullPresentation({ requested: false })),
+    deriveTypeBObservationSummary(
+      fullPresentation({
+        requested: true,
+        associationOverrides: {
+          status: "not_assessed",
+          notAssessedReasons: ["invalid_diagnostic_run_linkage"],
+        },
+      })
+    ),
+  ]) {
+    assert.ok(
+      !JSON.stringify(summary).toLowerCase().includes("componentobservations")
+    );
+  }
+});
+
+test("component observations preserve corridor source order without promotion by references or states", () => {
+  // The second component has MORE root references and an "associated"
+  // annotation; it must stay second.
+  const corridorSmall = buildCorridor(0, ["unmatched_terminated"]);
+  const corridorLarge = {
+    ...buildCorridor(1, ["associated"]),
+    poseProbeRootReferences: [40, 50, 60].map((fovProbeDeg, position) => ({
+      poseProbeEquivalenceKey: `ppk-050-${fovProbeDeg}`,
+      fovProbeDeg,
+      hypothesisIndex: position,
+    })),
+  };
+  const association = evaluatedAssociation(
+    deriveTypeBObservationSummary(
+      fullPresentation({
+        requested: true,
+        runOverrides: { branchCorridors: [corridorSmall, corridorLarge] },
+      })
+    )
+  );
+  assert.deepEqual(
+    association.componentObservations.map((record) => record.referenceCount),
+    [1, 3]
+  );
+  assert.deepEqual(
+    association.componentObservations.map(
+      (record) => record.associatedAnnotationObservation
+    ),
+    ["none_observed", "one_or_more_observed"]
+  );
+});
+
+test("every component matrix is closed five-state fixed order and reconciles to its own denominator", () => {
+  const association = evaluatedAssociation(
+    deriveTypeBObservationSummary(
+      associationPresentation([
+        ["associated", "tied_ambiguous"],
+        [],
+        ["unmatched_terminated", "unmatched_born", "near_coincident_unresolved"],
+      ])
+    )
+  );
+  assert.equal(association.componentObservations.length, 3);
+  let annotationTotal = 0;
+  let associatedComponents = 0;
+  for (const record of association.componentObservations) {
+    assert.deepEqual(
+      record.annotationStateCounts.map((entry) => entry.state),
+      [
+        "associated",
+        "tied_ambiguous",
+        "unmatched_terminated",
+        "unmatched_born",
+        "near_coincident_unresolved",
+      ]
+    );
+    const sum = record.annotationStateCounts.reduce(
+      (total, entry) => total + entry.count,
+      0
+    );
+    assert.equal(sum, record.annotationCount);
+    annotationTotal += record.annotationCount;
+    if (record.associatedAnnotationObservation === "one_or_more_observed") {
+      associatedComponents += 1;
+    }
+  }
+  // Component records recompose the run-level aggregates exactly.
+  assert.equal(annotationTotal, association.annotationCount);
+  assert.equal(
+    associatedComponents,
+    association.componentsWithAssociatedAnnotations
+  );
+  // The empty component stays visible with an honest zero matrix.
+  assert.deepEqual(association.componentObservations[1], {
+    referenceCount: 1,
+    annotationCount: 0,
+    associatedAnnotationObservation: "none_observed",
+    annotationStateCounts: [
+      { state: "associated", count: 0 },
+      { state: "tied_ambiguous", count: 0 },
+      { state: "unmatched_terminated", count: 0 },
+      { state: "unmatched_born", count: 0 },
+      { state: "near_coincident_unresolved", count: 0 },
+    ],
+  });
+});
+
+test("one_or_more_observed arises only from an exact raw associated annotation on that component", () => {
+  const association = evaluatedAssociation(
+    deriveTypeBObservationSummary(
+      associationPresentation([
+        ["tied_ambiguous", "near_coincident_unresolved", "unmatched_born"],
+        ["ASSOCIATED"],
+        ["unmatched_terminated", "associated"],
+      ])
+    )
+  );
+  // Ambiguity / unresolved / unmatched states and a non-exact casing never
+  // produce the observation; only the exact raw literal does.
+  assert.deepEqual(
+    association.componentObservations.map(
+      (record) => record.associatedAnnotationObservation
+    ),
+    ["none_observed", "none_observed", "one_or_more_observed"]
+  );
+  // The non-exact casing is an unknown state: kept in the component
+  // denominator, absent from every known count.
+  const casedComponent = association.componentObservations[1];
+  assert.equal(casedComponent.annotationCount, 1);
+  assert.equal(
+    casedComponent.annotationStateCounts.reduce(
+      (total, entry) => total + entry.count,
+      0
+    ),
+    0
+  );
+});
+
+test("an unknown component annotation state stays in the component denominator with a loud mismatch", () => {
+  const association = evaluatedAssociation(
+    deriveTypeBObservationSummary(
+      associationPresentation([["associated", "future_unknown_state/v9"]])
+    )
+  );
+  const record = association.componentObservations[0];
+  assert.equal(record.annotationCount, 2);
+  const knownSum = record.annotationStateCounts.reduce(
+    (total, entry) => total + entry.count,
+    0
+  );
+  assert.equal(knownSum, 1);
+  assert.notEqual(
+    knownSum,
+    record.annotationCount,
+    "a foreign component state must surface as a reconciliation mismatch"
+  );
+  // The aggregate matrix mismatches identically — component and aggregate
+  // levels stay mutually consistent.
+  assert.equal(association.annotationCount, 2);
+});
+
+test("component records expose closed keys and leak no identity, endpoint, or ordering fact", () => {
+  const association = evaluatedAssociation(
+    deriveTypeBObservationSummary(
+      associationPresentation([
+        ["associated", "tied_ambiguous"],
+        ["unmatched_terminated"],
+      ])
+    )
+  );
+  for (const record of association.componentObservations) {
+    assert.deepEqual(Object.keys(record), [
+      "referenceCount",
+      "annotationCount",
+      "associatedAnnotationObservation",
+      "annotationStateCounts",
+    ]);
+  }
+  const serialized = JSON.stringify(association.componentObservations);
+  for (const leaked of [
+    "ppk-050",
+    "branchIndex",
+    "Enumeration",
+    "fromReference",
+    "toReference",
+    "fovProbeDeg",
+    "hypothesisIndex",
+    "rootReferences",
+    "topology",
+    "policy",
+  ]) {
+    assert.ok(
+      !serialized.includes(leaked),
+      `component observations must not leak "${leaked}"`
+    );
+  }
+});
+
+// --- 21. Extended raw-literal containment (B3G-4) -----------------------------------
+
+test("controlled annotation literals are permitted at both matrix paths and nowhere else", () => {
+  const summary = deriveTypeBObservationSummary(
+    associationPresentation([
+      ["associated", "tied_ambiguous"],
+      ["unmatched_terminated", "unmatched_born", "near_coincident_unresolved"],
+    ])
+  );
+  assertControlledLiteralContainment(summary);
+  // The component matrix path genuinely exists and matches the guard.
+  const paths = collectStringValuesWithPaths(summary)
+    .filter(({ value }) =>
+      (CONTROLLED_ANNOTATION_STATES as readonly string[]).includes(value)
+    )
+    .map(({ path: valuePath }) => valuePath);
+  assert.ok(
+    paths.some((valuePath) =>
+      /^\$\.association\.annotationStateCounts\[\d+\]\.state$/.test(valuePath)
+    ),
+    "run-level matrix path must be present"
+  );
+  assert.ok(
+    paths.some((valuePath) =>
+      /^\$\.association\.componentObservations\[\d+\]\.annotationStateCounts\[\d+\]\.state$/.test(
+        valuePath
+      )
+    ),
+    "component matrix path must be present"
+  );
+  for (const valuePath of paths) {
+    assert.match(valuePath, MATRIX_STATE_PATH_PATTERN);
+  }
+});
+
+test("decoy raw literals outside the allowed paths fail the containment guard", () => {
+  const base = deriveTypeBObservationSummary(
+    associationPresentation([["associated"]])
+  );
+  const decoys: ((clone: Record<string, any>) => void)[] = [
+    (clone) => {
+      clone.association.associatedAnnotationObservation = "associated";
+    },
+    (clone) => {
+      clone.association.componentObservations[0].associatedAnnotationObservation =
+        "unmatched_born";
+    },
+    (clone) => {
+      clone.capture = {
+        condition: "refused",
+        refusalLiterals: ["unmatched_terminated"],
+      };
+    },
+    (clone) => {
+      clone.sourceReferences.sourceImageIdentityRef = "associated";
+    },
+    (clone) => {
+      clone.run = {
+        ...clone.run,
+        refusalLiterals: ["near_coincident_unresolved"],
+      };
+    },
+  ];
+  for (const applyDecoy of decoys) {
+    const clone = structuredClone(base) as unknown as Record<string, any>;
+    applyDecoy(clone);
+    assert.throws(
+      () =>
+        assertControlledLiteralContainment(
+          clone as unknown as TypeBObservationSummary
+        ),
+      "a raw literal outside the allowed matrix paths must fail containment"
+    );
+  }
+});
+
+test("a tampered unknown state at either allowed matrix path fails the controlled-vocabulary guard", () => {
+  const base = deriveTypeBObservationSummary(
+    associationPresentation([["associated"]])
+  );
+  const runLevel = structuredClone(base) as unknown as Record<string, any>;
+  runLevel.association.annotationStateCounts[0].state = "future_state/v9";
+  assert.throws(() =>
+    assertControlledLiteralContainment(
+      runLevel as unknown as TypeBObservationSummary
+    )
+  );
+  const componentLevel = structuredClone(base) as unknown as Record<
+    string,
+    any
+  >;
+  componentLevel.association.componentObservations[0].annotationStateCounts[0].state =
+    "future_state/v9";
+  assert.throws(() =>
+    assertControlledLiteralContainment(
+      componentLevel as unknown as TypeBObservationSummary
+    )
+  );
+});
+
+test("raw plausibility check-ID literals are permitted only at explicit checkId paths", () => {
+  const summary = deriveTypeBObservationSummary(multiClassPresentation());
+  assertControlledLiteralContainment(summary);
+  // Check IDs genuinely live at the run, class, and probe checkId paths.
+  const checkIdPaths = collectStringValuesWithPaths(summary)
+    .filter(({ value }) =>
+      CONTROLLED_CHECK_ID_LITERALS.some((literal) => value.includes(literal))
+    )
+    .map(({ path: valuePath }) => valuePath);
+  assert.ok(
+    checkIdPaths.some((valuePath) =>
+      /^\$\.run\.plausibilityPartitions\[\d+\]\.checkId$/.test(valuePath)
+    )
+  );
+  assert.ok(
+    checkIdPaths.some((valuePath) =>
+      /^\$\.run\.classObservations\[\d+\]\.plausibilityPartitions\[\d+\]\.checkId$/.test(
+        valuePath
+      )
+    )
+  );
+  assert.ok(
+    checkIdPaths.some((valuePath) =>
+      /^\$\.run\.probeObservations\[\d+\]\.plausibilityPartitions\[\d+\]\.checkId$/.test(
+        valuePath
+      )
+    )
+  );
+  // A check-ID literal anywhere else fails the guard: no global exemption.
+  const tampered = {
+    ...deriveTypeBObservationSummary(null),
+    status: "camera_above_floor/v0",
+  } as unknown as TypeBObservationSummary;
+  assert.throws(() => assertControlledLiteralContainment(tampered));
+});
+
+test("matrix redaction stays exact-path and exact-literal for component matrices too", () => {
+  const base = deriveTypeBObservationSummary(
+    associationPresentation([["associated"]])
+  );
+  // An unknown value at the component matrix path is NOT redacted, so it
+  // stays visible to the authority copy scans.
+  const tampered = structuredClone(base) as unknown as Record<string, any>;
+  tampered.association.componentObservations[0].annotationStateCounts[0].state =
+    "best component";
+  assert.ok(
+    serializeWithControlledMatrixRedaction(
+      tampered as unknown as TypeBObservationSummary
+    ).includes("best component"),
+    "non-vocabulary values at the component matrix path must remain scannable"
+  );
+  // A known literal parked on a NON-matrix component key is not redacted.
+  const decoy = structuredClone(base) as unknown as Record<string, any>;
+  decoy.association.componentObservations[0].associatedAnnotationObservation =
+    "unmatched_born";
+  assert.ok(
+    serializeWithControlledMatrixRedaction(
+      decoy as unknown as TypeBObservationSummary
+    ).includes("unmatched_born"),
+    "the redaction must never mask literals outside the matrix state paths"
+  );
+});
+
+// --- 22. Independence and no-authority across the new levels (B3G-4) ----------------
+
+test("class and probe records are independent of association state", () => {
+  const overrides = buildMultiClassRunOverrides();
+  const withoutAssociation = assembledRun(
+    deriveTypeBObservationSummary(
+      fullPresentation({ requested: false, runOverrides: overrides })
+    )
+  );
+  const withAssociation = assembledRun(
+    deriveTypeBObservationSummary(
+      fullPresentation({
+        requested: true,
+        runOverrides: buildMultiClassRunOverrides(),
+      })
+    )
+  );
+  assert.deepEqual(
+    withoutAssociation.classObservations,
+    withAssociation.classObservations
+  );
+  assert.deepEqual(
+    withoutAssociation.probeObservations,
+    withAssociation.probeObservations
+  );
+});
+
+test("frame-truncation changes touch only scoped compatibility, never plausibility or probe records", () => {
+  const evaluated = assembledRun(
+    deriveTypeBObservationSummary(multiClassPresentation())
+  );
+  const notAssessed = assembledRun(
+    deriveTypeBObservationSummary(
+      multiClassPresentation({
+        frameTruncationOverrides: {
+          status: "not_assessed",
+          notAssessedReasons: ["diagnostic_run_missing_pose_hypotheses"],
+          records: [],
+        },
+      })
+    )
+  );
+  assert.deepEqual(evaluated.probeObservations, notAssessed.probeObservations);
+  assert.deepEqual(
+    evaluated.plausibilityPartitions,
+    notAssessed.plausibilityPartitions
+  );
+  // Class records differ ONLY in the scoped compatibility observation.
+  assert.equal(
+    evaluated.classObservations.length,
+    notAssessed.classObservations.length
+  );
+  evaluated.classObservations.forEach((record, position) => {
+    const other = notAssessed.classObservations[position];
+    if (record.condition !== "generated" || other.condition !== "generated") {
+      assert.deepEqual(record, other);
+      return;
+    }
+    assert.equal(other.frameTruncationObservation, null);
+    assert.deepEqual(
+      { ...record, frameTruncationObservation: null },
+      { ...other }
+    );
+  });
+});
+
+test("component observations are independent of plausibility and frame truncation", () => {
+  const corridors = [
+    buildCorridor(0, ["associated", "tied_ambiguous"]),
+    buildCorridor(1, ["unmatched_terminated"]),
+  ];
+  const baseline = evaluatedAssociation(
+    deriveTypeBObservationSummary(
+      fullPresentation({
+        requested: true,
+        runOverrides: { branchCorridors: corridors },
+      })
+    )
+  );
+  const withMixedPlausibilityAndNoTruncation = evaluatedAssociation(
+    deriveTypeBObservationSummary(
+      fullPresentation({
+        requested: true,
+        runOverrides: {
+          branchCorridors: corridors,
+          poseProbeResults: buildMixedPoseProbeResults(),
+        },
+        frameTruncationOverrides: {
+          status: "not_assessed",
+          notAssessedReasons: ["diagnostic_run_missing_pose_hypotheses"],
+          records: [],
+        },
+      })
+    )
+  );
+  assert.deepEqual(
+    baseline.componentObservations,
+    withMixedPlausibilityAndNoTruncation.componentObservations
+  );
+});
+
+test("no new level introduces authority wording, composites, or UI/action-like fields", () => {
+  for (const summary of [
+    deriveTypeBObservationSummary(multiClassPresentation()),
+    deriveTypeBObservationSummary(
+      associationPresentation([
+        ["associated", "tied_ambiguous"],
+        ["unmatched_terminated"],
+      ])
+    ),
+  ]) {
+    assertNoForbiddenKeys(summary);
+    assertNoForbiddenCopy(summary);
+    const serialized = serializeWithControlledMatrixRedaction(summary);
+    for (const phrase of [
+      "bestclass",
+      "bestprobe",
+      "bestroot",
+      "bestbranch",
+      "bestcomponent",
+      "recommendedfov",
+      "recommendedcamera",
+      "selectedprobe",
+      "selectedcomponent",
+      "previewprobe",
+      "applycalibration",
+      "associatedandcompatible",
+      "associatedandpassed",
+      "compatibleandpassed",
+      "usablesolution",
+      "validsolution",
+      "successfulprobe",
+      "strongestcomponent",
+      "longestcomponent",
+      "passedallchecks",
+      "allcheckspassed",
+      "onclick",
+      "button",
+      "collapse",
+      "expand",
+      "href",
+    ]) {
+      assert.ok(
+        !serialized.includes(phrase),
+        `summary must not carry "${phrase}"`
+      );
+    }
+  }
 });
