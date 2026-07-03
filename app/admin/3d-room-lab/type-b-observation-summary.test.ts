@@ -1119,11 +1119,13 @@ test("schema literal is the /v3 contract, exported verbatim, and never a prior s
   }
 });
 
-test("no non-test consumer imports the summary module, so /v3 needs no compatibility adapter", () => {
-  // Repository-level consumer-safety proof: outside this test file, no source
-  // module in the repository references the observation-summary module or its
-  // schema family, so minting /v3 (and never returning /v2, /v1, or /v0)
-  // breaks no consumer and requires no compatibility adapter.
+test("the lab UI is the ONLY non-test consumer of the summary module", () => {
+  // Repository-level consumer-safety proof: outside this test file, the ONLY
+  // source module in the repository that references the observation-summary
+  // module or its schema family is the sanctioned B3G-5 read-only lab UI
+  // integration (ThreeRoomLab.tsx). No other consumer exists, so the /v3
+  // contract still needs no compatibility adapter and gains no new authority
+  // surface.
   const repoRoot = path.resolve(
     path.dirname(fileURLToPath(import.meta.url)),
     "..",
@@ -1154,8 +1156,8 @@ test("no non-test consumer imports the summary module, so /v3 needs no compatibi
   walk(repoRoot);
   assert.deepEqual(
     consumers,
-    [],
-    "the observation summary must have no non-test consumer"
+    [path.join(path.dirname(fileURLToPath(import.meta.url)), "ThreeRoomLab.tsx")],
+    "the read-only lab UI must be the only non-test consumer of the observation summary"
   );
 });
 
@@ -4037,4 +4039,258 @@ test("no new level introduces authority wording, composites, or UI/action-like f
       );
     }
   }
+});
+
+// --- 13. B3G-5 read-only UI integration guards (source inspection) -------------
+
+// Narrow source/structure regression guards over the SANCTIONED lab-UI
+// consumer, following the repository's established source-inspection pattern
+// (see type-b-test-handoff-override.test.ts). They prove the observation
+// index stays a read-only projection of the already-derived B3E presentation
+// with no action, selection, persistence, or authority surface.
+
+const UI_PATH = path.join(
+  path.dirname(fileURLToPath(import.meta.url)),
+  "ThreeRoomLab.tsx"
+);
+const UI_SOURCE = readFileSync(UI_PATH, "utf8");
+
+const OBSERVATION_INDEX_BEGIN_MARKER =
+  "{/* B3G-5: Type B Diagnostic Observation Index (read-only) — begin */}";
+const OBSERVATION_INDEX_END_MARKER =
+  "{/* B3G-5: Type B Diagnostic Observation Index — end */}";
+
+// The exact render block of the B3G-5 observation index, extracted between
+// its fixed source markers.
+const OBSERVATION_INDEX_BLOCK = (() => {
+  const begin = UI_SOURCE.indexOf(OBSERVATION_INDEX_BEGIN_MARKER);
+  const end = UI_SOURCE.indexOf(OBSERVATION_INDEX_END_MARKER);
+  return begin >= 0 && end > begin ? UI_SOURCE.slice(begin, end) : "";
+})();
+
+test("B3G-5: the UI derives the summary via useMemo from the B3E presentation value only", () => {
+  // Exactly ONE derivation call site exists in the UI.
+  const calls = UI_SOURCE.match(/deriveTypeBObservationSummary\s*\(/g) ?? [];
+  assert.equal(
+    calls.length,
+    1,
+    "the UI must call deriveTypeBObservationSummary exactly once"
+  );
+  // That call consumes ONLY the already-derived B3E presentation value.
+  assert.ok(
+    /deriveTypeBObservationSummary\(typeBDiagnosticPresentation\)/.test(
+      UI_SOURCE
+    ),
+    "the summary must be derived from typeBDiagnosticPresentation only"
+  );
+  // Derived by useMemo keyed to the presentation value alone — never from the
+  // raw capture result, raw envelope, solver results, or Type A state.
+  assert.ok(
+    /const typeBObservationSummary = useMemo\(\s*\(\) => deriveTypeBObservationSummary\(typeBDiagnosticPresentation\),\s*\[typeBDiagnosticPresentation\]\s*\);/.test(
+      UI_SOURCE
+    ),
+    "the summary must be a useMemo of the presentation value with the presentation as its only dependency"
+  );
+  assert.ok(
+    !/deriveTypeBObservationSummary\(\s*(?:typeBCaptureResult|typeBDiagnosticEnvelope)/.test(
+      UI_SOURCE
+    ),
+    "the summary must never be derived from the raw capture result or raw envelope"
+  );
+});
+
+test("B3G-5: the summary is never stored in state, persisted, or routed into any mutating function", () => {
+  // Not React state.
+  assert.ok(
+    !/setTypeBObservationSummary/.test(UI_SOURCE),
+    "no state setter for the summary may exist"
+  );
+  assert.ok(
+    !/useState[^\n]*ObservationSummary/i.test(UI_SOURCE),
+    "the summary must not live in useState"
+  );
+  // Never an argument to a setter, calibration, camera, floor, scene,
+  // persistence, preview, select, load, save, or apply function.
+  assert.ok(
+    !/\b(?:set[A-Z]\w*|apply\w*|load\w*|save\w*|persist\w*|select\w*|preview\w*|calibrat\w*|mutate\w*|commit\w*|store\w*)\s*\([^()]*typeBObservationSummary/.test(
+      UI_SOURCE
+    ),
+    "the summary must never be passed to a mutating / persisting / selecting function"
+  );
+  assert.ok(
+    !/localStorage[^\n]*typeBObservationSummary|typeBObservationSummary[^\n]*localStorage/.test(
+      UI_SOURCE
+    ),
+    "the summary must never touch localStorage"
+  );
+  // The summary identifier is read ONLY inside its useMemo declaration and
+  // the marked observation-index render block: no other code path consumes it.
+  const withoutBlock = UI_SOURCE.replace(OBSERVATION_INDEX_BLOCK, "");
+  const declaration = withoutBlock.match(
+    /const typeBObservationSummary = useMemo\([\s\S]*?\);/
+  );
+  assert.ok(declaration, "the useMemo declaration must exist");
+  const remainder = withoutBlock.replace(declaration![0], "");
+  assert.ok(
+    !remainder.includes("typeBObservationSummary"),
+    "the summary must not be consumed outside its declaration and the observation-index block"
+  );
+});
+
+test("B3G-5: the observation-index block carries no action, control, or interaction affordance", () => {
+  assert.ok(
+    OBSERVATION_INDEX_BLOCK.length > 0,
+    "the marked observation-index block must exist"
+  );
+  assert.ok(
+    OBSERVATION_INDEX_BLOCK.includes("Type B Diagnostic Observation Index"),
+    "the block must carry its fixed neutral title"
+  );
+  for (const forbidden of [
+    "<button",
+    "<a ",
+    "<a>",
+    "onClick",
+    "onPointer",
+    "onMouse",
+    "href=",
+    "cursor-pointer",
+    "hover:",
+    "<select",
+    "<input",
+    "CollapsibleSection",
+    "useState",
+  ]) {
+    assert.ok(
+      !OBSERVATION_INDEX_BLOCK.includes(forbidden),
+      `observation-index block must not contain "${forbidden}"`
+    );
+  }
+  // No traffic-light / success styling, checkmarks, progress bars, or
+  // percentage semantics.
+  for (const forbidden of [
+    "green-",
+    "emerald-",
+    "lime-",
+    "red-",
+    "✓",
+    "✔",
+    "progress",
+    "%",
+  ]) {
+    assert.ok(
+      !OBSERVATION_INDEX_BLOCK.includes(forbidden),
+      `observation-index block must not contain visual semantic "${forbidden}"`
+    );
+  }
+});
+
+test("B3G-5: no authority, ranking, or verdict wording enters the observation-index block", () => {
+  const lower = OBSERVATION_INDEX_BLOCK.toLowerCase();
+  for (const forbidden of [
+    "matched",
+    "validated",
+    "confirmed",
+    "continuous solution",
+    "stable branch",
+    "best",
+    "recommended",
+    "preferred",
+    "winning",
+    "usable",
+    "longest",
+    "strongest",
+    "success",
+    "valid root",
+    "good pose",
+    "all checks passed",
+    "score",
+    "rank",
+    "apply",
+    "calibration authority granted",
+  ]) {
+    assert.ok(
+      !lower.includes(forbidden),
+      `observation-index block must not contain "${forbidden}"`
+    );
+  }
+});
+
+test("B3G-5: the index renders only for an assembled summary, below the manifest/refusal facts and above the unchanged raw sections", () => {
+  // Render gating: nothing renders for a no-presentation summary or a
+  // non-assembled run (no zero counts, no placeholder).
+  assert.ok(
+    /typeBObservationSummary\.status !==\s*\n?\s*"presentation_observed"/.test(
+      OBSERVATION_INDEX_BLOCK
+    ),
+    "the block must gate on presentation_observed"
+  );
+  assert.ok(
+    /observationRun\.condition !== "assembled"\) \{\s*return null;/.test(
+      OBSERVATION_INDEX_BLOCK
+    ),
+    "the block must return null for a non-assembled run"
+  );
+
+  // Placement: results heading < capture/manifest/refusal facts < index <
+  // the four unchanged raw collapsible sections, in their established order.
+  const resultsIdx = UI_SOURCE.indexOf("Read-only Type B diagnostic results");
+  const manifestIdx = UI_SOURCE.indexOf("Run manifest");
+  const refusalFactsIdx = UI_SOURCE.indexOf(
+    "Run-level refusal / non-assessment facts"
+  );
+  const blockIdx = UI_SOURCE.indexOf(OBSERVATION_INDEX_BEGIN_MARKER);
+  const tupleIdx = UI_SOURCE.indexOf('title="Tuple class details"');
+  const probeIdx = UI_SOURCE.indexOf('title="P3P probe outcomes"');
+  const branchIdx = UI_SOURCE.indexOf('title="Branch corridors"');
+  const truncationIdx = UI_SOURCE.indexOf(
+    'title="Frame-truncation compatibility"'
+  );
+  for (const [label, idx] of [
+    ["results heading", resultsIdx],
+    ["run manifest", manifestIdx],
+    ["refusal facts", refusalFactsIdx],
+    ["observation index", blockIdx],
+    ["tuple class details", tupleIdx],
+    ["p3p probe outcomes", probeIdx],
+    ["branch corridors", branchIdx],
+    ["frame-truncation compatibility", truncationIdx],
+  ] as const) {
+    assert.ok(idx >= 0, `${label} must remain present in the UI`);
+  }
+  assert.ok(resultsIdx < manifestIdx, "manifest stays under results heading");
+  assert.ok(manifestIdx < refusalFactsIdx, "refusal facts follow the manifest");
+  assert.ok(refusalFactsIdx < blockIdx, "index sits below the refusal facts");
+  assert.ok(blockIdx < tupleIdx, "index sits above tuple class details");
+  assert.ok(tupleIdx < probeIdx, "raw section order unchanged (tuples, probes)");
+  assert.ok(probeIdx < branchIdx, "raw section order unchanged (branches)");
+  assert.ok(
+    branchIdx < truncationIdx,
+    "raw section order unchanged (frame truncation)"
+  );
+});
+
+test("B3G-5: the fixed non-authority sentence appears exactly once and the override banner stays verbatim", () => {
+  // JSX collapses the wrapped source lines into single spaces, so normalize
+  // whitespace before matching the required fixed sentence.
+  const normalized = UI_SOURCE.replace(/\s+/g, " ");
+  const SENTENCE =
+    "Association records continuity observations across authored probes. It does not validate a camera, identify a correct branch, or grant calibration authority.";
+  assert.equal(
+    normalized.split(SENTENCE).length - 1,
+    1,
+    "the required association non-authority sentence must appear exactly once"
+  );
+  // The established override banner remains verbatim and is never softened,
+  // renamed, or restated inside the observation index.
+  const BANNER = "LAB TEST OVERRIDE ACTIVE — NOT A REAL TYPE A HANDOFF";
+  const bannerCount = UI_SOURCE.split(BANNER).length - 1;
+  assert.ok(
+    bannerCount >= 3,
+    "the exact override banner string must remain in its established locations"
+  );
+  assert.ok(
+    !OBSERVATION_INDEX_BLOCK.includes("OVERRIDE"),
+    "the observation index must not restate or reinterpret the override banner"
+  );
 });

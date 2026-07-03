@@ -180,6 +180,19 @@ import type { TypeBDiagnosticRunAssemblyResult } from "./type-b-diagnostic-run-a
 import { TYPE_B_LATENT_DEPTH_PRODUCT_FORMULA } from "./type-b-evaluator-contract";
 import type { TypeBCaptureResult } from "./type-b-capture-contract";
 import { presentTypeBDiagnosticRun } from "./type-b-diagnostic-run-presentation";
+// --- Phase B3G-5: Read-Only Type B Diagnostic Observation Index -------------
+// LAB-ONLY, READ-ONLY. The UI derives the pure /v3 observation summary from
+// the ALREADY-derived B3E presentation value ONLY (never from the raw capture
+// result, raw envelope, solver output, Type A state, or live scene values) and
+// renders it as a neutral, compact fact index with NO action, ranking,
+// recommendation, or authority of any kind.
+import { deriveTypeBObservationSummary } from "./type-b-observation-summary";
+import type {
+  TypeBObservationAssociatedAnnotationObservation,
+  TypeBObservationAssociationAnnotationStateCount,
+  TypeBObservationFrameTruncationStates,
+  TypeBObservationPlausibilityStates,
+} from "./type-b-observation-summary";
 // --- Phase B3F-O: Lab-Only Type B Test-Handoff Override ---------------------
 // LAB-ONLY. A session-only override that lets Type B capture/diagnostic testing
 // proceed against an EFFECTIVE exhausted-handoff context without a genuine Type
@@ -1009,6 +1022,57 @@ function formatTypeBNumber(value: number | null | undefined): string {
   if (Number.isNaN(value)) return "NaN";
   if (!Number.isFinite(value)) return String(value);
   return String(value);
+}
+
+// --- Phase B3G-5: neutral observation-index display helpers ------------------
+// Pure text formatting of already-derived /v3 summary facts. Full state
+// partitions are always spelled out (zero counts included); nothing is
+// summed, ranked, colored, or converted into a verdict.
+
+// Full four-state plausibility partition, fixed vocabulary order.
+function formatTypeBPlausibilityStatesLine(
+  states: TypeBObservationPlausibilityStates
+): string {
+  return `passed: ${states.passed} · failed: ${states.failed} · not evaluated: ${states.not_evaluated} · not applicable: ${states.not_applicable}`;
+}
+
+// Full four-state frame-truncation compatibility partition, fixed order.
+function formatTypeBFrameTruncationStatesLine(
+  states: TypeBObservationFrameTruncationStates
+): string {
+  return `compatible: ${states.compatible} · incompatible: ${states.incompatible} · not evaluated: ${states.not_evaluated} · not applicable: ${states.not_applicable}`;
+}
+
+// Literal presence observation, never a match/validation claim.
+function formatTypeBAssociatedAnnotationObservation(
+  observation: TypeBObservationAssociatedAnnotationObservation
+): string {
+  return observation === "one_or_more_observed"
+    ? "one or more observed"
+    : "none observed";
+}
+
+// Controlled raw annotation-state display labels, in the fixed five-state
+// vocabulary order the summary already emits. Raw literals stay recognizable;
+// no state is renamed into match/validation wording.
+const TYPE_B_ANNOTATION_STATE_DISPLAY_LABELS: Record<string, string> = {
+  associated: "associated",
+  tied_ambiguous: "tied ambiguous",
+  unmatched_terminated: "unmatched terminated",
+  unmatched_born: "unmatched born",
+  near_coincident_unresolved: "near-coincident unresolved",
+};
+
+// Full five-state annotation partition line in fixed vocabulary order.
+function formatTypeBAnnotationStateCountsLine(
+  stateCounts: readonly TypeBObservationAssociationAnnotationStateCount[]
+): string {
+  return stateCounts
+    .map(
+      (entry) =>
+        `${TYPE_B_ANNOTATION_STATE_DISPLAY_LABELS[entry.state] ?? entry.state}: ${entry.count}`
+    )
+    .join(" · ");
 }
 
 function formatQualPx(value: number | null | undefined): string {
@@ -5899,6 +5963,18 @@ export default function ThreeRoomLab({
         envelope: typeBDiagnosticEnvelope,
       }),
     [typeBCaptureResult, typeBDiagnosticEnvelope]
+  );
+
+  // --- Phase B3G-5: read-only observation index derivation -------------------
+  // Pure /v3 summary derived ONLY from the already-derived B3E presentation
+  // value above. Never derived from the raw capture result, raw envelope,
+  // solver results, Type A state, or live calibration/scene state; never
+  // stored in React state or cached beyond this render lifecycle. When the
+  // existing capture/envelope lifecycle clears the presentation, this summary
+  // collapses to its no-presentation shape in the same render state.
+  const typeBObservationSummary = useMemo(
+    () => deriveTypeBObservationSummary(typeBDiagnosticPresentation),
+    [typeBDiagnosticPresentation]
   );
 
   // Brief literal run-state text.
@@ -13676,6 +13752,447 @@ export default function ThreeRoomLab({
                               )}
                             </div>
                           )}
+
+                          {/* B3G-5: Type B Diagnostic Observation Index (read-only) — begin */}
+                          {(() => {
+                            // Read-only fact index over the pure /v3 summary.
+                            // Rendered ONLY for a genuinely assembled run; a
+                            // no-presentation or capture-only state renders
+                            // nothing here (no zero counts, no placeholder).
+                            if (
+                              typeBObservationSummary.status !==
+                              "presentation_observed"
+                            ) {
+                              return null;
+                            }
+                            const observationRun = typeBObservationSummary.run;
+                            if (observationRun.condition !== "assembled") {
+                              return null;
+                            }
+                            const observationAssociation =
+                              typeBObservationSummary.association;
+                            const observationFrameTruncation =
+                              typeBObservationSummary.frameTruncation;
+                            return (
+                              <div className="space-y-2 rounded-lg border border-slate-700 bg-slate-900/60 p-3 text-[11px] text-slate-300">
+                                <p className="font-medium text-slate-100">
+                                  Type B Diagnostic Observation Index
+                                </p>
+
+                                {/* Tuple generation facts */}
+                                <div className="space-y-0.5">
+                                  <p className="text-slate-200">
+                                    Tuple generation
+                                  </p>
+                                  <p>
+                                    status:{" "}
+                                    <span className="text-slate-200">
+                                      {observationRun.tupleGeneration.status}
+                                    </span>
+                                  </p>
+                                  <p>
+                                    requested classes:{" "}
+                                    {observationRun.tupleGeneration.requestedProductClassCount}{" "}
+                                    · generated classes:{" "}
+                                    {observationRun.tupleGeneration.generatedProductClassCount}{" "}
+                                    · refused classes:{" "}
+                                    {observationRun.tupleGeneration.refusedProductClassCount}
+                                  </p>
+                                  <p>
+                                    members:{" "}
+                                    {observationRun.tupleGeneration.memberCount}{" "}
+                                    · tuples:{" "}
+                                    {observationRun.tupleGeneration.tupleCount}
+                                  </p>
+                                  {observationRun.tupleGeneration.refusalLiterals.map(
+                                    (reason, index) => (
+                                      <p
+                                        key={`type-b-obs-tuple-refusal-${index}`}
+                                        className="text-amber-200/90"
+                                      >
+                                        refusal: {reason}
+                                      </p>
+                                    )
+                                  )}
+                                  {observationRun.tupleGeneration.classRefusalRecords.map(
+                                    (record, index) => (
+                                      <p
+                                        key={`type-b-obs-class-refusal-${index}`}
+                                        className="text-amber-200/90"
+                                      >
+                                        class {record.classIdentityRef} refusal:{" "}
+                                        {record.refusalLiterals.join(", ")}
+                                      </p>
+                                    )
+                                  )}
+                                  {observationRun.refusalLiterals.map(
+                                    (reason, index) => (
+                                      <p
+                                        key={`type-b-obs-run-refusal-${index}`}
+                                        className="text-amber-200/90"
+                                      >
+                                        run refusal: {reason}
+                                      </p>
+                                    )
+                                  )}
+                                </div>
+
+                                {/* Probe / hypothesis facts */}
+                                <div className="space-y-0.5">
+                                  <p className="text-slate-200">
+                                    Probes and hypotheses
+                                  </p>
+                                  {observationRun.probeFacts
+                                    .authoredFovProbeCount !== null && (
+                                    <p>
+                                      authored probes:{" "}
+                                      {observationRun.probeFacts.authoredFovProbeCount}
+                                    </p>
+                                  )}
+                                  <p>
+                                    pose probes:{" "}
+                                    {observationRun.probeFacts.poseProbeCount}{" "}
+                                    · pose-stage refusals:{" "}
+                                    {observationRun.probeFacts.poseStageRefusalCount}{" "}
+                                    · enumerated hypotheses:{" "}
+                                    {observationRun.probeFacts.enumeratedHypothesisCount}
+                                  </p>
+                                  {observationRun.probeFacts.poseStageRefusalLiterals.map(
+                                    (reason, index) => (
+                                      <p
+                                        key={`type-b-obs-pose-refusal-${index}`}
+                                        className="text-amber-200/90"
+                                      >
+                                        pose-stage refusal: {reason}
+                                      </p>
+                                    )
+                                  )}
+                                </div>
+
+                                {/* Plausibility observations */}
+                                {observationRun.plausibilityPartitions.length >
+                                  0 && (
+                                  <div className="space-y-0.5">
+                                    <p className="text-slate-200">
+                                      Plausibility observations
+                                    </p>
+                                    {observationRun.plausibilityPartitions.map(
+                                      (partition, index) => (
+                                        <p key={`type-b-obs-plaus-${index}`}>
+                                          {partition.checkId} observation
+                                          (observations:{" "}
+                                          {partition.denominator}) —{" "}
+                                          {formatTypeBPlausibilityStatesLine(
+                                            partition.states
+                                          )}
+                                        </p>
+                                      )
+                                    )}
+                                  </div>
+                                )}
+
+                                {/* Frame-truncation observations */}
+                                {observationFrameTruncation.condition !==
+                                  "absent" && (
+                                  <div className="space-y-0.5">
+                                    <p className="text-slate-200">
+                                      Frame-truncation observations
+                                    </p>
+                                    {observationFrameTruncation.condition ===
+                                      "not_assessed" && (
+                                      <>
+                                        <p>Not assessed</p>
+                                        {observationFrameTruncation.notAssessedLiterals.map(
+                                          (reason, index) => (
+                                            <p
+                                              key={`type-b-obs-ft-reason-${index}`}
+                                              className="text-amber-200/90"
+                                            >
+                                              {reason}
+                                            </p>
+                                          )
+                                        )}
+                                      </>
+                                    )}
+                                    {observationFrameTruncation.condition ===
+                                      "evaluated" && (
+                                      <p>
+                                        Compatibility observations under stated
+                                        check (records:{" "}
+                                        {observationFrameTruncation.recordCount}
+                                        ) —{" "}
+                                        {formatTypeBFrameTruncationStatesLine(
+                                          observationFrameTruncation.states
+                                        )}
+                                      </p>
+                                    )}
+                                  </div>
+                                )}
+
+                                {/* Association observations */}
+                                {observationAssociation.condition !==
+                                  "absent" && (
+                                  <div className="space-y-0.5">
+                                    <p className="text-slate-200">
+                                      Association observations
+                                    </p>
+                                    {observationAssociation.condition ===
+                                      "not_requested" && <p>not requested</p>}
+                                    {observationAssociation.condition ===
+                                      "not_assessed" && (
+                                      <>
+                                        <p>not assessed</p>
+                                        {observationAssociation.notAssessedLiterals.map(
+                                          (reason, index) => (
+                                            <p
+                                              key={`type-b-obs-assoc-reason-${index}`}
+                                              className="text-amber-200/90"
+                                            >
+                                              {reason}
+                                            </p>
+                                          )
+                                        )}
+                                      </>
+                                    )}
+                                    {observationAssociation.condition ===
+                                      "evaluated" && (
+                                      <>
+                                        <p>evaluated</p>
+                                        <p>
+                                          components:{" "}
+                                          {observationAssociation.componentCount}{" "}
+                                          · with associated annotations:{" "}
+                                          {observationAssociation.componentsWithAssociatedAnnotations}{" "}
+                                          · without associated annotations:{" "}
+                                          {observationAssociation.componentsWithoutAssociatedAnnotations}
+                                        </p>
+                                        <p>
+                                          annotations:{" "}
+                                          {observationAssociation.annotationCount}{" "}
+                                          · associated annotation observation:{" "}
+                                          {formatTypeBAssociatedAnnotationObservation(
+                                            observationAssociation.associatedAnnotationObservation
+                                          )}
+                                        </p>
+                                        <p>
+                                          {formatTypeBAnnotationStateCountsLine(
+                                            observationAssociation.annotationStateCounts
+                                          )}
+                                        </p>
+                                        <p className="text-slate-400">
+                                          Association records continuity
+                                          observations across authored probes.
+                                          It does not validate a camera,
+                                          identify a correct branch, or grant
+                                          calibration authority.
+                                        </p>
+                                      </>
+                                    )}
+                                  </div>
+                                )}
+
+                                {/* Class observations (source order) */}
+                                {observationRun.classObservations.length >
+                                  0 && (
+                                  <div className="space-y-1">
+                                    <p className="text-slate-200">
+                                      Class observations
+                                    </p>
+                                    {observationRun.classObservations.map(
+                                      (classObservation, index) => (
+                                        <div
+                                          key={`type-b-obs-class-${index}`}
+                                          className="space-y-0.5 rounded border border-slate-700 bg-slate-950/40 p-2"
+                                        >
+                                          <p className="text-slate-200">
+                                            {classObservation.classIdentityRef}
+                                          </p>
+                                          {classObservation.condition ===
+                                            "refused" && (
+                                            <>
+                                              <p>Refused</p>
+                                              {classObservation.refusalLiterals.map(
+                                                (reason, rIndex) => (
+                                                  <p
+                                                    key={`type-b-obs-class-${index}-refusal-${rIndex}`}
+                                                    className="text-amber-200/90"
+                                                  >
+                                                    {reason}
+                                                  </p>
+                                                )
+                                              )}
+                                            </>
+                                          )}
+                                          {classObservation.condition ===
+                                            "generated" && (
+                                            <>
+                                              <p>Generated</p>
+                                              <p>
+                                                members:{" "}
+                                                {classObservation.memberCount}{" "}
+                                                · tuples:{" "}
+                                                {classObservation.tupleCount}{" "}
+                                                · pose probes:{" "}
+                                                {classObservation.poseProbeCount}{" "}
+                                                · enumerated hypotheses:{" "}
+                                                {classObservation.enumeratedHypothesisCount}
+                                              </p>
+                                              {classObservation.plausibilityPartitions.map(
+                                                (partition, pIndex) => (
+                                                  <p
+                                                    key={`type-b-obs-class-${index}-plaus-${pIndex}`}
+                                                  >
+                                                    {partition.checkId}{" "}
+                                                    observation (observations:{" "}
+                                                    {partition.denominator}) —{" "}
+                                                    {formatTypeBPlausibilityStatesLine(
+                                                      partition.states
+                                                    )}
+                                                  </p>
+                                                )
+                                              )}
+                                              {classObservation.frameTruncationObservation && (
+                                                <p>
+                                                  Compatibility observations
+                                                  under stated check (records:{" "}
+                                                  {classObservation.frameTruncationObservation.recordCount}
+                                                  ) —{" "}
+                                                  {formatTypeBFrameTruncationStatesLine(
+                                                    classObservation.frameTruncationObservation.states
+                                                  )}
+                                                </p>
+                                              )}
+                                            </>
+                                          )}
+                                        </div>
+                                      )
+                                    )}
+                                  </div>
+                                )}
+
+                                {/* Probe observations (source order, anonymous) */}
+                                {observationRun.probeObservations.length >
+                                  0 && (
+                                  <div className="space-y-1">
+                                    <p className="text-slate-200">
+                                      Probe observations
+                                    </p>
+                                    {observationRun.probeObservations.map(
+                                      (probeObservation, index) => (
+                                        <div
+                                          key={`type-b-obs-probe-${index}`}
+                                          className="space-y-0.5 rounded border border-slate-700 bg-slate-950/40 p-2"
+                                        >
+                                          <p className="text-slate-200">
+                                            Probe observation {index + 1}
+                                          </p>
+                                          {probeObservation.poseStageCondition ===
+                                            "refused" && (
+                                            <>
+                                              <p>Pose stage refused</p>
+                                              {probeObservation.stageRefusalLiterals.map(
+                                                (reason, rIndex) => (
+                                                  <p
+                                                    key={`type-b-obs-probe-${index}-refusal-${rIndex}`}
+                                                    className="text-amber-200/90"
+                                                  >
+                                                    {reason}
+                                                  </p>
+                                                )
+                                              )}
+                                            </>
+                                          )}
+                                          {probeObservation.poseStageCondition ===
+                                            "enumerated" && (
+                                            <>
+                                              {probeObservation.rootCensus && (
+                                                <p>
+                                                  Root census — algebraic
+                                                  candidates:{" "}
+                                                  {probeObservation.rootCensus.algebraicCandidateCount}{" "}
+                                                  · real roots:{" "}
+                                                  {probeObservation.rootCensus.realRootCount}{" "}
+                                                  · positive-distance roots:{" "}
+                                                  {probeObservation.rootCensus.positiveDistanceRootCount}{" "}
+                                                  · deduplicated roots:{" "}
+                                                  {probeObservation.rootCensus.deduplicatedRootCount}
+                                                </p>
+                                              )}
+                                              <p>
+                                                enumerated hypotheses:{" "}
+                                                {probeObservation.enumeratedHypothesisCount}
+                                              </p>
+                                              {probeObservation.plausibilityPartitions.map(
+                                                (partition, pIndex) => (
+                                                  <p
+                                                    key={`type-b-obs-probe-${index}-plaus-${pIndex}`}
+                                                  >
+                                                    {partition.checkId}{" "}
+                                                    observation (observations:{" "}
+                                                    {partition.denominator}) —{" "}
+                                                    {formatTypeBPlausibilityStatesLine(
+                                                      partition.states
+                                                    )}
+                                                  </p>
+                                                )
+                                              )}
+                                            </>
+                                          )}
+                                        </div>
+                                      )
+                                    )}
+                                  </div>
+                                )}
+
+                                {/* Component observations (only when association is evaluated) */}
+                                {observationAssociation.condition ===
+                                  "evaluated" &&
+                                  observationAssociation.componentObservations
+                                    .length > 0 && (
+                                    <div className="space-y-1">
+                                      <p className="text-slate-200">
+                                        Component observations
+                                      </p>
+                                      {observationAssociation.componentObservations.map(
+                                        (componentObservation, index) => (
+                                          <div
+                                            key={`type-b-obs-component-${index}`}
+                                            className="space-y-0.5 rounded border border-slate-700 bg-slate-950/40 p-2"
+                                          >
+                                            <p className="text-slate-200">
+                                              Component observation {index + 1}
+                                            </p>
+                                            <p>
+                                              reference count:{" "}
+                                              {componentObservation.referenceCount}{" "}
+                                              · annotation count:{" "}
+                                              {componentObservation.annotationCount}
+                                            </p>
+                                            <p>
+                                              associated annotation
+                                              observation:{" "}
+                                              {formatTypeBAssociatedAnnotationObservation(
+                                                componentObservation.associatedAnnotationObservation
+                                              )}
+                                            </p>
+                                            <p>
+                                              {formatTypeBAnnotationStateCountsLine(
+                                                componentObservation.annotationStateCounts
+                                              )}
+                                            </p>
+                                          </div>
+                                        )
+                                      )}
+                                      <p className="text-slate-400">
+                                        Association remains
+                                        enumeration/observation only.
+                                      </p>
+                                    </div>
+                                  )}
+                              </div>
+                            );
+                          })()}
+                          {/* B3G-5: Type B Diagnostic Observation Index — end */}
 
                           {/* Tuple class details (collapsed by default) */}
                           {typeBDiagnosticPresentation.tupleClasses.length > 0 && (
