@@ -166,6 +166,20 @@ import {
   type TypeBEndpointTarget,
   type TypeBPlacementTarget,
 } from "./type-b-direct-edit";
+// --- Phase B3E: Read-Only Type B Diagnostic UI Integration ------------------
+// LAB-ONLY, DIAGNOSTIC-FIRST, READ-ONLY. The UI may call ONLY the committed
+// public Type B capture / tuple-generation / diagnostic-run-assembly functions
+// (plus the B3E read-only presentation projection). It imports NO B3D-1/2/3
+// function and adds NO math, ranking, selection, preview, load, Apply, or
+// calibration authority. All result/input shapes are type-only.
+import { captureTypeBSnapshotAndCoverage } from "./type-b-capture";
+import type { TypeBSnapshotAndCoverageCaptureInput } from "./type-b-capture";
+import { generateTypeBBoundedDiagnosticTuples } from "./type-b-tuple-generation";
+import { assembleTypeBDiagnosticRun } from "./type-b-diagnostic-run-assembly";
+import type { TypeBDiagnosticRunAssemblyResult } from "./type-b-diagnostic-run-assembly";
+import { TYPE_B_LATENT_DEPTH_PRODUCT_FORMULA } from "./type-b-evaluator-contract";
+import type { TypeBCaptureResult } from "./type-b-capture-contract";
+import { presentTypeBDiagnosticRun } from "./type-b-diagnostic-run-presentation";
 import {
   generateManualFloorSupportTrials,
   type TrialGenerationCandidate,
@@ -950,6 +964,42 @@ function formatTypeBAngle(value: number | null | undefined): string {
     : `${value.toFixed(1)}°`;
 }
 
+// --- Phase B3E: raw operator-input parsing (pure; NEVER repairs) ------------
+// A single authored numeric field. A blank or malformed value becomes NaN and
+// is passed VERBATIM to the pure capture / evaluation contract so it can refuse
+// honestly; nothing is defaulted, clamped, or dropped.
+function parseTypeBNumberField(text: string): number {
+  const trimmed = text.trim();
+  if (trimmed.length === 0) return Number.NaN;
+  return Number(trimmed);
+}
+
+// A comma-separated authored numeric list. A blank WHOLE field yields an empty
+// list. Token order is preserved exactly; a blank/invalid internal token
+// becomes a non-finite NaN value (never silently dropped, sorted, deduplicated,
+// interpolated, or generated).
+function parseTypeBNumberListField(text: string): number[] {
+  if (text.trim().length === 0) return [];
+  return text.split(",").map((token) => {
+    const trimmed = token.trim();
+    if (trimmed.length === 0) return Number.NaN;
+    return Number(trimmed);
+  });
+}
+
+// True only when a raw authored field carries at least one non-whitespace char.
+function typeBFieldPresent(text: string): boolean {
+  return text.trim().length > 0;
+}
+
+// Neutral display of a raw numeric fact (preserves NaN as a visible literal).
+function formatTypeBNumber(value: number | null | undefined): string {
+  if (value === null || value === undefined) return "—";
+  if (Number.isNaN(value)) return "NaN";
+  if (!Number.isFinite(value)) return String(value);
+  return String(value);
+}
+
 function formatQualPx(value: number | null | undefined): string {
   return typeof value === "number" && Number.isFinite(value) ? `${value.toFixed(1)} px` : "unavailable";
 }
@@ -1175,6 +1225,49 @@ export default function ThreeRoomLab({
     null
   );
   const typeBOverlayRef = useRef<SVGSVGElement | null>(null);
+  // --- Phase B3E: read-only Type B capture + diagnostic UI state ------------
+  // LAB-ONLY, DIAGNOSTIC-FIRST, READ-ONLY. Isolated local state ONLY. Nothing
+  // here is seeded from Type A or any live room state; every field is
+  // operator-authored and starts blank / empty. Capture and diagnostic run
+  // happen ONLY on an explicit button click, never from an effect. No value
+  // here mutates calibration / candidate / polygon / FOV / dimensions /
+  // readiness / camera mode, and nothing is persisted.
+  //
+  // Raw operator-authored capture inputs (verbatim strings; never normalized,
+  // sorted, deduplicated, generated, interpolated, or repaired).
+  const [typeBWorldWidthText, setTypeBWorldWidthText] = useState("");
+  const [typeBAspectRatiosText, setTypeBAspectRatiosText] = useState("");
+  const [typeBProductClassRows, setTypeBProductClassRows] = useState<
+    { identity: string; value: string }[]
+  >([]);
+  const [typeBFovProbesText, setTypeBFovProbesText] = useState("");
+  // Exact capture / diagnostic results (stored verbatim; null until captured).
+  const [typeBCaptureResult, setTypeBCaptureResult] =
+    useState<TypeBCaptureResult | null>(null);
+  const [typeBDiagnosticEnvelope, setTypeBDiagnosticEnvelope] =
+    useState<TypeBDiagnosticRunAssemblyResult | null>(null);
+  // Optional branch-association request. Default OFF -> branchAssociation:null.
+  const [typeBRequestBranchAssociation, setTypeBRequestBranchAssociation] =
+    useState(false);
+  // Raw operator-authored topology + policy fields (blank until authored).
+  const [typeBTopologyOrderedProbesText, setTypeBTopologyOrderedProbesText] =
+    useState("");
+  const [typeBTopologyStepText, setTypeBTopologyStepText] = useState("");
+  const [typeBPolicyMaxPosText, setTypeBPolicyMaxPosText] = useState("");
+  const [typeBPolicyMaxRotText, setTypeBPolicyMaxRotText] = useState("");
+  const [typeBPolicyTiePosText, setTypeBPolicyTiePosText] = useState("");
+  const [typeBPolicyTieRotText, setTypeBPolicyTieRotText] = useState("");
+  const [typeBPolicyNearPosText, setTypeBPolicyNearPosText] = useState("");
+  const [typeBPolicyNearRotText, setTypeBPolicyNearRotText] = useState("");
+  // Read-only results collapse state (results persist through panel collapse;
+  // they clear ONLY via the B3E invalidation rules, never on toggle).
+  const [isTypeBTupleClassesOpen, setIsTypeBTupleClassesOpen] = useState(false);
+  const [isTypeBProbeOutcomesOpen, setIsTypeBProbeOutcomesOpen] =
+    useState(false);
+  const [isTypeBBranchCorridorsOpen, setIsTypeBBranchCorridorsOpen] =
+    useState(false);
+  const [isTypeBFrameTruncationOpen, setIsTypeBFrameTruncationOpen] =
+    useState(false);
   const [isCoupledSearchOpen, setIsCoupledSearchOpen] = useState(false);
   const [coupledSearchResultSet, setCoupledSearchResultSet] =
     useState<CoupledSearchResultSet | null>(null);
@@ -5132,6 +5225,86 @@ export default function ThreeRoomLab({
     setTypeBDraggingTarget(null);
   }, []);
 
+  // --- Phase B3E: read-only invalidation helpers (UI state ONLY) ------------
+  // These clear ONLY local Type B capture / diagnostic state. They never touch
+  // calibration / candidate / polygon / FOV / dimensions / readiness / camera
+  // mode, never persist, and never auto-recapture or auto-rerun.
+  //
+  // clearTypeBDiagnosticEnvelope clears ONLY the assembled diagnostic envelope
+  // (capture-input, branch-association, topology, and policy edits, plus each
+  // new capture attempt).
+  const clearTypeBDiagnosticEnvelope = useCallback(() => {
+    setTypeBDiagnosticEnvelope(null);
+  }, []);
+
+  // clearTypeBCaptureAndDiagnostic clears BOTH the capture result and the
+  // envelope (every evidence / basis change).
+  const clearTypeBCaptureAndDiagnostic = useCallback(() => {
+    setTypeBCaptureResult(null);
+    setTypeBDiagnosticEnvelope(null);
+  }, []);
+
+  // Capture-input mutators. Each writes the raw operator-authored value verbatim
+  // and clears BOTH the capture result and the envelope, because world width,
+  // authorized aspect ratios, primary product classes, and FOV probes are all
+  // part of the B3D-5B captured snapshot / B3C coverage: a stale capture must
+  // never survive an edit to any of them. The authored raw fields themselves
+  // are NEVER cleared, and no value is normalized, sorted, deduplicated,
+  // generated, interpolated, or repaired here.
+  const updateTypeBWorldWidthText = useCallback(
+    (text: string) => {
+      setTypeBWorldWidthText(text);
+      clearTypeBCaptureAndDiagnostic();
+    },
+    [clearTypeBCaptureAndDiagnostic]
+  );
+  const updateTypeBAspectRatiosText = useCallback(
+    (text: string) => {
+      setTypeBAspectRatiosText(text);
+      clearTypeBCaptureAndDiagnostic();
+    },
+    [clearTypeBCaptureAndDiagnostic]
+  );
+  const updateTypeBFovProbesText = useCallback(
+    (text: string) => {
+      setTypeBFovProbesText(text);
+      clearTypeBCaptureAndDiagnostic();
+    },
+    [clearTypeBCaptureAndDiagnostic]
+  );
+  const addTypeBProductClassRow = useCallback(() => {
+    setTypeBProductClassRows((rows) => [...rows, { identity: "", value: "" }]);
+    clearTypeBCaptureAndDiagnostic();
+  }, [clearTypeBCaptureAndDiagnostic]);
+  const removeTypeBProductClassRow = useCallback(
+    (index: number) => {
+      setTypeBProductClassRows((rows) => rows.filter((_, i) => i !== index));
+      clearTypeBCaptureAndDiagnostic();
+    },
+    [clearTypeBCaptureAndDiagnostic]
+  );
+  const updateTypeBProductClassRow = useCallback(
+    (index: number, patch: Partial<{ identity: string; value: string }>) => {
+      setTypeBProductClassRows((rows) =>
+        rows.map((row, i) => (i === index ? { ...row, ...patch } : row))
+      );
+      clearTypeBCaptureAndDiagnostic();
+    },
+    [clearTypeBCaptureAndDiagnostic]
+  );
+  // Branch-association-request mutators (also envelope-only).
+  const toggleTypeBRequestBranchAssociation = useCallback(() => {
+    setTypeBRequestBranchAssociation((on) => !on);
+    clearTypeBDiagnosticEnvelope();
+  }, [clearTypeBDiagnosticEnvelope]);
+  const updateTypeBAssociationField = useCallback(
+    (setter: (text: string) => void, text: string) => {
+      setter(text);
+      clearTypeBDiagnosticEnvelope();
+    },
+    [clearTypeBDiagnosticEnvelope]
+  );
+
   // Invalidation: clear an active review when the underlying room-geometry basis
   // changes. When the basis is unchanged the pure reconcile returns the same
   // state reference, so this effect is a stable no-op (no update loop).
@@ -5142,11 +5315,13 @@ export default function ThreeRoomLab({
       setTypeBReview(result.next);
       setTypeBOverlayVisible(false);
       resetTypeBInteraction();
+      // B3E: a review-basis reconciliation is an evidence/basis change.
+      clearTypeBCaptureAndDiagnostic();
       setTypeBReviewNote(
         "Type B evidence review cleared because the underlying room geometry context changed."
       );
     }
-  }, [typeBGeometryContext, resetTypeBInteraction]);
+  }, [typeBGeometryContext, resetTypeBInteraction, clearTypeBCaptureAndDiagnostic]);
 
   // Type A context change: retain declarations, re-qualify (handled by the memo
   // above), and surface a small note only when declarations exist.
@@ -5173,8 +5348,16 @@ export default function ThreeRoomLab({
     );
     typeBReviewRef.current = started;
     setTypeBReview(started);
+    // B3E: beginning a review is an evidence change.
+    clearTypeBCaptureAndDiagnostic();
     setTypeBReviewNote(null);
-  }, [loadedImageUrl, imageIntrinsicSize, selectedAutoFloorCandidateId, floorPolygon]);
+  }, [
+    loadedImageUrl,
+    imageIntrinsicSize,
+    selectedAutoFloorCandidateId,
+    floorPolygon,
+    clearTypeBCaptureAndDiagnostic,
+  ]);
 
   const handleClearTypeBReview = useCallback(() => {
     const empty = createEmptyTypeBReviewState();
@@ -5182,8 +5365,10 @@ export default function ThreeRoomLab({
     setTypeBReview(empty);
     setTypeBOverlayVisible(false);
     resetTypeBInteraction();
+    // B3E: clearing the review is an evidence change.
+    clearTypeBCaptureAndDiagnostic();
     setTypeBReviewNote("Type B evidence review cleared.");
-  }, [resetTypeBInteraction]);
+  }, [resetTypeBInteraction, clearTypeBCaptureAndDiagnostic]);
 
   const updateTypeBRearSeam = useCallback(
     (patch: Partial<TypeBDeclaredLineEvidence>) => {
@@ -5191,8 +5376,10 @@ export default function ThreeRoomLab({
         ...s,
         rearSeam: applyDeclaredLinePatch(s.rearSeam, "rear_floor_wall_seam", patch),
       }));
+      // B3E: a rear-seam edit is an evidence change.
+      clearTypeBCaptureAndDiagnostic();
     },
-    []
+    [clearTypeBCaptureAndDiagnostic]
   );
 
   const updateTypeBSideSeam = useCallback(
@@ -5201,15 +5388,19 @@ export default function ThreeRoomLab({
         ...s,
         strongSideSeam: applyDeclaredLinePatch(s.strongSideSeam, null, patch),
       }));
+      // B3E: a strong-side-seam edit is an evidence change.
+      clearTypeBCaptureAndDiagnostic();
     },
-    []
+    [clearTypeBCaptureAndDiagnostic]
   );
 
   const setTypeBLatentCondition = useCallback(
     (condition: TypeBLatentNearCornerCondition) => {
       setTypeBReview((s) => ({ ...s, latentNearCornerCondition: condition }));
+      // B3E: a latent-condition edit is an evidence change.
+      clearTypeBCaptureAndDiagnostic();
     },
-    []
+    [clearTypeBCaptureAndDiagnostic]
   );
 
   // --- Phase B2A: direct-overlay placement / drag interaction --------------
@@ -5261,8 +5452,10 @@ export default function ThreeRoomLab({
       const point = clientToTypeBSourceNorm(event.clientX, event.clientY);
       if (!point) return;
       setTypeBReview((s) => patchTypeBReviewEndpoint(s, target, point).next);
+      // B3E: a direct endpoint patch is an evidence change.
+      clearTypeBCaptureAndDiagnostic();
     },
-    [clientToTypeBSourceNorm]
+    [clientToTypeBSourceNorm, clearTypeBCaptureAndDiagnostic]
   );
 
   // Begin dragging a declared endpoint handle. Takes precedence over floor /
@@ -5290,8 +5483,10 @@ export default function ThreeRoomLab({
       const point = clientToTypeBSourceNorm(event.clientX, event.clientY);
       if (!point) return;
       setTypeBReview((s) => patchTypeBReviewEndpoint(s, dragging.target, point).next);
+      // B3E: endpoint drag movement is an evidence change.
+      clearTypeBCaptureAndDiagnostic();
     },
-    [clientToTypeBSourceNorm]
+    [clientToTypeBSourceNorm, clearTypeBCaptureAndDiagnostic]
   );
 
   const handleTypeBOverlayPointerUp = useCallback(
@@ -5406,6 +5601,184 @@ export default function ThreeRoomLab({
 
   const typeBReviewActive = typeBReview.begun;
   const typeBHasDeclaredGeometry = typeBReviewHasDeclaredGeometry(typeBReview);
+
+  // --- Phase B3E: explicit capture + diagnostic run wiring ------------------
+  // Both actions happen ONLY on an explicit operator click; NEVER from an
+  // effect, input change, panel expansion, image change, or capture success.
+  // Neither mutates review / candidate / polygon / FOV / dimensions / readiness
+  // / camera mode, and neither persists.
+
+  // Branch-association raw fields are complete only when the toggle is OFF, or
+  // ON with every required field nonblank. The UI validates NOTHING else about
+  // topology / policy semantics; parsed values (including NaN) pass through so
+  // B3D-2 returns its own honest non-assessment result.
+  const typeBBranchFieldsComplete =
+    !typeBRequestBranchAssociation ||
+    [
+      typeBTopologyOrderedProbesText,
+      typeBTopologyStepText,
+      typeBPolicyMaxPosText,
+      typeBPolicyMaxRotText,
+      typeBPolicyTiePosText,
+      typeBPolicyTieRotText,
+      typeBPolicyNearPosText,
+      typeBPolicyNearRotText,
+    ].every(typeBFieldPresent);
+
+  const handleCaptureTypeBInputs = useCallback(() => {
+    // Explicit Type B-only coverage, built VERBATIM from raw authored fields.
+    const explicitInputs = {
+      worldWidth: parseTypeBNumberField(typeBWorldWidthText),
+      authorizedAspectRatios: parseTypeBNumberListField(typeBAspectRatiosText),
+      primaryProductClasses: typeBProductClassRows.map((row) => ({
+        primaryProductClassIdentity: row.identity,
+        latentDepthProduct: {
+          formulaId: TYPE_B_LATENT_DEPTH_PRODUCT_FORMULA,
+          value: parseTypeBNumberField(row.value),
+        },
+      })),
+      fovProbesDeg: parseTypeBNumberListField(typeBFovProbesText),
+    };
+
+    // The capture input is built from LIVE Type B review facts. Missing / blank
+    // / invalid live facts reach capture UNCHANGED (no invented fallback), so
+    // the pure evaluator refuses honestly. The single cast forwards the live
+    // (possibly nullable) values to the defensively-guarded pure evaluator,
+    // which reads every field via a safe record accessor and never throws.
+    const captureInput = {
+      basis: {
+        sourceImageIdentity: typeBGeometryContext.sourceImageIdentity,
+        sourceFrameKey: typeBGeometryContext.sourceFrameKey,
+        sourceFrame: typeBSourceFrame,
+        candidateIdentity: typeBGeometryContext.candidateIdentity,
+        floorPolygonKey: typeBGeometryContext.floorPolygonKey,
+      },
+      rearSeam: typeBReview.rearSeam,
+      strongSideSeam: typeBReview.strongSideSeam,
+      latentNearCornerCondition: typeBReview.latentNearCornerCondition,
+      typeAContext: typeBTypeAContext,
+      b1Qualification: typeBQualification,
+      explicitInputs,
+      // Constructed ONLY at this explicit operator click.
+      capturedAtIso: new Date().toISOString(),
+    } as unknown as TypeBSnapshotAndCoverageCaptureInput;
+
+    const result = captureTypeBSnapshotAndCoverage(captureInput);
+    // Store the exact result; a new capture attempt clears any prior envelope.
+    setTypeBCaptureResult(result);
+    clearTypeBDiagnosticEnvelope();
+  }, [
+    typeBWorldWidthText,
+    typeBAspectRatiosText,
+    typeBProductClassRows,
+    typeBFovProbesText,
+    typeBGeometryContext,
+    typeBSourceFrame,
+    typeBReview.rearSeam,
+    typeBReview.strongSideSeam,
+    typeBReview.latentNearCornerCondition,
+    typeBTypeAContext,
+    typeBQualification,
+    clearTypeBDiagnosticEnvelope,
+  ]);
+
+  const typeBRunEnabled =
+    typeBCaptureResult?.status === "captured" &&
+    typeBReviewActive &&
+    typeBBranchFieldsComplete;
+
+  const handleRunTypeBDiagnostic = useCallback(() => {
+    const capture = typeBCaptureResult;
+    if (!capture || capture.status !== "captured") return;
+    if (!typeBReviewActive) return;
+    if (typeBRequestBranchAssociation && !typeBBranchFieldsComplete) return;
+
+    // B3C tuple generation from the frozen captured snapshot + coverage.
+    const tupleGeneration = generateTypeBBoundedDiagnosticTuples(
+      capture.snapshot,
+      capture.coverage
+    );
+
+    // Explicit topology + policy request (verbatim; NaN passes through) only
+    // when association is ON; otherwise null. The UI supplies NO defaults.
+    const envelope = assembleTypeBDiagnosticRun({
+      snapshot: capture.snapshot,
+      tupleGeneration,
+      branchAssociation: typeBRequestBranchAssociation
+        ? {
+            topology: {
+              schema: "vibode-type-b-fov-probe-topology/v0",
+              orderedProbesDeg: parseTypeBNumberListField(
+                typeBTopologyOrderedProbesText
+              ),
+              stepDeg: parseTypeBNumberField(typeBTopologyStepText),
+            },
+            policy: {
+              schema: "vibode-type-b-branch-association-policy/v0",
+              maxNormalizedCameraPositionDelta: parseTypeBNumberField(
+                typeBPolicyMaxPosText
+              ),
+              maxRotationDeltaDeg: parseTypeBNumberField(typeBPolicyMaxRotText),
+              tieMarginNormalizedCameraPosition: parseTypeBNumberField(
+                typeBPolicyTiePosText
+              ),
+              tieMarginRotationDeg: parseTypeBNumberField(typeBPolicyTieRotText),
+              nearCoincidentNormalizedCameraPositionDelta: parseTypeBNumberField(
+                typeBPolicyNearPosText
+              ),
+              nearCoincidentRotationDeltaDeg: parseTypeBNumberField(
+                typeBPolicyNearRotText
+              ),
+            },
+          }
+        : null,
+    });
+
+    // Store the returned envelope exactly. Capture result is left untouched.
+    setTypeBDiagnosticEnvelope(envelope);
+  }, [
+    typeBCaptureResult,
+    typeBReviewActive,
+    typeBRequestBranchAssociation,
+    typeBBranchFieldsComplete,
+    typeBTopologyOrderedProbesText,
+    typeBTopologyStepText,
+    typeBPolicyMaxPosText,
+    typeBPolicyMaxRotText,
+    typeBPolicyTiePosText,
+    typeBPolicyTieRotText,
+    typeBPolicyNearPosText,
+    typeBPolicyNearRotText,
+  ]);
+
+  // Explicit control: clear ONLY the capture result + envelope. It must NOT
+  // clear the operator's evidence declarations or authored input fields.
+  const handleClearTypeBCaptureResults = useCallback(() => {
+    clearTypeBCaptureAndDiagnostic();
+  }, [clearTypeBCaptureAndDiagnostic]);
+
+  // Read-only projection of the current capture + envelope into safe display
+  // rows. Pure; recomputed only when the stored results change.
+  const typeBDiagnosticPresentation = useMemo(
+    () =>
+      presentTypeBDiagnosticRun({
+        capture: typeBCaptureResult,
+        envelope: typeBDiagnosticEnvelope,
+      }),
+    [typeBCaptureResult, typeBDiagnosticEnvelope]
+  );
+
+  // Brief literal run-state text.
+  const typeBRunStateText =
+    typeBCaptureResult === null
+      ? "No captured inputs."
+      : typeBCaptureResult.status === "refused"
+        ? "Capture refused."
+        : typeBRequestBranchAssociation && !typeBBranchFieldsComplete
+          ? "Captured. Association request incomplete."
+          : typeBDiagnosticEnvelope !== null
+            ? "Diagnostic run stored."
+            : "Captured.";
 
   // Explicit operator action: seed a bounded local refinement from ONE stored
   // coarse row. Builds the K-A seed from the EXACT stored coarse record (never
@@ -12547,6 +12920,790 @@ export default function ThreeRoomLab({
                       >
                         Clear Type B evidence review
                       </button>
+                    </div>
+
+                    {/* ---- Phase B3E: read-only Type B capture + diagnostic ---- */}
+                    <div className="space-y-3 border-t border-slate-700/70 pt-3">
+                      <p className="rounded-lg border border-slate-600/40 bg-slate-800/40 px-3 py-2 text-[11px] text-slate-200">
+                        Lab-only read-only diagnostic. Authoring inputs, capturing,
+                        and running a diagnostic never rank, recommend, select,
+                        preview, load, Apply, or change calibration / camera /
+                        candidate / floor / FOV / dimensions / readiness state.
+                      </p>
+
+                      {/* A. Type B capture inputs */}
+                      <div className="space-y-2 rounded-lg border border-emerald-600/30 bg-emerald-500/5 p-3">
+                        <p className="text-[10px] font-semibold uppercase tracking-wide text-emerald-200/80">
+                          Type B capture inputs
+                        </p>
+                        <p className="text-[10px] text-slate-500">
+                          Explicit operator-authored coverage, used exactly as typed
+                          and never seeded from Type A. List fields are
+                          comma-separated.
+                        </p>
+                        <label className="block">
+                          <span className="text-[10px] uppercase tracking-wide text-slate-500">
+                            World width
+                          </span>
+                          <input
+                            type="text"
+                            value={typeBWorldWidthText}
+                            aria-label="Type B world width"
+                            onChange={(event) =>
+                              updateTypeBWorldWidthText(event.target.value)
+                            }
+                            className="w-full rounded border border-slate-700 bg-slate-950 px-2 py-1 text-[11px] text-slate-100 outline-none focus:border-sky-500"
+                          />
+                        </label>
+                        <label className="block">
+                          <span className="text-[10px] uppercase tracking-wide text-slate-500">
+                            Authorized aspect ratios (comma-separated)
+                          </span>
+                          <input
+                            type="text"
+                            value={typeBAspectRatiosText}
+                            aria-label="Type B authorized aspect ratios"
+                            onChange={(event) =>
+                              updateTypeBAspectRatiosText(event.target.value)
+                            }
+                            className="w-full rounded border border-slate-700 bg-slate-950 px-2 py-1 text-[11px] text-slate-100 outline-none focus:border-sky-500"
+                          />
+                        </label>
+                        <div className="space-y-1.5">
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="text-[10px] uppercase tracking-wide text-slate-500">
+                              Primary product classes
+                            </span>
+                            <button
+                              type="button"
+                              onClick={addTypeBProductClassRow}
+                              className="rounded border border-slate-600 bg-slate-800/50 px-2 py-0.5 text-[10px] font-medium text-slate-200 transition hover:bg-slate-800"
+                            >
+                              Add product class
+                            </button>
+                          </div>
+                          {typeBProductClassRows.length === 0 ? (
+                            <p className="text-[10px] text-slate-500">
+                              No product classes authored.
+                            </p>
+                          ) : (
+                            typeBProductClassRows.map((row, index) => (
+                              <div
+                                key={`type-b-product-class-${index}`}
+                                className="flex items-center gap-1.5"
+                              >
+                                <input
+                                  type="text"
+                                  value={row.identity}
+                                  placeholder="identity"
+                                  aria-label={`Type B product class ${index + 1} identity`}
+                                  onChange={(event) =>
+                                    updateTypeBProductClassRow(index, {
+                                      identity: event.target.value,
+                                    })
+                                  }
+                                  className="w-full rounded border border-slate-700 bg-slate-950 px-2 py-1 text-[11px] text-slate-100 outline-none focus:border-sky-500"
+                                />
+                                <input
+                                  type="text"
+                                  value={row.value}
+                                  placeholder="product value"
+                                  aria-label={`Type B product class ${index + 1} product value`}
+                                  onChange={(event) =>
+                                    updateTypeBProductClassRow(index, {
+                                      value: event.target.value,
+                                    })
+                                  }
+                                  className="w-full rounded border border-slate-700 bg-slate-950 px-2 py-1 text-[11px] text-slate-100 outline-none focus:border-sky-500"
+                                />
+                                <button
+                                  type="button"
+                                  onClick={() => removeTypeBProductClassRow(index)}
+                                  aria-label={`Remove product class ${index + 1}`}
+                                  className="shrink-0 rounded border border-slate-600 bg-slate-800/50 px-2 py-1 text-[10px] font-medium text-slate-200 transition hover:bg-slate-800"
+                                >
+                                  Remove
+                                </button>
+                              </div>
+                            ))
+                          )}
+                        </div>
+                        <label className="block">
+                          <span className="text-[10px] uppercase tracking-wide text-slate-500">
+                            FOV probes (comma-separated degrees)
+                          </span>
+                          <input
+                            type="text"
+                            value={typeBFovProbesText}
+                            aria-label="Type B FOV probes"
+                            onChange={(event) =>
+                              updateTypeBFovProbesText(event.target.value)
+                            }
+                            className="w-full rounded border border-slate-700 bg-slate-950 px-2 py-1 text-[11px] text-slate-100 outline-none focus:border-sky-500"
+                          />
+                        </label>
+                        <div className="flex flex-wrap gap-2 pt-1">
+                          <button
+                            type="button"
+                            onClick={handleCaptureTypeBInputs}
+                            className="rounded-lg border border-emerald-600/50 bg-emerald-600/10 px-3 py-1.5 text-sm font-medium text-emerald-100 transition hover:bg-emerald-600/20"
+                          >
+                            Capture Type B Inputs
+                          </button>
+                          <button
+                            type="button"
+                            onClick={handleClearTypeBCaptureResults}
+                            className="rounded-lg border border-slate-600 bg-slate-800/60 px-3 py-1.5 text-xs font-medium text-slate-200 transition hover:bg-slate-800"
+                          >
+                            Clear Type B Capture / Results
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* B. Optional branch association */}
+                      <div className="space-y-2 rounded-lg border border-slate-700 bg-slate-900/60 p-3">
+                        <label className="flex items-center gap-2 text-slate-200">
+                          <input
+                            type="checkbox"
+                            checked={typeBRequestBranchAssociation}
+                            onChange={toggleTypeBRequestBranchAssociation}
+                          />
+                          <span className="font-medium">Request branch association</span>
+                        </label>
+                        <p className="text-[10px] text-slate-500">
+                          Optional; default off. When off, branch association is not
+                          requested. No topology is implied from FOV order and no
+                          default is supplied.
+                        </p>
+                        {typeBRequestBranchAssociation && (
+                          <div className="space-y-1.5">
+                            <label className="block">
+                              <span className="text-[10px] uppercase tracking-wide text-slate-500">
+                                Ordered topology probes (comma-separated)
+                              </span>
+                              <input
+                                type="text"
+                                value={typeBTopologyOrderedProbesText}
+                                aria-label="Type B ordered topology probes"
+                                onChange={(event) =>
+                                  updateTypeBAssociationField(
+                                    setTypeBTopologyOrderedProbesText,
+                                    event.target.value
+                                  )
+                                }
+                                className="w-full rounded border border-slate-700 bg-slate-950 px-2 py-1 text-[11px] text-slate-100 outline-none focus:border-sky-500"
+                              />
+                            </label>
+                            <label className="block">
+                              <span className="text-[10px] uppercase tracking-wide text-slate-500">
+                                Topology step
+                              </span>
+                              <input
+                                type="text"
+                                value={typeBTopologyStepText}
+                                aria-label="Type B topology step"
+                                onChange={(event) =>
+                                  updateTypeBAssociationField(
+                                    setTypeBTopologyStepText,
+                                    event.target.value
+                                  )
+                                }
+                                className="w-full rounded border border-slate-700 bg-slate-950 px-2 py-1 text-[11px] text-slate-100 outline-none focus:border-sky-500"
+                              />
+                            </label>
+                            <label className="block">
+                              <span className="text-[10px] uppercase tracking-wide text-slate-500">
+                                Max normalized camera-position delta
+                              </span>
+                              <input
+                                type="text"
+                                value={typeBPolicyMaxPosText}
+                                aria-label="Type B max normalized camera-position delta"
+                                onChange={(event) =>
+                                  updateTypeBAssociationField(
+                                    setTypeBPolicyMaxPosText,
+                                    event.target.value
+                                  )
+                                }
+                                className="w-full rounded border border-slate-700 bg-slate-950 px-2 py-1 text-[11px] text-slate-100 outline-none focus:border-sky-500"
+                              />
+                            </label>
+                            <label className="block">
+                              <span className="text-[10px] uppercase tracking-wide text-slate-500">
+                                Max rotation delta
+                              </span>
+                              <input
+                                type="text"
+                                value={typeBPolicyMaxRotText}
+                                aria-label="Type B max rotation delta"
+                                onChange={(event) =>
+                                  updateTypeBAssociationField(
+                                    setTypeBPolicyMaxRotText,
+                                    event.target.value
+                                  )
+                                }
+                                className="w-full rounded border border-slate-700 bg-slate-950 px-2 py-1 text-[11px] text-slate-100 outline-none focus:border-sky-500"
+                              />
+                            </label>
+                            <label className="block">
+                              <span className="text-[10px] uppercase tracking-wide text-slate-500">
+                                Position tie margin
+                              </span>
+                              <input
+                                type="text"
+                                value={typeBPolicyTiePosText}
+                                aria-label="Type B position tie margin"
+                                onChange={(event) =>
+                                  updateTypeBAssociationField(
+                                    setTypeBPolicyTiePosText,
+                                    event.target.value
+                                  )
+                                }
+                                className="w-full rounded border border-slate-700 bg-slate-950 px-2 py-1 text-[11px] text-slate-100 outline-none focus:border-sky-500"
+                              />
+                            </label>
+                            <label className="block">
+                              <span className="text-[10px] uppercase tracking-wide text-slate-500">
+                                Rotation tie margin
+                              </span>
+                              <input
+                                type="text"
+                                value={typeBPolicyTieRotText}
+                                aria-label="Type B rotation tie margin"
+                                onChange={(event) =>
+                                  updateTypeBAssociationField(
+                                    setTypeBPolicyTieRotText,
+                                    event.target.value
+                                  )
+                                }
+                                className="w-full rounded border border-slate-700 bg-slate-950 px-2 py-1 text-[11px] text-slate-100 outline-none focus:border-sky-500"
+                              />
+                            </label>
+                            <label className="block">
+                              <span className="text-[10px] uppercase tracking-wide text-slate-500">
+                                Near-coincident position delta
+                              </span>
+                              <input
+                                type="text"
+                                value={typeBPolicyNearPosText}
+                                aria-label="Type B near-coincident position delta"
+                                onChange={(event) =>
+                                  updateTypeBAssociationField(
+                                    setTypeBPolicyNearPosText,
+                                    event.target.value
+                                  )
+                                }
+                                className="w-full rounded border border-slate-700 bg-slate-950 px-2 py-1 text-[11px] text-slate-100 outline-none focus:border-sky-500"
+                              />
+                            </label>
+                            <label className="block">
+                              <span className="text-[10px] uppercase tracking-wide text-slate-500">
+                                Near-coincident rotation delta
+                              </span>
+                              <input
+                                type="text"
+                                value={typeBPolicyNearRotText}
+                                aria-label="Type B near-coincident rotation delta"
+                                onChange={(event) =>
+                                  updateTypeBAssociationField(
+                                    setTypeBPolicyNearRotText,
+                                    event.target.value
+                                  )
+                                }
+                                className="w-full rounded border border-slate-700 bg-slate-950 px-2 py-1 text-[11px] text-slate-100 outline-none focus:border-sky-500"
+                              />
+                            </label>
+                            {!typeBBranchFieldsComplete && (
+                              <p className="rounded border border-amber-500/30 bg-amber-500/5 px-2 py-1 text-[10px] text-amber-200/80">
+                                Branch association request is incomplete. All fields
+                                must be authored before a diagnostic run.
+                              </p>
+                            )}
+                          </div>
+                        )}
+                      </div>
+
+                      {/* C. Type B diagnostic run */}
+                      <div className="space-y-2 rounded-lg border border-slate-700 bg-slate-900/60 p-3">
+                        <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">
+                          Type B diagnostic run
+                        </p>
+                        <button
+                          type="button"
+                          onClick={handleRunTypeBDiagnostic}
+                          disabled={!typeBRunEnabled}
+                          className={`rounded-lg border px-3 py-1.5 text-sm font-medium transition ${
+                            typeBRunEnabled
+                              ? "border-sky-600/50 bg-sky-600/10 text-sky-100 hover:bg-sky-600/20"
+                              : "cursor-not-allowed border-slate-700 bg-slate-800/40 text-slate-500"
+                          }`}
+                        >
+                          Run Type B Diagnostic
+                        </button>
+                        <p className="text-[10px] text-slate-400">{typeBRunStateText}</p>
+                      </div>
+
+                      {/* D. Read-only Type B diagnostic results */}
+                      {typeBCaptureResult !== null && (
+                        <div className="space-y-2">
+                          <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">
+                            Read-only Type B diagnostic results
+                          </p>
+
+                          {/* Capture refusal facts (visible) */}
+                          {typeBDiagnosticPresentation.capture?.status ===
+                            "refused" && (
+                            <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 p-3">
+                              <p className="font-medium text-amber-100">
+                                Capture refusal facts
+                              </p>
+                              <ul className="mt-1 list-disc space-y-0.5 pl-4 text-amber-200/90">
+                                {typeBDiagnosticPresentation.capture.refusalLiterals.map(
+                                  (reason, index) => (
+                                    <li key={`type-b-cap-refusal-${index}`}>
+                                      {reason}
+                                    </li>
+                                  )
+                                )}
+                              </ul>
+                            </div>
+                          )}
+
+                          {/* Captured facts (visible) */}
+                          {typeBDiagnosticPresentation.capture?.status ===
+                            "captured" && (
+                            <div className="space-y-1 rounded-lg border border-slate-700 bg-slate-900/60 p-3 text-[11px] text-slate-300">
+                              <p className="font-medium text-slate-100">
+                                Captured facts
+                              </p>
+                              <p className="break-all">
+                                Evidence fingerprint:{" "}
+                                <span className="text-slate-200">
+                                  {typeBDiagnosticPresentation.capture.evidenceFingerprint}
+                                </span>
+                              </p>
+                              <p className="break-all">
+                                Coverage fingerprint:{" "}
+                                <span className="text-slate-200">
+                                  {typeBDiagnosticPresentation.capture.coverageFingerprint}
+                                </span>
+                              </p>
+                              <p>
+                                Captured at:{" "}
+                                <span className="text-slate-200">
+                                  {typeBDiagnosticPresentation.capture.capturedAtIso}
+                                </span>
+                              </p>
+                              <p>
+                                Basis:{" "}
+                                <span className="text-slate-200">
+                                  {typeBDiagnosticPresentation.capture.basis.sourceImageIdentity}
+                                  {" · "}
+                                  {typeBDiagnosticPresentation.capture.basis.sourceFrameKey}
+                                  {" · "}
+                                  {typeBDiagnosticPresentation.capture.basis.candidateIdentity ?? "—"}
+                                  {" · "}
+                                  {typeBDiagnosticPresentation.capture.basis.floorPolygonKey ?? "—"}
+                                </span>
+                              </p>
+                              <p>
+                                World width:{" "}
+                                <span className="text-slate-200">
+                                  {formatTypeBNumber(
+                                    typeBDiagnosticPresentation.capture.worldWidth
+                                  )}
+                                </span>
+                              </p>
+                              <p>
+                                Authorized aspect ratios:{" "}
+                                <span className="text-slate-200">
+                                  {typeBDiagnosticPresentation.capture.authorizedAspectRatios
+                                    .map(formatTypeBNumber)
+                                    .join(", ") || "—"}
+                                </span>
+                              </p>
+                              <p>
+                                Product classes:{" "}
+                                <span className="text-slate-200">
+                                  {typeBDiagnosticPresentation.capture.productClasses
+                                    .map(
+                                      (entry) =>
+                                        `${entry.primaryProductClassIdentity}=${formatTypeBNumber(entry.latentDepthProductValue)}`
+                                    )
+                                    .join(", ") || "—"}
+                                </span>
+                              </p>
+                              <p>
+                                FOV probes:{" "}
+                                <span className="text-slate-200">
+                                  {typeBDiagnosticPresentation.capture.fovProbesDeg
+                                    .map(formatTypeBNumber)
+                                    .join(", ") || "—"}
+                                </span>
+                              </p>
+                            </div>
+                          )}
+
+                          {/* Run manifest (visible) */}
+                          {typeBDiagnosticPresentation.runManifest && (
+                            <div className="space-y-1 rounded-lg border border-slate-700 bg-slate-900/60 p-3 text-[11px] text-slate-300">
+                              <p className="font-medium text-slate-100">Run manifest</p>
+                              <p className="break-all">
+                                Assembly schema:{" "}
+                                <span className="text-slate-200">
+                                  {typeBDiagnosticPresentation.runManifest.assemblySchema}
+                                </span>
+                              </p>
+                              <p className="break-all">
+                                Diagnostic schema:{" "}
+                                <span className="text-slate-200">
+                                  {typeBDiagnosticPresentation.runManifest.diagnosticSchema}
+                                </span>
+                              </p>
+                              <p>
+                                Evidence family:{" "}
+                                <span className="text-slate-200">
+                                  {typeBDiagnosticPresentation.runManifest.evidenceFamily ?? "—"}
+                                </span>
+                              </p>
+                              <p>
+                                Evaluator family:{" "}
+                                <span className="text-slate-200">
+                                  {typeBDiagnosticPresentation.runManifest.evaluatorFamily ?? "—"}
+                                </span>
+                              </p>
+                              <p>
+                                Tuple-generation status:{" "}
+                                <span className="text-slate-200">
+                                  {typeBDiagnosticPresentation.runManifest.tupleGenerationStatus}
+                                </span>
+                              </p>
+                              <p>
+                                Association requested:{" "}
+                                <span className="text-slate-200">
+                                  {typeBDiagnosticPresentation.runManifest.associationRequested
+                                    ? "Yes"
+                                    : "No"}
+                                </span>
+                              </p>
+                            </div>
+                          )}
+
+                          {/* Run-level refusal / non-assessment facts (visible) */}
+                          {typeBDiagnosticPresentation.runManifest && (
+                            <div className="space-y-1 rounded-lg border border-slate-700 bg-slate-900/60 p-3 text-[11px] text-slate-300">
+                              <p className="font-medium text-slate-100">
+                                Run-level refusal / non-assessment facts
+                              </p>
+                              <p>
+                                Tuple-generation refusals:{" "}
+                                <span className="text-slate-200">
+                                  {typeBDiagnosticPresentation.runManifest.tupleGenerationRefusalLiterals.join(
+                                    ", "
+                                  ) || "—"}
+                                </span>
+                              </p>
+                              <p>
+                                Run-level refusals:{" "}
+                                <span className="text-slate-200">
+                                  {typeBDiagnosticPresentation.runManifest.runRefusalLiterals.join(
+                                    ", "
+                                  ) || "—"}
+                                </span>
+                              </p>
+                              {typeBDiagnosticPresentation.branchCorridors && (
+                                <p>
+                                  Branch non-assessment:{" "}
+                                  <span className="text-slate-200">
+                                    {typeBDiagnosticPresentation.branchCorridors.notAssessedLiterals.join(
+                                      ", "
+                                    ) || "—"}
+                                  </span>
+                                </p>
+                              )}
+                              {typeBDiagnosticPresentation.frameTruncation && (
+                                <p>
+                                  Frame-truncation non-assessment:{" "}
+                                  <span className="text-slate-200">
+                                    {typeBDiagnosticPresentation.frameTruncation.notAssessedLiterals.join(
+                                      ", "
+                                    ) || "—"}
+                                  </span>
+                                </p>
+                              )}
+                            </div>
+                          )}
+
+                          {/* Tuple class details (collapsed by default) */}
+                          {typeBDiagnosticPresentation.tupleClasses.length > 0 && (
+                            <CollapsibleSection
+                              title="Tuple class details"
+                              open={isTypeBTupleClassesOpen}
+                              onToggle={() =>
+                                setIsTypeBTupleClassesOpen((open) => !open)
+                              }
+                            >
+                              <div className="space-y-2 text-[11px] text-slate-300">
+                                {typeBDiagnosticPresentation.tupleClasses.map(
+                                  (cls, index) => (
+                                    <div
+                                      key={`type-b-tuple-class-${index}`}
+                                      className="rounded border border-slate-700 bg-slate-950/40 p-2"
+                                    >
+                                      <p className="text-slate-100">
+                                        {cls.primaryProductClassIdentity} · {cls.status}
+                                      </p>
+                                      <p>
+                                        Product-equivalence key:{" "}
+                                        <span className="text-slate-200">
+                                          {cls.productEquivalenceKey ?? "—"}
+                                        </span>
+                                      </p>
+                                      <p>
+                                        Primary latent-depth product:{" "}
+                                        <span className="text-slate-200">
+                                          {formatTypeBNumber(cls.primaryLatentDepthProduct)}
+                                        </span>
+                                      </p>
+                                      {cls.refusalLiterals.length > 0 && (
+                                        <p>
+                                          Class refusals:{" "}
+                                          <span className="text-slate-200">
+                                            {cls.refusalLiterals.join(", ")}
+                                          </span>
+                                        </p>
+                                      )}
+                                      {cls.members.map((member, memberIndex) => (
+                                        <p
+                                          key={`type-b-member-${index}-${memberIndex}`}
+                                          className="pl-2 text-slate-400"
+                                        >
+                                          aspect {formatTypeBNumber(member.memberAspectRatio)} · latent-side extent{" "}
+                                          {formatTypeBNumber(member.memberLatentSideExtent)} · probes{" "}
+                                          {member.probeListDeg
+                                            .map(formatTypeBNumber)
+                                            .join(", ") || "—"}
+                                        </p>
+                                      ))}
+                                    </div>
+                                  )
+                                )}
+                              </div>
+                            </CollapsibleSection>
+                          )}
+
+                          {/* P3P probe outcomes (collapsed by default) */}
+                          {typeBDiagnosticPresentation.poseProbeOutcomes.length > 0 && (
+                            <CollapsibleSection
+                              title="P3P probe outcomes"
+                              open={isTypeBProbeOutcomesOpen}
+                              onToggle={() =>
+                                setIsTypeBProbeOutcomesOpen((open) => !open)
+                              }
+                            >
+                              <div className="space-y-2 text-[11px] text-slate-300">
+                                {typeBDiagnosticPresentation.poseProbeOutcomes.map(
+                                  (probe, index) => (
+                                    <div
+                                      key={`type-b-probe-${index}`}
+                                      className="rounded border border-slate-700 bg-slate-950/40 p-2"
+                                    >
+                                      <p className="text-slate-100">
+                                        {probe.productEquivalenceKey} · FOV{" "}
+                                        {formatTypeBNumber(probe.fovProbeDeg)} ·{" "}
+                                        {probe.poseStageKind}
+                                      </p>
+                                      {probe.stageRefusalLiterals.length > 0 && (
+                                        <p>
+                                          Stage refusals:{" "}
+                                          <span className="text-slate-200">
+                                            {probe.stageRefusalLiterals.join(", ")}
+                                          </span>
+                                        </p>
+                                      )}
+                                      {probe.rootCensus && (
+                                        <p className="text-slate-400">
+                                          Root census: algebraic{" "}
+                                          {probe.rootCensus.algebraicCandidateCount} · real{" "}
+                                          {probe.rootCensus.realRootCount} · positive-distance{" "}
+                                          {probe.rootCensus.positiveDistanceRootCount} · deduplicated{" "}
+                                          {probe.rootCensus.deduplicatedRootCount}
+                                        </p>
+                                      )}
+                                      {probe.hypotheses.map((hypothesis, hIndex) => (
+                                        <div
+                                          key={`type-b-hypothesis-${index}-${hIndex}`}
+                                          className="pl-2 text-slate-400"
+                                        >
+                                          <p>Hypothesis index: {hypothesis.hypothesisIndex}</p>
+                                          {hypothesis.constructionObservations.map(
+                                            (obs, oIndex) => (
+                                              <p
+                                                key={`type-b-cons-${index}-${hIndex}-${oIndex}`}
+                                              >
+                                                construction: {obs.label} · {obs.state} · residual{" "}
+                                                {formatTypeBNumber(obs.residual)}
+                                              </p>
+                                            )
+                                          )}
+                                          {hypothesis.plausibilityObservations.map(
+                                            (obs, oIndex) => (
+                                              <p
+                                                key={`type-b-plaus-${index}-${hIndex}-${oIndex}`}
+                                              >
+                                                plausibility: {obs.label} · {obs.state}
+                                              </p>
+                                            )
+                                          )}
+                                        </div>
+                                      ))}
+                                    </div>
+                                  )
+                                )}
+                              </div>
+                            </CollapsibleSection>
+                          )}
+
+                          {/* Branch corridors (collapsed; only when requested) */}
+                          {typeBDiagnosticPresentation.branchCorridors && (
+                            <CollapsibleSection
+                              title="Branch corridors"
+                              open={isTypeBBranchCorridorsOpen}
+                              onToggle={() =>
+                                setIsTypeBBranchCorridorsOpen((open) => !open)
+                              }
+                            >
+                              <div className="space-y-2 text-[11px] text-slate-300">
+                                <p>
+                                  B3D-2 status:{" "}
+                                  <span className="text-slate-200">
+                                    {typeBDiagnosticPresentation.branchCorridors.status}
+                                  </span>
+                                </p>
+                                <p>
+                                  Topology:{" "}
+                                  <span className="text-slate-200">
+                                    {typeBDiagnosticPresentation.branchCorridors.topology
+                                      ? `${typeBDiagnosticPresentation.branchCorridors.topology.orderedProbesDeg
+                                          .map(formatTypeBNumber)
+                                          .join(", ")} · step ${formatTypeBNumber(typeBDiagnosticPresentation.branchCorridors.topology.stepDeg)}`
+                                      : "—"}
+                                  </span>
+                                </p>
+                                {typeBDiagnosticPresentation.branchCorridors.policy && (
+                                  <p className="text-slate-400">
+                                    Policy: maxPos{" "}
+                                    {formatTypeBNumber(
+                                      typeBDiagnosticPresentation.branchCorridors.policy
+                                        .maxNormalizedCameraPositionDelta
+                                    )}{" "}
+                                    · maxRot{" "}
+                                    {formatTypeBNumber(
+                                      typeBDiagnosticPresentation.branchCorridors.policy
+                                        .maxRotationDeltaDeg
+                                    )}{" "}
+                                    · tiePos{" "}
+                                    {formatTypeBNumber(
+                                      typeBDiagnosticPresentation.branchCorridors.policy
+                                        .tieMarginNormalizedCameraPosition
+                                    )}{" "}
+                                    · tieRot{" "}
+                                    {formatTypeBNumber(
+                                      typeBDiagnosticPresentation.branchCorridors.policy
+                                        .tieMarginRotationDeg
+                                    )}{" "}
+                                    · nearPos{" "}
+                                    {formatTypeBNumber(
+                                      typeBDiagnosticPresentation.branchCorridors.policy
+                                        .nearCoincidentNormalizedCameraPositionDelta
+                                    )}{" "}
+                                    · nearRot{" "}
+                                    {formatTypeBNumber(
+                                      typeBDiagnosticPresentation.branchCorridors.policy
+                                        .nearCoincidentRotationDeltaDeg
+                                    )}
+                                  </p>
+                                )}
+                                {typeBDiagnosticPresentation.branchCorridors
+                                  .notAssessedLiterals.length > 0 && (
+                                  <p>
+                                    Non-assessment:{" "}
+                                    <span className="text-slate-200">
+                                      {typeBDiagnosticPresentation.branchCorridors.notAssessedLiterals.join(
+                                        ", "
+                                      )}
+                                    </span>
+                                  </p>
+                                )}
+                                {typeBDiagnosticPresentation.branchCorridors.branches.map(
+                                  (branch, index) => (
+                                    <div
+                                      key={`type-b-branch-${index}`}
+                                      className="rounded border border-slate-700 bg-slate-950/40 p-2"
+                                    >
+                                      <p className="text-slate-100">
+                                        Branch {branch.branchIndex} ({branch.branchIndexLabel})
+                                      </p>
+                                      {branch.rootReferences.map((ref, rIndex) => (
+                                        <p
+                                          key={`type-b-branch-ref-${index}-${rIndex}`}
+                                          className="pl-2 text-slate-400"
+                                        >
+                                          {ref.poseProbeEquivalenceKey} · FOV{" "}
+                                          {formatTypeBNumber(ref.fovProbeDeg)} · hypothesis{" "}
+                                          {ref.hypothesisIndex}
+                                        </p>
+                                      ))}
+                                      {branch.annotations.map((annotation, aIndex) => (
+                                        <p
+                                          key={`type-b-branch-annotation-${index}-${aIndex}`}
+                                          className="pl-2 text-slate-500"
+                                        >
+                                          annotation: {annotation.state}
+                                        </p>
+                                      ))}
+                                    </div>
+                                  )
+                                )}
+                              </div>
+                            </CollapsibleSection>
+                          )}
+
+                          {/* Frame-truncation compatibility (collapsed by default) */}
+                          {typeBDiagnosticPresentation.frameTruncation && (
+                            <CollapsibleSection
+                              title="Frame-truncation compatibility"
+                              open={isTypeBFrameTruncationOpen}
+                              onToggle={() =>
+                                setIsTypeBFrameTruncationOpen((open) => !open)
+                              }
+                            >
+                              <div className="space-y-2 text-[11px] text-slate-300">
+                                <p>
+                                  B3D-3 status:{" "}
+                                  <span className="text-slate-200">
+                                    {typeBDiagnosticPresentation.frameTruncation.status}
+                                  </span>
+                                </p>
+                                {typeBDiagnosticPresentation.frameTruncation.records.map(
+                                  (record, index) => (
+                                    <p
+                                      key={`type-b-frame-truncation-${index}`}
+                                      className="text-slate-400"
+                                    >
+                                      {record.primaryProductClassIdentity} · aspect{" "}
+                                      {formatTypeBNumber(record.floorAspectRatio)} · latent-side extent{" "}
+                                      {formatTypeBNumber(record.latentSideExtent)} ·{" "}
+                                      {record.poseProbeEquivalenceKey} · hypothesis{" "}
+                                      {record.hypothesisIndex} · {record.cropCompatibility}
+                                    </p>
+                                  )
+                                )}
+                              </div>
+                            </CollapsibleSection>
+                          )}
+                        </div>
+                      )}
                     </div>
                   </>
                 )}
