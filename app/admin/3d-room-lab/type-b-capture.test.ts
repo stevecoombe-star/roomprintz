@@ -33,6 +33,8 @@ import type {
 } from "./type-b-evidence-types";
 import { generateTypeBBoundedDiagnosticTuples } from "./type-b-tuple-generation";
 import type { TypeBExplicitCaptureInputs } from "./type-b-capture-contract";
+import { TYPE_B_TEST_HANDOFF_OVERRIDE_SCHEMA } from "./type-b-test-handoff-override";
+import type { TypeBTestHandoffOverride } from "./type-b-test-handoff-override";
 
 import * as captureModule from "./type-b-capture";
 import {
@@ -130,12 +132,18 @@ function buildInput(
     rearSeam: buildRearSeam(),
     strongSideSeam: buildSideSeam(),
     latentNearCornerCondition: "frame_truncated",
-    typeAContext: "type_a_exhausted_handoff_candidate",
+    actualTypeAContext: "type_a_exhausted_handoff_candidate",
+    testHandoffOverride: null,
     b1Qualification: buildB1(),
     explicitInputs: buildExplicitInputs(),
     capturedAtIso: "2026-07-01T00:00:00.000Z",
     ...overrides,
   };
+}
+
+// A valid lab-only Type B test-handoff override (exact schema + enabled true).
+function buildTestOverride(): TypeBTestHandoffOverride {
+  return { schema: TYPE_B_TEST_HANDOFF_OVERRIDE_SCHEMA, enabled: true };
 }
 
 const MODULE_PATH = path.join(
@@ -174,7 +182,7 @@ test("the contract-owned ordering helper is imported and is the only ordering so
         worldWidth: -1,
         fovProbesDeg: [],
       },
-      typeAContext: "type_a_strong_support",
+      actualTypeAContext: "type_a_strong_support",
     })
   );
   assert.equal(result.status, "refused");
@@ -399,7 +407,7 @@ test("wrong Type A context produces type_a_context_not_exhausted_handoff with no
     "type_a_investigation_case",
   ] as const) {
     const result = captureTypeBSnapshotAndCoverage(
-      buildInput({ typeAContext: ctx })
+      buildInput({ actualTypeAContext: ctx })
     );
     assert.equal(result.status, "refused");
     if (result.status !== "refused") continue;
@@ -522,7 +530,7 @@ test("resolver refusals pass through unchanged and remain canonically ordered wi
         worldWidth: -5,
         fovProbesDeg: [],
       },
-      typeAContext: "type_a_strong_support",
+      actualTypeAContext: "type_a_strong_support",
       rearSeam: {
         ...buildRearSeam(),
         startEndpointStatus: "occluded",
@@ -833,7 +841,7 @@ test("no Type A dimensions, aspect data, FOV values, corridors, confidence, or c
 
 test("refusal result has no snapshot/coverage/identity keys; success has empty refusal reasons", () => {
   const refused = captureTypeBSnapshotAndCoverage(
-    buildInput({ typeAContext: "type_a_strong_support" })
+    buildInput({ actualTypeAContext: "type_a_strong_support" })
   );
   assert.equal(refused.status, "refused");
   if (refused.status === "refused") {
@@ -864,6 +872,7 @@ test("capture module imports only approved pure Type B contracts and no B3C/B3D 
     "./type-b-evaluator-contract",
     "./type-b-evidence-types",
     "./type-b-tuple-generation",
+    "./type-b-test-handoff-override",
   ]);
   for (const spec of specifiers) {
     assert.ok(allowed.has(spec), `unexpected import specifier: ${spec}`);
@@ -908,12 +917,13 @@ test("capture module has no forbidden runtime dependency and data-shape imports 
     );
   }
 
-  // Exactly three VALUE import statements (the runtime function/constant imports
-  // from the three approved runtime modules); every other import is `import type`.
+  // Exactly four VALUE import statements (the three prior approved runtime
+  // imports plus the B3F-O effective-context resolver); every other import is
+  // `import type`.
   const valueImports = MODULE_SOURCE.split("\n").filter(
     (line) => /^\s*import\s*\{/.test(line) && !/^\s*import\s+type/.test(line)
   );
-  assert.equal(valueImports.length, 3);
+  assert.equal(valueImports.length, 4);
 });
 
 // --- 23. Malformed runtime input safety -------------------------------------
@@ -943,7 +953,221 @@ test("inputs and nested arrays/objects remain unchanged after both success and r
   captureTypeBSnapshotAndCoverage(success);
   assert.deepEqual(success, successBefore);
 
-  const refusal = buildInput({ typeAContext: "type_a_strong_support" });
+  const refusal = buildInput({ actualTypeAContext: "type_a_strong_support" });
+  const refusalBefore = structuredClone(refusal);
+  captureTypeBSnapshotAndCoverage(refusal);
+  assert.deepEqual(refusal, refusalBefore);
+});
+
+// --- B3F-O. Lab-only Type B test-handoff override ---------------------------
+
+test("a non-exhausted actual Type A context without override still refuses with type_a_context_not_exhausted_handoff", () => {
+  for (const ctx of [
+    "type_a_not_run_or_unknown",
+    "type_a_strong_support",
+    "type_a_weak_support",
+    "type_a_investigation_case",
+  ] as const) {
+    const result = captureTypeBSnapshotAndCoverage(
+      buildInput({ actualTypeAContext: ctx, testHandoffOverride: null })
+    );
+    assert.equal(result.status, "refused");
+    if (result.status !== "refused") continue;
+    assert.ok(
+      result.refusalReasons.includes("type_a_context_not_exhausted_handoff")
+    );
+  }
+});
+
+test("a valid test override lets a non-exhausted actual Type A context capture when all other Type B conditions are valid", () => {
+  for (const ctx of [
+    "type_a_not_run_or_unknown",
+    "type_a_strong_support",
+    "type_a_weak_support",
+    "type_a_investigation_case",
+  ] as const) {
+    const result = captureTypeBSnapshotAndCoverage(
+      buildInput({
+        actualTypeAContext: ctx,
+        testHandoffOverride: buildTestOverride(),
+      })
+    );
+    assert.equal(result.status, "captured", `ctx=${ctx}`);
+  }
+});
+
+test("a successful override capture snapshot carries the EFFECTIVE exhausted typeAContext", () => {
+  const result = captureTypeBSnapshotAndCoverage(
+    buildInput({
+      actualTypeAContext: "type_a_weak_support",
+      testHandoffOverride: buildTestOverride(),
+    })
+  );
+  assert.equal(result.status, "captured");
+  if (result.status !== "captured") return;
+  assert.equal(
+    result.snapshot.typeAContext,
+    "type_a_exhausted_handoff_candidate"
+  );
+});
+
+test("a successful override capture carries exact lab_test_handoff_override provenance with the actual context preserved", () => {
+  const result = captureTypeBSnapshotAndCoverage(
+    buildInput({
+      actualTypeAContext: "type_a_investigation_case",
+      testHandoffOverride: buildTestOverride(),
+    })
+  );
+  assert.equal(result.status, "captured");
+  if (result.status !== "captured") return;
+  assert.deepEqual(result.typeAHandoffProvenance, {
+    kind: "lab_test_handoff_override",
+    actualTypeAContext: "type_a_investigation_case",
+    effectiveTypeAContext: "type_a_exhausted_handoff_candidate",
+    labTestOverrideActive: true,
+    overrideSchema: TYPE_B_TEST_HANDOFF_OVERRIDE_SCHEMA,
+  });
+});
+
+test("a genuine exhausted capture carries exact actual_type_a_exhausted_handoff provenance, even if an override is supplied", () => {
+  for (const override of [null, buildTestOverride()]) {
+    const result = captureTypeBSnapshotAndCoverage(
+      buildInput({
+        actualTypeAContext: "type_a_exhausted_handoff_candidate",
+        testHandoffOverride: override,
+      })
+    );
+    assert.equal(result.status, "captured");
+    if (result.status !== "captured") continue;
+    assert.deepEqual(result.typeAHandoffProvenance, {
+      kind: "actual_type_a_exhausted_handoff",
+      actualTypeAContext: "type_a_exhausted_handoff_candidate",
+      effectiveTypeAContext: "type_a_exhausted_handoff_candidate",
+      labTestOverrideActive: false,
+    });
+  }
+});
+
+test("an override never bypasses ineligible B1, invalid basis, endpoint-role refusal, or invalid coverage", () => {
+  const override = buildTestOverride();
+  const actualTypeAContext = "type_a_strong_support" as const;
+
+  // Non-eligible B1.
+  const badB1 = captureTypeBSnapshotAndCoverage(
+    buildInput({
+      actualTypeAContext,
+      testHandoffOverride: override,
+      b1Qualification: { ...buildB1(), status: "type_b_diagnostic_ineligible" } as never,
+    })
+  );
+  assert.equal(badB1.status, "refused");
+  if (badB1.status === "refused") {
+    assert.ok(badB1.refusalReasons.includes("type_b_not_qualified"));
+    // The override cleared the handoff gate; only B1 remains.
+    assert.ok(
+      !badB1.refusalReasons.includes("type_a_context_not_exhausted_handoff")
+    );
+  }
+
+  // Invalid basis.
+  const badBasis = captureTypeBSnapshotAndCoverage(
+    buildInput({
+      actualTypeAContext,
+      testHandoffOverride: override,
+      basis: { ...buildBasis(), sourceFrameKey: "" } as never,
+    })
+  );
+  assert.equal(badBasis.status, "refused");
+  if (badBasis.status === "refused") {
+    assert.ok(badBasis.refusalReasons.includes("invalid_snapshot_basis"));
+  }
+
+  // Endpoint-role refusal (frame_truncated terminus not contacting the frame).
+  const badRole = captureTypeBSnapshotAndCoverage(
+    buildInput({
+      actualTypeAContext,
+      testHandoffOverride: override,
+      strongSideSeam: {
+        ...buildSideSeam(),
+        endEndpointStatus: "frame_truncated",
+        endFrameContact: "no_frame_contact",
+      },
+    })
+  );
+  assert.equal(badRole.status, "refused");
+  if (badRole.status === "refused") {
+    assert.ok(
+      badRole.refusalReasons.includes(
+        "frame_truncated_side_terminus_not_contacts_frame"
+      )
+    );
+  }
+
+  // Invalid world width / aspects / product / FOV.
+  const badCoverage = captureTypeBSnapshotAndCoverage(
+    buildInput({
+      actualTypeAContext,
+      testHandoffOverride: override,
+      explicitInputs: {
+        ...buildExplicitInputs(),
+        worldWidth: -1,
+        authorizedAspectRatios: [1.0, Number.NaN, 2.0],
+        primaryProductClasses: [],
+        fovProbesDeg: [],
+      },
+    })
+  );
+  assert.equal(badCoverage.status, "refused");
+  if (badCoverage.status === "refused") {
+    assert.ok(badCoverage.refusalReasons.includes("invalid_world_width"));
+    assert.ok(badCoverage.refusalReasons.includes("invalid_floor_assumptions"));
+    assert.ok(badCoverage.refusalReasons.includes("no_primary_product_classes"));
+    assert.ok(badCoverage.refusalReasons.includes("no_fov_probes"));
+  }
+});
+
+test("a malformed runtime override never grants a handoff", () => {
+  const malformedOverrides: unknown[] = [
+    { schema: "wrong-schema", enabled: true },
+    { schema: TYPE_B_TEST_HANDOFF_OVERRIDE_SCHEMA, enabled: false },
+    { schema: TYPE_B_TEST_HANDOFF_OVERRIDE_SCHEMA },
+    { enabled: true },
+    {},
+    "on",
+    5,
+    true,
+  ];
+  for (const bad of malformedOverrides) {
+    const result = captureTypeBSnapshotAndCoverage(
+      buildInput({
+        actualTypeAContext: "type_a_strong_support",
+        testHandoffOverride: bad as never,
+      })
+    );
+    assert.equal(result.status, "refused");
+    if (result.status !== "refused") continue;
+    assert.ok(
+      result.refusalReasons.includes("type_a_context_not_exhausted_handoff"),
+      `malformed override must not grant handoff: ${JSON.stringify(bad)}`
+    );
+  }
+});
+
+test("override capture is deterministic and non-mutating for both success and refusal", () => {
+  const success = buildInput({
+    actualTypeAContext: "type_a_weak_support",
+    testHandoffOverride: buildTestOverride(),
+  });
+  const successBefore = structuredClone(success);
+  const a = captureTypeBSnapshotAndCoverage(success);
+  const b = captureTypeBSnapshotAndCoverage(success);
+  assert.deepEqual(a, b);
+  assert.deepEqual(success, successBefore);
+
+  const refusal = buildInput({
+    actualTypeAContext: "type_a_strong_support",
+    testHandoffOverride: { schema: "wrong", enabled: true } as never,
+  });
   const refusalBefore = structuredClone(refusal);
   captureTypeBSnapshotAndCoverage(refusal);
   assert.deepEqual(refusal, refusalBefore);

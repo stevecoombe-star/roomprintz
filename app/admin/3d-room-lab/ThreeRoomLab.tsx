@@ -180,6 +180,17 @@ import type { TypeBDiagnosticRunAssemblyResult } from "./type-b-diagnostic-run-a
 import { TYPE_B_LATENT_DEPTH_PRODUCT_FORMULA } from "./type-b-evaluator-contract";
 import type { TypeBCaptureResult } from "./type-b-capture-contract";
 import { presentTypeBDiagnosticRun } from "./type-b-diagnostic-run-presentation";
+// --- Phase B3F-O: Lab-Only Type B Test-Handoff Override ---------------------
+// LAB-ONLY. A session-only override that lets Type B capture/diagnostic testing
+// proceed against an EFFECTIVE exhausted-handoff context without a genuine Type
+// A exhaustion. The ACTUAL Type A context stays read-only and truthful; the
+// resolver is pure and grants NO selection, preview, load, Apply, or
+// calibration authority.
+import {
+  TYPE_B_TEST_HANDOFF_OVERRIDE_SCHEMA,
+  resolveTypeBEffectiveHandoffContext,
+} from "./type-b-test-handoff-override";
+import type { TypeBTestHandoffOverride } from "./type-b-test-handoff-override";
 import {
   generateManualFloorSupportTrials,
   type TrialGenerationCandidate,
@@ -1241,6 +1252,14 @@ export default function ThreeRoomLab({
     { identity: string; value: string }[]
   >([]);
   const [typeBFovProbesText, setTypeBFovProbesText] = useState("");
+  // --- Phase B3F-O: session-only Type B test-handoff override ---------------
+  // LAB-ONLY. Default OFF, never persisted, never auto-enabled, never written
+  // to scene JSON or import/export. It survives panel collapse. When enabled it
+  // makes ONLY the EFFECTIVE Type B handoff context exhausted; the ACTUAL Type
+  // A context is never mutated. It grants NO selection/preview/load/Apply/
+  // calibration authority.
+  const [isTypeBTestHandoffOverrideEnabled, setIsTypeBTestHandoffOverrideEnabled] =
+    useState(false);
   // Exact capture / diagnostic results (stored verbatim; null until captured).
   const [typeBCaptureResult, setTypeBCaptureResult] =
     useState<TypeBCaptureResult | null>(null);
@@ -5143,8 +5162,10 @@ export default function ThreeRoomLab({
   // / FOV / calibration / readiness / scene state, and never routes / switches
   // modes / persists.
 
-  // Read-only Type A -> Type B context (descriptive only; no Type A change).
-  const typeBTypeAContext = useMemo(
+  // ACTUAL read-only Type A -> Type B context (descriptive only; no Type A
+  // change). This continues to reflect the truthful Type A classification /
+  // viability mapping and is used for ALL Type A display and logic.
+  const actualTypeBTypeAContext = useMemo(
     () =>
       mapTypeATypeBContext(
         supportQualification.classification,
@@ -5152,6 +5173,33 @@ export default function ThreeRoomLab({
       ),
     [supportQualification.classification, supportQualification.broadSearchViability]
   );
+
+  // --- Phase B3F-O: session-only lab override + EFFECTIVE context ------------
+  // The override object is built ONLY when the operator explicitly enables it;
+  // otherwise it is null. The pure resolver derives the EFFECTIVE Type B
+  // handoff context and its provenance from the ACTUAL context plus the
+  // override. The ACTUAL context is NEVER mutated here.
+  const typeBTestHandoffOverride = useMemo<TypeBTestHandoffOverride | null>(
+    () =>
+      isTypeBTestHandoffOverrideEnabled
+        ? { schema: TYPE_B_TEST_HANDOFF_OVERRIDE_SCHEMA, enabled: true }
+        : null,
+    [isTypeBTestHandoffOverrideEnabled]
+  );
+  const typeBHandoffResolution = useMemo(
+    () =>
+      resolveTypeBEffectiveHandoffContext(
+        actualTypeBTypeAContext,
+        typeBTestHandoffOverride
+      ),
+    [actualTypeBTypeAContext, typeBTestHandoffOverride]
+  );
+  // The EFFECTIVE context is used ONLY for Type B evidence qualification, Type B
+  // capture input, and the Type B diagnostic workflow.
+  const effectiveTypeBTypeAContext = typeBHandoffResolution.effectiveTypeAContext;
+  const typeBTestHandoffProvenance = typeBHandoffResolution.provenance;
+  const actualTypeAIsGenuinelyExhausted =
+    actualTypeBTypeAContext === "type_a_exhausted_handoff_candidate";
 
   // Type B source frame is the INTRINSIC source image (frame-stable; unaffected
   // by display-only container resize). Null until a valid image is loaded.
@@ -5184,7 +5232,7 @@ export default function ThreeRoomLab({
         rearSeam: typeBReview.rearSeam,
         strongSideSeam: typeBReview.strongSideSeam,
         latentNearCornerCondition: typeBReview.latentNearCornerCondition,
-        typeAContext: typeBTypeAContext,
+        typeAContext: effectiveTypeBTypeAContext,
         geometryFacts: typeBGeometryFacts,
       }),
     [
@@ -5192,7 +5240,7 @@ export default function ThreeRoomLab({
       typeBReview.rearSeam,
       typeBReview.strongSideSeam,
       typeBReview.latentNearCornerCondition,
-      typeBTypeAContext,
+      effectiveTypeBTypeAContext,
       typeBGeometryFacts,
     ]
   );
@@ -5243,6 +5291,33 @@ export default function ThreeRoomLab({
     setTypeBCaptureResult(null);
     setTypeBDiagnosticEnvelope(null);
   }, []);
+
+  // --- Phase B3F-O: override lifecycle / invalidation -----------------------
+  // Disables the session-only test override AND clears the capture result +
+  // diagnostic envelope. It PRESERVES declared Type B evidence, raw capture
+  // inputs, and branch-request fields, and NEVER mutates Type A state or
+  // calibration. It is called from every basis / declared-evidence change
+  // (image identity, source frame, selected candidate, floor polygon, begin /
+  // clear review, seam edits, latent-condition edits, direct endpoint patch,
+  // endpoint drag) so a stale override can never outlive the evidence it was
+  // tested against. Capture-input / branch-association edits DO NOT call this
+  // (the override is an explicit session-level test setting).
+  const clearTypeBTestHandoffOverrideCaptureAndDiagnostic = useCallback(() => {
+    setIsTypeBTestHandoffOverrideEnabled(false);
+    setTypeBCaptureResult(null);
+    setTypeBDiagnosticEnvelope(null);
+  }, []);
+
+  // Explicit ON/OFF handlers. Toggling either way clears capture + envelope
+  // immediately; neither auto-captures, auto-runs, or touches Type A.
+  const enableTypeBTestHandoffOverride = useCallback(() => {
+    setIsTypeBTestHandoffOverrideEnabled(true);
+    setTypeBCaptureResult(null);
+    setTypeBDiagnosticEnvelope(null);
+  }, []);
+  const disableTypeBTestHandoffOverride = useCallback(() => {
+    clearTypeBTestHandoffOverrideCaptureAndDiagnostic();
+  }, [clearTypeBTestHandoffOverrideCaptureAndDiagnostic]);
 
   // Capture-input mutators. Each writes the raw operator-authored value verbatim
   // and clears BOTH the capture result and the envelope, because world width,
@@ -5316,26 +5391,72 @@ export default function ThreeRoomLab({
       setTypeBOverlayVisible(false);
       resetTypeBInteraction();
       // B3E: a review-basis reconciliation is an evidence/basis change.
-      clearTypeBCaptureAndDiagnostic();
+      // B3F-O: image identity / source frame / candidate / floor polygon are
+      // basis changes, so they also clear the session-only test override.
+      clearTypeBTestHandoffOverrideCaptureAndDiagnostic();
       setTypeBReviewNote(
         "Type B evidence review cleared because the underlying room geometry context changed."
       );
     }
-  }, [typeBGeometryContext, resetTypeBInteraction, clearTypeBCaptureAndDiagnostic]);
+  }, [
+    typeBGeometryContext,
+    resetTypeBInteraction,
+    clearTypeBTestHandoffOverrideCaptureAndDiagnostic,
+  ]);
 
   // Type A context change: retain declarations, re-qualify (handled by the memo
   // above), and surface a small note only when declarations exist.
   useEffect(() => {
     const prev = typeBPrevTypeAContextRef.current;
-    typeBPrevTypeAContextRef.current = typeBTypeAContext;
-    if (prev === null || prev === typeBTypeAContext) return;
+    typeBPrevTypeAContextRef.current = actualTypeBTypeAContext;
+    if (prev === null || prev === actualTypeBTypeAContext) return;
     const current = typeBReviewRef.current;
     if (current.rearSeam !== null || current.strongSideSeam !== null) {
       setTypeBReviewNote(
         "Type A context changed. Type B qualification was re-evaluated from the same declared evidence."
       );
     }
-  }, [typeBTypeAContext]);
+  }, [actualTypeBTypeAContext]);
+
+  // --- Phase B3F-O1: actual Type A provenance-freshness invalidation --------
+  // A stored successful capture records the ACTUAL Type A context in its
+  // `typeAHandoffProvenance`. If the live actual Type A context later diverges
+  // from that recorded value (in EITHER direction, e.g. weak -> exhausted,
+  // exhausted -> weak, strong -> investigation, unknown -> weak), the stored
+  // capture facts and any stored run manifest become factually stale (a false
+  // historic lab-override warning, or a stale genuine-handoff claim). This
+  // effect clears the stale capture result AND diagnostic envelope so nothing
+  // stored survives a provenance mismatch.
+  //
+  // It NEVER mutates Type A state and NEVER auto-recaptures / auto-reruns. It
+  // deliberately does NOT touch `isTypeBTestHandoffOverrideEnabled`: the
+  // override is an explicit session-only Type B lab setting, separate from the
+  // validity of a past capture (the operator decides whether to capture again).
+  useEffect(() => {
+    const capture = typeBCaptureResult;
+    // Primary authoritative comparison: a stored successful capture whose
+    // recorded actual Type A context no longer equals the live actual context.
+    if (
+      capture !== null &&
+      capture.status === "captured" &&
+      capture.typeAHandoffProvenance.actualTypeAContext !==
+        actualTypeBTypeAContext
+    ) {
+      setTypeBCaptureResult(null);
+      setTypeBDiagnosticEnvelope(null);
+      return;
+    }
+    // Envelope-only edge: an assembled envelope can never validly exist without
+    // a stored successful capture, so an orphan envelope is cleared defensively.
+    // No provenance is synthesized here; the capture provenance above remains
+    // the authoritative freshness source.
+    if (
+      (capture === null || capture.status !== "captured") &&
+      typeBDiagnosticEnvelope !== null
+    ) {
+      setTypeBDiagnosticEnvelope(null);
+    }
+  }, [actualTypeBTypeAContext, typeBCaptureResult, typeBDiagnosticEnvelope]);
 
   const handleBeginTypeBReview = useCallback(() => {
     const started = beginTypeBReview(
@@ -5349,14 +5470,15 @@ export default function ThreeRoomLab({
     typeBReviewRef.current = started;
     setTypeBReview(started);
     // B3E: beginning a review is an evidence change.
-    clearTypeBCaptureAndDiagnostic();
+    // B3F-O: beginning a review clears the session-only test override too.
+    clearTypeBTestHandoffOverrideCaptureAndDiagnostic();
     setTypeBReviewNote(null);
   }, [
     loadedImageUrl,
     imageIntrinsicSize,
     selectedAutoFloorCandidateId,
     floorPolygon,
-    clearTypeBCaptureAndDiagnostic,
+    clearTypeBTestHandoffOverrideCaptureAndDiagnostic,
   ]);
 
   const handleClearTypeBReview = useCallback(() => {
@@ -5366,9 +5488,10 @@ export default function ThreeRoomLab({
     setTypeBOverlayVisible(false);
     resetTypeBInteraction();
     // B3E: clearing the review is an evidence change.
-    clearTypeBCaptureAndDiagnostic();
+    // B3F-O: clearing the review clears the session-only test override too.
+    clearTypeBTestHandoffOverrideCaptureAndDiagnostic();
     setTypeBReviewNote("Type B evidence review cleared.");
-  }, [resetTypeBInteraction, clearTypeBCaptureAndDiagnostic]);
+  }, [resetTypeBInteraction, clearTypeBTestHandoffOverrideCaptureAndDiagnostic]);
 
   const updateTypeBRearSeam = useCallback(
     (patch: Partial<TypeBDeclaredLineEvidence>) => {
@@ -5377,9 +5500,10 @@ export default function ThreeRoomLab({
         rearSeam: applyDeclaredLinePatch(s.rearSeam, "rear_floor_wall_seam", patch),
       }));
       // B3E: a rear-seam edit is an evidence change.
-      clearTypeBCaptureAndDiagnostic();
+      // B3F-O: a rear-seam edit clears the session-only test override too.
+      clearTypeBTestHandoffOverrideCaptureAndDiagnostic();
     },
-    [clearTypeBCaptureAndDiagnostic]
+    [clearTypeBTestHandoffOverrideCaptureAndDiagnostic]
   );
 
   const updateTypeBSideSeam = useCallback(
@@ -5389,18 +5513,20 @@ export default function ThreeRoomLab({
         strongSideSeam: applyDeclaredLinePatch(s.strongSideSeam, null, patch),
       }));
       // B3E: a strong-side-seam edit is an evidence change.
-      clearTypeBCaptureAndDiagnostic();
+      // B3F-O: a strong-side-seam edit clears the session-only test override.
+      clearTypeBTestHandoffOverrideCaptureAndDiagnostic();
     },
-    [clearTypeBCaptureAndDiagnostic]
+    [clearTypeBTestHandoffOverrideCaptureAndDiagnostic]
   );
 
   const setTypeBLatentCondition = useCallback(
     (condition: TypeBLatentNearCornerCondition) => {
       setTypeBReview((s) => ({ ...s, latentNearCornerCondition: condition }));
       // B3E: a latent-condition edit is an evidence change.
-      clearTypeBCaptureAndDiagnostic();
+      // B3F-O: a latent-condition edit clears the session-only test override.
+      clearTypeBTestHandoffOverrideCaptureAndDiagnostic();
     },
-    [clearTypeBCaptureAndDiagnostic]
+    [clearTypeBTestHandoffOverrideCaptureAndDiagnostic]
   );
 
   // --- Phase B2A: direct-overlay placement / drag interaction --------------
@@ -5453,9 +5579,10 @@ export default function ThreeRoomLab({
       if (!point) return;
       setTypeBReview((s) => patchTypeBReviewEndpoint(s, target, point).next);
       // B3E: a direct endpoint patch is an evidence change.
-      clearTypeBCaptureAndDiagnostic();
+      // B3F-O: a direct endpoint patch clears the session-only test override.
+      clearTypeBTestHandoffOverrideCaptureAndDiagnostic();
     },
-    [clientToTypeBSourceNorm, clearTypeBCaptureAndDiagnostic]
+    [clientToTypeBSourceNorm, clearTypeBTestHandoffOverrideCaptureAndDiagnostic]
   );
 
   // Begin dragging a declared endpoint handle. Takes precedence over floor /
@@ -5484,9 +5611,10 @@ export default function ThreeRoomLab({
       if (!point) return;
       setTypeBReview((s) => patchTypeBReviewEndpoint(s, dragging.target, point).next);
       // B3E: endpoint drag movement is an evidence change.
-      clearTypeBCaptureAndDiagnostic();
+      // B3F-O: endpoint drag movement clears the session-only test override.
+      clearTypeBTestHandoffOverrideCaptureAndDiagnostic();
     },
-    [clientToTypeBSourceNorm, clearTypeBCaptureAndDiagnostic]
+    [clientToTypeBSourceNorm, clearTypeBTestHandoffOverrideCaptureAndDiagnostic]
   );
 
   const handleTypeBOverlayPointerUp = useCallback(
@@ -5656,7 +5784,11 @@ export default function ThreeRoomLab({
       rearSeam: typeBReview.rearSeam,
       strongSideSeam: typeBReview.strongSideSeam,
       latentNearCornerCondition: typeBReview.latentNearCornerCondition,
-      typeAContext: typeBTypeAContext,
+      // B3F-O: pass the ACTUAL Type A context and the session-only override.
+      // The pure evaluator resolves the EFFECTIVE context; the override is
+      // NEVER routed into Type A qualification logic.
+      actualTypeAContext: actualTypeBTypeAContext,
+      testHandoffOverride: typeBTestHandoffOverride,
       b1Qualification: typeBQualification,
       explicitInputs,
       // Constructed ONLY at this explicit operator click.
@@ -5677,7 +5809,8 @@ export default function ThreeRoomLab({
     typeBReview.rearSeam,
     typeBReview.strongSideSeam,
     typeBReview.latentNearCornerCondition,
-    typeBTypeAContext,
+    actualTypeBTypeAContext,
+    typeBTestHandoffOverride,
     typeBQualification,
     clearTypeBDiagnosticEnvelope,
   ]);
@@ -11657,6 +11790,70 @@ export default function ThreeRoomLab({
                     </div>
                   )}
                 </div>
+
+                {/* B3F-O. Lab-only Type B test-handoff override. This block is
+                    a Type B test control ONLY; it never changes Type A
+                    qualification, broad-search evidence, camera calibration, or
+                    any applied scene state. */}
+                <div className="rounded-lg border-2 border-dashed border-fuchsia-500/50 bg-fuchsia-500/5 p-3">
+                  <p className="text-[10px] font-semibold uppercase tracking-wide text-fuchsia-200">
+                    Type B test handoff override (lab-only)
+                  </p>
+                  <p className="mt-1 text-slate-300">
+                    Actual Type A context (read-only):{" "}
+                    <span className="font-mono text-slate-100">
+                      {actualTypeBTypeAContext}
+                    </span>
+                  </p>
+
+                  {actualTypeAIsGenuinelyExhausted ? (
+                    <p className="mt-2 rounded border border-emerald-500/30 bg-emerald-500/5 px-2 py-1 text-emerald-100/90">
+                      Actual Type A exhausted handoff is available. Test override
+                      is not needed.
+                    </p>
+                  ) : isTypeBTestHandoffOverrideEnabled ? (
+                    <div className="mt-2 space-y-2">
+                      <div className="rounded border border-fuchsia-500/40 bg-fuchsia-500/10 px-2 py-1.5">
+                        <p className="text-sm font-semibold text-fuchsia-100">
+                          LAB TEST OVERRIDE ACTIVE
+                        </p>
+                        <p className="mt-0.5 text-fuchsia-100/90">
+                          Effective Type B context:{" "}
+                          <span className="font-mono">
+                            type_a_exhausted_handoff_candidate
+                          </span>
+                        </p>
+                        <p className="text-fuchsia-100/90">
+                          Actual Type A context remains:{" "}
+                          <span className="font-mono">
+                            {actualTypeBTypeAContext}
+                          </span>
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={disableTypeBTestHandoffOverride}
+                        className="rounded-lg border border-fuchsia-500/50 bg-fuchsia-500/10 px-3 py-1.5 text-sm font-medium text-fuchsia-100 transition hover:bg-fuchsia-500/20"
+                      >
+                        Disable Type B Test Handoff Override
+                      </button>
+                    </div>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={enableTypeBTestHandoffOverride}
+                      className="mt-2 rounded-lg border border-fuchsia-500/50 bg-fuchsia-500/10 px-3 py-1.5 text-sm font-medium text-fuchsia-100 transition hover:bg-fuchsia-500/20"
+                    >
+                      Enable Type B Test Handoff Override
+                    </button>
+                  )}
+
+                  <p className="mt-2 text-[10px] text-slate-400">
+                    Lab-only Type B test control. This does not change Type A
+                    qualification, broad-search evidence, camera calibration, or
+                    any applied scene state.
+                  </p>
+                </div>
               </div>
             );
           })()}
@@ -12707,10 +12904,26 @@ export default function ThreeRoomLab({
                   )}
                 </div>
 
-                {/* Type A context (read-only) */}
+                {/* Type A context (read-only) + B3F-O effective/override */}
                 <div className="rounded-lg border border-slate-700 bg-slate-900/60 p-3">
                   <p className="font-medium text-slate-100">Type A context (read-only)</p>
-                  <p className="mt-0.5 text-slate-300">{q.typeAContext}</p>
+                  <p className="mt-0.5 text-slate-300">
+                    Actual Type A context:{" "}
+                    <span className="font-mono text-slate-200">
+                      {actualTypeBTypeAContext}
+                    </span>
+                  </p>
+                  <p className="mt-0.5 text-slate-300">
+                    Effective Type B context:{" "}
+                    <span className="font-mono text-slate-200">
+                      {effectiveTypeBTypeAContext}
+                    </span>
+                  </p>
+                  {typeBTestHandoffProvenance?.labTestOverrideActive && (
+                    <p className="mt-1 rounded border border-fuchsia-500/40 bg-fuchsia-500/10 px-2 py-1 text-[11px] font-semibold text-fuchsia-100">
+                      LAB TEST OVERRIDE ACTIVE — NOT A REAL TYPE A HANDOFF
+                    </p>
+                  )}
                   <p className="mt-1 text-[10px] text-slate-500">
                     Type A context is descriptive only. It does not grant Type B authority.
                   </p>
@@ -13276,6 +13489,30 @@ export default function ThreeRoomLab({
                               <p className="font-medium text-slate-100">
                                 Captured facts
                               </p>
+                              {typeBDiagnosticPresentation.capture
+                                .typeAHandoffProvenance.labTestOverrideActive && (
+                                <p className="rounded border border-fuchsia-500/40 bg-fuchsia-500/10 px-2 py-1 font-semibold text-fuchsia-100">
+                                  LAB TEST OVERRIDE ACTIVE — NOT A REAL TYPE A HANDOFF
+                                </p>
+                              )}
+                              <p>
+                                Type A handoff:{" "}
+                                <span className="text-slate-200">
+                                  {typeBDiagnosticPresentation.capture.typeAHandoffProvenance.kind}
+                                </span>
+                              </p>
+                              <p>
+                                Actual Type A context:{" "}
+                                <span className="text-slate-200">
+                                  {typeBDiagnosticPresentation.capture.typeAHandoffProvenance.actualTypeAContext}
+                                </span>
+                              </p>
+                              <p>
+                                Effective Type B context:{" "}
+                                <span className="text-slate-200">
+                                  {typeBDiagnosticPresentation.capture.typeAHandoffProvenance.effectiveTypeAContext}
+                                </span>
+                              </p>
                               <p className="break-all">
                                 Evidence fingerprint:{" "}
                                 <span className="text-slate-200">
@@ -13348,6 +13585,12 @@ export default function ThreeRoomLab({
                           {typeBDiagnosticPresentation.runManifest && (
                             <div className="space-y-1 rounded-lg border border-slate-700 bg-slate-900/60 p-3 text-[11px] text-slate-300">
                               <p className="font-medium text-slate-100">Run manifest</p>
+                              {typeBDiagnosticPresentation.runManifest
+                                .labTestOverrideActive && (
+                                <p className="rounded border border-fuchsia-500/40 bg-fuchsia-500/10 px-2 py-1 font-semibold text-fuchsia-100">
+                                  LAB TEST OVERRIDE ACTIVE — NOT A REAL TYPE A HANDOFF
+                                </p>
+                              )}
                               <p className="break-all">
                                 Assembly schema:{" "}
                                 <span className="text-slate-200">

@@ -765,6 +765,12 @@ test("capture-result contract structurally forbids illegal shapes and calibratio
       evidenceFingerprint: makeTypeBEvidenceFingerprint(buildSnapshot()),
       coverageFingerprint: makeTypeBCoverageFingerprint(buildSnapshot(), buildCoverage()),
     },
+    typeAHandoffProvenance: {
+      kind: "actual_type_a_exhausted_handoff",
+      actualTypeAContext: "type_a_exhausted_handoff_candidate",
+      effectiveTypeAContext: "type_a_exhausted_handoff_candidate",
+      labTestOverrideActive: false,
+    },
     refusalReasons: [],
   };
   const refusal: captureModule.TypeBCaptureRefusal = {
@@ -815,6 +821,7 @@ test("capture module imports only approved pure Type B contracts", () => {
     "./type-b-tuple-generation",
     "./type-b-p3p-diagnostic-contract",
     "./type-b-p3p-branch-association",
+    "./type-b-test-handoff-override",
   ]);
   const specifierRegex = /from\s+"([^"]+)"/;
   const specifiers = new Set<string>();

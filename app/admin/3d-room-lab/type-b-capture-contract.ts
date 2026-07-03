@@ -57,6 +57,7 @@ import type {
 } from "./type-b-tuple-generation";
 import type { TypeBFovProbeTopologyDeclaration } from "./type-b-p3p-diagnostic-contract";
 import type { TypeBBranchAssociationPolicy } from "./type-b-p3p-branch-association";
+import type { TypeBTypeAHandoffProvenance } from "./type-b-test-handoff-override";
 
 // --- 1. Required schema constants (the four runtime schema exports) ----------
 
@@ -250,12 +251,20 @@ export type TypeBCaptureIdentity = {
 // coverage, and the capture identity, with NO diagnostic result, association
 // request, root, branch, selected state, confidence, score, rank, preview,
 // load, Apply, or calibration field.
+//
+// B3F-O adds `typeAHandoffProvenance` (successful capture ONLY): it records
+// whether the snapshot's EFFECTIVE `typeAContext`
+// (`type_a_exhausted_handoff_candidate`, unchanged for B3C/B3D) was a genuine
+// Type A exhausted handoff or a lab-only Type B test override. This makes it
+// structurally impossible to confuse a real handoff with a lab test override,
+// and it grants NO selection, preview, load, Apply, or calibration authority.
 export type TypeBCaptureSuccess = {
   readonly schema: typeof TYPE_B_CAPTURE_SCHEMA;
   readonly status: "captured";
   readonly snapshot: TypeBEvidenceSnapshot;
   readonly coverage: TypeBTupleGenerationCoverage;
   readonly identity: TypeBCaptureIdentity;
+  readonly typeAHandoffProvenance: TypeBTypeAHandoffProvenance;
   readonly refusalReasons: readonly [];
 };
 

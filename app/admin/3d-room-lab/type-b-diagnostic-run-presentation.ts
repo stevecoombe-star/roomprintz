@@ -49,6 +49,20 @@ export type TypeBCaptureProductClassPresentation = {
   readonly latentDepthProductValue: number;
 };
 
+// B3F-O: explicit handoff provenance projected verbatim from the successful
+// capture wrapper. It states whether the effective exhausted context was a
+// genuine Type A handoff or a lab-only Type B test override. `overrideSchema`
+// is present ONLY for the lab-override kind. The UI can render a fixed warning
+// from `labTestOverrideActive === true`. It carries NO pose, root, branch,
+// scoring, ranking, confidence, selection, or calibration data.
+export type TypeBCaptureHandoffProvenancePresentation = {
+  readonly kind: string;
+  readonly actualTypeAContext: string;
+  readonly effectiveTypeAContext: string;
+  readonly labTestOverrideActive: boolean;
+  readonly overrideSchema: string | null;
+};
+
 // Discriminated so a refusal presentation STRUCTURALLY cannot carry any
 // snapshot / coverage fact (no fingerprint, basis, world width, aspects,
 // classes, probes, or timestamp), and a captured presentation always carries
@@ -69,6 +83,7 @@ export type TypeBCapturePresentation =
       readonly authorizedAspectRatios: readonly number[];
       readonly productClasses: readonly TypeBCaptureProductClassPresentation[];
       readonly fovProbesDeg: readonly number[];
+      readonly typeAHandoffProvenance: TypeBCaptureHandoffProvenancePresentation;
     };
 
 // --- 3. Run manifest --------------------------------------------------------
@@ -82,6 +97,12 @@ export type TypeBRunManifestPresentation = {
   readonly tupleGenerationRefusalLiterals: readonly string[];
   readonly associationRequested: boolean;
   readonly runRefusalLiterals: readonly string[];
+  // B3F-O: echoed verbatim from the capture provenance. The UI can render a
+  // fixed lab-override warning from `labTestOverrideActive === true`.
+  readonly labTestOverrideActive: boolean;
+  readonly actualTypeAContext: string | null;
+  readonly effectiveTypeAContext: string | null;
+  readonly handoffKind: string | null;
 };
 
 // --- 4. Tuple classes -------------------------------------------------------
@@ -270,6 +291,7 @@ function presentCapture(
   const basis = asRecord(snapshot.basis);
   const sourceFrame = asRecord(basis.sourceFrame);
   const floorAssumptions = asRecord(snapshot.floorAssumptions);
+  const provenance = asRecord(capture.typeAHandoffProvenance);
 
   const productClasses: TypeBCaptureProductClassPresentation[] = asArray(
     coverage.primaryProductClasses
@@ -303,6 +325,13 @@ function presentCapture(
     ),
     productClasses,
     fovProbesDeg: copyNumberList(coverage.fovProbesDeg),
+    typeAHandoffProvenance: {
+      kind: String(provenance.kind),
+      actualTypeAContext: String(provenance.actualTypeAContext),
+      effectiveTypeAContext: String(provenance.effectiveTypeAContext),
+      labTestOverrideActive: provenance.labTestOverrideActive === true,
+      overrideSchema: asString(provenance.overrideSchema),
+    },
   };
 }
 
@@ -321,10 +350,21 @@ function presentRunManifest(
   // derived.
   let evidenceFamily: string | null = null;
   let evaluatorFamily: string | null = null;
+  // B3F-O: handoff provenance echoed verbatim from the capture wrapper (never
+  // derived). Defaults describe "no captured provenance" (override inactive).
+  let labTestOverrideActive = false;
+  let actualTypeAContext: string | null = null;
+  let effectiveTypeAContext: string | null = null;
+  let handoffKind: string | null = null;
   if (isRecord(capture) && capture.status === "captured") {
     const snapshot = asRecord(capture.snapshot);
     evidenceFamily = asString(snapshot.evidenceFamily);
     evaluatorFamily = asString(snapshot.evaluatorFamily);
+    const provenance = asRecord(capture.typeAHandoffProvenance);
+    labTestOverrideActive = provenance.labTestOverrideActive === true;
+    actualTypeAContext = asString(provenance.actualTypeAContext);
+    effectiveTypeAContext = asString(provenance.effectiveTypeAContext);
+    handoffKind = asString(provenance.kind);
   }
 
   return {
@@ -338,6 +378,10 @@ function presentRunManifest(
     ),
     associationRequested: envelopeRecord.branchAssociation != null,
     runRefusalLiterals: copyStringLiterals(diagnosticRun.refusalReasons),
+    labTestOverrideActive,
+    actualTypeAContext,
+    effectiveTypeAContext,
+    handoffKind,
   };
 }
 

@@ -63,6 +63,8 @@ import {
   TYPE_B_FOV_PROBE_MIN_DEG,
 } from "./type-b-tuple-generation";
 import type { TypeBTupleGenerationCoverage } from "./type-b-tuple-generation";
+import { resolveTypeBEffectiveHandoffContext } from "./type-b-test-handoff-override";
+import type { TypeBTestHandoffOverride } from "./type-b-test-handoff-override";
 
 // --- 1. Pure capture-input contract -----------------------------------------
 
@@ -85,8 +87,16 @@ export type TypeBSnapshotAndCoverageCaptureInput = {
   // `frame_truncated` / `occluded`.
   readonly latentNearCornerCondition: TypeBLatentNearCornerCondition;
 
-  // Must be exactly `type_a_exhausted_handoff_candidate`.
-  readonly typeAContext: TypeATypeBContext;
+  // The ACTUAL read-only Type A -> Type B context (truthful; never mutated).
+  // Capture eligibility is validated against the EFFECTIVE context resolved
+  // from this plus the optional lab-only test override (below).
+  readonly actualTypeAContext: TypeATypeBContext;
+
+  // Optional lab-only Type B test-handoff override. When it is a valid explicit
+  // override AND the actual context is not a genuine exhausted handoff, the
+  // EFFECTIVE context becomes `type_a_exhausted_handoff_candidate` for Type B
+  // capture eligibility ONLY. `null` (or a malformed value) means no override.
+  readonly testHandoffOverride: TypeBTestHandoffOverride | null;
 
   // The frozen B1 qualification fingerprint source. Capture succeeds only when
   // it is exactly diagnostic eligible with no blocking reasons.
@@ -243,8 +253,19 @@ export function captureTypeBSnapshotAndCoverage(
     const rearSeam = safeInput.rearSeam;
     const strongSideSeam = safeInput.strongSideSeam;
     const condition = safeInput.latentNearCornerCondition;
-    const typeAContext = safeInput.typeAContext;
+    const actualTypeAContext = safeInput.actualTypeAContext;
+    const testHandoffOverride = safeInput.testHandoffOverride;
     const b1Qualification = safeInput.b1Qualification;
+
+    // --- B3F-O. Resolve the EFFECTIVE Type B handoff context from the ACTUAL
+    // Type A context plus the optional lab-only test override. The resolver is
+    // pure and never throws or promotes the actual context for a malformed
+    // override. Capture eligibility below is validated against the EFFECTIVE
+    // context; the ACTUAL context is preserved only in the returned provenance.
+    const handoffResolution = resolveTypeBEffectiveHandoffContext(
+      actualTypeAContext as TypeATypeBContext,
+      (testHandoffOverride ?? null) as TypeBTestHandoffOverride | null
+    );
     const explicitInputs = safeInput.explicitInputs;
     const capturedAtIso = safeInput.capturedAtIso;
 
@@ -300,8 +321,14 @@ export function captureTypeBSnapshotAndCoverage(
       condition === "frame_truncated" || condition === "occluded";
     if (!conditionAuthorized) reasons.add("latent_condition_not_authorized");
 
-    // --- B. Type A handoff context.
-    if (typeAContext !== "type_a_exhausted_handoff_candidate") {
+    // --- B. Type A handoff context, validated against the EFFECTIVE context.
+    // A valid active lab override makes the effective context exhausted even
+    // when the actual context is not; with no valid override the effective
+    // context equals the actual, so this remains the ordinary refusal.
+    if (
+      handoffResolution.effectiveTypeAContext !==
+      "type_a_exhausted_handoff_candidate"
+    ) {
       reasons.add("type_a_context_not_exhausted_handoff");
     }
 
@@ -406,6 +433,13 @@ export function captureTypeBSnapshotAndCoverage(
       return refuse(["invalid_snapshot_basis"]);
     }
 
+    // Defensive contradiction guard (unreachable in practice): zero refusals
+    // implies the effective context passed the exhausted-handoff gate, which
+    // only happens with non-null provenance (genuine handoff OR valid override).
+    if (handoffResolution.provenance === null) {
+      return refuse(["invalid_snapshot_basis"]);
+    }
+
     // --- G. Successful snapshot + coverage construction. Only reached with zero
     // refusals. Basis, seams, qualification, floor assumptions, and timestamp are
     // deep-copied; the resolver's frozen endpoint roles and junction are used
@@ -446,6 +480,10 @@ export function captureTypeBSnapshotAndCoverage(
       snapshot,
       coverage,
       identity,
+      // The verbatim provenance: whether the EFFECTIVE exhausted context was a
+      // genuine Type A handoff or a lab-only Type B test override. The snapshot
+      // `typeAContext` remains the effective handoff literal for B3C/B3D.
+      typeAHandoffProvenance: handoffResolution.provenance,
       refusalReasons: [],
     };
   } catch {

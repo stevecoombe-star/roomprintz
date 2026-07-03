@@ -114,7 +114,8 @@ function buildCaptureInput(
     rearSeam: buildRearSeam(),
     strongSideSeam: buildSideSeam(),
     latentNearCornerCondition: "frame_truncated",
-    typeAContext: "type_a_exhausted_handoff_candidate",
+    actualTypeAContext: "type_a_exhausted_handoff_candidate",
+    testHandoffOverride: null,
     b1Qualification: buildB1(),
     explicitInputs: buildExplicitInputs(),
     capturedAtIso: "2026-07-01T00:00:00.000Z",
@@ -124,6 +125,22 @@ function buildCaptureInput(
 
 function realCaptured() {
   const result = captureTypeBSnapshotAndCoverage(buildCaptureInput());
+  assert.equal(result.status, "captured");
+  return result;
+}
+
+// A genuine-exhausted capture reuses the default fixture. An override capture
+// uses a non-exhausted actual context plus a valid lab-only test override.
+function realOverrideCaptured() {
+  const result = captureTypeBSnapshotAndCoverage(
+    buildCaptureInput({
+      actualTypeAContext: "type_a_weak_support",
+      testHandoffOverride: {
+        schema: "vibode-type-b-test-handoff-override/v0",
+        enabled: true,
+      },
+    })
+  );
   assert.equal(result.status, "captured");
   return result;
 }
@@ -838,6 +855,96 @@ test("presentation output contains no forbidden coordinate/authority vocabulary"
     assert.ok(
       !serialized.includes(token.toLowerCase()),
       `presentation output must not contain "${token}"`
+    );
+  }
+});
+
+// --- B3F-O. Lab-only test-handoff override provenance -----------------------
+
+test("actual handoff provenance appears factually with no override warning signal", () => {
+  const capture = realCaptured();
+  const presentation = presentTypeBDiagnosticRun({
+    capture,
+    envelope: buildEnvelope({ requested: false }),
+  });
+  const c = presentation.capture;
+  assert.ok(c);
+  assert.equal(c.status, "captured");
+  if (c.status !== "captured") return;
+  assert.deepEqual(c.typeAHandoffProvenance, {
+    kind: "actual_type_a_exhausted_handoff",
+    actualTypeAContext: "type_a_exhausted_handoff_candidate",
+    effectiveTypeAContext: "type_a_exhausted_handoff_candidate",
+    labTestOverrideActive: false,
+    overrideSchema: null,
+  });
+  // Run manifest echoes the same non-override provenance.
+  assert.equal(presentation.runManifest?.labTestOverrideActive, false);
+  assert.equal(
+    presentation.runManifest?.handoffKind,
+    "actual_type_a_exhausted_handoff"
+  );
+  assert.equal(
+    presentation.runManifest?.actualTypeAContext,
+    "type_a_exhausted_handoff_candidate"
+  );
+  assert.equal(
+    presentation.runManifest?.effectiveTypeAContext,
+    "type_a_exhausted_handoff_candidate"
+  );
+});
+
+test("test override provenance appears with active override, actual + effective context, and lab-override kind/schema", () => {
+  const capture = realOverrideCaptured();
+  const presentation = presentTypeBDiagnosticRun({
+    capture,
+    envelope: buildEnvelope({ requested: false }),
+  });
+  const c = presentation.capture;
+  assert.ok(c);
+  assert.equal(c.status, "captured");
+  if (c.status !== "captured") return;
+  assert.deepEqual(c.typeAHandoffProvenance, {
+    kind: "lab_test_handoff_override",
+    actualTypeAContext: "type_a_weak_support",
+    effectiveTypeAContext: "type_a_exhausted_handoff_candidate",
+    labTestOverrideActive: true,
+    overrideSchema: "vibode-type-b-test-handoff-override/v0",
+  });
+});
+
+test("run manifest presentation retains the same override provenance", () => {
+  const capture = realOverrideCaptured();
+  const presentation = presentTypeBDiagnosticRun({
+    capture,
+    envelope: buildEnvelope({ requested: true }),
+  });
+  const manifest = presentation.runManifest;
+  assert.ok(manifest);
+  assert.equal(manifest.labTestOverrideActive, true);
+  assert.equal(manifest.handoffKind, "lab_test_handoff_override");
+  assert.equal(manifest.actualTypeAContext, "type_a_weak_support");
+  assert.equal(
+    manifest.effectiveTypeAContext,
+    "type_a_exhausted_handoff_candidate"
+  );
+});
+
+test("override provenance introduces no forbidden coordinate/authority vocabulary", () => {
+  const presentation = presentTypeBDiagnosticRun({
+    capture: realOverrideCaptured(),
+    envelope: buildEnvelope({ requested: true }),
+  });
+  const scan = JSON.parse(JSON.stringify(presentation));
+  if (scan.capture && scan.capture.status === "captured") {
+    scan.capture.evidenceFingerprint = "";
+    scan.capture.coverageFingerprint = "";
+  }
+  const serialized = JSON.stringify(scan).toLowerCase();
+  for (const token of FORBIDDEN_TOKENS) {
+    assert.ok(
+      !serialized.includes(token.toLowerCase()),
+      `override presentation output must not contain "${token}"`
     );
   }
 });
