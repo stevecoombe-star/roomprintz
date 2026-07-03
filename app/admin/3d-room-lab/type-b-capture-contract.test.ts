@@ -35,7 +35,9 @@ import {
   makeTypeBAssociationFingerprint,
   makeTypeBCoverageFingerprint,
   makeTypeBEvidenceFingerprint,
+  orderTypeBCaptureRefusalReasons,
   resolveTypeBCapturedEndpointRoles,
+  type TypeBCaptureRefusalReason,
   type TypeBEndpointRoleResolutionInput,
 } from "./type-b-capture-contract";
 
@@ -206,7 +208,7 @@ const MODULE_SOURCE = readFileSync(MODULE_PATH, "utf8");
 
 // --- 1. Runtime export surface ----------------------------------------------
 
-test("runtime module exports exactly four schema constants and four functions", () => {
+test("runtime module exports four schema constants, four fingerprint/resolver functions, and the capture-refusal ordering helper", () => {
   const keys = Object.keys(captureModule).sort();
   assert.deepEqual(keys, [
     "TYPE_B_ASSOCIATION_FINGERPRINT_SCHEMA",
@@ -216,8 +218,10 @@ test("runtime module exports exactly four schema constants and four functions", 
     "makeTypeBAssociationFingerprint",
     "makeTypeBCoverageFingerprint",
     "makeTypeBEvidenceFingerprint",
+    "orderTypeBCaptureRefusalReasons",
     "resolveTypeBCapturedEndpointRoles",
   ]);
+  assert.equal(typeof orderTypeBCaptureRefusalReasons, "function");
   assert.equal(TYPE_B_CAPTURE_SCHEMA, "vibode-type-b-capture/v0");
   assert.equal(
     TYPE_B_EVIDENCE_FINGERPRINT_SCHEMA,
@@ -880,6 +884,7 @@ function parseCaptureRefusalOrder(): string[] {
 const EXPECTED_CAPTURE_REFUSAL_MEMBERS = [
   "invalid_snapshot_basis",
   "invalid_world_width",
+  "invalid_floor_assumptions",
   "latent_condition_not_authorized",
   "type_a_context_not_exhausted_handoff",
   "type_b_not_qualified",
@@ -1125,6 +1130,68 @@ test("resolver never emits invalid_world_width (no world-width input)", () => {
   }
 });
 
+// --- B3D-5B1: floor-assumptions refusal accuracy -----------------------------
+
+test("TypeBCaptureRefusalReason includes the reused invalid_floor_assumptions literal", () => {
+  // Compile-time membership: only compiles if the literal is a union member.
+  const f: captureModule.TypeBCaptureRefusalReason = "invalid_floor_assumptions";
+  assert.equal(f, "invalid_floor_assumptions");
+});
+
+test("module-private ordering contains invalid_floor_assumptions exactly once, immediately after invalid_world_width", () => {
+  const order = parseCaptureRefusalOrder();
+  const count = order.filter(
+    (entry) => entry === "invalid_floor_assumptions"
+  ).length;
+  assert.equal(count, 1);
+  const idxWorldWidth = order.indexOf("invalid_world_width");
+  const idxFloor = order.indexOf("invalid_floor_assumptions");
+  assert.ok(idxWorldWidth >= 0 && idxFloor >= 0);
+  assert.equal(idxFloor, idxWorldWidth + 1);
+  // It precedes latent-authorization and every later eligibility/coverage fact.
+  const idxLatent = order.indexOf("latent_condition_not_authorized");
+  assert.ok(idxFloor < idxLatent);
+});
+
+test("resolver never emits invalid_floor_assumptions (no floor-assumptions input)", () => {
+  const fixtures = [
+    baseInput(),
+    baseInput({
+      strongSideSeam: seam(SIDE_BASE, {
+        startNorm: { x: 0.5, y: 0.55 },
+        endNorm: { x: 0.5, y: 0.95 },
+      }),
+    }),
+    baseInput({ sourceFrame: { width: 0, height: 800 } as never }),
+  ];
+  for (const fixture of fixtures) {
+    const result = resolveTypeBCapturedEndpointRoles(fixture);
+    if (result.status === "refused") {
+      assert.ok(
+        !result.refusalReasons.includes("invalid_floor_assumptions" as never),
+        "resolver must never emit invalid_floor_assumptions"
+      );
+    }
+  }
+});
+
+test("the ordering helper places invalid_floor_assumptions between invalid_world_width and latent_condition_not_authorized", () => {
+  const ordered = orderTypeBCaptureRefusalReasons(
+    new Set<TypeBCaptureRefusalReason>([
+      "latent_condition_not_authorized",
+      "invalid_floor_assumptions",
+      "invalid_world_width",
+      "invalid_snapshot_basis",
+    ])
+  );
+  assert.deepEqual(ordered, [
+    "invalid_snapshot_basis",
+    "invalid_world_width",
+    "invalid_floor_assumptions",
+    "latent_condition_not_authorized",
+  ]);
+});
+
 test("committed B3A/B3C/B3D schema strings remain untouched", () => {
   // Reading the upstream constants proves the exact literals are unchanged.
   assert.equal(TYPE_B_EVIDENCE_SNAPSHOT_SCHEMA, "vibode-type-b-evidence-snapshot/v1");
@@ -1149,4 +1216,81 @@ test("committed B3A/B3C/B3D schema strings remain untouched", () => {
     TYPE_B_BRANCH_ASSOCIATION_POLICY_SCHEMA,
     "vibode-type-b-branch-association-policy/v0"
   );
+});
+
+// --- B3D-5B: public capture-refusal ordering helper --------------------------
+
+test("orderTypeBCaptureRefusalReasons returns known literals in the exact canonical private order", () => {
+  const order = parseCaptureRefusalOrder();
+  // A shuffled set of EVERY known literal must come back in the private order.
+  const shuffled = [...order].reverse();
+  const ordered = orderTypeBCaptureRefusalReasons(
+    new Set(shuffled as TypeBCaptureRefusalReason[])
+  );
+  assert.deepEqual([...ordered], order);
+});
+
+test("orderTypeBCaptureRefusalReasons deduplicates via the input set and preserves a subset's order", () => {
+  const reasons = new Set<TypeBCaptureRefusalReason>([
+    "duplicate_fov_probe",
+    "invalid_snapshot_basis",
+    "type_b_not_qualified",
+    "invalid_world_width",
+  ]);
+  const ordered = orderTypeBCaptureRefusalReasons(reasons);
+  assert.deepEqual(ordered, [
+    "invalid_snapshot_basis",
+    "invalid_world_width",
+    "type_b_not_qualified",
+    "duplicate_fov_probe",
+  ]);
+  // Each literal appears exactly once (the Set dedupes naturally).
+  assert.equal(new Set(ordered).size, ordered.length);
+});
+
+test("orderTypeBCaptureRefusalReasons drops unknown values and returns a fresh array", () => {
+  const reasons = new Set<TypeBCaptureRefusalReason>([
+    "invalid_world_width",
+    "not_a_real_capture_reason" as TypeBCaptureRefusalReason,
+    "no_fov_probes",
+  ]);
+  const a = orderTypeBCaptureRefusalReasons(reasons);
+  const b = orderTypeBCaptureRefusalReasons(reasons);
+  assert.deepEqual([...a], ["invalid_world_width", "no_fov_probes"]);
+  // A new array instance is returned each call (immutable-by-convention).
+  assert.notEqual(a, b);
+  assert.deepEqual([...a], [...b]);
+});
+
+test("orderTypeBCaptureRefusalReasons is non-throwing and empty for malformed runtime calls", () => {
+  for (const bad of [null, undefined, 5, "x", true, [], {}]) {
+    const ordered = orderTypeBCaptureRefusalReasons(bad as never);
+    assert.deepEqual([...ordered], []);
+  }
+  assert.deepEqual([...orderTypeBCaptureRefusalReasons(new Set())], []);
+});
+
+test("the resolver's multi-reason output equals the ordering helper applied to the same set", () => {
+  // The resolver already emits its refusals in the canonical order; feeding the
+  // same literals to the exported helper must reproduce that exact sequence,
+  // proving the module has ONE ordering source.
+  const result = resolveTypeBCapturedEndpointRoles(
+    baseInput({
+      rearSeam: seam(REAR_BASE, {
+        startEndpointStatus: "occluded",
+        endEndpointStatus: "occluded",
+      }),
+      strongSideSeam: seam(SIDE_BASE, {
+        startEndpointStatus: "occluded",
+        endEndpointStatus: "occluded",
+        endFrameContact: "no_frame_contact",
+      }),
+    })
+  );
+  assert.equal(result.status, "refused");
+  if (result.status !== "refused") return;
+  const viaHelper = orderTypeBCaptureRefusalReasons(
+    new Set(result.refusalReasons)
+  );
+  assert.deepEqual([...viaHelper], [...result.refusalReasons]);
 });

@@ -127,6 +127,7 @@ export type TypeBCaptureRefusalReason =
   // Reused B3C run-level coverage-shape literals (NOT class-level).
   | Extract<
       TypeBTupleGenerationRefusalReason,
+      | "invalid_floor_assumptions"
       | "no_authorized_aspect_ratios"
       | "duplicate_authorized_aspect_ratio"
       | "no_primary_product_classes"
@@ -154,6 +155,11 @@ const TYPE_B_CAPTURE_REFUSAL_ORDER = [
   // fact; the endpoint-role resolver receives no world width and never raises
   // it).
   "invalid_world_width",
+  // Explicit Type B authorized-aspect validity. A non-finite / zero / negative
+  // aspect member reuses B3C's exact run-level `invalid_floor_assumptions`
+  // literal (distinct from world-width validity); the endpoint-role resolver
+  // receives no floor assumptions and never raises it.
+  "invalid_floor_assumptions",
   "latent_condition_not_authorized",
   // Type A handoff-context fact (a FUTURE B3D-5B capture-eligibility fact; the
   // endpoint-role resolver receives no Type A context and never raises it).
@@ -369,12 +375,39 @@ function isNonEmptyReasons(
   return reasons.length > 0;
 }
 
+// B3D-5B interface completion. Exposes the module's SINGLE canonical capture-
+// refusal ordering policy so a FUTURE B3D-5B capture evaluator can emit refusals
+// in the exact contract-owned order WITHOUT duplicating the private order array.
+// It returns ONLY known capture refusal literals, deduplicated naturally through
+// the input set, in the exact canonical private order, as a NEW immutable-by-
+// convention array. It is pure, deterministic, and NEVER throws for a malformed
+// runtime call (a non-Set / null argument yields an empty list). This adds NO
+// new refusal literal, alters NO existing ordering, and changes NO resolver
+// behavior or fingerprint: it simply makes the ordering policy reusable.
+export function orderTypeBCaptureRefusalReasons(
+  reasons: ReadonlySet<TypeBCaptureRefusalReason>
+): readonly TypeBCaptureRefusalReason[] {
+  try {
+    const membership =
+      reasons != null &&
+      typeof (reasons as { has?: unknown }).has === "function"
+        ? (reason: TypeBCaptureRefusalReason) => reasons.has(reason)
+        : () => false;
+    return TYPE_B_CAPTURE_REFUSAL_ORDER.filter((reason) => membership(reason));
+  } catch {
+    return [];
+  }
+}
+
 // Orders a collected set of refusal reasons by the single declared stable order,
-// dropping duplicates (a Set already dedupes) and unknown values.
+// dropping duplicates (a Set already dedupes) and unknown values. It delegates to
+// the exported `orderTypeBCaptureRefusalReasons` so the module has exactly ONE
+// ordering source; it returns a mutable copy to preserve the existing resolver
+// narrowing (head + rest tuple) with no behavioral change.
 function orderedCaptureRefusals(
   reasons: ReadonlySet<TypeBCaptureRefusalReason>
 ): TypeBCaptureRefusalReason[] {
-  return TYPE_B_CAPTURE_REFUSAL_ORDER.filter((reason) => reasons.has(reason));
+  return [...orderTypeBCaptureRefusalReasons(reasons)];
 }
 
 // --- 7. Frozen endpoint-role + junction-evidence resolver -------------------
