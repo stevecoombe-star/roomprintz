@@ -1,10 +1,10 @@
-// --- Phase B3G-2: Run-Level Literal Partitions and Refusal Preservation --------
+// --- Phase B3G-3: Branch Association Observation Matrix -------------------------
 // LAB-ONLY, DIAGNOSTIC-ONLY, READ-ONLY, DETERMINISTIC, NON-MUTATING,
 // NON-AUTHORITATIVE. A pure, React-free derivation that condenses the B3E safe
 // presentation boundary (`TypeBDiagnosticRunPresentation`) into a versioned,
 // immutable observation-summary contract.
 //
-// B3G-2 extends the B3G-1 contract with run-level LITERAL facts only:
+// B3G-2 extended the B3G-1 contract with run-level LITERAL facts only:
 // verbatim refusal / non-assessment literals, literal tallies of
 // already-projected literal discriminants (product-class statuses, pose-stage
 // kinds, plausibility states, crop-compatibility states), and closed
@@ -16,14 +16,29 @@
 // rotation, residual, FOV value, root identifier, hypothesis identifier, or
 // any solver / evaluation quantity.
 //
+// B3G-3 adds run-level literal ASSOCIATION facts to the evaluated association
+// arm only: a component-aggregate reconciliation (each B3E-presented branch
+// corridor is one anonymous diagnostic component) and a closed five-state
+// annotation observation matrix in fixed vocabulary order. The raw annotation
+// state literals ("associated", "tied_ambiguous", "unmatched_terminated",
+// "unmatched_born", "near_coincident_unresolved") are permitted ONLY inside
+// `annotationStateCounts[].state`. They never become a condition, headline,
+// verdict, recommendation, ordering principle, or selection affordance. No
+// component identifier, branch index, root reference, probe identity,
+// component size, span, topology, or policy value is emitted, and association
+// facts are never intersected with plausibility, frame-truncation, tuple, Type
+// A, or override facts.
+//
 // Controlled raw literals: `checkId` values (e.g. a raw
 // `camera_above_floor`-style check identity), tuple-generation / pose-stage
-// status strings, and refusal / non-assessment reason strings are preserved
-// VERBATIM as opaque diagnostic vocabulary. They are copied, never renamed,
-// normalized, translated, deduplicated, sorted, scored, or converted into a
-// verdict, so they carry no authority: a failed raw observation stays a
-// failed raw observation and never becomes a calibration / readiness /
-// selection judgment.
+// status strings, refusal / non-assessment reason strings, and the closed
+// five-state association annotation vocabulary are preserved VERBATIM as
+// opaque diagnostic vocabulary. They are copied, never renamed, normalized,
+// translated, deduplicated, sorted, scored, or converted into a verdict, so
+// they carry no authority: a failed raw observation stays a failed raw
+// observation and never becomes a calibration / readiness / selection
+// judgment, and an "associated" annotation stays a raw matrix tally and never
+// becomes a matched / validated / preferred-branch claim.
 //
 // Structural containment: its ONLY import is a type-only alias of the B3E
 // presentation contract. It has NO runtime dependency on the raw B3D modules
@@ -44,10 +59,13 @@ import type { TypeBDiagnosticRunPresentation } from "./type-b-diagnostic-run-pre
 
 // --- 1. Schema ----------------------------------------------------------------
 
-// B3G-2 adds material run-level fields to the committed B3G-1 `/v0` contract,
-// so the schema version is minted forward. The `/v0` shape is never returned.
+// B3G-3 materially expands the committed B3G-2 `/v1` contract (evaluated
+// association arm gains the literal observation matrix), so the schema version
+// is minted forward. Neither the `/v0` nor the `/v1` shape is ever returned.
+// Repository search confirms no non-test consumer exists, so no compatibility
+// adapter is needed.
 export const TYPE_B_OBSERVATION_SUMMARY_SCHEMA =
-  "vibode-type-b-observation-summary/v1" as const;
+  "vibode-type-b-observation-summary/v2" as const;
 
 export type TypeBObservationSummarySchema =
   typeof TYPE_B_OBSERVATION_SUMMARY_SCHEMA;
@@ -165,15 +183,54 @@ export type TypeBObservationRunSection =
 
 // Closed association condition union. B3D-2's raw "associated" status is
 // NEVER exposed as a summary condition; it maps to the neutral "evaluated"
-// literal, which claims only that assessment took place. Association remains
-// intentionally contained at B3G-2: no branch, component, annotation,
-// matched / unmatched, or link fact is projected. A not-assessed section
-// carries only its verbatim source reasons.
+// literal, which claims only that assessment took place. A not-assessed
+// section carries only its verbatim source reasons and NO fabricated matrix
+// or zero-state partition.
 export type TypeBObservationAssociationCondition =
   | "not_requested"
   | "not_assessed"
   | "evaluated";
 
+// The closed five-state raw association annotation vocabulary, in the ONLY
+// order it is ever emitted. These raw literals are controlled diagnostic
+// state values permitted exclusively inside `annotationStateCounts[].state`;
+// they never become a condition, headline, verdict, recommendation, ordering
+// principle, or selection affordance. The "unmatched_*" literals stay raw
+// diagnostic states and never produce any "matched" claim.
+export type TypeBObservationAssociationAnnotationState =
+  | "associated"
+  | "tied_ambiguous"
+  | "unmatched_terminated"
+  | "unmatched_born"
+  | "near_coincident_unresolved";
+
+// One literal tally entry of the closed five-state matrix. All five states
+// are always present (zero counts included) in fixed vocabulary order — never
+// sorted by count, apparent favorability, component length, or source
+// position.
+export type TypeBObservationAssociationAnnotationStateCount = {
+  readonly state: TypeBObservationAssociationAnnotationState;
+  readonly count: number;
+};
+
+// Literal presence observation over raw "associated" annotations. It is a
+// descriptive observation only, never a verdict, match claim, or readiness
+// signal.
+export type TypeBObservationAssociatedAnnotationObservation =
+  | "none_observed"
+  | "one_or_more_observed";
+
+// B3G-3 evaluated-association observation matrix. Each B3E-presented branch
+// corridor is one ANONYMOUS diagnostic component: no component identifier,
+// branch index, root reference, probe identity, component size, span,
+// topology, policy value, or per-component row is ever emitted. A component
+// counts as "with associated annotations" only when at least one of its
+// annotations carries the exact raw literal state "associated"; ambiguity /
+// unresolved annotations never make a component associated.
+// `annotationCount` is the literal total of source annotations (unknown
+// future states INCLUDED, so a foreign state surfaces as a loud
+// reconciliation mismatch against the five-state sum instead of silently
+// vanishing or being coerced).
 export type TypeBObservationAssociationSection =
   | { readonly condition: "absent" }
   | { readonly condition: "not_requested" }
@@ -181,7 +238,15 @@ export type TypeBObservationAssociationSection =
       readonly condition: "not_assessed";
       readonly notAssessedLiterals: readonly string[];
     }
-  | { readonly condition: "evaluated" };
+  | {
+      readonly condition: "evaluated";
+      readonly componentCount: number;
+      readonly componentsWithAssociatedAnnotations: number;
+      readonly componentsWithoutAssociatedAnnotations: number;
+      readonly annotationCount: number;
+      readonly associatedAnnotationObservation: TypeBObservationAssociatedAnnotationObservation;
+      readonly annotationStateCounts: readonly TypeBObservationAssociationAnnotationStateCount[];
+    };
 
 export type TypeBObservationFrameTruncationCondition =
   | "not_assessed"
@@ -486,6 +551,17 @@ function summarizeRun(
   };
 }
 
+// The single fixed emission order of the closed five-state vocabulary. Never
+// reordered, never sorted by count, favorability, component length, or source
+// position.
+const ASSOCIATION_ANNOTATION_STATE_VOCABULARY = [
+  "associated",
+  "tied_ambiguous",
+  "unmatched_terminated",
+  "unmatched_born",
+  "near_coincident_unresolved",
+] as const;
+
 function summarizeAssociation(
   runManifest: unknown,
   branchCorridors: unknown
@@ -495,14 +571,74 @@ function summarizeAssociation(
   if (!isRecord(branchCorridors)) return { condition: "not_requested" };
   // Neutral one-to-one condition mapping. Raw "associated" becomes the neutral
   // "evaluated"; any other status remains the non-claiming "not_assessed",
-  // which is never a failure claim and carries only its verbatim source
-  // reasons. No branch, component, annotation, or link fact is projected.
-  if (branchCorridors.status === "associated") {
-    return { condition: "evaluated" };
+  // which is never a failure claim, carries only its verbatim source reasons,
+  // and fabricates NO matrix, component count, annotation count, or zero-state
+  // partition.
+  if (branchCorridors.status !== "associated") {
+    return {
+      condition: "not_assessed",
+      notAssessedLiterals: copyStringLiterals(
+        branchCorridors.notAssessedLiterals
+      ),
+    };
   }
+
+  // B3G-3 literal observation matrix. Each B3E-presented branch corridor is
+  // one anonymous diagnostic component; only aggregate tallies are derived.
+  const stateCounts = {
+    associated: 0,
+    tied_ambiguous: 0,
+    unmatched_terminated: 0,
+    unmatched_born: 0,
+    near_coincident_unresolved: 0,
+  };
+  let componentCount = 0;
+  let componentsWithAssociatedAnnotations = 0;
+  // Literal total of source annotations. An unknown future state is INCLUDED
+  // in this denominator but tallied under no known state, so it surfaces as a
+  // loud reconciliation mismatch against the five-state sum instead of being
+  // silently coerced or dropped — and it never collapses a valid displayed
+  // run into a fabricated no-presentation result.
+  let annotationCount = 0;
+
+  for (const branchEntry of asArray(branchCorridors.branches)) {
+    componentCount += 1;
+    let componentHasAssociatedAnnotation = false;
+    for (const annotationEntry of asArray(asRecord(branchEntry).annotations)) {
+      annotationCount += 1;
+      const state = asRecord(annotationEntry).state;
+      // Exact raw literal comparison only: no renaming, no normalization, no
+      // coercion of an unknown state into a known one.
+      if (state === "associated") {
+        componentHasAssociatedAnnotation = true;
+        stateCounts.associated += 1;
+      } else if (state === "tied_ambiguous") {
+        stateCounts.tied_ambiguous += 1;
+      } else if (state === "unmatched_terminated") {
+        stateCounts.unmatched_terminated += 1;
+      } else if (state === "unmatched_born") {
+        stateCounts.unmatched_born += 1;
+      } else if (state === "near_coincident_unresolved") {
+        stateCounts.near_coincident_unresolved += 1;
+      }
+    }
+    if (componentHasAssociatedAnnotation) {
+      componentsWithAssociatedAnnotations += 1;
+    }
+  }
+
   return {
-    condition: "not_assessed",
-    notAssessedLiterals: copyStringLiterals(branchCorridors.notAssessedLiterals),
+    condition: "evaluated",
+    componentCount,
+    componentsWithAssociatedAnnotations,
+    componentsWithoutAssociatedAnnotations:
+      componentCount - componentsWithAssociatedAnnotations,
+    annotationCount,
+    associatedAnnotationObservation:
+      stateCounts.associated > 0 ? "one_or_more_observed" : "none_observed",
+    annotationStateCounts: ASSOCIATION_ANNOTATION_STATE_VOCABULARY.map(
+      (state) => ({ state, count: stateCounts[state] })
+    ),
   };
 }
 
@@ -573,15 +709,16 @@ function summarizeSourceReferences(
 // --- 6. Main derivation ---------------------------------------------------------
 
 /**
- * Pure, deterministic, non-mutating derivation of the B3G-2 observation
+ * Pure, deterministic, non-mutating derivation of the B3G-3 observation
  * summary from the B3E safe presentation boundary. `null`, `undefined`, or a
  * malformed runtime value NEVER throws and yields the stable no-presentation
  * shape. Equal inputs produce deeply equal (frozen) output. It exposes ONLY
  * closed neutral condition literals, verbatim provenance / refusal /
  * non-assessment facts, literal tallies with explicit denominators, closed
- * four-state partitions, and opaque source references — never a percentage,
+ * four-state partitions, the closed five-state association annotation matrix
+ * (evaluated arm only), and opaque source references — never a percentage,
  * ratio, score, rank, composite, pose, coordinate, residual, FOV value,
- * ordering signal, or authority claim.
+ * ordering signal, match / validation verdict, or authority claim.
  */
 export function deriveTypeBObservationSummary(
   presentation: TypeBDiagnosticRunPresentation | null | undefined

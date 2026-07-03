@@ -1,4 +1,4 @@
-// --- Phase B3G-2: Run-Level Literal Partitions and Refusal Preservation tests --
+// --- Phase B3G-3: Branch Association Observation Matrix tests -------------------
 // Pure unit tests (node:test) for the LAB-ONLY, DIAGNOSTIC-ONLY, READ-ONLY,
 // NON-AUTHORITATIVE observation-summary derivation. Fixtures are produced
 // through the REAL B3E presentation boundary (`presentTypeBDiagnosticRun`)
@@ -7,16 +7,19 @@
 // summary is proven against the presentation layer only — no raw B3D
 // envelope is handed to the summary directly.
 //
-// B3G-2 retains every B3G-1 guard (type-only import boundary, determinism,
-// non-mutation, deep freezing, source-order preservation, forbidden-key and
-// forbidden-copy containment) and adds: /v1 schema evolution, verbatim
-// refusal / non-assessment preservation, tuple-generation reconciliation,
-// probe / hypothesis reconciliation, closed four-state plausibility and
-// frame-truncation partitions, association containment, and extended
-// structural authority guards.
+// B3G-3 retains every B3G-1/B3G-2 guard (type-only import boundary,
+// determinism, non-mutation, deep freezing, source-order preservation,
+// verbatim refusal / non-assessment preservation, closed four-state
+// partitions, forbidden-key and forbidden-copy containment) and adds: /v2
+// schema evolution with consumer-safety proof, the closed five-state
+// association annotation matrix (fixed vocabulary order, zero counts
+// visible, loud unknown-state reconciliation), component-aggregate
+// reconciliation, strict raw-literal containment (the five raw annotation
+// state values are allowed ONLY at annotationStateCounts[].state), and
+// extended structural authority guards.
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync, statSync } from "node:fs";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -479,6 +482,63 @@ function mixedPresentation(): TypeBDiagnosticRunPresentation {
   });
 }
 
+// --- B3G-3 branch-corridor fixtures ------------------------------------------
+
+// A hand-authored raw branch corridor with one annotation per requested raw
+// state literal, fed through the REAL B3E boundary. Root references and
+// annotation endpoints are realistic raw shapes; B3G must never surface them.
+function buildCorridor(branchIndex: number, annotationStates: readonly string[]) {
+  const fovProbeDeg = 40 + branchIndex * 10;
+  const key = `ppk-050-${fovProbeDeg}`;
+  return {
+    schema: "vibode-type-b-branch-fov-corridor/v0",
+    branchIndex,
+    poseComparisonReferenceFrame: "type_b_junction_anchored/v0",
+    poseProbeRootReferences: [
+      { poseProbeEquivalenceKey: key, fovProbeDeg, hypothesisIndex: 0 },
+    ],
+    associationAnnotations: annotationStates.map((state, position) => ({
+      from: {
+        poseProbeEquivalenceKey: key,
+        fovProbeDeg,
+        hypothesisIndex: position,
+      },
+      to:
+        state === "associated"
+          ? {
+              poseProbeEquivalenceKey: "ppk-050-50",
+              fovProbeDeg: 50,
+              hypothesisIndex: position,
+            }
+          : null,
+      state,
+    })),
+  };
+}
+
+// An evaluated-association presentation whose corridors are exactly the
+// provided per-component annotation state lists (component i = corridors[i]).
+function associationPresentation(
+  corridors: readonly (readonly string[])[]
+): TypeBDiagnosticRunPresentation {
+  return fullPresentation({
+    requested: true,
+    runOverrides: {
+      branchCorridors: corridors.map((states, position) =>
+        buildCorridor(position, states)
+      ),
+    },
+  });
+}
+
+function evaluatedAssociation(summary: TypeBObservationSummary) {
+  assert.equal(summary.association.condition, "evaluated");
+  if (summary.association.condition !== "evaluated") {
+    throw new Error("unreachable");
+  }
+  return summary.association;
+}
+
 // --- Shared guard helpers -----------------------------------------------------
 
 // Case-insensitive forbidden key fragments for the B3G summary output ONLY.
@@ -525,8 +585,9 @@ const FORBIDDEN_COPY = [
   "completion score",
 ];
 
-// Explicit composite / selection field names (spec section I) whose absence
-// is asserted against the lowercased serialized summary.
+// Explicit composite / selection field names whose absence is asserted
+// against the lowercased serialized summary. B3G-3 extends the list with the
+// prohibited association composites and branch-authority names.
 const FORBIDDEN_EXPLICIT_STRINGS = [
   "passedallchecks",
   "allcheckspassed",
@@ -539,7 +600,119 @@ const FORBIDDEN_EXPLICIT_STRINGS = [
   "selectedbranch",
   "previewroot",
   "applycalibration",
+  "associatedandcompatible",
+  "associatedandpassed",
+  "longestbranch",
+  "recommendedbranch",
+  "branchscore",
+  "branchconfidence",
+  "componentranking",
 ];
+
+// The closed five-state raw association annotation vocabulary in its single
+// fixed emission order. These raw literals are permitted ONLY at
+// association.annotationStateCounts[].state.
+const CONTROLLED_ANNOTATION_STATES = [
+  "associated",
+  "tied_ambiguous",
+  "unmatched_terminated",
+  "unmatched_born",
+  "near_coincident_unresolved",
+] as const;
+
+// The single permitted location of the controlled raw annotation-state
+// literals inside the B3G summary.
+const MATRIX_STATE_PATH_PATTERN =
+  /^\$\.association\.annotationStateCounts\[\d+\]\.state$/;
+
+// Serializes a summary with the five KNOWN controlled raw annotation-state
+// literals redacted at their single permitted matrix location ONLY. This is
+// deliberately NOT a generic allow-list: nothing outside
+// association.annotationStateCounts[].state is ever redacted, and an unknown
+// state value at the matrix location is left untouched, so prohibited
+// authority language anywhere else (or a foreign state) still fails the copy
+// scan.
+function serializeWithControlledMatrixRedaction(
+  summary: TypeBObservationSummary
+): string {
+  const clone = structuredClone(summary) as unknown as {
+    association?: {
+      condition?: string;
+      annotationStateCounts?: { state?: unknown; count?: unknown }[];
+    };
+  };
+  const association = clone.association;
+  if (
+    association &&
+    association.condition === "evaluated" &&
+    Array.isArray(association.annotationStateCounts)
+  ) {
+    association.annotationStateCounts = association.annotationStateCounts.map(
+      (entry, position) =>
+        typeof entry?.state === "string" &&
+        (CONTROLLED_ANNOTATION_STATES as readonly string[]).includes(entry.state)
+          ? { ...entry, state: `controlled_state_${position}` }
+          : entry
+    );
+  }
+  return JSON.stringify(clone).toLowerCase();
+}
+
+// Collects every string VALUE in the summary with its exact JSON path, so
+// raw-literal containment can be proven per location instead of via a global
+// allow-list.
+function collectStringValuesWithPaths(
+  value: unknown,
+  pathSoFar = "$",
+  out: { path: string; value: string }[] = []
+) {
+  if (typeof value === "string") {
+    out.push({ path: pathSoFar, value });
+  } else if (Array.isArray(value)) {
+    value.forEach((entry, position) =>
+      collectStringValuesWithPaths(entry, `${pathSoFar}[${position}]`, out)
+    );
+  } else if (value && typeof value === "object") {
+    for (const [key, entry] of Object.entries(value)) {
+      collectStringValuesWithPaths(entry, `${pathSoFar}.${key}`, out);
+    }
+  }
+  return out;
+}
+
+// Proves the controlled raw annotation-state literals live ONLY at the single
+// permitted matrix location: every string VALUE containing "associated" or
+// "unmatched" must sit exactly at annotationStateCounts[].state and be one of
+// the five known vocabulary values, and no key is a raw state literal.
+function assertControlledLiteralContainment(summary: TypeBObservationSummary) {
+  for (const { path: valuePath, value } of collectStringValuesWithPaths(
+    summary
+  )) {
+    const lower = value.toLowerCase();
+    if (
+      lower.includes("associated") ||
+      lower.includes("unmatched") ||
+      (CONTROLLED_ANNOTATION_STATES as readonly string[]).includes(value)
+    ) {
+      assert.match(
+        valuePath,
+        MATRIX_STATE_PATH_PATTERN,
+        `raw association literal "${value}" leaked outside the matrix at ${valuePath}`
+      );
+      assert.ok(
+        (CONTROLLED_ANNOTATION_STATES as readonly string[]).includes(value),
+        `matrix state "${value}" must be one of the five known raw literals`
+      );
+    }
+  }
+  for (const key of collectKeysDeep(summary)) {
+    assert.ok(
+      !(CONTROLLED_ANNOTATION_STATES as readonly string[]).includes(key) &&
+        !key.toLowerCase().includes("unmatched"),
+      `raw association literal must never become a key: "${key}"`
+    );
+  }
+}
 
 function collectKeysDeep(value: unknown, keys: Set<string> = new Set()) {
   if (Array.isArray(value)) {
@@ -567,13 +740,19 @@ function assertNoForbiddenKeys(summary: TypeBObservationSummary) {
 }
 
 function assertNoForbiddenCopy(summary: TypeBObservationSummary) {
-  const serialized = JSON.stringify(summary).toLowerCase();
+  // The scan runs over the matrix-redacted serialization: the ONLY tolerated
+  // occurrences of the controlled raw state literals are the five known
+  // values at annotationStateCounts[].state (proven separately by
+  // assertControlledLiteralContainment). Everything else — including an
+  // unknown matrix state — is still scanned verbatim.
+  const serialized = serializeWithControlledMatrixRedaction(summary);
   for (const phrase of [...FORBIDDEN_COPY, ...FORBIDDEN_EXPLICIT_STRINGS]) {
     assert.ok(
       !serialized.includes(phrase),
       `serialized summary must not contain "${phrase}"`
     );
   }
+  assertControlledLiteralContainment(summary);
 }
 
 function deepFreezeInPlace(value: unknown) {
@@ -612,7 +791,7 @@ function assembledRun(summary: TypeBObservationSummary) {
 }
 
 const EXPECTED_EMPTY: TypeBObservationSummary = {
-  schema: "vibode-type-b-observation-summary/v1",
+  schema: "vibode-type-b-observation-summary/v2",
   status: "no_presentation",
   capture: { condition: "absent" },
   run: { condition: "absent" },
@@ -627,19 +806,62 @@ const EXPECTED_EMPTY: TypeBObservationSummary = {
 
 // --- 1. Schema and empty behavior --------------------------------------------
 
-test("schema literal is the /v1 contract, exported verbatim, and never the /v0 shape", () => {
+test("schema literal is the /v2 contract, exported verbatim, and never a prior shape", () => {
   assert.equal(
     TYPE_B_OBSERVATION_SUMMARY_SCHEMA,
-    "vibode-type-b-observation-summary/v1"
+    "vibode-type-b-observation-summary/v2"
   );
   const summaries = [
     deriveTypeBObservationSummary(null),
     deriveTypeBObservationSummary(fullPresentation()),
+    deriveTypeBObservationSummary(mixedPresentation()),
+    deriveTypeBObservationSummary(associationPresentation([["associated"]])),
   ];
   for (const summary of summaries) {
-    assert.equal(summary.schema, "vibode-type-b-observation-summary/v1");
+    assert.equal(summary.schema, "vibode-type-b-observation-summary/v2");
+    assert.notEqual(summary.schema, "vibode-type-b-observation-summary/v1");
     assert.notEqual(summary.schema, "vibode-type-b-observation-summary/v0");
   }
+});
+
+test("no non-test consumer imports the summary module, so /v2 needs no compatibility adapter", () => {
+  // Repository-level consumer-safety proof: outside this test file, no source
+  // module in the repository references the observation-summary module or its
+  // schema family, so minting /v2 (and never returning /v1) breaks no
+  // consumer and requires no compatibility adapter.
+  const repoRoot = path.resolve(
+    path.dirname(fileURLToPath(import.meta.url)),
+    "..",
+    "..",
+    ".."
+  );
+  const selfPath = fileURLToPath(import.meta.url);
+  const consumers: string[] = [];
+  const walk = (dir: string) => {
+    for (const entry of readdirSync(dir)) {
+      const fullPath = path.join(dir, entry);
+      if (statSync(fullPath).isDirectory()) {
+        if (entry === "node_modules" || entry.startsWith(".")) continue;
+        walk(fullPath);
+        continue;
+      }
+      if (!/\.(ts|tsx|js|jsx|mts|cts)$/.test(entry)) continue;
+      if (fullPath === selfPath || fullPath === MODULE_PATH) continue;
+      const contents = readFileSync(fullPath, "utf8");
+      if (
+        contents.includes("type-b-observation-summary") ||
+        contents.includes("vibode-type-b-observation-summary")
+      ) {
+        consumers.push(fullPath);
+      }
+    }
+  };
+  walk(repoRoot);
+  assert.deepEqual(
+    consumers,
+    [],
+    "the observation summary must have no non-test consumer"
+  );
 });
 
 test("null and undefined presentations return the stable no-presentation shape without throwing", () => {
@@ -669,12 +891,19 @@ test("no-presentation shape manufactures no evaluated-looking fact", () => {
     "denominator",
     "partition",
     "refusal",
+    "annotationstatecounts",
+    "componentcount",
+    "annotationcount",
+    "associatedannotationobservation",
+    "associated",
+    "unmatched",
   ]) {
     assert.ok(
       !serialized.includes(phrase),
       `empty summary must not imply evaluation via "${phrase}"`
     );
   }
+  assertDeepFrozen(summary);
 });
 
 test("runtime export surface is the schema literal plus deriveTypeBObservationSummary only", () => {
@@ -961,12 +1190,15 @@ test("raw B3D-2 'associated' status never appears as a summary condition", () =>
   const summary = deriveTypeBObservationSummary(
     fullPresentation({ requested: true })
   );
+  // The condition stays the neutral "evaluated" — never the raw "associated".
   assert.equal(summary.association.condition, "evaluated");
-  const serialized = JSON.stringify(summary).toLowerCase();
-  assert.ok(
-    !serialized.includes("associated"),
-    "summary must not expose the raw 'associated' status"
+  assert.notEqual(
+    summary.association.condition as string,
+    "associated",
+    "raw 'associated' must never be the association condition"
   );
+  // The raw literal is permitted ONLY at annotationStateCounts[].state.
+  assertControlledLiteralContainment(summary);
 });
 
 test("association condition is a closed union across requested/not-requested/not-assessed", () => {
@@ -1628,13 +1860,21 @@ test("frame-truncation facts are independent of association and plausibility", (
   }
 });
 
-// --- 13. Association containment (B3G-2) -----------------------------------------
+// --- 13. Association condition matrix and containment (B3G-3) ---------------------
 
-test("association arms expose only their closed condition plus not-assessed literals", () => {
+test("association arms expose exactly their closed contract keys", () => {
   const evaluated = deriveTypeBObservationSummary(
     fullPresentation({ requested: true })
   );
-  assert.deepEqual(Object.keys(evaluated.association), ["condition"]);
+  assert.deepEqual(Object.keys(evaluated.association), [
+    "condition",
+    "componentCount",
+    "componentsWithAssociatedAnnotations",
+    "componentsWithoutAssociatedAnnotations",
+    "annotationCount",
+    "associatedAnnotationObservation",
+    "annotationStateCounts",
+  ]);
 
   const notRequested = deriveTypeBObservationSummary(
     fullPresentation({ requested: false })
@@ -1660,20 +1900,136 @@ test("association arms expose only their closed condition plus not-assessed lite
   });
 });
 
-test("no branch, component, annotation, or match fact enters the B3G-2 output", () => {
+test("association condition matrix: absent when no run manifest exists", () => {
+  const summary = deriveTypeBObservationSummary(
+    presentTypeBDiagnosticRun({ capture: realRefusal(), envelope: null })
+  );
+  assert.deepEqual(summary.association, { condition: "absent" });
+});
+
+test("association condition matrix: not_requested carries no matrix fact", () => {
+  const summary = deriveTypeBObservationSummary(
+    fullPresentation({ requested: false })
+  );
+  assert.deepEqual(summary.association, { condition: "not_requested" });
+});
+
+test("association condition matrix: not_assessed keeps ordered duplicate-preserving literals and no matrix", () => {
+  const summary = deriveTypeBObservationSummary(
+    fullPresentation({
+      requested: true,
+      associationOverrides: {
+        status: "not_assessed",
+        notAssessedReasons: ["reason_b", "reason_a", "reason_a"],
+      },
+    })
+  );
+  assert.deepEqual(summary.association, {
+    condition: "not_assessed",
+    notAssessedLiterals: ["reason_b", "reason_a", "reason_a"],
+  });
+});
+
+test("association condition matrix: evaluated with only non-associated annotations", () => {
+  const association = evaluatedAssociation(
+    deriveTypeBObservationSummary(
+      associationPresentation([
+        ["tied_ambiguous", "near_coincident_unresolved"],
+        ["unmatched_terminated", "unmatched_born"],
+      ])
+    )
+  );
+  assert.deepEqual(association, {
+    condition: "evaluated",
+    componentCount: 2,
+    componentsWithAssociatedAnnotations: 0,
+    componentsWithoutAssociatedAnnotations: 2,
+    annotationCount: 4,
+    associatedAnnotationObservation: "none_observed",
+    annotationStateCounts: [
+      { state: "associated", count: 0 },
+      { state: "tied_ambiguous", count: 1 },
+      { state: "unmatched_terminated", count: 1 },
+      { state: "unmatched_born", count: 1 },
+      { state: "near_coincident_unresolved", count: 1 },
+    ],
+  });
+});
+
+test("association condition matrix: evaluated with one or more associated annotations", () => {
+  const association = evaluatedAssociation(
+    deriveTypeBObservationSummary(
+      associationPresentation([["associated", "associated"]])
+    )
+  );
+  assert.deepEqual(association, {
+    condition: "evaluated",
+    componentCount: 1,
+    componentsWithAssociatedAnnotations: 1,
+    componentsWithoutAssociatedAnnotations: 0,
+    annotationCount: 2,
+    associatedAnnotationObservation: "one_or_more_observed",
+    annotationStateCounts: [
+      { state: "associated", count: 2 },
+      { state: "tied_ambiguous", count: 0 },
+      { state: "unmatched_terminated", count: 0 },
+      { state: "unmatched_born", count: 0 },
+      { state: "near_coincident_unresolved", count: 0 },
+    ],
+  });
+});
+
+test("association condition matrix: evaluated with mixed raw states counts each annotation exactly once", () => {
+  const summary = deriveTypeBObservationSummary(
+    associationPresentation([
+      ["associated", "tied_ambiguous"],
+      ["unmatched_terminated"],
+      ["unmatched_born", "near_coincident_unresolved", "associated"],
+    ])
+  );
+  const association = evaluatedAssociation(summary);
+  assert.deepEqual(association, {
+    condition: "evaluated",
+    componentCount: 3,
+    componentsWithAssociatedAnnotations: 2,
+    componentsWithoutAssociatedAnnotations: 1,
+    annotationCount: 6,
+    associatedAnnotationObservation: "one_or_more_observed",
+    annotationStateCounts: [
+      { state: "associated", count: 2 },
+      { state: "tied_ambiguous", count: 1 },
+      { state: "unmatched_terminated", count: 1 },
+      { state: "unmatched_born", count: 1 },
+      { state: "near_coincident_unresolved", count: 1 },
+    ],
+  });
+  // No authority semantics ride along with the mixed matrix.
+  assertNoForbiddenKeys(summary);
+  assertNoForbiddenCopy(summary);
+});
+
+test("no branch identity, topology, policy, root-reference, or match fact enters the B3G-3 output", () => {
   for (const summary of [
     deriveTypeBObservationSummary(fullPresentation({ requested: true })),
+    deriveTypeBObservationSummary(
+      associationPresentation([
+        ["associated", "tied_ambiguous"],
+        ["unmatched_terminated"],
+      ])
+    ),
     deriveTypeBObservationSummary(mixedPresentation()),
   ]) {
     for (const key of collectKeysDeep(summary)) {
       const lower = key.toLowerCase();
       for (const fragment of [
         "branch",
-        "component",
-        "annotation",
         "topolog",
         "policy",
         "link",
+        "corridor",
+        "probeidentity",
+        "span",
+        "size",
         "match",
       ]) {
         assert.ok(
@@ -1682,17 +2038,402 @@ test("no branch, component, annotation, or match fact enters the B3G-2 output", 
         );
       }
     }
-    const serialized = JSON.stringify(summary).toLowerCase();
-    for (const phrase of ["associated", "unmatched", "matched", "branch"]) {
+    // Outside the matrix-redacted copy, no matched/branch wording survives
+    // and the standalone raw "associated" value string is gone.
+    const serialized = serializeWithControlledMatrixRedaction(summary);
+    for (const phrase of ['"associated"', "unmatched", "matched", "branch"]) {
       assert.ok(
         !serialized.includes(phrase),
         `summary copy must not carry association detail "${phrase}"`
       );
     }
+    assertControlledLiteralContainment(summary);
   }
 });
 
-// --- 14. Cross-dimension independence (B3G-2) ------------------------------------
+// --- 14. Five-state partition correctness (B3G-3) ---------------------------------
+
+test("every evaluated matrix always carries all five states in fixed vocabulary order", () => {
+  for (const association of [
+    evaluatedAssociation(
+      deriveTypeBObservationSummary(fullPresentation({ requested: true }))
+    ),
+    evaluatedAssociation(
+      deriveTypeBObservationSummary(associationPresentation([[]]))
+    ),
+    evaluatedAssociation(
+      deriveTypeBObservationSummary(
+        associationPresentation([
+          ["near_coincident_unresolved"],
+          ["associated"],
+        ])
+      )
+    ),
+  ]) {
+    assert.deepEqual(
+      association.annotationStateCounts.map((entry) => entry.state),
+      [
+        "associated",
+        "tied_ambiguous",
+        "unmatched_terminated",
+        "unmatched_born",
+        "near_coincident_unresolved",
+      ]
+    );
+    let sum = 0;
+    for (const entry of association.annotationStateCounts) {
+      assert.ok(
+        Number.isInteger(entry.count) && entry.count >= 0,
+        "matrix counts must be non-negative integers"
+      );
+      sum += entry.count;
+    }
+    assert.equal(sum, association.annotationCount);
+  }
+});
+
+test("zero-count states stay visible and are never dropped from an evaluated matrix", () => {
+  // Default fixture: a single unmatched_terminated annotation.
+  const association = evaluatedAssociation(
+    deriveTypeBObservationSummary(fullPresentation({ requested: true }))
+  );
+  assert.deepEqual(association.annotationStateCounts, [
+    { state: "associated", count: 0 },
+    { state: "tied_ambiguous", count: 0 },
+    { state: "unmatched_terminated", count: 1 },
+    { state: "unmatched_born", count: 0 },
+    { state: "near_coincident_unresolved", count: 0 },
+  ]);
+  assert.equal(association.associatedAnnotationObservation, "none_observed");
+});
+
+test("input annotation order never changes matrix order or counts", () => {
+  const states = [
+    "near_coincident_unresolved",
+    "associated",
+    "unmatched_born",
+    "tied_ambiguous",
+    "unmatched_terminated",
+  ];
+  const forward = evaluatedAssociation(
+    deriveTypeBObservationSummary(associationPresentation([states]))
+  );
+  const reversed = evaluatedAssociation(
+    deriveTypeBObservationSummary(
+      associationPresentation([[...states].reverse()])
+    )
+  );
+  assert.deepEqual(forward, reversed);
+  // The emitted order is the fixed vocabulary order — NOT the source order of
+  // either fixture, and never a count / favorability order.
+  assert.deepEqual(
+    forward.annotationStateCounts.map((entry) => entry.state),
+    [
+      "associated",
+      "tied_ambiguous",
+      "unmatched_terminated",
+      "unmatched_born",
+      "near_coincident_unresolved",
+    ]
+  );
+});
+
+test("an unknown future annotation state creates a loud reconciliation mismatch, never a clean matrix", () => {
+  const summary = deriveTypeBObservationSummary(
+    associationPresentation([["associated", "future_unknown_state/v9"]])
+  );
+  // The valid displayed run is NOT collapsed into a fabricated
+  // no-presentation result.
+  assert.equal(summary.status, "presentation_observed");
+  const association = evaluatedAssociation(summary);
+  // The unknown state is neither coerced into a known state nor dropped from
+  // the denominator: no known state gains a count for it...
+  assert.deepEqual(association.annotationStateCounts, [
+    { state: "associated", count: 1 },
+    { state: "tied_ambiguous", count: 0 },
+    { state: "unmatched_terminated", count: 0 },
+    { state: "unmatched_born", count: 0 },
+    { state: "near_coincident_unresolved", count: 0 },
+  ]);
+  // ...while the literal annotation denominator still includes it, so the
+  // closed-partition reconciliation FAILS loudly instead of looking clean.
+  assert.equal(association.annotationCount, 2);
+  const knownSum = association.annotationStateCounts.reduce(
+    (total, entry) => total + entry.count,
+    0
+  );
+  assert.notEqual(
+    knownSum,
+    association.annotationCount,
+    "a foreign state must surface as a reconciliation mismatch"
+  );
+  assert.equal(association.annotationCount - knownSum, 1);
+});
+
+// --- 15. Component-aggregate reconciliation (B3G-3) --------------------------------
+
+test("componentCount always equals with + without associated annotations", () => {
+  for (const association of [
+    evaluatedAssociation(
+      deriveTypeBObservationSummary(fullPresentation({ requested: true }))
+    ),
+    evaluatedAssociation(
+      deriveTypeBObservationSummary(
+        associationPresentation([
+          ["associated"],
+          ["unmatched_terminated"],
+          [],
+          ["tied_ambiguous", "associated"],
+        ])
+      )
+    ),
+  ]) {
+    assert.equal(
+      association.componentCount,
+      association.componentsWithAssociatedAnnotations +
+        association.componentsWithoutAssociatedAnnotations
+    );
+    assert.ok(Number.isInteger(association.componentCount));
+    assert.ok(association.componentsWithAssociatedAnnotations >= 0);
+    assert.ok(association.componentsWithoutAssociatedAnnotations >= 0);
+  }
+});
+
+test("a singleton unmatched-only component counts as without associated annotations", () => {
+  const association = evaluatedAssociation(
+    deriveTypeBObservationSummary(
+      associationPresentation([["unmatched_terminated"]])
+    )
+  );
+  assert.equal(association.componentCount, 1);
+  assert.equal(association.componentsWithAssociatedAnnotations, 0);
+  assert.equal(association.componentsWithoutAssociatedAnnotations, 1);
+});
+
+test("only the exact raw literal 'associated' makes a component associated", () => {
+  // Ambiguity / unresolved / unmatched annotations do NOT associate a
+  // component; a single raw "associated" annotation does.
+  const association = evaluatedAssociation(
+    deriveTypeBObservationSummary(
+      associationPresentation([
+        ["tied_ambiguous", "near_coincident_unresolved"],
+        ["unmatched_born", "associated", "unmatched_terminated"],
+      ])
+    )
+  );
+  assert.equal(association.componentCount, 2);
+  assert.equal(association.componentsWithAssociatedAnnotations, 1);
+  assert.equal(association.componentsWithoutAssociatedAnnotations, 1);
+});
+
+test("component aggregates expose no identity, index, root, FOV, topology, policy, or size fact", () => {
+  const summary = deriveTypeBObservationSummary(
+    associationPresentation([
+      ["associated", "tied_ambiguous"],
+      ["unmatched_terminated"],
+    ])
+  );
+  const association = evaluatedAssociation(summary);
+  // Aggregate numbers only: no per-component rows exist. The only array in
+  // the association section is the fixed five-entry matrix.
+  assert.equal(association.annotationStateCounts.length, 5);
+  for (const key of collectKeysDeep(association)) {
+    const lower = key.toLowerCase();
+    for (const fragment of [
+      "identity",
+      "index",
+      "root",
+      "fov",
+      "topolog",
+      "policy",
+      "span",
+      "size",
+      "ref",
+      "probe",
+      "deg",
+      "hypothes",
+    ]) {
+      assert.ok(
+        !lower.includes(fragment),
+        `association section must not carry detail key "${key}"`
+      );
+    }
+  }
+  // No raw identifier value (equivalence key, corridor schema) leaks in.
+  const serialized = JSON.stringify(association);
+  for (const leaked of ["ppk-050", "branch-fov-corridor", "junction_anchored"]) {
+    assert.ok(!serialized.includes(leaked));
+  }
+});
+
+// --- 16. Raw-literal containment and no-fabrication (B3G-3) ------------------------
+
+test("the five raw state literals appear only at annotationStateCounts[].state", () => {
+  for (const summary of [
+    deriveTypeBObservationSummary(null),
+    deriveTypeBObservationSummary(fullPresentation({ requested: false })),
+    deriveTypeBObservationSummary(fullPresentation({ requested: true })),
+    deriveTypeBObservationSummary(
+      associationPresentation([
+        ["associated", "tied_ambiguous"],
+        ["unmatched_terminated", "unmatched_born", "near_coincident_unresolved"],
+      ])
+    ),
+    deriveTypeBObservationSummary(
+      fullPresentation({
+        requested: true,
+        associationOverrides: {
+          status: "not_assessed",
+          notAssessedReasons: ["invalid_diagnostic_run_linkage"],
+        },
+      })
+    ),
+  ]) {
+    assertControlledLiteralContainment(summary);
+  }
+});
+
+test("unmatched_* literals never create any matched verdict or copy", () => {
+  const summary = deriveTypeBObservationSummary(
+    associationPresentation([["unmatched_terminated", "unmatched_born"]])
+  );
+  // With the controlled matrix states redacted at their single permitted
+  // location, no "matched" wording of any kind survives anywhere.
+  const serialized = serializeWithControlledMatrixRedaction(summary);
+  assert.ok(!serialized.includes("matched"));
+  assert.ok(!serialized.includes("unmatched"));
+  // The controlled values themselves are still present in the raw summary,
+  // exactly at the matrix location.
+  const association = evaluatedAssociation(summary);
+  assert.equal(
+    association.annotationStateCounts.find(
+      (entry) => entry.state === "unmatched_terminated"
+    )?.count,
+    1
+  );
+});
+
+test("the redaction used by copy guards is location-specific, not a global allow-list", () => {
+  // A value at the matrix location that is NOT one of the five known
+  // literals is NOT redacted: the redaction tolerates only the exact known
+  // vocabulary at its exact path, so any other value remains fully
+  // scannable (and would fail the authority scans).
+  const tampered = structuredClone(
+    deriveTypeBObservationSummary(associationPresentation([["associated"]]))
+  ) as unknown as {
+    association: { annotationStateCounts: { state: string; count: number }[] };
+  };
+  tampered.association.annotationStateCounts[0].state = "best branch";
+  assert.ok(
+    serializeWithControlledMatrixRedaction(
+      tampered as unknown as TypeBObservationSummary
+    ).includes("best branch"),
+    "non-vocabulary values at the matrix location must remain visible to copy scans"
+  );
+  // And a known literal placed anywhere else would not be redacted either:
+  // the redactor touches only association.annotationStateCounts[].state.
+  const decoy = {
+    ...deriveTypeBObservationSummary(null),
+    status: "associated",
+  } as unknown as TypeBObservationSummary;
+  assert.ok(
+    serializeWithControlledMatrixRedaction(decoy).includes("associated"),
+    "the redaction must never mask literals outside the matrix"
+  );
+});
+
+test("no association matrix fact is fabricated for any non-evaluated arm", () => {
+  const nonEvaluated = [
+    deriveTypeBObservationSummary(null),
+    deriveTypeBObservationSummary(
+      presentTypeBDiagnosticRun({ capture: realRefusal(), envelope: null })
+    ),
+    deriveTypeBObservationSummary(fullPresentation({ requested: false })),
+    deriveTypeBObservationSummary(
+      fullPresentation({
+        requested: true,
+        associationOverrides: {
+          status: "not_assessed",
+          notAssessedReasons: ["invalid_diagnostic_run_linkage"],
+        },
+      })
+    ),
+  ];
+  for (const summary of nonEvaluated) {
+    assert.notEqual(summary.association.condition, "evaluated");
+    const serialized = JSON.stringify(summary.association).toLowerCase();
+    for (const phrase of [
+      "componentcount",
+      "annotationcount",
+      "annotationstatecounts",
+      "associatedannotationobservation",
+      "count",
+    ]) {
+      assert.ok(
+        !serialized.includes(phrase),
+        `non-evaluated association arm must not fabricate "${phrase}"`
+      );
+    }
+    assertNumericFree(summary.association);
+  }
+});
+
+test("evaluated association matrix carries no plausibility, compatibility, tuple, Type A, override, camera, calibration, or scene fact", () => {
+  const summary = deriveTypeBObservationSummary(
+    associationPresentation([
+      ["associated", "tied_ambiguous"],
+      ["unmatched_terminated"],
+    ])
+  );
+  const associationSerialized = JSON.stringify(
+    evaluatedAssociation(summary)
+  ).toLowerCase();
+  for (const phrase of [
+    "plausib",
+    "compat",
+    "tuple",
+    "typea",
+    "type_a",
+    "override",
+    "camera",
+    "calibration",
+    "scene",
+    "truncation",
+    "hypothes",
+    "fov",
+    "pose",
+    "checkid",
+  ]) {
+    assert.ok(
+      !associationSerialized.includes(phrase),
+      `association matrix must not carry cross-dimension fact "${phrase}"`
+    );
+  }
+  // And the association matrix is unchanged by unrelated dimensions: mixed
+  // plausibility or different frame-truncation outcomes never leak in.
+  const withDifferentFrameTruncation = deriveTypeBObservationSummary(
+    fullPresentation({
+      requested: true,
+      runOverrides: {
+        branchCorridors: [
+          buildCorridor(0, ["associated", "tied_ambiguous"]),
+          buildCorridor(1, ["unmatched_terminated"]),
+        ],
+      },
+      frameTruncationOverrides: {
+        status: "not_assessed",
+        notAssessedReasons: ["diagnostic_run_missing_pose_hypotheses"],
+        records: [],
+      },
+    })
+  );
+  assert.deepEqual(
+    evaluatedAssociation(withDifferentFrameTruncation),
+    evaluatedAssociation(summary)
+  );
+});
+
+// --- 17. Cross-dimension independence (B3G-2) ------------------------------------
 
 test("no cross-dimension composite, intersection, or ranking-friendly fact exists", () => {
   const summary = deriveTypeBObservationSummary(mixedPresentation());
