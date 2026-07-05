@@ -34,6 +34,16 @@ import { buildG0ProbeDeclarations, validateG0ProbeDeclarations } from "../probe-
 import { G0_PROBE_PACKAGE_VERSION } from "../package";
 import { G0_SUPPORTING_CHECKS } from "../supporting-checks";
 
+const P_STALE_PRECONDITION_PUBLIC_URL_PATH = "/3d-lab/room-images/P-stale-precondition.jpg";
+const P_STALE_PRECONDITION_CANONICAL_PATH = path.join(
+  process.cwd(),
+  "app/admin/3d-room-lab/g0-containment/synthetic-assets/P-stale-precondition.jpg"
+);
+const P_STALE_PRECONDITION_PUBLIC_MIRROR_PATH = path.join(
+  process.cwd(),
+  "public/3d-lab/room-images/P-stale-precondition.jpg"
+);
+
 const VALIDATION_CONFIG: SceneStateValidationConfig = {
   transformLimits: {
     positionX: { min: -10, max: 10 },
@@ -156,6 +166,37 @@ test("2) synthetic assets and payload digests match declared metadata", async ()
     const loaded = await loadPayloadFixture(fixtureId);
     assert.equal(loaded.payloadDigest, G0_PAYLOAD_FIXTURES[fixtureId].payloadDigest);
   }
+});
+
+test("2b) P-stale precondition public mirror stays byte-identical to canonical source", async () => {
+  const asset = G0_SYNTHETIC_ASSETS["P-stale-precondition"];
+  const canonicalBytes = await readFile(P_STALE_PRECONDITION_CANONICAL_PATH);
+  const mirrorBytes = await readFile(P_STALE_PRECONDITION_PUBLIC_MIRROR_PATH);
+
+  assert.ok(canonicalBytes.byteLength > 0);
+  assert.ok(mirrorBytes.byteLength > 0);
+  assert.deepEqual(mirrorBytes, canonicalBytes);
+
+  const canonicalDigest = computeCalibrationImageFingerprint(canonicalBytes);
+  const mirrorDigest = computeCalibrationImageFingerprint(mirrorBytes);
+  assert.equal(canonicalDigest, asset.sha256);
+  assert.equal(mirrorDigest, asset.sha256);
+
+  const canonicalMetadata = await inspectImageMetadata(canonicalBytes);
+  const mirrorMetadata = await inspectImageMetadata(mirrorBytes);
+  assert.equal(canonicalMetadata.ok, true);
+  assert.equal(mirrorMetadata.ok, true);
+  if (canonicalMetadata.ok && mirrorMetadata.ok) {
+    assert.equal(canonicalMetadata.width, mirrorMetadata.width);
+    assert.equal(canonicalMetadata.height, mirrorMetadata.height);
+    assert.equal(canonicalMetadata.orientation, mirrorMetadata.orientation);
+
+    assert.equal(canonicalMetadata.width, asset.decodedWidth);
+    assert.equal(canonicalMetadata.height, asset.decodedHeight);
+    assert.equal(canonicalMetadata.orientation, asset.encodedOrientation);
+  }
+
+  assert.equal(P_STALE_PRECONDITION_PUBLIC_URL_PATH, "/3d-lab/room-images/P-stale-precondition.jpg");
 });
 
 test("3/4/5) qualification refusals for derivative, orientation, and dimension mismatch", async () => {
