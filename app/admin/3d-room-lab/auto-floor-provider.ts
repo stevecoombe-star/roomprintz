@@ -37,6 +37,8 @@ export type AutoFloorDetectionInput = {
   // by the real vision route to convert model source-normalized coordinates into
   // container-normalized-v0. mock providers safely ignore it.
   intrinsicSize?: { width: number; height: number } | null;
+  // Optional claim sent to server routes; server recomputes its own attestation.
+  expectedBasisFingerprint?: string | null;
 };
 
 export type AutoFloorDetectionProvider = {
@@ -147,6 +149,7 @@ const mockApiProvider: AutoFloorDetectionProvider = {
           frameSize: input.frameSize ?? null,
           currentFloorPolygon: input.currentFloorPolygon ?? null,
           floorRect: input.floorRect ?? null,
+          expectedBasisFingerprint: input.expectedBasisFingerprint ?? null,
           requestId:
             typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : null,
         }),
@@ -228,6 +231,7 @@ const visionModelProvider: AutoFloorDetectionProvider = {
           frameSize: input.frameSize ?? null,
           intrinsicSize: input.intrinsicSize ?? null,
           floorRect: input.floorRect ?? null,
+          expectedBasisFingerprint: input.expectedBasisFingerprint ?? null,
           // Sent only as an optional weak hint; the route may ignore it.
           currentFloorPolygon: input.currentFloorPolygon ?? null,
           requestId:

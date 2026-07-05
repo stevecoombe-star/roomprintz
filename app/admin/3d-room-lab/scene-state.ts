@@ -1,6 +1,9 @@
+import type { CalibrationImageBasis } from "./calibration-image-basis";
+
 export const SCENE_STATE_SCHEMA_VERSION = "vibode-3d-room-lab-scene-state/v0";
 export const SCENE_IMAGE_COORDINATE_SPACE_V0 = "container-normalized-v0";
 export const CALIBRATED_SCENE_STATE_CALIBRATION_VERSION_V1 = "calibrated-camera/v1";
+export const CALIBRATED_SCENE_STATE_CALIBRATION_VERSION_V2 = "calibrated-camera/v2";
 export const CALIBRATED_SCENE_STATE_SOLVER_V1 = "homography-planar-cv/v1";
 export const CALIBRATED_SCENE_STATE_MIN_VERTICAL_FOV_DEG = 20;
 export const CALIBRATED_SCENE_STATE_MAX_VERTICAL_FOV_DEG = 90;
@@ -55,10 +58,22 @@ export type CalibratedSceneStateCalibrationV1 = {
   };
 };
 
+export type CalibratedSceneStateCalibrationV2 = {
+  calibrationVersion: typeof CALIBRATED_SCENE_STATE_CALIBRATION_VERSION_V2;
+  solver: typeof CALIBRATED_SCENE_STATE_SOLVER_V1;
+  intrinsics: {
+    verticalFovDeg: number;
+  };
+  source: {
+    imageBasis: CalibrationImageBasis;
+    sourceFloorPolygon: FloorPoint[];
+  };
+};
+
 export type ValidatedCalibrationBlock =
   | {
       kind: "valid";
-      value: CalibratedSceneStateCalibrationV1;
+      value: CalibratedSceneStateCalibrationV2;
     }
   | {
       kind: "absent";
@@ -81,69 +96,52 @@ export type CalibrationRestoreCompatibility =
   | { ok: false; reason: string };
 
 export function evaluateCalibrationRestoreCompatibility(input: {
-  calibration: CalibratedSceneStateCalibrationV1;
-  currentRoomImageUrl: string;
-  currentIntrinsicWidth: number | null;
-  currentIntrinsicHeight: number | null;
-  currentFrameAspect: number;
-  aspectWarnDeltaPercent: number;
-  aspectAutoRevertDeltaPercent: number;
+  calibration: CalibratedSceneStateCalibrationV2;
+  currentImageBasis: CalibrationImageBasis | null;
 }): CalibrationRestoreCompatibility {
-  const { calibration } = input;
+  const { calibration, currentImageBasis } = input;
 
   // Remain fail-closed even though B1 validation already guarantees these.
-  if (calibration.calibrationVersion !== CALIBRATED_SCENE_STATE_CALIBRATION_VERSION_V1) {
+  if (calibration.calibrationVersion !== CALIBRATED_SCENE_STATE_CALIBRATION_VERSION_V2) {
     return { ok: false, reason: "unsupported calibration version" };
   }
   if (calibration.solver !== CALIBRATED_SCENE_STATE_SOLVER_V1) {
     return { ok: false, reason: "unsupported solver" };
   }
-
-  const persistedUrl = calibration.source.imageUrl.trim();
-  const currentUrl = input.currentRoomImageUrl.trim();
-  if (persistedUrl.length === 0 || currentUrl.length === 0 || persistedUrl !== currentUrl) {
-    return { ok: false, reason: "room image URL differs from calibration source" };
+  if (!currentImageBasis) {
+    return { ok: false, reason: "basis_unavailable" };
   }
-
-  if (
-    input.currentIntrinsicWidth === null ||
-    input.currentIntrinsicHeight === null ||
-    !Number.isFinite(input.currentIntrinsicWidth) ||
-    !Number.isFinite(input.currentIntrinsicHeight) ||
-    input.currentIntrinsicWidth <= 0 ||
-    input.currentIntrinsicHeight <= 0
-  ) {
-    return { ok: false, reason: "current intrinsic image dimensions unavailable" };
+  const persistedBasis = calibration.source.imageBasis;
+  if (currentImageBasis.basisFingerprint !== persistedBasis.basisFingerprint) {
+    return { ok: false, reason: "basis_fingerprint_mismatch" };
   }
   if (
-    input.currentIntrinsicWidth !== calibration.source.intrinsicWidth ||
-    input.currentIntrinsicHeight !== calibration.source.intrinsicHeight
+    currentImageBasis.decodedWidth !== persistedBasis.decodedWidth ||
+    currentImageBasis.decodedHeight !== persistedBasis.decodedHeight
   ) {
-    return { ok: false, reason: "intrinsic image dimensions differ from calibration source" };
+    return { ok: false, reason: "basis_dimension_mismatch" };
   }
-
-  const persistedAspect = calibration.frameAspect;
-  if (!Number.isFinite(persistedAspect) || persistedAspect <= 0) {
-    return { ok: false, reason: "persisted frame aspect invalid" };
+  if (
+    currentImageBasis.encodedOrientation !== persistedBasis.encodedOrientation ||
+    currentImageBasis.decodedOrientationNormal !== persistedBasis.decodedOrientationNormal ||
+    currentImageBasis.orientationTransform !== persistedBasis.orientationTransform
+  ) {
+    return { ok: false, reason: "basis_orientation_not_normal" };
   }
-  if (!Number.isFinite(input.currentFrameAspect) || input.currentFrameAspect <= 0) {
-    return { ok: false, reason: "current frame aspect unavailable" };
+  if (
+    currentImageBasis.coordinateSpaceVersion.decoderId !==
+      persistedBasis.coordinateSpaceVersion.decoderId ||
+    currentImageBasis.coordinateSpaceVersion.normalizationPolicyVersion !==
+      persistedBasis.coordinateSpaceVersion.normalizationPolicyVersion ||
+    currentImageBasis.coordinateSpaceVersion.orientationApplied !==
+      persistedBasis.coordinateSpaceVersion.orientationApplied
+  ) {
+    return { ok: false, reason: "basis_coordinate_space_mismatch" };
   }
-
-  const aspectDeltaPercent =
-    (Math.abs(input.currentFrameAspect - persistedAspect) / persistedAspect) * 100;
-  if (aspectDeltaPercent >= input.aspectAutoRevertDeltaPercent) {
-    return {
-      ok: false,
-      reason: `frame aspect changed too much (da=${aspectDeltaPercent.toFixed(2)}%)`,
-    };
+  if (currentImageBasis.basisKind !== persistedBasis.basisKind) {
+    return { ok: false, reason: "basis_derivative_not_authority_eligible" };
   }
-
-  const warning =
-    aspectDeltaPercent > input.aspectWarnDeltaPercent
-      ? `frame aspect drift within tolerance (da=${aspectDeltaPercent.toFixed(2)}%)`
-      : null;
-  return { ok: true, aspectDeltaPercent, warning };
+  return { ok: true, aspectDeltaPercent: 0, warning: null };
 }
 
 export type ImportedSceneValidated = {
@@ -217,7 +215,7 @@ export type SceneStatePayloadInput = {
     modelStatus: string;
   };
   image?: SceneImageMetadata | null;
-  calibration?: CalibratedSceneStateCalibrationV1;
+  calibration?: CalibratedSceneStateCalibrationV2;
 };
 
 function clampValue(value: number, min: number, max: number): number {
@@ -278,6 +276,61 @@ function parseFloorPolygon(value: unknown): FloorPoint[] | null {
   return points.length >= 3 ? points : null;
 }
 
+function parseCalibrationImageBasis(
+  value: unknown
+): CalibrationImageBasis | null {
+  if (!isRecord(value)) return null;
+  if (
+    typeof value.basisId !== "string" ||
+    typeof value.basisFingerprint !== "string" ||
+    typeof value.sourceImageUrl !== "string"
+  ) {
+    return null;
+  }
+  const decodedWidth = parseFiniteNumber(value.decodedWidth);
+  const decodedHeight = parseFiniteNumber(value.decodedHeight);
+  const encodedOrientation = parseFiniteNumber(value.encodedOrientation);
+  if (
+    decodedWidth === null ||
+    decodedHeight === null ||
+    encodedOrientation === null ||
+    decodedWidth <= 0 ||
+    decodedHeight <= 0
+  ) {
+    return null;
+  }
+  if (value.decodedOrientationNormal !== true) return null;
+  if (value.orientationTransform !== "identity") return null;
+  if (value.dimensionSource !== "server") return null;
+  if (!isRecord(value.coordinateSpaceVersion)) return null;
+  const coordinateSpaceVersion = value.coordinateSpaceVersion;
+  if (
+    typeof coordinateSpaceVersion.decoderId !== "string" ||
+    typeof coordinateSpaceVersion.normalizationPolicyVersion !== "string" ||
+    typeof coordinateSpaceVersion.orientationApplied !== "boolean"
+  ) {
+    return null;
+  }
+  if (value.basisKind !== "original" && value.basisKind !== "derivative") return null;
+  return {
+    basisId: value.basisId,
+    basisFingerprint: value.basisFingerprint,
+    sourceImageUrl: value.sourceImageUrl,
+    decodedWidth,
+    decodedHeight,
+    encodedOrientation,
+    decodedOrientationNormal: true,
+    orientationTransform: "identity",
+    dimensionSource: "server",
+    coordinateSpaceVersion: {
+      decoderId: coordinateSpaceVersion.decoderId,
+      normalizationPolicyVersion: coordinateSpaceVersion.normalizationPolicyVersion,
+      orientationApplied: coordinateSpaceVersion.orientationApplied,
+    },
+    basisKind: value.basisKind,
+  };
+}
+
 function parseValidatedCalibrationBlock(rawCalibration: unknown): ValidatedCalibrationBlock {
   if (typeof rawCalibration === "undefined") {
     return { kind: "absent" };
@@ -290,10 +343,16 @@ function parseValidatedCalibrationBlock(rawCalibration: unknown): ValidatedCalib
   if (!calibrationVersion) {
     return { kind: "ignored", reason: "calibration.calibrationVersion is required." };
   }
-  if (calibrationVersion !== CALIBRATED_SCENE_STATE_CALIBRATION_VERSION_V1) {
+  if (calibrationVersion === CALIBRATED_SCENE_STATE_CALIBRATION_VERSION_V1) {
     return {
       kind: "ignored",
-      reason: `Unsupported calibration.calibrationVersion. Expected ${CALIBRATED_SCENE_STATE_CALIBRATION_VERSION_V1}.`,
+      reason: "basis_legacy_receipt_missing",
+    };
+  }
+  if (calibrationVersion !== CALIBRATED_SCENE_STATE_CALIBRATION_VERSION_V2) {
+    return {
+      kind: "ignored",
+      reason: `Unsupported calibration.calibrationVersion. Expected ${CALIBRATED_SCENE_STATE_CALIBRATION_VERSION_V2}.`,
     };
   }
 
@@ -323,40 +382,35 @@ function parseValidatedCalibrationBlock(rawCalibration: unknown): ValidatedCalib
     };
   }
 
-  const frameAspect = parseFiniteNumber(rawCalibration.frameAspect);
-  if (frameAspect === null || frameAspect <= 0) {
-    return { kind: "ignored", reason: "calibration.frameAspect must be a positive number." };
-  }
-
   if (!isRecord(rawCalibration.source)) {
     return { kind: "ignored", reason: "calibration.source must be an object." };
   }
-  const imageUrl = parseRequiredTrimmedString(rawCalibration.source.imageUrl);
-  const intrinsicWidth = parseFiniteNumber(rawCalibration.source.intrinsicWidth);
-  const intrinsicHeight = parseFiniteNumber(rawCalibration.source.intrinsicHeight);
-  if (!imageUrl) {
-    return { kind: "ignored", reason: "calibration.source.imageUrl must be a non-empty string." };
-  }
-  if (intrinsicWidth === null || intrinsicHeight === null || intrinsicWidth <= 0 || intrinsicHeight <= 0) {
+  const imageBasis = parseCalibrationImageBasis(rawCalibration.source.imageBasis);
+  const sourceFloorPolygon = parseFloorPolygon(rawCalibration.source.sourceFloorPolygon);
+  if (!imageBasis) {
     return {
       kind: "ignored",
-      reason: "calibration.source.intrinsicWidth and calibration.source.intrinsicHeight must be positive numbers.",
+      reason: "calibration.source.imageBasis must be a valid basis receipt.",
+    };
+  }
+  if (!sourceFloorPolygon || sourceFloorPolygon.length !== 4) {
+    return {
+      kind: "ignored",
+      reason: "calibration.source.sourceFloorPolygon must contain exactly four valid points.",
     };
   }
 
   return {
     kind: "valid",
     value: {
-      calibrationVersion: CALIBRATED_SCENE_STATE_CALIBRATION_VERSION_V1,
+      calibrationVersion: CALIBRATED_SCENE_STATE_CALIBRATION_VERSION_V2,
       solver: CALIBRATED_SCENE_STATE_SOLVER_V1,
       intrinsics: {
         verticalFovDeg,
       },
-      frameAspect,
       source: {
-        imageUrl,
-        intrinsicWidth,
-        intrinsicHeight,
+        imageBasis,
+        sourceFloorPolygon,
       },
     },
   };
@@ -381,11 +435,9 @@ export function buildSceneStatePayload(input: SceneStatePayloadInput) {
           intrinsics: {
             verticalFovDeg: input.calibration.intrinsics.verticalFovDeg,
           },
-          frameAspect: input.calibration.frameAspect,
           source: {
-            imageUrl: input.calibration.source.imageUrl,
-            intrinsicWidth: input.calibration.source.intrinsicWidth,
-            intrinsicHeight: input.calibration.source.intrinsicHeight,
+            imageBasis: input.calibration.source.imageBasis,
+            sourceFloorPolygon: input.calibration.source.sourceFloorPolygon.map(roundPoint),
           },
         }
       : undefined,
@@ -432,7 +484,8 @@ export function buildSceneStatePayload(input: SceneStatePayloadInput) {
       modelStatus: input.debug.modelStatus,
     },
     notes: [
-      "Floor polygon points are normalized to the displayed container, not true uncropped source image pixels.",
+      "Floor polygon points are normalized to the displayed container for UI editing.",
+      "Source-normalized floor polygon is persisted for Type A calibration authority and restore compatibility.",
       "Phase 0D floor click placement uses temporary linear mapping constants and is not perspective-calibrated.",
     ],
   };

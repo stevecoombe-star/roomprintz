@@ -23,7 +23,7 @@ import {
   selectViewportSafeHandleOffset,
 } from "./floor-math";
 import {
-  CALIBRATED_SCENE_STATE_CALIBRATION_VERSION_V1,
+  CALIBRATED_SCENE_STATE_CALIBRATION_VERSION_V2,
   CALIBRATED_SCENE_STATE_MAX_VERTICAL_FOV_DEG,
   CALIBRATED_SCENE_STATE_MIN_VERTICAL_FOV_DEG,
   CALIBRATED_SCENE_STATE_SOLVER_V1,
@@ -31,7 +31,7 @@ import {
   buildSceneStatePayload,
   evaluateCalibrationRestoreCompatibility,
   validateImportedSceneJson,
-  type CalibratedSceneStateCalibrationV1,
+  type CalibratedSceneStateCalibrationV2,
   type FloorMappingState,
   type FloorPoint,
   type ImportedSceneValidated,
@@ -39,6 +39,11 @@ import {
   type PerspectiveDepthScalingState,
   type TransformState,
 } from "./scene-state";
+import {
+  CALIBRATION_IMAGE_BASIS_COORDINATE_SPACE_VERSION,
+  type CalibrationImageBasis,
+  type CalibrationImageBasisRefusalReason,
+} from "./calibration-image-basis";
 import {
   containerNormToSourceNorm,
   corridorHalfWidthToOverlayStrokeWidth,
@@ -101,6 +106,12 @@ import {
 } from "./calibrated-camera-apply";
 import { evaluateQuadSolvability } from "./quad-solvability";
 import { classifyAutoFloorSupport } from "./auto-floor-support-classification";
+import {
+  buildFloorPolygonAuthorityKey,
+  shouldDiscardAttestedResponse,
+  shouldDropAuthorityOnFrameChange,
+  shouldDropAuthorityOnManualAdjustment,
+} from "./policy-a-containment";
 import {
   createEmptyManualFloorSupportAnnotation,
   DEFAULT_COUPLED_MAX_RELATIVE_DELTA_SOURCE_PX,
@@ -250,6 +261,8 @@ type EmptyRoomAssistApiResponse = {
     generateOnly: boolean;
     emptyRoomAssistStatus: "completed" | "generated" | "unavailable" | "blocked" | "failed";
     emptyRoomCacheStatus: "hit" | "miss" | "unavailable" | "not_used";
+    attestedOriginalBasisFingerprint: string | null;
+    attestedEmptyBasisFingerprint: string | null;
     coordinateCompatibility: {
       ok: boolean;
       tier: "exact_grid_compatible" | "aspect_compatible_rescaled" | "incompatible";
@@ -365,6 +378,17 @@ type EmptyRoomAssistApiResponse = {
   emptyResult: AutoFloorDetectionResult | null;
 };
 
+type BasisQualificationApiResponse =
+  | {
+      qualified: true;
+      basis: CalibrationImageBasis;
+    }
+  | {
+      qualified: false;
+      reason: CalibrationImageBasisRefusalReason;
+      message?: string;
+    };
+
 type EmptyRoomAssistUiStatus =
   | "idle"
   | "generating"
@@ -400,6 +424,8 @@ type CalibratedCameraSnapshot = {
   frameSize: ImageFrameSize;
   diagnosticsSummary: string;
   appliedAtIso: string;
+  imageBasis: CalibrationImageBasis;
+  sourceFloorPolygon: FloorPoint[];
 };
 
 const OBJECT_HANDLE_ROTATE_DEADZONE_PX = 14;
@@ -533,6 +559,16 @@ function roundPoint(point: FloorPoint): FloorPoint {
     x: Number(point.x.toFixed(3)),
     y: Number(point.y.toFixed(3)),
   };
+}
+
+function floorPolygonsEqual(a: FloorPoint[], b: FloorPoint[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i += 1) {
+    if (Math.abs(a[i].x - b[i].x) > 1e-6 || Math.abs(a[i].y - b[i].y) > 1e-6) {
+      return false;
+    }
+  }
+  return true;
 }
 
 type FrameMatchDiagnostics = {
@@ -1207,7 +1243,7 @@ export default function ThreeRoomLab({
   // arrives, so an old pending request can never apply out of order.
   const [pendingCalibrationRestore, setPendingCalibrationRestore] = useState<{
     requestId: number;
-    calibration: CalibratedSceneStateCalibrationV1;
+    calibration: CalibratedSceneStateCalibrationV2;
   } | null>(null);
   const calibrationRestoreRequestIdRef = useRef(0);
   const [calibratedRestoreStatus, setCalibratedRestoreStatus] = useState<string>("none");
@@ -1215,7 +1251,14 @@ export default function ThreeRoomLab({
   const [lastFloorClickMappingResult, setLastFloorClickMappingResult] = useState<string>("legacy");
   const [showFloorOverlay, setShowFloorOverlay] = useState(true);
   const [floorPolygon, setFloorPolygon] = useState<FloorPoint[]>(DEFAULT_FLOOR_POLYGON);
+  const [sourceNormalizedFloorPolygon, setSourceNormalizedFloorPolygon] =
+    useState<FloorPoint[]>(DEFAULT_FLOOR_POLYGON);
+  const [floorPolygonAuthorityEligible, setFloorPolygonAuthorityEligible] = useState(true);
   const [activeFloorHandleIndex, setActiveFloorHandleIndex] = useState<number | null>(null);
+  const [qualifiedImageBasis, setQualifiedImageBasis] = useState<CalibrationImageBasis | null>(null);
+  const [basisQualificationStatus, setBasisQualificationStatus] = useState<string>("basis_unavailable");
+  const basisQualificationRequestIdRef = useRef(0);
+  const floorPolygonAuthorityKeyRef = useRef(buildFloorPolygonAuthorityKey(DEFAULT_FLOOR_POLYGON));
   // Phase 2B: auto floor detection mock harness. These do not mutate the manual
   // floor polygon, scene-state, or any calibrated camera behavior.
   const [autoFloorDetectionResult, setAutoFloorDetectionResult] =
@@ -1580,6 +1623,105 @@ export default function ThreeRoomLab({
     [imageLoadState, isRoomImageReadyForUrl, roomImageUrl]
   );
 
+  const frameSizeForImageSpace = useMemo<ImageFrameSize | null>(() => {
+    if (
+      !Number.isFinite(rendererSize.width) ||
+      !Number.isFinite(rendererSize.height) ||
+      rendererSize.width <= 0 ||
+      rendererSize.height <= 0
+    ) {
+      return null;
+    }
+    return { width: rendererSize.width, height: rendererSize.height };
+  }, [rendererSize.height, rendererSize.width]);
+
+  const projectContainerPolygonToSource = useCallback(
+    (polygon: FloorPoint[]): FloorPoint[] | null => {
+      if (!imageIntrinsicSize || !frameSizeForImageSpace) return null;
+      const projected = polygon
+        .map((point) => containerNormToSourceNorm(point, imageIntrinsicSize, frameSizeForImageSpace))
+        .filter((point): point is FloorPoint => point !== null);
+      return projected.length === polygon.length ? projected : null;
+    },
+    [frameSizeForImageSpace, imageIntrinsicSize]
+  );
+
+  const projectSourcePolygonToContainer = useCallback(
+    (polygon: FloorPoint[]): FloorPoint[] | null => {
+      if (!imageIntrinsicSize || !frameSizeForImageSpace) return null;
+      const projected = polygon
+        .map((point) => sourceNormToContainerNorm(point, imageIntrinsicSize, frameSizeForImageSpace))
+        .filter((point): point is FloorPoint => point !== null);
+      return projected.length === polygon.length ? projected : null;
+    },
+    [frameSizeForImageSpace, imageIntrinsicSize]
+  );
+
+  const applyContainerFloorPolygon = useCallback(
+    (polygon: FloorPoint[]) => {
+      setFloorPolygon(polygon);
+      const sourcePolygon = projectContainerPolygonToSource(polygon);
+      if (sourcePolygon && sourcePolygon.length >= 3) {
+        setSourceNormalizedFloorPolygon(sourcePolygon);
+        setFloorPolygonAuthorityEligible(true);
+      }
+    },
+    [projectContainerPolygonToSource]
+  );
+
+  useEffect(() => {
+    const projectedContainer = projectSourcePolygonToContainer(sourceNormalizedFloorPolygon);
+    if (!projectedContainer) return;
+    setFloorPolygon((prev) => (floorPolygonsEqual(prev, projectedContainer) ? prev : projectedContainer));
+  }, [projectSourcePolygonToContainer, sourceNormalizedFloorPolygon]);
+
+  useEffect(() => {
+    const trimmedUrl = roomImageUrl.trim();
+    if (!isRoomImageReadyForUrl(trimmedUrl) || !imageIntrinsicSize) {
+      setQualifiedImageBasis(null);
+      setBasisQualificationStatus("basis_unavailable");
+      return;
+    }
+
+    const requestId = basisQualificationRequestIdRef.current + 1;
+    basisQualificationRequestIdRef.current = requestId;
+    setBasisQualificationStatus("qualifying");
+
+    const run = async () => {
+      try {
+        const response = await fetch("/api/admin/3d-room-lab/calibration/qualify-basis", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            imageUrl: trimmedUrl,
+            browserDimensions: {
+              width: imageIntrinsicSize.width,
+              height: imageIntrinsicSize.height,
+            },
+            coordinateSpaceVersion: CALIBRATION_IMAGE_BASIS_COORDINATE_SPACE_VERSION,
+            basisKind: "original",
+          }),
+        });
+        const payload = (await response.json()) as BasisQualificationApiResponse;
+        if (requestId !== basisQualificationRequestIdRef.current) return;
+        if ("qualified" in payload && payload.qualified) {
+          setQualifiedImageBasis(payload.basis);
+          setBasisQualificationStatus("qualified");
+          return;
+        }
+        setQualifiedImageBasis(null);
+        setBasisQualificationStatus(
+          "qualified" in payload && !payload.qualified ? payload.reason : "basis_unavailable"
+        );
+      } catch {
+        if (requestId !== basisQualificationRequestIdRef.current) return;
+        setQualifiedImageBasis(null);
+        setBasisQualificationStatus("basis_fetch_failed");
+      }
+    };
+    void run();
+  }, [imageIntrinsicSize, isRoomImageReadyForUrl, roomImageUrl]);
+
   const cancelPendingCalibrationRestoreAfterManualGeometryChange = useCallback(() => {
     if (!pendingCalibrationRestore) return;
     calibrationRestoreRequestIdRef.current += 1;
@@ -1643,6 +1785,9 @@ export default function ThreeRoomLab({
       },
       fovDeg: number
     ) => {
+      if (!qualifiedImageBasis || sourceNormalizedFloorPolygon.length !== 4) {
+        return;
+      }
       captureAndNeutralizeDepthScalingForCalibratedMode();
       setLastCalibratedCameraAutoRevertReason(null);
       setCalibratedCameraSnapshot({
@@ -1651,23 +1796,38 @@ export default function ThreeRoomLab({
         frameSize: candidate.frameSize,
         diagnosticsSummary: candidate.diagnosticsSummary,
         appliedAtIso: new Date().toISOString(),
+        imageBasis: qualifiedImageBasis,
+        sourceFloorPolygon: sourceNormalizedFloorPolygon.map((point) => ({ x: point.x, y: point.y })),
       });
       setIsCalibratedCameraActive(true);
     },
-    [captureAndNeutralizeDepthScalingForCalibratedMode]
+    [captureAndNeutralizeDepthScalingForCalibratedMode, qualifiedImageBasis, sourceNormalizedFloorPolygon]
   );
 
   useEffect(() => {
     if (!isCalibratedCameraActive || !calibratedCameraSnapshot) return;
-    const diagnostics = computeFrameMatchDiagnostics(calibratedCameraSnapshot.frameSize, rendererSize);
-    if (!diagnostics?.isAutoRevertStale) return;
+    if (
+      !shouldDropAuthorityOnFrameChange(calibratedCameraSnapshot.frameSize, {
+        width: rendererSize.width,
+        height: rendererSize.height,
+      })
+    ) {
+      return;
+    }
+    deactivateCalibratedCameraMode();
+    setLastCalibratedCameraAutoRevertReason("reverted — frame changed; re-solve and re-qualify to restore authority");
+  }, [calibratedCameraSnapshot, deactivateCalibratedCameraMode, isCalibratedCameraActive, rendererSize.height, rendererSize.width]);
+
+  useEffect(() => {
+    const nextKey = buildFloorPolygonAuthorityKey(floorPolygon);
+    if (!shouldDropAuthorityOnManualAdjustment(floorPolygonAuthorityKeyRef.current, nextKey)) return;
+    floorPolygonAuthorityKeyRef.current = nextKey;
+    if (!isCalibratedCameraActive) return;
     deactivateCalibratedCameraMode();
     setLastCalibratedCameraAutoRevertReason(
-      `reverted — frame changed too much (dw=${formatNumber(diagnostics.widthDeltaPercent)}%, dh=${formatNumber(
-        diagnostics.heightDeltaPercent
-      )}%, da=${formatNumber(diagnostics.aspectDeltaPercent)}%)`
+      "reverted — manual floor adjustment changed the authority polygon"
     );
-  }, [calibratedCameraSnapshot, deactivateCalibratedCameraMode, isCalibratedCameraActive, rendererSize.height, rendererSize.width]);
+  }, [deactivateCalibratedCameraMode, floorPolygon, isCalibratedCameraActive]);
 
   useEffect(() => {
     if (!isCalibratedCameraActive) return;
@@ -2580,8 +2740,29 @@ export default function ThreeRoomLab({
   }, [activeQuadSolvability]);
 
   const calibratedCameraApplyStatus = useMemo(() => {
-    return evaluateCalibratedCameraApply(cameraPoseDebug.applyCandidate, cameraPoseDebug.unavailableReason);
-  }, [cameraPoseDebug.applyCandidate, cameraPoseDebug.unavailableReason]);
+    return evaluateCalibratedCameraApply(cameraPoseDebug.applyCandidate, cameraPoseDebug.unavailableReason, {
+      basisQualified:
+        !!qualifiedImageBasis &&
+        floorPolygonAuthorityEligible &&
+        sourceNormalizedFloorPolygon.length === 4,
+      basisUnavailableReason: !floorPolygonAuthorityEligible
+        ? "basis_legacy_receipt_missing"
+        : !qualifiedImageBasis
+          ? basisQualificationStatus === "qualified"
+            ? "basis_unavailable"
+            : basisQualificationStatus
+          : sourceNormalizedFloorPolygon.length !== 4
+            ? "basis_unavailable"
+            : null,
+    });
+  }, [
+    cameraPoseDebug.applyCandidate,
+    cameraPoseDebug.unavailableReason,
+    qualifiedImageBasis,
+    basisQualificationStatus,
+    floorPolygonAuthorityEligible,
+    sourceNormalizedFloorPolygon.length,
+  ]);
 
   // Phase 2J-B3: deferred calibrated-camera restore. This runs reactively, not
   // in a render loop: while a request is pending it simply waits (no side
@@ -2652,16 +2833,28 @@ export default function ThreeRoomLab({
       return;
     }
 
-    // Provenance + aspect compatibility (trimmed URL / intrinsic dims / persisted
-    // vs. current frame aspect, using the existing aspect thresholds).
+    const projectedRestorePolygon = projectSourcePolygonToContainer(
+      pending.calibration.source.sourceFloorPolygon
+    );
+    if (!projectedRestorePolygon || projectedRestorePolygon.length !== 4) {
+      finish("Calibration not restored: basis_coordinate_space_mismatch");
+      return;
+    }
+    if (
+      !floorPolygonsEqual(sourceNormalizedFloorPolygon, pending.calibration.source.sourceFloorPolygon) ||
+      !floorPolygonsEqual(floorPolygon, projectedRestorePolygon)
+    ) {
+      setSourceNormalizedFloorPolygon(
+        pending.calibration.source.sourceFloorPolygon.map((point) => ({ x: point.x, y: point.y }))
+      );
+      setFloorPolygon(projectedRestorePolygon);
+      return;
+    }
+
+    // Provenance compatibility uses exact image-basis receipt equality.
     const compat = evaluateCalibrationRestoreCompatibility({
       calibration: pending.calibration,
-      currentRoomImageUrl: roomImageUrlTrimmed,
-      currentIntrinsicWidth: imageIntrinsicSize.width,
-      currentIntrinsicHeight: imageIntrinsicSize.height,
-      currentFrameAspect: rendererSize.width / rendererSize.height,
-      aspectWarnDeltaPercent: CALIBRATED_CAMERA_STALE_WARN_ASPECT_DELTA_PERCENT,
-      aspectAutoRevertDeltaPercent: CALIBRATED_CAMERA_AUTO_REVERT_ASPECT_DELTA_PERCENT,
+      currentImageBasis: qualifiedImageBasis,
     });
     if (!compat.ok) {
       finish(`Calibration not restored: ${compat.reason}`);
@@ -2680,9 +2873,7 @@ export default function ThreeRoomLab({
 
     applyCalibratedCameraSnapshotFromCandidate(candidate, persistedFovDeg);
     finish(
-      compat.warning
-        ? `Calibrated camera restored (warning: ${compat.warning}).`
-        : "Calibrated camera restored from imported scene."
+      "Calibrated camera restored from imported scene."
     );
   }, [
     pendingCalibrationRestore,
@@ -2698,6 +2889,10 @@ export default function ThreeRoomLab({
     cameraPoseDebug.unavailableReason,
     calibratedCameraApplyStatus.available,
     calibratedCameraApplyStatus.reason,
+    qualifiedImageBasis,
+    floorPolygon,
+    sourceNormalizedFloorPolygon,
+    projectSourcePolygonToContainer,
     hasValidIntrinsicDimensions,
     applyCalibratedCameraSnapshotFromCandidate,
   ]);
@@ -6368,7 +6563,7 @@ export default function ThreeRoomLab({
       // floor polygon <- EXACT stored local tuple quad (clone; canonical
       // [NL, NR, FR, FL], same as the existing "Apply suggested quad" path).
       const loadedPolygon: FloorPoint[] = tuple.quadNorm.map((point) => ({ x: point.x, y: point.y }));
-      setFloorPolygon(loadedPolygon);
+      applyContainerFloorPolygon(loadedPolygon);
       setActiveFloorHandleIndex(null);
 
       // live width/depth <- EXACT stored diagnostic dims, clamped to the SAME
@@ -6427,6 +6622,7 @@ export default function ThreeRoomLab({
     [
       isCalibratedCameraActive,
       localRefinementPreview,
+      applyContainerFloorPolygon,
       cancelPendingCalibrationRestoreAfterManualGeometryChange,
       floorMapping,
       lastAcceptedFloorClick,
@@ -7368,10 +7564,22 @@ export default function ThreeRoomLab({
       intrinsicSize: imageIntrinsicSize
         ? { width: imageIntrinsicSize.width, height: imageIntrinsicSize.height }
         : null,
+      expectedBasisFingerprint: qualifiedImageBasis?.basisFingerprint ?? null,
     };
 
     try {
       const result = await runAutoFloorDetection(selectedAutoFloorProviderId, input);
+
+      if (
+        shouldDiscardAttestedResponse(
+          qualifiedImageBasis?.basisFingerprint ?? null,
+          result.attestedBasisFingerprint ?? null
+        )
+      ) {
+        setAutoFloorDetectionRunState("failed");
+        setAutoFloorDetectionFailureReasons(["basis_fingerprint_mismatch"]);
+        return;
+      }
 
       if (result.status === "failed") {
         setAutoFloorDetectionRunState("failed");
@@ -7396,6 +7604,7 @@ export default function ThreeRoomLab({
     floorMapping.worldDepth,
     selectedAutoFloorProviderId,
     imageIntrinsicSize,
+    qualifiedImageBasis,
   ]);
 
   // Phase 2D: explicit, user-controlled apply of the selected suggestion into the
@@ -7420,7 +7629,7 @@ export default function ThreeRoomLab({
       x: point.x,
       y: point.y,
     }));
-    setFloorPolygon(appliedPolygon);
+    applyContainerFloorPolygon(appliedPolygon);
 
     // Clear in-progress floor interaction state (mirrors the reset workflow).
     setActiveFloorHandleIndex(null);
@@ -7447,7 +7656,12 @@ export default function ThreeRoomLab({
         ? "Applied suggested quad; calibrated camera was reverted because the floor polygon changed."
         : `Applied suggested quad "${selectedAutoFloorCandidate.label}" to the editable floor polygon.`
     );
-  }, [deactivateCalibratedCameraMode, selectedAutoFloorCandidate, selectedAutoFloorCandidateScore]);
+  }, [
+    applyContainerFloorPolygon,
+    deactivateCalibratedCameraMode,
+    selectedAutoFloorCandidate,
+    selectedAutoFloorCandidateScore,
+  ]);
 
   const buildCurrentSceneStatePayload = (exportedAtIso: string) =>
     {
@@ -7469,24 +7683,27 @@ export default function ThreeRoomLab({
         Number.isFinite(authoritativeCalibrationFovDeg) &&
         authoritativeCalibrationFovDeg >= CALIBRATED_SCENE_STATE_MIN_VERTICAL_FOV_DEG &&
         authoritativeCalibrationFovDeg <= CALIBRATED_SCENE_STATE_MAX_VERTICAL_FOV_DEG;
-      const calibrationForExport: CalibratedSceneStateCalibrationV1 | undefined =
+      const calibrationForExport: CalibratedSceneStateCalibrationV2 | undefined =
         isCalibratedCameraActive &&
         !!calibratedCameraSnapshot &&
+        !!qualifiedImageBasis &&
         roomImageUrlTrimmed.length > 0 &&
         hasValidIntrinsicImageSize &&
         hasValidRendererSize &&
-        hasValidAuthoritativeFov
+        hasValidAuthoritativeFov &&
+        sourceNormalizedFloorPolygon.length === 4
           ? {
-              calibrationVersion: CALIBRATED_SCENE_STATE_CALIBRATION_VERSION_V1,
+              calibrationVersion: CALIBRATED_SCENE_STATE_CALIBRATION_VERSION_V2,
               solver: CALIBRATED_SCENE_STATE_SOLVER_V1,
               intrinsics: {
                 verticalFovDeg: authoritativeCalibrationFovDeg,
               },
-              frameAspect: rendererSize.width / rendererSize.height,
               source: {
-                imageUrl: roomImageUrlTrimmed,
-                intrinsicWidth: imageIntrinsicSize.width,
-                intrinsicHeight: imageIntrinsicSize.height,
+                imageBasis: qualifiedImageBasis,
+                sourceFloorPolygon: sourceNormalizedFloorPolygon.map((point) => ({
+                  x: point.x,
+                  y: point.y,
+                })),
               },
             }
           : undefined;
@@ -7559,10 +7776,12 @@ export default function ThreeRoomLab({
     modelNormalization.modelYawOffsetDeg,
     calibratedCameraSnapshot,
     isCalibratedCameraActive,
+    qualifiedImageBasis,
     rendererSize,
     roomImageUrl,
     sceneStateExportedAt,
     showFloorOverlay,
+    sourceNormalizedFloorPolygon,
     transform.positionX,
     transform.positionY,
     transform.positionZ,
@@ -7682,8 +7901,8 @@ export default function ThreeRoomLab({
     if (activeIndex === null) return;
     const normalizedPoint = getNormalizedOverlayPointFromClient(clientX, clientY);
     if (!normalizedPoint) return;
-    setFloorPolygon((prev) =>
-      prev.map((point, index) => (index === activeIndex ? normalizedPoint : point))
+    applyContainerFloorPolygon(
+      floorPolygon.map((point, index) => (index === activeIndex ? normalizedPoint : point))
     );
   };
 
@@ -8510,7 +8729,7 @@ export default function ThreeRoomLab({
     );
     setAutoRotateEnabled(validated.transform.autoRotate);
 
-    setFloorPolygon(validated.floor.polygon);
+    applyContainerFloorPolygon(validated.floor.polygon);
     setShowFloorOverlay(validated.floor.overlayVisible);
     setIsFloorClickPlacementEnabled(validated.floor.placementModeEnabled);
     setLastAcceptedFloorClick(validated.floor.lastAcceptedClick);
@@ -8535,6 +8754,7 @@ export default function ThreeRoomLab({
     const nextRestoreRequestId = calibrationRestoreRequestIdRef.current + 1;
     calibrationRestoreRequestIdRef.current = nextRestoreRequestId;
     if (validated.calibration.kind === "valid") {
+      setFloorPolygonAuthorityEligible(true);
       // Restore the persisted FOV assumption so the existing camera-pose
       // derivation re-solves against the imported floor + current frame.
       setCameraPoseFovYDeg(
@@ -8554,6 +8774,14 @@ export default function ThreeRoomLab({
           : "Calibration pending: waiting for image and frame to become usable."
       );
     } else {
+      if (
+        validated.calibration.kind === "ignored" &&
+        validated.calibration.reason === "basis_legacy_receipt_missing"
+      ) {
+        setFloorPolygonAuthorityEligible(false);
+      } else {
+        setFloorPolygonAuthorityEligible(true);
+      }
       setPendingCalibrationRestore(null);
       if (validated.calibration.kind === "ignored") {
         setCalibratedRestoreStatus(`Calibration ignored: ${validated.calibration.reason}`);
@@ -9206,6 +9434,7 @@ export default function ThreeRoomLab({
           frameSize: { width: rendererSize.width, height: rendererSize.height },
           floorRect: { widthMeters: floorMapping.worldWidth, depthMeters: floorMapping.worldDepth },
           generateOnly,
+          expectedBasisFingerprint: qualifiedImageBasis?.basisFingerprint ?? null,
         }),
       });
       const data = (await res.json()) as EmptyRoomAssistApiResponse | { error?: string };
@@ -9216,6 +9445,16 @@ export default function ThreeRoomLab({
       }
 
       const typed = data as EmptyRoomAssistApiResponse;
+      if (
+        shouldDiscardAttestedResponse(
+          qualifiedImageBasis?.basisFingerprint ?? null,
+          typed.assist.attestedOriginalBasisFingerprint
+        )
+      ) {
+        setEmptyRoomAssistUiStatus("failed");
+        setEmptyRoomAssistMessage("basis_fingerprint_mismatch");
+        return;
+      }
       setEmptyRoomAssistResult(typed);
       const assist = typed.assist;
       const ui: EmptyRoomAssistUiStatus =
@@ -10448,7 +10687,7 @@ export default function ThreeRoomLab({
                 type="button"
                 onClick={() => {
                   cancelPendingCalibrationRestoreAfterManualGeometryChange();
-                  setFloorPolygon(DEFAULT_FLOOR_POLYGON);
+                  applyContainerFloorPolygon(DEFAULT_FLOOR_POLYGON);
                   setActiveFloorHandleIndex(null);
                   dragPointerIdRef.current = null;
                   objectHandleDragPointerIdRef.current = null;

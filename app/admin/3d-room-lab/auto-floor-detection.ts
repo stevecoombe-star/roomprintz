@@ -59,6 +59,7 @@ export type AutoFloorDetectionResult = {
   selectedCandidateId: string | null;
   notes: string[];
   failureReasons: string[];
+  attestedBasisFingerprint?: string | null;
 };
 
 function clamp01(value: number): number {

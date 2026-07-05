@@ -16,6 +16,7 @@ import { fetchRoomImageSafely, inspectImageMetadata } from "@/lib/vibodeAutoFloo
 import { detectFloorFromVerifiedBytes } from "@/lib/vibodeAutoFloorVisionDetect";
 import { DEFAULT_AUTO_FLOOR_VISION_CONFIG } from "@/app/admin/3d-room-lab/auto-floor-vision-provider-scaffold";
 import type { AutoFloorDetectionResult } from "@/app/admin/3d-room-lab/auto-floor-detection";
+import { computeCalibrationImageFingerprint } from "@/lib/vibodeCalibrationImageBasis";
 
 // --- Phase 2F-F: lab-only, flag-gated REAL Gemini vision floor route ---------
 // POST /api/admin/3d-room-lab/auto-floor/detect-vision
@@ -81,6 +82,16 @@ function failed(reason: string): AutoFloorDetectionResult {
   };
 }
 
+function failedWithBasis(
+  reason: string,
+  attestedBasisFingerprint: string | null
+): AutoFloorDetectionResult {
+  return {
+    ...failed(reason),
+    attestedBasisFingerprint,
+  };
+}
+
 export async function POST(request: Request) {
   const startedAt = Date.now();
 
@@ -115,6 +126,7 @@ export async function POST(request: Request) {
   // Accept either intrinsicSize or sourceSize for the original-image dimensions.
   const intrinsicSize = parseSize(record.intrinsicSize) ?? parseSize(record.sourceSize);
   const floorRect = parseFloorRect(record.floorRect);
+  const expectedBasisFingerprint = safeStr(record.expectedBasisFingerprint);
 
   if (!frameSize) {
     return NextResponse.json(failed("Missing or invalid frame size."), { status: 200 });
@@ -141,7 +153,20 @@ export async function POST(request: Request) {
   });
   if (!image.ok) {
     logVisionFailure({ requestId, route: VISION_ROUTE, stage: "fetch", reason: image.reason });
-    return NextResponse.json(failed(image.reason), { status: 200 });
+    return NextResponse.json(failedWithBasis(image.reason, null), { status: 200 });
+  }
+  const attestedBasisFingerprint = computeCalibrationImageFingerprint(image.buffer);
+  if (expectedBasisFingerprint && expectedBasisFingerprint !== attestedBasisFingerprint) {
+    logVisionFailure({
+      requestId,
+      route: VISION_ROUTE,
+      stage: "basis_attestation",
+      reason: "basis_fingerprint_mismatch",
+    });
+    return NextResponse.json(
+      failedWithBasis("basis_fingerprint_mismatch", attestedBasisFingerprint),
+      { status: 200 }
+    );
   }
 
   // Verify the decoded bytes describe the same coordinate system as the client
@@ -161,14 +186,14 @@ export async function POST(request: Request) {
       orientation: meta.orientation,
     });
     return NextResponse.json(
-      failed("This image orientation is not yet supported for vision calibration."),
+      failedWithBasis("This image orientation is not yet supported for vision calibration.", attestedBasisFingerprint),
       { status: 200 }
     );
   }
   if (meta.width !== intrinsicSize.width || meta.height !== intrinsicSize.height) {
     logVisionFailure({ requestId, route: VISION_ROUTE, stage: "image_verify", reason: "dimension_mismatch" });
     return NextResponse.json(
-      failed("Room image dimensions changed before vision calibration could run."),
+      failedWithBasis("Room image dimensions changed before vision calibration could run.", attestedBasisFingerprint),
       { status: 200 }
     );
   }
@@ -225,7 +250,7 @@ export async function POST(request: Request) {
     } else {
       logVisionFailure(baseLog);
     }
-    return NextResponse.json(failed(info.uiReason), { status: 200 });
+    return NextResponse.json(failedWithBasis(info.uiReason, attestedBasisFingerprint), { status: 200 });
   }
 
   if (!outcome.ok && outcome.failureKind === "mapping") {
@@ -237,12 +262,12 @@ export async function POST(request: Request) {
       stage: "phase_2fb_mapping",
       message: outcome.message,
     });
-    return NextResponse.json(outcome.result, { status: 200 });
+    return NextResponse.json({ ...outcome.result, attestedBasisFingerprint }, { status: 200 });
   }
 
   if (!outcome.ok) {
     // Exhaustiveness guard.
-    return NextResponse.json(failed("Failed to process vision response."), { status: 200 });
+    return NextResponse.json(failedWithBasis("Failed to process vision response.", attestedBasisFingerprint), { status: 200 });
   }
 
   const result = outcome.result;
@@ -277,5 +302,5 @@ export async function POST(request: Request) {
     selectedScore: selected?.confidenceScore ?? null,
   });
 
-  return NextResponse.json(result, { status: 200 });
+  return NextResponse.json({ ...result, attestedBasisFingerprint }, { status: 200 });
 }

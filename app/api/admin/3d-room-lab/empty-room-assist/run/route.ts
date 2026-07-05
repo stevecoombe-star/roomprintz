@@ -21,6 +21,7 @@ import {
 } from "@/lib/vibodeAutoFloorImageProbe";
 import { detectFloorFromVerifiedBytes, type DetectFloorOutcome } from "@/lib/vibodeAutoFloorVisionDetect";
 import { getOrGenerateEmptyRoomImage, type EmptyRoomCacheStatus } from "@/lib/vibodeEmptyRoomAssist";
+import { computeCalibrationImageFingerprint } from "@/lib/vibodeCalibrationImageBasis";
 import { compareSourceNormalizedQuads, polygonArea, type QuadAgreementResult } from "@/app/admin/3d-room-lab/auto-floor-quad-agreement";
 import {
   decideEmptyPrimaryPolicy,
@@ -148,6 +149,8 @@ type AssistResponse = {
     generateOnly: boolean;
     emptyRoomAssistStatus: EmptyRoomAssistStatus;
     emptyRoomCacheStatus: EmptyRoomCacheStatus;
+    attestedOriginalBasisFingerprint: string | null;
+    attestedEmptyBasisFingerprint: string | null;
     coordinateCompatibility: CoordinateCompatibilitySummary;
     originalDetectionStatus: DetectionStatusLabel;
     emptyDetectionStatus: DetectionStatusLabel;
@@ -854,7 +857,8 @@ export async function POST(request: Request) {
     reason: string,
     cacheStatus: EmptyRoomCacheStatus = "not_used",
     generateOnly = false,
-    provenance: EmptyPrimaryProvenance = "manual_required"
+    provenance: EmptyPrimaryProvenance = "manual_required",
+    attestedOriginalBasisFingerprint: string | null = null
   ): AssistResponse => ({
     assist: {
       enabled: true,
@@ -863,6 +867,8 @@ export async function POST(request: Request) {
       generateOnly,
       emptyRoomAssistStatus: status,
       emptyRoomCacheStatus: cacheStatus,
+      attestedOriginalBasisFingerprint,
+      attestedEmptyBasisFingerprint: null,
       coordinateCompatibility: {
         ok: false,
         tier: "incompatible",
@@ -929,6 +935,7 @@ export async function POST(request: Request) {
   const intrinsicSize = parseSize(record.intrinsicSize) ?? parseSize(record.sourceSize);
   const floorRect = parseFloorRect(record.floorRect);
   const generateOnly = record.generateOnly === true;
+  const expectedBasisFingerprint = safeStr(record.expectedBasisFingerprint);
 
   if (!frameSize) {
     return NextResponse.json(baseUnavailable("failed", "Missing or invalid frame size.", "not_used", generateOnly), { status: 200 });
@@ -978,6 +985,19 @@ export async function POST(request: Request) {
   }
   const originalSize = { width: originalMeta.width, height: originalMeta.height };
   const originalHash = createHash("sha256").update(original.buffer).digest("hex");
+  if (expectedBasisFingerprint && expectedBasisFingerprint !== originalHash) {
+    return NextResponse.json(
+      baseUnavailable(
+        "blocked",
+        "basis_fingerprint_mismatch",
+        "not_used",
+        generateOnly,
+        "manual_required",
+        originalHash
+      ),
+      { status: 200 }
+    );
+  }
 
   // 2. Generate / retrieve the Empty Room image (no charge / no persistence).
   const generation = await getOrGenerateEmptyRoomImage({
@@ -1010,6 +1030,7 @@ export async function POST(request: Request) {
 
   // Verify Empty Room decoded dimensions/orientation and classify compatibility.
   const emptyBuffer = Buffer.from(generation.image.base64, "base64");
+  const attestedEmptyBasisFingerprint = computeCalibrationImageFingerprint(emptyBuffer);
   const emptyMeta = await inspectImageMetadata(emptyBuffer);
   const compat = classifyCompatibility(
     { width: originalSize.width, height: originalSize.height, orientation: originalMeta.orientation },
@@ -1054,6 +1075,8 @@ export async function POST(request: Request) {
           generateOnly: true,
           emptyRoomAssistStatus: "generated",
           emptyRoomCacheStatus: emptyCacheStatus,
+          attestedOriginalBasisFingerprint: originalHash,
+          attestedEmptyBasisFingerprint: null,
           coordinateCompatibility,
           originalDetectionStatus: "skipped",
           emptyDetectionStatus: "skipped",
@@ -1256,6 +1279,8 @@ export async function POST(request: Request) {
       generateOnly: false,
       emptyRoomAssistStatus: assistStatus,
       emptyRoomCacheStatus: emptyCacheStatus,
+      attestedOriginalBasisFingerprint: originalHash,
+      attestedEmptyBasisFingerprint,
       coordinateCompatibility,
       originalDetectionStatus: originalStatus,
       emptyDetectionStatus: emptyStatus,

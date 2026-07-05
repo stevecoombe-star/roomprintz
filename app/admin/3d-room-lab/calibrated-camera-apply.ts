@@ -20,6 +20,7 @@ export type CalibratedCameraApplyCandidate = {
 };
 
 export type CalibratedCameraApplyFirstFailingGate =
+  | "basis"
   | "no-candidate"
   | "confidence"
   | "cv-avg"
@@ -41,8 +42,16 @@ export type CalibratedCameraApplyEvaluation = {
 
 export function evaluateCalibratedCameraApply(
   candidate: CalibratedCameraApplyCandidate | null,
-  unavailableReason?: string | null
+  unavailableReason?: string | null,
+  options?: { basisQualified: boolean; basisUnavailableReason?: string | null }
 ): CalibratedCameraApplyEvaluation {
+  if (options && !options.basisQualified) {
+    return {
+      available: false,
+      reason: options?.basisUnavailableReason ?? "current image basis is not authority-qualified",
+      firstFailingGate: "basis",
+    };
+  }
   if (!candidate) {
     return {
       available: false,
