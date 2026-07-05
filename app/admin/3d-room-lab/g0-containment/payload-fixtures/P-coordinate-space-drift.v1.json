@@ -1,0 +1,60 @@
+{
+  "schemaVersion": "vibode-3d-room-lab-scene-state/v0",
+  "roomImageUrl": "https://lab.synthetic/P-parent.jpg",
+  "model": {
+    "modelPath": "/lab/model.glb",
+    "normalization": {
+      "yOffset": 0,
+      "yawOffsetDeg": 0,
+      "scaleMultiplier": 1
+    }
+  },
+  "transform": {
+    "positionX": 0,
+    "positionY": 0,
+    "positionZ": 0,
+    "rotationYDegrees": 0,
+    "scale": 1,
+    "autoRotate": false
+  },
+  "floor": {
+    "polygon": [
+      { "x": 0.2, "y": 0.8 },
+      { "x": 0.8, "y": 0.8 },
+      { "x": 0.7, "y": 0.95 },
+      { "x": 0.3, "y": 0.95 }
+    ],
+    "overlayVisible": true,
+    "placementModeEnabled": false
+  },
+  "calibration": {
+    "calibrationVersion": "calibrated-camera/v2",
+    "solver": "homography-planar-cv/v1",
+    "intrinsics": { "verticalFovDeg": 50 },
+    "source": {
+      "imageBasis": {
+        "basisId": "basis-parent",
+        "basisFingerprint": "bd7ffe9c5e68fd5fce30faf94cafe57f5e0840ed74a03986f74d2526fc95e9c8",
+        "sourceImageUrl": "https://lab.synthetic/P-parent.jpg",
+        "decodedWidth": 320,
+        "decodedHeight": 240,
+        "encodedOrientation": 1,
+        "decodedOrientationNormal": true,
+        "orientationTransform": "identity",
+        "dimensionSource": "server",
+        "coordinateSpaceVersion": {
+          "decoderId": "sharp-metadata/v0-legacy",
+          "normalizationPolicyVersion": "orientation-normal/v1",
+          "orientationApplied": false
+        },
+        "basisKind": "original"
+      },
+      "sourceFloorPolygon": [
+        { "x": 0.2, "y": 0.8 },
+        { "x": 0.8, "y": 0.8 },
+        { "x": 0.7, "y": 0.95 },
+        { "x": 0.3, "y": 0.95 }
+      ]
+    }
+  }
+}

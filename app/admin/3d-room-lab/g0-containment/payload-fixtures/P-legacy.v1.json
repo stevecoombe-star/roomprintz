@@ -1,0 +1,35 @@
+{
+  "schemaVersion": "vibode-3d-room-lab-scene-state/v0",
+  "roomImageUrl": "https://lab.synthetic/P-parent.jpg",
+  "model": {
+    "modelPath": "/lab/model.glb"
+  },
+  "transform": {
+    "positionX": 0,
+    "positionY": 0,
+    "positionZ": 0,
+    "rotationYDegrees": 0,
+    "scale": 1,
+    "autoRotate": false
+  },
+  "floor": {
+    "polygon": [
+      { "x": 0.2, "y": 0.8 },
+      { "x": 0.8, "y": 0.8 },
+      { "x": 0.7, "y": 0.95 }
+    ],
+    "overlayVisible": true,
+    "placementModeEnabled": false
+  },
+  "calibration": {
+    "calibrationVersion": "calibrated-camera/v1",
+    "solver": "homography-planar-cv/v1",
+    "intrinsics": { "verticalFovDeg": 50 },
+    "frameAspect": 1.3333,
+    "source": {
+      "imageUrl": "https://lab.synthetic/P-parent.jpg",
+      "intrinsicWidth": 320,
+      "intrinsicHeight": 240
+    }
+  }
+}
