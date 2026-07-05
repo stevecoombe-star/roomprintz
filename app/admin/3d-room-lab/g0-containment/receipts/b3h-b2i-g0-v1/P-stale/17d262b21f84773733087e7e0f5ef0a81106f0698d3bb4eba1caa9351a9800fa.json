@@ -1,0 +1,94 @@
+{
+  "probeId": "P-stale",
+  "probePackageVersion": "b3h-b2i-g0-v1",
+  "fixtureReceiptReference": {
+    "fixtureId": "g0-P-stale-fixture-v1",
+    "fixtureVersion": "g0/P-stale/v1",
+    "expectedRefusalOrContainmentResult": "active authority receipt drops; fresh projection, re-solve, and requalification are required before any later activation attempt",
+    "expectedPipelineStage": "live frame-state transition"
+  },
+  "runMetadata": {
+    "runId": "benchmark-run:17d262b21f84773733087e7e0f5ef0a81106f0698d3bb4eba1caa9351a9800fa",
+    "runIdentityFingerprint": "benchmark-run-identity:a63e0155da45b4e29be407bcaa0fc8f67cb06eba59d0195a666a013623438676",
+    "runIdentity": {
+      "fixtureVersion": "g0/P-stale/v1",
+      "basisFingerprint": "2e8b55c2fb8f8b68ba28f6b01ecf327be32270a51cfde4fa2cfcfbbc29eabd67",
+      "coordinateSpaceVersion": {
+        "decoderId": "sharp-metadata/v1",
+        "normalizationPolicyVersion": "orientation-normal/v1",
+        "orientationApplied": false
+      },
+      "solverGeneratorVersion": "g0-harness/v1",
+      "evaluationVersion": "g0-eval/v1",
+      "evidenceBundleVersion": "g0-bundle/v1"
+    },
+    "createdAt": "2026-07-05T22:35:49.000Z",
+    "supersedesRunId": null,
+    "rerunReason": "evaluation_changed"
+  },
+  "primaryObservation": {
+    "observationKind": "derived_containment_conclusion",
+    "observedPipelineStage": "live frame-state transition",
+    "observedOperationalState": "calibration_not_attempted",
+    "outcome": "pass",
+    "expectedVsObservedComparison": "matches_expected",
+    "emittedResult": null,
+    "derivedContainmentConclusion": "active authority receipt drops; fresh projection, re-solve, and requalification are required before any later activation attempt",
+    "rawObservationReferences": [
+      "chat-screenshot:baseline-active-calibrated-snapshot-and-frame-1118x698",
+      "chat-screenshot:post-resize-legacy-snapshot-cleared-frame-1064x665"
+    ]
+  },
+  "noAuthorityChecks": [
+    {
+      "checkId": "qualification_refusal_result",
+      "status": "not_run"
+    },
+    {
+      "checkId": "restore_or_import_result",
+      "status": "not_run"
+    },
+    {
+      "checkId": "route_response_result",
+      "status": "not_run"
+    },
+    {
+      "checkId": "apply_gate_defense_in_depth",
+      "status": "not_run"
+    },
+    {
+      "checkId": "client_discard_predicate",
+      "status": "not_run"
+    },
+    {
+      "checkId": "live_snapshot_state_observation",
+      "status": "pass"
+    },
+    {
+      "checkId": "state_transition_predicate",
+      "status": "pass"
+    }
+  ],
+  "supportingHarnessChecks": [
+    {
+      "checkId": "shouldDropAuthorityOnFrameChange_predicate",
+      "required": true,
+      "status": "passed",
+      "failureClass": null
+    },
+    {
+      "checkId": "precondition_artifact_readouts",
+      "required": true,
+      "status": "passed",
+      "failureClass": null
+    }
+  ],
+  "artifactReferences": [
+    "precondition_artifact_url:http://localhost:3000/3d-lab/room-images/P-stale-precondition-v2.jpg",
+    "precondition_artifact_sha256:2e8b55c2fb8f8b68ba28f6b01ecf327be32270a51cfde4fa2cfcfbbc29eabd67",
+    "baseline_frame_dimensions:1118x698",
+    "post_trigger_frame_dimensions:1064x665"
+  ],
+  "manualObservationLog": "Single controlled browser/container frame transition changed the renderer from 1118 x 698 to 1064 x 665. The active calibrated snapshot was cleared: camera mode changed from Calibrated snapshot to Legacy; calibrated camera snapshot FOV and diagnostics became none; and frame match reported: reverted — frame changed; re-solve and re-qualify to restore authority. No second resize, calibration re-apply, polygon edit, FOV change, or floor-dimension change was performed.",
+  "incidentReference": null
+}
