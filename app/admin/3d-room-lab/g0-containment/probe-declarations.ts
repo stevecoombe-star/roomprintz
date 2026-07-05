@@ -117,7 +117,7 @@ export function buildG0ProbeDeclarations(): Record<G0ProbeId, BenchmarkFixtureRe
     "P-stale": {
       ...makeBaseSafetyReceipt("P-stale"),
       fixtureClass: "derivative_containment_probe",
-      sourceAssetIdentity: { kind: "source_asset", sourceAssetId: "P-stale-precondition-asset" },
+      sourceAssetIdentity: { kind: "source_asset", sourceAssetId: "P-stale-precondition-v2-asset" },
       expectedRefusalOrContainmentResult: BENCHMARK_P_STALE_CONTAINMENT_RESULT,
       expectedPipelineStage: "live frame-state transition",
       basisBinding: {

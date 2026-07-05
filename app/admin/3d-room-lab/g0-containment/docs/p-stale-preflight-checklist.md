@@ -2,14 +2,37 @@
 
 This checklist is a **B2I preflight artifact only**. It does not execute P-stale and does not create a formal G0 run record in-repo.
 
-## Preflight Gate (must be captured later, outside B2I execution)
+## Precondition Artifact (active v2)
 
-- Qualified-basis status is captured (exact status string).
-- Calibrated apply availability is captured with `firstFailingGate: none`.
-- Active snapshot presence is captured.
-- Exact active frame size is captured.
-- Artifact identity and digest are captured for `P-stale-precondition.jpg`.
-- Explicit preflight pass/fail decision is recorded.
+- Active URL (only URL to use for future B2P-E retry): `http://localhost:3000/3d-lab/room-images/P-stale-precondition-v2.jpg`
+- Minimum renderer width: `640 px`
+- Default floor mapping: `4 m x 4 m`
+- Marker-center placement map (single honest placement attempt only):
+  - `NL -> bottom-left marker`
+  - `NR -> bottom-right marker`
+  - `FR -> upper-right marker`
+  - `FL -> upper-left marker`
+- Artifact identity and digest are captured for `P-stale-precondition-v2.jpg` (v1 is lineage-only and retired from active preflight).
+
+## Expected Normal Desktop-Frame Readout Envelope
+
+- Recommended FOV: `59deg-61deg`
+- High-confidence range: strictly interior (not pinned to FOV bounds)
+- `cvAvg`: approximately `<= 2.2 px`
+- `cvMax`: approximately `<= 3.1 px`
+- Display/CV delta: approximately `0`
+- Scale ratio: safely inside current bounds
+- Apply status: available
+- `firstFailingGate: none`
+
+## Hard Stops (fail preflight)
+
+- FOV pinned at or within `5deg` of `20deg` or `90deg`
+- Recommended FOV outside `59deg-61deg`
+- Scale ratio outside `0.99-1.02`
+- Any apply-funnel gate failure after one honest marker-center placement
+
+No corner refinement is allowed after the one marker-center placement attempt. A failure is artifact/preflight evidence and never an invitation to sculpt the quadrilateral.
 
 ## Live Smoke Observation Window (B2E boundary)
 

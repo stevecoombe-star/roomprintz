@@ -30,6 +30,11 @@ import { buildLabRequestBody, startG0LoopbackAssetServer } from "../harness";
 import { validateG0ObservedRunRecord, type G0ObservedRunRecord } from "../observed-run-record";
 import { buildG0ObservedRunRecordPath, writeG0ObservedRunRecordImmutable } from "../observed-run-writer";
 import { loadPayloadFixture } from "../payload-fixtures";
+import {
+  P_STALE_PRECONDITION_V2_CANONICAL_RELATIVE_PATH,
+  P_STALE_PRECONDITION_V2_PUBLIC_MIRROR_RELATIVE_PATH,
+  P_STALE_PRECONDITION_V2_PUBLIC_URL_PATH,
+} from "../p-stale-precondition-v2-spec";
 import { buildG0ProbeDeclarations, validateG0ProbeDeclarations } from "../probe-declarations";
 import { G0_PROBE_PACKAGE_VERSION } from "../package";
 import { G0_SUPPORTING_CHECKS } from "../supporting-checks";
@@ -43,6 +48,13 @@ const P_STALE_PRECONDITION_PUBLIC_MIRROR_PATH = path.join(
   process.cwd(),
   "public/3d-lab/room-images/P-stale-precondition.jpg"
 );
+const P_STALE_PRECONDITION_V2_CANONICAL_PATH = path.join(process.cwd(), P_STALE_PRECONDITION_V2_CANONICAL_RELATIVE_PATH);
+const P_STALE_PRECONDITION_V2_PUBLIC_MIRROR_PATH = path.join(process.cwd(), P_STALE_PRECONDITION_V2_PUBLIC_MIRROR_RELATIVE_PATH);
+
+function publicUrlPathToPublicFilesystemPath(publicUrlPath: string): string {
+  const url = new URL(`http://localhost${publicUrlPath}`);
+  return path.join(process.cwd(), "public", url.pathname.replace(/^\/+/, ""));
+}
 
 const VALIDATION_CONFIG: SceneStateValidationConfig = {
   transformLimits: {
@@ -159,6 +171,7 @@ test("2) synthetic assets and payload digests match declared metadata", async ()
       assert.equal(metadata.width, asset.decodedWidth);
       assert.equal(metadata.height, asset.decodedHeight);
       assert.equal(metadata.orientation, asset.encodedOrientation);
+      assert.equal(asset.decodedOrientationNormal, metadata.orientation === 1);
     }
   }
 
@@ -170,8 +183,9 @@ test("2) synthetic assets and payload digests match declared metadata", async ()
 
 test("2b) P-stale precondition public mirror stays byte-identical to canonical source", async () => {
   const asset = G0_SYNTHETIC_ASSETS["P-stale-precondition"];
+  const mirrorPath = publicUrlPathToPublicFilesystemPath(P_STALE_PRECONDITION_PUBLIC_URL_PATH);
   const canonicalBytes = await readFile(P_STALE_PRECONDITION_CANONICAL_PATH);
-  const mirrorBytes = await readFile(P_STALE_PRECONDITION_PUBLIC_MIRROR_PATH);
+  const mirrorBytes = await readFile(mirrorPath);
 
   assert.ok(canonicalBytes.byteLength > 0);
   assert.ok(mirrorBytes.byteLength > 0);
@@ -194,9 +208,43 @@ test("2b) P-stale precondition public mirror stays byte-identical to canonical s
     assert.equal(canonicalMetadata.width, asset.decodedWidth);
     assert.equal(canonicalMetadata.height, asset.decodedHeight);
     assert.equal(canonicalMetadata.orientation, asset.encodedOrientation);
+    assert.equal(asset.decodedOrientationNormal, canonicalMetadata.orientation === 1);
   }
 
-  assert.equal(P_STALE_PRECONDITION_PUBLIC_URL_PATH, "/3d-lab/room-images/P-stale-precondition.jpg");
+  assert.equal(mirrorPath, P_STALE_PRECONDITION_PUBLIC_MIRROR_PATH);
+});
+
+test("2c) P-stale precondition v2 public mirror stays byte-identical to canonical source", async () => {
+  const asset = G0_SYNTHETIC_ASSETS["P-stale-precondition-v2"];
+  const mirrorPath = publicUrlPathToPublicFilesystemPath(P_STALE_PRECONDITION_V2_PUBLIC_URL_PATH);
+  const canonicalBytes = await readFile(P_STALE_PRECONDITION_V2_CANONICAL_PATH);
+  const mirrorBytes = await readFile(mirrorPath);
+
+  assert.ok(canonicalBytes.byteLength > 0);
+  assert.ok(mirrorBytes.byteLength > 0);
+  assert.deepEqual(mirrorBytes, canonicalBytes);
+
+  const canonicalDigest = computeCalibrationImageFingerprint(canonicalBytes);
+  const mirrorDigest = computeCalibrationImageFingerprint(mirrorBytes);
+  assert.equal(canonicalDigest, asset.sha256);
+  assert.equal(mirrorDigest, asset.sha256);
+
+  const canonicalMetadata = await inspectImageMetadata(canonicalBytes);
+  const mirrorMetadata = await inspectImageMetadata(mirrorBytes);
+  assert.equal(canonicalMetadata.ok, true);
+  assert.equal(mirrorMetadata.ok, true);
+  if (canonicalMetadata.ok && mirrorMetadata.ok) {
+    assert.equal(canonicalMetadata.width, mirrorMetadata.width);
+    assert.equal(canonicalMetadata.height, mirrorMetadata.height);
+    assert.equal(canonicalMetadata.orientation, mirrorMetadata.orientation);
+
+    assert.equal(canonicalMetadata.width, asset.decodedWidth);
+    assert.equal(canonicalMetadata.height, asset.decodedHeight);
+    assert.equal(canonicalMetadata.orientation, asset.encodedOrientation);
+    assert.equal(asset.decodedOrientationNormal, canonicalMetadata.orientation === 1);
+  }
+
+  assert.equal(mirrorPath, P_STALE_PRECONDITION_V2_PUBLIC_MIRROR_PATH);
 });
 
 test("3/4/5) qualification refusals for derivative, orientation, and dimension mismatch", async () => {

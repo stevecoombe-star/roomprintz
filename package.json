@@ -12,7 +12,8 @@
     "test:b1-contracts": "node --conditions=react-server --import tsx --test app/admin/3d-room-lab/benchmark-fixture-intake-contract.test.ts",
     "test:policy-a-containment": "node --conditions=react-server --import tsx --test app/admin/3d-room-lab/policy-a-containment.test.ts",
     "test:image-space": "node --conditions=react-server --import tsx --test app/admin/3d-room-lab/image-space.test.ts",
-    "test:calibration-image-basis": "node --conditions=react-server --import tsx --test app/admin/3d-room-lab/policy-a-containment.test.ts"
+    "test:calibration-image-basis": "node --conditions=react-server --import tsx --test app/admin/3d-room-lab/policy-a-containment.test.ts",
+    "generate:p-stale-precondition-v2": "node --conditions=react-server --import tsx app/admin/3d-room-lab/g0-containment/synthetic-assets/generate-p-stale-precondition-v2.ts --write"
   },
   "dependencies": {
     "@supabase/ssr": "^0.10.2",

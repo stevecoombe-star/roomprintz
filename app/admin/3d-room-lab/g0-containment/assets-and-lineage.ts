@@ -7,7 +7,8 @@ export type G0SyntheticAssetId =
   | "A-empty"
   | "A-gen"
   | "A-drift-b"
-  | "P-stale-precondition";
+  | "P-stale-precondition"
+  | "P-stale-precondition-v2";
 
 export type G0SyntheticAsset = {
   readonly assetId: G0SyntheticAssetId;
@@ -16,7 +17,11 @@ export type G0SyntheticAsset = {
   readonly decodedWidth: number;
   readonly decodedHeight: number;
   readonly encodedOrientation: number;
+  readonly decodedOrientationNormal: boolean;
   readonly parentAssetId: G0SyntheticAssetId | null;
+  readonly provenanceQuality: "lab_synthetic";
+  readonly authorityClass: "non_authoritative";
+  readonly retiredFromActivePreflight?: boolean;
 };
 
 export const G0_SYNTHETIC_ASSET_BASE_DIR = path.join(
@@ -32,7 +37,10 @@ export const G0_SYNTHETIC_ASSETS: Record<G0SyntheticAssetId, G0SyntheticAsset> =
     decodedWidth: 320,
     decodedHeight: 240,
     encodedOrientation: 1,
+    decodedOrientationNormal: true,
     parentAssetId: null,
+    provenanceQuality: "lab_synthetic",
+    authorityClass: "non_authoritative",
   },
   "A-exif": {
     assetId: "A-exif",
@@ -41,7 +49,10 @@ export const G0_SYNTHETIC_ASSETS: Record<G0SyntheticAssetId, G0SyntheticAsset> =
     decodedWidth: 320,
     decodedHeight: 240,
     encodedOrientation: 6,
+    decodedOrientationNormal: false,
     parentAssetId: "A-parent",
+    provenanceQuality: "lab_synthetic",
+    authorityClass: "non_authoritative",
   },
   "A-crop": {
     assetId: "A-crop",
@@ -50,7 +61,10 @@ export const G0_SYNTHETIC_ASSETS: Record<G0SyntheticAssetId, G0SyntheticAsset> =
     decodedWidth: 280,
     decodedHeight: 220,
     encodedOrientation: 1,
+    decodedOrientationNormal: true,
     parentAssetId: "A-parent",
+    provenanceQuality: "lab_synthetic",
+    authorityClass: "non_authoritative",
   },
   "A-empty": {
     assetId: "A-empty",
@@ -59,7 +73,10 @@ export const G0_SYNTHETIC_ASSETS: Record<G0SyntheticAssetId, G0SyntheticAsset> =
     decodedWidth: 320,
     decodedHeight: 240,
     encodedOrientation: 1,
+    decodedOrientationNormal: true,
     parentAssetId: "A-parent",
+    provenanceQuality: "lab_synthetic",
+    authorityClass: "non_authoritative",
   },
   "A-gen": {
     assetId: "A-gen",
@@ -68,7 +85,10 @@ export const G0_SYNTHETIC_ASSETS: Record<G0SyntheticAssetId, G0SyntheticAsset> =
     decodedWidth: 320,
     decodedHeight: 240,
     encodedOrientation: 1,
+    decodedOrientationNormal: true,
     parentAssetId: "A-parent",
+    provenanceQuality: "lab_synthetic",
+    authorityClass: "non_authoritative",
   },
   "A-drift-b": {
     assetId: "A-drift-b",
@@ -77,7 +97,10 @@ export const G0_SYNTHETIC_ASSETS: Record<G0SyntheticAssetId, G0SyntheticAsset> =
     decodedWidth: 320,
     decodedHeight: 240,
     encodedOrientation: 1,
+    decodedOrientationNormal: true,
     parentAssetId: "A-parent",
+    provenanceQuality: "lab_synthetic",
+    authorityClass: "non_authoritative",
   },
   "P-stale-precondition": {
     assetId: "P-stale-precondition",
@@ -87,6 +110,22 @@ export const G0_SYNTHETIC_ASSETS: Record<G0SyntheticAssetId, G0SyntheticAsset> =
     decodedHeight: 720,
     encodedOrientation: 1,
     parentAssetId: null,
+    decodedOrientationNormal: true,
+    provenanceQuality: "lab_synthetic",
+    authorityClass: "non_authoritative",
+    retiredFromActivePreflight: true,
+  },
+  "P-stale-precondition-v2": {
+    assetId: "P-stale-precondition-v2",
+    fileName: "P-stale-precondition-v2.jpg",
+    sha256: "2e8b55c2fb8f8b68ba28f6b01ecf327be32270a51cfde4fa2cfcfbbc29eabd67",
+    decodedWidth: 1280,
+    decodedHeight: 720,
+    encodedOrientation: 1,
+    decodedOrientationNormal: true,
+    parentAssetId: null,
+    provenanceQuality: "lab_synthetic",
+    authorityClass: "non_authoritative",
   },
 } as const;
 
