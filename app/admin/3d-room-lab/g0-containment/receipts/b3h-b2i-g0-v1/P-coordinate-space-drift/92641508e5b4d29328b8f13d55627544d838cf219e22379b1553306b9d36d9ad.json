@@ -1,0 +1,99 @@
+{
+  "probeId": "P-coordinate-space-drift",
+  "probePackageVersion": "b3h-b2i-g0-v1",
+  "fixtureReceiptReference": {
+    "fixtureId": "g0-P-coordinate-space-drift-fixture-v1",
+    "fixtureVersion": "g0/P-coordinate-space-drift/v1",
+    "expectedRefusalOrContainmentResult": "basis_coordinate_space_mismatch",
+    "expectedPipelineStage": "restore image-basis receipt comparison"
+  },
+  "runMetadata": {
+    "runId": "benchmark-run:92641508e5b4d29328b8f13d55627544d838cf219e22379b1553306b9d36d9ad",
+    "runIdentityFingerprint": "benchmark-run-identity:cb7912b54323c567f8ca9827066789da8092c255812423b557254b6a4d0f1593",
+    "runIdentity": {
+      "fixtureVersion": "g0/P-coordinate-space-drift/v1",
+      "basisFingerprint": "cbb35f77c7e558ea2a4c983f9d3b27251dec1979ec14bffd882c88f0c2a35558",
+      "coordinateSpaceVersion": {
+        "decoderId": "sharp-metadata/v1",
+        "normalizationPolicyVersion": "orientation-normal/v1",
+        "orientationApplied": false
+      },
+      "solverGeneratorVersion": "g0-harness/v1",
+      "evaluationVersion": "g0-eval/v1",
+      "evidenceBundleVersion": "g0-bundle/v1"
+    },
+    "createdAt": "2026-07-06T19:44:27.000Z",
+    "supersedesRunId": null,
+    "rerunReason": "evaluation_changed"
+  },
+  "primaryObservation": {
+    "observationKind": "emitted_application_result",
+    "observedPipelineStage": "restore image-basis receipt comparison",
+    "observedOperationalState": "calibration_not_attempted",
+    "outcome": "pass",
+    "expectedVsObservedComparison": "matches_expected",
+    "emittedResult": "basis_coordinate_space_mismatch",
+    "derivedContainmentConclusion": null,
+    "rawObservationReferences": []
+  },
+  "noAuthorityChecks": [
+    {
+      "checkId": "qualification_refusal_result",
+      "status": "pass"
+    },
+    {
+      "checkId": "restore_or_import_result",
+      "status": "pass"
+    },
+    {
+      "checkId": "route_response_result",
+      "status": "not_run"
+    },
+    {
+      "checkId": "apply_gate_defense_in_depth",
+      "status": "pass"
+    },
+    {
+      "checkId": "client_discard_predicate",
+      "status": "not_run"
+    },
+    {
+      "checkId": "live_snapshot_state_observation",
+      "status": "not_run"
+    },
+    {
+      "checkId": "state_transition_predicate",
+      "status": "not_run"
+    }
+  ],
+  "supportingHarnessChecks": [
+    {
+      "checkId": "qualification_equality_key_check",
+      "required": true,
+      "status": "passed",
+      "failureClass": null,
+      "notes": "Persisted coordinate-space key differs from current committed coordinate-space version."
+    },
+    {
+      "checkId": "apply_gate_defense_in_depth",
+      "required": true,
+      "status": "passed",
+      "failureClass": null,
+      "notes": "firstFailingGate=basis"
+    }
+  ],
+  "artifactReferences": [
+    "fixture_payload_path:app/admin/3d-room-lab/g0-containment/payload-fixtures/P-coordinate-space-drift.v1.json",
+    "payload_identity:payload-coordinate-space-drift-v1",
+    "payload_digest:cbb35f77c7e558ea2a4c983f9d3b27251dec1979ec14bffd882c88f0c2a35558",
+    "persisted_coordinate_space_decoder:sharp-metadata/v0-legacy",
+    "current_coordinate_space_decoder:sharp-metadata/v1",
+    "execution_mode:deterministic_execution_observed",
+    "pinned_call_input:loadPayloadFixture:P-coordinate-space-drift payloadIdentity=payload-coordinate-space-drift-v1",
+    "pinned_call_input:validateImportedSceneJson:config=scene-state-defaults-v1",
+    "pinned_call_input:evaluateCalibrationRestoreCompatibility:currentCoordinateSpace=sharp-metadata/v1",
+    "pinned_call_input:evaluateCalibratedCameraApply:basisQualified=false,basisUnavailableReason=basis_coordinate_space_mismatch"
+  ],
+  "manualObservationLog": "Deterministic execution observed via committed payload fixture, import validation, and restore compatibility mismatch check.\npayload-only probe: no image basis fetched or evaluated; runIdentity.basisFingerprint carries canonical payload digest",
+  "incidentReference": null
+}
