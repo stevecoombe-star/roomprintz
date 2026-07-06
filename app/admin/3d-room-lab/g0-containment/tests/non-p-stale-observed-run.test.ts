@@ -72,6 +72,10 @@ function buildMinimalInput(overrides?: Partial<NonPStaleMinimalInput>): NonPStal
   };
 }
 
+function countExact(values: readonly string[], expected: string): number {
+  return values.filter((value) => value === expected).length;
+}
+
 async function writeInputFile(root: string, data: unknown): Promise<string> {
   const inputPath = path.join(root, "input.json");
   await writeFile(inputPath, JSON.stringify(data, null, 2), "utf8");
@@ -353,6 +357,54 @@ test("builder rejects unknown, duplicate, and missing required supporting checks
   );
 });
 
+test("builder de-duplicates exact artifact references and preserves first occurrence order", async () => {
+  const provenance = await resolveNonPStaleProvenance("P-legacy");
+  const execution = await runDeterministicFirstSliceExecution({
+    probeId: "P-legacy",
+    provenance,
+  });
+  const runMetadata = await buildNonPStaleRunMetadata({
+    minimalInput: buildMinimalInput(),
+    provenance,
+  });
+  const duplicateOnly = "custom:exact";
+  const distinctVariant = "custom:exact ";
+  const record = buildNonPStaleObservedRunRecord({
+    probeId: "P-legacy",
+    provenance,
+    runMetadata,
+    execution: {
+      ...execution,
+      artifactReferences: [...execution.artifactReferences, duplicateOnly, duplicateOnly, distinctVariant],
+    },
+  });
+
+  assert.equal(countExact(record.artifactReferences, duplicateOnly), 1);
+  assert.equal(countExact(record.artifactReferences, distinctVariant), 1);
+
+  const fixturePayloadPath = provenance.artifactReferences.find((entry) =>
+    entry.startsWith("fixture_payload_path:")
+  );
+  const payloadIdentity = `payload_identity:${provenance.payloadIdentity}`;
+  const payloadDigest = `payload_digest:${provenance.payloadDigest}`;
+  const executionMode = "execution_mode:deterministic_execution_observed";
+
+  assert.ok(fixturePayloadPath);
+  const fixturePayloadPathIndex = record.artifactReferences.indexOf(fixturePayloadPath!);
+  const payloadIdentityIndex = record.artifactReferences.indexOf(payloadIdentity);
+  const payloadDigestIndex = record.artifactReferences.indexOf(payloadDigest);
+  const duplicateOnlyIndex = record.artifactReferences.indexOf(duplicateOnly);
+  const executionModeIndex = record.artifactReferences.indexOf(executionMode);
+  const distinctVariantIndex = record.artifactReferences.indexOf(distinctVariant);
+
+  assert.ok(fixturePayloadPathIndex >= 0);
+  assert.ok(payloadIdentityIndex > fixturePayloadPathIndex);
+  assert.ok(payloadDigestIndex > payloadIdentityIndex);
+  assert.ok(duplicateOnlyIndex > payloadDigestIndex);
+  assert.ok(distinctVariantIndex > duplicateOnlyIndex);
+  assert.ok(executionModeIndex > distinctVariantIndex);
+});
+
 test("all eight no-authority profiles exist and include all seven axes", () => {
   for (const probeId of NON_P_STALE_PROBES) {
     const profile = NON_P_STALE_NO_AUTHORITY_PROFILES[probeId];
@@ -396,6 +448,56 @@ test("deterministic adapters produce audited first-slice tokens and supporting c
   assert.deepEqual(
     coordinateExecution.supportingChecks.map((check) => check.checkId).sort(),
     ["apply_gate_defense_in_depth", "qualification_equality_key_check"]
+  );
+
+  const legacyRunMetadata = await buildNonPStaleRunMetadata({
+    minimalInput: buildMinimalInput(),
+    provenance: legacyProvenance,
+  });
+  const legacyRecord = buildNonPStaleObservedRunRecord({
+    probeId: "P-legacy",
+    provenance: legacyProvenance,
+    runMetadata: legacyRunMetadata,
+    execution: legacyExecution,
+  });
+  assert.equal(
+    countExact(
+      legacyRecord.artifactReferences,
+      `payload_identity:${G0_PAYLOAD_FIXTURES["P-legacy"].payloadIdentity}`
+    ),
+    1
+  );
+  assert.equal(
+    countExact(
+      legacyRecord.artifactReferences,
+      `payload_digest:${G0_PAYLOAD_FIXTURES["P-legacy"].payloadDigest}`
+    ),
+    1
+  );
+
+  const coordinateRunMetadata = await buildNonPStaleRunMetadata({
+    minimalInput: buildMinimalInput(),
+    provenance: coordinateProvenance,
+  });
+  const coordinateRecord = buildNonPStaleObservedRunRecord({
+    probeId: "P-coordinate-space-drift",
+    provenance: coordinateProvenance,
+    runMetadata: coordinateRunMetadata,
+    execution: coordinateExecution,
+  });
+  assert.equal(
+    countExact(
+      coordinateRecord.artifactReferences,
+      `payload_identity:${G0_PAYLOAD_FIXTURES["P-coordinate-space-drift"].payloadIdentity}`
+    ),
+    1
+  );
+  assert.equal(
+    countExact(
+      coordinateRecord.artifactReferences,
+      `payload_digest:${G0_PAYLOAD_FIXTURES["P-coordinate-space-drift"].payloadDigest}`
+    ),
+    1
   );
 });
 

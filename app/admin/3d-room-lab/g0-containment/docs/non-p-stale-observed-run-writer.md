@@ -45,6 +45,7 @@ Do **not** supply emitted result, supporting checks, artifact references, basis 
 ## Behavior summary
 
 - `execution_mode=deterministic_execution_observed` is always printed for supported probes.
+- Artifact references are assembled in declared order (provenance, execution evidence, execution mode, pinned call inputs), then exact duplicate strings are removed while preserving first occurrence order.
 - Payload probes record:
   - `payload_identity:<identity>`
   - `payload_digest:<digest>`

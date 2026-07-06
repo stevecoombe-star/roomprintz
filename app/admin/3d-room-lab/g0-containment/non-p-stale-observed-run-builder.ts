@@ -186,6 +186,21 @@ function assertExecutionEvidence(mode: NonPStaleExecutionEvidence): void {
   }
 }
 
+function dedupeArtifactReferences(
+  artifactReferences: readonly string[]
+): readonly string[] {
+  const seen = new Set<string>();
+  const deduped: string[] = [];
+  for (const reference of artifactReferences) {
+    if (seen.has(reference)) {
+      continue;
+    }
+    seen.add(reference);
+    deduped.push(reference);
+  }
+  return deduped;
+}
+
 export async function buildNonPStaleRunMetadata(input: {
   minimalInput: NonPStaleMinimalInput;
   provenance: NonPStaleResolvedProvenance;
@@ -264,6 +279,12 @@ export function buildNonPStaleObservedRunRecord(input: {
           "payload-only probe: no image basis fetched or evaluated; runIdentity.basisFingerprint carries canonical payload digest",
         ]
       : [];
+  const artifactReferences = dedupeArtifactReferences([
+    ...input.provenance.artifactReferences,
+    ...input.execution.artifactReferences,
+    `execution_mode:${modeLabel}`,
+    ...input.execution.pinnedCallInputs.map((entry) => `pinned_call_input:${entry}`),
+  ]);
   return {
     probeId: input.probeId,
     probePackageVersion: G0_PROBE_PACKAGE_VERSION,
@@ -287,12 +308,7 @@ export function buildNonPStaleObservedRunRecord(input: {
     },
     noAuthorityChecks,
     supportingHarnessChecks,
-    artifactReferences: [
-      ...input.provenance.artifactReferences,
-      ...input.execution.artifactReferences,
-      `execution_mode:${modeLabel}`,
-      ...input.execution.pinnedCallInputs.map((entry) => `pinned_call_input:${entry}`),
-    ],
+    artifactReferences,
     manualObservationLog: [input.execution.manualObservationLog, ...payloadClarification].join("\n"),
     incidentReference: null,
   };
