@@ -1,9 +1,15 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
+import type { Dirent } from "node:fs";
 import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
+import {
+  CALIBRATION_IMAGE_BASIS_COORDINATE_SPACE_VERSION,
+  evaluateCalibrationImageBasisEvidence,
+} from "@/app/admin/3d-room-lab/calibration-image-basis";
 import { validateG0ObservedRunRecord, type G0ObservedRunRecord } from "../observed-run-record";
 import {
   buildNonPStaleObservedRunRecord,
@@ -76,6 +82,22 @@ function countExact(values: readonly string[], expected: string): number {
   return values.filter((value) => value === expected).length;
 }
 
+function replaceFirstExact(
+  values: readonly string[],
+  expected: string,
+  replacement: string
+): readonly string[] {
+  const index = values.indexOf(expected);
+  assert.ok(index >= 0);
+  const mutated = [...values];
+  mutated[index] = replacement;
+  return mutated;
+}
+
+function removeReferencesWithPrefix(values: readonly string[], prefix: string): readonly string[] {
+  return values.filter((value) => !value.startsWith(prefix));
+}
+
 async function writeInputFile(root: string, data: unknown): Promise<string> {
   const inputPath = path.join(root, "input.json");
   await writeFile(inputPath, JSON.stringify(data, null, 2), "utf8");
@@ -103,6 +125,33 @@ async function countJsonFiles(root: string): Promise<number> {
     }
   }
   return count;
+}
+
+async function collectJsonFileHashes(root: string): Promise<readonly string[]> {
+  const digests: string[] = [];
+  async function visit(dir: string): Promise<void> {
+    let entries: Dirent[];
+    try {
+      entries = await readdir(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      const fullPath = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        await visit(fullPath);
+        continue;
+      }
+      if (!entry.isFile() || !entry.name.endsWith(".json")) {
+        continue;
+      }
+      const bytes = await readFile(fullPath);
+      const digest = createHash("sha256").update(bytes).digest("hex");
+      digests.push(`${path.relative(root, fullPath)}:${digest}`);
+    }
+  }
+  await visit(root);
+  return digests.sort();
 }
 
 async function withMutatedSyntheticAsset<T>(
@@ -422,6 +471,118 @@ test("all eight no-authority profiles exist and include all seven axes", () => {
 });
 
 test("deterministic adapters produce audited first-slice tokens and supporting checks", async () => {
+  const pgenProvenance = await resolveNonPStaleProvenance("P-gen");
+  const originalFetch = globalThis.fetch;
+  const pgenExecution = await (async () => {
+    try {
+      globalThis.fetch = (() => {
+        throw new Error("fetch_must_not_be_invoked");
+      }) as typeof globalThis.fetch;
+      return runDeterministicFirstSliceExecution({
+        probeId: "P-gen",
+        provenance: pgenProvenance,
+      });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  })();
+  assert.equal(pgenExecution.mode, "deterministic_execution_observed");
+  assert.equal(pgenExecution.emittedResult, "basis_derivative_not_authority_eligible");
+  assert.equal(pgenExecution.expectedVsObservedComparison, "matches_expected");
+  assert.equal(pgenExecution.outcome, "pass");
+  assert.deepEqual(pgenExecution.supportingChecks, [
+    {
+      checkId: "apply_gate_defense_in_depth",
+      status: "passed",
+      failureClass: null,
+      notes: "firstFailingGate=basis",
+    },
+  ]);
+  assert.equal(
+    pgenExecution.pinnedCallInputs.some(
+      (input) =>
+        input.includes("qualifyCalibrationImageBasis") ||
+        input.includes("inspectImageMetadata") ||
+        input.includes("computeCalibrationImageFingerprint")
+    ),
+    false
+  );
+  assert.equal(
+    pgenExecution.artifactReferences.includes("primary_call_fetch_boundary:none"),
+    true
+  );
+  assert.match(
+    pgenExecution.manualObservationLog,
+    /All byte access occurred solely in resolver provenance verification/
+  );
+  for (const forbidden of [
+    "evaluator",
+    "capability",
+    "metric",
+    "authority_label",
+    "external_reference",
+  ]) {
+    assert.equal(
+      pgenExecution.manualObservationLog.toLowerCase().includes(forbidden),
+      false
+    );
+  }
+
+  const pgenRunMetadata = await buildNonPStaleRunMetadata({
+    minimalInput: buildMinimalInput(),
+    provenance: pgenProvenance,
+  });
+  const pgenRecord = buildNonPStaleObservedRunRecord({
+    probeId: "P-gen",
+    provenance: pgenProvenance,
+    runMetadata: pgenRunMetadata,
+    execution: pgenExecution,
+  });
+  assert.deepEqual(
+    await validateG0ObservedRunRecord({
+      fixtureReceipt: pgenProvenance.fixtureReceipt,
+      record: pgenRecord,
+    }),
+    { ok: true }
+  );
+  const persistedText = JSON.stringify(pgenRecord).toLowerCase();
+  for (const forbidden of [
+    "evaluator",
+    "capability",
+    "metric",
+    "authority_label",
+    "external_reference",
+  ]) {
+    assert.equal(persistedText.includes(forbidden), false);
+  }
+
+  assert.equal(pgenProvenance.evaluatedImageDigest, G0_SYNTHETIC_ASSETS["A-gen"].sha256);
+  assert.equal(pgenProvenance.payloadIdentity, null);
+  assert.equal(pgenProvenance.payloadDigest, null);
+  assert.equal(pgenProvenance.driftImageDigest, null);
+  assert.equal(
+    pgenProvenance.artifactReferences.some((entry) => entry.endsWith("/A-gen.jpg")),
+    true
+  );
+  assert.equal(
+    pgenProvenance.artifactReferences.includes(
+      `fixture_image_digest:${G0_SYNTHETIC_ASSETS["A-gen"].sha256}`
+    ),
+    true
+  );
+  assert.deepEqual(
+    pgenRecord.noAuthorityChecks.map((check) => `${check.checkId}:${check.status}`),
+    [
+      "qualification_refusal_result:pass",
+      "restore_or_import_result:not_run",
+      "route_response_result:not_run",
+      "apply_gate_defense_in_depth:pass",
+      "client_discard_predicate:not_run",
+      "live_snapshot_state_observation:not_run",
+      "state_transition_predicate:not_run",
+    ]
+  );
+
   const legacyProvenance = await resolveNonPStaleProvenance("P-legacy");
   const legacyExecution = await runDeterministicFirstSliceExecution({
     probeId: "P-legacy",
@@ -501,6 +662,208 @@ test("deterministic adapters produce audited first-slice tokens and supporting c
   );
 });
 
+test("P-gen resolver binding and deterministic adapter fail closed on provenance drift", async () => {
+  const provenance = await resolveNonPStaleProvenance("P-gen");
+  assert.equal(provenance.probeId, "P-gen");
+  assert.equal(provenance.evaluatedImageDigest, G0_SYNTHETIC_ASSETS["A-gen"].sha256);
+  assert.equal(
+    provenance.canonicalRepoRelativePaths.some((entry) => entry.endsWith("/A-gen.jpg")),
+    true
+  );
+  assert.equal(
+    provenance.fixtureReceipt.expectedRefusalOrContainmentResult,
+    "basis_derivative_not_authority_eligible"
+  );
+  assert.equal(
+    provenance.fixtureReceipt.expectedPipelineStage,
+    "server basis evidence evaluation"
+  );
+
+  await assert.rejects(
+    runDeterministicFirstSliceExecution({
+      probeId: "P-gen",
+      provenance: {
+        ...provenance,
+        probeId: "P-empty",
+      } as any,
+    }),
+    /unexpected_provenance_probe:P-gen:P-empty/
+  );
+
+  await assert.rejects(
+    runDeterministicFirstSliceExecution({
+      probeId: "P-gen",
+      provenance: {
+        ...provenance,
+        evaluatedImageDigest: G0_SYNTHETIC_ASSETS["A-empty"].sha256,
+      },
+    }),
+    /provenance_digest_drift:P-gen/
+  );
+
+  await assert.rejects(
+    runDeterministicFirstSliceExecution({
+      probeId: "P-gen",
+      provenance: {
+        ...provenance,
+        canonicalRepoRelativePaths: ["app/admin/3d-room-lab/g0-containment/synthetic-assets/A-empty.jpg"],
+      },
+    }),
+    /canonical_a_gen_path_missing:P-gen/
+  );
+
+  await assert.rejects(
+    runDeterministicFirstSliceExecution({
+      probeId: "P-gen",
+      provenance: {
+        ...provenance,
+        fixtureReceipt: {
+          ...provenance.fixtureReceipt,
+          expectedRefusalOrContainmentResult: "basis_dimension_mismatch",
+        },
+      },
+    }),
+    /declaration_expected_result_mismatch:P-gen/
+  );
+
+  await assert.rejects(
+    runDeterministicFirstSliceExecution({
+      probeId: "P-gen",
+      provenance: {
+        ...provenance,
+        fixtureReceipt: {
+          ...provenance.fixtureReceipt,
+          expectedPipelineStage: "restore image-basis receipt comparison",
+        },
+      },
+    }),
+    /declaration_expected_stage_mismatch:P-gen/
+  );
+});
+
+test("P-gen metadata references fail closed and do not cross fetch boundary", async () => {
+  const provenance = await resolveNonPStaleProvenance("P-gen");
+  const dimensionsReference = provenance.artifactReferences.find((entry) =>
+    entry.startsWith("fixture_image_dimensions:")
+  );
+  const orientationReference = provenance.artifactReferences.find((entry) =>
+    entry.startsWith("fixture_image_orientation:")
+  );
+  assert.ok(dimensionsReference);
+  assert.ok(orientationReference);
+
+  async function expectMetadataReject(
+    artifactReferences: readonly string[],
+    errorPattern: RegExp
+  ): Promise<void> {
+    let fetchCalls = 0;
+    const originalFetch = globalThis.fetch;
+    try {
+      globalThis.fetch = ((..._args: Parameters<typeof fetch>) => {
+        fetchCalls += 1;
+        throw new Error("fetch_must_not_be_invoked");
+      }) as typeof globalThis.fetch;
+      await assert.rejects(
+        runDeterministicFirstSliceExecution({
+          probeId: "P-gen",
+          provenance: { ...provenance, artifactReferences: [...artifactReferences] },
+        }),
+        errorPattern
+      );
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+    assert.equal(fetchCalls, 0);
+  }
+
+  let successFetchCalls = 0;
+  const originalFetch = globalThis.fetch;
+  const validExecution = await (async () => {
+    try {
+      globalThis.fetch = ((..._args: Parameters<typeof fetch>) => {
+        successFetchCalls += 1;
+        throw new Error("fetch_must_not_be_invoked");
+      }) as typeof globalThis.fetch;
+      return runDeterministicFirstSliceExecution({
+        probeId: "P-gen",
+        provenance: {
+          ...provenance,
+          artifactReferences: [...provenance.artifactReferences],
+        },
+      });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  })();
+  assert.equal(validExecution.emittedResult, "basis_derivative_not_authority_eligible");
+  assert.equal(successFetchCalls, 0);
+
+  await expectMetadataReject(
+    removeReferencesWithPrefix(provenance.artifactReferences, "fixture_image_dimensions:"),
+    /missing_fixture_image_dimensions_reference:P-gen/
+  );
+  await expectMetadataReject(
+    removeReferencesWithPrefix(provenance.artifactReferences, "fixture_image_orientation:"),
+    /missing_fixture_image_orientation_reference:P-gen/
+  );
+  await expectMetadataReject(
+    replaceFirstExact(
+      provenance.artifactReferences,
+      dimensionsReference!,
+      "fixture_image_dimensions:0x240"
+    ),
+    /malformed_fixture_image_dimensions_reference:P-gen/
+  );
+  await expectMetadataReject(
+    replaceFirstExact(provenance.artifactReferences, orientationReference!, "fixture_image_orientation:0"),
+    /malformed_fixture_image_orientation_reference:P-gen/
+  );
+  await expectMetadataReject(
+    [...provenance.artifactReferences, dimensionsReference!],
+    /duplicate_fixture_image_dimensions_reference:P-gen/
+  );
+  await expectMetadataReject(
+    [...provenance.artifactReferences, "fixture_image_dimensions:999x777"],
+    /duplicate_fixture_image_dimensions_reference:P-gen/
+  );
+  await expectMetadataReject(
+    [...provenance.artifactReferences, orientationReference!],
+    /duplicate_fixture_image_orientation_reference:P-gen/
+  );
+  await expectMetadataReject(
+    [...provenance.artifactReferences, "fixture_image_orientation:7"],
+    /duplicate_fixture_image_orientation_reference:P-gen/
+  );
+  await expectMetadataReject(
+    replaceFirstExact(
+      provenance.artifactReferences,
+      dimensionsReference!,
+      "fixture_image_dimensions:321x241"
+    ),
+    /resolver_bound_metadata_mismatch:P-gen/
+  );
+  await expectMetadataReject(
+    replaceFirstExact(provenance.artifactReferences, orientationReference!, "fixture_image_orientation:2"),
+    /resolver_bound_metadata_mismatch:P-gen/
+  );
+  await expectMetadataReject(
+    replaceFirstExact(
+      provenance.artifactReferences,
+      dimensionsReference!,
+      `${dimensionsReference!}junk`
+    ),
+    /malformed_fixture_image_dimensions_reference:P-gen/
+  );
+  await expectMetadataReject(
+    replaceFirstExact(
+      provenance.artifactReferences,
+      orientationReference!,
+      `${orientationReference!}extra`
+    ),
+    /malformed_fixture_image_orientation_reference:P-gen/
+  );
+});
+
 test("minimal input parser rejects malformed and forbidden override fields", () => {
   assert.throws(() => parseNonPStaleMinimalInput("nope"), /input_must_be_object/);
   assert.throws(
@@ -533,35 +896,68 @@ test("wrong bytes are rejected even if expected derivative token is known", asyn
   );
 });
 
-test("CLI rejects P-stale and unsupported probes, and dry-run writes nothing", async () => {
+test("P-gen basis-evidence controls keep derivative refusal deterministic and coordinate-space pinned", () => {
+  const positiveOriginal = evaluateCalibrationImageBasisEvidence({
+    basisKind: "original",
+    browserDimensions: null,
+    coordinateSpaceVersion: CALIBRATION_IMAGE_BASIS_COORDINATE_SPACE_VERSION,
+    metadata: { width: 320, height: 240, orientation: 1 },
+  });
+  assert.deepEqual(positiveOriginal, { ok: true });
+
+  const coordinateSpacePreemption = evaluateCalibrationImageBasisEvidence({
+    basisKind: "derivative",
+    browserDimensions: null,
+    coordinateSpaceVersion: {
+      ...CALIBRATION_IMAGE_BASIS_COORDINATE_SPACE_VERSION,
+      decoderId: "sharp-metadata/v0",
+    },
+    metadata: { width: 320, height: 240, orientation: 1 },
+  });
+  assert.equal(coordinateSpacePreemption.ok, false);
+  if (coordinateSpacePreemption.ok) {
+    throw new Error("unexpected_coordinate_space_preemption_shape");
+  }
+  assert.equal(coordinateSpacePreemption.reason, "basis_coordinate_space_mismatch");
+});
+
+test("CLI allows P-gen but rejects P-stale and remaining unsupported probes", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "g0-non-p-stale-cli-reject-"));
   try {
     const inputPath = await writeInputFile(root, buildMinimalInput());
+    const pgenDryRun = runCli(["--probe", "P-gen", "--input", inputPath, "--root-dir", root]);
+    assert.equal(pgenDryRun.status, 0);
+    assert.match(pgenDryRun.stdout, /execution_mode=deterministic_execution_observed/);
+    assert.match(pgenDryRun.stdout, /mode=dry-run/);
+    assert.equal(await countJsonFiles(path.join(root, "g0-containment", "receipts")), 0);
+
     const stale = runCli(["--probe", "P-stale", "--input", inputPath, "--root-dir", root]);
     assert.equal(stale.status, 1);
     assert.match(stale.stderr, /no_execution_adapter_yet:P-stale/);
 
-    const unsupported = runCli(["--probe", "P-crop", "--input", inputPath, "--root-dir", root]);
-    assert.equal(unsupported.status, 1);
-    assert.match(unsupported.stderr, /no_execution_adapter_yet:P-crop/);
-
-    const dryRun = runCli(["--probe", "P-legacy", "--input", inputPath, "--root-dir", root]);
-    assert.equal(dryRun.status, 0);
-    assert.match(dryRun.stdout, /execution_mode=deterministic_execution_observed/);
-    assert.match(dryRun.stdout, /mode=dry-run/);
-    assert.equal(await countJsonFiles(path.join(root, "g0-containment", "receipts")), 0);
+    for (const probeId of [
+      "P-crop",
+      "P-empty",
+      "P-url-drift",
+      "P-dimension-mismatch",
+      "X4",
+    ] as const) {
+      const unsupported = runCli(["--probe", probeId, "--input", inputPath, "--root-dir", root]);
+      assert.equal(unsupported.status, 1);
+      assert.match(unsupported.stderr, new RegExp(`no_execution_adapter_yet:${probeId}`));
+    }
   } finally {
     await rm(root, { recursive: true, force: true });
   }
 });
 
-test("CLI write uses temp root, re-read validates, and repeat write fails target exists", async () => {
+test("CLI write uses temp root, writes one immutable P-gen record, and repeat write fails target exists", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "g0-non-p-stale-cli-write-"));
   try {
     const inputPath = await writeInputFile(root, buildMinimalInput());
     const first = runCli([
       "--probe",
-      "P-coordinate-space-drift",
+      "P-gen",
       "--input",
       inputPath,
       "--root-dir",
@@ -578,9 +974,10 @@ test("CLI write uses temp root, re-read validates, and repeat write fails target
       .trim();
     assert.ok(recordPath);
     assert.ok(recordPath!.startsWith(root));
+    assert.equal(await countJsonFiles(path.join(root, "g0-containment", "receipts")), 1);
 
     const persisted = JSON.parse(await readFile(recordPath!, "utf8")) as G0ObservedRunRecord;
-    const provenance = await resolveNonPStaleProvenance("P-coordinate-space-drift");
+    const provenance = await resolveNonPStaleProvenance("P-gen");
     assert.deepEqual(
       await validateG0ObservedRunRecord({
         fixtureReceipt: provenance.fixtureReceipt,
@@ -591,7 +988,7 @@ test("CLI write uses temp root, re-read validates, and repeat write fails target
 
     const second = runCli([
       "--probe",
-      "P-coordinate-space-drift",
+      "P-gen",
       "--input",
       inputPath,
       "--root-dir",
@@ -605,16 +1002,19 @@ test("CLI write uses temp root, re-read validates, and repeat write fails target
   }
 });
 
-test("tests do not create new repository receipt records", async () => {
-  const before = await countJsonFiles(REPO_RECEIPTS_ROOT);
+test("tests do not create or mutate repository receipt records", async () => {
+  const beforeCount = await countJsonFiles(REPO_RECEIPTS_ROOT);
+  const beforeHashes = await collectJsonFileHashes(REPO_RECEIPTS_ROOT);
   const root = await mkdtemp(path.join(tmpdir(), "g0-non-p-stale-cli-repo-guard-"));
   try {
     const inputPath = await writeInputFile(root, buildMinimalInput());
-    const run = runCli(["--probe", "P-legacy", "--input", inputPath, "--root-dir", root, "--write"]);
+    const run = runCli(["--probe", "P-gen", "--input", inputPath, "--root-dir", root, "--write"]);
     assert.equal(run.status, 0);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
-  const after = await countJsonFiles(REPO_RECEIPTS_ROOT);
-  assert.equal(after, before);
+  const afterCount = await countJsonFiles(REPO_RECEIPTS_ROOT);
+  const afterHashes = await collectJsonFileHashes(REPO_RECEIPTS_ROOT);
+  assert.equal(afterCount, beforeCount);
+  assert.deepEqual(afterHashes, beforeHashes);
 });

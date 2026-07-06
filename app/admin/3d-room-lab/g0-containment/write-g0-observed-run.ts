@@ -15,6 +15,7 @@ import {
 import { G0_PROBE_IDS, type G0ProbeId } from "./package";
 
 const FIRST_SLICE_EXECUTABLE_PROBES = new Set<NonPStaleProbeId>([
+  "P-gen",
   "P-legacy",
   "P-coordinate-space-drift",
 ]);
