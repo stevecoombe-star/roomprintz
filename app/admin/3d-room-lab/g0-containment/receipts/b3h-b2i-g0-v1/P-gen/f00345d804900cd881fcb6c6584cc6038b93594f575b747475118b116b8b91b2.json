@@ -1,0 +1,91 @@
+{
+  "probeId": "P-gen",
+  "probePackageVersion": "b3h-b2i-g0-v1",
+  "fixtureReceiptReference": {
+    "fixtureId": "g0-P-gen-fixture-v1",
+    "fixtureVersion": "g0/P-gen/v1",
+    "expectedRefusalOrContainmentResult": "basis_derivative_not_authority_eligible",
+    "expectedPipelineStage": "server basis evidence evaluation"
+  },
+  "runMetadata": {
+    "runId": "benchmark-run:f00345d804900cd881fcb6c6584cc6038b93594f575b747475118b116b8b91b2",
+    "runIdentityFingerprint": "benchmark-run-identity:ddb235ab28f5ac1951f4da94c162d1e44d22f6a2f6a9893fce5f539570040768",
+    "runIdentity": {
+      "fixtureVersion": "g0/P-gen/v1",
+      "basisFingerprint": "f907cae15ee9cd81b18db63a541688ba85585d18806276e1e9e5c15f5b3990a2",
+      "coordinateSpaceVersion": {
+        "decoderId": "sharp-metadata/v1",
+        "normalizationPolicyVersion": "orientation-normal/v1",
+        "orientationApplied": false
+      },
+      "solverGeneratorVersion": "g0-harness/v1",
+      "evaluationVersion": "g0-eval/v1",
+      "evidenceBundleVersion": "g0-bundle/v1"
+    },
+    "createdAt": "2026-07-06T21:04:05.000Z",
+    "supersedesRunId": null,
+    "rerunReason": "evaluation_changed"
+  },
+  "primaryObservation": {
+    "observationKind": "emitted_application_result",
+    "observedPipelineStage": "server basis evidence evaluation",
+    "observedOperationalState": "calibration_not_attempted",
+    "outcome": "pass",
+    "expectedVsObservedComparison": "matches_expected",
+    "emittedResult": "basis_derivative_not_authority_eligible",
+    "derivedContainmentConclusion": null,
+    "rawObservationReferences": []
+  },
+  "noAuthorityChecks": [
+    {
+      "checkId": "qualification_refusal_result",
+      "status": "pass"
+    },
+    {
+      "checkId": "restore_or_import_result",
+      "status": "not_run"
+    },
+    {
+      "checkId": "route_response_result",
+      "status": "not_run"
+    },
+    {
+      "checkId": "apply_gate_defense_in_depth",
+      "status": "pass"
+    },
+    {
+      "checkId": "client_discard_predicate",
+      "status": "not_run"
+    },
+    {
+      "checkId": "live_snapshot_state_observation",
+      "status": "not_run"
+    },
+    {
+      "checkId": "state_transition_predicate",
+      "status": "not_run"
+    }
+  ],
+  "supportingHarnessChecks": [
+    {
+      "checkId": "apply_gate_defense_in_depth",
+      "required": true,
+      "status": "passed",
+      "failureClass": null,
+      "notes": "firstFailingGate=basis"
+    }
+  ],
+  "artifactReferences": [
+    "fixture_image_path:app/admin/3d-room-lab/g0-containment/synthetic-assets/A-gen.jpg",
+    "fixture_image_digest:f907cae15ee9cd81b18db63a541688ba85585d18806276e1e9e5c15f5b3990a2",
+    "fixture_image_dimensions:320x240",
+    "fixture_image_orientation:1",
+    "canonical_image_path:app/admin/3d-room-lab/g0-containment/synthetic-assets/A-gen.jpg",
+    "primary_call_fetch_boundary:none",
+    "execution_mode:deterministic_execution_observed",
+    "pinned_call_input:evaluateCalibrationImageBasisEvidence:basisKind=derivative,browserDimensions=null,coordinateSpace=sharp-metadata/v1,metadata=320x240/orientation=1",
+    "pinned_call_input:evaluateCalibratedCameraApply:basisQualified=false,basisUnavailableReason=basis_derivative_not_authority_eligible"
+  ],
+  "manualObservationLog": "The committed resolver re-hashed and provenance-bound A-gen from its canonical committed path, including digest, dimensions, orientation, and parent lineage.\nThe primary emission was a derivative-basis refusal produced by the pure basis-evidence function and did not itself fetch, decode, hash, or read A-gen bytes. All byte access occurred solely in resolver provenance verification.",
+  "incidentReference": null
+}
