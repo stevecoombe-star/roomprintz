@@ -7,6 +7,10 @@ import {
   type SceneStateValidationConfig,
 } from "@/app/admin/3d-room-lab/scene-state";
 import { G0_SYNTHETIC_ASSETS } from "./assets-and-lineage";
+import {
+  observePdimensionMismatchRouteContainment,
+  P_DIMENSION_PINNED_SYNTHETIC_DIMENSIONS,
+} from "./p-dimension-route-harness";
 import type { NonPStaleExecutionEvidence } from "./non-p-stale-observed-run-builder";
 import type { NonPStaleProbeId, NonPStaleResolvedProvenance } from "./non-p-stale-provenance-resolver";
 import { loadPayloadFixture } from "./payload-fixtures";
@@ -67,7 +71,10 @@ function assertPayloadProvenance(
   };
 }
 
-function extractResolverBoundImageMetadata(provenance: NonPStaleResolvedProvenance): {
+function extractResolverBoundImageMetadata(
+  probeId: "P-gen" | "P-dimension-mismatch",
+  provenance: NonPStaleResolvedProvenance
+): {
   width: number;
   height: number;
   orientation: number;
@@ -81,46 +88,46 @@ function extractResolverBoundImageMetadata(provenance: NonPStaleResolvedProvenan
   for (const entry of provenance.artifactReferences) {
     if (entry.includes("fixture_image_dimensions:")) {
       if (!entry.startsWith("fixture_image_dimensions:")) {
-        throw new Error("malformed_fixture_image_dimensions_reference:P-gen");
+        throw new Error(`malformed_fixture_image_dimensions_reference:${probeId}`);
       }
       const dimensionsMatch = entry.match(dimensionsPattern);
       if (!dimensionsMatch) {
-        throw new Error("malformed_fixture_image_dimensions_reference:P-gen");
+        throw new Error(`malformed_fixture_image_dimensions_reference:${probeId}`);
       }
       if (dimensions !== null) {
-        throw new Error("duplicate_fixture_image_dimensions_reference:P-gen");
+        throw new Error(`duplicate_fixture_image_dimensions_reference:${probeId}`);
       }
       const width = Number.parseInt(dimensionsMatch[1], 10);
       const height = Number.parseInt(dimensionsMatch[2], 10);
       if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
-        throw new Error("malformed_fixture_image_dimensions_reference:P-gen");
+        throw new Error(`malformed_fixture_image_dimensions_reference:${probeId}`);
       }
       dimensions = { width, height };
     }
 
     if (entry.includes("fixture_image_orientation:")) {
       if (!entry.startsWith("fixture_image_orientation:")) {
-        throw new Error("malformed_fixture_image_orientation_reference:P-gen");
+        throw new Error(`malformed_fixture_image_orientation_reference:${probeId}`);
       }
       const orientationMatch = entry.match(orientationPattern);
       if (!orientationMatch) {
-        throw new Error("malformed_fixture_image_orientation_reference:P-gen");
+        throw new Error(`malformed_fixture_image_orientation_reference:${probeId}`);
       }
       if (orientation !== null) {
-        throw new Error("duplicate_fixture_image_orientation_reference:P-gen");
+        throw new Error(`duplicate_fixture_image_orientation_reference:${probeId}`);
       }
       const parsedOrientation = Number.parseInt(orientationMatch[1], 10);
       if (!Number.isFinite(parsedOrientation) || parsedOrientation <= 0) {
-        throw new Error("malformed_fixture_image_orientation_reference:P-gen");
+        throw new Error(`malformed_fixture_image_orientation_reference:${probeId}`);
       }
       orientation = parsedOrientation;
     }
   }
   if (!dimensions) {
-    throw new Error("missing_fixture_image_dimensions_reference:P-gen");
+    throw new Error(`missing_fixture_image_dimensions_reference:${probeId}`);
   }
   if (orientation === null) {
-    throw new Error("missing_fixture_image_orientation_reference:P-gen");
+    throw new Error(`missing_fixture_image_orientation_reference:${probeId}`);
   }
   return {
     width: dimensions.width,
@@ -161,7 +168,7 @@ function runPgenDeterministicChain(
       throw new Error("declaration_expected_stage_mismatch:P-gen");
     }
 
-    const metadata = extractResolverBoundImageMetadata(provenance);
+    const metadata = extractResolverBoundImageMetadata("P-gen", provenance);
     const expectedMetadata = {
       width: G0_SYNTHETIC_ASSETS["A-gen"].decodedWidth,
       height: G0_SYNTHETIC_ASSETS["A-gen"].decodedHeight,
@@ -220,6 +227,146 @@ function runPgenDeterministicChain(
       artifactReferences: [`canonical_image_path:${canonicalAgenPath}`, "primary_call_fetch_boundary:none"],
       manualObservationLog:
         "The committed resolver re-hashed and provenance-bound A-gen from its canonical committed path, including digest, dimensions, orientation, and parent lineage.\nThe primary emission was a derivative-basis refusal produced by the pure basis-evidence function and did not itself fetch, decode, hash, or read A-gen bytes. All byte access occurred solely in resolver provenance verification.",
+    };
+  })();
+}
+
+function runPdimensionMismatchDeterministicChain(
+  provenance: NonPStaleResolvedProvenance
+): Promise<NonPStaleExecutionEvidence> {
+  return (async () => {
+    if (provenance.probeId !== "P-dimension-mismatch") {
+      throw new Error(`unexpected_provenance_probe:P-dimension-mismatch:${provenance.probeId}`);
+    }
+    if (provenance.evaluatedImageDigest !== G0_SYNTHETIC_ASSETS["A-parent"].sha256) {
+      throw new Error("provenance_digest_drift:P-dimension-mismatch");
+    }
+    const canonicalAParentPath = provenance.canonicalRepoRelativePaths.find((entry) =>
+      entry.endsWith("/A-parent.jpg")
+    );
+    if (!canonicalAParentPath) {
+      throw new Error("canonical_a_parent_path_missing:P-dimension-mismatch");
+    }
+    if (provenance.payloadIdentity !== null || provenance.payloadDigest !== null) {
+      throw new Error("payload_fields_must_be_null:P-dimension-mismatch");
+    }
+    if (provenance.driftImageDigest !== null) {
+      throw new Error("drift_digest_must_be_null:P-dimension-mismatch");
+    }
+    if (provenance.fixtureReceipt.expectedRefusalOrContainmentResult !== "basis_dimension_mismatch") {
+      throw new Error("declaration_expected_result_mismatch:P-dimension-mismatch");
+    }
+    if (provenance.fixtureReceipt.expectedPipelineStage !== "server basis evidence evaluation") {
+      throw new Error("declaration_expected_stage_mismatch:P-dimension-mismatch");
+    }
+
+    const resolverBoundAParentMetadata = extractResolverBoundImageMetadata(
+      "P-dimension-mismatch",
+      provenance
+    );
+    const expectedMetadata = {
+      width: G0_SYNTHETIC_ASSETS["A-parent"].decodedWidth,
+      height: G0_SYNTHETIC_ASSETS["A-parent"].decodedHeight,
+      orientation: G0_SYNTHETIC_ASSETS["A-parent"].encodedOrientation,
+    };
+    if (
+      resolverBoundAParentMetadata.width !== expectedMetadata.width ||
+      resolverBoundAParentMetadata.height !== expectedMetadata.height ||
+      resolverBoundAParentMetadata.orientation !== expectedMetadata.orientation
+    ) {
+      throw new Error("resolver_bound_metadata_mismatch:P-dimension-mismatch");
+    }
+
+    const primaryEvidence = evaluateCalibrationImageBasisEvidence({
+      metadata: resolverBoundAParentMetadata,
+      browserDimensions: P_DIMENSION_PINNED_SYNTHETIC_DIMENSIONS,
+      coordinateSpaceVersion: CALIBRATION_IMAGE_BASIS_COORDINATE_SPACE_VERSION,
+      basisKind: "original",
+    });
+    if (primaryEvidence.ok) {
+      throw new Error("unexpected_valid_result:P-dimension-mismatch");
+    }
+    if (primaryEvidence.reason !== "basis_dimension_mismatch") {
+      throw new Error("unexpected_emitted_token:P-dimension-mismatch");
+    }
+
+    const routeObservation = await observePdimensionMismatchRouteContainment({
+      expectedBasisFingerprint: provenance.evaluatedImageDigest,
+      canonicalAParentRepoRelativePath: canonicalAParentPath,
+    });
+    if (routeObservation.httpStatus !== 200 || routeObservation.responseStatus !== "failed") {
+      throw new Error("route_response_unexpected_status:P-dimension-mismatch");
+    }
+    if (routeObservation.candidatesLength !== 0 || routeObservation.selectedCandidateId !== null) {
+      throw new Error("route_response_unexpected_candidates:P-dimension-mismatch");
+    }
+    if (
+      routeObservation.failureReason !==
+      "Room image dimensions changed before vision calibration could run."
+    ) {
+      throw new Error("route_response_unexpected_failure_reason:P-dimension-mismatch");
+    }
+    if (routeObservation.attestedBasisFingerprint !== provenance.evaluatedImageDigest) {
+      throw new Error("route_attested_fingerprint_mismatch:P-dimension-mismatch");
+    }
+    if (
+      routeObservation.servedRequestPaths.length !== 1 ||
+      routeObservation.servedRequestPaths[0] !== "GET /A-parent.jpg"
+    ) {
+      throw new Error("route_response_unexpected_request_log:P-dimension-mismatch");
+    }
+    if (routeObservation.modelTripwireInvoked !== false) {
+      throw new Error("model_tripwire_reached:P-dimension-mismatch");
+    }
+
+    const defensiveApply = evaluateCalibratedCameraApply(null, null, {
+      basisQualified: false,
+      basisUnavailableReason: "basis_dimension_mismatch",
+    });
+    if (
+      defensiveApply.available !== false ||
+      defensiveApply.reason !== "basis_dimension_mismatch" ||
+      defensiveApply.firstFailingGate !== "basis"
+    ) {
+      throw new Error("apply_gate_mismatch:P-dimension-mismatch");
+    }
+
+    return {
+      mode: "deterministic_execution_observed",
+      emittedResult: "basis_dimension_mismatch",
+      expectedVsObservedComparison: "matches_expected",
+      outcome: "pass",
+      supportingChecks: [
+        {
+          checkId: "vision_route_pre_model_dimension_verification",
+          status: "passed",
+          failureClass: null,
+          notes:
+            "route_response_result records whether the route response body carried the probe's declared containment token. It remains not_run when a route supporting branch returns prose rather than that declared token.",
+        },
+        {
+          checkId: "apply_gate_defense_in_depth",
+          status: "passed",
+          failureClass: null,
+          notes: `firstFailingGate=${defensiveApply.firstFailingGate}`,
+        },
+      ],
+      pinnedCallInputs: [
+        `evaluateCalibrationImageBasisEvidence:basisKind=original,browserDimensions=${P_DIMENSION_PINNED_SYNTHETIC_DIMENSIONS.width}x${P_DIMENSION_PINNED_SYNTHETIC_DIMENSIONS.height},coordinateSpace=${CALIBRATION_IMAGE_BASIS_COORDINATE_SPACE_VERSION.decoderId},metadata=${resolverBoundAParentMetadata.width}x${resolverBoundAParentMetadata.height}/orientation=${resolverBoundAParentMetadata.orientation}`,
+        `route.POST:detect-vision,inProcess=true,imageUrl=loopback:/A-parent.jpg,intrinsicSize=${P_DIMENSION_PINNED_SYNTHETIC_DIMENSIONS.width}x${P_DIMENSION_PINNED_SYNTHETIC_DIMENSIONS.height},expectedBasisFingerprint=${provenance.evaluatedImageDigest}`,
+        "evaluateCalibratedCameraApply:basisQualified=false,basisUnavailableReason=basis_dimension_mismatch",
+      ],
+      artifactReferences: [
+        `canonical_image_path:${canonicalAParentPath}`,
+        "primary_call_fetch_boundary:none",
+        "route_supporting_fetch_boundary:loopback_127.0.0.1_3000_only",
+        "route_served_request_path:/A-parent.jpg",
+        `route_attested_basis_fingerprint:${routeObservation.attestedBasisFingerprint}`,
+        "route_failure_reason_kind:prose_not_containment_token",
+        "model_boundary:tripwire_installed_not_reached",
+      ],
+      manualObservationLog:
+        "The committed resolver re-read, hashed, decoded, and provenance-bound A-parent from its canonical committed path.\nThe pure primary call used resolver-bound metadata plus code-pinned synthetic dimensions and did not read image bytes.\nThe supporting route handler fetched controlled loopback bytes, decoded them, performed the dimension comparison before model execution, and returned prose rather than the containment token.\nThe model tripwire was installed and never reached.",
     };
   })();
 }
@@ -386,6 +533,9 @@ export async function runDeterministicFirstSliceExecution(input: {
 }): Promise<NonPStaleExecutionEvidence> {
   if (input.probeId === "P-gen") {
     return runPgenDeterministicChain(input.provenance);
+  }
+  if (input.probeId === "P-dimension-mismatch") {
+    return runPdimensionMismatchDeterministicChain(input.provenance);
   }
   if (input.probeId === "P-legacy") {
     return runPlegacyDeterministicChain(input.provenance);

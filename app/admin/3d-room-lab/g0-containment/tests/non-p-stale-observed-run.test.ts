@@ -19,6 +19,15 @@ import {
   type NonPStaleMinimalInput,
 } from "../non-p-stale-observed-run-builder";
 import { runDeterministicFirstSliceExecution } from "../non-p-stale-first-slice-execution";
+import { P_DIMENSION_PINNED_SYNTHETIC_DIMENSIONS } from "../p-dimension-route-harness";
+
+const includesNonPStaleEntry = process.argv.some((arg) => arg.endsWith("non-p-stale-observed-run.test.ts"));
+const includesStandalonePdimensionHarness = process.argv.some((arg) =>
+  arg.endsWith("p-dimension-route-harness.test.ts")
+);
+if (includesNonPStaleEntry && !includesStandalonePdimensionHarness) {
+  require("./p-dimension-route-harness.test");
+}
 import {
   NON_P_STALE_DECLARATION_BINDINGS,
   resolveNonPStaleProvenance,
@@ -741,6 +750,101 @@ test("P-gen resolver binding and deterministic adapter fail closed on provenance
   );
 });
 
+test("P-dimension resolver binding and deterministic adapter fail closed on provenance drift", async () => {
+  const provenance = await resolveNonPStaleProvenance("P-dimension-mismatch");
+  assert.equal(provenance.probeId, "P-dimension-mismatch");
+  assert.equal(provenance.evaluatedImageDigest, G0_SYNTHETIC_ASSETS["A-parent"].sha256);
+  assert.equal(
+    provenance.canonicalRepoRelativePaths.some((entry) => entry.endsWith("/A-parent.jpg")),
+    true
+  );
+  assert.equal(provenance.fixtureReceipt.expectedRefusalOrContainmentResult, "basis_dimension_mismatch");
+  assert.equal(provenance.fixtureReceipt.expectedPipelineStage, "server basis evidence evaluation");
+
+  await assert.rejects(
+    runDeterministicFirstSliceExecution({
+      probeId: "P-dimension-mismatch",
+      provenance: {
+        ...provenance,
+        probeId: "P-empty",
+      } as any,
+    }),
+    /unexpected_provenance_probe:P-dimension-mismatch:P-empty/
+  );
+
+  await assert.rejects(
+    runDeterministicFirstSliceExecution({
+      probeId: "P-dimension-mismatch",
+      provenance: {
+        ...provenance,
+        evaluatedImageDigest: G0_SYNTHETIC_ASSETS["A-empty"].sha256,
+      },
+    }),
+    /provenance_digest_drift:P-dimension-mismatch/
+  );
+
+  await assert.rejects(
+    runDeterministicFirstSliceExecution({
+      probeId: "P-dimension-mismatch",
+      provenance: {
+        ...provenance,
+        canonicalRepoRelativePaths: ["app/admin/3d-room-lab/g0-containment/synthetic-assets/A-empty.jpg"],
+      },
+    }),
+    /canonical_a_parent_path_missing:P-dimension-mismatch/
+  );
+
+  await assert.rejects(
+    runDeterministicFirstSliceExecution({
+      probeId: "P-dimension-mismatch",
+      provenance: {
+        ...provenance,
+        payloadIdentity: "unexpected",
+      },
+    }),
+    /payload_fields_must_be_null:P-dimension-mismatch/
+  );
+
+  await assert.rejects(
+    runDeterministicFirstSliceExecution({
+      probeId: "P-dimension-mismatch",
+      provenance: {
+        ...provenance,
+        driftImageDigest: G0_SYNTHETIC_ASSETS["A-drift-b"].sha256,
+      },
+    }),
+    /drift_digest_must_be_null:P-dimension-mismatch/
+  );
+
+  await assert.rejects(
+    runDeterministicFirstSliceExecution({
+      probeId: "P-dimension-mismatch",
+      provenance: {
+        ...provenance,
+        fixtureReceipt: {
+          ...provenance.fixtureReceipt,
+          expectedRefusalOrContainmentResult: "basis_derivative_not_authority_eligible",
+        },
+      },
+    }),
+    /declaration_expected_result_mismatch:P-dimension-mismatch/
+  );
+
+  await assert.rejects(
+    runDeterministicFirstSliceExecution({
+      probeId: "P-dimension-mismatch",
+      provenance: {
+        ...provenance,
+        fixtureReceipt: {
+          ...provenance.fixtureReceipt,
+          expectedPipelineStage: "restore image-basis receipt comparison",
+        },
+      },
+    }),
+    /declaration_expected_stage_mismatch:P-dimension-mismatch/
+  );
+});
+
 test("P-gen metadata references fail closed and do not cross fetch boundary", async () => {
   const provenance = await resolveNonPStaleProvenance("P-gen");
   const dimensionsReference = provenance.artifactReferences.find((entry) =>
@@ -864,6 +968,219 @@ test("P-gen metadata references fail closed and do not cross fetch boundary", as
   );
 });
 
+test("P-dimension deterministic chain is route-backed supporting evidence with exact checks and profile", async () => {
+  const provenance = await resolveNonPStaleProvenance("P-dimension-mismatch");
+  const execution = await runDeterministicFirstSliceExecution({
+    probeId: "P-dimension-mismatch",
+    provenance,
+  });
+  assert.equal(execution.mode, "deterministic_execution_observed");
+  assert.equal(execution.emittedResult, "basis_dimension_mismatch");
+  assert.equal(execution.expectedVsObservedComparison, "matches_expected");
+  assert.equal(execution.outcome, "pass");
+  assert.deepEqual(
+    execution.supportingChecks.map((check) => ({
+      checkId: check.checkId,
+      status: check.status,
+      failureClass: check.failureClass,
+    })),
+    [
+      {
+        checkId: "vision_route_pre_model_dimension_verification",
+        status: "passed",
+        failureClass: null,
+      },
+      {
+        checkId: "apply_gate_defense_in_depth",
+        status: "passed",
+        failureClass: null,
+      },
+    ]
+  );
+  assert.match(
+    execution.supportingChecks[0].notes ?? "",
+    /route_response_result records whether the route response body carried the probe's declared containment token/
+  );
+  assert.equal(
+    execution.artifactReferences.includes("primary_call_fetch_boundary:none"),
+    true
+  );
+  assert.equal(
+    execution.artifactReferences.includes("route_supporting_fetch_boundary:loopback_127.0.0.1_3000_only"),
+    true
+  );
+  assert.equal(
+    execution.artifactReferences.includes("route_served_request_path:/A-parent.jpg"),
+    true
+  );
+  assert.equal(
+    execution.artifactReferences.includes("route_failure_reason_kind:prose_not_containment_token"),
+    true
+  );
+  assert.equal(
+    execution.artifactReferences.includes("model_boundary:tripwire_installed_not_reached"),
+    true
+  );
+  assert.equal(
+    execution.pinnedCallInputs.some((value) =>
+      value.includes(
+        "evaluateCalibrationImageBasisEvidence:basisKind=original,browserDimensions=319x240"
+      )
+    ),
+    true
+  );
+  assert.equal(
+    execution.pinnedCallInputs.some((value) =>
+      value.includes(
+        "route.POST:detect-vision,inProcess=true,imageUrl=loopback:/A-parent.jpg,intrinsicSize=319x240"
+      )
+    ),
+    true
+  );
+  assert.match(
+    execution.manualObservationLog,
+    /returned prose rather than the containment token/
+  );
+
+  const runMetadata = await buildNonPStaleRunMetadata({
+    minimalInput: buildMinimalInput(),
+    provenance,
+  });
+  const record = buildNonPStaleObservedRunRecord({
+    probeId: "P-dimension-mismatch",
+    provenance,
+    runMetadata,
+    execution,
+  });
+  assert.deepEqual(
+    await validateG0ObservedRunRecord({
+      fixtureReceipt: provenance.fixtureReceipt,
+      record,
+    }),
+    { ok: true }
+  );
+  assert.deepEqual(
+    record.supportingHarnessChecks.map((check) => `${check.checkId}:${check.required}:${check.status}`),
+    [
+      "vision_route_pre_model_dimension_verification:true:passed",
+      "apply_gate_defense_in_depth:true:passed",
+    ]
+  );
+  assert.deepEqual(
+    record.noAuthorityChecks.map((check) => `${check.checkId}:${check.status}`),
+    [
+      "qualification_refusal_result:pass",
+      "restore_or_import_result:not_run",
+      "route_response_result:not_run",
+      "apply_gate_defense_in_depth:pass",
+      "client_discard_predicate:not_run",
+      "live_snapshot_state_observation:not_run",
+      "state_transition_predicate:not_run",
+    ]
+  );
+  assert.deepEqual(record.primaryObservation.rawObservationReferences, []);
+  const persistedText = JSON.stringify(record).toLowerCase();
+  for (const forbidden of [
+    "evaluator",
+    "capability",
+    "metric",
+    "authority_label",
+    "external_reference",
+  ]) {
+    assert.equal(persistedText.includes(forbidden), false);
+  }
+});
+
+test("P-dimension strict metadata references fail closed and preserve P-gen strictness", async () => {
+  const provenance = await resolveNonPStaleProvenance("P-dimension-mismatch");
+  const dimensionsReference = provenance.artifactReferences.find((entry) =>
+    entry.startsWith("fixture_image_dimensions:")
+  );
+  const orientationReference = provenance.artifactReferences.find((entry) =>
+    entry.startsWith("fixture_image_orientation:")
+  );
+  assert.ok(dimensionsReference);
+  assert.ok(orientationReference);
+
+  async function expectMetadataReject(
+    artifactReferences: readonly string[],
+    errorPattern: RegExp
+  ): Promise<void> {
+    await assert.rejects(
+      runDeterministicFirstSliceExecution({
+        probeId: "P-dimension-mismatch",
+        provenance: { ...provenance, artifactReferences: [...artifactReferences] },
+      }),
+      errorPattern
+    );
+  }
+
+  await expectMetadataReject(
+    removeReferencesWithPrefix(provenance.artifactReferences, "fixture_image_dimensions:"),
+    /missing_fixture_image_dimensions_reference:P-dimension-mismatch/
+  );
+  await expectMetadataReject(
+    removeReferencesWithPrefix(provenance.artifactReferences, "fixture_image_orientation:"),
+    /missing_fixture_image_orientation_reference:P-dimension-mismatch/
+  );
+  await expectMetadataReject(
+    replaceFirstExact(
+      provenance.artifactReferences,
+      dimensionsReference!,
+      "fixture_image_dimensions:0x240"
+    ),
+    /malformed_fixture_image_dimensions_reference:P-dimension-mismatch/
+  );
+  await expectMetadataReject(
+    replaceFirstExact(provenance.artifactReferences, orientationReference!, "fixture_image_orientation:0"),
+    /malformed_fixture_image_orientation_reference:P-dimension-mismatch/
+  );
+  await expectMetadataReject(
+    [...provenance.artifactReferences, dimensionsReference!],
+    /duplicate_fixture_image_dimensions_reference:P-dimension-mismatch/
+  );
+  await expectMetadataReject(
+    [...provenance.artifactReferences, "fixture_image_dimensions:999x777"],
+    /duplicate_fixture_image_dimensions_reference:P-dimension-mismatch/
+  );
+  await expectMetadataReject(
+    [...provenance.artifactReferences, orientationReference!],
+    /duplicate_fixture_image_orientation_reference:P-dimension-mismatch/
+  );
+  await expectMetadataReject(
+    [...provenance.artifactReferences, "fixture_image_orientation:7"],
+    /duplicate_fixture_image_orientation_reference:P-dimension-mismatch/
+  );
+  await expectMetadataReject(
+    replaceFirstExact(
+      provenance.artifactReferences,
+      dimensionsReference!,
+      "fixture_image_dimensions:321x241"
+    ),
+    /resolver_bound_metadata_mismatch:P-dimension-mismatch/
+  );
+  await expectMetadataReject(
+    replaceFirstExact(provenance.artifactReferences, orientationReference!, "fixture_image_orientation:2"),
+    /resolver_bound_metadata_mismatch:P-dimension-mismatch/
+  );
+  await expectMetadataReject(
+    replaceFirstExact(
+      provenance.artifactReferences,
+      dimensionsReference!,
+      `${dimensionsReference!}junk`
+    ),
+    /malformed_fixture_image_dimensions_reference:P-dimension-mismatch/
+  );
+  await expectMetadataReject(
+    replaceFirstExact(
+      provenance.artifactReferences,
+      orientationReference!,
+      `${orientationReference!}extra`
+    ),
+    /malformed_fixture_image_orientation_reference:P-dimension-mismatch/
+  );
+});
+
 test("minimal input parser rejects malformed and forbidden override fields", () => {
   assert.throws(() => parseNonPStaleMinimalInput("nope"), /input_must_be_object/);
   assert.throws(
@@ -896,18 +1213,30 @@ test("wrong bytes are rejected even if expected derivative token is known", asyn
   );
 });
 
-test("P-gen basis-evidence controls keep derivative refusal deterministic and coordinate-space pinned", () => {
+test("basis-evidence controls cover P-dimension and P-gen preemption order deterministically", () => {
   const positiveOriginal = evaluateCalibrationImageBasisEvidence({
     basisKind: "original",
-    browserDimensions: null,
+    browserDimensions: { width: 320, height: 240 },
     coordinateSpaceVersion: CALIBRATION_IMAGE_BASIS_COORDINATE_SPACE_VERSION,
     metadata: { width: 320, height: 240, orientation: 1 },
   });
   assert.deepEqual(positiveOriginal, { ok: true });
 
+  const dimensionMismatch = evaluateCalibrationImageBasisEvidence({
+    basisKind: "original",
+    browserDimensions: P_DIMENSION_PINNED_SYNTHETIC_DIMENSIONS,
+    coordinateSpaceVersion: CALIBRATION_IMAGE_BASIS_COORDINATE_SPACE_VERSION,
+    metadata: { width: 320, height: 240, orientation: 1 },
+  });
+  assert.equal(dimensionMismatch.ok, false);
+  if (dimensionMismatch.ok) {
+    throw new Error("unexpected_dimension_mismatch_shape");
+  }
+  assert.equal(dimensionMismatch.reason, "basis_dimension_mismatch");
+
   const coordinateSpacePreemption = evaluateCalibrationImageBasisEvidence({
-    basisKind: "derivative",
-    browserDimensions: null,
+    basisKind: "original",
+    browserDimensions: P_DIMENSION_PINNED_SYNTHETIC_DIMENSIONS,
     coordinateSpaceVersion: {
       ...CALIBRATION_IMAGE_BASIS_COORDINATE_SPACE_VERSION,
       decoderId: "sharp-metadata/v0",
@@ -919,9 +1248,33 @@ test("P-gen basis-evidence controls keep derivative refusal deterministic and co
     throw new Error("unexpected_coordinate_space_preemption_shape");
   }
   assert.equal(coordinateSpacePreemption.reason, "basis_coordinate_space_mismatch");
+
+  const derivativePreemption = evaluateCalibrationImageBasisEvidence({
+    basisKind: "derivative",
+    browserDimensions: P_DIMENSION_PINNED_SYNTHETIC_DIMENSIONS,
+    coordinateSpaceVersion: CALIBRATION_IMAGE_BASIS_COORDINATE_SPACE_VERSION,
+    metadata: { width: 320, height: 240, orientation: 1 },
+  });
+  assert.equal(derivativePreemption.ok, false);
+  if (derivativePreemption.ok) {
+    throw new Error("unexpected_derivative_preemption_shape");
+  }
+  assert.equal(derivativePreemption.reason, "basis_derivative_not_authority_eligible");
+
+  const orientationPreemption = evaluateCalibrationImageBasisEvidence({
+    basisKind: "original",
+    browserDimensions: P_DIMENSION_PINNED_SYNTHETIC_DIMENSIONS,
+    coordinateSpaceVersion: CALIBRATION_IMAGE_BASIS_COORDINATE_SPACE_VERSION,
+    metadata: { width: 320, height: 240, orientation: 2 },
+  });
+  assert.equal(orientationPreemption.ok, false);
+  if (orientationPreemption.ok) {
+    throw new Error("unexpected_orientation_preemption_shape");
+  }
+  assert.equal(orientationPreemption.reason, "basis_orientation_not_normal");
 });
 
-test("CLI allows P-gen but rejects P-stale and remaining unsupported probes", async () => {
+test("CLI allows P-gen and P-dimension-mismatch but rejects P-stale and remaining unsupported probes", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "g0-non-p-stale-cli-reject-"));
   try {
     const inputPath = await writeInputFile(root, buildMinimalInput());
@@ -929,19 +1282,25 @@ test("CLI allows P-gen but rejects P-stale and remaining unsupported probes", as
     assert.equal(pgenDryRun.status, 0);
     assert.match(pgenDryRun.stdout, /execution_mode=deterministic_execution_observed/);
     assert.match(pgenDryRun.stdout, /mode=dry-run/);
+
+    const pdimensionDryRun = runCli([
+      "--probe",
+      "P-dimension-mismatch",
+      "--input",
+      inputPath,
+      "--root-dir",
+      root,
+    ]);
+    assert.equal(pdimensionDryRun.status, 0);
+    assert.match(pdimensionDryRun.stdout, /execution_mode=deterministic_execution_observed/);
+    assert.match(pdimensionDryRun.stdout, /mode=dry-run/);
     assert.equal(await countJsonFiles(path.join(root, "g0-containment", "receipts")), 0);
 
     const stale = runCli(["--probe", "P-stale", "--input", inputPath, "--root-dir", root]);
     assert.equal(stale.status, 1);
     assert.match(stale.stderr, /no_execution_adapter_yet:P-stale/);
 
-    for (const probeId of [
-      "P-crop",
-      "P-empty",
-      "P-url-drift",
-      "P-dimension-mismatch",
-      "X4",
-    ] as const) {
+    for (const probeId of ["P-crop", "P-empty", "P-url-drift", "X4"] as const) {
       const unsupported = runCli(["--probe", probeId, "--input", inputPath, "--root-dir", root]);
       assert.equal(unsupported.status, 1);
       assert.match(unsupported.stderr, new RegExp(`no_execution_adapter_yet:${probeId}`));
@@ -951,13 +1310,13 @@ test("CLI allows P-gen but rejects P-stale and remaining unsupported probes", as
   }
 });
 
-test("CLI write uses temp root, writes one immutable P-gen record, and repeat write fails target exists", async () => {
+test("CLI write uses temp root, writes one immutable P-dimension record, and repeat write fails target exists", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "g0-non-p-stale-cli-write-"));
   try {
     const inputPath = await writeInputFile(root, buildMinimalInput());
     const first = runCli([
       "--probe",
-      "P-gen",
+      "P-dimension-mismatch",
       "--input",
       inputPath,
       "--root-dir",
@@ -977,7 +1336,7 @@ test("CLI write uses temp root, writes one immutable P-gen record, and repeat wr
     assert.equal(await countJsonFiles(path.join(root, "g0-containment", "receipts")), 1);
 
     const persisted = JSON.parse(await readFile(recordPath!, "utf8")) as G0ObservedRunRecord;
-    const provenance = await resolveNonPStaleProvenance("P-gen");
+    const provenance = await resolveNonPStaleProvenance("P-dimension-mismatch");
     assert.deepEqual(
       await validateG0ObservedRunRecord({
         fixtureReceipt: provenance.fixtureReceipt,
@@ -988,7 +1347,7 @@ test("CLI write uses temp root, writes one immutable P-gen record, and repeat wr
 
     const second = runCli([
       "--probe",
-      "P-gen",
+      "P-dimension-mismatch",
       "--input",
       inputPath,
       "--root-dir",
@@ -1008,7 +1367,15 @@ test("tests do not create or mutate repository receipt records", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "g0-non-p-stale-cli-repo-guard-"));
   try {
     const inputPath = await writeInputFile(root, buildMinimalInput());
-    const run = runCli(["--probe", "P-gen", "--input", inputPath, "--root-dir", root, "--write"]);
+    const run = runCli([
+      "--probe",
+      "P-dimension-mismatch",
+      "--input",
+      inputPath,
+      "--root-dir",
+      root,
+      "--write",
+    ]);
     assert.equal(run.status, 0);
   } finally {
     await rm(root, { recursive: true, force: true });
