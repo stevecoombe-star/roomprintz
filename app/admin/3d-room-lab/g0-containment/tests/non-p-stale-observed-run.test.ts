@@ -2407,11 +2407,24 @@ test("CLI X4 write uses temp root, re-validates the persisted record, and repeat
   assert.deepEqual(await collectJsonFileHashes(REPO_RECEIPTS_ROOT), beforeHashes);
 });
 
-test("CLI P-url-drift write uses temp root, re-validates the persisted record, and preserves all six durable receipts", async () => {
+test("CLI P-url-drift write uses temp root, re-validates the persisted record, and preserves the repository durable-receipt baseline byte-for-byte", async () => {
+  // Derive the durable-receipt baseline dynamically from the live repository
+  // tree so this precondition never goes stale as receipts are added.
   const beforeCount = await countJsonFiles(REPO_RECEIPTS_ROOT);
   const beforeHashes = await collectJsonFileHashes(REPO_RECEIPTS_ROOT);
-  assert.equal(beforeCount, 6);
-  assert.equal(beforeHashes.length, 6);
+  assert.ok(beforeCount > 0, "expected at least one durable receipt in the repository baseline");
+  assert.equal(beforeHashes.length, beforeCount);
+  const beforeHashByPath = new Map<string, string>();
+  for (const entry of beforeHashes) {
+    const separatorIndex = entry.lastIndexOf(":");
+    assert.ok(separatorIndex > 0, `malformed baseline hash entry: ${entry}`);
+    const relativePath = entry.slice(0, separatorIndex);
+    const digest = entry.slice(separatorIndex + 1);
+    assert.match(digest, /^[0-9a-f]{64}$/);
+    assert.equal(beforeHashByPath.has(relativePath), false, `duplicate baseline path: ${relativePath}`);
+    beforeHashByPath.set(relativePath, digest);
+  }
+  assert.equal(beforeHashByPath.size, beforeCount);
   const root = await mkdtemp(path.join(tmpdir(), "g0-non-p-stale-cli-p-url-drift-write-"));
   try {
     const inputPath = await writeInputFile(root, buildMinimalInput());
@@ -2515,8 +2528,16 @@ test("CLI P-url-drift write uses temp root, re-validates the persisted record, a
   } finally {
     await rm(root, { recursive: true, force: true });
   }
-  assert.equal(await countJsonFiles(REPO_RECEIPTS_ROOT), beforeCount);
-  assert.deepEqual(await collectJsonFileHashes(REPO_RECEIPTS_ROOT), beforeHashes);
+  const afterCount = await countJsonFiles(REPO_RECEIPTS_ROOT);
+  const afterHashes = await collectJsonFileHashes(REPO_RECEIPTS_ROOT);
+  assert.equal(afterCount, beforeCount);
+  assert.deepEqual(afterHashes, beforeHashes);
+  for (const entry of afterHashes) {
+    const separatorIndex = entry.lastIndexOf(":");
+    const relativePath = entry.slice(0, separatorIndex);
+    const digest = entry.slice(separatorIndex + 1);
+    assert.equal(beforeHashByPath.get(relativePath), digest);
+  }
 });
 
 test("tests do not create or mutate repository receipt records", async () => {
