@@ -11,6 +11,10 @@ import {
   observePdimensionMismatchRouteContainment,
   P_DIMENSION_PINNED_SYNTHETIC_DIMENSIONS,
 } from "./p-dimension-route-harness";
+import {
+  observeX4ExifOrientationRouteContainment,
+  X4_PINNED_MATCHING_DIMENSIONS,
+} from "./x4-exif-route-harness";
 import type { NonPStaleExecutionEvidence } from "./non-p-stale-observed-run-builder";
 import type { NonPStaleProbeId, NonPStaleResolvedProvenance } from "./non-p-stale-provenance-resolver";
 import { loadPayloadFixture } from "./payload-fixtures";
@@ -72,7 +76,7 @@ function assertPayloadProvenance(
 }
 
 function extractResolverBoundImageMetadata(
-  probeId: "P-gen" | "P-dimension-mismatch",
+  probeId: "P-gen" | "P-dimension-mismatch" | "X4",
   provenance: NonPStaleResolvedProvenance
 ): {
   width: number;
@@ -371,6 +375,160 @@ function runPdimensionMismatchDeterministicChain(
   })();
 }
 
+const X4_ROUTE_RESPONSE_CLARIFICATION =
+  "route_response_result records whether the route response body carried the probe's declared containment token. It remains not_run when a route supporting branch returns prose rather than that declared token." as const;
+
+function runX4ExifOrientationDeterministicChain(
+  provenance: NonPStaleResolvedProvenance
+): Promise<NonPStaleExecutionEvidence> {
+  return (async () => {
+    if (provenance.probeId !== "X4") {
+      throw new Error(`unexpected_provenance_probe:X4:${provenance.probeId}`);
+    }
+    if (provenance.evaluatedImageDigest !== G0_SYNTHETIC_ASSETS["A-exif"].sha256) {
+      throw new Error("provenance_digest_drift:X4");
+    }
+    const canonicalAExifPath = provenance.canonicalRepoRelativePaths.find((entry) =>
+      entry.endsWith("/A-exif.jpg")
+    );
+    if (!canonicalAExifPath) {
+      throw new Error("canonical_a_exif_path_missing:X4");
+    }
+    if (provenance.payloadIdentity !== null || provenance.payloadDigest !== null) {
+      throw new Error("payload_fields_must_be_null:X4");
+    }
+    if (provenance.driftImageDigest !== null) {
+      throw new Error("drift_digest_must_be_null:X4");
+    }
+    if (
+      provenance.fixtureReceipt.expectedRefusalOrContainmentResult !==
+      "basis_orientation_not_normal"
+    ) {
+      throw new Error("declaration_expected_result_mismatch:X4");
+    }
+    if (provenance.fixtureReceipt.expectedPipelineStage !== "server basis evidence evaluation") {
+      throw new Error("declaration_expected_stage_mismatch:X4");
+    }
+
+    const resolverBoundAExifMetadata = extractResolverBoundImageMetadata("X4", provenance);
+    const expectedMetadata = {
+      width: G0_SYNTHETIC_ASSETS["A-exif"].decodedWidth,
+      height: G0_SYNTHETIC_ASSETS["A-exif"].decodedHeight,
+      orientation: G0_SYNTHETIC_ASSETS["A-exif"].encodedOrientation,
+    };
+    if (
+      resolverBoundAExifMetadata.width !== expectedMetadata.width ||
+      resolverBoundAExifMetadata.height !== expectedMetadata.height ||
+      resolverBoundAExifMetadata.orientation !== expectedMetadata.orientation
+    ) {
+      throw new Error("resolver_bound_metadata_mismatch:X4");
+    }
+    if (
+      resolverBoundAExifMetadata.width !== X4_PINNED_MATCHING_DIMENSIONS.width ||
+      resolverBoundAExifMetadata.height !== X4_PINNED_MATCHING_DIMENSIONS.height
+    ) {
+      throw new Error("pinned_dimensions_not_matching:X4");
+    }
+    if (resolverBoundAExifMetadata.orientation === 1) {
+      throw new Error("fixture_orientation_unexpectedly_normal:X4");
+    }
+
+    const routeObservation = await observeX4ExifOrientationRouteContainment({
+      expectedBasisFingerprint: provenance.evaluatedImageDigest,
+      canonicalAExifRepoRelativePath: canonicalAExifPath,
+    });
+    if (routeObservation.httpStatus !== 200 || routeObservation.responseStatus !== "failed") {
+      throw new Error("route_response_unexpected_status:X4");
+    }
+    if (routeObservation.candidatesLength !== 0 || routeObservation.selectedCandidateId !== null) {
+      throw new Error("route_response_unexpected_candidates:X4");
+    }
+    if (routeObservation.notesLength !== 0) {
+      throw new Error("route_response_unexpected_notes:X4");
+    }
+    if (
+      routeObservation.failureReason !==
+      "This image orientation is not yet supported for vision calibration."
+    ) {
+      throw new Error("route_response_unexpected_failure_reason:X4");
+    }
+    if (routeObservation.attestedBasisFingerprint !== provenance.evaluatedImageDigest) {
+      throw new Error("route_attested_fingerprint_mismatch:X4");
+    }
+    if (
+      routeObservation.servedRequestPaths.length !== 1 ||
+      routeObservation.servedRequestPaths[0] !== "GET /A-exif.jpg"
+    ) {
+      throw new Error("route_response_unexpected_request_log:X4");
+    }
+    if (routeObservation.modelTripwireInvoked !== false) {
+      throw new Error("model_tripwire_reached:X4");
+    }
+
+    const primaryEvidence = evaluateCalibrationImageBasisEvidence({
+      basisKind: "original",
+      browserDimensions: null,
+      coordinateSpaceVersion: CALIBRATION_IMAGE_BASIS_COORDINATE_SPACE_VERSION,
+      metadata: resolverBoundAExifMetadata,
+    });
+    if (primaryEvidence.ok) {
+      throw new Error("unexpected_valid_result:X4");
+    }
+    if (primaryEvidence.reason !== "basis_orientation_not_normal") {
+      throw new Error("unexpected_emitted_token:X4");
+    }
+
+    const defensiveApply = evaluateCalibratedCameraApply(null, null, {
+      basisQualified: false,
+      basisUnavailableReason: "basis_orientation_not_normal",
+    });
+    if (
+      defensiveApply.available !== false ||
+      defensiveApply.reason !== "basis_orientation_not_normal" ||
+      defensiveApply.firstFailingGate !== "basis"
+    ) {
+      throw new Error("apply_gate_mismatch:X4");
+    }
+
+    return {
+      mode: "deterministic_execution_observed",
+      emittedResult: "basis_orientation_not_normal",
+      expectedVsObservedComparison: "matches_expected",
+      outcome: "pass",
+      supportingChecks: [
+        {
+          checkId: "vision_route_pre_model_orientation_refusal",
+          status: "passed",
+          failureClass: null,
+          notes: X4_ROUTE_RESPONSE_CLARIFICATION,
+        },
+        {
+          checkId: "apply_gate_defense_in_depth",
+          status: "passed",
+          failureClass: null,
+          notes: `firstFailingGate=${defensiveApply.firstFailingGate}`,
+        },
+      ],
+      pinnedCallInputs: [
+        `evaluateCalibrationImageBasisEvidence:basisKind=original,browserDimensions=null,coordinateSpace=${CALIBRATION_IMAGE_BASIS_COORDINATE_SPACE_VERSION.decoderId},metadata=${resolverBoundAExifMetadata.width}x${resolverBoundAExifMetadata.height}/orientation=${resolverBoundAExifMetadata.orientation}`,
+        `route.POST:detect-vision,inProcess=true,imageUrl=loopback:/A-exif.jpg,frameSize=${X4_PINNED_MATCHING_DIMENSIONS.width}x${X4_PINNED_MATCHING_DIMENSIONS.height},intrinsicSize=${X4_PINNED_MATCHING_DIMENSIONS.width}x${X4_PINNED_MATCHING_DIMENSIONS.height},expectedBasisFingerprint=${provenance.evaluatedImageDigest}`,
+        "evaluateCalibratedCameraApply:basisQualified=false,basisUnavailableReason=basis_orientation_not_normal",
+      ],
+      artifactReferences: [
+        `canonical_image_path:${canonicalAExifPath}`,
+        "primary_call_fetch_boundary:none",
+        "route_supporting_fetch_boundary:loopback_127.0.0.1_3000_only",
+        "route_served_request_path:/A-exif.jpg",
+        `route_attested_basis_fingerprint:${routeObservation.attestedBasisFingerprint}`,
+        "route_failure_reason_kind:prose_not_containment_token",
+        "model_boundary:tripwire_installed_not_reached",
+      ],
+      manualObservationLog:
+        "The committed resolver re-read, hashed, decoded, and provenance-bound A-exif from its canonical committed path, including digest, dimensions, EXIF orientation 6, and parent lineage.\nThe pure primary call used resolver-bound metadata with browserDimensions=null and did not read image bytes; it emitted the declared orientation refusal token.\nThe supporting route handler fetched controlled loopback bytes, decoded them, and refused on non-normal EXIF orientation before the dimension comparison and before model execution, returning prose rather than the containment token.\nThe model tripwire was installed and never reached.",
+    };
+  })();
+}
+
 function runPlegacyDeterministicChain(
   provenance: NonPStaleResolvedProvenance
 ): Promise<NonPStaleExecutionEvidence> {
@@ -536,6 +694,9 @@ export async function runDeterministicFirstSliceExecution(input: {
   }
   if (input.probeId === "P-dimension-mismatch") {
     return runPdimensionMismatchDeterministicChain(input.provenance);
+  }
+  if (input.probeId === "X4") {
+    return runX4ExifOrientationDeterministicChain(input.provenance);
   }
   if (input.probeId === "P-legacy") {
     return runPlegacyDeterministicChain(input.provenance);
