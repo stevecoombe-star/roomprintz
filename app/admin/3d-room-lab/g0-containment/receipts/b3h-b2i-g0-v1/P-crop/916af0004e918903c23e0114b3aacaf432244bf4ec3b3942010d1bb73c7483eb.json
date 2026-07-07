@@ -1,0 +1,109 @@
+{
+  "probeId": "P-crop",
+  "probePackageVersion": "b3h-b2i-g0-v1",
+  "fixtureReceiptReference": {
+    "fixtureId": "g0-P-crop-fixture-v1",
+    "fixtureVersion": "g0/P-crop/v1",
+    "expectedRefusalOrContainmentResult": "basis_derivative_not_authority_eligible",
+    "expectedPipelineStage": "server basis evidence evaluation"
+  },
+  "runMetadata": {
+    "runId": "benchmark-run:916af0004e918903c23e0114b3aacaf432244bf4ec3b3942010d1bb73c7483eb",
+    "runIdentityFingerprint": "benchmark-run-identity:ed533f46017076ba508a0ecc1f4ba2abb1448e89142bb4418e0fef3d5781862f",
+    "runIdentity": {
+      "fixtureVersion": "g0/P-crop/v1",
+      "basisFingerprint": "4aa5b69c28d49aef2847936fef9fe91a70be48b7e7f99f6f8063f37f7f4b60f2",
+      "coordinateSpaceVersion": {
+        "decoderId": "sharp-metadata/v1",
+        "normalizationPolicyVersion": "orientation-normal/v1",
+        "orientationApplied": false
+      },
+      "solverGeneratorVersion": "g0-harness/v1",
+      "evaluationVersion": "g0-eval/v1",
+      "evidenceBundleVersion": "g0-bundle/v1"
+    },
+    "createdAt": "2026-07-07T17:12:41.000Z",
+    "supersedesRunId": null,
+    "rerunReason": "evaluation_changed"
+  },
+  "primaryObservation": {
+    "observationKind": "emitted_application_result",
+    "observedPipelineStage": "server basis evidence evaluation",
+    "observedOperationalState": "calibration_not_attempted",
+    "outcome": "pass",
+    "expectedVsObservedComparison": "matches_expected",
+    "emittedResult": "basis_derivative_not_authority_eligible",
+    "derivedContainmentConclusion": null,
+    "rawObservationReferences": []
+  },
+  "noAuthorityChecks": [
+    {
+      "checkId": "qualification_refusal_result",
+      "status": "pass"
+    },
+    {
+      "checkId": "restore_or_import_result",
+      "status": "not_run"
+    },
+    {
+      "checkId": "route_response_result",
+      "status": "not_run"
+    },
+    {
+      "checkId": "apply_gate_defense_in_depth",
+      "status": "pass"
+    },
+    {
+      "checkId": "client_discard_predicate",
+      "status": "not_run"
+    },
+    {
+      "checkId": "live_snapshot_state_observation",
+      "status": "not_run"
+    },
+    {
+      "checkId": "state_transition_predicate",
+      "status": "not_run"
+    }
+  ],
+  "supportingHarnessChecks": [
+    {
+      "checkId": "restore_comparison_changed_byte_crop",
+      "required": true,
+      "status": "passed",
+      "failureClass": null,
+      "notes": "The resolver re-hashed A-crop and confirmed its digest differs from the registry-committed A-parent digest, with A-crop's registry lineage to A-parent enforced. A-parent bytes were not re-read. The pure comparison used A-parent as the persisted basis and A-crop as the current basis. Its observed result was basis_fingerprint_mismatch because fingerprint comparison precedes dimensions and basis-kind comparison. This supporting result verifies changed-byte crop containment ordering only; it is not the primary P-crop result and does not make restore_or_import_result a pass axis."
+    },
+    {
+      "checkId": "apply_gate_defense_in_depth",
+      "required": true,
+      "status": "passed",
+      "failureClass": null,
+      "notes": "firstFailingGate=basis"
+    }
+  ],
+  "artifactReferences": [
+    "fixture_image_path:app/admin/3d-room-lab/g0-containment/synthetic-assets/A-crop.jpg",
+    "fixture_image_digest:4aa5b69c28d49aef2847936fef9fe91a70be48b7e7f99f6f8063f37f7f4b60f2",
+    "fixture_image_dimensions:280x220",
+    "fixture_image_orientation:1",
+    "canonical_image_path:app/admin/3d-room-lab/g0-containment/synthetic-assets/A-crop.jpg",
+    "primary_call_fetch_boundary:none",
+    "restore_comparison_fetch_boundary:none",
+    "parent_registry_asset:A-parent",
+    "parent_registry_image_digest:bd7ffe9c5e68fd5fce30faf94cafe57f5e0840ed74a03986f74d2526fc95e9c8",
+    "parent_registry_dimensions:320x240",
+    "parent_registry_orientation:1",
+    "parent_lineage:registry_enforced:A-crop:A-parent",
+    "restore_comparison_persisted_registry_fingerprint:bd7ffe9c5e68fd5fce30faf94cafe57f5e0840ed74a03986f74d2526fc95e9c8",
+    "restore_comparison_current_fingerprint:4aa5b69c28d49aef2847936fef9fe91a70be48b7e7f99f6f8063f37f7f4b60f2",
+    "restore_comparison_observed_result:basis_fingerprint_mismatch",
+    "apply_gate_first_failing_gate:basis",
+    "execution_mode:deterministic_execution_observed",
+    "pinned_call_input:evaluateCalibrationImageBasisEvidence:basisKind=derivative,browserDimensions=null,coordinateSpace=sharp-metadata/v1,metadata=280x220/orientation=1",
+    "pinned_call_input:evaluateCalibrationRestoreCompatibility:persistedFingerprint=bd7ffe9c5e68fd5fce30faf94cafe57f5e0840ed74a03986f74d2526fc95e9c8,persistedDimensions=320x240,persistedBasisKind=original,currentFingerprint=4aa5b69c28d49aef2847936fef9fe91a70be48b7e7f99f6f8063f37f7f4b60f2,currentDimensions=280x220,currentBasisKind=derivative,orientation=1,coordinateSpace=sharp-metadata/v1,sourceImageUrl=synthetic://g0-containment/P-crop/pinned-comparison-source",
+    "pinned_call_input:evaluateCalibratedCameraApply:basisQualified=false,basisUnavailableReason=basis_derivative_not_authority_eligible"
+  ],
+  "manualObservationLog": "The committed resolver re-read, re-hashed, and re-decoded A-crop from its canonical committed path, including digest, dimensions 280x220, and orientation 1, and enforced A-crop's registry lineage to A-parent.\nA-parent bytes were not re-read in this run; the persisted A-parent fingerprint used by the supporting comparison is the registry-committed digest.\nThe pure primary call used resolver-bound A-crop metadata with basisKind=derivative and browserDimensions=null; its declared token was obtained only from result.reason and the call did not fetch, decode, hash, or read image bytes. This primary result proves the committed derivative-basis refusal guard only; it does not prove automatic crop detection.\nThe pure changed-byte supporting comparison used the registry-committed A-parent fingerprint as the persisted basis and the resolver-rehashed A-crop fingerprint as the current basis over the same pinned source URL, orientation, transform, dimension source, and coordinate-space version; its observed result was basis_fingerprint_mismatch because fingerprint comparison precedes the later dimension and basis-kind guards. This supporting result does not make restore_or_import_result a pass axis.\nThe apply gate refused with the declared token at the basis gate.\nAll byte access occurred solely in resolver provenance verification.",
+  "incidentReference": null
+}
