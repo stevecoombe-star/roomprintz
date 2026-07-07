@@ -18,8 +18,18 @@ import {
   type NonPStaleExecutionEvidence,
   type NonPStaleMinimalInput,
 } from "../non-p-stale-observed-run-builder";
-import { runDeterministicFirstSliceExecution } from "../non-p-stale-first-slice-execution";
+import { shouldDiscardAttestedResponse } from "@/app/admin/3d-room-lab/policy-a-containment";
+import { evaluateCalibrationRestoreCompatibility } from "@/app/admin/3d-room-lab/scene-state";
+import {
+  buildPurlDriftPersistedCalibration,
+  buildPurlDriftRestoreImageBasis,
+  runDeterministicFirstSliceExecution,
+} from "../non-p-stale-first-slice-execution";
 import { P_DIMENSION_PINNED_SYNTHETIC_DIMENSIONS } from "../p-dimension-route-harness";
+import {
+  P_URL_DRIFT_PINNED_MATCHING_DIMENSIONS,
+  P_URL_DRIFT_PINNED_SOURCE_IMAGE_URL,
+} from "../p-url-drift-route-harness";
 import { X4_PINNED_MATCHING_DIMENSIONS } from "../x4-exif-route-harness";
 
 const includesNonPStaleEntry = process.argv.some((arg) => arg.endsWith("non-p-stale-observed-run.test.ts"));
@@ -34,6 +44,12 @@ const includesStandaloneX4Harness = process.argv.some((arg) =>
 );
 if (includesNonPStaleEntry && !includesStandaloneX4Harness) {
   require("./x4-exif-route-harness.test");
+}
+const includesStandalonePurlDriftHarness = process.argv.some((arg) =>
+  arg.endsWith("p-url-drift-route-harness.test.ts")
+);
+if (includesNonPStaleEntry && !includesStandalonePurlDriftHarness) {
+  require("./p-url-drift-route-harness.test");
 }
 import {
   NON_P_STALE_DECLARATION_BINDINGS,
@@ -1611,6 +1627,531 @@ test("X4 strict metadata references fail closed on missing, malformed, duplicate
   );
 });
 
+const A_PARENT_SHA_LITERAL =
+  "bd7ffe9c5e68fd5fce30faf94cafe57f5e0840ed74a03986f74d2526fc95e9c8";
+const A_DRIFT_B_SHA_LITERAL =
+  "dfddfdac51dca6ac42008699768d4decf5f7c29c09ac1f5f8b069e837cc5d572";
+
+test("P-url-drift deterministic chain emits the exact restore token with exact supporting checks and profile", async () => {
+  const provenance = await resolveNonPStaleProvenance("P-url-drift");
+  assert.equal(provenance.probeId, "P-url-drift");
+  assert.equal(provenance.evaluatedImageDigest, G0_SYNTHETIC_ASSETS["A-parent"].sha256);
+  assert.equal(provenance.evaluatedImageDigest, A_PARENT_SHA_LITERAL);
+  assert.equal(provenance.driftImageDigest, G0_SYNTHETIC_ASSETS["A-drift-b"].sha256);
+  assert.equal(provenance.driftImageDigest, A_DRIFT_B_SHA_LITERAL);
+  assert.equal(provenance.fixtureReceipt.fixtureVersion, "g0/P-url-drift/v1");
+  assert.equal(
+    provenance.fixtureReceipt.expectedRefusalOrContainmentResult,
+    "basis_fingerprint_mismatch"
+  );
+  assert.equal(
+    provenance.fixtureReceipt.expectedPipelineStage,
+    "restore image-basis receipt comparison"
+  );
+  assert.equal(
+    provenance.fixtureReceipt.sourceAssetIdentity.kind === "source_asset"
+      ? provenance.fixtureReceipt.sourceAssetIdentity.sourceAssetId
+      : null,
+    "g0-source-P-url-drift"
+  );
+  assert.equal(
+    provenance.fixtureReceipt.basisBinding.kind === "expected_basis_refusal" &&
+      provenance.fixtureReceipt.basisBinding.sourceAssetIdentity.kind === "source_asset"
+      ? provenance.fixtureReceipt.basisBinding.sourceAssetIdentity.sourceAssetId
+      : null,
+    "A-parent-asset"
+  );
+
+  const execution = await runDeterministicFirstSliceExecution({
+    probeId: "P-url-drift",
+    provenance,
+  });
+  assert.equal(execution.mode, "deterministic_execution_observed");
+  assert.equal(execution.emittedResult, "basis_fingerprint_mismatch");
+  assert.equal(execution.expectedVsObservedComparison, "matches_expected");
+  assert.equal(execution.outcome, "pass");
+  assert.deepEqual(
+    execution.supportingChecks.map((check) => ({
+      checkId: check.checkId,
+      status: check.status,
+      failureClass: check.failureClass,
+    })),
+    [
+      {
+        checkId: "vision_route_mismatch_discard",
+        status: "passed",
+        failureClass: null,
+      },
+      {
+        checkId: "empty_room_route_mismatch_discard",
+        status: "passed",
+        failureClass: null,
+      },
+      {
+        checkId: "client_discard_predicate",
+        status: "passed",
+        failureClass: null,
+      },
+      {
+        checkId: "apply_gate_defense_in_depth",
+        status: "passed",
+        failureClass: null,
+      },
+    ]
+  );
+  assert.match(
+    execution.supportingChecks[0].notes ?? "",
+    /carried the literal declared token basis_fingerprint_mismatch/
+  );
+  assert.match(
+    execution.supportingChecks[0].notes ?? "",
+    /model tripwire was installed and never reached/
+  );
+  assert.match(
+    execution.supportingChecks[1].notes ?? "",
+    /blocked result state/
+  );
+  assert.match(
+    execution.supportingChecks[1].notes ?? "",
+    /generation and detection tripwires were installed and never reached/
+  );
+  assert.match(
+    execution.supportingChecks[2].notes ?? "",
+    /actual route-attested A-drift-b fingerprints/
+  );
+  assert.match(execution.supportingChecks[2].notes ?? "", /null-input controls/);
+  assert.equal(execution.supportingChecks[3].notes, "firstFailingGate=basis");
+
+  assert.equal(
+    execution.artifactReferences.includes(
+      "canonical_image_path:app/admin/3d-room-lab/g0-containment/synthetic-assets/A-parent.jpg"
+    ),
+    true
+  );
+  assert.equal(
+    execution.artifactReferences.includes(
+      "canonical_drift_image_path:app/admin/3d-room-lab/g0-containment/synthetic-assets/A-drift-b.jpg"
+    ),
+    true
+  );
+  assert.equal(execution.artifactReferences.includes("primary_call_fetch_boundary:none"), true);
+  assert.equal(
+    execution.artifactReferences.includes(
+      "route_supporting_fetch_boundary:loopback_127.0.0.1_3000_only"
+    ),
+    true
+  );
+  assert.equal(
+    execution.artifactReferences.includes("vision_route_served_request_path:/A-drift-b.jpg"),
+    true
+  );
+  assert.equal(
+    execution.artifactReferences.includes(
+      "empty_room_route_served_request_path:/A-drift-b.jpg"
+    ),
+    true
+  );
+  assert.equal(
+    execution.artifactReferences.includes(
+      `expected_basis_fingerprint_sent:${A_PARENT_SHA_LITERAL}`
+    ),
+    true
+  );
+  assert.equal(
+    execution.artifactReferences.includes(
+      `vision_route_attested_basis_fingerprint:${A_DRIFT_B_SHA_LITERAL}`
+    ),
+    true
+  );
+  assert.equal(
+    execution.artifactReferences.includes(
+      `empty_room_route_attested_basis_fingerprint:${A_DRIFT_B_SHA_LITERAL}`
+    ),
+    true
+  );
+  assert.equal(
+    execution.artifactReferences.includes("route_failure_reason_kind:declared_containment_token"),
+    true
+  );
+  assert.equal(
+    execution.artifactReferences.includes("model_boundary:tripwires_installed_not_reached"),
+    true
+  );
+
+  assert.equal(
+    execution.pinnedCallInputs.includes(
+      `evaluateCalibrationRestoreCompatibility:persistedFingerprint=${A_PARENT_SHA_LITERAL},currentFingerprint=${A_DRIFT_B_SHA_LITERAL},dimensions=320x240,orientation=1,basisKind=original,coordinateSpace=sharp-metadata/v1,sourceImageUrl=${P_URL_DRIFT_PINNED_SOURCE_IMAGE_URL}`
+    ),
+    true
+  );
+  assert.equal(
+    execution.pinnedCallInputs.includes(
+      `route.POST:detect-vision,inProcess=true,imageUrl=loopback:/A-drift-b.jpg,frameSize=320x240,intrinsicSize=320x240,expectedBasisFingerprint=${A_PARENT_SHA_LITERAL}`
+    ),
+    true
+  );
+  assert.equal(
+    execution.pinnedCallInputs.includes(
+      `route.POST:empty-room-assist/run,inProcess=true,imageUrl=loopback:/A-drift-b.jpg,frameSize=320x240,intrinsicSize=320x240,expectedBasisFingerprint=${A_PARENT_SHA_LITERAL}`
+    ),
+    true
+  );
+  assert.equal(
+    execution.pinnedCallInputs.includes(
+      `shouldDiscardAttestedResponse:currentBasisFingerprint=${A_PARENT_SHA_LITERAL},attestedBasisFingerprint=${A_DRIFT_B_SHA_LITERAL}`
+    ),
+    true
+  );
+  assert.equal(
+    execution.pinnedCallInputs.includes(
+      "evaluateCalibratedCameraApply:basisQualified=false,basisUnavailableReason=basis_fingerprint_mismatch"
+    ),
+    true
+  );
+
+  assert.match(
+    execution.manualObservationLog,
+    /performed no fetch, decode, hash, fingerprint computation, or filesystem access/
+  );
+  assert.match(
+    execution.manualObservationLog,
+    /both route responses attested the A-drift-b digest/
+  );
+  assert.match(
+    execution.manualObservationLog,
+    /emits a console warning and performs no persistent write/
+  );
+  assert.match(
+    execution.manualObservationLog,
+    /installed and never reached during the mismatch observations/
+  );
+
+  const runMetadata = await buildNonPStaleRunMetadata({
+    minimalInput: buildMinimalInput(),
+    provenance,
+  });
+  const record = buildNonPStaleObservedRunRecord({
+    probeId: "P-url-drift",
+    provenance,
+    runMetadata,
+    execution,
+  });
+  assert.deepEqual(
+    await validateG0ObservedRunRecord({
+      fixtureReceipt: provenance.fixtureReceipt,
+      record,
+    }),
+    { ok: true }
+  );
+  assert.deepEqual(
+    record.supportingHarnessChecks.map(
+      (check) => `${check.checkId}:${check.required}:${check.status}`
+    ),
+    [
+      "vision_route_mismatch_discard:true:passed",
+      "empty_room_route_mismatch_discard:true:passed",
+      "client_discard_predicate:true:passed",
+      "apply_gate_defense_in_depth:true:passed",
+    ]
+  );
+  assert.deepEqual(
+    record.noAuthorityChecks.map((check) => `${check.checkId}:${check.status}`),
+    [
+      "qualification_refusal_result:not_run",
+      "restore_or_import_result:pass",
+      "route_response_result:pass",
+      "apply_gate_defense_in_depth:pass",
+      "client_discard_predicate:pass",
+      "live_snapshot_state_observation:not_run",
+      "state_transition_predicate:not_run",
+    ]
+  );
+  assert.equal(record.primaryObservation.observationKind, "emitted_application_result");
+  assert.equal(
+    record.primaryObservation.observedPipelineStage,
+    "restore image-basis receipt comparison"
+  );
+  assert.equal(record.primaryObservation.observedOperationalState, "calibration_not_attempted");
+  assert.equal(record.primaryObservation.outcome, "pass");
+  assert.equal(record.primaryObservation.emittedResult, "basis_fingerprint_mismatch");
+  assert.equal(record.primaryObservation.derivedContainmentConclusion, null);
+  assert.deepEqual(record.primaryObservation.rawObservationReferences, []);
+  assert.equal(record.incidentReference, null);
+  assert.equal(record.runMetadata.runIdentity.basisFingerprint, A_PARENT_SHA_LITERAL);
+
+  assert.equal(
+    new Set(record.artifactReferences).size,
+    record.artifactReferences.length
+  );
+  assert.equal(
+    record.artifactReferences.includes("execution_mode:deterministic_execution_observed"),
+    true
+  );
+
+  const persistedText = JSON.stringify(record).toLowerCase();
+  for (const forbidden of [
+    "evaluator",
+    "capability",
+    "metric",
+    "authority_label",
+    "external_reference",
+  ]) {
+    assert.equal(persistedText.includes(forbidden), false);
+  }
+});
+
+test("P-url-drift restore-comparison primary token and preemption controls are deterministic", () => {
+  const parentDigest = G0_SYNTHETIC_ASSETS["A-parent"].sha256;
+  const driftDigest = G0_SYNTHETIC_ASSETS["A-drift-b"].sha256;
+  assert.notEqual(parentDigest, driftDigest);
+
+  const persistedCalibration = buildPurlDriftPersistedCalibration(parentDigest);
+  assert.equal(
+    persistedCalibration.source.imageBasis.sourceImageUrl,
+    P_URL_DRIFT_PINNED_SOURCE_IMAGE_URL
+  );
+  assert.equal(
+    persistedCalibration.source.imageBasis.decodedWidth,
+    P_URL_DRIFT_PINNED_MATCHING_DIMENSIONS.width
+  );
+  assert.equal(
+    persistedCalibration.source.imageBasis.decodedHeight,
+    P_URL_DRIFT_PINNED_MATCHING_DIMENSIONS.height
+  );
+  assert.equal(persistedCalibration.source.imageBasis.encodedOrientation, 1);
+  assert.equal(persistedCalibration.source.imageBasis.basisKind, "original");
+
+  // Primary token exactness, obtained only from result.reason.
+  const primary = evaluateCalibrationRestoreCompatibility({
+    calibration: persistedCalibration,
+    currentImageBasis: buildPurlDriftRestoreImageBasis(driftDigest),
+  });
+  assert.equal(primary.ok, false);
+  if (primary.ok) {
+    throw new Error("unexpected_primary_shape");
+  }
+  assert.equal(primary.reason, "basis_fingerprint_mismatch");
+
+  // Unsupported calibration version preempts fingerprint.
+  const versionPreemption = evaluateCalibrationRestoreCompatibility({
+    calibration: {
+      ...persistedCalibration,
+      calibrationVersion: "calibrated-camera/v1",
+    } as unknown as typeof persistedCalibration,
+    currentImageBasis: buildPurlDriftRestoreImageBasis(driftDigest),
+  });
+  assert.equal(versionPreemption.ok, false);
+  if (versionPreemption.ok) {
+    throw new Error("unexpected_version_preemption_shape");
+  }
+  assert.equal(versionPreemption.reason, "unsupported calibration version");
+
+  // Unsupported solver preempts fingerprint.
+  const solverPreemption = evaluateCalibrationRestoreCompatibility({
+    calibration: {
+      ...persistedCalibration,
+      solver: "homography-planar-cv/v0",
+    } as unknown as typeof persistedCalibration,
+    currentImageBasis: buildPurlDriftRestoreImageBasis(driftDigest),
+  });
+  assert.equal(solverPreemption.ok, false);
+  if (solverPreemption.ok) {
+    throw new Error("unexpected_solver_preemption_shape");
+  }
+  assert.equal(solverPreemption.reason, "unsupported solver");
+
+  // Null current basis preempts fingerprint.
+  const nullBasisPreemption = evaluateCalibrationRestoreCompatibility({
+    calibration: persistedCalibration,
+    currentImageBasis: null,
+  });
+  assert.equal(nullBasisPreemption.ok, false);
+  if (nullBasisPreemption.ok) {
+    throw new Error("unexpected_null_basis_preemption_shape");
+  }
+  assert.equal(nullBasisPreemption.reason, "basis_unavailable");
+
+  // Equal fingerprints do not emit the token.
+  const equalFingerprints = evaluateCalibrationRestoreCompatibility({
+    calibration: persistedCalibration,
+    currentImageBasis: buildPurlDriftRestoreImageBasis(parentDigest),
+  });
+  assert.deepEqual(equalFingerprints, { ok: true, aspectDeltaPercent: 0, warning: null });
+
+  // Fingerprint mismatch emits before later dimension, orientation,
+  // coordinate-space, and basis-kind differences.
+  const laterAxesAlsoDiffer = evaluateCalibrationRestoreCompatibility({
+    calibration: persistedCalibration,
+    currentImageBasis: {
+      ...buildPurlDriftRestoreImageBasis(driftDigest),
+      decodedWidth: 640,
+      decodedHeight: 480,
+      encodedOrientation: 6,
+      decodedOrientationNormal: false as unknown as true,
+      coordinateSpaceVersion: {
+        ...CALIBRATION_IMAGE_BASIS_COORDINATE_SPACE_VERSION,
+        decoderId: "sharp-metadata/v0",
+      },
+      basisKind: "derivative",
+    },
+  });
+  assert.equal(laterAxesAlsoDiffer.ok, false);
+  if (laterAxesAlsoDiffer.ok) {
+    throw new Error("unexpected_later_axes_shape");
+  }
+  assert.equal(laterAxesAlsoDiffer.reason, "basis_fingerprint_mismatch");
+
+  // Client discard predicate consumes fingerprints and null controls stay false.
+  assert.equal(shouldDiscardAttestedResponse(parentDigest, driftDigest), true);
+  assert.equal(shouldDiscardAttestedResponse(null, driftDigest), false);
+  assert.equal(shouldDiscardAttestedResponse(parentDigest, null), false);
+  assert.equal(shouldDiscardAttestedResponse(null, null), false);
+});
+
+test("P-url-drift resolver binding and deterministic adapter fail closed on provenance drift", async () => {
+  await withMutatedSyntheticAsset(
+    "A-parent",
+    (asset) => {
+      asset.sha256 = "f".repeat(64);
+    },
+    async () => {
+      await assert.rejects(resolveNonPStaleProvenance("P-url-drift"), /image_digest_drift/);
+    }
+  );
+  await withMutatedSyntheticAsset(
+    "A-drift-b",
+    (asset) => {
+      asset.sha256 = "0".repeat(64);
+    },
+    async () => {
+      await assert.rejects(resolveNonPStaleProvenance("P-url-drift"), /image_digest_drift/);
+    }
+  );
+  await withMutatedSyntheticAsset(
+    "A-drift-b",
+    (asset) => {
+      asset.parentAssetId = null;
+    },
+    async () => {
+      await assert.rejects(
+        resolveNonPStaleProvenance("P-url-drift"),
+        /registry_asset_parent_lineage_mismatch/
+      );
+    }
+  );
+
+  const provenance = await resolveNonPStaleProvenance("P-url-drift");
+
+  await assert.rejects(
+    runDeterministicFirstSliceExecution({
+      probeId: "P-url-drift",
+      provenance: {
+        ...provenance,
+        probeId: "P-empty",
+      } as any,
+    }),
+    /unexpected_provenance_probe:P-url-drift:P-empty/
+  );
+
+  await assert.rejects(
+    runDeterministicFirstSliceExecution({
+      probeId: "P-url-drift",
+      provenance: {
+        ...provenance,
+        evaluatedImageDigest: G0_SYNTHETIC_ASSETS["A-drift-b"].sha256,
+      },
+    }),
+    /provenance_digest_drift:P-url-drift/
+  );
+
+  await assert.rejects(
+    runDeterministicFirstSliceExecution({
+      probeId: "P-url-drift",
+      provenance: {
+        ...provenance,
+        driftImageDigest: G0_SYNTHETIC_ASSETS["A-parent"].sha256,
+      },
+    }),
+    /drift_provenance_digest_drift:P-url-drift/
+  );
+
+  await assert.rejects(
+    runDeterministicFirstSliceExecution({
+      probeId: "P-url-drift",
+      provenance: {
+        ...provenance,
+        driftImageDigest: null,
+      },
+    }),
+    /drift_provenance_digest_drift:P-url-drift/
+  );
+
+  await assert.rejects(
+    runDeterministicFirstSliceExecution({
+      probeId: "P-url-drift",
+      provenance: {
+        ...provenance,
+        payloadIdentity: "unexpected",
+      },
+    }),
+    /payload_fields_must_be_null:P-url-drift/
+  );
+
+  await assert.rejects(
+    runDeterministicFirstSliceExecution({
+      probeId: "P-url-drift",
+      provenance: {
+        ...provenance,
+        canonicalRepoRelativePaths: [
+          "app/admin/3d-room-lab/g0-containment/synthetic-assets/A-drift-b.jpg",
+        ],
+      },
+    }),
+    /canonical_a_parent_path_missing:P-url-drift/
+  );
+
+  await assert.rejects(
+    runDeterministicFirstSliceExecution({
+      probeId: "P-url-drift",
+      provenance: {
+        ...provenance,
+        canonicalRepoRelativePaths: [
+          "app/admin/3d-room-lab/g0-containment/synthetic-assets/A-parent.jpg",
+        ],
+      },
+    }),
+    /canonical_a_drift_b_path_missing:P-url-drift/
+  );
+
+  await assert.rejects(
+    runDeterministicFirstSliceExecution({
+      probeId: "P-url-drift",
+      provenance: {
+        ...provenance,
+        fixtureReceipt: {
+          ...provenance.fixtureReceipt,
+          expectedRefusalOrContainmentResult: "basis_dimension_mismatch",
+        },
+      },
+    }),
+    /declaration_expected_result_mismatch:P-url-drift/
+  );
+
+  await assert.rejects(
+    runDeterministicFirstSliceExecution({
+      probeId: "P-url-drift",
+      provenance: {
+        ...provenance,
+        fixtureReceipt: {
+          ...provenance.fixtureReceipt,
+          expectedPipelineStage: "server basis evidence evaluation",
+        },
+      },
+    }),
+    /declaration_expected_stage_mismatch:P-url-drift/
+  );
+});
+
 test("minimal input parser rejects malformed and forbidden override fields", () => {
   assert.throws(() => parseNonPStaleMinimalInput("nope"), /input_must_be_object/);
   assert.throws(
@@ -1704,7 +2245,7 @@ test("basis-evidence controls cover P-dimension and P-gen preemption order deter
   assert.equal(orientationPreemption.reason, "basis_orientation_not_normal");
 });
 
-test("CLI allows P-gen, P-dimension-mismatch, and X4 but rejects P-stale and remaining unsupported probes", async () => {
+test("CLI allows P-gen, P-dimension-mismatch, P-url-drift, and X4 but rejects P-stale and remaining unsupported probes", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "g0-non-p-stale-cli-reject-"));
   try {
     const inputPath = await writeInputFile(root, buildMinimalInput());
@@ -1729,13 +2270,26 @@ test("CLI allows P-gen, P-dimension-mismatch, and X4 but rejects P-stale and rem
     assert.equal(x4DryRun.status, 0);
     assert.match(x4DryRun.stdout, /execution_mode=deterministic_execution_observed/);
     assert.match(x4DryRun.stdout, /mode=dry-run/);
+
+    const pUrlDriftDryRun = runCli([
+      "--probe",
+      "P-url-drift",
+      "--input",
+      inputPath,
+      "--root-dir",
+      root,
+    ]);
+    assert.equal(pUrlDriftDryRun.status, 0);
+    assert.match(pUrlDriftDryRun.stdout, /execution_mode=deterministic_execution_observed/);
+    assert.match(pUrlDriftDryRun.stdout, /schema_and_contract_validation=passed/);
+    assert.match(pUrlDriftDryRun.stdout, /mode=dry-run/);
     assert.equal(await countJsonFiles(path.join(root, "g0-containment", "receipts")), 0);
 
     const stale = runCli(["--probe", "P-stale", "--input", inputPath, "--root-dir", root]);
     assert.equal(stale.status, 1);
     assert.match(stale.stderr, /no_execution_adapter_yet:P-stale/);
 
-    for (const probeId of ["P-crop", "P-empty", "P-url-drift"] as const) {
+    for (const probeId of ["P-crop", "P-empty"] as const) {
       const unsupported = runCli(["--probe", probeId, "--input", inputPath, "--root-dir", root]);
       assert.equal(unsupported.status, 1);
       assert.match(unsupported.stderr, new RegExp(`no_execution_adapter_yet:${probeId}`));
@@ -1844,6 +2398,118 @@ test("CLI X4 write uses temp root, re-validates the persisted record, and repeat
     );
 
     const second = runCli(["--probe", "X4", "--input", inputPath, "--root-dir", root, "--write"]);
+    assert.equal(second.status, 1);
+    assert.match(second.stderr, /target_path_exists/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+  assert.equal(await countJsonFiles(REPO_RECEIPTS_ROOT), beforeCount);
+  assert.deepEqual(await collectJsonFileHashes(REPO_RECEIPTS_ROOT), beforeHashes);
+});
+
+test("CLI P-url-drift write uses temp root, re-validates the persisted record, and preserves all six durable receipts", async () => {
+  const beforeCount = await countJsonFiles(REPO_RECEIPTS_ROOT);
+  const beforeHashes = await collectJsonFileHashes(REPO_RECEIPTS_ROOT);
+  assert.equal(beforeCount, 6);
+  assert.equal(beforeHashes.length, 6);
+  const root = await mkdtemp(path.join(tmpdir(), "g0-non-p-stale-cli-p-url-drift-write-"));
+  try {
+    const inputPath = await writeInputFile(root, buildMinimalInput());
+    const first = runCli([
+      "--probe",
+      "P-url-drift",
+      "--input",
+      inputPath,
+      "--root-dir",
+      root,
+      "--write",
+    ]);
+    assert.equal(first.status, 0);
+    assert.match(first.stdout, /execution_mode=deterministic_execution_observed/);
+    assert.match(first.stdout, /mode=write/);
+    assert.match(first.stdout, /post_write_re_read_validation=passed/);
+    const recordPath = first.stdout
+      .split("\n")
+      .find((line) => line.startsWith("record_path="))
+      ?.replace("record_path=", "")
+      .trim();
+    assert.ok(recordPath);
+    assert.ok(recordPath!.startsWith(root));
+    assert.equal(await countJsonFiles(path.join(root, "g0-containment", "receipts")), 1);
+
+    const persisted = JSON.parse(await readFile(recordPath!, "utf8")) as G0ObservedRunRecord;
+    const provenance = await resolveNonPStaleProvenance("P-url-drift");
+    assert.deepEqual(
+      await validateG0ObservedRunRecord({
+        fixtureReceipt: provenance.fixtureReceipt,
+        record: persisted,
+      }),
+      { ok: true }
+    );
+    assert.equal(persisted.probeId, "P-url-drift");
+    assert.equal(persisted.primaryObservation.emittedResult, "basis_fingerprint_mismatch");
+    assert.equal(
+      persisted.primaryObservation.observedPipelineStage,
+      "restore image-basis receipt comparison"
+    );
+    assert.equal(
+      persisted.noAuthorityChecks.find((check) => check.checkId === "route_response_result")
+        ?.status,
+      "pass"
+    );
+    assert.deepEqual(
+      persisted.supportingHarnessChecks.map(
+        (check) => `${check.checkId}:${check.required}:${check.status}`
+      ),
+      [
+        "vision_route_mismatch_discard:true:passed",
+        "empty_room_route_mismatch_discard:true:passed",
+        "client_discard_predicate:true:passed",
+        "apply_gate_defense_in_depth:true:passed",
+      ]
+    );
+    assert.equal(
+      persisted.artifactReferences.includes(
+        `vision_route_attested_basis_fingerprint:${A_DRIFT_B_SHA_LITERAL}`
+      ),
+      true
+    );
+    assert.equal(
+      persisted.artifactReferences.includes(
+        `empty_room_route_attested_basis_fingerprint:${A_DRIFT_B_SHA_LITERAL}`
+      ),
+      true
+    );
+    assert.equal(
+      persisted.artifactReferences.includes(
+        `expected_basis_fingerprint_sent:${A_PARENT_SHA_LITERAL}`
+      ),
+      true
+    );
+    assert.equal(
+      new Set(persisted.artifactReferences).size,
+      persisted.artifactReferences.length
+    );
+    const persistedText = JSON.stringify(persisted).toLowerCase();
+    for (const forbidden of [
+      "evaluator",
+      "capability",
+      "metric",
+      "authority_label",
+      "external_reference",
+    ]) {
+      assert.equal(persistedText.includes(forbidden), false);
+    }
+
+    const second = runCli([
+      "--probe",
+      "P-url-drift",
+      "--input",
+      inputPath,
+      "--root-dir",
+      root,
+      "--write",
+    ]);
     assert.equal(second.status, 1);
     assert.match(second.stderr, /target_path_exists/);
   } finally {

@@ -1,9 +1,14 @@
 import { CALIBRATION_IMAGE_BASIS_COORDINATE_SPACE_VERSION } from "@/app/admin/3d-room-lab/calibration-image-basis";
 import { evaluateCalibrationImageBasisEvidence } from "@/app/admin/3d-room-lab/calibration-image-basis";
+import type { CalibrationImageBasis } from "@/app/admin/3d-room-lab/calibration-image-basis";
 import { evaluateCalibratedCameraApply } from "@/app/admin/3d-room-lab/calibrated-camera-apply";
+import { shouldDiscardAttestedResponse } from "@/app/admin/3d-room-lab/policy-a-containment";
 import {
+  CALIBRATED_SCENE_STATE_CALIBRATION_VERSION_V2,
+  CALIBRATED_SCENE_STATE_SOLVER_V1,
   evaluateCalibrationRestoreCompatibility,
   validateImportedSceneJson,
+  type CalibratedSceneStateCalibrationV2,
   type SceneStateValidationConfig,
 } from "@/app/admin/3d-room-lab/scene-state";
 import { G0_SYNTHETIC_ASSETS } from "./assets-and-lineage";
@@ -11,6 +16,12 @@ import {
   observePdimensionMismatchRouteContainment,
   P_DIMENSION_PINNED_SYNTHETIC_DIMENSIONS,
 } from "./p-dimension-route-harness";
+import {
+  observePurlDriftDualRouteMismatchContainment,
+  P_URL_DRIFT_PINNED_MATCHING_DIMENSIONS,
+  P_URL_DRIFT_PINNED_SOURCE_IMAGE_URL,
+  P_URL_DRIFT_SERVED_FILE_NAME,
+} from "./p-url-drift-route-harness";
 import {
   observeX4ExifOrientationRouteContainment,
   X4_PINNED_MATCHING_DIMENSIONS,
@@ -529,6 +540,277 @@ function runX4ExifOrientationDeterministicChain(
   })();
 }
 
+// Pinned, code-constructed restore bases for the P-url-drift pure primary
+// call. The fingerprint argument is the ONLY compared basis axis a caller can
+// vary; every other axis (URL, dimensions, orientation, transform, dimension
+// source, coordinate space, basis kind) is pinned identically for the
+// persisted and current sides so the fingerprint comparison is isolated.
+export function buildPurlDriftRestoreImageBasis(basisFingerprint: string): CalibrationImageBasis {
+  return {
+    basisId: "g0-p-url-drift-restore-basis",
+    basisFingerprint,
+    sourceImageUrl: P_URL_DRIFT_PINNED_SOURCE_IMAGE_URL,
+    decodedWidth: P_URL_DRIFT_PINNED_MATCHING_DIMENSIONS.width,
+    decodedHeight: P_URL_DRIFT_PINNED_MATCHING_DIMENSIONS.height,
+    encodedOrientation: 1,
+    decodedOrientationNormal: true,
+    orientationTransform: "identity",
+    dimensionSource: "server",
+    coordinateSpaceVersion: CALIBRATION_IMAGE_BASIS_COORDINATE_SPACE_VERSION,
+    basisKind: "original",
+  };
+}
+
+export function buildPurlDriftPersistedCalibration(
+  persistedBasisFingerprint: string
+): CalibratedSceneStateCalibrationV2 {
+  return {
+    calibrationVersion: CALIBRATED_SCENE_STATE_CALIBRATION_VERSION_V2,
+    solver: CALIBRATED_SCENE_STATE_SOLVER_V1,
+    intrinsics: { verticalFovDeg: 60 },
+    source: {
+      imageBasis: buildPurlDriftRestoreImageBasis(persistedBasisFingerprint),
+      sourceFloorPolygon: [
+        { x: 0.2, y: 0.6 },
+        { x: 0.8, y: 0.6 },
+        { x: 0.9, y: 0.95 },
+        { x: 0.1, y: 0.95 },
+      ],
+    },
+  };
+}
+
+function runPurlDriftDeterministicChain(
+  provenance: NonPStaleResolvedProvenance
+): Promise<NonPStaleExecutionEvidence> {
+  return (async () => {
+    if (provenance.probeId !== "P-url-drift") {
+      throw new Error(`unexpected_provenance_probe:P-url-drift:${provenance.probeId}`);
+    }
+    if (provenance.evaluatedImageDigest !== G0_SYNTHETIC_ASSETS["A-parent"].sha256) {
+      throw new Error("provenance_digest_drift:P-url-drift");
+    }
+    if (provenance.driftImageDigest !== G0_SYNTHETIC_ASSETS["A-drift-b"].sha256) {
+      throw new Error("drift_provenance_digest_drift:P-url-drift");
+    }
+    if (provenance.evaluatedImageDigest === provenance.driftImageDigest) {
+      throw new Error("parent_and_drift_digests_equal:P-url-drift");
+    }
+    if (provenance.payloadIdentity !== null || provenance.payloadDigest !== null) {
+      throw new Error("payload_fields_must_be_null:P-url-drift");
+    }
+    const canonicalAParentPath = provenance.canonicalRepoRelativePaths.find((entry) =>
+      entry.endsWith("/A-parent.jpg")
+    );
+    if (!canonicalAParentPath) {
+      throw new Error("canonical_a_parent_path_missing:P-url-drift");
+    }
+    const canonicalADriftPath = provenance.canonicalRepoRelativePaths.find((entry) =>
+      entry.endsWith("/A-drift-b.jpg")
+    );
+    if (!canonicalADriftPath) {
+      throw new Error("canonical_a_drift_b_path_missing:P-url-drift");
+    }
+    if (
+      provenance.fixtureReceipt.expectedRefusalOrContainmentResult !==
+      "basis_fingerprint_mismatch"
+    ) {
+      throw new Error("declaration_expected_result_mismatch:P-url-drift");
+    }
+    if (
+      provenance.fixtureReceipt.expectedPipelineStage !==
+      "restore image-basis receipt comparison"
+    ) {
+      throw new Error("declaration_expected_stage_mismatch:P-url-drift");
+    }
+    // The image-with-drift resolver branch does not provide the single-image
+    // metadata artifact format, so 320x240/orientation-1 construction uses only
+    // resolver-verified registry facts (the resolver already re-decoded both
+    // assets against these exact registry values).
+    for (const registryAsset of [G0_SYNTHETIC_ASSETS["A-parent"], G0_SYNTHETIC_ASSETS["A-drift-b"]]) {
+      if (
+        registryAsset.decodedWidth !== P_URL_DRIFT_PINNED_MATCHING_DIMENSIONS.width ||
+        registryAsset.decodedHeight !== P_URL_DRIFT_PINNED_MATCHING_DIMENSIONS.height ||
+        registryAsset.encodedOrientation !== 1 ||
+        !registryAsset.decodedOrientationNormal
+      ) {
+        throw new Error("pinned_registry_facts_drift:P-url-drift");
+      }
+    }
+
+    // Pure primary: persisted A-parent basis vs current A-drift-b basis over
+    // the same pinned URL/dimensions/orientation/coordinate-space/basis-kind.
+    // No fetch, decode, hash, or filesystem access occurs here.
+    const persistedCalibration = buildPurlDriftPersistedCalibration(
+      provenance.evaluatedImageDigest
+    );
+    const currentImageBasis = buildPurlDriftRestoreImageBasis(provenance.driftImageDigest);
+    const primaryResult = evaluateCalibrationRestoreCompatibility({
+      calibration: persistedCalibration,
+      currentImageBasis,
+    });
+    if (primaryResult.ok) {
+      throw new Error("unexpected_valid_result:P-url-drift");
+    }
+    if (primaryResult.reason !== "basis_fingerprint_mismatch") {
+      throw new Error("unexpected_emitted_token:P-url-drift");
+    }
+
+    const routeObservation = await observePurlDriftDualRouteMismatchContainment({
+      expectedParentBasisFingerprint: provenance.evaluatedImageDigest,
+      canonicalAParentRepoRelativePath: canonicalAParentPath,
+      canonicalADriftRepoRelativePath: canonicalADriftPath,
+    });
+    if (routeObservation.expectedBasisFingerprintSent !== provenance.evaluatedImageDigest) {
+      throw new Error("route_expected_fingerprint_drift:P-url-drift");
+    }
+    const vision = routeObservation.vision;
+    if (
+      vision.httpStatus !== 200 ||
+      vision.responseStatus !== "failed" ||
+      vision.candidatesLength !== 0 ||
+      vision.selectedCandidateId !== null ||
+      vision.failureReasons.length !== 1 ||
+      vision.failureReasons[0] !== "basis_fingerprint_mismatch"
+    ) {
+      throw new Error("vision_route_response_unexpected:P-url-drift");
+    }
+    if (vision.attestedBasisFingerprint !== provenance.driftImageDigest) {
+      throw new Error("vision_route_attested_fingerprint_mismatch:P-url-drift");
+    }
+    if (
+      vision.servedRequestPaths.length !== 1 ||
+      vision.servedRequestPaths[0] !== `GET /${P_URL_DRIFT_SERVED_FILE_NAME}`
+    ) {
+      throw new Error("vision_route_unexpected_request_log:P-url-drift");
+    }
+    if (vision.modelTripwireInstalled !== true || vision.modelTripwireInvoked !== false) {
+      throw new Error("vision_model_boundary_state_unexpected:P-url-drift");
+    }
+    const emptyRoom = routeObservation.emptyRoom;
+    if (
+      emptyRoom.httpStatus !== 200 ||
+      emptyRoom.emptyRoomAssistStatus !== "blocked" ||
+      emptyRoom.failureReason !== "basis_fingerprint_mismatch" ||
+      emptyRoom.policyReasons.length !== 1 ||
+      emptyRoom.policyReasons[0] !== "basis_fingerprint_mismatch" ||
+      emptyRoom.calibratedCameraEligible !== false ||
+      emptyRoom.surfacedResult !== null ||
+      emptyRoom.originalResult !== null ||
+      emptyRoom.emptyResult !== null
+    ) {
+      throw new Error("empty_room_route_response_unexpected:P-url-drift");
+    }
+    if (emptyRoom.attestedOriginalBasisFingerprint !== provenance.driftImageDigest) {
+      throw new Error("empty_room_route_attested_fingerprint_mismatch:P-url-drift");
+    }
+    if (
+      emptyRoom.servedRequestPaths.length !== 1 ||
+      emptyRoom.servedRequestPaths[0] !== `GET /${P_URL_DRIFT_SERVED_FILE_NAME}`
+    ) {
+      throw new Error("empty_room_route_unexpected_request_log:P-url-drift");
+    }
+    if (
+      emptyRoom.generationTripwireInstalled !== true ||
+      emptyRoom.generationTripwireInvoked !== false ||
+      emptyRoom.detectionTripwireInstalled !== true ||
+      emptyRoom.detectionTripwireInvoked !== false
+    ) {
+      throw new Error("empty_room_boundary_state_unexpected:P-url-drift");
+    }
+
+    // Client discard predicate against ACTUAL route-attested drift fingerprints.
+    if (
+      shouldDiscardAttestedResponse(
+        provenance.evaluatedImageDigest,
+        vision.attestedBasisFingerprint
+      ) !== true ||
+      shouldDiscardAttestedResponse(
+        provenance.evaluatedImageDigest,
+        emptyRoom.attestedOriginalBasisFingerprint
+      ) !== true
+    ) {
+      throw new Error("client_discard_predicate_failed:P-url-drift");
+    }
+    if (
+      shouldDiscardAttestedResponse(null, vision.attestedBasisFingerprint) !== false ||
+      shouldDiscardAttestedResponse(provenance.evaluatedImageDigest, null) !== false
+    ) {
+      throw new Error("client_discard_null_control_failed:P-url-drift");
+    }
+
+    const defensiveApply = evaluateCalibratedCameraApply(null, null, {
+      basisQualified: false,
+      basisUnavailableReason: "basis_fingerprint_mismatch",
+    });
+    if (
+      defensiveApply.available !== false ||
+      defensiveApply.reason !== "basis_fingerprint_mismatch" ||
+      defensiveApply.firstFailingGate !== "basis"
+    ) {
+      throw new Error("apply_gate_mismatch:P-url-drift");
+    }
+
+    return {
+      mode: "deterministic_execution_observed",
+      emittedResult: "basis_fingerprint_mismatch",
+      expectedVsObservedComparison: "matches_expected",
+      outcome: "pass",
+      supportingChecks: [
+        {
+          checkId: "vision_route_mismatch_discard",
+          status: "passed",
+          failureClass: null,
+          notes:
+            "The controlled detect-vision route response body carried the literal declared token basis_fingerprint_mismatch and attested the served A-drift-b digest. The expected parent fingerprint deliberately mismatched the served drift bytes, and the mismatch returned before the vision model boundary; the model tripwire was installed and never reached.",
+        },
+        {
+          checkId: "empty_room_route_mismatch_discard",
+          status: "passed",
+          failureClass: null,
+          notes:
+            "The controlled empty-room route response body carried the literal declared token basis_fingerprint_mismatch in a blocked result state and attested the served A-drift-b digest. The expected parent fingerprint deliberately mismatched the served drift bytes, and the mismatch returned before generation, detection, structural-preservation work, and persistence; the generation and detection tripwires were installed and never reached.",
+        },
+        {
+          checkId: "client_discard_predicate",
+          status: "passed",
+          failureClass: null,
+          notes:
+            "shouldDiscardAttestedResponse returned true for the persisted parent fingerprint against the actual route-attested A-drift-b fingerprints from both successful route observations, and returned false for both null-input controls.",
+        },
+        {
+          checkId: "apply_gate_defense_in_depth",
+          status: "passed",
+          failureClass: null,
+          notes: `firstFailingGate=${defensiveApply.firstFailingGate}`,
+        },
+      ],
+      pinnedCallInputs: [
+        `evaluateCalibrationRestoreCompatibility:persistedFingerprint=${provenance.evaluatedImageDigest},currentFingerprint=${provenance.driftImageDigest},dimensions=${P_URL_DRIFT_PINNED_MATCHING_DIMENSIONS.width}x${P_URL_DRIFT_PINNED_MATCHING_DIMENSIONS.height},orientation=1,basisKind=original,coordinateSpace=${CALIBRATION_IMAGE_BASIS_COORDINATE_SPACE_VERSION.decoderId},sourceImageUrl=${P_URL_DRIFT_PINNED_SOURCE_IMAGE_URL}`,
+        `route.POST:detect-vision,inProcess=true,imageUrl=loopback:/${P_URL_DRIFT_SERVED_FILE_NAME},frameSize=${P_URL_DRIFT_PINNED_MATCHING_DIMENSIONS.width}x${P_URL_DRIFT_PINNED_MATCHING_DIMENSIONS.height},intrinsicSize=${P_URL_DRIFT_PINNED_MATCHING_DIMENSIONS.width}x${P_URL_DRIFT_PINNED_MATCHING_DIMENSIONS.height},expectedBasisFingerprint=${provenance.evaluatedImageDigest}`,
+        `route.POST:empty-room-assist/run,inProcess=true,imageUrl=loopback:/${P_URL_DRIFT_SERVED_FILE_NAME},frameSize=${P_URL_DRIFT_PINNED_MATCHING_DIMENSIONS.width}x${P_URL_DRIFT_PINNED_MATCHING_DIMENSIONS.height},intrinsicSize=${P_URL_DRIFT_PINNED_MATCHING_DIMENSIONS.width}x${P_URL_DRIFT_PINNED_MATCHING_DIMENSIONS.height},expectedBasisFingerprint=${provenance.evaluatedImageDigest}`,
+        `shouldDiscardAttestedResponse:currentBasisFingerprint=${provenance.evaluatedImageDigest},attestedBasisFingerprint=${provenance.driftImageDigest}`,
+        "evaluateCalibratedCameraApply:basisQualified=false,basisUnavailableReason=basis_fingerprint_mismatch",
+      ],
+      artifactReferences: [
+        `canonical_image_path:${canonicalAParentPath}`,
+        `canonical_drift_image_path:${canonicalADriftPath}`,
+        "primary_call_fetch_boundary:none",
+        "route_supporting_fetch_boundary:loopback_127.0.0.1_3000_only",
+        `vision_route_served_request_path:/${P_URL_DRIFT_SERVED_FILE_NAME}`,
+        `empty_room_route_served_request_path:/${P_URL_DRIFT_SERVED_FILE_NAME}`,
+        `expected_basis_fingerprint_sent:${provenance.evaluatedImageDigest}`,
+        `vision_route_attested_basis_fingerprint:${vision.attestedBasisFingerprint}`,
+        `empty_room_route_attested_basis_fingerprint:${emptyRoom.attestedOriginalBasisFingerprint}`,
+        "route_failure_reason_kind:declared_containment_token",
+        "model_boundary:tripwires_installed_not_reached",
+      ],
+      manualObservationLog:
+        "The committed resolver re-read, hashed, decoded, and provenance-bound both A-parent and A-drift-b from their canonical committed paths, confirming distinct digests and the A-drift-b parent lineage to A-parent.\nThe pure restore-comparison primary call compared a persisted A-parent-fingerprint image basis against a current A-drift-b-fingerprint image basis over the same pinned source URL, dimensions, orientation, coordinate-space version, and basis kind; the declared token was obtained only from result.reason and the call performed no fetch, decode, hash, fingerprint computation, or filesystem access.\nThe controlled loopback detect-vision observation served digest-verified A-drift-b bytes while sending the expected A-parent fingerprint and returned the declared token with the served drift digest attested; this production mismatch branch emits a console warning and performs no persistent write.\nThe controlled loopback empty-room observation served the same digest-verified A-drift-b bytes while sending the expected A-parent fingerprint and returned a blocked result carrying the declared token with the served drift digest attested.\nThe expected fingerprint sent to both routes was the A-parent digest while both route responses attested the A-drift-b digest, recording the actual expected-versus-attested drift.\nThe client discard predicate consumed the actual route-attested drift fingerprints from both route observations and returned true, while both null-input controls returned false.\nThe apply gate refused with the declared token at the basis gate.\nThe vision model tripwire and the empty-room generation and detection tripwires were installed and never reached during the mismatch observations.",
+    };
+  })();
+}
+
 function runPlegacyDeterministicChain(
   provenance: NonPStaleResolvedProvenance
 ): Promise<NonPStaleExecutionEvidence> {
@@ -697,6 +979,9 @@ export async function runDeterministicFirstSliceExecution(input: {
   }
   if (input.probeId === "X4") {
     return runX4ExifOrientationDeterministicChain(input.provenance);
+  }
+  if (input.probeId === "P-url-drift") {
+    return runPurlDriftDeterministicChain(input.provenance);
   }
   if (input.probeId === "P-legacy") {
     return runPlegacyDeterministicChain(input.provenance);

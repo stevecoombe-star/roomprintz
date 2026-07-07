@@ -19,6 +19,7 @@ const FIRST_SLICE_EXECUTABLE_PROBES = new Set<NonPStaleProbeId>([
   "P-dimension-mismatch",
   "P-legacy",
   "P-coordinate-space-drift",
+  "P-url-drift",
   "X4",
 ]);
 
