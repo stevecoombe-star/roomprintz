@@ -21,8 +21,11 @@ import {
 import { shouldDiscardAttestedResponse } from "@/app/admin/3d-room-lab/policy-a-containment";
 import { evaluateCalibrationRestoreCompatibility } from "@/app/admin/3d-room-lab/scene-state";
 import {
+  buildPcropComparisonImageBasis,
+  buildPcropPersistedParentCalibration,
   buildPurlDriftPersistedCalibration,
   buildPurlDriftRestoreImageBasis,
+  P_CROP_PINNED_SOURCE_IMAGE_URL,
   runDeterministicFirstSliceExecution,
 } from "../non-p-stale-first-slice-execution";
 import { P_DIMENSION_PINNED_SYNTHETIC_DIMENSIONS } from "../p-dimension-route-harness";
@@ -274,6 +277,16 @@ test("resolver fails closed on digest, metadata, orientation, path, and lineage 
     },
     async () => {
       await assert.rejects(resolveNonPStaleProvenance("P-gen"), /image_digest_drift/);
+    }
+  );
+
+  await withMutatedSyntheticAsset(
+    "A-crop",
+    (asset) => {
+      asset.decodedWidth = asset.decodedWidth + 1;
+    },
+    async () => {
+      await assert.rejects(resolveNonPStaleProvenance("P-crop"), /image_metadata_drift/);
     }
   );
 
@@ -2152,6 +2165,771 @@ test("P-url-drift resolver binding and deterministic adapter fail closed on prov
   );
 });
 
+const A_CROP_SHA_LITERAL =
+  "4aa5b69c28d49aef2847936fef9fe91a70be48b7e7f99f6f8063f37f7f4b60f2";
+
+const P_CROP_RESTORE_COMPARISON_CLARIFICATION =
+  "The resolver re-hashed A-crop and confirmed its digest differs from the registry-committed A-parent digest, with A-crop's registry lineage to A-parent enforced. A-parent bytes were not re-read. The pure comparison used A-parent as the persisted basis and A-crop as the current basis. Its observed result was basis_fingerprint_mismatch because fingerprint comparison precedes dimensions and basis-kind comparison. This supporting result verifies changed-byte crop containment ordering only; it is not the primary P-crop result and does not make restore_or_import_result a pass axis.";
+
+test("P-crop deterministic chain emits the derivative refusal token with exact supporting checks and profile", async () => {
+  const provenance = await resolveNonPStaleProvenance("P-crop");
+  assert.equal(provenance.probeId, "P-crop");
+  assert.equal(provenance.evaluatedImageDigest, G0_SYNTHETIC_ASSETS["A-crop"].sha256);
+  assert.equal(provenance.evaluatedImageDigest, A_CROP_SHA_LITERAL);
+  assert.equal(provenance.driftImageDigest, null);
+  assert.equal(provenance.fixtureReceipt.fixtureVersion, "g0/P-crop/v1");
+  assert.equal(
+    provenance.fixtureReceipt.expectedRefusalOrContainmentResult,
+    "basis_derivative_not_authority_eligible"
+  );
+  assert.equal(provenance.fixtureReceipt.expectedPipelineStage, "server basis evidence evaluation");
+  assert.equal(
+    provenance.artifactReferences.includes("fixture_image_dimensions:280x220"),
+    true
+  );
+  assert.equal(
+    provenance.artifactReferences.includes("fixture_image_orientation:1"),
+    true
+  );
+
+  // The frozen seven-axis P-crop profile persists verbatim.
+  assert.deepEqual(NON_P_STALE_NO_AUTHORITY_PROFILES["P-crop"], {
+    qualification_refusal_result: "pass",
+    restore_or_import_result: "not_run",
+    route_response_result: "not_run",
+    apply_gate_defense_in_depth: "pass",
+    client_discard_predicate: "not_run",
+    live_snapshot_state_observation: "not_run",
+    state_transition_predicate: "not_run",
+  });
+
+  // The whole deterministic chain must cross no fetch boundary.
+  let fetchCalls = 0;
+  const originalFetch = globalThis.fetch;
+  const execution = await (async () => {
+    try {
+      globalThis.fetch = ((..._args: Parameters<typeof fetch>) => {
+        fetchCalls += 1;
+        throw new Error("fetch_must_not_be_invoked");
+      }) as typeof globalThis.fetch;
+      return runDeterministicFirstSliceExecution({
+        probeId: "P-crop",
+        provenance,
+      });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  })();
+  assert.equal(fetchCalls, 0);
+
+  assert.equal(execution.mode, "deterministic_execution_observed");
+  assert.equal(execution.emittedResult, "basis_derivative_not_authority_eligible");
+  assert.equal(execution.expectedVsObservedComparison, "matches_expected");
+  assert.equal(execution.outcome, "pass");
+  assert.deepEqual(
+    execution.supportingChecks.map((check) => ({
+      checkId: check.checkId,
+      status: check.status,
+      failureClass: check.failureClass,
+    })),
+    [
+      {
+        checkId: "restore_comparison_changed_byte_crop",
+        status: "passed",
+        failureClass: null,
+      },
+      {
+        checkId: "apply_gate_defense_in_depth",
+        status: "passed",
+        failureClass: null,
+      },
+    ]
+  );
+  assert.equal(execution.supportingChecks[0].notes, P_CROP_RESTORE_COMPARISON_CLARIFICATION);
+  assert.equal(execution.supportingChecks[1].notes, "firstFailingGate=basis");
+
+  assert.equal(
+    execution.artifactReferences.includes(
+      "canonical_image_path:app/admin/3d-room-lab/g0-containment/synthetic-assets/A-crop.jpg"
+    ),
+    true
+  );
+  assert.equal(execution.artifactReferences.includes("primary_call_fetch_boundary:none"), true);
+  assert.equal(
+    execution.artifactReferences.includes("restore_comparison_fetch_boundary:none"),
+    true
+  );
+  assert.equal(execution.artifactReferences.includes("parent_registry_asset:A-parent"), true);
+  assert.equal(
+    execution.artifactReferences.includes(
+      `parent_registry_image_digest:${A_PARENT_SHA_LITERAL}`
+    ),
+    true
+  );
+  assert.equal(
+    execution.artifactReferences.includes("parent_registry_dimensions:320x240"),
+    true
+  );
+  assert.equal(execution.artifactReferences.includes("parent_registry_orientation:1"), true);
+  assert.equal(
+    execution.artifactReferences.includes("parent_lineage:registry_enforced:A-crop:A-parent"),
+    true
+  );
+  assert.equal(
+    execution.artifactReferences.includes(
+      `restore_comparison_persisted_registry_fingerprint:${A_PARENT_SHA_LITERAL}`
+    ),
+    true
+  );
+  assert.equal(
+    execution.artifactReferences.includes(
+      `restore_comparison_current_fingerprint:${A_CROP_SHA_LITERAL}`
+    ),
+    true
+  );
+  assert.equal(
+    execution.artifactReferences.includes(
+      "restore_comparison_observed_result:basis_fingerprint_mismatch"
+    ),
+    true
+  );
+  assert.equal(
+    execution.artifactReferences.includes("apply_gate_first_failing_gate:basis"),
+    true
+  );
+  // No parent file-path artifact: A-parent is registry-scoped only.
+  assert.equal(
+    execution.artifactReferences.some(
+      (entry) => entry.startsWith("parent_image_path:") || entry.includes("/A-parent.jpg")
+    ),
+    false
+  );
+
+  assert.equal(
+    execution.pinnedCallInputs.includes(
+      "evaluateCalibrationImageBasisEvidence:basisKind=derivative,browserDimensions=null,coordinateSpace=sharp-metadata/v1,metadata=280x220/orientation=1"
+    ),
+    true
+  );
+  assert.equal(
+    execution.pinnedCallInputs.includes(
+      `evaluateCalibrationRestoreCompatibility:persistedFingerprint=${A_PARENT_SHA_LITERAL},persistedDimensions=320x240,persistedBasisKind=original,currentFingerprint=${A_CROP_SHA_LITERAL},currentDimensions=280x220,currentBasisKind=derivative,orientation=1,coordinateSpace=sharp-metadata/v1,sourceImageUrl=${P_CROP_PINNED_SOURCE_IMAGE_URL}`
+    ),
+    true
+  );
+  assert.equal(
+    execution.pinnedCallInputs.includes(
+      "evaluateCalibratedCameraApply:basisQualified=false,basisUnavailableReason=basis_derivative_not_authority_eligible"
+    ),
+    true
+  );
+
+  // Single-asset manual log: honest resolver byte-access statement for
+  // A-crop only, registry-scoped A-parent facts, no dual-re-read claim.
+  assert.match(
+    execution.manualObservationLog,
+    /re-read, re-hashed, and re-decoded A-crop from its canonical committed path/
+  );
+  assert.match(execution.manualObservationLog, /A-parent bytes were not re-read in this run/);
+  assert.match(
+    execution.manualObservationLog,
+    /persisted A-parent fingerprint used by the supporting comparison is the registry-committed digest/
+  );
+  assert.match(
+    execution.manualObservationLog,
+    /declared token was obtained only from result\.reason/
+  );
+  assert.match(
+    execution.manualObservationLog,
+    /proves the committed derivative-basis refusal guard only; it does not prove automatic crop detection/
+  );
+  assert.match(
+    execution.manualObservationLog,
+    /basis_fingerprint_mismatch because fingerprint comparison precedes the later dimension and basis-kind guards/
+  );
+  assert.match(
+    execution.manualObservationLog,
+    /does not make restore_or_import_result a pass axis/
+  );
+  assert.match(
+    execution.manualObservationLog,
+    /apply gate refused with the declared token at the basis gate/
+  );
+  assert.match(
+    execution.manualObservationLog,
+    /All byte access occurred solely in resolver provenance verification/
+  );
+  assert.doesNotMatch(execution.manualObservationLog, /both A-crop and A-parent/);
+  assert.doesNotMatch(execution.manualObservationLog, /re-read[^.]*A-parent and/);
+  assert.doesNotMatch(execution.manualObservationLog, /route|loopback|live-client|model|tripwire/i);
+
+  const runMetadata = await buildNonPStaleRunMetadata({
+    minimalInput: buildMinimalInput(),
+    provenance,
+  });
+  const record = buildNonPStaleObservedRunRecord({
+    probeId: "P-crop",
+    provenance,
+    runMetadata,
+    execution,
+  });
+  assert.deepEqual(
+    await validateG0ObservedRunRecord({
+      fixtureReceipt: provenance.fixtureReceipt,
+      record,
+    }),
+    { ok: true }
+  );
+  assert.deepEqual(
+    record.supportingHarnessChecks.map(
+      (check) => `${check.checkId}:${check.required}:${check.status}`
+    ),
+    [
+      "restore_comparison_changed_byte_crop:true:passed",
+      "apply_gate_defense_in_depth:true:passed",
+    ]
+  );
+  assert.equal(
+    record.supportingHarnessChecks[0].notes,
+    P_CROP_RESTORE_COMPARISON_CLARIFICATION
+  );
+  assert.deepEqual(
+    record.noAuthorityChecks.map((check) => `${check.checkId}:${check.status}`),
+    [
+      "qualification_refusal_result:pass",
+      "restore_or_import_result:not_run",
+      "route_response_result:not_run",
+      "apply_gate_defense_in_depth:pass",
+      "client_discard_predicate:not_run",
+      "live_snapshot_state_observation:not_run",
+      "state_transition_predicate:not_run",
+    ]
+  );
+  assert.equal(record.primaryObservation.observationKind, "emitted_application_result");
+  assert.equal(record.primaryObservation.observedPipelineStage, "server basis evidence evaluation");
+  assert.equal(record.primaryObservation.observedOperationalState, "calibration_not_attempted");
+  assert.equal(
+    record.primaryObservation.emittedResult,
+    "basis_derivative_not_authority_eligible"
+  );
+  assert.equal(record.primaryObservation.derivedContainmentConclusion, null);
+  assert.deepEqual(record.primaryObservation.rawObservationReferences, []);
+  assert.equal(record.incidentReference, null);
+  assert.equal(record.runMetadata.runIdentity.basisFingerprint, A_CROP_SHA_LITERAL);
+
+  assert.equal(new Set(record.artifactReferences).size, record.artifactReferences.length);
+  assert.equal(
+    record.artifactReferences.includes("execution_mode:deterministic_execution_observed"),
+    true
+  );
+  assert.equal(
+    record.artifactReferences.some((entry) => entry.includes("/A-parent.jpg")),
+    false
+  );
+
+  const persistedText = JSON.stringify(record).toLowerCase();
+  for (const forbidden of [
+    "evaluator",
+    "capability",
+    "metric",
+    "authority_label",
+    "external_reference",
+  ]) {
+    assert.equal(persistedText.includes(forbidden), false);
+  }
+});
+
+test("P-crop primary token derives from result.reason with pinned guard order", () => {
+  const pcropShapedMetadata = { width: 280, height: 220, orientation: 1 };
+
+  const primary = evaluateCalibrationImageBasisEvidence({
+    basisKind: "derivative",
+    browserDimensions: null,
+    coordinateSpaceVersion: CALIBRATION_IMAGE_BASIS_COORDINATE_SPACE_VERSION,
+    metadata: pcropShapedMetadata,
+  });
+  assert.equal(primary.ok, false);
+  if (primary.ok) {
+    throw new Error("unexpected_p_crop_primary_shape");
+  }
+  assert.equal(primary.reason, "basis_derivative_not_authority_eligible");
+
+  // Coordinate-space guard fires first, even when derivative, orientation,
+  // and dimension differences are all present.
+  const coordinateSpacePreemption = evaluateCalibrationImageBasisEvidence({
+    basisKind: "derivative",
+    browserDimensions: { width: 320, height: 240 },
+    coordinateSpaceVersion: {
+      ...CALIBRATION_IMAGE_BASIS_COORDINATE_SPACE_VERSION,
+      decoderId: "sharp-metadata/v0",
+    },
+    metadata: { width: 280, height: 220, orientation: 6 },
+  });
+  assert.equal(coordinateSpacePreemption.ok, false);
+  if (coordinateSpacePreemption.ok) {
+    throw new Error("unexpected_coordinate_space_preemption_shape");
+  }
+  assert.equal(coordinateSpacePreemption.reason, "basis_coordinate_space_mismatch");
+
+  // Derivative fires next, before orientation and dimensions.
+  const derivativeBeforeOrientationAndDimensions = evaluateCalibrationImageBasisEvidence({
+    basisKind: "derivative",
+    browserDimensions: { width: 320, height: 240 },
+    coordinateSpaceVersion: CALIBRATION_IMAGE_BASIS_COORDINATE_SPACE_VERSION,
+    metadata: { width: 280, height: 220, orientation: 6 },
+  });
+  assert.equal(derivativeBeforeOrientationAndDimensions.ok, false);
+  if (derivativeBeforeOrientationAndDimensions.ok) {
+    throw new Error("unexpected_derivative_preemption_shape");
+  }
+  assert.equal(
+    derivativeBeforeOrientationAndDimensions.reason,
+    "basis_derivative_not_authority_eligible"
+  );
+
+  // Orientation fires next, before dimensions.
+  const orientationBeforeDimensions = evaluateCalibrationImageBasisEvidence({
+    basisKind: "original",
+    browserDimensions: { width: 320, height: 240 },
+    coordinateSpaceVersion: CALIBRATION_IMAGE_BASIS_COORDINATE_SPACE_VERSION,
+    metadata: { width: 280, height: 220, orientation: 6 },
+  });
+  assert.equal(orientationBeforeDimensions.ok, false);
+  if (orientationBeforeDimensions.ok) {
+    throw new Error("unexpected_orientation_preemption_shape");
+  }
+  assert.equal(orientationBeforeDimensions.reason, "basis_orientation_not_normal");
+
+  // Dimensions fire last.
+  const dimensionsLast = evaluateCalibrationImageBasisEvidence({
+    basisKind: "original",
+    browserDimensions: { width: 320, height: 240 },
+    coordinateSpaceVersion: CALIBRATION_IMAGE_BASIS_COORDINATE_SPACE_VERSION,
+    metadata: pcropShapedMetadata,
+  });
+  assert.equal(dimensionsLast.ok, false);
+  if (dimensionsLast.ok) {
+    throw new Error("unexpected_dimension_mismatch_shape");
+  }
+  assert.equal(dimensionsLast.reason, "basis_dimension_mismatch");
+
+  // Positive control: original 280x220 basis with browserDimensions=null is
+  // authority-eligible, so the P-crop refusal is carried by basisKind alone.
+  const positiveControl = evaluateCalibrationImageBasisEvidence({
+    basisKind: "original",
+    browserDimensions: null,
+    coordinateSpaceVersion: CALIBRATION_IMAGE_BASIS_COORDINATE_SPACE_VERSION,
+    metadata: pcropShapedMetadata,
+  });
+  assert.deepEqual(positiveControl, { ok: true });
+});
+
+test("P-crop pure changed-byte comparison yields fingerprint mismatch before dimension and basis-kind guards", () => {
+  const parentDigest = G0_SYNTHETIC_ASSETS["A-parent"].sha256;
+  const cropDigest = G0_SYNTHETIC_ASSETS["A-crop"].sha256;
+  assert.notEqual(parentDigest, cropDigest);
+
+  const persistedParentCalibration = buildPcropPersistedParentCalibration({
+    persistedBasisFingerprint: parentDigest,
+    persistedWidth: 320,
+    persistedHeight: 240,
+  });
+  assert.equal(
+    persistedParentCalibration.source.imageBasis.sourceImageUrl,
+    P_CROP_PINNED_SOURCE_IMAGE_URL
+  );
+  assert.equal(persistedParentCalibration.source.imageBasis.basisKind, "original");
+  assert.equal(persistedParentCalibration.source.imageBasis.encodedOrientation, 1);
+  assert.equal(persistedParentCalibration.source.imageBasis.orientationTransform, "identity");
+
+  const currentAcropBasis = buildPcropComparisonImageBasis({
+    basisFingerprint: cropDigest,
+    decodedWidth: 280,
+    decodedHeight: 220,
+    basisKind: "derivative",
+  });
+  // Pinned identically on both sides so only fingerprint, dimensions, and
+  // basis kind carry the persisted-vs-current difference.
+  assert.equal(currentAcropBasis.sourceImageUrl, P_CROP_PINNED_SOURCE_IMAGE_URL);
+  assert.equal(currentAcropBasis.encodedOrientation, 1);
+  assert.equal(currentAcropBasis.orientationTransform, "identity");
+
+  const comparison = evaluateCalibrationRestoreCompatibility({
+    calibration: persistedParentCalibration,
+    currentImageBasis: currentAcropBasis,
+  });
+  assert.equal(comparison.ok, false);
+  if (comparison.ok) {
+    throw new Error("unexpected_changed_byte_comparison_shape");
+  }
+  assert.equal(comparison.reason, "basis_fingerprint_mismatch");
+  // The supporting result is not the P-crop primary token.
+  assert.notEqual(comparison.reason, "basis_derivative_not_authority_eligible");
+
+  // Equal-fingerprint counterfactual: the 280x220-vs-320x240 dimension
+  // difference is real but shadowed; with fingerprints equal it fires next.
+  const equalFingerprintCounterfactual = evaluateCalibrationRestoreCompatibility({
+    calibration: persistedParentCalibration,
+    currentImageBasis: buildPcropComparisonImageBasis({
+      basisFingerprint: parentDigest,
+      decodedWidth: 280,
+      decodedHeight: 220,
+      basisKind: "derivative",
+    }),
+  });
+  assert.equal(equalFingerprintCounterfactual.ok, false);
+  if (equalFingerprintCounterfactual.ok) {
+    throw new Error("unexpected_equal_fingerprint_counterfactual_shape");
+  }
+  assert.equal(equalFingerprintCounterfactual.reason, "basis_dimension_mismatch");
+
+  // Basis-kind-last counterfactual: with fingerprint and dimensions equal,
+  // the derivative basis kind is the last guard to fire.
+  const basisKindLastCounterfactual = evaluateCalibrationRestoreCompatibility({
+    calibration: persistedParentCalibration,
+    currentImageBasis: buildPcropComparisonImageBasis({
+      basisFingerprint: parentDigest,
+      decodedWidth: 320,
+      decodedHeight: 240,
+      basisKind: "derivative",
+    }),
+  });
+  assert.equal(basisKindLastCounterfactual.ok, false);
+  if (basisKindLastCounterfactual.ok) {
+    throw new Error("unexpected_basis_kind_counterfactual_shape");
+  }
+  assert.equal(basisKindLastCounterfactual.reason, "basis_derivative_not_authority_eligible");
+
+  // Identity control: an identical original basis restores cleanly.
+  const identityControl = evaluateCalibrationRestoreCompatibility({
+    calibration: persistedParentCalibration,
+    currentImageBasis: buildPcropComparisonImageBasis({
+      basisFingerprint: parentDigest,
+      decodedWidth: 320,
+      decodedHeight: 240,
+      basisKind: "original",
+    }),
+  });
+  assert.deepEqual(identityControl, { ok: true, aspectDeltaPercent: 0, warning: null });
+});
+
+test("P-crop resolver binding and deterministic adapter fail closed on provenance drift", async () => {
+  const provenance = await resolveNonPStaleProvenance("P-crop");
+
+  await assert.rejects(
+    runDeterministicFirstSliceExecution({
+      probeId: "P-crop",
+      provenance: {
+        ...provenance,
+        probeId: "P-empty",
+      } as any,
+    }),
+    /unexpected_provenance_probe:P-crop:P-empty/
+  );
+
+  await assert.rejects(
+    runDeterministicFirstSliceExecution({
+      probeId: "P-crop",
+      provenance: {
+        ...provenance,
+        evaluatedImageDigest: G0_SYNTHETIC_ASSETS["A-empty"].sha256,
+      },
+    }),
+    /provenance_digest_drift:P-crop/
+  );
+
+  await assert.rejects(
+    runDeterministicFirstSliceExecution({
+      probeId: "P-crop",
+      provenance: {
+        ...provenance,
+        payloadIdentity: "unexpected",
+      },
+    }),
+    /payload_fields_must_be_null:P-crop/
+  );
+
+  await assert.rejects(
+    runDeterministicFirstSliceExecution({
+      probeId: "P-crop",
+      provenance: {
+        ...provenance,
+        driftImageDigest: G0_SYNTHETIC_ASSETS["A-drift-b"].sha256,
+      },
+    }),
+    /drift_digest_must_be_null:P-crop/
+  );
+
+  await assert.rejects(
+    runDeterministicFirstSliceExecution({
+      probeId: "P-crop",
+      provenance: {
+        ...provenance,
+        canonicalRepoRelativePaths: [
+          "app/admin/3d-room-lab/g0-containment/synthetic-assets/A-empty.jpg",
+        ],
+      },
+    }),
+    /canonical_a_crop_path_missing:P-crop/
+  );
+
+  await assert.rejects(
+    runDeterministicFirstSliceExecution({
+      probeId: "P-crop",
+      provenance: {
+        ...provenance,
+        fixtureReceipt: {
+          ...provenance.fixtureReceipt,
+          expectedRefusalOrContainmentResult: "basis_dimension_mismatch",
+        },
+      },
+    }),
+    /declaration_expected_result_mismatch:P-crop/
+  );
+
+  await assert.rejects(
+    runDeterministicFirstSliceExecution({
+      probeId: "P-crop",
+      provenance: {
+        ...provenance,
+        fixtureReceipt: {
+          ...provenance.fixtureReceipt,
+          expectedPipelineStage: "restore image-basis receipt comparison",
+        },
+      },
+    }),
+    /declaration_expected_stage_mismatch:P-crop/
+  );
+
+  const dimensionsReference = provenance.artifactReferences.find((entry) =>
+    entry.startsWith("fixture_image_dimensions:")
+  );
+  const orientationReference = provenance.artifactReferences.find((entry) =>
+    entry.startsWith("fixture_image_orientation:")
+  );
+  assert.ok(dimensionsReference);
+  assert.ok(orientationReference);
+  assert.equal(dimensionsReference, "fixture_image_dimensions:280x220");
+  assert.equal(orientationReference, "fixture_image_orientation:1");
+
+  await assert.rejects(
+    runDeterministicFirstSliceExecution({
+      probeId: "P-crop",
+      provenance: {
+        ...provenance,
+        artifactReferences: [
+          ...replaceFirstExact(
+            provenance.artifactReferences,
+            dimensionsReference!,
+            "fixture_image_dimensions:320x240"
+          ),
+        ],
+      },
+    }),
+    /resolver_bound_metadata_mismatch:P-crop/
+  );
+
+  await assert.rejects(
+    runDeterministicFirstSliceExecution({
+      probeId: "P-crop",
+      provenance: {
+        ...provenance,
+        artifactReferences: [
+          ...replaceFirstExact(
+            provenance.artifactReferences,
+            orientationReference!,
+            "fixture_image_orientation:6"
+          ),
+        ],
+      },
+    }),
+    /resolver_bound_metadata_mismatch:P-crop/
+  );
+
+  await assert.rejects(
+    runDeterministicFirstSliceExecution({
+      probeId: "P-crop",
+      provenance: {
+        ...provenance,
+        artifactReferences: [
+          ...removeReferencesWithPrefix(provenance.artifactReferences, "fixture_image_dimensions:"),
+        ],
+      },
+    }),
+    /missing_fixture_image_dimensions_reference:P-crop/
+  );
+
+  // Adapter-level registry-lineage guard.
+  await withMutatedSyntheticAsset(
+    "A-crop",
+    (asset) => {
+      asset.parentAssetId = null;
+    },
+    async () => {
+      await assert.rejects(
+        runDeterministicFirstSliceExecution({ probeId: "P-crop", provenance }),
+        /parent_lineage_drift:P-crop/
+      );
+    }
+  );
+
+  // Adapter-level pinned parent registry-fact guard.
+  await withMutatedSyntheticAsset(
+    "A-parent",
+    (asset) => {
+      asset.decodedWidth = 999;
+    },
+    async () => {
+      await assert.rejects(
+        runDeterministicFirstSliceExecution({ probeId: "P-crop", provenance }),
+        /parent_registry_facts_drift:P-crop/
+      );
+    }
+  );
+
+  // Explicit parent-digest-inequality guard: fail closed when A-crop and
+  // A-parent digests are artificially made equal.
+  await withMutatedSyntheticAsset(
+    "A-parent",
+    (asset) => {
+      asset.sha256 = G0_SYNTHETIC_ASSETS["A-crop"].sha256;
+    },
+    async () => {
+      await assert.rejects(
+        runDeterministicFirstSliceExecution({ probeId: "P-crop", provenance }),
+        /parent_and_crop_digests_equal:P-crop/
+      );
+    }
+  );
+});
+
+test("P-crop builder and validator reject missing, duplicate, and non-passed required supporting checks", async () => {
+  const provenance = await resolveNonPStaleProvenance("P-crop");
+  const execution = await runDeterministicFirstSliceExecution({
+    probeId: "P-crop",
+    provenance,
+  });
+  const runMetadata = await buildNonPStaleRunMetadata({
+    minimalInput: buildMinimalInput(),
+    provenance,
+  });
+
+  assert.throws(
+    () =>
+      buildNonPStaleObservedRunRecord({
+        probeId: "P-crop",
+        provenance,
+        runMetadata,
+        execution: {
+          ...execution,
+          supportingChecks: [execution.supportingChecks[1]],
+        },
+      }),
+    /missing_required_supporting_check:restore_comparison_changed_byte_crop/
+  );
+
+  assert.throws(
+    () =>
+      buildNonPStaleObservedRunRecord({
+        probeId: "P-crop",
+        provenance,
+        runMetadata,
+        execution: {
+          ...execution,
+          supportingChecks: [
+            execution.supportingChecks[0],
+            execution.supportingChecks[0],
+            execution.supportingChecks[1],
+          ],
+        },
+      }),
+    /duplicate_supporting_check:restore_comparison_changed_byte_crop/
+  );
+
+  assert.throws(
+    () =>
+      buildNonPStaleObservedRunRecord({
+        probeId: "P-crop",
+        provenance,
+        runMetadata,
+        execution: {
+          ...execution,
+          supportingChecks: [
+            { ...execution.supportingChecks[0], status: "not_run" as const },
+            execution.supportingChecks[1],
+          ],
+        },
+      }),
+    /required_supporting_check_not_passed:restore_comparison_changed_byte_crop/
+  );
+
+  assert.throws(
+    () =>
+      buildNonPStaleObservedRunRecord({
+        probeId: "P-crop",
+        provenance,
+        runMetadata,
+        execution: {
+          ...execution,
+          supportingChecks: [
+            ...execution.supportingChecks,
+            { checkId: "unknown_check", status: "passed" as const, failureClass: null },
+          ],
+        },
+      }),
+    /unknown_supporting_check/
+  );
+
+  const record = buildNonPStaleObservedRunRecord({
+    probeId: "P-crop",
+    provenance,
+    runMetadata,
+    execution,
+  });
+
+  assert.deepEqual(
+    await validateG0ObservedRunRecord({
+      fixtureReceipt: provenance.fixtureReceipt,
+      record: {
+        ...record,
+        supportingHarnessChecks: record.supportingHarnessChecks.filter(
+          (check) => check.checkId !== "restore_comparison_changed_byte_crop"
+        ),
+      },
+    }),
+    { ok: false, reason: "missing_required_supporting_check:restore_comparison_changed_byte_crop" }
+  );
+
+  assert.deepEqual(
+    await validateG0ObservedRunRecord({
+      fixtureReceipt: provenance.fixtureReceipt,
+      record: {
+        ...record,
+        supportingHarnessChecks: [
+          ...record.supportingHarnessChecks,
+          record.supportingHarnessChecks[0],
+        ],
+      },
+    }),
+    { ok: false, reason: "duplicate_supporting_check:restore_comparison_changed_byte_crop" }
+  );
+
+  assert.deepEqual(
+    await validateG0ObservedRunRecord({
+      fixtureReceipt: provenance.fixtureReceipt,
+      record: {
+        ...record,
+        supportingHarnessChecks: record.supportingHarnessChecks.map((check) =>
+          check.checkId === "restore_comparison_changed_byte_crop"
+            ? { ...check, status: "not_run" as const }
+            : check
+        ),
+      },
+    }),
+    { ok: false, reason: "required_supporting_check_not_passed:restore_comparison_changed_byte_crop" }
+  );
+});
+
 test("minimal input parser rejects malformed and forbidden override fields", () => {
   assert.throws(() => parseNonPStaleMinimalInput("nope"), /input_must_be_object/);
   assert.throws(
@@ -2245,7 +3023,7 @@ test("basis-evidence controls cover P-dimension and P-gen preemption order deter
   assert.equal(orientationPreemption.reason, "basis_orientation_not_normal");
 });
 
-test("CLI allows P-gen, P-dimension-mismatch, P-url-drift, and X4 but rejects P-stale and remaining unsupported probes", async () => {
+test("CLI allows P-gen, P-crop, P-dimension-mismatch, P-url-drift, and X4 but rejects P-stale and P-empty", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "g0-non-p-stale-cli-reject-"));
   try {
     const inputPath = await writeInputFile(root, buildMinimalInput());
@@ -2283,13 +3061,19 @@ test("CLI allows P-gen, P-dimension-mismatch, P-url-drift, and X4 but rejects P-
     assert.match(pUrlDriftDryRun.stdout, /execution_mode=deterministic_execution_observed/);
     assert.match(pUrlDriftDryRun.stdout, /schema_and_contract_validation=passed/);
     assert.match(pUrlDriftDryRun.stdout, /mode=dry-run/);
+
+    const pcropDryRun = runCli(["--probe", "P-crop", "--input", inputPath, "--root-dir", root]);
+    assert.equal(pcropDryRun.status, 0);
+    assert.match(pcropDryRun.stdout, /execution_mode=deterministic_execution_observed/);
+    assert.match(pcropDryRun.stdout, /schema_and_contract_validation=passed/);
+    assert.match(pcropDryRun.stdout, /mode=dry-run/);
     assert.equal(await countJsonFiles(path.join(root, "g0-containment", "receipts")), 0);
 
     const stale = runCli(["--probe", "P-stale", "--input", inputPath, "--root-dir", root]);
     assert.equal(stale.status, 1);
     assert.match(stale.stderr, /no_execution_adapter_yet:P-stale/);
 
-    for (const probeId of ["P-crop", "P-empty"] as const) {
+    for (const probeId of ["P-empty"] as const) {
       const unsupported = runCli(["--probe", probeId, "--input", inputPath, "--root-dir", root]);
       assert.equal(unsupported.status, 1);
       assert.match(unsupported.stderr, new RegExp(`no_execution_adapter_yet:${probeId}`));
@@ -2398,6 +3182,132 @@ test("CLI X4 write uses temp root, re-validates the persisted record, and repeat
     );
 
     const second = runCli(["--probe", "X4", "--input", inputPath, "--root-dir", root, "--write"]);
+    assert.equal(second.status, 1);
+    assert.match(second.stderr, /target_path_exists/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+  assert.equal(await countJsonFiles(REPO_RECEIPTS_ROOT), beforeCount);
+  assert.deepEqual(await collectJsonFileHashes(REPO_RECEIPTS_ROOT), beforeHashes);
+});
+
+test("CLI P-crop write uses temp root, re-validates the persisted record, and preserves the repository durable-receipt baseline byte-for-byte", async () => {
+  // Derive the durable-receipt baseline dynamically from the live repository
+  // tree so this precondition never goes stale as receipts are added.
+  const beforeCount = await countJsonFiles(REPO_RECEIPTS_ROOT);
+  const beforeHashes = await collectJsonFileHashes(REPO_RECEIPTS_ROOT);
+  assert.ok(
+    beforeCount > 0,
+    "expected at least one durable receipt in the repository baseline",
+  );
+  assert.equal(beforeHashes.length, beforeCount);
+  const root = await mkdtemp(path.join(tmpdir(), "g0-non-p-stale-cli-p-crop-write-"));
+  try {
+    const inputPath = await writeInputFile(root, buildMinimalInput());
+
+    // Dry run writes neither a repository receipt nor a temp-root receipt.
+    const dryRun = runCli(["--probe", "P-crop", "--input", inputPath, "--root-dir", root]);
+    assert.equal(dryRun.status, 0);
+    assert.match(dryRun.stdout, /execution_mode=deterministic_execution_observed/);
+    assert.match(dryRun.stdout, /schema_and_contract_validation=passed/);
+    assert.match(dryRun.stdout, /mode=dry-run/);
+    assert.equal(await countJsonFiles(path.join(root, "g0-containment", "receipts")), 0);
+
+    const first = runCli(["--probe", "P-crop", "--input", inputPath, "--root-dir", root, "--write"]);
+    assert.equal(first.status, 0);
+    assert.match(first.stdout, /execution_mode=deterministic_execution_observed/);
+    assert.match(first.stdout, /mode=write/);
+    assert.match(first.stdout, /post_write_re_read_validation=passed/);
+    const recordPath = first.stdout
+      .split("\n")
+      .find((line) => line.startsWith("record_path="))
+      ?.replace("record_path=", "")
+      .trim();
+    assert.ok(recordPath);
+    assert.ok(recordPath!.startsWith(root));
+    assert.equal(await countJsonFiles(path.join(root, "g0-containment", "receipts")), 1);
+
+    const persisted = JSON.parse(await readFile(recordPath!, "utf8")) as G0ObservedRunRecord;
+    const provenance = await resolveNonPStaleProvenance("P-crop");
+    assert.deepEqual(
+      await validateG0ObservedRunRecord({
+        fixtureReceipt: provenance.fixtureReceipt,
+        record: persisted,
+      }),
+      { ok: true }
+    );
+    assert.equal(persisted.probeId, "P-crop");
+    assert.equal(
+      persisted.primaryObservation.emittedResult,
+      "basis_derivative_not_authority_eligible"
+    );
+    assert.equal(
+      persisted.primaryObservation.observedPipelineStage,
+      "server basis evidence evaluation"
+    );
+    assert.equal(
+      persisted.noAuthorityChecks.find((check) => check.checkId === "restore_or_import_result")
+        ?.status,
+      "not_run"
+    );
+    assert.equal(
+      persisted.noAuthorityChecks.find((check) => check.checkId === "route_response_result")
+        ?.status,
+      "not_run"
+    );
+    assert.deepEqual(
+      persisted.supportingHarnessChecks.map(
+        (check) => `${check.checkId}:${check.required}:${check.status}`
+      ),
+      [
+        "restore_comparison_changed_byte_crop:true:passed",
+        "apply_gate_defense_in_depth:true:passed",
+      ]
+    );
+    assert.equal(
+      persisted.supportingHarnessChecks.find(
+        (check) => check.checkId === "restore_comparison_changed_byte_crop"
+      )?.notes,
+      P_CROP_RESTORE_COMPARISON_CLARIFICATION
+    );
+    assert.equal(
+      persisted.artifactReferences.includes(
+        `restore_comparison_persisted_registry_fingerprint:${A_PARENT_SHA_LITERAL}`
+      ),
+      true
+    );
+    assert.equal(
+      persisted.artifactReferences.includes(
+        `restore_comparison_current_fingerprint:${A_CROP_SHA_LITERAL}`
+      ),
+      true
+    );
+    assert.equal(
+      persisted.artifactReferences.includes(
+        "restore_comparison_observed_result:basis_fingerprint_mismatch"
+      ),
+      true
+    );
+    assert.equal(
+      persisted.artifactReferences.some((entry) => entry.includes("/A-parent.jpg")),
+      false
+    );
+    assert.equal(
+      new Set(persisted.artifactReferences).size,
+      persisted.artifactReferences.length
+    );
+    const persistedText = JSON.stringify(persisted).toLowerCase();
+    for (const forbidden of [
+      "evaluator",
+      "capability",
+      "metric",
+      "authority_label",
+      "external_reference",
+    ]) {
+      assert.equal(persistedText.includes(forbidden), false);
+    }
+
+    const second = runCli(["--probe", "P-crop", "--input", inputPath, "--root-dir", root, "--write"]);
     assert.equal(second.status, 1);
     assert.match(second.stderr, /target_path_exists/);
   } finally {

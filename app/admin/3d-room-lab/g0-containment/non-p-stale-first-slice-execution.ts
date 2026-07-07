@@ -1,6 +1,9 @@
 import { CALIBRATION_IMAGE_BASIS_COORDINATE_SPACE_VERSION } from "@/app/admin/3d-room-lab/calibration-image-basis";
 import { evaluateCalibrationImageBasisEvidence } from "@/app/admin/3d-room-lab/calibration-image-basis";
-import type { CalibrationImageBasis } from "@/app/admin/3d-room-lab/calibration-image-basis";
+import type {
+  CalibrationImageBasis,
+  CalibrationImageBasisKind,
+} from "@/app/admin/3d-room-lab/calibration-image-basis";
 import { evaluateCalibratedCameraApply } from "@/app/admin/3d-room-lab/calibrated-camera-apply";
 import { shouldDiscardAttestedResponse } from "@/app/admin/3d-room-lab/policy-a-containment";
 import {
@@ -87,7 +90,7 @@ function assertPayloadProvenance(
 }
 
 function extractResolverBoundImageMetadata(
-  probeId: "P-gen" | "P-dimension-mismatch" | "X4",
+  probeId: "P-gen" | "P-dimension-mismatch" | "X4" | "P-crop",
   provenance: NonPStaleResolvedProvenance
 ): {
   width: number;
@@ -242,6 +245,235 @@ function runPgenDeterministicChain(
       artifactReferences: [`canonical_image_path:${canonicalAgenPath}`, "primary_call_fetch_boundary:none"],
       manualObservationLog:
         "The committed resolver re-hashed and provenance-bound A-gen from its canonical committed path, including digest, dimensions, orientation, and parent lineage.\nThe primary emission was a derivative-basis refusal produced by the pure basis-evidence function and did not itself fetch, decode, hash, or read A-gen bytes. All byte access occurred solely in resolver provenance verification.",
+    };
+  })();
+}
+
+// Pinned, code-constructed comparison bases for the P-crop pure changed-byte
+// supporting comparison. The source URL, orientation, transform, dimension
+// source, and coordinate-space version are pinned identically on the persisted
+// and current sides; only fingerprint, dimensions, and basis kind carry the
+// real persisted-A-parent-vs-current-A-crop difference, and the fingerprint
+// guard fires first. The URL is a synthetic pin only; it is never fetched.
+export const P_CROP_PINNED_SOURCE_IMAGE_URL =
+  "synthetic://g0-containment/P-crop/pinned-comparison-source" as const;
+
+const P_CROP_PINNED_PARENT_DIMENSIONS = { width: 320, height: 240 } as const;
+
+export function buildPcropComparisonImageBasis(input: {
+  basisFingerprint: string;
+  decodedWidth: number;
+  decodedHeight: number;
+  basisKind: CalibrationImageBasisKind;
+}): CalibrationImageBasis {
+  return {
+    basisId: "g0-p-crop-comparison-basis",
+    basisFingerprint: input.basisFingerprint,
+    sourceImageUrl: P_CROP_PINNED_SOURCE_IMAGE_URL,
+    decodedWidth: input.decodedWidth,
+    decodedHeight: input.decodedHeight,
+    encodedOrientation: 1,
+    decodedOrientationNormal: true,
+    orientationTransform: "identity",
+    dimensionSource: "server",
+    coordinateSpaceVersion: CALIBRATION_IMAGE_BASIS_COORDINATE_SPACE_VERSION,
+    basisKind: input.basisKind,
+  };
+}
+
+// Persisted side of the P-crop comparison. The fingerprint and dimensions are
+// registry-committed A-parent facts supplied by the caller; they are NOT a
+// runtime re-verification, because the P-crop resolver run never re-reads
+// A-parent bytes.
+export function buildPcropPersistedParentCalibration(input: {
+  persistedBasisFingerprint: string;
+  persistedWidth: number;
+  persistedHeight: number;
+}): CalibratedSceneStateCalibrationV2 {
+  return {
+    calibrationVersion: CALIBRATED_SCENE_STATE_CALIBRATION_VERSION_V2,
+    solver: CALIBRATED_SCENE_STATE_SOLVER_V1,
+    intrinsics: { verticalFovDeg: 60 },
+    source: {
+      imageBasis: buildPcropComparisonImageBasis({
+        basisFingerprint: input.persistedBasisFingerprint,
+        decodedWidth: input.persistedWidth,
+        decodedHeight: input.persistedHeight,
+        basisKind: "original",
+      }),
+      sourceFloorPolygon: [
+        { x: 0.2, y: 0.6 },
+        { x: 0.8, y: 0.6 },
+        { x: 0.9, y: 0.95 },
+        { x: 0.1, y: 0.95 },
+      ],
+    },
+  };
+}
+
+const P_CROP_RESTORE_COMPARISON_CLARIFICATION =
+  "The resolver re-hashed A-crop and confirmed its digest differs from the registry-committed A-parent digest, with A-crop's registry lineage to A-parent enforced. A-parent bytes were not re-read. The pure comparison used A-parent as the persisted basis and A-crop as the current basis. Its observed result was basis_fingerprint_mismatch because fingerprint comparison precedes dimensions and basis-kind comparison. This supporting result verifies changed-byte crop containment ordering only; it is not the primary P-crop result and does not make restore_or_import_result a pass axis." as const;
+
+function runPcropDeterministicChain(
+  provenance: NonPStaleResolvedProvenance
+): Promise<NonPStaleExecutionEvidence> {
+  return (async () => {
+    if (provenance.probeId !== "P-crop") {
+      throw new Error(`unexpected_provenance_probe:P-crop:${provenance.probeId}`);
+    }
+    if (provenance.evaluatedImageDigest !== G0_SYNTHETIC_ASSETS["A-crop"].sha256) {
+      throw new Error("provenance_digest_drift:P-crop");
+    }
+    if (provenance.payloadIdentity !== null || provenance.payloadDigest !== null) {
+      throw new Error("payload_fields_must_be_null:P-crop");
+    }
+    if (provenance.driftImageDigest !== null) {
+      throw new Error("drift_digest_must_be_null:P-crop");
+    }
+    const canonicalAcropPath = provenance.canonicalRepoRelativePaths.find((entry) =>
+      entry.endsWith("/A-crop.jpg")
+    );
+    if (!canonicalAcropPath) {
+      throw new Error("canonical_a_crop_path_missing:P-crop");
+    }
+    if (
+      provenance.fixtureReceipt.expectedRefusalOrContainmentResult !==
+      "basis_derivative_not_authority_eligible"
+    ) {
+      throw new Error("declaration_expected_result_mismatch:P-crop");
+    }
+    if (provenance.fixtureReceipt.expectedPipelineStage !== "server basis evidence evaluation") {
+      throw new Error("declaration_expected_stage_mismatch:P-crop");
+    }
+
+    const resolverBoundAcropMetadata = extractResolverBoundImageMetadata("P-crop", provenance);
+    const expectedMetadata = {
+      width: G0_SYNTHETIC_ASSETS["A-crop"].decodedWidth,
+      height: G0_SYNTHETIC_ASSETS["A-crop"].decodedHeight,
+      orientation: G0_SYNTHETIC_ASSETS["A-crop"].encodedOrientation,
+    };
+    if (
+      resolverBoundAcropMetadata.width !== expectedMetadata.width ||
+      resolverBoundAcropMetadata.height !== expectedMetadata.height ||
+      resolverBoundAcropMetadata.orientation !== expectedMetadata.orientation
+    ) {
+      throw new Error("resolver_bound_metadata_mismatch:P-crop");
+    }
+
+    // A-parent facts below are registry-committed constants only. The P-crop
+    // resolver run re-read, re-hashed, and re-decoded A-crop alone; A-parent
+    // bytes were not re-read, re-hashed, or decoded in this run.
+    if (G0_SYNTHETIC_ASSETS["A-crop"].parentAssetId !== "A-parent") {
+      throw new Error("parent_lineage_drift:P-crop");
+    }
+    const parentRegistry = G0_SYNTHETIC_ASSETS["A-parent"];
+    if (
+      parentRegistry.decodedWidth !== P_CROP_PINNED_PARENT_DIMENSIONS.width ||
+      parentRegistry.decodedHeight !== P_CROP_PINNED_PARENT_DIMENSIONS.height ||
+      parentRegistry.encodedOrientation !== 1 ||
+      !parentRegistry.decodedOrientationNormal
+    ) {
+      throw new Error("parent_registry_facts_drift:P-crop");
+    }
+    if (provenance.evaluatedImageDigest === parentRegistry.sha256) {
+      throw new Error("parent_and_crop_digests_equal:P-crop");
+    }
+
+    const primaryEvidence = evaluateCalibrationImageBasisEvidence({
+      basisKind: "derivative",
+      browserDimensions: null,
+      coordinateSpaceVersion: CALIBRATION_IMAGE_BASIS_COORDINATE_SPACE_VERSION,
+      metadata: resolverBoundAcropMetadata,
+    });
+    if (primaryEvidence.ok) {
+      throw new Error("unexpected_valid_result:P-crop");
+    }
+    if (primaryEvidence.reason !== "basis_derivative_not_authority_eligible") {
+      throw new Error("unexpected_emitted_token:P-crop");
+    }
+
+    // Pure changed-byte supporting comparison: persisted registry-committed
+    // A-parent basis vs current resolver-rehashed A-crop basis. No fetch,
+    // decode, hash, fingerprint computation, or filesystem access occurs here.
+    const persistedParentCalibration = buildPcropPersistedParentCalibration({
+      persistedBasisFingerprint: parentRegistry.sha256,
+      persistedWidth: parentRegistry.decodedWidth,
+      persistedHeight: parentRegistry.decodedHeight,
+    });
+    const currentAcropImageBasis = buildPcropComparisonImageBasis({
+      basisFingerprint: provenance.evaluatedImageDigest,
+      decodedWidth: resolverBoundAcropMetadata.width,
+      decodedHeight: resolverBoundAcropMetadata.height,
+      basisKind: "derivative",
+    });
+    const restoreComparison = evaluateCalibrationRestoreCompatibility({
+      calibration: persistedParentCalibration,
+      currentImageBasis: currentAcropImageBasis,
+    });
+    if (restoreComparison.ok) {
+      throw new Error("unexpected_valid_restore_comparison:P-crop");
+    }
+    if (restoreComparison.reason !== "basis_fingerprint_mismatch") {
+      throw new Error("unexpected_restore_comparison_token:P-crop");
+    }
+
+    const defensiveApply = evaluateCalibratedCameraApply(null, null, {
+      basisQualified: false,
+      basisUnavailableReason: "basis_derivative_not_authority_eligible",
+    });
+    if (
+      defensiveApply.available !== false ||
+      defensiveApply.reason !== "basis_derivative_not_authority_eligible" ||
+      defensiveApply.firstFailingGate !== "basis"
+    ) {
+      throw new Error("apply_gate_mismatch:P-crop");
+    }
+
+    return {
+      mode: "deterministic_execution_observed",
+      emittedResult: primaryEvidence.reason,
+      expectedVsObservedComparison: "matches_expected",
+      outcome: "pass",
+      supportingChecks: [
+        {
+          checkId: "restore_comparison_changed_byte_crop",
+          status: "passed",
+          failureClass: null,
+          notes: P_CROP_RESTORE_COMPARISON_CLARIFICATION,
+        },
+        {
+          checkId: "apply_gate_defense_in_depth",
+          status: "passed",
+          failureClass: null,
+          notes: `firstFailingGate=${defensiveApply.firstFailingGate}`,
+        },
+      ],
+      pinnedCallInputs: [
+        `evaluateCalibrationImageBasisEvidence:basisKind=derivative,browserDimensions=null,coordinateSpace=${CALIBRATION_IMAGE_BASIS_COORDINATE_SPACE_VERSION.decoderId},metadata=${resolverBoundAcropMetadata.width}x${resolverBoundAcropMetadata.height}/orientation=${resolverBoundAcropMetadata.orientation}`,
+        `evaluateCalibrationRestoreCompatibility:persistedFingerprint=${parentRegistry.sha256},persistedDimensions=${parentRegistry.decodedWidth}x${parentRegistry.decodedHeight},persistedBasisKind=original,currentFingerprint=${provenance.evaluatedImageDigest},currentDimensions=${resolverBoundAcropMetadata.width}x${resolverBoundAcropMetadata.height},currentBasisKind=derivative,orientation=1,coordinateSpace=${CALIBRATION_IMAGE_BASIS_COORDINATE_SPACE_VERSION.decoderId},sourceImageUrl=${P_CROP_PINNED_SOURCE_IMAGE_URL}`,
+        "evaluateCalibratedCameraApply:basisQualified=false,basisUnavailableReason=basis_derivative_not_authority_eligible",
+      ],
+      artifactReferences: [
+        `canonical_image_path:${canonicalAcropPath}`,
+        "primary_call_fetch_boundary:none",
+        "restore_comparison_fetch_boundary:none",
+        "parent_registry_asset:A-parent",
+        `parent_registry_image_digest:${parentRegistry.sha256}`,
+        `parent_registry_dimensions:${parentRegistry.decodedWidth}x${parentRegistry.decodedHeight}`,
+        `parent_registry_orientation:${parentRegistry.encodedOrientation}`,
+        "parent_lineage:registry_enforced:A-crop:A-parent",
+        `restore_comparison_persisted_registry_fingerprint:${parentRegistry.sha256}`,
+        `restore_comparison_current_fingerprint:${provenance.evaluatedImageDigest}`,
+        `restore_comparison_observed_result:${restoreComparison.reason}`,
+        `apply_gate_first_failing_gate:${defensiveApply.firstFailingGate}`,
+      ],
+      manualObservationLog:
+        `The committed resolver re-read, re-hashed, and re-decoded A-crop from its canonical committed path, including digest, dimensions ${resolverBoundAcropMetadata.width}x${resolverBoundAcropMetadata.height}, and orientation ${resolverBoundAcropMetadata.orientation}, and enforced A-crop's registry lineage to A-parent.\n` +
+        "A-parent bytes were not re-read in this run; the persisted A-parent fingerprint used by the supporting comparison is the registry-committed digest.\n" +
+        "The pure primary call used resolver-bound A-crop metadata with basisKind=derivative and browserDimensions=null; its declared token was obtained only from result.reason and the call did not fetch, decode, hash, or read image bytes. This primary result proves the committed derivative-basis refusal guard only; it does not prove automatic crop detection.\n" +
+        "The pure changed-byte supporting comparison used the registry-committed A-parent fingerprint as the persisted basis and the resolver-rehashed A-crop fingerprint as the current basis over the same pinned source URL, orientation, transform, dimension source, and coordinate-space version; its observed result was basis_fingerprint_mismatch because fingerprint comparison precedes the later dimension and basis-kind guards. This supporting result does not make restore_or_import_result a pass axis.\n" +
+        "The apply gate refused with the declared token at the basis gate.\n" +
+        "All byte access occurred solely in resolver provenance verification.",
     };
   })();
 }
@@ -973,6 +1205,9 @@ export async function runDeterministicFirstSliceExecution(input: {
 }): Promise<NonPStaleExecutionEvidence> {
   if (input.probeId === "P-gen") {
     return runPgenDeterministicChain(input.provenance);
+  }
+  if (input.probeId === "P-crop") {
+    return runPcropDeterministicChain(input.provenance);
   }
   if (input.probeId === "P-dimension-mismatch") {
     return runPdimensionMismatchDeterministicChain(input.provenance);
