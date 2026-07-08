@@ -1,28 +1,45 @@
-// GER-W2B — Pure Receipt Ledger Row Model, Readback Verifier, and Fake-Client
-// Repository Decision Logic
+// GER-W2B / GER-W2D — Receipt Ledger Row Model, Readback Verifier, Fake-Client
+// Repository Decision Logic (W2B) plus the real service-role client factory and
+// Supabase-backed ledger adapter (W2D).
 //
-// This module is a lab-only, deterministic, network-free continuation of the
-// frozen GER-I0 kernel and GER-W1 wire adapter. It defines the future W2 ledger
-// row shape, a pure row builder from a W1 envelope, a readback verifier that
+// This module is a lab-only, deterministic-at-its-core continuation of the
+// frozen GER-I0 kernel and GER-W1 wire adapter. It defines the W2 ledger row
+// shape, a pure row builder from a W1 envelope, a readback verifier that
 // re-derives receipt truth exclusively from the canonical payload + the ten
 // projection columns, and an in-memory fake-client repository that models the
-// future W2 unique-constraint surface for deterministic decision-logic tests.
+// W2 unique-constraint surface for deterministic decision-logic tests (W2B).
 //
-// It validates ONLY local receipt facts plus fake in-memory store lookups. It
-// does NOT create a migration, a service-role client, or a database. It never
-// imports the Supabase JS client, the server-only guard, fs, network, env,
-// timers, randomness, or any mutable global. The ONLY imports permitted here
-// are the frozen GER-I0 kernel and the frozen GER-W1 wire adapter.
-// Canonicalization, hashing, and strict wire parsing are never reimplemented;
-// they are delegated.
+// W2D extends this with:
+//   * a real service-role Supabase client factory that fails closed on missing
+//     env (never reaching for the server-auth cookie helper module),
+//   * an async ledger client interface plus a Supabase adapter that targets
+//     public.vibode_gemini_evidence_receipts exactly, and
+//   * an async insert helper that mirrors the W2B decision protocol (R1 full
+//     prior-chain validation, R2 lookup-driven conflict classification, and
+//     post-insert / idempotent readback verification).
 //
-// Out-of-W2B recorded design notes:
-//   R3 — the future GER-W2C migration MUST pin
+// The W2B pure logic is preserved verbatim. Canonicalization, hashing, and
+// strict wire parsing are never reimplemented; they are delegated to GER-W1.
+//
+// Allowed imports for W2D are the executable server-only guard, the Supabase JS
+// client, and the frozen contract + wire modules. It must NOT import the Next
+// framework, its header helper, React, filesystem, node crypto, route handlers,
+// the server-auth cookie helper module, the usage-accounting lib, the asset
+// finalization lib, the scene-hash helper, storage helpers, or scene/camera
+// modules. It never applies migrations, captures raw wire bytes, retains
+// artifacts, integrates with routes, or grants any camera/calibration authority.
+//
+// Recorded design notes:
+//   R3 — the GER-W2C migration pins
 //        receipt_schema_version = "gemini-evidence-contract/ger-i0/v1"
-//        (RECEIPT_SCHEMA_VERSION) as a hard column default/check. Not done here.
-//   R4 — the future GER-W2D service module MUST use a real, executable
-//        server-only guard import statement (not an inert bare string
-//        expression that is never evaluated). W2B intentionally imports neither.
+//        (RECEIPT_SCHEMA_VERSION) as a hard column check.
+//   R4 — the W2D service surface uses a real, executable `import "server-only";`
+//        statement (not an inert bare string expression that is never
+//        evaluated). This module now satisfies R4.
+
+import "server-only";
+
+import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 
 import {
   validateReceiptSet,
@@ -592,4 +609,449 @@ export function insertGeminiEvidenceReceiptEnvelopeForTestV1(
   }
 
   return { ok: true, outcome: "inserted", row: stored };
+}
+
+// ---------------------------------------------------------------------------
+// Section 6 — Real service-role client factory (GER-W2D)
+// ---------------------------------------------------------------------------
+
+/**
+ * The physical ledger table created by the GER-W2C migration. The Supabase
+ * adapter targets exactly this table and never any other relation.
+ */
+export const GER_W2_LEDGER_TABLE = "vibode_gemini_evidence_receipts";
+
+/** Stable fail-closed reason when service-role env is incomplete. */
+export const GER_W2_LEDGER_SERVICE_ENV_MISSING_REASON =
+  "ledger_service_env_missing";
+
+/**
+ * Env source shape for the service-role factory. Defaults to process.env, but
+ * tests may pass an explicit object to exercise fail-closed behavior without
+ * reading the real ambient environment. The variable names mirror the existing
+ * service-role env patterns used elsewhere in the project.
+ */
+export type GeminiEvidenceReceiptLedgerServiceEnvSource = {
+  SUPABASE_URL?: string | undefined;
+  NEXT_PUBLIC_SUPABASE_URL?: string | undefined;
+  SUPABASE_SERVICE_ROLE_KEY?: string | undefined;
+  SUPABASE_SERVICE_KEY?: string | undefined;
+  [key: string]: string | undefined;
+};
+
+export type GeminiEvidenceReceiptLedgerServiceEnvResult =
+  | { ok: true; url: string; serviceRoleKey: string }
+  | { ok: false; reason: string };
+
+/**
+ * Resolve the service-role URL + key from an env source, failing closed with a
+ * stable ledger_ reason when either is missing. Pure and side-effect-free.
+ */
+export function resolveGeminiEvidenceReceiptLedgerServiceEnv(
+  source: GeminiEvidenceReceiptLedgerServiceEnvSource = process.env
+): GeminiEvidenceReceiptLedgerServiceEnvResult {
+  const url = source.SUPABASE_URL || source.NEXT_PUBLIC_SUPABASE_URL || "";
+  const serviceRoleKey =
+    source.SUPABASE_SERVICE_ROLE_KEY || source.SUPABASE_SERVICE_KEY || "";
+  if (!url || !serviceRoleKey) {
+    return { ok: false, reason: GER_W2_LEDGER_SERVICE_ENV_MISSING_REASON };
+  }
+  return { ok: true, url, serviceRoleKey };
+}
+
+/**
+ * Construct a real service-role Supabase client. This only builds the client
+ * object; it performs no database call. It fails closed by throwing a stable
+ * Error when env is missing, and never reaches for the server-auth cookie
+ * helper module or the Next framework header helper.
+ */
+export function createGeminiEvidenceReceiptLedgerServiceClient(
+  source: GeminiEvidenceReceiptLedgerServiceEnvSource = process.env
+): SupabaseClient {
+  const env = resolveGeminiEvidenceReceiptLedgerServiceEnv(source);
+  if (!env.ok) {
+    throw new Error(env.reason);
+  }
+  return createClient(env.url, env.serviceRoleKey, {
+    auth: {
+      persistSession: false,
+      autoRefreshToken: false,
+      detectSessionInUrl: false,
+    },
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Section 7 — Async ledger client interface + Supabase adapter (GER-W2D)
+// ---------------------------------------------------------------------------
+
+/**
+ * Async counterpart to the synchronous W2B fake-client interface. The insert
+ * result reports a unique violation with the stable ledger_unique_violation
+ * reason so the async insert helper can classify by lookup order (R2). Reads
+ * resolve to null on no-row and throw GeminiEvidenceLedgerReadError only for a
+ * genuine client/query error (never for a missing row).
+ */
+export interface AsyncGeminiEvidenceReceiptLedgerClientV1 {
+  insert(
+    row: GeminiEvidenceReceiptLedgerRowV1
+  ): Promise<
+    { ok: true } | { ok: false; reason: string; constraint?: string }
+  >;
+
+  readByReceiptId(
+    receiptId: string
+  ): Promise<GeminiEvidenceReceiptLedgerRowV1 | null>;
+  readByDigestHex(
+    digestHex: string
+  ): Promise<GeminiEvidenceReceiptLedgerRowV1 | null>;
+  readByProviderAttemptId(
+    providerAttemptId: string
+  ): Promise<GeminiEvidenceReceiptLedgerRowV1 | null>;
+  readByRetryForkKey(input: {
+    logicalInvocationId: string;
+    retryOfProviderAttemptId: string | null;
+  }): Promise<GeminiEvidenceReceiptLedgerRowV1 | null>;
+}
+
+/** Thrown by the Supabase adapter reads on a genuine client/query error. */
+export class GeminiEvidenceLedgerReadError extends Error {
+  readonly detail: string | null;
+  constructor(detail?: string | null) {
+    super("ledger_read_failed");
+    this.name = "GeminiEvidenceLedgerReadError";
+    this.detail = detail ?? null;
+  }
+}
+
+/**
+ * Conservatively recognize a Postgres/PostgREST unique-violation error. The
+ * primary signal is the SQLSTATE unique_violation code 23505. The constraint
+ * name is never trusted for classification (see R2); it is only optionally
+ * surfaced for diagnostics.
+ */
+export function isGeminiEvidenceLedgerUniqueViolationError(
+  error: unknown
+): boolean {
+  if (!error || typeof error !== "object") return false;
+  const code = (error as { code?: unknown }).code;
+  return code === "23505" || code === 23505;
+}
+
+function extractLedgerUniqueViolationConstraint(
+  error: unknown
+): string | undefined {
+  if (!error || typeof error !== "object") return undefined;
+  const constraint = (error as { constraint?: unknown }).constraint;
+  return typeof constraint === "string" && constraint.length > 0
+    ? constraint
+    : undefined;
+}
+
+function readErrorDetail(error: unknown): string | null {
+  if (error && typeof error === "object") {
+    const message = (error as { message?: unknown }).message;
+    if (typeof message === "string" && message.length > 0) return message;
+  }
+  return null;
+}
+
+function interpretLedgerRead(
+  data: unknown,
+  error: unknown
+): GeminiEvidenceReceiptLedgerRowV1 | null {
+  if (error) {
+    throw new GeminiEvidenceLedgerReadError(readErrorDetail(error));
+  }
+  return (data as GeminiEvidenceReceiptLedgerRowV1 | null) ?? null;
+}
+
+/**
+ * Adapt a Supabase client to the async ledger client interface, targeting
+ * public.vibode_gemini_evidence_receipts exactly.
+ *
+ * insert uses a plain .insert (never upsert / ignoreDuplicates) so that unique
+ * violations surface for lookup-driven classification. Reads return a single
+ * row via maybeSingle: no-row resolves to null, and a query error throws
+ * GeminiEvidenceLedgerReadError. The retry-fork read uses an IS NULL predicate
+ * for a null predecessor and an equality predicate otherwise (never a raw
+ * coalesce expression).
+ */
+export function createSupabaseGeminiEvidenceReceiptLedgerClientV1(
+  supabase: SupabaseClient
+): AsyncGeminiEvidenceReceiptLedgerClientV1 {
+  return {
+    async insert(row) {
+      const { error } = await supabase.from(GER_W2_LEDGER_TABLE).insert(row);
+      if (error) {
+        if (isGeminiEvidenceLedgerUniqueViolationError(error)) {
+          const constraint = extractLedgerUniqueViolationConstraint(error);
+          return constraint !== undefined
+            ? { ok: false, reason: "ledger_unique_violation", constraint }
+            : { ok: false, reason: "ledger_unique_violation" };
+        }
+        return { ok: false, reason: "ledger_insert_failed" };
+      }
+      return { ok: true };
+    },
+
+    async readByReceiptId(receiptId) {
+      const { data, error } = await supabase
+        .from(GER_W2_LEDGER_TABLE)
+        .select("*")
+        .eq("receipt_id", receiptId)
+        .maybeSingle();
+      return interpretLedgerRead(data, error);
+    },
+
+    async readByDigestHex(digestHex) {
+      const { data, error } = await supabase
+        .from(GER_W2_LEDGER_TABLE)
+        .select("*")
+        .eq("receipt_digest_hex", digestHex)
+        .maybeSingle();
+      return interpretLedgerRead(data, error);
+    },
+
+    async readByProviderAttemptId(providerAttemptId) {
+      const { data, error } = await supabase
+        .from(GER_W2_LEDGER_TABLE)
+        .select("*")
+        .eq("provider_attempt_id", providerAttemptId)
+        .maybeSingle();
+      return interpretLedgerRead(data, error);
+    },
+
+    async readByRetryForkKey(input) {
+      const base = supabase
+        .from(GER_W2_LEDGER_TABLE)
+        .select("*")
+        .eq("receipt_type", "gemini_invocation")
+        .eq("logical_invocation_id", input.logicalInvocationId);
+      const query =
+        input.retryOfProviderAttemptId === null
+          ? base.is("retry_of_provider_attempt_id", null)
+          : base.eq(
+              "retry_of_provider_attempt_id",
+              input.retryOfProviderAttemptId
+            );
+      const { data, error } = await query.maybeSingle();
+      return interpretLedgerRead(data, error);
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Section 8 — Async insert helper (GER-W2D repository protocol)
+// ---------------------------------------------------------------------------
+
+/**
+ * Async R1 — full prior-chain retry validation. Behaviorally identical to the
+ * synchronous validateProviderRetryChain; only store I/O is awaited.
+ */
+async function validateProviderRetryChainAsync(
+  client: AsyncGeminiEvidenceReceiptLedgerClientV1,
+  currentReceipt: ContractReceiptV1
+): Promise<{ ok: true } | { ok: false; reason: string }> {
+  const currentBody = asInvocationBody(currentReceipt);
+  if (!currentBody) {
+    return { ok: false, reason: "ledger_retry_chain:current_not_invocation" };
+  }
+  if (currentBody.priorInvocationReceipt === null) {
+    return {
+      ok: false,
+      reason: "ledger_retry_chain:provider_retry_missing_prior_reference",
+    };
+  }
+
+  const ancestorsNearestFirst: ContractReceiptV1[] = [];
+  const visited = new Set<string>([currentReceipt.header.receiptId]);
+
+  let cursorBody: InvocationBodyV1 = currentBody;
+  let depth = 0;
+
+  for (;;) {
+    depth += 1;
+    if (depth > GER_W2_MAX_RETRY_CHAIN_DEPTH) {
+      return { ok: false, reason: "ledger_retry_chain:max_depth_exceeded" };
+    }
+
+    const priorRef = cursorBody.priorInvocationReceipt;
+    if (priorRef === null) {
+      return {
+        ok: false,
+        reason: "ledger_retry_chain:provider_retry_missing_prior_reference",
+      };
+    }
+
+    const priorId = priorRef.receiptId;
+    if (visited.has(priorId)) {
+      return { ok: false, reason: "ledger_retry_chain:retry_reference_cycle" };
+    }
+    visited.add(priorId);
+
+    const priorRow = await client.readByReceiptId(priorId);
+    if (priorRow === null) {
+      return {
+        ok: false,
+        reason: "ledger_retry_chain:missing_referenced_receipt",
+      };
+    }
+
+    const verified = verifyGeminiEvidenceReceiptLedgerRowV1(priorRow);
+    if (!verified.ok) {
+      return {
+        ok: false,
+        reason: `ledger_retry_chain:referenced_receipt_readback:${verified.reason}`,
+      };
+    }
+
+    const priorReceipt = verified.receipt;
+    const priorBody = asInvocationBody(priorReceipt);
+    if (!priorBody) {
+      return {
+        ok: false,
+        reason: "ledger_retry_chain:referenced_receipt_not_invocation",
+      };
+    }
+
+    ancestorsNearestFirst.push(priorReceipt);
+
+    if (priorBody.identity.relationship !== "provider_retry") {
+      break;
+    }
+    cursorBody = priorBody;
+  }
+
+  const oldestFirstChain = [...ancestorsNearestFirst].reverse();
+  const fullChain = [...oldestFirstChain, currentReceipt];
+
+  const setResult = validateReceiptSet(fullChain);
+  if (!setResult.ok) {
+    return { ok: false, reason: `ledger_retry_chain:${setResult.reason}` };
+  }
+  return { ok: true };
+}
+
+/**
+ * Async R2 — lookup-driven conflict classification. Behaviorally identical to
+ * the synchronous classifyUniqueViolation; only store I/O is awaited. The
+ * reported constraint name is never consulted.
+ */
+async function classifyUniqueViolationAsync(
+  client: AsyncGeminiEvidenceReceiptLedgerClientV1,
+  row: GeminiEvidenceReceiptLedgerRowV1
+): Promise<GeminiEvidenceReceiptInsertResultV1> {
+  const byId = await client.readByReceiptId(row.receipt_id);
+  if (byId !== null) {
+    if (
+      byId.canonical_payload === row.canonical_payload &&
+      byId.receipt_digest_hex === row.receipt_digest_hex
+    ) {
+      const verified = verifyGeminiEvidenceReceiptLedgerRowV1(byId);
+      if (!verified.ok) {
+        return {
+          ok: false,
+          reason: "ledger_idempotent_readback_verification_failed",
+        };
+      }
+      return { ok: true, outcome: "idempotent", row: byId };
+    }
+    return { ok: false, reason: "ledger_receipt_integrity_conflict" };
+  }
+
+  const byDigest = await client.readByDigestHex(row.receipt_digest_hex);
+  if (byDigest !== null) {
+    return { ok: false, reason: "ledger_digest_id_mismatch" };
+  }
+
+  if (row.provider_attempt_id !== null) {
+    const byAttempt = await client.readByProviderAttemptId(
+      row.provider_attempt_id
+    );
+    if (byAttempt !== null) {
+      return { ok: false, reason: "ledger_provider_attempt_reused" };
+    }
+  }
+
+  if (row.logical_invocation_id !== null) {
+    const byFork = await client.readByRetryForkKey({
+      logicalInvocationId: row.logical_invocation_id,
+      retryOfProviderAttemptId: row.retry_of_provider_attempt_id,
+    });
+    if (byFork !== null) {
+      return { ok: false, reason: "ledger_forked_invocation_lineage" };
+    }
+  }
+
+  return { ok: false, reason: "ledger_unclassified_unique_violation" };
+}
+
+/**
+ * The GER-W2D async repository insert. It mirrors the W2B fake-client helper
+ * exactly:
+ *   1. W1-backed row construction
+ *   2. provider_retry full prior-chain validation (R1)
+ *   3. insert attempt (no upsert)
+ *   4. lookup-driven conflict classification on unique violation (R2)
+ *   5. post-insert readback verification
+ *   6. post-idempotent readback verification
+ *
+ * A genuine read query error (surfaced by the adapter as
+ * GeminiEvidenceLedgerReadError) is mapped to the stable ledger_read_failed
+ * reason. No mutable global state or hidden DB access is introduced.
+ */
+export async function insertGeminiEvidenceReceiptEnvelopeV1(
+  client: AsyncGeminiEvidenceReceiptLedgerClientV1,
+  input: {
+    envelope: unknown;
+    createdAt: string;
+    ownerUserIdSnapshot?: string | null;
+    roomIdSnapshot?: string | null;
+    assetIdSnapshot?: string | null;
+    versionIdSnapshot?: string | null;
+  }
+): Promise<GeminiEvidenceReceiptInsertResultV1> {
+  try {
+    const built = buildGeminiEvidenceReceiptLedgerRowV1(input);
+    if (!built.ok) {
+      return { ok: false, reason: built.reason };
+    }
+    const { row, receipt } = built;
+
+    const invocationBody = asInvocationBody(receipt);
+    if (
+      invocationBody !== null &&
+      invocationBody.identity.relationship === "provider_retry"
+    ) {
+      const chain = await validateProviderRetryChainAsync(client, receipt);
+      if (!chain.ok) {
+        return { ok: false, reason: chain.reason };
+      }
+    }
+
+    const inserted = await client.insert(row);
+    if (!inserted.ok) {
+      if (inserted.reason === "ledger_unique_violation") {
+        return await classifyUniqueViolationAsync(client, row);
+      }
+      return { ok: false, reason: inserted.reason };
+    }
+
+    const stored = await client.readByReceiptId(row.receipt_id);
+    if (stored === null) {
+      return { ok: false, reason: "ledger_readback_missing_after_insert" };
+    }
+    const verified = verifyGeminiEvidenceReceiptLedgerRowV1(stored);
+    if (!verified.ok) {
+      return { ok: false, reason: "ledger_readback_verification_failed" };
+    }
+
+    return { ok: true, outcome: "inserted", row: stored };
+  } catch (err: unknown) {
+    if (err instanceof GeminiEvidenceLedgerReadError) {
+      return { ok: false, reason: "ledger_read_failed" };
+    }
+    throw err;
+  }
 }

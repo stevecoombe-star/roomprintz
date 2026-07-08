@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 
+import type { SupabaseClient } from "@supabase/supabase-js";
+
 import {
   buildInvocationReceipt,
   makeInvocationReference,
@@ -21,9 +23,18 @@ import {
 import {
   buildGeminiEvidenceReceiptLedgerRowV1,
   createFakeGeminiEvidenceReceiptLedgerClientV1,
+  createGeminiEvidenceReceiptLedgerServiceClient,
+  createSupabaseGeminiEvidenceReceiptLedgerClientV1,
+  GeminiEvidenceLedgerReadError,
   GER_W2_LEDGER_CONSTRAINT_NAMES,
+  GER_W2_LEDGER_SERVICE_ENV_MISSING_REASON,
+  GER_W2_LEDGER_TABLE,
   insertGeminiEvidenceReceiptEnvelopeForTestV1,
+  insertGeminiEvidenceReceiptEnvelopeV1,
+  isGeminiEvidenceLedgerUniqueViolationError,
+  resolveGeminiEvidenceReceiptLedgerServiceEnv,
   verifyGeminiEvidenceReceiptLedgerRowV1,
+  type AsyncGeminiEvidenceReceiptLedgerClientV1,
   type GeminiEvidenceReceiptLedgerClientV1,
   type GeminiEvidenceReceiptLedgerRowV1,
 } from "./gemini-evidence-receipt-ledger";
@@ -157,6 +168,128 @@ function expectRefusal(
 ) {
   assert.equal(result.ok, false);
   assert.equal(result.reason, reason);
+}
+
+// ---------------------------------------------------------------------------
+// W2D deterministic mock helpers (no real database, no Supabase network)
+// ---------------------------------------------------------------------------
+
+/**
+ * Wrap the synchronous W2B fake client as an async ledger client. Unique
+ * violations are surfaced with the stable ledger_unique_violation reason so the
+ * async insert helper classifies by lookup order, mirroring the real adapter.
+ */
+function toAsyncLedgerClient(
+  sync: GeminiEvidenceReceiptLedgerClientV1
+): AsyncGeminiEvidenceReceiptLedgerClientV1 {
+  return {
+    async insert(row) {
+      const result = sync.insert(row);
+      if (result.ok) return { ok: true };
+      return result.constraint !== undefined
+        ? { ok: false, reason: "ledger_unique_violation", constraint: result.constraint }
+        : { ok: false, reason: "ledger_unique_violation" };
+    },
+    async readByReceiptId(receiptId) {
+      return sync.readByReceiptId(receiptId);
+    },
+    async readByDigestHex(digestHex) {
+      return sync.readByDigestHex(digestHex);
+    },
+    async readByProviderAttemptId(providerAttemptId) {
+      return sync.readByProviderAttemptId(providerAttemptId);
+    },
+    async readByRetryForkKey(input) {
+      return sync.readByRetryForkKey(input);
+    },
+  };
+}
+
+function asyncInsert(
+  client: AsyncGeminiEvidenceReceiptLedgerClientV1,
+  receipt: ContractReceiptV1
+) {
+  return insertGeminiEvidenceReceiptEnvelopeV1(client, {
+    envelope: envelopeOf(receipt),
+    createdAt: CREATED_AT,
+  });
+}
+
+type SupabaseCallLog = {
+  tables: string[];
+  selects: string[];
+  filters: Array<{ op: string; col: string; val: unknown }>;
+  inserts: unknown[];
+  upsertCount: number;
+  ignoreDuplicatesSeen: boolean;
+  maybeSingleCount: number;
+};
+
+type MockSupabaseConfig = {
+  insertResult?: { data: unknown; error: unknown };
+  readResult?: { data: unknown; error: unknown };
+};
+
+/**
+ * A minimal deterministic Supabase-shaped mock. It records the table, the
+ * select/filter chain, and insert payloads so tests can assert the adapter's
+ * query shape without any database or network access.
+ */
+function createMockSupabase(config: MockSupabaseConfig = {}): {
+  supabase: SupabaseClient;
+  calls: SupabaseCallLog;
+} {
+  const calls: SupabaseCallLog = {
+    tables: [],
+    selects: [],
+    filters: [],
+    inserts: [],
+    upsertCount: 0,
+    ignoreDuplicatesSeen: false,
+    maybeSingleCount: 0,
+  };
+
+  const builder = {
+    select(cols: string) {
+      calls.selects.push(cols);
+      return builder;
+    },
+    eq(col: string, val: unknown) {
+      calls.filters.push({ op: "eq", col, val });
+      return builder;
+    },
+    is(col: string, val: unknown) {
+      calls.filters.push({ op: "is", col, val });
+      return builder;
+    },
+    insert(payload: unknown) {
+      calls.inserts.push(payload);
+      return Promise.resolve(config.insertResult ?? { data: null, error: null });
+    },
+    upsert(payload: unknown, opts?: { ignoreDuplicates?: boolean }) {
+      void payload;
+      calls.upsertCount += 1;
+      if (opts?.ignoreDuplicates) calls.ignoreDuplicatesSeen = true;
+      return Promise.resolve(config.insertResult ?? { data: null, error: null });
+    },
+    maybeSingle() {
+      calls.maybeSingleCount += 1;
+      return Promise.resolve(config.readResult ?? { data: null, error: null });
+    },
+  };
+
+  const supabase = {
+    from(table: string) {
+      calls.tables.push(table);
+      return builder;
+    },
+  } as unknown as SupabaseClient;
+
+  return { supabase, calls };
+}
+
+function initialEnvelopeInput(receipt: ContractReceiptV1) {
+  return { envelope: envelopeOf(receipt), createdAt: CREATED_AT };
 }
 
 // ---------------------------------------------------------------------------
@@ -836,7 +969,8 @@ test("33) idempotent path refuses when stored row fails readback despite intact 
 // 32) Scope-containment self-check
 // ---------------------------------------------------------------------------
 
-test("32) the ledger module imports only the W1/W0 kernel and no prohibited dependency", () => {
+// 32 / 50) Source-containment self-check updated for the W2D allowed imports.
+test("32) the ledger module imports only the W2D-allowed dependencies", () => {
   const source = readFileSync(
     new URL("./gemini-evidence-receipt-ledger.ts", import.meta.url),
     "utf8"
@@ -846,9 +980,11 @@ test("32) the ledger module imports only the W1/W0 kernel and no prohibited depe
     (m) => m[1]
   );
   assert.ok(fromTargets.length >= 1, "expected at least one import");
+  // W2D allows exactly the frozen kernel/wire plus the Supabase JS client.
   const allowed = new Set([
     "./gemini-evidence-contract",
     "./gemini-evidence-wire",
+    "@supabase/supabase-js",
   ]);
   for (const target of fromTargets) {
     assert.equal(
@@ -859,18 +995,14 @@ test("32) the ledger module imports only the W1/W0 kernel and no prohibited depe
   }
 
   assert.equal(/\brequire\(/.test(source), false, "must not use require()");
-  // Anchor to a real import statement (line start), never a prose mention.
-  assert.equal(
-    /^\s*import\s+["']server-only["']/m.test(source),
-    false,
-    "must not import server-only"
-  );
 
   const forbiddenFragments = [
     "app/api/",
     "lib/vibodeGemini",
+    "lib/vibodeAssetFinalization",
+    "lib/adminServer",
     "lib/sceneHash",
-    "@supabase/",
+    "next/headers",
     'from "next',
     'from "react',
     'from "fs"',
@@ -878,7 +1010,6 @@ test("32) the ledger module imports only the W1/W0 kernel and no prohibited depe
     'from "node:crypto"',
     "Date.now",
     "Math.random",
-    "process.env",
   ];
   for (const fragment of forbiddenFragments) {
     assert.equal(
@@ -887,4 +1018,426 @@ test("32) the ledger module imports only the W1/W0 kernel and no prohibited depe
       `module must not reference ${fragment}`
     );
   }
+});
+
+// ---------------------------------------------------------------------------
+// 34–35) W2D service-role client factory (source + fail-closed env)
+// ---------------------------------------------------------------------------
+
+test('34) service module uses executable import "server-only" and no server-auth deps', () => {
+  const source = readFileSync(
+    new URL("./gemini-evidence-receipt-ledger.ts", import.meta.url),
+    "utf8"
+  );
+  // Must use a real, executable server-only guard import statement.
+  assert.equal(
+    /^\s*import\s+["']server-only["']\s*;?\s*$/m.test(source),
+    true,
+    'W2D must use executable import "server-only";'
+  );
+  // Must NOT use an inert bare "server-only"; expression statement.
+  assert.equal(
+    /^\s*["']server-only["']\s*;/m.test(source),
+    false,
+    "W2D must not use an inert bare server-only string statement"
+  );
+  assert.equal(
+    source.includes("next/headers"),
+    false,
+    "service module must not import next/headers"
+  );
+  assert.equal(
+    source.includes("adminServer"),
+    false,
+    "service module must not import lib/adminServer"
+  );
+});
+
+test("35) service client factory fails closed on missing env and builds on complete env", () => {
+  // Fail-closed behavior is exercised with explicit env objects; the real
+  // ambient process.env is never read here.
+  assert.equal(resolveGeminiEvidenceReceiptLedgerServiceEnv({}).ok, false);
+
+  const partial = resolveGeminiEvidenceReceiptLedgerServiceEnv({
+    SUPABASE_URL: "https://example.supabase.co",
+  });
+  assert.equal(partial.ok, false);
+  if (!partial.ok) {
+    assert.equal(partial.reason, GER_W2_LEDGER_SERVICE_ENV_MISSING_REASON);
+  }
+
+  const complete = resolveGeminiEvidenceReceiptLedgerServiceEnv({
+    SUPABASE_URL: "https://example.supabase.co",
+    SUPABASE_SERVICE_ROLE_KEY: "service-role-key",
+  });
+  assert.equal(complete.ok, true);
+  if (complete.ok) {
+    assert.equal(complete.url, "https://example.supabase.co");
+    assert.equal(complete.serviceRoleKey, "service-role-key");
+  }
+
+  assert.throws(
+    () => createGeminiEvidenceReceiptLedgerServiceClient({}),
+    (err: unknown) =>
+      err instanceof Error &&
+      err.message === GER_W2_LEDGER_SERVICE_ENV_MISSING_REASON
+  );
+
+  const client = createGeminiEvidenceReceiptLedgerServiceClient({
+    SUPABASE_URL: "https://example.supabase.co",
+    SUPABASE_SERVICE_ROLE_KEY: "service-role-key",
+  });
+  assert.equal(typeof client, "object");
+  assert.ok(client !== null);
+  assert.equal(typeof client.from, "function");
+});
+
+// ---------------------------------------------------------------------------
+// 36–41) Supabase adapter query shape (deterministic mock Supabase)
+// ---------------------------------------------------------------------------
+
+test("36) supabase adapter insert targets the receipt table exactly once with no upsert", async () => {
+  const { supabase, calls } = createMockSupabase({
+    insertResult: { data: null, error: null },
+  });
+  const client = createSupabaseGeminiEvidenceReceiptLedgerClientV1(supabase);
+  const row = buildRow(
+    initialReceipt({
+      receiptId: "inv-1",
+      logicalInvocationId: "lid-1",
+      providerAttemptId: "attempt-0",
+    })
+  );
+  const result = await client.insert(row);
+  assert.deepEqual(result, { ok: true });
+  assert.equal(GER_W2_LEDGER_TABLE, "vibode_gemini_evidence_receipts");
+  assert.deepEqual(calls.tables, [GER_W2_LEDGER_TABLE]);
+  assert.equal(calls.inserts.length, 1);
+  assert.equal(calls.inserts[0], row);
+  assert.equal(calls.upsertCount, 0);
+  assert.equal(calls.ignoreDuplicatesSeen, false);
+});
+
+test("37) supabase adapter readByReceiptId filters receipt_id and maps no-row to null", async () => {
+  const { supabase, calls } = createMockSupabase({
+    readResult: { data: null, error: null },
+  });
+  const client = createSupabaseGeminiEvidenceReceiptLedgerClientV1(supabase);
+  const result = await client.readByReceiptId("inv-x");
+  assert.equal(result, null);
+  assert.deepEqual(calls.tables, [GER_W2_LEDGER_TABLE]);
+  assert.equal(calls.maybeSingleCount, 1);
+  assert.ok(
+    calls.filters.some(
+      (f) => f.op === "eq" && f.col === "receipt_id" && f.val === "inv-x"
+    ),
+    "expected an eq filter on receipt_id"
+  );
+});
+
+test("38) supabase adapter readByDigestHex queries receipt_digest_hex", async () => {
+  const { supabase, calls } = createMockSupabase({
+    readResult: { data: null, error: null },
+  });
+  const client = createSupabaseGeminiEvidenceReceiptLedgerClientV1(supabase);
+  const digest = "a".repeat(64);
+  const result = await client.readByDigestHex(digest);
+  assert.equal(result, null);
+  assert.ok(
+    calls.filters.some(
+      (f) => f.op === "eq" && f.col === "receipt_digest_hex" && f.val === digest
+    ),
+    "expected an eq filter on receipt_digest_hex"
+  );
+});
+
+test("39) supabase adapter readByProviderAttemptId queries provider_attempt_id", async () => {
+  const { supabase, calls } = createMockSupabase({
+    readResult: { data: null, error: null },
+  });
+  const client = createSupabaseGeminiEvidenceReceiptLedgerClientV1(supabase);
+  const result = await client.readByProviderAttemptId("attempt-7");
+  assert.equal(result, null);
+  assert.ok(
+    calls.filters.some(
+      (f) =>
+        f.op === "eq" && f.col === "provider_attempt_id" && f.val === "attempt-7"
+    ),
+    "expected an eq filter on provider_attempt_id"
+  );
+});
+
+test("40) supabase adapter readByRetryForkKey uses IS NULL branch for null predecessor", async () => {
+  const { supabase, calls } = createMockSupabase({
+    readResult: { data: null, error: null },
+  });
+  const client = createSupabaseGeminiEvidenceReceiptLedgerClientV1(supabase);
+  const result = await client.readByRetryForkKey({
+    logicalInvocationId: "lid-1",
+    retryOfProviderAttemptId: null,
+  });
+  assert.equal(result, null);
+  assert.ok(
+    calls.filters.some(
+      (f) =>
+        f.op === "eq" && f.col === "logical_invocation_id" && f.val === "lid-1"
+    ),
+    "expected an eq filter on logical_invocation_id"
+  );
+  assert.ok(
+    calls.filters.some(
+      (f) =>
+        f.op === "is" &&
+        f.col === "retry_of_provider_attempt_id" &&
+        f.val === null
+    ),
+    "expected an IS NULL filter on retry_of_provider_attempt_id"
+  );
+  assert.equal(
+    calls.filters.some(
+      (f) => f.op === "eq" && f.col === "retry_of_provider_attempt_id"
+    ),
+    false,
+    "must not use an equality predicate for a null predecessor"
+  );
+});
+
+test("41) supabase adapter readByRetryForkKey uses equality branch for non-null predecessor", async () => {
+  const { supabase, calls } = createMockSupabase({
+    readResult: { data: null, error: null },
+  });
+  const client = createSupabaseGeminiEvidenceReceiptLedgerClientV1(supabase);
+  const result = await client.readByRetryForkKey({
+    logicalInvocationId: "lid-1",
+    retryOfProviderAttemptId: "attempt-0",
+  });
+  assert.equal(result, null);
+  assert.ok(
+    calls.filters.some(
+      (f) =>
+        f.op === "eq" &&
+        f.col === "retry_of_provider_attempt_id" &&
+        f.val === "attempt-0"
+    ),
+    "expected an equality predicate on retry_of_provider_attempt_id"
+  );
+  assert.equal(
+    calls.filters.some(
+      (f) => f.op === "is" && f.col === "retry_of_provider_attempt_id"
+    ),
+    false,
+    "must not use an IS NULL predicate for a non-null predecessor"
+  );
+});
+
+// ---------------------------------------------------------------------------
+// 42–47) Async insert protocol (mirrors the W2B fake-client decision logic)
+// ---------------------------------------------------------------------------
+
+test("42) async insert of a valid initial invocation -> inserted", async () => {
+  const client = toAsyncLedgerClient(
+    createFakeGeminiEvidenceReceiptLedgerClientV1()
+  );
+  const result = await asyncInsert(
+    client,
+    initialReceipt({
+      receiptId: "inv-1",
+      logicalInvocationId: "lid-1",
+      providerAttemptId: "attempt-0",
+    })
+  );
+  assert.equal(result.ok, true);
+  if (result.ok) {
+    assert.equal(result.outcome, "inserted");
+    assert.equal(result.row.receipt_id, "inv-1");
+  }
+});
+
+test("43) async exact duplicate with arbitrary unique violation -> idempotent after readback", async () => {
+  const client = toAsyncLedgerClient(
+    createFakeGeminiEvidenceReceiptLedgerClientV1({
+      pickConstraint: () => GER_W2_LEDGER_CONSTRAINT_NAMES.retryFork,
+    })
+  );
+  const receipt = initialReceipt({
+    receiptId: "inv-1",
+    logicalInvocationId: "lid-1",
+    providerAttemptId: "attempt-0",
+  });
+  assert.equal((await asyncInsert(client, receipt)).ok, true);
+  const second = await asyncInsert(client, receipt);
+  assert.equal(second.ok, true);
+  if (second.ok) {
+    assert.equal(second.outcome, "idempotent");
+    assert.equal(second.row.receipt_id, "inv-1");
+  }
+});
+
+test("44) async idempotent duplicate with corrupted stored projection -> idempotent readback failure", async () => {
+  const sync = createFakeGeminiEvidenceReceiptLedgerClientV1();
+  const client = toAsyncLedgerClient(sync);
+  const receipt = initialReceipt({
+    receiptId: "inv-1",
+    logicalInvocationId: "lid-1",
+    providerAttemptId: "attempt-0",
+  });
+  const validRow = buildRow(receipt);
+  // Payload + digest are intact (looks byte-identical), but a projection column
+  // is corrupted, so the idempotent branch must fail readback verification.
+  const corruptedStored: GeminiEvidenceReceiptLedgerRowV1 = {
+    ...validRow,
+    logical_invocation_id: "corrupted-lid",
+  };
+  assert.equal(sync.insert(corruptedStored).ok, true);
+  expectRefusal(
+    await asyncInsert(client, receipt),
+    "ledger_idempotent_readback_verification_failed"
+  );
+});
+
+test("45) async unique violation with no matching lookups -> unclassified", async () => {
+  const client: AsyncGeminiEvidenceReceiptLedgerClientV1 = {
+    async insert() {
+      return { ok: false, reason: "ledger_unique_violation" };
+    },
+    async readByReceiptId() {
+      return null;
+    },
+    async readByDigestHex() {
+      return null;
+    },
+    async readByProviderAttemptId() {
+      return null;
+    },
+    async readByRetryForkKey() {
+      return null;
+    },
+  };
+  expectRefusal(
+    await asyncInsert(
+      client,
+      initialReceipt({
+        receiptId: "inv-1",
+        logicalInvocationId: "lid-1",
+        providerAttemptId: "attempt-0",
+      })
+    ),
+    "ledger_unclassified_unique_violation"
+  );
+});
+
+test("46) async provider_retry valid full chain initial->retry1->retry2 -> inserted", async () => {
+  const client = toAsyncLedgerClient(
+    createFakeGeminiEvidenceReceiptLedgerClientV1()
+  );
+  const initial = initialReceipt({
+    receiptId: "inv-0",
+    logicalInvocationId: "lid-1",
+    providerAttemptId: "attempt-0",
+  });
+  const retry1 = retryReceipt({
+    receiptId: "inv-1",
+    logicalInvocationId: "lid-1",
+    providerAttemptId: "attempt-1",
+    retryOfProviderAttemptId: "attempt-0",
+    priorInvocationReceipt: makeInvocationReference(initial),
+  });
+  const retry2 = retryReceipt({
+    receiptId: "inv-2",
+    logicalInvocationId: "lid-1",
+    providerAttemptId: "attempt-2",
+    retryOfProviderAttemptId: "attempt-1",
+    priorInvocationReceipt: makeInvocationReference(retry1),
+  });
+  assert.equal((await asyncInsert(client, initial)).ok, true);
+  assert.equal((await asyncInsert(client, retry1)).ok, true);
+  const result = await asyncInsert(client, retry2);
+  assert.equal(result.ok, true);
+  if (result.ok) assert.equal(result.outcome, "inserted");
+});
+
+test("47) async provider_retry missing ancestor -> missing_referenced_receipt", async () => {
+  const sync = createFakeGeminiEvidenceReceiptLedgerClientV1();
+  const client = toAsyncLedgerClient(sync);
+  const initial = initialReceipt({
+    receiptId: "inv-0",
+    logicalInvocationId: "lid-1",
+    providerAttemptId: "attempt-0",
+  });
+  const retry1 = retryReceipt({
+    receiptId: "inv-1",
+    logicalInvocationId: "lid-1",
+    providerAttemptId: "attempt-1",
+    retryOfProviderAttemptId: "attempt-0",
+    priorInvocationReceipt: makeInvocationReference(initial),
+  });
+  const retry2 = retryReceipt({
+    receiptId: "inv-2",
+    logicalInvocationId: "lid-1",
+    providerAttemptId: "attempt-2",
+    retryOfProviderAttemptId: "attempt-1",
+    priorInvocationReceipt: makeInvocationReference(retry1),
+  });
+  // Seed retry1 directly WITHOUT its initial ancestor.
+  assert.equal(sync.insert(buildRow(retry1)).ok, true);
+  expectRefusal(
+    await asyncInsert(client, retry2),
+    "ledger_retry_chain:missing_referenced_receipt"
+  );
+});
+
+// ---------------------------------------------------------------------------
+// 48–49) Adapter-surfaced insert/read errors -> stable ledger_ reasons
+// ---------------------------------------------------------------------------
+
+test("48) async non-unique insert error -> ledger_insert_failed", async () => {
+  const { supabase } = createMockSupabase({
+    insertResult: { data: null, error: { code: "XX000", message: "boom" } },
+  });
+  const client = createSupabaseGeminiEvidenceReceiptLedgerClientV1(supabase);
+  const result = await insertGeminiEvidenceReceiptEnvelopeV1(
+    client,
+    initialEnvelopeInput(
+      initialReceipt({
+        receiptId: "inv-1",
+        logicalInvocationId: "lid-1",
+        providerAttemptId: "attempt-0",
+      })
+    )
+  );
+  expectRefusal(result, "ledger_insert_failed");
+  // A 23505 error would instead be classified as a unique violation.
+  assert.equal(
+    isGeminiEvidenceLedgerUniqueViolationError({ code: "XX000" }),
+    false
+  );
+  assert.equal(
+    isGeminiEvidenceLedgerUniqueViolationError({ code: "23505" }),
+    true
+  );
+});
+
+test("49) async read query error -> ledger_read_failed", async () => {
+  const { supabase } = createMockSupabase({
+    insertResult: { data: null, error: null },
+    readResult: { data: null, error: { code: "XX000", message: "boom" } },
+  });
+  const client = createSupabaseGeminiEvidenceReceiptLedgerClientV1(supabase);
+  const result = await insertGeminiEvidenceReceiptEnvelopeV1(
+    client,
+    initialEnvelopeInput(
+      initialReceipt({
+        receiptId: "inv-1",
+        logicalInvocationId: "lid-1",
+        providerAttemptId: "attempt-0",
+      })
+    )
+  );
+  expectRefusal(result, "ledger_read_failed");
+
+  // The adapter surfaces genuine query errors as a typed read error.
+  await assert.rejects(
+    async () => client.readByReceiptId("inv-1"),
+    (err: unknown) => err instanceof GeminiEvidenceLedgerReadError
+  );
 });
