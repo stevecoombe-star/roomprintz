@@ -15,6 +15,7 @@
     "test:ger-w1": "node --conditions=react-server --import tsx --test app/admin/3d-room-lab/gemini-evidence-wire.test.ts",
     "test:ger-w2": "node --conditions=react-server --import tsx --test app/admin/3d-room-lab/gemini-evidence-receipt-ledger.test.ts",
     "test:ger-w2c": "node --conditions=react-server --import tsx --test app/admin/3d-room-lab/gemini-evidence-receipt-ledger-migration.test.ts",
+    "test:ger-w3b0": "node --conditions=react-server --import tsx --test app/admin/3d-room-lab/gemini-evidence-producer-receipts.test.ts",
     "test:policy-a-containment": "node --conditions=react-server --import tsx --test app/admin/3d-room-lab/policy-a-containment.test.ts",
     "test:image-space": "node --conditions=react-server --import tsx --test app/admin/3d-room-lab/image-space.test.ts",
     "test:calibration-image-basis": "node --conditions=react-server --import tsx --test app/admin/3d-room-lab/policy-a-containment.test.ts",
