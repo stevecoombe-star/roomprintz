@@ -229,7 +229,7 @@ test("7) producer libs contain no ledger insert / receipt / Supabase / DB import
 // 8) No route file modified (the pass-through never edits the route source)
 // ---------------------------------------------------------------------------
 
-test("8) detect-vision route source is untouched by W3B.1 (no attemptId wiring)", () => {
+test("8) W3B.1 added no attemptId wiring; any route attemptId is W3B.2-minted only", () => {
   const routeSource = readFileSync(
     new URL(
       "../../../app/api/admin/3d-room-lab/auto-floor/detect-vision/route.ts",
@@ -237,9 +237,19 @@ test("8) detect-vision route source is untouched by W3B.1 (no attemptId wiring)"
     ),
     "utf8"
   );
-  // The route must not yet thread an attemptId into accounting; that is the
-  // deferred route-integration slice, not W3B.1.
-  assert.equal(routeSource.includes("attemptId"), false);
+  // W3B.1 itself threads no attemptId; the deferred route-integration slice is
+  // W3B.2. If the route threads an attemptId at all, it MUST come only from a
+  // minted W3B.2 producer identity (identity.providerAttemptId) — never from a
+  // request-supplied or default value.
+  if (routeSource.includes("attemptId")) {
+    assert.match(
+      routeSource,
+      /attemptId:\s*identity\.identity\.providerAttemptId/
+    );
+    // No request-body attemptId is ever read into accounting.
+    assert.equal(routeSource.includes("record.attemptId"), false);
+    assert.equal(routeSource.includes("body.attemptId"), false);
+  }
 });
 
 // ---------------------------------------------------------------------------

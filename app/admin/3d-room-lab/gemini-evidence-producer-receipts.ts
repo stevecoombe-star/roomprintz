@@ -322,6 +322,91 @@ export function resolveGeminiEvidenceProducerAccountingContextV1<
 }
 
 // ---------------------------------------------------------------------------
+// Section 5b — Detect-vision route identity gate + pure preparation (W3B.2)
+// ---------------------------------------------------------------------------
+
+/**
+ * Default-off gate for the detect-vision route producer-identity slice (W3B.2).
+ * This is a thin, intention-revealing alias over the general producer gate: it
+ * returns false for any absent / null / empty / false / "0" / "false" input and
+ * true only for the explicit boolean `true` or a recognized truthy string flag
+ * ("1", "true", "yes", "on"). Like the general gate, it NEVER reads the process
+ * environment; the route supplies the raw server-side flag value.
+ */
+export function shouldMintGeminiEvidenceDetectVisionIdentityV1(input: {
+  enabled?: string | boolean | null;
+}): boolean {
+  return shouldUseGeminiEvidenceProducerIdentityV1(input);
+}
+
+export type PrepareDetectVisionGeminiEvidenceIdentityResultV1 =
+  | { status: "disabled" }
+  | { status: "minted"; identity: GeminiEvidenceProducerIdentityV1 }
+  | { status: "error"; reason: string };
+
+/**
+ * Pure preparation of the detect-vision route producer identity (W3B.2).
+ *
+ * This helper is deterministic and side-effect free: it reads no environment,
+ * mints no entropy of its own, performs no I/O, and imports nothing from a
+ * route. The route is solely responsible for reading the server-side flag and
+ * for supplying production entropy seeds ONLY on the enabled branch.
+ *
+ * Behavior:
+ *   * disabled gate  -> { status: "disabled" } (route adds no attemptId)
+ *   * enabled, seeds missing -> { status: "error" } (route must fail closed)
+ *   * enabled, build fails    -> { status: "error" } (route must fail closed)
+ *   * enabled, build ok       -> { status: "minted", identity }
+ *
+ * The identity is minted ONLY from the caller-supplied entropy seeds via
+ * {@link buildGeminiEvidenceProducerIdentityV1}. It is NEVER derived from the
+ * scene hash, room id, asset id, version id, the request id, an image URL,
+ * frame size, or any other mutable request/scene input. `requestId` is carried
+ * through only as sanitize-or-null correlation and is kept strictly separate
+ * from the minted providerAttemptId.
+ */
+export function prepareDetectVisionGeminiEvidenceIdentityV1(input: {
+  enabled?: string | boolean | null;
+  requestId?: string | null;
+  createdAtIso: string;
+  entropySeeds?: {
+    receiptSeed: string;
+    logicalSeed: string;
+    attemptSeed: string;
+  };
+}): PrepareDetectVisionGeminiEvidenceIdentityResultV1 {
+  if (!shouldMintGeminiEvidenceDetectVisionIdentityV1(input)) {
+    return { status: "disabled" };
+  }
+
+  const seeds = input.entropySeeds;
+  if (
+    seeds === null ||
+    typeof seeds !== "object" ||
+    typeof seeds.receiptSeed !== "string" ||
+    typeof seeds.logicalSeed !== "string" ||
+    typeof seeds.attemptSeed !== "string"
+  ) {
+    return { status: "error", reason: "detect_vision_identity_missing_seeds" };
+  }
+
+  const built = buildGeminiEvidenceProducerIdentityV1({
+    relationship: "initial",
+    requestId: input.requestId,
+    createdAtIso: input.createdAtIso,
+    entropy: {
+      receiptSeed: seeds.receiptSeed,
+      logicalSeed: seeds.logicalSeed,
+      attemptSeed: seeds.attemptSeed,
+    },
+  });
+  if (!built.ok) {
+    return { status: "error", reason: built.reason };
+  }
+  return { status: "minted", identity: built.value };
+}
+
+// ---------------------------------------------------------------------------
 // Section 6 — Invocation receipt builder (gemini_invocation only)
 // ---------------------------------------------------------------------------
 

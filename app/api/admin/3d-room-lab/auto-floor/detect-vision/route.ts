@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { NextResponse } from "next/server";
 import { getAuthenticatedAdminUser } from "@/lib/adminServer";
 import {
@@ -17,6 +18,10 @@ import { detectFloorFromVerifiedBytes } from "@/lib/vibodeAutoFloorVisionDetect"
 import { DEFAULT_AUTO_FLOOR_VISION_CONFIG } from "@/app/admin/3d-room-lab/auto-floor-vision-provider-scaffold";
 import type { AutoFloorDetectionResult } from "@/app/admin/3d-room-lab/auto-floor-detection";
 import { computeCalibrationImageFingerprint } from "@/lib/vibodeCalibrationImageBasis";
+import {
+  prepareDetectVisionGeminiEvidenceIdentityV1,
+  shouldMintGeminiEvidenceDetectVisionIdentityV1,
+} from "@/app/admin/3d-room-lab/gemini-evidence-producer-receipts";
 
 // --- Phase 2F-F: lab-only, flag-gated REAL Gemini vision floor route ---------
 // POST /api/admin/3d-room-lab/auto-floor/detect-vision
@@ -201,6 +206,61 @@ export async function POST(request: Request) {
   const verifiedSourceSize = { width: meta.width, height: meta.height };
   const model = getAutoFloorVisionModel();
 
+  // GER-W3B.2 — Default-off producer identity minting at the outbound boundary.
+  // Per W3A correction R-3, identity is minted ONLY here: after every local
+  // preflight refusal point (admin gate, feature flag, API key, body/URL
+  // validation, SSRF fetch, basis attestation, decode + dimension checks) and
+  // immediately before the outbound Gemini call. Entropy seeds are produced only
+  // on the enabled branch and are never derived from requestId, roomId, assetId,
+  // versionId, the scene hash, the image URL, frame size, or any other input.
+  // When the flag is disabled (default), no seeds are generated and the
+  // accounting object is byte-identical to prior route behavior.
+  const baseAccounting = {
+    requestId,
+    route: VISION_ROUTE,
+    userId: adminUser.id ?? null,
+  };
+  let accounting: typeof baseAccounting & { attemptId?: string } = baseAccounting;
+  if (
+    shouldMintGeminiEvidenceDetectVisionIdentityV1({
+      enabled: process.env.GER_DETECT_VISION_IDENTITY_ENABLED,
+    })
+  ) {
+    const identity = prepareDetectVisionGeminiEvidenceIdentityV1({
+      enabled: true,
+      requestId,
+      createdAtIso: new Date().toISOString(),
+      entropySeeds: {
+        receiptSeed: randomUUID(),
+        logicalSeed: randomUUID(),
+        attemptSeed: randomUUID(),
+      },
+    });
+    if (identity.status === "error") {
+      // Fail closed: with identity enabled we never call Gemini with a missing
+      // or malformed attemptId. Return the same style of safe failed result.
+      logVisionFailure({
+        requestId,
+        route: VISION_ROUTE,
+        stage: "identity_mint",
+        reason: identity.reason,
+      });
+      return NextResponse.json(
+        failedWithBasis(
+          "Vision calibration identity could not be prepared.",
+          attestedBasisFingerprint
+        ),
+        { status: 200 }
+      );
+    }
+    if (identity.status === "minted") {
+      accounting = {
+        ...baseAccounting,
+        attemptId: identity.identity.providerAttemptId,
+      };
+    }
+  }
+
   const outcome = await detectFloorFromVerifiedBytes({
     apiKey,
     model,
@@ -210,7 +270,7 @@ export async function POST(request: Request) {
     floorRect,
     maxCandidates: MAX_CANDIDATES,
     timeoutMs: getAutoFloorVisionGeminiTimeoutMs(),
-    accounting: { requestId, route: VISION_ROUTE, userId: adminUser.id ?? null },
+    accounting,
   });
 
   if (!outcome.ok && outcome.failureKind === "gemini") {
