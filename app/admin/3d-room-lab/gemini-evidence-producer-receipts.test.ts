@@ -683,3 +683,230 @@ test("R-4) live-preflight re-scope is recorded and no live preflight is run", ()
   // producer helper performs zero database/storage/network access.
   assert.ok(true);
 });
+
+// ---------------------------------------------------------------------------
+// GER-W3B.0H — Deterministic producer identity seed-hardening fixtures
+//
+// These implement the W3B.0 audit's non-blocking follow-up note: deterministic
+// negative/edge coverage for seed handling (empty seed, slug-expansion overflow
+// seed, hostile-but-encodable seed) plus explicit boundary-length cases. All
+// fixtures are pure: no current time, randomness, env, network, DB, Supabase,
+// or route execution. They call the builder with fixed literal seeds only.
+// ---------------------------------------------------------------------------
+
+// A seed made entirely of a non-ASCII code point that expands under slug
+// encoding. "é" (U+00E9) encodes to "xe9" (3 chars) per source point, so any
+// meaningful repeat blows well past the 256-char identifier limit.
+const OVERFLOW_SEED = "é".repeat(300);
+// Hostile-but-encodable seed: space, tab, forward slash, and a supplementary
+// emoji. Every offending unit is deterministically escaped to "x<hex>".
+const HOSTILE_SEED = "a b\tc/💥";
+// Printable-ASCII grammar mirrored from the frozen W1 identifier grammar.
+const PRINTABLE_ASCII = /^[\x21-\x7e]+$/;
+
+// --- W3B.0H.1) Empty seed refusal -----------------------------------------
+
+test("W3B.0H.1a) empty receiptSeed refuses with producer_receipt_id:invalid_seed", () => {
+  const result = buildGeminiEvidenceProducerIdentityV1({
+    relationship: "initial",
+    requestId: "req-abc-123",
+    createdAtIso: CREATED_AT,
+    entropy: {
+      receiptSeed: "",
+      logicalSeed: "logical-seed-1",
+      attemptSeed: "attempt-seed-1",
+    },
+  });
+  assert.equal(result.ok, false);
+  if (!result.ok) {
+    assert.equal(result.reason, "producer_receipt_id:invalid_seed");
+  }
+});
+
+test("W3B.0H.1b) empty logicalSeed refuses with producer_logical_invocation_id:invalid_seed", () => {
+  const result = buildGeminiEvidenceProducerIdentityV1({
+    relationship: "initial",
+    requestId: "req-abc-123",
+    createdAtIso: CREATED_AT,
+    entropy: {
+      receiptSeed: "receipt-seed-1",
+      logicalSeed: "",
+      attemptSeed: "attempt-seed-1",
+    },
+  });
+  assert.equal(result.ok, false);
+  if (!result.ok) {
+    assert.equal(result.reason, "producer_logical_invocation_id:invalid_seed");
+  }
+});
+
+test("W3B.0H.1c) empty attemptSeed refuses with producer_provider_attempt_id:invalid_seed", () => {
+  const result = buildGeminiEvidenceProducerIdentityV1({
+    relationship: "initial",
+    requestId: "req-abc-123",
+    createdAtIso: CREATED_AT,
+    entropy: {
+      receiptSeed: "receipt-seed-1",
+      logicalSeed: "logical-seed-1",
+      attemptSeed: "",
+    },
+  });
+  assert.equal(result.ok, false);
+  if (!result.ok) {
+    assert.equal(result.reason, "producer_provider_attempt_id:invalid_seed");
+  }
+});
+
+// --- W3B.0H.2) Slug-expansion overflow refusal -----------------------------
+
+test("W3B.0H.2a) overflow receiptSeed refuses with producer_receipt_id:invalid_identifier", () => {
+  const result = buildGeminiEvidenceProducerIdentityV1({
+    relationship: "initial",
+    requestId: "req-abc-123",
+    createdAtIso: CREATED_AT,
+    entropy: {
+      receiptSeed: OVERFLOW_SEED,
+      logicalSeed: "logical-seed-1",
+      attemptSeed: "attempt-seed-1",
+    },
+  });
+  assert.equal(result.ok, false);
+  if (!result.ok) {
+    assert.equal(result.reason, "producer_receipt_id:invalid_identifier");
+  }
+});
+
+test("W3B.0H.2b) overflow logicalSeed refuses with producer_logical_invocation_id:invalid_identifier", () => {
+  const result = buildGeminiEvidenceProducerIdentityV1({
+    relationship: "initial",
+    requestId: "req-abc-123",
+    createdAtIso: CREATED_AT,
+    entropy: {
+      receiptSeed: "receipt-seed-1",
+      logicalSeed: OVERFLOW_SEED,
+      attemptSeed: "attempt-seed-1",
+    },
+  });
+  assert.equal(result.ok, false);
+  if (!result.ok) {
+    assert.equal(
+      result.reason,
+      "producer_logical_invocation_id:invalid_identifier"
+    );
+  }
+});
+
+test("W3B.0H.2c) overflow attemptSeed refuses with producer_provider_attempt_id:invalid_identifier", () => {
+  const result = buildGeminiEvidenceProducerIdentityV1({
+    relationship: "initial",
+    requestId: "req-abc-123",
+    createdAtIso: CREATED_AT,
+    entropy: {
+      receiptSeed: "receipt-seed-1",
+      logicalSeed: "logical-seed-1",
+      attemptSeed: OVERFLOW_SEED,
+    },
+  });
+  assert.equal(result.ok, false);
+  if (!result.ok) {
+    assert.equal(
+      result.reason,
+      "producer_provider_attempt_id:invalid_identifier"
+    );
+  }
+});
+
+// --- W3B.0H.3) Hostile-but-encodable seed succeeds safely ------------------
+
+test("W3B.0H.3) hostile-but-encodable seed mints safe, printable-ASCII IDs", () => {
+  const result = buildGeminiEvidenceProducerIdentityV1({
+    relationship: "initial",
+    requestId: "req-abc-123",
+    createdAtIso: CREATED_AT,
+    entropy: {
+      receiptSeed: HOSTILE_SEED,
+      logicalSeed: HOSTILE_SEED,
+      attemptSeed: HOSTILE_SEED,
+    },
+  });
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  const { receiptId, logicalInvocationId, providerAttemptId } = result.value;
+
+  const ids = [receiptId, logicalInvocationId, providerAttemptId];
+  for (const id of ids) {
+    // Printable ASCII only.
+    assert.equal(PRINTABLE_ASCII.test(id), true, `not printable ASCII: ${id}`);
+    // No whitespace of any kind.
+    assert.equal(/\s/.test(id), false, `contains whitespace: ${id}`);
+    // No raw tab / control chars (C0 controls + DEL).
+    assert.equal(
+      /[\x00-\x1f\x7f]/.test(id),
+      false,
+      `contains control char: ${id}`
+    );
+    // No raw emoji / non-ASCII bytes.
+    assert.equal(/[^\x00-\x7f]/.test(id), false, `contains non-ASCII: ${id}`);
+    // Not the reserved null-retry-predecessor sentinel.
+    assert.notEqual(id, GER_W2_NULL_RETRY_PREDECESSOR_SENTINEL);
+    // Length bound holds.
+    assert.ok(id.length > 0 && id.length <= 256, `length out of range: ${id}`);
+    // The raw hostile seed is never embedded literally in a minted ID.
+    assert.equal(
+      id.includes(HOSTILE_SEED),
+      false,
+      `raw hostile seed embedded in: ${id}`
+    );
+  }
+
+  // Expected stable prefixes are retained.
+  assert.ok(receiptId.startsWith(GER_W3B0_RECEIPT_ID_PREFIX));
+  assert.ok(
+    logicalInvocationId.startsWith(GER_W3B0_LOGICAL_INVOCATION_ID_PREFIX)
+  );
+  assert.ok(
+    providerAttemptId.startsWith(GER_W3B0_PROVIDER_ATTEMPT_ID_PREFIX)
+  );
+});
+
+// --- W3B.0H.4) Boundary-length seed behavior -------------------------------
+
+// The receipt prefix plus an all-ASCII seed maps 1:1 under slug encoding, so
+// the minted length is deterministically prefix.length + seed.length. Deriving
+// the boundary seed lengths from the prefix constant avoids brittle literals.
+const RECEIPT_PREFIX_LEN = GER_W3B0_RECEIPT_ID_PREFIX.length;
+const RECEIPT_MAX_ASCII_SEED_LEN = 256 - RECEIPT_PREFIX_LEN;
+
+test("W3B.0H.4a) an all-ASCII seed producing an ID exactly at 256 chars succeeds", () => {
+  const result = buildGeminiEvidenceProducerIdentityV1({
+    relationship: "initial",
+    requestId: "req-abc-123",
+    createdAtIso: CREATED_AT,
+    entropy: {
+      receiptSeed: "a".repeat(RECEIPT_MAX_ASCII_SEED_LEN),
+      logicalSeed: "logical-seed-1",
+      attemptSeed: "attempt-seed-1",
+    },
+  });
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.equal(result.value.receiptId.length, 256);
+  assert.ok(result.value.receiptId.startsWith(GER_W3B0_RECEIPT_ID_PREFIX));
+});
+
+test("W3B.0H.4b) an all-ASCII seed producing an ID above 256 chars refuses with invalid_identifier", () => {
+  const result = buildGeminiEvidenceProducerIdentityV1({
+    relationship: "initial",
+    requestId: "req-abc-123",
+    createdAtIso: CREATED_AT,
+    entropy: {
+      receiptSeed: "a".repeat(RECEIPT_MAX_ASCII_SEED_LEN + 1),
+      logicalSeed: "logical-seed-1",
+      attemptSeed: "attempt-seed-1",
+    },
+  });
+  assert.equal(result.ok, false);
+  if (!result.ok) {
+    assert.equal(result.reason, "producer_receipt_id:invalid_identifier");
+  }
+});
