@@ -20,6 +20,7 @@ import type { AutoFloorDetectionResult } from "@/app/admin/3d-room-lab/auto-floo
 import { computeCalibrationImageFingerprint } from "@/lib/vibodeCalibrationImageBasis";
 import {
   prepareDetectVisionGeminiEvidenceIdentityV1,
+  prepareDetectVisionGeminiEvidenceInvocationEnvelopeV1,
   shouldMintGeminiEvidenceDetectVisionIdentityV1,
 } from "@/app/admin/3d-room-lab/gemini-evidence-producer-receipts";
 
@@ -254,6 +255,34 @@ export async function POST(request: Request) {
       );
     }
     if (identity.status === "minted") {
+      // GER-W3B.3 — Construct (but never persist) the gemini_invocation receipt
+      // + W1 envelope from the SAME minted identity, immediately before the
+      // outbound Gemini call. This proves a valid, ledger-shaped invocation can
+      // be built at this boundary. The constructed value is ephemeral and is
+      // used ONLY to decide continuation: it is intentionally NOT inserted,
+      // persisted, logged verbatim, returned in the response body, or otherwise
+      // retained anywhere in this slice.
+      const invocation = prepareDetectVisionGeminiEvidenceInvocationEnvelopeV1({
+        identity: identity.identity,
+      });
+      if (invocation.status === "error") {
+        // Fail closed: with identity enabled we never call Gemini when the
+        // invocation envelope cannot be constructed. Return the same style of
+        // safe failed result as the other preflight refusals.
+        logVisionFailure({
+          requestId,
+          route: VISION_ROUTE,
+          stage: "invocation_construction",
+          reason: invocation.reason,
+        });
+        return NextResponse.json(
+          failedWithBasis(
+            "Vision calibration invocation could not be prepared.",
+            attestedBasisFingerprint
+          ),
+          { status: 200 }
+        );
+      }
       accounting = {
         ...baseAccounting,
         attemptId: identity.identity.providerAttemptId,

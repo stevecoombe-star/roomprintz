@@ -508,3 +508,49 @@ export function buildGeminiEvidenceInvocationReceiptEnvelopeForProducerV1(input:
 
   return { ok: true, receipt, envelope };
 }
+
+// ---------------------------------------------------------------------------
+// Section 7 — Detect-vision route invocation envelope construction (W3B.3)
+// ---------------------------------------------------------------------------
+
+export type PrepareDetectVisionGeminiEvidenceInvocationEnvelopeResultV1 =
+  | {
+      status: "built";
+      receipt: ContractReceiptV1;
+      envelope: GeminiEvidenceWireEnvelopeV1;
+    }
+  | { status: "error"; reason: string };
+
+/**
+ * Pure construction of the detect-vision `gemini_invocation` receipt + W1 wire
+ * envelope from an already-minted producer identity (W3B.3).
+ *
+ * This helper is deterministic and side-effect free: it reads no environment,
+ * mints no entropy of its own, performs no I/O, imports nothing from a route,
+ * and NEVER inserts, persists, sends, logs verbatim, returns, or otherwise
+ * retains the constructed receipt / envelope. It exists ONLY to prove — at the
+ * outbound-call boundary — that a valid, ledger-shaped invocation envelope can
+ * be constructed from the same identity the route already minted. Persistence
+ * is deferred to a later slice.
+ *
+ * It delegates to
+ * {@link buildGeminiEvidenceInvocationReceiptEnvelopeForProducerV1} with a
+ * fixed `provider_call_started` outbound status, so it builds ONLY a
+ * `gemini_invocation` receipt, keeps the relationship to `initial` /
+ * `operator_rerun` (R-5: `provider_retry` is refused with a stable reason), and
+ * never emits a pre-outbound refusal receipt. The built receipt is validated
+ * through the frozen kernel and its envelope through the frozen W1 adapter by
+ * the delegate.
+ */
+export function prepareDetectVisionGeminiEvidenceInvocationEnvelopeV1(input: {
+  identity: GeminiEvidenceProducerIdentityV1;
+}): PrepareDetectVisionGeminiEvidenceInvocationEnvelopeResultV1 {
+  const built = buildGeminiEvidenceInvocationReceiptEnvelopeForProducerV1({
+    identity: input.identity,
+    outboundCallStatus: "provider_call_started",
+  });
+  if (!built.ok) {
+    return { status: "error", reason: built.reason };
+  }
+  return { status: "built", receipt: built.receipt, envelope: built.envelope };
+}
