@@ -258,10 +258,15 @@ test("9) route fail-closes before the Gemini call on construction error", () => 
 });
 
 // ---------------------------------------------------------------------------
-// 10) Route inserts no ledger rows and imports no service client
+// 10) Route imports no direct Supabase/service ledger client (R-2)
 // ---------------------------------------------------------------------------
 
-test("10) route inserts no ledger rows / imports no service client", () => {
+// R-2: once W3B.4 is enabled the route CAUSES an insert through the server-only
+// persistence helper, so the old "route inserts no ledger rows" framing is
+// stale. The invariant that survives is narrower and still enforced here: the
+// route never imports or names any Supabase / service-client / direct-ledger
+// symbol itself. It delegates persistence entirely to the helper module.
+test("10) route imports no direct Supabase/service ledger client", () => {
   for (const fragment of [
     "insertGeminiEvidenceReceiptEnvelopeV1",
     "insertGeminiEvidenceReceiptEnvelopeForTestV1",
@@ -284,13 +289,35 @@ test("10) route inserts no ledger rows / imports no service client", () => {
 });
 
 // ---------------------------------------------------------------------------
-// 11) Route does not return/log the canonical payload or built envelope/receipt
+// 11) Built envelope is passed ONLY to the persistence helper (R-1)
 // ---------------------------------------------------------------------------
 
-test("11) route does not return/log the built receipt or envelope", () => {
+// R-1: W3B.4 must hand the built envelope to the persistence helper, so the old
+// blanket ban on the literal `invocation.envelope` is amended honestly. Exactly
+// ONE `invocation.envelope` use site is permitted, and it must be the argument
+// to the persistence helper call. It remains forbidden in logs, NextResponse
+// bodies, returned payloads, spreads, and any client-visible construction. The
+// receipt body / canonical payload / projection are still fully banned. The
+// test does not dodge the scan by destructuring: it asserts the exact literal
+// argument shape.
+test("11) route passes the built envelope only to the persistence helper", () => {
+  const envelopeUses = ROUTE_SOURCE.match(/invocation\.envelope/g) ?? [];
+  assert.equal(
+    envelopeUses.length,
+    1,
+    "expected exactly one invocation.envelope use site"
+  );
+
+  // The single use site must be the argument to the persistence helper call.
+  assert.match(
+    ROUTE_SOURCE,
+    /persistDetectVisionGeminiEvidenceInvocationEnvelopeV1\(\s*\{\s*envelope:\s*invocation\.envelope\b/,
+    "invocation.envelope must be the persistence helper argument"
+  );
+
+  // The receipt body, canonical payload, and projection remain fully banned.
   for (const fragment of [
     "invocation.receipt",
-    "invocation.envelope",
     "canonicalPayload",
     "canonicalJson",
     ".projection",

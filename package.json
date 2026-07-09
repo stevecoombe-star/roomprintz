@@ -19,6 +19,7 @@
     "test:ger-w3b1": "node --conditions=react-server --import tsx --test app/admin/3d-room-lab/gemini-evidence-producer-accounting-pass-through.test.ts",
     "test:ger-w3b2": "node --conditions=react-server --import tsx --test app/admin/3d-room-lab/gemini-evidence-detect-vision-route-identity.test.ts",
     "test:ger-w3b3": "node --conditions=react-server --import tsx --test app/admin/3d-room-lab/gemini-evidence-detect-vision-invocation-construction.test.ts",
+    "test:ger-w3b4": "node --conditions=react-server --import tsx --test app/admin/3d-room-lab/gemini-evidence-detect-vision-invocation-persistence.test.ts",
     "test:policy-a-containment": "node --conditions=react-server --import tsx --test app/admin/3d-room-lab/policy-a-containment.test.ts",
     "test:image-space": "node --conditions=react-server --import tsx --test app/admin/3d-room-lab/image-space.test.ts",
     "test:calibration-image-basis": "node --conditions=react-server --import tsx --test app/admin/3d-room-lab/policy-a-containment.test.ts",

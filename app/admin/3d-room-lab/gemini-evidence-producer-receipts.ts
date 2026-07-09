@@ -339,6 +339,29 @@ export function shouldMintGeminiEvidenceDetectVisionIdentityV1(input: {
   return shouldUseGeminiEvidenceProducerIdentityV1(input);
 }
 
+/**
+ * Default-off gate for the SEPARATE detect-vision invocation-ledger write slice
+ * (W3B.4). It is deliberately distinct from
+ * {@link shouldMintGeminiEvidenceDetectVisionIdentityV1}: the identity flag
+ * decides whether an invocation identity/envelope is minted at all, while this
+ * persistence flag decides whether an already-built invocation envelope is
+ * written to the W2D ledger before the outbound Gemini call. The persistence
+ * flag alone does nothing when the identity flag is disabled, because the route
+ * only reaches the persistence branch inside the enabled+minted identity path.
+ *
+ * Like every gate in this module it is pure and NEVER reads the process
+ * environment: the route supplies the raw server-side flag value from its own
+ * dedicated ledger-write environment variable. It returns false for any absent
+ * / null / empty / false / "0" / "false" / "TRUE" / "enabled" input and true
+ * only for the explicit boolean `true` or a recognized truthy string flag
+ * ("1", "true", "yes", "on").
+ */
+export function shouldPersistGeminiEvidenceDetectVisionInvocationV1(input: {
+  enabled?: string | boolean | null;
+}): boolean {
+  return shouldUseGeminiEvidenceProducerIdentityV1(input);
+}
+
 export type PrepareDetectVisionGeminiEvidenceIdentityResultV1 =
   | { status: "disabled" }
   | { status: "minted"; identity: GeminiEvidenceProducerIdentityV1 }
