@@ -280,7 +280,56 @@ export type GeminiAutoFloorAccounting = {
   requestId?: string | null;
   route?: string | null;
   userId?: string | null;
+  // GER-W3B.1: optional, additive, default-off provider attempt id pass-through.
+  // No caller is required to provide it and none is minted here; a future
+  // route-integration slice supplies a grammar-safe attemptId via the W3B.0
+  // resolver. When absent, the accounting context is byte-identical to before.
+  attemptId?: string;
 };
+
+/**
+ * The accounting context accepted by {@link withGeminiUsageAccounting}. Derived
+ * from the accounting module so the auto-floor boundary never re-declares that
+ * shape.
+ */
+type GeminiAutoFloorAccountingContext = Parameters<typeof withGeminiUsageAccounting>[0];
+
+/**
+ * GER-W3B.1 — Pure builder for the auto-floor `withGeminiUsageAccounting`
+ * context. Behavior-preserving by construction: it mirrors the previous inline
+ * object exactly and only carries `attemptId` through when the caller provides a
+ * string. No attemptId is minted, defaulted, or sanitized here, and `requestId`
+ * is never reused as `attemptId`.
+ */
+export function buildAutoFloorGeminiAccountingContext(args: {
+  model: string;
+  mime: string;
+  accounting?: GeminiAutoFloorAccounting;
+}): GeminiAutoFloorAccountingContext {
+  const { model, mime, accounting } = args;
+  const base: GeminiAutoFloorAccountingContext = {
+    requestId: accounting?.requestId ?? null,
+    userId: accounting?.userId ?? null,
+    provider: "google_gemini",
+    model,
+    workflowType: "auto-floor-detect",
+    actionType: "vision-floor-detect",
+    route: accounting?.route ?? "/api/admin/3d-room-lab/auto-floor/detect-vision",
+    service: "roomprintz-ui",
+    imageCount: 1,
+    metadata: {
+      mime,
+      modelVersion: model,
+      endpointKind: "google_generate_content_v1beta",
+      purpose: "auto-floor-vision",
+    },
+  };
+  // Additive, default-off: only carry attemptId when explicitly present.
+  if (typeof accounting?.attemptId === "string") {
+    return { ...base, attemptId: accounting.attemptId };
+  }
+  return base;
+}
 
 export type GeminiAutoFloorCallArgs = {
   apiKey: string;
@@ -359,23 +408,11 @@ export async function callGeminiAutoFloorDetection(
   )}`;
 
   const result = await withGeminiUsageAccounting(
-    {
-      requestId: args.accounting?.requestId ?? null,
-      userId: args.accounting?.userId ?? null,
-      provider: "google_gemini",
+    buildAutoFloorGeminiAccountingContext({
       model,
-      workflowType: "auto-floor-detect",
-      actionType: "vision-floor-detect",
-      route: args.accounting?.route ?? "/api/admin/3d-room-lab/auto-floor/detect-vision",
-      service: "roomprintz-ui",
-      imageCount: 1,
-      metadata: {
-        mime: args.mime,
-        modelVersion: model,
-        endpointKind: "google_generate_content_v1beta",
-        purpose: "auto-floor-vision",
-      },
-    },
+      mime: args.mime,
+      accounting: args.accounting,
+    }),
     async (): Promise<GeminiAutoFloorCallResult> => {
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), args.timeoutMs);

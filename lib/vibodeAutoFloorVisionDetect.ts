@@ -41,7 +41,10 @@ export type DetectFloorArgs = {
   floorRect: { widthMeters: number; depthMeters: number };
   maxCandidates: number;
   timeoutMs: number;
-  accounting: { requestId: string; route: string; userId: string | null };
+  // GER-W3B.1: `attemptId` is an optional, additive, default-off pass-through.
+  // It is not minted or sanitized here; a future route-integration slice will
+  // provide a grammar-safe attemptId. When absent, behavior is unchanged.
+  accounting: { requestId: string; route: string; userId: string | null; attemptId?: string };
 };
 
 export type GeminiCallMeta = {
