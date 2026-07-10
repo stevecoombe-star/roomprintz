@@ -50,6 +50,14 @@ import {
   type SupportSource,
 } from "./support-model";
 import {
+  createWallConfirmationStamp,
+  deriveWallSupport,
+  isWallConfirmationCurrent,
+  type WallPolygon,
+  type WallSupportDraft,
+  type WallSupportKind,
+} from "./wall-support-geometry";
+import {
   containerNormToSourceNorm,
   corridorHalfWidthToOverlayStrokeWidth,
   isValidImageSize,
@@ -547,6 +555,33 @@ const DEFAULT_FLOOR_POLYGON: FloorPoint[] = [
   { x: 0.38, y: 0.95 },
 ];
 
+const WALL_SUPPORT_KINDS: WallSupportKind[] = ["wall_back", "wall_left", "wall_right"];
+
+function createUnavailableWallDraft(kind: WallSupportKind): WallSupportDraft {
+  return {
+    kind,
+    enabled: false,
+    source: "manual",
+    imagePolygonSourceNorm: null,
+    reviewStatus: "unavailable",
+    confirmationStamp: null,
+  };
+}
+
+function createInitialWallDrafts(): Record<WallSupportKind, WallSupportDraft> {
+  return {
+    wall_back: createUnavailableWallDraft("wall_back"),
+    wall_left: createUnavailableWallDraft("wall_left"),
+    wall_right: createUnavailableWallDraft("wall_right"),
+  };
+}
+
+const WALL_SUPPORT_PRESENTATION: Record<WallSupportKind, { label: string; color: string; mutedColor: string }> = {
+  wall_back: { label: "Back wall", color: "#22d3ee", mutedColor: "#155e75" },
+  wall_left: { label: "Left wall", color: "#d946ef", mutedColor: "#86198f" },
+  wall_right: { label: "Right wall", color: "#f59e0b", mutedColor: "#92400e" },
+};
+
 const TRANSFORM_LIMITS = {
   positionX: { min: -5, max: 5, step: 0.01 },
   positionY: { min: -5, max: 5, step: 0.01 },
@@ -679,6 +714,25 @@ function intersectOverlayRayWithFloorPlane(
     ok: true,
     worldPoint: { x: intersectionPoint.x, y: intersectionPoint.y, z: intersectionPoint.z },
     floorPlane2D: { x: intersectionPoint.x, y: intersectionPoint.z },
+  };
+}
+
+function buildOverlayWorldRay(
+  normalizedPoint: FloorPoint,
+  camera: THREE.PerspectiveCamera | null
+): { origin: { x: number; y: number; z: number }; direction: { x: number; y: number; z: number } } | null {
+  if (!camera || !Number.isFinite(normalizedPoint.x) || !Number.isFinite(normalizedPoint.y)) return null;
+  camera.updateMatrixWorld(true);
+  const origin = camera.getWorldPosition(new THREE.Vector3());
+  const rayPoint = new THREE.Vector3(normalizedPoint.x * 2 - 1, 1 - normalizedPoint.y * 2, 0.5).unproject(camera);
+  const direction = rayPoint.sub(origin);
+  const directionLength = direction.length();
+  if (!Number.isFinite(directionLength) || directionLength <= 1e-9) return null;
+  direction.multiplyScalar(1 / directionLength);
+  if (![origin.x, origin.y, origin.z, direction.x, direction.y, direction.z].every(Number.isFinite)) return null;
+  return {
+    origin: { x: origin.x, y: origin.y, z: origin.z },
+    direction: { x: direction.x, y: direction.y, z: direction.z },
   };
 }
 
@@ -1189,6 +1243,7 @@ export default function ThreeRoomLab({
   const calibratedLiftStartClientPointRef = useRef<{ x: number; y: number } | null>(null);
   const calibratedLiftStartTransformRef = useRef<TransformState | null>(null);
   const floorAnchorDragPointerIdRef = useRef<number | null>(null);
+  const wallHandleDragRef = useRef<{ pointerId: number; kind: WallSupportKind; index: number } | null>(null);
   const lastAcceptedFloorClickRef = useRef<FloorPoint | null>(null);
   const perspectiveDepthScalingRef = useRef<PerspectiveDepthScalingState>(
     DEFAULT_PERSPECTIVE_DEPTH_SCALING
@@ -1267,6 +1322,23 @@ export default function ThreeRoomLab({
   const [floorSupportSource, setFloorSupportSource] = useState<SupportSource>("manual");
   const [floorSupportImageBasis, setFloorSupportImageBasis] = useState<CalibrationImageBasis | null>(null);
   const [activeFloorHandleIndex, setActiveFloorHandleIndex] = useState<number | null>(null);
+  // Wall source authority remains source-normalized; container polygons are
+  // derived presentation only, following the existing floor dual-space pattern.
+  const [wallSupportDrafts, setWallSupportDrafts] =
+    useState<Record<WallSupportKind, WallSupportDraft>>(createInitialWallDrafts);
+  const [wallSupportImageBases, setWallSupportImageBases] =
+    useState<Record<WallSupportKind, CalibrationImageBasis | null>>({
+      wall_back: null,
+      wall_left: null,
+      wall_right: null,
+    });
+  const [selectedWallKind, setSelectedWallKind] = useState<WallSupportKind | null>(null);
+  const [activeWallHandle, setActiveWallHandle] = useState<{ kind: WallSupportKind; index: number } | null>(null);
+  const [visibleWallKinds, setVisibleWallKinds] = useState<Record<WallSupportKind, boolean>>({
+    wall_back: true,
+    wall_left: true,
+    wall_right: true,
+  });
   const [qualifiedImageBasis, setQualifiedImageBasis] = useState<CalibrationImageBasis | null>(null);
   const [basisQualificationStatus, setBasisQualificationStatus] = useState<string>("basis_unavailable");
   const basisQualificationRequestIdRef = useRef(0);
@@ -3081,6 +3153,148 @@ export default function ThreeRoomLab({
       resolvedFloorSupportReviewStatus,
     ]
   );
+
+  const wallContainerPolygons = useMemo(() => {
+    const result: Record<WallSupportKind, WallPolygon | null> = {
+      wall_back: null,
+      wall_left: null,
+      wall_right: null,
+    };
+    for (const kind of WALL_SUPPORT_KINDS) {
+      const sourcePolygon = wallSupportDrafts[kind].imagePolygonSourceNorm;
+      if (!sourcePolygon) continue;
+      const projected = projectSourcePolygonToContainer(sourcePolygon);
+      result[kind] = projected && projected.length === 4 ? (projected as WallPolygon) : null;
+    }
+    return result;
+  }, [projectSourcePolygonToContainer, wallSupportDrafts]);
+
+  const wallSupportStates = useMemo(() => {
+    const states = {} as Record<
+      WallSupportKind,
+      {
+        derivation: ReturnType<typeof deriveWallSupport>;
+        resolvedReviewStatus: SupportReviewStatus;
+        confirmationCurrent: boolean;
+        runtime: ReturnType<typeof evaluateSupportUsability>;
+        blockingReasons: string[];
+        gridPolylines: FloorPoint[][];
+      }
+    >;
+    const activeSnapshot = isCalibratedCameraActive && calibratedCameraSnapshot ? calibratedCameraSnapshot : null;
+    const camera = cameraRef.current;
+    const cameraPosition = camera
+      ? (() => {
+          camera.updateMatrixWorld(true);
+          const point = camera.getWorldPosition(new THREE.Vector3());
+          return { x: point.x, y: point.y, z: point.z };
+        })()
+      : { x: Number.NaN, y: Number.NaN, z: Number.NaN };
+    const floorBounds = {
+      minX: -floorMapping.worldWidth / 2,
+      maxX: floorMapping.worldWidth / 2,
+      minZ: -floorMapping.worldDepth / 2,
+      maxZ: floorMapping.worldDepth / 2,
+    };
+
+    for (const kind of WALL_SUPPORT_KINDS) {
+      const draft = wallSupportDrafts[kind];
+      const containerPolygon = wallContainerPolygons[kind];
+      const sourcePolygon = draft.imagePolygonSourceNorm;
+      const derivation = deriveWallSupport({
+        kind,
+        polygonSourceNorm: draft.enabled ? sourcePolygon : null,
+        polygonContainerNorm: draft.enabled ? containerPolygon : null,
+        frameSize: frameSizeForImageSpace,
+        mapImagePixelToFloor: (point) =>
+          homographyDebug.homographyMatrixForPlacement
+            ? applyHomography(homographyDebug.homographyMatrixForPlacement, point)
+            : null,
+        cameraPosition,
+        rays: containerPolygon
+          ? (containerPolygon.map((point) => buildOverlayWorldRay(point, camera)) as [
+              ReturnType<typeof buildOverlayWorldRay>,
+              ReturnType<typeof buildOverlayWorldRay>,
+              ReturnType<typeof buildOverlayWorldRay>,
+              ReturnType<typeof buildOverlayWorldRay>,
+            ])
+          : [null, null, null, null],
+        projectWorldToPixels: (point) => {
+          if (!camera || !frameSizeForImageSpace) return null;
+          const projected = projectWorldPointToOverlayNormalized(camera, frameSizeForImageSpace, point);
+          return projected?.pixels ?? null;
+        },
+        floorBounds,
+      });
+      const confirmationCurrent = isWallConfirmationCurrent({
+        stamp: draft.confirmationStamp,
+        polygon: sourcePolygon,
+        basis: qualifiedImageBasis,
+        cameraAppliedAtIso: activeSnapshot?.appliedAtIso ?? null,
+        frameSize: frameSizeForImageSpace,
+      });
+      const resolvedReviewStatus: SupportReviewStatus =
+        !draft.enabled || !sourcePolygon
+          ? "unavailable"
+          : derivation.ok && draft.reviewStatus === "manually_confirmed" && confirmationCurrent
+            ? "manually_confirmed"
+            : "needs_review";
+      const runtime = evaluateSupportUsability({
+        reviewStatus: resolvedReviewStatus,
+        geometryValid: derivation.ok,
+        currentImageBasis: qualifiedImageBasis,
+        supportImageBasis: wallSupportImageBases[kind],
+        activeCameraSnapshot: activeSnapshot,
+        currentFrameSize: frameSizeForImageSpace,
+        cameraSnapshotStale: calibratedCameraFrameMatchStatus.diagnostics?.isWarningStale ?? false,
+      });
+      const blockingReasons = [
+        ...runtime.blockingReasons,
+        ...(derivation.ok ? [] : derivation.reasons),
+      ];
+      const gridPolylines: FloorPoint[][] = [];
+      if (derivation.ok && camera && frameSizeForImageSpace) {
+        const { plane, boundaryUV } = derivation;
+        const projectUv = (uv: { x: number; y: number }): FloorPoint | null => {
+          const worldPoint = {
+            x: plane.point.x + plane.basisU.x * uv.x + plane.basisV.x * uv.y,
+            y: plane.point.y + plane.basisU.y * uv.x + plane.basisV.y * uv.y,
+            z: plane.point.z + plane.basisU.z * uv.x + plane.basisV.z * uv.y,
+          };
+          return projectWorldPointToOverlayNormalized(camera, frameSizeForImageSpace, worldPoint)?.normalized ?? null;
+        };
+        const interpolate = (a: { x: number; y: number }, b: { x: number; y: number }, t: number) => ({
+          x: a.x + (b.x - a.x) * t,
+          y: a.y + (b.y - a.y) * t,
+        });
+        for (let index = 0; index < 5; index += 1) {
+          const t = index / 4;
+          const left = interpolate(boundaryUV[0], boundaryUV[3], t);
+          const right = interpolate(boundaryUV[1], boundaryUV[2], t);
+          const lower = interpolate(boundaryUV[0], boundaryUV[1], t);
+          const upper = interpolate(boundaryUV[3], boundaryUV[2], t);
+          const horizontal = [projectUv(left), projectUv(right)].filter((point): point is FloorPoint => point !== null);
+          const vertical = [projectUv(lower), projectUv(upper)].filter((point): point is FloorPoint => point !== null);
+          if (horizontal.length === 2) gridPolylines.push(horizontal);
+          if (vertical.length === 2) gridPolylines.push(vertical);
+        }
+      }
+      states[kind] = { derivation, resolvedReviewStatus, confirmationCurrent, runtime, blockingReasons, gridPolylines };
+    }
+    return states;
+  }, [
+    calibratedCameraFrameMatchStatus.diagnostics?.isWarningStale,
+    calibratedCameraSnapshot,
+    floorMapping.worldDepth,
+    floorMapping.worldWidth,
+    frameSizeForImageSpace,
+    homographyDebug.homographyMatrixForPlacement,
+    isCalibratedCameraActive,
+    qualifiedImageBasis,
+    wallContainerPolygons,
+    wallSupportDrafts,
+    wallSupportImageBases,
+  ]);
 
   // Phase 2K-A: user-facing calibration readiness. This is a PRESENTATION layer
   // only — it reads existing diagnostics (cameraPoseDebug.applyCandidate, the FOV
@@ -7976,6 +8190,133 @@ export default function ThreeRoomLab({
     );
   };
 
+  const configureWall = (kind: WallSupportKind) => {
+    const orderedFloor = homographyDebug.orderedCornersNorm;
+    if (!orderedFloor) return;
+    const seam: [FloorPoint, FloorPoint] =
+      kind === "wall_back"
+        ? [orderedFloor[3], orderedFloor[2]]
+        : kind === "wall_left"
+          ? [orderedFloor[0], orderedFloor[3]]
+          : [orderedFloor[2], orderedFloor[1]];
+    const upperOffset = 0.18;
+    const containerPolygon: WallPolygon = [
+      seam[0],
+      seam[1],
+      { x: seam[1].x, y: Math.max(0, seam[1].y - upperOffset) },
+      { x: seam[0].x, y: Math.max(0, seam[0].y - upperOffset) },
+    ];
+    const sourcePolygon = projectContainerPolygonToSource(containerPolygon);
+    if (!sourcePolygon || sourcePolygon.length !== 4) return;
+    setWallSupportDrafts((previous) => ({
+      ...previous,
+      [kind]: {
+        kind,
+        enabled: true,
+        source: "manual",
+        imagePolygonSourceNorm: sourcePolygon as WallPolygon,
+        reviewStatus: "needs_review",
+        confirmationStamp: null,
+      },
+    }));
+    setWallSupportImageBases((previous) => ({ ...previous, [kind]: qualifiedImageBasis }));
+    setSelectedWallKind(kind);
+  };
+
+  const clearWall = (kind: WallSupportKind) => {
+    setWallSupportDrafts((previous) => ({ ...previous, [kind]: createUnavailableWallDraft(kind) }));
+    setWallSupportImageBases((previous) => ({ ...previous, [kind]: null }));
+    if (selectedWallKind === kind) setSelectedWallKind(null);
+  };
+
+  const revokeWallConfirmation = (kind: WallSupportKind) => {
+    setWallSupportDrafts((previous) => {
+      const current = previous[kind];
+      return {
+        ...previous,
+        [kind]: {
+          ...current,
+          reviewStatus: current.enabled ? "needs_review" : "unavailable",
+          confirmationStamp: null,
+        },
+      };
+    });
+  };
+
+  const confirmWall = (kind: WallSupportKind) => {
+    const draft = wallSupportDrafts[kind];
+    const state = wallSupportStates[kind];
+    const camera = isCalibratedCameraActive ? calibratedCameraSnapshot : null;
+    const polygon = draft.imagePolygonSourceNorm;
+    const canConfirm =
+      !!polygon &&
+      !!qualifiedImageBasis &&
+      !!camera &&
+      !!frameSizeForImageSpace &&
+      state.derivation.ok &&
+      state.runtime.blockingReasons.every((reason) => reason === "support_not_confirmed");
+    if (!canConfirm || !polygon || !qualifiedImageBasis || !camera || !frameSizeForImageSpace) return;
+    setWallSupportDrafts((previous) => ({
+      ...previous,
+      [kind]: {
+        ...previous[kind],
+        reviewStatus: "manually_confirmed",
+        confirmationStamp: createWallConfirmationStamp(
+          polygon,
+          qualifiedImageBasis,
+          camera.appliedAtIso,
+          frameSizeForImageSpace
+        ),
+      },
+    }));
+  };
+
+  const updateWallHandleFromClientPoint = (
+    kind: WallSupportKind,
+    index: number,
+    clientX: number,
+    clientY: number
+  ) => {
+    const normalizedPoint = getNormalizedOverlayPointFromClient(clientX, clientY);
+    const currentPolygon = wallContainerPolygons[kind];
+    if (!normalizedPoint || !currentPolygon) return;
+    const nextContainer = currentPolygon.map((point, pointIndex) =>
+      pointIndex === index ? normalizedPoint : point
+    ) as WallPolygon;
+    const nextSource = projectContainerPolygonToSource(nextContainer);
+    if (!nextSource || nextSource.length !== 4) return;
+    setWallSupportDrafts((previous) => ({
+      ...previous,
+      [kind]: {
+        ...previous[kind],
+        enabled: true,
+        source: "manual",
+        imagePolygonSourceNorm: nextSource as WallPolygon,
+        reviewStatus: "needs_review",
+        confirmationStamp: null,
+      },
+    }));
+    setWallSupportImageBases((previous) => ({ ...previous, [kind]: qualifiedImageBasis }));
+  };
+
+  const handleWallHandlePointerDown = (
+    kind: WallSupportKind,
+    index: number,
+    event: PointerEvent<SVGCircleElement>
+  ) => {
+    event.preventDefault();
+    event.stopPropagation();
+    wallHandleDragRef.current = { pointerId: event.pointerId, kind, index };
+    setSelectedWallKind(kind);
+    setActiveWallHandle({ kind, index });
+    updateWallHandleFromClientPoint(kind, index, event.clientX, event.clientY);
+    try {
+      floorOverlayRef.current?.setPointerCapture(event.pointerId);
+    } catch {
+      // Pointer capture is optional for these lab-only wall handles.
+    }
+  };
+
   const getAnchorClientVector = (clientX: number, clientY: number) => {
     if (!lastAcceptedFloorClick) return null;
     const overlay = floorOverlayRef.current;
@@ -8269,6 +8610,12 @@ export default function ThreeRoomLab({
   };
 
   const handleFloorOverlayPointerMove = (event: PointerEvent<SVGSVGElement>) => {
+    const wallDrag = wallHandleDragRef.current;
+    if (wallDrag && wallDrag.pointerId === event.pointerId) {
+      event.preventDefault();
+      updateWallHandleFromClientPoint(wallDrag.kind, wallDrag.index, event.clientX, event.clientY);
+      return;
+    }
     if (activeFloorHandleIndex !== null && dragPointerIdRef.current === event.pointerId) {
       event.preventDefault();
       updateFloorHandleFromClientPoint(event.clientX, event.clientY);
@@ -8634,6 +8981,16 @@ export default function ThreeRoomLab({
   };
 
   const stopFloorHandleDrag = (event?: PointerEvent<SVGSVGElement>) => {
+    const wallDrag = wallHandleDragRef.current;
+    if (wallDrag && (!event || wallDrag.pointerId === event.pointerId)) {
+      try {
+        floorOverlayRef.current?.releasePointerCapture(wallDrag.pointerId);
+      } catch {
+        // Ignore release failures when capture has already ended.
+      }
+      wallHandleDragRef.current = null;
+      setActiveWallHandle(null);
+    }
     const pointerId = event?.pointerId ?? dragPointerIdRef.current;
     if (pointerId !== null) {
       try {
@@ -9706,6 +10063,83 @@ export default function ThreeRoomLab({
                   strokeWidth={1.2}
                   pointerEvents="none"
                 />
+                {WALL_SUPPORT_KINDS.map((kind) => {
+                  const polygon = wallContainerPolygons[kind];
+                  const draft = wallSupportDrafts[kind];
+                  const state = wallSupportStates[kind];
+                  const presentation = WALL_SUPPORT_PRESENTATION[kind];
+                  if (!draft.enabled || !polygon || !visibleWallKinds[kind]) return null;
+                  const valid = state.derivation.ok;
+                  const selected = selectedWallKind === kind;
+                  const points = polygon.map((point) => `${point.x * 100},${point.y * 100}`).join(" ");
+                  return (
+                    <g key={kind}>
+                      {state.gridPolylines.map((line, index) => (
+                        <polyline
+                          key={`${kind}-grid-${index}`}
+                          points={line.map((point) => `${point.x * 100},${point.y * 100}`).join(" ")}
+                          fill="none"
+                          stroke={valid ? presentation.color : "#fb7185"}
+                          strokeOpacity={selected ? 0.85 : 0.48}
+                          strokeWidth={selected ? 0.48 : 0.32}
+                          strokeDasharray="1.1 0.8"
+                          pointerEvents="none"
+                        />
+                      ))}
+                      <polygon
+                        points={points}
+                        fill={valid ? presentation.color : "#fb7185"}
+                        fillOpacity={selected ? 0.13 : 0.07}
+                        stroke={valid ? presentation.color : "#fb7185"}
+                        strokeOpacity={selected ? 1 : 0.75}
+                        strokeWidth={selected ? 1.1 : 0.8}
+                        strokeDasharray={valid ? undefined : "1.4 1"}
+                        pointerEvents="none"
+                      />
+                      <line
+                        x1={polygon[0].x * 100}
+                        y1={polygon[0].y * 100}
+                        x2={polygon[1].x * 100}
+                        y2={polygon[1].y * 100}
+                        stroke={valid ? "#f8fafc" : "#fecdd3"}
+                        strokeWidth={1.15}
+                        strokeDasharray="2.1 0.8"
+                        pointerEvents="none"
+                      />
+                      <text
+                        x={polygon[3].x * 100 + 1}
+                        y={polygon[3].y * 100 - 1}
+                        fill={valid ? presentation.color : "#fda4af"}
+                        fontSize="2"
+                        fontWeight="700"
+                        pointerEvents="none"
+                      >
+                        {presentation.label} · {state.resolvedReviewStatus.replaceAll("_", " ")}
+                      </text>
+                      {polygon.map((point, index) => (
+                        <circle
+                          key={`${kind}-handle-${index}`}
+                          cx={point.x * 100}
+                          cy={point.y * 100}
+                          r={1.7}
+                          fill={
+                            activeWallHandle?.kind === kind && activeWallHandle.index === index
+                              ? "#ffffff"
+                              : valid
+                                ? presentation.color
+                                : "#fb7185"
+                          }
+                          stroke="#020617"
+                          strokeWidth={0.6}
+                          className="cursor-grab active:cursor-grabbing"
+                          pointerEvents="all"
+                          aria-label={`${presentation.label} polygon handle ${index + 1}`}
+                          onPointerDown={(event) => handleWallHandlePointerDown(kind, index, event)}
+                        />
+                      ))}
+                    </g>
+                  );
+                })}
                 {autoFloorSuggestionPointsAttribute && selectedAutoFloorCandidate && (
                   <g pointerEvents="none" aria-hidden="true">
                     <polygon
@@ -15402,7 +15836,7 @@ export default function ThreeRoomLab({
           onToggle={() => setIsSupportsOpen((open) => !open)}
           meta={
             <span className="rounded bg-slate-500/15 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-slate-200">
-              package 1 · floor only
+              package 2 · floor + walls
             </span>
           }
         >
@@ -15476,20 +15910,94 @@ export default function ThreeRoomLab({
                     </p>
                   ) : null}
                 </div>
-                {[
-                  ["Back wall", "wall_back"],
-                  ["Left wall", "wall_left"],
-                  ["Right wall", "wall_right"],
-                  ["Ceiling", "ceiling"],
-                ].map(([label, kind]) => (
-                  <div
-                    key={kind}
-                    className="flex items-center justify-between rounded-lg border border-slate-800 bg-slate-950/40 px-3 py-2"
-                  >
-                    <span className="font-medium text-slate-200">{label}</span>
-                    <span className="text-slate-500">Unavailable · Not configured</span>
-                  </div>
-                ))}
+                {WALL_SUPPORT_KINDS.map((kind) => {
+                  const draft = wallSupportDrafts[kind];
+                  const state = wallSupportStates[kind];
+                  const presentation = WALL_SUPPORT_PRESENTATION[kind];
+                  const derivation = state.derivation;
+                  const canConfirm =
+                    derivation.ok &&
+                    state.runtime.blockingReasons.every((reason) => reason === "support_not_confirmed");
+                  const confirmationLabel = !draft.confirmationStamp
+                    ? "missing"
+                    : state.confirmationCurrent
+                      ? "current"
+                      : "stale";
+                  return (
+                    <div key={kind} className="rounded-lg border border-slate-700 bg-slate-950/60 p-3">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <button
+                          type="button"
+                          onClick={() => setSelectedWallKind(kind)}
+                          className="text-left text-sm font-medium"
+                          style={{ color: presentation.color }}
+                        >
+                          {presentation.label}
+                        </button>
+                        <span
+                          className={
+                            state.runtime.usable
+                              ? "rounded bg-emerald-500/15 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-emerald-200"
+                              : "rounded bg-amber-500/15 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-amber-200"
+                          }
+                        >
+                          runtime usable: {state.runtime.usable ? "yes" : "no"}
+                        </span>
+                      </div>
+                      <dl className="mt-2 grid gap-x-4 gap-y-1 sm:grid-cols-2">
+                        <div className="flex justify-between gap-2"><dt className="text-slate-500">state</dt><dd>{draft.enabled ? "configured" : "unavailable"}</dd></div>
+                        <div className="flex justify-between gap-2"><dt className="text-slate-500">source</dt><dd>{draft.source.replaceAll("_", " ")}</dd></div>
+                        <div className="flex justify-between gap-2"><dt className="text-slate-500">raw review</dt><dd>{draft.reviewStatus.replaceAll("_", " ")}</dd></div>
+                        <div className="flex justify-between gap-2"><dt className="text-slate-500">resolved review</dt><dd>{state.resolvedReviewStatus.replaceAll("_", " ")}</dd></div>
+                        <div className="flex justify-between gap-2"><dt className="text-slate-500">derivation valid</dt><dd>{derivation.ok ? "yes" : "no"}</dd></div>
+                        <div className="flex justify-between gap-2"><dt className="text-slate-500">confirmation</dt><dd>{confirmationLabel}</dd></div>
+                        <div className="flex justify-between gap-2"><dt className="text-slate-500">camera compatible</dt><dd>{state.runtime.blockingReasons.includes("no_active_calibrated_camera") || state.runtime.blockingReasons.includes("camera_snapshot_stale") ? "no" : "yes"}</dd></div>
+                        <div className="flex justify-between gap-2"><dt className="text-slate-500">basis compatible</dt><dd>{state.runtime.blockingReasons.includes("image_basis_unqualified") || state.runtime.blockingReasons.includes("image_basis_mismatch") ? "no" : "yes"}</dd></div>
+                        <div className="flex justify-between gap-2"><dt className="text-slate-500">first blocker</dt><dd>{reasonLabel(state.blockingReasons[0] ?? null)}</dd></div>
+                        {derivation.ok ? (
+                          <>
+                            <div className="flex justify-between gap-2"><dt className="text-slate-500">seam world length</dt><dd>{formatNumber(derivation.diagnostics.mappedSeamWorldLength)}</dd></div>
+                            <div className="flex justify-between gap-2"><dt className="text-slate-500">wall width / height</dt><dd>{formatNumber(derivation.diagnostics.wallWidth)} / {formatNumber(derivation.diagnostics.wallHeight)}</dd></div>
+                            <div className="flex justify-between gap-2"><dt className="text-slate-500">round-trip max</dt><dd>{formatNumber(derivation.diagnostics.maxRoundTripReprojectionErrorPx)} px</dd></div>
+                            <div className="flex justify-between gap-2"><dt className="text-slate-500">seam extrapolation</dt><dd>{formatNumber(derivation.diagnostics.maxSeamExtrapolationWorld)}</dd></div>
+                          </>
+                        ) : null}
+                      </dl>
+                      {state.blockingReasons.length > 0 ? (
+                        <p className="mt-2 text-slate-400">All blockers: {state.blockingReasons.map(reasonLabel).join(" · ")}</p>
+                      ) : null}
+                      <div className="mt-3 flex flex-wrap gap-2">
+                        {!draft.enabled ? (
+                          <button type="button" onClick={() => configureWall(kind)} className="rounded border border-slate-600 px-2 py-1 text-xs text-slate-100 hover:border-slate-400">
+                            Configure wall
+                          </button>
+                        ) : (
+                          <>
+                            <button type="button" onClick={() => confirmWall(kind)} disabled={!canConfirm} className="rounded border border-emerald-700 px-2 py-1 text-xs text-emerald-200 disabled:cursor-not-allowed disabled:opacity-40">
+                              Confirm wall
+                            </button>
+                            <button type="button" onClick={() => revokeWallConfirmation(kind)} className="rounded border border-amber-700 px-2 py-1 text-xs text-amber-200">
+                              Revoke confirmation
+                            </button>
+                            <button type="button" onClick={() => clearWall(kind)} className="rounded border border-rose-700 px-2 py-1 text-xs text-rose-200">
+                              Clear wall
+                            </button>
+                          </>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => setVisibleWallKinds((previous) => ({ ...previous, [kind]: !previous[kind] }))}
+                          className="rounded border border-slate-700 px-2 py-1 text-xs text-slate-300"
+                        >
+                          {visibleWallKinds[kind] ? "Hide overlay" : "Show overlay"}
+                        </button>
+                      </div>
+                      <p className="mt-2 text-[10px] text-slate-500">
+                        Local consistency only — this bounded plane is not a physical room measurement or global reconstruction.
+                      </p>
+                    </div>
+                  );
+                })}
               </div>
             );
           })()}
