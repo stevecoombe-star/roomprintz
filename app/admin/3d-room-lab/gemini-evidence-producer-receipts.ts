@@ -41,10 +41,16 @@
 
 import {
   buildInvocationReceipt,
+  buildSealedReceipt,
+  digestCanonicalJson,
+  makeInvocationReference,
   validateReceiptSet,
+  verifyReceiptSelfDigest,
+  type ContentDigestV1,
   type ContractReceiptV1,
   type InvocationIdentityV1,
   type InvocationPreflightV1,
+  type InvocationReceiptReferenceV1,
 } from "./gemini-evidence-contract";
 
 import {
@@ -576,4 +582,235 @@ export function prepareDetectVisionGeminiEvidenceInvocationEnvelopeV1(input: {
     return { status: "error", reason: built.reason };
   }
   return { status: "built", receipt: built.receipt, envelope: built.envelope };
+}
+
+// ---------------------------------------------------------------------------
+// Section 8 — Provider-response receipt builder (gemini_provider_response only)
+// ---------------------------------------------------------------------------
+
+/** Grammar-safe prefix for a minted provider_response receiptId (W3C.1). */
+export const GER_W3C1_PROVIDER_RESPONSE_RECEIPT_ID_PREFIX =
+  "ger-provresp-" as const;
+
+/**
+ * The single pinned canonical storage-binding payload for a digest-only,
+ * not-stored raw provider response (W3C-R decision #3). The
+ * `rawResponse.storageBindingDigest` value is the SHA-256 over the RFC8785/JCS
+ * canonical JSON of EXACTLY this object; changing any field changes the digest.
+ * Frozen so the builder can never mutate it into a retained/stored binding.
+ */
+export const GER_W3C1_NOT_STORED_STORAGE_BINDING_PAYLOAD_V1: Readonly<{
+  artifactRole: "raw_provider_response";
+  kind: "not_stored";
+  schemaVersion: "vibode-storage-binding/v1";
+}> = Object.freeze({
+  artifactRole: "raw_provider_response",
+  kind: "not_stored",
+  schemaVersion: "vibode-storage-binding/v1",
+});
+
+/** Lowercase 64-char hex (a bare SHA-256 digest value); never normalized. */
+const SHA256_LOWER_HEX_PATTERN = /^[0-9a-f]{64}$/;
+
+export type PrepareDetectVisionGeminiEvidenceProviderResponseEnvelopeResultV1 =
+  | {
+      status: "built";
+      receipt: ContractReceiptV1;
+      envelope: GeminiEvidenceWireEnvelopeV1;
+    }
+  | { status: "error"; reason: string };
+
+/**
+ * Validate the caller-supplied invocation receipt is a well-formed, sealed
+ * `gemini_invocation` receipt WITHOUT mutating or normalizing it. Returns a
+ * stable refusal reason otherwise. This never asserts global uniqueness,
+ * stored-row existence, or provider-call truth: it is a local shape + self
+ * digest + kernel-set consistency check only.
+ */
+function validateProviderResponseInvocationInput(
+  receipt: unknown
+): { ok: true; receipt: ContractReceiptV1 } | { ok: false; reason: string } {
+  if (receipt === null || receipt === undefined) {
+    return { ok: false, reason: "provider_response_invocation_missing" };
+  }
+  if (typeof receipt !== "object") {
+    return { ok: false, reason: "provider_response_invocation_malformed" };
+  }
+  const header = (receipt as { header?: unknown }).header;
+  if (
+    header === null ||
+    typeof header !== "object" ||
+    Array.isArray(header)
+  ) {
+    return { ok: false, reason: "provider_response_invocation_malformed" };
+  }
+  const receiptType = (header as { receiptType?: unknown }).receiptType;
+  if (receiptType !== "gemini_invocation") {
+    return { ok: false, reason: "provider_response_invocation_wrong_type" };
+  }
+  const typed = receipt as ContractReceiptV1;
+
+  // Self-digest first (guards a malformed / tampered digest before the ref is
+  // read), then full kernel-set consistency for the single invocation.
+  const self = verifyReceiptSelfDigest(typed);
+  if (!self.ok) {
+    return {
+      ok: false,
+      reason: `provider_response_invocation_malformed:${self.reason}`,
+    };
+  }
+  const setResult = validateReceiptSet([typed]);
+  if (!setResult.ok) {
+    return {
+      ok: false,
+      reason: `provider_response_invocation_invalid:${setResult.reason}`,
+    };
+  }
+  return { ok: true, receipt: typed };
+}
+
+/**
+ * Pure construction of a sealed `gemini_provider_response` receipt + W1 wire
+ * envelope from an existing `gemini_invocation` receipt and the exact raw
+ * provider-response BYTE digest produced upstream (GER-W3C.0).
+ *
+ * This helper is deterministic and side-effect free: it reads no environment,
+ * mints no entropy of its own, performs no I/O, imports no ledger / Supabase /
+ * route / Gemini caller / storage / fetch / fs, and NEVER persists, uploads,
+ * inserts, logs, or otherwise retains anything. It exists ONLY to prove that a
+ * valid, W1-shaped provider_response envelope can be sealed from a byte digest.
+ *
+ * Owner decisions (W3C-R):
+ *   * #1 digest basis: `rawResponse.digest.value` is the ALREADY-COMPUTED
+ *     `rawResponseBytesSha256Hex` (SHA-256 over the exact HTTP response body
+ *     bytes). It is NEVER recomputed here from parsed JSON or decoded text.
+ *   * #2 frozen W1 profile: the body is exactly `{ invocationRef, rawResponse }`
+ *     with no providerAttemptId / logicalInvocationId / requestId / httpStatus /
+ *     model / headers / metadata.
+ *   * #3 storage binding: `rawResponse.storageBindingDigest` is the SHA-256 over
+ *     the RFC8785/JCS canonical JSON of the pinned not-stored payload
+ *     {@link GER_W3C1_NOT_STORED_STORAGE_BINDING_PAYLOAD_V1};
+ *     `retentionState` is always `digest_only` and `text` is always absent.
+ *
+ * The `rawResponseByteLength` is accepted for caller symmetry with W3C.0 but is
+ * intentionally NOT embedded in the frozen receipt body; when present it must be
+ * a non-negative integer, otherwise the build fails closed.
+ */
+export function prepareDetectVisionGeminiEvidenceProviderResponseEnvelopeV1(input: {
+  invocationReceipt: ContractReceiptV1;
+  rawResponseBytesSha256Hex: string;
+  rawResponseByteLength?: number;
+  receiptSeed: string;
+  createdAtIso: string;
+}): PrepareDetectVisionGeminiEvidenceProviderResponseEnvelopeResultV1 {
+  const {
+    invocationReceipt,
+    rawResponseBytesSha256Hex,
+    rawResponseByteLength,
+    receiptSeed,
+    createdAtIso,
+  } = input;
+
+  // 1. Validate the invocation receipt is a gemini_invocation receipt.
+  const invocationCheck =
+    validateProviderResponseInvocationInput(invocationReceipt);
+  if (!invocationCheck.ok) {
+    return { status: "error", reason: invocationCheck.reason };
+  }
+
+  if (typeof createdAtIso !== "string" || !ISO_INSTANT_PATTERN.test(createdAtIso)) {
+    return { status: "error", reason: "provider_response_invalid_created_at" };
+  }
+
+  // 4. Validate the raw byte digest WITHOUT normalizing it (reject non-string,
+  //    wrong length, uppercase hex, non-hex, empty string).
+  if (
+    typeof rawResponseBytesSha256Hex !== "string" ||
+    !SHA256_LOWER_HEX_PATTERN.test(rawResponseBytesSha256Hex)
+  ) {
+    return { status: "error", reason: "provider_response_invalid_raw_digest" };
+  }
+
+  // Optional byte length: never embedded, but if present must be a plain
+  // non-negative integer (fail closed on NaN / negative / non-integer).
+  if (rawResponseByteLength !== undefined) {
+    if (
+      typeof rawResponseByteLength !== "number" ||
+      !Number.isInteger(rawResponseByteLength) ||
+      rawResponseByteLength < 0
+    ) {
+      return {
+        status: "error",
+        reason: "provider_response_invalid_byte_length",
+      };
+    }
+  }
+
+  // 3. Mint a grammar-safe provider_response receiptId from the seed.
+  const receiptMint = mintIdentifier(
+    GER_W3C1_PROVIDER_RESPONSE_RECEIPT_ID_PREFIX,
+    receiptSeed
+  );
+  if (!receiptMint.ok) {
+    return {
+      status: "error",
+      reason: `provider_response_receipt_id:${receiptMint.reason}`,
+    };
+  }
+
+  // 2. Build invocationRef from the invocation receipt.
+  const invocationRef: InvocationReceiptReferenceV1 = makeInvocationReference(
+    invocationCheck.receipt
+  );
+
+  // 4/5/6/7. rawResponse binding: raw byte digest (pinned scope), pinned
+  //          not-stored storage-binding digest, digest_only retention, no text.
+  const rawDigest: ContentDigestV1 = {
+    algorithm: "sha256",
+    encoding: "hex",
+    scope: "raw-provider-response-text/v1",
+    value: rawResponseBytesSha256Hex,
+  };
+  const storageBindingDigest = digestCanonicalJson(
+    "storage-binding-json/v1",
+    GER_W3C1_NOT_STORED_STORAGE_BINDING_PAYLOAD_V1
+  );
+
+  const body = {
+    invocationRef,
+    rawResponse: {
+      digest: rawDigest,
+      storageBindingDigest,
+      retentionState: "digest_only",
+    },
+  };
+
+  // 8. Seal the receipt through the frozen kernel.
+  const receipt = buildSealedReceipt({
+    receiptId: receiptMint.value,
+    receiptType: "gemini_provider_response",
+    createdAtIso,
+    body: body as unknown as Record<string, unknown>,
+  });
+
+  const setResult = validateReceiptSet([receipt]);
+  if (!setResult.ok) {
+    return {
+      status: "error",
+      reason: `provider_response_receipt_invalid:${setResult.reason}`,
+    };
+  }
+
+  // 9. Build + parse the W1 envelope through the frozen wire adapter.
+  const envelope = toGeminiEvidenceWireEnvelopeV1(receipt);
+  const parsed = parseGeminiEvidenceWireEnvelopeV1(envelope);
+  if (!parsed.ok) {
+    return {
+      status: "error",
+      reason: `provider_response_envelope_invalid:${parsed.reason}`,
+    };
+  }
+
+  // 10. Return only the sealed receipt + validated envelope.
+  return { status: "built", receipt, envelope };
 }
