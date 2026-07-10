@@ -1,5 +1,7 @@
 import "server-only";
 
+import { createHash } from "node:crypto";
+
 import { withGeminiUsageAccounting } from "@/lib/vibodeGeminiUsageAccounting";
 
 // --- Phase 2F-F: server-only Gemini call for auto-floor calibration quads ----
@@ -172,6 +174,10 @@ function parseUpstreamError(bodyText: string): {
 export type GeminiAutoFloorFailureStage =
   | "gemini_transport"
   | "gemini_non_ok"
+  // GER-W3C.0: the enabled raw-response capture hook refused before any parsing
+  // occurred. Only reachable when a capture hook is supplied (default-off callers
+  // never see this stage).
+  | "raw_response_capture"
   | "response_extraction"
   | "json_parse";
 
@@ -190,6 +196,10 @@ export class GeminiAutoFloorError extends Error {
   // is on (the route enforces that gate). debugExcerpt is pre-sanitized.
   readonly diagnostics: GeminiResponseDiagnostics | null;
   readonly debugExcerpt: string | null;
+  // GER-W3C.0: a stable, safe refusal reason forwarded verbatim from the capture
+  // hook. It never carries raw response text or a digest hex — the hook contract
+  // only ever returns a short stable reason token.
+  readonly captureReason: string | null;
 
   constructor(args: {
     code: string;
@@ -199,6 +209,7 @@ export class GeminiAutoFloorError extends Error {
     sanitizedMessage?: string | null;
     diagnostics?: GeminiResponseDiagnostics | null;
     debugExcerpt?: string | null;
+    captureReason?: string | null;
     message?: string;
   }) {
     super(args.message ?? args.code);
@@ -210,6 +221,7 @@ export class GeminiAutoFloorError extends Error {
     this.sanitizedMessage = args.sanitizedMessage ?? null;
     this.diagnostics = args.diagnostics ?? null;
     this.debugExcerpt = args.debugExcerpt ?? null;
+    this.captureReason = args.captureReason ?? null;
   }
 }
 
@@ -238,6 +250,8 @@ export function classifyGeminiAutoFloorFailure(error: unknown): GeminiAutoFloorF
       uiReason = "Gemini vision request timed out.";
     } else if (code === "RESPONSE_TRUNCATED") {
       uiReason = "Gemini response was truncated before valid JSON.";
+    } else if (stage === "raw_response_capture") {
+      uiReason = "Gemini response could not be recorded before processing.";
     } else if (stage === "response_extraction") {
       uiReason = "Gemini returned no usable content.";
     } else if (stage === "json_parse") {
@@ -331,6 +345,42 @@ export function buildAutoFloorGeminiAccountingContext(args: {
   return base;
 }
 
+/**
+ * GER-W3C.0 — Raw provider-response capture, taken over the EXACT HTTP response
+ * body bytes read via `arrayBuffer()`.
+ *
+ * `rawResponseBytesSha256Hex` is SHA-256 over those exact bytes
+ * (`raw-provider-response-text/v1`). It is deliberately NOT over `Response.text()`,
+ * parsed JSON, `JSON.stringify(parsed)`, pretty JSON, model candidate text, or
+ * any adapter output. `rawResponseText` is the UTF-8 decode of the same bytes,
+ * provided only for a future receipt builder — it is never logged or returned to
+ * callers by this module. `byteLength` is the exact captured byte count.
+ */
+export type GeminiProviderResponseCapture = {
+  rawResponseBytesSha256Hex: string;
+  rawResponseText: string;
+  byteLength: number;
+  httpStatus: number;
+};
+
+/**
+ * The hook's decision. A refusal carries only a short, stable reason token — it
+ * must never echo raw response text or a digest hex.
+ */
+export type GeminiProviderResponseCaptureDecision =
+  | { ok: true }
+  | { ok: false; reason: string };
+
+/**
+ * Optional provider-boundary capture hook. When supplied (enabled), it is invoked
+ * exactly once after the exact response bytes are read and digested, and BEFORE
+ * `JSON.parse` / `extractModelText` / `parseJsonFromText`. When absent (default),
+ * no capture occurs and the legacy `res.json()` path is preserved byte-for-byte.
+ */
+export type GeminiProviderResponseCaptureHook = (
+  capture: GeminiProviderResponseCapture
+) => Promise<GeminiProviderResponseCaptureDecision>;
+
 export type GeminiAutoFloorCallArgs = {
   apiKey: string;
   model: string;
@@ -344,6 +394,9 @@ export type GeminiAutoFloorCallArgs = {
   thinkingLevel?: "minimal";
   timeoutMs: number;
   accounting?: GeminiAutoFloorAccounting;
+  // GER-W3C.0: optional, additive, default-off raw-provider-response capture hook.
+  // When omitted the success path is byte-identical to before this slice.
+  onProviderResponseCaptured?: GeminiProviderResponseCaptureHook;
 };
 
 export type GeminiAutoFloorResponseMeta = {
@@ -477,7 +530,59 @@ export async function callGeminiAutoFloorDetection(
           });
         }
 
-        const envelope = (await res.json().catch(() => ({}))) as unknown;
+        // GER-W3C.0 — Default-off preservation vs. enabled raw-byte capture.
+        //
+        // Disabled (no hook): the legacy `res.json()` path is preserved exactly,
+        // including its `.catch(() => ({}))` masking of malformed 2xx bodies. No
+        // bytes are captured, no digest is computed, no hook is called.
+        //
+        // Enabled (hook present): the body is read exactly once via
+        // `arrayBuffer()`, SHA-256 is computed over those exact bytes, the bytes
+        // are UTF-8 decoded for the existing parse pipeline, and the hook runs
+        // after capture but before ANY parsing. If the hook refuses, we abort
+        // before parsing with a typed safe error. If the honest UTF-8/JSON parse
+        // of a 2xx body fails, we fail closed with a typed json_parse error rather
+        // than silently masking it as `{}` (the documented, enabled-mode-only
+        // diagnostic difference allowed by W3C-R). Raw text is never logged and is
+        // never returned to callers except via the hook.
+        let envelope: unknown;
+        if (args.onProviderResponseCaptured) {
+          // Read the body exactly once and digest the EXACT bytes via a
+          // Uint8Array view over the raw arrayBuffer, so no reserialized/parsed
+          // form is ever the digest basis.
+          const rawBytes = new Uint8Array(await res.arrayBuffer());
+          const rawResponseBytesSha256Hex = createHash("sha256")
+            .update(rawBytes)
+            .digest("hex");
+          const rawResponseText = new TextDecoder("utf-8").decode(rawBytes);
+          const decision = await args.onProviderResponseCaptured({
+            rawResponseBytesSha256Hex,
+            rawResponseText,
+            byteLength: rawBytes.byteLength,
+            httpStatus: res.status,
+          });
+          if (!decision.ok) {
+            throw new GeminiAutoFloorError({
+              code: "RAW_RESPONSE_CAPTURE_REFUSED",
+              stage: "raw_response_capture",
+              httpStatus: res.status,
+              captureReason: decision.reason,
+              message: "Raw response capture was refused before parsing.",
+            });
+          }
+          try {
+            envelope = JSON.parse(rawResponseText);
+          } catch {
+            throw new GeminiAutoFloorError({
+              code: "ENVELOPE_PARSE_ERROR",
+              stage: "json_parse",
+              httpStatus: res.status,
+              message: "Gemini returned a non-JSON response body.",
+            });
+          }
+        } else {
+          envelope = (await res.json().catch(() => ({}))) as unknown;
+        }
         const { text, diagnostics } = extractModelText(envelope);
         if (!text) {
           throw new GeminiAutoFloorError({
