@@ -45,6 +45,11 @@ import {
   type CalibrationImageBasisRefusalReason,
 } from "./calibration-image-basis";
 import {
+  evaluateSupportUsability,
+  type SupportReviewStatus,
+  type SupportSource,
+} from "./support-model";
+import {
   containerNormToSourceNorm,
   corridorHalfWidthToOverlayStrokeWidth,
   isValidImageSize,
@@ -1216,6 +1221,7 @@ export default function ThreeRoomLab({
   const [autoBoundsInfo, setAutoBoundsInfo] = useState<AutoBoundsNormalization | null>(null);
   // Phase 0P-C: local-only UI collapse state (not persisted, not in scene JSON).
   const [isCalibratedCameraOpen, setIsCalibratedCameraOpen] = useState(true);
+  const [isSupportsOpen, setIsSupportsOpen] = useState(false);
   const [isAdvancedControlsOpen, setIsAdvancedControlsOpen] = useState(false);
   const [isSceneStateOpen, setIsSceneStateOpen] = useState(false);
   const [isDebugOpen, setIsDebugOpen] = useState(false);
@@ -1254,6 +1260,12 @@ export default function ThreeRoomLab({
   const [sourceNormalizedFloorPolygon, setSourceNormalizedFloorPolygon] =
     useState<FloorPoint[]>(DEFAULT_FLOOR_POLYGON);
   const [floorPolygonAuthorityEligible, setFloorPolygonAuthorityEligible] = useState(true);
+  // A floor polygon alone is not a review decision. This local state is changed
+  // only by explicit operator geometry actions; camera reverts never erase it.
+  const [floorSupportReviewStatus, setFloorSupportReviewStatus] =
+    useState<SupportReviewStatus>("needs_review");
+  const [floorSupportSource, setFloorSupportSource] = useState<SupportSource>("manual");
+  const [floorSupportImageBasis, setFloorSupportImageBasis] = useState<CalibrationImageBasis | null>(null);
   const [activeFloorHandleIndex, setActiveFloorHandleIndex] = useState<number | null>(null);
   const [qualifiedImageBasis, setQualifiedImageBasis] = useState<CalibrationImageBasis | null>(null);
   const [basisQualificationStatus, setBasisQualificationStatus] = useState<string>("basis_unavailable");
@@ -1658,15 +1670,23 @@ export default function ThreeRoomLab({
   );
 
   const applyContainerFloorPolygon = useCallback(
-    (polygon: FloorPoint[]) => {
+    (
+      polygon: FloorPoint[],
+      review?: { status: SupportReviewStatus; source: SupportSource }
+    ) => {
       setFloorPolygon(polygon);
       const sourcePolygon = projectContainerPolygonToSource(polygon);
       if (sourcePolygon && sourcePolygon.length >= 3) {
         setSourceNormalizedFloorPolygon(sourcePolygon);
         setFloorPolygonAuthorityEligible(true);
+        if (review) {
+          setFloorSupportReviewStatus(review.status);
+          setFloorSupportSource(review.source);
+          setFloorSupportImageBasis(qualifiedImageBasis);
+        }
       }
     },
-    [projectContainerPolygonToSource]
+    [projectContainerPolygonToSource, qualifiedImageBasis]
   );
 
   useEffect(() => {
@@ -3022,6 +3042,45 @@ export default function ThreeRoomLab({
     lastCalibratedCameraAutoRevertReason,
     rendererSize,
   ]);
+
+  const floorSupportGeometryValid =
+    sourceNormalizedFloorPolygon.length === 4 && activeQuadSolvability.homographyAvailable;
+  // Mapping is intentionally fact-based: invalid source geometry is unavailable;
+  // an unapplied provider candidate is only suggested; explicit operator polygon
+  // actions become manually_confirmed only while existing authority eligibility
+  // permits it. Camera activation/revert never changes this review decision.
+  const resolvedFloorSupportReviewStatus: SupportReviewStatus = !floorSupportGeometryValid
+    ? "unavailable"
+    : floorSupportReviewStatus === "needs_review" &&
+        selectedAutoFloorCandidateId !== null &&
+        appliedAutoFloorCandidateId !== selectedAutoFloorCandidateId
+      ? "suggested"
+      : floorSupportReviewStatus;
+  const floorSupportRuntime = useMemo(
+    () =>
+      evaluateSupportUsability({
+        reviewStatus: resolvedFloorSupportReviewStatus,
+        geometryValid: floorSupportGeometryValid,
+        currentImageBasis: qualifiedImageBasis,
+        // A reviewed floor can use the currently active snapshot's existing
+        // basis receipt when its explicit review happened before qualification.
+        supportImageBasis: floorSupportImageBasis ?? calibratedCameraSnapshot?.imageBasis ?? null,
+        activeCameraSnapshot:
+          isCalibratedCameraActive && calibratedCameraSnapshot ? calibratedCameraSnapshot : null,
+        currentFrameSize: frameSizeForImageSpace,
+        cameraSnapshotStale: calibratedCameraFrameMatchStatus.diagnostics?.isWarningStale ?? false,
+      }),
+    [
+      calibratedCameraFrameMatchStatus.diagnostics?.isWarningStale,
+      calibratedCameraSnapshot,
+      floorSupportGeometryValid,
+      floorSupportImageBasis,
+      frameSizeForImageSpace,
+      isCalibratedCameraActive,
+      qualifiedImageBasis,
+      resolvedFloorSupportReviewStatus,
+    ]
+  );
 
   // Phase 2K-A: user-facing calibration readiness. This is a PRESENTATION layer
   // only — it reads existing diagnostics (cameraPoseDebug.applyCandidate, the FOV
@@ -6563,7 +6622,10 @@ export default function ThreeRoomLab({
       // floor polygon <- EXACT stored local tuple quad (clone; canonical
       // [NL, NR, FR, FL], same as the existing "Apply suggested quad" path).
       const loadedPolygon: FloorPoint[] = tuple.quadNorm.map((point) => ({ x: point.x, y: point.y }));
-      applyContainerFloorPolygon(loadedPolygon);
+      applyContainerFloorPolygon(loadedPolygon, {
+        status: "needs_review",
+        source: "derived",
+      });
       setActiveFloorHandleIndex(null);
 
       // live width/depth <- EXACT stored diagnostic dims, clamped to the SAME
@@ -7629,7 +7691,10 @@ export default function ThreeRoomLab({
       x: point.x,
       y: point.y,
     }));
-    applyContainerFloorPolygon(appliedPolygon);
+    applyContainerFloorPolygon(appliedPolygon, {
+      status: floorPolygonAuthorityEligible ? "manually_confirmed" : "needs_review",
+      source: "model_suggested",
+    });
 
     // Clear in-progress floor interaction state (mirrors the reset workflow).
     setActiveFloorHandleIndex(null);
@@ -7659,6 +7724,7 @@ export default function ThreeRoomLab({
   }, [
     applyContainerFloorPolygon,
     deactivateCalibratedCameraMode,
+    floorPolygonAuthorityEligible,
     selectedAutoFloorCandidate,
     selectedAutoFloorCandidateScore,
   ]);
@@ -7902,7 +7968,11 @@ export default function ThreeRoomLab({
     const normalizedPoint = getNormalizedOverlayPointFromClient(clientX, clientY);
     if (!normalizedPoint) return;
     applyContainerFloorPolygon(
-      floorPolygon.map((point, index) => (index === activeIndex ? normalizedPoint : point))
+      floorPolygon.map((point, index) => (index === activeIndex ? normalizedPoint : point)),
+      {
+        status: floorPolygonAuthorityEligible ? "manually_confirmed" : "needs_review",
+        source: "manual",
+      }
     );
   };
 
@@ -8729,7 +8799,10 @@ export default function ThreeRoomLab({
     );
     setAutoRotateEnabled(validated.transform.autoRotate);
 
-    applyContainerFloorPolygon(validated.floor.polygon);
+    applyContainerFloorPolygon(validated.floor.polygon, {
+      status: "needs_review",
+      source: "derived",
+    });
     setShowFloorOverlay(validated.floor.overlayVisible);
     setIsFloorClickPlacementEnabled(validated.floor.placementModeEnabled);
     setLastAcceptedFloorClick(validated.floor.lastAcceptedClick);
@@ -10687,7 +10760,10 @@ export default function ThreeRoomLab({
                 type="button"
                 onClick={() => {
                   cancelPendingCalibrationRestoreAfterManualGeometryChange();
-                  applyContainerFloorPolygon(DEFAULT_FLOOR_POLYGON);
+                  applyContainerFloorPolygon(DEFAULT_FLOOR_POLYGON, {
+                    status: "needs_review",
+                    source: "manual",
+                  });
                   setActiveFloorHandleIndex(null);
                   dragPointerIdRef.current = null;
                   objectHandleDragPointerIdRef.current = null;
@@ -15318,6 +15394,106 @@ export default function ThreeRoomLab({
             </div>
           )}
         </section>
+
+        <CollapsibleSection
+          title="Supports"
+          description="Lab-local support review and runtime usability. Review decisions are separate from the active camera."
+          open={isSupportsOpen}
+          onToggle={() => setIsSupportsOpen((open) => !open)}
+          meta={
+            <span className="rounded bg-slate-500/15 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-slate-200">
+              package 1 · floor only
+            </span>
+          }
+        >
+          {(() => {
+            const reasonLabel = (reason: string | null) =>
+              reason ? reason.replaceAll("_", " ") : "none";
+            const reviewLabel = resolvedFloorSupportReviewStatus.replaceAll("_", " ");
+            const sourceLabel =
+              resolvedFloorSupportReviewStatus === "suggested"
+                ? "model suggested"
+                : floorSupportSource.replaceAll("_", " ");
+            const basisState = !qualifiedImageBasis
+              ? `unqualified (${basisQualificationStatus})`
+              : floorSupportRuntime.blockingReasons.includes("image_basis_mismatch")
+                ? "stale or mismatched"
+                : "current";
+            const cameraState =
+              isCalibratedCameraActive && calibratedCameraSnapshot
+                ? calibratedCameraFrameMatchStatus.diagnostics?.isWarningStale
+                  ? "active — stale"
+                  : "active"
+                : "inactive";
+            return (
+              <div className="space-y-3 text-[11px] text-slate-300">
+                <div className="rounded-lg border border-slate-600/40 bg-slate-800/40 px-3 py-2 text-slate-200">
+                  Local support validity makes no physical measurement claim. It only reports whether this lab can use
+                  the reviewed support with the current camera and image-basis lifecycle.
+                </div>
+                <div className="rounded-lg border border-slate-700 bg-slate-950/60 p-3">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <p className="text-sm font-medium text-slate-100">Floor</p>
+                    <span
+                      className={
+                        floorSupportRuntime.usable
+                          ? "rounded bg-emerald-500/15 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-emerald-200"
+                          : "rounded bg-amber-500/15 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-amber-200"
+                      }
+                    >
+                      runtime usable: {floorSupportRuntime.usable ? "yes" : "no"}
+                    </span>
+                  </div>
+                  <dl className="mt-2 grid gap-x-4 gap-y-1 sm:grid-cols-2">
+                    <div className="flex justify-between gap-2">
+                      <dt className="text-slate-500">source</dt>
+                      <dd>{sourceLabel}</dd>
+                    </div>
+                    <div className="flex justify-between gap-2">
+                      <dt className="text-slate-500">review status</dt>
+                      <dd>{reviewLabel}</dd>
+                    </div>
+                    <div className="flex justify-between gap-2">
+                      <dt className="text-slate-500">geometry valid</dt>
+                      <dd>{floorSupportGeometryValid ? "yes" : "no"}</dd>
+                    </div>
+                    <div className="flex justify-between gap-2">
+                      <dt className="text-slate-500">camera state</dt>
+                      <dd>{cameraState}</dd>
+                    </div>
+                    <div className="flex justify-between gap-2">
+                      <dt className="text-slate-500">image basis</dt>
+                      <dd>{basisState}</dd>
+                    </div>
+                    <div className="flex justify-between gap-2">
+                      <dt className="text-slate-500">first blocker</dt>
+                      <dd>{reasonLabel(floorSupportRuntime.firstBlockingReason)}</dd>
+                    </div>
+                  </dl>
+                  {floorSupportRuntime.blockingReasons.length > 1 ? (
+                    <p className="mt-2 text-slate-400">
+                      All blockers: {floorSupportRuntime.blockingReasons.map(reasonLabel).join(" · ")}
+                    </p>
+                  ) : null}
+                </div>
+                {[
+                  ["Back wall", "wall_back"],
+                  ["Left wall", "wall_left"],
+                  ["Right wall", "wall_right"],
+                  ["Ceiling", "ceiling"],
+                ].map(([label, kind]) => (
+                  <div
+                    key={kind}
+                    className="flex items-center justify-between rounded-lg border border-slate-800 bg-slate-950/40 px-3 py-2"
+                  >
+                    <span className="font-medium text-slate-200">{label}</span>
+                    <span className="text-slate-500">Unavailable · Not configured</span>
+                  </div>
+                ))}
+              </div>
+            );
+          })()}
+        </CollapsibleSection>
 
         <CollapsibleSection
           title="Calibrated camera"
