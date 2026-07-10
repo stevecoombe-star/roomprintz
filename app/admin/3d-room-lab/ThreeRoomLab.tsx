@@ -15958,6 +15958,7 @@ export default function ThreeRoomLab({
                           <>
                             <div className="flex justify-between gap-2"><dt className="text-slate-500">seam world length</dt><dd>{formatNumber(derivation.diagnostics.mappedSeamWorldLength)}</dd></div>
                             <div className="flex justify-between gap-2"><dt className="text-slate-500">wall width / height</dt><dd>{formatNumber(derivation.diagnostics.wallWidth)} / {formatNumber(derivation.diagnostics.wallHeight)}</dd></div>
+                            <div className="flex justify-between gap-2"><dt className="text-slate-500">seam disagreement max</dt><dd>{formatNumber(derivation.diagnostics.maxLowerSeamDisagreementWorld)}</dd></div>
                             <div className="flex justify-between gap-2"><dt className="text-slate-500">round-trip max</dt><dd>{formatNumber(derivation.diagnostics.maxRoundTripReprojectionErrorPx)} px</dd></div>
                             <div className="flex justify-between gap-2"><dt className="text-slate-500">seam extrapolation</dt><dd>{formatNumber(derivation.diagnostics.maxSeamExtrapolationWorld)}</dd></div>
                           </>

@@ -74,6 +74,10 @@ function refusalReasons(result: ReturnType<typeof deriveWallSupport>) {
   return result.reasons;
 }
 
+function assertApproximately(actual: number | undefined, expected: number): void {
+  assert.ok(actual !== undefined && Math.abs(actual - expected) <= 1e-9, `expected ${actual} ≈ ${expected}`);
+}
+
 type WallRays = [WallRay | null, WallRay | null, WallRay | null, WallRay | null];
 
 test("derives a bounded back-wall plane and seam-up local boundary", () => {
@@ -87,6 +91,7 @@ test("derives a bounded back-wall plane and seam-up local boundary", () => {
   assert.deepEqual(result.plane.normal, { x: 0, y: 0, z: 1 });
   assert.equal(result.plane.basisU.x, 1);
   assert.equal(result.plane.basisV.y, 1);
+  assert.deepEqual(result.seamNormal, { x: 0, y: 0, z: 1 });
 });
 
 test("uses one deterministic seam-up local convention for back, left, and right wall kinds", () => {
@@ -100,6 +105,7 @@ test("uses one deterministic seam-up local convention for back, left, and right 
       z: result.plane.basisU.x * result.plane.basisV.y - result.plane.basisU.y * result.plane.basisV.x,
     };
     assert.deepEqual(crossUV, { x: 0, y: 0, z: 1 });
+    assert.deepEqual(result.seamNormal, crossUV);
     assert.equal(result.plane.basisU.x * result.plane.normal.x + result.plane.basisU.z * result.plane.normal.z, 0);
     assert.equal(result.plane.basisV.y, 1);
   }
@@ -123,6 +129,91 @@ test("keeps local U/V tied to reviewed seam when the camera is on the opposite s
   assert.deepEqual(result.plane.normal, { x: 0, y: 0, z: -1 });
   assert.deepEqual(result.plane.basisU, { x: 1, y: 0, z: 0 });
   assert.deepEqual(result.plane.basisV, { x: 0, y: 1, z: 0 });
+  assert.deepEqual(result.seamNormal, { x: 0, y: 0, z: 1 });
+  assert.notDeepEqual(result.seamNormal, result.plane.normal);
+});
+
+test("rejects independently derived lower seam disagreement at either endpoint", () => {
+  const startDisagrees = [...makeInput().rays] as WallRays;
+  startDisagrees[0] = rayTo({ x: -1.9, y: 0, z: 0 });
+  const startResult = deriveWallSupport(makeInput({ rays: startDisagrees }));
+  assert.deepEqual(refusalReasons(startResult), ["wall_seam_camera_inconsistent"]);
+  if (!startResult.ok) {
+    assertApproximately(startResult.diagnostics?.lowerSeamDisagreementStartWorld, 0.1);
+    assertApproximately(startResult.diagnostics?.lowerSeamDisagreementEndWorld, 0);
+    assertApproximately(startResult.diagnostics?.maxLowerSeamDisagreementWorld, 0.1);
+  }
+
+  const endDisagrees = [...makeInput().rays] as WallRays;
+  endDisagrees[1] = rayTo({ x: 1.9, y: 0, z: 0 });
+  const endResult = deriveWallSupport(makeInput({ rays: endDisagrees }));
+  assert.deepEqual(refusalReasons(endResult), ["wall_seam_camera_inconsistent"]);
+  if (!endResult.ok) {
+    assertApproximately(endResult.diagnostics?.lowerSeamDisagreementStartWorld, 0);
+    assertApproximately(endResult.diagnostics?.lowerSeamDisagreementEndWorld, 0.1);
+  }
+});
+
+test("reports deterministic maximum lower seam disagreement and accepts the exact tolerance", () => {
+  const bothDisagree = [...makeInput().rays] as WallRays;
+  bothDisagree[0] = rayTo({ x: -1.9, y: 0, z: 0 });
+  bothDisagree[1] = rayTo({ x: 1.85, y: 0, z: 0 });
+  const disagreement = deriveWallSupport(makeInput({ rays: bothDisagree }));
+  assert.deepEqual(refusalReasons(disagreement), ["wall_seam_camera_inconsistent"]);
+  if (!disagreement.ok) {
+    assertApproximately(disagreement.diagnostics?.maxLowerSeamDisagreementWorld, 0.15);
+  }
+
+  const atTolerance = [...makeInput().rays] as WallRays;
+  atTolerance[0] = rayTo({ x: -1.95, y: 0, z: 0 });
+  const exact = deriveWallSupport(
+    makeInput({
+      rays: atTolerance,
+      // Keep this fixture's independent projector tied to the originating
+      // image ray, rather than its intentionally offset world intersection.
+      projectWorldToPixels: (point) =>
+        point.y === 0 && point.x < -1.9
+          ? { x: 300, y: 480 }
+          : { x: point.x * 100 + 500, y: point.y === 0 ? 480 : 240 },
+    })
+  );
+  assert.equal(exact.ok, true);
+  if (exact.ok) assertApproximately(exact.diagnostics.maxLowerSeamDisagreementWorld, 0.05);
+});
+
+test("requires both corresponding upper corners to clear the height minimum", () => {
+  const upperStartBelow = [...makeInput().rays] as WallRays;
+  upperStartBelow[3] = rayTo({ x: -2, y: 0.04, z: 0 });
+  assert.deepEqual(refusalReasons(deriveWallSupport(makeInput({ rays: upperStartBelow }))), ["wall_upper_below_seam"]);
+
+  const upperEndBelow = [...makeInput().rays] as WallRays;
+  upperEndBelow[2] = rayTo({ x: 2, y: 0.04, z: 0 });
+  assert.deepEqual(refusalReasons(deriveWallSupport(makeInput({ rays: upperEndBelow }))), ["wall_upper_below_seam"]);
+
+  const exactlyMinimum = [...makeInput().rays] as WallRays;
+  exactlyMinimum[3] = rayTo({ x: -2, y: 0.05, z: 0 });
+  assert.deepEqual(refusalReasons(deriveWallSupport(makeInput({ rays: exactlyMinimum }))), ["wall_upper_below_seam"]);
+});
+
+test("accepts trapezoidal per-corner heights but rejects an invalid corner hidden by average height", () => {
+  const trapezoid = [...makeInput().rays] as WallRays;
+  trapezoid[2] = rayTo({ x: 2, y: 4, z: 0 });
+  trapezoid[3] = rayTo({ x: -2, y: 0.1, z: 0 });
+  const valid = deriveWallSupport(makeInput({ rays: trapezoid }));
+  assert.equal(valid.ok, true);
+  if (valid.ok) {
+    assert.equal(valid.diagnostics.upperEndHeight, 4);
+    assertApproximately(valid.diagnostics.upperStartHeight, 0.1);
+    assertApproximately(valid.diagnostics.wallHeight, 0.1);
+  }
+
+  const averageWouldPass = [...makeInput().rays] as WallRays;
+  averageWouldPass[2] = rayTo({ x: 2, y: 2, z: 0 });
+  averageWouldPass[3] = rayTo({ x: -2, y: -0.1, z: 0 });
+  assert.deepEqual(
+    refusalReasons(deriveWallSupport(makeInput({ rays: averageWouldPass }))),
+    ["wall_upper_below_seam"]
+  );
 });
 
 test("validates source polygon finiteness, bounds, shape, and image seam", () => {

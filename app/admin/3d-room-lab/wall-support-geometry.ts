@@ -44,6 +44,7 @@ export type WallSupportFailureReason =
   | "wall_homography_invalid"
   | "wall_seam_invalid"
   | "wall_seam_too_short_world"
+  | "wall_seam_camera_inconsistent"
   | "wall_excessive_extrapolation"
   | "wall_plane_invalid"
   | "wall_ray_invalid"
@@ -63,7 +64,15 @@ export type WallSupportFailureReason =
 export type WallSupportDiagnostics = {
   mappedSeamWorldLength: number;
   wallWidth: number;
+  /** Conservative usable height: the smaller of the two per-corner heights. */
   wallHeight: number;
+  upperStartHeight: number;
+  upperEndHeight: number;
+  minCornerHeight: number;
+  maxCornerHeight: number;
+  lowerSeamDisagreementStartWorld: number;
+  lowerSeamDisagreementEndWorld: number;
+  maxLowerSeamDisagreementWorld: number;
   maxRoundTripReprojectionErrorPx: number;
   maxSeamExtrapolationWorld: number;
   maxCameraDistance: number;
@@ -74,6 +83,11 @@ export type WallSupportDerivation =
   | {
       ok: true;
       plane: SupportPlane;
+      /**
+       * Deterministic local-frame normal: normalize(plane.basisU × plane.basisV).
+       * This may oppose the camera-facing plane.normal.
+       */
+      seamNormal: SupportVec3;
       boundaryWorld: SupportVec3[];
       boundaryUV: WallVec2[];
       seamWorld: [SupportVec3, SupportVec3];
@@ -90,6 +104,9 @@ export const WALL_SUPPORT_LIMITS = {
   maxWorldDistance: 50,
   maxRoundTripReprojectionErrorPx: 3,
   maxFloorExtrapolationRatio: 0.35,
+  // Matches ThreeRoomLab's existing ray-floor↔homography warning distance.
+  // This is a local consistency bound in assumed world units, not a measurement.
+  maxLowerSeamDisagreementWorld: 0.05,
 } as const;
 
 type DeriveWallSupportInput = {
@@ -126,6 +143,21 @@ function subtract3(a: SupportVec3, b: SupportVec3): SupportVec3 {
 
 function dot3(a: SupportVec3, b: SupportVec3): number {
   return a.x * b.x + a.y * b.y + a.z * b.z;
+}
+
+function cross3(a: SupportVec3, b: SupportVec3): SupportVec3 {
+  return {
+    x: a.y * b.z - a.z * b.y,
+    y: a.z * b.x - a.x * b.z,
+    z: a.x * b.y - a.y * b.x,
+  };
+}
+
+function normalize3(value: SupportVec3): SupportVec3 | null {
+  const magnitude = Math.hypot(value.x, value.y, value.z);
+  if (!Number.isFinite(magnitude) || magnitude <= 1e-9) return null;
+  const normalized = { x: value.x / magnitude, y: value.y / magnitude, z: value.z / magnitude };
+  return isFiniteVec3(normalized) ? normalized : null;
 }
 
 function polygonArea(points: readonly WallVec2[]): number {
@@ -216,8 +248,10 @@ export function isWallConfirmationCurrent(input: {
 
 /**
  * The local boundary coordinate system deliberately preserves reviewed seam
- * direction: U is lower-start -> lower-end and V is world +Y. `plane.normal`
- * remains camera-facing, so callers must not infer U×V equals that normal.
+ * direction: U is lower-start -> lower-end and V is world +Y. `seamNormal` is
+ * the deterministic normalized U×V normal for a future support-local frame.
+ * `plane.normal` remains independently camera-facing for intersection and
+ * front/back presentation, so callers must not infer the two normals coincide.
  */
 export function deriveWallSupport(input: DeriveWallSupportInput): WallSupportDerivation {
   const { polygonSourceNorm, polygonContainerNorm, frameSize } = input;
@@ -273,6 +307,10 @@ export function deriveWallSupport(input: DeriveWallSupportInput): WallSupportDer
     );
   }
   const plane = planeResult.plane;
+  const seamNormal = normalize3(cross3(plane.basisU, plane.basisV));
+  if (!seamNormal) {
+    return failure(["wall_plane_invalid"], { mappedSeamWorldLength, maxSeamExtrapolationWorld });
+  }
   const boundaryWorld: SupportVec3[] = [];
   for (const ray of input.rays) {
     if (!ray || !isFiniteVec3(ray.origin) || !isFiniteVec3(ray.direction)) {
@@ -298,31 +336,63 @@ export function deriveWallSupport(input: DeriveWallSupportInput): WallSupportDer
     boundaryWorld.push(intersection.point);
   }
 
-  const boundaryUV = boundaryWorld.map((point) => localUv(point, plane.point, plane));
-  if (!boundaryUV.every(isFiniteVec2)) return failure(["wall_boundary_invalid"], { mappedSeamWorldLength, maxSeamExtrapolationWorld });
-  if (isSelfIntersecting(boundaryUV)) return failure(["wall_boundary_self_intersecting"], { mappedSeamWorldLength, maxSeamExtrapolationWorld });
-  const boundaryArea = Math.abs(polygonArea(boundaryUV));
-  if (boundaryArea <= 1e-8) return failure(["wall_boundary_zero_area"], { mappedSeamWorldLength, maxSeamExtrapolationWorld });
+  const lowerSeamDisagreementStartWorld = distance3(seamWorld[0], boundaryWorld[0]);
+  const lowerSeamDisagreementEndWorld = distance3(seamWorld[1], boundaryWorld[1]);
+  const maxLowerSeamDisagreementWorld = Math.max(
+    lowerSeamDisagreementStartWorld,
+    lowerSeamDisagreementEndWorld
+  );
+  const lowerSeamDiagnostics = {
+    mappedSeamWorldLength,
+    maxSeamExtrapolationWorld,
+    lowerSeamDisagreementStartWorld,
+    lowerSeamDisagreementEndWorld,
+    maxLowerSeamDisagreementWorld,
+  };
+  // Preserve inclusive exact-threshold behavior across ray-intersection floating
+  // point noise; this epsilon is many orders below the 0.05 world-unit bound.
+  if (maxLowerSeamDisagreementWorld > WALL_SUPPORT_LIMITS.maxLowerSeamDisagreementWorld + 1e-9) {
+    return failure(["wall_seam_camera_inconsistent"], lowerSeamDiagnostics);
+  }
 
-  const lowerY = (boundaryUV[0].y + boundaryUV[1].y) / 2;
-  const upperY = (boundaryUV[2].y + boundaryUV[3].y) / 2;
-  const wallHeight = upperY - lowerY;
-  if (wallHeight <= WALL_SUPPORT_LIMITS.minWallHeight) {
-    return failure(["wall_upper_below_seam"], { mappedSeamWorldLength, maxSeamExtrapolationWorld, wallHeight });
+  const boundaryUV = boundaryWorld.map((point) => localUv(point, plane.point, plane));
+  if (!boundaryUV.every(isFiniteVec2)) return failure(["wall_boundary_invalid"], lowerSeamDiagnostics);
+
+  // Polygon order gives upper-end ↔ lower-end and upper-start ↔ lower-start.
+  // Each must independently clear the minimum; an average cannot hide a bad corner.
+  const upperEndHeight = boundaryUV[2].y - boundaryUV[1].y;
+  const upperStartHeight = boundaryUV[3].y - boundaryUV[0].y;
+  const minCornerHeight = Math.min(upperStartHeight, upperEndHeight);
+  const maxCornerHeight = Math.max(upperStartHeight, upperEndHeight);
+  const wallHeight = minCornerHeight;
+  const heightDiagnostics = {
+    ...lowerSeamDiagnostics,
+    wallHeight,
+    upperStartHeight,
+    upperEndHeight,
+    minCornerHeight,
+    maxCornerHeight,
+  };
+  if (
+    upperStartHeight <= WALL_SUPPORT_LIMITS.minWallHeight ||
+    upperEndHeight <= WALL_SUPPORT_LIMITS.minWallHeight
+  ) {
+    return failure(["wall_upper_below_seam"], heightDiagnostics);
   }
-  if (wallHeight > WALL_SUPPORT_LIMITS.maxWallHeight) {
-    return failure(["wall_height_excessive"], { mappedSeamWorldLength, maxSeamExtrapolationWorld, wallHeight });
+  if (maxCornerHeight > WALL_SUPPORT_LIMITS.maxWallHeight) {
+    return failure(["wall_height_excessive"], heightDiagnostics);
   }
+  if (isSelfIntersecting(boundaryUV)) return failure(["wall_boundary_self_intersecting"], heightDiagnostics);
+  const boundaryArea = Math.abs(polygonArea(boundaryUV));
+  if (boundaryArea <= 1e-8) return failure(["wall_boundary_zero_area"], heightDiagnostics);
   const wallWidth = Math.max(distance2(boundaryUV[0], boundaryUV[1]), distance2(boundaryUV[2], boundaryUV[3]));
   if (wallWidth > mappedSeamWorldLength * WALL_SUPPORT_LIMITS.maxWallWidthToSeamRatio) {
-    return failure(["wall_width_excessive"], { mappedSeamWorldLength, maxSeamExtrapolationWorld, wallHeight, wallWidth });
+    return failure(["wall_width_excessive"], { ...heightDiagnostics, wallWidth });
   }
   const maxCameraDistance = Math.max(...boundaryWorld.map((point) => distance3(point, input.cameraPosition)));
   if (maxCameraDistance > WALL_SUPPORT_LIMITS.maxWorldDistance) {
     return failure(["wall_camera_distance_excessive"], {
-      mappedSeamWorldLength,
-      maxSeamExtrapolationWorld,
-      wallHeight,
+      ...heightDiagnostics,
       wallWidth,
       maxCameraDistance,
     });
@@ -340,9 +410,7 @@ export function deriveWallSupport(input: DeriveWallSupportInput): WallSupportDer
   }
   if (maxRoundTripReprojectionErrorPx > WALL_SUPPORT_LIMITS.maxRoundTripReprojectionErrorPx) {
     return failure(["wall_reprojection_error"], {
-      mappedSeamWorldLength,
-      maxSeamExtrapolationWorld,
-      wallHeight,
+      ...heightDiagnostics,
       wallWidth,
       maxCameraDistance,
       maxRoundTripReprojectionErrorPx,
@@ -351,6 +419,7 @@ export function deriveWallSupport(input: DeriveWallSupportInput): WallSupportDer
   return {
     ok: true,
     plane,
+    seamNormal,
     boundaryWorld,
     boundaryUV,
     seamWorld,
@@ -358,6 +427,13 @@ export function deriveWallSupport(input: DeriveWallSupportInput): WallSupportDer
       mappedSeamWorldLength,
       wallWidth,
       wallHeight,
+      upperStartHeight,
+      upperEndHeight,
+      minCornerHeight,
+      maxCornerHeight,
+      lowerSeamDisagreementStartWorld,
+      lowerSeamDisagreementEndWorld,
+      maxLowerSeamDisagreementWorld,
       maxRoundTripReprojectionErrorPx,
       maxSeamExtrapolationWorld,
       maxCameraDistance,
