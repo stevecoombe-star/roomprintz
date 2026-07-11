@@ -59,6 +59,15 @@ import {
   type WallSupportKind,
 } from "./wall-support-geometry";
 import {
+  buildCeilingPolygonKey,
+  buildRoomHeightKey,
+  createCeilingConfirmationStamp,
+  deriveCeilingSupport,
+  isCeilingConfirmationCurrent,
+  type CeilingPolygon,
+  type CeilingSupportDraft,
+} from "./ceiling-support-geometry";
+import {
   containerNormToSourceNorm,
   corridorHalfWidthToOverlayStrokeWidth,
   isValidImageSize,
@@ -89,6 +98,7 @@ import {
   canMutateModelWhileAttached,
   computeSupportAttachmentTransform,
   deriveAttachmentDragCandidate,
+  findVerifiedInteriorAttachmentAnchor,
   isAttachedObjectModelLocked as isObjectModelMutationLocked,
   isAttachmentBindingCurrent,
   selectPlacementTransformAuthority,
@@ -603,6 +613,25 @@ const WALL_SUPPORT_PRESENTATION: Record<WallSupportKind, { label: string; color:
   wall_left: { label: "Left wall", color: "#d946ef", mutedColor: "#86198f" },
   wall_right: { label: "Right wall", color: "#f59e0b", mutedColor: "#92400e" },
 };
+
+const DEFAULT_ASSUMED_ROOM_HEIGHT = 2.5;
+const DEFAULT_CEILING_CONTAINER_POLYGON: CeilingPolygon = [
+  { x: 0.22, y: 0.48 },
+  { x: 0.78, y: 0.48 },
+  { x: 0.72, y: 0.12 },
+  { x: 0.28, y: 0.12 },
+];
+
+function createUnavailableCeilingDraft(): CeilingSupportDraft {
+  return {
+    enabled: false,
+    source: "manual",
+    imagePolygonSourceNorm: null,
+    roomHeight: DEFAULT_ASSUMED_ROOM_HEIGHT,
+    reviewStatus: "unavailable",
+    confirmationStamp: null,
+  };
+}
 
 const TRANSFORM_LIMITS = {
   positionX: { min: -5, max: 5, step: 0.01 },
@@ -1266,6 +1295,7 @@ export default function ThreeRoomLab({
   const calibratedLiftStartTransformRef = useRef<TransformState | null>(null);
   const floorAnchorDragPointerIdRef = useRef<number | null>(null);
   const wallHandleDragRef = useRef<{ pointerId: number; kind: WallSupportKind; index: number } | null>(null);
+  const ceilingHandleDragRef = useRef<{ pointerId: number; index: number } | null>(null);
   const lastAcceptedFloorClickRef = useRef<FloorPoint | null>(null);
   const perspectiveDepthScalingRef = useRef<PerspectiveDepthScalingState>(
     DEFAULT_PERSPECTIVE_DEPTH_SCALING
@@ -1371,6 +1401,12 @@ export default function ThreeRoomLab({
     wall_left: true,
     wall_right: true,
   });
+  // Ceiling authority is independent of wall drafts. The polygon is always
+  // source-normalized; the visible overlay is derived from it per frame.
+  const [ceilingSupportDraft, setCeilingSupportDraft] = useState<CeilingSupportDraft>(createUnavailableCeilingDraft);
+  const [ceilingSupportImageBasis, setCeilingSupportImageBasis] = useState<CalibrationImageBasis | null>(null);
+  const [isCeilingOverlayVisible, setIsCeilingOverlayVisible] = useState(true);
+  const [activeCeilingHandleIndex, setActiveCeilingHandleIndex] = useState<number | null>(null);
   const [qualifiedImageBasis, setQualifiedImageBasis] = useState<CalibrationImageBasis | null>(null);
   const [basisQualificationStatus, setBasisQualificationStatus] = useState<string>("basis_unavailable");
   const basisQualificationRequestIdRef = useRef(0);
@@ -3370,6 +3406,114 @@ export default function ThreeRoomLab({
     wallSupportImageBases,
   ]);
 
+  const ceilingContainerPolygon = useMemo(() => {
+    const source = ceilingSupportDraft.imagePolygonSourceNorm;
+    const projected = source ? projectSourcePolygonToContainer(source) : null;
+    return projected && projected.length === 4 ? (projected as CeilingPolygon) : null;
+  }, [ceilingSupportDraft.imagePolygonSourceNorm, projectSourcePolygonToContainer]);
+
+  const ceilingSupportState = useMemo(() => {
+    const activeSnapshot = isCalibratedCameraActive && calibratedCameraSnapshot ? calibratedCameraSnapshot : null;
+    const camera = cameraRef.current;
+    const cameraPosition = camera
+      ? (() => {
+          camera.updateMatrixWorld(true);
+          const point = camera.getWorldPosition(new THREE.Vector3());
+          return { x: point.x, y: point.y, z: point.z };
+        })()
+      : { x: Number.NaN, y: Number.NaN, z: Number.NaN };
+    const derivation = deriveCeilingSupport({
+      polygonSourceNorm: ceilingSupportDraft.enabled ? ceilingSupportDraft.imagePolygonSourceNorm : null,
+      polygonContainerNorm: ceilingSupportDraft.enabled ? ceilingContainerPolygon : null,
+      frameSize: frameSizeForImageSpace,
+      cameraPosition,
+      rays: ceilingContainerPolygon
+        ? (ceilingContainerPolygon.map((point) => buildOverlayWorldRay(point, camera)) as [
+            ReturnType<typeof buildOverlayWorldRay>,
+            ReturnType<typeof buildOverlayWorldRay>,
+            ReturnType<typeof buildOverlayWorldRay>,
+            ReturnType<typeof buildOverlayWorldRay>,
+          ])
+        : [null, null, null, null],
+      projectWorldToPixels: (point) => {
+        if (!camera || !frameSizeForImageSpace) return null;
+        return projectWorldPointToOverlayNormalized(camera, frameSizeForImageSpace, point)?.pixels ?? null;
+      },
+      roomHeight: ceilingSupportDraft.roomHeight,
+      floorBounds: {
+        minX: -floorMapping.worldWidth / 2,
+        maxX: floorMapping.worldWidth / 2,
+        minZ: -floorMapping.worldDepth / 2,
+        maxZ: floorMapping.worldDepth / 2,
+      },
+    });
+    const confirmationCurrent = isCeilingConfirmationCurrent({
+      stamp: ceilingSupportDraft.confirmationStamp,
+      polygon: ceilingSupportDraft.imagePolygonSourceNorm,
+      roomHeight: ceilingSupportDraft.roomHeight,
+      basis: qualifiedImageBasis,
+      cameraAppliedAtIso: activeSnapshot?.appliedAtIso ?? null,
+      frameSize: frameSizeForImageSpace,
+    });
+    const resolvedReviewStatus: SupportReviewStatus =
+      !ceilingSupportDraft.enabled || !ceilingSupportDraft.imagePolygonSourceNorm
+        ? "unavailable"
+        : derivation.ok && ceilingSupportDraft.reviewStatus === "manually_confirmed" && confirmationCurrent
+          ? "manually_confirmed"
+          : "needs_review";
+    const runtime = evaluateSupportUsability({
+      reviewStatus: resolvedReviewStatus,
+      geometryValid: derivation.ok,
+      currentImageBasis: qualifiedImageBasis,
+      supportImageBasis: ceilingSupportImageBasis,
+      activeCameraSnapshot: activeSnapshot,
+      currentFrameSize: frameSizeForImageSpace,
+      cameraSnapshotStale: calibratedCameraFrameMatchStatus.diagnostics?.isWarningStale ?? false,
+    });
+    const gridPolylines: FloorPoint[][] = [];
+    // Each point is created in world ceiling UV and projected through the active
+    // calibrated camera; this is intentionally not a bilinear SVG decoration.
+    if (derivation.ok && camera && frameSizeForImageSpace) {
+      const { plane, boundaryUV } = derivation;
+      const projectUv = (uv: { x: number; y: number }): FloorPoint | null =>
+        projectWorldPointToOverlayNormalized(camera, frameSizeForImageSpace, {
+          x: plane.point.x + uv.x,
+          y: plane.point.y,
+          z: plane.point.z + uv.y,
+        })?.normalized ?? null;
+      const interpolate = (a: { x: number; y: number }, b: { x: number; y: number }, t: number) => ({
+        x: a.x + (b.x - a.x) * t,
+        y: a.y + (b.y - a.y) * t,
+      });
+      for (let index = 0; index < 5; index += 1) {
+        const t = index / 4;
+        const lower = [projectUv(interpolate(boundaryUV[0], boundaryUV[1], t)), projectUv(interpolate(boundaryUV[3], boundaryUV[2], t))];
+        const side = [projectUv(interpolate(boundaryUV[0], boundaryUV[3], t)), projectUv(interpolate(boundaryUV[1], boundaryUV[2], t))];
+        if (lower[0] && lower[1]) gridPolylines.push(lower as FloorPoint[]);
+        if (side[0] && side[1]) gridPolylines.push(side as FloorPoint[]);
+      }
+    }
+    return {
+      derivation,
+      confirmationCurrent,
+      resolvedReviewStatus,
+      runtime,
+      blockingReasons: [...runtime.blockingReasons, ...(derivation.ok ? [] : derivation.reasons)],
+      gridPolylines,
+    };
+  }, [
+    calibratedCameraFrameMatchStatus.diagnostics?.isWarningStale,
+    calibratedCameraSnapshot,
+    ceilingContainerPolygon,
+    ceilingSupportDraft,
+    ceilingSupportImageBasis,
+    floorMapping.worldDepth,
+    floorMapping.worldWidth,
+    frameSizeForImageSpace,
+    isCalibratedCameraActive,
+    qualifiedImageBasis,
+  ]);
+
   // Package 3 attachment contexts are derived from the already-established
   // support runtime facts. They are deliberately not support authority: an
   // attachment merely records the exact context that an operator selected.
@@ -3424,6 +3568,7 @@ export default function ThreeRoomLab({
       wall_back: { usable: false, frame: null, bindingContext: null, reasons: [] },
       wall_left: { usable: false, frame: null, bindingContext: null, reasons: [] },
       wall_right: { usable: false, frame: null, bindingContext: null, reasons: [] },
+      ceiling: { usable: false, frame: null, bindingContext: null, reasons: [] },
     };
     for (const kind of WALL_SUPPORT_KINDS) {
       const state = wallSupportStates[kind];
@@ -3456,9 +3601,41 @@ export default function ThreeRoomLab({
         reasons: state.blockingReasons,
       };
     }
+    const ceilingStamp = ceilingSupportDraft.confirmationStamp;
+    const ceilingContext =
+      ceilingSupportDraft.imagePolygonSourceNorm &&
+      ceilingStamp &&
+      qualifiedImageBasis &&
+      calibratedCameraSnapshot &&
+      frameSizeForImageSpace
+        ? {
+            supportKind: "ceiling" as const,
+            sourcePolygonKey: `${buildCeilingPolygonKey(ceilingSupportDraft.imagePolygonSourceNorm)}:${buildRoomHeightKey(ceilingSupportDraft.roomHeight)}`,
+            confirmationStampKey: JSON.stringify(ceilingStamp),
+            imageBasisId: qualifiedImageBasis.basisId,
+            imageBasisFingerprint: qualifiedImageBasis.basisFingerprint,
+            cameraAppliedAtIso: calibratedCameraSnapshot.appliedAtIso,
+            frameWidth: frameSizeForImageSpace.width,
+            frameHeight: frameSizeForImageSpace.height,
+          }
+        : null;
+    contexts.ceiling = {
+      usable: ceilingSupportState.runtime.usable && ceilingSupportState.derivation.ok,
+      frame: ceilingSupportState.derivation.ok
+        ? {
+            kind: "ceiling",
+            plane: ceilingSupportState.derivation.plane,
+            boundaryUV: ceilingSupportState.derivation.boundaryUV.map((point) => ({ u: point.x, v: point.y })),
+          }
+        : null,
+      bindingContext: ceilingContext,
+      reasons: ceilingSupportState.blockingReasons,
+    };
     return contexts;
   }, [
     calibratedCameraSnapshot,
+    ceilingSupportDraft,
+    ceilingSupportState,
     floorMapping.worldDepth,
     floorMapping.worldWidth,
     floorSupportRuntime,
@@ -8560,6 +8737,91 @@ export default function ThreeRoomLab({
     }));
   };
 
+  const configureCeiling = () => {
+    const source = projectContainerPolygonToSource(DEFAULT_CEILING_CONTAINER_POLYGON);
+    if (!source || source.length !== 4) return;
+    setCeilingSupportDraft({
+      enabled: true,
+      source: "manual",
+      imagePolygonSourceNorm: source as CeilingPolygon,
+      roomHeight: DEFAULT_ASSUMED_ROOM_HEIGHT,
+      reviewStatus: "needs_review",
+      confirmationStamp: null,
+    });
+    setCeilingSupportImageBasis(qualifiedImageBasis);
+    setIsCeilingOverlayVisible(true);
+  };
+
+  const clearCeiling = () => {
+    setCeilingSupportDraft(createUnavailableCeilingDraft());
+    setCeilingSupportImageBasis(null);
+    setActiveCeilingHandleIndex(null);
+  };
+
+  const revokeCeilingConfirmation = () => {
+    setCeilingSupportDraft((previous) => ({
+      ...previous,
+      reviewStatus: previous.enabled ? "needs_review" : "unavailable",
+      confirmationStamp: null,
+    }));
+  };
+
+  const confirmCeiling = () => {
+    const polygon = ceilingSupportDraft.imagePolygonSourceNorm;
+    const camera = isCalibratedCameraActive ? calibratedCameraSnapshot : null;
+    const canConfirm =
+      !!polygon &&
+      !!qualifiedImageBasis &&
+      !!camera &&
+      !!frameSizeForImageSpace &&
+      ceilingSupportState.derivation.ok &&
+      ceilingSupportState.runtime.blockingReasons.every((reason) => reason === "support_not_confirmed");
+    if (!canConfirm || !polygon || !qualifiedImageBasis || !camera || !frameSizeForImageSpace) return;
+    setCeilingSupportDraft((previous) => ({
+      ...previous,
+      reviewStatus: "manually_confirmed",
+      confirmationStamp: createCeilingConfirmationStamp(
+        polygon,
+        previous.roomHeight,
+        qualifiedImageBasis,
+        camera.appliedAtIso,
+        frameSizeForImageSpace
+      ),
+    }));
+  };
+
+  const updateCeilingHandleFromClientPoint = (index: number, clientX: number, clientY: number) => {
+    const normalized = getNormalizedOverlayPointFromClient(clientX, clientY);
+    if (!normalized || !ceilingContainerPolygon) return;
+    const nextContainer = ceilingContainerPolygon.map((point, pointIndex) =>
+      pointIndex === index ? normalized : point
+    ) as CeilingPolygon;
+    const nextSource = projectContainerPolygonToSource(nextContainer);
+    if (!nextSource || nextSource.length !== 4) return;
+    setCeilingSupportDraft((previous) => ({
+      ...previous,
+      enabled: true,
+      source: "manual",
+      imagePolygonSourceNorm: nextSource as CeilingPolygon,
+      reviewStatus: "needs_review",
+      confirmationStamp: null,
+    }));
+    setCeilingSupportImageBasis(qualifiedImageBasis);
+  };
+
+  const handleCeilingHandlePointerDown = (index: number, event: PointerEvent<SVGCircleElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+    ceilingHandleDragRef.current = { pointerId: event.pointerId, index };
+    setActiveCeilingHandleIndex(index);
+    updateCeilingHandleFromClientPoint(index, event.clientX, event.clientY);
+    try {
+      floorOverlayRef.current?.setPointerCapture(event.pointerId);
+    } catch {
+      // Pointer capture is optional; source-normalized authority remains intact.
+    }
+  };
+
   const attachToSelectedSupport = (isReattach = false) => {
     const target = attachmentSupportContexts[selectedAttachmentSupportKind];
     if (!target.usable || !target.frame || !target.bindingContext) {
@@ -8581,19 +8843,22 @@ export default function ThreeRoomLab({
               candidate.v <= floorMapping.worldDepth / 2;
             return inside ? candidate : { u: 0, v: 0 };
           })()
-        : (() => {
-            const count = target.frame.boundaryUV.length;
-            return target.frame.boundaryUV.reduce(
-              (total, point) => ({ u: total.u + point.u / count, v: total.v + point.v / count }),
-              { u: 0, v: 0 }
-            );
-          })();
+        : findVerifiedInteriorAttachmentAnchor(target.frame);
+    if (!localPosition) {
+      setAttachmentInteractionStatus("attachment_anchor_outside_support");
+      return;
+    }
     const priorScale = objectSupportAttachment?.uniformScale ?? transformRef.current.uniformScale;
     const wallFace =
       objectSupportAttachment?.supportKind === selectedAttachmentSupportKind &&
       objectSupportAttachment.contactProfile.kind === "wall"
         ? objectSupportAttachment.contactProfile.contactSide
         : "min";
+    const ceilingFace =
+      objectSupportAttachment?.supportKind === selectedAttachmentSupportKind &&
+      objectSupportAttachment.contactProfile.kind === "ceiling"
+        ? objectSupportAttachment.contactProfile.contactSide
+        : "max";
     isAttachedObjectModelLockedRef.current = true;
     setObjectSupportAttachment({
       supportKind: selectedAttachmentSupportKind,
@@ -8607,7 +8872,9 @@ export default function ThreeRoomLab({
       contactProfile:
         selectedAttachmentSupportKind === "floor"
           ? { kind: "floor", contactAxis: "local_y", contactSide: "min" }
-          : { kind: "wall", contactAxis: "local_z", contactSide: wallFace },
+          : selectedAttachmentSupportKind === "ceiling"
+            ? { kind: "ceiling", contactAxis: "local_y", contactSide: ceilingFace }
+            : { kind: "wall", contactAxis: "local_z", contactSide: wallFace },
       attachedAtIso: new Date().toISOString(),
     });
     setAttachmentInteractionStatus(isReattach ? "reattached" : "attached");
@@ -9001,6 +9268,12 @@ export default function ThreeRoomLab({
   };
 
   const handleFloorOverlayPointerMove = (event: PointerEvent<SVGSVGElement>) => {
+    const ceilingDrag = ceilingHandleDragRef.current;
+    if (ceilingDrag && ceilingDrag.pointerId === event.pointerId) {
+      event.preventDefault();
+      updateCeilingHandleFromClientPoint(ceilingDrag.index, event.clientX, event.clientY);
+      return;
+    }
     const wallDrag = wallHandleDragRef.current;
     if (wallDrag && wallDrag.pointerId === event.pointerId) {
       event.preventDefault();
@@ -9409,6 +9682,16 @@ export default function ThreeRoomLab({
         // Ignore release failures when capture has already ended.
       }
       attachmentMoveDragRef.current = null;
+    }
+    const ceilingDrag = ceilingHandleDragRef.current;
+    if (ceilingDrag && (!event || ceilingDrag.pointerId === event.pointerId)) {
+      try {
+        floorOverlayRef.current?.releasePointerCapture(ceilingDrag.pointerId);
+      } catch {
+        // Ignore release failures when capture has already ended.
+      }
+      ceilingHandleDragRef.current = null;
+      setActiveCeilingHandleIndex(null);
     }
     const wallDrag = wallHandleDragRef.current;
     if (wallDrag && (!event || wallDrag.pointerId === event.pointerId)) {
@@ -10604,6 +10887,63 @@ export default function ThreeRoomLab({
                     </g>
                   );
                 })}
+                {ceilingSupportDraft.enabled && ceilingContainerPolygon && isCeilingOverlayVisible && (() => {
+                  const valid = ceilingSupportState.derivation.ok;
+                  const selected = selectedAttachmentSupportKind === "ceiling";
+                  const color = "#2dd4bf";
+                  const points = ceilingContainerPolygon.map((point) => `${point.x * 100},${point.y * 100}`).join(" ");
+                  return (
+                    <g>
+                      {valid && ceilingSupportState.gridPolylines.map((line, index) => (
+                        <polyline
+                          key={`ceiling-grid-${index}`}
+                          points={line.map((point) => `${point.x * 100},${point.y * 100}`).join(" ")}
+                          fill="none"
+                          stroke={color}
+                          strokeOpacity={selected ? 0.92 : 0.56}
+                          strokeWidth={selected ? 0.52 : 0.34}
+                          strokeDasharray="1.1 0.8"
+                          pointerEvents="none"
+                        />
+                      ))}
+                      <polygon
+                        points={points}
+                        fill={valid ? color : "#fb7185"}
+                        fillOpacity={selected ? 0.14 : 0.07}
+                        stroke={valid ? color : "#fb7185"}
+                        strokeOpacity={selected ? 1 : 0.78}
+                        strokeWidth={selected ? 1.15 : 0.8}
+                        strokeDasharray={valid ? undefined : "1.4 1"}
+                        pointerEvents="none"
+                      />
+                      <text
+                        x={ceilingContainerPolygon[3].x * 100 + 1}
+                        y={ceilingContainerPolygon[3].y * 100 - 1}
+                        fill={valid ? color : "#fda4af"}
+                        fontSize="2"
+                        fontWeight="700"
+                        pointerEvents="none"
+                      >
+                        Ceiling · {ceilingSupportState.resolvedReviewStatus.replaceAll("_", " ")}
+                      </text>
+                      {ceilingContainerPolygon.map((point, index) => (
+                        <circle
+                          key={`ceiling-handle-${index}`}
+                          cx={point.x * 100}
+                          cy={point.y * 100}
+                          r={1.7}
+                          fill={activeCeilingHandleIndex === index ? "#ffffff" : valid ? color : "#fb7185"}
+                          stroke="#020617"
+                          strokeWidth={0.6}
+                          className="cursor-grab active:cursor-grabbing"
+                          pointerEvents="all"
+                          aria-label={`Ceiling polygon handle ${index + 1}`}
+                          onPointerDown={(event) => handleCeilingHandlePointerDown(index, event)}
+                        />
+                      ))}
+                    </g>
+                  );
+                })()}
                 {autoFloorSuggestionPointsAttribute && selectedAutoFloorCandidate && (
                   <g pointerEvents="none" aria-hidden="true">
                     <polygon
@@ -16343,7 +16683,7 @@ export default function ThreeRoomLab({
           onToggle={() => setIsSupportsOpen((open) => !open)}
           meta={
             <span className="rounded bg-slate-500/15 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-slate-200">
-              package 2 · floor + walls
+              package 4 · floor + walls + ceiling
             </span>
           }
         >
@@ -16390,6 +16730,7 @@ export default function ThreeRoomLab({
                       ["wall_back", "Select Back wall"],
                       ["wall_left", "Select Left wall"],
                       ["wall_right", "Select Right wall"],
+                      ["ceiling", "Select Ceiling"],
                     ] as const).map(([kind, label]) => (
                       <button
                         key={kind}
@@ -16483,6 +16824,32 @@ export default function ThreeRoomLab({
                           </select>
                         </label>
                       )}
+                      {objectSupportAttachment.contactProfile.kind === "ceiling" && (
+                        <label className="rounded-lg border border-slate-800 bg-slate-950/60 p-2 text-xs text-slate-300">
+                          Ceiling contact face
+                          <select
+                            value={objectSupportAttachment.contactProfile.contactSide}
+                            disabled={objectTransformMode !== "support_attached_current"}
+                            onChange={(event) =>
+                              setObjectSupportAttachment((previous) =>
+                                previous?.contactProfile.kind === "ceiling"
+                                  ? {
+                                      ...previous,
+                                      contactProfile: {
+                                        ...previous.contactProfile,
+                                        contactSide: event.target.value === "min" ? "min" : "max",
+                                      },
+                                    }
+                                  : previous
+                              )
+                            }
+                            className="ml-2 rounded border border-slate-700 bg-slate-950 px-2 py-1 disabled:opacity-50"
+                          >
+                            <option value="max">local Y max</option>
+                            <option value="min">local Y min</option>
+                          </select>
+                        </label>
+                      )}
                     </div>
                   )}
                   <p className="mt-3 text-[11px] text-slate-400">Status: {attachmentInteractionStatus}</p>
@@ -16500,6 +16867,69 @@ export default function ThreeRoomLab({
                       ].filter((reason): reason is string => !!reason).join(" · ")}
                     </p>
                   )}
+                </div>
+                <div className="rounded-lg border border-teal-800/70 bg-teal-950/15 p-3">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div>
+                      <p className="text-sm font-medium text-teal-100">Ceiling</p>
+                      <p className="mt-1 text-[10px] text-teal-200/70">
+                        Finite, manually reviewed horizontal support. Height is an assumption in the current floor-world units.
+                      </p>
+                    </div>
+                    <span className={`rounded px-2 py-1 text-[10px] uppercase tracking-wide ${
+                      ceilingSupportState.runtime.usable ? "bg-emerald-500/15 text-emerald-100" : "bg-amber-500/15 text-amber-100"
+                    }`}>
+                      {ceilingSupportState.runtime.usable ? "usable" : "unavailable"}
+                    </span>
+                  </div>
+                  <label className="mt-3 block text-xs text-slate-300">
+                    Assumed room height
+                    <input
+                      type="number"
+                      step="0.01"
+                      value={ceilingSupportDraft.roomHeight}
+                      disabled={!ceilingSupportDraft.enabled}
+                      onChange={(event) => {
+                        const roomHeight = Number(event.target.value);
+                        setCeilingSupportDraft((previous) => ({
+                          ...previous,
+                          roomHeight,
+                          reviewStatus: previous.enabled ? "needs_review" : "unavailable",
+                          confirmationStamp: null,
+                        }));
+                      }}
+                      className="ml-2 w-28 rounded border border-slate-700 bg-slate-950 px-2 py-1 text-slate-100 disabled:opacity-50"
+                    />
+                  </label>
+                  <dl className="mt-3 grid gap-x-4 gap-y-1 sm:grid-cols-2">
+                    <div className="flex justify-between gap-2"><dt className="text-slate-500">configured</dt><dd>{ceilingSupportDraft.enabled ? "yes" : "no"}</dd></div>
+                    <div className="flex justify-between gap-2"><dt className="text-slate-500">source</dt><dd>{ceilingSupportDraft.source}</dd></div>
+                    <div className="flex justify-between gap-2"><dt className="text-slate-500">raw review</dt><dd>{ceilingSupportDraft.reviewStatus.replaceAll("_", " ")}</dd></div>
+                    <div className="flex justify-between gap-2"><dt className="text-slate-500">resolved review</dt><dd>{ceilingSupportState.resolvedReviewStatus.replaceAll("_", " ")}</dd></div>
+                    <div className="flex justify-between gap-2"><dt className="text-slate-500">derivation valid</dt><dd>{ceilingSupportState.derivation.ok ? "yes" : "no"}</dd></div>
+                    <div className="flex justify-between gap-2"><dt className="text-slate-500">confirmation</dt><dd>{ceilingSupportDraft.confirmationStamp ? ceilingSupportState.confirmationCurrent ? "current" : "stale" : "missing"}</dd></div>
+                    <div className="flex justify-between gap-2"><dt className="text-slate-500">camera height</dt><dd>{ceilingSupportState.derivation.ok ? formatNumber(ceilingSupportState.derivation.diagnostics.cameraHeight) : "n/a"}</dd></div>
+                    <div className="flex justify-between gap-2"><dt className="text-slate-500">camera clearance</dt><dd>{ceilingSupportState.derivation.ok ? formatNumber(ceilingSupportState.derivation.diagnostics.cameraClearance) : "n/a"}</dd></div>
+                    <div className="flex justify-between gap-2"><dt className="text-slate-500">ceiling width / depth</dt><dd>{ceilingSupportState.derivation.ok ? `${formatNumber(ceilingSupportState.derivation.diagnostics.ceilingWidthU)} / ${formatNumber(ceilingSupportState.derivation.diagnostics.ceilingDepthV)}` : "n/a"}</dd></div>
+                    <div className="flex justify-between gap-2"><dt className="text-slate-500">max distance / reprojection</dt><dd>{ceilingSupportState.derivation.ok ? `${formatNumber(ceilingSupportState.derivation.diagnostics.maxCameraDistance)} / ${formatNumber(ceilingSupportState.derivation.diagnostics.maxRoundTripPx)} px` : "n/a"}</dd></div>
+                  </dl>
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    <button type="button" onClick={configureCeiling} className="rounded border border-teal-500/70 px-2 py-1 text-xs text-teal-100">Configure ceiling</button>
+                    <button
+                      type="button"
+                      onClick={confirmCeiling}
+                      disabled={!ceilingSupportState.derivation.ok || !ceilingSupportState.runtime.blockingReasons.every((reason) => reason === "support_not_confirmed")}
+                      className="rounded border border-emerald-500/70 px-2 py-1 text-xs text-emerald-100 disabled:cursor-not-allowed disabled:opacity-40"
+                    >
+                      Confirm ceiling
+                    </button>
+                    <button type="button" onClick={revokeCeilingConfirmation} disabled={!ceilingSupportDraft.confirmationStamp} className="rounded border border-amber-500/70 px-2 py-1 text-xs text-amber-100 disabled:opacity-40">Revoke confirmation</button>
+                    <button type="button" onClick={clearCeiling} disabled={!ceilingSupportDraft.enabled} className="rounded border border-rose-500/70 px-2 py-1 text-xs text-rose-100 disabled:opacity-40">Clear ceiling</button>
+                    <button type="button" onClick={() => setIsCeilingOverlayVisible((visible) => !visible)} disabled={!ceilingSupportDraft.enabled} className="rounded border border-slate-600 px-2 py-1 text-xs text-slate-200 disabled:opacity-40">{isCeilingOverlayVisible ? "Hide overlay" : "Show overlay"}</button>
+                  </div>
+                  <p className="mt-2 text-[11px] text-slate-400">
+                    First blocker: {ceilingSupportState.blockingReasons[0]?.replaceAll("_", " ") ?? "none"} · all: {ceilingSupportState.blockingReasons.map((reason) => reason.replaceAll("_", " ")).join(" · ") || "none"}
+                  </p>
                 </div>
                 <div className="rounded-lg border border-slate-700 bg-slate-950/60 p-3">
                   <div className="flex flex-wrap items-center justify-between gap-2">

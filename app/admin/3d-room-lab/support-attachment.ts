@@ -1,12 +1,13 @@
 import type { SupportPlane, SupportVec3 } from "./support-plane-math";
 import type { WallSupportKind } from "./wall-support-geometry";
 
-export type AttachableSupportKind = "floor" | WallSupportKind;
+export type AttachableSupportKind = "floor" | WallSupportKind | "ceiling";
 export type Vec2 = { u: number; v: number };
 export type ModelLocalBounds = { min: SupportVec3; max: SupportVec3 };
 export type ObjectContactProfile =
   | { kind: "floor"; contactAxis: "local_y"; contactSide: "min" }
-  | { kind: "wall"; contactAxis: "local_z"; contactSide: "min" | "max" };
+  | { kind: "wall"; contactAxis: "local_z"; contactSide: "min" | "max" }
+  | { kind: "ceiling"; contactAxis: "local_y"; contactSide: "min" | "max" };
 
 export type ObjectSupportAttachment = {
   supportKind: AttachableSupportKind;
@@ -59,6 +60,11 @@ export type AttachmentSupportFrame =
       kind: WallSupportKind;
       plane: SupportPlane;
       seamNormal: SupportVec3;
+      boundaryUV: readonly Vec2[];
+    }
+  | {
+      kind: "ceiling";
+      plane: SupportPlane;
       boundaryUV: readonly Vec2[];
     };
 
@@ -182,6 +188,19 @@ function initialOrientation(frame: AttachmentSupportFrame): {
       normal: { x: 0, y: 1, z: 0 },
     };
   }
+  if (frame.kind === "ceiling") {
+    // Ceiling local coordinates always use world +X/+Z. Object local axes remain
+    // world +X/+Y/+Z (positive determinant); its selected Y face contacts the
+    // downward-facing room ceiling instead of inverting the known object.
+    return {
+      basis: {
+        x: { x: 1, y: 0, z: 0 },
+        y: { x: 0, y: 1, z: 0 },
+        z: { x: 0, y: 0, z: 1 },
+      },
+      normal: { x: 0, y: 1, z: 0 },
+    };
+  }
   const seamU = normalize(frame.plane.basisU);
   const seamV = normalize(frame.plane.basisV);
   const seamNormal = normalize(frame.seamNormal);
@@ -277,6 +296,27 @@ export function isAttachmentAnchorInsideSupport(frame: AttachmentSupportFrame, l
   return pointInPolygon(localPosition, frame.boundaryUV);
 }
 
+/** Returns a deterministic verified interior point for a finite support. */
+export function findVerifiedInteriorAttachmentAnchor(frame: AttachmentSupportFrame): Vec2 | null {
+  const points = frame.boundaryUV;
+  if (points.length < 3) return null;
+  const average = points.reduce((total, point) => ({ u: total.u + point.u / points.length, v: total.v + point.v / points.length }), {
+    u: 0,
+    v: 0,
+  });
+  if (isAttachmentAnchorInsideSupport(frame, average)) return average;
+  // A simple quadrilateral can be concave. Test deterministic triangle-fan
+  // centroids rather than clamping an invalid average onto the boundary.
+  for (let index = 1; index < points.length - 1; index += 1) {
+    const candidate = {
+      u: (points[0].u + points[index].u + points[index + 1].u) / 3,
+      v: (points[0].v + points[index].v + points[index + 1].v) / 3,
+    };
+    if (isAttachmentAnchorInsideSupport(frame, candidate)) return candidate;
+  }
+  return null;
+}
+
 export function computeSupportAttachmentTransform(input: {
   attachment: ObjectSupportAttachment;
   frame: AttachmentSupportFrame | null;
@@ -295,7 +335,8 @@ export function computeSupportAttachmentTransform(input: {
   }
   if (
     (attachment.supportKind === "floor" && attachment.contactProfile.kind !== "floor") ||
-    (attachment.supportKind !== "floor" && attachment.contactProfile.kind !== "wall")
+    (attachment.supportKind === "ceiling" && attachment.contactProfile.kind !== "ceiling") ||
+    (attachment.supportKind !== "floor" && attachment.supportKind !== "ceiling" && attachment.contactProfile.kind !== "wall")
   ) {
     reasons.push("attachment_contact_profile_invalid");
   }
@@ -336,10 +377,15 @@ export function computeSupportAttachmentTransform(input: {
   const contactLocal =
     attachment.contactProfile.kind === "floor"
       ? usableBounds.min.y
-      : attachment.contactProfile.contactSide === "min"
-        ? usableBounds.min.z
-        : usableBounds.max.z;
-  const contactAxis = attachment.contactProfile.kind === "floor" ? basis.y : basis.z;
+      : attachment.contactProfile.kind === "ceiling"
+        ? attachment.contactProfile.contactSide === "min"
+          ? usableBounds.min.y
+          : usableBounds.max.y
+        : attachment.contactProfile.contactSide === "min"
+          ? usableBounds.min.z
+          : usableBounds.max.z;
+  const contactAxis =
+    attachment.contactProfile.kind === "floor" || attachment.contactProfile.kind === "ceiling" ? basis.y : basis.z;
   if (!finite(contactLocal) || Math.abs(contactLocal) > Number.MAX_SAFE_INTEGER) {
     return { ok: false, reasons: ["attachment_contact_profile_invalid"] };
   }

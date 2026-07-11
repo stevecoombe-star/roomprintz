@@ -5,6 +5,7 @@ import {
   canMutateModelWhileAttached,
   computeSupportAttachmentTransform,
   deriveAttachmentDragCandidate,
+  findVerifiedInteriorAttachmentAnchor,
   isAttachedObjectModelLocked,
   isAttachmentBindingCurrent,
   selectPlacementTransformAuthority,
@@ -62,6 +63,22 @@ function wallFrame(normalZ = 1): AttachmentSupportFrame {
   };
 }
 
+const CEILING: AttachmentSupportFrame = {
+  kind: "ceiling",
+  plane: {
+    point: { x: 0, y: 2.5, z: 0 },
+    normal: { x: 0, y: -1, z: 0 },
+    basisU: { x: 1, y: 0, z: 0 },
+    basisV: { x: 0, y: 0, z: 1 },
+  },
+  boundaryUV: [
+    { u: -2, v: -2 },
+    { u: 2, v: -2 },
+    { u: 2, v: 2 },
+    { u: -2, v: 2 },
+  ],
+};
+
 function backWallPlane() {
   const frame = wallFrame();
   if (frame.kind === "floor") throw new Error("expected wall frame");
@@ -107,6 +124,10 @@ test("floor scale and rotation preserve support contact", () => {
 test("outside floor anchor fails closed", () => {
   const result = transform(attachment({ localPosition: { u: 3, v: 0 } }), FLOOR);
   assert.deepEqual(result, { ok: false, reasons: ["attachment_anchor_outside_support"] });
+});
+
+test("finite support initial anchor is verified inside before attachment", () => {
+  assert.deepEqual(findVerifiedInteriorAttachmentAnchor(CEILING), { u: 0, v: 0 });
 });
 
 test("wall min-Z contact extends to the camera-facing side", () => {
@@ -199,6 +220,57 @@ test("wall rotation retains contact and right-handed orientation", () => {
   assert.ok(result.diagnostics.orientationDeterminant > 0.999);
 });
 
+test("ceiling uses a positive world-up frame and local-Y-max contact extends downward", () => {
+  const result = transform(
+    attachment({
+      supportKind: "ceiling",
+      localPosition: { u: 0.5, v: -0.5 },
+      contactProfile: { kind: "ceiling", contactAxis: "local_y", contactSide: "max" },
+    }),
+    CEILING
+  );
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.deepEqual(result.orientationBasis, {
+    x: { x: 1, y: 0, z: 0 },
+    y: { x: 0, y: 1, z: 0 },
+    z: { x: 0, y: 0, z: 1 },
+  });
+  assert.equal(result.worldPosition.y, 1.5);
+  assert.equal(result.contactPointWorld.y, 2.5);
+  assert.ok(result.worldPosition.y < result.contactPointWorld.y);
+  assert.ok(result.diagnostics.orientationDeterminant > 0.999);
+});
+
+test("ceiling min face is explicit and scale and +Y rotation preserve ceiling contact", () => {
+  const min = transform(
+    attachment({
+      supportKind: "ceiling",
+      localPosition: { u: 0, v: 0 },
+      contactProfile: { kind: "ceiling", contactAxis: "local_y", contactSide: "min" },
+    }),
+    CEILING
+  );
+  const scaledRotated = transform(
+    attachment({
+      supportKind: "ceiling",
+      localPosition: { u: 0, v: 0 },
+      uniformScale: 2,
+      rotationAboutNormalDeg: 90,
+      contactProfile: { kind: "ceiling", contactAxis: "local_y", contactSide: "max" },
+    }),
+    CEILING
+  );
+  assert.equal(min.ok, true);
+  assert.equal(scaledRotated.ok, true);
+  if (!min.ok || !scaledRotated.ok) return;
+  assert.equal(min.worldPosition.y, 3.5);
+  assert.equal(min.contactPointWorld.y, 2.5);
+  assert.equal(scaledRotated.worldPosition.y, 0.5);
+  assert.equal(scaledRotated.contactPointWorld.y, 2.5);
+  assert.ok(scaledRotated.diagnostics.orientationDeterminant > 0.999);
+});
+
 test("wall seam orientation stays right handed for back, left, and right kinds", () => {
   for (const kind of ["wall_back", "wall_left", "wall_right"] as const) {
     const frame: AttachmentSupportFrame = {
@@ -255,6 +327,24 @@ test("binding requires exact geometry, basis, camera, frame, and wall kind", () 
   assert.equal(isAttachmentBindingCurrent(bound, { ...binding, frameWidth: 999 }), false);
   assert.equal(isAttachmentBindingCurrent(bound, { ...binding, confirmationStampKey: "changed-stamp" }), false);
   assert.equal(isAttachmentBindingCurrent(bound, { ...binding, supportKind: "wall_back" }), false);
+  const ceilingBinding: AttachmentBindingContext = {
+    ...binding,
+    supportKind: "ceiling",
+    sourcePolygonKey: "ceiling-polygon",
+    confirmationStampKey: "ceiling:height=2.500000",
+  };
+  const ceilingBound = attachment({ supportKind: "ceiling", supportBindingKey: buildAttachmentBindingKey(ceilingBinding) });
+  assert.equal(isAttachmentBindingCurrent(ceilingBound, ceilingBinding), true);
+  assert.equal(isAttachmentBindingCurrent(ceilingBound, { ...ceilingBinding, sourcePolygonKey: "changed" }), false);
+  assert.equal(isAttachmentBindingCurrent(ceilingBound, { ...ceilingBinding, confirmationStampKey: "changed" }), false);
+  assert.equal(
+    isAttachmentBindingCurrent(ceilingBound, {
+      ...ceilingBinding,
+      sourcePolygonKey: "ceiling-polygon:height=2.600000",
+      confirmationStampKey: "ceiling:height=2.600000",
+    }),
+    false
+  );
 });
 
 test("invalid bounds, contact profiles, and scale fail with named reasons", () => {
@@ -295,6 +385,13 @@ test("drag ray maps floor and wall coordinates, preserves grab offsets, and reje
     grabOffset: { u: 0, v: 0 },
   });
   assert.deepEqual(outside, { ok: false, reasons: ["attachment_anchor_outside_support"] });
+  const ceiling = deriveAttachmentDragCandidate({
+    frame: CEILING,
+    ray: { origin: { x: 0, y: 1.5, z: 0 }, direction: { x: 1, y: 1, z: 1 } },
+    grabOffset: { u: 0, v: 0 },
+  });
+  assert.equal(ceiling.ok, true);
+  if (ceiling.ok) assert.deepEqual(ceiling.localPosition, { u: 1, v: 1 });
 });
 
 test("drag returns deterministic ray failures and transform authority never selects legacy while attached", () => {
