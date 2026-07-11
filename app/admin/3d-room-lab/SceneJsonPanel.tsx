@@ -16,6 +16,7 @@ type SceneJsonPanelProps = {
   onSaveLocalDraft: () => void;
   onRestoreLocalDraft: () => void;
   onClearLocalDraft: () => void;
+  modelMutationLocked: boolean;
 };
 
 export default function SceneJsonPanel({
@@ -34,6 +35,7 @@ export default function SceneJsonPanel({
   onSaveLocalDraft,
   onRestoreLocalDraft,
   onClearLocalDraft,
+  modelMutationLocked,
 }: SceneJsonPanelProps) {
   return (
     <section className="rounded-2xl border border-slate-800 bg-slate-900/70 p-4">
@@ -82,7 +84,8 @@ export default function SceneJsonPanel({
             <button
               type="button"
               onClick={onApplyImport}
-              className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-200 transition hover:border-emerald-400/80 hover:text-emerald-200"
+              disabled={modelMutationLocked}
+              className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-200 transition hover:border-emerald-400/80 hover:text-emerald-200 disabled:cursor-not-allowed disabled:opacity-50"
             >
               Apply imported JSON
             </button>
@@ -106,6 +109,9 @@ export default function SceneJsonPanel({
         >
           {importStatus.message}
         </p>
+        {modelMutationLocked && (
+          <p className="mt-1 text-xs text-amber-300">Detach the object before restoring a scene.</p>
+        )}
         <textarea
           value={importTextValue}
           onChange={(event) => onImportTextChange(event.target.value)}
@@ -129,7 +135,8 @@ export default function SceneJsonPanel({
             <button
               type="button"
               onClick={onRestoreLocalDraft}
-              className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-200 transition hover:border-emerald-400/80 hover:text-emerald-200"
+              disabled={modelMutationLocked}
+              className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-200 transition hover:border-emerald-400/80 hover:text-emerald-200 disabled:cursor-not-allowed disabled:opacity-50"
             >
               Restore local draft
             </button>

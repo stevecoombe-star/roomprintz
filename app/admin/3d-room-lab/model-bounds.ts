@@ -113,6 +113,78 @@ export function computePlacementLocalFloorContactY(
   return { ok: true, yLocal, reason: "available" };
 }
 
+/**
+ * Axis-aligned bounds in placementGroup local space. This folds the existing
+ * auto-bounds and model-normalization child groups into raw measured bounds,
+ * but deliberately excludes placementGroup's room transform. Attachment math
+ * can therefore orient these model-local coordinates exactly once.
+ */
+export function computePlacementLocalModelBounds(input: {
+  autoBoundsInfo: AutoBoundsNormalization | null;
+  autoNormalizeBoundsEnabled: boolean;
+  modelNormalization: ModelNormalizationLike & { modelYawOffsetDeg: number };
+}): { ok: true; min: Vec3; max: Vec3 } | { ok: false; reason: string } {
+  const { autoBoundsInfo, autoNormalizeBoundsEnabled, modelNormalization } = input;
+  if (!autoBoundsInfo || !autoBoundsInfo.ok) return { ok: false, reason: "auto-bounds metadata unavailable" };
+  const { measuredSize, measuredCenter, scale, offset } = autoBoundsInfo;
+  const values = [
+    measuredSize.x, measuredSize.y, measuredSize.z,
+    measuredCenter.x, measuredCenter.y, measuredCenter.z,
+    scale, offset.x, offset.y, offset.z,
+    modelNormalization.modelScaleMultiplier, modelNormalization.modelYOffset, modelNormalization.modelYawOffsetDeg,
+  ];
+  if (!values.every(Number.isFinite) || modelNormalization.modelScaleMultiplier <= 0) {
+    return { ok: false, reason: "non-finite placement-local bounds metadata" };
+  }
+  const rawMin = {
+    x: measuredCenter.x - measuredSize.x / 2,
+    y: measuredCenter.y - measuredSize.y / 2,
+    z: measuredCenter.z - measuredSize.z / 2,
+  };
+  const rawMax = {
+    x: measuredCenter.x + measuredSize.x / 2,
+    y: measuredCenter.y + measuredSize.y / 2,
+    z: measuredCenter.z + measuredSize.z / 2,
+  };
+  const autoScale = autoNormalizeBoundsEnabled ? scale : 1;
+  const autoOffset = autoNormalizeBoundsEnabled ? offset : { x: 0, y: 0, z: 0 };
+  const yaw = (modelNormalization.modelYawOffsetDeg * Math.PI) / 180;
+  const cosine = Math.cos(yaw);
+  const sine = Math.sin(yaw);
+  const min = { x: Number.POSITIVE_INFINITY, y: Number.POSITIVE_INFINITY, z: Number.POSITIVE_INFINITY };
+  const max = { x: Number.NEGATIVE_INFINITY, y: Number.NEGATIVE_INFINITY, z: Number.NEGATIVE_INFINITY };
+  for (const x of [rawMin.x, rawMax.x]) {
+    for (const y of [rawMin.y, rawMax.y]) {
+      for (const z of [rawMin.z, rawMax.z]) {
+        const autoX = x * autoScale + autoOffset.x;
+        const autoY = y * autoScale + autoOffset.y;
+        const autoZ = z * autoScale + autoOffset.z;
+        const scaledX = autoX * modelNormalization.modelScaleMultiplier;
+        const scaledY = autoY * modelNormalization.modelScaleMultiplier + modelNormalization.modelYOffset;
+        const scaledZ = autoZ * modelNormalization.modelScaleMultiplier;
+        const transformed = {
+          x: cosine * scaledX + sine * scaledZ,
+          y: scaledY,
+          z: -sine * scaledX + cosine * scaledZ,
+        };
+        min.x = Math.min(min.x, transformed.x);
+        min.y = Math.min(min.y, transformed.y);
+        min.z = Math.min(min.z, transformed.z);
+        max.x = Math.max(max.x, transformed.x);
+        max.y = Math.max(max.y, transformed.y);
+        max.z = Math.max(max.z, transformed.z);
+      }
+    }
+  }
+  if (![min.x, min.y, min.z, max.x, max.y, max.z].every(Number.isFinite)) {
+    return { ok: false, reason: "non-finite placement-local bounds" };
+  }
+  if (max.x - min.x <= MIN_MEASURABLE_DIMENSION || max.y - min.y <= MIN_MEASURABLE_DIMENSION || max.z - min.z <= MIN_MEASURABLE_DIMENSION) {
+    return { ok: false, reason: "degenerate placement-local bounds" };
+  }
+  return { ok: true, min, max };
+}
+
 export function computeAutoBoundsNormalization(object: THREE.Object3D): AutoBoundsNormalization {
   try {
     object.updateMatrixWorld(true);

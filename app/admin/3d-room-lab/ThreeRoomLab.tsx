@@ -51,6 +51,7 @@ import {
 } from "./support-model";
 import {
   createWallConfirmationStamp,
+  buildWallPolygonKey,
   deriveWallSupport,
   isWallConfirmationCurrent,
   type WallPolygon,
@@ -80,8 +81,24 @@ import {
 import {
   computeAutoBoundsNormalization,
   computePlacementLocalFloorContactY,
+  computePlacementLocalModelBounds,
   type AutoBoundsNormalization,
 } from "./model-bounds";
+import {
+  buildAttachmentBindingKey,
+  canMutateModelWhileAttached,
+  computeSupportAttachmentTransform,
+  deriveAttachmentDragCandidate,
+  isAttachedObjectModelLocked as isObjectModelMutationLocked,
+  isAttachmentBindingCurrent,
+  selectPlacementTransformAuthority,
+  selectObjectTransformMode,
+  type AttachableSupportKind,
+  type AttachmentSupportFrame,
+  type ObjectSupportAttachment,
+  type ObjectTransformMode,
+  type SupportAttachmentTransformResult,
+} from "./support-attachment";
 import {
   getSelectedAutoFloorCandidate,
   type AutoFloorDetectionResult,
@@ -439,6 +456,11 @@ type CalibratedCameraSnapshot = {
   appliedAtIso: string;
   imageBasis: CalibrationImageBasis;
   sourceFloorPolygon: FloorPoint[];
+};
+type FrozenAttachmentWorldTransform = {
+  position: { x: number; y: number; z: number };
+  quaternion: { x: number; y: number; z: number; w: number };
+  uniformScale: number;
 };
 
 const OBJECT_HANDLE_ROTATE_DEADZONE_PX = 14;
@@ -1251,6 +1273,11 @@ export default function ThreeRoomLab({
   const calibratedCameraActiveRef = useRef(false);
   const calibratedCameraSnapshotRef = useRef<CalibratedCameraSnapshot | null>(null);
   const preCalibratedDepthScalingRef = useRef<PerspectiveDepthScalingState | null>(null);
+  const attachmentTransformRef = useRef<SupportAttachmentTransformResult | null>(null);
+  const objectTransformModeRef = useRef<ObjectTransformMode>("detached");
+  const frozenAttachmentWorldTransformRef = useRef<FrozenAttachmentWorldTransform | null>(null);
+  const attachmentMoveDragRef = useRef<{ pointerId: number; grabOffset: { u: number; v: number } } | null>(null);
+  const isAttachedObjectModelLockedRef = useRef(false);
 
   const [roomImageInput, setRoomImageInput] = useState(DEFAULT_ROOM_IMAGE_URL);
   const [roomImageUrl, setRoomImageUrl] = useState(DEFAULT_ROOM_IMAGE_URL);
@@ -1277,6 +1304,11 @@ export default function ThreeRoomLab({
   // Phase 0P-C: local-only UI collapse state (not persisted, not in scene JSON).
   const [isCalibratedCameraOpen, setIsCalibratedCameraOpen] = useState(true);
   const [isSupportsOpen, setIsSupportsOpen] = useState(false);
+  const [selectedAttachmentSupportKind, setSelectedAttachmentSupportKind] =
+    useState<AttachableSupportKind>("floor");
+  const [objectSupportAttachment, setObjectSupportAttachment] = useState<ObjectSupportAttachment | null>(null);
+  const isAttachedObjectModelLocked = isObjectModelMutationLocked(objectSupportAttachment);
+  const [attachmentInteractionStatus, setAttachmentInteractionStatus] = useState<string>("attachment_not_configured");
   const [isAdvancedControlsOpen, setIsAdvancedControlsOpen] = useState(false);
   const [isSceneStateOpen, setIsSceneStateOpen] = useState(false);
   const [isDebugOpen, setIsDebugOpen] = useState(false);
@@ -1629,6 +1661,10 @@ export default function ThreeRoomLab({
   useEffect(() => {
     transformRef.current = transform;
   }, [transform]);
+
+  useEffect(() => {
+    isAttachedObjectModelLockedRef.current = isAttachedObjectModelLocked;
+  }, [isAttachedObjectModelLocked]);
 
   useEffect(() => {
     modelNormalizationRef.current = modelNormalization;
@@ -2036,8 +2072,43 @@ export default function ThreeRoomLab({
   const applyPlacementTransform = () => {
     const placementGroup = placementGroupRef.current;
     if (!placementGroup) return;
+    const attachmentTransform = attachmentTransformRef.current;
+    const frozen = frozenAttachmentWorldTransformRef.current;
+    const authority = selectPlacementTransformAuthority({
+      mode: objectTransformModeRef.current,
+      hasCurrentAttachmentTransform: attachmentTransform?.ok ?? false,
+      hasFrozenAttachmentTransform: frozen !== null,
+    });
+    if (authority === "attachment_current" && attachmentTransform?.ok) {
+      const { worldPosition, orientationBasis, uniformScale } = attachmentTransform;
+      const rotationMatrix = new THREE.Matrix4().makeBasis(
+        new THREE.Vector3(orientationBasis.x.x, orientationBasis.x.y, orientationBasis.x.z),
+        new THREE.Vector3(orientationBasis.y.x, orientationBasis.y.y, orientationBasis.y.z),
+        new THREE.Vector3(orientationBasis.z.x, orientationBasis.z.y, orientationBasis.z.z)
+      );
+      placementGroup.position.set(worldPosition.x, worldPosition.y, worldPosition.z);
+      placementGroup.quaternion.setFromRotationMatrix(rotationMatrix);
+      placementGroup.scale.setScalar(uniformScale);
+      return;
+    }
+    if (authority === "attachment_frozen" && frozen) {
+      placementGroup.position.set(frozen.position.x, frozen.position.y, frozen.position.z);
+      placementGroup.quaternion.set(
+        frozen.quaternion.x,
+        frozen.quaternion.y,
+        frozen.quaternion.z,
+        frozen.quaternion.w
+      );
+      placementGroup.scale.setScalar(frozen.uniformScale);
+      return;
+    }
+    // A current attachment with invalid derived geometry, or a blocked
+    // attachment without a previous valid snapshot, holds the exact current
+    // Three.js placement. It must never enter detached transform logic.
+    if (authority === "attachment_hold") return;
     const currentTransform = transformRef.current;
     placementGroup.position.set(currentTransform.positionX, currentTransform.positionY, currentTransform.positionZ);
+    placementGroup.quaternion.identity();
     const finalRotationDeg = currentTransform.rotationYDeg + autoRotateOffsetDegRef.current;
     placementGroup.rotation.y = THREE.MathUtils.degToRad(finalRotationDeg);
     placementGroup.scale.setScalar(
@@ -2050,6 +2121,7 @@ export default function ThreeRoomLab({
   };
 
   const applyModelNormalization = () => {
+    if (isAttachedObjectModelLockedRef.current) return;
     const modelNormalizationGroup = modelNormalizationGroupRef.current;
     if (!modelNormalizationGroup) return;
     const currentNormalization = modelNormalizationRef.current;
@@ -2059,6 +2131,7 @@ export default function ThreeRoomLab({
   };
 
   const applyAutoBoundsNormalization = () => {
+    if (isAttachedObjectModelLockedRef.current) return;
     const autoBoundsGroup = autoBoundsGroupRef.current;
     if (!autoBoundsGroup) return;
     const info = lastAutoBoundsRef.current;
@@ -2129,7 +2202,8 @@ export default function ThreeRoomLab({
     getDepthNearFarOrderingInfo(perspectiveDepthScaling);
   const currentActiveObjectType = toSceneActiveObjectType(activeObjectKind);
   const isFloorAnchorDragEffectivelyEnabled = isFloorAnchorDragEnabled && !isCalibratedCameraActive;
-  const isObject2DHandlesEffectivelyEnabled = isObject2DHandlesEnabled && !isCalibratedCameraActive;
+  const isObject2DHandlesEffectivelyEnabled =
+    isObject2DHandlesEnabled && !isCalibratedCameraActive && !objectSupportAttachment;
   const floorInteractionModeSummary = isFloorClickPlacementEnabled
     ? isFloorAnchorDragEffectivelyEnabled
       ? isObject2DHandlesEffectivelyEnabled
@@ -3295,6 +3369,179 @@ export default function ThreeRoomLab({
     wallSupportDrafts,
     wallSupportImageBases,
   ]);
+
+  // Package 3 attachment contexts are derived from the already-established
+  // support runtime facts. They are deliberately not support authority: an
+  // attachment merely records the exact context that an operator selected.
+  const placementLocalModelBounds = useMemo(
+    () =>
+      computePlacementLocalModelBounds({
+        autoBoundsInfo,
+        autoNormalizeBoundsEnabled,
+        modelNormalization,
+      }),
+    [autoBoundsInfo, autoNormalizeBoundsEnabled, modelNormalization]
+  );
+  const attachmentSupportContexts = useMemo(() => {
+    const floorPolygonKey = sourceNormalizedFloorPolygon
+      .map((point) => `${point.x.toFixed(8)},${point.y.toFixed(8)}`)
+      .join("|");
+    const floorContext =
+      qualifiedImageBasis && calibratedCameraSnapshot && frameSizeForImageSpace
+        ? {
+            supportKind: "floor" as const,
+            sourcePolygonKey: floorPolygonKey,
+            confirmationStampKey: `floor:${resolvedFloorSupportReviewStatus}`,
+            imageBasisId: qualifiedImageBasis.basisId,
+            imageBasisFingerprint: qualifiedImageBasis.basisFingerprint,
+            cameraAppliedAtIso: calibratedCameraSnapshot.appliedAtIso,
+            frameWidth: frameSizeForImageSpace.width,
+            frameHeight: frameSizeForImageSpace.height,
+          }
+        : null;
+    const floorFrame: AttachmentSupportFrame = {
+      kind: "floor",
+      point: { x: 0, y: 0, z: 0 },
+      boundaryUV: [
+        { u: -floorMapping.worldWidth / 2, v: -floorMapping.worldDepth / 2 },
+        { u: floorMapping.worldWidth / 2, v: -floorMapping.worldDepth / 2 },
+        { u: floorMapping.worldWidth / 2, v: floorMapping.worldDepth / 2 },
+        { u: -floorMapping.worldWidth / 2, v: floorMapping.worldDepth / 2 },
+      ],
+    };
+    const contexts: Record<AttachableSupportKind, {
+      usable: boolean;
+      frame: AttachmentSupportFrame | null;
+      bindingContext: Parameters<typeof buildAttachmentBindingKey>[0] | null;
+      reasons: string[];
+    }> = {
+      floor: {
+        usable: floorSupportRuntime.usable,
+        frame: floorFrame,
+        bindingContext: floorContext,
+        reasons: floorSupportRuntime.blockingReasons,
+      },
+      wall_back: { usable: false, frame: null, bindingContext: null, reasons: [] },
+      wall_left: { usable: false, frame: null, bindingContext: null, reasons: [] },
+      wall_right: { usable: false, frame: null, bindingContext: null, reasons: [] },
+    };
+    for (const kind of WALL_SUPPORT_KINDS) {
+      const state = wallSupportStates[kind];
+      const draft = wallSupportDrafts[kind];
+      const stamp = draft.confirmationStamp;
+      const context =
+        draft.imagePolygonSourceNorm && stamp && qualifiedImageBasis && calibratedCameraSnapshot && frameSizeForImageSpace
+          ? {
+              supportKind: kind,
+              sourcePolygonKey: buildWallPolygonKey(draft.imagePolygonSourceNorm),
+              confirmationStampKey: JSON.stringify(stamp),
+              imageBasisId: qualifiedImageBasis.basisId,
+              imageBasisFingerprint: qualifiedImageBasis.basisFingerprint,
+              cameraAppliedAtIso: calibratedCameraSnapshot.appliedAtIso,
+              frameWidth: frameSizeForImageSpace.width,
+              frameHeight: frameSizeForImageSpace.height,
+            }
+          : null;
+      contexts[kind] = {
+        usable: state.runtime.usable && state.derivation.ok,
+        frame: state.derivation.ok
+          ? {
+              kind,
+              plane: state.derivation.plane,
+              seamNormal: state.derivation.seamNormal,
+              boundaryUV: state.derivation.boundaryUV.map((point) => ({ u: point.x, v: point.y })),
+            }
+          : null,
+        bindingContext: context,
+        reasons: state.blockingReasons,
+      };
+    }
+    return contexts;
+  }, [
+    calibratedCameraSnapshot,
+    floorMapping.worldDepth,
+    floorMapping.worldWidth,
+    floorSupportRuntime,
+    frameSizeForImageSpace,
+    qualifiedImageBasis,
+    resolvedFloorSupportReviewStatus,
+    sourceNormalizedFloorPolygon,
+    wallSupportDrafts,
+    wallSupportStates,
+  ]);
+  const selectedAttachmentSupport = attachmentSupportContexts[selectedAttachmentSupportKind];
+  const attachedSupport = objectSupportAttachment
+    ? attachmentSupportContexts[objectSupportAttachment.supportKind]
+    : null;
+  const attachmentBindingCurrent = !!(
+    objectSupportAttachment &&
+    attachedSupport?.bindingContext &&
+    isAttachmentBindingCurrent(objectSupportAttachment, attachedSupport.bindingContext)
+  );
+  const attachmentEligibilityMode = selectObjectTransformMode({
+    attachment: objectSupportAttachment,
+    bindingCurrent: attachmentBindingCurrent,
+    supportUsable: attachedSupport?.usable ?? false,
+    cameraActive: isCalibratedCameraActive,
+  });
+  const attachmentTransform = useMemo(() => {
+    if (!objectSupportAttachment || attachmentEligibilityMode !== "support_attached_current" || !attachedSupport?.frame) {
+      return null;
+    }
+    return computeSupportAttachmentTransform({
+      attachment: objectSupportAttachment,
+      frame: attachedSupport.frame,
+      modelBounds: placementLocalModelBounds.ok ? placementLocalModelBounds : null,
+      scaleRange: { min: TRANSFORM_LIMITS.uniformScale.min, max: TRANSFORM_LIMITS.uniformScale.max },
+    });
+  }, [attachedSupport?.frame, attachmentEligibilityMode, objectSupportAttachment, placementLocalModelBounds]);
+  // A support/runtime-valid attachment whose local transform cannot be derived
+  // is still blocked. This prevents a malformed model bound or frame from
+  // falling through to detached placement behavior.
+  const objectTransformMode: ObjectTransformMode =
+    attachmentEligibilityMode === "support_attached_current" && attachmentTransform && !attachmentTransform.ok
+      ? "support_attached_blocked"
+      : attachmentEligibilityMode;
+  useEffect(() => {
+    objectTransformModeRef.current = objectTransformMode;
+    attachmentTransformRef.current = attachmentTransform;
+    if (objectTransformMode === "support_attached_current" && attachmentTransform?.ok) {
+      frozenAttachmentWorldTransformRef.current = {
+        position: { ...attachmentTransform.worldPosition },
+        quaternion: (() => {
+          const matrix = new THREE.Matrix4().makeBasis(
+            new THREE.Vector3(
+              attachmentTransform.orientationBasis.x.x,
+              attachmentTransform.orientationBasis.x.y,
+              attachmentTransform.orientationBasis.x.z
+            ),
+            new THREE.Vector3(
+              attachmentTransform.orientationBasis.y.x,
+              attachmentTransform.orientationBasis.y.y,
+              attachmentTransform.orientationBasis.y.z
+            ),
+            new THREE.Vector3(
+              attachmentTransform.orientationBasis.z.x,
+              attachmentTransform.orientationBasis.z.y,
+              attachmentTransform.orientationBasis.z.z
+            )
+          );
+          const quaternion = new THREE.Quaternion().setFromRotationMatrix(matrix);
+          return { x: quaternion.x, y: quaternion.y, z: quaternion.z, w: quaternion.w };
+        })(),
+        uniformScale: attachmentTransform.uniformScale,
+      };
+    }
+    applyPlacementTransform();
+  }, [attachmentTransform, objectTransformMode]);
+  const attachmentAnchorProjection = useMemo(() => {
+    if (!attachmentTransform?.ok || !cameraRef.current || !frameSizeForImageSpace) return null;
+    return projectWorldPointToOverlayNormalized(
+      cameraRef.current,
+      frameSizeForImageSpace,
+      attachmentTransform.contactPointWorld
+    );
+  }, [attachmentTransform, frameSizeForImageSpace]);
 
   // Phase 2K-A: user-facing calibration readiness. This is a PRESENTATION layer
   // only — it reads existing diagnostics (cameraPoseDebug.applyCandidate, the FOV
@@ -7605,12 +7852,23 @@ export default function ThreeRoomLab({
   );
 
   const updateTransformField = (field: keyof TransformState, value: number) => {
+    if (objectTransformMode !== "detached") {
+      setAttachmentInteractionStatus("attachment controls own the transform while attached");
+      return;
+    }
     const limits = TRANSFORM_LIMITS[field];
     const clamped = clampValue(value, limits.min, limits.max);
     updateTransformState((prev) => ({ ...prev, [field]: clamped }), { markOwned: true });
   };
 
+  const refuseModelMutationWhileAttached = (): boolean => {
+    if (canMutateModelWhileAttached(objectSupportAttachment)) return false;
+    setAttachmentInteractionStatus("Detach the object before changing the model or model normalization.");
+    return true;
+  };
+
   const updateModelNormalizationField = (field: keyof ModelNormalizationState, value: number) => {
+    if (refuseModelMutationWhileAttached()) return;
     const limits = MODEL_NORMALIZATION_LIMITS[field];
     const clamped = clampValue(value, limits.min, limits.max);
     setModelNormalization((prev) => ({ ...prev, [field]: clamped }));
@@ -7744,14 +8002,45 @@ export default function ThreeRoomLab({
   };
 
   const handleResetTransform = () => {
+    if (objectSupportAttachment) {
+      const target = attachmentSupportContexts[objectSupportAttachment.supportKind];
+      const localPosition =
+        target.frame?.kind === "floor"
+          ? { u: 0, v: 0 }
+          : target.frame?.boundaryUV.reduce(
+              (total, point, _index, points) => ({
+                u: total.u + point.u / points.length,
+                v: total.v + point.v / points.length,
+              }),
+              { u: 0, v: 0 }
+            ) ?? objectSupportAttachment.localPosition;
+      setObjectSupportAttachment((previous) =>
+        previous
+          ? {
+              ...previous,
+              localPosition,
+              rotationAboutNormalDeg: 0,
+              uniformScale: 1,
+            }
+          : previous
+      );
+      setAttachmentInteractionStatus("attachment reset on the same support");
+      return;
+    }
     cancelPendingCalibrationRestoreAfterManualGeometryChange();
     autoRotateOffsetDegRef.current = 0;
     updateTransformState(defaultTransformForKind(activeObjectKind), { markOwned: true });
   };
 
   const handleResetModelNormalization = () => {
+    if (refuseModelMutationWhileAttached()) return;
     cancelPendingCalibrationRestoreAfterManualGeometryChange();
     setModelNormalization(DEFAULT_MODEL_NORMALIZATION);
+  };
+
+  const handleAutoNormalizeBoundsEnabledChange = (enabled: boolean) => {
+    if (refuseModelMutationWhileAttached()) return;
+    setAutoNormalizeBoundsEnabled(enabled);
   };
 
   const floorPolygonPointsAttribute = useMemo(
@@ -8271,6 +8560,103 @@ export default function ThreeRoomLab({
     }));
   };
 
+  const attachToSelectedSupport = (isReattach = false) => {
+    const target = attachmentSupportContexts[selectedAttachmentSupportKind];
+    if (!target.usable || !target.frame || !target.bindingContext) {
+      setAttachmentInteractionStatus("attachment_target_support_unusable");
+      return;
+    }
+    if (!placementLocalModelBounds.ok) {
+      setAttachmentInteractionStatus("attachment_model_bounds_unavailable");
+      return;
+    }
+    const localPosition =
+      target.frame.kind === "floor"
+        ? (() => {
+            const candidate = { u: transformRef.current.positionX, v: transformRef.current.positionZ };
+            const inside = target.frame.boundaryUV.some(() => true) &&
+              candidate.u >= -floorMapping.worldWidth / 2 &&
+              candidate.u <= floorMapping.worldWidth / 2 &&
+              candidate.v >= -floorMapping.worldDepth / 2 &&
+              candidate.v <= floorMapping.worldDepth / 2;
+            return inside ? candidate : { u: 0, v: 0 };
+          })()
+        : (() => {
+            const count = target.frame.boundaryUV.length;
+            return target.frame.boundaryUV.reduce(
+              (total, point) => ({ u: total.u + point.u / count, v: total.v + point.v / count }),
+              { u: 0, v: 0 }
+            );
+          })();
+    const priorScale = objectSupportAttachment?.uniformScale ?? transformRef.current.uniformScale;
+    const wallFace =
+      objectSupportAttachment?.supportKind === selectedAttachmentSupportKind &&
+      objectSupportAttachment.contactProfile.kind === "wall"
+        ? objectSupportAttachment.contactProfile.contactSide
+        : "min";
+    isAttachedObjectModelLockedRef.current = true;
+    setObjectSupportAttachment({
+      supportKind: selectedAttachmentSupportKind,
+      supportBindingKey: buildAttachmentBindingKey(target.bindingContext),
+      localPosition,
+      rotationAboutNormalDeg:
+        objectSupportAttachment?.supportKind === selectedAttachmentSupportKind
+          ? objectSupportAttachment.rotationAboutNormalDeg
+          : 0,
+      uniformScale: clampValue(priorScale, TRANSFORM_LIMITS.uniformScale.min, TRANSFORM_LIMITS.uniformScale.max),
+      contactProfile:
+        selectedAttachmentSupportKind === "floor"
+          ? { kind: "floor", contactAxis: "local_y", contactSide: "min" }
+          : { kind: "wall", contactAxis: "local_z", contactSide: wallFace },
+      attachedAtIso: new Date().toISOString(),
+    });
+    setAttachmentInteractionStatus(isReattach ? "reattached" : "attached");
+  };
+
+  const detachObjectSupport = () => {
+    isAttachedObjectModelLockedRef.current = false;
+    setObjectSupportAttachment(null);
+    attachmentTransformRef.current = null;
+    objectTransformModeRef.current = "detached";
+    frozenAttachmentWorldTransformRef.current = null;
+    attachmentMoveDragRef.current = null;
+    setAttachmentInteractionStatus("detached — legacy transform controls restored");
+  };
+
+  const handleAttachmentMovePointerDown = (event: PointerEvent<SVGCircleElement>) => {
+    if (objectTransformMode !== "support_attached_current" || !objectSupportAttachment || !attachedSupport?.frame) return;
+    const normalizedPoint = getNormalizedOverlayPointFromClient(event.clientX, event.clientY);
+    if (!normalizedPoint) {
+      setAttachmentInteractionStatus("attachment_ray_invalid");
+      return;
+    }
+    const ray = buildOverlayWorldRay(normalizedPoint, cameraRef.current);
+    const candidate = deriveAttachmentDragCandidate({
+      frame: attachedSupport.frame,
+      ray,
+      grabOffset: { u: 0, v: 0 },
+    });
+    if (!candidate.ok) {
+      setAttachmentInteractionStatus(candidate.reasons.join(" · "));
+      return;
+    }
+    attachmentMoveDragRef.current = {
+      pointerId: event.pointerId,
+      grabOffset: {
+        u: objectSupportAttachment.localPosition.u - candidate.localPosition.u,
+        v: objectSupportAttachment.localPosition.v - candidate.localPosition.v,
+      },
+    };
+    event.preventDefault();
+    event.stopPropagation();
+    setAttachmentInteractionStatus("dragging");
+    try {
+      floorOverlayRef.current?.setPointerCapture(event.pointerId);
+    } catch {
+      // Pointer capture is optional; the attachment move remains fail-closed.
+    }
+  };
+
   const updateWallHandleFromClientPoint = (
     kind: WallSupportKind,
     index: number,
@@ -8346,6 +8732,7 @@ export default function ThreeRoomLab({
   };
 
   const handleCalibratedMoveHandlePointerDown = (event: PointerEvent<SVGCircleElement>) => {
+    if (objectSupportAttachment) return;
     if (!calibratedMoveHandleStatus.available) return;
     const normalizedPoint = getNormalizedOverlayPointFromClient(event.clientX, event.clientY);
     if (!normalizedPoint) {
@@ -8405,6 +8792,7 @@ export default function ThreeRoomLab({
   };
 
   const handleCalibratedRotateHandlePointerDown = (event: PointerEvent<SVGElement>) => {
+    if (objectSupportAttachment) return;
     if (!calibratedRotateHandleStatus.available) return;
     const vector = getCalibratedRotateAnchorClientVector(event.clientX, event.clientY);
     if (!vector) {
@@ -8460,6 +8848,7 @@ export default function ThreeRoomLab({
   };
 
   const handleCalibratedScaleHandlePointerDown = (event: PointerEvent<SVGElement>) => {
+    if (objectSupportAttachment) return;
     if (!calibratedScaleHandleStatus.available) return;
     const vector = getCalibratedScaleAnchorClientVector(event.clientX, event.clientY);
     if (!vector) {
@@ -8501,6 +8890,7 @@ export default function ThreeRoomLab({
   };
 
   const handleCalibratedLiftHandlePointerDown = (event: PointerEvent<SVGElement>) => {
+    if (objectSupportAttachment) return;
     if (!calibratedLiftHandleStatus.available) return;
     event.preventDefault();
     event.stopPropagation();
@@ -8522,6 +8912,7 @@ export default function ThreeRoomLab({
   // Phase 2I-C1: explicit return-to-floor. Sets positionY to exactly 0 while
   // preserving every other transform field and all calibrated/depth state.
   const handleCalibratedDropToFloor = () => {
+    if (objectSupportAttachment) return;
     if (!calibratedDropToFloorAvailable) return;
     if (transformRef.current.positionY <= CALIBRATED_LIFT_RESTING_SNAP_EPSILON) return;
     updateTransformState(
@@ -8619,6 +9010,34 @@ export default function ThreeRoomLab({
     if (activeFloorHandleIndex !== null && dragPointerIdRef.current === event.pointerId) {
       event.preventDefault();
       updateFloorHandleFromClientPoint(event.clientX, event.clientY);
+      return;
+    }
+
+    const attachmentDrag = attachmentMoveDragRef.current;
+    if (attachmentDrag && attachmentDrag.pointerId === event.pointerId) {
+      if (
+        objectTransformMode !== "support_attached_current" ||
+        !objectSupportAttachment ||
+        !attachedSupport?.frame
+      ) {
+        attachmentMoveDragRef.current = null;
+        return;
+      }
+      event.preventDefault();
+      const normalizedPoint = getNormalizedOverlayPointFromClient(event.clientX, event.clientY);
+      const candidate = deriveAttachmentDragCandidate({
+        frame: attachedSupport.frame,
+        ray: normalizedPoint ? buildOverlayWorldRay(normalizedPoint, cameraRef.current) : null,
+        grabOffset: attachmentDrag.grabOffset,
+      });
+      if (!candidate.ok) {
+        setAttachmentInteractionStatus(candidate.reasons.join(" · "));
+        return;
+      }
+      setObjectSupportAttachment((previous) =>
+        previous ? { ...previous, localPosition: candidate.localPosition } : previous
+      );
+      setAttachmentInteractionStatus("ok");
       return;
     }
 
@@ -8950,6 +9369,7 @@ export default function ThreeRoomLab({
   };
 
   const handleFloorOverlayPointerDown = (event: PointerEvent<SVGSVGElement>) => {
+    if (objectSupportAttachment) return;
     if (!showFloorOverlay || !isFloorClickPlacementEnabled) return;
     if (activeFloorHandleIndex !== null) return;
     if (activeObjectHandleMode !== null) return;
@@ -8981,6 +9401,15 @@ export default function ThreeRoomLab({
   };
 
   const stopFloorHandleDrag = (event?: PointerEvent<SVGSVGElement>) => {
+    const attachmentDrag = attachmentMoveDragRef.current;
+    if (attachmentDrag && (!event || attachmentDrag.pointerId === event.pointerId)) {
+      try {
+        floorOverlayRef.current?.releasePointerCapture(attachmentDrag.pointerId);
+      } catch {
+        // Ignore release failures when capture has already ended.
+      }
+      attachmentMoveDragRef.current = null;
+    }
     const wallDrag = wallHandleDragRef.current;
     if (wallDrag && (!event || wallDrag.pointerId === event.pointerId)) {
       try {
@@ -9118,7 +9547,8 @@ export default function ThreeRoomLab({
     }
   };
 
-  const applyValidatedSceneState = (validated: ImportedSceneValidated, nextExportedAt: string) => {
+  const applyValidatedSceneState = (validated: ImportedSceneValidated, nextExportedAt: string): boolean => {
+    if (refuseModelMutationWhileAttached()) return false;
     // Phase 2J-B3: any prior calibrated-camera mode/snapshot must not survive an
     // import. We always drop back to legacy first so a stale pre-import snapshot
     // can never leak into the restored scene; calibrated mode is only ever
@@ -9221,9 +9651,14 @@ export default function ThreeRoomLab({
     }
 
     setSceneStateExportedAt(nextExportedAt);
+    return true;
   };
 
   const handleApplyImportedSceneJson = () => {
+    if (refuseModelMutationWhileAttached()) {
+      setImportSceneStatus({ kind: "error", message: "Detach the object before restoring a scene." });
+      return;
+    }
     if (!importSceneJsonInput.trim()) {
       setImportSceneStatus({
         kind: "error",
@@ -9261,7 +9696,10 @@ export default function ThreeRoomLab({
       return;
     }
 
-    applyValidatedSceneState(validated, validated.exportedAt ?? "imported-scene");
+    if (!applyValidatedSceneState(validated, validated.exportedAt ?? "imported-scene")) {
+      setImportSceneStatus({ kind: "error", message: "Detach the object before restoring a scene." });
+      return;
+    }
     setImportSceneStatus({
       kind: "success",
       message: "Imported scene JSON applied successfully.",
@@ -9297,6 +9735,10 @@ export default function ThreeRoomLab({
   };
 
   const handleRestoreLocalDraft = () => {
+    if (refuseModelMutationWhileAttached()) {
+      setLocalDraftStatus({ kind: "error", message: "Detach the object before restoring a local draft." });
+      return;
+    }
     let stored: string | null = null;
     try {
       stored = window.localStorage.getItem(LOCAL_DRAFT_STORAGE_KEY);
@@ -9347,7 +9789,10 @@ export default function ThreeRoomLab({
     }
 
     const restoredAt = validated.exportedAt ?? "restored-local-draft";
-    applyValidatedSceneState(validated, restoredAt);
+    if (!applyValidatedSceneState(validated, restoredAt)) {
+      setLocalDraftStatus({ kind: "error", message: "Detach the object before restoring a local draft." });
+      return;
+    }
     setLocalDraftLastSavedAt(validated.exportedAt ?? null);
     setLocalDraftStatus({
       kind: "success",
@@ -9373,6 +9818,7 @@ export default function ThreeRoomLab({
   };
 
   const handleLoadModelFromInput = () => {
+    if (refuseModelMutationWhileAttached()) return;
     const nextPath = modelPathInput.trim();
     setModelPath(nextPath);
     const loadModel = loadModelFromPathRef.current;
@@ -9385,6 +9831,7 @@ export default function ThreeRoomLab({
   };
 
   const handleUseFallbackCube = () => {
+    if (refuseModelMutationWhileAttached()) return;
     const useFallbackCube = useFallbackCubeRef.current;
     if (!useFallbackCube) {
       setModelLoadState("error");
@@ -9392,6 +9839,11 @@ export default function ThreeRoomLab({
       return;
     }
     useFallbackCube();
+  };
+
+  const handleModelPathInputChange = (value: string) => {
+    if (refuseModelMutationWhileAttached()) return;
+    setModelPathInput(value);
   };
 
   useEffect(() => {
@@ -9487,6 +9939,10 @@ export default function ThreeRoomLab({
     };
 
     const setActiveObject = (object: THREE.Object3D, kind: ActiveObjectKind) => {
+      if (isAttachedObjectModelLockedRef.current) {
+        disposeObject3D(object);
+        return;
+      }
       removeActiveObject();
       // Measure the raw object before parenting under transformed groups so
       // ancestor scale/position never contaminate the bounds, and recompute
@@ -9503,6 +9959,7 @@ export default function ThreeRoomLab({
     };
 
     const addFallbackCube = (reason: string) => {
+      if (isAttachedObjectModelLockedRef.current) return;
       setModelLoadState("fallback");
       setModelLoadError(reason);
       const geometry = new THREE.BoxGeometry(0.8, 0.8, 0.8);
@@ -9520,6 +9977,7 @@ export default function ThreeRoomLab({
     const loader = new GLTFLoader();
     let activeLoadToken = 0;
     const loadModelFromPath = (path: string) => {
+      if (isAttachedObjectModelLockedRef.current) return;
       const trimmedPath = path.trim();
       if (!trimmedPath) {
         addFallbackCube("Model path is empty.");
@@ -9976,14 +10434,16 @@ export default function ThreeRoomLab({
               <button
                 type="button"
                 onClick={handleLoadModelFromInput}
-                className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-200 transition hover:border-emerald-400/80 hover:text-emerald-200"
+                disabled={isAttachedObjectModelLocked}
+                className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-200 transition hover:border-emerald-400/80 hover:text-emerald-200 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 Load model
               </button>
               <button
                 type="button"
                 onClick={handleUseFallbackCube}
-                className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-200 transition hover:border-slate-500 hover:text-slate-100"
+                disabled={isAttachedObjectModelLocked}
+                className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-200 transition hover:border-slate-500 hover:text-slate-100 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 Use fallback cube
               </button>
@@ -9994,13 +10454,17 @@ export default function ThreeRoomLab({
             <input
               type="text"
               value={modelPathInput}
-              onChange={(event) => setModelPathInput(event.target.value)}
+              onChange={(event) => handleModelPathInputChange(event.target.value)}
+              disabled={isAttachedObjectModelLocked}
               placeholder="/3d-lab/furniture-test-chair.glb"
-              className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm outline-none focus:border-emerald-400"
+              className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm outline-none focus:border-emerald-400 disabled:cursor-not-allowed disabled:opacity-50"
             />
           </label>
           <p className="mt-2 text-xs text-slate-400">Active object type: {currentActiveObjectType}</p>
           <p className="mt-1 text-xs text-slate-400">Current model path: {modelPath || "(empty)"}</p>
+          {isAttachedObjectModelLocked && (
+            <p className="mt-2 text-xs text-amber-300">Detach the object before changing the model or model normalization.</p>
+          )}
           <p className="mt-1 text-xs text-slate-400">Model status: {formatModelStatus(modelLoadState, modelLoadError)}</p>
         </section>
 
@@ -10287,7 +10751,50 @@ export default function ThreeRoomLab({
                     onPointerDown={handleFloorAnchorPointerDown}
                   />
                 )}
-                {calibratedMoveHandleStatus.available && calibratedMoveHandleAnchorProjection.normalized && (
+                {objectTransformMode === "support_attached_current" &&
+                  attachmentAnchorProjection?.inFront &&
+                  attachmentAnchorProjection.normalized.x >= 0 &&
+                  attachmentAnchorProjection.normalized.x <= 1 &&
+                  attachmentAnchorProjection.normalized.y >= 0 &&
+                  attachmentAnchorProjection.normalized.y <= 1 && (
+                  <g>
+                    <circle
+                      cx={attachmentAnchorProjection.normalized.x * 100}
+                      cy={attachmentAnchorProjection.normalized.y * 100}
+                      r={2.3}
+                      fill="#0891b2"
+                      fillOpacity={0.3}
+                      stroke="#67e8f9"
+                      strokeWidth={0.65}
+                      pointerEvents="none"
+                    />
+                    <circle
+                      cx={attachmentAnchorProjection.normalized.x * 100}
+                      cy={attachmentAnchorProjection.normalized.y * 100}
+                      r={1.45}
+                      fill="#06b6d4"
+                      stroke="#ffffff"
+                      strokeWidth={0.5}
+                      className="cursor-move"
+                      pointerEvents="all"
+                      aria-label="Support attachment contact anchor"
+                      onPointerDown={handleAttachmentMovePointerDown}
+                    >
+                      <title>Move attached object on its support</title>
+                    </circle>
+                    <text
+                      x={attachmentAnchorProjection.normalized.x * 100 + 2}
+                      y={attachmentAnchorProjection.normalized.y * 100 - 2}
+                      fill="#cffafe"
+                      fontSize="2"
+                      pointerEvents="none"
+                    >
+                      Support anchor
+                    </text>
+                  </g>
+                )}
+                {objectTransformMode === "detached" &&
+                  calibratedMoveHandleStatus.available && calibratedMoveHandleAnchorProjection.normalized && (
                   <g>
                     <circle
                       cx={calibratedMoveHandleAnchorProjection.normalized.x * 100}
@@ -15865,6 +16372,135 @@ export default function ThreeRoomLab({
                   Local support validity makes no physical measurement claim. It only reports whether this lab can use
                   the reviewed support with the current camera and image-basis lifecycle.
                 </div>
+                <div className="rounded-lg border border-cyan-800/70 bg-cyan-950/20 p-3">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div>
+                      <p className="text-sm font-medium text-cyan-100">Object Support Attachment</p>
+                      <p className="mt-1 text-[10px] text-cyan-200/70">
+                        Explicit, session-local attachment for the one lab object. Selecting a target never attaches it.
+                      </p>
+                    </div>
+                    <span className="rounded bg-slate-950/80 px-2 py-1 text-[10px] uppercase tracking-wide text-cyan-100">
+                      transform mode: {objectTransformMode.replaceAll("_", " ")}
+                    </span>
+                  </div>
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    {([
+                      ["floor", "Select Floor"],
+                      ["wall_back", "Select Back wall"],
+                      ["wall_left", "Select Left wall"],
+                      ["wall_right", "Select Right wall"],
+                    ] as const).map(([kind, label]) => (
+                      <button
+                        key={kind}
+                        type="button"
+                        onClick={() => setSelectedAttachmentSupportKind(kind)}
+                        aria-pressed={selectedAttachmentSupportKind === kind}
+                        className={`rounded border px-2 py-1 text-xs ${
+                          selectedAttachmentSupportKind === kind
+                            ? "border-cyan-300 bg-cyan-400/15 text-cyan-50"
+                            : "border-slate-700 text-slate-300"
+                        }`}
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+                  <dl className="mt-3 grid gap-x-4 gap-y-1 sm:grid-cols-2">
+                    <div className="flex justify-between gap-2"><dt className="text-slate-500">selected target</dt><dd>{selectedAttachmentSupportKind.replace("wall_", "")}</dd></div>
+                    <div className="flex justify-between gap-2"><dt className="text-slate-500">selected runtime usable</dt><dd>{selectedAttachmentSupport.usable ? "yes" : "no"}</dd></div>
+                    <div className="flex justify-between gap-2"><dt className="text-slate-500">attached support</dt><dd>{objectSupportAttachment?.supportKind ?? "none"}</dd></div>
+                    <div className="flex justify-between gap-2"><dt className="text-slate-500">binding current</dt><dd>{objectSupportAttachment ? (attachmentBindingCurrent ? "yes" : "no") : "n/a"}</dd></div>
+                    <div className="flex justify-between gap-2"><dt className="text-slate-500">attachment status</dt><dd>{objectTransformMode === "support_attached_blocked" ? "stale / blocked" : objectSupportAttachment ? "current" : "not attached"}</dd></div>
+                    <div className="flex justify-between gap-2"><dt className="text-slate-500">contact profile</dt><dd>{objectSupportAttachment ? `${objectSupportAttachment.contactProfile.kind} · ${objectSupportAttachment.contactProfile.contactAxis} ${objectSupportAttachment.contactProfile.contactSide}` : "n/a"}</dd></div>
+                    <div className="flex justify-between gap-2"><dt className="text-slate-500">support U / V</dt><dd>{objectSupportAttachment ? `${formatNumber(objectSupportAttachment.localPosition.u)} / ${formatNumber(objectSupportAttachment.localPosition.v)}` : "n/a"}</dd></div>
+                    <div className="flex justify-between gap-2"><dt className="text-slate-500">rotation / scale</dt><dd>{objectSupportAttachment ? `${formatNumber(objectSupportAttachment.rotationAboutNormalDeg)}° / ${formatNumber(objectSupportAttachment.uniformScale)}` : "n/a"}</dd></div>
+                    <div className="flex justify-between gap-2"><dt className="text-slate-500">contact plane distance</dt><dd>{attachmentTransform?.ok ? formatNumber(attachmentTransform.diagnostics.contactDistanceToPlane) : "n/a"}</dd></div>
+                    <div className="flex justify-between gap-2"><dt className="text-slate-500">orientation determinant</dt><dd>{attachmentTransform?.ok ? formatNumber(attachmentTransform.diagnostics.orientationDeterminant) : "n/a"}</dd></div>
+                  </dl>
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    <button type="button" onClick={() => attachToSelectedSupport(false)} disabled={!selectedAttachmentSupport.usable} className="rounded border border-cyan-500/70 px-2 py-1 text-xs text-cyan-100 disabled:cursor-not-allowed disabled:opacity-40">
+                      Attach to selected support
+                    </button>
+                    <button type="button" onClick={() => attachToSelectedSupport(true)} disabled={!selectedAttachmentSupport.usable || !objectSupportAttachment} className="rounded border border-emerald-500/70 px-2 py-1 text-xs text-emerald-100 disabled:cursor-not-allowed disabled:opacity-40">
+                      Reattach to selected support
+                    </button>
+                    <button type="button" onClick={detachObjectSupport} disabled={!objectSupportAttachment} className="rounded border border-amber-500/70 px-2 py-1 text-xs text-amber-100 disabled:cursor-not-allowed disabled:opacity-40">
+                      Detach
+                    </button>
+                  </div>
+                  {objectSupportAttachment && (
+                    <div className="mt-3 grid gap-2 md:grid-cols-2">
+                      <TransformControlRow
+                        label="Attachment rotation about normal"
+                        value={objectSupportAttachment.rotationAboutNormalDeg}
+                        min={-180}
+                        max={180}
+                        step={1}
+                        disabled={objectTransformMode !== "support_attached_current"}
+                        onChange={(rotationAboutNormalDeg) =>
+                          setObjectSupportAttachment((previous) =>
+                            previous ? { ...previous, rotationAboutNormalDeg } : previous
+                          )
+                        }
+                      />
+                      <TransformControlRow
+                        label="Attachment uniform scale"
+                        value={objectSupportAttachment.uniformScale}
+                        min={TRANSFORM_LIMITS.uniformScale.min}
+                        max={TRANSFORM_LIMITS.uniformScale.max}
+                        step={TRANSFORM_LIMITS.uniformScale.step}
+                        disabled={objectTransformMode !== "support_attached_current"}
+                        onChange={(uniformScale) =>
+                          setObjectSupportAttachment((previous) =>
+                            previous ? { ...previous, uniformScale } : previous
+                          )
+                        }
+                      />
+                      {objectSupportAttachment.contactProfile.kind === "wall" && (
+                        <label className="rounded-lg border border-slate-800 bg-slate-950/60 p-2 text-xs text-slate-300">
+                          Wall contact face
+                          <select
+                            value={objectSupportAttachment.contactProfile.contactSide}
+                            disabled={objectTransformMode !== "support_attached_current"}
+                            onChange={(event) =>
+                              setObjectSupportAttachment((previous) =>
+                                previous?.contactProfile.kind === "wall"
+                                  ? {
+                                      ...previous,
+                                      contactProfile: {
+                                        ...previous.contactProfile,
+                                        contactSide: event.target.value === "max" ? "max" : "min",
+                                      },
+                                    }
+                                  : previous
+                              )
+                            }
+                            className="ml-2 rounded border border-slate-700 bg-slate-950 px-2 py-1 disabled:opacity-50"
+                          >
+                            <option value="min">local Z min</option>
+                            <option value="max">local Z max</option>
+                          </select>
+                        </label>
+                      )}
+                    </div>
+                  )}
+                  <p className="mt-3 text-[11px] text-slate-400">Status: {attachmentInteractionStatus}</p>
+                  {(objectTransformMode === "support_attached_blocked" || !selectedAttachmentSupport.usable) && (
+                    <p className="mt-1 text-[11px] text-amber-200">
+                      Blocking reasons: {[
+                        ...(objectTransformMode === "support_attached_blocked"
+                          ? [
+                              !isCalibratedCameraActive ? "attachment_camera_inactive" : null,
+                              !attachmentBindingCurrent ? "attachment_binding_stale" : null,
+                            ]
+                          : []),
+                        ...(objectTransformMode === "support_attached_blocked" ? attachedSupport?.reasons ?? [] : selectedAttachmentSupport.reasons),
+                        ...(attachmentTransform && !attachmentTransform.ok ? attachmentTransform.reasons : []),
+                      ].filter((reason): reason is string => !!reason).join(" · ")}
+                    </p>
+                  )}
+                </div>
                 <div className="rounded-lg border border-slate-700 bg-slate-950/60 p-3">
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <p className="text-sm font-medium text-slate-100">Floor</p>
@@ -16332,6 +16968,7 @@ export default function ThreeRoomLab({
                 type="checkbox"
                 checked={autoRotateEnabled}
                 onChange={(event) => setAutoRotateEnabled(event.target.checked)}
+                disabled={objectTransformMode !== "detached"}
                 className="accent-emerald-400"
               />
               Auto-rotate
@@ -16345,6 +16982,7 @@ export default function ThreeRoomLab({
               max={TRANSFORM_LIMITS.positionX.max}
               step={TRANSFORM_LIMITS.positionX.step}
               onChange={(value) => updateTransformField("positionX", value)}
+              disabled={objectTransformMode !== "detached"}
             />
             <TransformControlRow
               label="Position Y"
@@ -16353,6 +16991,7 @@ export default function ThreeRoomLab({
               max={TRANSFORM_LIMITS.positionY.max}
               step={TRANSFORM_LIMITS.positionY.step}
               onChange={(value) => updateTransformField("positionY", value)}
+              disabled={objectTransformMode !== "detached"}
             />
             <TransformControlRow
               label="Position Z"
@@ -16361,6 +17000,7 @@ export default function ThreeRoomLab({
               max={TRANSFORM_LIMITS.positionZ.max}
               step={TRANSFORM_LIMITS.positionZ.step}
               onChange={(value) => updateTransformField("positionZ", value)}
+              disabled={objectTransformMode !== "detached"}
             />
             <TransformControlRow
               label="Rotation Y (deg)"
@@ -16369,6 +17009,7 @@ export default function ThreeRoomLab({
               max={TRANSFORM_LIMITS.rotationYDeg.max}
               step={TRANSFORM_LIMITS.rotationYDeg.step}
               onChange={(value) => updateTransformField("rotationYDeg", value)}
+              disabled={objectTransformMode !== "detached"}
             />
             <TransformControlRow
               label="Uniform Scale"
@@ -16377,6 +17018,7 @@ export default function ThreeRoomLab({
               max={TRANSFORM_LIMITS.uniformScale.max}
               step={TRANSFORM_LIMITS.uniformScale.step}
               onChange={(value) => updateTransformField("uniformScale", value)}
+              disabled={objectTransformMode !== "detached"}
             />
           </div>
           <div className="mt-4 border-t border-slate-800 pt-3">
@@ -16387,15 +17029,17 @@ export default function ThreeRoomLab({
                   <input
                     type="checkbox"
                     checked={autoNormalizeBoundsEnabled}
-                    onChange={(event) => setAutoNormalizeBoundsEnabled(event.target.checked)}
-                    className="accent-emerald-400"
+                    onChange={(event) => handleAutoNormalizeBoundsEnabledChange(event.target.checked)}
+                    disabled={isAttachedObjectModelLocked}
+                    className="accent-emerald-400 disabled:cursor-not-allowed disabled:opacity-50"
                   />
                   Auto-normalize model bounds
                 </label>
                 <button
                   type="button"
                   onClick={handleResetModelNormalization}
-                  className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-200 transition hover:border-emerald-400/80 hover:text-emerald-200"
+                  disabled={isAttachedObjectModelLocked}
+                  className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-200 transition hover:border-emerald-400/80 hover:text-emerald-200 disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   Reset normalization
                 </button>
@@ -16406,6 +17050,9 @@ export default function ThreeRoomLab({
               still place the object in the room. Auto-normalize measures each loaded model&apos;s bounds and applies
               floor contact, X/Z centering, and target-size scaling automatically; the sliders below layer on top.
             </p>
+            {isAttachedObjectModelLocked && (
+              <p className="mt-1 text-xs text-amber-300">Detach the object before changing the model or model normalization.</p>
+            )}
             <div className="mt-2 grid gap-2 md:grid-cols-3">
               <TransformControlRow
                 label="Model Y offset"
@@ -16414,6 +17061,7 @@ export default function ThreeRoomLab({
                 max={MODEL_NORMALIZATION_LIMITS.modelYOffset.max}
                 step={MODEL_NORMALIZATION_LIMITS.modelYOffset.step}
                 onChange={(value) => updateModelNormalizationField("modelYOffset", value)}
+                disabled={isAttachedObjectModelLocked}
               />
               <TransformControlRow
                 label="Model yaw offset (deg)"
@@ -16422,6 +17070,7 @@ export default function ThreeRoomLab({
                 max={MODEL_NORMALIZATION_LIMITS.modelYawOffsetDeg.max}
                 step={MODEL_NORMALIZATION_LIMITS.modelYawOffsetDeg.step}
                 onChange={(value) => updateModelNormalizationField("modelYawOffsetDeg", value)}
+                disabled={isAttachedObjectModelLocked}
               />
               <TransformControlRow
                 label="Model scale multiplier"
@@ -16430,6 +17079,7 @@ export default function ThreeRoomLab({
                 max={MODEL_NORMALIZATION_LIMITS.modelScaleMultiplier.max}
                 step={MODEL_NORMALIZATION_LIMITS.modelScaleMultiplier.step}
                 onChange={(value) => updateModelNormalizationField("modelScaleMultiplier", value)}
+                disabled={isAttachedObjectModelLocked}
               />
             </div>
           </div>
@@ -16583,6 +17233,7 @@ export default function ThreeRoomLab({
             onSaveLocalDraft={handleSaveLocalDraft}
             onRestoreLocalDraft={handleRestoreLocalDraft}
             onClearLocalDraft={handleClearLocalDraft}
+            modelMutationLocked={isAttachedObjectModelLocked}
           />
         </CollapsibleSection>
 
