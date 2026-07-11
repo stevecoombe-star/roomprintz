@@ -5,6 +5,12 @@ import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import SceneJsonPanel from "./SceneJsonPanel";
 import CollapsibleSection from "./CollapsibleSection";
+import MilestoneValidationPanel from "./MilestoneValidationPanel";
+import {
+  createEmptyOperatorObservations,
+  type ObservationAttachmentProvenance,
+  type ValidationAttachmentProvenanceBySupport,
+} from "./milestone-validation";
 import {
   DEFAULT_FLOOR_MAPPING,
   DEFAULT_PERSPECTIVE_DEPTH_SCALING,
@@ -472,6 +478,22 @@ type FrozenAttachmentWorldTransform = {
   quaternion: { x: number; y: number; z: number; w: number };
   uniformScale: number;
 };
+
+function buildObservationAttachmentProvenance(
+  attachment: ObjectSupportAttachment
+): ObservationAttachmentProvenance {
+  const contactProfileKey =
+    attachment.contactProfile.kind === "floor"
+      ? "floor:local_y:min"
+      : attachment.contactProfile.kind === "wall"
+        ? `wall:local_z:${attachment.contactProfile.contactSide}`
+        : `ceiling:local_y:${attachment.contactProfile.contactSide}`;
+  return {
+    supportKind: attachment.supportKind,
+    attachmentBindingKey: attachment.supportBindingKey,
+    contactProfileKey: contactProfileKey as ObservationAttachmentProvenance["contactProfileKey"],
+  };
+}
 
 const OBJECT_HANDLE_ROTATE_DEADZONE_PX = 14;
 const OBJECT_HANDLE_SCALE_MIN_START_DISTANCE_PX = 10;
@@ -1302,6 +1324,7 @@ export default function ThreeRoomLab({
   );
   const calibratedCameraActiveRef = useRef(false);
   const calibratedCameraSnapshotRef = useRef<CalibratedCameraSnapshot | null>(null);
+  const calibratedCameraApplyStatusRef = useRef<{ available: boolean } | null>(null);
   const preCalibratedDepthScalingRef = useRef<PerspectiveDepthScalingState | null>(null);
   const attachmentTransformRef = useRef<SupportAttachmentTransformResult | null>(null);
   const objectTransformModeRef = useRef<ObjectTransformMode>("detached");
@@ -1334,6 +1357,12 @@ export default function ThreeRoomLab({
   // Phase 0P-C: local-only UI collapse state (not persisted, not in scene JSON).
   const [isCalibratedCameraOpen, setIsCalibratedCameraOpen] = useState(true);
   const [isSupportsOpen, setIsSupportsOpen] = useState(false);
+  const [isMilestoneValidationOpen, setIsMilestoneValidationOpen] = useState(false);
+  const [milestoneOperatorObservations, setMilestoneOperatorObservations] = useState(createEmptyOperatorObservations);
+  const [validationAttachmentProvenanceBySupport, setValidationAttachmentProvenanceBySupport] =
+    useState<ValidationAttachmentProvenanceBySupport>({});
+  const [milestoneProfileLabel, setMilestoneProfileLabel] = useState("");
+  const [milestoneRoomPhotoNotes, setMilestoneRoomPhotoNotes] = useState("");
   const [selectedAttachmentSupportKind, setSelectedAttachmentSupportKind] =
     useState<AttachableSupportKind>("floor");
   const [objectSupportAttachment, setObjectSupportAttachment] = useState<ObjectSupportAttachment | null>(null);
@@ -1383,6 +1412,7 @@ export default function ThreeRoomLab({
     useState<SupportReviewStatus>("needs_review");
   const [floorSupportSource, setFloorSupportSource] = useState<SupportSource>("manual");
   const [floorSupportImageBasis, setFloorSupportImageBasis] = useState<CalibrationImageBasis | null>(null);
+  const [supportInteractionStatus, setSupportInteractionStatus] = useState<string>("none");
   const [activeFloorHandleIndex, setActiveFloorHandleIndex] = useState<number | null>(null);
   // Wall source authority remains source-normalized; container polygons are
   // derived presentation only, following the existing floor dual-space pattern.
@@ -1949,7 +1979,11 @@ export default function ThreeRoomLab({
       },
       fovDeg: number
     ) => {
-      if (!qualifiedImageBasis || sourceNormalizedFloorPolygon.length !== 4) {
+      if (
+        !calibratedCameraApplyStatusRef.current?.available ||
+        !qualifiedImageBasis ||
+        sourceNormalizedFloorPolygon.length !== 4
+      ) {
         return;
       }
       captureAndNeutralizeDepthScalingForCalibratedMode();
@@ -2965,6 +2999,7 @@ export default function ThreeRoomLab({
     floorPolygonAuthorityEligible,
     sourceNormalizedFloorPolygon.length,
   ]);
+  calibratedCameraApplyStatusRef.current = calibratedCameraApplyStatus;
 
   // Phase 2J-B3: deferred calibrated-camera restore. This runs reactively, not
   // in a render loop: while a request is pending it simply waits (no side
@@ -3719,6 +3754,157 @@ export default function ThreeRoomLab({
       attachmentTransform.contactPointWorld
     );
   }, [attachmentTransform, frameSizeForImageSpace]);
+  // Package 5 observes existing authority and derived runtime facts. It does not
+  // create support, camera, attachment, or model authority of its own.
+  const milestoneMachineFacts = useMemo(() => {
+    const supportFact = (input: {
+      rawReviewStatus: SupportReviewStatus;
+      resolvedReviewStatus: SupportReviewStatus;
+      runtimeUsable: boolean;
+      confirmationCurrent: boolean;
+      identityKey: string | null;
+      attachable: boolean;
+      blockers: readonly string[];
+    }) => ({
+      rawReviewStatus: input.rawReviewStatus,
+      resolvedReviewStatus: input.resolvedReviewStatus,
+      runtimeUsable: input.runtimeUsable,
+      confirmationCurrent: input.confirmationCurrent,
+      identityKey: input.identityKey,
+      attachable: input.attachable,
+      blockers: input.blockers,
+    });
+    const floorIdentity = JSON.stringify({
+      polygon: buildFloorPolygonAuthorityKey(sourceNormalizedFloorPolygon),
+      review: resolvedFloorSupportReviewStatus,
+      basis: floorSupportImageBasis
+        ? [floorSupportImageBasis.basisId, floorSupportImageBasis.basisFingerprint]
+        : null,
+    });
+    const modelBoundsKey = placementLocalModelBounds.ok
+      ? JSON.stringify([placementLocalModelBounds.min, placementLocalModelBounds.max])
+      : null;
+    return {
+      imageBasis: {
+        qualified: !!qualifiedImageBasis,
+        basisId: qualifiedImageBasis?.basisId ?? null,
+        basisFingerprint: qualifiedImageBasis?.basisFingerprint ?? null,
+      },
+      camera: {
+        active: isCalibratedCameraActive,
+        stale: calibratedCameraFrameMatchStatus.diagnostics?.isWarningStale ?? false,
+        appliedAtIso: calibratedCameraSnapshot?.appliedAtIso ?? null,
+        frameWidth: frameSizeForImageSpace?.width ?? null,
+        frameHeight: frameSizeForImageSpace?.height ?? null,
+      },
+      supports: {
+        floor: supportFact({
+          rawReviewStatus: floorSupportReviewStatus,
+          resolvedReviewStatus: resolvedFloorSupportReviewStatus,
+          runtimeUsable: floorSupportRuntime.usable,
+          confirmationCurrent: resolvedFloorSupportReviewStatus === "manually_confirmed" || resolvedFloorSupportReviewStatus === "locally_verified",
+          identityKey: floorIdentity,
+          attachable: !!attachmentSupportContexts.floor.frame,
+          blockers: floorSupportRuntime.blockingReasons,
+        }),
+        wall_back: supportFact({
+          rawReviewStatus: wallSupportDrafts.wall_back.reviewStatus,
+          resolvedReviewStatus: wallSupportStates.wall_back.resolvedReviewStatus,
+          runtimeUsable: wallSupportStates.wall_back.runtime.usable,
+          confirmationCurrent: wallSupportStates.wall_back.confirmationCurrent,
+          identityKey: attachmentSupportContexts.wall_back.bindingContext
+            ? buildAttachmentBindingKey(attachmentSupportContexts.wall_back.bindingContext)
+            : null,
+          attachable: !!attachmentSupportContexts.wall_back.frame,
+          blockers: wallSupportStates.wall_back.blockingReasons,
+        }),
+        wall_left: supportFact({
+          rawReviewStatus: wallSupportDrafts.wall_left.reviewStatus,
+          resolvedReviewStatus: wallSupportStates.wall_left.resolvedReviewStatus,
+          runtimeUsable: wallSupportStates.wall_left.runtime.usable,
+          confirmationCurrent: wallSupportStates.wall_left.confirmationCurrent,
+          identityKey: attachmentSupportContexts.wall_left.bindingContext
+            ? buildAttachmentBindingKey(attachmentSupportContexts.wall_left.bindingContext)
+            : null,
+          attachable: !!attachmentSupportContexts.wall_left.frame,
+          blockers: wallSupportStates.wall_left.blockingReasons,
+        }),
+        wall_right: supportFact({
+          rawReviewStatus: wallSupportDrafts.wall_right.reviewStatus,
+          resolvedReviewStatus: wallSupportStates.wall_right.resolvedReviewStatus,
+          runtimeUsable: wallSupportStates.wall_right.runtime.usable,
+          confirmationCurrent: wallSupportStates.wall_right.confirmationCurrent,
+          identityKey: attachmentSupportContexts.wall_right.bindingContext
+            ? buildAttachmentBindingKey(attachmentSupportContexts.wall_right.bindingContext)
+            : null,
+          attachable: !!attachmentSupportContexts.wall_right.frame,
+          blockers: wallSupportStates.wall_right.blockingReasons,
+        }),
+        ceiling: supportFact({
+          rawReviewStatus: ceilingSupportDraft.reviewStatus,
+          resolvedReviewStatus: ceilingSupportState.resolvedReviewStatus,
+          runtimeUsable: ceilingSupportState.runtime.usable,
+          confirmationCurrent: ceilingSupportState.confirmationCurrent,
+          identityKey: attachmentSupportContexts.ceiling.bindingContext
+            ? buildAttachmentBindingKey(attachmentSupportContexts.ceiling.bindingContext)
+            : null,
+          attachable: !!attachmentSupportContexts.ceiling.frame,
+          blockers: ceilingSupportState.blockingReasons,
+        }),
+      },
+      attachment: {
+        mode: objectTransformMode,
+        supportKind: objectSupportAttachment?.supportKind ?? null,
+        bindingCurrent: attachmentBindingCurrent,
+        bindingKey: objectSupportAttachment?.supportBindingKey ?? null,
+        transformValid: attachmentTransform?.ok ?? false,
+        contactDistanceToPlane: attachmentTransform?.ok ? attachmentTransform.diagnostics.contactDistanceToPlane : null,
+        orientationDeterminant: attachmentTransform?.ok ? attachmentTransform.diagnostics.orientationDeterminant : null,
+        blockers: [
+          ...(objectTransformMode === "support_attached_blocked" ? attachedSupport?.reasons ?? [] : []),
+          ...(attachmentTransform && !attachmentTransform.ok ? attachmentTransform.reasons : []),
+        ],
+      },
+      model: {
+        boundsAvailable: autoBoundsInfo !== null,
+        boundsValid: placementLocalModelBounds.ok,
+        boundsKey: modelBoundsKey,
+      },
+      // These are existing guards exercised by the room-lab action paths; this
+      // profile only surfaces their availability for operator demonstration.
+      refusalCapabilities: {
+        unusableSupportGuard: true,
+        staleBindingGuard: true,
+        finiteBoundaryGuard: true,
+        cameraRevertGuard: true,
+        modelMutationLockGuard: true,
+      },
+    };
+  }, [
+    attachmentBindingCurrent,
+    attachmentSupportContexts,
+    attachmentTransform,
+    attachedSupport?.reasons,
+    autoBoundsInfo,
+    calibratedCameraFrameMatchStatus.diagnostics?.isWarningStale,
+    calibratedCameraSnapshot?.appliedAtIso,
+    ceilingSupportDraft.reviewStatus,
+    ceilingSupportState,
+    floorSupportImageBasis,
+    floorSupportReviewStatus,
+    floorSupportRuntime,
+    frameSizeForImageSpace,
+    isCalibratedCameraActive,
+    objectSupportAttachment?.supportBindingKey,
+    objectSupportAttachment?.supportKind,
+    objectTransformMode,
+    placementLocalModelBounds,
+    qualifiedImageBasis,
+    resolvedFloorSupportReviewStatus,
+    sourceNormalizedFloorPolygon,
+    wallSupportDrafts,
+    wallSupportStates,
+  ]);
 
   // Phase 2K-A: user-facing calibration readiness. This is a PRESENTATION layer
   // only — it reads existing diagnostics (cameraPoseDebug.applyCandidate, the FOV
@@ -8092,6 +8278,7 @@ export default function ThreeRoomLab({
     field: keyof Omit<PerspectiveDepthScalingState, "enabled">,
     value: number
   ) => {
+    if (isCalibratedCameraActive) return;
     const limits = PERSPECTIVE_DEPTH_SCALING_LIMITS[field];
     const clamped = clampValue(value, limits.min, limits.max);
     setPerspectiveDepthScaling((prev) => ({
@@ -8101,7 +8288,13 @@ export default function ThreeRoomLab({
   };
 
   const handleResetPerspectiveDepthScaling = () => {
+    if (isCalibratedCameraActive) return;
     setPerspectiveDepthScaling(DEFAULT_PERSPECTIVE_DEPTH_SCALING);
+  };
+
+  const handlePerspectiveDepthScalingEnabledChange = (enabled: boolean) => {
+    if (isCalibratedCameraActive) return;
+    setPerspectiveDepthScaling((previous) => ({ ...previous, enabled }));
   };
 
   const handleAutoFitFromFloor = () => {
@@ -8180,6 +8373,10 @@ export default function ThreeRoomLab({
 
   const handleResetTransform = () => {
     if (objectSupportAttachment) {
+      if (objectTransformMode !== "support_attached_current") {
+        setAttachmentInteractionStatus("attachment_binding_stale");
+        return;
+      }
       const target = attachmentSupportContexts[objectSupportAttachment.supportKind];
       const localPosition =
         target.frame?.kind === "floor"
@@ -8658,7 +8855,10 @@ export default function ThreeRoomLab({
 
   const configureWall = (kind: WallSupportKind) => {
     const orderedFloor = homographyDebug.orderedCornersNorm;
-    if (!orderedFloor) return;
+    if (!orderedFloor) {
+      setSupportInteractionStatus("wall_configuration_requires_ordered_floor");
+      return;
+    }
     const seam: [FloorPoint, FloorPoint] =
       kind === "wall_back"
         ? [orderedFloor[3], orderedFloor[2]]
@@ -8687,6 +8887,7 @@ export default function ThreeRoomLab({
     }));
     setWallSupportImageBases((previous) => ({ ...previous, [kind]: qualifiedImageBasis }));
     setSelectedWallKind(kind);
+    setSupportInteractionStatus("wall_configured");
   };
 
   const clearWall = (kind: WallSupportKind) => {
@@ -8696,6 +8897,10 @@ export default function ThreeRoomLab({
   };
 
   const revokeWallConfirmation = (kind: WallSupportKind) => {
+    if (!wallSupportDrafts[kind].confirmationStamp) {
+      setSupportInteractionStatus("wall_confirmation_not_present");
+      return;
+    }
     setWallSupportDrafts((previous) => {
       const current = previous[kind];
       return {
@@ -8707,6 +8912,7 @@ export default function ThreeRoomLab({
         },
       };
     });
+    setSupportInteractionStatus("wall_confirmation_revoked");
   };
 
   const confirmWall = (kind: WallSupportKind) => {
@@ -8739,7 +8945,10 @@ export default function ThreeRoomLab({
 
   const configureCeiling = () => {
     const source = projectContainerPolygonToSource(DEFAULT_CEILING_CONTAINER_POLYGON);
-    if (!source || source.length !== 4) return;
+    if (!source || source.length !== 4) {
+      setSupportInteractionStatus("ceiling_configuration_source_unavailable");
+      return;
+    }
     setCeilingSupportDraft({
       enabled: true,
       source: "manual",
@@ -8750,6 +8959,7 @@ export default function ThreeRoomLab({
     });
     setCeilingSupportImageBasis(qualifiedImageBasis);
     setIsCeilingOverlayVisible(true);
+    setSupportInteractionStatus("ceiling_configured");
   };
 
   const clearCeiling = () => {
@@ -8859,8 +9069,7 @@ export default function ThreeRoomLab({
       objectSupportAttachment.contactProfile.kind === "ceiling"
         ? objectSupportAttachment.contactProfile.contactSide
         : "max";
-    isAttachedObjectModelLockedRef.current = true;
-    setObjectSupportAttachment({
+    const nextAttachment: ObjectSupportAttachment = {
       supportKind: selectedAttachmentSupportKind,
       supportBindingKey: buildAttachmentBindingKey(target.bindingContext),
       localPosition,
@@ -8876,7 +9085,13 @@ export default function ThreeRoomLab({
             ? { kind: "ceiling", contactAxis: "local_y", contactSide: ceilingFace }
             : { kind: "wall", contactAxis: "local_z", contactSide: wallFace },
       attachedAtIso: new Date().toISOString(),
-    });
+    };
+    isAttachedObjectModelLockedRef.current = true;
+    setObjectSupportAttachment(nextAttachment);
+    setValidationAttachmentProvenanceBySupport((previous) => ({
+      ...previous,
+      [nextAttachment.supportKind]: buildObservationAttachmentProvenance(nextAttachment),
+    }));
     setAttachmentInteractionStatus(isReattach ? "reattached" : "attached");
   };
 
@@ -8888,6 +9103,16 @@ export default function ThreeRoomLab({
     frozenAttachmentWorldTransformRef.current = null;
     attachmentMoveDragRef.current = null;
     setAttachmentInteractionStatus("detached — legacy transform controls restored");
+  };
+
+  // Keep attachment UI controls fail-closed even if a stale browser event,
+  // automation, or future caller bypasses their disabled presentation state.
+  const updateCurrentAttachment = (update: (current: ObjectSupportAttachment) => ObjectSupportAttachment) => {
+    if (objectTransformMode !== "support_attached_current") {
+      setAttachmentInteractionStatus("attachment_binding_stale");
+      return;
+    }
+    setObjectSupportAttachment((previous) => (previous ? update(previous) : previous));
   };
 
   const handleAttachmentMovePointerDown = (event: PointerEvent<SVGCircleElement>) => {
@@ -9329,9 +9554,10 @@ export default function ThreeRoomLab({
     }
 
     if (calibratedMoveDragPointerIdRef.current === event.pointerId) {
-      if (!calibratedCameraActiveRef.current) {
+      if (!calibratedCameraActiveRef.current || !calibratedMoveHandleStatus.available) {
         calibratedMoveDragPointerIdRef.current = null;
         calibratedMoveGrabOffsetRef.current = null;
+        setLastCalibratedMoveStatus("rejected — calibrated move is no longer available");
         return;
       }
       event.preventDefault();
@@ -9398,9 +9624,13 @@ export default function ThreeRoomLab({
     if (calibratedRotateDragPointerIdRef.current === event.pointerId) {
       // Calibrated Rotate is only valid while calibrated camera is active and
       // auto-rotate is off; otherwise bail and clear to avoid stale drags.
-      if (!calibratedCameraActiveRef.current || autoRotateEnabledRef.current) {
+      if (
+        !calibratedCameraActiveRef.current ||
+        autoRotateEnabledRef.current ||
+        !calibratedRotateHandleStatus.available
+      ) {
         clearCalibratedRotateDragState();
-        setLastCalibratedRotateStatus("none");
+        setLastCalibratedRotateStatus("rejected — calibrated rotate is no longer available");
         return;
       }
       event.preventDefault();
@@ -9841,6 +10071,7 @@ export default function ThreeRoomLab({
     if (validated.modelPath !== null) {
       setModelPathInput(validated.modelPath);
       setModelPath(validated.modelPath);
+      loadModelFromPathRef.current?.(validated.modelPath);
     }
     setModelNormalization(validated.modelNormalization);
     const nextRoomImageUrl = validated.roomImageUrl ?? "";
@@ -12033,7 +12264,8 @@ export default function ThreeRoomLab({
               <button
                 type="button"
                 onClick={handleResetTransform}
-                className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-200 transition hover:border-emerald-400/80 hover:text-emerald-200"
+                disabled={objectSupportAttachment !== null && objectTransformMode !== "support_attached_current"}
+                className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-200 transition hover:border-emerald-400/80 hover:text-emerald-200 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 Reset transform
               </button>
@@ -16712,6 +16944,9 @@ export default function ThreeRoomLab({
                   Local support validity makes no physical measurement claim. It only reports whether this lab can use
                   the reviewed support with the current camera and image-basis lifecycle.
                 </div>
+                {supportInteractionStatus !== "none" ? (
+                  <p className="text-amber-200">Support action status: {supportInteractionStatus}</p>
+                ) : null}
                 <div className="rounded-lg border border-cyan-800/70 bg-cyan-950/20 p-3">
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <div>
@@ -16780,9 +17015,10 @@ export default function ThreeRoomLab({
                         step={1}
                         disabled={objectTransformMode !== "support_attached_current"}
                         onChange={(rotationAboutNormalDeg) =>
-                          setObjectSupportAttachment((previous) =>
-                            previous ? { ...previous, rotationAboutNormalDeg } : previous
-                          )
+                          updateCurrentAttachment((previous) => ({
+                            ...previous,
+                            rotationAboutNormalDeg: clampValue(rotationAboutNormalDeg, -180, 180),
+                          }))
                         }
                       />
                       <TransformControlRow
@@ -16793,9 +17029,14 @@ export default function ThreeRoomLab({
                         step={TRANSFORM_LIMITS.uniformScale.step}
                         disabled={objectTransformMode !== "support_attached_current"}
                         onChange={(uniformScale) =>
-                          setObjectSupportAttachment((previous) =>
-                            previous ? { ...previous, uniformScale } : previous
-                          )
+                          updateCurrentAttachment((previous) => ({
+                            ...previous,
+                            uniformScale: clampValue(
+                              uniformScale,
+                              TRANSFORM_LIMITS.uniformScale.min,
+                              TRANSFORM_LIMITS.uniformScale.max
+                            ),
+                          }))
                         }
                       />
                       {objectSupportAttachment.contactProfile.kind === "wall" && (
@@ -16804,19 +17045,25 @@ export default function ThreeRoomLab({
                           <select
                             value={objectSupportAttachment.contactProfile.contactSide}
                             disabled={objectTransformMode !== "support_attached_current"}
-                            onChange={(event) =>
-                              setObjectSupportAttachment((previous) =>
-                                previous?.contactProfile.kind === "wall"
-                                  ? {
-                                      ...previous,
-                                      contactProfile: {
-                                        ...previous.contactProfile,
-                                        contactSide: event.target.value === "max" ? "max" : "min",
-                                      },
-                                    }
-                                  : previous
-                              )
-                            }
+                            onChange={(event) => {
+                              if (objectTransformMode !== "support_attached_current") {
+                                updateCurrentAttachment((previous) => previous);
+                                return;
+                              }
+                              const nextAttachment: ObjectSupportAttachment = {
+                                ...objectSupportAttachment,
+                                contactProfile: {
+                                  kind: "wall",
+                                  contactAxis: "local_z",
+                                  contactSide: event.target.value === "max" ? "max" : "min",
+                                },
+                              };
+                              updateCurrentAttachment(() => nextAttachment);
+                              setValidationAttachmentProvenanceBySupport((previous) => ({
+                                ...previous,
+                                [nextAttachment.supportKind]: buildObservationAttachmentProvenance(nextAttachment),
+                              }));
+                            }}
                             className="ml-2 rounded border border-slate-700 bg-slate-950 px-2 py-1 disabled:opacity-50"
                           >
                             <option value="min">local Z min</option>
@@ -16830,19 +17077,25 @@ export default function ThreeRoomLab({
                           <select
                             value={objectSupportAttachment.contactProfile.contactSide}
                             disabled={objectTransformMode !== "support_attached_current"}
-                            onChange={(event) =>
-                              setObjectSupportAttachment((previous) =>
-                                previous?.contactProfile.kind === "ceiling"
-                                  ? {
-                                      ...previous,
-                                      contactProfile: {
-                                        ...previous.contactProfile,
-                                        contactSide: event.target.value === "min" ? "min" : "max",
-                                      },
-                                    }
-                                  : previous
-                              )
-                            }
+                            onChange={(event) => {
+                              if (objectTransformMode !== "support_attached_current") {
+                                updateCurrentAttachment((previous) => previous);
+                                return;
+                              }
+                              const nextAttachment: ObjectSupportAttachment = {
+                                ...objectSupportAttachment,
+                                contactProfile: {
+                                  kind: "ceiling",
+                                  contactAxis: "local_y",
+                                  contactSide: event.target.value === "min" ? "min" : "max",
+                                },
+                              };
+                              updateCurrentAttachment(() => nextAttachment);
+                              setValidationAttachmentProvenanceBySupport((previous) => ({
+                                ...previous,
+                                [nextAttachment.supportKind]: buildObservationAttachmentProvenance(nextAttachment),
+                              }));
+                            }}
                             className="ml-2 rounded border border-slate-700 bg-slate-950 px-2 py-1 disabled:opacity-50"
                           >
                             <option value="max">local Y max</option>
@@ -16891,12 +17144,17 @@ export default function ThreeRoomLab({
                       disabled={!ceilingSupportDraft.enabled}
                       onChange={(event) => {
                         const roomHeight = Number(event.target.value);
+                        if (!Number.isFinite(roomHeight)) {
+                          setSupportInteractionStatus("ceiling_height_must_be_finite");
+                          return;
+                        }
                         setCeilingSupportDraft((previous) => ({
                           ...previous,
                           roomHeight,
                           reviewStatus: previous.enabled ? "needs_review" : "unavailable",
                           confirmationStamp: null,
                         }));
+                        setSupportInteractionStatus("ceiling_height_changed_requires_review");
                       }}
                       className="ml-2 w-28 rounded border border-slate-700 bg-slate-950 px-2 py-1 text-slate-100 disabled:opacity-50"
                     />
@@ -17035,7 +17293,7 @@ export default function ThreeRoomLab({
                       ) : null}
                       <div className="mt-3 flex flex-wrap gap-2">
                         {!draft.enabled ? (
-                          <button type="button" onClick={() => configureWall(kind)} className="rounded border border-slate-600 px-2 py-1 text-xs text-slate-100 hover:border-slate-400">
+                          <button type="button" onClick={() => configureWall(kind)} disabled={!homographyDebug.orderedCornersNorm} className="rounded border border-slate-600 px-2 py-1 text-xs text-slate-100 hover:border-slate-400 disabled:cursor-not-allowed disabled:opacity-40">
                             Configure wall
                           </button>
                         ) : (
@@ -17043,7 +17301,7 @@ export default function ThreeRoomLab({
                             <button type="button" onClick={() => confirmWall(kind)} disabled={!canConfirm} className="rounded border border-emerald-700 px-2 py-1 text-xs text-emerald-200 disabled:cursor-not-allowed disabled:opacity-40">
                               Confirm wall
                             </button>
-                            <button type="button" onClick={() => revokeWallConfirmation(kind)} className="rounded border border-amber-700 px-2 py-1 text-xs text-amber-200">
+                            <button type="button" onClick={() => revokeWallConfirmation(kind)} disabled={!draft.confirmationStamp} className="rounded border border-amber-700 px-2 py-1 text-xs text-amber-200 disabled:cursor-not-allowed disabled:opacity-40">
                               Revoke confirmation
                             </button>
                             <button type="button" onClick={() => clearWall(kind)} className="rounded border border-rose-700 px-2 py-1 text-xs text-rose-200">
@@ -17068,6 +17326,30 @@ export default function ThreeRoomLab({
               </div>
             );
           })()}
+        </CollapsibleSection>
+
+        <CollapsibleSection
+          title="Visible 3D Milestone Validation"
+          description="Session-local closeout workflow. Machine readiness and manual visual observations remain separate."
+          open={isMilestoneValidationOpen}
+          onToggle={() => setIsMilestoneValidationOpen((open) => !open)}
+          meta={
+            <span className="rounded bg-cyan-500/15 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-cyan-100">
+              package 5 · no authority
+            </span>
+          }
+        >
+          <MilestoneValidationPanel
+            facts={milestoneMachineFacts}
+            observations={milestoneOperatorObservations}
+            provenanceBySupport={validationAttachmentProvenanceBySupport}
+            onObservationsChange={setMilestoneOperatorObservations}
+            profileLabel={milestoneProfileLabel}
+            onProfileLabelChange={setMilestoneProfileLabel}
+            roomPhotoNotes={milestoneRoomPhotoNotes}
+            onRoomPhotoNotesChange={setMilestoneRoomPhotoNotes}
+            onSelectAttachmentSupport={setSelectedAttachmentSupportKind}
+          />
         </CollapsibleSection>
 
         <CollapsibleSection
@@ -17570,17 +17852,17 @@ export default function ThreeRoomLab({
                   <input
                     type="checkbox"
                     checked={perspectiveDepthScaling.enabled}
-                    onChange={(event) =>
-                      setPerspectiveDepthScaling((prev) => ({ ...prev, enabled: event.target.checked }))
-                    }
-                    className="accent-emerald-400"
+                    onChange={(event) => handlePerspectiveDepthScalingEnabledChange(event.target.checked)}
+                    disabled={isCalibratedCameraActive}
+                    className="accent-emerald-400 disabled:cursor-not-allowed disabled:opacity-50"
                   />
                   Auto-scale by floor depth
                 </label>
                 <button
                   type="button"
                   onClick={handleResetPerspectiveDepthScaling}
-                  className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-200 transition hover:border-emerald-400/80 hover:text-emerald-200"
+                  disabled={isCalibratedCameraActive}
+                  className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-200 transition hover:border-emerald-400/80 hover:text-emerald-200 disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   Reset depth scaling
                 </button>
@@ -17610,6 +17892,7 @@ export default function ThreeRoomLab({
                 min={PERSPECTIVE_DEPTH_SCALING_LIMITS.nearScaleMultiplier.min}
                 max={PERSPECTIVE_DEPTH_SCALING_LIMITS.nearScaleMultiplier.max}
                 step={PERSPECTIVE_DEPTH_SCALING_LIMITS.nearScaleMultiplier.step}
+                disabled={isCalibratedCameraActive}
                 onChange={(value) => updatePerspectiveDepthScalingField("nearScaleMultiplier", value)}
               />
               <TransformControlRow
@@ -17618,6 +17901,7 @@ export default function ThreeRoomLab({
                 min={PERSPECTIVE_DEPTH_SCALING_LIMITS.farScaleMultiplier.min}
                 max={PERSPECTIVE_DEPTH_SCALING_LIMITS.farScaleMultiplier.max}
                 step={PERSPECTIVE_DEPTH_SCALING_LIMITS.farScaleMultiplier.step}
+                disabled={isCalibratedCameraActive}
                 onChange={(value) => updatePerspectiveDepthScalingField("farScaleMultiplier", value)}
               />
               <TransformControlRow
@@ -17626,6 +17910,7 @@ export default function ThreeRoomLab({
                 min={PERSPECTIVE_DEPTH_SCALING_LIMITS.nearFloorY.min}
                 max={PERSPECTIVE_DEPTH_SCALING_LIMITS.nearFloorY.max}
                 step={PERSPECTIVE_DEPTH_SCALING_LIMITS.nearFloorY.step}
+                disabled={isCalibratedCameraActive}
                 onChange={(value) => updatePerspectiveDepthScalingField("nearFloorY", value)}
               />
               <TransformControlRow
@@ -17634,6 +17919,7 @@ export default function ThreeRoomLab({
                 min={PERSPECTIVE_DEPTH_SCALING_LIMITS.farFloorY.min}
                 max={PERSPECTIVE_DEPTH_SCALING_LIMITS.farFloorY.max}
                 step={PERSPECTIVE_DEPTH_SCALING_LIMITS.farFloorY.step}
+                disabled={isCalibratedCameraActive}
                 onChange={(value) => updatePerspectiveDepthScalingField("farFloorY", value)}
               />
             </div>
