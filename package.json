@@ -25,6 +25,9 @@
     "test:policy-a-containment": "node --conditions=react-server --import tsx --test app/admin/3d-room-lab/policy-a-containment.test.ts",
     "test:image-space": "node --conditions=react-server --import tsx --test app/admin/3d-room-lab/image-space.test.ts",
     "test:calibration-image-basis": "node --conditions=react-server --import tsx --test app/admin/3d-room-lab/policy-a-containment.test.ts",
+    "test:room-envelope-reconciliation": "node --conditions=react-server --import tsx --test app/admin/3d-room-lab/room-envelope-reconciliation.test.ts",
+    "test:room-envelope-identity": "node --conditions=react-server --import tsx --test app/admin/3d-room-lab/room-envelope-identity.test.ts",
+    "test:room-envelope": "npm run test:room-envelope-reconciliation && npm run test:room-envelope-identity",
     "generate:p-stale-precondition-v2": "node --conditions=react-server --import tsx app/admin/3d-room-lab/g0-containment/synthetic-assets/generate-p-stale-precondition-v2.ts --write",
     "write:p-stale-observed-run": "node --conditions=react-server --import tsx app/admin/3d-room-lab/g0-containment/write-p-stale-observed-run.ts",
     "write:g0-observed-run": "node --conditions=react-server --import tsx app/admin/3d-room-lab/g0-containment/write-g0-observed-run.ts"
