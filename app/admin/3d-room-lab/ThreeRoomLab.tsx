@@ -6,6 +6,16 @@ import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import SceneJsonPanel from "./SceneJsonPanel";
 import CollapsibleSection from "./CollapsibleSection";
 import MilestoneValidationPanel from "./MilestoneValidationPanel";
+import RoomEnvelopePanel, { type RoomEnvelopePanelSupport } from "./RoomEnvelopePanel";
+import { buildRoomEnvelopeContextKey } from "./room-envelope-identity";
+import { reconcileRoomEnvelope } from "./room-envelope-reconciliation";
+import type {
+  RoomEnvelopeContextInput,
+  RoomEnvelopeGeometryInput,
+  RoomEnvelopeSupportGeometries,
+  RoomEnvelopeSupportKind,
+} from "./room-envelope-types";
+import { deriveRoomEnvelopeWireframe } from "./room-envelope-wireframe";
 import {
   createEmptyOperatorObservations,
   type ObservationAttachmentProvenance,
@@ -1358,6 +1368,7 @@ export default function ThreeRoomLab({
   const [isCalibratedCameraOpen, setIsCalibratedCameraOpen] = useState(true);
   const [isSupportsOpen, setIsSupportsOpen] = useState(false);
   const [isMilestoneValidationOpen, setIsMilestoneValidationOpen] = useState(false);
+  const [isRoomEnvelopeOpen, setIsRoomEnvelopeOpen] = useState(true);
   const [milestoneOperatorObservations, setMilestoneOperatorObservations] = useState(createEmptyOperatorObservations);
   const [validationAttachmentProvenanceBySupport, setValidationAttachmentProvenanceBySupport] =
     useState<ValidationAttachmentProvenanceBySupport>({});
@@ -1372,6 +1383,9 @@ export default function ThreeRoomLab({
   const [isSceneStateOpen, setIsSceneStateOpen] = useState(false);
   const [isDebugOpen, setIsDebugOpen] = useState(false);
   const [showHomographyDebugOverlay, setShowHomographyDebugOverlay] = useState(false);
+  // Presentation only: this never changes support eligibility, reconciliation,
+  // camera state, or any attachment/transform authority.
+  const [showRoomEnvelopeWireframe, setShowRoomEnvelopeWireframe] = useState(true);
   const [cameraPoseFovYDeg, setCameraPoseFovYDeg] = useState(50);
   const [isCalibratedCameraActive, setIsCalibratedCameraActive] = useState(false);
   // Phase 2K-C: one-click "Scan & apply" pending action. This arms a single
@@ -3680,6 +3694,252 @@ export default function ThreeRoomLab({
     sourceNormalizedFloorPolygon,
     wallSupportDrafts,
     wallSupportStates,
+  ]);
+  // Room Envelope Package 2 consumes the current attachment-support frames and
+  // support derivations as read-only geometry publishers. Eligibility remains
+  // wholly owned by each established support runtime evaluation.
+  const roomEnvelopeGeometryInput = useMemo<RoomEnvelopeGeometryInput>(() => {
+    const supports: RoomEnvelopeSupportGeometries = {
+      floor: null,
+      wall_back: null,
+      wall_left: null,
+      wall_right: null,
+      ceiling: null,
+    };
+    const included: Record<RoomEnvelopeSupportKind, boolean> = {
+      floor: false,
+      wall_back: false,
+      wall_left: false,
+      wall_right: false,
+      ceiling: false,
+    };
+    const floorFrame = attachmentSupportContexts.floor.frame;
+    if (floorSupportRuntime.usable && floorFrame?.kind === "floor") {
+      const boundaryWorld = floorFrame.boundaryUV.map((point) => ({
+        x: floorFrame.point.x + point.u,
+        y: floorFrame.point.y,
+        z: floorFrame.point.z + point.v,
+      }));
+      if (
+        boundaryWorld.length >= 3 &&
+        boundaryWorld.every((point) => [point.x, point.y, point.z].every(Number.isFinite))
+      ) {
+        supports.floor = {
+          kind: "floor",
+          boundaryWorld,
+          plane: {
+            point: { ...floorFrame.point },
+            normal: { x: 0, y: 1, z: 0 },
+            basisU: { x: 1, y: 0, z: 0 },
+            basisV: { x: 0, y: 0, z: 1 },
+          },
+          xAxisWorld: { x: 1, y: 0, z: 0 },
+          zAxisWorld: { x: 0, y: 0, z: 1 },
+        };
+        included.floor = true;
+      }
+    }
+    for (const kind of WALL_SUPPORT_KINDS) {
+      const state = wallSupportStates[kind];
+      if (!state.runtime.usable || !state.derivation.ok) continue;
+      const derivation = state.derivation;
+      if (
+        derivation.boundaryWorld.length < 3 ||
+        !derivation.boundaryWorld.every((point) => [point.x, point.y, point.z].every(Number.isFinite)) ||
+        !derivation.seamWorld.every((point) => [point.x, point.y, point.z].every(Number.isFinite))
+      ) {
+        continue;
+      }
+      supports[kind] = {
+        kind,
+        seamWorld: [{ ...derivation.seamWorld[0] }, { ...derivation.seamWorld[1] }],
+        boundaryWorld: derivation.boundaryWorld.map((point) => ({ ...point })),
+        plane: {
+          point: { ...derivation.plane.point },
+          normal: { ...derivation.plane.normal },
+          basisU: { ...derivation.plane.basisU },
+          basisV: { ...derivation.plane.basisV },
+        },
+      };
+      included[kind] = true;
+    }
+    if (ceilingSupportState.runtime.usable && ceilingSupportState.derivation.ok) {
+      const derivation = ceilingSupportState.derivation;
+      if (
+        derivation.boundaryWorld.length >= 3 &&
+        derivation.boundaryWorld.every((point) => [point.x, point.y, point.z].every(Number.isFinite))
+      ) {
+        supports.ceiling = {
+          kind: "ceiling",
+          boundaryWorld: derivation.boundaryWorld.map((point) => ({ ...point })),
+          plane: {
+            point: { ...derivation.plane.point },
+            normal: { ...derivation.plane.normal },
+            basisU: { ...derivation.plane.basisU },
+            basisV: { ...derivation.plane.basisV },
+          },
+          roomHeight: ceilingSupportDraft.roomHeight,
+        };
+        included.ceiling = true;
+      }
+    }
+    return {
+      supports,
+      included,
+      anchorChoice: { mode: "default" },
+      foregroundCap: null,
+    };
+  }, [
+    attachmentSupportContexts.floor.frame,
+    ceilingSupportDraft.roomHeight,
+    ceilingSupportState.derivation,
+    ceilingSupportState.runtime.usable,
+    floorSupportRuntime.usable,
+    wallSupportStates,
+  ]);
+  const roomEnvelopeReconciliation = useMemo(
+    () => reconcileRoomEnvelope(roomEnvelopeGeometryInput),
+    [roomEnvelopeGeometryInput]
+  );
+  const roomEnvelopeSupportFacts = useMemo<Readonly<Record<RoomEnvelopeSupportKind, RoomEnvelopePanelSupport>>>(() => {
+    const floorIdentity = attachmentSupportContexts.floor.bindingContext
+      ? buildAttachmentBindingKey(attachmentSupportContexts.floor.bindingContext)
+      : null;
+    const wallIdentity = (kind: WallSupportKind) =>
+      attachmentSupportContexts[kind].bindingContext
+        ? buildAttachmentBindingKey(attachmentSupportContexts[kind].bindingContext)
+        : null;
+    const ceilingIdentity = attachmentSupportContexts.ceiling.bindingContext
+      ? buildAttachmentBindingKey(attachmentSupportContexts.ceiling.bindingContext)
+      : null;
+    return {
+      floor: {
+        present: floorIdentity !== null,
+        runtimeUsable: floorSupportRuntime.usable,
+        included: roomEnvelopeGeometryInput.included.floor,
+        blockers: floorSupportRuntime.blockingReasons,
+        identityKey: floorIdentity,
+      },
+      wall_back: {
+        present: wallIdentity("wall_back") !== null,
+        runtimeUsable: wallSupportStates.wall_back.runtime.usable,
+        included: roomEnvelopeGeometryInput.included.wall_back,
+        blockers: wallSupportStates.wall_back.blockingReasons,
+        identityKey: wallIdentity("wall_back"),
+      },
+      wall_left: {
+        present: wallIdentity("wall_left") !== null,
+        runtimeUsable: wallSupportStates.wall_left.runtime.usable,
+        included: roomEnvelopeGeometryInput.included.wall_left,
+        blockers: wallSupportStates.wall_left.blockingReasons,
+        identityKey: wallIdentity("wall_left"),
+      },
+      wall_right: {
+        present: wallIdentity("wall_right") !== null,
+        runtimeUsable: wallSupportStates.wall_right.runtime.usable,
+        included: roomEnvelopeGeometryInput.included.wall_right,
+        blockers: wallSupportStates.wall_right.blockingReasons,
+        identityKey: wallIdentity("wall_right"),
+      },
+      ceiling: {
+        present: ceilingIdentity !== null,
+        runtimeUsable: ceilingSupportState.runtime.usable,
+        included: roomEnvelopeGeometryInput.included.ceiling,
+        blockers: ceilingSupportState.blockingReasons,
+        identityKey: ceilingIdentity,
+      },
+    };
+  }, [
+    attachmentSupportContexts,
+    ceilingSupportState.blockingReasons,
+    ceilingSupportState.runtime.usable,
+    floorSupportRuntime.blockingReasons,
+    floorSupportRuntime.usable,
+    roomEnvelopeGeometryInput.included,
+    wallSupportStates,
+  ]);
+  const roomEnvelopeContext = useMemo(() => {
+    const anchor = roomEnvelopeReconciliation.resolvedAnchor;
+    if (!anchor) return { key: null, unavailableReason: "A resolved Room Envelope anchor is unavailable." };
+    if (!qualifiedImageBasis) return { key: null, unavailableReason: "A qualified image basis is unavailable." };
+    if (!isCalibratedCameraActive || !calibratedCameraSnapshot) {
+      return { key: null, unavailableReason: "An active calibrated camera receipt is unavailable." };
+    }
+    if (!frameSizeForImageSpace) return { key: null, unavailableReason: "The current image frame is unavailable." };
+    const input: RoomEnvelopeContextInput = {
+      basis: {
+        basisId: qualifiedImageBasis.basisId,
+        basisFingerprint: qualifiedImageBasis.basisFingerprint,
+      },
+      camera: {
+        appliedAtIso: calibratedCameraSnapshot.appliedAtIso,
+        frameWidth: frameSizeForImageSpace.width,
+        frameHeight: frameSizeForImageSpace.height,
+      },
+      supports: {
+        floor: {
+          present: roomEnvelopeSupportFacts.floor.present,
+          included: roomEnvelopeSupportFacts.floor.included,
+          identityKey: roomEnvelopeSupportFacts.floor.identityKey,
+        },
+        wall_back: {
+          present: roomEnvelopeSupportFacts.wall_back.present,
+          included: roomEnvelopeSupportFacts.wall_back.included,
+          identityKey: roomEnvelopeSupportFacts.wall_back.identityKey,
+        },
+        wall_left: {
+          present: roomEnvelopeSupportFacts.wall_left.present,
+          included: roomEnvelopeSupportFacts.wall_left.included,
+          identityKey: roomEnvelopeSupportFacts.wall_left.identityKey,
+        },
+        wall_right: {
+          present: roomEnvelopeSupportFacts.wall_right.present,
+          included: roomEnvelopeSupportFacts.wall_right.included,
+          identityKey: roomEnvelopeSupportFacts.wall_right.identityKey,
+        },
+        ceiling: {
+          present: roomEnvelopeSupportFacts.ceiling.present,
+          included: roomEnvelopeSupportFacts.ceiling.included,
+          identityKey: roomEnvelopeSupportFacts.ceiling.identityKey,
+        },
+      },
+      resolvedAnchor: anchor,
+      foregroundCap: null,
+    };
+    return { key: buildRoomEnvelopeContextKey(input), unavailableReason: null };
+  }, [
+    calibratedCameraSnapshot,
+    frameSizeForImageSpace,
+    isCalibratedCameraActive,
+    qualifiedImageBasis,
+    roomEnvelopeReconciliation.resolvedAnchor,
+    roomEnvelopeSupportFacts,
+  ]);
+  const roomEnvelopeWireframe = useMemo(
+    () => deriveRoomEnvelopeWireframe({ reconciliation: roomEnvelopeReconciliation, geometry: roomEnvelopeGeometryInput }),
+    [roomEnvelopeGeometryInput, roomEnvelopeReconciliation]
+  );
+  const roomEnvelopeOverlay = useMemo(() => {
+    const camera = cameraRef.current;
+    if (!camera || !frameSizeForImageSpace) {
+      return { segments: [] as { id: string; start: FloorPoint; end: FloorPoint; kind: string }[], omittedSegmentCount: roomEnvelopeWireframe.segments.length };
+    }
+    let omittedSegmentCount = 0;
+    const segments = roomEnvelopeWireframe.segments.flatMap((segment) => {
+      const start = projectWorldPointToOverlayNormalized(camera, frameSizeForImageSpace, segment.startWorld);
+      const end = projectWorldPointToOverlayNormalized(camera, frameSizeForImageSpace, segment.endWorld);
+      if (!start?.inFront || !end?.inFront) {
+        omittedSegmentCount += 1;
+        return [];
+      }
+      return [{ id: segment.id, start: start.normalized, end: end.normalized, kind: segment.kind }];
+    });
+    return { segments, omittedSegmentCount };
+  }, [
+    calibratedCameraSnapshot,
+    frameSizeForImageSpace,
+    isCalibratedCameraActive,
+    roomEnvelopeWireframe,
   ]);
   const selectedAttachmentSupport = attachmentSupportContexts[selectedAttachmentSupportKind];
   const attachedSupport = objectSupportAttachment
@@ -11802,6 +12062,50 @@ export default function ThreeRoomLab({
                 )}
               </svg>
             )}
+            {showRoomEnvelopeWireframe && roomEnvelopeOverlay.segments.length > 0 && (
+              <svg
+                className="pointer-events-none absolute inset-0 z-[25] h-full w-full"
+                viewBox="0 0 100 100"
+                preserveAspectRatio="none"
+                aria-label="Read-only Room Envelope wireframe"
+              >
+                <g pointerEvents="none" aria-hidden="true">
+                  {roomEnvelopeOverlay.segments.map((segment) => {
+                    const inconsistent = roomEnvelopeReconciliation.status === "inconsistent";
+                    const stroke = inconsistent
+                      ? "#f59e0b"
+                      : segment.kind === "assumed_foreground_cap"
+                        ? "#c084fc"
+                        : segment.kind === "visible_extent"
+                          ? "#94a3b8"
+                          : segment.kind === "room_frame"
+                            ? "#67e8f9"
+                            : "#22d3ee";
+                    const dash = segment.kind === "visible_extent"
+                      ? "1.4 1.1"
+                      : segment.kind === "assumed_foreground_cap"
+                        ? "2 1"
+                        : inconsistent
+                          ? "1.1 0.8"
+                          : undefined;
+                    return (
+                      <line
+                        key={segment.id}
+                        x1={segment.start.x * 100}
+                        y1={segment.start.y * 100}
+                        x2={segment.end.x * 100}
+                        y2={segment.end.y * 100}
+                        stroke={stroke}
+                        strokeOpacity={segment.kind === "reconciled_support_patch" ? 0.62 : 0.82}
+                        strokeWidth={segment.kind === "visible_extent" ? 0.48 : 0.72}
+                        strokeDasharray={dash}
+                        pointerEvents="none"
+                      />
+                    );
+                  })}
+                </g>
+              </svg>
+            )}
             {manualAnnotation && manualSeamRenderData && (
               <svg
                 ref={manualOverlayRef}
@@ -17349,6 +17653,28 @@ export default function ThreeRoomLab({
             roomPhotoNotes={milestoneRoomPhotoNotes}
             onRoomPhotoNotesChange={setMilestoneRoomPhotoNotes}
             onSelectAttachmentSupport={setSelectedAttachmentSupportKind}
+          />
+        </CollapsibleSection>
+
+        <CollapsibleSection
+          title="Room Envelope"
+          description="Read-only current-support reconciliation and wireframe diagnostics."
+          open={isRoomEnvelopeOpen}
+          onToggle={() => setIsRoomEnvelopeOpen((open) => !open)}
+          meta={
+            <span className="rounded bg-cyan-500/15 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-cyan-100">
+              package 2 · no authority
+            </span>
+          }
+        >
+          <RoomEnvelopePanel
+            reconciliation={roomEnvelopeReconciliation}
+            supports={roomEnvelopeSupportFacts}
+            contextKey={roomEnvelopeContext.key}
+            contextUnavailableReason={roomEnvelopeContext.unavailableReason}
+            wireframeVisible={showRoomEnvelopeWireframe}
+            onWireframeVisibleChange={setShowRoomEnvelopeWireframe}
+            omittedProjectionSegmentCount={roomEnvelopeOverlay.omittedSegmentCount}
           />
         </CollapsibleSection>
 
