@@ -62,9 +62,20 @@ import {
 } from "./calibration-image-basis";
 import {
   evaluateSupportUsability,
+  type SupportKind,
   type SupportReviewStatus,
   type SupportSource,
 } from "./support-model";
+import {
+  canFocusSupport,
+  createUnlockedSupportEditLocks,
+  resolveSupportEditFocusAfterLockToggle,
+  resolveSupportEditInteraction,
+  resolveSupportEditRenderOrder,
+  toggleSupportEditFocus,
+  toggleSupportEditLock,
+  type SupportEditInteractionInput,
+} from "./support-edit-interaction";
 import {
   createWallConfirmationStamp,
   buildWallPolygonKey,
@@ -1451,6 +1462,14 @@ export default function ThreeRoomLab({
   const [ceilingSupportImageBasis, setCeilingSupportImageBasis] = useState<CalibrationImageBasis | null>(null);
   const [isCeilingOverlayVisible, setIsCeilingOverlayVisible] = useState(true);
   const [activeCeilingHandleIndex, setActiveCeilingHandleIndex] = useState<number | null>(null);
+  // Presentation-only interaction state. It is intentionally excluded from
+  // geometry, confirmation, attachment, Room Envelope, and scene persistence.
+  const [supportEditSession, setSupportEditSession] = useState(() => ({
+    activeFocus: null as SupportKind | null,
+    locks: createUnlockedSupportEditLocks(),
+  }));
+  const activeSupportEditFocus = supportEditSession.activeFocus;
+  const supportEditLocks = supportEditSession.locks;
   const [qualifiedImageBasis, setQualifiedImageBasis] = useState<CalibrationImageBasis | null>(null);
   const [basisQualificationStatus, setBasisQualificationStatus] = useState<string>("basis_unavailable");
   const basisQualificationRequestIdRef = useRef(0);
@@ -3562,6 +3581,67 @@ export default function ThreeRoomLab({
     isCalibratedCameraActive,
     qualifiedImageBasis,
   ]);
+
+  const supportEditBaseInputs = {
+    floor: {
+      kind: "floor",
+      visible: showFloorOverlay,
+      baseEditable: floorPolygon.length > 0,
+      locked: supportEditLocks.floor,
+    },
+    wall_back: {
+      kind: "wall_back",
+      visible: visibleWallKinds.wall_back,
+      baseEditable: wallSupportDrafts.wall_back.enabled && !!wallContainerPolygons.wall_back,
+      locked: supportEditLocks.wall_back,
+    },
+    wall_left: {
+      kind: "wall_left",
+      visible: visibleWallKinds.wall_left,
+      baseEditable: wallSupportDrafts.wall_left.enabled && !!wallContainerPolygons.wall_left,
+      locked: supportEditLocks.wall_left,
+    },
+    wall_right: {
+      kind: "wall_right",
+      visible: visibleWallKinds.wall_right,
+      baseEditable: wallSupportDrafts.wall_right.enabled && !!wallContainerPolygons.wall_right,
+      locked: supportEditLocks.wall_right,
+    },
+    ceiling: {
+      kind: "ceiling",
+      visible: isCeilingOverlayVisible,
+      baseEditable: ceilingSupportDraft.enabled && !!ceilingContainerPolygon,
+      locked: supportEditLocks.ceiling,
+    },
+  } satisfies Record<SupportKind, Omit<SupportEditInteractionInput, "activeFocus">>;
+  const effectiveSupportEditFocus =
+    activeSupportEditFocus &&
+    canFocusSupport({ ...supportEditBaseInputs[activeSupportEditFocus], activeFocus: activeSupportEditFocus })
+      ? activeSupportEditFocus
+      : null;
+  const supportEditInteractionStates = {
+    floor: resolveSupportEditInteraction({
+      ...supportEditBaseInputs.floor,
+      activeFocus: effectiveSupportEditFocus,
+    }),
+    wall_back: resolveSupportEditInteraction({
+      ...supportEditBaseInputs.wall_back,
+      activeFocus: effectiveSupportEditFocus,
+    }),
+    wall_left: resolveSupportEditInteraction({
+      ...supportEditBaseInputs.wall_left,
+      activeFocus: effectiveSupportEditFocus,
+    }),
+    wall_right: resolveSupportEditInteraction({
+      ...supportEditBaseInputs.wall_right,
+      activeFocus: effectiveSupportEditFocus,
+    }),
+    ceiling: resolveSupportEditInteraction({
+      ...supportEditBaseInputs.ceiling,
+      activeFocus: effectiveSupportEditFocus,
+    }),
+  };
+  const supportEditRenderOrder = resolveSupportEditRenderOrder(supportEditInteractionStates);
 
   // Package 3 attachment contexts are derived from the already-established
   // support runtime facts. They are deliberately not support authority: an
@@ -9292,6 +9372,63 @@ export default function ThreeRoomLab({
     }
   };
 
+  const toggleEditingFocus = (kind: SupportKind) => {
+    setSupportEditSession((current) => ({
+      ...current,
+      activeFocus: toggleSupportEditFocus({
+        ...supportEditBaseInputs[kind],
+        locked: current.locks[kind],
+        activeFocus: current.activeFocus,
+      }),
+    }));
+  };
+
+  const toggleEditingLock = (kind: SupportKind) => {
+    setSupportEditSession((current) => {
+      const locks = toggleSupportEditLock(current.locks, kind);
+      return {
+        activeFocus: resolveSupportEditFocusAfterLockToggle(current.activeFocus, kind, locks[kind]),
+        locks,
+      };
+    });
+  };
+
+  const setFloorOverlayEditingVisibility = (visible: boolean) => {
+    setShowFloorOverlay(visible);
+    if (!visible) {
+      setSupportEditSession((current) => ({
+        ...current,
+        activeFocus: current.activeFocus === "floor" ? null : current.activeFocus,
+      }));
+    }
+  };
+
+  const toggleWallOverlayEditingVisibility = (kind: WallSupportKind) => {
+    setVisibleWallKinds((previous) => {
+      const visible = !previous[kind];
+      if (!visible) {
+        setSupportEditSession((current) => ({
+          ...current,
+          activeFocus: current.activeFocus === kind ? null : current.activeFocus,
+        }));
+      }
+      return { ...previous, [kind]: visible };
+    });
+  };
+
+  const toggleCeilingOverlayEditingVisibility = () => {
+    setIsCeilingOverlayVisible((previous) => {
+      const visible = !previous;
+      if (!visible) {
+        setSupportEditSession((current) => ({
+          ...current,
+          activeFocus: current.activeFocus === "ceiling" ? null : current.activeFocus,
+        }));
+      }
+      return visible;
+    });
+  };
+
   const attachToSelectedSupport = (isReattach = false) => {
     const target = attachmentSupportContexts[selectedAttachmentSupportKind];
     if (!target.usable || !target.frame || !target.bindingContext) {
@@ -11296,8 +11433,8 @@ export default function ThreeRoomLab({
                   points={floorPolygonPointsAttribute}
                   fill="#ffffff"
                   fillOpacity={0.08}
-                  stroke="#facc15"
-                  strokeOpacity={1}
+                  stroke={supportEditInteractionStates.floor.focused ? "none" : "#facc15"}
+                  strokeOpacity={supportEditInteractionStates.floor.focused ? 0 : 1}
                   strokeWidth={1.2}
                   pointerEvents="none"
                 />
@@ -11309,6 +11446,7 @@ export default function ThreeRoomLab({
                   if (!draft.enabled || !polygon || !visibleWallKinds[kind]) return null;
                   const valid = state.derivation.ok;
                   const selected = selectedWallKind === kind;
+                  const editInteraction = supportEditInteractionStates[kind];
                   const points = polygon.map((point) => `${point.x * 100},${point.y * 100}`).join(" ");
                   return (
                     <g key={kind}>
@@ -11328,22 +11466,24 @@ export default function ThreeRoomLab({
                         points={points}
                         fill={valid ? presentation.color : "#fb7185"}
                         fillOpacity={selected ? 0.13 : 0.07}
-                        stroke={valid ? presentation.color : "#fb7185"}
-                        strokeOpacity={selected ? 1 : 0.75}
+                        stroke={editInteraction.focused ? "none" : valid ? presentation.color : "#fb7185"}
+                        strokeOpacity={editInteraction.focused ? 0 : selected ? 1 : 0.75}
                         strokeWidth={selected ? 1.1 : 0.8}
                         strokeDasharray={valid ? undefined : "1.4 1"}
                         pointerEvents="none"
                       />
-                      <line
-                        x1={polygon[0].x * 100}
-                        y1={polygon[0].y * 100}
-                        x2={polygon[1].x * 100}
-                        y2={polygon[1].y * 100}
-                        stroke={valid ? "#f8fafc" : "#fecdd3"}
-                        strokeWidth={1.15}
-                        strokeDasharray="2.1 0.8"
-                        pointerEvents="none"
-                      />
+                      {!editInteraction.focused && (
+                        <line
+                          x1={polygon[0].x * 100}
+                          y1={polygon[0].y * 100}
+                          x2={polygon[1].x * 100}
+                          y2={polygon[1].y * 100}
+                          stroke={valid ? "#f8fafc" : "#fecdd3"}
+                          strokeWidth={1.15}
+                          strokeDasharray="2.1 0.8"
+                          pointerEvents="none"
+                        />
+                      )}
                       <text
                         x={polygon[3].x * 100 + 1}
                         y={polygon[3].y * 100 - 1}
@@ -11354,7 +11494,7 @@ export default function ThreeRoomLab({
                       >
                         {presentation.label} · {state.resolvedReviewStatus.replaceAll("_", " ")}
                       </text>
-                      {polygon.map((point, index) => (
+                      {!editInteraction.focused && polygon.map((point, index) => (
                         <circle
                           key={`${kind}-handle-${index}`}
                           cx={point.x * 100}
@@ -11369,8 +11509,9 @@ export default function ThreeRoomLab({
                           }
                           stroke="#020617"
                           strokeWidth={0.6}
-                          className="cursor-grab active:cursor-grabbing"
-                          pointerEvents="all"
+                          className={editInteraction.interactive ? "cursor-grab active:cursor-grabbing" : "cursor-not-allowed"}
+                          pointerEvents={editInteraction.interactive ? "all" : "none"}
+                          aria-disabled={!editInteraction.interactive}
                           aria-label={`${presentation.label} polygon handle ${index + 1}`}
                           onPointerDown={(event) => handleWallHandlePointerDown(kind, index, event)}
                         />
@@ -11381,6 +11522,7 @@ export default function ThreeRoomLab({
                 {ceilingSupportDraft.enabled && ceilingContainerPolygon && isCeilingOverlayVisible && (() => {
                   const valid = ceilingSupportState.derivation.ok;
                   const selected = selectedAttachmentSupportKind === "ceiling";
+                  const editInteraction = supportEditInteractionStates.ceiling;
                   const color = "#2dd4bf";
                   const points = ceilingContainerPolygon.map((point) => `${point.x * 100},${point.y * 100}`).join(" ");
                   return (
@@ -11401,8 +11543,8 @@ export default function ThreeRoomLab({
                         points={points}
                         fill={valid ? color : "#fb7185"}
                         fillOpacity={selected ? 0.14 : 0.07}
-                        stroke={valid ? color : "#fb7185"}
-                        strokeOpacity={selected ? 1 : 0.78}
+                        stroke={editInteraction.focused ? "none" : valid ? color : "#fb7185"}
+                        strokeOpacity={editInteraction.focused ? 0 : selected ? 1 : 0.78}
                         strokeWidth={selected ? 1.15 : 0.8}
                         strokeDasharray={valid ? undefined : "1.4 1"}
                         pointerEvents="none"
@@ -11417,7 +11559,7 @@ export default function ThreeRoomLab({
                       >
                         Ceiling · {ceilingSupportState.resolvedReviewStatus.replaceAll("_", " ")}
                       </text>
-                      {ceilingContainerPolygon.map((point, index) => (
+                      {!editInteraction.focused && ceilingContainerPolygon.map((point, index) => (
                         <circle
                           key={`ceiling-handle-${index}`}
                           cx={point.x * 100}
@@ -11426,8 +11568,9 @@ export default function ThreeRoomLab({
                           fill={activeCeilingHandleIndex === index ? "#ffffff" : valid ? color : "#fb7185"}
                           stroke="#020617"
                           strokeWidth={0.6}
-                          className="cursor-grab active:cursor-grabbing"
-                          pointerEvents="all"
+                          className={editInteraction.interactive ? "cursor-grab active:cursor-grabbing" : "cursor-not-allowed"}
+                          pointerEvents={editInteraction.interactive ? "all" : "none"}
+                          aria-disabled={!editInteraction.interactive}
                           aria-label={`Ceiling polygon handle ${index + 1}`}
                           onPointerDown={(event) => handleCeilingHandlePointerDown(index, event)}
                         />
@@ -11552,7 +11695,7 @@ export default function ThreeRoomLab({
                     )}
                   </g>
                 )}
-                {floorPolygon.map((point, index) => (
+                {!supportEditInteractionStates.floor.focused && floorPolygon.map((point, index) => (
                   <circle
                     key={`floor-handle-${index}`}
                     cx={point.x * 100}
@@ -11562,12 +11705,141 @@ export default function ThreeRoomLab({
                     stroke="#020617"
                     strokeOpacity={1}
                     strokeWidth={0.75}
-                    className="cursor-grab active:cursor-grabbing"
-                    pointerEvents="all"
+                    className={supportEditInteractionStates.floor.interactive ? "cursor-grab active:cursor-grabbing" : "cursor-not-allowed"}
+                    pointerEvents={supportEditInteractionStates.floor.interactive ? "all" : "none"}
+                    aria-disabled={!supportEditInteractionStates.floor.interactive}
                     aria-label={`Floor polygon handle ${index + 1}`}
                     onPointerDown={(event) => handleFloorHandlePointerDown(index, event)}
                   />
                 ))}
+                {/* A focused support renders only its edit affordances here, after
+                    every base support-control group. Fills and grids stay in their
+                    original presentation layer, while object and attachment
+                    controls remain later in this SVG. */}
+                {supportEditRenderOrder.map((kind) => {
+                  const editInteraction = supportEditInteractionStates[kind];
+                  if (!editInteraction.focused || !editInteraction.showEditingControls) return null;
+                  if (kind === "floor") {
+                    return (
+                      <g key="focused-floor-edit-controls">
+                        <polygon
+                          points={floorPolygonPointsAttribute}
+                          fill="none"
+                          stroke="#facc15"
+                          strokeOpacity={1}
+                          strokeWidth={1.2}
+                          pointerEvents="none"
+                        />
+                        {floorPolygon.map((point, index) => (
+                          <circle
+                            key={`focused-floor-handle-${index}`}
+                            cx={point.x * 100}
+                            cy={point.y * 100}
+                            r={2.1}
+                            fill={activeFloorHandleIndex === index ? "#f97316" : "#22d3ee"}
+                            stroke="#020617"
+                            strokeOpacity={1}
+                            strokeWidth={0.75}
+                            className={editInteraction.interactive ? "cursor-grab active:cursor-grabbing" : "cursor-not-allowed"}
+                            pointerEvents={editInteraction.interactive ? "all" : "none"}
+                            aria-disabled={!editInteraction.interactive}
+                            aria-label={`Floor polygon handle ${index + 1}`}
+                            onPointerDown={(event) => handleFloorHandlePointerDown(index, event)}
+                          />
+                        ))}
+                      </g>
+                    );
+                  }
+                  if (kind === "ceiling") {
+                    if (!ceilingContainerPolygon || !ceilingSupportDraft.enabled || !isCeilingOverlayVisible) return null;
+                    const valid = ceilingSupportState.derivation.ok;
+                    const selected = selectedAttachmentSupportKind === "ceiling";
+                    const color = "#2dd4bf";
+                    const points = ceilingContainerPolygon.map((point) => `${point.x * 100},${point.y * 100}`).join(" ");
+                    return (
+                      <g key="focused-ceiling-edit-controls">
+                        <polygon
+                          points={points}
+                          fill="none"
+                          stroke={valid ? color : "#fb7185"}
+                          strokeOpacity={selected ? 1 : 0.78}
+                          strokeWidth={selected ? 1.15 : 0.8}
+                          strokeDasharray={valid ? undefined : "1.4 1"}
+                          pointerEvents="none"
+                        />
+                        {ceilingContainerPolygon.map((point, index) => (
+                          <circle
+                            key={`focused-ceiling-handle-${index}`}
+                            cx={point.x * 100}
+                            cy={point.y * 100}
+                            r={1.7}
+                            fill={activeCeilingHandleIndex === index ? "#ffffff" : valid ? color : "#fb7185"}
+                            stroke="#020617"
+                            strokeWidth={0.6}
+                            className={editInteraction.interactive ? "cursor-grab active:cursor-grabbing" : "cursor-not-allowed"}
+                            pointerEvents={editInteraction.interactive ? "all" : "none"}
+                            aria-disabled={!editInteraction.interactive}
+                            aria-label={`Ceiling polygon handle ${index + 1}`}
+                            onPointerDown={(event) => handleCeilingHandlePointerDown(index, event)}
+                          />
+                        ))}
+                      </g>
+                    );
+                  }
+                  const polygon = wallContainerPolygons[kind];
+                  const draft = wallSupportDrafts[kind];
+                  if (!polygon || !draft.enabled || !visibleWallKinds[kind]) return null;
+                  const state = wallSupportStates[kind];
+                  const presentation = WALL_SUPPORT_PRESENTATION[kind];
+                  const valid = state.derivation.ok;
+                  const selected = selectedWallKind === kind;
+                  const points = polygon.map((point) => `${point.x * 100},${point.y * 100}`).join(" ");
+                  return (
+                    <g key={`focused-${kind}-edit-controls`}>
+                      <polygon
+                        points={points}
+                        fill="none"
+                        stroke={valid ? presentation.color : "#fb7185"}
+                        strokeOpacity={selected ? 1 : 0.75}
+                        strokeWidth={selected ? 1.1 : 0.8}
+                        strokeDasharray={valid ? undefined : "1.4 1"}
+                        pointerEvents="none"
+                      />
+                      <line
+                        x1={polygon[0].x * 100}
+                        y1={polygon[0].y * 100}
+                        x2={polygon[1].x * 100}
+                        y2={polygon[1].y * 100}
+                        stroke={valid ? "#f8fafc" : "#fecdd3"}
+                        strokeWidth={1.15}
+                        strokeDasharray="2.1 0.8"
+                        pointerEvents="none"
+                      />
+                      {polygon.map((point, index) => (
+                        <circle
+                          key={`focused-${kind}-handle-${index}`}
+                          cx={point.x * 100}
+                          cy={point.y * 100}
+                          r={1.7}
+                          fill={
+                            activeWallHandle?.kind === kind && activeWallHandle.index === index
+                              ? "#ffffff"
+                              : valid
+                                ? presentation.color
+                                : "#fb7185"
+                          }
+                          stroke="#020617"
+                          strokeWidth={0.6}
+                          className={editInteraction.interactive ? "cursor-grab active:cursor-grabbing" : "cursor-not-allowed"}
+                          pointerEvents={editInteraction.interactive ? "all" : "none"}
+                          aria-disabled={!editInteraction.interactive}
+                          aria-label={`${presentation.label} polygon handle ${index + 1}`}
+                          onPointerDown={(event) => handleWallHandlePointerDown(kind, index, event)}
+                        />
+                      ))}
+                    </g>
+                  );
+                })}
                 {lastAcceptedFloorClick && (
                   <circle
                     cx={lastAcceptedFloorClick.x * 100}
@@ -12525,7 +12797,7 @@ export default function ThreeRoomLab({
                 <input
                   type="checkbox"
                   checked={showFloorOverlay}
-                  onChange={(event) => setShowFloorOverlay(event.target.checked)}
+                  onChange={(event) => setFloorOverlayEditingVisibility(event.target.checked)}
                   className="accent-emerald-400"
                 />
                 Show floor polygon
@@ -17242,6 +17514,13 @@ export default function ThreeRoomLab({
                   ? "active — stale"
                   : "active"
                 : "inactive";
+            const supportEditLabels: Record<SupportKind, string> = {
+              floor: "Floor",
+              wall_back: "Back wall",
+              wall_left: "Left wall",
+              wall_right: "Right wall",
+              ceiling: "Ceiling",
+            };
             return (
               <div className="space-y-3 text-[11px] text-slate-300">
                 <div className="rounded-lg border border-slate-600/40 bg-slate-800/40 px-3 py-2 text-slate-200">
@@ -17251,6 +17530,32 @@ export default function ThreeRoomLab({
                 {supportInteractionStatus !== "none" ? (
                   <p className="text-amber-200">Support action status: {supportInteractionStatus}</p>
                 ) : null}
+                <div className="rounded-lg border border-slate-700 bg-slate-950/60 px-3 py-2">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <span className="font-medium text-slate-100">
+                      {effectiveSupportEditFocus
+                        ? `Editing focus: ${supportEditLabels[effectiveSupportEditFocus]}`
+                        : "No support editing focus"}
+                    </span>
+                    {effectiveSupportEditFocus ? (
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setSupportEditSession((current) => ({ ...current, activeFocus: null }))
+                        }
+                        className="rounded border border-slate-600 px-2 py-1 text-xs text-slate-200"
+                      >
+                        Clear focus
+                      </button>
+                    ) : null}
+                  </div>
+                  <p className="mt-1 text-slate-400" title="Places this support’s editing handles above overlapping support handles. Other supports remain visible but their handles do not intercept clicks.">
+                    Edit focus places one support’s editing handles above overlapping support handles.
+                  </p>
+                  <p className="mt-1 text-slate-400" title="Prevents accidental point movement while leaving the support visible and usable.">
+                    Lock editing prevents accidental point movement while leaving the support visible and usable.
+                  </p>
+                </div>
                 <div className="rounded-lg border border-cyan-800/70 bg-cyan-950/20 p-3">
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <div>
@@ -17425,7 +17730,9 @@ export default function ThreeRoomLab({
                     </p>
                   )}
                 </div>
-                <div className="rounded-lg border border-teal-800/70 bg-teal-950/15 p-3">
+                <div className={`rounded-lg border bg-teal-950/15 p-3 ${
+                  supportEditInteractionStates.ceiling.focused ? "border-teal-300/80 ring-1 ring-teal-300/30" : "border-teal-800/70"
+                }`}>
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <div>
                       <p className="text-sm font-medium text-teal-100">Ceiling</p>
@@ -17487,13 +17794,34 @@ export default function ThreeRoomLab({
                     </button>
                     <button type="button" onClick={revokeCeilingConfirmation} disabled={!ceilingSupportDraft.confirmationStamp} className="rounded border border-amber-500/70 px-2 py-1 text-xs text-amber-100 disabled:opacity-40">Revoke confirmation</button>
                     <button type="button" onClick={clearCeiling} disabled={!ceilingSupportDraft.enabled} className="rounded border border-rose-500/70 px-2 py-1 text-xs text-rose-100 disabled:opacity-40">Clear ceiling</button>
-                    <button type="button" onClick={() => setIsCeilingOverlayVisible((visible) => !visible)} disabled={!ceilingSupportDraft.enabled} className="rounded border border-slate-600 px-2 py-1 text-xs text-slate-200 disabled:opacity-40">{isCeilingOverlayVisible ? "Hide overlay" : "Show overlay"}</button>
+                    <button
+                      type="button"
+                      onClick={() => toggleEditingFocus("ceiling")}
+                      disabled={!canFocusSupport({ ...supportEditBaseInputs.ceiling, activeFocus: effectiveSupportEditFocus })}
+                      aria-pressed={supportEditInteractionStates.ceiling.focused}
+                      title="Places this support’s editing handles above overlapping support handles."
+                      className="rounded border border-cyan-700 px-2 py-1 text-xs text-cyan-100 disabled:cursor-not-allowed disabled:opacity-40"
+                    >
+                      {supportEditInteractionStates.ceiling.focused ? "Editing" : "Edit"}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => toggleEditingLock("ceiling")}
+                      title="Prevents accidental point movement while leaving the support visible and usable."
+                      className="rounded border border-slate-600 px-2 py-1 text-xs text-slate-200"
+                    >
+                      {supportEditLocks.ceiling ? "Unlock editing" : "Lock editing"}
+                    </button>
+                    <button type="button" onClick={toggleCeilingOverlayEditingVisibility} disabled={!ceilingSupportDraft.enabled} className="rounded border border-slate-600 px-2 py-1 text-xs text-slate-200 disabled:opacity-40">{isCeilingOverlayVisible ? "Hide overlay" : "Show overlay"}</button>
+                    {supportEditLocks.ceiling ? <span className="self-center text-amber-200">Editing locked</span> : null}
                   </div>
                   <p className="mt-2 text-[11px] text-slate-400">
                     First blocker: {ceilingSupportState.blockingReasons[0]?.replaceAll("_", " ") ?? "none"} · all: {ceilingSupportState.blockingReasons.map((reason) => reason.replaceAll("_", " ")).join(" · ") || "none"}
                   </p>
                 </div>
-                <div className="rounded-lg border border-slate-700 bg-slate-950/60 p-3">
+                <div className={`rounded-lg border bg-slate-950/60 p-3 ${
+                  supportEditInteractionStates.floor.focused ? "border-cyan-400/80 ring-1 ring-cyan-400/30" : "border-slate-700"
+                }`}>
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <p className="text-sm font-medium text-slate-100">Floor</p>
                     <span
@@ -17532,6 +17860,34 @@ export default function ThreeRoomLab({
                       <dd>{reasonLabel(floorSupportRuntime.firstBlockingReason)}</dd>
                     </div>
                   </dl>
+                  <div className="mt-3 flex flex-wrap items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => toggleEditingFocus("floor")}
+                      disabled={!canFocusSupport({ ...supportEditBaseInputs.floor, activeFocus: effectiveSupportEditFocus })}
+                      aria-pressed={supportEditInteractionStates.floor.focused}
+                      title="Places this support’s editing handles above overlapping support handles."
+                      className="rounded border border-cyan-700 px-2 py-1 text-xs text-cyan-100 disabled:cursor-not-allowed disabled:opacity-40"
+                    >
+                      {supportEditInteractionStates.floor.focused ? "Editing" : "Edit"}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => toggleEditingLock("floor")}
+                      title="Prevents accidental point movement while leaving the support visible and usable."
+                      className="rounded border border-slate-600 px-2 py-1 text-xs text-slate-200"
+                    >
+                      {supportEditLocks.floor ? "Unlock editing" : "Lock editing"}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setFloorOverlayEditingVisibility(!showFloorOverlay)}
+                      className="rounded border border-slate-700 px-2 py-1 text-xs text-slate-300"
+                    >
+                      {showFloorOverlay ? "Hide overlay" : "Show overlay"}
+                    </button>
+                    {supportEditLocks.floor ? <span className="text-amber-200">Editing locked</span> : null}
+                  </div>
                   {floorSupportRuntime.blockingReasons.length > 1 ? (
                     <p className="mt-2 text-slate-400">
                       All blockers: {floorSupportRuntime.blockingReasons.map(reasonLabel).join(" · ")}
@@ -17552,7 +17908,12 @@ export default function ThreeRoomLab({
                       ? "current"
                       : "stale";
                   return (
-                    <div key={kind} className="rounded-lg border border-slate-700 bg-slate-950/60 p-3">
+                    <div
+                      key={kind}
+                      className={`rounded-lg border bg-slate-950/60 p-3 ${
+                        supportEditInteractionStates[kind].focused ? "border-cyan-400/80 ring-1 ring-cyan-400/30" : "border-slate-700"
+                      }`}
+                    >
                       <div className="flex flex-wrap items-center justify-between gap-2">
                         <button
                           type="button"
@@ -17615,11 +17976,30 @@ export default function ThreeRoomLab({
                         )}
                         <button
                           type="button"
-                          onClick={() => setVisibleWallKinds((previous) => ({ ...previous, [kind]: !previous[kind] }))}
+                          onClick={() => toggleEditingFocus(kind)}
+                          disabled={!canFocusSupport({ ...supportEditBaseInputs[kind], activeFocus: effectiveSupportEditFocus })}
+                          aria-pressed={supportEditInteractionStates[kind].focused}
+                          title="Places this support’s editing handles above overlapping support handles."
+                          className="rounded border border-cyan-700 px-2 py-1 text-xs text-cyan-100 disabled:cursor-not-allowed disabled:opacity-40"
+                        >
+                          {supportEditInteractionStates[kind].focused ? "Editing" : "Edit"}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => toggleEditingLock(kind)}
+                          title="Prevents accidental point movement while leaving the support visible and usable."
+                          className="rounded border border-slate-600 px-2 py-1 text-xs text-slate-200"
+                        >
+                          {supportEditLocks[kind] ? "Unlock editing" : "Lock editing"}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => toggleWallOverlayEditingVisibility(kind)}
                           className="rounded border border-slate-700 px-2 py-1 text-xs text-slate-300"
                         >
                           {visibleWallKinds[kind] ? "Hide overlay" : "Show overlay"}
                         </button>
+                        {supportEditLocks[kind] ? <span className="self-center text-amber-200">Editing locked</span> : null}
                       </div>
                       <p className="mt-2 text-[10px] text-slate-500">
                         Local consistency only — this bounded plane is not a physical room measurement or global reconstruction.
