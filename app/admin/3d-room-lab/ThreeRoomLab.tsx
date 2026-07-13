@@ -77,6 +77,15 @@ import {
   type SupportEditInteractionInput,
 } from "./support-edit-interaction";
 import {
+  beginSupportPointDragTransaction,
+  canApplySupportPointUndo,
+  consumeSupportPointUndo,
+  finalizeSupportPointDragTransaction,
+  isSupportPointUndoShortcut,
+  type SupportPointDragTransaction,
+  type SupportPointUndoRecord,
+} from "./support-point-undo";
+import {
   createWallConfirmationStamp,
   buildWallPolygonKey,
   deriveWallSupport,
@@ -1278,6 +1287,53 @@ function formatQualBool(value: boolean | null | undefined): string {
   return "unavailable";
 }
 
+type FloorSupportPointUndoSnapshot = {
+  kind: "floor";
+  floorPolygon: FloorPoint[];
+  sourceNormalizedFloorPolygon: FloorPoint[];
+  floorPolygonAuthorityEligible: boolean;
+  floorPolygonAuthorityKey: string;
+  reviewStatus: SupportReviewStatus;
+  source: SupportSource;
+  imageBasis: CalibrationImageBasis | null;
+};
+
+type WallSupportPointUndoSnapshot = {
+  kind: WallSupportKind;
+  draft: WallSupportDraft;
+  imageBasis: CalibrationImageBasis | null;
+};
+
+type CeilingSupportPointUndoSnapshot = {
+  kind: "ceiling";
+  draft: CeilingSupportDraft;
+  imageBasis: CalibrationImageBasis | null;
+};
+
+type SupportPointUndoSnapshot =
+  | FloorSupportPointUndoSnapshot
+  | WallSupportPointUndoSnapshot
+  | CeilingSupportPointUndoSnapshot;
+
+type SupportPointUndoSnapshots = {
+  floor: FloorSupportPointUndoSnapshot;
+  wall_back: WallSupportPointUndoSnapshot;
+  wall_left: WallSupportPointUndoSnapshot;
+  wall_right: WallSupportPointUndoSnapshot;
+  ceiling: CeilingSupportPointUndoSnapshot;
+};
+
+function buildSupportPointUndoSnapshotKey(snapshot: SupportPointUndoSnapshot): string {
+  return JSON.stringify(snapshot);
+}
+
+function isSupportPointUndoTextEntryTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof Element)) return false;
+  return target.closest(
+    'input, textarea, select, [contenteditable]:not([contenteditable="false"]), [role="textbox"]'
+  ) !== null;
+}
+
 export default function ThreeRoomLab({
   visionEnabled = false,
   emptyRoomAssistEnabled = false,
@@ -1339,6 +1395,14 @@ export default function ThreeRoomLab({
   const floorAnchorDragPointerIdRef = useRef<number | null>(null);
   const wallHandleDragRef = useRef<{ pointerId: number; kind: WallSupportKind; index: number } | null>(null);
   const ceilingHandleDragRef = useRef<{ pointerId: number; index: number } | null>(null);
+  const supportPointUndoSnapshotsRef = useRef<SupportPointUndoSnapshots | null>(null);
+  const activeSupportPointDragRef = useRef<{
+    pointerId: number;
+    transaction: SupportPointDragTransaction<SupportPointUndoSnapshot>;
+  } | null>(null);
+  const supportPointDragMovedRef = useRef(false);
+  const supportPointUndoRecordRef = useRef<SupportPointUndoRecord<SupportPointUndoSnapshot> | null>(null);
+  const supportPointUndoKeyboardHandlerRef = useRef<(event: KeyboardEvent) => void>(() => {});
   const lastAcceptedFloorClickRef = useRef<FloorPoint | null>(null);
   const perspectiveDepthScalingRef = useRef<PerspectiveDepthScalingState>(
     DEFAULT_PERSPECTIVE_DEPTH_SCALING
@@ -1438,6 +1502,8 @@ export default function ThreeRoomLab({
   const [floorSupportSource, setFloorSupportSource] = useState<SupportSource>("manual");
   const [floorSupportImageBasis, setFloorSupportImageBasis] = useState<CalibrationImageBasis | null>(null);
   const [supportInteractionStatus, setSupportInteractionStatus] = useState<string>("none");
+  const [supportPointUndoRecord, setSupportPointUndoRecord] =
+    useState<SupportPointUndoRecord<SupportPointUndoSnapshot> | null>(null);
   const [activeFloorHandleIndex, setActiveFloorHandleIndex] = useState<number | null>(null);
   // Wall source authority remains source-normalized; container polygons are
   // derived presentation only, following the existing floor dual-space pattern.
@@ -1474,6 +1540,38 @@ export default function ThreeRoomLab({
   const [basisQualificationStatus, setBasisQualificationStatus] = useState<string>("basis_unavailable");
   const basisQualificationRequestIdRef = useRef(0);
   const floorPolygonAuthorityKeyRef = useRef(buildFloorPolygonAuthorityKey(DEFAULT_FLOOR_POLYGON));
+  supportPointUndoSnapshotsRef.current = {
+    floor: {
+      kind: "floor",
+      floorPolygon: floorPolygon.map((point) => ({ x: point.x, y: point.y })),
+      sourceNormalizedFloorPolygon: sourceNormalizedFloorPolygon.map((point) => ({ x: point.x, y: point.y })),
+      floorPolygonAuthorityEligible,
+      floorPolygonAuthorityKey: buildFloorPolygonAuthorityKey(floorPolygon),
+      reviewStatus: floorSupportReviewStatus,
+      source: floorSupportSource,
+      imageBasis: floorSupportImageBasis,
+    },
+    wall_back: {
+      kind: "wall_back",
+      draft: wallSupportDrafts.wall_back,
+      imageBasis: wallSupportImageBases.wall_back,
+    },
+    wall_left: {
+      kind: "wall_left",
+      draft: wallSupportDrafts.wall_left,
+      imageBasis: wallSupportImageBases.wall_left,
+    },
+    wall_right: {
+      kind: "wall_right",
+      draft: wallSupportDrafts.wall_right,
+      imageBasis: wallSupportImageBases.wall_right,
+    },
+    ceiling: {
+      kind: "ceiling",
+      draft: ceilingSupportDraft,
+      imageBasis: ceilingSupportImageBasis,
+    },
+  };
   // Phase 2B: auto floor detection mock harness. These do not mutate the manual
   // floor polygon, scene-state, or any calibrated camera behavior.
   const [autoFloorDetectionResult, setAutoFloorDetectionResult] =
@@ -1876,6 +1974,125 @@ export default function ThreeRoomLab({
     [frameSizeForImageSpace, imageIntrinsicSize]
   );
 
+  const setCompletedSupportPointUndoRecord = (
+    record: SupportPointUndoRecord<SupportPointUndoSnapshot> | null
+  ) => {
+    supportPointUndoRecordRef.current = record;
+    setSupportPointUndoRecord(record);
+  };
+
+  const beginSupportPointDrag = (supportKind: SupportKind, pointerId: number): boolean => {
+    if (activeSupportPointDragRef.current) return false;
+    const before = supportPointUndoSnapshotsRef.current?.[supportKind];
+    if (!before) return false;
+    activeSupportPointDragRef.current = {
+      pointerId,
+      transaction: beginSupportPointDragTransaction(
+        supportKind,
+        before,
+        buildSupportPointUndoSnapshotKey(before)
+      ),
+    };
+    supportPointDragMovedRef.current = false;
+    return true;
+  };
+
+  const updateActiveSupportPointUndoSnapshot = useCallback((snapshot: SupportPointUndoSnapshot) => {
+    const active = activeSupportPointDragRef.current;
+    if (!active || !supportPointDragMovedRef.current || active.transaction.supportKind !== snapshot.kind) return;
+    const current = supportPointUndoSnapshotsRef.current;
+    if (!current) return;
+    supportPointUndoSnapshotsRef.current = { ...current, [snapshot.kind]: snapshot };
+  }, []);
+
+  const finalizeActiveSupportPointDrag = (pointerId?: number) => {
+    const active = activeSupportPointDragRef.current;
+    if (!active || (pointerId !== undefined && active.pointerId !== pointerId)) return;
+    const after = supportPointDragMovedRef.current
+      ? supportPointUndoSnapshotsRef.current?.[active.transaction.supportKind]
+      : active.transaction.before;
+    if (after) {
+      const nextRecord = finalizeSupportPointDragTransaction(
+        active.transaction,
+        buildSupportPointUndoSnapshotKey(after),
+        supportPointUndoRecordRef.current
+      );
+      if (nextRecord !== supportPointUndoRecordRef.current) {
+        setCompletedSupportPointUndoRecord(nextRecord);
+      }
+    }
+    activeSupportPointDragRef.current = null;
+    supportPointDragMovedRef.current = false;
+  };
+
+  const restoreSupportPointUndoSnapshot = (snapshot: SupportPointUndoSnapshot) => {
+    if (snapshot.kind === "floor") {
+      setFloorPolygon(snapshot.floorPolygon.map((point) => ({ x: point.x, y: point.y })));
+      setSourceNormalizedFloorPolygon(snapshot.sourceNormalizedFloorPolygon.map((point) => ({ x: point.x, y: point.y })));
+      setFloorPolygonAuthorityEligible(snapshot.floorPolygonAuthorityEligible);
+      floorPolygonAuthorityKeyRef.current = snapshot.floorPolygonAuthorityKey;
+      setFloorSupportReviewStatus(snapshot.reviewStatus);
+      setFloorSupportSource(snapshot.source);
+      setFloorSupportImageBasis(snapshot.imageBasis);
+      return;
+    }
+    if (snapshot.kind === "ceiling") {
+      setCeilingSupportDraft(snapshot.draft);
+      setCeilingSupportImageBasis(snapshot.imageBasis);
+      return;
+    }
+    setWallSupportDrafts((previous) => ({ ...previous, [snapshot.kind]: snapshot.draft }));
+    setWallSupportImageBases((previous) => ({ ...previous, [snapshot.kind]: snapshot.imageBasis }));
+  };
+
+  supportPointUndoKeyboardHandlerRef.current = (event) => {
+    if (
+      !isSupportPointUndoShortcut({
+        key: event.key,
+        metaKey: event.metaKey,
+        ctrlKey: event.ctrlKey,
+        shiftKey: event.shiftKey,
+        altKey: event.altKey,
+        repeat: event.repeat,
+      }) ||
+      isSupportPointUndoTextEntryTarget(event.target)
+    ) {
+      return;
+    }
+    const record = supportPointUndoRecordRef.current;
+    if (!record || activeSupportPointDragRef.current) return;
+    const currentSnapshot = supportPointUndoSnapshotsRef.current?.[record.supportKind];
+    if (!currentSnapshot) return;
+    if (!canApplySupportPointUndo(record, buildSupportPointUndoSnapshotKey(currentSnapshot), false)) {
+      setCompletedSupportPointUndoRecord(null);
+      setSupportInteractionStatus("Undo unavailable because the support changed after that point move.");
+      event.preventDefault();
+      return;
+    }
+    const consumed = consumeSupportPointUndo(record);
+    if (!consumed) return;
+    setCompletedSupportPointUndoRecord(consumed.nextUndoRecord);
+    restoreSupportPointUndoSnapshot(consumed.snapshot);
+    const label =
+      record.supportKind === "floor"
+        ? "Floor"
+        : record.supportKind === "wall_back"
+          ? "Back wall"
+          : record.supportKind === "wall_left"
+            ? "Left wall"
+            : record.supportKind === "wall_right"
+              ? "Right wall"
+              : "Ceiling";
+    setSupportInteractionStatus(`Undid last ${label} point move.`);
+    event.preventDefault();
+  };
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => supportPointUndoKeyboardHandlerRef.current(event);
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, []);
+
   const applyContainerFloorPolygon = useCallback(
     (
       polygon: FloorPoint[],
@@ -1891,9 +2108,31 @@ export default function ThreeRoomLab({
           setFloorSupportSource(review.source);
           setFloorSupportImageBasis(qualifiedImageBasis);
         }
+        const current = supportPointUndoSnapshotsRef.current?.floor;
+        if (current) {
+          updateActiveSupportPointUndoSnapshot({
+            kind: "floor",
+            floorPolygon: polygon.map((point) => ({ x: point.x, y: point.y })),
+            sourceNormalizedFloorPolygon: sourcePolygon.map((point) => ({ x: point.x, y: point.y })),
+            floorPolygonAuthorityEligible: true,
+            floorPolygonAuthorityKey: buildFloorPolygonAuthorityKey(polygon),
+            reviewStatus: review?.status ?? current.reviewStatus,
+            source: review?.source ?? current.source,
+            imageBasis: review ? qualifiedImageBasis : current.imageBasis,
+          });
+        }
+      } else {
+        const current = supportPointUndoSnapshotsRef.current?.floor;
+        if (current) {
+          updateActiveSupportPointUndoSnapshot({
+            ...current,
+            floorPolygon: polygon.map((point) => ({ x: point.x, y: point.y })),
+            floorPolygonAuthorityKey: buildFloorPolygonAuthorityKey(polygon),
+          });
+        }
       }
     },
-    [projectContainerPolygonToSource, qualifiedImageBasis]
+    [projectContainerPolygonToSource, qualifiedImageBasis, updateActiveSupportPointUndoSnapshot]
   );
 
   useEffect(() => {
@@ -9348,18 +9587,27 @@ export default function ThreeRoomLab({
     ) as CeilingPolygon;
     const nextSource = projectContainerPolygonToSource(nextContainer);
     if (!nextSource || nextSource.length !== 4) return;
-    setCeilingSupportDraft((previous) => ({
-      ...previous,
-      enabled: true,
-      source: "manual",
-      imagePolygonSourceNorm: nextSource as CeilingPolygon,
-      reviewStatus: "needs_review",
-      confirmationStamp: null,
-    }));
+    setCeilingSupportDraft((previous) => {
+      const next = {
+        ...previous,
+        enabled: true,
+        source: "manual" as const,
+        imagePolygonSourceNorm: nextSource as CeilingPolygon,
+        reviewStatus: "needs_review" as const,
+        confirmationStamp: null,
+      };
+      updateActiveSupportPointUndoSnapshot({
+        kind: "ceiling",
+        draft: next,
+        imageBasis: qualifiedImageBasis,
+      });
+      return next;
+    });
     setCeilingSupportImageBasis(qualifiedImageBasis);
   };
 
   const handleCeilingHandlePointerDown = (index: number, event: PointerEvent<SVGCircleElement>) => {
+    if (!beginSupportPointDrag("ceiling", event.pointerId)) return;
     event.preventDefault();
     event.stopPropagation();
     ceilingHandleDragRef.current = { pointerId: event.pointerId, index };
@@ -9560,17 +9808,25 @@ export default function ThreeRoomLab({
     ) as WallPolygon;
     const nextSource = projectContainerPolygonToSource(nextContainer);
     if (!nextSource || nextSource.length !== 4) return;
-    setWallSupportDrafts((previous) => ({
-      ...previous,
-      [kind]: {
-        ...previous[kind],
-        enabled: true,
-        source: "manual",
-        imagePolygonSourceNorm: nextSource as WallPolygon,
-        reviewStatus: "needs_review",
-        confirmationStamp: null,
-      },
-    }));
+    setWallSupportDrafts((previous) => {
+      const next = {
+        ...previous,
+        [kind]: {
+          ...previous[kind],
+          enabled: true,
+          source: "manual" as const,
+          imagePolygonSourceNorm: nextSource as WallPolygon,
+          reviewStatus: "needs_review" as const,
+          confirmationStamp: null,
+        },
+      };
+      updateActiveSupportPointUndoSnapshot({
+        kind,
+        draft: next[kind],
+        imageBasis: qualifiedImageBasis,
+      });
+      return next;
+    });
     setWallSupportImageBases((previous) => ({ ...previous, [kind]: qualifiedImageBasis }));
   };
 
@@ -9579,6 +9835,7 @@ export default function ThreeRoomLab({
     index: number,
     event: PointerEvent<SVGCircleElement>
   ) => {
+    if (!beginSupportPointDrag(kind, event.pointerId)) return;
     event.preventDefault();
     event.stopPropagation();
     wallHandleDragRef.current = { pointerId: event.pointerId, kind, index };
@@ -9877,6 +10134,7 @@ export default function ThreeRoomLab({
   };
 
   const handleFloorHandlePointerDown = (index: number, event: PointerEvent<SVGCircleElement>) => {
+    if (!beginSupportPointDrag("floor", event.pointerId)) return;
     event.preventDefault();
     event.stopPropagation();
     dragPointerIdRef.current = event.pointerId;
@@ -9893,17 +10151,20 @@ export default function ThreeRoomLab({
     const ceilingDrag = ceilingHandleDragRef.current;
     if (ceilingDrag && ceilingDrag.pointerId === event.pointerId) {
       event.preventDefault();
+      supportPointDragMovedRef.current = true;
       updateCeilingHandleFromClientPoint(ceilingDrag.index, event.clientX, event.clientY);
       return;
     }
     const wallDrag = wallHandleDragRef.current;
     if (wallDrag && wallDrag.pointerId === event.pointerId) {
       event.preventDefault();
+      supportPointDragMovedRef.current = true;
       updateWallHandleFromClientPoint(wallDrag.kind, wallDrag.index, event.clientX, event.clientY);
       return;
     }
     if (activeFloorHandleIndex !== null && dragPointerIdRef.current === event.pointerId) {
       event.preventDefault();
+      supportPointDragMovedRef.current = true;
       updateFloorHandleFromClientPoint(event.clientX, event.clientY);
       return;
     }
@@ -10301,6 +10562,7 @@ export default function ThreeRoomLab({
   };
 
   const stopFloorHandleDrag = (event?: PointerEvent<SVGSVGElement>) => {
+    finalizeActiveSupportPointDrag(event?.pointerId);
     const attachmentDrag = attachmentMoveDragRef.current;
     if (attachmentDrag && (!event || attachmentDrag.pointerId === event.pointerId)) {
       try {
@@ -17521,11 +17783,33 @@ export default function ThreeRoomLab({
               wall_right: "Right wall",
               ceiling: "Ceiling",
             };
+            const undoCurrentSnapshot = supportPointUndoRecord
+              ? supportPointUndoSnapshotsRef.current?.[supportPointUndoRecord.supportKind]
+              : null;
+            const undoAvailable =
+              !!supportPointUndoRecord &&
+              !!undoCurrentSnapshot &&
+              canApplySupportPointUndo(
+                supportPointUndoRecord,
+                buildSupportPointUndoSnapshotKey(undoCurrentSnapshot),
+                activeSupportPointDragRef.current !== null
+              );
+            const supportPointUndoAvailability = !supportPointUndoRecord
+              ? "No support point move to undo"
+              : undoAvailable
+                ? `Undo available: ${supportEditLabels[supportPointUndoRecord.supportKind]} point move`
+                : activeSupportPointDragRef.current
+                  ? "Undo unavailable while a support point drag is active."
+                  : "Undo unavailable because the support changed after that point move.";
             return (
               <div className="space-y-3 text-[11px] text-slate-300">
                 <div className="rounded-lg border border-slate-600/40 bg-slate-800/40 px-3 py-2 text-slate-200">
                   Local support validity makes no physical measurement claim. It only reports whether this lab can use
                   the reviewed support with the current camera and image-basis lifecycle.
+                </div>
+                <div className="rounded-lg border border-slate-700 bg-slate-950/60 px-3 py-2 text-slate-300">
+                  <p>Command-Z / Ctrl-Z undoes the last completed support-point drag.</p>
+                  <p className="mt-1 text-slate-400">{supportPointUndoAvailability}</p>
                 </div>
                 {supportInteractionStatus !== "none" ? (
                   <p className="text-amber-200">Support action status: {supportInteractionStatus}</p>
