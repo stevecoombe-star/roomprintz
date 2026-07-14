@@ -72,7 +72,7 @@ test("every basis, camera, support, inclusion, and anchor provenance fact is bou
   assert.notEqual(key, buildRoomEnvelopeContextKey({ ...original, resolvedAnchor: { kind: "wall_back", selection: "explicit" } }));
 });
 
-test("foreground cap identity, derivation version, and numerical policy version are present and material", () => {
+test("context key binds the v2 boundary-policy derivation while preserving numeric policy v1", () => {
   const value = context();
   const key = buildRoomEnvelopeContextKey(value);
   assert.notEqual(key, buildRoomEnvelopeContextKey({ ...value, foregroundCap: null }));
@@ -91,6 +91,9 @@ test("foreground cap identity, derivation version, and numerical policy version 
   assert.match(key, new RegExp(ROOM_ENVELOPE_CONTEXT_VERSION));
   assert.match(key, new RegExp(ROOM_ENVELOPE_DERIVATION_VERSION));
   assert.match(key, new RegExp(ROOM_ENVELOPE_NUMERIC_POLICY_VERSION));
+  assert.equal(ROOM_ENVELOPE_DERIVATION_VERSION, "room-envelope-derivation/v2");
+  assert.equal(ROOM_ENVELOPE_NUMERIC_POLICY_VERSION, "room-envelope-numeric/v1");
+  assert.equal(key.includes("room-envelope-derivation/v1"), false);
   assert.equal(key.includes("residual"), false);
   assert.equal(key.includes("dimensions"), false);
 });

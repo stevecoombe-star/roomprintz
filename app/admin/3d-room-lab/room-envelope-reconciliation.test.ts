@@ -178,6 +178,45 @@ function roomSupportsWithWidth(width: number): RoomEnvelopeSupportGeometries {
   };
 }
 
+function a3PartialSupports(): RoomEnvelopeSupportGeometries {
+  const supports = roomSupports();
+  supports.wall_right = null;
+  supports.ceiling = null;
+  supports.wall_left = {
+    ...supports.wall_left!,
+    // Polygon order is lower-start, lower-end, upper-end, upper-start.
+    // The upper-start is the visible Back/Left seam corner and intentionally
+    // extends 0.120 units behind the candidate Back face.
+    boundaryWorld: [
+      { x: -2, y: 0, z: 0 },
+      { x: -2, y: 0, z: 4 },
+      { x: -2, y: 3, z: 4 },
+      { x: -2, y: 3, z: -0.12 },
+    ],
+  };
+  return supports;
+}
+
+function boundaryObservation(
+  result: ReturnType<typeof reconcileRoomEnvelope>,
+  expected: {
+    supportKind: string;
+    pointRole: string;
+    pointIndex?: number;
+    candidateFaceId: string;
+  }
+) {
+  const observation = result.residuals.boundaryObservations.find(
+    (candidate) =>
+      candidate.supportKind === expected.supportKind &&
+      candidate.pointRole === expected.pointRole &&
+      (expected.pointIndex === undefined || candidate.pointIndex === expected.pointIndex) &&
+      candidate.candidateFaceId === expected.candidateFaceId
+  );
+  assert.ok(observation, `missing boundary observation ${JSON.stringify(expected)}`);
+  return observation;
+}
+
 test("canonical anchors construct positive, orthonormal world frames independent of seam direction", () => {
   const supports = roomSupports();
   const expected = {
@@ -255,7 +294,8 @@ test("partial and candidate rules preserve missing support facts without blocker
   }
   const exact = reconcileRoomEnvelope(input());
   assert.equal(exact.status, "candidate");
-  assert.equal(exact.residuals.maxBoundaryToEnvelopeDistance, 0);
+  assert.equal(exact.residuals.maxStructuralBoundaryDistance, 0);
+  assert.equal(exact.residuals.maxFinitePatchBoundaryOverrun, 0);
   assert.equal(exact.residuals.maxAbsSupportPlaneOffset, 0);
   assert.equal(exact.hasCeiling, false);
   assert.equal(exact.hasForegroundCap, false);
@@ -280,7 +320,8 @@ test("a coherent 90-degree yawed room remains a complete candidate in canonical 
   assert.equal(result.status, "candidate");
   assert.deepEqual(result.blockers, []);
   assert.deepEqual(result.dimensions.width, { present: true, value: 4, provenance: "machine_derived_world_extent" });
-  assert.ok(result.residuals.maxBoundaryToEnvelopeDistance < 1e-9);
+  assert.ok(result.residuals.maxStructuralBoundaryDistance < 1e-9);
+  assert.ok(result.residuals.maxFinitePatchBoundaryOverrun < 1e-9);
   assert.ok(result.residuals.maxAbsSupportPlaneOffset < 1e-9);
   assert.equal(result.isCompleteCappedEnvelope, true);
   assert.deepEqual(result.faces.front, {
@@ -382,9 +423,6 @@ test("angular, seam, plane, closure, role, order, and boundary disagreement bloc
   const wrongRole = input();
   wrongRole.supports.wall_right = { ...wrongRole.supports.wall_right!, plane: plane({ x: 2, y: 0, z: 0 }, { x: 1, y: 0, z: 0 }) };
   assert.ok(reconcileRoomEnvelope(wrongRole).blockers.includes("support_role_inconsistent"));
-  const outlier = input();
-  outlier.supports.wall_left = { ...outlier.supports.wall_left!, boundaryWorld: [...outlier.supports.wall_left!.boundaryWorld, { x: -3, y: 1, z: 2 }] };
-  assert.ok(reconcileRoomEnvelope(outlier).blockers.includes("boundary_outside_envelope"));
 });
 
 test("ceiling finite patch coverage is visible but does not block coherent planes", () => {
@@ -500,4 +538,290 @@ test("reconciliation is immutable, deterministic, and returns fixed deduplicated
   const blockers = reconcileRoomEnvelope(bad).blockers;
   assert.deepEqual(blockers, [...new Set(blockers)]);
   assert.deepEqual(blockers, ROOM_ENVELOPE_BLOCKER_ORDER.filter((blocker) => blockers.includes(blocker)));
+});
+
+test("A3 truthful Left upper Back seam overrun is finite-patch coverage, not structural containment", () => {
+  const result = reconcileRoomEnvelope(input({
+    supports: a3PartialSupports(),
+    included: { ...ALL_INCLUDED, wall_right: false, ceiling: false },
+  }));
+
+  assert.equal(result.status, "partial");
+  assert.deepEqual(result.blockers, []);
+  assert.ok(result.residuals.maxStructuralBoundaryDistance <= 0.05);
+  assert.ok(Math.abs(result.residuals.maxFinitePatchBoundaryOverrun - 0.12) < 1e-12);
+  assert.deepEqual(boundaryObservation(result, {
+    supportKind: "wall_left",
+    pointRole: "wall_upper_start",
+    candidateFaceId: "back",
+  }), {
+    supportKind: "wall_left",
+    pointRole: "wall_upper_start",
+    pointIndex: 3,
+    candidateFaceId: "back",
+    classification: "finite_patch_coverage",
+    blocking: false,
+    pointWorld: { x: -2, y: 3, z: -0.12 },
+    outsideDistanceWorld: 0.12,
+  });
+});
+
+test("Right and Back upper corners beyond adjacent faces remain finite-patch coverage", () => {
+  const rightSupports = roomSupports();
+  rightSupports.wall_left = null;
+  rightSupports.wall_right = {
+    ...rightSupports.wall_right!,
+    boundaryWorld: [
+      { x: 2, y: 0, z: 0 },
+      { x: 2, y: 0, z: 4 },
+      { x: 2, y: 3, z: 4 },
+      { x: 2, y: 3, z: -0.12 },
+    ],
+  };
+  const right = reconcileRoomEnvelope(input({
+    supports: rightSupports,
+    included: { ...ALL_INCLUDED, wall_left: false, ceiling: false },
+  }));
+  assert.equal(right.status, "partial");
+  assert.deepEqual(right.blockers, []);
+  assert.deepEqual(boundaryObservation(right, {
+    supportKind: "wall_right",
+    pointRole: "wall_upper_start",
+    candidateFaceId: "back",
+  }), {
+    supportKind: "wall_right",
+    pointRole: "wall_upper_start",
+    pointIndex: 3,
+    candidateFaceId: "back",
+    classification: "finite_patch_coverage",
+    blocking: false,
+    pointWorld: { x: 2, y: 3, z: -0.12 },
+    outsideDistanceWorld: 0.12,
+  });
+
+  const backSupports = a3PartialSupports();
+  backSupports.wall_back = {
+    ...backSupports.wall_back!,
+    boundaryWorld: [
+      { x: -2, y: 0, z: 0 },
+      { x: 2, y: 0, z: 0 },
+      { x: 2, y: 3, z: 0 },
+      { x: -2.12, y: 3, z: 0 },
+    ],
+  };
+  const back = reconcileRoomEnvelope(input({
+    supports: backSupports,
+    included: { ...ALL_INCLUDED, wall_right: false, ceiling: false },
+  }));
+  assert.equal(back.status, "partial");
+  assert.deepEqual(back.blockers, []);
+  assert.deepEqual(boundaryObservation(back, {
+    supportKind: "wall_back",
+    pointRole: "wall_upper_start",
+    candidateFaceId: "left",
+  }), {
+    supportKind: "wall_back",
+    pointRole: "wall_upper_start",
+    pointIndex: 3,
+    candidateFaceId: "left",
+    classification: "finite_patch_coverage",
+    blocking: false,
+    pointWorld: { x: -2.12, y: 3, z: 0 },
+    outsideDistanceWorld: 0.1200000000000001,
+  });
+});
+
+test("Ceiling boundary overrun is finite-patch coverage while Floor boundary overrun remains structural", () => {
+  const ceilingSupports = roomSupports();
+  ceilingSupports.ceiling = {
+    ...ceilingSupports.ceiling!,
+    boundaryWorld: [
+      { x: -2, y: 3, z: 0 },
+      { x: 2, y: 3, z: 0 },
+      { x: 2.084, y: 3, z: 4 },
+      { x: -2, y: 3, z: 4 },
+    ],
+  };
+  const ceiling = reconcileRoomEnvelope(input({ supports: ceilingSupports, included: { ...ALL_INCLUDED, ceiling: true } }));
+  assert.equal(ceiling.status, "candidate");
+  assert.deepEqual(ceiling.blockers, []);
+  assert.equal(boundaryObservation(ceiling, {
+    supportKind: "ceiling",
+    pointRole: "ceiling_boundary",
+    pointIndex: 2,
+    candidateFaceId: "right",
+  }).blocking, false);
+  assert.ok(Math.abs(boundaryObservation(ceiling, {
+    supportKind: "ceiling",
+    pointRole: "ceiling_boundary",
+    pointIndex: 2,
+    candidateFaceId: "right",
+  }).outsideDistanceWorld - 0.084) < 1e-12);
+
+  const floorSupports = roomSupports();
+  floorSupports.wall_right = null;
+  floorSupports.ceiling = null;
+  floorSupports.floor = {
+    ...floorSupports.floor!,
+    boundaryWorld: [
+      { x: -2, y: 0, z: -0.12 },
+      { x: 2, y: 0, z: 0 },
+      { x: 2, y: 0, z: 4 },
+      { x: -2, y: 0, z: 4 },
+    ],
+  };
+  const floor = reconcileRoomEnvelope(input({
+    supports: floorSupports,
+    included: { ...ALL_INCLUDED, wall_right: false, ceiling: false },
+  }));
+  assert.equal(floor.status, "inconsistent");
+  assert.deepEqual(floor.blockers, ["boundary_outside_envelope"]);
+  assert.deepEqual(boundaryObservation(floor, {
+    supportKind: "floor",
+    pointRole: "floor_boundary",
+    candidateFaceId: "back",
+  }), {
+    supportKind: "floor",
+    pointRole: "floor_boundary",
+    pointIndex: 0,
+    candidateFaceId: "back",
+    classification: "structural",
+    blocking: true,
+    pointWorld: { x: -2, y: 0, z: -0.12 },
+    outsideDistanceWorld: 0.12,
+  });
+});
+
+test("a wall lower seam overrun blocks while adjacent upper-patch overrun remains visible", () => {
+  const supports = a3PartialSupports();
+  supports.wall_left = {
+    ...supports.wall_left!,
+    seamWorld: [{ x: -2, y: 0, z: -0.12 }, { x: -2, y: 0, z: 4 }],
+  };
+  const result = reconcileRoomEnvelope(input({
+    supports,
+    included: { ...ALL_INCLUDED, wall_right: false, ceiling: false },
+  }));
+
+  assert.equal(result.status, "inconsistent");
+  assert.deepEqual(result.blockers, ["boundary_outside_envelope"]);
+  assert.deepEqual(boundaryObservation(result, {
+    supportKind: "wall_left",
+    pointRole: "wall_lower_start",
+    candidateFaceId: "back",
+  }), {
+    supportKind: "wall_left",
+    pointRole: "wall_lower_start",
+    pointIndex: 0,
+    candidateFaceId: "back",
+    classification: "structural",
+    blocking: true,
+    pointWorld: { x: -2, y: 0, z: -0.12 },
+    outsideDistanceWorld: 0.12,
+  });
+  assert.deepEqual(boundaryObservation(result, {
+    supportKind: "wall_left",
+    pointRole: "wall_upper_start",
+    candidateFaceId: "back",
+  }), {
+    supportKind: "wall_left",
+    pointRole: "wall_upper_start",
+    pointIndex: 3,
+    candidateFaceId: "back",
+    classification: "finite_patch_coverage",
+    blocking: false,
+    pointWorld: { x: -2, y: 3, z: -0.12 },
+    outsideDistanceWorld: 0.12,
+  });
+});
+
+test("structural and finite-patch aggregates remain separate and report their largest points", () => {
+  const supports = a3PartialSupports();
+  supports.wall_left = {
+    ...supports.wall_left!,
+    seamWorld: [{ x: -2, y: 0, z: -0.12 }, { x: -2, y: 0, z: 4 }],
+    boundaryWorld: [
+      { x: -2, y: 0, z: 0 },
+      { x: -2, y: 0, z: 4 },
+      { x: -2, y: 3, z: 4 },
+      { x: -2, y: 3, z: -0.2 },
+    ],
+  };
+  const result = reconcileRoomEnvelope(input({
+    supports,
+    included: { ...ALL_INCLUDED, wall_right: false, ceiling: false },
+  }));
+
+  assert.equal(result.status, "inconsistent");
+  assert.deepEqual(result.blockers, ["boundary_outside_envelope"]);
+  assert.ok(Math.abs(result.residuals.maxStructuralBoundaryDistance - 0.12) < 1e-12);
+  assert.ok(Math.abs(result.residuals.maxFinitePatchBoundaryOverrun - 0.2) < 1e-12);
+  assert.ok(result.residuals.rmsStructuralBoundaryDistance < result.residuals.maxStructuralBoundaryDistance);
+  assert.ok(result.residuals.rmsFinitePatchBoundaryOverrun < result.residuals.maxFinitePatchBoundaryOverrun);
+});
+
+test("boundary provenance ordering is deterministic, immutable, and excluded patch coverage remains separate", () => {
+  const source = input({
+    supports: a3PartialSupports(),
+    included: { ...ALL_INCLUDED, wall_left: false, wall_right: false, ceiling: false },
+  });
+  const frozen = deepFreeze(clone(source));
+  const first = reconcileRoomEnvelope(frozen);
+  const second = reconcileRoomEnvelope(frozen);
+  assert.equal(first.status, "partial");
+  assert.deepEqual(first.blockers, []);
+  assert.deepEqual(first.residuals.boundaryObservations, second.residuals.boundaryObservations);
+  assert.deepEqual(frozen, source);
+  assert.ok(Object.isFrozen(first.residuals.boundaryObservations));
+  assert.ok(first.residuals.boundaryObservations.every(Object.isFrozen));
+  const fullyIncluded = reconcileRoomEnvelope(input());
+  const observationKeys = fullyIncluded.residuals.boundaryObservations.map((observation) =>
+    `${observation.supportKind}:${observation.pointRole}:${observation.pointIndex}:${observation.candidateFaceId}`
+  );
+  assert.equal(new Set(observationKeys).size, observationKeys.length);
+  assert.deepEqual(
+    fullyIncluded.residuals.boundaryObservations.slice(0, 6).map((observation) => [
+      observation.supportKind,
+      observation.pointRole,
+      observation.pointIndex,
+      observation.candidateFaceId,
+    ]),
+    [
+      ["floor", "floor_boundary", 0, "left"],
+      ["floor", "floor_boundary", 0, "right"],
+      ["floor", "floor_boundary", 0, "back"],
+      ["floor", "floor_boundary", 1, "left"],
+      ["floor", "floor_boundary", 1, "right"],
+      ["floor", "floor_boundary", 1, "back"],
+    ]
+  );
+  assert.deepEqual(
+    first.residuals.boundaryObservations.slice(0, 4).map((observation) => [
+      observation.supportKind,
+      observation.pointRole,
+      observation.pointIndex,
+      observation.candidateFaceId,
+    ]),
+    [
+      ["floor", "floor_boundary", 0, "back"],
+      ["floor", "floor_boundary", 1, "back"],
+      ["floor", "floor_boundary", 2, "back"],
+      ["floor", "floor_boundary", 3, "back"],
+    ]
+  );
+  const excludedLeft = first.residuals.excludedSupportResiduals.find((item) => item.supportKind === "wall_left");
+  assert.ok(excludedLeft);
+  assert.ok(Object.isFrozen(excludedLeft.boundaryObservations));
+  assert.deepEqual(excludedLeft.boundaryObservations.find((observation) =>
+    observation.pointRole === "wall_upper_start" && observation.candidateFaceId === "back"
+  ), {
+    supportKind: "wall_left",
+    pointRole: "wall_upper_start",
+    pointIndex: 3,
+    candidateFaceId: "back",
+    classification: "finite_patch_coverage",
+    blocking: false,
+    pointWorld: { x: -2, y: 3, z: -0.12 },
+    outsideDistanceWorld: 0.12,
+  });
 });

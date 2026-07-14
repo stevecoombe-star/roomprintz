@@ -139,11 +139,30 @@ export type RoomEnvelopeCoverageResidual = {
   wallKind: RoomEnvelopeWallKind;
   upperCornerGaps: number[];
 };
+export type RoomEnvelopeBoundaryPointRole =
+  | "floor_boundary"
+  | "wall_lower_start"
+  | "wall_lower_end"
+  | "wall_upper_end"
+  | "wall_upper_start"
+  | "ceiling_boundary";
+export type RoomEnvelopeBoundaryClassification = "structural" | "finite_patch_coverage";
+export type RoomEnvelopeBoundaryObservation = Readonly<{
+  supportKind: RoomEnvelopeSupportKind;
+  pointRole: RoomEnvelopeBoundaryPointRole;
+  pointIndex: number | null;
+  candidateFaceId: RoomEnvelopeFaceId;
+  classification: RoomEnvelopeBoundaryClassification;
+  blocking: boolean;
+  pointWorld: Readonly<SupportVec3>;
+  outsideDistanceWorld: number;
+}>;
 export type RoomEnvelopeExcludedResidual = {
   supportKind: RoomEnvelopeSupportKind;
   available: boolean;
   maxBoundaryOutsideDistance: number;
   supportPlaneOffset: number | null;
+  boundaryObservations: readonly RoomEnvelopeBoundaryObservation[];
 };
 
 export type RoomEnvelopeResiduals = {
@@ -160,8 +179,11 @@ export type RoomEnvelopeResiduals = {
   supportPlaneOffsets: RoomEnvelopePlaneOffsetResidual[];
   maxAbsSupportPlaneOffset: number;
   cornerClosure: RoomEnvelopeCornerClosureResidual[];
-  maxBoundaryToEnvelopeDistance: number;
-  rmsBoundaryToEnvelopeDistance: number;
+  boundaryObservations: readonly RoomEnvelopeBoundaryObservation[];
+  maxStructuralBoundaryDistance: number;
+  rmsStructuralBoundaryDistance: number;
+  maxFinitePatchBoundaryOverrun: number;
+  rmsFinitePatchBoundaryOverrun: number;
   excludedSupportResiduals: RoomEnvelopeExcludedResidual[];
 };
 

@@ -1,6 +1,11 @@
 "use client";
 
-import type { RoomEnvelopeReconciliationResult, RoomEnvelopeSupportKind } from "./room-envelope-types";
+import type {
+  RoomEnvelopeBoundaryPointRole,
+  RoomEnvelopeFaceId,
+  RoomEnvelopeReconciliationResult,
+  RoomEnvelopeSupportKind,
+} from "./room-envelope-types";
 import type {
   FloorProjectionAgreementObservation,
   FloorProjectionAgreementResult,
@@ -49,6 +54,22 @@ const SUPPORT_LABELS: Readonly<Record<RoomEnvelopeSupportKind, string>> = {
   wall_right: "Right wall",
   ceiling: "Ceiling",
 };
+const FACE_LABELS: Readonly<Record<RoomEnvelopeFaceId, string>> = {
+  floor: "Floor face",
+  ceiling: "Ceiling face",
+  left: "Left face",
+  right: "Right face",
+  back: "Back face",
+  front: "Front face",
+};
+const BOUNDARY_POINT_ROLE_LABELS: Readonly<Record<RoomEnvelopeBoundaryPointRole, string>> = {
+  floor_boundary: "boundary point",
+  wall_lower_start: "lower-start",
+  wall_lower_end: "lower-end",
+  wall_upper_end: "upper-end",
+  wall_upper_start: "upper-start",
+  ceiling_boundary: "boundary point",
+};
 
 function formatWorld(value: number): string {
   return Number.isFinite(value) ? `${value.toFixed(3)} world units` : "unavailable";
@@ -76,6 +97,13 @@ function formatPoint2(point: { x: number; y: number }): string {
 
 function formatPoint3(point: { x: number; y: number; z: number }): string {
   return `(${point.x.toFixed(3)}, ${point.y.toFixed(3)}, ${point.z.toFixed(3)})`;
+}
+
+function formatBoundaryPointRole(role: RoomEnvelopeBoundaryPointRole, pointIndex: number | null): string {
+  const label = BOUNDARY_POINT_ROLE_LABELS[role];
+  return (role === "floor_boundary" || role === "ceiling_boundary") && pointIndex !== null
+    ? `${label} ${pointIndex}`
+    : label;
 }
 
 const FLOOR_CORNER_LABELS: Readonly<Record<FloorProjectionCornerKind, string>> = {
@@ -134,6 +162,9 @@ export default function RoomEnvelopePanel({
     : reconciliation.status === "candidate"
       ? "text-cyan-200"
       : "text-slate-300";
+  const finitePatchBoundaryObservations = reconciliation.residuals.boundaryObservations.filter(
+    (observation) => observation.classification === "finite_patch_coverage" && observation.outsideDistanceWorld > 0
+  );
 
   return (
     <section className="space-y-4 rounded-xl border border-cyan-800/70 bg-slate-950/50 p-4">
@@ -323,17 +354,33 @@ export default function RoomEnvelopePanel({
           {reconciliation.residuals.wallFloorSeams.map((item) => <li key={item.wallKind}>{SUPPORT_LABELS[item.wallKind]} / Floor seam error: max Y {formatWorld(item.maxAbsY)}, offset spread {formatWorld(item.faceOffsetSpread)}</li>)}
           {reconciliation.residuals.supportPlaneOffsets.map((item) => <li key={item.wallKind}>{SUPPORT_LABELS[item.wallKind]} support-to-candidate face offset: {formatSignedWorld(item.signedOffset)} (absolute {formatWorld(item.absoluteOffset)})</li>)}
           {reconciliation.residuals.cornerClosure.map((item) => <li key={item.pair}>{item.pair} room-corner closure: {item.available ? formatWorld(item.worldDistanceError) : "not available"} · conditioning sinθ {item.intersectionSinTheta.toFixed(6)}</li>)}
-          <li>Maximum boundary distance: {formatWorld(reconciliation.residuals.maxBoundaryToEnvelopeDistance)}</li>
-          <li>RMS boundary distance: {formatWorld(reconciliation.residuals.rmsBoundaryToEnvelopeDistance)}</li>
+          <li>Maximum structural boundary distance: {formatWorld(reconciliation.residuals.maxStructuralBoundaryDistance)} (policy ≤ 0.050 world units)</li>
+          <li>RMS structural boundary distance: {formatWorld(reconciliation.residuals.rmsStructuralBoundaryDistance)}</li>
           {reconciliation.residuals.wallCeilingPlaneOrthogonality.map((item, index) => <li key={`wall-ceiling-plane-${index}`}>Wall/Ceiling plane consistency: {item.available ? formatDegrees(item.degrees) : "not available"}</li>)}
         </ul>
         <h4 className="mt-3 text-xs font-medium text-slate-200">Diagnostic-only finite-patch coverage</h4>
         <ul className="mt-2 space-y-1 rounded border border-slate-800 bg-slate-950/40 p-3 text-xs text-slate-400">
+          <li>Maximum finite-patch boundary overrun: {formatWorld(reconciliation.residuals.maxFinitePatchBoundaryOverrun)}</li>
           {reconciliation.residuals.wallCeilingCoverage.length > 0 ? reconciliation.residuals.wallCeilingCoverage.map((item) => (
             <li key={item.wallKind}>{SUPPORT_LABELS[item.wallKind]} / Ceiling upper-corner gaps: {item.upperCornerGaps.map(formatWorld).join(" · ") || "none"}</li>
           )) : <li>No finite wall/Ceiling patch coverage facts available.</li>}
           <li>Positive gap: reviewed wall patch stops below Ceiling. Negative gap: reviewed wall patch extends above Ceiling.</li>
-          <li>Cropped support patches are diagnostic coverage facts, not plane failures.</li>
+          <li>Finite reviewed patches may extend beyond adjacent candidate faces because independently reconstructed support planes and image rays do not necessarily terminate at identical 3D intersections.</li>
+          <li>These observations do not alter support geometry or grant envelope authority.</li>
+          {finitePatchBoundaryObservations.length > 0 ? (
+            <li>
+              <details>
+                <summary className="cursor-pointer text-slate-200">Boundary overrun observations ({finitePatchBoundaryObservations.length})</summary>
+                <ul className="mt-2 space-y-1">
+                  {finitePatchBoundaryObservations.map((observation) => (
+                    <li key={`${observation.supportKind}:${observation.pointRole}:${observation.pointIndex}:${observation.candidateFaceId}`}>
+                      {SUPPORT_LABELS[observation.supportKind]} {formatBoundaryPointRole(observation.pointRole, observation.pointIndex)} → {FACE_LABELS[observation.candidateFaceId]}: {formatWorld(observation.outsideDistanceWorld)} outside · Diagnostic only
+                    </li>
+                  ))}
+                </ul>
+              </details>
+            </li>
+          ) : null}
         </ul>
       </div>
 
@@ -344,7 +391,7 @@ export default function RoomEnvelopePanel({
             {reconciliation.blockers.map((blocker) => <li key={blocker}><code>{blocker}</code></li>)}
           </ol>
         ) : (
-          <p className="mt-2 text-xs text-slate-400">No machine consistency blockers under Room Envelope v1 policy.</p>
+          <p className="mt-2 text-xs text-slate-400">No machine consistency blockers under the current Room Envelope policy.</p>
         )}
       </div>
 

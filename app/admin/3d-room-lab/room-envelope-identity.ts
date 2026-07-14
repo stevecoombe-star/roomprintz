@@ -1,7 +1,7 @@
 import type { RoomEnvelopeContextInput, RoomEnvelopeSupportKind } from "./room-envelope-types";
 
 export const ROOM_ENVELOPE_CONTEXT_VERSION = "room-envelope-context/v1";
-export const ROOM_ENVELOPE_DERIVATION_VERSION = "room-envelope-derivation/v1";
+export const ROOM_ENVELOPE_DERIVATION_VERSION = "room-envelope-derivation/v2";
 export const ROOM_ENVELOPE_NUMERIC_POLICY_VERSION = "room-envelope-numeric/v1";
 
 const SUPPORT_ORDER: readonly RoomEnvelopeSupportKind[] = [

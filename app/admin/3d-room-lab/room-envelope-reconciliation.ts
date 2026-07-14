@@ -1,8 +1,10 @@
 import type {
   RoomEnvelopeAnchorChoice,
+  RoomEnvelopeBoundaryClassification,
+  RoomEnvelopeBoundaryObservation,
+  RoomEnvelopeBoundaryPointRole,
   RoomEnvelopeBlocker,
   RoomEnvelopeCandidateFaces,
-  RoomEnvelopeCeilingGeometry,
   RoomEnvelopeConditioning,
   RoomEnvelopeCornerClosureResidual,
   RoomEnvelopeDerivationStatus,
@@ -61,6 +63,13 @@ const UP: SupportVec3 = { x: 0, y: 1, z: 0 };
 const ORIGIN: SupportVec3 = { x: 0, y: 0, z: 0 };
 const EMPTY_FACE: RoomEnvelopeFace = { present: false };
 type MutableCandidateFaces = Record<RoomEnvelopeFaceId, RoomEnvelopeFace>;
+type BoundaryEvidencePoint = {
+  pointWorld: SupportVec3;
+  pointRole: RoomEnvelopeBoundaryPointRole;
+  pointIndex: number | null;
+  classification: RoomEnvelopeBoundaryClassification;
+};
+const BOUNDARY_FACE_IDS: readonly RoomEnvelopeFaceId[] = ["left", "right", "back", "front"];
 
 function finite(value: number): boolean {
   return Number.isFinite(value);
@@ -186,8 +195,11 @@ function emptyResiduals(): RoomEnvelopeResiduals {
     supportPlaneOffsets: [],
     maxAbsSupportPlaneOffset: 0,
     cornerClosure: [],
-    maxBoundaryToEnvelopeDistance: 0,
-    rmsBoundaryToEnvelopeDistance: 0,
+    boundaryObservations: Object.freeze([]),
+    maxStructuralBoundaryDistance: 0,
+    rmsStructuralBoundaryDistance: 0,
+    maxFinitePatchBoundaryOverrun: 0,
+    rmsFinitePatchBoundaryOverrun: 0,
     excludedSupportResiduals: [],
   };
 }
@@ -305,28 +317,139 @@ function wallOffset(wall: RoomEnvelopeWallGeometry, frame: RoomEnvelopeFrame): n
   return wall.kind === "wall_back" ? (a.z + b.z) / 2 : (a.x + b.x) / 2;
 }
 
-function boundaryPoints(input: RoomEnvelopeGeometryInput, kind: RoomEnvelopeSupportKind): readonly SupportVec3[] {
+function allBoundaryPoints(input: RoomEnvelopeGeometryInput, kind: RoomEnvelopeSupportKind): readonly SupportVec3[] {
   const support = input.supports[kind];
   if (!support) return [];
   if (support.kind === "floor" || support.kind === "ceiling") return support.boundaryWorld;
   return [...support.boundaryWorld, support.seamWorld[0], support.seamWorld[1]];
 }
 
-function outsideDistance(
+function boundaryEvidencePoints(
+  input: RoomEnvelopeGeometryInput,
+  kind: RoomEnvelopeSupportKind,
+  frame: RoomEnvelopeFrame
+): BoundaryEvidencePoint[] {
+  const support = input.supports[kind];
+  if (!support) return [];
+  if (support.kind === "floor") {
+    return support.boundaryWorld.map((pointWorld, pointIndex) => ({
+      pointWorld,
+      pointRole: "floor_boundary",
+      pointIndex,
+      classification: "structural",
+    }));
+  }
+  if (support.kind === "ceiling") {
+    return support.boundaryWorld.map((pointWorld, pointIndex) => ({
+      pointWorld,
+      pointRole: "ceiling_boundary",
+      pointIndex,
+      classification: "finite_patch_coverage",
+    }));
+  }
+  const seam = [...support.seamWorld].sort((left, right) => {
+    const a = coordinate(left, frame);
+    const b = coordinate(right, frame);
+    return support.kind === "wall_back" ? a.x - b.x : a.z - b.z;
+  });
+  const evidence: BoundaryEvidencePoint[] = [
+    {
+      pointWorld: seam[0],
+      pointRole: "wall_lower_start",
+      pointIndex: 0,
+      classification: "structural",
+    },
+    {
+      pointWorld: seam[1],
+      pointRole: "wall_lower_end",
+      pointIndex: 1,
+      classification: "structural",
+    },
+  ];
+  for (let pointIndex = 2; pointIndex < support.boundaryWorld.length; pointIndex += 1) {
+    evidence.push({
+      pointWorld: support.boundaryWorld[pointIndex],
+      pointRole: pointIndex === 2 ? "wall_upper_end" : "wall_upper_start",
+      pointIndex,
+      classification: "finite_patch_coverage",
+    });
+  }
+  return evidence;
+}
+
+function outsideDistanceToFace(
   point: SupportVec3,
   frame: RoomEnvelopeFrame,
-  faces: RoomEnvelopeCandidateFaces,
-  includeVerticalBounds = true
+  faceId: RoomEnvelopeFaceId,
+  face: Extract<RoomEnvelopeFace, { present: true }>
 ): number {
   const projected = coordinate(point, frame);
-  const distances: number[] = [];
-  if (includeVerticalBounds && faces.floor.present) distances.push(Math.max(0, -projected.y));
-  if (includeVerticalBounds && faces.ceiling.present) distances.push(Math.max(0, projected.y - faces.ceiling.offset));
-  if (faces.left.present) distances.push(Math.max(0, faces.left.offset - projected.x));
-  if (faces.right.present) distances.push(Math.max(0, projected.x - faces.right.offset));
-  if (faces.back.present) distances.push(Math.max(0, faces.back.offset - projected.z));
-  if (faces.front.present) distances.push(Math.max(0, projected.z - faces.front.offset));
-  return Math.hypot(...distances);
+  if (faceId === "left") return Math.max(0, face.offset - projected.x);
+  if (faceId === "right") return Math.max(0, projected.x - face.offset);
+  if (faceId === "back") return Math.max(0, face.offset - projected.z);
+  if (faceId === "front") return Math.max(0, projected.z - face.offset);
+  return 0;
+}
+
+function evaluateBoundaryObservations(
+  input: RoomEnvelopeGeometryInput,
+  kinds: readonly RoomEnvelopeSupportKind[],
+  frame: RoomEnvelopeFrame,
+  faces: RoomEnvelopeCandidateFaces
+): readonly RoomEnvelopeBoundaryObservation[] {
+  const observations: RoomEnvelopeBoundaryObservation[] = [];
+  for (const kind of kinds) {
+    for (const evidence of boundaryEvidencePoints(input, kind, frame)) {
+      if (!finiteVec(evidence.pointWorld)) continue;
+      const distances = BOUNDARY_FACE_IDS.flatMap((candidateFaceId) => {
+        const face = faces[candidateFaceId];
+        return face.present ? [outsideDistanceToFace(evidence.pointWorld, frame, candidateFaceId, face)] : [];
+      });
+      const combinedOutsideDistance = Math.hypot(...distances);
+      for (const candidateFaceId of BOUNDARY_FACE_IDS) {
+        const face = faces[candidateFaceId];
+        if (!face.present) continue;
+        const outsideDistanceWorld = outsideDistanceToFace(evidence.pointWorld, frame, candidateFaceId, face);
+        observations.push(Object.freeze({
+          supportKind: kind,
+          pointRole: evidence.pointRole,
+          pointIndex: evidence.pointIndex,
+          candidateFaceId,
+          classification: evidence.classification,
+          blocking:
+            evidence.classification === "structural" &&
+            outsideDistanceWorld > 0 &&
+            combinedOutsideDistance > ROOM_ENVELOPE_NUMERIC_POLICY.worldDistanceTolerance,
+          pointWorld: Object.freeze({ ...evidence.pointWorld }),
+          outsideDistanceWorld,
+        }));
+      }
+    }
+  }
+  return Object.freeze(observations);
+}
+
+function boundaryPointDistances(
+  observations: readonly RoomEnvelopeBoundaryObservation[],
+  classification: RoomEnvelopeBoundaryClassification
+): number[] {
+  const distances = new Map<string, number[]>();
+  for (const observation of observations) {
+    if (observation.classification !== classification) continue;
+    const key = `${observation.supportKind}:${observation.pointRole}:${observation.pointIndex ?? "none"}`;
+    const values = distances.get(key) ?? [];
+    values.push(observation.outsideDistanceWorld);
+    distances.set(key, values);
+  }
+  return [...distances.values()].map((values) => Math.hypot(...values));
+}
+
+function maximum(values: readonly number[]): number {
+  return values.reduce((current, value) => Math.max(current, value), 0);
+}
+
+function rms(values: readonly number[]): number {
+  return values.length === 0 ? 0 : Math.sqrt(values.reduce((sum, value) => sum + value * value, 0) / values.length);
 }
 
 function lineIntersection(
@@ -561,23 +684,19 @@ export function reconcileRoomEnvelope(input: RoomEnvelopeGeometryInput): RoomEnv
     }
   }
 
-  const includedDistances: number[] = [];
-  for (const kind of includedKinds) {
-    for (const point of boundaryPoints(input, kind)) {
-      if (!finiteVec(point)) continue;
-      includedDistances.push(outsideDistance(point, frame, faces, kind === "floor" || kind === "ceiling"));
-    }
-  }
-  residuals.maxBoundaryToEnvelopeDistance = includedDistances.reduce((maximum, value) => Math.max(maximum, value), 0);
-  residuals.rmsBoundaryToEnvelopeDistance = includedDistances.length === 0
-    ? 0
-    : Math.sqrt(includedDistances.reduce((sum, value) => sum + value * value, 0) / includedDistances.length);
-  if (residuals.maxBoundaryToEnvelopeDistance > ROOM_ENVELOPE_NUMERIC_POLICY.worldDistanceTolerance) {
+  residuals.boundaryObservations = evaluateBoundaryObservations(input, includedKinds, frame, faces);
+  const structuralBoundaryDistances = boundaryPointDistances(residuals.boundaryObservations, "structural");
+  const finitePatchBoundaryDistances = boundaryPointDistances(residuals.boundaryObservations, "finite_patch_coverage");
+  residuals.maxStructuralBoundaryDistance = maximum(structuralBoundaryDistances);
+  residuals.rmsStructuralBoundaryDistance = rms(structuralBoundaryDistances);
+  residuals.maxFinitePatchBoundaryOverrun = maximum(finitePatchBoundaryDistances);
+  residuals.rmsFinitePatchBoundaryOverrun = rms(finitePatchBoundaryDistances);
+  if (residuals.boundaryObservations.some((observation) => observation.blocking)) {
     blockers.push("boundary_outside_envelope");
   }
 
   if (faces.back.present) {
-    const allZ = includedKinds.flatMap((kind) => boundaryPoints(input, kind).filter(finiteVec).map((point) => coordinate(point, frame).z));
+    const allZ = includedKinds.flatMap((kind) => allBoundaryPoints(input, kind).filter(finiteVec).map((point) => coordinate(point, frame).z));
     const visibleDepth = allZ.length > 0 ? Math.max(0, Math.max(...allZ) - faces.back.offset) : 0;
     dimensions.visibleReviewedDepth = { present: true, value: visibleDepth, provenance: "machine_derived_world_extent" };
   }
@@ -592,8 +711,10 @@ export function reconcileRoomEnvelope(input: RoomEnvelopeGeometryInput): RoomEnv
   for (const kind of ROOM_ENVELOPE_SUPPORT_ORDER) {
     if (!input.supports[kind] || input.included[kind]) continue;
     const support = input.supports[kind]!;
-    const points = boundaryPoints(input, kind).filter(finiteVec);
-    const maxBoundaryOutsideDistance = points.reduce((maximum, point) => Math.max(maximum, outsideDistance(point, frame, faces)), 0);
+    const boundaryObservations = evaluateBoundaryObservations(input, [kind], frame, faces);
+    const excludedStructuralDistances = boundaryPointDistances(boundaryObservations, "structural");
+    const excludedFinitePatchDistances = boundaryPointDistances(boundaryObservations, "finite_patch_coverage");
+    const maxBoundaryOutsideDistance = maximum([...excludedStructuralDistances, ...excludedFinitePatchDistances]);
     const planeOffset = support.kind === "floor" || support.kind === "ceiling"
       ? null
       : (() => {
@@ -603,7 +724,13 @@ export function reconcileRoomEnvelope(input: RoomEnvelopeGeometryInput): RoomEnv
           const offset = support.kind === "wall_back" ? location.z : location.x;
           return finite(offset) ? offset - face.offset : null;
         })();
-    residuals.excludedSupportResiduals.push({ supportKind: kind, available: frame !== null, maxBoundaryOutsideDistance, supportPlaneOffset: planeOffset });
+    residuals.excludedSupportResiduals.push({
+      supportKind: kind,
+      available: frame !== null,
+      maxBoundaryOutsideDistance,
+      supportPlaneOffset: planeOffset,
+      boundaryObservations,
+    });
   }
 
   const hasMandatory = ["floor", "wall_back", "wall_left", "wall_right"].every((kind) => isIncluded(input, kind as RoomEnvelopeSupportKind));
