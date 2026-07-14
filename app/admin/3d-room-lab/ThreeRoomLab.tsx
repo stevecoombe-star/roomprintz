@@ -15,6 +15,11 @@ import {
   mapReviewedFloorCornersToAgreementOrder,
   type FloorProjectionAgreementCornerInput,
 } from "./floor-projection-agreement";
+import {
+  CALIBRATED_READ_ONLY_PROJECTION_RENDERER_FAR,
+  CALIBRATED_READ_ONLY_PROJECTION_RENDERER_NEAR,
+  buildCalibratedReadOnlyProjectionCamera,
+} from "./calibrated-camera-readonly-projection";
 import { buildRoomEnvelopeContextKey } from "./room-envelope-identity";
 import { reconcileRoomEnvelope } from "./room-envelope-reconciliation";
 import type {
@@ -1959,6 +1964,18 @@ export default function ThreeRoomLab({
     }
     return { width: rendererSize.width, height: rendererSize.height };
   }, [rendererSize.height, rendererSize.width]);
+
+  const calibratedReadOnlyProjectionCamera = useMemo<THREE.PerspectiveCamera | null>(() => {
+    if (!isCalibratedCameraActive || !calibratedCameraSnapshot || !frameSizeForImageSpace) return null;
+    const result = buildCalibratedReadOnlyProjectionCamera({
+      fovDeg: calibratedCameraSnapshot.fovDeg,
+      pose: calibratedCameraSnapshot.pose,
+      frameSize: frameSizeForImageSpace,
+      near: CALIBRATED_READ_ONLY_PROJECTION_RENDERER_NEAR,
+      far: CALIBRATED_READ_ONLY_PROJECTION_RENDERER_FAR,
+    });
+    return result.ok ? result.camera : null;
+  }, [calibratedCameraSnapshot, frameSizeForImageSpace, isCalibratedCameraActive]);
 
   const projectContainerPolygonToSource = useCallback(
     (polygon: FloorPoint[]): FloorPoint[] | null => {
@@ -4265,8 +4282,8 @@ export default function ThreeRoomLab({
     );
     if (!worldByCorner) return unavailable("floor_attachment_frame_has_fewer_than_four_boundary_points");
 
-    const camera = cameraRef.current;
-    if (!camera) return unavailable("calibrated_camera_unavailable");
+    const camera = calibratedReadOnlyProjectionCamera;
+    if (!camera) return unavailable("calibrated_readonly_projection_camera_unavailable");
     const sourceByCorner = mapReviewedFloorCornersToAgreementOrder(sourceOrdered.value);
     const containerByCorner = mapReviewedFloorCornersToAgreementOrder(containerOrdered.value);
     const corners = {} as Record<(typeof FLOOR_PROJECTION_CORNER_ORDER)[number], FloorProjectionAgreementCornerInput>;
@@ -4295,6 +4312,7 @@ export default function ThreeRoomLab({
   }, [
     attachmentSupportContexts.floor.frame,
     calibratedCameraSnapshot,
+    calibratedReadOnlyProjectionCamera,
     floorPolygon,
     frameSizeForImageSpace,
     isCalibratedCameraActive,
@@ -4305,7 +4323,7 @@ export default function ThreeRoomLab({
     [roomEnvelopeGeometryInput, roomEnvelopeReconciliation]
   );
   const roomEnvelopeOverlay = useMemo(() => {
-    const camera = cameraRef.current;
+    const camera = calibratedReadOnlyProjectionCamera;
     if (!camera || !frameSizeForImageSpace) {
       return { segments: [] as { id: string; start: FloorPoint; end: FloorPoint; kind: string }[], omittedSegmentCount: roomEnvelopeWireframe.segments.length };
     }
@@ -4321,9 +4339,8 @@ export default function ThreeRoomLab({
     });
     return { segments, omittedSegmentCount };
   }, [
-    calibratedCameraSnapshot,
+    calibratedReadOnlyProjectionCamera,
     frameSizeForImageSpace,
-    isCalibratedCameraActive,
     roomEnvelopeWireframe,
   ]);
   const selectedAttachmentSupport = attachmentSupportContexts[selectedAttachmentSupportKind];

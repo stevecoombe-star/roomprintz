@@ -29,6 +29,7 @@
     "test:room-envelope-identity": "node --conditions=react-server --import tsx --test app/admin/3d-room-lab/room-envelope-identity.test.ts",
     "test:room-envelope-wireframe": "node --conditions=react-server --import tsx --test app/admin/3d-room-lab/room-envelope-wireframe.test.ts",
     "test:floor-projection-agreement": "node --conditions=react-server --import tsx --test app/admin/3d-room-lab/floor-projection-agreement.test.ts",
+    "test:calibrated-camera-readonly-projection": "node --conditions=react-server --import tsx --test app/admin/3d-room-lab/calibrated-camera-readonly-projection.test.ts",
     "test:support-edit-interaction": "node --conditions=react-server --import tsx --test app/admin/3d-room-lab/support-edit-interaction.test.ts",
     "test:support-point-undo": "node --conditions=react-server --import tsx --test app/admin/3d-room-lab/support-point-undo.test.ts",
     "test:room-envelope": "npm run test:room-envelope-reconciliation && npm run test:room-envelope-identity && npm run test:room-envelope-wireframe && npm run test:floor-projection-agreement",
