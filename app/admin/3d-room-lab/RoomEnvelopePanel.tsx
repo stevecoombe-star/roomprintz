@@ -1,6 +1,21 @@
 "use client";
 
 import type { RoomEnvelopeReconciliationResult, RoomEnvelopeSupportKind } from "./room-envelope-types";
+import type {
+  FloorProjectionAgreementObservation,
+  FloorProjectionAgreementResult,
+  FloorProjectionCornerKind,
+} from "./floor-projection-agreement";
+import {
+  CALIBRATED_CAMERA_APPLY_MAX_AVG_DELTA_PX,
+  CALIBRATED_CAMERA_APPLY_MAX_CV_AVG_PX,
+  CALIBRATED_CAMERA_APPLY_MAX_CV_MAX_PX,
+  CALIBRATED_CAMERA_APPLY_MAX_DISPLAY_AVG_PX,
+  CALIBRATED_CAMERA_APPLY_MAX_DISPLAY_MAX_PX,
+  CALIBRATED_CAMERA_APPLY_MAX_MAX_DELTA_PX,
+  CALIBRATED_CAMERA_APPLY_MAX_SCALE_RATIO,
+  CALIBRATED_CAMERA_APPLY_MIN_SCALE_RATIO,
+} from "./calibrated-camera-apply";
 import {
   ROOM_ENVELOPE_DERIVATION_VERSION,
   ROOM_ENVELOPE_NUMERIC_POLICY_VERSION,
@@ -22,6 +37,9 @@ type RoomEnvelopePanelProps = {
   wireframeVisible: boolean;
   onWireframeVisibleChange: (visible: boolean) => void;
   omittedProjectionSegmentCount: number;
+  floorProjectionAgreement: FloorProjectionAgreementResult;
+  calibratedCameraAppliedAtIso: string | null;
+  floorBindingKey: string | null;
 };
 
 const SUPPORT_LABELS: Readonly<Record<RoomEnvelopeSupportKind, string>> = {
@@ -43,6 +61,36 @@ function formatDegrees(value: number): string {
 function formatSignedWorld(value: number): string {
   return Number.isFinite(value) ? `${value >= 0 ? "+" : ""}${value.toFixed(3)} world units` : "unavailable";
 }
+
+function formatPx(value: number): string {
+  return Number.isFinite(value) ? `${value.toFixed(2)} px` : "unavailable";
+}
+
+function formatSignedPx(value: number): string {
+  return Number.isFinite(value) ? `${value >= 0 ? "+" : ""}${value.toFixed(2)} px` : "unavailable";
+}
+
+function formatPoint2(point: { x: number; y: number }): string {
+  return `(${point.x.toFixed(4)}, ${point.y.toFixed(4)})`;
+}
+
+function formatPoint3(point: { x: number; y: number; z: number }): string {
+  return `(${point.x.toFixed(3)}, ${point.y.toFixed(3)}, ${point.z.toFixed(3)})`;
+}
+
+const FLOOR_CORNER_LABELS: Readonly<Record<FloorProjectionCornerKind, string>> = {
+  far_left: "Far left",
+  far_right: "Far right",
+  near_right: "Near right",
+  near_left: "Near left",
+};
+
+const FLOOR_PROJECTION_OBSERVATION_LABELS: Readonly<Record<FloorProjectionAgreementObservation, string>> = {
+  near_and_far_similar: "Near- and far-edge disagreement are similar within diagnostic epsilon.",
+  far_exceeds_near: "Far-edge disagreement exceeds near-edge disagreement.",
+  near_exceeds_far: "Near-edge disagreement exceeds far-edge disagreement.",
+  unavailable: "Unavailable.",
+};
 
 function DimensionRow({
   label,
@@ -70,6 +118,9 @@ export default function RoomEnvelopePanel({
   wireframeVisible,
   onWireframeVisibleChange,
   omittedProjectionSegmentCount,
+  floorProjectionAgreement,
+  calibratedCameraAppliedAtIso,
+  floorBindingKey,
 }: RoomEnvelopePanelProps) {
   const statusLabel = reconciliation.status === "unavailable"
     ? "Unavailable"
@@ -115,6 +166,118 @@ export default function RoomEnvelopePanel({
           <div><dt className="inline text-slate-500">Wireframe: </dt><dd className="inline text-slate-200">{wireframeVisible ? "visible" : "hidden (derivation remains active)"}</dd></div>
         </dl>
       </div>
+
+      <section className="space-y-3 rounded border border-violet-800/70 bg-slate-950/60 p-3 text-xs">
+        <div>
+          <h4 className="font-medium text-violet-100">Floor projection agreement — diagnostic only</h4>
+          <p className="mt-1 text-slate-400">
+            Projection path comparison: reviewed 2D Floor perimeter versus calibrated-camera projection of the world Floor rectangle.
+          </p>
+          <p className="mt-1 text-slate-400">Pixel deltas are measured in the current Room Lab image-overlay frame.</p>
+          <p className="mt-1 text-violet-200">Diagnostic only — does not change support or envelope authority.</p>
+        </div>
+
+        {!floorProjectionAgreement.available ? (
+          <div className="rounded border border-slate-800 bg-slate-950/40 p-2 text-slate-300">
+            <p>Availability: unavailable</p>
+            <ul className="mt-1 list-disc pl-4 text-slate-400">
+              {floorProjectionAgreement.unavailableReasons.map((reason) => <li key={reason}><code>{reason}</code></li>)}
+            </ul>
+          </div>
+        ) : (
+          <>
+            <div className="rounded border border-slate-800 bg-slate-950/40 p-2">
+              <p className="text-slate-300">Availability: available</p>
+              <dl className="mt-2 grid gap-x-4 gap-y-1 sm:grid-cols-2">
+                <div><dt className="inline text-slate-500">Maximum corner discrepancy: </dt><dd className="inline text-slate-200">{formatPx(floorProjectionAgreement.maximumDistancePx)}</dd></div>
+                <div><dt className="inline text-slate-500">RMS corner discrepancy: </dt><dd className="inline text-slate-200">{formatPx(floorProjectionAgreement.rmsDistancePx)}</dd></div>
+                <div><dt className="inline text-slate-500">Average signed X: </dt><dd className="inline text-slate-200">{formatSignedPx(floorProjectionAgreement.averageDeltaXPx)}</dd></div>
+                <div><dt className="inline text-slate-500">Average signed Y: </dt><dd className="inline text-slate-200">{formatSignedPx(floorProjectionAgreement.averageDeltaYPx)}</dd></div>
+                <div><dt className="inline text-slate-500">Centroid displacement: </dt><dd className="inline text-slate-200">{formatPx(floorProjectionAgreement.centroidDistancePx)} ({formatSignedPx(floorProjectionAgreement.centroidDeltaXPx)}, {formatSignedPx(floorProjectionAgreement.centroidDeltaYPx)})</dd></div>
+                <div><dt className="inline text-slate-500">Near edge RMS: </dt><dd className="inline text-slate-200">{formatPx(floorProjectionAgreement.nearEdgeRmsDistancePx)}</dd></div>
+                <div><dt className="inline text-slate-500">Far edge RMS: </dt><dd className="inline text-slate-200">{formatPx(floorProjectionAgreement.farEdgeRmsDistancePx)}</dd></div>
+                <div><dt className="inline text-slate-500">Far-minus-near RMS: </dt><dd className="inline text-slate-200">{formatSignedPx(floorProjectionAgreement.farMinusNearRmsPx)}</dd></div>
+                <div><dt className="inline text-slate-500">Pattern observation: </dt><dd className="inline text-slate-200">{FLOOR_PROJECTION_OBSERVATION_LABELS[floorProjectionAgreement.observation]}</dd></div>
+              </dl>
+            </div>
+
+            <div className="overflow-x-auto rounded border border-slate-800 bg-slate-950/40">
+              <table className="w-full min-w-[700px] text-left text-[11px]">
+                <caption className="px-2 py-2 text-left font-medium text-slate-200">Four-corner agreement (Δ = projected − reviewed)</caption>
+                <thead className="border-y border-slate-800 text-slate-500">
+                  <tr>
+                    <th className="px-2 py-1 font-medium">Corner</th>
+                    <th className="px-2 py-1 font-medium">Reviewed px</th>
+                    <th className="px-2 py-1 font-medium">Projected px</th>
+                    <th className="px-2 py-1 font-medium">ΔX px</th>
+                    <th className="px-2 py-1 font-medium">ΔY px</th>
+                    <th className="px-2 py-1 font-medium">Distance px</th>
+                    <th className="px-2 py-1 font-medium">World point</th>
+                  </tr>
+                </thead>
+                <tbody className="text-slate-300">
+                  {floorProjectionAgreement.corners.map((corner) => (
+                    <tr key={corner.corner} className="border-b border-slate-900">
+                      <td className="px-2 py-1">{FLOOR_CORNER_LABELS[corner.corner]}</td>
+                      <td className="px-2 py-1">{formatPoint2(corner.reviewedDisplayPx)}</td>
+                      <td className="px-2 py-1">{formatPoint2(corner.projectedDisplayPx)}</td>
+                      <td className="px-2 py-1">{formatSignedPx(corner.deltaXPx)}</td>
+                      <td className="px-2 py-1">{formatSignedPx(corner.deltaYPx)}</td>
+                      <td className="px-2 py-1">{formatPx(corner.distancePx)}</td>
+                      <td className="px-2 py-1">{formatPoint3(corner.world)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+
+            <div className="overflow-x-auto rounded border border-slate-800 bg-slate-950/40">
+              <table className="w-full min-w-[700px] text-left text-[11px]">
+                <caption className="px-2 py-2 text-left font-medium text-slate-200">Edge agreement</caption>
+                <thead className="border-y border-slate-800 text-slate-500">
+                  <tr>
+                    <th className="px-2 py-1 font-medium">Edge</th>
+                    <th className="px-2 py-1 font-medium">Reviewed length</th>
+                    <th className="px-2 py-1 font-medium">Projected length</th>
+                    <th className="px-2 py-1 font-medium">Signed difference</th>
+                    <th className="px-2 py-1 font-medium">Endpoint max</th>
+                    <th className="px-2 py-1 font-medium">Endpoint RMS</th>
+                  </tr>
+                </thead>
+                <tbody className="text-slate-300">
+                  {floorProjectionAgreement.edges.map((edge) => (
+                    <tr key={edge.edge} className="border-b border-slate-900">
+                      <td className="px-2 py-1 capitalize">{edge.edge}</td>
+                      <td className="px-2 py-1">{formatPx(edge.reviewedLengthPx)}</td>
+                      <td className="px-2 py-1">{formatPx(edge.projectedLengthPx)}</td>
+                      <td className="px-2 py-1">{formatSignedPx(edge.signedLengthDifferencePx)}</td>
+                      <td className="px-2 py-1">{formatPx(edge.endpointMaxDistancePx)}</td>
+                      <td className="px-2 py-1">{formatPx(edge.endpointRmsDistancePx)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </>
+        )}
+
+        <details className="rounded border border-slate-800 bg-slate-950/40 p-2 text-slate-400">
+          <summary className="cursor-pointer font-medium text-slate-200">Floor projection agreement provenance</summary>
+          <ul className="mt-2 space-y-1">
+            <li>Frame: {floorProjectionAgreement.frameWidthPx} × {floorProjectionAgreement.frameHeightPx} px</li>
+            <li>Calibrated camera appliedAtIso: {calibratedCameraAppliedAtIso ?? "unavailable"}</li>
+            <li>Floor binding key: {floorBindingKey ? `${floorBindingKey.slice(0, 96)}…` : "unavailable"}</li>
+            <li>
+              Existing calibrated-camera Apply policy (read-only; not evaluated by this diagnostic): CV avg &lt; {CALIBRATED_CAMERA_APPLY_MAX_CV_AVG_PX} px · CV max &lt; {CALIBRATED_CAMERA_APPLY_MAX_CV_MAX_PX} px · display avg &lt; {CALIBRATED_CAMERA_APPLY_MAX_DISPLAY_AVG_PX} px · display max &lt; {CALIBRATED_CAMERA_APPLY_MAX_DISPLAY_MAX_PX} px · display/CV avg delta ≤ {CALIBRATED_CAMERA_APPLY_MAX_AVG_DELTA_PX} px · display/CV max delta ≤ {CALIBRATED_CAMERA_APPLY_MAX_MAX_DELTA_PX} px · scale ratio {CALIBRATED_CAMERA_APPLY_MIN_SCALE_RATIO}–{CALIBRATED_CAMERA_APPLY_MAX_SCALE_RATIO}
+            </li>
+            {floorProjectionAgreement.available ? floorProjectionAgreement.corners.map((corner) => (
+              <li key={`provenance-${corner.corner}`}>
+                {FLOOR_CORNER_LABELS[corner.corner]} — source normalized {formatPoint2(corner.sourceNormalized)} · container normalized {formatPoint2(corner.containerNormalized)} · projected normalized {formatPoint2(corner.projectedNormalized)}
+              </li>
+            )) : null}
+          </ul>
+        </details>
+      </section>
 
       <div>
         <h4 className="text-xs font-medium text-slate-200">Input support eligibility</h4>

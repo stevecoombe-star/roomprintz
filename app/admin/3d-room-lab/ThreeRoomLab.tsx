@@ -7,6 +7,14 @@ import SceneJsonPanel from "./SceneJsonPanel";
 import CollapsibleSection from "./CollapsibleSection";
 import MilestoneValidationPanel from "./MilestoneValidationPanel";
 import RoomEnvelopePanel, { type RoomEnvelopePanelSupport } from "./RoomEnvelopePanel";
+import {
+  FLOOR_PROJECTION_CORNER_ORDER,
+  calculateFloorProjectionAgreement,
+  createUnavailableFloorProjectionAgreement,
+  mapFloorAttachmentBoundaryToAgreementOrder,
+  mapReviewedFloorCornersToAgreementOrder,
+  type FloorProjectionAgreementCornerInput,
+} from "./floor-projection-agreement";
 import { buildRoomEnvelopeContextKey } from "./room-envelope-identity";
 import { reconcileRoomEnvelope } from "./room-envelope-reconciliation";
 import type {
@@ -4233,6 +4241,64 @@ export default function ThreeRoomLab({
     qualifiedImageBasis,
     roomEnvelopeReconciliation.resolvedAnchor,
     roomEnvelopeSupportFacts,
+  ]);
+  const floorProjectionAgreement = useMemo(() => {
+    const unavailable = (reason: string) =>
+      createUnavailableFloorProjectionAgreement([reason], frameSizeForImageSpace);
+    if (!frameSizeForImageSpace) return unavailable("image_overlay_frame_unavailable");
+    if (!isCalibratedCameraActive) return unavailable("calibrated_camera_inactive");
+    if (!calibratedCameraSnapshot) return unavailable("calibrated_camera_snapshot_unavailable");
+
+    const sourceOrdered = orderFloorCorners(sourceNormalizedFloorPolygon);
+    if (!sourceOrdered.ok) return unavailable(`reviewed_source_ordering_failed:${sourceOrdered.reason}`);
+    const containerOrdered = orderFloorCorners(floorPolygon);
+    if (!containerOrdered.ok) return unavailable(`reviewed_container_ordering_failed:${containerOrdered.reason}`);
+
+    const floorFrame = attachmentSupportContexts.floor.frame;
+    if (!floorFrame || floorFrame.kind !== "floor") return unavailable("floor_attachment_frame_unavailable");
+    const worldByCorner = mapFloorAttachmentBoundaryToAgreementOrder(
+      floorFrame.boundaryUV.map((point) => ({
+        x: floorFrame.point.x + point.u,
+        y: floorFrame.point.y,
+        z: floorFrame.point.z + point.v,
+      }))
+    );
+    if (!worldByCorner) return unavailable("floor_attachment_frame_has_fewer_than_four_boundary_points");
+
+    const camera = cameraRef.current;
+    if (!camera) return unavailable("calibrated_camera_unavailable");
+    const sourceByCorner = mapReviewedFloorCornersToAgreementOrder(sourceOrdered.value);
+    const containerByCorner = mapReviewedFloorCornersToAgreementOrder(containerOrdered.value);
+    const corners = {} as Record<(typeof FLOOR_PROJECTION_CORNER_ORDER)[number], FloorProjectionAgreementCornerInput>;
+    for (const corner of FLOOR_PROJECTION_CORNER_ORDER) {
+      const projected = projectWorldPointToOverlayNormalized(camera, frameSizeForImageSpace, worldByCorner[corner]);
+      if (!projected) return unavailable(`camera_projection_failed:${corner}`);
+      if (!projected.inFront) return unavailable(`projected_point_behind_camera:${corner}`);
+      const reviewed = containerByCorner[corner];
+      corners[corner] = {
+        sourceNormalized: sourceByCorner[corner],
+        containerNormalized: reviewed,
+        reviewedDisplayPx: {
+          x: reviewed.x * frameSizeForImageSpace.width,
+          y: reviewed.y * frameSizeForImageSpace.height,
+        },
+        world: worldByCorner[corner],
+        projectedNormalized: projected.normalized,
+        projectedDisplayPx: projected.pixels,
+      };
+    }
+    return calculateFloorProjectionAgreement({
+      frameWidthPx: frameSizeForImageSpace.width,
+      frameHeightPx: frameSizeForImageSpace.height,
+      corners,
+    });
+  }, [
+    attachmentSupportContexts.floor.frame,
+    calibratedCameraSnapshot,
+    floorPolygon,
+    frameSizeForImageSpace,
+    isCalibratedCameraActive,
+    sourceNormalizedFloorPolygon,
   ]);
   const roomEnvelopeWireframe = useMemo(
     () => deriveRoomEnvelopeWireframe({ reconciliation: roomEnvelopeReconciliation, geometry: roomEnvelopeGeometryInput }),
@@ -18339,6 +18405,9 @@ export default function ThreeRoomLab({
             wireframeVisible={showRoomEnvelopeWireframe}
             onWireframeVisibleChange={setShowRoomEnvelopeWireframe}
             omittedProjectionSegmentCount={roomEnvelopeOverlay.omittedSegmentCount}
+            floorProjectionAgreement={floorProjectionAgreement}
+            calibratedCameraAppliedAtIso={calibratedCameraSnapshot?.appliedAtIso ?? null}
+            floorBindingKey={roomEnvelopeSupportFacts.floor.identityKey}
           />
         </CollapsibleSection>
 

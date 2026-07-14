@@ -28,9 +28,10 @@
     "test:room-envelope-reconciliation": "node --conditions=react-server --import tsx --test app/admin/3d-room-lab/room-envelope-reconciliation.test.ts",
     "test:room-envelope-identity": "node --conditions=react-server --import tsx --test app/admin/3d-room-lab/room-envelope-identity.test.ts",
     "test:room-envelope-wireframe": "node --conditions=react-server --import tsx --test app/admin/3d-room-lab/room-envelope-wireframe.test.ts",
+    "test:floor-projection-agreement": "node --conditions=react-server --import tsx --test app/admin/3d-room-lab/floor-projection-agreement.test.ts",
     "test:support-edit-interaction": "node --conditions=react-server --import tsx --test app/admin/3d-room-lab/support-edit-interaction.test.ts",
     "test:support-point-undo": "node --conditions=react-server --import tsx --test app/admin/3d-room-lab/support-point-undo.test.ts",
-    "test:room-envelope": "npm run test:room-envelope-reconciliation && npm run test:room-envelope-identity && npm run test:room-envelope-wireframe",
+    "test:room-envelope": "npm run test:room-envelope-reconciliation && npm run test:room-envelope-identity && npm run test:room-envelope-wireframe && npm run test:floor-projection-agreement",
     "generate:p-stale-precondition-v2": "node --conditions=react-server --import tsx app/admin/3d-room-lab/g0-containment/synthetic-assets/generate-p-stale-precondition-v2.ts --write",
     "write:p-stale-observed-run": "node --conditions=react-server --import tsx app/admin/3d-room-lab/g0-containment/write-p-stale-observed-run.ts",
     "write:g0-observed-run": "node --conditions=react-server --import tsx app/admin/3d-room-lab/g0-containment/write-g0-observed-run.ts"
