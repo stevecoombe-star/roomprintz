@@ -108,6 +108,11 @@ import {
   type WallSupportKind,
 } from "./wall-support-geometry";
 import {
+  getWallLowerPointRole,
+  resolveWallFloorPointSnap,
+  type FloorCornerKind,
+} from "./wall-floor-point-snap";
+import {
   buildCeilingPolygonKey,
   buildRoomHeightKey,
   createCeilingConfirmationStamp,
@@ -1336,6 +1341,21 @@ type SupportPointUndoSnapshots = {
   ceiling: CeilingSupportPointUndoSnapshot;
 };
 
+type WallFloorSnapPresentation = {
+  kind: WallSupportKind;
+  index: number;
+  floorCorner: FloorCornerKind;
+  snapped: boolean;
+  targetContainerNorm: FloorPoint;
+};
+
+type ActiveWallFloorSnap = {
+  kind: WallSupportKind;
+  index: number;
+  floorCorner: FloorCornerKind;
+  isSnapped: boolean;
+};
+
 function buildSupportPointUndoSnapshotKey(snapshot: SupportPointUndoSnapshot): string {
   return JSON.stringify(snapshot);
 }
@@ -1407,6 +1427,7 @@ export default function ThreeRoomLab({
   const calibratedLiftStartTransformRef = useRef<TransformState | null>(null);
   const floorAnchorDragPointerIdRef = useRef<number | null>(null);
   const wallHandleDragRef = useRef<{ pointerId: number; kind: WallSupportKind; index: number } | null>(null);
+  const activeWallFloorSnapRef = useRef<ActiveWallFloorSnap | null>(null);
   const ceilingHandleDragRef = useRef<{ pointerId: number; index: number } | null>(null);
   const supportPointUndoSnapshotsRef = useRef<SupportPointUndoSnapshots | null>(null);
   const activeSupportPointDragRef = useRef<{
@@ -1530,6 +1551,8 @@ export default function ThreeRoomLab({
     });
   const [selectedWallKind, setSelectedWallKind] = useState<WallSupportKind | null>(null);
   const [activeWallHandle, setActiveWallHandle] = useState<{ kind: WallSupportKind; index: number } | null>(null);
+  const [wallFloorSnapPresentation, setWallFloorSnapPresentation] =
+    useState<WallFloorSnapPresentation | null>(null);
   const [visibleWallKinds, setVisibleWallKinds] = useState<Record<WallSupportKind, boolean>>({
     wall_back: true,
     wall_left: true,
@@ -2097,6 +2120,7 @@ export default function ThreeRoomLab({
     const consumed = consumeSupportPointUndo(record);
     if (!consumed) return;
     setCompletedSupportPointUndoRecord(consumed.nextUndoRecord);
+    clearWallFloorSnap();
     restoreSupportPointUndoSnapshot(consumed.snapshot);
     const label =
       record.supportKind === "floor"
@@ -3595,6 +3619,29 @@ export default function ThreeRoomLab({
       resolvedFloorSupportReviewStatus,
     ]
   );
+  const floorSourceCornersForWallSnap = useMemo<Partial<Record<FloorCornerKind, FloorPoint>>>(() => {
+    const ordered = orderFloorCorners(sourceNormalizedFloorPolygon);
+    if (!ordered.ok) return {};
+    return {
+      NL: ordered.value.nearLeft,
+      NR: ordered.value.nearRight,
+      FR: ordered.value.farRight,
+      FL: ordered.value.farLeft,
+    };
+  }, [sourceNormalizedFloorPolygon]);
+  // Reuse the established Floor runtime authority gate. The additional corner
+  // order check is the same current displayed-floor ordering used by wall
+  // configuration; no snap-specific weaker currentness path exists.
+  const floorAuthorityAvailableForWallSnap =
+    floorSupportRuntime.usable &&
+    homographyDebug.cornerOrderStatus === "ok" &&
+    Object.keys(floorSourceCornersForWallSnap).length === 4 &&
+    !!imageIntrinsicSize &&
+    !!frameSizeForImageSpace;
+  const clearWallFloorSnap = useCallback(() => {
+    activeWallFloorSnapRef.current = null;
+    setWallFloorSnapPresentation(null);
+  }, []);
 
   const wallContainerPolygons = useMemo(() => {
     const result: Record<WallSupportKind, WallPolygon | null> = {
@@ -3906,6 +3953,28 @@ export default function ThreeRoomLab({
     }),
   };
   const supportEditRenderOrder = resolveSupportEditRenderOrder(supportEditInteractionStates);
+
+  useEffect(() => {
+    const activeSnap = activeWallFloorSnapRef.current;
+    if (!activeSnap) return;
+    if (
+      !floorAuthorityAvailableForWallSnap ||
+      !supportEditInteractionStates[activeSnap.kind].interactive ||
+      activeWallHandle?.kind !== activeSnap.kind ||
+      activeWallHandle.index !== activeSnap.index
+    ) {
+      clearWallFloorSnap();
+    }
+  }, [
+    activeWallHandle,
+    clearWallFloorSnap,
+    floorAuthorityAvailableForWallSnap,
+    frameSizeForImageSpace,
+    imageIntrinsicSize,
+    qualifiedImageBasis,
+    sourceNormalizedFloorPolygon,
+    supportEditInteractionStates,
+  ]);
 
   // Package 3 attachment contexts are derived from the already-established
   // support runtime facts. They are deliberately not support authority: an
@@ -9553,6 +9622,7 @@ export default function ThreeRoomLab({
   };
 
   const clearWall = (kind: WallSupportKind) => {
+    if (activeWallFloorSnapRef.current?.kind === kind) clearWallFloorSnap();
     setWallSupportDrafts((previous) => ({ ...previous, [kind]: createUnavailableWallDraft(kind) }));
     setWallSupportImageBases((previous) => ({ ...previous, [kind]: null }));
     if (selectedWallKind === kind) setSelectedWallKind(null);
@@ -9704,6 +9774,7 @@ export default function ThreeRoomLab({
   };
 
   const toggleEditingFocus = (kind: SupportKind) => {
+    clearWallFloorSnap();
     setSupportEditSession((current) => ({
       ...current,
       activeFocus: toggleSupportEditFocus({
@@ -9715,6 +9786,7 @@ export default function ThreeRoomLab({
   };
 
   const toggleEditingLock = (kind: SupportKind) => {
+    clearWallFloorSnap();
     setSupportEditSession((current) => {
       const locks = toggleSupportEditLock(current.locks, kind);
       return {
@@ -9725,6 +9797,7 @@ export default function ThreeRoomLab({
   };
 
   const setFloorOverlayEditingVisibility = (visible: boolean) => {
+    if (!visible) clearWallFloorSnap();
     setShowFloorOverlay(visible);
     if (!visible) {
       setSupportEditSession((current) => ({
@@ -9738,6 +9811,7 @@ export default function ThreeRoomLab({
     setVisibleWallKinds((previous) => {
       const visible = !previous[kind];
       if (!visible) {
+        if (activeWallFloorSnapRef.current?.kind === kind) clearWallFloorSnap();
         setSupportEditSession((current) => ({
           ...current,
           activeFocus: current.activeFocus === kind ? null : current.activeFocus,
@@ -9748,6 +9822,7 @@ export default function ThreeRoomLab({
   };
 
   const toggleCeilingOverlayEditingVisibility = () => {
+    clearWallFloorSnap();
     setIsCeilingOverlayVisible((previous) => {
       const visible = !previous;
       if (!visible) {
@@ -9882,15 +9957,70 @@ export default function ThreeRoomLab({
     index: number,
     clientX: number,
     clientY: number
-  ) => {
+  ): boolean => {
     const normalizedPoint = getNormalizedOverlayPointFromClient(clientX, clientY);
     const currentPolygon = wallContainerPolygons[kind];
-    if (!normalizedPoint || !currentPolygon) return;
+    const currentSourcePolygon = wallSupportDrafts[kind].imagePolygonSourceNorm;
+    if (!normalizedPoint || !currentPolygon || !currentSourcePolygon) return false;
     const nextContainer = currentPolygon.map((point, pointIndex) =>
       pointIndex === index ? normalizedPoint : point
     ) as WallPolygon;
     const nextSource = projectContainerPolygonToSource(nextContainer);
-    if (!nextSource || nextSource.length !== 4) return;
+    if (!nextSource || nextSource.length !== 4) return false;
+
+    const wallPointRole = getWallLowerPointRole(index);
+    let resolvedSource = nextSource as WallPolygon;
+    let snappedAtDragStart = false;
+    if (wallPointRole) {
+      const activeSnap = activeWallFloorSnapRef.current;
+      const snap = resolveWallFloorPointSnap({
+        available:
+          floorAuthorityAvailableForWallSnap &&
+          supportEditInteractionStates[kind].interactive,
+        wallKind: kind,
+        wallPointRole,
+        isSnapped: activeSnap?.kind === kind && activeSnap.index === index ? activeSnap.isSnapped : false,
+        unsnappedWallPointSourceNorm: nextSource[index],
+        pointerContainerNorm: normalizedPoint,
+        floorSourceCorners: floorSourceCornersForWallSnap,
+        intrinsicSize: imageIntrinsicSize,
+        frameSize: frameSizeForImageSpace,
+      });
+      if (snap.floorCorner && snap.targetContainerNorm) {
+        activeWallFloorSnapRef.current = {
+          kind,
+          index,
+          floorCorner: snap.floorCorner,
+          isSnapped: snap.snapped,
+        };
+        setWallFloorSnapPresentation(
+          snap.showTarget
+            ? {
+                kind,
+                index,
+                floorCorner: snap.floorCorner,
+                snapped: snap.snapped,
+                targetContainerNorm: snap.targetContainerNorm,
+              }
+            : null
+        );
+      } else {
+        clearWallFloorSnap();
+      }
+      if (snap.snapped) {
+        resolvedSource = nextSource.map((point, pointIndex) =>
+          pointIndex === index ? snap.pointSourceNorm : point
+        ) as WallPolygon;
+      }
+      snappedAtDragStart = snap.snapped;
+    } else {
+      clearWallFloorSnap();
+    }
+
+    const geometryChanged = currentSourcePolygon.some(
+      (point, pointIndex) =>
+        point.x !== resolvedSource[pointIndex].x || point.y !== resolvedSource[pointIndex].y
+    );
     setWallSupportDrafts((previous) => {
       const next = {
         ...previous,
@@ -9898,7 +10028,7 @@ export default function ThreeRoomLab({
           ...previous[kind],
           enabled: true,
           source: "manual" as const,
-          imagePolygonSourceNorm: nextSource as WallPolygon,
+          imagePolygonSourceNorm: resolvedSource,
           reviewStatus: "needs_review" as const,
           confirmationStamp: null,
         },
@@ -9911,6 +10041,7 @@ export default function ThreeRoomLab({
       return next;
     });
     setWallSupportImageBases((previous) => ({ ...previous, [kind]: qualifiedImageBasis }));
+    return snappedAtDragStart && geometryChanged;
   };
 
   const handleWallHandlePointerDown = (
@@ -9918,13 +10049,16 @@ export default function ThreeRoomLab({
     index: number,
     event: PointerEvent<SVGCircleElement>
   ) => {
+    if (!supportEditInteractionStates[kind].interactive) return;
     if (!beginSupportPointDrag(kind, event.pointerId)) return;
     event.preventDefault();
     event.stopPropagation();
     wallHandleDragRef.current = { pointerId: event.pointerId, kind, index };
     setSelectedWallKind(kind);
     setActiveWallHandle({ kind, index });
-    updateWallHandleFromClientPoint(kind, index, event.clientX, event.clientY);
+    if (updateWallHandleFromClientPoint(kind, index, event.clientX, event.clientY)) {
+      supportPointDragMovedRef.current = true;
+    }
     try {
       floorOverlayRef.current?.setPointerCapture(event.pointerId);
     } catch {
@@ -10674,6 +10808,7 @@ export default function ThreeRoomLab({
       }
       wallHandleDragRef.current = null;
       setActiveWallHandle(null);
+      clearWallFloorSnap();
     }
     const pointerId = event?.pointerId ?? dragPointerIdRef.current;
     if (pointerId !== null) {
@@ -11792,6 +11927,8 @@ export default function ThreeRoomLab({
                   const valid = state.derivation.ok;
                   const selected = selectedWallKind === kind;
                   const editInteraction = supportEditInteractionStates[kind];
+                  const snap =
+                    wallFloorSnapPresentation?.kind === kind ? wallFloorSnapPresentation : null;
                   const points = polygon.map((point) => `${point.x * 100},${point.y * 100}`).join(" ");
                   return (
                     <g key={kind}>
@@ -11828,6 +11965,42 @@ export default function ThreeRoomLab({
                           strokeDasharray="2.1 0.8"
                           pointerEvents="none"
                         />
+                      )}
+                      {snap && (
+                        <g pointerEvents="none" aria-hidden="true">
+                          <circle
+                            cx={snap.targetContainerNorm.x * 100}
+                            cy={snap.targetContainerNorm.y * 100}
+                            r={2.6}
+                            fill="none"
+                            stroke="#f8fafc"
+                            strokeOpacity={0.95}
+                            strokeWidth={0.55}
+                            strokeDasharray={snap.snapped ? undefined : "0.9 0.65"}
+                          />
+                          <circle
+                            cx={polygon[snap.index].x * 100}
+                            cy={polygon[snap.index].y * 100}
+                            r={1.15}
+                            fill={snap.snapped ? "#f8fafc" : presentation.color}
+                            stroke="#020617"
+                            strokeWidth={0.42}
+                          />
+                          <text
+                            x={snap.targetContainerNorm.x * 100 + 3}
+                            y={snap.targetContainerNorm.y * 100 - 2.2}
+                            fill="#f8fafc"
+                            fontSize="1.75"
+                            fontWeight="700"
+                          >
+                            {snap.snapped ? `Snapped to Floor ${snap.floorCorner}` : `Snap target: Floor ${snap.floorCorner}`}
+                            {snap.snapped && (
+                              <tspan x={snap.targetContainerNorm.x * 100 + 3} dy="2.05" fontWeight="500">
+                                Shared structural corner
+                              </tspan>
+                            )}
+                          </text>
+                        </g>
                       )}
                       <text
                         x={polygon[3].x * 100 + 1}
