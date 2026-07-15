@@ -73,6 +73,15 @@ export type WallSupportDiagnostics = {
   lowerSeamDisagreementStartWorld: number;
   lowerSeamDisagreementEndWorld: number;
   maxLowerSeamDisagreementWorld: number;
+  /** Dot products of the normalized lower-boundary rays and wall-plane normal. */
+  lowerSeamRayPlaneDenominatorStart: number;
+  lowerSeamRayPlaneDenominatorEnd: number;
+  /** Angle between the observed lower-seam ray and authoritative Floor point. */
+  lowerSeamCameraAngleStartRad: number;
+  lowerSeamCameraAngleEndRad: number;
+  maxLowerSeamCameraAngleRad: number;
+  /** Stable lower-seam camera-consistency policy limit, in radians. */
+  maxLowerSeamCameraAngleThresholdRad: number;
   maxRoundTripReprojectionErrorPx: number;
   maxSeamExtrapolationWorld: number;
   maxCameraDistance: number;
@@ -104,9 +113,9 @@ export const WALL_SUPPORT_LIMITS = {
   maxWorldDistance: 50,
   maxRoundTripReprojectionErrorPx: 3,
   maxFloorExtrapolationRatio: 0.35,
-  // Matches ThreeRoomLab's existing ray-floor↔homography warning distance.
-  // This is a local consistency bound in assumed world units, not a measurement.
-  maxLowerSeamDisagreementWorld: 0.05,
+  // Two degrees of observed-ray vs Floor-seam disagreement. This is angular
+  // (not world-space), so it does not grow with a grazing plane intersection.
+  maxLowerSeamCameraAngleRad: Math.PI / 90,
 } as const;
 
 type DeriveWallSupportInput = {
@@ -158,6 +167,15 @@ function normalize3(value: SupportVec3): SupportVec3 | null {
   if (!Number.isFinite(magnitude) || magnitude <= 1e-9) return null;
   const normalized = { x: value.x / magnitude, y: value.y / magnitude, z: value.z / magnitude };
   return isFiniteVec3(normalized) ? normalized : null;
+}
+
+function angleBetweenNormalized3(left: SupportVec3, right: SupportVec3): number | null {
+  const leftNormalized = normalize3(left);
+  const rightNormalized = normalize3(right);
+  if (!leftNormalized || !rightNormalized) return null;
+  const cosine = Math.max(-1, Math.min(1, dot3(leftNormalized, rightNormalized)));
+  const angle = Math.acos(cosine);
+  return Number.isFinite(angle) ? angle : null;
 }
 
 function polygonArea(points: readonly WallVec2[]): number {
@@ -342,16 +360,53 @@ export function deriveWallSupport(input: DeriveWallSupportInput): WallSupportDer
     lowerSeamDisagreementStartWorld,
     lowerSeamDisagreementEndWorld
   );
+  const lowerStartRay = input.rays[0];
+  const lowerEndRay = input.rays[1];
+  if (!lowerStartRay || !lowerEndRay) {
+    return failure(["wall_ray_invalid"], { mappedSeamWorldLength, maxSeamExtrapolationWorld });
+  }
+  const lowerStartDirection = normalize3(lowerStartRay.direction);
+  const lowerEndDirection = normalize3(lowerEndRay.direction);
+  if (!lowerStartDirection || !lowerEndDirection) {
+    return failure(["wall_ray_invalid"], { mappedSeamWorldLength, maxSeamExtrapolationWorld });
+  }
+  const lowerSeamRayPlaneDenominatorStart = dot3(lowerStartDirection, plane.normal);
+  const lowerSeamRayPlaneDenominatorEnd = dot3(lowerEndDirection, plane.normal);
+  const lowerSeamCameraAngleStartRad = angleBetweenNormalized3(
+    lowerStartDirection,
+    subtract3(seamWorld[0], lowerStartRay.origin)
+  );
+  const lowerSeamCameraAngleEndRad = angleBetweenNormalized3(
+    lowerEndDirection,
+    subtract3(seamWorld[1], lowerEndRay.origin)
+  );
+  if (
+    !Number.isFinite(lowerSeamRayPlaneDenominatorStart) ||
+    !Number.isFinite(lowerSeamRayPlaneDenominatorEnd) ||
+    lowerSeamCameraAngleStartRad === null ||
+    lowerSeamCameraAngleEndRad === null
+  ) {
+    return failure(["wall_ray_invalid"], { mappedSeamWorldLength, maxSeamExtrapolationWorld });
+  }
+  const maxLowerSeamCameraAngleRad = Math.max(lowerSeamCameraAngleStartRad, lowerSeamCameraAngleEndRad);
   const lowerSeamDiagnostics = {
     mappedSeamWorldLength,
     maxSeamExtrapolationWorld,
     lowerSeamDisagreementStartWorld,
     lowerSeamDisagreementEndWorld,
     maxLowerSeamDisagreementWorld,
+    lowerSeamRayPlaneDenominatorStart,
+    lowerSeamRayPlaneDenominatorEnd,
+    lowerSeamCameraAngleStartRad,
+    lowerSeamCameraAngleEndRad,
+    maxLowerSeamCameraAngleRad,
+    maxLowerSeamCameraAngleThresholdRad: WALL_SUPPORT_LIMITS.maxLowerSeamCameraAngleRad,
   };
-  // Preserve inclusive exact-threshold behavior across ray-intersection floating
-  // point noise; this epsilon is many orders below the 0.05 world-unit bound.
-  if (maxLowerSeamDisagreementWorld > WALL_SUPPORT_LIMITS.maxLowerSeamDisagreementWorld + 1e-9) {
+  // The Floor-derived seam is authoritative. World disagreement with the
+  // ray/plane reconstruction remains diagnostic-only because it is amplified
+  // by grazing intersections; camera consistency is tested against the
+  // observed lower-seam rays directly.
+  if (maxLowerSeamCameraAngleRad > WALL_SUPPORT_LIMITS.maxLowerSeamCameraAngleRad + 1e-9) {
     return failure(["wall_seam_camera_inconsistent"], lowerSeamDiagnostics);
   }
 
@@ -434,6 +489,12 @@ export function deriveWallSupport(input: DeriveWallSupportInput): WallSupportDer
       lowerSeamDisagreementStartWorld,
       lowerSeamDisagreementEndWorld,
       maxLowerSeamDisagreementWorld,
+      lowerSeamRayPlaneDenominatorStart,
+      lowerSeamRayPlaneDenominatorEnd,
+      lowerSeamCameraAngleStartRad,
+      lowerSeamCameraAngleEndRad,
+      maxLowerSeamCameraAngleRad,
+      maxLowerSeamCameraAngleThresholdRad: WALL_SUPPORT_LIMITS.maxLowerSeamCameraAngleRad,
       maxRoundTripReprojectionErrorPx,
       maxSeamExtrapolationWorld,
       maxCameraDistance,

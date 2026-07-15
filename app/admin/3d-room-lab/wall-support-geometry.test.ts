@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import * as THREE from "three";
 import type { CalibrationImageBasis } from "./calibration-image-basis";
 import {
   buildWallPolygonKey,
@@ -18,6 +19,22 @@ const POLYGON: WallPolygon = [
   { x: 0.7, y: 0.3 },
   { x: 0.3, y: 0.3 },
 ];
+const ROOM_B_FRAME = { width: 1118, height: 698 };
+const ROOM_B_CAMERA = {
+  position: { x: 0.8650443337121687, y: 1.026730078232466, z: 5.25605633824082 },
+  lookAt: { x: 0.5658053560585476, y: 0.986461021903263, z: 4.30272825339533 },
+  up: { x: -0.0400329432323816, y: 0.9987591746229256, z: -0.029622197127919917 },
+};
+const ROOM_B_RIGHT_POLYGON: WallPolygon = [
+  { x: 0.8362350190412188, y: 0.6374625576375754 },
+  { x: 0.9899999999999998, y: 0.8700000000000001 },
+  { x: 0.9629816308243727, y: 0.06522786308142993 },
+  { x: 0.8270469310035844, y: 0.28637880620461126 },
+];
+const ROOM_B_RIGHT_SEAM = [
+  { x: 1.9, y: 0, z: -2 },
+  { x: 1.9, y: 0, z: 2 },
+] as const;
 
 function rayTo(point: { x: number; y: number; z: number }) {
   return {
@@ -45,6 +62,84 @@ function makeInput(overrides: Partial<Parameters<typeof deriveWallSupport>[0]> =
       y: point.y === 0 ? 480 : 240,
     }),
     floorBounds: { minX: -2.5, maxX: 2.5, minZ: -2, maxZ: 2 },
+    ...overrides,
+  };
+}
+
+function makeRoomBCamera(): THREE.PerspectiveCamera {
+  const camera = new THREE.PerspectiveCamera(47, ROOM_B_FRAME.width / ROOM_B_FRAME.height);
+  camera.position.set(ROOM_B_CAMERA.position.x, ROOM_B_CAMERA.position.y, ROOM_B_CAMERA.position.z);
+  camera.up.set(ROOM_B_CAMERA.up.x, ROOM_B_CAMERA.up.y, ROOM_B_CAMERA.up.z);
+  camera.lookAt(ROOM_B_CAMERA.lookAt.x, ROOM_B_CAMERA.lookAt.y, ROOM_B_CAMERA.lookAt.z);
+  camera.updateMatrixWorld(true);
+  return camera;
+}
+
+function roomBRay(camera: THREE.PerspectiveCamera, point: { x: number; y: number }): WallRay {
+  const origin = camera.getWorldPosition(new THREE.Vector3());
+  const rayPoint = new THREE.Vector3(point.x * 2 - 1, 1 - point.y * 2, 0.5).unproject(camera);
+  return {
+    origin: { x: origin.x, y: origin.y, z: origin.z },
+    direction: rayPoint.sub(origin).normalize(),
+  };
+}
+
+function roomBProject(camera: THREE.PerspectiveCamera, point: { x: number; y: number; z: number }) {
+  const projected = new THREE.Vector3(point.x, point.y, point.z).project(camera);
+  return {
+    x: ((projected.x + 1) / 2) * ROOM_B_FRAME.width,
+    y: ((1 - projected.y) / 2) * ROOM_B_FRAME.height,
+  };
+}
+
+function rayAtAngleFromBackWallSeam(angle: number): WallRay {
+  const towardSeam = new THREE.Vector3(-2, -1.5, -3).normalize();
+  const orthogonal = new THREE.Vector3().crossVectors(towardSeam, new THREE.Vector3(0, 1, 0)).normalize();
+  const direction = towardSeam.multiplyScalar(Math.cos(angle)).addScaledVector(orthogonal, Math.sin(angle));
+  return {
+    origin: CAMERA,
+    direction: { x: direction.x, y: direction.y, z: direction.z },
+  };
+}
+
+function projectBoundaryToReviewedCorner(point: { x: number; y: number; z: number }) {
+  if (point.y > 0.5) return point.x < 0 ? { x: 300, y: 240 } : { x: 700, y: 240 };
+  return point.x < 0 ? { x: 300, y: 480 } : { x: 700, y: 480 };
+}
+
+function makeRoomBRightWallInput(
+  overrides: Partial<Parameters<typeof deriveWallSupport>[0]> = {}
+): Parameters<typeof deriveWallSupport>[0] {
+  const camera = makeRoomBCamera();
+  const lowerStartPixel = {
+    x: ROOM_B_RIGHT_POLYGON[0].x * ROOM_B_FRAME.width,
+    y: ROOM_B_RIGHT_POLYGON[0].y * ROOM_B_FRAME.height,
+  };
+  const lowerEndPixel = {
+    x: ROOM_B_RIGHT_POLYGON[1].x * ROOM_B_FRAME.width,
+    y: ROOM_B_RIGHT_POLYGON[1].y * ROOM_B_FRAME.height,
+  };
+  return {
+    kind: "wall_right",
+    polygonSourceNorm: ROOM_B_RIGHT_POLYGON,
+    polygonContainerNorm: ROOM_B_RIGHT_POLYGON,
+    frameSize: ROOM_B_FRAME,
+    // The Floor-derived lower seam is authoritative: FR -> NR.
+    mapImagePixelToFloor: (point) =>
+      Math.abs(point.x - lowerStartPixel.x) < 1e-6 && Math.abs(point.y - lowerStartPixel.y) < 1e-6
+        ? { x: ROOM_B_RIGHT_SEAM[0].x, y: ROOM_B_RIGHT_SEAM[0].z }
+        : Math.abs(point.x - lowerEndPixel.x) < 1e-6 && Math.abs(point.y - lowerEndPixel.y) < 1e-6
+          ? { x: ROOM_B_RIGHT_SEAM[1].x, y: ROOM_B_RIGHT_SEAM[1].z }
+          : null,
+    cameraPosition: ROOM_B_CAMERA.position,
+    rays: ROOM_B_RIGHT_POLYGON.map((point) => roomBRay(camera, point)) as [
+      WallRay,
+      WallRay,
+      WallRay,
+      WallRay,
+    ],
+    projectWorldToPixels: (point) => roomBProject(camera, point),
+    floorBounds: { minX: -1.9, maxX: 1.9, minZ: -2, maxZ: 2 },
     ...overrides,
   };
 }
@@ -108,6 +203,7 @@ test("uses one deterministic seam-up local convention for back, left, and right 
     assert.deepEqual(result.seamNormal, crossUV);
     assert.equal(result.plane.basisU.x * result.plane.normal.x + result.plane.basisU.z * result.plane.normal.z, 0);
     assert.equal(result.plane.basisV.y, 1);
+    assert.ok(Object.values(result.diagnostics).filter((value) => typeof value === "number").every(Number.isFinite));
   }
 });
 
@@ -133,52 +229,63 @@ test("keeps local U/V tied to reviewed seam when the camera is on the opposite s
   assert.notDeepEqual(result.seamNormal, result.plane.normal);
 });
 
-test("rejects independently derived lower seam disagreement at either endpoint", () => {
-  const startDisagrees = [...makeInput().rays] as WallRays;
-  startDisagrees[0] = rayTo({ x: -1.9, y: 0, z: 0 });
-  const startResult = deriveWallSupport(makeInput({ rays: startDisagrees }));
-  assert.deepEqual(refusalReasons(startResult), ["wall_seam_camera_inconsistent"]);
-  if (!startResult.ok) {
-    assertApproximately(startResult.diagnostics?.lowerSeamDisagreementStartWorld, 0.1);
-    assertApproximately(startResult.diagnostics?.lowerSeamDisagreementEndWorld, 0);
-    assertApproximately(startResult.diagnostics?.maxLowerSeamDisagreementWorld, 0.1);
-  }
+test("accepts Room B's exact Floor-snapped grazing right wall while retaining raw disagreement diagnostics", () => {
+  const result = deriveWallSupport(makeRoomBRightWallInput());
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.deepEqual(result.seamWorld, ROOM_B_RIGHT_SEAM);
+  assertApproximately(result.diagnostics.lowerSeamDisagreementStartWorld, 0.17082545236212116);
+  assertApproximately(result.diagnostics.lowerSeamDisagreementEndWorld, 0.0567337344423187);
+  assertApproximately(result.diagnostics.maxLowerSeamDisagreementWorld, 0.17082545236212116);
+  assertApproximately(result.diagnostics.lowerSeamRayPlaneDenominatorStart, -0.1368814758452134);
+  assertApproximately(result.diagnostics.lowerSeamRayPlaneDenominatorEnd, -0.29081239864871);
+  assertApproximately(result.diagnostics.lowerSeamCameraAngleStartRad, 0.008034166543566902);
+  assertApproximately(result.diagnostics.lowerSeamCameraAngleEndRad, 0.01573498745732104);
+  assert.ok(result.diagnostics.maxLowerSeamCameraAngleRad <= result.diagnostics.maxLowerSeamCameraAngleThresholdRad);
+  assert.ok(result.diagnostics.wallWidth > 0);
+  assert.ok(result.diagnostics.wallHeight > 0);
+  assert.ok(Object.values(result.diagnostics).filter((value) => typeof value === "number").every(Number.isFinite));
+});
 
-  const endDisagrees = [...makeInput().rays] as WallRays;
-  endDisagrees[1] = rayTo({ x: 1.9, y: 0, z: 0 });
-  const endResult = deriveWallSupport(makeInput({ rays: endDisagrees }));
-  assert.deepEqual(refusalReasons(endResult), ["wall_seam_camera_inconsistent"]);
-  if (!endResult.ok) {
-    assertApproximately(endResult.diagnostics?.lowerSeamDisagreementStartWorld, 0);
-    assertApproximately(endResult.diagnostics?.lowerSeamDisagreementEndWorld, 0.1);
+test("rejects genuinely camera-inconsistent lower seam rays", () => {
+  const inconsistentRays = [...makeInput().rays] as WallRays;
+  inconsistentRays[0] = rayTo({ x: -1, y: 0, z: 0 });
+  const result = deriveWallSupport(makeInput({ rays: inconsistentRays }));
+  assert.deepEqual(refusalReasons(result), ["wall_seam_camera_inconsistent"]);
+  if (!result.ok) {
+    assert.ok(
+      (result.diagnostics?.maxLowerSeamCameraAngleRad ?? 0) >
+        (result.diagnostics?.maxLowerSeamCameraAngleThresholdRad ?? Number.POSITIVE_INFINITY)
+    );
   }
 });
 
-test("reports deterministic maximum lower seam disagreement and accepts the exact tolerance", () => {
-  const bothDisagree = [...makeInput().rays] as WallRays;
-  bothDisagree[0] = rayTo({ x: -1.9, y: 0, z: 0 });
-  bothDisagree[1] = rayTo({ x: 1.85, y: 0, z: 0 });
-  const disagreement = deriveWallSupport(makeInput({ rays: bothDisagree }));
-  assert.deepEqual(refusalReasons(disagreement), ["wall_seam_camera_inconsistent"]);
-  if (!disagreement.ok) {
-    assertApproximately(disagreement.diagnostics?.maxLowerSeamDisagreementWorld, 0.15);
-  }
-
-  const atTolerance = [...makeInput().rays] as WallRays;
-  atTolerance[0] = rayTo({ x: -1.95, y: 0, z: 0 });
-  const exact = deriveWallSupport(
+test("uses an angular camera-consistency boundary with exact-threshold acceptance", () => {
+  const angle = Math.PI / 90;
+  const exactlyAtThreshold = deriveWallSupport(
     makeInput({
-      rays: atTolerance,
-      // Keep this fixture's independent projector tied to the originating
-      // image ray, rather than its intentionally offset world intersection.
-      projectWorldToPixels: (point) =>
-        point.y === 0 && point.x < -1.9
-          ? { x: 300, y: 480 }
-          : { x: point.x * 100 + 500, y: point.y === 0 ? 480 : 240 },
+      rays: [
+        rayAtAngleFromBackWallSeam(angle),
+        ...makeInput().rays.slice(1),
+      ] as WallRays,
+      projectWorldToPixels: projectBoundaryToReviewedCorner,
     })
   );
-  assert.equal(exact.ok, true);
-  if (exact.ok) assertApproximately(exact.diagnostics.maxLowerSeamDisagreementWorld, 0.05);
+  assert.equal(exactlyAtThreshold.ok, true);
+  if (exactlyAtThreshold.ok) {
+    assertApproximately(exactlyAtThreshold.diagnostics.maxLowerSeamCameraAngleRad, angle);
+  }
+
+  const justAboveThreshold = deriveWallSupport(
+    makeInput({
+      rays: [
+        rayAtAngleFromBackWallSeam(angle + 1e-4),
+        ...makeInput().rays.slice(1),
+      ] as WallRays,
+      projectWorldToPixels: projectBoundaryToReviewedCorner,
+    })
+  );
+  assert.deepEqual(refusalReasons(justAboveThreshold), ["wall_seam_camera_inconsistent"]);
 });
 
 test("requires both corresponding upper corners to clear the height minimum", () => {
