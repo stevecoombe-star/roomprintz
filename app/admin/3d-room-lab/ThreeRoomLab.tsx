@@ -69,6 +69,16 @@ import {
   type TransformState,
 } from "./scene-state";
 import {
+  CALIBRATED_CAMERA_APPLIED_AUTHORITY_VERSION,
+  CALIBRATED_CAMERA_AUTHORITY_CALIBRATION_VERSION,
+  CALIBRATED_CAMERA_AUTHORITY_SOLVER,
+  CALIBRATED_CAMERA_IDENTITY_EQUIVALENCE_VERSION,
+  evaluateCalibratedCameraIdentityRestore,
+  selectAppliedAtIso,
+  type CameraIdentityMode,
+  type ParsedCalibratedCameraAppliedAuthority,
+} from "./calibrated-camera-restore-authority";
+import {
   CALIBRATION_IMAGE_BASIS_COORDINATE_SPACE_VERSION,
   type CalibrationImageBasis,
   type CalibrationImageBasisRefusalReason,
@@ -1519,6 +1529,7 @@ export default function ThreeRoomLab({
   const [pendingCalibrationRestore, setPendingCalibrationRestore] = useState<{
     requestId: number;
     calibration: CalibratedSceneStateCalibrationV2;
+    authority: ParsedCalibratedCameraAppliedAuthority | null;
   } | null>(null);
   const calibrationRestoreRequestIdRef = useRef(0);
   const [calibratedRestoreStatus, setCalibratedRestoreStatus] = useState<string>("none");
@@ -2298,7 +2309,8 @@ export default function ThreeRoomLab({
         frameSize: ImageFrameSize;
         diagnosticsSummary: string;
       },
-      fovDeg: number
+      fovDeg: number,
+      identityMode: CameraIdentityMode = { kind: "new_apply" }
     ) => {
       if (
         !calibratedCameraApplyStatusRef.current?.available ||
@@ -2314,7 +2326,7 @@ export default function ThreeRoomLab({
         fovDeg,
         frameSize: candidate.frameSize,
         diagnosticsSummary: candidate.diagnosticsSummary,
-        appliedAtIso: new Date().toISOString(),
+        appliedAtIso: selectAppliedAtIso(identityMode, new Date().toISOString()),
         imageBasis: qualifiedImageBasis,
         sourceFloorPolygon: sourceNormalizedFloorPolygon.map((point) => ({ x: point.x, y: point.y })),
       });
@@ -3414,7 +3426,7 @@ export default function ThreeRoomLab({
       calibration: pending.calibration,
       currentImageBasis: qualifiedImageBasis,
     });
-    if (!compat.ok) {
+    if (!compat.ok && !pending.authority) {
       finish(`Calibration not restored: ${compat.reason}`);
       return;
     }
@@ -3429,9 +3441,46 @@ export default function ThreeRoomLab({
       return;
     }
 
+    if (!pending.authority) {
+      applyCalibratedCameraSnapshotFromCandidate(candidate, persistedFovDeg);
+      finish("Calibrated camera restored with NEW identity (request-only scene).");
+      return;
+    }
+
+    const identityEvaluation = compat.ok
+      ? evaluateCalibratedCameraIdentityRestore({
+          authority: pending.authority,
+          currentImageBasis: qualifiedImageBasis!,
+          currentFrameSize: { width: rendererSize.width, height: rendererSize.height },
+          currentSourceFloorPolygon: sourceNormalizedFloorPolygon,
+          currentFloorMapping: {
+            worldWidth: floorMapping.worldWidth,
+            worldDepth: floorMapping.worldDepth,
+          },
+          currentFovDeg: persistedFovDeg,
+          freshCandidatePose: candidate.pose,
+          currentCalibrationVersion: CALIBRATED_CAMERA_AUTHORITY_CALIBRATION_VERSION,
+          currentSolver: CALIBRATED_CAMERA_AUTHORITY_SOLVER,
+        })
+      : { ok: false as const, reason: `restore-compat:${compat.reason}` };
+    if (identityEvaluation.ok) {
+      applyCalibratedCameraSnapshotFromCandidate(candidate, persistedFovDeg, {
+        kind: "restore_existing_identity",
+        identity: identityEvaluation.identity,
+      });
+      finish(
+        `Existing calibrated-camera identity preserved (${CALIBRATED_CAMERA_IDENTITY_EQUIVALENCE_VERSION}; ` +
+          `max corner delta ${identityEvaluation.identity.receipt.maxCornerDeltaPx.toFixed(6)}px; ` +
+          `frame ${rendererSize.width}x${rendererSize.height}).`
+      );
+      return;
+    }
+
     applyCalibratedCameraSnapshotFromCandidate(candidate, persistedFovDeg);
     finish(
-      "Calibrated camera restored from imported scene."
+      "Calibrated camera restored with NEW identity: existing identity was not preserved " +
+        `(reason: ${identityEvaluation.reason}); wall/Ceiling confirmations and attachments may remain stale; ` +
+        "Reconfirm/Reattach is required."
     );
   }, [
     pendingCalibrationRestore,
@@ -3448,6 +3497,8 @@ export default function ThreeRoomLab({
     calibratedCameraApplyStatus.available,
     calibratedCameraApplyStatus.reason,
     qualifiedImageBasis,
+    floorMapping.worldWidth,
+    floorMapping.worldDepth,
     floorPolygon,
     sourceNormalizedFloorPolygon,
     projectSourcePolygonToContainer,
@@ -9381,6 +9432,59 @@ export default function ThreeRoomLab({
               },
             }
           : undefined;
+      const calibrationAppliedAuthorityForExport =
+        calibrationForExport &&
+        calibratedCameraSnapshot &&
+        qualifiedImageBasis &&
+        calibratedCameraSnapshot.imageBasis.basisId === qualifiedImageBasis.basisId &&
+        calibratedCameraSnapshot.imageBasis.basisFingerprint === qualifiedImageBasis.basisFingerprint &&
+        calibratedCameraSnapshot.imageBasis.sourceImageUrl === qualifiedImageBasis.sourceImageUrl &&
+        calibratedCameraSnapshot.imageBasis.decodedWidth === qualifiedImageBasis.decodedWidth &&
+        calibratedCameraSnapshot.imageBasis.decodedHeight === qualifiedImageBasis.decodedHeight &&
+        calibratedCameraSnapshot.imageBasis.encodedOrientation === qualifiedImageBasis.encodedOrientation &&
+        calibratedCameraSnapshot.imageBasis.decodedOrientationNormal === qualifiedImageBasis.decodedOrientationNormal &&
+        calibratedCameraSnapshot.imageBasis.orientationTransform === qualifiedImageBasis.orientationTransform &&
+        calibratedCameraSnapshot.imageBasis.dimensionSource === qualifiedImageBasis.dimensionSource &&
+        calibratedCameraSnapshot.imageBasis.coordinateSpaceVersion.decoderId ===
+          qualifiedImageBasis.coordinateSpaceVersion.decoderId &&
+        calibratedCameraSnapshot.imageBasis.coordinateSpaceVersion.normalizationPolicyVersion ===
+          qualifiedImageBasis.coordinateSpaceVersion.normalizationPolicyVersion &&
+        calibratedCameraSnapshot.imageBasis.coordinateSpaceVersion.orientationApplied ===
+          qualifiedImageBasis.coordinateSpaceVersion.orientationApplied &&
+        calibratedCameraSnapshot.imageBasis.basisKind === qualifiedImageBasis.basisKind &&
+        floorPolygonsEqual(calibratedCameraSnapshot.sourceFloorPolygon, sourceNormalizedFloorPolygon) &&
+        calibratedCameraSnapshot.frameSize.width > 0 &&
+        calibratedCameraSnapshot.frameSize.height > 0 &&
+        calibratedCameraSnapshot.frameSize.width === rendererSize.width &&
+        calibratedCameraSnapshot.frameSize.height === rendererSize.height &&
+        Number.isFinite(floorMapping.worldWidth) &&
+        Number.isFinite(floorMapping.worldDepth) &&
+        floorMapping.worldWidth > 0 &&
+        floorMapping.worldDepth > 0
+          ? {
+              authorityVersion: CALIBRATED_CAMERA_APPLIED_AUTHORITY_VERSION,
+              appliedAtIso: calibratedCameraSnapshot.appliedAtIso,
+              verticalFovDeg: calibratedCameraSnapshot.fovDeg,
+              frameSize: { ...calibratedCameraSnapshot.frameSize },
+              pose: {
+                position: { ...calibratedCameraSnapshot.pose.position },
+                lookAt: { ...calibratedCameraSnapshot.pose.lookAt },
+                up: { ...calibratedCameraSnapshot.pose.up },
+              },
+              imageBasis: calibratedCameraSnapshot.imageBasis,
+              sourceFloorPolygon: calibratedCameraSnapshot.sourceFloorPolygon.map((point) => ({
+                x: point.x,
+                y: point.y,
+              })) as [FloorPoint, FloorPoint, FloorPoint, FloorPoint],
+              floorMapping: {
+                worldWidth: floorMapping.worldWidth,
+                worldDepth: floorMapping.worldDepth,
+              },
+              calibrationVersion: CALIBRATED_CAMERA_AUTHORITY_CALIBRATION_VERSION,
+              solver: CALIBRATED_CAMERA_AUTHORITY_SOLVER,
+              diagnosticsSummary: calibratedCameraSnapshot.diagnosticsSummary,
+            }
+          : undefined;
 
       return buildSceneStatePayload({
         exportedAtIso,
@@ -9414,6 +9518,35 @@ export default function ThreeRoomLab({
             }
           : null,
         calibration: calibrationForExport,
+        calibrationAppliedAuthority: calibrationAppliedAuthorityForExport,
+        supports: {
+          floor: {
+            sourceNormalizedPolygon: sourceNormalizedFloorPolygon,
+            reviewStatus: floorSupportReviewStatus,
+            source: floorSupportSource,
+            supportImageBasis: floorSupportImageBasis,
+            authorityEligible: floorPolygonAuthorityEligible,
+          },
+          walls: {
+            wall_back: {
+              draft: wallSupportDrafts.wall_back,
+              supportImageBasis: wallSupportImageBases.wall_back,
+            },
+            wall_left: {
+              draft: wallSupportDrafts.wall_left,
+              supportImageBasis: wallSupportImageBases.wall_left,
+            },
+            wall_right: {
+              draft: wallSupportDrafts.wall_right,
+              supportImageBasis: wallSupportImageBases.wall_right,
+            },
+          },
+          ceiling: {
+            draft: ceilingSupportDraft,
+            supportImageBasis: ceilingSupportImageBasis,
+          },
+        },
+        attachment: objectSupportAttachment,
         debug: {
           rendererSize,
           imageStatus: imageLoadState,
@@ -10945,18 +11078,51 @@ export default function ThreeRoomLab({
     // re-established below through a fresh, compatible solve.
     deactivateCalibratedCameraMode({ clearAutoRevertReason: true });
 
-    if (validated.modelPath !== null) {
-      setModelPathInput(validated.modelPath);
-      setModelPath(validated.modelPath);
-      loadModelFromPathRef.current?.(validated.modelPath);
-    }
-    setModelNormalization(validated.modelNormalization);
     const nextRoomImageUrl = validated.roomImageUrl ?? "";
     const nextRoomImageUrlTrimmed = nextRoomImageUrl.trim();
     setRoomImageInput(nextRoomImageUrl);
     setRoomImageUrl(nextRoomImageUrl);
     applyRoomImageRequest(nextRoomImageUrlTrimmed);
 
+    applyContainerFloorPolygon(validated.floor.polygon, {
+      status: "needs_review",
+      source: "derived",
+    });
+    if (validated.supports) {
+      // Source authority is restored exactly; container-normalized polygons and
+      // every support derivation remain memoized presentation/runtime outputs.
+      setSourceNormalizedFloorPolygon(validated.supports.floor.sourceNormalizedPolygon);
+      setFloorSupportReviewStatus(validated.supports.floor.reviewStatus);
+      setFloorSupportSource(validated.supports.floor.source);
+      setFloorSupportImageBasis(validated.supports.floor.supportImageBasis);
+      setFloorPolygonAuthorityEligible(validated.supports.floor.authorityEligible);
+      floorPolygonAuthorityKeyRef.current = buildFloorPolygonAuthorityKey(validated.floor.polygon);
+      setWallSupportDrafts({
+        wall_back: validated.supports.walls.wall_back?.draft ?? createUnavailableWallDraft("wall_back"),
+        wall_left: validated.supports.walls.wall_left?.draft ?? createUnavailableWallDraft("wall_left"),
+        wall_right: validated.supports.walls.wall_right?.draft ?? createUnavailableWallDraft("wall_right"),
+      });
+      setWallSupportImageBases({
+        wall_back: validated.supports.walls.wall_back?.supportImageBasis ?? null,
+        wall_left: validated.supports.walls.wall_left?.supportImageBasis ?? null,
+        wall_right: validated.supports.walls.wall_right?.supportImageBasis ?? null,
+      });
+      setCeilingSupportDraft(validated.supports.ceiling?.draft ?? createUnavailableCeilingDraft());
+      setCeilingSupportImageBasis(validated.supports.ceiling?.supportImageBasis ?? null);
+    } else {
+      // Legacy v0 scenes had no support authority. Never infer it from the
+      // restored floor/container geometry or fabricate confirmation provenance.
+      setWallSupportDrafts(createInitialWallDrafts());
+      setWallSupportImageBases({ wall_back: null, wall_left: null, wall_right: null });
+      setCeilingSupportDraft(createUnavailableCeilingDraft());
+      setCeilingSupportImageBasis(null);
+    }
+    if (validated.modelPath !== null) {
+      setModelPathInput(validated.modelPath);
+      setModelPath(validated.modelPath);
+      loadModelFromPathRef.current?.(validated.modelPath);
+    }
+    setModelNormalization(validated.modelNormalization);
     // Phase 2J-B3: positionY resting-band normalization. Within the resting
     // epsilon we snap to exactly 0; values above the band stay lifted; values
     // below -epsilon are preserved as generic transform but will block
@@ -10964,7 +11130,6 @@ export default function ThreeRoomLab({
     const importedPositionY = validated.transform.positionY;
     const normalizedPositionY =
       Math.abs(importedPositionY) <= CALIBRATED_LIFT_RESTING_SNAP_EPSILON ? 0 : importedPositionY;
-
     updateTransformState(
       {
         positionX: validated.transform.positionX,
@@ -10976,11 +11141,6 @@ export default function ThreeRoomLab({
       { markOwned: true }
     );
     setAutoRotateEnabled(validated.transform.autoRotate);
-
-    applyContainerFloorPolygon(validated.floor.polygon, {
-      status: "needs_review",
-      source: "derived",
-    });
     setShowFloorOverlay(validated.floor.overlayVisible);
     setIsFloorClickPlacementEnabled(validated.floor.placementModeEnabled);
     setLastAcceptedFloorClick(validated.floor.lastAcceptedClick);
@@ -10994,10 +11154,41 @@ export default function ThreeRoomLab({
     setLastObjectHandleHeightDeltaYUnits(null);
     setIsFloorAnchorDragActive(false);
     setActiveFloorHandleIndex(null);
+    setSelectedWallKind(null);
+    setActiveWallHandle(null);
+    setActiveCeilingHandleIndex(null);
+    setSupportPointUndoRecord(null);
+    setSupportEditSession({ activeFocus: null, locks: createUnlockedSupportEditLocks() });
+    attachmentMoveDragRef.current = null;
+    attachmentTransformRef.current = null;
+    // If the exact binding is stale after import, retain the serialized object
+    // transform as the attachment hold state rather than falling back to old
+    // pre-import placement or manufacturing a new attachment.
+    const importedYawRadians = (validated.transform.rotationYDeg * Math.PI) / 180;
+    frozenAttachmentWorldTransformRef.current = validated.attachment
+      ? {
+          position: {
+            x: validated.transform.positionX,
+            y: normalizedPositionY,
+            z: validated.transform.positionZ,
+          },
+          quaternion: {
+            x: 0,
+            y: Math.sin(importedYawRadians / 2),
+            z: 0,
+            w: Math.cos(importedYawRadians / 2),
+          },
+          uniformScale: validated.transform.uniformScale,
+        }
+      : null;
     dragPointerIdRef.current = null;
     objectHandleDragPointerIdRef.current = null;
     setActiveObjectHandleMode(null);
     floorAnchorDragPointerIdRef.current = null;
+    // Restore the exact serialized binding last. Existing attachment currentness
+    // evaluates the preserved key; import never builds a replacement key or
+    // silently reattaches against the newly derived support context.
+    setObjectSupportAttachment(validated.attachment);
 
     // Phase 2J-B3: treat the optional calibration block as a deferred re-solve
     // request. Bumping the monotonic generation invalidates any older pending
@@ -11018,6 +11209,7 @@ export default function ThreeRoomLab({
       setPendingCalibrationRestore({
         requestId: nextRestoreRequestId,
         calibration: validated.calibration.value,
+        authority: validated.calibrationAppliedAuthority,
       });
       setCalibratedRestoreStatus(
         isRoomImageReadyForUrl(nextRoomImageUrlTrimmed)

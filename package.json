@@ -30,6 +30,8 @@
     "test:room-envelope-wireframe": "node --conditions=react-server --import tsx --test app/admin/3d-room-lab/room-envelope-wireframe.test.ts",
     "test:floor-projection-agreement": "node --conditions=react-server --import tsx --test app/admin/3d-room-lab/floor-projection-agreement.test.ts",
     "test:calibrated-camera-readonly-projection": "node --conditions=react-server --import tsx --test app/admin/3d-room-lab/calibrated-camera-readonly-projection.test.ts",
+    "test:calibrated-camera-restore-authority": "node --conditions=react-server --import tsx --test app/admin/3d-room-lab/calibrated-camera-restore-authority.test.ts",
+    "test:scene-state": "node --conditions=react-server --import tsx --test app/admin/3d-room-lab/scene-state.test.ts",
     "test:support-edit-interaction": "node --conditions=react-server --import tsx --test app/admin/3d-room-lab/support-edit-interaction.test.ts",
     "test:support-point-undo": "node --conditions=react-server --import tsx --test app/admin/3d-room-lab/support-point-undo.test.ts",
     "test:wall-floor-point-snap": "node --conditions=react-server --import tsx --test app/admin/3d-room-lab/wall-floor-point-snap.test.ts",

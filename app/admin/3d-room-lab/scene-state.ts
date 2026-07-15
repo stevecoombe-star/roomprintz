@@ -1,6 +1,30 @@
 import type { CalibrationImageBasis } from "./calibration-image-basis";
+import {
+  isStrictUtcIsoTimestamp,
+  parseCalibratedCameraAppliedAuthority,
+  type CalibratedCameraAppliedAuthority,
+  type ParsedCalibratedCameraAppliedAuthority,
+} from "./calibrated-camera-restore-authority";
+import type { ObjectSupportAttachment } from "./support-attachment";
+import type { SupportReviewStatus, SupportSource } from "./support-model";
+import type {
+  CeilingConfirmationStamp,
+  CeilingPolygon,
+  CeilingSupportDraft,
+} from "./ceiling-support-geometry";
+import type {
+  WallConfirmationStamp,
+  WallPolygon,
+  WallSupportDraft,
+  WallSupportKind,
+} from "./wall-support-geometry";
+import {
+  CEILING_HEIGHT_MAX_WORLD_UNITS,
+  CEILING_HEIGHT_MIN_WORLD_UNITS,
+} from "./support-plane-math";
 
-export const SCENE_STATE_SCHEMA_VERSION = "vibode-3d-room-lab-scene-state/v0";
+export const LEGACY_SCENE_STATE_SCHEMA_VERSION = "vibode-3d-room-lab-scene-state/v0";
+export const SCENE_STATE_SCHEMA_VERSION = "vibode-3d-room-lab-scene-state/v1";
 export const SCENE_IMAGE_COORDINATE_SPACE_V0 = "container-normalized-v0";
 export const CALIBRATED_SCENE_STATE_CALIBRATION_VERSION_V1 = "calibrated-camera/v1";
 export const CALIBRATED_SCENE_STATE_CALIBRATION_VERSION_V2 = "calibrated-camera/v2";
@@ -167,7 +191,34 @@ export type ImportedSceneValidated = {
   };
   image: SceneImageMetadata | null;
   calibration: ValidatedCalibrationBlock;
+  calibrationAppliedAuthority: ParsedCalibratedCameraAppliedAuthority | null;
+  supports: PersistedSupportState | null;
+  attachment: ObjectSupportAttachment | null;
   exportedAt: string | null;
+};
+
+export type PersistedFloorSupportState = {
+  sourceNormalizedPolygon: FloorPoint[];
+  reviewStatus: SupportReviewStatus;
+  source: SupportSource;
+  supportImageBasis: CalibrationImageBasis | null;
+  authorityEligible: boolean;
+};
+
+export type PersistedWallSupportState = {
+  draft: WallSupportDraft;
+  supportImageBasis: CalibrationImageBasis | null;
+};
+
+export type PersistedCeilingSupportState = {
+  draft: CeilingSupportDraft;
+  supportImageBasis: CalibrationImageBasis | null;
+};
+
+export type PersistedSupportState = {
+  floor: PersistedFloorSupportState;
+  walls: Record<WallSupportKind, PersistedWallSupportState | null>;
+  ceiling: PersistedCeilingSupportState | null;
 };
 
 type NumberRange = { min: number; max: number };
@@ -216,6 +267,9 @@ export type SceneStatePayloadInput = {
   };
   image?: SceneImageMetadata | null;
   calibration?: CalibratedSceneStateCalibrationV2;
+  calibrationAppliedAuthority?: CalibratedCameraAppliedAuthority;
+  supports: PersistedSupportState;
+  attachment: ObjectSupportAttachment | null;
 };
 
 function clampValue(value: number, min: number, max: number): number {
@@ -386,7 +440,7 @@ function parseValidatedCalibrationBlock(rawCalibration: unknown): ValidatedCalib
     return { kind: "ignored", reason: "calibration.source must be an object." };
   }
   const imageBasis = parseCalibrationImageBasis(rawCalibration.source.imageBasis);
-  const sourceFloorPolygon = parseFloorPolygon(rawCalibration.source.sourceFloorPolygon);
+  const sourceFloorPolygon = parseSourceNormalizedQuad(rawCalibration.source.sourceFloorPolygon);
   if (!imageBasis) {
     return {
       kind: "ignored",
@@ -416,6 +470,261 @@ function parseValidatedCalibrationBlock(rawCalibration: unknown): ValidatedCalib
   };
 }
 
+const SUPPORT_REVIEW_STATUSES: readonly SupportReviewStatus[] = [
+  "unavailable",
+  "suggested",
+  "needs_review",
+  "manually_confirmed",
+  "locally_verified",
+];
+const SUPPORT_SOURCES: readonly SupportSource[] = ["manual", "model_suggested", "derived"];
+const WALL_SUPPORT_KINDS: readonly WallSupportKind[] = ["wall_back", "wall_left", "wall_right"];
+
+function parseExactString(value: unknown): string | null {
+  return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+function parseReviewStatus(value: unknown): SupportReviewStatus | null {
+  return typeof value === "string" && SUPPORT_REVIEW_STATUSES.includes(value as SupportReviewStatus)
+    ? value as SupportReviewStatus
+    : null;
+}
+
+function parseSupportSource(value: unknown): SupportSource | null {
+  return typeof value === "string" && SUPPORT_SOURCES.includes(value as SupportSource)
+    ? value as SupportSource
+    : null;
+}
+
+function parseSourceNormalizedQuad(value: unknown): [FloorPoint, FloorPoint, FloorPoint, FloorPoint] | null {
+  if (!Array.isArray(value) || value.length !== 4) return null;
+  const points: FloorPoint[] = [];
+  for (const point of value) {
+    if (!isRecord(point)) return null;
+    const x = parseFiniteNumber(point.x);
+    const y = parseFiniteNumber(point.y);
+    if (x === null || y === null || x < 0 || x > 1 || y < 0 || y > 1) return null;
+    points.push({ x, y });
+  }
+  return points as [FloorPoint, FloorPoint, FloorPoint, FloorPoint];
+}
+
+function parseWallConfirmationStamp(value: unknown, requireStrictTimestamp: boolean): WallConfirmationStamp | null {
+  if (value === null) return null;
+  if (!isRecord(value)) return null;
+  const wallPolygonKey = parseExactString(value.wallPolygonKey);
+  const imageBasisId = parseExactString(value.imageBasisId);
+  const imageBasisFingerprint = parseExactString(value.imageBasisFingerprint);
+  const cameraAppliedAtIso = parseExactString(value.cameraAppliedAtIso);
+  const frameWidth = parseFiniteNumber(value.frameWidth);
+  const frameHeight = parseFiniteNumber(value.frameHeight);
+  if (!wallPolygonKey || !imageBasisId || !imageBasisFingerprint || !cameraAppliedAtIso ||
+    (requireStrictTimestamp && !isStrictUtcIsoTimestamp(cameraAppliedAtIso)) ||
+    frameWidth === null || frameHeight === null || frameWidth <= 0 || frameHeight <= 0) return null;
+  return { wallPolygonKey, imageBasisId, imageBasisFingerprint, cameraAppliedAtIso, frameWidth, frameHeight };
+}
+
+function parseCeilingConfirmationStamp(value: unknown, requireStrictTimestamp: boolean): CeilingConfirmationStamp | null {
+  if (value === null) return null;
+  if (!isRecord(value)) return null;
+  const ceilingPolygonKey = parseExactString(value.ceilingPolygonKey);
+  const roomHeightKey = parseExactString(value.roomHeightKey);
+  const imageBasisId = parseExactString(value.imageBasisId);
+  const imageBasisFingerprint = parseExactString(value.imageBasisFingerprint);
+  const cameraAppliedAtIso = parseExactString(value.cameraAppliedAtIso);
+  const frameWidth = parseFiniteNumber(value.frameWidth);
+  const frameHeight = parseFiniteNumber(value.frameHeight);
+  if (!ceilingPolygonKey || !roomHeightKey || !imageBasisId || !imageBasisFingerprint || !cameraAppliedAtIso ||
+    (requireStrictTimestamp && !isStrictUtcIsoTimestamp(cameraAppliedAtIso)) ||
+    frameWidth === null || frameHeight === null || frameWidth <= 0 || frameHeight <= 0) return null;
+  return { ceilingPolygonKey, roomHeightKey, imageBasisId, imageBasisFingerprint, cameraAppliedAtIso, frameWidth, frameHeight };
+}
+
+function parseWallSupportState(
+  value: unknown,
+  expectedKind: WallSupportKind,
+  requireStrictTimestamp: boolean
+): PersistedWallSupportState | null {
+  if (value === null) return null;
+  if (!isRecord(value) || !isRecord(value.draft)) return null;
+  const draft = value.draft;
+  const kind = draft.kind;
+  const enabled = parseBoolean(draft.enabled);
+  const source = parseSupportSource(draft.source);
+  const reviewStatus = parseReviewStatus(draft.reviewStatus);
+  const polygon = draft.imagePolygonSourceNorm === null
+    ? null
+    : parseSourceNormalizedQuad(draft.imagePolygonSourceNorm);
+  const confirmationStamp = parseWallConfirmationStamp(draft.confirmationStamp, requireStrictTimestamp);
+  const supportImageBasis = value.supportImageBasis === null
+    ? null
+    : parseCalibrationImageBasis(value.supportImageBasis);
+  if (kind !== expectedKind || enabled === null || !source || !reviewStatus ||
+    (draft.imagePolygonSourceNorm !== null && !polygon) ||
+    (draft.confirmationStamp !== null && !confirmationStamp) ||
+    (value.supportImageBasis !== null && !supportImageBasis)) return null;
+  return {
+    draft: {
+      kind: expectedKind,
+      enabled,
+      source,
+      imagePolygonSourceNorm: polygon as WallPolygon | null,
+      reviewStatus,
+      confirmationStamp,
+    },
+    supportImageBasis,
+  };
+}
+
+function parseCeilingSupportState(value: unknown, requireStrictTimestamp: boolean): PersistedCeilingSupportState | null {
+  if (value === null) return null;
+  if (!isRecord(value) || !isRecord(value.draft)) return null;
+  const draft = value.draft;
+  const enabled = parseBoolean(draft.enabled);
+  const source = parseSupportSource(draft.source);
+  const reviewStatus = parseReviewStatus(draft.reviewStatus);
+  const polygon = draft.imagePolygonSourceNorm === null
+    ? null
+    : parseSourceNormalizedQuad(draft.imagePolygonSourceNorm);
+  const roomHeight = parseFiniteNumber(draft.roomHeight);
+  const confirmationStamp = parseCeilingConfirmationStamp(draft.confirmationStamp, requireStrictTimestamp);
+  const supportImageBasis = value.supportImageBasis === null
+    ? null
+    : parseCalibrationImageBasis(value.supportImageBasis);
+  if (enabled === null || !source || !reviewStatus || roomHeight === null ||
+    roomHeight < CEILING_HEIGHT_MIN_WORLD_UNITS || roomHeight > CEILING_HEIGHT_MAX_WORLD_UNITS ||
+    (draft.imagePolygonSourceNorm !== null && !polygon) ||
+    (draft.confirmationStamp !== null && !confirmationStamp) ||
+    (value.supportImageBasis !== null && !supportImageBasis)) return null;
+  return {
+    draft: {
+      enabled,
+      source,
+      imagePolygonSourceNorm: polygon as CeilingPolygon | null,
+      roomHeight,
+      reviewStatus,
+      confirmationStamp,
+    },
+    supportImageBasis,
+  };
+}
+
+function parsePersistedSupports(value: unknown, requireStrictTimestamp: boolean): PersistedSupportState | null {
+  if (!isRecord(value) || !isRecord(value.floor) || !isRecord(value.walls)) return null;
+  const floor = value.floor;
+  const sourceNormalizedPolygon = parseSourceNormalizedQuad(floor.sourceNormalizedPolygon);
+  const reviewStatus = parseReviewStatus(floor.reviewStatus);
+  const source = parseSupportSource(floor.source);
+  const supportImageBasis = floor.supportImageBasis === null
+    ? null
+    : parseCalibrationImageBasis(floor.supportImageBasis);
+  const authorityEligible = parseBoolean(floor.authorityEligible);
+  if (!sourceNormalizedPolygon || !reviewStatus || !source || authorityEligible === null ||
+    (floor.supportImageBasis !== null && !supportImageBasis)) return null;
+  const walls = {
+    wall_back: parseWallSupportState(value.walls.wall_back, "wall_back", requireStrictTimestamp),
+    wall_left: parseWallSupportState(value.walls.wall_left, "wall_left", requireStrictTimestamp),
+    wall_right: parseWallSupportState(value.walls.wall_right, "wall_right", requireStrictTimestamp),
+  };
+  if (
+    (value.walls.wall_back !== null && !walls.wall_back) ||
+    (value.walls.wall_left !== null && !walls.wall_left) ||
+    (value.walls.wall_right !== null && !walls.wall_right)
+  ) return null;
+  const ceiling = parseCeilingSupportState(value.ceiling, requireStrictTimestamp);
+  if (value.ceiling !== null && !ceiling) return null;
+  return { floor: { sourceNormalizedPolygon, reviewStatus, source, supportImageBasis, authorityEligible }, walls, ceiling };
+}
+
+function parseAttachment(
+  value: unknown,
+  scaleRange: NumberRange,
+  requireStrictTimestamp: boolean
+): ObjectSupportAttachment | null {
+  if (value === null) return null;
+  if (!isRecord(value)) return null;
+  const supportKind = value.supportKind;
+  const supportBindingKey = typeof value.supportBindingKey === "string" ? value.supportBindingKey : null;
+  const localPosition = isRecord(value.localPosition) ? value.localPosition : null;
+  const u = localPosition ? parseFiniteNumber(localPosition.u) : null;
+  const v = localPosition ? parseFiniteNumber(localPosition.v) : null;
+  const rotationAboutNormalDeg = parseFiniteNumber(value.rotationAboutNormalDeg);
+  const uniformScale = parseFiniteNumber(value.uniformScale);
+  const attachedAtIso = parseExactString(value.attachedAtIso);
+  const contactProfile = value.contactProfile;
+  if (
+    !WALL_SUPPORT_KINDS.includes(supportKind as WallSupportKind) && supportKind !== "floor" && supportKind !== "ceiling" ||
+    supportBindingKey === null || u === null || v === null || rotationAboutNormalDeg === null ||
+    uniformScale === null || uniformScale < scaleRange.min || uniformScale > scaleRange.max || !attachedAtIso ||
+    (requireStrictTimestamp && !isStrictUtcIsoTimestamp(attachedAtIso)) ||
+    !isRecord(contactProfile)
+  ) return null;
+  const validProfile =
+    (supportKind === "floor" && contactProfile.kind === "floor" && contactProfile.contactAxis === "local_y" && contactProfile.contactSide === "min") ||
+    (WALL_SUPPORT_KINDS.includes(supportKind as WallSupportKind) && contactProfile.kind === "wall" && contactProfile.contactAxis === "local_z" &&
+      (contactProfile.contactSide === "min" || contactProfile.contactSide === "max")) ||
+    (supportKind === "ceiling" && contactProfile.kind === "ceiling" && contactProfile.contactAxis === "local_y" &&
+      (contactProfile.contactSide === "min" || contactProfile.contactSide === "max"));
+  if (!validProfile) return null;
+  return {
+    supportKind,
+    supportBindingKey,
+    localPosition: { u, v },
+    rotationAboutNormalDeg,
+    uniformScale,
+    contactProfile: contactProfile as ObjectSupportAttachment["contactProfile"],
+    attachedAtIso,
+  } as ObjectSupportAttachment;
+}
+
+function calibrationImageBasesExactlyEqual(left: CalibrationImageBasis, right: CalibrationImageBasis): boolean {
+  return (
+    left.basisId === right.basisId &&
+    left.basisFingerprint === right.basisFingerprint &&
+    left.sourceImageUrl === right.sourceImageUrl &&
+    left.decodedWidth === right.decodedWidth &&
+    left.decodedHeight === right.decodedHeight &&
+    left.encodedOrientation === right.encodedOrientation &&
+    left.decodedOrientationNormal === right.decodedOrientationNormal &&
+    left.orientationTransform === right.orientationTransform &&
+    left.dimensionSource === right.dimensionSource &&
+    left.coordinateSpaceVersion.decoderId === right.coordinateSpaceVersion.decoderId &&
+    left.coordinateSpaceVersion.normalizationPolicyVersion === right.coordinateSpaceVersion.normalizationPolicyVersion &&
+    left.coordinateSpaceVersion.orientationApplied === right.coordinateSpaceVersion.orientationApplied &&
+    left.basisKind === right.basisKind
+  );
+}
+
+function sourceFloorPolygonsExactlyEqual(left: readonly FloorPoint[], right: readonly FloorPoint[]): boolean {
+  return left.length === 4 && right.length === 4 && left.every((point, index) =>
+    point.x === right[index].x && point.y === right[index].y
+  );
+}
+
+function authorityCrossFieldsMatch(input: {
+  calibration: ValidatedCalibrationBlock;
+  supports: PersistedSupportState;
+  authority: ParsedCalibratedCameraAppliedAuthority;
+  floorMappingRaw: unknown;
+}): boolean {
+  const { calibration, supports, authority, floorMappingRaw } = input;
+  if (calibration.kind !== "valid" || !isRecord(floorMappingRaw)) return false;
+  const worldWidth = parseFiniteNumber(floorMappingRaw.worldWidth);
+  const worldDepth = parseFiniteNumber(floorMappingRaw.worldDepth);
+  return !!(
+    sourceFloorPolygonsExactlyEqual(calibration.value.source.sourceFloorPolygon, supports.floor.sourceNormalizedPolygon) &&
+    sourceFloorPolygonsExactlyEqual(calibration.value.source.sourceFloorPolygon, authority.sourceFloorPolygon) &&
+    calibration.value.intrinsics.verticalFovDeg === authority.verticalFovDeg &&
+    calibration.value.calibrationVersion === authority.calibrationVersion &&
+    calibration.value.solver === authority.solver &&
+    calibrationImageBasesExactlyEqual(calibration.value.source.imageBasis, authority.imageBasis) &&
+    worldWidth !== null &&
+    worldDepth !== null &&
+    worldWidth === authority.floorMapping.worldWidth &&
+    worldDepth === authority.floorMapping.worldDepth
+  );
+}
+
 export function buildSceneStatePayload(input: SceneStatePayloadInput) {
   return {
     schemaVersion: SCENE_STATE_SCHEMA_VERSION,
@@ -437,8 +746,36 @@ export function buildSceneStatePayload(input: SceneStatePayloadInput) {
           },
           source: {
             imageBasis: input.calibration.source.imageBasis,
-            sourceFloorPolygon: input.calibration.source.sourceFloorPolygon.map(roundPoint),
+            sourceFloorPolygon: input.calibration.source.sourceFloorPolygon.map((point) => ({
+              x: point.x,
+              y: point.y,
+            })),
           },
+        }
+      : undefined,
+    calibrationAppliedAuthority: input.calibrationAppliedAuthority
+      ? {
+          authorityVersion: input.calibrationAppliedAuthority.authorityVersion,
+          appliedAtIso: input.calibrationAppliedAuthority.appliedAtIso,
+          verticalFovDeg: input.calibrationAppliedAuthority.verticalFovDeg,
+          frameSize: { ...input.calibrationAppliedAuthority.frameSize },
+          pose: {
+            position: { ...input.calibrationAppliedAuthority.pose.position },
+            lookAt: { ...input.calibrationAppliedAuthority.pose.lookAt },
+            up: { ...input.calibrationAppliedAuthority.pose.up },
+          },
+          imageBasis: {
+            ...input.calibrationAppliedAuthority.imageBasis,
+            coordinateSpaceVersion: { ...input.calibrationAppliedAuthority.imageBasis.coordinateSpaceVersion },
+          },
+          sourceFloorPolygon: input.calibrationAppliedAuthority.sourceFloorPolygon.map((point) => ({
+            x: point.x,
+            y: point.y,
+          })),
+          floorMapping: { ...input.calibrationAppliedAuthority.floorMapping },
+          calibrationVersion: input.calibrationAppliedAuthority.calibrationVersion,
+          solver: input.calibrationAppliedAuthority.solver,
+          diagnosticsSummary: input.calibrationAppliedAuthority.diagnosticsSummary,
         }
       : undefined,
     model: {
@@ -478,6 +815,55 @@ export function buildSceneStatePayload(input: SceneStatePayloadInput) {
         farFloorY: input.floor.perspectiveDepthScaling.farFloorY,
       },
     },
+    supports: {
+      floor: {
+        sourceNormalizedPolygon: input.supports.floor.sourceNormalizedPolygon.map((point) => ({ x: point.x, y: point.y })),
+        reviewStatus: input.supports.floor.reviewStatus,
+        source: input.supports.floor.source,
+        supportImageBasis: input.supports.floor.supportImageBasis,
+        authorityEligible: input.supports.floor.authorityEligible,
+      },
+      walls: Object.fromEntries(
+        WALL_SUPPORT_KINDS.map((kind) => {
+          const support = input.supports.walls[kind];
+          return [kind, support
+            ? {
+                draft: {
+                  ...support.draft,
+                  imagePolygonSourceNorm: support.draft.imagePolygonSourceNorm?.map((point) => ({ x: point.x, y: point.y })) ?? null,
+                  confirmationStamp: support.draft.confirmationStamp
+                    ? { ...support.draft.confirmationStamp }
+                    : null,
+                },
+                supportImageBasis: support.supportImageBasis,
+              }
+            : null];
+        })
+      ),
+      ceiling: input.supports.ceiling
+        ? {
+            draft: {
+              ...input.supports.ceiling.draft,
+              imagePolygonSourceNorm: input.supports.ceiling.draft.imagePolygonSourceNorm?.map((point) => ({ x: point.x, y: point.y })) ?? null,
+              confirmationStamp: input.supports.ceiling.draft.confirmationStamp
+                ? { ...input.supports.ceiling.draft.confirmationStamp }
+                : null,
+            },
+            supportImageBasis: input.supports.ceiling.supportImageBasis,
+          }
+        : null,
+    },
+    attachment: input.attachment
+      ? {
+          supportKind: input.attachment.supportKind,
+          supportBindingKey: input.attachment.supportBindingKey,
+          localPosition: { ...input.attachment.localPosition },
+          rotationAboutNormalDeg: input.attachment.rotationAboutNormalDeg,
+          uniformScale: input.attachment.uniformScale,
+          contactProfile: { ...input.attachment.contactProfile },
+          attachedAtIso: input.attachment.attachedAtIso,
+        }
+      : null,
     debug: {
       rendererSize: input.debug.rendererSize,
       imageStatus: input.debug.imageStatus,
@@ -496,8 +882,9 @@ export function validateImportedSceneJson(
   config: SceneStateValidationConfig
 ): ImportedSceneValidated | string {
   if (!isRecord(raw)) return "Imported payload must be a JSON object.";
-  if (raw.schemaVersion !== SCENE_STATE_SCHEMA_VERSION) {
-    return `Unsupported schemaVersion. Expected ${SCENE_STATE_SCHEMA_VERSION}.`;
+  const isCurrentVersion = raw.schemaVersion === SCENE_STATE_SCHEMA_VERSION;
+  if (!isCurrentVersion && raw.schemaVersion !== LEGACY_SCENE_STATE_SCHEMA_VERSION) {
+    return `Unsupported schemaVersion. Expected ${SCENE_STATE_SCHEMA_VERSION} or ${LEGACY_SCENE_STATE_SCHEMA_VERSION}.`;
   }
 
   const roomImageUrlRaw = (raw as Record<string, unknown>).roomImageUrl;
@@ -685,6 +1072,50 @@ export function validateImportedSceneJson(
     };
   }
 
+  let supports: PersistedSupportState | null = null;
+  let attachment: ObjectSupportAttachment | null = null;
+  let calibrationAppliedAuthority: ParsedCalibratedCameraAppliedAuthority | null = null;
+  if (isCurrentVersion) {
+    if (!Object.prototype.hasOwnProperty.call(raw, "supports")) {
+      return "supports is required for the current scene schema.";
+    }
+    if (!Object.prototype.hasOwnProperty.call(raw, "attachment")) {
+      return "attachment is required for the current scene schema.";
+    }
+    supports = parsePersistedSupports(raw.supports, true);
+    if (!supports) {
+      return "supports must contain valid source-normalized floor, wall, and ceiling authority.";
+    }
+    if (
+      calibration.kind === "valid" &&
+      !sourceFloorPolygonsExactlyEqual(
+        calibration.value.source.sourceFloorPolygon,
+        supports.floor.sourceNormalizedPolygon
+      )
+    ) {
+      return "calibration.source.sourceFloorPolygon contradicts supports.floor.sourceNormalizedPolygon.";
+    }
+    attachment = parseAttachment(raw.attachment, config.transformLimits.uniformScale, true);
+    if (raw.attachment !== null && !attachment) {
+      return "attachment must be a valid exact support attachment record or null.";
+    }
+    if (typeof raw.calibrationAppliedAuthority !== "undefined") {
+      const parsedAuthority = parseCalibratedCameraAppliedAuthority(raw.calibrationAppliedAuthority);
+      if (!parsedAuthority.ok) {
+        return `calibrationAppliedAuthority is malformed (${parsedAuthority.reason}).`;
+      }
+      calibrationAppliedAuthority = parsedAuthority.value;
+      if (!authorityCrossFieldsMatch({
+        calibration,
+        supports,
+        authority: calibrationAppliedAuthority,
+        floorMappingRaw: mappingRaw,
+      })) {
+        return "calibrationAppliedAuthority contradicts duplicated current-v1 calibration or floor authority.";
+      }
+    }
+  }
+
   return {
     roomImageUrl,
     modelPath,
@@ -728,6 +1159,9 @@ export function validateImportedSceneJson(
     },
     image,
     calibration,
+    calibrationAppliedAuthority,
+    supports,
+    attachment,
     exportedAt: parseOptionalString((raw as Record<string, unknown>).exportedAt),
   };
 }
