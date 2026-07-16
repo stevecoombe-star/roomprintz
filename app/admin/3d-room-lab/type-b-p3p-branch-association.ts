@@ -35,9 +35,6 @@ import {
 } from "./type-b-evaluator-contract";
 import type {
   TypeBEvidenceSnapshot,
-  TypeBEvidenceSnapshotBasis,
-  TypeBRotationMatrix3,
-  TypeBVec3,
 } from "./type-b-evaluator-contract";
 import {
   TYPE_B_BRANCH_FOV_CORRIDOR_SCHEMA,

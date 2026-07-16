@@ -197,7 +197,7 @@ const TYPE_B_CAPTURE_REFUSAL_ORDER = [
 // `Exclude<...>` stops being `never` and this alias fails its `extends never`
 // constraint, breaking the typecheck. It has no runtime footprint.
 type _AssertNever<T extends never> = T;
-type _CaptureRefusalOrderIsExhaustive = _AssertNever<
+export type _CaptureRefusalOrderIsExhaustive = _AssertNever<
   Exclude<TypeBCaptureRefusalReason, (typeof TYPE_B_CAPTURE_REFUSAL_ORDER)[number]>
 >;
 

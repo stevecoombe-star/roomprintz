@@ -26,7 +26,7 @@ import {
 import { inspectImageMetadata } from "@/lib/vibodeAutoFloorImageFetch";
 import { computeCalibrationImageFingerprint, qualifyCalibrationImageBasis } from "@/lib/vibodeCalibrationImageBasis";
 import { G0_PAYLOAD_FIXTURES, G0_SYNTHETIC_ASSETS } from "../assets-and-lineage";
-import { buildLabRequestBody, startG0LoopbackAssetServer } from "../harness";
+import { startG0LoopbackAssetServer } from "../harness";
 import { validateG0ObservedRunRecord, type G0ObservedRunRecord } from "../observed-run-record";
 import { buildG0ObservedRunRecordPath, writeG0ObservedRunRecordImmutable } from "../observed-run-writer";
 import { loadPayloadFixture } from "../payload-fixtures";

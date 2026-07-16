@@ -1475,6 +1475,7 @@ export default function ThreeRoomLab({
   const [modelLoadError, setModelLoadError] = useState<string | null>(null);
   const [modelPathInput, setModelPathInput] = useState(DEFAULT_MODEL_GLB_PATH);
   const [modelPath, setModelPath] = useState(DEFAULT_MODEL_GLB_PATH);
+  const initialModelPathRef = useRef(modelPath);
   const [rendererSize, setRendererSize] = useState({ width: 0, height: 0 });
   const [activeObjectKind, setActiveObjectKind] = useState<ActiveObjectKind>(null);
   const [autoRotateEnabled, setAutoRotateEnabled] = useState(false);
@@ -3944,65 +3945,82 @@ export default function ThreeRoomLab({
     qualifiedImageBasis,
   ]);
 
-  const supportEditBaseInputs = {
-    floor: {
-      kind: "floor",
-      visible: showFloorOverlay,
-      baseEditable: floorPolygon.length > 0,
-      locked: supportEditLocks.floor,
-    },
-    wall_back: {
-      kind: "wall_back",
-      visible: visibleWallKinds.wall_back,
-      baseEditable: wallSupportDrafts.wall_back.enabled && !!wallContainerPolygons.wall_back,
-      locked: supportEditLocks.wall_back,
-    },
-    wall_left: {
-      kind: "wall_left",
-      visible: visibleWallKinds.wall_left,
-      baseEditable: wallSupportDrafts.wall_left.enabled && !!wallContainerPolygons.wall_left,
-      locked: supportEditLocks.wall_left,
-    },
-    wall_right: {
-      kind: "wall_right",
-      visible: visibleWallKinds.wall_right,
-      baseEditable: wallSupportDrafts.wall_right.enabled && !!wallContainerPolygons.wall_right,
-      locked: supportEditLocks.wall_right,
-    },
-    ceiling: {
-      kind: "ceiling",
-      visible: isCeilingOverlayVisible,
-      baseEditable: ceilingSupportDraft.enabled && !!ceilingContainerPolygon,
-      locked: supportEditLocks.ceiling,
-    },
-  } satisfies Record<SupportKind, Omit<SupportEditInteractionInput, "activeFocus">>;
+  const supportEditBaseInputs = useMemo(
+    () =>
+      ({
+        floor: {
+          kind: "floor",
+          visible: showFloorOverlay,
+          baseEditable: floorPolygon.length > 0,
+          locked: supportEditLocks.floor,
+        },
+        wall_back: {
+          kind: "wall_back",
+          visible: visibleWallKinds.wall_back,
+          baseEditable: wallSupportDrafts.wall_back.enabled && !!wallContainerPolygons.wall_back,
+          locked: supportEditLocks.wall_back,
+        },
+        wall_left: {
+          kind: "wall_left",
+          visible: visibleWallKinds.wall_left,
+          baseEditable: wallSupportDrafts.wall_left.enabled && !!wallContainerPolygons.wall_left,
+          locked: supportEditLocks.wall_left,
+        },
+        wall_right: {
+          kind: "wall_right",
+          visible: visibleWallKinds.wall_right,
+          baseEditable: wallSupportDrafts.wall_right.enabled && !!wallContainerPolygons.wall_right,
+          locked: supportEditLocks.wall_right,
+        },
+        ceiling: {
+          kind: "ceiling",
+          visible: isCeilingOverlayVisible,
+          baseEditable: ceilingSupportDraft.enabled && !!ceilingContainerPolygon,
+          locked: supportEditLocks.ceiling,
+        },
+      }) satisfies Record<SupportKind, Omit<SupportEditInteractionInput, "activeFocus">>,
+    [
+      ceilingContainerPolygon,
+      ceilingSupportDraft.enabled,
+      floorPolygon.length,
+      isCeilingOverlayVisible,
+      showFloorOverlay,
+      supportEditLocks,
+      visibleWallKinds,
+      wallContainerPolygons,
+      wallSupportDrafts,
+    ]
+  );
   const effectiveSupportEditFocus =
     activeSupportEditFocus &&
     canFocusSupport({ ...supportEditBaseInputs[activeSupportEditFocus], activeFocus: activeSupportEditFocus })
       ? activeSupportEditFocus
       : null;
-  const supportEditInteractionStates = {
-    floor: resolveSupportEditInteraction({
-      ...supportEditBaseInputs.floor,
-      activeFocus: effectiveSupportEditFocus,
+  const supportEditInteractionStates = useMemo(
+    () => ({
+      floor: resolveSupportEditInteraction({
+        ...supportEditBaseInputs.floor,
+        activeFocus: effectiveSupportEditFocus,
+      }),
+      wall_back: resolveSupportEditInteraction({
+        ...supportEditBaseInputs.wall_back,
+        activeFocus: effectiveSupportEditFocus,
+      }),
+      wall_left: resolveSupportEditInteraction({
+        ...supportEditBaseInputs.wall_left,
+        activeFocus: effectiveSupportEditFocus,
+      }),
+      wall_right: resolveSupportEditInteraction({
+        ...supportEditBaseInputs.wall_right,
+        activeFocus: effectiveSupportEditFocus,
+      }),
+      ceiling: resolveSupportEditInteraction({
+        ...supportEditBaseInputs.ceiling,
+        activeFocus: effectiveSupportEditFocus,
+      }),
     }),
-    wall_back: resolveSupportEditInteraction({
-      ...supportEditBaseInputs.wall_back,
-      activeFocus: effectiveSupportEditFocus,
-    }),
-    wall_left: resolveSupportEditInteraction({
-      ...supportEditBaseInputs.wall_left,
-      activeFocus: effectiveSupportEditFocus,
-    }),
-    wall_right: resolveSupportEditInteraction({
-      ...supportEditBaseInputs.wall_right,
-      activeFocus: effectiveSupportEditFocus,
-    }),
-    ceiling: resolveSupportEditInteraction({
-      ...supportEditBaseInputs.ceiling,
-      activeFocus: effectiveSupportEditFocus,
-    }),
-  };
+    [effectiveSupportEditFocus, supportEditBaseInputs]
+  );
   const supportEditRenderOrder = resolveSupportEditRenderOrder(supportEditInteractionStates);
 
   useEffect(() => {
@@ -8890,7 +8908,6 @@ export default function ThreeRoomLab({
     ],
     [
       activeFloorHandleIndex,
-      activeObjectKind,
       autoRotateEnabled,
       autoFloorDetectionResult,
       selectedAutoFloorCandidate,
@@ -8987,7 +9004,6 @@ export default function ThreeRoomLab({
       rendererSize.width,
       showFloorOverlay,
       transform.positionX,
-      transform.positionY,
       transform.positionZ,
       transform.rotationYDeg,
       transform.uniformScale,
@@ -11413,15 +11429,15 @@ export default function ThreeRoomLab({
     loadModel(nextPath);
   };
 
-  const handleUseFallbackCube = () => {
+  const handleFallbackCube = () => {
     if (refuseModelMutationWhileAttached()) return;
-    const useFallbackCube = useFallbackCubeRef.current;
-    if (!useFallbackCube) {
+    const fallbackCubeAction = useFallbackCubeRef.current;
+    if (!fallbackCubeAction) {
       setModelLoadState("error");
       setModelLoadError("Renderer is not ready yet.");
       return;
     }
-    useFallbackCube();
+    fallbackCubeAction();
   };
 
   const handleModelPathInputChange = (value: string) => {
@@ -11596,7 +11612,7 @@ export default function ThreeRoomLab({
     useFallbackCubeRef.current = () => {
       addFallbackCube("Manual fallback cube.");
     };
-    loadModelFromPath(modelPath);
+    loadModelFromPath(initialModelPathRef.current);
 
     const animate = () => {
       if (isDisposed) return;
@@ -12024,7 +12040,7 @@ export default function ThreeRoomLab({
               </button>
               <button
                 type="button"
-                onClick={handleUseFallbackCube}
+                onClick={handleFallbackCube}
                 disabled={isAttachedObjectModelLocked}
                 className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-200 transition hover:border-slate-500 hover:text-slate-100 disabled:cursor-not-allowed disabled:opacity-50"
               >

@@ -6,6 +6,8 @@ import { inspectImageMetadata } from "@/lib/vibodeAutoFloorImageFetch";
 import { computeCalibrationImageFingerprint } from "@/lib/vibodeCalibrationImageBasis";
 import { G0_SYNTHETIC_ASSETS } from "./assets-and-lineage";
 
+type ModuleLoad = (request: string, parent: unknown, isMain: boolean) => unknown;
+
 const P_DIMENSION_PROBE_ID = "P-dimension-mismatch";
 const LOOPBACK_HOST = "127.0.0.1";
 const LOOPBACK_PORT = 3000;
@@ -119,7 +121,7 @@ export async function observePdimensionMismatchRouteContainment(input: {
 
   let server: Server | null = null;
   let restoreEnv: (() => void) | null = null;
-  const originalLoad = (Module as unknown as { _load: Function })._load;
+  const originalLoad = (Module as unknown as { _load: ModuleLoad })._load;
   const previousTripwireState = activeTripwireState;
   const tripwireState: ActiveTripwireState = { modelTripwireInvoked: false };
 
@@ -175,7 +177,7 @@ export async function observePdimensionMismatchRouteContainment(input: {
     restoreEnv = applyRouteEnv();
     activeTripwireState = tripwireState;
 
-    (Module as unknown as { _load: Function })._load = function patched(
+    (Module as unknown as { _load: ModuleLoad })._load = function patched(
       request: string,
       parent: unknown,
       isMain: boolean
@@ -267,7 +269,7 @@ export async function observePdimensionMismatchRouteContainment(input: {
       modelTripwireInvoked: false,
     };
   } finally {
-    (Module as unknown as { _load: Function })._load = originalLoad;
+    (Module as unknown as { _load: ModuleLoad })._load = originalLoad;
     if (restoreEnv) {
       restoreEnv();
     }

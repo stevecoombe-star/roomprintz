@@ -4,12 +4,14 @@ import test from "node:test";
 import { G0_SYNTHETIC_ASSETS } from "../assets-and-lineage";
 import { buildLabRequestBody, startG0LoopbackAssetServer, withG0RouteEnv } from "../harness";
 
+type ModuleLoad = (request: string, parent: unknown, isMain: boolean) => unknown;
+
 async function withModuleMocks<T>(
   mocks: Record<string, unknown>,
   run: () => Promise<T>
 ): Promise<T> {
-  const originalLoad = (Module as unknown as { _load: Function })._load;
-  (Module as unknown as { _load: Function })._load = function patched(
+  const originalLoad = (Module as unknown as { _load: ModuleLoad })._load;
+  (Module as unknown as { _load: ModuleLoad })._load = function patched(
     request: string,
     parent: unknown,
     isMain: boolean
@@ -22,7 +24,7 @@ async function withModuleMocks<T>(
   try {
     return await run();
   } finally {
-    (Module as unknown as { _load: Function })._load = originalLoad;
+    (Module as unknown as { _load: ModuleLoad })._load = originalLoad;
   }
 }
 

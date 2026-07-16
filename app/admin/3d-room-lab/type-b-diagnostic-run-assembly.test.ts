@@ -32,7 +32,6 @@ import { evaluateTypeBP3pDiagnosticRun } from "./type-b-p3p-diagnostic-evaluatio
 import {
   TYPE_B_FOV_PROBE_TOPOLOGY_SCHEMA,
   type TypeBFovProbeTopologyDeclaration,
-  type TypeBP3pDiagnosticRunRecord,
 } from "./type-b-p3p-diagnostic-contract";
 import {
   TYPE_B_BRANCH_ASSOCIATION_POLICY_SCHEMA,

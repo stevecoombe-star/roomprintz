@@ -50,6 +50,48 @@ import {
   type TypeBObservationSummary,
 } from "./type-b-observation-summary";
 
+type MutableJsonScalar = string | number | boolean | null;
+type MutableJsonValue = MutableJsonScalar | MutableJsonObject | MutableJsonValue[];
+type MutableJsonObject = { [key: string]: MutableJsonValue };
+
+function isMutableJsonObject(value: unknown): value is MutableJsonObject {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function cloneSummaryForTampering(summary: TypeBObservationSummary): MutableJsonObject {
+  const clone: unknown = structuredClone(summary);
+  if (!isMutableJsonObject(clone)) {
+    throw new Error("summary_clone_must_be_an_object");
+  }
+  return clone;
+}
+
+function requireJsonProperty(object: MutableJsonObject, key: string): MutableJsonValue {
+  const value = object[key];
+  if (typeof value === "undefined") {
+    throw new Error(`missing_summary_property:${key}`);
+  }
+  return value;
+}
+
+function requireJsonObject(value: MutableJsonValue, label: string): MutableJsonObject {
+  if (!isMutableJsonObject(value)) {
+    throw new Error(`summary_property_must_be_an_object:${label}`);
+  }
+  return value;
+}
+
+function requireJsonArray(value: MutableJsonValue, label: string): MutableJsonValue[] {
+  if (!Array.isArray(value)) {
+    throw new Error(`summary_property_must_be_an_array:${label}`);
+  }
+  return value;
+}
+
+function asTamperedObservationSummary(value: MutableJsonObject): TypeBObservationSummary {
+  return value as unknown as TypeBObservationSummary;
+}
+
 // --- Capture fixtures (real committed evaluator) ----------------------------
 
 function buildBasis(): TypeBEvidenceSnapshot["basis"] {
@@ -3767,13 +3809,22 @@ test("decoy raw literals outside the allowed paths fail the containment guard", 
   const base = deriveTypeBObservationSummary(
     associationPresentation([["associated"]])
   );
-  const decoys: ((clone: Record<string, any>) => void)[] = [
+  const decoys: ((clone: MutableJsonObject) => void)[] = [
     (clone) => {
-      clone.association.associatedAnnotationObservation = "associated";
+      requireJsonObject(requireJsonProperty(clone, "association"), "association")
+        .associatedAnnotationObservation = "associated";
     },
     (clone) => {
-      clone.association.componentObservations[0].associatedAnnotationObservation =
-        "unmatched_born";
+      const association = requireJsonObject(
+        requireJsonProperty(clone, "association"),
+        "association"
+      );
+      const components = requireJsonArray(
+        requireJsonProperty(association, "componentObservations"),
+        "association.componentObservations"
+      );
+      requireJsonObject(components[0], "association.componentObservations[0]")
+        .associatedAnnotationObservation = "unmatched_born";
     },
     (clone) => {
       clone.capture = {
@@ -3782,22 +3833,24 @@ test("decoy raw literals outside the allowed paths fail the containment guard", 
       };
     },
     (clone) => {
-      clone.sourceReferences.sourceImageIdentityRef = "associated";
+      requireJsonObject(
+        requireJsonProperty(clone, "sourceReferences"),
+        "sourceReferences"
+      ).sourceImageIdentityRef = "associated";
     },
     (clone) => {
-      clone.run = {
-        ...clone.run,
-        refusalLiterals: ["near_coincident_unresolved"],
-      };
+      requireJsonObject(requireJsonProperty(clone, "run"), "run").refusalLiterals = [
+        "near_coincident_unresolved",
+      ];
     },
   ];
   for (const applyDecoy of decoys) {
-    const clone = structuredClone(base) as unknown as Record<string, any>;
+    const clone = cloneSummaryForTampering(base);
     applyDecoy(clone);
     assert.throws(
       () =>
         assertControlledLiteralContainment(
-          clone as unknown as TypeBObservationSummary
+          asTamperedObservationSummary(clone)
         ),
       "a raw literal outside the allowed matrix paths must fail containment"
     );
@@ -3808,22 +3861,45 @@ test("a tampered unknown state at either allowed matrix path fails the controlle
   const base = deriveTypeBObservationSummary(
     associationPresentation([["associated"]])
   );
-  const runLevel = structuredClone(base) as unknown as Record<string, any>;
-  runLevel.association.annotationStateCounts[0].state = "future_state/v9";
+  const runLevel = cloneSummaryForTampering(base);
+  const runAssociation = requireJsonObject(
+    requireJsonProperty(runLevel, "association"),
+    "association"
+  );
+  const runCounts = requireJsonArray(
+    requireJsonProperty(runAssociation, "annotationStateCounts"),
+    "association.annotationStateCounts"
+  );
+  requireJsonObject(runCounts[0], "association.annotationStateCounts[0]").state = "future_state/v9";
   assert.throws(() =>
     assertControlledLiteralContainment(
-      runLevel as unknown as TypeBObservationSummary
+      asTamperedObservationSummary(runLevel)
     )
   );
-  const componentLevel = structuredClone(base) as unknown as Record<
-    string,
-    any
-  >;
-  componentLevel.association.componentObservations[0].annotationStateCounts[0].state =
-    "future_state/v9";
+  const componentLevel = cloneSummaryForTampering(base);
+  const componentAssociation = requireJsonObject(
+    requireJsonProperty(componentLevel, "association"),
+    "association"
+  );
+  const componentObservations = requireJsonArray(
+    requireJsonProperty(componentAssociation, "componentObservations"),
+    "association.componentObservations"
+  );
+  const firstComponent = requireJsonObject(
+    componentObservations[0],
+    "association.componentObservations[0]"
+  );
+  const componentCounts = requireJsonArray(
+    requireJsonProperty(firstComponent, "annotationStateCounts"),
+    "association.componentObservations[0].annotationStateCounts"
+  );
+  requireJsonObject(
+    componentCounts[0],
+    "association.componentObservations[0].annotationStateCounts[0]"
+  ).state = "future_state/v9";
   assert.throws(() =>
     assertControlledLiteralContainment(
-      componentLevel as unknown as TypeBObservationSummary
+      asTamperedObservationSummary(componentLevel)
     )
   );
 });
@@ -3870,22 +3946,48 @@ test("matrix redaction stays exact-path and exact-literal for component matrices
   );
   // An unknown value at the component matrix path is NOT redacted, so it
   // stays visible to the authority copy scans.
-  const tampered = structuredClone(base) as unknown as Record<string, any>;
-  tampered.association.componentObservations[0].annotationStateCounts[0].state =
-    "best component";
+  const tampered = cloneSummaryForTampering(base);
+  const tamperedAssociation = requireJsonObject(
+    requireJsonProperty(tampered, "association"),
+    "association"
+  );
+  const tamperedComponents = requireJsonArray(
+    requireJsonProperty(tamperedAssociation, "componentObservations"),
+    "association.componentObservations"
+  );
+  const tamperedComponent = requireJsonObject(
+    tamperedComponents[0],
+    "association.componentObservations[0]"
+  );
+  const tamperedCounts = requireJsonArray(
+    requireJsonProperty(tamperedComponent, "annotationStateCounts"),
+    "association.componentObservations[0].annotationStateCounts"
+  );
+  requireJsonObject(
+    tamperedCounts[0],
+    "association.componentObservations[0].annotationStateCounts[0]"
+  ).state = "best component";
   assert.ok(
     serializeWithControlledMatrixRedaction(
-      tampered as unknown as TypeBObservationSummary
+      asTamperedObservationSummary(tampered)
     ).includes("best component"),
     "non-vocabulary values at the component matrix path must remain scannable"
   );
   // A known literal parked on a NON-matrix component key is not redacted.
-  const decoy = structuredClone(base) as unknown as Record<string, any>;
-  decoy.association.componentObservations[0].associatedAnnotationObservation =
-    "unmatched_born";
+  const decoy = cloneSummaryForTampering(base);
+  const decoyAssociation = requireJsonObject(
+    requireJsonProperty(decoy, "association"),
+    "association"
+  );
+  const decoyComponents = requireJsonArray(
+    requireJsonProperty(decoyAssociation, "componentObservations"),
+    "association.componentObservations"
+  );
+  requireJsonObject(decoyComponents[0], "association.componentObservations[0]")
+    .associatedAnnotationObservation = "unmatched_born";
   assert.ok(
     serializeWithControlledMatrixRedaction(
-      decoy as unknown as TypeBObservationSummary
+      asTamperedObservationSummary(decoy)
     ).includes("unmatched_born"),
     "the redaction must never mask literals outside the matrix state paths"
   );

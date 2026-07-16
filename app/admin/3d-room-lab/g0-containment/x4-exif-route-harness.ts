@@ -12,6 +12,8 @@ import { inspectImageMetadata } from "@/lib/vibodeAutoFloorImageFetch";
 import { computeCalibrationImageFingerprint } from "@/lib/vibodeCalibrationImageBasis";
 import { G0_SYNTHETIC_ASSETS } from "./assets-and-lineage";
 
+type ModuleLoad = (request: string, parent: unknown, isMain: boolean) => unknown;
+
 // X4-specific bounded route-supporting observation module. This module is
 // deliberately not shared with, derived from, or generalized over the
 // completed P-dimension harness.
@@ -165,10 +167,10 @@ async function importFreshRouteModuleBoundToX4Mocks(): Promise<{
 }
 
 function installPatchedModuleLoad(input: {
-  originalLoad: Function;
+  originalLoad: ModuleLoad;
   requestId: string;
 }): void {
-  (Module as unknown as { _load: Function })._load = function patched(
+  (Module as unknown as { _load: ModuleLoad })._load = function patched(
     request: string,
     parent: unknown,
     isMain: boolean
@@ -239,7 +241,7 @@ export async function observeX4ExifOrientationRouteContainment(input: {
 
   let server: Server | null = null;
   let restoreEnv: (() => void) | null = null;
-  const originalLoad = (Module as unknown as { _load: Function })._load;
+  const originalLoad = (Module as unknown as { _load: ModuleLoad })._load;
   const previousTripwireState = activeTripwireState;
   const tripwireState: ActiveTripwireState = { modelTripwireInvoked: false };
 
@@ -350,7 +352,7 @@ export async function observeX4ExifOrientationRouteContainment(input: {
       modelTripwireInvoked: false,
     };
   } finally {
-    (Module as unknown as { _load: Function })._load = originalLoad;
+    (Module as unknown as { _load: ModuleLoad })._load = originalLoad;
     evictRouteModuleFromRequireCache();
     if (restoreEnv) {
       restoreEnv();
@@ -385,7 +387,7 @@ export async function observeX4NormalOrientationRoutePreemptionControl(input: {
 
   let server: Server | null = null;
   let restoreEnv: (() => void) | null = null;
-  const originalLoad = (Module as unknown as { _load: Function })._load;
+  const originalLoad = (Module as unknown as { _load: ModuleLoad })._load;
   const previousTripwireState = activeTripwireState;
   const tripwireState: ActiveTripwireState = { modelTripwireInvoked: false };
 
@@ -466,7 +468,7 @@ export async function observeX4NormalOrientationRoutePreemptionControl(input: {
       servedRequestPaths,
     };
   } finally {
-    (Module as unknown as { _load: Function })._load = originalLoad;
+    (Module as unknown as { _load: ModuleLoad })._load = originalLoad;
     evictRouteModuleFromRequireCache();
     if (restoreEnv) {
       restoreEnv();

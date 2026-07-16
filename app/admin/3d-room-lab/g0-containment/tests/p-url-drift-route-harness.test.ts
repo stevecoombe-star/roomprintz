@@ -7,7 +7,11 @@ import Module from "node:module";
 import path from "node:path";
 import test from "node:test";
 import { fetchRoomImageSafely, validateImageUrl } from "@/lib/vibodeAutoFloorImageFetch";
-import { G0_SYNTHETIC_ASSETS, type G0SyntheticAssetId } from "../assets-and-lineage";
+import {
+  G0_SYNTHETIC_ASSETS,
+  type G0SyntheticAsset,
+  type G0SyntheticAssetId,
+} from "../assets-and-lineage";
 import {
   createPurlDriftLoopbackRequestHandler,
   observePurlDriftDetectVisionMatchingFingerprintControl,
@@ -17,6 +21,9 @@ import {
   P_URL_DRIFT_ROUTE_ENV,
   P_URL_DRIFT_SERVED_FILE_NAME,
 } from "../p-url-drift-route-harness";
+
+type ModuleLoad = (request: string, parent: unknown, isMain: boolean) => unknown;
+type Mutable<T> = { -readonly [Key in keyof T]: T[Key] };
 
 const ROUTE_ENV_KEYS = [
   "EMPTY_ROOM_ASSIST_ENABLED",
@@ -128,10 +135,10 @@ async function collectJsonFileHashes(root: string): Promise<readonly string[]> {
 
 async function withMutatedSyntheticAsset<T>(
   assetId: G0SyntheticAssetId,
-  mutate: (asset: any) => void,
+  mutate: (asset: Mutable<G0SyntheticAsset>) => void,
   fn: () => Promise<T>
 ): Promise<T> {
-  const asset = G0_SYNTHETIC_ASSETS[assetId] as any;
+  const asset = G0_SYNTHETIC_ASSETS[assetId] as Mutable<G0SyntheticAsset>;
   const snapshot = { ...asset };
   mutate(asset);
   try {
@@ -142,7 +149,7 @@ async function withMutatedSyntheticAsset<T>(
 }
 
 test("P-url-drift dual-route harness returns exact mismatch observation for both routes and restores process state", async () => {
-  const originalLoad = (Module as unknown as { _load: Function })._load;
+  const originalLoad = (Module as unknown as { _load: ModuleLoad })._load;
   const envBefore = getRouteEnvSnapshot();
   const cacheKeysBefore = routeModuleCacheKeys();
   const receiptsBefore = await collectJsonFileHashes(REPO_RECEIPTS_ROOT);
@@ -189,7 +196,7 @@ test("P-url-drift dual-route harness returns exact mismatch observation for both
   assert.deepEqual(observation.vision.servedRequestPaths, ["GET /A-drift-b.jpg"]);
   assert.deepEqual(observation.emptyRoom.servedRequestPaths, ["GET /A-drift-b.jpg"]);
 
-  assert.equal((Module as unknown as { _load: Function })._load, originalLoad);
+  assert.equal((Module as unknown as { _load: ModuleLoad })._load, originalLoad);
   assert.deepEqual(getRouteEnvSnapshot(), envBefore);
   assert.deepEqual(routeModuleCacheKeys(), cacheKeysBefore);
   await assertLoopbackPortAvailable();
@@ -197,20 +204,20 @@ test("P-url-drift dual-route harness returns exact mismatch observation for both
 });
 
 test("P-url-drift matching-fingerprint detect-vision control reaches the P-url-drift model tripwire", async () => {
-  const originalLoad = (Module as unknown as { _load: Function })._load;
+  const originalLoad = (Module as unknown as { _load: ModuleLoad })._load;
   const envBefore = getRouteEnvSnapshot();
 
   const control = await observePurlDriftDetectVisionMatchingFingerprintControl(controlInput());
   assert.equal(control.modelTripwireInvoked, true);
   assert.deepEqual(control.servedRequestPaths, ["GET /A-drift-b.jpg"]);
 
-  assert.equal((Module as unknown as { _load: Function })._load, originalLoad);
+  assert.equal((Module as unknown as { _load: ModuleLoad })._load, originalLoad);
   assert.deepEqual(getRouteEnvSnapshot(), envBefore);
   await assertLoopbackPortAvailable();
 });
 
 test("P-url-drift matching-fingerprint empty-room control reaches the generation tripwire first and never detection", async () => {
-  const originalLoad = (Module as unknown as { _load: Function })._load;
+  const originalLoad = (Module as unknown as { _load: ModuleLoad })._load;
   const envBefore = getRouteEnvSnapshot();
 
   const control = await observePurlDriftEmptyRoomMatchingFingerprintControl(controlInput());
@@ -219,13 +226,13 @@ test("P-url-drift matching-fingerprint empty-room control reaches the generation
   assert.equal(control.detectionTripwireInvoked, false);
   assert.deepEqual(control.servedRequestPaths, ["GET /A-drift-b.jpg"]);
 
-  assert.equal((Module as unknown as { _load: Function })._load, originalLoad);
+  assert.equal((Module as unknown as { _load: ModuleLoad })._load, originalLoad);
   assert.deepEqual(getRouteEnvSnapshot(), envBefore);
   await assertLoopbackPortAvailable();
 });
 
 test("P-url-drift harness fails closed on occupied loopback port before either route and recovers cleanly", async () => {
-  const originalLoad = (Module as unknown as { _load: Function })._load;
+  const originalLoad = (Module as unknown as { _load: ModuleLoad })._load;
   const envBefore = getRouteEnvSnapshot();
   const occupied = await occupyLoopbackPort();
   try {
@@ -237,7 +244,7 @@ test("P-url-drift harness fails closed on occupied loopback port before either r
     await closeServer(occupied);
   }
 
-  assert.equal((Module as unknown as { _load: Function })._load, originalLoad);
+  assert.equal((Module as unknown as { _load: ModuleLoad })._load, originalLoad);
   assert.deepEqual(getRouteEnvSnapshot(), envBefore);
 
   const postFailureObservation = await observePurlDriftDualRouteMismatchContainment(
@@ -250,7 +257,7 @@ test("P-url-drift harness fails closed on occupied loopback port before either r
     "GET /A-drift-b.jpg",
   ]);
 
-  assert.equal((Module as unknown as { _load: Function })._load, originalLoad);
+  assert.equal((Module as unknown as { _load: ModuleLoad })._load, originalLoad);
   assert.deepEqual(getRouteEnvSnapshot(), envBefore);
   await assertLoopbackPortAvailable();
 });
@@ -364,7 +371,7 @@ test("P-url-drift loopback handler digest-verifies served bytes before every ser
 });
 
 test("P-url-drift harness verifies digests before binding and fails closed on drift or expected/served equality", async () => {
-  const originalLoad = (Module as unknown as { _load: Function })._load;
+  const originalLoad = (Module as unknown as { _load: ModuleLoad })._load;
   const envBefore = getRouteEnvSnapshot();
 
   await assert.rejects(
@@ -430,7 +437,7 @@ test("P-url-drift harness verifies digests before binding and fails closed on dr
     /control_expected_digest_drift:P-url-drift/
   );
 
-  assert.equal((Module as unknown as { _load: Function })._load, originalLoad);
+  assert.equal((Module as unknown as { _load: ModuleLoad })._load, originalLoad);
   assert.deepEqual(getRouteEnvSnapshot(), envBefore);
   await assertLoopbackPortAvailable();
 });

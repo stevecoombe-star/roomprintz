@@ -6,7 +6,6 @@ import { inspectImageMetadata } from "@/lib/vibodeAutoFloorImageFetch";
 import { computeCalibrationImageFingerprint, qualifyCalibrationImageBasis } from "@/lib/vibodeCalibrationImageBasis";
 import { CALIBRATION_IMAGE_BASIS_COORDINATE_SPACE_VERSION } from "@/app/admin/3d-room-lab/calibration-image-basis";
 import {
-  CALIBRATED_CAMERA_APPLY_MAX_CV_MAX_PX,
   CALIBRATED_CAMERA_APPLY_MAX_SCALE_RATIO,
 } from "@/app/admin/3d-room-lab/calibrated-camera-apply";
 import {

@@ -334,7 +334,6 @@ function bodyInvocation(body: Record<string, unknown>): ValidationResult {
   return OK;
 }
 
-const PROVIDER_RESPONSE_BODY_KEYS = ["invocationRef", "rawResponse"] as const;
 const RAW_RESPONSE_REQUIRED_KEYS = [
   "digest",
   "storageBindingDigest",

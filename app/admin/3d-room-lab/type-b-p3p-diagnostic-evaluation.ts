@@ -545,14 +545,6 @@ function registerRotation(
   return R;
 }
 
-function matrixVec(R: readonly number[], v: V3): V3 {
-  return {
-    x: R[0] * v.x + R[1] * v.y + R[2] * v.z,
-    y: R[3] * v.x + R[4] * v.y + R[5] * v.z,
-    z: R[6] * v.x + R[7] * v.y + R[8] * v.z,
-  };
-}
-
 function matrixTransposeVec(R: readonly number[], v: V3): V3 {
   return {
     x: R[0] * v.x + R[3] * v.y + R[6] * v.z,

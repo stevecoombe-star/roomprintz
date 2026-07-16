@@ -9,7 +9,6 @@ import test from "node:test";
 
 import {
   GER_I0_ZERO_AUTHORITY,
-  type ContractReceiptV1,
 } from "./gemini-evidence-contract";
 
 import {

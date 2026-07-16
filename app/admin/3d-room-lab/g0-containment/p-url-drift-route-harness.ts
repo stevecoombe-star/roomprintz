@@ -12,6 +12,8 @@ import { inspectImageMetadata } from "@/lib/vibodeAutoFloorImageFetch";
 import { computeCalibrationImageFingerprint } from "@/lib/vibodeCalibrationImageBasis";
 import { G0_SYNTHETIC_ASSETS } from "./assets-and-lineage";
 
+type ModuleLoad = (request: string, parent: unknown, isMain: boolean) => unknown;
+
 // P-url-drift-specific bounded dual-route observation module. This module is
 // deliberately not shared with, derived from, or generalized over the
 // completed P-dimension or X4 harnesses.
@@ -237,7 +239,7 @@ type InstalledPurlDriftMocks = {
 };
 
 function installPatchedModuleLoad(input: {
-  originalLoad: Function;
+  originalLoad: ModuleLoad;
   requestId: string;
 }): InstalledPurlDriftMocks {
   const mocks: InstalledPurlDriftMocks = {
@@ -254,7 +256,7 @@ function installPatchedModuleLoad(input: {
       getOrGenerateEmptyRoomImage: async () => emptyRoomGenerationTripwireDelegator(),
     },
   };
-  (Module as unknown as { _load: Function })._load = function patched(
+  (Module as unknown as { _load: ModuleLoad })._load = function patched(
     request: string,
     parent: unknown,
     isMain: boolean
@@ -279,7 +281,7 @@ function installPatchedModuleLoad(input: {
 // Positive identity proof that THIS harness's tripwire mocks are the ones any
 // fresh route evaluation will bind, without invoking the tripwires themselves.
 function assertPurlDriftMocksInstalled(mocks: InstalledPurlDriftMocks): void {
-  const loadFn = (Module as unknown as { _load: Function })._load;
+  const loadFn = (Module as unknown as { _load: ModuleLoad })._load;
   const visionMock = loadFn.call(Module, "@/lib/vibodeAutoFloorVisionDetect", null, false) as {
     detectFloorFromVerifiedBytes?: unknown;
   };
@@ -445,7 +447,7 @@ export async function observePurlDriftDualRouteMismatchContainment(input: {
   let visionServer: Server | null = null;
   let emptyRoomServer: Server | null = null;
   let restoreEnv: (() => void) | null = null;
-  const originalLoad = (Module as unknown as { _load: Function })._load;
+  const originalLoad = (Module as unknown as { _load: ModuleLoad })._load;
   const previousTripwireState = activeTripwireState;
   const tripwireState: ActiveTripwireState = {
     visionModelTripwireInvoked: false,
@@ -668,7 +670,7 @@ export async function observePurlDriftDualRouteMismatchContainment(input: {
       },
     };
   } finally {
-    (Module as unknown as { _load: Function })._load = originalLoad;
+    (Module as unknown as { _load: ModuleLoad })._load = originalLoad;
     evictRouteModulesFromRequireCache();
     if (restoreEnv) {
       restoreEnv();
@@ -705,7 +707,7 @@ export async function observePurlDriftDetectVisionMatchingFingerprintControl(inp
 
   let server: Server | null = null;
   let restoreEnv: (() => void) | null = null;
-  const originalLoad = (Module as unknown as { _load: Function })._load;
+  const originalLoad = (Module as unknown as { _load: ModuleLoad })._load;
   const previousTripwireState = activeTripwireState;
   const tripwireState: ActiveTripwireState = {
     visionModelTripwireInvoked: false,
@@ -774,7 +776,7 @@ export async function observePurlDriftDetectVisionMatchingFingerprintControl(inp
       servedRequestPaths,
     };
   } finally {
-    (Module as unknown as { _load: Function })._load = originalLoad;
+    (Module as unknown as { _load: ModuleLoad })._load = originalLoad;
     evictRouteModulesFromRequireCache();
     if (restoreEnv) {
       restoreEnv();
@@ -809,7 +811,7 @@ export async function observePurlDriftEmptyRoomMatchingFingerprintControl(input:
 
   let server: Server | null = null;
   let restoreEnv: (() => void) | null = null;
-  const originalLoad = (Module as unknown as { _load: Function })._load;
+  const originalLoad = (Module as unknown as { _load: ModuleLoad })._load;
   const previousTripwireState = activeTripwireState;
   const tripwireState: ActiveTripwireState = {
     visionModelTripwireInvoked: false,
@@ -889,7 +891,7 @@ export async function observePurlDriftEmptyRoomMatchingFingerprintControl(input:
       servedRequestPaths,
     };
   } finally {
-    (Module as unknown as { _load: Function })._load = originalLoad;
+    (Module as unknown as { _load: ModuleLoad })._load = originalLoad;
     evictRouteModulesFromRequireCache();
     if (restoreEnv) {
       restoreEnv();

@@ -8,6 +8,8 @@ import { computeCalibrationImageFingerprint } from "@/lib/vibodeCalibrationImage
 import { G0_SYNTHETIC_ASSET_BASE_DIR, G0_SYNTHETIC_ASSETS } from "../assets-and-lineage";
 import { observePdimensionMismatchRouteContainment } from "../p-dimension-route-harness";
 
+type ModuleLoad = (request: string, parent: unknown, isMain: boolean) => unknown;
+
 const ROUTE_ENV_KEYS = [
   "AUTO_FLOOR_VISION_ENABLED",
   "GEMINI_API_KEY",
@@ -54,8 +56,8 @@ async function withModuleMocks<T>(
   mocks: Record<string, unknown>,
   run: () => Promise<T>
 ): Promise<T> {
-  const originalLoad = (Module as unknown as { _load: Function })._load;
-  (Module as unknown as { _load: Function })._load = function patched(
+  const originalLoad = (Module as unknown as { _load: ModuleLoad })._load;
+  (Module as unknown as { _load: ModuleLoad })._load = function patched(
     request: string,
     parent: unknown,
     isMain: boolean
@@ -68,7 +70,7 @@ async function withModuleMocks<T>(
   try {
     return await run();
   } finally {
-    (Module as unknown as { _load: Function })._load = originalLoad;
+    (Module as unknown as { _load: ModuleLoad })._load = originalLoad;
   }
 }
 
@@ -98,7 +100,7 @@ async function withRouteEnv<T>(run: () => Promise<T>): Promise<T> {
 }
 
 test("P-dimension route harness returns exact supporting mismatch observation and restores process state", async () => {
-  const originalLoad = (Module as unknown as { _load: Function })._load;
+  const originalLoad = (Module as unknown as { _load: ModuleLoad })._load;
   const envBefore = getRouteEnvSnapshot();
 
   const observation = await observePdimensionMismatchRouteContainment({
@@ -116,13 +118,13 @@ test("P-dimension route harness returns exact supporting mismatch observation an
     servedRequestPaths: ["GET /A-parent.jpg"],
     modelTripwireInvoked: false,
   });
-  assert.equal((Module as unknown as { _load: Function })._load, originalLoad);
+  assert.equal((Module as unknown as { _load: ModuleLoad })._load, originalLoad);
   assert.deepEqual(getRouteEnvSnapshot(), envBefore);
   await assertLoopbackPortAvailable();
 });
 
 test("P-dimension route harness fails closed on occupied loopback port before route execution", async () => {
-  const originalLoad = (Module as unknown as { _load: Function })._load;
+  const originalLoad = (Module as unknown as { _load: ModuleLoad })._load;
   const envBefore = getRouteEnvSnapshot();
   const occupied = await occupyLoopbackPort();
   try {
@@ -143,7 +145,7 @@ test("P-dimension route harness fails closed on occupied loopback port before ro
   });
   assert.equal(postFailureObservation.modelTripwireInvoked, false);
 
-  assert.equal((Module as unknown as { _load: Function })._load, originalLoad);
+  assert.equal((Module as unknown as { _load: ModuleLoad })._load, originalLoad);
   assert.deepEqual(getRouteEnvSnapshot(), envBefore);
   await assertLoopbackPortAvailable();
 });

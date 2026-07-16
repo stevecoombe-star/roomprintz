@@ -9,13 +9,11 @@ import {
   makeInvocationReference,
   makeSyntheticDigest,
   type ContractReceiptV1,
-  type InvocationIdentityV1,
   type InvocationPreflightV1,
   type InvocationReceiptReferenceV1,
 } from "./gemini-evidence-contract";
 
 import {
-  GER_W2_NULL_RETRY_PREDECESSOR_SENTINEL,
   toGeminiEvidenceWireEnvelopeV1,
   type GeminiEvidenceWireEnvelopeV1,
 } from "./gemini-evidence-wire";

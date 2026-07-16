@@ -1,4 +1,4 @@
-import { createServer, type Server } from "node:http";
+import { createServer } from "node:http";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { G0_SYNTHETIC_ASSET_BASE_DIR, G0_SYNTHETIC_ASSETS } from "./assets-and-lineage";

@@ -31,14 +31,6 @@ import {
   type RetentionTombstoneBodyV1,
 } from "./gemini-evidence-contract";
 
-// ---------------------------------------------------------------------------
-// Compact fixture helpers
-// ---------------------------------------------------------------------------
-
-function jsonDigest(scope: ContentDigestScopeV1, seed: string) {
-  return digestCanonicalJson(scope, { seed });
-}
-
 const PASSED_PREFLIGHT: InvocationPreflightV1 = {
   status: "passed",
   outboundCallStatus: "provider_call_started",

@@ -13,6 +13,8 @@ import {
   observeX4NormalOrientationRoutePreemptionControl,
 } from "../x4-exif-route-harness";
 
+type ModuleLoad = (request: string, parent: unknown, isMain: boolean) => unknown;
+
 const ROUTE_ENV_KEYS = [
   "AUTO_FLOOR_VISION_ENABLED",
   "GEMINI_API_KEY",
@@ -89,7 +91,7 @@ async function collectJsonFileHashes(root: string): Promise<readonly string[]> {
 }
 
 test("X4 route harness returns exact orientation-refusal observation and restores process state", async () => {
-  const originalLoad = (Module as unknown as { _load: Function })._load;
+  const originalLoad = (Module as unknown as { _load: ModuleLoad })._load;
   const envBefore = getRouteEnvSnapshot();
   const receiptsBefore = await collectJsonFileHashes(REPO_RECEIPTS_ROOT);
 
@@ -114,14 +116,14 @@ test("X4 route harness returns exact orientation-refusal observation and restore
   assert.equal(observation.attestedBasisFingerprint, G0_SYNTHETIC_ASSETS["A-exif"].sha256);
   assert.equal(observation.modelTripwireInvoked, false);
 
-  assert.equal((Module as unknown as { _load: Function })._load, originalLoad);
+  assert.equal((Module as unknown as { _load: ModuleLoad })._load, originalLoad);
   assert.deepEqual(getRouteEnvSnapshot(), envBefore);
   await assertLoopbackPortAvailable();
   assert.deepEqual(await collectJsonFileHashes(REPO_RECEIPTS_ROOT), receiptsBefore);
 });
 
 test("X4 route harness fails closed on occupied loopback port and recovers with a clean run", async () => {
-  const originalLoad = (Module as unknown as { _load: Function })._load;
+  const originalLoad = (Module as unknown as { _load: ModuleLoad })._load;
   const envBefore = getRouteEnvSnapshot();
   const occupied = await occupyLoopbackPort();
   try {
@@ -136,7 +138,7 @@ test("X4 route harness fails closed on occupied loopback port and recovers with 
     await closeServer(occupied);
   }
 
-  assert.equal((Module as unknown as { _load: Function })._load, originalLoad);
+  assert.equal((Module as unknown as { _load: ModuleLoad })._load, originalLoad);
   assert.deepEqual(getRouteEnvSnapshot(), envBefore);
 
   const postFailureObservation = await observeX4ExifOrientationRouteContainment({
@@ -146,7 +148,7 @@ test("X4 route harness fails closed on occupied loopback port and recovers with 
   assert.equal(postFailureObservation.modelTripwireInvoked, false);
   assert.deepEqual(postFailureObservation.servedRequestPaths, ["GET /A-exif.jpg"]);
 
-  assert.equal((Module as unknown as { _load: Function })._load, originalLoad);
+  assert.equal((Module as unknown as { _load: ModuleLoad })._load, originalLoad);
   assert.deepEqual(getRouteEnvSnapshot(), envBefore);
   await assertLoopbackPortAvailable();
 });
@@ -195,7 +197,7 @@ test("X4 loopback handler serves only GET /A-exif.jpg and records every request"
 });
 
 test("X4 route harness verifies A-exif digest before serving and fails closed on drift", async () => {
-  const originalLoad = (Module as unknown as { _load: Function })._load;
+  const originalLoad = (Module as unknown as { _load: ModuleLoad })._load;
   const envBefore = getRouteEnvSnapshot();
   await assert.rejects(
     observeX4ExifOrientationRouteContainment({
@@ -204,7 +206,7 @@ test("X4 route harness verifies A-exif digest before serving and fails closed on
     }),
     /loopback_fixture_digest_drift:X4/
   );
-  assert.equal((Module as unknown as { _load: Function })._load, originalLoad);
+  assert.equal((Module as unknown as { _load: ModuleLoad })._load, originalLoad);
   assert.deepEqual(getRouteEnvSnapshot(), envBefore);
   await assertLoopbackPortAvailable();
 
@@ -219,7 +221,7 @@ test("X4 route harness verifies A-exif digest before serving and fails closed on
 });
 
 test("X4 normal-orientation positive control reaches and trips the model boundary", async () => {
-  const originalLoad = (Module as unknown as { _load: Function })._load;
+  const originalLoad = (Module as unknown as { _load: ModuleLoad })._load;
   const envBefore = getRouteEnvSnapshot();
 
   const control = await observeX4NormalOrientationRoutePreemptionControl({
@@ -229,7 +231,7 @@ test("X4 normal-orientation positive control reaches and trips the model boundar
   assert.equal(control.modelTripwireInvoked, true);
   assert.deepEqual(control.servedRequestPaths, ["GET /A-parent.jpg"]);
 
-  assert.equal((Module as unknown as { _load: Function })._load, originalLoad);
+  assert.equal((Module as unknown as { _load: ModuleLoad })._load, originalLoad);
   assert.deepEqual(getRouteEnvSnapshot(), envBefore);
   await assertLoopbackPortAvailable();
 });

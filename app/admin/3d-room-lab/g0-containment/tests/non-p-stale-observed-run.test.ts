@@ -3,6 +3,7 @@ import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import type { Dirent } from "node:fs";
 import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -36,23 +37,24 @@ import {
 import { X4_PINNED_MATCHING_DIMENSIONS } from "../x4-exif-route-harness";
 
 const includesNonPStaleEntry = process.argv.some((arg) => arg.endsWith("non-p-stale-observed-run.test.ts"));
+const loadHarnessTest = createRequire(__filename);
 const includesStandalonePdimensionHarness = process.argv.some((arg) =>
   arg.endsWith("p-dimension-route-harness.test.ts")
 );
 if (includesNonPStaleEntry && !includesStandalonePdimensionHarness) {
-  require("./p-dimension-route-harness.test");
+  loadHarnessTest("./p-dimension-route-harness.test");
 }
 const includesStandaloneX4Harness = process.argv.some((arg) =>
   arg.endsWith("x4-exif-route-harness.test.ts")
 );
 if (includesNonPStaleEntry && !includesStandaloneX4Harness) {
-  require("./x4-exif-route-harness.test");
+  loadHarnessTest("./x4-exif-route-harness.test");
 }
 const includesStandalonePurlDriftHarness = process.argv.some((arg) =>
   arg.endsWith("p-url-drift-route-harness.test.ts")
 );
 if (includesNonPStaleEntry && !includesStandalonePurlDriftHarness) {
-  require("./p-url-drift-route-harness.test");
+  loadHarnessTest("./p-url-drift-route-harness.test");
 }
 import {
   NON_P_STALE_DECLARATION_BINDINGS,
@@ -63,7 +65,9 @@ import { NON_P_STALE_NO_AUTHORITY_PROFILES } from "../non-p-stale-no-authority-p
 import {
   G0_PAYLOAD_FIXTURES,
   G0_SYNTHETIC_ASSETS,
+  type G0PayloadFixture,
   type G0PayloadFixtureId,
+  type G0SyntheticAsset,
   type G0SyntheticAssetId,
 } from "../assets-and-lineage";
 
@@ -83,6 +87,8 @@ const REPO_RECEIPTS_ROOT = path.join(
   process.cwd(),
   "app/admin/3d-room-lab/g0-containment/receipts"
 );
+
+type Mutable<T> = { -readonly [Key in keyof T]: T[Key] };
 
 type CliRunResult = {
   status: number | null;
@@ -191,10 +197,10 @@ async function collectJsonFileHashes(root: string): Promise<readonly string[]> {
 
 async function withMutatedSyntheticAsset<T>(
   assetId: G0SyntheticAssetId,
-  mutate: (asset: any) => void,
+  mutate: (asset: Mutable<G0SyntheticAsset>) => void,
   fn: () => Promise<T>
 ): Promise<T> {
-  const asset = G0_SYNTHETIC_ASSETS[assetId] as any;
+  const asset = G0_SYNTHETIC_ASSETS[assetId] as Mutable<G0SyntheticAsset>;
   const snapshot = { ...asset };
   mutate(asset);
   try {
@@ -206,10 +212,10 @@ async function withMutatedSyntheticAsset<T>(
 
 async function withMutatedPayloadFixture<T>(
   fixtureId: G0PayloadFixtureId,
-  mutate: (fixture: any) => void,
+  mutate: (fixture: Mutable<G0PayloadFixture>) => void,
   fn: () => Promise<T>
 ): Promise<T> {
-  const fixture = G0_PAYLOAD_FIXTURES[fixtureId] as any;
+  const fixture = G0_PAYLOAD_FIXTURES[fixtureId] as Mutable<G0PayloadFixture>;
   const snapshot = { ...fixture };
   mutate(fixture);
   try {
@@ -730,7 +736,7 @@ test("P-gen resolver binding and deterministic adapter fail closed on provenance
       provenance: {
         ...provenance,
         probeId: "P-empty",
-      } as any,
+      },
     }),
     /unexpected_provenance_probe:P-gen:P-empty/
   );
@@ -803,7 +809,7 @@ test("P-dimension resolver binding and deterministic adapter fail closed on prov
       provenance: {
         ...provenance,
         probeId: "P-empty",
-      } as any,
+      },
     }),
     /unexpected_provenance_probe:P-dimension-mismatch:P-empty/
   );
@@ -899,7 +905,7 @@ test("P-gen metadata references fail closed and do not cross fetch boundary", as
     let fetchCalls = 0;
     const originalFetch = globalThis.fetch;
     try {
-      globalThis.fetch = ((..._args: Parameters<typeof fetch>) => {
+      globalThis.fetch = (() => {
         fetchCalls += 1;
         throw new Error("fetch_must_not_be_invoked");
       }) as typeof globalThis.fetch;
@@ -920,7 +926,7 @@ test("P-gen metadata references fail closed and do not cross fetch boundary", as
   const originalFetch = globalThis.fetch;
   const validExecution = await (async () => {
     try {
-      globalThis.fetch = ((..._args: Parameters<typeof fetch>) => {
+      globalThis.fetch = (() => {
         successFetchCalls += 1;
         throw new Error("fetch_must_not_be_invoked");
       }) as typeof globalThis.fetch;
@@ -1468,7 +1474,7 @@ test("X4 resolver binding and deterministic adapter fail closed on provenance dr
       provenance: {
         ...provenance,
         probeId: "P-empty",
-      } as any,
+      },
     }),
     /unexpected_provenance_probe:X4:P-empty/
   );
@@ -2061,7 +2067,7 @@ test("P-url-drift resolver binding and deterministic adapter fail closed on prov
       provenance: {
         ...provenance,
         probeId: "P-empty",
-      } as any,
+      },
     }),
     /unexpected_provenance_probe:P-url-drift:P-empty/
   );
@@ -2208,7 +2214,7 @@ test("P-crop deterministic chain emits the derivative refusal token with exact s
   const originalFetch = globalThis.fetch;
   const execution = await (async () => {
     try {
-      globalThis.fetch = ((..._args: Parameters<typeof fetch>) => {
+      globalThis.fetch = (() => {
         fetchCalls += 1;
         throw new Error("fetch_must_not_be_invoked");
       }) as typeof globalThis.fetch;
@@ -2622,7 +2628,7 @@ test("P-crop resolver binding and deterministic adapter fail closed on provenanc
       provenance: {
         ...provenance,
         probeId: "P-empty",
-      } as any,
+      },
     }),
     /unexpected_provenance_probe:P-crop:P-empty/
   );
