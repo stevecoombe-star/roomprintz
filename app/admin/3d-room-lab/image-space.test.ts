@@ -1,0 +1,102 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+
+import {
+  corridorHalfWidthToOverlayStrokeWidth,
+  getCoverCrop,
+  sourceNormToContainerNormDiagnostic,
+  type ImageFrameSize,
+  type ImageIntrinsicSize,
+} from "./image-space";
+
+// Phase 2O-B1 corridor-width render fix: the manual seam corridor band stroke
+// width must be derived from the source-pixel half-width, not a fixed value.
+
+const INTRINSIC: ImageIntrinsicSize = { width: 1600, height: 1000 };
+const FRAME: ImageFrameSize = { width: 800, height: 500 };
+
+test("corridor stroke width is null for non-positive or non-finite half-width", () => {
+  assert.equal(corridorHalfWidthToOverlayStrokeWidth(0, INTRINSIC, FRAME), null);
+  assert.equal(corridorHalfWidthToOverlayStrokeWidth(-5, INTRINSIC, FRAME), null);
+  assert.equal(corridorHalfWidthToOverlayStrokeWidth(Number.NaN, INTRINSIC, FRAME), null);
+});
+
+test("corridor stroke width is null for invalid image/frame dimensions", () => {
+  assert.equal(corridorHalfWidthToOverlayStrokeWidth(6, { width: 0, height: 0 }, FRAME), null);
+  assert.equal(corridorHalfWidthToOverlayStrokeWidth(6, INTRINSIC, { width: 0, height: 0 }), null);
+});
+
+test("a larger source-pixel half-width produces a larger display width (same context)", () => {
+  const small = corridorHalfWidthToOverlayStrokeWidth(6, INTRINSIC, FRAME);
+  const large = corridorHalfWidthToOverlayStrokeWidth(100, INTRINSIC, FRAME);
+  assert.ok(small !== null && large !== null);
+  assert.ok((large as number) > (small as number));
+  // The default (6) and the smoke-test value (100) must NOT render identically.
+  assert.notEqual(small, large);
+});
+
+test("display width is linearly proportional to the source-pixel half-width", () => {
+  const base = corridorHalfWidthToOverlayStrokeWidth(6, INTRINSIC, FRAME);
+  const scaled = corridorHalfWidthToOverlayStrokeWidth(60, INTRINSIC, FRAME);
+  assert.ok(base !== null && scaled !== null);
+  // 10x the half-width -> 10x the rendered stroke width for a fixed context.
+  assert.ok(Math.abs((scaled as number) - (base as number) * 10) < 1e-9);
+});
+
+test("conversion matches the documented source-px -> container-px -> viewBox pipeline", () => {
+  const crop = getCoverCrop(INTRINSIC, FRAME);
+  assert.ok(crop);
+  const halfWidth = 25;
+  const expectedFullContainerPx = 2 * halfWidth * (crop as { scale: number }).scale;
+  const expectedAvgUnitsPerPx = (100 / FRAME.width + 100 / FRAME.height) / 2;
+  const expected = expectedFullContainerPx * expectedAvgUnitsPerPx;
+  const actual = corridorHalfWidthToOverlayStrokeWidth(halfWidth, INTRINSIC, FRAME);
+  assert.ok(actual !== null);
+  assert.ok(Math.abs((actual as number) - expected) < 1e-9);
+});
+
+// --- Phase 2O-D: sourceNormToContainerNormDiagnostic ------------------------
+// INTRINSIC (1600x1000) and FRAME (800x500) share the same aspect ratio, so the
+// object-cover crop has zero offset and source-normalized maps 1:1 into
+// container-normalized space, which makes the expected values easy to reason
+// about while still exercising the real getCoverCrop math.
+
+test("diagnostic conversion: valid inside-frame point is visible with zero overshoot", () => {
+  const result = sourceNormToContainerNormDiagnostic({ x: 0.5, y: 0.5 }, INTRINSIC, FRAME);
+  assert.ok(result);
+  assert.ok(Math.abs(result.container.x - 0.5) < 1e-9);
+  assert.ok(Math.abs(result.container.y - 0.5) < 1e-9);
+  assert.equal(result.visibleInFrame, true);
+  assert.equal(result.maxOvershoot, 0);
+});
+
+test("diagnostic conversion: near-edge inside-frame point stays visible", () => {
+  const result = sourceNormToContainerNormDiagnostic({ x: 0.995, y: 0.01 }, INTRINSIC, FRAME);
+  assert.ok(result);
+  assert.equal(result.visibleInFrame, true);
+  assert.equal(result.maxOvershoot, 0);
+  assert.ok(result.container.x <= 1 && result.container.x >= 0);
+  assert.ok(result.container.y <= 1 && result.container.y >= 0);
+});
+
+test("diagnostic conversion: off-frame point is not visible and reports overshoot", () => {
+  const result = sourceNormToContainerNormDiagnostic({ x: 1.3, y: 0.5 }, INTRINSIC, FRAME);
+  assert.ok(result);
+  assert.equal(result.visibleInFrame, false);
+  // Equal-aspect mapping: source x 1.3 -> container x 1.3 -> overshoot 0.3.
+  assert.ok(result.maxOvershoot > 0);
+  assert.ok(Math.abs(result.maxOvershoot - 0.3) < 1e-9);
+});
+
+test("diagnostic conversion: negative off-frame point reports overshoot below zero edge", () => {
+  const result = sourceNormToContainerNormDiagnostic({ x: 0.5, y: -0.2 }, INTRINSIC, FRAME);
+  assert.ok(result);
+  assert.equal(result.visibleInFrame, false);
+  assert.ok(Math.abs(result.maxOvershoot - 0.2) < 1e-9);
+});
+
+test("diagnostic conversion: invalid dimensions or non-finite point return null", () => {
+  assert.equal(sourceNormToContainerNormDiagnostic({ x: 0.5, y: 0.5 }, { width: 0, height: 0 }, FRAME), null);
+  assert.equal(sourceNormToContainerNormDiagnostic({ x: 0.5, y: 0.5 }, INTRINSIC, { width: 0, height: 0 }), null);
+  assert.equal(sourceNormToContainerNormDiagnostic({ x: Number.NaN, y: 0.5 }, INTRINSIC, FRAME), null);
+});

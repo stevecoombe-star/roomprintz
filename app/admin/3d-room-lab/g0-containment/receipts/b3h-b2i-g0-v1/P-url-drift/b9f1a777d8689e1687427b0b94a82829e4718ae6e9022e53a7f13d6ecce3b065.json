@@ -1,0 +1,124 @@
+{
+  "probeId": "P-url-drift",
+  "probePackageVersion": "b3h-b2i-g0-v1",
+  "fixtureReceiptReference": {
+    "fixtureId": "g0-P-url-drift-fixture-v1",
+    "fixtureVersion": "g0/P-url-drift/v1",
+    "expectedRefusalOrContainmentResult": "basis_fingerprint_mismatch",
+    "expectedPipelineStage": "restore image-basis receipt comparison"
+  },
+  "runMetadata": {
+    "runId": "benchmark-run:b9f1a777d8689e1687427b0b94a82829e4718ae6e9022e53a7f13d6ecce3b065",
+    "runIdentityFingerprint": "benchmark-run-identity:e282393201f9266e8cb9d77fbcb9499768fe83613e2c5cf2aa992958f702e1f7",
+    "runIdentity": {
+      "fixtureVersion": "g0/P-url-drift/v1",
+      "basisFingerprint": "bd7ffe9c5e68fd5fce30faf94cafe57f5e0840ed74a03986f74d2526fc95e9c8",
+      "coordinateSpaceVersion": {
+        "decoderId": "sharp-metadata/v1",
+        "normalizationPolicyVersion": "orientation-normal/v1",
+        "orientationApplied": false
+      },
+      "solverGeneratorVersion": "g0-harness/v1",
+      "evaluationVersion": "g0-eval/v1",
+      "evidenceBundleVersion": "g0-bundle/v1"
+    },
+    "createdAt": "2026-07-07T03:30:42.000Z",
+    "supersedesRunId": null,
+    "rerunReason": "evaluation_changed"
+  },
+  "primaryObservation": {
+    "observationKind": "emitted_application_result",
+    "observedPipelineStage": "restore image-basis receipt comparison",
+    "observedOperationalState": "calibration_not_attempted",
+    "outcome": "pass",
+    "expectedVsObservedComparison": "matches_expected",
+    "emittedResult": "basis_fingerprint_mismatch",
+    "derivedContainmentConclusion": null,
+    "rawObservationReferences": []
+  },
+  "noAuthorityChecks": [
+    {
+      "checkId": "qualification_refusal_result",
+      "status": "not_run"
+    },
+    {
+      "checkId": "restore_or_import_result",
+      "status": "pass"
+    },
+    {
+      "checkId": "route_response_result",
+      "status": "pass"
+    },
+    {
+      "checkId": "apply_gate_defense_in_depth",
+      "status": "pass"
+    },
+    {
+      "checkId": "client_discard_predicate",
+      "status": "pass"
+    },
+    {
+      "checkId": "live_snapshot_state_observation",
+      "status": "not_run"
+    },
+    {
+      "checkId": "state_transition_predicate",
+      "status": "not_run"
+    }
+  ],
+  "supportingHarnessChecks": [
+    {
+      "checkId": "vision_route_mismatch_discard",
+      "required": true,
+      "status": "passed",
+      "failureClass": null,
+      "notes": "The controlled detect-vision route response body carried the literal declared token basis_fingerprint_mismatch and attested the served A-drift-b digest. The expected parent fingerprint deliberately mismatched the served drift bytes, and the mismatch returned before the vision model boundary; the model tripwire was installed and never reached."
+    },
+    {
+      "checkId": "empty_room_route_mismatch_discard",
+      "required": true,
+      "status": "passed",
+      "failureClass": null,
+      "notes": "The controlled empty-room route response body carried the literal declared token basis_fingerprint_mismatch in a blocked result state and attested the served A-drift-b digest. The expected parent fingerprint deliberately mismatched the served drift bytes, and the mismatch returned before generation, detection, structural-preservation work, and persistence; the generation and detection tripwires were installed and never reached."
+    },
+    {
+      "checkId": "client_discard_predicate",
+      "required": true,
+      "status": "passed",
+      "failureClass": null,
+      "notes": "shouldDiscardAttestedResponse returned true for the persisted parent fingerprint against the actual route-attested A-drift-b fingerprints from both successful route observations, and returned false for both null-input controls."
+    },
+    {
+      "checkId": "apply_gate_defense_in_depth",
+      "required": true,
+      "status": "passed",
+      "failureClass": null,
+      "notes": "firstFailingGate=basis"
+    }
+  ],
+  "artifactReferences": [
+    "fixture_image_path:app/admin/3d-room-lab/g0-containment/synthetic-assets/A-parent.jpg",
+    "fixture_image_digest:bd7ffe9c5e68fd5fce30faf94cafe57f5e0840ed74a03986f74d2526fc95e9c8",
+    "drift_image_path:app/admin/3d-room-lab/g0-containment/synthetic-assets/A-drift-b.jpg",
+    "drift_image_digest:dfddfdac51dca6ac42008699768d4decf5f7c29c09ac1f5f8b069e837cc5d572",
+    "canonical_image_path:app/admin/3d-room-lab/g0-containment/synthetic-assets/A-parent.jpg",
+    "canonical_drift_image_path:app/admin/3d-room-lab/g0-containment/synthetic-assets/A-drift-b.jpg",
+    "primary_call_fetch_boundary:none",
+    "route_supporting_fetch_boundary:loopback_127.0.0.1_3000_only",
+    "vision_route_served_request_path:/A-drift-b.jpg",
+    "empty_room_route_served_request_path:/A-drift-b.jpg",
+    "expected_basis_fingerprint_sent:bd7ffe9c5e68fd5fce30faf94cafe57f5e0840ed74a03986f74d2526fc95e9c8",
+    "vision_route_attested_basis_fingerprint:dfddfdac51dca6ac42008699768d4decf5f7c29c09ac1f5f8b069e837cc5d572",
+    "empty_room_route_attested_basis_fingerprint:dfddfdac51dca6ac42008699768d4decf5f7c29c09ac1f5f8b069e837cc5d572",
+    "route_failure_reason_kind:declared_containment_token",
+    "model_boundary:tripwires_installed_not_reached",
+    "execution_mode:deterministic_execution_observed",
+    "pinned_call_input:evaluateCalibrationRestoreCompatibility:persistedFingerprint=bd7ffe9c5e68fd5fce30faf94cafe57f5e0840ed74a03986f74d2526fc95e9c8,currentFingerprint=dfddfdac51dca6ac42008699768d4decf5f7c29c09ac1f5f8b069e837cc5d572,dimensions=320x240,orientation=1,basisKind=original,coordinateSpace=sharp-metadata/v1,sourceImageUrl=http://127.0.0.1:3000/A-drift-b.jpg",
+    "pinned_call_input:route.POST:detect-vision,inProcess=true,imageUrl=loopback:/A-drift-b.jpg,frameSize=320x240,intrinsicSize=320x240,expectedBasisFingerprint=bd7ffe9c5e68fd5fce30faf94cafe57f5e0840ed74a03986f74d2526fc95e9c8",
+    "pinned_call_input:route.POST:empty-room-assist/run,inProcess=true,imageUrl=loopback:/A-drift-b.jpg,frameSize=320x240,intrinsicSize=320x240,expectedBasisFingerprint=bd7ffe9c5e68fd5fce30faf94cafe57f5e0840ed74a03986f74d2526fc95e9c8",
+    "pinned_call_input:shouldDiscardAttestedResponse:currentBasisFingerprint=bd7ffe9c5e68fd5fce30faf94cafe57f5e0840ed74a03986f74d2526fc95e9c8,attestedBasisFingerprint=dfddfdac51dca6ac42008699768d4decf5f7c29c09ac1f5f8b069e837cc5d572",
+    "pinned_call_input:evaluateCalibratedCameraApply:basisQualified=false,basisUnavailableReason=basis_fingerprint_mismatch"
+  ],
+  "manualObservationLog": "The committed resolver re-read, hashed, decoded, and provenance-bound both A-parent and A-drift-b from their canonical committed paths, confirming distinct digests and the A-drift-b parent lineage to A-parent.\nThe pure restore-comparison primary call compared a persisted A-parent-fingerprint image basis against a current A-drift-b-fingerprint image basis over the same pinned source URL, dimensions, orientation, coordinate-space version, and basis kind; the declared token was obtained only from result.reason and the call performed no fetch, decode, hash, fingerprint computation, or filesystem access.\nThe controlled loopback detect-vision observation served digest-verified A-drift-b bytes while sending the expected A-parent fingerprint and returned the declared token with the served drift digest attested; this production mismatch branch emits a console warning and performs no persistent write.\nThe controlled loopback empty-room observation served the same digest-verified A-drift-b bytes while sending the expected A-parent fingerprint and returned a blocked result carrying the declared token with the served drift digest attested.\nThe expected fingerprint sent to both routes was the A-parent digest while both route responses attested the A-drift-b digest, recording the actual expected-versus-attested drift.\nThe client discard predicate consumed the actual route-attested drift fingerprints from both route observations and returned true, while both null-input controls returned false.\nThe apply gate refused with the declared token at the basis gate.\nThe vision model tripwire and the empty-room generation and detection tripwires were installed and never reached during the mismatch observations.",
+  "incidentReference": null
+}

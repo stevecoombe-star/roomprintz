@@ -3,7 +3,11 @@ import { cookies } from "next/headers";
 import { createServerClient } from "@supabase/ssr";
 import { createClient } from "@supabase/supabase-js";
 import type { SupabaseClient } from "@supabase/supabase-js";
-import { getUserTokenWallet } from "@/lib/vibodeTokenDomain";
+import { getServiceRoleSupabaseClient } from "@/lib/adminServer";
+import {
+  getAuthenticatedTokenSnapshotWallet,
+  toTokenSnapshotResponse,
+} from "@/lib/vibodeTokenSnapshot";
 
 export const runtime = "nodejs";
 
@@ -45,45 +49,19 @@ async function getCookieSupabaseClient(): Promise<AnySupabaseClient | null> {
 
 export async function GET(req: NextRequest) {
   try {
-    let supabase: AnySupabaseClient | null = null;
-    let userId: string | null = null;
-
     const cookieSupabase = await getCookieSupabaseClient();
-    if (cookieSupabase) {
-      const { data, error } = await cookieSupabase.auth.getUser();
-      if (!error && data?.user) {
-        supabase = cookieSupabase;
-        userId = data.user.id;
-      }
-    }
-
-    if (!supabase || !userId) {
-      supabase = getBearerSupabaseClient(req);
-      if (supabase) {
-        const { data, error } = await supabase.auth.getUser();
-        if (!error && data?.user) {
-          userId = data.user.id;
-        }
-      }
-    }
-
-    if (!supabase || !userId) {
+    const bearerSupabase = getBearerSupabaseClient(req);
+    const snapshot = await getAuthenticatedTokenSnapshotWallet({
+      authClients: [cookieSupabase, bearerSupabase],
+      getServiceRoleClient: getServiceRoleSupabaseClient,
+    });
+    if (!snapshot) {
       return Response.json({ error: "Unauthorized" }, { status: 401 });
     }
 
     // Deterministic first-touch initialization:
-    // first authenticated snapshot call bootstraps wallet if missing.
-    const wallet = await getUserTokenWallet(supabase, userId);
-
-    return Response.json({
-      balanceTokens: wallet.balance_tokens,
-      lifetimeGrantedTokens: wallet.lifetime_granted_tokens,
-      lifetimeSpentTokens: wallet.lifetime_spent_tokens,
-      monthlyGrantedTokens: wallet.monthly_granted_tokens,
-      monthlySpentTokens: wallet.monthly_spent_tokens,
-      currentPeriodStart: wallet.current_period_start,
-      currentPeriodEnd: wallet.current_period_end,
-    });
+    // first authenticated snapshot call bootstraps a wallet through service role.
+    return Response.json(toTokenSnapshotResponse(snapshot.wallet));
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : "Unexpected error";
     return Response.json({ error: message }, { status: 500 });

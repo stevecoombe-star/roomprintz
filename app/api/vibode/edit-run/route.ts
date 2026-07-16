@@ -300,7 +300,8 @@ export async function POST(req: NextRequest) {
     if (userErr || !userData?.user) {
       return Response.json({ error: "Unauthorized" }, { status: 401 });
     }
-    if (!getAdminSupabaseClient()) {
+    const tokenAdminSupabase = getAdminSupabaseClient();
+    if (!tokenAdminSupabase) {
       return Response.json(
         { error: "Server configuration missing service role Supabase for token charging." },
         { status: 500 }
@@ -328,7 +329,7 @@ export async function POST(req: NextRequest) {
       operationKey,
       TOKEN_DEFAULT_COSTS[tokenActionType]
     );
-    const walletBeforeSpend = await getUserTokenWallet(supabase, authenticatedUserId);
+    const walletBeforeSpend = await getUserTokenWallet(tokenAdminSupabase, authenticatedUserId);
     const affordability = canAffordTokens({
       balanceTokens: walletBeforeSpend.balance_tokens,
       requiredTokens: tokenCost,

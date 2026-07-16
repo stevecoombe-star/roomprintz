@@ -91,7 +91,7 @@ export async function POST(req: NextRequest) {
       FULL_VIBE_OPERATION_KEY,
       FULL_VIBE_DEFAULT_TOKEN_COST
     );
-    const wallet = await getUserTokenWallet(supabase, userId);
+    const wallet = await getUserTokenWallet(adminSupabase, userId);
     const affordability = canAffordTokens({
       balanceTokens: wallet.balance_tokens,
       requiredTokens: tokenCost,

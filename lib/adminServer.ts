@@ -38,7 +38,13 @@ export async function getCookieSupabaseClient(): Promise<AnySupabaseClient | nul
 
 export function getServiceRoleSupabaseClient(): AnySupabaseClient | null {
   if (!hasSupabaseServiceEnv()) return null;
-  return createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
+  return createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
+    auth: {
+      persistSession: false,
+      autoRefreshToken: false,
+      detectSessionInUrl: false,
+    },
+  });
 }
 
 export async function getAuthenticatedAdminUser(): Promise<User | null> {

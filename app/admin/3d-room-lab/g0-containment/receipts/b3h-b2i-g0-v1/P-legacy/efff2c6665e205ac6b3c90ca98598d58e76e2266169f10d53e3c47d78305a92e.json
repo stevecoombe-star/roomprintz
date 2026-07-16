@@ -1,0 +1,89 @@
+{
+  "probeId": "P-legacy",
+  "probePackageVersion": "b3h-b2i-g0-v1",
+  "fixtureReceiptReference": {
+    "fixtureId": "g0-P-legacy-fixture-v1",
+    "fixtureVersion": "g0/P-legacy/v1",
+    "expectedRefusalOrContainmentResult": "basis_legacy_receipt_missing",
+    "expectedPipelineStage": "scene-import calibration-block validation"
+  },
+  "runMetadata": {
+    "runId": "benchmark-run:efff2c6665e205ac6b3c90ca98598d58e76e2266169f10d53e3c47d78305a92e",
+    "runIdentityFingerprint": "benchmark-run-identity:3f567937f610b7de5f80fae5687c37a4bcb0ff95894fba1635447c7c21eec351",
+    "runIdentity": {
+      "fixtureVersion": "g0/P-legacy/v1",
+      "basisFingerprint": "27c3e478c35977c39db86f0123a0e85fa85f7ac8bec2cf809d5fcf45093c96e6",
+      "coordinateSpaceVersion": {
+        "decoderId": "sharp-metadata/v1",
+        "normalizationPolicyVersion": "orientation-normal/v1",
+        "orientationApplied": false
+      },
+      "solverGeneratorVersion": "g0-harness/v1",
+      "evaluationVersion": "g0-eval/v1",
+      "evidenceBundleVersion": "g0-bundle/v1"
+    },
+    "createdAt": "2026-07-06T19:39:48.000Z",
+    "supersedesRunId": null,
+    "rerunReason": "evidence_bundle_changed"
+  },
+  "primaryObservation": {
+    "observationKind": "emitted_application_result",
+    "observedPipelineStage": "scene-import calibration-block validation",
+    "observedOperationalState": "calibration_not_attempted",
+    "outcome": "pass",
+    "expectedVsObservedComparison": "matches_expected",
+    "emittedResult": "basis_legacy_receipt_missing",
+    "derivedContainmentConclusion": null,
+    "rawObservationReferences": []
+  },
+  "noAuthorityChecks": [
+    {
+      "checkId": "qualification_refusal_result",
+      "status": "not_run"
+    },
+    {
+      "checkId": "restore_or_import_result",
+      "status": "pass"
+    },
+    {
+      "checkId": "route_response_result",
+      "status": "not_run"
+    },
+    {
+      "checkId": "apply_gate_defense_in_depth",
+      "status": "pass"
+    },
+    {
+      "checkId": "client_discard_predicate",
+      "status": "not_run"
+    },
+    {
+      "checkId": "live_snapshot_state_observation",
+      "status": "not_run"
+    },
+    {
+      "checkId": "state_transition_predicate",
+      "status": "not_run"
+    }
+  ],
+  "supportingHarnessChecks": [
+    {
+      "checkId": "defensive_apply_gate_check",
+      "required": true,
+      "status": "passed",
+      "failureClass": null,
+      "notes": "firstFailingGate=basis"
+    }
+  ],
+  "artifactReferences": [
+    "fixture_payload_path:app/admin/3d-room-lab/g0-containment/payload-fixtures/P-legacy.v1.json",
+    "payload_identity:payload-legacy-v1",
+    "payload_digest:27c3e478c35977c39db86f0123a0e85fa85f7ac8bec2cf809d5fcf45093c96e6",
+    "execution_mode:deterministic_execution_observed",
+    "pinned_call_input:loadPayloadFixture:P-legacy payloadIdentity=payload-legacy-v1",
+    "pinned_call_input:validateImportedSceneJson:config=scene-state-defaults-v1",
+    "pinned_call_input:evaluateCalibratedCameraApply:basisQualified=false,basisUnavailableReason=basis_legacy_receipt_missing"
+  ],
+  "manualObservationLog": "Deterministic execution observed via committed payload fixture and committed pure validation chain.\npayload-only probe: no image basis fetched or evaluated; runIdentity.basisFingerprint carries canonical payload digest",
+  "incidentReference": null
+}

@@ -1489,7 +1489,7 @@ export async function POST(req: NextRequest) {
       );
     }
     const tokenCost = await getTokenCostForOperation(supabase, tokenOperationKey, tokenCostFallback);
-    const wallet = await getUserTokenWallet(supabase, userId);
+    const wallet = await getUserTokenWallet(adminSupabase, userId);
     const affordability = canAffordTokens({
       balanceTokens: wallet.balance_tokens,
       requiredTokens: tokenCost,

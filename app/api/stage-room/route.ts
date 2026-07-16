@@ -290,7 +290,7 @@ export async function POST(req: NextRequest) {
       operationKey,
       TOKEN_DEFAULT_COSTS[actionType]
     );
-    const walletBeforeSpend = await getUserTokenWallet(supabase, user.id);
+    const walletBeforeSpend = await getUserTokenWallet(adminSupabase, user.id);
     const affordability = canAffordTokens({
       balanceTokens: walletBeforeSpend.balance_tokens,
       requiredTokens: tokenCost,

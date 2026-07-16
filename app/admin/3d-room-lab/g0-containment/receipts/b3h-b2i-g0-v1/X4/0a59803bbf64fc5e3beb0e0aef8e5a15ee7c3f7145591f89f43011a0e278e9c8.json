@@ -1,0 +1,104 @@
+{
+  "probeId": "X4",
+  "probePackageVersion": "b3h-b2i-g0-v1",
+  "fixtureReceiptReference": {
+    "fixtureId": "g0-X4-fixture-v1",
+    "fixtureVersion": "g0/X4/v1",
+    "expectedRefusalOrContainmentResult": "basis_orientation_not_normal",
+    "expectedPipelineStage": "server basis evidence evaluation"
+  },
+  "runMetadata": {
+    "runId": "benchmark-run:0a59803bbf64fc5e3beb0e0aef8e5a15ee7c3f7145591f89f43011a0e278e9c8",
+    "runIdentityFingerprint": "benchmark-run-identity:4803e37ad666282bc6fe5bed120718e5476d515d09040a7505393ef3233dd1a9",
+    "runIdentity": {
+      "fixtureVersion": "g0/X4/v1",
+      "basisFingerprint": "26d09c2e02a9c05a02d0684a1cc6a509aa6cb037e83f0e09c23e4da8b1aab859",
+      "coordinateSpaceVersion": {
+        "decoderId": "sharp-metadata/v1",
+        "normalizationPolicyVersion": "orientation-normal/v1",
+        "orientationApplied": false
+      },
+      "solverGeneratorVersion": "g0-harness/v1",
+      "evaluationVersion": "g0-eval/v1",
+      "evidenceBundleVersion": "g0-bundle/v1"
+    },
+    "createdAt": "2026-07-07T00:15:55.000Z",
+    "supersedesRunId": null,
+    "rerunReason": "evaluation_changed"
+  },
+  "primaryObservation": {
+    "observationKind": "emitted_application_result",
+    "observedPipelineStage": "server basis evidence evaluation",
+    "observedOperationalState": "calibration_not_attempted",
+    "outcome": "pass",
+    "expectedVsObservedComparison": "matches_expected",
+    "emittedResult": "basis_orientation_not_normal",
+    "derivedContainmentConclusion": null,
+    "rawObservationReferences": []
+  },
+  "noAuthorityChecks": [
+    {
+      "checkId": "qualification_refusal_result",
+      "status": "pass"
+    },
+    {
+      "checkId": "restore_or_import_result",
+      "status": "not_run"
+    },
+    {
+      "checkId": "route_response_result",
+      "status": "not_run"
+    },
+    {
+      "checkId": "apply_gate_defense_in_depth",
+      "status": "pass"
+    },
+    {
+      "checkId": "client_discard_predicate",
+      "status": "not_run"
+    },
+    {
+      "checkId": "live_snapshot_state_observation",
+      "status": "not_run"
+    },
+    {
+      "checkId": "state_transition_predicate",
+      "status": "not_run"
+    }
+  ],
+  "supportingHarnessChecks": [
+    {
+      "checkId": "vision_route_pre_model_orientation_refusal",
+      "required": true,
+      "status": "passed",
+      "failureClass": null,
+      "notes": "route_response_result records whether the route response body carried the probe's declared containment token. It remains not_run when a route supporting branch returns prose rather than that declared token."
+    },
+    {
+      "checkId": "apply_gate_defense_in_depth",
+      "required": true,
+      "status": "passed",
+      "failureClass": null,
+      "notes": "firstFailingGate=basis"
+    }
+  ],
+  "artifactReferences": [
+    "fixture_image_path:app/admin/3d-room-lab/g0-containment/synthetic-assets/A-exif.jpg",
+    "fixture_image_digest:26d09c2e02a9c05a02d0684a1cc6a509aa6cb037e83f0e09c23e4da8b1aab859",
+    "fixture_image_dimensions:320x240",
+    "fixture_image_orientation:6",
+    "canonical_image_path:app/admin/3d-room-lab/g0-containment/synthetic-assets/A-exif.jpg",
+    "primary_call_fetch_boundary:none",
+    "route_supporting_fetch_boundary:loopback_127.0.0.1_3000_only",
+    "route_served_request_path:/A-exif.jpg",
+    "route_attested_basis_fingerprint:26d09c2e02a9c05a02d0684a1cc6a509aa6cb037e83f0e09c23e4da8b1aab859",
+    "route_failure_reason_kind:prose_not_containment_token",
+    "model_boundary:tripwire_installed_not_reached",
+    "execution_mode:deterministic_execution_observed",
+    "pinned_call_input:evaluateCalibrationImageBasisEvidence:basisKind=original,browserDimensions=null,coordinateSpace=sharp-metadata/v1,metadata=320x240/orientation=6",
+    "pinned_call_input:route.POST:detect-vision,inProcess=true,imageUrl=loopback:/A-exif.jpg,frameSize=320x240,intrinsicSize=320x240,expectedBasisFingerprint=26d09c2e02a9c05a02d0684a1cc6a509aa6cb037e83f0e09c23e4da8b1aab859",
+    "pinned_call_input:evaluateCalibratedCameraApply:basisQualified=false,basisUnavailableReason=basis_orientation_not_normal"
+  ],
+  "manualObservationLog": "The committed resolver re-read, hashed, decoded, and provenance-bound A-exif from its canonical committed path, including digest, dimensions, EXIF orientation 6, and parent lineage.\nThe pure primary call used resolver-bound metadata with browserDimensions=null and did not read image bytes; it emitted the declared orientation refusal token.\nThe supporting route handler fetched controlled loopback bytes, decoded them, and refused on non-normal EXIF orientation before the dimension comparison and before model execution, returning prose rather than the containment token.\nThe model tripwire was installed and never reached.",
+  "incidentReference": null
+}

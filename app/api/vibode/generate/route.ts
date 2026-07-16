@@ -2021,7 +2021,7 @@ export async function handleGenerateRequest(args: {
     operationKey,
     TOKEN_DEFAULT_COSTS[tokenActionType]
   );
-  const walletBeforeSpend = await getUserTokenWallet(supabase, user.id);
+  const walletBeforeSpend = await getUserTokenWallet(adminSupabase, user.id);
   const affordability = canAffordTokens({
     balanceTokens: walletBeforeSpend.balance_tokens,
     requiredTokens: tokenCost,
