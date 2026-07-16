@@ -334,7 +334,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
     const tokenCost = await getTokenCostForOperation(userSupabase, operationKey, operationFallbackCost);
-    const wallet = await getUserTokenWallet(userSupabase, resolvedUserId);
+    const wallet = await getUserTokenWallet(adminSupabase, resolvedUserId);
     const affordability = canAffordTokens({
       balanceTokens: wallet.balance_tokens,
       requiredTokens: tokenCost,
