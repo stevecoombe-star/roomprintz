@@ -61,6 +61,7 @@ export type WallSupportFailureReason =
   | "wall_ray_parallel"
   | "wall_intersection_behind_camera"
   | "wall_intersection_non_finite"
+  | "wall_upper_reconstruction_ill_conditioned"
   | "wall_upper_below_seam"
   | "wall_height_invalid"
   | "wall_height_excessive"
@@ -92,6 +93,14 @@ export type WallSupportDiagnostics = {
   maxLowerSeamCameraAngleRad: number;
   /** Stable lower-seam camera-consistency policy limit, in radians. */
   maxLowerSeamCameraAngleThresholdRad: number;
+  /** Signed normalized upper-start ray/plane denominator (polygon/ray index 3). */
+  upperRayPlaneDenominatorStart: number;
+  /** Signed normalized upper-end ray/plane denominator (polygon/ray index 2). */
+  upperRayPlaneDenominatorEnd: number;
+  /** Minimum absolute normalized upper-ray/plane denominator. */
+  minUpperRayPlaneDenominator: number;
+  /** Dimensionless upper-ray conditioning acceptance threshold. */
+  minUpperRayPlaneDenominatorThreshold: number;
   maxRoundTripReprojectionErrorPx: number;
   maxSeamExtrapolationWorld: number;
   maxCameraDistance: number;
@@ -126,6 +135,10 @@ export const WALL_SUPPORT_LIMITS = {
   // Two degrees of observed-ray vs Floor-seam disagreement. This is angular
   // (not world-space), so it does not grow with a grazing plane intersection.
   maxLowerSeamCameraAngleRad: Math.PI / 90,
+  // Dimensionless grazing-incidence measure abs(dot(normalized ray, plane normal)).
+  // Values below this are too ill-conditioned for reliable upper reconstruction;
+  // exact equality accepts.
+  minUpperRayPlaneDenominator: 0.035,
 } as const;
 
 type DeriveWallSupportInput = {
@@ -423,8 +436,43 @@ export function deriveWallSupport(input: DeriveWallSupportInput): WallSupportDer
     return failure(["wall_seam_camera_inconsistent"], lowerSeamDiagnostics);
   }
 
+  // Polygon order is lower-start, lower-end, upper-end, upper-start.
+  const upperStartRay = input.rays[3];
+  const upperEndRay = input.rays[2];
+  if (!upperStartRay || !upperEndRay) {
+    return failure(["wall_ray_invalid"], lowerSeamDiagnostics);
+  }
+  const upperStartDirection = normalize3(upperStartRay.direction);
+  const upperEndDirection = normalize3(upperEndRay.direction);
+  if (!upperStartDirection || !upperEndDirection) {
+    return failure(["wall_ray_invalid"], lowerSeamDiagnostics);
+  }
+  const upperRayPlaneDenominatorStart = dot3(upperStartDirection, plane.normal);
+  const upperRayPlaneDenominatorEnd = dot3(upperEndDirection, plane.normal);
+  const minUpperRayPlaneDenominator = Math.min(
+    Math.abs(upperRayPlaneDenominatorStart),
+    Math.abs(upperRayPlaneDenominatorEnd)
+  );
+  if (
+    !Number.isFinite(upperRayPlaneDenominatorStart) ||
+    !Number.isFinite(upperRayPlaneDenominatorEnd) ||
+    !Number.isFinite(minUpperRayPlaneDenominator)
+  ) {
+    return failure(["wall_ray_invalid"], lowerSeamDiagnostics);
+  }
+  const upperConditioningDiagnostics = {
+    ...lowerSeamDiagnostics,
+    upperRayPlaneDenominatorStart,
+    upperRayPlaneDenominatorEnd,
+    minUpperRayPlaneDenominator,
+    minUpperRayPlaneDenominatorThreshold: WALL_SUPPORT_LIMITS.minUpperRayPlaneDenominator,
+  };
+  if (minUpperRayPlaneDenominator < WALL_SUPPORT_LIMITS.minUpperRayPlaneDenominator) {
+    return failure(["wall_upper_reconstruction_ill_conditioned"], upperConditioningDiagnostics);
+  }
+
   const boundaryUV = boundaryWorld.map((point) => localUv(point, plane.point, plane));
-  if (!boundaryUV.every(isFiniteVec2)) return failure(["wall_boundary_invalid"], lowerSeamDiagnostics);
+  if (!boundaryUV.every(isFiniteVec2)) return failure(["wall_boundary_invalid"], upperConditioningDiagnostics);
 
   // Polygon order gives upper-end ↔ lower-end and upper-start ↔ lower-start.
   // Each must independently clear the minimum; an average cannot hide a bad corner.
@@ -434,7 +482,7 @@ export function deriveWallSupport(input: DeriveWallSupportInput): WallSupportDer
   const maxCornerHeight = Math.max(upperStartHeight, upperEndHeight);
   const wallHeight = minCornerHeight;
   const heightDiagnostics = {
-    ...lowerSeamDiagnostics,
+    ...upperConditioningDiagnostics,
     wallHeight,
     upperStartHeight,
     upperEndHeight,
@@ -473,7 +521,7 @@ export function deriveWallSupport(input: DeriveWallSupportInput): WallSupportDer
       x: polygonContainerNorm[index].x * frameSize.width,
       y: polygonContainerNorm[index].y * frameSize.height,
     };
-    if (!isFiniteVec2(projected)) return failure(["wall_reprojection_error"]);
+    if (!isFiniteVec2(projected)) return failure(["wall_reprojection_error"], upperConditioningDiagnostics);
     maxRoundTripReprojectionErrorPx = Math.max(maxRoundTripReprojectionErrorPx, distance2(projected, expected));
   }
   if (maxRoundTripReprojectionErrorPx > WALL_SUPPORT_LIMITS.maxRoundTripReprojectionErrorPx) {
@@ -508,6 +556,10 @@ export function deriveWallSupport(input: DeriveWallSupportInput): WallSupportDer
       lowerSeamCameraAngleEndRad,
       maxLowerSeamCameraAngleRad,
       maxLowerSeamCameraAngleThresholdRad: WALL_SUPPORT_LIMITS.maxLowerSeamCameraAngleRad,
+      upperRayPlaneDenominatorStart,
+      upperRayPlaneDenominatorEnd,
+      minUpperRayPlaneDenominator,
+      minUpperRayPlaneDenominatorThreshold: WALL_SUPPORT_LIMITS.minUpperRayPlaneDenominator,
       maxRoundTripReprojectionErrorPx,
       maxSeamExtrapolationWorld,
       maxCameraDistance,

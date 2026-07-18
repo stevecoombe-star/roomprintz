@@ -4,12 +4,14 @@ import * as THREE from "three";
 import type { CalibrationImageBasis } from "./calibration-image-basis";
 import { sourceNormToContainerNorm } from "./image-space";
 import { applyHomography, getFloorRectCorners, solvePlaneHomography } from "./perspective-solve";
+import { evaluateSupportUsability } from "./support-model";
 import {
   buildWallPolygonKey,
   createWallConfirmationStamp,
   deriveWallSupport,
   isWallConfirmationCurrent,
   LEGACY_WALL_GEOMETRY_POLICY_VERSION,
+  WALL_SUPPORT_LIMITS,
   WALL_GEOMETRY_POLICY_VERSION,
   type WallRay,
   type WallPolygon,
@@ -70,6 +72,43 @@ function makeInput(overrides: Partial<Parameters<typeof deriveWallSupport>[0]> =
   };
 }
 
+function makeUpperConditionedInput(upperDenominator: number, upperDirectionScale = 1) {
+  const upperHorizontalDistance = Math.hypot(1, 2);
+  const camera = {
+    x: 0,
+    y: 0,
+    z: upperHorizontalDistance * upperDenominator / Math.sqrt(1 - upperDenominator ** 2),
+  };
+  const upperDirection = (x: -1 | 1): WallRay => ({
+    origin: camera,
+    direction: {
+      x: x * Math.sqrt(1 - upperDenominator ** 2) / upperHorizontalDistance * upperDirectionScale,
+      y: 2 * Math.sqrt(1 - upperDenominator ** 2) / upperHorizontalDistance * upperDirectionScale,
+      z: -upperDenominator * upperDirectionScale,
+    },
+  });
+  const lowerDirection = (x: -1 | 1): WallRay => ({
+    origin: camera,
+    direction: { x, y: 0, z: -camera.z },
+  });
+  return makeInput({
+    polygonSourceNorm: POLYGON,
+    polygonContainerNorm: POLYGON,
+    cameraPosition: camera,
+    mapImagePixelToFloor: (point) => ({ x: point.x < 500 ? -1 : 1, y: 0 }),
+    rays: [
+      lowerDirection(-1),
+      lowerDirection(1),
+      upperDirection(1),
+      upperDirection(-1),
+    ] as const,
+    projectWorldToPixels: (point) => ({
+      x: point.x < 0 ? 300 : 700,
+      y: point.y < 1 ? 480 : 240,
+    }),
+  });
+}
+
 function makeRoomBCamera(): THREE.PerspectiveCamera {
   const camera = new THREE.PerspectiveCamera(47, ROOM_B_FRAME.width / ROOM_B_FRAME.height);
   camera.position.set(ROOM_B_CAMERA.position.x, ROOM_B_CAMERA.position.y, ROOM_B_CAMERA.position.z);
@@ -115,18 +154,19 @@ function makeRoomBRightWallInput(
   overrides: Partial<Parameters<typeof deriveWallSupport>[0]> = {}
 ): Parameters<typeof deriveWallSupport>[0] {
   const camera = makeRoomBCamera();
+  const polygon = (overrides.polygonContainerNorm ?? overrides.polygonSourceNorm ?? ROOM_B_RIGHT_POLYGON) as WallPolygon;
   const lowerStartPixel = {
-    x: ROOM_B_RIGHT_POLYGON[0].x * ROOM_B_FRAME.width,
-    y: ROOM_B_RIGHT_POLYGON[0].y * ROOM_B_FRAME.height,
+    x: polygon[0].x * ROOM_B_FRAME.width,
+    y: polygon[0].y * ROOM_B_FRAME.height,
   };
   const lowerEndPixel = {
-    x: ROOM_B_RIGHT_POLYGON[1].x * ROOM_B_FRAME.width,
-    y: ROOM_B_RIGHT_POLYGON[1].y * ROOM_B_FRAME.height,
+    x: polygon[1].x * ROOM_B_FRAME.width,
+    y: polygon[1].y * ROOM_B_FRAME.height,
   };
   return {
     kind: "wall_right",
-    polygonSourceNorm: ROOM_B_RIGHT_POLYGON,
-    polygonContainerNorm: ROOM_B_RIGHT_POLYGON,
+    polygonSourceNorm: polygon,
+    polygonContainerNorm: polygon,
     frameSize: ROOM_B_FRAME,
     // The Floor-derived lower seam is authoritative: FR -> NR.
     mapImagePixelToFloor: (point) =>
@@ -136,7 +176,7 @@ function makeRoomBRightWallInput(
           ? { x: ROOM_B_RIGHT_SEAM[1].x, y: ROOM_B_RIGHT_SEAM[1].z }
           : null,
     cameraPosition: ROOM_B_CAMERA.position,
-    rays: ROOM_B_RIGHT_POLYGON.map((point) => roomBRay(camera, point)) as [
+    rays: polygon.map((point) => roomBRay(camera, point)) as [
       WallRay,
       WallRay,
       WallRay,
@@ -290,6 +330,60 @@ test("uses an angular camera-consistency boundary with exact-threshold acceptanc
     })
   );
   assert.deepEqual(refusalReasons(justAboveThreshold), ["wall_seam_camera_inconsistent"]);
+});
+
+test("accepts upper rays at and above the conditioning boundary, including unnormalized directions", () => {
+  const safelyAbove = deriveWallSupport(makeUpperConditionedInput(0.04, 17));
+  assert.equal(safelyAbove.ok, true);
+  if (safelyAbove.ok) {
+    assertApproximately(safelyAbove.diagnostics.minUpperRayPlaneDenominator, 0.04);
+    assert.equal(
+      safelyAbove.diagnostics.minUpperRayPlaneDenominatorThreshold,
+      WALL_SUPPORT_LIMITS.minUpperRayPlaneDenominator
+    );
+  }
+
+  const exactlyAtThreshold = deriveWallSupport(
+    makeUpperConditionedInput(WALL_SUPPORT_LIMITS.minUpperRayPlaneDenominator)
+  );
+  assert.equal(exactlyAtThreshold.ok, true);
+  if (exactlyAtThreshold.ok) {
+    assert.equal(exactlyAtThreshold.diagnostics.minUpperRayPlaneDenominator, 0.035);
+  }
+});
+
+test("refuses a just-below upper conditioning denominator after all earlier ray and seam checks", () => {
+  const result = deriveWallSupport(makeUpperConditionedInput(0.035 - 1e-4, 23));
+  assert.deepEqual(refusalReasons(result), ["wall_upper_reconstruction_ill_conditioned"]);
+  if (!result.ok) {
+    assertApproximately(result.diagnostics?.upperRayPlaneDenominatorStart, -0.0349);
+    assertApproximately(result.diagnostics?.upperRayPlaneDenominatorEnd, -0.0349);
+    assertApproximately(result.diagnostics?.minUpperRayPlaneDenominator, 0.0349);
+    assert.equal(result.diagnostics?.minUpperRayPlaneDenominatorThreshold, 0.035);
+  }
+});
+
+test("preserves parallel, behind-camera, and lower-seam inconsistency precedence over upper conditioning", () => {
+  const parallel = makeUpperConditionedInput(0.0349);
+  const parallelRays = [...parallel.rays] as WallRays;
+  parallelRays[2] = { origin: parallel.cameraPosition, direction: { x: 1, y: 0, z: 0 } };
+  assert.deepEqual(refusalReasons(deriveWallSupport({ ...parallel, rays: parallelRays })), ["wall_ray_parallel"]);
+
+  const behind = makeUpperConditionedInput(0.0349);
+  const behindRays = [...behind.rays] as WallRays;
+  behindRays[2] = { origin: behind.cameraPosition, direction: { x: 1, y: 2, z: 0.0349 } };
+  assert.deepEqual(
+    refusalReasons(deriveWallSupport({ ...behind, rays: behindRays })),
+    ["wall_intersection_behind_camera"]
+  );
+
+  const inconsistent = makeUpperConditionedInput(0.0349);
+  const inconsistentRays = [...inconsistent.rays] as WallRays;
+  inconsistentRays[0] = { origin: inconsistent.cameraPosition, direction: { x: 0, y: 0, z: -1 } };
+  assert.deepEqual(
+    refusalReasons(deriveWallSupport({ ...inconsistent, rays: inconsistentRays })),
+    ["wall_seam_camera_inconsistent"]
+  );
 });
 
 test("requires both corresponding upper corners to clear the height minimum", () => {
@@ -464,6 +558,7 @@ test("confirmation binds exactly to polygon, basis, camera snapshot, frame, and 
 test("wall confirmation policy is an exact authority match with a v1 legacy baseline alias", () => {
   const basis = makeBasis();
   const stamp = createWallConfirmationStamp(POLYGON, basis, "2026-07-10T00:00:00.000Z", FRAME);
+  assert.equal(WALL_GEOMETRY_POLICY_VERSION, "wall-support-geometry-policy/v1");
   const currentInput = {
     stamp,
     polygon: POLYGON,
@@ -495,6 +590,42 @@ test("wall confirmation policy is an exact authority match with a v1 legacy base
   assert.equal(isWallConfirmationCurrent(legacyInput, LEGACY_WALL_GEOMETRY_POLICY_VERSION), true);
   assert.equal(isWallConfirmationCurrent(legacyInput, "wall-support-geometry-policy/v2"), false);
   assert.equal(isWallConfirmationCurrent({ ...currentInput, stamp: null }), false);
+});
+
+test("an ill-conditioned live wall is operationally needs-review without mutating a current v1 confirmation", () => {
+  const basis = makeBasis();
+  const stamp = createWallConfirmationStamp(POLYGON, basis, "2026-07-10T00:00:00.000Z", FRAME);
+  const rawDraft = {
+    reviewStatus: "manually_confirmed" as const,
+    confirmationStamp: stamp,
+  };
+  const liveDerivation = deriveWallSupport(makeUpperConditionedInput(0.0349));
+  assert.deepEqual(refusalReasons(liveDerivation), ["wall_upper_reconstruction_ill_conditioned"]);
+  assert.equal(
+    isWallConfirmationCurrent({
+      stamp: rawDraft.confirmationStamp,
+      polygon: POLYGON,
+      basis,
+      cameraAppliedAtIso: "2026-07-10T00:00:00.000Z",
+      frameSize: FRAME,
+    }),
+    true
+  );
+  const resolvedReviewStatus = liveDerivation.ok ? rawDraft.reviewStatus : "needs_review";
+  const usability = evaluateSupportUsability({
+    reviewStatus: resolvedReviewStatus,
+    geometryValid: liveDerivation.ok,
+    currentImageBasis: basis,
+    supportImageBasis: basis,
+    activeCameraSnapshot: { imageBasis: basis, frameSize: FRAME },
+    currentFrameSize: FRAME,
+    cameraSnapshotStale: false,
+  });
+  assert.equal(resolvedReviewStatus, "needs_review");
+  assert.equal(usability.usable, false);
+  assert.deepEqual(usability.blockingReasons, ["invalid_support_geometry", "support_not_confirmed"]);
+  assert.equal(rawDraft.confirmationStamp, stamp);
+  assert.equal(rawDraft.confirmationStamp.wallGeometryPolicyVersion, "wall-support-geometry-policy/v1");
 });
 
 // Golden baseline guardrail. These fixtures deliberately use literal expected
@@ -727,6 +858,10 @@ test("pins Vibode wall-support world, local, and projected-grid geometry", () =>
       [result.diagnostics.mappedSeamWorldLength, result.diagnostics.wallWidth, result.diagnostics.wallHeight, result.diagnostics.upperStartHeight, result.diagnostics.upperEndHeight, result.diagnostics.maxCameraDistance],
       fixture.expected.metrics, 1e-9, `${fixture.name} metrics`
     );
+    assert.ok(Number.isFinite(result.diagnostics.upperRayPlaneDenominatorStart), `${fixture.name} upper-start conditioning`);
+    assert.ok(Number.isFinite(result.diagnostics.upperRayPlaneDenominatorEnd), `${fixture.name} upper-end conditioning`);
+    assert.ok(result.diagnostics.minUpperRayPlaneDenominator >= 0.035, `${fixture.name} upper conditioning minimum`);
+    assert.equal(result.diagnostics.minUpperRayPlaneDenominatorThreshold, 0.035, `${fixture.name} conditioning threshold`);
     const projectedStructural = result.boundaryWorld.map((point) => goldenProject(fixture.camera, point));
     assertGoldenPoints(projectedStructural.map(([x, y]) => ({ x, y })), container.map((point) => [point.x, point.y]), 1e-6, `${fixture.name} structural projection`);
     const grid = goldenGrid(result, fixture.camera);
@@ -783,7 +918,20 @@ function deriveRoomCLeft(polygon: WallPolygon) {
   return deriveRoomCWall("wall_left", polygon);
 }
 
-test("Room C extreme compressed Left wall keeps its baseline width refusal", () => {
+const ROOM_C_LEFT_HISTORICAL_FAIL_OPEN_BOUNDARY_WORLD = [
+  [-1.5123408318449818, 0.0094084933450993, 0.7225143072393507],
+  [-1.5005711655377656, 0.018068594093000545, -1.8739950136342038],
+  [-1.3706401755201358, 9.370413648181556, -30.538106454436925],
+  [-1.417273615462988, 10.767669398413364, -20.25029044373371],
+] as const;
+const ROOM_C_LEFT_HISTORICAL_FAIL_OPEN_BOUNDARY_UV = [
+  [-0.03697307793319957, 0.0094084933450993],
+  [2.559562918048414, 0.018068594093000545],
+  [31.22396883815993, 9.370413648181556],
+  [20.936047136095794, 10.767669398413364],
+] as const;
+
+test("Room C extreme compressed Left wall is refused before amplified geometry is admitted", () => {
   const result = deriveRoomCLeft([
     { x: 0.06258421957488214, y: 0.8212701532004936 },
     { x: 0.07800000000000003, y: 0.6950000000000001 },
@@ -792,22 +940,27 @@ test("Room C extreme compressed Left wall keeps its baseline width refusal", () 
   ]);
   assert.equal(result.ok, false);
   if (result.ok) return;
-  assert.deepEqual(result.reasons, ["wall_width_excessive"]);
+  assert.deepEqual(result.reasons, ["wall_upper_reconstruction_ill_conditioned"]);
   assertGoldenNumbers(
     [
       result.diagnostics?.mappedSeamWorldLength ?? Number.NaN,
-      result.diagnostics?.wallWidth ?? Number.NaN,
-      result.diagnostics?.wallHeight ?? Number.NaN,
-      result.diagnostics?.upperStartHeight ?? Number.NaN,
-      result.diagnostics?.upperEndHeight ?? Number.NaN,
       result.diagnostics?.lowerSeamRayPlaneDenominatorStart ?? Number.NaN,
       result.diagnostics?.lowerSeamRayPlaneDenominatorEnd ?? Number.NaN,
       result.diagnostics?.maxLowerSeamCameraAngleRad ?? Number.NaN,
+      result.diagnostics?.upperRayPlaneDenominatorStart ?? Number.NaN,
+      result.diagnostics?.upperRayPlaneDenominatorEnd ?? Number.NaN,
+      result.diagnostics?.minUpperRayPlaneDenominator ?? Number.NaN,
+      result.diagnostics?.minUpperRayPlaneDenominatorThreshold ?? Number.NaN,
     ],
-    [2.7306332695496174, 27.539647838391385, 17.990261248832965, 18.268551397806252, 17.990261248832965, -0.06144444658560525, -0.038083344200869715, 0.0007884341551257884],
+    [2.7306332695496174, -0.06144444658560525, -0.038083344200869715, 0.0007884341551257884, -0.005419716026738272, -0.0034929105349324084, 0.0034929105349324084, 0.035],
     1e-9,
     "Room C extreme diagnostics"
   );
+  assert.equal(result.diagnostics?.wallWidth, undefined);
+  assert.equal(result.diagnostics?.wallHeight, undefined);
+  assert.equal(result.reasons.includes("wall_width_excessive"), false);
+  assert.equal(result.reasons.includes("wall_height_excessive"), false);
+  assert.equal(result.reasons.includes("wall_camera_distance_excessive"), false);
 });
 
 test("Room C Left baseline fail-open manifest — not an accepted physical wall", () => {
@@ -817,13 +970,89 @@ test("Room C Left baseline fail-open manifest — not an accepted physical wall"
     { x: 0.07829716726870521, y: 0.2217541460689261 },
     { x: 0.06197515781635025, y: 0.03226154195777707 },
   ]);
-  assert.equal(result.ok, true);
-  if (!result.ok) return;
-  assertGoldenPoints3(result.boundaryWorld, [[-1.5123408318449818, 0.0094084933450993, 0.7225143072393507], [-1.5005711655377656, 0.018068594093000545, -1.8739950136342038], [-1.3706401755201358, 9.370413648181556, -30.538106454436925], [-1.417273615462988, 10.767669398413364, -20.25029044373371]], 1e-9, "Room C fail-open boundaryWorld");
-  assertGoldenPoints(result.boundaryUV, [[-0.03697307793319957, 0.0094084933450993], [2.559562918048414, 0.018068594093000545], [31.22396883815993, 9.370413648181556], [20.936047136095794, 10.767669398413364]], 1e-9, "Room C fail-open boundaryUV");
-  assertGoldenNumbers([result.diagnostics.wallWidth, result.diagnostics.wallHeight, result.diagnostics.upperStartHeight, result.diagnostics.upperEndHeight, result.diagnostics.maxCameraDistance], [10.382372396488103, 9.352345054088556, 10.758260905068266, 9.352345054088556, 36.35347979929209], 1e-9, "Room C fail-open diagnostics");
-  const projected = result.boundaryWorld.map((point) => goldenProject(GOLDEN_C_CAMERA, point));
-  assertGoldenNumbers(projected.flat(), [0.06015660002240175, 0.8406574644835392, 0.07800000000000007, 0.7084498255886382, 0.07829716726870528, 0.2025625655246459, 0.061975157816350046, 0], 1e-6, "Room C fail-open structural projection");
+  assert.equal(result.ok, false);
+  if (result.ok) return;
+  assert.deepEqual(result.reasons, ["wall_upper_reconstruction_ill_conditioned"]);
+  assertGoldenNumbers(
+    [
+      result.diagnostics?.upperRayPlaneDenominatorStart ?? Number.NaN,
+      result.diagnostics?.upperRayPlaneDenominatorEnd ?? Number.NaN,
+      result.diagnostics?.minUpperRayPlaneDenominator ?? Number.NaN,
+      result.diagnostics?.minUpperRayPlaneDenominatorThreshold ?? Number.NaN,
+    ],
+    [-0.010742981638736531, -0.007955622709496441, 0.007955622709496441, 0.035],
+    1e-9,
+    "Room C historical fail-open upper conditioning"
+  );
+  // This same input previously produced about 9–11 m height, roughly 10 m
+  // width, 36 m camera distance, and near-zero reprojection error. The inert
+  // literals above document artifacts now refused before becoming authority.
+  assert.equal(result.diagnostics?.wallWidth, undefined);
+  assert.equal(result.diagnostics?.wallHeight, undefined);
+});
+
+test("one-rendered-pixel upper-corner perturbations preserve the observed conditioning boundary", () => {
+  const roomBPixelX = 1 / ROOM_B_FRAME.width;
+  const roomBPixelY = 1 / ROOM_B_FRAME.height;
+  for (const [index, axis, delta] of [
+    [2, "x", roomBPixelX],
+    [2, "y", -roomBPixelY],
+    [3, "x", -roomBPixelX],
+    [3, "y", roomBPixelY],
+  ] as const) {
+    const polygon = ROOM_B_RIGHT_POLYGON.map((point) => ({ ...point })) as WallPolygon;
+    polygon[index][axis] += delta;
+    const result = deriveWallSupport(makeRoomBRightWallInput({
+      polygonSourceNorm: polygon,
+      polygonContainerNorm: polygon,
+    }));
+    assert.equal(result.ok, true, `Room B Right index ${index} ${axis} ${delta}`);
+    if (result.ok) assert.ok(result.diagnostics.minUpperRayPlaneDenominator >= 0.035);
+  }
+
+  const roomCPixelY = 1 / ROOM_C_INTRINSIC.height;
+  const cases: readonly [string, WallPolygon][] = [
+    [
+      "exact Left upper-start +1 px",
+      [
+        { x: 0.06258421957488214, y: 0.8212701532004936 },
+        { x: 0.07800000000000003, y: 0.6950000000000001 },
+        { x: 0.07833851366487456, y: 0.22163347825024032 },
+        { x: 0.0631, y: 0.03226154195777707 + roomCPixelY },
+      ],
+    ],
+    [
+      "exact Left upper-end -1 px",
+      [
+        { x: 0.06258421957488214, y: 0.8212701532004936 },
+        { x: 0.07800000000000003, y: 0.6950000000000001 },
+        { x: 0.07833851366487456, y: 0.22163347825024032 - roomCPixelY },
+        { x: 0.0631, y: 0.03226154195777707 },
+      ],
+    ],
+    [
+      "historical fail-open Left upper-start -1 px",
+      [
+        { x: 0.06015660002240144, y: 0.8186771943162083 },
+        { x: 0.07800000000000003, y: 0.6950000000000001 },
+        { x: 0.07829716726870521, y: 0.2217541460689261 },
+        { x: 0.06197515781635025, y: 0.03226154195777707 - roomCPixelY },
+      ],
+    ],
+    [
+      "historical fail-open Left upper-end +1 px",
+      [
+        { x: 0.06015660002240144, y: 0.8186771943162083 },
+        { x: 0.07800000000000003, y: 0.6950000000000001 },
+        { x: 0.07829716726870521, y: 0.2217541460689261 + roomCPixelY },
+        { x: 0.06197515781635025, y: 0.03226154195777707 },
+      ],
+    ],
+  ];
+  for (const [label, polygon] of cases) {
+    const result = deriveRoomCLeft(polygon);
+    assert.deepEqual(refusalReasons(result), ["wall_upper_reconstruction_ill_conditioned"], label);
+  }
 });
 
 const ROOM_C_OPERATOR_FIXTURES = [
@@ -871,6 +1100,10 @@ test("pins operator-exported Room C wall geometry and projected grids", () => {
     assertGoldenPoints3(result.boundaryWorld, fixture.boundaryWorld, 1e-9, `${fixture.name} boundaryWorld`);
     assertGoldenPoints(result.boundaryUV, fixture.boundaryUV, 1e-9, `${fixture.name} boundaryUV`);
     assertGoldenNumbers([result.diagnostics.wallWidth, result.diagnostics.wallHeight, result.diagnostics.upperStartHeight, result.diagnostics.upperEndHeight, result.diagnostics.maxCameraDistance], fixture.metrics, 1e-9, `${fixture.name} diagnostics`);
+    assert.ok(Number.isFinite(result.diagnostics.upperRayPlaneDenominatorStart), `${fixture.name} upper-start conditioning`);
+    assert.ok(Number.isFinite(result.diagnostics.upperRayPlaneDenominatorEnd), `${fixture.name} upper-end conditioning`);
+    assert.ok(result.diagnostics.minUpperRayPlaneDenominator >= 0.035, `${fixture.name} upper conditioning minimum`);
+    assert.equal(result.diagnostics.minUpperRayPlaneDenominatorThreshold, 0.035, `${fixture.name} conditioning threshold`);
     const structural = result.boundaryWorld.map((point) => goldenProject(GOLDEN_C_CAMERA, point));
     assertGoldenPoints(structural.map(([x, y]) => ({ x, y })), fixture.container, 1e-6, `${fixture.name} structural projection`);
     const grid = goldenGrid(result, GOLDEN_C_CAMERA);
