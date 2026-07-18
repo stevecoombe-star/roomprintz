@@ -121,6 +121,8 @@ import {
   getWallLowerPointRole,
   resolveWallFloorPointSnap,
   type FloorCornerKind,
+  type WallFloorSeamTarget,
+  type WallFloorSnapKind,
 } from "./wall-floor-point-snap";
 import {
   buildCeilingPolygonKey,
@@ -1354,16 +1356,18 @@ type SupportPointUndoSnapshots = {
 type WallFloorSnapPresentation = {
   kind: WallSupportKind;
   index: number;
-  floorCorner: FloorCornerKind;
+  snapKind: WallFloorSnapKind;
+  floorCorner: FloorCornerKind | null;
+  floorSeam: WallFloorSeamTarget | null;
   snapped: boolean;
   targetContainerNorm: FloorPoint;
 };
 
 type ActiveWallFloorSnap = {
+  pointerId: number;
   kind: WallSupportKind;
   index: number;
-  floorCorner: FloorCornerKind;
-  isSnapped: boolean;
+  snapKind: WallFloorSnapKind;
 };
 
 function buildSupportPointUndoSnapshotKey(snapshot: SupportPointUndoSnapshot): string {
@@ -10104,6 +10108,7 @@ export default function ThreeRoomLab({
   const updateWallHandleFromClientPoint = (
     kind: WallSupportKind,
     index: number,
+    pointerId: number,
     clientX: number,
     clientY: number
   ): boolean => {
@@ -10128,26 +10133,33 @@ export default function ThreeRoomLab({
           supportEditInteractionStates[kind].interactive,
         wallKind: kind,
         wallPointRole,
-        isSnapped: activeSnap?.kind === kind && activeSnap.index === index ? activeSnap.isSnapped : false,
+        activeSnapKind:
+          activeSnap?.pointerId === pointerId &&
+          activeSnap.kind === kind &&
+          activeSnap.index === index
+            ? activeSnap.snapKind
+            : null,
         unsnappedWallPointSourceNorm: nextSource[index],
         pointerContainerNorm: normalizedPoint,
         floorSourceCorners: floorSourceCornersForWallSnap,
         intrinsicSize: imageIntrinsicSize,
         frameSize: frameSizeForImageSpace,
       });
-      if (snap.floorCorner && snap.targetContainerNorm) {
+      if (snap.snapKind && snap.targetContainerNorm) {
         activeWallFloorSnapRef.current = {
+          pointerId,
           kind,
           index,
-          floorCorner: snap.floorCorner,
-          isSnapped: snap.snapped,
+          snapKind: snap.snapKind,
         };
         setWallFloorSnapPresentation(
           snap.showTarget
             ? {
                 kind,
                 index,
+                snapKind: snap.snapKind,
                 floorCorner: snap.floorCorner,
+                floorSeam: snap.floorSeam,
                 snapped: snap.snapped,
                 targetContainerNorm: snap.targetContainerNorm,
               }
@@ -10205,7 +10217,7 @@ export default function ThreeRoomLab({
     wallHandleDragRef.current = { pointerId: event.pointerId, kind, index };
     setSelectedWallKind(kind);
     setActiveWallHandle({ kind, index });
-    if (updateWallHandleFromClientPoint(kind, index, event.clientX, event.clientY)) {
+    if (updateWallHandleFromClientPoint(kind, index, event.pointerId, event.clientX, event.clientY)) {
       supportPointDragMovedRef.current = true;
     }
     try {
@@ -10525,7 +10537,13 @@ export default function ThreeRoomLab({
     if (wallDrag && wallDrag.pointerId === event.pointerId) {
       event.preventDefault();
       supportPointDragMovedRef.current = true;
-      updateWallHandleFromClientPoint(wallDrag.kind, wallDrag.index, event.clientX, event.clientY);
+      updateWallHandleFromClientPoint(
+        wallDrag.kind,
+        wallDrag.index,
+        event.pointerId,
+        event.clientX,
+        event.clientY
+      );
       return;
     }
     if (activeFloorHandleIndex !== null && dragPointerIdRef.current === event.pointerId) {
@@ -12179,18 +12197,30 @@ export default function ThreeRoomLab({
                           <circle
                             cx={snap.targetContainerNorm.x * 100}
                             cy={snap.targetContainerNorm.y * 100}
-                            r={2.6}
+                            r={snap.snapKind === "seam" ? 2.2 : 2.6}
                             fill="none"
-                            stroke="#f8fafc"
+                            stroke={snap.snapKind === "seam" ? "#67e8f9" : "#f8fafc"}
                             strokeOpacity={0.95}
                             strokeWidth={0.55}
-                            strokeDasharray={snap.snapped ? undefined : "0.9 0.65"}
+                            strokeDasharray={
+                              snap.snapKind === "seam"
+                                ? "0.65 0.45"
+                                : snap.snapped
+                                  ? undefined
+                                  : "0.9 0.65"
+                            }
                           />
                           <circle
                             cx={polygon[snap.index].x * 100}
                             cy={polygon[snap.index].y * 100}
                             r={1.15}
-                            fill={snap.snapped ? "#f8fafc" : presentation.color}
+                            fill={
+                              snap.snapped
+                                ? snap.snapKind === "seam"
+                                  ? "#67e8f9"
+                                  : "#f8fafc"
+                                : presentation.color
+                            }
                             stroke="#020617"
                             strokeWidth={0.42}
                           />
@@ -12201,8 +12231,12 @@ export default function ThreeRoomLab({
                             fontSize="1.75"
                             fontWeight="700"
                           >
-                            {snap.snapped ? `Snapped to Floor ${snap.floorCorner}` : `Snap target: Floor ${snap.floorCorner}`}
-                            {snap.snapped && (
+                            {snap.snapKind === "seam"
+                              ? `Snapped to Floor seam ${snap.floorSeam?.startFloorCorner}–${snap.floorSeam?.endFloorCorner}`
+                              : snap.snapped
+                                ? `Snapped to Floor ${snap.floorCorner}`
+                                : `Snap target: Floor ${snap.floorCorner}`}
+                            {snap.snapKind === "corner" && snap.snapped && (
                               <tspan x={snap.targetContainerNorm.x * 100 + 3} dy="2.05" fontWeight="500">
                                 Shared structural corner
                               </tspan>
