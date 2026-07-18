@@ -11,6 +11,7 @@ import {
   CALIBRATED_CAMERA_AUTHORITY_CALIBRATION_VERSION,
   CALIBRATED_CAMERA_AUTHORITY_SOLVER,
 } from "./calibrated-camera-restore-authority";
+import { createWallConfirmationStamp } from "./wall-support-geometry";
 
 const limits = {
   transformLimits: {
@@ -195,6 +196,80 @@ test("round-trips full operator-owned support source state", () => {
   assert.deepEqual(result.supports?.walls.wall_left?.draft, payloadInput().supports.walls.wall_left?.draft);
   assert.deepEqual(result.supports?.walls.wall_right?.draft, payloadInput().supports.walls.wall_right?.draft);
   assert.deepEqual(result.supports?.ceiling?.draft, payloadInput().supports.ceiling?.draft);
+});
+
+test("round-trips a versioned wall policy stamp with deterministic field ordering", () => {
+  const value = payload();
+  const inputStamp = value.supports.walls.wall_back!.draft.confirmationStamp!;
+  inputStamp.wallGeometryPolicyVersion = "wall-support-geometry-policy/v1";
+  const result = parse(value);
+  const parsedStamp = result.supports!.walls.wall_back!.draft.confirmationStamp!;
+  const equivalentFreshStamp = {
+    ...createWallConfirmationStamp(quad, basis, "2026-07-14T00:00:00.000Z", { width: 1600, height: 1200 }),
+    wallPolygonKey: "wall_back-polygon",
+  };
+  assert.deepEqual(parsedStamp, inputStamp);
+  assert.equal(JSON.stringify(parsedStamp), JSON.stringify(equivalentFreshStamp));
+
+  const reexported = buildSceneStatePayload({ ...payloadInput(), supports: result.supports! });
+  assert.deepEqual(reexported.supports.walls.wall_back!.draft.confirmationStamp, inputStamp);
+});
+
+test("round-trips legacy wall stamps without synthesis or input mutation", () => {
+  const value = payload();
+  const original = structuredClone(value);
+  const result = parse(value);
+  const parsedStamp = result.supports!.walls.wall_back!.draft.confirmationStamp!;
+  assert.deepEqual(value, original);
+  assert.equal(Object.prototype.hasOwnProperty.call(parsedStamp, "wallGeometryPolicyVersion"), false);
+
+  const reexported = buildSceneStatePayload({ ...payloadInput(), supports: result.supports! });
+  assert.equal(
+    Object.prototype.hasOwnProperty.call(
+      reexported.supports.walls.wall_back!.draft.confirmationStamp!,
+      "wallGeometryPolicyVersion"
+    ),
+    false
+  );
+});
+
+test("preserves an unknown well-formed future wall policy string", () => {
+  const value = payload();
+  value.supports.walls.wall_back!.draft.confirmationStamp!.wallGeometryPolicyVersion =
+    "wall-support-geometry-policy/v999";
+  const result = parse(value);
+  assert.equal(
+    result.supports!.walls.wall_back!.draft.confirmationStamp!.wallGeometryPolicyVersion,
+    "wall-support-geometry-policy/v999"
+  );
+  const reexported = buildSceneStatePayload({ ...payloadInput(), supports: result.supports! });
+  assert.equal(
+    reexported.supports.walls.wall_back!.draft.confirmationStamp!.wallGeometryPolicyVersion,
+    "wall-support-geometry-policy/v999"
+  );
+});
+
+for (const [name, policyVersion] of [
+  ["empty string", ""],
+  ["whitespace-only string", " \t "],
+  ["number", 1],
+  ["null", null],
+  ["object", {}],
+] as const) {
+  test(`rejects malformed wall geometry policy version: ${name}`, () => {
+    const value = payload();
+    (value.supports.walls.wall_back!.draft.confirmationStamp as unknown as Record<string, unknown>)
+      .wallGeometryPolicyVersion = policyVersion;
+    assert.match(validateImportedSceneJson(value, limits) as string, /supports/);
+  });
+}
+
+test("keeps manually confirmed walls with a null stamp importable", () => {
+  const value = payload();
+  value.supports.walls.wall_back!.draft.confirmationStamp = null;
+  const result = parse(value);
+  assert.equal(result.supports!.walls.wall_back!.draft.reviewStatus, "manually_confirmed");
+  assert.equal(result.supports!.walls.wall_back!.draft.confirmationStamp, null);
 });
 
 test("round-trips the complete applied authority without rounding source Floor authority", () => {

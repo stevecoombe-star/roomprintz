@@ -16,6 +16,15 @@ export type WallVec2 = { x: number; y: number };
 /** Polygon order is lower-start, lower-end, upper-end, upper-start. */
 export type WallPolygon = [SourceNormPoint, SourceNormPoint, SourceNormPoint, SourceNormPoint];
 
+// Bump the active policy exactly when wall geometry authority materially changes:
+// boundaryWorld/boundaryUV construction, plane/seam authority, upper-corner
+// reconstruction, basis interpretation, polygon ordering, or finite-patch
+// semantics. Do not bump for diagnostics, wording, presentation, or
+// threshold-only changes that leave accepted geometry unchanged. Any intentional
+// rewrite of material golden geometry values requires a policy bump.
+export const WALL_GEOMETRY_POLICY_VERSION = "wall-support-geometry-policy/v1";
+export const LEGACY_WALL_GEOMETRY_POLICY_VERSION = "wall-support-geometry-policy/v1";
+
 export type WallConfirmationStamp = {
   wallPolygonKey: string;
   imageBasisId: string;
@@ -23,6 +32,7 @@ export type WallConfirmationStamp = {
   cameraAppliedAtIso: string;
   frameWidth: number;
   frameHeight: number;
+  wallGeometryPolicyVersion?: string;
 };
 
 export type WallSupportDraft = {
@@ -238,6 +248,7 @@ export function createWallConfirmationStamp(
     cameraAppliedAtIso,
     frameWidth: frameSize.width,
     frameHeight: frameSize.height,
+    wallGeometryPolicyVersion: WALL_GEOMETRY_POLICY_VERSION,
   };
 }
 
@@ -247,14 +258,16 @@ export function isWallConfirmationCurrent(input: {
   basis: CalibrationImageBasis | null;
   cameraAppliedAtIso: string | null;
   frameSize: ImageFrameSize | null;
-}): boolean {
+}, activePolicyVersion = WALL_GEOMETRY_POLICY_VERSION): boolean {
   const { stamp, polygon, basis, cameraAppliedAtIso, frameSize } = input;
+  const effectiveStampPolicy = stamp?.wallGeometryPolicyVersion ?? LEGACY_WALL_GEOMETRY_POLICY_VERSION;
   return !!(
     stamp &&
     polygon &&
     basis &&
     cameraAppliedAtIso &&
     frameSize &&
+    effectiveStampPolicy === activePolicyVersion &&
     stamp.wallPolygonKey === buildWallPolygonKey(polygon) &&
     stamp.imageBasisId === basis.basisId &&
     stamp.imageBasisFingerprint === basis.basisFingerprint &&

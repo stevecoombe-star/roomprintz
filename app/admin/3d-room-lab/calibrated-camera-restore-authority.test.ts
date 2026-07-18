@@ -25,7 +25,12 @@ import {
   selectObjectTransformMode,
   selectPlacementTransformAuthority,
 } from "./support-attachment";
-import { buildWallPolygonKey, isWallConfirmationCurrent, type WallPolygon } from "./wall-support-geometry";
+import {
+  buildWallPolygonKey,
+  createWallConfirmationStamp,
+  isWallConfirmationCurrent,
+  type WallPolygon,
+} from "./wall-support-geometry";
 
 const basis = {
   basisId: "basis-a",
@@ -220,7 +225,7 @@ test("timestamp selection only accepts the branded evaluated identity for restor
   selectAppliedAtIso({ kind: "restore_existing_identity", identity: parsedAuthority() }, "2026-07-15T00:00:00.000Z");
 });
 
-test("preserved identity naturally restores wall, Ceiling, and attachment currentness", () => {
+test("preserved identity restores wall policy authority, Ceiling, and attachment currentness", () => {
   const authority = parsedAuthority();
   const wallPolygon: WallPolygon = [
     { x: 0.1, y: 0.8 },
@@ -229,7 +234,7 @@ test("preserved identity naturally restores wall, Ceiling, and attachment curren
     { x: 0.2, y: 0.2 },
   ];
   const ceilingPolygon: CeilingPolygon = wallPolygon.map((point) => ({ ...point })) as CeilingPolygon;
-  const wallStamp = {
+  const legacyWallStamp = {
     wallPolygonKey: buildWallPolygonKey(wallPolygon),
     imageBasisId: basis.basisId,
     imageBasisFingerprint: basis.basisFingerprint,
@@ -238,19 +243,53 @@ test("preserved identity naturally restores wall, Ceiling, and attachment curren
     frameHeight: authority.frameSize.height,
   };
   assert.equal(isWallConfirmationCurrent({
-    stamp: wallStamp,
+    stamp: legacyWallStamp,
     polygon: wallPolygon,
     basis,
     cameraAppliedAtIso: authority.appliedAtIso,
     frameSize: authority.frameSize,
   }), true);
   assert.equal(isWallConfirmationCurrent({
-    stamp: wallStamp,
+    stamp: legacyWallStamp,
     polygon: wallPolygon,
     basis,
     cameraAppliedAtIso: "2026-07-15T00:00:00.000Z",
     frameSize: authority.frameSize,
   }), false);
+  assert.equal(
+    isWallConfirmationCurrent({
+      stamp: legacyWallStamp,
+      polygon: wallPolygon,
+      basis,
+      cameraAppliedAtIso: authority.appliedAtIso,
+      frameSize: authority.frameSize,
+    }, "wall-support-geometry-policy/v2"),
+    false
+  );
+
+  const reconfirmedWallStamp = createWallConfirmationStamp(
+    wallPolygon,
+    basis,
+    authority.appliedAtIso,
+    authority.frameSize
+  );
+  assert.equal(isWallConfirmationCurrent({
+    stamp: reconfirmedWallStamp,
+    polygon: wallPolygon,
+    basis,
+    cameraAppliedAtIso: authority.appliedAtIso,
+    frameSize: authority.frameSize,
+  }), true);
+  assert.equal(
+    isWallConfirmationCurrent({
+      stamp: { ...reconfirmedWallStamp, wallGeometryPolicyVersion: "wall-support-geometry-policy/v0" },
+      polygon: wallPolygon,
+      basis,
+      cameraAppliedAtIso: authority.appliedAtIso,
+      frameSize: authority.frameSize,
+    }),
+    false
+  );
 
   const ceilingStamp = {
     ceilingPolygonKey: buildCeilingPolygonKey(ceilingPolygon),

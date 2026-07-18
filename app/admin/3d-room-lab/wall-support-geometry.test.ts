@@ -9,6 +9,8 @@ import {
   createWallConfirmationStamp,
   deriveWallSupport,
   isWallConfirmationCurrent,
+  LEGACY_WALL_GEOMETRY_POLICY_VERSION,
+  WALL_GEOMETRY_POLICY_VERSION,
   type WallRay,
   type WallPolygon,
 } from "./wall-support-geometry";
@@ -404,9 +406,18 @@ test("refuses seam mapping, ray, height, width, distance, and reprojection failu
   );
 });
 
-test("confirmation binds exactly to polygon, basis, camera snapshot, and frame", () => {
+test("confirmation binds exactly to polygon, basis, camera snapshot, frame, and active geometry policy", () => {
   const basis = makeBasis();
   const stamp = createWallConfirmationStamp(POLYGON, basis, "2026-07-10T00:00:00.000Z", FRAME);
+  assert.deepEqual(stamp, {
+    wallPolygonKey: "0.30000000,0.60000000|0.70000000,0.60000000|0.70000000,0.30000000|0.30000000,0.30000000",
+    imageBasisId: "basis-1",
+    imageBasisFingerprint: "fingerprint-1",
+    cameraAppliedAtIso: "2026-07-10T00:00:00.000Z",
+    frameWidth: 1000,
+    frameHeight: 800,
+    wallGeometryPolicyVersion: "wall-support-geometry-policy/v1",
+  });
   assert.equal(
     isWallConfirmationCurrent({
       stamp,
@@ -448,6 +459,42 @@ test("confirmation binds exactly to polygon, basis, camera snapshot, and frame",
     }),
     false
   );
+});
+
+test("wall confirmation policy is an exact authority match with a v1 legacy baseline alias", () => {
+  const basis = makeBasis();
+  const stamp = createWallConfirmationStamp(POLYGON, basis, "2026-07-10T00:00:00.000Z", FRAME);
+  const currentInput = {
+    stamp,
+    polygon: POLYGON,
+    basis,
+    cameraAppliedAtIso: "2026-07-10T00:00:00.000Z",
+    frameSize: FRAME,
+  };
+  assert.equal(isWallConfirmationCurrent(currentInput, WALL_GEOMETRY_POLICY_VERSION), true);
+  assert.equal(
+    isWallConfirmationCurrent({
+      ...currentInput,
+      stamp: { ...stamp, wallGeometryPolicyVersion: "wall-support-geometry-policy/v0" },
+    }),
+    false
+  );
+  assert.equal(
+    isWallConfirmationCurrent({
+      ...currentInput,
+      stamp: { ...stamp, wallGeometryPolicyVersion: "wall-support-geometry-policy/v999" },
+    }),
+    false
+  );
+  assert.equal(isWallConfirmationCurrent(currentInput, "wall-support-geometry-policy/v2"), false);
+  assert.equal(isWallConfirmationCurrent(currentInput, "*"), false);
+
+  const { wallGeometryPolicyVersion: _policyVersion, ...legacyStamp } = stamp;
+  const legacyInput = { ...currentInput, stamp: legacyStamp };
+  assert.equal(isWallConfirmationCurrent(legacyInput), true);
+  assert.equal(isWallConfirmationCurrent(legacyInput, LEGACY_WALL_GEOMETRY_POLICY_VERSION), true);
+  assert.equal(isWallConfirmationCurrent(legacyInput, "wall-support-geometry-policy/v2"), false);
+  assert.equal(isWallConfirmationCurrent({ ...currentInput, stamp: null }), false);
 });
 
 // Golden baseline guardrail. These fixtures deliberately use literal expected

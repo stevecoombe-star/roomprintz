@@ -518,10 +518,27 @@ function parseWallConfirmationStamp(value: unknown, requireStrictTimestamp: bool
   const cameraAppliedAtIso = parseExactString(value.cameraAppliedAtIso);
   const frameWidth = parseFiniteNumber(value.frameWidth);
   const frameHeight = parseFiniteNumber(value.frameHeight);
+  const hasWallGeometryPolicyVersion = Object.prototype.hasOwnProperty.call(value, "wallGeometryPolicyVersion");
+  let wallGeometryPolicyVersion: string | undefined;
+  if (hasWallGeometryPolicyVersion) {
+    if (
+      typeof value.wallGeometryPolicyVersion !== "string" ||
+      value.wallGeometryPolicyVersion.trim().length === 0
+    ) return null;
+    wallGeometryPolicyVersion = value.wallGeometryPolicyVersion;
+  }
   if (!wallPolygonKey || !imageBasisId || !imageBasisFingerprint || !cameraAppliedAtIso ||
     (requireStrictTimestamp && !isStrictUtcIsoTimestamp(cameraAppliedAtIso)) ||
     frameWidth === null || frameHeight === null || frameWidth <= 0 || frameHeight <= 0) return null;
-  return { wallPolygonKey, imageBasisId, imageBasisFingerprint, cameraAppliedAtIso, frameWidth, frameHeight };
+  return {
+    wallPolygonKey,
+    imageBasisId,
+    imageBasisFingerprint,
+    cameraAppliedAtIso,
+    frameWidth,
+    frameHeight,
+    ...(hasWallGeometryPolicyVersion ? { wallGeometryPolicyVersion } : {}),
+  };
 }
 
 function parseCeilingConfirmationStamp(value: unknown, requireStrictTimestamp: boolean): CeilingConfirmationStamp | null {
