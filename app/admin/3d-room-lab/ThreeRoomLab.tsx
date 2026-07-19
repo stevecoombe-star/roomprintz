@@ -20,6 +20,10 @@ import {
   CALIBRATED_READ_ONLY_PROJECTION_RENDERER_NEAR,
   buildCalibratedReadOnlyProjectionCamera,
 } from "./calibrated-camera-readonly-projection";
+import {
+  computeProjectionCoherenceDiagnostics,
+  type ProjectionCoherenceWallInput,
+} from "./projection-coherence-diagnostics";
 import { buildRoomEnvelopeContextKey } from "./room-envelope-identity";
 import { reconcileRoomEnvelope } from "./room-envelope-reconciliation";
 import type {
@@ -1493,6 +1497,7 @@ export default function ThreeRoomLab({
   const [isSupportsOpen, setIsSupportsOpen] = useState(false);
   const [isMilestoneValidationOpen, setIsMilestoneValidationOpen] = useState(false);
   const [isRoomEnvelopeOpen, setIsRoomEnvelopeOpen] = useState(true);
+  const [isProjectionCoherenceDiagnosticsOpen, setIsProjectionCoherenceDiagnosticsOpen] = useState(false);
   const [milestoneOperatorObservations, setMilestoneOperatorObservations] = useState(createEmptyOperatorObservations);
   const [validationAttachmentProvenanceBySupport, setValidationAttachmentProvenanceBySupport] =
     useState<ValidationAttachmentProvenanceBySupport>({});
@@ -4558,6 +4563,85 @@ export default function ThreeRoomLab({
       attachmentTransform.contactPointWorld
     );
   }, [attachmentTransform, frameSizeForImageSpace]);
+  // Read-only, runtime-derived observability. This consumes existing camera,
+  // support, attachment, and reprojection facts and owns no scene authority.
+  const projectionCoherenceDiagnostics = useMemo(() => {
+    const walls: ProjectionCoherenceWallInput[] = WALL_SUPPORT_KINDS.map((kind) => {
+      const draft = wallSupportDrafts[kind];
+      const state = wallSupportStates[kind];
+      return {
+        kind,
+        enabled: draft.enabled,
+        reviewState: state.resolvedReviewStatus,
+        confirmationCurrent: state.confirmationCurrent,
+        runtimeUsable: state.runtime.usable,
+        sourcePolygon: draft.imagePolygonSourceNorm,
+        derivation: state.derivation,
+      };
+    });
+    return computeProjectionCoherenceDiagnostics({
+      camera:
+        isCalibratedCameraActive && calibratedCameraSnapshot
+          ? {
+              calibratedCameraVersion: CALIBRATED_CAMERA_AUTHORITY_CALIBRATION_VERSION,
+              appliedAtIso: calibratedCameraSnapshot.appliedAtIso,
+              fovDeg: calibratedCameraSnapshot.fovDeg,
+              pose: calibratedCameraSnapshot.pose,
+            }
+          : null,
+      frame: frameSizeForImageSpace
+        ? {
+            width: frameSizeForImageSpace.width,
+            height: frameSizeForImageSpace.height,
+            intrinsicWidth: imageIntrinsicSize?.width ?? Number.NaN,
+            intrinsicHeight: imageIntrinsicSize?.height ?? Number.NaN,
+            imageBasisId: qualifiedImageBasis?.basisId ?? null,
+            imageBasisFingerprint: qualifiedImageBasis?.basisFingerprint ?? null,
+          }
+        : null,
+      floor: {
+        polygonKey: buildFloorPolygonAuthorityKey(sourceNormalizedFloorPolygon),
+        worldWidth: floorMapping.worldWidth,
+        worldDepth: floorMapping.worldDepth,
+      },
+      walls,
+      attachment:
+        objectSupportAttachment?.supportKind === "floor" && attachmentTransform?.ok
+          ? {
+              current: attachmentBindingCurrent && objectTransformMode === "support_attached_current",
+              supportKind: "floor",
+              contactPointWorld: attachmentTransform.contactPointWorld,
+            }
+          : null,
+      floorReprojection: cameraPoseDebug.applyCandidate
+        ? {
+            cvAveragePx: cameraPoseDebug.applyCandidate.cvAvgPx,
+            cvMaximumPx: cameraPoseDebug.applyCandidate.cvMaxPx,
+            cvPerCornerPx: cameraPoseDebug.cornerResidualDiagnostics?.perCornerCvResidualPx ?? null,
+            rendererAveragePx: cameraPoseDebug.applyCandidate.displayAvgPx,
+            rendererMaximumPx: cameraPoseDebug.applyCandidate.displayMaxPx,
+            scaleRatio: cameraPoseDebug.applyCandidate.scaleRatio,
+          }
+        : null,
+    });
+  }, [
+    attachmentBindingCurrent,
+    attachmentTransform,
+    calibratedCameraSnapshot,
+    cameraPoseDebug.applyCandidate,
+    cameraPoseDebug.cornerResidualDiagnostics,
+    floorMapping.worldDepth,
+    floorMapping.worldWidth,
+    frameSizeForImageSpace,
+    imageIntrinsicSize,
+    isCalibratedCameraActive,
+    objectSupportAttachment?.supportKind,
+    objectTransformMode,
+    qualifiedImageBasis,
+    sourceNormalizedFloorPolygon,
+    wallSupportDrafts,
+    wallSupportStates,
+  ]);
   // Package 5 observes existing authority and derived runtime facts. It does not
   // create support, camera, attachment, or model authority of its own.
   const milestoneMachineFacts = useMemo(() => {
@@ -18243,6 +18327,143 @@ export default function ThreeRoomLab({
             </div>
           )}
         </section>
+
+        <CollapsibleSection
+          title="Projection coherence diagnostics"
+          description="Diagnostic only — does not change camera, geometry, support confirmation, attachment, or Room Envelope state."
+          open={isProjectionCoherenceDiagnosticsOpen}
+          onToggle={() => setIsProjectionCoherenceDiagnosticsOpen((open) => !open)}
+          meta={
+            <span className="rounded bg-slate-500/15 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-slate-200">
+              read-only · v1
+            </span>
+          }
+        >
+          {(() => {
+            const diagnostic = projectionCoherenceDiagnostics;
+            const number = (value: number | null, digits = 2, suffix = "") =>
+              value !== null && Number.isFinite(value) ? `${value.toFixed(digits)}${suffix}` : "unavailable";
+            const availabilityNumber = (value: { state: string; value?: unknown; reason?: string }, digits = 3, suffix = "") =>
+              value.state === "available" && typeof value.value === "number"
+                ? number(value.value, digits, suffix)
+                : `unavailable — ${value.reason ?? "insufficient evidence"}`;
+            const raw = diagnostic.structural.rawObservedTilt;
+            const residual = diagnostic.structural.locationMatchedResidual;
+            return (
+              <div className="space-y-4 text-[11px] text-slate-300">
+                <div className="rounded-lg border border-slate-700 bg-slate-950/60 p-3">
+                  <p className="text-slate-100">Provenance and availability</p>
+                  <dl className="mt-2 grid gap-x-4 gap-y-1 sm:grid-cols-2">
+                    <div className="flex justify-between gap-2"><dt className="text-slate-500">diagnostic / camera version</dt><dd>{diagnostic.provenance.diagnosticVersion} / {diagnostic.provenance.calibratedCameraVersion ?? "unavailable"}</dd></div>
+                    <div className="flex justify-between gap-2"><dt className="text-slate-500">camera applied</dt><dd>{diagnostic.provenance.cameraAppliedAtIso ?? "unavailable"}</dd></div>
+                    <div className="flex justify-between gap-2"><dt className="text-slate-500">FOV / frame</dt><dd>{number(diagnostic.provenance.fovDeg, 2, "°")} / {diagnostic.provenance.frameWidth ?? "—"} × {diagnostic.provenance.frameHeight ?? "—"}</dd></div>
+                    <div className="flex justify-between gap-2"><dt className="text-slate-500">image basis</dt><dd>{diagnostic.provenance.imageBasisId ?? "unavailable"} · {diagnostic.provenance.imageBasisFingerprint ?? "unavailable"}</dd></div>
+                    <div className="flex justify-between gap-2"><dt className="text-slate-500">Floor key</dt><dd className="max-w-[18rem] truncate">{diagnostic.provenance.floorPolygonKey ?? "unavailable"}</dd></div>
+                    <div className="flex justify-between gap-2"><dt className="text-slate-500">Floor mapping / wall policy</dt><dd>{number(diagnostic.provenance.floorWorldWidth, 3)} × {number(diagnostic.provenance.floorWorldDepth, 3)} m · {diagnostic.provenance.wallGeometryPolicyVersion}</dd></div>
+                  </dl>
+                </div>
+
+                <div className="rounded-lg border border-slate-700 bg-slate-950/60 p-3">
+                  <p className="text-slate-100">Camera</p>
+                  <dl className="mt-2 grid gap-x-4 gap-y-1 sm:grid-cols-2">
+                    <div className="flex justify-between gap-2"><dt className="text-slate-500">signed camera roll</dt><dd>{availabilityNumber(diagnostic.camera.roll, 3, "°")}</dd></div>
+                    <div className="flex justify-between gap-2"><dt className="text-slate-500">signed view yaw</dt><dd>{availabilityNumber(diagnostic.camera.yaw, 3, "°")}</dd></div>
+                    <div className="flex justify-between gap-2"><dt className="text-slate-500">normalized lateral offset</dt><dd>{availabilityNumber(diagnostic.camera.normalizedLateralOffset, 3)}</dd></div>
+                  </dl>
+                </div>
+
+                <div className="rounded-lg border border-slate-700 bg-slate-950/60 p-3">
+                  <p className="text-slate-100">Structural evidence summary</p>
+                  <p className="mt-1 text-slate-500">Length-weighted medians use the first ordered value whose cumulative positive weight reaches 50%. Neither estimator is universally authoritative.</p>
+                  {raw.state === "available" ? (
+                    <dl className="mt-2 grid gap-x-4 gap-y-1 sm:grid-cols-2">
+                      <div className="flex justify-between gap-2"><dt className="text-slate-500">raw observed tilt</dt><dd>{number(raw.value.valueDeg, 3, "°")}</dd></div>
+                      <div className="flex justify-between gap-2"><dt className="text-slate-500">raw range / weighted MAD</dt><dd>{number(raw.value.rangeDeg, 3, "°")} / {number(raw.value.weightedMadDeg, 3, "°")}</dd></div>
+                      <div className="flex justify-between gap-2"><dt className="text-slate-500">raw observations / physical verticals</dt><dd>{raw.value.eligibleObservationCount} / {raw.value.distinctPhysicalVerticalCount}</dd></div>
+                      <div className="flex justify-between gap-2"><dt className="text-slate-500">raw leave-one-out range</dt><dd>{number(raw.value.leaveOneOutMinimumDeg, 3, "°")} to {number(raw.value.leaveOneOutMaximumDeg, 3, "°")} ({number(raw.value.leaveOneOutRangeDeg, 3, "°")})</dd></div>
+                    </dl>
+                  ) : <p className="mt-2 text-slate-400">Raw observed tilt: {raw.reason}</p>}
+                  {residual.state === "available" ? (
+                    <dl className="mt-2 grid gap-x-4 gap-y-1 sm:grid-cols-2">
+                      <div className="flex justify-between gap-2"><dt className="text-slate-500">location-matched residual</dt><dd>{number(residual.value.valueDeg, 3, "°")}</dd></div>
+                      <div className="flex justify-between gap-2"><dt className="text-slate-500">residual range / weighted MAD</dt><dd>{number(residual.value.rangeDeg, 3, "°")} / {number(residual.value.weightedMadDeg, 3, "°")}</dd></div>
+                      <div className="flex justify-between gap-2"><dt className="text-slate-500">residual observations / physical verticals</dt><dd>{residual.value.eligibleObservationCount} / {residual.value.distinctPhysicalVerticalCount}</dd></div>
+                      <div className="flex justify-between gap-2"><dt className="text-slate-500">residual leave-one-out range</dt><dd>{number(residual.value.leaveOneOutMinimumDeg, 3, "°")} to {number(residual.value.leaveOneOutMaximumDeg, 3, "°")} ({number(residual.value.leaveOneOutRangeDeg, 3, "°")})</dd></div>
+                    </dl>
+                  ) : <p className="mt-2 text-slate-400">Location-matched residual: {residual.reason}</p>}
+                  <dl className="mt-2 grid gap-x-4 gap-y-1 sm:grid-cols-2">
+                    <div className="flex justify-between gap-2"><dt className="text-slate-500">camera − raw structural</dt><dd>{number(diagnostic.comparison.signedRawDisagreementDeg, 3, "°")} (abs {number(diagnostic.comparison.absoluteRawDisagreementDeg, 3, "°")})</dd></div>
+                    <div className="flex justify-between gap-2"><dt className="text-slate-500">comparison availability</dt><dd>{diagnostic.comparison.unavailableReason ?? "available"}</dd></div>
+                  </dl>
+                </div>
+
+                <div className="rounded-lg border border-slate-700 bg-slate-950/60 p-3">
+                  <p className="text-slate-100">Per-edge evidence</p>
+                  {diagnostic.structural.observations.length === 0 ? <p className="mt-2 text-slate-400">No derivation-successful wall edges are available for structural observation.</p> : (
+                    <div className="mt-2 space-y-2">
+                      {diagnostic.structural.observations.map((observation) => (
+                        <div key={`${observation.wallKind}-${observation.sideIndex}`} className="rounded border border-slate-800 px-2 py-1.5">
+                          <div className="flex flex-wrap justify-between gap-2 text-slate-100"><span>{observation.wallKind.replace("wall_", "")} side {observation.sideIndex} · {observation.physicalVerticalId}</span><span>{observation.inclusion}{observation.exclusionReason ? ` — ${observation.exclusionReason}` : ""}</span></div>
+                          <div className="mt-1 grid gap-x-4 gap-y-1 sm:grid-cols-2 text-slate-400">
+                            <span>observed / predicted / residual: {number(observation.observedTiltDeg, 3, "°")} / {number(observation.predictedWorldUpTiltDeg, 3, "°")} / {number(observation.locationMatchedResidualDeg, 3, "°")}</span>
+                            <span>source length: {number(observation.sourcePixelLength, 2, " px")} · frame touching/coincident: {observation.frameTouching ? "yes" : "no"} / {observation.frameCoincident ? "yes" : "no"}</span>
+                            <span>review/current/runtime: {observation.reviewState.replaceAll("_", " ")} / {observation.confirmationCurrent ? "yes" : "no"} / {observation.runtimeUsable ? "yes" : "no"}</span>
+                            <span>source endpoints: ({number(observation.sourcePixelEndpoints.lower.x, 2)}, {number(observation.sourcePixelEndpoints.lower.y, 2)}) → ({number(observation.sourcePixelEndpoints.upper.x, 2)}, {number(observation.sourcePixelEndpoints.upper.y, 2)})</span>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                <div className="rounded-lg border border-slate-700 bg-slate-950/60 p-3">
+                  <p className="text-slate-100">Attachment-anchor projection</p>
+                  {diagnostic.anchorProjection.state === "available" ? (
+                    <dl className="mt-2 grid gap-x-4 gap-y-1 sm:grid-cols-2">
+                      <div className="flex justify-between gap-2"><dt className="text-slate-500">1 m world-up tilt</dt><dd>{number(diagnostic.anchorProjection.value.tiltDeg, 3, "°")}</dd></div>
+                      <div className="flex justify-between gap-2"><dt className="text-slate-500">horizontal / projected pixels per metre</dt><dd>{number(diagnostic.anchorProjection.value.horizontalPixelsPerVerticalMetre, 2, " px/m")} / {number(diagnostic.anchorProjection.value.projectedPixelsPerVerticalMetre, 2, " px/m")}</dd></div>
+                      <div className="flex justify-between gap-2"><dt className="text-slate-500">both endpoints in front</dt><dd>{diagnostic.anchorProjection.value.bothInFront ? "yes" : "no"}</dd></div>
+                    </dl>
+                  ) : <p className="mt-2 text-slate-400">{diagnostic.anchorProjection.reason}</p>}
+                </div>
+
+                <div className="rounded-lg border border-slate-700 bg-slate-950/60 p-3">
+                  <p className="text-slate-100">Wall reconstruction</p>
+                  <div className="mt-2 space-y-2">
+                    {diagnostic.walls.map((wall) => (
+                      <div key={wall.kind} className="rounded border border-slate-800 px-2 py-1.5">
+                        <div className="flex flex-wrap justify-between gap-2 text-slate-100"><span>{wall.kind.replace("wall_", "")}: {wall.derivation}</span><span>review/current/runtime: {wall.reviewState.replaceAll("_", " ")} / {wall.confirmationCurrent ? "yes" : "no"} / {wall.runtimeUsable ? "yes" : "no"}</span></div>
+                        {wall.derivation === "refused" ? <p className="mt-1 text-slate-400">refusal: {wall.refusalReasons.join(" · ") || "unspecified"}</p> : null}
+                        <div className="mt-1 grid gap-x-4 gap-y-1 sm:grid-cols-2 text-slate-400">
+                          <span>drift 1 / 2: {number(wall.endpoint1LateralDriftM, 3, " m")} / {number(wall.endpoint2LateralDriftM, 3, " m")}</span>
+                          <span>height 1 / 2: {number(wall.endpoint1HeightM, 3, " m")} / {number(wall.endpoint2HeightM, 3, " m")}</span>
+                          <span>lean 1 / 2: {number(wall.endpoint1LeanDeg, 2, "°")} / {number(wall.endpoint2LeanDeg, 2, "°")}</span>
+                          <span>conditioning 1 / 2 / min: {number(wall.endpoint1UpperRayPlaneDenominator, 4)} / {number(wall.endpoint2UpperRayPlaneDenominator, 4)} / {number(wall.minimumUpperRayPlaneDenominator, 4)}</span>
+                          <span>refusal floor / margin / multiple: {number(wall.refusalFloor, 3)} / {number(wall.conditioningMargin, 3)} / {number(wall.conditioningMultiple, 2, "×")}</span>
+                          <span>reprojection max / lower seam 1 / 2: {number(wall.maximumReprojectionResidualPx, 2, " px")} / {number(wall.lowerSeamDisagreementEndpoint1M, 3, " m")} / {number(wall.lowerSeamDisagreementEndpoint2M, 3, " m")}</span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="rounded-lg border border-slate-700 bg-slate-950/60 p-3">
+                  <p className="text-slate-100">Floor reprojection</p>
+                  <p className="mt-1 text-slate-400">Good Floor reprojection does not establish vertical coherence.</p>
+                  {diagnostic.floorReprojection.state === "available" ? (
+                    <dl className="mt-2 grid gap-x-4 gap-y-1 sm:grid-cols-2">
+                      <div className="flex justify-between gap-2"><dt className="text-slate-500">CV average / maximum</dt><dd>{number(diagnostic.floorReprojection.value.cvAveragePx, 3, " px")} / {number(diagnostic.floorReprojection.value.cvMaximumPx, 3, " px")}</dd></div>
+                      <div className="flex justify-between gap-2"><dt className="text-slate-500">renderer average / maximum</dt><dd>{number(diagnostic.floorReprojection.value.rendererAveragePx, 3, " px")} / {number(diagnostic.floorReprojection.value.rendererMaximumPx, 3, " px")}</dd></div>
+                      <div className="flex justify-between gap-2"><dt className="text-slate-500">CV − renderer average / maximum</dt><dd>{number(diagnostic.floorReprojection.value.cvVsRendererAverageDifferencePx, 3, " px")} / {number(diagnostic.floorReprojection.value.cvVsRendererMaximumDifferencePx, 3, " px")}</dd></div>
+                      <div className="flex justify-between gap-2"><dt className="text-slate-500">CV per corner</dt><dd>{diagnostic.floorReprojection.value.cvPerCornerPx.map((value) => number(value, 3, " px")).join(" · ") || "unavailable"}</dd></div>
+                      <div className="flex justify-between gap-2"><dt className="text-slate-500">scale ratio</dt><dd>{number(diagnostic.floorReprojection.value.scaleRatio, 3)}</dd></div>
+                    </dl>
+                  ) : <p className="mt-2 text-slate-400">{diagnostic.floorReprojection.reason}</p>}
+                </div>
+              </div>
+            );
+          })()}
+        </CollapsibleSection>
 
         <CollapsibleSection
           title="Supports"
