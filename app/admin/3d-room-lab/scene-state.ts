@@ -7,6 +7,11 @@ import {
 } from "./calibrated-camera-restore-authority";
 import type { ObjectSupportAttachment } from "./support-attachment";
 import type { SupportReviewStatus, SupportSource } from "./support-model";
+import {
+  parseVerticalEvidenceSection,
+  serializeVerticalEvidenceSection,
+  type VerticalEvidenceSection,
+} from "./vertical-evidence";
 import type {
   CeilingConfirmationStamp,
   CeilingPolygon,
@@ -194,6 +199,8 @@ export type ImportedSceneValidated = {
   calibrationAppliedAuthority: ParsedCalibratedCameraAppliedAuthority | null;
   supports: PersistedSupportState | null;
   attachment: ObjectSupportAttachment | null;
+  verticalEvidence: VerticalEvidenceSection | null;
+  verticalEvidenceDegradationReason: string | null;
   exportedAt: string | null;
 };
 
@@ -270,6 +277,7 @@ export type SceneStatePayloadInput = {
   calibrationAppliedAuthority?: CalibratedCameraAppliedAuthority;
   supports: PersistedSupportState;
   attachment: ObjectSupportAttachment | null;
+  verticalEvidence?: VerticalEvidenceSection | null;
 };
 
 function clampValue(value: number, min: number, max: number): number {
@@ -881,6 +889,7 @@ export function buildSceneStatePayload(input: SceneStatePayloadInput) {
           attachedAtIso: input.attachment.attachedAtIso,
         }
       : null,
+    verticalEvidence: serializeVerticalEvidenceSection(input.verticalEvidence ?? null),
     debug: {
       rendererSize: input.debug.rendererSize,
       imageStatus: input.debug.imageStatus,
@@ -1092,6 +1101,8 @@ export function validateImportedSceneJson(
   let supports: PersistedSupportState | null = null;
   let attachment: ObjectSupportAttachment | null = null;
   let calibrationAppliedAuthority: ParsedCalibratedCameraAppliedAuthority | null = null;
+  let verticalEvidence: VerticalEvidenceSection | null = null;
+  let verticalEvidenceDegradationReason: string | null = null;
   if (isCurrentVersion) {
     if (!Object.prototype.hasOwnProperty.call(raw, "supports")) {
       return "supports is required for the current scene schema.";
@@ -1130,6 +1141,16 @@ export function validateImportedSceneJson(
       })) {
         return "calibrationAppliedAuthority contradicts duplicated current-v1 calibration or floor authority.";
       }
+    }
+  }
+  if (isCurrentVersion) {
+    const parsedVerticalEvidence = parseVerticalEvidenceSection(raw.verticalEvidence);
+    if (parsedVerticalEvidence.kind === "valid") {
+      verticalEvidence = parsedVerticalEvidence.value;
+    } else if (parsedVerticalEvidence.kind === "degraded") {
+      // This optional, non-authoritative section fails closed without blocking
+      // restoration of the existing scene authority.
+      verticalEvidenceDegradationReason = parsedVerticalEvidence.reason;
     }
   }
 
@@ -1179,6 +1200,8 @@ export function validateImportedSceneJson(
     calibrationAppliedAuthority,
     supports,
     attachment,
+    verticalEvidence,
+    verticalEvidenceDegradationReason,
     exportedAt: parseOptionalString((raw as Record<string, unknown>).exportedAt),
   };
 }

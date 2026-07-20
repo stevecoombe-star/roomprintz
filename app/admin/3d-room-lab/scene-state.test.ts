@@ -12,6 +12,11 @@ import {
   CALIBRATED_CAMERA_AUTHORITY_SOLVER,
 } from "./calibrated-camera-restore-authority";
 import { createWallConfirmationStamp } from "./wall-support-geometry";
+import {
+  buildVerticalEvidenceSuggestionId,
+  materializeVerticalEvidenceObservation,
+  type VerticalEvidenceSuggestion,
+} from "./vertical-evidence";
 
 const limits = {
   transformLimits: {
@@ -181,6 +186,50 @@ function payload() {
   return buildSceneStatePayload(payloadInput());
 }
 
+function verticalEvidenceFixture() {
+  const sourceNormalizedEndpoints = { lower: { x: 0.2, y: 0.8 }, upper: { x: 0.2, y: 0.2 } };
+  const suggestion: VerticalEvidenceSuggestion = {
+    suggestionId: buildVerticalEvidenceSuggestionId({
+      imageBasisId: basis.basisId,
+      imageBasisFingerprint: basis.basisFingerprint,
+      wallKind: "wall_back",
+      wallPolygonKey: "back-wall",
+      physicalVerticalId: "back_left",
+      sourceNormalizedEndpoints,
+    }),
+    imageBasisId: basis.basisId,
+    imageBasisFingerprint: basis.basisFingerprint,
+    intrinsicWidth: basis.decodedWidth,
+    intrinsicHeight: basis.decodedHeight,
+    wallKind: "wall_back",
+    wallPolygonKey: "back-wall",
+    physicalVerticalId: "back_left",
+    sourceNormalizedEndpoints,
+    suggestionGeneratorVersion: "wall-edge-suggestions/v1",
+    sourceResidualDeg: null,
+  };
+  const materialized = materializeVerticalEvidenceObservation({
+    suggestion,
+    operatorDecision: "selected",
+    decisionAtIso: "2026-07-14T00:00:00.000Z",
+    floor: {
+      sourceNormalizedPolygon: quad,
+      polygonKey: "floor-a",
+      worldWidth: 6,
+      worldDepth: 5,
+    },
+    historicalContext: {
+      nonBinding: true,
+      cameraVersion: "calibrated-camera/v2",
+      cameraAppliedAtIso: "2026-07-14T00:00:00.000Z",
+      frameWidth: 1600,
+      frameHeight: 1200,
+    },
+  });
+  assert.ok(materialized.ok, materialized.ok ? "" : materialized.reason);
+  return { evidenceModelVersion: "vertical-evidence-model/v1" as const, observations: [materialized.observation] };
+}
+
 type Payload = ReturnType<typeof payload>;
 
 function parse(value: unknown) {
@@ -196,6 +245,81 @@ test("round-trips full operator-owned support source state", () => {
   assert.deepEqual(result.supports?.walls.wall_left?.draft, payloadInput().supports.walls.wall_left?.draft);
   assert.deepEqual(result.supports?.walls.wall_right?.draft, payloadInput().supports.walls.wall_right?.draft);
   assert.deepEqual(result.supports?.ceiling?.draft, payloadInput().supports.ceiling?.draft);
+});
+
+test("round-trips optional vertical evidence and degrades malformed records fail-closed", () => {
+  const input = payloadInput();
+  input.verticalEvidence = verticalEvidenceFixture();
+  const exported = buildSceneStatePayload(input);
+  const restored = parse(exported);
+  assert.deepEqual(restored.verticalEvidence, input.verticalEvidence);
+  assert.equal(restored.verticalEvidenceDegradationReason, null);
+
+  const malformed = structuredClone(exported) as unknown as {
+    verticalEvidence: { observations: Array<{ frozenWorldAnchor: { x: number } }> };
+  };
+  malformed.verticalEvidence!.observations[0].frozenWorldAnchor.x = Number.NaN;
+  const degraded = parse(malformed);
+  assert.equal(degraded.verticalEvidence, null);
+  assert.match(degraded.verticalEvidenceDegradationReason ?? "", /malformed observation/);
+});
+
+test("vertical evidence import strips injected authority-like keys without affecting scene authority", () => {
+  const input = payloadInput();
+  input.verticalEvidence = verticalEvidenceFixture();
+  const baseline = buildSceneStatePayload(input);
+  const injected = structuredClone(baseline) as unknown as {
+    verticalEvidence: Record<string, unknown> & {
+      observations: Array<Record<string, unknown> & {
+        floorProvenance: Record<string, unknown>;
+        sourceNormalizedEndpoints: Record<string, unknown>;
+      }>;
+    };
+  };
+  const authorityLikeKeys = [
+    "pose",
+    "candidate",
+    "candidateCamera",
+    "calibrationVersion",
+    "applyCamera",
+    "cameraAppliedAtIso",
+    "authorityEligible",
+    "calibrationAuthorityGranted",
+  ] as const;
+  for (const key of authorityLikeKeys) injected.verticalEvidence[key] = { injected: true };
+  const observation = injected.verticalEvidence.observations[0];
+  for (const key of authorityLikeKeys) observation[key] = { injected: true };
+  observation.floorProvenance.authorityEligible = true;
+  observation.floorProvenance.calibrationAuthorityGranted = true;
+  observation.sourceNormalizedEndpoints.candidateCamera = { injected: true };
+
+  const baselineParsed = parse(baseline);
+  const injectedParsed = parse(injected);
+  assert.deepEqual(injectedParsed.verticalEvidence, baselineParsed.verticalEvidence);
+  assert.deepEqual(injectedParsed.calibration, baselineParsed.calibration);
+  assert.deepEqual(injectedParsed.calibrationAppliedAuthority, baselineParsed.calibrationAppliedAuthority);
+  assert.deepEqual(injectedParsed.supports, baselineParsed.supports);
+  assert.deepEqual(injectedParsed.attachment, baselineParsed.attachment);
+  assert.deepEqual(injectedParsed.floor, baselineParsed.floor);
+
+  const parsedEvidence = injectedParsed.verticalEvidence!;
+  const parsedObservation = parsedEvidence.observations[0] as unknown as Record<string, unknown> & {
+    floorProvenance: Record<string, unknown>;
+    sourceNormalizedEndpoints: Record<string, unknown>;
+  };
+  for (const key of authorityLikeKeys) {
+    assert.equal(Object.hasOwn(parsedEvidence, key), false, `section excludes ${key}`);
+    assert.equal(Object.hasOwn(parsedObservation, key), false, `observation excludes ${key}`);
+  }
+  assert.equal(Object.hasOwn(parsedObservation.floorProvenance, "authorityEligible"), false);
+  assert.equal(Object.hasOwn(parsedObservation.floorProvenance, "calibrationAuthorityGranted"), false);
+  assert.equal(Object.hasOwn(parsedObservation.sourceNormalizedEndpoints, "candidateCamera"), false);
+
+  const reexported = buildSceneStatePayload({ ...payloadInput(), verticalEvidence: injectedParsed.verticalEvidence });
+  const serializedEvidence = JSON.stringify(reexported.verticalEvidence);
+  for (const key of ["pose", "candidate", "candidateCamera", "calibrationVersion", "applyCamera", "authorityEligible", "calibrationAuthorityGranted"]) {
+    assert.equal(serializedEvidence.includes(`"${key}"`), false, `re-export excludes ${key}`);
+  }
 });
 
 test("round-trips a versioned wall policy stamp with deterministic field ordering", () => {

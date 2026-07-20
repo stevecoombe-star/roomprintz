@@ -24,6 +24,15 @@ import {
   computeProjectionCoherenceDiagnostics,
   type ProjectionCoherenceWallInput,
 } from "./projection-coherence-diagnostics";
+import {
+  changeVerticalEvidenceDecision,
+  deriveVerticalEvidenceCollectionRuntime,
+  deriveVerticalEvidenceSuggestions,
+  materializeVerticalEvidenceObservation,
+  type VerticalEvidenceOperatorDecision,
+  type VerticalEvidenceSection,
+  type VerticalEvidenceSuggestion,
+} from "./vertical-evidence";
 import { buildRoomEnvelopeContextKey } from "./room-envelope-identity";
 import { reconcileRoomEnvelope } from "./room-envelope-reconciliation";
 import type {
@@ -1498,6 +1507,9 @@ export default function ThreeRoomLab({
   const [isMilestoneValidationOpen, setIsMilestoneValidationOpen] = useState(false);
   const [isRoomEnvelopeOpen, setIsRoomEnvelopeOpen] = useState(true);
   const [isProjectionCoherenceDiagnosticsOpen, setIsProjectionCoherenceDiagnosticsOpen] = useState(false);
+  const [isVerticalEvidenceOpen, setIsVerticalEvidenceOpen] = useState(false);
+  const [verticalEvidence, setVerticalEvidence] = useState<VerticalEvidenceSection | null>(null);
+  const [verticalEvidenceStatus, setVerticalEvidenceStatus] = useState("No operator decisions recorded.");
   const [milestoneOperatorObservations, setMilestoneOperatorObservations] = useState(createEmptyOperatorObservations);
   const [validationAttachmentProvenanceBySupport, setValidationAttachmentProvenanceBySupport] =
     useState<ValidationAttachmentProvenanceBySupport>({});
@@ -4642,6 +4654,63 @@ export default function ThreeRoomLab({
     wallSupportDrafts,
     wallSupportStates,
   ]);
+  // Non-authoritative vertical evidence is deliberately derived from the
+  // existing wall/runtime policy and projection-coherence edge facts. It does
+  // not feed either system back into camera, support, or scene geometry.
+  const verticalEvidenceSuggestions = useMemo(
+    () => deriveVerticalEvidenceSuggestions({
+      imageBasis: qualifiedImageBasis,
+      intrinsicWidth: imageIntrinsicSize?.width ?? null,
+      intrinsicHeight: imageIntrinsicSize?.height ?? null,
+      walls: WALL_SUPPORT_KINDS.map((kind) => ({
+        kind,
+        polygon: wallSupportDrafts[kind].imagePolygonSourceNorm,
+        derivationOk: wallSupportStates[kind].derivation.ok,
+        runtimeUsable: wallSupportStates[kind].runtime.usable,
+      })),
+      structuralObservations: projectionCoherenceDiagnostics.structural.observations,
+    }),
+    [
+      imageIntrinsicSize,
+      projectionCoherenceDiagnostics.structural.observations,
+      qualifiedImageBasis,
+      wallSupportDrafts,
+      wallSupportStates,
+    ]
+  );
+  const verticalEvidenceRuntime = useMemo(
+    () => deriveVerticalEvidenceCollectionRuntime({
+      section: verticalEvidence,
+      context: {
+        imageBasis: qualifiedImageBasis,
+        intrinsicWidth: imageIntrinsicSize?.width ?? null,
+        intrinsicHeight: imageIntrinsicSize?.height ?? null,
+        floor: {
+          polygonKey: buildFloorPolygonAuthorityKey(sourceNormalizedFloorPolygon),
+          worldWidth: floorMapping.worldWidth,
+          worldDepth: floorMapping.worldDepth,
+        },
+        walls: {
+          wall_back: wallSupportDrafts.wall_back.imagePolygonSourceNorm,
+          wall_left: wallSupportDrafts.wall_left.imagePolygonSourceNorm,
+          wall_right: wallSupportDrafts.wall_right.imagePolygonSourceNorm,
+        },
+      },
+      suggestions: verticalEvidenceSuggestions,
+      structuralObservations: projectionCoherenceDiagnostics.structural.observations,
+    }),
+    [
+      floorMapping.worldDepth,
+      floorMapping.worldWidth,
+      imageIntrinsicSize,
+      projectionCoherenceDiagnostics.structural.observations,
+      qualifiedImageBasis,
+      sourceNormalizedFloorPolygon,
+      verticalEvidence,
+      verticalEvidenceSuggestions,
+      wallSupportDrafts,
+    ]
+  );
   // Package 5 observes existing authority and derived runtime facts. It does not
   // create support, camera, attachment, or model authority of its own.
   const milestoneMachineFacts = useMemo(() => {
@@ -9651,6 +9720,7 @@ export default function ThreeRoomLab({
           },
         },
         attachment: objectSupportAttachment,
+        verticalEvidence,
         debug: {
           rendererSize,
           imageStatus: imageLoadState,
@@ -9698,7 +9768,90 @@ export default function ThreeRoomLab({
     transform.positionZ,
     transform.rotationYDeg,
     transform.uniformScale,
+    verticalEvidence,
   ]);
+
+  const recordVerticalEvidenceDecision = (
+    suggestion: VerticalEvidenceSuggestion,
+    decision: Exclude<VerticalEvidenceOperatorDecision, "unreviewed">
+  ) => {
+    const decisionAtIso = new Date().toISOString();
+    const existing = verticalEvidence?.observations.find(
+      (observation) => observation.observationId === `vertical-evidence-observation/v1:${suggestion.suggestionId}`
+    );
+    if (existing) {
+      const changed = changeVerticalEvidenceDecision({
+        observation: existing,
+        operatorDecision: decision,
+        decisionAtIso,
+      });
+      if (!changed) {
+        setVerticalEvidenceStatus("Decision was rejected because its timestamp was invalid.");
+        return;
+      }
+      setVerticalEvidence((current) => current
+        ? { ...current, observations: current.observations.map((observation) => observation.observationId === changed.observationId ? changed : observation) }
+        : current);
+      setVerticalEvidenceStatus(`${decision} decision recorded for existing observation.`);
+      return;
+    }
+    const superseded = verticalEvidenceRuntime.observations.find((item) =>
+      item.observation.wallKind === suggestion.wallKind &&
+      item.observation.physicalVerticalId === suggestion.physicalVerticalId &&
+      item.usability !== "current"
+    )?.observation;
+    const materialized = materializeVerticalEvidenceObservation({
+      suggestion,
+      operatorDecision: decision,
+      decisionAtIso,
+      floor: {
+        sourceNormalizedPolygon: sourceNormalizedFloorPolygon,
+        polygonKey: buildFloorPolygonAuthorityKey(sourceNormalizedFloorPolygon),
+        worldWidth: floorMapping.worldWidth,
+        worldDepth: floorMapping.worldDepth,
+      },
+      historicalContext: {
+        nonBinding: true,
+        cameraVersion: isCalibratedCameraActive ? CALIBRATED_CAMERA_AUTHORITY_CALIBRATION_VERSION : null,
+        cameraAppliedAtIso: isCalibratedCameraActive ? calibratedCameraSnapshot?.appliedAtIso ?? null : null,
+        frameWidth: frameSizeForImageSpace?.width ?? null,
+        frameHeight: frameSizeForImageSpace?.height ?? null,
+      },
+      supersession: superseded
+        ? {
+            supersedesObservationId: superseded.observationId,
+            reason: "operator-selected replacement after source provenance changed",
+            atIso: decisionAtIso,
+          }
+        : null,
+    });
+    if (!materialized.ok) {
+      setVerticalEvidenceStatus(`Could not record observation: ${materialized.reason}`);
+      return;
+    }
+    setVerticalEvidence((current) => ({
+      evidenceModelVersion: "vertical-evidence-model/v1",
+      observations: [...(current?.observations ?? []), materialized.observation],
+    }));
+    setVerticalEvidenceStatus(
+      `${decision} decision materialized as a non-authoritative observation.${superseded ? " It explicitly supersedes a review-required predecessor." : ""}`
+    );
+  };
+
+  const clearVerticalEvidenceDecision = (observationId: string) => {
+    const observation = verticalEvidence?.observations.find((item) => item.observationId === observationId);
+    if (!observation) return;
+    const changed = changeVerticalEvidenceDecision({
+      observation,
+      operatorDecision: "unreviewed",
+      decisionAtIso: null,
+    });
+    if (!changed) return;
+    setVerticalEvidence((current) => current
+      ? { ...current, observations: current.observations.map((item) => item.observationId === observationId ? changed : item) }
+      : current);
+    setVerticalEvidenceStatus("Operator decision cleared; immutable source and frozen anchor were preserved.");
+  };
 
   const getNormalizedOverlayPointFromClient = (clientX: number, clientY: number): FloorPoint | null => {
     const overlay = floorOverlayRef.current;
@@ -11235,6 +11388,14 @@ export default function ThreeRoomLab({
       setCeilingSupportDraft(createUnavailableCeilingDraft());
       setCeilingSupportImageBasis(null);
     }
+    setVerticalEvidence(validated.verticalEvidence);
+    setVerticalEvidenceStatus(
+      validated.verticalEvidenceDegradationReason
+        ? `Imported vertical evidence was discarded fail-closed: ${validated.verticalEvidenceDegradationReason}`
+        : validated.verticalEvidence
+          ? "Imported vertical evidence restored; currentness will be re-evaluated from current source inputs."
+          : "No vertical evidence collection in imported scene."
+    );
     if (validated.modelPath !== null) {
       setModelPathInput(validated.modelPath);
       setModelPath(validated.modelPath);
@@ -18459,6 +18620,129 @@ export default function ThreeRoomLab({
                       <div className="flex justify-between gap-2"><dt className="text-slate-500">scale ratio</dt><dd>{number(diagnostic.floorReprojection.value.scaleRatio, 3)}</dd></div>
                     </dl>
                   ) : <p className="mt-2 text-slate-400">{diagnostic.floorReprojection.reason}</p>}
+                </div>
+              </div>
+            );
+          })()}
+        </CollapsibleSection>
+
+        <CollapsibleSection
+          title="Vertical Evidence"
+          description="Non-authoritative photographed wall-edge collection for calibrated-camera/v3 research. It cannot alter camera, geometry, supports, attachments, Room Envelope, or rendered objects."
+          open={isVerticalEvidenceOpen}
+          onToggle={() => setIsVerticalEvidenceOpen((open) => !open)}
+          meta={
+            <span className="rounded bg-amber-500/15 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-amber-100">
+              non-authoritative · v1
+            </span>
+          }
+        >
+          {(() => {
+            const runtime = verticalEvidenceRuntime;
+            const number = (value: number | null, digits = 3, suffix = "") =>
+              value !== null && Number.isFinite(value) ? `${value.toFixed(digits)}${suffix}` : "unavailable";
+            const runtimeBySuggestion = new Map(
+              runtime.observations.map((item) => [item.observation.suggestionSourceId, item])
+            );
+            return (
+              <div className="space-y-4 text-[11px] text-slate-300">
+                <div className="rounded-lg border border-amber-800/70 bg-amber-950/20 p-3 text-amber-100">
+                  <p>Suggestions are ephemeral. A record is persisted only after you explicitly select or exclude it. This panel has no solver, candidate camera, score, or Apply control.</p>
+                  <p className="mt-1 text-amber-200/80">Status: {verticalEvidenceStatus}</p>
+                </div>
+                <div className="rounded-lg border border-slate-700 bg-slate-950/60 p-3">
+                  <p className="text-slate-100">Collection assessment</p>
+                  <dl className="mt-2 grid gap-x-4 gap-y-1 sm:grid-cols-2">
+                    <div className="flex justify-between gap-2"><dt className="text-slate-500">assessment</dt><dd>{runtime.assessment}</dd></div>
+                    <div className="flex justify-between gap-2"><dt className="text-slate-500">eligible selected observations</dt><dd>{runtime.observations.filter((item) => item.eligible).length}</dd></div>
+                    <div className="flex justify-between gap-2"><dt className="text-slate-500">distinct physical verticals</dt><dd>{runtime.metrics.distinctPhysicalVerticalCount}</dd></div>
+                    <div className="flex justify-between gap-2"><dt className="text-slate-500">represented walls / same-wall-only</dt><dd>{runtime.metrics.representedWallCount} / {runtime.metrics.sameWallOnly ? "yes" : "no"}</dd></div>
+                  </dl>
+                  <p className="mt-2 text-slate-500">Only <span className="text-slate-300">insufficient</span> and <span className="text-slate-300">unclassified</span> are intentionally available in Package 1.</p>
+                </div>
+
+                <div className="rounded-lg border border-slate-700 bg-slate-950/60 p-3">
+                  <p className="text-slate-100">Current wall-edge suggestions</p>
+                  {runtime.suggestions.length === 0 ? (
+                    <p className="mt-2 text-slate-400">No currently runtime-usable, derivation-successful structural wall edges are available. Refused walls contribute nothing.</p>
+                  ) : (
+                    <div className="mt-2 space-y-2">
+                      {runtime.suggestions.map((suggestion) => {
+                        const existing = runtimeBySuggestion.get(suggestion.suggestionId);
+                        return (
+                          <div key={suggestion.suggestionId} className="rounded border border-slate-800 p-2">
+                            <div className="flex flex-wrap justify-between gap-2 text-slate-100">
+                              <span>{suggestion.wallKind.replace("wall_", "")} · {suggestion.physicalVerticalId}</span>
+                              <span>{existing ? `recorded: ${existing.observation.operatorDecision}` : "ephemeral"}</span>
+                            </div>
+                            <div className="mt-1 grid gap-x-4 gap-y-1 sm:grid-cols-2 text-slate-400">
+                              <span>source: ({number(suggestion.sourceNormalizedEndpoints.lower.x)}, {number(suggestion.sourceNormalizedEndpoints.lower.y)}) → ({number(suggestion.sourceNormalizedEndpoints.upper.x)}, {number(suggestion.sourceNormalizedEndpoints.upper.y)})</span>
+                              <span>wall key: {suggestion.wallPolygonKey}</span>
+                              <span>basis: {suggestion.imageBasisId} · {suggestion.imageBasisFingerprint}</span>
+                              <span>active raw residual: {number(suggestion.sourceResidualDeg, 3, "°")}</span>
+                              <span className="break-all">suggestion ID: {suggestion.suggestionId}</span>
+                            </div>
+                            <div className="mt-2 flex flex-wrap gap-2">
+                              <button type="button" onClick={() => recordVerticalEvidenceDecision(suggestion, "selected")} className="rounded border border-emerald-600/70 px-2 py-1 text-xs text-emerald-100">Select</button>
+                              <button type="button" onClick={() => recordVerticalEvidenceDecision(suggestion, "excluded")} className="rounded border border-slate-500 px-2 py-1 text-xs text-slate-200">Exclude</button>
+                              {existing ? <button type="button" onClick={() => clearVerticalEvidenceDecision(existing.observation.observationId)} className="rounded border border-amber-600/70 px-2 py-1 text-xs text-amber-100">Clear decision</button> : null}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+
+                <div className="rounded-lg border border-slate-700 bg-slate-950/60 p-3">
+                  <p className="text-slate-100">Persisted observations and provenance</p>
+                  {runtime.observations.length === 0 ? <p className="mt-2 text-slate-400">No operator decision has materialized an observation.</p> : (
+                    <div className="mt-2 space-y-2">
+                      {runtime.observations.map((item) => {
+                        const observation = item.observation;
+                        return (
+                          <div key={observation.observationId} className="rounded border border-slate-800 p-2">
+                            <div className="flex flex-wrap justify-between gap-2 text-slate-100">
+                              <span>{observation.wallKind.replace("wall_", "")} · {observation.physicalVerticalId}</span>
+                              <span>{observation.operatorDecision} · {item.usability}{item.eligible ? " · eligible" : ""}</span>
+                            </div>
+                            <div className="mt-1 grid gap-x-4 gap-y-1 sm:grid-cols-2 text-slate-400">
+                              <span>reasons: {item.reasons.length ? item.reasons.join(" · ") : "none"}</span>
+                              <span>frozen anchor: ({number(observation.frozenWorldAnchor.x)}, 0, {number(observation.frozenWorldAnchor.z)})</span>
+                              <span>Floor provenance: {observation.floorProvenance.floorPolygonKey} · {number(observation.floorProvenance.worldWidth)} × {number(observation.floorProvenance.worldDepth)}</span>
+                              <span>historical non-binding camera/frame: {observation.historicalContext.cameraVersion ?? "none"} / {observation.historicalContext.cameraAppliedAtIso ?? "none"} / {observation.historicalContext.frameWidth ?? "—"} × {observation.historicalContext.frameHeight ?? "—"}</span>
+                              <span>decision at: {observation.decisionAtIso ?? "cleared / unreviewed"}</span>
+                              <span>active raw residual: {number(item.activeRawResidualDeg, 3, "°")}</span>
+                              <span>supersession: {observation.supersession ? `${observation.supersession.supersedesObservationId} · ${observation.supersession.reason}` : "none"}</span>
+                              <span className="break-all">observation ID: {observation.observationId}</span>
+                              <span className="break-all">anchor derivation: {observation.frozenAnchorDerivationId}</span>
+                            </div>
+                            <div className="mt-2 flex flex-wrap gap-2">
+                              <button type="button" onClick={() => clearVerticalEvidenceDecision(observation.observationId)} className="rounded border border-amber-600/70 px-2 py-1 text-xs text-amber-100">Clear decision</button>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+
+                <div className="rounded-lg border border-slate-700 bg-slate-950/60 p-3">
+                  <p className="text-slate-100">Exact physical-vertical groups and threshold-free observability</p>
+                  <div className="mt-2 space-y-2">
+                    {runtime.metrics.observationsPerPhysicalVertical.map((group) => (
+                      <div key={group.physicalVerticalId} className="rounded border border-slate-800 px-2 py-1.5 text-slate-400">
+                        <span className="text-slate-100">{group.physicalVerticalId}</span> · observations {group.observationIds.length} · endpoint disagreement {number(group.withinGroupEndpointDisagreementNormalized)} · frozen-anchor disagreement {number(group.withinGroupFrozenAnchorDisagreementNormalized)}
+                      </div>
+                    ))}
+                  </div>
+                  <dl className="mt-3 grid gap-x-4 gap-y-1 sm:grid-cols-2">
+                    <div className="flex justify-between gap-2"><dt className="text-slate-500">max normalized source separation</dt><dd>{number(runtime.metrics.normalizedSourceImageSeparation)}</dd></div>
+                    <div className="flex justify-between gap-2"><dt className="text-slate-500">max normalized world-anchor separation</dt><dd>{number(runtime.metrics.normalizedWorldAnchorSeparation)}</dd></div>
+                    <div className="flex justify-between gap-2"><dt className="text-slate-500">Floor quadrants</dt><dd>NL {runtime.metrics.floorQuadrantOccupancy.near_left} · NR {runtime.metrics.floorQuadrantOccupancy.near_right} · FL {runtime.metrics.floorQuadrantOccupancy.far_left} · FR {runtime.metrics.floorQuadrantOccupancy.far_right} · outside {runtime.metrics.floorQuadrantOccupancy.outside_or_unavailable}</dd></div>
+                    <div className="flex justify-between gap-2"><dt className="text-slate-500">raw residual summary</dt><dd>{runtime.metrics.activeRawResidualSummary.count} · {number(runtime.metrics.activeRawResidualSummary.minimumDeg, 3, "°")} to {number(runtime.metrics.activeRawResidualSummary.maximumDeg, 3, "°")} · avg {number(runtime.metrics.activeRawResidualSummary.averageDeg, 3, "°")}</dd></div>
+                  </dl>
+                  <p className="mt-2 text-slate-500">{runtime.metrics.activeRawResidualSummary.note}</p>
                 </div>
               </div>
             );

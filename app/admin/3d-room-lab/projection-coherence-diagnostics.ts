@@ -339,6 +339,28 @@ function boundaryOf(point: ProjectionCoherencePoint2, frame: NonNullable<Project
   return null;
 }
 
+/** Uses the existing structural-observation frame exclusion semantics. */
+export function isFrameCoincidentStructuralEdge(
+  lower: ProjectionCoherencePoint2,
+  upper: ProjectionCoherencePoint2,
+  frame: Pick<NonNullable<ProjectionCoherenceInput["frame"]>, "intrinsicWidth" | "intrinsicHeight">
+): boolean {
+  if (
+    !finite(lower.x) ||
+    !finite(lower.y) ||
+    !finite(upper.x) ||
+    !finite(upper.y) ||
+    !finite(frame.intrinsicWidth) ||
+    !finite(frame.intrinsicHeight) ||
+    frame.intrinsicWidth <= 0 ||
+    frame.intrinsicHeight <= 0
+  ) return false;
+  const lowerPx = { x: lower.x * frame.intrinsicWidth, y: lower.y * frame.intrinsicHeight };
+  const upperPx = { x: upper.x * frame.intrinsicWidth, y: upper.y * frame.intrinsicHeight };
+  const lowerBoundary = boundaryOf(lowerPx, frame as NonNullable<ProjectionCoherenceInput["frame"]>);
+  return !!lowerBoundary && lowerBoundary === boundaryOf(upperPx, frame as NonNullable<ProjectionCoherenceInput["frame"]>);
+}
+
 function buildCamera(input: ProjectionCoherenceInput): THREE.PerspectiveCamera | null {
   if (!input.camera || !input.frame) return null;
   const result = buildCalibratedReadOnlyProjectionCamera({
@@ -399,7 +421,7 @@ export function computeProjectionCoherenceDiagnostics(input: ProjectionCoherence
           ? signedTiltFromImageVerticalDeg(projectedLower.px, projectedUpper.px)
           : null;
         const frameTouching = touchesFrame(lowerPx, frame) || touchesFrame(upperPx, frame);
-        const frameCoincident = !!boundaryOf(lowerPx, frame) && boundaryOf(lowerPx, frame) === boundaryOf(upperPx, frame);
+        const frameCoincident = isFrameCoincidentStructuralEdge(lower, upper, frame);
         const exclusionReason =
           wall.reviewState !== "manually_confirmed" ? "not_manually_confirmed" :
           !wall.confirmationCurrent ? "confirmation_not_current" :
