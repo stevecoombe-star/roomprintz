@@ -10,7 +10,7 @@ import {
   type ProjectionCoherenceWallPolygon,
 } from "./projection-coherence-diagnostics";
 import { sourceNormToContainerNorm } from "./image-space";
-import { applyHomography, getFloorRectCorners, orderFloorCorners, solvePlaneHomography } from "./perspective-solve";
+import { applyHomography, getFloorRectCorners, solvePlaneHomography, validateOrderedFloorCorners } from "./perspective-solve";
 import { deriveWallSupport, type WallPolygon, type WallSupportKind } from "./wall-support-geometry";
 
 const frame = { width: 1118, height: 698, intrinsicWidth: 1264, intrinsicHeight: 848, imageBasisId: "basis", imageBasisFingerprint: "fingerprint" };
@@ -53,7 +53,7 @@ type CanonicalRoom = {
 const CANONICAL_ROOMS: readonly CanonicalRoom[] = [
   {
     name: "A", intrinsic: { width: 1264, height: 848 }, fovDeg: 62, mapping: { width: 4, depth: 4 },
-    floor: [{ x: 0.362, y: 0.648 }, { x: 0.6900000000000001, y: 0.647 }, { x: 1, y: 0.927 }, { x: 0.11069808467741936, y: 0.9171407926687549 }],
+    floor: [{ x: 0.11069808467741936, y: 0.9171407926687549 }, { x: 1, y: 0.927 }, { x: 0.6900000000000001, y: 0.647 }, { x: 0.362, y: 0.648 }],
     camera: { position: { x: -0.12668965921617842, y: 1.3172796068108077, z: 4.324911370435683 }, lookAt: { x: -0.153493032292473, y: 1.300344979215656, z: 3.3254140980132183 }, up: { x: 0.0071526302474179725, y: 0.9998276517543196, z: -0.017132036305902914 } },
     walls: {
       wall_back: [{ x: 0.362, y: 0.648 }, { x: 0.6900000000000001, y: 0.647 }, { x: 0.6903561827956989, y: 0.30728766326709694 }, { x: 0.3606245799731182, y: 0.31049631819550844 }],
@@ -99,7 +99,7 @@ function deriveCanonicalRoom(room: CanonicalRoom): ProjectionCoherenceInput {
   const rect = getFloorRectCorners({ widthMeters: room.mapping.width, depthMeters: room.mapping.depth });
   assert.ok(rect.ok, `${room.name} Floor rect`);
   if (!rect.ok) throw new Error(`${room.name} invalid Floor rect`);
-  const orderedFloor = orderFloorCorners(container(room.floor) as unknown as { x: number; y: number }[]);
+  const orderedFloor = validateOrderedFloorCorners(container(room.floor) as unknown as { x: number; y: number }[]);
   assert.ok(orderedFloor.ok, `${room.name} Floor order`);
   if (!orderedFloor.ok) throw new Error(`${room.name} Floor order`);
   const homography = solvePlaneHomography(

@@ -80,7 +80,7 @@ function buildCannedRawVisionResponse() {
     candidates: [
       {
         // Strong central patch. Points deliberately scrambled (FR, NL, FL, NR)
-        // so canonicalization via orderFloorCorners is actually required.
+        // so unlabelled-input canonicalization is actually required.
         quad: [
           { x: 0.62, y: 0.6 },
           { x: 0.28, y: 0.9 },

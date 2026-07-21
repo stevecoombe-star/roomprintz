@@ -5,7 +5,7 @@ import type { Vec2 } from "./perspective-solve";
 // (for the assist pipeline: intrinsic-source-normalized-v0, after the identical
 // dimensions/orientation gate). Both quads MUST already be corner-corresponded
 // in the canonical [nearLeft, nearRight, farRight, farLeft] order (the Phase
-// 2F-B mapper guarantees this via orderFloorCorners), so index i ↔ index i.
+// 2F-B mapper guarantees this via the unlabelled-input canonicalizer), so index i ↔ index i.
 //
 // This module is pure: no homography/FOV/pose math is reimplemented here. It
 // reports corner agreement, polygon IoU, and area agreement only. Camera-pose /

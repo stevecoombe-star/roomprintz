@@ -2,7 +2,7 @@
 // Pure geometry + image-space helpers for constrained trial generation.
 //
 // IMPORT BOUNDARY: this module may use pure geometry, the cover-crop image-space
-// helpers, and orderFloorCorners. It MUST NOT import the solver evaluation
+// helpers, and validateOrderedFloorCorners. It MUST NOT import the solver evaluation
 // (evaluateQuadSolvability), Apply/FOV/snapshot/scene-state, or any UI/state.
 //
 // All arc-length / corridor / separation math is performed in SOURCE-IMAGE
@@ -21,7 +21,7 @@ import type {
   ManualPhysicalSeam,
   SourceNormPoint,
 } from "./manual-floor-support-types";
-import { orderFloorCorners } from "./perspective-solve";
+import { validateOrderedFloorCorners } from "./perspective-solve";
 import {
   createEvaluableConstraintStatus,
   mergeConstraintStatus,
@@ -34,7 +34,7 @@ import {
 // trial-types + trial-geometry + annotation types/validation.
 export type { ImageFrameSize, ImageIntrinsicSize, SourceToContainerDiagnostic };
 
-// Canonical corner label -> quad index. Mirrors orderFloorCorners asArray:
+// Canonical corner label -> quad index. Mirrors the semantic Floor order:
 //   [NL, NR, FR, FL]
 export const CANONICAL_CORNER_INDEX: Record<FloorCornerLabel, number> = {
   NL: 0,
@@ -352,7 +352,7 @@ export function gateTrialQuad(params: TrialQuadGateParams): ManualTrialConstrain
   }
 
   // Canonical orderability.
-  const ordered = orderFloorCorners(quad);
+  const ordered = validateOrderedFloorCorners(quad);
   if (!ordered.ok) {
     status = mergeConstraintStatus(status, {
       hardReasons: [`canonical order failure: ${ordered.reason}`],

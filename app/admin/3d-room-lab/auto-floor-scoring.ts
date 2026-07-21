@@ -4,9 +4,9 @@ import {
   computeReprojectionError,
   floorVec3ToPlane2D,
   getFloorRectCorners,
-  orderFloorCorners,
   solvePlaneHomography,
   type Vec2,
+  validateOrderedFloorCorners,
 } from "./perspective-solve";
 
 // --- Phase 2C: Auto floor candidate geometry scoring (preview only) ---------
@@ -18,7 +18,7 @@ import {
 // Strict Phase 2C scope:
 // - No Apply, no floorPolygon mutation, no auto-apply.
 // - No real model detection / segmentation / external calls.
-// - Reuse existing perspective-solve helpers (orderFloorCorners,
+// - Reuse existing perspective-solve helpers (validateOrderedFloorCorners,
 //   solvePlaneHomography, computeReprojectionError) rather than duplicating the
 //   heavy math. Only small geometry sanity helpers live here.
 
@@ -170,8 +170,9 @@ export function scoreAutoFloorCandidateGeometry(
     polygonNotes.push("Polygon coordinates fall outside the normalized [0,1] range.");
   }
 
-  // 2) Corner ordering (reuse existing helper) --------------------------------
-  const orderingResult = allFinite ? orderFloorCorners(rawPoints) : null;
+  // 2) Semantic corner validation. Candidates have already been canonicalized
+  // at their provider boundary, so their [NL, NR, FR, FL] identities are stable.
+  const orderingResult = allFinite ? validateOrderedFloorCorners(rawPoints) : null;
   const cornerOrderingOk = !!orderingResult && orderingResult.ok;
   let cornerOrderConfidence: string | number | null = null;
   let orderedQuad: [Vec2, Vec2, Vec2, Vec2] | null = null;

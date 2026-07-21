@@ -132,12 +132,28 @@ function crossZ(a: Vec2, b: Vec2, c: Vec2): number {
   return (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
 }
 
+function pointLiesOnSegment(point: Vec2, start: Vec2, end: Vec2): boolean {
+  return (
+    Math.abs(crossZ(start, end, point)) <= EPSILON &&
+    point.x >= Math.min(start.x, end.x) - EPSILON &&
+    point.x <= Math.max(start.x, end.x) + EPSILON &&
+    point.y >= Math.min(start.y, end.y) - EPSILON &&
+    point.y <= Math.max(start.y, end.y) + EPSILON
+  );
+}
+
 function segmentsIntersect(a1: Vec2, a2: Vec2, b1: Vec2, b2: Vec2): boolean {
   const o1 = crossZ(a1, a2, b1);
   const o2 = crossZ(a1, a2, b2);
   const o3 = crossZ(b1, b2, a1);
   const o4 = crossZ(b1, b2, a2);
-  return o1 * o2 < -EPSILON && o3 * o4 < -EPSILON;
+  if (o1 * o2 < -EPSILON && o3 * o4 < -EPSILON) return true;
+  return (
+    pointLiesOnSegment(b1, a1, a2) ||
+    pointLiesOnSegment(b2, a1, a2) ||
+    pointLiesOnSegment(a1, b1, b2) ||
+    pointLiesOnSegment(a2, b1, b2)
+  );
 }
 
 function isConvexOrderedQuad(points: [Vec2, Vec2, Vec2, Vec2]): boolean {
@@ -147,7 +163,7 @@ function isConvexOrderedQuad(points: [Vec2, Vec2, Vec2, Vec2]): boolean {
     const b = points[(i + 1) % 4];
     const c = points[(i + 2) % 4];
     const cross = crossZ(a, b, c);
-    if (Math.abs(cross) < EPSILON) continue;
+    if (Math.abs(cross) < EPSILON) return false;
     const currentSign = cross > 0 ? 1 : -1;
     if (sign === 0) {
       sign = currentSign;
@@ -158,13 +174,34 @@ function isConvexOrderedQuad(points: [Vec2, Vec2, Vec2, Vec2]): boolean {
   return sign !== 0;
 }
 
-function hasDuplicatePoints(points: Vec2[]): boolean {
+function hasDuplicatePoints(points: readonly Vec2[]): boolean {
   for (let i = 0; i < points.length; i += 1) {
     for (let j = i + 1; j < points.length; j += 1) {
       if (distance2(points[i], points[j]) < 1e-6) return true;
     }
   }
   return false;
+}
+
+function validateQuadPerimeter(points: [Vec2, Vec2, Vec2, Vec2]): string | null {
+  if (hasDuplicatePoints(points)) return "Floor polygon points are degenerate (duplicates).";
+
+  for (let index = 0; index < points.length; index += 1) {
+    if (distance2(points[index], points[(index + 1) % points.length]) < 1e-6) {
+      return "Floor polygon has a degenerate perimeter edge.";
+    }
+  }
+
+  const signedArea = polygonSignedArea2D(points);
+  if (!isFiniteNumber(signedArea) || Math.abs(signedArea) < 1e-6) {
+    return "Floor polygon area is degenerate.";
+  }
+
+  if (segmentsIntersect(points[0], points[1], points[2], points[3]) || segmentsIntersect(points[1], points[2], points[3], points[0])) {
+    return "Floor polygon perimeter self-intersects.";
+  }
+  if (!isConvexOrderedQuad(points)) return "Floor polygon perimeter is non-convex.";
+  return null;
 }
 
 function gaussianSolve8x8(a: number[][], b: number[]): number[] | null {
@@ -505,11 +542,52 @@ export function projectFloorPointThroughPose(
   return projectFloorPointThroughPoseWithCameraIntrinsics(pose, intrinsicsResult.value, floorPoint2D);
 }
 
+function toOrderedFloorCorners<T extends Vec2>(points: [T, T, T, T]): OrderedFloorCorners<T> {
+  return {
+    nearLeft: points[0],
+    nearRight: points[1],
+    farRight: points[2],
+    farLeft: points[3],
+    asArray: points,
+  };
+}
+
 /**
- * Orders a 4-point floor polygon in visible-frame/container normalized coordinates.
- * Assumes image-space y-down (larger y is nearer/front).
+ * Validates the established editor/scene-state Floor correspondence
+ * [NL, NR, FR, FL] without changing any corner identity.
+ *
+ * A Floor polygon has semantic positions after it enters editor state. This
+ * helper deliberately validates the stored perimeter only; it must never infer
+ * corner roles from image-space x/y position.
  */
-export function orderFloorCorners(polygon: FloorPoint[]): SolveResult<OrderedFloorCorners<FloorPoint>> {
+export function validateOrderedFloorCorners(polygon: FloorPoint[]): SolveResult<OrderedFloorCorners<FloorPoint>> {
+  if (!Array.isArray(polygon) || polygon.length !== 4) {
+    return { ok: false, reason: "Expected exactly 4 floor polygon points." };
+  }
+  if (!polygon.every(isValidVec2)) {
+    return { ok: false, reason: "Floor polygon contains non-finite points." };
+  }
+  const orderedQuad = polygon as [FloorPoint, FloorPoint, FloorPoint, FloorPoint];
+  const perimeterError = validateQuadPerimeter(orderedQuad);
+  if (perimeterError) return { ok: false, reason: perimeterError };
+
+  return {
+    ok: true,
+    value: toOrderedFloorCorners(orderedQuad),
+    confidence: "high",
+  };
+}
+
+/**
+ * Canonicalizes a four-point provider/detector result whose point order is
+ * genuinely unknown. This is an intake-only operation: it first forms a cyclic
+ * perimeter, then derives the legacy [NL, NR, FR, FL] image-space convention.
+ *
+ * It never repairs a crossing/non-convex input by sorting it into a valid
+ * looking polygon. Callers must use validateOrderedFloorCorners once the quad
+ * has entered editor or scene state.
+ */
+export function canonicalizeUnlabelledFloorQuad(polygon: Vec2[]): SolveResult<OrderedFloorCorners<Vec2>> {
   if (!Array.isArray(polygon) || polygon.length !== 4) {
     return { ok: false, reason: "Expected exactly 4 floor polygon points." };
   }
@@ -519,58 +597,48 @@ export function orderFloorCorners(polygon: FloorPoint[]): SolveResult<OrderedFlo
   if (hasDuplicatePoints(polygon)) {
     return { ok: false, reason: "Floor polygon points are degenerate (duplicates)." };
   }
-  const area = Math.abs(polygonSignedArea2D(polygon));
-  if (!isFiniteNumber(area) || area < 1e-6) {
-    return { ok: false, reason: "Floor polygon area is degenerate." };
+
+  const centroid = polygon.reduce(
+    (sum, point) => ({ x: sum.x + point.x / polygon.length, y: sum.y + point.y / polygon.length }),
+    { x: 0, y: 0 }
+  );
+  const cyclic = [...polygon].sort(
+    (left, right) =>
+      Math.atan2(left.y - centroid.y, left.x - centroid.x) - Math.atan2(right.y - centroid.y, right.x - centroid.x)
+  ) as [Vec2, Vec2, Vec2, Vec2];
+  const cyclicError = validateQuadPerimeter(cyclic);
+  if (cyclicError) return { ok: false, reason: `Unlabelled floor polygon is invalid: ${cyclicError}` };
+
+  const indicesByDescendingY = [0, 1, 2, 3].sort((left, right) => cyclic[right].y - cyclic[left].y);
+  const nearIndices = [indicesByDescendingY[0], indicesByDescendingY[1]] as [number, number];
+  const areAdjacent =
+    (nearIndices[0] + 1) % cyclic.length === nearIndices[1] || (nearIndices[1] + 1) % cyclic.length === nearIndices[0];
+  if (!areAdjacent) {
+    return { ok: false, reason: "Unlabelled floor polygon has no unambiguous adjacent near edge." };
   }
 
-  const sortedByYDesc = [...polygon].sort((a, b) => b.y - a.y);
-  const nearCandidates = [sortedByYDesc[0], sortedByYDesc[1]].sort((a, b) => a.x - b.x);
-  const farCandidates = [sortedByYDesc[2], sortedByYDesc[3]].sort((a, b) => a.x - b.x);
-
-  const nearLeft = nearCandidates[0];
-  const nearRight = nearCandidates[1];
-  const farLeft = farCandidates[0];
-  const farRight = farCandidates[1];
-
-  const nearAvgY = (nearLeft.y + nearRight.y) / 2;
-  const farAvgY = (farLeft.y + farRight.y) / 2;
-  const nearWidth = Math.abs(nearRight.x - nearLeft.x);
-  const farWidth = Math.abs(farRight.x - farLeft.x);
-  const orderedQuad: [FloorPoint, FloorPoint, FloorPoint, FloorPoint] = [
-    nearLeft,
-    nearRight,
-    farRight,
-    farLeft,
+  const nearCandidates = nearIndices.map((index) => cyclic[index]).sort((left, right) => left.x - right.x);
+  const farCandidates = cyclic
+    .filter((_, index) => !nearIndices.includes(index))
+    .sort((left, right) => left.x - right.x);
+  const semanticQuad: [Vec2, Vec2, Vec2, Vec2] = [
+    nearCandidates[0],
+    nearCandidates[1],
+    farCandidates[1],
+    farCandidates[0],
   ];
-  const hasBowTie = segmentsIntersect(nearLeft, nearRight, farRight, farLeft);
-  const isConvex = isConvexOrderedQuad(orderedQuad);
-
-  let confidence: "high" | "low" = "high";
-  let note: string | undefined;
-
-  if (nearAvgY <= farAvgY || nearWidth < EPSILON || farWidth < EPSILON) {
-    confidence = "low";
-    note = "Near/far ordering is weak or edge widths are narrow.";
-  }
-  if (hasBowTie || !isConvex) {
-    confidence = "low";
-    note = note
-      ? `${note} Quad appears non-convex or self-intersecting.`
-      : "Quad appears non-convex or self-intersecting.";
+  const semanticError = validateQuadPerimeter(semanticQuad);
+  if (semanticError) {
+    return { ok: false, reason: `Unlabelled floor polygon cannot form a cyclic semantic perimeter: ${semanticError}` };
   }
 
+  const nearAvgY = (semanticQuad[0].y + semanticQuad[1].y) / 2;
+  const farAvgY = (semanticQuad[2].y + semanticQuad[3].y) / 2;
   return {
     ok: true,
-    value: {
-      nearLeft,
-      nearRight,
-      farRight,
-      farLeft,
-      asArray: [nearLeft, nearRight, farRight, farLeft],
-    },
-    confidence,
-    note,
+    value: toOrderedFloorCorners(semanticQuad),
+    confidence: nearAvgY > farAvgY ? "high" : "low",
+    ...(nearAvgY > farAvgY ? {} : { note: "Near/far ordering is weak." }),
   };
 }
 

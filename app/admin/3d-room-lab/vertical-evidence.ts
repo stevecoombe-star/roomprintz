@@ -8,8 +8,8 @@ import {
   applyHomography,
   floorVec3ToPlane2D,
   getFloorRectCorners,
-  orderFloorCorners,
   solvePlaneHomography,
+  validateOrderedFloorCorners,
 } from "./perspective-solve";
 import { buildWallPolygonKey, type WallPolygon, type WallSupportKind } from "./wall-support-geometry";
 
@@ -369,7 +369,9 @@ export function deriveFrozenVerticalEvidenceAnchor(input: {
     input.worldDepth <= 0 ||
     !finitePoint(input.lowerSourceNormalizedEndpoint)
   ) return { ok: false, reason: "invalid source image, Floor mapping, or lower endpoint" };
-  const orderedFloor = orderFloorCorners(input.sourceNormalizedFloorPolygon.map((point) => ({ x: point.x, y: point.y })));
+  const orderedFloor = validateOrderedFloorCorners(
+    input.sourceNormalizedFloorPolygon.map((point) => ({ x: point.x, y: point.y }))
+  );
   if (!orderedFloor.ok) return { ok: false, reason: `Floor order unavailable: ${orderedFloor.reason}` };
   const floorRect = getFloorRectCorners({ widthMeters: input.worldWidth, depthMeters: input.worldDepth });
   if (!floorRect.ok) return { ok: false, reason: `Floor mapping unavailable: ${floorRect.reason}` };

@@ -163,9 +163,9 @@ import {
   getFloorRectCorners,
   type HomographyMatrix,
   invertHomography,
-  orderFloorCorners,
   projectFloorPointThroughCameraPoseCv,
   solvePlaneHomography,
+  validateOrderedFloorCorners,
 } from "./perspective-solve";
 import {
   computeAutoBoundsNormalization,
@@ -677,10 +677,10 @@ const FALLBACK_DEFAULT_TRANSFORM: TransformState = {
 };
 
 const DEFAULT_FLOOR_POLYGON: FloorPoint[] = [
-  { x: 0.18, y: 0.76 },
-  { x: 0.82, y: 0.76 },
-  { x: 0.62, y: 0.95 },
   { x: 0.38, y: 0.95 },
+  { x: 0.62, y: 0.95 },
+  { x: 0.82, y: 0.76 },
+  { x: 0.18, y: 0.76 },
 ];
 
 const WALL_SUPPORT_KINDS: WallSupportKind[] = ["wall_back", "wall_left", "wall_right"];
@@ -2693,7 +2693,7 @@ export default function ThreeRoomLab({
       };
     }
 
-    const orderedCornersResult = orderFloorCorners(floorPolygon);
+    const orderedCornersResult = validateOrderedFloorCorners(floorPolygon);
     if (!orderedCornersResult.ok) {
       rows.push({
         label: "homography corner order",
@@ -3695,7 +3695,7 @@ export default function ThreeRoomLab({
     ]
   );
   const floorSourceCornersForWallSnap = useMemo<Partial<Record<FloorCornerKind, FloorPoint>>>(() => {
-    const ordered = orderFloorCorners(sourceNormalizedFloorPolygon);
+    const ordered = validateOrderedFloorCorners(sourceNormalizedFloorPolygon);
     if (!ordered.ok) return {};
     return {
       NL: ordered.value.nearLeft,
@@ -4427,9 +4427,9 @@ export default function ThreeRoomLab({
     if (!isCalibratedCameraActive) return unavailable("calibrated_camera_inactive");
     if (!calibratedCameraSnapshot) return unavailable("calibrated_camera_snapshot_unavailable");
 
-    const sourceOrdered = orderFloorCorners(sourceNormalizedFloorPolygon);
+    const sourceOrdered = validateOrderedFloorCorners(sourceNormalizedFloorPolygon);
     if (!sourceOrdered.ok) return unavailable(`reviewed_source_ordering_failed:${sourceOrdered.reason}`);
-    const containerOrdered = orderFloorCorners(floorPolygon);
+    const containerOrdered = validateOrderedFloorCorners(floorPolygon);
     if (!containerOrdered.ok) return unavailable(`reviewed_container_ordering_failed:${containerOrdered.reason}`);
 
     const floorFrame = attachmentSupportContexts.floor.frame;

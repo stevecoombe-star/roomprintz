@@ -240,6 +240,16 @@ function parse(value: unknown) {
 
 test("round-trips full operator-owned support source state", () => {
   const result = parse(payload());
+  assert.deepEqual(
+    result.floor.polygon,
+    [
+      { x: 0.123, y: 0.8 },
+      { x: 0.9, y: 0.8 },
+      { x: 0.8, y: 0.2 },
+      { x: 0.2, y: 0.2 },
+    ],
+    "Floor [NL, NR, FR, FL] array positions are preserved through export/import"
+  );
   assert.equal(result.supports?.floor.reviewStatus, "manually_confirmed");
   assert.deepEqual(result.supports?.walls.wall_back?.draft, payloadInput().supports.walls.wall_back?.draft);
   assert.deepEqual(result.supports?.walls.wall_left?.draft, payloadInput().supports.walls.wall_left?.draft);

@@ -35,7 +35,7 @@ export type AutoFloorCandidateConfidence = "high" | "medium" | "low";
  *
  * quadNorm uses normalized image/container coordinates in [0, 1] and is ordered
  * near-left, near-right, far-right, far-left (image y-down: larger y is nearer
- * the camera), matching the orderFloorCorners convention used elsewhere in the
+ * the camera), matching the semantic [NL, NR, FR, FL] convention used elsewhere in the
  * lab. The quad is a clean rectangular floor patch, not the visible floor
  * outline.
  */
