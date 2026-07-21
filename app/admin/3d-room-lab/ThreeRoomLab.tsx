@@ -33,6 +33,7 @@ import {
   type VerticalEvidenceSection,
   type VerticalEvidenceSuggestion,
 } from "./vertical-evidence";
+import { evaluateV3CandidateObservability } from "./v3-candidate-observability";
 import { buildRoomEnvelopeContextKey } from "./room-envelope-identity";
 import { reconcileRoomEnvelope } from "./room-envelope-reconciliation";
 import type {
@@ -1508,6 +1509,7 @@ export default function ThreeRoomLab({
   const [isRoomEnvelopeOpen, setIsRoomEnvelopeOpen] = useState(true);
   const [isProjectionCoherenceDiagnosticsOpen, setIsProjectionCoherenceDiagnosticsOpen] = useState(false);
   const [isVerticalEvidenceOpen, setIsVerticalEvidenceOpen] = useState(false);
+  const [isV3CandidateObservabilityOpen, setIsV3CandidateObservabilityOpen] = useState(false);
   const [verticalEvidence, setVerticalEvidence] = useState<VerticalEvidenceSection | null>(null);
   const [verticalEvidenceStatus, setVerticalEvidenceStatus] = useState("No operator decisions recorded.");
   const [milestoneOperatorObservations, setMilestoneOperatorObservations] = useState(createEmptyOperatorObservations);
@@ -4709,6 +4711,29 @@ export default function ThreeRoomLab({
       verticalEvidence,
       verticalEvidenceSuggestions,
       wallSupportDrafts,
+    ]
+  );
+  const v3CandidateObservability = useMemo(
+    () =>
+      evaluateV3CandidateObservability({
+        isCalibratedCameraActive,
+        calibratedCameraSnapshot,
+        qualifiedImageBasis,
+        sourceNormalizedFloorPolygon,
+        floorMapping: {
+          worldWidth: floorMapping.worldWidth,
+          worldDepth: floorMapping.worldDepth,
+        },
+        verticalEvidenceRuntimeObservations: verticalEvidenceRuntime,
+      }),
+    [
+      isCalibratedCameraActive,
+      calibratedCameraSnapshot,
+      qualifiedImageBasis,
+      sourceNormalizedFloorPolygon,
+      floorMapping.worldWidth,
+      floorMapping.worldDepth,
+      verticalEvidenceRuntime,
     ]
   );
   // Package 5 observes existing authority and derived runtime facts. It does not
@@ -18743,6 +18768,147 @@ export default function ThreeRoomLab({
                     <div className="flex justify-between gap-2"><dt className="text-slate-500">raw residual summary</dt><dd>{runtime.metrics.activeRawResidualSummary.count} · {number(runtime.metrics.activeRawResidualSummary.minimumDeg, 3, "°")} to {number(runtime.metrics.activeRawResidualSummary.maximumDeg, 3, "°")} · avg {number(runtime.metrics.activeRawResidualSummary.averageDeg, 3, "°")}</dd></div>
                   </dl>
                   <p className="mt-2 text-slate-500">{runtime.metrics.activeRawResidualSummary.note}</p>
+                </div>
+              </div>
+            );
+          })()}
+        </CollapsibleSection>
+
+        <CollapsibleSection
+          title="Calibrated Camera V3 Candidate — Research Only"
+          description="Read-only candidate observability for the active calibrated-camera/v2 snapshot. It cannot alter the active camera, scene, or persisted state."
+          open={isV3CandidateObservabilityOpen}
+          onToggle={() => setIsV3CandidateObservabilityOpen((open) => !open)}
+          meta={
+            <span className="rounded bg-violet-500/15 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-violet-100">
+              read-only · non-authoritative
+            </span>
+          }
+        >
+          {(() => {
+            const evaluation = v3CandidateObservability;
+            const number = (value: number | null | undefined, digits = 3, suffix = "") =>
+              value !== null && value !== undefined && Number.isFinite(value) ? `${value.toFixed(digits)}${suffix}` : "unavailable";
+            const radiansToDegrees = (value: number | null | undefined) =>
+              value !== null && value !== undefined && Number.isFinite(value) ? value * 180 / Math.PI : null;
+            if (evaluation.kind === "unavailable") {
+              return (
+                <div className="space-y-3 text-[11px] text-slate-300">
+                  <div className="rounded-lg border border-amber-800/70 bg-amber-950/20 p-3">
+                    <p className="text-amber-100">Candidate evaluation unavailable: {evaluation.reason}</p>
+                    {evaluation.detail ? <p className="mt-1 text-amber-200/80">{evaluation.detail}</p> : null}
+                    <p className="mt-2 text-slate-300">The active camera and scene are unchanged.</p>
+                  </div>
+                </div>
+              );
+            }
+            const { provenance, result } = evaluation;
+            const theta = result.theta;
+            const candidatePose = result.candidatePose;
+            const probeTheta = result.verticalOnlyProbe.theta;
+            return (
+              <div className="space-y-4 text-[11px] text-slate-300">
+                <div className="rounded-lg border border-violet-800/70 bg-violet-950/20 p-3 text-violet-100">
+                  <p>Read-only · non-authoritative. This is an ephemeral Package 2A experiment report; it has no Apply, persistence, preview-camera, or scene-mutation behavior.</p>
+                </div>
+
+                <div className="rounded-lg border border-slate-700 bg-slate-950/60 p-3">
+                  <p className="text-slate-100">Provenance and safety metadata</p>
+                  <dl className="mt-2 grid gap-x-4 gap-y-1 sm:grid-cols-2">
+                    <div className="flex justify-between gap-2"><dt className="text-slate-500">camera applied</dt><dd>{provenance.cameraAppliedAtIso}</dd></div>
+                    <div className="flex justify-between gap-2"><dt className="text-slate-500">calibration version</dt><dd>{provenance.calibrationVersion}</dd></div>
+                    <div className="flex justify-between gap-2"><dt className="text-slate-500">image basis ID</dt><dd>{provenance.imageBasisId}</dd></div>
+                    <div className="flex justify-between gap-2"><dt className="text-slate-500">image basis fingerprint</dt><dd className="break-all">{provenance.imageBasisFingerprint}</dd></div>
+                    <div className="flex justify-between gap-2"><dt className="text-slate-500">Floor-polygon key</dt><dd className="max-w-[20rem] truncate">{provenance.floorPolygonKey}</dd></div>
+                    <div className="flex justify-between gap-2"><dt className="text-slate-500">candidate fingerprint</dt><dd>{result.fingerprint}</dd></div>
+                    <div className="flex justify-between gap-2"><dt className="text-slate-500">applied</dt><dd>{String(result.safety.applied)}</dd></div>
+                    <div className="flex justify-between gap-2"><dt className="text-slate-500">authoritative</dt><dd>{String(result.safety.authoritative)}</dd></div>
+                    <div className="flex justify-between gap-2"><dt className="text-slate-500">persisted</dt><dd>{String(result.safety.persisted)}</dd></div>
+                    <div className="flex justify-between gap-2"><dt className="text-slate-500">active camera unchanged</dt><dd>{String(result.safety.activeCameraUnchanged)}</dd></div>
+                  </dl>
+                </div>
+
+                <div className="rounded-lg border border-slate-700 bg-slate-950/60 p-3">
+                  <p className="text-slate-100">Solver status and evidence counts</p>
+                  <dl className="mt-2 grid gap-x-4 gap-y-1 sm:grid-cols-2">
+                    <div className="flex justify-between gap-2"><dt className="text-slate-500">primary status</dt><dd>{result.status}</dd></div>
+                    <div className="flex justify-between gap-2"><dt className="text-slate-500">warnings</dt><dd>{result.warnings.length ? result.warnings.join(" · ") : "none"}</dd></div>
+                    <div className="flex justify-between gap-2"><dt className="text-slate-500">exploratory</dt><dd>{result.exploratory?.outcome ?? "none"}</dd></div>
+                    <div className="flex justify-between gap-2"><dt className="text-slate-500">active bounds</dt><dd>{result.activeBounds.length ? result.activeBounds.join(" · ") : "none"}</dd></div>
+                    <div className="flex justify-between gap-2"><dt className="text-slate-500">persisted / selected</dt><dd>{provenance.observationCounts.persisted} / {provenance.observationCounts.selected}</dd></div>
+                    <div className="flex justify-between gap-2"><dt className="text-slate-500">current / eligible</dt><dd>{provenance.observationCounts.current} / {provenance.observationCounts.eligible}</dd></div>
+                    <div className="flex justify-between gap-2"><dt className="text-slate-500">admitted observations</dt><dd>{result.admittedObservationIds.length}</dd></div>
+                    <div className="flex justify-between gap-2"><dt className="text-slate-500">distinct physical verticals</dt><dd>{result.distinctPhysicalVerticalCount}</dd></div>
+                  </dl>
+                  <p className="mt-3 text-slate-100">Excluded observations</p>
+                  {result.excludedObservations.length ? (
+                    <div className="mt-1 space-y-1 text-slate-400">
+                      {result.excludedObservations.map((item) => <p key={item.observationId}>{item.observationId} · {item.reason}</p>)}
+                    </div>
+                  ) : <p className="mt-1 text-slate-400">none</p>}
+                </div>
+
+                <div className="rounded-lg border border-slate-700 bg-slate-950/60 p-3">
+                  <p className="text-slate-100">V2-to-candidate pose delta</p>
+                  <p className="mt-1 text-slate-500">Angular signs are right-hand-rule corrections around world +X and world +Z. Translations are metres in the authoritative Y-up world frame.</p>
+                  <dl className="mt-2 grid gap-x-4 gap-y-1 sm:grid-cols-2">
+                    <div className="flex justify-between gap-2"><dt className="text-slate-500">omega X / omega Z</dt><dd>{number(radiansToDegrees(theta?.omegaXRad), 4, "°")} / {number(radiansToDegrees(theta?.omegaZRad), 4, "°")}</dd></div>
+                    <div className="flex justify-between gap-2"><dt className="text-slate-500">swing magnitude</dt><dd>{theta ? number(Math.hypot(theta.omegaXRad, theta.omegaZRad) * 180 / Math.PI, 4, "°") : "unavailable"}</dd></div>
+                    <div className="flex justify-between gap-2"><dt className="text-slate-500">delta X / Y / Z</dt><dd>{number(theta?.deltaTxM, 4, " m")} / {number(theta?.deltaTyM, 4, " m")} / {number(theta?.deltaTzM, 4, " m")}</dd></div>
+                    <div className="flex justify-between gap-2"><dt className="text-slate-500">candidate FOV</dt><dd>{number(candidatePose?.verticalFovDeg, 3, "°")}</dd></div>
+                    <div className="flex justify-between gap-2"><dt className="text-slate-500">active v2 position</dt><dd>{calibratedCameraSnapshot ? `${number(calibratedCameraSnapshot.pose.position.x)} / ${number(calibratedCameraSnapshot.pose.position.y)} / ${number(calibratedCameraSnapshot.pose.position.z)}` : "unavailable"}</dd></div>
+                    <div className="flex justify-between gap-2"><dt className="text-slate-500">candidate position</dt><dd>{candidatePose ? `${number(candidatePose.position.x)} / ${number(candidatePose.position.y)} / ${number(candidatePose.position.z)}` : "unavailable"}</dd></div>
+                    <div className="flex justify-between gap-2"><dt className="text-slate-500">active v2 lookAt</dt><dd>{calibratedCameraSnapshot ? `${number(calibratedCameraSnapshot.pose.lookAt.x)} / ${number(calibratedCameraSnapshot.pose.lookAt.y)} / ${number(calibratedCameraSnapshot.pose.lookAt.z)}` : "unavailable"}</dd></div>
+                    <div className="flex justify-between gap-2"><dt className="text-slate-500">candidate lookAt</dt><dd>{candidatePose ? `${number(candidatePose.lookAt.x)} / ${number(candidatePose.lookAt.y)} / ${number(candidatePose.lookAt.z)}` : "unavailable"}</dd></div>
+                    <div className="flex justify-between gap-2"><dt className="text-slate-500">active v2 up</dt><dd>{calibratedCameraSnapshot ? `${number(calibratedCameraSnapshot.pose.up.x)} / ${number(calibratedCameraSnapshot.pose.up.y)} / ${number(calibratedCameraSnapshot.pose.up.z)}` : "unavailable"}</dd></div>
+                    <div className="flex justify-between gap-2"><dt className="text-slate-500">candidate up</dt><dd>{candidatePose ? `${number(candidatePose.up.x)} / ${number(candidatePose.up.y)} / ${number(candidatePose.up.z)}` : "unavailable"}</dd></div>
+                  </dl>
+                </div>
+
+                <div className="rounded-lg border border-slate-700 bg-slate-950/60 p-3">
+                  <p className="text-slate-100">Residual stages</p>
+                  <dl className="mt-2 grid gap-x-4 gap-y-1 sm:grid-cols-2">
+                    <div className="flex justify-between gap-2"><dt className="text-slate-500">initial / final objective</dt><dd>{number(result.initial.objective, 5)} / {number(result.final.objective, 5)}</dd></div>
+                    <div className="flex justify-between gap-2"><dt className="text-slate-500">initial / final Floor RMS</dt><dd>{number(result.initial.floorRmsPx, 4, " px")} / {number(result.final.floorRmsPx, 4, " px")}</dd></div>
+                    <div className="flex justify-between gap-2"><dt className="text-slate-500">initial vertical summary</dt><dd>unavailable (not emitted by Package 2A)</dd></div>
+                    <div className="flex justify-between gap-2"><dt className="text-slate-500">final group vertical mean abs</dt><dd>{number(result.final.meanAbsGroupVerticalDeg, 4, "°")}</dd></div>
+                    <div className="flex justify-between gap-2"><dt className="text-slate-500">vertical-only probe</dt><dd>{result.verticalOnlyProbe.outcome}</dd></div>
+                    <div className="flex justify-between gap-2"><dt className="text-slate-500">probe Floor RMS</dt><dd>{number(result.verticalOnlyProbe.floorRmsPx, 4, " px")}</dd></div>
+                    <div className="flex justify-between gap-2"><dt className="text-slate-500">probe omega X / Z</dt><dd>{number(radiansToDegrees(probeTheta?.omegaXRad), 4, "°")} / {number(radiansToDegrees(probeTheta?.omegaZRad), 4, "°")}</dd></div>
+                    <div className="flex justify-between gap-2"><dt className="text-slate-500">probe translation X / Y / Z</dt><dd>{number(probeTheta?.deltaTxM, 4, " m")} / {number(probeTheta?.deltaTyM, 4, " m")} / {number(probeTheta?.deltaTzM, 4, " m")}</dd></div>
+                  </dl>
+                  <p className="mt-3 text-slate-100">Per-observation residuals</p>
+                  {result.observations.length ? result.observations.map((item) => (
+                    <p key={item.observationId} className="mt-1 text-slate-400">{item.observationId} · {item.physicalVerticalId} · residual {number(item.residualRad * 180 / Math.PI, 4, "°")} · robust influence {number(item.robustInfluence, 4)}</p>
+                  )) : <p className="mt-1 text-slate-400">none</p>}
+                  <p className="mt-3 text-slate-100">Per-physical-group residuals and duplicate ranges</p>
+                  {result.groups.length ? result.groups.map((group) => (
+                    <p key={group.physicalVerticalId} className="mt-1 text-slate-400">{group.physicalVerticalId} · mean {number(group.meanResidualRad * 180 / Math.PI, 4, "°")} · range {number(group.residualRangeRad * 180 / Math.PI, 4, "°")} · observations {group.observationIds.join(", ")}</p>
+                  )) : <p className="mt-1 text-slate-400">none</p>}
+                  <p className="mt-2 text-slate-500">Vertical-only probe per-observation residuals are unavailable because Package 2A does not emit them.</p>
+                </div>
+
+                <div className="rounded-lg border border-slate-700 bg-slate-950/60 p-3">
+                  <p className="text-slate-100">Solver diagnostics</p>
+                  <dl className="mt-2 grid gap-x-4 gap-y-1 sm:grid-cols-2">
+                    <div className="flex justify-between gap-2"><dt className="text-slate-500">conditioning</dt><dd>{result.conditioning ? `${result.conditioning.passes ? "passes" : "fails"} · ${result.conditioning.singularValues.map((value) => number(value, 5)).join(" / ")}` : "unavailable"}</dd></div>
+                    <div className="flex justify-between gap-2"><dt className="text-slate-500">bimodality</dt><dd>{result.bimodality ? `${result.bimodality.verdict} · largest gap ${number(result.bimodality.largestGapDeg, 4, "°")}` : "unavailable"}</dd></div>
+                    <div className="flex justify-between gap-2"><dt className="text-slate-500">optimizer termination</dt><dd>{result.optimizer.convergenceReason ?? "unavailable"}</dd></div>
+                    <div className="flex justify-between gap-2"><dt className="text-slate-500">iterations / rejected / clamped</dt><dd>{result.optimizer.iterations} / {result.optimizer.rejectedTrials} / {result.optimizer.clampedTrialProposals}</dd></div>
+                    <div className="flex justify-between gap-2"><dt className="text-slate-500">optimizer ran</dt><dd>{String(result.optimizer.ran)}</dd></div>
+                    <div className="flex justify-between gap-2"><dt className="text-slate-500">cross-block tension</dt><dd>{result.crossBlock?.evaluated ? `${String(result.crossBlock.tension)} · unresolved ${String(result.crossBlock.unresolved)}` : result.crossBlock?.reason ?? "unavailable"}</dd></div>
+                  </dl>
+                  {result.bimodality ? (
+                    <div className="mt-2 space-y-1 text-slate-400">
+                      <p>Bimodality groups: {result.bimodality.sortedGroupResidualsDeg.map((item) => `${item.physicalVerticalId} ${number(item.residualDeg, 4, "°")}`).join(" · ") || "none"}</p>
+                      <p>Split index / families: {result.bimodality.splitIndex ?? "unavailable"} / {result.bimodality.families.map((item) => `${item.physicalVerticalId} ${item.family}`).join(" · ") || "none"}</p>
+                      <p>Left count / mean / median / MAD: {result.bimodality.left.count} / {number(result.bimodality.left.meanDeg, 4, "°")} / {number(result.bimodality.left.medianDeg, 4, "°")} / {number(result.bimodality.left.madDeg, 4, "°")}</p>
+                      <p>Right count / mean / median / MAD: {result.bimodality.right.count} / {number(result.bimodality.right.meanDeg, 4, "°")} / {number(result.bimodality.right.medianDeg, 4, "°")} / {number(result.bimodality.right.madDeg, 4, "°")}</p>
+                    </div>
+                  ) : null}
+                  {result.crossBlock?.evaluated ? (
+                    <p className="mt-2 text-slate-400">Cross-block probe: Floor RMS {number(result.crossBlock.floorRmsAtV2Px, 4, " px")} → {number(result.crossBlock.floorRmsAtProbePx, 4, " px")}; vertical mean abs {number(result.crossBlock.verticalMeanAbsAtV2Deg, 4, "°")} → {number(result.crossBlock.verticalMeanAbsAtProbeDeg, 4, "°")}; improvement {number(result.crossBlock.probeVerticalImprovementDeg, 4, "°")}; Floor cost {number(result.crossBlock.probeFloorCostPx, 4, " px")}.</p>
+                  ) : null}
                 </div>
               </div>
             );
