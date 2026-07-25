@@ -297,11 +297,15 @@ function sourcePx(point: V3Vec2, snapshot: V3ActiveV2Snapshot): V3Vec2 | null {
   const { intrinsicWidth: width, intrinsicHeight: height } = snapshot.imageBasis;
   return finite(point.x, point.y, width, height) ? { x: point.x * width, y: point.y * height } : null;
 }
-function orderedFloor(polygon: readonly V3Vec2[]): V3Vec2[] | null {
+/**
+ * Validates the applied Floor authority without assigning semantic identities.
+ *
+ * activeV2.sourceFloorPolygon is already ordered [NL, NR, FR, FL]; screen
+ * position cannot safely recover that identity for an oblique room view.
+ */
+export function v3ValidatedSemanticFloor(polygon: readonly V3Vec2[]): readonly [V3Vec2, V3Vec2, V3Vec2, V3Vec2] | null {
   if (polygon.length !== 4 || !polygon.every(p => finite(p.x, p.y))) return null;
-  const y = [...polygon].sort((a, b) => b.y - a.y);
-  const near = [y[0], y[1]].sort((a, b) => a.x - b.x); const far = [y[2], y[3]].sort((a, b) => a.x - b.x);
-  return [near[0], near[1], far[1], far[0]];
+  return [polygon[0], polygon[1], polygon[2], polygon[3]];
 }
 function floorCorners(snapshot: V3ActiveV2Snapshot): V3Vec3[] | null {
   const { worldWidth: w, worldDepth: d } = snapshot.floor;
@@ -329,7 +333,7 @@ export function v3PseudoHuberDerivative(z: number, delta: number): number { retu
 export function v3RobustInfluence(z: number, delta: number): number { return 1 / Math.sqrt(1 + z*z/(delta*delta)); }
 
 function evaluate(snapshot: V3ActiveV2Snapshot, admitted: readonly Admitted[], theta: V3Theta, config: V3SolverConfig, floorWeight = 1): Evaluation {
-  const corners = floorCorners(snapshot); const annotation = orderedFloor(snapshot.sourceFloorPolygon);
+  const corners = floorCorners(snapshot); const annotation = v3ValidatedSemanticFloor(snapshot.sourceFloorPolygon);
   if (!corners || !annotation) return { valid: false, reason: "invalid_floor", floorResidualsPx: [], verticals: [], objective: Number.NaN, floorRmsPx: null, meanAbsGroupVerticalDeg: null };
   const floorResidualsPx: number[] = [];
   for (let i = 0; i < 4; i += 1) {

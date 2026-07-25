@@ -12,6 +12,7 @@ import {
   v3ProjectIntrinsic,
   v3PseudoHuberDerivative,
   v3RobustInfluence,
+  v3ValidatedSemanticFloor,
   v3WrapToMinusPiPlusPi,
   V3_SOLVER_CONFIG,
   V3_SOLVER_CONFIG_VERSION,
@@ -26,6 +27,98 @@ import { buildSyntheticCameraFixtures, syntheticFixtureById, type SyntheticCamer
 
 const ZERO: V3Theta = { omegaXRad: 0, omegaZRad: 0, deltaTxM: 0, deltaTyM: 0, deltaTzM: 0 };
 const R = Math.PI / 180;
+
+const ROOM_C_SOURCE_FLOOR = [
+  { x: 0.042, y: 0.9653019205454482 }, // NL
+  { x: 0.5717160898297491, y: 0.6739386656908225 }, // NR
+  { x: 0.4119999999999999, y: 0.6180000000000001 }, // FR
+  { x: 0.07800000000000003, y: 0.6950000000000001 }, // FL
+] as const;
+
+const ROOM_C_SNAPSHOT: V3ActiveV2Snapshot = {
+  authorityVersion: "room-c-applied-v2/v1",
+  appliedAtIso: "2026-07-24T00:00:00.000Z",
+  calibrationVersion: "room-c-fov79/v1",
+  solverIdentifier: "room-c-active-v2",
+  frameSize: { width: 1118, height: 698 },
+  imageBasis: { id: "room-c", fingerprint: "room-c-rebuilt-current", intrinsicWidth: 7360, intrinsicHeight: 4912 },
+  verticalFovDeg: 79,
+  worldToCameraCv: [
+    0.690933160926, 0.004025651341, 0.722907436166,
+    0.018145976802, -0.999765997462, -0.011775985908,
+    0.722690867978, 0.021254280734, -0.690844530189,
+  ],
+  position: { x: -2.2055247589696, y: 1.5239039479254053, z: 4.991732874351085 },
+  sourceFloorPolygon: ROOM_C_SOURCE_FLOOR,
+  floor: { polygonKey: "room-c-floor", worldWidth: 4.8, worldDepth: 4.0 },
+};
+
+const ROOM_C_VERTICAL_EVIDENCE: readonly V3CandidateObservation[] = [
+  {
+    observationId: "room-c-back-left", physicalVerticalId: "back_left",
+    sourceNormalizedEndpoints: { lower: { x: 0.07800000000000003, y: 0.6950000000000001 }, upper: { x: 0.07975610439068101, y: 0.22119989357881983 } },
+    frozenWorldAnchor: { x: -2.4000000000000017, y: 0, z: -2.0000000000000036 },
+    wallPolygonKey: "room-c-back", frozenAnchorDerivationId: "room-c-applied-floor/v1",
+  },
+  {
+    observationId: "room-c-back-right-back", physicalVerticalId: "back_right",
+    sourceNormalizedEndpoints: { lower: { x: 0.4119999999999999, y: 0.6180000000000001 }, upper: { x: 0.4103767641129033, y: 0.33614154282591974 } },
+    frozenWorldAnchor: { x: 2.3999999999999986, y: 0, z: -2.0000000000000084 },
+    wallPolygonKey: "room-c-back", frozenAnchorDerivationId: "room-c-applied-floor/v1",
+  },
+  {
+    observationId: "room-c-back-right-right", physicalVerticalId: "back_right",
+    sourceNormalizedEndpoints: { lower: { x: 0.4119999999999999, y: 0.6180000000000001 }, upper: { x: 0.4108667954749104, y: 0.33605238385360725 } },
+    frozenWorldAnchor: { x: 2.3999999999999986, y: 0, z: -2.0000000000000084 },
+    wallPolygonKey: "room-c-right", frozenAnchorDerivationId: "room-c-applied-floor/v1",
+  },
+  {
+    observationId: "room-c-front-right", physicalVerticalId: "front_right",
+    sourceNormalizedEndpoints: { lower: { x: 0.5717160898297491, y: 0.6739386656908225 }, upper: { x: 0.5670537914426524, y: 0.25118877614839996 } },
+    frozenWorldAnchor: { x: 2.399999999999997, y: 0, z: 1.9999999999999987 },
+    wallPolygonKey: "room-c-right", frozenAnchorDerivationId: "room-c-applied-floor/v1",
+  },
+].map(observation => ({
+  ...observation,
+  imageBasisId: ROOM_C_SNAPSHOT.imageBasis.id,
+  imageBasisFingerprint: ROOM_C_SNAPSHOT.imageBasis.fingerprint,
+  intrinsicWidth: ROOM_C_SNAPSHOT.imageBasis.intrinsicWidth,
+  intrinsicHeight: ROOM_C_SNAPSHOT.imageBasis.intrinsicHeight,
+  evidenceModelVersion: "vertical-evidence-model/v1",
+  suggestionGeneratorVersion: "wall-edge-suggestions/v1",
+  operatorDecision: "selected" as const,
+  decisionAtIso: "2026-07-22T03:40:27.123Z",
+  current: true,
+  eligible: true,
+}));
+
+function roomCObservations(): V3CandidateObservation[] {
+  return ROOM_C_VERTICAL_EVIDENCE.map(observation => structuredClone(observation));
+}
+
+function roomCProductionControlFloorRms(): number {
+  const corners = [
+    { x: -2.4, y: 0, z: 2 }, { x: 2.4, y: 0, z: 2 },
+    { x: 2.4, y: 0, z: -2 }, { x: -2.4, y: 0, z: -2 },
+  ];
+  const { intrinsicWidth: width, intrinsicHeight: height } = ROOM_C_SNAPSHOT.imageBasis;
+  const scale = Math.max(ROOM_C_SNAPSHOT.frameSize.width / width, ROOM_C_SNAPSHOT.frameSize.height / height);
+  const focal = ROOM_C_SNAPSHOT.frameSize.height / (2 * Math.tan(ROOM_C_SNAPSHOT.verticalFovDeg * R / 2)) / scale;
+  const residuals = corners.flatMap((corner, index) => {
+    const dx = corner.x - ROOM_C_SNAPSHOT.position.x;
+    const dy = corner.y - ROOM_C_SNAPSHOT.position.y;
+    const dz = corner.z - ROOM_C_SNAPSHOT.position.z;
+    const m = ROOM_C_SNAPSHOT.worldToCameraCv;
+    const camera = {
+      x: m[0] * dx + m[1] * dy + m[2] * dz,
+      y: m[3] * dx + m[4] * dy + m[5] * dz,
+      z: m[6] * dx + m[7] * dy + m[8] * dz,
+    };
+    const observed = ROOM_C_SOURCE_FLOOR[index];
+    return [focal * camera.x / camera.z + width / 2 - observed.x * width, focal * camera.y / camera.z + height / 2 - observed.y * height];
+  });
+  return Math.sqrt(residuals.reduce((sum, residual) => sum + residual * residual, 0) / residuals.length);
+}
 
 function matMul(a: V3Matrix3, b: V3Matrix3): V3Matrix3 {
   return [
@@ -148,6 +241,64 @@ test("v2 camera reprojects exact synthetic Floor in source intrinsic pixels", ()
   const expected = fixture.floorEvidencePixels;
   assert.ok(Math.max(...projected.map((p, i) => Math.hypot(p.x - expected[i].x, p.y - expected[i].y))) < 1e-7);
   assert.ok(projected[0].y > projected[2].y, "intrinsic projection remains y-down");
+});
+
+test("Room C preserves applied semantic Floor order despite NR appearing above FL", () => {
+  const inputBefore = structuredClone(ROOM_C_SOURCE_FLOOR);
+  const semantic = v3ValidatedSemanticFloor(ROOM_C_SOURCE_FLOOR);
+  assert.ok(semantic);
+  assert.ok(ROOM_C_SOURCE_FLOOR[1].y < ROOM_C_SOURCE_FLOOR[3].y, "NR is above FL in screen space");
+  assert.deepEqual(semantic, ROOM_C_SOURCE_FLOOR);
+  assert.equal(semantic[0], ROOM_C_SOURCE_FLOOR[0], "NL remains slot 0");
+  assert.equal(semantic[1], ROOM_C_SOURCE_FLOOR[1], "NR remains slot 1");
+  assert.equal(semantic[2], ROOM_C_SOURCE_FLOOR[2], "FR remains slot 2");
+  assert.equal(semantic[3], ROOM_C_SOURCE_FLOOR[3], "FL remains slot 3");
+  assert.notDeepEqual(semantic, [ROOM_C_SOURCE_FLOOR[0], ROOM_C_SOURCE_FLOOR[3], ROOM_C_SOURCE_FLOOR[1], ROOM_C_SOURCE_FLOOR[2]]);
+  assert.deepEqual(ROOM_C_SOURCE_FLOOR, inputBefore);
+});
+
+test("Room C theta-zero Floor RMS uses the independent applied-v2 semantic control", () => {
+  const control = roomCProductionControlFloorRms();
+  const measured = v3EvaluateExactObjective(ROOM_C_SNAPSHOT, roomCObservations(), ZERO);
+  assert.equal(measured.valid, true);
+  assert.ok(Math.abs(control - 6.9213) < 0.01, `unexpected production control RMS ${control}`);
+  assert.ok((measured.floorRmsPx ?? Infinity) < 20);
+  assert.ok((measured.floorRmsPx ?? Infinity) < 100, "must not resemble the 1,614 px correspondence failure");
+  assert.ok(Math.abs((measured.floorRmsPx ?? Infinity) - control) < 1e-8);
+});
+
+test("Room C Floor slots pair metric corners with the matching semantic source index", () => {
+  const semantic = v3ValidatedSemanticFloor(ROOM_C_SOURCE_FLOOR);
+  assert.ok(semantic);
+  assert.deepEqual(semantic[0], { x: 0.042, y: 0.9653019205454482 }); // metric NL
+  assert.deepEqual(semantic[1], { x: 0.5717160898297491, y: 0.6739386656908225 }); // metric NR
+  assert.deepEqual(semantic[2], { x: 0.4119999999999999, y: 0.6180000000000001 }); // metric FR
+  assert.deepEqual(semantic[3], { x: 0.07800000000000003, y: 0.6950000000000001 }); // metric FL
+  assert.notDeepEqual(semantic, [ROOM_C_SOURCE_FLOOR[0], ROOM_C_SOURCE_FLOOR[3], ROOM_C_SOURCE_FLOOR[1], ROOM_C_SOURCE_FLOOR[2]]);
+});
+
+test("Room C full solver and vertical-only probe retain truthful Floor correspondence", () => {
+  const observations = roomCObservations();
+  const snapshotBefore = structuredClone(ROOM_C_SNAPSHOT);
+  const observationsBefore = structuredClone(observations);
+  const first = solveV3Candidate({ activeV2: ROOM_C_SNAPSHOT, observations });
+  const second = solveV3Candidate({ activeV2: ROOM_C_SNAPSHOT, observations });
+  assert.deepEqual(first, second);
+  assert.deepEqual(ROOM_C_SNAPSHOT, snapshotBefore);
+  assert.deepEqual(observations, observationsBefore);
+  assert.ok(Math.abs((first.initial.floorRmsPx ?? Infinity) - 6.9213) < 0.01);
+  assert.ok((first.final.floorRmsPx ?? Infinity) < 3);
+  assert.equal(first.status, "candidate_ready");
+  assert.deepEqual(first.activeBounds, []);
+  assert.equal(first.optimizer.convergenceReason, "scaled_step");
+  assert.equal(first.verticalOnlyProbe.outcome, "interior_converged");
+  assert.ok((first.verticalOnlyProbe.floorRmsPx ?? Infinity) < 100, "vertical-only reporting must not resemble the 1,614 px correspondence failure");
+  assert.equal(first.crossBlock?.evaluated, true);
+  if (!first.crossBlock?.evaluated) throw new Error("Room C vertical-only probe was unavailable.");
+  assert.ok(first.crossBlock.verticalMeanAbsAtV2Deg > 1 && first.crossBlock.verticalMeanAbsAtV2Deg < 1.1);
+  assert.ok(first.crossBlock.verticalMeanAbsAtProbeDeg < 0.1);
+  assert.ok(first.crossBlock.verticalMeanAbsAtProbeDeg < first.crossBlock.verticalMeanAbsAtV2Deg);
+  assert.equal(first.fingerprint, second.fingerprint);
 });
 
 test("pure swing reconstructs from actual candidate matrices without hidden Y twist", () => {
