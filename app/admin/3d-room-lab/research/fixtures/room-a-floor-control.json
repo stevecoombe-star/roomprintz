@@ -1,0 +1,31 @@
+{
+  "fixtureId": "afc-r1-room-a-floor-control",
+  "roomLabel": "Room A",
+  "imageBasis": {
+    "basisId": "room-a-original",
+    "basisFingerprint": "afc-r1-room-a-original-v1",
+    "decodedWidth": 1264,
+    "decodedHeight": 848,
+    "coordinateSpaceVersion": {
+      "decoderId": "afc-r1-control",
+      "normalizationPolicyVersion": "source-normalized/v1",
+      "orientationApplied": false
+    },
+    "basisKind": "original"
+  },
+  "frameSize": { "width": 1118, "height": 698 },
+  "coordinateSpace": "source-normalized/v1",
+  "semanticOrder": ["NL", "NR", "FR", "FL"],
+  "sourceFloorPolygon": [
+    { "x": 0.10837393593189963, "y": 0.9249876495993743 },
+    { "x": 1, "y": 0.9299999999999999 },
+    { "x": 0.688, "y": 0.648 },
+    { "x": 0.356, "y": 0.648 }
+  ],
+  "manualControl": {
+    "ratio": 1,
+    "fovDeg": 61,
+    "diagnosticsReference": { "cvAvgPx": 0.86, "cvMaxPx": 1.33 }
+  },
+  "expectedIdentifiabilityRegime": "degenerate_valley"
+}

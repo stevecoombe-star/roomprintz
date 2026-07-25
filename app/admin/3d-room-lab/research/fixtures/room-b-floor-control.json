@@ -1,0 +1,31 @@
+{
+  "fixtureId": "afc-r1-room-b-floor-control",
+  "roomLabel": "Room B",
+  "imageBasis": {
+    "basisId": "room-b-original",
+    "basisFingerprint": "afc-r1-room-b-original-v1",
+    "decodedWidth": 5000,
+    "decodedHeight": 3333,
+    "coordinateSpaceVersion": {
+      "decoderId": "afc-r1-control",
+      "normalizationPolicyVersion": "source-normalized/v1",
+      "orientationApplied": false
+    },
+    "basisKind": "original"
+  },
+  "frameSize": { "width": 1118, "height": 698 },
+  "coordinateSpace": "source-normalized/v1",
+  "semanticOrder": ["NL", "NR", "FR", "FL"],
+  "sourceFloorPolygon": [
+    { "x": 0.21765442988351255, "y": 0.7085225978419112 },
+    { "x": 1, "y": 0.8827832609810005 },
+    { "x": 0.834628416218638, "y": 0.6338394564965875 },
+    { "x": 0.45189992159498205, "y": 0.5951037795153279 }
+  ],
+  "manualControl": {
+    "ratio": 1.2,
+    "fovDeg": 58,
+    "diagnosticsReference": { "cvAvgPx": 1.75, "cvMaxPx": 3.3 }
+  },
+  "expectedIdentifiabilityRegime": "isolated_optimum"
+}
