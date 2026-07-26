@@ -1,0 +1,88 @@
+{
+  "trustedContext": {
+    "auditProvenance": {
+      "requestId": "r3b-request-fixture",
+      "contractVersion": "AFC-R3B/v1",
+      "promptVersion": "afc-r3b-prompt/v1",
+      "providerId": "gemini",
+      "modelId": "synthetic-gemini-model",
+      "responseReceivedAt": "2026-07-26T18:00:00.000Z",
+      "rawResponseSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+  },
+  "validProposalResponse": {
+    "schema_version": "afc-r3-floor-hypotheses/v1",
+    "basis_binding": "afc-r3b-room-b-binding",
+    "status": "proposals",
+    "proposals": [
+      {
+        "corners": {
+          "NL": { "x": 0.21765442988351255, "y": 0.7085225978419112, "support": "direct_visible" },
+          "NR": { "x": 1, "y": 0.8827832609810005, "support": "direct_visible" },
+          "FR": { "x": 0.834628416218638, "y": 0.6338394564965875, "support": "inferred_from_visible_edges" },
+          "FL": { "x": 0.45189992159498205, "y": 0.5951037795153279, "support": "occluded_inferred" }
+        },
+        "edge_evidence": {
+          "near": { "support": "direct_visible", "note": "visible near boundary" },
+          "right": { "support": "partially_visible", "note": "right boundary partly visible" },
+          "far": { "support": "inferred_continuation", "note": "far edge inferred" },
+          "left": { "support": "partially_visible", "note": "left boundary partly visible" }
+        }
+      }
+    ]
+  },
+  "insufficientEvidenceResponse": {
+    "schema_version": "afc-r3-floor-hypotheses/v1",
+    "basis_binding": "afc-r3b-room-b-binding",
+    "status": "insufficient_evidence",
+    "reason_code": "boundary_evidence_insufficient",
+    "note": "The visible floor boundary is insufficient."
+  },
+  "fourProposalResponse": {
+    "schema_version": "afc-r3-floor-hypotheses/v1",
+    "basis_binding": "afc-r3b-room-b-binding",
+    "status": "proposals",
+    "proposals": [
+      { "corners": { "NL": { "x": 0.2, "y": 0.7, "support": "direct_visible" }, "NR": { "x": 0.9, "y": 0.85, "support": "direct_visible" }, "FR": { "x": 0.8, "y": 0.6, "support": "direct_visible" }, "FL": { "x": 0.4, "y": 0.55, "support": "direct_visible" } }, "edge_evidence": { "near": { "support": "direct_visible", "note": "near" }, "right": { "support": "direct_visible", "note": "right" }, "far": { "support": "direct_visible", "note": "far" }, "left": { "support": "direct_visible", "note": "left" } } },
+      { "corners": { "NL": { "x": 0.21, "y": 0.7, "support": "direct_visible" }, "NR": { "x": 0.9, "y": 0.85, "support": "direct_visible" }, "FR": { "x": 0.8, "y": 0.6, "support": "direct_visible" }, "FL": { "x": 0.4, "y": 0.55, "support": "direct_visible" } }, "edge_evidence": { "near": { "support": "direct_visible", "note": "near" }, "right": { "support": "direct_visible", "note": "right" }, "far": { "support": "direct_visible", "note": "far" }, "left": { "support": "direct_visible", "note": "left" } } },
+      { "corners": { "NL": { "x": 0.22, "y": 0.7, "support": "direct_visible" }, "NR": { "x": 0.9, "y": 0.85, "support": "direct_visible" }, "FR": { "x": 0.8, "y": 0.6, "support": "direct_visible" }, "FL": { "x": 0.4, "y": 0.55, "support": "direct_visible" } }, "edge_evidence": { "near": { "support": "direct_visible", "note": "near" }, "right": { "support": "direct_visible", "note": "right" }, "far": { "support": "direct_visible", "note": "far" }, "left": { "support": "direct_visible", "note": "left" } } },
+      { "corners": { "NL": { "x": 0.23, "y": 0.7, "support": "direct_visible" }, "NR": { "x": 0.9, "y": 0.85, "support": "direct_visible" }, "FR": { "x": 0.8, "y": 0.6, "support": "direct_visible" }, "FL": { "x": 0.4, "y": 0.55, "support": "direct_visible" } }, "edge_evidence": { "near": { "support": "direct_visible", "note": "near" }, "right": { "support": "direct_visible", "note": "right" }, "far": { "support": "direct_visible", "note": "far" }, "left": { "support": "direct_visible", "note": "left" } } }
+    ]
+  },
+  "exactDuplicateResponse": {
+    "schema_version": "afc-r3-floor-hypotheses/v1",
+    "basis_binding": "afc-r3b-room-b-binding",
+    "status": "proposals",
+    "proposals": [
+      { "corners": { "NL": { "x": 0.2, "y": 0.7, "support": "direct_visible" }, "NR": { "x": 0.9, "y": 0.85, "support": "direct_visible" }, "FR": { "x": 0.8, "y": 0.6, "support": "direct_visible" }, "FL": { "x": 0.4, "y": 0.55, "support": "direct_visible" } }, "edge_evidence": { "near": { "support": "direct_visible", "note": "first observation" }, "right": { "support": "direct_visible", "note": "right" }, "far": { "support": "direct_visible", "note": "far" }, "left": { "support": "direct_visible", "note": "left" } } },
+      { "corners": { "NL": { "x": 0.2, "y": 0.7, "support": "direct_visible" }, "NR": { "x": 0.9, "y": 0.85, "support": "direct_visible" }, "FR": { "x": 0.8, "y": 0.6, "support": "direct_visible" }, "FL": { "x": 0.4, "y": 0.55, "support": "direct_visible" } }, "edge_evidence": { "near": { "support": "direct_visible", "note": "second observation" }, "right": { "support": "direct_visible", "note": "right" }, "far": { "support": "direct_visible", "note": "far" }, "left": { "support": "direct_visible", "note": "left" } } }
+    ]
+  },
+  "offFrameProposalResponse": {
+    "schema_version": "afc-r3-floor-hypotheses/v1",
+    "basis_binding": "afc-r3b-room-b-binding",
+    "status": "proposals",
+    "proposals": [
+      {
+        "corners": {
+          "NL": { "x": -0.1, "y": 0.7, "support": "outside_frame_inferred" },
+          "NR": { "x": 0.95, "y": 0.9, "support": "direct_visible" },
+          "FR": { "x": 0.8, "y": 0.6, "support": "direct_visible" },
+          "FL": { "x": 0.3, "y": 0.55, "support": "direct_visible" }
+        },
+        "edge_evidence": {
+          "near": { "support": "inferred_continuation", "note": "continues beyond left frame" },
+          "right": { "support": "direct_visible", "note": "right edge visible" },
+          "far": { "support": "direct_visible", "note": "far edge visible" },
+          "left": { "support": "partially_visible", "note": "left edge enters frame" }
+        }
+      }
+    ]
+  },
+  "malformedStructuralExample": {
+    "schema_version": "afc-r3-floor-hypotheses/v1",
+    "basis_binding": "afc-r3b-room-b-binding",
+    "status": "proposals",
+    "proposals": []
+  }
+}

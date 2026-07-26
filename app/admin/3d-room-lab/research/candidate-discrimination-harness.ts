@@ -380,7 +380,7 @@ function contextFingerprint(context: SharedCandidateComparisonContext): string {
   return fnv1a32(stableSerialize(context));
 }
 
-function candidateCanonicalPolygon(candidate: FloorCandidateInput): string {
+export function candidateCanonicalPolygon(candidate: FloorCandidateInput): string {
   return stableSerialize({ coordinateSpace: candidate.coordinateSpace, semanticOrder: candidate.semanticOrder, sourceFloorPolygon: candidate.sourceFloorPolygon });
 }
 
