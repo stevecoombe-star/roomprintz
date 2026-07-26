@@ -10,6 +10,7 @@ import {
   GEMINI_FLOOR_HYPOTHESES_SCHEMA_VERSION,
   type GeminiFloorCornerSupportV1,
   type GeminiFloorEdgeSupportV1,
+  type GeminiFloorInsufficientEvidenceReasonV1,
 } from "./gemini-floor-proposal-contract";
 
 export const AFC_R3C_PROMPT_CONTRACT_VERSION = "AFC-R3C-B1/v1" as const;
@@ -39,18 +40,29 @@ export type AfcR3cPromptBuildResult = Readonly<{
   basisBinding: string;
 }>;
 
-const CORNER_SUPPORTS: readonly GeminiFloorCornerSupportV1[] = [
-  "direct_visible",
-  "inferred_from_visible_edges",
-  "occluded_inferred",
-  "outside_frame_inferred",
-];
-const EDGE_SUPPORTS: readonly GeminiFloorEdgeSupportV1[] = [
-  "direct_visible",
-  "partially_visible",
-  "inferred_continuation",
-  "not_visible",
-];
+// `satisfies` makes a future AFC-R3B union expansion a compile-time failure
+// until this prompt/schema enumeration is deliberately updated.
+const CORNER_SUPPORT_MAP = {
+  direct_visible: true,
+  inferred_from_visible_edges: true,
+  occluded_inferred: true,
+  outside_frame_inferred: true,
+} as const satisfies Record<GeminiFloorCornerSupportV1, true>;
+const EDGE_SUPPORT_MAP = {
+  direct_visible: true,
+  partially_visible: true,
+  inferred_continuation: true,
+  not_visible: true,
+} as const satisfies Record<GeminiFloorEdgeSupportV1, true>;
+const INSUFFICIENT_REASON_MAP = {
+  image_unusable: true,
+  floor_region_not_visible: true,
+  boundary_evidence_insufficient: true,
+  semantic_labels_unresolvable: true,
+} as const satisfies Record<GeminiFloorInsufficientEvidenceReasonV1, true>;
+const CORNER_SUPPORTS = Object.freeze(Object.keys(CORNER_SUPPORT_MAP) as GeminiFloorCornerSupportV1[]);
+const EDGE_SUPPORTS = Object.freeze(Object.keys(EDGE_SUPPORT_MAP) as GeminiFloorEdgeSupportV1[]);
+const INSUFFICIENT_REASONS = Object.freeze(Object.keys(INSUFFICIENT_REASON_MAP) as GeminiFloorInsufficientEvidenceReasonV1[]);
 
 function deepFreeze<T>(value: T, visited = new WeakSet<object>()): T {
   if (value && typeof value === "object") {
@@ -78,7 +90,7 @@ Return status "proposals" with 1–4 proposals, or status "insufficient_evidence
 Return only materially distinct plausible Floor interpretations. Never pad the proposal count. Keep materially different plausible interpretations separate. Do not make a selection between proposals.
 Use no field outside this exact schema:
 {"schema_version":"${GEMINI_FLOOR_HYPOTHESES_SCHEMA_VERSION}","basis_binding":"{{BASIS_BINDING}}","status":"proposals","proposals":[{"corners":{"NL":{"x":0,"y":0,"support":"direct_visible"},"NR":{"x":0,"y":0,"support":"direct_visible"},"FR":{"x":0,"y":0,"support":"direct_visible"},"FL":{"x":0,"y":0,"support":"direct_visible"}},"edge_evidence":{"near":{"support":"direct_visible","note":"text"},"right":{"support":"direct_visible","note":"text"},"far":{"support":"direct_visible","note":"text"},"left":{"support":"direct_visible","note":"text"}}}]}
-For insufficient evidence, use only schema_version, basis_binding, status, reason_code, and note. reason_code is one of image_unusable, floor_region_not_visible, boundary_evidence_insufficient, semantic_labels_unresolvable.
+For insufficient evidence, use only schema_version, basis_binding, status, reason_code, and note. reason_code is one of ${INSUFFICIENT_REASONS.join(", ")}.
 Corners are keyed semantic corners: NL, NR, FR, FL. The near edge is NL–NR and closer to the viewer; right is NR–FR; far is FR–FL and farther from the viewer; left is FL–NL.
 Coordinates are normalized to the exact supplied image, with top-left origin, positive X right, and positive Y down.
 Corner support values are exactly: ${CORNER_SUPPORTS.join(", ")}. Edge support values are exactly: ${EDGE_SUPPORTS.join(", ")}. Use outside_frame_inferred exactly when a corner lies outside [0,1].
@@ -153,7 +165,7 @@ export const AFC_R3C_GEMINI_FLOOR_PROPOSAL_RESPONSE_SCHEMA = deepFreeze({
         schema_version: { type: "string", const: GEMINI_FLOOR_HYPOTHESES_SCHEMA_VERSION },
         basis_binding: { type: "string" },
         status: { type: "string", const: "insufficient_evidence" },
-        reason_code: { type: "string", enum: ["image_unusable", "floor_region_not_visible", "boundary_evidence_insufficient", "semantic_labels_unresolvable"] },
+        reason_code: { type: "string", enum: INSUFFICIENT_REASONS },
         note: { type: "string" },
       },
     },

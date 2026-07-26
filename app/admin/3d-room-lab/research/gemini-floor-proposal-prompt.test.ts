@@ -9,7 +9,12 @@ import {
   AFC_R3C_ORIGINAL_CONTEXT_PROMPT_VERSION,
   buildAfcR3cGeminiFloorProposalPrompt,
 } from "./gemini-floor-proposal-prompt";
-import { GEMINI_FLOOR_HYPOTHESES_SCHEMA_VERSION } from "./gemini-floor-proposal-contract";
+import {
+  GEMINI_FLOOR_HYPOTHESES_SCHEMA_VERSION,
+  type GeminiFloorCornerSupportV1,
+  type GeminiFloorEdgeSupportV1,
+  type GeminiFloorInsufficientEvidenceReasonV1,
+} from "./gemini-floor-proposal-contract";
 
 function allFrozen(value: unknown, seen = new WeakSet<object>()): boolean {
   if (!value || typeof value !== "object") return true;
@@ -20,6 +25,16 @@ function allFrozen(value: unknown, seen = new WeakSet<object>()): boolean {
 
 function build(imageRole: "empty_room_boundary_specialist" | "original_contextual") {
   return buildAfcR3cGeminiFloorProposalPrompt({ imageRole, basisBinding: fixture.basisBinding });
+}
+function assertNoAffirmativeAuthorityRequest(text: string): void {
+  const terms = ["confidence", "rank", "winner", "best candidate", "preferred candidate", "most likely", "top candidate", "choose", "score", "recommended candidate"];
+  for (const line of text.split("\n")) {
+    const lower = line.toLowerCase();
+    for (const term of terms) {
+      if (!lower.includes(term)) continue;
+      assert.match(lower, /\b(do not|never|no)\b/, `Authority-bearing term "${term}" must only occur in a prohibition.`);
+    }
+  }
 }
 
 test("role-specific prompts are deterministic, versioned, SHA-attested, and immutable", () => {
@@ -56,9 +71,7 @@ test("both prompts bind exactly to R3B, require strict JSON, distinct ambiguity,
     assert.match(text, /direct_visible, inferred_from_visible_edges, occluded_inferred, outside_frame_inferred/);
     assert.match(text, /direct_visible, partially_visible, inferred_continuation, not_visible/);
     assert.match(text, new RegExp(GEMINI_FLOOR_HYPOTHESES_SCHEMA_VERSION));
-    for (const prohibitedRequest of ["confidence", "rank", "winner", "best candidate"]) {
-      assert.equal(text.toLowerCase().includes(prohibitedRequest), false);
-    }
+    assertNoAffirmativeAuthorityRequest(text);
     assert.match(text, /Do not return IDs, scoring, ordering, ratio, FOV, pose, physical dimensions/i);
     assert.equal(text.includes("current Floor polygon"), false);
     assert.equal(text.includes("approved"), false);
@@ -72,12 +85,15 @@ test("each role carries only its specialized visual evidence instructions", () =
   assert.match(empty, /floor-wall seams/i);
   assert.match(empty, /same-plane continuation or a separate room/i);
   assert.match(empty, /largest reliable convex contained Floor calibration surface/i);
+  for (const prohibited of ["secondary", "low-trust", "merely advisory"]) assert.equal(empty.toLowerCase().includes(prohibited), false);
   const original = build("original_contextual").promptText;
   assert.match(original, /occupied original room photograph/i);
   assert.match(original, /Furniture edges are not floor-wall edges/i);
   assert.match(original, /Rugs are not Floor boundaries/i);
   assert.match(original, /Object tops must not be interpreted as the Floor plane/i);
   assert.match(original, /Infer an obscured boundary only when architectural or perspective evidence supports it/i);
+  assert.equal(original.includes("Empty-Room"), false);
+  assert.equal(original.toLowerCase().includes("preferred proposal order"), false);
 });
 
 test("runtime response schema is closed to the committed R3B model-authored fields", () => {
@@ -90,6 +106,18 @@ test("runtime response schema is closed to the committed R3B model-authored fiel
     assert.equal(serial.toLowerCase().includes(`"${prohibited.toLowerCase()}"`), false);
   }
   assert.equal(serial.includes(GEMINI_FLOOR_HYPOTHESES_SCHEMA_VERSION), true);
+});
+
+test("schema enum lists exactly match each committed AFC-R3B enum in stable order", () => {
+  const schema = AFC_R3C_GEMINI_FLOOR_PROPOSAL_RESPONSE_SCHEMA;
+  const defs = schema.$defs;
+  const corners = defs.corner.properties.support.enum as readonly GeminiFloorCornerSupportV1[];
+  const edges = defs.edge.properties.support.enum as readonly GeminiFloorEdgeSupportV1[];
+  const insufficient = schema.oneOf[1].properties.reason_code.enum as readonly GeminiFloorInsufficientEvidenceReasonV1[];
+  assert.deepEqual(corners, ["direct_visible", "inferred_from_visible_edges", "occluded_inferred", "outside_frame_inferred"]);
+  assert.deepEqual(edges, ["direct_visible", "partially_visible", "inferred_continuation", "not_visible"]);
+  assert.deepEqual(insufficient, ["image_unusable", "floor_region_not_visible", "boundary_evidence_insufficient", "semantic_labels_unresolvable"]);
+  for (const values of [corners, edges, insufficient]) assert.equal(new Set(values).size, values.length);
 });
 
 test("invalid prompt arguments fail closed without mutating the input", () => {

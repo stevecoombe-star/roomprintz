@@ -9,6 +9,7 @@ import {
   CANDIDATE_DISCRIMINATION_SELECTION_POLICY_VERSION,
   candidateCanonicalPolygon,
   runCandidateDiscriminationExperiment,
+  type FloorCandidateInput,
   type SharedCandidateComparisonContext,
 } from "./candidate-discrimination-harness";
 import {
@@ -132,11 +133,34 @@ function run(
   if (resultStatus(result) === "incompatible_input") throw new Error((result as { reason: string }).reason);
   return result as AfcR3cProposalRun;
 }
+type MutableRun = {
+  imageRole: unknown;
+  r3bResult: Record<string, unknown> & { candidates?: unknown[]; safety?: Record<string, unknown> | null };
+  transfer: Record<string, unknown>;
+  provenance: Record<string, unknown>;
+};
+function mutableRun(
+  imageRole: "empty_room_boundary_specialist" | "original_contextual",
+  result = validParsed()
+): MutableRun {
+  return clone(run(imageRole, result)) as unknown as MutableRun;
+}
+function expectCompositionInputFailure(value: unknown, studyMode: "empty_only" | "original_only" | "parallel_union" | null = null): void {
+  const result = composeAfcR3cProposalRuns(value);
+  assert.equal(result.status, "contract_failure");
+  assert.equal(result.reason, "composition_input_invalid");
+  assert.equal(result.studyMode, studyMode);
+  assert.deepEqual(result.candidates, []);
+  assert.deepEqual(result.candidateProvenanceById, {});
+  assert.equal(allFrozen(result), true);
+}
 
 test("compatibility formula mirrors the audited route boundary behavior and freezes output", () => {
   const exact = classifyAfcR3cImagePairCompatibility(original, { ...original });
   assert.equal(exact.version, AFC_R3C_IMAGE_PAIR_COMPATIBILITY_VERSION);
   assert.equal(exact.tier, "exact_grid_compatible");
+  assert.equal(exact.relativeAspectErrorRaw, 0);
+  assert.equal(exact.relativeAspectError, 0);
   const audited = classifyAfcR3cImagePairCompatibility(original, empty);
   assert.equal(audited.tier, "aspect_compatible_rescaled");
   assert.equal(audited.relativeAspectError, 0.0063);
@@ -154,6 +178,33 @@ test("compatibility formula mirrors the audited route boundary behavior and free
   assert.equal(classifyAfcR3cImagePairCompatibility(original, { ...empty, orientation: 6 }).tier, "incompatible");
   assert.equal(classifyAfcR3cImagePairCompatibility(original, { ...empty, decodedWidth: 0 }).tier, "incompatible");
   assert.equal(allFrozen(audited), true);
+});
+
+test("raw aspect error is retained independently and alone controls compatibility admission", () => {
+  const audited = classifyAfcR3cImagePairCompatibility(original, empty);
+  assert.notEqual(audited.relativeAspectErrorRaw, audited.relativeAspectError);
+  assert.equal(audited.relativeAspectError, 0.0063);
+  assert.equal(audited.relativeAspectErrorRaw, Math.abs((1264 / 848) - (960 / 640)) / (960 / 640));
+  const atBoundary = classifyAfcR3cImagePairCompatibility(
+    { fingerprint: "o", decodedWidth: 200, decodedHeight: 1, orientation: 1 },
+    { fingerprint: "i", decodedWidth: 197, decodedHeight: 1, orientation: 1 }
+  );
+  assert.equal(atBoundary.relativeAspectErrorRaw, 0.015);
+  assert.equal(atBoundary.tier, "aspect_compatible_rescaled");
+  const roundedButRejected = classifyAfcR3cImagePairCompatibility(
+    { fingerprint: "o", decodedWidth: 100000, decodedHeight: 1, orientation: 1 },
+    { fingerprint: "i", decodedWidth: 98496, decodedHeight: 1, orientation: 1 }
+  );
+  assert.equal(roundedButRejected.relativeAspectErrorRaw, 0.01504);
+  assert.equal(roundedButRejected.relativeAspectError, 0.015);
+  assert.equal(roundedButRejected.tier, "incompatible");
+  const roundedButAccepted = classifyAfcR3cImagePairCompatibility(
+    { fingerprint: "o", decodedWidth: 1000000, decodedHeight: 1, orientation: 1 },
+    { fingerprint: "i", decodedWidth: 985004, decodedHeight: 1, orientation: 1 }
+  );
+  assert.equal(roundedButAccepted.relativeAspectErrorRaw, 0.014996);
+  assert.equal(roundedButAccepted.relativeAspectError, 0.015);
+  assert.equal(roundedButAccepted.tier, "aspect_compatible_rescaled");
 });
 
 test("role input attestation refuses mismatched original, missing empty fingerprint, and incompatible empty metadata", () => {
@@ -203,6 +254,20 @@ test("transfer is exact source-normalized reinterpretation, including accepted o
   assert.equal(allFrozen(transferred), true);
 });
 
+test("transfer, invocation provenance, and candidate sidecars retain raw and rounded aspect errors", () => {
+  const emptyRun = run("empty_room_boundary_specialist", validParsed());
+  assert.equal(emptyRun.transfer.relativeAspectErrorRaw, Math.abs((1264 / 848) - (960 / 640)) / (960 / 640));
+  assert.equal(emptyRun.transfer.relativeAspectError, 0.0063);
+  assert.equal(emptyRun.provenance.relativeAspectErrorRaw, emptyRun.transfer.relativeAspectErrorRaw);
+  assert.equal(emptyRun.provenance.relativeAspectError, emptyRun.transfer.relativeAspectError);
+  const result = composeAfcR3cProposalRuns({ studyMode: "empty_only", emptyRun });
+  assert.equal(result.status, "proposals");
+  if (result.status !== "proposals") return;
+  const sidecar = result.candidateProvenanceById[result.candidates[0].candidateId];
+  assert.equal(sidecar.relativeAspectErrorRaw, emptyRun.transfer.relativeAspectErrorRaw);
+  assert.equal(sidecar.relativeAspectError, emptyRun.transfer.relativeAspectError);
+});
+
 test("single-source modes preserve proposals, insufficient evidence, and contract failures", () => {
   const emptyProposals = composeAfcR3cProposalRuns({ studyMode: "empty_only", emptyRun: run("empty_room_boundary_specialist", validParsed(), empty, "empty_only") });
   assert.equal(emptyProposals.status, "proposals");
@@ -212,6 +277,49 @@ test("single-source modes preserve proposals, insufficient evidence, and contrac
   assert.equal(insufficient.status, "insufficient_evidence");
   const failed = composeAfcR3cProposalRuns({ studyMode: "empty_only", emptyRun: run("empty_room_boundary_specialist", failureParsed(), empty, "empty_only") });
   assert.equal(failed.status, "contract_failure");
+  assert.equal(failed.reason, "r3b_contract_failure");
+});
+
+test("composition is total for malformed R3B-like results and recognizes genuine R3B branches", () => {
+  assert.equal(composeAfcR3cProposalRuns({ studyMode: "empty_only", emptyRun: run("empty_room_boundary_specialist", validParsed()) }).status, "proposals");
+  assert.equal(composeAfcR3cProposalRuns({ studyMode: "empty_only", emptyRun: run("empty_room_boundary_specialist", validParsed("insufficient")) }).status, "insufficient_evidence");
+  assert.equal(composeAfcR3cProposalRuns({ studyMode: "empty_only", emptyRun: run("empty_room_boundary_specialist", failureParsed()) }).status, "contract_failure");
+  for (const alter of [
+    (value: MutableRun) => { value.r3bResult = { status: "proposals", contractVersion: "AFC-R3B/v1" }; },
+    (value: MutableRun) => { value.r3bResult.safety = null; },
+    (value: MutableRun) => { value.r3bResult.safety = { applied: false }; },
+    (value: MutableRun) => { (value.r3bResult.safety as Record<string, unknown>).authoritative = true; },
+  ]) {
+    const forged = mutableRun("empty_room_boundary_specialist");
+    alter(forged);
+    assert.doesNotThrow(() => expectCompositionInputFailure({ studyMode: "empty_only", emptyRun: forged }, "empty_only"));
+  }
+});
+
+test("composition requires exact arm sets and never executes an unknown study mode", () => {
+  const emptyRun = run("empty_room_boundary_specialist", validParsed(), empty, "empty_only");
+  const originalRun = run("original_contextual", validParsed(), original, "original_only");
+  assert.equal(composeAfcR3cProposalRuns({ studyMode: "empty_only", emptyRun }).status, "proposals");
+  assert.equal(composeAfcR3cProposalRuns({ studyMode: "original_only", originalRun }).status, "proposals");
+  expectCompositionInputFailure({ studyMode: "empty_only", emptyRun, originalRun }, "empty_only");
+  expectCompositionInputFailure({ studyMode: "original_only", emptyRun, originalRun }, "original_only");
+  expectCompositionInputFailure({ studyMode: "parallel_union", emptyRun }, "parallel_union");
+  expectCompositionInputFailure({ studyMode: "parallel_union", originalRun }, "parallel_union");
+  expectCompositionInputFailure({ studyMode: "empty_only" }, "empty_only");
+  expectCompositionInputFailure({ studyMode: "joint_multimodal", emptyRun, originalRun }, null);
+});
+
+test("composition entry is total over malformed unknown inputs", () => {
+  const throwingInput = new Proxy({}, { get() { throw new Error("forged getter"); } });
+  for (const [input, studyMode] of [
+    [null, null],
+    [[], null],
+    [{}, null],
+    [{ studyMode: "empty_only", emptyRun: null }, "empty_only"],
+    [throwingInput, null],
+  ] as const) {
+    assert.doesNotThrow(() => expectCompositionInputFailure(input, studyMode));
+  }
 });
 
 test("parallel union namespaces candidates, preserves geometry/order, and records an explicit insufficient arm", () => {
@@ -250,6 +358,32 @@ test("parallel union namespaces candidates, preserves geometry/order, and record
   assert.deepEqual(failed.candidates, []);
 });
 
+test("parallel union blocks malformed competing arms in both directions", () => {
+  const emptyRun = run("empty_room_boundary_specialist", validParsed());
+  const originalRun = run("original_contextual", validParsed());
+  expectCompositionInputFailure({ studyMode: "parallel_union", emptyRun, originalRun: { ...mutableRun("original_contextual"), r3bResult: { status: "proposals" } } }, "parallel_union");
+  expectCompositionInputFailure({ studyMode: "parallel_union", originalRun, emptyRun: { ...mutableRun("empty_room_boundary_specialist"), r3bResult: { status: "proposals" } } }, "parallel_union");
+});
+
+test("forged runs fail closed and duplicate report IDs cannot escape", () => {
+  const cases: Array<(value: MutableRun) => void> = [
+    (value) => { value.transfer.compatibilityTier = "incompatible"; },
+    (value) => { value.transfer.transferPolicyVersion = "stale/v0"; },
+    (value) => { value.imageRole = "original_contextual"; },
+    (value) => { value.provenance.promptVersion = "afc-r3c-original-context-prompt/v1"; },
+    (value) => { value.provenance.originalImageFingerprint = ""; },
+  ];
+  for (const alter of cases) {
+    const forged = mutableRun("empty_room_boundary_specialist");
+    alter(forged);
+    assert.doesNotThrow(() => expectCompositionInputFailure({ studyMode: "empty_only", emptyRun: forged }, "empty_only"));
+  }
+  const collision = mutableRun("empty_room_boundary_specialist");
+  if (!collision.r3bResult.candidates) throw new Error("Expected synthetic R3B candidates.");
+  collision.r3bResult.candidates.push(clone(collision.r3bResult.candidates[0]));
+  expectCompositionInputFailure({ studyMode: "empty_only", emptyRun: collision }, "empty_only");
+});
+
 test("canonical geometry-first ordering is invocation-order independent and provenance does not affect AFC-R2 geometry", () => {
   const emptyRun = run("empty_room_boundary_specialist", validParsed());
   const originalRun = run("original_contextual", validParsed());
@@ -277,6 +411,51 @@ test("canonical geometry-first ordering is invocation-order independent and prov
   assert.equal(a.candidateFamilies[0].totalReportingCandidateCount, 2);
   assert.equal(a.comparisonFingerprint, b.comparisonFingerprint);
   assert.equal(a.selectionState, b.selectionState);
+});
+
+test("near-but-distinct cross-image geometry is preserved for AFC-R2 alone to group or refuse", () => {
+  const shiftedRaw = clone(r3bFixture.validProposalResponse) as unknown as {
+    basis_binding: string;
+    proposals: Array<{ corners: { NL: { x: number } } }>;
+  };
+  shiftedRaw.basis_binding = binding();
+  shiftedRaw.proposals[0].corners.NL.x += 0.01;
+  const emptyRun = run("empty_room_boundary_specialist", validParsed());
+  const originalRun = run("original_contextual", parseResponse(shiftedRaw));
+  const composed = composeAfcR3cProposalRuns({ studyMode: "parallel_union", emptyRun, originalRun });
+  assert.equal(composed.status, "proposals");
+  if (composed.status !== "proposals") return;
+  assert.equal(composed.candidates.length, 2);
+  assert.notEqual(candidateCanonicalPolygon(composed.candidates[0]), candidateCanonicalPolygon(composed.candidates[1]));
+  const comparison = runCandidateDiscriminationExperiment({
+    contractVersion: CANDIDATE_DISCRIMINATION_CONTRACT_VERSION,
+    sharedContext: sharedContext(),
+    candidates: composed.candidates,
+    selectionPolicyVersion: CANDIDATE_DISCRIMINATION_SELECTION_POLICY_VERSION,
+  });
+  assert.equal(comparison.rankingStages.exactDistinctCandidateCount, 2);
+});
+
+test("provenance-only changes leave candidate geometry and AFC-R2 comparison fingerprints unchanged", () => {
+  const emptyRun = mutableRun("empty_room_boundary_specialist");
+  const originalRun = mutableRun("original_contextual");
+  const first = composeAfcR3cProposalRuns({ studyMode: "parallel_union", emptyRun, originalRun });
+  emptyRun.provenance.providerId = "other-provider";
+  emptyRun.provenance.modelId = "other-model";
+  emptyRun.provenance.promptSha256 = "b".repeat(64);
+  emptyRun.provenance.rawResponseSha256 = "c".repeat(64);
+  const second = composeAfcR3cProposalRuns({ studyMode: "parallel_union", emptyRun, originalRun });
+  assert.equal(first.status, "proposals");
+  assert.equal(second.status, "proposals");
+  if (first.status !== "proposals" || second.status !== "proposals") return;
+  assert.deepEqual(first.candidates.map(candidateCanonicalPolygon), second.candidates.map(candidateCanonicalPolygon));
+  const comparison = (candidates: readonly FloorCandidateInput[]) => runCandidateDiscriminationExperiment({
+    contractVersion: CANDIDATE_DISCRIMINATION_CONTRACT_VERSION,
+    sharedContext: sharedContext(),
+    candidates,
+    selectionPolicyVersion: CANDIDATE_DISCRIMINATION_SELECTION_POLICY_VERSION,
+  });
+  assert.equal(comparison(first.candidates).comparisonFingerprint, comparison(second.candidates).comparisonFingerprint);
 });
 
 test("composition branches, candidates, provenance, arm status, and safety are recursively frozen and do not mutate inputs", () => {

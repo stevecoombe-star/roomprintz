@@ -19,6 +19,8 @@ import {
 } from "./gemini-floor-proposal-contract";
 import {
   AFC_R3C_PROMPT_CONTRACT_VERSION,
+  AFC_R3C_EMPTY_BOUNDARY_PROMPT_VERSION,
+  AFC_R3C_ORIGINAL_CONTEXT_PROMPT_VERSION,
   type AfcR3cInputImageRole,
   type AfcR3cPromptBuildResult,
   type AfcR3cStudyMode,
@@ -49,6 +51,9 @@ export type AfcR3cImagePairCompatibility = Readonly<{
   inputOrientation: number | null;
   originalAspect: number | null;
   inputAspect: number | null;
+  /** Exact finite JavaScript value used for the compatibility admission gate. */
+  relativeAspectErrorRaw: number | null;
+  /** Production-route parity report rounded to four decimals. */
   relativeAspectError: number | null;
   reason: string | null;
 }>;
@@ -61,6 +66,7 @@ export type AfcR3cSourceNormalizedTransferRecord = Readonly<{
   inputDecodedDimensions: Readonly<{ width: number; height: number }>;
   originalOrientation: number;
   inputOrientation: number;
+  relativeAspectErrorRaw: number;
   relativeAspectError: number;
   numericalCoordinatesReinterpreted: boolean;
   exactGrid: boolean;
@@ -84,6 +90,7 @@ export type AfcR3cInvocationProvenance = Readonly<{
   originalOrientation: number;
   inputOrientation: number;
   compatibilityTier: AfcR3cCompatibilityTier;
+  relativeAspectErrorRaw: number;
   relativeAspectError: number;
   transferPolicyVersion: typeof AFC_R3C_SOURCE_NORMALIZED_TRANSFER_VERSION;
   promptVersion: string;
@@ -138,6 +145,7 @@ export type AfcR3cCandidateProvenance = Readonly<{
   originalImageFingerprint: string;
   emptyRoomImageFingerprint: string | null;
   compatibilityTier: AfcR3cCompatibilityTier;
+  relativeAspectErrorRaw: number;
   relativeAspectError: number;
   transfer: AfcR3cSourceNormalizedTransferRecord;
   promptVersion: string;
@@ -161,6 +169,17 @@ type CompositionBase = Readonly<{
   safety: AfcR3cSafety;
   armStatuses: readonly AfcR3cArmStatus[];
 }>;
+type CompositionInputFailure = Readonly<{
+  contractVersion: typeof AFC_R3C_PROMPT_CONTRACT_VERSION;
+  studyMode: AfcR3cStudyMode | null;
+  safety: AfcR3cSafety;
+  armStatuses: readonly [];
+  status: "contract_failure";
+  reason: "composition_input_invalid";
+  detail: "Composition input is invalid.";
+  candidates: readonly [];
+  candidateProvenanceById: Readonly<Record<string, never>>;
+}>;
 export type AfcR3cCompositionResult =
   | (CompositionBase & Readonly<{
       status: "proposals";
@@ -174,10 +193,11 @@ export type AfcR3cCompositionResult =
     }>)
   | (CompositionBase & Readonly<{
       status: "contract_failure";
-      reason: "r3b_contract_failure" | "composition_input_invalid";
+      reason: "r3b_contract_failure";
       candidates: readonly [];
       candidateProvenanceById: Readonly<Record<string, never>>;
-    }>);
+    }>)
+  | CompositionInputFailure;
 
 export type AfcR3cCompositionInput = Readonly<{
   studyMode: AfcR3cStudyMode;
@@ -203,6 +223,11 @@ function deepFreeze<T>(value: T, visited = new WeakSet<object>()): T {
   return value;
 }
 
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
 function knownRole(value: unknown): value is AfcR3cInputImageRole {
   return value === "empty_room_boundary_specialist" || value === "original_contextual";
 }
@@ -243,7 +268,8 @@ export function classifyAfcR3cImagePairCompatibility(
       inputDecodedDimensions: validImage(input) ? dimensions(input) : null,
       originalOrientation: validImage(original) ? original.orientation : null,
       inputOrientation: validImage(input) ? input.orientation : null,
-      originalAspect: null, inputAspect: null, relativeAspectError: null,
+      originalAspect: null, inputAspect: null,
+      relativeAspectErrorRaw: null, relativeAspectError: null,
       reason: "Image metadata is invalid for transfer.",
     });
   }
@@ -260,6 +286,7 @@ export function classifyAfcR3cImagePairCompatibility(
     inputOrientation: input.orientation,
     originalAspect: round4(originalAspect),
     inputAspect: round4(inputAspect),
+    relativeAspectErrorRaw: relativeAspectError,
     relativeAspectError: round4(relativeAspectError),
   } as const;
   if (original.orientation !== 1 || input.orientation !== 1) {
@@ -284,7 +311,7 @@ function transferRecord(
   input: AfcR3cDecodedImage,
   compatibility: AfcR3cImagePairCompatibility
 ): AfcR3cSourceNormalizedTransferRecord {
-  if (compatibility.tier === "incompatible" || compatibility.relativeAspectError === null) {
+  if (compatibility.tier === "incompatible" || compatibility.relativeAspectErrorRaw === null || compatibility.relativeAspectError === null) {
     throw new TypeError("Incompatible image pair cannot establish a source-normalized transfer.");
   }
   return deepFreeze({
@@ -295,6 +322,7 @@ function transferRecord(
     inputDecodedDimensions: dimensions(input),
     originalOrientation: original.orientation,
     inputOrientation: input.orientation,
+    relativeAspectErrorRaw: compatibility.relativeAspectErrorRaw,
     relativeAspectError: compatibility.relativeAspectError,
     numericalCoordinatesReinterpreted: imageRole === "empty_room_boundary_specialist",
     exactGrid: compatibility.tier === "exact_grid_compatible",
@@ -306,12 +334,55 @@ function transferRecord(
   });
 }
 
+function hasExactSafety(value: unknown): value is AfcR3cSafety {
+  return isPlainObject(value) &&
+    value.applied === false &&
+    value.authoritative === false &&
+    value.persisted === false &&
+    value.activeCameraUnchanged === true;
+}
+
+function validCandidateSource(value: unknown): value is FloorCandidateInput {
+  if (!isPlainObject(value) || !validFingerprint(value.candidateId) || value.candidateSource !== "gemini-proposal" ||
+    value.coordinateSpace !== "source-normalized/v1" || !Array.isArray(value.semanticOrder) ||
+    value.semanticOrder.length !== 4 || value.semanticOrder[0] !== "NL" || value.semanticOrder[1] !== "NR" ||
+    value.semanticOrder[2] !== "FR" || value.semanticOrder[3] !== "FL" || !Array.isArray(value.sourceFloorPolygon) ||
+    value.sourceFloorPolygon.length !== 4) return false;
+  return value.sourceFloorPolygon.every((point) => isPlainObject(point) &&
+    typeof point.x === "number" && Number.isFinite(point.x) &&
+    typeof point.y === "number" && Number.isFinite(point.y));
+}
+
+function validReviewEvidenceByCandidateId(value: unknown, candidates: readonly FloorCandidateInput[]): boolean {
+  if (!isPlainObject(value)) return false;
+  return candidates.every((candidate) => {
+    const evidence = value[candidate.candidateId];
+    return isPlainObject(evidence) &&
+      typeof evidence.rawSourceOrdinal === "number" &&
+      Number.isInteger(evidence.rawSourceOrdinal) &&
+      evidence.rawSourceOrdinal >= 0;
+  });
+}
+
+/**
+ * Defensive recognition only. AFC-R3B remains the authoritative raw-response
+ * parser; this guard must be total because composition is a public batch entry.
+ */
 function isR3bResult(value: unknown): value is GeminiFloorProposalParseResult {
-  if (!value || typeof value !== "object") return false;
-  const result = value as GeminiFloorProposalParseResult;
-  return (result.status === "proposals" || result.status === "insufficient_evidence" || result.status === "contract_failure") &&
-    result.contractVersion === GEMINI_FLOOR_PROPOSAL_CONTRACT_VERSION &&
-    result.safety.applied === false && result.safety.authoritative === false;
+  if (!isPlainObject(value) ||
+    (value.status !== "proposals" && value.status !== "insufficient_evidence" && value.status !== "contract_failure") ||
+    value.contractVersion !== GEMINI_FLOOR_PROPOSAL_CONTRACT_VERSION ||
+    !hasExactSafety(value.safety) ||
+    !isPlainObject(value.auditProvenance)) return false;
+  if (value.status === "proposals") {
+    return Array.isArray(value.candidates) &&
+      value.candidates.every(validCandidateSource) &&
+      validReviewEvidenceByCandidateId(value.reviewEvidenceByCandidateId, value.candidates as readonly FloorCandidateInput[]);
+  }
+  if (value.status === "insufficient_evidence") {
+    return typeof value.reasonCode === "string" && typeof value.note === "string";
+  }
+  return typeof value.reason === "string" && typeof value.path === "string" && typeof value.detail === "string";
 }
 
 /**
@@ -365,6 +436,7 @@ export function createAfcR3cProposalRun(input: AfcR3cInvocationInput): AfcR3cPro
     originalOrientation: input.originalImage.orientation,
     inputOrientation: input.inputImage.orientation,
     compatibilityTier: compatibility.tier,
+    relativeAspectErrorRaw: compatibility.relativeAspectErrorRaw!,
     relativeAspectError: compatibility.relativeAspectError!,
     transferPolicyVersion: AFC_R3C_SOURCE_NORMALIZED_TRANSFER_VERSION,
     promptVersion: input.prompt.promptVersion,
@@ -411,12 +483,76 @@ function armStatus(run: AfcR3cProposalRun): AfcR3cArmStatus {
 function roleToken(role: AfcR3cInputImageRole): "empty" | "original" {
   return role === "empty_room_boundary_specialist" ? "empty" : "original";
 }
-function requiredRuns(input: AfcR3cCompositionInput): AfcR3cProposalRun[] | null {
-  if (!knownStudyMode(input?.studyMode)) return null;
-  if (input.studyMode === "empty_only") return input.emptyRun?.imageRole === "empty_room_boundary_specialist" ? [input.emptyRun] : null;
-  if (input.studyMode === "original_only") return input.originalRun?.imageRole === "original_contextual" ? [input.originalRun] : null;
-  return input.emptyRun?.imageRole === "empty_room_boundary_specialist" && input.originalRun?.imageRole === "original_contextual"
-    ? [input.emptyRun, input.originalRun]
+function validDimensionRecord(value: unknown): boolean {
+  return isPlainObject(value) && finitePositiveInteger(value.width) && finitePositiveInteger(value.height);
+}
+function acceptedTier(value: unknown): value is Exclude<AfcR3cCompatibilityTier, "incompatible"> {
+  return value === "exact_grid_compatible" || value === "aspect_compatible_rescaled";
+}
+function validTransferForRun(value: unknown, imageRole: AfcR3cInputImageRole): value is AfcR3cSourceNormalizedTransferRecord {
+  if (!isPlainObject(value) ||
+    value.transferPolicyVersion !== AFC_R3C_SOURCE_NORMALIZED_TRANSFER_VERSION ||
+    value.inputImageRole !== imageRole ||
+    !acceptedTier(value.compatibilityTier) ||
+    !validDimensionRecord(value.originalDecodedDimensions) ||
+    !validDimensionRecord(value.inputDecodedDimensions) ||
+    typeof value.originalOrientation !== "number" || !Number.isFinite(value.originalOrientation) ||
+    typeof value.inputOrientation !== "number" || !Number.isFinite(value.inputOrientation) ||
+    typeof value.relativeAspectErrorRaw !== "number" || !Number.isFinite(value.relativeAspectErrorRaw) ||
+    typeof value.relativeAspectError !== "number" || !Number.isFinite(value.relativeAspectError) ||
+    typeof value.numericalCoordinatesReinterpreted !== "boolean" ||
+    value.clamped !== false || value.reordered !== false || value.repaired !== false || value.containerSpaceUsed !== false) return false;
+  return value.compatibilityTier === "exact_grid_compatible"
+    ? value.exactGrid === true && value.aspectCompatible === false
+    : value.exactGrid === false && value.aspectCompatible === true;
+}
+function validProvenanceForRun(value: unknown, imageRole: AfcR3cInputImageRole, transfer: AfcR3cSourceNormalizedTransferRecord, r3bResult: GeminiFloorProposalParseResult): boolean {
+  if (!isPlainObject(value) ||
+    value.contractVersion !== AFC_R3C_PROMPT_CONTRACT_VERSION ||
+    !knownStudyMode(value.studyMode) ||
+    value.inputImageRole !== imageRole ||
+    !validFingerprint(value.originalImageFingerprint) ||
+    !validFingerprint(value.inputImageFingerprint) ||
+    (imageRole === "empty_room_boundary_specialist" && !validFingerprint(value.emptyRoomImageFingerprint)) ||
+    (imageRole === "original_contextual" && value.emptyRoomImageFingerprint !== null) ||
+    value.compatibilityTier !== transfer.compatibilityTier ||
+    value.transferPolicyVersion !== AFC_R3C_SOURCE_NORMALIZED_TRANSFER_VERSION ||
+    value.relativeAspectErrorRaw !== transfer.relativeAspectErrorRaw ||
+    value.relativeAspectError !== transfer.relativeAspectError ||
+    value.afcR3bContractVersion !== GEMINI_FLOOR_PROPOSAL_CONTRACT_VERSION ||
+    value.r3bSchemaVersion !== GEMINI_FLOOR_HYPOTHESES_SCHEMA_VERSION ||
+    !validFingerprint(value.providerId) || !validFingerprint(value.modelId) ||
+    !/^[a-f0-9]{64}$/.test(value.promptSha256 as string) ||
+    value.inputResponseStatus !== r3bResult.status) return false;
+  const expectedPromptVersion = imageRole === "empty_room_boundary_specialist"
+    ? AFC_R3C_EMPTY_BOUNDARY_PROMPT_VERSION
+    : AFC_R3C_ORIGINAL_CONTEXT_PROMPT_VERSION;
+  return value.promptVersion === expectedPromptVersion &&
+    (value.rawResponseSha256 === null || (typeof value.rawResponseSha256 === "string" && /^[a-f0-9]{64}$/.test(value.rawResponseSha256)));
+}
+function validRun(value: unknown, expectedRole: AfcR3cInputImageRole): value is AfcR3cProposalRun {
+  if (!isPlainObject(value) || value.imageRole !== expectedRole || !isR3bResult(value.r3bResult) ||
+    !validTransferForRun(value.transfer, expectedRole)) return false;
+  return validProvenanceForRun(value.provenance, expectedRole, value.transfer, value.r3bResult);
+}
+function requiredRuns(input: unknown): { studyMode: AfcR3cStudyMode; runs: AfcR3cProposalRun[] } | null {
+  if (!isPlainObject(input) || !knownStudyMode(input.studyMode)) return null;
+  const hasEmpty = input.emptyRun !== undefined;
+  const hasOriginal = input.originalRun !== undefined;
+  if (input.studyMode === "empty_only") {
+    return hasEmpty && !hasOriginal && validRun(input.emptyRun, "empty_room_boundary_specialist")
+      ? { studyMode: input.studyMode, runs: [input.emptyRun] }
+      : null;
+  }
+  if (input.studyMode === "original_only") {
+    return hasOriginal && !hasEmpty && validRun(input.originalRun, "original_contextual")
+      ? { studyMode: input.studyMode, runs: [input.originalRun] }
+      : null;
+  }
+  return hasEmpty && hasOriginal &&
+    validRun(input.emptyRun, "empty_room_boundary_specialist") &&
+    validRun(input.originalRun, "original_contextual")
+    ? { studyMode: input.studyMode, runs: [input.emptyRun, input.originalRun] }
     : null;
 }
 function emptyRecord(): Readonly<Record<string, never>> {
@@ -425,64 +561,90 @@ function emptyRecord(): Readonly<Record<string, never>> {
 function base(studyMode: AfcR3cStudyMode, arms: readonly AfcR3cArmStatus[]): CompositionBase {
   return { contractVersion: AFC_R3C_PROMPT_CONTRACT_VERSION, studyMode, safety: SAFETY, armStatuses: arms };
 }
+function inputFailure(studyMode: AfcR3cStudyMode | null): CompositionInputFailure {
+  return deepFreeze({
+    contractVersion: AFC_R3C_PROMPT_CONTRACT_VERSION,
+    studyMode,
+    safety: SAFETY,
+    armStatuses: [],
+    status: "contract_failure",
+    reason: "composition_input_invalid",
+    detail: "Composition input is invalid.",
+    candidates: [],
+    candidateProvenanceById: emptyRecord(),
+  });
+}
+function safeStudyMode(input: unknown): AfcR3cStudyMode | null {
+  try {
+    return isPlainObject(input) && knownStudyMode(input.studyMode) ? input.studyMode : null;
+  } catch {
+    return null;
+  }
+}
 
 /**
  * Combines only independently validated R3B results. Parallel union is atomic:
  * one malformed arm blocks every candidate from the requested composition.
  */
-export function composeAfcR3cProposalRuns(input: AfcR3cCompositionInput): AfcR3cCompositionResult {
-  const runs = requiredRuns(input);
-  if (!runs || !knownStudyMode(input?.studyMode) || runs.some((run) => !isR3bResult(run.r3bResult))) {
-    return deepFreeze({ ...base((input?.studyMode ?? "parallel_union") as AfcR3cStudyMode, []), status: "contract_failure", reason: "composition_input_invalid", candidates: [], candidateProvenanceById: emptyRecord() });
-  }
-  const arms = runs.map(armStatus).sort((a, b) => compareCanonicalStrings(roleToken(a.imageRole), roleToken(b.imageRole)));
-  if (runs.some((run) => run.r3bResult.status === "contract_failure")) {
-    return deepFreeze({ ...base(input.studyMode, arms), status: "contract_failure", reason: "r3b_contract_failure", candidates: [], candidateProvenanceById: emptyRecord() });
-  }
-  const proposalRuns = runs.filter((run): run is AfcR3cProposalRun & { r3bResult: Extract<GeminiFloorProposalParseResult, { status: "proposals" }> } => run.r3bResult.status === "proposals");
-  if (!proposalRuns.length) {
-    return deepFreeze({ ...base(input.studyMode, arms), status: "insufficient_evidence", candidates: [], candidateProvenanceById: emptyRecord() });
-  }
-  const staged: Array<{ candidate: FloorCandidateInput; provenance: AfcR3cCandidateProvenance; canonical: string }> = [];
-  for (const run of proposalRuns) {
-    for (const source of run.r3bResult.candidates) {
-      const transferred = transferAfcR3cCandidateToOriginalBasis(source, run.transfer);
-      const candidateId = `afc-r3c:${roleToken(run.imageRole)}:${source.candidateId}`;
-      const review = run.r3bResult.reviewEvidenceByCandidateId[source.candidateId];
-      staged.push({
-        candidate: deepFreeze({ ...transferred, candidateId }),
-        canonical: candidateCanonicalPolygon(transferred),
-        provenance: deepFreeze({
-          imageRole: run.imageRole,
-          sourceR3bCandidateId: source.candidateId,
-          inputImageFingerprint: run.provenance.inputImageFingerprint,
-          originalImageFingerprint: run.provenance.originalImageFingerprint,
-          emptyRoomImageFingerprint: run.provenance.emptyRoomImageFingerprint,
-          compatibilityTier: run.provenance.compatibilityTier,
-          relativeAspectError: run.provenance.relativeAspectError,
-          transfer: run.transfer,
-          promptVersion: run.provenance.promptVersion,
-          promptSha256: run.provenance.promptSha256,
-          providerId: run.provenance.providerId,
-          modelId: run.provenance.modelId,
-          rawResponseSha256: run.provenance.rawResponseSha256,
-          sourceResponseStatus: "proposals",
-          rawSourceOrdinal: review.rawSourceOrdinal,
-        }),
-      });
+export function composeAfcR3cProposalRuns(input: unknown): AfcR3cCompositionResult {
+  const requestedStudyMode = safeStudyMode(input);
+  try {
+    const required = requiredRuns(input);
+    if (!required) return inputFailure(requestedStudyMode);
+    const { studyMode, runs } = required;
+    const arms = runs.map(armStatus).sort((a, b) => compareCanonicalStrings(roleToken(a.imageRole), roleToken(b.imageRole)));
+    if (runs.some((run) => run.r3bResult.status === "contract_failure")) {
+      return deepFreeze({ ...base(studyMode, arms), status: "contract_failure", reason: "r3b_contract_failure", candidates: [], candidateProvenanceById: emptyRecord() });
     }
+    const proposalRuns = runs.filter((run): run is AfcR3cProposalRun & { r3bResult: Extract<GeminiFloorProposalParseResult, { status: "proposals" }> } => run.r3bResult.status === "proposals");
+    if (!proposalRuns.length) {
+      return deepFreeze({ ...base(studyMode, arms), status: "insufficient_evidence", candidates: [], candidateProvenanceById: emptyRecord() });
+    }
+    const staged: Array<{ candidate: FloorCandidateInput; provenance: AfcR3cCandidateProvenance; canonical: string }> = [];
+    for (const run of proposalRuns) {
+      for (const source of run.r3bResult.candidates) {
+        const transferred = transferAfcR3cCandidateToOriginalBasis(source, run.transfer);
+        const candidateId = `afc-r3c:${roleToken(run.imageRole)}:${source.candidateId}`;
+        const review = run.r3bResult.reviewEvidenceByCandidateId[source.candidateId];
+        staged.push({
+          candidate: deepFreeze({ ...transferred, candidateId }),
+          canonical: candidateCanonicalPolygon(transferred),
+          provenance: deepFreeze({
+            imageRole: run.imageRole,
+            sourceR3bCandidateId: source.candidateId,
+            inputImageFingerprint: run.provenance.inputImageFingerprint,
+            originalImageFingerprint: run.provenance.originalImageFingerprint,
+            emptyRoomImageFingerprint: run.provenance.emptyRoomImageFingerprint,
+            compatibilityTier: run.provenance.compatibilityTier,
+            relativeAspectErrorRaw: run.provenance.relativeAspectErrorRaw,
+            relativeAspectError: run.provenance.relativeAspectError,
+            transfer: run.transfer,
+            promptVersion: run.provenance.promptVersion,
+            promptSha256: run.provenance.promptSha256,
+            providerId: run.provenance.providerId,
+            modelId: run.provenance.modelId,
+            rawResponseSha256: run.provenance.rawResponseSha256,
+            sourceResponseStatus: "proposals",
+            rawSourceOrdinal: review.rawSourceOrdinal,
+          }),
+        });
+      }
+    }
+    staged.sort((a, b) =>
+      compareCanonicalStrings(a.canonical, b.canonical) ||
+      compareCanonicalStrings(roleToken(a.provenance.imageRole), roleToken(b.provenance.imageRole)) ||
+      compareCanonicalStrings(a.provenance.sourceR3bCandidateId, b.provenance.sourceR3bCandidateId)
+    );
+    if (new Set(staged.map((item) => item.candidate.candidateId)).size !== staged.length) return inputFailure(studyMode);
+    const provenanceById: Record<string, AfcR3cCandidateProvenance> = {};
+    for (const item of staged) provenanceById[item.candidate.candidateId] = item.provenance;
+    return deepFreeze({
+      ...base(studyMode, arms),
+      status: "proposals",
+      candidates: staged.map((item) => item.candidate),
+      candidateProvenanceById: provenanceById,
+    });
+  } catch {
+    return inputFailure(requestedStudyMode);
   }
-  staged.sort((a, b) =>
-    compareCanonicalStrings(a.canonical, b.canonical) ||
-    compareCanonicalStrings(roleToken(a.provenance.imageRole), roleToken(b.provenance.imageRole)) ||
-    compareCanonicalStrings(a.provenance.sourceR3bCandidateId, b.provenance.sourceR3bCandidateId)
-  );
-  const provenanceById: Record<string, AfcR3cCandidateProvenance> = {};
-  for (const item of staged) provenanceById[item.candidate.candidateId] = item.provenance;
-  return deepFreeze({
-    ...base(input.studyMode, arms),
-    status: "proposals",
-    candidates: staged.map((item) => item.candidate),
-    candidateProvenanceById: provenanceById,
-  });
 }
