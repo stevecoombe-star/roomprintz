@@ -18,6 +18,9 @@
 # ----------------------------------------
 /coverage
 
+# AFC-R3C-B2 local-only Gemini research captures
+/.local/afc-r3c-captures/
+
 # ----------------------------------------
 # Next.js
 # ----------------------------------------
