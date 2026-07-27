@@ -37,8 +37,10 @@ type CliOptions = Readonly<{
 const EXIT: Record<string, number> = {
   invalid_arguments: 2,
   invalid_manifest: 3,
+  comparison_context_invalid: 3,
   image_read_failed: 4,
   image_oversized: 4,
+  image_byte_count_mismatch: 5,
   image_mime_mismatch: 4,
   image_hash_mismatch: 5,
   image_metadata_mismatch: 6,
@@ -168,10 +170,15 @@ export async function runAfcR3cProposalRunnerCli(argv = process.argv.slice(2)): 
   if (!parsed.ok) return printFailure("invalid_arguments", parsed.reason);
   const options = parsed.value;
   const root = await repositoryRoot(process.cwd());
+  const parsedManifest = await readManifest(options.manifest);
+  if (!parsedManifest.ok) {
+    const failureCode = parsedManifest.reason === "shared_context_invalid"
+      ? "comparison_context_invalid"
+      : "invalid_manifest";
+    return printFailure(failureCode, `${parsedManifest.reason}${"path" in parsedManifest ? `:${parsedManifest.path}` : ""}`);
+  }
   const outputCheck = validateAfcR3cCaptureDirectory(options.outputDir, root);
   if (!outputCheck.ok) return printFailure("capture_write_failed", outputCheck.reason);
-  const parsedManifest = await readManifest(options.manifest);
-  if (!parsedManifest.ok) return printFailure("invalid_manifest", `${parsedManifest.reason}${"path" in parsedManifest ? `:${parsedManifest.path}` : ""}`);
   console.log(`AFC-R3C-B2 resolved model: ${options.model}`);
   if (options.validateOnly) return validateOnly(options, parsedManifest.manifest);
   const apiKey = process.env.GEMINI_API_KEY?.trim() || process.env.GOOGLE_API_KEY?.trim() || null;

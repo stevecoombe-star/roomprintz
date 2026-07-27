@@ -29,14 +29,14 @@ const PIXEL = Buffer.from(
 );
 const sha = (value: Buffer | string) => createHash("sha256").update(value).digest("hex");
 
-function rawManifest(imagePath = "original.png") {
+function rawManifest(imagePath = "original.png", emptyImagePath = "empty.png") {
   const digest = sha(PIXEL);
   return {
     contractVersion: "afc-r3c-image-manifest/v1",
     roomId: "synthetic-room-a",
-    original: { filePath: imagePath, sha256: digest, decodedWidth: 1, decodedHeight: 1, orientation: 1, mimeType: "image/png" },
+    original: { filePath: imagePath, sha256: digest, byteCount: PIXEL.byteLength, decodedWidth: 1, decodedHeight: 1, orientation: 1, mimeType: "image/png" },
     emptyRoomAssist: {
-      filePath: imagePath, sha256: digest, decodedWidth: 1, decodedHeight: 1, orientation: 1, mimeType: "image/png",
+      filePath: emptyImagePath, sha256: digest, byteCount: PIXEL.byteLength, decodedWidth: 1, decodedHeight: 1, orientation: 1, mimeType: "image/png",
       generatedFromOriginalSha256: digest, generatorId: "synthetic-generator", generatorModelId: "synthetic-v1",
     },
     sharedComparisonContext: {
@@ -52,7 +52,7 @@ function rawManifest(imagePath = "original.png") {
       basisKind: "original",
       ratioDomain: { min: 1, max: 1, step: 0.1 },
       fovDomain: { minDeg: 45, maxDeg: 45, stepDeg: 1 },
-      refinement: { ratioStep: 0.1, fovStepDeg: 1, basinFactor: 1, additivePxAllowance: 0 },
+      refinement: { enabled: false, ratioStep: 0.1, fovStepDeg: 1, basinFactor: 1, additivePxAllowance: 0 },
       referenceDepth: 1,
     },
   };
@@ -104,6 +104,7 @@ test("B2 runner captures exact envelope/text and binds R3B to model text", async
   const dir = await mkdtemp(path.join(os.tmpdir(), "afc-r3c-b2-"));
   try {
     await writeFile(path.join(dir, "original.png"), PIXEL);
+    await writeFile(path.join(dir, "empty.png"), PIXEL);
     const parsed = parseAfcR3cImageManifest(rawManifest());
     assert.equal(parsed.ok, true);
     if (!parsed.ok) return;
@@ -181,6 +182,7 @@ test("B2 validate-only CLI cannot invoke provider or write captures", async () =
   const dir = await mkdtemp(path.join(os.tmpdir(), "afc-r3c-cli-"));
   try {
     await writeFile(path.join(dir, "original.png"), PIXEL);
+    await writeFile(path.join(dir, "empty.png"), PIXEL);
     const manifestPath = path.join(dir, "room.manifest.json");
     const output = path.join(dir, "captures");
     await writeFile(manifestPath, JSON.stringify(rawManifest()));
@@ -209,6 +211,7 @@ test("B2 exported runner also enforces the live-call acknowledgement", async () 
   const dir = await mkdtemp(path.join(os.tmpdir(), "afc-r3c-runner-gate-"));
   try {
     await writeFile(path.join(dir, "original.png"), PIXEL);
+    await writeFile(path.join(dir, "empty.png"), PIXEL);
     const parsed = parseAfcR3cImageManifest(rawManifest());
     assert.equal(parsed.ok, true);
     if (!parsed.ok) return;
@@ -224,6 +227,45 @@ test("B2 exported runner also enforces the live-call acknowledgement", async () 
     } as unknown as Parameters<typeof runAfcR3cGeminiFloorProposalStudy>[0]);
     assert.equal(result.failureCode, "invalid_arguments");
     assert.equal(calls, 0);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("C2 rejects invalid trusted context before provider calls or output preflight", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "afc-r3c-context-order-"));
+  try {
+    await writeFile(path.join(dir, "original.png"), PIXEL);
+    const parsed = parseAfcR3cImageManifest(rawManifest());
+    assert.equal(parsed.ok, true);
+    if (!parsed.ok) return;
+    const malformed = structuredClone(parsed.manifest) as Record<string, unknown>;
+    malformed.sharedComparisonContext = { basisId: "x" };
+    let providerCalls = 0;
+    let captureWrites = 0;
+    const outputDir = path.join(dir, "must-not-exist");
+    const result = await runAfcR3cGeminiFloorProposalStudy({
+      manifest: malformed,
+      manifestDirectory: dir,
+      studyMode: "original_only",
+      outputDir,
+      apiKey: "test-key",
+      model: "gemini-fixture",
+      executeLiveProviderCall: true,
+      repositoryRoot: process.cwd(),
+      fetchImpl: async () => {
+        providerCalls += 1;
+        return new Response("{}");
+      },
+      captureWriter: async () => {
+        captureWrites += 1;
+        return { ok: true, filePath: path.join(outputDir, "unexpected"), reused: false };
+      },
+    } as unknown as Parameters<typeof runAfcR3cGeminiFloorProposalStudy>[0]);
+    assert.equal(result.failureCode, "comparison_context_invalid");
+    assert.equal(providerCalls, 0);
+    assert.equal(captureWrites, 0);
+    await assert.rejects(stat(outputDir));
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

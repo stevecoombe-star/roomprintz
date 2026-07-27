@@ -17,6 +17,10 @@ import {
   type FloorCandidateInput,
   type SharedCandidateComparisonContext,
 } from "./candidate-discrimination-harness";
+import {
+  validateSharedCandidateComparisonContext,
+  type ValidSharedCandidateComparisonContext,
+} from "./gemini-floor-proposal-manifest";
 
 export const GEMINI_FLOOR_PROPOSAL_CONTRACT_VERSION = "AFC-R3B/v1" as const;
 export const GEMINI_FLOOR_HYPOTHESES_SCHEMA_VERSION = "afc-r3-floor-hypotheses/v1" as const;
@@ -92,6 +96,10 @@ export type GeminiFloorProposalAuditProvenanceV1 = Readonly<{
   responseReceivedAt: string;
   rawResponseSha256: string;
 }>;
+export type VerifiedGeminiFloorProposalAuditProvenanceV1 = GeminiFloorProposalAuditProvenanceV1 & Readonly<{
+  /** Set only by this parser after comparing the digest to exact UTF-8 text. */
+  rawResponseSha256Verified: true;
+}>;
 
 export type GeminiFloorProposalTrustedContextV1 = Readonly<{
   sharedComparisonContext: SharedCandidateComparisonContext;
@@ -111,14 +119,12 @@ export type GeminiFloorReviewEvidenceV1 = Readonly<{
 }>;
 
 export type GeminiFloorProposalFailureReason =
+  | "comparison_context_invalid"
   | "r3_response_too_large"
   | "r3_invalid_json"
   | "r3_not_object"
   | "r3_unknown_schema_version"
-  | "r3_coordinate_extent_policy_mismatch"
-  | "r3_raw_response_hash_invalid"
   | "r3_raw_response_hash_mismatch"
-  | "r3_trusted_contract_version_mismatch"
   | "r3_basis_binding_invalid"
   | "r3_basis_binding_mismatch"
   | "r3_unknown_field"
@@ -152,7 +158,7 @@ export type GeminiFloorProposalSuccess = Readonly<{
   safety: GeminiFloorProposalSafety;
   candidates: readonly FloorCandidateInput[];
   reviewEvidenceByCandidateId: Readonly<Record<string, GeminiFloorReviewEvidenceV1>>;
-  auditProvenance: GeminiFloorProposalAuditProvenanceV1;
+  auditProvenance: VerifiedGeminiFloorProposalAuditProvenanceV1;
 }>;
 export type GeminiFloorInsufficientEvidence = Readonly<{
   status: "insufficient_evidence";
@@ -161,7 +167,7 @@ export type GeminiFloorInsufficientEvidence = Readonly<{
   safety: GeminiFloorProposalSafety;
   reasonCode: GeminiFloorInsufficientEvidenceReasonV1;
   note: string;
-  auditProvenance: GeminiFloorProposalAuditProvenanceV1;
+  auditProvenance: VerifiedGeminiFloorProposalAuditProvenanceV1;
 }>;
 export type GeminiFloorProposalContractFailure = Readonly<{
   status: "contract_failure";
@@ -178,6 +184,7 @@ export type GeminiFloorProposalContractFailure = Readonly<{
     modelId: string | null;
     responseReceivedAt: string | null;
     rawResponseSha256: string | null;
+    rawResponseSha256Verified: false | null;
   }>;
 }>;
 export type GeminiFloorProposalParseResult =
@@ -234,6 +241,7 @@ function safeFailureProvenance(value: unknown): GeminiFloorProposalContractFailu
     modelId: text("modelId"),
     responseReceivedAt: text("responseReceivedAt"),
     rawResponseSha256: text("rawResponseSha256"),
+    rawResponseSha256Verified: false,
   };
 }
 
@@ -280,7 +288,7 @@ function validCoordinateExtentPolicy(
  * It is audit-only and never enters candidate geometry or AFC-R2 ranking.
  */
 export function deriveGeminiFloorBasisBinding(
-  sharedComparisonContext: SharedCandidateComparisonContext,
+  sharedComparisonContext: ValidSharedCandidateComparisonContext,
   coordinateExtentPolicy: GeminiFloorCoordinateExtentPolicyV1
 ): string {
   const canonical = stableSerialize({
@@ -429,7 +437,7 @@ function parseProposal(
   };
 }
 
-function copyProvenance(source: GeminiFloorProposalAuditProvenanceV1): GeminiFloorProposalAuditProvenanceV1 {
+function copyProvenance(source: GeminiFloorProposalAuditProvenanceV1): VerifiedGeminiFloorProposalAuditProvenanceV1 {
   return {
     requestId: source.requestId,
     contractVersion: source.contractVersion,
@@ -438,6 +446,7 @@ function copyProvenance(source: GeminiFloorProposalAuditProvenanceV1): GeminiFlo
     modelId: source.modelId,
     responseReceivedAt: source.responseReceivedAt,
     rawResponseSha256: source.rawResponseSha256,
+    rawResponseSha256Verified: true,
   };
 }
 
@@ -508,16 +517,20 @@ export function parseGeminiFloorProposalResponse(
 ): GeminiFloorProposalParseResult {
   const finish = (result: GeminiFloorProposalParseResult) => withFailureProvenance(result, trustedContext);
   if (typeof rawResponse !== "string") return finish(failure("r3_invalid_type", "$", "Raw response must be a string."));
+  const validatedSharedContext = validateSharedCandidateComparisonContext(trustedContext?.sharedComparisonContext);
+  if (!validatedSharedContext.ok) {
+    return finish(failure("comparison_context_invalid", "$.trustedContext.sharedComparisonContext", "Trusted comparison context is invalid."));
+  }
   const extentPolicy = trustedContext?.coordinateExtentPolicy;
   if (!validCoordinateExtentPolicy(extentPolicy)) {
-    return finish(failure("r3_coordinate_extent_policy_mismatch", "$.trustedContext.coordinateExtentPolicy", "Trusted coordinate extent policy must exactly equal afc-r3-coordinate-extent/v1."));
+    return finish(failure("comparison_context_invalid", "$.trustedContext.coordinateExtentPolicy", "Trusted comparison context is invalid."));
   }
   const audit = trustedContext?.auditProvenance;
   if (!audit || audit.contractVersion !== GEMINI_FLOOR_PROPOSAL_CONTRACT_VERSION) {
-    return finish(failure("r3_trusted_contract_version_mismatch", "$.trustedContext.auditProvenance.contractVersion", `Trusted contractVersion must equal ${GEMINI_FLOOR_PROPOSAL_CONTRACT_VERSION}.`));
+    return finish(failure("comparison_context_invalid", "$.trustedContext.auditProvenance", "Trusted comparison context is invalid."));
   }
   if (typeof audit.rawResponseSha256 !== "string" || !/^[a-f0-9]{64}$/.test(audit.rawResponseSha256)) {
-    return finish(failure("r3_raw_response_hash_invalid", "$.trustedContext.auditProvenance.rawResponseSha256", "Trusted raw-response SHA-256 must be 64 lowercase hexadecimal characters."));
+    return finish(failure("comparison_context_invalid", "$.trustedContext.auditProvenance", "Trusted comparison context is invalid."));
   }
   if (Buffer.byteLength(rawResponse, "utf8") > GEMINI_FLOOR_MAX_RAW_RESPONSE_BYTES) {
     return finish(failure("r3_response_too_large", "$", "Raw response exceeds 65,536 UTF-8 bytes."));
@@ -542,7 +555,10 @@ export function parseGeminiFloorProposalResponse(
   if (typeof decoded.basis_binding !== "string" || !/^[\x21-\x7e]{1,128}$/.test(decoded.basis_binding)) {
     return finish(failure("r3_basis_binding_invalid", "$.basis_binding", "basis_binding must be a printable-ASCII token of at most 128 characters."));
   }
-  const expectedBasisBinding = deriveGeminiFloorBasisBinding(trustedContext.sharedComparisonContext, extentPolicy);
+  const expectedBasisBinding = deriveGeminiFloorBasisBinding(
+    validatedSharedContext.value,
+    extentPolicy
+  );
   if (decoded.basis_binding !== expectedBasisBinding) {
     return finish(failure("r3_basis_binding_mismatch", "$.basis_binding", "Model basis_binding does not match the trusted-context-derived binding."));
   }

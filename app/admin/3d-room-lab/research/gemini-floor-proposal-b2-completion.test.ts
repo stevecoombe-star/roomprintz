@@ -55,9 +55,9 @@ function manifestRaw(imagePath = "original.png") {
   return {
     contractVersion: "afc-r3c-image-manifest/v1",
     roomId: "synthetic-room-a",
-    original: { filePath: imagePath, sha256: digest, decodedWidth: 1, decodedHeight: 1, orientation: 1, mimeType: "image/png" },
+    original: { filePath: imagePath, sha256: digest, byteCount: PIXEL.byteLength, decodedWidth: 1, decodedHeight: 1, orientation: 1, mimeType: "image/png" },
     emptyRoomAssist: {
-      filePath: imagePath, sha256: digest, decodedWidth: 1, decodedHeight: 1, orientation: 1, mimeType: "image/png",
+      filePath: "empty.png", sha256: digest, byteCount: PIXEL.byteLength, decodedWidth: 1, decodedHeight: 1, orientation: 1, mimeType: "image/png",
       generatedFromOriginalSha256: digest, generatorId: "synthetic-generator", generatorModelId: "synthetic-v1",
     },
     sharedComparisonContext: {
@@ -70,7 +70,7 @@ function manifestRaw(imagePath = "original.png") {
       orientationApplied: false, basisKind: "original",
       ratioDomain: { min: 1, max: 1, step: 0.1 },
       fovDomain: { minDeg: 45, maxDeg: 45, stepDeg: 1 },
-      refinement: { ratioStep: 0.1, fovStepDeg: 1, basinFactor: 1, additivePxAllowance: 0 },
+      refinement: { enabled: false, ratioStep: 0.1, fovStepDeg: 1, basinFactor: 1, additivePxAllowance: 0 },
       referenceDepth: 1,
     },
   };
@@ -123,6 +123,7 @@ async function withTemp<T>(fn: (dir: string) => Promise<T>): Promise<T> {
 
 async function writeImage(dir: string) {
   await writeFile(path.join(dir, "original.png"), PIXEL);
+  await writeFile(path.join(dir, "empty.png"), PIXEL);
 }
 
 function fakeQueue(bytes: readonly Buffer[], calls: unknown[]) {
@@ -170,6 +171,7 @@ test("B exact-byte image verification matrix (cases 13–21)", async () => withT
   assert.equal(success.image.bytes.equals(PIXEL), true, "20/21 unchanged bytes");
   const rows: Array<[string, Partial<typeof input.original>, number | undefined, string]> = [
     ["14 hash", { sha256: "a".repeat(64) }, undefined, "image_hash_mismatch"],
+    ["14 byte count", { byteCount: PIXEL.byteLength + 1 }, undefined, "image_byte_count_mismatch"],
     ["15 width", { decodedWidth: 2 }, undefined, "image_metadata_mismatch"],
     ["16 height", { decodedHeight: 2 }, undefined, "image_metadata_mismatch"],
     ["17 orientation", { orientation: 2 }, undefined, "image_metadata_mismatch"],
@@ -181,6 +183,33 @@ test("B exact-byte image verification matrix (cases 13–21)", async () => withT
       descriptor: { ...input.original, ...override }, manifestDirectory: dir, maxBytes,
     });
     assert.equal(result.ok ? "ok" : result.code, code, name);
+  }
+}));
+
+test("B2 runtime image verification rejects symlinks and containment escapes before admission", async () => withTemp(async (dir) => {
+  await writeImage(dir);
+  const input = manifest();
+  const linkedPath = path.join(dir, "linked.png");
+  await symlink("original.png", linkedPath);
+  const linked = await verifyAfcR3cManifestImage({
+    descriptor: { ...input.original, filePath: "linked.png" },
+    manifestDirectory: dir,
+  });
+  assert.equal(linked.ok ? "ok" : linked.code, "image_read_failed");
+
+  const outsidePath = path.join(path.dirname(dir), "afc-r3c-outside.png");
+  const outputDir = path.join(dir, "must-not-exist");
+  try {
+    await writeFile(outsidePath, PIXEL);
+    const escaped = await verifyAfcR3cManifestImage({
+      descriptor: { ...input.original, filePath: "../afc-r3c-outside.png" },
+      manifestDirectory: dir,
+    });
+    assert.equal(escaped.ok ? "ok" : escaped.code, "image_read_failed");
+    if (!escaped.ok) assert.equal(escaped.reason, "Local image path is outside the manifest directory.");
+    await assert.rejects(stat(outputDir));
+  } finally {
+    await rm(outsidePath, { force: true });
   }
 }));
 

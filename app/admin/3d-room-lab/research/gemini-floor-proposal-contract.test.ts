@@ -20,6 +20,7 @@ import {
   type GeminiFloorProposalParseResult,
   type GeminiFloorProposalTrustedContextV1,
 } from "./gemini-floor-proposal-contract";
+import { validateSharedCandidateComparisonContext } from "./gemini-floor-proposal-manifest";
 
 type CornerObject = { x: unknown; y: unknown; support: unknown; [key: string]: unknown };
 type EdgeObject = { support: unknown; note: unknown; [key: string]: unknown };
@@ -72,7 +73,10 @@ function sharedContext(): SharedCandidateComparisonContext {
 }
 
 function binding(shared = sharedContext(), policy = GEMINI_FLOOR_COORDINATE_EXTENT_POLICY): string {
-  return deriveGeminiFloorBasisBinding(shared, policy);
+  const validated = validateSharedCandidateComparisonContext(shared);
+  assert.equal(validated.ok, true);
+  if (!validated.ok) throw new Error("fixture context must validate");
+  return deriveGeminiFloorBasisBinding(validated.value, policy);
 }
 
 function context(rawResponse = ""): GeminiFloorProposalTrustedContextV1 {
@@ -428,7 +432,7 @@ test("trusted coordinate extent policy is exact, finite, and actually governs ac
     const trusted = context(text) as unknown as MutableTrustedContext;
     trusted.coordinateExtentPolicy = { ...trusted.coordinateExtentPolicy };
     mutate(trusted);
-    expectFailureResult(parseGeminiFloorProposalResponse(text, trusted as GeminiFloorProposalTrustedContextV1), "r3_coordinate_extent_policy_mismatch");
+    expectFailureResult(parseGeminiFloorProposalResponse(text, trusted as GeminiFloorProposalTrustedContextV1), "comparison_context_invalid");
   }
 });
 
@@ -439,10 +443,11 @@ test("raw-response SHA-256 is verified before parsing and retained separately in
   assert.equal(accepted.status, "proposals");
   if (accepted.status === "proposals") {
     assert.equal(accepted.auditProvenance.rawResponseSha256, createHash("sha256").update(text, "utf8").digest("hex"));
+    assert.equal(accepted.auditProvenance.rawResponseSha256Verified, true);
   }
   const malformed = context(text) as unknown as MutableTrustedContext;
   malformed.auditProvenance = { ...malformed.auditProvenance, rawResponseSha256: "not-a-sha256" };
-  expectFailureResult(parseGeminiFloorProposalResponse(text, malformed as GeminiFloorProposalTrustedContextV1), "r3_raw_response_hash_invalid");
+  expectFailureResult(parseGeminiFloorProposalResponse(text, malformed as GeminiFloorProposalTrustedContextV1), "comparison_context_invalid");
   const mismatched = context(text) as unknown as MutableTrustedContext;
   mismatched.auditProvenance = { ...mismatched.auditProvenance, rawResponseSha256: "0".repeat(64) };
   expectFailureResult(parseGeminiFloorProposalResponse(text, mismatched as GeminiFloorProposalTrustedContextV1), "r3_raw_response_hash_mismatch");
@@ -456,12 +461,11 @@ test("basis bindings are derived from trusted comparison context and extent poli
   assert.notEqual(first, binding({ ...original, basisFingerprint: "other-basis" }));
   assert.notEqual(first, binding({ ...original, decodedWidth: original.decodedWidth + 1 }));
   assert.notEqual(first, binding({ ...original, frameSize: { ...original.frameSize, width: original.frameSize.width + 1 } }));
-  assert.notEqual(first, binding({ ...original, normalizationPolicyVersion: "other" } as unknown as SharedCandidateComparisonContext));
   assert.notEqual(first, binding(original, { ...GEMINI_FLOOR_COORDINATE_EXTENT_POLICY, maxX: 1.26 }));
   const response = valid();
   const text = raw(response);
   const changed = context(text) as unknown as MutableTrustedContext;
-  changed.sharedComparisonContext = { ...changed.sharedComparisonContext, basisFingerprint: "other-basis" };
+  changed.sharedComparisonContext = { ...changed.sharedComparisonContext, basisFingerprint: "a".repeat(64) };
   expectFailureResult(parseGeminiFloorProposalResponse(text, changed as GeminiFloorProposalTrustedContextV1), "r3_basis_binding_mismatch");
 });
 
@@ -470,7 +474,7 @@ test("trusted adapter version, binding syntax, branch fields, and failure audit 
   const text = raw(response);
   const stale = context(text) as unknown as MutableTrustedContext;
   stale.auditProvenance = { ...stale.auditProvenance, contractVersion: "AFC-R3B/v0" };
-  expectFailureResult(parseGeminiFloorProposalResponse(text, stale as GeminiFloorProposalTrustedContextV1), "r3_trusted_contract_version_mismatch");
+  expectFailureResult(parseGeminiFloorProposalResponse(text, stale as GeminiFloorProposalTrustedContextV1), "comparison_context_invalid");
   const malformedBinding = valid();
   malformedBinding.basis_binding = "";
   expectFailureResult(parseGeminiFloorProposalResponse(raw(malformedBinding), context(raw(malformedBinding))), "r3_basis_binding_invalid");
@@ -486,5 +490,30 @@ test("trusted adapter version, binding syntax, branch fields, and failure audit 
     assert.equal(failed.auditProvenance.contractVersion, GEMINI_FLOOR_PROPOSAL_CONTRACT_VERSION);
     assert.equal(allFrozen(failed), true);
     assert.equal(JSON.stringify(failed).includes(raw(insufficientCrossBranch)), false);
+  }
+});
+
+test("invalid trusted comparison contexts never reach basis-binding comparison", () => {
+  const text = raw(valid());
+  const invalidContexts: unknown[] = [
+    undefined,
+    null,
+    {},
+    "garbage",
+    [],
+    { basisId: "x" },
+    { ...sharedContext(), basisId: "" },
+    { ...sharedContext(), decodedWidth: 0 },
+    { ...sharedContext(), frameSize: { width: 0, height: 1 } },
+    { ...sharedContext(), ratioDomain: { min: 2, max: 1, step: 0.1 } },
+    { ...sharedContext(), fovDomain: { minDeg: 90, maxDeg: 20, stepDeg: 1 } },
+  ];
+  for (const sharedComparisonContext of invalidContexts) {
+    const trusted = context(text) as unknown as Record<string, unknown>;
+    trusted.sharedComparisonContext = sharedComparisonContext;
+    expectFailureResult(
+      parseGeminiFloorProposalResponse(text, trusted as GeminiFloorProposalTrustedContextV1),
+      "comparison_context_invalid"
+    );
   }
 });

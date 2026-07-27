@@ -6,6 +6,7 @@
  */
 import "server-only";
 
+import path from "node:path";
 import type { SharedCandidateComparisonContext } from "./candidate-discrimination-harness";
 
 export const AFC_R3C_IMAGE_MANIFEST_VERSION = "afc-r3c-image-manifest/v1" as const;
@@ -13,6 +14,7 @@ export const AFC_R3C_IMAGE_MANIFEST_VERSION = "afc-r3c-image-manifest/v1" as con
 export type AfcR3cManifestImage = Readonly<{
   filePath: string;
   sha256: string;
+  byteCount: number;
   decodedWidth: number;
   decodedHeight: number;
   orientation: number;
@@ -26,9 +28,13 @@ export type AfcR3cImageManifestV1 = Readonly<{
   emptyRoomAssist: AfcR3cManifestImage & Readonly<{
     generatedFromOriginalSha256: string;
     generatorId: string;
+    /**
+     * Requested generator model label (for example, "NBP"), not a
+     * provider-resolved model identity.
+     */
     generatorModelId: string;
   }>;
-  sharedComparisonContext: SharedCandidateComparisonContext;
+  sharedComparisonContext: ValidSharedCandidateComparisonContext;
 }>;
 
 export type AfcR3cManifestParseResult =
@@ -38,8 +44,16 @@ type ImageParseResult =
   | Readonly<{ ok: true; image: AfcR3cManifestImage }>
   | Readonly<{ ok: false; reason: string; path: string }>;
 type ContextParseResult =
-  | Readonly<{ ok: true; context: SharedCandidateComparisonContext }>
+  | Readonly<{ ok: true; context: ValidSharedCandidateComparisonContext }>
   | Readonly<{ ok: false; reason: string; path: string }>;
+
+declare const validatedSharedComparisonContext: unique symbol;
+export type ValidSharedCandidateComparisonContext = SharedCandidateComparisonContext & Readonly<{
+  [validatedSharedComparisonContext]: true;
+}>;
+export type SharedComparisonContextValidationResult =
+  | Readonly<{ ok: true; value: ValidSharedCandidateComparisonContext }>
+  | Readonly<{ ok: false; failureCode: "comparison_context_invalid"; reason: string }>;
 
 const SHA256 = /^[a-f0-9]{64}$/;
 const ROOM_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
@@ -69,7 +83,7 @@ function exactKeys(value: Record<string, unknown>, keys: readonly string[]): str
 }
 
 function positiveInteger(value: unknown): value is number {
-  return typeof value === "number" && Number.isFinite(value) && Number.isInteger(value) && value > 0;
+  return typeof value === "number" && Number.isFinite(value) && Number.isSafeInteger(value) && value > 0;
 }
 
 function finite(value: unknown): value is number {
@@ -81,28 +95,36 @@ function nonEmpty(value: unknown): value is string {
 }
 
 function validLocalPath(value: unknown): value is string {
-  return typeof value === "string" &&
-    value.length > 0 &&
-    value.length <= 4096 &&
-    !value.includes("\0") &&
-    !/^[a-z][a-z0-9+.-]*:/i.test(value);
+  if (typeof value !== "string" || value.length === 0 || value.length > 4096 || value.includes("\0")) return false;
+  if (path.isAbsolute(value) || /^[a-z][a-z0-9+.-]*:/i.test(value)) return false;
+  return value.split(/[\\/]/).every((part) => part !== "..");
+}
+
+function extensionMatchesMime(filePath: string, mimeType: string): boolean {
+  const extension = path.extname(filePath).toLowerCase();
+  return (mimeType === "image/jpeg" && (extension === ".jpg" || extension === ".jpeg")) ||
+    (mimeType === "image/png" && extension === ".png") ||
+    (mimeType === "image/webp" && extension === ".webp");
 }
 
 function parseImage(value: unknown, path: string): ImageParseResult {
   if (!plain(value)) return { ok: false, reason: "image_not_object", path };
-  const unknown = exactKeys(value, ["filePath", "sha256", "decodedWidth", "decodedHeight", "orientation", "mimeType"]);
+  const unknown = exactKeys(value, ["filePath", "sha256", "byteCount", "decodedWidth", "decodedHeight", "orientation", "mimeType"]);
   if (unknown) return { ok: false, reason: "image_field_invalid", path: `${path}.${unknown}` };
   if (!validLocalPath(value.filePath)) return { ok: false, reason: "image_path_invalid", path: `${path}.filePath` };
   if (typeof value.sha256 !== "string" || !SHA256.test(value.sha256)) return { ok: false, reason: "image_sha256_invalid", path: `${path}.sha256` };
+  if (!positiveInteger(value.byteCount)) return { ok: false, reason: "image_byte_count_invalid", path: `${path}.byteCount` };
   if (!positiveInteger(value.decodedWidth)) return { ok: false, reason: "image_width_invalid", path: `${path}.decodedWidth` };
   if (!positiveInteger(value.decodedHeight)) return { ok: false, reason: "image_height_invalid", path: `${path}.decodedHeight` };
-  if (!finite(value.orientation)) return { ok: false, reason: "image_orientation_invalid", path: `${path}.orientation` };
+  if (value.orientation !== 1) return { ok: false, reason: "image_orientation_invalid", path: `${path}.orientation` };
   if (typeof value.mimeType !== "string" || !IMAGE_MIMES.has(value.mimeType)) return { ok: false, reason: "image_mime_invalid", path: `${path}.mimeType` };
+  if (!extensionMatchesMime(value.filePath, value.mimeType)) return { ok: false, reason: "image_extension_mime_mismatch", path: `${path}.filePath` };
   return {
     ok: true,
     image: {
       filePath: value.filePath,
       sha256: value.sha256,
+      byteCount: value.byteCount,
       decodedWidth: value.decodedWidth,
       decodedHeight: value.decodedHeight,
       orientation: value.orientation,
@@ -111,47 +133,50 @@ function parseImage(value: unknown, path: string): ImageParseResult {
   };
 }
 
-function parseContext(value: unknown, original: AfcR3cManifestImage): ContextParseResult {
-  if (!plain(value)) return { ok: false, reason: "shared_context_not_object", path: "$.sharedComparisonContext" };
+export function validateSharedCandidateComparisonContext(value: unknown): SharedComparisonContextValidationResult {
+  const invalid = (): SharedComparisonContextValidationResult => ({
+    ok: false,
+    failureCode: "comparison_context_invalid",
+    reason: "Shared comparison context is invalid.",
+  });
+  if (!plain(value)) return invalid();
   const keys = [
     "ratioFovContractVersion", "basisId", "basisFingerprint", "decoderId",
     "normalizationPolicyVersion", "decodedWidth", "decodedHeight", "frameSize",
     "orientationApplied", "basisKind", "ratioDomain", "fovDomain", "refinement", "referenceDepth",
   ] as const;
   const unknown = exactKeys(value, keys);
-  if (unknown) return { ok: false, reason: "shared_context_field_invalid", path: `$.sharedComparisonContext.${unknown}` };
-  if (value.ratioFovContractVersion !== "ratio-fov-harness/v1") return { ok: false, reason: "shared_context_contract_invalid", path: "$.sharedComparisonContext.ratioFovContractVersion" };
-  if (!nonEmpty(value.basisId) || value.basisFingerprint !== original.sha256 || !nonEmpty(value.decoderId)) {
-    return { ok: false, reason: "shared_context_basis_invalid", path: "$.sharedComparisonContext" };
-  }
+  if (unknown) return invalid();
+  if (value.ratioFovContractVersion !== "ratio-fov-harness/v1") return invalid();
+  if (!nonEmpty(value.basisId) || !nonEmpty(value.basisFingerprint) || !nonEmpty(value.decoderId)) return invalid();
   if (value.normalizationPolicyVersion !== "source-normalized/v1" || value.orientationApplied !== false || value.basisKind !== "original" || value.referenceDepth !== 1) {
-    return { ok: false, reason: "shared_context_coordinate_space_invalid", path: "$.sharedComparisonContext" };
+    return invalid();
   }
-  if (value.decodedWidth !== original.decodedWidth || value.decodedHeight !== original.decodedHeight) {
-    return { ok: false, reason: "shared_context_dimensions_mismatch", path: "$.sharedComparisonContext" };
-  }
-  if (!plain(value.frameSize) || exactKeys(value.frameSize, ["width", "height"]) || value.frameSize.width !== original.decodedWidth || value.frameSize.height !== original.decodedHeight) {
-    return { ok: false, reason: "shared_context_frame_invalid", path: "$.sharedComparisonContext.frameSize" };
+  if (!positiveInteger(value.decodedWidth) || !positiveInteger(value.decodedHeight)) return invalid();
+  if (!plain(value.frameSize) || exactKeys(value.frameSize, ["width", "height"]) ||
+    !positiveInteger(value.frameSize.width) || !positiveInteger(value.frameSize.height)) {
+    return invalid();
   }
   if (!plain(value.ratioDomain) || exactKeys(value.ratioDomain, ["min", "max", "step"]) ||
     !finite(value.ratioDomain.min) || value.ratioDomain.min <= 0 || !finite(value.ratioDomain.max) ||
     value.ratioDomain.max < value.ratioDomain.min || !finite(value.ratioDomain.step) || value.ratioDomain.step <= 0) {
-    return { ok: false, reason: "shared_context_ratio_domain_invalid", path: "$.sharedComparisonContext.ratioDomain" };
+    return invalid();
   }
   if (!plain(value.fovDomain) || exactKeys(value.fovDomain, ["minDeg", "maxDeg", "stepDeg"]) ||
     !finite(value.fovDomain.minDeg) || value.fovDomain.minDeg < 20 || !finite(value.fovDomain.maxDeg) ||
     value.fovDomain.maxDeg > 90 || value.fovDomain.maxDeg < value.fovDomain.minDeg ||
     !finite(value.fovDomain.stepDeg) || value.fovDomain.stepDeg <= 0) {
-    return { ok: false, reason: "shared_context_fov_domain_invalid", path: "$.sharedComparisonContext.fovDomain" };
+    return invalid();
   }
-  if (!plain(value.refinement) || exactKeys(value.refinement, ["ratioStep", "fovStepDeg", "basinFactor", "additivePxAllowance"]) ||
+  if (!plain(value.refinement) || exactKeys(value.refinement, ["enabled", "ratioStep", "fovStepDeg", "basinFactor", "additivePxAllowance"]) ||
+    typeof value.refinement.enabled !== "boolean" ||
     !finite(value.refinement.ratioStep) || value.refinement.ratioStep <= 0 ||
     !finite(value.refinement.fovStepDeg) || value.refinement.fovStepDeg <= 0 ||
     !finite(value.refinement.basinFactor) || value.refinement.basinFactor <= 0 ||
     !finite(value.refinement.additivePxAllowance) || value.refinement.additivePxAllowance < 0) {
-    return { ok: false, reason: "shared_context_refinement_invalid", path: "$.sharedComparisonContext.refinement" };
+    return invalid();
   }
-  return { ok: true, context: deepFreeze({
+  return { ok: true, value: deepFreeze({
     ratioFovContractVersion: value.ratioFovContractVersion,
     basisId: value.basisId,
     basisFingerprint: value.basisFingerprint,
@@ -165,13 +190,30 @@ function parseContext(value: unknown, original: AfcR3cManifestImage): ContextPar
     ratioDomain: { min: value.ratioDomain.min, max: value.ratioDomain.max, step: value.ratioDomain.step },
     fovDomain: { minDeg: value.fovDomain.minDeg, maxDeg: value.fovDomain.maxDeg, stepDeg: value.fovDomain.stepDeg },
     refinement: {
+      enabled: value.refinement.enabled,
       ratioStep: value.refinement.ratioStep,
       fovStepDeg: value.refinement.fovStepDeg,
       basinFactor: value.refinement.basinFactor,
       additivePxAllowance: value.refinement.additivePxAllowance,
     },
     referenceDepth: value.referenceDepth,
-  }) as SharedCandidateComparisonContext };
+  }) as ValidSharedCandidateComparisonContext };
+}
+
+function parseContext(value: unknown, original: AfcR3cManifestImage): ContextParseResult {
+  const validated = validateSharedCandidateComparisonContext(value);
+  if (!validated.ok) return { ok: false, reason: "shared_context_invalid", path: "$.sharedComparisonContext" };
+  const context = validated.value;
+  if (context.basisFingerprint !== original.sha256) {
+    return { ok: false, reason: "shared_context_basis_invalid", path: "$.sharedComparisonContext.basisFingerprint" };
+  }
+  if (context.decodedWidth !== original.decodedWidth || context.decodedHeight !== original.decodedHeight) {
+    return { ok: false, reason: "shared_context_dimensions_mismatch", path: "$.sharedComparisonContext" };
+  }
+  if (context.frameSize.width !== original.decodedWidth || context.frameSize.height !== original.decodedHeight) {
+    return { ok: false, reason: "shared_context_frame_invalid", path: "$.sharedComparisonContext.frameSize" };
+  }
+  return { ok: true, context };
 }
 
 /** Parse an untrusted JSON manifest, rejecting every unknown field. */
@@ -185,21 +227,28 @@ export function parseAfcR3cImageManifest(value: unknown): AfcR3cManifestParseRes
   if (!original.ok) return original;
   if (!plain(value.emptyRoomAssist)) return { ok: false, reason: "empty_image_not_object", path: "$.emptyRoomAssist" };
   const emptyUnknown = exactKeys(value.emptyRoomAssist, [
-    "filePath", "sha256", "decodedWidth", "decodedHeight", "orientation", "mimeType",
+    "filePath", "sha256", "byteCount", "decodedWidth", "decodedHeight", "orientation", "mimeType",
     "generatedFromOriginalSha256", "generatorId", "generatorModelId",
   ]);
   if (emptyUnknown) return { ok: false, reason: "empty_image_field_invalid", path: `$.emptyRoomAssist.${emptyUnknown}` };
   const empty = parseImage({
     filePath: value.emptyRoomAssist.filePath,
     sha256: value.emptyRoomAssist.sha256,
+    byteCount: value.emptyRoomAssist.byteCount,
     decodedWidth: value.emptyRoomAssist.decodedWidth,
     decodedHeight: value.emptyRoomAssist.decodedHeight,
     orientation: value.emptyRoomAssist.orientation,
     mimeType: value.emptyRoomAssist.mimeType,
   }, "$.emptyRoomAssist");
   if (!empty.ok) return empty;
+  if (empty.image.filePath === original.image.filePath) return { ok: false, reason: "image_paths_not_distinct", path: "$.emptyRoomAssist.filePath" };
+  if (empty.image.decodedWidth !== original.image.decodedWidth || empty.image.decodedHeight !== original.image.decodedHeight) {
+    return { ok: false, reason: "image_dimensions_mismatch", path: "$.emptyRoomAssist" };
+  }
   if (value.emptyRoomAssist.generatedFromOriginalSha256 !== original.image.sha256) return { ok: false, reason: "empty_parent_fingerprint_mismatch", path: "$.emptyRoomAssist.generatedFromOriginalSha256" };
   if (!nonEmpty(value.emptyRoomAssist.generatorId)) return { ok: false, reason: "empty_generator_invalid", path: "$.emptyRoomAssist.generatorId" };
+  // This v1 field is the requested generator label; it is not a claim about
+  // any provider-resolved model identity.
   if (!nonEmpty(value.emptyRoomAssist.generatorModelId)) return { ok: false, reason: "empty_generator_model_invalid", path: "$.emptyRoomAssist.generatorModelId" };
   const context = parseContext(value.sharedComparisonContext, original.image);
   if (!context.ok) return context;

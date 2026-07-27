@@ -31,6 +31,7 @@ import {
   parseGeminiFloorProposalResponse,
   type GeminiFloorProposalParseResult,
 } from "./gemini-floor-proposal-contract";
+import { validateSharedCandidateComparisonContext } from "./gemini-floor-proposal-manifest";
 import { buildAfcR3cGeminiFloorProposalPrompt } from "./gemini-floor-proposal-prompt";
 
 const original: AfcR3cDecodedImage = { fingerprint: "original-sha", decodedWidth: 960, decodedHeight: 640, orientation: 1 };
@@ -69,7 +70,10 @@ function sharedContext(): SharedCandidateComparisonContext {
   };
 }
 function binding(): string {
-  return deriveGeminiFloorBasisBinding(sharedContext(), GEMINI_FLOOR_COORDINATE_EXTENT_POLICY);
+  const validated = validateSharedCandidateComparisonContext(sharedContext());
+  assert.equal(validated.ok, true);
+  if (!validated.ok) throw new Error("fixture context must validate");
+  return deriveGeminiFloorBasisBinding(validated.value, GEMINI_FLOOR_COORDINATE_EXTENT_POLICY);
 }
 function parseResponse(response: unknown): GeminiFloorProposalParseResult {
   const raw = JSON.stringify(response);

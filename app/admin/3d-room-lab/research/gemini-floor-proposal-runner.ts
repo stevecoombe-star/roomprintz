@@ -8,7 +8,7 @@
 import "server-only";
 
 import { randomUUID } from "node:crypto";
-import { readFile } from "node:fs/promises";
+import { lstat, readFile } from "node:fs/promises";
 import path from "node:path";
 
 import {
@@ -39,7 +39,11 @@ import {
   type AfcR3cCompositionResult,
   type AfcR3cProposalRun,
 } from "./gemini-floor-proposal-composition";
-import type { AfcR3cImageManifestV1, AfcR3cManifestImage } from "./gemini-floor-proposal-manifest";
+import {
+  validateSharedCandidateComparisonContext,
+  type AfcR3cImageManifestV1,
+  type AfcR3cManifestImage,
+} from "./gemini-floor-proposal-manifest";
 import {
   AFC_R3C_ENVELOPE_EXTRACTION_POLICY_VERSION,
   AFC_R3C_GEMINI_PROVIDER_ID,
@@ -75,16 +79,18 @@ export type AfcR3cVerifiedImage = Readonly<{
 
 export type AfcR3cImageVerificationResult =
   | Readonly<{ ok: true; image: AfcR3cVerifiedImage }>
-  | Readonly<{ ok: false; code: "image_read_failed" | "image_oversized" | "image_mime_mismatch" | "image_hash_mismatch" | "image_metadata_mismatch" | "image_orientation_unsupported"; reason: string }>;
+  | Readonly<{ ok: false; code: "image_read_failed" | "image_oversized" | "image_byte_count_mismatch" | "image_mime_mismatch" | "image_hash_mismatch" | "image_metadata_mismatch" | "image_orientation_unsupported"; reason: string }>;
 
 export type AfcR3cRunnerFailureCode =
   | "invalid_arguments"
   | "image_read_failed"
   | "image_oversized"
+  | "image_byte_count_mismatch"
   | "image_mime_mismatch"
   | "image_hash_mismatch"
   | "image_metadata_mismatch"
   | "image_orientation_unsupported"
+  | "comparison_context_invalid"
   | "incompatible_image_pair"
   | "missing_api_key"
   | "provider_transport_failed"
@@ -151,15 +157,25 @@ export async function verifyAfcR3cManifestImage(args: {
   manifestDirectory: string;
   maxBytes?: number;
 }): Promise<AfcR3cImageVerificationResult> {
-  const absolutePath = path.resolve(args.manifestDirectory, args.descriptor.filePath);
+  const root = path.resolve(args.manifestDirectory);
+  const absolutePath = path.resolve(root, args.descriptor.filePath);
+  const relativePath = path.relative(root, absolutePath);
+  if (!relativePath || relativePath === ".." || relativePath.startsWith(`..${path.sep}`) || path.isAbsolute(relativePath)) {
+    return { ok: false, code: "image_read_failed", reason: "Local image path is outside the manifest directory." };
+  }
   let bytes: Buffer;
   try {
+    const metadata = await lstat(absolutePath);
+    if (!metadata.isFile() || metadata.isSymbolicLink()) throw new Error("invalid_file");
     bytes = await readFile(absolutePath);
   } catch {
     return { ok: false, code: "image_read_failed", reason: "Local image could not be read." };
   }
   if (bytes.byteLength === 0 || bytes.byteLength > (args.maxBytes ?? AFC_R3C_MAX_IMAGE_BYTES)) {
     return { ok: false, code: "image_oversized", reason: "Local image exceeds the configured byte limit." };
+  }
+  if (bytes.byteLength !== args.descriptor.byteCount) {
+    return { ok: false, code: "image_byte_count_mismatch", reason: "Manifest byte count does not match the exact local bytes." };
   }
   if (mimeFromBytes(bytes) !== args.descriptor.mimeType) {
     return { ok: false, code: "image_mime_mismatch", reason: "Manifest MIME does not match the image bytes." };
@@ -372,7 +388,9 @@ async function executeArm(args: {
     modelOutputPath: textWrite.filePath,
     r3bResult,
     proposalRun: run,
-    failureCode: r3bResult.status === "contract_failure" ? "r3b_contract_failure" : null,
+    failureCode: r3bResult.status === "contract_failure"
+      ? r3bResult.reason === "comparison_context_invalid" ? "comparison_context_invalid" : "r3b_contract_failure"
+      : null,
     failureReason: r3bResult.status === "contract_failure" ? r3bResult.reason : null,
   });
 }
@@ -413,6 +431,9 @@ export async function runAfcR3cGeminiFloorProposalStudy(args: {
     ? classifyAfcR3cImagePairCompatibility(original, empty)
     : classifyAfcR3cImagePairCompatibility(original, original);
   if (pairCompatibility.tier === "incompatible") return failure("incompatible_image_pair");
+  if (!validateSharedCandidateComparisonContext(args.manifest.sharedComparisonContext).ok) {
+    return failure("comparison_context_invalid");
+  }
   if (!args.apiKey) return failure("missing_api_key");
   // All image/context/key preflight has completed. Create + probe the capture
   // directory before any provider request so a response can never be accepted
