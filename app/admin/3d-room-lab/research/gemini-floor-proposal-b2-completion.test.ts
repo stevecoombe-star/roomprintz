@@ -16,14 +16,22 @@ import {
   writeAfcR3cImmutableCapture,
 } from "./gemini-floor-proposal-capture";
 import {
+  GEMINI_FLOOR_PROPOSAL_CONTRACT_VERSION,
   GEMINI_FLOOR_COORDINATE_EXTENT_POLICY,
   deriveGeminiFloorBasisBinding,
+  parseGeminiFloorProposalResponse,
 } from "./gemini-floor-proposal-contract";
-import { parseAfcR3cImageManifest } from "./gemini-floor-proposal-manifest";
 import {
+  parseAfcR3cImageManifest,
+  validateSharedCandidateComparisonContext,
+} from "./gemini-floor-proposal-manifest";
+import {
+  AFC_R3C_ENVELOPE_EXTRACTION_POLICY_VERSION,
+  AFC_R3C_GEMINI_FLOOR_PROPOSAL_PROVIDER_JSON_SCHEMA,
   buildAfcR3cGeminiEndpoint,
   buildAfcR3cGeminiRequestPayload,
   callAfcR3cGeminiProvider,
+  compileAfcR3cProviderJsonSchema,
   extractAfcR3cModelOutputText,
   resolveAfcR3cGenerationConfig,
 } from "./gemini-floor-proposal-provider";
@@ -33,12 +41,15 @@ import {
   verifyAfcR3cManifestImage,
 } from "./gemini-floor-proposal-runner";
 import { runAfcR3cProposalRunnerCli } from "./gemini-floor-proposal-runner-cli";
+import roomAEnvelopeReplayFixture from "./fixtures/gemini-floor-proposal-room-a-envelope-replay.v1.json";
 
 const PIXEL = Buffer.from(
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScL5WQAAAABJRU5ErkJggg==",
   "base64"
 );
 const sha = (value: Buffer | string) => createHash("sha256").update(value).digest("hex");
+const EXPECTED_EXTRACTION_POLICY_VERSION = "afc-r3c-envelope-extraction/exactly-one-candidate-one-text-part-optional-thought-signature/v2";
+const EXPECTED_PROVIDER_SCHEMA_SHA256 = "ff126cd9538d142d85df8fd2fac6bf692145460a1c78f24a4e6fc758896ea8f0";
 const originalFetch = globalThis.fetch;
 type ProviderPayload = {
   contents: Array<{ parts: Array<{ text?: string; inlineData?: { mimeType: string; data: string } }> }>;
@@ -109,9 +120,9 @@ function insufficientText(input: ReturnType<typeof manifest>): string {
   });
 }
 
-function envelope(text: string, extra: Record<string, unknown> = {}): Buffer {
+function envelope(text: string, extra: Record<string, unknown> = {}, partExtra: Record<string, unknown> = {}): Buffer {
   return Buffer.from(JSON.stringify({
-    candidates: [{ finishReason: "STOP", content: { parts: [{ text }] } }],
+    candidates: [{ finishReason: "STOP", content: { parts: [{ text, ...partExtra }] } }],
     modelVersion: "fixture-model-version", usageMetadata: { totalTokenCount: 12 }, ...extra,
   }), "utf8");
 }
@@ -222,7 +233,29 @@ test("C request payload and transport matrix (cases 23–38)", async () => {
   assert.equal(payload.contents[0].parts[0].text, prompt.promptText, "28");
   assert.deepEqual(Buffer.from(payload.contents[0].parts[1].inlineData!.data, "base64"), PIXEL, "26");
   assert.equal(payload.contents[0].parts[1].inlineData!.mimeType, "image/png", "27");
-  assert.equal(payload.generationConfig.responseSchema !== undefined, true, "30");
+  assert.equal(payload.generationConfig.responseJsonSchema !== undefined, true, "30 responseJsonSchema");
+  assert.equal("responseSchema" in payload.generationConfig, false, "30 no deprecated responseSchema");
+  const providerSchema = payload.generationConfig.responseJsonSchema as Record<string, unknown>;
+  const providerSchemaText = JSON.stringify(providerSchema);
+  assert.equal(providerSchema, AFC_R3C_GEMINI_FLOOR_PROPOSAL_PROVIDER_JSON_SCHEMA, "30 canonical compiled schema");
+  for (const feature of ["\"$defs\"", "\"$ref\"", "\"oneOf\"", "\"additionalProperties\""]) {
+    assert.equal(providerSchemaText.includes(feature), true, `30 preserves ${feature}`);
+  }
+  assert.equal(providerSchemaText.includes("\"const\""), false, "30 converts unsupported const");
+  assert.equal(providerSchemaText.includes("\"schema_version\":{\"type\":\"string\",\"enum\":[\"afc-r3-floor-hypotheses/v1\"]}"), true, "30 const semantics");
+  assert.equal(sha(providerSchemaText), EXPECTED_PROVIDER_SCHEMA_SHA256, "30 provider schema digest");
+  for (const description of [
+    "Normalized horizontal coordinate. 0 and 1 are inside the frame. Values strictly below 0 or above 1 are outside.",
+    "Normalized vertical coordinate. 0 and 1 are inside the frame. Values strictly below 0 or above 1 are outside.",
+    "outside_frame_inferred must be used if and only if x or y is strictly outside [0,1]. It is invalid when both coordinates lie within the closed interval [0,1], including endpoints.",
+  ]) {
+    assert.equal(providerSchemaText.includes(JSON.stringify(description)), true, `30 preserves ${description}`);
+  }
+  assert.throws(
+    () => compileAfcR3cProviderJsonSchema({ type: "string", pattern: ".*" }),
+    /unsupported keyword/,
+    "30 unsupported canonical schema fails closed"
+  );
   assert.deepEqual(payload.generationConfig.thinkingConfig, { thinkingLevel: "minimal" }, "32/33");
   assert.equal("AUTO_FLOOR_VISION_RESPONSE_SCHEMA" in payload, false, "34/35");
   assert.equal(buildAfcR3cGeminiEndpoint("models/gemini-3.5-flash", "secret").includes("models%2Fgemini-3.5-flash"), true, "31");
@@ -237,11 +270,31 @@ test("C request payload and transport matrix (cases 23–38)", async () => {
   assert.equal(timeout.ok ? "ok" : timeout.failure.kind, "timeout", "37");
   assert.equal(JSON.stringify(timeout).includes("secret"), false, "38");
   const rawEnvelope = Buffer.from(' \n{"candidates":[]}\n', "utf8");
+  const wirePayloads: ProviderPayload[] = [];
   const captured = await callAfcR3cGeminiProvider({
-    apiKey: "secret", model: "gemini-fixture", prompt, imageBytes: PIXEL, mimeType: "image/png", timeoutMs: 10,
-    fetchImpl: async () => new Response(rawEnvelope.toString("utf8"), { status: 200 }),
+    apiKey: "secret", model: "gemini-3.5-flash", prompt, imageBytes: PIXEL, mimeType: "image/png", timeoutMs: 10,
+    fetchImpl: async (_url, init) => {
+      wirePayloads.push(JSON.parse(String(init.body)) as ProviderPayload);
+      return new Response(rawEnvelope.toString("utf8"), { status: 200 });
+    },
   });
   assert.equal(captured.ok, true, "39 exact response capture");
+  assert.equal(wirePayloads.length, 1, "39 captured serialized request");
+  const serializedWirePayload = wirePayloads[0]!;
+  assert.deepEqual(Object.keys(serializedWirePayload).sort(), ["contents", "generationConfig"], "39 wire top-level keys");
+  assert.deepEqual(Object.keys(serializedWirePayload.generationConfig).sort(), [
+    "maxOutputTokens", "responseJsonSchema", "responseMimeType", "temperature", "thinkingConfig",
+  ], "39 wire generation keys");
+  assert.equal(serializedWirePayload.generationConfig.responseJsonSchema !== undefined, true, "39 wire responseJsonSchema");
+  assert.equal("responseSchema" in serializedWirePayload.generationConfig, false, "39 wire no responseSchema");
+  assert.equal(
+    sha(JSON.stringify(serializedWirePayload.generationConfig.responseJsonSchema)),
+    EXPECTED_PROVIDER_SCHEMA_SHA256,
+    "39 wire schema digest"
+  );
+  assert.equal(serializedWirePayload.generationConfig.responseMimeType, "application/json", "39 wire MIME");
+  assert.equal(serializedWirePayload.contents.length, 1, "39 wire active image count");
+  assert.equal(serializedWirePayload.contents[0].parts[1].inlineData?.mimeType, "image/png", "39 wire active image MIME");
   if (captured.ok) {
     assert.equal(captured.response.providerEnvelopeSha256, sha(rawEnvelope), "39");
     assert.deepEqual(captured.response.envelopeBytes, rawEnvelope, "39");
@@ -267,6 +320,31 @@ test("D exact envelope and strict extraction matrix (cases 39–61)", () => {
     assert.deepEqual(good.usageMetadata, { totalTokenCount: 12 }, "59");
     assert.equal(good.providerModelVersion, "fixture-model-version", "60");
   }
+  const signedBytes = envelope(text, {}, { thoughtSignature: "opaque-provider-metadata" });
+  const signedBefore = Buffer.from(signedBytes);
+  const signed = extractAfcR3cModelOutputText(signedBytes);
+  assert.equal(signed.ok, true, "42 thoughtSignature is accepted");
+  if (signed.ok) {
+    assert.equal(signed.modelOutputText, text, "42 thoughtSignature is excluded");
+    assert.equal(signed.modelOutputTextSha256, sha(text), "42 exact text hash");
+  }
+  assert.deepEqual(signedBytes, signedBefore, "42 source envelope bytes remain unchanged");
+  for (const invalid of [null, 1, false, {}, []]) {
+    const result = extractAfcR3cModelOutputText(envelope(text, {}, { thoughtSignature: invalid }));
+    assert.equal(result.ok ? "ok" : result.reason, "thought_signature_invalid", `42 invalid thoughtSignature ${typeof invalid}`);
+  }
+  for (const semanticKey of ["functionCall", "inlineData", "executableCode", "fileData"] as const) {
+    assert.equal(
+      extractAfcR3cModelOutputText(envelope(text, {}, { [semanticKey]: {} })).ok,
+      false,
+      `42 text plus ${semanticKey} remains ambiguous`
+    );
+  }
+  assert.equal(
+    extractAfcR3cModelOutputText(envelope(text, {}, { providerMetadata: "unapproved" })).ok,
+    false,
+    "42 unknown part metadata remains rejected"
+  );
   const failures: Array<[string, unknown]> = [
     ["43 missing candidates", {}],
     ["44 empty candidates", { candidates: [] }],
@@ -290,11 +368,59 @@ test("D exact envelope and strict extraction matrix (cases 39–61)", () => {
   assert.equal(unknown.ok, true, "61 unknown envelope data ignored");
 });
 
+test("D1 extraction policy identifier is literal and receipt-attested", () => {
+  assert.equal(AFC_R3C_ENVELOPE_EXTRACTION_POLICY_VERSION, EXPECTED_EXTRACTION_POLICY_VERSION);
+});
+
+test("D2 portable Room A envelope replay accepts thoughtSignature and preserves strict R3B rejection", () => {
+  const fixture = roomAEnvelopeReplayFixture;
+  assert.equal(fixture.fixtureContractVersion, "afc-r3c-provider-envelope-replay-fixture/v1");
+  assert.equal(fixture.provenance.sourceLiveEnvelopeSha256, "87c1b70a343bf96e1c6fe33ae56979c3c2ddf7bcb5ed870bc8fd2e8d268baac7");
+  assert.equal(fixture.provenance.sourceRequestId, "room-a-empty-only-live2-20260728T002627Z.empty");
+  assert.equal(fixture.provenance.fixtureEnvelopeByteIdenticalToLive, false);
+  assert.deepEqual(fixture.provenance.omittedLiveFields, [
+    "responseId",
+    "usageMetadata.promptTokensDetails",
+  ]);
+  assert.equal(fixture.provenance.expectedExtractedTextSha256, "8fe156a79fd10882f3a55a1c426a6a822f9af5b0690bb7d312d4ad93ac99168c");
+  assert.equal(fixture.provenance.expectedExtractedTextUtf8ByteLength, 1414);
+  const envelopeBytes = Buffer.from(JSON.stringify(fixture.envelope), "utf8");
+  const before = Buffer.from(envelopeBytes);
+  const extraction = extractAfcR3cModelOutputText(envelopeBytes);
+  assert.equal(extraction.ok, true, "fixture text plus thoughtSignature is accepted");
+  assert.deepEqual(envelopeBytes, before, "fixture envelope bytes remain unchanged");
+  if (!extraction.ok) return;
+  assert.equal(extraction.modelOutputTextSha256, fixture.provenance.expectedExtractedTextSha256);
+  assert.equal(extraction.modelOutputUtf8ByteLength, fixture.provenance.expectedExtractedTextUtf8ByteLength);
+  assert.equal(extraction.modelOutputText.includes("thoughtSignature"), false);
+  const sharedContext = validateSharedCandidateComparisonContext(fixture.sharedComparisonContext);
+  assert.equal(sharedContext.ok, true, "portable Room A context remains valid");
+  if (!sharedContext.ok) return;
+  const replay = parseGeminiFloorProposalResponse(extraction.modelOutputText, {
+    sharedComparisonContext: sharedContext.value,
+    coordinateExtentPolicy: GEMINI_FLOOR_COORDINATE_EXTENT_POLICY,
+    auditProvenance: {
+      requestId: "room-a-empty-only-live2-20260728T002627Z.empty",
+      contractVersion: GEMINI_FLOOR_PROPOSAL_CONTRACT_VERSION,
+      promptVersion: "afc-r3c-empty-boundary-prompt/v1",
+      providerId: "google_gemini",
+      modelId: "gemini-3.5-flash",
+      responseReceivedAt: "2026-07-28T00:26:27.000Z",
+      rawResponseSha256: extraction.modelOutputTextSha256,
+    },
+  });
+  assert.equal(replay.status, "contract_failure");
+  if (replay.status === "contract_failure") {
+    assert.equal(replay.reason, "r3_support_contradiction");
+    assert.equal(replay.path, "$.proposals[0].corners.NL.support");
+  }
+});
+
 test("E model-output digest and R3B binding matrix (cases 62–72)", async () => withTemp(async (dir) => {
   await writeImage(dir);
   const input = manifest();
   const text = ` \n${proposalText(input)}\n `;
-  const bytes = envelope(text);
+  const bytes = envelope(text, {}, { thoughtSignature: "opaque-provider-metadata" });
   const result = await runAfcR3cGeminiFloorProposalStudy({
     manifest: input, manifestDirectory: dir, studyMode: "original_only", outputDir: path.join(dir, "out"),
     apiKey: "secret", model: "gemini-fixture", executeLiveProviderCall: true, repositoryRoot: process.cwd(),
@@ -306,6 +432,9 @@ test("E model-output digest and R3B binding matrix (cases 62–72)", async () =>
   assert.notEqual(sha(text), sha(bytes), "67/70");
   assert.equal((await readFile(arm.modelOutputPath!, "utf8")), text, "71");
   assert.notEqual(sha(text), sha(`${text} `), "66");
+  assert.equal((await readFile(arm.modelOutputPath!, "utf8")).includes("thoughtSignature"), false, "71 metadata not captured");
+  const signedReceipt = JSON.parse(await readFile(arm.receiptPath!, "utf8"));
+  assert.equal(signedReceipt.provider.extractionPolicyVersion, EXPECTED_EXTRACTION_POLICY_VERSION, "71 receipt policy version");
   const bad = await runAfcR3cGeminiFloorProposalStudy({
     manifest: input, manifestDirectory: dir, studyMode: "original_only", outputDir: path.join(dir, "bad"),
     apiKey: "secret", model: "gemini-fixture", executeLiveProviderCall: true, repositoryRoot: process.cwd(),
@@ -313,6 +442,51 @@ test("E model-output digest and R3B binding matrix (cases 62–72)", async () =>
   });
   assert.equal(bad.failureCode, "r3b_contract_failure", "72");
 }));
+
+test("E2 strict R3B support labels accept boundaries and strictly outside coordinates", () => {
+  const input = manifest();
+  const trusted = (rawResponse: string) => ({
+    sharedComparisonContext: input.sharedComparisonContext,
+    coordinateExtentPolicy: GEMINI_FLOOR_COORDINATE_EXTENT_POLICY,
+    auditProvenance: {
+      requestId: "support-label-fixture",
+      contractVersion: GEMINI_FLOOR_PROPOSAL_CONTRACT_VERSION,
+      promptVersion: "afc-r3c-empty-boundary-prompt/v2",
+      providerId: "google_gemini",
+      modelId: "gemini-fixture",
+      responseReceivedAt: "2026-07-28T00:00:00.000Z",
+      rawResponseSha256: sha(rawResponse),
+    },
+  });
+  const parse = (corners: Record<string, unknown>) => {
+    const response = JSON.parse(proposalText(input)) as { proposals: Array<{ corners: Record<string, unknown> }> };
+    response.proposals[0].corners = corners;
+    const rawResponse = JSON.stringify(response);
+    return parseGeminiFloorProposalResponse(rawResponse, trusted(rawResponse));
+  };
+  const boundary = parse({
+    NL: { x: 0, y: 1, support: "direct_visible" },
+    NR: { x: 1, y: 1, support: "direct_visible" },
+    FR: { x: 0.8, y: 0.5, support: "direct_visible" },
+    FL: { x: 0.2, y: 0.5, support: "direct_visible" },
+  });
+  assert.equal(boundary.status, "proposals", "closed-frame boundary is in-frame");
+  const outside = parse({
+    NL: { x: -0.05, y: 1.03, support: "outside_frame_inferred" },
+    NR: { x: 1.05, y: 1.03, support: "outside_frame_inferred" },
+    FR: { x: 0.8, y: 0.5, support: "direct_visible" },
+    FL: { x: 0.2, y: 0.5, support: "direct_visible" },
+  });
+  assert.equal(outside.status, "proposals", "strictly outside coordinates require outside_frame_inferred");
+  const inverse = parse({
+    NL: { x: -0.05, y: 1.03, support: "direct_visible" },
+    NR: { x: 1.05, y: 1.03, support: "direct_visible" },
+    FR: { x: 0.8, y: 0.5, support: "direct_visible" },
+    FL: { x: 0.2, y: 0.5, support: "direct_visible" },
+  });
+  assert.equal(inverse.status, "contract_failure");
+  if (inverse.status === "contract_failure") assert.equal(inverse.reason, "r3_support_contradiction");
+});
 
 test("F capture filesystem and receipt safety matrix (cases 73–89)", async () => withTemp(async (dir) => {
   const repo = path.join(dir, "repo");
@@ -391,14 +565,30 @@ test("G runner composition, receipts, and authority matrix (cases 22, 57, 88–1
     fetchImpl: fakeQueue([envelope(insufficientText(input)), envelope(insufficientText(input))], []),
   });
   assert.equal(bothInsufficient.composition?.status, "insufficient_evidence", "95");
-  const nonSuccess = Buffer.from('{"error":{"message":"fixture"}}');
+  const nonSuccess = Buffer.from(JSON.stringify({
+    error: {
+      code: 400,
+      status: "INVALID_ARGUMENT",
+      message: 'Invalid JSON payload received. Unknown name "const" at generation_config.response_schema.',
+    },
+  }));
   const capturedNonSuccess = await runAfcR3cGeminiFloorProposalStudy({
     manifest: input, manifestDirectory: dir, studyMode: "original_only", outputDir: path.join(dir, "non-ok"),
     apiKey: "secret", model: "gemini-fixture", executeLiveProviderCall: true, repositoryRoot: process.cwd(),
-    fetchImpl: async () => new Response(nonSuccess.toString("utf8"), { status: 429 }),
+    fetchImpl: async () => new Response(nonSuccess.toString("utf8"), { status: 400 }),
   });
-  assert.equal(capturedNonSuccess.failureCode, "provider_non_success", "57");
-  assert.deepEqual(await readFile(capturedNonSuccess.arms[0].providerEnvelopePath!), nonSuccess, "41/57");
+  assert.equal(capturedNonSuccess.failureCode, "provider_non_success", "57 400 is retained");
+  assert.equal(capturedNonSuccess.arms.length, 1, "57 one arm");
+  const failedArm = capturedNonSuccess.arms[0];
+  assert.deepEqual(await readFile(failedArm.providerEnvelopePath!), nonSuccess, "41/57 one envelope");
+  assert.equal(failedArm.modelOutputPath, null, "57 no model-output capture");
+  assert.equal(failedArm.r3bResult, null, "57 no R3B parse");
+  assert.equal(capturedNonSuccess.afcR2Result, null, "57 AFC-R2 not run");
+  const failedReceipt = JSON.parse(await readFile(failedArm.receiptPath!, "utf8"));
+  assert.equal(failedReceipt.provider.providerEnvelopeSha256, failedArm.provider?.providerEnvelopeSha256, "57 receipt envelope");
+  assert.equal(failedReceipt.provider.modelOutputTextSha256, null, "57 receipt no model output");
+  assert.equal(failedReceipt.afcR3b, null, "57 receipt no R3B");
+  assert.equal(failedReceipt.afcR2.selectionState, "not_run", "57 receipt AFC-R2 not run");
   let stoppedCalls = 0;
   const stopped = await runAfcR3cGeminiFloorProposalStudy({
     manifest: input, manifestDirectory: dir, studyMode: "parallel_union", outputDir: path.join(dir, "writer-failure"),

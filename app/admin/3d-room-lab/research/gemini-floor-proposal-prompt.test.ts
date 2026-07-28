@@ -2,11 +2,12 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import test from "node:test";
 
-import fixture from "./fixtures/gemini-floor-proposal-prompt.v1.json";
+import fixture from "./fixtures/gemini-floor-proposal-prompt.v2.json";
 import {
   AFC_R3C_EMPTY_BOUNDARY_PROMPT_VERSION,
   AFC_R3C_GEMINI_FLOOR_PROPOSAL_RESPONSE_SCHEMA,
   AFC_R3C_ORIGINAL_CONTEXT_PROMPT_VERSION,
+  AFC_R3C_PROMPT_CONTRACT_VERSION,
   buildAfcR3cGeminiFloorProposalPrompt,
 } from "./gemini-floor-proposal-prompt";
 import {
@@ -42,6 +43,9 @@ test("role-specific prompts are deterministic, versioned, SHA-attested, and immu
   const original = build("original_contextual");
   assert.deepEqual(empty, build("empty_room_boundary_specialist"));
   assert.deepEqual(original, build("original_contextual"));
+  assert.equal(AFC_R3C_PROMPT_CONTRACT_VERSION, "AFC-R3C-B1/v2");
+  assert.equal(AFC_R3C_EMPTY_BOUNDARY_PROMPT_VERSION, "afc-r3c-empty-boundary-prompt/v2");
+  assert.equal(AFC_R3C_ORIGINAL_CONTEXT_PROMPT_VERSION, "afc-r3c-original-context-prompt/v2");
   assert.equal(empty.promptVersion, AFC_R3C_EMPTY_BOUNDARY_PROMPT_VERSION);
   assert.equal(original.promptVersion, AFC_R3C_ORIGINAL_CONTEXT_PROMPT_VERSION);
   assert.equal(empty.promptVersion, fixture.empty.promptVersion);
@@ -78,6 +82,28 @@ test("both prompts bind exactly to R3B, require strict JSON, distinct ambiguity,
   }
 });
 
+test("both prompts require closed-interval support-coordinate consistency", () => {
+  for (const result of [build("empty_room_boundary_specialist"), build("original_contextual")]) {
+    const text = result.promptText;
+    assert.match(text, /closed interval \[0,1\] on both axes/i);
+    assert.match(text, /0 and 1 are inside the frame/i);
+    assert.match(text, /strictly outside only when x < 0, x > 1, y < 0, or y > 1/i);
+    assert.match(text, /outside_frame_inferred if and only if at least one corner coordinate is strictly outside \[0,1\]/i);
+    assert.equal(
+      text.includes('{"x":0.0,"y":1.0,"support":"outside_frame_inferred"} is invalid'),
+      true,
+      "boundary contradiction example"
+    );
+    assert.equal(
+      text.includes('{"x":-0.05,"y":1.03,"support":"outside_frame_inferred"}'),
+      true,
+      "valid strictly outside example"
+    );
+    assert.match(text, /Before responding, perform an output preflight for every corner/i);
+    assert.match(text, /Do not output this checklist or any reasoning transcript/i);
+  }
+});
+
 test("each role carries only its specialized visual evidence instructions", () => {
   const empty = build("empty_room_boundary_specialist").promptText;
   assert.match(empty, /geometry-preserving Empty-Room Assist/i);
@@ -106,6 +132,22 @@ test("runtime response schema is closed to the committed R3B model-authored fiel
     assert.equal(serial.toLowerCase().includes(`"${prohibited.toLowerCase()}"`), false);
   }
   assert.equal(serial.includes(GEMINI_FLOOR_HYPOTHESES_SCHEMA_VERSION), true);
+});
+
+test("corner schema descriptions communicate the closed-frame support rule", () => {
+  const corner = AFC_R3C_GEMINI_FLOOR_PROPOSAL_RESPONSE_SCHEMA.$defs.corner.properties;
+  assert.equal(
+    corner.x.description,
+    "Normalized horizontal coordinate. 0 and 1 are inside the frame. Values strictly below 0 or above 1 are outside."
+  );
+  assert.equal(
+    corner.y.description,
+    "Normalized vertical coordinate. 0 and 1 are inside the frame. Values strictly below 0 or above 1 are outside."
+  );
+  assert.equal(
+    corner.support.description,
+    "outside_frame_inferred must be used if and only if x or y is strictly outside [0,1]. It is invalid when both coordinates lie within the closed interval [0,1], including endpoints."
+  );
 });
 
 test("schema enum lists exactly match each committed AFC-R3B enum in stable order", () => {

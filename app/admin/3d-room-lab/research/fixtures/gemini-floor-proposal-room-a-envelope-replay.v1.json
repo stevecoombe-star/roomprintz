@@ -1,0 +1,74 @@
+{
+  "fixtureContractVersion": "afc-r3c-provider-envelope-replay-fixture/v1",
+  "provenance": {
+    "sourceLiveEnvelopeSha256": "87c1b70a343bf96e1c6fe33ae56979c3c2ddf7bcb5ed870bc8fd2e8d268baac7",
+    "sourceRequestId": "room-a-empty-only-live2-20260728T002627Z.empty",
+    "purpose": "provider-free extraction and AFC-R3B rejection regression",
+    "authority": "research-only, non-authoritative, derived evidence",
+    "fixtureEnvelopeByteIdenticalToLive": false,
+    "thoughtSignature": "redacted deterministic placeholder; not used by extraction",
+    "omittedLiveFields": [
+      "responseId",
+      "usageMetadata.promptTokensDetails"
+    ],
+    "expectedExtractedTextSha256": "8fe156a79fd10882f3a55a1c426a6a822f9af5b0690bb7d312d4ad93ac99168c",
+    "expectedExtractedTextUtf8ByteLength": 1414
+  },
+  "sharedComparisonContext": {
+    "ratioFovContractVersion": "ratio-fov-harness/v1",
+    "basisId": "room-a-original-ca9d77cb-source-normalized-v1",
+    "basisFingerprint": "ca9d77cb4b951ce95ed4fa261b55b288164b07e757dbdf5da565eafefc3439b7",
+    "decoderId": "sharp-metadata/v1",
+    "normalizationPolicyVersion": "source-normalized/v1",
+    "decodedWidth": 1264,
+    "decodedHeight": 848,
+    "frameSize": {
+      "width": 1264,
+      "height": 848
+    },
+    "orientationApplied": false,
+    "basisKind": "original",
+    "ratioDomain": {
+      "min": 0.5,
+      "max": 2,
+      "step": 0.05
+    },
+    "fovDomain": {
+      "minDeg": 20,
+      "maxDeg": 90,
+      "stepDeg": 1
+    },
+    "refinement": {
+      "enabled": true,
+      "ratioStep": 0.005,
+      "fovStepDeg": 0.1,
+      "basinFactor": 1.25,
+      "additivePxAllowance": 0.25
+    },
+    "referenceDepth": 1
+  },
+  "envelope": {
+    "candidates": [
+      {
+        "content": {
+          "parts": [
+            {
+              "text": "{\n  \"schema_version\": \"afc-r3-floor-hypotheses/v1\",\n  \"basis_binding\": \"afc-r3b:02cffde0b886fc79400692b8253dc9a1ee171b8201ce0f5baa7675b51fd7bceb\",\n  \"status\": \"proposals\",\n  \"proposals\": [\n    {\n      \"corners\": {\n        \"NL\": {\n          \"x\": 0.0,\n          \"y\": 1.0,\n          \"support\": \"outside_frame_inferred\"\n        },\n        \"NR\": {\n          \"x\": 1.0,\n          \"y\": 1.0,\n          \"support\": \"outside_frame_inferred\"\n        },\n        \"FR\": {\n          \"x\": 0.69,\n          \"y\": 0.64,\n          \"support\": \"direct_visible\"\n        },\n        \"FL\": {\n          \"x\": 0.36,\n          \"y\": 0.64,\n          \"support\": \"direct_visible\"\n        }\n      },\n      \"edge_evidence\": {\n        \"near\": {\n          \"support\": \"not_visible\",\n          \"note\": \"The near edge is completely cut off by the bottom frame boundary.\"\n        },\n        \"right\": {\n          \"support\": \"partially_visible\",\n          \"note\": \"The right wall-floor seam is visible from the far-right corner up to the bottom-right edge of the frame.\"\n        },\n        \"far\": {\n          \"support\": \"direct_visible\",\n          \"note\": \"The far wall-floor seam is clearly visible along the baseboard below the window.\"\n        },\n        \"left\": {\n          \"support\": \"partially_visible\",\n          \"note\": \"The left wall-floor seam is visible from the far-left corner up to the bottom-left edge of the frame.\"\n        }\n      }\n    }\n  ]\n}",
+              "thoughtSignature": "redacted-thought-signature"
+            }
+          ],
+          "role": "model"
+        },
+        "finishReason": "STOP",
+        "index": 0
+      }
+    ],
+    "usageMetadata": {
+      "promptTokenCount": 1884,
+      "candidatesTokenCount": 490,
+      "totalTokenCount": 2374,
+      "serviceTier": "standard"
+    },
+    "modelVersion": "gemini-3.5-flash"
+  }
+}

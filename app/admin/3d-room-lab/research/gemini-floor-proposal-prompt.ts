@@ -13,9 +13,9 @@ import {
   type GeminiFloorInsufficientEvidenceReasonV1,
 } from "./gemini-floor-proposal-contract";
 
-export const AFC_R3C_PROMPT_CONTRACT_VERSION = "AFC-R3C-B1/v1" as const;
-export const AFC_R3C_EMPTY_BOUNDARY_PROMPT_VERSION = "afc-r3c-empty-boundary-prompt/v1" as const;
-export const AFC_R3C_ORIGINAL_CONTEXT_PROMPT_VERSION = "afc-r3c-original-context-prompt/v1" as const;
+export const AFC_R3C_PROMPT_CONTRACT_VERSION = "AFC-R3C-B1/v2" as const;
+export const AFC_R3C_EMPTY_BOUNDARY_PROMPT_VERSION = "afc-r3c-empty-boundary-prompt/v2" as const;
+export const AFC_R3C_ORIGINAL_CONTEXT_PROMPT_VERSION = "afc-r3c-original-context-prompt/v2" as const;
 
 export type AfcR3cInputImageRole =
   | "empty_room_boundary_specialist"
@@ -93,7 +93,10 @@ Use no field outside this exact schema:
 For insufficient evidence, use only schema_version, basis_binding, status, reason_code, and note. reason_code is one of ${INSUFFICIENT_REASONS.join(", ")}.
 Corners are keyed semantic corners: NL, NR, FR, FL. The near edge is NL–NR and closer to the viewer; right is NR–FR; far is FR–FL and farther from the viewer; left is FL–NL.
 Coordinates are normalized to the exact supplied image, with top-left origin, positive X right, and positive Y down.
-Corner support values are exactly: ${CORNER_SUPPORTS.join(", ")}. Edge support values are exactly: ${EDGE_SUPPORTS.join(", ")}. Use outside_frame_inferred exactly when a corner lies outside [0,1].
+The normalized image frame is the closed interval [0,1] on both axes: 0 and 1 are inside the frame. A coordinate is strictly outside only when x < 0, x > 1, y < 0, or y > 1.
+Corner support values are exactly: ${CORNER_SUPPORTS.join(", ")}. Edge support values are exactly: ${EDGE_SUPPORTS.join(", ")}. Use outside_frame_inferred if and only if at least one corner coordinate is strictly outside [0,1]. Do not use outside_frame_inferred for an in-frame corner, including a boundary corner; use the appropriate in-frame corner label such as direct_visible, inferred_from_visible_edges, or occluded_inferred instead.
+Invalid boundary example: {"x":0.0,"y":1.0,"support":"outside_frame_inferred"} is invalid because both coordinates are inside or on the frame boundary. Valid outside example: {"x":-0.05,"y":1.03,"support":"outside_frame_inferred"}.
+Before responding, perform an output preflight for every corner: compare support against x/y coordinates, reject your own draft and correct it if support and frame inclusion disagree. Do not output this checklist or any reasoning transcript.
 The Floor proposal is a convex calibration surface on the main-room Floor plane, not an irregular traced room outline. Do not trace doorway notches or other concave outlines into a quadrilateral. Return insufficient_evidence rather than inventing unsupported boundaries.
 Do not return IDs, scoring, ordering, ratio, FOV, pose, physical dimensions, recommendations, selection instructions, or explanatory proposal rationale.`;
 
@@ -176,9 +179,19 @@ export const AFC_R3C_GEMINI_FLOOR_PROPOSAL_RESPONSE_SCHEMA = deepFreeze({
       additionalProperties: false,
       required: ["x", "y", "support"],
       properties: {
-        x: { type: "number" },
-        y: { type: "number" },
-        support: { type: "string", enum: CORNER_SUPPORTS },
+        x: {
+          type: "number",
+          description: "Normalized horizontal coordinate. 0 and 1 are inside the frame. Values strictly below 0 or above 1 are outside.",
+        },
+        y: {
+          type: "number",
+          description: "Normalized vertical coordinate. 0 and 1 are inside the frame. Values strictly below 0 or above 1 are outside.",
+        },
+        support: {
+          type: "string",
+          enum: CORNER_SUPPORTS,
+          description: "outside_frame_inferred must be used if and only if x or y is strictly outside [0,1]. It is invalid when both coordinates lie within the closed interval [0,1], including endpoints.",
+        },
       },
     },
     edge: {
