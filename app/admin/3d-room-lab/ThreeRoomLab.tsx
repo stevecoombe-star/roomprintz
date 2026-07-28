@@ -6,6 +6,8 @@ import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import SceneJsonPanel from "./SceneJsonPanel";
 import CollapsibleSection from "./CollapsibleSection";
 import AfcProposalOverlayPanel from "./AfcProposalOverlayPanel";
+import AfcUi2aRunnerPanel from "./AfcUi2aRunnerPanel";
+import type { AfcUi2aCurrentImageDescriptor } from "./afc-ui2a-runner-state";
 import AfcMainViewportEvidenceOverlay from "./AfcMainViewportEvidenceOverlay";
 import {
   projectAfcViewportEvidence,
@@ -1035,6 +1037,9 @@ type ThreeRoomLabProps = {
   // Server-derived AFC_UI1_PROPOSAL_OVERLAY_ENABLED. The research route is the
   // hard gate; this only controls whether the isolated evidence panel is shown.
   afcProposalOverlayEnabled?: boolean;
+  // Server-derived AFC_UI2A_PREPARATION_ENABLED. This only reveals the isolated
+  // original-preparation panel; the route repeats the hard server gate.
+  afcUi2aPreparationEnabled?: boolean;
 };
 
 // --- Phase 2O-O: neutral, descriptive support-qualification presentation -----
@@ -1408,6 +1413,7 @@ export default function ThreeRoomLab({
   visionEnabled = false,
   emptyRoomAssistEnabled = false,
   afcProposalOverlayEnabled = false,
+  afcUi2aPreparationEnabled = false,
 }: ThreeRoomLabProps) {
   const envEnabled = process.env.NEXT_PUBLIC_VIBODE_ENABLE_3D_ROOM_LAB === "1";
   const availableAutoFloorProviders = useMemo(
@@ -1520,6 +1526,7 @@ export default function ThreeRoomLab({
   const [isProjectionCoherenceDiagnosticsOpen, setIsProjectionCoherenceDiagnosticsOpen] = useState(false);
   const [isVerticalEvidenceOpen, setIsVerticalEvidenceOpen] = useState(false);
   const [isAfcProposalOverlayOpen, setIsAfcProposalOverlayOpen] = useState(false);
+  const [isAfcUi2aRunnerOpen, setIsAfcUi2aRunnerOpen] = useState(false);
   const [isV3CandidateObservabilityOpen, setIsV3CandidateObservabilityOpen] = useState(false);
   const [verticalEvidence, setVerticalEvidence] = useState<VerticalEvidenceSection | null>(null);
   const [verticalEvidenceStatus, setVerticalEvidenceStatus] = useState("No operator decisions recorded.");
@@ -2295,6 +2302,33 @@ export default function ThreeRoomLab({
     };
     void run();
   }, [imageIntrinsicSize, isRoomImageReadyForUrl, roomImageUrl]);
+
+  // Browser dimensions and the qualified basis are only eligibility signals.
+  // UI2A refetches and verifies authoritative bytes on the server before it
+  // can write an Original capture.
+  const afcUi2aCurrentImage = useMemo<AfcUi2aCurrentImageDescriptor | null>(() => {
+    const imageUrl = roomImageUrl.trim();
+    if (
+      !imageUrl ||
+      !isRoomImageReadyForUrl(imageUrl) ||
+      !imageIntrinsicSize ||
+      !qualifiedImageBasis ||
+      basisQualificationStatus !== "qualified" ||
+      qualifiedImageBasis.sourceImageUrl !== imageUrl ||
+      qualifiedImageBasis.decodedWidth !== imageIntrinsicSize.width ||
+      qualifiedImageBasis.decodedHeight !== imageIntrinsicSize.height
+    ) {
+      return null;
+    }
+    return Object.freeze({
+      contractVersion: "afc-ui2a-current-image/v1",
+      imageUrl,
+      expectedFingerprint: qualifiedImageBasis.basisFingerprint,
+      expectedWidth: imageIntrinsicSize.width,
+      expectedHeight: imageIntrinsicSize.height,
+      qualificationStatus: basisQualificationStatus,
+    });
+  }, [basisQualificationStatus, imageIntrinsicSize, isRoomImageReadyForUrl, qualifiedImageBasis, roomImageUrl]);
 
   const cancelPendingCalibrationRestoreAfterManualGeometryChange = useCallback(() => {
     if (!pendingCalibrationRestore) return;
@@ -18802,6 +18836,14 @@ export default function ThreeRoomLab({
             );
           })()}
         </CollapsibleSection>
+
+        <AfcUi2aRunnerPanel
+          enabled={afcUi2aPreparationEnabled}
+          open={isAfcUi2aRunnerOpen}
+          onToggle={() => setIsAfcUi2aRunnerOpen((open) => !open)}
+          currentImage={afcUi2aCurrentImage}
+          qualificationStatus={basisQualificationStatus}
+        />
 
         <AfcProposalOverlayPanel
           enabled={afcProposalOverlayEnabled}
