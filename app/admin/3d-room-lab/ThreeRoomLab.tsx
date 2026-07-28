@@ -5,6 +5,7 @@ import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import SceneJsonPanel from "./SceneJsonPanel";
 import CollapsibleSection from "./CollapsibleSection";
+import AfcProposalOverlayPanel from "./AfcProposalOverlayPanel";
 import MilestoneValidationPanel from "./MilestoneValidationPanel";
 import RoomEnvelopePanel, { type RoomEnvelopePanelSupport } from "./RoomEnvelopePanel";
 import {
@@ -1026,6 +1027,9 @@ type ThreeRoomLabProps = {
   // Server-derived (EMPTY_ROOM_ASSIST_ENABLED). Controls whether the lab-only
   // Empty-Room assist panel is offered. The route remains the hard gate.
   emptyRoomAssistEnabled?: boolean;
+  // Server-derived AFC_UI1_PROPOSAL_OVERLAY_ENABLED. The research route is the
+  // hard gate; this only controls whether the isolated evidence panel is shown.
+  afcProposalOverlayEnabled?: boolean;
 };
 
 // --- Phase 2O-O: neutral, descriptive support-qualification presentation -----
@@ -1398,6 +1402,7 @@ function isSupportPointUndoTextEntryTarget(target: EventTarget | null): boolean 
 export default function ThreeRoomLab({
   visionEnabled = false,
   emptyRoomAssistEnabled = false,
+  afcProposalOverlayEnabled = false,
 }: ThreeRoomLabProps) {
   const envEnabled = process.env.NEXT_PUBLIC_VIBODE_ENABLE_3D_ROOM_LAB === "1";
   const availableAutoFloorProviders = useMemo(
@@ -1509,6 +1514,7 @@ export default function ThreeRoomLab({
   const [isRoomEnvelopeOpen, setIsRoomEnvelopeOpen] = useState(true);
   const [isProjectionCoherenceDiagnosticsOpen, setIsProjectionCoherenceDiagnosticsOpen] = useState(false);
   const [isVerticalEvidenceOpen, setIsVerticalEvidenceOpen] = useState(false);
+  const [isAfcProposalOverlayOpen, setIsAfcProposalOverlayOpen] = useState(false);
   const [isV3CandidateObservabilityOpen, setIsV3CandidateObservabilityOpen] = useState(false);
   const [verticalEvidence, setVerticalEvidence] = useState<VerticalEvidenceSection | null>(null);
   const [verticalEvidenceStatus, setVerticalEvidenceStatus] = useState("No operator decisions recorded.");
@@ -18773,6 +18779,12 @@ export default function ThreeRoomLab({
             );
           })()}
         </CollapsibleSection>
+
+        <AfcProposalOverlayPanel
+          enabled={afcProposalOverlayEnabled}
+          open={isAfcProposalOverlayOpen}
+          onToggle={() => setIsAfcProposalOverlayOpen((open) => !open)}
+        />
 
         <CollapsibleSection
           title="Calibrated Camera V3 Candidate — Research Only"
