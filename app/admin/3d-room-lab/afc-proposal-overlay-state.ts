@@ -7,6 +7,10 @@ import type {
   AfcProposalOverlayViewModel,
   AfcProposalReceiptSummary,
 } from "./research/afc-proposal-overlay-view-model";
+import {
+  DEFAULT_AFC_VIEWPORT_DISPLAY_CONTROLS,
+  type AfcViewportDisplayControls,
+} from "./afc-main-viewport-evidence";
 
 export type AfcProposalOverlayLoadStatus = "unloaded" | "loading" | "valid" | "invalid" | "basis_mismatch" | "unsupported";
 export type AfcProposalOverlayImageRole = "original" | "empty";
@@ -83,6 +87,9 @@ export function useAfcProposalOverlayState(enabled: boolean) {
   const [imageRequestGeneration, setImageRequestGeneration] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [controls, setControls] = useState<AfcProposalOverlayControls>(DEFAULT_AFC_PROPOSAL_OVERLAY_CONTROLS);
+  const [viewportControls, setViewportControls] = useState<AfcViewportDisplayControls>(
+    DEFAULT_AFC_VIEWPORT_DISPLAY_CONTROLS
+  );
   const requestGenerationRef = useRef(createAfcProposalOverlayRequestGuard());
 
   useEffect(() => () => { requestGenerationRef.current.invalidate(); }, []);
@@ -110,6 +117,7 @@ export function useAfcProposalOverlayState(enabled: boolean) {
     setImageRole("empty");
     setError(null);
     setControls(DEFAULT_AFC_PROPOSAL_OVERLAY_CONTROLS);
+    setViewportControls(DEFAULT_AFC_VIEWPORT_DISPLAY_CONTROLS);
   }, []);
 
   const selectImageRole = useCallback((role: AfcProposalOverlayImageRole) => {
@@ -154,9 +162,12 @@ export function useAfcProposalOverlayState(enabled: boolean) {
   const updateControls = useCallback((patch: Partial<AfcProposalOverlayControls>) => {
     setControls((current) => ({ ...current, ...patch }));
   }, []);
+  const updateViewportControls = useCallback((patch: Partial<AfcViewportDisplayControls>) => {
+    setViewportControls((current) => ({ ...current, ...patch }));
+  }, []);
 
   return useMemo(() => ({
-    status, receipts, selectedReceiptFileName, setSelectedReceiptFileName, viewModel, imageRole, imageUrl, imageRequestGeneration, error, controls,
-    refreshReceipts, clear, load, selectImageRole, imageFailed, updateControls,
-  }), [status, receipts, selectedReceiptFileName, viewModel, imageRole, imageUrl, imageRequestGeneration, error, controls, refreshReceipts, clear, load, selectImageRole, imageFailed, updateControls]);
+    status, receipts, selectedReceiptFileName, setSelectedReceiptFileName, viewModel, imageRole, imageUrl, imageRequestGeneration, error, controls, viewportControls,
+    refreshReceipts, clear, load, selectImageRole, imageFailed, updateControls, updateViewportControls,
+  }), [status, receipts, selectedReceiptFileName, viewModel, imageRole, imageUrl, imageRequestGeneration, error, controls, viewportControls, refreshReceipts, clear, load, selectImageRole, imageFailed, updateControls, updateViewportControls]);
 }

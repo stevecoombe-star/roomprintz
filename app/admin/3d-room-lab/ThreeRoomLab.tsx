@@ -6,6 +6,11 @@ import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import SceneJsonPanel from "./SceneJsonPanel";
 import CollapsibleSection from "./CollapsibleSection";
 import AfcProposalOverlayPanel from "./AfcProposalOverlayPanel";
+import AfcMainViewportEvidenceOverlay from "./AfcMainViewportEvidenceOverlay";
+import {
+  projectAfcViewportEvidence,
+  type AfcViewportEvidenceSnapshot,
+} from "./afc-main-viewport-evidence";
 import MilestoneValidationPanel from "./MilestoneValidationPanel";
 import RoomEnvelopePanel, { type RoomEnvelopePanelSupport } from "./RoomEnvelopePanel";
 import {
@@ -1614,6 +1619,9 @@ export default function ThreeRoomLab({
   const activeSupportEditFocus = supportEditSession.activeFocus;
   const supportEditLocks = supportEditSession.locks;
   const [qualifiedImageBasis, setQualifiedImageBasis] = useState<CalibrationImageBasis | null>(null);
+  // Ephemeral read-only AFC evidence only. It is intentionally absent from
+  // Floor, camera, support, scene, and persistence state.
+  const [afcViewportEvidence, setAfcViewportEvidence] = useState<AfcViewportEvidenceSnapshot | null>(null);
   const [basisQualificationStatus, setBasisQualificationStatus] = useState<string>("basis_unavailable");
   const basisQualificationRequestIdRef = useRef(0);
   const floorPolygonAuthorityKeyRef = useRef(buildFloorPolygonAuthorityKey(DEFAULT_FLOOR_POLYGON));
@@ -2028,6 +2036,16 @@ export default function ThreeRoomLab({
     }
     return { width: rendererSize.width, height: rendererSize.height };
   }, [rendererSize.height, rendererSize.width]);
+
+  const afcMainViewportProjection = useMemo(
+    () => projectAfcViewportEvidence(
+      afcViewportEvidence,
+      qualifiedImageBasis?.basisFingerprint ?? null,
+      imageIntrinsicSize,
+      frameSizeForImageSpace
+    ),
+    [afcViewportEvidence, frameSizeForImageSpace, imageIntrinsicSize, qualifiedImageBasis]
+  );
 
   const calibratedReadOnlyProjectionCamera = useMemo<THREE.PerspectiveCamera | null>(() => {
     if (!isCalibratedCameraActive || !calibratedCameraSnapshot || !frameSizeForImageSpace) return null;
@@ -13370,6 +13388,11 @@ export default function ThreeRoomLab({
                 )}
               </svg>
             )}
+            {afcMainViewportProjection.kind === "projected" ? (
+              // Separate from floorOverlayRef so this evidence layer cannot
+              // receive its pointer handlers or authority-bearing state.
+              <AfcMainViewportEvidenceOverlay projection={afcMainViewportProjection} />
+            ) : null}
             {showRoomEnvelopeWireframe && roomEnvelopeOverlay.segments.length > 0 && (
               <svg
                 className="pointer-events-none absolute inset-0 z-[25] h-full w-full"
@@ -18784,6 +18807,8 @@ export default function ThreeRoomLab({
           enabled={afcProposalOverlayEnabled}
           open={isAfcProposalOverlayOpen}
           onToggle={() => setIsAfcProposalOverlayOpen((open) => !open)}
+          onViewportEvidenceChange={setAfcViewportEvidence}
+          viewportProjection={afcMainViewportProjection}
         />
 
         <CollapsibleSection

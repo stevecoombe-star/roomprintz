@@ -1,13 +1,23 @@
 "use client";
 
+import { useEffect } from "react";
+
 import CollapsibleSection from "./CollapsibleSection";
 import AfcProposalOverlayCanvas from "./AfcProposalOverlayCanvas";
 import { canRenderAfcProposalOverlay, useAfcProposalOverlayState, type AfcProposalOverlayControls } from "./afc-proposal-overlay-state";
+import {
+  buildAfcViewportEvidenceSnapshot,
+  describeAfcViewportProjectionSuppression,
+  type AfcMainViewportProjectionResult,
+  type AfcViewportEvidenceSnapshot,
+} from "./afc-main-viewport-evidence";
 
 type AfcProposalOverlayPanelProps = Readonly<{
   enabled: boolean;
   open: boolean;
   onToggle: () => void;
+  onViewportEvidenceChange: (evidence: AfcViewportEvidenceSnapshot | null) => void;
+  viewportProjection: AfcMainViewportProjectionResult;
 }>;
 
 const CONTROL_LABELS: ReadonlyArray<readonly [keyof Omit<AfcProposalOverlayControls, "opacity">, string]> = [
@@ -21,9 +31,26 @@ function PrettyJson({ value }: Readonly<{ value: unknown }>) {
 }
 
 /** Isolated research evidence panel. It accepts no Floor, camera, scene, or persistence setter. */
-export default function AfcProposalOverlayPanel({ enabled, open, onToggle }: AfcProposalOverlayPanelProps) {
+export default function AfcProposalOverlayPanel({
+  enabled,
+  open,
+  onToggle,
+  onViewportEvidenceChange,
+  viewportProjection,
+}: AfcProposalOverlayPanelProps) {
   const state = useAfcProposalOverlayState(enabled);
   const model = state.viewModel;
+  useEffect(() => {
+    onViewportEvidenceChange(enabled ? buildAfcViewportEvidenceSnapshot({
+      viewModel: model,
+      status: state.status,
+      imageUrl: state.imageUrl,
+      selectedImageRole: state.imageRole,
+      display: state.viewportControls,
+    }) : null);
+  }, [enabled, model, onViewportEvidenceChange, state.imageRole, state.imageUrl, state.status, state.viewportControls]);
+  useEffect(() => () => onViewportEvidenceChange(null), [onViewportEvidenceChange]);
+
   return (
     <CollapsibleSection
       title="AFC Proposal Overlay — Research Evidence Only"
@@ -78,6 +105,29 @@ export default function AfcProposalOverlayPanel({ enabled, open, onToggle }: Afc
                   <label className="flex min-w-52 flex-1 items-center gap-2 text-slate-300">Overlay opacity <input type="range" min="0" max="1" step="0.05" value={state.controls.opacity} onChange={(event) => state.updateControls({ opacity: Number(event.target.value) })} className="flex-1 accent-emerald-400" /><span>{state.controls.opacity.toFixed(2)}</span></label>
                 </div>
               </div>
+              <section className="rounded-lg border border-emerald-900/70 bg-emerald-950/15 p-3">
+                <h3 className="text-sm text-emerald-100">Main viewport evidence projection</h3>
+                <p className="mt-1 text-[11px] text-slate-400">Dashed AFC evidence only. It is read-only, unapplied, non-authoritative, and never enters Floor or calibrated-camera state.</p>
+                <div className="mt-3 flex flex-wrap gap-x-4 gap-y-2">
+                  <label className="flex items-center gap-1.5 text-slate-200"><input type="checkbox" checked={state.viewportControls.showInMainViewport} onChange={(event) => state.updateViewportControls({ showInMainViewport: event.target.checked })} />Show AFC evidence in main viewport</label>
+                  <label className="flex items-center gap-1.5 text-slate-300"><input type="checkbox" checked={state.viewportControls.showFill} onChange={(event) => state.updateViewportControls({ showFill: event.target.checked })} />Show fill</label>
+                  <label className="flex items-center gap-1.5 text-slate-300"><input type="checkbox" checked={state.viewportControls.showStroke} onChange={(event) => state.updateViewportControls({ showStroke: event.target.checked })} />Show stroke</label>
+                  <label className="flex items-center gap-1.5 text-slate-300"><input type="checkbox" checked={state.viewportControls.showMarkers} onChange={(event) => state.updateViewportControls({ showMarkers: event.target.checked })} />Show markers</label>
+                  <label className="flex items-center gap-1.5 text-slate-300"><input type="checkbox" checked={state.viewportControls.showLabels} onChange={(event) => state.updateViewportControls({ showLabels: event.target.checked })} />Show labels</label>
+                  <label className="flex min-w-52 flex-1 items-center gap-2 text-slate-300">Main viewport opacity <input type="range" min="0" max="1" step="0.05" value={state.viewportControls.opacity} onChange={(event) => state.updateViewportControls({ opacity: Number(event.target.value) })} className="flex-1 accent-emerald-400" /><span>{state.viewportControls.opacity.toFixed(2)}</span></label>
+                </div>
+                {viewportProjection.kind === "projected" ? (
+                  <div className="mt-3 space-y-2 text-[11px]">
+                    <p className="text-emerald-100">Main viewport matched <span className="font-medium">{viewportProjection.matchedRole === "original" ? "Original" : "Empty"}</span>{viewportProjection.crossRole ? ` · cross-role: viewer = ${state.imageRole === "original" ? "Original" : "Empty"}, main viewport = ${viewportProjection.matchedRole === "original" ? "Original" : "Empty"}; both belong to this validated receipt image pair.` : " · exact role match."}</p>
+                    <div className="overflow-x-auto"><table className="w-full text-left text-slate-300"><thead className="text-slate-500"><tr><th>Corner</th><th>x</th><th>y</th><th>Frame</th><th>Overshoot x</th><th>Overshoot y</th></tr></thead><tbody>{viewportProjection.cornerOrder.map((name) => {
+                      const corner = viewportProjection.corners[name];
+                      return <tr key={name} className="border-t border-slate-800"><td className="font-medium">{name}</td><td>{corner.x.toFixed(6)}</td><td>{corner.y.toFixed(6)}</td><td>{corner.visibleInFrame ? "visible" : "off-frame"}</td><td>{corner.overshootX.toFixed(6)}</td><td>{corner.overshootY.toFixed(6)}</td></tr>;
+                    })}</tbody></table></div>
+                  </div>
+                ) : (
+                  <p className="mt-3 text-[11px] text-amber-200">{describeAfcViewportProjectionSuppression(viewportProjection)}</p>
+                )}
+              </section>
               <AfcProposalOverlayCanvas
                 viewModel={model}
                 verifiedImageUrl={state.imageUrl}

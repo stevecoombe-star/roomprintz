@@ -181,8 +181,11 @@ export function corridorHalfWidthToOverlayStrokeWidth(
 // off-frame sample (which must be hard-rejected before the solver) from a valid
 // in-frame sample, instead of silently snapping it to the frame edge.
 //
-// This must NOT replace sourceNormToContainerNorm for UI/interaction/display
-// conversion, which intentionally clamps to keep overlays inside the frame.
+// This must NOT replace sourceNormToContainerNorm for ordinary
+// UI/interaction/display conversion, which intentionally clamps to keep
+// editable overlays inside the frame. It is appropriate for read-only
+// diagnostic/evidence projections that must truthfully preserve off-frame
+// coordinates for operator inspection.
 export type SourceToContainerDiagnostic = {
   // Unclamped container-normalized coordinate (may be outside [0,1]).
   container: FloorPoint;
