@@ -1,0 +1,58 @@
+{
+  "contractVersion": "afc-r3c-image-manifest/v1",
+  "roomId": "room-a",
+  "original": {
+    "filePath": "room-a.original.ca9d77cb4b951ce95ed4fa261b55b288164b07e757dbdf5da565eafefc3439b7.jpg",
+    "sha256": "ca9d77cb4b951ce95ed4fa261b55b288164b07e757dbdf5da565eafefc3439b7",
+    "byteCount": 486995,
+    "decodedWidth": 1264,
+    "decodedHeight": 848,
+    "orientation": 1,
+    "mimeType": "image/jpeg"
+  },
+  "emptyRoomAssist": {
+    "filePath": "room-a.empty-room.d5f9b40ffbe2789d4756d72162b1d4a38d505da67b36e5deb9b2a9e0ec5bb686.png",
+    "sha256": "d5f9b40ffbe2789d4756d72162b1d4a38d505da67b36e5deb9b2a9e0ec5bb686",
+    "byteCount": 1199149,
+    "decodedWidth": 1264,
+    "decodedHeight": 848,
+    "orientation": 1,
+    "mimeType": "image/png",
+    "generatedFromOriginalSha256": "ca9d77cb4b951ce95ed4fa261b55b288164b07e757dbdf5da565eafefc3439b7",
+    "generatorId": "vibode-empty-room-assist/stage1-empty-room/v1",
+    "generatorModelId": "NBP"
+  },
+  "sharedComparisonContext": {
+    "ratioFovContractVersion": "ratio-fov-harness/v1",
+    "basisId": "room-a-original-ca9d77cb-source-normalized-v1",
+    "basisFingerprint": "ca9d77cb4b951ce95ed4fa261b55b288164b07e757dbdf5da565eafefc3439b7",
+    "decoderId": "sharp-metadata/v1",
+    "normalizationPolicyVersion": "source-normalized/v1",
+    "decodedWidth": 1264,
+    "decodedHeight": 848,
+    "frameSize": {
+      "width": 1264,
+      "height": 848
+    },
+    "orientationApplied": false,
+    "basisKind": "original",
+    "ratioDomain": {
+      "min": 0.5,
+      "max": 2,
+      "step": 0.05
+    },
+    "fovDomain": {
+      "minDeg": 20,
+      "maxDeg": 90,
+      "stepDeg": 1
+    },
+    "refinement": {
+      "enabled": true,
+      "ratioStep": 0.005,
+      "fovStepDeg": 0.1,
+      "basinFactor": 1.25,
+      "additivePxAllowance": 0.25
+    },
+    "referenceDepth": 1
+  }
+}

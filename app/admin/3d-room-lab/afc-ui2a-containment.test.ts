@@ -40,3 +40,34 @@ test("UI2A Empty resolution is the sole fixed-capture capability importer", asyn
     }
   }
 });
+
+test("UI2A prepared-package modules are server-only and capability-contained", async () => {
+  const files = [
+    "research/afc-ui2a-shared-context.ts",
+    "research/afc-ui2a-package-image-verification.ts",
+    "research/afc-ui2a-manifest-writer.ts",
+    "research/afc-ui2a-prepared-package-contract.ts",
+    "research/afc-ui2a-prepared-package.ts",
+    "research/afc-ui2a-prepared-package-replay.ts",
+  ];
+  const texts = await Promise.all(files.map(source));
+  for (const text of texts) {
+    assert.equal(text.includes('import "server-only"'), true);
+    for (const forbidden of [
+      "afc-r3c-fixed-empty-room-capture", "vibodeEmptyRoomAssist", "callCompositorVibodeStageRun",
+      "gemini-floor-proposal-provider", "gemini-floor-proposal-runner", "candidate-discrimination-harness",
+      "scene-state", "setFloor", "setCamera", "setSupport", "supabase", "token-accounting",
+      "vibodeAfcUi2aConfig", "vibodeEmptyRoomAssist",
+    ]) assert.equal(text.includes(forbidden), false, forbidden);
+  }
+  const compositionImports = texts.flatMap((text) => [...text.matchAll(/from "\.\/gemini-floor-proposal-composition"/g)].map(() => text));
+  assert.equal(compositionImports.length, 2);
+  for (const text of compositionImports) assert.equal(text.includes("classifyAfcR3cImagePairCompatibility"), true);
+  const replay = texts.at(-1) ?? "";
+  for (const forbidden of ["writeAfcR3cImmutableCapture", "writeFile", "mkdir", "open("]) assert.equal(replay.includes(forbidden), false, forbidden);
+  const materializer = texts.at(-2) ?? "";
+  assert.equal(materializer.includes("writeAfcR3cImmutableCapture"), true);
+  assert.equal(materializer.includes("resolutionSource"), false);
+  assert.equal(materializer.includes("captureSource"), false);
+  assert.equal(materializer.includes("requestId"), false);
+});
