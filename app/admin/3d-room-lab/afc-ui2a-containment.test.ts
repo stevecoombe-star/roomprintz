@@ -19,3 +19,24 @@ test("UI2A server preparation and status stay capability-contained", async () =>
   for (const forbidden of ["from \"./gemini-floor-proposal-runner\"", "from \"./gemini-floor-proposal-provider\"", "from \"@/lib/vibodeEmptyRoomAssist\"", "from \"@/app/admin/3d-room-lab/scene-state\""]) assert.equal(preparation.includes(forbidden), false, forbidden);
   for (const forbidden of ["writeFile", "mkdir", "open(", "writeAfcR3cImmutableCapture", "gemini-floor-proposal"]) assert.equal(status.includes(forbidden), false, forbidden);
 });
+test("UI2A Empty resolution is the sole fixed-capture capability importer", async () => {
+  const research = [
+    "research/afc-ui2a-package-contract.ts",
+    "research/afc-ui2a-original-preparation-replay.ts",
+    "research/afc-ui2a-empty-evidence-replay.ts",
+    "research/afc-ui2a-empty-resolution.ts",
+  ];
+  const fixedCaptureImports = await Promise.all(research.map(async (file) => ({
+    file,
+    text: await source(file),
+  })));
+  assert.deepEqual(
+    fixedCaptureImports.filter(({ text }) => text.includes('from "./afc-r3c-fixed-empty-room-capture"')).map(({ file }) => file),
+    ["research/afc-ui2a-empty-resolution.ts"]
+  );
+  for (const { text } of fixedCaptureImports) {
+    for (const forbidden of ["@/lib/vibodeEmptyRoomAssist", "@/lib/callCompositorVibodeStageRun", "gemini-floor-proposal-provider", "gemini-floor-proposal-runner", "afc-r3c-manifest", "shared-comparison-context", "token-accounting"]) {
+      assert.equal(text.includes(forbidden), false, forbidden);
+    }
+  }
+});
