@@ -2,6 +2,7 @@ import ThreeRoomLab from "./ThreeRoomLab";
 import { isAutoFloorVisionEnabled, isEmptyRoomAssistEnabled } from "@/lib/vibodeAutoFloorVisionConfig";
 import { isAfcUi1ProposalOverlayEnabled } from "@/lib/vibodeAfcUi1Config";
 import { isAfcUi2aPreparationEnabled } from "@/lib/vibodeAfcUi2aConfig";
+import { isAfcUi2bProposalRunnerEnabled } from "@/lib/vibodeAfcUi2bConfig";
 
 export default function AdminThreeRoomLabPage() {
   // Server-only feature flags; the client never reads env. We pass only derived
@@ -11,5 +12,6 @@ export default function AdminThreeRoomLabPage() {
   const emptyRoomAssistEnabled = isEmptyRoomAssistEnabled();
   const afcProposalOverlayEnabled = isAfcUi1ProposalOverlayEnabled();
   const afcUi2aPreparationEnabled = isAfcUi2aPreparationEnabled();
-  return <ThreeRoomLab visionEnabled={visionEnabled} emptyRoomAssistEnabled={emptyRoomAssistEnabled} afcProposalOverlayEnabled={afcProposalOverlayEnabled} afcUi2aPreparationEnabled={afcUi2aPreparationEnabled} />;
+  const afcUi2bProposalRunnerEnabled = isAfcUi2bProposalRunnerEnabled();
+  return <ThreeRoomLab visionEnabled={visionEnabled} emptyRoomAssistEnabled={emptyRoomAssistEnabled} afcProposalOverlayEnabled={afcProposalOverlayEnabled} afcUi2aPreparationEnabled={afcUi2aPreparationEnabled} afcUi2bProposalRunnerEnabled={afcUi2bProposalRunnerEnabled} />;
 }

@@ -7,6 +7,7 @@ import SceneJsonPanel from "./SceneJsonPanel";
 import CollapsibleSection from "./CollapsibleSection";
 import AfcProposalOverlayPanel from "./AfcProposalOverlayPanel";
 import AfcUi2aRunnerPanel from "./AfcUi2aRunnerPanel";
+import AfcUi2bProposalRunnerPanel from "./AfcUi2bProposalRunnerPanel";
 import type { AfcUi2aCurrentImageDescriptor } from "./afc-ui2a-runner-state";
 import AfcMainViewportEvidenceOverlay from "./AfcMainViewportEvidenceOverlay";
 import {
@@ -1040,6 +1041,9 @@ type ThreeRoomLabProps = {
   // Server-derived AFC_UI2A_PREPARATION_ENABLED. This only reveals the isolated
   // original-preparation panel; the route repeats the hard server gate.
   afcUi2aPreparationEnabled?: boolean;
+  // Server-derived UI2B gate. It controls only panel visibility; the routes
+  // independently repeat the authorization and feature gate.
+  afcUi2bProposalRunnerEnabled?: boolean;
 };
 
 // --- Phase 2O-O: neutral, descriptive support-qualification presentation -----
@@ -1414,6 +1418,7 @@ export default function ThreeRoomLab({
   emptyRoomAssistEnabled = false,
   afcProposalOverlayEnabled = false,
   afcUi2aPreparationEnabled = false,
+  afcUi2bProposalRunnerEnabled = false,
 }: ThreeRoomLabProps) {
   const envEnabled = process.env.NEXT_PUBLIC_VIBODE_ENABLE_3D_ROOM_LAB === "1";
   const availableAutoFloorProviders = useMemo(
@@ -1527,6 +1532,7 @@ export default function ThreeRoomLab({
   const [isVerticalEvidenceOpen, setIsVerticalEvidenceOpen] = useState(false);
   const [isAfcProposalOverlayOpen, setIsAfcProposalOverlayOpen] = useState(false);
   const [isAfcUi2aRunnerOpen, setIsAfcUi2aRunnerOpen] = useState(false);
+  const [isAfcUi2bProposalRunnerOpen, setIsAfcUi2bProposalRunnerOpen] = useState(false);
   const [isV3CandidateObservabilityOpen, setIsV3CandidateObservabilityOpen] = useState(false);
   const [verticalEvidence, setVerticalEvidence] = useState<VerticalEvidenceSection | null>(null);
   const [verticalEvidenceStatus, setVerticalEvidenceStatus] = useState("No operator decisions recorded.");
@@ -18843,6 +18849,12 @@ export default function ThreeRoomLab({
           onToggle={() => setIsAfcUi2aRunnerOpen((open) => !open)}
           currentImage={afcUi2aCurrentImage}
           qualificationStatus={basisQualificationStatus}
+        />
+
+        <AfcUi2bProposalRunnerPanel
+          enabled={afcUi2bProposalRunnerEnabled}
+          open={isAfcUi2bProposalRunnerOpen}
+          onToggle={() => setIsAfcUi2bProposalRunnerOpen((open) => !open)}
         />
 
         <AfcProposalOverlayPanel
