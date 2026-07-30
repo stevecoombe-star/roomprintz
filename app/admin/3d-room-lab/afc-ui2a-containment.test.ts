@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { readFile, readdir } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
 
@@ -9,9 +9,85 @@ async function source(relative: string) {
 }
 test("UI2A client boundary has no scene, persistence, upload, or live capability", async () => {
   const text = `${await source("AfcUi2aRunnerPanel.tsx")}\n${await source("afc-ui2a-runner-state.ts")}`;
-  for (const forbidden of ["setFloor", "setCamera", "setSupport", "SceneJson", "localStorage", "sessionStorage", "indexedDB", "gemini-floor-proposal", "AFC-R2", "compositor", "token-accounting", "outputDir", "type=\"file\""]) {
+  for (const forbidden of ["setFloor", "setCamera", "setSupport", "SceneJson", "localStorage", "sessionStorage", "indexedDB", "gemini-floor-proposal", "AFC-R2", "callCompositorVibodeStageRun", "token-accounting", "outputDir", "type=\"file\"", "resolvedModelId"]) {
     assert.equal(text.includes(forbidden), false, forbidden);
   }
+});
+
+test("UI2A complete and inventory services keep package authority server-only", async () => {
+  const [complete, inventory, completeRoute, packagesRoute] = await Promise.all([
+    source("research/afc-ui2a-complete.ts"),
+    source("research/afc-ui2a-package-inventory.ts"),
+    readFile(path.resolve(process.cwd(), "app/api/admin/3d-room-lab/afc-ui2a/complete/route.ts"), "utf8"),
+    readFile(path.resolve(process.cwd(), "app/api/admin/3d-room-lab/afc-ui2a/packages/route.ts"), "utf8"),
+  ]);
+  assert.equal(complete.includes('import "server-only"'), true);
+  assert.equal(inventory.includes('import "server-only"'), true);
+  assert.equal(complete.includes('from "./afc-ui2a-empty-resolution"'), true);
+  for (const forbidden of ["afc-r3c-fixed-empty-room-capture", "callCompositorVibodeStageRun", "writeAfcR3cImmutableCapture"]) assert.equal(completeRoute.includes(forbidden), false, forbidden);
+  for (const forbidden of ["writeFile", "mkdir", "open(", "writeAfcR3cImmutableCapture", "delete", "unlink"]) assert.equal(inventory.includes(forbidden), false, forbidden);
+  assert.equal(inventory.includes('replayAfcUi2aPreparedPackage'), true);
+  assert.equal(packagesRoute.includes("afc-ui2a-package-inventory"), true);
+  assert.equal(packagesRoute.includes("afc-ui2a-prepared-package"), false);
+});
+
+test("UI2A-2C contracts, routes, and panel keep explicit capability boundaries", async () => {
+  const files = {
+    completeContract: "research/afc-ui2a-complete-contract.ts",
+    complete: "research/afc-ui2a-complete.ts",
+    inventory: "research/afc-ui2a-package-inventory.ts",
+    panel: "AfcUi2aRunnerPanel.tsx",
+    state: "afc-ui2a-runner-state.ts",
+  } as const;
+  const text = Object.fromEntries(await Promise.all(Object.entries(files).map(async ([key, file]) => [key, await source(file)]))) as Record<keyof typeof files, string>;
+  const routeRoot = path.resolve(process.cwd(), "app/api/admin/3d-room-lab/afc-ui2a");
+  const [completeRoute, packagesRoute, routeNames] = await Promise.all([
+    readFile(path.join(routeRoot, "complete/route.ts"), "utf8"),
+    readFile(path.join(routeRoot, "packages/route.ts"), "utf8"),
+    readdir(routeRoot),
+  ]);
+  assert.deepEqual(routeNames.filter((name) => !name.startsWith(".")).sort(), ["complete", "packages", "prepare", "status"]);
+  assert.equal(text.completeContract.includes("roomDirectory"), false);
+  assert.equal(text.completeContract.includes("originalFilePath"), false);
+  assert.equal(text.completeContract.includes("resolvedModelId"), false);
+  assert.equal(text.complete.includes('import "server-only"'), true);
+  assert.equal(text.inventory.includes('import "server-only"'), true);
+  assert.equal(text.complete.includes('from "./afc-ui2a-empty-resolution"'), true);
+  assert.equal(text.inventory.includes('from "./afc-ui2a-prepared-package-replay"'), true);
+  for (const forbidden of [
+    "compatibility: { ...materialized.compatibility }",
+    "manifest: { ...materialized.manifest }",
+    "receipt: { ...materialized.receipt }",
+    "safety: { ...materialized.safety }",
+    "original: { ...receipt.original }",
+    "compatibility: { ...receipt.compatibility }",
+    "safety: { ...receipt.safety }",
+  ]) assert.equal(`${text.complete}\n${text.inventory}`.includes(forbidden), false, forbidden);
+  for (const forbidden of ["writeFile", "mkdir", "open(", "unlink", "rm("]) assert.equal(text.inventory.includes(forbidden), false, forbidden);
+  for (const forbidden of ["afc-ui2a-empty-resolution", "afc-ui2a-prepared-package", "afc-r3c-fixed-empty-room-capture", "callCompositorVibodeStageRun"]) assert.equal(completeRoute.includes(forbidden), false, forbidden);
+  for (const forbidden of ["afc-ui2a-prepared-package", "writeAfcR3cImmutableCapture", "callCompositorVibodeStageRun"]) assert.equal(packagesRoute.includes(forbidden), false, forbidden);
+  for (const client of [text.panel, text.state]) {
+    for (const forbidden of ["research/", "AFC_UI2A_EMPTY_GENERATION_ENABLED", "AFC_UI1_FIXED_INPUTS_ROOT", "resolvedModelId", "localStorage", "sessionStorage", "indexedDB"]) assert.equal(client.includes(forbidden), false, forbidden);
+  }
+  for (const visible of ["Prepared Input Package", "Refresh packages", "Complete prepared package", "Generate Empty Room and complete package", "This will request up to one Empty-Room compositor generation call.", "Strict package replay verified"]) {
+    assert.equal(text.panel.includes(visible), true, visible);
+  }
+  assert.equal(text.panel.includes('state.completionStatus === "generation_required"'), true);
+  assert.equal(text.state.includes("void refreshPackageInventory()"), true);
+});
+
+test("UI2A clear invalidates every request guard before exposing reset state", async () => {
+  const [state, panel] = await Promise.all([source("afc-ui2a-runner-state.ts"), source("AfcUi2aRunnerPanel.tsx")]);
+  const clear = state.match(/const clear = useCallback\(\(\) => \{([\s\S]*?)setOperationIdentity/);
+  assert.ok(clear);
+  const body = clear[1];
+  for (const invalidation of [
+    "prepareGeneration.current.invalidate()",
+    "statusGeneration.current.invalidate()",
+    "packageGeneration.current.invalidate()",
+    "completionGeneration.current.invalidate()",
+  ]) assert.equal(body.includes(invalidation), true, invalidation);
+  assert.equal(panel.includes('disabled={state.status === "preparing" || state.requestGenerationInFlight}'), true);
 });
 test("UI2A server preparation and status stay capability-contained", async () => {
   const preparation = await source("research/afc-ui2a-prepare-original.ts");
