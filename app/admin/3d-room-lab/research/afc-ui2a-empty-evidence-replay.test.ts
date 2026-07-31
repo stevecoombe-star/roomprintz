@@ -150,6 +150,25 @@ test("legacy source input basename is provenance while captured Original basenam
     }
     assert.deepEqual(await readdir(roomDirectory), before);
 
+    const aspectReceipt = receiptFor(originalFileName);
+    aspectReceipt.original.decodedWidth = 200;
+    aspectReceipt.original.decodedHeight = 1;
+    aspectReceipt.emptyRoomAssist.decodedWidth = 197;
+    aspectReceipt.emptyRoomAssist.decodedHeight = 1;
+    await writeFile(path.join(roomDirectory, receiptFileName), JSON.stringify(aspectReceipt));
+    const aspectOriginal = {
+      ...original,
+      original: { ...original.original, decodedWidth: 200, decodedHeight: 1 },
+    } as AfcUi2aVerifiedOriginalEvidence;
+    const aspectSelected = await discoverAfcUi2aDurableEmptyEvidence(aspectOriginal, {
+      inspectMetadata: async () => ({ ok: true as const, width: 197, height: 1, orientation: 1 }),
+    });
+    assert.equal(aspectSelected.status, "selected");
+    if (aspectSelected.status === "selected") {
+      assert.equal(aspectSelected.evidence.emptyRoomAssist.decodedWidth, 197);
+      assert.equal(aspectSelected.evidence.emptyRoomAssist.decodedHeight, 1);
+    }
+
     await writeFile(path.join(roomDirectory, receiptFileName), JSON.stringify(receiptFor("different-original.png")));
     const rejected = await discoverAfcUi2aDurableEmptyEvidence(original);
     assert.deepEqual(rejected, { status: "invalid", failureCode: "empty_lineage_mismatch" });

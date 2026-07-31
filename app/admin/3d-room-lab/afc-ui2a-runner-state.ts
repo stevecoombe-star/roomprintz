@@ -32,7 +32,7 @@ export type AfcUi2aPackageSummary = Readonly<{
   manifest: Readonly<{ fileName: string; sha256: string; contractVersion: string; disposition?: string }>; originalPreparationId: string;
   original: Readonly<{ fileName: string; sha256: string; byteCount: number; mimeType: string; decodedWidth: number; decodedHeight: number; orientation: 1 }>;
   emptyRoomAssist: Readonly<{ fileName: string; sha256: string; byteCount: number; mimeType: string; decodedWidth: number; decodedHeight: number; orientation: 1; generatedFromOriginalSha256: string; generatorId: string; requestedModelId: "NBP"; resolvedModelStatus: "not_reported_by_compositor" }>;
-  compatibility: Readonly<{ version: string; tier: "exact_grid_compatible"; relativeAspectErrorRaw: number; relativeAspectError: number }>;
+  compatibility: Readonly<{ version: string; tier: "exact_grid_compatible" | "aspect_compatible_rescaled"; relativeAspectErrorRaw: number; relativeAspectError: number }>;
   sharedContextDigest: string;
   safety: Readonly<{ emptyRoomGenerationCall: false; geminiFloorProposalCall: false; afcR2Run: false }>;
 }>;

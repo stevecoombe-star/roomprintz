@@ -3,6 +3,11 @@ import "server-only";
 import { createHash } from "node:crypto";
 
 import {
+  AFC_R3C_IMAGE_PAIR_COMPATIBILITY_VERSION,
+  classifyAfcR3cImagePairCompatibility,
+  type AfcR3cCompatibilityTier,
+} from "./afc-r3c-image-pair-compatibility";
+import {
   validateSharedCandidateComparisonContext,
   type ValidSharedCandidateComparisonContext,
 } from "./gemini-floor-proposal-manifest";
@@ -12,12 +17,13 @@ import { digestAfcUi2aSharedContext } from "./afc-ui2a-shared-context";
 export const AFC_UI2A_PREPARED_INPUT_RECEIPT_VERSION = "afc-ui2a-prepared-input-receipt/v1" as const;
 export const AFC_UI2A_PREPARED_PACKAGE_STAGE = "pair_manifest_prepared" as const;
 export const AFC_UI2A_PACKAGE_IDENTITY_VERSION = "afc-ui2a-package-identity/v1" as const;
-export const AFC_UI2A_COMPATIBILITY_VERSION = "afc-r3c-image-pair-compatibility/v1" as const;
+export const AFC_UI2A_COMPATIBILITY_VERSION = AFC_R3C_IMAGE_PAIR_COMPATIBILITY_VERSION;
 export const AFC_R3C_MANIFEST_FILENAME_VERSION = "afc-r3c-image-manifest/v1" as const;
 
-type ExactCompatibility = Readonly<{
+export type AfcUi2aCompatibleTier = Exclude<AfcR3cCompatibilityTier, "incompatible">;
+export type AfcUi2aCompatibilityEvidence = Readonly<{
   version: typeof AFC_UI2A_COMPATIBILITY_VERSION;
-  tier: "exact_grid_compatible";
+  tier: AfcUi2aCompatibleTier;
   relativeAspectErrorRaw: number;
   relativeAspectError: number;
 }>;
@@ -45,7 +51,7 @@ export type AfcUi2aPreparedInputReceiptV1 = Readonly<{
     requestedModelId: "NBP";
     resolvedModelStatus: "not_reported_by_compositor";
   }>;
-  compatibility: ExactCompatibility;
+  compatibility: AfcUi2aCompatibilityEvidence;
   sharedComparisonContext: ValidSharedCandidateComparisonContext;
   sharedContextDigest: string;
   manifest: Readonly<{ fileName: string; sha256: string; contractVersion: typeof AFC_R3C_MANIFEST_FILENAME_VERSION }>;
@@ -130,12 +136,13 @@ export function buildAfcUi2aPackageIdentity(input: {
   emptySha256: string;
   manifestSha256: string;
   sharedContextDigest: string;
-  compatibility: Pick<ExactCompatibility, "version" | "tier" | "relativeAspectErrorRaw">;
+  compatibility: Pick<AfcUi2aCompatibilityEvidence, "version" | "tier" | "relativeAspectErrorRaw">;
 }): AfcUi2aPackageIdentity | null {
   if (!roomId(input.roomId) || !sha(input.originalSha256) || !sha(input.emptySha256) ||
     !sha(input.manifestSha256) || !sha(input.sharedContextDigest) ||
     input.compatibility.version !== AFC_UI2A_COMPATIBILITY_VERSION ||
-    input.compatibility.tier !== "exact_grid_compatible" || !finite(input.compatibility.relativeAspectErrorRaw)) return null;
+    (input.compatibility.tier !== "exact_grid_compatible" && input.compatibility.tier !== "aspect_compatible_rescaled") ||
+    !finite(input.compatibility.relativeAspectErrorRaw)) return null;
   const payload = {
     contractVersion: AFC_UI2A_PACKAGE_IDENTITY_VERSION,
     roomId: input.roomId,
@@ -145,7 +152,7 @@ export function buildAfcUi2aPackageIdentity(input: {
     sharedContextDigest: input.sharedContextDigest,
     compatibility: {
       version: AFC_UI2A_COMPATIBILITY_VERSION,
-      tier: "exact_grid_compatible" as const,
+      tier: input.compatibility.tier,
       relativeAspectErrorRaw: zero(input.compatibility.relativeAspectErrorRaw),
     },
   };
@@ -163,6 +170,30 @@ function expectedSafety(): AfcUi2aPreparedInputReceiptV1["safety"] {
     floorStateUnchanged: true, supportStateUnchanged: true, databaseWrites: false,
     productionAssetWrites: false, productionTokenAccountingUsed: false, emptyRoomGenerationCall: false,
     geminiFloorProposalCall: false, afcR2Run: false, localResearchPackageWritten: true,
+  };
+}
+
+function derivedCompatibility(original: ReceiptImage, empty: ReceiptImage): AfcUi2aCompatibilityEvidence | null {
+  const compatibility = classifyAfcR3cImagePairCompatibility(
+    {
+      fingerprint: original.sha256,
+      decodedWidth: original.decodedWidth,
+      decodedHeight: original.decodedHeight,
+      orientation: original.orientation,
+    },
+    {
+      fingerprint: empty.sha256,
+      decodedWidth: empty.decodedWidth,
+      decodedHeight: empty.decodedHeight,
+      orientation: empty.orientation,
+    },
+  );
+  if (compatibility.tier === "incompatible" || compatibility.relativeAspectErrorRaw === null || compatibility.relativeAspectError === null) return null;
+  return {
+    version: compatibility.version,
+    tier: compatibility.tier,
+    relativeAspectErrorRaw: zero(compatibility.relativeAspectErrorRaw),
+    relativeAspectError: zero(compatibility.relativeAspectError),
   };
 }
 
@@ -184,12 +215,16 @@ export function parseAfcUi2aPreparedInputReceipt(value: unknown):
   if (value.originalPreparation.preparationId !== originalPreparationId(value.roomId, value.original.sha256)) return invalid("$.originalPreparation");
   const empty = value.emptyRoomAssist;
   if (!emptyImage(empty) || empty.generatedFromOriginalSha256 !== value.original.sha256) return invalid("$.emptyRoomAssist");
-  if (empty.decodedWidth !== value.original.decodedWidth || empty.decodedHeight !== value.original.decodedHeight) return invalid("$.emptyRoomAssist");
   const compatibility = value.compatibility;
   if (!exactKeys(compatibility, ["version", "tier", "relativeAspectErrorRaw", "relativeAspectError"]) ||
-    compatibility.version !== AFC_UI2A_COMPATIBILITY_VERSION || compatibility.tier !== "exact_grid_compatible" ||
-    !finite(compatibility.relativeAspectErrorRaw) || !finite(compatibility.relativeAspectError) ||
-    zero(compatibility.relativeAspectErrorRaw) !== zero(compatibility.relativeAspectError)) return invalid("$.compatibility");
+    compatibility.version !== AFC_UI2A_COMPATIBILITY_VERSION ||
+    (compatibility.tier !== "exact_grid_compatible" && compatibility.tier !== "aspect_compatible_rescaled") ||
+    !finite(compatibility.relativeAspectErrorRaw) || !finite(compatibility.relativeAspectError)) return invalid("$.compatibility");
+  const derived = derivedCompatibility(value.original, empty);
+  if (!derived ||
+    compatibility.tier !== derived.tier ||
+    zero(compatibility.relativeAspectErrorRaw) !== derived.relativeAspectErrorRaw ||
+    zero(compatibility.relativeAspectError) !== derived.relativeAspectError) return invalid("$.compatibility");
   const context = validateSharedCandidateComparisonContext(value.sharedComparisonContext);
   if (!context.ok || context.value.basisFingerprint !== value.original.sha256 ||
     context.value.decodedWidth !== value.original.decodedWidth || context.value.decodedHeight !== value.original.decodedHeight ||
@@ -235,7 +270,7 @@ export function parseAfcUi2aPreparedInputReceipt(value: unknown):
       emptyRoomAssist: { ...empty },
       compatibility: {
         version: AFC_UI2A_COMPATIBILITY_VERSION,
-        tier: "exact_grid_compatible" as const,
+        tier: derived.tier,
         relativeAspectErrorRaw: zero(compatibility.relativeAspectErrorRaw),
         relativeAspectError: zero(compatibility.relativeAspectError),
       },

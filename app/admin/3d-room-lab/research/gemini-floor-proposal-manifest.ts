@@ -8,6 +8,7 @@ import "server-only";
 
 import path from "node:path";
 import type { SharedCandidateComparisonContext } from "./candidate-discrimination-harness";
+import { classifyAfcR3cImagePairCompatibility } from "./afc-r3c-image-pair-compatibility";
 
 export const AFC_R3C_IMAGE_MANIFEST_VERSION = "afc-r3c-image-manifest/v1" as const;
 
@@ -242,8 +243,22 @@ export function parseAfcR3cImageManifest(value: unknown): AfcR3cManifestParseRes
   }, "$.emptyRoomAssist");
   if (!empty.ok) return empty;
   if (empty.image.filePath === original.image.filePath) return { ok: false, reason: "image_paths_not_distinct", path: "$.emptyRoomAssist.filePath" };
-  if (empty.image.decodedWidth !== original.image.decodedWidth || empty.image.decodedHeight !== original.image.decodedHeight) {
-    return { ok: false, reason: "image_dimensions_mismatch", path: "$.emptyRoomAssist" };
+  const compatibility = classifyAfcR3cImagePairCompatibility(
+    {
+      fingerprint: original.image.sha256,
+      decodedWidth: original.image.decodedWidth,
+      decodedHeight: original.image.decodedHeight,
+      orientation: original.image.orientation,
+    },
+    {
+      fingerprint: empty.image.sha256,
+      decodedWidth: empty.image.decodedWidth,
+      decodedHeight: empty.image.decodedHeight,
+      orientation: empty.image.orientation,
+    },
+  );
+  if (compatibility.tier === "incompatible") {
+    return { ok: false, reason: "image_pair_incompatible", path: "$.emptyRoomAssist" };
   }
   if (value.emptyRoomAssist.generatedFromOriginalSha256 !== original.image.sha256) return { ok: false, reason: "empty_parent_fingerprint_mismatch", path: "$.emptyRoomAssist.generatedFromOriginalSha256" };
   if (!nonEmpty(value.emptyRoomAssist.generatorId)) return { ok: false, reason: "empty_generator_invalid", path: "$.emptyRoomAssist.generatorId" };

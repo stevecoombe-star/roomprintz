@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import { lstat, readFile, realpath } from "node:fs/promises";
 import path from "node:path";
 
-import { classifyAfcR3cImagePairCompatibility } from "./gemini-floor-proposal-composition";
+import { classifyAfcR3cImagePairCompatibility } from "./afc-r3c-image-pair-compatibility";
 import {
   parseAfcR3cImageManifest,
   validateSharedCandidateComparisonContext,
@@ -87,13 +87,18 @@ async function safeRoomDirectory(root: string, roomId: string): Promise<string |
     return null;
   }
 }
-function exactCompatibility(receipt: AfcUi2aPreparedInputReceiptV1, original: { sha256: string; decodedWidth: number; decodedHeight: number; orientation: number }, empty: { sha256: string; decodedWidth: number; decodedHeight: number; orientation: number }): boolean {
+function receiptCompatibilityMatches(
+  receipt: AfcUi2aPreparedInputReceiptV1,
+  original: { sha256: string; decodedWidth: number; decodedHeight: number; orientation: number },
+  empty: { sha256: string; decodedWidth: number; decodedHeight: number; orientation: number },
+): boolean {
   const compatibility = classifyAfcR3cImagePairCompatibility(
     { fingerprint: original.sha256, decodedWidth: original.decodedWidth, decodedHeight: original.decodedHeight, orientation: original.orientation },
     { fingerprint: empty.sha256, decodedWidth: empty.decodedWidth, decodedHeight: empty.decodedHeight, orientation: empty.orientation },
   );
-  return compatibility.tier === "exact_grid_compatible" &&
+  return compatibility.tier !== "incompatible" &&
     compatibility.version === receipt.compatibility.version &&
+    compatibility.tier === receipt.compatibility.tier &&
     (Object.is(compatibility.relativeAspectErrorRaw, receipt.compatibility.relativeAspectErrorRaw) ||
       compatibility.relativeAspectErrorRaw === receipt.compatibility.relativeAspectErrorRaw) &&
     (Object.is(compatibility.relativeAspectError, receipt.compatibility.relativeAspectError) ||
@@ -177,7 +182,7 @@ export async function replayAfcUi2aPreparedPackage(args: {
     reverified.images.emptyRoomAssist.sha256 !== receipt.emptyRoomAssist.sha256) return failure("package_replay_failed");
   const context = validateSharedCandidateComparisonContext(receipt.sharedComparisonContext);
   if (!context.ok || digestAfcUi2aSharedContext(context.value) !== receipt.sharedContextDigest) return failure("shared_context_invalid");
-  if (!exactCompatibility(receipt, reverified.images.original, reverified.images.emptyRoomAssist)) return failure("pair_incompatible");
+  if (!receiptCompatibilityMatches(receipt, reverified.images.original, reverified.images.emptyRoomAssist)) return failure("pair_incompatible");
   const identity = buildAfcUi2aPackageIdentity({
     roomId, originalSha256: receipt.original.sha256, emptySha256: receipt.emptyRoomAssist.sha256,
     manifestSha256: receipt.manifest.sha256, sharedContextDigest: receipt.sharedContextDigest,

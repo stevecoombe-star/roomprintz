@@ -29,7 +29,7 @@ type EmptyImage = Image & Readonly<{
   resolvedModelStatus: "not_reported_by_compositor";
 }>;
 type Compatibility = Readonly<{
-  version: "afc-r3c-image-pair-compatibility/v1"; tier: "exact_grid_compatible";
+  version: "afc-r3c-image-pair-compatibility/v1"; tier: "exact_grid_compatible" | "aspect_compatible_rescaled";
   relativeAspectErrorRaw: number; relativeAspectError: number;
 }>;
 type PackageSafety = Readonly<{

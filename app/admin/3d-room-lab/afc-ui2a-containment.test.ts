@@ -136,9 +136,9 @@ test("UI2A prepared-package modules are server-only and capability-contained", a
       "vibodeAfcUi2aConfig", "vibodeEmptyRoomAssist",
     ]) assert.equal(text.includes(forbidden), false, forbidden);
   }
-  const compositionImports = texts.flatMap((text) => [...text.matchAll(/from "\.\/gemini-floor-proposal-composition"/g)].map(() => text));
-  assert.equal(compositionImports.length, 2);
-  for (const text of compositionImports) assert.equal(text.includes("classifyAfcR3cImagePairCompatibility"), true);
+  const compatibilityImports = texts.flatMap((text) => [...text.matchAll(/from "\.\/afc-r3c-image-pair-compatibility"/g)].map(() => text));
+  assert.equal(compatibilityImports.length, 3);
+  for (const text of compatibilityImports) assert.equal(text.includes("classifyAfcR3cImagePairCompatibility"), true);
   const replay = texts.at(-1) ?? "";
   for (const forbidden of ["writeAfcR3cImmutableCapture", "writeFile", "mkdir", "open("]) assert.equal(replay.includes(forbidden), false, forbidden);
   const materializer = texts.at(-2) ?? "";

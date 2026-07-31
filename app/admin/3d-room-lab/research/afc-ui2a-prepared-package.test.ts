@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { admitAfcUi2aExactGridPair, materializeAfcUi2aPreparedPackage } from "./afc-ui2a-prepared-package";
+import { admitAfcUi2aCompatiblePair, materializeAfcUi2aPreparedPackage } from "./afc-ui2a-prepared-package";
 import { writeAfcR3cImmutableCapture } from "./gemini-floor-proposal-capture";
 import { parseAfcUi2aPreparedInputReceipt } from "./afc-ui2a-prepared-package-contract";
 import { stableAfcUi2aReceiptBytes } from "./afc-ui2a-original-preparation-contract";
@@ -91,16 +91,26 @@ function replaySuccess() {
   return async () => ({ ok: true as const, evidence: {} as never });
 }
 
-test("exact-grid admission uses the committed classifier and refuses rescaling", () => {
-  const exact = admitAfcUi2aExactGridPair(original, emptyRoomAssist);
+test("compatibility admission uses the committed classifier for exact and aspect-rescaled pairs", () => {
+  const exact = admitAfcUi2aCompatiblePair(original, emptyRoomAssist);
   assert.equal(exact.ok, true);
   if (exact.ok) assert.deepEqual(exact.compatibility, {
     version: "afc-r3c-image-pair-compatibility/v1", tier: "exact_grid_compatible",
     relativeAspectErrorRaw: 0, relativeAspectError: 0,
   });
-  const rescaled = admitAfcUi2aExactGridPair(original, { ...emptyRoomAssist, decodedWidth: 200, decodedHeight: 100 });
-  assert.equal(rescaled.ok, false);
-  if (!rescaled.ok) assert.equal(rescaled.compatibility.tier, "aspect_compatible_rescaled");
+  const rescaled = admitAfcUi2aCompatiblePair(original, { ...emptyRoomAssist, decodedWidth: 200, decodedHeight: 100 });
+  assert.equal(rescaled.ok, true);
+  if (rescaled.ok) assert.equal(rescaled.compatibility.tier, "aspect_compatible_rescaled");
+  const roomB = admitAfcUi2aCompatiblePair(
+    { ...original, decodedWidth: 5000, decodedHeight: 3333 },
+    { ...emptyRoomAssist, decodedWidth: 1264, decodedHeight: 848 },
+  );
+  assert.equal(roomB.ok, true);
+  if (roomB.ok) {
+    assert.equal(roomB.compatibility.tier, "aspect_compatible_rescaled");
+    assert.ok(Math.abs(roomB.compatibility.relativeAspectErrorRaw - 0.006388679245283) < 1e-15);
+    assert.equal(roomB.compatibility.relativeAspectError, 0.0064);
+  }
 });
 
 test("materialization primitive acknowledgement gates before any evidence read", async () => {

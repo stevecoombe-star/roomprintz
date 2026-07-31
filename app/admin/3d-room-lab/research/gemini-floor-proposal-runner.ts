@@ -420,16 +420,16 @@ export async function runAfcR3cGeminiFloorProposalStudy(args: {
   if (args.executeLiveProviderCall !== true || !["empty_only", "original_only", "parallel_union"].includes(args.studyMode) || !args.model.trim()) return failure("invalid_arguments");
   const originalResult = await verifyAfcR3cManifestImage({ descriptor: args.manifest.original, manifestDirectory: args.manifestDirectory });
   if (!originalResult.ok) return failure(originalResult.code);
-  const needsEmpty = args.studyMode !== "original_only";
-  const emptyResult = needsEmpty
-    ? await verifyAfcR3cManifestImage({ descriptor: args.manifest.emptyRoomAssist, manifestDirectory: args.manifestDirectory })
-    : null;
-  if (emptyResult && !emptyResult.ok) return failure(emptyResult.code);
+  const emptyResult = await verifyAfcR3cManifestImage({
+    descriptor: args.manifest.emptyRoomAssist,
+    manifestDirectory: args.manifestDirectory,
+  });
+  if (!emptyResult.ok) return failure(emptyResult.code);
   const original = originalResult.image;
-  const empty = emptyResult?.ok ? emptyResult.image : null;
-  const pairCompatibility = empty
-    ? classifyAfcR3cImagePairCompatibility(original, empty)
-    : classifyAfcR3cImagePairCompatibility(original, original);
+  const empty = emptyResult.image;
+  // Proposal receipts bind the immutable manifest pair for every study mode.
+  // Per-arm transfer/provenance remains derived from the selected input below.
+  const pairCompatibility = classifyAfcR3cImagePairCompatibility(original, empty);
   if (pairCompatibility.tier === "incompatible") return failure("incompatible_image_pair");
   if (!validateSharedCandidateComparisonContext(args.manifest.sharedComparisonContext).ok) {
     return failure("comparison_context_invalid");
@@ -444,11 +444,11 @@ export async function runAfcR3cGeminiFloorProposalStudy(args: {
   });
   if (!preparedCapture.ok) return failure("capture_write_failed");
   const armInputs: Array<{ role: AfcR3cInputImageRole; image: AfcR3cVerifiedImage }> = args.studyMode === "empty_only"
-    ? [{ role: "empty_room_boundary_specialist", image: empty! }]
+    ? [{ role: "empty_room_boundary_specialist", image: empty }]
     : args.studyMode === "original_only"
       ? [{ role: "original_contextual", image: original }]
       : [
-          { role: "empty_room_boundary_specialist", image: empty! },
+          { role: "empty_room_boundary_specialist", image: empty },
           { role: "original_contextual", image: original },
         ];
   const arms: ArmOutcome[] = [];

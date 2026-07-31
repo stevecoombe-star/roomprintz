@@ -65,7 +65,7 @@ test("shared comparison-context validator is closed, structural, and fail-closed
   }
 });
 
-test("manifest parser rejects traversal, duplicate paths, mismatched images, and invalid context", () => {
+test("manifest parser rejects traversal, duplicate paths, incompatible pairs, and invalid context", () => {
   assert.equal(parseAfcR3cImageManifest(manifest()).ok, true);
   const rows: Array<(value: ReturnType<typeof manifest>) => void> = [
     (value) => { value.original.filePath = "../escape.png"; },
@@ -80,6 +80,29 @@ test("manifest parser rejects traversal, duplicate paths, mismatched images, and
     mutate(value);
     assert.equal(parseAfcR3cImageManifest(value).ok, false);
   }
+});
+
+test("manifest parser accepts an aspect-compatible Empty while retaining the Original comparison basis", () => {
+  const value = manifest();
+  value.original.decodedWidth = 200;
+  value.original.decodedHeight = 1;
+  value.emptyRoomAssist.decodedWidth = 197;
+  value.emptyRoomAssist.decodedHeight = 1;
+  value.sharedComparisonContext.decodedWidth = 200;
+  value.sharedComparisonContext.decodedHeight = 1;
+  value.sharedComparisonContext.frameSize = { width: 200, height: 1 };
+  const parsed = parseAfcR3cImageManifest(value);
+  assert.equal(parsed.ok, true);
+  if (!parsed.ok) return;
+  assert.deepEqual(
+    { width: parsed.manifest.original.decodedWidth, height: parsed.manifest.original.decodedHeight },
+    { width: 200, height: 1 },
+  );
+  assert.deepEqual(
+    { width: parsed.manifest.emptyRoomAssist.decodedWidth, height: parsed.manifest.emptyRoomAssist.decodedHeight },
+    { width: 197, height: 1 },
+  );
+  assert.deepEqual(parsed.manifest.sharedComparisonContext.frameSize, { width: 200, height: 1 });
 });
 
 test("generatorModelId accepts the requested generator label without claiming resolution", () => {

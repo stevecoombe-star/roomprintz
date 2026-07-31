@@ -65,7 +65,7 @@ function safeMessage(code: AfcUi2aCompleteFailureCode): string {
     empty_image_mismatch: "The Empty-Room image no longer matches verified evidence.",
     empty_lineage_mismatch: "The Empty-Room evidence does not match the selected Original.",
     conflicting_empty_evidence: "More than one distinct verified Empty-Room image exists.",
-    pair_incompatible: "The Original and Empty-Room images are not exact-grid compatible.",
+    pair_incompatible: "The Original and Empty-Room images are not geometrically compatible under the committed aspect-ratio policy.",
     shared_context_invalid: "The shared comparison context is invalid.",
     manifest_conflict: "A conflicting immutable manifest exists.",
     manifest_capture_failed: "The immutable manifest could not be captured.",

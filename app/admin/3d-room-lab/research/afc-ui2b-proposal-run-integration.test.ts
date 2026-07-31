@@ -4,15 +4,24 @@ import { access, mkdir, mkdtemp, readdir, readFile, realpath, rm, symlink, write
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import sharp from "sharp";
 
 import { replayAfcProposalOverlay } from "./afc-proposal-overlay-view-model";
+import { classifyAfcR3cImagePairCompatibility } from "./afc-r3c-image-pair-compatibility";
+import { discoverAfcUi2aDurableEmptyEvidence, AFC_UI2A_EMPTY_GENERATOR_ID } from "./afc-ui2a-empty-evidence-replay";
+import { prepareAfcUi2aOriginal } from "./afc-ui2a-prepare-original";
 import { materializeAfcUi2aPreparedPackage } from "./afc-ui2a-prepared-package";
 import { replayAfcUi2aOriginalPreparation } from "./afc-ui2a-original-preparation-replay";
 import { replayAfcUi2aPreparedPackage } from "./afc-ui2a-prepared-package-replay";
 import { stableAfcUi2aReceiptBytes } from "./afc-ui2a-original-preparation-contract";
 import { replayAfcUi2bBindingReceipt } from "./afc-ui2b-binding-replay";
 import { discoverAfcUi2bProposalRuns } from "./afc-ui2b-proposal-run-inventory";
-import { parseAfcUi2bBindingReceipt, runAfcUi2bControlledProposal } from "./afc-ui2b-proposal-run";
+import {
+  afcUi2bProposalBindingReceiptFileName,
+  parseAfcUi2bBindingReceipt,
+  runAfcUi2bControlledProposal,
+} from "./afc-ui2b-proposal-run";
+import { stableReceiptBytes, writeAfcR3cImmutableCapture } from "./gemini-floor-proposal-capture";
 import { deriveGeminiFloorBasisBinding, GEMINI_FLOOR_COORDINATE_EXTENT_POLICY } from "./gemini-floor-proposal-contract";
 import { resolveAfcR3cGenerationConfig } from "./gemini-floor-proposal-provider";
 import { runAfcR3cGeminiFloorProposalStudy } from "./gemini-floor-proposal-runner";
@@ -79,6 +88,249 @@ async function fixture() {
   return { root, captureRoot, materialized, replayPackage, replayProposal, original, emptyRoomAssist };
 }
 
+const ROOM_B_LIKE = {
+  roomId: "room-b-like",
+  original: { width: 5000, height: 3333 },
+  empty: { width: 1264, height: 848 },
+  compatibility: {
+    version: "afc-r3c-image-pair-compatibility/v1",
+    tier: "aspect_compatible_rescaled",
+    relativeAspectErrorRaw: 0.0063886792452830824,
+    relativeAspectError: 0.0064,
+  },
+} as const;
+
+async function captureSnapshot(directory: string) {
+  return Object.fromEntries(await Promise.all((await readdir(directory)).sort().map(async (name) => {
+    const bytes = await readFile(path.join(directory, name));
+    return [name, { sha256: sha(bytes), byteCount: bytes.byteLength }] as const;
+  })));
+}
+
+function deeplyFrozen(value: unknown, seen = new WeakSet<object>()): boolean {
+  if (!value || typeof value !== "object" || ArrayBuffer.isView(value)) return true;
+  if (seen.has(value)) return true;
+  seen.add(value);
+  return Object.isFrozen(value) && Object.values(value).every((child) => deeplyFrozen(child, seen));
+}
+
+async function aspectCompatibleFixture() {
+  const root = await mkdtemp(path.join(os.tmpdir(), "afc-ui2b-room-b-like-"));
+  const canonicalRoot = await realpath(root);
+  const originalBytes = await sharp({
+    create: { width: ROOM_B_LIKE.original.width, height: ROOM_B_LIKE.original.height, channels: 3, background: { r: 24, g: 42, b: 64 } },
+  }).jpeg().toBuffer();
+  const emptyBytes = await sharp({
+    create: { width: ROOM_B_LIKE.empty.width, height: ROOM_B_LIKE.empty.height, channels: 3, background: { r: 236, g: 232, b: 224 } },
+  }).png().toBuffer();
+  const originalSha256 = sha(originalBytes);
+  const preparedOriginal = await prepareAfcUi2aOriginal({
+    contractVersion: "afc-ui2a-prepare-original-request/v1",
+    currentImage: {
+      contractVersion: "afc-ui2a-current-image/v1",
+      imageUrl: "https://images.example/room-b-like.jpg?test-secret=redacted",
+      expectedFingerprint: originalSha256,
+      expectedWidth: ROOM_B_LIKE.original.width,
+      expectedHeight: ROOM_B_LIKE.original.height,
+    },
+    roomLabel: ROOM_B_LIKE.roomId,
+    executeCapture: true,
+  }, {
+    fetchImage: async () => ({
+      ok: true as const,
+      base64: originalBytes.toString("base64"),
+      buffer: originalBytes,
+      mime: "image/jpeg",
+      byteCount: originalBytes.byteLength,
+      host: "images.example",
+    }),
+    resolveFixedInputsRoot: async () => ({ ok: true as const, root: canonicalRoot }),
+    immutableWriter: writeAfcR3cImmutableCapture,
+    maxImageBytes: 25 * 1024 * 1024,
+  });
+  assert.equal(preparedOriginal.status, "prepared", JSON.stringify(preparedOriginal));
+  if (preparedOriginal.status !== "prepared") throw new Error("Original preparation failed.");
+  assert.deepEqual(
+    { width: preparedOriginal.original.decodedWidth, height: preparedOriginal.original.decodedHeight },
+    ROOM_B_LIKE.original,
+  );
+
+  const originalPreparation = {
+    preparationId: preparedOriginal.preparationId,
+    receiptFileName: preparedOriginal.receipt.fileName,
+    receiptSha256: preparedOriginal.receipt.sha256,
+  };
+  const replayOriginal = (args: Parameters<typeof replayAfcUi2aOriginalPreparation>[0]) =>
+    replayAfcUi2aOriginalPreparation(args, {
+      resolveFixedInputsRoot: async () => ({ ok: true as const, root: canonicalRoot }),
+    });
+  const originalReplay = await replayOriginal({ roomLabel: ROOM_B_LIKE.roomId, selector: originalPreparation });
+  assert.equal(originalReplay.ok, true, originalReplay.ok ? "" : originalReplay.failureCode);
+  if (!originalReplay.ok) throw new Error("Original strict replay failed.");
+  const originalEvidence = originalReplay.evidence;
+  const roomDirectory = originalEvidence.roomDirectory;
+
+  const emptySha256 = sha(emptyBytes);
+  const emptyFileName = `${ROOM_B_LIKE.roomId}.empty-room.${emptySha256}.png`;
+  const emptyPath = path.join(roomDirectory, emptyFileName);
+  const emptyWrite = await writeAfcR3cImmutableCapture({
+    outputDir: roomDirectory,
+    filename: emptyFileName,
+    bytes: emptyBytes,
+  });
+  assert.equal(emptyWrite.ok, true);
+  const fixedEmptyReceiptFileName = "afc-r3c-fixed-empty-room.room-b-like-ui2b.receipt.json";
+  const fixedEmptyReceipt = {
+    receiptContractVersion: "afc-r3c-fixed-empty-room-capture-receipt/v1",
+    roomId: ROOM_B_LIKE.roomId,
+    requestId: "room-b-like-ui2b",
+    createdAt: "2026-07-30T00:00:00.000Z",
+    captureSource: "cache_hit",
+    original: {
+      sourceFilePath: originalEvidence.originalFilePath,
+      capturedFilePath: originalEvidence.originalFilePath,
+      sha256: originalEvidence.original.sha256,
+      byteCount: originalEvidence.original.byteCount,
+      decodedWidth: originalEvidence.original.decodedWidth,
+      decodedHeight: originalEvidence.original.decodedHeight,
+      orientation: 1,
+      mimeType: originalEvidence.original.mimeType,
+    },
+    emptyRoomAssist: {
+      capturedFilePath: emptyPath,
+      sha256: emptySha256,
+      byteCount: emptyBytes.byteLength,
+      decodedWidth: ROOM_B_LIKE.empty.width,
+      decodedHeight: ROOM_B_LIKE.empty.height,
+      orientation: 1,
+      mimeType: "image/png",
+      generatedFromOriginalSha256: originalEvidence.original.sha256,
+    },
+    generation: {
+      cacheStatus: "hit",
+      generatorId: AFC_UI2A_EMPTY_GENERATOR_ID,
+      requestedModelId: "NBP",
+      resolvedModelId: null,
+      resolvedModelStatus: "not_reported_by_compositor",
+      appliedAspectRatio: null,
+      imageTransport: "data_url",
+      generatedAt: "2026-07-30T00:00:00.000Z",
+    },
+    safety: {
+      applied: false,
+      authoritative: false,
+      persisted: false,
+      activeCameraUnchanged: true,
+      sceneStateUnchanged: true,
+      databaseWrites: false,
+      productionAssetWrites: false,
+      productionTokenAccountingUsed: false,
+      emptyRoomGenerationCall: false,
+      geminiFloorProposalCall: false,
+      localResearchCaptureWritten: true,
+    },
+  };
+  const emptyReceiptWrite = await writeAfcR3cImmutableCapture({
+    outputDir: roomDirectory,
+    filename: fixedEmptyReceiptFileName,
+    bytes: stableReceiptBytes(fixedEmptyReceipt),
+  });
+  assert.equal(emptyReceiptWrite.ok, true);
+  const durableEmpty = await discoverAfcUi2aDurableEmptyEvidence(originalEvidence);
+  assert.equal(durableEmpty.status, "selected", JSON.stringify(durableEmpty));
+  if (durableEmpty.status !== "selected") throw new Error("Empty evidence strict replay failed.");
+  assert.equal(durableEmpty.evidence.canonicalReceiptFileName, fixedEmptyReceiptFileName);
+  assert.deepEqual(
+    { width: durableEmpty.evidence.emptyRoomAssist.decodedWidth, height: durableEmpty.evidence.emptyRoomAssist.decodedHeight },
+    ROOM_B_LIKE.empty,
+  );
+
+  const classified = classifyAfcR3cImagePairCompatibility(
+    {
+      fingerprint: originalEvidence.original.sha256,
+      decodedWidth: originalEvidence.original.decodedWidth,
+      decodedHeight: originalEvidence.original.decodedHeight,
+      orientation: originalEvidence.original.orientation,
+    },
+    {
+      fingerprint: durableEmpty.evidence.emptyRoomAssist.sha256,
+      decodedWidth: durableEmpty.evidence.emptyRoomAssist.decodedWidth,
+      decodedHeight: durableEmpty.evidence.emptyRoomAssist.decodedHeight,
+      orientation: durableEmpty.evidence.emptyRoomAssist.orientation,
+    },
+  );
+  assert.deepEqual(
+    {
+      version: classified.version,
+      tier: classified.tier,
+      relativeAspectErrorRaw: classified.relativeAspectErrorRaw,
+      relativeAspectError: classified.relativeAspectError,
+    },
+    ROOM_B_LIKE.compatibility,
+  );
+
+  const replayPackage = (input: Parameters<typeof replayAfcUi2aPreparedPackage>[0]) =>
+    replayAfcUi2aPreparedPackage(input, {
+      resolveFixedInputsRoot: async () => ({ ok: true as const, root: canonicalRoot }),
+      replayOriginal,
+    });
+  const materialize = () => materializeAfcUi2aPreparedPackage({
+    originalPreparation,
+    originalEvidence,
+    emptyEvidence: durableEmpty.evidence,
+    executeCapture: true,
+  }, { replayPackage });
+  const materialized = await materialize();
+  assert.equal(materialized.status, "package_materialized", JSON.stringify(materialized));
+  if (materialized.status !== "package_materialized") throw new Error("Prepared package materialization failed.");
+  assert.deepEqual(materialized.compatibility, ROOM_B_LIKE.compatibility);
+  assert.equal(materialized.sharedContextDigest.length, 64);
+  assert.equal(materialized.original.sha256, originalEvidence.original.sha256);
+  assert.equal(materialized.emptyRoomAssist.sha256, durableEmpty.evidence.emptyRoomAssist.sha256);
+  const repeatedMaterialization = await materialize();
+  assert.equal(repeatedMaterialization.status, "package_materialized");
+  if (repeatedMaterialization.status !== "package_materialized") throw new Error("Repeated materialization failed.");
+  assert.equal(repeatedMaterialization.packageId, materialized.packageId);
+  assert.equal(repeatedMaterialization.manifest.sha256, materialized.manifest.sha256);
+  assert.equal(repeatedMaterialization.receipt.sha256, materialized.receipt.sha256);
+  assert.equal(repeatedMaterialization.receipt.reused, true);
+
+  const strictPackageReplay = await replayPackage({
+    roomLabel: ROOM_B_LIKE.roomId,
+    packageId: materialized.packageId,
+    receiptFileName: materialized.receipt.fileName,
+    receiptSha256: materialized.receipt.sha256,
+  });
+  assert.equal(strictPackageReplay.ok, true, strictPackageReplay.ok ? "" : strictPackageReplay.failureCode);
+  if (!strictPackageReplay.ok) throw new Error("Prepared package strict replay failed.");
+  assert.equal(strictPackageReplay.evidence.receipt.sharedComparisonContext.basisKind, "original");
+  assert.equal(strictPackageReplay.evidence.receipt.sharedComparisonContext.basisFingerprint, originalEvidence.original.sha256);
+  assert.deepEqual(strictPackageReplay.evidence.receipt.compatibility, ROOM_B_LIKE.compatibility);
+
+  const captureRoot = path.join(root, ".local", "afc-r3c-captures");
+  const replayProposal = (input: { receiptFileName: string; captureRoot?: string }) => replayAfcProposalOverlay({
+    receiptFileName: input.receiptFileName,
+    captureRoot: input.captureRoot,
+    fixedInputsRoot: canonicalRoot,
+    resolveFixedInputsRoot: async () => canonicalRoot,
+  });
+  return {
+    root,
+    canonicalRoot,
+    captureRoot,
+    roomDirectory,
+    originalBytes,
+    emptyBytes,
+    originalEvidence,
+    emptyEvidence: durableEmpty.evidence,
+    classified,
+    materialized,
+    strictPackageReplay,
+    replayPackage,
+    replayProposal,
+  };
+}
+
 function request(
   prepared: Extract<Awaited<ReturnType<typeof fixture>>["materialized"], { status: "package_materialized" }>,
   studyMode: "original_only" | "empty_only",
@@ -91,7 +343,7 @@ function request(
   return {
     contractVersion: "afc-ui2b-proposal-run-request/v1",
     operation: "execute",
-    roomLabel: "room-a",
+    roomLabel: prepared.roomId,
     packageSelector: { packageId, receiptFileName, receiptSha256: prepared.receipt.sha256 },
     studyMode, executeCapture: true, executeLiveProviderCall: true,
   };
@@ -223,6 +475,12 @@ for (const studyMode of ["original_only", "empty_only"] as const) {
       assert.equal(result.runner.providerCallCount, 1);
       assert.equal(result.proposal.armCount, 1);
       assert.equal(runAfcR2, false);
+      assert.deepEqual(result.compatibility, {
+        version: "afc-r3c-image-pair-compatibility/v1",
+        tier: "exact_grid_compatible",
+        relativeAspectErrorRaw: 0,
+        relativeAspectError: 0,
+      });
       const resolvedGeneration = resolveAfcR3cGenerationConfig("gemini-3.5-flash");
       assert.deepEqual(Object.keys(generationConfig as Record<string, unknown>).sort(), [
         "maxOutputTokens", "responseJsonSchema", "responseMimeType", "temperature", "thinkingConfig",
@@ -240,6 +498,12 @@ for (const studyMode of ["original_only", "empty_only"] as const) {
       assert.equal(selectedImageData, (studyMode === "original_only" ? ORIGINAL : EMPTY).toString("base64"));
       const proposalPath = path.join(value.captureRoot, result.proposal.receiptFileName);
       await access(proposalPath);
+      const proposalReceipt = JSON.parse(await readFile(proposalPath, "utf8"));
+      assert.deepEqual(proposalReceipt.compatibility, {
+        tier: "exact_grid_compatible",
+        relativeAspectErrorRaw: 0,
+        relativeAspectError: 0,
+      });
       const proposalReplay = await value.replayProposal({ receiptFileName: result.proposal.receiptFileName, captureRoot: value.captureRoot });
       assert.equal(proposalReplay.status, "valid");
       if (proposalReplay.status !== "valid") return;
@@ -282,6 +546,385 @@ for (const studyMode of ["original_only", "empty_only"] as const) {
     }
   });
 }
+
+test("UI2B aspect-compatible original_only preserves manifest-pair authority end to end", async () => {
+  const value = await aspectCompatibleFixture();
+  try {
+    assert.equal(value.materialized.manifest.disposition, "written");
+    assert.deepEqual(value.materialized.compatibility, ROOM_B_LIKE.compatibility);
+    assert.equal(value.strictPackageReplay.ok, true);
+    assert.equal(value.classified.tier, "aspect_compatible_rescaled");
+    assert.equal(value.classified.relativeAspectErrorRaw, ROOM_B_LIKE.compatibility.relativeAspectErrorRaw);
+    assert.equal(value.classified.relativeAspectError, ROOM_B_LIKE.compatibility.relativeAspectError);
+    await assert.rejects(access(value.captureRoot));
+
+    const executeRequest = request(value.materialized, "original_only");
+    const validateRequest = {
+      ...executeRequest,
+      operation: "validate" as const,
+    };
+    let validationFetches = 0;
+    let validationRuns = 0;
+    let validationCaptureRootCalls = 0;
+    let validationApiKeyCalls = 0;
+    const validation = await runAfcUi2bControlledProposal(validateRequest, {
+      replayPackage: value.replayPackage,
+      resolveModel: () => "gemini-3.5-flash",
+      resolveApiKey: () => {
+        validationApiKeyCalls++;
+        return "must-not-resolve";
+      },
+      captureRoot: () => {
+        validationCaptureRootCalls++;
+        return value.captureRoot;
+      },
+      fetchImpl: async () => {
+        validationFetches++;
+        throw new Error("validation must not call the provider");
+      },
+      runStudy: async () => {
+        validationRuns++;
+        throw new Error("validation must not invoke the runner");
+      },
+    });
+    assert.equal(validation.status, "run_validated", JSON.stringify(validation));
+    if (validation.status !== "run_validated") return;
+    assert.equal(validation.studyMode, "original_only");
+    assert.equal(validation.selectedImage.role, "original_photo_contextual_geometry");
+    assert.equal(validation.selectedImage.sha256, value.originalEvidence.original.sha256);
+    assert.deepEqual(
+      { width: validation.selectedImage.decodedWidth, height: validation.selectedImage.decodedHeight },
+      ROOM_B_LIKE.original,
+    );
+    assert.deepEqual(validation.compatibility, ROOM_B_LIKE.compatibility);
+    assert.equal(validation.runner.runnerContractVersion, "afc-r3c-proposal-run-receipt/v1");
+    assert.equal(validation.runner.promptRole, "original_photo_contextual_geometry");
+    assert.equal(validation.runner.providerCallCount, 0);
+    assert.equal(validation.runner.providerCall, false);
+    assert.equal(validation.runner.captureWrite, false);
+    assert.equal(validation.safety.proposalReceiptWritten, false);
+    assert.equal(validationFetches, 0);
+    assert.equal(validationRuns, 0);
+    assert.equal(validationCaptureRootCalls, 0);
+    assert.equal(validationApiKeyCalls, 0);
+    await assert.rejects(access(value.captureRoot));
+
+    const basis = deriveGeminiFloorBasisBinding(
+      value.strictPackageReplay.evidence.receipt.sharedComparisonContext,
+      GEMINI_FLOOR_COORDINATE_EXTENT_POLICY,
+    );
+    let providerCalls = 0;
+    let providerImageData = "";
+    let providerPartCount = 0;
+    let runnerCalls = 0;
+    let packageReplays = 0;
+    let proposalReplays = 0;
+    let studyResult: Awaited<ReturnType<typeof runAfcR3cGeminiFloorProposalStudy>> | null = null;
+    const execution = await runAfcUi2bControlledProposal(executeRequest, {
+      replayPackage: async (input) => {
+        packageReplays++;
+        return value.replayPackage(input);
+      },
+      replayProposal: async (input) => {
+        proposalReplays++;
+        return value.replayProposal(input);
+      },
+      captureRoot: () => value.captureRoot,
+      repositoryRoot: () => value.root,
+      resolveApiKey: () => "fake-key",
+      resolveModel: () => "gemini-3.5-flash",
+      runStudy: async (args) => {
+        runnerCalls++;
+        studyResult = await runAfcR3cGeminiFloorProposalStudy(args);
+        return studyResult;
+      },
+      fetchImpl: async (_url, init) => {
+        providerCalls++;
+        const body = JSON.parse(String(init?.body)) as {
+          contents: Array<{ parts: Array<{ text?: string; inlineData?: { data?: string; mimeType?: string } }> }>;
+        };
+        providerPartCount = body.contents[0].parts.length;
+        providerImageData = body.contents[0].parts[1].inlineData?.data ?? "";
+        assert.equal(body.contents[0].parts[1].inlineData?.mimeType, value.originalEvidence.original.mimeType);
+        return new Response(fakeEnvelope(basis), { status: 200 });
+      },
+    });
+    assert.equal(execution.status, "run_completed", JSON.stringify(execution));
+    if (execution.status !== "run_completed") return;
+    assert.equal(runnerCalls, 1);
+    assert.equal(packageReplays, 2, "admission and companion replay both use strict package authority");
+    assert.equal(proposalReplays, 2, "controlled completion and companion replay both delegate to strict UI1 replay");
+    assert.equal(providerCalls, 1);
+    assert.equal(providerPartCount, 2);
+    assert.equal(providerImageData, value.originalBytes.toString("base64"));
+    assert.notEqual(providerImageData, value.emptyBytes.toString("base64"));
+    assert.equal(execution.studyMode, "original_only");
+    assert.equal(execution.selectedImage.role, "original_photo_contextual_geometry");
+    assert.equal(execution.selectedImage.sha256, value.originalEvidence.original.sha256);
+    assert.deepEqual(
+      { width: execution.selectedImage.decodedWidth, height: execution.selectedImage.decodedHeight },
+      ROOM_B_LIKE.original,
+    );
+    assert.deepEqual(execution.compatibility, ROOM_B_LIKE.compatibility);
+    assert.equal(execution.runner.providerCallCount, 1);
+    assert.equal(execution.runner.captureWrite, true);
+    assert.equal(execution.runner.companionReceiptWritten, true);
+    assert.equal(execution.proposal.armCount, 1);
+    assert.equal(execution.proposal.candidateCount, 1);
+    assert.equal(execution.proposal.strictReplayVerified, true);
+    assert.equal(execution.safety.compositorCalls, false);
+    assert.equal(execution.safety.emptyRoomGenerationCalls, false);
+    assert.equal(execution.safety.afcR2Runs, false);
+
+    const captureNames = (await readdir(value.captureRoot)).sort();
+    assert.equal(captureNames.filter((name) => name.startsWith("provider-envelope.")).length, 1);
+    assert.equal(captureNames.filter((name) => name.startsWith("model-output.")).length, 1);
+    assert.equal(captureNames.filter((name) => /^afc-r3c-run\..*\.receipt\.json$/.test(name)).length, 1);
+    assert.equal(captureNames.filter((name) => /^afc-ui2b-run\..*\.binding\.json$/.test(name)).length, 1);
+    assert.equal(captureNames.some((name) => name.endsWith(".reservation")), false);
+
+    const proposalReceiptPath = path.join(value.captureRoot, execution.proposal.receiptFileName);
+    const proposalReceiptBytes = await readFile(proposalReceiptPath);
+    const proposalReceipt = JSON.parse(proposalReceiptBytes.toString("utf8"));
+    assert.equal(sha(proposalReceiptBytes), execution.proposal.receiptSha256);
+    assert.equal(proposalReceipt.receiptContractVersion, "afc-r3c-proposal-run-receipt/v1");
+    assert.equal(proposalReceipt.studyMode, "original_only");
+    assert.equal(proposalReceipt.imageRole, "original_contextual");
+    assert.deepEqual(proposalReceipt.inputImage, {
+      fingerprint: value.originalEvidence.original.sha256,
+      decodedWidth: ROOM_B_LIKE.original.width,
+      decodedHeight: ROOM_B_LIKE.original.height,
+      orientation: 1,
+      mimeType: value.originalEvidence.original.mimeType,
+    });
+    assert.equal(proposalReceipt.originalImageFingerprint, value.originalEvidence.original.sha256);
+    assert.equal(proposalReceipt.emptyRoomAssistFingerprint, value.emptyEvidence.emptyRoomAssist.sha256);
+    assert.deepEqual(proposalReceipt.compatibility, {
+      tier: ROOM_B_LIKE.compatibility.tier,
+      relativeAspectErrorRaw: ROOM_B_LIKE.compatibility.relativeAspectErrorRaw,
+      relativeAspectError: ROOM_B_LIKE.compatibility.relativeAspectError,
+    });
+
+    const completedStudy = studyResult as Awaited<ReturnType<typeof runAfcR3cGeminiFloorProposalStudy>> | null;
+    if (!completedStudy) throw new Error("The real AFC-R3C runner result was not captured.");
+    const armRun = completedStudy.arms[0]?.proposalRun;
+    assert.ok(armRun);
+    if (!armRun) throw new Error("The real AFC-R3C proposal run was not captured.");
+    assert.equal(armRun.transfer.compatibilityTier, "exact_grid_compatible");
+    assert.equal(armRun.transfer.relativeAspectErrorRaw, 0);
+    assert.equal(armRun.transfer.relativeAspectError, 0);
+    assert.equal(armRun.provenance.compatibilityTier, "exact_grid_compatible");
+    assert.equal(armRun.provenance.relativeAspectErrorRaw, 0);
+    assert.equal(armRun.provenance.relativeAspectError, 0);
+    assert.notEqual(armRun.transfer.compatibilityTier, proposalReceipt.compatibility.tier);
+    assert.notEqual(armRun.provenance.compatibilityTier, proposalReceipt.compatibility.tier);
+
+    const proposalReplay = await value.replayProposal({
+      receiptFileName: execution.proposal.receiptFileName,
+      captureRoot: value.captureRoot,
+    });
+    assert.equal(proposalReplay.status, "valid", proposalReplay.status === "valid" ? "" : `${proposalReplay.reason} (${proposalReplay.path})`);
+    if (proposalReplay.status !== "valid") return;
+    assert.equal(proposalReplay.viewModel.artifactIdentity.receiptSha256, execution.proposal.receiptSha256);
+    assert.equal(proposalReplay.viewModel.artifactIdentity.studyMode, "original_only");
+    assert.equal(proposalReplay.viewModel.artifactIdentity.imageRole, "original_contextual");
+    assert.equal(proposalReplay.viewModel.imageBasis.basisBinding, basis);
+    assert.equal(proposalReplay.viewModel.imageBasis.manifestVersion, "afc-r3c-image-manifest/v1");
+    assert.deepEqual(
+      {
+        sha256: proposalReplay.viewModel.imageBasis.original.sha256,
+        width: proposalReplay.viewModel.imageBasis.original.width,
+        height: proposalReplay.viewModel.imageBasis.original.height,
+      },
+      {
+        sha256: value.originalEvidence.original.sha256,
+        width: ROOM_B_LIKE.original.width,
+        height: ROOM_B_LIKE.original.height,
+      },
+    );
+    assert.deepEqual(
+      {
+        sha256: proposalReplay.viewModel.imageBasis.emptyRoom.sha256,
+        width: proposalReplay.viewModel.imageBasis.emptyRoom.width,
+        height: proposalReplay.viewModel.imageBasis.emptyRoom.height,
+        generatedFromOriginalSha256: proposalReplay.viewModel.imageBasis.emptyRoom.generatedFromOriginalSha256,
+      },
+      {
+        sha256: value.emptyEvidence.emptyRoomAssist.sha256,
+        width: ROOM_B_LIKE.empty.width,
+        height: ROOM_B_LIKE.empty.height,
+        generatedFromOriginalSha256: value.originalEvidence.original.sha256,
+      },
+    );
+    assert.equal(proposalReplay.images.original.sha256, value.originalEvidence.original.sha256);
+    assert.equal(proposalReplay.images.empty.sha256, value.emptyEvidence.emptyRoomAssist.sha256);
+    assert.equal(proposalReplay.images.original.bytes.equals(value.originalBytes), true);
+    assert.equal(proposalReplay.images.empty.bytes.equals(value.emptyBytes), true);
+    assert.deepEqual(proposalReplay.viewModel.provenance.prompt, proposalReceipt.prompt);
+    assert.deepEqual(proposalReplay.viewModel.provenance.afcR3b.candidateIds, proposalReceipt.afcR3b.candidateIds);
+    assert.deepEqual(proposalReplay.viewModel.provenance.afcR3c.candidateIds, proposalReceipt.afcR3c.candidateIds);
+    assert.deepEqual(proposalReplay.viewModel.provenance.afcR3c.candidateIds, execution.proposal.acceptedCandidateIds);
+    assert.equal(proposalReplay.viewModel.provenance.artifactHashes.receiptSha256, execution.proposal.receiptSha256);
+    assert.equal(proposalReplay.viewModel.provenance.artifactHashes.providerEnvelopeSha256, proposalReceipt.provider.providerEnvelopeSha256);
+    assert.equal(proposalReplay.viewModel.provenance.artifactHashes.modelOutputSha256, proposalReceipt.provider.modelOutputTextSha256);
+    const providerEnvelopeBytes = await readFile(path.join(value.captureRoot, path.basename(proposalReceipt.capture.providerEnvelopePath)));
+    const modelOutputBytes = await readFile(path.join(value.captureRoot, path.basename(proposalReceipt.capture.modelOutputPath)));
+    assert.equal(sha(providerEnvelopeBytes), proposalReceipt.provider.providerEnvelopeSha256);
+    assert.equal(providerEnvelopeBytes.byteLength, proposalReceipt.provider.providerEnvelopeByteLength);
+    assert.equal(sha(modelOutputBytes), proposalReceipt.provider.modelOutputTextSha256);
+    assert.equal(modelOutputBytes.byteLength, proposalReceipt.provider.modelOutputUtf8ByteLength);
+    const manifestBytes = await readFile(path.join(value.roomDirectory, value.materialized.manifest.fileName));
+    assert.equal(sha(manifestBytes), value.materialized.manifest.sha256);
+    assert.equal(value.strictPackageReplay.evidence.receipt.manifest.sha256, value.materialized.manifest.sha256);
+    const recomputedCompatibility = classifyAfcR3cImagePairCompatibility(
+      {
+        fingerprint: proposalReplay.images.original.sha256,
+        decodedWidth: proposalReplay.images.original.width,
+        decodedHeight: proposalReplay.images.original.height,
+        orientation: 1,
+      },
+      {
+        fingerprint: proposalReplay.images.empty.sha256,
+        decodedWidth: proposalReplay.images.empty.width,
+        decodedHeight: proposalReplay.images.empty.height,
+        orientation: 1,
+      },
+    );
+    assert.deepEqual(proposalReceipt.compatibility, {
+      tier: recomputedCompatibility.tier,
+      relativeAspectErrorRaw: recomputedCompatibility.relativeAspectErrorRaw,
+      relativeAspectError: recomputedCompatibility.relativeAspectError,
+    });
+
+    const companionFileName = afcUi2bProposalBindingReceiptFileName(execution.proposal.receiptSha256);
+    const companionBytes = await readFile(path.join(value.captureRoot, companionFileName));
+    const companionSha256 = sha(companionBytes);
+    const companionRaw = JSON.parse(companionBytes.toString("utf8"));
+    const parsedCompanion = parseAfcUi2bBindingReceipt(companionRaw);
+    assert.equal(parsedCompanion.ok, true);
+    if (!parsedCompanion.ok) return;
+    assert.equal(companionFileName, `afc-ui2b-run.${execution.proposal.receiptSha256}.binding.json`);
+    assert.equal(sha(stableReceiptBytes(parsedCompanion.receipt)), companionSha256);
+    assert.equal(parsedCompanion.receipt.package.packageId, value.materialized.packageId);
+    assert.equal(parsedCompanion.receipt.package.receiptSha256, value.materialized.receipt.sha256);
+    assert.equal(parsedCompanion.receipt.proposal.receiptFileName, execution.proposal.receiptFileName);
+    assert.equal(parsedCompanion.receipt.proposal.receiptSha256, execution.proposal.receiptSha256);
+    assert.equal(parsedCompanion.receipt.manifest.sha256, value.materialized.manifest.sha256);
+    assert.equal(Object.hasOwn(companionRaw, "compatibility"), false);
+    const companionReplay = await replayAfcUi2bBindingReceipt({
+      roomLabel: ROOM_B_LIKE.roomId,
+      bindingFileName: companionFileName,
+    }, {
+      captureRoot: () => value.captureRoot,
+      replayPackage: value.replayPackage,
+      replayProposal: value.replayProposal,
+    });
+    assert.equal(companionReplay.status, "valid");
+    if (companionReplay.status !== "valid") return;
+    assert.equal(companionReplay.summary.packageId, value.materialized.packageId);
+    assert.equal(companionReplay.summary.proposal.receiptSha256, execution.proposal.receiptSha256);
+    assert.equal(companionReplay.summary.proposal.strictReplayVerified, true);
+
+    const inventory = await discoverAfcUi2bProposalRuns({
+      roomLabel: ROOM_B_LIKE.roomId,
+      packageId: value.materialized.packageId,
+      studyMode: "original_only",
+    }, {
+      captureRoot: () => value.captureRoot,
+      replayPackage: value.replayPackage,
+      replayProposal: value.replayProposal,
+    });
+    assert.equal(inventory.status, "inventory");
+    if (inventory.status !== "inventory") return;
+    assert.equal(inventory.roomId, ROOM_B_LIKE.roomId);
+    assert.equal(inventory.runs.length, 1);
+    assert.equal(inventory.invalidCandidateCount, 0);
+    assert.deepEqual(inventory.runs[0], companionReplay.summary);
+    assert.equal(inventory.runs[0].studyMode, "original_only");
+    assert.equal(inventory.runs[0].proposal.receiptSha256, execution.proposal.receiptSha256);
+    assert.equal(inventory.runs[0].proposal.candidateCount, 1);
+    assert.deepEqual(inventory.runs[0].proposal.acceptedCandidateIds, execution.proposal.acceptedCandidateIds);
+    assert.equal(inventory.runs[0].proposal.strictReplayVerified, true);
+    assert.equal(JSON.stringify(inventory).includes(value.root), false);
+    assert.equal(JSON.stringify(inventory).includes(value.roomDirectory), false);
+    assert.equal(deeplyFrozen(inventory), true);
+
+    const immutableSnapshot = await captureSnapshot(value.captureRoot);
+    const repeatedProposalReplay = await value.replayProposal({
+      receiptFileName: execution.proposal.receiptFileName,
+      captureRoot: value.captureRoot,
+    });
+    const repeatedCompanionReplay = await replayAfcUi2bBindingReceipt({
+      roomLabel: ROOM_B_LIKE.roomId,
+      bindingFileName: companionFileName,
+    }, {
+      captureRoot: () => value.captureRoot,
+      replayPackage: value.replayPackage,
+      replayProposal: value.replayProposal,
+    });
+    const repeatedInventory = await discoverAfcUi2bProposalRuns({ roomLabel: ROOM_B_LIKE.roomId }, {
+      captureRoot: () => value.captureRoot,
+      replayPackage: value.replayPackage,
+      replayProposal: value.replayProposal,
+    });
+    assert.deepEqual(repeatedProposalReplay, proposalReplay);
+    assert.deepEqual(repeatedCompanionReplay, companionReplay);
+    assert.deepEqual(repeatedInventory, inventory);
+    assert.deepEqual(await captureSnapshot(value.captureRoot), immutableSnapshot);
+    assert.equal(providerCalls, 1);
+    assert.equal((await readdir(value.captureRoot)).filter((name) => name.startsWith("provider-envelope.")).length, 1);
+    assert.equal((await readdir(value.captureRoot)).filter((name) => name.startsWith("model-output.")).length, 1);
+    assert.equal((await readdir(value.captureRoot)).filter((name) => /^afc-r3c-run\..*\.receipt\.json$/.test(name)).length, 1);
+    assert.equal((await readdir(value.captureRoot)).filter((name) => /^afc-ui2b-run\..*\.binding\.json$/.test(name)).length, 1);
+    assert.equal(value.materialized.packageId, value.strictPackageReplay.evidence.packageId);
+    assert.equal(sha(await readFile(proposalReceiptPath)), execution.proposal.receiptSha256);
+    assert.equal(sha(await readFile(path.join(value.captureRoot, companionFileName))), companionSha256);
+
+    const tamperedReceipt = JSON.parse(proposalReceiptBytes.toString("utf8"));
+    tamperedReceipt.compatibility = {
+      tier: "exact_grid_compatible",
+      relativeAspectErrorRaw: 0,
+      relativeAspectError: 0,
+    };
+    const tamperedReceiptFileName = execution.proposal.receiptFileName.replace(
+      /\.receipt\.json$/,
+      ".tampered-compatibility.receipt.json",
+    );
+    const tamperedReceiptBytes = stableReceiptBytes(tamperedReceipt);
+    const tamperedWrite = await writeAfcR3cImmutableCapture({
+      outputDir: value.captureRoot,
+      filename: tamperedReceiptFileName,
+      bytes: tamperedReceiptBytes,
+    });
+    assert.equal(tamperedWrite.ok, true);
+    const tamperedReceiptSha256 = sha(tamperedReceiptBytes);
+    const tamperedCompanionFileName = afcUi2bProposalBindingReceiptFileName(tamperedReceiptSha256);
+    await assert.rejects(access(path.join(value.captureRoot, tamperedCompanionFileName)));
+    const negativeReplay = await value.replayProposal({
+      receiptFileName: tamperedReceiptFileName,
+      captureRoot: value.captureRoot,
+    });
+    assert.equal(negativeReplay.status, "basis_mismatch");
+    if (negativeReplay.status === "basis_mismatch") assert.equal(negativeReplay.path, "$.compatibility");
+    await assert.rejects(access(path.join(value.captureRoot, tamperedCompanionFileName)));
+    assert.equal((await readdir(value.captureRoot)).filter((name) => /^afc-ui2b-run\..*\.binding\.json$/.test(name)).length, 1);
+    const inventoryAfterTamper = await discoverAfcUi2bProposalRuns({ roomLabel: ROOM_B_LIKE.roomId }, {
+      captureRoot: () => value.captureRoot,
+      replayPackage: value.replayPackage,
+      replayProposal: value.replayProposal,
+    });
+    assert.equal(inventoryAfterTamper.status, "inventory");
+    if (inventoryAfterTamper.status === "inventory") {
+      assert.equal(inventoryAfterTamper.runs.length, 1);
+      assert.equal(inventoryAfterTamper.invalidCandidateCount, 0);
+      assert.equal(inventoryAfterTamper.runs[0].proposal.receiptSha256, execution.proposal.receiptSha256);
+      assert.notEqual(inventoryAfterTamper.runs[0].proposal.receiptSha256, tamperedReceiptSha256);
+    }
+    assert.equal(providerCalls, 1, "negative replay never reaches the provider");
+  } finally {
+    await rm(value.root, { recursive: true, force: true });
+  }
+});
 
 test("UI2B counted fetch preserves one provider attempt through provider failures", async () => {
   const cases: ReadonlyArray<readonly [string, string, () => Promise<Response>]> = [

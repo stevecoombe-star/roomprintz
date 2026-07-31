@@ -136,12 +136,9 @@ async function validateOnly(options: CliOptions, manifest: Extract<Awaited<Retur
   const manifestDirectory = path.dirname(path.resolve(options.manifest));
   const original = await verifyAfcR3cManifestImage({ descriptor: manifest.original, manifestDirectory });
   if (!original.ok) return printFailure(original.code);
-  const empty = options.studyMode === "original_only"
-    ? null
-    : await verifyAfcR3cManifestImage({ descriptor: manifest.emptyRoomAssist, manifestDirectory });
-  if (empty && !empty.ok) return printFailure(empty.code);
-  const input = empty?.ok ? empty.image : original.image;
-  const compatibility = classifyAfcR3cImagePairCompatibility(original.image, input);
+  const empty = await verifyAfcR3cManifestImage({ descriptor: manifest.emptyRoomAssist, manifestDirectory });
+  if (!empty.ok) return printFailure(empty.code);
+  const compatibility = classifyAfcR3cImagePairCompatibility(original.image, empty.image);
   if (compatibility.tier === "incompatible") return printFailure("incompatible_image_pair");
   const basisBinding = deriveGeminiFloorBasisBinding(manifest.sharedComparisonContext, GEMINI_FLOOR_COORDINATE_EXTENT_POLICY);
   const roles = options.studyMode === "parallel_union"

@@ -21,7 +21,7 @@ type InventoryPackage = Readonly<{
     fileName: string; sha256: string; byteCount: number; mimeType: string; decodedWidth: number; decodedHeight: number; orientation: 1;
     generatedFromOriginalSha256: string; generatorId: string; requestedModelId: "NBP"; resolvedModelStatus: "not_reported_by_compositor";
   }>;
-  compatibility: Readonly<{ version: "afc-r3c-image-pair-compatibility/v1"; tier: "exact_grid_compatible"; relativeAspectErrorRaw: number; relativeAspectError: number }>;
+  compatibility: Readonly<{ version: "afc-r3c-image-pair-compatibility/v1"; tier: "exact_grid_compatible" | "aspect_compatible_rescaled"; relativeAspectErrorRaw: number; relativeAspectError: number }>;
   sharedContextDigest: string;
   safety: Readonly<{
     authoritative: false; applied: false; persistedToScene: false; activeCameraUnchanged: true; floorStateUnchanged: true; supportStateUnchanged: true;

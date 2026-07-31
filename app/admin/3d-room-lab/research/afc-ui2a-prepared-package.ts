@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import { lstat, readFile, realpath } from "node:fs/promises";
 import path from "node:path";
 
-import { classifyAfcR3cImagePairCompatibility } from "./gemini-floor-proposal-composition";
+import { classifyAfcR3cImagePairCompatibility } from "./afc-r3c-image-pair-compatibility";
 import { writeAfcR3cImmutableCapture } from "./gemini-floor-proposal-capture";
 import type { AfcUi2aVerifiedEmptyEvidence } from "./afc-ui2a-empty-evidence-replay";
 import type { AfcUi2aVerifiedOriginalEvidence } from "./afc-ui2a-original-preparation-replay";
@@ -31,7 +31,7 @@ export type AfcUi2aPreparedPackageMaterializationFailureCode =
 
 type CompatibilityEvidence = Readonly<{
   version: "afc-r3c-image-pair-compatibility/v1";
-  tier: "exact_grid_compatible";
+  tier: "exact_grid_compatible" | "aspect_compatible_rescaled";
   relativeAspectErrorRaw: number;
   relativeAspectError: number;
 }>;
@@ -74,7 +74,7 @@ function message(code: AfcUi2aPreparedPackageMaterializationFailureCode): string
     case "empty_image_missing": return "The immutable Empty-Room image is unavailable.";
     case "empty_image_mismatch": return "The immutable Empty-Room image no longer matches verified evidence.";
     case "empty_lineage_mismatch": return "The Empty-Room evidence does not match the verified Original.";
-    case "pair_incompatible": return "The image pair is not exact-grid compatible; manifest v1 requires identical decoded dimensions.";
+    case "pair_incompatible": return "The image pair is not geometrically compatible under the committed aspect-ratio policy.";
     case "shared_context_invalid": return "The shared comparison context is invalid.";
     case "manifest_build_failed": return "The image manifest could not be built.";
     case "manifest_conflict": return "A different immutable manifest already exists for this room.";
@@ -112,7 +112,7 @@ async function safeExistingFile(directory: string, name: string): Promise<Buffer
   }
 }
 
-export function admitAfcUi2aExactGridPair(
+export function admitAfcUi2aCompatiblePair(
   original: AfcUi2aVerifiedOriginalEvidence["original"],
   empty: AfcUi2aVerifiedEmptyEvidence["emptyRoomAssist"],
 ): Readonly<{ ok: true; compatibility: CompatibilityEvidence }> | Readonly<{
@@ -127,14 +127,14 @@ export function admitAfcUi2aExactGridPair(
     relativeAspectErrorRaw: classified.relativeAspectErrorRaw === null ? null : zero(classified.relativeAspectErrorRaw),
     relativeAspectError: classified.relativeAspectError === null ? null : zero(classified.relativeAspectError),
   };
-  if (classified.tier !== "exact_grid_compatible" || evidence.relativeAspectErrorRaw === null || evidence.relativeAspectError === null) {
+  if (classified.tier === "incompatible" || evidence.relativeAspectErrorRaw === null || evidence.relativeAspectError === null) {
     return deepFreeze({ ok: false as const, compatibility: evidence });
   }
   return deepFreeze({
     ok: true as const,
     compatibility: {
       version: classified.version,
-      tier: "exact_grid_compatible" as const,
+      tier: classified.tier,
       relativeAspectErrorRaw: evidence.relativeAspectErrorRaw,
       relativeAspectError: evidence.relativeAspectError,
     },
@@ -155,7 +155,7 @@ export async function materializeAfcUi2aPreparedPackage(args: {
     !/^[a-f0-9]{64}$/.test(args.originalPreparation.receiptSha256)) return fail("original_evidence_invalid");
   const reverified = await reverifyAfcUi2aPackageImages(args.originalEvidence, args.emptyEvidence, dependencies.imageVerification);
   if (!reverified.ok) return fail(reverified.failureCode);
-  const admission = admitAfcUi2aExactGridPair(reverified.images.original, reverified.images.emptyRoomAssist);
+  const admission = admitAfcUi2aCompatiblePair(reverified.images.original, reverified.images.emptyRoomAssist);
   if (!admission.ok) return fail("pair_incompatible");
   const shared = buildAfcUi2aSharedComparisonContext({
     roomId: args.originalEvidence.roomId, originalSha256: reverified.images.original.sha256,

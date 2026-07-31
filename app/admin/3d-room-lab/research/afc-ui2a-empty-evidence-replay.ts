@@ -5,6 +5,7 @@ import path from "node:path";
 
 import { computeCalibrationImageFingerprint } from "@/lib/vibodeCalibrationImageBasis";
 import { inspectImageMetadata } from "@/lib/vibodeAutoFloorImageFetch";
+import { classifyAfcR3cImagePairCompatibility } from "./afc-r3c-image-pair-compatibility";
 import type { AfcUi2aVerifiedOriginalEvidence } from "./afc-ui2a-original-preparation-replay";
 import { deepFreeze, type AfcUi2aPackageFailureCode, type AfcUi2aVerifiedGenerationProvenance, type AfcUi2aVerifiedImageMetadata } from "./afc-ui2a-package-contract";
 import type { AfcUi2aSupportedMime } from "./afc-ui2a-original-preparation-contract";
@@ -131,7 +132,21 @@ async function verifyReceipt(args: {
   if (!metadata.ok || metadata.orientation !== 1 || metadata.width !== receipt.emptyRoomAssist.decodedWidth || metadata.height !== receipt.emptyRoomAssist.decodedHeight) {
     return { ok: false, failureCode: "durable_empty_invalid" };
   }
-  if (metadata.width !== original.original.decodedWidth || metadata.height !== original.original.decodedHeight) return { ok: false, failureCode: "pair_incompatible" };
+  const compatibility = classifyAfcR3cImagePairCompatibility(
+    {
+      fingerprint: original.original.sha256,
+      decodedWidth: original.original.decodedWidth,
+      decodedHeight: original.original.decodedHeight,
+      orientation: original.original.orientation,
+    },
+    {
+      fingerprint: receipt.emptyRoomAssist.sha256,
+      decodedWidth: metadata.width,
+      decodedHeight: metadata.height,
+      orientation: metadata.orientation,
+    },
+  );
+  if (compatibility.tier === "incompatible") return { ok: false, failureCode: "pair_incompatible" };
   return {
     ok: true,
     evidence: deepFreeze({
