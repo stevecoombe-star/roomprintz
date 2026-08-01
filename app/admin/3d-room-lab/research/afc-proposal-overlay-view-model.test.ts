@@ -1,13 +1,14 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
 import { deriveGeminiFloorBasisBinding, GEMINI_FLOOR_COORDINATE_EXTENT_POLICY, parseGeminiFloorProposalResponse } from "./gemini-floor-proposal-contract";
 import {
+  compareAfcProposalReceiptCanonical,
   discoverAfcProposalReceipts,
   deriveAfcProposalOperatorWarnings,
   replayAfcProposalOverlay,
@@ -205,9 +206,109 @@ test("AFC-UI1 replays the immutable Room A live3 receipt", { skip: !live3Availab
 });
 
 test("AFC-UI1 discovery lists only strict supported receipts", { skip: !live3Available }, async () => {
-  const receipts = await discoverAfcProposalReceipts({ captureRoot });
-  assert.ok(receipts.some((receipt) => receipt.receiptFileName === receiptFileName));
-  assert.ok(receipts.every((receipt) => !receipt.receiptFileName.includes("/")));
+  const inventory = await discoverAfcProposalReceipts({ captureRoot });
+  assert.ok(inventory.receipts.some((receipt) => receipt.receiptFileName === receiptFileName));
+  assert.ok(inventory.receipts.every((receipt) => !receipt.receiptFileName.includes("/")));
+});
+
+test("AFC-UI1C discovery returns a deeply frozen claim inventory in canonical order", async () => {
+  await withPortableFixture(async (fixture) => {
+    const inventoryRoot = path.join(fixture.root, "inventory-only");
+    await mkdir(inventoryRoot);
+    const base = JSON.parse(await readFile(fixture.receiptPath, "utf8"));
+    const validInputs: ReadonlyArray<readonly [string, Record<string, unknown>]> = [
+      ["afc-r3c-run.inventory-old.receipt.json", { ...base, requestId: "inventory.old" }],
+      ["afc-r3c-run.inventory-exact.receipt.json", {
+        ...base, requestId: "inventory.exact", createdAt: "2026-01-02T00:00:00.000Z",
+      }],
+      ["afc-r3c-run.inventory-aspect.receipt.json", {
+        ...base, requestId: "inventory.aspect", createdAt: "2026-01-02T00:00:00.000Z",
+        compatibility: { tier: "aspect_compatible_rescaled", relativeAspectErrorRaw: 0.001, relativeAspectError: 0.001 },
+      }],
+      ["afc-r3c-run.inventory-original.receipt.json", {
+        ...base, requestId: "inventory.original", createdAt: "2026-01-02T00:00:00.000Z",
+        studyMode: "original_only", imageRole: "original_contextual",
+      }],
+      ["afc-r3c-run.inventory-room-b.receipt.json", {
+        ...base, requestId: "inventory.room-b", createdAt: "2026-01-02T00:00:00.000Z", roomId: "room-b",
+      }],
+      ["afc-r3c-run.inventory-newest.receipt.json", {
+        ...base, requestId: "inventory.newest", createdAt: "2026-02-01T00:00:00.000Z", roomId: "room-c",
+      }],
+    ];
+    const bytesByName = new Map<string, Buffer>();
+    for (const [name, receipt] of [...validInputs].reverse()) {
+      const bytes = Buffer.from(JSON.stringify(receipt));
+      bytesByName.set(name, bytes);
+      await writeFile(path.join(inventoryRoot, name), bytes);
+    }
+    await writeFile(path.join(inventoryRoot, "afc-r3c-run.invalid-json.receipt.json"), "{");
+    await writeFile(path.join(inventoryRoot, "afc-r3c-run.invalid-contract.receipt.json"), "{}");
+
+    const inventory = await discoverAfcProposalReceipts({ captureRoot: inventoryRoot });
+    assert.equal(inventory.invalidCandidateCount, 2);
+    assert.equal(inventory.receipts.length, validInputs.length);
+    assert.equal(Object.isFrozen(inventory), true);
+    assert.equal(Object.isFrozen(inventory.receipts), true);
+    assert.ok(inventory.receipts.every(Object.isFrozen));
+    assert.ok(inventory.receipts.every((receipt) => !("status" in receipt)));
+    assert.ok(inventory.receipts.every((receipt) => !JSON.stringify(receipt).includes(inventoryRoot)));
+    assert.ok(inventory.receipts.every((receipt) => !receipt.receiptFileName.includes("/")));
+
+    for (const receipt of inventory.receipts) {
+      assert.equal(receipt.receiptSha256, sha256(bytesByName.get(receipt.receiptFileName)!));
+      assert.equal(receipt.r3cCandidateId, base.afcR3c.candidateIds[0]);
+    }
+    assert.equal(inventory.receipts[0].receiptFileName, "afc-r3c-run.inventory-newest.receipt.json");
+    const tied = ["afc-r3c-run.inventory-exact.receipt.json", "afc-r3c-run.inventory-aspect.receipt.json"]
+      .sort((left, right) => {
+        const leftSha = sha256(bytesByName.get(left)!);
+        const rightSha = sha256(bytesByName.get(right)!);
+        return leftSha < rightSha ? -1 : leftSha > rightSha ? 1 : 0;
+      });
+    assert.deepEqual(
+      inventory.receipts.map((receipt) => receipt.receiptFileName),
+      [
+        "afc-r3c-run.inventory-newest.receipt.json",
+        ...tied,
+        "afc-r3c-run.inventory-original.receipt.json",
+        "afc-r3c-run.inventory-room-b.receipt.json",
+        "afc-r3c-run.inventory-old.receipt.json",
+      ]
+    );
+    const exact = inventory.receipts.find((receipt) => receipt.requestId === "inventory.exact")!;
+    const aspect = inventory.receipts.find((receipt) => receipt.requestId === "inventory.aspect")!;
+    assert.deepEqual(Object.keys(exact), Object.keys(aspect), "compatibility tier does not alter inventory shape");
+
+    const canonicalNames = inventory.receipts.map((receipt) => receipt.receiptFileName);
+    const permutations = [
+      [...inventory.receipts].reverse(),
+      [...inventory.receipts.slice(2), ...inventory.receipts.slice(0, 2)],
+    ];
+    for (const permutation of permutations) {
+      assert.deepEqual(
+        permutation.sort(compareAfcProposalReceiptCanonical).map((receipt) => receipt.receiptFileName),
+        canonicalNames
+      );
+    }
+  });
+});
+
+test("AFC-UI1C live discovery returns ten canonical receipts, counts two invalid candidates, and changes no artifacts", { skip: !live3Available }, async () => {
+  const snapshot = async () => {
+    const names = (await readdir(captureRoot)).sort();
+    return Promise.all(names.map(async (name) => {
+      const bytes = await readFile(path.join(captureRoot, name));
+      return `${name}:${bytes.byteLength}:${sha256(bytes)}`;
+    }));
+  };
+  const before = await snapshot();
+  const inventory = await discoverAfcProposalReceipts({ captureRoot });
+  const after = await snapshot();
+  assert.equal(inventory.receipts.length, 10);
+  assert.equal(inventory.invalidCandidateCount, 2);
+  assert.deepEqual(inventory.receipts, [...inventory.receipts].sort(compareAfcProposalReceiptCanonical));
+  assert.deepEqual(after, before);
 });
 
 test("AFC-UI1 fails closed for traversal, missing roots, and missing artifacts", async () => {

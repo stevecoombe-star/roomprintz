@@ -1,12 +1,18 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 import {
   DEFAULT_AFC_PROPOSAL_OVERLAY_CONTROLS,
+  EMPTY_AFC_PROPOSAL_RECEIPT_INVENTORY,
   canRenderAfcProposalOverlay,
   createAfcProposalOverlayRequestGuard,
+  failedAfcProposalReceiptInventoryTransition,
   imageFailureTransition,
+  loadedAfcProposalReceiptInventoryTransition,
+  loadingAfcProposalReceiptInventoryTransition,
   polygonPoints,
+  reconcileAfcProposalReceiptSelection,
   verifiedImageUrl,
 } from "./afc-proposal-overlay-state";
 
@@ -61,4 +67,54 @@ test("AFC-UI1 verified image URLs bind image role to the loaded receipt digest",
   const url = verifiedImageUrl("afc-r3c-run.safe.receipt.json", "a".repeat(64), "empty");
   assert.match(url, /receiptSha256=aaaaaaaa/);
   assert.match(url, /role=empty/);
+});
+
+test("AFC-UI1C inventory generations are independent from load and image generations", () => {
+  const loadImageGuard = createAfcProposalOverlayRequestGuard();
+  const inventoryGuard = createAfcProposalOverlayRequestGuard();
+  const imageGeneration = loadImageGuard.begin();
+  const inventoryGeneration = inventoryGuard.begin();
+  inventoryGuard.invalidate();
+  assert.equal(inventoryGuard.isCurrent(inventoryGeneration), false);
+  assert.equal(loadImageGuard.isCurrent(imageGeneration), true);
+  const failed = imageFailureTransition("Image failed after inventory refresh.");
+  assert.equal(failed.status, "invalid");
+  assert.equal(failed.imageUrl, null);
+});
+
+test("AFC-UI1C inventory transitions retain prior receipts on loading and failure", () => {
+  const receipts = [{ receiptFileName: "afc-r3c-run.selected.receipt.json" }] as never;
+  const loaded = loadedAfcProposalReceiptInventoryTransition(receipts, 2);
+  const loading = loadingAfcProposalReceiptInventoryTransition(loaded);
+  const failed = failedAfcProposalReceiptInventoryTransition(loading);
+  assert.equal(loaded.status, "loaded");
+  assert.equal(loading.status, "loading");
+  assert.equal(failed.status, "failure");
+  assert.equal(failed.receipts, receipts);
+  assert.equal(failed.invalidCandidateCount, 2);
+  assert.equal(EMPTY_AFC_PROPOSAL_RECEIPT_INVENTORY.status, "idle");
+});
+
+test("AFC-UI1C re-discovery retains selection only while its receipt remains present", () => {
+  const selected = "afc-r3c-run.selected.receipt.json";
+  const receipts = [
+    { receiptFileName: selected },
+    { receiptFileName: "afc-r3c-run.other.receipt.json" },
+  ];
+  assert.equal(reconcileAfcProposalReceiptSelection(selected, receipts as never), selected);
+  assert.equal(reconcileAfcProposalReceiptSelection(selected, receipts.slice(1) as never), "");
+  assert.equal(reconcileAfcProposalReceiptSelection("", receipts as never), "");
+});
+
+test("AFC-UI1C discovery is caught, claim-only, and does not touch loaded evidence state", async () => {
+  const source = await readFile(new URL("./afc-proposal-overlay-state.ts", import.meta.url), "utf8");
+  const refresh = source.slice(
+    source.indexOf("const refreshReceipts"),
+    source.indexOf("const clear")
+  );
+  assert.match(refresh, /try\s*\{/);
+  assert.match(refresh, /catch\s*\{/);
+  assert.doesNotMatch(refresh, /setViewModel|setImageUrl|setStatus\(|loadImageRequestGenerationRef/);
+  assert.match(source, /loadImageRequestGenerationRef/);
+  assert.match(source, /inventoryRequestGenerationRef/);
 });

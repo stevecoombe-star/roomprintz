@@ -14,6 +14,12 @@ import {
 
 export type AfcProposalOverlayLoadStatus = "unloaded" | "loading" | "valid" | "invalid" | "basis_mismatch" | "unsupported";
 export type AfcProposalOverlayImageRole = "original" | "empty";
+export type AfcProposalReceiptInventoryStatus = "idle" | "loading" | "loaded" | "failure";
+export type AfcProposalReceiptInventoryState = Readonly<{
+  status: AfcProposalReceiptInventoryStatus;
+  receipts: readonly AfcProposalReceiptSummary[];
+  invalidCandidateCount: number;
+}>;
 export type AfcProposalOverlayControls = Readonly<{
   showFill: boolean;
   showStroke: boolean;
@@ -46,7 +52,7 @@ function errorMessage(value: unknown): string {
   return isFailure(value) ? `${value.reason} (${value.path})` : "The AFC evidence route returned an invalid response.";
 }
 
-/** Pure monotonic gate shared by all asynchronous browser evidence operations. */
+/** Pure monotonic gate instantiated independently for asynchronous operation domains. */
 export function createAfcProposalOverlayRequestGuard() {
   let current = 0;
   return Object.freeze({
@@ -55,6 +61,38 @@ export function createAfcProposalOverlayRequestGuard() {
     isCurrent: (generation: number) => generation === current,
     current: () => current,
   });
+}
+
+export function reconcileAfcProposalReceiptSelection(
+  selectedReceiptFileName: string,
+  receipts: readonly AfcProposalReceiptSummary[]
+): string {
+  return selectedReceiptFileName &&
+    receipts.some((receipt) => receipt.receiptFileName === selectedReceiptFileName)
+    ? selectedReceiptFileName
+    : "";
+}
+
+export const EMPTY_AFC_PROPOSAL_RECEIPT_INVENTORY: AfcProposalReceiptInventoryState =
+  Object.freeze({ status: "idle", receipts: Object.freeze([]), invalidCandidateCount: 0 });
+
+export function loadingAfcProposalReceiptInventoryTransition(
+  current: AfcProposalReceiptInventoryState
+): AfcProposalReceiptInventoryState {
+  return Object.freeze({ ...current, status: "loading" });
+}
+
+export function loadedAfcProposalReceiptInventoryTransition(
+  receipts: readonly AfcProposalReceiptSummary[],
+  invalidCandidateCount: number
+): AfcProposalReceiptInventoryState {
+  return Object.freeze({ status: "loaded", receipts, invalidCandidateCount });
+}
+
+export function failedAfcProposalReceiptInventoryTransition(
+  current: AfcProposalReceiptInventoryState
+): AfcProposalReceiptInventoryState {
+  return Object.freeze({ ...current, status: "failure" });
 }
 
 export function verifiedImageUrl(receiptFileName: string, receiptSha256: string, role: AfcProposalOverlayImageRole): string {
@@ -79,7 +117,9 @@ export function canRenderAfcProposalOverlay(status: AfcProposalOverlayLoadStatus
 
 export function useAfcProposalOverlayState(enabled: boolean) {
   const [status, setStatus] = useState<AfcProposalOverlayLoadStatus>("unloaded");
-  const [receipts, setReceipts] = useState<readonly AfcProposalReceiptSummary[]>([]);
+  const [receiptInventory, setReceiptInventory] = useState<AfcProposalReceiptInventoryState>(
+    EMPTY_AFC_PROPOSAL_RECEIPT_INVENTORY
+  );
   const [selectedReceiptFileName, setSelectedReceiptFileName] = useState("");
   const [viewModel, setViewModel] = useState<AfcProposalOverlayViewModel | null>(null);
   const [imageRole, setImageRole] = useState<AfcProposalOverlayImageRole>("empty");
@@ -90,25 +130,47 @@ export function useAfcProposalOverlayState(enabled: boolean) {
   const [viewportControls, setViewportControls] = useState<AfcViewportDisplayControls>(
     DEFAULT_AFC_VIEWPORT_DISPLAY_CONTROLS
   );
-  const requestGenerationRef = useRef(createAfcProposalOverlayRequestGuard());
+  const loadImageRequestGenerationRef = useRef(createAfcProposalOverlayRequestGuard());
+  const inventoryRequestGenerationRef = useRef(createAfcProposalOverlayRequestGuard());
 
-  useEffect(() => () => { requestGenerationRef.current.invalidate(); }, []);
+  useEffect(() => () => {
+    loadImageRequestGenerationRef.current.invalidate();
+    inventoryRequestGenerationRef.current.invalidate();
+  }, []);
 
   const refreshReceipts = useCallback(async () => {
     if (!enabled) return;
-    const generation = requestGenerationRef.current.begin();
-    const response = await fetch(`${ROUTE}?operation=receipts`, { cache: "no-store" });
-    const body: unknown = await response.json().catch(() => null);
-    if (!requestGenerationRef.current.isCurrent(generation)) return;
-    if (!response.ok || !body || typeof body !== "object" || !Array.isArray((body as { receipts?: unknown }).receipts)) {
-      setError(errorMessage(body));
-      return;
+    const generation = inventoryRequestGenerationRef.current.begin();
+    setReceiptInventory(loadingAfcProposalReceiptInventoryTransition);
+    try {
+      const response = await fetch(`${ROUTE}?operation=receipts`, { cache: "no-store" });
+      const body: unknown = await response.json().catch(() => null);
+      if (!inventoryRequestGenerationRef.current.isCurrent(generation)) return;
+      const candidateCount = (body as { invalidCandidateCount?: unknown } | null)?.invalidCandidateCount;
+      if (!response.ok || !body || typeof body !== "object" ||
+        (body as { status?: unknown }).status !== "valid" ||
+        !Array.isArray((body as { receipts?: unknown }).receipts) ||
+        typeof candidateCount !== "number" || !Number.isSafeInteger(candidateCount) || candidateCount < 0) {
+        setReceiptInventory(failedAfcProposalReceiptInventoryTransition);
+        return;
+      }
+      const discoveredReceipts = (body as { receipts: readonly AfcProposalReceiptSummary[] }).receipts;
+      setReceiptInventory(loadedAfcProposalReceiptInventoryTransition(
+        discoveredReceipts,
+        candidateCount
+      ));
+      setSelectedReceiptFileName((current) =>
+        reconcileAfcProposalReceiptSelection(current, discoveredReceipts)
+      );
+    } catch {
+      if (inventoryRequestGenerationRef.current.isCurrent(generation)) {
+        setReceiptInventory(failedAfcProposalReceiptInventoryTransition);
+      }
     }
-    setReceipts((body as { receipts: readonly AfcProposalReceiptSummary[] }).receipts);
   }, [enabled]);
 
   const clear = useCallback(() => {
-    requestGenerationRef.current.invalidate();
+    loadImageRequestGenerationRef.current.invalidate();
     setStatus("unloaded");
     setSelectedReceiptFileName("");
     setViewModel(null);
@@ -122,7 +184,7 @@ export function useAfcProposalOverlayState(enabled: boolean) {
 
   const selectImageRole = useCallback((role: AfcProposalOverlayImageRole) => {
     if (!viewModel) return;
-    const generation = requestGenerationRef.current.begin();
+    const generation = loadImageRequestGenerationRef.current.begin();
     setImageRole(role);
     setImageRequestGeneration(generation);
     setImageUrl(verifiedImageUrl(viewModel.artifactIdentity.receiptFileName, viewModel.artifactIdentity.receiptSha256, role));
@@ -130,14 +192,14 @@ export function useAfcProposalOverlayState(enabled: boolean) {
 
   const load = useCallback(async () => {
     if (!selectedReceiptFileName) return;
-    const generation = requestGenerationRef.current.begin();
+    const generation = loadImageRequestGenerationRef.current.begin();
     setStatus("loading");
     setViewModel(null);
     setImageUrl(null);
     setError(null);
     const response = await fetch(`${ROUTE}?operation=load&receipt=${encodeURIComponent(selectedReceiptFileName)}`, { cache: "no-store" });
     const body: unknown = await response.json().catch(() => null);
-    if (!requestGenerationRef.current.isCurrent(generation)) return;
+    if (!loadImageRequestGenerationRef.current.isCurrent(generation)) return;
     if (!response.ok || !body || typeof body !== "object" || (body as { status?: unknown }).status !== "valid" || !(body as { viewModel?: unknown }).viewModel) {
       const failure = isFailure(body) ? body : { status: "invalid" as const, reason: errorMessage(body), path: "$.response" };
       setStatus(failure.status);
@@ -153,7 +215,7 @@ export function useAfcProposalOverlayState(enabled: boolean) {
   }, [selectedReceiptFileName]);
 
   const imageFailed = useCallback((generation: number, reason = "The browser could not deliver the verified image bytes.") => {
-    if (!requestGenerationRef.current.isCurrent(generation)) return;
+    if (!loadImageRequestGenerationRef.current.isCurrent(generation)) return;
     const transition = imageFailureTransition(reason);
     setImageUrl(transition.imageUrl);
     setStatus(transition.status);
@@ -167,7 +229,7 @@ export function useAfcProposalOverlayState(enabled: boolean) {
   }, []);
 
   return useMemo(() => ({
-    status, receipts, selectedReceiptFileName, setSelectedReceiptFileName, viewModel, imageRole, imageUrl, imageRequestGeneration, error, controls, viewportControls,
+    status, receipts: receiptInventory.receipts, receiptInventoryStatus: receiptInventory.status, invalidCandidateCount: receiptInventory.invalidCandidateCount, selectedReceiptFileName, setSelectedReceiptFileName, viewModel, imageRole, imageUrl, imageRequestGeneration, error, controls, viewportControls,
     refreshReceipts, clear, load, selectImageRole, imageFailed, updateControls, updateViewportControls,
-  }), [status, receipts, selectedReceiptFileName, viewModel, imageRole, imageUrl, imageRequestGeneration, error, controls, viewportControls, refreshReceipts, clear, load, selectImageRole, imageFailed, updateControls, updateViewportControls]);
+  }), [status, receiptInventory, selectedReceiptFileName, viewModel, imageRole, imageUrl, imageRequestGeneration, error, controls, viewportControls, refreshReceipts, clear, load, selectImageRole, imageFailed, updateControls, updateViewportControls]);
 }

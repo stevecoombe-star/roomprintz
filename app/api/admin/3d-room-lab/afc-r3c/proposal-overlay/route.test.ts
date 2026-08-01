@@ -15,7 +15,10 @@ const validReplay = {
 function handler(overrides: Partial<Parameters<typeof createAfcProposalOverlayGetHandler>[0]> = {}) {
   return createAfcProposalOverlayGetHandler({
     getAuthenticatedAdminUser: async () => ({ id: "admin" }),
-    discover: async () => [{ receiptFileName: "afc-r3c-run.safe.receipt.json" }],
+    discover: async () => ({
+      receipts: [{ receiptFileName: "afc-r3c-run.safe.receipt.json" }],
+      invalidCandidateCount: 2,
+    }) as never,
     replay: async () => validReplay,
     nodeEnv: () => "development",
     isEnabled: () => true,
@@ -41,11 +44,36 @@ test("AFC-UI1 route discovers, loads, and independently serves verified roles", 
   const load = await get(new Request("http://test/overlay?operation=load&receipt=afc-r3c-run.safe.receipt.json"));
   const image = await get(new Request(`http://test/overlay?operation=image&receipt=afc-r3c-run.safe.receipt.json&receiptSha256=${"c".repeat(64)}&role=empty`));
   assert.equal(discovery.status, 200);
+  assert.deepEqual(await discovery.json(), {
+    status: "valid",
+    receipts: [{ receiptFileName: "afc-r3c-run.safe.receipt.json" }],
+    invalidCandidateCount: 2,
+  });
   assert.equal(load.status, 200);
   assert.equal(image.status, 200);
   assert.equal(image.headers.get("content-type"), "image/png");
   assert.equal(image.headers.get("x-afc-ui1-image-sha256"), "b".repeat(64));
   assert.equal(image.headers.get("x-content-type-options"), "nosniff");
+});
+
+test("AFC-UI1C both discovery paths pass through the inventory envelope without replay", async () => {
+  let replayCount = 0;
+  const get = handler({
+    replay: async () => {
+      replayCount += 1;
+      return validReplay;
+    },
+  });
+  const explicit = await get(new Request("http://test/overlay?operation=receipts"));
+  const defaultDiscovery = await get(new Request("http://test/overlay"));
+  for (const response of [explicit, defaultDiscovery]) {
+    assert.deepEqual(await response.json(), {
+      status: "valid",
+      receipts: [{ receiptFileName: "afc-r3c-run.safe.receipt.json" }],
+      invalidCandidateCount: 2,
+    });
+  }
+  assert.equal(replayCount, 0);
 });
 
 test("AFC-UI1 image delivery rejects a stale receipt digest", async () => {

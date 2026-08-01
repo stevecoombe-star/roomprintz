@@ -4,6 +4,7 @@ import { useEffect } from "react";
 
 import CollapsibleSection from "./CollapsibleSection";
 import AfcProposalOverlayCanvas from "./AfcProposalOverlayCanvas";
+import AfcProposalReceiptBrowser from "./AfcProposalReceiptBrowser";
 import { canRenderAfcProposalOverlay, useAfcProposalOverlayState, type AfcProposalOverlayControls } from "./afc-proposal-overlay-state";
 import {
   buildAfcViewportEvidenceSnapshot,
@@ -66,18 +67,22 @@ export default function AfcProposalOverlayPanel({
           <div className="rounded-lg border border-amber-800/70 bg-amber-950/20 p-3 text-amber-100">
             This viewer replays a captured receipt and verifies its artifacts before rendering. It cannot alter Floor geometry, camera state, support review, scene JSON, persistence, or selection.
           </div>
+          <div className="space-y-2">
+            <p className="text-slate-400">Inventory fields are receipt claims. Full artifact verification occurs only when Load receipt is used.</p>
+            <AfcProposalReceiptBrowser
+              receipts={state.receipts}
+              inventoryStatus={state.receiptInventoryStatus}
+              invalidCandidateCount={state.invalidCandidateCount}
+              selectedReceiptFileName={state.selectedReceiptFileName}
+              loadedReceiptFileName={model?.artifactIdentity.receiptFileName ?? null}
+              onSelectReceipt={state.setSelectedReceiptFileName}
+            />
+          </div>
           <div className="flex flex-wrap items-end gap-2">
-            <label className="grid min-w-72 gap-1 text-slate-400">
-              <span>Immutable proposal-run receipt</span>
-              <select value={state.selectedReceiptFileName} onChange={(event) => state.setSelectedReceiptFileName(event.target.value)} disabled={state.status === "loading"} className="rounded border border-slate-700 bg-slate-950 px-2 py-1 text-slate-100">
-                <option value="">Select a verified receipt…</option>
-                {state.receipts.map((receipt) => <option key={receipt.receiptFileName} value={receipt.receiptFileName}>{receipt.roomId} · {receipt.createdAt} · {receipt.imageRole}</option>)}
-              </select>
-            </label>
             <button type="button" onClick={() => void state.load()} disabled={!state.selectedReceiptFileName || state.status === "loading"} className="rounded border border-emerald-600/70 px-3 py-1.5 text-emerald-100 disabled:cursor-not-allowed disabled:opacity-50">
               {state.status === "loading" ? "Validating…" : "Load receipt"}
             </button>
-            <button type="button" onClick={() => void state.refreshReceipts()} disabled={state.status === "loading"} className="rounded border border-slate-600 px-3 py-1.5 text-slate-200 disabled:opacity-50">Discover receipts</button>
+            <button type="button" onClick={() => void state.refreshReceipts()} disabled={state.status === "loading" || state.receiptInventoryStatus === "loading"} className="rounded border border-slate-600 px-3 py-1.5 text-slate-200 disabled:opacity-50">Discover receipts</button>
             {(state.status !== "unloaded" || state.selectedReceiptFileName) ? <button type="button" onClick={state.clear} className="rounded border border-amber-700/80 px-3 py-1.5 text-amber-100">Clear / unload</button> : null}
           </div>
           {state.status === "loading" ? <p className="text-amber-200">Verifying receipt, artifacts, manifest, image lineage, and AFC-R3B replay. No stale proposal is rendered.</p> : null}

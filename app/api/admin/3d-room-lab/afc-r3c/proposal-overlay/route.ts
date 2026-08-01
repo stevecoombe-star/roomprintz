@@ -27,6 +27,15 @@ function responseForReplay(result: AfcProposalOverlayReplay) {
     : NextResponse.json(result, { status: 400 });
 }
 
+async function responseForDiscovery(discover: RouteDependencies["discover"]) {
+  const inventory = await discover();
+  return NextResponse.json({
+    status: "valid",
+    receipts: inventory.receipts,
+    invalidCandidateCount: inventory.invalidCandidateCount,
+  });
+}
+
 /**
  * Read-only development route. It only replays immutable, locally captured
  * evidence; it never imports a provider, runner, capture writer, compositor,
@@ -46,13 +55,13 @@ export function createAfcProposalOverlayGetHandler(dependencies: RouteDependenci
       if (url.searchParams.size !== 0) {
         return NextResponse.json({ status: "invalid", reason: "An operation is required when query parameters are supplied.", path: "$.operation" }, { status: 400 });
       }
-      return NextResponse.json({ status: "valid", receipts: await dependencies.discover() });
+      return responseForDiscovery(dependencies.discover);
     }
     if (operation === "receipts") {
       if (url.searchParams.size !== 1) {
         return NextResponse.json({ status: "invalid", reason: "Unexpected receipt-discovery parameter.", path: "$.query" }, { status: 400 });
       }
-      return NextResponse.json({ status: "valid", receipts: await dependencies.discover() });
+      return responseForDiscovery(dependencies.discover);
     }
     const receiptFileName = url.searchParams.get("receipt");
     if (!receiptFileName) return NextResponse.json({ status: "invalid", reason: "Receipt filename is required.", path: "$.receipt" }, { status: 400 });

@@ -29,13 +29,19 @@ type ReceiptImageRole = "empty_room_boundary_specialist" | "original_contextual"
 
 export type AfcProposalReceiptSummary = Readonly<{
   receiptFileName: string;
+  receiptSha256: string;
   createdAt: string;
   roomId: string;
   studyMode: string;
   imageRole: string;
   requestId: string;
+  r3cCandidateId: string;
   candidateCount: number;
-  status: string;
+}>;
+
+export type AfcProposalReceiptInventory = Readonly<{
+  receipts: readonly AfcProposalReceiptSummary[];
+  invalidCandidateCount: number;
 }>;
 
 export type AfcProposalOverlayViewModel = Readonly<{
@@ -450,20 +456,51 @@ export async function replayAfcProposalOverlay(options: AfcProposalOverlayReplay
   return deepFreeze({ status: "valid", viewModel: deepFreeze(viewModel), images: deepFreeze({ original, empty }) });
 }
 
-export async function discoverAfcProposalReceipts(options: Pick<AfcProposalOverlayReplayOptions, "captureRoot"> = {}): Promise<readonly AfcProposalReceiptSummary[]> {
+function compareInventoryText(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
+export function compareAfcProposalReceiptCanonical(
+  left: AfcProposalReceiptSummary,
+  right: AfcProposalReceiptSummary
+): number {
+  return Date.parse(right.createdAt) - Date.parse(left.createdAt) ||
+    compareInventoryText(left.roomId, right.roomId) ||
+    compareInventoryText(left.studyMode, right.studyMode) ||
+    compareInventoryText(left.receiptSha256, right.receiptSha256);
+}
+
+export async function discoverAfcProposalReceipts(options: Pick<AfcProposalOverlayReplayOptions, "captureRoot"> = {}): Promise<AfcProposalReceiptInventory> {
   const captureRoot = await canonicalDirectory(options.captureRoot ?? path.join(process.cwd(), AFC_UI1_CAPTURE_ROOT_RELATIVE));
-  if (!captureRoot) return [];
+  if (!captureRoot) return deepFreeze({ receipts: [], invalidCandidateCount: 0 });
   let names: string[];
-  try { names = await readdir(captureRoot); } catch { return []; }
+  try { names = await readdir(captureRoot); } catch { return deepFreeze({ receipts: [], invalidCandidateCount: 0 }); }
   const summaries: AfcProposalReceiptSummary[] = [];
-  for (const name of names.filter(isReceiptFilename).sort()) {
+  let invalidCandidateCount = 0;
+  for (const name of names.filter(isReceiptFilename).sort(compareInventoryText)) {
     const bytes = await safeRead(captureRoot, name);
     if (!bytes) continue;
     try {
       const parsed = parseReceipt(JSON.parse(bytes.toString("utf8")));
-      if ("status" in parsed) continue;
-      summaries.push(deepFreeze({ receiptFileName: name, createdAt: parsed.createdAt, roomId: parsed.roomId, studyMode: parsed.studyMode, imageRole: parsed.imageRole, requestId: parsed.requestId, candidateCount: parsed.afcR3c.candidateIds.length, status: parsed.afcR3c.compositionStatus }));
-    } catch { /* discovery intentionally skips malformed receipts */ }
+      if ("status" in parsed) {
+        invalidCandidateCount += 1;
+        continue;
+      }
+      summaries.push(deepFreeze({
+        receiptFileName: name,
+        receiptSha256: sha256(bytes),
+        createdAt: parsed.createdAt,
+        roomId: parsed.roomId,
+        studyMode: parsed.studyMode,
+        imageRole: parsed.imageRole,
+        requestId: parsed.requestId,
+        r3cCandidateId: parsed.afcR3c.candidateIds[0],
+        candidateCount: parsed.afcR3c.candidateIds.length,
+      }));
+    } catch {
+      invalidCandidateCount += 1;
+    }
   }
-  return deepFreeze(summaries);
+  summaries.sort(compareAfcProposalReceiptCanonical);
+  return deepFreeze({ receipts: summaries, invalidCandidateCount });
 }
