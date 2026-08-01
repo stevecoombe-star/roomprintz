@@ -1,5 +1,46 @@
 import type { FloorPoint } from "./scene-state";
 
+// AFC-CP1A coordinate-transform policy
+// ------------------------------------
+// This module exposes two families of transforms:
+//
+//   Clamped helpers (containerNormToSourceNorm, sourceNormToContainerNorm,
+//   normToPixels, pixelsToNorm) are UI-SAFE helpers. They keep interactive
+//   overlays, pointer input, and display geometry inside the visible frame,
+//   and they intentionally destroy magnitude outside [0,1].
+//
+//   Unclamped helpers (containerNormToSourceNormUnclamped,
+//   sourceNormToContainerNormUnclamped, normToPixelsUnclamped) are
+//   GEOMETRY/AUTHORITY transforms. They are exact, lossless, and mutually
+//   inverse, and they preserve coordinates outside [0,1].
+//
+// Who uses which, as of AFC-CP1A:
+//
+//   FLOOR authority projection uses the UNCLAMPED transforms. The Floor
+//   source-normalized polygon is the canonical authority, and a clamped round
+//   trip through container space silently rewrote an untouched source corner
+//   whenever the image aspect differed from the frame aspect. Only the
+//   Floor-specific projection callbacks are wired this way.
+//
+//   WALL, CEILING, seam, Type B, Empty-Room-Assist, and every other ordinary
+//   UI-safe overlay stay on the CLAMPED transforms. Their derived container
+//   polygons remain inside [0,1], so their handles stay reachable and no
+//   boundary proxy is needed. AFC-CP1A did NOT switch them.
+//
+//   FLOOR HANDLES are drawn through a presentation-only boundary proxy (see
+//   floor-handle-presentation.ts). Only the rendered element and its hit
+//   target are clamped; the Floor polygon outline and Floor state keep the
+//   truthful unclamped coordinate.
+//
+//   SOLVER INPUT remains clamped in AFC-CP1A. normToPixelsUnclamped is
+//   additive scaffolding with no caller; quad solvability still uses
+//   normToPixels.
+//
+// The unclamped transforms are raw mathematical transforms and stay that way.
+// Removing one-ULP noise around a semantic image boundary is a separate,
+// Floor-only concern handled by canonicalizeSourceUnitBoundaryPoint in
+// floor-coordinate-extent.ts, never inside this module.
+
 export type ImageIntrinsicSize = { width: number; height: number };
 export type ImageFrameSize = { width: number; height: number };
 export type PixelPoint = { x: number; y: number };
@@ -66,6 +107,10 @@ export function getCoverCrop(
   };
 }
 
+/**
+ * UI-safe helper. Clamps both the container input and the source output to
+ * [0,1]. Not an authority transform: see containerNormToSourceNormUnclamped.
+ */
 export function containerNormToSourceNorm(
   point: FloorPoint,
   intrinsic: ImageIntrinsicSize,
@@ -86,6 +131,10 @@ export function containerNormToSourceNorm(
   };
 }
 
+/**
+ * UI-safe helper. Clamps both the source input and the container output to
+ * [0,1]. Not an authority transform: see sourceNormToContainerNormUnclamped.
+ */
 export function sourceNormToContainerNorm(
   point: FloorPoint,
   intrinsic: ImageIntrinsicSize,
@@ -111,10 +160,27 @@ export function sourceNormToContainerNorm(
  * Uses the exact same object-cover crop math (getCoverCrop) so it is consistent
  * with the clamping variant, but preserves out-of-frame magnitude.
  *
- * This is intended ONLY for converting untrusted model raw coordinates (Phase
- * 2F vision) BEFORE the Phase 2F-B validator applies its own clamp/reject
- * policy. It must NOT be used for UI/manual overlay conversion, which relies on
- * the clamping sourceNormToContainerNorm to stay inside the frame.
+ * Three distinct call sites are sanctioned, and they must not be conflated:
+ *
+ *   1. Truthful authority-derived geometry projection. The canonical Floor
+ *      source/container projection pair (AFC-CP1A) and the untrusted-model raw
+ *      coordinate conversion (Phase 2F vision, ahead of the Phase 2F-B
+ *      validator's own clamp/reject policy) both use this helper. Any path
+ *      whose output must remain a faithful, invertible image of the source
+ *      geometry belongs here.
+ *
+ *   2. Ordinary UI-safe overlays. Wall, Ceiling, seam, Type B, and
+ *      Empty-Room-Assist overlays intentionally stay inside the frame and keep
+ *      using the clamping sourceNormToContainerNorm. AFC-CP1A did not switch
+ *      them, and they have no boundary-proxy handles because they never need
+ *      one. Do not switch them.
+ *
+ *   3. Presentation-only proxy handles. An interactive Floor handle whose
+ *      truthful container coordinate falls outside the frame is DRAWN at a
+ *      clamped boundary target so it stays visible and reachable (see
+ *      floor-handle-presentation.ts). That clamp applies to the rendered
+ *      element and its hit target only; the polygon outline and the underlying
+ *      Floor state keep the truthful unclamped coordinate.
  *
  * Returns null for invalid/non-finite dimensions or points.
  */
@@ -140,6 +206,42 @@ export function sourceNormToContainerNormUnclamped(
     x: frameX / frame.width,
     y: frameY / frame.height,
   };
+}
+
+/**
+ * AFC-CP1A authority transform: the exact mathematical inverse of
+ * sourceNormToContainerNormUnclamped.
+ *
+ * Uses the same object-cover crop math (getCoverCrop) as every other helper in
+ * this module, but clamps neither the container-normalized input nor the
+ * source-normalized output, so a Floor corner that projects outside the visible
+ * frame survives a container round trip with full precision.
+ *
+ * Returns null for invalid/non-finite dimensions, a non-finite point, or a
+ * non-finite result.
+ */
+export function containerNormToSourceNormUnclamped(
+  point: FloorPoint,
+  intrinsic: ImageIntrinsicSize,
+  frame: ImageFrameSize
+): FloorPoint | null {
+  const crop = getCoverCrop(intrinsic, frame);
+  if (!crop) return null;
+  if (!point || !Number.isFinite(point.x) || !Number.isFinite(point.y)) return null;
+
+  // No clamp on the container-normalized input.
+  const frameX = point.x * frame.width;
+  const frameY = point.y * frame.height;
+
+  const sourceX = (frameX - crop.offsetX) / crop.scale;
+  const sourceY = (frameY - crop.offsetY) / crop.scale;
+
+  // No clamp on the source-normalized output.
+  const x = sourceX / intrinsic.width;
+  const y = sourceY / intrinsic.height;
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+
+  return { x, y };
 }
 
 /**
@@ -233,11 +335,37 @@ export function sourceNormToContainerNormDiagnostic(
   };
 }
 
+/**
+ * UI-safe helper. Clamps the normalized input to [0,1] before scaling.
+ * Not an authority transform: see normToPixelsUnclamped.
+ */
 export function normToPixels(point: FloorPoint, size: ImageIntrinsicSize | ImageFrameSize): PixelPoint | null {
   if (!isValidImageSize(size)) return null;
   return {
     x: clamp01(point.x) * size.width,
     y: clamp01(point.y) * size.height,
+  };
+}
+
+/**
+ * AFC-CP1A authority helper: normalized -> pixels with no clamp, so negative
+ * and greater-than-one coordinates keep their magnitude.
+ *
+ * Additive scaffolding. No solver caller is switched to it in AFC-CP1A; the
+ * existing clamped normToPixels remains the solver input path for now.
+ *
+ * Follows this module's invalid-input convention and returns null for an
+ * invalid size or a non-finite point.
+ */
+export function normToPixelsUnclamped(
+  point: FloorPoint,
+  size: ImageIntrinsicSize | ImageFrameSize
+): PixelPoint | null {
+  if (!isValidImageSize(size)) return null;
+  if (!point || !Number.isFinite(point.x) || !Number.isFinite(point.y)) return null;
+  return {
+    x: point.x * size.width,
+    y: point.y * size.height,
   };
 }
 

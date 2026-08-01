@@ -74,6 +74,11 @@ import {
   mapPointerTravelToWorldYDelta,
   selectViewportSafeHandleOffset,
 } from "./floor-math";
+import { canonicalizeSourceUnitBoundaryPoint } from "./floor-coordinate-extent";
+import {
+  describeFloorHandleAccessibleLabel,
+  resolveFloorHandlePresentation,
+} from "./floor-handle-presentation";
 import {
   CALIBRATED_SCENE_STATE_CALIBRATION_VERSION_V2,
   CALIBRATED_SCENE_STATE_MAX_VERTICAL_FOV_DEG,
@@ -158,10 +163,12 @@ import {
 } from "./ceiling-support-geometry";
 import {
   containerNormToSourceNorm,
+  containerNormToSourceNormUnclamped,
   corridorHalfWidthToOverlayStrokeWidth,
   isValidImageSize,
   normToPixels,
   sourceNormToContainerNorm,
+  sourceNormToContainerNormUnclamped,
   type ImageFrameSize,
   type ImageIntrinsicSize,
 } from "./image-space";
@@ -2072,6 +2079,10 @@ export default function ThreeRoomLab({
     return result.ok ? result.camera : null;
   }, [calibratedCameraSnapshot, frameSizeForImageSpace, isCalibratedCameraActive]);
 
+  // Generic UI-safe support projection. Wall and Ceiling keep the pre-CP1A
+  // clamped behavior: their derived container polygons stay inside [0,1], so
+  // their handles stay reachable without any boundary-proxy presentation.
+  // Floor authority paths must NOT use these.
   const projectContainerPolygonToSource = useCallback(
     (polygon: FloorPoint[]): FloorPoint[] | null => {
       if (!imageIntrinsicSize || !frameSizeForImageSpace) return null;
@@ -2088,6 +2099,42 @@ export default function ThreeRoomLab({
       if (!imageIntrinsicSize || !frameSizeForImageSpace) return null;
       const projected = polygon
         .map((point) => sourceNormToContainerNorm(point, imageIntrinsicSize, frameSizeForImageSpace))
+        .filter((point): point is FloorPoint => point !== null);
+      return projected.length === polygon.length ? projected : null;
+    },
+    [frameSizeForImageSpace, imageIntrinsicSize]
+  );
+
+  // AFC-CP1A: the canonical FLOOR-ONLY source/container projection pair. These
+  // are authority transforms, so they use the lossless unclamped helpers. A
+  // clamped round trip here silently rewrote untouched source corners whenever
+  // the image aspect differed from the frame aspect.
+  //
+  // Truthful derived Floor container coordinates may fall outside [0,1]; the
+  // Floor handle layers render a presentation-only boundary proxy for those.
+  const projectFloorContainerPolygonToSource = useCallback(
+    (polygon: FloorPoint[]): FloorPoint[] | null => {
+      if (!imageIntrinsicSize || !frameSizeForImageSpace) return null;
+      const projected = polygon
+        .map((point) => {
+          const source = containerNormToSourceNormUnclamped(point, imageIntrinsicSize, frameSizeForImageSpace);
+          // Remove one-ULP noise around a semantic image boundary so an
+          // untouched boundary corner stays exactly 0 or 1 and scene-v1
+          // persistence still accepts it. Not a clamp: a genuinely off-frame
+          // coordinate is preserved verbatim.
+          return source ? canonicalizeSourceUnitBoundaryPoint(source) : null;
+        })
+        .filter((point): point is FloorPoint => point !== null);
+      return projected.length === polygon.length ? projected : null;
+    },
+    [frameSizeForImageSpace, imageIntrinsicSize]
+  );
+
+  const projectFloorSourcePolygonToContainer = useCallback(
+    (polygon: FloorPoint[]): FloorPoint[] | null => {
+      if (!imageIntrinsicSize || !frameSizeForImageSpace) return null;
+      const projected = polygon
+        .map((point) => sourceNormToContainerNormUnclamped(point, imageIntrinsicSize, frameSizeForImageSpace))
         .filter((point): point is FloorPoint => point !== null);
       return projected.length === polygon.length ? projected : null;
     },
@@ -2220,7 +2267,7 @@ export default function ThreeRoomLab({
       review?: { status: SupportReviewStatus; source: SupportSource }
     ) => {
       setFloorPolygon(polygon);
-      const sourcePolygon = projectContainerPolygonToSource(polygon);
+      const sourcePolygon = projectFloorContainerPolygonToSource(polygon);
       if (sourcePolygon && sourcePolygon.length >= 3) {
         setSourceNormalizedFloorPolygon(sourcePolygon);
         setFloorPolygonAuthorityEligible(true);
@@ -2253,14 +2300,14 @@ export default function ThreeRoomLab({
         }
       }
     },
-    [projectContainerPolygonToSource, qualifiedImageBasis, updateActiveSupportPointUndoSnapshot]
+    [projectFloorContainerPolygonToSource, qualifiedImageBasis, updateActiveSupportPointUndoSnapshot]
   );
 
   useEffect(() => {
-    const projectedContainer = projectSourcePolygonToContainer(sourceNormalizedFloorPolygon);
+    const projectedContainer = projectFloorSourcePolygonToContainer(sourceNormalizedFloorPolygon);
     if (!projectedContainer) return;
     setFloorPolygon((prev) => (floorPolygonsEqual(prev, projectedContainer) ? prev : projectedContainer));
-  }, [projectSourcePolygonToContainer, sourceNormalizedFloorPolygon]);
+  }, [projectFloorSourcePolygonToContainer, sourceNormalizedFloorPolygon]);
 
   useEffect(() => {
     const trimmedUrl = roomImageUrl.trim();
@@ -3491,7 +3538,11 @@ export default function ThreeRoomLab({
       return;
     }
 
-    const projectedRestorePolygon = projectSourcePolygonToContainer(
+    // Floor authority path: this polygon is compared against floorPolygon,
+    // which the Floor sync effect derives losslessly. Projecting it through the
+    // clamped helper would make the two never converge for a boundary-touching
+    // scene and would re-run this effect indefinitely.
+    const projectedRestorePolygon = projectFloorSourcePolygonToContainer(
       pending.calibration.source.sourceFloorPolygon
     );
     if (!projectedRestorePolygon || projectedRestorePolygon.length !== 4) {
@@ -3589,7 +3640,7 @@ export default function ThreeRoomLab({
     floorMapping.worldDepth,
     floorPolygon,
     sourceNormalizedFloorPolygon,
-    projectSourcePolygonToContainer,
+    projectFloorSourcePolygonToContainer,
     hasValidIntrinsicDimensions,
     applyCalibratedCameraSnapshotFromCandidate,
   ]);
@@ -9461,8 +9512,18 @@ export default function ThreeRoomLab({
     setAutoNormalizeBoundsEnabled(enabled);
   };
 
+  // Truthful outline: the polygon keeps the unmodified floorPolygon coordinates
+  // even when a corner projects outside the visible frame.
   const floorPolygonPointsAttribute = useMemo(
     () => floorPolygon.map((point) => `${point.x * 100},${point.y * 100}`).join(" "),
+    [floorPolygon]
+  );
+
+  // Presentation-only render/hit targets shared by BOTH Floor handle layers, so
+  // the base layer and the focused edit layer can never disagree. This never
+  // feeds back into floorPolygon or sourceNormalizedFloorPolygon.
+  const floorHandlePresentations = useMemo(
+    () => floorPolygon.map((point) => resolveFloorHandlePresentation(point)),
     [floorPolygon]
   );
 
@@ -12789,23 +12850,27 @@ export default function ThreeRoomLab({
                     )}
                   </g>
                 )}
-                {!supportEditInteractionStates.floor.focused && floorPolygon.map((point, index) => (
-                  <circle
-                    key={`floor-handle-${index}`}
-                    cx={point.x * 100}
-                    cy={point.y * 100}
-                    r={2.1}
-                    fill={activeFloorHandleIndex === index ? "#f97316" : "#22d3ee"}
-                    stroke="#020617"
-                    strokeOpacity={1}
-                    strokeWidth={0.75}
-                    className={supportEditInteractionStates.floor.interactive ? "cursor-grab active:cursor-grabbing" : "cursor-not-allowed"}
-                    pointerEvents={supportEditInteractionStates.floor.interactive ? "all" : "none"}
-                    aria-disabled={!supportEditInteractionStates.floor.interactive}
-                    aria-label={`Floor polygon handle ${index + 1}`}
-                    onPointerDown={(event) => handleFloorHandlePointerDown(index, event)}
-                  />
-                ))}
+                {!supportEditInteractionStates.floor.focused && floorHandlePresentations.map((presentation, index) => {
+                  if (!presentation) return null;
+                  return (
+                    <circle
+                      key={`floor-handle-${index}`}
+                      cx={presentation.point.x * 100}
+                      cy={presentation.point.y * 100}
+                      r={2.1}
+                      fill={activeFloorHandleIndex === index ? "#f97316" : presentation.offFrame ? "#a78bfa" : "#22d3ee"}
+                      stroke="#020617"
+                      strokeOpacity={1}
+                      strokeWidth={presentation.offFrame ? 0.95 : 0.75}
+                      strokeDasharray={presentation.offFrame ? "1.1 0.8" : undefined}
+                      className={supportEditInteractionStates.floor.interactive ? "cursor-grab active:cursor-grabbing" : "cursor-not-allowed"}
+                      pointerEvents={supportEditInteractionStates.floor.interactive ? "all" : "none"}
+                      aria-disabled={!supportEditInteractionStates.floor.interactive}
+                      aria-label={describeFloorHandleAccessibleLabel(index, FLOOR_CORNER_LABELS[index] ?? `corner ${index + 1}`, presentation)}
+                      onPointerDown={(event) => handleFloorHandlePointerDown(index, event)}
+                    />
+                  );
+                })}
                 {/* A focused support renders only its edit affordances here, after
                     every base support-control group. Fills and grids stay in their
                     original presentation layer, while object and attachment
@@ -12824,23 +12889,27 @@ export default function ThreeRoomLab({
                           strokeWidth={1.2}
                           pointerEvents="none"
                         />
-                        {floorPolygon.map((point, index) => (
-                          <circle
-                            key={`focused-floor-handle-${index}`}
-                            cx={point.x * 100}
-                            cy={point.y * 100}
-                            r={2.1}
-                            fill={activeFloorHandleIndex === index ? "#f97316" : "#22d3ee"}
-                            stroke="#020617"
-                            strokeOpacity={1}
-                            strokeWidth={0.75}
-                            className={editInteraction.interactive ? "cursor-grab active:cursor-grabbing" : "cursor-not-allowed"}
-                            pointerEvents={editInteraction.interactive ? "all" : "none"}
-                            aria-disabled={!editInteraction.interactive}
-                            aria-label={`Floor polygon handle ${index + 1}`}
-                            onPointerDown={(event) => handleFloorHandlePointerDown(index, event)}
-                          />
-                        ))}
+                        {floorHandlePresentations.map((presentation, index) => {
+                          if (!presentation) return null;
+                          return (
+                            <circle
+                              key={`focused-floor-handle-${index}`}
+                              cx={presentation.point.x * 100}
+                              cy={presentation.point.y * 100}
+                              r={2.1}
+                              fill={activeFloorHandleIndex === index ? "#f97316" : presentation.offFrame ? "#a78bfa" : "#22d3ee"}
+                              stroke="#020617"
+                              strokeOpacity={1}
+                              strokeWidth={presentation.offFrame ? 0.95 : 0.75}
+                              strokeDasharray={presentation.offFrame ? "1.1 0.8" : undefined}
+                              className={editInteraction.interactive ? "cursor-grab active:cursor-grabbing" : "cursor-not-allowed"}
+                              pointerEvents={editInteraction.interactive ? "all" : "none"}
+                              aria-disabled={!editInteraction.interactive}
+                              aria-label={describeFloorHandleAccessibleLabel(index, FLOOR_CORNER_LABELS[index] ?? `corner ${index + 1}`, presentation)}
+                              onPointerDown={(event) => handleFloorHandlePointerDown(index, event)}
+                            />
+                          );
+                        })}
                       </g>
                     );
                   }
