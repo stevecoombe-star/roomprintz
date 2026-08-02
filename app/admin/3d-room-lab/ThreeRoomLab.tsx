@@ -178,13 +178,13 @@ import {
   type ImageFrameSize,
   type ImageIntrinsicSize,
 } from "./image-space";
+import { buildFloorFitPreviewGridPolylines } from "./floor-fit-preview-grid";
 import {
   applyHomography,
   computeReprojectionError,
   floorVec3ToPlane2D,
   getFloorRectCorners,
   type HomographyMatrix,
-  invertHomography,
   projectFloorPointThroughCameraPoseCv,
   solvePlaneHomography,
   validateOrderedFloorCorners,
@@ -2990,6 +2990,17 @@ export default function ThreeRoomLab({
     homographyMatrixForPlacement = solveResult.value;
     placementFallbackReason = "none";
 
+    if (showHomographyDebugOverlay) {
+      gridPolylinesNorm = buildFloorFitPreviewGridPolylines({
+        orderedCornersNorm: orderedCornersResult.value.asArray,
+        frameSize,
+        worldWidth: floorMapping.worldWidth,
+        worldDepth: floorMapping.worldDepth,
+        gridLineCount: 7,
+        samplesPerLine: 20,
+      });
+    }
+
     rows.push({
       label: "homography solve",
       value: `ok (${solveResult.confidence})${solveResult.note ? ` — ${solveResult.note}` : ""}`,
@@ -3021,84 +3032,6 @@ export default function ThreeRoomLab({
         label: "homography reprojection",
         value: `fail (${reprojection.reason})`,
       });
-    }
-
-    const buildGridPolylinesNorm = (
-      inverseHomography: HomographyMatrix,
-      renderSize: ImageFrameSize
-    ): FloorPoint[][] => {
-      const halfWidth = floorMapping.worldWidth / 2;
-      const halfDepth = floorMapping.worldDepth / 2;
-      const gridLineCount = 7;
-      const samplesPerLine = 20;
-      const lines: FloorPoint[][] = [];
-
-      const projectFloorToOverlayNorm = (x: number, z: number): FloorPoint | null => {
-        const projectedPx = applyHomography(inverseHomography, { x, y: z });
-        if (!projectedPx) return null;
-        if (!Number.isFinite(projectedPx.x) || !Number.isFinite(projectedPx.y)) return null;
-        const normalizedX = projectedPx.x / renderSize.width;
-        const normalizedY = projectedPx.y / renderSize.height;
-        if (
-          !Number.isFinite(normalizedX) ||
-          !Number.isFinite(normalizedY) ||
-          normalizedX < 0 ||
-          normalizedX > 1 ||
-          normalizedY < 0 ||
-          normalizedY > 1
-        ) {
-          return null;
-        }
-        return { x: normalizedX, y: normalizedY };
-      };
-
-      const pushLineSegments = (points: FloorPoint[]) => {
-        if (points.length >= 2) lines.push(points);
-      };
-
-      const sampleGridLine = (
-        axis: "x" | "z",
-        fixedValue: number,
-        variableMin: number,
-        variableMax: number
-      ) => {
-        let currentSegment: FloorPoint[] = [];
-        for (let sampleIndex = 0; sampleIndex <= samplesPerLine; sampleIndex += 1) {
-          const t = sampleIndex / samplesPerLine;
-          const variable = variableMin + (variableMax - variableMin) * t;
-          const point =
-            axis === "x"
-              ? projectFloorToOverlayNorm(fixedValue, variable)
-              : projectFloorToOverlayNorm(variable, fixedValue);
-          if (!point) {
-            pushLineSegments(currentSegment);
-            currentSegment = [];
-            continue;
-          }
-          currentSegment.push(point);
-        }
-        pushLineSegments(currentSegment);
-      };
-
-      for (let i = 0; i < gridLineCount; i += 1) {
-        const t = i / (gridLineCount - 1);
-        const x = -halfWidth + (halfWidth * 2) * t;
-        sampleGridLine("x", x, -halfDepth, halfDepth);
-      }
-      for (let i = 0; i < gridLineCount; i += 1) {
-        const t = i / (gridLineCount - 1);
-        const z = -halfDepth + (halfDepth * 2) * t;
-        sampleGridLine("z", z, -halfWidth, halfWidth);
-      }
-
-      return lines;
-    };
-
-    if (showHomographyDebugOverlay && frameSize) {
-      const inverseHomography = invertHomography(solveResult.value);
-      if (inverseHomography) {
-        gridPolylinesNorm = buildGridPolylinesNorm(inverseHomography, frameSize);
-      }
     }
 
     if (!lastAcceptedFloorClick) {
