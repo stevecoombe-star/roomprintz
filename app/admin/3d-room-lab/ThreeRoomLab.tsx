@@ -86,6 +86,15 @@ import {
   resolveFloorHandlePresentation,
 } from "./floor-handle-presentation";
 import {
+  createFloorHandleDragStart,
+  deriveFloorHandleDragCandidate,
+  floorDragCandidateDiffersFromCurrent,
+  floorDragOverlayRectEquals,
+  floorDragPointerFromClient,
+  type FloorHandleDragStart,
+  type FloorDragOverlayRect,
+} from "./floor-handle-drag";
+import {
   CALIBRATED_SCENE_STATE_CALIBRATION_VERSION_V2,
   CALIBRATED_SCENE_STATE_MAX_VERTICAL_FOV_DEG,
   CALIBRATED_SCENE_STATE_MIN_VERTICAL_FOV_DEG,
@@ -1490,6 +1499,8 @@ export default function ThreeRoomLab({
   const calibratedLiftStartClientPointRef = useRef<{ x: number; y: number } | null>(null);
   const calibratedLiftStartTransformRef = useRef<TransformState | null>(null);
   const floorAnchorDragPointerIdRef = useRef<number | null>(null);
+  const floorHandleDragRef = useRef<FloorHandleDragStart | null>(null);
+  const floorHandlePointerCaptureSucceededRef = useRef(false);
   const wallHandleDragRef = useRef<{ pointerId: number; kind: WallSupportKind; index: number } | null>(null);
   const activeWallFloorSnapRef = useRef<ActiveWallFloorSnap | null>(null);
   const ceilingHandleDragRef = useRef<{ pointerId: number; index: number } | null>(null);
@@ -1498,6 +1509,7 @@ export default function ThreeRoomLab({
     pointerId: number;
     transaction: SupportPointDragTransaction<SupportPointUndoSnapshot>;
   } | null>(null);
+  const finalizeActiveSupportPointDragRef = useRef<(pointerId?: number) => void>(() => {});
   const supportPointDragMovedRef = useRef(false);
   const supportPointUndoRecordRef = useRef<SupportPointUndoRecord<SupportPointUndoSnapshot> | null>(null);
   const supportPointUndoKeyboardHandlerRef = useRef<(event: KeyboardEvent) => void>(() => {});
@@ -2199,6 +2211,7 @@ export default function ThreeRoomLab({
     activeSupportPointDragRef.current = null;
     supportPointDragMovedRef.current = false;
   };
+  finalizeActiveSupportPointDragRef.current = finalizeActiveSupportPointDrag;
 
   const restoreSupportPointUndoSnapshot = (snapshot: SupportPointUndoSnapshot) => {
     if (snapshot.kind === "floor") {
@@ -10003,6 +10016,23 @@ export default function ThreeRoomLab({
     };
   };
 
+  const getFloorDragOverlayRect = (): FloorDragOverlayRect | null => {
+    const overlay = floorOverlayRef.current;
+    if (!overlay) return null;
+    const rect = overlay.getBoundingClientRect();
+    if (
+      !Number.isFinite(rect.left) ||
+      !Number.isFinite(rect.top) ||
+      !Number.isFinite(rect.width) ||
+      !Number.isFinite(rect.height) ||
+      rect.width <= 0 ||
+      rect.height <= 0
+    ) {
+      return null;
+    }
+    return { left: rect.left, top: rect.top, width: rect.width, height: rect.height };
+  };
+
   const applyFloorPlacement = (point: FloorPoint, options?: { source?: "floor-click" | "other" }) => {
     let mapped = mapFloorPointToObjectTransform(point, floorMapping);
     let markerPointForAcceptedClick = point;
@@ -10099,19 +10129,37 @@ export default function ThreeRoomLab({
     setLastRejectedFloorClick(null);
   };
 
-  const updateFloorHandleFromClientPoint = (clientX: number, clientY: number) => {
-    const activeIndex = activeFloorHandleIndex;
-    if (activeIndex === null) return;
-    const normalizedPoint = getNormalizedOverlayPointFromClient(clientX, clientY);
-    if (!normalizedPoint) return;
-    applyContainerFloorPolygon(
-      floorPolygon.map((point, index) => (index === activeIndex ? normalizedPoint : point)),
+  const updateFloorHandleFromClientPoint = (
+    clientX: number,
+    clientY: number
+  ): "unchanged" | "applied" | "rejected" | "basis_changed" => {
+    const drag = floorHandleDragRef.current;
+    if (!drag) return "rejected";
+    const currentRect = getFloorDragOverlayRect();
+    if (!currentRect || !floorDragOverlayRectEquals(drag.overlayRect, currentRect)) {
+      return "basis_changed";
+    }
+    const currentPointer = floorDragPointerFromClient(clientX, clientY, currentRect);
+    if (!currentPointer) return "rejected";
+    const candidate = deriveFloorHandleDragCandidate(drag, currentPointer);
+    if (!candidate) return "rejected";
+    if (!floorDragCandidateDiffersFromCurrent(candidate, floorPolygon)) return "unchanged";
+
+    const wasMoved = supportPointDragMovedRef.current;
+    supportPointDragMovedRef.current = true;
+    const applied = applyContainerFloorPolygon(
+      candidate,
       {
         status: floorPolygonAuthorityEligible ? "manually_confirmed" : "needs_review",
         source: "manual",
       },
       { captureUndo: "active_drag" }
     );
+    if (!applied) {
+      supportPointDragMovedRef.current = wasMoved;
+      return "rejected";
+    }
+    return "applied";
   };
 
   const configureWall = (kind: WallSupportKind) => {
@@ -10889,16 +10937,31 @@ export default function ThreeRoomLab({
   };
 
   const handleFloorHandlePointerDown = (index: number, event: PointerEvent<SVGCircleElement>) => {
-    if (!beginSupportPointDrag("floor", event.pointerId)) return;
+    const overlayRect = getFloorDragOverlayRect();
+    const startPointer = overlayRect ? floorDragPointerFromClient(event.clientX, event.clientY, overlayRect) : null;
+    const drag = startPointer && overlayRect
+      ? createFloorHandleDragStart({
+          cornerIndex: index,
+          floorPolygon,
+          startPointer,
+          overlayRect,
+        })
+      : null;
+    if (!drag || !beginSupportPointDrag("floor", event.pointerId)) return;
     event.preventDefault();
     event.stopPropagation();
+    floorHandleDragRef.current = drag;
     dragPointerIdRef.current = event.pointerId;
     setActiveFloorHandleIndex(index);
-    updateFloorHandleFromClientPoint(event.clientX, event.clientY);
-    try {
-      floorOverlayRef.current?.setPointerCapture(event.pointerId);
-    } catch {
-      // Pointer capture can fail in some edge cases; dragging still works while pointer stays in bounds.
+    floorHandlePointerCaptureSucceededRef.current = false;
+    const overlay = floorOverlayRef.current;
+    if (overlay) {
+      try {
+        overlay.setPointerCapture(event.pointerId);
+        floorHandlePointerCaptureSucceededRef.current = true;
+      } catch {
+        // Pointer capture can fail in some edge cases; dragging still works while pointer stays in bounds.
+      }
     }
   };
 
@@ -10923,10 +10986,12 @@ export default function ThreeRoomLab({
       );
       return;
     }
-    if (activeFloorHandleIndex !== null && dragPointerIdRef.current === event.pointerId) {
+    if (floorHandleDragRef.current && dragPointerIdRef.current === event.pointerId) {
       event.preventDefault();
-      supportPointDragMovedRef.current = true;
-      updateFloorHandleFromClientPoint(event.clientX, event.clientY);
+      const result = updateFloorHandleFromClientPoint(event.clientX, event.clientY);
+      if (result === "basis_changed") {
+        stopFloorHandleDrag(event);
+      }
       return;
     }
 
@@ -11363,6 +11428,8 @@ export default function ThreeRoomLab({
       }
     }
     dragPointerIdRef.current = null;
+    floorHandleDragRef.current = null;
+    floorHandlePointerCaptureSucceededRef.current = false;
     setActiveFloorHandleIndex(null);
 
     const objectHandlePointerId = event?.pointerId ?? objectHandleDragPointerIdRef.current;
@@ -11432,6 +11499,46 @@ export default function ThreeRoomLab({
     floorAnchorDragPointerIdRef.current = null;
     setIsFloorAnchorDragActive(false);
   };
+
+  const handleFloorOverlayPointerLeave = (event: PointerEvent<SVGSVGElement>) => {
+    if (!floorHandleDragRef.current || floorHandlePointerCaptureSucceededRef.current) return;
+    stopFloorHandleDrag(event);
+  };
+
+  // CP1C-B freezes the pointer-normalization basis at drag start. If resize or
+  // layout changes that basis, end the gesture at its last valid authority
+  // state rather than reinterpreting the same client coordinates.
+  useEffect(() => {
+    const drag = floorHandleDragRef.current;
+    if (!drag) return;
+    const overlay = floorOverlayRef.current;
+    const rect = overlay?.getBoundingClientRect();
+    const currentRect =
+      rect &&
+      Number.isFinite(rect.left) &&
+      Number.isFinite(rect.top) &&
+      Number.isFinite(rect.width) &&
+      Number.isFinite(rect.height) &&
+      rect.width > 0 &&
+      rect.height > 0
+        ? { left: rect.left, top: rect.top, width: rect.width, height: rect.height }
+        : null;
+    if (currentRect && floorDragOverlayRectEquals(drag.overlayRect, currentRect)) return;
+
+    const pointerId = dragPointerIdRef.current;
+    floorHandleDragRef.current = null;
+    dragPointerIdRef.current = null;
+    finalizeActiveSupportPointDragRef.current(pointerId ?? undefined);
+    setActiveFloorHandleIndex(null);
+    if (pointerId !== null) {
+      try {
+        floorOverlayRef.current?.releasePointerCapture(pointerId);
+      } catch {
+        // Capture may already have ended because the overlay changed.
+      }
+    }
+    setSupportInteractionStatus("Floor handle drag stopped because the overlay size changed.");
+  }, [rendererSize.height, rendererSize.width]);
 
   const handleCopySceneJson = async () => {
     const exportedAtIso = new Date().toISOString();
@@ -12537,7 +12644,8 @@ export default function ThreeRoomLab({
                 onPointerMove={handleFloorOverlayPointerMove}
                 onPointerUp={stopFloorHandleDrag}
                 onPointerCancel={stopFloorHandleDrag}
-                onPointerLeave={stopFloorHandleDrag}
+                onLostPointerCapture={stopFloorHandleDrag}
+                onPointerLeave={handleFloorOverlayPointerLeave}
                 style={{ touchAction: "none" }}
               >
                 <polygon

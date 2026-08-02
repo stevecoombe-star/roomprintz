@@ -9,6 +9,7 @@ import {
   resolveFloorHandlePresentation,
   type FloorHandlePresentation,
 } from "./floor-handle-presentation";
+import { createFloorHandleDragStart, deriveFloorHandleDragCandidate } from "./floor-handle-drag";
 import {
   containerNormToSourceNormUnclamped,
   sourceNormToContainerNormUnclamped,
@@ -219,7 +220,7 @@ test("fixture: the truthful point still round trips to source y=1.0 through the 
   assert.ok(Math.abs(restored.x - source.x) <= 1e-9);
 });
 
-test("fixture: no presentation value reaches source state without an explicit pointer action", () => {
+test("fixture: proxy pointer-down with no movement preserves the truthful real corner", () => {
   const source: FloorPoint[] = [
     { x: 0.2, y: 1 },
     { x: 0.8, y: 1 },
@@ -243,22 +244,16 @@ test("fixture: no presentation value reaches source state without an explicit po
     assert.ok(Math.abs(passiveSource[i].y - source[i].y) <= 1e-9, `corner ${i} y undisturbed`);
   }
 
-  // An EXPLICIT pointer action on the proxy is allowed to pull that one corner
-  // to the reachable boundary. The pointer conversion is already bounded to
-  // [0,1], so this models updateFloorHandleFromClientPoint.
-  const pointerPoint = { x: 0.22, y: 1 };
-  const afterDrag = container.map((point, index) => (index === 0 ? pointerPoint : point));
-  const draggedSource = afterDrag.map(
-    (point) => containerNormToSourceNormUnclamped(point, FIXTURE_INTRINSIC, FIXTURE_FRAME) as FloorPoint
-  );
-  assert.ok(draggedSource[0].y < 1, "the explicitly dragged corner moved to the frame boundary");
-  for (const index of [1, 2, 3]) {
-    assert.ok(
-      Math.abs(draggedSource[index].x - source[index].x) <= 1e-9 &&
-        Math.abs(draggedSource[index].y - source[index].y) <= 1e-9,
-      `untouched corner ${index} must remain lossless during an explicit drag of another corner`
-    );
-  }
+  const drag = createFloorHandleDragStart({
+    cornerIndex: 0,
+    floorPolygon: container,
+    startPointer: presentations[0].point,
+    overlayRect: { left: 0, top: 0, width: 1, height: 1 },
+  });
+  assert.ok(drag);
+  const unchanged = deriveFloorHandleDragCandidate(drag, presentations[0].point);
+  assert.ok(unchanged);
+  assert.deepEqual(unchanged[0], container[0], "proxy pointer-down must not substitute the boundary point");
 });
 
 test("fixture: the proxy does not reintroduce the 0.9166667 corruption", () => {
@@ -295,6 +290,7 @@ test("fixture: the proxy does not reintroduce the 0.9166667 corruption", () => {
 const LAB_DIR = path.dirname(fileURLToPath(import.meta.url));
 const UI_SOURCE = readFileSync(path.join(LAB_DIR, "ThreeRoomLab.tsx"), "utf8");
 const HELPER_SOURCE = readFileSync(path.join(LAB_DIR, "floor-handle-presentation.ts"), "utf8");
+const DRAG_SOURCE = readFileSync(path.join(LAB_DIR, "floor-handle-drag.ts"), "utf8");
 
 /** Extracts the single <circle .../> element carrying the given key literal. */
 function extractCircleElement(keyLiteral: string): string {
@@ -425,7 +421,7 @@ test("containment: the presentation helper calls no setter and no authority tran
   }
 });
 
-test("containment: no presentation value is written into Floor authority state", () => {
+test("containment: presentation points never enter Floor authority; drag uses truthful start plus delta", () => {
   assert.ok(
     !/set[A-Z]\w*\([^)]*floorHandlePresentations/.test(UI_SOURCE),
     "no setter may consume the presentation array"
@@ -434,13 +430,22 @@ test("containment: no presentation value is written into Floor authority state",
     !/applyContainerFloorPolygon\([^)]*presentation/.test(UI_SOURCE),
     "the Floor writer must not consume a presentation value"
   );
-  // The Floor writer still receives the raw pointer-derived polygon.
+  const pointerDownStart = UI_SOURCE.indexOf("const handleFloorHandlePointerDown =");
+  const pointerDownEnd = UI_SOURCE.indexOf("const handleFloorOverlayPointerMove =", pointerDownStart);
+  const pointerDown = UI_SOURCE.slice(pointerDownStart, pointerDownEnd);
+  assert.ok(pointerDownStart >= 0 && pointerDownEnd > pointerDownStart);
+  assert.ok(!/updateFloorHandleFromClientPoint\(/.test(pointerDown), "pointer-down must not mutate geometry");
   assert.ok(
-    /applyContainerFloorPolygon\(\s*floorPolygon\.map\(\(point, index\) => \(index === activeIndex \? normalizedPoint : point\)\),/.test(
-      UI_SOURCE
-    ),
-    "the explicit pointer path must still write the raw pointer point"
+    /createFloorHandleDragStart\(\{[\s\S]*?floorPolygon,[\s\S]*?startPointer,[\s\S]*?overlayRect,/.test(pointerDown),
+    "pointer-down must freeze the truthful floor polygon and unclamped pointer basis"
   );
+  assert.ok(/deriveFloorHandleDragCandidate\(drag, currentPointer\)/.test(UI_SOURCE));
+  assert.ok(
+    /floorDragCandidateDiffersFromCurrent\(candidate, floorPolygon\)/.test(UI_SOURCE),
+    "no-op detection must compare against current live Floor geometry, not frozen drag start geometry"
+  );
+  assert.ok(/applyContainerFloorPolygon\(\s*candidate,/.test(UI_SOURCE));
+  assert.ok(!/presentation/.test(DRAG_SOURCE), "the pure drag math must not accept presentation geometry");
 });
 
 test("containment: floorPolygon state is not clamped and the pointer bound is unchanged", () => {
@@ -455,6 +460,32 @@ test("containment: floorPolygon state is not clamped and the pointer bound is un
   assert.ok(
     /x: clampValue\(\(clientX - rect\.left\) \/ rect\.width, 0, 1\),/.test(UI_SOURCE),
     "the pointer conversion must remain bounded to [0,1]"
+  );
+  assert.ok(
+    /floorDragPointerFromClient\(clientX, clientY, currentRect\)/.test(UI_SOURCE),
+    "Floor handle drag must use an explicit unclamped pointer conversion"
+  );
+});
+
+test("containment: overlay-basis changes end the Floor drag without a geometry rewrite", () => {
+  const resizePolicyStart = UI_SOURCE.indexOf("// CP1C-B freezes the pointer-normalization basis at drag start.");
+  const resizePolicyEnd = UI_SOURCE.indexOf("const handleCopySceneJson =", resizePolicyStart);
+  const resizePolicy = UI_SOURCE.slice(resizePolicyStart, resizePolicyEnd);
+  assert.ok(resizePolicyStart >= 0 && resizePolicyEnd > resizePolicyStart);
+  assert.match(resizePolicy, /floorDragOverlayRectEquals\(drag\.overlayRect, currentRect\)/);
+  assert.match(resizePolicy, /finalizeActiveSupportPointDragRef\.current\(pointerId \?\? undefined\)/);
+  assert.match(resizePolicy, /floorHandleDragRef\.current = null/);
+  assert.doesNotMatch(resizePolicy, /applyContainerFloorPolygon/);
+});
+
+test("containment: pointer-leave ends only Floor drags without pointer capture", () => {
+  assert.match(
+    UI_SOURCE,
+    /floorHandlePointerCaptureSucceededRef\.current = false;[\s\S]*?setPointerCapture\(event\.pointerId\);[\s\S]*?floorHandlePointerCaptureSucceededRef\.current = true;/
+  );
+  assert.match(
+    UI_SOURCE,
+    /const handleFloorOverlayPointerLeave =[\s\S]*?!floorHandleDragRef\.current \|\| floorHandlePointerCaptureSucceededRef\.current[\s\S]*?stopFloorHandleDrag\(event\);/
   );
 });
 
