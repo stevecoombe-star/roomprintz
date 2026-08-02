@@ -32,8 +32,9 @@ import type { FloorPoint } from "./scene-state";
 //   target are clamped; the Floor polygon outline and Floor state keep the
 //   truthful unclamped coordinate.
 //
-//   SOLVER INPUT remains clamped in AFC-CP1A. normToPixelsUnclamped is
-//   additive scaffolding with no caller; quad solvability still uses
+//   FLOOR SOLVER INPUT uses normToPixelsUnclamped (AFC-CP1C-A) so derived
+//   off-frame Floor coordinates reach homography and pose solving truthfully.
+//   Presentation, interaction, Wall, and Ceiling paths continue to use
 //   normToPixels.
 //
 // The unclamped transforms are raw mathematical transforms and stay that way.
@@ -348,11 +349,11 @@ export function normToPixels(point: FloorPoint, size: ImageIntrinsicSize | Image
 }
 
 /**
- * AFC-CP1A authority helper: normalized -> pixels with no clamp, so negative
- * and greater-than-one coordinates keep their magnitude.
- *
- * Additive scaffolding. No solver caller is switched to it in AFC-CP1A; the
- * existing clamped normToPixels remains the solver input path for now.
+ * Truthful Floor solver helper: normalized -> renderer/frame pixels with no
+ * clamp, so negative and greater-than-one coordinates keep their magnitude.
+ * The live Floor homography and calibrated-camera pose paths use this helper;
+ * UI-safe presentation and interaction paths must continue to use
+ * normToPixels.
  *
  * Follows this module's invalid-input convention and returns null for an
  * invalid size or a non-finite point.

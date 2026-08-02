@@ -458,13 +458,16 @@ test("containment: floorPolygon state is not clamped and the pointer bound is un
   );
 });
 
-test("containment: no solver caller and no scene schema changed", () => {
+test("containment: proxy presentation remains separate from the truthful Floor solver", () => {
   assert.equal(SCENE_STATE_SCHEMA_VERSION, "vibode-3d-room-lab-scene-state/v1");
   assert.ok(
-    /const pixels = normToPixels\(point, frameSize\);/.test(UI_SOURCE),
-    "quad solvability must still use the clamped normToPixels"
+    /const pixels = normToPixelsUnclamped\(point, frameSize\);/.test(UI_SOURCE),
+    "the live Floor homography must retain off-frame magnitude"
   );
-  assert.ok(!/normToPixelsUnclamped/.test(UI_SOURCE), "no solver caller may switch to the unclamped helper");
+  assert.ok(
+    /const pointPixels = normToPixels\(point, homographyDebug\.frameSize\);/.test(UI_SOURCE),
+    "bounded pointer-driven placement conversion remains presentation-safe"
+  );
 });
 
 test("containment: image-space documents all three sanctioned unclamped call sites", () => {

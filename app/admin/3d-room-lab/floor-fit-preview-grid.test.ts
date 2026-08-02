@@ -5,7 +5,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { buildFloorFitPreviewGridPolylines } from "./floor-fit-preview-grid";
-import { normToPixels, type ImageFrameSize } from "./image-space";
+import { normToPixels, normToPixelsUnclamped, type ImageFrameSize } from "./image-space";
 import {
   applyHomography,
   floorVec3ToPlane2D,
@@ -258,20 +258,25 @@ test("AFC-CP1B-H1: invalid preview inputs fail closed without non-finite geometr
   );
 });
 
-test("AFC-CP1B-H1: placement availability gates otherwise-valid truthful preview geometry", () => {
+test("AFC-CP1C-A: truthful preview and live solver preserve the same off-frame Floor geometry", () => {
   const previewLines = buildGrid(CLAMP_DEGENERATE_FLOOR);
   assert.equal(previewLines.length, GRID_LINE_COUNT * 2, "truthful preview homography must remain valid");
 
-  const clampedPixels = orderedCorners(CLAMP_DEGENERATE_FLOOR).map((point) => normToPixels(point, FRAME));
-  assert.ok(clampedPixels.every((point): point is FloorPoint => point !== null));
-  assert.deepEqual(clampedPixels[0], clampedPixels[1], "near corners must collapse after placement clamping");
+  const solverPixels = orderedCorners(CLAMP_DEGENERATE_FLOOR).map((point) => normToPixelsUnclamped(point, FRAME));
+  assert.ok(solverPixels.every((point): point is FloorPoint => point !== null));
+  assert.deepEqual(solverPixels[0], { x: 1760.0000000000002, y: 1200 });
+  assert.deepEqual(solverPixels[1], { x: 2000, y: 1200 });
   const floorRect = getFloorRectCorners({ widthMeters: WORLD_WIDTH, depthMeters: WORLD_DEPTH });
   assert.ok(floorRect.ok, floorRect.ok ? "" : floorRect.reason);
-  const placementSolve = solvePlaneHomography(
-    clampedPixels,
+  const solverSolve = solvePlaneHomography(
+    solverPixels,
     floorRect.value.asArray.map((point) => floorVec3ToPlane2D(point))
   );
-  assert.equal(placementSolve.ok, false, "the clamped placement solve must fail");
+  assert.equal(solverSolve.ok, true, "the live solver must accept the same truthful corners as the preview");
+
+  const clampedPixels = orderedCorners(CLAMP_DEGENERATE_FLOOR).map((point) => normToPixels(point, FRAME));
+  assert.ok(clampedPixels.every((point): point is FloorPoint => point !== null));
+  assert.deepEqual(clampedPixels[0], clampedPixels[1], "the UI-safe helper must remain clamped");
 
   const labDir = path.dirname(fileURLToPath(import.meta.url));
   const uiSource = readFileSync(path.join(labDir, "ThreeRoomLab.tsx"), "utf8");
@@ -288,11 +293,10 @@ test("AFC-CP1B-H1: placement availability gates otherwise-valid truthful preview
     0,
     "placement failure returns the initialized empty preview grid"
   );
-  assert.ok(/const pixels = normToPixels\(point, frameSize\);/.test(uiSource));
+  assert.ok(/const pixels = normToPixelsUnclamped\(point, frameSize\);/.test(uiSource));
   assert.ok(
     /gridPolylinesNorm = buildFloorFitPreviewGridPolylines\(\{[\s\S]*?orderedCornersNorm: orderedCornersResult\.value\.asArray/.test(
       uiSource
     )
   );
-  assert.ok(!/normToPixelsUnclamped/.test(uiSource));
 });

@@ -757,6 +757,7 @@ test("scene versions retain v1 unit bounds and activate widened Floor bounds onl
 
 const LAB_DIR = path.dirname(fileURLToPath(import.meta.url));
 const UI_SOURCE = readFileSync(path.join(LAB_DIR, "ThreeRoomLab.tsx"), "utf8");
+const QUAD_SOLVABILITY_SOURCE = readFileSync(path.join(LAB_DIR, "quad-solvability.ts"), "utf8");
 const EXTENT_SOURCE = readFileSync(path.join(LAB_DIR, "floor-coordinate-extent.ts"), "utf8");
 const IMAGE_SPACE_SOURCE = readFileSync(path.join(LAB_DIR, "image-space.ts"), "utf8");
 
@@ -907,9 +908,10 @@ test("containment: presentation values never reach authority state", () => {
   assert.ok(!/projectFloor\w+\([^)]*presentation/.test(UI_SOURCE));
 });
 
-test("containment: no solver caller switched and no scene parser widened", () => {
-  assert.ok(/const pixels = normToPixels\(point, frameSize\);/.test(UI_SOURCE));
-  assert.ok(!/normToPixelsUnclamped/.test(UI_SOURCE));
+test("containment: truthful Floor solver callers are unclamped and scene parsing is unchanged", () => {
+  assert.ok(/const pixels = normToPixelsUnclamped\(point, frameSize\);/.test(UI_SOURCE));
+  assert.equal((QUAD_SOLVABILITY_SOURCE.match(/normToPixelsUnclamped\(point, frameSize\)/g) ?? []).length, 2);
+  assert.ok(/const anchorPixels = normToPixels\(lastAcceptedFloorClick, frameSize\);/.test(UI_SOURCE));
   assert.equal(SCENE_STATE_SCHEMA_VERSION, "vibode-3d-room-lab-scene-state/v1");
 });
 
@@ -924,7 +926,7 @@ test("containment: the extent module stays pure and free of side effects", () =>
 test("containment: image-space documentation states the Floor/non-Floor split accurately", () => {
   assert.ok(/FLOOR authority projection uses the UNCLAMPED transforms/.test(IMAGE_SPACE_SOURCE));
   assert.ok(/WALL, CEILING, seam, Type B, Empty-Room-Assist/.test(IMAGE_SPACE_SOURCE));
-  assert.ok(/SOLVER INPUT remains clamped in AFC-CP1A/.test(IMAGE_SPACE_SOURCE));
+  assert.ok(/FLOOR SOLVER INPUT uses normToPixelsUnclamped \(AFC-CP1C-A\)/.test(IMAGE_SPACE_SOURCE));
   assert.ok(/FLOOR HANDLES are drawn through a presentation-only boundary proxy/.test(IMAGE_SPACE_SOURCE));
   assert.ok(
     !/It must NOT be used for UI\/manual overlay conversion/.test(IMAGE_SPACE_SOURCE),

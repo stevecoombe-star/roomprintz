@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { evaluateQuadSolvability } from "./quad-solvability";
 import {
+  applyHomography,
   applyInverseHomography,
   canonicalizeUnlabelledFloorQuad,
   floorVec3ToPlane2D,
@@ -114,6 +115,187 @@ test("Room C corrected quad remains truthfully ineligible for Apply", () => {
     /corner ordering|self-intersect|non-convex|bow.?tie/i,
     "refusal must arise from pose/reprojection geometry, not manufactured perimeter invalidity"
   );
+});
+
+test("quad solvability preserves bounded off-frame Floor pixels through homography and pose preparation", () => {
+  const frame = { width: 800, height: 1000 };
+  const cases = [
+    {
+      name: "one near corner below the frame",
+      quad: [
+        { x: 0.2, y: 1.1 },
+        { x: 0.8, y: 0.9 },
+        { x: 0.7, y: 0.45 },
+        { x: 0.3, y: 0.45 },
+      ],
+    },
+    {
+      name: "one far corner above the frame",
+      quad: [
+        { x: 0.2, y: 0.9 },
+        { x: 0.8, y: 0.9 },
+        { x: 0.7, y: -0.1 },
+        { x: 0.3, y: 0.45 },
+      ],
+    },
+    {
+      name: "one corner left of the frame",
+      quad: [
+        { x: -0.1, y: 0.9 },
+        { x: 0.8, y: 0.9 },
+        { x: 0.7, y: 0.45 },
+        { x: 0.1, y: 0.45 },
+      ],
+    },
+    {
+      name: "one corner right of the frame",
+      quad: [
+        { x: 0.2, y: 0.9 },
+        { x: 1.1, y: 0.9 },
+        { x: 0.9, y: 0.45 },
+        { x: 0.3, y: 0.45 },
+      ],
+    },
+    {
+      name: "two below-frame corners",
+      quad: [
+        { x: 0.2, y: 1.1 },
+        { x: 0.8, y: 1.1 },
+        { x: 0.7, y: 0.45 },
+        { x: 0.3, y: 0.45 },
+      ],
+    },
+    {
+      name: "mixed in-frame and off-frame corners",
+      quad: [
+        { x: -0.1, y: 1.1 },
+        { x: 1.1, y: 0.9 },
+        { x: 0.8, y: 0.45 },
+        { x: 0.2, y: 0.45 },
+      ],
+    },
+    {
+      name: "exact approved source extent limits",
+      quad: [
+        { x: -0.25, y: 1.25 },
+        { x: 1.25, y: 1.25 },
+        { x: 1, y: 0.25 },
+        { x: 0, y: 0.25 },
+      ],
+    },
+    {
+      name: "ordinary in-frame quad",
+      quad: [
+        { x: 0.2, y: 0.9 },
+        { x: 0.8, y: 0.9 },
+        { x: 0.7, y: 0.45 },
+        { x: 0.3, y: 0.45 },
+      ],
+    },
+  ];
+
+  for (const { name, quad } of cases) {
+    const result = evaluateQuadSolvability({
+      quadNorm: quad,
+      frameSize: frame,
+      floorDimensions: { worldWidth: 3, worldDepth: 4 },
+      currentVerticalFovDeg: 48,
+      fovScanConfig: { minFovDeg: 20, maxFovDeg: 22, stepDeg: 1 },
+    });
+    assert.ok(result.homographyAvailable, `${name}: homography must remain available`);
+    assert.ok(result.homographyMatrixForPlacement, `${name}: homography matrix must be available`);
+    assert.ok(result.imagePointsPx, `${name}: pose preparation must receive image points`);
+
+    const expectedPixels = result.orderedCornersNorm?.map((point) => ({
+      x: point.x * frame.width,
+      y: point.y * frame.height,
+    }));
+    assert.deepEqual(result.imagePointsPx, expectedPixels, `${name}: pose inputs must retain exact pixel magnitude`);
+
+    const expectedFloorPoints = result.floorPlanePoints2D;
+    assert.ok(expectedFloorPoints, `${name}: floor-plane points must be available`);
+    for (let index = 0; index < result.imagePointsPx.length; index += 1) {
+      const projected = applyHomography(result.homographyMatrixForPlacement, result.imagePointsPx[index]);
+      assert.ok(projected, `${name}: homography must map solver input corner ${index}`);
+      assert.ok(Math.abs(projected.x - expectedFloorPoints[index].x) < 1e-7, `${name}: homography x ${index}`);
+      assert.ok(Math.abs(projected.y - expectedFloorPoints[index].y) < 1e-7, `${name}: homography y ${index}`);
+    }
+  }
+});
+
+test("quad solvability retains fail-closed geometry gates for invalid Floor quads", () => {
+  const invalidQuads = [
+    {
+      name: "non-finite point",
+      quad: [
+        { x: Number.NaN, y: 0.9 },
+        { x: 0.8, y: 0.9 },
+        { x: 0.7, y: 0.45 },
+        { x: 0.3, y: 0.45 },
+      ],
+    },
+    {
+      name: "duplicate point",
+      quad: [
+        { x: 0.2, y: 0.9 },
+        { x: 0.2, y: 0.9 },
+        { x: 0.7, y: 0.45 },
+        { x: 0.3, y: 0.45 },
+      ],
+    },
+    {
+      name: "nearly zero edge",
+      quad: [
+        { x: 0.2, y: 0.9 },
+        { x: 0.2000001, y: 0.9 },
+        { x: 0.7, y: 0.45 },
+        { x: 0.3, y: 0.45 },
+      ],
+    },
+    {
+      name: "nearly zero area",
+      quad: [
+        { x: 0.2, y: 0.5 },
+        { x: 0.8, y: 0.5000001 },
+        { x: 0.7, y: 0.5000002 },
+        { x: 0.3, y: 0.5000001 },
+      ],
+    },
+    {
+      name: "self-intersecting perimeter",
+      quad: [
+        { x: 0.2, y: 0.9 },
+        { x: 0.7, y: 0.45 },
+        { x: 0.8, y: 0.9 },
+        { x: 0.3, y: 0.45 },
+      ],
+    },
+  ];
+
+  for (const { name, quad } of invalidQuads) {
+    const result = evaluateQuadSolvability({
+      quadNorm: quad,
+      frameSize: { width: 800, height: 1000 },
+      floorDimensions: { worldWidth: 3, worldDepth: 4 },
+      currentVerticalFovDeg: 48,
+      fovScanConfig: { minFovDeg: 20, maxFovDeg: 22, stepDeg: 1 },
+    });
+    assert.equal(result.homographyAvailable, false, `${name}: homography must remain unavailable`);
+    assert.equal(result.poseAvailable, false, `${name}: pose must remain unavailable`);
+    assert.equal(result.applyEvaluation.available, false, `${name}: apply must remain unavailable`);
+  }
+
+  const floorRect = valueOrThrow(getFloorRectCorners({ widthMeters: 3, depthMeters: 4 }));
+  const singular = solvePlaneHomography(
+    [
+      { x: 0, y: 0 },
+      { x: 1, y: 0 },
+      { x: 2, y: 0 },
+      { x: 3, y: 0 },
+    ],
+    floorRect.asArray.map(floorVec3ToPlane2D)
+  );
+  assert.equal(singular.ok, false, "singular homography input must remain rejected");
 });
 
 test("semantic self-crossing perimeter is rejected without repair", () => {

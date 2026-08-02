@@ -268,6 +268,23 @@ test("normToPixelsUnclamped preserves off-frame normalized values", () => {
   assertClose(beyond.y, 1320, "beyond-one y pixels");
 });
 
+test("normToPixelsUnclamped scales exact CP1C-A extent boundaries on both axes", () => {
+  const size: ImageIntrinsicSize = { width: 800, height: 600 };
+  const cases = [
+    { normalized: -0.25, x: -200, y: -150 },
+    { normalized: 0, x: 0, y: 0 },
+    { normalized: 1, x: 800, y: 600 },
+    { normalized: 1.25, x: 1000, y: 750 },
+  ];
+
+  for (const { normalized, x, y } of cases) {
+    const pixels = normToPixelsUnclamped({ x: normalized, y: normalized }, size);
+    assert.ok(pixels, `pixels for normalized ${normalized}`);
+    assert.equal(pixels.x, x, `x at normalized ${normalized}`);
+    assert.equal(pixels.y, y, `y at normalized ${normalized}`);
+  }
+});
+
 test("normToPixelsUnclamped matches normToPixels for in-frame values", () => {
   const size: ImageIntrinsicSize = { width: 1600, height: 1200 };
   const point = { x: 0.25, y: 0.75 };

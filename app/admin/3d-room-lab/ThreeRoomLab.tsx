@@ -173,6 +173,7 @@ import {
   corridorHalfWidthToOverlayStrokeWidth,
   isValidImageSize,
   normToPixels,
+  normToPixelsUnclamped,
   sourceNormToContainerNorm,
   sourceNormToContainerNormUnclamped,
   type ImageFrameSize,
@@ -2921,7 +2922,7 @@ export default function ThreeRoomLab({
 
     const sourceImagePointsPx: { x: number; y: number }[] = [];
     for (const point of orderedCornersResult.value.asArray) {
-      const pixels = normToPixels(point, frameSize);
+      const pixels = normToPixelsUnclamped(point, frameSize);
       if (!pixels) {
         rows.push({
           label: "homography solve",

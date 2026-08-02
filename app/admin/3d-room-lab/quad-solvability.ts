@@ -3,7 +3,7 @@ import {
   type CalibratedCameraApplyCandidate,
   type CalibratedCameraApplyEvaluation,
 } from "./calibrated-camera-apply";
-import { normToPixels, type ImageFrameSize } from "./image-space";
+import { normToPixelsUnclamped, type ImageFrameSize } from "./image-space";
 import {
   buildCameraIntrinsicsFromFov,
   decomposeHomographyToCameraPose,
@@ -236,7 +236,7 @@ export function evaluateQuadSolvability(input: QuadSolvabilityInput): QuadSolvab
         const sourceImagePointsPx: Vec2[] = [];
         let sourceConversionOk = true;
         for (const point of orderedCornersNorm) {
-          const pixels = normToPixels(point, frameSize);
+          const pixels = normToPixelsUnclamped(point, frameSize);
           if (!pixels) {
             sourceConversionOk = false;
             break;
@@ -281,7 +281,7 @@ export function evaluateQuadSolvability(input: QuadSolvabilityInput): QuadSolvab
     const points: Vec2[] = [];
     let conversionFailed = false;
     for (const point of orderedCornersNorm) {
-      const pixels = normToPixels(point, frameSize);
+      const pixels = normToPixelsUnclamped(point, frameSize);
       if (!pixels) {
         conversionFailed = true;
         break;

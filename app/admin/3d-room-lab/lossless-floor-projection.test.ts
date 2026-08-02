@@ -327,6 +327,7 @@ test("CP1A regression: an invalid conversion still returns null for the whole po
 
 const LAB_DIR = path.dirname(fileURLToPath(import.meta.url));
 const UI_SOURCE = readFileSync(path.join(LAB_DIR, "ThreeRoomLab.tsx"), "utf8");
+const QUAD_SOLVABILITY_SOURCE = readFileSync(path.join(LAB_DIR, "quad-solvability.ts"), "utf8");
 const IMAGE_SPACE_SOURCE = readFileSync(path.join(LAB_DIR, "image-space.ts"), "utf8");
 const EXTENT_SOURCE = readFileSync(path.join(LAB_DIR, "floor-coordinate-extent.ts"), "utf8");
 
@@ -389,10 +390,10 @@ test("CP1A containment: the Floor callbacks keep their existing null contract an
   }
 });
 
-test("CP1A containment: the unclamped transforms are reachable only from the Floor callbacks", () => {
-  // Named-path invariant rather than a brittle total count: every unclamped
-  // call in the lab UI must sit inside one of the two Floor authority
-  // callbacks, and the generic (Wall/Ceiling) callbacks must stay clamped.
+test("CP1C-A containment: Floor authority and live solver seams use unclamped transforms only where required", () => {
+  // Wall and Ceiling callbacks remain presentation-safe. The Floor authority
+  // callbacks plus the live Floor homography are the only UI-side unclamped
+  // paths sanctioned by CP1C-A.
   const genericContainerToSource = extractCallbackBlock("projectContainerPolygonToSource");
   const genericSourceToContainer = extractCallbackBlock("projectSourcePolygonToContainer");
 
@@ -406,24 +407,26 @@ test("CP1A containment: the unclamped transforms are reachable only from the Flo
   assert.ok(/sourceNormToContainerNorm\s*\(/.test(genericSourceToContainer));
 
   const floorBlocks = CONTAINER_TO_SOURCE_BLOCK + SOURCE_TO_CONTAINER_BLOCK;
-  const unclampedCallsInUi = (UI_SOURCE.match(/\w+Unclamped\s*\(/g) ?? []).length;
   const unclampedCallsInFloorBlocks = (floorBlocks.match(/\w+Unclamped\s*\(/g) ?? []).length;
-  assert.equal(
-    unclampedCallsInUi,
-    unclampedCallsInFloorBlocks,
-    "every unclamped transform call must live inside a Floor authority callback"
-  );
   assert.ok(unclampedCallsInFloorBlocks >= 2, "both Floor callbacks must use an unclamped transform");
+  assert.ok(
+    /const pixels = normToPixelsUnclamped\(point, frameSize\);/.test(UI_SOURCE),
+    "the live Floor homography must preserve off-frame container magnitude"
+  );
+  assert.ok(
+    (QUAD_SOLVABILITY_SOURCE.match(/normToPixelsUnclamped\(point, frameSize\)/g) ?? []).length === 2,
+    "homography construction and pose preparation must share the unclamped Floor pixels"
+  );
 });
 
-test("CP1A containment: quad solvability still uses the existing clamped normToPixels", () => {
+test("CP1C-A containment: the live Floor solver uses unclamped pixels while UI-safe helpers remain clamped", () => {
   assert.ok(
-    /const pixels = normToPixels\(point, frameSize\);/.test(UI_SOURCE),
-    "the homography/quad-solvability pixel path must still use normToPixels"
+    /const pixels = normToPixelsUnclamped\(point, frameSize\);/.test(UI_SOURCE),
+    "the live homography path must use normToPixelsUnclamped"
   );
   assert.ok(
-    !/normToPixelsUnclamped/.test(UI_SOURCE),
-    "AFC-CP1A must not switch any solver caller to normToPixelsUnclamped"
+    /const anchorPixels = normToPixels\(lastAcceptedFloorClick, frameSize\);/.test(UI_SOURCE),
+    "bounded diagnostic anchor conversion remains UI-safe"
   );
 });
 
