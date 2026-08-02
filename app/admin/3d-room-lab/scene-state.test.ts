@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  LEGACY_SCENE_STATE_SCHEMA_VERSION,
   SCENE_STATE_SCHEMA_VERSION,
   buildSceneStatePayload,
   validateImportedSceneJson,
@@ -236,6 +237,58 @@ function parse(value: unknown) {
   const result = validateImportedSceneJson(value, limits);
   assert.notEqual(typeof result, "string", typeof result === "string" ? result : "");
   return result as Exclude<typeof result, string>;
+}
+
+for (const coordinate of [1.25, -0.25] as const) {
+  test(`v0 calibration.source.sourceFloorPolygon ignores unit-external ${coordinate}`, () => {
+    const value = payload();
+    const legacyValue = value as unknown as Record<string, unknown>;
+    legacyValue.schemaVersion = LEGACY_SCENE_STATE_SCHEMA_VERSION;
+    delete legacyValue.supports;
+    delete legacyValue.attachment;
+    delete value.calibrationAppliedAuthority;
+    value.calibration!.source.sourceFloorPolygon[0].x = coordinate;
+
+    const result = validateImportedSceneJson(value, limits);
+    assert.notEqual(typeof result, "string", String(result));
+    if (typeof result === "string") return;
+    assert.deepEqual(result.calibration, {
+      kind: "ignored",
+      reason: "calibration.source.sourceFloorPolygon must contain exactly four valid points.",
+    });
+  });
+
+  test(`v1 supports.floor.sourceNormalizedPolygon rejects unit-external ${coordinate}`, () => {
+    const value = payload();
+    value.supports.floor.sourceNormalizedPolygon[0].x = coordinate;
+    assert.match(
+      validateImportedSceneJson(value, limits) as string,
+      /^supports must contain valid source-normalized floor, wall, and ceiling authority\.$/
+    );
+  });
+
+  test(`v1 calibration.source.sourceFloorPolygon ignores unit-external ${coordinate}`, () => {
+    const value = payload();
+    delete value.calibrationAppliedAuthority;
+    value.calibration!.source.sourceFloorPolygon[0].x = coordinate;
+
+    const result = validateImportedSceneJson(value, limits);
+    assert.notEqual(typeof result, "string", String(result));
+    if (typeof result === "string") return;
+    assert.deepEqual(result.calibration, {
+      kind: "ignored",
+      reason: "calibration.source.sourceFloorPolygon must contain exactly four valid points.",
+    });
+  });
+
+  test(`v1 calibrationAppliedAuthority.sourceFloorPolygon rejects unit-external ${coordinate}`, () => {
+    const value = payload();
+    value.calibrationAppliedAuthority!.sourceFloorPolygon[0].x = coordinate;
+    assert.equal(
+      validateImportedSceneJson(value, limits),
+      "calibrationAppliedAuthority is malformed (source_floor_polygon)."
+    );
+  });
 }
 
 test("round-trips full operator-owned support source state", () => {

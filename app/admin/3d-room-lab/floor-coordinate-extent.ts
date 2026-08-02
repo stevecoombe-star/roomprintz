@@ -21,8 +21,13 @@ export const FLOOR_SOURCE_COORDINATE_MIN = -0.25;
 /** Inclusive upper bound for a source-image-normalized Floor coordinate. */
 export const FLOOR_SOURCE_COORDINATE_MAX = 1.25;
 
-export type FloorSourceCoordinateExtent = Readonly<{
-  version: typeof FLOOR_SOURCE_COORDINATE_EXTENT_VERSION;
+export const UNIT_SOURCE_COORDINATE_EXTENT_VERSION =
+  "source-coordinate-extent/unit-v1" as const;
+
+export type FloorSourceCoordinateExtent<
+  Version extends string = string,
+> = Readonly<{
+  version: Version;
   minX: number;
   maxX: number;
   minY: number;
@@ -37,10 +42,22 @@ export const FLOOR_SOURCE_COORDINATE_EXTENT: FloorSourceCoordinateExtent = Objec
   maxY: FLOOR_SOURCE_COORDINATE_MAX,
 });
 
+/** Strict unit extent used by the currently supported persisted scene versions. */
+export const UNIT_SOURCE_COORDINATE_EXTENT: FloorSourceCoordinateExtent<
+  typeof UNIT_SOURCE_COORDINATE_EXTENT_VERSION
+> = Object.freeze({
+  version: UNIT_SOURCE_COORDINATE_EXTENT_VERSION,
+  minX: 0,
+  maxX: 1,
+  minY: 0,
+  maxY: 1,
+});
+
 /** A finite point expressed in source-image-normalized coordinates. */
 export type FloorSourcePoint = Readonly<{ x: number; y: number }>;
 
 export type FloorSourceExtentRejectReason =
+  | "source_corner_count"
   | "source_x_not_finite"
   | "source_y_not_finite"
   | "source_x_below_min"
@@ -51,6 +68,17 @@ export type FloorSourceExtentRejectReason =
 export type FloorSourceExtentValidation =
   | Readonly<{ ok: true; point: FloorSourcePoint }>
   | Readonly<{ ok: false; reason: FloorSourceExtentRejectReason }>;
+
+export type FloorSourcePolygonExtentValidation =
+  | Readonly<{
+      ok: true;
+      points: readonly [FloorSourcePoint, FloorSourcePoint, FloorSourcePoint, FloorSourcePoint];
+    }>
+  | Readonly<{
+      ok: false;
+      rejectedCornerIndex: number | null;
+      reason: FloorSourceExtentRejectReason;
+    }>;
 
 /**
  * Pure extent validation for a single source-image-normalized point.
@@ -77,6 +105,51 @@ export function validateFloorSourcePointExtent(
   if (point.y < extent.minY) return { ok: false, reason: "source_y_below_min" };
   if (point.y > extent.maxY) return { ok: false, reason: "source_y_above_max" };
   return { ok: true, point: { x: point.x, y: point.y } };
+}
+
+/**
+ * Pure, positional validation for a source-image-normalized Floor quad.
+ *
+ * Exactly four corners are required. A count failure reports
+ * source_corner_count with no rejected corner. Otherwise, the first rejected
+ * corner is reported with the same structured reason as point validation; no
+ * values are clamped, canonicalized, reordered, or otherwise normalized.
+ */
+export function validateFloorSourcePolygonExtent(
+  points: readonly (FloorSourcePoint | null | undefined)[] | null | undefined,
+  extent: FloorSourceCoordinateExtent = FLOOR_SOURCE_COORDINATE_EXTENT
+): FloorSourcePolygonExtentValidation {
+  const candidatePoints = points ?? [];
+  const cornerCount = candidatePoints.length;
+  if (cornerCount !== 4) {
+    return {
+      ok: false,
+      rejectedCornerIndex: null,
+      reason: "source_corner_count",
+    };
+  }
+
+  const validatedPoints: FloorSourcePoint[] = [];
+  for (let index = 0; index < 4; index += 1) {
+    const validation = validateFloorSourcePointExtent(candidatePoints[index], extent);
+    if (!validation.ok) {
+      return {
+        ok: false,
+        rejectedCornerIndex: index,
+        reason: validation.reason,
+      };
+    }
+    validatedPoints.push(validation.point);
+  }
+  return {
+    ok: true,
+    points: validatedPoints as [
+      FloorSourcePoint,
+      FloorSourcePoint,
+      FloorSourcePoint,
+      FloorSourcePoint,
+    ],
+  };
 }
 
 /** Convenience predicate over validateFloorSourcePointExtent. */

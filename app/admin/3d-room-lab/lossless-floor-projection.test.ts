@@ -10,6 +10,7 @@ import {
   FLOOR_SOURCE_COORDINATE_MIN,
   isFloorSourcePointWithinExtent,
   validateFloorSourcePointExtent,
+  validateFloorSourcePolygonExtent,
 } from "./floor-coordinate-extent";
 import {
   containerNormToSourceNorm,
@@ -157,6 +158,38 @@ test("CP1A extent: validation never clamps a rejected point into range", () => {
   const result = validateFloorSourcePointExtent({ x: 5, y: 5 });
   assert.equal(result.ok, false);
   assert.equal("point" in result, false, "a rejected result must not carry a substituted point");
+});
+
+test("CP1B-1H extent: polygon validation distinguishes corner count from extent failure", () => {
+  const quad: FloorPoint[] = [
+    { x: 0.2, y: 0.8 },
+    { x: 0.8, y: 0.8 },
+    { x: 0.7, y: 0.2 },
+    { x: 0.3, y: 0.2 },
+  ];
+  assert.deepEqual(validateFloorSourcePolygonExtent(quad.slice(0, 3)), {
+    ok: false,
+    rejectedCornerIndex: null,
+    reason: "source_corner_count",
+  });
+  assert.deepEqual(validateFloorSourcePolygonExtent([...quad, { x: 0.5, y: 0.5 }]), {
+    ok: false,
+    rejectedCornerIndex: null,
+    reason: "source_corner_count",
+  });
+  assert.deepEqual(
+    validateFloorSourcePolygonExtent([
+      quad[0],
+      quad[1],
+      { x: 1.26, y: quad[2].y },
+      quad[3],
+    ]),
+    {
+      ok: false,
+      rejectedCornerIndex: 2,
+      reason: "source_x_above_max",
+    }
+  );
 });
 
 // --- 2. Corruption-loop regression -----------------------------------------

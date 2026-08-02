@@ -13,6 +13,7 @@ import {
   type CalibratedCameraAppliedAuthority,
   type ParsedCalibratedCameraAppliedAuthority,
 } from "./calibrated-camera-restore-authority";
+import { FLOOR_SOURCE_COORDINATE_EXTENT } from "./floor-coordinate-extent";
 import {
   buildCeilingPolygonKey,
   buildRoomHeightKey,
@@ -133,6 +134,18 @@ test("rejects a missing required field", () => {
   const value = authorityFixture() as unknown as Record<string, unknown>;
   delete value.diagnosticsSummary;
   assert.deepEqual(parseCalibratedCameraAppliedAuthority(value), { ok: false, reason: "diagnostics_summary" });
+});
+
+test("defaults applied-authority parsing to unit extent while allowing an explicit widened extent", () => {
+  const value = authorityFixture();
+  value.sourceFloorPolygon[0].x = 1.1;
+  assert.deepEqual(parseCalibratedCameraAppliedAuthority(value), {
+    ok: false,
+    reason: "source_floor_polygon",
+  });
+  const widened = parseCalibratedCameraAppliedAuthority(value, FLOOR_SOURCE_COORDINATE_EXTENT);
+  assert.equal(widened.ok, true);
+  if (widened.ok) assert.equal(widened.value.sourceFloorPolygon[0].x, 1.1);
 });
 
 test("strict timestamp validator only accepts Date ISO UTC milliseconds", () => {

@@ -2,6 +2,12 @@ import {
   CALIBRATION_IMAGE_BASIS_COORDINATE_SPACE_VERSION,
   type CalibrationImageBasis,
 } from "./calibration-image-basis";
+import {
+  UNIT_SOURCE_COORDINATE_EXTENT,
+  validateFloorSourcePolygonExtent,
+  type FloorSourceCoordinateExtent,
+  type FloorSourcePoint,
+} from "./floor-coordinate-extent";
 import { floorVec3ToPlane2D, getFloorRectCorners, projectFloorPointThroughPose, type CameraPose } from "./perspective-solve";
 
 export const CALIBRATED_CAMERA_APPLIED_AUTHORITY_VERSION =
@@ -187,16 +193,21 @@ function parseStrictImageBasis(value: unknown): CalibrationImageBasis | null {
   };
 }
 
-function parseFloorPolygon(value: unknown): AuthorityFloorPolygon | null {
-  if (!Array.isArray(value) || value.length !== 4) return null;
-  const points: AuthorityFloorPoint[] = [];
-  for (const point of value) {
-    if (!isRecord(point) || !finite(point.x) || !finite(point.y) || point.x < 0 || point.x > 1 || point.y < 0 || point.y > 1) {
-      return null;
-    }
-    points.push({ x: point.x, y: point.y });
-  }
-  return points as unknown as AuthorityFloorPolygon;
+function parseFloorPolygon(
+  value: unknown,
+  extent: FloorSourceCoordinateExtent = UNIT_SOURCE_COORDINATE_EXTENT
+): AuthorityFloorPolygon | null {
+  const points = Array.isArray(value)
+    ? value.map((point): FloorSourcePoint | null => {
+        if (!isRecord(point)) return null;
+        return {
+          x: finite(point.x) ? point.x : Number.NaN,
+          y: finite(point.y) ? point.y : Number.NaN,
+        };
+      })
+    : null;
+  const validation = validateFloorSourcePolygonExtent(points, extent);
+  return validation.ok ? validation.points as AuthorityFloorPolygon : null;
 }
 
 function imageBasesEqual(left: CalibrationImageBasis, right: CalibrationImageBasis): boolean {
@@ -250,7 +261,10 @@ export function isStrictUtcIsoTimestamp(value: unknown): value is string {
   return Number.isFinite(parsed.getTime()) && parsed.toISOString() === value;
 }
 
-export function parseCalibratedCameraAppliedAuthority(raw: unknown): AppliedAuthorityParseResult {
+export function parseCalibratedCameraAppliedAuthority(
+  raw: unknown,
+  floorSourceCoordinateExtent: FloorSourceCoordinateExtent = UNIT_SOURCE_COORDINATE_EXTENT
+): AppliedAuthorityParseResult {
   if (!isRecord(raw)) return { ok: false, reason: "authority_not_object" };
   if (raw.authorityVersion !== CALIBRATED_CAMERA_APPLIED_AUTHORITY_VERSION) {
     return { ok: false, reason: "authority_version" };
@@ -283,7 +297,7 @@ export function parseCalibratedCameraAppliedAuthority(raw: unknown): AppliedAuth
   }
   const imageBasis = parseStrictImageBasis(raw.imageBasis);
   if (!imageBasis) return { ok: false, reason: "image_basis" };
-  const sourceFloorPolygon = parseFloorPolygon(raw.sourceFloorPolygon);
+  const sourceFloorPolygon = parseFloorPolygon(raw.sourceFloorPolygon, floorSourceCoordinateExtent);
   if (!sourceFloorPolygon) return { ok: false, reason: "source_floor_polygon" };
   if (!isRecord(raw.floorMapping) || !finite(raw.floorMapping.worldWidth) || !finite(raw.floorMapping.worldDepth) ||
     raw.floorMapping.worldWidth <= 0 || raw.floorMapping.worldDepth <= 0) {
