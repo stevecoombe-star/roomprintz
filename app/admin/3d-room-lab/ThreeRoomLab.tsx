@@ -76,6 +76,12 @@ import {
 } from "./floor-math";
 import { canonicalizeSourceUnitBoundaryPoint } from "./floor-coordinate-extent";
 import {
+  buildDurableSourceFloorAuthorityKey,
+  planContainerFloorPolygon,
+  planSourceNormalizedFloorPolygon,
+  type FloorSourceAuthorityPlan,
+} from "./floor-source-authority";
+import {
   describeFloorHandleAccessibleLabel,
   resolveFloorHandlePresentation,
 } from "./floor-handle-presentation";
@@ -246,7 +252,6 @@ import {
   buildFloorPolygonAuthorityKey,
   shouldDiscardAttestedResponse,
   shouldDropAuthorityOnFrameChange,
-  shouldDropAuthorityOnManualAdjustment,
 } from "./policy-a-containment";
 import {
   createEmptyManualFloorSupportAnnotation,
@@ -539,6 +544,8 @@ type EmptyRoomAssistUiStatus =
 
 const DEFAULT_MODEL_GLB_PATH = "/3d-lab/furniture-test-chair.glb";
 const LOCAL_DRAFT_STORAGE_KEY = "vibode:3d-room-lab:scene-state:v0";
+const LEGACY_V0_FLOOR_PROJECTION_NOT_READY_MESSAGE =
+  "Legacy v0 Floor could not be restored because the room image projection is not ready. Wait for the room image to finish loading, then retry.";
 const DEFAULT_ROOM_IMAGE_URL =
   "https://images.unsplash.com/photo-1505693314120-0d443867891c?auto=format&fit=crop&w=1600&q=80";
 
@@ -1644,14 +1651,14 @@ export default function ThreeRoomLab({
   const [afcViewportEvidence, setAfcViewportEvidence] = useState<AfcViewportEvidenceSnapshot | null>(null);
   const [basisQualificationStatus, setBasisQualificationStatus] = useState<string>("basis_unavailable");
   const basisQualificationRequestIdRef = useRef(0);
-  const floorPolygonAuthorityKeyRef = useRef(buildFloorPolygonAuthorityKey(DEFAULT_FLOOR_POLYGON));
+  const floorPolygonAuthorityKeyRef = useRef(buildDurableSourceFloorAuthorityKey(DEFAULT_FLOOR_POLYGON));
   supportPointUndoSnapshotsRef.current = {
     floor: {
       kind: "floor",
       floorPolygon: floorPolygon.map((point) => ({ x: point.x, y: point.y })),
       sourceNormalizedFloorPolygon: sourceNormalizedFloorPolygon.map((point) => ({ x: point.x, y: point.y })),
       floorPolygonAuthorityEligible,
-      floorPolygonAuthorityKey: buildFloorPolygonAuthorityKey(floorPolygon),
+      floorPolygonAuthorityKey: buildDurableSourceFloorAuthorityKey(sourceNormalizedFloorPolygon),
       reviewStatus: floorSupportReviewStatus,
       source: floorSupportSource,
       imageBasis: floorSupportImageBasis,
@@ -2261,54 +2268,6 @@ export default function ThreeRoomLab({
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, []);
 
-  const applyContainerFloorPolygon = useCallback(
-    (
-      polygon: FloorPoint[],
-      review?: { status: SupportReviewStatus; source: SupportSource }
-    ) => {
-      setFloorPolygon(polygon);
-      const sourcePolygon = projectFloorContainerPolygonToSource(polygon);
-      if (sourcePolygon && sourcePolygon.length >= 3) {
-        setSourceNormalizedFloorPolygon(sourcePolygon);
-        setFloorPolygonAuthorityEligible(true);
-        if (review) {
-          setFloorSupportReviewStatus(review.status);
-          setFloorSupportSource(review.source);
-          setFloorSupportImageBasis(qualifiedImageBasis);
-        }
-        const current = supportPointUndoSnapshotsRef.current?.floor;
-        if (current) {
-          updateActiveSupportPointUndoSnapshot({
-            kind: "floor",
-            floorPolygon: polygon.map((point) => ({ x: point.x, y: point.y })),
-            sourceNormalizedFloorPolygon: sourcePolygon.map((point) => ({ x: point.x, y: point.y })),
-            floorPolygonAuthorityEligible: true,
-            floorPolygonAuthorityKey: buildFloorPolygonAuthorityKey(polygon),
-            reviewStatus: review?.status ?? current.reviewStatus,
-            source: review?.source ?? current.source,
-            imageBasis: review ? qualifiedImageBasis : current.imageBasis,
-          });
-        }
-      } else {
-        const current = supportPointUndoSnapshotsRef.current?.floor;
-        if (current) {
-          updateActiveSupportPointUndoSnapshot({
-            ...current,
-            floorPolygon: polygon.map((point) => ({ x: point.x, y: point.y })),
-            floorPolygonAuthorityKey: buildFloorPolygonAuthorityKey(polygon),
-          });
-        }
-      }
-    },
-    [projectFloorContainerPolygonToSource, qualifiedImageBasis, updateActiveSupportPointUndoSnapshot]
-  );
-
-  useEffect(() => {
-    const projectedContainer = projectFloorSourcePolygonToContainer(sourceNormalizedFloorPolygon);
-    if (!projectedContainer) return;
-    setFloorPolygon((prev) => (floorPolygonsEqual(prev, projectedContainer) ? prev : projectedContainer));
-  }, [projectFloorSourcePolygonToContainer, sourceNormalizedFloorPolygon]);
-
   useEffect(() => {
     const trimmedUrl = roomImageUrl.trim();
     if (!isRoomImageReadyForUrl(trimmedUrl) || !imageIntrinsicSize) {
@@ -2432,6 +2391,115 @@ export default function ThreeRoomLab({
     }
   }, [restoreDepthScalingAfterCalibratedMode]);
 
+  // Every authority-eligible runtime Floor mutation reaches this one commit.
+  // Import, draft, undo, and calibrated-camera restore remain specialized
+  // installations because they must retain persisted metadata exactly.
+  const commitFloorAuthorityMutation = useCallback(
+    (
+      plan: Extract<FloorSourceAuthorityPlan, { ok: true }>,
+      review: { status: SupportReviewStatus; source: SupportSource },
+      options: { captureUndo?: "none" | "active_drag" } = {}
+    ) => {
+      const previousAuthorityKey = floorPolygonAuthorityKeyRef.current;
+      const sourcePolygon = plan.sourcePolygon.map((point) => ({ x: point.x, y: point.y }));
+      const containerPolygon = plan.containerPolygon?.map((point) => ({ x: point.x, y: point.y })) ?? null;
+
+      setSourceNormalizedFloorPolygon(sourcePolygon);
+      if (containerPolygon) setFloorPolygon(containerPolygon);
+      setFloorPolygonAuthorityEligible(true);
+      setFloorSupportReviewStatus(review.status);
+      setFloorSupportSource(review.source);
+      setFloorSupportImageBasis(qualifiedImageBasis);
+      floorPolygonAuthorityKeyRef.current = plan.authorityKey;
+
+      if (previousAuthorityKey !== plan.authorityKey) {
+        // A pending restore belongs to the pre-mutation source authority and
+        // must not overwrite a later manual or programmatic Floor update.
+        cancelPendingCalibrationRestoreAfterManualGeometryChange();
+      }
+
+      if (options.captureUndo === "active_drag") {
+        const current = supportPointUndoSnapshotsRef.current?.floor;
+        if (current) {
+          updateActiveSupportPointUndoSnapshot({
+            kind: "floor",
+            floorPolygon: (containerPolygon ?? current.floorPolygon).map((point) => ({ x: point.x, y: point.y })),
+            sourceNormalizedFloorPolygon: sourcePolygon,
+            floorPolygonAuthorityEligible: true,
+            floorPolygonAuthorityKey: plan.authorityKey,
+            reviewStatus: review.status,
+            source: review.source,
+            imageBasis: qualifiedImageBasis,
+          });
+        }
+      }
+
+      if (
+        previousAuthorityKey !== plan.authorityKey &&
+        calibratedCameraActiveRef.current
+      ) {
+        // Keep repeated pointer events from observing the pre-render active
+        // ref and producing a second mutation-side invalidation.
+        calibratedCameraActiveRef.current = false;
+        deactivateCalibratedCameraMode();
+        setLastCalibratedCameraAutoRevertReason(
+          "reverted — manual floor adjustment changed the authority polygon"
+        );
+      }
+      return true;
+    },
+    [
+      cancelPendingCalibrationRestoreAfterManualGeometryChange,
+      deactivateCalibratedCameraMode,
+      qualifiedImageBasis,
+      updateActiveSupportPointUndoSnapshot,
+    ]
+  );
+
+  const applyContainerFloorPolygon = useCallback(
+    (
+      polygon: readonly FloorPoint[],
+      review: { status: SupportReviewStatus; source: SupportSource },
+      options?: { captureUndo?: "none" | "active_drag" }
+    ): boolean => {
+      const plan = planContainerFloorPolygon({
+        containerPolygon: polygon,
+        projectToSource: (containerPolygon) =>
+          projectFloorContainerPolygonToSource(containerPolygon.map((point) => ({ x: point.x, y: point.y }))),
+      });
+      if (!plan.ok) return false;
+      return commitFloorAuthorityMutation(plan, review, options);
+    },
+    [commitFloorAuthorityMutation, projectFloorContainerPolygonToSource]
+  );
+
+  // Source-first programmatic intake is intentionally generic: callers supply
+  // only existing room-support provenance and never AFC/provider concepts.
+  // It remains intentionally unbound until a later UI adapter needs it.
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  const applySourceNormalizedFloorPolygon = useCallback(
+    (
+      points: readonly FloorPoint[],
+      review: { status: SupportReviewStatus; source: SupportSource },
+      options?: { captureUndo?: "none" | "active_drag" }
+    ): boolean => {
+      const plan = planSourceNormalizedFloorPolygon({
+        points,
+        projectToContainer: (sourcePolygon) =>
+          projectFloorSourcePolygonToContainer(sourcePolygon.map((point) => ({ x: point.x, y: point.y }))),
+      });
+      if (!plan.ok) return false;
+      return commitFloorAuthorityMutation(plan, review, options);
+    },
+    [commitFloorAuthorityMutation, projectFloorSourcePolygonToContainer]
+  );
+
+  useEffect(() => {
+    const projectedContainer = projectFloorSourcePolygonToContainer(sourceNormalizedFloorPolygon);
+    if (!projectedContainer) return;
+    setFloorPolygon((prev) => (floorPolygonsEqual(prev, projectedContainer) ? prev : projectedContainer));
+  }, [projectFloorSourcePolygonToContainer, sourceNormalizedFloorPolygon]);
+
   // Phase 2J-B3: single established calibrated-camera apply path. Both the manual
   // "Apply calibrated camera" button and the deferred restore effect funnel
   // through here so there is no parallel application mechanism. The camera pose
@@ -2483,17 +2551,6 @@ export default function ThreeRoomLab({
     deactivateCalibratedCameraMode();
     setLastCalibratedCameraAutoRevertReason("reverted — frame changed; re-solve and re-qualify to restore authority");
   }, [calibratedCameraSnapshot, deactivateCalibratedCameraMode, isCalibratedCameraActive, rendererSize.height, rendererSize.width]);
-
-  useEffect(() => {
-    const nextKey = buildFloorPolygonAuthorityKey(floorPolygon);
-    if (!shouldDropAuthorityOnManualAdjustment(floorPolygonAuthorityKeyRef.current, nextKey)) return;
-    floorPolygonAuthorityKeyRef.current = nextKey;
-    if (!isCalibratedCameraActive) return;
-    deactivateCalibratedCameraMode();
-    setLastCalibratedCameraAutoRevertReason(
-      "reverted — manual floor adjustment changed the authority polygon"
-    );
-  }, [deactivateCalibratedCameraMode, floorPolygon, isCalibratedCameraActive]);
 
   useEffect(() => {
     if (!isCalibratedCameraActive) return;
@@ -3553,6 +3610,12 @@ export default function ThreeRoomLab({
       !floorPolygonsEqual(sourceNormalizedFloorPolygon, pending.calibration.source.sourceFloorPolygon) ||
       !floorPolygonsEqual(floorPolygon, projectedRestorePolygon)
     ) {
+      // A restore installs exact persisted source authority; it deliberately
+      // bypasses mutation intake and therefore never canonicalizes or
+      // mutation-invalidates calibrated camera state.
+      floorPolygonAuthorityKeyRef.current = buildDurableSourceFloorAuthorityKey(
+        pending.calibration.source.sourceFloorPolygon
+      );
       setSourceNormalizedFloorPolygon(
         pending.calibration.source.sourceFloorPolygon.map((point) => ({ x: point.x, y: point.y }))
       );
@@ -8536,10 +8599,6 @@ export default function ThreeRoomLab({
       setLocalRefinementPreviewProbeId(null);
       setLocalRefinementPreviewSignature(null);
 
-      // Mirror manual-geometry-change safety (cancel any pending calibration
-      // restore), exactly as the manual polygon-reset path does.
-      cancelPendingCalibrationRestoreAfterManualGeometryChange();
-
       // floor polygon <- EXACT stored local tuple quad (clone; canonical
       // [NL, NR, FR, FL], same as the existing "Apply suggested quad" path).
       const loadedPolygon: FloorPoint[] = tuple.quadNorm.map((point) => ({ x: point.x, y: point.y }));
@@ -8606,7 +8665,6 @@ export default function ThreeRoomLab({
       isCalibratedCameraActive,
       localRefinementPreview,
       applyContainerFloorPolygon,
-      cancelPendingCalibrationRestoreAfterManualGeometryChange,
       floorMapping,
       lastAcceptedFloorClick,
       selectedAutoFloorCandidateId,
@@ -9673,6 +9731,7 @@ export default function ThreeRoomLab({
       x: point.x,
       y: point.y,
     }));
+    const wasCalibratedCameraActive = calibratedCameraActiveRef.current;
     applyContainerFloorPolygon(appliedPolygon, {
       status: floorPolygonAuthorityEligible ? "manually_confirmed" : "needs_review",
       source: "model_suggested",
@@ -9691,12 +9750,7 @@ export default function ThreeRoomLab({
     setIsFloorAnchorDragActive(false);
     setWasLastAnchorDragMoveRejected(false);
 
-    // Applying a new polygon invalidates any active calibrated camera snapshot.
-    const wasCalibratedCameraActive = calibratedCameraActiveRef.current;
-    if (wasCalibratedCameraActive) {
-      deactivateCalibratedCameraMode({ clearAutoRevertReason: true });
-    }
-
+    // The shared Floor-authority commit owns calibrated-camera invalidation.
     setAppliedAutoFloorCandidateId(selectedAutoFloorCandidate.id);
     setLastAutoFloorApplyMessage(
       wasCalibratedCameraActive
@@ -9705,7 +9759,6 @@ export default function ThreeRoomLab({
     );
   }, [
     applyContainerFloorPolygon,
-    deactivateCalibratedCameraMode,
     floorPolygonAuthorityEligible,
     selectedAutoFloorCandidate,
     selectedAutoFloorCandidateScore,
@@ -10122,7 +10175,8 @@ export default function ThreeRoomLab({
       {
         status: floorPolygonAuthorityEligible ? "manually_confirmed" : "needs_review",
         source: "manual",
-      }
+      },
+      { captureUndo: "active_drag" }
     );
   };
 
@@ -11526,7 +11580,7 @@ export default function ThreeRoomLab({
       setFloorSupportSource(validated.supports.floor.source);
       setFloorSupportImageBasis(validated.supports.floor.supportImageBasis);
       setFloorPolygonAuthorityEligible(validated.supports.floor.authorityEligible);
-      floorPolygonAuthorityKeyRef.current = buildFloorPolygonAuthorityKey(
+      floorPolygonAuthorityKeyRef.current = buildDurableSourceFloorAuthorityKey(
         validated.supports.floor.sourceNormalizedPolygon
       );
       setWallSupportDrafts({
@@ -11544,10 +11598,11 @@ export default function ThreeRoomLab({
     } else {
       // Legacy v0 scenes had no support authority. Never infer it from the
       // restored floor/container geometry or fabricate confirmation provenance.
-      applyContainerFloorPolygon(validated.floor.polygon, {
+      const legacyFloorInstalled = applyContainerFloorPolygon(validated.floor.polygon, {
         status: "needs_review",
         source: "derived",
       });
+      if (!legacyFloorInstalled) return false;
       setWallSupportDrafts(createInitialWallDrafts());
       setWallSupportImageBases({ wall_back: null, wall_left: null, wall_right: null });
       setCeilingSupportDraft(createUnavailableCeilingDraft());
@@ -11640,7 +11695,6 @@ export default function ThreeRoomLab({
     const nextRestoreRequestId = calibrationRestoreRequestIdRef.current + 1;
     calibrationRestoreRequestIdRef.current = nextRestoreRequestId;
     if (validated.calibration.kind === "valid") {
-      setFloorPolygonAuthorityEligible(true);
       // Restore the persisted FOV assumption so the existing camera-pose
       // derivation re-solves against the imported floor + current frame.
       setCameraPoseFovYDeg(
@@ -11661,13 +11715,16 @@ export default function ThreeRoomLab({
           : "Calibration pending: waiting for image and frame to become usable."
       );
     } else {
-      if (
-        validated.calibration.kind === "ignored" &&
-        validated.calibration.reason === "basis_legacy_receipt_missing"
-      ) {
-        setFloorPolygonAuthorityEligible(false);
-      } else {
-        setFloorPolygonAuthorityEligible(true);
+      // Supports-bearing v1/v2 scenes retain the persisted eligibility exactly.
+      // Legacy v0 scenes have no persisted support lifecycle, so keep their
+      // established calibration-degradation fallback.
+      if (!validated.supports) {
+        setFloorPolygonAuthorityEligible(
+          !(
+            validated.calibration.kind === "ignored" &&
+            validated.calibration.reason === "basis_legacy_receipt_missing"
+          )
+        );
       }
       setPendingCalibrationRestore(null);
       if (validated.calibration.kind === "ignored") {
@@ -11724,7 +11781,7 @@ export default function ThreeRoomLab({
     }
 
     if (!applyValidatedSceneState(validated, validated.exportedAt ?? "imported-scene")) {
-      setImportSceneStatus({ kind: "error", message: "Detach the object before restoring a scene." });
+      setImportSceneStatus({ kind: "error", message: LEGACY_V0_FLOOR_PROJECTION_NOT_READY_MESSAGE });
       return;
     }
     setImportSceneStatus({
@@ -11821,7 +11878,7 @@ export default function ThreeRoomLab({
 
     const restoredAt = validated.exportedAt ?? "restored-local-draft";
     if (!applyValidatedSceneState(validated, restoredAt)) {
-      setLocalDraftStatus({ kind: "error", message: "Detach the object before restoring a local draft." });
+      setLocalDraftStatus({ kind: "error", message: LEGACY_V0_FLOOR_PROJECTION_NOT_READY_MESSAGE });
       return;
     }
     setLocalDraftLastSavedAt(validated.exportedAt ?? null);
@@ -14035,7 +14092,6 @@ export default function ThreeRoomLab({
               <button
                 type="button"
                 onClick={() => {
-                  cancelPendingCalibrationRestoreAfterManualGeometryChange();
                   applyContainerFloorPolygon(DEFAULT_FLOOR_POLYGON, {
                     status: "needs_review",
                     source: "manual",

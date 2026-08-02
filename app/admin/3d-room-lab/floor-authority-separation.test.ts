@@ -789,9 +789,11 @@ test("containment: generic (Wall/Ceiling) callbacks use the clamped transforms",
   assert.ok(!/canonicalizeSourceUnitBoundary/.test(GENERIC_S2C));
 });
 
-test("containment: every Floor authority consumer uses a Floor-specific callback", () => {
-  // applyContainerFloorPolygon
-  assert.ok(/const sourcePolygon = projectFloorContainerPolygonToSource\(polygon\);/.test(UI_SOURCE));
+test("containment: Floor authority planning uses Floor-specific callbacks", () => {
+  // container-first authority planning
+  assert.ok(/const plan = planContainerFloorPolygon\(\{[\s\S]*projectFloorContainerPolygonToSource/.test(UI_SOURCE));
+  // source-first authority planning
+  assert.ok(/const plan = planSourceNormalizedFloorPolygon\(\{[\s\S]*projectFloorSourcePolygonToContainer/.test(UI_SOURCE));
   // source -> container Floor synchronization effect
   assert.ok(
     /const projectedContainer = projectFloorSourcePolygonToContainer\(sourceNormalizedFloorPolygon\);/.test(
@@ -822,7 +824,7 @@ test("import precedence: supports-bearing scenes install source authority withou
   );
   assert.match(
     supportsRestore,
-    /floorPolygonAuthorityKeyRef\.current = buildFloorPolygonAuthorityKey\(\s*validated\.supports\.floor\.sourceNormalizedPolygon/
+    /floorPolygonAuthorityKeyRef\.current = buildDurableSourceFloorAuthorityKey\(\s*validated\.supports\.floor\.sourceNormalizedPolygon/
   );
   assert.equal(
     supportsRestore.includes("applyContainerFloorPolygon("),
@@ -856,12 +858,6 @@ test("containment: every Wall and Ceiling consumer stays on the generic clamped 
     (UI_SOURCE.match(/const nextSource = projectContainerPolygonToSource\(nextContainer\);/g) ?? []).length,
     2,
     "the Ceiling and Wall handle drags must both stay on the clamped callback"
-  );
-  assert.ok(
-    !/projectFloor\w+\(\s*(?:nextContainer|containerPolygon|DEFAULT_CEILING_CONTAINER_POLYGON|sourcePolygon)\b/.test(
-      UI_SOURCE
-    ),
-    "no Wall/Ceiling consumer may call a Floor-specific callback"
   );
 });
 
@@ -938,4 +934,92 @@ test("containment: image-space documentation states the Floor/non-Floor split ac
     !/[Cc]eiling[^.\n]*unclamped/.test(IMAGE_SPACE_SOURCE),
     "nothing may suggest Ceiling was switched to unclamped projection"
   );
+});
+
+test("CP1B-B: runtime authority mutations converge through source-authority planning and one commit", () => {
+  const commitStart = UI_SOURCE.indexOf("const commitFloorAuthorityMutation = useCallback(");
+  const containerStart = UI_SOURCE.indexOf("const applyContainerFloorPolygon = useCallback(");
+  const sourceStart = UI_SOURCE.indexOf("const applySourceNormalizedFloorPolygon = useCallback(");
+  assert.ok(commitStart >= 0 && containerStart > commitStart && sourceStart > containerStart);
+  const commit = UI_SOURCE.slice(commitStart, containerStart);
+  const container = UI_SOURCE.slice(containerStart, sourceStart);
+  const source = UI_SOURCE.slice(sourceStart, UI_SOURCE.indexOf("\n  useEffect(() => {", sourceStart));
+
+  assert.match(commit, /setSourceNormalizedFloorPolygon\(sourcePolygon\)/);
+  assert.match(commit, /floorPolygonAuthorityKeyRef\.current = plan\.authorityKey/);
+  assert.match(commit, /previousAuthorityKey !== plan\.authorityKey/);
+  assert.match(commit, /cancelPendingCalibrationRestoreAfterManualGeometryChange\(\)/);
+  assert.match(commit, /deactivateCalibratedCameraMode\(\)/);
+  assert.match(container, /planContainerFloorPolygon/);
+  assert.match(container, /commitFloorAuthorityMutation\(plan, review, options\)/);
+  assert.match(source, /planSourceNormalizedFloorPolygon/);
+  assert.match(source, /commitFloorAuthorityMutation\(plan, review, options\)/);
+  assert.ok(!/localStorage|buildCurrentSceneStatePayload|sceneStateExportedAt/.test(source));
+});
+
+test("CP1B-B: durable runtime identity is source-only while restores remain specialized", () => {
+  assert.match(
+    UI_SOURCE,
+    /useRef\(buildDurableSourceFloorAuthorityKey\(DEFAULT_FLOOR_POLYGON\)\)/
+  );
+  assert.match(
+    UI_SOURCE,
+    /floorPolygonAuthorityKey: buildDurableSourceFloorAuthorityKey\(sourceNormalizedFloorPolygon\)/
+  );
+  assert.match(
+    UI_SOURCE,
+    /floorPolygonAuthorityKeyRef\.current = buildDurableSourceFloorAuthorityKey\(\s*pending\.calibration\.source\.sourceFloorPolygon/
+  );
+  assert.match(
+    UI_SOURCE,
+    /floorPolygonAuthorityKeyRef\.current = buildDurableSourceFloorAuthorityKey\(\s*validated\.supports\.floor\.sourceNormalizedPolygon/
+  );
+  assert.equal(
+    UI_SOURCE.includes("shouldDropAuthorityOnManualAdjustment"),
+    false,
+    "container-space invalidation effect must not remain"
+  );
+});
+
+test("CP1B-B: no Apply Verified AFC Quad UI or persistence side effect was introduced", () => {
+  assert.equal(UI_SOURCE.includes("Apply Verified AFC Quad"), false);
+  assert.match(UI_SOURCE, /const LOCAL_DRAFT_STORAGE_KEY = "vibode:3d-room-lab:scene-state:v0";/);
+});
+
+test("CP1B-B correction: legacy v0 import fails closed when canonical source projection is unavailable", () => {
+  const installerStart = UI_SOURCE.indexOf("const applyValidatedSceneState =");
+  const legacyStart = UI_SOURCE.indexOf("} else {", UI_SOURCE.indexOf("if (validated.supports) {", installerStart));
+  const verticalEvidenceStart = UI_SOURCE.indexOf("setVerticalEvidence(", legacyStart);
+  assert.ok(installerStart >= 0 && legacyStart > installerStart && verticalEvidenceStart > legacyStart);
+  const legacyBranch = UI_SOURCE.slice(legacyStart, verticalEvidenceStart);
+
+  assert.match(
+    legacyBranch,
+    /const legacyFloorInstalled = applyContainerFloorPolygon\(validated\.floor\.polygon, \{\s*status: "needs_review",\s*source: "derived",\s*\}\)/
+  );
+  assert.match(legacyBranch, /if \(!legacyFloorInstalled\) return false;/);
+  assert.ok(
+    legacyBranch.indexOf("if (!legacyFloorInstalled) return false;") <
+      legacyBranch.indexOf("setWallSupportDrafts("),
+    "failure must stop before later legacy support installation"
+  );
+
+  const importStart = UI_SOURCE.indexOf("const handleApplyImportedSceneJson =");
+  const importEnd = UI_SOURCE.indexOf("const handleClearImportedSceneJson =", importStart);
+  const draftStart = UI_SOURCE.indexOf("const handleRestoreLocalDraft =");
+  const draftEnd = UI_SOURCE.indexOf("const handleClearLocalDraft =", draftStart);
+  assert.ok(importStart >= 0 && importEnd > importStart && draftStart >= 0 && draftEnd > draftStart);
+  const importHandler = UI_SOURCE.slice(importStart, importEnd);
+  const draftHandler = UI_SOURCE.slice(draftStart, draftEnd);
+  for (const handler of [importHandler, draftHandler]) {
+    assert.match(
+      handler,
+      /if \(!applyValidatedSceneState\([\s\S]*?\)\) \{\s*set(?:ImportScene|LocalDraft)Status\(\{ kind: "error", message: LEGACY_V0_FLOOR_PROJECTION_NOT_READY_MESSAGE \}\);\s*return;\s*\}/
+    );
+    assert.ok(
+      handler.indexOf("LEGACY_V0_FLOOR_PROJECTION_NOT_READY_MESSAGE") <
+        handler.indexOf("successfully."),
+      "failed installation must not reach the success status"
+    );
+  }
 });
