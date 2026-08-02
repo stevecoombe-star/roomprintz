@@ -21,6 +21,7 @@ import {
 import {
   buildSceneStatePayload,
   SCENE_STATE_SCHEMA_VERSION,
+  SCENE_STATE_SCHEMA_VERSION_V2,
   validateImportedSceneJson,
   type FloorPoint,
   type SceneStatePayloadInput,
@@ -650,6 +651,12 @@ function sceneInput(sourceQuad: Quad, containerQuad: Quad): SceneStatePayloadInp
   };
 }
 
+function build(input: SceneStatePayloadInput) {
+  const result = buildSceneStatePayload(input);
+  assert.ok(result.ok, result.ok ? "" : result.reason);
+  return result.payload;
+}
+
 test("scene v1: a boundary-touching Floor scene survives edit, export, and re-import", () => {
   const intrinsic: ImageIntrinsicSize = { width: 3007, height: 1993 };
   const sourceQuad: Quad = [
@@ -671,7 +678,7 @@ test("scene v1: a boundary-touching Floor scene survives edit, export, and re-im
   assert.equal(editedSource[0].y, 1);
   assert.equal(editedSource[1].y, 1);
 
-  const payload = buildSceneStatePayload(
+  const payload = build(
     sceneInput(editedSource as Quad, edited as Quad)
   );
   const parsed = validateImportedSceneJson(JSON.parse(JSON.stringify(payload)), VALIDATION_CONFIG);
@@ -699,7 +706,8 @@ test("scene v1: the uncanonicalized raw value would have been rejected", () => {
     { x: 0.62, y: 0.7 },
     { x: 0.3, y: 0.7 },
   ];
-  const payload = buildSceneStatePayload(sceneInput(rawQuad, containerQuad));
+  const payload = build(sceneInput(rawQuad, containerQuad));
+  payload.schemaVersion = SCENE_STATE_SCHEMA_VERSION;
   const parsed = validateImportedSceneJson(JSON.parse(JSON.stringify(payload)), VALIDATION_CONFIG);
   assert.equal(typeof parsed, "string", "a raw >1 source coordinate must still be rejected by scene v1");
 });
@@ -718,14 +726,16 @@ test("scene v1: genuine values above 1 beyond the tiny tolerance remain rejected
       { x: 0.7, y: 0.7 },
       { x: 0.3, y: 0.7 },
     ];
-    const payload = buildSceneStatePayload(sceneInput(quad, containerQuad));
+    const payload = build(sceneInput(quad, containerQuad));
+    payload.schemaVersion = SCENE_STATE_SCHEMA_VERSION;
     const parsed = validateImportedSceneJson(JSON.parse(JSON.stringify(payload)), VALIDATION_CONFIG);
     assert.equal(typeof parsed, "string", `source y=${badY} must remain rejected by scene v1`);
   }
 });
 
-test("scene v1: the schema version is unchanged and persistence was not widened", () => {
+test("scene versions retain v1 unit bounds and activate widened Floor bounds only for v2", () => {
   assert.equal(SCENE_STATE_SCHEMA_VERSION, "vibode-3d-room-lab-scene-state/v1");
+  assert.equal(SCENE_STATE_SCHEMA_VERSION_V2, "vibode-3d-room-lab-scene-state/v2");
   const sceneStateSource = readFileSync(path.join(LAB_DIR, "scene-state.ts"), "utf8");
   assert.ok(
     /if \(x === null \|\| y === null \|\| x < 0 \|\| x > 1 \|\| y < 0 \|\| y > 1\) return null;/.test(
@@ -734,8 +744,10 @@ test("scene v1: the schema version is unchanged and persistence was not widened"
     "the source-normalized quad parser must keep its strict [0,1] bound"
   );
   assert.ok(
-    !/-0\.25/.test(sceneStateSource),
-    "scene persistence must not be widened to the [-0.25, 1.25] extent"
+    /schemaVersion: SCENE_STATE_SCHEMA_VERSION_V2,[\s\S]*floorSourceCoordinateExtent: FLOOR_SOURCE_COORDINATE_EXTENT/.test(
+      sceneStateSource
+    ),
+    "only scene v2 may activate the widened Floor source extent"
   );
 });
 
@@ -791,6 +803,37 @@ test("containment: every Floor authority consumer uses a Floor-specific callback
     /const projectedRestorePolygon = projectFloorSourcePolygonToContainer\(\s*pending\.calibration\.source\.sourceFloorPolygon\s*\);/.test(
       UI_SOURCE
     )
+  );
+});
+
+test("import precedence: supports-bearing scenes install source authority without container-first reconstruction", () => {
+  const importStart = UI_SOURCE.indexOf("const applyValidatedSceneState =");
+  const supportsStart = UI_SOURCE.indexOf("if (validated.supports) {", importStart);
+  const legacyStart = UI_SOURCE.indexOf("} else {", supportsStart);
+  const importEnd = UI_SOURCE.indexOf("const handleApplyImportedSceneJson =", importStart);
+  assert.ok(importStart >= 0 && supportsStart > importStart && legacyStart > supportsStart && importEnd > legacyStart);
+
+  const supportsRestore = UI_SOURCE.slice(supportsStart, legacyStart);
+  assert.match(supportsRestore, /setFloorPolygon\(validated\.floor\.polygon\.map/);
+  assert.match(supportsRestore, /setSourceNormalizedFloorPolygon\(\s*validated\.supports\.floor\.sourceNormalizedPolygon\.map/);
+  assert.ok(
+    supportsRestore.indexOf("setSourceNormalizedFloorPolygon(") < supportsRestore.indexOf("setFloorPolygon("),
+    "canonical source authority must be installed before the provisional mirror"
+  );
+  assert.match(
+    supportsRestore,
+    /floorPolygonAuthorityKeyRef\.current = buildFloorPolygonAuthorityKey\(\s*validated\.supports\.floor\.sourceNormalizedPolygon/
+  );
+  assert.equal(
+    supportsRestore.includes("applyContainerFloorPolygon("),
+    false,
+    "v1/v2 source authority must not be reconstructed from the mirror"
+  );
+
+  const legacyRestore = UI_SOURCE.slice(legacyStart, importEnd);
+  assert.match(
+    legacyRestore,
+    /applyContainerFloorPolygon\(validated\.floor\.polygon, \{\s*status: "needs_review",\s*source: "derived",\s*\}\)/
   );
 });
 

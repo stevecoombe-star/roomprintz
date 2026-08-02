@@ -9880,8 +9880,10 @@ export default function ThreeRoomLab({
     };
 
   const sceneStateJson = useMemo(() => {
-    const payload = buildCurrentSceneStatePayload(sceneStateExportedAt);
-    return JSON.stringify(payload, null, 2);
+    const result = buildCurrentSceneStatePayload(sceneStateExportedAt);
+    return result.ok
+      ? JSON.stringify(result.payload, null, 2)
+      : `Scene export unavailable: ${result.reason}`;
   }, [
     activeObjectKind,
     autoRotateEnabled,
@@ -11445,8 +11447,12 @@ export default function ThreeRoomLab({
 
   const handleCopySceneJson = async () => {
     const exportedAtIso = new Date().toISOString();
-    const payload = buildCurrentSceneStatePayload(exportedAtIso);
-    const jsonText = JSON.stringify(payload, null, 2);
+    const result = buildCurrentSceneStatePayload(exportedAtIso);
+    if (!result.ok) {
+      setSceneJsonStatus({ kind: "error", message: `Copy unavailable: ${result.reason}` });
+      return;
+    }
+    const jsonText = JSON.stringify(result.payload, null, 2);
     setSceneStateExportedAt(exportedAtIso);
     try {
       await navigator.clipboard.writeText(jsonText);
@@ -11465,8 +11471,12 @@ export default function ThreeRoomLab({
 
   const handleDownloadSceneJson = () => {
     const exportedAtIso = new Date().toISOString();
-    const payload = buildCurrentSceneStatePayload(exportedAtIso);
-    const jsonText = JSON.stringify(payload, null, 2);
+    const result = buildCurrentSceneStatePayload(exportedAtIso);
+    if (!result.ok) {
+      setSceneJsonStatus({ kind: "error", message: `Download unavailable: ${result.reason}` });
+      return;
+    }
+    const jsonText = JSON.stringify(result.payload, null, 2);
     setSceneStateExportedAt(exportedAtIso);
     try {
       const blob = new Blob([jsonText], { type: "application/json" });
@@ -11505,19 +11515,20 @@ export default function ThreeRoomLab({
     setRoomImageUrl(nextRoomImageUrl);
     applyRoomImageRequest(nextRoomImageUrlTrimmed);
 
-    applyContainerFloorPolygon(validated.floor.polygon, {
-      status: "needs_review",
-      source: "derived",
-    });
     if (validated.supports) {
-      // Source authority is restored exactly; container-normalized polygons and
-      // every support derivation remain memoized presentation/runtime outputs.
-      setSourceNormalizedFloorPolygon(validated.supports.floor.sourceNormalizedPolygon);
+      // The persisted source polygon is canonical. The container polygon is
+      // only a provisional display mirror until the source projection refreshes.
+      setSourceNormalizedFloorPolygon(
+        validated.supports.floor.sourceNormalizedPolygon.map((point) => ({ x: point.x, y: point.y }))
+      );
+      setFloorPolygon(validated.floor.polygon.map((point) => ({ x: point.x, y: point.y })));
       setFloorSupportReviewStatus(validated.supports.floor.reviewStatus);
       setFloorSupportSource(validated.supports.floor.source);
       setFloorSupportImageBasis(validated.supports.floor.supportImageBasis);
       setFloorPolygonAuthorityEligible(validated.supports.floor.authorityEligible);
-      floorPolygonAuthorityKeyRef.current = buildFloorPolygonAuthorityKey(validated.floor.polygon);
+      floorPolygonAuthorityKeyRef.current = buildFloorPolygonAuthorityKey(
+        validated.supports.floor.sourceNormalizedPolygon
+      );
       setWallSupportDrafts({
         wall_back: validated.supports.walls.wall_back?.draft ?? createUnavailableWallDraft("wall_back"),
         wall_left: validated.supports.walls.wall_left?.draft ?? createUnavailableWallDraft("wall_left"),
@@ -11533,6 +11544,10 @@ export default function ThreeRoomLab({
     } else {
       // Legacy v0 scenes had no support authority. Never infer it from the
       // restored floor/container geometry or fabricate confirmation provenance.
+      applyContainerFloorPolygon(validated.floor.polygon, {
+        status: "needs_review",
+        source: "derived",
+      });
       setWallSupportDrafts(createInitialWallDrafts());
       setWallSupportImageBases({ wall_back: null, wall_left: null, wall_right: null });
       setCeilingSupportDraft(createUnavailableCeilingDraft());
@@ -11728,8 +11743,12 @@ export default function ThreeRoomLab({
 
   const handleSaveLocalDraft = () => {
     const exportedAtIso = new Date().toISOString();
-    const payload = buildCurrentSceneStatePayload(exportedAtIso);
-    const jsonText = JSON.stringify(payload);
+    const result = buildCurrentSceneStatePayload(exportedAtIso);
+    if (!result.ok) {
+      setLocalDraftStatus({ kind: "error", message: `Save unavailable: ${result.reason}` });
+      return;
+    }
+    const jsonText = JSON.stringify(result.payload);
     try {
       window.localStorage.setItem(LOCAL_DRAFT_STORAGE_KEY, jsonText);
       setLocalDraftLastSavedAt(exportedAtIso);

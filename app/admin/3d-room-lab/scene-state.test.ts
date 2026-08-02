@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   LEGACY_SCENE_STATE_SCHEMA_VERSION,
   SCENE_STATE_SCHEMA_VERSION,
+  SCENE_STATE_SCHEMA_VERSION_V2,
   buildSceneStatePayload,
   validateImportedSceneJson,
   type SceneStatePayloadInput,
@@ -183,8 +184,14 @@ function payloadInput(): SceneStatePayloadInput {
   };
 }
 
+function build(input: SceneStatePayloadInput) {
+  const result = buildSceneStatePayload(input);
+  assert.ok(result.ok, result.ok ? "" : result.reason);
+  return result.payload;
+}
+
 function payload() {
-  return buildSceneStatePayload(payloadInput());
+  return build(payloadInput());
 }
 
 function verticalEvidenceFixture() {
@@ -313,7 +320,7 @@ test("round-trips full operator-owned support source state", () => {
 test("round-trips optional vertical evidence and degrades malformed records fail-closed", () => {
   const input = payloadInput();
   input.verticalEvidence = verticalEvidenceFixture();
-  const exported = buildSceneStatePayload(input);
+  const exported = build(input);
   const restored = parse(exported);
   assert.deepEqual(restored.verticalEvidence, input.verticalEvidence);
   assert.equal(restored.verticalEvidenceDegradationReason, null);
@@ -330,7 +337,7 @@ test("round-trips optional vertical evidence and degrades malformed records fail
 test("vertical evidence import strips injected authority-like keys without affecting scene authority", () => {
   const input = payloadInput();
   input.verticalEvidence = verticalEvidenceFixture();
-  const baseline = buildSceneStatePayload(input);
+  const baseline = build(input);
   const injected = structuredClone(baseline) as unknown as {
     verticalEvidence: Record<string, unknown> & {
       observations: Array<Record<string, unknown> & {
@@ -378,7 +385,7 @@ test("vertical evidence import strips injected authority-like keys without affec
   assert.equal(Object.hasOwn(parsedObservation.floorProvenance, "calibrationAuthorityGranted"), false);
   assert.equal(Object.hasOwn(parsedObservation.sourceNormalizedEndpoints, "candidateCamera"), false);
 
-  const reexported = buildSceneStatePayload({ ...payloadInput(), verticalEvidence: injectedParsed.verticalEvidence });
+  const reexported = build({ ...payloadInput(), verticalEvidence: injectedParsed.verticalEvidence });
   const serializedEvidence = JSON.stringify(reexported.verticalEvidence);
   for (const key of ["pose", "candidate", "candidateCamera", "calibrationVersion", "applyCamera", "authorityEligible", "calibrationAuthorityGranted"]) {
     assert.equal(serializedEvidence.includes(`"${key}"`), false, `re-export excludes ${key}`);
@@ -398,7 +405,7 @@ test("round-trips a versioned wall policy stamp with deterministic field orderin
   assert.deepEqual(parsedStamp, inputStamp);
   assert.equal(JSON.stringify(parsedStamp), JSON.stringify(equivalentFreshStamp));
 
-  const reexported = buildSceneStatePayload({ ...payloadInput(), supports: result.supports! });
+  const reexported = build({ ...payloadInput(), supports: result.supports! });
   assert.deepEqual(reexported.supports.walls.wall_back!.draft.confirmationStamp, inputStamp);
 });
 
@@ -410,7 +417,7 @@ test("round-trips legacy wall stamps without synthesis or input mutation", () =>
   assert.deepEqual(value, original);
   assert.equal(Object.prototype.hasOwnProperty.call(parsedStamp, "wallGeometryPolicyVersion"), false);
 
-  const reexported = buildSceneStatePayload({ ...payloadInput(), supports: result.supports! });
+  const reexported = build({ ...payloadInput(), supports: result.supports! });
   assert.equal(
     Object.prototype.hasOwnProperty.call(
       reexported.supports.walls.wall_back!.draft.confirmationStamp!,
@@ -429,7 +436,7 @@ test("preserves an unknown well-formed future wall policy string", () => {
     result.supports!.walls.wall_back!.draft.confirmationStamp!.wallGeometryPolicyVersion,
     "wall-support-geometry-policy/v999"
   );
-  const reexported = buildSceneStatePayload({ ...payloadInput(), supports: result.supports! });
+  const reexported = build({ ...payloadInput(), supports: result.supports! });
   assert.equal(
     reexported.supports.walls.wall_back!.draft.confirmationStamp!.wallGeometryPolicyVersion,
     "wall-support-geometry-policy/v999"
@@ -624,4 +631,199 @@ test("is deterministic and does not mutate frozen input", () => {
 
 test("exports the current schema version", () => {
   assert.equal(payload().schemaVersion, SCENE_STATE_SCHEMA_VERSION);
+});
+
+function setFloorSourceAuthority(
+  input: SceneStatePayloadInput,
+  sourcePolygon: typeof quad
+): void {
+  input.supports.floor.sourceNormalizedPolygon = structuredClone(sourcePolygon);
+  input.calibration!.source.sourceFloorPolygon = structuredClone(sourcePolygon);
+  input.calibrationAppliedAuthority!.sourceFloorPolygon = structuredClone(sourcePolygon);
+}
+
+test("v2 accepts the inclusive widened Floor source extent on both axes", () => {
+  const input = payloadInput();
+  const widenedQuad = [
+    { x: -0.25, y: -0.25 },
+    { x: 0, y: 0 },
+    { x: 1, y: 1 },
+    { x: 1.25, y: 1.25 },
+  ] as typeof quad;
+  setFloorSourceAuthority(input, widenedQuad);
+
+  const exported = build(input);
+  assert.equal(exported.schemaVersion, SCENE_STATE_SCHEMA_VERSION_V2);
+  const restored = parse(JSON.parse(JSON.stringify(exported)));
+  assert.deepEqual(restored.supports?.floor.sourceNormalizedPolygon, widenedQuad);
+  assert.deepEqual(restored.calibrationAppliedAuthority?.sourceFloorPolygon, widenedQuad);
+});
+
+for (const [axis, coordinate] of [
+  ["x", -0.25000000000000006],
+  ["x", 1.2500000000000002],
+  ["y", -0.25000000000000006],
+  ["y", 1.2500000000000002],
+  ["x", Number.NaN],
+  ["y", Number.POSITIVE_INFINITY],
+  ["x", Number.NEGATIVE_INFINITY],
+] as const) {
+  test(`v2 rejects ${axis}=${String(coordinate)} outside its exact Floor extent`, () => {
+    const value = payload();
+    value.schemaVersion = SCENE_STATE_SCHEMA_VERSION_V2;
+    value.supports.floor.sourceNormalizedPolygon[0][axis] = coordinate;
+    assert.match(
+      validateImportedSceneJson(value, limits) as string,
+      /^supports must contain valid source-normalized floor, wall, and ceiling authority\.$/
+    );
+  });
+}
+
+test("v2 preserves exact off-frame source authority and duplicated claims through JSON", () => {
+  const input = payloadInput();
+  const sourcePolygon = [
+    { x: -0.05, y: 1.10 },
+    { x: 1.25, y: 0.25 },
+    { x: 0.75, y: -0.05 },
+    { x: 0.2, y: 0.2 },
+  ] as typeof quad;
+  setFloorSourceAuthority(input, sourcePolygon);
+  input.floor.polygon = [
+    { x: -0.7777, y: 1.7777 },
+    { x: 1.7777, y: 0.25 },
+    { x: 0.75, y: -0.7777 },
+    { x: 0.2, y: 0.2 },
+  ];
+
+  const exported = build(input);
+  assert.equal(exported.schemaVersion, SCENE_STATE_SCHEMA_VERSION_V2);
+  assert.deepEqual(exported.supports.floor.sourceNormalizedPolygon, sourcePolygon);
+  assert.deepEqual(exported.calibration?.source.sourceFloorPolygon, sourcePolygon);
+  assert.deepEqual(exported.calibrationAppliedAuthority?.sourceFloorPolygon, sourcePolygon);
+  const restored = parse(JSON.parse(JSON.stringify(exported)));
+  assert.deepEqual(restored.supports?.floor.sourceNormalizedPolygon, sourcePolygon);
+  assert.equal(restored.calibration.kind, "valid");
+  if (restored.calibration.kind === "valid") {
+    assert.deepEqual(restored.calibration.value.source.sourceFloorPolygon, sourcePolygon);
+  }
+  assert.deepEqual(restored.calibrationAppliedAuthority?.sourceFloorPolygon, sourcePolygon);
+});
+
+test("v2 does not rewrite a meaningful one-ULP-above-unit persisted source value", () => {
+  const input = payloadInput();
+  const sourcePolygon = structuredClone(quad);
+  sourcePolygon[0].x = 1.0000000000000002;
+  setFloorSourceAuthority(input, sourcePolygon);
+
+  const exported = build(input);
+  assert.equal(exported.schemaVersion, SCENE_STATE_SCHEMA_VERSION_V2);
+  assert.equal(exported.supports.floor.sourceNormalizedPolygon[0].x, 1.0000000000000002);
+  assert.equal(parse(JSON.parse(JSON.stringify(exported))).supports?.floor.sourceNormalizedPolygon[0].x, 1.0000000000000002);
+});
+
+test("export selects v1 for unit-bounded source authority and refuses invalid authority without a payload", () => {
+  const inFrame = buildSceneStatePayload(payloadInput());
+  assert.ok(inFrame.ok, inFrame.ok ? "" : inFrame.reason);
+  assert.equal(inFrame.payload.schemaVersion, SCENE_STATE_SCHEMA_VERSION);
+
+  const outOfExtent = payloadInput();
+  outOfExtent.supports.floor.sourceNormalizedPolygon[0].x = 1.2500000000000002;
+  const rejected = buildSceneStatePayload(outOfExtent);
+  assert.equal(rejected.ok, false);
+  if (!rejected.ok) {
+    assert.match(rejected.reason, /source_x_above_max/);
+    assert.equal("payload" in rejected, false);
+  }
+
+  const nonFinite = payloadInput();
+  nonFinite.supports.floor.sourceNormalizedPolygon[0].y = Number.NaN;
+  const rejectedNonFinite = buildSceneStatePayload(nonFinite);
+  assert.equal(rejectedNonFinite.ok, false);
+  if (!rejectedNonFinite.ok) assert.match(rejectedNonFinite.reason, /source_y_not_finite/);
+});
+
+test("v2 has no schema fallback and retains the v1 source extent", () => {
+  const input = payloadInput();
+  const sourcePolygon = structuredClone(quad);
+  sourcePolygon[0].x = 1.1;
+  setFloorSourceAuthority(input, sourcePolygon);
+  const exported = build(input);
+  assert.equal(exported.schemaVersion, SCENE_STATE_SCHEMA_VERSION_V2);
+
+  const relabeledV1 = structuredClone(exported);
+  relabeledV1.schemaVersion = SCENE_STATE_SCHEMA_VERSION;
+  assert.match(validateImportedSceneJson(relabeledV1, limits) as string, /supports/);
+
+  const unknown = structuredClone(exported);
+  unknown.schemaVersion = "vibode-3d-room-lab-scene-state/v999" as typeof unknown.schemaVersion;
+  assert.match(validateImportedSceneJson(unknown, limits) as string, /Unsupported schemaVersion/);
+});
+
+test("v2 parses the container Floor mirror without clamping and rejects non-finite mirrors", () => {
+  const input = payloadInput();
+  const sourcePolygon = structuredClone(quad);
+  sourcePolygon[0].x = -0.05;
+  setFloorSourceAuthority(input, sourcePolygon);
+  const exported = build(input);
+  exported.floor.polygon = [
+    { x: -4, y: 2 },
+    { x: 3, y: -5 },
+    { x: 0.8, y: 0.2 },
+    { x: 0.2, y: 0.2 },
+  ];
+  const restored = parse(exported);
+  assert.deepEqual(restored.floor.polygon, exported.floor.polygon);
+  assert.deepEqual(restored.supports?.floor.sourceNormalizedPolygon, sourcePolygon);
+
+  exported.floor.polygon[0].x = Number.POSITIVE_INFINITY;
+  assert.match(validateImportedSceneJson(exported, limits) as string, /floor\.polygon/);
+});
+
+for (const [kind, coordinate] of [
+  ["wall", 1.1],
+  ["wall", -0.05],
+  ["ceiling", 1.1],
+  ["ceiling", -0.05],
+] as const) {
+  test(`v2 keeps ${kind} source coordinates unit-bounded (${coordinate})`, () => {
+    const input = payloadInput();
+    const sourcePolygon = structuredClone(quad);
+    sourcePolygon[0].x = -0.05;
+    setFloorSourceAuthority(input, sourcePolygon);
+    const exported = build(input);
+    if (kind === "wall") {
+      exported.supports.walls.wall_back!.draft.imagePolygonSourceNorm![0].x = coordinate;
+    } else {
+      exported.supports.ceiling!.draft.imagePolygonSourceNorm![0].x = coordinate;
+    }
+    assert.match(validateImportedSceneJson(exported, limits) as string, /supports/);
+  });
+}
+
+test("v2 rejects contradictory duplicated Floor authority claims", () => {
+  const input = payloadInput();
+  const sourcePolygon = structuredClone(quad);
+  sourcePolygon[0].x = -0.05;
+  setFloorSourceAuthority(input, sourcePolygon);
+  const exported = build(input);
+  exported.calibration!.source.sourceFloorPolygon[0].x = 0.25;
+  assert.match(validateImportedSceneJson(exported, limits) as string, /calibration\.source\.sourceFloorPolygon contradicts/);
+
+  const authorityMismatch = build(input);
+  authorityMismatch.calibrationAppliedAuthority!.sourceFloorPolygon[0].x = 0.25;
+  assert.match(validateImportedSceneJson(authorityMismatch, limits) as string, /calibrationAppliedAuthority contradicts/);
+});
+
+test("export refuses duplicated source-authority contradictions without producing a payload", () => {
+  const input = payloadInput();
+  input.calibration!.source.sourceFloorPolygon[0].x = 0.25;
+  const rejected = buildSceneStatePayload(input);
+  assert.equal(rejected.ok, false);
+  if (!rejected.ok) {
+    assert.equal(
+      rejected.reason,
+      "calibration.source.sourceFloorPolygon contradicts supports.floor.sourceNormalizedPolygon."
+    );
+    assert.equal("payload" in rejected, false);
+  }
 });

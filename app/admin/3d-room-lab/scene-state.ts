@@ -6,6 +6,7 @@ import {
   type ParsedCalibratedCameraAppliedAuthority,
 } from "./calibrated-camera-restore-authority";
 import {
+  FLOOR_SOURCE_COORDINATE_EXTENT,
   UNIT_SOURCE_COORDINATE_EXTENT,
   validateFloorSourcePolygonExtent,
   type FloorSourceCoordinateExtent,
@@ -37,6 +38,7 @@ import {
 
 export const LEGACY_SCENE_STATE_SCHEMA_VERSION = "vibode-3d-room-lab-scene-state/v0";
 export const SCENE_STATE_SCHEMA_VERSION = "vibode-3d-room-lab-scene-state/v1";
+export const SCENE_STATE_SCHEMA_VERSION_V2 = "vibode-3d-room-lab-scene-state/v2";
 export const SCENE_IMAGE_COORDINATE_SPACE_V0 = "container-normalized-v0";
 export const CALIBRATED_SCENE_STATE_CALIBRATION_VERSION_V1 = "calibrated-camera/v1";
 export const CALIBRATED_SCENE_STATE_CALIBRATION_VERSION_V2 = "calibrated-camera/v2";
@@ -47,7 +49,8 @@ export const CALIBRATED_SCENE_STATE_MAX_VERTICAL_FOV_DEG = 90;
 type SceneVersionPolicy = Readonly<{
   schemaVersion:
     | typeof LEGACY_SCENE_STATE_SCHEMA_VERSION
-    | typeof SCENE_STATE_SCHEMA_VERSION;
+    | typeof SCENE_STATE_SCHEMA_VERSION
+    | typeof SCENE_STATE_SCHEMA_VERSION_V2;
   floorSourceCoordinateExtent: FloorSourceCoordinateExtent;
   currentVersionBlocksEnabled: boolean;
 }>;
@@ -61,6 +64,11 @@ const SCENE_VERSION_POLICIES: readonly SceneVersionPolicy[] = Object.freeze([
   Object.freeze({
     schemaVersion: SCENE_STATE_SCHEMA_VERSION,
     floorSourceCoordinateExtent: UNIT_SOURCE_COORDINATE_EXTENT,
+    currentVersionBlocksEnabled: true,
+  }),
+  Object.freeze({
+    schemaVersion: SCENE_STATE_SCHEMA_VERSION_V2,
+    floorSourceCoordinateExtent: FLOOR_SOURCE_COORDINATE_EXTENT,
     currentVersionBlocksEnabled: true,
   }),
 ]);
@@ -348,14 +356,20 @@ function parseRequiredTrimmedString(value: unknown): string | null {
   return trimmed.length > 0 ? trimmed : null;
 }
 
-function parseFloorPoint(value: unknown): FloorPoint | null {
+function parseFiniteFloorPoint(value: unknown): FloorPoint | null {
   if (!isRecord(value)) return null;
   const x = parseFiniteNumber(value.x);
   const y = parseFiniteNumber(value.y);
   if (x === null || y === null) return null;
+  return { x, y };
+}
+
+function parseFloorPoint(value: unknown): FloorPoint | null {
+  const point = parseFiniteFloorPoint(value);
+  if (!point) return null;
   return {
-    x: clampValue(x, 0, 1),
-    y: clampValue(y, 0, 1),
+    x: clampValue(point.x, 0, 1),
+    y: clampValue(point.y, 0, 1),
   };
 }
 
@@ -367,6 +381,13 @@ function parseOptionalFloorPoint(value: unknown): FloorPoint | null {
 function parseFloorPolygon(value: unknown): FloorPoint[] | null {
   if (!Array.isArray(value)) return null;
   const points = value.map(parseFloorPoint).filter((point): point is FloorPoint => point !== null);
+  return points.length >= 3 ? points : null;
+}
+
+function parseFiniteFloorPolygon(value: unknown): FloorPoint[] | null {
+  if (!Array.isArray(value)) return null;
+  const points = value.map(parseFiniteFloorPoint);
+  if (!points.every((point): point is FloorPoint => point !== null)) return null;
   return points.length >= 3 ? points : null;
 }
 
@@ -843,9 +864,62 @@ function authorityCrossFieldsMatch(input: {
   );
 }
 
-export function buildSceneStatePayload(input: SceneStatePayloadInput) {
+type SceneStatePayloadBuildValidation =
+  | Readonly<{ ok: true; schemaVersion: typeof SCENE_STATE_SCHEMA_VERSION | typeof SCENE_STATE_SCHEMA_VERSION_V2 }>
+  | Readonly<{ ok: false; reason: string }>;
+
+function validateSceneStatePayloadBuild(input: SceneStatePayloadInput): SceneStatePayloadBuildValidation {
+  const sourceValidation = validateFloorSourcePolygonExtent(
+    input.supports.floor.sourceNormalizedPolygon,
+    FLOOR_SOURCE_COORDINATE_EXTENT
+  );
+  if (!sourceValidation.ok) {
+    const corner = sourceValidation.rejectedCornerIndex === null
+      ? ""
+      : ` at corner ${sourceValidation.rejectedCornerIndex}`;
+    return {
+      ok: false,
+      reason: `supports.floor.sourceNormalizedPolygon is invalid${corner} (${sourceValidation.reason}).`,
+    };
+  }
+  if (
+    input.calibration &&
+    !sourceFloorPolygonsExactlyEqual(
+      input.calibration.source.sourceFloorPolygon,
+      input.supports.floor.sourceNormalizedPolygon
+    )
+  ) {
+    return {
+      ok: false,
+      reason: "calibration.source.sourceFloorPolygon contradicts supports.floor.sourceNormalizedPolygon.",
+    };
+  }
+  if (
+    input.calibrationAppliedAuthority &&
+    !sourceFloorPolygonsExactlyEqual(
+      input.calibrationAppliedAuthority.sourceFloorPolygon,
+      input.supports.floor.sourceNormalizedPolygon
+    )
+  ) {
+    return {
+      ok: false,
+      reason: "calibrationAppliedAuthority.sourceFloorPolygon contradicts supports.floor.sourceNormalizedPolygon.",
+    };
+  }
+  const schemaVersion = sourceValidation.points.every((point) =>
+    point.x >= 0 && point.x <= 1 && point.y >= 0 && point.y <= 1
+  )
+    ? SCENE_STATE_SCHEMA_VERSION
+    : SCENE_STATE_SCHEMA_VERSION_V2;
+  return { ok: true, schemaVersion };
+}
+
+function serializeSceneStatePayload(
+  input: SceneStatePayloadInput,
+  schemaVersion: typeof SCENE_STATE_SCHEMA_VERSION | typeof SCENE_STATE_SCHEMA_VERSION_V2
+) {
   return {
-    schemaVersion: SCENE_STATE_SCHEMA_VERSION,
+    schemaVersion,
     exportedAt: input.exportedAtIso,
     roomImageUrl: input.roomImageUrl || null,
     image: input.image
@@ -996,6 +1070,21 @@ export function buildSceneStatePayload(input: SceneStatePayloadInput) {
   };
 }
 
+export type SceneStatePayload = ReturnType<typeof serializeSceneStatePayload>;
+
+export type SceneStatePayloadBuildResult =
+  | Readonly<{ ok: true; payload: SceneStatePayload }>
+  | Readonly<{ ok: false; reason: string }>;
+
+export function buildSceneStatePayload(input: SceneStatePayloadInput): SceneStatePayloadBuildResult {
+  const validation = validateSceneStatePayloadBuild(input);
+  if (!validation.ok) return validation;
+  return {
+    ok: true,
+    payload: serializeSceneStatePayload(input, validation.schemaVersion),
+  };
+}
+
 export function validateImportedSceneJson(
   raw: unknown,
   config: SceneStateValidationConfig
@@ -1003,7 +1092,7 @@ export function validateImportedSceneJson(
   if (!isRecord(raw)) return "Imported payload must be a JSON object.";
   const versionPolicy = resolveSceneVersionPolicy(raw.schemaVersion);
   if (!versionPolicy) {
-    return `Unsupported schemaVersion. Expected ${SCENE_STATE_SCHEMA_VERSION} or ${LEGACY_SCENE_STATE_SCHEMA_VERSION}.`;
+    return `Unsupported schemaVersion. Expected ${SCENE_STATE_SCHEMA_VERSION_V2}, ${SCENE_STATE_SCHEMA_VERSION}, or ${LEGACY_SCENE_STATE_SCHEMA_VERSION}.`;
   }
   const isCurrentVersion = versionPolicy.currentVersionBlocksEnabled;
 
@@ -1101,7 +1190,9 @@ export function validateImportedSceneJson(
     return "transform fields are invalid. Expected numeric position/rotation/scale and boolean autoRotate.";
   }
 
-  const polygon = parseFloorPolygon(floorRaw.polygon);
+  const polygon = versionPolicy.schemaVersion === SCENE_STATE_SCHEMA_VERSION_V2
+    ? parseFiniteFloorPolygon(floorRaw.polygon)
+    : parseFloorPolygon(floorRaw.polygon);
   const mappingRaw = floorRaw.mapping;
   const perspectiveDepthScalingRaw = floorRaw.perspectiveDepthScaling;
   const overlayVisible = parseBoolean(floorRaw.overlayVisible);

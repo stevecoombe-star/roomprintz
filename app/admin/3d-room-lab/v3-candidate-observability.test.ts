@@ -308,7 +308,7 @@ test("candidate evaluation is absent from scene JSON", () => {
   evaluated(input);
   assert.deepEqual(input, before);
   const quad = input.sourceNormalizedFloorPolygon.map((point) => ({ x: point.x, y: point.y }));
-  const payload = buildSceneStatePayload({
+  const buildResult = buildSceneStatePayload({
     exportedAtIso: "2026-07-20T00:00:00.000Z",
     roomImageUrl: "",
     modelPath: "",
@@ -343,6 +343,8 @@ test("candidate evaluation is absent from scene JSON", () => {
     verticalEvidence: null,
     debug: { rendererSize: { width: 0, height: 0 }, imageStatus: "idle", modelStatus: "idle" },
   } satisfies SceneStatePayloadInput);
+  assert.ok(buildResult.ok, buildResult.ok ? "" : buildResult.reason);
+  const payload = buildResult.payload;
   const forbiddenKeys = new Set(["candidatePose", "theta", "omegaXRad", "omegaZRad", "candidateReport"]);
   const visit = (value: unknown): void => {
     if (typeof value === "string") assert.equal(value.startsWith("v3fnv1a-"), false);
