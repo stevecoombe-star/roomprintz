@@ -37,11 +37,16 @@ function viewModel(
       original: { sha256: ORIGINAL_SHA, width: 1264, height: 848, mimeType: "image/jpeg" },
       emptyRoom: {
         sha256: EMPTY_SHA,
-        width: 1024,
-        height: 768,
+        width: 960,
+        height: 640,
         mimeType: "image/jpeg",
         generatedFromOriginalSha256: ORIGINAL_SHA,
       },
+    },
+    pairCompatibility: {
+      tier: "aspect_compatible_rescaled",
+      relativeAspectErrorRaw: 0.0063,
+      relativeAspectError: 0.0063,
     },
     candidate: {
       r3bCandidateId: "afc-r3b:01",
@@ -95,7 +100,7 @@ function viewModel(
 function basis(role: "original" | "empty" = "original"): AfcQualifiedLiveImageBasis {
   const image = role === "original"
     ? { basisFingerprint: ORIGINAL_SHA, decodedWidth: 1264, decodedHeight: 848 }
-    : { basisFingerprint: EMPTY_SHA, decodedWidth: 1024, decodedHeight: 768 };
+    : { basisFingerprint: EMPTY_SHA, decodedWidth: 960, decodedHeight: 640 };
   return { ...image };
 }
 
@@ -121,6 +126,9 @@ test("qualifies Original-role AFC evidence with exact source corners and verifie
   assert.equal(result.candidate.coordinateSpace, "source-normalized/v1");
   assert.equal(result.candidate.matchedImageRole, "original");
   assert.equal(result.candidate.imageRole, "original_contextual");
+  assert.equal(result.candidate.proposalImageMember, "original");
+  assert.equal(result.candidate.transferMode, "exact_role_match");
+  assert.equal(result.candidate.pairCompatibilityTier, "aspect_compatible_rescaled");
   assert.deepEqual(
     {
       receiptFileName: result.candidate.receiptFileName,
@@ -157,15 +165,69 @@ test("qualifies Empty-role AFC evidence only against the verified Empty basis", 
   assert.deepEqual(result.candidate.sourcePolygon, BASE_POLYGON.map(({ x, y }) => ({ x, y })));
 });
 
-test("fails closed when the live basis matches the opposite verified image role", () => {
+test("qualifies paired cross-role evidence through replay-verified aspect compatibility", () => {
+  const emptyProposal = qualify(viewModel("empty_room_boundary_specialist"), basis("original"));
+  assertEligible(emptyProposal);
+  assert.equal(emptyProposal.candidate.proposalImageMember, "empty");
+  assert.equal(emptyProposal.candidate.matchedImageRole, "original");
+  assert.equal(emptyProposal.candidate.transferMode, "paired_cross_role_aspect_rescaled");
+  assert.equal(emptyProposal.candidate.pairCompatibilityTier, "aspect_compatible_rescaled");
+
+  const originalProposal = qualify(viewModel("original_contextual"), basis("empty"));
+  assertEligible(originalProposal);
+  assert.equal(originalProposal.candidate.proposalImageMember, "original");
+  assert.equal(originalProposal.candidate.matchedImageRole, "empty");
+  assert.equal(originalProposal.candidate.transferMode, "paired_cross_role_aspect_rescaled");
+  assert.deepEqual(originalProposal.candidate.sourcePolygon, BASE_POLYGON.map(({ x, y }) => ({ x, y })));
+});
+
+test("qualifies paired cross-role evidence through replay-verified exact-grid compatibility", () => {
+  const exactGrid = viewModel("empty_room_boundary_specialist") as unknown as {
+    imageBasis: { emptyRoom: { width: number; height: number } };
+    pairCompatibility: { tier: string; relativeAspectErrorRaw: number; relativeAspectError: number };
+  };
+  exactGrid.imageBasis.emptyRoom.width = 1264;
+  exactGrid.imageBasis.emptyRoom.height = 848;
+  exactGrid.pairCompatibility = {
+    tier: "exact_grid_compatible",
+    relativeAspectErrorRaw: 0,
+    relativeAspectError: 0,
+  };
+  const result = qualify(exactGrid as unknown as AfcProposalOverlayViewModel, basis("original"));
+  assertEligible(result);
+  assert.equal(result.candidate.transferMode, "paired_cross_role_exact_grid");
+  assert.equal(result.candidate.pairCompatibilityTier, "exact_grid_compatible");
+});
+
+test("cross-role transfer rejects unverified pair compatibility without relaxing live member identity", () => {
+  const rejectedCompatibility = viewModel("empty_room_boundary_specialist") as unknown as {
+    pairCompatibility: { tier: string; relativeAspectErrorRaw: number; relativeAspectError: number };
+  };
+  rejectedCompatibility.pairCompatibility.tier = "incompatible";
   assert.deepEqual(
-    qualify(viewModel("empty_room_boundary_specialist"), basis("original")),
-    { ok: false, reason: "fingerprint_mismatch" }
+    qualify(rejectedCompatibility as unknown as AfcProposalOverlayViewModel, basis("original")),
+    { ok: false, reason: "pair_compatibility_rejected" }
   );
+
+  const outsideTolerance = viewModel("empty_room_boundary_specialist") as unknown as {
+    pairCompatibility: { tier: string; relativeAspectErrorRaw: number; relativeAspectError: number };
+  };
+  outsideTolerance.pairCompatibility.relativeAspectErrorRaw = 0.01500001;
   assert.deepEqual(
-    qualify(viewModel("original_contextual"), basis("empty")),
-    { ok: false, reason: "fingerprint_mismatch" }
+    qualify(outsideTolerance as unknown as AfcProposalOverlayViewModel, basis("original")),
+    { ok: false, reason: "pair_compatibility_rejected" }
   );
+});
+
+test("cross-role transfer accepts the inclusive replay-verified aspect boundary", () => {
+  const boundary = viewModel("empty_room_boundary_specialist") as unknown as {
+    pairCompatibility: { tier: string; relativeAspectErrorRaw: number; relativeAspectError: number };
+  };
+  boundary.pairCompatibility.relativeAspectErrorRaw = 0.015;
+  boundary.pairCompatibility.relativeAspectError = 0.015;
+  const result = qualify(boundary as unknown as AfcProposalOverlayViewModel, basis("original"));
+  assertEligible(result);
+  assert.equal(result.candidate.transferMode, "paired_cross_role_aspect_rescaled");
 });
 
 test("rejects fingerprint and independent width or height mismatches", () => {
@@ -292,6 +354,8 @@ test("copies and freezes source geometry without projection values or retained r
     "height",
     "imageRole",
     "matchedImageRole",
+    "pairCompatibilityTier",
+    "proposalImageMember",
     "r3bCandidateId",
     "r3cCandidateId",
     "receiptFileName",
@@ -301,6 +365,7 @@ test("copies and freezes source geometry without projection values or retained r
     "semanticOrder",
     "source",
     "sourcePolygon",
+    "transferMode",
     "width",
   ]);
 });

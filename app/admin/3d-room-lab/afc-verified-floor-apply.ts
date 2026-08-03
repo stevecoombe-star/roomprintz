@@ -6,12 +6,18 @@ import type {
   SupportReviewStatus,
   SupportSource,
 } from "./support-model";
+import { AFC_R3C_ASPECT_RELATIVE_ERROR_TOLERANCE } from "./research/afc-r3c-image-pair-compatibility";
 import type { AfcProposalOverlayViewModel } from "./research/afc-proposal-overlay-view-model";
 
 const AFC_FLOOR_SEMANTIC_ORDER = ["NL", "NR", "FR", "FL"] as const;
 
 type AfcFloorSemanticCorner = (typeof AFC_FLOOR_SEMANTIC_ORDER)[number];
 type AfcVerifiedImageRole = "original" | "empty";
+type AfcVerifiedPairCompatibilityTier = "exact_grid_compatible" | "aspect_compatible_rescaled";
+type AfcVerifiedFloorApplyTransferMode =
+  | "exact_role_match"
+  | "paired_cross_role_exact_grid"
+  | "paired_cross_role_aspect_rescaled";
 
 /**
  * An already-qualified live room-image identity. Qualification ownership stays
@@ -39,6 +45,9 @@ export type VerifiedAfcFloorApplyRejectionCode =
   | "no_qualified_basis"
   | "unsupported_image_role"
   | "missing_role_image_identity"
+  | "pair_identity_mismatch"
+  | "missing_pair_compatibility"
+  | "pair_compatibility_rejected"
   | "fingerprint_mismatch"
   | "dimension_mismatch"
   | "source_extent_rejected";
@@ -58,7 +67,10 @@ export type VerifiedAfcFloorCandidate = Readonly<{
   r3bCandidateId: string;
   r3cCandidateId: string;
   imageRole: "empty_room_boundary_specialist" | "original_contextual";
+  proposalImageMember: AfcVerifiedImageRole;
   matchedImageRole: AfcVerifiedImageRole;
+  transferMode: AfcVerifiedFloorApplyTransferMode;
+  pairCompatibilityTier: AfcVerifiedPairCompatibilityTier | null;
   basisFingerprint: string;
   width: number;
   height: number;
@@ -137,6 +149,46 @@ function roleImage(
   return image;
 }
 
+function imageExactlyMatchesLiveBasis(
+  image: Readonly<{ sha256: string; width: number; height: number }>,
+  liveBasis: AfcQualifiedLiveImageBasis
+): boolean {
+  return (
+    liveBasis.basisFingerprint === image.sha256 &&
+    liveBasis.decodedWidth === image.width &&
+    liveBasis.decodedHeight === image.height
+  );
+}
+
+function liveFingerprintMatchesImage(
+  image: Readonly<{ sha256: string; width: number; height: number }>,
+  liveBasis: AfcQualifiedLiveImageBasis
+): boolean {
+  return liveBasis.basisFingerprint === image.sha256;
+}
+
+function acceptedPairCompatibility(
+  viewModel: AfcProposalOverlayViewModel
+): AfcVerifiedPairCompatibilityTier | null {
+  const compatibility = viewModel.pairCompatibility;
+  if (
+    !compatibility ||
+    !Number.isFinite(compatibility.relativeAspectErrorRaw) ||
+    compatibility.relativeAspectErrorRaw < 0 ||
+    !Number.isFinite(compatibility.relativeAspectError) ||
+    !["exact_grid_compatible", "aspect_compatible_rescaled"].includes(compatibility.tier)
+  ) {
+    return null;
+  }
+  if (
+    compatibility.tier === "aspect_compatible_rescaled" &&
+    compatibility.relativeAspectErrorRaw > AFC_R3C_ASPECT_RELATIVE_ERROR_TOLERANCE
+  ) {
+    return null;
+  }
+  return compatibility.tier;
+}
+
 function extractSourcePolygon(
   viewModel: AfcProposalOverlayViewModel
 ):
@@ -204,21 +256,45 @@ export function qualifyVerifiedAfcFloorApply(
   if (candidate.coordinateSpace !== "source-normalized/v1") return rejected("coordinate_space_mismatch");
 
   const imageRole = viewModel.artifactIdentity?.imageRole;
-  const matchedImageRole = imageRole === "original_contextual"
+  const proposalImageMember = imageRole === "original_contextual"
     ? "original"
     : imageRole === "empty_room_boundary_specialist"
       ? "empty"
       : null;
-  if (!matchedImageRole) return rejected("unsupported_image_role");
+  if (!proposalImageMember) return rejected("unsupported_image_role");
 
-  const image = roleImage(viewModel, matchedImageRole);
-  if (!image) return rejected("missing_role_image_identity");
-  if (input.liveBasis.basisFingerprint !== image.sha256) return rejected("fingerprint_mismatch");
-  if (
-    input.liveBasis.decodedWidth !== image.width ||
-    input.liveBasis.decodedHeight !== image.height
+  const proposalImage = roleImage(viewModel, proposalImageMember);
+  const pairedRole = proposalImageMember === "original" ? "empty" : "original";
+  const pairedImage = roleImage(viewModel, pairedRole);
+  if (!proposalImage || !pairedImage) return rejected("missing_role_image_identity");
+
+  let matchedImageRole: AfcVerifiedImageRole;
+  let transferMode: AfcVerifiedFloorApplyTransferMode;
+  let pairCompatibilityTier: AfcVerifiedPairCompatibilityTier | null;
+  if (imageExactlyMatchesLiveBasis(proposalImage, input.liveBasis)) {
+    matchedImageRole = proposalImageMember;
+    transferMode = "exact_role_match";
+    pairCompatibilityTier = acceptedPairCompatibility(viewModel);
+  } else if (imageExactlyMatchesLiveBasis(pairedImage, input.liveBasis)) {
+    if (viewModel.imageBasis.emptyRoom.generatedFromOriginalSha256 !== viewModel.imageBasis.original.sha256) {
+      return rejected("pair_identity_mismatch");
+    }
+    const compatibility = acceptedPairCompatibility(viewModel);
+    if (!compatibility) {
+      return viewModel.pairCompatibility ? rejected("pair_compatibility_rejected") : rejected("missing_pair_compatibility");
+    }
+    matchedImageRole = pairedRole;
+    pairCompatibilityTier = compatibility;
+    transferMode = compatibility === "exact_grid_compatible"
+      ? "paired_cross_role_exact_grid"
+      : "paired_cross_role_aspect_rescaled";
+  } else if (
+    liveFingerprintMatchesImage(proposalImage, input.liveBasis) ||
+    liveFingerprintMatchesImage(pairedImage, input.liveBasis)
   ) {
     return rejected("dimension_mismatch");
+  } else {
+    return rejected("fingerprint_mismatch");
   }
 
   const sourcePolygon = extractSourcePolygon(viewModel);
@@ -236,7 +312,10 @@ export function qualifyVerifiedAfcFloorApply(
       r3bCandidateId: candidate.r3bCandidateId,
       r3cCandidateId: candidate.r3cCandidateId,
       imageRole,
+      proposalImageMember,
       matchedImageRole,
+      transferMode,
+      pairCompatibilityTier,
       basisFingerprint: input.liveBasis.basisFingerprint,
       width: input.liveBasis.decodedWidth,
       height: input.liveBasis.decodedHeight,

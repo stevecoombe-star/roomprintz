@@ -60,6 +60,12 @@ export type AfcProposalOverlayViewModel = Readonly<{
     original: Readonly<{ sha256: string; width: number; height: number; mimeType: string }>;
     emptyRoom: Readonly<{ sha256: string; width: number; height: number; mimeType: string; generatedFromOriginalSha256: string }>;
   }>;
+  /** Replay-verified Original ↔ Empty transfer classification. */
+  pairCompatibility: Readonly<{
+    tier: "exact_grid_compatible" | "aspect_compatible_rescaled";
+    relativeAspectErrorRaw: number;
+    relativeAspectError: number;
+  }>;
   candidate: Readonly<{
     r3bCandidateId: string;
     r3cCandidateId: string;
@@ -436,6 +442,7 @@ export async function replayAfcProposalOverlay(options: AfcProposalOverlayReplay
   const viewModel: AfcProposalOverlayViewModel = {
     artifactIdentity: { receiptFileName: options.receiptFileName, receiptSha256: sha256(receiptBytes), requestId: receipt.requestId, createdAt: receipt.createdAt, roomId: receipt.roomId, studyMode: receipt.studyMode, imageRole: receipt.imageRole },
     imageBasis: { basisBinding: typeof (rawModel as Record<string, unknown>).basis_binding === "string" ? (rawModel as Record<string, string>).basis_binding : "", manifestVersion: manifest.contractVersion, original: { sha256: original.sha256, width: original.width, height: original.height, mimeType: original.mimeType }, emptyRoom: { sha256: empty.sha256, width: empty.width, height: empty.height, mimeType: empty.mimeType, generatedFromOriginalSha256: manifest.emptyRoomAssist.generatedFromOriginalSha256 } },
+    pairCompatibility: receipt.compatibility,
     candidate: { r3bCandidateId: candidate.candidateId, r3cCandidateId: r3cIds[0], coordinateSpace: "source-normalized/v1", semanticOrder: ["NL", "NR", "FR", "FL"] },
     corners: { NL: { x: points[0].x, y: points[0].y, support: review.corners.NL }, NR: { x: points[1].x, y: points[1].y, support: review.corners.NR }, FR: { x: points[2].x, y: points[2].y, support: review.corners.FR }, FL: { x: points[3].x, y: points[3].y, support: review.corners.FL } },
     edges: { near: review.edges.near, right: review.edges.right, far: review.edges.far, left: review.edges.left },

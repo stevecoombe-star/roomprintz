@@ -983,8 +983,16 @@ test("CP1B-B: durable runtime identity is source-only while restores remain spec
   );
 });
 
-test("CP1B-B: no Apply Verified AFC Quad UI or persistence side effect was introduced", () => {
-  assert.equal(UI_SOURCE.includes("Apply Verified AFC Quad"), false);
+test("CP2A: verified AFC Apply stays host-owned and source-first", () => {
+  const panelSource = readFileSync(path.join(LAB_DIR, "AfcProposalOverlayPanel.tsx"), "utf8");
+  assert.match(panelSource, /Apply verified AFC Floor/);
+  assert.match(panelSource, /onApplyVerifiedFloor/);
+  assert.doesNotMatch(
+    panelSource,
+    /setFloorPolygon|setSourceNormalizedFloorPolygon|applySourceNormalizedFloorPolygon|planSourceNormalizedFloorPolygon|commitFloorAuthorityMutation/
+  );
+  assert.match(UI_SOURCE, /revalidateVerifiedAfcFloorApplyRequest/);
+  assert.match(UI_SOURCE, /applySourceNormalizedFloorPolygon\(\s*revalidated\.candidate\.sourcePolygon/);
   assert.match(UI_SOURCE, /const LOCAL_DRAFT_STORAGE_KEY = "vibode:3d-room-lab:scene-state:v0";/);
 });
 

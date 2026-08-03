@@ -8,7 +8,16 @@ import CollapsibleSection from "./CollapsibleSection";
 import AfcProposalOverlayPanel from "./AfcProposalOverlayPanel";
 import AfcUi2aRunnerPanel from "./AfcUi2aRunnerPanel";
 import AfcUi2bProposalRunnerPanel from "./AfcUi2bProposalRunnerPanel";
+import {
+  type AfcQualifiedLiveImageBasis,
+} from "./afc-verified-floor-apply";
+import {
+  revalidateVerifiedAfcFloorApplyRequest,
+  type VerifiedAfcFloorApplyActionStatus,
+  type VerifiedAfcFloorApplyRequest,
+} from "./afc-verified-floor-apply-request";
 import type { AfcUi2aCurrentImageDescriptor } from "./afc-ui2a-runner-state";
+import type { AfcProposalOverlayViewModel } from "./research/afc-proposal-overlay-view-model";
 import AfcMainViewportEvidenceOverlay from "./AfcMainViewportEvidenceOverlay";
 import {
   projectAfcViewportEvidence,
@@ -146,6 +155,7 @@ import {
   beginSupportPointDragTransaction,
   canApplySupportPointUndo,
   consumeSupportPointUndo,
+  createSupportPointProgrammaticUndoRecord,
   finalizeSupportPointDragTransaction,
   isSupportPointUndoShortcut,
   type SupportPointDragTransaction,
@@ -1662,6 +1672,9 @@ export default function ThreeRoomLab({
   // Ephemeral read-only AFC evidence only. It is intentionally absent from
   // Floor, camera, support, scene, and persistence state.
   const [afcViewportEvidence, setAfcViewportEvidence] = useState<AfcViewportEvidenceSnapshot | null>(null);
+  const afcReplayValidViewModelRef = useRef<AfcProposalOverlayViewModel | null>(null);
+  const [afcVerifiedFloorApplyStatus, setAfcVerifiedFloorApplyStatus] =
+    useState<VerifiedAfcFloorApplyActionStatus>({ kind: "idle" });
   const [basisQualificationStatus, setBasisQualificationStatus] = useState<string>("basis_unavailable");
   const basisQualificationRequestIdRef = useRef(0);
   const floorPolygonAuthorityKeyRef = useRef(buildDurableSourceFloorAuthorityKey(DEFAULT_FLOOR_POLYGON));
@@ -2356,6 +2369,29 @@ export default function ThreeRoomLab({
     });
   }, [basisQualificationStatus, imageIntrinsicSize, isRoomImageReadyForUrl, qualifiedImageBasis, roomImageUrl]);
 
+  // A narrow, current basis receipt for the AFC Floor qualifier. This remains
+  // null while the room image is loading, stale, or otherwise unqualified.
+  const afcVerifiedFloorLiveBasis = useMemo<AfcQualifiedLiveImageBasis | null>(() => {
+    const imageUrl = roomImageUrl.trim();
+    if (
+      !imageUrl ||
+      !isRoomImageReadyForUrl(imageUrl) ||
+      !imageIntrinsicSize ||
+      !qualifiedImageBasis ||
+      basisQualificationStatus !== "qualified" ||
+      qualifiedImageBasis.sourceImageUrl !== imageUrl ||
+      qualifiedImageBasis.decodedWidth !== imageIntrinsicSize.width ||
+      qualifiedImageBasis.decodedHeight !== imageIntrinsicSize.height
+    ) {
+      return null;
+    }
+    return Object.freeze({
+      basisFingerprint: qualifiedImageBasis.basisFingerprint,
+      decodedWidth: qualifiedImageBasis.decodedWidth,
+      decodedHeight: qualifiedImageBasis.decodedHeight,
+    });
+  }, [basisQualificationStatus, imageIntrinsicSize, isRoomImageReadyForUrl, qualifiedImageBasis, roomImageUrl]);
+
   const cancelPendingCalibrationRestoreAfterManualGeometryChange = useCallback(() => {
     if (!pendingCalibrationRestore) return;
     calibrationRestoreRequestIdRef.current += 1;
@@ -2412,11 +2448,14 @@ export default function ThreeRoomLab({
     (
       plan: Extract<FloorSourceAuthorityPlan, { ok: true }>,
       review: { status: SupportReviewStatus; source: SupportSource },
-      options: { captureUndo?: "none" | "active_drag" } = {}
+      options: { captureUndo?: "none" | "active_drag" | "programmatic" } = {}
     ) => {
       const previousAuthorityKey = floorPolygonAuthorityKeyRef.current;
       const sourcePolygon = plan.sourcePolygon.map((point) => ({ x: point.x, y: point.y }));
       const containerPolygon = plan.containerPolygon?.map((point) => ({ x: point.x, y: point.y })) ?? null;
+      const programmaticBefore = options.captureUndo === "programmatic"
+        ? supportPointUndoSnapshotsRef.current?.floor
+        : null;
 
       setSourceNormalizedFloorPolygon(sourcePolygon);
       if (containerPolygon) setFloorPolygon(containerPolygon);
@@ -2447,6 +2486,31 @@ export default function ThreeRoomLab({
           });
         }
       }
+      if (programmaticBefore) {
+        const after: FloorSupportPointUndoSnapshot = {
+          kind: "floor",
+          floorPolygon: (containerPolygon ?? programmaticBefore.floorPolygon).map((point) => ({
+            x: point.x,
+            y: point.y,
+          })),
+          sourceNormalizedFloorPolygon: sourcePolygon,
+          floorPolygonAuthorityEligible: true,
+          floorPolygonAuthorityKey: plan.authorityKey,
+          reviewStatus: review.status,
+          source: review.source,
+          imageBasis: qualifiedImageBasis,
+        };
+        const nextRecord = createSupportPointProgrammaticUndoRecord(
+          "floor",
+          programmaticBefore,
+          buildSupportPointUndoSnapshotKey(programmaticBefore),
+          buildSupportPointUndoSnapshotKey(after),
+          supportPointUndoRecordRef.current
+        );
+        if (nextRecord !== supportPointUndoRecordRef.current) {
+          setCompletedSupportPointUndoRecord(nextRecord);
+        }
+      }
 
       if (
         previousAuthorityKey !== plan.authorityKey &&
@@ -2474,7 +2538,7 @@ export default function ThreeRoomLab({
     (
       polygon: readonly FloorPoint[],
       review: { status: SupportReviewStatus; source: SupportSource },
-      options?: { captureUndo?: "none" | "active_drag" }
+      options?: { captureUndo?: "none" | "active_drag" | "programmatic" }
     ): boolean => {
       const plan = planContainerFloorPolygon({
         containerPolygon: polygon,
@@ -2489,23 +2553,59 @@ export default function ThreeRoomLab({
 
   // Source-first programmatic intake is intentionally generic: callers supply
   // only existing room-support provenance and never AFC/provider concepts.
-  // It remains intentionally unbound until a later UI adapter needs it.
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const applySourceNormalizedFloorPolygon = useCallback(
     (
       points: readonly FloorPoint[],
       review: { status: SupportReviewStatus; source: SupportSource },
-      options?: { captureUndo?: "none" | "active_drag" }
-    ): boolean => {
+      options?: { captureUndo?: "none" | "active_drag" | "programmatic" }
+    ): "applied" | "no_change" | "rejected" => {
       const plan = planSourceNormalizedFloorPolygon({
         points,
         projectToContainer: (sourcePolygon) =>
           projectFloorSourcePolygonToContainer(sourcePolygon.map((point) => ({ x: point.x, y: point.y }))),
       });
-      if (!plan.ok) return false;
-      return commitFloorAuthorityMutation(plan, review, options);
+      if (!plan.ok) return "rejected";
+      if (plan.authorityKey === floorPolygonAuthorityKeyRef.current) return "no_change";
+      return commitFloorAuthorityMutation(plan, review, options) ? "applied" : "rejected";
     },
     [commitFloorAuthorityMutation, projectFloorSourcePolygonToContainer]
+  );
+
+  const handleReplayValidAfcViewModelChange = useCallback(
+    (viewModel: AfcProposalOverlayViewModel | null) => {
+      afcReplayValidViewModelRef.current = viewModel;
+    },
+    []
+  );
+
+  const handleApplyVerifiedAfcFloor = useCallback(
+    (request: VerifiedAfcFloorApplyRequest) => {
+      const revalidated = revalidateVerifiedAfcFloorApplyRequest({
+        request,
+        viewModel: afcReplayValidViewModelRef.current,
+        liveBasis: afcVerifiedFloorLiveBasis,
+      });
+      if (!revalidated.ok) {
+        setAfcVerifiedFloorApplyStatus({ kind: "invalidated_before_apply" });
+        return;
+      }
+      const outcome = applySourceNormalizedFloorPolygon(
+        revalidated.candidate.sourcePolygon,
+        {
+          status: revalidated.candidate.reviewStatus,
+          source: revalidated.candidate.source,
+        },
+        { captureUndo: "programmatic" }
+      );
+      setAfcVerifiedFloorApplyStatus(
+        outcome === "applied"
+          ? { kind: "applied" }
+          : outcome === "no_change"
+            ? { kind: "no_change" }
+            : { kind: "rejected" }
+      );
+    },
+    [afcVerifiedFloorLiveBasis, applySourceNormalizedFloorPolygon]
   );
 
   useEffect(() => {
@@ -19049,6 +19149,10 @@ export default function ThreeRoomLab({
           onToggle={() => setIsAfcProposalOverlayOpen((open) => !open)}
           onViewportEvidenceChange={setAfcViewportEvidence}
           viewportProjection={afcMainViewportProjection}
+          liveBasis={afcVerifiedFloorLiveBasis}
+          onReplayValidViewModelChange={handleReplayValidAfcViewModelChange}
+          onApplyVerifiedFloor={handleApplyVerifiedAfcFloor}
+          applyStatus={afcVerifiedFloorApplyStatus}
         />
 
         <CollapsibleSection

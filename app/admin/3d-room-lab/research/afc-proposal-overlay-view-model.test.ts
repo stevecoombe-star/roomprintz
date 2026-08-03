@@ -185,6 +185,11 @@ test("AFC-UI1 replays the immutable Room A live3 receipt", { skip: !live3Availab
   assert.equal(view.provenance.artifactHashes.modelOutputSha256, "1dd7de954d60a590e88600bdf9c6bf19e0d8870b8123e8a22d661eafb4361268");
   assert.equal(view.candidate.r3bCandidateId, "afc-r3:fnv1a32:0b43131e#01");
   assert.equal(view.candidate.r3cCandidateId, "afc-r3c:empty:afc-r3:fnv1a32:0b43131e#01");
+  assert.deepEqual(view.pairCompatibility, {
+    tier: "exact_grid_compatible",
+    relativeAspectErrorRaw: 0,
+    relativeAspectError: 0,
+  });
   assert.deepEqual(view.corners, {
     NL: { x: 0, y: 0.98, support: "direct_visible" },
     NR: { x: 1, y: 0.93, support: "direct_visible" },

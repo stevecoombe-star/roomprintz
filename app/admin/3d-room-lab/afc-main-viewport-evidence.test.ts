@@ -198,7 +198,10 @@ test("AFC-UI1B structural containment keeps the renderer separate and passive", 
   assert.doesNotMatch(evidence, /provider|gemini|afc-r2|compositor|localStorage/i);
   assert.doesNotMatch(overlay, /provider|server-only|floor|camera|scene|localStorage/i);
   assert.doesNotMatch(evidence, /setFloorPolygon|setSourceNormalizedFloorPolygon|applyContainerFloorPolygon|setCalibratedCameraSnapshot/);
-  assert.doesNotMatch(panel, /setFloorPolygon|setSourceNormalizedFloorPolygon|applyContainerFloorPolygon|setCalibratedCameraSnapshot/);
+  assert.doesNotMatch(
+    panel,
+    /setFloorPolygon|setSourceNormalizedFloorPolygon|applyContainerFloorPolygon|applySourceNormalizedFloorPolygon|planSourceNormalizedFloorPolygon|commitFloorAuthorityMutation|setCalibratedCameraSnapshot/
+  );
   assert.match(lab, /<AfcMainViewportEvidenceOverlay projection=\{afcMainViewportProjection\} \/>/);
   assert.ok(lab.indexOf("floorOverlayRef") < lab.indexOf("<AfcMainViewportEvidenceOverlay"), "AFC overlay mounts after the interactive Floor SVG as a sibling");
   assert.match(lab, /onViewportEvidenceChange=\{setAfcViewportEvidence\}/);

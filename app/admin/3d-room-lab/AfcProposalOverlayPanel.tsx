@@ -12,6 +12,16 @@ import {
   type AfcMainViewportProjectionResult,
   type AfcViewportEvidenceSnapshot,
 } from "./afc-main-viewport-evidence";
+import {
+  qualifyVerifiedAfcFloorApply,
+  type AfcQualifiedLiveImageBasis,
+  type VerifiedAfcFloorCandidate,
+} from "./afc-verified-floor-apply";
+import type {
+  VerifiedAfcFloorApplyActionStatus,
+  VerifiedAfcFloorApplyRequest,
+} from "./afc-verified-floor-apply-request";
+import type { AfcProposalOverlayViewModel } from "./research/afc-proposal-overlay-view-model";
 
 type AfcProposalOverlayPanelProps = Readonly<{
   enabled: boolean;
@@ -19,6 +29,10 @@ type AfcProposalOverlayPanelProps = Readonly<{
   onToggle: () => void;
   onViewportEvidenceChange: (evidence: AfcViewportEvidenceSnapshot | null) => void;
   viewportProjection: AfcMainViewportProjectionResult;
+  liveBasis: AfcQualifiedLiveImageBasis | null;
+  onReplayValidViewModelChange: (viewModel: AfcProposalOverlayViewModel | null) => void;
+  onApplyVerifiedFloor: (request: VerifiedAfcFloorApplyRequest) => void;
+  applyStatus: VerifiedAfcFloorApplyActionStatus;
 }>;
 
 const CONTROL_LABELS: ReadonlyArray<readonly [keyof Omit<AfcProposalOverlayControls, "opacity">, string]> = [
@@ -31,16 +45,52 @@ function PrettyJson({ value }: Readonly<{ value: unknown }>) {
   return <pre className="max-h-80 overflow-auto rounded border border-slate-800 bg-slate-950 p-2 text-[10px] leading-relaxed text-slate-300">{JSON.stringify(value, null, 2)}</pre>;
 }
 
-/** Isolated research evidence panel. It accepts no Floor, camera, scene, or persistence setter. */
+function applyQualificationMessage(reason: string): string {
+  switch (reason) {
+    case "no_view_model":
+    case "missing_candidate":
+    case "missing_candidate_identity":
+      return "Verified AFC proposal evidence is unavailable.";
+    case "no_qualified_basis":
+      return "The current room image basis is not qualified for this proposal.";
+    case "fingerprint_mismatch":
+    case "dimension_mismatch":
+    case "missing_role_image_identity":
+      return "The current room image does not exactly match this proposal's verified role and dimensions.";
+    default:
+      return "This AFC proposal is not eligible for Floor Apply.";
+  }
+}
+
+function applyEligibilityMessage(candidate: VerifiedAfcFloorCandidate): string {
+  if (candidate.transferMode === "exact_role_match") {
+    return "Eligible through an exact verified proposal-role image match. Camera calibration is not applied.";
+  }
+  if (candidate.transferMode === "paired_cross_role_aspect_rescaled") {
+    return "Eligible through the replay-verified Original ↔ Empty image pair; the pair is aspect-compatible within the accepted tolerance. Camera calibration is not applied.";
+  }
+  return "Eligible through the replay-verified Original ↔ Empty image pair with an exact grid. Camera calibration is not applied.";
+}
+
+/** Evidence UI owns presentation only; the host retains all Floor authority. */
 export default function AfcProposalOverlayPanel({
   enabled,
   open,
   onToggle,
   onViewportEvidenceChange,
   viewportProjection,
+  liveBasis,
+  onReplayValidViewModelChange,
+  onApplyVerifiedFloor,
+  applyStatus,
 }: AfcProposalOverlayPanelProps) {
   const state = useAfcProposalOverlayState(enabled);
   const model = state.viewModel;
+  const replayValidModel = canRenderAfcProposalOverlay(state.status, state.imageUrl) ? model : null;
+  const applyQualification = qualifyVerifiedAfcFloorApply({
+    viewModel: replayValidModel,
+    liveBasis,
+  });
   useEffect(() => {
     onViewportEvidenceChange(enabled ? buildAfcViewportEvidenceSnapshot({
       viewModel: model,
@@ -51,11 +101,14 @@ export default function AfcProposalOverlayPanel({
     }) : null);
   }, [enabled, model, onViewportEvidenceChange, state.imageRole, state.imageUrl, state.status, state.viewportControls]);
   useEffect(() => () => onViewportEvidenceChange(null), [onViewportEvidenceChange]);
+  useEffect(() => {
+    onReplayValidViewModelChange(replayValidModel);
+  }, [onReplayValidViewModelChange, replayValidModel]);
 
   return (
     <CollapsibleSection
       title="AFC Proposal Overlay — Research Evidence Only"
-      description="Receipt-first replay of immutable AFC-R3C artifacts. Read-only evidence; not a Floor comparison or Apply surface."
+      description="Receipt-first replay of immutable AFC-R3C artifacts. Evidence remains non-authoritative until a separately verified Floor Apply succeeds."
       open={open}
       onToggle={onToggle}
       meta={<span className="rounded bg-amber-500/15 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-amber-100">read-only · unapplied · non-authoritative · not persisted</span>}
@@ -65,7 +118,7 @@ export default function AfcProposalOverlayPanel({
       ) : (
         <div className="space-y-4 text-xs text-slate-300">
           <div className="rounded-lg border border-amber-800/70 bg-amber-950/20 p-3 text-amber-100">
-            This viewer replays a captured receipt and verifies its artifacts before rendering. It cannot alter Floor geometry, camera state, support review, scene JSON, persistence, or selection.
+            This viewer replays a captured receipt and verifies its artifacts before rendering. Dashed AFC geometry remains evidence; an explicit verified Floor Apply sends only exact source geometry to the host's canonical Floor authority. It never applies camera calibration.
           </div>
           <div className="space-y-2">
             <p className="text-slate-400">Inventory fields are receipt claims. Full artifact verification occurs only when Load receipt is used.</p>
@@ -99,6 +152,27 @@ export default function AfcProposalOverlayPanel({
                   <div><dt className="text-slate-500">Safety</dt><dd>research-only · unapplied · non-authoritative · not persisted · camera unchanged</dd></div>
                 </dl>
               </div>
+              <section className="rounded-lg border border-emerald-900/70 bg-emerald-950/15 p-3">
+                <h3 className="text-sm text-emerald-100">Verified Floor Apply</h3>
+                {applyQualification.ok ? (
+                  <>
+                    <p className="mt-1 text-[11px] text-slate-300">{applyEligibilityMessage(applyQualification.candidate)}</p>
+                    <button
+                      type="button"
+                      className="mt-3 rounded border border-emerald-600/70 px-3 py-1.5 text-emerald-100"
+                      onClick={() => onApplyVerifiedFloor({ candidate: applyQualification.candidate })}
+                    >
+                      Apply verified AFC Floor
+                    </button>
+                  </>
+                ) : (
+                  <p className="mt-1 text-[11px] text-amber-200">{applyQualificationMessage(applyQualification.reason)}</p>
+                )}
+                {applyStatus.kind === "applied" ? <p className="mt-2 text-[11px] text-emerald-100">Verified AFC Floor applied. Camera calibration was not applied.</p> : null}
+                {applyStatus.kind === "no_change" ? <p className="mt-2 text-[11px] text-slate-300">No material Floor authority change was needed.</p> : null}
+                {applyStatus.kind === "invalidated_before_apply" ? <p className="mt-2 text-[11px] text-amber-200">Apply rejected because the current verified evidence or image basis changed.</p> : null}
+                {applyStatus.kind === "rejected" ? <p className="mt-2 text-[11px] text-rose-200">Apply rejected by canonical Floor authority. Floor was unchanged.</p> : null}
+              </section>
               <div className="flex flex-wrap items-center gap-2">
                 <span className="text-slate-400">Verified image:</span>
                 <button type="button" onClick={() => state.selectImageRole("original")} className={`rounded border px-2 py-1 ${state.imageRole === "original" ? "border-emerald-500 text-emerald-100" : "border-slate-600 text-slate-300"}`}>Original</button>
