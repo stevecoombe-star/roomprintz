@@ -16,6 +16,18 @@ import {
   type VerifiedAfcFloorApplyActionStatus,
   type VerifiedAfcFloorApplyRequest,
 } from "./afc-verified-floor-apply-request";
+import {
+  qualifyVerifiedAfcCameraApply,
+  type VerifiedAfcFloorCameraBinding,
+} from "./afc-verified-camera-apply";
+import {
+  revalidateVerifiedAfcCameraApplyRequest,
+  type VerifiedAfcCameraApplyRequest,
+} from "./afc-verified-camera-apply-request";
+import {
+  establishVerifiedAfcFloorCameraBinding,
+  shouldClearVerifiedAfcFloorCameraBindingForFloorAuthorityChange,
+} from "./afc-verified-camera-binding";
 import type { AfcUi2aCurrentImageDescriptor } from "./afc-ui2a-runner-state";
 import type { AfcProposalOverlayViewModel } from "./research/afc-proposal-overlay-view-model";
 import AfcMainViewportEvidenceOverlay from "./AfcMainViewportEvidenceOverlay";
@@ -265,6 +277,7 @@ import {
   CALIBRATED_CAMERA_APPLY_MAX_SCALE_RATIO,
   CALIBRATED_CAMERA_APPLY_MIN_SCALE_RATIO,
   evaluateCalibratedCameraApply,
+  type CalibratedCameraApplyCandidate,
 } from "./calibrated-camera-apply";
 import { evaluateQuadSolvability } from "./quad-solvability";
 import { classifyAutoFloorSupport } from "./auto-floor-support-classification";
@@ -590,6 +603,15 @@ type CalibratedCameraSnapshot = {
   imageBasis: CalibrationImageBasis;
   sourceFloorPolygon: FloorPoint[];
 };
+type CameraPoseApplyCandidate = CalibratedCameraApplyCandidate & {
+  diagnosticsSummary: string;
+  pose: CalibratedCameraSnapshot["pose"];
+};
+type VerifiedAfcCameraApplyActionStatus =
+  | Readonly<{ kind: "idle" }>
+  | Readonly<{ kind: "applied" }>
+  | Readonly<{ kind: "invalidated_before_apply" }>
+  | Readonly<{ kind: "rejected" }>;
 type FrozenAttachmentWorldTransform = {
   position: { x: number; y: number; z: number };
   quaternion: { x: number; y: number; z: number; w: number };
@@ -1530,6 +1552,11 @@ export default function ThreeRoomLab({
   const calibratedCameraActiveRef = useRef(false);
   const calibratedCameraSnapshotRef = useRef<CalibratedCameraSnapshot | null>(null);
   const calibratedCameraApplyStatusRef = useRef<{ available: boolean } | null>(null);
+  const cameraPoseApplyCandidateRef = useRef<CameraPoseApplyCandidate | null>(null);
+  const cameraPoseUnavailableReasonRef = useRef<string | null>(null);
+  const afcVerifiedFloorLiveBasisRef = useRef<AfcQualifiedLiveImageBasis | null>(null);
+  const verifiedAfcFloorCameraBindingRef = useRef<VerifiedAfcFloorCameraBinding | null>(null);
+  const verifiedAfcFloorCameraBindingGenerationRef = useRef(0);
   const preCalibratedDepthScalingRef = useRef<PerspectiveDepthScalingState | null>(null);
   const attachmentTransformRef = useRef<SupportAttachmentTransformResult | null>(null);
   const objectTransformModeRef = useRef<ObjectTransformMode>("detached");
@@ -1675,6 +1702,10 @@ export default function ThreeRoomLab({
   const afcReplayValidViewModelRef = useRef<AfcProposalOverlayViewModel | null>(null);
   const [afcVerifiedFloorApplyStatus, setAfcVerifiedFloorApplyStatus] =
     useState<VerifiedAfcFloorApplyActionStatus>({ kind: "idle" });
+  const [verifiedAfcFloorCameraBinding, setVerifiedAfcFloorCameraBinding] =
+    useState<VerifiedAfcFloorCameraBinding | null>(null);
+  const [afcVerifiedCameraApplyStatus, setAfcVerifiedCameraApplyStatus] =
+    useState<VerifiedAfcCameraApplyActionStatus>({ kind: "idle" });
   const [basisQualificationStatus, setBasisQualificationStatus] = useState<string>("basis_unavailable");
   const basisQualificationRequestIdRef = useRef(0);
   const floorPolygonAuthorityKeyRef = useRef(buildDurableSourceFloorAuthorityKey(DEFAULT_FLOOR_POLYGON));
@@ -2235,6 +2266,14 @@ export default function ThreeRoomLab({
       setFloorSupportReviewStatus(snapshot.reviewStatus);
       setFloorSupportSource(snapshot.source);
       setFloorSupportImageBasis(snapshot.imageBasis);
+      clearVerifiedAfcFloorCameraBinding();
+      if (calibratedCameraActiveRef.current) {
+        calibratedCameraActiveRef.current = false;
+        deactivateCalibratedCameraMode();
+        setLastCalibratedCameraAutoRevertReason(
+          "reverted — Floor Undo changed the authority polygon"
+        );
+      }
       return;
     }
     if (snapshot.kind === "ceiling") {
@@ -2391,6 +2430,40 @@ export default function ThreeRoomLab({
       decodedHeight: qualifiedImageBasis.decodedHeight,
     });
   }, [basisQualificationStatus, imageIntrinsicSize, isRoomImageReadyForUrl, qualifiedImageBasis, roomImageUrl]);
+  afcVerifiedFloorLiveBasisRef.current = afcVerifiedFloorLiveBasis;
+
+  const setCurrentVerifiedAfcFloorCameraBinding = useCallback(
+    (binding: VerifiedAfcFloorCameraBinding | null) => {
+      verifiedAfcFloorCameraBindingRef.current = binding;
+      setVerifiedAfcFloorCameraBinding(binding);
+    },
+    []
+  );
+
+  const clearVerifiedAfcFloorCameraBinding = useCallback(() => {
+    setCurrentVerifiedAfcFloorCameraBinding(null);
+    setAfcVerifiedCameraApplyStatus({ kind: "idle" });
+  }, [setCurrentVerifiedAfcFloorCameraBinding]);
+
+  const establishVerifiedAfcFloorCameraBindingAfterFloorApply = useCallback(
+    (outcome: "applied" | "no_change", liveBasis: AfcQualifiedLiveImageBasis | null) => {
+      const established = establishVerifiedAfcFloorCameraBinding({
+        outcome,
+        previousGeneration: verifiedAfcFloorCameraBindingGenerationRef.current,
+        floorAuthorityKey: floorPolygonAuthorityKeyRef.current,
+        liveBasis,
+      });
+      if (!established) {
+        clearVerifiedAfcFloorCameraBinding();
+        return false;
+      }
+      verifiedAfcFloorCameraBindingGenerationRef.current = established.nextGeneration;
+      setAfcVerifiedCameraApplyStatus({ kind: "idle" });
+      setCurrentVerifiedAfcFloorCameraBinding(established.binding);
+      return true;
+    },
+    [clearVerifiedAfcFloorCameraBinding, setCurrentVerifiedAfcFloorCameraBinding]
+  );
 
   const cancelPendingCalibrationRestoreAfterManualGeometryChange = useCallback(() => {
     if (!pendingCalibrationRestore) return;
@@ -2419,6 +2492,7 @@ export default function ThreeRoomLab({
   const deactivateCalibratedCameraMode = useCallback((options?: { clearAutoRevertReason?: boolean }) => {
     setIsCalibratedCameraActive(false);
     setCalibratedCameraSnapshot(null);
+    setAfcVerifiedCameraApplyStatus({ kind: "idle" });
     calibratedMoveDragPointerIdRef.current = null;
     calibratedMoveGrabOffsetRef.current = null;
     setLastCalibratedMoveStatus("none");
@@ -2465,7 +2539,12 @@ export default function ThreeRoomLab({
       setFloorSupportImageBasis(qualifiedImageBasis);
       floorPolygonAuthorityKeyRef.current = plan.authorityKey;
 
-      if (previousAuthorityKey !== plan.authorityKey) {
+      const floorAuthorityChanged = shouldClearVerifiedAfcFloorCameraBindingForFloorAuthorityChange(
+        previousAuthorityKey,
+        plan.authorityKey
+      );
+      if (floorAuthorityChanged) {
+        clearVerifiedAfcFloorCameraBinding();
         // A pending restore belongs to the pre-mutation source authority and
         // must not overwrite a later manual or programmatic Floor update.
         cancelPendingCalibrationRestoreAfterManualGeometryChange();
@@ -2513,7 +2592,7 @@ export default function ThreeRoomLab({
       }
 
       if (
-        previousAuthorityKey !== plan.authorityKey &&
+        floorAuthorityChanged &&
         calibratedCameraActiveRef.current
       ) {
         // Keep repeated pointer events from observing the pre-render active
@@ -2528,6 +2607,7 @@ export default function ThreeRoomLab({
     },
     [
       cancelPendingCalibrationRestoreAfterManualGeometryChange,
+      clearVerifiedAfcFloorCameraBinding,
       deactivateCalibratedCameraMode,
       qualifiedImageBasis,
       updateActiveSupportPointUndoSnapshot,
@@ -2580,10 +2660,11 @@ export default function ThreeRoomLab({
 
   const handleApplyVerifiedAfcFloor = useCallback(
     (request: VerifiedAfcFloorApplyRequest) => {
+      const currentLiveBasis = afcVerifiedFloorLiveBasisRef.current;
       const revalidated = revalidateVerifiedAfcFloorApplyRequest({
         request,
         viewModel: afcReplayValidViewModelRef.current,
-        liveBasis: afcVerifiedFloorLiveBasis,
+        liveBasis: currentLiveBasis,
       });
       if (!revalidated.ok) {
         setAfcVerifiedFloorApplyStatus({ kind: "invalidated_before_apply" });
@@ -2597,6 +2678,9 @@ export default function ThreeRoomLab({
         },
         { captureUndo: "programmatic" }
       );
+      if (outcome === "applied" || outcome === "no_change") {
+        establishVerifiedAfcFloorCameraBindingAfterFloorApply(outcome, currentLiveBasis);
+      }
       setAfcVerifiedFloorApplyStatus(
         outcome === "applied"
           ? { kind: "applied" }
@@ -2605,7 +2689,7 @@ export default function ThreeRoomLab({
             : { kind: "rejected" }
       );
     },
-    [afcVerifiedFloorLiveBasis, applySourceNormalizedFloorPolygon]
+    [applySourceNormalizedFloorPolygon, establishVerifiedAfcFloorCameraBindingAfterFloorApply]
   );
 
   useEffect(() => {
@@ -2634,7 +2718,7 @@ export default function ThreeRoomLab({
         !qualifiedImageBasis ||
         sourceNormalizedFloorPolygon.length !== 4
       ) {
-        return;
+        return false;
       }
       captureAndNeutralizeDepthScalingForCalibratedMode();
       setLastCalibratedCameraAutoRevertReason(null);
@@ -2648,6 +2732,7 @@ export default function ThreeRoomLab({
         sourceFloorPolygon: sourceNormalizedFloorPolygon.map((point) => ({ x: point.x, y: point.y })),
       });
       setIsCalibratedCameraActive(true);
+      return true;
     },
     [captureAndNeutralizeDepthScalingForCalibratedMode, qualifiedImageBasis, sourceNormalizedFloorPolygon]
   );
@@ -3436,6 +3521,8 @@ export default function ThreeRoomLab({
 
     return makeResult();
   }, [activeQuadSolvability, cameraPoseFovYDeg]);
+  cameraPoseApplyCandidateRef.current = cameraPoseDebug.applyCandidate;
+  cameraPoseUnavailableReasonRef.current = cameraPoseDebug.unavailableReason;
 
   const cameraPoseFovScanDebug = useMemo(() => {
     const rows: { label: string; value: string }[] = [];
@@ -3572,6 +3659,88 @@ export default function ThreeRoomLab({
     sourceNormalizedFloorPolygon.length,
   ]);
   calibratedCameraApplyStatusRef.current = calibratedCameraApplyStatus;
+
+  const verifiedAfcCameraApplyQualification = useMemo(
+    () =>
+      qualifyVerifiedAfcCameraApply({
+        binding: verifiedAfcFloorCameraBinding,
+        currentFloorAuthorityKey: floorPolygonAuthorityKeyRef.current ?? null,
+        currentLiveBasis: afcVerifiedFloorLiveBasis,
+        currentCameraApplyEvaluation: calibratedCameraApplyStatus,
+        hasApplyCandidate: cameraPoseDebug.applyCandidate !== null,
+      }),
+    [
+      afcVerifiedFloorLiveBasis,
+      calibratedCameraApplyStatus,
+      cameraPoseDebug.applyCandidate,
+      sourceNormalizedFloorPolygon,
+      verifiedAfcFloorCameraBinding,
+    ]
+  );
+
+  const handleApplyVerifiedAfcCamera = useCallback(
+    (request: VerifiedAfcCameraApplyRequest) => {
+      if (pendingScanAndApplyFov !== null) {
+        setAfcVerifiedCameraApplyStatus({ kind: "rejected" });
+        return;
+      }
+
+      const candidate = cameraPoseApplyCandidateRef.current;
+      const freshEvaluation = evaluateCalibratedCameraApply(
+        candidate,
+        cameraPoseUnavailableReasonRef.current,
+        {
+          basisQualified:
+            !!qualifiedImageBasis &&
+            floorPolygonAuthorityEligible &&
+            sourceNormalizedFloorPolygon.length === 4,
+          basisUnavailableReason: !floorPolygonAuthorityEligible
+            ? "basis_legacy_receipt_missing"
+            : !qualifiedImageBasis
+              ? basisQualificationStatus === "qualified"
+                ? "basis_unavailable"
+                : basisQualificationStatus
+              : sourceNormalizedFloorPolygon.length !== 4
+                ? "basis_unavailable"
+                : null,
+        }
+      );
+      calibratedCameraApplyStatusRef.current = freshEvaluation;
+      const revalidated = revalidateVerifiedAfcCameraApplyRequest({
+        request,
+        qualificationInput: {
+          binding: verifiedAfcFloorCameraBindingRef.current,
+          currentFloorAuthorityKey: floorPolygonAuthorityKeyRef.current ?? null,
+          currentLiveBasis: afcVerifiedFloorLiveBasisRef.current,
+          currentCameraApplyEvaluation: freshEvaluation,
+          hasApplyCandidate: candidate !== null,
+        },
+      });
+      if (!revalidated.ok) {
+        setAfcVerifiedCameraApplyStatus({
+          kind: revalidated.reason === "request_invalid" ? "rejected" : "invalidated_before_apply",
+        });
+        return;
+      }
+      if (!candidate) {
+        setAfcVerifiedCameraApplyStatus({ kind: "invalidated_before_apply" });
+        return;
+      }
+
+      setScanAndApplyResult(null);
+      const applied = applyCalibratedCameraSnapshotFromCandidate(candidate, cameraPoseFovYDeg);
+      setAfcVerifiedCameraApplyStatus({ kind: applied ? "applied" : "rejected" });
+    },
+    [
+      applyCalibratedCameraSnapshotFromCandidate,
+      basisQualificationStatus,
+      cameraPoseFovYDeg,
+      floorPolygonAuthorityEligible,
+      pendingScanAndApplyFov,
+      qualifiedImageBasis,
+      sourceNormalizedFloorPolygon.length,
+    ]
+  );
 
   // Phase 2J-B3: deferred calibrated-camera restore. This runs reactively, not
   // in a render loop: while a request is pending it simply waits (no side
@@ -11698,6 +11867,7 @@ export default function ThreeRoomLab({
 
   const applyValidatedSceneState = (validated: ImportedSceneValidated, nextExportedAt: string): boolean => {
     if (refuseModelMutationWhileAttached()) return false;
+    clearVerifiedAfcFloorCameraBinding();
     // Phase 2J-B3: any prior calibrated-camera mode/snapshot must not survive an
     // import. We always drop back to legacy first so a stale pre-import snapshot
     // can never leak into the restored scene; calibrated mode is only ever
@@ -20146,6 +20316,66 @@ export default function ThreeRoomLab({
                   Recommended FOV applied, but calibration was not applied: {calibratedCameraApplyStatus.reason}
                 </p>
               )}
+          </div>
+
+          <div className="mt-3 rounded-lg border border-emerald-900/70 bg-emerald-950/15 p-3">
+            <div className="flex flex-wrap items-center gap-2 text-xs">
+              <button
+                type="button"
+                onClick={() => {
+                  if (!verifiedAfcCameraApplyQualification.ok) return;
+                  handleApplyVerifiedAfcCamera({
+                    bindingGeneration: verifiedAfcCameraApplyQualification.bindingGeneration,
+                  });
+                }}
+                disabled={!verifiedAfcCameraApplyQualification.ok || pendingScanAndApplyFov !== null}
+                className="rounded border border-emerald-500/70 px-2 py-1 font-medium text-emerald-200 transition hover:border-emerald-300 hover:text-emerald-100 disabled:cursor-not-allowed disabled:border-slate-700 disabled:text-slate-500 disabled:opacity-60"
+              >
+                Apply calibration from verified AFC Floor
+              </button>
+              <span className="text-slate-500">
+                Uses the current FOV and current solver candidate; it does not run an FOV scan.
+              </span>
+            </div>
+            <p
+              className={
+                verifiedAfcCameraApplyQualification.ok
+                  ? "mt-2 text-xs text-emerald-200"
+                  : "mt-2 text-xs text-amber-200"
+              }
+            >
+              {verifiedAfcCameraApplyQualification.ok
+                ? "Exact AFC-bound Floor is current and the camera solution is Apply-safe. Apply remains explicit."
+                : verifiedAfcCameraApplyQualification.reason === "no_afc_floor_binding"
+                  ? "Apply a verified AFC Floor first to enable AFC-bound calibration."
+                  : verifiedAfcCameraApplyQualification.reason === "camera_candidate_unavailable"
+                    ? "AFC-bound Floor and exact live image basis are current, but no Apply-safe camera candidate is available at the current FOV. It does not run an FOV scan."
+                    : verifiedAfcCameraApplyQualification.reason === "camera_apply_gates_failed"
+                      ? `AFC-bound calibration is unavailable: ${verifiedAfcCameraApplyQualification.cameraReason}`
+                      : (
+                        verifiedAfcCameraApplyQualification.reason === "current_floor_authority_unavailable" ||
+                        verifiedAfcCameraApplyQualification.reason === "floor_authority_mismatch" ||
+                        verifiedAfcCameraApplyQualification.reason === "live_image_basis_unavailable" ||
+                        verifiedAfcCameraApplyQualification.reason === "support_image_basis_mismatch"
+                      )
+                        ? "AFC-bound calibration is unavailable because the current Floor or exact live image basis no longer matches."
+                        : "AFC-bound calibration is unavailable. Refresh the current camera readiness and try again."}
+            </p>
+            {afcVerifiedCameraApplyStatus.kind === "applied" && isCalibratedCameraActive ? (
+              <p className="mt-1 text-xs text-emerald-300">
+                Calibration applied from the current verified AFC Floor.
+              </p>
+            ) : null}
+            {afcVerifiedCameraApplyStatus.kind === "invalidated_before_apply" ? (
+              <p className="mt-1 text-xs text-amber-200">
+                AFC-bound calibration was not applied because the Floor, image basis, or camera readiness changed.
+              </p>
+            ) : null}
+            {afcVerifiedCameraApplyStatus.kind === "rejected" ? (
+              <p className="mt-1 text-xs text-rose-200">
+                AFC-bound calibration was not applied. Refresh readiness and try again.
+              </p>
+            ) : null}
           </div>
 
           <div className="mt-3 flex flex-wrap items-center gap-2 text-xs">

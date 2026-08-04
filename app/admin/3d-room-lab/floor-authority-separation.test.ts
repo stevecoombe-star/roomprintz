@@ -760,6 +760,7 @@ const UI_SOURCE = readFileSync(path.join(LAB_DIR, "ThreeRoomLab.tsx"), "utf8");
 const QUAD_SOLVABILITY_SOURCE = readFileSync(path.join(LAB_DIR, "quad-solvability.ts"), "utf8");
 const EXTENT_SOURCE = readFileSync(path.join(LAB_DIR, "floor-coordinate-extent.ts"), "utf8");
 const IMAGE_SPACE_SOURCE = readFileSync(path.join(LAB_DIR, "image-space.ts"), "utf8");
+const SCENE_STATE_SOURCE = readFileSync(path.join(LAB_DIR, "scene-state.ts"), "utf8");
 
 function extractCallbackBlock(name: string): string {
   const start = UI_SOURCE.indexOf(`const ${name} = useCallback(`);
@@ -949,7 +950,8 @@ test("CP1B-B: runtime authority mutations converge through source-authority plan
 
   assert.match(commit, /setSourceNormalizedFloorPolygon\(sourcePolygon\)/);
   assert.match(commit, /floorPolygonAuthorityKeyRef\.current = plan\.authorityKey/);
-  assert.match(commit, /previousAuthorityKey !== plan\.authorityKey/);
+  assert.match(commit, /shouldClearVerifiedAfcFloorCameraBindingForFloorAuthorityChange/);
+  assert.match(commit, /clearVerifiedAfcFloorCameraBinding\(\)/);
   assert.match(commit, /cancelPendingCalibrationRestoreAfterManualGeometryChange\(\)/);
   assert.match(commit, /deactivateCalibratedCameraMode\(\)/);
   assert.match(container, /planContainerFloorPolygon/);
@@ -994,6 +996,139 @@ test("CP2A: verified AFC Apply stays host-owned and source-first", () => {
   assert.match(UI_SOURCE, /revalidateVerifiedAfcFloorApplyRequest/);
   assert.match(UI_SOURCE, /applySourceNormalizedFloorPolygon\(\s*revalidated\.candidate\.sourcePolygon/);
   assert.match(UI_SOURCE, /const LOCAL_DRAFT_STORAGE_KEY = "vibode:3d-room-lab:scene-state:v0";/);
+});
+
+test("CP2B: AFC-bound camera Apply stays host-owned and reuses camera authority", () => {
+  const panelSource = readFileSync(path.join(LAB_DIR, "AfcProposalOverlayPanel.tsx"), "utf8");
+  const floorApply = extractCallbackBlock("handleApplyVerifiedAfcFloor");
+  const cameraApply = extractCallbackBlock("handleApplyVerifiedAfcCamera");
+  const ordinaryApplyStart = UI_SOURCE.indexOf(
+    "onClick={() => {\n                const candidate = cameraPoseDebug.applyCandidate;"
+  );
+  const ordinaryApplyEnd = UI_SOURCE.indexOf("\n              Apply calibration\n", ordinaryApplyStart);
+
+  assert.match(UI_SOURCE, /qualifyVerifiedAfcCameraApply/);
+  assert.match(cameraApply, /revalidateVerifiedAfcCameraApplyRequest/);
+  assert.match(cameraApply, /evaluateCalibratedCameraApply/);
+  assert.match(cameraApply, /applyCalibratedCameraSnapshotFromCandidate\(candidate, cameraPoseFovYDeg\)/);
+  assert.doesNotMatch(cameraApply, /applySourceNormalizedFloorPolygon|commitFloorAuthorityMutation/);
+  assert.doesNotMatch(floorApply, /applyCalibratedCameraSnapshotFromCandidate/);
+  assert.doesNotMatch(
+    panelSource,
+    /onApplyVerifiedAfcCamera|onApplyCamera|cameraPoseApplyCandidateRef|calibratedCameraSnapshot|setVerifiedAfcFloorCameraBinding/
+  );
+  assert.match(UI_SOURCE, /Apply calibration from verified AFC Floor/);
+  assert.ok(ordinaryApplyStart >= 0 && ordinaryApplyEnd > ordinaryApplyStart);
+  assert.doesNotMatch(
+    UI_SOURCE.slice(ordinaryApplyStart, ordinaryApplyEnd),
+    /verifiedAfcFloorCameraBinding|handleApplyVerifiedAfcCamera/
+  );
+  assert.doesNotMatch(SCENE_STATE_SOURCE, /VerifiedAfcFloorCameraBinding|bindingGeneration|afcVerifiedCameraApply/);
+});
+
+test("CP2B: readiness copy separates candidate availability from Floor and basis identity", () => {
+  const mappingStart = UI_SOURCE.indexOf(
+    '{verifiedAfcCameraApplyQualification.ok\n                ? "Exact AFC-bound Floor is current'
+  );
+  const mappingEnd = UI_SOURCE.indexOf("\n            </p>", mappingStart);
+  assert.ok(mappingStart >= 0 && mappingEnd > mappingStart);
+  const mapping = UI_SOURCE.slice(mappingStart, mappingEnd);
+
+  assert.match(
+    mapping,
+    /reason === "camera_candidate_unavailable"[\s\S]*?AFC-bound Floor and exact live image basis are current, but no Apply-safe camera candidate is available at the current FOV\. It does not run an FOV scan\./
+  );
+  assert.match(
+    mapping,
+    /reason === "floor_authority_mismatch"[\s\S]*?reason === "support_image_basis_mismatch"[\s\S]*?current Floor or exact live image basis no longer matches\./
+  );
+  assert.doesNotMatch(
+    mapping.slice(
+      mapping.indexOf('reason === "camera_candidate_unavailable"'),
+      mapping.indexOf('reason === "camera_apply_gates_failed"')
+    ),
+    /current Floor or exact live image basis no longer matches/
+  );
+});
+
+test("CP2B: binding and camera authority transitions reset camera-apply status truthfully", () => {
+  const clearStart = UI_SOURCE.indexOf("const clearVerifiedAfcFloorCameraBinding = useCallback(");
+  const establishStart = UI_SOURCE.indexOf("const establishVerifiedAfcFloorCameraBindingAfterFloorApply = useCallback(");
+  const deactivateStart = UI_SOURCE.indexOf("const deactivateCalibratedCameraMode = useCallback(");
+  const commitStart = UI_SOURCE.indexOf("const commitFloorAuthorityMutation = useCallback(");
+  assert.ok(clearStart >= 0 && establishStart > clearStart && deactivateStart > establishStart && commitStart > deactivateStart);
+  const clear = UI_SOURCE.slice(clearStart, establishStart);
+  const establish = UI_SOURCE.slice(establishStart, deactivateStart);
+  const deactivate = UI_SOURCE.slice(deactivateStart, commitStart);
+
+  assert.match(clear, /setCurrentVerifiedAfcFloorCameraBinding\(null\)/);
+  assert.match(clear, /setAfcVerifiedCameraApplyStatus\(\{ kind: "idle" }\)/);
+  assert.match(establish, /setAfcVerifiedCameraApplyStatus\(\{ kind: "idle" }\)/);
+  assert.match(deactivate, /setIsCalibratedCameraActive\(false\)/);
+  assert.match(deactivate, /setCalibratedCameraSnapshot\(null\)/);
+  assert.match(deactivate, /setAfcVerifiedCameraApplyStatus\(\{ kind: "idle" }\)/);
+  assert.match(
+    UI_SOURCE,
+    /afcVerifiedCameraApplyStatus\.kind === "applied" && isCalibratedCameraActive/
+  );
+});
+
+test("CP2B: camera writer acknowledgement controls AFC success status", () => {
+  const writerStart = UI_SOURCE.indexOf("const applyCalibratedCameraSnapshotFromCandidate = useCallback(");
+  const writerEnd = UI_SOURCE.indexOf("\n\n  useEffect(() => {", writerStart);
+  const handler = extractCallbackBlock("handleApplyVerifiedAfcCamera");
+  assert.ok(writerStart >= 0 && writerEnd > writerStart);
+  const writer = UI_SOURCE.slice(writerStart, writerEnd);
+
+  assert.match(writer, /sourceNormalizedFloorPolygon\.length !== 4[\s\S]*?return false;/);
+  assert.match(
+    writer,
+    /setCalibratedCameraSnapshot\([\s\S]*?setIsCalibratedCameraActive\(true\);\s*return true;/
+  );
+  assert.match(
+    handler,
+    /const applied = applyCalibratedCameraSnapshotFromCandidate\(candidate, cameraPoseFovYDeg\)/
+  );
+  assert.match(
+    handler,
+    /setAfcVerifiedCameraApplyStatus\(\{ kind: applied \? "applied" : "rejected" }\)/
+  );
+});
+
+test("CP2B: Floor Undo and import clear the ephemeral binding without changing other support branches", () => {
+  const restoreStart = UI_SOURCE.indexOf("const restoreSupportPointUndoSnapshot =");
+  const ceilingBranchStart = UI_SOURCE.indexOf('if (snapshot.kind === "ceiling")', restoreStart);
+  const restoreEnd = UI_SOURCE.indexOf("\n\n  supportPointUndoKeyboardHandlerRef.current", restoreStart);
+  const importStart = UI_SOURCE.indexOf("const applyValidatedSceneState =");
+  const importEnd = UI_SOURCE.indexOf("const handleApplyImportedSceneJson =", importStart);
+  assert.ok(
+    restoreStart >= 0 &&
+      ceilingBranchStart > restoreStart &&
+      restoreEnd > ceilingBranchStart &&
+      importStart >= 0 &&
+      importEnd > importStart
+  );
+  const floorUndo = UI_SOURCE.slice(restoreStart, ceilingBranchStart);
+  const nonFloorUndo = UI_SOURCE.slice(ceilingBranchStart, restoreEnd);
+  const sceneImport = UI_SOURCE.slice(importStart, importEnd);
+
+  assert.match(floorUndo, /clearVerifiedAfcFloorCameraBinding\(\)/);
+  assert.match(floorUndo, /deactivateCalibratedCameraMode\(\)/);
+  assert.doesNotMatch(nonFloorUndo, /clearVerifiedAfcFloorCameraBinding|deactivateCalibratedCameraMode/);
+  assert.match(sceneImport, /clearVerifiedAfcFloorCameraBinding\(\)/);
+  assert.match(sceneImport, /deactivateCalibratedCameraMode\(\{ clearAutoRevertReason: true }\)/);
+  assert.doesNotMatch(sceneImport, /setCurrentVerifiedAfcFloorCameraBinding\(/);
+});
+
+test("CP2B: Revert preserves a current AFC Floor binding", () => {
+  const revertLabel = UI_SOURCE.indexOf("\n              Revert to legacy camera\n");
+  const revertStart = UI_SOURCE.lastIndexOf("<button", revertLabel);
+  const revertEnd = UI_SOURCE.indexOf("</button>", revertLabel);
+  assert.ok(revertLabel >= 0 && revertStart >= 0 && revertEnd > revertLabel);
+  assert.doesNotMatch(
+    UI_SOURCE.slice(revertStart, revertEnd),
+    /clearVerifiedAfcFloorCameraBinding|setCurrentVerifiedAfcFloorCameraBinding/
+  );
 });
 
 test("CP1B-B correction: legacy v0 import fails closed when canonical source projection is unavailable", () => {

@@ -168,7 +168,7 @@ export default function AfcProposalOverlayPanel({
                 ) : (
                   <p className="mt-1 text-[11px] text-amber-200">{applyQualificationMessage(applyQualification.reason)}</p>
                 )}
-                {applyStatus.kind === "applied" ? <p className="mt-2 text-[11px] text-emerald-100">Verified AFC Floor applied. Camera calibration was not applied.</p> : null}
+                {applyStatus.kind === "applied" ? <p className="mt-2 text-[11px] text-emerald-100">Verified AFC Floor applied. Camera calibration was not applied. Use the Calibration section to apply the current camera solution when AFC-bound readiness is available.</p> : null}
                 {applyStatus.kind === "no_change" ? <p className="mt-2 text-[11px] text-slate-300">No material Floor authority change was needed.</p> : null}
                 {applyStatus.kind === "invalidated_before_apply" ? <p className="mt-2 text-[11px] text-amber-200">Apply rejected because the current verified evidence or image basis changed.</p> : null}
                 {applyStatus.kind === "rejected" ? <p className="mt-2 text-[11px] text-rose-200">Apply rejected by canonical Floor authority. Floor was unchanged.</p> : null}
