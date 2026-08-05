@@ -1,0 +1,159 @@
+{
+  "schemaVersion": "afc-sr1-ground-truth/v1",
+  "roomId": "room-c",
+  "photoClass": {
+    "classification": "supported_full_back_wall",
+    "provenance": "receipt_replay",
+    "notes": [
+      "The replayed Empty proposal records direct support for the far floor-wall edge."
+    ]
+  },
+  "imageBasis": {
+    "fingerprint": "32edb8294a3e5c68d0e54bd5c387eb408b0bc1e15dad781cef0206090df4df1e",
+    "decodedWidth": 7360,
+    "decodedHeight": 4912,
+    "orientation": 1,
+    "provenance": "receipt_replay"
+  },
+  "rawFloor": {
+    "polygon": [
+      { "x": 0.045, "y": 1 },
+      { "x": 1, "y": 0.82 },
+      { "x": 0.415, "y": 0.616 },
+      { "x": 0.077, "y": 0.694 }
+    ],
+    "source": "empty_receipt",
+    "receiptFileName": "afc-r3c-run.afc-r3c.c4ef8721-5dca-4d4f-b26f-ab5510481245.empty.receipt.json",
+    "receiptSha256": "af56e0cec497ecc7c5282c0a211ea923cc958c6ffc05b0ff3d934053354f3bf8",
+    "requestId": "afc-r3c.c4ef8721-5dca-4d4f-b26f-ab5510481245.empty",
+    "r3bCandidateId": "afc-r3:fnv1a32:caf0b988#01",
+    "r3cCandidateId": "afc-r3c:empty:afc-r3:fnv1a32:caf0b988#01",
+    "sourceBasisFingerprint": "32edb8294a3e5c68d0e54bd5c387eb408b0bc1e15dad781cef0206090df4df1e",
+    "sourceDecodedWidth": 7360,
+    "sourceDecodedHeight": 4912,
+    "sourceOrientation": 1,
+    "projectedToImageBasis": true,
+    "provenance": "scene_state_export",
+    "notes": [
+      "Receipt identity remains the single-candidate Empty evidence.",
+      "The CP2A-applied source-authoritative Floor from afc-sr1-gt0-room-c-empty-raw-applied.scene-state.json records this exact polygon on the active Original basis."
+    ]
+  },
+  "rawToOriginalPlacement": {
+    "status": "same_basis",
+    "method": "explicit_projected_capture",
+    "originalBasisFingerprint": "32edb8294a3e5c68d0e54bd5c387eb408b0bc1e15dad781cef0206090df4df1e",
+    "sourcePolygonFingerprint": "13457889890e7ca7a47d6bbf0505117a3e4f86dbd2159b712bb437b626032b5d",
+    "provenance": "scene_state_export",
+    "evidenceReference": "afc-sr1-gt0-room-c-empty-raw-applied.scene-state.json; AFC Floor Apply screenshot: Verified AFC Floor applied. Camera calibration was not applied."
+  },
+  "acceptedFloor": {
+    "polygon": [
+      { "x": 0.045, "y": 1 },
+      { "x": 0.5866547177769379, "y": 0.6762406630659392 },
+      { "x": 0.415, "y": 0.616 },
+      { "x": 0.077, "y": 0.694 }
+    ],
+    "source": "manual_calibration",
+    "provenance": "scene_state_export"
+  },
+  "seamRefinement": {
+    "adjustableCorner": "NR",
+    "side": "right",
+    "direction": "near_to_far",
+    "seamStart": { "x": 1, "y": 0.82 },
+    "seamEnd": { "x": 0.415, "y": 0.616 },
+    "rawCorner": { "x": 1, "y": 0.82 },
+    "acceptedCorner": { "x": 0.5866547177769379, "y": 0.6762406630659392 },
+    "seamT": 0.7063703325987577,
+    "perpendicularErrorSourceNormResearchOnly": 0.000360303150254346,
+    "collinearWithinTolerance": true,
+    "toleranceSourceNormResearchOnly": 0.002,
+    "provenance": "derived_from_recorded_values",
+    "notes": [
+      "Canonical same-basis refinement uses the CP2A-applied raw NR→FR seam and the accepted polygon from afc-sr1-gt0-room-c-refined-apply-safe.scene-state-FINAL.json."
+    ]
+  },
+  "uncertifiedReceiptSeamEvidence": {
+    "status": "cross_basis_unprojected",
+    "usableAsGroundTruth": false,
+    "projectedToImageBasis": false,
+    "side": "right",
+    "adjustableCorner": "NR",
+    "direction": "near_to_far",
+    "emptyBasisFingerprint": "b7283bb606d09bc7803543bfcbca14aa5f2041cfb91c5eb590d69d167355243f",
+    "emptyDecodedWidth": 1264,
+    "emptyDecodedHeight": 848,
+    "originalBasisFingerprint": "32edb8294a3e5c68d0e54bd5c387eb408b0bc1e15dad781cef0206090df4df1e",
+    "originalDecodedWidth": 7360,
+    "originalDecodedHeight": 4912,
+    "seamStartOnEmptyBasis": { "x": 1, "y": 0.82 },
+    "seamEndOnEmptyBasis": { "x": 0.415, "y": 0.616 },
+    "acceptedCornerOnOriginalBasis": { "x": 0.5721046146953405, "y": 0.6705558693883779 },
+    "unprojectedReceiptSeamT": 0.7315669848921734,
+    "perpendicularErrorSourceNormResearchOnly": 0.00021654106334196836,
+    "toleranceSourceNormResearchOnly": 0.002,
+    "collinearWithinResearchTolerance": true,
+    "provenance": "derived_from_recorded_values",
+    "notes": [
+      "This historical arithmetic compares an Empty-basis receipt seam with the prior repository control corner.",
+      "The error uses isotropic source-normalized x/y units and is research-only; it is not a uniform intrinsic-pixel distance for non-square images."
+    ]
+  },
+  "afcAuthorityPathStatus": "not_yet_exercisable",
+  "calibration": {
+    "worldWidthMeters": 4.6,
+    "worldDepthMeters": 4,
+    "widthDepthRatio": 1.15,
+    "depthWidthAspect": 0.8695652173913043,
+    "verticalFovDeg": 79,
+    "dimensionsTruth": "accepted_calibration_values",
+    "cvAveragePx": 1.62,
+    "cvMaximumPx": 3.28,
+    "displayAveragePx": 1.62,
+    "displayMaximumPx": 3.28,
+    "scaleRatio": 1.0119014164972706,
+    "scaleRatioProvenance": "derived_from_recorded_values",
+    "cameraDiagnosticsContext": {
+      "intrinsicWidth": 7360,
+      "intrinsicHeight": 4912,
+      "frameWidth": 1118,
+      "frameHeight": 698,
+      "sourceToFramePolicy": "cover_crop",
+      "derivationVersion": "ratio-fov-harness/v1",
+      "provenance": "derived_from_recorded_values"
+    },
+    "cameraApplySafe": true,
+    "cameraAppliedSuccessfully": true,
+    "cameraApplyEvidence": {
+      "status": "ordinary_calibrated_camera_applied",
+      "provenance": [
+        "manual_observation",
+        "live_ui_diagnostics",
+        "scene_state_export"
+      ],
+      "notes": [
+        "Ordinary calibrated-camera Apply succeeded before the final export.",
+        "AFC-bound CP2B Apply was not performed after manual NR refinement changed the Floor authority key and invalidated the original ephemeral AFC Floor-camera binding; the refined SR1 advisory handoff does not yet exist."
+      ]
+    },
+    "provenance": "live_ui_diagnostics"
+  },
+  "manualProcess": {
+    "widthFovIterationCount": null,
+    "visuallyAccepted": true,
+    "notes": [
+      "4.8 × 4.0 at current FOV 50°; recommended FOV 78°.",
+      "4.8 × 4.0 @ 78° → CV 4.05 / 9.29, not Apply-safe.",
+      "4.7 × 4.0 @ 78° → CV 3.75 / 7.72, Apply-safe; recommended FOV updated to 79°.",
+      "4.7 × 4.0 @ 79° → CV 2.50 / 7.65, Apply-safe.",
+      "4.6 × 4.0 @ 79° → CV 1.62 / 3.28, strongest; 4.5 × 4.0 @ 79° → CV 5.48 / 10.94, not Apply-safe; returned to 4.6 × 4.0 @ 79°.",
+      "Ordinary calibration applied successfully; the test cube appeared convincingly grounded."
+    ],
+    "provenance": "manual_observation"
+  },
+  "completeness": {
+    "status": "certified",
+    "missingFields": []
+  }
+}

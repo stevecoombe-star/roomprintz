@@ -1,0 +1,116 @@
+{
+  "schemaVersion": "afc-sr1-ground-truth/v1",
+  "roomId": "room-a",
+  "photoClass": {
+    "classification": "unknown",
+    "provenance": "repository_fixture",
+    "notes": [
+      "The R1 control fixture records an Original image basis, not an independently captured photo-class decision."
+    ]
+  },
+  "imageBasis": {
+    "fingerprint": "afc-r1-room-a-original-v1",
+    "decodedWidth": 1264,
+    "decodedHeight": 848,
+    "orientation": 1,
+    "provenance": "repository_fixture"
+  },
+  "rawFloor": {
+    "polygon": null,
+    "source": "unknown",
+    "receiptFileName": null,
+    "receiptSha256": null,
+    "requestId": null,
+    "r3bCandidateId": null,
+    "r3cCandidateId": null,
+    "sourceBasisFingerprint": null,
+    "sourceDecodedWidth": null,
+    "sourceDecodedHeight": null,
+    "sourceOrientation": null,
+    "projectedToImageBasis": null,
+    "provenance": "unknown",
+    "notes": []
+  },
+  "rawToOriginalPlacement": {
+    "status": "not_projected"
+  },
+  "acceptedFloor": {
+    "polygon": [
+      { "x": 0.10837393593189963, "y": 0.9249876495993743 },
+      { "x": 1, "y": 0.9299999999999999 },
+      { "x": 0.688, "y": 0.648 },
+      { "x": 0.356, "y": 0.648 }
+    ],
+    "source": "control_fixture",
+    "provenance": "repository_fixture"
+  },
+  "seamRefinement": {
+    "adjustableCorner": "unknown",
+    "side": "unknown",
+    "direction": null,
+    "seamStart": null,
+    "seamEnd": null,
+    "rawCorner": null,
+    "acceptedCorner": null,
+    "seamT": null,
+    "perpendicularErrorSourceNormResearchOnly": null,
+    "collinearWithinTolerance": null,
+    "toleranceSourceNormResearchOnly": null,
+    "provenance": "unknown",
+    "notes": [
+      "Repository controls contain no raw-to-final seam history; no t=0 inference is made."
+    ]
+  },
+  "uncertifiedReceiptSeamEvidence": {
+    "status": "none"
+  },
+  "afcAuthorityPathStatus": "not_tested",
+  "calibration": {
+    "worldWidthMeters": null,
+    "worldDepthMeters": null,
+    "widthDepthRatio": 1,
+    "depthWidthAspect": 1,
+    "verticalFovDeg": 61,
+    "dimensionsTruth": "unknown",
+    "cvAveragePx": 0.86,
+    "cvMaximumPx": 1.33,
+    "displayAveragePx": null,
+    "displayMaximumPx": null,
+    "scaleRatio": null,
+    "scaleRatioProvenance": null,
+    "cameraDiagnosticsContext": null,
+    "cameraApplySafe": null,
+    "cameraAppliedSuccessfully": null,
+    "cameraApplyEvidence": {
+      "status": "not_applied",
+      "provenance": [],
+      "notes": []
+    },
+    "provenance": "repository_fixture"
+  },
+  "manualProcess": {
+    "widthFovIterationCount": null,
+    "visuallyAccepted": null,
+    "notes": [
+      "The R1 harness calls this a degenerate valley; this fixture does not elevate its control values to empirical capture."
+    ],
+    "provenance": "repository_test"
+  },
+  "completeness": {
+    "status": "partial",
+    "missingFields": [
+      "photoClass.classification",
+      "rawFloor.emptyReceiptPolygon",
+      "rawFloor.receiptIdentity",
+      "rawFloor.sourceBasis",
+      "rawToOriginalPlacement",
+      "seamRefinement.sameBasisEvidence",
+      "calibration.worldDimensions",
+      "calibration.displayDiagnostics",
+      "calibration.scaleRatio",
+      "calibration.cameraApplySafe",
+      "calibration.cameraAppliedSuccessfully",
+      "manualProcess.visualAcceptance"
+    ]
+  }
+}
