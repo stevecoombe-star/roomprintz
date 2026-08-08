@@ -3,6 +3,9 @@ import test from "node:test";
 
 import roomC from "./fixtures/afc-sr1-room-c-ground-truth.v1.json";
 import {
+  buildAfcSr1TopKReference,
+} from "./afc-sr1-solver-certification";
+import {
   buildAfcSr1OriginalBasisPlacement,
   buildAfcSr1OverlayDescriptor,
   buildAfcSr1SemanticPriorBinding,
@@ -56,6 +59,9 @@ const fastConfig: AfcSr1JointSolverConfigV1 = Object.freeze({
     refineStep: 0.25,
     advisoryDensificationStep: 0.1,
   }),
+  refinement: Object.freeze({
+    topSeedsPerHypothesis: 5,
+  }),
   semanticPriorPolicy: "search_order_and_densification_only/v1",
   candidateQualification: "existing_calibrated_camera_apply_gates/v1",
   tieBreakPolicy: "geometric_then_canonical_parameter_order/v1",
@@ -66,6 +72,7 @@ function handoffFor(input: Readonly<{
   decision?: "adjust_nl" | "adjust_nr" | "no_adjustment" | "abstain" | "unsupported_image_class";
   rankedHypotheses?: readonly ["none" | "NL" | "NR", "none" | "NL" | "NR", "none" | "NL" | "NR"];
   frameBasis?: Readonly<{ width: number; height: number }>;
+  seamPrior?: Readonly<{ preferredSeamT: number; minSeamT: number; maxSeamT: number }> | null;
 }> = {}) {
   const polygon = input.polygon ?? basePolygon;
   const size = input.frameBasis ?? { width: 1600, height: 1000 };
@@ -121,11 +128,11 @@ function handoffFor(input: Readonly<{
       { hypothesis: ranking[1], score: 0.2 },
       { hypothesis: ranking[2], score: 0.1 },
     ] : null,
-    seamTPrior: geometric ? {
+    seamTPrior: geometric && input.seamPrior !== null ? {
       adjustableCorner: top,
-      preferredSeamT: 0.7,
-      minSeamT: 0.5,
-      maxSeamT: 0.9,
+      preferredSeamT: input.seamPrior?.preferredSeamT ?? 0.7,
+      minSeamT: input.seamPrior?.minSeamT ?? 0.5,
+      maxSeamT: input.seamPrior?.maxSeamT ?? 0.9,
     } : null,
     semanticLabels: geometric ? ["both_side_walls_visible"] : [],
   };
@@ -194,6 +201,11 @@ test("config, ratio, FOV, and seam grids are deterministic and retain ratios bel
     seamSearch: Object.freeze({ ...fastConfig.seamSearch, advisoryDensificationStep: 0.2 }),
   });
   assert.notEqual(digestAfcSr1JointSolverConfig(fastConfig), digestAfcSr1JointSolverConfig(changedConfig));
+  const changedSeedConfig: AfcSr1JointSolverConfigV1 = Object.freeze({
+    ...fastConfig,
+    refinement: Object.freeze({ ...fastConfig.refinement, topSeedsPerHypothesis: 3 }),
+  });
+  assert.notEqual(digestAfcSr1JointSolverConfig(fastConfig), digestAfcSr1JointSolverConfig(changedSeedConfig));
 });
 
 test("none retains the exact raw polygon and NL/NR alter only their certified near-to-far seam", () => {
@@ -369,4 +381,46 @@ test("identical solves retain deterministic trace, winner identity, and digests"
   const right = solveAfcSr1JointCalibration({ solverHandoff: handoff, evaluationContext: context, config: fastConfig });
   assert.deepEqual(left, right);
   assert.notEqual(left.status, "invalid_input");
+});
+
+test("Room C densified NR refinement retains geometric top-K seeds and matches the independent reference", () => {
+  const roomContext: AfcSr1JointSolverEvaluationContextV1 = Object.freeze({
+    schemaVersion: "afc-sr1-joint-solver-evaluation-context/v1",
+    frameSize: Object.freeze({
+      width: roomC.calibration.cameraDiagnosticsContext.frameWidth,
+      height: roomC.calibration.cameraDiagnosticsContext.frameHeight,
+    }),
+    coverCropPolicy: "existing_image_space_cover_crop/v1",
+    researchBasisQualified: true,
+  });
+  const solverHandoff = handoffFor({
+    polygon: roomC.rawFloor.polygon as unknown as AfcSr1SourcePolygon,
+    decision: "adjust_nr",
+    frameBasis: { width: roomC.imageBasis.decodedWidth, height: roomC.imageBasis.decodedHeight },
+    seamPrior: {
+      preferredSeamT: 0.7063703325987577,
+      minSeamT: 0.65,
+      maxSeamT: 0.75,
+    },
+  });
+  const production = solveAfcSr1JointCalibration({ solverHandoff, evaluationContext: roomContext });
+  assert.equal(production.status, "solved");
+  if (production.status !== "solved") return;
+  assert.equal(production.candidate.cell.hypothesis, "NR");
+  assert.equal(production.diagnostics.refinementSummary.topSeedsPerHypothesis, 5);
+  assert.equal(production.diagnostics.refinementSummary.seedsByHypothesis.NR.length, 5);
+  assert.ok(Object.isFrozen(production.diagnostics.refinementSummary.seedsByHypothesis.NR));
+  const reference = buildAfcSr1TopKReference({
+    solverHandoff,
+    evaluationContext: roomContext,
+    productionResult: production,
+    k: 5,
+  });
+  assert.equal(reference.productionMatchesReference, true);
+  assert.deepEqual(production.candidate.cell, {
+    hypothesis: reference.best?.hypothesis,
+    seamT: reference.best?.seamT,
+    widthDepthRatio: reference.best?.widthDepthRatio,
+    verticalFovDeg: reference.best?.verticalFovDeg,
+  });
 });

@@ -68,6 +68,9 @@ export type AfcSr1JointSolverConfigV1 = Readonly<{
     refineStep: number;
     advisoryDensificationStep: number;
   }>;
+  refinement: Readonly<{
+    topSeedsPerHypothesis: number;
+  }>;
   semanticPriorPolicy: "search_order_and_densification_only/v1";
   candidateQualification: "existing_calibrated_camera_apply_gates/v1";
   tieBreakPolicy: "geometric_then_canonical_parameter_order/v1";
@@ -122,7 +125,9 @@ export type AfcSr1JointSolverTraceV1 = Readonly<{
   advisoryStatus: AfcSr1ValidatedAdvisoryStatusV1;
   coarseBestByHypothesis: Readonly<Record<AfcSr1SolverHypothesisV1, AfcSr1JointSearchCellV1 | null>>;
   refinementSummary: Readonly<{
+    topSeedsPerHypothesis: number;
     seededHypotheses: readonly AfcSr1SolverHypothesisV1[];
+    seedsByHypothesis: Readonly<Record<AfcSr1SolverHypothesisV1, readonly AfcSr1JointSearchCellV1[]>>;
     evaluatedCellCount: number;
   }>;
 }>;
@@ -170,6 +175,9 @@ export const DEFAULT_AFC_SR1_JOINT_SOLVER_CONFIG: AfcSr1JointSolverConfigV1 = de
     coarseStep: 0.05,
     refineStep: 0.005,
     advisoryDensificationStep: 0.01,
+  },
+  refinement: {
+    topSeedsPerHypothesis: 5,
   },
   semanticPriorPolicy: "search_order_and_densification_only/v1",
   candidateQualification: "existing_calibrated_camera_apply_gates/v1",
@@ -221,7 +229,7 @@ export function validateAfcSr1JointSolverConfig(
 ): asserts config is AfcSr1JointSolverConfigV1 {
   if (!isPlainRecord(config) || !hasExactKeys(config, [
     "schemaVersion", "algorithmVersion", "referenceDepthM", "ratioSearch", "fovSearch",
-    "seamSearch", "semanticPriorPolicy", "candidateQualification", "tieBreakPolicy",
+    "seamSearch", "refinement", "semanticPriorPolicy", "candidateQualification", "tieBreakPolicy",
   ]) || !Object.isFrozen(config)) configFailure("shape_or_freeze_invalid");
   if (config.schemaVersion !== AFC_SR1_JOINT_SOLVER_CONFIG_VERSION ||
       config.algorithmVersion !== AFC_SR1_JOINT_SOLVER_ALGORITHM_VERSION ||
@@ -256,6 +264,12 @@ export function validateAfcSr1JointSolverConfig(
       config.seamSearch.globalMinExclusive < 0 || config.seamSearch.globalMaxExclusive > 1 ||
       config.seamSearch.globalMinExclusive >= config.seamSearch.globalMaxExclusive) {
     configFailure("seam_search_invalid");
+  }
+  if (!isPlainRecord(config.refinement) || !hasExactKeys(config.refinement, ["topSeedsPerHypothesis"]) ||
+      !Object.isFrozen(config.refinement) ||
+      !Number.isInteger(config.refinement.topSeedsPerHypothesis) ||
+      config.refinement.topSeedsPerHypothesis <= 0) {
+    configFailure("refinement_invalid");
   }
 }
 
@@ -604,6 +618,9 @@ export function solveAfcSr1JointCalibration(input: Readonly<{
   const order = hypothesisOrder(input.solverHandoff);
   const configDigest = digestAfcSr1JointSolverConfig(config);
   const coarseBest = new Map<AfcSr1SolverHypothesisV1, AfcSr1JointSolverCandidateV1>();
+  const coarseCandidates = new Map<AfcSr1SolverHypothesisV1, AfcSr1JointSolverCandidateV1[]>(
+    HYPOTHESES.map(hypothesis => [hypothesis, []])
+  );
   const seen = new Set<string>();
   const rejectedByReason: Record<string, number> = {};
   let evaluatedCellCount = 0;
@@ -637,9 +654,8 @@ export function solveAfcSr1JointCalibration(input: Readonly<{
     }
     const candidate = result.candidate;
     if (candidate.applyGateObservability.available) applySafeCellCount += 1;
-    const currentCoarse = coarseBest.get(candidate.cell.hypothesis);
-    if (phase === "coarse" && (!currentCoarse || rankAfcSr1JointSolverCandidates([candidate, currentCoarse])[0] === candidate)) {
-      coarseBest.set(candidate.cell.hypothesis, candidate);
+    if (phase === "coarse") {
+      coarseCandidates.get(candidate.cell.hypothesis)!.push(candidate);
     }
     if (!bestValid || rankAfcSr1JointSolverCandidates([candidate, bestValid])[0] === candidate) bestValid = candidate;
     if (candidate.applyGateObservability.available &&
@@ -676,26 +692,33 @@ export function solveAfcSr1JointCalibration(input: Readonly<{
   }
 
   const seededHypotheses: AfcSr1SolverHypothesisV1[] = [];
+  const seedsByHypothesis = {} as Record<AfcSr1SolverHypothesisV1, readonly AfcSr1JointSolverCandidateV1[]>;
   for (const hypothesis of HYPOTHESES) {
-    const seed = coarseBest.get(hypothesis);
+    const seeds = rankAfcSr1JointSolverCandidates(coarseCandidates.get(hypothesis) ?? [])
+      .slice(0, config.refinement.topSeedsPerHypothesis);
+    seedsByHypothesis[hypothesis] = Object.freeze(seeds);
+    const seed = seeds[0];
     if (!seed) continue;
+    coarseBest.set(hypothesis, seed);
     seededHypotheses.push(hypothesis);
-    const seams = hypothesis === "none"
-      ? [null]
-      : localValues(
-        seed.cell.seamT!,
-        config.seamSearch.coarseStep,
-        config.seamSearch.refineStep,
-        config.seamSearch.globalMinExclusive,
-        config.seamSearch.globalMaxExclusive
-      ).filter(value => isLegalSeamT(value, config));
-    evaluateGrid(
-      hypothesis,
-      seams,
-      ratioRefineTicks(config, seed.cell.widthDepthRatio),
-      fovRefineTicks(config, seed.cell.verticalFovDeg),
-      "refine"
-    );
+    for (const refinementSeed of seeds) {
+      const seams = hypothesis === "none"
+        ? [null]
+        : localValues(
+          refinementSeed.cell.seamT!,
+          config.seamSearch.coarseStep,
+          config.seamSearch.refineStep,
+          config.seamSearch.globalMinExclusive,
+          config.seamSearch.globalMaxExclusive
+        ).filter(value => isLegalSeamT(value, config));
+      evaluateGrid(
+        hypothesis,
+        seams,
+        ratioRefineTicks(config, refinementSeed.cell.widthDepthRatio),
+        fovRefineTicks(config, refinementSeed.cell.verticalFovDeg),
+        "refine"
+      );
+    }
   }
 
   const diagnostics: AfcSr1JointSolverTraceV1 = deepFreeze({
@@ -712,7 +735,13 @@ export function solveAfcSr1JointCalibration(input: Readonly<{
       NR: coarseBest.get("NR")?.cell ?? null,
     },
     refinementSummary: {
+      topSeedsPerHypothesis: config.refinement.topSeedsPerHypothesis,
       seededHypotheses,
+      seedsByHypothesis: {
+        none: seedsByHypothesis.none?.map(candidate => candidate.cell) ?? [],
+        NL: seedsByHypothesis.NL?.map(candidate => candidate.cell) ?? [],
+        NR: seedsByHypothesis.NR?.map(candidate => candidate.cell) ?? [],
+      },
       evaluatedCellCount: refinementEvaluatedCellCount,
     },
   });
