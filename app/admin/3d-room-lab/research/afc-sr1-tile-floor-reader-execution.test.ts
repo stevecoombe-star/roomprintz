@@ -8,6 +8,9 @@ import {
   AFC_SR1_TR2_POLICY_VERSION,
   AFC_SR1_TR2_RESEARCH_PROFILE,
   AFC_SR1_TR2_RESULT_SCHEMA_VERSION,
+  AFC_SR1_TR2_V2_POLICY_VERSION,
+  AFC_SR1_TR2_V2_RESEARCH_PROFILE,
+  AFC_SR1_TR2_V2_RESULT_SCHEMA_VERSION,
   executeAfcSr1TileFloorReader,
   validateAfcSr1Tr2ReaderReceipt,
 } from "./afc-sr1-tile-floor-reader-execution";
@@ -110,6 +113,35 @@ function input(caseRow = row) {
   };
 }
 
+function v2Receipt(status: "usable" | "rejected" = "usable", caseRow = row) {
+  const value = receipt(status, caseRow) as any;
+  const analysisIdentity = {
+    mode: "identity",
+    analysisWidth: 1264,
+    analysisHeight: 848,
+    scaleX: 1,
+    scaleY: 1,
+    referenceLongEdge: 1264,
+    resampler: "identity",
+    pixelFormat: "bgr8",
+    pixelBufferSha256: "a".repeat(64),
+  };
+  value.schemaVersion = AFC_SR1_TR2_V2_RESULT_SCHEMA_VERSION;
+  value.researchProfile = AFC_SR1_TR2_V2_RESEARCH_PROFILE;
+  value.policyVersion = AFC_SR1_TR2_V2_POLICY_VERSION;
+  value.runtimeIdentity.readerModuleVersion = "afc-sr1-tile-floor-reader/v2";
+  value.analysisIdentity = analysisIdentity;
+  const preimage = JSON.parse(value.evidenceCanonicalJson);
+  preimage.schemaVersion = value.schemaVersion;
+  preimage.researchProfile = value.researchProfile;
+  preimage.policyVersion = value.policyVersion;
+  preimage.runtime = value.runtimeIdentity;
+  preimage.analysisIdentity = analysisIdentity;
+  value.evidenceCanonicalJson = canonical(preimage);
+  value.evidenceDigest.value = sha256(value.evidenceCanonicalJson);
+  return value;
+}
+
 test("TR2 receipt validates canonical text digest and response/preimage binding", () => {
   const result = validateAfcSr1Tr2ReaderReceipt(receipt(), input());
   assert.equal(result.status, "usable");
@@ -125,6 +157,20 @@ test("TR2 receipt rejects a tampered digest, preimage, image identity, or ROI", 
     const value = JSON.parse(JSON.stringify(receipt()));
     mutate(value);
     assert.throws(() => validateAfcSr1Tr2ReaderReceipt(value, input()));
+  }
+});
+
+test("TR2 v2 receipt binds a valid analysis identity and rejects tampering", () => {
+  const v2Input = { ...input(), readerVersion: "v2" as const };
+  assert.equal(validateAfcSr1Tr2ReaderReceipt(v2Receipt(), v2Input).status, "usable");
+  for (const mutate of [
+    (value: any) => { value.analysisIdentity.pixelBufferSha256 = "z".repeat(64); },
+    (value: any) => { value.analysisIdentity.scaleX = 2; },
+    (value: any) => { value.analysisIdentity.resampler = "opencv-inter-area/v1"; },
+  ]) {
+    const value = JSON.parse(JSON.stringify(v2Receipt()));
+    mutate(value);
+    assert.throws(() => validateAfcSr1Tr2ReaderReceipt(value, v2Input));
   }
 });
 
@@ -147,6 +193,46 @@ test("TR2 reader rejection skips TR0 and usable receipt invokes certified TR0", 
   assert.equal(usable.projectiveHandoff?.status, "usable");
   assert.deepEqual(Object.keys(outbound as object).sort(), ["imageBase64", "policyVersion", "researchProfile", "roi"]);
   assert.equal(JSON.stringify(outbound).includes("truncatedAnchor"), false);
+});
+
+test("TR2 v2 invokes unchanged TR0 with original input dimensions", async () => {
+  const receiptValue = v2Receipt() as any;
+  receiptValue.imageIdentity.decodedWidth = 2528;
+  receiptValue.imageIdentity.decodedHeight = 1696;
+  receiptValue.analysisIdentity = {
+    ...receiptValue.analysisIdentity,
+    mode: "downscale_long_edge",
+    scaleX: 2,
+    scaleY: 2,
+    resampler: "opencv-inter-area/v1",
+  };
+  receiptValue.floorVanishingLinePixel = {
+    ...receiptValue.floorVanishingLinePixel,
+    c: receiptValue.floorVanishingLinePixel.c * 2,
+  };
+  const preimage = JSON.parse(receiptValue.evidenceCanonicalJson);
+  preimage.image = receiptValue.imageIdentity;
+  preimage.analysisIdentity = receiptValue.analysisIdentity;
+  preimage.floorVanishingLinePixel = receiptValue.floorVanishingLinePixel;
+  receiptValue.evidenceCanonicalJson = canonical(preimage);
+  receiptValue.evidenceDigest.value = sha256(receiptValue.evidenceCanonicalJson);
+  const v2Input = {
+    ...input(),
+    readerVersion: "v2" as const,
+    expectedImageIdentity: { sha256: sha256(bytes), byteCount: bytes.byteLength },
+  };
+  const direct = deriveAfcSr1FloorVanishingLineCrossRoom({
+    analysisImage: { decodedWidth: 2528, decodedHeight: 1696 },
+    floorVanishingLinePixel: receiptValue.floorVanishingLinePixel,
+    sourcePolygon: row.sourcePolygon as unknown as AfcSr1SourcePolygon,
+    truncatedAnchor: row.truncatedAnchor,
+  });
+  const result = await executeAfcSr1TileFloorReader(v2Input, {
+    callCompositor: async () => receiptValue,
+  });
+  assert.equal(result.readerExecution.status, "usable");
+  assert.equal(result.projectiveHandoff?.status, "usable");
+  assert.deepEqual(result.projectiveHandoff, direct);
 });
 
 test("TR2 float JSON handoff preserves the certified direct seamT within 1e-12", async () => {
