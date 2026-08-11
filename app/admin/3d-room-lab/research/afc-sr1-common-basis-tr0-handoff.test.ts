@@ -11,13 +11,21 @@ import {
 } from "./afc-sr1-basis-bound-source-polygon";
 import {
   buildAfcSr1CommonBasisTr0Handoff,
+  type AfcSr1CommonBasisTr0HandoffInputV1,
   validateAfcSr1ValidatedCommonBasisTr0Handoff,
 } from "./afc-sr1-common-basis-tr0-handoff";
 import { deriveAfcSr1FloorVanishingLineCrossRoom } from "./afc-sr1-floor-vanishing-line-cross-room";
 import type { AfcSr1SourcePolygon } from "./afc-sr1-semantic-prior";
-import type { AfcSr1Tr2ReaderReceipt } from "./afc-sr1-tile-floor-reader-execution";
+import {
+  AFC_SR1_TR2_V3_POLICY_VERSION,
+  AFC_SR1_TR2_V3_RESEARCH_PROFILE,
+  AFC_SR1_TR2_V3_RESULT_SCHEMA_VERSION,
+  getAfcSr1ValidatedTr2UsableReaderAuthority,
+  validateAfcSr1Tr2ReaderReceipt,
+} from "./afc-sr1-tile-floor-reader-execution";
 
-const readerFingerprint = createHash("sha256").update("raw-reader-image").digest("hex");
+const bytes = new TextEncoder().encode("raw-reader-image");
+const readerFingerprint = createHash("sha256").update(bytes).digest("hex");
 const parentFingerprint = createHash("sha256").update("empty-parent-image").digest("hex");
 const otherFingerprint = createHash("sha256").update("same-size-different-image").digest("hex");
 const polygon: AfcSr1SourcePolygon = Object.freeze([
@@ -28,36 +36,118 @@ const polygon: AfcSr1SourcePolygon = Object.freeze([
 ]) as AfcSr1SourcePolygon;
 const line = Object.freeze({ a: 0, b: 1 / 500, c: -0.8 });
 
-function receipt(fingerprint = readerFingerprint): AfcSr1Tr2ReaderReceipt {
+function receipt() {
   const imageIdentity = {
-    sha256: fingerprint,
-    byteCount: 101,
+    sha256: readerFingerprint,
+    byteCount: bytes.byteLength,
     decodedWidth: 1000,
     decodedHeight: 500,
   };
+  const roiBase = {
+    coordinateSpace: "source-normalized/v1" as const,
+    polygon: polygon.map(({ x, y }) => [x, y] as const),
+  };
+  const roiIdentity = {
+    ...roiBase,
+    roiDigest: sha256HexUtf8(canonicalizeRfc8785Jcs(roiBase)),
+  };
+  const runtimeIdentity = {
+    readerModuleVersion: "afc-sr1-tile-floor-reader/v3",
+    opencvVersion: "4.11.0",
+    numpyVersion: "2.4.6",
+  };
+  const analysisIdentity = {
+    mode: "identity",
+    analysisWidth: 1000,
+    analysisHeight: 500,
+    scaleX: 1,
+    scaleY: 1,
+    referenceLongEdge: 1264,
+    resampler: "identity",
+    pixelFormat: "bgr8",
+    pixelBufferSha256: "a".repeat(64),
+  };
+  const family = {
+    vpClass: "finite",
+    rho: 0.7,
+    normalizedHomogeneousVp: [1, 1, 0.001],
+    supportCount: 2,
+    supportTotalLengthPx: 100,
+    cappedSupportLengthPx: 100,
+    medianResidualPx: 1,
+    p90ResidualPx: 2,
+  };
+  const pair = {
+    familyIndices: [0, 1],
+    families: [family, family],
+    floorLineAnalysis: [0, 1, -400],
+    basinSupport: 1,
+    stability: { stable: true, maxSplitVsFullProbeDistancePx: 1 },
+  };
+  const diagnostics = {
+    segmentCounts: { raw: 4, admittedAllNineInside: 4 },
+    candidateDiscovery: { finalFamilies: [family, family] },
+    validFamilyCount: 2,
+    candidateUnorderedPairCount: 1,
+    validPairCount: 1,
+    invalidPairs: [],
+    validPairUniverse: [pair],
+    winningPair: pair,
+  };
+  const diagnosticSubset = {
+    segmentCounts: diagnostics.segmentCounts,
+    candidateDiscovery: diagnostics.candidateDiscovery,
+    validFamilyCount: diagnostics.validFamilyCount,
+    candidateUnorderedPairCount: diagnostics.candidateUnorderedPairCount,
+    validPairCount: diagnostics.validPairCount,
+    invalidPairs: diagnostics.invalidPairs,
+    validPairUniverse: diagnostics.validPairUniverse,
+    finalFamilies: diagnostics.candidateDiscovery.finalFamilies,
+    winningPair: diagnostics.winningPair,
+  };
   const preimage = {
-    schemaVersion: "afc-sr1-tr2-tile-floor-reader-result/v3",
-    researchProfile: "afc-sr1-tr2-tile-floor-reader/v3",
-    policyVersion: "afc-sr1-ts2-extractor-policy/v3",
-    status: "usable",
+    schemaVersion: AFC_SR1_TR2_V3_RESULT_SCHEMA_VERSION,
+    researchProfile: AFC_SR1_TR2_V3_RESEARCH_PROFILE,
+    policyVersion: AFC_SR1_TR2_V3_POLICY_VERSION,
     image: imageIdentity,
+    roi: roiIdentity,
+    runtime: runtimeIdentity,
+    status: "usable",
+    diagnostics: diagnosticSubset,
+    analysisIdentity,
     floorVanishingLinePixel: line,
   };
   const evidenceCanonicalJson = canonicalizeRfc8785Jcs(preimage);
-  return {
+  const raw = {
     schemaVersion: preimage.schemaVersion,
     researchProfile: preimage.researchProfile,
     policyVersion: preimage.policyVersion,
     status: "usable",
     imageIdentity,
+    roiIdentity,
+    runtimeIdentity,
+    analysisIdentity,
     floorVanishingLinePixel: line,
+    diagnostics,
     evidenceCanonicalJson,
     evidenceDigest: {
       algorithm: "sha256",
       encoding: "hex",
       value: sha256HexUtf8(evidenceCanonicalJson),
     },
-  } as AfcSr1Tr2ReaderReceipt;
+    elapsedMs: 1,
+  };
+  return validateAfcSr1Tr2ReaderReceipt(raw, {
+    readerVersion: "v3",
+    tiledImageBytes: bytes,
+    roi: roiBase,
+  });
+}
+
+function readerAuthority() {
+  const authority = getAfcSr1ValidatedTr2UsableReaderAuthority(receipt());
+  assert.notEqual(authority, null);
+  return authority!;
 }
 
 function bound(fingerprint = readerFingerprint, width = 1000, height = 500) {
@@ -70,7 +160,7 @@ function bound(fingerprint = readerFingerprint, width = 1000, height = 500) {
 
 function input(overrides: Record<string, unknown> = {}) {
   return {
-    readerReceipt: receipt(),
+    readerAuthority: readerAuthority(),
     readerImageKind: "raw_input",
     basisBoundSourcePolygon: bound(),
     basisRelation: "identical_input",
@@ -81,11 +171,13 @@ function input(overrides: Record<string, unknown> = {}) {
       evidenceReference: "synthetic/anchor-NL",
     },
     ...overrides,
-  };
+  } as unknown as AfcSr1CommonBasisTr0HandoffInputV1;
 }
 
 function rejected(overrides: Record<string, unknown>, reason: string) {
-  const result = buildAfcSr1CommonBasisTr0Handoff(input(overrides));
+  const result = buildAfcSr1CommonBasisTr0Handoff(
+    input(overrides) as AfcSr1CommonBasisTr0HandoffInputV1
+  );
   assert.deepEqual(result, { status: "rejected", reason });
 }
 
@@ -165,9 +257,14 @@ test("only explicit NL and NR anchor authorities open v1", () => {
 
 test("unsupported relation and tampered reader or bound-polygon evidence fail closed", () => {
   rejected({ basisRelation: "certified_placement" }, "unsupported_basis_relation");
-  const tamperedReceipt = structuredClone(receipt()) as any;
-  tamperedReceipt.imageIdentity.sha256 = otherFingerprint;
-  rejected({ readerReceipt: tamperedReceipt }, "invalid_reader_receipt");
+  const fabricatedAuthority = {
+    ...readerAuthority(),
+    imageIdentity: {
+      ...readerAuthority().imageIdentity,
+      sha256: otherFingerprint,
+    },
+  };
+  rejected({ readerAuthority: fabricatedAuthority }, "invalid_reader_receipt");
 
   const tamperedPolygon = structuredClone(bound()) as any;
   tamperedPolygon.basis.fingerprint = otherFingerprint;

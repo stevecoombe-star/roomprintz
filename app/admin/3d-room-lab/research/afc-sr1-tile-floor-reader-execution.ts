@@ -8,11 +8,10 @@ import {
   deriveAfcSr1FloorVanishingLineCrossRoom,
   type AfcSr1FloorVanishingLineCrossRoomResultV1,
 } from "./afc-sr1-floor-vanishing-line-cross-room";
-import {
-  buildAfcSr1CommonBasisTr0Handoff,
-  type AfcSr1BasisRelationV1,
-  type AfcSr1CommonBasisTr0HandoffResultV1,
-  type AfcSr1ExplicitAnchorAuthorityV1,
+import type {
+  AfcSr1BasisRelationV1,
+  AfcSr1CommonBasisTr0HandoffResultV1,
+  AfcSr1ExplicitAnchorAuthorityV1,
 } from "./afc-sr1-common-basis-tr0-handoff";
 import type { AfcSr1CrossRoomTruncatedAnchorV1 } from "./afc-sr1-cross-room-prior";
 import type { AfcSr1SourcePolygon } from "./afc-sr1-semantic-prior";
@@ -61,6 +60,34 @@ type AnalysisIdentity = Readonly<{
   pixelBufferSha256: string;
 }>;
 type ReaderVersion = "v1" | "v2" | "v3";
+
+declare const AFC_SR1_VALIDATED_TR2_USABLE_READER_AUTHORITY:
+  unique symbol;
+
+/**
+ * Opaque immutable projection issued only after canonical TR2 V3 validation.
+ * Common-basis code consumes this authority instead of parsing compositor
+ * evidenceCanonicalJson under a second canonicalization policy.
+ */
+export type AfcSr1ValidatedTr2UsableReaderAuthorityV1 = Readonly<{
+  schemaVersion: typeof AFC_SR1_TR2_V3_RESULT_SCHEMA_VERSION;
+  researchProfile: typeof AFC_SR1_TR2_V3_RESEARCH_PROFILE;
+  policyVersion: typeof AFC_SR1_TR2_V3_POLICY_VERSION;
+  imageIdentity: Readonly<{
+    sha256: string;
+    decodedWidth: number;
+    decodedHeight: number;
+    orientation: 1;
+  }>;
+  floorVanishingLinePixel: PixelLine;
+  receiptEvidenceDigest: string;
+  readonly [AFC_SR1_VALIDATED_TR2_USABLE_READER_AUTHORITY]:
+    "afc-sr1-validated-tr2-usable-reader-authority/v1";
+}>;
+
+const validatedUsableReaderAuthorities = new WeakSet<object>();
+const validatedUsableReaderAuthorityByReceipt =
+  new WeakMap<object, AfcSr1ValidatedTr2UsableReaderAuthorityV1>();
 
 export type AfcSr1Tr2ReaderReceipt =
   | Readonly<{
@@ -430,6 +457,45 @@ function assertExpectedImageIdentity(
   }
 }
 
+function registerValidatedUsableReaderAuthority(
+  receipt: AfcSr1Tr2ReaderReceipt
+): void {
+  if (receipt.schemaVersion !== AFC_SR1_TR2_V3_RESULT_SCHEMA_VERSION ||
+      receipt.status !== "usable" ||
+      receipt.imageIdentity.decodedWidth === null ||
+      receipt.imageIdentity.decodedHeight === null) {
+    return;
+  }
+  const authority = Object.freeze({
+    schemaVersion: receipt.schemaVersion,
+    researchProfile: receipt.researchProfile,
+    policyVersion: receipt.policyVersion,
+    imageIdentity: Object.freeze({
+      sha256: receipt.imageIdentity.sha256,
+      decodedWidth: receipt.imageIdentity.decodedWidth,
+      decodedHeight: receipt.imageIdentity.decodedHeight,
+      orientation: 1 as const,
+    }),
+    floorVanishingLinePixel: Object.freeze({ ...receipt.floorVanishingLinePixel }),
+    receiptEvidenceDigest: receipt.evidenceDigest.value,
+  }) as AfcSr1ValidatedTr2UsableReaderAuthorityV1;
+  validatedUsableReaderAuthorities.add(authority);
+  validatedUsableReaderAuthorityByReceipt.set(receipt, authority);
+}
+
+export function getAfcSr1ValidatedTr2UsableReaderAuthority(
+  receipt: AfcSr1Tr2ReaderReceipt
+): AfcSr1ValidatedTr2UsableReaderAuthorityV1 | null {
+  return validatedUsableReaderAuthorityByReceipt.get(receipt) ?? null;
+}
+
+export function isAfcSr1ValidatedTr2UsableReaderAuthority(
+  value: unknown
+): value is AfcSr1ValidatedTr2UsableReaderAuthorityV1 {
+  return typeof value === "object" && value !== null &&
+    validatedUsableReaderAuthorities.has(value);
+}
+
 export function validateAfcSr1Tr2ReaderReceipt(
   value: unknown,
   expected: Pick<
@@ -528,7 +594,9 @@ export function validateAfcSr1Tr2ReaderReceipt(
         !equalJson(preimage.floorVanishingLinePixel, value.floorVanishingLinePixel)) {
       throw new Error("TR2 usable receipt has an invalid pixel floor vanishing line.");
     }
-    return value as AfcSr1Tr2ReaderReceipt;
+    const receipt = value as AfcSr1Tr2ReaderReceipt;
+    registerValidatedUsableReaderAuthority(receipt);
+    return receipt;
   }
   if (typeof value.reason !== "string" || value.reason.length === 0 || preimage.reason !== value.reason ||
       Object.prototype.hasOwnProperty.call(value, "floorVanishingLinePixel")) {
@@ -568,12 +636,19 @@ export async function executeAfcSr1TileFloorReader(
     if (input.strictTr0Handoff !== undefined && input.legacyUnboundTr0Handoff !== undefined) {
       throw new Error("TR0 execution accepts either strict or legacy-unbound handoff, never both.");
     }
-    const commonBasisHandoff = input.strictTr0Handoff === undefined
-      ? null
-      : buildAfcSr1CommonBasisTr0Handoff({
-          readerReceipt: readerExecution,
-          ...input.strictTr0Handoff,
-        });
+    let commonBasisHandoff: AfcSr1CommonBasisTr0HandoffResultV1 | null = null;
+    if (input.strictTr0Handoff !== undefined) {
+      const readerAuthority = getAfcSr1ValidatedTr2UsableReaderAuthority(readerExecution);
+      if (readerAuthority === null) {
+        throw new Error("TR2 usable receipt did not produce validated reader authority.");
+      }
+      const { buildAfcSr1CommonBasisTr0Handoff } =
+        await import("./afc-sr1-common-basis-tr0-handoff");
+      commonBasisHandoff = buildAfcSr1CommonBasisTr0Handoff({
+        readerAuthority,
+        ...input.strictTr0Handoff,
+      });
+    }
     const projectiveHandoff = commonBasisHandoff?.status === "validated"
       ? deriveAfcSr1FloorVanishingLineCrossRoom(commonBasisHandoff.handoff.tr0Input)
       : null;

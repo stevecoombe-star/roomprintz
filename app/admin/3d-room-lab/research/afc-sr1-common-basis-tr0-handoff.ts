@@ -3,7 +3,6 @@ import {
   sha256HexUtf8,
 } from "../gemini-evidence-contract";
 import type {
-  AfcSr1AnalysisImageV1,
   AfcSr1FloorVanishingLineCrossRoomInputV1,
   AfcSr1PixelLineV1,
 } from "./afc-sr1-floor-vanishing-line-cross-room";
@@ -18,7 +17,10 @@ import {
   validateAfcSr1SourcePolygon,
 } from "./afc-sr1-semantic-prior";
 import type { AfcSr1CrossRoomTruncatedAnchorV1 } from "./afc-sr1-cross-room-prior";
-import type { AfcSr1Tr2ReaderReceipt } from "./afc-sr1-tile-floor-reader-execution";
+import {
+  isAfcSr1ValidatedTr2UsableReaderAuthority,
+  type AfcSr1ValidatedTr2UsableReaderAuthorityV1,
+} from "./afc-sr1-tile-floor-reader-execution";
 
 export const AFC_SR1_COMMON_BASIS_TR0_HANDOFF_VERSION =
   "afc-sr1-common-basis-tr0-handoff/v1" as const;
@@ -75,7 +77,7 @@ export type AfcSr1CommonBasisTr0HandoffResultV1 =
   | Readonly<{ status: "rejected"; reason: AfcSr1CommonBasisTr0HandoffRejectReasonV1 }>;
 
 export type AfcSr1CommonBasisTr0HandoffInputV1 = Readonly<{
-  readerReceipt: AfcSr1Tr2ReaderReceipt;
+  readerAuthority: AfcSr1ValidatedTr2UsableReaderAuthorityV1;
   readerImageKind: "raw_input" | "ts0_child";
   basisBoundSourcePolygon: AfcSr1BasisBoundSourcePolygonV1;
   basisRelation: AfcSr1BasisRelationV1;
@@ -135,52 +137,6 @@ function equalJson(left: unknown, right: unknown): boolean {
   return canonicalizeRfc8785Jcs(left) === canonicalizeRfc8785Jcs(right);
 }
 
-function validatedReaderAuthority(
-  value: unknown
-): Readonly<{
-  analysisImage: AfcSr1AnalysisImageV1;
-  line: AfcSr1PixelLineV1;
-  fingerprint: string;
-  receiptEvidenceDigest: string;
-}> | null {
-  if (!isPlainRecord(value) ||
-      value.schemaVersion !== "afc-sr1-tr2-tile-floor-reader-result/v3" ||
-      value.researchProfile !== "afc-sr1-tr2-tile-floor-reader/v3" ||
-      value.policyVersion !== "afc-sr1-ts2-extractor-policy/v3" ||
-      value.status !== "usable" ||
-      !isPlainRecord(value.imageIdentity) ||
-      !isSha256(value.imageIdentity.sha256) ||
-      !isPositiveInteger(value.imageIdentity.decodedWidth) ||
-      !isPositiveInteger(value.imageIdentity.decodedHeight) ||
-      !validLine(value.floorVanishingLinePixel) ||
-      typeof value.evidenceCanonicalJson !== "string" ||
-      !validDigest(value.evidenceDigest) ||
-      sha256HexUtf8(value.evidenceCanonicalJson) !== value.evidenceDigest.value) {
-    return null;
-  }
-  let preimage: unknown;
-  try {
-    preimage = JSON.parse(value.evidenceCanonicalJson);
-  } catch {
-    return null;
-  }
-  if (canonicalizeRfc8785Jcs(preimage) !== value.evidenceCanonicalJson ||
-      !isPlainRecord(preimage) || preimage.status !== "usable" ||
-      !equalJson(preimage.image, value.imageIdentity) ||
-      !equalJson(preimage.floorVanishingLinePixel, value.floorVanishingLinePixel)) {
-    return null;
-  }
-  return Object.freeze({
-    analysisImage: Object.freeze({
-      decodedWidth: value.imageIdentity.decodedWidth,
-      decodedHeight: value.imageIdentity.decodedHeight,
-    }),
-    line: Object.freeze({ ...value.floorVanishingLinePixel }),
-    fingerprint: value.imageIdentity.sha256,
-    receiptEvidenceDigest: value.evidenceDigest.value,
-  });
-}
-
 function rejection(
   reason: AfcSr1CommonBasisTr0HandoffRejectReasonV1
 ): AfcSr1CommonBasisTr0HandoffResultV1 {
@@ -199,11 +155,13 @@ function freezeLine(line: AfcSr1PixelLineV1): AfcSr1PixelLineV1 {
 }
 
 export function buildAfcSr1CommonBasisTr0Handoff(
-  input: unknown
+  input: AfcSr1CommonBasisTr0HandoffInputV1
 ): AfcSr1CommonBasisTr0HandoffResultV1 {
   if (!isPlainRecord(input)) return rejection("invalid_reader_receipt");
-  const reader = validatedReaderAuthority(input.readerReceipt);
-  if (!reader) return rejection("invalid_reader_receipt");
+  if (!isAfcSr1ValidatedTr2UsableReaderAuthority(input.readerAuthority)) {
+    return rejection("invalid_reader_receipt");
+  }
+  const reader = input.readerAuthority;
   try {
     validateAfcSr1BasisBoundSourcePolygon(input.basisBoundSourcePolygon);
   } catch {
@@ -224,9 +182,9 @@ export function buildAfcSr1CommonBasisTr0Handoff(
   if (input.readerImageKind !== "raw_input" && input.readerImageKind !== "ts0_child") {
     return rejection("projective_basis_unproven");
   }
-  if (polygon.basis.fingerprint !== reader.fingerprint ||
-      polygon.basis.decodedWidth !== reader.analysisImage.decodedWidth ||
-      polygon.basis.decodedHeight !== reader.analysisImage.decodedHeight ||
+  if (polygon.basis.fingerprint !== reader.imageIdentity.sha256 ||
+      polygon.basis.decodedWidth !== reader.imageIdentity.decodedWidth ||
+      polygon.basis.decodedHeight !== reader.imageIdentity.decodedHeight ||
       polygon.basis.orientation !== 1) {
     return rejection(input.readerImageKind === "ts0_child"
       ? "projective_basis_unproven"
@@ -235,8 +193,11 @@ export function buildAfcSr1CommonBasisTr0Handoff(
   const truncatedAnchor = input.truncatedAnchor as AfcSr1CrossRoomTruncatedAnchorV1;
   const anchorAuthority = input.anchorAuthority as AfcSr1ExplicitAnchorAuthorityV1;
   const tr0Input: AfcSr1FloorVanishingLineCrossRoomInputV1 = Object.freeze({
-    analysisImage: reader.analysisImage,
-    floorVanishingLinePixel: reader.line,
+    analysisImage: Object.freeze({
+      decodedWidth: reader.imageIdentity.decodedWidth,
+      decodedHeight: reader.imageIdentity.decodedHeight,
+    }),
+    floorVanishingLinePixel: reader.floorVanishingLinePixel,
     sourcePolygon: polygon.polygon,
     truncatedAnchor,
   });
@@ -249,12 +210,12 @@ export function buildAfcSr1CommonBasisTr0Handoff(
     basisRelation: "identical_input" as const,
     resolvedBasisMode: "identical_input" as const,
     readerBasis: Object.freeze({
-      fingerprint: reader.fingerprint,
-      decodedWidth: reader.analysisImage.decodedWidth,
-      decodedHeight: reader.analysisImage.decodedHeight,
+      fingerprint: reader.imageIdentity.sha256,
+      decodedWidth: reader.imageIdentity.decodedWidth,
+      decodedHeight: reader.imageIdentity.decodedHeight,
       orientation: 1 as const,
       receiptEvidenceDigest: reader.receiptEvidenceDigest,
-      floorVanishingLinePixel: freezeLine(reader.line),
+      floorVanishingLinePixel: freezeLine(reader.floorVanishingLinePixel),
     }),
     polygonBasisFingerprint: polygon.basis.fingerprint,
     polygonFingerprint: polygon.polygonFingerprint,
