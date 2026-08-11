@@ -3,6 +3,13 @@ import { readFile } from "node:fs/promises";
 import { deriveAfcSr1FloorVanishingLineCrossRoom } from "./afc-sr1-floor-vanishing-line-cross-room";
 import { validateAfcSr1Tr2ReaderReceipt } from "./afc-sr1-tile-floor-reader-execution";
 
+/**
+ * Historical Reader V3 reproduction bridge only.
+ *
+ * Its source polygon and truncated anchor predate the common-basis contract,
+ * so its output is intentionally named legacy-unbound and is never authority
+ * for the new semantic handoff certification.
+ */
 type BridgeRow = Readonly<{
   receipt: unknown;
   imageBase64: string;
@@ -26,7 +33,11 @@ async function main(): Promise<void> {
       roi: row.roi,
     });
     if (receipt.status === "rejected") {
-      return { validationStatus: "accepted", readerStatus: "rejected", projectiveHandoff: null };
+      return {
+        validationStatus: "accepted",
+        readerStatus: "rejected",
+        legacyUnboundProjectiveHandoff: null,
+      };
     }
     if (receipt.imageIdentity.decodedWidth === null || receipt.imageIdentity.decodedHeight === null) {
       throw new Error("Usable V3 receipt is missing decoded image dimensions.");
@@ -34,7 +45,7 @@ async function main(): Promise<void> {
     return {
       validationStatus: "accepted",
       readerStatus: "usable",
-      projectiveHandoff: deriveAfcSr1FloorVanishingLineCrossRoom({
+      legacyUnboundProjectiveHandoff: deriveAfcSr1FloorVanishingLineCrossRoom({
         analysisImage: {
           decodedWidth: receipt.imageIdentity.decodedWidth,
           decodedHeight: receipt.imageIdentity.decodedHeight,

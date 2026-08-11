@@ -8,8 +8,15 @@ import {
   deriveAfcSr1FloorVanishingLineCrossRoom,
   type AfcSr1FloorVanishingLineCrossRoomResultV1,
 } from "./afc-sr1-floor-vanishing-line-cross-room";
+import {
+  buildAfcSr1CommonBasisTr0Handoff,
+  type AfcSr1BasisRelationV1,
+  type AfcSr1CommonBasisTr0HandoffResultV1,
+  type AfcSr1ExplicitAnchorAuthorityV1,
+} from "./afc-sr1-common-basis-tr0-handoff";
 import type { AfcSr1CrossRoomTruncatedAnchorV1 } from "./afc-sr1-cross-room-prior";
 import type { AfcSr1SourcePolygon } from "./afc-sr1-semantic-prior";
+import type { AfcSr1BasisBoundSourcePolygonV1 } from "./afc-sr1-basis-bound-source-polygon";
 
 export const AFC_SR1_TR2_RESEARCH_PROFILE = "afc-sr1-tr2-tile-floor-reader/v1" as const;
 export const AFC_SR1_TR2_POLICY_VERSION = "afc-sr1-ts2-extractor-policy/v1" as const;
@@ -160,13 +167,32 @@ export type AfcSr1Tr2ExecutionInput = Readonly<{
     polygon: readonly (readonly [number, number])[];
   }>;
   expectedImageIdentity?: ExpectedImageIdentity;
-  sourcePolygon?: AfcSr1SourcePolygon;
-  truncatedAnchor?: AfcSr1CrossRoomTruncatedAnchorV1;
+  /**
+   * The only route that can open a new semantic TR0 handoff. ROI remains a
+   * reader-only mask and carries no same-basis authority.
+   */
+  strictTr0Handoff?: Readonly<{
+    readerImageKind: "raw_input" | "ts0_child";
+    basisBoundSourcePolygon: AfcSr1BasisBoundSourcePolygonV1;
+    basisRelation: AfcSr1BasisRelationV1;
+    truncatedAnchor: AfcSr1CrossRoomTruncatedAnchorV1;
+    anchorAuthority: AfcSr1ExplicitAnchorAuthorityV1;
+  }>;
+  /**
+   * Historical V3 certification reproduction only. This value is explicitly
+   * not common-basis certified and can never populate projectiveHandoff.
+   */
+  legacyUnboundTr0Handoff?: Readonly<{
+    sourcePolygon: AfcSr1SourcePolygon;
+    truncatedAnchor: AfcSr1CrossRoomTruncatedAnchorV1;
+  }>;
 }>;
 
 export type AfcSr1Tr2ExecutionResult = Readonly<{
   readerExecution: AfcSr1Tr2ReaderReceipt;
+  commonBasisHandoff: AfcSr1CommonBasisTr0HandoffResultV1 | null;
   projectiveHandoff: AfcSr1FloorVanishingLineCrossRoomResultV1 | null;
+  legacyUnboundProjectiveHandoff: AfcSr1FloorVanishingLineCrossRoomResultV1 | null;
 }>;
 
 /** Transient research flow: RAW is tried once, then TS0 supplies fallback bytes. */
@@ -532,16 +558,30 @@ export async function executeAfcSr1TileFloorReader(
     });
     const readerExecution = validateAfcSr1Tr2ReaderReceipt(rawReceipt, input);
     if (readerExecution.status === "rejected") {
-      return Object.freeze({ readerExecution, projectiveHandoff: null });
+      return Object.freeze({
+        readerExecution,
+        commonBasisHandoff: null,
+        projectiveHandoff: null,
+        legacyUnboundProjectiveHandoff: null,
+      });
     }
-    if ((input.sourcePolygon === undefined) !== (input.truncatedAnchor === undefined)) {
-      throw new Error("TR0 handoff requires both sourcePolygon and truncatedAnchor.");
+    if (input.strictTr0Handoff !== undefined && input.legacyUnboundTr0Handoff !== undefined) {
+      throw new Error("TR0 execution accepts either strict or legacy-unbound handoff, never both.");
     }
+    const commonBasisHandoff = input.strictTr0Handoff === undefined
+      ? null
+      : buildAfcSr1CommonBasisTr0Handoff({
+          readerReceipt: readerExecution,
+          ...input.strictTr0Handoff,
+        });
+    const projectiveHandoff = commonBasisHandoff?.status === "validated"
+      ? deriveAfcSr1FloorVanishingLineCrossRoom(commonBasisHandoff.handoff.tr0Input)
+      : null;
     if (readerExecution.imageIdentity.decodedWidth === null ||
         readerExecution.imageIdentity.decodedHeight === null) {
       throw new Error("TR2 usable receipt is missing decoded dimensions.");
     }
-    const projectiveHandoff = input.sourcePolygon === undefined
+    const legacyUnboundProjectiveHandoff = input.legacyUnboundTr0Handoff === undefined
       ? null
       : deriveAfcSr1FloorVanishingLineCrossRoom({
           analysisImage: {
@@ -549,10 +589,15 @@ export async function executeAfcSr1TileFloorReader(
             decodedHeight: readerExecution.imageIdentity.decodedHeight,
           },
           floorVanishingLinePixel: readerExecution.floorVanishingLinePixel,
-          sourcePolygon: input.sourcePolygon,
-          truncatedAnchor: input.truncatedAnchor,
+          sourcePolygon: input.legacyUnboundTr0Handoff.sourcePolygon,
+          truncatedAnchor: input.legacyUnboundTr0Handoff.truncatedAnchor,
         });
-    return Object.freeze({ readerExecution, projectiveHandoff });
+    return Object.freeze({
+      readerExecution,
+      commonBasisHandoff,
+      projectiveHandoff,
+      legacyUnboundProjectiveHandoff,
+    });
   } finally {
     clearTimeout(timeout);
   }
@@ -563,20 +608,24 @@ export async function executeAfcSr1RawFirstTileFloorReader(
   createTiledFallback: () => Promise<AfcSr1Tr2ExecutionInput>,
   dependencies: Readonly<{ callCompositor?: CompositorCaller }> = {}
 ): Promise<AfcSr1Tr2RawFirstResult> {
-  if (rawInput.sourcePolygon === undefined || rawInput.truncatedAnchor === undefined) {
-    throw new Error("RAW-first execution requires sourcePolygon and truncatedAnchor.");
+  if ((rawInput.strictTr0Handoff === undefined) === (rawInput.legacyUnboundTr0Handoff === undefined)) {
+    throw new Error("RAW-first execution requires exactly one strict or legacy-unbound TR0 handoff.");
   }
   const raw = await executeAfcSr1TileFloorReader({ ...rawInput, readerVersion: "v3" }, dependencies);
-  if (raw.projectiveHandoff?.status === "usable") {
+  if (raw.projectiveHandoff?.status === "usable" ||
+      raw.legacyUnboundProjectiveHandoff?.status === "usable") {
     return Object.freeze({ mode: "raw-direct", raw, tiled: null });
   }
   const tiledInput = await createTiledFallback();
-  if (tiledInput.sourcePolygon === undefined || tiledInput.truncatedAnchor === undefined) {
-    throw new Error("RAW-first tiled fallback requires sourcePolygon and truncatedAnchor.");
+  if ((tiledInput.strictTr0Handoff === undefined) === (tiledInput.legacyUnboundTr0Handoff === undefined)) {
+    throw new Error("RAW-first tiled fallback requires exactly one strict or legacy-unbound TR0 handoff.");
   }
   const tiled = await executeAfcSr1TileFloorReader({ ...tiledInput, readerVersion: "v3" }, dependencies);
   return Object.freeze({
-    mode: tiled.projectiveHandoff?.status === "usable" ? "tiled-fallback" : "rejected",
+    mode: tiled.projectiveHandoff?.status === "usable" ||
+        tiled.legacyUnboundProjectiveHandoff?.status === "usable"
+      ? "tiled-fallback"
+      : "rejected",
     raw,
     tiled,
   });

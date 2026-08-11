@@ -12,6 +12,7 @@ import {
   executeAfcSr1TileFloorReader,
   validateAfcSr1Tr2ReaderReceipt,
 } from "./afc-sr1-tile-floor-reader-execution";
+import { buildAfcSr1BasisBoundSourcePolygon } from "./afc-sr1-basis-bound-source-polygon";
 import { deriveAfcSr1FloorVanishingLineCrossRoom } from "./afc-sr1-floor-vanishing-line-cross-room";
 import type { AfcSr1SourcePolygon } from "./afc-sr1-semantic-prior";
 
@@ -41,8 +42,41 @@ function input() {
       coordinateSpace: "source-normalized/v1" as const,
       polygon: row.sourcePolygon.map(({ x, y }) => [x, y] as const),
     },
-    sourcePolygon: row.sourcePolygon as unknown as AfcSr1SourcePolygon,
-    truncatedAnchor: row.truncatedAnchor as "NL" | "NR",
+    legacyUnboundTr0Handoff: {
+      sourcePolygon: row.sourcePolygon as unknown as AfcSr1SourcePolygon,
+      truncatedAnchor: row.truncatedAnchor as "NL" | "NR",
+    },
+  };
+}
+
+function strictInput(readerImageKind: "raw_input" | "ts0_child" = "raw_input") {
+  const legacy = input();
+  return {
+    ...legacy,
+    legacyUnboundTr0Handoff: undefined,
+    strictTr0Handoff: {
+      readerImageKind,
+      basisBoundSourcePolygon: buildAfcSr1BasisBoundSourcePolygon({
+        polygon: row.sourcePolygon as unknown as AfcSr1SourcePolygon,
+        basis: {
+          fingerprint: sha256(bytes),
+          decodedWidth: 1264,
+          decodedHeight: 848,
+          orientation: 1,
+        },
+        provenance: {
+          kind: "explicit_development_capture",
+          evidenceReference: "synthetic/v3-raw",
+        },
+      }),
+      basisRelation: "identical_input" as const,
+      truncatedAnchor: row.truncatedAnchor as "NL" | "NR",
+      anchorAuthority: {
+        kind: "predeclared_truncated_anchor" as const,
+        truncatedAnchor: row.truncatedAnchor as "NL" | "NR",
+        evidenceReference: "synthetic/v3-anchor",
+      },
+    },
   };
 }
 
@@ -260,7 +294,7 @@ test("V3 early rejection may omit analysis identity; later rejection may not", (
   assert.throws(() => validateAfcSr1Tr2ReaderReceipt(missing, input()));
 });
 
-test("V3 usable receipt invokes unchanged TR0 and rejected receipt skips it", async () => {
+test("historical V3 legacy-unbound bridge invokes unchanged TR0 and skips rejected receipts", async () => {
   const direct = deriveAfcSr1FloorVanishingLineCrossRoom({
     analysisImage: row.analysisImage,
     floorVanishingLinePixel: row.floorVanishingLinePixel,
@@ -270,12 +304,48 @@ test("V3 usable receipt invokes unchanged TR0 and rejected receipt skips it", as
   const usable = await executeAfcSr1TileFloorReader(input(), {
     callCompositor: async () => structuredClone(v3Receipt()),
   });
-  assert.deepEqual(usable.projectiveHandoff, direct);
+  assert.deepEqual(usable.legacyUnboundProjectiveHandoff, direct);
 
   const rejected = await executeAfcSr1TileFloorReader(input(), {
     callCompositor: async () => structuredClone(v3Receipt({ status: "rejected", early: true })),
   });
-  assert.equal(rejected.projectiveHandoff, null);
+  assert.equal(rejected.legacyUnboundProjectiveHandoff, null);
+});
+
+test("strict execution opens TR0 only through common-basis authority", async () => {
+  const strict = await executeAfcSr1TileFloorReader(strictInput(), {
+    callCompositor: async () => structuredClone(v3Receipt()),
+  });
+  assert.equal(strict.commonBasisHandoff?.status, "validated");
+  assert.equal(strict.projectiveHandoff?.status, "usable");
+  assert.equal(strict.legacyUnboundProjectiveHandoff, null);
+
+  const tiled = await executeAfcSr1TileFloorReader({
+    ...strictInput("ts0_child"),
+    strictTr0Handoff: {
+      ...strictInput("ts0_child").strictTr0Handoff!,
+      basisBoundSourcePolygon: buildAfcSr1BasisBoundSourcePolygon({
+        polygon: row.sourcePolygon as unknown as AfcSr1SourcePolygon,
+        basis: {
+          fingerprint: "b".repeat(64),
+          decodedWidth: 1264,
+          decodedHeight: 848,
+          orientation: 1,
+        },
+        provenance: {
+          kind: "empty_room_read",
+          evidenceReference: "synthetic/empty-parent",
+        },
+      }),
+    },
+  }, {
+    callCompositor: async () => structuredClone(v3Receipt()),
+  });
+  assert.deepEqual(tiled.commonBasisHandoff, {
+    status: "rejected",
+    reason: "projective_basis_unproven",
+  });
+  assert.equal(tiled.projectiveHandoff, null);
 });
 
 test("RAW-first case A returns raw-direct and does not call fallback", async () => {
@@ -311,7 +381,7 @@ test("RAW-first cases B and D use one fallback after a RAW reader rejection", as
   assert.equal(result.mode, "tiled-fallback");
   assert.equal(compositorCalls, 2);
   assert.equal(fallbackCalls, 1);
-  assert.equal(result.tiled?.projectiveHandoff?.status, "usable");
+  assert.equal(result.tiled?.legacyUnboundProjectiveHandoff?.status, "usable");
 });
 
 test("RAW-first case C falls back when RAW downstream rejects", async () => {
@@ -350,7 +420,7 @@ test("RAW-first case E fails closed when fallback reader rejects", async () => {
     }
   );
   assert.equal(result.mode, "rejected");
-  assert.equal(result.tiled?.projectiveHandoff, null);
+  assert.equal(result.tiled?.legacyUnboundProjectiveHandoff, null);
 });
 
 test("RAW-first case E also fails closed when fallback downstream rejects", async () => {
@@ -366,14 +436,14 @@ test("RAW-first case E also fails closed when fallback downstream rejects", asyn
     }
   );
   assert.equal(result.mode, "rejected");
-  assert.equal(result.tiled?.projectiveHandoff?.status, "rejected");
+  assert.equal(result.tiled?.legacyUnboundProjectiveHandoff?.status, "rejected");
 });
 
 test("RAW-first missing required TR0 inputs is caller failure, not fallback evidence", async () => {
   let fallbackCalls = 0;
   let compositorCalls = 0;
   await assert.rejects(() => executeAfcSr1RawFirstTileFloorReader(
-    { ...input(), sourcePolygon: undefined, truncatedAnchor: undefined },
+    { ...input(), legacyUnboundTr0Handoff: undefined },
     async () => {
       fallbackCalls += 1;
       return input();
@@ -392,7 +462,7 @@ test("RAW-first missing required TR0 inputs is caller failure, not fallback evid
 test("RAW-first fallback missing required TR0 inputs is caller failure", async () => {
   await assert.rejects(() => executeAfcSr1RawFirstTileFloorReader(
     input(),
-    async () => ({ ...input(), sourcePolygon: undefined, truncatedAnchor: undefined }),
+    async () => ({ ...input(), legacyUnboundTr0Handoff: undefined }),
     {
       callCompositor: async () => structuredClone(v3Receipt({ status: "rejected", early: true })),
     }

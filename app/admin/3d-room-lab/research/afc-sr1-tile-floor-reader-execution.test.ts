@@ -111,8 +111,10 @@ function input(caseRow = row) {
     expectedImageIdentity: {
       sha256: sha256(bytes), byteCount: bytes.byteLength, decodedWidth: 1264, decodedHeight: 848,
     },
-    sourcePolygon: caseRow.sourcePolygon as unknown as AfcSr1SourcePolygon,
-    truncatedAnchor: caseRow.truncatedAnchor as "NL" | "NR",
+    legacyUnboundTr0Handoff: {
+      sourcePolygon: caseRow.sourcePolygon as unknown as AfcSr1SourcePolygon,
+      truncatedAnchor: caseRow.truncatedAnchor as "NL" | "NR",
+    },
   };
 }
 
@@ -177,12 +179,12 @@ test("TR2 v2 receipt binds a valid analysis identity and rejects tampering", () 
   }
 });
 
-test("TR2 reader rejection skips TR0 and usable receipt invokes certified TR0", async () => {
+test("historical legacy-unbound TR2 reproduction remains separate from strict TR0", async () => {
   const rejected = await executeAfcSr1TileFloorReader(input(), {
     callCompositor: async () => receipt("rejected"),
   });
   assert.equal(rejected.readerExecution.status, "rejected");
-  assert.equal(rejected.projectiveHandoff, null);
+  assert.equal(rejected.legacyUnboundProjectiveHandoff, null);
 
   let outbound: unknown;
   const usable = await executeAfcSr1TileFloorReader(input(), {
@@ -192,13 +194,13 @@ test("TR2 reader rejection skips TR0 and usable receipt invokes certified TR0", 
     },
   });
   assert.equal(usable.readerExecution.status, "usable");
-  assert.ok(usable.projectiveHandoff);
-  assert.equal(usable.projectiveHandoff?.status, "usable");
+  assert.ok(usable.legacyUnboundProjectiveHandoff);
+  assert.equal(usable.legacyUnboundProjectiveHandoff?.status, "usable");
   assert.deepEqual(Object.keys(outbound as object).sort(), ["imageBase64", "policyVersion", "researchProfile", "roi"]);
   assert.equal(JSON.stringify(outbound).includes("truncatedAnchor"), false);
 });
 
-test("TR2 v2 invokes unchanged TR0 with original input dimensions", async () => {
+test("historical v2 legacy-unbound bridge preserves original input dimensions", async () => {
   const receiptValue = v2Receipt() as any;
   receiptValue.imageIdentity.decodedWidth = 2528;
   receiptValue.imageIdentity.decodedHeight = 1696;
@@ -234,11 +236,11 @@ test("TR2 v2 invokes unchanged TR0 with original input dimensions", async () => 
     callCompositor: async () => receiptValue,
   });
   assert.equal(result.readerExecution.status, "usable");
-  assert.equal(result.projectiveHandoff?.status, "usable");
-  assert.deepEqual(result.projectiveHandoff, direct);
+  assert.equal(result.legacyUnboundProjectiveHandoff?.status, "usable");
+  assert.deepEqual(result.legacyUnboundProjectiveHandoff, direct);
 });
 
-test("TR2 float JSON handoff preserves the certified direct seamT within 1e-12", async () => {
+test("historical float JSON handoff preserves the direct seamT within 1e-12", async () => {
   const direct = deriveAfcSr1FloorVanishingLineCrossRoom({
     analysisImage: row.analysisImage,
     floorVanishingLinePixel: row.floorVanishingLinePixel,
@@ -249,22 +251,22 @@ test("TR2 float JSON handoff preserves the certified direct seamT within 1e-12",
   const throughReceipt = await executeAfcSr1TileFloorReader(input(), {
     callCompositor: async () => JSON.parse(JSON.stringify(receipt())),
   });
-  assert.equal(throughReceipt.projectiveHandoff?.status, "usable");
-  if (direct.status === "usable" && throughReceipt.projectiveHandoff?.status === "usable") {
-    assert.ok(Math.abs(direct.prior.seamT - throughReceipt.projectiveHandoff.prior.seamT) <= 1e-12);
+  assert.equal(throughReceipt.legacyUnboundProjectiveHandoff?.status, "usable");
+  if (direct.status === "usable" && throughReceipt.legacyUnboundProjectiveHandoff?.status === "usable") {
+    assert.ok(Math.abs(direct.prior.seamT - throughReceipt.legacyUnboundProjectiveHandoff.prior.seamT) <= 1e-12);
   }
 });
 
-test("all six frozen C/D JSON receipt handoffs preserve certified seamT", async () => {
+test("all six frozen C/D JSON legacy handoffs preserve historical seamT", async () => {
   for (const caseRow of fixture.cases) {
     const result = await executeAfcSr1TileFloorReader(input(caseRow), {
       callCompositor: async () => JSON.parse(JSON.stringify(receipt("usable", caseRow))),
     });
     assert.equal(result.readerExecution.status, "usable", `${caseRow.room}-${caseRow.generation}`);
-    assert.equal(result.projectiveHandoff?.status, "usable", `${caseRow.room}-${caseRow.generation}`);
-    if (result.projectiveHandoff?.status === "usable") {
+    assert.equal(result.legacyUnboundProjectiveHandoff?.status, "usable", `${caseRow.room}-${caseRow.generation}`);
+    if (result.legacyUnboundProjectiveHandoff?.status === "usable") {
       assert.ok(
-        Math.abs(result.projectiveHandoff.prior.seamT - caseRow.expectedSeamT) <= 1e-12,
+        Math.abs(result.legacyUnboundProjectiveHandoff.prior.seamT - caseRow.expectedSeamT) <= 1e-12,
         `${caseRow.room}-${caseRow.generation}`
       );
     }
