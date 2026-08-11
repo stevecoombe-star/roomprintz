@@ -41,10 +41,13 @@ function receipt(status: "usable" | "rejected" = "usable", caseRow = row) {
     decodedWidth: 1264,
     decodedHeight: 848,
   };
-  const roiIdentity = {
+  const roiIdentityBase = {
     coordinateSpace: "source-normalized/v1",
     polygon: roiPolygon,
-    roiDigest: "d".repeat(64),
+  };
+  const roiIdentity = {
+    ...roiIdentityBase,
+    roiDigest: sha256(canonical(roiIdentityBase)),
   };
   const runtimeIdentity = {
     readerModuleVersion: "afc-sr1-tile-floor-reader/v1",

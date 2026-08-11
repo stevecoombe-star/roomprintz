@@ -19,6 +19,10 @@ export const AFC_SR1_TR2_V2_RESEARCH_PROFILE = "afc-sr1-tr2-tile-floor-reader/v2
 export const AFC_SR1_TR2_V2_POLICY_VERSION = "afc-sr1-ts2-extractor-policy/v2" as const;
 export const AFC_SR1_TR2_V2_RESULT_SCHEMA_VERSION =
   "afc-sr1-tr2-tile-floor-reader-result/v2" as const;
+export const AFC_SR1_TR2_V3_RESEARCH_PROFILE = "afc-sr1-tr2-tile-floor-reader/v3" as const;
+export const AFC_SR1_TR2_V3_POLICY_VERSION = "afc-sr1-ts2-extractor-policy/v3" as const;
+export const AFC_SR1_TR2_V3_RESULT_SCHEMA_VERSION =
+  "afc-sr1-tr2-tile-floor-reader-result/v3" as const;
 export const AFC_SR1_TR2_READER_TIMEOUT_MS = 15_000;
 
 type ImageIdentity = Readonly<{
@@ -49,7 +53,7 @@ type AnalysisIdentity = Readonly<{
   pixelFormat: "bgr8";
   pixelBufferSha256: string;
 }>;
-type ReaderVersion = "v1" | "v2";
+type ReaderVersion = "v1" | "v2" | "v3";
 
 export type AfcSr1Tr2ReaderReceipt =
   | Readonly<{
@@ -109,6 +113,36 @@ export type AfcSr1Tr2ReaderReceipt =
       evidenceCanonicalJson: string;
       evidenceDigest: Readonly<{ algorithm: "sha256"; encoding: "hex"; value: string }>;
       elapsedMs: number;
+    }>
+  | Readonly<{
+      schemaVersion: typeof AFC_SR1_TR2_V3_RESULT_SCHEMA_VERSION;
+      researchProfile: typeof AFC_SR1_TR2_V3_RESEARCH_PROFILE;
+      policyVersion: typeof AFC_SR1_TR2_V3_POLICY_VERSION;
+      status: "usable";
+      imageIdentity: ImageIdentity;
+      roiIdentity: RoiIdentity;
+      runtimeIdentity: RuntimeIdentity;
+      analysisIdentity: AnalysisIdentity;
+      floorVanishingLinePixel: PixelLine;
+      diagnostics: unknown;
+      evidenceCanonicalJson: string;
+      evidenceDigest: Readonly<{ algorithm: "sha256"; encoding: "hex"; value: string }>;
+      elapsedMs: number;
+    }>
+  | Readonly<{
+      schemaVersion: typeof AFC_SR1_TR2_V3_RESULT_SCHEMA_VERSION;
+      researchProfile: typeof AFC_SR1_TR2_V3_RESEARCH_PROFILE;
+      policyVersion: typeof AFC_SR1_TR2_V3_POLICY_VERSION;
+      status: "rejected";
+      reason: string;
+      imageIdentity: ImageIdentity;
+      roiIdentity: RoiIdentity;
+      runtimeIdentity: RuntimeIdentity;
+      analysisIdentity?: AnalysisIdentity;
+      diagnostics: unknown;
+      evidenceCanonicalJson: string;
+      evidenceDigest: Readonly<{ algorithm: "sha256"; encoding: "hex"; value: string }>;
+      elapsedMs: number;
     }>;
 
 type ExpectedImageIdentity = Readonly<{
@@ -133,6 +167,13 @@ export type AfcSr1Tr2ExecutionInput = Readonly<{
 export type AfcSr1Tr2ExecutionResult = Readonly<{
   readerExecution: AfcSr1Tr2ReaderReceipt;
   projectiveHandoff: AfcSr1FloorVanishingLineCrossRoomResultV1 | null;
+}>;
+
+/** Transient research flow: RAW is tried once, then TS0 supplies fallback bytes. */
+export type AfcSr1Tr2RawFirstResult = Readonly<{
+  mode: "raw-direct" | "tiled-fallback" | "rejected";
+  raw: AfcSr1Tr2ExecutionResult;
+  tiled: AfcSr1Tr2ExecutionResult | null;
 }>;
 
 type CompositorCaller = typeof callCompositorAfcSr1TileFloorReader;
@@ -163,6 +204,10 @@ function validRoiIdentity(value: unknown): value is RoiIdentity {
   return isRecord(value) &&
     value.coordinateSpace === "source-normalized/v1" &&
     Array.isArray(value.polygon) &&
+    value.polygon.length >= 3 &&
+    value.polygon.every((point) =>
+      Array.isArray(point) && point.length === 2 &&
+      point.every((coordinate) => finiteNumber(coordinate) && coordinate >= 0 && coordinate <= 1)) &&
     isSha256(value.roiDigest);
 }
 
@@ -223,6 +268,12 @@ function isV2Receipt(value: Record<string, unknown>): boolean {
     value.policyVersion === AFC_SR1_TR2_V2_POLICY_VERSION;
 }
 
+function isV3Receipt(value: Record<string, unknown>): boolean {
+  return value.schemaVersion === AFC_SR1_TR2_V3_RESULT_SCHEMA_VERSION &&
+    value.researchProfile === AFC_SR1_TR2_V3_RESEARCH_PROFILE &&
+    value.policyVersion === AFC_SR1_TR2_V3_POLICY_VERSION;
+}
+
 function equalJson(left: unknown, right: unknown): boolean {
   if (left === right) return true;
   if (typeof left !== typeof right || left === null || right === null) return false;
@@ -237,6 +288,27 @@ function equalJson(left: unknown, right: unknown): boolean {
     return keys.length === Object.keys(rightRecord).length &&
       keys.every((key) => Object.prototype.hasOwnProperty.call(rightRecord, key) &&
         equalJson(leftRecord[key], rightRecord[key]));
+  }
+  return false;
+}
+
+function hasJsonWhitespaceOutsideStrings(value: string): boolean {
+  let inString = false;
+  let escaped = false;
+  for (const character of value) {
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (character === "\\") {
+        escaped = true;
+      } else if (character === "\"") {
+        inString = false;
+      }
+    } else if (character === "\"") {
+      inString = true;
+    } else if (/\s/.test(character)) {
+      return true;
+    }
   }
   return false;
 }
@@ -256,6 +328,56 @@ function receiptDiagnosticSubset(diagnostics: unknown): Record<string, unknown> 
     stabilityMaxProbeDistancePx: stability.max_split_vs_full_probe_distance_px ?? null,
     hypothesisStrategies: [first.hypothesis_strategy ?? null, second.hypothesis_strategy ?? null],
   };
+}
+
+function v3ReceiptDiagnosticSubset(diagnostics: unknown): Record<string, unknown> {
+  const root = isRecord(diagnostics) ? diagnostics : {};
+  const discovery = isRecord(root.candidateDiscovery) ? root.candidateDiscovery : {};
+  return {
+    segmentCounts: root.segmentCounts ?? null,
+    candidateDiscovery: root.candidateDiscovery ?? null,
+    validFamilyCount: root.validFamilyCount ?? null,
+    candidateUnorderedPairCount: root.candidateUnorderedPairCount ?? null,
+    validPairCount: root.validPairCount ?? null,
+    invalidPairs: root.invalidPairs ?? null,
+    validPairUniverse: root.validPairUniverse ?? null,
+    finalFamilies: discovery.finalFamilies ?? null,
+    winningPair: root.winningPair ?? null,
+  };
+}
+
+function validV3Diagnostics(value: unknown): boolean {
+  if (!isRecord(value) || !positiveInteger(value.validFamilyCount) ||
+      typeof value.candidateUnorderedPairCount !== "number" ||
+      !Number.isInteger(value.candidateUnorderedPairCount) || value.candidateUnorderedPairCount < 1 ||
+      typeof value.validPairCount !== "number" ||
+      !Number.isInteger(value.validPairCount) || value.validPairCount < 1 ||
+      !Array.isArray(value.validPairUniverse) ||
+      value.validPairUniverse.length !== value.validPairCount ||
+      !isRecord(value.winningPair) ||
+      !Array.isArray(value.winningPair.families) || value.winningPair.families.length !== 2 ||
+      !positiveInteger(value.winningPair.basinSupport) ||
+      value.winningPair.basinSupport > value.validPairCount) return false;
+  const validPairCount = value.validPairCount;
+  const validFamily = (family: unknown): boolean => isRecord(family) &&
+    (family.vpClass === "finite" || family.vpClass === "directional") &&
+    Array.isArray(family.normalizedHomogeneousVp) && family.normalizedHomogeneousVp.length === 3 &&
+    family.normalizedHomogeneousVp.every(finiteNumber) && finiteNumber(family.rho) &&
+    positiveInteger(family.supportCount) && finiteNumber(family.supportTotalLengthPx) &&
+    finiteNumber(family.cappedSupportLengthPx) &&
+    finiteNumber(family.medianResidualPx) && finiteNumber(family.p90ResidualPx);
+  const validPair = (pair: unknown): boolean => isRecord(pair) &&
+    Array.isArray(pair.familyIndices) && pair.familyIndices.length === 2 &&
+    pair.familyIndices.every((index) => Number.isInteger(index) && index >= 0) &&
+    Array.isArray(pair.families) && pair.families.length === 2 && pair.families.every(validFamily) &&
+    Array.isArray(pair.floorLineAnalysis) && pair.floorLineAnalysis.length === 3 &&
+    pair.floorLineAnalysis.every(finiteNumber) &&
+    positiveInteger(pair.basinSupport) && pair.basinSupport <= validPairCount &&
+    isRecord(pair.stability) && pair.stability.stable === true &&
+    finiteNumber(pair.stability.maxSplitVsFullProbeDistancePx) &&
+    pair.stability.maxSplitVsFullProbeDistancePx <= 18;
+  return value.winningPair.families.every(validFamily) &&
+    validPair(value.winningPair) && value.validPairUniverse.every(validPair);
 }
 
 function expectedBytesIdentity(bytes: Uint8Array): Pick<ImageIdentity, "sha256" | "byteCount"> {
@@ -284,10 +406,13 @@ function assertExpectedImageIdentity(
 
 export function validateAfcSr1Tr2ReaderReceipt(
   value: unknown,
-  expected: Pick<AfcSr1Tr2ExecutionInput, "tiledImageBytes" | "roi" | "expectedImageIdentity">
+  expected: Pick<
+    AfcSr1Tr2ExecutionInput,
+    "readerVersion" | "tiledImageBytes" | "roi" | "expectedImageIdentity"
+  >
 ): AfcSr1Tr2ReaderReceipt {
   if (!isRecord(value) ||
-      (!isV1Receipt(value) && !isV2Receipt(value)) ||
+      (!isV1Receipt(value) && !isV2Receipt(value) && !isV3Receipt(value)) ||
       (value.status !== "usable" && value.status !== "rejected") ||
       !validImageIdentity(value.imageIdentity) ||
       !validRoiIdentity(value.roiIdentity) ||
@@ -301,10 +426,37 @@ export function validateAfcSr1Tr2ReaderReceipt(
     throw new Error("TR2 receipt has an invalid schema.");
   }
   const v2 = isV2Receipt(value);
+  const v3 = isV3Receipt(value);
+  const expectedVersion = expected.readerVersion ?? "v1";
+  if ((expectedVersion === "v1" && !isV1Receipt(value)) ||
+      (expectedVersion === "v2" && !v2) ||
+      (expectedVersion === "v3" && !v3)) {
+    throw new Error("TR2 receipt version does not match the requested reader version.");
+  }
   if (v2) {
     if (value.runtimeIdentity.readerModuleVersion !== "afc-sr1-tile-floor-reader/v2" ||
         !validAnalysisIdentity(value.analysisIdentity, value.imageIdentity)) {
-      throw new Error("TR2 v2 receipt has an invalid analysis identity.");
+      throw new Error("TR2 versioned receipt has an invalid analysis identity.");
+    }
+  } else if (v3) {
+    if (value.runtimeIdentity.readerModuleVersion !== "afc-sr1-tile-floor-reader/v3") {
+      throw new Error("TR2 v3 receipt has an invalid reader module identity.");
+    }
+    const hasAnalysisIdentity = Object.prototype.hasOwnProperty.call(value, "analysisIdentity");
+    if ((value.status === "usable" && !hasAnalysisIdentity) ||
+        (hasAnalysisIdentity && !validAnalysisIdentity(value.analysisIdentity, value.imageIdentity))) {
+      throw new Error("TR2 v3 receipt has an invalid analysis identity.");
+    }
+    if (value.status === "rejected" && !hasAnalysisIdentity &&
+        value.reason !== "invalid_input_image" && value.reason !== "invalid_roi") {
+      throw new Error("TR2 v3 rejection is missing its available analysis identity.");
+    }
+    if (value.status === "rejected" && !hasAnalysisIdentity &&
+        ((value.reason === "invalid_input_image" &&
+          (value.imageIdentity.decodedWidth !== null || value.imageIdentity.decodedHeight !== null)) ||
+         (value.reason === "invalid_roi" &&
+          (value.imageIdentity.decodedWidth === null || value.imageIdentity.decodedHeight === null)))) {
+      throw new Error("TR2 v3 early rejection has inconsistent decoded image identity.");
     }
   } else if (value.runtimeIdentity.readerModuleVersion !== "afc-sr1-tile-floor-reader/v1") {
     throw new Error("TR2 v1 receipt has an invalid reader module identity.");
@@ -318,6 +470,11 @@ export function validateAfcSr1Tr2ReaderReceipt(
   } catch {
     throw new Error("TR2 receipt evidence canonical JSON is invalid.");
   }
+  if (hasJsonWhitespaceOutsideStrings(value.evidenceCanonicalJson)) {
+    throw new Error("TR2 receipt evidence JSON is not canonical.");
+  }
+  const v3HasAnalysisIdentity = v3 &&
+    Object.prototype.hasOwnProperty.call(value, "analysisIdentity");
   if (!isRecord(preimage) ||
       preimage.schemaVersion !== value.schemaVersion ||
       preimage.researchProfile !== value.researchProfile ||
@@ -326,8 +483,9 @@ export function validateAfcSr1Tr2ReaderReceipt(
       !equalJson(preimage.image, value.imageIdentity) ||
       !equalJson(preimage.roi, value.roiIdentity) ||
       !equalJson(preimage.runtime, value.runtimeIdentity) ||
-      !equalJson(preimage.diagnostics, receiptDiagnosticSubset(value.diagnostics)) ||
-      (v2 && !equalJson(preimage.analysisIdentity, value.analysisIdentity))) {
+      !equalJson(preimage.diagnostics, v3 ? v3ReceiptDiagnosticSubset(value.diagnostics) : receiptDiagnosticSubset(value.diagnostics)) ||
+      ((v2 || v3HasAnalysisIdentity) &&
+       !equalJson(preimage.analysisIdentity, value.analysisIdentity))) {
     throw new Error("TR2 receipt response does not agree with its evidence preimage.");
   }
   if (value.roiIdentity.coordinateSpace !== expected.roi.coordinateSpace ||
@@ -335,6 +493,9 @@ export function validateAfcSr1Tr2ReaderReceipt(
     throw new Error("TR2 receipt ROI identity does not match request.");
   }
   assertExpectedImageIdentity(value.imageIdentity, expected.expectedImageIdentity, expected.tiledImageBytes);
+  if (v3 && value.status === "usable" && !validV3Diagnostics(value.diagnostics)) {
+    throw new Error("TR2 v3 receipt has invalid projective-family diagnostics.");
+  }
 
   if (value.status === "usable") {
     if (!validPixelLine(value.floorVanishingLinePixel) ||
@@ -357,9 +518,10 @@ export async function executeAfcSr1TileFloorReader(
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), AFC_SR1_TR2_READER_TIMEOUT_MS);
   const v2 = input.readerVersion === "v2";
+  const v3 = input.readerVersion === "v3";
   const payload = {
-    researchProfile: v2 ? AFC_SR1_TR2_V2_RESEARCH_PROFILE : AFC_SR1_TR2_RESEARCH_PROFILE,
-    policyVersion: v2 ? AFC_SR1_TR2_V2_POLICY_VERSION : AFC_SR1_TR2_POLICY_VERSION,
+    researchProfile: v3 ? AFC_SR1_TR2_V3_RESEARCH_PROFILE : v2 ? AFC_SR1_TR2_V2_RESEARCH_PROFILE : AFC_SR1_TR2_RESEARCH_PROFILE,
+    policyVersion: v3 ? AFC_SR1_TR2_V3_POLICY_VERSION : v2 ? AFC_SR1_TR2_V2_POLICY_VERSION : AFC_SR1_TR2_POLICY_VERSION,
     imageBase64: Buffer.from(input.tiledImageBytes).toString("base64"),
     roi: input.roi,
   };
@@ -394,4 +556,28 @@ export async function executeAfcSr1TileFloorReader(
   } finally {
     clearTimeout(timeout);
   }
+}
+
+export async function executeAfcSr1RawFirstTileFloorReader(
+  rawInput: AfcSr1Tr2ExecutionInput,
+  createTiledFallback: () => Promise<AfcSr1Tr2ExecutionInput>,
+  dependencies: Readonly<{ callCompositor?: CompositorCaller }> = {}
+): Promise<AfcSr1Tr2RawFirstResult> {
+  if (rawInput.sourcePolygon === undefined || rawInput.truncatedAnchor === undefined) {
+    throw new Error("RAW-first execution requires sourcePolygon and truncatedAnchor.");
+  }
+  const raw = await executeAfcSr1TileFloorReader({ ...rawInput, readerVersion: "v3" }, dependencies);
+  if (raw.projectiveHandoff?.status === "usable") {
+    return Object.freeze({ mode: "raw-direct", raw, tiled: null });
+  }
+  const tiledInput = await createTiledFallback();
+  if (tiledInput.sourcePolygon === undefined || tiledInput.truncatedAnchor === undefined) {
+    throw new Error("RAW-first tiled fallback requires sourcePolygon and truncatedAnchor.");
+  }
+  const tiled = await executeAfcSr1TileFloorReader({ ...tiledInput, readerVersion: "v3" }, dependencies);
+  return Object.freeze({
+    mode: tiled.projectiveHandoff?.status === "usable" ? "tiled-fallback" : "rejected",
+    raw,
+    tiled,
+  });
 }
