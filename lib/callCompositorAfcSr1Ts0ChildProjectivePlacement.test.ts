@@ -6,6 +6,7 @@ import {
   callCompositorAfcSr1Ts0ChildProjectivePlacement,
   type CallCompositorAfcSr1Ts0ChildProjectivePlacementArgs,
 } from "./callCompositorAfcSr1Ts0ChildProjectivePlacement";
+import { CompositorTransportError } from "./compositorTransportError";
 
 const parentBytes = Uint8Array.from([1, 2, 3]);
 const childBytes = Uint8Array.from([4, 5, 6]);
@@ -118,13 +119,18 @@ test("placement client rejects non-OK and malformed JSON responses", async () =>
     globalThis.fetch = async () => new Response("disabled", { status: 404 });
     await assert.rejects(
       callCompositorAfcSr1Ts0ChildProjectivePlacement(args),
-      /404 disabled/
+      (error) =>
+        error instanceof CompositorTransportError &&
+        error.classification === "http_404" &&
+        error.httpStatus === 404
     );
 
     globalThis.fetch = async () => new Response("{", { status: 200 });
     await assert.rejects(
       callCompositorAfcSr1Ts0ChildProjectivePlacement(args),
-      /JSON/
+      (error) =>
+        error instanceof CompositorTransportError &&
+        error.classification === "malformed_response"
     );
   });
 });
@@ -144,7 +150,9 @@ test("placement client forwards AbortSignal and omits auth when unconfigured", a
         ...args,
         signal: controller.signal,
       }),
-      /aborted/
+      (error) =>
+        error instanceof CompositorTransportError &&
+        error.classification === "timeout"
     );
   });
 });

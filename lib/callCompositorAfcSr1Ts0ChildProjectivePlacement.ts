@@ -4,6 +4,8 @@ import type {
   AfcSr1Ts0LineageIdentityV1,
 } from "@/app/admin/3d-room-lab/research/afc-sr1-ts0-child-projective-placement";
 
+import { callCompositorJson } from "./compositorTransportError";
+
 export const AFC_SR1_TS0_CHILD_PROJECTIVE_PLACEMENT_PATH =
   "/api/research/afc-sr1/ts0-child-projective-placement" as const;
 
@@ -26,30 +28,9 @@ export type CallCompositorAfcSr1Ts0ChildProjectivePlacementArgs = Readonly<{
   signal?: AbortSignal;
 }>;
 
-function compositorBaseUrl(): string {
-  const endpointBase = process.env.ROOMPRINTZ_COMPOSITOR_URL?.trim();
-  if (!endpointBase) {
-    throw new Error(
-      "ROOMPRINTZ_COMPOSITOR_URL is not set in env (RoomPrintz compositor endpoint)."
-    );
-  }
-  return endpointBase
-    .replace(/\/stage-room\/?$/, "")
-    .replace(/\/api\/vibode\/stage-run\/?$/, "")
-    .replace(/\/vibode\/stage-run\/?$/, "")
-    .replace(/\/vibode\/compose\/?$/, "")
-    .replace(/\/$/, "");
-}
-
 export async function callCompositorAfcSr1Ts0ChildProjectivePlacement(
   args: CallCompositorAfcSr1Ts0ChildProjectivePlacementArgs
 ): Promise<unknown> {
-  const headers: Record<string, string> = {
-    "Content-Type": "application/json",
-  };
-  const apiKey = process.env.ROOMPRINTZ_COMPOSITOR_API_KEY?.trim();
-  if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
-
   const payload = {
     parentImageBase64: Buffer.from(args.parentImageBytes).toString("base64"),
     childImageBase64: Buffer.from(args.childImageBytes).toString("base64"),
@@ -57,20 +38,11 @@ export async function callCompositorAfcSr1Ts0ChildProjectivePlacement(
     registrationExclusion: args.registrationExclusion,
     ts0Lineage: args.ts0Lineage,
   };
-  const response = await fetch(
-    `${compositorBaseUrl()}${AFC_SR1_TS0_CHILD_PROJECTIVE_PLACEMENT_PATH}`,
-    {
-      method: "POST",
-      headers,
-      body: JSON.stringify(payload),
-      signal: args.signal,
-    }
-  );
-  if (!response.ok) {
-    const text = await response.text().catch(() => "");
-    throw new Error(
-      `Compositor backend error (AFC-SR1 TS0 child placement): ${response.status} ${text}`.trim()
-    );
-  }
-  return response.json();
+  return callCompositorJson({
+    seam: "ts0-child-placement",
+    path: AFC_SR1_TS0_CHILD_PROJECTIVE_PLACEMENT_PATH,
+    method: "POST",
+    payload,
+    signal: args.signal,
+  });
 }

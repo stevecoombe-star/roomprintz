@@ -3,6 +3,8 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 
+import { CompositorTransportError } from "@/lib/compositorTransportError";
+
 import {
   canonicalizeRfc8785Jcs,
   sha256HexUtf8,
@@ -678,6 +680,66 @@ test("all RAW hard failures prohibit TS0 fallback", async (context) => {
       assert.equal(harness.observed.ts0, 0);
     });
   }
+});
+
+test("typed 404 and timeout preserve the exact PATH A transport-failure preimage", async () => {
+  const errors = [
+    new CompositorTransportError({
+      seam: "tile-floor-reader",
+      classification: "http_404",
+      httpStatus: 404,
+      endpoint: {
+        host: "127.0.0.1",
+        port: "8000",
+        path: "/api/research/afc-sr1/tile-floor-vanishing-line",
+      },
+    }),
+    new CompositorTransportError({
+      seam: "tile-floor-reader",
+      classification: "timeout",
+      osCode: "ETIMEDOUT",
+      endpoint: {
+        host: "127.0.0.1",
+        port: "8000",
+        path: "/api/research/afc-sr1/tile-floor-vanishing-line",
+      },
+    }),
+  ];
+  const results = [];
+  for (const error of errors) {
+    let ts0Calls = 0;
+    const result = await executeAfcSr1RawFirstPlacementAwareOrchestration(
+      input(),
+      {
+        callRawReader: async () => {
+          throw error;
+        },
+        executeTs0: async () => {
+          ts0Calls += 1;
+          return scaffoldResult("C-T1");
+        },
+      }
+    );
+    assert.equal(result.mode, "rejected");
+    assert.equal(result.finalReason, "transport_failure");
+    assert.equal(result.rawAttempt.receipt, null);
+    assert.equal(result.fallbackAttempt, null);
+    assert.deepEqual(result.attemptCounts, {
+      rawReader: 1,
+      ts0: 0,
+      placement: 0,
+      childReader: 0,
+      placementBoundHandoff: 0,
+      tiledProjective: 0,
+    });
+    assert.equal(ts0Calls, 0);
+    assert.equal(
+      result.evidenceDigest.value,
+      sha256HexUtf8(result.evidenceCanonicalJson)
+    );
+    results.push(result);
+  }
+  assert.deepEqual(results[0], results[1]);
 });
 
 test("TS0 and lineage failures stop before placement", async (context) => {
