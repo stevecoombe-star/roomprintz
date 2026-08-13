@@ -118,7 +118,6 @@ function input(
       maxOutputBytes: 32 * 1024 * 1024,
       fetchTimeoutMs: 1_000,
       allowLocalhostHttp: false,
-      generationTimeoutMs: 1_000,
     },
     ...overrides,
   };
@@ -516,6 +515,42 @@ test("valid RAW authority plus downstream geometric rejection is fallback eligib
   assert.equal(harness.observed.ts0, 1);
 });
 
+test("nested Track 1a rejection reason survives only in the non-scientific diagnostic trace", async () => {
+  let projectiveCalls = 0;
+  const harness = dependencies("C-T1", usableRawReceipt, {
+    deriveProjective: (value) => {
+      projectiveCalls += 1;
+      return projectiveCalls === 1
+        ? Object.freeze({
+            status: "rejected" as const,
+            reason: "track1a_rejected" as const,
+            prior: Object.freeze({
+              schemaVersion: "afc-sr1-cross-room-prior/v1" as const,
+              authority: "advisory_only" as const,
+              status: "rejected" as const,
+              reason: "projected_seam_t_outside_domain" as const,
+            }),
+          })
+        : deriveAfcSr1FloorVanishingLineCrossRoom(value);
+    },
+  });
+  const result = await executeAfcSr1RawFirstPlacementAwareOrchestration(
+    input(),
+    harness.value
+  );
+  assert.equal(result.mode, "tiled-placement");
+  assert.equal(result.rawAttempt.projective?.reason, "track1a_rejected");
+  assert.equal(
+    result.diagnostics.rawTrack1aPriorReason,
+    "projected_seam_t_outside_domain"
+  );
+  assert.equal(result.diagnostics.excludedFromCanonicalEvidence, true);
+  assert.doesNotMatch(
+    result.evidenceCanonicalJson,
+    /projected_seam_t_outside_domain/
+  );
+});
+
 test("A/B/D preserved classifications do not claim strict success", () => {
   const diagnostics = {
     "A RAW": classifyAfcSr1V3ReaderRejectionReason(
@@ -782,6 +817,13 @@ test("TS0 and lineage failures stop before placement", async (context) => {
       assert.equal(result.attemptCounts.placement, 0);
       assert.equal(result.attemptCounts.childReader, 0);
       assert.equal(harness.observed.placement, 0);
+      if (reason === "ts0_lineage_invalid") {
+        assert.equal(result.diagnostics.lineageFailure, "lineage_failure");
+        assert.equal(result.diagnostics.ts0Failure, null);
+      } else {
+        assert.equal(result.diagnostics.lineageFailure, null);
+        assert.equal(result.diagnostics.ts0Failure?.code, "generation_failed");
+      }
     });
   }
 });

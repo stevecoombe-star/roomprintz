@@ -16,15 +16,21 @@ test("readiness client requires the exact diagnostic-only response", async () =>
     globalThis.fetch = async (input) => {
       observedUrl = String(input);
       return Response.json({
-        schemaVersion: "afc-sr1-readiness/v1",
+        schemaVersion: "afc-sr1-readiness/v2",
         readerEnabled: true,
         placementEnabled: false,
+        ts0GeneratorReady: true,
+        ts0GeneratorProfile: "afc-sr1-tile-grid-scaffold/v1",
+        ts0RequestedModelId: "NBP",
       });
     };
     assert.deepEqual(await callCompositorAfcSr1Readiness(), {
-      schemaVersion: "afc-sr1-readiness/v1",
+      schemaVersion: "afc-sr1-readiness/v2",
       readerEnabled: true,
       placementEnabled: false,
+      ts0GeneratorReady: true,
+      ts0GeneratorProfile: "afc-sr1-tile-grid-scaffold/v1",
+      ts0RequestedModelId: "NBP",
     });
     assert.equal(
       observedUrl,
@@ -33,9 +39,12 @@ test("readiness client requires the exact diagnostic-only response", async () =>
 
     globalThis.fetch = async () =>
       Response.json({
-        schemaVersion: "afc-sr1-readiness/v1",
+        schemaVersion: "afc-sr1-readiness/v2",
         readerEnabled: true,
         placementEnabled: true,
+        ts0GeneratorReady: true,
+        ts0GeneratorProfile: "afc-sr1-tile-grid-scaffold/v1",
+        ts0RequestedModelId: "NBP",
         scientificResult: "forbidden",
       });
     await assert.rejects(

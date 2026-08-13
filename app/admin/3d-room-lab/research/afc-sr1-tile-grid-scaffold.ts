@@ -15,6 +15,10 @@ import {
 } from "./afc-r3c-image-pair-compatibility";
 import { callCompositorVibodeStageRun } from "@/lib/callCompositorVibodeStageRun";
 import {
+  CompositorTransportError,
+  toCompositorTransportDiagnostic,
+} from "@/lib/compositorTransportError";
+import {
   ALLOWED_IMAGE_MIME,
   fetchRoomImageSafely,
   inspectImageMetadata,
@@ -25,6 +29,11 @@ export const AFC_SR1_TILE_GRID_SCAFFOLD_PRESET = "tile_grid_scaffold" as const;
 export const AFC_SR1_TILE_GRID_SCAFFOLD_REQUESTED_MODEL_ID = "NBP" as const;
 export const AFC_SR1_TILE_GRID_SCAFFOLD_GENERATOR_ID =
   "vibode-tile-grid-scaffold/stage2/v1" as const;
+export const AFC_SR1_TS0_GENERATION_TIMEOUT_CONTRACT_VERSION =
+  "afc-sr1-ts0-single-dispatch-timeout/v1" as const;
+export const AFC_SR1_TS0_GENERATION_TIMEOUT_MS = 120_000;
+export const AFC_SR1_TS0_GENERATION_DIAGNOSTIC_VERSION =
+  "afc-sr1-ts0-generation-diagnostic/v1" as const;
 
 type SupportedImageMime = "image/jpeg" | "image/png" | "image/webp";
 
@@ -55,6 +64,42 @@ export type AfcSr1TileGridScaffoldProvenance = Readonly<{
   generationStatus: "generated";
 }>;
 
+export type AfcSr1Ts0GenerationFailureCode =
+  | "invalid_empty_input"
+  | "compositor_unavailable"
+  | "timeout"
+  | "connection_failure"
+  | "http_4xx"
+  | "http_5xx"
+  | "malformed_response"
+  | "missing_image_artifact"
+  | "generation_failed"
+  | "invalid_output_image"
+  | "unsupported_output_mime"
+  | "output_decode_failed"
+  | "basis_incompatible";
+
+export type AfcSr1Ts0GenerationDiagnostic = Readonly<{
+  schemaVersion: typeof AFC_SR1_TS0_GENERATION_DIAGNOSTIC_VERSION;
+  classification: AfcSr1Ts0GenerationFailureCode;
+  failureBoundary:
+    | "pre_dispatch_readiness_failure"
+    | "dispatch_outcome_indeterminate"
+    | "knowable_generation_failure"
+    | "response_contract_failure"
+    | "scientific_artifact_rejection";
+  elapsedMs: number;
+  generationTimeoutMs: typeof AFC_SR1_TS0_GENERATION_TIMEOUT_MS;
+  httpStatus: number | null;
+  errorClass: string | null;
+  message: string;
+  authorizedAttemptCount: 0 | 1;
+  providerDispatch:
+    | "not_attempted"
+    | "unknown"
+    | "response_received";
+}>;
+
 export type AfcSr1TileGridScaffoldResult =
   | Readonly<{
       status: "generated";
@@ -68,18 +113,12 @@ export type AfcSr1TileGridScaffoldResult =
     }>
   | Readonly<{
       status: "failure";
-      code:
-        | "invalid_empty_input"
-        | "compositor_unavailable"
-        | "generation_failed"
-        | "invalid_output_image"
-        | "unsupported_output_mime"
-        | "output_decode_failed"
-        | "basis_incompatible";
+      code: AfcSr1Ts0GenerationFailureCode;
       runId: string;
       input?: AfcSr1TileGridScaffoldImageIdentity;
       tiled?: AfcSr1TileGridScaffoldImageIdentity;
       compatibility?: AfcR3cImagePairCompatibility;
+      diagnostic?: AfcSr1Ts0GenerationDiagnostic;
     }>;
 
 export type AfcSr1TileGridScaffoldArgs = Readonly<{
@@ -88,7 +127,6 @@ export type AfcSr1TileGridScaffoldArgs = Readonly<{
   maxOutputBytes: number;
   fetchTimeoutMs: number;
   allowLocalhostHttp: boolean;
-  generationTimeoutMs: number;
   dependencies?: Readonly<{
     now?: () => Date;
     createRunId?: () => string;
@@ -151,6 +189,119 @@ function sanitizeAppliedAspectRatio(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const trimmed = value.trim();
   return /^[A-Za-z0-9:._-]{1,32}$/.test(trimmed) ? trimmed : null;
+}
+
+function elapsedMs(startedAt: number): number {
+  return Math.max(0, Math.round((performance.now() - startedAt) * 1000) / 1000);
+}
+
+function safeErrorClass(error: unknown): string | null {
+  if (typeof error !== "object" || error === null) return null;
+  const name = (error as { name?: unknown }).name;
+  return typeof name === "string" && /^[A-Za-z][A-Za-z0-9_.-]{0,63}$/.test(name)
+    ? name
+    : null;
+}
+
+function generationDiagnostic(args: {
+  classification: AfcSr1Ts0GenerationFailureCode;
+  failureBoundary: AfcSr1Ts0GenerationDiagnostic["failureBoundary"];
+  startedAt: number;
+  httpStatus?: number | null;
+  errorClass?: string | null;
+  message: string;
+  authorizedAttemptCount: 0 | 1;
+  providerDispatch: AfcSr1Ts0GenerationDiagnostic["providerDispatch"];
+}): AfcSr1Ts0GenerationDiagnostic {
+  return Object.freeze({
+    schemaVersion: AFC_SR1_TS0_GENERATION_DIAGNOSTIC_VERSION,
+    classification: args.classification,
+    failureBoundary: args.failureBoundary,
+    elapsedMs: elapsedMs(args.startedAt),
+    generationTimeoutMs: AFC_SR1_TS0_GENERATION_TIMEOUT_MS,
+    httpStatus: args.httpStatus ?? null,
+    errorClass: args.errorClass ?? null,
+    message: args.message,
+    authorizedAttemptCount: args.authorizedAttemptCount,
+    providerDispatch: args.providerDispatch,
+  });
+}
+
+function classifyGenerationError(
+  error: unknown,
+  startedAt: number
+): Readonly<{
+  code: AfcSr1Ts0GenerationFailureCode;
+  diagnostic: AfcSr1Ts0GenerationDiagnostic;
+}> {
+  if (error instanceof CompositorTransportError) {
+    const transport = toCompositorTransportDiagnostic(error);
+    let code: AfcSr1Ts0GenerationFailureCode;
+    let failureBoundary: AfcSr1Ts0GenerationDiagnostic["failureBoundary"];
+    let providerDispatch: AfcSr1Ts0GenerationDiagnostic["providerDispatch"] =
+      "unknown";
+    if (transport.class === "timeout") {
+      code = "timeout";
+      failureBoundary = "dispatch_outcome_indeterminate";
+    } else if (transport.class === "connection_failure") {
+      code = "connection_failure";
+      failureBoundary = "dispatch_outcome_indeterminate";
+    } else if (
+      transport.httpStatus !== null &&
+      transport.httpStatus >= 400 &&
+      transport.httpStatus <= 499
+    ) {
+      code = "http_4xx";
+      failureBoundary = "knowable_generation_failure";
+      providerDispatch = "response_received";
+    } else if (transport.class === "http_5xx") {
+      code = "http_5xx";
+      failureBoundary = "knowable_generation_failure";
+      providerDispatch = "response_received";
+    } else if (transport.class === "malformed_response") {
+      code = "malformed_response";
+      failureBoundary = "response_contract_failure";
+      providerDispatch = "response_received";
+    } else if (transport.class === "missing_image_artifact") {
+      code = "missing_image_artifact";
+      failureBoundary = "response_contract_failure";
+      providerDispatch = "response_received";
+    } else if (transport.class === "client_construction_failure") {
+      code = "compositor_unavailable";
+      failureBoundary = "pre_dispatch_readiness_failure";
+      providerDispatch = "not_attempted";
+    } else {
+      code = "generation_failed";
+      failureBoundary = "knowable_generation_failure";
+      providerDispatch = "response_received";
+    }
+    return Object.freeze({
+      code,
+      diagnostic: generationDiagnostic({
+        classification: code,
+        failureBoundary,
+        startedAt,
+        httpStatus: transport.httpStatus,
+        errorClass: error.name,
+        message: transport.message,
+        authorizedAttemptCount:
+          failureBoundary === "pre_dispatch_readiness_failure" ? 0 : 1,
+        providerDispatch,
+      }),
+    });
+  }
+  return Object.freeze({
+    code: "generation_failed",
+    diagnostic: generationDiagnostic({
+      classification: "generation_failed",
+      failureBoundary: "dispatch_outcome_indeterminate",
+      startedAt,
+      errorClass: safeErrorClass(error),
+      message: "TS0 generation failed without a recoverable classification.",
+      authorizedAttemptCount: 1,
+      providerDispatch: "unknown",
+    }),
+  });
 }
 
 async function identityFromExactBytes(
@@ -257,15 +408,48 @@ async function decodeCompositorResult(args: {
 export async function vibodeTileGridScaffoldAssist(
   args: AfcSr1TileGridScaffoldArgs
 ): Promise<AfcSr1TileGridScaffoldResult> {
+  const startedAt = performance.now();
   const runId = (args.dependencies?.createRunId ?? randomUUID)();
   const empty = await verifyExactEmpty(args.empty, args.maxOutputBytes);
-  if (!empty.ok) return Object.freeze({ status: "failure", code: "invalid_empty_input", runId });
+  if (!empty.ok) {
+    const code = "invalid_empty_input";
+    return Object.freeze({
+      status: "failure",
+      code,
+      runId,
+      diagnostic: generationDiagnostic({
+        classification: code,
+        failureBoundary: "pre_dispatch_readiness_failure",
+        startedAt,
+        message: "TS0 EMPTY input failed local validation.",
+        authorizedAttemptCount: 0,
+        providerDispatch: "not_attempted",
+      }),
+    });
+  }
   if (!process.env.ROOMPRINTZ_COMPOSITOR_URL?.trim()) {
-    return Object.freeze({ status: "failure", code: "compositor_unavailable", runId, input: empty.identity });
+    const code = "compositor_unavailable";
+    return Object.freeze({
+      status: "failure",
+      code,
+      runId,
+      input: empty.identity,
+      diagnostic: generationDiagnostic({
+        classification: code,
+        failureBoundary: "pre_dispatch_readiness_failure",
+        startedAt,
+        message: "TS0 compositor endpoint is unavailable.",
+        authorizedAttemptCount: 0,
+        providerDispatch: "not_attempted",
+      }),
+    });
   }
 
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), args.generationTimeoutMs);
+  const timeout = setTimeout(
+    () => controller.abort(),
+    AFC_SR1_TS0_GENERATION_TIMEOUT_MS
+  );
   let generation: Awaited<ReturnType<typeof callCompositorVibodeStageRun>>;
   try {
     generation = await callCompositorVibodeStageRun({
@@ -284,8 +468,15 @@ export async function vibodeTileGridScaffoldAssist(
       },
       signal: controller.signal,
     });
-  } catch {
-    return Object.freeze({ status: "failure", code: "generation_failed", runId, input: empty.identity });
+  } catch (error) {
+    const failure = classifyGenerationError(error, startedAt);
+    return Object.freeze({
+      status: "failure",
+      code: failure.code,
+      runId,
+      input: empty.identity,
+      diagnostic: failure.diagnostic,
+    });
   } finally {
     clearTimeout(timeout);
   }
@@ -297,10 +488,40 @@ export async function vibodeTileGridScaffoldAssist(
     fetchTimeoutMs: args.fetchTimeoutMs,
     allowLocalhostHttp: args.allowLocalhostHttp,
   });
-  if (!decoded.ok) return Object.freeze({ status: "failure", code: decoded.code, runId, input: empty.identity });
+  if (!decoded.ok) {
+    return Object.freeze({
+      status: "failure",
+      code: decoded.code,
+      runId,
+      input: empty.identity,
+      diagnostic: generationDiagnostic({
+        classification: decoded.code,
+        failureBoundary: "scientific_artifact_rejection",
+        startedAt,
+        message: "TS0 output artifact transport was inadmissible.",
+        authorizedAttemptCount: 1,
+        providerDispatch: "response_received",
+      }),
+    });
+  }
 
   const tiled = await identityFromExactBytes(decoded.bytes, decoded.mimeType, args.maxOutputBytes);
-  if (!tiled.ok) return Object.freeze({ status: "failure", code: tiled.code, runId, input: empty.identity });
+  if (!tiled.ok) {
+    return Object.freeze({
+      status: "failure",
+      code: tiled.code,
+      runId,
+      input: empty.identity,
+      diagnostic: generationDiagnostic({
+        classification: tiled.code,
+        failureBoundary: "scientific_artifact_rejection",
+        startedAt,
+        message: "TS0 output image failed structural validation.",
+        authorizedAttemptCount: 1,
+        providerDispatch: "response_received",
+      }),
+    });
+  }
 
   const compatibility = classifyAfcR3cImagePairCompatibility(
     {
@@ -324,6 +545,14 @@ export async function vibodeTileGridScaffoldAssist(
       input: empty.identity,
       tiled: tiled.identity,
       compatibility,
+      diagnostic: generationDiagnostic({
+        classification: "basis_incompatible",
+        failureBoundary: "scientific_artifact_rejection",
+        startedAt,
+        message: "TS0 output image basis is incompatible with its parent.",
+        authorizedAttemptCount: 1,
+        providerDispatch: "response_received",
+      }),
     });
   }
 

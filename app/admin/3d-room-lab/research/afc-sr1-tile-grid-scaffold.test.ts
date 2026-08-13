@@ -4,6 +4,8 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 import {
+  AFC_SR1_TS0_GENERATION_TIMEOUT_CONTRACT_VERSION,
+  AFC_SR1_TS0_GENERATION_TIMEOUT_MS,
   AFC_SR1_TILE_GRID_SCAFFOLD_PROFILE,
   AFC_SR1_TILE_GRID_SCAFFOLD_PRESET,
   vibodeTileGridScaffoldAssist,
@@ -29,6 +31,30 @@ function empty(bytes = PIXEL): AfcSr1TileGridScaffoldEmptyInput {
       orientation: 1,
     },
   };
+}
+
+async function withRawCompositor<T>(
+  fetchCall: typeof globalThis.fetch,
+  fn: () => Promise<T>
+): Promise<T> {
+  const previousUrl = process.env.ROOMPRINTZ_COMPOSITOR_URL;
+  const previousKey = process.env.ROOMPRINTZ_COMPOSITOR_API_KEY;
+  process.env.ROOMPRINTZ_COMPOSITOR_URL =
+    "https://offline-compositor.invalid";
+  process.env.ROOMPRINTZ_COMPOSITOR_API_KEY = "never-serialize-this-secret";
+  globalThis.fetch = fetchCall;
+  try {
+    return await fn();
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (previousUrl === undefined) delete process.env.ROOMPRINTZ_COMPOSITOR_URL;
+    else process.env.ROOMPRINTZ_COMPOSITOR_URL = previousUrl;
+    if (previousKey === undefined) {
+      delete process.env.ROOMPRINTZ_COMPOSITOR_API_KEY;
+    } else {
+      process.env.ROOMPRINTZ_COMPOSITOR_API_KEY = previousKey;
+    }
+  }
 }
 
 async function withCompositor<T>(
@@ -60,7 +86,6 @@ function args(input = empty()) {
     maxOutputBytes: 1024 * 1024,
     fetchTimeoutMs: 1000,
     allowLocalhostHttp: false,
-    generationTimeoutMs: 1000,
     dependencies: {
       now: () => new Date("2026-08-09T23:00:00.000Z"),
     },
@@ -110,7 +135,12 @@ test("TS0 requires a verified exact EMPTY and fails closed for unsupported or un
     identity: { ...empty().identity, sha256: "a".repeat(64) },
   };
   const invalid = await vibodeTileGridScaffoldAssist({ ...args(badInput), dependencies: { createRunId: () => "bad-input" } });
-  assert.deepEqual(invalid, { status: "failure", code: "invalid_empty_input", runId: "bad-input" });
+  assert.equal(invalid.status, "failure");
+  assert.equal(invalid.status === "failure" && invalid.code, "invalid_empty_input");
+  assert.equal(
+    invalid.status === "failure" && invalid.diagnostic?.authorizedAttemptCount,
+    0
+  );
 
   await withCompositor(
     () => ({ imageUrl: `data:image/jpeg;base64,${PIXEL.toString("base64")}` }),
@@ -118,6 +148,10 @@ test("TS0 requires a verified exact EMPTY and fails closed for unsupported or un
       const result = await vibodeTileGridScaffoldAssist({ ...args(), dependencies: { createRunId: () => "wrong-mime" } });
       assert.equal(result.status, "failure");
       assert.equal(result.status === "failure" && result.code, "unsupported_output_mime");
+      assert.equal(
+        result.status === "failure" && result.diagnostic?.classification,
+        "unsupported_output_mime"
+      );
     }
   );
 
@@ -128,6 +162,26 @@ test("TS0 requires a verified exact EMPTY and fails closed for unsupported or un
       const result = await vibodeTileGridScaffoldAssist({ ...args(), dependencies: { createRunId: () => "decode-fail" } });
       assert.equal(result.status, "failure");
       assert.equal(result.status === "failure" && result.code, "output_decode_failed");
+      assert.equal(
+        result.status === "failure" && result.diagnostic?.classification,
+        "output_decode_failed"
+      );
+    }
+  );
+
+  await withCompositor(
+    () => ({ imageUrl: "data:image/png;base64," }),
+    async () => {
+      const result = await vibodeTileGridScaffoldAssist({
+        ...args(),
+        dependencies: { createRunId: () => "empty-artifact" },
+      });
+      assert.equal(result.status, "failure");
+      assert.equal(result.status === "failure" && result.code, "invalid_output_image");
+      assert.equal(
+        result.status === "failure" && result.diagnostic?.classification,
+        "invalid_output_image"
+      );
     }
   );
 });
@@ -146,6 +200,7 @@ test("TS0 exposes aspect observability and rejects an incompatible generated bas
       assert.equal(result.status, "failure");
       if (result.status !== "failure") return;
       assert.equal(result.code, "basis_incompatible");
+      assert.equal(result.diagnostic?.classification, "basis_incompatible");
       assert.equal(result.input?.decodedWidth, 1);
       assert.equal(result.tiled?.decodedWidth, 2);
       assert.equal(result.compatibility?.tier, "incompatible");
@@ -171,8 +226,96 @@ test("TS0 intentionally has no cache: repeated calls create independent run iden
   );
 });
 
+test("TS0 timeout contract is frozen at 120 seconds and a timeout consumes one dispatch without retry", async () => {
+  assert.equal(AFC_SR1_TS0_GENERATION_TIMEOUT_MS, 120_000);
+  assert.equal(
+    AFC_SR1_TS0_GENERATION_TIMEOUT_CONTRACT_VERSION,
+    "afc-sr1-ts0-single-dispatch-timeout/v1"
+  );
+  let dispatches = 0;
+  const result = await withRawCompositor(
+    async () => {
+      dispatches += 1;
+      throw new DOMException("contains-never-serialize-this-secret", "AbortError");
+    },
+    () => vibodeTileGridScaffoldAssist(args())
+  );
+  assert.equal(dispatches, 1);
+  assert.equal(result.status, "failure");
+  if (result.status !== "failure") return;
+  assert.equal(result.code, "timeout");
+  assert.equal(result.diagnostic?.classification, "timeout");
+  assert.equal(
+    result.diagnostic?.failureBoundary,
+    "dispatch_outcome_indeterminate"
+  );
+  assert.equal(result.diagnostic?.authorizedAttemptCount, 1);
+  assert.equal(result.diagnostic?.generationTimeoutMs, 120_000);
+  assert.doesNotMatch(
+    JSON.stringify(result),
+    /never-serialize-this-secret|Authorization|data:image/
+  );
+});
+
+test("TS0 preserves HTTP, malformed response, and missing artifact distinctions", async (context) => {
+  const cases = [
+    ["http_4xx", () => new Response('{"detail":"secret"}', { status: 429 })],
+    ["http_5xx", () => new Response('{"detail":"secret"}', { status: 503 })],
+    ["malformed_response", () => new Response("not-json", { status: 200 })],
+    ["missing_image_artifact", () => Response.json({ appliedAspectRatio: "4:3" })],
+  ] as const;
+  for (const [expected, response] of cases) {
+    await context.test(expected, async () => {
+      let dispatches = 0;
+      const result = await withRawCompositor(
+        async () => {
+          dispatches += 1;
+          return response();
+        },
+        () => vibodeTileGridScaffoldAssist(args())
+      );
+      assert.equal(dispatches, 1);
+      assert.equal(result.status, "failure");
+      if (result.status !== "failure") return;
+      assert.equal(result.code, expected);
+      assert.equal(result.diagnostic?.classification, expected);
+      assert.equal(
+        result.diagnostic?.httpStatus,
+        expected === "http_4xx" ? 429 : expected === "http_5xx" ? 503 : 200
+      );
+      assert.doesNotMatch(
+        JSON.stringify(result),
+        /never-serialize-this-secret|Authorization|data:image/
+      );
+    });
+  }
+});
+
+test("TS0 preserves connection failure without leaking the underlying message", async () => {
+  let dispatches = 0;
+  const result = await withRawCompositor(
+    async () => {
+      dispatches += 1;
+      throw new TypeError("never-serialize-this-secret");
+    },
+    () => vibodeTileGridScaffoldAssist(args())
+  );
+  assert.equal(dispatches, 1);
+  assert.equal(result.status, "failure");
+  if (result.status !== "failure") return;
+  assert.equal(result.code, "connection_failure");
+  assert.equal(result.diagnostic?.classification, "connection_failure");
+  assert.doesNotMatch(JSON.stringify(result), /never-serialize-this-secret/);
+});
+
 test("TS0 containment imports only image transport, compatibility, and direct compositor execution", async () => {
-  const source = await readFile(new URL("./afc-sr1-tile-grid-scaffold.ts", import.meta.url), "utf8");
+  const [source, runnerSource] = await Promise.all([
+    readFile(new URL("./afc-sr1-tile-grid-scaffold.ts", import.meta.url), "utf8"),
+    readFile(
+      new URL("./afc-sr1-certified-control-runner.ts", import.meta.url),
+      "utf8"
+    ),
+  ]);
   for (const forbidden of [
     "ThreeRoomLab",
     "afc-verified-floor-apply",
@@ -187,4 +330,13 @@ test("TS0 containment imports only image transport, compatibility, and direct co
   }
   assert.equal(source.includes('from "@/lib/callCompositorVibodeStageRun"'), true);
   assert.equal(source.includes("isContinuation: true"), true);
+  assert.equal(source.includes("args.generationTimeoutMs"), false);
+  assert.doesNotMatch(
+    runnerSource,
+    /generationTimeoutMs:\s*15_?000/
+  );
+  assert.match(
+    runnerSource,
+    /generationTimeoutMs:\s*AFC_SR1_TS0_GENERATION_TIMEOUT_MS/
+  );
 });

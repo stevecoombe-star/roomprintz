@@ -63,6 +63,8 @@ import {
   type AfcSr1TileGridScaffoldArgs,
   type AfcSr1TileGridScaffoldImageIdentity,
   type AfcSr1TileGridScaffoldResult,
+  type AfcSr1Ts0GenerationDiagnostic,
+  type AfcSr1Ts0GenerationFailureCode,
 } from "./afc-sr1-tile-grid-scaffold";
 import {
   AFC_SR1_TS0_CHILD_PROJECTIVE_PLACEMENT_POLICY_VERSION,
@@ -175,6 +177,17 @@ export type AfcSr1OrchestrationAttemptCountsV1 = Readonly<{
   tiledProjective: number;
 }>;
 
+export type AfcSr1PathANonScientificDiagnosticsV1 = Readonly<{
+  excludedFromCanonicalEvidence: true;
+  rawTrack1aPriorReason: string | null;
+  fallbackTrack1aPriorReason: string | null;
+  ts0Failure: Readonly<{
+    code: AfcSr1Ts0GenerationFailureCode;
+    diagnostic: AfcSr1Ts0GenerationDiagnostic | null;
+  }> | null;
+  lineageFailure: "lineage_failure" | null;
+}>;
+
 export type AfcSr1RawFirstPlacementAwareOrchestrationResultV1 = Readonly<{
   schemaVersion:
     typeof AFC_SR1_RAW_FIRST_PLACEMENT_AWARE_ORCHESTRATION_VERSION;
@@ -206,6 +219,7 @@ export type AfcSr1RawFirstPlacementAwareOrchestrationResultV1 = Readonly<{
     encoding: "hex";
     value: string;
   }>;
+  diagnostics: AfcSr1PathANonScientificDiagnosticsV1;
 }>;
 
 export type AfcSr1RawFirstPlacementAwareOrchestrationInputV1 = Readonly<{
@@ -564,6 +578,16 @@ function projectiveTrace(
       });
 }
 
+function nestedTrack1aPriorReason(
+  result: AfcSr1FloorVanishingLineCrossRoomResultV1
+): string | null {
+  return result.status === "rejected" &&
+    result.reason === "track1a_rejected" &&
+    result.prior?.status === "rejected"
+    ? result.prior.reason
+    : null;
+}
+
 function lineageIdentity(
   authority: AfcSr1ValidatedTs0ParentChildLineageAuthorityV1
 ): AfcSr1Ts0LineageIdentityV1 {
@@ -650,6 +674,11 @@ export async function executeAfcSr1RawFirstPlacementAwareOrchestration(
     fallbackEligibilityClass: "hard_rejected",
   });
   let fallbackAttempt: AfcSr1FallbackAttemptTraceV1 | null = null;
+  let rawTrack1aPriorReason: string | null = null;
+  let fallbackTrack1aPriorReason: string | null = null;
+  let ts0Failure: AfcSr1PathANonScientificDiagnosticsV1["ts0Failure"] = null;
+  let lineageFailure: AfcSr1PathANonScientificDiagnosticsV1["lineageFailure"] =
+    null;
 
   const finish = (
     mode: AfcSr1RawFirstPlacementAwareModeV1,
@@ -671,6 +700,13 @@ export async function executeAfcSr1RawFirstPlacementAwareOrchestration(
       finalReason,
     };
     const evidenceCanonicalJson = canonicalizeRfc8785Jcs(preimage);
+    const diagnostics: AfcSr1PathANonScientificDiagnosticsV1 = Object.freeze({
+      excludedFromCanonicalEvidence: true,
+      rawTrack1aPriorReason,
+      fallbackTrack1aPriorReason,
+      ts0Failure,
+      lineageFailure,
+    });
     return Object.freeze({
       ...preimage,
       evidenceCanonicalJson,
@@ -679,6 +715,7 @@ export async function executeAfcSr1RawFirstPlacementAwareOrchestration(
         encoding: "hex" as const,
         value: sha256HexUtf8(evidenceCanonicalJson),
       }),
+      diagnostics,
     });
   };
 
@@ -813,6 +850,7 @@ export async function executeAfcSr1RawFirstPlacementAwareOrchestration(
           ? "success"
           : "evidence_rejected_fallback_eligible",
     });
+    rawTrack1aPriorReason = nestedTrack1aPriorReason(rawProjective);
     if (rawProjective.status === "usable") {
       return finish("raw-direct", null);
     }
@@ -852,10 +890,18 @@ export async function executeAfcSr1RawFirstPlacementAwareOrchestration(
       },
     });
   } catch {
+    ts0Failure = Object.freeze({
+      code: "generation_failed",
+      diagnostic: null,
+    });
     fallbackAttempt = freezeFallback();
     return finish("rejected", "ts0_generation_failed");
   }
   if (ts0Result.status !== "generated") {
+    ts0Failure = Object.freeze({
+      code: ts0Result.code,
+      diagnostic: ts0Result.diagnostic ?? null,
+    });
     fallbackAttempt = freezeFallback();
     return finish("rejected", "ts0_generation_failed");
   }
@@ -871,6 +917,7 @@ export async function executeAfcSr1RawFirstPlacementAwareOrchestration(
         childBytes
       );
   } catch {
+    lineageFailure = "lineage_failure";
     fallbackAttempt = freezeFallback();
     return finish("rejected", "ts0_lineage_invalid");
   }
@@ -1038,6 +1085,7 @@ export async function executeAfcSr1RawFirstPlacementAwareOrchestration(
     return finish("rejected", "tiled_projective_execution_failed");
   }
   fallback.finalProjective = projectiveTrace(tiledProjective);
+  fallbackTrack1aPriorReason = nestedTrack1aPriorReason(tiledProjective);
   fallbackAttempt = freezeFallback();
   return tiledProjective.status === "usable"
     ? finish("tiled-placement", null)

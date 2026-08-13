@@ -1,3 +1,9 @@
+import {
+  callCompositorJson,
+  CompositorTransportError,
+  resolveCompositorEndpoint,
+} from "./compositorTransportError";
+
 type VibodeStageRunResponse = {
   imageUrl: string;
   appliedAspectRatio?: string | null;
@@ -8,54 +14,46 @@ export async function callCompositorVibodeStageRun(args: {
   headers?: Record<string, string>;
   signal?: AbortSignal;
 }): Promise<VibodeStageRunResponse> {
-  const endpointBase = process.env.ROOMPRINTZ_COMPOSITOR_URL?.trim();
-
-  if (!endpointBase) {
-    throw new Error(
-      "ROOMPRINTZ_COMPOSITOR_URL is not set in env (RoomPrintz compositor endpoint)."
-    );
-  }
-
-  const endpointBaseNormalized = endpointBase
-    .replace(/\/stage-room\/?$/, "")
-    .replace(/\/api\/vibode\/stage-run\/?$/, "")
-    .replace(/\/vibode\/stage-run\/?$/, "")
-    .replace(/\/vibode\/compose\/?$/, "")
-    .replace(/\/vibode\/remove\/?$/, "")
-    .replace(/\/vibode\/swap\/?$/, "")
-    .replace(/\/vibode\/rotate\/?$/, "")
-    .replace(/\/vibode\/full_vibe\/?$/, "")
-    .replace(/\/$/, "");
-  const endpoint = `${endpointBaseNormalized}/api/vibode/stage-run`;
-  const apiKey = process.env.ROOMPRINTZ_COMPOSITOR_API_KEY;
-
-  const headers: Record<string, string> = {
-    "Content-Type": "application/json",
-    ...(args.headers ?? {}),
-  };
-  if (apiKey) {
-    headers.Authorization = `Bearer ${apiKey}`;
-  }
-
-  const res = await fetch(endpoint, {
+  const data = await callCompositorJson({
+    seam: "stage-run",
+    path: "/api/vibode/stage-run",
     method: "POST",
-    headers,
-    body: JSON.stringify(args.payload),
+    payload: args.payload,
+    headers: args.headers,
     signal: args.signal,
   });
-
-  if (!res.ok) {
-    const text = await res.text().catch(() => "");
-    throw new Error(`Compositor backend error (stage-run): ${res.status} ${text}`.trim());
+  if (typeof data !== "object" || data === null || Array.isArray(data)) {
+    throw new CompositorTransportError({
+      seam: "stage-run",
+      classification: "malformed_response",
+      httpStatus: 200,
+      endpoint: resolveCompositorEndpoint("/api/vibode/stage-run").endpoint,
+    });
   }
-
-  const data = (await res.json()) as VibodeStageRunResponse;
-  if (!data?.imageUrl) {
-    throw new Error("Compositor stage-run did not return imageUrl");
+  const response = data as Record<string, unknown>;
+  if (typeof response.imageUrl !== "string" || response.imageUrl.trim() === "") {
+    throw new CompositorTransportError({
+      seam: "stage-run",
+      classification: "missing_image_artifact",
+      httpStatus: 200,
+      endpoint: resolveCompositorEndpoint("/api/vibode/stage-run").endpoint,
+    });
+  }
+  if (
+    response.appliedAspectRatio !== undefined &&
+    response.appliedAspectRatio !== null &&
+    typeof response.appliedAspectRatio !== "string"
+  ) {
+    throw new CompositorTransportError({
+      seam: "stage-run",
+      classification: "malformed_response",
+      httpStatus: 200,
+      endpoint: resolveCompositorEndpoint("/api/vibode/stage-run").endpoint,
+    });
   }
 
   return {
-    imageUrl: data.imageUrl,
-    appliedAspectRatio: data.appliedAspectRatio ?? null,
+    imageUrl: response.imageUrl,
+    appliedAspectRatio: response.appliedAspectRatio ?? null,
   };
 }

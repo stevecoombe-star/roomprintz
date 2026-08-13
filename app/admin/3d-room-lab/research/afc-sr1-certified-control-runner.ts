@@ -15,7 +15,7 @@ import { promisify } from "node:util";
 import {
   AFC_SR1_READINESS_PATH,
   callCompositorAfcSr1Readiness,
-  type AfcSr1ReadinessV1,
+  type AfcSr1ReadinessV2,
 } from "@/lib/callCompositorAfcSr1Readiness";
 import {
   callCompositorAfcSr1TileFloorReader,
@@ -45,14 +45,23 @@ import {
   type AfcSr1RawFirstPlacementAwareOrchestrationResultV1,
 } from "./afc-sr1-raw-first-placement-aware-orchestration";
 import {
+  deriveAfcSr1FloorVanishingLineCrossRoom,
+} from "./afc-sr1-floor-vanishing-line-cross-room";
+import {
   AFC_SR1_TR2_V3_POLICY_VERSION,
   AFC_SR1_TR2_V3_RESEARCH_PROFILE,
   validateAfcSr1Tr2ReaderReceipt,
 } from "./afc-sr1-tile-floor-reader-execution";
-import type {
-  AfcSr1TileGridScaffoldImageIdentity,
-  AfcSr1TileGridScaffoldProvenance,
-  AfcSr1TileGridScaffoldResult,
+import {
+  AFC_SR1_TS0_GENERATION_TIMEOUT_CONTRACT_VERSION,
+  AFC_SR1_TS0_GENERATION_TIMEOUT_MS,
+  AFC_SR1_TILE_GRID_SCAFFOLD_PROFILE,
+  AFC_SR1_TILE_GRID_SCAFFOLD_REQUESTED_MODEL_ID,
+  vibodeTileGridScaffoldAssist,
+  type AfcSr1TileGridScaffoldArgs,
+  type AfcSr1TileGridScaffoldImageIdentity,
+  type AfcSr1TileGridScaffoldProvenance,
+  type AfcSr1TileGridScaffoldResult,
 } from "./afc-sr1-tile-grid-scaffold";
 import {
   validateAfcSr1Ts0ChildProjectivePlacementReceipt,
@@ -63,11 +72,11 @@ import {
 } from "./afc-sr1-ts0-parent-child-lineage-authority";
 
 export const AFC_SR1_CERTIFIED_RUNNER_VERSION =
-  "afc-sr1-certified-control-runner/v1" as const;
+  "afc-sr1-certified-control-runner/v2" as const;
 export const AFC_SR1_CERTIFIED_PERMISSION_MODE =
   "filesystem-localhost-confirmed/v1" as const;
 export const AFC_SR1_READINESS_CERTIFICATION_VERSION =
-  "afc-sr1-integrated-path-a-readiness-certification/v1" as const;
+  "afc-sr1-integrated-path-a-readiness-certification/v2" as const;
 export const AFC_SR1_TRANSPORT_REQUEST_WIRE_VERSION =
   "afc-sr1-transport-request-wire/v1" as const;
 export const AFC_SR1_TRANSPORT_RESPONSE_WIRE_VERSION =
@@ -77,13 +86,17 @@ export const AFC_SR1_TRANSPORT_ERROR_WIRE_VERSION =
 
 const execFile = promisify(execFileCallback);
 const REPORT_FILENAME =
-  "afc-sr1-integrated-path-a-readiness-certification.v1.json";
+  "afc-sr1-integrated-path-a-readiness-certification.v2.json";
 const FIXTURE_DIRECTORY = new URL(
   "./fixtures/afc-sr1-room-c-strict-semantic-handoff-control.v1/",
   import.meta.url
 );
 
-export type HarnessWireSeam = "raw-reader" | "placement" | "child-reader";
+export type HarnessWireSeam =
+  | "raw-reader"
+  | "ts0-generation"
+  | "placement"
+  | "child-reader";
 
 export type WritableProbeResult = Readonly<{
   directory: string;
@@ -132,6 +145,9 @@ export type CertifiedRunnerDependencies = Readonly<{
   callHealth?: () => Promise<unknown>;
   executePathA?: typeof executeAfcSr1RawFirstPlacementAwareOrchestration;
   callRawReader?: typeof callCompositorAfcSr1TileFloorReader;
+  executeTs0?: (
+    args: AfcSr1TileGridScaffoldArgs
+  ) => Promise<AfcSr1TileGridScaffoldResult>;
   callPlacement?: typeof callCompositorAfcSr1Ts0ChildProjectivePlacement;
   callChildReader?: typeof callCompositorAfcSr1TileFloorReader;
 }>;
@@ -338,6 +354,7 @@ function errorDiagnostic(error: unknown): Readonly<{
 async function writeRequestWire(args: {
   directory: string;
   seam: HarnessWireSeam;
+  artifactStem?: string;
   utc: string;
   safeRequest: unknown;
   state: WireCaptureState;
@@ -353,7 +370,10 @@ async function writeRequestWire(args: {
     request: args.safeRequest,
     scientificImagePayloadStored: false,
   });
-  const path = join(args.directory, `${args.seam}.request-wire.v1.json`);
+  const path = join(
+    args.directory,
+    `${args.artifactStem ?? args.seam}.request-wire.v1.json`
+  );
   const written = await writeCanonicalArtifact(path, artifact);
   args.state.requestPath = written.path;
   args.state.requestWireDigest = written.sha256;
@@ -362,6 +382,7 @@ async function writeRequestWire(args: {
 async function writeResponseWire(args: {
   directory: string;
   seam: HarnessWireSeam;
+  artifactStem?: string;
   utc: string;
   response: unknown;
   state: WireCaptureState;
@@ -373,7 +394,10 @@ async function writeResponseWire(args: {
     requestWireDigest: args.state.requestWireDigest,
     response: safeResponse(args.response),
   });
-  const path = join(args.directory, `${args.seam}.response-wire.v1.json`);
+  const path = join(
+    args.directory,
+    `${args.artifactStem ?? args.seam}.response-wire.v1.json`
+  );
   await writeCanonicalArtifact(path, artifact);
   args.state.responsePath = path;
 }
@@ -381,8 +405,10 @@ async function writeResponseWire(args: {
 async function writeErrorWire(args: {
   directory: string;
   seam: HarnessWireSeam;
+  artifactStem?: string;
   utc: string;
   error: unknown;
+  diagnosticContext?: unknown;
   state: WireCaptureState;
 }): Promise<void> {
   const diagnostic = errorDiagnostic(args.error);
@@ -397,8 +423,14 @@ async function writeErrorWire(args: {
     utc: args.utc,
     requestWireDigest: args.state.requestWireDigest,
     scientificImagePayloadStored: false,
+    ...(args.diagnosticContext === undefined
+      ? {}
+      : { diagnosticContext: safeResponse(args.diagnosticContext) }),
   });
-  const path = join(args.directory, `${args.seam}.error-wire.v1.json`);
+  const path = join(
+    args.directory,
+    `${args.artifactStem ?? args.seam}.error-wire.v1.json`
+  );
   await writeCanonicalArtifact(path, artifact);
   args.state.errorPath = path;
 }
@@ -406,6 +438,7 @@ async function writeErrorWire(args: {
 export function createReaderWireTransport(args: {
   directory: string;
   seam: "raw-reader" | "child-reader";
+  artifactStem?: string;
   call: typeof callCompositorAfcSr1TileFloorReader;
   now?: () => Date;
   state?: WireCaptureState;
@@ -430,6 +463,7 @@ export function createReaderWireTransport(args: {
       await writeRequestWire({
         directory: args.directory,
         seam: args.seam,
+        artifactStem: args.artifactStem,
         utc: now().toISOString(),
         safeRequest: Object.freeze({
           researchProfile: payload?.researchProfile ?? null,
@@ -447,6 +481,7 @@ export function createReaderWireTransport(args: {
         await writeResponseWire({
           directory: args.directory,
           seam: args.seam,
+          artifactStem: args.artifactStem,
           utc: now().toISOString(),
           response,
           state,
@@ -456,6 +491,7 @@ export function createReaderWireTransport(args: {
         await writeErrorWire({
           directory: args.directory,
           seam: args.seam,
+          artifactStem: args.artifactStem,
           utc: now().toISOString(),
           error,
           state,
@@ -468,6 +504,7 @@ export function createReaderWireTransport(args: {
 
 export function createPlacementWireTransport(args: {
   directory: string;
+  artifactStem?: string;
   call: typeof callCompositorAfcSr1Ts0ChildProjectivePlacement;
   now?: () => Date;
   state?: WireCaptureState;
@@ -488,6 +525,7 @@ export function createPlacementWireTransport(args: {
       await writeRequestWire({
         directory: args.directory,
         seam: "placement",
+        artifactStem: args.artifactStem,
         utc: now().toISOString(),
         safeRequest: Object.freeze({
           policyVersion: request.policyVersion,
@@ -509,6 +547,7 @@ export function createPlacementWireTransport(args: {
         await writeResponseWire({
           directory: args.directory,
           seam: "placement",
+          artifactStem: args.artifactStem,
           utc: now().toISOString(),
           response,
           state,
@@ -518,8 +557,135 @@ export function createPlacementWireTransport(args: {
         await writeErrorWire({
           directory: args.directory,
           seam: "placement",
+          artifactStem: args.artifactStem,
           utc: now().toISOString(),
           error,
+          state,
+        });
+        throw error;
+      }
+    },
+  });
+}
+
+export type Ts0WireObservation = {
+  dispatchCount: number;
+  runtimeMs: number | null;
+  resultStatus: "generated" | "failure" | null;
+  failureCode: string | null;
+};
+
+function summarizeTs0Result(result: AfcSr1TileGridScaffoldResult): unknown {
+  if (result.status === "failure") {
+    return Object.freeze({
+      status: result.status,
+      code: result.code,
+      runId: result.runId,
+      input: result.input ?? null,
+      tiled: result.tiled ?? null,
+      compatibility: result.compatibility ?? null,
+      diagnostic: result.diagnostic ?? null,
+      scientificImagePayloadStored: false,
+    });
+  }
+  return Object.freeze({
+    status: result.status,
+    input: result.input,
+    tiledIdentity: result.tiled.identity,
+    provenance: result.provenance,
+    compatibility: result.compatibility,
+    scientificImagePayloadStored: false,
+  });
+}
+
+export function createTs0WireTransport(args: {
+  directory: string;
+  call: (
+    input: AfcSr1TileGridScaffoldArgs
+  ) => Promise<AfcSr1TileGridScaffoldResult>;
+  now?: () => Date;
+  state?: WireCaptureState;
+  artifactStem?: string;
+}): Readonly<{
+  state: WireCaptureState;
+  observation: Ts0WireObservation;
+  call: (
+    input: AfcSr1TileGridScaffoldArgs
+  ) => Promise<AfcSr1TileGridScaffoldResult>;
+}> {
+  const state = args.state ?? {
+    requestPath: null,
+    requestWireDigest: null,
+    responsePath: null,
+    errorPath: null,
+  };
+  const observation: Ts0WireObservation = {
+    dispatchCount: 0,
+    runtimeMs: null,
+    resultStatus: null,
+    failureCode: null,
+  };
+  const now = args.now ?? (() => new Date());
+  return Object.freeze({
+    state,
+    observation,
+    call: async (input) => {
+      if (observation.dispatchCount !== 0) {
+        throw new Error("TS0 exact-once transport refused a second dispatch.");
+      }
+      await writeRequestWire({
+        directory: args.directory,
+        seam: "ts0-generation",
+        artifactStem: args.artifactStem,
+        utc: now().toISOString(),
+        safeRequest: Object.freeze({
+          profileId: AFC_SR1_TILE_GRID_SCAFFOLD_PROFILE,
+          requestedModelId: AFC_SR1_TILE_GRID_SCAFFOLD_REQUESTED_MODEL_ID,
+          timeoutContractVersion:
+            AFC_SR1_TS0_GENERATION_TIMEOUT_CONTRACT_VERSION,
+          generationTimeoutMs: AFC_SR1_TS0_GENERATION_TIMEOUT_MS,
+          emptyIdentity: input.empty.identity,
+          resultAllowedHosts: [...input.resultAllowedHosts],
+          maxOutputBytes: input.maxOutputBytes,
+          fetchTimeoutMs: input.fetchTimeoutMs,
+          allowLocalhostHttp: input.allowLocalhostHttp,
+        }),
+        state,
+      });
+      observation.dispatchCount = 1;
+      const started = performance.now();
+      try {
+        const result = await args.call(input);
+        observation.runtimeMs = performance.now() - started;
+        observation.resultStatus = result.status;
+        observation.failureCode =
+          result.status === "failure" ? result.code : null;
+        await writeResponseWire({
+          directory: args.directory,
+          seam: "ts0-generation",
+          artifactStem: args.artifactStem,
+          utc: now().toISOString(),
+          response: Object.freeze({
+            runtimeMs: observation.runtimeMs,
+            generationTimeoutMs: AFC_SR1_TS0_GENERATION_TIMEOUT_MS,
+            result: summarizeTs0Result(result),
+          }),
+          state,
+        });
+        return result;
+      } catch (error) {
+        observation.runtimeMs = performance.now() - started;
+        await writeErrorWire({
+          directory: args.directory,
+          seam: "ts0-generation",
+          artifactStem: args.artifactStem,
+          utc: now().toISOString(),
+          error,
+          diagnosticContext: Object.freeze({
+            runtimeMs: observation.runtimeMs,
+            generationTimeoutMs: AFC_SR1_TS0_GENERATION_TIMEOUT_MS,
+            dispatchCount: observation.dispatchCount,
+          }),
           state,
         });
         throw error;
@@ -646,7 +812,6 @@ async function roomCInput(
         maxOutputBytes: 32 * 1024 * 1024,
         fetchTimeoutMs: 15_000,
         allowLocalhostHttp: config.ts0AllowLocalhostHttp,
-        generationTimeoutMs: 15_000,
       }),
     }),
   });
@@ -922,7 +1087,7 @@ export async function runAfcSr1CertifiedControl(
     );
   }
 
-  let readiness: AfcSr1ReadinessV1;
+  let readiness: AfcSr1ReadinessV2;
   let health: unknown;
   try {
     [health, readiness] = await Promise.all([callHealth(), callReadiness()]);
@@ -938,39 +1103,67 @@ export async function runAfcSr1CertifiedControl(
   if (!readiness.readerEnabled || !readiness.placementEnabled) {
     throw new AfcSr1CertifiedPreflightError(2, "scientific_gate_disabled");
   }
+  if (
+    !readiness.ts0GeneratorReady ||
+    readiness.ts0GeneratorProfile !== AFC_SR1_TILE_GRID_SCAFFOLD_PROFILE ||
+    readiness.ts0RequestedModelId !==
+      AFC_SR1_TILE_GRID_SCAFFOLD_REQUESTED_MODEL_ID
+  ) {
+    throw new AfcSr1CertifiedPreflightError(
+      2,
+      "ts0_generator_prerequisite_failed"
+    );
+  }
 
   const { control, input } = await roomCInput(config);
+  const executionDirectory = resolve(config.executionDirectory);
   const rawWire = createReaderWireTransport({
-    directory: resolve(config.executionDirectory),
+    directory: executionDirectory,
+    artifactStem: "principal-raw-reader",
     seam: "raw-reader",
     call:
       dependencies.callRawReader ??
       callCompositorAfcSr1TileFloorReader,
     now,
   });
+  const fallbackRawWire = createReaderWireTransport({
+    directory: executionDirectory,
+    artifactStem: "fallback-raw-reader",
+    seam: "raw-reader",
+    call:
+      dependencies.callRawReader ??
+      callCompositorAfcSr1TileFloorReader,
+    now,
+  });
+  const ts0Wire = createTs0WireTransport({
+    directory: executionDirectory,
+    artifactStem: "fallback-ts0-generation",
+    call: dependencies.executeTs0 ?? vibodeTileGridScaffoldAssist,
+    now,
+  });
   const placementWire = createPlacementWireTransport({
-    directory: resolve(config.executionDirectory),
+    directory: executionDirectory,
+    artifactStem: "fallback-placement",
     call:
       dependencies.callPlacement ??
       callCompositorAfcSr1Ts0ChildProjectivePlacement,
     now,
   });
   const childWire = createReaderWireTransport({
-    directory: resolve(config.executionDirectory),
+    directory: executionDirectory,
+    artifactStem: "fallback-child-reader",
     seam: "child-reader",
     call:
       dependencies.callChildReader ??
       callCompositorAfcSr1TileFloorReader,
     now,
   });
-  const started = performance.now();
-  const result = await (
+  const executePathA =
     dependencies.executePathA ??
-    executeAfcSr1RawFirstPlacementAwareOrchestration
-  )(input, {
+    executeAfcSr1RawFirstPlacementAwareOrchestration;
+  const started = performance.now();
+  const result = await executePathA(input, {
     callRawReader: rawWire.call,
-    callPlacement: placementWire.call,
-    callChildReader: childWire.call,
   });
   const runtimeMs = performance.now() - started;
   const replay = replayValid(result);
@@ -994,42 +1187,130 @@ export async function runAfcSr1CertifiedControl(
     rawWire.state.errorPath === null &&
     seamWithinHistoricalTolerance !== false;
 
-  let fallbackControl: unknown;
+  let fallbackResult:
+    | AfcSr1RawFirstPlacementAwareOrchestrationResultV1
+    | null = null;
+  let injectedProjectiveCalls = 0;
   if (roomCPass) {
-    try {
-      fallbackControl = await certifyExposedC1HttpSeams({
-        control,
-        parentBytes: input.parentImageBytes,
-        placementWire,
-        childWire,
-      });
-    } catch {
-      fallbackControl = Object.freeze({
-        identity: "afc-sr1-room-c-exposed-c-t1-http-seam-control/v1",
-        actualPath:
-          "direct_exposed_placement_and_child_reader_http_seam_certification",
-        placementResponseWirePresent:
-          placementWire.state.responsePath !== null,
-        childResponseWirePresent: childWire.state.responsePath !== null,
-        errorWiresAbsent:
-          placementWire.state.errorPath === null &&
-          childWire.state.errorPath === null,
-        replayValid: false,
-        status: "FAIL" as const,
-      });
-    }
-  } else {
-    fallbackControl = Object.freeze({
-      identity: "not_run_principal_control_failed",
-      actualPath: null,
-      status: "FAIL" as const,
+    fallbackResult = await executePathA(input, {
+      callRawReader: fallbackRawWire.call,
+      executeTs0: ts0Wire.call,
+      callPlacement: placementWire.call,
+      callChildReader: childWire.call,
+      deriveProjective: (value) => {
+        injectedProjectiveCalls += 1;
+        return injectedProjectiveCalls === 1
+          ? Object.freeze({
+              status: "rejected" as const,
+              reason: "track1a_rejected" as const,
+            })
+          : deriveAfcSr1FloorVanishingLineCrossRoom(value);
+      },
     });
   }
-  const fallbackPass =
-    typeof fallbackControl === "object" &&
-    fallbackControl !== null &&
-    (fallbackControl as { status?: unknown }).status === "PASS";
-  const overallPass = roomCPass && fallbackPass;
+  const fallbackReplay =
+    fallbackResult === null ? false : replayValid(fallbackResult);
+  const fallbackLegalCounts =
+    fallbackResult === null ? false : legalAttemptCounts(fallbackResult);
+  const ts0ReadinessPass =
+    fallbackResult !== null &&
+    ts0Wire.observation.dispatchCount === 1 &&
+    ts0Wire.observation.resultStatus === "generated" &&
+    fallbackResult.fallbackAttempt?.childImageIdentity !== null &&
+    fallbackResult.fallbackAttempt?.childImageIdentity !== undefined &&
+    fallbackResult.fallbackAttempt?.lineage.status === "validated" &&
+    ts0Wire.state.requestPath !== null &&
+    ts0Wire.state.responsePath !== null &&
+    ts0Wire.state.errorPath === null;
+  const placementAndChildPass =
+    fallbackResult !== null &&
+    fallbackResult.fallbackAttempt?.placement?.status === "usable" &&
+    fallbackResult.fallbackAttempt?.childReader?.status === "usable" &&
+    placementWire.state.responsePath !== null &&
+    placementWire.state.errorPath === null &&
+    childWire.state.responsePath !== null &&
+    childWire.state.errorPath === null;
+  const integratedFallbackPass =
+    fallbackResult !== null &&
+    fallbackResult.mode === "tiled-placement" &&
+    fallbackResult.finalReason === null &&
+    fallbackResult.rawAttempt.receipt?.status === "usable" &&
+    fallbackResult.rawAttempt.projective?.reason === "track1a_rejected" &&
+    fallbackResult.fallbackAttempt?.placementBoundHandoff?.status ===
+      "validated" &&
+    fallbackResult.fallbackAttempt?.finalProjective?.status === "usable" &&
+    injectedProjectiveCalls === 2 &&
+    fallbackReplay &&
+    fallbackLegalCounts &&
+    fallbackRawWire.state.responsePath !== null &&
+    fallbackRawWire.state.errorPath === null &&
+    ts0ReadinessPass &&
+    placementAndChildPass;
+  const fallbackControl = fallbackResult === null
+    ? Object.freeze({
+        identity: "not_run_principal_control_failed",
+        certificationClaim: null,
+        rejectionMechanism: null,
+        status: "FAIL" as const,
+      })
+    : Object.freeze({
+        identity:
+          "afc-sr1-room-c-injected-fallback-live-ts0-placement-child-control/v1",
+        certificationClaim: integratedFallbackPass
+          ? ("injected_fallback_live_ts0_placement_child_path_certified" as const)
+          : null,
+        attemptedCertification:
+          "injected_fallback_live_ts0_placement_child_path_certified" as const,
+        rejectionMechanism:
+          "development_only_first_track1a_projective_rejection_injection" as const,
+        resultMode: fallbackResult.mode,
+        finalReason: fallbackResult.finalReason,
+        rawReceiptStatus: fallbackResult.rawAttempt.receipt?.status ?? null,
+        rawProjectiveReason:
+          fallbackResult.rawAttempt.projective?.reason ?? null,
+        attemptCounts: fallbackResult.attemptCounts,
+        ts0: Object.freeze({
+          timeoutContractVersion:
+            AFC_SR1_TS0_GENERATION_TIMEOUT_CONTRACT_VERSION,
+          generationTimeoutMs: AFC_SR1_TS0_GENERATION_TIMEOUT_MS,
+          dispatchCount: ts0Wire.observation.dispatchCount,
+          runtimeMs: ts0Wire.observation.runtimeMs,
+          resultStatus: ts0Wire.observation.resultStatus,
+          failureCode: ts0Wire.observation.failureCode,
+          childImageIdentity:
+            fallbackResult.fallbackAttempt?.childImageIdentity ?? null,
+          lineageStatus:
+            fallbackResult.fallbackAttempt?.lineage.status ?? "rejected",
+        }),
+        placementStatus:
+          fallbackResult.fallbackAttempt?.placement?.status ?? null,
+        placementReason:
+          fallbackResult.fallbackAttempt?.placement?.reason ?? null,
+        childReaderStatus:
+          fallbackResult.fallbackAttempt?.childReader?.status ?? null,
+        childReaderReason:
+          fallbackResult.fallbackAttempt?.childReader?.reason ?? null,
+        placementBoundHandoffStatus:
+          fallbackResult.fallbackAttempt?.placementBoundHandoff?.status ?? null,
+        finalProjectiveStatus:
+          fallbackResult.fallbackAttempt?.finalProjective?.status ?? null,
+        diagnostics: fallbackResult.diagnostics,
+        evidenceDigest: fallbackResult.evidenceDigest.value,
+        replayValid: fallbackReplay,
+        wires: Object.freeze({
+          raw: Object.freeze({ ...fallbackRawWire.state }),
+          ts0: Object.freeze({ ...ts0Wire.state }),
+          placement: Object.freeze({ ...placementWire.state }),
+          childReader: Object.freeze({ ...childWire.state }),
+        }),
+        status: integratedFallbackPass ? ("PASS" as const) : ("FAIL" as const),
+      });
+  const overallPass =
+    roomCPass &&
+    readiness.ts0GeneratorReady &&
+    ts0ReadinessPass &&
+    placementAndChildPass &&
+    integratedFallbackPass;
   const utc = now().toISOString();
   const preimage = Object.freeze({
     schemaVersion: AFC_SR1_READINESS_CERTIFICATION_VERSION,
@@ -1056,6 +1337,9 @@ export async function runAfcSr1CertifiedControl(
         permissionMode: config.permissionMode,
         ts0ResultAllowedHosts: [...config.ts0ResultAllowedHosts],
         ts0AllowLocalhostHttp: config.ts0AllowLocalhostHttp,
+        ts0GenerationTimeoutContractVersion:
+          AFC_SR1_TS0_GENERATION_TIMEOUT_CONTRACT_VERSION,
+        ts0GenerationTimeoutMs: AFC_SR1_TS0_GENERATION_TIMEOUT_MS,
         workspaceProbe,
         custodyProbe,
       }),
@@ -1067,8 +1351,19 @@ export async function runAfcSr1CertifiedControl(
         emptyPost422IsSufficient: false,
         rootHealthIsSufficient: false,
       }),
-      stage3IntegratedScientificControl: Object.freeze({
-        status: overallPass ? ("PASS" as const) : ("FAIL" as const),
+      stage3RoomCPrincipalRawDirectPathA: Object.freeze({
+        status: roomCPass ? ("PASS" as const) : ("FAIL" as const),
+      }),
+      stage4LiveDevelopmentTs0StructureLineage: Object.freeze({
+        mandatoryForOverallPass: true,
+        status: ts0ReadinessPass ? ("PASS" as const) : ("FAIL" as const),
+      }),
+      stage5PlacementAndChildReaderLiveSeams: Object.freeze({
+        cannotRescueFailedStage4: true,
+        status: placementAndChildPass ? ("PASS" as const) : ("FAIL" as const),
+      }),
+      stage6IntegratedInjectedDevelopmentFallbackPathA: Object.freeze({
+        status: integratedFallbackPass ? ("PASS" as const) : ("FAIL" as const),
       }),
     }),
     controls: Object.freeze({
@@ -1085,10 +1380,9 @@ export async function runAfcSr1CertifiedControl(
         evidenceDigest: result.evidenceDigest.value,
         replayValid: replay,
         runtimeMs,
+        diagnostics: result.diagnostics,
         wires: Object.freeze({
           raw: Object.freeze({ ...rawWire.state }),
-          placement: Object.freeze({ ...placementWire.state }),
-          childReader: Object.freeze({ ...childWire.state }),
         }),
       }),
       fallback: fallbackControl,

@@ -3,7 +3,8 @@ import "server-only";
 export type CompositorTransportSeam =
   | "tile-floor-reader"
   | "ts0-child-placement"
-  | "readiness";
+  | "readiness"
+  | "stage-run";
 
 export type CompositorTransportErrorClass =
   | "connection_failure"
@@ -15,6 +16,7 @@ export type CompositorTransportErrorClass =
   | "http_5xx"
   | "http_other"
   | "malformed_response"
+  | "missing_image_artifact"
   | "client_construction_failure";
 
 export type SanitizedCompositorEndpoint = Readonly<{
@@ -37,6 +39,10 @@ const ENDPOINT_SUFFIXES = Object.freeze([
   /\/api\/vibode\/stage-run\/?$/,
   /\/vibode\/stage-run\/?$/,
   /\/vibode\/compose\/?$/,
+  /\/vibode\/remove\/?$/,
+  /\/vibode\/swap\/?$/,
+  /\/vibode\/rotate\/?$/,
+  /\/vibode\/full_vibe\/?$/,
 ]);
 
 function fixedMessage(
@@ -53,6 +59,8 @@ function fixedMessage(
       return "Compositor request timed out.";
     case "malformed_response":
       return "Compositor returned malformed JSON.";
+    case "missing_image_artifact":
+      return "Compositor response did not contain an image artifact.";
     case "client_construction_failure":
       return "Compositor client request could not be constructed.";
     default:
@@ -169,6 +177,7 @@ export async function callCompositorJson(args: {
   path: string;
   method?: "GET" | "POST";
   payload?: unknown;
+  headers?: Readonly<Record<string, string>>;
   signal?: AbortSignal;
 }): Promise<unknown> {
   let resolved: ReturnType<typeof resolveCompositorEndpoint>;
@@ -184,7 +193,7 @@ export async function callCompositorJson(args: {
     });
   }
 
-  const headers: Record<string, string> = {};
+  const headers: Record<string, string> = { ...(args.headers ?? {}) };
   if (body !== undefined) headers["Content-Type"] = "application/json";
   const apiKey = process.env.ROOMPRINTZ_COMPOSITOR_API_KEY?.trim();
   if (apiKey) headers.Authorization = `Bearer ${apiKey}`;

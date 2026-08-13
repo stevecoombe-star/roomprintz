@@ -15,6 +15,12 @@ import {
   sha256HexUtf8,
 } from "../gemini-evidence-contract";
 import {
+  classifyAfcR3cImagePairCompatibility,
+} from "./afc-r3c-image-pair-compatibility";
+import type {
+  AfcSr1TileGridScaffoldResult,
+} from "./afc-sr1-tile-grid-scaffold";
+import {
   AFC_SR1_CERTIFIED_PERMISSION_MODE,
   AFC_SR1_READINESS_CERTIFICATION_VERSION,
   AFC_SR1_TRANSPORT_ERROR_WIRE_VERSION,
@@ -43,6 +49,17 @@ const fixedRepositoryState: RepositoryRuntimeState = Object.freeze({
   statusPorcelain: "",
   trackedDiffSha256: "b".repeat(64),
 });
+
+function readiness(readerEnabled = true) {
+  return {
+    schemaVersion: "afc-sr1-readiness/v2" as const,
+    readerEnabled,
+    placementEnabled: true,
+    ts0GeneratorReady: true,
+    ts0GeneratorProfile: "afc-sr1-tile-grid-scaffold/v1" as const,
+    ts0RequestedModelId: "NBP" as const,
+  };
+}
 
 async function directories(): Promise<Readonly<{
   root: string;
@@ -122,6 +139,49 @@ async function cT1Receipts(): Promise<Readonly<{
   });
 }
 
+async function cT1ScaffoldResult(): Promise<AfcSr1TileGridScaffoldResult> {
+  const [control, lineage] = await Promise.all([
+    readFile(new URL("control.json", fixtureDirectory), "utf8").then(JSON.parse),
+    readFile(
+      new URL(
+        "./fixtures/afc-sr1-room-c-ts0-lineage-control.v1.json",
+        import.meta.url
+      ),
+      "utf8"
+    ).then(JSON.parse),
+  ]);
+  const metadata = lineage.results["C-T1"];
+  const childBytes = await readFile(
+    new URL(
+      control.realCompositorV3Evidence["C-T1"].imageFixtureFile,
+      fixtureDirectory
+    )
+  );
+  return {
+    status: "generated",
+    input: structuredClone(lineage.parent),
+    tiled: {
+      base64: childBytes.toString("base64"),
+      identity: structuredClone(metadata.child),
+    },
+    provenance: structuredClone(metadata.provenance),
+    compatibility: classifyAfcR3cImagePairCompatibility(
+      {
+        fingerprint: lineage.parent.sha256,
+        decodedWidth: lineage.parent.decodedWidth,
+        decodedHeight: lineage.parent.decodedHeight,
+        orientation: lineage.parent.orientation,
+      },
+      {
+        fingerprint: metadata.child.sha256,
+        decodedWidth: metadata.child.decodedWidth,
+        decodedHeight: metadata.child.decodedHeight,
+        orientation: metadata.child.orientation,
+      }
+    ),
+  };
+}
+
 test("writeability probe fsyncs, renames, reads back, and removes its files", async () => {
   const paths = await directories();
   const result = await probeWritableDirectory(paths.execution, () => "fixed");
@@ -160,11 +220,7 @@ test("writeability failure stops before readiness and every scientific dispatch"
       },
       callReadiness: async () => {
         readinessCalls += 1;
-        return {
-          schemaVersion: "afc-sr1-readiness/v1",
-          readerEnabled: true,
-          placementEnabled: true,
-        };
+        return readiness();
       },
       callRawReader: async () => {
         rawCalls += 1;
@@ -192,11 +248,7 @@ test("gate readiness failure stops before integrated PATH A", async () => {
     runAfcSr1CertifiedControl(config(paths), {
       readRepositoryState: async () => fixedRepositoryState,
       callHealth: async () => ({ status: "ok" }),
-      callReadiness: async () => ({
-        schemaVersion: "afc-sr1-readiness/v1",
-        readerEnabled: false,
-        placementEnabled: true,
-      }),
+      callReadiness: async () => readiness(false),
       executePathA: async () => {
         pathACalls += 1;
         throw new Error("must not execute");
@@ -206,6 +258,30 @@ test("gate readiness failure stops before integrated PATH A", async () => {
       error instanceof AfcSr1CertifiedPreflightError &&
       error.stage === 2 &&
       error.code === "scientific_gate_disabled"
+  );
+  assert.equal(pathACalls, 0);
+});
+
+test("TS0 generator prerequisite failure stops before every PATH A control", async () => {
+  const paths = await directories();
+  let pathACalls = 0;
+  await assert.rejects(
+    runAfcSr1CertifiedControl(config(paths), {
+      readRepositoryState: async () => fixedRepositoryState,
+      callHealth: async () => ({ status: "ok" }),
+      callReadiness: async () => ({
+        ...readiness(),
+        ts0GeneratorReady: false,
+      }),
+      executePathA: async () => {
+        pathACalls += 1;
+        throw new Error("must not execute");
+      },
+    }),
+    (error) =>
+      error instanceof AfcSr1CertifiedPreflightError &&
+      error.stage === 2 &&
+      error.code === "ts0_generator_prerequisite_failed"
   );
   assert.equal(pathACalls, 0);
 });
@@ -256,7 +332,9 @@ test("Room C control runs actual integrated PATH A and emits bound report", asyn
   const paths = await directories();
   const receipt = await roomCRawReceipt();
   const seamReceipts = await cT1Receipts();
+  const scaffold = await cT1ScaffoldResult();
   let rawCalls = 0;
+  let ts0Calls = 0;
   let placementCalls = 0;
   let childCalls = 0;
   const completed = await runAfcSr1CertifiedControl(config(paths), {
@@ -264,14 +342,14 @@ test("Room C control runs actual integrated PATH A and emits bound report", asyn
     createId: () => "fixed-probe",
     readRepositoryState: async () => fixedRepositoryState,
     callHealth: async () => ({ status: "ok" }),
-    callReadiness: async () => ({
-      schemaVersion: "afc-sr1-readiness/v1",
-      readerEnabled: true,
-      placementEnabled: true,
-    }),
+    callReadiness: async () => readiness(),
     callRawReader: async () => {
       rawCalls += 1;
       return structuredClone(receipt);
+    },
+    executeTs0: async () => {
+      ts0Calls += 1;
+      return structuredClone(scaffold);
     },
     callPlacement: async () => {
       placementCalls += 1;
@@ -282,7 +360,8 @@ test("Room C control runs actual integrated PATH A and emits bound report", asyn
       return structuredClone(seamReceipts.childReader);
     },
   });
-  assert.equal(rawCalls, 1);
+  assert.equal(rawCalls, 2);
+  assert.equal(ts0Calls, 1);
   assert.equal(placementCalls, 1);
   assert.equal(childCalls, 1);
   const report = JSON.parse(await readFile(completed.artifactPath, "utf8"));
@@ -295,22 +374,126 @@ test("Room C control runs actual integrated PATH A and emits bound report", asyn
   assert.equal(report.controls.principal.wires.raw.errorPath, null);
   assert.ok(report.controls.principal.wires.raw.responsePath);
   assert.equal(
-    report.stages.stage3IntegratedScientificControl.status,
+    report.stages.stage3RoomCPrincipalRawDirectPathA.status,
+    "PASS"
+  );
+  assert.equal(
+    report.stages.stage4LiveDevelopmentTs0StructureLineage.status,
+    "PASS"
+  );
+  assert.equal(
+    report.stages.stage5PlacementAndChildReaderLiveSeams.status,
+    "PASS"
+  );
+  assert.equal(
+    report.stages.stage6IntegratedInjectedDevelopmentFallbackPathA.status,
     "PASS"
   );
   assert.equal(report.controls.fallback.status, "PASS");
+  assert.equal(
+    report.controls.fallback.certificationClaim,
+    "injected_fallback_live_ts0_placement_child_path_certified"
+  );
+  assert.equal(report.controls.fallback.resultMode, "tiled-placement");
   assert.equal(report.controls.fallback.placementStatus, "usable");
   assert.equal(report.controls.fallback.childReaderStatus, "usable");
-  assert.deepEqual(report.controls.fallback.dispatchCounts, {
-    rawReader: 0,
-    ts0: 0,
+  assert.deepEqual(report.controls.fallback.attemptCounts, {
+    rawReader: 1,
+    ts0: 1,
     placement: 1,
     childReader: 1,
+    placementBoundHandoff: 1,
+    tiledProjective: 1,
   });
+  assert.equal(report.controls.fallback.ts0.dispatchCount, 1);
+  assert.equal(report.controls.fallback.ts0.resultStatus, "generated");
+  assert.equal(report.controls.fallback.ts0.generationTimeoutMs, 120_000);
+  assert.equal(
+    report.stages.stage4LiveDevelopmentTs0StructureLineage
+      .mandatoryForOverallPass,
+    true
+  );
+  assert.equal(
+    report.stages.stage5PlacementAndChildReaderLiveSeams
+      .cannotRescueFailedStage4,
+    true
+  );
   assert.equal(
     await readFile(completed.custodyArtifactPath, "utf8"),
     await readFile(completed.artifactPath, "utf8")
   );
+});
+
+test("failed live TS0 readiness blocks PASS and cannot be rescued by placement or child seams", async () => {
+  const paths = await directories();
+  const receipt = await roomCRawReceipt();
+  let rawCalls = 0;
+  let ts0Calls = 0;
+  let placementCalls = 0;
+  let childCalls = 0;
+  await assert.rejects(
+    runAfcSr1CertifiedControl(config(paths), {
+      now: () => new Date("2026-08-12T19:00:00.000Z"),
+      createId: () => "fixed-probe",
+      readRepositoryState: async () => fixedRepositoryState,
+      callHealth: async () => ({ status: "ok" }),
+      callReadiness: async () => readiness(),
+      callRawReader: async () => {
+        rawCalls += 1;
+        return structuredClone(receipt);
+      },
+      executeTs0: async () => {
+        ts0Calls += 1;
+        return {
+          status: "failure",
+          code: "timeout",
+          runId: "one-authorized-attempt",
+        };
+      },
+      callPlacement: async () => {
+        placementCalls += 1;
+        return {};
+      },
+      callChildReader: async () => {
+        childCalls += 1;
+        return {};
+      },
+    }),
+    /Integrated AFC-SR1 control certification failed/
+  );
+  assert.equal(rawCalls, 2);
+  assert.equal(ts0Calls, 1);
+  assert.equal(placementCalls, 0);
+  assert.equal(childCalls, 0);
+  const report = JSON.parse(
+    await readFile(
+      join(
+        paths.execution,
+        "afc-sr1-integrated-path-a-readiness-certification.v2.json"
+      ),
+      "utf8"
+    )
+  );
+  assert.equal(report.overallStatus, "FAIL");
+  assert.equal(
+    report.stages.stage4LiveDevelopmentTs0StructureLineage.status,
+    "FAIL"
+  );
+  assert.equal(
+    report.stages.stage5PlacementAndChildReaderLiveSeams.status,
+    "FAIL"
+  );
+  assert.equal(report.controls.fallback.ts0.dispatchCount, 1);
+  assert.equal(report.controls.fallback.ts0.failureCode, "timeout");
+  assert.equal(report.controls.fallback.certificationClaim, null);
+  assert.deepEqual(report.controls.fallback.attemptCounts, {
+    rawReader: 1,
+    ts0: 1,
+    placement: 0,
+    childReader: 0,
+    placementBoundHandoff: 0,
+    tiledProjective: 0,
+  });
 });
 
 test("valid rejected Room C receipt cannot certify or be rescued by C-T1 seams", async () => {
@@ -326,11 +509,7 @@ test("valid rejected Room C receipt cannot certify or be rescued by C-T1 seams",
       createId: () => "fixed-probe",
       readRepositoryState: async () => fixedRepositoryState,
       callHealth: async () => ({ status: "ok" }),
-      callReadiness: async () => ({
-        schemaVersion: "afc-sr1-readiness/v1",
-        readerEnabled: true,
-        placementEnabled: true,
-      }),
+      callReadiness: async () => readiness(),
       callRawReader: async () => {
         rawCalls += 1;
         return structuredClone(rejectedReceipt);
@@ -352,7 +531,7 @@ test("valid rejected Room C receipt cannot certify or be rescued by C-T1 seams",
   const report = JSON.parse(await readFile(
     join(
       paths.execution,
-      "afc-sr1-integrated-path-a-readiness-certification.v1.json"
+      "afc-sr1-integrated-path-a-readiness-certification.v2.json"
     ),
     "utf8"
   ));
@@ -364,12 +543,13 @@ test("valid rejected Room C receipt cannot certify or be rescued by C-T1 seams",
   );
   assert.equal(report.overallStatus, "FAIL");
   assert.equal(
-    report.stages.stage3IntegratedScientificControl.status,
+    report.stages.stage3RoomCPrincipalRawDirectPathA.status,
     "FAIL"
   );
   assert.deepEqual(report.controls.fallback, {
     identity: "not_run_principal_control_failed",
-    actualPath: null,
+    certificationClaim: null,
+    rejectionMechanism: null,
     status: "FAIL",
   });
 });
@@ -392,7 +572,7 @@ test("live local gate-off HTTP 404 writes typed error wire and PATH A remains tr
     if (request.url === "/api/research/afc-sr1/readiness") {
       dispatches.readiness += 1;
       response.end(
-        '{"schemaVersion":"afc-sr1-readiness/v1","readerEnabled":true,"placementEnabled":true}'
+        '{"schemaVersion":"afc-sr1-readiness/v2","readerEnabled":true,"placementEnabled":true,"ts0GeneratorReady":true,"ts0GeneratorProfile":"afc-sr1-tile-grid-scaffold/v1","ts0RequestedModelId":"NBP"}'
       );
       return;
     }
@@ -445,7 +625,7 @@ test("live local gate-off HTTP 404 writes typed error wire and PATH A remains tr
   });
   const reportPath = join(
     paths.execution,
-    "afc-sr1-integrated-path-a-readiness-certification.v1.json"
+    "afc-sr1-integrated-path-a-readiness-certification.v2.json"
   );
   const report = JSON.parse(await readFile(reportPath, "utf8"));
   assert.equal(report.controls.principal.resultMode, "rejected");
