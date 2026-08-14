@@ -9,6 +9,17 @@ import AfcProposalOverlayPanel from "./AfcProposalOverlayPanel";
 import AfcUi2aRunnerPanel from "./AfcUi2aRunnerPanel";
 import AfcUi2bProposalRunnerPanel from "./AfcUi2bProposalRunnerPanel";
 import {
+  ROOM_C_AFC_LAB_GEOMETRY_CANDIDATE,
+} from "./afc-lab-geometry-candidate";
+import {
+  settleAfcFixedSeamCalibration,
+  type AfcFixedSeamCalibrationSuccess,
+} from "./afc-fixed-seam-calibration";
+import {
+  validatePendingAfcLabCameraApply,
+  type AfcLabCameraApplyToken,
+} from "./afc-lab-apply-transaction";
+import {
   type AfcQualifiedLiveImageBasis,
 } from "./afc-verified-floor-apply";
 import {
@@ -612,6 +623,15 @@ type VerifiedAfcCameraApplyActionStatus =
   | Readonly<{ kind: "applied" }>
   | Readonly<{ kind: "invalidated_before_apply" }>
   | Readonly<{ kind: "rejected" }>;
+type PendingAfcLabCameraApply = AfcLabCameraApplyToken & Readonly<{
+  settle: AfcFixedSeamCalibrationSuccess;
+}>;
+type AfcLabApplyStatus =
+  | Readonly<{ kind: "idle" }>
+  | Readonly<{ kind: "blocked"; reason: string }>
+  | Readonly<{ kind: "failed"; reason: string }>
+  | Readonly<{ kind: "pending"; settle: AfcFixedSeamCalibrationSuccess }>
+  | Readonly<{ kind: "applied"; settle: AfcFixedSeamCalibrationSuccess }>;
 type FrozenAttachmentWorldTransform = {
   position: { x: number; y: number; z: number };
   quaternion: { x: number; y: number; z: number; w: number };
@@ -1629,6 +1649,13 @@ export default function ThreeRoomLab({
   const [scanAndApplyResult, setScanAndApplyResult] = useState<
     { kind: "applied"; fov: number } | { kind: "blocked"; fov: number } | null
   >(null);
+  // AFC-SR1 Phase 2A: Room C establishes Floor/mapping/FOV in one click, then
+  // waits for a fresh post-render solve before it can enter the existing camera
+  // Apply path. This token is intentionally independent of Scan & Apply.
+  const [pendingAfcLabCameraApply, setPendingAfcLabCameraApply] =
+    useState<PendingAfcLabCameraApply | null>(null);
+  const afcLabCameraApplyTokenRef = useRef(0);
+  const [afcLabApplyStatus, setAfcLabApplyStatus] = useState<AfcLabApplyStatus>({ kind: "idle" });
   const [calibratedCameraSnapshot, setCalibratedCameraSnapshot] = useState<CalibratedCameraSnapshot | null>(null);
   const [lastCalibratedCameraAutoRevertReason, setLastCalibratedCameraAutoRevertReason] = useState<string | null>(null);
   // Phase 2J-B3: deferred calibrated-camera restore. A scene import always
@@ -2657,6 +2684,114 @@ export default function ThreeRoomLab({
     },
     []
   );
+
+  const handleApplyRoomCAfcLab = useCallback(() => {
+    if (isCalibratedCameraActive) {
+      setAfcLabApplyStatus({
+        kind: "blocked",
+        reason: "Calibrated camera already active.",
+      });
+      return;
+    }
+    if (pendingScanAndApplyFov !== null || pendingAfcLabCameraApply !== null) return;
+    if (!ROOM_C_AFC_LAB_GEOMETRY_CANDIDATE.ok) {
+      setAfcLabApplyStatus({
+        kind: "failed",
+        reason: `Room C AFC control is unavailable: ${ROOM_C_AFC_LAB_GEOMETRY_CANDIDATE.reason}.`,
+      });
+      return;
+    }
+    const geometry = ROOM_C_AFC_LAB_GEOMETRY_CANDIDATE.candidate;
+    const liveBasis = afcVerifiedFloorLiveBasisRef.current;
+    if (
+      !liveBasis ||
+      liveBasis.basisFingerprint !== geometry.acceptanceBasis.basisFingerprint ||
+      liveBasis.decodedWidth !== geometry.acceptanceBasis.decodedWidth ||
+      liveBasis.decodedHeight !== geometry.acceptanceBasis.decodedHeight ||
+      !qualifiedImageBasis ||
+      qualifiedImageBasis.encodedOrientation !== geometry.acceptanceBasis.orientation
+    ) {
+      setAfcLabApplyStatus({
+        kind: "failed",
+        reason: "Room C AFC requires the qualified Room C Original acceptance basis; the current image does not match.",
+      });
+      return;
+    }
+
+    const settle = settleAfcFixedSeamCalibration({
+      sourceNormalizedPolygon: geometry.sourceNormalizedPolygon,
+      sourceImageSize: {
+        width: geometry.acceptanceBasis.decodedWidth,
+        height: geometry.acceptanceBasis.decodedHeight,
+      },
+      frameSize: { width: rendererSize.width, height: rendererSize.height },
+      referenceDepthM: geometry.referenceDepthM,
+    });
+    if (!settle.ok) {
+      setAfcLabApplyStatus({
+        kind: "failed",
+        reason: `Room C AFC settle failed closed: ${settle.reason}.`,
+      });
+      return;
+    }
+
+    const floorOutcome = applySourceNormalizedFloorPolygon(
+      geometry.sourceNormalizedPolygon,
+      { status: "needs_review", source: "derived" },
+      { captureUndo: "programmatic" }
+    );
+    if (floorOutcome === "rejected") {
+      setAfcLabApplyStatus({
+        kind: "failed",
+        reason: "Room C AFC Floor Apply was rejected by the existing source-authority path.",
+      });
+      return;
+    }
+
+    const expectedFloorAuthorityKey = buildDurableSourceFloorAuthorityKey(geometry.sourceNormalizedPolygon);
+    if (floorPolygonAuthorityKeyRef.current !== expectedFloorAuthorityKey) {
+      setAfcLabApplyStatus({
+        kind: "failed",
+        reason: "Room C AFC Floor Apply did not retain the expected source authority.",
+      });
+      return;
+    }
+
+    // This is deliberately a direct, un-clamped metric mapping. The fixed
+    // control's explicit reference depth is 4.0 m; the settle has already
+    // rejected widths/depths outside the existing Lab limits.
+    setFloorMapping((previous) => ({
+      ...previous,
+      worldWidth: settle.worldWidthM,
+      worldDepth: settle.worldDepthM,
+    }));
+    setCameraPoseFovYDeg(settle.verticalFovDeg);
+
+    const token = afcLabCameraApplyTokenRef.current + 1;
+    afcLabCameraApplyTokenRef.current = token;
+    setAfcLabApplyStatus({ kind: "pending", settle });
+    setPendingAfcLabCameraApply({
+      token,
+      floorAuthorityKey: expectedFloorAuthorityKey,
+      basisFingerprint: geometry.acceptanceBasis.basisFingerprint,
+      decodedWidth: geometry.acceptanceBasis.decodedWidth,
+      decodedHeight: geometry.acceptanceBasis.decodedHeight,
+      worldWidthM: settle.worldWidthM,
+      worldDepthM: settle.worldDepthM,
+      verticalFovDeg: settle.verticalFovDeg,
+      frameWidth: rendererSize.width,
+      frameHeight: rendererSize.height,
+      settle,
+    });
+  }, [
+    applySourceNormalizedFloorPolygon,
+    isCalibratedCameraActive,
+    pendingAfcLabCameraApply,
+    pendingScanAndApplyFov,
+    qualifiedImageBasis,
+    rendererSize.height,
+    rendererSize.width,
+  ]);
 
   const handleApplyVerifiedAfcFloor = useCallback(
     (request: VerifiedAfcFloorApplyRequest) => {
@@ -5757,6 +5892,94 @@ export default function ThreeRoomLab({
     cameraPoseDebug.applyCandidate,
     calibrationReadiness.recommendedFov,
     applyCalibratedCameraSnapshotFromCandidate,
+  ]);
+
+  // AFC-SR1 Phase 2A deferred camera transaction. The Floor authority commit,
+  // absolute mapping, and FOV write above must render before this effect asks
+  // for a candidate. The ref reads are therefore the current memoized solve,
+  // never a click-time pose or a persisted snapshot.
+  useEffect(() => {
+    const pending = pendingAfcLabCameraApply;
+    if (!pending) return;
+
+    const fail = (reason: string) => {
+      setPendingAfcLabCameraApply(null);
+      setAfcLabApplyStatus({ kind: "failed", reason });
+    };
+    const liveBasis = afcVerifiedFloorLiveBasisRef.current;
+    const transactionValidation = validatePendingAfcLabCameraApply(pending, {
+      currentToken: afcLabCameraApplyTokenRef.current,
+      floorAuthorityKey: floorPolygonAuthorityKeyRef.current,
+      basis: liveBasis,
+      worldWidthM: floorMapping.worldWidth,
+      worldDepthM: floorMapping.worldDepth,
+      verticalFovDeg: cameraPoseFovYDeg,
+      frameWidth: rendererSize.width,
+      frameHeight: rendererSize.height,
+      isCalibratedCameraActive,
+    });
+    if (!transactionValidation.valid) {
+      const reason =
+        transactionValidation.reason === "stale_token"
+          ? "Room C AFC camera Apply was cancelled because a newer request superseded it."
+          : transactionValidation.reason === "basis_mismatch"
+            ? "Room C AFC camera Apply was cancelled because the Room C Original basis changed."
+            : transactionValidation.reason === "floor_mismatch"
+              ? "Room C AFC camera Apply was cancelled because Floor authority changed before the fresh solve."
+              : transactionValidation.reason === "mapping_mismatch" || transactionValidation.reason === "fov_mismatch"
+                ? "Room C AFC camera Apply was cancelled because mapping or FOV changed before the fresh solve."
+                : transactionValidation.reason === "frame_mismatch"
+                  ? "Room C AFC camera Apply was cancelled because the rendering frame changed before the fresh solve."
+                  : "Room C AFC camera Apply was cancelled because calibrated camera mode became active.";
+      fail(reason);
+      return;
+    }
+
+    const candidate = cameraPoseApplyCandidateRef.current;
+    const freshEvaluation = evaluateCalibratedCameraApply(
+      candidate,
+      cameraPoseUnavailableReasonRef.current,
+      {
+        basisQualified:
+          !!qualifiedImageBasis &&
+          basisQualificationStatus === "qualified" &&
+          floorPolygonAuthorityEligible &&
+          sourceNormalizedFloorPolygon.length === 4,
+        basisUnavailableReason: !floorPolygonAuthorityEligible
+          ? "basis_legacy_receipt_missing"
+          : !qualifiedImageBasis
+            ? "basis_unavailable"
+            : basisQualificationStatus,
+      }
+    );
+    calibratedCameraApplyStatusRef.current = freshEvaluation;
+    if (!candidate || !freshEvaluation.available) {
+      fail(`Room C AFC camera Apply failed closed: ${freshEvaluation.reason}.`);
+      return;
+    }
+
+    // Clear first so a render cannot repeat the camera mutation. The writer
+    // still rechecks the same current Apply gate before it activates the camera.
+    setPendingAfcLabCameraApply(null);
+    const applied = applyCalibratedCameraSnapshotFromCandidate(candidate, pending.verticalFovDeg);
+    setAfcLabApplyStatus(
+      applied
+        ? { kind: "applied", settle: pending.settle }
+        : { kind: "failed", reason: "Room C AFC camera Apply was rejected by the existing calibrated-camera writer." }
+    );
+  }, [
+    applyCalibratedCameraSnapshotFromCandidate,
+    basisQualificationStatus,
+    cameraPoseFovYDeg,
+    floorMapping.worldDepth,
+    floorMapping.worldWidth,
+    floorPolygonAuthorityEligible,
+    isCalibratedCameraActive,
+    pendingAfcLabCameraApply,
+    qualifiedImageBasis,
+    rendererSize.height,
+    rendererSize.width,
+    sourceNormalizedFloorPolygon.length,
   ]);
 
   const objectProjectionDiagnostic = useMemo(() => {
@@ -20316,6 +20539,76 @@ export default function ThreeRoomLab({
                   Recommended FOV applied, but calibration was not applied: {calibratedCameraApplyStatus.reason}
                 </p>
               )}
+          </div>
+
+          <div className="mt-3 rounded-lg border border-cyan-900/70 bg-cyan-950/15 p-3">
+            <div className="flex flex-wrap items-center gap-2 text-xs">
+              <button
+                type="button"
+                onClick={handleApplyRoomCAfcLab}
+                disabled={
+                  !ROOM_C_AFC_LAB_GEOMETRY_CANDIDATE.ok ||
+                  isCalibratedCameraActive ||
+                  pendingAfcLabCameraApply !== null ||
+                  pendingScanAndApplyFov !== null
+                }
+                className="rounded border border-cyan-500/70 px-2 py-1 font-medium text-cyan-100 transition hover:border-cyan-300 hover:text-white disabled:cursor-not-allowed disabled:border-slate-700 disabled:text-slate-500 disabled:opacity-60"
+              >
+                {pendingAfcLabCameraApply ? "Applying Room C AFC…" : "Apply Room C AFC"}
+              </button>
+              <span className="text-slate-400">
+                Development control — RAW-direct AFC geometry → Floor → Width/FOV → fresh camera Apply.
+              </span>
+              {isCalibratedCameraActive ? (
+                <span className="text-amber-300">Calibrated camera already active.</span>
+              ) : null}
+            </div>
+            {ROOM_C_AFC_LAB_GEOMETRY_CANDIDATE.ok ? (
+              <>
+                <div className="mt-2 grid gap-1 text-xs text-slate-300 md:grid-cols-2">
+                  <p>
+                    Automatic seamT: <span className="text-cyan-200">{ROOM_C_AFC_LAB_GEOMETRY_CANDIDATE.candidate.seamT}</span>
+                  </p>
+                  <p>
+                    Reference depth: <span className="text-cyan-200">{formatNumber(ROOM_C_AFC_LAB_GEOMETRY_CANDIDATE.candidate.referenceDepthM)} m</span>
+                  </p>
+                  <p>
+                    Geometry: <span className="text-cyan-200">RAW-direct / {ROOM_C_AFC_LAB_GEOMETRY_CANDIDATE.candidate.geometryProvenance.pathAEvidenceIdentity}</span>
+                  </p>
+                  <p className="break-all text-slate-500">
+                    Evidence digest: {ROOM_C_AFC_LAB_GEOMETRY_CANDIDATE.candidate.geometryProvenance.pathAEvidenceDigest}
+                  </p>
+                </div>
+                {afcLabApplyStatus.kind === "pending" || afcLabApplyStatus.kind === "applied" ? (
+                  <p className={afcLabApplyStatus.kind === "applied" ? "mt-2 text-xs text-emerald-300" : "mt-2 text-xs text-cyan-200"}>
+                    {afcLabApplyStatus.kind === "applied" ? "Camera Apply completed." : "Floor, Width/Depth, and FOV committed; waiting for a fresh camera solve."}{" "}
+                    Width {formatNumber(afcLabApplyStatus.settle.worldWidthM)} m · Depth{" "}
+                    {formatNumber(afcLabApplyStatus.settle.worldDepthM)} m · FOV{" "}
+                    {formatNumber(afcLabApplyStatus.settle.verticalFovDeg)}° ·{" "}
+                    {afcLabApplyStatus.settle.applyObservability.available ? "Apply-safe" : "not Apply-safe"}
+                  </p>
+                ) : null}
+                {afcLabApplyStatus.kind === "failed" || afcLabApplyStatus.kind === "blocked" ? (
+                  <p className="mt-2 text-xs text-rose-200">{afcLabApplyStatus.reason}</p>
+                ) : null}
+                <div className="mt-3 border-t border-slate-800 pt-2 text-xs">
+                  <p className="font-medium text-slate-200">C-P04 diagnostic sidecar — not geometry provenance</p>
+                  <p className="mt-1 text-slate-400">
+                    Case {ROOM_C_AFC_LAB_GEOMETRY_CANDIDATE.candidate.diagnostics.caseId} · placement{" "}
+                    <span className="text-rose-200">{ROOM_C_AFC_LAB_GEOMETRY_CANDIDATE.candidate.diagnostics.placementStatus}</span> ·{" "}
+                    {ROOM_C_AFC_LAB_GEOMETRY_CANDIDATE.candidate.diagnostics.placementReason}
+                  </p>
+                  <p className="mt-1 text-slate-400">
+                    Validation P90: {ROOM_C_AFC_LAB_GEOMETRY_CANDIDATE.candidate.diagnostics.validationP90Px} px ·
+                    geometry authority: {ROOM_C_AFC_LAB_GEOMETRY_CANDIDATE.candidate.diagnostics.geometryAuthority}
+                  </p>
+                </div>
+              </>
+            ) : (
+              <p className="mt-2 text-xs text-rose-200">
+                Room C AFC control is invalid: {ROOM_C_AFC_LAB_GEOMETRY_CANDIDATE.reason}.
+              </p>
+            )}
           </div>
 
           <div className="mt-3 rounded-lg border border-emerald-900/70 bg-emerald-950/15 p-3">
