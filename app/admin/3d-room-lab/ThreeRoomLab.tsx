@@ -1,6 +1,16 @@
 "use client";
 
-import { FormEvent, PointerEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  ChangeEvent as ReactChangeEvent,
+  FormEvent,
+  KeyboardEvent as ReactKeyboardEvent,
+  PointerEvent,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import SceneJsonPanel from "./SceneJsonPanel";
@@ -8,9 +18,18 @@ import CollapsibleSection from "./CollapsibleSection";
 import AfcProposalOverlayPanel from "./AfcProposalOverlayPanel";
 import AfcUi2aRunnerPanel from "./AfcUi2aRunnerPanel";
 import AfcUi2bProposalRunnerPanel from "./AfcUi2bProposalRunnerPanel";
+import AfcPerspectiveAdjustControl from "./AfcPerspectiveAdjustControl";
 import {
   ROOM_C_AFC_LAB_GEOMETRY_CANDIDATE,
 } from "./afc-lab-geometry-candidate";
+import {
+  AFC_PERSPECTIVE_ADJUST_DELTA_LIMIT,
+  AFC_PERSPECTIVE_ADJUST_KEYBOARD_DEBOUNCE_MS,
+  buildAfcPerspectiveAdjustCandidate,
+  clampAfcPerspectiveAdjustDelta,
+  shouldInvalidateAfcPerspectiveSessionForFloorCommit,
+  type AfcPerspectiveFloorCommitOptions,
+} from "./afc-lab-perspective-adjust";
 import {
   settleAfcFixedSeamCalibration,
   type AfcFixedSeamCalibrationSuccess,
@@ -632,6 +651,14 @@ type AfcLabApplyStatus =
   | Readonly<{ kind: "failed"; reason: string }>
   | Readonly<{ kind: "pending"; settle: AfcFixedSeamCalibrationSuccess }>
   | Readonly<{ kind: "applied"; settle: AfcFixedSeamCalibrationSuccess }>;
+type AfcPerspectiveAdjustSession = Readonly<{
+  baselineSeamT: number;
+  committedDeltaSeamT: number;
+  previewDeltaSeamT: number;
+  committedSeamT: number;
+  automaticSettle: AfcFixedSeamCalibrationSuccess;
+  adjustmentCount: number;
+}>;
 type FrozenAttachmentWorldTransform = {
   position: { x: number; y: number; z: number };
   quaternion: { x: number; y: number; z: number; w: number };
@@ -1656,6 +1683,19 @@ export default function ThreeRoomLab({
     useState<PendingAfcLabCameraApply | null>(null);
   const afcLabCameraApplyTokenRef = useRef(0);
   const [afcLabApplyStatus, setAfcLabApplyStatus] = useState<AfcLabApplyStatus>({ kind: "idle" });
+  const [perspectiveAdjustSession, setPerspectiveAdjustSession] = useState<AfcPerspectiveAdjustSession | null>(null);
+  const perspectiveAdjustSessionRef = useRef<AfcPerspectiveAdjustSession | null>(null);
+  const perspectivePreviewDeltaRef = useRef(0);
+  const perspectiveKeyboardCommitTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const invalidatePerspectiveAdjustSession = useCallback(() => {
+    if (perspectiveKeyboardCommitTimerRef.current !== null) {
+      clearTimeout(perspectiveKeyboardCommitTimerRef.current);
+      perspectiveKeyboardCommitTimerRef.current = null;
+    }
+    perspectivePreviewDeltaRef.current = 0;
+    perspectiveAdjustSessionRef.current = null;
+    setPerspectiveAdjustSession(null);
+  }, []);
   const [calibratedCameraSnapshot, setCalibratedCameraSnapshot] = useState<CalibratedCameraSnapshot | null>(null);
   const [lastCalibratedCameraAutoRevertReason, setLastCalibratedCameraAutoRevertReason] = useState<string | null>(null);
   // Phase 2J-B3: deferred calibrated-camera restore. A scene import always
@@ -2286,6 +2326,7 @@ export default function ThreeRoomLab({
 
   const restoreSupportPointUndoSnapshot = (snapshot: SupportPointUndoSnapshot) => {
     if (snapshot.kind === "floor") {
+      invalidatePerspectiveAdjustSession();
       setFloorPolygon(snapshot.floorPolygon.map((point) => ({ x: point.x, y: point.y })));
       setSourceNormalizedFloorPolygon(snapshot.sourceNormalizedFloorPolygon.map((point) => ({ x: point.x, y: point.y })));
       setFloorPolygonAuthorityEligible(snapshot.floorPolygonAuthorityEligible);
@@ -2549,7 +2590,7 @@ export default function ThreeRoomLab({
     (
       plan: Extract<FloorSourceAuthorityPlan, { ok: true }>,
       review: { status: SupportReviewStatus; source: SupportSource },
-      options: { captureUndo?: "none" | "active_drag" | "programmatic" } = {}
+      options: { captureUndo?: "none" | "active_drag" | "programmatic" } & AfcPerspectiveFloorCommitOptions = {}
     ) => {
       const previousAuthorityKey = floorPolygonAuthorityKeyRef.current;
       const sourcePolygon = plan.sourcePolygon.map((point) => ({ x: point.x, y: point.y }));
@@ -2575,6 +2616,9 @@ export default function ThreeRoomLab({
         // A pending restore belongs to the pre-mutation source authority and
         // must not overwrite a later manual or programmatic Floor update.
         cancelPendingCalibrationRestoreAfterManualGeometryChange();
+      }
+      if (shouldInvalidateAfcPerspectiveSessionForFloorCommit(options)) {
+        invalidatePerspectiveAdjustSession();
       }
 
       if (options.captureUndo === "active_drag") {
@@ -2636,6 +2680,7 @@ export default function ThreeRoomLab({
       cancelPendingCalibrationRestoreAfterManualGeometryChange,
       clearVerifiedAfcFloorCameraBinding,
       deactivateCalibratedCameraMode,
+      invalidatePerspectiveAdjustSession,
       qualifiedImageBasis,
       updateActiveSupportPointUndoSnapshot,
     ]
@@ -2645,7 +2690,7 @@ export default function ThreeRoomLab({
     (
       polygon: readonly FloorPoint[],
       review: { status: SupportReviewStatus; source: SupportSource },
-      options?: { captureUndo?: "none" | "active_drag" | "programmatic" }
+      options?: { captureUndo?: "none" | "active_drag" | "programmatic" } & AfcPerspectiveFloorCommitOptions
     ): boolean => {
       const plan = planContainerFloorPolygon({
         containerPolygon: polygon,
@@ -2664,7 +2709,7 @@ export default function ThreeRoomLab({
     (
       points: readonly FloorPoint[],
       review: { status: SupportReviewStatus; source: SupportSource },
-      options?: { captureUndo?: "none" | "active_drag" | "programmatic" }
+      options?: { captureUndo?: "none" | "active_drag" | "programmatic" } & AfcPerspectiveFloorCommitOptions
     ): "applied" | "no_change" | "rejected" => {
       const plan = planSourceNormalizedFloorPolygon({
         points,
@@ -2685,76 +2730,91 @@ export default function ThreeRoomLab({
     []
   );
 
-  const handleApplyRoomCAfcLab = useCallback(() => {
-    if (isCalibratedCameraActive) {
+  const realizeAfcLabGeometry = useCallback((input: {
+    sourceNormalizedPolygon: readonly [FloorPoint, FloorPoint, FloorPoint, FloorPoint];
+    referenceDepthM: number;
+    acceptanceBasis: Readonly<{ basisFingerprint: string; decodedWidth: number; decodedHeight: number; orientation: 1 }>;
+    activeCameraPolicy: "block" | "replace";
+    captureUndo: "none" | "programmatic";
+    preservePerspectiveSession: boolean;
+  }): AfcFixedSeamCalibrationSuccess | null => {
+    if (input.activeCameraPolicy === "block" && isCalibratedCameraActive) {
       setAfcLabApplyStatus({
         kind: "blocked",
         reason: "Calibrated camera already active.",
       });
-      return;
+      return null;
     }
-    if (pendingScanAndApplyFov !== null || pendingAfcLabCameraApply !== null) return;
-    if (!ROOM_C_AFC_LAB_GEOMETRY_CANDIDATE.ok) {
-      setAfcLabApplyStatus({
-        kind: "failed",
-        reason: `Room C AFC control is unavailable: ${ROOM_C_AFC_LAB_GEOMETRY_CANDIDATE.reason}.`,
-      });
-      return;
-    }
-    const geometry = ROOM_C_AFC_LAB_GEOMETRY_CANDIDATE.candidate;
+    if (pendingScanAndApplyFov !== null || pendingAfcLabCameraApply !== null) return null;
     const liveBasis = afcVerifiedFloorLiveBasisRef.current;
     if (
       !liveBasis ||
-      liveBasis.basisFingerprint !== geometry.acceptanceBasis.basisFingerprint ||
-      liveBasis.decodedWidth !== geometry.acceptanceBasis.decodedWidth ||
-      liveBasis.decodedHeight !== geometry.acceptanceBasis.decodedHeight ||
+      liveBasis.basisFingerprint !== input.acceptanceBasis.basisFingerprint ||
+      liveBasis.decodedWidth !== input.acceptanceBasis.decodedWidth ||
+      liveBasis.decodedHeight !== input.acceptanceBasis.decodedHeight ||
       !qualifiedImageBasis ||
-      qualifiedImageBasis.encodedOrientation !== geometry.acceptanceBasis.orientation
+      qualifiedImageBasis.encodedOrientation !== input.acceptanceBasis.orientation
     ) {
       setAfcLabApplyStatus({
         kind: "failed",
         reason: "Room C AFC requires the qualified Room C Original acceptance basis; the current image does not match.",
       });
-      return;
+      return null;
     }
 
     const settle = settleAfcFixedSeamCalibration({
-      sourceNormalizedPolygon: geometry.sourceNormalizedPolygon,
+      sourceNormalizedPolygon: input.sourceNormalizedPolygon,
       sourceImageSize: {
-        width: geometry.acceptanceBasis.decodedWidth,
-        height: geometry.acceptanceBasis.decodedHeight,
+        width: input.acceptanceBasis.decodedWidth,
+        height: input.acceptanceBasis.decodedHeight,
       },
       frameSize: { width: rendererSize.width, height: rendererSize.height },
-      referenceDepthM: geometry.referenceDepthM,
+      referenceDepthM: input.referenceDepthM,
     });
     if (!settle.ok) {
       setAfcLabApplyStatus({
         kind: "failed",
         reason: `Room C AFC settle failed closed: ${settle.reason}.`,
       });
-      return;
+      return null;
+    }
+    if (!settle.applyObservability.available) {
+      setAfcLabApplyStatus({
+        kind: "failed",
+        reason: "Room C AFC settle is not Apply-safe.",
+      });
+      return null;
     }
 
     const floorOutcome = applySourceNormalizedFloorPolygon(
-      geometry.sourceNormalizedPolygon,
+      input.sourceNormalizedPolygon,
       { status: "needs_review", source: "derived" },
-      { captureUndo: "programmatic" }
+      { captureUndo: input.captureUndo, preservePerspectiveSession: input.preservePerspectiveSession }
     );
     if (floorOutcome === "rejected") {
       setAfcLabApplyStatus({
         kind: "failed",
         reason: "Room C AFC Floor Apply was rejected by the existing source-authority path.",
       });
-      return;
+      return null;
     }
 
-    const expectedFloorAuthorityKey = buildDurableSourceFloorAuthorityKey(geometry.sourceNormalizedPolygon);
+    const expectedFloorAuthorityKey = buildDurableSourceFloorAuthorityKey(input.sourceNormalizedPolygon);
     if (floorPolygonAuthorityKeyRef.current !== expectedFloorAuthorityKey) {
       setAfcLabApplyStatus({
         kind: "failed",
         reason: "Room C AFC Floor Apply did not retain the expected source authority.",
       });
-      return;
+      return null;
+    }
+
+    // A changed Floor authority already deactivates calibrated mode inside its
+    // successful canonical commit. A no-change Perspective realization still
+    // needs a replacement camera, but only after Floor Apply is confirmed.
+    // This guarantees a rejected Floor Apply leaves the prior good camera up.
+    if (input.activeCameraPolicy === "replace" && (isCalibratedCameraActive || calibratedCameraActiveRef.current)) {
+      calibratedCameraActiveRef.current = false;
+      deactivateCalibratedCameraMode();
     }
 
     // This is deliberately a direct, un-clamped metric mapping. The fixed
@@ -2773,9 +2833,9 @@ export default function ThreeRoomLab({
     setPendingAfcLabCameraApply({
       token,
       floorAuthorityKey: expectedFloorAuthorityKey,
-      basisFingerprint: geometry.acceptanceBasis.basisFingerprint,
-      decodedWidth: geometry.acceptanceBasis.decodedWidth,
-      decodedHeight: geometry.acceptanceBasis.decodedHeight,
+      basisFingerprint: input.acceptanceBasis.basisFingerprint,
+      decodedWidth: input.acceptanceBasis.decodedWidth,
+      decodedHeight: input.acceptanceBasis.decodedHeight,
       worldWidthM: settle.worldWidthM,
       worldDepthM: settle.worldDepthM,
       verticalFovDeg: settle.verticalFovDeg,
@@ -2783,8 +2843,10 @@ export default function ThreeRoomLab({
       frameHeight: rendererSize.height,
       settle,
     });
+    return settle;
   }, [
     applySourceNormalizedFloorPolygon,
+    deactivateCalibratedCameraMode,
     isCalibratedCameraActive,
     pendingAfcLabCameraApply,
     pendingScanAndApplyFov,
@@ -2792,6 +2854,191 @@ export default function ThreeRoomLab({
     rendererSize.height,
     rendererSize.width,
   ]);
+
+  const handleApplyRoomCAfcLab = useCallback(() => {
+    // Preserve the original one-click contract: it does not become a generic
+    // re-apply button merely because Perspective Adjust can replace a session.
+    if (isCalibratedCameraActive) {
+      setAfcLabApplyStatus({
+        kind: "blocked",
+        reason: "Calibrated camera already active.",
+      });
+      return;
+    }
+    if (!ROOM_C_AFC_LAB_GEOMETRY_CANDIDATE.ok) {
+      setAfcLabApplyStatus({
+        kind: "failed",
+        reason: `Room C AFC control is unavailable: ${ROOM_C_AFC_LAB_GEOMETRY_CANDIDATE.reason}.`,
+      });
+      return;
+    }
+    // A fresh AFC attempt supersedes any old Perspective gesture, including a
+    // queued keyboard commit from either UI surface.
+    invalidatePerspectiveAdjustSession();
+    const geometry = ROOM_C_AFC_LAB_GEOMETRY_CANDIDATE.candidate;
+    const settle = realizeAfcLabGeometry({
+      sourceNormalizedPolygon: geometry.sourceNormalizedPolygon,
+      referenceDepthM: geometry.referenceDepthM,
+      acceptanceBasis: geometry.acceptanceBasis,
+      activeCameraPolicy: "block",
+      captureUndo: "programmatic",
+      preservePerspectiveSession: false,
+    });
+    if (!settle) return;
+    perspectivePreviewDeltaRef.current = 0;
+    const session: AfcPerspectiveAdjustSession = {
+      baselineSeamT: geometry.baselineSeamT,
+      committedDeltaSeamT: 0,
+      previewDeltaSeamT: 0,
+      committedSeamT: geometry.baselineSeamT,
+      automaticSettle: settle,
+      adjustmentCount: 0,
+    };
+    perspectiveAdjustSessionRef.current = session;
+    setPerspectiveAdjustSession(session);
+  }, [invalidatePerspectiveAdjustSession, isCalibratedCameraActive, realizeAfcLabGeometry]);
+
+  const restorePerspectivePreviewToCommitted = useCallback(() => {
+    const current = perspectiveAdjustSessionRef.current;
+    if (!current) return;
+    const next: AfcPerspectiveAdjustSession = {
+      ...current,
+      previewDeltaSeamT: current.committedDeltaSeamT,
+    };
+    perspectivePreviewDeltaRef.current = next.previewDeltaSeamT;
+    perspectiveAdjustSessionRef.current = next;
+    setPerspectiveAdjustSession(next);
+  }, []);
+
+  const commitPerspectiveAdjust = useCallback((requestedDeltaSeamT: number) => {
+    const session = perspectiveAdjustSessionRef.current;
+    if (!session || !ROOM_C_AFC_LAB_GEOMETRY_CANDIDATE.ok || pendingAfcLabCameraApply !== null) return;
+    const geometry = ROOM_C_AFC_LAB_GEOMETRY_CANDIDATE.candidate;
+    const adjusted = buildAfcPerspectiveAdjustCandidate({
+      rawSourceNormalizedPolygon: geometry.rawSourceNormalizedPolygon,
+      baselineSeamT: session.baselineSeamT,
+      requestedDeltaSeamT,
+    });
+    if (!adjusted.ok) {
+      setAfcLabApplyStatus({
+        kind: "failed",
+        reason: `Perspective Adjust was not applied: ${adjusted.reason}.`,
+      });
+      restorePerspectivePreviewToCommitted();
+      return;
+    }
+    // The settle above is deliberately complete before the realization helper
+    // replaces calibrated mode and writes any durable Floor authority.
+    const settle = realizeAfcLabGeometry({
+      sourceNormalizedPolygon: adjusted.candidate.sourceNormalizedPolygon,
+      referenceDepthM: geometry.referenceDepthM,
+      acceptanceBasis: geometry.acceptanceBasis,
+      activeCameraPolicy: "replace",
+      captureUndo: "none",
+      preservePerspectiveSession: true,
+    });
+    if (!settle) {
+      restorePerspectivePreviewToCommitted();
+      return;
+    }
+    perspectivePreviewDeltaRef.current = adjusted.candidate.committedDeltaSeamT;
+    const current = perspectiveAdjustSessionRef.current;
+    if (!current || current.baselineSeamT !== session.baselineSeamT) {
+      restorePerspectivePreviewToCommitted();
+      return;
+    }
+    const next: AfcPerspectiveAdjustSession = {
+      ...current,
+      committedDeltaSeamT: adjusted.candidate.committedDeltaSeamT,
+      previewDeltaSeamT: adjusted.candidate.committedDeltaSeamT,
+      committedSeamT: adjusted.candidate.candidateSeamT,
+      adjustmentCount: current.adjustmentCount + 1,
+    };
+    perspectiveAdjustSessionRef.current = next;
+    setPerspectiveAdjustSession(next);
+  }, [pendingAfcLabCameraApply, realizeAfcLabGeometry, restorePerspectivePreviewToCommitted]);
+
+  const handlePerspectiveAdjustPreviewChange = useCallback((value: number) => {
+    const preview = clampAfcPerspectiveAdjustDelta(value);
+    if (preview === null) return;
+    perspectivePreviewDeltaRef.current = preview;
+    const current = perspectiveAdjustSessionRef.current;
+    if (!current) return;
+    const next: AfcPerspectiveAdjustSession = { ...current, previewDeltaSeamT: preview };
+    perspectiveAdjustSessionRef.current = next;
+    setPerspectiveAdjustSession(next);
+  }, []);
+
+  const clearPerspectiveKeyboardCommitTimer = useCallback(() => {
+    if (perspectiveKeyboardCommitTimerRef.current !== null) {
+      clearTimeout(perspectiveKeyboardCommitTimerRef.current);
+      perspectiveKeyboardCommitTimerRef.current = null;
+    }
+  }, []);
+
+  const schedulePerspectiveKeyboardCommit = useCallback(() => {
+    clearPerspectiveKeyboardCommitTimer();
+    perspectiveKeyboardCommitTimerRef.current = setTimeout(() => {
+      perspectiveKeyboardCommitTimerRef.current = null;
+      commitPerspectiveAdjust(perspectivePreviewDeltaRef.current);
+    }, AFC_PERSPECTIVE_ADJUST_KEYBOARD_DEBOUNCE_MS);
+  }, [clearPerspectiveKeyboardCommitTimer, commitPerspectiveAdjust]);
+
+  const handlePerspectiveAdjustRangeChange = useCallback((event: ReactChangeEvent<HTMLInputElement>) => {
+    handlePerspectiveAdjustPreviewChange(Number(event.currentTarget.value));
+  }, [handlePerspectiveAdjustPreviewChange]);
+
+  const handlePerspectiveAdjustPointerUp = useCallback((event: PointerEvent<HTMLInputElement>) => {
+    clearPerspectiveKeyboardCommitTimer();
+    commitPerspectiveAdjust(Number(event.currentTarget.value));
+  }, [clearPerspectiveKeyboardCommitTimer, commitPerspectiveAdjust]);
+
+  const handlePerspectiveAdjustPointerCancel = useCallback(() => {
+    clearPerspectiveKeyboardCommitTimer();
+    restorePerspectivePreviewToCommitted();
+  }, [clearPerspectiveKeyboardCommitTimer, restorePerspectivePreviewToCommitted]);
+
+  const handlePerspectiveAdjustKeyDown = useCallback((event: ReactKeyboardEvent<HTMLInputElement>) => {
+    if (
+      event.key === "ArrowLeft" ||
+      event.key === "ArrowRight" ||
+      event.key === "ArrowUp" ||
+      event.key === "ArrowDown" ||
+      event.key === "Home" ||
+      event.key === "End" ||
+      event.key === "PageUp" ||
+      event.key === "PageDown"
+    ) {
+      schedulePerspectiveKeyboardCommit();
+    }
+  }, [schedulePerspectiveKeyboardCommit]);
+
+  const handlePerspectiveAdjustReset = useCallback(() => {
+    clearPerspectiveKeyboardCommitTimer();
+    // Do not move the thumb to Automatic optimistically: commit owns the
+    // transition, so a failed reset remains truthful to committed geometry.
+    commitPerspectiveAdjust(0);
+  }, [clearPerspectiveKeyboardCommitTimer, commitPerspectiveAdjust]);
+
+  const perspectiveAdjustControlProps = {
+    previewDeltaSeamT: perspectiveAdjustSession?.previewDeltaSeamT ?? 0,
+    committedDeltaSeamT: perspectiveAdjustSession?.committedDeltaSeamT ?? 0,
+    deltaLimit: AFC_PERSPECTIVE_ADJUST_DELTA_LIMIT,
+    enabled:
+      perspectiveAdjustSession !== null &&
+      isCalibratedCameraActive &&
+      pendingAfcLabCameraApply === null &&
+      pendingScanAndApplyFov === null,
+    pending: pendingAfcLabCameraApply !== null,
+    onChange: handlePerspectiveAdjustRangeChange,
+    onPointerDown: clearPerspectiveKeyboardCommitTimer,
+    onPointerUp: handlePerspectiveAdjustPointerUp,
+    onPointerCancel: handlePerspectiveAdjustPointerCancel,
+    onKeyDown: handlePerspectiveAdjustKeyDown,
+    onReset: handlePerspectiveAdjustReset,
+  };
+
+  useEffect(() => clearPerspectiveKeyboardCommitTimer, [clearPerspectiveKeyboardCommitTimer]);
 
   const handleApplyVerifiedAfcFloor = useCallback(
     (request: VerifiedAfcFloorApplyRequest) => {
@@ -3962,8 +4209,9 @@ export default function ThreeRoomLab({
       !floorPolygonsEqual(floorPolygon, projectedRestorePolygon)
     ) {
       // A restore installs exact persisted source authority; it deliberately
-      // bypasses mutation intake and therefore never canonicalizes or
-      // mutation-invalidates calibrated camera state.
+      // bypasses mutation intake and therefore never canonicalizes persisted
+      // geometry. It still invalidates any interactive Perspective session.
+      invalidatePerspectiveAdjustSession();
       floorPolygonAuthorityKeyRef.current = buildDurableSourceFloorAuthorityKey(
         pending.calibration.source.sourceFloorPolygon
       );
@@ -4057,6 +4305,7 @@ export default function ThreeRoomLab({
     projectFloorSourcePolygonToContainer,
     hasValidIntrinsicDimensions,
     applyCalibratedCameraSnapshotFromCandidate,
+    invalidatePerspectiveAdjustSession,
   ]);
 
   const cameraPoseGridPolylinesNorm = useMemo(() => {
@@ -12090,6 +12339,10 @@ export default function ThreeRoomLab({
 
   const applyValidatedSceneState = (validated: ImportedSceneValidated, nextExportedAt: string): boolean => {
     if (refuseModelMutationWhileAttached()) return false;
+    // Supports-bearing imports install persisted Floor authority directly, so
+    // they bypass the ordinary mutation commit. They are still external to the
+    // active Perspective session and must cancel its queued keyboard work.
+    invalidatePerspectiveAdjustSession();
     clearVerifiedAfcFloorCameraBinding();
     // Phase 2J-B3: any prior calibrated-camera mode/snapshot must not survive an
     // import. We always drop back to legacy first so a stale pre-import snapshot
@@ -14539,6 +14792,13 @@ export default function ThreeRoomLab({
                 </svg>
               </>
             )}
+          </div>
+          <div className="mt-3">
+            <AfcPerspectiveAdjustControl
+              {...perspectiveAdjustControlProps}
+              ariaLabel="Perspective Adjust (room viewport)"
+              compact
+            />
           </div>
         </section>
 
@@ -20591,6 +20851,64 @@ export default function ThreeRoomLab({
                 {afcLabApplyStatus.kind === "failed" || afcLabApplyStatus.kind === "blocked" ? (
                   <p className="mt-2 text-xs text-rose-200">{afcLabApplyStatus.reason}</p>
                 ) : null}
+                <div className="mt-3 border-t border-slate-800 pt-2 text-xs">
+                  <AfcPerspectiveAdjustControl
+                    {...perspectiveAdjustControlProps}
+                    ariaLabel="Perspective Adjust (Calibrated camera)"
+                  />
+                  {perspectiveAdjustSession ? (
+                    <div className="mt-2 grid gap-1 text-slate-400 md:grid-cols-2">
+                      <p>
+                        {perspectiveAdjustSession.previewDeltaSeamT === 0 ? "Automatic" : "Preview"} delta:{" "}
+                        <span className="text-cyan-200">{perspectiveAdjustSession.previewDeltaSeamT.toFixed(3)}</span>
+                      </p>
+                      <p>
+                        Committed delta: <span className="text-cyan-200">{perspectiveAdjustSession.committedDeltaSeamT.toFixed(3)}</span>
+                      </p>
+                      <p>
+                        Automatic baseline seamT: <span className="text-cyan-200">{perspectiveAdjustSession.baselineSeamT}</span>
+                      </p>
+                      <p>
+                        Preview seamT:{" "}
+                        <span className="text-cyan-200">
+                          {(perspectiveAdjustSession.baselineSeamT + perspectiveAdjustSession.previewDeltaSeamT).toFixed(6)}
+                        </span>
+                      </p>
+                      <p>
+                        Current committed seamT: <span className="text-cyan-200">{perspectiveAdjustSession.committedSeamT}</span>
+                      </p>
+                      <p>
+                        Automatic Width/FOV:{" "}
+                        <span className="text-cyan-200">
+                          {formatNumber(perspectiveAdjustSession.automaticSettle.worldWidthM)} m /{" "}
+                          {formatNumber(perspectiveAdjustSession.automaticSettle.verticalFovDeg)}°
+                        </span>
+                      </p>
+                      <p>
+                        Current Width/FOV:{" "}
+                        <span className="text-cyan-200">
+                          {formatNumber(floorMapping.worldWidth)} m / {formatNumber(cameraPoseFovYDeg)}°
+                        </span>
+                      </p>
+                      <p>
+                        Winning cell: <span className="text-cyan-200">{afcLabApplyStatus.kind === "pending" || afcLabApplyStatus.kind === "applied" ? afcLabApplyStatus.settle.winningCellId : "last result unavailable"}</span>
+                      </p>
+                      <p>
+                        Evaluated / Apply-safe cells:{" "}
+                        <span className="text-cyan-200">
+                          {afcLabApplyStatus.kind === "pending" || afcLabApplyStatus.kind === "applied"
+                            ? `${afcLabApplyStatus.settle.evaluatedCellCount} / ${afcLabApplyStatus.settle.applySafeCellCount}`
+                            : "last result unavailable"}
+                        </span>
+                      </p>
+                      <p>
+                        Adjustments: <span className="text-cyan-200">{perspectiveAdjustSession.adjustmentCount}</span> · session active
+                      </p>
+                    </div>
+                  ) : (
+                    <p className="mt-2 text-slate-500">Apply Room C AFC to enable Perspective Adjust.</p>
+                  )}
+                </div>
                 <div className="mt-3 border-t border-slate-800 pt-2 text-xs">
                   <p className="font-medium text-slate-200">C-P04 diagnostic sidecar — not geometry provenance</p>
                   <p className="mt-1 text-slate-400">

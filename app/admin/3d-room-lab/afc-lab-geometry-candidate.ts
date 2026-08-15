@@ -101,15 +101,22 @@ function exactSemanticOrder(value: unknown): value is typeof AFC_LAB_GEOMETRY_SE
   );
 }
 
-function constructNrAdjustedPolygon(raw: Polygon, seamT: number): Polygon | null {
+/**
+ * Rebuilds the AFC adjustable corner from the frozen raw polygon. This is the
+ * only NR → FR interpolation used by the Room C automatic candidate and the
+ * Perspective Adjust control.
+ */
+export function constructAfcLabNrAdjustedPolygon(raw: unknown, seamT: number): Polygon | null {
   if (!Number.isFinite(seamT) || seamT < 0 || seamT > 1) return null;
-  const nr = raw[1];
-  const fr = raw[2];
+  const sourcePolygon = polygon(raw);
+  if (!sourcePolygon) return null;
+  const nr = sourcePolygon[1];
+  const fr = sourcePolygon[2];
   const adjustedNr = Object.freeze({
     x: nr.x + seamT * (fr.x - nr.x),
     y: nr.y + seamT * (fr.y - nr.y),
   });
-  const adjusted = Object.freeze([raw[0], adjustedNr, raw[2], raw[3]] as const);
+  const adjusted = Object.freeze([sourcePolygon[0], adjustedNr, sourcePolygon[2], sourcePolygon[3]] as const);
   return (
     validateFloorSourcePolygonExtent(adjusted).ok &&
     validateOrderedFloorCorners(adjusted.map((point) => ({ ...point }))).ok
@@ -161,7 +168,7 @@ export function buildAfcLabGeometryCandidate(control: unknown): AfcLabGeometryCa
   ) {
     return invalid("seam_invalid");
   }
-  const sourceNormalizedPolygon = constructNrAdjustedPolygon(rawPolygon, seamT);
+  const sourceNormalizedPolygon = constructAfcLabNrAdjustedPolygon(rawPolygon, seamT);
   if (!sourceNormalizedPolygon) return invalid("seam_invalid");
 
   const referenceDepthM = finite(geometry.referenceDepthM);

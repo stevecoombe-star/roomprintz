@@ -56,6 +56,19 @@ test("Room C AFC transaction blocks a stale token", () => {
   });
 });
 
+test("a newer Perspective Adjust commit prevents the older pending camera transaction from winning", () => {
+  const olderPerspectiveCommit: AfcLabCameraApplyToken = { ...validToken(), token: 21, verticalFovDeg: 70.2 };
+  const newerLiveState: AfcLabCameraApplyLiveState = {
+    ...validLiveState(),
+    currentToken: 22,
+    verticalFovDeg: 88.1,
+  };
+  assert.deepEqual(validatePendingAfcLabCameraApply(olderPerspectiveCommit, newerLiveState), {
+    valid: false,
+    reason: "stale_token",
+  });
+});
+
 test("Room C AFC transaction blocks changed Floor authority", () => {
   assert.deepEqual(validatePendingAfcLabCameraApply(validToken(), { ...validLiveState(), floorAuthorityKey: "floor:other" }), {
     valid: false,
