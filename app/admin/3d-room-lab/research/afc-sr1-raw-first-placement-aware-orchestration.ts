@@ -50,9 +50,9 @@ import {
 } from "./afc-sr1-placement-bound-tr0-handoff";
 import {
   AFC_SR1_TR2_READER_TIMEOUT_MS,
-  AFC_SR1_TR2_V3_POLICY_VERSION,
-  AFC_SR1_TR2_V3_RESEARCH_PROFILE,
-  AFC_SR1_TR2_V3_RESULT_SCHEMA_VERSION,
+  AFC_SR1_TR2_V4_POLICY_VERSION,
+  AFC_SR1_TR2_V4_RESEARCH_PROFILE,
+  AFC_SR1_TR2_V4_RESULT_SCHEMA_VERSION,
   getAfcSr1ValidatedTr2UsableReaderAuthority,
   validateAfcSr1Tr2ReaderReceipt,
   type AfcSr1Tr2ExecutionInput,
@@ -82,6 +82,10 @@ import {
   validateAfcSr1GeneratedTs0ParentChildLineage,
   type AfcSr1ValidatedTs0ParentChildLineageAuthorityV1,
 } from "./afc-sr1-ts0-parent-child-lineage-authority";
+import {
+  retainAfcSr1V3ReaderDiagnostics,
+  type AfcSr1V3ReaderDiagnosticsV1,
+} from "../afc-sr1-v3-reader-diagnostics";
 
 export const AFC_SR1_RAW_FIRST_PLACEMENT_AWARE_ORCHESTRATION_POLICY_VERSION =
   "afc-sr1-raw-first-placement-aware-orchestration-policy/v1" as const;
@@ -89,10 +93,11 @@ export const AFC_SR1_RAW_FIRST_PLACEMENT_AWARE_ORCHESTRATION_VERSION =
   "afc-sr1-raw-first-placement-aware-orchestration/v1" as const;
 export const AFC_SR1_PLACEMENT_TIMEOUT_MS = 15_000;
 
-export const AFC_SR1_V3_FALLBACK_ELIGIBLE_REASONS = Object.freeze([
+export const AFC_SR1_RAW_READER_TS0_FALLBACK_ELIGIBLE_REASONS = Object.freeze([
   "insufficient_segments",
   "no_stable_valid_pair",
   "degenerate_vanishing_line",
+  "no_independent_direction_pair",
 ] as const);
 
 export const AFC_SR1_V3_HARD_REJECTION_REASONS = Object.freeze([
@@ -179,6 +184,11 @@ export type AfcSr1OrchestrationAttemptCountsV1 = Readonly<{
 
 export type AfcSr1PathANonScientificDiagnosticsV1 = Readonly<{
   excludedFromCanonicalEvidence: true;
+  v3ReaderDiagnostics?: Readonly<{
+    rawReader: AfcSr1V3ReaderDiagnosticsV1 | null;
+    childReader: AfcSr1V3ReaderDiagnosticsV1 | null;
+    authoritativeReaderRole: "rawReader" | "childReader" | null;
+  }>;
   rawTrack1aPriorReason: string | null;
   fallbackTrack1aPriorReason: string | null;
   ts0Failure: Readonly<{
@@ -186,6 +196,8 @@ export type AfcSr1PathANonScientificDiagnosticsV1 = Readonly<{
     diagnostic: AfcSr1Ts0GenerationDiagnostic | null;
   }> | null;
   lineageFailure: "lineage_failure" | null;
+  placementReason: string | null;
+  validationP90Px: number | null;
 }>;
 
 export type AfcSr1RawFirstPlacementAwareOrchestrationResultV1 = Readonly<{
@@ -250,6 +262,13 @@ export type AfcSr1RawFirstPlacementAwareDependenciesV1 = Readonly<{
   buildCommonBasis?: typeof buildAfcSr1CommonBasisTr0Handoff;
   deriveProjective?: typeof deriveAfcSr1FloorVanishingLineCrossRoom;
   buildPlacementBoundHandoff?: typeof buildAfcSr1PlacementBoundTr0Handoff;
+  onTs0ChildValidated?: (
+    artifact: Readonly<{
+      childBytes: Uint8Array;
+      identity: AfcSr1TileGridScaffoldImageIdentity;
+      lineageEvidenceDigest: string;
+    }>
+  ) => void | Promise<void>;
 }>;
 
 type Preflight = Readonly<{
@@ -264,12 +283,13 @@ type Preflight = Readonly<{
 }>;
 
 const FALLBACK_REASON_SET = new Set<string>(
-  AFC_SR1_V3_FALLBACK_ELIGIBLE_REASONS
+  AFC_SR1_RAW_READER_TS0_FALLBACK_ELIGIBLE_REASONS
 );
 const ANCHOR_AUTHORITY_KINDS = new Set([
   "gt_adjustable_corner_derived",
   "predeclared_truncated_anchor",
   "lab_manual_advanced_calibration",
+  "supported_domain_near_side_derived",
 ]);
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
@@ -298,7 +318,7 @@ function equalJson(left: unknown, right: unknown): boolean {
   return canonicalizeRfc8785Jcs(left) === canonicalizeRfc8785Jcs(right);
 }
 
-export function classifyAfcSr1V3ReaderRejectionReason(
+export function classifyAfcSr1ReaderRejectionReason(
   reason: string
 ): Exclude<AfcSr1RawOutcomeClassV1, "success"> {
   return FALLBACK_REASON_SET.has(reason)
@@ -366,12 +386,12 @@ function frozenVersionsAreExact(): boolean {
       "afc-sr1-basis-bound-source-polygon/v1" &&
     AFC_SR1_COMMON_BASIS_TR0_HANDOFF_VERSION ===
       "afc-sr1-common-basis-tr0-handoff/v1" &&
-    AFC_SR1_TR2_V3_RESEARCH_PROFILE ===
-      "afc-sr1-tr2-tile-floor-reader/v3" &&
-    AFC_SR1_TR2_V3_POLICY_VERSION ===
-      "afc-sr1-ts2-extractor-policy/v3" &&
-    AFC_SR1_TR2_V3_RESULT_SCHEMA_VERSION ===
-      "afc-sr1-tr2-tile-floor-reader-result/v3" &&
+    AFC_SR1_TR2_V4_RESEARCH_PROFILE ===
+      "afc-sr1-tr2-tile-floor-reader/v4" &&
+    AFC_SR1_TR2_V4_POLICY_VERSION ===
+      "afc-sr1-ts2-extractor-policy/v4" &&
+    AFC_SR1_TR2_V4_RESULT_SCHEMA_VERSION ===
+      "afc-sr1-tr2-tile-floor-reader-result/v4" &&
     AFC_SR1_TILE_GRID_SCAFFOLD_PROFILE ===
       "afc-sr1-tile-grid-scaffold/v1" &&
     AFC_SR1_TS0_PARENT_CHILD_LINEAGE_EVIDENCE_VERSION ===
@@ -500,8 +520,8 @@ function readerPayload(
   roi: AfcSr1Tr2ExecutionInput["roi"]
 ): unknown {
   return Object.freeze({
-    researchProfile: AFC_SR1_TR2_V3_RESEARCH_PROFILE,
-    policyVersion: AFC_SR1_TR2_V3_POLICY_VERSION,
+    researchProfile: AFC_SR1_TR2_V4_RESEARCH_PROFILE,
+    policyVersion: AFC_SR1_TR2_V4_POLICY_VERSION,
     imageBase64: Buffer.from(bytes).toString("base64"),
     roi,
   });
@@ -679,6 +699,10 @@ export async function executeAfcSr1RawFirstPlacementAwareOrchestration(
   let ts0Failure: AfcSr1PathANonScientificDiagnosticsV1["ts0Failure"] = null;
   let lineageFailure: AfcSr1PathANonScientificDiagnosticsV1["lineageFailure"] =
     null;
+  let placementReason: string | null = null;
+  let validationP90Px: number | null = null;
+  let rawReaderDiagnostics: AfcSr1V3ReaderDiagnosticsV1 | null = null;
+  let childReaderDiagnostics: AfcSr1V3ReaderDiagnosticsV1 | null = null;
 
   const finish = (
     mode: AfcSr1RawFirstPlacementAwareModeV1,
@@ -702,10 +726,21 @@ export async function executeAfcSr1RawFirstPlacementAwareOrchestration(
     const evidenceCanonicalJson = canonicalizeRfc8785Jcs(preimage);
     const diagnostics: AfcSr1PathANonScientificDiagnosticsV1 = Object.freeze({
       excludedFromCanonicalEvidence: true,
+      v3ReaderDiagnostics: Object.freeze({
+        rawReader: rawReaderDiagnostics,
+        childReader: childReaderDiagnostics,
+        authoritativeReaderRole: mode === "raw-direct"
+          ? "rawReader"
+          : mode === "tiled-placement"
+            ? "childReader"
+            : null,
+      }),
       rawTrack1aPriorReason,
       fallbackTrack1aPriorReason,
       ts0Failure,
       lineageFailure,
+      placementReason,
+      validationP90Px,
     });
     return Object.freeze({
       ...preimage,
@@ -737,7 +772,7 @@ export async function executeAfcSr1RawFirstPlacementAwareOrchestration(
   anchorAuthority = preflight.anchorAuthority;
 
   const rawExpected = {
-    readerVersion: "v3" as const,
+    readerVersion: "v4" as const,
     tiledImageBytes: preflight.parentImageBytes,
     roi: preflight.roi,
     expectedImageIdentity: {
@@ -768,8 +803,12 @@ export async function executeAfcSr1RawFirstPlacementAwareOrchestration(
   } catch {
     return finish("rejected", "raw_receipt_invalid");
   }
+  rawReaderDiagnostics = retainAfcSr1V3ReaderDiagnostics(
+    rawReceipt,
+    "rawReader"
+  );
   if (rawReceipt.status === "rejected") {
-    const classification = classifyAfcSr1V3ReaderRejectionReason(
+    const classification = classifyAfcSr1ReaderRejectionReason(
       rawReceipt.reason
     );
     rawAttempt = Object.freeze({
@@ -926,6 +965,18 @@ export async function executeAfcSr1RawFirstPlacementAwareOrchestration(
     evidenceDigest: lineageAuthority.lineageEvidenceDigest,
   };
   fallbackAttempt = freezeFallback();
+  if (dependencies.onTs0ChildValidated) {
+    try {
+      await dependencies.onTs0ChildValidated(Object.freeze({
+        childBytes: Uint8Array.from(childBytes),
+        identity: Object.freeze({ ...ts0Result.tiled.identity }),
+        lineageEvidenceDigest: lineageAuthority.lineageEvidenceDigest,
+      }));
+    } catch {
+      // Artifact retention is deliberately non-scientific and cannot alter
+      // PATH A execution or promote/reject scientific authority.
+    }
+  }
   const lineage = lineageIdentity(lineageAuthority);
 
   counts.placement += 1;
@@ -974,6 +1025,9 @@ export async function executeAfcSr1RawFirstPlacementAwareOrchestration(
     )) {
       throw new Error("placement request binding mismatch");
     }
+    placementReason = placementReceipt.reason;
+    validationP90Px =
+      placementReceipt.diagnostics.holdout.validationP90Px;
   } catch {
     fallbackAttempt = freezeFallback();
     return finish("rejected", "placement_receipt_invalid");
@@ -1005,7 +1059,7 @@ export async function executeAfcSr1RawFirstPlacementAwareOrchestration(
   let childReceipt;
   try {
     childReceipt = validateAfcSr1Tr2ReaderReceipt(childWireReceipt, {
-      readerVersion: "v3",
+      readerVersion: "v4",
       tiledImageBytes: childBytes,
       roi: preflight.roi,
       expectedImageIdentity: {
@@ -1019,6 +1073,10 @@ export async function executeAfcSr1RawFirstPlacementAwareOrchestration(
     fallbackAttempt = freezeFallback();
     return finish("rejected", "tiled_reader_receipt_invalid");
   }
+  childReaderDiagnostics = retainAfcSr1V3ReaderDiagnostics(
+    childReceipt,
+    "childReader"
+  );
   fallback.childReader = receiptTrace(childReceipt);
   fallbackAttempt = freezeFallback();
   if (childReceipt.status === "rejected") {

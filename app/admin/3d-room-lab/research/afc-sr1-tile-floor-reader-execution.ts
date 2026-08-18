@@ -29,6 +29,10 @@ export const AFC_SR1_TR2_V3_RESEARCH_PROFILE = "afc-sr1-tr2-tile-floor-reader/v3
 export const AFC_SR1_TR2_V3_POLICY_VERSION = "afc-sr1-ts2-extractor-policy/v3" as const;
 export const AFC_SR1_TR2_V3_RESULT_SCHEMA_VERSION =
   "afc-sr1-tr2-tile-floor-reader-result/v3" as const;
+export const AFC_SR1_TR2_V4_RESEARCH_PROFILE = "afc-sr1-tr2-tile-floor-reader/v4" as const;
+export const AFC_SR1_TR2_V4_POLICY_VERSION = "afc-sr1-ts2-extractor-policy/v4" as const;
+export const AFC_SR1_TR2_V4_RESULT_SCHEMA_VERSION =
+  "afc-sr1-tr2-tile-floor-reader-result/v4" as const;
 export const AFC_SR1_TR2_READER_TIMEOUT_MS = 15_000;
 
 type ImageIdentity = Readonly<{
@@ -59,20 +63,27 @@ type AnalysisIdentity = Readonly<{
   pixelFormat: "bgr8";
   pixelBufferSha256: string;
 }>;
-type ReaderVersion = "v1" | "v2" | "v3";
+type ReaderVersion = "v1" | "v2" | "v3" | "v4";
 
 declare const AFC_SR1_VALIDATED_TR2_USABLE_READER_AUTHORITY:
   unique symbol;
 
 /**
- * Opaque immutable projection issued only after canonical TR2 V3 validation.
+ * Opaque immutable projection issued only after canonical current-reader
+ * validation. Historical V3 validation remains available for sealed replay.
  * Common-basis code consumes this authority instead of parsing compositor
  * evidenceCanonicalJson under a second canonicalization policy.
  */
 export type AfcSr1ValidatedTr2UsableReaderAuthorityV1 = Readonly<{
-  schemaVersion: typeof AFC_SR1_TR2_V3_RESULT_SCHEMA_VERSION;
-  researchProfile: typeof AFC_SR1_TR2_V3_RESEARCH_PROFILE;
-  policyVersion: typeof AFC_SR1_TR2_V3_POLICY_VERSION;
+  schemaVersion:
+    | typeof AFC_SR1_TR2_V3_RESULT_SCHEMA_VERSION
+    | typeof AFC_SR1_TR2_V4_RESULT_SCHEMA_VERSION;
+  researchProfile:
+    | typeof AFC_SR1_TR2_V3_RESEARCH_PROFILE
+    | typeof AFC_SR1_TR2_V4_RESEARCH_PROFILE;
+  policyVersion:
+    | typeof AFC_SR1_TR2_V3_POLICY_VERSION
+    | typeof AFC_SR1_TR2_V4_POLICY_VERSION;
   imageIdentity: Readonly<{
     sha256: string;
     decodedWidth: number;
@@ -167,6 +178,36 @@ export type AfcSr1Tr2ReaderReceipt =
       schemaVersion: typeof AFC_SR1_TR2_V3_RESULT_SCHEMA_VERSION;
       researchProfile: typeof AFC_SR1_TR2_V3_RESEARCH_PROFILE;
       policyVersion: typeof AFC_SR1_TR2_V3_POLICY_VERSION;
+      status: "rejected";
+      reason: string;
+      imageIdentity: ImageIdentity;
+      roiIdentity: RoiIdentity;
+      runtimeIdentity: RuntimeIdentity;
+      analysisIdentity?: AnalysisIdentity;
+      diagnostics: unknown;
+      evidenceCanonicalJson: string;
+      evidenceDigest: Readonly<{ algorithm: "sha256"; encoding: "hex"; value: string }>;
+      elapsedMs: number;
+    }>
+  | Readonly<{
+      schemaVersion: typeof AFC_SR1_TR2_V4_RESULT_SCHEMA_VERSION;
+      researchProfile: typeof AFC_SR1_TR2_V4_RESEARCH_PROFILE;
+      policyVersion: typeof AFC_SR1_TR2_V4_POLICY_VERSION;
+      status: "usable";
+      imageIdentity: ImageIdentity;
+      roiIdentity: RoiIdentity;
+      runtimeIdentity: RuntimeIdentity;
+      analysisIdentity: AnalysisIdentity;
+      floorVanishingLinePixel: PixelLine;
+      diagnostics: unknown;
+      evidenceCanonicalJson: string;
+      evidenceDigest: Readonly<{ algorithm: "sha256"; encoding: "hex"; value: string }>;
+      elapsedMs: number;
+    }>
+  | Readonly<{
+      schemaVersion: typeof AFC_SR1_TR2_V4_RESULT_SCHEMA_VERSION;
+      researchProfile: typeof AFC_SR1_TR2_V4_RESEARCH_PROFILE;
+      policyVersion: typeof AFC_SR1_TR2_V4_POLICY_VERSION;
       status: "rejected";
       reason: string;
       imageIdentity: ImageIdentity;
@@ -327,6 +368,12 @@ function isV3Receipt(value: Record<string, unknown>): boolean {
     value.policyVersion === AFC_SR1_TR2_V3_POLICY_VERSION;
 }
 
+function isV4Receipt(value: Record<string, unknown>): boolean {
+  return value.schemaVersion === AFC_SR1_TR2_V4_RESULT_SCHEMA_VERSION &&
+    value.researchProfile === AFC_SR1_TR2_V4_RESEARCH_PROFILE &&
+    value.policyVersion === AFC_SR1_TR2_V4_POLICY_VERSION;
+}
+
 function equalJson(left: unknown, right: unknown): boolean {
   if (left === right) return true;
   if (typeof left !== typeof right || left === null || right === null) return false;
@@ -399,6 +446,105 @@ function v3ReceiptDiagnosticSubset(diagnostics: unknown): Record<string, unknown
   };
 }
 
+function v4ReceiptDiagnosticSubset(diagnostics: unknown): Record<string, unknown> {
+  const root = isRecord(diagnostics) ? diagnostics : {};
+  const discovery = isRecord(root.candidateDiscovery) ? root.candidateDiscovery : {};
+  return {
+    segmentCounts: root.segmentCounts ?? null,
+    candidateDiscovery: root.candidateDiscovery ?? null,
+    validFamilyCount: root.validFamilyCount ?? null,
+    candidateUnorderedPairCount: root.candidateUnorderedPairCount ?? null,
+    stableProjectivelyValidPairCount:
+      root.stableProjectivelyValidPairCount ?? null,
+    eligiblePairCount: root.eligiblePairCount ?? null,
+    validPairCount: root.validPairCount ?? null,
+    invalidPairs: root.invalidPairs ?? null,
+    independentDirectionEligibilityRejectedPairs:
+      root.independentDirectionEligibilityRejectedPairs ?? null,
+    validPairUniverse: root.validPairUniverse ?? null,
+    finalFamilies: discovery.finalFamilies ?? null,
+    winningPair: root.winningPair ?? null,
+  };
+}
+
+function nonNegativeInteger(value: unknown): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0;
+}
+
+function validV4Eligibility(value: unknown): boolean {
+  return isRecord(value) &&
+    Array.isArray(value.familyIndices) && value.familyIndices.length === 2 &&
+    value.familyIndices.every((index) => Number.isInteger(index) && index >= 0) &&
+    typeof value.eligible === "boolean" &&
+    (value.failedStage === null || value.failedStage === 1 || value.failedStage === 2) &&
+    (value.rejectionReason === null ||
+      value.rejectionReason === "duplicate_or_interchangeable_families" ||
+      value.rejectionReason === "insufficient_direction_field_separation") &&
+    finiteNumber(value.overlapFractionOfSmaller) &&
+    nonNegativeInteger(value.firstSupportCount) &&
+    nonNegativeInteger(value.secondSupportCount) &&
+    nonNegativeInteger(value.firstInlierBandCount) &&
+    nonNegativeInteger(value.secondInlierBandCount) &&
+    finiteNumber(value.firstInlierBandFraction) &&
+    finiteNumber(value.secondInlierBandFraction) &&
+    (value.firstRegionMedianDegrees === null ||
+      finiteNumber(value.firstRegionMedianDegrees)) &&
+    (value.secondRegionMedianDegrees === null ||
+      finiteNumber(value.secondRegionMedianDegrees)) &&
+    (value.strongRegionMedianDegrees === null ||
+      finiteNumber(value.strongRegionMedianDegrees)) &&
+    (value.eligible
+      ? value.failedStage === null && value.rejectionReason === null
+      : (value.failedStage === 1 || value.failedStage === 2) &&
+        typeof value.rejectionReason === "string");
+}
+
+function validV4Diagnostics(
+  value: unknown,
+  status: "usable" | "rejected",
+  reason: string | undefined
+): boolean {
+  if (!isRecord(value)) {
+    return false;
+  }
+  if (status === "rejected" && reason !== "no_independent_direction_pair") {
+    return true;
+  }
+  if (
+      !nonNegativeInteger(value.validFamilyCount) ||
+      !nonNegativeInteger(value.candidateUnorderedPairCount) ||
+      !nonNegativeInteger(value.stableProjectivelyValidPairCount) ||
+      !nonNegativeInteger(value.eligiblePairCount) ||
+      !nonNegativeInteger(value.validPairCount) ||
+      !Array.isArray(value.independentDirectionEligibilityRejectedPairs) ||
+      !Array.isArray(value.validPairUniverse)
+  ) {
+    return false;
+  }
+  if (status === "rejected") {
+    return true;
+  }
+  return !(
+      value.validPairCount !== value.eligiblePairCount ||
+      value.validPairUniverse.length !== value.validPairCount ||
+      value.independentDirectionEligibilityRejectedPairs.some((pair) =>
+        !isRecord(pair) || !validV4Eligibility(pair) || pair.eligible
+      ) ||
+      value.validPairUniverse.some((pair) => {
+        if (!isRecord(pair) ||
+            !isRecord(pair.independentDirectionEligibility)) return true;
+        const eligibility = pair.independentDirectionEligibility;
+        return !validV4Eligibility(eligibility) || eligibility.eligible !== true;
+      }) ||
+      value.eligiblePairCount +
+        value.independentDirectionEligibilityRejectedPairs.length !==
+        value.stableProjectivelyValidPairCount
+  ) && isRecord(value.winningPair) &&
+    isRecord(value.winningPair.independentDirectionEligibility) &&
+    validV4Eligibility(value.winningPair.independentDirectionEligibility) &&
+    value.winningPair.independentDirectionEligibility.eligible === true;
+}
+
 function validV3Diagnostics(value: unknown): boolean {
   if (!isRecord(value) || !positiveInteger(value.validFamilyCount) ||
       typeof value.candidateUnorderedPairCount !== "number" ||
@@ -460,7 +606,8 @@ function assertExpectedImageIdentity(
 function registerValidatedUsableReaderAuthority(
   receipt: AfcSr1Tr2ReaderReceipt
 ): void {
-  if (receipt.schemaVersion !== AFC_SR1_TR2_V3_RESULT_SCHEMA_VERSION ||
+  if ((receipt.schemaVersion !== AFC_SR1_TR2_V3_RESULT_SCHEMA_VERSION &&
+       receipt.schemaVersion !== AFC_SR1_TR2_V4_RESULT_SCHEMA_VERSION) ||
       receipt.status !== "usable" ||
       receipt.imageIdentity.decodedWidth === null ||
       receipt.imageIdentity.decodedHeight === null) {
@@ -504,7 +651,8 @@ export function validateAfcSr1Tr2ReaderReceipt(
   >
 ): AfcSr1Tr2ReaderReceipt {
   if (!isRecord(value) ||
-      (!isV1Receipt(value) && !isV2Receipt(value) && !isV3Receipt(value)) ||
+      (!isV1Receipt(value) && !isV2Receipt(value) && !isV3Receipt(value) &&
+       !isV4Receipt(value)) ||
       (value.status !== "usable" && value.status !== "rejected") ||
       !validImageIdentity(value.imageIdentity) ||
       !validRoiIdentity(value.roiIdentity) ||
@@ -519,10 +667,12 @@ export function validateAfcSr1Tr2ReaderReceipt(
   }
   const v2 = isV2Receipt(value);
   const v3 = isV3Receipt(value);
+  const v4 = isV4Receipt(value);
   const expectedVersion = expected.readerVersion ?? "v1";
   if ((expectedVersion === "v1" && !isV1Receipt(value)) ||
       (expectedVersion === "v2" && !v2) ||
-      (expectedVersion === "v3" && !v3)) {
+      (expectedVersion === "v3" && !v3) ||
+      (expectedVersion === "v4" && !v4)) {
     throw new Error("TR2 receipt version does not match the requested reader version.");
   }
   if (v2) {
@@ -530,25 +680,26 @@ export function validateAfcSr1Tr2ReaderReceipt(
         !validAnalysisIdentity(value.analysisIdentity, value.imageIdentity)) {
       throw new Error("TR2 versioned receipt has an invalid analysis identity.");
     }
-  } else if (v3) {
-    if (value.runtimeIdentity.readerModuleVersion !== "afc-sr1-tile-floor-reader/v3") {
-      throw new Error("TR2 v3 receipt has an invalid reader module identity.");
+  } else if (v3 || v4) {
+    if (value.runtimeIdentity.readerModuleVersion !==
+      (v4 ? "afc-sr1-tile-floor-reader/v4" : "afc-sr1-tile-floor-reader/v3")) {
+      throw new Error("TR2 versioned receipt has an invalid reader module identity.");
     }
     const hasAnalysisIdentity = Object.prototype.hasOwnProperty.call(value, "analysisIdentity");
     if ((value.status === "usable" && !hasAnalysisIdentity) ||
         (hasAnalysisIdentity && !validAnalysisIdentity(value.analysisIdentity, value.imageIdentity))) {
-      throw new Error("TR2 v3 receipt has an invalid analysis identity.");
+      throw new Error("TR2 versioned receipt has an invalid analysis identity.");
     }
     if (value.status === "rejected" && !hasAnalysisIdentity &&
         value.reason !== "invalid_input_image" && value.reason !== "invalid_roi") {
-      throw new Error("TR2 v3 rejection is missing its available analysis identity.");
+      throw new Error("TR2 versioned rejection is missing its available analysis identity.");
     }
     if (value.status === "rejected" && !hasAnalysisIdentity &&
         ((value.reason === "invalid_input_image" &&
           (value.imageIdentity.decodedWidth !== null || value.imageIdentity.decodedHeight !== null)) ||
          (value.reason === "invalid_roi" &&
           (value.imageIdentity.decodedWidth === null || value.imageIdentity.decodedHeight === null)))) {
-      throw new Error("TR2 v3 early rejection has inconsistent decoded image identity.");
+      throw new Error("TR2 versioned early rejection has inconsistent decoded image identity.");
     }
   } else if (value.runtimeIdentity.readerModuleVersion !== "afc-sr1-tile-floor-reader/v1") {
     throw new Error("TR2 v1 receipt has an invalid reader module identity.");
@@ -565,7 +716,7 @@ export function validateAfcSr1Tr2ReaderReceipt(
   if (hasJsonWhitespaceOutsideStrings(value.evidenceCanonicalJson)) {
     throw new Error("TR2 receipt evidence JSON is not canonical.");
   }
-  const v3HasAnalysisIdentity = v3 &&
+  const versionedHasAnalysisIdentity = (v3 || v4) &&
     Object.prototype.hasOwnProperty.call(value, "analysisIdentity");
   if (!isRecord(preimage) ||
       preimage.schemaVersion !== value.schemaVersion ||
@@ -575,8 +726,14 @@ export function validateAfcSr1Tr2ReaderReceipt(
       !equalJson(preimage.image, value.imageIdentity) ||
       !equalJson(preimage.roi, value.roiIdentity) ||
       !equalJson(preimage.runtime, value.runtimeIdentity) ||
-      !equalJson(preimage.diagnostics, v3 ? v3ReceiptDiagnosticSubset(value.diagnostics) : receiptDiagnosticSubset(value.diagnostics)) ||
-      ((v2 || v3HasAnalysisIdentity) &&
+      !equalJson(
+        preimage.diagnostics,
+        v4
+          ? v4ReceiptDiagnosticSubset(value.diagnostics)
+          : v3 ? v3ReceiptDiagnosticSubset(value.diagnostics)
+          : receiptDiagnosticSubset(value.diagnostics)
+      ) ||
+      ((v2 || versionedHasAnalysisIdentity) &&
        !equalJson(preimage.analysisIdentity, value.analysisIdentity))) {
     throw new Error("TR2 receipt response does not agree with its evidence preimage.");
   }
@@ -587,6 +744,13 @@ export function validateAfcSr1Tr2ReaderReceipt(
   assertExpectedImageIdentity(value.imageIdentity, expected.expectedImageIdentity, expected.tiledImageBytes);
   if (v3 && value.status === "usable" && !validV3Diagnostics(value.diagnostics)) {
     throw new Error("TR2 v3 receipt has invalid projective-family diagnostics.");
+  }
+  if (v4 && !validV4Diagnostics(
+    value.diagnostics,
+    value.status,
+    typeof value.reason === "string" ? value.reason : undefined
+  )) {
+    throw new Error("TR2 v4 receipt has invalid independent-direction diagnostics.");
   }
 
   if (value.status === "usable") {
@@ -613,9 +777,10 @@ export async function executeAfcSr1TileFloorReader(
   const timeout = setTimeout(() => controller.abort(), AFC_SR1_TR2_READER_TIMEOUT_MS);
   const v2 = input.readerVersion === "v2";
   const v3 = input.readerVersion === "v3";
+  const v4 = input.readerVersion === "v4";
   const payload = {
-    researchProfile: v3 ? AFC_SR1_TR2_V3_RESEARCH_PROFILE : v2 ? AFC_SR1_TR2_V2_RESEARCH_PROFILE : AFC_SR1_TR2_RESEARCH_PROFILE,
-    policyVersion: v3 ? AFC_SR1_TR2_V3_POLICY_VERSION : v2 ? AFC_SR1_TR2_V2_POLICY_VERSION : AFC_SR1_TR2_POLICY_VERSION,
+    researchProfile: v4 ? AFC_SR1_TR2_V4_RESEARCH_PROFILE : v3 ? AFC_SR1_TR2_V3_RESEARCH_PROFILE : v2 ? AFC_SR1_TR2_V2_RESEARCH_PROFILE : AFC_SR1_TR2_RESEARCH_PROFILE,
+    policyVersion: v4 ? AFC_SR1_TR2_V4_POLICY_VERSION : v3 ? AFC_SR1_TR2_V3_POLICY_VERSION : v2 ? AFC_SR1_TR2_V2_POLICY_VERSION : AFC_SR1_TR2_POLICY_VERSION,
     imageBase64: Buffer.from(input.tiledImageBytes).toString("base64"),
     roi: input.roi,
   };

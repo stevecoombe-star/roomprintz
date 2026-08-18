@@ -48,8 +48,8 @@ import {
   deriveAfcSr1FloorVanishingLineCrossRoom,
 } from "./afc-sr1-floor-vanishing-line-cross-room";
 import {
-  AFC_SR1_TR2_V3_POLICY_VERSION,
-  AFC_SR1_TR2_V3_RESEARCH_PROFILE,
+  AFC_SR1_TR2_V4_POLICY_VERSION,
+  AFC_SR1_TR2_V4_RESEARCH_PROFILE,
   validateAfcSr1Tr2ReaderReceipt,
 } from "./afc-sr1-tile-floor-reader-execution";
 import {
@@ -953,14 +953,14 @@ async function certifyExposedC1HttpSeams(args: {
     );
   const childWireResponse = await args.childWire.call({
     payload: Object.freeze({
-      researchProfile: AFC_SR1_TR2_V3_RESEARCH_PROFILE,
-      policyVersion: AFC_SR1_TR2_V3_POLICY_VERSION,
+      researchProfile: AFC_SR1_TR2_V4_RESEARCH_PROFILE,
+      policyVersion: AFC_SR1_TR2_V4_POLICY_VERSION,
       imageBase64: Buffer.from(childBytes).toString("base64"),
       roi: args.control.authority.readerRoi,
     }),
   });
   const childReceipt = validateAfcSr1Tr2ReaderReceipt(childWireResponse, {
-    readerVersion: "v3",
+    readerVersion: "v4",
     tiledImageBytes: childBytes,
     roi: args.control.authority.readerRoi,
     expectedImageIdentity: {

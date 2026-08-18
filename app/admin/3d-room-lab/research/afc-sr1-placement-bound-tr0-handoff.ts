@@ -83,7 +83,7 @@ export type AfcSr1ValidatedPlacementBoundTr0HandoffV1 = Readonly<{
     decodedWidth: number;
     decodedHeight: number;
     orientation: 1;
-    policyVersion: "afc-sr1-ts2-extractor-policy/v3";
+    policyVersion: "afc-sr1-ts2-extractor-policy/v4";
     receiptEvidenceDigest: string;
     floorVanishingLinePixel: AfcSr1PixelLineV1;
   }>;
@@ -125,6 +125,7 @@ const ANCHOR_KINDS = new Set([
   "gt_adjustable_corner_derived",
   "predeclared_truncated_anchor",
   "lab_manual_advanced_calibration",
+  "supported_domain_near_side_derived",
 ]);
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
@@ -273,6 +274,9 @@ export function buildAfcSr1PlacementBoundTr0Handoff(
   const reader = input.readerAuthority;
   const placement = input.placementAuthority;
   const lineageEvidence = input.lineageAuthority.evidence;
+  if (reader.policyVersion !== "afc-sr1-ts2-extractor-policy/v4") {
+    return rejection("reader_child_basis_mismatch");
+  }
   const lineageParent = {
     sha256: lineageEvidence.parent.sha256,
     byteCount: lineageEvidence.parent.byteCount,
@@ -451,7 +455,7 @@ export function validateAfcSr1ValidatedPlacementBoundTr0Handoff(
       !positiveInteger(value.readerChildBasis.decodedWidth) ||
       !positiveInteger(value.readerChildBasis.decodedHeight) ||
       value.readerChildBasis.orientation !== 1 ||
-      value.readerChildBasis.policyVersion !== "afc-sr1-ts2-extractor-policy/v3" ||
+      value.readerChildBasis.policyVersion !== "afc-sr1-ts2-extractor-policy/v4" ||
       !isSha256(value.readerChildBasis.receiptEvidenceDigest) ||
       !validLine(value.readerChildBasis.floorVanishingLinePixel) ||
       !isPlainRecord(value.placement) ||

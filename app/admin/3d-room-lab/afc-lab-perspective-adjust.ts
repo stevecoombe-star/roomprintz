@@ -1,6 +1,6 @@
 import {
   AFC_LAB_GEOMETRY_SEMANTIC_ORDER,
-  constructAfcLabNrAdjustedPolygon,
+  constructAfcLabAdjustedPolygon,
 } from "./afc-lab-geometry-candidate";
 
 type Point = Readonly<{ x: number; y: number }>;
@@ -19,6 +19,7 @@ export type AfcPerspectiveAdjustCandidateInput = Readonly<{
   rawSourceNormalizedPolygon: unknown;
   baselineSeamT: number;
   requestedDeltaSeamT: number;
+  adjustableCorner?: "NL" | "NR";
 }>;
 
 export type AfcPerspectiveAdjustCandidate = Readonly<{
@@ -27,6 +28,7 @@ export type AfcPerspectiveAdjustCandidate = Readonly<{
   requestedDeltaSeamT: number;
   committedDeltaSeamT: number;
   candidateSeamT: number;
+  adjustableCorner: "NL" | "NR";
   sourceNormalizedPolygon: Polygon;
 }>;
 
@@ -75,7 +77,12 @@ export function buildAfcPerspectiveAdjustCandidate(
   if (candidateSeamT <= 0 || candidateSeamT >= 1) {
     return Object.freeze({ ok: false as const, reason: "candidate_seam_out_of_domain" as const });
   }
-  const sourceNormalizedPolygon = constructAfcLabNrAdjustedPolygon(input.rawSourceNormalizedPolygon, candidateSeamT);
+  const adjustableCorner = input.adjustableCorner ?? "NR";
+  const sourceNormalizedPolygon = constructAfcLabAdjustedPolygon(
+    input.rawSourceNormalizedPolygon,
+    candidateSeamT,
+    adjustableCorner
+  );
   if (!sourceNormalizedPolygon) {
     return Object.freeze({ ok: false as const, reason: "source_polygon_invalid" as const });
   }
@@ -87,6 +94,7 @@ export function buildAfcPerspectiveAdjustCandidate(
       requestedDeltaSeamT: input.requestedDeltaSeamT,
       committedDeltaSeamT,
       candidateSeamT,
+      adjustableCorner,
       sourceNormalizedPolygon,
     }),
   });

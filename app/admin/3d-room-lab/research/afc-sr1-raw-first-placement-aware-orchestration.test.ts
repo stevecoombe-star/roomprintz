@@ -24,9 +24,9 @@ import {
 import {
   AFC_SR1_RAW_FIRST_PLACEMENT_AWARE_ORCHESTRATION_POLICY_VERSION,
   AFC_SR1_RAW_FIRST_PLACEMENT_AWARE_ORCHESTRATION_VERSION,
-  AFC_SR1_V3_FALLBACK_ELIGIBLE_REASONS,
+  AFC_SR1_RAW_READER_TS0_FALLBACK_ELIGIBLE_REASONS,
   AFC_SR1_V3_HARD_REJECTION_REASONS,
-  classifyAfcSr1V3ReaderRejectionReason,
+  classifyAfcSr1ReaderRejectionReason,
   executeAfcSr1RawFirstPlacementAwareOrchestration,
   type AfcSr1RawFirstPlacementAwareDependenciesV1,
   type AfcSr1RawFirstPlacementAwareOrchestrationInputV1,
@@ -141,18 +141,143 @@ function rejectedReaderReceipt(
   return receipt;
 }
 
-function rejectedPlacementReceipt(source: any): any {
+function v4Eligibility(
+  familyIndices: readonly [number, number],
+  eligible: boolean
+): Record<string, unknown> {
+  return {
+    familyIndices,
+    eligible,
+    failedStage: eligible ? null : 2,
+    rejectionReason: eligible
+      ? null
+      : "insufficient_direction_field_separation",
+    overlapFractionOfSmaller: 0,
+    firstSupportCount: 8,
+    secondSupportCount: 8,
+    firstInlierBandCount: 0,
+    secondInlierBandCount: 0,
+    firstInlierBandFraction: 0,
+    secondInlierBandFraction: 0,
+    firstRegionMedianDegrees: eligible ? 11 : 1,
+    secondRegionMedianDegrees: eligible ? 17 : 2,
+    strongRegionMedianDegrees: eligible ? 17 : 2,
+  };
+}
+
+function v4ReaderReceipt(
+  source: any,
+  options: Readonly<{
+    status?: "usable" | "rejected";
+    reason?: string;
+  }> = {}
+): any {
+  const receipt = structuredClone(source);
+  const status = options.status ?? receipt.status ?? "usable";
+  const reason = options.reason ?? receipt.reason;
+  const sourceDiagnostics = receipt.diagnostics;
+  const eligiblePairs = (sourceDiagnostics.validPairUniverse ?? []).map(
+    (pair: any) => ({
+      ...pair,
+      independentDirectionEligibility: v4Eligibility(
+        pair.familyIndices as [number, number],
+        true
+      ),
+    })
+  );
+  const winningPair = sourceDiagnostics.winningPair
+    ? {
+        ...sourceDiagnostics.winningPair,
+        independentDirectionEligibility: v4Eligibility(
+          sourceDiagnostics.winningPair.familyIndices as [number, number],
+          true
+        ),
+      }
+    : null;
+  const noIndependentDirectionPair =
+    status === "rejected" && reason === "no_independent_direction_pair";
+  const rejected = status === "rejected";
+  const rejectedPair = sourceDiagnostics.winningPair
+    ? v4Eligibility(
+        sourceDiagnostics.winningPair.familyIndices as [number, number],
+        false
+      )
+    : null;
+  receipt.schemaVersion = "afc-sr1-tr2-tile-floor-reader-result/v4";
+  receipt.researchProfile = "afc-sr1-tr2-tile-floor-reader/v4";
+  receipt.policyVersion = "afc-sr1-ts2-extractor-policy/v4";
+  receipt.runtimeIdentity.readerModuleVersion = "afc-sr1-tile-floor-reader/v4";
+  receipt.status = status;
+  receipt.diagnostics = {
+    ...sourceDiagnostics,
+    stableProjectivelyValidPairCount: rejected
+      ? noIndependentDirectionPair ? sourceDiagnostics.validPairCount ?? 0 : 0
+      : sourceDiagnostics.validPairCount ?? 0,
+    eligiblePairCount: rejected ? 0 : sourceDiagnostics.validPairCount ?? 0,
+    validPairCount: rejected ? 0 : sourceDiagnostics.validPairCount ?? 0,
+    independentDirectionEligibilityRejectedPairs: noIndependentDirectionPair &&
+      rejectedPair !== null
+      ? [rejectedPair]
+      : [],
+    validPairUniverse: rejected ? [] : eligiblePairs,
+    ...(rejected ? { winningPair: undefined } : { winningPair }),
+  };
+  if (status === "usable") {
+    delete receipt.reason;
+  } else {
+    receipt.reason = reason;
+    delete receipt.floorVanishingLinePixel;
+  }
+  const discovery = receipt.diagnostics.candidateDiscovery ?? {};
+  const preimage = {
+    schemaVersion: receipt.schemaVersion,
+    researchProfile: receipt.researchProfile,
+    policyVersion: receipt.policyVersion,
+    image: receipt.imageIdentity,
+    roi: receipt.roiIdentity,
+    runtime: receipt.runtimeIdentity,
+    status,
+    diagnostics: {
+      segmentCounts: receipt.diagnostics.segmentCounts ?? null,
+      candidateDiscovery: receipt.diagnostics.candidateDiscovery ?? null,
+      validFamilyCount: receipt.diagnostics.validFamilyCount ?? null,
+      candidateUnorderedPairCount:
+        receipt.diagnostics.candidateUnorderedPairCount ?? null,
+      stableProjectivelyValidPairCount:
+        receipt.diagnostics.stableProjectivelyValidPairCount ?? null,
+      eligiblePairCount: receipt.diagnostics.eligiblePairCount ?? null,
+      validPairCount: receipt.diagnostics.validPairCount ?? null,
+      invalidPairs: receipt.diagnostics.invalidPairs ?? null,
+      independentDirectionEligibilityRejectedPairs:
+        receipt.diagnostics.independentDirectionEligibilityRejectedPairs ?? null,
+      validPairUniverse: receipt.diagnostics.validPairUniverse ?? null,
+      finalFamilies: discovery.finalFamilies ?? null,
+      winningPair: receipt.diagnostics.winningPair ?? null,
+    },
+    analysisIdentity: receipt.analysisIdentity,
+    ...(status === "usable"
+      ? { floorVanishingLinePixel: receipt.floorVanishingLinePixel }
+      : { reason }),
+  };
+  receipt.evidenceCanonicalJson = canonicalizeRfc8785Jcs(preimage);
+  receipt.evidenceDigest.value =
+    sha256HexUtf8(receipt.evidenceCanonicalJson);
+  return receipt;
+}
+
+function rejectedPlacementReceipt(
+  source: any,
+  reason = "insufficient_correspondence"
+): any {
   const receipt = structuredClone(source);
   receipt.status = "rejected";
-  receipt.reason = "insufficient_correspondence";
+  receipt.reason = reason;
   receipt.translationPx = null;
   receipt.H_norm = null;
-  const {
-    evidenceCanonicalJson: _canonical,
-    evidenceDigest: _digest,
-    elapsedMs: _elapsed,
-    ...preimage
-  } = receipt;
+  const preimage = structuredClone(receipt);
+  delete preimage.evidenceCanonicalJson;
+  delete preimage.evidenceDigest;
+  delete preimage.elapsedMs;
   receipt.evidenceCanonicalJson = canonicalizeRfc8785Jcs(preimage);
   receipt.evidenceDigest.value =
     sha256HexUtf8(receipt.evidenceCanonicalJson);
@@ -235,7 +360,7 @@ function dependencies(
     }),
     callChildReader: overrides.callChildReader ?? (async () => {
       observed.childReader += 1;
-      return structuredClone(
+      return v4ReaderReceipt(
         overrides.childReceipt ??
           control.realCompositorV3Evidence[label].receipt
       );
@@ -243,22 +368,24 @@ function dependencies(
     buildCommonBasis: overrides.buildCommonBasis,
     deriveProjective: overrides.deriveProjective,
     buildPlacementBoundHandoff: overrides.buildPlacementBoundHandoff,
+    onTs0ChildValidated: overrides.onTs0ChildValidated,
   };
   return { observed, value };
 }
 
 const usableRawReceipt =
-  control.realCompositorV3Evidence["C-RAW"].receipt;
+  v4ReaderReceipt(control.realCompositorV3Evidence["C-RAW"].receipt);
 
 function syntheticRawRejection(reason = "no_stable_valid_pair"): any {
-  return rejectedReaderReceipt(usableRawReceipt, reason);
+  return v4ReaderReceipt(usableRawReceipt, { status: "rejected", reason });
 }
 
-test("Reader V3 fallback classification is closed over every canonical reason", () => {
-  assert.deepEqual([...AFC_SR1_V3_FALLBACK_ELIGIBLE_REASONS], [
+test("Reader V4 fallback classification is closed over every canonical reason", () => {
+  assert.deepEqual([...AFC_SR1_RAW_READER_TS0_FALLBACK_ELIGIBLE_REASONS], [
     "insufficient_segments",
     "no_stable_valid_pair",
     "degenerate_vanishing_line",
+    "no_independent_direction_pair",
   ]);
   assert.deepEqual([...AFC_SR1_V3_HARD_REJECTION_REASONS], [
     "unsupported_policy_version",
@@ -268,34 +395,34 @@ test("Reader V3 fallback classification is closed over every canonical reason", 
     "invalid_roi",
     "impossible_eroded_roi",
   ]);
-  for (const reason of AFC_SR1_V3_FALLBACK_ELIGIBLE_REASONS) {
+  for (const reason of AFC_SR1_RAW_READER_TS0_FALLBACK_ELIGIBLE_REASONS) {
     assert.equal(
-      classifyAfcSr1V3ReaderRejectionReason(reason),
+      classifyAfcSr1ReaderRejectionReason(reason),
       "evidence_rejected_fallback_eligible"
     );
   }
   for (const reason of AFC_SR1_V3_HARD_REJECTION_REASONS) {
     assert.equal(
-      classifyAfcSr1V3ReaderRejectionReason(reason),
+      classifyAfcSr1ReaderRejectionReason(reason),
       "hard_rejected"
     );
   }
   assert.equal(
-    classifyAfcSr1V3ReaderRejectionReason("future_reader_reason"),
+    classifyAfcSr1ReaderRejectionReason("future_reader_reason"),
     "hard_rejected"
   );
 });
 
-test("every canonical/unknown V3 reason enforces the orchestration fallback boundary", async (context) => {
+test("every canonical/unknown V4 reason enforces the orchestration fallback boundary", async (context) => {
   for (const reason of [
-    ...AFC_SR1_V3_FALLBACK_ELIGIBLE_REASONS,
+    ...AFC_SR1_RAW_READER_TS0_FALLBACK_ELIGIBLE_REASONS,
     ...AFC_SR1_V3_HARD_REJECTION_REASONS,
     "future_reader_reason",
   ]) {
     await context.test(reason, async () => {
       const fallbackEligible =
-        AFC_SR1_V3_FALLBACK_ELIGIBLE_REASONS.includes(
-          reason as typeof AFC_SR1_V3_FALLBACK_ELIGIBLE_REASONS[number]
+        AFC_SR1_RAW_READER_TS0_FALLBACK_ELIGIBLE_REASONS.includes(
+          reason as typeof AFC_SR1_RAW_READER_TS0_FALLBACK_ELIGIBLE_REASONS[number]
         );
       const harness = dependencies(
         "C-T1",
@@ -354,6 +481,71 @@ test("Room C natural RAW-direct short-circuits every fallback stage", async () =
     placement: 0,
     childReader: 0,
   });
+  assert.equal(result.diagnostics.v3ReaderDiagnostics?.rawReader, null);
+  assert.equal(result.diagnostics.v3ReaderDiagnostics?.authoritativeReaderRole, "rawReader");
+  assert.equal(
+    result.evidenceDigest.value,
+    sha256HexUtf8(result.evidenceCanonicalJson),
+    "non-scientific sidecar is absent from the canonical preimage"
+  );
+});
+
+test("RAW PATH A ignores optional observation-only V3 diagnostics while retaining its science receipt", async () => {
+  const baseline = await executeAfcSr1RawFirstPlacementAwareOrchestration(
+    input(), dependencies("C-T1", usableRawReceipt).value
+  );
+  const receiptWithSupportGeometry = structuredClone(usableRawReceipt) as any;
+  receiptWithSupportGeometry.diagnostics.familySupportGeometry = {
+    coordinateSpace: "analysis-pixel/v1",
+    authority: "none",
+    role: "observation_only",
+    excludedFromCanonicalEvidence: true,
+    segments: [{ detectorIndex: 17, x1: 10, y1: 20, x2: 30, y2: 40 }],
+    families: [{ familyIndex: 0, supporterDetectorIndices: [17] }],
+  };
+  receiptWithSupportGeometry.diagnostics.familyPairIndependenceDiagnostics = {
+    contractVersion: "afc-sr1-family-pair-independence-diagnostics/v1",
+    coordinateSpace: "analysis-pixel/v1",
+    authority: "none",
+    role: "observation_only",
+    excludedFromCanonicalEvidence: true,
+    familyOrientationSummaries: [],
+    pairs: [],
+  };
+  const observed = dependencies("C-T1", receiptWithSupportGeometry);
+  const withSupportGeometry = await executeAfcSr1RawFirstPlacementAwareOrchestration(
+    input(), observed.value
+  );
+  assert.equal(withSupportGeometry.mode, baseline.mode);
+  assert.equal(
+    withSupportGeometry.rawAttempt.projective?.seamT,
+    baseline.rawAttempt.projective?.seamT
+  );
+  assert.deepEqual(withSupportGeometry.attemptCounts, baseline.attemptCounts);
+  assert.equal(withSupportGeometry.evidenceCanonicalJson, baseline.evidenceCanonicalJson);
+  assert.deepEqual(withSupportGeometry.evidenceDigest, baseline.evidenceDigest);
+  assert.equal(withSupportGeometry.finalReason, baseline.finalReason);
+  assert.deepEqual(withSupportGeometry.rawAttempt, baseline.rawAttempt);
+  assert.equal(observed.observed.rawReader, 1);
+});
+
+test("supported-domain near-side authority traverses unchanged RAW PATH A", async () => {
+  const harness = dependencies("C-T1", usableRawReceipt);
+  const anchorAuthority = {
+    kind: "supported_domain_near_side_derived" as const,
+    truncatedAnchor: "NL" as const,
+    evidenceReference:
+      "attempt=test;classifier=afc-sr1-supported-room-view-classifier/v1;empty=fixture;photoClass=off_axis_left_near;truncatedAnchor=NL",
+  };
+  const result = await executeAfcSr1RawFirstPlacementAwareOrchestration(
+    input({ anchorAuthority }),
+    harness.value
+  );
+  assert.equal(result.mode, "raw-direct");
+  assert.deepEqual(result.anchorAuthority, anchorAuthority);
+  assert.equal(result.rawAttempt.projective?.seamT, 0.7037731582393056);
+  assert.equal(result.attemptCounts.rawReader, 1);
+  assert.equal(result.attemptCounts.ts0, 0);
 });
 
 for (const label of ["C-T1", "C-T2", "C-T3"] as const) {
@@ -402,6 +594,122 @@ for (const label of ["C-T1", "C-T2", "C-T3"] as const) {
     });
   });
 }
+
+test("V4 independence rejection uses the one existing TS0 branch", async () => {
+  const harness = dependencies(
+    "C-T1",
+    syntheticRawRejection("no_independent_direction_pair")
+  );
+  const result = await executeAfcSr1RawFirstPlacementAwareOrchestration(
+    input(),
+    harness.value
+  );
+  assert.equal(result.mode, "tiled-placement");
+  assert.equal(result.rawAttempt.receipt?.reason, "no_independent_direction_pair");
+  assert.equal(
+    result.rawAttempt.fallbackEligibilityClass,
+    "evidence_rejected_fallback_eligible"
+  );
+  assert.deepEqual(harness.observed, {
+    rawReader: 1,
+    ts0: 1,
+    placement: 1,
+    childReader: 1,
+  });
+  assert.deepEqual(result.attemptCounts, {
+    rawReader: 1,
+    ts0: 1,
+    placement: 1,
+    childReader: 1,
+    placementBoundHandoff: 1,
+    tiledProjective: 1,
+  });
+});
+
+test("RAW and CHILD request the exact same V4 Reader identity", async () => {
+  const payloads: any[] = [];
+  const harness = dependencies(
+    "C-T1",
+    syntheticRawRejection("no_independent_direction_pair"),
+    {
+      callRawReader: async ({ payload }) => {
+        harness.observed.rawReader += 1;
+        payloads.push(payload);
+        return structuredClone(syntheticRawRejection("no_independent_direction_pair"));
+      },
+      callChildReader: async ({ payload }) => {
+        harness.observed.childReader += 1;
+        payloads.push(payload);
+        return v4ReaderReceipt(control.realCompositorV3Evidence["C-T1"].receipt);
+      },
+    }
+  );
+  const result = await executeAfcSr1RawFirstPlacementAwareOrchestration(
+    input(),
+    harness.value
+  );
+  assert.equal(result.mode, "tiled-placement");
+  assert.equal(payloads.length, 2);
+  for (const payload of payloads) {
+    assert.equal(payload.researchProfile, "afc-sr1-tr2-tile-floor-reader/v4");
+    assert.equal(payload.policyVersion, "afc-sr1-ts2-extractor-policy/v4");
+  }
+  assert.equal(harness.observed.rawReader, 1);
+  assert.equal(harness.observed.childReader, 1);
+});
+
+test("V3 receipt where PATH A requires V4 fails closed before TS0", async () => {
+  const harness = dependencies(
+    "C-T1",
+    control.realCompositorV3Evidence["C-RAW"].receipt
+  );
+  const result = await executeAfcSr1RawFirstPlacementAwareOrchestration(
+    input(),
+    harness.value
+  );
+  assert.equal(result.mode, "rejected");
+  assert.equal(result.finalReason, "raw_receipt_invalid");
+  assert.deepEqual(harness.observed, {
+    rawReader: 1,
+    ts0: 0,
+    placement: 0,
+    childReader: 0,
+  });
+});
+
+test("TS0 retention hook receives the exact validated same-attempt child", async () => {
+  type CapturedTs0Artifact = {
+    childBytes: Uint8Array;
+    sha256: string;
+    lineageEvidenceDigest: string;
+  };
+  let captured: CapturedTs0Artifact | null = null;
+  const harness = dependencies("C-T1", syntheticRawRejection(), {
+    onTs0ChildValidated: (artifact) => {
+      captured = {
+        childBytes: artifact.childBytes,
+        sha256: artifact.identity.sha256,
+        lineageEvidenceDigest: artifact.lineageEvidenceDigest,
+      };
+    },
+  });
+  const result = await executeAfcSr1RawFirstPlacementAwareOrchestration(
+    input(),
+    harness.value
+  );
+  assert.equal(result.mode, "tiled-placement");
+  const retained = captured as CapturedTs0Artifact | null;
+  assert.ok(retained);
+  assert.deepEqual(
+    Buffer.from(retained.childBytes),
+    Buffer.from(childBytes("C-T1"))
+  );
+  assert.equal(retained.sha256, lineageControl.results["C-T1"].child.sha256);
+  assert.equal(
+    retained.lineageEvidenceDigest,
+    result.fallbackAttempt?.lineage.evidenceDigest
+  );
+});
 
 test("one immutable polygon and anchor authority object crosses RAW and placement branches", async () => {
   const orchestrationInput = input();
@@ -553,10 +861,10 @@ test("nested Track 1a rejection reason survives only in the non-scientific diagn
 
 test("A/B/D preserved classifications do not claim strict success", () => {
   const diagnostics = {
-    "A RAW": classifyAfcSr1V3ReaderRejectionReason(
+    "A RAW": classifyAfcSr1ReaderRejectionReason(
       "no_stable_valid_pair"
     ),
-    "B RAW": classifyAfcSr1V3ReaderRejectionReason(
+    "B RAW": classifyAfcSr1ReaderRejectionReason(
       "no_stable_valid_pair"
     ),
     "D downstream": "evidence_rejected_fallback_eligible",
@@ -828,7 +1136,7 @@ test("TS0 and lineage failures stop before placement", async (context) => {
   }
 });
 
-test("placement failures stop before child V3 and never retry", async (context) => {
+test("placement failures stop before child Reader and never retry", async (context) => {
   const tampered = structuredClone(
     placementControl.placements["C-T1"].receipt
   );
@@ -874,15 +1182,40 @@ test("placement failures stop before child V3 and never retry", async (context) 
   }
 });
 
-test("child V3 failures stop before placement-bound handoff", async (context) => {
+test("residual placement rejection remains scientific rejection with its P90 diagnostic", async () => {
+  const receipt = rejectedPlacementReceipt(
+    placementControl.placements["C-T1"].receipt,
+    "validation_residual_exceeds_limit"
+  );
+  const harness = dependencies("C-T1", syntheticRawRejection(), {
+    placementReceipt: receipt,
+  });
+  const result = await executeAfcSr1RawFirstPlacementAwareOrchestration(
+    input(),
+    harness.value
+  );
+  assert.equal(result.mode, "rejected");
+  assert.equal(result.finalReason, "placement_rejected");
+  assert.equal(
+    result.diagnostics.placementReason,
+    "validation_residual_exceeds_limit"
+  );
+  assert.equal(
+    result.diagnostics.validationP90Px,
+    receipt.diagnostics.holdout.validationP90Px
+  );
+  assert.equal(harness.observed.childReader, 0);
+});
+
+test("child V4 failures stop before placement-bound handoff", async (context) => {
   const wrongChild = control.realCompositorV3Evidence["C-T2"].receipt;
   const rejectedChild = rejectedReaderReceipt(
     control.realCompositorV3Evidence["C-T1"].receipt,
-    "no_stable_valid_pair"
+    "no_independent_direction_pair"
   );
   const cases: [string, unknown, string][] = [
-    ["wrong child V3 receipt", wrongChild, "tiled_reader_receipt_invalid"],
-    ["child V3 rejected", rejectedChild, "tiled_reader_rejected"],
+    ["wrong child V4 receipt", wrongChild, "tiled_reader_receipt_invalid"],
+    ["child V4 independence rejected", rejectedChild, "tiled_reader_rejected"],
   ];
   for (const [name, receipt, reason] of cases) {
     await context.test(name, async () => {
@@ -900,6 +1233,8 @@ test("child V3 failures stop before placement-bound handoff", async (context) =>
       assert.equal(result.attemptCounts.childReader, 1);
       assert.equal(result.attemptCounts.placementBoundHandoff, 0);
       assert.equal(result.attemptCounts.tiledProjective, 0);
+      assert.equal(result.attemptCounts.ts0, 1);
+      assert.equal(result.attemptCounts.placement, 1);
     });
   }
 });

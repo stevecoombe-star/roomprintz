@@ -19,6 +19,17 @@ import AfcProposalOverlayPanel from "./AfcProposalOverlayPanel";
 import AfcUi2aRunnerPanel from "./AfcUi2aRunnerPanel";
 import AfcUi2bProposalRunnerPanel from "./AfcUi2bProposalRunnerPanel";
 import AfcPerspectiveAdjustControl from "./AfcPerspectiveAdjustControl";
+import AfcSr1LiveFloorReadOverlay from "./AfcSr1LiveFloorReadOverlay";
+import {
+  deriveAfcSr1V3ReaderForensics,
+} from "./afc-sr1-v3-reader-diagnostics";
+import {
+  validateAfcSr1LiveResultAcceptance,
+} from "./afc-sr1-live-acceptance";
+import type {
+  AfcSr1LiveAuthoritativeGeometry,
+  AfcSr1LiveProductResult,
+} from "./afc-sr1-live-product-contract";
 import {
   ROOM_C_AFC_LAB_GEOMETRY_CANDIDATE,
 } from "./afc-lab-geometry-candidate";
@@ -32,6 +43,7 @@ import {
 } from "./afc-lab-perspective-adjust";
 import {
   settleAfcFixedSeamCalibration,
+  type AfcFixedSeamCalibrationResult,
   type AfcFixedSeamCalibrationSuccess,
 } from "./afc-fixed-seam-calibration";
 import {
@@ -652,6 +664,17 @@ type AfcLabApplyStatus =
   | Readonly<{ kind: "pending"; settle: AfcFixedSeamCalibrationSuccess }>
   | Readonly<{ kind: "applied"; settle: AfcFixedSeamCalibrationSuccess }>;
 type AfcPerspectiveAdjustSession = Readonly<{
+  attemptId: string;
+  resultId: string;
+  rawSourceNormalizedPolygon: readonly [FloorPoint, FloorPoint, FloorPoint, FloorPoint];
+  adjustableCorner: "NL" | "NR";
+  referenceDepthM: number;
+  acceptanceBasis: Readonly<{
+    basisFingerprint: string;
+    decodedWidth: number;
+    decodedHeight: number;
+    orientation: 1;
+  }>;
   baselineSeamT: number;
   committedDeltaSeamT: number;
   previewDeltaSeamT: number;
@@ -659,6 +682,37 @@ type AfcPerspectiveAdjustSession = Readonly<{
   automaticSettle: AfcFixedSeamCalibrationSuccess;
   adjustmentCount: number;
 }>;
+type AfcLiveAnalyzeStatus =
+  | Readonly<{ kind: "ready" }>
+  | Readonly<{ kind: "analyzing"; attemptId: string }>
+  | Readonly<{ kind: "applying"; attemptId: string; mode: string }>
+  | Readonly<{ kind: "completed"; attemptId: string; mode: string }>
+  | Readonly<{ kind: "degraded"; attemptId: string; reason: string }>
+  | Readonly<{ kind: "failed"; attemptId: string | null; reason: string }>;
+type AfcLiveSettleFailure = Readonly<{
+  attemptId: string;
+  reason: string;
+  settle: Extract<AfcFixedSeamCalibrationResult, { ok: false }>;
+  sourceNormalizedPolygon: readonly [FloorPoint, FloorPoint, FloorPoint, FloorPoint];
+  rawSourceNormalizedPolygon: readonly [FloorPoint, FloorPoint, FloorPoint, FloorPoint];
+  originalImageSize: Readonly<{ width: number; height: number }>;
+  rendererSize: Readonly<{ width: number; height: number }>;
+  referenceDepthM: number;
+}>;
+
+function qualifiedSourceUrlMatchesRoomImage(
+  qualifiedSourceUrl: string,
+  roomImageUrl: string
+): boolean {
+  if (qualifiedSourceUrl === roomImageUrl) return true;
+  if (!roomImageUrl.startsWith("/")) return false;
+  try {
+    return new URL(roomImageUrl, qualifiedSourceUrl).toString() ===
+      qualifiedSourceUrl;
+  } catch {
+    return false;
+  }
+}
 type FrozenAttachmentWorldTransform = {
   position: { x: number; y: number; z: number };
   quaternion: { x: number; y: number; z: number; w: number };
@@ -1602,6 +1656,11 @@ export default function ThreeRoomLab({
   const cameraPoseApplyCandidateRef = useRef<CameraPoseApplyCandidate | null>(null);
   const cameraPoseUnavailableReasonRef = useRef<string | null>(null);
   const afcVerifiedFloorLiveBasisRef = useRef<AfcQualifiedLiveImageBasis | null>(null);
+  const qualifiedImageBasisRef = useRef<CalibrationImageBasis | null>(null);
+  const afcLiveAttemptIdRef = useRef<string | null>(null);
+  const afcLiveLoadGenerationRef = useRef(0);
+  const afcLiveAbortControllerRef = useRef<AbortController | null>(null);
+  const afcLiveApplyingResultRef = useRef<AfcSr1LiveAuthoritativeGeometry | null>(null);
   const verifiedAfcFloorCameraBindingRef = useRef<VerifiedAfcFloorCameraBinding | null>(null);
   const verifiedAfcFloorCameraBindingGenerationRef = useRef(0);
   const preCalibratedDepthScalingRef = useRef<PerspectiveDepthScalingState | null>(null);
@@ -1682,7 +1741,14 @@ export default function ThreeRoomLab({
   const [pendingAfcLabCameraApply, setPendingAfcLabCameraApply] =
     useState<PendingAfcLabCameraApply | null>(null);
   const afcLabCameraApplyTokenRef = useRef(0);
+  const afcLastRealizationFailureRef = useRef<string | null>(null);
   const [afcLabApplyStatus, setAfcLabApplyStatus] = useState<AfcLabApplyStatus>({ kind: "idle" });
+  const [afcLiveAnalyzeStatus, setAfcLiveAnalyzeStatus] =
+    useState<AfcLiveAnalyzeStatus>({ kind: "ready" });
+  const [afcLiveResult, setAfcLiveResult] =
+    useState<AfcSr1LiveProductResult | null>(null);
+  const [afcLiveSettleFailure, setAfcLiveSettleFailure] =
+    useState<AfcLiveSettleFailure | null>(null);
   const [perspectiveAdjustSession, setPerspectiveAdjustSession] = useState<AfcPerspectiveAdjustSession | null>(null);
   const perspectiveAdjustSessionRef = useRef<AfcPerspectiveAdjustSession | null>(null);
   const perspectivePreviewDeltaRef = useRef(0);
@@ -1695,6 +1761,25 @@ export default function ThreeRoomLab({
     perspectivePreviewDeltaRef.current = 0;
     perspectiveAdjustSessionRef.current = null;
     setPerspectiveAdjustSession(null);
+  }, []);
+  const supersedeAfcLiveAttemptForLoadChange = useCallback(() => {
+    afcLiveAbortControllerRef.current?.abort();
+    afcLiveAbortControllerRef.current = null;
+    afcLiveAttemptIdRef.current = null;
+    afcLiveApplyingResultRef.current = null;
+    afcLiveLoadGenerationRef.current += 1;
+    afcLabCameraApplyTokenRef.current += 1;
+    setPendingAfcLabCameraApply(null);
+    setAfcLiveResult(null);
+    setAfcLiveSettleFailure(null);
+    setAfcLiveAnalyzeStatus({ kind: "ready" });
+  }, []);
+  useEffect(() => () => {
+    afcLiveAbortControllerRef.current?.abort();
+    afcLiveAbortControllerRef.current = null;
+    afcLiveAttemptIdRef.current = null;
+    afcLiveApplyingResultRef.current = null;
+    afcLiveLoadGenerationRef.current += 1;
   }, []);
   const [calibratedCameraSnapshot, setCalibratedCameraSnapshot] = useState<CalibratedCameraSnapshot | null>(null);
   const [lastCalibratedCameraAutoRevertReason, setLastCalibratedCameraAutoRevertReason] = useState<string | null>(null);
@@ -2151,6 +2236,9 @@ export default function ThreeRoomLab({
     (requestedUrl: string) => {
       const trimmedRequestedUrl = requestedUrl.trim();
       const trimmedCurrentRoomImageUrl = roomImageUrl.trim();
+      if (trimmedRequestedUrl !== trimmedCurrentRoomImageUrl) {
+        supersedeAfcLiveAttemptForLoadChange();
+      }
       if (!trimmedRequestedUrl) {
         setImageLoadState("idle");
         setImageIntrinsicSize(null);
@@ -2173,7 +2261,7 @@ export default function ThreeRoomLab({
       setImageIntrinsicSize(null);
       setLoadedImageUrl(null);
     },
-    [imageLoadState, isRoomImageReadyForUrl, roomImageUrl]
+    [imageLoadState, isRoomImageReadyForUrl, roomImageUrl, supersedeAfcLiveAttemptForLoadChange]
   );
 
   const frameSizeForImageSpace = useMemo<ImageFrameSize | null>(() => {
@@ -2416,11 +2504,14 @@ export default function ThreeRoomLab({
 
     const run = async () => {
       try {
+        const serverImageUrl = trimmedUrl.startsWith("/")
+          ? new URL(trimmedUrl, window.location.origin).toString()
+          : trimmedUrl;
         const response = await fetch("/api/admin/3d-room-lab/calibration/qualify-basis", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            imageUrl: trimmedUrl,
+            imageUrl: serverImageUrl,
             browserDimensions: {
               width: imageIntrinsicSize.width,
               height: imageIntrinsicSize.height,
@@ -2460,7 +2551,10 @@ export default function ThreeRoomLab({
       !imageIntrinsicSize ||
       !qualifiedImageBasis ||
       basisQualificationStatus !== "qualified" ||
-      qualifiedImageBasis.sourceImageUrl !== imageUrl ||
+      !qualifiedSourceUrlMatchesRoomImage(
+        qualifiedImageBasis.sourceImageUrl,
+        imageUrl
+      ) ||
       qualifiedImageBasis.decodedWidth !== imageIntrinsicSize.width ||
       qualifiedImageBasis.decodedHeight !== imageIntrinsicSize.height
     ) {
@@ -2486,7 +2580,10 @@ export default function ThreeRoomLab({
       !imageIntrinsicSize ||
       !qualifiedImageBasis ||
       basisQualificationStatus !== "qualified" ||
-      qualifiedImageBasis.sourceImageUrl !== imageUrl ||
+      !qualifiedSourceUrlMatchesRoomImage(
+        qualifiedImageBasis.sourceImageUrl,
+        imageUrl
+      ) ||
       qualifiedImageBasis.decodedWidth !== imageIntrinsicSize.width ||
       qualifiedImageBasis.decodedHeight !== imageIntrinsicSize.height
     ) {
@@ -2499,6 +2596,7 @@ export default function ThreeRoomLab({
     });
   }, [basisQualificationStatus, imageIntrinsicSize, isRoomImageReadyForUrl, qualifiedImageBasis, roomImageUrl]);
   afcVerifiedFloorLiveBasisRef.current = afcVerifiedFloorLiveBasis;
+  qualifiedImageBasisRef.current = qualifiedImageBasis;
 
   const setCurrentVerifiedAfcFloorCameraBinding = useCallback(
     (binding: VerifiedAfcFloorCameraBinding | null) => {
@@ -2592,6 +2690,19 @@ export default function ThreeRoomLab({
       review: { status: SupportReviewStatus; source: SupportSource },
       options: { captureUndo?: "none" | "active_drag" | "programmatic" } & AfcPerspectiveFloorCommitOptions = {}
     ) => {
+      if (
+        afcLiveAbortControllerRef.current !== null &&
+        afcLiveApplyingResultRef.current === null
+      ) {
+        afcLiveAbortControllerRef.current.abort();
+        afcLiveAbortControllerRef.current = null;
+        afcLiveAttemptIdRef.current = null;
+        setAfcLiveAnalyzeStatus({
+          kind: "failed",
+          attemptId: null,
+          reason: "AFC analysis was superseded by a Floor authority change.",
+        });
+      }
       const previousAuthorityKey = floorPolygonAuthorityKeyRef.current;
       const sourcePolygon = plan.sourcePolygon.map((point) => ({ x: point.x, y: point.y }));
       const containerPolygon = plan.containerPolygon?.map((point) => ({ x: point.x, y: point.y })) ?? null;
@@ -2738,7 +2849,9 @@ export default function ThreeRoomLab({
     captureUndo: "none" | "programmatic";
     preservePerspectiveSession: boolean;
   }): AfcFixedSeamCalibrationSuccess | null => {
+    afcLastRealizationFailureRef.current = null;
     if (input.activeCameraPolicy === "block" && isCalibratedCameraActive) {
+      afcLastRealizationFailureRef.current = "Calibrated camera already active.";
       setAfcLabApplyStatus({
         kind: "blocked",
         reason: "Calibrated camera already active.",
@@ -2755,9 +2868,11 @@ export default function ThreeRoomLab({
       !qualifiedImageBasis ||
       qualifiedImageBasis.encodedOrientation !== input.acceptanceBasis.orientation
     ) {
+      afcLastRealizationFailureRef.current =
+        "AFC requires the exact qualified Original acceptance basis; the current image does not match.";
       setAfcLabApplyStatus({
         kind: "failed",
-        reason: "Room C AFC requires the qualified Room C Original acceptance basis; the current image does not match.",
+        reason: "AFC requires the exact qualified Original acceptance basis; the current image does not match.",
       });
       return null;
     }
@@ -2772,16 +2887,39 @@ export default function ThreeRoomLab({
       referenceDepthM: input.referenceDepthM,
     });
     if (!settle.ok) {
+      const reason = `AFC settle failed closed: ${settle.reason}.`;
+      afcLastRealizationFailureRef.current = reason;
+      const liveResult = afcLiveApplyingResultRef.current;
+      if (liveResult) {
+        setAfcLiveSettleFailure({
+          attemptId: liveResult.attemptId,
+          reason,
+          settle,
+          sourceNormalizedPolygon: input.sourceNormalizedPolygon,
+          rawSourceNormalizedPolygon:
+            liveResult.geometry.rawSourceNormalizedPolygon,
+          originalImageSize: {
+            width: input.acceptanceBasis.decodedWidth,
+            height: input.acceptanceBasis.decodedHeight,
+          },
+          rendererSize: {
+            width: rendererSize.width,
+            height: rendererSize.height,
+          },
+          referenceDepthM: input.referenceDepthM,
+        });
+      }
       setAfcLabApplyStatus({
         kind: "failed",
-        reason: `Room C AFC settle failed closed: ${settle.reason}.`,
+        reason,
       });
       return null;
     }
     if (!settle.applyObservability.available) {
+      afcLastRealizationFailureRef.current = "AFC settle is not Apply-safe.";
       setAfcLabApplyStatus({
         kind: "failed",
-        reason: "Room C AFC settle is not Apply-safe.",
+        reason: "AFC settle is not Apply-safe.",
       });
       return null;
     }
@@ -2792,18 +2930,22 @@ export default function ThreeRoomLab({
       { captureUndo: input.captureUndo, preservePerspectiveSession: input.preservePerspectiveSession }
     );
     if (floorOutcome === "rejected") {
+      afcLastRealizationFailureRef.current =
+        "AFC Floor Apply was rejected by the existing source-authority path.";
       setAfcLabApplyStatus({
         kind: "failed",
-        reason: "Room C AFC Floor Apply was rejected by the existing source-authority path.",
+        reason: "AFC Floor Apply was rejected by the existing source-authority path.",
       });
       return null;
     }
 
     const expectedFloorAuthorityKey = buildDurableSourceFloorAuthorityKey(input.sourceNormalizedPolygon);
     if (floorPolygonAuthorityKeyRef.current !== expectedFloorAuthorityKey) {
+      afcLastRealizationFailureRef.current =
+        "AFC Floor Apply did not retain the expected source authority.";
       setAfcLabApplyStatus({
         kind: "failed",
-        reason: "Room C AFC Floor Apply did not retain the expected source authority.",
+        reason: "AFC Floor Apply did not retain the expected source authority.",
       });
       return null;
     }
@@ -2817,9 +2959,9 @@ export default function ThreeRoomLab({
       deactivateCalibratedCameraMode();
     }
 
-    // This is deliberately a direct, un-clamped metric mapping. The fixed
-    // control's explicit reference depth is 4.0 m; the settle has already
-    // rejected widths/depths outside the existing Lab limits.
+    // This is deliberately a direct, un-clamped metric mapping. The caller
+    // supplies the explicit metric policy; settle has already rejected
+    // widths/depths outside the existing Lab limits.
     setFloorMapping((previous) => ({
       ...previous,
       worldWidth: settle.worldWidthM,
@@ -2887,6 +3029,12 @@ export default function ThreeRoomLab({
     if (!settle) return;
     perspectivePreviewDeltaRef.current = 0;
     const session: AfcPerspectiveAdjustSession = {
+      attemptId: "room-c-control",
+      resultId: "room-c-control",
+      rawSourceNormalizedPolygon: geometry.rawSourceNormalizedPolygon,
+      adjustableCorner: geometry.adjustableCorner,
+      referenceDepthM: geometry.referenceDepthM,
+      acceptanceBasis: geometry.acceptanceBasis,
       baselineSeamT: geometry.baselineSeamT,
       committedDeltaSeamT: 0,
       previewDeltaSeamT: 0,
@@ -2897,6 +3045,214 @@ export default function ThreeRoomLab({
     perspectiveAdjustSessionRef.current = session;
     setPerspectiveAdjustSession(session);
   }, [invalidatePerspectiveAdjustSession, isCalibratedCameraActive, realizeAfcLabGeometry]);
+
+  const handleAnalyzeAndApplyLiveAfc = useCallback(async () => {
+    const basis = qualifiedImageBasisRef.current;
+    const imageUrl = roomImageUrl.trim();
+    const serverImageUrl = imageUrl.startsWith("/")
+      ? new URL(imageUrl, window.location.origin).toString()
+      : imageUrl;
+    if (
+      !basis ||
+      basisQualificationStatus !== "qualified" ||
+      !qualifiedSourceUrlMatchesRoomImage(basis.sourceImageUrl, imageUrl) ||
+      basis.encodedOrientation !== 1 ||
+      !isRoomImageReadyForUrl(imageUrl)
+    ) {
+      setAfcLiveAnalyzeStatus({
+        kind: "failed",
+        attemptId: null,
+        reason: "Load and qualify the current Original image before running AFC.",
+      });
+      return;
+    }
+    if (pendingAfcLabCameraApply !== null || pendingScanAndApplyFov !== null) {
+      setAfcLiveAnalyzeStatus({
+        kind: "failed",
+        attemptId: null,
+        reason: "Wait for the current camera transaction to finish.",
+      });
+      return;
+    }
+
+    afcLiveAbortControllerRef.current?.abort();
+    const controller = new AbortController();
+    afcLiveAbortControllerRef.current = controller;
+    const attemptId = `afc-${window.crypto.randomUUID()}`;
+    const labLoadGeneration = afcLiveLoadGenerationRef.current;
+    afcLiveAttemptIdRef.current = attemptId;
+    afcLiveApplyingResultRef.current = null;
+    setAfcLiveResult(null);
+    setAfcLiveSettleFailure(null);
+    setAfcLiveAnalyzeStatus({ kind: "analyzing", attemptId });
+
+    try {
+      const response = await fetch(
+        "/api/admin/3d-room-lab/afc-sr1/live-analyze",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          signal: controller.signal,
+          body: JSON.stringify({
+            attemptId,
+            sourceImageUrl: serverImageUrl,
+            sourceImageIdentity: {
+              sha256: basis.basisFingerprint,
+              decodedWidth: basis.decodedWidth,
+              decodedHeight: basis.decodedHeight,
+              orientation: 1,
+            },
+            labLoadGeneration,
+            referenceDepthM: floorMapping.worldDepth,
+          }),
+        }
+      );
+      const result = (await response.json()) as AfcSr1LiveProductResult;
+      if (
+        controller.signal.aborted ||
+        afcLiveAttemptIdRef.current !== attemptId ||
+        afcLiveLoadGenerationRef.current !== labLoadGeneration
+      ) {
+        return;
+      }
+      if (!response.ok) {
+        setAfcLiveAnalyzeStatus({
+          kind: "failed",
+          attemptId,
+          reason: "The AFC product request failed before analysis completed.",
+        });
+        return;
+      }
+      if (result.status === "degraded_evidence") {
+        setAfcLiveResult(result);
+        setAfcLiveAnalyzeStatus({
+          kind: "degraded",
+          attemptId,
+          reason: result.reason,
+        });
+        return;
+      }
+      if (result.status === "failed") {
+        setAfcLiveResult(result);
+        setAfcLiveAnalyzeStatus({
+          kind: "failed",
+          attemptId,
+          reason: result.detail,
+        });
+        return;
+      }
+
+      // This is the final synchronous gate immediately before the canonical
+      // Floor mutation in realizeAfcLabGeometry.
+      const currentBasis = qualifiedImageBasisRef.current;
+      const acceptance = validateAfcSr1LiveResultAcceptance(result, {
+        currentAttemptId: afcLiveAttemptIdRef.current,
+        labLoadGeneration: afcLiveLoadGenerationRef.current,
+        qualifiedBasis: currentBasis
+          ? {
+              basisFingerprint: currentBasis.basisFingerprint,
+              decodedWidth: currentBasis.decodedWidth,
+              decodedHeight: currentBasis.decodedHeight,
+              orientation: currentBasis.encodedOrientation,
+            }
+          : null,
+      });
+      if (!acceptance.accepted) {
+        setAfcLiveAnalyzeStatus({
+          kind: "failed",
+          attemptId,
+          reason: `AFC result was stale and was not applied (${acceptance.reason}).`,
+        });
+        return;
+      }
+
+      setAfcLiveResult(result);
+      setAfcLiveAnalyzeStatus({
+        kind: "applying",
+        attemptId,
+        mode: result.geometry.mode,
+      });
+      afcLiveApplyingResultRef.current = result;
+      const settle = realizeAfcLabGeometry({
+        sourceNormalizedPolygon: result.geometry.sourceNormalizedPolygon,
+        referenceDepthM: result.metric.referenceDepthM,
+        acceptanceBasis: result.geometry.acceptanceBasis,
+        activeCameraPolicy: "replace",
+        captureUndo: "programmatic",
+        preservePerspectiveSession: false,
+      });
+      if (!settle) {
+        afcLiveApplyingResultRef.current = null;
+        setAfcLiveAnalyzeStatus({
+          kind: "failed",
+          attemptId,
+          reason:
+            afcLastRealizationFailureRef.current ??
+            "AFC geometry was not accepted by the existing Lab realization sink.",
+        });
+        return;
+      }
+
+      if (
+        result.photoClass === "on_axis" ||
+        !result.perspectiveAdjust.supported
+      ) {
+        invalidatePerspectiveAdjustSession();
+      } else {
+        const baselineSeamT = result.geometry.baselineSeamT;
+        const adjustableCorner = result.geometry.adjustableCorner;
+        if (baselineSeamT === null || adjustableCorner === null) {
+          invalidatePerspectiveAdjustSession();
+        } else {
+          perspectivePreviewDeltaRef.current = 0;
+          const session: AfcPerspectiveAdjustSession = {
+            attemptId: result.attemptId,
+            resultId: result.resultId,
+            rawSourceNormalizedPolygon:
+              result.geometry.rawSourceNormalizedPolygon,
+            adjustableCorner,
+            referenceDepthM: result.metric.referenceDepthM,
+            acceptanceBasis: result.geometry.acceptanceBasis,
+            baselineSeamT,
+            committedDeltaSeamT: 0,
+            previewDeltaSeamT: 0,
+            committedSeamT: baselineSeamT,
+            automaticSettle: settle,
+            adjustmentCount: 0,
+          };
+          perspectiveAdjustSessionRef.current = session;
+          setPerspectiveAdjustSession(session);
+        }
+      }
+    } catch (error) {
+      if (
+        error instanceof DOMException &&
+        error.name === "AbortError"
+      ) {
+        return;
+      }
+      if (afcLiveAttemptIdRef.current === attemptId) {
+        setAfcLiveAnalyzeStatus({
+          kind: "failed",
+          attemptId,
+          reason: "AFC analysis could not be completed.",
+        });
+      }
+    } finally {
+      if (afcLiveAbortControllerRef.current === controller) {
+        afcLiveAbortControllerRef.current = null;
+      }
+    }
+  }, [
+    basisQualificationStatus,
+    floorMapping.worldDepth,
+    invalidatePerspectiveAdjustSession,
+    isRoomImageReadyForUrl,
+    pendingAfcLabCameraApply,
+    pendingScanAndApplyFov,
+    realizeAfcLabGeometry,
+    roomImageUrl,
+  ]);
 
   const restorePerspectivePreviewToCommitted = useCallback(() => {
     const current = perspectiveAdjustSessionRef.current;
@@ -2912,12 +3268,12 @@ export default function ThreeRoomLab({
 
   const commitPerspectiveAdjust = useCallback((requestedDeltaSeamT: number) => {
     const session = perspectiveAdjustSessionRef.current;
-    if (!session || !ROOM_C_AFC_LAB_GEOMETRY_CANDIDATE.ok || pendingAfcLabCameraApply !== null) return;
-    const geometry = ROOM_C_AFC_LAB_GEOMETRY_CANDIDATE.candidate;
+    if (!session || pendingAfcLabCameraApply !== null) return;
     const adjusted = buildAfcPerspectiveAdjustCandidate({
-      rawSourceNormalizedPolygon: geometry.rawSourceNormalizedPolygon,
+      rawSourceNormalizedPolygon: session.rawSourceNormalizedPolygon,
       baselineSeamT: session.baselineSeamT,
       requestedDeltaSeamT,
+      adjustableCorner: session.adjustableCorner,
     });
     if (!adjusted.ok) {
       setAfcLabApplyStatus({
@@ -2931,8 +3287,8 @@ export default function ThreeRoomLab({
     // replaces calibrated mode and writes any durable Floor authority.
     const settle = realizeAfcLabGeometry({
       sourceNormalizedPolygon: adjusted.candidate.sourceNormalizedPolygon,
-      referenceDepthM: geometry.referenceDepthM,
-      acceptanceBasis: geometry.acceptanceBasis,
+      referenceDepthM: session.referenceDepthM,
+      acceptanceBasis: session.acceptanceBasis,
       activeCameraPolicy: "replace",
       captureUndo: "none",
       preservePerspectiveSession: true,
@@ -6154,6 +6510,15 @@ export default function ThreeRoomLab({
     const fail = (reason: string) => {
       setPendingAfcLabCameraApply(null);
       setAfcLabApplyStatus({ kind: "failed", reason });
+      const liveResult = afcLiveApplyingResultRef.current;
+      if (liveResult) {
+        setAfcLiveAnalyzeStatus({
+          kind: "failed",
+          attemptId: liveResult.attemptId,
+          reason,
+        });
+        afcLiveApplyingResultRef.current = null;
+      }
     };
     const liveBasis = afcVerifiedFloorLiveBasisRef.current;
     const transactionValidation = validatePendingAfcLabCameraApply(pending, {
@@ -6170,16 +6535,16 @@ export default function ThreeRoomLab({
     if (!transactionValidation.valid) {
       const reason =
         transactionValidation.reason === "stale_token"
-          ? "Room C AFC camera Apply was cancelled because a newer request superseded it."
+          ? "AFC camera Apply was cancelled because a newer request superseded it."
           : transactionValidation.reason === "basis_mismatch"
-            ? "Room C AFC camera Apply was cancelled because the Room C Original basis changed."
+            ? "AFC camera Apply was cancelled because the Original basis changed."
             : transactionValidation.reason === "floor_mismatch"
-              ? "Room C AFC camera Apply was cancelled because Floor authority changed before the fresh solve."
+              ? "AFC camera Apply was cancelled because Floor authority changed before the fresh solve."
               : transactionValidation.reason === "mapping_mismatch" || transactionValidation.reason === "fov_mismatch"
-                ? "Room C AFC camera Apply was cancelled because mapping or FOV changed before the fresh solve."
+                ? "AFC camera Apply was cancelled because mapping or FOV changed before the fresh solve."
                 : transactionValidation.reason === "frame_mismatch"
-                  ? "Room C AFC camera Apply was cancelled because the rendering frame changed before the fresh solve."
-                  : "Room C AFC camera Apply was cancelled because calibrated camera mode became active.";
+                  ? "AFC camera Apply was cancelled because the rendering frame changed before the fresh solve."
+                  : "AFC camera Apply was cancelled because calibrated camera mode became active.";
       fail(reason);
       return;
     }
@@ -6203,7 +6568,7 @@ export default function ThreeRoomLab({
     );
     calibratedCameraApplyStatusRef.current = freshEvaluation;
     if (!candidate || !freshEvaluation.available) {
-      fail(`Room C AFC camera Apply failed closed: ${freshEvaluation.reason}.`);
+      fail(`AFC camera Apply failed closed: ${freshEvaluation.reason}.`);
       return;
     }
 
@@ -6214,8 +6579,25 @@ export default function ThreeRoomLab({
     setAfcLabApplyStatus(
       applied
         ? { kind: "applied", settle: pending.settle }
-        : { kind: "failed", reason: "Room C AFC camera Apply was rejected by the existing calibrated-camera writer." }
+        : { kind: "failed", reason: "AFC camera Apply was rejected by the existing calibrated-camera writer." }
     );
+    const liveResult = afcLiveApplyingResultRef.current;
+    if (liveResult) {
+      setAfcLiveAnalyzeStatus(
+        applied
+          ? {
+              kind: "completed",
+              attemptId: liveResult.attemptId,
+              mode: liveResult.geometry.mode,
+            }
+          : {
+              kind: "failed",
+              attemptId: liveResult.attemptId,
+              reason: "AFC camera Apply was rejected by the existing calibrated-camera writer.",
+            }
+      );
+      afcLiveApplyingResultRef.current = null;
+    }
   }, [
     applyCalibratedCameraSnapshotFromCandidate,
     basisQualificationStatus,
@@ -20801,6 +21183,434 @@ export default function ThreeRoomLab({
               )}
           </div>
 
+          <div className="mt-3 rounded-lg border border-emerald-900/70 bg-emerald-950/15 p-3">
+            <div className="flex flex-wrap items-center gap-2 text-xs">
+              <button
+                type="button"
+                onClick={() => void handleAnalyzeAndApplyLiveAfc()}
+                disabled={
+                  basisQualificationStatus !== "qualified" ||
+                  afcVerifiedFloorLiveBasis === null ||
+                  afcLiveAnalyzeStatus.kind === "applying" ||
+                  pendingAfcLabCameraApply !== null ||
+                  pendingScanAndApplyFov !== null
+                }
+                className="rounded border border-emerald-500/70 px-2 py-1 font-medium text-emerald-100 transition hover:border-emerald-300 hover:text-white disabled:cursor-not-allowed disabled:border-slate-700 disabled:text-slate-500 disabled:opacity-60"
+              >
+                {afcLiveAnalyzeStatus.kind === "analyzing"
+                  ? "Run AFC Again"
+                  : afcLiveAnalyzeStatus.kind === "applying"
+                    ? "Applying AFC…"
+                    : "Analyze & Apply AFC"}
+              </button>
+              <span className="text-slate-400">
+                Current loaded Original → EMPTY → supported geometry → calibrated Lab.
+              </span>
+            </div>
+            {afcLiveAnalyzeStatus.kind === "completed" ? (
+              <p className="mt-2 text-xs text-emerald-300">
+                AFC completed ({afcLiveAnalyzeStatus.mode}).{" "}
+                {afcLiveResult?.status === "authoritative_geometry" &&
+                afcLiveResult.photoClass === "on_axis"
+                  ? "Perspective Adjust is not applicable to the on-axis v1 constraint."
+                  : "Perspective Adjust is initialized from this live Automatic baseline."}
+              </p>
+            ) : null}
+            {afcLiveAnalyzeStatus.kind === "degraded" ? (
+              <p className="mt-2 text-xs text-amber-300">
+                AFC retained useful evidence but did not apply geometry:{" "}
+                {afcLiveAnalyzeStatus.reason}.
+              </p>
+            ) : null}
+            {afcLiveAnalyzeStatus.kind === "failed" ? (
+              <p className="mt-2 text-xs text-rose-200">
+                {afcLiveAnalyzeStatus.reason}
+              </p>
+            ) : null}
+            {afcLiveResult ? (
+              <div className="mt-2 grid gap-1 text-xs text-slate-400 md:grid-cols-2">
+                <p>
+                  Attempt:{" "}
+                  <span className="break-all text-cyan-200">
+                    {afcLiveResult.attemptId}
+                  </span>
+                </p>
+                <p>
+                  Result:{" "}
+                  <span className="text-cyan-200">{afcLiveResult.status}</span>
+                </p>
+                {afcLiveResult.status !== "failed" ? (
+                  <p>
+                    Room view:{" "}
+                    <span className="text-cyan-200">
+                      {afcLiveResult.photoClass}
+                    </span>
+                  </p>
+                ) : null}
+                <p>
+                  Placement:{" "}
+                  <span className="text-cyan-200">
+                    {afcLiveResult.diagnostics.placementReason ??
+                      afcLiveResult.diagnostics.placementStatus ??
+                      "not reached"}
+                  </span>
+                </p>
+                <p>
+                  Validation P90:{" "}
+                  <span className="text-cyan-200">
+                    {afcLiveResult.diagnostics.validationP90Px ?? "n/a"}
+                  </span>
+                </p>
+                <p className="break-all">
+                  Evidence digest: {afcLiveResult.diagnostics.evidenceDigest}
+                </p>
+              </div>
+            ) : null}
+            {afcLiveResult?.diagnostics.floorReadDiagnostic ? (
+              <AfcSr1LiveFloorReadOverlay
+                key={afcLiveResult.attemptId}
+                diagnostic={afcLiveResult.diagnostics.floorReadDiagnostic}
+                rawV3ReaderDiagnostics={
+                  afcLiveResult.diagnostics.v3ReaderDiagnostics?.rawReader ?? null
+                }
+                finalGeometry={
+                  afcLiveResult.status === "authoritative_geometry"
+                    ? {
+                        polygon:
+                          afcLiveResult.geometry.sourceNormalizedPolygon,
+                        fixedAnchor: afcLiveResult.geometry.fixedAnchor,
+                        adjustableCorner:
+                          afcLiveResult.geometry.adjustableCorner,
+                        baselineSeamT:
+                          afcLiveResult.geometry.baselineSeamT,
+                      }
+                    : null
+                }
+                originalPreviewUrl={
+                  afcLiveResult.attemptId === afcLiveAttemptIdRef.current
+                    ? roomImageUrl
+                    : null
+                }
+              />
+            ) : afcLiveResult ? (
+              <p className="mt-2 text-xs text-slate-500">
+                Floor read unavailable: {afcLiveResult.status === "failed"
+                  ? `${afcLiveResult.reason} (${afcLiveResult.detail})`
+                  : "a valid unique Gemini Floor proposal was not available."}
+              </p>
+            ) : null}
+            {(() => {
+              const readerDiagnostics =
+                afcLiveResult?.diagnostics.v3ReaderDiagnostics;
+              const floorRead = afcLiveResult?.diagnostics.floorReadDiagnostic;
+              if (!readerDiagnostics) return null;
+              const rawReader = readerDiagnostics.rawReader;
+              const childReader = readerDiagnostics.childReader;
+              const authoritativeReader = readerDiagnostics.authoritativeReaderRole === "childReader"
+                ? childReader
+                : rawReader;
+              if (!authoritativeReader && !rawReader && !childReader) return null;
+              const authoritative = afcLiveResult?.status === "authoritative_geometry"
+                ? afcLiveResult.geometry
+                : null;
+              const forensic = rawReader && floorRead
+                ? deriveAfcSr1V3ReaderForensics({
+                    diagnostics: rawReader,
+                    rawPolygon: floorRead.polygon,
+                    finalPolygon: authoritative?.sourceNormalizedPolygon ?? null,
+                    fixedAnchor: authoritative?.fixedAnchor ?? null,
+                    authoritativeSeamT: readerDiagnostics.authoritativeReaderRole === "rawReader"
+                      ? authoritative?.baselineSeamT ?? null
+                      : null,
+                  })
+                : null;
+              const number = (value: number | null) =>
+                value === null ? "n/a" : value.toFixed(4);
+              const vp = (value: NonNullable<typeof forensic>["rawWidthVp"]) =>
+                value.kind === "finite"
+                  ? `(${number(value.sourceNormalized?.x ?? null)}, ${number(value.sourceNormalized?.y ?? null)})`
+                  : value.kind === "directional" ? "directional" : "unavailable";
+              const residual = (value: NonNullable<typeof forensic>["rawWidthVp"]) =>
+                value.kind === "directional"
+                  ? `angular residual ${number(value.horizonResidual.directionalAngularDegrees)}°`
+                  : `residual ${number(value.horizonResidual.decodedPixelDistance)} px`;
+              const readerSummary = (reader: NonNullable<typeof authoritativeReader>) => (
+                <>
+                  <p className="break-all">Receipt: {reader.receiptEvidenceDigest}</p>
+                  <p>EMPTY: {reader.imageIdentity.sha256} · {reader.imageIdentity.decodedWidth}×{reader.imageIdentity.decodedHeight}</p>
+                  <p>Analysis: {reader.analysisIdentity.mode} · {reader.analysisIdentity.analysisWidth}×{reader.analysisIdentity.analysisHeight} · scale {number(reader.analysisIdentity.scaleX)}/{number(reader.analysisIdentity.scaleY)}</p>
+                  <p className="break-all">ROI digest: {reader.roiIdentity.roiDigest}</p>
+                  <p>Winning horizon px: {number(reader.floorVanishingLinePixel.a)}, {number(reader.floorVanishingLinePixel.b)}, {number(reader.floorVanishingLinePixel.c)}</p>
+                  <p>Winning pair: [{reader.winningPair.familyIndices.join(", ")}] · basin {reader.winningPair.basinSupport} · stability {number(reader.winningPair.stability.maxSplitVsFullProbeDistancePx)} px</p>
+                  <p>Valid pairs: {reader.validPairCount} · invalid: {reader.invalidPairs.length} · candidate pairs: {reader.candidateUnorderedPairCount}</p>
+                </>
+              );
+              const pairIndependenceDiagnostics = (
+                reader: NonNullable<typeof authoritativeReader>,
+                label: "RAW" | "CHILD"
+              ) => {
+                const sidecar = reader.familyPairIndependenceDiagnostics;
+                if (!sidecar) return null;
+                const isWinner = (indices: readonly [number, number]) =>
+                  indices[0] === reader.winningPair.familyIndices[0] &&
+                  indices[1] === reader.winningPair.familyIndices[1];
+                const field = (summary: {
+                  supporterCount: number;
+                  medianDegrees: number | null;
+                  p90Degrees: number | null;
+                } | null) => summary
+                  ? `n ${summary.supporterCount} · med ${number(summary.medianDegrees)}° · P90 ${number(summary.p90Degrees)}°`
+                  : "unavailable";
+                const residual = (summary: {
+                  supporterCount: number;
+                  medianResidualPx: number | null;
+                  p90ResidualPx: number | null;
+                  withinExistingInlierBandCount: number;
+                } | null) => summary
+                  ? `n ${summary.supporterCount} · med ${number(summary.medianResidualPx)} px · P90 ${number(summary.p90ResidualPx)} px · existing-band ${summary.withinExistingInlierBandCount}`
+                  : "unavailable";
+                return (
+                  <details className="mt-2 rounded border border-slate-700/80 p-2 text-[11px] text-slate-300">
+                    <summary className="cursor-pointer">
+                      Pair independence diagnostics — observation only ({label})
+                    </summary>
+                    <p className="mt-1 text-slate-500">
+                      V3 winner display context: [{reader.winningPair.familyIndices.join(", ")}]. Pair order is retained from the Reader.
+                    </p>
+                    <div className="mt-1 overflow-x-auto">
+                      <table className="w-full text-left">
+                        <thead className="text-slate-500"><tr><th>Family</th><th>n</th><th>Axial mean°</th><th>Median°</th><th>SD°</th><th>IQR°</th></tr></thead>
+                        <tbody>{sidecar.familyOrientationSummaries.map((summary) => (
+                          <tr key={summary.familyIndex}>
+                            <td>{summary.familyIndex}</td><td>{summary.supporterCount}</td>
+                            <td>{number(summary.axialMeanDegrees)}</td><td>{number(summary.axialMedianDegrees)}</td>
+                            <td>{number(summary.axialCircularStdDevDegrees)}</td><td>{number(summary.axialIqrDegrees)}</td>
+                          </tr>
+                        ))}</tbody>
+                      </table>
+                    </div>
+                    <div className="mt-2 overflow-x-auto">
+                      <table className="w-full text-left">
+                        <thead className="text-slate-500"><tr><th>Pair</th><th>Overlap</th><th>Exclusive support px</th><th>A→B cross-fit</th><th>B→A cross-fit</th><th>Union field Δ</th><th>Shared field Δ</th></tr></thead>
+                        <tbody>{sidecar.pairs.map((pair) => (
+                          <tr key={pair.familyIndices.join("-")}>
+                            <td>[{pair.familyIndices.join(", ")}]{isWinner(pair.familyIndices) ? " · V3 winner" : ""}</td>
+                            <td>shared {pair.overlap.sharedSupporterCount} / union {pair.overlap.unionSupporterCount} · J {number(pair.overlap.jaccard)} · smaller {number(pair.overlap.overlapFractionOfSmaller)}</td>
+                            <td>shared {number(pair.exclusiveSupport.sharedSupportLengthPx)} · A-only {pair.exclusiveSupport.firstOnlySupporterCount}/{number(pair.exclusiveSupport.firstOnlySupportLengthPx)} · B-only {pair.exclusiveSupport.secondOnlySupporterCount}/{number(pair.exclusiveSupport.secondOnlySupportLengthPx)}</td>
+                            <td>{residual(pair.crossFit.firstSupportersAgainstSecond)}</td>
+                            <td>{residual(pair.crossFit.secondSupportersAgainstFirst)}</td>
+                            <td>{field(pair.predictedDirectionFieldDisagreement.onUnionSupporterMidpoints)}</td>
+                            <td>{field(pair.predictedDirectionFieldDisagreement.onSharedSupporterMidpoints)}</td>
+                          </tr>
+                        ))}</tbody>
+                      </table>
+                    </div>
+                  </details>
+                );
+              };
+              return (
+                <details className="mt-3 rounded border border-violet-900/70 bg-slate-950/40 p-2 text-xs">
+                  <summary className="cursor-pointer font-medium text-violet-100">
+                    V3 Reader evidence — observation only
+                  </summary>
+                  <p className="mt-2 text-slate-300">
+                    Authoritative Reader role: <span className="text-violet-200">
+                      {readerDiagnostics.authoritativeReaderRole === "rawReader"
+                        ? "RAW"
+                        : readerDiagnostics.authoritativeReaderRole === "childReader"
+                          ? "CHILD"
+                          : "none"}
+                    </span>
+                  </p>
+                  {rawReader ? (
+                    <>
+                      <p className="mt-2 font-medium text-violet-200">
+                        RAW V3 Reader{readerDiagnostics.authoritativeReaderRole === "rawReader"
+                          ? " — winning horizon / authoritative"
+                          : " — parent EMPTY observation only"}
+                      </p>
+                      <div className="mt-1 grid gap-1 text-slate-300 md:grid-cols-2">
+                        {readerSummary(rawReader)}
+                        {forensic ? (
+                          <>
+                            <p>Horizon source-normalized: {forensic.sourceNormalizedHorizon
+                              ? `${number(forensic.sourceNormalizedHorizon.a)}, ${number(forensic.sourceNormalizedHorizon.b)}, ${number(forensic.sourceNormalizedHorizon.c)}`
+                              : "unavailable"}</p>
+                            <p>Winning replay: {forensic.winningPairReplay.status} · seamT {number(forensic.winningPairReplay.seamT)}</p>
+                            <p>Raw width VP: {vp(forensic.rawWidthVp)} · {forensic.rawWidthVp.side} · {residual(forensic.rawWidthVp)}</p>
+                            <p>Depth VP: {vp(forensic.depthVp)} · {forensic.depthVp.side} · {residual(forensic.depthVp)}</p>
+                            <p>Authoritative width VP: {vp(forensic.authoritativeWidthVp)} · {forensic.authoritativeWidthVp.side} · {residual(forensic.authoritativeWidthVp)}</p>
+                            <p>Width side changed: {forensic.widthVpSideChanged === null ? "n/a" : forensic.widthVpSideChanged ? "yes" : "no"} · near-edge orientation changed: {forensic.nearEdgeOrientationChanged === null ? "n/a" : forensic.nearEdgeOrientationChanged ? "yes" : "no"}</p>
+                            <p>Authoritative seamT: {number(authoritative?.baselineSeamT ?? null)}</p>
+                          </>
+                        ) : null}
+                      </div>
+                      {pairIndependenceDiagnostics(rawReader, "RAW")}
+                    </>
+                  ) : null}
+                  {childReader ? (
+                    <>
+                      <p className="mt-2 font-medium text-violet-200">
+                        CHILD V3 Reader{readerDiagnostics.authoritativeReaderRole === "childReader"
+                          ? " — authoritative Reader"
+                          : " — observation only"} (child-image coordinates)
+                      </p>
+                      <div className="mt-1 grid gap-1 text-slate-300 md:grid-cols-2">
+                        {readerSummary(childReader)}
+                      </div>
+                      {pairIndependenceDiagnostics(childReader, "CHILD")}
+                      <p className="mt-1 text-slate-500">
+                        Child horizon is intentionally not drawn over parent EMPTY.
+                      </p>
+                    </>
+                  ) : null}
+                  {forensic ? (
+                    <p className="mt-2 text-slate-400">
+                      RAW alternate pairs retain V3 discovery order; they are not re-ranked by counterfactual seamT.
+                    </p>
+                  ) : null}
+                  {forensic?.otherValidPairs.length ? (
+                    <div className="mt-1 overflow-x-auto">
+                      <table className="w-full text-left text-[11px] text-slate-300">
+                        <thead className="text-slate-500"><tr><th>Pair</th><th>Basin</th><th>Probe px</th><th>Width VP side</th><th>Track 1a</th><th>Counterfactual seamT</th></tr></thead>
+                        <tbody>{forensic.otherValidPairs.map((pair) => (
+                          <tr key={pair.familyIndices.join("-")}><td>[{pair.familyIndices.join(", ")}]</td><td>{pair.pair.basinSupport}</td><td>{number(pair.pair.stability.maxSplitVsFullProbeDistancePx)}</td><td>{pair.impliedWidthVp.side}</td><td>{pair.track1aStatus}{pair.track1aReason ? `: ${pair.track1aReason}` : ""}</td><td>{number(pair.seamT)}</td></tr>
+                        ))}</tbody>
+                      </table>
+                    </div>
+                  ) : null}
+                  <details className="mt-2 text-[11px] text-slate-500">
+                    <summary>Sanitized V3 diagnostic JSON</summary>
+                    <pre className="mt-1 overflow-x-auto whitespace-pre-wrap">{JSON.stringify(readerDiagnostics, null, 2)}</pre>
+                  </details>
+                </details>
+              );
+            })()}
+            {(() => {
+              const failure = afcLiveSettleFailure;
+              if (
+                !failure ||
+                failure.attemptId !== afcLiveResult?.attemptId ||
+                failure.settle.reason !== "no_apply_safe_candidate"
+              ) {
+                return null;
+              }
+              const settle = failure.settle.diagnostics;
+              const best = settle.bestRejectedCandidate;
+              const boundary = best
+                ? [
+                    best.atRatioMin ? "ratio min" : null,
+                    best.atRatioMax ? "ratio max" : null,
+                    best.atFovMin ? "FOV min" : null,
+                    best.atFovMax ? "FOV max" : null,
+                  ].filter(Boolean).join(" · ") || "interior"
+                : "n/a";
+              return (
+                <div className="mt-3 rounded border border-rose-900/70 bg-slate-950/40 p-2 text-xs">
+                  <p className="font-medium text-rose-100">
+                    Live AFC settle: {failure.reason}
+                  </p>
+                  <p className="mt-1 text-slate-300">
+                    Cells evaluated: {settle.evaluatedCellCount} · Geometric successes:{" "}
+                    {settle.successfulCellCount} · Apply-safe: {settle.applySafeCellCount} ·
+                    Structural failures: {settle.structuralFailureCount}
+                  </p>
+                  {best ? (
+                    <div className="mt-2 grid gap-1 text-slate-400 md:grid-cols-2">
+                      <p>
+                        Best rejected — ratio {formatNumber(best.ratio)} · width{" "}
+                        {formatNumber(best.worldWidthM)} m · FOV{" "}
+                        {formatNumber(best.verticalFovDeg)}°
+                      </p>
+                      <p>
+                        CV avg/max: {formatNumber(best.cvAvgPx)} /{" "}
+                        {formatNumber(best.cvMaxPx)} px (Apply &lt;4 / &lt;10)
+                      </p>
+                      <p>
+                        Display avg/max: {formatNumber(best.displayAvgPx)} /{" "}
+                        {formatNumber(best.displayMaxPx)} px (Apply &lt;10 / &lt;10)
+                      </p>
+                      <p>
+                        Delta avg/max: {formatNumber(best.avgDeltaPx)} /{" "}
+                        {formatNumber(best.maxDeltaPx)} px (Apply ≤1 / ≤1)
+                      </p>
+                      <p>
+                        Scale ratio: {formatNumber(best.scaleRatio)} (Apply 0.85–1.18)
+                      </p>
+                      <p>
+                        First failing gate: <span className="text-rose-200">{best.firstFailingGate}</span> ·
+                        boundary: {boundary}
+                      </p>
+                    </div>
+                  ) : (
+                    <p className="mt-2 text-slate-400">
+                      No geometrically successful cell exists; there is no rejected Apply candidate.
+                    </p>
+                  )}
+                  <p className="mt-2 break-words text-slate-400">
+                    Rejection counts:{" "}
+                    {Object.entries(settle.rejectionCounts).map(([gate, count]) =>
+                      `${gate}=${count}`
+                    ).join(" · ") || "none"}
+                  </p>
+                  <p className="mt-1 break-words text-slate-500">
+                    By category:{" "}
+                    {Object.entries(settle.structuralFailureReasons).map(([category, count]) =>
+                      `${category}=${count}`
+                    ).join(" · ") || "none"}
+                  </p>
+                  <p className="mt-2 text-slate-400">
+                    Replay snapshot — Original {failure.originalImageSize.width}×
+                    {failure.originalImageSize.height} · renderer{" "}
+                    {failure.rendererSize.width}×{failure.rendererSize.height} · reference depth{" "}
+                    {formatNumber(failure.referenceDepthM)} m
+                  </p>
+                  <p className="mt-1 break-all font-mono text-[10px] text-slate-500">
+                    final={JSON.stringify(failure.sourceNormalizedPolygon)} raw=
+                    {JSON.stringify(failure.rawSourceNormalizedPolygon)}
+                  </p>
+                </div>
+              );
+            })()}
+            {afcLiveResult?.status === "failed" &&
+            afcLiveResult.diagnostics.supportedRoomClassifier ? (
+              <div className="mt-2 rounded border border-amber-900/70 bg-slate-950/40 p-2 font-mono text-[11px] text-amber-100">
+                {(() => {
+                  const classifier =
+                    afcLiveResult.diagnostics.supportedRoomClassifier;
+                  const { observables, semanticFloorPolygon } = classifier;
+                  const point = (name: string, value: { x: number; y: number }) =>
+                    `${name}=(${value.x.toFixed(4)},${value.y.toFixed(4)})`;
+                  return (
+                    <>
+                      <p>
+                        classifier={classifier.classifierVersion} reason={classifier.reason} EMPTY=
+                        {classifier.emptyDecodedWidth}×{classifier.emptyDecodedHeight}
+                      </p>
+                      <p>
+                        dyNear={observables.dyNear.toFixed(4)} dyFar=
+                        {observables.dyFar.toFixed(4)} farMidX=
+                        {observables.farMidX.toFixed(4)} widthVP∞=
+                        {String(observables.widthVanishingPointAtInfinity)}
+                      </p>
+                      <p>
+                        leftRun={observables.leftVisibleRunPx.toFixed(2)}px rightRun=
+                        {observables.rightVisibleRunPx.toFixed(2)}px asymmetry=
+                        {observables.truncationAsymmetry.toFixed(4)}
+                      </p>
+                      <p>
+                        {point("NL", semanticFloorPolygon.NL)}{" "}
+                        {point("NR", semanticFloorPolygon.NR)}{" "}
+                        {point("FR", semanticFloorPolygon.FR)}{" "}
+                        {point("FL", semanticFloorPolygon.FL)}
+                      </p>
+                    </>
+                  );
+                })()}
+              </div>
+            ) : null}
+          </div>
+
           <div className="mt-3 rounded-lg border border-cyan-900/70 bg-cyan-950/15 p-3">
             <div className="flex flex-wrap items-center gap-2 text-xs">
               <button
@@ -20904,9 +21714,12 @@ export default function ThreeRoomLab({
                       <p>
                         Adjustments: <span className="text-cyan-200">{perspectiveAdjustSession.adjustmentCount}</span> · session active
                       </p>
+                      <p className="break-all">
+                        Baseline: <span className="text-cyan-200">{perspectiveAdjustSession.attemptId} / {perspectiveAdjustSession.resultId}</span>
+                      </p>
                     </div>
                   ) : (
-                    <p className="mt-2 text-slate-500">Apply Room C AFC to enable Perspective Adjust.</p>
+                    <p className="mt-2 text-slate-500">Apply supported off-axis AFC geometry to enable Perspective Adjust.</p>
                   )}
                 </div>
                 <div className="mt-3 border-t border-slate-800 pt-2 text-xs">

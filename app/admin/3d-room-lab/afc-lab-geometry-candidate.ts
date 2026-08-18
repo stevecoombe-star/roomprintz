@@ -107,16 +107,30 @@ function exactSemanticOrder(value: unknown): value is typeof AFC_LAB_GEOMETRY_SE
  * Perspective Adjust control.
  */
 export function constructAfcLabNrAdjustedPolygon(raw: unknown, seamT: number): Polygon | null {
+  return constructAfcLabAdjustedPolygon(raw, seamT, "NR");
+}
+
+export function constructAfcLabAdjustedPolygon(
+  raw: unknown,
+  seamT: number,
+  adjustableCorner: "NL" | "NR"
+): Polygon | null {
   if (!Number.isFinite(seamT) || seamT < 0 || seamT > 1) return null;
   const sourcePolygon = polygon(raw);
   if (!sourcePolygon) return null;
-  const nr = sourcePolygon[1];
-  const fr = sourcePolygon[2];
-  const adjustedNr = Object.freeze({
-    x: nr.x + seamT * (fr.x - nr.x),
-    y: nr.y + seamT * (fr.y - nr.y),
+  const adjustableIndex = adjustableCorner === "NL" ? 0 : 1;
+  const farIndex = adjustableCorner === "NL" ? 3 : 2;
+  const near = sourcePolygon[adjustableIndex];
+  const far = sourcePolygon[farIndex];
+  const adjustedNear = Object.freeze({
+    x: near.x + seamT * (far.x - near.x),
+    y: near.y + seamT * (far.y - near.y),
   });
-  const adjusted = Object.freeze([sourcePolygon[0], adjustedNr, sourcePolygon[2], sourcePolygon[3]] as const);
+  const adjusted = Object.freeze(
+    sourcePolygon.map((point, index) =>
+      index === adjustableIndex ? adjustedNear : point
+    ) as unknown as Polygon
+  );
   return (
     validateFloorSourcePolygonExtent(adjusted).ok &&
     validateOrderedFloorCorners(adjusted.map((point) => ({ ...point }))).ok

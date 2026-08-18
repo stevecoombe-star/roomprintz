@@ -3,8 +3,12 @@ import { getCoverCrop, type ImageFrameSize } from "./image-space";
 import {
   evaluateRatioFovCell,
   type RatioFovApplyObservability,
+  type RatioFovCell,
   type RatioFovSuccessfulCell,
 } from "./research/ratio-fov-harness";
+import type {
+  CalibratedCameraApplyFirstFailingGate,
+} from "./calibrated-camera-apply";
 import { validateFloorSourcePolygonExtent } from "./floor-coordinate-extent";
 import { validateOrderedFloorCorners } from "./perspective-solve";
 
@@ -31,11 +35,59 @@ export type AfcFixedSeamCalibrationSuccess = Readonly<{
   applySafeCellCount: number;
 }>;
 
+export type AfcFixedSeamCalibrationBestRejectedCandidate = Readonly<{
+  ratio: number;
+  worldWidthM: number;
+  verticalFovDeg: number;
+  confidence: RatioFovSuccessfulCell["confidence"];
+  cvAvgPx: number;
+  cvMaxPx: number;
+  displayAvgPx: number;
+  displayMaxPx: number;
+  avgDeltaPx: number;
+  maxDeltaPx: number;
+  scaleRatio: number;
+  firstFailingGate: CalibratedCameraApplyFirstFailingGate;
+  atRatioMin: boolean;
+  atRatioMax: boolean;
+  atFovMin: boolean;
+  atFovMax: boolean;
+}>;
+
+export type AfcFixedSeamStructuralFailureCategory =
+  | "floor_rect_failed"
+  | "homography_solve_failed"
+  | "homography_decomposition_failed"
+  | "cv_reprojection_unavailable"
+  | "display_reprojection_unavailable"
+  | "other";
+
+export type AfcFixedSeamCalibrationNoApplySafeDiagnostics = Readonly<{
+  evaluatedCellCount: number;
+  successfulCellCount: number;
+  applySafeCellCount: number;
+  structuralFailureCount: number;
+  structuralFailureReasons: Readonly<
+    Partial<Record<AfcFixedSeamStructuralFailureCategory, number>>
+  >;
+  rejectionCounts: Readonly<
+    Partial<Record<CalibratedCameraApplyFirstFailingGate, number>>
+  >;
+  bestRejectedCandidate: AfcFixedSeamCalibrationBestRejectedCandidate | null;
+}>;
+
 export type AfcFixedSeamCalibrationResult =
   | AfcFixedSeamCalibrationSuccess
   | Readonly<{
       ok: false;
-      reason: AfcFixedSeamCalibrationFailure;
+      reason: "no_apply_safe_candidate";
+      evaluatedCellCount: number;
+      applySafeCellCount: number;
+      diagnostics: AfcFixedSeamCalibrationNoApplySafeDiagnostics;
+    }>
+  | Readonly<{
+      ok: false;
+      reason: Exclude<AfcFixedSeamCalibrationFailure, "no_apply_safe_candidate">;
       evaluatedCellCount: number;
       applySafeCellCount: number;
     }>;
@@ -105,6 +157,71 @@ function cellId(cell: RatioFovSuccessfulCell): string {
 }
 
 /**
+ * Diagnostic-only aggregation. Ratio/FOV evaluator failure strings remain
+ * untouched because they are forensic detail, not a settle decision input.
+ */
+export function categorizeRatioFovStructuralFailure(
+  reason: string
+): AfcFixedSeamStructuralFailureCategory {
+  if (reason.startsWith("widthMeters and depthMeters")) {
+    return "floor_rect_failed";
+  }
+  if (reason.startsWith("Homography decomposition failed:")) {
+    return "homography_decomposition_failed";
+  }
+  if (
+    reason === "CV per-corner diagnostics unavailable." ||
+    reason.startsWith("CV reprojection failed:")
+  ) {
+    return "cv_reprojection_unavailable";
+  }
+  if (
+    reason === "Display reprojection diagnostics unavailable." ||
+    reason.startsWith("Pose projection failed:")
+  ) {
+    return "display_reprojection_unavailable";
+  }
+  if (
+    reason.startsWith("Homography solve failed") ||
+    reason.startsWith("Solved homography") ||
+    reason.startsWith("Point correspondences") ||
+    reason.startsWith("Point sets") ||
+    reason.includes("homography") ||
+    reason.startsWith("Input points") ||
+    reason.startsWith("Expected exactly 4 source")
+  ) {
+    return "homography_solve_failed";
+  }
+  return "other";
+}
+
+function bestRejectedCandidate(
+  cell: RatioFovSuccessfulCell,
+  input: AfcFixedSeamCalibrationInput,
+  ratioSearch: Readonly<{ min: number; max: number; step: number }>,
+  fovSearch: Readonly<{ minDeg: number; maxDeg: number; stepDeg: number }>
+): AfcFixedSeamCalibrationBestRejectedCandidate {
+  return Object.freeze({
+    ratio: cell.ratio,
+    worldWidthM: cell.ratio * input.referenceDepthM,
+    verticalFovDeg: cell.fovDeg,
+    confidence: cell.confidence,
+    cvAvgPx: cell.cvAvgPx,
+    cvMaxPx: cell.cvMaxPx,
+    displayAvgPx: cell.applyObservability.displayAvgPx,
+    displayMaxPx: cell.applyObservability.displayMaxPx,
+    avgDeltaPx: cell.applyObservability.averageDeltaPx,
+    maxDeltaPx: cell.applyObservability.maximumDeltaPx,
+    scaleRatio: cell.columnScaleRatio,
+    firstFailingGate: cell.applyObservability.firstFailingGate,
+    atRatioMin: cell.ratio === ratioSearch.min,
+    atRatioMax: cell.ratio === ratioSearch.max,
+    atFovMin: cell.fovDeg === fovSearch.minDeg,
+    atFovMax: cell.fovDeg === fovSearch.maxDeg,
+  });
+}
+
+/**
  * Settles ratio × FOV for an already-built, fixed-seam polygon. It has no seam
  * input by design: perspective adjustment can rebuild the polygon first and
  * call this exact path again. The evaluator is reused only as a pure
@@ -156,11 +273,19 @@ export function settleAfcFixedSeamCalibration(
   const coarseFovs = valuesInRange(fovSearch.minDeg, fovSearch.maxDeg, fovSearch.stepDeg);
   const coarse: RatioFovSuccessfulCell[] = [];
   let evaluatedCellCount = 0;
+  let structuralFailureCount = 0;
+  const structuralFailureReasons: Partial<
+    Record<AfcFixedSeamStructuralFailureCategory, number>
+  > = {};
 
-  const evaluate = (ratio: number, fovDeg: number) => {
+  const evaluate = (
+    ratio: number,
+    fovDeg: number,
+    successfulCells: RatioFovSuccessfulCell[]
+  ) => {
     if (!metricDomainAllows(ratio, input.referenceDepthM)) return;
     evaluatedCellCount += 1;
-    const cell = evaluateRatioFovCell({
+    const cell: RatioFovCell = evaluateRatioFovCell({
       frameSize: input.frameSize,
       frameFloorPolygonPx: framePolygon,
       ratio,
@@ -171,15 +296,57 @@ export function settleAfcFixedSeamCalibration(
       // it can commit anything.
       researchBasisQualified: true,
     });
-    if (cell.status === "success") coarse.push(cell);
+    if (cell.status === "success") {
+      successfulCells.push(cell);
+      return;
+    }
+    structuralFailureCount += 1;
+    const category = categorizeRatioFovStructuralFailure(cell.failureReason);
+    structuralFailureReasons[category] =
+      (structuralFailureReasons[category] ?? 0) + 1;
   };
 
   for (const ratio of coarseRatios) {
-    for (const fovDeg of coarseFovs) evaluate(ratio, fovDeg);
+    for (const fovDeg of coarseFovs) evaluate(ratio, fovDeg, coarse);
   }
+  const noApplySafeFailure = (
+    successfulCells: readonly RatioFovSuccessfulCell[]
+  ): AfcFixedSeamCalibrationResult => {
+    const ranked = [...successfulCells].sort(
+      compareAfcFixedSeamCalibrationCells
+    );
+    const rejectionCounts: Partial<
+      Record<CalibratedCameraApplyFirstFailingGate, number>
+    > = {};
+    for (const cell of ranked) {
+      if (cell.applyObservability.available) continue;
+      const gate = cell.applyObservability.firstFailingGate;
+      rejectionCounts[gate] = (rejectionCounts[gate] ?? 0) + 1;
+    }
+    const applySafeCellCount = ranked.filter(
+      (cell) => cell.applyObservability.available
+    ).length;
+    return Object.freeze({
+      ok: false as const,
+      reason: "no_apply_safe_candidate" as const,
+      evaluatedCellCount,
+      applySafeCellCount,
+      diagnostics: Object.freeze({
+        evaluatedCellCount,
+        successfulCellCount: ranked.length,
+        applySafeCellCount,
+        structuralFailureCount,
+        structuralFailureReasons: Object.freeze({ ...structuralFailureReasons }),
+        rejectionCounts: Object.freeze({ ...rejectionCounts }),
+        bestRejectedCandidate: ranked[0]
+          ? bestRejectedCandidate(ranked[0], input, ratioSearch, fovSearch)
+          : null,
+      }),
+    });
+  };
   const coarseBest = [...coarse].sort(compareAfcFixedSeamCalibrationCells)[0];
   if (!coarseBest) {
-    return Object.freeze({ ok: false as const, reason: "no_apply_safe_candidate", evaluatedCellCount, applySafeCellCount: 0 });
+    return noApplySafeFailure([]);
   }
 
   const refined: RatioFovSuccessfulCell[] = [];
@@ -195,17 +362,7 @@ export function settleAfcFixedSeamCalibration(
   );
   for (const ratio of refinedRatios) {
     for (const fovDeg of refinedFovs) {
-      if (!metricDomainAllows(ratio, input.referenceDepthM)) continue;
-      evaluatedCellCount += 1;
-      const cell = evaluateRatioFovCell({
-        frameSize: input.frameSize,
-        frameFloorPolygonPx: framePolygon,
-        ratio,
-        fovDeg,
-        referenceDepth: input.referenceDepthM,
-        researchBasisQualified: true,
-      });
-      if (cell.status === "success") refined.push(cell);
+      evaluate(ratio, fovDeg, refined);
     }
   }
 
@@ -213,7 +370,7 @@ export function settleAfcFixedSeamCalibration(
   const winning = ranked.find((cell) => cell.applyObservability.available);
   const applySafeCellCount = ranked.filter((cell) => cell.applyObservability.available).length;
   if (!winning) {
-    return Object.freeze({ ok: false as const, reason: "no_apply_safe_candidate", evaluatedCellCount, applySafeCellCount });
+    return noApplySafeFailure(ranked);
   }
   const worldWidthM = winning.ratio * input.referenceDepthM;
   if (!metricDomainAllows(winning.ratio, input.referenceDepthM)) {

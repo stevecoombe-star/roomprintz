@@ -85,11 +85,87 @@ function config(paths: Awaited<ReturnType<typeof directories>>): CertifiedRunner
   });
 }
 
+function v4ReaderReceipt(source: any): unknown {
+  const receipt = structuredClone(source);
+  const diagnostics = receipt.diagnostics;
+  const eligibility = (familyIndices: readonly [number, number]) => ({
+    familyIndices,
+    eligible: true,
+    failedStage: null,
+    rejectionReason: null,
+    overlapFractionOfSmaller: 0,
+    firstSupportCount: 8,
+    secondSupportCount: 8,
+    firstInlierBandCount: 0,
+    secondInlierBandCount: 0,
+    firstInlierBandFraction: 0,
+    secondInlierBandFraction: 0,
+    firstRegionMedianDegrees: 11,
+    secondRegionMedianDegrees: 17,
+    strongRegionMedianDegrees: 17,
+  });
+  const validPairUniverse = diagnostics.validPairUniverse.map((pair: any) => ({
+    ...pair,
+    independentDirectionEligibility: eligibility(pair.familyIndices),
+  }));
+  const winningPair = {
+    ...diagnostics.winningPair,
+    independentDirectionEligibility: eligibility(
+      diagnostics.winningPair.familyIndices
+    ),
+  };
+  receipt.schemaVersion = "afc-sr1-tr2-tile-floor-reader-result/v4";
+  receipt.researchProfile = "afc-sr1-tr2-tile-floor-reader/v4";
+  receipt.policyVersion = "afc-sr1-ts2-extractor-policy/v4";
+  receipt.runtimeIdentity.readerModuleVersion = "afc-sr1-tile-floor-reader/v4";
+  receipt.diagnostics = {
+    ...diagnostics,
+    stableProjectivelyValidPairCount: diagnostics.validPairCount,
+    eligiblePairCount: diagnostics.validPairCount,
+    validPairCount: diagnostics.validPairCount,
+    independentDirectionEligibilityRejectedPairs: [],
+    validPairUniverse,
+    winningPair,
+  };
+  const preimage = {
+    schemaVersion: receipt.schemaVersion,
+    researchProfile: receipt.researchProfile,
+    policyVersion: receipt.policyVersion,
+    image: receipt.imageIdentity,
+    roi: receipt.roiIdentity,
+    runtime: receipt.runtimeIdentity,
+    status: receipt.status,
+    diagnostics: {
+      segmentCounts: receipt.diagnostics.segmentCounts ?? null,
+      candidateDiscovery: receipt.diagnostics.candidateDiscovery ?? null,
+      validFamilyCount: receipt.diagnostics.validFamilyCount ?? null,
+      candidateUnorderedPairCount:
+        receipt.diagnostics.candidateUnorderedPairCount ?? null,
+      stableProjectivelyValidPairCount:
+        receipt.diagnostics.stableProjectivelyValidPairCount ?? null,
+      eligiblePairCount: receipt.diagnostics.eligiblePairCount ?? null,
+      validPairCount: receipt.diagnostics.validPairCount ?? null,
+      invalidPairs: receipt.diagnostics.invalidPairs ?? null,
+      independentDirectionEligibilityRejectedPairs:
+        receipt.diagnostics.independentDirectionEligibilityRejectedPairs ?? null,
+      validPairUniverse: receipt.diagnostics.validPairUniverse ?? null,
+      finalFamilies: receipt.diagnostics.candidateDiscovery?.finalFamilies ?? null,
+      winningPair: receipt.diagnostics.winningPair ?? null,
+    },
+    analysisIdentity: receipt.analysisIdentity,
+    floorVanishingLinePixel: receipt.floorVanishingLinePixel,
+  };
+  receipt.evidenceCanonicalJson = canonicalizeRfc8785Jcs(preimage);
+  receipt.evidenceDigest.value =
+    sha256HexUtf8(receipt.evidenceCanonicalJson);
+  return receipt;
+}
+
 async function roomCRawReceipt(): Promise<unknown> {
   const control = JSON.parse(
     await readFile(new URL("control.json", fixtureDirectory), "utf8")
   );
-  return structuredClone(control.realCompositorV3Evidence["C-RAW"].receipt);
+  return v4ReaderReceipt(control.realCompositorV3Evidence["C-RAW"].receipt);
 }
 
 async function roomCRejectedRawReceipt(): Promise<unknown> {
@@ -133,9 +209,7 @@ async function cT1Receipts(): Promise<Readonly<{
   ]);
   return Object.freeze({
     placement: structuredClone(placementControl.placements["C-T1"].receipt),
-    childReader: structuredClone(
-      control.realCompositorV3Evidence["C-T1"].receipt
-    ),
+    childReader: v4ReaderReceipt(control.realCompositorV3Evidence["C-T1"].receipt),
   });
 }
 
@@ -309,8 +383,8 @@ test("error wire captures typed 404 without secrets or image payload", async () 
   await assert.rejects(
     wire.call({
       payload: {
-        researchProfile: "afc-sr1-tr2-tile-floor-reader/v3",
-        policyVersion: "afc-sr1-ts2-extractor-policy/v3",
+        researchProfile: "afc-sr1-tr2-tile-floor-reader/v4",
+        policyVersion: "afc-sr1-ts2-extractor-policy/v4",
         imageBase64: Buffer.from("scientific-image-secret").toString("base64"),
         roi: { coordinateSpace: "source-normalized/v1", polygon: [] },
       },

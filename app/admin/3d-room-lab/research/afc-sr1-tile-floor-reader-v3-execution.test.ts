@@ -8,6 +8,9 @@ import {
   AFC_SR1_TR2_V3_POLICY_VERSION,
   AFC_SR1_TR2_V3_RESEARCH_PROFILE,
   AFC_SR1_TR2_V3_RESULT_SCHEMA_VERSION,
+  AFC_SR1_TR2_V4_POLICY_VERSION,
+  AFC_SR1_TR2_V4_RESEARCH_PROFILE,
+  AFC_SR1_TR2_V4_RESULT_SCHEMA_VERSION,
   executeAfcSr1RawFirstTileFloorReader,
   executeAfcSr1TileFloorReader,
   validateAfcSr1Tr2ReaderReceipt,
@@ -47,6 +50,10 @@ function input() {
       truncatedAnchor: row.truncatedAnchor as "NL" | "NR",
     },
   };
+}
+
+function v4Input() {
+  return { ...input(), readerVersion: "v4" as const };
 }
 
 function strictInput(readerImageKind: "raw_input" | "ts0_child" = "raw_input") {
@@ -218,6 +225,114 @@ function v3Receipt(options: Readonly<{
   };
 }
 
+function v4Receipt(options: Readonly<{
+  status?: "usable" | "rejected";
+  reason?: string;
+}> = {}): any {
+  const source: any = v3Receipt();
+  const status = options.status ?? "usable";
+  const reason = options.reason ??
+    (status === "rejected" ? "no_independent_direction_pair" : undefined);
+  const eligible = {
+    familyIndices: [0, 1],
+    eligible: true,
+    failedStage: null,
+    rejectionReason: null,
+    overlapFractionOfSmaller: 0,
+    firstSupportCount: 12,
+    secondSupportCount: 12,
+    firstInlierBandCount: 0,
+    secondInlierBandCount: 0,
+    firstInlierBandFraction: 0,
+    secondInlierBandFraction: 0,
+    firstRegionMedianDegrees: 11,
+    secondRegionMedianDegrees: 17,
+    strongRegionMedianDegrees: 17,
+  };
+  const rejectedEligibility = {
+    ...eligible,
+    eligible: false,
+    failedStage: 2,
+    rejectionReason: "insufficient_direction_field_separation",
+    firstRegionMedianDegrees: 1,
+    secondRegionMedianDegrees: 2,
+    strongRegionMedianDegrees: 2,
+  };
+  const sourcePair = source.diagnostics.validPairUniverse[0];
+  const pair = {
+    ...sourcePair,
+    independentDirectionEligibility: eligible,
+  };
+  const diagnostics: any = {
+    ...source.diagnostics,
+    stableProjectivelyValidPairCount: 1,
+    eligiblePairCount: status === "usable" ? 1 : 0,
+    validPairCount: status === "usable" ? 1 : 0,
+    independentDirectionEligibilityRejectedPairs:
+      status === "rejected" ? [{
+        ...rejectedEligibility,
+      }] : [],
+    validPairUniverse: status === "usable" ? [pair] : [],
+    ...(status === "usable" ? { winningPair: pair } : { winningPair: undefined }),
+  };
+  const subset = {
+    segmentCounts: diagnostics.segmentCounts,
+    candidateDiscovery: diagnostics.candidateDiscovery,
+    validFamilyCount: diagnostics.validFamilyCount,
+    candidateUnorderedPairCount: diagnostics.candidateUnorderedPairCount,
+    stableProjectivelyValidPairCount:
+      diagnostics.stableProjectivelyValidPairCount,
+    eligiblePairCount: diagnostics.eligiblePairCount,
+    validPairCount: diagnostics.validPairCount,
+    invalidPairs: diagnostics.invalidPairs,
+    independentDirectionEligibilityRejectedPairs:
+      diagnostics.independentDirectionEligibilityRejectedPairs,
+    validPairUniverse: diagnostics.validPairUniverse,
+    finalFamilies: diagnostics.candidateDiscovery.finalFamilies,
+    winningPair: diagnostics.winningPair ?? null,
+  };
+  const runtimeIdentity = {
+    ...source.runtimeIdentity,
+    readerModuleVersion: "afc-sr1-tile-floor-reader/v4",
+  };
+  const preimage = {
+    schemaVersion: AFC_SR1_TR2_V4_RESULT_SCHEMA_VERSION,
+    researchProfile: AFC_SR1_TR2_V4_RESEARCH_PROFILE,
+    policyVersion: AFC_SR1_TR2_V4_POLICY_VERSION,
+    image: source.imageIdentity,
+    roi: source.roiIdentity,
+    runtime: runtimeIdentity,
+    status,
+    diagnostics: subset,
+    analysisIdentity,
+    ...(status === "usable"
+      ? { floorVanishingLinePixel: source.floorVanishingLinePixel }
+      : { reason }),
+  };
+  const evidenceCanonicalJson = canonical(preimage);
+  return {
+    schemaVersion: preimage.schemaVersion,
+    researchProfile: preimage.researchProfile,
+    policyVersion: preimage.policyVersion,
+    status,
+    imageIdentity: source.imageIdentity,
+    roiIdentity: source.roiIdentity,
+    runtimeIdentity,
+    analysisIdentity,
+    diagnostics,
+    ...(status === "usable"
+      ? { floorVanishingLinePixel: source.floorVanishingLinePixel }
+      : { reason }),
+    evidenceCanonicalJson,
+    evidenceDigest: {
+      algorithm: "sha256",
+      encoding: "hex",
+      value: sha256(evidenceCanonicalJson),
+    },
+    elapsedMs: source.elapsedMs,
+  };
+}
+
 function rebind(value: any): void {
   const preimage = JSON.parse(value.evidenceCanonicalJson);
   preimage.diagnostics = v3Subset(value.diagnostics);
@@ -228,6 +343,85 @@ function rebind(value: any): void {
 test("V3 valid receipt, canonical digest, identities, and pair evidence are accepted", () => {
   const result = validateAfcSr1Tr2ReaderReceipt(v3Receipt(), input());
   assert.equal(result.status, "usable");
+});
+
+test("V4 usable and no-independent-direction rejected receipts validate with canonical eligibility fields", () => {
+  const usable = validateAfcSr1Tr2ReaderReceipt(v4Receipt(), v4Input());
+  assert.equal(usable.status, "usable");
+  assert.equal(usable.schemaVersion, AFC_SR1_TR2_V4_RESULT_SCHEMA_VERSION);
+  assert.equal(usable.runtimeIdentity.readerModuleVersion, "afc-sr1-tile-floor-reader/v4");
+  const rejected = validateAfcSr1Tr2ReaderReceipt(
+    v4Receipt({ status: "rejected" }),
+    v4Input()
+  );
+  assert.equal(rejected.status, "rejected");
+  if (rejected.status === "rejected") {
+    assert.equal(rejected.reason, "no_independent_direction_pair");
+  }
+  const canonical = JSON.parse(usable.evidenceCanonicalJson);
+  assert.equal(canonical.diagnostics.stableProjectivelyValidPairCount, 1);
+  assert.equal(canonical.diagnostics.eligiblePairCount, 1);
+  assert.equal(canonical.diagnostics.validPairCount, 1);
+  assert.deepEqual(
+    canonical.diagnostics.validPairUniverse[0].independentDirectionEligibility,
+    (usable.diagnostics as any).validPairUniverse[0]
+      .independentDirectionEligibility
+  );
+  const withObservationSidecars = v4Receipt();
+  withObservationSidecars.diagnostics.familySupportGeometry = {
+    authority: "none",
+    role: "observation_only",
+  };
+  withObservationSidecars.diagnostics.familyPairIndependenceDiagnostics = {
+    contractVersion: "afc-sr1-family-pair-independence-diagnostics/v1",
+    authority: "none",
+    role: "observation_only",
+  };
+  const sidecarReceipt = validateAfcSr1Tr2ReaderReceipt(
+    withObservationSidecars,
+    v4Input()
+  );
+  assert.equal(sidecarReceipt.evidenceCanonicalJson, usable.evidenceCanonicalJson);
+});
+
+test("V3 receipt fails closed when V4 is required", () => {
+  assert.throws(() => validateAfcSr1Tr2ReaderReceipt(v3Receipt(), v4Input()));
+});
+
+test("V3 optional observation-only diagnostics stay outside receipt evidence", () => {
+  const baseline = v3Receipt();
+  const withSupportGeometry = structuredClone(baseline) as typeof baseline & {
+    diagnostics: Record<string, unknown>;
+  };
+  withSupportGeometry.diagnostics.familySupportGeometry = {
+    coordinateSpace: "analysis-pixel/v1",
+    authority: "none",
+    role: "observation_only",
+    excludedFromCanonicalEvidence: true,
+    segments: [{ detectorIndex: 17, x1: 10, y1: 20, x2: 30, y2: 40 }],
+    families: [{ familyIndex: 0, supporterDetectorIndices: [17] }],
+  };
+  withSupportGeometry.diagnostics.familyPairIndependenceDiagnostics = {
+    contractVersion: "afc-sr1-family-pair-independence-diagnostics/v1",
+    coordinateSpace: "analysis-pixel/v1",
+    authority: "none",
+    role: "observation_only",
+    excludedFromCanonicalEvidence: true,
+    familyOrientationSummaries: [],
+    pairs: [],
+  };
+  assert.equal(validateAfcSr1Tr2ReaderReceipt(withSupportGeometry, input()).status, "usable");
+  assert.equal(withSupportGeometry.evidenceCanonicalJson, baseline.evidenceCanonicalJson);
+  assert.deepEqual(withSupportGeometry.evidenceDigest, baseline.evidenceDigest);
+  assert.equal(
+    JSON.parse(withSupportGeometry.evidenceCanonicalJson).diagnostics.familySupportGeometry,
+    undefined
+  );
+  assert.equal(
+    JSON.parse(withSupportGeometry.evidenceCanonicalJson).diagnostics
+      .familyPairIndependenceDiagnostics,
+    undefined
+  );
 });
 
 test("V3 profile, policy, schema, module, image, and ROI mismatches fail closed", () => {

@@ -5,7 +5,10 @@
  * evaluates labeled Floor evidence only; it neither registers nor changes a
  * renderer camera, invokes Apply, persists data, or mutates caller input.
  */
-import { evaluateCalibratedCameraApply } from "../calibrated-camera-apply";
+import {
+  evaluateCalibratedCameraApply,
+  type CalibratedCameraApplyFirstFailingGate,
+} from "../calibrated-camera-apply";
 import { getCoverCrop } from "../image-space";
 import {
   decomposeHomographyToCameraPose,
@@ -103,7 +106,7 @@ export type RatioFovResearchSafety = Readonly<{
 
 export type RatioFovApplyObservability = Readonly<{
   available: boolean;
-  firstFailingGate: string;
+  firstFailingGate: CalibratedCameraApplyFirstFailingGate;
   reason: string;
   displayAvgPx: number;
   displayMaxPx: number;

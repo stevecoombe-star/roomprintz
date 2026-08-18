@@ -35,7 +35,8 @@ export type AfcSr1ExplicitAnchorAuthorityV1 = Readonly<{
   kind:
     | "gt_adjustable_corner_derived"
     | "predeclared_truncated_anchor"
-    | "lab_manual_advanced_calibration";
+    | "lab_manual_advanced_calibration"
+    | "supported_domain_near_side_derived";
   truncatedAnchor: AfcSr1CrossRoomTruncatedAnchorV1;
   evidenceReference: string;
 }>;
@@ -90,6 +91,7 @@ const ANCHOR_AUTHORITY_KINDS = new Set<AfcSr1ExplicitAnchorAuthorityV1["kind"]>(
   "gt_adjustable_corner_derived",
   "predeclared_truncated_anchor",
   "lab_manual_advanced_calibration",
+  "supported_domain_near_side_derived",
 ]);
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {

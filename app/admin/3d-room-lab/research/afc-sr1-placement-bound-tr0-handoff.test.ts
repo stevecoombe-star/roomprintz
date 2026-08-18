@@ -24,9 +24,9 @@ import {
 } from "./afc-sr1-placement-bound-tr0-handoff";
 import type { AfcSr1SourcePolygon } from "./afc-sr1-semantic-prior";
 import {
-  AFC_SR1_TR2_V3_POLICY_VERSION,
-  AFC_SR1_TR2_V3_RESEARCH_PROFILE,
-  AFC_SR1_TR2_V3_RESULT_SCHEMA_VERSION,
+  AFC_SR1_TR2_V4_POLICY_VERSION,
+  AFC_SR1_TR2_V4_RESEARCH_PROFILE,
+  AFC_SR1_TR2_V4_RESULT_SCHEMA_VERSION,
   getAfcSr1ValidatedTr2UsableReaderAuthority,
   validateAfcSr1Tr2ReaderReceipt,
 } from "./afc-sr1-tile-floor-reader-execution";
@@ -130,7 +130,7 @@ function readerReceipt(bytes = childBytes) {
     roiDigest: sha256HexUtf8(canonicalizeRfc8785Jcs(roiBase)),
   };
   const runtimeIdentity = {
-    readerModuleVersion: "afc-sr1-tile-floor-reader/v3",
+    readerModuleVersion: "afc-sr1-tile-floor-reader/v4",
     opencvVersion: "4.11.0",
     numpyVersion: "2.4.6",
   };
@@ -161,14 +161,33 @@ function readerReceipt(bytes = childBytes) {
     floorLineAnalysis: [0, 1, -370],
     basinSupport: 1,
     stability: { stable: true, maxSplitVsFullProbeDistancePx: 1 },
+    independentDirectionEligibility: {
+      familyIndices: [0, 1],
+      eligible: true,
+      failedStage: null,
+      rejectionReason: null,
+      overlapFractionOfSmaller: 0,
+      firstSupportCount: 8,
+      secondSupportCount: 8,
+      firstInlierBandCount: 0,
+      secondInlierBandCount: 0,
+      firstInlierBandFraction: 0,
+      secondInlierBandFraction: 0,
+      firstRegionMedianDegrees: 11,
+      secondRegionMedianDegrees: 17,
+      strongRegionMedianDegrees: 17,
+    },
   };
   const diagnostics = {
     segmentCounts: { raw: 4, admittedAllNineInside: 4 },
     candidateDiscovery: { finalFamilies: [family, family] },
     validFamilyCount: 2,
     candidateUnorderedPairCount: 1,
+    stableProjectivelyValidPairCount: 1,
+    eligiblePairCount: 1,
     validPairCount: 1,
     invalidPairs: [],
+    independentDirectionEligibilityRejectedPairs: [],
     validPairUniverse: [pair],
     winningPair: pair,
   };
@@ -177,16 +196,21 @@ function readerReceipt(bytes = childBytes) {
     candidateDiscovery: diagnostics.candidateDiscovery,
     validFamilyCount: diagnostics.validFamilyCount,
     candidateUnorderedPairCount: diagnostics.candidateUnorderedPairCount,
+    stableProjectivelyValidPairCount:
+      diagnostics.stableProjectivelyValidPairCount,
+    eligiblePairCount: diagnostics.eligiblePairCount,
     validPairCount: diagnostics.validPairCount,
     invalidPairs: diagnostics.invalidPairs,
+    independentDirectionEligibilityRejectedPairs:
+      diagnostics.independentDirectionEligibilityRejectedPairs,
     validPairUniverse: diagnostics.validPairUniverse,
     finalFamilies: diagnostics.candidateDiscovery.finalFamilies,
     winningPair: diagnostics.winningPair,
   };
   const preimage = {
-    schemaVersion: AFC_SR1_TR2_V3_RESULT_SCHEMA_VERSION,
-    researchProfile: AFC_SR1_TR2_V3_RESEARCH_PROFILE,
-    policyVersion: AFC_SR1_TR2_V3_POLICY_VERSION,
+    schemaVersion: AFC_SR1_TR2_V4_RESULT_SCHEMA_VERSION,
+    researchProfile: AFC_SR1_TR2_V4_RESEARCH_PROFILE,
+    policyVersion: AFC_SR1_TR2_V4_POLICY_VERSION,
     image: imageIdentity,
     roi: roiIdentity,
     runtime: runtimeIdentity,
@@ -219,7 +243,7 @@ function readerReceipt(bytes = childBytes) {
 
 function readerAuthority(bytes = childBytes) {
   const receipt = validateAfcSr1Tr2ReaderReceipt(readerReceipt(bytes), {
-    readerVersion: "v3",
+    readerVersion: "v4",
     tiledImageBytes: bytes,
     roi: {
       coordinateSpace: "source-normalized/v1",
@@ -470,6 +494,16 @@ test("only the exact EMPTY parent polygon basis is accepted", () => {
 });
 
 test("anchor authority is explicit, exact, and independent of placement mask", () => {
+  assert.equal(
+    buildAfcSr1PlacementBoundTr0Handoff(handoffInput({
+      anchorAuthority: {
+        ...anchorAuthority,
+        kind: "supported_domain_near_side_derived",
+        evidenceReference: "synthetic/classifier-v1/anchor-NL",
+      },
+    })).status,
+    "validated"
+  );
   expectRejected({ anchorAuthority: undefined }, "anchor_authority_unresolved");
   expectRejected({
     anchorAuthority: { ...anchorAuthority, truncatedAnchor: "NR" },

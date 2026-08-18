@@ -69,6 +69,29 @@ test("Perspective Adjust moves only NR along the established NR to FR seam", () 
   assert.ok(positive.candidateSeamT > candidate.baselineSeamT);
 });
 
+test("live right-near Perspective Adjust moves only NL along NL to FL", () => {
+  const candidate = roomC();
+  const raw = [
+    { x: 1 - candidate.rawSourceNormalizedPolygon[1].x, y: candidate.rawSourceNormalizedPolygon[1].y },
+    { x: 1 - candidate.rawSourceNormalizedPolygon[0].x, y: candidate.rawSourceNormalizedPolygon[0].y },
+    { x: 1 - candidate.rawSourceNormalizedPolygon[3].x, y: candidate.rawSourceNormalizedPolygon[3].y },
+    { x: 1 - candidate.rawSourceNormalizedPolygon[2].x, y: candidate.rawSourceNormalizedPolygon[2].y },
+  ] as const;
+  const result = buildAfcPerspectiveAdjustCandidate({
+    rawSourceNormalizedPolygon: raw,
+    baselineSeamT: candidate.baselineSeamT,
+    requestedDeltaSeamT: 0.01,
+    adjustableCorner: "NL",
+  });
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.equal(result.candidate.adjustableCorner, "NL");
+  assert.notDeepEqual(result.candidate.sourceNormalizedPolygon[0], raw[0]);
+  assert.deepEqual(result.candidate.sourceNormalizedPolygon[1], raw[1]);
+  assert.deepEqual(result.candidate.sourceNormalizedPolygon[2], raw[2]);
+  assert.deepEqual(result.candidate.sourceNormalizedPolygon[3], raw[3]);
+});
+
 test("Perspective Adjust clamps the engineering UX delta range", () => {
   const candidate = roomC();
   const positive = adjusted(1);
