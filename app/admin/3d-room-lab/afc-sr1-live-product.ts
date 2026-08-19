@@ -66,12 +66,12 @@ const SHA256 = /^[a-f0-9]{64}$/;
 const MAX_ATTEMPT_EVIDENCE = 8;
 const EMPTY_GENERATION_TIMEOUT_MS = 120_000;
 
-type QualifiedOriginal = Readonly<{
+export type AfcSr1QualifiedOriginal = Readonly<{
   basis: AfcSr1LiveBasis;
   sourceImageUrl: string;
 }>;
 
-type ResolvedEmpty = Readonly<{
+export type AfcSr1ResolvedEmpty = Readonly<{
   basis: AfcSr1LiveBasis;
   bytes: Uint8Array;
   generated: boolean;
@@ -122,6 +122,16 @@ export function getAfcSr1LiveAttemptEvidence(
   return attemptEvidence.get(attemptId) ?? null;
 }
 
+export function retainAfcSr1LiveAttemptEmptyEvidence(
+  attemptId: string,
+  empty: AfcSr1ResolvedEmpty
+): void {
+  retainAttemptEvidence(attemptId).floorRead = Object.freeze({
+    emptyBytes: Uint8Array.from(empty.bytes),
+    emptyBasis: empty.basis,
+  });
+}
+
 function retainAttemptEvidence(attemptId: string): AttemptEvidence {
   let evidence = attemptEvidence.get(attemptId);
   if (!evidence) {
@@ -170,9 +180,9 @@ function detectMime(
   return null;
 }
 
-async function qualifyOriginalDefault(
+export async function qualifyAfcSr1LiveOriginalDefault(
   request: AfcSr1LiveAnalyzeRequest
-): Promise<QualifiedOriginal | null> {
+): Promise<AfcSr1QualifiedOriginal | null> {
   const fetched = await fetchRoomImageSafely(request.sourceImageUrl, {
     allowedHosts: getAutoFloorVisionAllowedImageHosts(),
     maxBytes: getAutoFloorVisionImageMaxBytes(),
@@ -197,9 +207,9 @@ async function qualifyOriginalDefault(
   });
 }
 
-async function resolveEmptyDefault(
-  original: QualifiedOriginal
-): Promise<ResolvedEmpty | null> {
+export async function resolveAfcSr1LiveEmptyDefault(
+  original: AfcSr1QualifiedOriginal
+): Promise<AfcSr1ResolvedEmpty | null> {
   const existing = inFlightEmpty.get(original.basis.sha256);
   let ownsGeneration = false;
   let promise = existing;
@@ -264,8 +274,8 @@ function mapResolverFailure(
 
 async function resolveCanonicalFloorDefault(
   request: AfcSr1LiveAnalyzeRequest,
-  _original: QualifiedOriginal,
-  empty: ResolvedEmpty
+  _original: AfcSr1QualifiedOriginal,
+  empty: AfcSr1ResolvedEmpty
 ): Promise<FloorProposalResult> {
   const resolved = await resolveCanonicalAfcFloorFromEmpty({
     empty: {
@@ -292,7 +302,7 @@ async function resolveCanonicalFloorDefault(
   });
 }
 
-function validRequest(value: AfcSr1LiveAnalyzeRequest): boolean {
+export function isValidAfcSr1LiveAnalyzeRequest(value: AfcSr1LiveAnalyzeRequest): boolean {
   return (
     !!value &&
     typeof value.attemptId === "string" &&
@@ -314,9 +324,9 @@ function validRequest(value: AfcSr1LiveAnalyzeRequest): boolean {
   );
 }
 
-function sourceIdentityMatches(
+export function afcSr1LiveSourceIdentityMatches(
   request: AfcSr1LiveAnalyzeRequest,
-  original: QualifiedOriginal
+  original: AfcSr1QualifiedOriginal
 ): boolean {
   const expected = request.sourceImageIdentity;
   const actual = original.basis;
@@ -328,7 +338,7 @@ function sourceIdentityMatches(
   );
 }
 
-function validProductPolygon(value: unknown): value is AfcSr1SourcePolygon {
+export function isValidAfcSr1LiveProductPolygon(value: unknown): value is AfcSr1SourcePolygon {
   try {
     validateAfcSr1SourcePolygon(value);
   } catch {
@@ -347,7 +357,7 @@ function isInFrame(polygon: AfcSr1SourcePolygon): boolean {
   );
 }
 
-function clonePolygon(polygon: AfcSr1SourcePolygon): AfcSr1SourcePolygon {
+export function cloneAfcSr1LivePolygon(polygon: AfcSr1SourcePolygon): AfcSr1SourcePolygon {
   return Object.freeze(
     polygon.map((point) => Object.freeze({ ...point })) as unknown as
       AfcSr1SourcePolygon
@@ -356,17 +366,14 @@ function clonePolygon(polygon: AfcSr1SourcePolygon): AfcSr1SourcePolygon {
 
 function floorReadDiagnostic(
   request: AfcSr1LiveAnalyzeRequest,
-  original: QualifiedOriginal,
-  empty: ResolvedEmpty,
+  original: AfcSr1QualifiedOriginal,
+  empty: AfcSr1ResolvedEmpty,
   selected: Extract<FloorProposalResult, { status: "selected" }>
 ): AfcSr1LiveFloorReadDiagnostic {
-  retainAttemptEvidence(request.attemptId).floorRead = Object.freeze({
-    emptyBytes: Uint8Array.from(empty.bytes),
-    emptyBasis: empty.basis,
-  });
+  retainAfcSr1LiveAttemptEmptyEvidence(request.attemptId, empty);
   return Object.freeze({
     detectorKind: "empty_room_assist_empty_arm",
-    polygon: clonePolygon(selected.polygon),
+    polygon: cloneAfcSr1LivePolygon(selected.polygon),
     selectedCandidateId: selected.selectedCandidateId,
     selectedCandidateIndex: selected.selectedCandidateIndex,
     candidateCount: selected.candidateCount,
@@ -409,7 +416,7 @@ function correctedOffAxisPolygon(
         })
       : Object.freeze({ ...point })
   ) as unknown as AfcSr1SourcePolygon;
-  return validProductPolygon(corrected) ? Object.freeze(corrected) : null;
+  return isValidAfcSr1LiveProductPolygon(corrected) ? Object.freeze(corrected) : null;
 }
 
 type MutableAttemptCounts = {
@@ -420,6 +427,8 @@ function emptyCounts(): MutableAttemptCounts {
   return {
     originalQualification: 0,
     emptyGeneration: 0,
+    tiledGeneration: 0,
+    tiledReader: 0,
     geminiFloorProposal: 0,
     supportedRoomClassifier: 0,
     onAxisCorrection: 0,
@@ -454,7 +463,7 @@ type ClassifierFailureDiagnostics =
 function classifierFailureDiagnostics(
   classification: AfcSr1SupportedRoomViewResult,
   polygon: AfcSr1SourcePolygon,
-  empty: ResolvedEmpty
+  empty: AfcSr1ResolvedEmpty
 ): ClassifierFailureDiagnostics | null {
   if (classification.status !== "unsupported" || !classification.observables) {
     return null;
@@ -510,14 +519,14 @@ function diagnostics(
 export type AfcSr1LiveProductDependencies = Readonly<{
   qualifyOriginal?: (
     request: AfcSr1LiveAnalyzeRequest
-  ) => Promise<QualifiedOriginal | null>;
+  ) => Promise<AfcSr1QualifiedOriginal | null>;
   resolveEmpty?: (
-    original: QualifiedOriginal
-  ) => Promise<ResolvedEmpty | null>;
+    original: AfcSr1QualifiedOriginal
+  ) => Promise<AfcSr1ResolvedEmpty | null>;
   resolveCanonicalFloor?: (
     request: AfcSr1LiveAnalyzeRequest,
-    original: QualifiedOriginal,
-    empty: ResolvedEmpty
+    original: AfcSr1QualifiedOriginal,
+    empty: AfcSr1ResolvedEmpty
   ) => Promise<FloorProposalResult>;
   classifyRoom?: typeof classifyAfcSr1SupportedRoomView;
   deriveOnAxis?: typeof deriveAfcSr1OnAxisParallelWidthFloor;
@@ -562,13 +571,13 @@ export async function executeAfcSr1CompleteProductAttempt(
     ),
   });
 
-  if (!validRequest(request)) {
+  if (!isValidAfcSr1LiveAnalyzeRequest(request)) {
     return failed("invalid_request", "request_contract_invalid");
   }
 
   counts.originalQualification = 1;
   const original = await (
-    dependencies.qualifyOriginal ?? qualifyOriginalDefault
+    dependencies.qualifyOriginal ?? qualifyAfcSr1LiveOriginalDefault
   )(request);
   if (!original) {
     return failed(
@@ -576,11 +585,11 @@ export async function executeAfcSr1CompleteProductAttempt(
       "original_refetch_or_decode_failed"
     );
   }
-  if (!sourceIdentityMatches(request, original)) {
+  if (!afcSr1LiveSourceIdentityMatches(request, original)) {
     return failed("source_identity_mismatch", "qualified_source_basis_mismatch");
   }
 
-  const empty = await (dependencies.resolveEmpty ?? resolveEmptyDefault)(
+  const empty = await (dependencies.resolveEmpty ?? resolveAfcSr1LiveEmptyDefault)(
     original
   );
   if (!empty) {
@@ -623,7 +632,7 @@ export async function executeAfcSr1CompleteProductAttempt(
       proposal.reason
     );
   }
-  if (!validProductPolygon(proposal.polygon)) {
+  if (!isValidAfcSr1LiveProductPolygon(proposal.polygon)) {
     return failed("floor_proposal_invalid", "canonical_floor_polygon_invalid");
   }
   if (!isInFrame(proposal.polygon)) {
@@ -694,8 +703,8 @@ export async function executeAfcSr1CompleteProductAttempt(
       geometry: Object.freeze({
         mode: "on-axis-parallel-width",
         geometryAuthority: "on_axis_parallel_width_derived",
-        sourceNormalizedPolygon: clonePolygon(onAxis.correctedPolygon),
-        rawSourceNormalizedPolygon: clonePolygon(proposal.polygon),
+        sourceNormalizedPolygon: cloneAfcSr1LivePolygon(onAxis.correctedPolygon),
+        rawSourceNormalizedPolygon: cloneAfcSr1LivePolygon(proposal.polygon),
         fixedAnchor: null,
         adjustableCorner: null,
         baselineSeamT: null,
@@ -879,7 +888,7 @@ export async function executeAfcSr1CompleteProductAttempt(
       mode: pathA.mode,
       geometryAuthority: "supported_domain_near_side_derived",
       sourceNormalizedPolygon: corrected,
-        rawSourceNormalizedPolygon: clonePolygon(proposal.polygon),
+        rawSourceNormalizedPolygon: cloneAfcSr1LivePolygon(proposal.polygon),
       fixedAnchor: truncatedAnchor,
       adjustableCorner,
       baselineSeamT: seamT,

@@ -1,8 +1,8 @@
 import { NextResponse } from "next/server";
 
 import {
-  executeAfcSr1CompleteProductAttempt,
-} from "@/app/admin/3d-room-lab/afc-sr1-live-product";
+  executeAfcSr1TiledLiveProductAttempt,
+} from "@/app/admin/3d-room-lab/afc-sr1-tiled-live-product";
 import type {
   AfcSr1LiveAnalyzeRequest,
   AfcSr1LiveProductResult,
@@ -112,7 +112,7 @@ export function createAfcSr1LiveAnalyzePostHandler(
     if (!parsed) return json({ error: "AFC live request was invalid." }, 400);
 
     const result = await (
-      dependencies.executeAttempt ?? executeAfcSr1CompleteProductAttempt
+      dependencies.executeAttempt ?? executeAfcSr1TiledLiveProductAttempt
     )(parsed);
     return json(result, 200);
   };

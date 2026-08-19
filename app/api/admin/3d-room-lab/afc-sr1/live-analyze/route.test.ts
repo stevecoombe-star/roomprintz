@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 import {
   createAfcSr1LiveAnalyzePostHandler,
@@ -54,7 +55,7 @@ test("route delegates one validated product attempt", async () => {
       assert.deepEqual(request, valid);
       return {
         status: "failed",
-        schemaVersion: "afc-sr1-complete-product-attempt/v1",
+        schemaVersion: "afc-sr1-complete-product-attempt/v2",
         attemptId: request.attemptId,
         resultId: "result-1",
         labLoadGeneration: request.labLoadGeneration,
@@ -72,6 +73,8 @@ test("route delegates one validated product attempt", async () => {
           attemptCounts: {
             originalQualification: 1,
             emptyGeneration: 1,
+            tiledGeneration: 0,
+            tiledReader: 0,
             geminiFloorProposal: 1,
             supportedRoomClassifier: 1,
             onAxisCorrection: 0,
@@ -93,4 +96,10 @@ test("route delegates one validated product attempt", async () => {
   assert.equal(response.status, 200);
   assert.equal(attempts, 1);
   assert.equal((await response.json()).status, "failed");
+});
+
+test("live route selects the isolated TILED authority", () => {
+  const source = readFileSync(new URL("./route.ts", import.meta.url), "utf8");
+  assert.match(source, /executeAfcSr1TiledLiveProductAttempt/);
+  assert.doesNotMatch(source, /executeAfcSr1CompleteProductAttempt/);
 });

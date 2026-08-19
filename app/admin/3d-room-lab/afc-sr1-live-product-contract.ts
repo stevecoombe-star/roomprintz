@@ -7,7 +7,7 @@ import type {
 } from "./afc-sr1-v3-reader-diagnostics";
 
 export const AFC_SR1_LIVE_PRODUCT_VERSION =
-  "afc-sr1-complete-product-attempt/v1" as const;
+  "afc-sr1-complete-product-attempt/v2" as const;
 
 export type AfcSr1LiveAnalyzeRequest = Readonly<{
   attemptId: string;
@@ -34,6 +34,8 @@ export type AfcSr1LiveBasis = Readonly<{
 export type AfcSr1LiveAttemptCounts = Readonly<{
   originalQualification: number;
   emptyGeneration: number;
+  tiledGeneration: number;
+  tiledReader: number;
   geminiFloorProposal: number;
   supportedRoomClassifier: number;
   onAxisCorrection: number;
@@ -117,12 +119,18 @@ export type AfcSr1LiveAuthoritativeGeometry = Readonly<{
   photoClass:
     | "off_axis_left_near"
     | "off_axis_right_near"
-    | "on_axis";
+    | "on_axis"
+    | "tiled_perspective_core";
   geometry: Readonly<{
-    mode: "raw-direct" | "tiled-placement" | "on-axis-parallel-width";
+    mode:
+      | "raw-direct"
+      | "tiled-placement"
+      | "on-axis-parallel-width"
+      | "tiled-perspective-core";
     geometryAuthority:
       | "supported_domain_near_side_derived"
-      | "on_axis_parallel_width_derived";
+      | "on_axis_parallel_width_derived"
+      | "tiled_perspective_reader";
     sourceNormalizedPolygon: AfcSr1SourcePolygon;
     rawSourceNormalizedPolygon: AfcSr1SourcePolygon;
     fixedAnchor: "NL" | "NR" | null;
@@ -138,18 +146,42 @@ export type AfcSr1LiveAuthoritativeGeometry = Readonly<{
         | "paired_cross_role_aspect_rescaled";
       transferProvenance: string;
     }>;
-    classifierVersion: string;
+    classifierVersion: string | null;
     anchorAuthorityKind: "supported_domain_near_side_derived" | null;
     onAxisConstruction: "NL_fixed" | "NR_fixed" | null;
+    tiledPerspective?: Readonly<{
+      tiledBasis: AfcSr1LiveBasis;
+      emptyToTiledLineageDigest: string;
+      emptyToTiledTransfer: "identity_source_normalized";
+      emptyToOriginalCompatibilityTier:
+        | "exact_grid_compatible"
+        | "aspect_compatible_rescaled";
+      readerVersion: "afc-sr1-tiled-perspective-reader/s1";
+      core: Readonly<{
+        rows: number;
+        columns: number;
+        j0: number;
+        i0: number;
+        cellIds: readonly number[];
+      }>;
+      selectedComponentTileCount: number;
+      rawQuadrilateralCount: number;
+      deduplicatedCellCount: number;
+      reprojectionMeanPx: number;
+      reprojectionMaxPx: number;
+    }>;
   }>;
   metric: Readonly<{
-    perspectiveAuthority: "afc_derived";
+    perspectiveAuthority: "afc_derived" | "tiled_perspective_core";
     metricScaleAuthority: "provisional_reference_depth";
     referenceDepthM: number;
   }>;
   perspectiveAdjust: Readonly<{
     supported: boolean;
-    reason: "off_axis_live_baseline" | "on_axis_not_applicable_v1";
+    reason:
+      | "off_axis_live_baseline"
+      | "on_axis_not_applicable_v1"
+      | "tiled_cluster_not_applicable_v1";
   }>;
   diagnostics: AfcSr1LiveDiagnostics;
 }>;
@@ -174,6 +206,16 @@ export type AfcSr1LiveFailureReason =
   | "source_identity_mismatch"
   | "empty_generation_failed"
   | "original_empty_incompatible"
+  | "tiled_generation_failed"
+  | "tiled_lineage_not_exact_grid"
+  | "tiled_reader_transport_failed"
+  | "tiled_identity_mismatch"
+  | "no_complete_tile"
+  | "no_coherent_lattice"
+  | "lattice_assignment_conflict"
+  | "no_rectangular_core"
+  | "homography_failure"
+  | "semantic_ordering_failure"
   | "gemini_transport_failed"
   | "gemini_response_invalid"
   | "gemini_insufficient_evidence"

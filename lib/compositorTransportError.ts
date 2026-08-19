@@ -2,6 +2,7 @@ import "server-only";
 
 export type CompositorTransportSeam =
   | "tile-floor-reader"
+  | "tiled-perspective-reader"
   | "ts0-child-placement"
   | "readiness"
   | "stage-run";

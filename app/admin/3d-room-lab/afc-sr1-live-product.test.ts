@@ -276,6 +276,8 @@ test("off-axis RAW-direct is one complete authoritative attempt", async () => {
   assert.deepEqual(result.diagnostics.attemptCounts, {
     originalQualification: 1,
     emptyGeneration: 1,
+    tiledGeneration: 0,
+    tiledReader: 0,
     geminiFloorProposal: 1,
     supportedRoomClassifier: 1,
     onAxisCorrection: 0,
