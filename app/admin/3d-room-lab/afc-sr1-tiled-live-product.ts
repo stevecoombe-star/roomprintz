@@ -29,9 +29,11 @@ import {
   cloneAfcSr1LivePolygon,
   isValidAfcSr1LiveAnalyzeRequest,
   isValidAfcSr1LiveProductPolygon,
+  afcSr1LiveTiledDiagnosticImages,
   qualifyAfcSr1LiveOriginalDefault,
   resolveAfcSr1LiveEmptyDefault,
   retainAfcSr1LiveAttemptEmptyEvidence,
+  retainAfcSr1LiveAttemptTiledEvidence,
   type AfcSr1QualifiedOriginal,
   type AfcSr1ResolvedEmpty,
 } from "./afc-sr1-live-product";
@@ -207,6 +209,11 @@ export async function executeAfcSr1TiledLiveProductAttempt(
     return failed("tiled_generation_failed", tiled.code);
   }
   const tiledBytes = Buffer.from(tiled.tiled.base64, "base64");
+  retainAfcSr1LiveAttemptTiledEvidence(
+    request.attemptId,
+    tiledBytes,
+    tiled.tiled.identity
+  );
   let lineage: AfcSr1TiledPerspectiveExactGridLineage;
   try {
     lineage = await (
@@ -258,6 +265,7 @@ export async function executeAfcSr1TiledLiveProductAttempt(
     labLoadGeneration: request.labLoadGeneration,
     originalBasis: original.basis,
     emptyBasis: empty.basis,
+    diagnosticImages: afcSr1LiveTiledDiagnosticImages(request.attemptId),
     photoClass: "tiled_perspective_core",
     geometry: Object.freeze({
       mode: "tiled-perspective-core",

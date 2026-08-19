@@ -20,6 +20,7 @@ import AfcUi2aRunnerPanel from "./AfcUi2aRunnerPanel";
 import AfcUi2bProposalRunnerPanel from "./AfcUi2bProposalRunnerPanel";
 import AfcPerspectiveAdjustControl from "./AfcPerspectiveAdjustControl";
 import AfcSr1LiveFloorReadOverlay from "./AfcSr1LiveFloorReadOverlay";
+import AfcTiledPerspectiveDiagnosticViewer from "./AfcTiledPerspectiveDiagnosticViewer";
 import {
   deriveAfcSr1V3ReaderForensics,
 } from "./afc-sr1-v3-reader-diagnostics";
@@ -21418,7 +21419,29 @@ export default function ThreeRoomLab({
                 </p>
               </div>
             ) : null}
-            {afcLiveResult?.diagnostics.floorReadDiagnostic ? (
+            {afcLiveResult?.status === "authoritative_geometry" &&
+            afcLiveResult.geometry.mode === "tiled-perspective-core" ? (
+              <AfcTiledPerspectiveDiagnosticViewer
+                key={afcLiveResult.attemptId}
+                result={afcLiveResult}
+                originalImageUrl={
+                  afcLiveResult.attemptId === afcLiveAttemptIdRef.current
+                    ? roomImageUrl
+                    : null
+                }
+                perspectiveAdjustDelta={
+                  perspectiveAdjustSession?.kind === AFC_TILED_PERSPECTIVE_ADJUST_MODE &&
+                  perspectiveAdjustSession.attemptId === afcLiveResult.attemptId &&
+                  perspectiveAdjustSession.resultId === afcLiveResult.resultId
+                    ? perspectiveAdjustSession.committedDelta
+                    : null
+                }
+                settleDidNotApply={
+                  afcLiveSettleFailure?.attemptId === afcLiveResult.attemptId &&
+                  afcLiveSettleFailure.settle.reason === "no_apply_safe_candidate"
+                }
+              />
+            ) : afcLiveResult?.diagnostics.floorReadDiagnostic ? (
               <AfcSr1LiveFloorReadOverlay
                 key={afcLiveResult.attemptId}
                 diagnostic={afcLiveResult.diagnostics.floorReadDiagnostic}

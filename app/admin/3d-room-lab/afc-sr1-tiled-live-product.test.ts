@@ -6,6 +6,9 @@ import {
   executeAfcSr1TiledLiveProductAttempt,
   type AfcSr1TiledLiveProductDependencies,
 } from "./afc-sr1-tiled-live-product";
+import {
+  getAfcSr1LiveAttemptEvidence,
+} from "./afc-sr1-live-product";
 import type { AfcSr1LiveAnalyzeRequest } from "./afc-sr1-live-product-contract";
 
 const originalIdentity = {
@@ -99,6 +102,12 @@ function harness(): {
       },
       readTiledPerspective: async () => {
         calls.reader++;
+        assert.deepEqual(
+          getAfcSr1LiveAttemptEvidence(request().attemptId)?.tiledPerspective
+            ?.tiledBytes,
+          Uint8Array.of(1, 2, 3),
+          "the generated TILED evidence is retained before the reader runs"
+        );
         return readerResponse();
       },
     },
@@ -118,6 +127,16 @@ test("S2A performs one exact authority path and transfers the reader quad to Ori
   assert.equal(result.geometry.tiledPerspective?.tiledBasis.sha256, tiledIdentity.sha256);
   assert.equal(result.geometry.tiledPerspective?.emptyToTiledTransfer, "identity_source_normalized");
   assert.equal(result.metric.perspectiveAuthority, "tiled_perspective_core");
+  assert.ok(result.diagnosticImages);
+  assert.match(
+    result.diagnosticImages.emptyUrl,
+    /live-attempt-empty\?attemptId=s2a-attempt/
+  );
+  assert.match(
+    result.diagnosticImages.tiledUrl,
+    /live-attempt-tiled\?attemptId=s2a-attempt/
+  );
+  assert.doesNotMatch(JSON.stringify(result), /"base64"|tiledBytes/);
   assert.deepEqual(result.perspectiveAdjust, {
     supported: true,
     mode: "tiled_symmetric_near_edge_v1",
@@ -157,6 +176,11 @@ test("S2A stops on a reader failure without a second generation or fallback", as
   assert.equal(result.status, "failed");
   assert.equal(result.reason, "no_coherent_lattice");
   assert.deepEqual(calls, { qualify: 1, empty: 1, tiled: 1, lineage: 1, reader: 1 });
+  assert.deepEqual(
+    getAfcSr1LiveAttemptEvidence(request().attemptId)?.tiledPerspective?.tiledBytes,
+    Uint8Array.of(1, 2, 3),
+    "a reader failure does not discard or regenerate retained TILED evidence"
+  );
 });
 
 test("S2A rejects a non-exact TILED lineage before reader invocation", async () => {

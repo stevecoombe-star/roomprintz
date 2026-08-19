@@ -195,6 +195,21 @@ test("dual Floor overlay receives only authoritative final AFC geometry fields",
   );
 });
 
+test("TILED Perspective viewer mounts from reader authority even when Lab settle fails", () => {
+  assert.match(source, /AfcTiledPerspectiveDiagnosticViewer/);
+  const viewerStart = source.lastIndexOf("<AfcTiledPerspectiveDiagnosticViewer");
+  const viewerEnd = source.indexOf(") : afcLiveResult?.diagnostics.floorReadDiagnostic", viewerStart);
+  assert.ok(viewerStart >= 0 && viewerEnd > viewerStart);
+  const viewer = source.slice(viewerStart - 250, viewerEnd);
+  assert.match(viewer, /afcLiveResult\?\.status === "authoritative_geometry"/);
+  assert.match(viewer, /afcLiveResult\.geometry\.mode === "tiled-perspective-core"/);
+  assert.match(viewer, /key=\{afcLiveResult\.attemptId\}/);
+  assert.match(viewer, /roomImageUrl/);
+  assert.match(viewer, /perspectiveAdjustSession\.committedDelta/);
+  assert.match(viewer, /afcLiveSettleFailure\.settle\.reason === "no_apply_safe_candidate"/);
+  assert.doesNotMatch(viewer, /afcLiveAnalyzeStatus\.kind === "completed"/);
+});
+
 test("V3 panel distinguishes RAW from CHILD provenance without child overlay", () => {
   assert.match(source, /Authoritative Reader role:/);
   assert.match(source, /RAW V3 Reader/);

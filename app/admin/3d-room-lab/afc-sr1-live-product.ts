@@ -104,6 +104,10 @@ type AttemptEvidence = {
     emptyBytes: Uint8Array;
     emptyBasis: AfcSr1LiveBasis;
   }>;
+  tiledPerspective?: Readonly<{
+    tiledBytes: Uint8Array;
+    tiledBasis: AfcSr1LiveBasis;
+  }>;
   ts0Child?: Readonly<{
     bytes: Uint8Array;
     sha256: string;
@@ -115,6 +119,8 @@ const attemptEvidence = new Map<string, AttemptEvidence>();
 const inFlightEmpty = new Map<string, Promise<EmptyRoomAssistGenerateResult>>();
 const LIVE_EMPTY_DIAGNOSTIC_ROUTE =
   "/api/admin/3d-room-lab/afc-sr1/live-attempt-empty";
+const LIVE_TILED_DIAGNOSTIC_ROUTE =
+  "/api/admin/3d-room-lab/afc-sr1/live-attempt-tiled";
 
 export function getAfcSr1LiveAttemptEvidence(
   attemptId: string
@@ -129,6 +135,30 @@ export function retainAfcSr1LiveAttemptEmptyEvidence(
   retainAttemptEvidence(attemptId).floorRead = Object.freeze({
     emptyBytes: Uint8Array.from(empty.bytes),
     emptyBasis: empty.basis,
+  });
+}
+
+/**
+ * Keeps the exact generated TILED artifact in the same bounded, in-memory
+ * attempt evidence record as EMPTY. It is diagnostic evidence only and is
+ * never used as a fallback input or to re-run generation.
+ */
+export function retainAfcSr1LiveAttemptTiledEvidence(
+  attemptId: string,
+  tiledBytes: Uint8Array,
+  tiledBasis: AfcSr1LiveBasis
+): void {
+  retainAttemptEvidence(attemptId).tiledPerspective = Object.freeze({
+    tiledBytes: Uint8Array.from(tiledBytes),
+    tiledBasis: Object.freeze({ ...tiledBasis }),
+  });
+}
+
+export function afcSr1LiveTiledDiagnosticImages(attemptId: string) {
+  const encodedAttemptId = encodeURIComponent(attemptId);
+  return Object.freeze({
+    emptyUrl: `${LIVE_EMPTY_DIAGNOSTIC_ROUTE}?attemptId=${encodedAttemptId}`,
+    tiledUrl: `${LIVE_TILED_DIAGNOSTIC_ROUTE}?attemptId=${encodedAttemptId}`,
   });
 }
 

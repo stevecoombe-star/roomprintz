@@ -116,6 +116,14 @@ export type AfcSr1LiveAuthoritativeGeometry = Readonly<{
   labLoadGeneration: number;
   originalBasis: AfcSr1LiveBasis;
   emptyBasis: AfcSr1LiveBasis;
+  /**
+   * Attempt-bound, read-only diagnostic image handles. Original remains
+   * host-owned because it is already the current qualified Lab image.
+   */
+  diagnosticImages?: Readonly<{
+    emptyUrl: string;
+    tiledUrl: string;
+  }>;
   photoClass:
     | "off_axis_left_near"
     | "off_axis_right_near"
