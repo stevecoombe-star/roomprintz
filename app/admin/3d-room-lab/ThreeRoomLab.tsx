@@ -2165,7 +2165,7 @@ export default function ThreeRoomLab({
   const [isFloorClickPlacementEnabled, setIsFloorClickPlacementEnabled] = useState(false);
   const [isFloorAnchorDragEnabled, setIsFloorAnchorDragEnabled] = useState(false);
   const [isFloorAnchorDragActive, setIsFloorAnchorDragActive] = useState(false);
-  const [isObject2DHandlesEnabled, setIsObject2DHandlesEnabled] = useState(false);
+  const [isObject2DHandlesEnabled, setIsObject2DHandlesEnabled] = useState(true);
   const [activeObjectHandleMode, setActiveObjectHandleMode] = useState<ObjectHandleMode>(null);
   const [wasLastObjectHandleMoveRejected, setWasLastObjectHandleMoveRejected] = useState(false);
   const [lastObjectHandleRotateDeltaDeg, setLastObjectHandleRotateDeltaDeg] = useState<number | null>(null);
@@ -5823,6 +5823,8 @@ export default function ThreeRoomLab({
     attachmentEligibilityMode === "support_attached_current" && attachmentTransform && !attachmentTransform.ok
       ? "support_attached_blocked"
       : attachmentEligibilityMode;
+  const showCalibratedObjectControls =
+    isObject2DHandlesEnabled && isCalibratedCameraActive && objectTransformMode === "detached";
   useEffect(() => {
     objectTransformModeRef.current = objectTransformMode;
     attachmentTransformRef.current = attachmentTransform;
@@ -13929,20 +13931,20 @@ export default function ThreeRoomLab({
               </div>
             )}
             <div ref={canvasHostRef} className="pointer-events-none absolute inset-0 z-10" />
-            {showFloorOverlay && (
-              <svg
-                ref={floorOverlayRef}
-                className="absolute inset-0 z-20 h-full w-full"
-                viewBox="0 0 100 100"
-                preserveAspectRatio="none"
-                onPointerDown={handleFloorOverlayPointerDown}
-                onPointerMove={handleFloorOverlayPointerMove}
-                onPointerUp={stopFloorHandleDrag}
-                onPointerCancel={stopFloorHandleDrag}
-                onLostPointerCapture={stopFloorHandleDrag}
-                onPointerLeave={handleFloorOverlayPointerLeave}
-                style={{ touchAction: "none" }}
-              >
+            <svg
+              ref={floorOverlayRef}
+              className="absolute inset-0 z-20 h-full w-full"
+              viewBox="0 0 100 100"
+              preserveAspectRatio="none"
+              onPointerDown={handleFloorOverlayPointerDown}
+              onPointerMove={handleFloorOverlayPointerMove}
+              onPointerUp={stopFloorHandleDrag}
+              onPointerCancel={stopFloorHandleDrag}
+              onLostPointerCapture={stopFloorHandleDrag}
+              onPointerLeave={handleFloorOverlayPointerLeave}
+              style={{ touchAction: "none" }}
+            >
+              {showFloorOverlay && (
                 <polygon
                   points={floorPolygonPointsAttribute}
                   fill="#ffffff"
@@ -13952,6 +13954,7 @@ export default function ThreeRoomLab({
                   strokeWidth={1.2}
                   pointerEvents="none"
                 />
+              )}
                 {WALL_SUPPORT_KINDS.map((kind) => {
                   const polygon = wallContainerPolygons[kind];
                   const draft = wallSupportDrafts[kind];
@@ -14263,7 +14266,7 @@ export default function ThreeRoomLab({
                     )}
                   </g>
                 )}
-                {!supportEditInteractionStates.floor.focused && floorHandlePresentations.map((presentation, index) => {
+                {showFloorOverlay && !supportEditInteractionStates.floor.focused && floorHandlePresentations.map((presentation, index) => {
                   if (!presentation) return null;
                   return (
                     <circle
@@ -14291,6 +14294,7 @@ export default function ThreeRoomLab({
                 {supportEditRenderOrder.map((kind) => {
                   const editInteraction = supportEditInteractionStates[kind];
                   if (!editInteraction.focused || !editInteraction.showEditingControls) return null;
+                  if (kind === "floor" && !showFloorOverlay) return null;
                   if (kind === "floor") {
                     return (
                       <g key="focused-floor-edit-controls">
@@ -14416,7 +14420,7 @@ export default function ThreeRoomLab({
                     </g>
                   );
                 })}
-                {lastAcceptedFloorClick && (
+                {isFloorAnchorDragEffectivelyEnabled && lastAcceptedFloorClick && (
                   <circle
                     cx={lastAcceptedFloorClick.x * 100}
                     cy={lastAcceptedFloorClick.y * 100}
@@ -14472,7 +14476,7 @@ export default function ThreeRoomLab({
                     </text>
                   </g>
                 )}
-                {objectTransformMode === "detached" &&
+                {showCalibratedObjectControls &&
                   calibratedMoveHandleStatus.available && calibratedMoveHandleAnchorProjection.normalized && (
                   <g>
                     <circle
@@ -14531,7 +14535,8 @@ export default function ThreeRoomLab({
                     </text>
                   </g>
                 )}
-                {calibratedRotateHandleStatus.available && calibratedMoveHandleAnchorProjection.normalized && (
+                {showCalibratedObjectControls &&
+                  calibratedRotateHandleStatus.available && calibratedMoveHandleAnchorProjection.normalized && (
                   <g>
                     <line
                       x1={calibratedMoveHandleAnchorProjection.normalized.x * 100}
@@ -14578,7 +14583,8 @@ export default function ThreeRoomLab({
                     </text>
                   </g>
                 )}
-                {calibratedScaleHandleStatus.available && calibratedMoveHandleAnchorProjection.normalized && (
+                {showCalibratedObjectControls &&
+                  calibratedScaleHandleStatus.available && calibratedMoveHandleAnchorProjection.normalized && (
                   <g>
                     <line
                       x1={calibratedMoveHandleAnchorProjection.normalized.x * 100}
@@ -14625,7 +14631,8 @@ export default function ThreeRoomLab({
                     </text>
                   </g>
                 )}
-                {calibratedLiftHandleStatus.available &&
+                {showCalibratedObjectControls &&
+                  calibratedLiftHandleStatus.available &&
                   calibratedLiftHandleAnchorProjection.normalized &&
                   calibratedLiftHandlePlacement.available && (
                   <g>
@@ -14908,8 +14915,7 @@ export default function ThreeRoomLab({
                     </text>
                   </g>
                 )}
-              </svg>
-            )}
+            </svg>
             {afcMainViewportProjection.kind === "projected" ? (
               // Separate from floorOverlayRef so this evidence layer cannot
               // receive its pointer handlers or authority-bearing state.
@@ -15415,7 +15421,7 @@ export default function ThreeRoomLab({
                   onChange={(event) => setIsObject2DHandlesEnabled(event.target.checked)}
                   className="accent-emerald-400"
                 />
-                Enable object 2D handles
+                Show object controls
               </label>
               <button
                 type="button"
@@ -15479,13 +15485,19 @@ export default function ThreeRoomLab({
           )}
           {isObject2DHandlesEffectivelyEnabled && !lastAcceptedFloorClick && (
             <p className="mt-1 text-xs text-amber-300">
-              Enable object 2D handles is on. Click inside the floor polygon first to create an anchor.
+              Show object controls is on. Click inside the floor polygon first to create an anchor.
             </p>
           )}
           {isObject2DHandlesEffectivelyEnabled && lastAcceptedFloorClick && (
             <p className="mt-1 text-xs text-sky-200">
               Overlay handles are attached to the active object anchor. Drag Move/Height/Rotate/Scale handles to manipulate the
               active 3D object.
+            </p>
+          )}
+          {showCalibratedObjectControls && (
+            <p className="mt-1 text-xs text-sky-200">
+              Move: drag the blue handle to move on the calibrated ground plane. Lift: drag the violet handle to
+              raise/lower. Rotate: drag the amber handle to rotate. Scale: drag the green handle to scale.
             </p>
           )}
           <div className="mt-2 rounded-lg border border-slate-800 bg-slate-950/50 p-2 text-[11px] text-slate-300">
