@@ -140,12 +140,15 @@ import {
   getDepthNearFarOrderingInfo,
   getDepthScaleMultiplier,
   getEffectiveObjectScale,
-  isPointInsidePolygon,
   isWithinViewportBounds,
   mapFloorPointToObjectTransform,
   mapPointerTravelToWorldYDelta,
   selectViewportSafeHandleOffset,
 } from "./floor-math";
+import {
+  DEFAULT_PLACEMENT_CONSTRAINT,
+  applyPlacementConstraint,
+} from "./placement-constraint";
 import { canonicalizeSourceUnitBoundaryPoint } from "./floor-coordinate-extent";
 import {
   buildDurableSourceFloorAuthorityKey,
@@ -11394,11 +11397,22 @@ export default function ThreeRoomLab({
       setLastFloorClickMappingResult(mappingResultForDebug);
     }
 
-    updateTransformState((prev) => ({ ...prev, positionX: mapped.positionX, positionZ: mapped.positionZ }), {
+    const placementResult = applyPlacementConstraint(DEFAULT_PLACEMENT_CONSTRAINT, {
+      x: mapped.positionX,
+      z: mapped.positionZ,
+    });
+    if (!placementResult.ok) return placementResult;
+
+    updateTransformState((prev) => ({
+      ...prev,
+      positionX: placementResult.positionXZ.x,
+      positionZ: placementResult.positionXZ.z,
+    }), {
       markOwned: true,
     });
     setLastAcceptedFloorClick(markerPointForAcceptedClick);
     setLastRejectedFloorClick(null);
+    return placementResult;
   };
 
   const updateFloorHandleFromClientPoint = (
@@ -12299,13 +12313,12 @@ export default function ThreeRoomLab({
       event.preventDefault();
       const normalizedPoint = getNormalizedOverlayPointFromClient(event.clientX, event.clientY);
       if (!normalizedPoint) return;
-      const isInside = isPointInsidePolygon(normalizedPoint, floorPolygon);
-      if (!isInside) {
+      const placementResult = applyFloorPlacement(normalizedPoint);
+      if (!placementResult.ok) {
         setWasLastObjectHandleMoveRejected(true);
         return;
       }
       setWasLastObjectHandleMoveRejected(false);
-      applyFloorPlacement(normalizedPoint);
       return;
     }
 
@@ -12363,12 +12376,19 @@ export default function ThreeRoomLab({
         setLastCalibratedMoveStatus("rejected — floor-contact projection is off-screen");
         return;
       }
-      const isInside = isPointInsidePolygon(projectedNormalized, floorPolygon);
-      if (!isInside) {
-        setLastCalibratedMoveStatus("rejected — outside floor polygon");
+      const placementResult = applyPlacementConstraint(DEFAULT_PLACEMENT_CONSTRAINT, {
+        x: nextX,
+        z: nextZ,
+      });
+      if (!placementResult.ok) {
+        setLastCalibratedMoveStatus(`rejected — ${placementResult.reason}`);
         return;
       }
-      updateTransformState((prev) => ({ ...prev, positionX: nextX, positionZ: nextZ }), {
+      updateTransformState((prev) => ({
+        ...prev,
+        positionX: placementResult.positionXZ.x,
+        positionZ: placementResult.positionXZ.z,
+      }), {
         markOwned: true,
       });
       setLastAcceptedFloorClick(projectedNormalized);
@@ -12618,13 +12638,12 @@ export default function ThreeRoomLab({
     event.preventDefault();
     const normalizedPoint = getNormalizedOverlayPointFromClient(event.clientX, event.clientY);
     if (!normalizedPoint) return;
-    const isInside = isPointInsidePolygon(normalizedPoint, floorPolygon);
-    if (!isInside) {
+    const placementResult = applyFloorPlacement(normalizedPoint, { source: "other" });
+    if (!placementResult.ok) {
       setWasLastAnchorDragMoveRejected(true);
       return;
     }
     setWasLastAnchorDragMoveRejected(false);
-    applyFloorPlacement(normalizedPoint, { source: "other" });
   };
 
   const handleFloorOverlayPointerDown = (event: PointerEvent<SVGSVGElement>) => {
@@ -12634,13 +12653,12 @@ export default function ThreeRoomLab({
     if (activeObjectHandleMode !== null) return;
     const normalizedPoint = getNormalizedOverlayPointFromClient(event.clientX, event.clientY);
     if (!normalizedPoint) return;
-    const isInside = isPointInsidePolygon(normalizedPoint, floorPolygon);
-    if (!isInside) {
+    const placementResult = applyFloorPlacement(normalizedPoint, { source: "floor-click" });
+    if (!placementResult.ok) {
       setLastRejectedFloorClick(normalizedPoint);
       return;
     }
     setWasLastAnchorDragMoveRejected(false);
-    applyFloorPlacement(normalizedPoint, { source: "floor-click" });
   };
 
   const handleFloorAnchorPointerDown = (event: PointerEvent<SVGCircleElement>) => {

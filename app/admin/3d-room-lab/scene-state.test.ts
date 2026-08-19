@@ -317,6 +317,18 @@ test("round-trips full operator-owned support source state", () => {
   assert.deepEqual(result.supports?.ceiling?.draft, payloadInput().supports.ceiling?.draft);
 });
 
+test("preserves a detached pose outside the sample Floor quad within existing transform limits", () => {
+  const input = payloadInput();
+  input.transform.positionX = 4.5;
+  input.transform.positionZ = -9.5;
+
+  const exported = build(input);
+  const restored = parse(JSON.parse(JSON.stringify(exported)));
+  assert.equal(restored.transform.positionX, 4.5);
+  assert.equal(restored.transform.positionZ, -9.5);
+  assert.deepEqual(restored.floor.polygon, exported.floor.polygon);
+});
+
 test("round-trips optional vertical evidence and degrades malformed records fail-closed", () => {
   const input = payloadInput();
   input.verticalEvidence = verticalEvidenceFixture();
