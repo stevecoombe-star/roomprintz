@@ -20,9 +20,10 @@ test("Perspective Adjust renders two surfaces from one shared props/controller b
   assert.equal((uiSource.match(/\{\.\.\.perspectiveAdjustControlProps\}/g) ?? []).length, 2);
   const sharedProps = between("const perspectiveAdjustControlProps =", "useEffect(() => clearPerspectiveKeyboardCommitTimer");
   for (const sharedBinding of [
-    "previewDeltaSeamT:",
-    "committedDeltaSeamT:",
-    "deltaLimit:",
+    "previewDelta:",
+    "committedDelta:",
+    "minDelta:",
+    "maxDelta:",
     "enabled:",
     "pending:",
     "onChange:",
@@ -64,6 +65,8 @@ test("pointer, reset, and external Floor installations cancel stale Perspective 
   for (const source of [floorUndo, sceneImport, calibrationRestore]) {
     assert.match(source, /invalidatePerspectiveAdjustSession\(\)/);
   }
+  const imageChange = between("const supersedeAfcLiveAttemptForLoadChange =", "useEffect(() => () =>");
+  assert.match(imageChange, /invalidatePerspectiveAdjustSession\(\)/);
 });
 
 test("a rejected Perspective Floor Apply keeps the existing camera until Floor authority is confirmed", () => {
@@ -81,4 +84,58 @@ test("failed Perspective realization restores preview from committed geometry", 
   const reset = between("const handlePerspectiveAdjustReset =", "const perspectiveAdjustControlProps =");
   assert.doesNotMatch(reset, /handlePerspectiveAdjustPreviewChange\(0\)/);
   assert.match(reset, /commitPerspectiveAdjust\(0\)/);
+});
+
+test("TILED Perspective Adjust owns an immutable Automatic session without seam authority", () => {
+  const initialization = between(
+    'result.perspectiveAdjust.mode === AFC_TILED_PERSPECTIVE_ADJUST_MODE',
+    '} else if ('
+  );
+  assert.match(initialization, /result\.geometry\.sourceNormalizedPolygon\.map/);
+  assert.match(initialization, /computeAfcTiledPerspectiveAdjustmentRange\(automaticPolygon\)/);
+  assert.match(initialization, /kind: AFC_TILED_PERSPECTIVE_ADJUST_MODE/);
+  assert.match(initialization, /tiledReaderVersion/);
+  assert.match(initialization, /tiledBasisSha256/);
+  assert.doesNotMatch(initialization, /baselineSeamT|adjustableCorner|fixedAnchor/);
+});
+
+test("TILED commits and reset reuse realization without reader or generation work", () => {
+  const commit = between("const commitPerspectiveAdjust =", "const handlePerspectiveAdjustPreviewChange =");
+  const tiledBranch = between(
+    'if (session.kind === AFC_TILED_PERSPECTIVE_ADJUST_MODE)',
+    "const adjusted = buildAfcPerspectiveAdjustCandidate"
+  );
+  assert.match(tiledBranch, /buildAfcTiledPerspectiveAdjustPolygon/);
+  assert.match(tiledBranch, /realizeAfcLabGeometry/);
+  assert.match(tiledBranch, /labLoadGeneration/);
+  for (const forbidden of ["callCompositor", "vibodeTileGridScaffoldAssist", "Gemini", "executePathA"]) {
+    assert.doesNotMatch(tiledBranch, new RegExp(forbidden));
+  }
+  assert.match(commit, /preservePerspectiveSession: true/);
+  const reset = between("const handlePerspectiveAdjustReset =", "const perspectiveAdjustControlProps =");
+  assert.match(reset, /commitPerspectiveAdjust\(0\)/);
+});
+
+test("shared S2B interactions keep preview lightweight and commit once through the existing engine", () => {
+  const preview = between(
+    "const handlePerspectiveAdjustPreviewChange =",
+    "const clearPerspectiveKeyboardCommitTimer ="
+  );
+  assert.doesNotMatch(preview, /realizeAfcLabGeometry|callCompositor|vibodeTileGridScaffoldAssist/);
+  const pointer = between(
+    "const handlePerspectiveAdjustPointerUp =",
+    "const handlePerspectiveAdjustPointerCancel ="
+  );
+  assert.match(pointer, /commitPerspectiveAdjust\(Number\(event\.currentTarget\.value\)\)/);
+  const cancel = between(
+    "const handlePerspectiveAdjustPointerCancel =",
+    "const handlePerspectiveAdjustKeyDown ="
+  );
+  assert.match(cancel, /restorePerspectivePreviewToCommitted\(\)/);
+  const keyboard = between(
+    "const schedulePerspectiveKeyboardCommit =",
+    "const handlePerspectiveAdjustRangeChange ="
+  );
+  assert.match(keyboard, /AFC_PERSPECTIVE_ADJUST_KEYBOARD_DEBOUNCE_MS/);
+  assert.match(keyboard, /commitPerspectiveAdjust\(perspectivePreviewDeltaRef\.current\)/);
 });

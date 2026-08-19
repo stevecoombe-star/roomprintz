@@ -8,9 +8,10 @@ import type {
 
 type AfcPerspectiveAdjustControlProps = Readonly<{
   ariaLabel: string;
-  previewDeltaSeamT: number;
-  committedDeltaSeamT: number;
-  deltaLimit: number;
+  previewDelta: number;
+  committedDelta: number;
+  minDelta: number;
+  maxDelta: number;
   enabled: boolean;
   pending: boolean;
   compact?: boolean;
@@ -28,9 +29,10 @@ type AfcPerspectiveAdjustControlProps = Readonly<{
  */
 export default function AfcPerspectiveAdjustControl({
   ariaLabel,
-  previewDeltaSeamT,
-  committedDeltaSeamT,
-  deltaLimit,
+  previewDelta,
+  committedDelta,
+  minDelta,
+  maxDelta,
   enabled,
   pending,
   compact = false,
@@ -45,9 +47,9 @@ export default function AfcPerspectiveAdjustControl({
     ? "Applying…"
     : !enabled
       ? "Unavailable"
-      : previewDeltaSeamT === 0 && committedDeltaSeamT === 0
+      : previewDelta === 0 && committedDelta === 0
         ? "Automatic"
-        : previewDeltaSeamT !== committedDeltaSeamT
+        : previewDelta !== committedDelta
           ? "Preview"
           : "Adjusted";
 
@@ -81,10 +83,10 @@ export default function AfcPerspectiveAdjustControl({
         <input
           aria-label={ariaLabel}
           type="range"
-          min={-deltaLimit}
-          max={deltaLimit}
+          min={minDelta}
+          max={maxDelta}
           step={0.001}
-          value={previewDeltaSeamT}
+          value={previewDelta}
           disabled={!enabled}
           onChange={onChange}
           onPointerDown={onPointerDown}

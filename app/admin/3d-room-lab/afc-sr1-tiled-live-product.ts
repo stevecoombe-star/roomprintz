@@ -298,8 +298,9 @@ export async function executeAfcSr1TiledLiveProductAttempt(
       referenceDepthM: request.referenceDepthM,
     }),
     perspectiveAdjust: Object.freeze({
-      supported: false,
-      reason: "tiled_cluster_not_applicable_v1",
+      supported: true,
+      mode: "tiled_symmetric_near_edge_v1",
+      reason: "tiled_automatic_baseline_v1",
     }),
     diagnostics: diagnostics(counts, null),
   });

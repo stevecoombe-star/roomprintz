@@ -119,8 +119,9 @@ test("S2A performs one exact authority path and transfers the reader quad to Ori
   assert.equal(result.geometry.tiledPerspective?.emptyToTiledTransfer, "identity_source_normalized");
   assert.equal(result.metric.perspectiveAuthority, "tiled_perspective_core");
   assert.deepEqual(result.perspectiveAdjust, {
-    supported: false,
-    reason: "tiled_cluster_not_applicable_v1",
+    supported: true,
+    mode: "tiled_symmetric_near_edge_v1",
+    reason: "tiled_automatic_baseline_v1",
   });
   assert.deepEqual(result.diagnostics.attemptCounts, {
     originalQualification: 1,

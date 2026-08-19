@@ -176,13 +176,21 @@ export type AfcSr1LiveAuthoritativeGeometry = Readonly<{
     metricScaleAuthority: "provisional_reference_depth";
     referenceDepthM: number;
   }>;
-  perspectiveAdjust: Readonly<{
-    supported: boolean;
-    reason:
-      | "off_axis_live_baseline"
-      | "on_axis_not_applicable_v1"
-      | "tiled_cluster_not_applicable_v1";
-  }>;
+  perspectiveAdjust:
+    | Readonly<{
+        supported: true;
+        mode: "historical_fixed_seam_v1";
+        reason: "off_axis_live_baseline";
+      }>
+    | Readonly<{
+        supported: true;
+        mode: "tiled_symmetric_near_edge_v1";
+        reason: "tiled_automatic_baseline_v1";
+      }>
+    | Readonly<{
+        supported: false;
+        reason: "on_axis_not_applicable_v1" | "tiled_cluster_not_applicable_v1";
+      }>;
   diagnostics: AfcSr1LiveDiagnostics;
 }>;
 

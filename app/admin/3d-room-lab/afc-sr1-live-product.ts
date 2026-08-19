@@ -900,6 +900,7 @@ export async function executeAfcSr1CompleteProductAttempt(
     metric,
     perspectiveAdjust: Object.freeze({
       supported: true,
+      mode: "historical_fixed_seam_v1",
       reason: "off_axis_live_baseline",
     }),
     diagnostics: diagnostics(

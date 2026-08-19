@@ -42,6 +42,14 @@ import {
   type AfcPerspectiveFloorCommitOptions,
 } from "./afc-lab-perspective-adjust";
 import {
+  AFC_TILED_PERSPECTIVE_ADJUST_MODE,
+  buildAfcTiledPerspectiveAdjustPolygon,
+  clampAfcTiledPerspectiveDelta,
+  computeAfcTiledPerspectiveAdjustmentRange,
+  type AfcTiledPerspectiveAdjustmentRange,
+  type AfcTiledPerspectivePolygon,
+} from "./afc-tiled-perspective-adjust";
+import {
   settleAfcFixedSeamCalibration,
   type AfcFixedSeamCalibrationResult,
   type AfcFixedSeamCalibrationSuccess,
@@ -663,7 +671,8 @@ type AfcLabApplyStatus =
   | Readonly<{ kind: "failed"; reason: string }>
   | Readonly<{ kind: "pending"; settle: AfcFixedSeamCalibrationSuccess }>
   | Readonly<{ kind: "applied"; settle: AfcFixedSeamCalibrationSuccess }>;
-type AfcPerspectiveAdjustSession = Readonly<{
+type AfcHistoricalPerspectiveAdjustSession = Readonly<{
+  kind: "historical_fixed_seam_v1";
   attemptId: string;
   resultId: string;
   rawSourceNormalizedPolygon: readonly [FloorPoint, FloorPoint, FloorPoint, FloorPoint];
@@ -682,6 +691,29 @@ type AfcPerspectiveAdjustSession = Readonly<{
   automaticSettle: AfcFixedSeamCalibrationSuccess;
   adjustmentCount: number;
 }>;
+type AfcTiledPerspectiveAdjustSession = Readonly<{
+  kind: typeof AFC_TILED_PERSPECTIVE_ADJUST_MODE;
+  attemptId: string;
+  resultId: string;
+  labLoadGeneration: number;
+  acceptanceBasis: Readonly<{
+    basisFingerprint: string;
+    decodedWidth: number;
+    decodedHeight: number;
+    orientation: 1;
+  }>;
+  referenceDepthM: number;
+  automaticPolygon: AfcTiledPerspectivePolygon;
+  previewDelta: number;
+  committedDelta: number;
+  range: AfcTiledPerspectiveAdjustmentRange;
+  tiledReaderVersion: "afc-sr1-tiled-perspective-reader/s1";
+  tiledBasisSha256: string;
+  adjustmentCount: number;
+}>;
+type AfcPerspectiveAdjustSession =
+  | AfcHistoricalPerspectiveAdjustSession
+  | AfcTiledPerspectiveAdjustSession;
 type AfcLiveAnalyzeStatus =
   | Readonly<{ kind: "ready" }>
   | Readonly<{ kind: "analyzing"; attemptId: string }>
@@ -1763,6 +1795,7 @@ export default function ThreeRoomLab({
     setPerspectiveAdjustSession(null);
   }, []);
   const supersedeAfcLiveAttemptForLoadChange = useCallback(() => {
+    invalidatePerspectiveAdjustSession();
     afcLiveAbortControllerRef.current?.abort();
     afcLiveAbortControllerRef.current = null;
     afcLiveAttemptIdRef.current = null;
@@ -1773,7 +1806,7 @@ export default function ThreeRoomLab({
     setAfcLiveResult(null);
     setAfcLiveSettleFailure(null);
     setAfcLiveAnalyzeStatus({ kind: "ready" });
-  }, []);
+  }, [invalidatePerspectiveAdjustSession]);
   useEffect(() => () => {
     afcLiveAbortControllerRef.current?.abort();
     afcLiveAbortControllerRef.current = null;
@@ -3029,6 +3062,7 @@ export default function ThreeRoomLab({
     if (!settle) return;
     perspectivePreviewDeltaRef.current = 0;
     const session: AfcPerspectiveAdjustSession = {
+      kind: "historical_fixed_seam_v1",
       attemptId: "room-c-control",
       resultId: "room-c-control",
       rawSourceNormalizedPolygon: geometry.rawSourceNormalizedPolygon,
@@ -3194,6 +3228,40 @@ export default function ThreeRoomLab({
       }
 
       if (
+        result.perspectiveAdjust.supported &&
+        result.perspectiveAdjust.mode === AFC_TILED_PERSPECTIVE_ADJUST_MODE &&
+        result.geometry.mode === "tiled-perspective-core"
+      ) {
+        const tiledPerspective = result.geometry.tiledPerspective;
+        const automaticPolygon = Object.freeze(
+          result.geometry.sourceNormalizedPolygon.map((point) =>
+            Object.freeze({ x: point.x, y: point.y })
+          )
+        ) as AfcTiledPerspectivePolygon;
+        const range = computeAfcTiledPerspectiveAdjustmentRange(automaticPolygon);
+        if (!range?.usable || !tiledPerspective) {
+          invalidatePerspectiveAdjustSession();
+        } else {
+          perspectivePreviewDeltaRef.current = 0;
+          const session: AfcTiledPerspectiveAdjustSession = {
+            kind: AFC_TILED_PERSPECTIVE_ADJUST_MODE,
+            attemptId: result.attemptId,
+            resultId: result.resultId,
+            labLoadGeneration: result.labLoadGeneration,
+            acceptanceBasis: result.geometry.acceptanceBasis,
+            referenceDepthM: result.metric.referenceDepthM,
+            automaticPolygon,
+            previewDelta: 0,
+            committedDelta: 0,
+            range,
+            tiledReaderVersion: tiledPerspective.readerVersion,
+            tiledBasisSha256: tiledPerspective.tiledBasis.sha256,
+            adjustmentCount: 0,
+          };
+          perspectiveAdjustSessionRef.current = session;
+          setPerspectiveAdjustSession(session);
+        }
+      } else if (
         result.photoClass === "on_axis" ||
         !result.perspectiveAdjust.supported
       ) {
@@ -3206,6 +3274,7 @@ export default function ThreeRoomLab({
         } else {
           perspectivePreviewDeltaRef.current = 0;
           const session: AfcPerspectiveAdjustSession = {
+            kind: "historical_fixed_seam_v1",
             attemptId: result.attemptId,
             resultId: result.resultId,
             rawSourceNormalizedPolygon:
@@ -3257,22 +3326,78 @@ export default function ThreeRoomLab({
   const restorePerspectivePreviewToCommitted = useCallback(() => {
     const current = perspectiveAdjustSessionRef.current;
     if (!current) return;
-    const next: AfcPerspectiveAdjustSession = {
-      ...current,
-      previewDeltaSeamT: current.committedDeltaSeamT,
-    };
-    perspectivePreviewDeltaRef.current = next.previewDeltaSeamT;
+    const next: AfcPerspectiveAdjustSession = current.kind === AFC_TILED_PERSPECTIVE_ADJUST_MODE
+      ? { ...current, previewDelta: current.committedDelta }
+      : { ...current, previewDeltaSeamT: current.committedDeltaSeamT };
+    perspectivePreviewDeltaRef.current = next.kind === AFC_TILED_PERSPECTIVE_ADJUST_MODE
+      ? next.previewDelta
+      : next.previewDeltaSeamT;
     perspectiveAdjustSessionRef.current = next;
     setPerspectiveAdjustSession(next);
   }, []);
 
-  const commitPerspectiveAdjust = useCallback((requestedDeltaSeamT: number) => {
+  const commitPerspectiveAdjust = useCallback((requestedDelta: number) => {
     const session = perspectiveAdjustSessionRef.current;
     if (!session || pendingAfcLabCameraApply !== null) return;
+    if (session.kind === AFC_TILED_PERSPECTIVE_ADJUST_MODE) {
+      const basis = qualifiedImageBasisRef.current;
+      if (
+        afcLiveAttemptIdRef.current !== session.attemptId ||
+        afcLiveLoadGenerationRef.current !== session.labLoadGeneration ||
+        !basis ||
+        basis.basisFingerprint !== session.acceptanceBasis.basisFingerprint ||
+        basis.decodedWidth !== session.acceptanceBasis.decodedWidth ||
+        basis.decodedHeight !== session.acceptanceBasis.decodedHeight ||
+        basis.encodedOrientation !== session.acceptanceBasis.orientation
+      ) {
+        invalidatePerspectiveAdjustSession();
+        return;
+      }
+      const adjusted = buildAfcTiledPerspectiveAdjustPolygon(
+        session.automaticPolygon,
+        requestedDelta,
+        session.range
+      );
+      if (!adjusted.ok) {
+        restorePerspectivePreviewToCommitted();
+        return;
+      }
+      const settle = realizeAfcLabGeometry({
+        sourceNormalizedPolygon: adjusted.sourceNormalizedPolygon,
+        referenceDepthM: session.referenceDepthM,
+        acceptanceBasis: session.acceptanceBasis,
+        activeCameraPolicy: "replace",
+        captureUndo: "none",
+        preservePerspectiveSession: true,
+      });
+      if (!settle) {
+        restorePerspectivePreviewToCommitted();
+        return;
+      }
+      const current = perspectiveAdjustSessionRef.current;
+      if (
+        !current ||
+        current.kind !== AFC_TILED_PERSPECTIVE_ADJUST_MODE ||
+        current.attemptId !== session.attemptId ||
+        current.resultId !== session.resultId
+      ) {
+        return;
+      }
+      perspectivePreviewDeltaRef.current = adjusted.committedDelta;
+      const next: AfcTiledPerspectiveAdjustSession = {
+        ...current,
+        committedDelta: adjusted.committedDelta,
+        previewDelta: adjusted.committedDelta,
+        adjustmentCount: current.adjustmentCount + 1,
+      };
+      perspectiveAdjustSessionRef.current = next;
+      setPerspectiveAdjustSession(next);
+      return;
+    }
     const adjusted = buildAfcPerspectiveAdjustCandidate({
       rawSourceNormalizedPolygon: session.rawSourceNormalizedPolygon,
       baselineSeamT: session.baselineSeamT,
-      requestedDeltaSeamT,
+      requestedDeltaSeamT: requestedDelta,
       adjustableCorner: session.adjustableCorner,
     });
     if (!adjusted.ok) {
@@ -3299,11 +3424,15 @@ export default function ThreeRoomLab({
     }
     perspectivePreviewDeltaRef.current = adjusted.candidate.committedDeltaSeamT;
     const current = perspectiveAdjustSessionRef.current;
-    if (!current || current.baselineSeamT !== session.baselineSeamT) {
+    if (
+      !current ||
+      current.kind !== "historical_fixed_seam_v1" ||
+      current.baselineSeamT !== session.baselineSeamT
+    ) {
       restorePerspectivePreviewToCommitted();
       return;
     }
-    const next: AfcPerspectiveAdjustSession = {
+    const next: AfcHistoricalPerspectiveAdjustSession = {
       ...current,
       committedDeltaSeamT: adjusted.candidate.committedDeltaSeamT,
       previewDeltaSeamT: adjusted.candidate.committedDeltaSeamT,
@@ -3312,15 +3441,25 @@ export default function ThreeRoomLab({
     };
     perspectiveAdjustSessionRef.current = next;
     setPerspectiveAdjustSession(next);
-  }, [pendingAfcLabCameraApply, realizeAfcLabGeometry, restorePerspectivePreviewToCommitted]);
+  }, [
+    invalidatePerspectiveAdjustSession,
+    pendingAfcLabCameraApply,
+    realizeAfcLabGeometry,
+    restorePerspectivePreviewToCommitted,
+  ]);
 
   const handlePerspectiveAdjustPreviewChange = useCallback((value: number) => {
-    const preview = clampAfcPerspectiveAdjustDelta(value);
-    if (preview === null) return;
-    perspectivePreviewDeltaRef.current = preview;
     const current = perspectiveAdjustSessionRef.current;
     if (!current) return;
-    const next: AfcPerspectiveAdjustSession = { ...current, previewDeltaSeamT: preview };
+    const preview = current.kind === AFC_TILED_PERSPECTIVE_ADJUST_MODE
+      ? clampAfcTiledPerspectiveDelta(value, current.range)
+      : clampAfcPerspectiveAdjustDelta(value);
+    if (preview === null) return;
+    perspectivePreviewDeltaRef.current = preview;
+    const next: AfcPerspectiveAdjustSession =
+      current.kind === AFC_TILED_PERSPECTIVE_ADJUST_MODE
+        ? { ...current, previewDelta: preview }
+        : { ...current, previewDeltaSeamT: preview };
     perspectiveAdjustSessionRef.current = next;
     setPerspectiveAdjustSession(next);
   }, []);
@@ -3377,9 +3516,18 @@ export default function ThreeRoomLab({
   }, [clearPerspectiveKeyboardCommitTimer, commitPerspectiveAdjust]);
 
   const perspectiveAdjustControlProps = {
-    previewDeltaSeamT: perspectiveAdjustSession?.previewDeltaSeamT ?? 0,
-    committedDeltaSeamT: perspectiveAdjustSession?.committedDeltaSeamT ?? 0,
-    deltaLimit: AFC_PERSPECTIVE_ADJUST_DELTA_LIMIT,
+    previewDelta: perspectiveAdjustSession?.kind === AFC_TILED_PERSPECTIVE_ADJUST_MODE
+      ? perspectiveAdjustSession.previewDelta
+      : perspectiveAdjustSession?.previewDeltaSeamT ?? 0,
+    committedDelta: perspectiveAdjustSession?.kind === AFC_TILED_PERSPECTIVE_ADJUST_MODE
+      ? perspectiveAdjustSession.committedDelta
+      : perspectiveAdjustSession?.committedDeltaSeamT ?? 0,
+    minDelta: perspectiveAdjustSession?.kind === AFC_TILED_PERSPECTIVE_ADJUST_MODE
+      ? perspectiveAdjustSession.range.minDelta
+      : -AFC_PERSPECTIVE_ADJUST_DELTA_LIMIT,
+    maxDelta: perspectiveAdjustSession?.kind === AFC_TILED_PERSPECTIVE_ADJUST_MODE
+      ? perspectiveAdjustSession.range.maxDelta
+      : AFC_PERSPECTIVE_ADJUST_DELTA_LIMIT,
     enabled:
       perspectiveAdjustSession !== null &&
       isCalibratedCameraActive &&
@@ -21204,7 +21352,7 @@ export default function ThreeRoomLab({
                     : "Analyze & Apply AFC"}
               </button>
               <span className="text-slate-400">
-                Current loaded Original → EMPTY → supported geometry → calibrated Lab.
+                Current loaded Original → EMPTY → TILED perspective → calibrated Lab.
               </span>
             </div>
             {afcLiveAnalyzeStatus.kind === "completed" ? (
@@ -21213,6 +21361,10 @@ export default function ThreeRoomLab({
                 {afcLiveResult?.status === "authoritative_geometry" &&
                 afcLiveResult.photoClass === "on_axis"
                   ? "Perspective Adjust is not applicable to the on-axis v1 constraint."
+                  : afcLiveResult?.status === "authoritative_geometry" &&
+                    afcLiveResult.perspectiveAdjust.supported &&
+                    afcLiveResult.perspectiveAdjust.mode === AFC_TILED_PERSPECTIVE_ADJUST_MODE
+                    ? "Perspective Adjust is available from the TILED Automatic baseline."
                   : "Perspective Adjust is initialized from this live Automatic baseline."}
               </p>
             ) : null}
@@ -21667,6 +21819,33 @@ export default function ThreeRoomLab({
                     ariaLabel="Perspective Adjust (Calibrated camera)"
                   />
                   {perspectiveAdjustSession ? (
+                    perspectiveAdjustSession.kind === AFC_TILED_PERSPECTIVE_ADJUST_MODE ? (
+                      <div className="mt-2 grid gap-1 text-slate-400 md:grid-cols-2">
+                        <p>
+                          {perspectiveAdjustSession.previewDelta === 0 ? "Automatic — TILED reader baseline" : "Adjusted — manual TILED override"}:{" "}
+                          <span className="text-cyan-200">{perspectiveAdjustSession.previewDelta.toFixed(3)}</span>
+                        </p>
+                        <p>
+                          Committed perspective delta: <span className="text-cyan-200">{perspectiveAdjustSession.committedDelta.toFixed(3)}</span>
+                        </p>
+                        <p>
+                          Valid delta range: <span className="text-cyan-200">
+                            {perspectiveAdjustSession.range.minDelta.toFixed(3)} to {perspectiveAdjustSession.range.maxDelta.toFixed(3)}
+                          </span>
+                        </p>
+                        <p className="break-all">
+                          TILED baseline: <span className="text-cyan-200">
+                            {perspectiveAdjustSession.tiledReaderVersion} / {perspectiveAdjustSession.tiledBasisSha256}
+                          </span>
+                        </p>
+                        <p>
+                          Adjustments: <span className="text-cyan-200">{perspectiveAdjustSession.adjustmentCount}</span> · session active
+                        </p>
+                        <p className="break-all">
+                          Baseline: <span className="text-cyan-200">{perspectiveAdjustSession.attemptId} / {perspectiveAdjustSession.resultId}</span>
+                        </p>
+                      </div>
+                    ) : (
                     <div className="mt-2 grid gap-1 text-slate-400 md:grid-cols-2">
                       <p>
                         {perspectiveAdjustSession.previewDeltaSeamT === 0 ? "Automatic" : "Preview"} delta:{" "}
@@ -21718,8 +21897,9 @@ export default function ThreeRoomLab({
                         Baseline: <span className="text-cyan-200">{perspectiveAdjustSession.attemptId} / {perspectiveAdjustSession.resultId}</span>
                       </p>
                     </div>
+                    )
                   ) : (
-                    <p className="mt-2 text-slate-500">Apply supported off-axis AFC geometry to enable Perspective Adjust.</p>
+                    <p className="mt-2 text-slate-500">Apply supported AFC geometry to enable Perspective Adjust.</p>
                   )}
                 </div>
                 <div className="mt-3 border-t border-slate-800 pt-2 text-xs">
