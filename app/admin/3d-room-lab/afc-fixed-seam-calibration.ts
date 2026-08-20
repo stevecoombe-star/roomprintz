@@ -33,6 +33,7 @@ export type AfcFixedSeamCalibrationSuccess = Readonly<{
   applyObservability: RatioFovApplyObservability;
   evaluatedCellCount: number;
   applySafeCellCount: number;
+  ratioExtensionDiagnostics?: AfcFixedSeamRatioExtensionDiagnostics;
 }>;
 
 export type AfcFixedSeamCalibrationBestRejectedCandidate = Readonly<{
@@ -106,6 +107,29 @@ const DEFAULT_FOV_SEARCH = Object.freeze({ minDeg: 20, maxDeg: 90, stepDeg: 1 })
 const REFINEMENT_RATIO_STEP = 0.005;
 const REFINEMENT_FOV_STEP_DEG = 0.1;
 
+export type AfcMetricAllowedRatioBounds = Readonly<{
+  min: number;
+  max: number;
+}>;
+
+export type AfcFixedSeamRatioExtensionDiagnostics = Readonly<{
+  defaultRatioSearchMin: number;
+  defaultRatioSearchMax: number;
+  extendedRatioSearchMin: number;
+  extendedRatioSearchMax: number;
+  ratioExtensionApplied: true;
+  extensionSide: "lower" | "upper";
+  selectedRatio: number;
+  referenceDepthM: number;
+  worldWidthM: number;
+  worldDepthM: number;
+  baselineCvAvgPx: number;
+  baselineCvMaxPx: number;
+  firstFailingGate: CalibratedCameraApplyFirstFailingGate;
+  atRatioMin: boolean;
+  atRatioMax: boolean;
+}>;
+
 function valuesInRange(minimum: number, maximum: number, step: number): readonly number[] {
   if (
     !Number.isFinite(minimum) ||
@@ -120,6 +144,20 @@ function valuesInRange(minimum: number, maximum: number, step: number): readonly
   return Object.freeze(
     Array.from({ length: count + 1 }, (_, index) => Number((minimum + index * step).toPrecision(14)))
   );
+}
+
+/**
+ * Converts the existing metric Width limits into the canonical
+ * width/depth-ratio domain for one fixed provisional reference depth.
+ */
+export function metricAllowedRatioBounds(
+  referenceDepthM: number
+): AfcMetricAllowedRatioBounds | null {
+  if (!Number.isFinite(referenceDepthM) || referenceDepthM <= 0) return null;
+  const min = FLOOR_MAPPING_LIMITS.worldWidth.min / referenceDepthM;
+  const max = FLOOR_MAPPING_LIMITS.worldWidth.max / referenceDepthM;
+  if (!Number.isFinite(min) || !Number.isFinite(max) || min > max) return null;
+  return Object.freeze({ min, max });
 }
 
 function validPolygon(value: readonly Point[]): value is Polygon {
@@ -387,5 +425,78 @@ export function settleAfcFixedSeamCalibration(
     applyObservability: winning.applyObservability,
     evaluatedCellCount,
     applySafeCellCount,
+  });
+}
+
+/**
+ * Preserves the certified default settle as the first and normally only pass.
+ * A second pass is available exclusively when its best rejected default cell
+ * indicates that the viable realization is beyond a default ratio boundary.
+ */
+export function settleAfcFixedSeamCalibrationWithRatioExtension(
+  input: AfcFixedSeamCalibrationInput
+): AfcFixedSeamCalibrationResult {
+  const baseline = settleAfcFixedSeamCalibration(input);
+  if (
+    baseline.ok ||
+    input.ratioSearch !== undefined ||
+    baseline.reason !== "no_apply_safe_candidate"
+  ) {
+    return baseline;
+  }
+
+  const bestRejected = baseline.diagnostics.bestRejectedCandidate;
+  const metricBounds = metricAllowedRatioBounds(input.referenceDepthM);
+  if (!bestRejected || !metricBounds) return baseline;
+
+  const extension = bestRejected.atRatioMin && metricBounds.min < DEFAULT_RATIO_SEARCH.min
+    ? {
+        side: "lower" as const,
+        ratioSearch: {
+          min: metricBounds.min,
+          // The refinement grid is 0.005 wide. Keep the extension disjoint
+          // from the default domain while allowing its final basin to approach
+          // the default boundary.
+          max: DEFAULT_RATIO_SEARCH.min - REFINEMENT_RATIO_STEP,
+          step: DEFAULT_RATIO_SEARCH.step,
+        },
+      }
+    : bestRejected.atRatioMax && metricBounds.max > DEFAULT_RATIO_SEARCH.max
+      ? {
+          side: "upper" as const,
+          ratioSearch: {
+            min: DEFAULT_RATIO_SEARCH.max + REFINEMENT_RATIO_STEP,
+            max: metricBounds.max,
+            step: DEFAULT_RATIO_SEARCH.step,
+          },
+        }
+      : null;
+  if (!extension || extension.ratioSearch.min > extension.ratioSearch.max) return baseline;
+
+  const extended = settleAfcFixedSeamCalibration({
+    ...input,
+    ratioSearch: extension.ratioSearch,
+  });
+  if (!extended.ok) return extended;
+
+  return Object.freeze({
+    ...extended,
+    ratioExtensionDiagnostics: Object.freeze({
+      defaultRatioSearchMin: DEFAULT_RATIO_SEARCH.min,
+      defaultRatioSearchMax: DEFAULT_RATIO_SEARCH.max,
+      extendedRatioSearchMin: extension.ratioSearch.min,
+      extendedRatioSearchMax: extension.ratioSearch.max,
+      ratioExtensionApplied: true,
+      extensionSide: extension.side,
+      selectedRatio: extended.widthDepthRatio,
+      referenceDepthM: extended.referenceDepthM,
+      worldWidthM: extended.worldWidthM,
+      worldDepthM: extended.worldDepthM,
+      baselineCvAvgPx: bestRejected.cvAvgPx,
+      baselineCvMaxPx: bestRejected.cvMaxPx,
+      firstFailingGate: bestRejected.firstFailingGate,
+      atRatioMin: bestRejected.atRatioMin,
+      atRatioMax: bestRejected.atRatioMax,
+    }),
   });
 }

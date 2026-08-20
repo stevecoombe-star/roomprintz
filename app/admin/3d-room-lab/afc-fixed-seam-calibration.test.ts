@@ -4,7 +4,9 @@ import { ROOM_C_AFC_LAB_GEOMETRY_CANDIDATE } from "./afc-lab-geometry-candidate"
 import {
   categorizeRatioFovStructuralFailure,
   compareAfcFixedSeamCalibrationCells,
+  metricAllowedRatioBounds,
   settleAfcFixedSeamCalibration,
+  settleAfcFixedSeamCalibrationWithRatioExtension,
 } from "./afc-fixed-seam-calibration";
 import type { RatioFovSuccessfulCell } from "./research/ratio-fov-harness";
 
@@ -39,6 +41,96 @@ test("fixed-seam calibration is deterministic and maps ratio to explicit Room C 
   assert.ok(Math.abs(first.applyObservability.displayAvgPx - 0.348687) < 0.001);
   assert.ok(Math.abs(first.applyObservability.displayMaxPx - 0.699020) < 0.001);
   assert.equal("diagnostics" in first, false, "failure-only diagnostics must not alter success semantics");
+});
+
+test("metric ratio bounds derive from the existing Width limits and provisional reference depth", () => {
+  assert.deepEqual(metricAllowedRatioBounds(4), { min: 0.125, max: 3 });
+  assert.equal(metricAllowedRatioBounds(0), null);
+  assert.equal(metricAllowedRatioBounds(Number.NaN), null);
+});
+
+test("ratio-extension wrapper preserves the certified Room C default settle byte-for-byte", () => {
+  const baseline = settleAfcFixedSeamCalibration(roomCInput());
+  const wrapped = settleAfcFixedSeamCalibrationWithRatioExtension(roomCInput());
+  assert.deepEqual(wrapped, baseline);
+  assert.equal(wrapped.ok, true);
+  if (!wrapped.ok) return;
+  assert.equal(wrapped.widthDepthRatio, 1.155);
+  assert.equal(wrapped.worldWidthM, 4.62);
+  assert.equal(wrapped.worldDepthM, 4);
+  assert.equal(wrapped.verticalFovDeg, 78.4);
+  assert.equal(wrapped.ratioExtensionDiagnostics, undefined);
+});
+
+// A fixed, already-authoritative 1-wide × 7-deep projective floor fixture.
+// It is intentionally supplied directly to realization: no reader, core-shape,
+// or source-quad mutation is involved in this regression.
+const SKINNY_ONE_BY_SEVEN_AUTHORITATIVE_QUAD = [
+  { x: 0.56, y: 0.2 },
+  { x: 0.44, y: 0.2 },
+  { x: 0.32, y: 0.55 },
+  { x: 0.68, y: 0.55 },
+] as const;
+
+test("boundary-gated lower ratio extension realizes a skinny authoritative quad deterministically", () => {
+  const input = {
+    sourceNormalizedPolygon: SKINNY_ONE_BY_SEVEN_AUTHORITATIVE_QUAD,
+    sourceImageSize: { width: 1118, height: 698 },
+    frameSize: { width: 1118, height: 698 },
+    referenceDepthM: 4,
+  };
+  const frozenAuthoritativeQuad = JSON.parse(
+    JSON.stringify(input.sourceNormalizedPolygon)
+  );
+  const baseline = settleAfcFixedSeamCalibration(input);
+  assert.equal(baseline.ok, false);
+  if (baseline.ok) return;
+  assert.equal(baseline.reason, "no_apply_safe_candidate");
+  if (baseline.reason !== "no_apply_safe_candidate") return;
+  assert.equal(baseline.diagnostics.bestRejectedCandidate?.atRatioMin, true);
+  assert.equal(baseline.diagnostics.bestRejectedCandidate?.atRatioMax, false);
+
+  const first = settleAfcFixedSeamCalibrationWithRatioExtension(input);
+  const second = settleAfcFixedSeamCalibrationWithRatioExtension(input);
+  assert.deepEqual(second, first);
+  assert.equal(first.ok, true);
+  if (!first.ok) return;
+  assert.ok(first.applyObservability.available);
+  assert.ok(first.widthDepthRatio < 0.5);
+  assert.equal(first.widthDepthRatio, 0.13);
+  assert.ok(first.worldWidthM > 0.5);
+  assert.equal(first.worldWidthM, 0.52);
+  assert.equal(first.worldWidthM, first.widthDepthRatio * input.referenceDepthM);
+  assert.equal(first.worldDepthM, input.referenceDepthM);
+  assert.deepEqual(input.sourceNormalizedPolygon, frozenAuthoritativeQuad);
+  const diagnostics = first.ratioExtensionDiagnostics;
+  assert.ok(diagnostics);
+  assert.deepEqual(
+    {
+      defaultMin: diagnostics.defaultRatioSearchMin,
+      defaultMax: diagnostics.defaultRatioSearchMax,
+      extendedMin: diagnostics.extendedRatioSearchMin,
+      extendedMax: diagnostics.extendedRatioSearchMax,
+      applied: diagnostics.ratioExtensionApplied,
+      side: diagnostics.extensionSide,
+      selectedRatio: diagnostics.selectedRatio,
+      firstFailingGate: diagnostics.firstFailingGate,
+      atRatioMin: diagnostics.atRatioMin,
+      atRatioMax: diagnostics.atRatioMax,
+    },
+    {
+      defaultMin: 0.5,
+      defaultMax: 2,
+      extendedMin: 0.125,
+      extendedMax: 0.495,
+      applied: true,
+      side: "lower",
+      selectedRatio: first.widthDepthRatio,
+      firstFailingGate: "confidence",
+      atRatioMin: true,
+      atRatioMax: false,
+    }
+  );
 });
 
 function rankingCell(input: {

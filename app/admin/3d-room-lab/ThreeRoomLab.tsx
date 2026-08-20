@@ -51,7 +51,7 @@ import {
   type AfcTiledPerspectivePolygon,
 } from "./afc-tiled-perspective-adjust";
 import {
-  settleAfcFixedSeamCalibration,
+  settleAfcFixedSeamCalibrationWithRatioExtension,
   type AfcFixedSeamCalibrationResult,
   type AfcFixedSeamCalibrationSuccess,
 } from "./afc-fixed-seam-calibration";
@@ -2914,7 +2914,7 @@ export default function ThreeRoomLab({
       return null;
     }
 
-    const settle = settleAfcFixedSeamCalibration({
+    const settle = settleAfcFixedSeamCalibrationWithRatioExtension({
       sourceNormalizedPolygon: input.sourceNormalizedPolygon,
       sourceImageSize: {
         width: input.acceptanceBasis.decodedWidth,

@@ -101,12 +101,14 @@ test("TILED Perspective Adjust owns an immutable Automatic session without seam 
 
 test("TILED commits and reset reuse realization without reader or generation work", () => {
   const commit = between("const commitPerspectiveAdjust =", "const handlePerspectiveAdjustPreviewChange =");
+  const realization = between("const realizeAfcLabGeometry =", "const handleApplyRoomCAfcLab =");
   const tiledBranch = between(
     'if (session.kind === AFC_TILED_PERSPECTIVE_ADJUST_MODE)',
     "const adjusted = buildAfcPerspectiveAdjustCandidate"
   );
   assert.match(tiledBranch, /buildAfcTiledPerspectiveAdjustPolygon/);
   assert.match(tiledBranch, /realizeAfcLabGeometry/);
+  assert.match(realization, /settleAfcFixedSeamCalibrationWithRatioExtension\(/);
   assert.match(tiledBranch, /labLoadGeneration/);
   for (const forbidden of ["callCompositor", "vibodeTileGridScaffoldAssist", "Gemini", "executePathA"]) {
     assert.doesNotMatch(tiledBranch, new RegExp(forbidden));

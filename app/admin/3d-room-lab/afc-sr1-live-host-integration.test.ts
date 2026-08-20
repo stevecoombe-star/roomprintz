@@ -28,6 +28,15 @@ test("live AFC host calls only the product route then the existing realization s
   );
 });
 
+test("live realization uses the boundary-gated ratio extension wrapper", () => {
+  const realizationStart = source.indexOf("const realizeAfcLabGeometry =");
+  const realizationEnd = source.indexOf("const handleApplyRoomCAfcLab =", realizationStart);
+  assert.ok(realizationStart >= 0 && realizationEnd > realizationStart);
+  const realization = source.slice(realizationStart, realizationEnd);
+  assert.match(realization, /settleAfcFixedSeamCalibrationWithRatioExtension\(/);
+  assert.doesNotMatch(realization, /settleAfcFixedSeamCalibration\(\{/);
+});
+
 test("stale acceptance is immediately before canonical realization", () => {
   const handler = handlerSource();
   const validation = handler.indexOf("validateAfcSr1LiveResultAcceptance");
