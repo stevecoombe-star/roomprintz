@@ -1,0 +1,61 @@
+{
+  "version": "p2-s1-empty-physical-boundary/v1",
+  "roomId": "room-a",
+  "coordinateSpace": "empty-source-normalized/v1",
+  "emptyImage": {
+    "sha256": "d5f9b40ffbe2789d4756d72162b1d4a38d505da67b36e5deb9b2a9e0ec5bb686",
+    "dimensions": { "width": 1264, "height": 848 },
+    "generatorId": "vibode-empty-room-assist/stage1-empty-room/v1",
+    "generatedFromOriginalSha256": "ca9d77cb4b951ce95ed4fa261b55b288164b07e757dbdf5da565eafefc3439b7",
+    "manifestFileName": "afc-r3c-room-a.image-manifest.v1.json"
+  },
+  "evaluationCorridorSourcePx": 6,
+  "annotations": [
+    {
+      "id": "back-wall-visible-baseboard",
+      "pointsSourceNormalized": [
+        { "x": 0.360759, "y": 0.652123 },
+        { "x": 0.525316, "y": 0.652123 },
+        { "x": 0.692247, "y": 0.650943 }
+      ],
+      "interpretation": "rear_floor_wall_seam",
+      "evidenceKind": "direct_visible",
+      "boundaryState": "physical_wall",
+      "collisionEligible": true,
+      "startEndpoint": { "status": "visible", "frameContact": "no_frame_contact" },
+      "endEndpoint": { "status": "visible", "frameContact": "no_frame_contact" },
+      "notes": "Manually reviewed source pixels (456,553) through (875,552) trace the visible baseboard-bottom/floor contact. The heater remains above the seam; the chain stops at the visible left corner and closed-door edge."
+    },
+    {
+      "id": "left-wall-visible-baseboard",
+      "pointsSourceNormalized": [
+        { "x": 0.034810, "y": 0.998821 },
+        { "x": 0.186709, "y": 0.837264 },
+        { "x": 0.360759, "y": 0.652123 }
+      ],
+      "interpretation": "side_wall_floor_seam",
+      "evidenceKind": "direct_visible",
+      "boundaryState": "physical_wall",
+      "collisionEligible": true,
+      "startEndpoint": { "status": "frame_truncated", "frameContact": "contacts_frame" },
+      "endEndpoint": { "status": "visible", "frameContact": "no_frame_contact" },
+      "notes": "Manually reviewed source pixels (44,847) through (456,553) trace only the visible left baseboard-bottom/floor contact. The first point is the last visible source-row contact and claims no continuation outside the frame."
+    },
+    {
+      "id": "right-wall-visible-baseboard",
+      "pointsSourceNormalized": [
+        { "x": 0.692247, "y": 0.650943 },
+        { "x": 0.743671, "y": 0.688679 },
+        { "x": 0.868671, "y": 0.807783 },
+        { "x": 0.999209, "y": 0.932783 }
+      ],
+      "interpretation": "side_wall_floor_seam",
+      "evidenceKind": "direct_visible",
+      "boundaryState": "physical_wall",
+      "collisionEligible": true,
+      "startEndpoint": { "status": "visible", "frameContact": "no_frame_contact" },
+      "endEndpoint": { "status": "frame_truncated", "frameContact": "contacts_frame" },
+      "notes": "Manually reviewed source pixels follow the closed door bottom from (875,552) to its jamb at (940,584), then the visible right baseboard-bottom/floor contact through (1098,685) to (1263,791). No line crosses the door face; ambiguous threshold and beyond-frame continuation are omitted."
+    }
+  ]
+}
