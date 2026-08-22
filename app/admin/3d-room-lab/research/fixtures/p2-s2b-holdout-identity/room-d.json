@@ -1,0 +1,14 @@
+{
+  "version": "p2-s2b-holdout-identity/v1",
+  "certificationRole": "p2-s2b-blinded-holdout",
+  "roomId": "room-d",
+  "emptySha256": "82d72e591c535f8ce5174b9771b47cd007b004817bca6ccd3170a2e4e6387e96",
+  "emptyDimensions": {
+    "width": 1264,
+    "height": 848
+  },
+  "generatorId": "vibode-empty-room-assist/stage1-empty-room/v1",
+  "manifestFileName": "afc-r3c-room-d.image-manifest.v1.json",
+  "originalSha256": "a59063f7c339b029504d46ecb749c9f5d92576f78808d0b1be41641df7ed234f",
+  "sourceIdentity": "vibode-afc-r3c-fixed-inputs/room-d/room-d.empty-room.82d72e591c535f8ce5174b9771b47cd007b004817bca6ccd3170a2e4e6387e96.png"
+}
