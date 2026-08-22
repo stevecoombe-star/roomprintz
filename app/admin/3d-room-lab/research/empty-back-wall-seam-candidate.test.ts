@@ -247,6 +247,7 @@ test("P2-S1B automatic module has no semantic promotion or live importer", async
   assert.deepEqual(
     importers.map(importer => path.relative(researchDirectory, importer)),
     [
+      "empty-competing-cluster-evidence.ts",
       "empty-multi-response-column-field.test.ts",
       "empty-multi-response-column-field.ts",
       "visible-floor-wall-seam-fragment.test.ts",

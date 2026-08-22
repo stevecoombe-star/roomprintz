@@ -546,7 +546,11 @@ test("P2-S1D output has no wall semantics, linking surface, or live/product impo
   await visit(appRoot);
   assert.deepEqual(
     importers.map(importer => path.relative(researchDirectory, importer)),
-    ["empty-multi-response-column-field.test.ts"]
+    [
+      "empty-competing-cluster-evidence.test.ts",
+      "empty-competing-cluster-evidence.ts",
+      "empty-multi-response-column-field.test.ts",
+    ]
   );
 });
 
