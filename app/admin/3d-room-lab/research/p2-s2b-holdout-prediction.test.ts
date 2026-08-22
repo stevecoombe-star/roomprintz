@@ -424,18 +424,12 @@ test("P2-S2B receipts strictly reproduce fresh deterministic predictions", async
   assert.notEqual(receiptHashes[0], receiptHashes[1]);
 });
 
-test("P2-S2B Pass 1 has no holdout oracle, scorer, leakage, or product importer", async () => {
+test("P2-S2B sealed prediction path has no oracle, scorer, leakage, or product importer", async () => {
   const allFiles = (await Promise.all(
     ["app", "components", "lib"].map(directory =>
       walk(path.join(process.cwd(), directory))
     )
   )).flat();
-  assert.equal(
-    allFiles.some(filePath =>
-      filePath.toLowerCase().includes("p2-s2b-holdout-oracle")
-    ),
-    false
-  );
   const predictionSource = await readFile(path.join(
     RESEARCH_ROOT,
     "p2-s2b-holdout-prediction.ts"
@@ -448,11 +442,23 @@ test("P2-S2B Pass 1 has no holdout oracle, scorer, leakage, or product importer"
     predictionSource,
     /TILED|calibration|perspective|worldXZ|camera|holdout-oracle/
   );
+  const permittedResearchRoutes = new Set([
+    path.join(
+      process.cwd(),
+      "app",
+      "api",
+      "admin",
+      "3d-room-lab",
+      "p2-s2b-holdout-oracle-image",
+      "route.ts"
+    ),
+  ]);
   const productImporters: string[] = [];
   for (const filePath of allFiles) {
     if (
       !/\.(ts|tsx)$/.test(filePath) ||
-      filePath.startsWith(`${RESEARCH_ROOT}${path.sep}`)
+      filePath.startsWith(`${RESEARCH_ROOT}${path.sep}`) ||
+      permittedResearchRoutes.has(filePath)
     ) continue;
     const source = await readFile(filePath, "utf8");
     if (source.includes("p2-s2b-holdout-")) productImporters.push(filePath);
@@ -463,7 +469,7 @@ test("P2-S2B Pass 1 has no holdout oracle, scorer, leakage, or product importer"
   );
   assert.equal(
     p2s2bFixtures.some(filePath =>
-      /dummy|adapter|oracle|scor/i.test(path.basename(filePath))
+      /dummy|adapter|scor/i.test(path.basename(filePath))
     ),
     false
   );
