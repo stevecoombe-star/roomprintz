@@ -133,7 +133,7 @@ export type BackWallSeamReadResult =
     }>
   | Readonly<{ ok: false; reason: "decode_failed" | "fixture_identity_mismatch" }>;
 
-type DecodedAppearance = Readonly<{
+export type DecodedAppearance = Readonly<{
   roomId: string;
   sha256: string;
   width: number;
@@ -161,11 +161,11 @@ function angleDeg(points: readonly SourcePoint[]): number {
   return Math.atan2(last.y - first.y, last.x - first.x) * 180 / Math.PI;
 }
 
-function pixelLuma(red: number, green: number, blue: number): number {
+export function pixelLuma(red: number, green: number, blue: number): number {
   return 0.2126 * red + 0.7152 * green + 0.0722 * blue;
 }
 
-function patchMeanRgb(
+export function patchMeanRgb(
   image: DecodedAppearance,
   x: number,
   yStart: number,
