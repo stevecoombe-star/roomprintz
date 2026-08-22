@@ -606,7 +606,7 @@ export async function readCertifiedEmptyBackWallSeamCandidates(
   });
 }
 
-type PixelPolyline = readonly SourcePoint[];
+export type PixelPolyline = readonly SourcePoint[];
 
 export type BackWallSeamRoomEvaluation = Readonly<{
   roomId: string;
@@ -624,11 +624,11 @@ export type BackWallSeamRoomEvaluation = Readonly<{
   illegalBridge: boolean;
 }>;
 
-function toPixelPolyline(points: readonly SourcePoint[], width: number, height: number): PixelPolyline {
+export function toPixelPolyline(points: readonly SourcePoint[], width: number, height: number): PixelPolyline {
   return points.map(point => ({ x: point.x * width, y: point.y * height }));
 }
 
-function samplePolyline(points: PixelPolyline, spacingPx = 1): readonly SourcePoint[] {
+export function samplePolyline(points: PixelPolyline, spacingPx = 1): readonly SourcePoint[] {
   const samples: SourcePoint[] = [];
   for (let segmentIndex = 1; segmentIndex < points.length; segmentIndex += 1) {
     const start = points[segmentIndex - 1];
@@ -652,7 +652,7 @@ function pointToFiniteSegmentDistance(point: SourcePoint, start: SourcePoint, en
   return Math.hypot(point.x - (start.x + t * dx), point.y - (start.y + t * dy));
 }
 
-function pointToFinitePolylinesDistance(point: SourcePoint, polylines: readonly PixelPolyline[]): number {
+export function pointToFinitePolylinesDistance(point: SourcePoint, polylines: readonly PixelPolyline[]): number {
   let minimum = Number.POSITIVE_INFINITY;
   for (const polyline of polylines) {
     for (let index = 1; index < polyline.length; index += 1) {

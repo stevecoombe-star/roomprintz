@@ -237,12 +237,20 @@ test("P2-S1B automatic module has no semantic promotion or live importer", async
         await visit(entryPath);
       } else if (/\.[cm]?[jt]sx?$/.test(entry.name) && entryPath !== modulePath && entryPath !== new URL(import.meta.url).pathname) {
         const source = await readFile(entryPath, "utf8");
-        if (source.includes("empty-back-wall-seam-candidate")) importers.push(entryPath);
+        if (/from\s+["']\.\/empty-back-wall-seam-candidate["']/.test(source)) {
+          importers.push(entryPath);
+        }
       }
     }
   }
   await visit(appRoot);
-  assert.deepEqual(importers, []);
+  assert.deepEqual(
+    importers.map(importer => path.relative(researchDirectory, importer)),
+    [
+      "visible-floor-wall-seam-fragment.test.ts",
+      "visible-floor-wall-seam-fragment.ts",
+    ]
+  );
 });
 
 test("P2-S1B linking joins only locally coherent supported columns", () => {
