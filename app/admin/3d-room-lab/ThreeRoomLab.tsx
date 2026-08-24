@@ -197,6 +197,14 @@ import {
   type ParsedCalibratedCameraAppliedAuthority,
 } from "./calibrated-camera-restore-authority";
 import {
+  freezeAppliedTiledAfcCamera,
+} from "./afc-calibrated-camera-authority-freeze";
+import {
+  buildCalibratedCameraFreezeReceiptFilename,
+  serializeCalibratedCameraFreezeReceipt,
+  type CalibratedCameraFreezeReceipt,
+} from "./calibrated-camera-freeze-receipt";
+import {
   CALIBRATION_IMAGE_BASIS_COORDINATE_SPACE_VERSION,
   type CalibrationImageBasis,
   type CalibrationImageBasisRefusalReason,
@@ -676,6 +684,11 @@ type AfcLabApplyStatus =
   | Readonly<{ kind: "failed"; reason: string }>
   | Readonly<{ kind: "pending"; settle: AfcFixedSeamCalibrationSuccess }>
   | Readonly<{ kind: "applied"; settle: AfcFixedSeamCalibrationSuccess }>;
+type AfcCameraFreezeStatus =
+  | Readonly<{ kind: "idle" }>
+  | Readonly<{ kind: "freezing"; attemptId: string }>
+  | Readonly<{ kind: "ready"; attemptId: string }>
+  | Readonly<{ kind: "failed"; attemptId: string; reason: string }>;
 type AfcHistoricalPerspectiveAdjustSession = Readonly<{
   kind: "historical_fixed_seam_v1";
   attemptId: string;
@@ -1642,6 +1655,7 @@ export default function ThreeRoomLab({
   const afcLiveLoadGenerationRef = useRef(0);
   const afcLiveAbortControllerRef = useRef<AbortController | null>(null);
   const afcLiveApplyingResultRef = useRef<AfcSr1LiveAuthoritativeGeometry | null>(null);
+  const afcCameraFreezeGenerationRef = useRef(0);
   const verifiedAfcFloorCameraBindingRef = useRef<VerifiedAfcFloorCameraBinding | null>(null);
   const verifiedAfcFloorCameraBindingGenerationRef = useRef(0);
   const preCalibratedDepthScalingRef = useRef<PerspectiveDepthScalingState | null>(null);
@@ -1730,6 +1744,15 @@ export default function ThreeRoomLab({
     useState<AfcSr1LiveProductResult | null>(null);
   const [afcLiveSettleFailure, setAfcLiveSettleFailure] =
     useState<AfcLiveSettleFailure | null>(null);
+  const [afcCameraFreezeReceipt, setAfcCameraFreezeReceipt] =
+    useState<CalibratedCameraFreezeReceipt | null>(null);
+  const [afcCameraFreezeStatus, setAfcCameraFreezeStatus] =
+    useState<AfcCameraFreezeStatus>({ kind: "idle" });
+  const invalidateAfcCameraFreeze = useCallback(() => {
+    afcCameraFreezeGenerationRef.current += 1;
+    setAfcCameraFreezeReceipt(null);
+    setAfcCameraFreezeStatus({ kind: "idle" });
+  }, []);
   const [perspectiveAdjustSession, setPerspectiveAdjustSession] = useState<AfcPerspectiveAdjustSession | null>(null);
   const perspectiveAdjustSessionRef = useRef<AfcPerspectiveAdjustSession | null>(null);
   const perspectivePreviewDeltaRef = useRef(0);
@@ -1744,6 +1767,7 @@ export default function ThreeRoomLab({
     setPerspectiveAdjustSession(null);
   }, []);
   const supersedeAfcLiveAttemptForLoadChange = useCallback(() => {
+    invalidateAfcCameraFreeze();
     invalidatePerspectiveAdjustSession();
     afcLiveAbortControllerRef.current?.abort();
     afcLiveAbortControllerRef.current = null;
@@ -1755,7 +1779,7 @@ export default function ThreeRoomLab({
     setAfcLiveResult(null);
     setAfcLiveSettleFailure(null);
     setAfcLiveAnalyzeStatus({ kind: "ready" });
-  }, [invalidatePerspectiveAdjustSession]);
+  }, [invalidateAfcCameraFreeze, invalidatePerspectiveAdjustSession]);
   useEffect(() => () => {
     afcLiveAbortControllerRef.current?.abort();
     afcLiveAbortControllerRef.current = null;
@@ -2638,6 +2662,7 @@ export default function ThreeRoomLab({
   }, []);
 
   const deactivateCalibratedCameraMode = useCallback((options?: { clearAutoRevertReason?: boolean }) => {
+    invalidateAfcCameraFreeze();
     setIsCalibratedCameraActive(false);
     setCalibratedCameraSnapshot(null);
     setAfcVerifiedCameraApplyStatus({ kind: "idle" });
@@ -2661,7 +2686,7 @@ export default function ThreeRoomLab({
     if (options?.clearAutoRevertReason) {
       setLastCalibratedCameraAutoRevertReason(null);
     }
-  }, [restoreDepthScalingAfterCalibratedMode]);
+  }, [invalidateAfcCameraFreeze, restoreDepthScalingAfterCalibratedMode]);
 
   // Every authority-eligible runtime Floor mutation reaches this one commit.
   // Import, draft, undo, and calibrated-camera restore remain specialized
@@ -3058,6 +3083,7 @@ export default function ThreeRoomLab({
       return;
     }
 
+    invalidateAfcCameraFreeze();
     afcLiveAbortControllerRef.current?.abort();
     const controller = new AbortController();
     afcLiveAbortControllerRef.current = controller;
@@ -3264,6 +3290,7 @@ export default function ThreeRoomLab({
   }, [
     basisQualificationStatus,
     floorMapping.worldDepth,
+    invalidateAfcCameraFreeze,
     invalidatePerspectiveAdjustSession,
     isRoomImageReadyForUrl,
     pendingAfcLabCameraApply,
@@ -3555,9 +3582,10 @@ export default function ThreeRoomLab({
       ) {
         return false;
       }
+      invalidateAfcCameraFreeze();
       captureAndNeutralizeDepthScalingForCalibratedMode();
       setLastCalibratedCameraAutoRevertReason(null);
-      setCalibratedCameraSnapshot({
+      const snapshot: CalibratedCameraSnapshot = {
         pose: candidate.pose,
         fovDeg,
         frameSize: candidate.frameSize,
@@ -3565,11 +3593,13 @@ export default function ThreeRoomLab({
         appliedAtIso: selectAppliedAtIso(identityMode, new Date().toISOString()),
         imageBasis: qualifiedImageBasis,
         sourceFloorPolygon: sourceNormalizedFloorPolygon.map((point) => ({ x: point.x, y: point.y })),
-      });
+      };
+      calibratedCameraSnapshotRef.current = snapshot;
+      setCalibratedCameraSnapshot(snapshot);
       setIsCalibratedCameraActive(true);
       return true;
     },
-    [captureAndNeutralizeDepthScalingForCalibratedMode, qualifiedImageBasis, sourceNormalizedFloorPolygon]
+    [captureAndNeutralizeDepthScalingForCalibratedMode, invalidateAfcCameraFreeze, qualifiedImageBasis, sourceNormalizedFloorPolygon]
   );
 
   useEffect(() => {
@@ -6675,12 +6705,75 @@ export default function ThreeRoomLab({
     // still rechecks the same current Apply gate before it activates the camera.
     setPendingAfcLabCameraApply(null);
     const applied = applyCalibratedCameraSnapshotFromCandidate(candidate, pending.verticalFovDeg);
+    const appliedSnapshot = applied
+      ? calibratedCameraSnapshotRef.current
+      : null;
     setAfcLabApplyStatus(
       applied
         ? { kind: "applied", settle: pending.settle }
         : { kind: "failed", reason: "AFC camera Apply was rejected by the existing calibrated-camera writer." }
     );
-    const liveResult = afcLiveApplyingResultRef.current;
+    const liveResult =
+      afcLiveApplyingResultRef.current ??
+      (afcLiveResult?.status === "authoritative_geometry"
+        ? afcLiveResult
+        : null);
+    if (appliedSnapshot && liveResult) {
+      const freezeGeneration =
+        ++afcCameraFreezeGenerationRef.current;
+      setAfcCameraFreezeStatus({
+        kind: "freezing",
+        attemptId: liveResult.attemptId,
+      });
+      const currentPerspectiveSession =
+        perspectiveAdjustSessionRef.current;
+      const perspectiveAdjustment =
+        currentPerspectiveSession?.kind ===
+          AFC_TILED_PERSPECTIVE_ADJUST_MODE &&
+        currentPerspectiveSession.attemptId === liveResult.attemptId &&
+        currentPerspectiveSession.resultId === liveResult.resultId
+          ? {
+              mode: AFC_TILED_PERSPECTIVE_ADJUST_MODE,
+              committedDelta:
+                currentPerspectiveSession.committedDelta,
+              adjustmentCount:
+                currentPerspectiveSession.adjustmentCount,
+            }
+          : null;
+      void freezeAppliedTiledAfcCamera({
+        appliedSnapshot,
+        liveResult,
+        pending,
+        settle: pending.settle,
+        candidate,
+        candidateEvaluation: freshEvaluation,
+        basisQualified:
+          basisQualificationStatus === "qualified" &&
+          qualifiedImageBasis?.basisKind === "original",
+        frozenAtIso: new Date().toISOString(),
+        perspectiveAdjustment,
+      }).then((freezeResult) => {
+        if (
+          freezeGeneration !==
+          afcCameraFreezeGenerationRef.current
+        ) {
+          return;
+        }
+        if (freezeResult.ok) {
+          setAfcCameraFreezeReceipt(freezeResult.value);
+          setAfcCameraFreezeStatus({
+            kind: "ready",
+            attemptId: liveResult.attemptId,
+          });
+          return;
+        }
+        setAfcCameraFreezeStatus({
+          kind: "failed",
+          attemptId: liveResult.attemptId,
+          reason: `${freezeResult.reason}: ${freezeResult.detail}`,
+        });
+      });
+    }
     if (liveResult) {
       setAfcLiveAnalyzeStatus(
         applied
@@ -6699,6 +6792,7 @@ export default function ThreeRoomLab({
     }
   }, [
     applyCalibratedCameraSnapshotFromCandidate,
+    afcLiveResult,
     basisQualificationStatus,
     cameraPoseFovYDeg,
     floorMapping.worldDepth,
@@ -12829,6 +12923,45 @@ export default function ThreeRoomLab({
       setSceneJsonStatus({
         kind: "error",
         message: `Download failed: ${message}`,
+      });
+    }
+  };
+
+  const handleDownloadAfcCameraFreezeReceipt = () => {
+    if (
+      !afcCameraFreezeReceipt ||
+      afcCameraFreezeStatus.kind !== "ready"
+    ) {
+      return;
+    }
+    const jsonText = serializeCalibratedCameraFreezeReceipt(
+      afcCameraFreezeReceipt
+    );
+    try {
+      const blob = new Blob([jsonText], {
+        type: "application/json",
+      });
+      const objectUrl = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = objectUrl;
+      anchor.download =
+        buildCalibratedCameraFreezeReceiptFilename(
+          afcCameraFreezeReceipt
+        );
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      URL.revokeObjectURL(objectUrl);
+    } catch (error) {
+      const message =
+        error instanceof Error
+          ? error.message
+          : "Receipt download failed.";
+      setAfcCameraFreezeStatus({
+        kind: "failed",
+        attemptId:
+          afcCameraFreezeReceipt.payload.afc.attemptId,
+        reason: message,
       });
     }
   };
@@ -21342,6 +21475,33 @@ export default function ThreeRoomLab({
                     afcLiveResult.perspectiveAdjust.mode === AFC_TILED_PERSPECTIVE_ADJUST_MODE
                     ? "Perspective Adjust is available from the TILED Automatic baseline."
                   : "Perspective Adjust is initialized from this live Automatic baseline."}
+              </p>
+            ) : null}
+            {afcCameraFreezeStatus.kind === "freezing" ? (
+              <p className="mt-2 text-xs text-cyan-200">
+                Freezing immutable calibrated-camera authority receipt…
+              </p>
+            ) : null}
+            {afcCameraFreezeStatus.kind === "ready" &&
+            afcCameraFreezeReceipt ? (
+              <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
+                <button
+                  type="button"
+                  onClick={handleDownloadAfcCameraFreezeReceipt}
+                  className="rounded border border-cyan-500/70 px-2 py-1 font-medium text-cyan-100 transition hover:border-cyan-300 hover:text-white"
+                >
+                  Download camera authority receipt
+                </button>
+                <span className="break-all text-slate-400">
+                  SHA-256:{" "}
+                  {afcCameraFreezeReceipt.integrity.payloadSha256}
+                </span>
+              </div>
+            ) : null}
+            {afcCameraFreezeStatus.kind === "failed" ? (
+              <p className="mt-2 text-xs text-rose-200">
+                Camera authority freeze failed closed:{" "}
+                {afcCameraFreezeStatus.reason}
               </p>
             ) : null}
             {afcLiveAnalyzeStatus.kind === "degraded" ? (
