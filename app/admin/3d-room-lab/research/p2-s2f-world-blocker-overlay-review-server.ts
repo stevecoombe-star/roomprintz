@@ -1,15 +1,23 @@
 import "server-only";
 
+import { createHash } from "node:crypto";
 import { readFile, readdir } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
 import {
+  parseCalibratedCameraAppliedAuthority,
+  type ParsedCalibratedCameraAppliedAuthority,
+} from "../calibrated-camera-applied-authority";
+import {
+  extractCalibratedCameraAppliedAuthority,
+  parseCalibratedCameraFreezeReceipt,
+} from "../calibrated-camera-freeze-receipt";
+import {
   CALIBRATED_READ_ONLY_PROJECTION_RENDERER_FAR,
   CALIBRATED_READ_ONLY_PROJECTION_RENDERER_NEAR,
   buildCalibratedReadOnlyProjectionCamera,
 } from "../calibrated-camera-readonly-projection";
-import { parseCalibratedCameraAppliedAuthority } from "../calibrated-camera-restore-authority";
 import { FLOOR_SOURCE_COORDINATE_EXTENT } from "../floor-coordinate-extent";
 import { classifyAfcR3cImagePairCompatibility } from "./afc-r3c-image-pair-compatibility";
 import { resolveAfcUi2aFixedInputsRoot } from "./afc-ui2a-fixed-input-root";
@@ -21,6 +29,7 @@ import {
 } from "./p2-s2e-termination-collision-overlay-review-server";
 import {
   buildP2S2FFragmentReviewDiagnostics,
+  type P2S2FCameraAuthorityDiagnostics,
   type P2S2FWorldBlockerReviewProjection,
   type P2S2FWorldBlockerReviewRecord,
   type P2S2FWorldBlockerReviewRoomId,
@@ -43,7 +52,7 @@ type ManifestImage = Readonly<{
   sha256: string;
   decodedWidth: number;
   decodedHeight: number;
-  orientation: number;
+  orientation: 1;
 }>;
 
 type ImagePairAuthority = Readonly<{
@@ -148,12 +157,14 @@ function unavailable(
   reason: Extract<
     P2S2FWorldBlockerReviewProjection,
     { status: "unavailable" }
-  >["reason"]
+  >["reason"],
+  detail: string
 ): Extract<P2S2FWorldBlockerReviewProjection, { status: "unavailable" }> {
   return Object.freeze({
     status: "unavailable",
     cameraProvenance: "unavailable",
     reason,
+    detail,
   });
 }
 
@@ -163,6 +174,85 @@ function inside(parent: string, child: string): boolean {
     relative !== ".." &&
     !relative.startsWith(`..${path.sep}`) &&
     !path.isAbsolute(relative);
+}
+
+type AcceptedCameraFile =
+  | Readonly<{ ok: true; serialized: string }>
+  | Readonly<{ ok: false; detail: string }>;
+
+async function readAcceptedCameraFile(
+  root: string,
+  roomId: P2S2FWorldBlockerReviewRoomId,
+  originalSha256: string
+): Promise<AcceptedCameraFile> {
+  const names = [
+    `afc-sr1-${originalSha256.slice(0, 16)}-calibrated-camera-authority.v1.json`,
+    `${roomId}.json`,
+  ];
+  for (const name of names) {
+    const candidate = path.resolve(root, name);
+    if (!inside(root, candidate)) {
+      return {
+        ok: false,
+        detail: `Configured authority source escaped its root: ${name}`,
+      };
+    }
+    try {
+      return { ok: true, serialized: await readFile(candidate, "utf8") };
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
+      return {
+        ok: false,
+        detail: `Configured authority source could not be read: ${name}`,
+      };
+    }
+  }
+  return {
+    ok: false,
+    detail:
+      "No room-bound authority file exists in the configured snapshot root.",
+  };
+}
+
+function receiptUnavailableReason(
+  reason: string
+): Extract<
+  P2S2FWorldBlockerReviewProjection,
+  { status: "unavailable" }
+>["reason"] {
+  if (reason === "expected_original_mismatch") {
+    return "accepted_camera_original_identity_mismatch";
+  }
+  if (reason === "expected_empty_mismatch") {
+    return "accepted_camera_empty_identity_mismatch";
+  }
+  if (reason === "expected_tiled_mismatch") {
+    return "accepted_camera_tiled_identity_mismatch";
+  }
+  return "accepted_camera_freeze_receipt_invalid";
+}
+
+function rawCameraDiagnostics(
+  authority: ParsedCalibratedCameraAppliedAuthority
+): P2S2FCameraAuthorityDiagnostics {
+  return Object.freeze({
+    source: "raw_applied_authority",
+    authorityVersion: authority.authorityVersion,
+    receiptVersion: null,
+    receiptSha256: null,
+    receiptPayloadSha256: null,
+    originalSha256: authority.imageBasis.basisFingerprint,
+    emptySha256: null,
+    tiledSha256: null,
+    attemptId: null,
+    appliedAtIso: authority.appliedAtIso,
+    worldWidth: authority.floorMapping.worldWidth,
+    worldDepth: authority.floorMapping.worldDepth,
+    verticalFovDeg: authority.verticalFovDeg,
+    applyFrame: authority.frameSize,
+    calibrationVersion: authority.calibrationVersion,
+    solver: authority.solver,
+  });
 }
 
 async function loadProjection(
@@ -180,64 +270,128 @@ async function loadProjection(
     process.env.P2_S2F_ACCEPTED_CAMERA_SNAPSHOT_ROOT?.trim();
   if (!configuredRoot) {
     return {
-      projection: unavailable("accepted_camera_snapshot_not_configured"),
+      projection: unavailable(
+        "accepted_camera_snapshot_not_configured",
+        "P2_S2F_ACCEPTED_CAMERA_SNAPSHOT_ROOT is not configured."
+      ),
       result: null,
     };
   }
   const root = path.resolve(configuredRoot);
-  const snapshotPath = path.resolve(root, `${roomId}.json`);
-  if (!inside(root, snapshotPath)) {
+  const acceptedFile = await readAcceptedCameraFile(
+    root,
+    roomId,
+    imagePair.original.sha256
+  );
+  if (!acceptedFile.ok) {
     return {
-      projection: unavailable("accepted_camera_snapshot_unavailable"),
+      projection: unavailable(
+        "accepted_camera_snapshot_unavailable",
+        acceptedFile.detail
+      ),
       result: null,
     };
   }
 
-  let raw: unknown;
+  let parsed: unknown;
   try {
-    const parsed = JSON.parse(await readFile(snapshotPath, "utf8")) as unknown;
-    raw = isRecord(parsed) && "calibrationAppliedAuthority" in parsed
-      ? parsed.calibrationAppliedAuthority
-      : parsed;
+    parsed = JSON.parse(acceptedFile.serialized) as unknown;
   } catch {
     return {
-      projection: unavailable("accepted_camera_snapshot_unavailable"),
+      projection: unavailable(
+        "accepted_camera_snapshot_invalid",
+        "Configured authority source is not valid JSON."
+      ),
       result: null,
     };
   }
-  const authority = parseCalibratedCameraAppliedAuthority(
-    raw,
-    FLOOR_SOURCE_COORDINATE_EXTENT
-  );
-  if (!authority.ok) {
-    return {
-      projection: unavailable("accepted_camera_snapshot_invalid"),
-      result: null,
-    };
-  }
-  if (
-    authority.value.imageBasis.basisKind !== "original" ||
-    authority.value.imageBasis.basisFingerprint !== imagePair.original.sha256 ||
-    authority.value.imageBasis.decodedWidth !== imagePair.original.decodedWidth ||
-    authority.value.imageBasis.decodedHeight !== imagePair.original.decodedHeight ||
-    authority.value.imageBasis.encodedOrientation !== imagePair.original.orientation
-  ) {
-    return {
-      projection: unavailable("accepted_camera_original_basis_mismatch"),
-      result: null,
-    };
+
+  let authority: ParsedCalibratedCameraAppliedAuthority;
+  let cameraAuthority: P2S2FCameraAuthorityDiagnostics;
+  if (isRecord(parsed) && "receiptVersion" in parsed) {
+    const receipt = await parseCalibratedCameraFreezeReceipt(parsed, {
+      original: imagePair.original,
+      empty: imagePair.empty,
+    });
+    if (!receipt.ok) {
+      return {
+        projection: unavailable(
+          receiptUnavailableReason(receipt.reason),
+          `Freeze receipt rejected (${receipt.reason}): ${receipt.detail}`
+        ),
+        result: null,
+      };
+    }
+    authority = extractCalibratedCameraAppliedAuthority(receipt.value);
+    cameraAuthority = Object.freeze({
+      source: "freeze_receipt_certified",
+      authorityVersion: authority.authorityVersion,
+      receiptVersion: receipt.value.receiptVersion,
+      receiptSha256: createHash("sha256")
+        .update(acceptedFile.serialized)
+        .digest("hex"),
+      receiptPayloadSha256: receipt.value.integrity.payloadSha256,
+      originalSha256: receipt.value.payload.original.sha256,
+      emptySha256: receipt.value.payload.empty.sha256,
+      tiledSha256: receipt.value.payload.afc.tiled.image.sha256,
+      attemptId: receipt.value.payload.afc.attemptId,
+      appliedAtIso: authority.appliedAtIso,
+      worldWidth: authority.floorMapping.worldWidth,
+      worldDepth: authority.floorMapping.worldDepth,
+      verticalFovDeg: authority.verticalFovDeg,
+      applyFrame: authority.frameSize,
+      calibrationVersion: authority.calibrationVersion,
+      solver: authority.solver,
+    });
+  } else {
+    const raw = isRecord(parsed) && "calibrationAppliedAuthority" in parsed
+      ? parsed.calibrationAppliedAuthority
+      : parsed;
+    const parsedAuthority = parseCalibratedCameraAppliedAuthority(
+      raw,
+      FLOOR_SOURCE_COORDINATE_EXTENT
+    );
+    if (!parsedAuthority.ok) {
+      return {
+        projection: unavailable(
+          "accepted_camera_snapshot_invalid",
+          `Raw applied authority rejected: ${parsedAuthority.reason}.`
+        ),
+        result: null,
+      };
+    }
+    authority = parsedAuthority.value;
+    if (
+      authority.imageBasis.basisKind !== "original" ||
+      authority.imageBasis.basisFingerprint !== imagePair.original.sha256 ||
+      authority.imageBasis.decodedWidth !== imagePair.original.decodedWidth ||
+      authority.imageBasis.decodedHeight !== imagePair.original.decodedHeight ||
+      authority.imageBasis.encodedOrientation !== imagePair.original.orientation
+    ) {
+      return {
+        projection: unavailable(
+          "accepted_camera_original_basis_mismatch",
+          "Raw applied authority Original identity does not match the controlled room manifest."
+        ),
+        result: null,
+      };
+    }
+    cameraAuthority = rawCameraDiagnostics(authority);
   }
 
   const camera = buildCalibratedReadOnlyProjectionCamera({
-    fovDeg: authority.value.verticalFovDeg,
-    pose: authority.value.pose,
-    frameSize: authority.value.frameSize,
+    fovDeg: authority.verticalFovDeg,
+    pose: authority.pose,
+    frameSize: authority.frameSize,
     near: CALIBRATED_READ_ONLY_PROJECTION_RENDERER_NEAR,
     far: CALIBRATED_READ_ONLY_PROJECTION_RENDERER_FAR,
   });
   if (!camera.ok) {
     return {
-      projection: unavailable("accepted_camera_snapshot_invalid"),
+      projection: unavailable(
+        "accepted_camera_frame_invalid",
+        `Read-only projection camera rejected the authority: ${camera.reason}`
+      ),
       result: null,
     };
   }
@@ -264,15 +418,24 @@ async function loadProjection(
       height: imagePair.original.decodedHeight,
     },
     compatibility,
-    containerSize: authority.value.frameSize,
+    containerSize: authority.frameSize,
     calibratedCamera: camera.camera,
   });
-  if (!result.ok) return { projection: unavailable("accepted_camera_snapshot_invalid"), result };
+  if (!result.ok) {
+    return {
+      projection: unavailable(
+        "accepted_camera_snapshot_invalid",
+        `Projection input rejected (${result.reason}): ${result.detail}`
+      ),
+      result,
+    };
+  }
   return {
     projection: Object.freeze({
       status: "available",
-      cameraProvenance: "reconstituted_accepted_snapshot",
-      cameraAppliedAtIso: authority.value.appliedAtIso,
+      cameraProvenance: cameraAuthority.source,
+      cameraAppliedAtIso: authority.appliedAtIso,
+      cameraAuthority,
       blockers: result.blockers,
       failures: result.failures,
     }),

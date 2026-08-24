@@ -21,6 +21,16 @@ function metric(value: number | null): string {
   return value === null ? "—" : value.toFixed(6);
 }
 
+function shortSha(value: string | null): string {
+  return value ? value.slice(0, 16) : "—";
+}
+
+function cameraSourceLabel(value: "freeze_receipt_certified" | "raw_applied_authority") {
+  return value === "freeze_receipt_certified"
+    ? "certified freeze receipt"
+    : "raw applied authority";
+}
+
 export default function WorldBlockerOverlayReviewClient({ records }: Props) {
   const [roomId, setRoomId] =
     useState<P2S2FWorldBlockerReviewRoomId>("room-e");
@@ -70,14 +80,42 @@ export default function WorldBlockerOverlayReviewClient({ records }: Props) {
               ? "border-emerald-700 bg-emerald-950/30 text-emerald-100"
               : "border-amber-700 bg-amber-950/30 text-amber-100"
           }`}>
-            Camera provenance: <span className="font-mono">
-              {current.projection.cameraProvenance}
+            Authority status: <span className="font-semibold">
+              {current.projection.status}
             </span>
             {current.projection.status === "available"
-              ? ` · applied ${current.projection.cameraAppliedAtIso}`
-              : ` · ${current.projection.reason}`}
+              ? ` · source ${cameraSourceLabel(current.projection.cameraProvenance)}`
+              : " · camera authority unavailable — projection gated"}
           </div>
         </section>
+
+        {current.projection.status === "available" ? (
+          <section className="mt-4 rounded border border-slate-700 bg-slate-900 p-3">
+            <h2 className="font-semibold">Read-only camera authority</h2>
+            <dl className="mt-3 grid gap-x-6 gap-y-2 text-xs sm:grid-cols-2 xl:grid-cols-4">
+              <div><dt className="text-slate-400">Source</dt><dd>{cameraSourceLabel(current.projection.cameraAuthority.source)}</dd></div>
+              <div><dt className="text-slate-400">Receipt version</dt><dd className="font-mono">{current.projection.cameraAuthority.receiptVersion ?? "—"}</dd></div>
+              <div><dt className="text-slate-400">Receipt SHA-256</dt><dd className="font-mono">{shortSha(current.projection.cameraAuthority.receiptSha256)}</dd></div>
+              <div><dt className="text-slate-400">Payload checksum</dt><dd className="font-mono">{shortSha(current.projection.cameraAuthority.receiptPayloadSha256)}</dd></div>
+              <div><dt className="text-slate-400">Original SHA-256</dt><dd className="font-mono">{shortSha(current.projection.cameraAuthority.originalSha256)}</dd></div>
+              <div><dt className="text-slate-400">EMPTY SHA-256</dt><dd className="font-mono">{shortSha(current.projection.cameraAuthority.emptySha256)}</dd></div>
+              <div><dt className="text-slate-400">TILED SHA-256</dt><dd className="font-mono">{shortSha(current.projection.cameraAuthority.tiledSha256)}</dd></div>
+              <div><dt className="text-slate-400">Attempt ID</dt><dd className="font-mono">{current.projection.cameraAuthority.attemptId ?? "—"}</dd></div>
+              <div><dt className="text-slate-400">Applied</dt><dd className="font-mono">{current.projection.cameraAuthority.appliedAtIso}</dd></div>
+              <div><dt className="text-slate-400">World width / depth</dt><dd>{current.projection.cameraAuthority.worldWidth.toFixed(2)} m / {current.projection.cameraAuthority.worldDepth.toFixed(2)} m</dd></div>
+              <div><dt className="text-slate-400">Vertical FOV</dt><dd>{current.projection.cameraAuthority.verticalFovDeg.toFixed(2)}°</dd></div>
+              <div><dt className="text-slate-400">Apply frame</dt><dd>{current.projection.cameraAuthority.applyFrame.width} × {current.projection.cameraAuthority.applyFrame.height}</dd></div>
+              <div><dt className="text-slate-400">Calibration version</dt><dd className="font-mono">{current.projection.cameraAuthority.calibrationVersion}</dd></div>
+              <div><dt className="text-slate-400">Solver version</dt><dd className="font-mono">{current.projection.cameraAuthority.solver}</dd></div>
+            </dl>
+          </section>
+        ) : (
+          <section className="mt-4 rounded border border-amber-800 bg-amber-950/20 p-3 text-sm text-amber-100">
+            <p className="font-semibold">camera authority unavailable — projection gated</p>
+            <p className="mt-1 font-mono text-xs">{current.projection.reason}</p>
+            <p className="mt-1 text-xs text-slate-400">{current.projection.detail}</p>
+          </section>
+        )}
 
         <div className="mt-4 grid gap-4 2xl:grid-cols-2">
           <section className="min-w-0 rounded border border-slate-700 bg-slate-900 p-3">
@@ -210,7 +248,7 @@ export default function WorldBlockerOverlayReviewClient({ records }: Props) {
                 </p>
                 <p className="mt-3 max-w-md text-xs text-slate-400">
                   No metric world coordinates are invented without a complete
-                  accepted calibrated camera snapshot.
+                  room-bound calibrated camera authority.
                 </p>
               </div>
             )}

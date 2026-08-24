@@ -158,6 +158,23 @@ test("S2A performs one exact authority path and transfers the reader quad to Ori
   });
 });
 
+test("S2A accepts an injected certified EMPTY without stage-1 generation", async () => {
+  const { dependencies, calls } = harness();
+  const result = await executeAfcSr1TiledLiveProductAttempt(request(), {
+    ...dependencies,
+    resolveEmpty: async () => {
+      calls.empty++;
+      return { basis: emptyIdentity, bytes: Uint8Array.of(1, 2, 3), generated: false };
+    },
+  });
+  assert.equal(result.status, "authoritative_geometry");
+  assert.equal(result.geometry.geometryAuthority, "tiled_perspective_reader");
+  assert.deepEqual(calls, { qualify: 1, empty: 1, tiled: 1, lineage: 1, reader: 1 });
+  assert.equal(result.diagnostics.attemptCounts.emptyGeneration, 0);
+  assert.equal(result.diagnostics.attemptCounts.tiledGeneration, 1);
+  assert.equal(result.diagnostics.attemptCounts.tiledReader, 1);
+});
+
 test("S2A stops on a reader failure without a second generation or fallback", async () => {
   const { dependencies, calls } = harness();
   const failingReader = async () => {

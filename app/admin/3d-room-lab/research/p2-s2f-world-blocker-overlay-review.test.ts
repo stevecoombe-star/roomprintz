@@ -40,6 +40,7 @@ test("viewer loads certified P2-S2D/P2-S2E source for A-E and fails camera prove
         status: "unavailable",
         cameraProvenance: "unavailable",
         reason: "accepted_camera_snapshot_not_configured",
+        detail: "P2_S2F_ACCEPTED_CAMERA_SNAPSHOT_ROOT is not configured.",
       });
       assert.ok(loaded.record.diagnostics.every(diagnostic =>
         diagnostic.projectionStatus === "unavailable" &&
@@ -154,11 +155,23 @@ test("viewer is research-only, read-only, and renders open SVG polylines", async
   assert.doesNotMatch(combined, /method:\s*["'](?:POST|PUT|PATCH|DELETE)["']/);
   assert.doesNotMatch(combined, /projectEmptyPhysicalBoundaryAnnotation/);
   assert.doesNotMatch(combined, /solvePerspective|evaluateFov|new Homography/);
+  assert.doesNotMatch(sources[2], /calibrated-camera-restore-authority/);
+  assert.match(sources[2], /parseCalibratedCameraFreezeReceipt/);
+  assert.match(sources[2], /extractCalibratedCameraAppliedAuthority/);
+  assert.match(sources[2], /buildCalibratedReadOnlyProjectionCamera/);
   assert.match(sources[0], /projectEmptyFloorPointToWorldXZ/);
   assert.match(sources[0], /pointsWorldXZ\.push/);
   assert.match(sources[3], /NODE_ENV === "production"\) notFound\(\)/);
   assert.match(sources[4], /<polyline/);
   assert.doesNotMatch(sources[4], /<polygon/);
+  assert.doesNotMatch(sources[4], /<button/);
+  assert.match(sources[4], /Read-only camera authority/);
+  assert.match(sources[4], /Receipt version/);
+  assert.match(sources[4], /camera authority unavailable — projection gated/);
+  assert.match(
+    sources[4],
+    /viewBox=\{`\$\{view\.minX\} \$\{view\.minZ\} \$\{view\.extent\} \$\{view\.extent\}`\}/
+  );
   assert.match(apiSource, /getAuthenticatedAdminUser/);
   assert.match(apiSource, /"Cache-Control": "no-store"/);
 });

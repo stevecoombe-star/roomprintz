@@ -17,15 +17,23 @@ function handlerSource(): string {
   return source.slice(start, end);
 }
 
-test("live AFC host calls only the product route then the existing realization sink", () => {
+test("live AFC host keeps the five-key product request separate from certified research input", () => {
   const handler = handlerSource();
   assert.match(handler, /\/api\/admin\/3d-room-lab\/afc-sr1\/live-analyze/);
-  assert.doesNotMatch(handler, /afc-ui2a|afc-ui2b|certified-control/);
+  assert.match(handler, /\/api\/admin\/3d-room-lab\/afc-sr1\/live-analyze-certified-empty/);
+  assert.match(handler, /certifiedMode\s*\?\s*"\/api\/admin\/3d-room-lab\/afc-sr1\/live-analyze-certified-empty"/);
+  const defaultRequest = handler.slice(
+    handler.indexOf(": {\n                attemptId,"),
+    handler.indexOf("}),\n        }", handler.indexOf(": {\n                attemptId,"))
+  );
+  assert.match(defaultRequest, /attemptId,[\s\S]*sourceImageUrl:[\s\S]*sourceImageIdentity:[\s\S]*labLoadGeneration,[\s\S]*referenceDepthM:/);
+  assert.doesNotMatch(defaultRequest, /certifiedEmptyPackage/);
   assert.equal(
     handler.match(/realizeAfcLabGeometry\(\{/g)?.length,
     1,
-    "one accepted result enters realization exactly once"
+    "both sources enter the common accepted-result realization exactly once"
   );
+  assert.doesNotMatch(handler, /executeAfcSr1CompleteProductAttempt|PATH A|ROOM_C_AFC_LAB_GEOMETRY_CANDIDATE/);
 });
 
 test("live realization uses the boundary-gated ratio extension wrapper", () => {

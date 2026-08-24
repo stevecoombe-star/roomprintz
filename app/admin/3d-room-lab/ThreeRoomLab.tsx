@@ -1178,6 +1178,14 @@ function TransformControlRow({
   );
 }
 
+type AfcSr1CertifiedPreparedPackage = Readonly<{
+  packageId: string;
+  roomId: string;
+  receipt: Readonly<{ fileName: string; sha256: string }>;
+  original: Readonly<{ sha256: string }>;
+  emptyRoomAssist: Readonly<{ sha256: string }>;
+}>;
+
 type ThreeRoomLabProps = {
   // Server-derived (AUTO_FLOOR_VISION_ENABLED). Controls whether the experimental
   // Gemini vision provider is offered in the provider selector. The route remains
@@ -1744,6 +1752,15 @@ export default function ThreeRoomLab({
     useState<AfcSr1LiveProductResult | null>(null);
   const [afcLiveSettleFailure, setAfcLiveSettleFailure] =
     useState<AfcLiveSettleFailure | null>(null);
+  const [afcCertifiedEmptySource, setAfcCertifiedEmptySource] =
+    useState<"live_generate" | "certified_prepared_package">("live_generate");
+  const [afcCertifiedEmptyRoomId, setAfcCertifiedEmptyRoomId] = useState("");
+  const [afcCertifiedEmptyPackages, setAfcCertifiedEmptyPackages] =
+    useState<readonly AfcSr1CertifiedPreparedPackage[]>([]);
+  const [afcCertifiedEmptyInventoryStatus, setAfcCertifiedEmptyInventoryStatus] =
+    useState<"idle" | "loading" | "loaded" | "failed">("idle");
+  const [afcCertifiedEmptyPackageId, setAfcCertifiedEmptyPackageId] =
+    useState<string | null>(null);
   const [afcCameraFreezeReceipt, setAfcCameraFreezeReceipt] =
     useState<CalibratedCameraFreezeReceipt | null>(null);
   const [afcCameraFreezeStatus, setAfcCameraFreezeStatus] =
@@ -2604,6 +2621,71 @@ export default function ThreeRoomLab({
   afcVerifiedFloorLiveBasisRef.current = afcVerifiedFloorLiveBasis;
   qualifiedImageBasisRef.current = qualifiedImageBasis;
 
+  const matchingAfcCertifiedEmptyPackages = useMemo(
+    () => afcCertifiedEmptyPackages.filter(
+      (entry) => entry.original.sha256 === qualifiedImageBasis?.basisFingerprint
+    ),
+    [afcCertifiedEmptyPackages, qualifiedImageBasis?.basisFingerprint]
+  );
+  const selectedAfcCertifiedEmptyPackage = useMemo(
+    () => matchingAfcCertifiedEmptyPackages.find(
+      (entry) => entry.packageId === afcCertifiedEmptyPackageId
+    ) ?? null,
+    [afcCertifiedEmptyPackageId, matchingAfcCertifiedEmptyPackages]
+  );
+  const refreshAfcCertifiedEmptyPackages = useCallback(async () => {
+    if (
+      !afcUi2aPreparationEnabled ||
+      !/^[a-z][a-z0-9-]{0,63}$/.test(afcCertifiedEmptyRoomId)
+    ) {
+      setAfcCertifiedEmptyPackages([]);
+      setAfcCertifiedEmptyPackageId(null);
+      setAfcCertifiedEmptyInventoryStatus("failed");
+      return;
+    }
+    setAfcCertifiedEmptyInventoryStatus("loading");
+    setAfcCertifiedEmptyPackageId(null);
+    try {
+      const response = await fetch(
+        `/api/admin/3d-room-lab/afc-ui2a/packages?roomLabel=${encodeURIComponent(afcCertifiedEmptyRoomId)}`,
+        { cache: "no-store" }
+      );
+      const body: unknown = await response.json().catch(() => null);
+      if (
+        !response.ok ||
+        !body ||
+        typeof body !== "object" ||
+        (body as { status?: unknown }).status !== "inventory" ||
+        !Array.isArray((body as { packages?: unknown }).packages)
+      ) {
+        setAfcCertifiedEmptyPackages([]);
+        setAfcCertifiedEmptyInventoryStatus("failed");
+        return;
+      }
+      const packages = (body as { packages: unknown[] }).packages.flatMap((entry) => {
+        if (
+          !entry ||
+          typeof entry !== "object" ||
+          typeof (entry as { packageId?: unknown }).packageId !== "string" ||
+          typeof (entry as { roomId?: unknown }).roomId !== "string" ||
+          typeof (entry as { receipt?: { fileName?: unknown; sha256?: unknown } }).receipt?.fileName !== "string" ||
+          typeof (entry as { receipt?: { fileName?: unknown; sha256?: unknown } }).receipt?.sha256 !== "string" ||
+          typeof (entry as { original?: { sha256?: unknown } }).original?.sha256 !== "string" ||
+          typeof (entry as { emptyRoomAssist?: { sha256?: unknown } }).emptyRoomAssist?.sha256 !== "string"
+        ) {
+          return [];
+        }
+        const value = entry as AfcSr1CertifiedPreparedPackage;
+        return [value];
+      });
+      setAfcCertifiedEmptyPackages(packages);
+      setAfcCertifiedEmptyInventoryStatus("loaded");
+    } catch {
+      setAfcCertifiedEmptyPackages([]);
+      setAfcCertifiedEmptyInventoryStatus("failed");
+    }
+  }, [afcCertifiedEmptyRoomId, afcUi2aPreparationEnabled]);
+
   const setCurrentVerifiedAfcFloorCameraBinding = useCallback(
     (binding: VerifiedAfcFloorCameraBinding | null) => {
       verifiedAfcFloorCameraBindingRef.current = binding;
@@ -3082,6 +3164,17 @@ export default function ThreeRoomLab({
       });
       return;
     }
+    if (
+      afcCertifiedEmptySource === "certified_prepared_package" &&
+      (!afcUi2aPreparationEnabled || !selectedAfcCertifiedEmptyPackage)
+    ) {
+      setAfcLiveAnalyzeStatus({
+        kind: "failed",
+        attemptId: null,
+        reason: "Select a verified prepared package for the current Original image.",
+      });
+      return;
+    }
 
     invalidateAfcCameraFreeze();
     afcLiveAbortControllerRef.current?.abort();
@@ -3096,24 +3189,51 @@ export default function ThreeRoomLab({
     setAfcLiveAnalyzeStatus({ kind: "analyzing", attemptId });
 
     try {
+      const certifiedPackage = selectedAfcCertifiedEmptyPackage;
+      const certifiedMode =
+        afcCertifiedEmptySource === "certified_prepared_package" &&
+        certifiedPackage !== null;
       const response = await fetch(
-        "/api/admin/3d-room-lab/afc-sr1/live-analyze",
+        certifiedMode
+          ? "/api/admin/3d-room-lab/afc-sr1/live-analyze-certified-empty"
+          : "/api/admin/3d-room-lab/afc-sr1/live-analyze",
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           signal: controller.signal,
-          body: JSON.stringify({
-            attemptId,
-            sourceImageUrl: serverImageUrl,
-            sourceImageIdentity: {
-              sha256: basis.basisFingerprint,
-              decodedWidth: basis.decodedWidth,
-              decodedHeight: basis.decodedHeight,
-              orientation: 1,
-            },
-            labLoadGeneration,
-            referenceDepthM: floorMapping.worldDepth,
-          }),
+          body: JSON.stringify(
+            afcCertifiedEmptySource === "certified_prepared_package" &&
+            certifiedPackage !== null
+            ? {
+                attemptId,
+                sourceImageUrl: serverImageUrl,
+                sourceImageIdentity: {
+                  sha256: basis.basisFingerprint,
+                  decodedWidth: basis.decodedWidth,
+                  decodedHeight: basis.decodedHeight,
+                  orientation: 1,
+                },
+                labLoadGeneration,
+                referenceDepthM: floorMapping.worldDepth,
+                certifiedEmptyPackage: {
+                  roomId: certifiedPackage.roomId,
+                  packageId: certifiedPackage.packageId,
+                  receiptFileName: certifiedPackage.receipt.fileName,
+                  receiptSha256: certifiedPackage.receipt.sha256,
+                },
+              }
+            : {
+                attemptId,
+                sourceImageUrl: serverImageUrl,
+                sourceImageIdentity: {
+                  sha256: basis.basisFingerprint,
+                  decodedWidth: basis.decodedWidth,
+                  decodedHeight: basis.decodedHeight,
+                  orientation: 1,
+                },
+                labLoadGeneration,
+                referenceDepthM: floorMapping.worldDepth,
+              }),
         }
       );
       const result = (await response.json()) as AfcSr1LiveProductResult;
@@ -3288,6 +3408,8 @@ export default function ThreeRoomLab({
       }
     }
   }, [
+    afcCertifiedEmptySource,
+    afcUi2aPreparationEnabled,
     basisQualificationStatus,
     floorMapping.worldDepth,
     invalidateAfcCameraFreeze,
@@ -3297,6 +3419,7 @@ export default function ThreeRoomLab({
     pendingScanAndApplyFov,
     realizeAfcLabGeometry,
     roomImageUrl,
+    selectedAfcCertifiedEmptyPackage,
   ]);
 
   const restorePerspectivePreviewToCommitted = useCallback(() => {
@@ -21441,6 +21564,84 @@ export default function ThreeRoomLab({
           </div>
 
           <div className="mt-3 rounded-lg border border-emerald-900/70 bg-emerald-950/15 p-3">
+            {afcUi2aPreparationEnabled ? (
+              <div className="mb-3 border-b border-emerald-900/70 pb-3 text-xs">
+                <div className="flex flex-wrap items-center gap-3">
+                  <span className="font-medium text-slate-200">EMPTY source:</span>
+                  <label className="flex items-center gap-1 text-slate-300">
+                    <input
+                      type="radio"
+                      name="afc-certified-empty-source"
+                      checked={afcCertifiedEmptySource === "live_generate"}
+                      onChange={() => setAfcCertifiedEmptySource("live_generate")}
+                    />
+                    Live generate
+                  </label>
+                  <label className="flex items-center gap-1 text-slate-300">
+                    <input
+                      type="radio"
+                      name="afc-certified-empty-source"
+                      checked={afcCertifiedEmptySource === "certified_prepared_package"}
+                      onChange={() => setAfcCertifiedEmptySource("certified_prepared_package")}
+                    />
+                    Certified prepared package
+                  </label>
+                </div>
+                {afcCertifiedEmptySource === "certified_prepared_package" ? (
+                  <div className="mt-2 flex flex-wrap items-center gap-2">
+                    <label className="text-slate-400">
+                      Room label{" "}
+                      <input
+                        value={afcCertifiedEmptyRoomId}
+                        onChange={(event) => {
+                          setAfcCertifiedEmptyRoomId(event.target.value);
+                          setAfcCertifiedEmptyPackages([]);
+                          setAfcCertifiedEmptyPackageId(null);
+                          setAfcCertifiedEmptyInventoryStatus("idle");
+                        }}
+                        placeholder="room-c"
+                        className="ml-1 rounded border border-slate-700 bg-slate-950 px-2 py-1 text-slate-100 outline-none focus:border-emerald-400"
+                      />
+                    </label>
+                    <button
+                      type="button"
+                      onClick={() => void refreshAfcCertifiedEmptyPackages()}
+                      disabled={
+                        !/^[a-z][a-z0-9-]{0,63}$/.test(afcCertifiedEmptyRoomId) ||
+                        afcCertifiedEmptyInventoryStatus === "loading"
+                      }
+                      className="rounded border border-slate-600 px-2 py-1 text-slate-200 transition hover:border-emerald-400 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {afcCertifiedEmptyInventoryStatus === "loading"
+                        ? "Refreshing…"
+                        : "Refresh packages"}
+                    </button>
+                    <select
+                      value={afcCertifiedEmptyPackageId ?? ""}
+                      onChange={(event) => setAfcCertifiedEmptyPackageId(event.target.value || null)}
+                      disabled={matchingAfcCertifiedEmptyPackages.length === 0}
+                      className="max-w-full rounded border border-slate-700 bg-slate-950 px-2 py-1 text-slate-100 outline-none focus:border-emerald-400 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      <option value="">Select a matching package</option>
+                      {matchingAfcCertifiedEmptyPackages.map((entry) => (
+                        <option key={entry.packageId} value={entry.packageId}>
+                          {entry.packageId}
+                        </option>
+                      ))}
+                    </select>
+                    {selectedAfcCertifiedEmptyPackage ? (
+                      <span className="break-all text-emerald-200">
+                        EMPTY SHA: {selectedAfcCertifiedEmptyPackage.emptyRoomAssist.sha256}
+                      </span>
+                    ) : (
+                      <span className="text-amber-200">
+                        Select one verified package matching the current Original.
+                      </span>
+                    )}
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
             <div className="flex flex-wrap items-center gap-2 text-xs">
               <button
                 type="button"
@@ -21450,7 +21651,11 @@ export default function ThreeRoomLab({
                   afcVerifiedFloorLiveBasis === null ||
                   afcLiveAnalyzeStatus.kind === "applying" ||
                   pendingAfcLabCameraApply !== null ||
-                  pendingScanAndApplyFov !== null
+                  pendingScanAndApplyFov !== null ||
+                  (
+                    afcCertifiedEmptySource === "certified_prepared_package" &&
+                    (!afcUi2aPreparationEnabled || selectedAfcCertifiedEmptyPackage === null)
+                  )
                 }
                 className="rounded border border-emerald-500/70 px-2 py-1 font-medium text-emerald-100 transition hover:border-emerald-300 hover:text-white disabled:cursor-not-allowed disabled:border-slate-700 disabled:text-slate-500 disabled:opacity-60"
               >

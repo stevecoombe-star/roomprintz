@@ -18,9 +18,28 @@ export type P2S2FWorldBlockerReviewRoomId =
   typeof P2_S2F_WORLD_BLOCKER_REVIEW_ROOMS[number];
 
 export type P2S2FReviewCameraProvenance =
-  | "accepted_live_or_frozen_calibrated_camera"
-  | "reconstituted_accepted_snapshot"
+  | "freeze_receipt_certified"
+  | "raw_applied_authority"
   | "unavailable";
+
+export type P2S2FCameraAuthorityDiagnostics = Readonly<{
+  source: Exclude<P2S2FReviewCameraProvenance, "unavailable">;
+  authorityVersion: string;
+  receiptVersion: string | null;
+  receiptSha256: string | null;
+  receiptPayloadSha256: string | null;
+  originalSha256: string;
+  emptySha256: string | null;
+  tiledSha256: string | null;
+  attemptId: string | null;
+  appliedAtIso: string;
+  worldWidth: number;
+  worldDepth: number;
+  verticalFovDeg: number;
+  applyFrame: Readonly<{ width: number; height: number }>;
+  calibrationVersion: string;
+  solver: string;
+}>;
 
 export type P2S2FFragmentReviewDiagnostic = Readonly<{
   sourceFragmentId: string;
@@ -39,6 +58,7 @@ export type P2S2FWorldBlockerReviewProjection =
       status: "available";
       cameraProvenance: Exclude<P2S2FReviewCameraProvenance, "unavailable">;
       cameraAppliedAtIso: string;
+      cameraAuthority: P2S2FCameraAuthorityDiagnostics;
       blockers: readonly ProjectedVisibleFloorBlocker[];
       failures: readonly P2S2FFragmentProjectionFailure[];
     }>
@@ -49,7 +69,13 @@ export type P2S2FWorldBlockerReviewProjection =
         | "accepted_camera_snapshot_not_configured"
         | "accepted_camera_snapshot_unavailable"
         | "accepted_camera_snapshot_invalid"
-        | "accepted_camera_original_basis_mismatch";
+        | "accepted_camera_original_basis_mismatch"
+        | "accepted_camera_freeze_receipt_invalid"
+        | "accepted_camera_original_identity_mismatch"
+        | "accepted_camera_empty_identity_mismatch"
+        | "accepted_camera_tiled_identity_mismatch"
+        | "accepted_camera_frame_invalid";
+      detail: string;
     }>;
 
 export type P2S2FWorldBlockerReviewRecord = Readonly<{
