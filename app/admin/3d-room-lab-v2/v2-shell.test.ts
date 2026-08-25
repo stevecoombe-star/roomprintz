@@ -15,6 +15,7 @@ import AdminAfcV2Page from "./page";
 import {
   REPRESENTATION_KINDS,
   createInitialRepresentationState,
+  setEmptyRepresentation,
   setOriginalRepresentation,
 } from "./representation-state";
 
@@ -27,7 +28,9 @@ function readRuntimeSources() {
   return readdirSync(V2_DIRECTORY)
     .filter(
       (fileName) =>
-        /\.(?:ts|tsx)$/.test(fileName) && !fileName.endsWith(".test.ts"),
+        /\.(?:ts|tsx)$/.test(fileName) &&
+        !fileName.endsWith(".test.ts") &&
+        !fileName.endsWith(".server.ts"),
     )
     .map((fileName) => ({
       fileName,
@@ -42,7 +45,7 @@ function importSpecifiers(source: string): string[] {
   );
 }
 
-test("V2-S1 route and clean shell render", () => {
+test("V2-S2 route and clean shell render", () => {
   const routeMarkup = renderToStaticMarkup(
     createElement(AdminAfcV2Page),
   );
@@ -50,7 +53,7 @@ test("V2-S1 route and clean shell render", () => {
 
   assert.match(routeMarkup, /3D Room Lab v2/);
   assert.match(shellMarkup, /Analyze &amp; Apply AFC/);
-  assert.match(shellMarkup, /Load Original/);
+  assert.match(shellMarkup, /Prepare Original/);
   assert.match(shellMarkup, /Original/);
   assert.match(shellMarkup, /EMPTY/);
   assert.match(shellMarkup, /FULLY TILED/);
@@ -59,7 +62,7 @@ test("V2-S1 route and clean shell render", () => {
   assert.match(shellMarkup, /Camera/);
   assert.match(shellMarkup, /Room Boundaries/);
   assert.match(shellMarkup, /Supports/);
-  assert.match(shellMarkup, /AFC geometry is not implemented in V2-S1/);
+  assert.match(shellMarkup, /Floor-only TILED remains internal evidence/);
 });
 
 test("representation contract keeps Original, EMPTY, and FULLY_TILED distinct", () => {
@@ -81,9 +84,8 @@ test("representation contract keeps Original, EMPTY, and FULLY_TILED distinct", 
   const loaded = setOriginalRepresentation(initial, {
     imageUrl: "blob:original-room",
     source: {
-      type: "local-file",
-      fileName: "room.jpg",
-      mimeType: "image/jpeg",
+      type: "hosted-url",
+      imageUrl: "https://example.test/room.jpg",
     },
   });
   assert.equal(loaded.ORIGINAL.availability, "available");
@@ -93,30 +95,35 @@ test("representation contract keeps Original, EMPTY, and FULLY_TILED distinct", 
   assert.notEqual(loaded.ORIGINAL, loaded.FULLY_TILED);
 });
 
-test("analysis request reports the V2-S1 boundary without geometry state", () => {
+test("orchestration tracks the V2-S2 certified floor lifecycle", () => {
   const loaded = reduceAfcOrchestrationState(
     INITIAL_AFC_ORCHESTRATION_STATE,
-    { type: "original_loaded" },
+    { type: "original_preparation_started" },
   );
   assert.deepEqual(loaded, {
     selectedRepresentation: "ORIGINAL",
-    status: "original_loaded",
+    status: "preparing_original",
   });
 
   const requested = reduceAfcOrchestrationState(loaded, {
-    type: "analysis_requested",
+    type: "original_ready",
   });
   assert.deepEqual(requested, {
     selectedRepresentation: "ORIGINAL",
-    status: "not_implemented",
+    status: "original_ready",
   });
-  assert.deepEqual(Object.keys(requested).sort(), [
-    "selectedRepresentation",
-    "status",
-  ]);
+  const applying = reduceAfcOrchestrationState(requested, {
+    type: "analysis_stage",
+    status: "generating_empty",
+  });
+  assert.equal(applying.status, "generating_empty");
+  assert.equal(
+    reduceAfcOrchestrationState(applying, { type: "analysis_applied" }).status,
+    "applied",
+  );
 });
 
-test("v2 runtime imports remain isolated from v1 and geometry execution", () => {
+test("v2 browser runtime remains isolated from v1 UI and research", () => {
   const runtimeSources = readRuntimeSources();
   const imports = runtimeSources.flatMap(({ source }) =>
     importSpecifiers(source),
@@ -125,9 +132,12 @@ test("v2 runtime imports remain isolated from v1 and geometry execution", () => 
     "next",
     "next/image",
     "react",
+    "three",
     "./RoomLabV2",
+    "./CalibratedRoomViewer",
     "./orchestration-state",
     "./representation-state",
+    "@/app/admin/3d-room-lab/calibrated-camera-readonly-projection",
   ]);
 
   for (const imported of imports) {
@@ -143,12 +153,29 @@ test("v2 runtime imports remain isolated from v1 and geometry execution", () => 
     .join("\n");
 
   assert.doesNotMatch(combinedSource, /(?:^|[/"])research(?:[/"]|$)/m);
-  assert.doesNotMatch(combinedSource, /\bcompositor\b/i);
-  assert.doesNotMatch(combinedSource, /live-analyze|tile_grid_scaffold/i);
-  assert.doesNotMatch(combinedSource, /\bfetch\s*\(|\/api\//);
+  assert.doesNotMatch(combinedSource, /ThreeRoomLab/);
+  assert.doesNotMatch(combinedSource, /\/api\/admin\/3d-room-lab\/afc-sr1/);
+  assert.doesNotMatch(combinedSource, /tile_grid_scaffold/i);
   assert.doesNotMatch(combinedSource, /localStorage|scene-state:v0/);
   assert.doesNotMatch(
     combinedSource,
-    /setCalibratedCamera|applyContainerFloor|live-collision-blockers/i,
+    /setCalibratedCamera|applyContainerFloor|live-collision-blockers|evaluateQuadSolvability/i,
+  );
+});
+
+test("floor-only TILED stays internal and never enables FULLY_TILED", () => {
+  const withOriginal = setOriginalRepresentation(createInitialRepresentationState(), {
+    imageUrl: "https://example.test/room.jpg",
+    source: { type: "hosted-url", imageUrl: "https://example.test/room.jpg" },
+  });
+  const withEmpty = setEmptyRepresentation(
+    withOriginal,
+    "/api/admin/3d-room-lab-v2/attempt-empty?attemptId=attempt",
+  );
+  assert.equal(withEmpty.EMPTY.availability, "available");
+  assert.equal(withEmpty.FULLY_TILED.availability, "unavailable");
+  assert.match(
+    "reason" in withEmpty.FULLY_TILED ? withEmpty.FULLY_TILED.reason : "",
+    /V2-S2/,
   );
 });

@@ -4,7 +4,7 @@ import RoomLabV2 from "./RoomLabV2";
 
 export const metadata: Metadata = {
   title: "AFC v2 Room Lab",
-  description: "Clean AFC v2 architecture shell",
+  description: "Certified AFC v2 floor and camera calibration",
 };
 
 export default function AdminAfcV2Page() {

@@ -2,8 +2,14 @@ import type { RepresentationKind } from "./representation-state";
 
 export type AfcShellStatus =
   | "idle"
-  | "original_loaded"
-  | "not_implemented";
+  | "preparing_original"
+  | "original_ready"
+  | "generating_empty"
+  | "generating_floor_scaffold"
+  | "reading_floor"
+  | "calibrating_camera"
+  | "applied"
+  | "failed";
 
 export type AfcOrchestrationState = {
   selectedRepresentation: RepresentationKind;
@@ -15,8 +21,11 @@ export type AfcOrchestrationEvent =
       type: "representation_selected";
       representation: RepresentationKind;
     }
-  | { type: "original_loaded" }
-  | { type: "analysis_requested" };
+  | { type: "original_preparation_started" }
+  | { type: "original_ready" }
+  | { type: "analysis_stage"; status: Exclude<AfcShellStatus, "idle" | "preparing_original" | "original_ready" | "applied" | "failed"> }
+  | { type: "analysis_applied" }
+  | { type: "analysis_failed" };
 
 export const INITIAL_AFC_ORCHESTRATION_STATE: AfcOrchestrationState = {
   selectedRepresentation: "ORIGINAL",
@@ -25,8 +34,14 @@ export const INITIAL_AFC_ORCHESTRATION_STATE: AfcOrchestrationState = {
 
 export const AFC_STATUS_LABELS: Record<AfcShellStatus, string> = {
   idle: "Idle",
-  original_loaded: "Original loaded",
-  not_implemented: "Not implemented in V2-S1",
+  preparing_original: "Preparing Original",
+  original_ready: "Original ready",
+  generating_empty: "Generating EMPTY",
+  generating_floor_scaffold: "Generating floor calibration scaffold",
+  reading_floor: "Reading floor",
+  calibrating_camera: "Calibrating camera",
+  applied: "Applied",
+  failed: "Failed",
 };
 
 export function reduceAfcOrchestrationState(
@@ -39,15 +54,30 @@ export function reduceAfcOrchestrationState(
         ...state,
         selectedRepresentation: event.representation,
       };
-    case "original_loaded":
+    case "original_preparation_started":
       return {
         selectedRepresentation: "ORIGINAL",
-        status: "original_loaded",
+        status: "preparing_original",
       };
-    case "analysis_requested":
+    case "original_ready":
       return {
         ...state,
-        status: "not_implemented",
+        status: "original_ready",
+      };
+    case "analysis_stage":
+      return {
+        ...state,
+        status: event.status,
+      };
+    case "analysis_applied":
+      return {
+        selectedRepresentation: "ORIGINAL",
+        status: "applied",
+      };
+    case "analysis_failed":
+      return {
+        ...state,
+        status: "failed",
       };
   }
 }

@@ -16,16 +16,15 @@ export const REPRESENTATION_DESCRIPTIONS: Record<
   RepresentationKind,
   string
 > = {
-  ORIGINAL: "The source room image.",
-  EMPTY: "Future appearance-cleared evidence. No geometry is provided in V2-S1.",
+  ORIGINAL: "The accepted Original image basis.",
+  EMPTY: "Appearance-cleared evidence generated for floor calibration.",
   FULLY_TILED:
-    "Future architectural observation evidence. No geometry is provided in V2-S1.",
+    "Reserved for the future full-room architectural scaffold.",
 };
 
 export type OriginalImageSource = {
-  type: "local-file";
-  fileName: string;
-  mimeType: string;
+  type: "hosted-url";
+  imageUrl: string;
 };
 
 export type AvailableRepresentation<
@@ -65,7 +64,7 @@ export function createInitialRepresentationState(): RepresentationState {
     EMPTY: {
       kind: "EMPTY",
       availability: "unavailable",
-      reason: "EMPTY generation is not implemented in V2-S1.",
+      reason: "Run certified floor AFC to generate EMPTY evidence.",
     },
     FULLY_TILED: {
       kind: "FULLY_TILED",
@@ -89,6 +88,37 @@ export function setOriginalRepresentation(
       availability: "available",
       imageUrl: image.imageUrl,
       source: image.source,
+    },
+    EMPTY: {
+      kind: "EMPTY",
+      availability: "unavailable",
+      reason: "Run certified floor AFC to generate EMPTY evidence.",
+    },
+    FULLY_TILED: {
+      kind: "FULLY_TILED",
+      availability: "unavailable",
+      reason: "FULLY TILED is not implemented in V2-S2.",
+    },
+  };
+}
+
+export function setEmptyRepresentation(
+  state: RepresentationState,
+  imageUrl: string,
+): RepresentationState {
+  return {
+    ...state,
+    EMPTY: {
+      kind: "EMPTY",
+      availability: "available",
+      imageUrl,
+    },
+    // Floor-only TILED is an internal calibration artifact. FULLY_TILED remains
+    // intentionally unavailable until V2-S3.
+    FULLY_TILED: {
+      kind: "FULLY_TILED",
+      availability: "unavailable",
+      reason: "FULLY TILED is not implemented in V2-S2.",
     },
   };
 }
