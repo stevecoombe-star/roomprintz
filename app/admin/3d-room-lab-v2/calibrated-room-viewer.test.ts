@@ -13,6 +13,10 @@ const source = readFileSync(
   path.join(process.cwd(), "app/admin/3d-room-lab-v2/CalibratedRoomViewer.tsx"),
   "utf8",
 );
+const roomLabSource = readFileSync(
+  path.join(process.cwd(), "app/admin/3d-room-lab-v2/RoomLabV2.tsx"),
+  "utf8",
+);
 
 test("read-only viewer realizes only the supplied frozen snapshot", () => {
   assert.match(source, /buildCalibratedReadOnlyProjectionCamera/);
@@ -54,4 +58,26 @@ test("read-only viewer has no solver, camera writer, or historical host coupling
   );
   assert.doesNotMatch(source, /collision|support|furniture/i);
   assert.doesNotMatch(source, /on[A-Z][A-Za-z]*=/);
+});
+
+test("accepted Original and transparent calibrated overlay coexist after apply", () => {
+  assert.match(
+    roomLabSource,
+    /selectedRepresentation === "ORIGINAL"[\s\S]*applied[\s\S]*<CalibratedRoomViewer[\s\S]*originalImageUrl=\{selectedRepresentation\.imageUrl\}[\s\S]*camera=\{applied\.camera\}/,
+  );
+  assert.match(source, /<Image[\s\S]*src=\{originalImageUrl\}/);
+  assert.match(source, /alt="Accepted Original room basis"/);
+  assert.match(source, /className="z-0 object-contain"/);
+  assert.match(source, /pointer-events-none absolute inset-0 overflow-hidden/);
+  assert.match(source, /new THREE\.WebGLRenderer\(\{ alpha: true/);
+  assert.match(source, /renderer\.setClearColor\(0x000000, 0\)/);
+  assert.match(source, /renderer\.setClearAlpha\(0\)/);
+  assert.match(source, /scene\.background = null/);
+  assert.match(source, /className="absolute inset-0 z-10 bg-transparent"/);
+  assert.doesNotMatch(source, /TextureLoader|map:\s*texture/);
+  assert.match(source, /new THREE\.MeshBasicMaterial\(\{[\s\S]*color: 0x22d3ee/);
+  assert.match(source, /new THREE\.EdgesGeometry\(geometry\)/);
+  assert.match(source, /new THREE\.LineSegments/);
+  assert.match(roomLabSource, /frame:\s*originalDisplayFrame/);
+  assert.doesNotMatch(source, /camera\.aspect\s*=|setCalibratedCamera/);
 });

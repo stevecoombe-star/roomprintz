@@ -6,7 +6,7 @@ import test from "node:test";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 
-import RoomLabV2 from "./RoomLabV2";
+import RoomLabV2, { containedDisplayFrame } from "./RoomLabV2";
 import {
   INITIAL_AFC_ORCHESTRATION_STATE,
   reduceAfcOrchestrationState,
@@ -16,6 +16,7 @@ import {
   REPRESENTATION_KINDS,
   createInitialRepresentationState,
   setEmptyRepresentation,
+  setFullyTiledRepresentation,
   setOriginalRepresentation,
 } from "./representation-state";
 
@@ -45,7 +46,7 @@ function importSpecifiers(source: string): string[] {
   );
 }
 
-test("V2-S2 route and clean shell render", () => {
+test("V2-S3 route and restrained room-observation shell render", () => {
   const routeMarkup = renderToStaticMarkup(
     createElement(AdminAfcV2Page),
   );
@@ -60,9 +61,11 @@ test("V2-S2 route and clean shell render", () => {
   assert.match(shellMarkup, /AFC Status/);
   assert.match(shellMarkup, /Floor/);
   assert.match(shellMarkup, /Camera/);
+  assert.match(shellMarkup, /Room Observations/);
   assert.match(shellMarkup, /Room Boundaries/);
   assert.match(shellMarkup, /Supports/);
-  assert.match(shellMarkup, /Floor-only TILED remains internal evidence/);
+  assert.match(shellMarkup, /Generate one FULLY TILED scaffold/);
+  assert.doesNotMatch(shellMarkup, /floor-only TILED/i);
 });
 
 test("representation contract keeps Original, EMPTY, and FULLY_TILED distinct", () => {
@@ -93,6 +96,30 @@ test("representation contract keeps Original, EMPTY, and FULLY_TILED distinct", 
   assert.equal(loaded.FULLY_TILED.availability, "unavailable");
   assert.notEqual(loaded.ORIGINAL, loaded.EMPTY);
   assert.notEqual(loaded.ORIGINAL, loaded.FULLY_TILED);
+});
+
+test("diagnostic image frame preserves each representation aspect ratio", () => {
+  assert.deepEqual(
+    containedDisplayFrame(
+      { width: 1000, height: 600 },
+      { width: 1200, height: 800 },
+    ),
+    { width: 900, height: 600 },
+  );
+  assert.deepEqual(
+    containedDisplayFrame(
+      { width: 600, height: 1000 },
+      { width: 1200, height: 800 },
+    ),
+    { width: 600, height: 400 },
+  );
+  assert.deepEqual(
+    containedDisplayFrame(
+      { width: 0, height: 0 },
+      { width: 1200, height: 800 },
+    ),
+    { width: 0, height: 0 },
+  );
 });
 
 test("orchestration tracks the V2-S2 certified floor lifecycle", () => {
@@ -135,8 +162,10 @@ test("v2 browser runtime remains isolated from v1 UI and research", () => {
     "three",
     "./RoomLabV2",
     "./CalibratedRoomViewer",
+    "./RoomEvidenceOverlay",
     "./orchestration-state",
     "./representation-state",
+    "./room-observation-contract",
     "@/app/admin/3d-room-lab/calibrated-camera-readonly-projection",
   ]);
 
@@ -163,7 +192,7 @@ test("v2 browser runtime remains isolated from v1 UI and research", () => {
   );
 });
 
-test("floor-only TILED stays internal and never enables FULLY_TILED", () => {
+test("EMPTY stays distinct and only real generation enables FULLY_TILED", () => {
   const withOriginal = setOriginalRepresentation(createInitialRepresentationState(), {
     imageUrl: "https://example.test/room.jpg",
     source: { type: "hosted-url", imageUrl: "https://example.test/room.jpg" },
@@ -176,6 +205,12 @@ test("floor-only TILED stays internal and never enables FULLY_TILED", () => {
   assert.equal(withEmpty.FULLY_TILED.availability, "unavailable");
   assert.match(
     "reason" in withEmpty.FULLY_TILED ? withEmpty.FULLY_TILED.reason : "",
-    /V2-S2/,
+    /not been generated/,
   );
+  const withFullyTiled = setFullyTiledRepresentation(
+    withEmpty,
+    "/api/admin/3d-room-lab-v2/attempt-fully-tiled?attemptId=attempt&resultId=result",
+  );
+  assert.equal(withFullyTiled.FULLY_TILED.availability, "available");
+  assert.notEqual(withFullyTiled.EMPTY, withFullyTiled.FULLY_TILED);
 });

@@ -5,9 +5,10 @@ export type AfcShellStatus =
   | "preparing_original"
   | "original_ready"
   | "generating_empty"
-  | "generating_floor_scaffold"
+  | "generating_fully_tiled"
   | "reading_floor"
   | "calibrating_camera"
+  | "observing_room"
   | "applied"
   | "failed";
 
@@ -37,9 +38,10 @@ export const AFC_STATUS_LABELS: Record<AfcShellStatus, string> = {
   preparing_original: "Preparing Original",
   original_ready: "Original ready",
   generating_empty: "Generating EMPTY",
-  generating_floor_scaffold: "Generating floor calibration scaffold",
-  reading_floor: "Reading floor",
+  generating_fully_tiled: "Generating FULLY TILED",
+  reading_floor: "Reading Floor from FULLY TILED",
   calibrating_camera: "Calibrating camera",
+  observing_room: "Observing visible room envelope",
   applied: "Applied",
   failed: "Failed",
 };

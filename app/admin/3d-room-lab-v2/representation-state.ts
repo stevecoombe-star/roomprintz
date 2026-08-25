@@ -17,9 +17,9 @@ export const REPRESENTATION_DESCRIPTIONS: Record<
   string
 > = {
   ORIGINAL: "The accepted Original image basis.",
-  EMPTY: "Appearance-cleared evidence generated for floor calibration.",
+  EMPTY: "Appearance-cleared diagnostic evidence.",
   FULLY_TILED:
-    "Reserved for the future full-room architectural scaffold.",
+    "Single tiled scaffold for Floor and room-envelope observation.",
 };
 
 export type OriginalImageSource = {
@@ -64,12 +64,12 @@ export function createInitialRepresentationState(): RepresentationState {
     EMPTY: {
       kind: "EMPTY",
       availability: "unavailable",
-      reason: "Run certified floor AFC to generate EMPTY evidence.",
+      reason: "Run AFC to generate EMPTY diagnostic evidence.",
     },
     FULLY_TILED: {
       kind: "FULLY_TILED",
       availability: "unavailable",
-      reason: "FULLY TILED generation is not implemented in V2-S1.",
+      reason: "Run AFC to generate the FULLY TILED room-envelope scaffold.",
     },
   };
 }
@@ -92,12 +92,12 @@ export function setOriginalRepresentation(
     EMPTY: {
       kind: "EMPTY",
       availability: "unavailable",
-      reason: "Run certified floor AFC to generate EMPTY evidence.",
+      reason: "Run AFC to generate EMPTY diagnostic evidence.",
     },
     FULLY_TILED: {
       kind: "FULLY_TILED",
       availability: "unavailable",
-      reason: "FULLY TILED is not implemented in V2-S2.",
+      reason: "Run AFC to generate the FULLY TILED room-envelope scaffold.",
     },
   };
 }
@@ -113,12 +113,25 @@ export function setEmptyRepresentation(
       availability: "available",
       imageUrl,
     },
-    // Floor-only TILED is an internal calibration artifact. FULLY_TILED remains
-    // intentionally unavailable until V2-S3.
+    // EMPTY availability alone never aliases or enables FULLY_TILED.
     FULLY_TILED: {
       kind: "FULLY_TILED",
       availability: "unavailable",
-      reason: "FULLY TILED is not implemented in V2-S2.",
+      reason: "FULLY TILED has not been generated for this attempt.",
+    },
+  };
+}
+
+export function setFullyTiledRepresentation(
+  state: RepresentationState,
+  imageUrl: string,
+): RepresentationState {
+  return {
+    ...state,
+    FULLY_TILED: {
+      kind: "FULLY_TILED",
+      availability: "available",
+      imageUrl,
     },
   };
 }

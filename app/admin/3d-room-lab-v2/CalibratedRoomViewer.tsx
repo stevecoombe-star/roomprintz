@@ -54,51 +54,62 @@ export default function CalibratedRoomViewer({
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     renderer.setSize(snapshot.frame.width, snapshot.frame.height, false);
     renderer.setClearColor(0x000000, 0);
-    renderer.domElement.className = "size-full";
+    renderer.setClearAlpha(0);
+    renderer.domElement.className = "size-full bg-transparent";
     mount.appendChild(renderer.domElement);
 
     const scene = new THREE.Scene();
-    const texture = new THREE.TextureLoader().load(
-      originalImageUrl,
-      () => renderer.render(scene, result.camera),
-    );
-    texture.colorSpace = THREE.SRGBColorSpace;
+    scene.background = null;
     const material = new THREE.MeshBasicMaterial({
-      map: texture,
-      opacity: 0.72,
+      color: 0x22d3ee,
+      opacity: 0.08,
       transparent: true,
       side: THREE.DoubleSide,
+      depthWrite: false,
     });
     const geometry = new THREE.PlaneGeometry(
       floor.worldWidthM,
       floor.referenceDepthM,
     );
-    const originalBasisPlane = new THREE.Mesh(geometry, material);
-    originalBasisPlane.rotation.x = -Math.PI / 2;
-    scene.add(originalBasisPlane);
+    const floorSurface = new THREE.Mesh(geometry, material);
+    floorSurface.rotation.x = -Math.PI / 2;
+    scene.add(floorSurface);
+    const edgesGeometry = new THREE.EdgesGeometry(geometry);
+    const edgesMaterial = new THREE.LineBasicMaterial({
+      color: 0x67e8f9,
+      transparent: true,
+      opacity: 0.75,
+    });
+    const floorWireframe = new THREE.LineSegments(
+      edgesGeometry,
+      edgesMaterial,
+    );
+    floorWireframe.rotation.x = -Math.PI / 2;
+    scene.add(floorWireframe);
     renderer.render(scene, result.camera);
 
     return () => {
       geometry.dispose();
+      edgesGeometry.dispose();
       material.dispose();
-      texture.dispose();
+      edgesMaterial.dispose();
       renderer.dispose();
       renderer.domElement.remove();
     };
-  }, [floor.referenceDepthM, floor.worldWidthM, originalImageUrl, snapshot]);
+  }, [floor.referenceDepthM, floor.worldWidthM, snapshot]);
 
   return (
-    <div className="relative size-full overflow-hidden bg-black">
+    <div className="pointer-events-none absolute inset-0 overflow-hidden bg-black">
       <Image
         src={originalImageUrl}
         alt="Accepted Original room basis"
         fill
         unoptimized
-        className="object-cover"
+        className="z-0 object-contain"
       />
       <div
         ref={mountRef}
-        className="pointer-events-none absolute inset-0"
+        className="absolute inset-0 z-10 bg-transparent"
         aria-label="Read-only calibrated camera realization"
       />
     </div>

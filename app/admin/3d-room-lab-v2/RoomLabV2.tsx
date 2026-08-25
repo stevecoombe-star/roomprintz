@@ -19,9 +19,12 @@ import {
   REPRESENTATION_LABELS,
   createInitialRepresentationState,
   setEmptyRepresentation,
+  setFullyTiledRepresentation,
   setOriginalRepresentation,
 } from "./representation-state";
 import CalibratedRoomViewer from "./CalibratedRoomViewer";
+import RoomEvidenceOverlay from "./RoomEvidenceOverlay";
+import type { RoomObservationContract } from "./room-observation-contract";
 
 type OriginalBasis = {
   basisFingerprint: string;
@@ -48,8 +51,26 @@ type AppliedAfcResult = {
       up: { x: number; y: number; z: number };
     };
   };
+  fullyTiled: {
+    imageUrl: string;
+    identity: {
+      sha256: string;
+      decodedWidth: number;
+      decodedHeight: number;
+    };
+    provenance: {
+      generationId: string;
+      generatedFrom: "ORIGINAL";
+      promptVersion: string;
+    };
+  } | null;
+  roomObservation: RoomObservationContract | null;
+  emptyIdentity: {
+    decodedWidth: number;
+    decodedHeight: number;
+  } | null;
   freezeReceipt: unknown;
-  parityEvidence: unknown;
+  analysisEvidence: unknown;
 };
 
 function isPreparedOriginal(
@@ -60,14 +81,74 @@ function isPreparedOriginal(
     !!(value as { basis?: unknown }).basis;
 }
 
-function isAppliedAfcResult(value: unknown): value is {
-  status: "applied";
+function isFloorAppliedAfcResult(value: unknown): value is {
+  status: "applied" | "partial";
+  reason?: string;
   floor: AppliedAfcResult["floor"];
   camera: AppliedAfcResult["camera"];
+  fullyTiled: AppliedAfcResult["fullyTiled"];
+  roomObservation: AppliedAfcResult["roomObservation"];
+  product?: {
+    emptyBasis?: {
+      decodedWidth: number;
+      decodedHeight: number;
+    };
+  };
   freezeReceipt: unknown;
 } {
   return !!value && typeof value === "object" &&
-    (value as { status?: unknown }).status === "applied";
+    ((value as { status?: unknown }).status === "applied" ||
+      (value as { status?: unknown }).status === "partial") &&
+    !!(value as { floor?: unknown }).floor &&
+    !!(value as { camera?: unknown }).camera;
+}
+
+function pipelineRepresentations(value: unknown): {
+  emptyImageUrl: string | null;
+  fullyTiled: AppliedAfcResult["fullyTiled"];
+} {
+  if (!value || typeof value !== "object") {
+    return { emptyImageUrl: null, fullyTiled: null };
+  }
+  const candidate = value as {
+    emptyImageUrl?: unknown;
+    fullyTiled?: unknown;
+  };
+  const fullyTiled = candidate.fullyTiled &&
+      typeof candidate.fullyTiled === "object" &&
+      typeof (candidate.fullyTiled as { imageUrl?: unknown }).imageUrl ===
+        "string"
+    ? candidate.fullyTiled as AppliedAfcResult["fullyTiled"]
+    : null;
+  return {
+    emptyImageUrl: typeof candidate.emptyImageUrl === "string"
+      ? candidate.emptyImageUrl
+      : null,
+    fullyTiled,
+  };
+}
+
+export function containedDisplayFrame(
+  container: Readonly<{ width: number; height: number }>,
+  source: Readonly<{ width: number; height: number }> | null,
+): { width: number; height: number } {
+  if (
+    !source ||
+    container.width <= 0 ||
+    container.height <= 0 ||
+    source.width <= 0 ||
+    source.height <= 0
+  ) {
+    return container;
+  }
+  const scale = Math.min(
+    container.width / source.width,
+    container.height / source.height,
+  );
+  return {
+    width: Math.max(1, Math.round(source.width * scale)),
+    height: Math.max(1, Math.round(source.height * scale)),
+  };
 }
 
 export default function RoomLabV2() {
@@ -92,6 +173,31 @@ export default function RoomLabV2() {
     representations[orchestration.selectedRepresentation];
   const originalAvailable =
     representations.ORIGINAL.availability === "available" && basis !== null;
+  const originalDisplayFrame = containedDisplayFrame(
+    viewerFrame,
+    basis
+      ? { width: basis.decodedWidth, height: basis.decodedHeight }
+      : null,
+  );
+  const selectedImageSize = orchestration.selectedRepresentation ===
+      "FULLY_TILED" && applied?.fullyTiled
+    ? {
+      width: applied.fullyTiled.identity.decodedWidth,
+      height: applied.fullyTiled.identity.decodedHeight,
+    }
+    : orchestration.selectedRepresentation === "EMPTY" &&
+        applied?.emptyIdentity
+    ? {
+      width: applied.emptyIdentity.decodedWidth,
+      height: applied.emptyIdentity.decodedHeight,
+    }
+    : basis
+    ? { width: basis.decodedWidth, height: basis.decodedHeight }
+    : null;
+  const displayFrame = containedDisplayFrame(
+    viewerFrame,
+    selectedImageSize,
+  );
 
   useEffect(() => {
     const viewer = viewerRef.current;
@@ -156,8 +262,8 @@ export default function RoomLabV2() {
       !basis ||
       !preparedImageUrl ||
       !originalAvailable ||
-      viewerFrame.width <= 0 ||
-      viewerFrame.height <= 0
+      originalDisplayFrame.width <= 0 ||
+      originalDisplayFrame.height <= 0
     ) return;
     abortRef.current?.abort();
     const controller = new AbortController();
@@ -182,14 +288,27 @@ export default function RoomLabV2() {
             orientation: basis.encodedOrientation,
           },
           loadGeneration: generation,
-          frame: viewerFrame,
+          frame: originalDisplayFrame,
           referenceDepthM: 4,
         }),
       });
-      dispatch({ type: "analysis_stage", status: "generating_floor_scaffold" });
       const result: unknown = await response.json();
       if (controller.signal.aborted || generation !== loadGenerationRef.current) return;
-      if (!response.ok || !isAppliedAfcResult(result)) {
+      const pipeline = pipelineRepresentations(result);
+      setRepresentations((current) => {
+        let next = current;
+        if (pipeline.emptyImageUrl) {
+          next = setEmptyRepresentation(next, pipeline.emptyImageUrl);
+        }
+        if (pipeline.fullyTiled) {
+          next = setFullyTiledRepresentation(
+            next,
+            pipeline.fullyTiled.imageUrl,
+          );
+        }
+        return next;
+      });
+      if (!response.ok || !isFloorAppliedAfcResult(result)) {
         const reason = result && typeof result === "object" &&
           typeof (result as { reason?: unknown }).reason === "string"
           ? (result as { reason: string }).reason
@@ -197,20 +316,25 @@ export default function RoomLabV2() {
         throw new Error(reason);
       }
       dispatch({ type: "analysis_stage", status: "reading_floor" });
-      setRepresentations((current) =>
-        setEmptyRepresentation(
-          current,
-          `/api/admin/3d-room-lab-v2/attempt-empty?attemptId=${encodeURIComponent(attemptId)}`,
-        ),
-      );
       dispatch({ type: "analysis_stage", status: "calibrating_camera" });
+      if (result.roomObservation) {
+        dispatch({ type: "analysis_stage", status: "observing_room" });
+      }
       setApplied({
         floor: result.floor,
         camera: result.camera,
+        fullyTiled: result.fullyTiled,
+        roomObservation: result.roomObservation,
+        emptyIdentity: result.product?.emptyBasis ?? null,
         freezeReceipt: result.freezeReceipt,
-        parityEvidence: result,
+        analysisEvidence: result,
       });
-      dispatch({ type: "analysis_applied" });
+      if (result.status === "partial") {
+        setError(result.reason ?? "Room-envelope observation did not complete.");
+        dispatch({ type: "analysis_failed" });
+      } else {
+        dispatch({ type: "analysis_applied" });
+      }
     } catch (caught) {
       if (controller.signal.aborted) return;
       setError(caught instanceof Error ? caught.message : "AFC analysis failed.");
@@ -220,16 +344,16 @@ export default function RoomLabV2() {
     }
   }
 
-  function downloadParityEvidence() {
+  function downloadAnalysisEvidence() {
     if (!applied) return;
     const blob = new Blob(
-      [JSON.stringify(applied.parityEvidence, null, 2)],
+      [JSON.stringify(applied.analysisEvidence, null, 2)],
       { type: "application/json" },
     );
     const url = URL.createObjectURL(blob);
     const anchor = document.createElement("a");
     anchor.href = url;
-    anchor.download = "afc-v2-s2-parity-evidence.json";
+    anchor.download = "afc-v2-s3-room-observation-evidence.json";
     anchor.click();
     URL.revokeObjectURL(url);
   }
@@ -241,18 +365,19 @@ export default function RoomLabV2() {
           <div>
             <div className="mb-3 flex items-center gap-3">
               <span className="rounded-full border border-cyan-400/30 bg-cyan-400/10 px-3 py-1 text-xs font-semibold tracking-[0.16em] text-cyan-200">
-                AFC V2 · S2
+                AFC V2 · S3
               </span>
               <span className="text-xs text-slate-500">
-                Certified floor AFC parity
+                FULLY TILED room-envelope observation
               </span>
             </div>
             <h1 className="text-2xl font-semibold tracking-tight text-white sm:text-3xl">
               3D Room Lab v2
             </h1>
             <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-400">
-              Run the certified floor-AFC path against an authority-qualified
-              Original image URL. Floor-only TILED remains internal evidence.
+              Generate one FULLY TILED scaffold for the certified Floor read
+              and visible room-envelope observation, while camera authority
+              remains frozen upstream of this read-only viewer.
             </p>
           </div>
 
@@ -345,7 +470,13 @@ export default function RoomLabV2() {
               aria-label={`${REPRESENTATION_LABELS[orchestration.selectedRepresentation]} viewer`}
             >
               {selectedRepresentation.availability === "available" ? (
-                <>
+                <div
+                  className="relative overflow-hidden bg-black"
+                  style={{
+                    width: displayFrame.width,
+                    height: displayFrame.height,
+                  }}
+                >
                   {orchestration.selectedRepresentation === "ORIGINAL" &&
                   applied ? (
                     <CalibratedRoomViewer
@@ -359,10 +490,10 @@ export default function RoomLabV2() {
                   ) : (
                     <Image
                       src={selectedRepresentation.imageUrl}
-                      alt="Loaded Original room"
+                      alt={`${REPRESENTATION_LABELS[orchestration.selectedRepresentation]} room representation`}
                       fill
                       unoptimized
-                      className="object-cover"
+                      className="object-contain"
                     />
                   )}
                   {selectedRepresentation.source ? (
@@ -370,17 +501,19 @@ export default function RoomLabV2() {
                       Original · authority-qualified
                     </div>
                   ) : null}
-                  {orchestration.selectedRepresentation === "ORIGINAL" && applied ? (
-                    <svg className="pointer-events-none absolute inset-0 size-full" viewBox="0 0 1 1" preserveAspectRatio="none" aria-label="Calibrated floor authority">
-                      <polygon
-                        points={applied.floor.sourceNormalizedPolygon.map((point) => `${point.x},${point.y}`).join(" ")}
-                        fill="rgba(34, 211, 238, 0.13)"
-                        stroke="rgb(103, 232, 249)"
-                        strokeWidth="0.004"
-                      />
-                    </svg>
+                  {applied ? (
+                    <RoomEvidenceOverlay
+                      floorPolygon={applied.floor.sourceNormalizedPolygon}
+                      roomObservation={applied.roomObservation}
+                      showFloorAuthority={
+                        orchestration.selectedRepresentation !== "ORIGINAL"
+                      }
+                      showRoomObservation={
+                        orchestration.selectedRepresentation === "FULLY_TILED"
+                      }
+                    />
                   ) : null}
-                </>
+                </div>
               ) : (
                 <div className="max-w-md px-8 text-center">
                   <div className="mx-auto mb-4 flex size-12 items-center justify-center rounded-full border border-slate-700 bg-slate-900 text-lg text-slate-500">
@@ -432,10 +565,10 @@ export default function RoomLabV2() {
             {applied ? (
               <button
                 type="button"
-                onClick={downloadParityEvidence}
+                onClick={downloadAnalysisEvidence}
                 className="rounded-xl border border-slate-700 bg-slate-900 px-4 py-3 text-left text-xs font-medium text-cyan-200 transition hover:border-slate-500"
               >
-                Download parity evidence
+                Download V2-S3 observation evidence
               </button>
             ) : null}
             <section className="rounded-xl border border-slate-800 bg-slate-900/70 p-4">
@@ -448,15 +581,48 @@ export default function RoomLabV2() {
               </p>
             </section>
             <section className="rounded-xl border border-slate-800 bg-slate-900/70 p-4">
+              <h2 className="text-sm font-semibold text-slate-200">
+                Room Observations
+              </h2>
+              {applied?.roomObservation ? (
+                <div className="mt-2 space-y-1 text-xs leading-5 text-slate-500">
+                  <p>
+                    {applied.roomObservation.observedPlanes.length} planes ·{" "}
+                    {applied.roomObservation.observedGridFamilies.length} grid
+                    families
+                  </p>
+                  <p>
+                    {applied.roomObservation.observedSeams.length} seams ·{" "}
+                    {applied.roomObservation.observedOpenings.length} openings ·{" "}
+                    {applied.roomObservation.adjacency.length} adjacencies
+                  </p>
+                  <p>
+                    {Array.from(new Set(
+                      applied.roomObservation.observedPlanes.map((plane) =>
+                        plane.category
+                      ),
+                    )).join(", ") || "No confident plane categories"}
+                  </p>
+                  <p className="text-slate-600">
+                    {applied.roomObservation.observationVersion}
+                  </p>
+                </div>
+              ) : (
+                <p className="mt-2 text-xs leading-5 text-slate-500">
+                  No FULLY TILED room observation contract.
+                </p>
+              )}
+            </section>
+            <section className="rounded-xl border border-slate-800 bg-slate-900/70 p-4">
               <h2 className="text-sm font-semibold text-slate-200">Room Boundaries</h2>
               <p className="mt-2 text-xs leading-5 text-slate-500">
-                Not implemented in V2-S2.
+                Final world geometry is deferred to V2-S4.
               </p>
             </section>
             <section className="rounded-xl border border-slate-800 bg-slate-900/70 p-4">
               <h2 className="text-sm font-semibold text-slate-200">Supports</h2>
               <p className="mt-2 text-xs leading-5 text-slate-500">
-                Not implemented in V2-S2.
+                Not implemented.
               </p>
             </section>
           </aside>

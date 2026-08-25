@@ -1,0 +1,61 @@
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import path from "node:path";
+import test from "node:test";
+
+const overlaySource = readFileSync(
+  path.join(
+    process.cwd(),
+    "app/admin/3d-room-lab-v2/RoomEvidenceOverlay.tsx",
+  ),
+  "utf8",
+);
+const roomLabSource = readFileSync(
+  path.join(process.cwd(), "app/admin/3d-room-lab-v2/RoomLabV2.tsx"),
+  "utf8",
+);
+const calibratedViewerSource = readFileSync(
+  path.join(
+    process.cwd(),
+    "app/admin/3d-room-lab-v2/CalibratedRoomViewer.tsx",
+  ),
+  "utf8",
+);
+
+test("cyan authoritative Floor is available once on every public representation", () => {
+  assert.match(overlaySource, /data-evidence-role="authoritative-floor"/);
+  assert.match(overlaySource, /rgb\(103, 232, 249\)/);
+  assert.match(
+    roomLabSource,
+    /\{applied \? \([\s\S]*<RoomEvidenceOverlay[\s\S]*floorPolygon=\{applied\.floor\.sourceNormalizedPolygon\}/,
+  );
+  assert.match(
+    roomLabSource,
+    /showFloorAuthority=\{[\s\S]*selectedRepresentation !== "ORIGINAL"/,
+  );
+  assert.match(calibratedViewerSource, /new THREE\.LineSegments/);
+  assert.match(calibratedViewerSource, /color: 0x67e8f9/);
+});
+
+test("FULLY_TILED alone enables provider-reported room-observation overlays", () => {
+  assert.match(
+    roomLabSource,
+    /showRoomObservation=\{[\s\S]*selectedRepresentation === "FULLY_TILED"/,
+  );
+  assert.match(overlaySource, /room\.observedPlanes\.map/);
+  assert.match(overlaySource, /room\.observedGridFamilies\.flatMap/);
+  assert.match(overlaySource, /room\.observedSeams\.map/);
+  assert.match(overlaySource, /room\.observedOpenings\.map/);
+  assert.match(
+    overlaySource,
+    /data-evidence-role="diagnostic-room-observation"/,
+  );
+});
+
+test("overlay is a read-only evidence consumer", () => {
+  assert.match(overlaySource, /pointer-events-none/);
+  assert.doesNotMatch(
+    overlaySource,
+    /onClick|onChange|setFloor|setCamera|dispatch|evaluateQuadSolvability/,
+  );
+});
