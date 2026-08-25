@@ -92,6 +92,7 @@ test("controlled FULLY_TILED evidence is observed against the frozen camera refe
           observedGridFamilies: [],
           observedSeams: [],
           observedOpenings: [],
+          planeContinuity: [],
           adjacency: [],
           unresolved: ["No seam-supported adjacency is visible."],
         };
@@ -114,6 +115,287 @@ test("controlled FULLY_TILED evidence is observed against the frozen camera refe
     "floor-result-controlled",
   );
   assert.equal(result.contract.diagnostics.provider, "controlled_fixture");
+});
+
+test("visible floor observation stays distinct from the unchanged calibration Floor patch", async () => {
+  const calibrationBefore = JSON.stringify(
+    observationInput.floor.sourceNormalizedPolygon,
+  );
+  let suppliedPrompt = "";
+  const visibleFloorPolygon = [
+    { x: 0.02, y: 0.62 },
+    { x: 0.98, y: 0.62 },
+    { x: 1, y: 1 },
+    { x: 0, y: 1 },
+  ];
+  const result = await observeFullyTiledRoomEnvelope(observationInput, {
+    callProvider: async (args) => {
+      suppliedPrompt = args.prompt;
+      return {
+        observedPlanes: [{
+          id: "visible_floor",
+          category: "floor",
+          imagePolygon: visibleFloorPolygon,
+          confidence: 0.95,
+          visibility: "observed",
+        }],
+        observedGridFamilies: [{
+          id: "visible_floor_axis_a",
+          planeId: "visible_floor",
+          axis: "axis_a",
+          lineSegments: [{
+            start: { x: 0.2, y: 0.8 },
+            end: { x: 0.8, y: 0.8 },
+          }],
+          confidence: 0.9,
+          visibility: "observed",
+        }],
+        observedSeams: [],
+        observedOpenings: [],
+        planeContinuity: [],
+        adjacency: [],
+        unresolved: [],
+      };
+    },
+  });
+
+  assert.equal(result.status, "observed");
+  if (result.status !== "observed") return;
+  assert.match(suppliedPrompt, /calibration patch, not the visible floor extent/i);
+  assert.deepEqual(
+    result.contract.observedPlanes[0].imagePolygon,
+    visibleFloorPolygon,
+  );
+  assert.notDeepEqual(
+    result.contract.observedPlanes[0].imagePolygon,
+    observationInput.floor.sourceNormalizedPolygon,
+  );
+  assert.equal(
+    JSON.stringify(observationInput.floor.sourceNormalizedPolygon),
+    calibrationBefore,
+  );
+  assert.equal(
+    result.contract.calibratedCameraReference.authorityKey,
+    observationInput.floor.authorityKey,
+  );
+  assert.equal(result.contract.diagnostics.worldGeometryProduced, false);
+});
+
+test("missing wall and ceiling grids receive a bounded focused provider refinement", async () => {
+  let calls = 0;
+  let refinementPrompt = "";
+  const result = await observeFullyTiledRoomEnvelope(observationInput, {
+    callProvider: async (args) => {
+      calls += 1;
+      if (calls === 1) {
+        return {
+          observedPlanes: [
+            {
+              id: "wall_visible",
+              category: "wall",
+              imagePolygon: [
+                { x: 0.1, y: 0.2 },
+                { x: 0.8, y: 0.2 },
+                { x: 0.8, y: 0.7 },
+                { x: 0.1, y: 0.7 },
+              ],
+              confidence: 0.95,
+              visibility: "observed",
+            },
+            {
+              id: "ceiling_visible",
+              category: "ceiling",
+              imagePolygon: [
+                { x: 0.1, y: 0.05 },
+                { x: 0.9, y: 0.05 },
+                { x: 0.8, y: 0.15 },
+                { x: 0.1, y: 0.15 },
+              ],
+              confidence: 0.9,
+              visibility: "observed",
+            },
+          ],
+          observedGridFamilies: [],
+          observedSeams: [],
+          observedOpenings: [],
+          planeContinuity: [],
+          unresolved: [],
+        };
+      }
+      refinementPrompt = args.prompt;
+      return {
+        observedGridFamilies: [
+          {
+            id: "wall_axis_a",
+            planeId: "wall_visible",
+            axis: "axis_a",
+            lineSegments: [
+              { start: { x: 0.2, y: 0.3 }, end: { x: 0.7, y: 0.3 } },
+              { start: { x: 0.2, y: 0.4 }, end: { x: 0.7, y: 0.4 } },
+            ],
+            confidence: 0.9,
+            visibility: "observed",
+          },
+          {
+            id: "ceiling_axis_a",
+            planeId: "ceiling_visible",
+            axis: "axis_a",
+            lineSegments: [
+              { start: { x: 0.2, y: 0.1 }, end: { x: 0.8, y: 0.1 } },
+              { start: { x: 0.25, y: 0.14 }, end: { x: 0.75, y: 0.14 } },
+            ],
+            confidence: 0.85,
+            visibility: "observed",
+          },
+        ],
+        unresolved: [],
+      };
+    },
+  });
+
+  assert.equal(result.status, "observed");
+  if (result.status !== "observed") return;
+  assert.equal(calls, 2);
+  assert.match(refinementPrompt, /focused grout-line census/i);
+  assert.match(refinementPrompt, /wall_visible/);
+  assert.match(refinementPrompt, /ceiling_visible/);
+  assert.deepEqual(
+    result.contract.observedGridFamilies.map((family) => family.planeId).sort(),
+    ["ceiling_visible", "wall_visible"],
+  );
+  assert.equal(result.contract.diagnostics.providerPasses.gridRefinement, 1);
+});
+
+test("missing floor-wall and wall-ceiling boundaries receive focused seam refinement", async () => {
+  let calls = 0;
+  const result = await observeFullyTiledRoomEnvelope(observationInput, {
+    callProvider: async (args) => {
+      calls += 1;
+      if (calls === 1) {
+        return {
+          observedPlanes: [
+            {
+              id: "floor_visible",
+              category: "floor",
+              imagePolygon: [
+                { x: 0.1, y: 0.65 },
+                { x: 0.9, y: 0.65 },
+                { x: 1, y: 1 },
+                { x: 0, y: 1 },
+              ],
+              confidence: 0.95,
+              visibility: "observed",
+            },
+            {
+              id: "wall_visible",
+              category: "wall",
+              imagePolygon: [
+                { x: 0.1, y: 0.2 },
+                { x: 0.9, y: 0.2 },
+                { x: 0.9, y: 0.65 },
+                { x: 0.1, y: 0.65 },
+              ],
+              confidence: 0.95,
+              visibility: "observed",
+            },
+            {
+              id: "ceiling_visible",
+              category: "ceiling",
+              imagePolygon: [
+                { x: 0, y: 0 },
+                { x: 1, y: 0 },
+                { x: 0.9, y: 0.2 },
+                { x: 0.1, y: 0.2 },
+              ],
+              confidence: 0.9,
+              visibility: "observed",
+            },
+          ],
+          observedGridFamilies: [
+            {
+              id: "floor_grid",
+              planeId: "floor_visible",
+              axis: "axis_a",
+              lineSegments: [{
+                start: { x: 0.2, y: 0.8 },
+                end: { x: 0.8, y: 0.8 },
+              }],
+              confidence: 0.9,
+              visibility: "observed",
+            },
+            {
+              id: "wall_grid",
+              planeId: "wall_visible",
+              axis: "axis_a",
+              lineSegments: [{
+                start: { x: 0.2, y: 0.4 },
+                end: { x: 0.8, y: 0.4 },
+              }],
+              confidence: 0.9,
+              visibility: "observed",
+            },
+            {
+              id: "ceiling_grid",
+              planeId: "ceiling_visible",
+              axis: "axis_a",
+              lineSegments: [{
+                start: { x: 0.2, y: 0.1 },
+                end: { x: 0.8, y: 0.1 },
+              }],
+              confidence: 0.85,
+              visibility: "observed",
+            },
+          ],
+          observedSeams: [],
+          observedOpenings: [],
+          planeContinuity: [],
+          unresolved: [],
+        };
+      }
+      assert.match(args.prompt, /focused visible-seam census/i);
+      return {
+        observedSeams: [
+          {
+            id: "refined_floor_wall",
+            category: "floor_wall",
+            planeIds: ["floor_visible", "wall_visible"],
+            imagePolyline: [
+              { x: 0.1, y: 0.65 },
+              { x: 0.9, y: 0.65 },
+            ],
+            confidence: 0.9,
+            visibility: "observed",
+            boundaryEvidence: "architectural_break",
+            gridCompatibility: "incompatible",
+          },
+          {
+            id: "refined_wall_ceiling",
+            category: "wall_ceiling",
+            planeIds: ["wall_visible", "ceiling_visible"],
+            imagePolyline: [
+              { x: 0.1, y: 0.2 },
+              { x: 0.9, y: 0.2 },
+            ],
+            confidence: 0.9,
+            visibility: "observed",
+            boundaryEvidence: "architectural_break",
+            gridCompatibility: "incompatible",
+          },
+        ],
+        unresolved: [],
+      };
+    },
+  });
+
+  assert.equal(result.status, "observed");
+  if (result.status !== "observed") return;
+  assert.equal(calls, 2);
+  assert.deepEqual(
+    result.contract.observedSeams.map((seam) => seam.category).sort(),
+    ["floor_wall", "wall_ceiling"],
+  );
+  assert.equal(result.contract.adjacency.length, 2);
+  assert.equal(result.contract.diagnostics.providerPasses.seamRefinement, 1);
 });
 
 test("Gemini HTTP failure preserves bounded safe diagnostics without secrets", async () => {
@@ -153,6 +435,7 @@ test("malformed provider result fails closed with a contract reason", async () =
       observedGridFamilies: [],
       observedSeams: [],
       observedOpenings: [],
+      planeContinuity: [],
       adjacency: [],
       unresolved: [],
     }),
@@ -178,6 +461,7 @@ test("provider schema avoids rejected maxItems complexity while local contract r
         observedGridFamilies: [],
         observedSeams: [],
         observedOpenings: [],
+        planeContinuity: [],
         adjacency: [],
         unresolved: [],
       };

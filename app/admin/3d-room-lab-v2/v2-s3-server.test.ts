@@ -410,6 +410,7 @@ test("V2-S3 runtime remains isolated from boundary, support, collision, and came
     "fully-tiled-floor-authority.server.ts",
     "room-observation.server.ts",
     "room-observation-contract.ts",
+    "room-observation-normalization.ts",
     "RoomLabV2.tsx",
     "RoomEvidenceOverlay.tsx",
   ];
@@ -424,4 +425,29 @@ test("V2-S3 runtime remains isolated from boundary, support, collision, and came
     /room-envelope-reconciliation|live-collision|support-attachment|ThreeRoomLab|Type-B|afc-ui2|g0-containment/i,
   );
   assert.doesNotMatch(source, /setCalibratedCamera|applyContainerFloor/);
+});
+
+test("room-observer modules cannot import Floor or camera authority writers", () => {
+  const files = [
+    "room-observation.server.ts",
+    "room-observation-contract.ts",
+    "room-observation-normalization.ts",
+  ];
+  const source = files.map((file) =>
+    readFileSync(
+      path.join(process.cwd(), "app/admin/3d-room-lab-v2", file),
+      "utf8",
+    )
+  ).join("\n");
+  const imports = source.split("\n")
+    .filter((line) => /^\s*import\b/.test(line))
+    .join("\n");
+  assert.doesNotMatch(
+    imports,
+    /fully-tiled-floor-authority|calibrated-camera|camera-solver|ratio.*fov/i,
+  );
+  assert.doesNotMatch(
+    source,
+    /setCalibratedCamera|applyContainerFloor|updateCamera|writeCameraAuthority/,
+  );
 });

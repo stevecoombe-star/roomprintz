@@ -1,3 +1,10 @@
+import {
+  normalizeRoomObservationEvidence,
+  type NormalizationRejection,
+  type PlaneContinuityEvidence,
+  type RoomObservationNormalizationDiagnostics,
+} from "./room-observation-normalization";
+
 export const AFC_V2_ROOM_OBSERVATION_VERSION =
   "afc-v2-room-observation/v1" as const;
 export const AFC_V2_ROOM_OBSERVATION_COORDINATE_SPACE =
@@ -41,7 +48,9 @@ export type ObservedPlane = Readonly<{
   gridFamilyIds: readonly string[];
   confidence: number;
   ambiguity: string | null;
-  evidenceClass: "provider_reported_visible_evidence";
+  evidenceClass:
+    | "provider_reported_visible_evidence"
+    | "conservative_normalized_visible_evidence";
 }>;
 
 export type ObservedGridFamily = Readonly<{
@@ -60,6 +69,13 @@ export type ObservedSeam = Readonly<{
   imagePolyline: readonly SourceNormalizedPoint[];
   confidence: number;
   ambiguity: string | null;
+  boundaryEvidence:
+    | "projective_discontinuity"
+    | "architectural_break"
+    | "uninterrupted_tiled_field"
+    | "unclear"
+    | "legacy_unstructured";
+  gridCompatibility: "compatible" | "incompatible" | "insufficient";
   evidenceClass: "provider_reported_visible_evidence";
 }>;
 
@@ -121,17 +137,25 @@ export type RoomObservationContract = Readonly<{
     model: string;
     promptVersion: string;
     generatedAt: string;
+    providerPasses: Readonly<{
+      structuralObservation: 1;
+      gridRefinement: 0 | 1;
+      seamRefinement: 0 | 1;
+    }>;
+    rejectedForbiddenProviderFields: readonly string[];
     rejected: Readonly<{
       planes: number;
       gridFamilies: number;
       seams: number;
       openings: number;
       adjacency: number;
+      continuity: number;
     }>;
+    normalization: RoomObservationNormalizationDiagnostics;
     unresolved: readonly string[];
     worldGeometryProduced: false;
     providerEvidenceStatus:
-      "schema_validated_provider_report_not_pixel_verified";
+      "schema_validated_and_conservatively_normalized_provider_report_not_pixel_verified";
     hiddenSurfacePolicy: "prohibited_and_explicit_hidden_claims_filtered";
     cameraAuthority: "certified_floor_camera_reference_only";
   }>;
@@ -158,6 +182,7 @@ const MAX_SEGMENTS_PER_FAMILY = 64;
 const MAX_SEAMS = 32;
 const MAX_OPENINGS = 32;
 const MAX_ADJACENCY = 64;
+const MAX_CONTINUITY_CLAIMS = 32;
 
 function record(value: unknown): Record<string, unknown> | null {
   return value !== null && typeof value === "object" && !Array.isArray(value)
@@ -269,12 +294,47 @@ export function buildRoomObservationContract(
   context: ContractContext,
 ): RoomObservationContract {
   const root = record(raw) ?? {};
+  const rawProviderPasses = record(root.providerPasses);
+  const providerPasses = Object.freeze({
+    structuralObservation: 1 as const,
+    gridRefinement: rawProviderPasses?.gridRefinement === 1
+      ? 1 as const
+      : 0 as const,
+    seamRefinement: rawProviderPasses?.seamRefinement === 1
+      ? 1 as const
+      : 0 as const,
+  });
+  const forbiddenProviderFields = [
+    "camera",
+    "calibratedCamera",
+    "floor",
+    "floorAuthority",
+    "worldPlanes",
+    "worldGeometry",
+    "wallHeights",
+    "roomMesh",
+    "collisionPlanes",
+    "supportPlanes",
+  ].filter((key) => key in root);
   const rejected = {
     planes: 0,
     gridFamilies: 0,
     seams: 0,
     openings: 0,
     adjacency: 0,
+    continuity: 0,
+  };
+  const parserRejections: NormalizationRejection[] = [];
+  const reject = (
+    kind: NormalizationRejection["kind"],
+    rawId: unknown,
+    reason: string,
+  ) => {
+    parserRejections.push(Object.freeze({
+      kind,
+      rawId: id(rawId),
+      reason,
+    }));
   };
 
   const planeIds = new Set<string>();
@@ -295,6 +355,7 @@ export function buildRoomObservationContract(
       candidate.visibility !== "observed"
     ) {
       rejected.planes += 1;
+      reject("plane", candidate?.id, "malformed_unbound_or_nonvisible_plane");
       if (planeId) planeIds.delete(planeId);
       continue;
     }
@@ -333,6 +394,11 @@ export function buildRoomObservationContract(
       !lineSegments.every((item): item is SourceNormalizedSegment => item !== null)
     ) {
       rejected.gridFamilies += 1;
+      reject(
+        "grid_family",
+        candidate?.id,
+        "malformed_unbound_empty_or_nonvisible_grid_family",
+      );
       if (gridId) gridIds.delete(gridId);
       continue;
     }
@@ -383,6 +449,7 @@ export function buildRoomObservationContract(
       referencedPlaneIds.length === 0
     ) {
       rejected.seams += 1;
+      reject("seam", candidate?.id, "malformed_unbound_or_nonvisible_seam");
       if (seamId) seamIds.delete(seamId);
       continue;
     }
@@ -393,6 +460,17 @@ export function buildRoomObservationContract(
       imagePolyline,
       confidence: certainty,
       ambiguity: ambiguity(candidate.ambiguity),
+      boundaryEvidence: candidate.boundaryEvidence ===
+          "projective_discontinuity" ||
+          candidate.boundaryEvidence === "architectural_break" ||
+          candidate.boundaryEvidence === "uninterrupted_tiled_field" ||
+          candidate.boundaryEvidence === "unclear"
+        ? candidate.boundaryEvidence
+        : "legacy_unstructured",
+      gridCompatibility: candidate.gridCompatibility === "compatible" ||
+          candidate.gridCompatibility === "incompatible"
+        ? candidate.gridCompatibility
+        : "insufficient",
       evidenceClass: "provider_reported_visible_evidence",
     }));
   }
@@ -419,6 +497,7 @@ export function buildRoomObservationContract(
       (parsedHostPlaneId !== null && !planeIds.has(parsedHostPlaneId))
     ) {
       rejected.openings += 1;
+      reject("opening", candidate?.id, "malformed_unbound_or_nonvisible_opening");
       if (openingId) openingIds.delete(openingId);
       continue;
     }
@@ -431,6 +510,70 @@ export function buildRoomObservationContract(
       ambiguity: ambiguity(candidate.ambiguity),
       tiledFieldInterruption: true,
       evidenceClass: "provider_reported_visible_evidence",
+    }));
+  }
+
+  const continuityIds = new Set<string>();
+  const rawContinuity = Array.isArray(root.planeContinuity)
+    ? root.planeContinuity.slice(0, MAX_CONTINUITY_CLAIMS)
+    : [];
+  const continuity: PlaneContinuityEvidence[] = [];
+  for (const value of rawContinuity) {
+    const candidate = record(value);
+    const continuityId = uniqueId(candidate?.id, continuityIds);
+    const certainty = confidence(candidate?.confidence);
+    const referencedPlaneIds = Array.isArray(candidate?.planeIds)
+      ? [...new Set(candidate.planeIds.map(id).filter((item): item is string =>
+        item !== null && planeIds.has(item)
+      ))]
+      : [];
+    const assessment = candidate?.assessment === "continuous" ||
+        candidate?.assessment === "discontinuous" ||
+        candidate?.assessment === "unresolved"
+      ? candidate.assessment
+      : null;
+    const gridCompatibility = candidate?.gridCompatibility === "compatible" ||
+        candidate?.gridCompatibility === "incompatible" ||
+        candidate?.gridCompatibility === "insufficient"
+      ? candidate.gridCompatibility
+      : null;
+    const boundaryEvidence =
+        candidate?.boundaryEvidence === "uninterrupted_tiled_field" ||
+        candidate?.boundaryEvidence === "projective_discontinuity" ||
+        candidate?.boundaryEvidence === "architectural_break" ||
+        candidate?.boundaryEvidence === "opening" ||
+        candidate?.boundaryEvidence === "unclear"
+      ? candidate.boundaryEvidence
+      : null;
+    if (
+      !candidate ||
+      !continuityId ||
+      referencedPlaneIds.length !== 2 ||
+      !assessment ||
+      !gridCompatibility ||
+      !boundaryEvidence ||
+      certainty === null ||
+      candidate.visibility !== "observed"
+    ) {
+      rejected.continuity += 1;
+      reject(
+        "continuity",
+        candidate?.id,
+        "malformed_unbound_or_nonvisible_continuity_claim",
+      );
+      if (continuityId) continuityIds.delete(continuityId);
+      continue;
+    }
+    continuity.push(Object.freeze({
+      id: continuityId,
+      planeIds: Object.freeze(
+        referencedPlaneIds as unknown as [string, string],
+      ),
+      assessment,
+      gridCompatibility,
+      boundaryEvidence,
+      confidence: certainty,
+      ambiguity: ambiguity(candidate.ambiguity),
     }));
   }
 
@@ -473,13 +616,31 @@ export function buildRoomObservationContract(
     }));
   }
 
-  const unresolved = Array.isArray(root.unresolved)
+  const normalized = normalizeRoomObservationEvidence({
+    planes: observedPlanes,
+    gridFamilies: observedGridFamilies,
+    seams: observedSeams,
+    openings: observedOpenings,
+    continuity,
+    rawAdjacencyCount: rawAdjacency.length,
+    parserRejections,
+    imageAspectRatio: context.fullyTiledIdentity.decodedWidth /
+      context.fullyTiledIdentity.decodedHeight,
+  });
+
+  const providerUnresolved = Array.isArray(root.unresolved)
     ? root.unresolved
       .filter((value): value is string => typeof value === "string")
       .map((value) => value.trim().slice(0, 240))
       .filter(Boolean)
       .slice(0, 32)
     : [];
+  const unresolved = [
+    ...providerUnresolved,
+    ...normalized.diagnostics.unresolvedTopology.map((entry) =>
+      `${entry.reason}: ${entry.rawIds.join(",")}`.slice(0, 240)
+    ),
+  ].slice(0, 32);
 
   return Object.freeze({
     representationIdentity: Object.freeze({
@@ -509,21 +670,24 @@ export function buildRoomObservationContract(
       frozenSnapshotDigest: context.frozenSnapshotDigest,
       role: "consumed_reference_only",
     }),
-    observedPlanes: Object.freeze(observedPlanes),
-    observedSeams: Object.freeze(observedSeams),
-    observedOpenings: Object.freeze(observedOpenings),
-    observedGridFamilies: Object.freeze(observedGridFamilies),
-    adjacency: Object.freeze(adjacency),
+    observedPlanes: normalized.planes,
+    observedSeams: normalized.seams,
+    observedOpenings: normalized.openings,
+    observedGridFamilies: normalized.gridFamilies,
+    adjacency: normalized.adjacency,
     diagnostics: Object.freeze({
       provider: context.provider,
       model: context.model,
       promptVersion: context.promptVersion,
       generatedAt: context.generatedAt,
+      providerPasses,
+      rejectedForbiddenProviderFields: Object.freeze(forbiddenProviderFields),
       rejected: Object.freeze(rejected),
+      normalization: normalized.diagnostics,
       unresolved: Object.freeze(unresolved),
       worldGeometryProduced: false,
       providerEvidenceStatus:
-        "schema_validated_provider_report_not_pixel_verified",
+        "schema_validated_and_conservatively_normalized_provider_report_not_pixel_verified",
       hiddenSurfacePolicy: "prohibited_and_explicit_hidden_claims_filtered",
       cameraAuthority: "certified_floor_camera_reference_only",
     }),

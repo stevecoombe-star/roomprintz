@@ -145,7 +145,7 @@ test("room observation contract separates visible evidence and conservative topo
   assert.equal(result.diagnostics.worldGeometryProduced, false);
   assert.equal(
     result.diagnostics.providerEvidenceStatus,
-    "schema_validated_provider_report_not_pixel_verified",
+    "schema_validated_and_conservatively_normalized_provider_report_not_pixel_verified",
   );
   assert.equal(
     result.sourceBasis.crossBasisAlignment,
@@ -217,6 +217,8 @@ test("ambiguous evidence remains unknown and hidden or unbound claims are reject
       confidence: 0.8,
     }],
     unresolved: ["No visible support for the hidden wall."],
+    camera: { verticalFovDeg: 99 },
+    worldPlanes: [{ id: "forbidden_world_wall" }],
   });
 
   assert.equal(result.observedPlanes.length, 1);
@@ -231,5 +233,12 @@ test("ambiguous evidence remains unknown and hidden or unbound claims are reject
     seams: 0,
     openings: 1,
     adjacency: 1,
+    continuity: 0,
   });
+  assert.deepEqual(result.diagnostics.rejectedForbiddenProviderFields, [
+    "camera",
+    "worldPlanes",
+  ]);
+  assert.equal("camera" in result, false);
+  assert.equal("worldPlanes" in result, false);
 });

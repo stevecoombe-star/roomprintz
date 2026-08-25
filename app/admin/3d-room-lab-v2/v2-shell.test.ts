@@ -166,6 +166,7 @@ test("v2 browser runtime remains isolated from v1 UI and research", () => {
     "./orchestration-state",
     "./representation-state",
     "./room-observation-contract",
+    "./room-observation-normalization",
     "@/app/admin/3d-room-lab/calibrated-camera-readonly-projection",
   ]);
 

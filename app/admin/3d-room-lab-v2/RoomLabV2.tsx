@@ -597,6 +597,14 @@ export default function RoomLabV2() {
                     {applied.roomObservation.adjacency.length} adjacencies
                   </p>
                   <p>
+                    {applied.roomObservation.diagnostics.normalization.merges.length}{" "}
+                    merges ·{" "}
+                    {applied.roomObservation.diagnostics.normalization
+                      .rejectedEvidence.length} rejected ·{" "}
+                    {applied.roomObservation.diagnostics.unresolved.length}{" "}
+                    unresolved
+                  </p>
+                  <p>
                     {Array.from(new Set(
                       applied.roomObservation.observedPlanes.map((plane) =>
                         plane.category
@@ -606,6 +614,12 @@ export default function RoomLabV2() {
                   <p className="text-slate-600">
                     {applied.roomObservation.observationVersion}
                   </p>
+                  {applied.roomObservation.diagnostics.unresolved[0] ? (
+                    <p className="text-amber-300/70">
+                      Unresolved:{" "}
+                      {applied.roomObservation.diagnostics.unresolved[0]}
+                    </p>
+                  ) : null}
                 </div>
               ) : (
                 <p className="mt-2 text-xs leading-5 text-slate-500">

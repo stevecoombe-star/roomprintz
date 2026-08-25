@@ -52,6 +52,18 @@ test("FULLY_TILED alone enables provider-reported room-observation overlays", ()
   );
 });
 
+test("overlay distinguishes normalized evidence categories from Floor authority", () => {
+  assert.match(overlaySource, /data-plane-category=\{plane\.category\}/);
+  assert.match(overlaySource, /data-seam-category=\{seam\.category\}/);
+  assert.match(overlaySource, /data-grid-axis=\{family\.axis\}/);
+  assert.match(overlaySource, /data-evidence-kind="opening"/);
+  assert.match(overlaySource, /data-evidence-role="room-observation-legend"/);
+  assert.match(overlaySource, /visible Floor/);
+  assert.match(overlaySource, /calibration quad/);
+  assert.match(overlaySource, /rgb\(251, 146, 60\)/);
+  assert.match(overlaySource, /rgb\(103, 232, 249\)/);
+});
+
 test("overlay is a read-only evidence consumer", () => {
   assert.match(overlaySource, /pointer-events-none/);
   assert.doesNotMatch(

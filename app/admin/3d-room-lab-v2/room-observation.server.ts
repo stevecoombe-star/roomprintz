@@ -10,7 +10,7 @@ import {
 } from "./room-observation-contract";
 
 export const AFC_V2_ROOM_OBSERVATION_PROMPT_VERSION =
-  "afc-v2-visible-room-envelope-observer/v1" as const;
+  "afc-v2-visible-room-envelope-observer/v5" as const;
 export const AFC_V2_ROOM_OBSERVATION_DEFAULT_MODEL = "gemini-3.5-flash";
 const ROOM_OBSERVATION_TIMEOUT_MS = 60_000;
 
@@ -21,7 +21,7 @@ const RESPONSE_SCHEMA = {
     "observedGridFamilies",
     "observedSeams",
     "observedOpenings",
-    "adjacency",
+    "planeContinuity",
     "unresolved",
   ],
   properties: {
@@ -96,6 +96,8 @@ const RESPONSE_SCHEMA = {
           "imagePolyline",
           "confidence",
           "visibility",
+          "boundaryEvidence",
+          "gridCompatibility",
         ],
         properties: {
           id: { type: "string" },
@@ -112,6 +114,19 @@ const RESPONSE_SCHEMA = {
           confidence: { type: "number", minimum: 0, maximum: 1 },
           visibility: { type: "string", enum: ["observed"] },
           ambiguity: { type: ["string", "null"] },
+          boundaryEvidence: {
+            type: "string",
+            enum: [
+              "projective_discontinuity",
+              "architectural_break",
+              "uninterrupted_tiled_field",
+              "unclear",
+            ],
+          },
+          gridCompatibility: {
+            type: "string",
+            enum: ["compatible", "incompatible", "insufficient"],
+          },
         },
       },
     },
@@ -146,23 +161,47 @@ const RESPONSE_SCHEMA = {
         },
       },
     },
-    adjacency: {
+    planeContinuity: {
       type: "array",
       items: {
         type: "object",
         required: [
           "id",
-          "planeAId",
-          "planeBId",
-          "seamId",
+          "planeIds",
+          "assessment",
+          "gridCompatibility",
+          "boundaryEvidence",
           "confidence",
+          "visibility",
         ],
         properties: {
           id: { type: "string" },
-          planeAId: { type: "string" },
-          planeBId: { type: "string" },
-          seamId: { type: "string" },
+          planeIds: {
+            type: "array",
+            minItems: 2,
+            items: { type: "string" },
+          },
+          assessment: {
+            type: "string",
+            enum: ["continuous", "discontinuous", "unresolved"],
+          },
+          gridCompatibility: {
+            type: "string",
+            enum: ["compatible", "incompatible", "insufficient"],
+          },
+          boundaryEvidence: {
+            type: "string",
+            enum: [
+              "uninterrupted_tiled_field",
+              "projective_discontinuity",
+              "architectural_break",
+              "opening",
+              "unclear",
+            ],
+          },
           confidence: { type: "number", minimum: 0, maximum: 1 },
+          visibility: { type: "string", enum: ["observed"] },
+          ambiguity: { type: ["string", "null"] },
         },
       },
     },
@@ -192,6 +231,238 @@ const RESPONSE_SCHEMA = {
     },
   },
 } as const;
+
+const GRID_REFINEMENT_SCHEMA = {
+  type: "object",
+  required: ["observedGridFamilies", "unresolved"],
+  properties: {
+    observedGridFamilies: RESPONSE_SCHEMA.properties.observedGridFamilies,
+    unresolved: RESPONSE_SCHEMA.properties.unresolved,
+  },
+  $defs: RESPONSE_SCHEMA.$defs,
+} as const;
+
+const SEAM_REFINEMENT_SCHEMA = {
+  type: "object",
+  required: ["observedSeams", "unresolved"],
+  properties: {
+    observedSeams: RESPONSE_SCHEMA.properties.observedSeams,
+    unresolved: RESPONSE_SCHEMA.properties.unresolved,
+  },
+  $defs: RESPONSE_SCHEMA.$defs,
+} as const;
+
+function objectRecord(value: unknown): Record<string, unknown> | null {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+function missingGridPlaneSummaries(raw: unknown): readonly unknown[] {
+  const root = objectRecord(raw);
+  const planes = Array.isArray(root?.observedPlanes)
+    ? root.observedPlanes
+    : [];
+  const grids = Array.isArray(root?.observedGridFamilies)
+    ? root.observedGridFamilies
+    : [];
+  const boundPlaneIds = new Set(
+    grids.map((value) => objectRecord(value)?.planeId)
+      .filter((value): value is string => typeof value === "string"),
+  );
+  return planes
+    .map(objectRecord)
+    .filter((plane): plane is Record<string, unknown> =>
+      Boolean(
+        plane &&
+          typeof plane.id === "string" &&
+          (plane.category === "floor" ||
+            plane.category === "wall" ||
+            plane.category === "ceiling") &&
+          !boundPlaneIds.has(plane.id),
+      )
+    )
+    .map((plane) => ({
+      id: plane.id,
+      category: plane.category,
+      imagePolygon: plane.imagePolygon,
+    }))
+    .slice(0, 16);
+}
+
+function gridRefinementPrompt(
+  missingPlanes: readonly unknown[],
+): string {
+  return `Perform a focused grout-line census on the supplied FULLY_TILED analytical image.
+
+The primary room observer reported these visible planes without any accepted grid family:
+${JSON.stringify(missingPlanes)}
+
+This image intentionally shows a dark tiled lattice on visible floor, wall, and ceiling fields. For each listed plane, inspect only inside its supplied image polygon and sample actual visible grout-line segments. Return axis_a and axis_b when both are visible, or one family when only one is visible. Use at least two sampled segments per family when available. Keep every segment inside the associated visible plane field and stop at openings or boundaries. Do not alter planes, seams, openings, camera, Floor authority, or world geometry. Do not synthesize lines. If a listed plane genuinely has no safely observable family, explain that plane by ID in unresolved.
+
+Coordinates are source-normalized: x=0 left, x=1 right, y=0 top, y=1 bottom. IDs must begin with a letter and contain only letters, digits, underscore, or hyphen. Return JSON matching the supplied schema.`;
+}
+
+function mergeGridRefinement(
+  raw: unknown,
+  refinement: unknown,
+): unknown {
+  const root = objectRecord(raw);
+  const refined = objectRecord(refinement);
+  if (!root || !refined) return raw;
+  const primaryGrids = Array.isArray(root.observedGridFamilies)
+    ? root.observedGridFamilies
+    : [];
+  const refinedGrids = Array.isArray(refined.observedGridFamilies)
+    ? refined.observedGridFamilies
+    : [];
+  const primaryUnresolved = Array.isArray(root.unresolved)
+    ? root.unresolved
+    : [];
+  const refinedUnresolved = Array.isArray(refined.unresolved)
+    ? refined.unresolved
+    : [];
+  return {
+    ...root,
+    observedGridFamilies: [...primaryGrids, ...refinedGrids],
+    unresolved: [...primaryUnresolved, ...refinedUnresolved],
+    providerPasses: {
+      structuralObservation: 1,
+      gridRefinement: 1,
+      seamRefinement: objectRecord(root.providerPasses)?.seamRefinement === 1
+        ? 1
+        : 0,
+    },
+  };
+}
+
+function normalizedPoints(value: unknown): readonly { x: number; y: number }[] {
+  return Array.isArray(value)
+    ? value.map(objectRecord).filter((point): point is Record<string, unknown> =>
+      Boolean(
+        point &&
+          typeof point.x === "number" &&
+          typeof point.y === "number",
+      )
+    ).map((point) => ({ x: point.x as number, y: point.y as number }))
+    : [];
+}
+
+function polygonsShareBoundary(a: unknown, b: unknown): boolean {
+  const pointsA = normalizedPoints(a);
+  const pointsB = normalizedPoints(b);
+  const contacts = pointsA.filter((pointA) =>
+    pointsB.some((pointB) =>
+      Math.hypot(pointA.x - pointB.x, pointA.y - pointB.y) <= 0.02
+    )
+  );
+  return contacts.some((first, index) =>
+    contacts.slice(index + 1).some((second) =>
+      Math.hypot(first.x - second.x, first.y - second.y) >= 0.025
+    )
+  );
+}
+
+function missingSeamTargets(raw: unknown): readonly unknown[] {
+  const root = objectRecord(raw);
+  const planes = Array.isArray(root?.observedPlanes)
+    ? root.observedPlanes.map(objectRecord).filter(Boolean) as Record<
+      string,
+      unknown
+    >[]
+    : [];
+  const seams = Array.isArray(root?.observedSeams)
+    ? root.observedSeams.map(objectRecord).filter(Boolean) as Record<
+      string,
+      unknown
+    >[]
+    : [];
+  const acceptedPairKeys = new Set(
+    seams.map((seam) =>
+      Array.isArray(seam.planeIds)
+        ? [...seam.planeIds].filter((id): id is string =>
+          typeof id === "string"
+        ).sort().join(":")
+        : ""
+    ),
+  );
+  const targets: unknown[] = [];
+  for (let a = 0; a < planes.length; a += 1) {
+    for (let b = a + 1; b < planes.length; b += 1) {
+      const categories = [planes[a].category, planes[b].category].sort().join(
+        ":",
+      );
+      const category = categories === "floor:wall"
+        ? "floor_wall"
+        : categories === "ceiling:wall"
+        ? "wall_ceiling"
+        : null;
+      const ids = [planes[a].id, planes[b].id].filter((id): id is string =>
+        typeof id === "string"
+      );
+      if (
+        category &&
+        ids.length === 2 &&
+        !acceptedPairKeys.has([...ids].sort().join(":")) &&
+        polygonsShareBoundary(
+          planes[a].imagePolygon,
+          planes[b].imagePolygon,
+        )
+      ) {
+        targets.push({ category, planeIds: ids });
+      }
+    }
+  }
+  return targets.slice(0, 24);
+}
+
+function seamRefinementPrompt(raw: unknown, targets: readonly unknown[]): string {
+  const root = objectRecord(raw);
+  return `Perform a focused visible-seam census on the supplied FULLY_TILED analytical image.
+
+The primary observer's polygons share boundaries for these floor-wall or wall-ceiling plane pairs, but no seam was reported:
+${JSON.stringify(targets)}
+
+Reported planes:
+${JSON.stringify(root?.observedPlanes ?? [])}
+
+Reported openings:
+${JSON.stringify(root?.observedOpenings ?? [])}
+
+For each target pair, report a seam only where the architectural meeting boundary is actually visible. Trace only the observed source-normalized polyline; stop at windows, doors, passages, occlusion, and image edges. Do not cross or fill an opening. Do not add wall-wall seams in this pass. Do not alter planes, grids, openings, camera, Floor authority, or world geometry. If a target cannot be supported, identify its plane IDs in unresolved.
+
+Coordinates are source-normalized: x=0 left, x=1 right, y=0 top, y=1 bottom. IDs must begin with a letter and contain only letters, digits, underscore, or hyphen. Return JSON matching the supplied schema.`;
+}
+
+function mergeSeamRefinement(raw: unknown, refinement: unknown): unknown {
+  const root = objectRecord(raw);
+  const refined = objectRecord(refinement);
+  if (!root || !refined) return raw;
+  const primarySeams = Array.isArray(root.observedSeams)
+    ? root.observedSeams
+    : [];
+  const refinedSeams = Array.isArray(refined.observedSeams)
+    ? refined.observedSeams
+    : [];
+  const primaryUnresolved = Array.isArray(root.unresolved)
+    ? root.unresolved
+    : [];
+  const refinedUnresolved = Array.isArray(refined.unresolved)
+    ? refined.unresolved
+    : [];
+  return {
+    ...root,
+    observedSeams: [...primarySeams, ...refinedSeams],
+    unresolved: [...primaryUnresolved, ...refinedUnresolved],
+    providerPasses: {
+      structuralObservation: 1,
+      gridRefinement: objectRecord(root.providerPasses)?.gridRefinement === 1
+        ? 1
+        : 0,
+      seamRefinement: 1,
+    },
+  };
+}
 
 type ObservationInput = Readonly<{
   attemptId: string;
@@ -333,14 +604,23 @@ Coordinates must be normalized to the supplied image: x=0 left, x=1 right, y=0 t
 Evidence rules:
 - Report visible evidence only. Never invent hidden planes, hidden seams, occluded continuations, or a whole-room reconstruction.
 - Do not output world coordinates, dimensions, camera parameters, support geometry, collision geometry, or final Room-Boundary geometry.
-- A plane is a visible contiguous tiled field. Use floor, wall, ceiling, or unknown when category is ambiguous.
-- For each plane, trace a conservative image polygon inside its actually visible field.
-- A grid family is a set of sampled visible grout-line segments on one plane. Use at most two principal families per plane. Sample actual lines; do not synthesize extensions.
-- A seam is an actually visible floor-wall, wall-wall, wall-ceiling, or unknown architectural meeting boundary. Reference only planes you reported.
+- A plane is a projectively coherent visible tiled field. Use floor, wall, ceiling, or unknown when category is ambiguous. Do not split one uninterrupted tiled field merely because it spans a large image region or contains a window. Do not promote a thin corner-line band, grout cluster, or antialiased transition into a separate plane when it has no independently coherent grid field.
+- For each plane, trace a conservative image polygon around only that visible field. The supplied calibrated Floor polygon is a camera-calibration patch, not the visible floor extent: independently trace the visible tiled floor field and never copy the calibration quad unless the visible field truly has that exact boundary. A floor polygon must follow visible floor-wall seams and the lower image boundary; it must not include wall or ceiling pixels.
+- This analytical image intentionally contains a conspicuous dark grout-line lattice across the floor, walls, and ceiling. Treat those lines as primary geometric evidence, not texture noise. For every confidently reported plane, perform a separate grid census before writing JSON. Report up to two principal families (axis_a and axis_b) whenever actual lines are visible, including narrow wall and ceiling fields. Sample at least two actual visible segments per family when available. A result with floor grids but no wall or ceiling grids is incomplete when the supplied image visibly contains those lines. Never synthesize extensions or invent a family that is genuinely not visible; record that absence in unresolved.
+- Systematically inspect visible floor-wall, wall-wall, and wall-ceiling boundaries. A seam is only an actually visible architectural meeting boundary. Reference only planes you reported and stop each polyline at openings, occlusion, or the image edge.
+- For every seam, classify boundaryEvidence and gridCompatibility. A wall-wall seam needs a projective discontinuity or architectural break; an uninterrupted tiled field is not a true wall-wall seam even if an earlier region split suggested one.
 - An opening is a visible window, door, passage, or unknown discontinuity where the tiled field stops. Trace the observed boundary only.
-- Adjacency is allowed only when two reported planes visibly meet along one reported seam.
+- Add one planeContinuity entry for every neighboring pair of reported wall polygons. If two or more wall planes are reported, planeContinuity must not be empty. Mark continuous only when the polygons share a visible boundary, sampled grid directions are compatible, the tiled field is uninterrupted, and no opening or supported corner separates them. Use discontinuous for a supported corner/opening and unresolved when evidence is insufficient.
+- Do not report adjacency separately. V2 normalization derives final adjacency only from accepted visible seams.
 - Set visibility to "observed" exactly. Put uncertainty in ambiguity and unresolved. Prefer unknown or omission over a false claim.
 - IDs must begin with a letter and contain only letters, digits, underscore, or hyphen.
+
+Before returning JSON, audit the result in this order:
+1. Every plane polygon stays inside its own visible field.
+2. Every reported plane has a deliberate grid-family decision.
+3. Every visible floor-wall and wall-ceiling boundary was considered.
+4. Every wall-wall seam has real discontinuity evidence rather than a semantic guess.
+5. Openings interrupt fields and polylines without being filled or crossed.
 
 Return JSON matching the supplied schema.`;
 }
@@ -402,6 +682,118 @@ function extractJson(payload: unknown): unknown {
   }
 }
 
+async function callGeminiJson(args: {
+  apiKey: string;
+  model: string;
+  prompt: string;
+  responseSchema: unknown;
+  imageBase64: string;
+  mimeType: string;
+  fetch: typeof fetch;
+}): Promise<unknown> {
+  const controller = new AbortController();
+  const timeout = setTimeout(
+    () => controller.abort(),
+    ROOM_OBSERVATION_TIMEOUT_MS,
+  );
+  try {
+    const generationConfig: Record<string, unknown> = {
+      temperature: 0.1,
+      maxOutputTokens: 8192,
+      responseMimeType: "application/json",
+      responseJsonSchema: args.responseSchema,
+    };
+    if (/(?:^|\/)gemini-3\.5-flash$/i.test(args.model)) {
+      generationConfig.thinkingConfig = { thinkingLevel: "minimal" };
+    }
+    let response: Response;
+    try {
+      response = await args.fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(args.model)}:generateContent?key=${encodeURIComponent(args.apiKey)}`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          signal: controller.signal,
+          body: JSON.stringify({
+            contents: [{
+              role: "user",
+              parts: [
+                { text: args.prompt },
+                {
+                  inlineData: {
+                    mimeType: args.mimeType,
+                    data: args.imageBase64,
+                  },
+                },
+              ],
+            }],
+            generationConfig,
+          }),
+        },
+      );
+    } catch (error) {
+      const timedOut = controller.signal.aborted ||
+        (error instanceof DOMException && error.name === "AbortError");
+      throw new RoomObservationPipelineError({
+        failureClass: timedOut ? "timeout" : "transport",
+        failureStage: "provider_invocation",
+        safeDetail: timedOut
+          ? "Room observer request timed out."
+          : `Room observer transport failed: ${safeDetail(error)}`,
+      });
+    }
+    if (!response.ok) {
+      const body = await response.text().catch(() => "");
+      let providerDetail = "";
+      try {
+        const parsed = JSON.parse(body) as {
+          error?: { status?: unknown; message?: unknown };
+        };
+        const status = typeof parsed.error?.status === "string"
+          ? parsed.error.status
+          : "";
+        const message = typeof parsed.error?.message === "string"
+          ? parsed.error.message
+          : "";
+        providerDetail = [status, message].filter(Boolean).join(": ");
+      } catch {
+        providerDetail = "";
+      }
+      throw new RoomObservationPipelineError({
+        failureClass: "provider_http",
+        failureStage: "provider_response",
+        providerStatus: response.status,
+        safeDetail: providerDetail
+          ? `Room observer HTTP ${response.status}: ${safeDetail(providerDetail)}`
+          : `Room observer failed with HTTP ${response.status}.`,
+      });
+    }
+    const contentType = response.headers.get("content-type") ?? "";
+    if (!contentType.toLowerCase().includes("application/json")) {
+      throw new RoomObservationPipelineError({
+        failureClass: "provider_response",
+        failureStage: "provider_response",
+        providerStatus: response.status,
+        safeDetail: "Room observer returned a non-JSON response content type.",
+      });
+    }
+    let envelope: unknown;
+    try {
+      envelope = JSON.parse(await response.text());
+    } catch {
+      throw new RoomObservationPipelineError({
+        failureClass: "provider_response",
+        failureStage: "provider_response",
+        providerStatus: response.status,
+        safeDetail: "Room observer returned an invalid JSON response envelope.",
+      });
+    }
+    return extractJson(envelope);
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 function validateProviderObservationEnvelope(
   value: unknown,
 ): string | null {
@@ -414,7 +806,7 @@ function validateProviderObservationEnvelope(
     "observedGridFamilies",
     "observedSeams",
     "observedOpenings",
-    "adjacency",
+    "planeContinuity",
     "unresolved",
   ] as const;
   const invalid = requiredArrays.find((key) => !Array.isArray(record[key]));
@@ -539,151 +931,123 @@ export async function observeFullyTiledRoomEnvelope(
   }
   const observationPrompt = prompt(input);
   const now = dependencies.now ?? (() => new Date());
-  let contract: RoomObservationContract;
-  try {
+  const imageBase64 = Buffer.from(input.generation.bytes).toString("base64");
+  const callRaw = async (args: {
+    prompt: string;
+    responseSchema: unknown;
+    actionType: string;
+    attemptId: string;
+  }): Promise<unknown> => {
     if (dependencies.callProvider) {
-      const raw = await dependencies.callProvider({
-        prompt: observationPrompt,
-        imageBase64: Buffer.from(input.generation.bytes).toString("base64"),
+      return dependencies.callProvider({
+        prompt: args.prompt,
+        imageBase64,
         mimeType: input.generation.identity.mimeType,
-        responseSchema: RESPONSE_SCHEMA,
+        responseSchema: args.responseSchema,
         model,
       });
-      contract = buildValidatedContract({ raw, input, provider, model, now });
-    } else {
-      contract = await withGeminiUsageAccounting(
-        {
-          attemptId: input.attemptId,
-          provider: "google_gemini",
-          model,
-          workflowType: "afc-v2-room-envelope-observation",
-          actionType: "observe-fully-tiled-room-envelope",
-          route: "/api/admin/3d-room-lab-v2/analyze",
-          service: "roomprintz-ui",
-          sourceTrigger: "admin_3d_room_lab_v2",
-          imageCount: 1,
-          metadata: {
-            promptVersion: AFC_V2_ROOM_OBSERVATION_PROMPT_VERSION,
-            representation: "FULLY_TILED",
-            cameraRole: "consumed_reference_only",
-          },
-        },
-        async () => {
-          const controller = new AbortController();
-          const timeout = setTimeout(
-            () => controller.abort(),
-            ROOM_OBSERVATION_TIMEOUT_MS,
-          );
-          try {
-            const generationConfig: Record<string, unknown> = {
-              temperature: 0.1,
-              maxOutputTokens: 8192,
-              responseMimeType: "application/json",
-              responseJsonSchema: RESPONSE_SCHEMA,
-            };
-            if (/(?:^|\/)gemini-3\.5-flash$/i.test(model)) {
-              generationConfig.thinkingConfig = {
-                thinkingLevel: "minimal",
-              };
-            }
-            let response: Response;
-            try {
-              response = await (dependencies.fetch ?? fetch)(
-                `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(apiKey!)}`,
-                {
-                  method: "POST",
-                  headers: { "Content-Type": "application/json" },
-                  signal: controller.signal,
-                  body: JSON.stringify({
-                    contents: [{
-                      role: "user",
-                      parts: [
-                        { text: observationPrompt },
-                        {
-                          inlineData: {
-                            mimeType: input.generation.identity.mimeType,
-                            data: Buffer.from(input.generation.bytes).toString(
-                              "base64",
-                            ),
-                          },
-                        },
-                      ],
-                    }],
-                    generationConfig,
-                  }),
-                },
-              );
-            } catch (error) {
-              const timedOut = controller.signal.aborted ||
-                (error instanceof DOMException && error.name === "AbortError");
-              throw new RoomObservationPipelineError({
-                failureClass: timedOut ? "timeout" : "transport",
-                failureStage: "provider_invocation",
-                safeDetail: timedOut
-                  ? "Room observer request timed out."
-                  : `Room observer transport failed: ${safeDetail(error)}`,
-              });
-            }
-            if (!response.ok) {
-              const body = await response.text().catch(() => "");
-              let providerDetail = "";
-              try {
-                const parsed = JSON.parse(body) as {
-                  error?: { status?: unknown; message?: unknown };
-                };
-                const status = typeof parsed.error?.status === "string"
-                  ? parsed.error.status
-                  : "";
-                const message = typeof parsed.error?.message === "string"
-                  ? parsed.error.message
-                  : "";
-                providerDetail = [status, message].filter(Boolean).join(": ");
-              } catch {
-                providerDetail = "";
-              }
-              throw new RoomObservationPipelineError({
-                failureClass: "provider_http",
-                failureStage: "provider_response",
-                providerStatus: response.status,
-                safeDetail: providerDetail
-                  ? `Room observer HTTP ${response.status}: ${safeDetail(providerDetail)}`
-                  : `Room observer failed with HTTP ${response.status}.`,
-              });
-            }
-            const contentType = response.headers.get("content-type") ?? "";
-            if (!contentType.toLowerCase().includes("application/json")) {
-              throw new RoomObservationPipelineError({
-                failureClass: "provider_response",
-                failureStage: "provider_response",
-                providerStatus: response.status,
-                safeDetail:
-                  "Room observer returned a non-JSON response content type.",
-              });
-            }
-            let envelope: unknown;
-            try {
-              envelope = JSON.parse(await response.text());
-            } catch {
-              throw new RoomObservationPipelineError({
-                failureClass: "provider_response",
-                failureStage: "provider_response",
-                providerStatus: response.status,
-                safeDetail: "Room observer returned an invalid JSON response envelope.",
-              });
-            }
-            return buildValidatedContract({
-              raw: extractJson(envelope),
-              input,
-              provider,
-              model,
-              now,
-            });
-          } finally {
-            clearTimeout(timeout);
-          }
-        },
-      );
     }
+    return withGeminiUsageAccounting(
+      {
+        attemptId: args.attemptId,
+        provider: "google_gemini",
+        model,
+        workflowType: "afc-v2-room-envelope-observation",
+        actionType: args.actionType,
+        route: "/api/admin/3d-room-lab-v2/analyze",
+        service: "roomprintz-ui",
+        sourceTrigger: "admin_3d_room_lab_v2",
+        imageCount: 1,
+        metadata: {
+          promptVersion: AFC_V2_ROOM_OBSERVATION_PROMPT_VERSION,
+          representation: "FULLY_TILED",
+          cameraRole: "consumed_reference_only",
+        },
+      },
+      () =>
+        callGeminiJson({
+          apiKey: apiKey!,
+          model,
+          prompt: args.prompt,
+          responseSchema: args.responseSchema,
+          imageBase64,
+          mimeType: input.generation.identity.mimeType,
+          fetch: dependencies.fetch ?? fetch,
+        }),
+    );
+  };
+  let contract: RoomObservationContract;
+  try {
+    let raw = await callRaw({
+      prompt: observationPrompt,
+      responseSchema: RESPONSE_SCHEMA,
+      actionType: "observe-fully-tiled-room-envelope",
+      attemptId: input.attemptId,
+    });
+    const missingPlanes = missingGridPlaneSummaries(raw);
+    if (missingPlanes.length > 0) {
+      try {
+        const refinement = await callRaw({
+          prompt: gridRefinementPrompt(missingPlanes),
+          responseSchema: GRID_REFINEMENT_SCHEMA,
+          actionType: "refine-fully-tiled-room-grids",
+          attemptId: `${input.attemptId}-grid-refinement`,
+        });
+        raw = mergeGridRefinement(raw, refinement);
+      } catch (error) {
+        const root = objectRecord(raw);
+        if (root) {
+          const unresolved = Array.isArray(root.unresolved)
+            ? root.unresolved
+            : [];
+          raw = {
+            ...root,
+            unresolved: [
+              ...unresolved,
+              `Grid refinement failed closed: ${safeDetail(error)}`.slice(0, 240),
+            ],
+            providerPasses: {
+              structuralObservation: 1,
+              gridRefinement: 0,
+              seamRefinement: 0,
+            },
+          };
+        }
+      }
+    }
+    const seamTargets = missingSeamTargets(raw);
+    if (seamTargets.length > 0) {
+      try {
+        const refinement = await callRaw({
+          prompt: seamRefinementPrompt(raw, seamTargets),
+          responseSchema: SEAM_REFINEMENT_SCHEMA,
+          actionType: "refine-fully-tiled-room-seams",
+          attemptId: `${input.attemptId}-seam-refinement`,
+        });
+        raw = mergeSeamRefinement(raw, refinement);
+      } catch (error) {
+        const root = objectRecord(raw);
+        if (root) {
+          const unresolved = Array.isArray(root.unresolved)
+            ? root.unresolved
+            : [];
+          raw = {
+            ...root,
+            unresolved: [
+              ...unresolved,
+              `Seam refinement failed closed: ${safeDetail(error)}`.slice(0, 240),
+            ],
+            providerPasses: {
+              structuralObservation: 1,
+              gridRefinement:
+                objectRecord(root.providerPasses)?.gridRefinement === 1 ? 1 : 0,
+              seamRefinement: 0,
+            },
+          };
+        }
+      }
+    }
+    contract = buildValidatedContract({ raw, input, provider, model, now });
   } catch (error) {
     const diagnostic = failureDiagnostic({ error, provider, model });
     console.error("[afc-v2-room-observation] failed", diagnostic);
