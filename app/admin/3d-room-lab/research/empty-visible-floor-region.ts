@@ -2,16 +2,18 @@ import { createHash } from "node:crypto";
 
 import sharp from "sharp";
 
-import {
-  type EmptyPhysicalBoundaryFixture,
-  verifyEmptyPhysicalBoundaryFixtureIdentity,
-} from "./empty-physical-boundary-read";
-
 export const EMPTY_VISIBLE_FLOOR_REGION_VERSION = "p2-s2a-visible-floor-region/v1" as const;
 export const EMPTY_SOURCE_PIXEL_COORDINATE_SPACE = "empty-source-pixels/v1" as const;
 
 export type SourcePixelPoint = Readonly<{ x: number; y: number }>;
 export type Rgb = readonly [number, number, number];
+export type CertifiedEmptyVisibleFloorSourceIdentity = Readonly<{
+  roomId: string;
+  emptyImage: Readonly<{
+    sha256: string;
+    dimensions: Readonly<{ width: number; height: number }>;
+  }>;
+}>;
 
 export type EmptyVisibleFloorRegionParameters = Readonly<{
   blurSigma: number;
@@ -423,7 +425,7 @@ function componentDiagnostics(
  */
 export async function readCertifiedEmptyVisibleFloorRegion(
   imageBytes: Uint8Array,
-  fixture: EmptyPhysicalBoundaryFixture,
+  sourceIdentity: CertifiedEmptyVisibleFloorSourceIdentity,
   parameters: EmptyVisibleFloorRegionParameters =
     P2_S2A_VISIBLE_FLOOR_REGION_PARAMETERS
 ): Promise<EmptyVisibleFloorRegionReadResult> {
@@ -448,7 +450,11 @@ export async function readCertifiedEmptyVisibleFloorRegion(
     if (
       decoded.info.channels < 3 ||
       blurred.info.channels < 3 ||
-      !verifyEmptyPhysicalBoundaryFixtureIdentity(fixture, observedIdentity)
+      sourceIdentity.emptyImage.sha256 !== observedIdentity.sha256 ||
+      sourceIdentity.emptyImage.dimensions.width !==
+        observedIdentity.dimensions.width ||
+      sourceIdentity.emptyImage.dimensions.height !==
+        observedIdentity.dimensions.height
     ) {
       return { ok: false, reason: "fixture_identity_mismatch" };
     }
@@ -521,13 +527,13 @@ export async function readCertifiedEmptyVisibleFloorRegion(
       image.width,
       image.height,
       parameters.maximumAdjacentUpperPerimeterJumpPx,
-      fixture.roomId
+      sourceIdentity.roomId
     );
     const frame = frameContactSpans(
       component.mask,
       image.width,
       image.height,
-      fixture.roomId
+      sourceIdentity.roomId
     );
     const diagnostics = componentDiagnostics(
       component.mask,
@@ -536,7 +542,7 @@ export async function readCertifiedEmptyVisibleFloorRegion(
     );
     const region: EmptyVisibleFloorRegion = Object.freeze({
       version: EMPTY_VISIBLE_FLOOR_REGION_VERSION,
-      roomId: fixture.roomId,
+      roomId: sourceIdentity.roomId,
       emptyImageSha256: sha256,
       coordinateSpace: EMPTY_SOURCE_PIXEL_COORDINATE_SPACE,
       dimensions: observedIdentity.dimensions,

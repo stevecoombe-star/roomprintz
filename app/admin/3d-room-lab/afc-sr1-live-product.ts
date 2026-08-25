@@ -99,7 +99,14 @@ type FloorProposalResult =
       evidenceDigest: string | null;
     }>;
 
-type AttemptEvidence = {
+export type AfcSr1LiveAttemptEvidence = {
+  binding?: Readonly<{
+    attemptId: string;
+    resultId: string;
+    labLoadGeneration: number;
+    originalBasis: AfcSr1LiveBasis;
+    emptyBasis: AfcSr1LiveBasis;
+  }>;
   floorRead?: Readonly<{
     emptyBytes: Uint8Array;
     emptyBasis: AfcSr1LiveBasis;
@@ -107,6 +114,7 @@ type AttemptEvidence = {
   tiledPerspective?: Readonly<{
     tiledBytes: Uint8Array;
     tiledBasis: AfcSr1LiveBasis;
+    resultId?: string;
   }>;
   ts0Child?: Readonly<{
     bytes: Uint8Array;
@@ -115,7 +123,7 @@ type AttemptEvidence = {
   }>;
 };
 
-const attemptEvidence = new Map<string, AttemptEvidence>();
+const attemptEvidence = new Map<string, AfcSr1LiveAttemptEvidence>();
 const inFlightEmpty = new Map<string, Promise<EmptyRoomAssistGenerateResult>>();
 const LIVE_EMPTY_DIAGNOSTIC_ROUTE =
   "/api/admin/3d-room-lab/afc-sr1/live-attempt-empty";
@@ -124,33 +132,74 @@ const LIVE_TILED_DIAGNOSTIC_ROUTE =
 
 export function getAfcSr1LiveAttemptEvidence(
   attemptId: string
-): Readonly<AttemptEvidence> | null {
+): Readonly<AfcSr1LiveAttemptEvidence> | null {
   return attemptEvidence.get(attemptId) ?? null;
 }
 
 export function retainAfcSr1LiveAttemptEmptyEvidence(
-  attemptId: string,
-  empty: AfcSr1ResolvedEmpty
+  input: Readonly<{
+    attemptId: string;
+    resultId: string;
+    labLoadGeneration: number;
+    originalBasis: AfcSr1LiveBasis;
+    empty: AfcSr1ResolvedEmpty;
+  }>
 ): void {
-  retainAttemptEvidence(attemptId).floorRead = Object.freeze({
-    emptyBytes: Uint8Array.from(empty.bytes),
-    emptyBasis: empty.basis,
-  });
+  const evidence: AfcSr1LiveAttemptEvidence = {
+    binding: Object.freeze({
+      attemptId: input.attemptId,
+      resultId: input.resultId,
+      labLoadGeneration: input.labLoadGeneration,
+      originalBasis: Object.freeze({ ...input.originalBasis }),
+      emptyBasis: Object.freeze({ ...input.empty.basis }),
+    }),
+    floorRead: Object.freeze({
+      emptyBytes: Uint8Array.from(input.empty.bytes),
+      emptyBasis: Object.freeze({ ...input.empty.basis }),
+    }),
+  };
+  attemptEvidence.delete(input.attemptId);
+  attemptEvidence.set(input.attemptId, evidence);
+  evictOldestAttemptEvidence();
+}
+
+function evictOldestAttemptEvidence(): void {
+  while (attemptEvidence.size > MAX_ATTEMPT_EVIDENCE) {
+    const oldest = attemptEvidence.keys().next().value;
+    if (typeof oldest !== "string") break;
+    attemptEvidence.delete(oldest);
+  }
+}
+
+function attemptBindingMatches(
+  evidence: AfcSr1LiveAttemptEvidence,
+  attemptId: string,
+  resultId: string
+): boolean {
+  return (
+    evidence.binding?.attemptId === attemptId &&
+    evidence.binding.resultId === resultId
+  );
 }
 
 /**
- * Keeps the exact generated TILED artifact in the same bounded, in-memory
- * attempt evidence record as EMPTY. It is diagnostic evidence only and is
- * never used as a fallback input or to re-run generation.
+ * TILED is retained only beside the EMPTY/Original binding from the same
+ * product result. A reused attempt key cannot splice evidence across results.
  */
 export function retainAfcSr1LiveAttemptTiledEvidence(
   attemptId: string,
+  resultId: string,
   tiledBytes: Uint8Array,
   tiledBasis: AfcSr1LiveBasis
 ): void {
-  retainAttemptEvidence(attemptId).tiledPerspective = Object.freeze({
+  const evidence = attemptEvidence.get(attemptId);
+  if (!evidence || !attemptBindingMatches(evidence, attemptId, resultId)) {
+    return;
+  }
+  evidence.tiledPerspective = Object.freeze({
     tiledBytes: Uint8Array.from(tiledBytes),
     tiledBasis: Object.freeze({ ...tiledBasis }),
+    resultId,
   });
 }
 
@@ -162,16 +211,12 @@ export function afcSr1LiveTiledDiagnosticImages(attemptId: string) {
   });
 }
 
-function retainAttemptEvidence(attemptId: string): AttemptEvidence {
+function retainAttemptEvidence(attemptId: string): AfcSr1LiveAttemptEvidence {
   let evidence = attemptEvidence.get(attemptId);
   if (!evidence) {
     evidence = {};
     attemptEvidence.set(attemptId, evidence);
-    while (attemptEvidence.size > MAX_ATTEMPT_EVIDENCE) {
-      const oldest = attemptEvidence.keys().next().value;
-      if (typeof oldest !== "string") break;
-      attemptEvidence.delete(oldest);
-    }
+    evictOldestAttemptEvidence();
   }
   return evidence;
 }
@@ -396,11 +441,18 @@ export function cloneAfcSr1LivePolygon(polygon: AfcSr1SourcePolygon): AfcSr1Sour
 
 function floorReadDiagnostic(
   request: AfcSr1LiveAnalyzeRequest,
+  resultId: string,
   original: AfcSr1QualifiedOriginal,
   empty: AfcSr1ResolvedEmpty,
   selected: Extract<FloorProposalResult, { status: "selected" }>
 ): AfcSr1LiveFloorReadDiagnostic {
-  retainAfcSr1LiveAttemptEmptyEvidence(request.attemptId, empty);
+  retainAfcSr1LiveAttemptEmptyEvidence({
+    attemptId: request.attemptId,
+    resultId,
+    labLoadGeneration: request.labLoadGeneration,
+    originalBasis: original.basis,
+    empty,
+  });
   return Object.freeze({
     detectorKind: "empty_room_assist_empty_arm",
     polygon: cloneAfcSr1LivePolygon(selected.polygon),
@@ -670,6 +722,7 @@ export async function executeAfcSr1CompleteProductAttempt(
   }
   const acceptedFloorRead = floorReadDiagnostic(
     request,
+    resultId,
     original,
     empty,
     proposal

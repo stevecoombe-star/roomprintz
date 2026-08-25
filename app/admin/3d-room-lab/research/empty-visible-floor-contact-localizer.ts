@@ -1,9 +1,9 @@
 import sharp from "sharp";
 
-import type { EmptyPhysicalBoundaryFixture } from "./empty-physical-boundary-read";
 import {
   EMPTY_VISIBLE_FLOOR_REGION_VERSION,
   P2_S2A_VISIBLE_FLOOR_REGION_PARAMETERS,
+  type CertifiedEmptyVisibleFloorSourceIdentity,
   type EmptyVisibleFloorRegion,
   type EmptyVisibleFloorRegionParameters,
   readCertifiedEmptyVisibleFloorRegion,
@@ -1493,7 +1493,7 @@ export function localizeVisibleFloorTerminationFragments(
 
 export async function readCertifiedVisibleFloorTerminationFragments(
   imageBytes: Uint8Array,
-  fixture: EmptyPhysicalBoundaryFixture,
+  sourceIdentity: CertifiedEmptyVisibleFloorSourceIdentity,
   regionParameters: EmptyVisibleFloorRegionParameters =
     P2_S2A_VISIBLE_FLOOR_REGION_PARAMETERS,
   localizerParameters: VisibleFloorContactLocalizerParameters =
@@ -1501,7 +1501,7 @@ export async function readCertifiedVisibleFloorTerminationFragments(
 ): Promise<VisibleFloorContactReadResult> {
   const regionRead = await readCertifiedEmptyVisibleFloorRegion(
     imageBytes,
-    fixture,
+    sourceIdentity,
     regionParameters
   );
   if (!regionRead.ok) return regionRead;

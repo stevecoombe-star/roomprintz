@@ -172,7 +172,13 @@ export async function executeAfcSr1TiledLiveProductAttempt(
     return failed("empty_generation_failed", "empty_generation_or_decode_failed");
   }
   counts.emptyGeneration = empty.generated ? 1 : 0;
-  retainAfcSr1LiveAttemptEmptyEvidence(request.attemptId, empty);
+  retainAfcSr1LiveAttemptEmptyEvidence({
+    attemptId: request.attemptId,
+    resultId,
+    labLoadGeneration: request.labLoadGeneration,
+    originalBasis: original.basis,
+    empty,
+  });
 
   const emptyToOriginal = classifyAfcR3cImagePairCompatibility(
     {
@@ -211,6 +217,7 @@ export async function executeAfcSr1TiledLiveProductAttempt(
   const tiledBytes = Buffer.from(tiled.tiled.base64, "base64");
   retainAfcSr1LiveAttemptTiledEvidence(
     request.attemptId,
+    resultId,
     tiledBytes,
     tiled.tiled.identity
   );
