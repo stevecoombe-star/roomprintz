@@ -22,7 +22,7 @@ const calibratedViewerSource = readFileSync(
   "utf8",
 );
 
-test("cyan authoritative Floor is available once on every public representation", () => {
+test("cyan authoritative Floor is shown on the TILED authority basis", () => {
   assert.match(overlaySource, /data-evidence-role="authoritative-floor"/);
   assert.match(overlaySource, /rgb\(103, 232, 249\)/);
   assert.match(
@@ -31,17 +31,19 @@ test("cyan authoritative Floor is available once on every public representation"
   );
   assert.match(
     roomLabSource,
-    /showFloorAuthority=\{[\s\S]*selectedRepresentation !== "ORIGINAL"/,
+    /showFloorAuthority=\{[\s\S]*selectedRepresentation === "TILED"/,
   );
   assert.match(calibratedViewerSource, /new THREE\.LineSegments/);
   assert.match(calibratedViewerSource, /color: 0x67e8f9/);
 });
 
-test("FULLY_TILED alone enables provider-reported room-observation overlays", () => {
+test("live S3C defers room-observation overlays during EMPTY migration", () => {
   assert.match(
     roomLabSource,
-    /showRoomObservation=\{[\s\S]*selectedRepresentation === "FULLY_TILED"/,
+    /showRoomObservation=\{false\}/,
   );
+  assert.doesNotMatch(roomLabSource, /FULLY_TILED/);
+  // The read-only renderer remains available for the later EMPTY certification.
   assert.match(overlaySource, /room\.observedPlanes\.map/);
   assert.match(overlaySource, /room\.observedGridFamilies\.flatMap/);
   assert.match(overlaySource, /room\.observedSeams\.map/);

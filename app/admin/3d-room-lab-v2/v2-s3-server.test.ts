@@ -208,7 +208,7 @@ function observation() {
   );
 }
 
-test("live V2 generates one FULLY_TILED scaffold before Floor and reuses it for room observation", async () => {
+test("retired S3B reference generates one FULLY_TILED scaffold for historical regression", async () => {
   const order: string[] = [];
   let floorBytes: Uint8Array | null = null;
   let roomIdentity = "";
@@ -404,7 +404,7 @@ test("FULLY_TILED evidence route exposes V2 Floor source without false EMPTY lin
   assert.doesNotMatch(routeSource, /EMPTY.*TILED|emptyToTiled/);
 });
 
-test("V2-S3 runtime remains isolated from boundary, support, collision, and camera writers", () => {
+test("retired V2-S3B reference remains isolated from boundary and support systems", () => {
   const files = [
     "afc-v2-s3-analysis.server.ts",
     "fully-tiled-floor-authority.server.ts",

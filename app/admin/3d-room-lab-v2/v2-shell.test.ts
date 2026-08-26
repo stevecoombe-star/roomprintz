@@ -16,8 +16,8 @@ import {
   REPRESENTATION_KINDS,
   createInitialRepresentationState,
   setEmptyRepresentation,
-  setFullyTiledRepresentation,
   setOriginalRepresentation,
+  setTiledRepresentation,
 } from "./representation-state";
 
 const V2_DIRECTORY = path.join(
@@ -46,7 +46,7 @@ function importSpecifiers(source: string): string[] {
   );
 }
 
-test("V2-S3 route and restrained room-observation shell render", () => {
+test("V2-S3C route and restored EMPTY to TILED shell render", () => {
   const routeMarkup = renderToStaticMarkup(
     createElement(AdminAfcV2Page),
   );
@@ -57,32 +57,33 @@ test("V2-S3 route and restrained room-observation shell render", () => {
   assert.match(shellMarkup, /Prepare Original/);
   assert.match(shellMarkup, /Original/);
   assert.match(shellMarkup, /EMPTY/);
-  assert.match(shellMarkup, /FULLY TILED/);
+  assert.match(shellMarkup, /TILED/);
   assert.match(shellMarkup, /AFC Status/);
   assert.match(shellMarkup, /Floor/);
   assert.match(shellMarkup, /Camera/);
   assert.match(shellMarkup, /Room Observations/);
   assert.match(shellMarkup, /Room Boundaries/);
   assert.match(shellMarkup, /Supports/);
-  assert.match(shellMarkup, /Generate one FULLY TILED scaffold/);
-  assert.doesNotMatch(shellMarkup, /floor-only TILED/i);
+  assert.match(shellMarkup, /proven floor-only TILED scaffold/i);
+  assert.match(shellMarkup, /deferred.*EMPTY.*Room Observation/i);
+  assert.doesNotMatch(shellMarkup, /FULLY TILED/i);
 });
 
-test("representation contract keeps Original, EMPTY, and FULLY_TILED distinct", () => {
+test("representation contract keeps Original, EMPTY, and TILED distinct", () => {
   assert.deepEqual(REPRESENTATION_KINDS, [
     "ORIGINAL",
     "EMPTY",
-    "FULLY_TILED",
+    "TILED",
   ]);
 
   const initial = createInitialRepresentationState();
   assert.equal(initial.ORIGINAL.kind, "ORIGINAL");
   assert.equal(initial.EMPTY.kind, "EMPTY");
-  assert.equal(initial.FULLY_TILED.kind, "FULLY_TILED");
+  assert.equal(initial.TILED.kind, "TILED");
   assert.equal(initial.EMPTY.availability, "unavailable");
-  assert.equal(initial.FULLY_TILED.availability, "unavailable");
+  assert.equal(initial.TILED.availability, "unavailable");
   assert.equal("imageUrl" in initial.EMPTY, false);
-  assert.equal("imageUrl" in initial.FULLY_TILED, false);
+  assert.equal("imageUrl" in initial.TILED, false);
 
   const loaded = setOriginalRepresentation(initial, {
     imageUrl: "blob:original-room",
@@ -93,9 +94,9 @@ test("representation contract keeps Original, EMPTY, and FULLY_TILED distinct", 
   });
   assert.equal(loaded.ORIGINAL.availability, "available");
   assert.equal(loaded.EMPTY.availability, "unavailable");
-  assert.equal(loaded.FULLY_TILED.availability, "unavailable");
+  assert.equal(loaded.TILED.availability, "unavailable");
   assert.notEqual(loaded.ORIGINAL, loaded.EMPTY);
-  assert.notEqual(loaded.ORIGINAL, loaded.FULLY_TILED);
+  assert.notEqual(loaded.ORIGINAL, loaded.TILED);
 });
 
 test("diagnostic image frame preserves each representation aspect ratio", () => {
@@ -193,7 +194,7 @@ test("v2 browser runtime remains isolated from v1 UI and research", () => {
   );
 });
 
-test("EMPTY stays distinct and only real generation enables FULLY_TILED", () => {
+test("EMPTY stays distinct and only real generation enables TILED", () => {
   const withOriginal = setOriginalRepresentation(createInitialRepresentationState(), {
     imageUrl: "https://example.test/room.jpg",
     source: { type: "hosted-url", imageUrl: "https://example.test/room.jpg" },
@@ -203,15 +204,15 @@ test("EMPTY stays distinct and only real generation enables FULLY_TILED", () => 
     "/api/admin/3d-room-lab-v2/attempt-empty?attemptId=attempt",
   );
   assert.equal(withEmpty.EMPTY.availability, "available");
-  assert.equal(withEmpty.FULLY_TILED.availability, "unavailable");
+  assert.equal(withEmpty.TILED.availability, "unavailable");
   assert.match(
-    "reason" in withEmpty.FULLY_TILED ? withEmpty.FULLY_TILED.reason : "",
+    "reason" in withEmpty.TILED ? withEmpty.TILED.reason : "",
     /not been generated/,
   );
-  const withFullyTiled = setFullyTiledRepresentation(
+  const withTiled = setTiledRepresentation(
     withEmpty,
-    "/api/admin/3d-room-lab-v2/attempt-fully-tiled?attemptId=attempt&resultId=result",
+    "/api/admin/3d-room-lab-v2/attempt-tiled?attemptId=attempt",
   );
-  assert.equal(withFullyTiled.FULLY_TILED.availability, "available");
-  assert.notEqual(withFullyTiled.EMPTY, withFullyTiled.FULLY_TILED);
+  assert.equal(withTiled.TILED.availability, "available");
+  assert.notEqual(withTiled.EMPTY, withTiled.TILED);
 });

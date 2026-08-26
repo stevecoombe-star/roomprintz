@@ -9,6 +9,10 @@ export const runtime = "nodejs";
 
 const SAFE_ID = /^[A-Za-z0-9._-]{1,180}$/;
 
+/**
+ * Historical S3B evidence endpoint. Live Analyze & Apply no longer generates
+ * or links this representation.
+ */
 export async function GET(request: Request) {
   if (!(await getAuthenticatedAdminUser())) {
     return NextResponse.json(

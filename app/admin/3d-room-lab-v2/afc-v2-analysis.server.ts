@@ -24,6 +24,9 @@ import {
   validateAfcSr1LiveResultAcceptance,
 } from "@/app/admin/3d-room-lab/afc-sr1-live-acceptance";
 import {
+  getAfcSr1LiveAttemptEvidence,
+} from "@/app/admin/3d-room-lab/afc-sr1-live-product";
+import {
   executeAfcSr1TiledLiveProductAttempt,
   type AfcSr1TiledLiveProductDependencies,
 } from "@/app/admin/3d-room-lab/afc-sr1-tiled-live-product";
@@ -39,6 +42,12 @@ import { evaluateQuadSolvability } from "@/app/admin/3d-room-lab/quad-solvabilit
 import {
   classifyAfcR3cImagePairCompatibility,
 } from "@/app/admin/3d-room-lab/research/afc-r3c-image-pair-compatibility";
+import {
+  AFC_SR1_TILE_GRID_SCAFFOLD_GENERATOR_ID,
+  AFC_SR1_TILE_GRID_SCAFFOLD_PRESET,
+  AFC_SR1_TILE_GRID_SCAFFOLD_PROFILE,
+  AFC_SR1_TILE_GRID_SCAFFOLD_REQUESTED_MODEL_ID,
+} from "@/app/admin/3d-room-lab/research/afc-sr1-tile-grid-scaffold";
 import {
   validateAfcSr1TiledPerspectiveExactGridLineage,
 } from "@/app/admin/3d-room-lab/research/afc-sr1-tiled-perspective-exact-grid-lineage";
@@ -60,13 +69,58 @@ export type AfcV2AnalyzeInput = Readonly<{
   referenceDepthM: number;
 }>;
 
+type AfcV2LivePipelineEvidence = Readonly<{
+  empty: Readonly<{
+    imageUrl: string;
+    identity: AfcSr1LiveBasis;
+    provenance: Readonly<{
+      generatedFrom: "ORIGINAL";
+      parentOriginalSha256: string;
+    }>;
+  }> | null;
+  tiled: Readonly<{
+    imageUrl: string;
+    identity: AfcSr1LiveBasis;
+    provenance: Readonly<{
+      generatedFrom: "EMPTY";
+      parentEmptySha256: string;
+      originalAncestorSha256: string;
+      lineageEvidenceDigest: string | null;
+      generatorId: typeof AFC_SR1_TILE_GRID_SCAFFOLD_GENERATOR_ID;
+      profileId: typeof AFC_SR1_TILE_GRID_SCAFFOLD_PROFILE;
+      researchPreset: typeof AFC_SR1_TILE_GRID_SCAFFOLD_PRESET;
+      requestedModelId: typeof AFC_SR1_TILE_GRID_SCAFFOLD_REQUESTED_MODEL_ID;
+    }>;
+    floorReaderContract: Readonly<{
+      authority: "tiled_perspective_reader";
+      input: "full_tiled_raster";
+      inputIdentitySha256: string;
+      sourceNormalizedTransfer: "identity_source_normalized";
+      readerVersion: string | null;
+    }>;
+  }> | null;
+  liveGeneratedRepresentations: readonly ["EMPTY", "TILED"];
+  executionCounts: Readonly<{
+    emptyGeneration: number;
+    floorOnlyTiledGeneration: number;
+    tiledFloorReader: number;
+    fullyTiledGeneration: 0;
+    fullyTiledFloorReader: 0;
+    roomObserver: 0;
+  }>;
+  roomObservation: null;
+  roomObservationStatus: "deferred_pending_empty_migration";
+  roomObservationDiagnostic:
+    "Room Observation is deferred until the separately certified EMPTY migration.";
+}>;
+
 export type AfcV2AnalyzeResult =
-  | Readonly<{
+  | Readonly<AfcV2LivePipelineEvidence & {
       status: "failed";
       reason: string;
       product: AfcSr1LiveProductResult;
     }>
-  | Readonly<{
+  | Readonly<AfcV2LivePipelineEvidence & {
       status: "applied";
       product: AfcSr1LiveAuthoritativeGeometry;
       floor: Readonly<{
@@ -261,6 +315,71 @@ function originalBasis(
   };
 }
 
+function livePipelineEvidence(
+  input: AfcV2AnalyzeInput,
+  product: AfcSr1LiveProductResult,
+): AfcV2LivePipelineEvidence {
+  const evidence = getAfcSr1LiveAttemptEvidence(input.attemptId);
+  const binding = evidence?.binding;
+  const empty = evidence?.floorRead && binding
+    ? Object.freeze({
+      imageUrl:
+        `/api/admin/3d-room-lab-v2/attempt-empty?attemptId=${encodeURIComponent(input.attemptId)}`,
+      identity: evidence.floorRead.emptyBasis,
+      provenance: Object.freeze({
+        generatedFrom: "ORIGINAL" as const,
+        parentOriginalSha256: binding.originalBasis.sha256,
+      }),
+    })
+    : null;
+  const perspective = product.status === "authoritative_geometry"
+    ? product.geometry.tiledPerspective
+    : null;
+  const tiled = evidence?.tiledPerspective && binding
+    ? Object.freeze({
+      imageUrl:
+        `/api/admin/3d-room-lab-v2/attempt-tiled?attemptId=${encodeURIComponent(input.attemptId)}`,
+      identity: evidence.tiledPerspective.tiledBasis,
+      provenance: Object.freeze({
+        generatedFrom: "EMPTY" as const,
+        parentEmptySha256: binding.emptyBasis.sha256,
+        originalAncestorSha256: binding.originalBasis.sha256,
+        lineageEvidenceDigest:
+          perspective?.emptyToTiledLineageDigest ?? null,
+        generatorId: AFC_SR1_TILE_GRID_SCAFFOLD_GENERATOR_ID,
+        profileId: AFC_SR1_TILE_GRID_SCAFFOLD_PROFILE,
+        researchPreset: AFC_SR1_TILE_GRID_SCAFFOLD_PRESET,
+        requestedModelId: AFC_SR1_TILE_GRID_SCAFFOLD_REQUESTED_MODEL_ID,
+      }),
+      floorReaderContract: Object.freeze({
+        authority: "tiled_perspective_reader" as const,
+        input: "full_tiled_raster" as const,
+        inputIdentitySha256: evidence.tiledPerspective.tiledBasis.sha256,
+        sourceNormalizedTransfer: "identity_source_normalized" as const,
+        readerVersion: perspective?.readerVersion ?? null,
+      }),
+    })
+    : null;
+  const counts = product.diagnostics.attemptCounts;
+  return Object.freeze({
+    empty,
+    tiled,
+    liveGeneratedRepresentations: Object.freeze(["EMPTY", "TILED"] as const),
+    executionCounts: Object.freeze({
+      emptyGeneration: counts.emptyGeneration,
+      floorOnlyTiledGeneration: counts.tiledGeneration,
+      tiledFloorReader: counts.tiledReader,
+      fullyTiledGeneration: 0 as const,
+      fullyTiledFloorReader: 0 as const,
+      roomObserver: 0 as const,
+    }),
+    roomObservation: null,
+    roomObservationStatus: "deferred_pending_empty_migration" as const,
+    roomObservationDiagnostic:
+      "Room Observation is deferred until the separately certified EMPTY migration." as const,
+  });
+}
+
 /**
  * V2's server-side certified floor transaction. The browser receives an
  * already-applied result and never owns solver, Floor, or camera authority.
@@ -278,6 +397,7 @@ export async function executeAfcV2Analysis(
   }, dependencies.product);
   if (product.status !== "authoritative_geometry") {
     return {
+      ...livePipelineEvidence(input, product),
       status: "failed",
       reason:
         product.status === "failed"
@@ -298,7 +418,12 @@ export async function executeAfcV2Analysis(
     },
   });
   if (!acceptance.accepted) {
-    return { status: "failed", reason: acceptance.reason, product };
+    return {
+      ...livePipelineEvidence(input, product),
+      status: "failed",
+      reason: acceptance.reason,
+      product,
+    };
   }
 
   const settle = settleAfcFixedSeamCalibrationWithRatioExtension({
@@ -312,6 +437,7 @@ export async function executeAfcV2Analysis(
   });
   if (!settle.ok || !settle.applyObservability.available) {
     return {
+      ...livePipelineEvidence(input, product),
       status: "failed",
       reason: settle.ok ? "AFC settle is not Apply-safe." : `AFC settle failed closed: ${settle.reason}.`,
       product,
@@ -349,7 +475,12 @@ export async function executeAfcV2Analysis(
     isCalibratedCameraActive: false,
   });
   if (!transaction.valid) {
-    return { status: "failed", reason: transaction.reason, product };
+    return {
+      ...livePipelineEvidence(input, product),
+      status: "failed",
+      reason: transaction.reason,
+      product,
+    };
   }
 
   const solved = evaluateQuadSolvability({
@@ -365,6 +496,7 @@ export async function executeAfcV2Analysis(
   const candidate = solved.applyCandidate;
   if (!candidate || !solved.applyEvaluation.available) {
     return {
+      ...livePipelineEvidence(input, product),
       status: "failed",
       reason: `AFC camera Apply failed closed: ${solved.applyEvaluation.reason}.`,
       product,
@@ -393,6 +525,7 @@ export async function executeAfcV2Analysis(
   });
   if (!freeze.ok) {
     return {
+      ...livePipelineEvidence(input, product),
       status: "failed",
       reason: `AFC camera freeze failed closed: ${freeze.reason}.`,
       product,
@@ -412,6 +545,7 @@ export async function executeAfcV2Analysis(
   });
   if (!restore.ok) {
     return {
+      ...livePipelineEvidence(input, product),
       status: "failed",
       reason: `AFC camera restore identity failed closed: ${restore.reason}.`,
       product,
@@ -419,6 +553,7 @@ export async function executeAfcV2Analysis(
   }
 
   return {
+    ...livePipelineEvidence(input, product),
     status: "applied",
     product,
     floor: {
@@ -447,42 +582,44 @@ export async function executeAfcV2ControlledReplay(
 ): Promise<AfcV2AnalyzeResult> {
   const product = await createAfcV2ControlledReplayDependencies(input, evidence);
   if (!product) {
+    const rejectedProduct: AfcSr1LiveProductResult = {
+      status: "failed",
+      schemaVersion: "afc-sr1-complete-product-attempt/v2",
+      attemptId: input.attemptId,
+      resultId: "controlled-replay-rejected",
+      labLoadGeneration: input.loadGeneration,
+      reason: "invalid_request",
+      detail: "controlled_replay_evidence_invalid",
+      diagnostics: {
+        finalReason: "controlled_replay_evidence_invalid",
+        placementStatus: null,
+        placementReason: null,
+        validationP90Px: null,
+        evidenceDigest: "controlled-replay-invalid",
+        sameAttemptTs0Retained: false,
+        attemptCounts: {
+          originalQualification: 0,
+          emptyGeneration: 0,
+          tiledGeneration: 0,
+          tiledReader: 0,
+          geminiFloorProposal: 0,
+          supportedRoomClassifier: 0,
+          onAxisCorrection: 0,
+          pathA: 0,
+          rawReader: 0,
+          ts0: 0,
+          placement: 0,
+          childReader: 0,
+        },
+        floorReadDiagnostic: null,
+        supportedRoomClassifier: null,
+      },
+    };
     return {
+      ...livePipelineEvidence(input, rejectedProduct),
       status: "failed",
       reason: "Controlled replay evidence did not satisfy exact identity and lineage bindings.",
-      product: {
-        status: "failed",
-        schemaVersion: "afc-sr1-complete-product-attempt/v2",
-        attemptId: input.attemptId,
-        resultId: "controlled-replay-rejected",
-        labLoadGeneration: input.loadGeneration,
-        reason: "invalid_request",
-        detail: "controlled_replay_evidence_invalid",
-        diagnostics: {
-          finalReason: "controlled_replay_evidence_invalid",
-          placementStatus: null,
-          placementReason: null,
-          validationP90Px: null,
-          evidenceDigest: "controlled-replay-invalid",
-          sameAttemptTs0Retained: false,
-          attemptCounts: {
-            originalQualification: 0,
-            emptyGeneration: 0,
-            tiledGeneration: 0,
-            tiledReader: 0,
-            geminiFloorProposal: 0,
-            supportedRoomClassifier: 0,
-            onAxisCorrection: 0,
-            pathA: 0,
-            rawReader: 0,
-            ts0: 0,
-            placement: 0,
-            childReader: 0,
-          },
-          floorReadDiagnostic: null,
-          supportedRoomClassifier: null,
-        },
-      },
+      product: rejectedProduct,
     };
   }
   return executeAfcV2Analysis(input, {

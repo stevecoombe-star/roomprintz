@@ -121,8 +121,9 @@ export type AfcV2S3AnalysisDependencies = Readonly<{
 }>;
 
 /**
- * Live V2 owns one tiled scaffold. FULLY_TILED is generated once from Original,
- * then consumed independently by the certified floor reader and room observer.
+ * Retired S3B reference pipeline. The live V2 analyze route no longer calls
+ * this FULLY_TILED experiment; it remains executable for historical receipts
+ * and regression coverage only.
  */
 export async function executeAfcV2S3Analysis(
   input: AfcV2AnalyzeInput,

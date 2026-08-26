@@ -19,8 +19,8 @@ import {
   REPRESENTATION_LABELS,
   createInitialRepresentationState,
   setEmptyRepresentation,
-  setFullyTiledRepresentation,
   setOriginalRepresentation,
+  setTiledRepresentation,
 } from "./representation-state";
 import CalibratedRoomViewer from "./CalibratedRoomViewer";
 import RoomEvidenceOverlay from "./RoomEvidenceOverlay";
@@ -51,7 +51,7 @@ type AppliedAfcResult = {
       up: { x: number; y: number; z: number };
     };
   };
-  fullyTiled: {
+  tiled: {
     imageUrl: string;
     identity: {
       sha256: string;
@@ -59,16 +59,29 @@ type AppliedAfcResult = {
       decodedHeight: number;
     };
     provenance: {
-      generationId: string;
+      generatedFrom: "EMPTY";
+      parentEmptySha256: string;
+      originalAncestorSha256: string;
+      lineageEvidenceDigest: string | null;
+      generatorId: string;
+      profileId: string;
+      researchPreset: string;
+    };
+  } | null;
+  empty: {
+    imageUrl: string;
+    identity: {
+      sha256: string;
+      decodedWidth: number;
+      decodedHeight: number;
+    };
+    provenance: {
       generatedFrom: "ORIGINAL";
-      promptVersion: string;
+      parentOriginalSha256: string;
     };
   } | null;
   roomObservation: RoomObservationContract | null;
-  emptyIdentity: {
-    decodedWidth: number;
-    decodedHeight: number;
-  } | null;
+  roomObservationStatus: "deferred_pending_empty_migration";
   freezeReceipt: unknown;
   analysisEvidence: unknown;
 };
@@ -86,8 +99,10 @@ function isFloorAppliedAfcResult(value: unknown): value is {
   reason?: string;
   floor: AppliedAfcResult["floor"];
   camera: AppliedAfcResult["camera"];
-  fullyTiled: AppliedAfcResult["fullyTiled"];
+  tiled: AppliedAfcResult["tiled"];
+  empty: AppliedAfcResult["empty"];
   roomObservation: AppliedAfcResult["roomObservation"];
+  roomObservationStatus: AppliedAfcResult["roomObservationStatus"];
   product?: {
     emptyBasis?: {
       decodedWidth: number;
@@ -104,28 +119,28 @@ function isFloorAppliedAfcResult(value: unknown): value is {
 }
 
 function pipelineRepresentations(value: unknown): {
-  emptyImageUrl: string | null;
-  fullyTiled: AppliedAfcResult["fullyTiled"];
+  empty: AppliedAfcResult["empty"];
+  tiled: AppliedAfcResult["tiled"];
 } {
   if (!value || typeof value !== "object") {
-    return { emptyImageUrl: null, fullyTiled: null };
+    return { empty: null, tiled: null };
   }
   const candidate = value as {
-    emptyImageUrl?: unknown;
-    fullyTiled?: unknown;
+    empty?: unknown;
+    tiled?: unknown;
   };
-  const fullyTiled = candidate.fullyTiled &&
-      typeof candidate.fullyTiled === "object" &&
-      typeof (candidate.fullyTiled as { imageUrl?: unknown }).imageUrl ===
+  const empty = candidate.empty &&
+      typeof candidate.empty === "object" &&
+      typeof (candidate.empty as { imageUrl?: unknown }).imageUrl ===
         "string"
-    ? candidate.fullyTiled as AppliedAfcResult["fullyTiled"]
+    ? candidate.empty as AppliedAfcResult["empty"]
     : null;
-  return {
-    emptyImageUrl: typeof candidate.emptyImageUrl === "string"
-      ? candidate.emptyImageUrl
-      : null,
-    fullyTiled,
-  };
+  const tiled = candidate.tiled &&
+      typeof candidate.tiled === "object" &&
+      typeof (candidate.tiled as { imageUrl?: unknown }).imageUrl === "string"
+    ? candidate.tiled as AppliedAfcResult["tiled"]
+    : null;
+  return { empty, tiled };
 }
 
 export function containedDisplayFrame(
@@ -180,16 +195,16 @@ export default function RoomLabV2() {
       : null,
   );
   const selectedImageSize = orchestration.selectedRepresentation ===
-      "FULLY_TILED" && applied?.fullyTiled
+      "TILED" && applied?.tiled
     ? {
-      width: applied.fullyTiled.identity.decodedWidth,
-      height: applied.fullyTiled.identity.decodedHeight,
+      width: applied.tiled.identity.decodedWidth,
+      height: applied.tiled.identity.decodedHeight,
     }
     : orchestration.selectedRepresentation === "EMPTY" &&
-        applied?.emptyIdentity
+        applied?.empty
     ? {
-      width: applied.emptyIdentity.decodedWidth,
-      height: applied.emptyIdentity.decodedHeight,
+      width: applied.empty.identity.decodedWidth,
+      height: applied.empty.identity.decodedHeight,
     }
     : basis
     ? { width: basis.decodedWidth, height: basis.decodedHeight }
@@ -297,13 +312,13 @@ export default function RoomLabV2() {
       const pipeline = pipelineRepresentations(result);
       setRepresentations((current) => {
         let next = current;
-        if (pipeline.emptyImageUrl) {
-          next = setEmptyRepresentation(next, pipeline.emptyImageUrl);
+        if (pipeline.empty) {
+          next = setEmptyRepresentation(next, pipeline.empty.imageUrl);
         }
-        if (pipeline.fullyTiled) {
-          next = setFullyTiledRepresentation(
+        if (pipeline.tiled) {
+          next = setTiledRepresentation(
             next,
-            pipeline.fullyTiled.imageUrl,
+            pipeline.tiled.imageUrl,
           );
         }
         return next;
@@ -323,9 +338,10 @@ export default function RoomLabV2() {
       setApplied({
         floor: result.floor,
         camera: result.camera,
-        fullyTiled: result.fullyTiled,
+        tiled: result.tiled,
+        empty: result.empty,
         roomObservation: result.roomObservation,
-        emptyIdentity: result.product?.emptyBasis ?? null,
+        roomObservationStatus: result.roomObservationStatus,
         freezeReceipt: result.freezeReceipt,
         analysisEvidence: result,
       });
@@ -353,7 +369,7 @@ export default function RoomLabV2() {
     const url = URL.createObjectURL(blob);
     const anchor = document.createElement("a");
     anchor.href = url;
-    anchor.download = "afc-v2-s3-room-observation-evidence.json";
+    anchor.download = "afc-v2-s3c-floor-camera-evidence.json";
     anchor.click();
     URL.revokeObjectURL(url);
   }
@@ -365,19 +381,19 @@ export default function RoomLabV2() {
           <div>
             <div className="mb-3 flex items-center gap-3">
               <span className="rounded-full border border-cyan-400/30 bg-cyan-400/10 px-3 py-1 text-xs font-semibold tracking-[0.16em] text-cyan-200">
-                AFC V2 · S3
+                AFC V2 · S3C
               </span>
               <span className="text-xs text-slate-500">
-                FULLY TILED room-envelope observation
+                certified EMPTY → TILED Floor authority
               </span>
             </div>
             <h1 className="text-2xl font-semibold tracking-tight text-white sm:text-3xl">
               3D Room Lab v2
             </h1>
             <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-400">
-              Generate one FULLY TILED scaffold for the certified Floor read
-              and visible room-envelope observation, while camera authority
-              remains frozen upstream of this read-only viewer.
+              Generate conservative EMPTY, then the proven floor-only TILED
+              scaffold for the certified Floor read. Camera authority remains
+              frozen and restored on the Original basis.
             </p>
           </div>
 
@@ -506,11 +522,9 @@ export default function RoomLabV2() {
                       floorPolygon={applied.floor.sourceNormalizedPolygon}
                       roomObservation={applied.roomObservation}
                       showFloorAuthority={
-                        orchestration.selectedRepresentation !== "ORIGINAL"
+                        orchestration.selectedRepresentation === "TILED"
                       }
-                      showRoomObservation={
-                        orchestration.selectedRepresentation === "FULLY_TILED"
-                      }
+                      showRoomObservation={false}
                     />
                   ) : null}
                 </div>
@@ -562,13 +576,26 @@ export default function RoomLabV2() {
                   : "No calibrated Floor authority."}
               </p>
             </section>
+            <section className="rounded-xl border border-slate-800 bg-slate-900/70 p-4">
+              <h2 className="text-sm font-semibold text-slate-200">Lineage</h2>
+              <p className="mt-2 text-xs leading-5 text-slate-500">
+                {applied?.empty && applied.tiled
+                  ? `Original ${applied.empty.provenance.parentOriginalSha256.slice(0, 10)}… → EMPTY ${applied.empty.identity.sha256.slice(0, 10)}… → TILED ${applied.tiled.identity.sha256.slice(0, 10)}…`
+                  : "Awaiting Original → EMPTY → TILED evidence."}
+              </p>
+              {applied?.tiled ? (
+                <p className="mt-1 text-xs leading-5 text-slate-600">
+                  Full-raster certified tiled-perspective reader
+                </p>
+              ) : null}
+            </section>
             {applied ? (
               <button
                 type="button"
                 onClick={downloadAnalysisEvidence}
                 className="rounded-xl border border-slate-700 bg-slate-900 px-4 py-3 text-left text-xs font-medium text-cyan-200 transition hover:border-slate-500"
               >
-                Download V2-S3 observation evidence
+                Download V2-S3C Floor/Camera evidence
               </button>
             ) : null}
             <section className="rounded-xl border border-slate-800 bg-slate-900/70 p-4">
@@ -623,7 +650,8 @@ export default function RoomLabV2() {
                 </div>
               ) : (
                 <p className="mt-2 text-xs leading-5 text-slate-500">
-                  No FULLY TILED room observation contract.
+                  Pending — deferred for the separately certified EMPTY
+                  Room Observation migration.
                 </p>
               )}
             </section>

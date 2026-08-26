@@ -2,11 +2,9 @@ import { NextResponse } from "next/server";
 
 import {
   AFC_V2_REFERENCE_DEPTH_M,
+  executeAfcV2Analysis,
   type AfcV2AnalyzeInput,
 } from "@/app/admin/3d-room-lab-v2/afc-v2-analysis.server";
-import {
-  executeAfcV2S3Analysis,
-} from "@/app/admin/3d-room-lab-v2/afc-v2-s3-analysis.server";
 import { getAuthenticatedAdminUser } from "@/lib/adminServer";
 
 export const runtime = "nodejs";
@@ -87,5 +85,5 @@ export async function POST(request: Request) {
   }
   const input = parse(body);
   if (!input) return json({ error: "AFC V2 analysis request was invalid." }, 400);
-  return json(await executeAfcV2S3Analysis(input), 200);
+  return json(await executeAfcV2Analysis(input), 200);
 }
