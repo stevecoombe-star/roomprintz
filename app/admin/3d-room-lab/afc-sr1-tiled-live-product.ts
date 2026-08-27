@@ -27,6 +27,7 @@ import type { AfcSr1SourcePolygon } from "./research/afc-sr1-semantic-prior";
 import {
   afcSr1LiveSourceIdentityMatches,
   cloneAfcSr1LivePolygon,
+  getAfcSr1LiveAttemptEvidence,
   isValidAfcSr1LiveAnalyzeRequest,
   isValidAfcSr1LiveProductPolygon,
   afcSr1LiveTiledDiagnosticImages,
@@ -41,6 +42,7 @@ import {
   AFC_SR1_LIVE_PRODUCT_VERSION,
   type AfcSr1LiveAnalyzeRequest,
   type AfcSr1LiveAttemptCounts,
+  type AfcSr1LiveBasis,
   type AfcSr1LiveFailureReason,
   type AfcSr1LiveProductResult,
 } from "./afc-sr1-live-product-contract";
@@ -124,6 +126,16 @@ export type AfcSr1TiledLiveProductDependencies = Readonly<{
     imageBase64: string;
     claimedIdentity: AfcSr1TiledPerspectiveReaderIdentity;
   }) => Promise<AfcSr1TiledPerspectiveReaderResponse>;
+  onEmptyRetained?: (args: Readonly<{
+    attemptId: string;
+    resultId: string;
+    loadGeneration: number;
+    originalIdentity: AfcSr1LiveBasis;
+    retainedEmpty: Readonly<{
+      bytes: Uint8Array;
+      identity: AfcSr1LiveBasis;
+    }>;
+  }>) => void;
   createResultId?: () => string;
 }>;
 
@@ -179,6 +191,26 @@ export async function executeAfcSr1TiledLiveProductAttempt(
     originalBasis: original.basis,
     empty,
   });
+  const retained = getAfcSr1LiveAttemptEvidence(request.attemptId);
+  if (
+    retained?.binding?.resultId === resultId &&
+    retained.floorRead?.emptyBasis.sha256 === empty.basis.sha256
+  ) {
+    try {
+      dependencies.onEmptyRetained?.(Object.freeze({
+        attemptId: request.attemptId,
+        resultId,
+        loadGeneration: request.labLoadGeneration,
+        originalIdentity: retained.binding.originalBasis,
+        retainedEmpty: Object.freeze({
+          bytes: retained.floorRead.emptyBytes,
+          identity: retained.floorRead.emptyBasis,
+        }),
+      }));
+    } catch {
+      // Observation is a sibling branch and cannot block TILED/Floor authority.
+    }
+  }
 
   const emptyToOriginal = classifyAfcR3cImagePairCompatibility(
     {

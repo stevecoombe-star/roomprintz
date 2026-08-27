@@ -10,6 +10,9 @@ import {
 import type {
   AfcSr1TiledLiveProductDependencies,
 } from "../3d-room-lab/afc-sr1-tiled-live-product";
+import {
+  buildEmptyRoomObservationEvidence,
+} from "./empty-room-observation-contract";
 
 const originalBasis = {
   sha256: "a".repeat(64),
@@ -54,6 +57,36 @@ const authoritativeQuad = [
   { x: 0.65, y: 0.55 },
   { x: 0.35, y: 0.55 },
 ] as const;
+
+async function observeEmptyFixture() {
+  return buildEmptyRoomObservationEvidence({
+    observedPlanes: [{
+      id: "visible_floor",
+      category: "floor",
+      sourceNormalizedPolygon: [
+        { x: 0, y: 1 },
+        { x: 1, y: 1 },
+        { x: 0.7, y: 0.6 },
+      ],
+      confidence: 0.9,
+      visibility: "observed",
+    }],
+    observedSeams: [],
+    observedOpenings: [],
+    observedJunctions: [],
+    unresolved: [],
+  }, {
+    attemptId: input.attemptId,
+    loadGeneration: input.loadGeneration,
+    emptyIdentity: emptyBasis,
+    originalAncestorSha256: originalBasis.sha256,
+    provider: "controlled_fixture",
+    model: "fixture",
+    observerProfile: "empty-visible-architecture-conservative/v1",
+    promptVersion: "afc-v2-empty-visible-room-observer/v2",
+    generatedAt: "2026-08-26T12:00:00.000Z",
+  });
+}
 
 function productDependencies(
   observations: {
@@ -168,6 +201,7 @@ test("live V2 restores Original to EMPTY to full-raster TILED reader authority",
   const result = await executeAfcV2Analysis(input, {
     analysisMode: "controlled_replay",
     product: productDependencies(observations),
+    observeRoom: observeEmptyFixture,
   });
 
   assert.equal(result.status, "applied");
@@ -209,10 +243,11 @@ test("live V2 restores Original to EMPTY to full-raster TILED reader authority",
     tiledFloorReader: 1,
     fullyTiledGeneration: 0,
     fullyTiledFloorReader: 0,
-    roomObserver: 0,
+    roomObserver: 1,
   });
   assert.equal(result.camera.originalBasisRestored, true);
-  assert.equal(result.roomObservationStatus, "deferred_pending_empty_migration");
+  assert.equal(result.roomObservationStatus, "observed");
+  assert.equal(result.roomObservation?.basis.kind, "EMPTY");
 });
 
 test("TILED generation failure creates no Floor or camera authority", async () => {
@@ -223,6 +258,7 @@ test("TILED generation failure creates no Floor or camera authority", async () =
   };
   const result = await executeAfcV2Analysis(input, {
     product: productDependencies(observations, { generationFails: true }),
+    observeRoom: observeEmptyFixture,
   });
   assert.equal(result.status, "failed");
   assert.deepEqual(observations.order, ["original", "empty", "tiled"]);
@@ -240,6 +276,7 @@ test("failed certified TILED read preserves evidence but creates no camera", asy
   };
   const result = await executeAfcV2Analysis(input, {
     product: productDependencies(observations, { readerFails: true }),
+    observeRoom: observeEmptyFixture,
   });
   assert.equal(result.status, "failed");
   assert.deepEqual(observations.order, [

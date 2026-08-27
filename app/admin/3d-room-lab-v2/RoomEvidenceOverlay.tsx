@@ -1,13 +1,13 @@
 "use client";
 
 import type {
-  RoomObservationContract,
+  EmptyRoomObservationEvidence,
   SourceNormalizedPoint,
-} from "./room-observation-contract";
+} from "./empty-room-observation-contract";
 
 type Props = Readonly<{
   floorPolygon: readonly SourceNormalizedPoint[];
-  roomObservation: RoomObservationContract | null;
+  roomObservation: EmptyRoomObservationEvidence | null;
   showFloorAuthority: boolean;
   showRoomObservation: boolean;
 }>;
@@ -40,7 +40,10 @@ export default function RoomEvidenceOverlay({
   showFloorAuthority,
   showRoomObservation,
 }: Props) {
-  const room = showRoomObservation ? roomObservation : null;
+  const room = showRoomObservation &&
+      roomObservation?.observerStatus !== "failed"
+    ? roomObservation
+    : null;
   return (
     <>
       <svg
@@ -57,62 +60,67 @@ export default function RoomEvidenceOverlay({
             {room.observedPlanes.map((plane) => (
               <polygon
                 key={plane.id}
-                points={points(plane.imagePolygon)}
+                points={points(plane.sourceNormalizedPolygon)}
                 fill="rgba(167, 139, 250, 0.06)"
                 stroke={PLANE_STROKES[plane.category]}
-                strokeWidth="0.002"
-                strokeDasharray={plane.ambiguity ? "0.008 0.005" : undefined}
+                strokeWidth="0.0015"
+                strokeOpacity="0.45"
+                strokeDasharray="0.006 0.005"
                 data-evidence-kind="plane"
+                data-evidence-role="visible-plane-extent-not-seam"
                 data-plane-category={plane.category}
-                data-normalized={
-                  plane.evidenceClass ===
-                    "conservative_normalized_visible_evidence"
-                    ? "true"
-                    : "false"
-                }
+                data-region-role={plane.regionRole}
               />
             ))}
-            {room.observedGridFamilies.flatMap((family) =>
-              family.lineSegments.map((segment, index) => (
-                <line
-                  key={`${family.id}-${index}`}
-                  x1={segment.start.x}
-                  y1={segment.start.y}
-                  x2={segment.end.x}
-                  y2={segment.end.y}
-                  stroke={family.axis === "axis_b"
-                    ? "rgb(34, 197, 94)"
-                    : family.axis === "unresolved"
-                    ? "rgb(148, 163, 184)"
-                    : "rgb(163, 230, 53)"}
-                  strokeWidth="0.002"
-                  strokeDasharray="0.008 0.005"
-                  data-evidence-kind="grid-family"
-                  data-grid-axis={family.axis}
-                />
-              ))
-            )}
             {room.observedSeams.map((seam) => (
               <polyline
                 key={seam.id}
-                points={points(seam.imagePolyline)}
+                points={points(seam.sourceNormalizedPolyline)}
                 fill="none"
                 stroke={SEAM_STROKES[seam.category]}
-                strokeWidth="0.003"
+                strokeWidth="0.0035"
                 strokeDasharray={seam.ambiguity ? "0.008 0.005" : undefined}
                 data-evidence-kind="seam"
+                data-evidence-role="explicit-observed-architectural-seam"
                 data-seam-category={seam.category}
               />
             ))}
-            {room.observedOpenings.map((opening) => (
-              <polygon
-                key={opening.id}
-                points={points(opening.imageBoundary)}
-                fill="rgba(244, 114, 182, 0.08)"
-                stroke="rgb(244, 114, 182)"
-                strokeWidth="0.003"
-                strokeDasharray={opening.ambiguity ? "0.008 0.005" : undefined}
-                data-evidence-kind="opening"
+            {room.observedOpenings.map((opening) =>
+              opening.boundaryClosure === "complete_visible_outline" ? (
+                <polygon
+                  key={opening.id}
+                  points={points(opening.sourceNormalizedBoundary)}
+                  fill="rgba(244, 114, 182, 0.08)"
+                  stroke="rgb(244, 114, 182)"
+                  strokeWidth="0.003"
+                  strokeDasharray={opening.ambiguity
+                    ? "0.008 0.005"
+                    : undefined}
+                  data-evidence-kind="opening"
+                />
+              ) : (
+                <polyline
+                  key={opening.id}
+                  points={points(opening.sourceNormalizedBoundary)}
+                  fill="none"
+                  stroke="rgb(244, 114, 182)"
+                  strokeWidth="0.003"
+                  strokeDasharray="0.008 0.005"
+                  data-evidence-kind="opening"
+                />
+              )
+            )}
+            {room.observedJunctions.map((junction) => (
+              <circle
+                key={junction.id}
+                cx={junction.sourceNormalizedPoint.x}
+                cy={junction.sourceNormalizedPoint.y}
+                r="0.005"
+                fill="rgb(250, 204, 21)"
+                stroke="rgb(15, 23, 42)"
+                strokeWidth="0.0015"
+                data-evidence-kind="junction"
+                data-junction-category={junction.category}
               />
             ))}
           </g>
@@ -134,9 +142,15 @@ export default function RoomEvidenceOverlay({
           aria-label="Room observation overlay legend"
           data-evidence-role="room-observation-legend"
         >
-          <p><span className="text-orange-400">◇</span> visible Floor · <span className="text-cyan-300">◇</span> calibration quad</p>
-          <p><span className="text-lime-400">╱</span> grids · <span className="text-amber-400">—</span> floor-wall · <span className="text-red-400">—</span> wall-wall</p>
-          <p><span className="text-blue-400">—</span> wall-ceiling · <span className="text-pink-400">◇</span> opening · dashed ambiguous</p>
+          <p className="font-semibold text-slate-100">
+            EMPTY · observation only
+          </p>
+          <p><span className="text-orange-400">◇</span> visible floor region · <span className="text-amber-400">—</span> floor-wall · <span className="text-red-400">—</span> wall-wall</p>
+          <p><span className="text-blue-400">—</span> wall-ceiling · <span className="text-pink-400">◇</span> opening · <span className="text-yellow-300">●</span> junction</p>
+          <p className="text-slate-500">
+            faint dashed = plane extent · solid = explicit seam
+          </p>
+          <p className="text-slate-500">Not Floor or Camera authority</p>
         </div>
       ) : null}
     </>

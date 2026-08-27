@@ -58,6 +58,20 @@ test("read-only viewer has no solver, camera writer, or historical host coupling
   );
   assert.doesNotMatch(source, /collision|support|furniture/i);
   assert.doesNotMatch(source, /on[A-Z][A-Za-z]*=/);
+  assert.doesNotMatch(source, /result\.camera\.(fov|aspect|position|up)\s*=/);
+});
+
+test("floor quad visibility is a render flag and does not rebuild the frozen camera", () => {
+  assert.match(source, /floorSurface\.visible = showFloorQuadRef\.current/);
+  assert.match(source, /floorWireframe\.visible = showFloorQuadRef\.current/);
+  assert.match(
+    source,
+    /\}, \[floor\.referenceDepthM, floor\.worldWidthM, snapshot\]\);/,
+  );
+  assert.doesNotMatch(
+    source,
+    /\}, \[floor\.referenceDepthM, floor\.worldWidthM, snapshot, showFloorQuad\]\);/,
+  );
 });
 
 test("accepted Original and transparent calibrated overlay coexist after apply", () => {
@@ -73,11 +87,17 @@ test("accepted Original and transparent calibrated overlay coexist after apply",
   assert.match(source, /renderer\.setClearColor\(0x000000, 0\)/);
   assert.match(source, /renderer\.setClearAlpha\(0\)/);
   assert.match(source, /scene\.background = null/);
-  assert.match(source, /className="absolute inset-0 z-10 bg-transparent"/);
+  assert.match(source, /className="pointer-events-auto absolute inset-0 z-10 bg-transparent"/);
   assert.doesNotMatch(source, /TextureLoader|map:\s*texture/);
   assert.match(source, /new THREE\.MeshBasicMaterial\(\{[\s\S]*color: 0x22d3ee/);
   assert.match(source, /new THREE\.EdgesGeometry\(geometry\)/);
   assert.match(source, /new THREE\.LineSegments/);
   assert.match(roomLabSource, /frame:\s*originalDisplayFrame/);
   assert.doesNotMatch(source, /camera\.aspect\s*=|setCalibratedCamera/);
+  assert.doesNotMatch(source, /OrbitControls/);
+  assert.match(source, /new TransformControls\(result\.camera, renderer\.domElement\)/);
+  assert.match(source, /controls\.attach\(target\)/);
+  assert.match(source, /transformControlsAttachmentTarget\(entry\)/);
+  assert.match(source, /raycaster\.intersectObject\(objectLayer, true\)/);
+  assert.doesNotMatch(source, /attach\(entry\.autoBounds\)/);
 });

@@ -46,7 +46,7 @@ function importSpecifiers(source: string): string[] {
   );
 }
 
-test("V2-S3C route and restored EMPTY to TILED shell render", () => {
+test("V2-S3D route renders separated EMPTY observation and TILED authority", () => {
   const routeMarkup = renderToStaticMarkup(
     createElement(AdminAfcV2Page),
   );
@@ -63,9 +63,18 @@ test("V2-S3C route and restored EMPTY to TILED shell render", () => {
   assert.match(shellMarkup, /Camera/);
   assert.match(shellMarkup, /Room Observations/);
   assert.match(shellMarkup, /Room Boundaries/);
+  assert.match(shellMarkup, /Scene \/ Models/);
+  assert.match(shellMarkup, /Selected Model/);
+  assert.match(shellMarkup, /Show Floor Quad/);
+  assert.match(shellMarkup, /Add Test Cube/);
+  assert.match(shellMarkup, /Load Model \/ GLB/);
+  assert.match(shellMarkup, />Move</);
+  assert.match(shellMarkup, />Rotate</);
+  assert.match(shellMarkup, />Scale</);
   assert.match(shellMarkup, /Supports/);
-  assert.match(shellMarkup, /proven floor-only TILED scaffold/i);
-  assert.match(shellMarkup, /deferred.*EMPTY.*Room Observation/i);
+  assert.match(shellMarkup, /EMPTY now supplies conservative visible-room/i);
+  assert.match(shellMarkup, /sole Floor and Camera authority path/i);
+  assert.match(shellMarkup, /No retained EMPTY observation basis was available/i);
   assert.doesNotMatch(shellMarkup, /FULLY TILED/i);
 });
 
@@ -164,11 +173,19 @@ test("v2 browser runtime remains isolated from v1 UI and research", () => {
     "./RoomLabV2",
     "./CalibratedRoomViewer",
     "./RoomEvidenceOverlay",
+    "./empty-room-observation-contract",
+    "./empty-room-observation-normalization",
     "./orchestration-state",
     "./representation-state",
     "./room-observation-contract",
     "./room-observation-normalization",
     "@/app/admin/3d-room-lab/calibrated-camera-readonly-projection",
+    "@/app/admin/3d-room-lab/model-bounds",
+    "./scene-layer-state",
+    "./scene-object-runtime",
+    "./scene-viewport-interaction",
+    "three/examples/jsm/loaders/GLTFLoader.js",
+    "three/examples/jsm/controls/TransformControls.js",
   ]);
 
   for (const imported of imports) {

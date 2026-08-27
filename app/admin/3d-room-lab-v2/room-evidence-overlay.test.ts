@@ -27,27 +27,29 @@ test("cyan authoritative Floor is shown on the TILED authority basis", () => {
   assert.match(overlaySource, /rgb\(103, 232, 249\)/);
   assert.match(
     roomLabSource,
-    /\{applied \? \([\s\S]*<RoomEvidenceOverlay[\s\S]*floorPolygon=\{applied\.floor\.sourceNormalizedPolygon\}/,
+    /<RoomEvidenceOverlay[\s\S]*floorPolygon=\{applied\?\.floor\.sourceNormalizedPolygon \?\? \[\]\}/,
   );
   assert.match(
     roomLabSource,
     /showFloorAuthority=\{[\s\S]*selectedRepresentation === "TILED"/,
   );
+  assert.match(roomLabSource, /showFloorQuad/);
   assert.match(calibratedViewerSource, /new THREE\.LineSegments/);
   assert.match(calibratedViewerSource, /color: 0x67e8f9/);
+  assert.match(calibratedViewerSource, /floorSurface\.visible/);
 });
 
-test("live S3C defers room-observation overlays during EMPTY migration", () => {
+test("live S3D renders room-observation overlays only on EMPTY", () => {
   assert.match(
     roomLabSource,
-    /showRoomObservation=\{false\}/,
+    /showRoomObservation=\{[\s\S]*selectedRepresentation === "EMPTY"/,
   );
+  assert.match(roomLabSource, /Observation overlay/);
   assert.doesNotMatch(roomLabSource, /FULLY_TILED/);
-  // The read-only renderer remains available for the later EMPTY certification.
   assert.match(overlaySource, /room\.observedPlanes\.map/);
-  assert.match(overlaySource, /room\.observedGridFamilies\.flatMap/);
   assert.match(overlaySource, /room\.observedSeams\.map/);
   assert.match(overlaySource, /room\.observedOpenings\.map/);
+  assert.match(overlaySource, /room\.observedJunctions\.map/);
   assert.match(
     overlaySource,
     /data-evidence-role="diagnostic-room-observation"/,
@@ -57,11 +59,21 @@ test("live S3C defers room-observation overlays during EMPTY migration", () => {
 test("overlay distinguishes normalized evidence categories from Floor authority", () => {
   assert.match(overlaySource, /data-plane-category=\{plane\.category\}/);
   assert.match(overlaySource, /data-seam-category=\{seam\.category\}/);
-  assert.match(overlaySource, /data-grid-axis=\{family\.axis\}/);
+  assert.match(
+    overlaySource,
+    /data-evidence-role="visible-plane-extent-not-seam"/,
+  );
+  assert.match(
+    overlaySource,
+    /data-evidence-role="explicit-observed-architectural-seam"/,
+  );
+  assert.match(overlaySource, /strokeOpacity="0\.45"/);
+  assert.match(overlaySource, /faint dashed = plane extent/);
   assert.match(overlaySource, /data-evidence-kind="opening"/);
+  assert.match(overlaySource, /data-evidence-kind="junction"/);
   assert.match(overlaySource, /data-evidence-role="room-observation-legend"/);
-  assert.match(overlaySource, /visible Floor/);
-  assert.match(overlaySource, /calibration quad/);
+  assert.match(overlaySource, /EMPTY · observation only/);
+  assert.match(overlaySource, /Not Floor or Camera authority/);
   assert.match(overlaySource, /rgb\(251, 146, 60\)/);
   assert.match(overlaySource, /rgb\(103, 232, 249\)/);
 });

@@ -52,6 +52,16 @@ import {
   validateAfcSr1TiledPerspectiveExactGridLineage,
 } from "@/app/admin/3d-room-lab/research/afc-sr1-tiled-perspective-exact-grid-lineage";
 import { inspectImageMetadata } from "@/lib/vibodeAutoFloorImageFetch";
+import {
+  buildFailedEmptyRoomObservationEvidence,
+  type EmptyRoomObservationEvidence,
+} from "./empty-room-observation-contract";
+import {
+  AFC_V2_EMPTY_ROOM_OBSERVATION_DEFAULT_MODEL,
+  AFC_V2_EMPTY_ROOM_OBSERVATION_PROFILE,
+  AFC_V2_EMPTY_ROOM_OBSERVATION_PROMPT_VERSION,
+  observeRetainedEmptyRoom,
+} from "./empty-room-observation.server";
 
 export const AFC_V2_REFERENCE_DEPTH_M = 4;
 
@@ -106,12 +116,17 @@ type AfcV2LivePipelineEvidence = Readonly<{
     tiledFloorReader: number;
     fullyTiledGeneration: 0;
     fullyTiledFloorReader: 0;
-    roomObserver: 0;
+    roomObserver: 0 | 1;
   }>;
-  roomObservation: null;
-  roomObservationStatus: "deferred_pending_empty_migration";
+  roomObservation: EmptyRoomObservationEvidence | null;
+  roomObservationStatus:
+    | "observed"
+    | "partial"
+    | "failed"
+    | "not_run_empty_unavailable";
   roomObservationDiagnostic:
-    "Room Observation is deferred until the separately certified EMPTY migration.";
+    | EmptyRoomObservationEvidence["failure"]
+    | null;
 }>;
 
 export type AfcV2AnalyzeResult =
@@ -169,6 +184,7 @@ export type AfcV2ControlledReplayEvidence = Readonly<{
 
 export type AfcV2AnalysisDependencies = Readonly<{
   product?: AfcSr1TiledLiveProductDependencies;
+  observeRoom?: typeof observeRetainedEmptyRoom;
   analysisMode?: "live" | "controlled_replay";
 }>;
 
@@ -318,6 +334,7 @@ function originalBasis(
 function livePipelineEvidence(
   input: AfcV2AnalyzeInput,
   product: AfcSr1LiveProductResult,
+  roomObservation: EmptyRoomObservationEvidence | null,
 ): AfcV2LivePipelineEvidence {
   const evidence = getAfcSr1LiveAttemptEvidence(input.attemptId);
   const binding = evidence?.binding;
@@ -371,12 +388,12 @@ function livePipelineEvidence(
       tiledFloorReader: counts.tiledReader,
       fullyTiledGeneration: 0 as const,
       fullyTiledFloorReader: 0 as const,
-      roomObserver: 0 as const,
+      roomObserver: roomObservation ? 1 as const : 0 as const,
     }),
-    roomObservation: null,
-    roomObservationStatus: "deferred_pending_empty_migration" as const,
-    roomObservationDiagnostic:
-      "Room Observation is deferred until the separately certified EMPTY migration." as const,
+    roomObservation,
+    roomObservationStatus: roomObservation?.observerStatus ??
+      "not_run_empty_unavailable",
+    roomObservationDiagnostic: roomObservation?.failure ?? null,
   });
 }
 
@@ -388,16 +405,76 @@ export async function executeAfcV2Analysis(
   input: AfcV2AnalyzeInput,
   dependencies: AfcV2AnalysisDependencies = {},
 ): Promise<AfcV2AnalyzeResult> {
+  const observationBranch: {
+    promise: Promise<EmptyRoomObservationEvidence> | null;
+  } = { promise: null };
+  const externalEmptyHook = dependencies.product?.onEmptyRetained;
   const product = await executeAfcSr1TiledLiveProductAttempt({
     attemptId: input.attemptId,
     sourceImageUrl: input.sourceImageUrl,
     sourceImageIdentity: input.sourceImageIdentity,
     labLoadGeneration: input.loadGeneration,
     referenceDepthM: input.referenceDepthM,
-  }, dependencies.product);
+  }, {
+    ...dependencies.product,
+    onEmptyRetained: (retained) => {
+      try {
+        externalEmptyHook?.(retained);
+      } catch {
+        // External diagnostics cannot block either certified branch.
+      }
+      const failedObservation = () =>
+        buildFailedEmptyRoomObservationEvidence({
+          attemptId: retained.attemptId,
+          loadGeneration: retained.loadGeneration,
+          emptyIdentity: retained.retainedEmpty.identity,
+          originalAncestorSha256: retained.originalIdentity.sha256,
+          provider: dependencies.observeRoom
+            ? "controlled_fixture"
+            : "google_gemini",
+          model: process.env.AFC_V2_ROOM_OBSERVATION_MODEL?.trim() ||
+            AFC_V2_EMPTY_ROOM_OBSERVATION_DEFAULT_MODEL,
+          observerProfile: AFC_V2_EMPTY_ROOM_OBSERVATION_PROFILE,
+          promptVersion: AFC_V2_EMPTY_ROOM_OBSERVATION_PROMPT_VERSION,
+          generatedAt: new Date().toISOString(),
+        }, {
+          failureClass: "unknown",
+          failureStage: "provider_invocation",
+          provider: dependencies.observeRoom
+            ? "controlled_fixture"
+            : "google_gemini",
+          model: process.env.AFC_V2_ROOM_OBSERVATION_MODEL?.trim() ||
+            AFC_V2_EMPTY_ROOM_OBSERVATION_DEFAULT_MODEL,
+          providerStatus: null,
+          safeDetail:
+            "Room observation branch rejected unexpectedly; Floor/Camera continued independently.",
+          contractValidationReason: null,
+        });
+      try {
+        observationBranch.promise = (
+          dependencies.observeRoom ?? observeRetainedEmptyRoom
+        )({
+          attemptId: retained.attemptId,
+          loadGeneration: retained.loadGeneration,
+          originalAncestorIdentity: retained.originalIdentity,
+          retainedEmpty: retained.retainedEmpty,
+        }).catch(() => failedObservation());
+      } catch {
+        observationBranch.promise = Promise.resolve(failedObservation());
+      }
+    },
+  });
+  const roomObservation = observationBranch.promise
+    ? await observationBranch.promise
+    : null;
+  const pipelineEvidence = livePipelineEvidence(
+    input,
+    product,
+    roomObservation,
+  );
   if (product.status !== "authoritative_geometry") {
     return {
-      ...livePipelineEvidence(input, product),
+      ...pipelineEvidence,
       status: "failed",
       reason:
         product.status === "failed"
@@ -419,7 +496,7 @@ export async function executeAfcV2Analysis(
   });
   if (!acceptance.accepted) {
     return {
-      ...livePipelineEvidence(input, product),
+      ...pipelineEvidence,
       status: "failed",
       reason: acceptance.reason,
       product,
@@ -437,7 +514,7 @@ export async function executeAfcV2Analysis(
   });
   if (!settle.ok || !settle.applyObservability.available) {
     return {
-      ...livePipelineEvidence(input, product),
+      ...pipelineEvidence,
       status: "failed",
       reason: settle.ok ? "AFC settle is not Apply-safe." : `AFC settle failed closed: ${settle.reason}.`,
       product,
@@ -476,7 +553,7 @@ export async function executeAfcV2Analysis(
   });
   if (!transaction.valid) {
     return {
-      ...livePipelineEvidence(input, product),
+      ...pipelineEvidence,
       status: "failed",
       reason: transaction.reason,
       product,
@@ -496,7 +573,7 @@ export async function executeAfcV2Analysis(
   const candidate = solved.applyCandidate;
   if (!candidate || !solved.applyEvaluation.available) {
     return {
-      ...livePipelineEvidence(input, product),
+      ...pipelineEvidence,
       status: "failed",
       reason: `AFC camera Apply failed closed: ${solved.applyEvaluation.reason}.`,
       product,
@@ -525,7 +602,7 @@ export async function executeAfcV2Analysis(
   });
   if (!freeze.ok) {
     return {
-      ...livePipelineEvidence(input, product),
+      ...pipelineEvidence,
       status: "failed",
       reason: `AFC camera freeze failed closed: ${freeze.reason}.`,
       product,
@@ -545,7 +622,7 @@ export async function executeAfcV2Analysis(
   });
   if (!restore.ok) {
     return {
-      ...livePipelineEvidence(input, product),
+      ...pipelineEvidence,
       status: "failed",
       reason: `AFC camera restore identity failed closed: ${restore.reason}.`,
       product,
@@ -553,7 +630,7 @@ export async function executeAfcV2Analysis(
   }
 
   return {
-    ...livePipelineEvidence(input, product),
+    ...pipelineEvidence,
     status: "applied",
     product,
     floor: {
@@ -616,7 +693,7 @@ export async function executeAfcV2ControlledReplay(
       },
     };
     return {
-      ...livePipelineEvidence(input, rejectedProduct),
+      ...livePipelineEvidence(input, rejectedProduct, null),
       status: "failed",
       reason: "Controlled replay evidence did not satisfy exact identity and lineage bindings.",
       product: rejectedProduct,

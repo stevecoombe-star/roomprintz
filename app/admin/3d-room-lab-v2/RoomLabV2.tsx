@@ -24,7 +24,30 @@ import {
 } from "./representation-state";
 import CalibratedRoomViewer from "./CalibratedRoomViewer";
 import RoomEvidenceOverlay from "./RoomEvidenceOverlay";
-import type { RoomObservationContract } from "./room-observation-contract";
+import type {
+  EmptyRoomObservationEvidence,
+} from "./empty-room-observation-contract";
+import {
+  DEFAULT_SHOW_FLOOR_QUAD,
+  SCENE_TRANSFORM_LIMITS,
+  addGlbModel,
+  addTestCube,
+  createInitialSceneLayerState,
+  getSelectedSceneObject,
+  sceneObjectBlobUrls,
+  selectSceneObject,
+  setSceneObjectLoadStatus,
+  setViewportTransformMode,
+  applyObjectWorldTransform,
+  blobUrlOwnedSolelyByObject,
+  deleteSceneObject,
+  resetSceneObjectTransform,
+  updateSelectedPositionAxis,
+  updateSelectedRotationAxis,
+  updateSelectedUniformScale,
+  type SceneLayerState,
+  type SceneObjectLoadStatus,
+} from "./scene-layer-state";
 
 type OriginalBasis = {
   basisFingerprint: string;
@@ -80,9 +103,18 @@ type AppliedAfcResult = {
       parentOriginalSha256: string;
     };
   } | null;
-  roomObservation: RoomObservationContract | null;
-  roomObservationStatus: "deferred_pending_empty_migration";
   freezeReceipt: unknown;
+};
+
+type PipelineEvidenceState = {
+  empty: AppliedAfcResult["empty"];
+  tiled: AppliedAfcResult["tiled"];
+  roomObservation: EmptyRoomObservationEvidence | null;
+  roomObservationStatus:
+    | "observed"
+    | "partial"
+    | "failed"
+    | "not_run_empty_unavailable";
   analysisEvidence: unknown;
 };
 
@@ -101,8 +133,6 @@ function isFloorAppliedAfcResult(value: unknown): value is {
   camera: AppliedAfcResult["camera"];
   tiled: AppliedAfcResult["tiled"];
   empty: AppliedAfcResult["empty"];
-  roomObservation: AppliedAfcResult["roomObservation"];
-  roomObservationStatus: AppliedAfcResult["roomObservationStatus"];
   product?: {
     emptyBasis?: {
       decodedWidth: number;
@@ -118,16 +148,21 @@ function isFloorAppliedAfcResult(value: unknown): value is {
     !!(value as { camera?: unknown }).camera;
 }
 
-function pipelineRepresentations(value: unknown): {
-  empty: AppliedAfcResult["empty"];
-  tiled: AppliedAfcResult["tiled"];
-} {
+function pipelineEvidence(value: unknown): PipelineEvidenceState {
   if (!value || typeof value !== "object") {
-    return { empty: null, tiled: null };
+    return {
+      empty: null,
+      tiled: null,
+      roomObservation: null,
+      roomObservationStatus: "not_run_empty_unavailable",
+      analysisEvidence: value,
+    };
   }
   const candidate = value as {
     empty?: unknown;
     tiled?: unknown;
+    roomObservation?: unknown;
+    roomObservationStatus?: unknown;
   };
   const empty = candidate.empty &&
       typeof candidate.empty === "object" &&
@@ -140,7 +175,29 @@ function pipelineRepresentations(value: unknown): {
       typeof (candidate.tiled as { imageUrl?: unknown }).imageUrl === "string"
     ? candidate.tiled as AppliedAfcResult["tiled"]
     : null;
-  return { empty, tiled };
+  const roomObservation = candidate.roomObservation &&
+      typeof candidate.roomObservation === "object" &&
+      ((candidate.roomObservation as { observerStatus?: unknown })
+          .observerStatus === "observed" ||
+        (candidate.roomObservation as { observerStatus?: unknown })
+            .observerStatus === "partial" ||
+        (candidate.roomObservation as { observerStatus?: unknown })
+            .observerStatus === "failed")
+    ? candidate.roomObservation as EmptyRoomObservationEvidence
+    : null;
+  const roomObservationStatus =
+    candidate.roomObservationStatus === "observed" ||
+      candidate.roomObservationStatus === "partial" ||
+      candidate.roomObservationStatus === "failed"
+      ? candidate.roomObservationStatus
+      : "not_run_empty_unavailable";
+  return {
+    empty,
+    tiled,
+    roomObservation,
+    roomObservationStatus,
+    analysisEvidence: value,
+  };
 }
 
 export function containedDisplayFrame(
@@ -166,6 +223,60 @@ export function containedDisplayFrame(
   };
 }
 
+export function formatSelectedModelHeading(label: string | null): string {
+  return `Selected Model — ${label ?? "None"}`;
+}
+
+function TransformControlRow({
+  label,
+  value,
+  min,
+  max,
+  step,
+  disabled,
+  onValue,
+}: {
+  label: string;
+  value: number;
+  min: number;
+  max: number;
+  step: number;
+  disabled: boolean;
+  onValue: (value: number) => void;
+}) {
+  return (
+    <label className="block">
+      <span className="flex items-center justify-between gap-2 text-[11px] text-slate-400">
+        {label}
+        <input
+          type="number"
+          min={min}
+          max={max}
+          step={step}
+          value={value}
+          disabled={disabled}
+          onChange={(event) => {
+            const next = Number.parseFloat(event.target.value);
+            if (!Number.isFinite(next)) return;
+            onValue(next);
+          }}
+          className="w-20 rounded border border-slate-700 bg-slate-950 px-2 py-1 text-right text-[11px] text-slate-100 outline-none focus:border-cyan-400 disabled:cursor-not-allowed disabled:text-slate-600"
+        />
+      </span>
+      <input
+        type="range"
+        min={min}
+        max={max}
+        step={step}
+        value={value}
+        disabled={disabled}
+        onChange={(event) => onValue(Number.parseFloat(event.target.value))}
+        className="mt-1 w-full accent-cyan-400 disabled:cursor-not-allowed"
+      />
+    </label>
+  );
+}
+
 export default function RoomLabV2() {
   const [representations, setRepresentations] = useState(
     createInitialRepresentationState,
@@ -178,9 +289,17 @@ export default function RoomLabV2() {
   const [preparedImageUrl, setPreparedImageUrl] = useState<string | null>(null);
   const [basis, setBasis] = useState<OriginalBasis | null>(null);
   const [applied, setApplied] = useState<AppliedAfcResult | null>(null);
+  const [pipeline, setPipeline] = useState<PipelineEvidenceState | null>(null);
+  const [showRoomObservationOverlay, setShowRoomObservationOverlay] =
+    useState(true);
+  const [showFloorQuad, setShowFloorQuad] = useState(DEFAULT_SHOW_FLOOR_QUAD);
+  const [sceneLayer, setSceneLayer] = useState(createInitialSceneLayerState);
+  const [selectedModelExpanded, setSelectedModelExpanded] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [viewerFrame, setViewerFrame] = useState({ width: 0, height: 0 });
   const viewerRef = useRef<HTMLDivElement | null>(null);
+  const glbInputRef = useRef<HTMLInputElement | null>(null);
+  const sceneLayerRef = useRef(sceneLayer);
   const loadGenerationRef = useRef(0);
   const abortRef = useRef<AbortController | null>(null);
 
@@ -195,16 +314,16 @@ export default function RoomLabV2() {
       : null,
   );
   const selectedImageSize = orchestration.selectedRepresentation ===
-      "TILED" && applied?.tiled
+      "TILED" && pipeline?.tiled
     ? {
-      width: applied.tiled.identity.decodedWidth,
-      height: applied.tiled.identity.decodedHeight,
+      width: pipeline.tiled.identity.decodedWidth,
+      height: pipeline.tiled.identity.decodedHeight,
     }
     : orchestration.selectedRepresentation === "EMPTY" &&
-        applied?.empty
+        pipeline?.empty
     ? {
-      width: applied.empty.identity.decodedWidth,
-      height: applied.empty.identity.decodedHeight,
+      width: pipeline.empty.identity.decodedWidth,
+      height: pipeline.empty.identity.decodedHeight,
     }
     : basis
     ? { width: basis.decodedWidth, height: basis.decodedHeight }
@@ -213,6 +332,76 @@ export default function RoomLabV2() {
     viewerFrame,
     selectedImageSize,
   );
+  const selectedSceneObject = getSelectedSceneObject(sceneLayer);
+  const sceneControlsEnabled = Boolean(applied);
+
+  function resetSceneLayer(next: SceneLayerState = createInitialSceneLayerState()) {
+    for (const url of sceneObjectBlobUrls(sceneLayerRef.current)) {
+      URL.revokeObjectURL(url);
+    }
+    sceneLayerRef.current = next;
+    setSceneLayer(next);
+  }
+
+  function reportObjectLoadStatus(
+    objectId: string,
+    loadStatus: SceneObjectLoadStatus,
+    loadError: string | null = null,
+  ) {
+    setSceneLayer((current) =>
+      setSceneObjectLoadStatus(current, objectId, loadStatus, loadError)
+    );
+  }
+
+  function reportSelection(objectId: string | null) {
+    setSceneLayer((current) => selectSceneObject(current, objectId));
+  }
+
+  function reportObjectTransform(
+    objectId: string,
+    transform: SceneLayerState["objects"][number]["transform"],
+  ) {
+    setSceneLayer((current) =>
+      applyObjectWorldTransform(current, objectId, transform)
+    );
+  }
+
+  function handleResetSelectedTransform() {
+    setSceneLayer((current) => resetSceneObjectTransform(current));
+  }
+
+  function handleDeleteSelectedObject() {
+    const current = sceneLayerRef.current;
+    const selected = getSelectedSceneObject(current);
+    if (!selected) return;
+    const urlToRevoke = blobUrlOwnedSolelyByObject(current, selected);
+    const next = deleteSceneObject(current, selected.id);
+    sceneLayerRef.current = next;
+    setSceneLayer(next);
+    if (urlToRevoke) URL.revokeObjectURL(urlToRevoke);
+  }
+
+  function handleGlbFile(fileList: FileList | null) {
+    const file = fileList?.[0];
+    if (!file || !sceneControlsEnabled) return;
+    const objectUrl = URL.createObjectURL(file);
+    setSceneLayer((current) =>
+      addGlbModel(current, { objectUrl, fileName: file.name })
+    );
+    if (glbInputRef.current) glbInputRef.current.value = "";
+  }
+
+  useEffect(() => {
+    sceneLayerRef.current = sceneLayer;
+  }, [sceneLayer]);
+
+  useEffect(() => {
+    return () => {
+      for (const url of sceneObjectBlobUrls(sceneLayerRef.current)) {
+        URL.revokeObjectURL(url);
+      }
+    };
+  }, []);
 
   useEffect(() => {
     const viewer = viewerRef.current;
@@ -240,6 +429,9 @@ export default function RoomLabV2() {
     setBasis(null);
     setPreparedImageUrl(null);
     setApplied(null);
+    setPipeline(null);
+    resetSceneLayer();
+    setShowFloorQuad(DEFAULT_SHOW_FLOOR_QUAD);
     setError(null);
     dispatch({ type: "original_preparation_started" });
     try {
@@ -286,6 +478,7 @@ export default function RoomLabV2() {
     const generation = loadGenerationRef.current;
     const attemptId = `afc-v2-${window.crypto.randomUUID()}`;
     setApplied(null);
+    setPipeline(null);
     setError(null);
     dispatch({ type: "analysis_stage", status: "generating_empty" });
     try {
@@ -309,16 +502,17 @@ export default function RoomLabV2() {
       });
       const result: unknown = await response.json();
       if (controller.signal.aborted || generation !== loadGenerationRef.current) return;
-      const pipeline = pipelineRepresentations(result);
+      const receivedPipeline = pipelineEvidence(result);
+      setPipeline(receivedPipeline);
       setRepresentations((current) => {
         let next = current;
-        if (pipeline.empty) {
-          next = setEmptyRepresentation(next, pipeline.empty.imageUrl);
+        if (receivedPipeline.empty) {
+          next = setEmptyRepresentation(next, receivedPipeline.empty.imageUrl);
         }
-        if (pipeline.tiled) {
+        if (receivedPipeline.tiled) {
           next = setTiledRepresentation(
             next,
-            pipeline.tiled.imageUrl,
+            receivedPipeline.tiled.imageUrl,
           );
         }
         return next;
@@ -332,7 +526,7 @@ export default function RoomLabV2() {
       }
       dispatch({ type: "analysis_stage", status: "reading_floor" });
       dispatch({ type: "analysis_stage", status: "calibrating_camera" });
-      if (result.roomObservation) {
+      if (receivedPipeline.roomObservation) {
         dispatch({ type: "analysis_stage", status: "observing_room" });
       }
       setApplied({
@@ -340,17 +534,9 @@ export default function RoomLabV2() {
         camera: result.camera,
         tiled: result.tiled,
         empty: result.empty,
-        roomObservation: result.roomObservation,
-        roomObservationStatus: result.roomObservationStatus,
         freezeReceipt: result.freezeReceipt,
-        analysisEvidence: result,
       });
-      if (result.status === "partial") {
-        setError(result.reason ?? "Room-envelope observation did not complete.");
-        dispatch({ type: "analysis_failed" });
-      } else {
-        dispatch({ type: "analysis_applied" });
-      }
+      dispatch({ type: "analysis_applied" });
     } catch (caught) {
       if (controller.signal.aborted) return;
       setError(caught instanceof Error ? caught.message : "AFC analysis failed.");
@@ -361,15 +547,29 @@ export default function RoomLabV2() {
   }
 
   function downloadAnalysisEvidence() {
-    if (!applied) return;
+    if (!pipeline?.analysisEvidence) return;
     const blob = new Blob(
-      [JSON.stringify(applied.analysisEvidence, null, 2)],
+      [JSON.stringify(pipeline.analysisEvidence, null, 2)],
       { type: "application/json" },
     );
     const url = URL.createObjectURL(blob);
     const anchor = document.createElement("a");
     anchor.href = url;
     anchor.download = "afc-v2-s3c-floor-camera-evidence.json";
+    anchor.click();
+    URL.revokeObjectURL(url);
+  }
+
+  function downloadRoomObservationEvidence() {
+    if (!pipeline?.roomObservation) return;
+    const blob = new Blob(
+      [JSON.stringify(pipeline.roomObservation, null, 2)],
+      { type: "application/json" },
+    );
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = "afc-v2-s3d-empty-room-observation-evidence.json";
     anchor.click();
     URL.revokeObjectURL(url);
   }
@@ -381,19 +581,20 @@ export default function RoomLabV2() {
           <div>
             <div className="mb-3 flex items-center gap-3">
               <span className="rounded-full border border-cyan-400/30 bg-cyan-400/10 px-3 py-1 text-xs font-semibold tracking-[0.16em] text-cyan-200">
-                AFC V2 · S3C
+                AFC V2 · S3E
               </span>
               <span className="text-xs text-slate-500">
-                certified EMPTY → TILED Floor authority
+                Frozen Floor/Camera + object scene harness
               </span>
             </div>
             <h1 className="text-2xl font-semibold tracking-tight text-white sm:text-3xl">
               3D Room Lab v2
             </h1>
             <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-400">
-              Generate conservative EMPTY, then the proven floor-only TILED
-              scaffold for the certified Floor read. Camera authority remains
-              frozen and restored on the Original basis.
+              EMPTY now supplies conservative visible-room observation
+              evidence while its TILED child remains the sole Floor and Camera
+              authority path. Scene objects render under that frozen camera
+              and never write it.
             </p>
           </div>
 
@@ -434,6 +635,7 @@ export default function RoomLabV2() {
           className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_320px]"
           aria-label="AFC v2 workspace"
         >
+          <div className="flex min-w-0 flex-col gap-3">
           <div className="overflow-hidden rounded-2xl border border-slate-800 bg-slate-900/70 shadow-2xl shadow-black/20">
             <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-800 px-4 py-3">
               <div
@@ -472,11 +674,27 @@ export default function RoomLabV2() {
                   );
                 })}
               </div>
-              <span className="text-xs text-slate-500">
-                {REPRESENTATION_DESCRIPTIONS[
-                  orchestration.selectedRepresentation
-                ]}
-              </span>
+              <div className="flex items-center gap-3">
+                {orchestration.selectedRepresentation === "EMPTY" &&
+                    pipeline?.roomObservation &&
+                    pipeline.roomObservation.observerStatus !== "failed" ? (
+                  <label className="flex items-center gap-2 text-xs text-slate-300">
+                    <input
+                      type="checkbox"
+                      checked={showRoomObservationOverlay}
+                      onChange={(event) =>
+                        setShowRoomObservationOverlay(event.target.checked)}
+                      className="accent-cyan-400"
+                    />
+                    Observation overlay
+                  </label>
+                ) : null}
+                <span className="text-xs text-slate-500">
+                  {REPRESENTATION_DESCRIPTIONS[
+                    orchestration.selectedRepresentation
+                  ]}
+                </span>
+              </div>
             </div>
 
             <div
@@ -502,6 +720,13 @@ export default function RoomLabV2() {
                         worldWidthM: applied.floor.worldWidthM,
                         referenceDepthM: applied.floor.referenceDepthM,
                       }}
+                      showFloorQuad={showFloorQuad}
+                      sceneObjects={sceneLayer.objects}
+                      selectedObjectId={sceneLayer.selectedObjectId}
+                      transformMode={sceneLayer.transformMode}
+                      reportObjectLoadStatus={reportObjectLoadStatus}
+                      reportSelection={reportSelection}
+                      reportObjectTransform={reportObjectTransform}
                     />
                   ) : (
                     <Image
@@ -517,14 +742,19 @@ export default function RoomLabV2() {
                       Original · authority-qualified
                     </div>
                   ) : null}
-                  {applied ? (
+                  {applied || pipeline?.roomObservation ? (
                     <RoomEvidenceOverlay
-                      floorPolygon={applied.floor.sourceNormalizedPolygon}
-                      roomObservation={applied.roomObservation}
+                      floorPolygon={applied?.floor.sourceNormalizedPolygon ?? []}
+                      roomObservation={pipeline?.roomObservation ?? null}
                       showFloorAuthority={
-                        orchestration.selectedRepresentation === "TILED"
+                        Boolean(applied) &&
+                        orchestration.selectedRepresentation === "TILED" &&
+                        showFloorQuad
                       }
-                      showRoomObservation={false}
+                      showRoomObservation={
+                        showRoomObservationOverlay &&
+                        orchestration.selectedRepresentation === "EMPTY"
+                      }
                     />
                   ) : null}
                 </div>
@@ -547,6 +777,110 @@ export default function RoomLabV2() {
                 </div>
               )}
             </div>
+          </div>
+
+          <section className="shrink-0 rounded-xl border border-slate-800 bg-slate-900/70 p-4">
+            <h2 className="text-sm font-semibold text-slate-200">
+              Scene / Models
+            </h2>
+            <p className="mt-2 text-[11px] leading-4 text-slate-600">
+              Object scene layer. Renders under the frozen camera. Does not
+              write Floor, Camera, or EMPTY observation.
+            </p>
+            <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:flex-wrap">
+              <button
+                type="button"
+                disabled={!sceneControlsEnabled}
+                onClick={() => setSceneLayer((current) => addTestCube(current))}
+                className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-xs font-medium text-slate-100 transition hover:border-slate-500 disabled:cursor-not-allowed disabled:text-slate-600 sm:min-w-[10rem] sm:flex-1"
+              >
+                Add Test Cube
+              </button>
+              <button
+                type="button"
+                disabled={!sceneControlsEnabled}
+                onClick={() => glbInputRef.current?.click()}
+                className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-xs font-medium text-slate-100 transition hover:border-slate-500 disabled:cursor-not-allowed disabled:text-slate-600 sm:min-w-[10rem] sm:flex-1"
+              >
+                Load Model / GLB
+              </button>
+              <input
+                ref={glbInputRef}
+                type="file"
+                accept=".glb,.gltf,model/gltf-binary,model/gltf+json"
+                className="hidden"
+                aria-label="Load Model / GLB"
+                onChange={(event) => handleGlbFile(event.target.files)}
+              />
+            </div>
+            {sceneLayer.objects.length > 0 ? (
+              <ul className="mt-3 space-y-1">
+                {sceneLayer.objects.map((object) => (
+                  <li key={object.id}>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setSceneLayer((current) =>
+                          selectSceneObject(current, object.id)
+                        )}
+                      className={`w-full rounded-md px-2 py-1.5 text-left text-[11px] ${
+                        sceneLayer.selectedObjectId === object.id
+                          ? "bg-slate-700 text-white"
+                          : "text-slate-400 hover:bg-slate-800 hover:text-slate-200"
+                      }`}
+                    >
+                      {object.label}
+                      {object.kind === "glb"
+                        ? ` · ${object.loadStatus}`
+                        : ""}
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            ) : null}
+            <div className="mt-3 flex flex-wrap gap-1">
+              {(["move", "rotate", "scale"] as const).map((mode) => (
+                <button
+                  key={mode}
+                  type="button"
+                  disabled={!sceneControlsEnabled}
+                  aria-pressed={sceneLayer.transformMode === mode}
+                  onClick={() =>
+                    setSceneLayer((current) =>
+                      setViewportTransformMode(current, mode)
+                    )
+                  }
+                  className={`min-w-[4.5rem] flex-1 rounded-md px-2 py-1.5 text-[11px] font-semibold capitalize ${
+                    sceneLayer.transformMode === mode
+                      ? "bg-cyan-400 text-slate-950"
+                      : "border border-slate-700 bg-slate-950 text-slate-300 hover:border-slate-500"
+                  } disabled:cursor-not-allowed disabled:text-slate-600`}
+                >
+                  {mode === "move" ? "Move" : mode === "rotate" ? "Rotate" : "Scale"}
+                </button>
+              ))}
+            </div>
+            {selectedSceneObject ? (
+              <div className="mt-2 flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  disabled={!sceneControlsEnabled}
+                  onClick={handleResetSelectedTransform}
+                  className="min-w-[9rem] flex-1 rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-xs font-medium text-slate-100 transition hover:border-slate-500 disabled:cursor-not-allowed disabled:text-slate-600"
+                >
+                  Reset Transform
+                </button>
+                <button
+                  type="button"
+                  disabled={!sceneControlsEnabled}
+                  onClick={handleDeleteSelectedObject}
+                  className="min-w-[9rem] flex-1 rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-xs font-medium text-slate-100 transition hover:border-slate-500 disabled:cursor-not-allowed disabled:text-slate-600"
+                >
+                  Delete Object
+                </button>
+              </div>
+            ) : null}
+          </section>
           </div>
 
           <aside className="flex flex-col gap-3" aria-label="AFC architecture status">
@@ -575,15 +909,32 @@ export default function RoomLabV2() {
                   ? `Calibrated · width ${applied.floor.worldWidthM.toFixed(2)} m · reference depth ${applied.floor.referenceDepthM.toFixed(2)} m · ratio ${applied.floor.widthDepthRatio.toFixed(3)}`
                   : "No calibrated Floor authority."}
               </p>
+              <label className="mt-3 flex items-center gap-2 text-xs text-slate-300">
+                <input
+                  type="checkbox"
+                  checked={showFloorQuad}
+                  disabled={!applied}
+                  onChange={(event) => setShowFloorQuad(event.target.checked)}
+                  className="accent-cyan-400"
+                  aria-label="Show Floor Quad"
+                />
+                Show Floor Quad
+              </label>
+              <p className="mt-1 text-[11px] leading-4 text-slate-600">
+                Diagnostic visibility only. Authority, Apply, freeze, and
+                restore are unchanged.
+              </p>
             </section>
             <section className="rounded-xl border border-slate-800 bg-slate-900/70 p-4">
               <h2 className="text-sm font-semibold text-slate-200">Lineage</h2>
               <p className="mt-2 text-xs leading-5 text-slate-500">
-                {applied?.empty && applied.tiled
-                  ? `Original ${applied.empty.provenance.parentOriginalSha256.slice(0, 10)}… → EMPTY ${applied.empty.identity.sha256.slice(0, 10)}… → TILED ${applied.tiled.identity.sha256.slice(0, 10)}…`
+                {pipeline?.empty && pipeline.tiled
+                  ? `Original ${pipeline.empty.provenance.parentOriginalSha256.slice(0, 10)}… → EMPTY ${pipeline.empty.identity.sha256.slice(0, 10)}… → TILED ${pipeline.tiled.identity.sha256.slice(0, 10)}…`
+                  : pipeline?.empty
+                  ? `Original ${pipeline.empty.provenance.parentOriginalSha256.slice(0, 10)}… → EMPTY ${pipeline.empty.identity.sha256.slice(0, 10)}…`
                   : "Awaiting Original → EMPTY → TILED evidence."}
               </p>
-              {applied?.tiled ? (
+              {pipeline?.tiled ? (
                 <p className="mt-1 text-xs leading-5 text-slate-600">
                   Full-raster certified tiled-perspective reader
                 </p>
@@ -611,49 +962,213 @@ export default function RoomLabV2() {
               <h2 className="text-sm font-semibold text-slate-200">
                 Room Observations
               </h2>
-              {applied?.roomObservation ? (
+              {pipeline?.roomObservation ? (
                 <div className="mt-2 space-y-1 text-xs leading-5 text-slate-500">
-                  <p>
-                    {applied.roomObservation.observedPlanes.length} planes ·{" "}
-                    {applied.roomObservation.observedGridFamilies.length} grid
-                    families
+                  <p className="font-medium text-slate-300">
+                    Basis: EMPTY · Authority: observation only
                   </p>
                   <p>
-                    {applied.roomObservation.observedSeams.length} seams ·{" "}
-                    {applied.roomObservation.observedOpenings.length} openings ·{" "}
-                    {applied.roomObservation.adjacency.length} adjacencies
+                    Status: {pipeline.roomObservation.observerStatus}
                   </p>
                   <p>
-                    {applied.roomObservation.diagnostics.normalization.merges.length}{" "}
-                    merges ·{" "}
-                    {applied.roomObservation.diagnostics.normalization
-                      .rejectedEvidence.length} rejected ·{" "}
-                    {applied.roomObservation.diagnostics.unresolved.length}{" "}
-                    unresolved
+                    {pipeline.roomObservation.observedPlanes.length} visible
+                    planes ·{" "}
+                    {pipeline.roomObservation.observedVisibleFloorRegions.length}{" "}
+                    visible floor regions
                   </p>
                   <p>
-                    {Array.from(new Set(
-                      applied.roomObservation.observedPlanes.map((plane) =>
-                        plane.category
-                      ),
-                    )).join(", ") || "No confident plane categories"}
+                    {pipeline.roomObservation.observedSeams.length} seams ·{" "}
+                    {pipeline.roomObservation.observedOpenings.length} openings ·{" "}
+                    {pipeline.roomObservation.observedJunctions.length} junctions
                   </p>
                   <p className="text-slate-600">
-                    {applied.roomObservation.observationVersion}
+                    {pipeline.roomObservation.schemaVersion}
                   </p>
-                  {applied.roomObservation.diagnostics.unresolved[0] ? (
+                  {pipeline.roomObservation.qualityGate
+                      .openingClosureAdjustments.length > 0 ? (
+                    <p className="text-amber-300/70">
+                      {
+                        pipeline.roomObservation.qualityGate
+                          .openingClosureAdjustments.length
+                      }{" "}
+                      opening closure claim(s) preserved as partial
+                    </p>
+                  ) : null}
+                  {pipeline.roomObservation.failure ? (
+                    <p className="text-amber-300/70">
+                      {pipeline.roomObservation.failure.safeDetail}
+                    </p>
+                  ) : pipeline.roomObservation.qualityGate.unresolved[0] ? (
                     <p className="text-amber-300/70">
                       Unresolved:{" "}
-                      {applied.roomObservation.diagnostics.unresolved[0]}
+                      {pipeline.roomObservation.qualityGate.unresolved[0]}
                     </p>
                   ) : null}
                 </div>
               ) : (
                 <p className="mt-2 text-xs leading-5 text-slate-500">
-                  Pending — deferred for the separately certified EMPTY
-                  Room Observation migration.
+                  No retained EMPTY observation basis was available.
                 </p>
               )}
+            </section>
+            {pipeline?.roomObservation ? (
+              <button
+                type="button"
+                onClick={downloadRoomObservationEvidence}
+                className="rounded-xl border border-slate-700 bg-slate-900 px-4 py-3 text-left text-xs font-medium text-orange-200 transition hover:border-slate-500"
+              >
+                Download V2-S3D EMPTY Room Observation evidence
+              </button>
+            ) : null}
+            <section className="rounded-xl border border-slate-800 bg-slate-900/70 p-4">
+              <button
+                type="button"
+                aria-expanded={selectedModelExpanded}
+                aria-controls="v2-selected-model-details"
+                onClick={() =>
+                  setSelectedModelExpanded((open) => !open)
+                }
+                className="-mx-1 flex w-[calc(100%+0.5rem)] items-center justify-between gap-2 rounded-md px-1 py-0.5 text-left transition hover:bg-slate-800/60"
+              >
+                <h2 className="min-w-0 truncate text-sm font-semibold text-slate-200">
+                  {formatSelectedModelHeading(
+                    selectedSceneObject?.label ?? null,
+                  )}
+                </h2>
+                <span className="shrink-0 text-xs text-slate-500" aria-hidden="true">
+                  {selectedModelExpanded ? "▾" : "▸"}
+                </span>
+              </button>
+              {selectedModelExpanded ? (
+                <div
+                  id="v2-selected-model-details"
+                  className="mt-3"
+                >
+                  {selectedSceneObject ? (
+                    <div className="space-y-3">
+                      <p className="text-xs text-slate-300">
+                        {selectedSceneObject.kind === "test_cube"
+                          ? "Test Cube"
+                          : "GLB"}
+                        {" · "}
+                        {selectedSceneObject.label}
+                      </p>
+                      {selectedSceneObject.loadError ? (
+                        <p className="text-[11px] text-amber-300/80">
+                          {selectedSceneObject.loadError}
+                        </p>
+                      ) : null}
+                      <div>
+                        <p className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                          Move
+                        </p>
+                        <div className="space-y-2">
+                          <TransformControlRow
+                            label="X"
+                            value={selectedSceneObject.transform.position.x}
+                            min={SCENE_TRANSFORM_LIMITS.positionX.min}
+                            max={SCENE_TRANSFORM_LIMITS.positionX.max}
+                            step={SCENE_TRANSFORM_LIMITS.positionX.step}
+                            disabled={!sceneControlsEnabled}
+                            onValue={(value) =>
+                              setSceneLayer((current) =>
+                                updateSelectedPositionAxis(current, "x", value)
+                              )}
+                          />
+                          <TransformControlRow
+                            label="Y"
+                            value={selectedSceneObject.transform.position.y}
+                            min={SCENE_TRANSFORM_LIMITS.positionY.min}
+                            max={SCENE_TRANSFORM_LIMITS.positionY.max}
+                            step={SCENE_TRANSFORM_LIMITS.positionY.step}
+                            disabled={!sceneControlsEnabled}
+                            onValue={(value) =>
+                              setSceneLayer((current) =>
+                                updateSelectedPositionAxis(current, "y", value)
+                              )}
+                          />
+                          <TransformControlRow
+                            label="Z"
+                            value={selectedSceneObject.transform.position.z}
+                            min={SCENE_TRANSFORM_LIMITS.positionZ.min}
+                            max={SCENE_TRANSFORM_LIMITS.positionZ.max}
+                            step={SCENE_TRANSFORM_LIMITS.positionZ.step}
+                            disabled={!sceneControlsEnabled}
+                            onValue={(value) =>
+                              setSceneLayer((current) =>
+                                updateSelectedPositionAxis(current, "z", value)
+                              )}
+                          />
+                        </div>
+                      </div>
+                      <div>
+                        <p className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                          Rotate
+                        </p>
+                        <div className="space-y-2">
+                          <TransformControlRow
+                            label="X"
+                            value={selectedSceneObject.transform.rotationDeg.x}
+                            min={SCENE_TRANSFORM_LIMITS.rotationDeg.min}
+                            max={SCENE_TRANSFORM_LIMITS.rotationDeg.max}
+                            step={SCENE_TRANSFORM_LIMITS.rotationDeg.step}
+                            disabled={!sceneControlsEnabled}
+                            onValue={(value) =>
+                              setSceneLayer((current) =>
+                                updateSelectedRotationAxis(current, "x", value)
+                              )}
+                          />
+                          <TransformControlRow
+                            label="Y"
+                            value={selectedSceneObject.transform.rotationDeg.y}
+                            min={SCENE_TRANSFORM_LIMITS.rotationDeg.min}
+                            max={SCENE_TRANSFORM_LIMITS.rotationDeg.max}
+                            step={SCENE_TRANSFORM_LIMITS.rotationDeg.step}
+                            disabled={!sceneControlsEnabled}
+                            onValue={(value) =>
+                              setSceneLayer((current) =>
+                                updateSelectedRotationAxis(current, "y", value)
+                              )}
+                          />
+                          <TransformControlRow
+                            label="Z"
+                            value={selectedSceneObject.transform.rotationDeg.z}
+                            min={SCENE_TRANSFORM_LIMITS.rotationDeg.min}
+                            max={SCENE_TRANSFORM_LIMITS.rotationDeg.max}
+                            step={SCENE_TRANSFORM_LIMITS.rotationDeg.step}
+                            disabled={!sceneControlsEnabled}
+                            onValue={(value) =>
+                              setSceneLayer((current) =>
+                                updateSelectedRotationAxis(current, "z", value)
+                              )}
+                          />
+                        </div>
+                      </div>
+                      <div>
+                        <p className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                          Scale
+                        </p>
+                        <TransformControlRow
+                          label="Uniform"
+                          value={selectedSceneObject.transform.uniformScale}
+                          min={SCENE_TRANSFORM_LIMITS.uniformScale.min}
+                          max={SCENE_TRANSFORM_LIMITS.uniformScale.max}
+                          step={SCENE_TRANSFORM_LIMITS.uniformScale.step}
+                          disabled={!sceneControlsEnabled}
+                          onValue={(value) =>
+                            setSceneLayer((current) =>
+                              updateSelectedUniformScale(current, value)
+                            )}
+                        />
+                      </div>
+                    </div>
+                  ) : (
+                    <p className="text-xs leading-5 text-slate-500">
+                      No selected model. Add a Test Cube or load a GLB after Apply.
+                    </p>
+                  )}
+                </div>
+              ) : null}
             </section>
             <section className="rounded-xl border border-slate-800 bg-slate-900/70 p-4">
               <h2 className="text-sm font-semibold text-slate-200">Room Boundaries</h2>
