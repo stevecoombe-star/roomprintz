@@ -78,6 +78,24 @@ test("overlay distinguishes normalized evidence categories from Floor authority"
   assert.match(overlaySource, /rgb\(103, 232, 249\)/);
 });
 
+test("legend is independently toggleable and hidden when overlay is off", () => {
+  assert.match(roomLabSource, /Observation overlay/);
+  assert.match(roomLabSource, /showRoomObservationLegend/);
+  assert.match(
+    roomLabSource,
+    /const \[showRoomObservationLegend, setShowRoomObservationLegend\] =\s*useState\(true\)/,
+  );
+  assert.match(
+    roomLabSource,
+    /showObservationLegend=\{showRoomObservationLegend\}/,
+  );
+  assert.match(overlaySource, /room && showObservationLegend/);
+  assert.doesNotMatch(
+    roomLabSource,
+    /setPipeline\([\s\S]{0,60}showRoomObservationLegend|setShowRoomObservationLegend[\s\S]{0,80}setPipeline/,
+  );
+});
+
 test("overlay is a read-only evidence consumer", () => {
   assert.match(overlaySource, /pointer-events-none/);
   assert.doesNotMatch(

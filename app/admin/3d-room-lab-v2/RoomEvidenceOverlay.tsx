@@ -10,6 +10,7 @@ type Props = Readonly<{
   roomObservation: EmptyRoomObservationEvidence | null;
   showFloorAuthority: boolean;
   showRoomObservation: boolean;
+  showObservationLegend?: boolean;
 }>;
 
 function points(value: readonly SourceNormalizedPoint[]): string {
@@ -39,6 +40,7 @@ export default function RoomEvidenceOverlay({
   roomObservation,
   showFloorAuthority,
   showRoomObservation,
+  showObservationLegend = true,
 }: Props) {
   const room = showRoomObservation &&
       roomObservation?.observerStatus !== "failed"
@@ -136,7 +138,7 @@ export default function RoomEvidenceOverlay({
           />
         ) : null}
       </svg>
-      {room ? (
+      {room && showObservationLegend ? (
         <div
           className="pointer-events-none absolute right-3 top-3 z-30 rounded-md bg-slate-950/80 px-2.5 py-2 text-[10px] leading-4 text-slate-300 backdrop-blur"
           aria-label="Room observation overlay legend"

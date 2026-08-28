@@ -292,6 +292,8 @@ export default function RoomLabV2() {
   const [pipeline, setPipeline] = useState<PipelineEvidenceState | null>(null);
   const [showRoomObservationOverlay, setShowRoomObservationOverlay] =
     useState(true);
+  const [showRoomObservationLegend, setShowRoomObservationLegend] =
+    useState(true);
   const [showFloorQuad, setShowFloorQuad] = useState(DEFAULT_SHOW_FLOOR_QUAD);
   const [sceneLayer, setSceneLayer] = useState(createInitialSceneLayerState);
   const [selectedModelExpanded, setSelectedModelExpanded] = useState(false);
@@ -678,16 +680,28 @@ export default function RoomLabV2() {
                 {orchestration.selectedRepresentation === "EMPTY" &&
                     pipeline?.roomObservation &&
                     pipeline.roomObservation.observerStatus !== "failed" ? (
-                  <label className="flex items-center gap-2 text-xs text-slate-300">
-                    <input
-                      type="checkbox"
-                      checked={showRoomObservationOverlay}
-                      onChange={(event) =>
-                        setShowRoomObservationOverlay(event.target.checked)}
-                      className="accent-cyan-400"
-                    />
-                    Observation overlay
-                  </label>
+                  <>
+                    <label className="flex items-center gap-2 text-xs text-slate-300">
+                      <input
+                        type="checkbox"
+                        checked={showRoomObservationOverlay}
+                        onChange={(event) =>
+                          setShowRoomObservationOverlay(event.target.checked)}
+                        className="accent-cyan-400"
+                      />
+                      Observation overlay
+                    </label>
+                    <label className="flex items-center gap-2 text-xs text-slate-300">
+                      <input
+                        type="checkbox"
+                        checked={showRoomObservationLegend}
+                        onChange={(event) =>
+                          setShowRoomObservationLegend(event.target.checked)}
+                        className="accent-cyan-400"
+                      />
+                      Legend
+                    </label>
+                  </>
                 ) : null}
                 <span className="text-xs text-slate-500">
                   {REPRESENTATION_DESCRIPTIONS[
@@ -755,6 +769,7 @@ export default function RoomLabV2() {
                         showRoomObservationOverlay &&
                         orchestration.selectedRepresentation === "EMPTY"
                       }
+                      showObservationLegend={showRoomObservationLegend}
                     />
                   ) : null}
                 </div>
@@ -981,6 +996,26 @@ export default function RoomLabV2() {
                     {pipeline.roomObservation.observedOpenings.length} openings ·{" "}
                     {pipeline.roomObservation.observedJunctions.length} junctions
                   </p>
+                  {pipeline.roomObservation.observerStatus !== "failed" &&
+                      pipeline.roomObservation.qualityGate.focusedSideCeilingWall
+                        .observerStatus !== "not_run" ? (
+                    <p>
+                      Focused side ceiling-wall:{" "}
+                      {
+                        pipeline.roomObservation.qualityGate.focusedSideCeilingWall
+                          .addedSeamIds.length
+                      }{" "}
+                      added
+                      {pipeline.roomObservation.qualityGate.focusedSideCeilingWall
+                        .skippedDuplicateSeamIds.length > 0
+                        ? ` · ${pipeline.roomObservation.qualityGate.focusedSideCeilingWall.skippedDuplicateSeamIds.length} focused duplicate skipped`
+                        : ""}
+                      {pipeline.roomObservation.qualityGate.focusedSideCeilingWall
+                        .suppressedGeneralSeamIds.length > 0
+                        ? ` · ${pipeline.roomObservation.qualityGate.focusedSideCeilingWall.suppressedGeneralSeamIds.length} general duplicate suppressed`
+                        : ""}
+                    </p>
+                  ) : null}
                   <p className="text-slate-600">
                     {pipeline.roomObservation.schemaVersion}
                   </p>

@@ -62,6 +62,17 @@ import {
   AFC_V2_EMPTY_ROOM_OBSERVATION_PROMPT_VERSION,
   observeRetainedEmptyRoom,
 } from "./empty-room-observation.server";
+import {
+  AFC_V2_EMPTY_SIDE_CEILING_WALL_PROFILE,
+  AFC_V2_EMPTY_SIDE_CEILING_WALL_PROMPT_VERSION,
+  emptyFocusedSideCeilingWallSibling,
+  observeFocusedSideCeilingWallSeams,
+} from "./empty-side-ceiling-wall-observation.server";
+import {
+  buildFailedFocusedSideCeilingWallEvidence,
+} from "./empty-side-ceiling-wall-observation-contract";
+import { mergeFocusedSideCeilingWallSeams } from "./empty-side-ceiling-wall-observation-merge.server";
+import type { FocusedSideCeilingWallEvidence } from "./empty-side-ceiling-wall-observation-contract";
 
 export const AFC_V2_REFERENCE_DEPTH_M = 4;
 
@@ -117,6 +128,7 @@ type AfcV2LivePipelineEvidence = Readonly<{
     fullyTiledGeneration: 0;
     fullyTiledFloorReader: 0;
     roomObserver: 0 | 1;
+    focusedSideCeilingObserver: 0 | 1;
   }>;
   roomObservation: EmptyRoomObservationEvidence | null;
   roomObservationStatus:
@@ -127,6 +139,11 @@ type AfcV2LivePipelineEvidence = Readonly<{
   roomObservationDiagnostic:
     | EmptyRoomObservationEvidence["failure"]
     | null;
+  focusedSideCeilingObservation: FocusedSideCeilingWallEvidence | null;
+  focusedSideCeilingObservationStatus:
+    | FocusedSideCeilingWallEvidence["observerStatus"]
+    | "empty"
+    | "not_run";
 }>;
 
 export type AfcV2AnalyzeResult =
@@ -185,6 +202,7 @@ export type AfcV2ControlledReplayEvidence = Readonly<{
 export type AfcV2AnalysisDependencies = Readonly<{
   product?: AfcSr1TiledLiveProductDependencies;
   observeRoom?: typeof observeRetainedEmptyRoom;
+  observeFocusedSideCeilingWall?: typeof observeFocusedSideCeilingWallSeams;
   analysisMode?: "live" | "controlled_replay";
 }>;
 
@@ -335,6 +353,7 @@ function livePipelineEvidence(
   input: AfcV2AnalyzeInput,
   product: AfcSr1LiveProductResult,
   roomObservation: EmptyRoomObservationEvidence | null,
+  focusedSideCeilingObservation: FocusedSideCeilingWallEvidence | null,
 ): AfcV2LivePipelineEvidence {
   const evidence = getAfcSr1LiveAttemptEvidence(input.attemptId);
   const binding = evidence?.binding;
@@ -389,11 +408,20 @@ function livePipelineEvidence(
       fullyTiledGeneration: 0 as const,
       fullyTiledFloorReader: 0 as const,
       roomObserver: roomObservation ? 1 as const : 0 as const,
+      focusedSideCeilingObserver: focusedSideCeilingObservation ? 1 as const : 0 as const,
     }),
     roomObservation,
     roomObservationStatus: roomObservation?.observerStatus ??
       "not_run_empty_unavailable",
     roomObservationDiagnostic: roomObservation?.failure ?? null,
+    focusedSideCeilingObservation,
+    focusedSideCeilingObservationStatus:
+      focusedSideCeilingObservation?.observerStatus === "failed"
+        ? "failed"
+        : focusedSideCeilingObservation?.observerStatus === "observed" &&
+            focusedSideCeilingObservation.observedSeams.length === 0
+        ? "empty"
+        : focusedSideCeilingObservation?.observerStatus ?? "not_run",
   });
 }
 
@@ -406,8 +434,9 @@ export async function executeAfcV2Analysis(
   dependencies: AfcV2AnalysisDependencies = {},
 ): Promise<AfcV2AnalyzeResult> {
   const observationBranch: {
-    promise: Promise<EmptyRoomObservationEvidence> | null;
-  } = { promise: null };
+    general: Promise<EmptyRoomObservationEvidence> | null;
+    focused: Promise<FocusedSideCeilingWallEvidence> | null;
+  } = { general: null, focused: null };
   const externalEmptyHook = dependencies.product?.onEmptyRetained;
   const product = await executeAfcSr1TiledLiveProductAttempt({
     attemptId: input.attemptId,
@@ -423,6 +452,12 @@ export async function executeAfcV2Analysis(
       } catch {
         // External diagnostics cannot block either certified branch.
       }
+      const observationInput = {
+        attemptId: retained.attemptId,
+        loadGeneration: retained.loadGeneration,
+        originalAncestorIdentity: retained.originalIdentity,
+        retainedEmpty: retained.retainedEmpty,
+      };
       const failedObservation = () =>
         buildFailedEmptyRoomObservationEvidence({
           attemptId: retained.attemptId,
@@ -450,27 +485,68 @@ export async function executeAfcV2Analysis(
             "Room observation branch rejected unexpectedly; Floor/Camera continued independently.",
           contractValidationReason: null,
         });
-      try {
-        observationBranch.promise = (
-          dependencies.observeRoom ?? observeRetainedEmptyRoom
-        )({
+      const failedFocused = () =>
+        buildFailedFocusedSideCeilingWallEvidence({
           attemptId: retained.attemptId,
           loadGeneration: retained.loadGeneration,
-          originalAncestorIdentity: retained.originalIdentity,
-          retainedEmpty: retained.retainedEmpty,
-        }).catch(() => failedObservation());
+          emptyIdentity: retained.retainedEmpty.identity,
+          originalAncestorSha256: retained.originalIdentity.sha256,
+          provider: dependencies.observeFocusedSideCeilingWall ||
+              dependencies.observeRoom
+            ? "controlled_fixture"
+            : "google_gemini",
+          model: process.env.AFC_V2_ROOM_OBSERVATION_MODEL?.trim() ||
+            AFC_V2_EMPTY_ROOM_OBSERVATION_DEFAULT_MODEL,
+          observerProfile: AFC_V2_EMPTY_SIDE_CEILING_WALL_PROFILE,
+          promptVersion: AFC_V2_EMPTY_SIDE_CEILING_WALL_PROMPT_VERSION,
+          generatedAt: new Date().toISOString(),
+        }, {
+          failureClass: "unknown",
+          failureStage: "provider_invocation",
+          provider: dependencies.observeFocusedSideCeilingWall ||
+              dependencies.observeRoom
+            ? "controlled_fixture"
+            : "google_gemini",
+          model: process.env.AFC_V2_ROOM_OBSERVATION_MODEL?.trim() ||
+            AFC_V2_EMPTY_ROOM_OBSERVATION_DEFAULT_MODEL,
+          providerStatus: null,
+          safeDetail:
+            "Focused side-ceiling-wall observation rejected unexpectedly; general observation and Floor/Camera continued independently.",
+          contractValidationReason: null,
+        });
+      const focusedObserver = dependencies.observeFocusedSideCeilingWall ??
+        (dependencies.observeRoom
+          ? async (input: typeof observationInput) =>
+            emptyFocusedSideCeilingWallSibling(input)
+          : observeFocusedSideCeilingWallSeams);
+      try {
+        observationBranch.general = (
+          dependencies.observeRoom ?? observeRetainedEmptyRoom
+        )(observationInput).catch(() => failedObservation());
       } catch {
-        observationBranch.promise = Promise.resolve(failedObservation());
+        observationBranch.general = Promise.resolve(failedObservation());
+      }
+      try {
+        observationBranch.focused = focusedObserver(observationInput)
+          .catch(() => failedFocused());
+      } catch {
+        observationBranch.focused = Promise.resolve(failedFocused());
       }
     },
   });
-  const roomObservation = observationBranch.promise
-    ? await observationBranch.promise
-    : null;
+  const [generalObservation, focusedObservation] = await Promise.all([
+    observationBranch.general,
+    observationBranch.focused,
+  ]);
+  const roomObservation = mergeFocusedSideCeilingWallSeams({
+    general: generalObservation,
+    focused: focusedObservation,
+  });
   const pipelineEvidence = livePipelineEvidence(
     input,
     product,
     roomObservation,
+    focusedObservation,
   );
   if (product.status !== "authoritative_geometry") {
     return {
@@ -693,7 +769,7 @@ export async function executeAfcV2ControlledReplay(
       },
     };
     return {
-      ...livePipelineEvidence(input, rejectedProduct, null),
+      ...livePipelineEvidence(input, rejectedProduct, null, null),
       status: "failed",
       reason: "Controlled replay evidence did not satisfy exact identity and lineage bindings.",
       product: rejectedProduct,

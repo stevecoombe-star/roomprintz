@@ -83,7 +83,7 @@ async function observeEmptyFixture() {
     provider: "controlled_fixture",
     model: "fixture",
     observerProfile: "empty-visible-architecture-conservative/v1",
-    promptVersion: "afc-v2-empty-visible-room-observer/v2",
+    promptVersion: "afc-v2-empty-visible-room-observer/v3",
     generatedAt: "2026-08-26T12:00:00.000Z",
   });
 }
@@ -244,6 +244,7 @@ test("live V2 restores Original to EMPTY to full-raster TILED reader authority",
     fullyTiledGeneration: 0,
     fullyTiledFloorReader: 0,
     roomObserver: 1,
+    focusedSideCeilingObserver: 1,
   });
   assert.equal(result.camera.originalBasisRestored, true);
   assert.equal(result.roomObservationStatus, "observed");

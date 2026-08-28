@@ -12,7 +12,7 @@ import {
 } from "./empty-room-observation-contract";
 
 export const AFC_V2_EMPTY_ROOM_OBSERVATION_PROMPT_VERSION =
-  "afc-v2-empty-visible-room-observer/v2" as const;
+  "afc-v2-empty-visible-room-observer/v4" as const;
 export const AFC_V2_EMPTY_ROOM_OBSERVATION_PROFILE =
   "empty-visible-architecture-conservative/v1" as const;
 export const AFC_V2_EMPTY_ROOM_OBSERVATION_DEFAULT_MODEL = "gemini-3.5-flash";
@@ -257,6 +257,12 @@ Visible seams:
 - Never connect across an occlusion or close a gap.
 - Trace each wall-ceiling seam independently along the visible physical junction between that specific wall and the ceiling. Do not derive a wall-ceiling seam merely from the broad extent or polygon boundary of either plane.
 - Preserve the visible slope and image perspective of wall-ceiling seams. If a junction is weak, partly occluded, or uncertain, return only the confidently visible segment. Do not extend it to an image edge unless the physical junction remains visibly traceable there.
+- Inspect each visibly supported side wall-ceiling intersection independently of the back wall-ceiling seam. A side wall-ceiling seam is the visible architectural boundary where a side wall meets the ceiling. If a back wall, a side wall, and a ceiling are all visible, inspect that side wall's intersection with the ceiling as its own seam candidate. This remains image observation only: do not infer hidden geometry, solve vanishing points, correct the camera, project to world, or reconstruct from Floor or TILED evidence.
+- Side wall-ceiling seams commonly appear as perspective-receding lines from the near or front image region toward the back wall-ceiling junction. They are not required to be horizontal, vertical, axis-aligned, or parallel to image borders. They may be shallow diagonals, high-angle diagonals, partly contrast-defined, or near the left or right image edge. Follow the architectural boundary, not image-axis preference. Do not prefer only the strongest or most horizontal ceiling-wall edge.
+- Distinguish wall-wall from wall-ceiling. A wall-wall seam separates two approximately vertical wall planes. A side wall-ceiling seam separates the ceiling plane from a side wall plane and often recedes diagonally toward the back of the room. Do not substitute a vertical wall-wall line, a plane-polygon extent, or a weaker interior tonal edge for a side wall-ceiling seam.
+- Distinguish the true wall-ceiling junction from the lower edge of an attached or projecting overhead element such as a pelmet, curtain box, valance, bulkhead face, shallow soffit, overhead shelf, or decorative trim. If such an element sits below the ceiling, do not move the wall-ceiling seam or junction down to that lower edge. Follow the actual room envelope where the wall meets the ceiling. If that envelope is occluded, omit or report only the visible supported portion; do not reconstruct behind the element. If a soffit or bulkhead genuinely defines the visible ceiling boundary, keep it.
+- Do not require both left and right side wall-ceiling seams. Report a side only when that side's junction is visibly supported. Omission of an unsupported or ambiguous side remains correct and is preferable to a fabricated seam. Junction support, including a visible meeting of back wall-ceiling, side wall-ceiling, and wall-wall, may help place an endpoint but is not permission to manufacture a missing side seam. Prefer the actual room-envelope ceiling/wall intersection over a lower attached-element edge.
+- If only part of a side wall-ceiling junction is confidently visible, emit the supported visible segment rather than inventing the full wall-ceiling run. Do not extend through glare, occlusion, clipping, or uncertain tonal transition unless the continuation remains visibly supported. Do not omit a clearly visible side junction merely because a plane polygon already approximates that region, because the back wall-ceiling seam is clearer, or because an endpoint approaches x=0 or x=1.
 - Preserve visible floor-wall boundaries without broadening, smoothing, or completing them.
 - Preserve the conservative wall-wall rule: trace a room corner only where the physical junction is visible. A plane polygon reaching an image edge does not establish another wall or a wall-wall seam.
 
@@ -273,6 +279,7 @@ Visible openings:
 Visible corners and junctions:
 - Report visible room corners, seam junctions, and useful opening-boundary intersections.
 - Bind junctions to reported seams/openings where applicable.
+- Place a wall-ceiling junction on the actual room-envelope ceiling/wall intersection, not on the lower edge of a pelmet or similar attached overhead element. If that envelope is not visibly supportable, omit the junction rather than reconstructing it behind the element.
 
 Strict prohibitions:
 - Do not infer hidden walls or unseen room boundaries.
@@ -287,6 +294,7 @@ Strict prohibitions:
 
 Confidence:
 - Confidence measures certainty in the reported coordinates and traced geometry, not certainty that the object is a window, door, wall, or ceiling.
+- For seams, confidence is certainty that the reported line follows the actual visible architectural seam, not certainty that two planes probably meet in that region. Do not inflate seam confidence from room topology.
 - Recognizing a window does not justify high confidence in all of its boundary edges.
 - Lower confidence, return partial evidence, or omit the primitive when edge placement is obscured by trim or shadow, perspective is ambiguous, the opening approaches image truncation, or any side would come only from expected rectangular construction.
 - Keep ambiguity and boundary completeness consistent: uncertainty or missing edges cannot be reported as an unambiguous complete outline.

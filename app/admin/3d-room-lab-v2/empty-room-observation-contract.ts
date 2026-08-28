@@ -59,6 +59,10 @@ export type EmptyObservedPlane = Readonly<{
   evidenceClass: "provider_reported_visible_evidence";
 }>;
 
+export type EmptyObservedSeamObservationSource =
+  | "general_empty_observer"
+  | "focused_side_ceiling_wall";
+
 export type EmptyObservedSeam = Readonly<{
   id: string;
   category: EmptyObservedSeamCategory;
@@ -68,6 +72,7 @@ export type EmptyObservedSeam = Readonly<{
   confidence: number;
   ambiguity: string | null;
   evidenceClass: "provider_reported_visible_evidence";
+  observationSource: EmptyObservedSeamObservationSource;
 }>;
 
 export type EmptyObservedOpening = Readonly<{
@@ -130,6 +135,37 @@ export type EmptyRoomObservationFailureDiagnostic = Readonly<{
   safeDetail: string;
   contractValidationReason: string | null;
 }>;
+
+export type FocusedSideCeilingWallMergeReceipt = Readonly<{
+  observerStatus: "observed" | "partial" | "failed" | "empty" | "not_run";
+  promptVersion: string | null;
+  emptyIdentitySha256: string | null;
+  addedSeamIds: readonly string[];
+  skippedDuplicateSeamIds: readonly string[];
+  rejectedSeamIds: readonly string[];
+  suppressedGeneralSeamIds: readonly string[];
+  skippedJunctionIds: readonly string[];
+  resolutionReasons: readonly string[];
+  geometryManufactured: false;
+  hiddenContinuationAdded: false;
+  failure: EmptyRoomObservationFailureDiagnostic | null;
+}>;
+
+export const AFC_V2_FOCUSED_SIDE_CEILING_WALL_NOT_RUN =
+  Object.freeze({
+    observerStatus: "not_run",
+    promptVersion: null,
+    emptyIdentitySha256: null,
+    addedSeamIds: Object.freeze([] as const),
+    skippedDuplicateSeamIds: Object.freeze([] as const),
+    rejectedSeamIds: Object.freeze([] as const),
+    suppressedGeneralSeamIds: Object.freeze([] as const),
+    skippedJunctionIds: Object.freeze([] as const),
+    resolutionReasons: Object.freeze([] as const),
+    geometryManufactured: false,
+    hiddenContinuationAdded: false,
+    failure: null,
+  }) satisfies FocusedSideCeilingWallMergeReceipt;
 
 type EvidenceContext = Readonly<{
   attemptId: string;
@@ -200,6 +236,7 @@ export type EmptyRoomObservationAcceptedEvidence = CommonEvidence & Readonly<{
         | "provider_complete_claim_conflicted_with_partial_visible_edge_evidence"
         | "provider_partial_claim_preserved_despite_complete_edge_evidence";
     }>[];
+    focusedSideCeilingWall: FocusedSideCeilingWallMergeReceipt;
   }>;
   failure: null;
 }>;
@@ -220,6 +257,7 @@ export type EmptyRoomObservationFailedEvidence = CommonEvidence & Readonly<{
     unresolved: readonly [];
     partialReasons: readonly [];
     openingClosureAdjustments: readonly [];
+    focusedSideCeilingWall: null;
   }>;
   failure: EmptyRoomObservationFailureDiagnostic;
 }>;
@@ -464,6 +502,7 @@ export function buildEmptyRoomObservationEvidence(
       confidence: certainty,
       ambiguity: ambiguity(candidate.ambiguity),
       evidenceClass: "provider_reported_visible_evidence",
+      observationSource: "general_empty_observer",
     }));
   }
 
@@ -696,6 +735,7 @@ export function buildEmptyRoomObservationEvidence(
       unresolved,
       partialReasons,
       openingClosureAdjustments: Object.freeze(openingClosureAdjustments),
+      focusedSideCeilingWall: AFC_V2_FOCUSED_SIDE_CEILING_WALL_NOT_RUN,
     }),
     failure: null,
   });
@@ -722,6 +762,7 @@ export function buildFailedEmptyRoomObservationEvidence(
       unresolved: [] as const,
       partialReasons: [] as const,
       openingClosureAdjustments: [] as const,
+      focusedSideCeilingWall: null,
     }),
     failure,
   });

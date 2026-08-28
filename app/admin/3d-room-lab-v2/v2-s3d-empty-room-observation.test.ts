@@ -11,6 +11,7 @@ import {
   type EmptyRoomObservationAcceptedEvidence,
 } from "./empty-room-observation-contract";
 import {
+  AFC_V2_EMPTY_ROOM_OBSERVATION_PROMPT_VERSION,
   observeRetainedEmptyRoom,
 } from "./empty-room-observation.server";
 import {
@@ -143,7 +144,7 @@ function evidence(
     provider: "controlled_fixture",
     model: "fixture",
     observerProfile: "empty-visible-architecture-conservative/v1",
-    promptVersion: "afc-v2-empty-visible-room-observer/v2",
+    promptVersion: "afc-v2-empty-visible-room-observer/v3",
     generatedAt: "2026-08-26T12:00:00.000Z",
   });
 }
@@ -254,6 +255,8 @@ test("EMPTY observer consumes exact retained bytes with no Floor or Camera input
   });
 
   assert.equal(result.observerStatus, "observed");
+  assert.equal(result.observer.promptVersion, AFC_V2_EMPTY_ROOM_OBSERVATION_PROMPT_VERSION);
+  assert.equal(result.observer.promptVersion, "afc-v2-empty-visible-room-observer/v4");
   assert.equal(result.basis.kind, "EMPTY");
   assert.equal(result.basis.identity.sha256, emptyBasis.sha256);
   assert.equal(result.basis.originalAncestorSha256, originalBasis.sha256);
@@ -281,6 +284,8 @@ test("EMPTY observer consumes exact retained bytes with no Floor or Camera input
   assert.match(suppliedPrompt, /certainty in the reported coordinates/i);
   assert.match(suppliedPrompt, /Trace each wall-ceiling seam independently/i);
   assert.match(suppliedPrompt, /Do not derive a wall-ceiling seam merely/i);
+  assert.match(suppliedPrompt, /pelmet, curtain box, valance/i);
+  assert.match(suppliedPrompt, /Place a wall-ceiling junction on the actual room-envelope/i);
 });
 
 test("quality gate keeps partial evidence and rejects malformed geometry conservatively", () => {
@@ -591,7 +596,7 @@ test("Room Observation failure does not block certified Floor, Apply, freeze, or
     provider: "controlled_fixture",
     model: "fixture",
     observerProfile: "empty-visible-architecture-conservative/v1",
-    promptVersion: "afc-v2-empty-visible-room-observer/v2",
+    promptVersion: "afc-v2-empty-visible-room-observer/v3",
     generatedAt: "2026-08-26T12:00:00.000Z",
   }, {
     failureClass: "transport",
