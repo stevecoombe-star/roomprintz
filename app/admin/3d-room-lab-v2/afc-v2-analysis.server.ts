@@ -73,6 +73,8 @@ import {
 } from "./empty-side-ceiling-wall-observation-contract";
 import { mergeFocusedSideCeilingWallSeams } from "./empty-side-ceiling-wall-observation-merge.server";
 import type { FocusedSideCeilingWallEvidence } from "./empty-side-ceiling-wall-observation-contract";
+import { constructAfcV2RoomBoundaryAuthority } from "./room-boundary-authority.server";
+import type { AfcV2RoomBoundaryAuthorityReceipt } from "./room-boundary-authority-contract";
 
 export const AFC_V2_REFERENCE_DEPTH_M = 4;
 
@@ -144,6 +146,7 @@ type AfcV2LivePipelineEvidence = Readonly<{
     | FocusedSideCeilingWallEvidence["observerStatus"]
     | "empty"
     | "not_run";
+  roomBoundaries: AfcV2RoomBoundaryAuthorityReceipt | null;
 }>;
 
 export type AfcV2AnalyzeResult =
@@ -422,6 +425,7 @@ function livePipelineEvidence(
             focusedSideCeilingObservation.observedSeams.length === 0
         ? "empty"
         : focusedSideCeilingObservation?.observerStatus ?? "not_run",
+    roomBoundaries: null,
   });
 }
 
@@ -705,26 +709,49 @@ export async function executeAfcV2Analysis(
     };
   }
 
+  const floor = {
+    authorityKey: floorAuthorityKey,
+    sourceNormalizedPolygon: product.geometry.sourceNormalizedPolygon,
+    worldWidthM: settle.worldWidthM,
+    referenceDepthM: settle.referenceDepthM,
+    widthDepthRatio: settle.widthDepthRatio,
+  };
+  const camera = {
+    applied: true as const,
+    verticalFovDeg: snapshot.fovDeg,
+    pose: snapshot.pose,
+    frame: snapshot.frameSize,
+    originalBasisRestored: true as const,
+  };
+  const roomBoundaries = constructAfcV2RoomBoundaryAuthority({
+    attemptId: input.attemptId,
+    loadGeneration: input.loadGeneration,
+    observation: roomObservation,
+    emptyIdentity: product.emptyBasis,
+    originalIdentity: product.originalBasis,
+    floor: {
+      authorityKey: floor.authorityKey,
+      worldWidthM: floor.worldWidthM,
+      referenceDepthM: floor.referenceDepthM,
+      widthDepthRatio: floor.widthDepthRatio,
+    },
+    camera: {
+      verticalFovDeg: camera.verticalFovDeg,
+      pose: camera.pose,
+      frame: camera.frame,
+    },
+    freezeReceipt: freeze.value,
+  });
+
   return {
     ...pipelineEvidence,
     status: "applied",
     product,
-    floor: {
-      authorityKey: floorAuthorityKey,
-      sourceNormalizedPolygon: product.geometry.sourceNormalizedPolygon,
-      worldWidthM: settle.worldWidthM,
-      referenceDepthM: settle.referenceDepthM,
-      widthDepthRatio: settle.widthDepthRatio,
-    },
-    camera: {
-      applied: true,
-      verticalFovDeg: snapshot.fovDeg,
-      pose: snapshot.pose,
-      frame: snapshot.frameSize,
-      originalBasisRestored: true,
-    },
+    floor,
+    camera,
     analysisMode: dependencies.analysisMode ?? "live",
     freezeReceipt: freeze.value,
+    roomBoundaries,
   };
 }
 

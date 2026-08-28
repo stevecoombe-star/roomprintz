@@ -350,7 +350,8 @@ test("S3C/S3D representation architecture remains ORIGINAL → EMPTY → TILED",
   assert.doesNotMatch(viewerSource, /FULLY_TILED/);
   assert.doesNotMatch(sceneLayerSource, /FULLY_TILED/);
   assert.match(roomLabSource, /Room Observations/);
-  assert.match(roomLabSource, /Final world geometry is deferred to V2-S4/);
+  assert.match(roomLabSource, /Room Boundaries/);
+  assert.match(roomLabSource, /collisionAuthority/);
   assert.match(overlaySource, /data-evidence-role="authoritative-floor"/);
   assert.match(
     roomLabSource,
@@ -358,7 +359,7 @@ test("S3C/S3D representation architecture remains ORIGINAL → EMPTY → TILED",
   );
 });
 
-test("V2-S4 collision and room-boundary behavior is not implemented", () => {
+test("V2-S4B collision and object-enforcement behavior is not implemented", () => {
   for (const source of [sceneLayerSource, sceneRuntimeSource, viewerSource]) {
     assert.doesNotMatch(
       source,
@@ -370,6 +371,7 @@ test("V2-S4 collision and room-boundary behavior is not implemented", () => {
     );
   }
   assert.match(roomLabSource, /Not implemented/);
+  assert.match(roomLabSource, /collisionAuthority = \{String\(applied\.roomBoundaries\.collisionAuthority\)\}/);
 });
 
 test("auto-bounds places a Test Cube on the calibrated floor plane, not the cyan quad", () => {

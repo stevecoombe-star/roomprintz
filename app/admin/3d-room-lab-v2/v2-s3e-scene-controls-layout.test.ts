@@ -197,5 +197,6 @@ test("layout polish does not change viewport interaction, clamp, or persistence 
   assert.match(roomLabSource, /URL\.revokeObjectURL/);
   assert.doesNotMatch(viewerSource, /revokeObjectURL|createObjectURL/);
   assert.doesNotMatch(roomLabSource, /FULLY_TILED/);
-  assert.match(roomLabSource, /Final world geometry is deferred to V2-S4/);
+  assert.match(roomLabSource, /Room Boundaries/);
+  assert.match(roomLabSource, /collisionAuthority/);
 });

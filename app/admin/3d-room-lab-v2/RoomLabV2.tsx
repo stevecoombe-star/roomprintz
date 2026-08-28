@@ -28,6 +28,12 @@ import type {
   EmptyRoomObservationEvidence,
 } from "./empty-room-observation-contract";
 import {
+  AFC_V2_ROOM_BOUNDARY_AUTHORITY_VERSION,
+  floorWallBoundaryStatusBySeamId,
+  wallBaseDiagnosticsFromReceipt,
+  type AfcV2RoomBoundaryAuthorityReceipt,
+} from "./room-boundary-authority-contract";
+import {
   DEFAULT_SHOW_FLOOR_QUAD,
   SCENE_TRANSFORM_LIMITS,
   addGlbModel,
@@ -104,6 +110,7 @@ type AppliedAfcResult = {
     };
   } | null;
   freezeReceipt: unknown;
+  roomBoundaries: AfcV2RoomBoundaryAuthorityReceipt | null;
 };
 
 type PipelineEvidenceState = {
@@ -140,12 +147,24 @@ function isFloorAppliedAfcResult(value: unknown): value is {
     };
   };
   freezeReceipt: unknown;
+  roomBoundaries?: unknown;
 } {
   return !!value && typeof value === "object" &&
     ((value as { status?: unknown }).status === "applied" ||
       (value as { status?: unknown }).status === "partial") &&
     !!(value as { floor?: unknown }).floor &&
     !!(value as { camera?: unknown }).camera;
+}
+
+function asRoomBoundaryReceipt(
+  value: unknown,
+): AfcV2RoomBoundaryAuthorityReceipt | null {
+  return value &&
+      typeof value === "object" &&
+      (value as { schemaVersion?: unknown }).schemaVersion ===
+        AFC_V2_ROOM_BOUNDARY_AUTHORITY_VERSION
+    ? value as AfcV2RoomBoundaryAuthorityReceipt
+    : null;
 }
 
 function pipelineEvidence(value: unknown): PipelineEvidenceState {
@@ -537,6 +556,7 @@ export default function RoomLabV2() {
         tiled: result.tiled,
         empty: result.empty,
         freezeReceipt: result.freezeReceipt,
+        roomBoundaries: asRoomBoundaryReceipt(result.roomBoundaries),
       });
       dispatch({ type: "analysis_applied" });
     } catch (caught) {
@@ -576,6 +596,20 @@ export default function RoomLabV2() {
     URL.revokeObjectURL(url);
   }
 
+  function downloadRoomBoundaryEvidence() {
+    if (!applied?.roomBoundaries) return;
+    const blob = new Blob(
+      [JSON.stringify(applied.roomBoundaries, null, 2)],
+      { type: "application/json" },
+    );
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = "afc-v2-s4a-room-boundary-authority.json";
+    anchor.click();
+    URL.revokeObjectURL(url);
+  }
+
   return (
     <main className="min-h-screen bg-slate-950 text-slate-100">
       <div className="mx-auto flex w-full max-w-[1500px] flex-col gap-6 px-5 py-6 sm:px-8 lg:px-10">
@@ -583,10 +617,10 @@ export default function RoomLabV2() {
           <div>
             <div className="mb-3 flex items-center gap-3">
               <span className="rounded-full border border-cyan-400/30 bg-cyan-400/10 px-3 py-1 text-xs font-semibold tracking-[0.16em] text-cyan-200">
-                AFC V2 · S3E
+                AFC V2 · S4A
               </span>
               <span className="text-xs text-slate-500">
-                Frozen Floor/Camera + object scene harness
+                Frozen Floor/Camera + diagnostic world wall-base authority
               </span>
             </div>
             <h1 className="text-2xl font-semibold tracking-tight text-white sm:text-3xl">
@@ -735,6 +769,9 @@ export default function RoomLabV2() {
                         referenceDepthM: applied.floor.referenceDepthM,
                       }}
                       showFloorQuad={showFloorQuad}
+                      wallBaseDiagnostics={wallBaseDiagnosticsFromReceipt(
+                        applied.roomBoundaries,
+                      )}
                       sceneObjects={sceneLayer.objects}
                       selectedObjectId={sceneLayer.selectedObjectId}
                       transformMode={sceneLayer.transformMode}
@@ -770,6 +807,11 @@ export default function RoomLabV2() {
                         orchestration.selectedRepresentation === "EMPTY"
                       }
                       showObservationLegend={showRoomObservationLegend}
+                      floorWallBoundaryStatusBySeamId={
+                        floorWallBoundaryStatusBySeamId(
+                          applied?.roomBoundaries ?? null,
+                        )
+                      }
                     />
                   ) : null}
                 </div>
@@ -1207,10 +1249,68 @@ export default function RoomLabV2() {
             </section>
             <section className="rounded-xl border border-slate-800 bg-slate-900/70 p-4">
               <h2 className="text-sm font-semibold text-slate-200">Room Boundaries</h2>
-              <p className="mt-2 text-xs leading-5 text-slate-500">
-                Final world geometry is deferred to V2-S4.
-              </p>
+              {applied?.roomBoundaries ? (
+                <div className="mt-2 space-y-1 text-xs leading-5 text-slate-400">
+                  <p>{applied.roomBoundaries.schemaVersion}</p>
+                  <p>
+                    Candidates {applied.roomBoundaries.summary.candidateCount}
+                    {" · "}accepted {applied.roomBoundaries.summary.accepted}
+                    {" · "}ambiguous {applied.roomBoundaries.summary.ambiguous}
+                    {" · "}insufficient {applied.roomBoundaries.summary.insufficient}
+                    {" · "}rejected {applied.roomBoundaries.summary.rejected}
+                  </p>
+                  <p>
+                    skipped non-floor-wall{" "}
+                    {applied.roomBoundaries.summary.skippedNonFloorWall}
+                  </p>
+                  <p className="text-cyan-200/80">
+                    collisionAuthority = {String(applied.roomBoundaries.collisionAuthority)}
+                  </p>
+                  <p>
+                    EMPTY↔Original:{" "}
+                    {applied.roomBoundaries.lineage.emptyToOriginalCompatibility.tier}
+                  </p>
+                  <p>
+                    Interior accepted{" "}
+                    {
+                      applied.roomBoundaries.candidates.filter((candidate) =>
+                        candidate.interior.status === "accepted"
+                      ).length
+                    }
+                  </p>
+                  {applied.roomBoundaries.candidates
+                    .flatMap((candidate) =>
+                      candidate.reasons.map((reason) =>
+                        `${candidate.sourceSeamId}: ${reason}`
+                      )
+                    )
+                    .slice(0, 6)
+                    .map((reason) => (
+                      <p key={reason} className="text-amber-300/70">
+                        {reason}
+                      </p>
+                    ))}
+                  {applied.roomBoundaries.constructionReasons[0] ? (
+                    <p className="text-slate-500">
+                      {applied.roomBoundaries.constructionReasons[0]}
+                    </p>
+                  ) : null}
+                </div>
+              ) : (
+                <p className="mt-2 text-xs leading-5 text-slate-500">
+                  Room-Boundary construction waits for frozen Floor/Camera.
+                </p>
+              )}
             </section>
+            {applied?.roomBoundaries ? (
+              <button
+                type="button"
+                onClick={downloadRoomBoundaryEvidence}
+                className="rounded-xl border border-slate-700 bg-slate-900 px-4 py-3 text-left text-xs font-medium text-amber-200 transition hover:border-slate-500"
+              >
+                Download V2-S4A Room-Boundary authority
+              </button>
+            ) : null}
             <section className="rounded-xl border border-slate-800 bg-slate-900/70 p-4">
               <h2 className="text-sm font-semibold text-slate-200">Supports</h2>
               <p className="mt-2 text-xs leading-5 text-slate-500">

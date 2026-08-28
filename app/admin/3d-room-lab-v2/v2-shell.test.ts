@@ -175,6 +175,7 @@ test("v2 browser runtime remains isolated from v1 UI and research", () => {
     "./RoomEvidenceOverlay",
     "./empty-room-observation-contract",
     "./empty-room-observation-normalization",
+    "./room-boundary-authority-contract",
     "./orchestration-state",
     "./representation-state",
     "./room-observation-contract",

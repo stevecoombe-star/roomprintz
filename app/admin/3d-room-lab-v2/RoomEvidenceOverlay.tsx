@@ -4,6 +4,7 @@ import type {
   EmptyRoomObservationEvidence,
   SourceNormalizedPoint,
 } from "./empty-room-observation-contract";
+import type { RoomBoundaryCandidateStatus } from "./room-boundary-authority-contract";
 
 type Props = Readonly<{
   floorPolygon: readonly SourceNormalizedPoint[];
@@ -11,6 +12,9 @@ type Props = Readonly<{
   showFloorAuthority: boolean;
   showRoomObservation: boolean;
   showObservationLegend?: boolean;
+  floorWallBoundaryStatusBySeamId?: Readonly<
+    Record<string, RoomBoundaryCandidateStatus>
+  >;
 }>;
 
 function points(value: readonly SourceNormalizedPoint[]): string {
@@ -31,6 +35,13 @@ const SEAM_STROKES = {
   unknown: "rgb(148, 163, 184)",
 } as const;
 
+const BOUNDARY_STATUS_STROKES = {
+  accepted: "rgb(52, 211, 153)",
+  ambiguous: "rgb(250, 204, 21)",
+  insufficient: "rgb(148, 163, 184)",
+  rejected: "rgb(251, 113, 133)",
+} as const;
+
 /**
  * Read-only image-space diagnostics. The cyan Floor is authoritative upstream;
  * all other primitives are normalized visible room-observation evidence.
@@ -41,6 +52,7 @@ export default function RoomEvidenceOverlay({
   showFloorAuthority,
   showRoomObservation,
   showObservationLegend = true,
+  floorWallBoundaryStatusBySeamId = {},
 }: Props) {
   const room = showRoomObservation &&
       roomObservation?.observerStatus !== "failed"
@@ -85,8 +97,52 @@ export default function RoomEvidenceOverlay({
                 data-evidence-kind="seam"
                 data-evidence-role="explicit-observed-architectural-seam"
                 data-seam-category={seam.category}
+                data-boundary-status={
+                  seam.category === "floor_wall"
+                    ? floorWallBoundaryStatusBySeamId[seam.id]
+                    : undefined
+                }
               />
             ))}
+            {room.observedSeams
+              .filter((seam) =>
+                seam.category === "floor_wall" &&
+                floorWallBoundaryStatusBySeamId[seam.id]
+              )
+              .map((seam) => {
+                const status = floorWallBoundaryStatusBySeamId[seam.id]!;
+                const start = seam.sourceNormalizedPolyline[0];
+                const end = seam.sourceNormalizedPolyline[
+                  seam.sourceNormalizedPolyline.length - 1
+                ];
+                return (
+                  <g
+                    key={`boundary-${seam.id}`}
+                    data-evidence-role="s4a-room-boundary-status"
+                    data-boundary-status={status}
+                    data-source-seam-id={seam.id}
+                  >
+                    <circle
+                      cx={start.x}
+                      cy={start.y}
+                      r="0.007"
+                      fill={BOUNDARY_STATUS_STROKES[status]}
+                      fillOpacity="0.9"
+                      stroke="rgb(15, 23, 42)"
+                      strokeWidth="0.0015"
+                    />
+                    <circle
+                      cx={end.x}
+                      cy={end.y}
+                      r="0.007"
+                      fill={BOUNDARY_STATUS_STROKES[status]}
+                      fillOpacity="0.9"
+                      stroke="rgb(15, 23, 42)"
+                      strokeWidth="0.0015"
+                    />
+                  </g>
+                );
+              })}
             {room.observedOpenings.map((opening) =>
               opening.boundaryClosure === "complete_visible_outline" ? (
                 <polygon
@@ -153,6 +209,19 @@ export default function RoomEvidenceOverlay({
             faint dashed = plane extent · solid = explicit seam
           </p>
           <p className="text-slate-500">Not Floor or Camera authority</p>
+          {Object.keys(floorWallBoundaryStatusBySeamId).length > 0 ? (
+            <p className="mt-1 text-slate-400">
+              S4A floor-wall endpoints:
+              {" "}
+              <span className="text-emerald-400">accepted</span>
+              {" · "}
+              <span className="text-yellow-300">ambiguous</span>
+              {" · "}
+              <span className="text-slate-400">insufficient</span>
+              {" · "}
+              <span className="text-rose-400">rejected</span>
+            </p>
+          ) : null}
         </div>
       ) : null}
     </>

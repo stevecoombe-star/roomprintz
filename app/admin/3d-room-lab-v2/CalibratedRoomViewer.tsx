@@ -17,6 +17,7 @@ import type {
   ViewportTransformMode,
   WorldTransform,
 } from "./scene-layer-state";
+import type { RoomBoundaryWallBaseDiagnostic } from "./room-boundary-authority-contract";
 import {
   applyWorldTransform,
   attachNormalizedObject,
@@ -61,6 +62,7 @@ type Props = Readonly<{
   camera: FrozenV2CameraSnapshot;
   floor: Readonly<{ worldWidthM: number; referenceDepthM: number }>;
   showFloorQuad: boolean;
+  wallBaseDiagnostics?: readonly RoomBoundaryWallBaseDiagnostic[];
   sceneObjects: readonly SceneObjectRecord[];
   selectedObjectId: string | null;
   transformMode: ViewportTransformMode;
@@ -92,6 +94,7 @@ export default function CalibratedRoomViewer({
   camera: snapshot,
   floor,
   showFloorQuad,
+  wallBaseDiagnostics = [],
   sceneObjects,
   selectedObjectId,
   transformMode,
@@ -101,6 +104,7 @@ export default function CalibratedRoomViewer({
 }: Props) {
   const mountRef = useRef<HTMLDivElement | null>(null);
   const showFloorQuadRef = useRef(showFloorQuad);
+  const wallBaseDiagnosticsRef = useRef(wallBaseDiagnostics);
   const sceneObjectsRef = useRef(sceneObjects);
   const selectedObjectIdRef = useRef(selectedObjectId);
   const transformModeRef = useRef(transformMode);
@@ -110,6 +114,7 @@ export default function CalibratedRoomViewer({
 
   useEffect(() => {
     showFloorQuadRef.current = showFloorQuad;
+    wallBaseDiagnosticsRef.current = wallBaseDiagnostics;
     sceneObjectsRef.current = sceneObjects;
     selectedObjectIdRef.current = selectedObjectId;
     transformModeRef.current = transformMode;
@@ -123,6 +128,7 @@ export default function CalibratedRoomViewer({
     sceneObjects,
     selectedObjectId,
     showFloorQuad,
+    wallBaseDiagnostics,
     transformMode,
   ]);
 
@@ -184,6 +190,63 @@ export default function CalibratedRoomViewer({
 
     const objectLayer = new THREE.Group();
     scene.add(objectLayer);
+    const wallBaseLayer = new THREE.Group();
+    wallBaseLayer.name = "diagnosticWallBase";
+    scene.add(wallBaseLayer);
+    const wallBaseMaterial = new THREE.LineBasicMaterial({
+      color: 0xfbbf24,
+      transparent: true,
+      opacity: 0.95,
+    });
+    const interiorTickMaterial = new THREE.LineBasicMaterial({
+      color: 0x34d399,
+      transparent: true,
+      opacity: 0.95,
+    });
+    const ignoreRaycast = () => {};
+    let lastWallBaseDiagnostics: readonly RoomBoundaryWallBaseDiagnostic[] | null =
+      null;
+    const clearWallBaseLayer = () => {
+      while (wallBaseLayer.children.length > 0) {
+        const child = wallBaseLayer.children[0];
+        wallBaseLayer.remove(child);
+        if (child instanceof THREE.Line) {
+          child.geometry.dispose();
+        }
+      }
+    };
+    const syncWallBaseDiagnostics = () => {
+      const diagnostics = wallBaseDiagnosticsRef.current;
+      if (diagnostics === lastWallBaseDiagnostics) return;
+      lastWallBaseDiagnostics = diagnostics;
+      clearWallBaseLayer();
+      for (const segment of diagnostics) {
+        const baseGeometry = new THREE.BufferGeometry().setFromPoints([
+          new THREE.Vector3(segment.start[0], segment.start[1], segment.start[2]),
+          new THREE.Vector3(segment.end[0], segment.end[1], segment.end[2]),
+        ]);
+        const baseLine = new THREE.Line(baseGeometry, wallBaseMaterial);
+        baseLine.raycast = ignoreRaycast;
+        wallBaseLayer.add(baseLine);
+        if (segment.interiorTick) {
+          const tickGeometry = new THREE.BufferGeometry().setFromPoints([
+            new THREE.Vector3(
+              segment.interiorTick.from[0],
+              segment.interiorTick.from[1],
+              segment.interiorTick.from[2],
+            ),
+            new THREE.Vector3(
+              segment.interiorTick.to[0],
+              segment.interiorTick.to[1],
+              segment.interiorTick.to[2],
+            ),
+          ]);
+          const tickLine = new THREE.Line(tickGeometry, interiorTickMaterial);
+          tickLine.raycast = ignoreRaycast;
+          wallBaseLayer.add(tickLine);
+        }
+      }
+    };
     const runtime = new Map<string, RuntimeEntry>();
     const raycaster = new THREE.Raycaster();
     const pointerNdc = new THREE.Vector2();
@@ -542,6 +605,7 @@ export default function CalibratedRoomViewer({
       animationFrame = window.requestAnimationFrame(animate);
       floorSurface.visible = showFloorQuadRef.current;
       floorWireframe.visible = showFloorQuadRef.current;
+      syncWallBaseDiagnostics();
       syncSceneObjects();
       if (controls.object) enforceNonNegativeWorldY(controls.object);
       renderer.render(scene, result.camera);
@@ -566,6 +630,9 @@ export default function CalibratedRoomViewer({
         removeEntry(entry);
       }
       runtime.clear();
+      clearWallBaseLayer();
+      wallBaseMaterial.dispose();
+      interiorTickMaterial.dispose();
       geometry.dispose();
       edgesGeometry.dispose();
       material.dispose();
