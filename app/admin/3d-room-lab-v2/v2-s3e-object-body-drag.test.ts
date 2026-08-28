@@ -255,7 +255,9 @@ test("Reset Transform restores a body-dragged object to its initial transform", 
   state = resetSceneObjectTransform(state);
   assert.equal(state.selectedObjectId, id);
   assert.deepEqual(getSelectedSceneObject(state)?.transform, DEFAULT_WORLD_TRANSFORM);
-  assert.match(roomLabSource, /resetSceneObjectTransform\(current\)/);
+  assert.match(roomLabSource, /handleResetSelectedTransform/);
+  assert.match(roomLabSource, /applyCollisionAwareTransform/);
+  assert.match(roomLabSource, /selected\.initialTransform/);
 });
 
 test("Delete Object removes a body-dragged selection and clears drag on missing runtime", () => {
@@ -292,7 +294,7 @@ test("direct X-Z drag never writes Y and keeps the floor-plane invariant", () =>
     position: { x: 0.2, y: -1, z: 0.2 },
   });
   assert.equal(getSelectedSceneObject(state)?.transform.position.y, 0);
-  assert.match(viewerSource, /applyPlacementWorldPosition\(entry\.placement, next\)/);
+  assert.match(viewerSource, /applyPlacementWorldPosition\(entry\.placement,/);
   assert.match(viewerSource, /entry\.placement\.position\.y = session\.placementY/);
   assert.match(viewerSource, /entry\.placement\.position\.y = bodyDrag\.placementY/);
   assert.doesNotMatch(interactionSource, /sourceNormalizedPolygon/);

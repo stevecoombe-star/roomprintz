@@ -56,7 +56,7 @@ test("read-only viewer has no solver, camera writer, or historical host coupling
     source,
     /evaluateQuadSolvability|settleAfc|evaluateCalibratedCameraApply|freezeApplied|setCalibratedCamera|ThreeRoomLab/,
   );
-  assert.doesNotMatch(source, /collision|support|furniture/i);
+  assert.doesNotMatch(source, /live-collision-blockers|support-attachment|room-envelope-reconciliation/);
   assert.doesNotMatch(source, /on[A-Z][A-Za-z]*=/);
   assert.doesNotMatch(source, /result\.camera\.(fov|aspect|position|up)\s*=/);
 });

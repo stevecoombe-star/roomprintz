@@ -158,7 +158,9 @@ test("Reset Transform restores the recorded initial transform without deselectin
   });
   assert.equal(target, placement);
   assert.match(roomLabSource, /Reset Transform/);
-  assert.match(roomLabSource, /resetSceneObjectTransform\(current\)/);
+  assert.match(roomLabSource, /handleResetSelectedTransform/);
+  assert.match(roomLabSource, /applyCollisionAwareTransform/);
+  assert.match(roomLabSource, /selected\.initialTransform/);
   assert.doesNotMatch(
     roomLabSource.slice(
       roomLabSource.indexOf("handleResetSelectedTransform"),

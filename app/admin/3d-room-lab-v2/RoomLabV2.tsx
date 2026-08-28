@@ -34,6 +34,15 @@ import {
   type AfcV2RoomBoundaryAuthorityReceipt,
 } from "./room-boundary-authority-contract";
 import {
+  AFC_V2_ROOM_COLLISION_AUTHORITY_VERSION,
+  collisionWallDiagnosticsFromReceipt,
+  enabledCollisionWallsFromReceipt,
+  roomCollisionQualificationBasisLabel,
+  type AfcV2RoomCollisionAuthorityReceipt,
+} from "./room-collision-authority-contract";
+import { TEST_CUBE_NORMALIZED_PLACEMENT_LOCAL_AABB, type LocalAabb } from "./room-collision-footprint";
+import { resolveSceneObjectCollision } from "./scene-collision-resolver";
+import {
   DEFAULT_SHOW_FLOOR_QUAD,
   SCENE_TRANSFORM_LIMITS,
   addGlbModel,
@@ -47,7 +56,6 @@ import {
   applyObjectWorldTransform,
   blobUrlOwnedSolelyByObject,
   deleteSceneObject,
-  resetSceneObjectTransform,
   updateSelectedPositionAxis,
   updateSelectedRotationAxis,
   updateSelectedUniformScale,
@@ -111,6 +119,7 @@ type AppliedAfcResult = {
   } | null;
   freezeReceipt: unknown;
   roomBoundaries: AfcV2RoomBoundaryAuthorityReceipt | null;
+  roomCollision: AfcV2RoomCollisionAuthorityReceipt | null;
 };
 
 type PipelineEvidenceState = {
@@ -148,6 +157,7 @@ function isFloorAppliedAfcResult(value: unknown): value is {
   };
   freezeReceipt: unknown;
   roomBoundaries?: unknown;
+  roomCollision?: unknown;
 } {
   return !!value && typeof value === "object" &&
     ((value as { status?: unknown }).status === "applied" ||
@@ -164,6 +174,17 @@ function asRoomBoundaryReceipt(
       (value as { schemaVersion?: unknown }).schemaVersion ===
         AFC_V2_ROOM_BOUNDARY_AUTHORITY_VERSION
     ? value as AfcV2RoomBoundaryAuthorityReceipt
+    : null;
+}
+
+function asRoomCollisionReceipt(
+  value: unknown,
+): AfcV2RoomCollisionAuthorityReceipt | null {
+  return value &&
+      typeof value === "object" &&
+      (value as { schemaVersion?: unknown }).schemaVersion ===
+        AFC_V2_ROOM_COLLISION_AUTHORITY_VERSION
+    ? value as AfcV2RoomCollisionAuthorityReceipt
     : null;
 }
 
@@ -321,6 +342,8 @@ export default function RoomLabV2() {
   const viewerRef = useRef<HTMLDivElement | null>(null);
   const glbInputRef = useRef<HTMLInputElement | null>(null);
   const sceneLayerRef = useRef(sceneLayer);
+  const objectLocalAabbRef = useRef(new Map<string, LocalAabb>());
+  const roomCollisionRef = useRef<AfcV2RoomCollisionAuthorityReceipt | null>(null);
   const loadGenerationRef = useRef(0);
   const abortRef = useRef<AbortController | null>(null);
 
@@ -360,8 +383,40 @@ export default function RoomLabV2() {
     for (const url of sceneObjectBlobUrls(sceneLayerRef.current)) {
       URL.revokeObjectURL(url);
     }
+    objectLocalAabbRef.current.clear();
     sceneLayerRef.current = next;
     setSceneLayer(next);
+  }
+
+  function reportObjectLocalAabb(objectId: string, aabb: LocalAabb | null) {
+    if (!aabb) {
+      objectLocalAabbRef.current.delete(objectId);
+      return;
+    }
+    objectLocalAabbRef.current.set(objectId, aabb);
+  }
+
+  function localAabbForObject(object: SceneLayerState["objects"][number]): LocalAabb | null {
+    return objectLocalAabbRef.current.get(object.id) ??
+      (object.kind === "test_cube" ? TEST_CUBE_NORMALIZED_PLACEMENT_LOCAL_AABB : null);
+  }
+
+  function applyCollisionAwareTransform(
+    current: SceneLayerState,
+    objectId: string,
+    proposed: SceneLayerState["objects"][number]["transform"],
+    mode: "move" | "pose",
+  ): SceneLayerState {
+    const object = current.objects.find((item) => item.id === objectId);
+    if (!object) return current;
+    const resolved = resolveSceneObjectCollision({
+      current: object.transform,
+      proposed,
+      localAabb: localAabbForObject(object),
+      walls: enabledCollisionWallsFromReceipt(roomCollisionRef.current),
+      mode,
+    });
+    return applyObjectWorldTransform(current, objectId, resolved.transform);
   }
 
   function reportObjectLoadStatus(
@@ -388,7 +443,16 @@ export default function RoomLabV2() {
   }
 
   function handleResetSelectedTransform() {
-    setSceneLayer((current) => resetSceneObjectTransform(current));
+    setSceneLayer((current) => {
+      const selected = getSelectedSceneObject(current);
+      if (!selected) return current;
+      return applyCollisionAwareTransform(
+        current,
+        selected.id,
+        selected.initialTransform,
+        "pose",
+      );
+    });
   }
 
   function handleDeleteSelectedObject() {
@@ -396,6 +460,7 @@ export default function RoomLabV2() {
     const selected = getSelectedSceneObject(current);
     if (!selected) return;
     const urlToRevoke = blobUrlOwnedSolelyByObject(current, selected);
+    objectLocalAabbRef.current.delete(selected.id);
     const next = deleteSceneObject(current, selected.id);
     sceneLayerRef.current = next;
     setSceneLayer(next);
@@ -415,6 +480,10 @@ export default function RoomLabV2() {
   useEffect(() => {
     sceneLayerRef.current = sceneLayer;
   }, [sceneLayer]);
+
+  useEffect(() => {
+    roomCollisionRef.current = applied?.roomCollision ?? null;
+  }, [applied]);
 
   useEffect(() => {
     return () => {
@@ -557,6 +626,7 @@ export default function RoomLabV2() {
         empty: result.empty,
         freezeReceipt: result.freezeReceipt,
         roomBoundaries: asRoomBoundaryReceipt(result.roomBoundaries),
+        roomCollision: asRoomCollisionReceipt(result.roomCollision),
       });
       dispatch({ type: "analysis_applied" });
     } catch (caught) {
@@ -596,6 +666,20 @@ export default function RoomLabV2() {
     URL.revokeObjectURL(url);
   }
 
+  function downloadRoomCollisionEvidence() {
+    if (!applied?.roomCollision) return;
+    const blob = new Blob(
+      [JSON.stringify(applied.roomCollision, null, 2)],
+      { type: "application/json" },
+    );
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = "afc-v2-s4b-room-collision-authority.json";
+    anchor.click();
+    URL.revokeObjectURL(url);
+  }
+
   function downloadRoomBoundaryEvidence() {
     if (!applied?.roomBoundaries) return;
     const blob = new Blob(
@@ -617,10 +701,10 @@ export default function RoomLabV2() {
           <div>
             <div className="mb-3 flex items-center gap-3">
               <span className="rounded-full border border-cyan-400/30 bg-cyan-400/10 px-3 py-1 text-xs font-semibold tracking-[0.16em] text-cyan-200">
-                AFC V2 · S4A
+                AFC V2 · S4B
               </span>
               <span className="text-xs text-slate-500">
-                Frozen Floor/Camera + diagnostic world wall-base authority
+                Frozen Floor/Camera + S4A wall-base diagnostics + S4B collision qualification
               </span>
             </div>
             <h1 className="text-2xl font-semibold tracking-tight text-white sm:text-3xl">
@@ -772,12 +856,19 @@ export default function RoomLabV2() {
                       wallBaseDiagnostics={wallBaseDiagnosticsFromReceipt(
                         applied.roomBoundaries,
                       )}
+                      collisionWallDiagnostics={collisionWallDiagnosticsFromReceipt(
+                        applied.roomCollision,
+                      )}
+                      collisionWalls={enabledCollisionWallsFromReceipt(
+                        applied.roomCollision,
+                      )}
                       sceneObjects={sceneLayer.objects}
                       selectedObjectId={sceneLayer.selectedObjectId}
                       transformMode={sceneLayer.transformMode}
                       reportObjectLoadStatus={reportObjectLoadStatus}
                       reportSelection={reportSelection}
                       reportObjectTransform={reportObjectTransform}
+                      reportObjectLocalAabb={reportObjectLocalAabb}
                     />
                   ) : (
                     <Image
@@ -848,7 +939,18 @@ export default function RoomLabV2() {
               <button
                 type="button"
                 disabled={!sceneControlsEnabled}
-                onClick={() => setSceneLayer((current) => addTestCube(current))}
+                onClick={() =>
+                  setSceneLayer((current) => {
+                    const next = addTestCube(current);
+                    const id = next.selectedObjectId;
+                    if (id) {
+                      objectLocalAabbRef.current.set(
+                        id,
+                        TEST_CUBE_NORMALIZED_PLACEMENT_LOCAL_AABB,
+                      );
+                    }
+                    return next;
+                  })}
                 className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-xs font-medium text-slate-100 transition hover:border-slate-500 disabled:cursor-not-allowed disabled:text-slate-600 sm:min-w-[10rem] sm:flex-1"
               >
                 Add Test Cube
@@ -1148,9 +1250,23 @@ export default function RoomLabV2() {
                             step={SCENE_TRANSFORM_LIMITS.positionX.step}
                             disabled={!sceneControlsEnabled}
                             onValue={(value) =>
-                              setSceneLayer((current) =>
-                                updateSelectedPositionAxis(current, "x", value)
-                              )}
+                              setSceneLayer((current) => {
+                                const selected = getSelectedSceneObject(current);
+                                if (!selected) return current;
+                                const next = updateSelectedPositionAxis(
+                                  current,
+                                  "x",
+                                  value,
+                                );
+                                const proposed = getSelectedSceneObject(next);
+                                if (!proposed) return next;
+                                return applyCollisionAwareTransform(
+                                  current,
+                                  selected.id,
+                                  proposed.transform,
+                                  "move",
+                                );
+                              })}
                           />
                           <TransformControlRow
                             label="Y"
@@ -1172,9 +1288,23 @@ export default function RoomLabV2() {
                             step={SCENE_TRANSFORM_LIMITS.positionZ.step}
                             disabled={!sceneControlsEnabled}
                             onValue={(value) =>
-                              setSceneLayer((current) =>
-                                updateSelectedPositionAxis(current, "z", value)
-                              )}
+                              setSceneLayer((current) => {
+                                const selected = getSelectedSceneObject(current);
+                                if (!selected) return current;
+                                const next = updateSelectedPositionAxis(
+                                  current,
+                                  "z",
+                                  value,
+                                );
+                                const proposed = getSelectedSceneObject(next);
+                                if (!proposed) return next;
+                                return applyCollisionAwareTransform(
+                                  current,
+                                  selected.id,
+                                  proposed.transform,
+                                  "move",
+                                );
+                              })}
                           />
                         </div>
                       </div>
@@ -1191,9 +1321,23 @@ export default function RoomLabV2() {
                             step={SCENE_TRANSFORM_LIMITS.rotationDeg.step}
                             disabled={!sceneControlsEnabled}
                             onValue={(value) =>
-                              setSceneLayer((current) =>
-                                updateSelectedRotationAxis(current, "x", value)
-                              )}
+                              setSceneLayer((current) => {
+                                const selected = getSelectedSceneObject(current);
+                                if (!selected) return current;
+                                const next = updateSelectedRotationAxis(
+                                  current,
+                                  "x",
+                                  value,
+                                );
+                                const proposed = getSelectedSceneObject(next);
+                                if (!proposed) return next;
+                                return applyCollisionAwareTransform(
+                                  current,
+                                  selected.id,
+                                  proposed.transform,
+                                  "pose",
+                                );
+                              })}
                           />
                           <TransformControlRow
                             label="Y"
@@ -1203,9 +1347,23 @@ export default function RoomLabV2() {
                             step={SCENE_TRANSFORM_LIMITS.rotationDeg.step}
                             disabled={!sceneControlsEnabled}
                             onValue={(value) =>
-                              setSceneLayer((current) =>
-                                updateSelectedRotationAxis(current, "y", value)
-                              )}
+                              setSceneLayer((current) => {
+                                const selected = getSelectedSceneObject(current);
+                                if (!selected) return current;
+                                const next = updateSelectedRotationAxis(
+                                  current,
+                                  "y",
+                                  value,
+                                );
+                                const proposed = getSelectedSceneObject(next);
+                                if (!proposed) return next;
+                                return applyCollisionAwareTransform(
+                                  current,
+                                  selected.id,
+                                  proposed.transform,
+                                  "pose",
+                                );
+                              })}
                           />
                           <TransformControlRow
                             label="Z"
@@ -1215,9 +1373,23 @@ export default function RoomLabV2() {
                             step={SCENE_TRANSFORM_LIMITS.rotationDeg.step}
                             disabled={!sceneControlsEnabled}
                             onValue={(value) =>
-                              setSceneLayer((current) =>
-                                updateSelectedRotationAxis(current, "z", value)
-                              )}
+                              setSceneLayer((current) => {
+                                const selected = getSelectedSceneObject(current);
+                                if (!selected) return current;
+                                const next = updateSelectedRotationAxis(
+                                  current,
+                                  "z",
+                                  value,
+                                );
+                                const proposed = getSelectedSceneObject(next);
+                                if (!proposed) return next;
+                                return applyCollisionAwareTransform(
+                                  current,
+                                  selected.id,
+                                  proposed.transform,
+                                  "pose",
+                                );
+                              })}
                           />
                         </div>
                       </div>
@@ -1233,9 +1405,19 @@ export default function RoomLabV2() {
                           step={SCENE_TRANSFORM_LIMITS.uniformScale.step}
                           disabled={!sceneControlsEnabled}
                           onValue={(value) =>
-                            setSceneLayer((current) =>
-                              updateSelectedUniformScale(current, value)
-                            )}
+                            setSceneLayer((current) => {
+                              const selected = getSelectedSceneObject(current);
+                              if (!selected) return current;
+                              const next = updateSelectedUniformScale(current, value);
+                              const proposed = getSelectedSceneObject(next);
+                              if (!proposed) return next;
+                              return applyCollisionAwareTransform(
+                                current,
+                                selected.id,
+                                proposed.transform,
+                                "pose",
+                              );
+                            })}
                         />
                       </div>
                     </div>
@@ -1301,6 +1483,59 @@ export default function RoomLabV2() {
                   Room-Boundary construction waits for frozen Floor/Camera.
                 </p>
               )}
+              {applied?.roomCollision ? (
+                <div className="mt-4 space-y-1 border-t border-slate-800 pt-3 text-xs leading-5 text-slate-400">
+                  <p className="font-semibold text-rose-200/90">
+                    Collision Authority
+                  </p>
+                  <p>{applied.roomCollision.schemaVersion}</p>
+                  <p className="text-rose-200/80">
+                    collisionAuthority = {String(applied.roomCollision.collisionAuthority)}
+                  </p>
+                  <p>
+                    Candidates {applied.roomCollision.summary.candidateCount}
+                    {" · "}accepted {applied.roomCollision.summary.accepted}
+                    {" · "}ambiguous {applied.roomCollision.summary.ambiguous}
+                    {" · "}insufficient {applied.roomCollision.summary.insufficient}
+                    {" · "}rejected {applied.roomCollision.summary.rejected}
+                  </p>
+                  <p>
+                    skipped non-S4A-accepted{" "}
+                    {applied.roomCollision.summary.skippedNonS4AAccepted}
+                  </p>
+                  <p>
+                    EMPTY↔Original:{" "}
+                    {applied.roomCollision.lineage.roomBoundary.compatibilityTier ??
+                      "unavailable"}
+                  </p>
+                  <p>
+                    Floor-standing objects cannot cross S4B collision-enabled
+                    finite wall-base spans.
+                  </p>
+                  <p>
+                    openingsNotSubtracted = true · verticalExtentUnknown = true ·
+                    hiddenContinuation = false · geometryManufactured = false
+                  </p>
+                  {applied.roomCollision.boundaries.map((boundary) => (
+                    <p key={boundary.sourceBoundaryId} className="text-rose-200/70">
+                      {boundary.sourceSeamId}: {boundary.status}
+                      {" · "}
+                      {roomCollisionQualificationBasisLabel(boundary)}
+                      {boundary.collisionEnabled ? " · collision-enabled" : ""}
+                      {boundary.qualificationReasons[0]
+                        ? ` · ${boundary.qualificationReasons.join(", ")}`
+                        : ""}
+                      {" · "}
+                      {boundary.reliabilityClass}
+                    </p>
+                  ))}
+                  {applied.roomCollision.constructionReasons[0] ? (
+                    <p className="text-slate-500">
+                      {applied.roomCollision.constructionReasons[0]}
+                    </p>
+                  ) : null}
+                </div>
+              ) : null}
             </section>
             {applied?.roomBoundaries ? (
               <button
@@ -1309,6 +1544,15 @@ export default function RoomLabV2() {
                 className="rounded-xl border border-slate-700 bg-slate-900 px-4 py-3 text-left text-xs font-medium text-amber-200 transition hover:border-slate-500"
               >
                 Download V2-S4A Room-Boundary authority
+              </button>
+            ) : null}
+            {applied?.roomCollision ? (
+              <button
+                type="button"
+                onClick={downloadRoomCollisionEvidence}
+                className="rounded-xl border border-slate-700 bg-slate-900 px-4 py-3 text-left text-xs font-medium text-rose-200 transition hover:border-slate-500"
+              >
+                Download V2-S4B Room-Collision authority
               </button>
             ) : null}
             <section className="rounded-xl border border-slate-800 bg-slate-900/70 p-4">

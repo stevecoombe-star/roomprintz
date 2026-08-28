@@ -75,6 +75,8 @@ import { mergeFocusedSideCeilingWallSeams } from "./empty-side-ceiling-wall-obse
 import type { FocusedSideCeilingWallEvidence } from "./empty-side-ceiling-wall-observation-contract";
 import { constructAfcV2RoomBoundaryAuthority } from "./room-boundary-authority.server";
 import type { AfcV2RoomBoundaryAuthorityReceipt } from "./room-boundary-authority-contract";
+import { constructAfcV2RoomCollisionAuthority } from "./room-collision-qualification.server";
+import type { AfcV2RoomCollisionAuthorityReceipt } from "./room-collision-authority-contract";
 
 export const AFC_V2_REFERENCE_DEPTH_M = 4;
 
@@ -147,6 +149,7 @@ type AfcV2LivePipelineEvidence = Readonly<{
     | "empty"
     | "not_run";
   roomBoundaries: AfcV2RoomBoundaryAuthorityReceipt | null;
+  roomCollision: AfcV2RoomCollisionAuthorityReceipt | null;
 }>;
 
 export type AfcV2AnalyzeResult =
@@ -426,6 +429,7 @@ function livePipelineEvidence(
         ? "empty"
         : focusedSideCeilingObservation?.observerStatus ?? "not_run",
     roomBoundaries: null,
+    roomCollision: null,
   });
 }
 
@@ -742,6 +746,10 @@ export async function executeAfcV2Analysis(
     },
     freezeReceipt: freeze.value,
   });
+  const roomCollision = constructAfcV2RoomCollisionAuthority({
+    roomBoundary: roomBoundaries,
+    observation: roomObservation,
+  });
 
   return {
     ...pipelineEvidence,
@@ -752,6 +760,7 @@ export async function executeAfcV2Analysis(
     analysisMode: dependencies.analysisMode ?? "live",
     freezeReceipt: freeze.value,
     roomBoundaries,
+    roomCollision,
   };
 }
 

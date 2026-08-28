@@ -118,8 +118,10 @@ test("Reset Transform and Delete Object live in Scene / Models, not Selected Mod
   assert.doesNotMatch(selected, /Delete Object/);
   assert.match(
     roomLabSource,
-    /function handleResetSelectedTransform\(\) \{\s*setSceneLayer\(\(current\) => resetSceneObjectTransform\(current\)\);/,
+    /function handleResetSelectedTransform\(\) \{\s*setSceneLayer\(\(current\) => \{/,
   );
+  assert.match(roomLabSource, /applyCollisionAwareTransform\(/);
+  assert.match(roomLabSource, /selected\.initialTransform/);
   assert.match(
     roomLabSource,
     /const next = deleteSceneObject\(current, selected\.id\);/,

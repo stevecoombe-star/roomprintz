@@ -18,6 +18,12 @@ import type {
   WorldTransform,
 } from "./scene-layer-state";
 import type { RoomBoundaryWallBaseDiagnostic } from "./room-boundary-authority-contract";
+import type {
+  RoomCollisionEnabledWall,
+  RoomCollisionWallDiagnostic,
+} from "./room-collision-authority-contract";
+import type { LocalAabb } from "./room-collision-footprint";
+import { resolveSceneObjectCollision } from "./scene-collision-resolver";
 import {
   applyWorldTransform,
   attachNormalizedObject,
@@ -25,6 +31,7 @@ import {
   createTestCubeMesh,
   disposeObject3D,
   loadGlbFromUrl,
+  measurePlacementLocalAabb,
 } from "./scene-object-runtime";
 import {
   applyPlacementWorldPosition,
@@ -63,6 +70,8 @@ type Props = Readonly<{
   floor: Readonly<{ worldWidthM: number; referenceDepthM: number }>;
   showFloorQuad: boolean;
   wallBaseDiagnostics?: readonly RoomBoundaryWallBaseDiagnostic[];
+  collisionWallDiagnostics?: readonly RoomCollisionWallDiagnostic[];
+  collisionWalls?: readonly RoomCollisionEnabledWall[];
   sceneObjects: readonly SceneObjectRecord[];
   selectedObjectId: string | null;
   transformMode: ViewportTransformMode;
@@ -73,6 +82,7 @@ type Props = Readonly<{
   ) => void;
   reportSelection?: (objectId: string | null) => void;
   reportObjectTransform?: (objectId: string, transform: WorldTransform) => void;
+  reportObjectLocalAabb?: (objectId: string, aabb: LocalAabb | null) => void;
 }>;
 
 type RuntimeEntry = {
@@ -82,6 +92,8 @@ type RuntimeEntry = {
   placement: THREE.Group;
   autoBounds: THREE.Group;
   loadToken: number;
+  localAabb: LocalAabb | null;
+  lastResolved: WorldTransform | null;
 };
 
 /**
@@ -95,34 +107,46 @@ export default function CalibratedRoomViewer({
   floor,
   showFloorQuad,
   wallBaseDiagnostics = [],
+  collisionWallDiagnostics = [],
+  collisionWalls = [],
   sceneObjects,
   selectedObjectId,
   transformMode,
   reportObjectLoadStatus,
   reportSelection,
   reportObjectTransform,
+  reportObjectLocalAabb,
 }: Props) {
   const mountRef = useRef<HTMLDivElement | null>(null);
   const showFloorQuadRef = useRef(showFloorQuad);
   const wallBaseDiagnosticsRef = useRef(wallBaseDiagnostics);
+  const collisionWallDiagnosticsRef = useRef(collisionWallDiagnostics);
+  const collisionWallsRef = useRef(collisionWalls);
   const sceneObjectsRef = useRef(sceneObjects);
   const selectedObjectIdRef = useRef(selectedObjectId);
   const transformModeRef = useRef(transformMode);
   const reportLoadStatusRef = useRef(reportObjectLoadStatus);
   const reportSelectionRef = useRef(reportSelection);
   const reportObjectTransformRef = useRef(reportObjectTransform);
+  const reportObjectLocalAabbRef = useRef(reportObjectLocalAabb);
 
   useEffect(() => {
     showFloorQuadRef.current = showFloorQuad;
     wallBaseDiagnosticsRef.current = wallBaseDiagnostics;
+    collisionWallDiagnosticsRef.current = collisionWallDiagnostics;
+    collisionWallsRef.current = collisionWalls;
     sceneObjectsRef.current = sceneObjects;
     selectedObjectIdRef.current = selectedObjectId;
     transformModeRef.current = transformMode;
     reportLoadStatusRef.current = reportObjectLoadStatus;
     reportSelectionRef.current = reportSelection;
     reportObjectTransformRef.current = reportObjectTransform;
+    reportObjectLocalAabbRef.current = reportObjectLocalAabb;
   }, [
+    collisionWallDiagnostics,
+    collisionWalls,
     reportObjectLoadStatus,
+    reportObjectLocalAabb,
     reportObjectTransform,
     reportSelection,
     sceneObjects,
@@ -203,6 +227,14 @@ export default function CalibratedRoomViewer({
       transparent: true,
       opacity: 0.95,
     });
+    const collisionWallLayer = new THREE.Group();
+    collisionWallLayer.name = "diagnosticCollisionWall";
+    scene.add(collisionWallLayer);
+    const collisionWallMaterial = new THREE.LineBasicMaterial({
+      color: 0xf43f5e,
+      transparent: true,
+      opacity: 0.95,
+    });
     const ignoreRaycast = () => {};
     let lastWallBaseDiagnostics: readonly RoomBoundaryWallBaseDiagnostic[] | null =
       null;
@@ -247,6 +279,36 @@ export default function CalibratedRoomViewer({
         }
       }
     };
+    let lastCollisionWallDiagnostics: readonly RoomCollisionWallDiagnostic[] | null =
+      null;
+    const clearCollisionWallLayer = () => {
+      while (collisionWallLayer.children.length > 0) {
+        const child = collisionWallLayer.children[0];
+        collisionWallLayer.remove(child);
+        if (child instanceof THREE.Line) {
+          child.geometry.dispose();
+        }
+      }
+    };
+    const syncCollisionWallDiagnostics = () => {
+      const diagnostics = collisionWallDiagnosticsRef.current;
+      if (diagnostics === lastCollisionWallDiagnostics) return;
+      lastCollisionWallDiagnostics = diagnostics;
+      clearCollisionWallLayer();
+      for (const segment of diagnostics) {
+        const geometry = new THREE.BufferGeometry().setFromPoints([
+          new THREE.Vector3(segment.start[0], segment.start[1], segment.start[2]),
+          new THREE.Vector3(segment.end[0], segment.end[1], segment.end[2]),
+        ]);
+        const line = new THREE.Line(geometry, collisionWallMaterial);
+        line.raycast = ignoreRaycast;
+        collisionWallLayer.add(line);
+      }
+    };
+    const cacheEntryBounds = (entry: RuntimeEntry) => {
+      entry.localAabb = measurePlacementLocalAabb(entry.placement, entry.autoBounds);
+      reportObjectLocalAabbRef.current?.(entry.id, entry.localAabb);
+    };
     const runtime = new Map<string, RuntimeEntry>();
     const raycaster = new THREE.Raycaster();
     const pointerNdc = new THREE.Vector2();
@@ -289,6 +351,7 @@ export default function CalibratedRoomViewer({
         ? attached.userData.sceneObjectId
         : null;
       if (!objectId) return;
+      const entry = runtime.get(objectId);
       enforceNonNegativeWorldY(attached);
       if (controls.getMode() === "scale") {
         const record = sceneObjectsRef.current.find((item) => item.id === objectId);
@@ -298,10 +361,20 @@ export default function CalibratedRoomViewer({
         );
         attached.scale.setScalar(uniform);
       }
-      reportObjectTransformRef.current?.(
-        objectId,
-        worldTransformFromObject3D(attached),
-      );
+      const proposed = worldTransformFromObject3D(attached);
+      const current = entry?.lastResolved ??
+        sceneObjectsRef.current.find((item) => item.id === objectId)?.transform ??
+        proposed;
+      const resolved = resolveSceneObjectCollision({
+        current,
+        proposed,
+        localAabb: entry?.localAabb ?? null,
+        walls: collisionWallsRef.current,
+        mode: controls.getMode() === "translate" ? "move" : "pose",
+      });
+      applyWorldTransform(attached, resolved.transform);
+      if (entry) entry.lastResolved = resolved.transform;
+      reportObjectTransformRef.current?.(objectId, resolved.transform);
     };
 
     const syncGizmo = () => {
@@ -333,6 +406,8 @@ export default function CalibratedRoomViewer({
             placement: root.placement,
             autoBounds: root.autoBounds,
             loadToken: 0,
+            localAabb: null,
+            lastResolved: record.transform,
           };
           tagSceneObjectRoot(created.placement, record.id);
           objectLayer.add(created.placement);
@@ -340,6 +415,7 @@ export default function CalibratedRoomViewer({
           entry = created;
           if (record.kind === "test_cube") {
             attachNormalizedObject(created.autoBounds, createTestCubeMesh());
+            cacheEntryBounds(created);
           } else if (record.objectUrl) {
             const loadToken = ++created.loadToken;
             const objectUrl = record.objectUrl;
@@ -362,6 +438,7 @@ export default function CalibratedRoomViewer({
                 return;
               }
               attachNormalizedObject(created.autoBounds, loaded.scene);
+              cacheEntryBounds(created);
               reportLoadStatusRef.current?.(record.id, "loaded", null);
             });
           }
@@ -375,6 +452,7 @@ export default function CalibratedRoomViewer({
           !objectMatchesWorldTransform(entry.placement, record.transform)
         ) {
           applyWorldTransform(entry.placement, record.transform);
+          entry.lastResolved = record.transform;
         }
         enforceNonNegativeWorldY(entry.placement);
         if (bodyDrag?.active && record.id === bodyDrag.objectId) {
@@ -464,12 +542,36 @@ export default function CalibratedRoomViewer({
         offsetZ: session.offsetZ,
         placementY: session.placementY,
       });
-      applyPlacementWorldPosition(entry.placement, next);
+      const current = entry.lastResolved ?? worldTransformFromObject3D(entry.placement);
+      const proposed = {
+        ...current,
+        position: {
+          x: next.x,
+          y: session.placementY,
+          z: next.z,
+        },
+      };
+      const resolved = resolveSceneObjectCollision({
+        current,
+        proposed,
+        localAabb: entry.localAabb,
+        walls: collisionWallsRef.current,
+        mode: "move",
+      });
+      applyPlacementWorldPosition(entry.placement, {
+        x: resolved.transform.position.x,
+        y: session.placementY,
+        z: resolved.transform.position.z,
+      });
       entry.placement.position.y = session.placementY;
-      reportObjectTransformRef.current?.(
-        session.objectId,
-        worldTransformFromObject3D(entry.placement),
-      );
+      entry.lastResolved = {
+        ...resolved.transform,
+        position: {
+          ...resolved.transform.position,
+          y: session.placementY,
+        },
+      };
+      reportObjectTransformRef.current?.(session.objectId, entry.lastResolved);
     };
 
     const pickFromPointer = (clientX: number, clientY: number) => {
@@ -606,6 +708,7 @@ export default function CalibratedRoomViewer({
       floorSurface.visible = showFloorQuadRef.current;
       floorWireframe.visible = showFloorQuadRef.current;
       syncWallBaseDiagnostics();
+      syncCollisionWallDiagnostics();
       syncSceneObjects();
       if (controls.object) enforceNonNegativeWorldY(controls.object);
       renderer.render(scene, result.camera);
@@ -631,8 +734,10 @@ export default function CalibratedRoomViewer({
       }
       runtime.clear();
       clearWallBaseLayer();
+      clearCollisionWallLayer();
       wallBaseMaterial.dispose();
       interiorTickMaterial.dispose();
+      collisionWallMaterial.dispose();
       geometry.dispose();
       edgesGeometry.dispose();
       material.dispose();

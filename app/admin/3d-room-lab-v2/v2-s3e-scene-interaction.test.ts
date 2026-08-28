@@ -297,10 +297,7 @@ test("scene-layer transforms never write camera, Floor, freeze, or observation",
     viewerSource,
     /result\.camera\.(fov|aspect|position|up)\s*=/,
   );
-  assert.match(
-    roomLabSource,
-    /onClick=\{\(\) => setSceneLayer\(\(current\) => addTestCube\(current\)\)\}/,
-  );
+  assert.match(roomLabSource, /addTestCube\(current\)/);
   const addCubeRegion = roomLabSource.slice(
     roomLabSource.indexOf("Add Test Cube") - 220,
     roomLabSource.indexOf("Add Test Cube") + 40,
@@ -359,19 +356,22 @@ test("S3C/S3D representation architecture remains ORIGINAL → EMPTY → TILED",
   );
 });
 
-test("V2-S4B collision and object-enforcement behavior is not implemented", () => {
-  for (const source of [sceneLayerSource, sceneRuntimeSource, viewerSource]) {
-    assert.doesNotMatch(
-      source,
-      /wall collision|floor boundary collision|support surfaces|object clamping|sliding|corner collision/i,
-    );
-    assert.doesNotMatch(
-      source,
-      /live-collision|support-attachment|room-envelope-reconciliation/,
-    );
+test("V2-S4B collision is the only room-collision authority consumed by runtime", () => {
+  assert.match(roomLabSource, /resolveSceneObjectCollision/);
+  assert.match(viewerSource, /resolveSceneObjectCollision/);
+  assert.match(roomLabSource, /enabledCollisionWallsFromReceipt/);
+  assert.match(viewerSource, /collisionWallsRef/);
+  assert.doesNotMatch(sceneLayerSource, /enabledCollisionWallsFromReceipt|constructAfcV2RoomCollisionAuthority/);
+  assert.doesNotMatch(
+    sceneRuntimeSource,
+    /enabledCollisionWallsFromReceipt|constructAfcV2RoomCollisionAuthority|roomObservation/,
+  );
+  for (const source of [sceneLayerSource, sceneRuntimeSource]) {
+    assert.doesNotMatch(source, /live-collision|support-attachment|room-envelope-reconciliation/);
   }
   assert.match(roomLabSource, /Not implemented/);
   assert.match(roomLabSource, /collisionAuthority = \{String\(applied\.roomBoundaries\.collisionAuthority\)\}/);
+  assert.match(roomLabSource, /collisionAuthority = \{String\(applied\.roomCollision\.collisionAuthority\)\}/);
 });
 
 test("auto-bounds places a Test Cube on the calibrated floor plane, not the cyan quad", () => {

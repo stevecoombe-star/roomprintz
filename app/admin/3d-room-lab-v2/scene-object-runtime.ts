@@ -100,6 +100,38 @@ export function attachNormalizedObject(
   autoBounds.add(object);
 }
 
+/**
+ * Cached placement-local AABB of normalized child content. Call once after
+ * attachNormalizedObject. Collision uses this cache plus proposed TRS.
+ */
+export function measurePlacementLocalAabb(
+  placement: THREE.Object3D,
+  autoBounds: THREE.Object3D,
+): { min: { x: number; y: number; z: number }; max: { x: number; y: number; z: number } } | null {
+  placement.updateMatrixWorld(true);
+  const inverse = new THREE.Matrix4().copy(placement.matrixWorld).invert();
+  const box = new THREE.Box3();
+  autoBounds.traverse((child) => {
+    const mesh = child as THREE.Mesh;
+    if (!mesh.isMesh || !mesh.geometry) return;
+    mesh.updateWorldMatrix(true, false);
+    mesh.geometry.computeBoundingBox();
+    const geometryBox = mesh.geometry.boundingBox;
+    if (!geometryBox || geometryBox.isEmpty()) return;
+    const local = geometryBox.clone();
+    local.applyMatrix4(mesh.matrixWorld);
+    local.applyMatrix4(inverse);
+    box.union(local);
+  });
+  if (box.isEmpty()) return null;
+  const min = { x: box.min.x, y: box.min.y, z: box.min.z };
+  const max = { x: box.max.x, y: box.max.y, z: box.max.z };
+  if (![min.x, min.y, min.z, max.x, max.y, max.z].every(Number.isFinite)) {
+    return null;
+  }
+  return { min, max };
+}
+
 export async function loadGlbFromUrl(url: string): Promise<LoadedGlbResult> {
   const trimmed = url.trim();
   if (!trimmed) {

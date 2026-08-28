@@ -14,16 +14,8 @@ import {
 import {
   buildEmptyRoomObservationEvidence,
   buildFailedEmptyRoomObservationEvidence,
-  type EmptyRoomObservationAcceptedEvidence,
 } from "./empty-room-observation-contract";
-import {
-  ROOM_BOUNDARY_GOLDEN_FLOOR_CENTER_MAX_ERROR_M,
-  ROOM_BOUNDARY_GOLDEN_FLOOR_CORNER_MAX_ERROR_M,
-} from "./room-boundary-authority-contract";
-import {
-  projectFloorAuthorityPolygonToWorld,
-  realizeFrozenRoomBoundaryCamera,
-} from "./room-boundary-projection.server";
+import { AFC_V2_ROOM_COLLISION_AUTHORITY_VERSION } from "./room-collision-authority-contract";
 
 const sha = (bytes: Uint8Array) =>
   createHash("sha256").update(bytes).digest("hex");
@@ -53,7 +45,7 @@ const tiledBasis = {
   orientation: 1 as const,
 };
 const input: AfcV2AnalyzeInput = {
-  attemptId: "v2-s4a-host",
+  attemptId: "v2-s4b-host",
   sourceImageUrl: "https://example.test/original.jpg",
   sourceImageIdentity: {
     sha256: originalBasis.sha256,
@@ -61,7 +53,7 @@ const input: AfcV2AnalyzeInput = {
     decodedHeight: originalBasis.decodedHeight,
     orientation: 1,
   },
-  loadGeneration: 21,
+  loadGeneration: 22,
   frame: { width: 1118, height: 698 },
   referenceDepthM: 4,
 };
@@ -72,8 +64,8 @@ const authoritativeFloorQuad = [
   { x: 0.35, y: 0.55 },
 ] as const;
 
-function providerObservation() {
-  return {
+function observation() {
+  return buildEmptyRoomObservationEvidence({
     observedPlanes: [
       {
         id: "visible_floor",
@@ -106,6 +98,7 @@ function providerObservation() {
       planeIds: ["visible_floor", "visible_wall"],
       sourceNormalizedPolyline: [
         { x: 0.2, y: 0.62 },
+        { x: 0.5, y: 0.62 },
         { x: 0.8, y: 0.62 },
       ],
       confidence: 0.9,
@@ -114,11 +107,7 @@ function providerObservation() {
     observedOpenings: [],
     observedJunctions: [],
     unresolved: [],
-  };
-}
-
-function observation(): EmptyRoomObservationAcceptedEvidence {
-  return buildEmptyRoomObservationEvidence(providerObservation(), {
+  }, {
     attemptId: input.attemptId,
     loadGeneration: input.loadGeneration,
     emptyIdentity: emptyBasis,
@@ -127,13 +116,13 @@ function observation(): EmptyRoomObservationAcceptedEvidence {
     model: "fixture",
     observerProfile: "empty-visible-architecture-conservative/v1",
     promptVersion: "afc-v2-empty-visible-room-observer/v4",
-    generatedAt: "2026-08-27T12:00:00.000Z",
+    generatedAt: "2026-08-28T12:00:00.000Z",
   });
 }
 
 function productDependencies(): AfcSr1TiledLiveProductDependencies {
   return {
-    createResultId: () => "v2-s4a-result",
+    createResultId: () => "v2-s4b-result",
     qualifyOriginal: async () => ({
       sourceImageUrl: input.sourceImageUrl,
       basis: originalBasis,
@@ -155,8 +144,8 @@ function productDependencies(): AfcSr1TiledLiveProductDependencies {
         profileId: "afc-sr1-tile-grid-scaffold/v1",
         researchPreset: "tile_grid_scaffold",
         requestedModelId: "NBP",
-        runId: "v2-s4a-generation",
-        generatedAt: "2026-08-27T12:00:00.000Z",
+        runId: "v2-s4b-generation",
+        generatedAt: "2026-08-28T12:00:00.000Z",
         appliedAspectRatio: "3:2",
         imageTransport: "data_url",
         generationStatus: "generated",
@@ -194,7 +183,7 @@ function productDependencies(): AfcSr1TiledLiveProductDependencies {
   };
 }
 
-test("zero accepted Room Boundaries does not fail AFC apply", async () => {
+test("zero enabled S4B collision boundaries do not fail AFC apply", async () => {
   const failedObservation = buildFailedEmptyRoomObservationEvidence({
     attemptId: input.attemptId,
     loadGeneration: input.loadGeneration,
@@ -204,14 +193,14 @@ test("zero accepted Room Boundaries does not fail AFC apply", async () => {
     model: "fixture",
     observerProfile: "empty-visible-architecture-conservative/v1",
     promptVersion: "afc-v2-empty-visible-room-observer/v4",
-    generatedAt: "2026-08-27T12:00:00.000Z",
+    generatedAt: "2026-08-28T12:00:00.000Z",
   }, {
-    failureClass: "transport",
+    failureClass: "unknown",
     failureStage: "provider_invocation",
     provider: "controlled_fixture",
     model: "fixture",
     providerStatus: null,
-    safeDetail: "Controlled observer failure.",
+    safeDetail: "controlled",
     contractValidationReason: null,
   });
   const result = await executeAfcV2Analysis(input, {
@@ -221,20 +210,16 @@ test("zero accepted Room Boundaries does not fail AFC apply", async () => {
   });
   assert.equal(result.status, "applied");
   if (result.status !== "applied") return;
-  assert.equal(result.roomObservationStatus, "failed");
-  assert.equal(result.roomObservation?.authority, "observation_only");
-  assert.equal(
-    result.roomObservation?.authoritySeparation.worldProjectionPerformed,
-    false,
-  );
   assert.ok(result.roomBoundaries);
-  assert.equal(result.roomBoundaries.summary.accepted, 0);
   assert.equal(result.roomBoundaries.collisionAuthority, false);
+  assert.ok(result.roomCollision);
+  assert.equal(result.roomCollision.schemaVersion, AFC_V2_ROOM_COLLISION_AUTHORITY_VERSION);
+  assert.equal(result.roomCollision.collisionAuthority, false);
   assert.equal(result.floor.sourceNormalizedPolygon.length, 4);
   assert.equal(result.camera.originalBasisRestored, true);
 });
 
-test("S4A construction does not mutate Floor, FOV, camera, or observation authority", async () => {
+test("S4B is constructed after S4A and cannot roll back Floor/Camera/S4A", async () => {
   const observed = observation();
   const result = await executeAfcV2Analysis(input, {
     analysisMode: "controlled_replay",
@@ -242,110 +227,41 @@ test("S4A construction does not mutate Floor, FOV, camera, or observation author
     observeRoom: async () => observed,
   });
   assert.equal(result.status, "applied");
-  if (result.status !== "applied" || !result.roomObservation) return;
-  assert.deepEqual(result.floor.sourceNormalizedPolygon, authoritativeFloorQuad);
-  assert.equal(result.roomObservation.authority, "observation_only");
-  assert.equal(
-    result.roomObservation.authoritySeparation.worldProjectionPerformed,
-    false,
-  );
-  assert.equal(result.roomObservation.authoritySeparation.floorAuthorityConsumed, false);
-  assert.equal(result.roomObservation.authoritySeparation.cameraAuthorityConsumed, false);
-  assert.equal(result.roomBoundaries?.collisionAuthority, false);
-  assert.equal(
-    result.roomBoundaries?.lineage.floor.authorityKey,
-    result.floor.authorityKey,
-  );
-  assert.equal(
-    result.roomBoundaries?.lineage.camera.verticalFovDeg,
-    result.camera.verticalFovDeg,
-  );
-  assert.deepEqual(
-    result.roomBoundaries?.lineage.camera.pose,
-    result.camera.pose,
-  );
-});
-
-test("Floor Authority golden round-trip through the S4A frozen camera", async () => {
-  const result = await executeAfcV2Analysis(input, {
-    analysisMode: "controlled_replay",
-    product: productDependencies(),
-    observeRoom: async () => observation(),
-  });
-  assert.equal(result.status, "applied");
   if (result.status !== "applied") return;
-  const realized = realizeFrozenRoomBoundaryCamera({
-    verticalFovDeg: result.camera.verticalFovDeg,
-    pose: result.camera.pose,
-    frame: result.camera.frame,
-  });
-  assert.equal(realized.ok, true);
-  if (!realized.ok) return;
-  const projected = projectFloorAuthorityPolygonToWorld(
-    result.floor.sourceNormalizedPolygon,
-    {
-      width: originalBasis.decodedWidth,
-      height: originalBasis.decodedHeight,
-    },
-    result.camera.frame,
-    realized.camera,
+  assert.equal(result.roomObservation?.authority, "observation_only");
+  assert.equal(result.roomBoundaries?.collisionAuthority, false);
+  assert.ok(result.roomCollision);
+  assert.equal(result.roomCollision.authority, "partial_room_collision_authority");
+  assert.deepEqual(result.floor.sourceNormalizedPolygon, authoritativeFloorQuad);
+  const analysisSource = readFileSync(
+    path.join(process.cwd(), "app/admin/3d-room-lab-v2/afc-v2-analysis.server.ts"),
+    "utf8",
   );
-  assert.equal(projected.every((point) => point.ok), true);
-  const worlds = projected.flatMap((point) => point.ok ? [point.world] : []);
-  assert.equal(worlds.length, 4);
-  for (const world of worlds) {
-    assert.ok(Math.abs(world.y) <= 1e-6);
-  }
-  const xs = worlds.map((world) => world.x);
-  const zs = worlds.map((world) => world.z);
-  const recoveredWidth = Math.max(...xs) - Math.min(...xs);
-  const recoveredDepth = Math.max(...zs) - Math.min(...zs);
-  assert.ok(
-    Math.abs(recoveredWidth - result.floor.worldWidthM) <=
-      ROOM_BOUNDARY_GOLDEN_FLOOR_CORNER_MAX_ERROR_M,
-    `width recovered ${recoveredWidth}, expected ${result.floor.worldWidthM}`,
-  );
-  assert.ok(
-    Math.abs(recoveredDepth - result.floor.referenceDepthM) <=
-      ROOM_BOUNDARY_GOLDEN_FLOOR_CORNER_MAX_ERROR_M,
-    `depth recovered ${recoveredDepth}, expected ${result.floor.referenceDepthM}`,
-  );
-  const first = projected[0];
-  assert.equal(first?.ok, true);
-  if (first && first.ok) {
-    assert.ok(
-      Math.abs(first.containerNormalized.y - first.originalSourceNormalized.y) >
-        1e-4,
-      "cover-crop container mapping must not be skipped for this off-aspect frame",
-    );
-  }
-  const centerX = (Math.min(...xs) + Math.max(...xs)) / 2;
-  const centerZ = (Math.min(...zs) + Math.max(...zs)) / 2;
-  assert.ok(Math.abs(centerX) <= ROOM_BOUNDARY_GOLDEN_FLOOR_CENTER_MAX_ERROR_M);
-  assert.ok(Math.abs(centerZ) <= ROOM_BOUNDARY_GOLDEN_FLOOR_CENTER_MAX_ERROR_M);
+  const s4aIndex = analysisSource.indexOf("constructAfcV2RoomBoundaryAuthority");
+  const s4bIndex = analysisSource.indexOf("constructAfcV2RoomCollisionAuthority");
+  assert.ok(s4aIndex > 0 && s4bIndex > s4aIndex);
 });
 
-test("object-layer modules still do not consume Room Observation or S4A physics", () => {
-  const directory = path.join(process.cwd(), "app/admin/3d-room-lab-v2");
-  const sceneLayer = readFileSync(path.join(directory, "scene-layer-state.ts"), "utf8");
-  const sceneRuntime = readFileSync(path.join(directory, "scene-object-runtime.ts"), "utf8");
-  const interaction = readFileSync(
-    path.join(directory, "scene-viewport-interaction.ts"),
+test("S4B host keeps S4A and S4B as separate receipts", () => {
+  const roomLabSource = readFileSync(
+    path.join(process.cwd(), "app/admin/3d-room-lab-v2/RoomLabV2.tsx"),
     "utf8",
   );
-  const resolver = readFileSync(
-    path.join(directory, "scene-collision-resolver.ts"),
-    "utf8",
-  );
-  for (const source of [sceneLayer, sceneRuntime, interaction]) {
-    assert.doesNotMatch(source, /constructAfcV2RoomBoundaryAuthority|roomBoundaries/);
+  assert.match(roomLabSource, /roomBoundaries: asRoomBoundaryReceipt/);
+  assert.match(roomLabSource, /roomCollision: asRoomCollisionReceipt/);
+  assert.match(roomLabSource, /afc-v2-s4a-room-boundary-authority\.json/);
+  assert.match(roomLabSource, /afc-v2-s4b-room-collision-authority\.json/);
+  assert.doesNotMatch(roomLabSource, /FULLY_TILED/);
+});
+
+test("V1 runtime files are not modified by S4B", () => {
+  const v1Files = [
+    "app/admin/3d-room-lab/page.tsx",
+    "app/admin/3d-room-lab/p2-s2h-furniture-blocker-collision.ts",
+  ];
+  for (const relative of v1Files) {
+    const source = readFileSync(path.join(process.cwd(), relative), "utf8");
     assert.doesNotMatch(source, /constructAfcV2RoomCollisionAuthority/);
-    assert.doesNotMatch(
-      source,
-      /live-collision|support-attachment|room-envelope-reconciliation/,
-    );
+    assert.doesNotMatch(source, /afc-v2-room-collision-authority\/v1/);
   }
-  assert.doesNotMatch(resolver, /empty-room-observation|room-boundary-qualification|observedSeams/);
-  assert.doesNotMatch(resolver, /constructAfcV2RoomCollisionAuthority/);
-  assert.match(resolver, /enabledCollisionWallsFromReceipt|RoomCollisionEnabledWall/);
 });

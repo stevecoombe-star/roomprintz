@@ -37,7 +37,9 @@ test("ORIGINAL viewer draws accepted finite wall-base diagnostics outside the ob
   assert.match(viewerSource, /wallBaseLayer/);
   assert.match(viewerSource, /raycaster\.intersectObject\(objectLayer, true\)/);
   assert.doesNotMatch(viewerSource, /wallBaseLayer[\s\S]{0,80}objectLayer\.add/);
-  assert.doesNotMatch(viewerSource, /collision|support|furniture/i);
+  assert.match(viewerSource, /diagnosticCollisionWall/);
+  assert.doesNotMatch(viewerSource, /collisionWallLayer[\s\S]{0,80}objectLayer\.add/);
+  assert.doesNotMatch(viewerSource, /live-collision-blockers|support-attachment|room-envelope-reconciliation/);
   assert.match(
     viewerSource,
     /\}, \[floor\.referenceDepthM, floor\.worldWidthM, snapshot\]\);/,
@@ -60,4 +62,7 @@ test("S4A is constructed only after freeze and cannot roll back Floor\/Camera", 
   assert.ok(freezeIndex > 0 && constructIndex > freezeIndex);
   assert.match(analysisSource, /status: "applied"/);
   assert.match(analysisSource, /roomBoundaries,/);
+  assert.match(analysisSource, /constructAfcV2RoomCollisionAuthority/);
+  const s4bIndex = analysisSource.indexOf("constructAfcV2RoomCollisionAuthority");
+  assert.ok(s4bIndex > constructIndex);
 });
