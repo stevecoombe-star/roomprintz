@@ -356,15 +356,16 @@ test("S3C/S3D representation architecture remains ORIGINAL → EMPTY → TILED",
   );
 });
 
-test("V2-S4B collision is the only room-collision authority consumed by runtime", () => {
+test("runtime consumes exactly one of EMPTY-authoritative, OL-CQ, S4C-CQ, or S4B collision walls", () => {
   assert.match(roomLabSource, /resolveSceneObjectCollision/);
   assert.match(viewerSource, /resolveSceneObjectCollision/);
-  assert.match(roomLabSource, /enabledCollisionWallsFromReceipt/);
+  assert.match(roomLabSource, /selectActiveRuntimeCollisionWalls/);
+  assert.match(roomLabSource, /emptyAuthoritativeCollision/);
   assert.match(viewerSource, /collisionWallsRef/);
-  assert.doesNotMatch(sceneLayerSource, /enabledCollisionWallsFromReceipt|constructAfcV2RoomCollisionAuthority/);
+  assert.doesNotMatch(sceneLayerSource, /enabledCollisionWallsFromReceipt|constructAfcV2RoomCollisionAuthority|selectActiveRuntimeCollisionWalls/);
   assert.doesNotMatch(
     sceneRuntimeSource,
-    /enabledCollisionWallsFromReceipt|constructAfcV2RoomCollisionAuthority|roomObservation/,
+    /enabledCollisionWallsFromReceipt|constructAfcV2RoomCollisionAuthority|roomObservation|selectActiveRuntimeCollisionWalls/,
   );
   for (const source of [sceneLayerSource, sceneRuntimeSource]) {
     assert.doesNotMatch(source, /live-collision|support-attachment|room-envelope-reconciliation/);

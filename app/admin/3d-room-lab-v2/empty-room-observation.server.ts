@@ -12,7 +12,7 @@ import {
 } from "./empty-room-observation-contract";
 
 export const AFC_V2_EMPTY_ROOM_OBSERVATION_PROMPT_VERSION =
-  "afc-v2-empty-visible-room-observer/v4" as const;
+  "afc-v2-empty-visible-room-observer/v5" as const;
 export const AFC_V2_EMPTY_ROOM_OBSERVATION_PROFILE =
   "empty-visible-architecture-conservative/v1" as const;
 export const AFC_V2_EMPTY_ROOM_OBSERVATION_DEFAULT_MODEL = "gemini-3.5-flash";
@@ -264,6 +264,7 @@ Visible seams:
 - Do not require both left and right side wall-ceiling seams. Report a side only when that side's junction is visibly supported. Omission of an unsupported or ambiguous side remains correct and is preferable to a fabricated seam. Junction support, including a visible meeting of back wall-ceiling, side wall-ceiling, and wall-wall, may help place an endpoint but is not permission to manufacture a missing side seam. Prefer the actual room-envelope ceiling/wall intersection over a lower attached-element edge.
 - If only part of a side wall-ceiling junction is confidently visible, emit the supported visible segment rather than inventing the full wall-ceiling run. Do not extend through glare, occlusion, clipping, or uncertain tonal transition unless the continuation remains visibly supported. Do not omit a clearly visible side junction merely because a plane polygon already approximates that region, because the back wall-ceiling seam is clearer, or because an endpoint approaches x=0 or x=1.
 - Preserve visible floor-wall boundaries without broadening, smoothing, or completing them.
+- For visible side floor-wall boundaries, emit the explicit finite seam even if one endpoint is at the image frame. Do not omit a directly visible floor-wall seam merely because the floor or wall plane polygon already approximates the same boundary. Preserve only the visible segment; do not extend beyond the frame or invent a hidden physical endpoint.
 - Preserve the conservative wall-wall rule: trace a room corner only where the physical junction is visible. A plane polygon reaching an image edge does not establish another wall or a wall-wall seam.
 
 Visible openings:

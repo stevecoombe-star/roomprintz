@@ -72,6 +72,7 @@ type Props = Readonly<{
   wallBaseDiagnostics?: readonly RoomBoundaryWallBaseDiagnostic[];
   collisionWallDiagnostics?: readonly RoomCollisionWallDiagnostic[];
   collisionWalls?: readonly RoomCollisionEnabledWall[];
+  collisionWallColor?: number;
   sceneObjects: readonly SceneObjectRecord[];
   selectedObjectId: string | null;
   transformMode: ViewportTransformMode;
@@ -109,6 +110,7 @@ export default function CalibratedRoomViewer({
   wallBaseDiagnostics = [],
   collisionWallDiagnostics = [],
   collisionWalls = [],
+  collisionWallColor = 0xf43f5e,
   sceneObjects,
   selectedObjectId,
   transformMode,
@@ -122,6 +124,7 @@ export default function CalibratedRoomViewer({
   const wallBaseDiagnosticsRef = useRef(wallBaseDiagnostics);
   const collisionWallDiagnosticsRef = useRef(collisionWallDiagnostics);
   const collisionWallsRef = useRef(collisionWalls);
+  const collisionWallColorRef = useRef(collisionWallColor);
   const sceneObjectsRef = useRef(sceneObjects);
   const selectedObjectIdRef = useRef(selectedObjectId);
   const transformModeRef = useRef(transformMode);
@@ -135,6 +138,7 @@ export default function CalibratedRoomViewer({
     wallBaseDiagnosticsRef.current = wallBaseDiagnostics;
     collisionWallDiagnosticsRef.current = collisionWallDiagnostics;
     collisionWallsRef.current = collisionWalls;
+    collisionWallColorRef.current = collisionWallColor;
     sceneObjectsRef.current = sceneObjects;
     selectedObjectIdRef.current = selectedObjectId;
     transformModeRef.current = transformMode;
@@ -145,6 +149,7 @@ export default function CalibratedRoomViewer({
   }, [
     collisionWallDiagnostics,
     collisionWalls,
+    collisionWallColor,
     reportObjectLoadStatus,
     reportObjectLocalAabb,
     reportObjectTransform,
@@ -292,6 +297,7 @@ export default function CalibratedRoomViewer({
     };
     const syncCollisionWallDiagnostics = () => {
       const diagnostics = collisionWallDiagnosticsRef.current;
+      collisionWallMaterial.color.setHex(collisionWallColorRef.current);
       if (diagnostics === lastCollisionWallDiagnostics) return;
       lastCollisionWallDiagnostics = diagnostics;
       clearCollisionWallLayer();

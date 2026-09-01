@@ -311,7 +311,7 @@ function productDependencies(): AfcSr1TiledLiveProductDependencies {
   };
 }
 
-test("V2-S3F active observer is v4 and coaches side wall-ceiling seams", async () => {
+test("V2-S3F active observer is v5 and coaches side wall-ceiling seams", async () => {
   let suppliedPrompt = "";
   const result = await observeRetainedEmptyRoom({
     attemptId: input.attemptId,
@@ -329,9 +329,9 @@ test("V2-S3F active observer is v4 and coaches side wall-ceiling seams", async (
 
   assert.equal(
     AFC_V2_EMPTY_ROOM_OBSERVATION_PROMPT_VERSION,
-    "afc-v2-empty-visible-room-observer/v4",
+    "afc-v2-empty-visible-room-observer/v5",
   );
-  assert.equal(result.observer.promptVersion, "afc-v2-empty-visible-room-observer/v4");
+  assert.equal(result.observer.promptVersion, "afc-v2-empty-visible-room-observer/v5");
   assert.equal(result.observerStatus, "observed");
   assert.match(suppliedPrompt, /side wall-ceiling intersection independently/i);
   assert.match(suppliedPrompt, /perspective-receding/i);

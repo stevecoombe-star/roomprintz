@@ -245,6 +245,7 @@ test("live V2 restores Original to EMPTY to full-raster TILED reader authority",
     fullyTiledFloorReader: 0,
     roomObserver: 1,
     focusedSideCeilingObserver: 1,
+    focusedSideFloorWallObserver: 1,
   });
   assert.equal(result.camera.originalBasisRestored, true);
   assert.equal(result.roomObservationStatus, "observed");

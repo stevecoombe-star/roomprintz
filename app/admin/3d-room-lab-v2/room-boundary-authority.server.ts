@@ -22,6 +22,7 @@ import {
   type RoomBoundaryCandidateAuthority,
   type RoomBoundaryCandidateStatus,
   type RoomBoundaryInteriorEvidence,
+  type RoomBoundaryLineResidualClass,
   type RoomBoundaryWorldGeometry,
   type RoomBoundaryWorldXyz,
 } from "./room-boundary-authority-contract";
@@ -42,7 +43,9 @@ import {
   evaluateFrontierProximity,
   evaluateInteriorHalfSpace,
   evaluateOppositeOccupancy,
+  floorWallProjectionContinuation,
   isNearVerticalFloorWallSeam,
+  nearVerticalFloorWallMayContinue,
 } from "./room-boundary-qualification.server";
 
 export type RoomBoundaryConstructionInput = Readonly<{
@@ -248,6 +251,7 @@ function candidateShell(input: {
   occupancy: RoomBoundaryCandidate["imageEvidence"]["occupancy"];
   frontier: RoomBoundaryCandidate["imageEvidence"]["frontier"];
   lineResidual: RoomBoundaryCandidate["imageEvidence"]["lineResidual"];
+  lineResidualClass: RoomBoundaryLineResidualClass;
   nearVertical: boolean;
   projection: RoomBoundaryCandidate["projection"];
   worldGeometry: RoomBoundaryWorldGeometry | null;
@@ -273,6 +277,7 @@ function candidateShell(input: {
       occupancy: input.occupancy,
       frontier: input.frontier,
       lineResidual: input.lineResidual,
+      lineResidualClass: input.lineResidualClass,
       nearVertical: input.nearVertical,
     }),
     projection: input.projection,
@@ -310,10 +315,19 @@ function qualifySeam(input: {
   const floorPlaneId = bound?.floor.id ?? null;
   const wallPlaneId = bound?.wall.id ?? null;
   const imageFit = imagePolylineLineFit(seam.sourceNormalizedPolyline);
+  const occupancyPolyline =
+    imageFit &&
+      imageFit.residual.maxDistance > ROOM_BOUNDARY_IMAGE_LINE_MAX_RESIDUAL &&
+      seam.sourceNormalizedPolyline.length >= 3
+      ? [
+        seam.sourceNormalizedPolyline[0],
+        seam.sourceNormalizedPolyline[seam.sourceNormalizedPolyline.length - 1],
+      ]
+      : seam.sourceNormalizedPolyline;
   const nearVertical = isNearVerticalFloorWallSeam(seam.sourceNormalizedPolyline);
   const occupancy = bound
     ? evaluateOppositeOccupancy(
-      seam.sourceNormalizedPolyline,
+      occupancyPolyline,
       bound.floor.sourceNormalizedPolygon,
       bound.wall.sourceNormalizedPolygon,
     )
@@ -338,7 +352,16 @@ function qualifySeam(input: {
     reasons.push("observer_ambiguity_present");
     status = status ?? "insufficient";
   }
-  if (nearVertical) {
+  if (
+    !nearVerticalFloorWallMayContinue({
+      nearVertical,
+      bindingSucceeded: bound !== null,
+      ambiguity: seam.ambiguity,
+      occupancyOpposite: occupancy?.opposite === true,
+      nearFloorFrontier: frontier?.nearFloorFrontier === true,
+      nearWallFrontier: frontier?.nearWallFrontier === true,
+    })
+  ) {
     reasons.push("near_vertical_image_seam_insufficient_as_floor_wall");
     status = status ?? "insufficient";
   }
@@ -369,9 +392,13 @@ function qualifySeam(input: {
   if (!imageFit) {
     reasons.push("image_line_fit_degenerate");
     status = status ?? "insufficient";
-  } else if (imageFit.residual.maxDistance > ROOM_BOUNDARY_IMAGE_LINE_MAX_RESIDUAL) {
-    reasons.push("image_line_inconsistent");
-    status = status ?? "insufficient";
+  }
+  const imageResidualSupported = Boolean(
+    imageFit &&
+      imageFit.residual.maxDistance <= ROOM_BOUNDARY_IMAGE_LINE_MAX_RESIDUAL,
+  );
+  if (imageFit && !imageResidualSupported) {
+    reasons.push("image_line_residual_underdetermined");
   }
   if (!input.compatibilityOk) {
     reasons.push("empty_original_incompatible");
@@ -380,6 +407,7 @@ function qualifySeam(input: {
 
   let projection = emptyProjection();
   let worldGeometry: RoomBoundaryWorldGeometry | null = null;
+  let lineResidualClass: RoomBoundaryLineResidualClass = "underdetermined";
   if (input.compatibilityOk && input.camera.ok) {
     const points = projectEmptyPolylineToWorld(
       seam.sourceNormalizedPolyline,
@@ -390,34 +418,68 @@ function qualifySeam(input: {
     const worldSamples = points.flatMap((point) =>
       point.ok ? [{ x: point.world.x, z: point.world.z }] : []
     );
-    const failed = points.find((point) => !point.ok);
-    const worldFit = failed ? null : worldXzLineFit(worldSamples);
+    const first = points[0];
+    const last = points[points.length - 1];
+    const continuation = floorWallProjectionContinuation(points);
+    const endpointProjectionFailed = continuation.endpointProjectionFailed;
+    const interiorProjectionFailed = continuation.interiorProjectionFailed;
+    const allProjected = points.length >= 2 && points.every((point) => point.ok);
+    const worldFit = worldXzLineFit(worldSamples);
     projection = Object.freeze({
       kernelVersion: AFC_V2_ROOM_BOUNDARY_PROJECTION_KERNEL_VERSION,
       points: Object.freeze(points),
       worldSamples: Object.freeze(worldSamples),
       worldResidual: worldFit?.residual ?? null,
     });
-    if (failed && !failed.ok) {
-      reasons.push(`projection_failed:${failed.reason}`);
+    const worldResidualSupported = Boolean(
+      worldFit &&
+        worldFit.residual.maxDistance <= ROOM_BOUNDARY_WORLD_LINE_MAX_RESIDUAL_M,
+    );
+    const residualSupported = seam.sourceNormalizedPolyline.length >= 3 &&
+      imageResidualSupported &&
+      allProjected &&
+      worldResidualSupported;
+    if (residualSupported) {
+      lineResidualClass = "supported";
+    }
+    if (endpointProjectionFailed) {
+      const failed = first && !first.ok ? first : last && !last.ok ? last : null;
+      reasons.push(
+        `projection_failed:${failed && !failed.ok ? failed.reason : "endpoint"}`,
+      );
       status = status ?? "insufficient";
-    } else if (!worldFit) {
+    } else if (interiorProjectionFailed) {
+      reasons.push("interior_projection_unusable");
+    }
+    if (!worldFit) {
       reasons.push("world_line_fit_degenerate");
       status = status ?? "insufficient";
-    } else if (worldFit.residual.maxDistance > ROOM_BOUNDARY_WORLD_LINE_MAX_RESIDUAL_M) {
-      reasons.push("world_line_inconsistent");
-      status = status ?? "insufficient";
-    } else {
-      const span = finiteWorldSpanAlongLine(
-        worldSamples,
-        worldFit.origin,
-        worldFit.direction,
-      );
-      if (!span || span.length < ROOM_BOUNDARY_MIN_WORLD_SEAM_LENGTH_M) {
-        reasons.push("degenerate_world_span");
-        status = status ?? "rejected";
+    } else if (!worldResidualSupported) {
+      reasons.push("world_line_residual_underdetermined");
+    }
+
+    if (first && last && first.ok && last.ok) {
+      if (residualSupported && worldFit) {
+        const span = finiteWorldSpanAlongLine(
+          worldSamples,
+          worldFit.origin,
+          worldFit.direction,
+        );
+        if (!span || span.length < ROOM_BOUNDARY_MIN_WORLD_SEAM_LENGTH_M) {
+          reasons.push("degenerate_world_span");
+          status = status ?? "rejected";
+        } else {
+          worldGeometry = deriveUnflippedVerticalSupportPlane(span.start, span.end);
+          if (!worldGeometry) {
+            reasons.push("vertical_support_plane_degenerate");
+            status = status ?? "insufficient";
+          }
+        }
       } else {
-        worldGeometry = deriveUnflippedVerticalSupportPlane(span.start, span.end);
+        worldGeometry = deriveUnflippedVerticalSupportPlane(
+          { x: first.world.x, y: 0, z: first.world.z },
+          { x: last.world.x, y: 0, z: last.world.z },
+        );
         if (!worldGeometry) {
           reasons.push("vertical_support_plane_degenerate");
           status = status ?? "insufficient";
@@ -439,6 +501,7 @@ function qualifySeam(input: {
       occupancy,
       frontier,
       lineResidual: imageFit?.residual ?? null,
+      lineResidualClass,
       nearVertical,
       projection,
       worldGeometry,
@@ -455,6 +518,7 @@ function qualifySeam(input: {
       occupancy,
       frontier,
       lineResidual: imageFit?.residual ?? null,
+      lineResidualClass,
       nearVertical,
       projection,
       worldGeometry: null,
@@ -470,6 +534,7 @@ function qualifySeam(input: {
     occupancy,
     frontier,
     lineResidual: imageFit?.residual ?? null,
+    lineResidualClass,
     nearVertical,
     projection,
     worldGeometry,
@@ -495,10 +560,12 @@ function attachInterior(
     return candidate;
   }
   const floor = planes.find((plane) => plane.id === candidate.source.floorPlaneId);
+  const wall = planes.find((plane) => plane.id === candidate.source.wallPlaneId);
   const interior = evaluateInteriorHalfSpace({
     occupancy: candidate.imageEvidence.occupancy,
     polyline: candidate.imageEvidence.polyline,
     floorPolygon: floor?.sourceNormalizedPolygon ?? null,
+    wallPolygon: wall?.sourceNormalizedPolygon ?? null,
     geometry: candidate.worldGeometry,
     camera,
     projectWitness,

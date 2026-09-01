@@ -167,6 +167,39 @@ export const AFC_V2_FOCUSED_SIDE_CEILING_WALL_NOT_RUN =
     failure: null,
   }) satisfies FocusedSideCeilingWallMergeReceipt;
 
+export type FocusedSideFloorWallMergeReceipt = Readonly<{
+  observerStatus: "observed" | "partial" | "failed" | "empty" | "not_run";
+  promptVersion: string | null;
+  emptyIdentitySha256: string | null;
+  addedPlaneIds: readonly string[];
+  addedSeamIds: readonly string[];
+  skippedDuplicatePlaneIds: readonly string[];
+  skippedDuplicateSeamIds: readonly string[];
+  rejectedPlaneIds: readonly string[];
+  rejectedSeamIds: readonly string[];
+  resolutionReasons: readonly string[];
+  geometryManufactured: false;
+  hiddenContinuationAdded: false;
+  failure: EmptyRoomObservationFailureDiagnostic | null;
+}>;
+
+export const AFC_V2_FOCUSED_SIDE_FLOOR_WALL_NOT_RUN =
+  Object.freeze({
+    observerStatus: "not_run",
+    promptVersion: null,
+    emptyIdentitySha256: null,
+    addedPlaneIds: Object.freeze([] as const),
+    addedSeamIds: Object.freeze([] as const),
+    skippedDuplicatePlaneIds: Object.freeze([] as const),
+    skippedDuplicateSeamIds: Object.freeze([] as const),
+    rejectedPlaneIds: Object.freeze([] as const),
+    rejectedSeamIds: Object.freeze([] as const),
+    resolutionReasons: Object.freeze([] as const),
+    geometryManufactured: false,
+    hiddenContinuationAdded: false,
+    failure: null,
+  }) satisfies FocusedSideFloorWallMergeReceipt;
+
 type EvidenceContext = Readonly<{
   attemptId: string;
   loadGeneration: number;
@@ -237,6 +270,7 @@ export type EmptyRoomObservationAcceptedEvidence = CommonEvidence & Readonly<{
         | "provider_partial_claim_preserved_despite_complete_edge_evidence";
     }>[];
     focusedSideCeilingWall: FocusedSideCeilingWallMergeReceipt;
+    focusedSideFloorWall: FocusedSideFloorWallMergeReceipt;
   }>;
   failure: null;
 }>;
@@ -258,6 +292,7 @@ export type EmptyRoomObservationFailedEvidence = CommonEvidence & Readonly<{
     partialReasons: readonly [];
     openingClosureAdjustments: readonly [];
     focusedSideCeilingWall: null;
+    focusedSideFloorWall: null;
   }>;
   failure: EmptyRoomObservationFailureDiagnostic;
 }>;
@@ -736,6 +771,7 @@ export function buildEmptyRoomObservationEvidence(
       partialReasons,
       openingClosureAdjustments: Object.freeze(openingClosureAdjustments),
       focusedSideCeilingWall: AFC_V2_FOCUSED_SIDE_CEILING_WALL_NOT_RUN,
+      focusedSideFloorWall: AFC_V2_FOCUSED_SIDE_FLOOR_WALL_NOT_RUN,
     }),
     failure: null,
   });
@@ -763,6 +799,7 @@ export function buildFailedEmptyRoomObservationEvidence(
       partialReasons: [] as const,
       openingClosureAdjustments: [] as const,
       focusedSideCeilingWall: null,
+      focusedSideFloorWall: null,
     }),
     failure,
   });

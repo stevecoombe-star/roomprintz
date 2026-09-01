@@ -5,16 +5,17 @@ import type {
 } from "./empty-room-observation-contract";
 import {
   AFC_V2_ROOM_BOUNDARY_AUTHORITY_VERSION,
-  ROOM_BOUNDARY_IMAGE_FRONTIER_MAX_DISTANCE,
-  ROOM_BOUNDARY_INTERIOR_WITNESS_INSET,
+  ROOM_BOUNDARY_IMAGE_LINE_MAX_RESIDUAL,
+  ROOM_BOUNDARY_WORLD_LINE_MAX_RESIDUAL_M,
   type AfcV2RoomBoundaryAuthorityReceipt,
   type RoomBoundaryCandidate,
   type RoomBoundaryOccupancyEvidence,
 } from "./room-boundary-authority-contract";
 import {
-  distanceToPolygonFrontier,
-  pointInPolygon as imagePointInPolygon,
+  applicableEvidencePasses,
+  classifyRegionalProbeEvidence,
 } from "./room-boundary-qualification.server";
+import { floorWallPolylineCrossesOpeningInterior } from "./room-opening-intersection-geometry";
 import {
   AFC_V2_ROOM_COLLISION_AUTHORITY_VERSION,
   AFC_V2_ROOM_COLLISION_COORDINATE_SPACE,
@@ -36,9 +37,6 @@ export type RoomCollisionConstructionInput = Readonly<{
   observation: EmptyRoomObservationEvidence | null;
 }>;
 
-const ON_BOUNDARY_ABS = 1e-12;
-const COLLINEAR_CROSS_ABS = 1e-14;
-const PARAM_MERGE_ABS = 1e-12;
 const OPEN_SEGMENT_PARAM_EPS = 1e-9;
 const PROBE_COINCIDENCE_EPS = 1e-9;
 
@@ -164,8 +162,20 @@ function qualifyBoundary(input: {
   const imageSampleCount = candidate.imageEvidence.lineResidual?.sampleCount ??
     candidate.imageEvidence.polyline.length;
   const worldSampleCount = candidate.projection.worldSamples.length;
-  const lineResidualInformative = imageSampleCount >= 3 && worldSampleCount >= 3;
-  const twoPointObserved = !lineResidualInformative;
+  const imageResidual = candidate.imageEvidence.lineResidual?.maxDistance ?? null;
+  const worldResidual = candidate.projection.worldResidual?.maxDistance ?? null;
+  const projectionInvalidating = candidate.projection.points.some((point) => !point.ok);
+  const imageResidualSupported = imageResidual !== null &&
+    imageResidual <= ROOM_BOUNDARY_IMAGE_LINE_MAX_RESIDUAL;
+  const worldResidualSupported = worldResidual !== null &&
+    worldResidual <= ROOM_BOUNDARY_WORLD_LINE_MAX_RESIDUAL_M;
+  const lineResidualInformative = imageSampleCount >= 3 &&
+    worldSampleCount >= 3 &&
+    imageResidualSupported &&
+    worldResidualSupported &&
+    !projectionInvalidating;
+  const lineResidualClass = lineResidualInformative ? "supported" as const : "underdetermined" as const;
+  const twoPointObserved = candidate.imageEvidence.polyline.length < 3;
   const observedSampleCount = Math.min(imageSampleCount, worldSampleCount);
 
   if (input.compatibilityTier !== "exact_grid_compatible") {
@@ -199,7 +209,7 @@ function qualifyBoundary(input: {
       openingCrossing,
     });
   } else {
-    const span = corroborateTwoPointSpan({
+    const span = corroborateObservedSpan({
       polyline: candidate.imageEvidence.polyline,
       occupancy: candidate.imageEvidence.occupancy,
       floorPolygon: boundObservedPolygon(
@@ -219,6 +229,11 @@ function qualifyBoundary(input: {
       floorFrontierPass: span.floorFrontierPass,
       wallFrontierPass: span.wallFrontierPass,
       occupancyPass: span.occupancyPass,
+      applicableProbeCount: span.applicableProbeCount,
+      passingApplicableProbeCount: span.passingApplicableProbeCount,
+      contradictionProbeCount: span.contradictionProbeCount,
+      notApplicableProbeCount: span.notApplicableProbeCount,
+      probes: span.probes,
       openingCrossing,
     });
     if (!span.passed) {
@@ -253,6 +268,7 @@ function qualifyBoundary(input: {
     diagnostics: Object.freeze({
       observedSampleCount,
       lineResidualInformative,
+      lineResidualClass,
       maxWorldResidualM,
       spanM: spanM !== null && Number.isFinite(spanM) ? spanM : null,
       residualOverSpan:
@@ -313,6 +329,11 @@ type SpanCorroborationResult = Readonly<{
   floorFrontierPass: boolean;
   wallFrontierPass: boolean;
   occupancyPass: boolean;
+  applicableProbeCount: number;
+  passingApplicableProbeCount: number;
+  contradictionProbeCount: number;
+  notApplicableProbeCount: number;
+  probes: readonly Readonly<{ status: "pass" | "contradiction" | "not_applicable" }>[];
   passed: boolean;
 }>;
 
@@ -324,16 +345,21 @@ function failedSpanCorroboration(): SpanCorroborationResult {
     floorFrontierPass: false,
     wallFrontierPass: false,
     occupancyPass: false,
+    applicableProbeCount: 0,
+    passingApplicableProbeCount: 0,
+    contradictionProbeCount: 0,
+    notApplicableProbeCount: 0,
+    probes: Object.freeze([]),
     passed: false,
   };
 }
 
 /**
  * Independent span-wise region corroboration for residual-underdetermined
- * seams. Qualification probes never enter the observed polyline, worldSamples,
- * or residual.
+ * seams (2-point and n>=3). Qualification probes never enter the observed polyline,
+ * worldSamples, or residual.
  */
-function corroborateTwoPointSpan(input: {
+export function corroborateObservedSpan(input: {
   polyline: readonly SourceNormalizedPoint[];
   occupancy: RoomBoundaryOccupancyEvidence | null;
   floorPolygon: readonly SourceNormalizedPoint[] | null;
@@ -343,43 +369,99 @@ function corroborateTwoPointSpan(input: {
   const start = input.polyline[0];
   const end = input.polyline[input.polyline.length - 1];
   if (!start || !end) return failedSpanCorroboration();
-  const probes = buildTwoPointSpanProbes(start, end, input.floorPolygon, input.wallPolygon);
+  const probes = buildObservedSpanProbes(
+    input.polyline,
+    input.floorPolygon,
+    input.wallPolygon,
+  );
   if (probes.length === 0) return failedSpanCorroboration();
 
-  let passingProbeCount = 0;
-  let floorFrontierPass = true;
-  let wallFrontierPass = true;
-  let occupancyPass = true;
-  for (const probe of probes) {
-    const floorDistance = distanceToPolygonFrontier(probe.point, input.floorPolygon);
-    const wallDistance = distanceToPolygonFrontier(probe.point, input.wallPolygon);
-    const floorOk = floorDistance !== null &&
-      floorDistance <= ROOM_BOUNDARY_IMAGE_FRONTIER_MAX_DISTANCE;
-    const wallOk = wallDistance !== null &&
-      wallDistance <= ROOM_BOUNDARY_IMAGE_FRONTIER_MAX_DISTANCE;
-    const occupancyOk = localOppositeOccupancyPass({
+  const classified = probes.map((probe) =>
+    classifyRegionalProbeEvidence({
       probe: probe.point,
       start,
       end,
       occupancy: input.occupancy,
-      floorPolygon: input.floorPolygon,
-      wallPolygon: input.wallPolygon,
-    });
-    if (!floorOk) floorFrontierPass = false;
-    if (!wallOk) wallFrontierPass = false;
-    if (!occupancyOk) occupancyPass = false;
-    if (floorOk && wallOk && occupancyOk) passingProbeCount += 1;
-  }
+      floorPolygon: input.floorPolygon!,
+      wallPolygon: input.wallPolygon!,
+    })
+  );
+  const passCount = classified.filter((item) => item.status === "pass").length;
+  const contradictionCount = classified.filter((item) =>
+    item.status === "contradiction"
+  ).length;
+  const notApplicableCount = classified.filter((item) =>
+    item.status === "not_applicable"
+  ).length;
+  const applicableCount = passCount + contradictionCount;
+  const floorApplicable = classified.filter((item) =>
+    item.floorFrontier.status !== "not_applicable"
+  );
+  const wallApplicable = classified.filter((item) =>
+    item.wallFrontier.status !== "not_applicable"
+  );
+  const occupancyApplicable = classified.filter((item) =>
+    item.occupancy !== "not_applicable"
+  );
+  const floorFrontierPass = floorApplicable.length >= 1 &&
+    floorApplicable.every((item) => item.floorFrontier.status === "pass");
+  const wallFrontierPass = wallApplicable.length >= 1 &&
+    wallApplicable.every((item) => item.wallFrontier.status === "pass");
+  const occupancyPass = occupancyApplicable.length >= 1 &&
+    occupancyApplicable.every((item) => item.occupancy === "pass");
 
   return {
     kind: "multi_probe_region_frontier",
-    probeCount: probes.length,
-    passingProbeCount,
+    probeCount: classified.length,
+    passingProbeCount: passCount,
     floorFrontierPass,
     wallFrontierPass,
     occupancyPass,
-    passed: passingProbeCount === probes.length,
+    applicableProbeCount: applicableCount,
+    passingApplicableProbeCount: passCount,
+    contradictionProbeCount: contradictionCount,
+    notApplicableProbeCount: notApplicableCount,
+    probes: Object.freeze(classified.map((item) => Object.freeze({ status: item.status }))),
+    passed: applicableEvidencePasses({
+      passCount,
+      contradictionCount,
+    }),
   };
+}
+
+function buildObservedSpanProbes(
+  polyline: readonly SourceNormalizedPoint[],
+  floorPolygon: readonly SourceNormalizedPoint[],
+  wallPolygon: readonly SourceNormalizedPoint[],
+): readonly Readonly<{ t: number; point: SourceNormalizedPoint }>[] {
+  const start = polyline[0];
+  const end = polyline[polyline.length - 1];
+  if (!start || !end) return [];
+  const abx = end.x - start.x;
+  const aby = end.y - start.y;
+  const lengthSq = abx * abx + aby * aby;
+  const probes = [
+    ...buildTwoPointSpanProbes(start, end, floorPolygon, wallPolygon),
+  ];
+  if (polyline.length >= 3 && lengthSq > 1e-18) {
+    for (let index = 1; index < polyline.length - 1; index += 1) {
+      const point = polyline[index];
+      const t = ((point.x - start.x) * abx + (point.y - start.y) * aby) / lengthSq;
+      if (!(t > OPEN_SEGMENT_PARAM_EPS && t < 1 - OPEN_SEGMENT_PARAM_EPS)) continue;
+      probes.push({ t, point });
+    }
+  }
+  probes.sort((left, right) => left.t - right.t);
+  const unique: Array<{ t: number; point: SourceNormalizedPoint }> = [];
+  for (const probe of probes) {
+    const duplicate = unique.some((item) =>
+      Math.hypot(item.point.x - probe.point.x, item.point.y - probe.point.y) <=
+        PROBE_COINCIDENCE_EPS
+    );
+    if (duplicate) continue;
+    unique.push(probe);
+  }
+  return unique;
 }
 
 function buildTwoPointSpanProbes(
@@ -440,71 +522,6 @@ function orthogonalProjectionOnOpenSegment(
     return null;
   }
   return { t, point: projected };
-}
-
-function localOppositeOccupancyPass(input: {
-  probe: SourceNormalizedPoint;
-  start: SourceNormalizedPoint;
-  end: SourceNormalizedPoint;
-  occupancy: RoomBoundaryOccupancyEvidence | null;
-  floorPolygon: readonly SourceNormalizedPoint[];
-  wallPolygon: readonly SourceNormalizedPoint[];
-}): boolean {
-  const floorSide = input.occupancy?.floorSide;
-  if (floorSide !== "positive" && floorSide !== "negative") return false;
-  const tangent = normalize2d({
-    x: input.end.x - input.start.x,
-    y: input.end.y - input.start.y,
-  });
-  if (!tangent) return false;
-  const floorNormal = normalize2d(perpendicularTowardSide(tangent, floorSide));
-  if (!floorNormal) return false;
-  const floorSample = {
-    x: input.probe.x + floorNormal.x * ROOM_BOUNDARY_INTERIOR_WITNESS_INSET,
-    y: input.probe.y + floorNormal.y * ROOM_BOUNDARY_INTERIOR_WITNESS_INSET,
-  };
-  const wallSample = {
-    x: input.probe.x - floorNormal.x * ROOM_BOUNDARY_INTERIOR_WITNESS_INSET,
-    y: input.probe.y - floorNormal.y * ROOM_BOUNDARY_INTERIOR_WITNESS_INSET,
-  };
-  if (!inNormalizedImageBounds(floorSample) || !inNormalizedImageBounds(wallSample)) {
-    return false;
-  }
-  return imagePointInPolygon(floorSample, input.floorPolygon) &&
-    !imagePointInPolygon(floorSample, input.wallPolygon) &&
-    imagePointInPolygon(wallSample, input.wallPolygon) &&
-    !imagePointInPolygon(wallSample, input.floorPolygon);
-}
-
-function signedImageSide(
-  origin: SourceNormalizedPoint,
-  direction: SourceNormalizedPoint,
-  point: SourceNormalizedPoint,
-): number {
-  return direction.x * (point.y - origin.y) - direction.y * (point.x - origin.x);
-}
-
-function perpendicularTowardSide(
-  direction: SourceNormalizedPoint,
-  desired: "positive" | "negative",
-): SourceNormalizedPoint {
-  const first = { x: -direction.y, y: direction.x };
-  const origin = { x: 0, y: 0 };
-  const firstSign = signedImageSide(origin, direction, first);
-  const matches = desired === "positive" ? firstSign > 0 : firstSign < 0;
-  return matches ? first : { x: direction.y, y: -direction.x };
-}
-
-function normalize2d(
-  vector: SourceNormalizedPoint,
-): SourceNormalizedPoint | null {
-  const length = Math.hypot(vector.x, vector.y);
-  if (!Number.isFinite(length) || length <= 1e-12) return null;
-  return { x: vector.x / length, y: vector.y / length };
-}
-
-function inNormalizedImageBounds(point: SourceNormalizedPoint): boolean {
-  return point.x >= 0 && point.x <= 1 && point.y >= 0 && point.y <= 1;
 }
 
 function s4aReceiptIntegrityReasons(
@@ -605,191 +622,4 @@ function emptyReceipt(
   });
 }
 
-/**
- * Whole-boundary opening veto. Touching a jamb or opening endpoint is not a
- * crossing. Uses segment-vs-polygon interior tests, not sparse sampling.
- */
-export function floorWallPolylineCrossesOpeningInterior(
-  polyline: readonly SourceNormalizedPoint[],
-  openings: readonly EmptyObservedOpening[],
-): boolean {
-  if (polyline.length < 2 || openings.length === 0) return false;
-  for (const opening of openings) {
-    const boundary = opening.sourceNormalizedBoundary;
-    if (boundary.length < 2) continue;
-    if (opening.boundaryClosure === "complete_visible_outline" && boundary.length >= 3) {
-      if (polylineCrossesPolygonInterior(polyline, boundary)) return true;
-      continue;
-    }
-    if (polylineProperlyCrossesPolyline(polyline, boundary)) return true;
-  }
-  return false;
-}
-
-function polylineCrossesPolygonInterior(
-  polyline: readonly SourceNormalizedPoint[],
-  polygon: readonly SourceNormalizedPoint[],
-): boolean {
-  for (const point of polyline) {
-    if (strictlyInsidePolygon(point, polygon)) return true;
-  }
-  for (let index = 0; index < polyline.length - 1; index += 1) {
-    if (segmentCrossesPolygonInterior(polyline[index], polyline[index + 1], polygon)) {
-      return true;
-    }
-  }
-  return false;
-}
-
-function segmentCrossesPolygonInterior(
-  start: SourceNormalizedPoint,
-  end: SourceNormalizedPoint,
-  polygon: readonly SourceNormalizedPoint[],
-): boolean {
-  const params = [0, 1];
-  for (let index = 0; index < polygon.length; index += 1) {
-    const edgeStart = polygon[index];
-    const edgeEnd = polygon[(index + 1) % polygon.length];
-    const hit = closedSegmentIntersectionParameter(start, end, edgeStart, edgeEnd);
-    if (hit !== null) params.push(hit);
-  }
-  params.sort((left, right) => left - right);
-  const unique = uniqueParams(params);
-  for (let index = 0; index < unique.length - 1; index += 1) {
-    const t0 = unique[index];
-    const t1 = unique[index + 1];
-    if (t1 - t0 <= PARAM_MERGE_ABS) continue;
-    const mid = {
-      x: start.x + (end.x - start.x) * ((t0 + t1) / 2),
-      y: start.y + (end.y - start.y) * ((t0 + t1) / 2),
-    };
-    if (strictlyInsidePolygon(mid, polygon)) return true;
-  }
-  return false;
-}
-
-function polylineProperlyCrossesPolyline(
-  first: readonly SourceNormalizedPoint[],
-  second: readonly SourceNormalizedPoint[],
-): boolean {
-  for (let i = 0; i < first.length - 1; i += 1) {
-    for (let j = 0; j < second.length - 1; j += 1) {
-      if (segmentsProperlyIntersect(first[i], first[i + 1], second[j], second[j + 1])) {
-        return true;
-      }
-    }
-  }
-  return false;
-}
-
-function strictlyInsidePolygon(
-  point: SourceNormalizedPoint,
-  polygon: readonly SourceNormalizedPoint[],
-): boolean {
-  return pointInPolygon(point, polygon) && !pointOnPolygonBoundary(point, polygon);
-}
-
-function pointInPolygon(
-  point: SourceNormalizedPoint,
-  polygon: readonly SourceNormalizedPoint[],
-): boolean {
-  if (polygon.length < 3) return false;
-  let inside = false;
-  for (let index = 0, previous = polygon.length - 1; index < polygon.length; previous = index, index += 1) {
-    const a = polygon[index];
-    const b = polygon[previous];
-    const intersects = (a.y > point.y) !== (b.y > point.y) &&
-      point.x < ((b.x - a.x) * (point.y - a.y)) / (b.y - a.y) + a.x;
-    if (intersects) inside = !inside;
-  }
-  return inside;
-}
-
-function pointOnPolygonBoundary(
-  point: SourceNormalizedPoint,
-  polygon: readonly SourceNormalizedPoint[],
-): boolean {
-  for (let index = 0; index < polygon.length; index += 1) {
-    if (pointOnSegment(point, polygon[index], polygon[(index + 1) % polygon.length])) {
-      return true;
-    }
-  }
-  return false;
-}
-
-function pointOnSegment(
-  point: SourceNormalizedPoint,
-  start: SourceNormalizedPoint,
-  end: SourceNormalizedPoint,
-): boolean {
-  const abx = end.x - start.x;
-  const aby = end.y - start.y;
-  const apx = point.x - start.x;
-  const apy = point.y - start.y;
-  const cross = abx * apy - aby * apx;
-  const lengthSq = abx * abx + aby * aby;
-  if (lengthSq <= 1e-24) {
-    return Math.hypot(apx, apy) <= ON_BOUNDARY_ABS;
-  }
-  if (Math.abs(cross) > ON_BOUNDARY_ABS * Math.sqrt(lengthSq)) return false;
-  const dot = apx * abx + apy * aby;
-  return dot >= -ON_BOUNDARY_ABS && dot <= lengthSq + ON_BOUNDARY_ABS;
-}
-
-function closedSegmentIntersectionParameter(
-  a: SourceNormalizedPoint,
-  b: SourceNormalizedPoint,
-  c: SourceNormalizedPoint,
-  d: SourceNormalizedPoint,
-): number | null {
-  const hit = segmentIntersection(a, b, c, d, true);
-  return hit ? hit.t : null;
-}
-
-function segmentsProperlyIntersect(
-  a: SourceNormalizedPoint,
-  b: SourceNormalizedPoint,
-  c: SourceNormalizedPoint,
-  d: SourceNormalizedPoint,
-): boolean {
-  const hit = segmentIntersection(a, b, c, d, false);
-  return hit !== null;
-}
-
-function segmentIntersection(
-  a: SourceNormalizedPoint,
-  b: SourceNormalizedPoint,
-  c: SourceNormalizedPoint,
-  d: SourceNormalizedPoint,
-  inclusive: boolean,
-): { t: number; u: number } | null {
-  const abx = b.x - a.x;
-  const aby = b.y - a.y;
-  const cdx = d.x - c.x;
-  const cdy = d.y - c.y;
-  const denom = abx * cdy - aby * cdx;
-  if (Math.abs(denom) <= COLLINEAR_CROSS_ABS) return null;
-  const acx = c.x - a.x;
-  const acy = c.y - a.y;
-  const t = (acx * cdy - acy * cdx) / denom;
-  const u = (acx * aby - acy * abx) / denom;
-  if (inclusive) {
-    if (t < -PARAM_MERGE_ABS || t > 1 + PARAM_MERGE_ABS) return null;
-    if (u < -PARAM_MERGE_ABS || u > 1 + PARAM_MERGE_ABS) return null;
-    return { t: Math.min(1, Math.max(0, t)), u };
-  }
-  if (t <= PARAM_MERGE_ABS || t >= 1 - PARAM_MERGE_ABS) return null;
-  if (u <= PARAM_MERGE_ABS || u >= 1 - PARAM_MERGE_ABS) return null;
-  return { t, u };
-}
-
-function uniqueParams(values: readonly number[]): number[] {
-  const unique: number[] = [];
-  for (const value of values) {
-    const last = unique[unique.length - 1];
-    if (last === undefined || Math.abs(value - last) > PARAM_MERGE_ABS) {
-      unique.push(value);
-    }
-  }
-  return unique;
-}
+export { floorWallPolylineCrossesOpeningInterior } from "./room-opening-intersection-geometry";

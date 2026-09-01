@@ -46,6 +46,7 @@ test("Room Boundaries panel keeps S4A and adds S4B collision authority", () => {
   assert.match(contractSource, /two-point region-corroborated/);
   assert.match(contractSource, /two-point region corroboration failed/);
   assert.match(contractSource, /multi-point residual-supported/);
+  assert.match(contractSource, /residual-underdetermined region-corroborated/);
   assert.doesNotMatch(roomLabSource, /two-point refused/);
   assert.doesNotMatch(contractSource, /twoPointRejected/);
   assert.match(roomLabSource, /openingsNotSubtracted = true/);

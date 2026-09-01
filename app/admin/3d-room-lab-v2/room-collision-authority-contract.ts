@@ -11,7 +11,7 @@ export const AFC_V2_ROOM_COLLISION_AUTHORITY_VERSION =
 export const AFC_V2_ROOM_COLLISION_COORDINATE_SPACE =
   AFC_V2_ROOM_BOUNDARY_COORDINATE_SPACE;
 export const AFC_V2_ROOM_COLLISION_QUALIFICATION_VERSION =
-  "afc-v2-room-collision-qualification/v2" as const;
+  "afc-v2-room-collision-qualification/v3" as const;
 export const AFC_V2_ROOM_COLLISION_GEOMETRY_KERNEL_VERSION =
   "afc-v2-room-collision-geometry/v1" as const;
 export const AFC_V2_ROOM_COLLISION_OBJECT_KERNEL_VERSION =
@@ -65,7 +65,12 @@ export type RoomCollisionBoundaryLimitations = Readonly<{
   verticalExtentUnknown: true;
   hiddenContinuation: false;
   openingsNotSubtracted: true;
+  /** True only when the observed polyline has fewer than 3 vertices. */
   twoPointObserved: boolean;
+  /**
+   * True when residual-underdetermined corroboration passed. Applies to both
+   * 2-point seams and residual-underdetermined n>=3 seams.
+   */
   twoPointCorroborated: boolean;
 }>;
 
@@ -74,19 +79,43 @@ export type RoomCollisionCorroborationKind =
   | "multi_probe_region_frontier"
   | "none";
 
+export type RoomCollisionProbeEvidenceStatus =
+  | "pass"
+  | "contradiction"
+  | "not_applicable";
+
+export type RoomCollisionProbeEvidence = Readonly<{
+  status: RoomCollisionProbeEvidenceStatus;
+}>;
+
 export type RoomCollisionBoundaryCorroboration = Readonly<{
   kind: RoomCollisionCorroborationKind;
   probeCount?: number;
   passingProbeCount?: number;
+  /**
+   * Floor/wall/occupancy summary booleans are defined against *applicable*
+   * evidence only. `false` means applicable contradiction or zero applicable
+   * evidence, never mere unsupported/truncated observation.
+   */
   floorFrontierPass?: boolean;
   wallFrontierPass?: boolean;
   occupancyPass?: boolean;
+  applicableProbeCount?: number;
+  passingApplicableProbeCount?: number;
+  contradictionProbeCount?: number;
+  notApplicableProbeCount?: number;
+  probes?: readonly RoomCollisionProbeEvidence[];
   openingCrossing: boolean;
 }>;
 
 export type RoomCollisionBoundaryDiagnostics = Readonly<{
   observedSampleCount: number;
+  /**
+   * True only when n>=3, image residual <= 0.006, world residual <= 0.05 m,
+   * and no projection-invalidating condition. Sample count alone is not proof.
+   */
   lineResidualInformative: boolean;
+  lineResidualClass: "supported" | "underdetermined";
   maxWorldResidualM: number | null;
   spanM: number | null;
   residualOverSpan: number | null;
@@ -224,17 +253,24 @@ export function collisionReliabilityClass(
 export type RoomCollisionQualificationBasisLabel =
   | "multi-point residual-supported"
   | "two-point region-corroborated"
-  | "two-point region corroboration failed";
+  | "two-point region corroboration failed"
+  | "residual-underdetermined region-corroborated"
+  | "residual-underdetermined region corroboration failed";
 
 export function roomCollisionQualificationBasisLabel(
-  boundary: Pick<RoomCollisionBoundary, "limitations">,
+  boundary: Pick<RoomCollisionBoundary, "limitations" | "diagnostics">,
 ): RoomCollisionQualificationBasisLabel {
+  if (boundary.diagnostics.lineResidualInformative) {
+    return "multi-point residual-supported";
+  }
   if (boundary.limitations.twoPointObserved) {
     return boundary.limitations.twoPointCorroborated
       ? "two-point region-corroborated"
       : "two-point region corroboration failed";
   }
-  return "multi-point residual-supported";
+  return boundary.limitations.twoPointCorroborated
+    ? "residual-underdetermined region-corroborated"
+    : "residual-underdetermined region corroboration failed";
 }
 
 export function enabledCollisionWallsFromReceipt(

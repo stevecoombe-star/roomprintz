@@ -15,10 +15,17 @@ import {
 import {
   AFC_V2_ROOM_BOUNDARY_AUTHORITY_VERSION,
   ROOM_BOUNDARY_MIN_WORLD_SEAM_LENGTH_M,
+  ROOM_BOUNDARY_NEAR_VERTICAL_MAX_HORIZONTAL_RATIO,
   ROOM_BOUNDARY_VERTICAL_PLANE_NORMAL_Y_MAX,
   ROOM_BOUNDARY_WORLD_LINE_MAX_RESIDUAL_M,
   wallBaseDiagnosticsFromReceipt,
 } from "./room-boundary-authority-contract";
+import {
+  evaluateInteriorHalfSpace,
+  isNearVerticalFloorWallSeam,
+} from "./room-boundary-qualification.server";
+import { constructAfcV2RoomCollisionAuthority } from "./room-collision-qualification.server";
+import { ROOM_COLLISION_REASON } from "./room-collision-authority-contract";
 
 const emptyIdentity = {
   sha256: "e".repeat(64),
@@ -298,9 +305,14 @@ test("N-point inconsistent polyline is not accepted", () => {
     }),
   )));
   assert.notEqual(receipt.candidates[0]?.status, "accepted");
+  assert.equal(receipt.candidates[0]?.imageEvidence.lineResidualClass, "underdetermined");
   assert.match(
     receipt.candidates[0]?.reasons.join(" ") ?? "",
-    /image_line_inconsistent/,
+    /seam_not_near_floor_polygon_frontier|seam_not_near_wall_polygon_frontier|image_line_residual_underdetermined/,
+  );
+  assert.equal(
+    receipt.candidates[0]?.reasons.includes("image_line_inconsistent"),
+    false,
   );
 });
 
@@ -552,4 +564,847 @@ test("receipt retains unsuccessful candidates, lineage, and diagnostic wall-base
 
 test("world residual threshold is an explicit named constant", () => {
   assert.equal(ROOM_BOUNDARY_WORLD_LINE_MAX_RESIDUAL_M, 0.05);
+});
+
+test("residual-underdetermined multi-point preserves observed endpoint span", () => {
+  const polyline = [
+    { x: 0.2, y: 0.62 },
+    { x: 0.5, y: 0.6305 },
+    { x: 0.8, y: 0.62 },
+  ];
+  const receipt = constructAfcV2RoomBoundaryAuthority(construction(evidence(
+    providerObservation({
+      observedSeams: [{
+        id: "wiggle_floor_wall",
+        category: "floor_wall",
+        planeIds: ["visible_floor", "visible_wall"],
+        sourceNormalizedPolyline: polyline,
+        confidence: 0.9,
+        visibility: "observed",
+      }],
+    }),
+  )));
+  const candidate = receipt.candidates[0];
+  assert.ok(candidate);
+  assert.ok((candidate.imageEvidence.lineResidual?.maxDistance ?? 0) >
+    0.006, `residual=${candidate.imageEvidence.lineResidual?.maxDistance}`);
+  assert.equal(candidate.imageEvidence.lineResidualClass, "underdetermined");
+  assert.ok(
+    candidate.worldGeometry,
+    `status=${candidate.status} reasons=${candidate.reasons.join(",")}`,
+  );
+  assert.equal(candidate.limitations.hiddenContinuation, false);
+  assert.equal(candidate.limitations.geometryManufactured, false);
+  assert.equal(receipt.geometryManufactured, false);
+  assert.match(
+    candidate.reasons.join(" "),
+    /image_line_residual_underdetermined/,
+  );
+  assert.equal(candidate.reasons.includes("image_line_inconsistent"), false);
+  assert.equal(candidate.status, "accepted");
+  assert.equal(candidate.authority.baseSegment, true);
+  assert.equal(candidate.authority.supportPlane, true);
+});
+
+test("residual-supported multi-point remains accepted without residual-underdetermined reasons", () => {
+  const receipt = constructAfcV2RoomBoundaryAuthority(construction(evidence(
+    providerObservation({
+      observedSeams: [{
+        id: "visible_floor_wall",
+        category: "floor_wall",
+        planeIds: ["visible_floor", "visible_wall"],
+        sourceNormalizedPolyline: [
+          { x: 0.2, y: 0.62 },
+          { x: 0.5, y: 0.62 },
+          { x: 0.8, y: 0.62 },
+        ],
+        confidence: 0.9,
+        visibility: "observed",
+      }],
+    }),
+  )));
+  const candidate = receipt.candidates[0];
+  assert.ok(candidate);
+  assert.equal(candidate.status, "accepted");
+  assert.equal(candidate.imageEvidence.lineResidualClass, "supported");
+  assert.ok((candidate.imageEvidence.lineResidual?.maxDistance ?? 1) <= 0.006);
+  assert.equal(
+    candidate.reasons.includes("image_line_residual_underdetermined"),
+    false,
+  );
+  assert.equal(candidate.limitations.hiddenContinuation, false);
+  assert.equal(candidate.limitations.geometryManufactured, false);
+  assert.ok(candidate.worldGeometry);
+});
+
+const steepFloorPolygon = [
+  { x: 0.160, y: 0.64 },
+  { x: 0.90, y: 0.64 },
+  { x: 0.99, y: 0.98 },
+  { x: 0.127, y: 0.98 },
+];
+const steepWallPolygon = [
+  { x: 0.02, y: 0.12 },
+  { x: 0.18, y: 0.12 },
+  { x: 0.160, y: 0.64 },
+  { x: 0.127, y: 0.98 },
+  { x: 0.02, y: 0.90 },
+];
+const steepSeamPolyline = [
+  { x: 0.127, y: 0.98 },
+  { x: 0.160, y: 0.64 },
+];
+
+function steepSideObservation(overrides: Record<string, unknown> = {}) {
+  return providerObservation({
+    observedPlanes: [
+      {
+        id: "visible_floor",
+        category: "floor",
+        sourceNormalizedPolygon: steepFloorPolygon,
+        confidence: 0.94,
+        visibility: "observed",
+      },
+      {
+        id: "visible_side_wall",
+        category: "wall",
+        sourceNormalizedPolygon: steepWallPolygon,
+        confidence: 0.91,
+        visibility: "observed",
+      },
+    ],
+    observedSeams: [{
+      id: "visible_side_floor_wall",
+      category: "floor_wall",
+      planeIds: ["visible_floor", "visible_side_wall"],
+      sourceNormalizedPolyline: steepSeamPolyline,
+      confidence: 0.9,
+      visibility: "observed",
+    }],
+    ...overrides,
+  });
+}
+
+function steepSideReceipt(
+  observationOverrides: Record<string, unknown> = {},
+  constructionOverrides: Partial<RoomBoundaryConstructionInput> = {},
+) {
+  return constructAfcV2RoomBoundaryAuthority(construction(
+    evidence(steepSideObservation(observationOverrides)),
+    constructionOverrides,
+  ));
+}
+
+function assertNearVerticalInsufficient(receipt: ReturnType<typeof steepSideReceipt>) {
+  const candidate = receipt.candidates[0];
+  assert.ok(candidate);
+  assert.equal(candidate.imageEvidence.nearVertical, true);
+  assert.notEqual(candidate.status, "accepted");
+  assert.ok(
+    candidate.reasons.includes("near_vertical_image_seam_insufficient_as_floor_wall") ||
+      candidate.reasons.includes("invalid_or_missing_floor_wall_plane_binding") ||
+      candidate.reasons.includes("observer_ambiguity_present") ||
+      candidate.reasons.includes("floor_and_wall_occupancy_not_opposite") ||
+      candidate.reasons.includes("seam_not_near_floor_polygon_frontier") ||
+      candidate.reasons.includes("seam_not_near_wall_polygon_frontier"),
+  );
+  assert.equal(candidate.authority.collision, false);
+}
+
+test("strong near-vertical floor-wall continues without the insufficiency reason", () => {
+  assert.equal(ROOM_BOUNDARY_NEAR_VERTICAL_MAX_HORIZONTAL_RATIO, 0.1);
+  assert.equal(isNearVerticalFloorWallSeam(steepSeamPolyline), true);
+  const receipt = steepSideReceipt();
+  const candidate = receipt.candidates[0];
+  assert.ok(candidate);
+  assert.equal(candidate.imageEvidence.nearVertical, true);
+  assert.equal(
+    candidate.reasons.includes("near_vertical_image_seam_insufficient_as_floor_wall"),
+    false,
+  );
+  assert.equal(candidate.status, "accepted");
+  assert.equal(candidate.imageEvidence.occupancy?.opposite, true);
+  assert.equal(candidate.imageEvidence.frontier?.nearFloorFrontier, true);
+  assert.equal(candidate.imageEvidence.frontier?.nearWallFrontier, true);
+  assert.equal(candidate.interior.status, "accepted");
+  assert.equal(candidate.authority.collision, false);
+  assert.equal(receipt.collisionAuthority, false);
+  assert.equal(candidate.limitations.geometryManufactured, false);
+  assert.equal(candidate.limitations.hiddenContinuation, false);
+  assert.equal(receipt.geometryManufactured, false);
+});
+
+test("near-vertical without opposite occupancy keeps the insufficiency veto", () => {
+  const receipt = steepSideReceipt({
+    observedPlanes: [
+      {
+        id: "visible_floor",
+        category: "floor",
+        sourceNormalizedPolygon: steepFloorPolygon,
+        confidence: 0.94,
+        visibility: "observed",
+      },
+      {
+        id: "visible_side_wall",
+        category: "wall",
+        sourceNormalizedPolygon: steepFloorPolygon,
+        confidence: 0.91,
+        visibility: "observed",
+      },
+    ],
+  });
+  assertNearVerticalInsufficient(receipt);
+  assert.match(
+    receipt.candidates[0]?.reasons.join(" ") ?? "",
+    /near_vertical_image_seam_insufficient_as_floor_wall|floor_and_wall_occupancy_not_opposite/,
+  );
+});
+
+test("near-vertical without floor frontier stays insufficient", () => {
+  const receipt = steepSideReceipt({
+    observedPlanes: [
+      {
+        id: "visible_floor",
+        category: "floor",
+        sourceNormalizedPolygon: [
+          { x: 0.55, y: 0.88 },
+          { x: 0.98, y: 0.88 },
+          { x: 0.98, y: 0.99 },
+          { x: 0.55, y: 0.99 },
+        ],
+        confidence: 0.94,
+        visibility: "observed",
+      },
+      {
+        id: "visible_side_wall",
+        category: "wall",
+        sourceNormalizedPolygon: steepWallPolygon,
+        confidence: 0.91,
+        visibility: "observed",
+      },
+    ],
+  });
+  assertNearVerticalInsufficient(receipt);
+  assert.equal(
+    receipt.candidates[0]?.imageEvidence.frontier?.nearFloorFrontier,
+    false,
+  );
+});
+
+test("near-vertical without wall frontier stays insufficient", () => {
+  const receipt = steepSideReceipt({
+    observedPlanes: [
+      {
+        id: "visible_floor",
+        category: "floor",
+        sourceNormalizedPolygon: steepFloorPolygon,
+        confidence: 0.94,
+        visibility: "observed",
+      },
+      {
+        id: "visible_side_wall",
+        category: "wall",
+        sourceNormalizedPolygon: [
+          { x: 0.01, y: 0.12 },
+          { x: 0.06, y: 0.12 },
+          { x: 0.06, y: 0.90 },
+          { x: 0.01, y: 0.90 },
+        ],
+        confidence: 0.91,
+        visibility: "observed",
+      },
+    ],
+  });
+  assertNearVerticalInsufficient(receipt);
+  assert.equal(
+    receipt.candidates[0]?.imageEvidence.frontier?.nearWallFrontier,
+    false,
+  );
+});
+
+test("near-vertical with observer ambiguity is not overridden", () => {
+  const receipt = steepSideReceipt({
+    observedSeams: [{
+      id: "visible_side_floor_wall",
+      category: "floor_wall",
+      planeIds: ["visible_floor", "visible_side_wall"],
+      sourceNormalizedPolyline: steepSeamPolyline,
+      confidence: 0.9,
+      visibility: "observed",
+      ambiguity: "Could be a door jamb rather than the floor-wall junction.",
+    }],
+  });
+  assertNearVerticalInsufficient(receipt);
+  assert.match(
+    receipt.candidates[0]?.reasons.join(" ") ?? "",
+    /observer_ambiguity_present/,
+  );
+});
+
+test("near-vertical does not override wrong plane binding", () => {
+  const base = evidence(steepSideObservation());
+  const missingWall = constructAfcV2RoomBoundaryAuthority(construction({
+    ...base,
+    observedSeams: [{
+      ...base.observedSeams[0]!,
+      planeIds: ["visible_floor"],
+    }],
+  }));
+  assert.equal(missingWall.candidates[0]?.status, "rejected");
+  assert.equal(missingWall.candidates[0]?.imageEvidence.nearVertical, true);
+  assert.match(
+    missingWall.candidates[0]?.reasons.join(" ") ?? "",
+    /invalid_or_missing_floor_wall_plane_binding/,
+  );
+  assert.notEqual(missingWall.candidates[0]?.status, "accepted");
+  const twoWalls = constructAfcV2RoomBoundaryAuthority(construction({
+    ...base,
+    observedPlanes: [
+      ...base.observedPlanes,
+      {
+        ...base.observedPlanes[1]!,
+        id: "visible_other_wall",
+      },
+    ],
+    observedSeams: [{
+      ...base.observedSeams[0]!,
+      planeIds: ["visible_side_wall", "visible_other_wall"],
+    }],
+  }));
+  assert.equal(twoWalls.candidates[0]?.status, "rejected");
+  assert.match(
+    twoWalls.candidates[0]?.reasons.join(" ") ?? "",
+    /invalid_or_missing_floor_wall_plane_binding/,
+  );
+});
+
+test("door jamb and window jamb style vertical lines fail closed", () => {
+  const jamb = constructAfcV2RoomBoundaryAuthority(construction(evidence(
+    providerObservation({
+      observedSeams: [{
+        id: "door_jamb",
+        category: "floor_wall",
+        planeIds: ["visible_floor", "visible_wall"],
+        sourceNormalizedPolyline: [
+          { x: 0.48, y: 0.22 },
+          { x: 0.50, y: 0.78 },
+        ],
+        confidence: 0.7,
+        visibility: "observed",
+      }],
+    }),
+  )));
+  assertNearVerticalInsufficient(jamb);
+  const windowJamb = constructAfcV2RoomBoundaryAuthority(construction(evidence(
+    providerObservation({
+      observedSeams: [{
+        id: "window_jamb",
+        category: "floor_wall",
+        planeIds: ["visible_floor", "visible_wall"],
+        sourceNormalizedPolyline: [
+          { x: 0.62, y: 0.18 },
+          { x: 0.64, y: 0.55 },
+        ],
+        confidence: 0.7,
+        visibility: "observed",
+      }],
+    }),
+  )));
+  assertNearVerticalInsufficient(windowJamb);
+});
+
+test("radiator vertical edge and floor-interior steep line fail closed", () => {
+  const radiator = constructAfcV2RoomBoundaryAuthority(construction(evidence(
+    providerObservation({
+      observedSeams: [{
+        id: "radiator_edge",
+        category: "floor_wall",
+        planeIds: ["visible_floor", "visible_wall"],
+        sourceNormalizedPolyline: [
+          { x: 0.31, y: 0.28 },
+          { x: 0.33, y: 0.52 },
+        ],
+        confidence: 0.7,
+        visibility: "observed",
+      }],
+    }),
+  )));
+  assertNearVerticalInsufficient(radiator);
+  const floorInterior = constructAfcV2RoomBoundaryAuthority(construction(evidence(
+    providerObservation({
+      observedSeams: [{
+        id: "floor_interior_steep",
+        category: "floor_wall",
+        planeIds: ["visible_floor", "visible_wall"],
+        sourceNormalizedPolyline: [
+          { x: 0.48, y: 0.72 },
+          { x: 0.50, y: 0.95 },
+        ],
+        confidence: 0.7,
+        visibility: "observed",
+      }],
+    }),
+  )));
+  assertNearVerticalInsufficient(floorInterior);
+});
+
+test("frame-truncated steep side floor-wall continues without a junction", () => {
+  const truncatedSeam = [
+    { x: 0.012, y: 0.995 },
+    { x: 0.044, y: 0.66 },
+  ];
+  const receipt = steepSideReceipt({
+    observedPlanes: [
+      {
+        id: "visible_floor",
+        category: "floor",
+        sourceNormalizedPolygon: [
+          { x: 0.044, y: 0.66 },
+          { x: 0.88, y: 0.66 },
+          { x: 0.99, y: 0.995 },
+          { x: 0.012, y: 0.995 },
+        ],
+        confidence: 0.94,
+        visibility: "observed",
+      },
+      {
+        id: "visible_side_wall",
+        category: "wall",
+        sourceNormalizedPolygon: [
+          { x: 0.01, y: 0.12 },
+          { x: 0.08, y: 0.12 },
+          { x: 0.044, y: 0.66 },
+          { x: 0.012, y: 0.995 },
+          { x: 0.01, y: 0.90 },
+        ],
+        confidence: 0.91,
+        visibility: "observed",
+      },
+    ],
+    observedSeams: [{
+      id: "visible_side_floor_wall",
+      category: "floor_wall",
+      planeIds: ["visible_floor", "visible_side_wall"],
+      sourceNormalizedPolyline: truncatedSeam,
+      confidence: 0.9,
+      visibility: "observed",
+    }],
+  });
+  const candidate = receipt.candidates[0];
+  assert.ok(candidate);
+  assert.equal(isNearVerticalFloorWallSeam(truncatedSeam), true);
+  assert.equal(candidate.imageEvidence.nearVertical, true);
+  assert.equal(candidate.limitations.frameAdjacentEndpoint, true);
+  assert.equal(
+    candidate.reasons.includes("near_vertical_image_seam_insufficient_as_floor_wall"),
+    false,
+  );
+  assert.notEqual(candidate.status, "rejected");
+});
+
+test("strong steep seam continues with or without an explicit room_corner", () => {
+  const withoutCorner = steepSideReceipt({ observedJunctions: [] });
+  assert.equal(
+    withoutCorner.candidates[0]?.reasons.includes(
+      "near_vertical_image_seam_insufficient_as_floor_wall",
+    ),
+    false,
+  );
+  assert.equal(withoutCorner.candidates[0]?.status, "accepted");
+  const withCorner = steepSideReceipt({
+    observedJunctions: [{
+      id: "visible_room_corner",
+      category: "room_corner",
+      sourceNormalizedPoint: { x: 0.160, y: 0.64 },
+      seamIds: ["visible_side_floor_wall"],
+      openingIds: [],
+      confidence: 0.9,
+      visibility: "observed",
+    }],
+  });
+  assert.equal(
+    withCorner.candidates[0]?.reasons.includes(
+      "near_vertical_image_seam_insufficient_as_floor_wall",
+    ),
+    false,
+  );
+  assert.equal(withCorner.candidates[0]?.status, "accepted");
+});
+
+test("world projection failure after near-vertical continuation still fails", () => {
+  const receipt = steepSideReceipt({}, {
+    camera: {
+      verticalFovDeg: 52,
+      pose: {
+        position: { x: 0.4, y: 1.8, z: 4.2 },
+        lookAt: { x: 0.4, y: 8, z: 4.2 },
+        up: { x: 0, y: 0, z: -1 },
+      },
+      frame: { width: 900, height: 600 },
+    },
+  });
+  const candidate = receipt.candidates[0];
+  assert.ok(candidate);
+  assert.equal(candidate.imageEvidence.nearVertical, true);
+  assert.equal(
+    candidate.reasons.includes("near_vertical_image_seam_insufficient_as_floor_wall"),
+    false,
+  );
+  assert.notEqual(candidate.status, "accepted");
+  assert.match(candidate.reasons.join(" "), /projection_failed/);
+});
+
+test("interior witness failure after near-vertical continuation still fails", () => {
+  const receipt = steepSideReceipt({
+    observedPlanes: [
+      {
+        id: "visible_floor",
+        category: "floor",
+        sourceNormalizedPolygon: [
+          { x: 0.160, y: 0.64 },
+          { x: 0.172, y: 0.64 },
+          { x: 0.139, y: 0.98 },
+          { x: 0.127, y: 0.98 },
+        ],
+        confidence: 0.94,
+        visibility: "observed",
+      },
+      {
+        id: "visible_side_wall",
+        category: "wall",
+        sourceNormalizedPolygon: steepWallPolygon,
+        confidence: 0.91,
+        visibility: "observed",
+      },
+    ],
+  });
+  const candidate = receipt.candidates[0];
+  assert.ok(candidate);
+  assert.equal(
+    candidate.reasons.includes("near_vertical_image_seam_insufficient_as_floor_wall"),
+    false,
+  );
+  assert.notEqual(candidate.interior.status, "accepted");
+  assert.equal(candidate.authority.collision, false);
+  assert.match(candidate.reasons.join(" "), /interior_witness/);
+});
+
+test("camera contradiction after near-vertical continuation still fails", () => {
+  const receipt = steepSideReceipt();
+  const candidate = receipt.candidates[0];
+  assert.ok(candidate);
+  assert.equal(candidate.status, "accepted");
+  assert.ok(candidate.worldGeometry);
+  assert.ok(candidate.interior.witnessWorldPoint);
+  const normal = candidate.worldGeometry.supportPlaneNormal;
+  const oppositeCamera = {
+    verticalFovDeg: 52,
+    pose: {
+      position: {
+        x: normal.x * 4,
+        y: 1.8,
+        z: normal.z * 4,
+      },
+      lookAt: { x: 0, y: 0, z: 0 },
+      up: { x: 0, y: 1, z: 0 },
+    },
+    frame: { width: 900, height: 600 },
+  };
+  const interior = evaluateInteriorHalfSpace({
+    occupancy: candidate.imageEvidence.occupancy,
+    polyline: candidate.imageEvidence.polyline,
+    floorPolygon: steepFloorPolygon,
+    wallPolygon: steepWallPolygon,
+    geometry: candidate.worldGeometry,
+    camera: oppositeCamera,
+    projectWitness: () => candidate.interior.witnessWorldPoint,
+  });
+  const cameraAgrees = interior.cameraSideSign === interior.sideSign &&
+    (interior.cameraSideSign === 1 || interior.cameraSideSign === -1);
+  if (cameraAgrees) {
+    const flipped = evaluateInteriorHalfSpace({
+      occupancy: candidate.imageEvidence.occupancy,
+      polyline: candidate.imageEvidence.polyline,
+      floorPolygon: steepFloorPolygon,
+      wallPolygon: steepWallPolygon,
+      geometry: candidate.worldGeometry,
+      camera: {
+        ...oppositeCamera,
+        pose: {
+          ...oppositeCamera.pose,
+          position: {
+            x: -normal.x * 4,
+            y: 1.8,
+            z: -normal.z * 4,
+          },
+        },
+      },
+      projectWitness: () => candidate.interior.witnessWorldPoint,
+    });
+    assert.equal(flipped.cameraContradictsWitness, true);
+    assert.equal(flipped.status, "insufficient");
+  } else {
+    assert.equal(interior.cameraContradictsWitness, true);
+    assert.equal(interior.status, "insufficient");
+  }
+  const s4b = constructAfcV2RoomCollisionAuthority({
+    roomBoundary: {
+      ...receipt,
+      candidates: receipt.candidates.map((item) => ({
+        ...item,
+        interior: {
+          ...item.interior,
+          status: "insufficient" as const,
+          cameraContradictsWitness: true,
+          cameraSideSign: item.interior.sideSign === -1 ? 1 as const : -1 as const,
+        },
+      })),
+    },
+    observation: evidence(steepSideObservation()),
+  });
+  assert.equal(s4b.boundaries[0]?.collisionEnabled, false);
+  assert.ok(
+    s4b.boundaries[0]?.qualificationReasons.includes(
+      ROOM_COLLISION_REASON.interiorCameraNotCorroborated,
+    ) ||
+      s4b.boundaries[0]?.qualificationReasons.includes(
+        ROOM_COLLISION_REASON.interiorNotCollisionReady,
+      ),
+  );
+});
+
+test("S4B regional contradiction and opening crossing still disable collision", () => {
+  const accepted = steepSideReceipt();
+  assert.equal(accepted.candidates[0]?.status, "accepted");
+  const sameSideWall = constructAfcV2RoomCollisionAuthority({
+    roomBoundary: accepted,
+    observation: evidence(steepSideObservation({
+      observedPlanes: [
+        {
+          id: "visible_floor",
+          category: "floor",
+          sourceNormalizedPolygon: steepFloorPolygon,
+          confidence: 0.94,
+          visibility: "observed",
+        },
+        {
+          id: "visible_side_wall",
+          category: "wall",
+          sourceNormalizedPolygon: steepFloorPolygon,
+          confidence: 0.91,
+          visibility: "observed",
+        },
+      ],
+    })),
+  });
+  assert.equal(sameSideWall.boundaries[0]?.collisionEnabled, false);
+  assert.ok(
+    sameSideWall.boundaries[0]?.qualificationReasons.includes(
+      ROOM_COLLISION_REASON.twoPointRegionCorroborationInsufficient,
+    ),
+  );
+  const openingObservation = evidence(steepSideObservation({
+    observedOpenings: [{
+      id: "doorway",
+      category: "doorway",
+      hostPlaneId: "visible_side_wall",
+      sourceNormalizedBoundary: [
+        { x: 0.10, y: 0.74 },
+        { x: 0.22, y: 0.74 },
+        { x: 0.22, y: 0.88 },
+        { x: 0.10, y: 0.88 },
+      ],
+      boundaryClosure: "complete_visible_outline",
+      boundaryEvidenceCompleteness: "all_edges_visibly_traced",
+      confidence: 0.9,
+      visibility: "observed",
+    }],
+  }));
+  const opening = constructAfcV2RoomCollisionAuthority({
+    roomBoundary: accepted,
+    observation: openingObservation,
+  });
+  assert.equal(opening.boundaries[0]?.collisionEnabled, false);
+  assert.ok(
+    opening.boundaries[0]?.qualificationReasons.includes(
+      ROOM_COLLISION_REASON.seamCrossesReportedOpening,
+    ),
+  );
+});
+
+test("non-steep back/right and side positives remain unchanged", () => {
+  const back = constructAfcV2RoomBoundaryAuthority(construction());
+  assert.equal(back.candidates[0]?.imageEvidence.nearVertical, false);
+  assert.equal(back.candidates[0]?.status, "accepted");
+  assert.equal(
+    back.candidates[0]?.reasons.includes(
+      "near_vertical_image_seam_insufficient_as_floor_wall",
+    ),
+    false,
+  );
+  const side = constructAfcV2RoomBoundaryAuthority(construction(evidence(
+    providerObservation({
+      observedPlanes: [
+        {
+          id: "visible_floor",
+          category: "floor",
+          sourceNormalizedPolygon: [
+            { x: 0.05, y: 0.95 },
+            { x: 0.95, y: 0.95 },
+            { x: 0.7, y: 0.58 },
+            { x: 0.2, y: 0.7 },
+          ],
+          confidence: 0.9,
+          visibility: "observed",
+        },
+        {
+          id: "side_wall",
+          category: "wall",
+          sourceNormalizedPolygon: [
+            { x: 0.02, y: 0.2 },
+            { x: 0.22, y: 0.15 },
+            { x: 0.2, y: 0.7 },
+            { x: 0.04, y: 0.92 },
+          ],
+          confidence: 0.86,
+          visibility: "observed",
+        },
+      ],
+      observedSeams: [{
+        id: "side_floor_wall",
+        category: "floor_wall",
+        planeIds: ["visible_floor", "side_wall"],
+        sourceNormalizedPolyline: [
+          { x: 0.04, y: 0.92 },
+          { x: 0.2, y: 0.7 },
+        ],
+        confidence: 0.88,
+        visibility: "observed",
+      }],
+    }),
+  )));
+  assert.equal(isNearVerticalFloorWallSeam([
+    { x: 0.04, y: 0.92 },
+    { x: 0.2, y: 0.7 },
+  ]), false);
+  assert.equal(side.candidates[0]?.imageEvidence.nearVertical, false);
+  assert.equal(
+    side.candidates[0]?.reasons.includes(
+      "near_vertical_image_seam_insufficient_as_floor_wall",
+    ),
+    false,
+  );
+});
+
+test("strong near-vertical S4A to S4B enables collision only with intact proof", () => {
+  const observation = evidence(steepSideObservation());
+  const s4a = constructAfcV2RoomBoundaryAuthority(construction(observation));
+  assert.equal(s4a.candidates[0]?.status, "accepted");
+  assert.equal(s4a.candidates[0]?.imageEvidence.nearVertical, true);
+  assert.equal(s4a.candidates[0]?.interior.status, "accepted");
+  assert.equal(s4a.collisionAuthority, false);
+  const s4b = constructAfcV2RoomCollisionAuthority({
+    roomBoundary: s4a,
+    observation,
+  });
+  assert.equal(s4b.boundaries[0]?.status, "accepted");
+  assert.equal(s4b.boundaries[0]?.collisionEnabled, true);
+  assert.equal(s4b.boundaries[0]?.corroboration.kind, "multi_probe_region_frontier");
+  assert.equal(s4b.geometryManufactured, false);
+  assert.equal(s4b.hiddenContinuation, false);
+
+  const occupancyFalse = constructAfcV2RoomCollisionAuthority({
+    roomBoundary: steepSideReceipt({
+      observedPlanes: [
+        {
+          id: "visible_floor",
+          category: "floor",
+          sourceNormalizedPolygon: steepFloorPolygon,
+          confidence: 0.94,
+          visibility: "observed",
+        },
+        {
+          id: "visible_side_wall",
+          category: "wall",
+          sourceNormalizedPolygon: steepFloorPolygon,
+          confidence: 0.91,
+          visibility: "observed",
+        },
+      ],
+    }),
+    observation,
+  });
+  assert.equal(occupancyFalse.boundaries[0]?.collisionEnabled, false);
+
+  const floorFrontierFalse = constructAfcV2RoomCollisionAuthority({
+    roomBoundary: steepSideReceipt({
+      observedPlanes: [
+        {
+          id: "visible_floor",
+          category: "floor",
+          sourceNormalizedPolygon: [
+            { x: 0.55, y: 0.88 },
+            { x: 0.98, y: 0.88 },
+            { x: 0.98, y: 0.99 },
+            { x: 0.55, y: 0.99 },
+          ],
+          confidence: 0.94,
+          visibility: "observed",
+        },
+        {
+          id: "visible_side_wall",
+          category: "wall",
+          sourceNormalizedPolygon: steepWallPolygon,
+          confidence: 0.91,
+          visibility: "observed",
+        },
+      ],
+    }),
+    observation,
+  });
+  assert.equal(floorFrontierFalse.boundaries[0]?.collisionEnabled, false);
+
+  const wallFrontierFalse = constructAfcV2RoomCollisionAuthority({
+    roomBoundary: steepSideReceipt({
+      observedPlanes: [
+        {
+          id: "visible_floor",
+          category: "floor",
+          sourceNormalizedPolygon: steepFloorPolygon,
+          confidence: 0.94,
+          visibility: "observed",
+        },
+        {
+          id: "visible_side_wall",
+          category: "wall",
+          sourceNormalizedPolygon: [
+            { x: 0.01, y: 0.12 },
+            { x: 0.06, y: 0.12 },
+            { x: 0.06, y: 0.90 },
+            { x: 0.01, y: 0.90 },
+          ],
+          confidence: 0.91,
+          visibility: "observed",
+        },
+      ],
+    }),
+    observation,
+  });
+  assert.equal(wallFrontierFalse.boundaries[0]?.collisionEnabled, false);
+
+  const ambiguous = constructAfcV2RoomCollisionAuthority({
+    roomBoundary: steepSideReceipt({
+      observedSeams: [{
+        id: "visible_side_floor_wall",
+        category: "floor_wall",
+        planeIds: ["visible_floor", "visible_side_wall"],
+        sourceNormalizedPolyline: steepSeamPolyline,
+        confidence: 0.9,
+        visibility: "observed",
+        ambiguity: "Could be trim rather than the floor-wall junction.",
+      }],
+    }),
+    observation,
+  });
+  assert.equal(ambiguous.boundaries[0]?.collisionEnabled, false);
 });

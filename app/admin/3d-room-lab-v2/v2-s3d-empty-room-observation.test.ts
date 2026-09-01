@@ -256,7 +256,7 @@ test("EMPTY observer consumes exact retained bytes with no Floor or Camera input
 
   assert.equal(result.observerStatus, "observed");
   assert.equal(result.observer.promptVersion, AFC_V2_EMPTY_ROOM_OBSERVATION_PROMPT_VERSION);
-  assert.equal(result.observer.promptVersion, "afc-v2-empty-visible-room-observer/v4");
+  assert.equal(result.observer.promptVersion, "afc-v2-empty-visible-room-observer/v5");
   assert.equal(result.basis.kind, "EMPTY");
   assert.equal(result.basis.identity.sha256, emptyBasis.sha256);
   assert.equal(result.basis.originalAncestorSha256, originalBasis.sha256);
@@ -286,6 +286,10 @@ test("EMPTY observer consumes exact retained bytes with no Floor or Camera input
   assert.match(suppliedPrompt, /Do not derive a wall-ceiling seam merely/i);
   assert.match(suppliedPrompt, /pelmet, curtain box, valance/i);
   assert.match(suppliedPrompt, /Place a wall-ceiling junction on the actual room-envelope/i);
+  assert.match(suppliedPrompt, /visible side floor-wall boundaries/i);
+  assert.match(suppliedPrompt, /emit the explicit finite seam even if one endpoint is at the image frame/i);
+  assert.match(suppliedPrompt, /Do not omit a directly visible floor-wall seam merely because/i);
+  assert.match(suppliedPrompt, /do not extend beyond the frame/i);
 });
 
 test("quality gate keeps partial evidence and rejects malformed geometry conservatively", () => {

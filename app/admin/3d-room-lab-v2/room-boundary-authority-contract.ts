@@ -13,7 +13,7 @@ export const AFC_V2_ROOM_BOUNDARY_KIND =
 export const AFC_V2_ROOM_BOUNDARY_PROJECTION_KERNEL_VERSION =
   "afc-v2-room-boundary-projection/v1" as const;
 export const AFC_V2_ROOM_BOUNDARY_CONSTRUCTION_VERSION =
-  "afc-v2-room-boundary-construction/v1" as const;
+  "afc-v2-room-boundary-construction/v2" as const;
 export const AFC_V2_ROOM_BOUNDARY_LINE_FIT_VERSION =
   "afc-v2-room-boundary-line-fit/v1" as const;
 
@@ -111,11 +111,39 @@ export type RoomBoundaryOccupancyEvidence = Readonly<{
   wallNegativeCount: number;
 }>;
 
+export type RoomBoundaryLineResidualClass = "supported" | "underdetermined";
+
+export type RoomBoundaryEvidenceApplicabilityStatus =
+  | "pass"
+  | "contradiction"
+  | "not_applicable";
+
+export type RoomBoundaryFrontierVertexApplicability =
+  | "applicable"
+  | "unsupported_by_frame"
+  | "unsupported_by_polygon_coverage"
+  | "contradiction";
+
+export type RoomBoundaryFrontierVertexEvidence = Readonly<{
+  applicability: RoomBoundaryFrontierVertexApplicability;
+  status: RoomBoundaryEvidenceApplicabilityStatus;
+  distance: number | null;
+  frameAdjacent: boolean;
+}>;
+
 export type RoomBoundaryFrontierEvidence = Readonly<{
   maxDistanceToFloorFrontier: number | null;
   maxDistanceToWallFrontier: number | null;
   nearFloorFrontier: boolean;
   nearWallFrontier: boolean;
+  /**
+   * Per-vertex floor/wall frontier classification. `near*Frontier` is true
+   * only when every *applicable* vertex passes and at least one is applicable.
+   * Frame-adjacent vertices with missing polygon coverage are not_applicable
+   * and do not contribute to max distance.
+   */
+  floorVertices: readonly RoomBoundaryFrontierVertexEvidence[];
+  wallVertices: readonly RoomBoundaryFrontierVertexEvidence[];
 }>;
 
 export type RoomBoundaryLineResidual = Readonly<{
@@ -177,6 +205,7 @@ export type RoomBoundaryCandidate = Readonly<{
     occupancy: RoomBoundaryOccupancyEvidence | null;
     frontier: RoomBoundaryFrontierEvidence | null;
     lineResidual: RoomBoundaryLineResidual | null;
+    lineResidualClass: RoomBoundaryLineResidualClass;
     nearVertical: boolean;
   }>;
   projection: Readonly<{

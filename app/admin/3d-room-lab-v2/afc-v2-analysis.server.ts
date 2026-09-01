@@ -73,10 +73,45 @@ import {
 } from "./empty-side-ceiling-wall-observation-contract";
 import { mergeFocusedSideCeilingWallSeams } from "./empty-side-ceiling-wall-observation-merge.server";
 import type { FocusedSideCeilingWallEvidence } from "./empty-side-ceiling-wall-observation-contract";
+import {
+  AFC_V2_EMPTY_SIDE_FLOOR_WALL_PROFILE,
+  AFC_V2_EMPTY_SIDE_FLOOR_WALL_PROMPT_VERSION,
+  emptyFocusedSideFloorWallSibling,
+  observeFocusedSideFloorWallObservation,
+} from "./empty-side-floor-wall-observation.server";
+import {
+  buildFailedFocusedSideFloorWallEvidence,
+} from "./empty-side-floor-wall-observation-contract";
+import { mergeFocusedSideFloorWallObservation } from "./empty-side-floor-wall-observation-merge.server";
+import type { FocusedSideFloorWallEvidence } from "./empty-side-floor-wall-observation-contract";
 import { constructAfcV2RoomBoundaryAuthority } from "./room-boundary-authority.server";
 import type { AfcV2RoomBoundaryAuthorityReceipt } from "./room-boundary-authority-contract";
 import { constructAfcV2RoomCollisionAuthority } from "./room-collision-qualification.server";
 import type { AfcV2RoomCollisionAuthorityReceipt } from "./room-collision-authority-contract";
+import { constructEmptyOriginalRegistrationAuthority } from "./empty-original-registration.server";
+import type { AfcV2EmptyOriginalRegistrationAuthorityReceipt } from "./empty-original-registration-authority-contract";
+import { constructAfcV2RoomEnvelopeAuthority } from "./room-envelope-authority.server";
+import type { AfcV2RoomEnvelopeAuthorityReceipt } from "./room-envelope-authority-contract";
+import { constructAfcV2RoomEnvelopeCollisionAuthority } from "./room-envelope-collision-qualification.server";
+import type { AfcV2RoomEnvelopeCollisionAuthorityReceipt } from "./room-envelope-collision-authority-contract";
+import { constructOriginalStructuralLocalizationAuthority } from "./original-structural-localization.server";
+import {
+  shouldAttemptOriginalStructuralLocalization,
+  type AfcV2OriginalStructuralLocalizationAuthorityReceipt,
+} from "./original-structural-localization-authority-contract";
+import { constructOriginalLocalizedBoundaryAuthority } from "./original-localized-boundary.server";
+import type { AfcV2OriginalLocalizedRoomBoundaryAuthorityReceipt } from "./original-localized-boundary-authority-contract";
+import { constructOriginalLocalizedCollisionAuthority } from "./original-localized-collision-qualification.server";
+import type { AfcV2OriginalLocalizedCollisionAuthorityReceipt } from "./original-localized-collision-authority-contract";
+import { constructAfcV2EmptyAuthoritativeCollisionAuthority } from "./empty-authoritative-collision-qualification.server";
+import type { AfcV2EmptyAuthoritativeCollisionAuthorityReceipt } from "./empty-authoritative-collision-authority-contract";
+import {
+  getAutoFloorVisionAllowedImageHosts,
+  getAutoFloorVisionImageFetchTimeoutMs,
+  getAutoFloorVisionImageMaxBytes,
+  isAutoFloorVisionAllowLocalhostHttp,
+} from "@/lib/vibodeAutoFloorVisionConfig";
+import { fetchRoomImageSafely } from "@/lib/vibodeAutoFloorImageFetch";
 
 export const AFC_V2_REFERENCE_DEPTH_M = 4;
 
@@ -133,6 +168,7 @@ type AfcV2LivePipelineEvidence = Readonly<{
     fullyTiledFloorReader: 0;
     roomObserver: 0 | 1;
     focusedSideCeilingObserver: 0 | 1;
+    focusedSideFloorWallObserver: 0 | 1;
   }>;
   roomObservation: EmptyRoomObservationEvidence | null;
   roomObservationStatus:
@@ -148,8 +184,20 @@ type AfcV2LivePipelineEvidence = Readonly<{
     | FocusedSideCeilingWallEvidence["observerStatus"]
     | "empty"
     | "not_run";
+  focusedSideFloorWallObservation: FocusedSideFloorWallEvidence | null;
+  focusedSideFloorWallObservationStatus:
+    | FocusedSideFloorWallEvidence["observerStatus"]
+    | "empty"
+    | "not_run";
   roomBoundaries: AfcV2RoomBoundaryAuthorityReceipt | null;
   roomCollision: AfcV2RoomCollisionAuthorityReceipt | null;
+  emptyOriginalRegistration: AfcV2EmptyOriginalRegistrationAuthorityReceipt | null;
+  roomEnvelope: AfcV2RoomEnvelopeAuthorityReceipt | null;
+  roomEnvelopeCollision: AfcV2RoomEnvelopeCollisionAuthorityReceipt | null;
+  originalStructuralLocalization: AfcV2OriginalStructuralLocalizationAuthorityReceipt | null;
+  originalLocalizedBoundary: AfcV2OriginalLocalizedRoomBoundaryAuthorityReceipt | null;
+  originalLocalizedCollision: AfcV2OriginalLocalizedCollisionAuthorityReceipt | null;
+  emptyAuthoritativeCollision: AfcV2EmptyAuthoritativeCollisionAuthorityReceipt | null;
 }>;
 
 export type AfcV2AnalyzeResult =
@@ -209,7 +257,12 @@ export type AfcV2AnalysisDependencies = Readonly<{
   product?: AfcSr1TiledLiveProductDependencies;
   observeRoom?: typeof observeRetainedEmptyRoom;
   observeFocusedSideCeilingWall?: typeof observeFocusedSideCeilingWallSeams;
+  observeFocusedSideFloorWall?: typeof observeFocusedSideFloorWallObservation;
   analysisMode?: "live" | "controlled_replay";
+  registrationRasters?: Readonly<{
+    originalBytes: Uint8Array;
+    emptyBytes: Uint8Array;
+  }>;
 }>;
 
 export type AfcV2ControlledReplayTestDependencies = Readonly<
@@ -360,6 +413,7 @@ function livePipelineEvidence(
   product: AfcSr1LiveProductResult,
   roomObservation: EmptyRoomObservationEvidence | null,
   focusedSideCeilingObservation: FocusedSideCeilingWallEvidence | null,
+  focusedSideFloorWallObservation: FocusedSideFloorWallEvidence | null,
 ): AfcV2LivePipelineEvidence {
   const evidence = getAfcSr1LiveAttemptEvidence(input.attemptId);
   const binding = evidence?.binding;
@@ -415,6 +469,7 @@ function livePipelineEvidence(
       fullyTiledFloorReader: 0 as const,
       roomObserver: roomObservation ? 1 as const : 0 as const,
       focusedSideCeilingObserver: focusedSideCeilingObservation ? 1 as const : 0 as const,
+      focusedSideFloorWallObserver: focusedSideFloorWallObservation ? 1 as const : 0 as const,
     }),
     roomObservation,
     roomObservationStatus: roomObservation?.observerStatus ??
@@ -428,8 +483,23 @@ function livePipelineEvidence(
             focusedSideCeilingObservation.observedSeams.length === 0
         ? "empty"
         : focusedSideCeilingObservation?.observerStatus ?? "not_run",
+    focusedSideFloorWallObservation,
+    focusedSideFloorWallObservationStatus:
+      focusedSideFloorWallObservation?.observerStatus === "failed"
+        ? "failed"
+        : focusedSideFloorWallObservation?.observerStatus === "observed" &&
+            focusedSideFloorWallObservation.observedSides.length === 0
+        ? "empty"
+        : focusedSideFloorWallObservation?.observerStatus ?? "not_run",
     roomBoundaries: null,
     roomCollision: null,
+    emptyOriginalRegistration: null,
+    roomEnvelope: null,
+    roomEnvelopeCollision: null,
+    originalStructuralLocalization: null,
+    originalLocalizedBoundary: null,
+    originalLocalizedCollision: null,
+    emptyAuthoritativeCollision: null,
   });
 }
 
@@ -444,7 +514,9 @@ export async function executeAfcV2Analysis(
   const observationBranch: {
     general: Promise<EmptyRoomObservationEvidence> | null;
     focused: Promise<FocusedSideCeilingWallEvidence> | null;
-  } = { general: null, focused: null };
+    focusedFloorWall: Promise<FocusedSideFloorWallEvidence> | null;
+  } = { general: null, focused: null, focusedFloorWall: null };
+  let capturedEmptyBytes: Uint8Array | null = null;
   const externalEmptyHook = dependencies.product?.onEmptyRetained;
   const product = await executeAfcSr1TiledLiveProductAttempt({
     attemptId: input.attemptId,
@@ -455,6 +527,7 @@ export async function executeAfcV2Analysis(
   }, {
     ...dependencies.product,
     onEmptyRetained: (retained) => {
+      capturedEmptyBytes = retained.retainedEmpty.bytes;
       try {
         externalEmptyHook?.(retained);
       } catch {
@@ -527,6 +600,40 @@ export async function executeAfcV2Analysis(
           ? async (input: typeof observationInput) =>
             emptyFocusedSideCeilingWallSibling(input)
           : observeFocusedSideCeilingWallSeams);
+      const failedFocusedFloorWall = () =>
+        buildFailedFocusedSideFloorWallEvidence({
+          attemptId: retained.attemptId,
+          loadGeneration: retained.loadGeneration,
+          emptyIdentity: retained.retainedEmpty.identity,
+          originalAncestorSha256: retained.originalIdentity.sha256,
+          provider: dependencies.observeFocusedSideFloorWall ||
+              dependencies.observeRoom
+            ? "controlled_fixture"
+            : "google_gemini",
+          model: process.env.AFC_V2_ROOM_OBSERVATION_MODEL?.trim() ||
+            AFC_V2_EMPTY_ROOM_OBSERVATION_DEFAULT_MODEL,
+          observerProfile: AFC_V2_EMPTY_SIDE_FLOOR_WALL_PROFILE,
+          promptVersion: AFC_V2_EMPTY_SIDE_FLOOR_WALL_PROMPT_VERSION,
+          generatedAt: new Date().toISOString(),
+        }, {
+          failureClass: "unknown",
+          failureStage: "provider_invocation",
+          provider: dependencies.observeFocusedSideFloorWall ||
+              dependencies.observeRoom
+            ? "controlled_fixture"
+            : "google_gemini",
+          model: process.env.AFC_V2_ROOM_OBSERVATION_MODEL?.trim() ||
+            AFC_V2_EMPTY_ROOM_OBSERVATION_DEFAULT_MODEL,
+          providerStatus: null,
+          safeDetail:
+            "Focused side-floor-wall observation rejected unexpectedly; general observation and Floor/Camera continued independently.",
+          contractValidationReason: null,
+        });
+      const focusedFloorWallObserver = dependencies.observeFocusedSideFloorWall ??
+        (dependencies.observeRoom
+          ? async (input: typeof observationInput) =>
+            emptyFocusedSideFloorWallSibling(input)
+          : observeFocusedSideFloorWallObservation);
       try {
         observationBranch.general = (
           dependencies.observeRoom ?? observeRetainedEmptyRoom
@@ -540,21 +647,37 @@ export async function executeAfcV2Analysis(
       } catch {
         observationBranch.focused = Promise.resolve(failedFocused());
       }
+      try {
+        observationBranch.focusedFloorWall = focusedFloorWallObserver(
+          observationInput,
+        ).catch(() => failedFocusedFloorWall());
+      } catch {
+        observationBranch.focusedFloorWall = Promise.resolve(
+          failedFocusedFloorWall(),
+        );
+      }
     },
   });
-  const [generalObservation, focusedObservation] = await Promise.all([
-    observationBranch.general,
-    observationBranch.focused,
-  ]);
-  const roomObservation = mergeFocusedSideCeilingWallSeams({
+  const [generalObservation, focusedObservation, focusedFloorWallObservation] =
+    await Promise.all([
+      observationBranch.general,
+      observationBranch.focused,
+      observationBranch.focusedFloorWall,
+    ]);
+  const afterCeiling = mergeFocusedSideCeilingWallSeams({
     general: generalObservation,
     focused: focusedObservation,
+  });
+  const roomObservation = mergeFocusedSideFloorWallObservation({
+    general: afterCeiling,
+    focused: focusedFloorWallObservation,
   });
   const pipelineEvidence = livePipelineEvidence(
     input,
     product,
     roomObservation,
     focusedObservation,
+    focusedFloorWallObservation,
   );
   if (product.status !== "authoritative_geometry") {
     return {
@@ -750,6 +873,128 @@ export async function executeAfcV2Analysis(
     roomBoundary: roomBoundaries,
     observation: roomObservation,
   });
+  const emptyBytes = dependencies.registrationRasters?.emptyBytes ??
+    capturedEmptyBytes ??
+    getAfcSr1LiveAttemptEvidence(input.attemptId)?.floorRead?.emptyBytes ??
+    null;
+  const originalBytes = dependencies.registrationRasters?.originalBytes ??
+    await fetchVerifiedOriginalBytes(input, product) ??
+    null;
+  let emptyOriginalRegistration: AfcV2EmptyOriginalRegistrationAuthorityReceipt | null =
+    null;
+  let roomEnvelope: AfcV2RoomEnvelopeAuthorityReceipt | null = null;
+  let roomEnvelopeCollision: AfcV2RoomEnvelopeCollisionAuthorityReceipt | null =
+    null;
+  let originalStructuralLocalization: AfcV2OriginalStructuralLocalizationAuthorityReceipt | null =
+    null;
+  let originalLocalizedBoundary: AfcV2OriginalLocalizedRoomBoundaryAuthorityReceipt | null =
+    null;
+  let originalLocalizedCollision: AfcV2OriginalLocalizedCollisionAuthorityReceipt | null =
+    null;
+  let emptyAuthoritativeCollision: AfcV2EmptyAuthoritativeCollisionAuthorityReceipt | null =
+    null;
+  try {
+    emptyOriginalRegistration = await constructEmptyOriginalRegistrationAuthority({
+      emptyIdentity: {
+        sha256: product.emptyBasis.sha256,
+        decodedWidth: product.emptyBasis.decodedWidth,
+        decodedHeight: product.emptyBasis.decodedHeight,
+        orientation: product.emptyBasis.orientation,
+      },
+      originalIdentity: {
+        sha256: product.originalBasis.sha256,
+        decodedWidth: product.originalBasis.decodedWidth,
+        decodedHeight: product.originalBasis.decodedHeight,
+        orientation: product.originalBasis.orientation,
+      },
+      emptyBytes,
+      originalBytes,
+      observation: roomObservation,
+    });
+    roomEnvelope = constructAfcV2RoomEnvelopeAuthority({
+      registration: emptyOriginalRegistration,
+      roomBoundary: roomBoundaries,
+      roomCollision,
+      observation: roomObservation,
+    });
+    roomEnvelopeCollision = constructAfcV2RoomEnvelopeCollisionAuthority({
+      roomCollision,
+      registration: emptyOriginalRegistration,
+      roomEnvelope,
+    });
+  } catch {
+    emptyOriginalRegistration = emptyOriginalRegistration ?? null;
+    roomEnvelope = roomEnvelope ?? null;
+    roomEnvelopeCollision = null;
+  }
+  try {
+    if (
+      shouldAttemptOriginalStructuralLocalization({
+        oldCompatibilityTier: emptyOriginalRegistration?.oldCompatibilityTier,
+        identityRegistrationClass: emptyOriginalRegistration?.registrationClass,
+      })
+    ) {
+      originalStructuralLocalization = await constructOriginalStructuralLocalizationAuthority({
+        emptyIdentity: {
+          sha256: product.emptyBasis.sha256,
+          decodedWidth: product.emptyBasis.decodedWidth,
+          decodedHeight: product.emptyBasis.decodedHeight,
+          orientation: product.emptyBasis.orientation,
+        },
+        originalIdentity: {
+          sha256: product.originalBasis.sha256,
+          decodedWidth: product.originalBasis.decodedWidth,
+          decodedHeight: product.originalBasis.decodedHeight,
+          orientation: product.originalBasis.orientation,
+        },
+        emptyBytes,
+        originalBytes,
+        observation: roomObservation,
+        identityRegistration: emptyOriginalRegistration,
+        attemptId: input.attemptId,
+        frozenCameraReceiptIdentity: freeze.value.payload.authority.appliedAtIso ??
+          "frozen-calibrated-camera",
+        floorAuthorityKey: floor.authorityKey,
+      });
+      if (
+        originalStructuralLocalization.registrationClass ===
+          "certified_original_localized"
+      ) {
+        originalLocalizedBoundary = constructOriginalLocalizedBoundaryAuthority({
+          localization: originalStructuralLocalization,
+          observation: roomObservation,
+          originalIdentity: {
+            decodedWidth: product.originalBasis.decodedWidth,
+            decodedHeight: product.originalBasis.decodedHeight,
+          },
+          camera: {
+            verticalFovDeg: camera.verticalFovDeg,
+            pose: camera.pose,
+            frame: camera.frame,
+          },
+        });
+        originalLocalizedCollision = constructOriginalLocalizedCollisionAuthority({
+          localization: originalStructuralLocalization,
+          originalLocalizedBoundary,
+          observation: roomObservation,
+        });
+      }
+    }
+  } catch {
+    originalStructuralLocalization = originalStructuralLocalization ?? null;
+    originalLocalizedBoundary = originalLocalizedBoundary ?? null;
+    originalLocalizedCollision = null;
+  }
+  try {
+    emptyAuthoritativeCollision = constructAfcV2EmptyAuthoritativeCollisionAuthority({
+      roomCollision,
+      roomEnvelope,
+      identityRegistration: emptyOriginalRegistration,
+      originalLocalization: originalStructuralLocalization,
+    });
+  } catch {
+    emptyAuthoritativeCollision = null;
+  }
 
   return {
     ...pipelineEvidence,
@@ -761,6 +1006,13 @@ export async function executeAfcV2Analysis(
     freezeReceipt: freeze.value,
     roomBoundaries,
     roomCollision,
+    emptyOriginalRegistration,
+    roomEnvelope,
+    roomEnvelopeCollision,
+    originalStructuralLocalization,
+    originalLocalizedBoundary,
+    originalLocalizedCollision,
+    emptyAuthoritativeCollision,
   };
 }
 
@@ -805,7 +1057,7 @@ export async function executeAfcV2ControlledReplay(
       },
     };
     return {
-      ...livePipelineEvidence(input, rejectedProduct, null, null),
+      ...livePipelineEvidence(input, rejectedProduct, null, null, null),
       status: "failed",
       reason: "Controlled replay evidence did not satisfy exact identity and lineage bindings.",
       product: rejectedProduct,
@@ -814,5 +1066,33 @@ export async function executeAfcV2ControlledReplay(
   return executeAfcV2Analysis(input, {
     analysisMode: "controlled_replay",
     product: { ...product, ...testDependencies },
+    registrationRasters: (() => {
+      const replayOriginal = decodeEvidence(evidence.original.base64);
+      const replayEmpty = decodeEvidence(evidence.empty.base64);
+      return replayOriginal && replayEmpty
+        ? { originalBytes: replayOriginal, emptyBytes: replayEmpty }
+        : undefined;
+    })(),
   });
+}
+
+async function fetchVerifiedOriginalBytes(
+  input: AfcV2AnalyzeInput,
+  product: AfcSr1LiveAuthoritativeGeometry,
+): Promise<Uint8Array | null> {
+  try {
+    const fetched = await fetchRoomImageSafely(input.sourceImageUrl, {
+      allowedHosts: getAutoFloorVisionAllowedImageHosts(),
+      maxBytes: getAutoFloorVisionImageMaxBytes(),
+      timeoutMs: getAutoFloorVisionImageFetchTimeoutMs(),
+      allowLocalhostHttp: isAutoFloorVisionAllowLocalhostHttp(),
+    });
+    if (!fetched.ok) return null;
+    if (sha256(Uint8Array.from(fetched.buffer)) !== product.originalBasis.sha256) {
+      return null;
+    }
+    return Uint8Array.from(fetched.buffer);
+  } catch {
+    return null;
+  }
 }

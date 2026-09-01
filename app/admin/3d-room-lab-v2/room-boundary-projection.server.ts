@@ -188,8 +188,10 @@ export function projectEmptySourceNormalizedToWorld(
 }
 
 /**
- * Every vertex is projected. A single failure fails the polyline; callers must
- * not drop the bad point and accept the rest.
+ * Every vertex is projected and retained in diagnostics. Residual-supported
+ * floor-wall callers still require every sample. Residual-underdetermined
+ * floor-wall callers may keep the observed endpoint span when an interior
+ * sample fails; they must not invent a replacement endpoint.
  */
 export function projectEmptyPolylineToWorld(
   polyline: readonly SourceNormalizedPoint[],

@@ -35,11 +35,39 @@ import {
 } from "./room-boundary-authority-contract";
 import {
   AFC_V2_ROOM_COLLISION_AUTHORITY_VERSION,
-  collisionWallDiagnosticsFromReceipt,
-  enabledCollisionWallsFromReceipt,
   roomCollisionQualificationBasisLabel,
   type AfcV2RoomCollisionAuthorityReceipt,
 } from "./room-collision-authority-contract";
+import {
+  AFC_V2_EMPTY_ORIGINAL_REGISTRATION_AUTHORITY_VERSION,
+  type AfcV2EmptyOriginalRegistrationAuthorityReceipt,
+} from "./empty-original-registration-authority-contract";
+import {
+  AFC_V2_ROOM_ENVELOPE_AUTHORITY_VERSION,
+  type AfcV2RoomEnvelopeAuthorityReceipt,
+} from "./room-envelope-authority-contract";
+import {
+  AFC_V2_ROOM_ENVELOPE_COLLISION_AUTHORITY_VERSION,
+  selectActiveRuntimeCollisionWalls,
+  type AfcV2RoomEnvelopeCollisionAuthorityReceipt,
+} from "./room-envelope-collision-authority-contract";
+import {
+  AFC_V2_ORIGINAL_STRUCTURAL_LOCALIZATION_AUTHORITY_VERSION,
+  activeRegistrationPath,
+  type AfcV2OriginalStructuralLocalizationAuthorityReceipt,
+} from "./original-structural-localization-authority-contract";
+import {
+  AFC_V2_ORIGINAL_LOCALIZED_ROOM_BOUNDARY_AUTHORITY_VERSION,
+  type AfcV2OriginalLocalizedRoomBoundaryAuthorityReceipt,
+} from "./original-localized-boundary-authority-contract";
+import {
+  AFC_V2_ORIGINAL_LOCALIZED_COLLISION_AUTHORITY_VERSION,
+  type AfcV2OriginalLocalizedCollisionAuthorityReceipt,
+} from "./original-localized-collision-authority-contract";
+import {
+  AFC_V2_EMPTY_AUTHORITATIVE_COLLISION_AUTHORITY_VERSION,
+  type AfcV2EmptyAuthoritativeCollisionAuthorityReceipt,
+} from "./empty-authoritative-collision-authority-contract";
 import { TEST_CUBE_NORMALIZED_PLACEMENT_LOCAL_AABB, type LocalAabb } from "./room-collision-footprint";
 import { resolveSceneObjectCollision } from "./scene-collision-resolver";
 import {
@@ -120,6 +148,13 @@ type AppliedAfcResult = {
   freezeReceipt: unknown;
   roomBoundaries: AfcV2RoomBoundaryAuthorityReceipt | null;
   roomCollision: AfcV2RoomCollisionAuthorityReceipt | null;
+  emptyOriginalRegistration: AfcV2EmptyOriginalRegistrationAuthorityReceipt | null;
+  roomEnvelope: AfcV2RoomEnvelopeAuthorityReceipt | null;
+  roomEnvelopeCollision: AfcV2RoomEnvelopeCollisionAuthorityReceipt | null;
+  originalStructuralLocalization: AfcV2OriginalStructuralLocalizationAuthorityReceipt | null;
+  originalLocalizedBoundary: AfcV2OriginalLocalizedRoomBoundaryAuthorityReceipt | null;
+  originalLocalizedCollision: AfcV2OriginalLocalizedCollisionAuthorityReceipt | null;
+  emptyAuthoritativeCollision: AfcV2EmptyAuthoritativeCollisionAuthorityReceipt | null;
 };
 
 type PipelineEvidenceState = {
@@ -158,6 +193,13 @@ function isFloorAppliedAfcResult(value: unknown): value is {
   freezeReceipt: unknown;
   roomBoundaries?: unknown;
   roomCollision?: unknown;
+  emptyOriginalRegistration?: unknown;
+  roomEnvelope?: unknown;
+  roomEnvelopeCollision?: unknown;
+  originalStructuralLocalization?: unknown;
+  originalLocalizedBoundary?: unknown;
+  originalLocalizedCollision?: unknown;
+  emptyAuthoritativeCollision?: unknown;
 } {
   return !!value && typeof value === "object" &&
     ((value as { status?: unknown }).status === "applied" ||
@@ -185,6 +227,83 @@ function asRoomCollisionReceipt(
       (value as { schemaVersion?: unknown }).schemaVersion ===
         AFC_V2_ROOM_COLLISION_AUTHORITY_VERSION
     ? value as AfcV2RoomCollisionAuthorityReceipt
+    : null;
+}
+
+function asRegistrationReceipt(
+  value: unknown,
+): AfcV2EmptyOriginalRegistrationAuthorityReceipt | null {
+  return value &&
+      typeof value === "object" &&
+      (value as { schemaVersion?: unknown }).schemaVersion ===
+        AFC_V2_EMPTY_ORIGINAL_REGISTRATION_AUTHORITY_VERSION
+    ? value as AfcV2EmptyOriginalRegistrationAuthorityReceipt
+    : null;
+}
+
+function asRoomEnvelopeReceipt(
+  value: unknown,
+): AfcV2RoomEnvelopeAuthorityReceipt | null {
+  return value &&
+      typeof value === "object" &&
+      (value as { schemaVersion?: unknown }).schemaVersion ===
+        AFC_V2_ROOM_ENVELOPE_AUTHORITY_VERSION
+    ? value as AfcV2RoomEnvelopeAuthorityReceipt
+    : null;
+}
+
+function asRoomEnvelopeCollisionReceipt(
+  value: unknown,
+): AfcV2RoomEnvelopeCollisionAuthorityReceipt | null {
+  return value &&
+      typeof value === "object" &&
+      (value as { schemaVersion?: unknown }).schemaVersion ===
+        AFC_V2_ROOM_ENVELOPE_COLLISION_AUTHORITY_VERSION
+    ? value as AfcV2RoomEnvelopeCollisionAuthorityReceipt
+    : null;
+}
+
+function asOriginalStructuralLocalizationReceipt(
+  value: unknown,
+): AfcV2OriginalStructuralLocalizationAuthorityReceipt | null {
+  return value &&
+      typeof value === "object" &&
+      (value as { schemaVersion?: unknown }).schemaVersion ===
+        AFC_V2_ORIGINAL_STRUCTURAL_LOCALIZATION_AUTHORITY_VERSION
+    ? value as AfcV2OriginalStructuralLocalizationAuthorityReceipt
+    : null;
+}
+
+function asOriginalLocalizedBoundaryReceipt(
+  value: unknown,
+): AfcV2OriginalLocalizedRoomBoundaryAuthorityReceipt | null {
+  return value &&
+      typeof value === "object" &&
+      (value as { schemaVersion?: unknown }).schemaVersion ===
+        AFC_V2_ORIGINAL_LOCALIZED_ROOM_BOUNDARY_AUTHORITY_VERSION
+    ? value as AfcV2OriginalLocalizedRoomBoundaryAuthorityReceipt
+    : null;
+}
+
+function asOriginalLocalizedCollisionReceipt(
+  value: unknown,
+): AfcV2OriginalLocalizedCollisionAuthorityReceipt | null {
+  return value &&
+      typeof value === "object" &&
+      (value as { schemaVersion?: unknown }).schemaVersion ===
+        AFC_V2_ORIGINAL_LOCALIZED_COLLISION_AUTHORITY_VERSION
+    ? value as AfcV2OriginalLocalizedCollisionAuthorityReceipt
+    : null;
+}
+
+function asEmptyAuthoritativeCollisionReceipt(
+  value: unknown,
+): AfcV2EmptyAuthoritativeCollisionAuthorityReceipt | null {
+  return value &&
+      typeof value === "object" &&
+      (value as { schemaVersion?: unknown }).schemaVersion ===
+        AFC_V2_EMPTY_AUTHORITATIVE_COLLISION_AUTHORITY_VERSION
+    ? value as AfcV2EmptyAuthoritativeCollisionAuthorityReceipt
     : null;
 }
 
@@ -334,6 +453,9 @@ export default function RoomLabV2() {
     useState(true);
   const [showRoomObservationLegend, setShowRoomObservationLegend] =
     useState(true);
+  const [showRegistrationCorrespondences, setShowRegistrationCorrespondences] =
+    useState(true);
+  const [showOriginalLocalization, setShowOriginalLocalization] = useState(true);
   const [showFloorQuad, setShowFloorQuad] = useState(DEFAULT_SHOW_FLOOR_QUAD);
   const [sceneLayer, setSceneLayer] = useState(createInitialSceneLayerState);
   const [selectedModelExpanded, setSelectedModelExpanded] = useState(false);
@@ -343,7 +465,11 @@ export default function RoomLabV2() {
   const glbInputRef = useRef<HTMLInputElement | null>(null);
   const sceneLayerRef = useRef(sceneLayer);
   const objectLocalAabbRef = useRef(new Map<string, LocalAabb>());
-  const roomCollisionRef = useRef<AfcV2RoomCollisionAuthorityReceipt | null>(null);
+  const activeCollisionRef = useRef(selectActiveRuntimeCollisionWalls({
+    emptyAuthoritativeCollision: null,
+    envelopeCollision: null,
+    roomCollision: null,
+  }));
   const loadGenerationRef = useRef(0);
   const abortRef = useRef<AbortController | null>(null);
 
@@ -413,7 +539,7 @@ export default function RoomLabV2() {
       current: object.transform,
       proposed,
       localAabb: localAabbForObject(object),
-      walls: enabledCollisionWallsFromReceipt(roomCollisionRef.current),
+      walls: activeCollisionRef.current.walls,
       mode,
     });
     return applyObjectWorldTransform(current, objectId, resolved.transform);
@@ -477,13 +603,24 @@ export default function RoomLabV2() {
     if (glbInputRef.current) glbInputRef.current.value = "";
   }
 
+  const activeCollision = selectActiveRuntimeCollisionWalls({
+    emptyAuthoritativeCollision: applied?.emptyAuthoritativeCollision ?? null,
+    originalLocalizedCollision: applied?.originalLocalizedCollision ?? null,
+    envelopeCollision: applied?.roomEnvelopeCollision ?? null,
+    roomCollision: applied?.roomCollision ?? null,
+  });
+  const registrationPath = activeRegistrationPath({
+    identityRegistrationClass: applied?.emptyOriginalRegistration?.registrationClass,
+    originalLocalizationClass: applied?.originalStructuralLocalization?.registrationClass,
+  });
+
   useEffect(() => {
     sceneLayerRef.current = sceneLayer;
   }, [sceneLayer]);
 
   useEffect(() => {
-    roomCollisionRef.current = applied?.roomCollision ?? null;
-  }, [applied]);
+    activeCollisionRef.current = activeCollision;
+  }, [activeCollision]);
 
   useEffect(() => {
     return () => {
@@ -627,6 +764,25 @@ export default function RoomLabV2() {
         freezeReceipt: result.freezeReceipt,
         roomBoundaries: asRoomBoundaryReceipt(result.roomBoundaries),
         roomCollision: asRoomCollisionReceipt(result.roomCollision),
+        emptyOriginalRegistration: asRegistrationReceipt(
+          result.emptyOriginalRegistration,
+        ),
+        roomEnvelope: asRoomEnvelopeReceipt(result.roomEnvelope),
+        roomEnvelopeCollision: asRoomEnvelopeCollisionReceipt(
+          result.roomEnvelopeCollision,
+        ),
+        originalStructuralLocalization: asOriginalStructuralLocalizationReceipt(
+          result.originalStructuralLocalization,
+        ),
+        originalLocalizedBoundary: asOriginalLocalizedBoundaryReceipt(
+          result.originalLocalizedBoundary,
+        ),
+        originalLocalizedCollision: asOriginalLocalizedCollisionReceipt(
+          result.originalLocalizedCollision,
+        ),
+        emptyAuthoritativeCollision: asEmptyAuthoritativeCollisionReceipt(
+          result.emptyAuthoritativeCollision,
+        ),
       });
       dispatch({ type: "analysis_applied" });
     } catch (caught) {
@@ -690,6 +846,104 @@ export default function RoomLabV2() {
     const anchor = document.createElement("a");
     anchor.href = url;
     anchor.download = "afc-v2-s4a-room-boundary-authority.json";
+    anchor.click();
+    URL.revokeObjectURL(url);
+  }
+
+  function downloadRegistrationEvidence() {
+    if (!applied?.emptyOriginalRegistration) return;
+    const blob = new Blob(
+      [JSON.stringify(applied.emptyOriginalRegistration, null, 2)],
+      { type: "application/json" },
+    );
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = "afc-v2-s4c0-empty-original-registration-authority.json";
+    anchor.click();
+    URL.revokeObjectURL(url);
+  }
+
+  function downloadRoomEnvelopeEvidence() {
+    if (!applied?.roomEnvelope) return;
+    const blob = new Blob(
+      [JSON.stringify(applied.roomEnvelope, null, 2)],
+      { type: "application/json" },
+    );
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = "afc-v2-s4c1-room-envelope-authority.json";
+    anchor.click();
+    URL.revokeObjectURL(url);
+  }
+
+  function downloadRoomEnvelopeCollisionEvidence() {
+    if (!applied?.roomEnvelopeCollision) return;
+    const blob = new Blob(
+      [JSON.stringify(applied.roomEnvelopeCollision, null, 2)],
+      { type: "application/json" },
+    );
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = "afc-v2-s4c-cq-room-envelope-collision-authority.json";
+    anchor.click();
+    URL.revokeObjectURL(url);
+  }
+
+  function downloadOriginalLocalizationEvidence() {
+    if (!applied?.originalStructuralLocalization) return;
+    const blob = new Blob(
+      [JSON.stringify(applied.originalStructuralLocalization, null, 2)],
+      { type: "application/json" },
+    );
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = "afc-v2-s4c0-ol-original-structural-localization-authority.json";
+    anchor.click();
+    URL.revokeObjectURL(url);
+  }
+
+  function downloadOriginalLocalizedBoundaryEvidence() {
+    if (!applied?.originalLocalizedBoundary) return;
+    const blob = new Blob(
+      [JSON.stringify(applied.originalLocalizedBoundary, null, 2)],
+      { type: "application/json" },
+    );
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = "afc-v2-s4c0-ol-original-localized-boundary-authority.json";
+    anchor.click();
+    URL.revokeObjectURL(url);
+  }
+
+  function downloadOriginalLocalizedCollisionEvidence() {
+    if (!applied?.originalLocalizedCollision) return;
+    const blob = new Blob(
+      [JSON.stringify(applied.originalLocalizedCollision, null, 2)],
+      { type: "application/json" },
+    );
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = "afc-v2-s4c-ol-original-localized-collision-authority.json";
+    anchor.click();
+    URL.revokeObjectURL(url);
+  }
+
+  function downloadEmptyAuthoritativeCollisionEvidence() {
+    if (!applied?.emptyAuthoritativeCollision) return;
+    const blob = new Blob(
+      [JSON.stringify(applied.emptyAuthoritativeCollision, null, 2)],
+      { type: "application/json" },
+    );
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = "afc-v2-empty-authoritative-collision-authority.json";
     anchor.click();
     URL.revokeObjectURL(url);
   }
@@ -821,6 +1075,34 @@ export default function RoomLabV2() {
                     </label>
                   </>
                 ) : null}
+                {applied?.emptyOriginalRegistration?.correspondences.length ? (
+                  <label className="flex items-center gap-2 text-xs text-slate-300">
+                    <input
+                      type="checkbox"
+                      checked={showRegistrationCorrespondences}
+                      onChange={(event) =>
+                        setShowRegistrationCorrespondences(event.target.checked)}
+                      className="accent-teal-400"
+                    />
+                    Registration evidence (diagnostic only)
+                    {applied.emptyOriginalRegistration.anchorCount > 0 ||
+                        applied.emptyOriginalRegistration.ridgeStructureCount > 0
+                      ? ` · ${applied.emptyOriginalRegistration.anchorInlierCount}A/${applied.emptyOriginalRegistration.ridgeInlierCount}R`
+                      : ""}
+                  </label>
+                ) : null}
+                {applied?.originalStructuralLocalization?.structures.length ? (
+                  <label className="flex items-center gap-2 text-xs text-slate-300">
+                    <input
+                      type="checkbox"
+                      checked={showOriginalLocalization}
+                      onChange={(event) =>
+                        setShowOriginalLocalization(event.target.checked)}
+                      className="accent-violet-400"
+                    />
+                    ORIGINAL localization (diagnostic only)
+                  </label>
+                ) : null}
                 <span className="text-xs text-slate-500">
                   {REPRESENTATION_DESCRIPTIONS[
                     orchestration.selectedRepresentation
@@ -856,12 +1138,15 @@ export default function RoomLabV2() {
                       wallBaseDiagnostics={wallBaseDiagnosticsFromReceipt(
                         applied.roomBoundaries,
                       )}
-                      collisionWallDiagnostics={collisionWallDiagnosticsFromReceipt(
-                        applied.roomCollision,
-                      )}
-                      collisionWalls={enabledCollisionWallsFromReceipt(
-                        applied.roomCollision,
-                      )}
+                      collisionWallDiagnostics={activeCollision.diagnostics}
+                      collisionWalls={activeCollision.walls}
+                      collisionWallColor={activeCollision.source === "empty_authoritative"
+                        ? 0xf97316
+                        : activeCollision.source === "ol_cq"
+                        ? 0xa78bfa
+                        : activeCollision.source === "s4c_cq"
+                        ? 0x2dd4bf
+                        : 0xf43f5e}
                       sceneObjects={sceneLayer.objects}
                       selectedObjectId={sceneLayer.selectedObjectId}
                       transformMode={sceneLayer.transformMode}
@@ -902,6 +1187,27 @@ export default function RoomLabV2() {
                         floorWallBoundaryStatusBySeamId(
                           applied?.roomBoundaries ?? null,
                         )
+                      }
+                      registrationCorrespondences={
+                        showRegistrationCorrespondences &&
+                          orchestration.selectedRepresentation === "EMPTY"
+                          ? applied?.emptyOriginalRegistration?.correspondences ??
+                            []
+                          : []
+                      }
+                      overlaySpace={
+                        orchestration.selectedRepresentation === "ORIGINAL"
+                          ? "original"
+                          : orchestration.selectedRepresentation === "EMPTY"
+                          ? "empty"
+                          : "none"
+                      }
+                      originalLocalizationStructures={
+                        showOriginalLocalization &&
+                          orchestration.selectedRepresentation === "ORIGINAL"
+                          ? applied?.originalStructuralLocalization?.structures ??
+                            []
+                          : []
                       }
                     />
                   ) : null}
@@ -1157,6 +1463,26 @@ export default function RoomLabV2() {
                       {pipeline.roomObservation.qualityGate.focusedSideCeilingWall
                         .suppressedGeneralSeamIds.length > 0
                         ? ` · ${pipeline.roomObservation.qualityGate.focusedSideCeilingWall.suppressedGeneralSeamIds.length} general duplicate suppressed`
+                        : ""}
+                    </p>
+                  ) : null}
+                  {pipeline.roomObservation.observerStatus !== "failed" &&
+                      pipeline.roomObservation.qualityGate.focusedSideFloorWall
+                        .observerStatus !== "not_run" ? (
+                    <p>
+                      Focused side floor-wall:{" "}
+                      {
+                        pipeline.roomObservation.qualityGate.focusedSideFloorWall
+                          .addedSeamIds.length
+                      }{" "}
+                      seams added
+                      {pipeline.roomObservation.qualityGate.focusedSideFloorWall
+                        .addedPlaneIds.length > 0
+                        ? ` · ${pipeline.roomObservation.qualityGate.focusedSideFloorWall.addedPlaneIds.length} planes added`
+                        : ""}
+                      {pipeline.roomObservation.qualityGate.focusedSideFloorWall
+                        .skippedDuplicateSeamIds.length > 0
+                        ? ` · ${pipeline.roomObservation.qualityGate.focusedSideFloorWall.skippedDuplicateSeamIds.length} focused duplicate skipped`
                         : ""}
                     </p>
                   ) : null}
@@ -1553,6 +1879,347 @@ export default function RoomLabV2() {
                 className="rounded-xl border border-slate-700 bg-slate-900 px-4 py-3 text-left text-xs font-medium text-rose-200 transition hover:border-slate-500"
               >
                 Download V2-S4B Room-Collision authority
+              </button>
+            ) : null}
+            <section className="rounded-xl border border-slate-800 bg-slate-900/70 p-4">
+              <h2 className="text-sm font-semibold text-slate-200">Room Envelope</h2>
+              {applied?.emptyOriginalRegistration ? (
+                <div className="mt-2 space-y-1 text-xs leading-5 text-slate-400">
+                  <p className="font-semibold text-teal-200/90">Registration</p>
+                  <p className="text-amber-200/80">
+                    diagnostic only
+                  </p>
+                  <p>
+                    Registration path: {registrationPath}
+                  </p>
+                  <p>{applied.emptyOriginalRegistration.schemaVersion}</p>
+                  <p>
+                    methodVersion ={" "}
+                    {applied.emptyOriginalRegistration.methodVersion}
+                  </p>
+                  <p>
+                    old compatibility:{" "}
+                    {applied.emptyOriginalRegistration.oldCompatibilityTier}
+                  </p>
+                  <p className="text-teal-200/80">
+                    registrationClass ={" "}
+                    {applied.emptyOriginalRegistration.registrationClass}
+                  </p>
+                  <p>
+                    transformKind = {applied.emptyOriginalRegistration.transformKind}
+                  </p>
+                  <p>
+                    collisionPromotionEligible ={" "}
+                    {String(
+                      applied.emptyOriginalRegistration.collisionPromotionEligible,
+                    )}
+                  </p>
+                  <p className="text-slate-500">
+                    RAW samples{" "}
+                    {applied.emptyOriginalRegistration.correspondenceCount}
+                    {" / attempted "}
+                    {applied.emptyOriginalRegistration.attemptedCorrespondenceCount}
+                  </p>
+                  <p>
+                    anchors{" "}
+                    {applied.emptyOriginalRegistration.anchorInlierCount}
+                    {" / "}
+                    {applied.emptyOriginalRegistration.anchorCount}
+                    {" · ridges "}
+                    {applied.emptyOriginalRegistration.ridgeInlierCount}
+                    {" / "}
+                    {applied.emptyOriginalRegistration.ridgeStructureCount}
+                  </p>
+                  <p>
+                    evidence units{" "}
+                    {applied.emptyOriginalRegistration.independentEvidenceUnitCount}
+                    {" / attempted "}
+                    {applied.emptyOriginalRegistration.attemptedEvidenceUnitCount}
+                    {" · structure inlier fraction "}
+                    {applied.emptyOriginalRegistration.inlierFraction === null
+                      ? "n/a"
+                      : applied.emptyOriginalRegistration.inlierFraction.toFixed(3)}
+                  </p>
+                  <p>
+                    orientation bins{" "}
+                    {applied.emptyOriginalRegistration.orientationBinCount ?? "n/a"}
+                    {" · zoom lock "}
+                    {applied.emptyOriginalRegistration.zoomLockSatisfied === null
+                      ? "n/a"
+                      : String(applied.emptyOriginalRegistration.zoomLockSatisfied)}
+                    {" ("}
+                    {applied.emptyOriginalRegistration.zoomLockConfiguration}
+                    {")"}
+                  </p>
+                  <p>
+                    contradictions{" "}
+                    {applied.emptyOriginalRegistration.contradictionCount}
+                  </p>
+                  <p>
+                    anchor max{" "}
+                    {applied.emptyOriginalRegistration.residuals.anchorMax ?? "n/a"}
+                    {" · RMS "}
+                    {applied.emptyOriginalRegistration.residuals.anchorRms ?? "n/a"}
+                  </p>
+                  <p>
+                    ridge normal max{" "}
+                    {applied.emptyOriginalRegistration.residuals.ridgeNormalMax ?? "n/a"}
+                    {" · RMS "}
+                    {applied.emptyOriginalRegistration.residuals.ridgeNormalRms ?? "n/a"}
+                  </p>
+                  <p>
+                    diagnostic scale{" "}
+                    {applied.emptyOriginalRegistration.residuals.diagnosticSimilarity
+                      ?.scale ?? "n/a"}
+                    {" · tx "}
+                    {applied.emptyOriginalRegistration.residuals.diagnosticSimilarity
+                      ?.tx ?? "n/a"}
+                    {" · ty "}
+                    {applied.emptyOriginalRegistration.residuals.diagnosticSimilarity
+                      ?.ty ?? "n/a"}
+                  </p>
+                  <p>
+                    ridge scale{" "}
+                    {applied.emptyOriginalRegistration.residuals.diagnosticRidgeScale ??
+                      "n/a"}
+                  </p>
+                  <p>
+                    spread quadrants{" "}
+                    {applied.emptyOriginalRegistration.correspondenceSpread
+                      ?.quadrantCount ?? "n/a"}
+                    {" · hull "}
+                    {applied.emptyOriginalRegistration.correspondenceSpread
+                      ?.hullArea ?? "n/a"}
+                    {" · pca2 "}
+                    {applied.emptyOriginalRegistration.correspondenceSpread
+                      ?.secondPcaRatio ?? "n/a"}
+                  </p>
+                  {applied.emptyOriginalRegistration.constructionReasons[0] ? (
+                    <p className="text-amber-300/70">
+                      {applied.emptyOriginalRegistration.constructionReasons.join(
+                        ", ",
+                      )}
+                    </p>
+                  ) : null}
+                </div>
+              ) : (
+                <p className="mt-2 text-xs leading-5 text-slate-500">
+                  EMPTY↔ORIGINAL registration waits for frozen Floor/Camera.
+                </p>
+              )}
+              {applied?.originalStructuralLocalization ? (
+                <div className="mt-3 space-y-1 border-t border-slate-800 pt-3 text-xs leading-5 text-slate-400">
+                  <p className="font-semibold text-violet-200/90">ORIGINAL Localization</p>
+                  <p className="text-amber-200/80">
+                    diagnostic only
+                  </p>
+                  <p>{applied.originalStructuralLocalization.schemaVersion}</p>
+                  <p>
+                    method = {applied.originalStructuralLocalization.methodVersion}
+                  </p>
+                  <p className="text-violet-200/80">
+                    status = {applied.originalStructuralLocalization.registrationClass}
+                  </p>
+                  <p>
+                    transformKind = {applied.originalStructuralLocalization.transformKind}
+                    {" · noGlobalTransformApplied = "}
+                    {String(applied.originalStructuralLocalization.noGlobalTransformApplied)}
+                  </p>
+                  <p>
+                    localized walls{" "}
+                    {applied.originalStructuralLocalization.summary.localizedFloorWalls}
+                    {" · localized openings "}
+                    {applied.originalStructuralLocalization.summary.localizedFloorReachingOpenings}
+                  </p>
+                  <p>
+                    no-match {applied.originalStructuralLocalization.summary.noMatch}
+                    {" · ambiguous "}
+                    {applied.originalStructuralLocalization.summary.ambiguous}
+                    {" · rejected "}
+                    {applied.originalStructuralLocalization.summary.rejected}
+                  </p>
+                  <p>
+                    collisionPromotionEligible ={" "}
+                    {String(
+                      applied.originalStructuralLocalization.collisionPromotionEligible,
+                    )}
+                  </p>
+                  <p>
+                    World Boundary accepted walls{" "}
+                    {applied.originalLocalizedBoundary?.summary.accepted ?? 0}
+                  </p>
+                </div>
+              ) : null}
+              {applied?.roomEnvelope ? (
+                <div className="mt-3 space-y-1 border-t border-slate-800 pt-3 text-xs leading-5 text-slate-400">
+                  <p className="font-semibold text-teal-200/90">Envelope</p>
+                  <p>{applied.roomEnvelope.schemaVersion}</p>
+                  <p>
+                    walls enriched{" "}
+                    {applied.roomEnvelope.walls.filter((wall) =>
+                      wall.residualSolidSpans.length > 0
+                    ).length}
+                    {" · openings qualified "}
+                    {applied.roomEnvelope.openings.filter((opening) =>
+                      opening.status === "qualified_floor_gap"
+                    ).length}
+                  </p>
+                  <p>
+                    residual wall spans {applied.roomEnvelope.solidBaseSpans.length}
+                    {" · opening gaps "}
+                    {applied.roomEnvelope.walls.reduce(
+                      (sum, wall) => sum + wall.openingGapIntervals.length,
+                      0,
+                    )}
+                  </p>
+                  <p>corners: not_evaluated</p>
+                  <p>vertical: not_evaluated</p>
+                  <p>ceiling: {applied.roomEnvelope.ceiling.status}</p>
+                </div>
+              ) : null}
+              {applied ? (
+                <div className="mt-3 space-y-1 border-t border-slate-800 pt-3 text-xs leading-5 text-slate-400">
+                  <p className="font-semibold text-orange-200/90">Collision</p>
+                  <p className="text-orange-200/80">
+                    Collision policy: EMPTY-authoritative experiment
+                  </p>
+                  <p>
+                    Image compatibility:{" "}
+                    {applied.emptyAuthoritativeCollision?.lineage.compatibilityTier ??
+                      applied.roomCollision?.lineage.roomBoundary.compatibilityTier ??
+                      applied.emptyOriginalRegistration?.oldCompatibilityTier ??
+                      "unavailable"}
+                  </p>
+                  <p>
+                    Identity registration:{" "}
+                    {applied.emptyOriginalRegistration?.registrationClass ?? "unavailable"}
+                    {" · diagnostic only"}
+                  </p>
+                  <p>
+                    ORIGINAL localization:{" "}
+                    {applied.originalStructuralLocalization?.registrationClass ??
+                      "not_attempted"}
+                    {" · diagnostic only"}
+                  </p>
+                  <p>
+                    EMPTY collision walls:{" "}
+                    {applied.emptyAuthoritativeCollision
+                      ? `${applied.emptyAuthoritativeCollision.summary.accepted} accepted / ${applied.emptyAuthoritativeCollision.summary.refused} refused`
+                      : "unavailable"}
+                  </p>
+                  <p>
+                    baseline S4B collisionAuthority ={" "}
+                    {String(applied.roomCollision?.collisionAuthority ?? false)}
+                  </p>
+                  <p>
+                    S4C-CQ collisionAuthority ={" "}
+                    {String(
+                      applied.roomEnvelopeCollision?.collisionAuthority ?? false,
+                    )}
+                  </p>
+                  <p>
+                    OL collisionAuthority ={" "}
+                    {String(
+                      applied.originalLocalizedCollision?.collisionAuthority ?? false,
+                    )}
+                  </p>
+                  <p className="text-orange-200/80">
+                    Active collision source:{" "}
+                    {activeCollision.source === "empty_authoritative"
+                      ? "EMPTY-authoritative"
+                      : activeCollision.source === "ol_cq"
+                      ? "ORIGINAL-localized"
+                      : activeCollision.source === "s4c_cq"
+                      ? "S4C-CQ"
+                      : "S4B"}
+                  </p>
+                  {applied.emptyAuthoritativeCollision?.walls.map((wall) => (
+                    <p key={wall.id} className="text-orange-200/70">
+                      {wall.sourceS4ABoundaryId} / {wall.sourceSeamId}: S4A {wall.sourceS4AStatus}
+                      {" · "}
+                      {wall.compatibilityTier ?? "unavailable"}
+                      {" · "}
+                      {wall.twoPointObserved
+                        ? wall.twoPointCorroborated
+                          ? "two-point region-corroborated"
+                          : "two-point region corroboration failed"
+                        : wall.corroboration.kind === "multi_probe_region_frontier"
+                        ? wall.twoPointCorroborated
+                          ? "residual-underdetermined region-corroborated"
+                          : "residual-underdetermined region corroboration failed"
+                        : "multi-point residual-supported"}
+                      {" · opening "}
+                      {wall.openingCrossing ? "crossing" : "clear"}
+                      {wall.collisionEnabled ? " · collision-enabled" : " · refused"}
+                      {wall.qualificationReasons[0]
+                        ? ` · ${wall.qualificationReasons.join(", ")}`
+                        : ""}
+                    </p>
+                  ))}
+                </div>
+              ) : null}
+            </section>
+            {applied?.emptyOriginalRegistration ? (
+              <button
+                type="button"
+                onClick={downloadRegistrationEvidence}
+                className="rounded-xl border border-slate-700 bg-slate-900 px-4 py-3 text-left text-xs font-medium text-teal-200 transition hover:border-slate-500"
+              >
+                Download V2-S4C0 Registration authority
+              </button>
+            ) : null}
+            {applied?.roomEnvelope ? (
+              <button
+                type="button"
+                onClick={downloadRoomEnvelopeEvidence}
+                className="rounded-xl border border-slate-700 bg-slate-900 px-4 py-3 text-left text-xs font-medium text-teal-200 transition hover:border-slate-500"
+              >
+                Download V2-S4C Room-Envelope authority
+              </button>
+            ) : null}
+            {applied?.roomEnvelopeCollision ? (
+              <button
+                type="button"
+                onClick={downloadRoomEnvelopeCollisionEvidence}
+                className="rounded-xl border border-slate-700 bg-slate-900 px-4 py-3 text-left text-xs font-medium text-teal-200 transition hover:border-slate-500"
+              >
+                Download V2-S4C Enriched Collision authority
+              </button>
+            ) : null}
+            {applied?.originalStructuralLocalization ? (
+              <button
+                type="button"
+                onClick={downloadOriginalLocalizationEvidence}
+                className="rounded-xl border border-slate-700 bg-slate-900 px-4 py-3 text-left text-xs font-medium text-violet-200 transition hover:border-slate-500"
+              >
+                Download V2-S4C0-OL ORIGINAL Structural Localization
+              </button>
+            ) : null}
+            {applied?.originalLocalizedBoundary ? (
+              <button
+                type="button"
+                onClick={downloadOriginalLocalizedBoundaryEvidence}
+                className="rounded-xl border border-slate-700 bg-slate-900 px-4 py-3 text-left text-xs font-medium text-violet-200 transition hover:border-slate-500"
+              >
+                Download V2-S4C0-OL ORIGINAL Localized Boundary
+              </button>
+            ) : null}
+            {applied?.originalLocalizedCollision ? (
+              <button
+                type="button"
+                onClick={downloadOriginalLocalizedCollisionEvidence}
+                className="rounded-xl border border-slate-700 bg-slate-900 px-4 py-3 text-left text-xs font-medium text-violet-200 transition hover:border-slate-500"
+              >
+                Download V2-S4C OL Collision authority
+              </button>
+            ) : null}
+            {applied?.emptyAuthoritativeCollision ? (
+              <button
+                type="button"
+                onClick={downloadEmptyAuthoritativeCollisionEvidence}
+                className="rounded-xl border border-slate-700 bg-slate-900 px-4 py-3 text-left text-xs font-medium text-orange-200 transition hover:border-slate-500"
+              >
+                Download EMPTY-Authoritative Collision Authority
               </button>
             ) : null}
             <section className="rounded-xl border border-slate-800 bg-slate-900/70 p-4">
