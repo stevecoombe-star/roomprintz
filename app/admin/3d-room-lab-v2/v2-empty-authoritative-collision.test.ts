@@ -39,7 +39,7 @@ import { constructAfcV2EmptyAuthoritativeCollisionAuthority } from "./empty-auth
 import { ORIGINAL_LOCALIZED_COLLISION_REASON } from "./original-localized-collision-authority-contract";
 import type { AfcV2OriginalLocalizedCollisionAuthorityReceipt } from "./original-localized-collision-authority-contract";
 import { resolveSceneObjectCollision } from "./scene-collision-resolver";
-import { TEST_CUBE_NORMALIZED_PLACEMENT_LOCAL_AABB } from "./room-collision-footprint";
+import { TEST_CUBE_PLACEMENT_LOCAL_AABB } from "./room-collision-footprint";
 import { DEFAULT_WORLD_TRANSFORM } from "./scene-layer-state";
 
 const V2 = path.join(process.cwd(), "app/admin/3d-room-lab-v2");
@@ -647,7 +647,7 @@ test("EMPTY-authoritative enabled walls use the unchanged collision kernel", () 
       ...DEFAULT_WORLD_TRANSFORM,
       position: { x: wall.a.x + 4, y: 0, z: wall.a.z },
     },
-    localAabb: TEST_CUBE_NORMALIZED_PLACEMENT_LOCAL_AABB,
+    localAabb: TEST_CUBE_PLACEMENT_LOCAL_AABB,
     walls,
     mode: "move",
   });

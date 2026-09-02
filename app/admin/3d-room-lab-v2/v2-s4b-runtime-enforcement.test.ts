@@ -5,7 +5,7 @@ import test from "node:test";
 import * as THREE from "three";
 
 import type { RoomCollisionEnabledWall } from "./room-collision-authority-contract";
-import { TEST_CUBE_NORMALIZED_PLACEMENT_LOCAL_AABB } from "./room-collision-footprint";
+import { TEST_CUBE_PLACEMENT_LOCAL_AABB } from "./room-collision-footprint";
 import { resolveSceneObjectCollision } from "./scene-collision-resolver";
 import {
   DEFAULT_WORLD_TRANSFORM,
@@ -22,7 +22,7 @@ import {
 } from "./scene-layer-state";
 import {
   applyWorldTransform,
-  attachNormalizedObject,
+  attachImportedObject,
   createSceneObjectRoot,
   createTestCubeMesh,
   measurePlacementLocalAabb,
@@ -69,12 +69,12 @@ test("body-drag helper preserves grab offset while the resolver stops at the wal
   const resolved = resolveSceneObjectCollision({
     current: transformAt(0),
     proposed: { ...DEFAULT_WORLD_TRANSFORM, position: proposed },
-    localAabb: TEST_CUBE_NORMALIZED_PLACEMENT_LOCAL_AABB,
+    localAabb: TEST_CUBE_PLACEMENT_LOCAL_AABB,
     walls: [xWall],
     mode: "move",
   });
   assert.ok(resolved.transform.position.x < proposed.x);
-  assert.ok(Math.abs(resolved.transform.position.x - 0.25) < 1e-6);
+  assert.ok(Math.abs(resolved.transform.position.x - 0.5) < 1e-6);
   assert.equal(resolved.transform.position.y, 0);
 });
 
@@ -85,11 +85,11 @@ test("TransformControls Move uses the same resolver and leaves Y to the floor in
       ...DEFAULT_WORLD_TRANSFORM,
       position: { x: 4, y: 1.2, z: 0.5 },
     },
-    localAabb: TEST_CUBE_NORMALIZED_PLACEMENT_LOCAL_AABB,
+    localAabb: TEST_CUBE_PLACEMENT_LOCAL_AABB,
     walls: [xWall],
     mode: "move",
   });
-  assert.ok(Math.abs(resolved.transform.position.x - 0.25) < 1e-6);
+  assert.ok(Math.abs(resolved.transform.position.x - 0.5) < 1e-6);
   assert.equal(resolved.transform.position.y, 1.2);
   const viewerSource = read("CalibratedRoomViewer.tsx");
   assert.match(viewerSource, /writeAttachedTransform/);
@@ -105,7 +105,7 @@ test("X/Z sliders cannot bypass collision; Y slider is floor-only", () => {
   const resolved = resolveSceneObjectCollision({
     current: selected.transform,
     proposed: proposed.transform,
-    localAabb: TEST_CUBE_NORMALIZED_PLACEMENT_LOCAL_AABB,
+    localAabb: TEST_CUBE_PLACEMENT_LOCAL_AABB,
     walls: [xWall],
     mode: "move",
   });
@@ -125,25 +125,25 @@ test("valid rotation is accepted and penetrating rotation is rejected without au
       ...DEFAULT_WORLD_TRANSFORM,
       rotationDeg: { x: 0, y: 20, z: 0 },
     },
-    localAabb: TEST_CUBE_NORMALIZED_PLACEMENT_LOCAL_AABB,
+    localAabb: TEST_CUBE_PLACEMENT_LOCAL_AABB,
     walls: [xWall],
     mode: "pose",
   });
   assert.equal(accepted.status, "accepted");
   assert.equal(accepted.transform.rotationDeg.y, 20);
-  const flush = transformAt(0.25);
+  const flush = transformAt(0.5);
   const rejected = resolveSceneObjectCollision({
     current: flush,
     proposed: {
       ...flush,
       rotationDeg: { x: 0, y: 45, z: 0 },
     },
-    localAabb: TEST_CUBE_NORMALIZED_PLACEMENT_LOCAL_AABB,
+    localAabb: TEST_CUBE_PLACEMENT_LOCAL_AABB,
     walls: [xWall],
     mode: "pose",
   });
   assert.equal(rejected.status, "rejected_pose");
-  assert.equal(rejected.transform.position.x, 0.25);
+  assert.equal(rejected.transform.position.x, 0.5);
   assert.equal(rejected.transform.rotationDeg.y, 0);
 });
 
@@ -151,22 +151,22 @@ test("valid scale is accepted and penetrating scale is rejected without auto-tra
   const accepted = resolveSceneObjectCollision({
     current: transformAt(0),
     proposed: { ...DEFAULT_WORLD_TRANSFORM, uniformScale: 1.1 },
-    localAabb: TEST_CUBE_NORMALIZED_PLACEMENT_LOCAL_AABB,
+    localAabb: TEST_CUBE_PLACEMENT_LOCAL_AABB,
     walls: [xWall],
     mode: "pose",
   });
   assert.equal(accepted.status, "accepted");
-  const flush = transformAt(0.25);
+  const flush = transformAt(0.5);
   const rejected = resolveSceneObjectCollision({
     current: flush,
     proposed: { ...flush, uniformScale: 2 },
-    localAabb: TEST_CUBE_NORMALIZED_PLACEMENT_LOCAL_AABB,
+    localAabb: TEST_CUBE_PLACEMENT_LOCAL_AABB,
     walls: [xWall],
     mode: "pose",
   });
   assert.equal(rejected.status, "rejected_pose");
   assert.equal(rejected.transform.uniformScale, 1);
-  assert.equal(rejected.transform.position.x, 0.25);
+  assert.equal(rejected.transform.position.x, 0.5);
 });
 
 test("reset uses collision policy instead of bypassing walls", () => {
@@ -175,7 +175,7 @@ test("reset uses collision policy instead of bypassing walls", () => {
   const reset = resolveSceneObjectCollision({
     current,
     proposed: overlappingInitial,
-    localAabb: TEST_CUBE_NORMALIZED_PLACEMENT_LOCAL_AABB,
+    localAabb: TEST_CUBE_PLACEMENT_LOCAL_AABB,
     walls: [xWall],
     mode: "pose",
   });
@@ -212,23 +212,23 @@ test("historical X/Z sandbox limits are not physical authority; walls still stop
   const resolved = resolveSceneObjectCollision({
     current: transformAt(0),
     proposed: transformAt(8),
-    localAabb: TEST_CUBE_NORMALIZED_PLACEMENT_LOCAL_AABB,
+    localAabb: TEST_CUBE_PLACEMENT_LOCAL_AABB,
     walls: [xWall],
     mode: "move",
   });
   assert.ok(resolved.transform.position.x < 8);
-  assert.ok(Math.abs(resolved.transform.position.x - 0.25) < 1e-6);
+  assert.ok(Math.abs(resolved.transform.position.x - 0.5) < 1e-6);
 });
 
-test("Test Cube cached AABB matches auto-bounds normalization", () => {
+test("Test Cube cached AABB matches 1 m import placement", () => {
   const root = createSceneObjectRoot();
   const cube = createTestCubeMesh();
-  attachNormalizedObject(root.autoBounds, cube);
+  attachImportedObject(root.importPlacement, cube);
   applyWorldTransform(root.placement, DEFAULT_WORLD_TRANSFORM);
-  const aabb = measurePlacementLocalAabb(root.placement, root.autoBounds);
+  const aabb = measurePlacementLocalAabb(root.placement, root.importPlacement);
   assert.ok(aabb);
-  assert.ok(Math.abs(aabb.min.x - TEST_CUBE_NORMALIZED_PLACEMENT_LOCAL_AABB.min.x) < 1e-6);
-  assert.ok(Math.abs(aabb.max.x - TEST_CUBE_NORMALIZED_PLACEMENT_LOCAL_AABB.max.x) < 1e-6);
+  assert.ok(Math.abs(aabb.min.x - TEST_CUBE_PLACEMENT_LOCAL_AABB.min.x) < 1e-6);
+  assert.ok(Math.abs(aabb.max.x - TEST_CUBE_PLACEMENT_LOCAL_AABB.max.x) < 1e-6);
   assert.ok(Math.abs(aabb.min.y) < 1e-6);
   cube.geometry.dispose();
   (cube.material as THREE.Material).dispose();

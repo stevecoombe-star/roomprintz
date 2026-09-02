@@ -1,13 +1,12 @@
 import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 
-import { computeAutoBoundsNormalization } from "@/app/admin/3d-room-lab/model-bounds";
-
+import { computeImportPlacement } from "./scene-object-import-bounds";
 import {
   CALIBRATED_FLOOR_PLANE_Y,
   SCENE_ROTATION_EULER_ORDER,
   TEST_CUBE_COLOR,
-  TEST_CUBE_GEOMETRY_SIZE,
+  TEST_CUBE_EDGE_M,
   type WorldTransform,
 } from "./scene-layer-state";
 
@@ -32,9 +31,9 @@ export type LoadedGlbResult =
 
 export function createTestCubeMesh(): THREE.Mesh {
   const geometry = new THREE.BoxGeometry(
-    TEST_CUBE_GEOMETRY_SIZE,
-    TEST_CUBE_GEOMETRY_SIZE,
-    TEST_CUBE_GEOMETRY_SIZE,
+    TEST_CUBE_EDGE_M,
+    TEST_CUBE_EDGE_M,
+    TEST_CUBE_EDGE_M,
   );
   const material = new THREE.MeshStandardMaterial({
     color: TEST_CUBE_COLOR,
@@ -46,27 +45,27 @@ export function createTestCubeMesh(): THREE.Mesh {
 
 export function createSceneObjectRoot(): {
   placement: THREE.Group;
-  autoBounds: THREE.Group;
+  importPlacement: THREE.Group;
 } {
   const placement = new THREE.Group();
-  const autoBounds = new THREE.Group();
-  placement.add(autoBounds);
-  return { placement, autoBounds };
+  const importPlacement = new THREE.Group();
+  placement.add(importPlacement);
+  return { placement, importPlacement };
 }
 
-export function applyAutoBoundsToGroup(
-  autoBounds: THREE.Group,
+export function applyImportPlacementToGroup(
+  importPlacement: THREE.Group,
   object: THREE.Object3D,
 ): void {
-  const info = computeAutoBoundsNormalization(object);
-  autoBounds.rotation.set(0, 0, 0);
+  const info = computeImportPlacement(object);
+  importPlacement.rotation.set(0, 0, 0);
   if (info.ok) {
-    autoBounds.scale.setScalar(info.scale);
-    autoBounds.position.set(info.offset.x, info.offset.y, info.offset.z);
+    importPlacement.scale.setScalar(info.scale);
+    importPlacement.position.set(info.offset.x, info.offset.y, info.offset.z);
     return;
   }
-  autoBounds.scale.setScalar(1);
-  autoBounds.position.set(0, 0, 0);
+  importPlacement.scale.setScalar(1);
+  importPlacement.position.set(0, 0, 0);
 }
 
 export function applyWorldTransform(
@@ -87,31 +86,31 @@ export function applyWorldTransform(
   object.scale.setScalar(transform.uniformScale);
 }
 
-export function attachNormalizedObject(
-  autoBounds: THREE.Group,
+export function attachImportedObject(
+  importPlacement: THREE.Group,
   object: THREE.Object3D,
 ): void {
-  while (autoBounds.children.length > 0) {
-    const child = autoBounds.children[0];
-    autoBounds.remove(child);
+  while (importPlacement.children.length > 0) {
+    const child = importPlacement.children[0];
+    importPlacement.remove(child);
     disposeObject3D(child);
   }
-  applyAutoBoundsToGroup(autoBounds, object);
-  autoBounds.add(object);
+  applyImportPlacementToGroup(importPlacement, object);
+  importPlacement.add(object);
 }
 
 /**
- * Cached placement-local AABB of normalized child content. Call once after
- * attachNormalizedObject. Collision uses this cache plus proposed TRS.
+ * Cached placement-local AABB of imported child content. Call once after
+ * attachImportedObject. Collision uses this cache plus proposed TRS.
  */
 export function measurePlacementLocalAabb(
   placement: THREE.Object3D,
-  autoBounds: THREE.Object3D,
+  importPlacement: THREE.Object3D,
 ): { min: { x: number; y: number; z: number }; max: { x: number; y: number; z: number } } | null {
   placement.updateMatrixWorld(true);
   const inverse = new THREE.Matrix4().copy(placement.matrixWorld).invert();
   const box = new THREE.Box3();
-  autoBounds.traverse((child) => {
+  importPlacement.traverse((child) => {
     const mesh = child as THREE.Mesh;
     if (!mesh.isMesh || !mesh.geometry) return;
     mesh.updateWorldMatrix(true, false);

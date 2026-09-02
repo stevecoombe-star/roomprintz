@@ -151,10 +151,10 @@ test("Reset Transform restores the recorded initial transform without deselectin
 
   const placement = new THREE.Group();
   applyWorldTransform(placement, selected!.transform);
-  const autoBounds = new THREE.Group();
+  const importPlacement = new THREE.Group();
   const target = transformControlsAttachmentTarget({
     placement,
-    autoBounds,
+    importPlacement,
   });
   assert.equal(target, placement);
   assert.match(roomLabSource, /Reset Transform/);

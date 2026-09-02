@@ -199,7 +199,7 @@ test("v2 browser runtime remains isolated from v1 UI and research", () => {
     "./room-observation-contract",
     "./room-observation-normalization",
     "@/app/admin/3d-room-lab/calibrated-camera-readonly-projection",
-    "@/app/admin/3d-room-lab/model-bounds",
+    "./scene-object-import-bounds",
     "./scene-layer-state",
     "./scene-movement-control-range",
     "./scene-object-runtime",
@@ -228,6 +228,12 @@ test("v2 browser runtime remains isolated from v1 UI and research", () => {
   assert.doesNotMatch(
     combinedSource,
     /setCalibratedCamera|applyContainerFloor|live-collision-blockers|evaluateQuadSolvability/i,
+  );
+  assert.doesNotMatch(combinedSource, /computeAutoBoundsNormalization|AUTO_NORMALIZE_TARGET_SIZE/);
+  assert.doesNotMatch(combinedSource, /3d-room-lab\/model-bounds/);
+  assert.equal(
+    imports.includes("@/app/admin/3d-room-lab/model-bounds"),
+    false,
   );
 });
 

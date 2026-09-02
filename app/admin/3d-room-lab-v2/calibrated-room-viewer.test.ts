@@ -137,5 +137,6 @@ test("accepted Original and transparent calibrated overlay coexist after apply",
   assert.match(source, /controls\.attach\(target\)/);
   assert.match(source, /transformControlsAttachmentTarget\(entry\)/);
   assert.match(source, /raycaster\.intersectObject\(objectLayer, true\)/);
+  assert.doesNotMatch(source, /attach\(entry\.importPlacement\)/);
   assert.doesNotMatch(source, /attach\(entry\.autoBounds\)/);
 });

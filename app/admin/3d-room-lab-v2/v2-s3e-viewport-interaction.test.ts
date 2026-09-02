@@ -50,7 +50,7 @@ test("raycast hit selects the tagged SceneObject, including nested GLB meshes", 
   const root = createSceneObjectRoot();
   tagSceneObjectRoot(root.placement, "glb-1");
   const nested = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.2, 0.2));
-  root.autoBounds.add(nested);
+  root.importPlacement.add(nested);
   assert.equal(resolveSceneObjectId(nested), "glb-1");
   assert.equal(
     pickSceneObjectId([{ object: nested }]),
@@ -75,13 +75,14 @@ test("empty intersects deselect and a second object replaces the first", () => {
   assert.equal(state.objects.length, 2);
 });
 
-test("TransformControls attachment target is the placement group, not autoBounds or camera", () => {
+test("TransformControls attachment target is the placement group, not importPlacement or camera", () => {
   const root = createSceneObjectRoot();
   const target = transformControlsAttachmentTarget(root);
   assert.equal(target, root.placement);
-  assert.notEqual(target, root.autoBounds);
+  assert.notEqual(target, root.importPlacement);
   assert.match(viewerSource, /controls\.attach\(target\)/);
   assert.match(viewerSource, /transformControlsAttachmentTarget\(entry\)/);
+  assert.doesNotMatch(viewerSource, /attach\(entry\.importPlacement\)/);
   assert.doesNotMatch(viewerSource, /attach\(entry\.autoBounds\)/);
   assert.doesNotMatch(viewerSource, /controls\.attach\(result\.camera\)/);
   assert.doesNotMatch(interactionSource, /PerspectiveCamera/);

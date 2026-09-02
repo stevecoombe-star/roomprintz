@@ -1,4 +1,4 @@
-import type { WorldTransform } from "./scene-layer-state";
+import { TEST_CUBE_EDGE_M, type WorldTransform } from "./scene-layer-state";
 
 export type Vec2 = Readonly<{ x: number; z: number }>;
 export type Vec3 = Readonly<{ x: number; y: number; z: number }>;
@@ -9,12 +9,13 @@ export type LocalAabb = Readonly<{
 }>;
 
 /**
- * Placement-local AABB of the auto-bounds-normalized Test Cube.
- * Geometry 0.8 → target max dimension 1.5 → half-extent 0.75, floor at Y=0.
+ * Placement-local AABB of the 1 m Test Cube after XZ centering and floor contact.
+ * Geometry edge = TEST_CUBE_EDGE_M; wrapper scale = 1; floor at Y = 0.
  */
-export const TEST_CUBE_NORMALIZED_PLACEMENT_LOCAL_AABB: LocalAabb = Object.freeze({
-  min: Object.freeze({ x: -0.75, y: 0, z: -0.75 }),
-  max: Object.freeze({ x: 0.75, y: 1.5, z: 0.75 }),
+const TEST_CUBE_HALF_EDGE_M = TEST_CUBE_EDGE_M / 2;
+export const TEST_CUBE_PLACEMENT_LOCAL_AABB: LocalAabb = Object.freeze({
+  min: Object.freeze({ x: -TEST_CUBE_HALF_EDGE_M, y: 0, z: -TEST_CUBE_HALF_EDGE_M }),
+  max: Object.freeze({ x: TEST_CUBE_HALF_EDGE_M, y: TEST_CUBE_EDGE_M, z: TEST_CUBE_HALF_EDGE_M }),
 });
 
 const HULL_COLLINEAR_ABS = 1e-12;

@@ -30,7 +30,7 @@ export const SCENE_POSITION_XZ_SAFETY_ABS_M = 500;
 
 export type ViewportTransformMode = "move" | "rotate" | "scale";
 
-export const TEST_CUBE_GEOMETRY_SIZE = 0.8;
+export const TEST_CUBE_EDGE_M = 1;
 export const TEST_CUBE_COLOR = "#34d399";
 
 export const SCENE_TRANSFORM_LIMITS = {

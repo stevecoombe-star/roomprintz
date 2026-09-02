@@ -6,7 +6,7 @@ import * as THREE from "three";
 
 import type { RoomCollisionEnabledWall } from "./room-collision-authority-contract";
 import {
-  TEST_CUBE_NORMALIZED_PLACEMENT_LOCAL_AABB,
+  TEST_CUBE_PLACEMENT_LOCAL_AABB,
   aabbCorners,
   applyWorldTransformToPoint,
   footprintFromLocalAabb,
@@ -44,7 +44,7 @@ function wall(input: Partial<RoomCollisionEnabledWall> & Pick<RoomCollisionEnabl
 }
 
 function cubeFootprint(transform: WorldTransform = DEFAULT_WORLD_TRANSFORM) {
-  return footprintFromLocalAabb(TEST_CUBE_NORMALIZED_PLACEMENT_LOCAL_AABB, transform);
+  return footprintFromLocalAabb(TEST_CUBE_PLACEMENT_LOCAL_AABB, transform);
 }
 
 function moveX(x: number): WorldTransform {
@@ -72,7 +72,7 @@ test("Test Cube stops at FACE, not center", () => {
     allowSlide: true,
   });
   assert.ok(result.translation.x < 3);
-  assert.ok(Math.abs(result.translation.x - 0.25) < 1e-6);
+  assert.ok(Math.abs(result.translation.x - 0.5) < 1e-6);
   const stopped = cubeFootprint(moveX(result.translation.x));
   const prepared = prepareCollisionWall(xWallAt1);
   assert.ok(prepared);
@@ -83,13 +83,13 @@ test("Test Cube stops at FACE, not center", () => {
 });
 
 test("conservative footprint comes from cached AABB corners", () => {
-  const corners = aabbCorners(TEST_CUBE_NORMALIZED_PLACEMENT_LOCAL_AABB);
+  const corners = aabbCorners(TEST_CUBE_PLACEMENT_LOCAL_AABB);
   assert.equal(corners.length, 8);
   const footprint = cubeFootprint();
   assert.ok(footprint.length >= 4);
   const xs = footprint.map((point) => point.x);
-  assert.ok(Math.abs(Math.max(...xs) - 0.75) < 1e-9);
-  assert.ok(Math.abs(Math.min(...xs) + 0.75) < 1e-9);
+  assert.ok(Math.abs(Math.max(...xs) - 0.5) < 1e-9);
+  assert.ok(Math.abs(Math.min(...xs) + 0.5) < 1e-9);
 });
 
 test("uniform scale updates footprint", () => {
@@ -98,7 +98,7 @@ test("uniform scale updates footprint", () => {
     uniformScale: 2,
   });
   const xs = scaled.map((point) => point.x);
-  assert.ok(Math.abs(Math.max(...xs) - 1.5) < 1e-9);
+  assert.ok(Math.abs(Math.max(...xs) - 1) < 1e-9);
 });
 
 test("yaw updates footprint", () => {
@@ -107,7 +107,7 @@ test("yaw updates footprint", () => {
     rotationDeg: { x: 0, y: 45, z: 0 },
   });
   const xs = yawed.map((point) => point.x);
-  assert.ok(Math.max(...xs) > 0.9);
+  assert.ok(Math.max(...xs) > 0.65);
 });
 
 test("X/Z tilt projected hull remains conservative", () => {
@@ -117,7 +117,7 @@ test("X/Z tilt projected hull remains conservative", () => {
   });
   assert.ok(tilted.length >= 4);
   const xs = tilted.map((point) => point.x);
-  assert.ok(Math.max(...xs) - Math.min(...xs) >= 1.5 - 1e-6);
+  assert.ok(Math.max(...xs) - Math.min(...xs) >= 1 - 1e-6);
 });
 
 test("TRS matches Three.js XYZ euler", () => {
@@ -202,11 +202,11 @@ test("large teleporting drag cannot tunnel through a wall", () => {
     allowSlide: false,
   });
   assert.ok(result.translation.x < 1);
-  assert.ok(Math.abs(result.translation.x - 0.25) < 1e-6);
+  assert.ok(Math.abs(result.translation.x - 0.5) < 1e-6);
 });
 
 test("exact contact is allowed and arithmetic epsilon is stable", () => {
-  const flush = cubeFootprint(moveX(0.25));
+  const flush = cubeFootprint(moveX(0.5));
   const prepared = prepareCollisionWall(xWallAt1)!;
   const minD = clippedMinInteriorDistance(flush, prepared);
   assert.ok(minD !== null);
@@ -227,7 +227,7 @@ test("inward motion stops the normal component and preserves tangent slide", () 
     walls: [xWallAt1],
     allowSlide: true,
   });
-  assert.ok(Math.abs(result.translation.x - 0.25) < 1e-6);
+  assert.ok(Math.abs(result.translation.x - 0.5) < 1e-6);
   assert.ok(result.translation.z > 1);
   assert.equal(result.status, "slid");
 });

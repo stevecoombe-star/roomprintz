@@ -69,7 +69,7 @@ import {
   type AfcV2EmptyAuthoritativeCollisionAuthorityReceipt,
 } from "./empty-authoritative-collision-authority-contract";
 import { deriveSceneMovementControlRange } from "./scene-movement-control-range";
-import { TEST_CUBE_NORMALIZED_PLACEMENT_LOCAL_AABB, type LocalAabb } from "./room-collision-footprint";
+import { TEST_CUBE_PLACEMENT_LOCAL_AABB, type LocalAabb } from "./room-collision-footprint";
 import { resolveSceneObjectCollision } from "./scene-collision-resolver";
 import {
   DEFAULT_SHOW_COLLISION_BOUNDARY,
@@ -533,7 +533,7 @@ export default function RoomLabV2() {
 
   function localAabbForObject(object: SceneLayerState["objects"][number]): LocalAabb | null {
     return objectLocalAabbRef.current.get(object.id) ??
-      (object.kind === "test_cube" ? TEST_CUBE_NORMALIZED_PLACEMENT_LOCAL_AABB : null);
+      (object.kind === "test_cube" ? TEST_CUBE_PLACEMENT_LOCAL_AABB : null);
   }
 
   function applyCollisionAwareTransform(
@@ -1272,7 +1272,7 @@ export default function RoomLabV2() {
                     if (id) {
                       objectLocalAabbRef.current.set(
                         id,
-                        TEST_CUBE_NORMALIZED_PLACEMENT_LOCAL_AABB,
+                        TEST_CUBE_PLACEMENT_LOCAL_AABB,
                       );
                     }
                     return next;

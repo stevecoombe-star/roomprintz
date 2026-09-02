@@ -4,7 +4,7 @@ import path from "node:path";
 import test from "node:test";
 
 import type { RoomCollisionEnabledWall } from "./room-collision-authority-contract";
-import { TEST_CUBE_NORMALIZED_PLACEMENT_LOCAL_AABB, footprintFromLocalAabb } from "./room-collision-footprint";
+import { TEST_CUBE_PLACEMENT_LOCAL_AABB, footprintFromLocalAabb } from "./room-collision-footprint";
 import {
   NUMERICAL_DISTANCE_EPSILON,
   resolveSweptConvexTranslation,
@@ -124,12 +124,12 @@ test("a wall beyond historical Z = -10 stops the object, not the old transform r
   const resolved = resolveSceneObjectCollision({
     current: transformAt(0, 0),
     proposed: transformAt(0, -20),
-    localAabb: TEST_CUBE_NORMALIZED_PLACEMENT_LOCAL_AABB,
+    localAabb: TEST_CUBE_PLACEMENT_LOCAL_AABB,
     walls: [distantBackWall],
     mode: "move",
   });
   assert.ok(resolved.transform.position.z < SCENE_TRANSFORM_LIMITS.positionZ.min);
-  assert.ok(Math.abs(resolved.transform.position.z - (-13.25)) < 1e-6);
+  assert.ok(Math.abs(resolved.transform.position.z - (-13.5)) < 1e-6);
   assert.ok(resolved.transform.position.z > -14);
 });
 
@@ -144,17 +144,17 @@ test("a wall beyond historical X = 5 stops the object, not the old transform ran
   const resolved = resolveSceneObjectCollision({
     current: transformAt(0),
     proposed: transformAt(20),
-    localAabb: TEST_CUBE_NORMALIZED_PLACEMENT_LOCAL_AABB,
+    localAabb: TEST_CUBE_PLACEMENT_LOCAL_AABB,
     walls: [distantRightWall],
     mode: "move",
   });
   assert.ok(resolved.transform.position.x > SCENE_TRANSFORM_LIMITS.positionX.max);
-  assert.ok(Math.abs(resolved.transform.position.x - 7.25) < 1e-6);
+  assert.ok(Math.abs(resolved.transform.position.x - 7.5) < 1e-6);
 });
 
 test("no-tunneling remains intact for a jump past a distant wall", () => {
   const start = footprintFromLocalAabb(
-    TEST_CUBE_NORMALIZED_PLACEMENT_LOCAL_AABB,
+    TEST_CUBE_PLACEMENT_LOCAL_AABB,
     transformAt(0),
   );
   const result = resolveSweptConvexTranslation({
@@ -164,13 +164,13 @@ test("no-tunneling remains intact for a jump past a distant wall", () => {
     allowSlide: false,
   });
   assert.ok(result.translation.x < 8);
-  assert.ok(Math.abs(result.translation.x - 7.25) < 1e-6);
+  assert.ok(Math.abs(result.translation.x - 7.5) < 1e-6);
 });
 
 test("slide remains intact along a distant wall", () => {
-  const flushX = 7.25;
+  const flushX = 7.5;
   const start = footprintFromLocalAabb(
-    TEST_CUBE_NORMALIZED_PLACEMENT_LOCAL_AABB,
+    TEST_CUBE_PLACEMENT_LOCAL_AABB,
     transformAt(flushX, 0),
   );
   const result = resolveSweptConvexTranslation({
@@ -185,34 +185,34 @@ test("slide remains intact along a distant wall", () => {
 });
 
 test("rotate rejection remains intact against a distant wall", () => {
-  const flush = transformAt(7.25);
+  const flush = transformAt(7.5);
   const rejected = resolveSceneObjectCollision({
     current: flush,
     proposed: {
       ...flush,
       rotationDeg: { x: 0, y: 45, z: 0 },
     },
-    localAabb: TEST_CUBE_NORMALIZED_PLACEMENT_LOCAL_AABB,
+    localAabb: TEST_CUBE_PLACEMENT_LOCAL_AABB,
     walls: [distantRightWall],
     mode: "pose",
   });
   assert.equal(rejected.status, "rejected_pose");
-  assert.equal(rejected.transform.position.x, 7.25);
+  assert.equal(rejected.transform.position.x, 7.5);
   assert.equal(rejected.transform.rotationDeg.y, 0);
 });
 
 test("scale rejection remains intact against a distant wall", () => {
-  const flush = transformAt(7.25);
+  const flush = transformAt(7.5);
   const rejected = resolveSceneObjectCollision({
     current: flush,
     proposed: { ...flush, uniformScale: 2 },
-    localAabb: TEST_CUBE_NORMALIZED_PLACEMENT_LOCAL_AABB,
+    localAabb: TEST_CUBE_PLACEMENT_LOCAL_AABB,
     walls: [distantRightWall],
     mode: "pose",
   });
   assert.equal(rejected.status, "rejected_pose");
   assert.equal(rejected.transform.uniformScale, 1);
-  assert.equal(rejected.transform.position.x, 7.25);
+  assert.equal(rejected.transform.position.x, 7.5);
 });
 
 test("floor Y clamp and Reset Transform remain intact", () => {

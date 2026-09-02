@@ -14,7 +14,7 @@ export const SCENE_SELECTION_POINTER_SLOP_PX = 5;
 
 export type SceneObjectRoot = Readonly<{
   placement: THREE.Object3D;
-  autoBounds: THREE.Object3D;
+  importPlacement: THREE.Object3D;
 }>;
 
 export function tagSceneObjectRoot(

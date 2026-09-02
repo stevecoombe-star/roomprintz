@@ -16,7 +16,7 @@ import {
   DEFAULT_WORLD_TRANSFORM,
   SCENE_ROTATION_EULER_ORDER,
   TEST_CUBE_COLOR,
-  TEST_CUBE_GEOMETRY_SIZE,
+  TEST_CUBE_EDGE_M,
   addGlbModel,
   addTestCube,
   createInitialSceneLayerState,
@@ -29,7 +29,7 @@ import {
 } from "./scene-layer-state";
 import {
   applyWorldTransform,
-  attachNormalizedObject,
+  attachImportedObject,
   createSceneObjectRoot,
   createTestCubeMesh,
   loadGlbFromUrl,
@@ -238,13 +238,13 @@ test("Add Test Cube creates one selected scene object at the V1 origin", () => {
   assert.equal(selected?.transform.position.z, 0);
 });
 
-test("Test Cube mesh reuses the V1 cube geometry and material", () => {
+test("Test Cube mesh is an explicit 1 m cube", () => {
   const cube = createTestCubeMesh();
   const geometry = cube.geometry as THREE.BoxGeometry;
-  assert.equal(geometry.parameters.width, TEST_CUBE_GEOMETRY_SIZE);
-  assert.equal(geometry.parameters.height, TEST_CUBE_GEOMETRY_SIZE);
-  assert.equal(geometry.parameters.depth, TEST_CUBE_GEOMETRY_SIZE);
-  assert.equal(TEST_CUBE_GEOMETRY_SIZE, 0.8);
+  assert.equal(geometry.parameters.width, TEST_CUBE_EDGE_M);
+  assert.equal(geometry.parameters.height, TEST_CUBE_EDGE_M);
+  assert.equal(geometry.parameters.depth, TEST_CUBE_EDGE_M);
+  assert.equal(TEST_CUBE_EDGE_M, 1);
   const material = cube.material as THREE.MeshStandardMaterial;
   assert.equal(`#${material.color.getHexString()}`, TEST_CUBE_COLOR);
   cube.geometry.dispose();
@@ -287,11 +287,11 @@ test("GLB loader path is available and failures stay in the scene layer", async 
   assert.match(viewerSource, /"failed"/);
 });
 
-test("mocked GLB attaches, auto-bounds, and accepts world transforms", () => {
+test("mocked GLB attaches, import-places, and accepts world transforms", () => {
   const root = createSceneObjectRoot();
   const mockGlb = new THREE.Group();
   mockGlb.add(new THREE.Mesh(new THREE.BoxGeometry(2, 2, 2)));
-  attachNormalizedObject(root.autoBounds, mockGlb);
+  attachImportedObject(root.importPlacement, mockGlb);
   applyWorldTransform(root.placement, {
     position: { x: 0.4, y: 0.2, z: -0.3 },
     rotationDeg: { x: 0, y: 25, z: 0 },
@@ -492,15 +492,15 @@ test("runtime consumes exactly one of EMPTY-authoritative, OL-CQ, S4C-CQ, or S4B
   assert.match(roomLabSource, /collisionAuthority = \{String\(applied\.roomCollision\.collisionAuthority\)\}/);
 });
 
-test("auto-bounds places a Test Cube on the calibrated floor plane, not the cyan quad", () => {
+test("import placement puts a Test Cube on the calibrated floor plane, not the cyan quad", () => {
   const root = createSceneObjectRoot();
   const cube = createTestCubeMesh();
-  attachNormalizedObject(root.autoBounds, cube);
+  attachImportedObject(root.importPlacement, cube);
   applyWorldTransform(root.placement, DEFAULT_WORLD_TRANSFORM);
   root.placement.updateMatrixWorld(true);
   const box = new THREE.Box3().setFromObject(root.placement);
   assert.ok(Math.abs(box.min.y) < 1e-6);
-  assert.ok(box.max.y > 0);
+  assert.ok(Math.abs(box.max.y - TEST_CUBE_EDGE_M) < 1e-6);
   cube.geometry.dispose();
   (cube.material as THREE.Material).dispose();
 });

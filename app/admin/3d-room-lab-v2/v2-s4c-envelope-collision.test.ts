@@ -25,7 +25,7 @@ import {
 } from "./room-envelope-collision-authority-contract";
 import { constructAfcV2RoomEnvelopeCollisionAuthority } from "./room-envelope-collision-qualification.server";
 import { resolveSceneObjectCollision } from "./scene-collision-resolver";
-import { TEST_CUBE_NORMALIZED_PLACEMENT_LOCAL_AABB } from "./room-collision-footprint";
+import { TEST_CUBE_PLACEMENT_LOCAL_AABB } from "./room-collision-footprint";
 import { DEFAULT_WORLD_TRANSFORM } from "./scene-layer-state";
 
 const emptyIdentity = {
@@ -427,31 +427,31 @@ test("Move/sweep/slide/rotate/scale kernel behavior is unchanged", () => {
   const move = resolveSceneObjectCollision({
     current: { ...DEFAULT_WORLD_TRANSFORM, position: { x: 0, y: 0, z: 0 } },
     proposed: { ...DEFAULT_WORLD_TRANSFORM, position: { x: 4, y: 0, z: 0 } },
-    localAabb: TEST_CUBE_NORMALIZED_PLACEMENT_LOCAL_AABB,
+    localAabb: TEST_CUBE_PLACEMENT_LOCAL_AABB,
     walls: [wall],
     mode: "move",
   });
-  assert.ok(Math.abs(move.transform.position.x - 0.25) < 1e-6);
+  assert.ok(Math.abs(move.transform.position.x - 0.5) < 1e-6);
   const rotate = resolveSceneObjectCollision({
-    current: { ...DEFAULT_WORLD_TRANSFORM, position: { x: 0.25, y: 0, z: 0 } },
+    current: { ...DEFAULT_WORLD_TRANSFORM, position: { x: 0.5, y: 0, z: 0 } },
     proposed: {
       ...DEFAULT_WORLD_TRANSFORM,
-      position: { x: 0.25, y: 0, z: 0 },
+      position: { x: 0.5, y: 0, z: 0 },
       rotationDeg: { x: 0, y: 45, z: 0 },
     },
-    localAabb: TEST_CUBE_NORMALIZED_PLACEMENT_LOCAL_AABB,
+    localAabb: TEST_CUBE_PLACEMENT_LOCAL_AABB,
     walls: [wall],
     mode: "pose",
   });
   assert.equal(rotate.status, "rejected_pose");
   const scale = resolveSceneObjectCollision({
-    current: { ...DEFAULT_WORLD_TRANSFORM, position: { x: 0.25, y: 0, z: 0 } },
+    current: { ...DEFAULT_WORLD_TRANSFORM, position: { x: 0.5, y: 0, z: 0 } },
     proposed: {
       ...DEFAULT_WORLD_TRANSFORM,
-      position: { x: 0.25, y: 0, z: 0 },
+      position: { x: 0.5, y: 0, z: 0 },
       uniformScale: 3,
     },
-    localAabb: TEST_CUBE_NORMALIZED_PLACEMENT_LOCAL_AABB,
+    localAabb: TEST_CUBE_PLACEMENT_LOCAL_AABB,
     walls: [wall],
     mode: "pose",
   });

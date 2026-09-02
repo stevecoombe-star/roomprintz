@@ -26,7 +26,7 @@ import type { LocalAabb } from "./room-collision-footprint";
 import { resolveSceneObjectCollision } from "./scene-collision-resolver";
 import {
   applyWorldTransform,
-  attachNormalizedObject,
+  attachImportedObject,
   createSceneObjectRoot,
   createTestCubeMesh,
   disposeObject3D,
@@ -93,7 +93,7 @@ type RuntimeEntry = {
   kind: SceneObjectRecord["kind"];
   objectUrl: string | null;
   placement: THREE.Group;
-  autoBounds: THREE.Group;
+  importPlacement: THREE.Group;
   loadToken: number;
   localAabb: LocalAabb | null;
   lastResolved: WorldTransform | null;
@@ -322,7 +322,7 @@ export default function CalibratedRoomViewer({
       }
     };
     const cacheEntryBounds = (entry: RuntimeEntry) => {
-      entry.localAabb = measurePlacementLocalAabb(entry.placement, entry.autoBounds);
+      entry.localAabb = measurePlacementLocalAabb(entry.placement, entry.importPlacement);
       reportObjectLocalAabbRef.current?.(entry.id, entry.localAabb);
     };
     const runtime = new Map<string, RuntimeEntry>();
@@ -420,7 +420,7 @@ export default function CalibratedRoomViewer({
             kind: record.kind,
             objectUrl: record.objectUrl,
             placement: root.placement,
-            autoBounds: root.autoBounds,
+            importPlacement: root.importPlacement,
             loadToken: 0,
             localAabb: null,
             lastResolved: record.transform,
@@ -430,7 +430,7 @@ export default function CalibratedRoomViewer({
           runtime.set(record.id, created);
           entry = created;
           if (record.kind === "test_cube") {
-            attachNormalizedObject(created.autoBounds, createTestCubeMesh());
+            attachImportedObject(created.importPlacement, createTestCubeMesh());
             cacheEntryBounds(created);
           } else if (record.objectUrl) {
             const loadToken = ++created.loadToken;
@@ -453,7 +453,7 @@ export default function CalibratedRoomViewer({
                 );
                 return;
               }
-              attachNormalizedObject(created.autoBounds, loaded.scene);
+              attachImportedObject(created.importPlacement, loaded.scene);
               cacheEntryBounds(created);
               reportLoadStatusRef.current?.(record.id, "loaded", null);
             });

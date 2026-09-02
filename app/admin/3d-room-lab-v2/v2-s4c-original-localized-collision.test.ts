@@ -7,7 +7,7 @@ import { buildEmptyRoomObservationEvidence } from "./empty-room-observation-cont
 import { FLOOR_REACHING_OPENING_CATEGORIES } from "./room-envelope-authority-contract";
 import { selectActiveRuntimeCollisionWalls } from "./room-envelope-collision-authority-contract";
 import { resolveSceneObjectCollision } from "./scene-collision-resolver";
-import { TEST_CUBE_NORMALIZED_PLACEMENT_LOCAL_AABB } from "./room-collision-footprint";
+import { TEST_CUBE_PLACEMENT_LOCAL_AABB } from "./room-collision-footprint";
 import { DEFAULT_WORLD_TRANSFORM } from "./scene-layer-state";
 import {
   ORIGINAL_SOURCE_NORMALIZED_IMAGE_SPACE,
@@ -630,7 +630,7 @@ test("OL walls use the unchanged collision kernel", () => {
       ...DEFAULT_WORLD_TRANSFORM,
       position: { x: 0, y: 0, z: -0.5 },
     },
-    localAabb: TEST_CUBE_NORMALIZED_PLACEMENT_LOCAL_AABB,
+    localAabb: TEST_CUBE_PLACEMENT_LOCAL_AABB,
     walls: selected.walls,
     mode: "move",
   });
