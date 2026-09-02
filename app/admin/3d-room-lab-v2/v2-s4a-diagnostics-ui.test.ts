@@ -46,6 +46,46 @@ test("ORIGINAL viewer draws accepted finite wall-base diagnostics outside the ob
   );
 });
 
+test("Show Collision Boundary does not hide S4A wall-base diagnostics", () => {
+  assert.match(
+    viewerSource,
+    /collisionWallLayer\.visible = showCollisionBoundaryRef\.current/,
+  );
+  assert.doesNotMatch(
+    viewerSource,
+    /wallBaseLayer\.visible = showCollisionBoundaryRef\.current/,
+  );
+  assert.match(
+    viewerSource,
+    /wallBaseLayer\.visible = showWallBoundaryRef\.current/,
+  );
+  assert.doesNotMatch(
+    roomLabSource,
+    /setShowCollisionBoundary\([\s\S]{0,200}wallBaseDiagnostics/,
+  );
+});
+
+test("Show Wall Boundary hides only S4A wall-base diagnostics and does not rewrite S4A", () => {
+  assert.match(roomLabSource, /aria-label="Show Wall Boundary"/);
+  assert.match(
+    viewerSource,
+    /wallBaseLayer\.visible = showWallBoundaryRef\.current/,
+  );
+  assert.doesNotMatch(
+    viewerSource,
+    /collisionWallLayer\.visible = showWallBoundaryRef\.current/,
+  );
+  assert.doesNotMatch(
+    roomLabSource,
+    /setShowWallBoundary\([\s\S]{0,160}setApplied|setShowWallBoundary\([\s\S]{0,200}constructAfcV2RoomBoundaryAuthority/,
+  );
+  assert.match(roomLabSource, /wallBaseDiagnostics=\{wallBaseDiagnosticsFromReceipt/);
+  assert.match(
+    viewerSource,
+    /\}, \[floor\.referenceDepthM, floor\.worldWidthM, snapshot\]\);/,
+  );
+});
+
 test("Room Boundaries inspector receipts S4A without claiming collision authority", () => {
   assert.match(roomLabSource, /Room Boundaries/);
   assert.match(roomLabSource, /collisionAuthority = \{String\(applied\.roomBoundaries\.collisionAuthority\)\}/);

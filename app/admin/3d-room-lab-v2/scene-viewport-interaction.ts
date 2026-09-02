@@ -2,6 +2,7 @@ import * as THREE from "three";
 
 import {
   CALIBRATED_FLOOR_PLANE_Y,
+  SCENE_POSITION_XZ_SAFETY_ABS_M,
   SCENE_ROTATION_EULER_ORDER,
   SCENE_TRANSFORM_LIMITS,
   type ViewportTransformMode,
@@ -143,14 +144,14 @@ export function objectBodyDragWorldPosition(input: Readonly<{
   return {
     x: clamp(
       input.hitX - input.offsetX,
-      SCENE_TRANSFORM_LIMITS.positionX.min,
-      SCENE_TRANSFORM_LIMITS.positionX.max,
+      -SCENE_POSITION_XZ_SAFETY_ABS_M,
+      SCENE_POSITION_XZ_SAFETY_ABS_M,
     ),
     y: input.placementY,
     z: clamp(
       input.hitZ - input.offsetZ,
-      SCENE_TRANSFORM_LIMITS.positionZ.min,
-      SCENE_TRANSFORM_LIMITS.positionZ.max,
+      -SCENE_POSITION_XZ_SAFETY_ABS_M,
+      SCENE_POSITION_XZ_SAFETY_ABS_M,
     ),
   };
 }

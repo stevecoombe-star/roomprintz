@@ -69,6 +69,8 @@ type Props = Readonly<{
   camera: FrozenV2CameraSnapshot;
   floor: Readonly<{ worldWidthM: number; referenceDepthM: number }>;
   showFloorQuad: boolean;
+  showWallBoundary: boolean;
+  showCollisionBoundary: boolean;
   wallBaseDiagnostics?: readonly RoomBoundaryWallBaseDiagnostic[];
   collisionWallDiagnostics?: readonly RoomCollisionWallDiagnostic[];
   collisionWalls?: readonly RoomCollisionEnabledWall[];
@@ -107,6 +109,8 @@ export default function CalibratedRoomViewer({
   camera: snapshot,
   floor,
   showFloorQuad,
+  showWallBoundary,
+  showCollisionBoundary,
   wallBaseDiagnostics = [],
   collisionWallDiagnostics = [],
   collisionWalls = [],
@@ -121,6 +125,8 @@ export default function CalibratedRoomViewer({
 }: Props) {
   const mountRef = useRef<HTMLDivElement | null>(null);
   const showFloorQuadRef = useRef(showFloorQuad);
+  const showWallBoundaryRef = useRef(showWallBoundary);
+  const showCollisionBoundaryRef = useRef(showCollisionBoundary);
   const wallBaseDiagnosticsRef = useRef(wallBaseDiagnostics);
   const collisionWallDiagnosticsRef = useRef(collisionWallDiagnostics);
   const collisionWallsRef = useRef(collisionWalls);
@@ -135,6 +141,8 @@ export default function CalibratedRoomViewer({
 
   useEffect(() => {
     showFloorQuadRef.current = showFloorQuad;
+    showWallBoundaryRef.current = showWallBoundary;
+    showCollisionBoundaryRef.current = showCollisionBoundary;
     wallBaseDiagnosticsRef.current = wallBaseDiagnostics;
     collisionWallDiagnosticsRef.current = collisionWallDiagnostics;
     collisionWallsRef.current = collisionWalls;
@@ -156,7 +164,9 @@ export default function CalibratedRoomViewer({
     reportSelection,
     sceneObjects,
     selectedObjectId,
+    showCollisionBoundary,
     showFloorQuad,
+    showWallBoundary,
     wallBaseDiagnostics,
     transformMode,
   ]);
@@ -713,6 +723,8 @@ export default function CalibratedRoomViewer({
       animationFrame = window.requestAnimationFrame(animate);
       floorSurface.visible = showFloorQuadRef.current;
       floorWireframe.visible = showFloorQuadRef.current;
+      wallBaseLayer.visible = showWallBoundaryRef.current;
+      collisionWallLayer.visible = showCollisionBoundaryRef.current;
       syncWallBaseDiagnostics();
       syncCollisionWallDiagnostics();
       syncSceneObjects();

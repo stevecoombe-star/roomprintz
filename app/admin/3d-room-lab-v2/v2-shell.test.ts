@@ -66,6 +66,8 @@ test("V2-S3D route renders separated EMPTY observation and TILED authority", () 
   assert.match(shellMarkup, /Scene \/ Models/);
   assert.match(shellMarkup, /Selected Model/);
   assert.match(shellMarkup, /Show Floor Quad/);
+  assert.match(shellMarkup, /Show Wall Boundary/);
+  assert.match(shellMarkup, /Show Collision Boundary/);
   assert.match(shellMarkup, /Add Test Cube/);
   assert.match(shellMarkup, /Load Model \/ GLB/);
   assert.match(shellMarkup, />Move</);
@@ -199,6 +201,7 @@ test("v2 browser runtime remains isolated from v1 UI and research", () => {
     "@/app/admin/3d-room-lab/calibrated-camera-readonly-projection",
     "@/app/admin/3d-room-lab/model-bounds",
     "./scene-layer-state",
+    "./scene-movement-control-range",
     "./scene-object-runtime",
     "./scene-viewport-interaction",
     "three/examples/jsm/loaders/GLTFLoader.js",

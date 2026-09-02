@@ -10,7 +10,9 @@ import * as THREE from "three";
 import RoomLabV2 from "./RoomLabV2";
 import { REPRESENTATION_KINDS } from "./representation-state";
 import {
+  DEFAULT_SHOW_COLLISION_BOUNDARY,
   DEFAULT_SHOW_FLOOR_QUAD,
+  DEFAULT_SHOW_WALL_BOUNDARY,
   DEFAULT_WORLD_TRANSFORM,
   SCENE_ROTATION_EULER_ORDER,
   TEST_CUBE_COLOR,
@@ -91,6 +93,67 @@ test("V2-S3E floor quad default is explicit ON and visual-only", () => {
   assert.match(overlaySource, /data-evidence-role="authoritative-floor"/);
 });
 
+test("Show Collision Boundary defaults ON and hides only the collision diagnostic layer", () => {
+  assert.equal(DEFAULT_SHOW_COLLISION_BOUNDARY, true);
+  const markup = renderToStaticMarkup(createElement(RoomLabV2));
+  assert.match(markup, /aria-label="Show Collision Boundary"/);
+  assert.match(markup, /Show Collision Boundary/);
+  assert.match(
+    markup,
+    /aria-label="Show Collision Boundary"[\s\S]*checked|checked[\s\S]*aria-label="Show Collision Boundary"/,
+  );
+  assert.match(
+    viewerSource,
+    /collisionWallLayer\.visible = showCollisionBoundaryRef\.current/,
+  );
+  assert.doesNotMatch(
+    viewerSource,
+    /wallBaseLayer\.visible = showCollisionBoundaryRef\.current/,
+  );
+  assert.match(
+    viewerSource,
+    /\}, \[floor\.referenceDepthM, floor\.worldWidthM, snapshot\]\);/,
+  );
+  assert.doesNotMatch(
+    viewerSource,
+    /\}, \[floor\.referenceDepthM, floor\.worldWidthM, snapshot, showCollisionBoundary\]\);/,
+  );
+  assert.match(roomLabSource, /showCollisionBoundary=\{showCollisionBoundary\}/);
+  assert.match(roomLabSource, /collisionWalls=\{activeCollision\.walls\}/);
+});
+
+test("Show Wall Boundary defaults ON and hides only the S4A wall-base diagnostic layer", () => {
+  assert.equal(DEFAULT_SHOW_WALL_BOUNDARY, true);
+  const markup = renderToStaticMarkup(createElement(RoomLabV2));
+  assert.match(markup, /aria-label="Show Wall Boundary"/);
+  assert.match(markup, /Show Wall Boundary/);
+  assert.match(
+    markup,
+    /aria-label="Show Wall Boundary"[\s\S]*checked|checked[\s\S]*aria-label="Show Wall Boundary"/,
+  );
+  assert.match(
+    viewerSource,
+    /wallBaseLayer\.visible = showWallBoundaryRef\.current/,
+  );
+  assert.doesNotMatch(
+    viewerSource,
+    /collisionWallLayer\.visible = showWallBoundaryRef\.current/,
+  );
+  assert.doesNotMatch(
+    viewerSource,
+    /wallBaseLayer\.visible = showCollisionBoundaryRef\.current/,
+  );
+  assert.match(
+    viewerSource,
+    /\}, \[floor\.referenceDepthM, floor\.worldWidthM, snapshot\]\);/,
+  );
+  assert.doesNotMatch(
+    viewerSource,
+    /\}, \[floor\.referenceDepthM, floor\.worldWidthM, snapshot, showWallBoundary\]\);/,
+  );
+  assert.match(roomLabSource, /showWallBoundary=\{showWallBoundary\}/);
+});
+
 test("toggling the Floor quad does not rewrite Floor or camera authority", () => {
   const before = structuredClone(frozenAuthority);
   assert.equal(DEFAULT_SHOW_FLOOR_QUAD, true);
@@ -103,6 +166,60 @@ test("toggling the Floor quad does not rewrite Floor or camera authority", () =>
     roomLabSource,
     /setShowFloorQuad\([\s\S]{0,120}setApplied|setShowFloorQuad\([\s\S]{0,120}analyzeAndApply/,
   );
+});
+
+test("toggling collision-boundary visibility does not rewrite collision authority", () => {
+  assert.doesNotMatch(
+    roomLabSource,
+    /setShowCollisionBoundary\([\s\S]{0,160}setApplied|setShowCollisionBoundary\([\s\S]{0,160}selectActiveRuntimeCollisionWalls/,
+  );
+  assert.doesNotMatch(
+    viewerSource,
+    /showCollisionBoundaryRef\.current[\s\S]{0,80}collisionWallsRef/,
+  );
+  assert.match(viewerSource, /walls: collisionWallsRef\.current/);
+  assert.doesNotMatch(
+    viewerSource,
+    /resolveSceneObjectCollision\([\s\S]{0,200}showCollisionBoundary/,
+  );
+  assert.match(viewerSource, /syncCollisionWallDiagnostics\(\)/);
+  assert.doesNotMatch(
+    viewerSource,
+    /if \(showCollisionBoundaryRef\.current\) \{\s*syncCollisionWallDiagnostics/,
+  );
+});
+
+test("wall-boundary and collision-boundary visibility toggles are independent and display-only", () => {
+  assert.match(
+    viewerSource,
+    /wallBaseLayer\.visible = showWallBoundaryRef\.current/,
+  );
+  assert.match(
+    viewerSource,
+    /collisionWallLayer\.visible = showCollisionBoundaryRef\.current/,
+  );
+  assert.doesNotMatch(
+    viewerSource,
+    /wallBaseLayer\.visible = showCollisionBoundaryRef\.current/,
+  );
+  assert.doesNotMatch(
+    viewerSource,
+    /collisionWallLayer\.visible = showWallBoundaryRef\.current/,
+  );
+  assert.doesNotMatch(
+    roomLabSource,
+    /setShowWallBoundary\([\s\S]{0,160}setApplied|setShowWallBoundary\([\s\S]{0,160}selectActiveRuntimeCollisionWalls/,
+  );
+  assert.doesNotMatch(
+    viewerSource,
+    /resolveSceneObjectCollision\([\s\S]{0,200}showWallBoundary/,
+  );
+  assert.match(viewerSource, /syncWallBaseDiagnostics\(\)/);
+  assert.doesNotMatch(
+    viewerSource,
+    /if \(showWallBoundaryRef\.current\) \{\s*syncWallBaseDiagnostics/,
+  );
+  assert.match(roomLabSource, /collisionWalls=\{activeCollision\.walls\}/);
 });
 
 test("Add Test Cube creates one selected scene object at the V1 origin", () => {

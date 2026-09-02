@@ -65,3 +65,39 @@ test("S4B viewer diagnostics do not intercept raycast", () => {
   assert.match(viewerSource, /baseLine\.raycast = ignoreRaycast/);
   assert.match(viewerSource, /collisionWallMaterial/);
 });
+
+test("Show Collision Boundary hides S4B diagnostic lines without clearing the wall set", () => {
+  assert.match(roomLabSource, /aria-label="Show Collision Boundary"/);
+  assert.match(
+    viewerSource,
+    /collisionWallLayer\.visible = showCollisionBoundaryRef\.current/,
+  );
+  assert.match(roomLabSource, /collisionWalls=\{activeCollision\.walls\}/);
+  assert.match(viewerSource, /walls: collisionWallsRef\.current/);
+  assert.doesNotMatch(
+    viewerSource,
+    /collisionWallsRef\.current = showCollisionBoundary/,
+  );
+  assert.doesNotMatch(
+    roomLabSource,
+    /setShowCollisionBoundary\([\s\S]{0,200}selectActiveRuntimeCollisionWalls/,
+  );
+});
+
+test("Show Wall Boundary does not hide or clear the active collision wall set", () => {
+  assert.match(roomLabSource, /aria-label="Show Wall Boundary"/);
+  assert.match(
+    viewerSource,
+    /wallBaseLayer\.visible = showWallBoundaryRef\.current/,
+  );
+  assert.doesNotMatch(
+    viewerSource,
+    /collisionWallLayer\.visible = showWallBoundaryRef\.current/,
+  );
+  assert.match(roomLabSource, /collisionWalls=\{activeCollision\.walls\}/);
+  assert.match(viewerSource, /walls: collisionWallsRef\.current/);
+  assert.doesNotMatch(
+    roomLabSource,
+    /setShowWallBoundary\([\s\S]{0,200}selectActiveRuntimeCollisionWalls/,
+  );
+});

@@ -74,6 +74,44 @@ test("floor quad visibility is a render flag and does not rebuild the frozen cam
   );
 });
 
+test("collision-boundary visibility is a render flag and does not rebuild the frozen camera", () => {
+  assert.match(
+    source,
+    /collisionWallLayer\.visible = showCollisionBoundaryRef\.current/,
+  );
+  assert.match(
+    source,
+    /\}, \[floor\.referenceDepthM, floor\.worldWidthM, snapshot\]\);/,
+  );
+  assert.doesNotMatch(
+    source,
+    /\}, \[floor\.referenceDepthM, floor\.worldWidthM, snapshot, showCollisionBoundary\]\);/,
+  );
+  assert.doesNotMatch(
+    source,
+    /\}, \[floor\.referenceDepthM, floor\.worldWidthM, snapshot, showFloorQuad, showCollisionBoundary\]\);/,
+  );
+});
+
+test("wall-boundary visibility is a render flag and does not rebuild the frozen camera", () => {
+  assert.match(
+    source,
+    /wallBaseLayer\.visible = showWallBoundaryRef\.current/,
+  );
+  assert.match(
+    source,
+    /\}, \[floor\.referenceDepthM, floor\.worldWidthM, snapshot\]\);/,
+  );
+  assert.doesNotMatch(
+    source,
+    /\}, \[floor\.referenceDepthM, floor\.worldWidthM, snapshot, showWallBoundary\]\);/,
+  );
+  assert.doesNotMatch(
+    source,
+    /collisionWallLayer\.visible = showWallBoundaryRef\.current/,
+  );
+});
+
 test("accepted Original and transparent calibrated overlay coexist after apply", () => {
   assert.match(
     roomLabSource,

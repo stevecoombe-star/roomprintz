@@ -68,10 +68,13 @@ import {
   AFC_V2_EMPTY_AUTHORITATIVE_COLLISION_AUTHORITY_VERSION,
   type AfcV2EmptyAuthoritativeCollisionAuthorityReceipt,
 } from "./empty-authoritative-collision-authority-contract";
+import { deriveSceneMovementControlRange } from "./scene-movement-control-range";
 import { TEST_CUBE_NORMALIZED_PLACEMENT_LOCAL_AABB, type LocalAabb } from "./room-collision-footprint";
 import { resolveSceneObjectCollision } from "./scene-collision-resolver";
 import {
+  DEFAULT_SHOW_COLLISION_BOUNDARY,
   DEFAULT_SHOW_FLOOR_QUAD,
+  DEFAULT_SHOW_WALL_BOUNDARY,
   SCENE_TRANSFORM_LIMITS,
   addGlbModel,
   addTestCube,
@@ -457,6 +460,12 @@ export default function RoomLabV2() {
     useState(true);
   const [showOriginalLocalization, setShowOriginalLocalization] = useState(true);
   const [showFloorQuad, setShowFloorQuad] = useState(DEFAULT_SHOW_FLOOR_QUAD);
+  const [showWallBoundary, setShowWallBoundary] = useState(
+    DEFAULT_SHOW_WALL_BOUNDARY,
+  );
+  const [showCollisionBoundary, setShowCollisionBoundary] = useState(
+    DEFAULT_SHOW_COLLISION_BOUNDARY,
+  );
   const [sceneLayer, setSceneLayer] = useState(createInitialSceneLayerState);
   const [selectedModelExpanded, setSelectedModelExpanded] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -608,6 +617,15 @@ export default function RoomLabV2() {
     originalLocalizedCollision: applied?.originalLocalizedCollision ?? null,
     envelopeCollision: applied?.roomEnvelopeCollision ?? null,
     roomCollision: applied?.roomCollision ?? null,
+  });
+  const movementControlRange = deriveSceneMovementControlRange({
+    floor: applied
+      ? {
+        worldWidthM: applied.floor.worldWidthM,
+        referenceDepthM: applied.floor.referenceDepthM,
+      }
+      : null,
+    collisionWalls: activeCollision.walls,
   });
   const registrationPath = activeRegistrationPath({
     identityRegistrationClass: applied?.emptyOriginalRegistration?.registrationClass,
@@ -1135,6 +1153,8 @@ export default function RoomLabV2() {
                         referenceDepthM: applied.floor.referenceDepthM,
                       }}
                       showFloorQuad={showFloorQuad}
+                      showWallBoundary={showWallBoundary}
+                      showCollisionBoundary={showCollisionBoundary}
                       wallBaseDiagnostics={wallBaseDiagnosticsFromReceipt(
                         applied.roomBoundaries,
                       )}
@@ -1571,9 +1591,9 @@ export default function RoomLabV2() {
                           <TransformControlRow
                             label="X"
                             value={selectedSceneObject.transform.position.x}
-                            min={SCENE_TRANSFORM_LIMITS.positionX.min}
-                            max={SCENE_TRANSFORM_LIMITS.positionX.max}
-                            step={SCENE_TRANSFORM_LIMITS.positionX.step}
+                            min={movementControlRange.positionX.min}
+                            max={movementControlRange.positionX.max}
+                            step={movementControlRange.positionX.step}
                             disabled={!sceneControlsEnabled}
                             onValue={(value) =>
                               setSceneLayer((current) => {
@@ -1609,9 +1629,9 @@ export default function RoomLabV2() {
                           <TransformControlRow
                             label="Z"
                             value={selectedSceneObject.transform.position.z}
-                            min={SCENE_TRANSFORM_LIMITS.positionZ.min}
-                            max={SCENE_TRANSFORM_LIMITS.positionZ.max}
-                            step={SCENE_TRANSFORM_LIMITS.positionZ.step}
+                            min={movementControlRange.positionZ.min}
+                            max={movementControlRange.positionZ.max}
+                            step={movementControlRange.positionZ.step}
                             disabled={!sceneControlsEnabled}
                             onValue={(value) =>
                               setSceneLayer((current) => {
@@ -1757,6 +1777,38 @@ export default function RoomLabV2() {
             </section>
             <section className="rounded-xl border border-slate-800 bg-slate-900/70 p-4">
               <h2 className="text-sm font-semibold text-slate-200">Room Boundaries</h2>
+              <label className="mt-3 flex items-center gap-2 text-xs text-slate-300">
+                <input
+                  type="checkbox"
+                  checked={showWallBoundary}
+                  disabled={!applied}
+                  onChange={(event) =>
+                    setShowWallBoundary(event.target.checked)}
+                  className="accent-amber-400"
+                  aria-label="Show Wall Boundary"
+                />
+                Show Wall Boundary
+              </label>
+              <p className="mt-1 text-[11px] leading-4 text-slate-600">
+                Amber S4A wall-base diagnostic lines only. Authority is
+                unchanged.
+              </p>
+              <label className="mt-3 flex items-center gap-2 text-xs text-slate-300">
+                <input
+                  type="checkbox"
+                  checked={showCollisionBoundary}
+                  disabled={!applied}
+                  onChange={(event) =>
+                    setShowCollisionBoundary(event.target.checked)}
+                  className="accent-rose-400"
+                  aria-label="Show Collision Boundary"
+                />
+                Show Collision Boundary
+              </label>
+              <p className="mt-1 text-[11px] leading-4 text-slate-600">
+                Diagnostic line visibility only. Collision enforcement is
+                unchanged.
+              </p>
               {applied?.roomBoundaries ? (
                 <div className="mt-2 space-y-1 text-xs leading-5 text-slate-400">
                   <p>{applied.roomBoundaries.schemaVersion}</p>

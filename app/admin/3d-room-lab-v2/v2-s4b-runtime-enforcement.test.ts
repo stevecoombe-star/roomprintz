@@ -19,8 +19,6 @@ import {
   resetSceneObjectTransform,
   selectSceneObject,
   updateSelectedPositionAxis,
-  updateSelectedRotationAxis,
-  updateSelectedUniformScale,
 } from "./scene-layer-state";
 import {
   applyWorldTransform,
@@ -100,7 +98,7 @@ test("TransformControls Move uses the same resolver and leaves Y to the floor in
 });
 
 test("X/Z sliders cannot bypass collision; Y slider is floor-only", () => {
-  let state = addTestCube(createInitialSceneLayerState());
+  const state = addTestCube(createInitialSceneLayerState());
   const selected = getSelectedSceneObject(state)!;
   const clamped = updateSelectedPositionAxis(state, "x", 4);
   const proposed = getSelectedSceneObject(clamped)!;
@@ -203,21 +201,22 @@ test("object lifecycle, selection, and delete remain independent of collision", 
   assert.doesNotMatch(viewerSource, /revokeObjectURL/);
 });
 
-test("sandbox X/Z limits still apply and are distinct from wall collision", () => {
-  let state = addTestCube(createInitialSceneLayerState());
-  state = updateSelectedPositionAxis(state, "x", 50);
-  assert.equal(
-    getSelectedSceneObject(state)?.transform.position.x,
-    SCENE_TRANSFORM_LIMITS.positionX.max,
+test("historical X/Z sandbox limits are not physical authority; walls still stop movement", () => {
+  const state = updateSelectedPositionAxis(
+    addTestCube(createInitialSceneLayerState()),
+    "x",
+    8,
   );
+  assert.equal(getSelectedSceneObject(state)?.transform.position.x, 8);
+  assert.ok(8 > SCENE_TRANSFORM_LIMITS.positionX.max);
   const resolved = resolveSceneObjectCollision({
     current: transformAt(0),
-    proposed: transformAt(SCENE_TRANSFORM_LIMITS.positionX.max),
+    proposed: transformAt(8),
     localAabb: TEST_CUBE_NORMALIZED_PLACEMENT_LOCAL_AABB,
     walls: [xWall],
     mode: "move",
   });
-  assert.ok(resolved.transform.position.x < SCENE_TRANSFORM_LIMITS.positionX.max);
+  assert.ok(resolved.transform.position.x < 8);
   assert.ok(Math.abs(resolved.transform.position.x - 0.25) < 1e-6);
 });
 

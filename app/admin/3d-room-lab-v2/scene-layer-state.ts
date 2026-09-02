@@ -7,12 +7,26 @@
  *
  * World Y is independently bounded by the infinite calibrated floor plane
  * at Y = 0. That is not room-footprint collision (V2-S4).
+ *
+ * X/Z are not bounded by SCENE_TRANSFORM_LIMITS. Those historical min/max
+ * values are not runtime movement authority. Live slider ranges are derived
+ * at view time from the current Floor rectangle and active collision walls.
+ * Runtime X/Z is limited only by SCENE_POSITION_XZ_SAFETY_ABS_M (sanity),
+ * active collision walls, and the floor plane.
  */
 
 export const DEFAULT_SHOW_FLOOR_QUAD = true;
+export const DEFAULT_SHOW_WALL_BOUNDARY = true;
+export const DEFAULT_SHOW_COLLISION_BOUNDARY = true;
 export const DEFAULT_VIEWPORT_TRANSFORM_MODE = "move" as const;
 export const SCENE_ROTATION_EULER_ORDER = "XYZ" as const;
 export const CALIBRATED_FLOOR_PLANE_Y = 0;
+
+/**
+ * Far sanity bound for stored X/Z so non-finite or exploded values cannot
+ * enter scene state. Not a room sandbox wall and not UI slider range.
+ */
+export const SCENE_POSITION_XZ_SAFETY_ABS_M = 500;
 
 export type ViewportTransformMode = "move" | "rotate" | "scale";
 
@@ -20,8 +34,16 @@ export const TEST_CUBE_GEOMETRY_SIZE = 0.8;
 export const TEST_CUBE_COLOR = "#34d399";
 
 export const SCENE_TRANSFORM_LIMITS = {
+  /**
+   * Historical X sandbox. Not applied as runtime movement law.
+   * UI X range is derived live; runtime X uses SCENE_POSITION_XZ_SAFETY_ABS_M.
+   */
   positionX: { min: -5, max: 5, step: 0.01 },
   positionY: { min: CALIBRATED_FLOOR_PLANE_Y, max: 5, step: 0.01 },
+  /**
+   * Historical Z sandbox. Not applied as runtime movement law.
+   * UI Z range is derived live; runtime Z uses SCENE_POSITION_XZ_SAFETY_ABS_M.
+   */
   positionZ: { min: -10, max: 10, step: 0.01 },
   rotationDeg: { min: -180, max: 180, step: 1 },
   uniformScale: { min: 0.1, max: 4, step: 0.01 },
@@ -76,6 +98,14 @@ export function createInitialSceneLayerState(): SceneLayerState {
 
 function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
+}
+
+function clampPositionXZ(value: number): number {
+  return clamp(
+    value,
+    -SCENE_POSITION_XZ_SAFETY_ABS_M,
+    SCENE_POSITION_XZ_SAFETY_ABS_M,
+  );
 }
 
 function finiteOrUnchanged(value: number, fallback: number): number {
@@ -201,12 +231,13 @@ export function updateSelectedPositionAxis(
 ): SceneLayerState {
   const selected = getSelectedSceneObject(state);
   if (!selected || !Number.isFinite(value)) return state;
-  const limits = axis === "x"
-    ? SCENE_TRANSFORM_LIMITS.positionX
-    : axis === "y"
-    ? SCENE_TRANSFORM_LIMITS.positionY
-    : SCENE_TRANSFORM_LIMITS.positionZ;
-  const nextValue = clamp(value, limits.min, limits.max);
+  const nextValue = axis === "y"
+    ? clamp(
+      value,
+      SCENE_TRANSFORM_LIMITS.positionY.min,
+      SCENE_TRANSFORM_LIMITS.positionY.max,
+    )
+    : clampPositionXZ(value);
   return patchSelectedTransform(state, {
     ...selected.transform,
     position: {
@@ -309,21 +340,13 @@ export function deleteSelectedSceneObject(
 function clampWorldTransform(transform: WorldTransform): WorldTransform {
   return {
     position: {
-      x: clamp(
-        finiteOrUnchanged(transform.position.x, 0),
-        SCENE_TRANSFORM_LIMITS.positionX.min,
-        SCENE_TRANSFORM_LIMITS.positionX.max,
-      ),
+      x: clampPositionXZ(finiteOrUnchanged(transform.position.x, 0)),
       y: clamp(
         finiteOrUnchanged(transform.position.y, 0),
         SCENE_TRANSFORM_LIMITS.positionY.min,
         SCENE_TRANSFORM_LIMITS.positionY.max,
       ),
-      z: clamp(
-        finiteOrUnchanged(transform.position.z, 0),
-        SCENE_TRANSFORM_LIMITS.positionZ.min,
-        SCENE_TRANSFORM_LIMITS.positionZ.max,
-      ),
+      z: clampPositionXZ(finiteOrUnchanged(transform.position.z, 0)),
     },
     rotationDeg: {
       x: clamp(
