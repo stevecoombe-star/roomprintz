@@ -202,6 +202,7 @@ test("v2 browser runtime remains isolated from v1 UI and research", () => {
     "./scene-object-import-bounds",
     "./scene-layer-state",
     "./scene-movement-control-range",
+    "./scene-metric-world-realization",
     "./scene-object-runtime",
     "./scene-viewport-interaction",
     "three/examples/jsm/loaders/GLTFLoader.js",

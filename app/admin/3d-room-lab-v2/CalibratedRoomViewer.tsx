@@ -25,6 +25,13 @@ import type {
 import type { LocalAabb } from "./room-collision-footprint";
 import { resolveSceneObjectCollision } from "./scene-collision-resolver";
 import {
+  canonicalizeObjectWorldTransform,
+  realizeCollisionWalls,
+  realizeObjectWorldTransform,
+  realizeWallBaseDiagnostic,
+  realizeCollisionWallDiagnostic,
+} from "./scene-metric-world-realization";
+import {
   applyWorldTransform,
   attachImportedObject,
   createSceneObjectRoot,
@@ -86,6 +93,9 @@ type Props = Readonly<{
   reportSelection?: (objectId: string | null) => void;
   reportObjectTransform?: (objectId: string, transform: WorldTransform) => void;
   reportObjectLocalAabb?: (objectId: string, aabb: LocalAabb | null) => void;
+  metricScale?: number;
+  worldScaleInputCaptured?: boolean;
+  reportViewportInteraction?: (active: boolean) => void;
 }>;
 
 type RuntimeEntry = {
@@ -99,10 +109,32 @@ type RuntimeEntry = {
   lastResolved: WorldTransform | null;
 };
 
+function applyRealizedCameraPose(
+  camera: THREE.PerspectiveCamera,
+  snapshot: FrozenV2CameraSnapshot,
+  metricScale: number,
+): void {
+  const scale = Number.isFinite(metricScale) && metricScale > 0 ? metricScale : 1;
+  camera.position.set(
+    snapshot.pose.position.x * scale,
+    snapshot.pose.position.y * scale,
+    snapshot.pose.position.z * scale,
+  );
+  camera.up.set(snapshot.pose.up.x, snapshot.pose.up.y, snapshot.pose.up.z);
+  camera.lookAt(
+    snapshot.pose.lookAt.x * scale,
+    snapshot.pose.lookAt.y * scale,
+    snapshot.pose.lookAt.z * scale,
+  );
+  camera.updateMatrixWorld(true);
+}
+
 /**
  * Read-only realization of an already-frozen camera snapshot. It deliberately
  * has no solver, writer, or state callback: replacing the snapshot is the only
  * way to change the rendered camera. Scene objects are a downstream overlay.
+ * World Scale updates camera translation in place and must not rebuild this
+ * viewer.
  */
 export default function CalibratedRoomViewer({
   originalImageUrl,
@@ -122,6 +154,9 @@ export default function CalibratedRoomViewer({
   reportSelection,
   reportObjectTransform,
   reportObjectLocalAabb,
+  metricScale = 1,
+  worldScaleInputCaptured = false,
+  reportViewportInteraction,
 }: Props) {
   const mountRef = useRef<HTMLDivElement | null>(null);
   const showFloorQuadRef = useRef(showFloorQuad);
@@ -138,6 +173,9 @@ export default function CalibratedRoomViewer({
   const reportSelectionRef = useRef(reportSelection);
   const reportObjectTransformRef = useRef(reportObjectTransform);
   const reportObjectLocalAabbRef = useRef(reportObjectLocalAabb);
+  const metricScaleRef = useRef(metricScale);
+  const worldScaleInputCapturedRef = useRef(worldScaleInputCaptured);
+  const reportViewportInteractionRef = useRef(reportViewportInteraction);
 
   useEffect(() => {
     showFloorQuadRef.current = showFloorQuad;
@@ -154,14 +192,19 @@ export default function CalibratedRoomViewer({
     reportSelectionRef.current = reportSelection;
     reportObjectTransformRef.current = reportObjectTransform;
     reportObjectLocalAabbRef.current = reportObjectLocalAabb;
+    metricScaleRef.current = metricScale;
+    worldScaleInputCapturedRef.current = worldScaleInputCaptured;
+    reportViewportInteractionRef.current = reportViewportInteraction;
   }, [
     collisionWallDiagnostics,
     collisionWalls,
     collisionWallColor,
+    metricScale,
     reportObjectLoadStatus,
     reportObjectLocalAabb,
     reportObjectTransform,
     reportSelection,
+    reportViewportInteraction,
     sceneObjects,
     selectedObjectId,
     showCollisionBoundary,
@@ -169,6 +212,7 @@ export default function CalibratedRoomViewer({
     showWallBoundary,
     wallBaseDiagnostics,
     transformMode,
+    worldScaleInputCaptured,
   ]);
 
   useEffect(() => {
@@ -182,6 +226,7 @@ export default function CalibratedRoomViewer({
       far: CALIBRATED_READ_ONLY_PROJECTION_RENDERER_FAR,
     });
     if (!result.ok) return;
+    applyRealizedCameraPose(result.camera, snapshot, metricScaleRef.current);
 
     const renderer = new THREE.WebGLRenderer({ alpha: true, antialias: true });
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
@@ -226,6 +271,12 @@ export default function CalibratedRoomViewer({
     );
     floorWireframe.rotation.x = -Math.PI / 2;
     scene.add(floorWireframe);
+    const applyFloorMeshScale = (scale: number) => {
+      const next = Number.isFinite(scale) && scale > 0 ? scale : 1;
+      floorSurface.scale.set(next, next, 1);
+      floorWireframe.scale.set(next, next, 1);
+    };
+    applyFloorMeshScale(metricScaleRef.current);
 
     const objectLayer = new THREE.Group();
     scene.add(objectLayer);
@@ -253,6 +304,7 @@ export default function CalibratedRoomViewer({
     const ignoreRaycast = () => {};
     let lastWallBaseDiagnostics: readonly RoomBoundaryWallBaseDiagnostic[] | null =
       null;
+    let lastWallBaseMetricScale = Number.NaN;
     const clearWallBaseLayer = () => {
       while (wallBaseLayer.children.length > 0) {
         const child = wallBaseLayer.children[0];
@@ -264,10 +316,18 @@ export default function CalibratedRoomViewer({
     };
     const syncWallBaseDiagnostics = () => {
       const diagnostics = wallBaseDiagnosticsRef.current;
-      if (diagnostics === lastWallBaseDiagnostics) return;
+      const scale = metricScaleRef.current;
+      if (
+        diagnostics === lastWallBaseDiagnostics &&
+        lastWallBaseMetricScale === scale
+      ) {
+        return;
+      }
       lastWallBaseDiagnostics = diagnostics;
+      lastWallBaseMetricScale = scale;
       clearWallBaseLayer();
-      for (const segment of diagnostics) {
+      for (const canonical of diagnostics) {
+        const segment = realizeWallBaseDiagnostic(canonical, scale);
         const baseGeometry = new THREE.BufferGeometry().setFromPoints([
           new THREE.Vector3(segment.start[0], segment.start[1], segment.start[2]),
           new THREE.Vector3(segment.end[0], segment.end[1], segment.end[2]),
@@ -296,6 +356,7 @@ export default function CalibratedRoomViewer({
     };
     let lastCollisionWallDiagnostics: readonly RoomCollisionWallDiagnostic[] | null =
       null;
+    let lastCollisionDiagnosticMetricScale = Number.NaN;
     const clearCollisionWallLayer = () => {
       while (collisionWallLayer.children.length > 0) {
         const child = collisionWallLayer.children[0];
@@ -307,11 +368,19 @@ export default function CalibratedRoomViewer({
     };
     const syncCollisionWallDiagnostics = () => {
       const diagnostics = collisionWallDiagnosticsRef.current;
+      const scale = metricScaleRef.current;
       collisionWallMaterial.color.setHex(collisionWallColorRef.current);
-      if (diagnostics === lastCollisionWallDiagnostics) return;
+      if (
+        diagnostics === lastCollisionWallDiagnostics &&
+        lastCollisionDiagnosticMetricScale === scale
+      ) {
+        return;
+      }
       lastCollisionWallDiagnostics = diagnostics;
+      lastCollisionDiagnosticMetricScale = scale;
       clearCollisionWallLayer();
-      for (const segment of diagnostics) {
+      for (const canonical of diagnostics) {
+        const segment = realizeCollisionWallDiagnostic(canonical, scale);
         const geometry = new THREE.BufferGeometry().setFromPoints([
           new THREE.Vector3(segment.start[0], segment.start[1], segment.start[2]),
           new THREE.Vector3(segment.end[0], segment.end[1], segment.end[2]),
@@ -360,6 +429,30 @@ export default function CalibratedRoomViewer({
       disposeObject3D(entry.placement);
     };
 
+    const realizedCollisionWalls = () =>
+      realizeCollisionWalls(collisionWallsRef.current, metricScaleRef.current);
+
+    const reportCanonicalTransform = (
+      objectId: string,
+      realized: WorldTransform,
+    ) => {
+      reportObjectTransformRef.current?.(
+        objectId,
+        canonicalizeObjectWorldTransform(realized, metricScaleRef.current),
+      );
+    };
+
+    const reportViewportInteraction = (active: boolean) => {
+      reportViewportInteractionRef.current?.(active);
+    };
+
+    const syncControlsEnabled = () => {
+      controls.enabled = !worldScaleInputCapturedRef.current && !bodyDrag;
+    };
+
+    // Collision kernel walls: collisionWallsRef.current realized after
+    // the host's active wall selection. Qualification receipts stay canonical.
+
     const writeAttachedTransform = () => {
       const attached = controls.object;
       if (!attached) return;
@@ -379,18 +472,21 @@ export default function CalibratedRoomViewer({
       }
       const proposed = worldTransformFromObject3D(attached);
       const current = entry?.lastResolved ??
-        sceneObjectsRef.current.find((item) => item.id === objectId)?.transform ??
-        proposed;
+        realizeObjectWorldTransform(
+          sceneObjectsRef.current.find((item) => item.id === objectId)?.transform ??
+            proposed,
+          metricScaleRef.current,
+        );
       const resolved = resolveSceneObjectCollision({
         current,
         proposed,
         localAabb: entry?.localAabb ?? null,
-        walls: collisionWallsRef.current,
+        walls: realizedCollisionWalls(),
         mode: controls.getMode() === "translate" ? "move" : "pose",
       });
       applyWorldTransform(attached, resolved.transform);
       if (entry) entry.lastResolved = resolved.transform;
-      reportObjectTransformRef.current?.(objectId, resolved.transform);
+      reportCanonicalTransform(objectId, resolved.transform);
     };
 
     const syncGizmo = () => {
@@ -423,7 +519,10 @@ export default function CalibratedRoomViewer({
             importPlacement: root.importPlacement,
             loadToken: 0,
             localAabb: null,
-            lastResolved: record.transform,
+            lastResolved: realizeObjectWorldTransform(
+              record.transform,
+              metricScaleRef.current,
+            ),
           };
           tagSceneObjectRoot(created.placement, record.id);
           objectLayer.add(created.placement);
@@ -463,12 +562,16 @@ export default function CalibratedRoomViewer({
           (gizmoDragging || bodyDrag?.active === true) &&
           (record.id === selectedObjectIdRef.current ||
             record.id === bodyDrag?.objectId);
+        const realizedTransform = realizeObjectWorldTransform(
+          record.transform,
+          metricScaleRef.current,
+        );
         if (
           !skipStateWrite &&
-          !objectMatchesWorldTransform(entry.placement, record.transform)
+          !objectMatchesWorldTransform(entry.placement, realizedTransform)
         ) {
-          applyWorldTransform(entry.placement, record.transform);
-          entry.lastResolved = record.transform;
+          applyWorldTransform(entry.placement, realizedTransform);
+          entry.lastResolved = realizedTransform;
         }
         enforceNonNegativeWorldY(entry.placement);
         if (bodyDrag?.active && record.id === bodyDrag.objectId) {
@@ -524,18 +627,19 @@ export default function CalibratedRoomViewer({
     const endBodyDrag = () => {
       const session = bodyDrag;
       if (!session) {
-        controls.enabled = true;
+        syncControlsEnabled();
         return;
       }
       bodyDrag = null;
-      controls.enabled = true;
+      syncControlsEnabled();
+      reportViewportInteraction(gizmoDragging);
       releaseBodyDragCapture(session.pointerId);
       if (!session.active) return;
       const entry = runtime.get(session.objectId);
       if (!entry) return;
       entry.placement.position.y = session.placementY;
       enforceNonNegativeWorldY(entry.placement);
-      reportObjectTransformRef.current?.(
+      reportCanonicalTransform(
         session.objectId,
         worldTransformFromObject3D(entry.placement),
       );
@@ -571,7 +675,7 @@ export default function CalibratedRoomViewer({
         current,
         proposed,
         localAabb: entry.localAabb,
-        walls: collisionWallsRef.current,
+        walls: realizedCollisionWalls(),
         mode: "move",
       });
       applyPlacementWorldPosition(entry.placement, {
@@ -587,7 +691,7 @@ export default function CalibratedRoomViewer({
           y: session.placementY,
         },
       };
-      reportObjectTransformRef.current?.(session.objectId, entry.lastResolved);
+      reportCanonicalTransform(session.objectId, entry.lastResolved);
     };
 
     const pickFromPointer = (clientX: number, clientY: number) => {
@@ -596,6 +700,14 @@ export default function CalibratedRoomViewer({
 
     const pointerDownListener = (event: PointerEvent) => {
       if (event.isPrimary === false) return;
+      if (worldScaleInputCapturedRef.current) {
+        pointerGesture = {
+          clientX: event.clientX,
+          clientY: event.clientY,
+          pointerDownOnGizmo: true,
+        };
+        return;
+      }
       const pointerDownOnGizmo = controls.axis !== null || gizmoDragging;
       pointerGesture = {
         clientX: event.clientX,
@@ -664,6 +776,7 @@ export default function CalibratedRoomViewer({
       if (!session.active) {
         if (!shouldActivateObjectBodyDrag(movement)) return;
         session.active = true;
+        reportViewportInteraction(true);
       }
       applyBodyDragAt(event.clientX, event.clientY);
     };
@@ -704,6 +817,9 @@ export default function CalibratedRoomViewer({
       if (gizmoDragging) {
         if (pointerGesture) pointerGesture.pointerDownOnGizmo = true;
         if (bodyDrag) endBodyDrag();
+        reportViewportInteraction(true);
+      } else {
+        reportViewportInteraction(bodyDrag?.active === true);
       }
       if (!gizmoDragging) writeAttachedTransform();
     };
@@ -721,6 +837,9 @@ export default function CalibratedRoomViewer({
     const animate = () => {
       if (disposed) return;
       animationFrame = window.requestAnimationFrame(animate);
+      applyFloorMeshScale(metricScaleRef.current);
+      applyRealizedCameraPose(result.camera, snapshot, metricScaleRef.current);
+      syncControlsEnabled();
       floorSurface.visible = showFloorQuadRef.current;
       floorWireframe.visible = showFloorQuadRef.current;
       wallBaseLayer.visible = showWallBoundaryRef.current;

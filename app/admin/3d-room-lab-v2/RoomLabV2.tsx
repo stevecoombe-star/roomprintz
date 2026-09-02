@@ -70,7 +70,21 @@ import {
 } from "./empty-authoritative-collision-authority-contract";
 import { deriveSceneMovementControlRange } from "./scene-movement-control-range";
 import { TEST_CUBE_PLACEMENT_LOCAL_AABB, type LocalAabb } from "./room-collision-footprint";
-import { resolveSceneObjectCollision } from "./scene-collision-resolver";
+import {
+  AUTO_METRIC_SCALE,
+  USER_WORLD_SCALE_DEFAULT,
+  USER_WORLD_SCALE_MAX,
+  USER_WORLD_SCALE_MIN,
+  USER_WORLD_SCALE_STEP,
+  canonicalXzFromDisplayed,
+  clampUserWorldScale,
+  computeMetricScale,
+  correctSceneLayerForWorldScaleChange,
+  displayedXzFromCanonical,
+  realizeCollisionWalls,
+  realizeFloorRectangle,
+  resolveCanonicalTransformInRealizedWorld,
+} from "./scene-metric-world-realization";
 import {
   DEFAULT_SHOW_COLLISION_BOUNDARY,
   DEFAULT_SHOW_FLOOR_QUAD,
@@ -468,6 +482,9 @@ export default function RoomLabV2() {
   );
   const [sceneLayer, setSceneLayer] = useState(createInitialSceneLayerState);
   const [selectedModelExpanded, setSelectedModelExpanded] = useState(false);
+  const [userWorldScale, setUserWorldScale] = useState(USER_WORLD_SCALE_DEFAULT);
+  const [viewportInteractionActive, setViewportInteractionActive] = useState(false);
+  const [worldScaleInputCaptured, setWorldScaleInputCaptured] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [viewerFrame, setViewerFrame] = useState({ width: 0, height: 0 });
   const viewerRef = useRef<HTMLDivElement | null>(null);
@@ -479,6 +496,11 @@ export default function RoomLabV2() {
     envelopeCollision: null,
     roomCollision: null,
   }));
+  const autoMetricScale = AUTO_METRIC_SCALE;
+  const metricScale = computeMetricScale(autoMetricScale, userWorldScale);
+  const metricScaleRef = useRef(metricScale);
+  metricScaleRef.current = metricScale;
+  const previousMetricScaleRef = useRef(metricScale);
   const loadGenerationRef = useRef(0);
   const abortRef = useRef<AbortController | null>(null);
 
@@ -544,14 +566,16 @@ export default function RoomLabV2() {
   ): SceneLayerState {
     const object = current.objects.find((item) => item.id === objectId);
     if (!object) return current;
-    const resolved = resolveSceneObjectCollision({
-      current: object.transform,
-      proposed,
+    // Host and viewer both call resolveSceneObjectCollision in realized metres.
+    const resolved = resolveCanonicalTransformInRealizedWorld({
+      currentCanonical: object.transform,
+      proposedCanonical: proposed,
       localAabb: localAabbForObject(object),
-      walls: activeCollisionRef.current.walls,
+      canonicalWalls: activeCollisionRef.current.walls,
+      metricScale: metricScaleRef.current,
       mode,
     });
-    return applyObjectWorldTransform(current, objectId, resolved.transform);
+    return applyObjectWorldTransform(current, objectId, resolved);
   }
 
   function reportObjectLoadStatus(
@@ -618,14 +642,16 @@ export default function RoomLabV2() {
     envelopeCollision: applied?.roomEnvelopeCollision ?? null,
     roomCollision: applied?.roomCollision ?? null,
   });
+  const realizedFloor = applied
+    ? realizeFloorRectangle(applied.floor, metricScale)
+    : null;
+  const realizedCollisionWalls = realizeCollisionWalls(
+    activeCollision.walls,
+    metricScale,
+  );
   const movementControlRange = deriveSceneMovementControlRange({
-    floor: applied
-      ? {
-        worldWidthM: applied.floor.worldWidthM,
-        referenceDepthM: applied.floor.referenceDepthM,
-      }
-      : null,
-    collisionWalls: activeCollision.walls,
+    floor: realizedFloor,
+    collisionWalls: realizedCollisionWalls,
   });
   const registrationPath = activeRegistrationPath({
     identityRegistrationClass: applied?.emptyOriginalRegistration?.registrationClass,
@@ -637,8 +663,38 @@ export default function RoomLabV2() {
   }, [sceneLayer]);
 
   useEffect(() => {
+    metricScaleRef.current = metricScale;
+  }, [metricScale]);
+
+  useEffect(() => {
+    if (!worldScaleInputCaptured) return;
+    const release = () => setWorldScaleInputCaptured(false);
+    window.addEventListener("pointerup", release);
+    window.addEventListener("pointercancel", release);
+    return () => {
+      window.removeEventListener("pointerup", release);
+      window.removeEventListener("pointercancel", release);
+    };
+  }, [worldScaleInputCaptured]);
+
+  useEffect(() => {
     activeCollisionRef.current = activeCollision;
   }, [activeCollision]);
+
+  useEffect(() => {
+    const previous = previousMetricScaleRef.current;
+    previousMetricScaleRef.current = metricScale;
+    if (!(metricScale < previous)) return;
+    setSceneLayer((current) =>
+      correctSceneLayerForWorldScaleChange({
+        state: current,
+        previousMetricScale: previous,
+        nextMetricScale: metricScale,
+        canonicalWalls: activeCollisionRef.current.walls,
+        localAabbFor: (object) => localAabbForObject(object),
+      })
+    );
+  }, [metricScale]);
 
   useEffect(() => {
     return () => {
@@ -676,6 +732,7 @@ export default function RoomLabV2() {
     setApplied(null);
     setPipeline(null);
     resetSceneLayer();
+    setUserWorldScale(USER_WORLD_SCALE_DEFAULT);
     setShowFloorQuad(DEFAULT_SHOW_FLOOR_QUAD);
     setError(null);
     dispatch({ type: "original_preparation_started" });
@@ -1170,10 +1227,13 @@ export default function RoomLabV2() {
                       sceneObjects={sceneLayer.objects}
                       selectedObjectId={sceneLayer.selectedObjectId}
                       transformMode={sceneLayer.transformMode}
+                      metricScale={metricScale}
+                      worldScaleInputCaptured={worldScaleInputCaptured}
                       reportObjectLoadStatus={reportObjectLoadStatus}
                       reportSelection={reportSelection}
                       reportObjectTransform={reportObjectTransform}
                       reportObjectLocalAabb={reportObjectLocalAabb}
+                      reportViewportInteraction={setViewportInteractionActive}
                     />
                   ) : (
                     <Image
@@ -1391,7 +1451,7 @@ export default function RoomLabV2() {
               <h2 className="text-sm font-semibold text-slate-200">Floor</h2>
               <p className="mt-2 text-xs leading-5 text-slate-500">
                 {applied
-                  ? `Calibrated · width ${applied.floor.worldWidthM.toFixed(2)} m · reference depth ${applied.floor.referenceDepthM.toFixed(2)} m · ratio ${applied.floor.widthDepthRatio.toFixed(3)}`
+                  ? `Calibrated · width ${realizedFloor?.worldWidthM.toFixed(2)} m · reference depth ${realizedFloor?.referenceDepthM.toFixed(2)} m · ratio ${applied.floor.widthDepthRatio.toFixed(3)} · world scale ${metricScale.toFixed(2)}×`
                   : "No calibrated Floor authority."}
               </p>
               <label className="mt-3 flex items-center gap-2 text-xs text-slate-300">
@@ -1441,6 +1501,65 @@ export default function RoomLabV2() {
                   ? `Calibrated · ${applied.camera.verticalFovDeg.toFixed(1)}° FOV · applied and frozen`
                     + " · Original identity restored"
                   : "No calibrated camera."}
+              </p>
+            </section>
+            <section className="rounded-xl border border-slate-800 bg-slate-900/70 p-4">
+              <h2 className="text-sm font-semibold text-slate-200">World Scale</h2>
+              <p className="mt-2 text-xs leading-5 text-slate-400">
+                {metricScale.toFixed(2)}×
+                <span className="ml-2 text-slate-600">
+                  Auto {autoMetricScale.toFixed(2)}×
+                </span>
+              </p>
+              <label className="mt-3 block">
+                <span className="flex items-center justify-between gap-2 text-[11px] text-slate-400">
+                  Scale
+                  <input
+                    type="number"
+                    min={USER_WORLD_SCALE_MIN}
+                    max={USER_WORLD_SCALE_MAX}
+                    step={USER_WORLD_SCALE_STEP}
+                    value={userWorldScale}
+                    disabled={!applied || viewportInteractionActive}
+                    aria-label="World Scale"
+                    onChange={(event) => {
+                      const next = Number.parseFloat(event.target.value);
+                      if (!Number.isFinite(next)) return;
+                      setUserWorldScale(clampUserWorldScale(next));
+                    }}
+                    onPointerDown={() => setWorldScaleInputCaptured(true)}
+                    onPointerUp={() => setWorldScaleInputCaptured(false)}
+                    onPointerCancel={() => setWorldScaleInputCaptured(false)}
+                    className="w-20 rounded border border-slate-700 bg-slate-950 px-2 py-1 text-right text-[11px] text-slate-100 outline-none focus:border-cyan-400 disabled:cursor-not-allowed disabled:text-slate-600"
+                  />
+                </span>
+                <input
+                  type="range"
+                  min={USER_WORLD_SCALE_MIN}
+                  max={USER_WORLD_SCALE_MAX}
+                  step={USER_WORLD_SCALE_STEP}
+                  value={userWorldScale}
+                  disabled={!applied || viewportInteractionActive}
+                  aria-label="World Scale slider"
+                  onChange={(event) =>
+                    setUserWorldScale(clampUserWorldScale(Number.parseFloat(event.target.value)))}
+                  onPointerDown={() => setWorldScaleInputCaptured(true)}
+                  onPointerUp={() => setWorldScaleInputCaptured(false)}
+                  onPointerCancel={() => setWorldScaleInputCaptured(false)}
+                  className="mt-1 w-full accent-cyan-400 disabled:cursor-not-allowed"
+                />
+              </label>
+              <button
+                type="button"
+                disabled={!applied || viewportInteractionActive}
+                onClick={() => setUserWorldScale(USER_WORLD_SCALE_DEFAULT)}
+                className="mt-3 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-xs font-medium text-slate-100 transition hover:border-slate-500 disabled:cursor-not-allowed disabled:text-slate-600"
+              >
+                Reset to Auto
+              </button>
+              <p className="mt-2 text-[11px] leading-4 text-slate-600">
+                Scales the realized room, camera translation, and object
+                X/Z placement. Authored object size is unchanged.
               </p>
             </section>
             <section className="rounded-xl border border-slate-800 bg-slate-900/70 p-4">
@@ -1590,7 +1709,10 @@ export default function RoomLabV2() {
                         <div className="space-y-2">
                           <TransformControlRow
                             label="X"
-                            value={selectedSceneObject.transform.position.x}
+                            value={displayedXzFromCanonical(
+                              selectedSceneObject.transform.position.x,
+                              metricScale,
+                            )}
                             min={movementControlRange.positionX.min}
                             max={movementControlRange.positionX.max}
                             step={movementControlRange.positionX.step}
@@ -1602,7 +1724,7 @@ export default function RoomLabV2() {
                                 const next = updateSelectedPositionAxis(
                                   current,
                                   "x",
-                                  value,
+                                  canonicalXzFromDisplayed(value, metricScale),
                                 );
                                 const proposed = getSelectedSceneObject(next);
                                 if (!proposed) return next;
@@ -1628,7 +1750,10 @@ export default function RoomLabV2() {
                           />
                           <TransformControlRow
                             label="Z"
-                            value={selectedSceneObject.transform.position.z}
+                            value={displayedXzFromCanonical(
+                              selectedSceneObject.transform.position.z,
+                              metricScale,
+                            )}
                             min={movementControlRange.positionZ.min}
                             max={movementControlRange.positionZ.max}
                             step={movementControlRange.positionZ.step}
@@ -1640,7 +1765,7 @@ export default function RoomLabV2() {
                                 const next = updateSelectedPositionAxis(
                                   current,
                                   "z",
-                                  value,
+                                  canonicalXzFromDisplayed(value, metricScale),
                                 );
                                 const proposed = getSelectedSceneObject(next);
                                 if (!proposed) return next;
