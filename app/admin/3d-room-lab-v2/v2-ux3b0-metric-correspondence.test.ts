@@ -887,7 +887,7 @@ test("lab overlay and diagnostic panel stay shadow-only and do not say metres", 
   assert.match(roomLabSource, /Metric Correspondence/);
   assert.match(roomLabSource, /No eligible finite span/);
   assert.match(roomLabSource, /METRIC_SPAN_ESTIMATE_SHADOW_STATUS_COPY|Shadow only/);
-  assert.match(roomLabSource, /No physical estimate yet/);
+  assert.match(roomLabSource, /METRIC_SPAN_ESTIMATE_NOT_RUN_COPY|Not run/);
   assert.match(roomLabSource, /formatCanonicalGaugeUnits/);
   assert.match(roomLabSource, /Download Metric Correspondence/);
   assert.match(roomLabSource, /afc-v2-metric-correspondence-selection\.json/);

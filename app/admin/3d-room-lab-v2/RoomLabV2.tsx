@@ -97,6 +97,7 @@ import {
   METRIC_SPAN_ESTIMATE_NOT_APPLIED_COPY,
   METRIC_SPAN_ESTIMATE_SHADOW_STATUS_COPY,
   METRIC_SPAN_ESTIMATE_UNRELIABLE_COPY,
+  METRIC_SPAN_ESTIMATE_NOT_RUN_COPY,
   type MetricCorrespondenceEstimateReceipt,
 } from "./metric-correspondence-estimate-contract";
 import {
@@ -1917,7 +1918,7 @@ export default function RoomLabV2() {
                         {METRIC_SPAN_ESTIMATE_UNRELIABLE_COPY}
                       </p>
                     ) : (
-                      <p>No physical estimate yet</p>
+                      <p>{METRIC_SPAN_ESTIMATE_NOT_RUN_COPY}</p>
                     )}
                     <p className="text-slate-600">
                       Status: {METRIC_SPAN_ESTIMATE_SHADOW_STATUS_COPY}

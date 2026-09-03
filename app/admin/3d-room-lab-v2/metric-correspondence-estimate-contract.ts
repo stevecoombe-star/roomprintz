@@ -24,6 +24,7 @@ export const METRIC_SPAN_ESTIMATE_UNRELIABLE_COPY =
   "Couldn't estimate highlighted span reliably" as const;
 export const METRIC_SPAN_ESTIMATE_NOT_APPLIED_COPY = "Not applied" as const;
 export const METRIC_SPAN_ESTIMATE_SHADOW_STATUS_COPY = "Shadow only" as const;
+export const METRIC_SPAN_ESTIMATE_NOT_RUN_COPY = "Not run" as const;
 
 export type MetricCorrespondenceEstimateImageIdentity = Readonly<{
   sha256: string;

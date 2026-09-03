@@ -22,12 +22,12 @@ import {
   AFC_V2_METRIC_CORRESPONDENCE_ESTIMATE_AUTHORITY,
   AFC_V2_METRIC_CORRESPONDENCE_ESTIMATE_PROMPT_VERSION,
   AFC_V2_METRIC_CORRESPONDENCE_ESTIMATE_VERSION,
-  buildMetricCorrespondenceEstimateReceipt,
   deriveMetricScaleFromSpan,
   formatCandidateMetricScale,
   METRIC_SPAN_ESTIMATE_NOT_APPLIED_COPY,
   METRIC_SPAN_ESTIMATE_SHADOW_STATUS_COPY,
   METRIC_SPAN_ESTIMATE_UNRELIABLE_COPY,
+  METRIC_SPAN_ESTIMATE_NOT_RUN_COPY,
   parseMetricCorrespondencePhysicalEstimate,
   type MetricCorrespondencePhysicalEstimate,
 } from "./metric-correspondence-estimate-contract";
@@ -634,30 +634,38 @@ test("overlay failure becomes a typed unavailable receipt and does not call the 
 });
 
 test("no selected span does not invoke the matched-span provider", async () => {
-  let providerCalls = 0;
   const result = await executeAfcV2Analysis(analyzeInput, {
     product: productDependencies(),
     observeRoom: async () => emptyObservation(),
-    estimateMetricCorrespondence: async () => {
-      providerCalls += 1;
-      throw new Error("span estimator must not run");
-    },
   });
   assert.equal(result.status, "applied");
   if (result.status !== "applied") return;
-  assert.equal(providerCalls, 0);
   assert.equal(result.metricCorrespondence?.selected, null);
   assert.equal(result.metricCorrespondenceEstimate, null);
   assert.equal(result.camera.applied, true);
 });
 
-test("provider or overlay failure does not block AFC Apply", async () => {
+test("eligible correspondence span does not invoke UX-3b1 during normal Analyze", async () => {
   const result = await executeAfcV2Analysis(analyzeInput, {
     product: productDependencies(),
     observeRoom: async () => eligibleFloorWallObservation(),
-    estimateMetricCorrespondence: async () => {
-      throw new Error("span estimator boom");
-    },
+  });
+  assert.equal(result.status, "applied");
+  if (result.status !== "applied") return;
+  assert.ok(result.metricCorrespondence?.selected);
+  assert.equal(result.metricCorrespondenceEstimate, null);
+  const analysisSource = readV2("afc-v2-analysis.server.ts");
+  assert.doesNotMatch(analysisSource, /startMetricCorrespondenceEstimate/);
+  assert.doesNotMatch(analysisSource, /estimateMetricCorrespondenceSpan/);
+  assert.doesNotMatch(analysisSource, /estimateMetricCorrespondence/);
+  assert.match(analysisSource, /selectMetricCorrespondenceSpan/);
+  assert.match(analysisSource, /metricCorrespondenceEstimate: null/);
+});
+
+test("absence of UX-3b1 does not block AFC Apply or alter Auto inputs", async () => {
+  const result = await executeAfcV2Analysis(analyzeInput, {
+    product: productDependencies(),
+    observeRoom: async () => eligibleFloorWallObservation(),
   });
   assert.equal(result.status, "applied");
   if (result.status !== "applied") return;
@@ -666,39 +674,21 @@ test("provider or overlay failure does not block AFC Apply", async () => {
   assert.equal(result.camera.originalBasisRestored, true);
   assert.ok(result.roomBoundaries);
   assert.ok(result.roomCollision);
-  if (result.metricCorrespondence?.selected) {
-    assert.equal(result.metricCorrespondenceEstimate?.hostAcceptance.class, "unavailable");
-    assert.match(
-      result.metricCorrespondenceEstimate?.failure?.safeDetail ?? "",
-      /span estimator boom/,
-    );
-  }
+  assert.ok(result.metricCorrespondence?.selected);
+  assert.equal(result.metricCorrespondenceEstimate, null);
   assert.equal(AUTO_METRIC_SCALE, 1);
   assert.equal(METRIC_SPAN_ESTIMATE_UNRELIABLE_COPY, "Couldn't estimate highlighted span reliably");
+  assert.equal(METRIC_SPAN_ESTIMATE_NOT_RUN_COPY, "Not run");
 });
 
 test("live Auto is not wired from matched-span candidateMetricScale", async () => {
   const result = await executeAfcV2Analysis(analyzeInput, {
     product: productDependencies(),
     observeRoom: async () => eligibleFloorWallObservation(),
-    estimateMetricCorrespondence: async (input) =>
-      buildMetricCorrespondenceEstimateReceipt(
-        {
-          correspondenceSpanId: input.span.id,
-          sourceImageHash: analyzeInput.sourceImageIdentity.sha256,
-          overlayImageHash: "e".repeat(64),
-          attemptId: input.attemptId,
-          loadGeneration: input.loadGeneration,
-          provider: "controlled_fixture",
-          model: "fixture",
-        },
-        parsedEstimate(),
-        acceptMetricCorrespondenceEstimate(parsedEstimate(), input.span.canonicalLength),
-        null,
-      ),
   });
   assert.equal(result.status, "applied");
   if (result.status !== "applied") return;
+  assert.equal(result.metricCorrespondenceEstimate, null);
   assert.equal(AUTO_METRIC_SCALE, 1);
   assert.equal(computeMetricScale(AUTO_METRIC_SCALE, 1), 1);
   assert.equal(result.floor.referenceDepthM, 4);
@@ -731,41 +721,17 @@ test("provider output cannot alter the selected UX-3b0 span", async () => {
   const result = await executeAfcV2Analysis(analyzeInput, {
     product: productDependencies(),
     observeRoom: async () => eligibleFloorWallObservation(),
-    estimateMetricCorrespondence: async (input) =>
-      buildMetricCorrespondenceEstimateReceipt(
-        {
-          correspondenceSpanId: "injected-other-span",
-          sourceImageHash: analyzeInput.sourceImageIdentity.sha256,
-          overlayImageHash: "f".repeat(64),
-          attemptId: input.attemptId,
-          loadGeneration: input.loadGeneration,
-          provider: "controlled_fixture",
-          model: "fixture",
-        },
-        parsedEstimate(),
-        acceptMetricCorrespondenceEstimate(
-          parsedEstimate(),
-          input.span.canonicalLength,
-        ),
-        null,
-      ),
   });
   assert.equal(result.status, "applied");
   if (result.status !== "applied") return;
   assert.ok(result.metricCorrespondence?.selected);
   assert.notEqual(result.metricCorrespondence?.selected?.id, "injected-other-span");
-  assert.equal(
-    result.metricCorrespondenceEstimate?.correspondenceSpanId,
-    "injected-other-span",
-  );
+  assert.equal(result.metricCorrespondenceEstimate, null);
   const analysisSource = readV2("afc-v2-analysis.server.ts");
   const selectIndex = analysisSource.indexOf("selectMetricCorrespondenceSpan");
-  const estimateIndex = analysisSource.indexOf("startMetricCorrespondenceEstimate");
-  assert.ok(selectIndex > 0 && estimateIndex > selectIndex);
-  assert.match(
-    analysisSource,
-    /if \(!selected\) return null/,
-  );
+  assert.ok(selectIndex > 0);
+  assert.equal(analysisSource.indexOf("startMetricCorrespondenceEstimate"), -1);
+  assert.doesNotMatch(analysisSource, /if \(!selected\) return null/);
 });
 
 test("UX-3a generic prior cannot alter the matched-span candidate scale", async () => {
@@ -775,36 +741,11 @@ test("UX-3a generic prior cannot alter the matched-span candidate scale", async 
     estimateMetricRoom: async () => {
       throw new Error("ux3a must not feed ux3b1");
     },
-    estimateMetricCorrespondence: async (input) =>
-      buildMetricCorrespondenceEstimateReceipt(
-        {
-          correspondenceSpanId: input.span.id,
-          sourceImageHash: analyzeInput.sourceImageIdentity.sha256,
-          overlayImageHash: "a1".repeat(32),
-          attemptId: input.attemptId,
-          loadGeneration: input.loadGeneration,
-          provider: "controlled_fixture",
-          model: "fixture",
-        },
-        parsedEstimate(),
-        acceptMetricCorrespondenceEstimate(
-          parsedEstimate(),
-          input.span.canonicalLength,
-        ),
-        null,
-      ),
   });
   assert.equal(result.status, "applied");
   if (result.status !== "applied") return;
-  const candidate = result.metricCorrespondenceEstimate?.hostAcceptance.candidateMetricScale;
-  if (candidate !== null && candidate !== undefined) {
-    const expected = deriveMetricScaleFromSpan(
-      result.metricCorrespondence?.selected?.canonicalLength ?? 0,
-      ROOM4_PHYSICAL_BEST_M,
-    );
-    assert.equal(candidate, expected);
-    assert.notEqual(candidate, 1.5);
-  }
+  assert.ok(result.metricCorrespondence?.selected);
+  assert.equal(result.metricCorrespondenceEstimate, null);
   const acceptance = readV2("metric-correspondence-estimate-acceptance.ts");
   const estimator = readV2("metric-correspondence-estimate.server.ts");
   assert.doesNotMatch(acceptance, /metric-room-prior/);
@@ -826,8 +767,10 @@ test("diagnostic UI keeps canonical gauge, physical metres, and candidate scale 
   assert.match(roomLabSource, /formatCanonicalGaugeUnits/);
   assert.match(roomLabSource, /formatCandidateMetricScale/);
   assert.match(roomLabSource, /formatMetricMetres/);
+  assert.match(roomLabSource, /METRIC_SPAN_ESTIMATE_NOT_RUN_COPY/);
   assert.equal(METRIC_SPAN_ESTIMATE_SHADOW_STATUS_COPY, "Shadow only");
   assert.equal(METRIC_SPAN_ESTIMATE_NOT_APPLIED_COPY, "Not applied");
+  assert.equal(METRIC_SPAN_ESTIMATE_NOT_RUN_COPY, "Not run");
   assert.doesNotMatch(overlaySource, /metricCorrespondenceEstimate/);
   assert.match(overlaySource, /metricCorrespondenceSpan\.imageA/);
   assert.match(overlaySource, /metricCorrespondenceSpan\.imageB/);
