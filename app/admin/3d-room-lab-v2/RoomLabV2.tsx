@@ -71,7 +71,6 @@ import {
 import { deriveSceneMovementControlRange } from "./scene-movement-control-range";
 import { TEST_CUBE_PLACEMENT_LOCAL_AABB, type LocalAabb } from "./room-collision-footprint";
 import {
-  AUTO_METRIC_SCALE,
   USER_WORLD_SCALE_DEFAULT,
   USER_WORLD_SCALE_MAX,
   USER_WORLD_SCALE_MIN,
@@ -85,6 +84,40 @@ import {
   realizeFloorRectangle,
   resolveCanonicalTransformInRealizedWorld,
 } from "./scene-metric-world-realization";
+import {
+  formatCanonicalGaugeUnits,
+  isMetricCorrespondenceSelection,
+  metricCorrespondenceRoleCopy,
+  type MetricCorrespondenceSelection,
+} from "./metric-correspondence-span-contract";
+import {
+  formatCandidateMetricScale,
+  isMetricCorrespondenceEstimateReceipt,
+  metricCorrespondenceEstimateIsAccepted,
+  METRIC_SPAN_ESTIMATE_NOT_APPLIED_COPY,
+  METRIC_SPAN_ESTIMATE_SHADOW_STATUS_COPY,
+  METRIC_SPAN_ESTIMATE_UNRELIABLE_COPY,
+  type MetricCorrespondenceEstimateReceipt,
+} from "./metric-correspondence-estimate-contract";
+import {
+  formatMetricMetres,
+  isMetricRoomPriorReceipt,
+  metricRoomPriorIsAccepted,
+  METRIC_ROOM_PRIOR_ACCEPTED_STATUS_COPY,
+  METRIC_ROOM_PRIOR_NOT_APPLIED_COPY,
+  METRIC_ROOM_PRIOR_UNRELIABLE_COPY,
+  type MetricRoomPriorReceipt,
+} from "./metric-room-prior-contract";
+import {
+  AUTO_METRIC_GEMINI_AVAILABLE_COPY,
+  AUTO_METRIC_LAB_TRUST_LABEL,
+  AUTO_METRIC_NO_TRUSTED_SPAN_COPY,
+  AUTO_METRIC_SCALE_EXPERIMENTAL_COPY,
+  AUTO_METRIC_SCALE_SOURCE_COPY,
+  AUTO_METRIC_UNRELIABLE_COPY,
+  formatAutoMetricScale,
+} from "./metric-auto-scale-contract";
+import { deriveAutoMetricScale } from "./metric-auto-scale";
 import {
   DEFAULT_SHOW_COLLISION_BOUNDARY,
   DEFAULT_SHOW_FLOOR_QUAD,
@@ -183,6 +216,9 @@ type PipelineEvidenceState = {
     | "partial"
     | "failed"
     | "not_run_empty_unavailable";
+  metricRoomPrior: MetricRoomPriorReceipt | null;
+  metricCorrespondence: MetricCorrespondenceSelection | null;
+  metricCorrespondenceEstimate: MetricCorrespondenceEstimateReceipt | null;
   analysisEvidence: unknown;
 };
 
@@ -331,6 +367,9 @@ function pipelineEvidence(value: unknown): PipelineEvidenceState {
       tiled: null,
       roomObservation: null,
       roomObservationStatus: "not_run_empty_unavailable",
+      metricRoomPrior: null,
+      metricCorrespondence: null,
+      metricCorrespondenceEstimate: null,
       analysisEvidence: value,
     };
   }
@@ -339,6 +378,9 @@ function pipelineEvidence(value: unknown): PipelineEvidenceState {
     tiled?: unknown;
     roomObservation?: unknown;
     roomObservationStatus?: unknown;
+    metricRoomPrior?: unknown;
+    metricCorrespondence?: unknown;
+    metricCorrespondenceEstimate?: unknown;
   };
   const empty = candidate.empty &&
       typeof candidate.empty === "object" &&
@@ -372,6 +414,16 @@ function pipelineEvidence(value: unknown): PipelineEvidenceState {
     tiled,
     roomObservation,
     roomObservationStatus,
+    metricRoomPrior: isMetricRoomPriorReceipt(candidate.metricRoomPrior)
+      ? candidate.metricRoomPrior
+      : null,
+    metricCorrespondence: isMetricCorrespondenceSelection(candidate.metricCorrespondence)
+      ? candidate.metricCorrespondence
+      : null,
+    metricCorrespondenceEstimate:
+      isMetricCorrespondenceEstimateReceipt(candidate.metricCorrespondenceEstimate)
+        ? candidate.metricCorrespondenceEstimate
+        : null,
     analysisEvidence: value,
   };
 }
@@ -483,6 +535,10 @@ export default function RoomLabV2() {
   const [sceneLayer, setSceneLayer] = useState(createInitialSceneLayerState);
   const [selectedModelExpanded, setSelectedModelExpanded] = useState(false);
   const [userWorldScale, setUserWorldScale] = useState(USER_WORLD_SCALE_DEFAULT);
+  const [
+    trustSelectedBackSpanAsFullWidth,
+    setTrustSelectedBackSpanAsFullWidth,
+  ] = useState(false);
   const [viewportInteractionActive, setViewportInteractionActive] = useState(false);
   const [worldScaleInputCaptured, setWorldScaleInputCaptured] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -496,7 +552,33 @@ export default function RoomLabV2() {
     envelopeCollision: null,
     roomCollision: null,
   }));
-  const autoMetricScale = AUTO_METRIC_SCALE;
+  const acceptedMetricPrior = metricRoomPriorIsAccepted(pipeline?.metricRoomPrior)
+    ? pipeline?.metricRoomPrior ?? null
+    : null;
+  const metricPriorDepth = acceptedMetricPrior?.estimate?.estimatedRoomDepthM ?? null;
+  const metricPriorWidth = acceptedMetricPrior?.estimate?.estimatedRoomWidthM ?? null;
+  const metricPriorCeiling = acceptedMetricPrior?.estimate?.estimatedCeilingHeightM ?? null;
+  const metricPriorConfidence = acceptedMetricPrior?.estimate?.modelConfidence ?? null;
+  const selectedMetricSpan = pipeline?.metricCorrespondence?.selected ?? null;
+  const matchedS4aCandidate = selectedMetricSpan?.lineage.s4aCandidateId
+    ? applied?.roomBoundaries?.candidates.find(
+        (candidate) =>
+          candidate.id === selectedMetricSpan.lineage.s4aCandidateId,
+      ) ?? null
+    : null;
+  const autoMetricReceipt = deriveAutoMetricScale({
+    roomPrior: pipeline?.metricRoomPrior ?? null,
+    selected: selectedMetricSpan,
+    s4aSafety: matchedS4aCandidate
+      ? {
+          observedSpanOnly: matchedS4aCandidate.limitations.observedSpanOnly,
+          hiddenContinuation: matchedS4aCandidate.limitations.hiddenContinuation,
+          geometryManufactured: matchedS4aCandidate.limitations.geometryManufactured,
+        }
+      : null,
+    trustSelectedBackSpanAsFullWidth,
+  });
+  const autoMetricScale = autoMetricReceipt.autoMetricScale;
   const metricScale = computeMetricScale(autoMetricScale, userWorldScale);
   const metricScaleRef = useRef(metricScale);
   metricScaleRef.current = metricScale;
@@ -733,6 +815,7 @@ export default function RoomLabV2() {
     setPipeline(null);
     resetSceneLayer();
     setUserWorldScale(USER_WORLD_SCALE_DEFAULT);
+    setTrustSelectedBackSpanAsFullWidth(false);
     setShowFloorQuad(DEFAULT_SHOW_FLOOR_QUAD);
     setError(null);
     dispatch({ type: "original_preparation_started" });
@@ -1023,6 +1106,61 @@ export default function RoomLabV2() {
     URL.revokeObjectURL(url);
   }
 
+  function downloadMetricRoomPriorEvidence() {
+    if (!pipeline?.metricRoomPrior) return;
+    const blob = new Blob(
+      [JSON.stringify(pipeline.metricRoomPrior, null, 2)],
+      { type: "application/json" },
+    );
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = "afc-v2-metric-room-prior-evidence.json";
+    anchor.click();
+    URL.revokeObjectURL(url);
+  }
+
+  function downloadMetricCorrespondenceEvidence() {
+    if (!pipeline?.metricCorrespondence) return;
+    const blob = new Blob(
+      [JSON.stringify(pipeline.metricCorrespondence, null, 2)],
+      { type: "application/json" },
+    );
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = "afc-v2-metric-correspondence-selection.json";
+    anchor.click();
+    URL.revokeObjectURL(url);
+  }
+
+  function downloadMetricCorrespondenceEstimateEvidence() {
+    if (!pipeline?.metricCorrespondenceEstimate) return;
+    const blob = new Blob(
+      [JSON.stringify(pipeline.metricCorrespondenceEstimate, null, 2)],
+      { type: "application/json" },
+    );
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = "afc-v2-metric-correspondence-estimate.json";
+    anchor.click();
+    URL.revokeObjectURL(url);
+  }
+
+  function downloadAutoMetricScaleEvidence() {
+    const blob = new Blob(
+      [JSON.stringify(autoMetricReceipt, null, 2)],
+      { type: "application/json" },
+    );
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = "afc-v2-auto-metric-scale.json";
+    anchor.click();
+    URL.revokeObjectURL(url);
+  }
+
   return (
     <main className="min-h-screen bg-slate-950 text-slate-100">
       <div className="mx-auto flex w-full max-w-[1500px] flex-col gap-6 px-5 py-6 sm:px-8 lg:px-10">
@@ -1288,6 +1426,13 @@ export default function RoomLabV2() {
                           ? applied?.originalStructuralLocalization?.structures ??
                             []
                           : []
+                      }
+                      metricCorrespondenceSpan={
+                        orchestration.selectedRepresentation === "ORIGINAL" &&
+                          pipeline?.metricCorrespondence?.selected
+                            ?.overlaySafeOnOriginal
+                          ? pipeline.metricCorrespondence.selected
+                          : null
                       }
                     />
                   ) : null}
@@ -1561,6 +1706,253 @@ export default function RoomLabV2() {
                 Scales the realized room, camera translation, and object
                 X/Z placement. Authored object size is unchanged.
               </p>
+              <div className="mt-4 border-t border-slate-800 pt-3">
+                <h3 className="text-xs font-semibold text-slate-300">
+                  Room Size Prior
+                </h3>
+                {acceptedMetricPrior && metricPriorWidth ? (
+                  <div className="mt-2 space-y-1 text-xs leading-5 text-slate-500">
+                    <p>
+                      Approx. width: {formatMetricMetres(metricPriorWidth.best)}
+                    </p>
+                    <p>
+                      Width range: {metricPriorWidth.low.toFixed(1)}–
+                      {metricPriorWidth.high.toFixed(1)} m
+                    </p>
+                    {metricPriorDepth ? (
+                      <>
+                        <p className="pt-2">
+                          Approx. depth: {formatMetricMetres(metricPriorDepth.best)}
+                        </p>
+                        <p>
+                          Depth range: {metricPriorDepth.low.toFixed(1)}–
+                          {metricPriorDepth.high.toFixed(1)} m
+                        </p>
+                      </>
+                    ) : null}
+                    {metricPriorCeiling !== null ? (
+                      <p className="pt-2">
+                        Approx. ceiling: {formatMetricMetres(metricPriorCeiling)}
+                      </p>
+                    ) : null}
+                    {metricPriorConfidence !== null ? (
+                      <p className="pt-2">
+                        Confidence: {metricPriorConfidence.toFixed(2)}
+                      </p>
+                    ) : null}
+                    <p className="pt-2">
+                      Status: {METRIC_ROOM_PRIOR_ACCEPTED_STATUS_COPY}
+                    </p>
+                    {!autoMetricReceipt.accepted ? (
+                      <p className="text-slate-600">
+                        {METRIC_ROOM_PRIOR_NOT_APPLIED_COPY}
+                      </p>
+                    ) : null}
+                  </div>
+                ) : (
+                  <div className="mt-2 space-y-1 text-xs leading-5 text-slate-500">
+                    <p>{METRIC_ROOM_PRIOR_UNRELIABLE_COPY}</p>
+                    <p className="text-slate-600">
+                      {METRIC_ROOM_PRIOR_NOT_APPLIED_COPY}
+                    </p>
+                  </div>
+                )}
+                {pipeline?.metricRoomPrior ? (
+                  <button
+                    type="button"
+                    onClick={downloadMetricRoomPriorEvidence}
+                    className="mt-3 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-xs font-medium text-cyan-200 transition hover:border-slate-500"
+                  >
+                    Download Metric Prior
+                  </button>
+                ) : null}
+              </div>
+              <div className="mt-4 border-t border-slate-800 pt-3">
+                <h3 className="text-xs font-semibold text-slate-300">
+                  Auto Metric Scale
+                </h3>
+                {autoMetricReceipt.accepted ? (
+                  <div className="mt-2 space-y-1 text-xs leading-5 text-slate-500">
+                    <p>Source: {AUTO_METRIC_SCALE_SOURCE_COPY}</p>
+                    {autoMetricReceipt.physicalSource ? (
+                      <p>
+                        Physical target:{" "}
+                        {formatMetricMetres(autoMetricReceipt.physicalSource.metres)}
+                      </p>
+                    ) : null}
+                    {autoMetricReceipt.canonicalSource ? (
+                      <p>
+                        Canonical span:{" "}
+                        {formatCanonicalGaugeUnits(
+                          autoMetricReceipt.canonicalSource.gaugeLength,
+                        )}
+                      </p>
+                    ) : null}
+                    <p>Auto: {formatAutoMetricScale(autoMetricScale)}</p>
+                    <p>User World Scale: {formatAutoMetricScale(userWorldScale)}</p>
+                    <p>Combined: {formatAutoMetricScale(metricScale)}</p>
+                    <p>Status: {AUTO_METRIC_SCALE_EXPERIMENTAL_COPY}</p>
+                  </div>
+                ) : acceptedMetricPrior && metricPriorWidth ? (
+                  <div className="mt-2 space-y-1 text-xs leading-5 text-slate-500">
+                    <p>{AUTO_METRIC_GEMINI_AVAILABLE_COPY}</p>
+                    <p>{AUTO_METRIC_NO_TRUSTED_SPAN_COPY}</p>
+                    <p>Auto: {formatAutoMetricScale(autoMetricScale)}</p>
+                  </div>
+                ) : (
+                  <div className="mt-2 space-y-1 text-xs leading-5 text-slate-500">
+                    <p>{AUTO_METRIC_UNRELIABLE_COPY}</p>
+                    <p>Auto: {formatAutoMetricScale(autoMetricScale)}</p>
+                  </div>
+                )}
+                {selectedMetricSpan?.role === "back_floor_wall" ? (
+                  <label className="mt-3 flex items-start gap-2 text-[11px] leading-4 text-slate-400">
+                    <input
+                      type="checkbox"
+                      className="mt-0.5 accent-cyan-400"
+                      checked={trustSelectedBackSpanAsFullWidth}
+                      disabled={!applied || selectedMetricSpan.truncation !== "none"}
+                      aria-label={AUTO_METRIC_LAB_TRUST_LABEL}
+                      onChange={(event) =>
+                        setTrustSelectedBackSpanAsFullWidth(event.target.checked)}
+                    />
+                    <span>{AUTO_METRIC_LAB_TRUST_LABEL}</span>
+                  </label>
+                ) : null}
+                <button
+                  type="button"
+                  onClick={downloadAutoMetricScaleEvidence}
+                  className="mt-3 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-xs font-medium text-cyan-200 transition hover:border-slate-500"
+                >
+                  Download Auto Metric Scale
+                </button>
+              </div>
+              <div className="mt-4 border-t border-slate-800 pt-3">
+                <h3 className="text-xs font-semibold text-slate-300">
+                  Metric Correspondence
+                </h3>
+                {pipeline?.metricCorrespondence?.selected ? (
+                  <div className="mt-2 space-y-1 text-xs leading-5 text-slate-500">
+                    <p>
+                      Selected span:{" "}
+                      {metricCorrespondenceRoleCopy(
+                        pipeline.metricCorrespondence.selected.role,
+                      )}
+                    </p>
+                    <p>
+                      Canonical length:{" "}
+                      {formatCanonicalGaugeUnits(
+                        pipeline.metricCorrespondence.selected.canonicalLength,
+                      )}
+                    </p>
+                    <p>
+                      Image span:{" "}
+                      {pipeline.metricCorrespondence.selected.imageLengthNormalized
+                        .toFixed(2)}{" "}
+                      normalized
+                    </p>
+                    <p>
+                      Overlay:{" "}
+                      {pipeline.metricCorrespondence.selected.overlaySafeOnOriginal
+                        ? "ORIGINAL-safe"
+                        : "unsafe"}
+                    </p>
+                    {pipeline.metricCorrespondence.selected.lineage.sourceSeamId ? (
+                      <p>
+                        Source seam:{" "}
+                        {pipeline.metricCorrespondence.selected.lineage.sourceSeamId}
+                      </p>
+                    ) : null}
+                    <p>
+                      Confidence:{" "}
+                      {pipeline.metricCorrespondence.selected.confidence.toFixed(2)}
+                    </p>
+                    <p>
+                      Rejected:{" "}
+                      {pipeline.metricCorrespondence.rejectedAlternatives.length}
+                    </p>
+                    <p className="pt-3 text-[11px] font-medium uppercase tracking-wide text-slate-600">
+                      Diagnostic span estimate
+                    </p>
+                    {metricCorrespondenceEstimateIsAccepted(
+                      pipeline.metricCorrespondenceEstimate,
+                    ) &&
+                    pipeline.metricCorrespondenceEstimate?.estimate
+                      ?.estimatedLengthM ? (
+                      <>
+                        <p>
+                          Physical span estimate: ~
+                          {formatMetricMetres(
+                            pipeline.metricCorrespondenceEstimate.estimate
+                              .estimatedLengthM.best,
+                          )}
+                        </p>
+                        <p>
+                          Range:{" "}
+                          {pipeline.metricCorrespondenceEstimate.estimate
+                            .estimatedLengthM.low.toFixed(1)}
+                          –
+                          {pipeline.metricCorrespondenceEstimate.estimate
+                            .estimatedLengthM.high.toFixed(1)}{" "}
+                          m
+                        </p>
+                        <p>
+                          Confidence:{" "}
+                          {pipeline.metricCorrespondenceEstimate.estimate
+                            .modelConfidence.toFixed(2)}
+                        </p>
+                        {pipeline.metricCorrespondenceEstimate.hostAcceptance
+                          .candidateMetricScale !== null ? (
+                          <p>
+                            Diagnostic candidate scale:{" "}
+                            {formatCandidateMetricScale(
+                              pipeline.metricCorrespondenceEstimate.hostAcceptance
+                                .candidateMetricScale,
+                            )}
+                          </p>
+                        ) : null}
+                      </>
+                    ) : pipeline.metricCorrespondenceEstimate ? (
+                      <p>
+                        {METRIC_SPAN_ESTIMATE_UNRELIABLE_COPY}
+                      </p>
+                    ) : (
+                      <p>No physical estimate yet</p>
+                    )}
+                    <p className="text-slate-600">
+                      Status: {METRIC_SPAN_ESTIMATE_SHADOW_STATUS_COPY}
+                    </p>
+                    <p className="text-slate-600">
+                      {METRIC_SPAN_ESTIMATE_NOT_APPLIED_COPY}
+                    </p>
+                  </div>
+                ) : (
+                  <div className="mt-2 space-y-1 text-xs leading-5 text-slate-500">
+                    <p>No eligible finite span</p>
+                    <p className="text-slate-600">
+                      Status: {METRIC_SPAN_ESTIMATE_SHADOW_STATUS_COPY}
+                    </p>
+                  </div>
+                )}
+                {pipeline?.metricCorrespondence ? (
+                  <button
+                    type="button"
+                    onClick={downloadMetricCorrespondenceEvidence}
+                    className="mt-3 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-xs font-medium text-cyan-200 transition hover:border-slate-500"
+                  >
+                    Download Metric Correspondence
+                  </button>
+                ) : null}
+                {pipeline?.metricCorrespondenceEstimate ? (
+                  <button
+                    type="button"
+                    onClick={downloadMetricCorrespondenceEstimateEvidence}
+                    className="mt-3 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-xs font-medium text-cyan-200 transition hover:border-slate-500"
+                  >
+                    Download Span Estimate
+                  </button>
+                ) : null}
+              </div>
             </section>
             <section className="rounded-xl border border-slate-800 bg-slate-900/70 p-4">
               <h2 className="text-sm font-semibold text-slate-200">

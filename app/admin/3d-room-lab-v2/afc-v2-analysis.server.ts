@@ -106,6 +106,32 @@ import type { AfcV2OriginalLocalizedCollisionAuthorityReceipt } from "./original
 import { constructAfcV2EmptyAuthoritativeCollisionAuthority } from "./empty-authoritative-collision-qualification.server";
 import type { AfcV2EmptyAuthoritativeCollisionAuthorityReceipt } from "./empty-authoritative-collision-authority-contract";
 import {
+  buildUnavailableMetricRoomPriorReceipt,
+  type MetricPriorImageIdentity,
+  type MetricRoomPriorReceipt,
+  type MetricRoomPriorReceiptContext,
+} from "./metric-room-prior-contract";
+import {
+  AFC_V2_METRIC_ROOM_PRIOR_DEFAULT_MODEL,
+  estimateMetricRoomPrior,
+  type MetricRoomPriorInput,
+} from "./metric-room-prior.server";
+import {
+  emptyMetricCorrespondenceSelection,
+  type MetricCorrespondenceSelection,
+} from "./metric-correspondence-span-contract";
+import { selectMetricCorrespondenceSpan } from "./metric-correspondence-span";
+import {
+  buildUnavailableMetricCorrespondenceEstimateReceipt,
+  type MetricCorrespondenceEstimateReceipt,
+  type MetricCorrespondenceEstimateReceiptContext,
+} from "./metric-correspondence-estimate-contract";
+import {
+  AFC_V2_METRIC_CORRESPONDENCE_ESTIMATE_DEFAULT_MODEL,
+  estimateMetricCorrespondenceSpan,
+  type MetricCorrespondenceEstimateInput,
+} from "./metric-correspondence-estimate.server";
+import {
   getAutoFloorVisionAllowedImageHosts,
   getAutoFloorVisionImageFetchTimeoutMs,
   getAutoFloorVisionImageMaxBytes,
@@ -198,6 +224,9 @@ type AfcV2LivePipelineEvidence = Readonly<{
   originalLocalizedBoundary: AfcV2OriginalLocalizedRoomBoundaryAuthorityReceipt | null;
   originalLocalizedCollision: AfcV2OriginalLocalizedCollisionAuthorityReceipt | null;
   emptyAuthoritativeCollision: AfcV2EmptyAuthoritativeCollisionAuthorityReceipt | null;
+  metricRoomPrior: MetricRoomPriorReceipt | null;
+  metricCorrespondence: MetricCorrespondenceSelection | null;
+  metricCorrespondenceEstimate: MetricCorrespondenceEstimateReceipt | null;
 }>;
 
 export type AfcV2AnalyzeResult =
@@ -258,6 +287,12 @@ export type AfcV2AnalysisDependencies = Readonly<{
   observeRoom?: typeof observeRetainedEmptyRoom;
   observeFocusedSideCeilingWall?: typeof observeFocusedSideCeilingWallSeams;
   observeFocusedSideFloorWall?: typeof observeFocusedSideFloorWallObservation;
+  estimateMetricRoom?: (
+    input: MetricRoomPriorInput,
+  ) => Promise<MetricRoomPriorReceipt>;
+  estimateMetricCorrespondence?: (
+    input: MetricCorrespondenceEstimateInput,
+  ) => Promise<MetricCorrespondenceEstimateReceipt>;
   analysisMode?: "live" | "controlled_replay";
   registrationRasters?: Readonly<{
     originalBytes: Uint8Array;
@@ -414,6 +449,7 @@ function livePipelineEvidence(
   roomObservation: EmptyRoomObservationEvidence | null,
   focusedSideCeilingObservation: FocusedSideCeilingWallEvidence | null,
   focusedSideFloorWallObservation: FocusedSideFloorWallEvidence | null,
+  metricRoomPrior: MetricRoomPriorReceipt | null,
 ): AfcV2LivePipelineEvidence {
   const evidence = getAfcSr1LiveAttemptEvidence(input.attemptId);
   const binding = evidence?.binding;
@@ -500,7 +536,304 @@ function livePipelineEvidence(
     originalLocalizedBoundary: null,
     originalLocalizedCollision: null,
     emptyAuthoritativeCollision: null,
+    metricRoomPrior,
+    metricCorrespondence: null,
+    metricCorrespondenceEstimate: null,
   });
+}
+
+type OriginalCapture = { bytes: Uint8Array | null };
+
+function metricPriorModelId(): string {
+  return process.env.AFC_V2_ROOM_OBSERVATION_MODEL?.trim() ||
+    AFC_V2_METRIC_ROOM_PRIOR_DEFAULT_MODEL;
+}
+
+function metricPriorContext(
+  input: AfcV2AnalyzeInput,
+  provider: MetricRoomPriorReceiptContext["provider"],
+): MetricRoomPriorReceiptContext {
+  return {
+    sourceImageHash: input.sourceImageIdentity.sha256,
+    originalAncestorSha256: input.sourceImageIdentity.sha256,
+    attemptId: input.attemptId,
+    loadGeneration: input.loadGeneration,
+    provider,
+    model: metricPriorModelId(),
+  };
+}
+
+function isControlledMetricPriorFixture(
+  dependencies: AfcV2AnalysisDependencies,
+): boolean {
+  return Boolean(
+    dependencies.estimateMetricRoom ||
+    dependencies.observeRoom ||
+    dependencies.observeFocusedSideCeilingWall ||
+    dependencies.observeFocusedSideFloorWall ||
+    dependencies.analysisMode === "controlled_replay",
+  );
+}
+
+function asOriginalMime(
+  value: string,
+): MetricPriorImageIdentity["mimeType"] | null {
+  return value === "image/jpeg" || value === "image/png" || value === "image/webp"
+    ? value
+    : null;
+}
+
+function stubOriginalForMetricPrior(
+  input: AfcV2AnalyzeInput,
+  bytes: Uint8Array,
+): MetricRoomPriorInput["original"] {
+  return {
+    bytes,
+    identity: {
+      sha256: input.sourceImageIdentity.sha256,
+      byteCount: bytes.byteLength,
+      decodedWidth: input.sourceImageIdentity.decodedWidth,
+      decodedHeight: input.sourceImageIdentity.decodedHeight,
+      mimeType: "image/jpeg",
+      orientation: 1,
+    },
+  };
+}
+
+async function resolveOriginalForMetricPrior(
+  input: AfcV2AnalyzeInput,
+  dependencies: AfcV2AnalysisDependencies,
+  capture: OriginalCapture,
+): Promise<MetricRoomPriorInput["original"] | null> {
+  if (dependencies.registrationRasters?.originalBytes) {
+    const bytes = dependencies.registrationRasters.originalBytes;
+    capture.bytes = bytes;
+    return stubOriginalForMetricPrior(input, bytes);
+  }
+  try {
+    const fetched = await fetchRoomImageSafely(input.sourceImageUrl, {
+      allowedHosts: getAutoFloorVisionAllowedImageHosts(),
+      maxBytes: getAutoFloorVisionImageMaxBytes(),
+      timeoutMs: getAutoFloorVisionImageFetchTimeoutMs(),
+      allowLocalhostHttp: isAutoFloorVisionAllowLocalhostHttp(),
+    });
+    if (!fetched.ok) return null;
+    const bytes = Uint8Array.from(fetched.buffer);
+    if (sha256(bytes) !== input.sourceImageIdentity.sha256) return null;
+    const mime = asOriginalMime(fetched.mime);
+    if (!mime) return null;
+    capture.bytes = bytes;
+    return {
+      bytes,
+      identity: {
+        sha256: input.sourceImageIdentity.sha256,
+        byteCount: bytes.byteLength,
+        decodedWidth: input.sourceImageIdentity.decodedWidth,
+        decodedHeight: input.sourceImageIdentity.decodedHeight,
+        mimeType: mime,
+        orientation: 1,
+      },
+    };
+  } catch {
+    return null;
+  }
+}
+
+function unavailableMetricPrior(
+  input: AfcV2AnalyzeInput,
+  provider: MetricRoomPriorReceiptContext["provider"],
+  args: {
+    failureClass: "configuration" | "basis_validation" | "unknown";
+    failureStage: "configuration" | "basis_validation" | "provider_invocation";
+    safeDetail: string;
+    contractValidationReason: string | null;
+  },
+): MetricRoomPriorReceipt {
+  return buildUnavailableMetricRoomPriorReceipt(
+    metricPriorContext(input, provider),
+    {
+      failureClass: args.failureClass,
+      failureStage: args.failureStage,
+      provider,
+      model: metricPriorModelId(),
+      providerStatus: null,
+      safeDetail: args.safeDetail,
+      contractValidationReason: args.contractValidationReason,
+    },
+  );
+}
+
+function startMetricRoomPrior(
+  input: AfcV2AnalyzeInput,
+  dependencies: AfcV2AnalysisDependencies,
+  originalCapture: OriginalCapture,
+): Promise<MetricRoomPriorReceipt> {
+  return (async () => {
+    try {
+      if (dependencies.estimateMetricRoom) {
+        if (dependencies.registrationRasters?.originalBytes) {
+          originalCapture.bytes = dependencies.registrationRasters.originalBytes;
+        }
+        return await dependencies.estimateMetricRoom({
+          attemptId: input.attemptId,
+          loadGeneration: input.loadGeneration,
+          original: stubOriginalForMetricPrior(
+            input,
+            originalCapture.bytes ?? new Uint8Array(),
+          ),
+        });
+      }
+      if (isControlledMetricPriorFixture(dependencies)) {
+        return unavailableMetricPrior(input, "controlled_fixture", {
+          failureClass: "configuration",
+          failureStage: "configuration",
+          safeDetail:
+            "Metric room prior was not invoked in this controlled fixture.",
+          contractValidationReason: "controlled_fixture_metric_prior_not_run",
+        });
+      }
+      const original = await resolveOriginalForMetricPrior(
+        input,
+        dependencies,
+        originalCapture,
+      );
+      if (!original) {
+        return unavailableMetricPrior(input, "google_gemini", {
+          failureClass: "basis_validation",
+          failureStage: "basis_validation",
+          safeDetail: "ORIGINAL image was unavailable for the metric room prior.",
+          contractValidationReason: "original_unavailable_for_metric_prior",
+        });
+      }
+      return await estimateMetricRoomPrior({
+        attemptId: input.attemptId,
+        loadGeneration: input.loadGeneration,
+        original,
+      });
+    } catch (error) {
+      const provider = dependencies.estimateMetricRoom ||
+          isControlledMetricPriorFixture(dependencies)
+        ? "controlled_fixture" as const
+        : "google_gemini" as const;
+      return unavailableMetricPrior(input, provider, {
+        failureClass: "unknown",
+        failureStage: "provider_invocation",
+        safeDetail: error instanceof Error
+          ? error.message.replace(/key=[^&\s"']+/gi, "key=[REDACTED]").slice(0, 320)
+          : "Metric room prior branch rejected unexpectedly; Floor/Camera continued independently.",
+        contractValidationReason: null,
+      });
+    }
+  })();
+}
+
+function metricSpanEstimateModelId(): string {
+  return process.env.AFC_V2_ROOM_OBSERVATION_MODEL?.trim() ||
+    AFC_V2_METRIC_CORRESPONDENCE_ESTIMATE_DEFAULT_MODEL;
+}
+
+function metricSpanEstimateContext(
+  input: AfcV2AnalyzeInput,
+  spanId: string,
+  provider: MetricCorrespondenceEstimateReceiptContext["provider"],
+): MetricCorrespondenceEstimateReceiptContext {
+  return {
+    correspondenceSpanId: spanId,
+    sourceImageHash: input.sourceImageIdentity.sha256,
+    overlayImageHash: "",
+    attemptId: input.attemptId,
+    loadGeneration: input.loadGeneration,
+    provider,
+    model: metricSpanEstimateModelId(),
+  };
+}
+
+function unavailableMetricSpanEstimate(
+  input: AfcV2AnalyzeInput,
+  spanId: string,
+  provider: MetricCorrespondenceEstimateReceiptContext["provider"],
+  args: {
+    failureClass: "configuration" | "basis_validation" | "overlay_generation" | "unknown";
+    failureStage: "configuration" | "basis_validation" | "overlay_generation" | "provider_invocation";
+    safeDetail: string;
+    contractValidationReason: string | null;
+  },
+): MetricCorrespondenceEstimateReceipt {
+  return buildUnavailableMetricCorrespondenceEstimateReceipt(
+    metricSpanEstimateContext(input, spanId, provider),
+    {
+      failureClass: args.failureClass,
+      failureStage: args.failureStage,
+      provider,
+      model: metricSpanEstimateModelId(),
+      providerStatus: null,
+      safeDetail: args.safeDetail,
+      contractValidationReason: args.contractValidationReason,
+    },
+  );
+}
+
+function originalForSpanEstimate(
+  input: AfcV2AnalyzeInput,
+  bytes: Uint8Array,
+): MetricCorrespondenceEstimateInput["original"] {
+  return stubOriginalForMetricPrior(input, bytes);
+}
+
+async function startMetricCorrespondenceEstimate(
+  input: AfcV2AnalyzeInput,
+  dependencies: AfcV2AnalysisDependencies,
+  originalCapture: OriginalCapture,
+  correspondence: MetricCorrespondenceSelection,
+): Promise<MetricCorrespondenceEstimateReceipt | null> {
+  const selected = correspondence.selected;
+  if (!selected) return null;
+  try {
+    if (dependencies.estimateMetricCorrespondence) {
+      return await dependencies.estimateMetricCorrespondence({
+        attemptId: input.attemptId,
+        loadGeneration: input.loadGeneration,
+        original: originalForSpanEstimate(
+          input,
+          originalCapture.bytes ?? new Uint8Array(),
+        ),
+        span: selected,
+      });
+    }
+    if (isControlledMetricPriorFixture(dependencies)) {
+      return null;
+    }
+    const original = originalCapture.bytes
+      ? originalForSpanEstimate(input, originalCapture.bytes)
+      : await resolveOriginalForMetricPrior(input, dependencies, originalCapture);
+    if (!original) {
+      return unavailableMetricSpanEstimate(input, selected.id, "google_gemini", {
+        failureClass: "basis_validation",
+        failureStage: "basis_validation",
+        safeDetail: "ORIGINAL image was unavailable for matched-span estimation.",
+        contractValidationReason: "original_unavailable_for_span_estimate",
+      });
+    }
+    return await estimateMetricCorrespondenceSpan({
+      attemptId: input.attemptId,
+      loadGeneration: input.loadGeneration,
+      original,
+      span: selected,
+    });
+  } catch (error) {
+    const provider = dependencies.estimateMetricCorrespondence ||
+        isControlledMetricPriorFixture(dependencies)
+      ? "controlled_fixture" as const
+      : "google_gemini" as const;
+    return unavailableMetricSpanEstimate(input, selected.id, provider, {
+      failureClass: "unknown",
+      failureStage: "provider_invocation",
+      safeDetail: error instanceof Error
+        ? error.message.replace(/key=[^&\s"']+/gi, "key=[REDACTED]").slice(0, 320)
+        : "Matched-span estimate rejected unexpectedly; Floor/Camera continued independently.",
+      contractValidationReason: null,
+    });
+  }
 }
 
 /**
@@ -511,6 +844,12 @@ export async function executeAfcV2Analysis(
   input: AfcV2AnalyzeInput,
   dependencies: AfcV2AnalysisDependencies = {},
 ): Promise<AfcV2AnalyzeResult> {
+  const originalCapture: OriginalCapture = { bytes: null };
+  const metricPriorPromise = startMetricRoomPrior(
+    input,
+    dependencies,
+    originalCapture,
+  );
   const observationBranch: {
     general: Promise<EmptyRoomObservationEvidence> | null;
     focused: Promise<FocusedSideCeilingWallEvidence> | null;
@@ -658,12 +997,17 @@ export async function executeAfcV2Analysis(
       }
     },
   });
-  const [generalObservation, focusedObservation, focusedFloorWallObservation] =
-    await Promise.all([
-      observationBranch.general,
-      observationBranch.focused,
-      observationBranch.focusedFloorWall,
-    ]);
+  const [
+    generalObservation,
+    focusedObservation,
+    focusedFloorWallObservation,
+    metricRoomPrior,
+  ] = await Promise.all([
+    observationBranch.general,
+    observationBranch.focused,
+    observationBranch.focusedFloorWall,
+    metricPriorPromise,
+  ]);
   const afterCeiling = mergeFocusedSideCeilingWallSeams({
     general: generalObservation,
     focused: focusedObservation,
@@ -678,6 +1022,7 @@ export async function executeAfcV2Analysis(
     roomObservation,
     focusedObservation,
     focusedFloorWallObservation,
+    metricRoomPrior,
   );
   if (product.status !== "authoritative_geometry") {
     return {
@@ -878,6 +1223,7 @@ export async function executeAfcV2Analysis(
     getAfcSr1LiveAttemptEvidence(input.attemptId)?.floorRead?.emptyBytes ??
     null;
   const originalBytes = dependencies.registrationRasters?.originalBytes ??
+    originalCapture.bytes ??
     await fetchVerifiedOriginalBytes(input, product) ??
     null;
   let emptyOriginalRegistration: AfcV2EmptyOriginalRegistrationAuthorityReceipt | null =
@@ -996,6 +1342,51 @@ export async function executeAfcV2Analysis(
     emptyAuthoritativeCollision = null;
   }
 
+  let metricCorrespondence: MetricCorrespondenceSelection =
+    emptyMetricCorrespondenceSelection(["no_eligible_finite_span"]);
+  try {
+    metricCorrespondence = selectMetricCorrespondenceSpan({
+      roomBoundary: roomBoundaries,
+      registration: emptyOriginalRegistration,
+      originalLocalizedBoundary,
+      originalLocalizationClass:
+        originalStructuralLocalization?.registrationClass ?? null,
+    });
+  } catch {
+    metricCorrespondence = emptyMetricCorrespondenceSelection([
+      "extraction_failed_closed",
+    ]);
+  }
+
+  let metricCorrespondenceEstimate: MetricCorrespondenceEstimateReceipt | null =
+    null;
+  try {
+    metricCorrespondenceEstimate = await startMetricCorrespondenceEstimate(
+      input,
+      dependencies,
+      originalCapture,
+      metricCorrespondence,
+    );
+  } catch {
+    metricCorrespondenceEstimate = metricCorrespondence.selected
+      ? unavailableMetricSpanEstimate(
+        input,
+        metricCorrespondence.selected.id,
+        dependencies.estimateMetricCorrespondence ||
+            isControlledMetricPriorFixture(dependencies)
+          ? "controlled_fixture"
+          : "google_gemini",
+        {
+          failureClass: "unknown",
+          failureStage: "provider_invocation",
+          safeDetail:
+            "Matched-span estimate rejected unexpectedly; Floor/Camera continued independently.",
+          contractValidationReason: null,
+        },
+      )
+      : null;
+  }
+
   return {
     ...pipelineEvidence,
     status: "applied",
@@ -1013,6 +1404,8 @@ export async function executeAfcV2Analysis(
     originalLocalizedBoundary,
     originalLocalizedCollision,
     emptyAuthoritativeCollision,
+    metricCorrespondence,
+    metricCorrespondenceEstimate,
   };
 }
 
@@ -1057,7 +1450,19 @@ export async function executeAfcV2ControlledReplay(
       },
     };
     return {
-      ...livePipelineEvidence(input, rejectedProduct, null, null, null),
+      ...livePipelineEvidence(
+        input,
+        rejectedProduct,
+        null,
+        null,
+        null,
+        unavailableMetricPrior(input, "controlled_fixture", {
+          failureClass: "configuration",
+          failureStage: "configuration",
+          safeDetail: "Controlled replay evidence was rejected before metric prior.",
+          contractValidationReason: "controlled_replay_evidence_invalid",
+        }),
+      ),
       status: "failed",
       reason: "Controlled replay evidence did not satisfy exact identity and lineage bindings.",
       product: rejectedProduct,

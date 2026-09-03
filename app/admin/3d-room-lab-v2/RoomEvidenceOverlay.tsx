@@ -7,6 +7,7 @@ import type {
 import type { RoomBoundaryCandidateStatus } from "./room-boundary-authority-contract";
 import type { EmptyOriginalRegistrationCorrespondence } from "./empty-original-registration-authority-contract";
 import type { OriginalLocalizedStructure } from "./original-structural-localization-authority-contract";
+import type { MetricCorrespondenceSpan } from "./metric-correspondence-span-contract";
 
 function perpendicular(tangent: Readonly<{ u: number; v: number }>): Readonly<{ u: number; v: number }> {
   const length = Math.hypot(tangent.u, tangent.v);
@@ -26,6 +27,7 @@ type Props = Readonly<{
   registrationCorrespondences?: readonly EmptyOriginalRegistrationCorrespondence[];
   overlaySpace?: "empty" | "original" | "none";
   originalLocalizationStructures?: readonly OriginalLocalizedStructure[];
+  metricCorrespondenceSpan?: MetricCorrespondenceSpan | null;
 }>;
 
 function points(value: readonly SourceNormalizedPoint[]): string {
@@ -67,6 +69,7 @@ export default function RoomEvidenceOverlay({
   registrationCorrespondences = [],
   overlaySpace = "none",
   originalLocalizationStructures = [],
+  metricCorrespondenceSpan = null,
 }: Props) {
   const room = showRoomObservation &&
       roomObservation?.observerStatus !== "failed"
@@ -348,6 +351,77 @@ export default function RoomEvidenceOverlay({
                 </g>
               );
             })}
+          </g>
+        ) : null}
+        {overlaySpace === "original" &&
+            metricCorrespondenceSpan &&
+            metricCorrespondenceSpan.overlaySafeOnOriginal ? (
+          <g
+            aria-label="Metric correspondence span"
+            data-evidence-role="metric-correspondence-span"
+            data-span-role={metricCorrespondenceSpan.role}
+            data-source-seam-id={
+              metricCorrespondenceSpan.lineage.sourceSeamId ?? undefined
+            }
+          >
+            <line
+              x1={metricCorrespondenceSpan.imageA.x}
+              y1={metricCorrespondenceSpan.imageA.y}
+              x2={metricCorrespondenceSpan.imageB.x}
+              y2={metricCorrespondenceSpan.imageB.y}
+              stroke="rgb(34, 211, 238)"
+              strokeWidth="0.005"
+              strokeLinecap="round"
+              data-evidence-kind="metric-correspondence-segment"
+            />
+            <circle
+              cx={metricCorrespondenceSpan.imageA.x}
+              cy={metricCorrespondenceSpan.imageA.y}
+              r="0.009"
+              fill="rgb(34, 211, 238)"
+              stroke="rgb(15, 23, 42)"
+              strokeWidth="0.0015"
+              data-evidence-kind="metric-correspondence-endpoint-a"
+            />
+            <text
+              x={metricCorrespondenceSpan.imageA.x}
+              y={metricCorrespondenceSpan.imageA.y - 0.016}
+              fill="rgb(207, 250, 254)"
+              fontSize="0.024"
+              textAnchor="middle"
+              data-evidence-kind="metric-correspondence-endpoint-a-label"
+            >
+              A
+            </text>
+            <circle
+              cx={metricCorrespondenceSpan.imageB.x}
+              cy={metricCorrespondenceSpan.imageB.y}
+              r="0.009"
+              fill="rgb(34, 211, 238)"
+              stroke="rgb(15, 23, 42)"
+              strokeWidth="0.0015"
+              data-evidence-kind="metric-correspondence-endpoint-b"
+            />
+            <text
+              x={metricCorrespondenceSpan.imageB.x}
+              y={metricCorrespondenceSpan.imageB.y - 0.016}
+              fill="rgb(207, 250, 254)"
+              fontSize="0.024"
+              textAnchor="middle"
+              data-evidence-kind="metric-correspondence-endpoint-b-label"
+            >
+              B
+            </text>
+            <text
+              x={(metricCorrespondenceSpan.imageA.x + metricCorrespondenceSpan.imageB.x) / 2}
+              y={(metricCorrespondenceSpan.imageA.y + metricCorrespondenceSpan.imageB.y) / 2 - 0.018}
+              fill="rgb(207, 250, 254)"
+              fontSize="0.028"
+              textAnchor="middle"
+              data-evidence-kind="metric-correspondence-label"
+            >
+              Metric span
+            </text>
           </g>
         ) : null}
         {showFloorAuthority ? (
