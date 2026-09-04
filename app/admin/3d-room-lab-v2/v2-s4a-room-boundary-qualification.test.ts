@@ -8,6 +8,7 @@ import {
 import {
   applicableEvidencePasses,
   chooseFloorInteriorWitnessAttempt,
+  classifyFocusedWallSupportingRegion,
   classifyOccupancyOffset,
   competingSameWall,
   distanceToPolygonFrontier,
@@ -15,9 +16,12 @@ import {
   evaluateInteriorHalfSpace,
   evaluateOppositeOccupancy,
   floorWallProjectionContinuation,
+  focusedSupportingRegionOccupancyAcceptable,
   isNearVerticalFloorWallSeam,
   nearVerticalFloorWallMayContinue,
+  observationSourceMayCreateWorldBoundary,
   pointInPolygon,
+  s4aWallFrontierHasCertifiedTruncatedSupport,
 } from "./room-boundary-qualification.server";
 
 const floorPolygon = [
@@ -248,6 +252,41 @@ test("frame-adjacent missing polygon support is not_applicable, not a max-distan
   );
 });
 
+test("S4A wall-frontier receipt distinguishes truncated support from full or zero support", () => {
+  const truncated = [
+    { x: 0.01, y: 0.62 },
+    { x: 0.35, y: 0.62 },
+    { x: 0.55, y: 0.62 },
+  ];
+  const conservativeWall = [
+    { x: 0.2, y: 0.1 },
+    { x: 0.9, y: 0.1 },
+    { x: 0.8, y: 0.62 },
+    { x: 0.2, y: 0.62 },
+  ];
+  const truncatedFrontier = evaluateFrontierProximity(
+    truncated,
+    floorPolygon,
+    conservativeWall,
+  );
+  assert.equal(
+    s4aWallFrontierHasCertifiedTruncatedSupport(truncatedFrontier),
+    true,
+  );
+  const full = evaluateFrontierProximity(seam, floorPolygon, wallPolygon);
+  assert.equal(s4aWallFrontierHasCertifiedTruncatedSupport(full), false);
+  assert.equal(s4aWallFrontierHasCertifiedTruncatedSupport(null), false);
+  const zeroPass = {
+    ...truncatedFrontier,
+    wallVertices: truncatedFrontier.wallVertices.map((vertex) => ({
+      ...vertex,
+      status: "not_applicable" as const,
+      applicability: "unsupported_by_frame" as const,
+    })),
+  };
+  assert.equal(s4aWallFrontierHasCertifiedTruncatedSupport(zeroPass), false);
+});
+
 test("interior non-frame vertex far from wall/floor frontier remains a failure", () => {
   const interiorFalse = [
     { x: 0.35, y: 0.35 },
@@ -368,4 +407,70 @@ test("endpoint projection failure fails closed; interior failure may retain obse
 test("thresholds remain the named conservative gates", () => {
   assert.equal(ROOM_BOUNDARY_IMAGE_FRONTIER_MAX_DISTANCE, 0.012);
   assert.equal(ROOM_BOUNDARY_NEAR_VERTICAL_MAX_HORIZONTAL_RATIO, 0.1);
+});
+
+test("supporting-region classifies outline, interior overshoot, and true contradiction", () => {
+  const leftFloor = [
+    { x: 0.06, y: 1 },
+    { x: 0.96, y: 1 },
+    { x: 0.8, y: 0.64 },
+    { x: 0.18, y: 0.64 },
+  ];
+  const leftSeam = [
+    { x: 0.06, y: 1 },
+    { x: 0.18, y: 0.64 },
+  ];
+  const tightWall = [
+    { x: 0, y: 0.22 },
+    { x: 0.18, y: 0.16 },
+    { x: 0.18, y: 0.64 },
+    { x: 0.06, y: 1 },
+  ];
+  const overshootWall = [
+    { x: 0, y: 0.22 },
+    { x: 0.18, y: 0.16 },
+    { x: 0.24, y: 0.58 },
+    { x: 0.24, y: 0.70 },
+    { x: 0.06, y: 1 },
+  ];
+  const floatingSeam = [
+    { x: 0.55, y: 0.50 },
+    { x: 0.70, y: 0.48 },
+  ];
+  assert.equal(
+    classifyFocusedWallSupportingRegion(leftSeam, tightWall, leftFloor),
+    "outline_coherent",
+  );
+  assert.equal(
+    classifyFocusedWallSupportingRegion(leftSeam, overshootWall, leftFloor),
+    "supporting_region_interior_overshoot",
+  );
+  assert.equal(
+    classifyFocusedWallSupportingRegion(floatingSeam, tightWall, leftFloor),
+    "true_contradiction",
+  );
+  const overshootOccupancy = evaluateOppositeOccupancy(
+    leftSeam,
+    leftFloor,
+    overshootWall,
+  );
+  assert.equal(
+    focusedSupportingRegionOccupancyAcceptable(
+      overshootOccupancy,
+      "supporting_region_interior_overshoot",
+    ),
+    true,
+  );
+  assert.equal(
+    observationSourceMayCreateWorldBoundary("general_empty_observer"),
+    true,
+  );
+  assert.equal(
+    observationSourceMayCreateWorldBoundary("focused_side_floor_wall_observer"),
+    true,
+  );
+  assert.equal(
+    observationSourceMayCreateWorldBoundary("focused_side_ceiling_wall"),
+    false,
+  );
 });

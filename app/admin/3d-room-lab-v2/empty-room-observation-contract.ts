@@ -61,7 +61,11 @@ export type EmptyObservedPlane = Readonly<{
 
 export type EmptyObservedSeamObservationSource =
   | "general_empty_observer"
-  | "focused_side_ceiling_wall";
+  | "focused_side_ceiling_wall"
+  | "focused_side_floor_wall_observer";
+
+export const FOCUSED_SIDE_FLOOR_WALL_OBSERVATION_SOURCE =
+  "focused_side_floor_wall_observer" as const;
 
 export type EmptyObservedSeam = Readonly<{
   id: string;
@@ -167,6 +171,19 @@ export const AFC_V2_FOCUSED_SIDE_CEILING_WALL_NOT_RUN =
     failure: null,
   }) satisfies FocusedSideCeilingWallMergeReceipt;
 
+export type FocusedWallSupportingRegionClass =
+  | "outline_coherent"
+  | "supporting_region_interior_overshoot"
+  | "true_contradiction"
+  | "not_evaluated";
+
+export type FocusedSideFloorWallObservedSideDiagnostic = Readonly<{
+  side: "left" | "right";
+  sourceNormalizedWallPolygon: readonly SourceNormalizedPoint[] | null;
+  sourceNormalizedFloorWallPolyline: readonly SourceNormalizedPoint[] | null;
+  supportingRegionClass: FocusedWallSupportingRegionClass;
+}>;
+
 export type FocusedSideFloorWallMergeReceipt = Readonly<{
   observerStatus: "observed" | "partial" | "failed" | "empty" | "not_run";
   promptVersion: string | null;
@@ -177,6 +194,7 @@ export type FocusedSideFloorWallMergeReceipt = Readonly<{
   skippedDuplicateSeamIds: readonly string[];
   rejectedPlaneIds: readonly string[];
   rejectedSeamIds: readonly string[];
+  observedSideDiagnostics: readonly FocusedSideFloorWallObservedSideDiagnostic[];
   resolutionReasons: readonly string[];
   geometryManufactured: false;
   hiddenContinuationAdded: false;
@@ -194,6 +212,7 @@ export const AFC_V2_FOCUSED_SIDE_FLOOR_WALL_NOT_RUN =
     skippedDuplicateSeamIds: Object.freeze([] as const),
     rejectedPlaneIds: Object.freeze([] as const),
     rejectedSeamIds: Object.freeze([] as const),
+    observedSideDiagnostics: Object.freeze([] as const),
     resolutionReasons: Object.freeze([] as const),
     geometryManufactured: false,
     hiddenContinuationAdded: false,

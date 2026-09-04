@@ -1,12 +1,15 @@
 import "server-only";
 
-import type {
-  EmptyObservedPlane,
-  EmptyObservedSeam,
-  EmptyRoomObservationAcceptedEvidence,
-  EmptyRoomObservationEvidence,
-  FocusedSideFloorWallMergeReceipt,
-  SourceNormalizedPoint,
+import {
+  FOCUSED_SIDE_FLOOR_WALL_OBSERVATION_SOURCE,
+  type EmptyObservedPlane,
+  type EmptyObservedSeam,
+  type EmptyRoomObservationAcceptedEvidence,
+  type EmptyRoomObservationEvidence,
+  type FocusedSideFloorWallMergeReceipt,
+  type FocusedSideFloorWallObservedSideDiagnostic,
+  type FocusedWallSupportingRegionClass,
+  type SourceNormalizedPoint,
 } from "./empty-room-observation-contract";
 import type {
   FocusedSideFloorWallEvidence,
@@ -14,9 +17,11 @@ import type {
   FocusedSideFloorWallSideEvidence,
 } from "./empty-side-floor-wall-observation-contract";
 import {
+  classifyFocusedWallSupportingRegion,
   classifyFrontierVertex,
   evaluateFrontierProximity,
   evaluateOppositeOccupancy,
+  focusedSupportingRegionOccupancyAcceptable,
   isNearVerticalFloorWallSeam,
   pointIsFrameAdjacent,
 } from "./room-boundary-qualification.server";
@@ -51,6 +56,7 @@ export const FLOOR_WALL_MERGE_REASON = {
   notNearFloorFrontier: "focused_rejected:seam_not_near_floor_frontier",
   notNearWallFrontier: "focused_rejected:seam_not_near_wall_frontier",
   occupancyIncoherent: "focused_rejected:local_occupancy_incoherent",
+  supportingRegionOvershoot: "focused_admitted:supporting_region_overshoot",
   nearVertical: "focused_rejected:near_vertical_wall_wall_like",
   minSpan: "focused_rejected:below_minimum_image_span",
   beyondSupport: "focused_rejected:extends_beyond_reported_support",
@@ -233,6 +239,18 @@ function occupancyCoherent(
       occupancy.wallSide !== "mixed" &&
       occupancy.floorSide !== "undetermined" &&
       occupancy.wallSide !== "undetermined",
+  );
+}
+
+function focusedAddPlaneOccupancyAdmissible(
+  seam: readonly SourceNormalizedPoint[],
+  floor: readonly SourceNormalizedPoint[],
+  wall: readonly SourceNormalizedPoint[],
+  supportingRegionClass: "outline_coherent" | "supporting_region_interior_overshoot",
+): boolean {
+  return focusedSupportingRegionOccupancyAcceptable(
+    evaluateOppositeOccupancy(seam, floor, wall),
+    supportingRegionClass,
   );
 }
 
@@ -971,6 +989,7 @@ function focusedReceipt(args: {
   skippedDuplicateSeamIds?: readonly string[];
   rejectedPlaneIds?: readonly string[];
   rejectedSeamIds?: readonly string[];
+  observedSideDiagnostics?: readonly FocusedSideFloorWallObservedSideDiagnostic[];
   resolutionReasons?: readonly string[];
 }): FocusedSideFloorWallMergeReceipt {
   const addedPlaneIds = args.addedPlaneIds ?? [];
@@ -979,6 +998,7 @@ function focusedReceipt(args: {
   const skippedDuplicateSeamIds = args.skippedDuplicateSeamIds ?? [];
   const rejectedPlaneIds = args.rejectedPlaneIds ?? [];
   const rejectedSeamIds = args.rejectedSeamIds ?? [];
+  const observedSideDiagnostics = args.observedSideDiagnostics ?? [];
   const resolutionReasons = args.resolutionReasons ?? [];
   if (!args.focused) {
     return Object.freeze({
@@ -991,6 +1011,7 @@ function focusedReceipt(args: {
       skippedDuplicateSeamIds: Object.freeze(skippedDuplicateSeamIds),
       rejectedPlaneIds: Object.freeze(rejectedPlaneIds),
       rejectedSeamIds: Object.freeze(rejectedSeamIds),
+      observedSideDiagnostics: Object.freeze(observedSideDiagnostics),
       resolutionReasons: Object.freeze(resolutionReasons),
       geometryManufactured: false,
       hiddenContinuationAdded: false,
@@ -1012,6 +1033,7 @@ function focusedReceipt(args: {
     skippedDuplicateSeamIds: Object.freeze(skippedDuplicateSeamIds),
     rejectedPlaneIds: Object.freeze(rejectedPlaneIds),
     rejectedSeamIds: Object.freeze(rejectedSeamIds),
+    observedSideDiagnostics: Object.freeze(observedSideDiagnostics),
     resolutionReasons: Object.freeze(resolutionReasons),
     geometryManufactured: false,
     hiddenContinuationAdded: false,
@@ -1074,6 +1096,7 @@ function resolveFocusedSide(args: {
   skippedDuplicateSeamIds: string[];
   rejectedPlaneIds: string[];
   rejectedSeamIds: string[];
+  observedSideDiagnostics: FocusedSideFloorWallObservedSideDiagnostic[];
   resolutionReasons: string[];
 }): void {
   const {
@@ -1089,10 +1112,21 @@ function resolveFocusedSide(args: {
     skippedDuplicateSeamIds,
     rejectedPlaneIds,
     rejectedSeamIds,
+    observedSideDiagnostics,
     resolutionReasons,
   } = args;
   const seamLine = side.sourceNormalizedFloorWallPolyline;
   const wallPolygon = side.sourceNormalizedWallPolygon;
+  let supportingRegionClass: FocusedWallSupportingRegionClass = "not_evaluated";
+  const noteSide = (classification: FocusedWallSupportingRegionClass = supportingRegionClass) => {
+    supportingRegionClass = classification;
+    observedSideDiagnostics.push(Object.freeze({
+      side: side.side,
+      sourceNormalizedWallPolygon: wallPolygon,
+      sourceNormalizedFloorWallPolyline: seamLine,
+      supportingRegionClass: classification,
+    }));
+  };
 
   if (side.ambiguity !== null) {
     rejectSide(
@@ -1102,10 +1136,12 @@ function resolveFocusedSide(args: {
       rejectedSeamIds,
       resolutionReasons,
     );
+    noteSide();
     return;
   }
   if (!seamLine) {
     resolutionReasons.push(FLOOR_WALL_MERGE_REASON.wallWithoutSeam);
+    noteSide();
     return;
   }
   if (polylineSide(seamLine) !== side.side && polylineSide(seamLine) !== "center") {
@@ -1116,6 +1152,7 @@ function resolveFocusedSide(args: {
       rejectedSeamIds,
       resolutionReasons,
     );
+    noteSide();
     return;
   }
   if (polylineLength(seamLine) < FOCUSED_SIDE_FLOOR_WALL_MIN_IMAGE_SPAN) {
@@ -1126,6 +1163,7 @@ function resolveFocusedSide(args: {
       rejectedSeamIds,
       resolutionReasons,
     );
+    noteSide();
     return;
   }
   if (isNearVerticalFloorWallSeam(seamLine)) {
@@ -1136,6 +1174,7 @@ function resolveFocusedSide(args: {
       rejectedSeamIds,
       resolutionReasons,
     );
+    noteSide();
     return;
   }
 
@@ -1153,6 +1192,7 @@ function resolveFocusedSide(args: {
       rejectedSeamIds,
       resolutionReasons,
     );
+    noteSide();
     return;
   }
   if (completePair.status === "complete") {
@@ -1161,6 +1201,7 @@ function resolveFocusedSide(args: {
       skippedDuplicatePlaneIds.push(`${side.side}_wall`);
     }
     resolutionReasons.push(FLOOR_WALL_MERGE_REASON.alreadyPresent);
+    noteSide();
     return;
   }
 
@@ -1171,6 +1212,7 @@ function resolveFocusedSide(args: {
   if (overlappingSeam) {
     skippedDuplicateSeamIds.push(`${side.side}_floor_wall`);
     resolutionReasons.push(FLOOR_WALL_MERGE_REASON.duplicateSeam);
+    noteSide();
     return;
   }
   const wallWalls = seams.filter((seam) => seam.category === "wall_wall");
@@ -1186,6 +1228,7 @@ function resolveFocusedSide(args: {
       rejectedSeamIds,
       resolutionReasons,
     );
+    noteSide();
     return;
   }
   const wallCeilings = seams.filter((seam) => seam.category === "wall_ceiling");
@@ -1201,6 +1244,7 @@ function resolveFocusedSide(args: {
       rejectedSeamIds,
       resolutionReasons,
     );
+    noteSide();
     return;
   }
 
@@ -1218,6 +1262,7 @@ function resolveFocusedSide(args: {
       rejectedSeamIds,
       resolutionReasons,
     );
+    noteSide();
     return;
   }
 
@@ -1232,6 +1277,7 @@ function resolveFocusedSide(args: {
         rejectedSeamIds,
         resolutionReasons,
       );
+      noteSide();
       return;
     }
     const wallSide = polygonSide(wallPolygon);
@@ -1245,6 +1291,7 @@ function resolveFocusedSide(args: {
         rejectedSeamIds,
         resolutionReasons,
       );
+      noteSide();
       return;
     }
     if (seamExtendsBeyondWallSupport(seamLine, wallPolygon)) {
@@ -1255,6 +1302,7 @@ function resolveFocusedSide(args: {
         rejectedSeamIds,
         resolutionReasons,
       );
+      noteSide();
       return;
     }
     const frontier = frontierCoherent(
@@ -1270,9 +1318,16 @@ function resolveFocusedSide(args: {
         rejectedSeamIds,
         resolutionReasons,
       );
+      noteSide();
       return;
     }
-    if (!frontier.nearWall) {
+    const supportingRegion = classifyFocusedWallSupportingRegion(
+      seamLine,
+      wallPolygon,
+      floor.sourceNormalizedPolygon,
+    );
+    supportingRegionClass = supportingRegion;
+    if (supportingRegion === "true_contradiction") {
       rejectSide(
         side,
         FLOOR_WALL_MERGE_REASON.notNearWallFrontier,
@@ -1280,9 +1335,17 @@ function resolveFocusedSide(args: {
         rejectedSeamIds,
         resolutionReasons,
       );
+      noteSide(supportingRegion);
       return;
     }
-    if (!occupancyCoherent(seamLine, floor.sourceNormalizedPolygon, wallPolygon)) {
+    if (
+      !focusedAddPlaneOccupancyAdmissible(
+        seamLine,
+        floor.sourceNormalizedPolygon,
+        wallPolygon,
+        supportingRegion,
+      )
+    ) {
       rejectSide(
         side,
         FLOOR_WALL_MERGE_REASON.occupancyIncoherent,
@@ -1290,6 +1353,7 @@ function resolveFocusedSide(args: {
         rejectedSeamIds,
         resolutionReasons,
       );
+      noteSide(supportingRegion);
       return;
     }
     if (planes.length >= MAX_PLANES || seams.length >= MAX_SEAMS) {
@@ -1300,6 +1364,7 @@ function resolveFocusedSide(args: {
         rejectedSeamIds,
         resolutionReasons,
       );
+      noteSide(supportingRegion);
       return;
     }
     addedPlane = Object.freeze({
@@ -1316,6 +1381,9 @@ function resolveFocusedSide(args: {
       evidenceClass: "provider_reported_visible_evidence" as const,
     });
     wall = addedPlane;
+    if (supportingRegion === "supporting_region_interior_overshoot") {
+      resolutionReasons.push(FLOOR_WALL_MERGE_REASON.supportingRegionOvershoot);
+    }
   } else {
     if (wallPolygon) {
       skippedDuplicatePlaneIds.push(`${side.side}_wall`);
@@ -1334,6 +1402,7 @@ function resolveFocusedSide(args: {
         rejectedSeamIds,
         resolutionReasons,
       );
+      noteSide();
       return;
     }
     if (!frontier.nearWall) {
@@ -1344,6 +1413,7 @@ function resolveFocusedSide(args: {
         rejectedSeamIds,
         resolutionReasons,
       );
+      noteSide();
       return;
     }
     if (
@@ -1360,6 +1430,7 @@ function resolveFocusedSide(args: {
         rejectedSeamIds,
         resolutionReasons,
       );
+      noteSide();
       return;
     }
     if (seamExtendsBeyondWallSupport(seamLine, wall.sourceNormalizedPolygon)) {
@@ -1370,6 +1441,7 @@ function resolveFocusedSide(args: {
         rejectedSeamIds,
         resolutionReasons,
       );
+      noteSide();
       return;
     }
     if (seams.length >= MAX_SEAMS) {
@@ -1380,6 +1452,7 @@ function resolveFocusedSide(args: {
         rejectedSeamIds,
         resolutionReasons,
       );
+      noteSide();
       return;
     }
   }
@@ -1397,7 +1470,7 @@ function resolveFocusedSide(args: {
     confidence: conservativeConfidence(side.confidence, floor, wall),
     ambiguity: null,
     evidenceClass: "provider_reported_visible_evidence",
-    observationSource: "general_empty_observer",
+    observationSource: FOCUSED_SIDE_FLOOR_WALL_OBSERVATION_SOURCE,
   });
   if (addedPlane) {
     planes.push(addedPlane);
@@ -1405,6 +1478,7 @@ function resolveFocusedSide(args: {
   }
   seams.push(mergedSeam);
   addedSeamIds.push(mergedSeam.id);
+  noteSide(supportingRegionClass);
 }
 
 function withMergedEvidence(
@@ -1440,6 +1514,7 @@ function withMergedEvidence(
   const skippedDuplicateSeamIds: string[] = [];
   const rejectedPlaneIds: string[] = [];
   const rejectedSeamIds: string[] = [];
+  const observedSideDiagnostics: FocusedSideFloorWallObservedSideDiagnostic[] = [];
   const resolutionReasons: string[] = [];
   if (!floor) {
     return withReceipt(general, focusedReceipt({
@@ -1468,6 +1543,7 @@ function withMergedEvidence(
       skippedDuplicateSeamIds,
       rejectedPlaneIds,
       rejectedSeamIds,
+      observedSideDiagnostics,
       resolutionReasons,
     });
   }
@@ -1497,6 +1573,7 @@ function withMergedEvidence(
       skippedDuplicateSeamIds,
       rejectedPlaneIds,
       rejectedSeamIds,
+      observedSideDiagnostics,
       resolutionReasons,
     }),
     {
@@ -1521,8 +1598,12 @@ function withMergedEvidence(
  * frame-truncated SIDE seams require rear-junction agreement, supported
  * rear sampling, foreground direction, and compatible frame termination.
  * Floor polygon geometry is never modified or used to manufacture a
- * seam. Added floor_wall seams are rewritten to general_empty_observer
- * so S4A can enumerate them.
+ * frame termination. The focused wall polygon is a supporting visible
+ * region: a floor-coherent seam inside that region is not rejected solely
+ * for missing wall-outline coincidence. Floor polygon geometry is never
+ * modified or used to manufacture a seam. Added floor_wall seams keep
+ * focused_side_floor_wall_observer provenance so S4A can apply the same
+ * supporting-region interpretation without granting collision.
  */
 export function mergeFocusedSideFloorWallObservation(args: {
   general: EmptyRoomObservationEvidence | null;

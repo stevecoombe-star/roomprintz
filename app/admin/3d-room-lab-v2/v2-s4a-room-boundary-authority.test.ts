@@ -232,6 +232,26 @@ test("focused observer provenance cannot create world-boundary authority", () =>
   assert.equal(receipt.summary.accepted, 0);
 });
 
+test("focused side floor-wall provenance may be enumerated as a world-boundary candidate", () => {
+  const base = evidence();
+  const focusedSeam: EmptyObservedSeam = {
+    ...base.observedSeams[0]!,
+    id: "focused_side_floor_wall",
+    observationSource: "focused_side_floor_wall_observer",
+  };
+  const receipt = constructAfcV2RoomBoundaryAuthority(construction({
+    ...base,
+    observedSeams: [focusedSeam],
+  }));
+  const candidate = receipt.candidates[0];
+  assert.ok(candidate);
+  assert.equal(candidate.source.observationSource, "focused_side_floor_wall_observer");
+  assert.equal(
+    candidate.reasons.includes("focused_observer_cannot_create_world_boundary"),
+    false,
+  );
+});
+
 test("missing plane binding does not accept", () => {
   const base = evidence();
   const receipt = constructAfcV2RoomBoundaryAuthority(construction({

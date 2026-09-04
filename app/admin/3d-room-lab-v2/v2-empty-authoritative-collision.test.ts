@@ -1458,3 +1458,82 @@ test("EMPTY-authoritative policy has no room-specific code", () => {
     assert.doesNotMatch(text, /ROOM_2/);
   }
 });
+
+test("Test L: aspect-rescaled Room 2-class truncated wall promotes under EMPTY-authoritative", () => {
+  const observation = evidence(providerObservation({
+    observedPlanes: [
+      {
+        id: "visible_floor",
+        category: "floor",
+        sourceNormalizedPolygon: [
+          { x: 0.045, y: 0.9999 },
+          { x: 0.076, y: 0.697 },
+          { x: 0.414, y: 0.616 },
+          { x: 1, y: 0.819 },
+          { x: 1, y: 0.9999 },
+        ],
+        confidence: 0.94,
+        visibility: "observed",
+      },
+      {
+        id: "visible_wall",
+        category: "wall",
+        sourceNormalizedPolygon: [
+          { x: 0, y: 0.222 },
+          { x: 0.076, y: 0.282 },
+          { x: 0.076, y: 0.697 },
+          { x: 0, y: 0.75 },
+        ],
+        confidence: 0.91,
+        visibility: "observed",
+      },
+    ],
+    observedSeams: [{
+      id: "left_floor_wall",
+      category: "floor_wall",
+      planeIds: ["visible_floor", "visible_wall"],
+      sourceNormalizedPolyline: [
+        { x: 0.045, y: 0.9999 },
+        { x: 0.076, y: 0.697 },
+      ],
+      confidence: 0.9,
+      visibility: "observed",
+    }],
+  }));
+  const { s4a, s4b } = s4bOf(observation, rescaledOriginalIdentity);
+  const boundary = s4b.boundaries[0];
+  assert.ok(boundary);
+  assert.equal(s4a.candidates[0]?.status, "accepted");
+  assert.equal(boundary.limitations.twoPointCorroborated, true);
+  assert.equal(boundary.corroboration.floorFrontierPass, true);
+  assert.equal(boundary.corroboration.wallFrontierPass, true);
+  assert.equal(boundary.corroboration.contradictionProbeCount, 0);
+  assert.equal(boundary.collisionEnabled, false);
+  assert.ok(
+    boundary.qualificationReasons.includes(
+      ROOM_COLLISION_REASON.aspectRescaledOrIncompatibleNotCollisionReady,
+    ),
+  );
+  assert.equal(
+    boundary.qualificationReasons.includes(
+      ROOM_COLLISION_REASON.twoPointRegionCorroborationInsufficient,
+    ),
+    false,
+  );
+  const ea = emptyAuthoritative({
+    s4b,
+    s4a,
+    observation,
+    registrationClass: "rejected",
+  });
+  assert.equal(ea.collisionAuthority, true);
+  assert.equal(ea.walls[0]?.collisionEnabled, true);
+  assert.equal(ea.walls[0]?.status, "accepted");
+  assert.equal(ea.walls[0]?.derivation, "empty_authoritative_promotion");
+  assert.equal(
+    ea.walls[0]?.qualificationReasons.includes(
+      ROOM_COLLISION_REASON.aspectRescaledOrIncompatibleNotCollisionReady,
+    ),
+    false,
+  );
+});

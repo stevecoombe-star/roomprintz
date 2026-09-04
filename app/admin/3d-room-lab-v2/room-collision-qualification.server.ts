@@ -9,11 +9,15 @@ import {
   ROOM_BOUNDARY_WORLD_LINE_MAX_RESIDUAL_M,
   type AfcV2RoomBoundaryAuthorityReceipt,
   type RoomBoundaryCandidate,
+  type RoomBoundaryFrontierEvidence,
   type RoomBoundaryOccupancyEvidence,
 } from "./room-boundary-authority-contract";
 import {
   applicableEvidencePasses,
+  classifyFocusedWallSupportingRegion,
   classifyRegionalProbeEvidence,
+  isFocusedSideFloorWallObservationSource,
+  s4aWallFrontierHasCertifiedTruncatedSupport,
 } from "./room-boundary-qualification.server";
 import { floorWallPolylineCrossesOpeningInterior } from "./room-opening-intersection-geometry";
 import {
@@ -209,17 +213,31 @@ function qualifyBoundary(input: {
       openingCrossing,
     });
   } else {
+    const floorPolygon = boundObservedPolygon(
+      input.observation,
+      candidate.source.floorPlaneId,
+    );
+    const wallPolygon = boundObservedPolygon(
+      input.observation,
+      candidate.source.wallPlaneId,
+    );
+    const supportingRegionWall =
+      isFocusedSideFloorWallObservationSource(candidate.source.observationSource) &&
+      floorPolygon !== null &&
+      wallPolygon !== null &&
+      classifyFocusedWallSupportingRegion(
+        candidate.imageEvidence.polyline,
+        wallPolygon,
+        floorPolygon,
+      ) === "supporting_region_interior_overshoot";
     const span = corroborateObservedSpan({
       polyline: candidate.imageEvidence.polyline,
       occupancy: candidate.imageEvidence.occupancy,
-      floorPolygon: boundObservedPolygon(
-        input.observation,
-        candidate.source.floorPlaneId,
-      ),
-      wallPolygon: boundObservedPolygon(
-        input.observation,
-        candidate.source.wallPlaneId,
-      ),
+      floorPolygon,
+      wallPolygon,
+      supportingRegionWall,
+      s4aAccepted: candidate.status === "accepted",
+      s4aWallFrontier: candidate.imageEvidence.frontier,
     });
     twoPointCorroborated = span.passed;
     corroboration = Object.freeze({
@@ -364,6 +382,9 @@ export function corroborateObservedSpan(input: {
   occupancy: RoomBoundaryOccupancyEvidence | null;
   floorPolygon: readonly SourceNormalizedPoint[] | null;
   wallPolygon: readonly SourceNormalizedPoint[] | null;
+  supportingRegionWall?: boolean;
+  s4aAccepted?: boolean;
+  s4aWallFrontier?: RoomBoundaryFrontierEvidence | null;
 }): SpanCorroborationResult {
   if (!input.floorPolygon || !input.wallPolygon) return failedSpanCorroboration();
   const start = input.polyline[0];
@@ -376,6 +397,8 @@ export function corroborateObservedSpan(input: {
   );
   if (probes.length === 0) return failedSpanCorroboration();
 
+  const truncatedWallSupport = input.s4aAccepted === true &&
+    s4aWallFrontierHasCertifiedTruncatedSupport(input.s4aWallFrontier);
   const classified = probes.map((probe) =>
     classifyRegionalProbeEvidence({
       probe: probe.point,
@@ -384,6 +407,8 @@ export function corroborateObservedSpan(input: {
       occupancy: input.occupancy,
       floorPolygon: input.floorPolygon!,
       wallPolygon: input.wallPolygon!,
+      supportingRegionWall: input.supportingRegionWall === true,
+      s4aTruncatedWallSupport: truncatedWallSupport,
     })
   );
   const passCount = classified.filter((item) => item.status === "pass").length;
@@ -405,10 +430,26 @@ export function corroborateObservedSpan(input: {
   );
   const floorFrontierPass = floorApplicable.length >= 1 &&
     floorApplicable.every((item) => item.floorFrontier.status === "pass");
-  const wallFrontierPass = wallApplicable.length >= 1 &&
-    wallApplicable.every((item) => item.wallFrontier.status === "pass");
   const occupancyPass = occupancyApplicable.length >= 1 &&
     occupancyApplicable.every((item) => item.occupancy === "pass");
+  const applicablePassed = applicableEvidencePasses({
+    passCount,
+    contradictionCount,
+  });
+  /**
+   * Scoped: S4A already certified wall support as applicable PASS +
+   * frame/coverage N/A. Remaining in-span wall evidence may be only N/A.
+   * Zero-evidence (no S4A wall PASS) still fails closed.
+   */
+  const truncatedWallSpanPass = truncatedWallSupport &&
+    floorFrontierPass &&
+    contradictionCount === 0 &&
+    wallApplicable.length === 0 &&
+    classified.length >= 1;
+  const wallFrontierPass = wallApplicable.length >= 1 &&
+      wallApplicable.every((item) => item.wallFrontier.status === "pass")
+    ? true
+    : truncatedWallSpanPass;
 
   return {
     kind: "multi_probe_region_frontier",
@@ -422,10 +463,7 @@ export function corroborateObservedSpan(input: {
     contradictionProbeCount: contradictionCount,
     notApplicableProbeCount: notApplicableCount,
     probes: Object.freeze(classified.map((item) => Object.freeze({ status: item.status }))),
-    passed: applicableEvidencePasses({
-      passCount,
-      contradictionCount,
-    }),
+    passed: applicablePassed || truncatedWallSpanPass,
   };
 }
 

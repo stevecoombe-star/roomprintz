@@ -9,6 +9,9 @@ import {
 } from "./empty-room-observation-contract";
 import {
   AFC_V2_ROOM_BOUNDARY_AUTHORITY_VERSION,
+  ROOM_BOUNDARY_FRAME_EDGE_PROXIMITY,
+  ROOM_BOUNDARY_IMAGE_FRONTIER_MAX_DISTANCE,
+  ROOM_BOUNDARY_INTERIOR_WITNESS_INSET,
   ROOM_BOUNDARY_WORLD_LINE_MAX_RESIDUAL_M,
   type AfcV2RoomBoundaryAuthorityReceipt,
   type RoomBoundaryCandidate,
@@ -30,10 +33,13 @@ import {
 } from "./room-collision-qualification.server";
 import {
   applicableEvidencePasses,
+  classifyFocusedWallSupportingRegion,
   classifyRegionalOppositeOccupancy,
   classifyRegionalProbeEvidence,
   classifyRegionalSampleMembership,
+  evaluateFrontierProximity,
   evaluateOppositeOccupancy,
+  s4aWallFrontierHasCertifiedTruncatedSupport,
 } from "./room-boundary-qualification.server";
 
 const emptyIdentity = {
@@ -2040,4 +2046,480 @@ test("regional occupancy does not assign +normal to floorSide", () => {
   assert.doesNotMatch(regional, /perpendicularTowardSide/);
   assert.doesNotMatch(regional, /expectedPolygon/);
   assert.doesNotMatch(regional, /floorNormal/);
+});
+
+const room2Floor = [
+  { x: 0.045, y: 0.9999 },
+  { x: 0.076, y: 0.697 },
+  { x: 0.414, y: 0.616 },
+  { x: 1, y: 0.819 },
+  { x: 1, y: 0.9999 },
+];
+const room2Wall = [
+  { x: 0, y: 0.222 },
+  { x: 0.076, y: 0.282 },
+  { x: 0.076, y: 0.697 },
+  { x: 0, y: 0.75 },
+];
+const room2Seam = [
+  { x: 0.045, y: 0.9999 },
+  { x: 0.076, y: 0.697 },
+];
+
+function room2Observation() {
+  return twoPointEvidenceWithPlanes(room2Floor, room2Wall, {
+    observedSeams: [{
+      id: "left_floor_wall",
+      category: "floor_wall",
+      planeIds: ["visible_floor", "visible_wall"],
+      sourceNormalizedPolyline: room2Seam,
+      confidence: 0.9,
+      visibility: "observed",
+    }],
+  });
+}
+
+function room2TruncatedFrontier() {
+  return evaluateFrontierProximity(room2Seam, room2Floor, room2Wall);
+}
+
+function syntheticTruncatedWallFrontier() {
+  return {
+    maxDistanceToFloorFrontier: 0,
+    maxDistanceToWallFrontier: 0,
+    nearFloorFrontier: true,
+    nearWallFrontier: true,
+    floorVertices: [
+      { applicability: "applicable" as const, status: "pass" as const, distance: 0, frameAdjacent: false },
+      { applicability: "applicable" as const, status: "pass" as const, distance: 0, frameAdjacent: false },
+    ],
+    wallVertices: [
+      {
+        applicability: "unsupported_by_frame" as const,
+        status: "not_applicable" as const,
+        distance: 0.25,
+        frameAdjacent: true,
+      },
+      {
+        applicability: "applicable" as const,
+        status: "pass" as const,
+        distance: 0,
+        frameAdjacent: false,
+      },
+    ],
+  };
+}
+
+test("Test A: Room 2 truncated left wall corroborates via S4A wall-frontier receipt", () => {
+  const observation = room2Observation();
+  const s4a = s4aReceipt(observation);
+  const candidate = s4a.candidates[0];
+  assert.ok(candidate);
+  assert.equal(candidate.status, "accepted");
+  assert.equal(
+    s4aWallFrontierHasCertifiedTruncatedSupport(candidate.imageEvidence.frontier),
+    true,
+  );
+  const wallVertices = candidate.imageEvidence.frontier?.wallVertices ?? [];
+  assert.equal(wallVertices.some((vertex) => vertex.status === "pass"), true);
+  assert.equal(
+    wallVertices.some((vertex) =>
+      vertex.status === "not_applicable" &&
+        (vertex.applicability === "unsupported_by_frame" ||
+          vertex.applicability === "unsupported_by_polygon_coverage")
+    ),
+    true,
+  );
+
+  const occupancy = uniqueOccupancy(room2Seam, room2Floor, room2Wall);
+  const start = room2Seam[0]!;
+  const end = room2Seam[1]!;
+  const span = corroborateObservedSpan({
+    polyline: room2Seam,
+    occupancy,
+    floorPolygon: room2Floor,
+    wallPolygon: room2Wall,
+    s4aAccepted: true,
+    s4aWallFrontier: room2TruncatedFrontier(),
+  });
+  assert.equal(span.floorFrontierPass, true);
+  assert.equal(span.wallFrontierPass, true);
+  assert.equal(span.contradictionProbeCount, 0);
+  assert.equal(span.passed, true);
+  assert.equal(span.probeCount, 4);
+  assert.ok(span.probes.every((probe) => probe.status !== "contradiction"));
+  assert.equal(span.occupancyPass === true || span.occupancyPass === false, true);
+
+  const probes = [
+    { x: 0.05489926481033586, y: 0.9031746028693312 },
+    { x: 0.0605, y: 0.8484499999999999 },
+    { x: 0.06984419877119269, y: 0.757148135232443 },
+    { x: 0.07322138453906674, y: 0.724149762036022 },
+  ];
+  for (const probe of probes) {
+    const classified = classifyRegionalProbeEvidence({
+      probe,
+      start,
+      end,
+      occupancy,
+      floorPolygon: room2Floor,
+      wallPolygon: room2Wall,
+      s4aTruncatedWallSupport: true,
+    });
+    assert.equal(classified.floorFrontier.status, "pass");
+    assert.equal(classified.wallFrontier.status, "not_applicable");
+    assert.notEqual(classified.occupancy, "contradiction");
+    assert.notEqual(classified.status, "contradiction");
+    assert.deepEqual(
+      [classified.plusMembership, classified.minusMembership].sort(),
+      ["floor_only", "neither"],
+    );
+  }
+
+  const s4b = collide(withCollisionReadyInterior(s4a), observation);
+  const boundary = s4b.boundaries[0];
+  assert.ok(boundary);
+  assert.equal(boundary.corroboration.floorFrontierPass, true);
+  assert.equal(boundary.corroboration.wallFrontierPass, true);
+  assert.equal(boundary.corroboration.contradictionProbeCount, 0);
+  assert.equal(boundary.limitations.twoPointCorroborated, true);
+  assert.equal(boundary.collisionEnabled, true);
+});
+
+test("Test A: Room 2 without S4A truncated receipt still fails closed", () => {
+  const span = corroborateObservedSpan({
+    polyline: room2Seam,
+    occupancy: uniqueOccupancy(room2Seam, room2Floor, room2Wall),
+    floorPolygon: room2Floor,
+    wallPolygon: room2Wall,
+  });
+  assert.equal(span.passed, false);
+  assert.equal(span.wallFrontierPass, false);
+  assert.equal(span.contradictionProbeCount, 4);
+});
+
+test("Test B: bitten floor remains fatal even with truncated wall receipt", () => {
+  const bittenFloor = [
+    { x: 0, y: 1 },
+    { x: 1, y: 1 },
+    { x: 0.8, y: 0.62 },
+    { x: 0.65, y: 0.62 },
+    { x: 0.5, y: 0.8 },
+    { x: 0.35, y: 0.62 },
+    { x: 0.2, y: 0.62 },
+  ];
+  const span = corroborateObservedSpan({
+    polyline: [{ x: 0.2, y: 0.62 }, { x: 0.8, y: 0.62 }],
+    occupancy: uniqueOccupancy(
+      [{ x: 0.2, y: 0.62 }, { x: 0.8, y: 0.62 }],
+      defaultFloorPolygon,
+      defaultWallPolygon,
+    ),
+    floorPolygon: bittenFloor,
+    wallPolygon: defaultWallPolygon,
+    s4aAccepted: true,
+    s4aWallFrontier: syntheticTruncatedWallFrontier(),
+  });
+  assert.equal(span.passed, false);
+  assert.equal(span.floorFrontierPass, false);
+});
+
+test("Test C: radiator/baseboard floor-frontier contradiction remains fatal", () => {
+  const radiator = [{ x: 0.3, y: 0.35 }, { x: 0.7, y: 0.35 }];
+  const span = corroborateObservedSpan({
+    polyline: radiator,
+    occupancy: uniqueOccupancy(
+      [{ x: 0.2, y: 0.62 }, { x: 0.8, y: 0.62 }],
+      defaultFloorPolygon,
+      defaultWallPolygon,
+    ),
+    floorPolygon: defaultFloorPolygon,
+    wallPolygon: defaultWallPolygon,
+    s4aAccepted: true,
+    s4aWallFrontier: syntheticTruncatedWallFrontier(),
+  });
+  assert.equal(span.passed, false);
+  assert.equal(span.floorFrontierPass, false);
+
+  const { observation, s4a } = readyTwoPoint();
+  const baseboard = withCandidate(s4a, (candidate) => ({
+    ...candidate,
+    imageEvidence: {
+      ...candidate.imageEvidence,
+      polyline: [{ x: 0.25, y: 0.58 }, { x: 0.75, y: 0.58 }],
+      frontier: syntheticTruncatedWallFrontier(),
+    },
+  }));
+  const s4b = collide(baseboard, observation);
+  assert.equal(s4b.boundaries[0]?.collisionEnabled, false);
+  assert.equal(s4b.boundaries[0]?.corroboration.floorFrontierPass, false);
+});
+
+test("Test D: interior floor line remains rejected under truncated wall receipt", () => {
+  const span = corroborateObservedSpan({
+    polyline: [{ x: 0.35, y: 0.85 }, { x: 0.65, y: 0.85 }],
+    occupancy: uniqueOccupancy(
+      [{ x: 0.2, y: 0.62 }, { x: 0.8, y: 0.62 }],
+      defaultFloorPolygon,
+      defaultWallPolygon,
+    ),
+    floorPolygon: defaultFloorPolygon,
+    wallPolygon: defaultWallPolygon,
+    s4aAccepted: true,
+    s4aWallFrontier: syntheticTruncatedWallFrontier(),
+  });
+  assert.equal(span.passed, false);
+  assert.equal(span.floorFrontierPass, false);
+});
+
+test("Test E: same-side occupancy remains a hard contradiction", () => {
+  assert.equal(
+    classifyRegionalOppositeOccupancy({ plus: "floor_only", minus: "floor_only" }),
+    "contradiction",
+  );
+  assert.equal(
+    classifyRegionalOppositeOccupancy({ plus: "wall_only", minus: "wall_only" }),
+    "contradiction",
+  );
+  const sameSideWall = [
+    { x: 0.15, y: 0.95 },
+    { x: 0.85, y: 0.95 },
+    { x: 0.8, y: 0.62 },
+    { x: 0.2, y: 0.62 },
+  ];
+  const span = corroborateObservedSpan({
+    polyline: [{ x: 0.2, y: 0.62 }, { x: 0.8, y: 0.62 }],
+    occupancy: {
+      floorSide: "positive",
+      wallSide: "negative",
+      opposite: true,
+      floorOnLineCount: 1,
+      floorPositiveCount: 4,
+      floorNegativeCount: 0,
+      wallOnLineCount: 1,
+      wallPositiveCount: 0,
+      wallNegativeCount: 4,
+    },
+    floorPolygon: defaultFloorPolygon,
+    wallPolygon: sameSideWall,
+    s4aAccepted: true,
+    s4aWallFrontier: syntheticTruncatedWallFrontier(),
+  });
+  assert.equal(span.passed, false);
+  assert.ok(span.contradictionProbeCount >= 1);
+  assert.equal(span.occupancyPass, false);
+});
+
+test("Test F: full non-truncated wall still corroborates unchanged", () => {
+  const span = spanOf(
+    [{ x: 0.2, y: 0.62 }, { x: 0.8, y: 0.62 }],
+    defaultFloorPolygon,
+    defaultWallPolygon,
+  );
+  assert.equal(span.passed, true);
+  assert.equal(span.floorFrontierPass, true);
+  assert.equal(span.wallFrontierPass, true);
+  assert.equal(span.occupancyPass, true);
+  assert.equal(span.contradictionProbeCount, 0);
+});
+
+test("Test G: frame-adjacent supported+N/A does not become an automatic one-sided pass", () => {
+  const floor = [
+    { x: 0, y: 1 },
+    { x: 1, y: 1 },
+    { x: 0.8, y: 0.62 },
+    { x: 0.2, y: 0.62 },
+  ];
+  const wall = [
+    { x: 0.2, y: 0.1 },
+    { x: 0.8, y: 0.1 },
+    { x: 0.8, y: 0.62 },
+    { x: 0.2, y: 0.62 },
+  ];
+  const start = { x: 0.25, y: 0.62 };
+  const end = { x: 0.99, y: 0.62 };
+  const occupancy = uniqueOccupancy([start, end], floor, wall);
+  const truncated = classifyRegionalProbeEvidence({
+    probe: { x: 0.995, y: 0.62 },
+    start,
+    end,
+    occupancy,
+    floorPolygon: floor,
+    wallPolygon: wall,
+    s4aTruncatedWallSupport: true,
+  });
+  const supported = classifyRegionalProbeEvidence({
+    probe: { x: 0.5, y: 0.62 },
+    start,
+    end,
+    occupancy,
+    floorPolygon: floor,
+    wallPolygon: wall,
+    s4aTruncatedWallSupport: true,
+  });
+  assert.equal(supported.status, "pass");
+  assert.ok(
+    truncated.status === "not_applicable" || truncated.occupancy === "not_applicable",
+  );
+  assert.notEqual(truncated.status, "pass");
+  assert.notEqual(truncated.occupancy, "contradiction");
+});
+
+test("Test H: focused supporting-region overshoot remains a separate passing path", () => {
+  const floor = [
+    { x: 0.06, y: 1 },
+    { x: 0.96, y: 1 },
+    { x: 0.8, y: 0.64 },
+    { x: 0.18, y: 0.64 },
+  ];
+  const seam = [
+    { x: 0.06, y: 1 },
+    { x: 0.18, y: 0.64 },
+  ];
+  const overshootWall = [
+    { x: 0, y: 0.22 },
+    { x: 0.18, y: 0.16 },
+    { x: 0.24, y: 0.58 },
+    { x: 0.24, y: 0.70 },
+    { x: 0.06, y: 1 },
+  ];
+  assert.equal(
+    classifyFocusedWallSupportingRegion(seam, overshootWall, floor),
+    "supporting_region_interior_overshoot",
+  );
+  const occupancy = evaluateOppositeOccupancy(seam, floor, overshootWall);
+  const focused = corroborateObservedSpan({
+    polyline: seam,
+    occupancy,
+    floorPolygon: floor,
+    wallPolygon: overshootWall,
+    supportingRegionWall: true,
+  });
+  assert.equal(focused.passed, true);
+  const general = corroborateObservedSpan({
+    polyline: seam,
+    occupancy,
+    floorPolygon: floor,
+    wallPolygon: overshootWall,
+  });
+  assert.equal(general.passed, false);
+  const midpoint = {
+    x: (seam[0]!.x + seam[1]!.x) / 2,
+    y: (seam[0]!.y + seam[1]!.y) / 2,
+  };
+  const truncatedOnOvershoot = classifyRegionalProbeEvidence({
+    probe: midpoint,
+    start: seam[0]!,
+    end: seam[1]!,
+    occupancy,
+    floorPolygon: floor,
+    wallPolygon: overshootWall,
+    s4aTruncatedWallSupport: true,
+  });
+  assert.notEqual(truncatedOnOvershoot.wallFrontier.status, "not_applicable");
+});
+
+test("Test I: zero S4A wall evidence still fails closed", () => {
+  const occupancy = uniqueOccupancy(room2Seam, room2Floor, room2Wall);
+  const noWallPass = {
+    ...room2TruncatedFrontier(),
+    wallVertices: room2TruncatedFrontier().wallVertices.map((vertex) => ({
+      ...vertex,
+      applicability: "unsupported_by_frame" as const,
+      status: "not_applicable" as const,
+    })),
+  };
+  assert.equal(s4aWallFrontierHasCertifiedTruncatedSupport(noWallPass), false);
+  const span = corroborateObservedSpan({
+    polyline: room2Seam,
+    occupancy,
+    floorPolygon: room2Floor,
+    wallPolygon: room2Wall,
+    s4aAccepted: true,
+    s4aWallFrontier: noWallPass,
+  });
+  assert.equal(span.passed, false);
+  assert.equal(span.wallFrontierPass, false);
+
+  const missingWall = corroborateObservedSpan({
+    polyline: room2Seam,
+    occupancy,
+    floorPolygon: room2Floor,
+    wallPolygon: null,
+    s4aAccepted: true,
+    s4aWallFrontier: room2TruncatedFrontier(),
+  });
+  assert.equal(missingWall.passed, false);
+  assert.equal(missingWall.kind, "none");
+});
+
+test("Test J: opening crossing remains collision-false independent of truncation", () => {
+  const crossingOpening = {
+    id: "door",
+    category: "doorway",
+    hostPlaneId: "visible_wall",
+    sourceNormalizedBoundary: [
+      { x: 0.04, y: 0.70 },
+      { x: 0.09, y: 0.70 },
+      { x: 0.09, y: 0.95 },
+      { x: 0.04, y: 0.95 },
+    ],
+    boundaryClosure: "complete_visible_outline",
+    boundaryEvidenceCompleteness: "all_edges_visibly_traced",
+    confidence: 0.9,
+    visibility: "observed",
+  };
+  const observation = twoPointEvidenceWithPlanes(room2Floor, room2Wall, {
+    observedSeams: [{
+      id: "left_floor_wall",
+      category: "floor_wall",
+      planeIds: ["visible_floor", "visible_wall"],
+      sourceNormalizedPolyline: room2Seam,
+      confidence: 0.9,
+      visibility: "observed",
+    }],
+    observedOpenings: [crossingOpening],
+  });
+  const s4a = withCollisionReadyInterior(s4aReceipt(room2Observation()));
+  const s4b = collide(s4a, observation);
+  assert.equal(s4b.boundaries[0]?.collisionEnabled, false);
+  assert.ok(
+    s4b.boundaries[0]?.qualificationReasons.includes(
+      ROOM_COLLISION_REASON.seamCrossesReportedOpening,
+    ),
+  );
+});
+
+test("Test K: S4A rejection cannot be promoted by truncated-wall corroboration", () => {
+  const observation = room2Observation();
+  const s4a = withCandidate(s4aReceipt(observation), (candidate) => ({
+    ...candidate,
+    status: "rejected" as const,
+    reasons: [...candidate.reasons, "observer_ambiguity_present"],
+  }));
+  const s4b = collide(s4a, observation);
+  assert.equal(s4b.boundaries[0]?.collisionEnabled, false);
+  assert.ok(
+    s4b.boundaries[0]?.qualificationReasons.includes(
+      ROOM_COLLISION_REASON.s4aNotAccepted,
+    ),
+  );
+});
+
+test("frame-truncated wall handling does not loosen named thresholds", () => {
+  assert.equal(ROOM_BOUNDARY_IMAGE_FRONTIER_MAX_DISTANCE, 0.012);
+  assert.equal(ROOM_BOUNDARY_INTERIOR_WITNESS_INSET, 0.012);
+  assert.equal(ROOM_BOUNDARY_FRAME_EDGE_PROXIMITY, 0.02);
+  const qualification = readFileSync(
+    path.join(process.cwd(), "app/admin/3d-room-lab-v2/room-boundary-qualification.server.ts"),
+    "utf8",
+  );
+  const collision = readFileSync(
+    path.join(process.cwd(), "app/admin/3d-room-lab-v2/room-collision-qualification.server.ts"),
+    "utf8",
+  );
+  assert.doesNotMatch(qualification, /confidence\s*[><=]/);
+  assert.doesNotMatch(collision, /MIN_CONFIDENCE|confidenceThreshold/);
+  assert.match(collision, /s4aWallFrontierHasCertifiedTruncatedSupport/);
+  assert.match(collision, /s4aAccepted: candidate.status === "accepted"/);
 });

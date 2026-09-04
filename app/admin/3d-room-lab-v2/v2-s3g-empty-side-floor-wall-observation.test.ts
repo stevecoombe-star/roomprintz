@@ -465,7 +465,7 @@ test("S4A still rejects non-canonical focused observationSource values", () => {
     ),
     "utf8",
   );
-  assert.match(authority, /observationSource !== "general_empty_observer"/);
+  assert.match(authority, /observationSourceMayCreateWorldBoundary/);
   assert.match(authority, /focused_observer_cannot_create_world_boundary/);
 });
 

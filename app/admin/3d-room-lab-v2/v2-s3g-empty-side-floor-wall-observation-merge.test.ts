@@ -7,6 +7,7 @@ import test from "node:test";
 import {
   buildEmptyRoomObservationEvidence,
   buildFailedEmptyRoomObservationEvidence,
+  FOCUSED_SIDE_FLOOR_WALL_OBSERVATION_SOURCE,
   type EmptyRoomObservationAcceptedEvidence,
 } from "./empty-room-observation-contract";
 import {
@@ -25,8 +26,12 @@ import {
 } from "./empty-side-floor-wall-observation-merge.server";
 import { AFC_V2_EMPTY_SIDE_FLOOR_WALL_PROMPT_VERSION } from "./empty-side-floor-wall-observation.server";
 import { constructAfcV2RoomBoundaryAuthority } from "./room-boundary-authority.server";
+import { constructAfcV2RoomCollisionAuthority } from "./room-collision-qualification.server";
 import {
+  classifyFocusedWallSupportingRegion,
   classifyFrontierVertex,
+  distanceToPolygonFrontier,
+  pointInPolygon,
   pointIsFrameAdjacent,
 } from "./room-boundary-qualification.server";
 import { ROOM_BOUNDARY_IMAGE_FRONTIER_MAX_DISTANCE } from "./room-boundary-authority-contract";
@@ -74,6 +79,17 @@ const LEFT_WALL = [
   { x: 0, y: 0.22 },
   { x: 0.18, y: 0.16 },
   { x: 0.18, y: 0.64 },
+  { x: 0.06, y: 1 },
+] as const;
+/**
+ * Focused wall region that contains the left floor-wall seam as an interior
+ * chord. Rear sample is farther than 0.012 from the wall outline.
+ */
+const OVERSHOOT_LEFT_WALL = [
+  { x: 0, y: 0.22 },
+  { x: 0.18, y: 0.16 },
+  { x: 0.24, y: 0.58 },
+  { x: 0.24, y: 0.70 },
   { x: 0.06, y: 1 },
 ] as const;
 const RIGHT_WALL = [
@@ -823,7 +839,7 @@ test("general omits left wall and seam; focused frame-truncated pair is merged",
     seam.id.includes("left")
   );
   assert.ok(leftSeam);
-  assert.equal(leftSeam.observationSource, "general_empty_observer");
+  assert.equal(leftSeam.observationSource, FOCUSED_SIDE_FLOOR_WALL_OBSERVATION_SOURCE);
   assert.equal(leftSeam.endpointPolicy, "preserve_observed_open_endpoints");
   assert.equal(leftSeam.planeIds[0], "visible_floor");
   assert.ok(leftSeam.planeIds[1]);
@@ -1218,7 +1234,7 @@ test("generic three-wall composition reaches S4A candidate enumeration", () => {
   assert.equal(receipt.summary.candidateCount, 3);
   assert.ok(receipt.candidates.some((candidate) =>
     candidate.source.category === "floor_wall" &&
-    candidate.source.observationSource === "general_empty_observer" &&
+    candidate.source.observationSource === FOCUSED_SIDE_FLOOR_WALL_OBSERVATION_SOURCE &&
     candidate.source.planeIds.includes("visible_floor") &&
     candidate.sourceSeamId.includes("left")
   ));
@@ -1330,10 +1346,12 @@ test("merge source does not promote floor polygon edges into seams", () => {
     /sourceNormalizedPolygon\s*\[|floor\.sourceNormalizedPolygon\.slice/,
   );
   assert.match(source, /evaluateFrontierProximity/);
+  assert.match(source, /classifyFocusedWallSupportingRegion/);
+  assert.match(source, /focused_admitted:supporting_region_overshoot/);
   assert.match(source, /evaluateOppositeOccupancy/);
   assert.match(source, /pointIsFrameAdjacent/);
   assert.match(source, /classifyFrontierVertex/);
-  assert.match(source, /observationSource: "general_empty_observer"/);
+  assert.match(source, /observationSource: FOCUSED_SIDE_FLOOR_WALL_OBSERVATION_SOURCE/);
   assert.match(source, /findCompleteGeneralSideFloorWallPair/);
   assert.match(source, /classifyGeneralWallRole/);
   assert.match(source, /classifyProvenSideWallSide/);
@@ -1414,7 +1432,7 @@ test("General left wall present without bound seam: focused seam fills and reuse
   const bound = floorWallSeamsBoundTo(merged, "visible_left_wall");
   assert.equal(bound.length, 1);
   assert.deepEqual(bound[0].planeIds, ["visible_floor", "visible_left_wall"]);
-  assert.equal(bound[0].observationSource, "general_empty_observer");
+  assert.equal(bound[0].observationSource, FOCUSED_SIDE_FLOOR_WALL_OBSERVATION_SOURCE);
   assert.equal(merged.qualityGate.focusedSideFloorWall.addedPlaneIds.length, 0);
   assert.equal(merged.qualityGate.focusedSideFloorWall.addedSeamIds.length, 1);
   assert.ok(
@@ -1452,7 +1470,7 @@ test("left-biased back floor-wall seam does not suppress focused left recovery",
   const leftWall = wallsOnSide(merged, "left")[0];
   const leftSeams = floorWallSeamsBoundTo(merged, leftWall.id);
   assert.equal(leftSeams.length, 1);
-  assert.equal(leftSeams[0].observationSource, "general_empty_observer");
+  assert.equal(leftSeams[0].observationSource, FOCUSED_SIDE_FLOOR_WALL_OBSERVATION_SOURCE);
   assert.equal(merged.qualityGate.focusedSideFloorWall.addedPlaneIds.length, 1);
   assert.equal(merged.qualityGate.focusedSideFloorWall.addedSeamIds.length, 1);
   assert.ok(
@@ -1871,7 +1889,7 @@ test("failed Room-2-style omission: left-biased back seam, no left pair, focused
   assert.ok(leftWall);
   const leftSeams = floorWallSeamsBoundTo(merged, leftWall.id);
   assert.equal(leftSeams.length, 1);
-  assert.equal(leftSeams[0].observationSource, "general_empty_observer");
+  assert.equal(leftSeams[0].observationSource, FOCUSED_SIDE_FLOOR_WALL_OBSERVATION_SOURCE);
   assert.equal(wallsOnSide(merged, "right").length, 1);
   assert.equal(floorWallSeamsBoundTo(merged, "visible_right_wall").length, 1);
   assert.equal(merged.qualityGate.focusedSideFloorWall.addedPlaneIds.length, 1);
@@ -1904,14 +1922,14 @@ test("focused-added left seam is enumerated by S4A and not rejected for focused 
   assert.ok(leftWall);
   const leftSeam = floorWallSeamsBoundTo(merged, leftWall.id)[0];
   assert.ok(leftSeam);
-  assert.equal(leftSeam.observationSource, "general_empty_observer");
+  assert.equal(leftSeam.observationSource, FOCUSED_SIDE_FLOOR_WALL_OBSERVATION_SOURCE);
   const receipt = constructAfcV2RoomBoundaryAuthority(construction(merged));
   assert.ok(receipt.summary.candidateCount >= 3);
   const leftCandidate = receipt.candidates.find((candidate) =>
     candidate.sourceSeamId === leftSeam.id
   );
   assert.ok(leftCandidate);
-  assert.equal(leftCandidate.source.observationSource, "general_empty_observer");
+  assert.equal(leftCandidate.source.observationSource, FOCUSED_SIDE_FLOOR_WALL_OBSERVATION_SOURCE);
   assert.equal(
     leftCandidate.reasons.includes("focused_observer_cannot_create_world_boundary"),
     false,
@@ -2049,7 +2067,7 @@ test("General omits left + focused correct long seam fills the omission", () => 
   const leftWall = wallsOnSide(merged, "left")[0];
   const leftSeams = floorWallSeamsBoundTo(merged, leftWall.id);
   assert.equal(leftSeams.length, 1);
-  assert.equal(leftSeams[0].observationSource, "general_empty_observer");
+  assert.equal(leftSeams[0].observationSource, FOCUSED_SIDE_FLOOR_WALL_OBSERVATION_SOURCE);
   assert.equal(receiptOf(merged).addedPlaneIds.length, 1);
   assert.equal(receiptOf(merged).addedSeamIds.length, 1);
   assert.ok(adjacencyForSeam(merged, leftSeams[0].id));
@@ -2352,13 +2370,13 @@ test("architectural focused recovery still reaches S4A as a candidate", () => {
   const leftWall = wallsOnSide(merged, "left")[0];
   const leftSeam = floorWallSeamsBoundTo(merged, leftWall.id)[0];
   assert.ok(leftSeam);
-  assert.equal(leftSeam.observationSource, "general_empty_observer");
+  assert.equal(leftSeam.observationSource, FOCUSED_SIDE_FLOOR_WALL_OBSERVATION_SOURCE);
   const s4a = constructAfcV2RoomBoundaryAuthority(construction(merged));
   const leftCandidate = s4a.candidates.find((candidate) =>
     candidate.sourceSeamId === leftSeam.id
   );
   assert.ok(leftCandidate);
-  assert.equal(leftCandidate.source.observationSource, "general_empty_observer");
+  assert.equal(leftCandidate.source.observationSource, FOCUSED_SIDE_FLOOR_WALL_OBSERVATION_SOURCE);
   assert.equal(
     leftCandidate.reasons.includes("focused_observer_cannot_create_world_boundary"),
     false,
@@ -2792,7 +2810,7 @@ test("canonical Room 2 omission recovery reaches S4A with back, right, and left"
   assert.ok(leftWallId);
   const leftSeam = floorWallSeamsBoundTo(merged, leftWallId)[0];
   assert.ok(leftSeam);
-  assert.equal(leftSeam.observationSource, "general_empty_observer");
+  assert.equal(leftSeam.observationSource, FOCUSED_SIDE_FLOOR_WALL_OBSERVATION_SOURCE);
   assert.ok(merged.observedPlanes.some((plane) =>
     plane.id === "visible_back_wall"
   ));
@@ -2807,7 +2825,7 @@ test("canonical Room 2 omission recovery reaches S4A with back, right, and left"
     candidate.sourceSeamId === leftSeam.id
   );
   assert.ok(leftCandidate);
-  assert.equal(leftCandidate.source.observationSource, "general_empty_observer");
+  assert.equal(leftCandidate.source.observationSource, FOCUSED_SIDE_FLOOR_WALL_OBSERVATION_SOURCE);
   assert.equal(
     leftCandidate.reasons.includes("focused_observer_cannot_create_world_boundary"),
     false,
@@ -2943,7 +2961,7 @@ test("canonical Room 2 frame-truncated good left seam passes merge consistency",
   const leftSeam = floorWallSeamsBoundTo(merged, leftWall.id)[0];
   assert.ok(leftSeam);
   assert.deepEqual(leftSeam.sourceNormalizedPolyline, [...TRUNC_LEFT_GOOD_SEAM]);
-  assert.equal(leftSeam.observationSource, "general_empty_observer");
+  assert.equal(leftSeam.observationSource, FOCUSED_SIDE_FLOOR_WALL_OBSERVATION_SOURCE);
   assert.ok(adjacencyForSeam(merged, leftSeam.id));
   assert.equal(receiptOf(merged).geometryManufactured, false);
   assert.equal(receiptOf(merged).hiddenContinuationAdded, false);
@@ -3332,14 +3350,14 @@ test("canonical good frame-truncated left reaches S4A with back and right", () =
   const leftWall = wallsOnSide(merged, "left")[0];
   const leftSeam = floorWallSeamsBoundTo(merged, leftWall.id)[0];
   assert.ok(leftSeam);
-  assert.equal(leftSeam.observationSource, "general_empty_observer");
+  assert.equal(leftSeam.observationSource, FOCUSED_SIDE_FLOOR_WALL_OBSERVATION_SOURCE);
   const s4a = constructAfcV2RoomBoundaryAuthority(construction(merged));
   assert.ok(s4a.summary.candidateCount >= 3);
   const leftCandidate = s4a.candidates.find((candidate) =>
     candidate.sourceSeamId === leftSeam.id
   );
   assert.ok(leftCandidate);
-  assert.equal(leftCandidate.source.observationSource, "general_empty_observer");
+  assert.equal(leftCandidate.source.observationSource, FOCUSED_SIDE_FLOOR_WALL_OBSERVATION_SOURCE);
   assert.equal(
     leftCandidate.reasons.includes("focused_observer_cannot_create_world_boundary"),
     false,
@@ -3350,5 +3368,304 @@ test("canonical good frame-truncated left reaches S4A with back and right", () =
   assert.ok(s4a.candidates.some((candidate) =>
     candidate.sourceSeamId === "floor_wall_right"
   ));
+});
+
+test("Test A: supporting-region overshoot admits focused left wall and seam", () => {
+  const rear = LEFT_SEAM[1];
+  const rearDistance = distanceToPolygonFrontier(rear, OVERSHOOT_LEFT_WALL);
+  assert.equal(pointInPolygon(rear, OVERSHOOT_LEFT_WALL), true);
+  assert.ok(rearDistance !== null && rearDistance > ROOM_BOUNDARY_IMAGE_FRONTIER_MAX_DISTANCE);
+  assert.equal(
+    classifyFocusedWallSupportingRegion(LEFT_SEAM, OVERSHOOT_LEFT_WALL, FLOOR_POLYGON),
+    "supporting_region_interior_overshoot",
+  );
+  const general = generalEvidence(generalRaw({ includeLeft: false }));
+  const merged = requireMerged(mergeFocusedSideFloorWallObservation({
+    general,
+    focused: focusedEvidence([focusedSide({
+      side: "left",
+      polygon: OVERSHOOT_LEFT_WALL,
+      polyline: LEFT_SEAM,
+      frameTruncated: false,
+    })]),
+  }));
+  assert.equal(wallsOnSide(merged, "left").length, 1);
+  const leftWall = wallsOnSide(merged, "left")[0];
+  const leftSeam = floorWallSeamsBoundTo(merged, leftWall.id)[0];
+  assert.ok(leftSeam);
+  assert.equal(leftSeam.observationSource, FOCUSED_SIDE_FLOOR_WALL_OBSERVATION_SOURCE);
+  assert.equal(receiptOf(merged).addedPlaneIds.length, 1);
+  assert.equal(receiptOf(merged).addedSeamIds.length, 1);
+  assert.ok(
+    receiptOf(merged).resolutionReasons.includes(
+      FLOOR_WALL_MERGE_REASON.supportingRegionOvershoot,
+    ),
+  );
+  const diagnostic = receiptOf(merged).observedSideDiagnostics.find((item) =>
+    item.side === "left"
+  );
+  assert.ok(diagnostic);
+  assert.equal(
+    diagnostic.supportingRegionClass,
+    "supporting_region_interior_overshoot",
+  );
+  assert.deepEqual(diagnostic.sourceNormalizedWallPolygon, [...OVERSHOOT_LEFT_WALL]);
+  assert.deepEqual(diagnostic.sourceNormalizedFloorWallPolyline, [...LEFT_SEAM]);
+});
+
+test("Test B: tight focused wall outline remains admitted", () => {
+  assert.equal(
+    classifyFocusedWallSupportingRegion(LEFT_SEAM, LEFT_WALL, FLOOR_POLYGON),
+    "outline_coherent",
+  );
+  const general = generalEvidence(generalRaw({ includeLeft: false }));
+  const merged = requireMerged(mergeFocusedSideFloorWallObservation({
+    general,
+    focused: focusedEvidence([focusedSide({
+      side: "left",
+      polygon: LEFT_WALL,
+      polyline: LEFT_SEAM,
+      frameTruncated: false,
+    })]),
+  }));
+  assert.equal(receiptOf(merged).addedPlaneIds.length, 1);
+  assert.equal(receiptOf(merged).addedSeamIds.length, 1);
+  assert.equal(
+    receiptOf(merged).resolutionReasons.includes(
+      FLOOR_WALL_MERGE_REASON.supportingRegionOvershoot,
+    ),
+    false,
+  );
+  assert.equal(
+    receiptOf(merged).observedSideDiagnostics[0]?.supportingRegionClass,
+    "outline_coherent",
+  );
+});
+
+test("Test C: radiator / interior false edge remains rejected", () => {
+  const radiator = [
+    { x: 0.07, y: 0.38 },
+    { x: 0.14, y: 0.34 },
+  ] as const;
+  const general = generalEvidence(generalRaw({ includeLeft: false }));
+  const merged = requireMerged(mergeFocusedSideFloorWallObservation({
+    general,
+    focused: focusedEvidence([focusedSide({
+      side: "left",
+      polygon: OVERSHOOT_LEFT_WALL,
+      polyline: radiator,
+      frameTruncated: false,
+    })]),
+  }));
+  assert.equal(receiptOf(merged).addedSeamIds.length, 0);
+  assert.equal(receiptOf(merged).addedPlaneIds.length, 0);
+  assert.ok(
+    receiptOf(merged).resolutionReasons.includes(
+      FLOOR_WALL_MERGE_REASON.notNearFloorFrontier,
+    ),
+  );
+});
+
+test("Test D: floating unrelated seam remains rejected", () => {
+  const general = generalEvidence(generalRaw({ includeLeft: false }));
+  const merged = requireMerged(mergeFocusedSideFloorWallObservation({
+    general,
+    focused: focusedEvidence([focusedSide({
+      side: "left",
+      polygon: [
+        { x: 0, y: 0.08 },
+        { x: 0.10, y: 0.08 },
+        { x: 0.10, y: 0.28 },
+        { x: 0, y: 0.28 },
+      ],
+      polyline: LEFT_SEAM,
+      frameTruncated: false,
+    })]),
+  }));
+  assert.equal(receiptOf(merged).addedSeamIds.length, 0);
+  assert.ok(
+    receiptOf(merged).resolutionReasons.includes(
+      FLOOR_WALL_MERGE_REASON.beyondSupport,
+    ) ||
+    receiptOf(merged).resolutionReasons.includes(
+      FLOOR_WALL_MERGE_REASON.notNearWallFrontier,
+    ) ||
+    receiptOf(merged).resolutionReasons.includes(
+      FLOOR_WALL_MERGE_REASON.notNearFloorFrontier,
+    ),
+  );
+});
+
+test("Test E: general duplicate remains suppressed", () => {
+  const general = generalEvidence(generalRaw({ includeLeft: true }));
+  const merged = requireMerged(mergeFocusedSideFloorWallObservation({
+    general,
+    focused: focusedEvidence([focusedSide({
+      side: "left",
+      polygon: OVERSHOOT_LEFT_WALL,
+      polyline: LEFT_SEAM,
+      frameTruncated: false,
+    })]),
+  }));
+  assert.equal(receiptOf(merged).addedSeamIds.length, 0);
+  assert.equal(receiptOf(merged).addedPlaneIds.length, 0);
+  assert.ok(
+    receiptOf(merged).resolutionReasons.includes(
+      FLOOR_WALL_MERGE_REASON.alreadyPresent,
+    ),
+  );
+});
+
+test("Test F: right duplicate suppression does not block left supporting-region admission", () => {
+  const general = generalEvidence(generalRaw({
+    includeLeft: false,
+    includeRight: true,
+  }));
+  const merged = requireMerged(mergeFocusedSideFloorWallObservation({
+    general,
+    focused: focusedEvidence([
+      focusedSide({
+        side: "left",
+        polygon: OVERSHOOT_LEFT_WALL,
+        polyline: LEFT_SEAM,
+        frameTruncated: false,
+      }),
+      focusedSide({ side: "right" }),
+    ]),
+  }));
+  assert.equal(receiptOf(merged).addedPlaneIds.length, 1);
+  assert.equal(receiptOf(merged).addedSeamIds.length, 1);
+  assert.ok(
+    receiptOf(merged).skippedDuplicateSeamIds.includes("right_floor_wall"),
+  );
+  assert.ok(
+    receiptOf(merged).resolutionReasons.includes(
+      FLOOR_WALL_MERGE_REASON.alreadyPresent,
+    ),
+  );
+  assert.ok(
+    receiptOf(merged).resolutionReasons.includes(
+      FLOOR_WALL_MERGE_REASON.supportingRegionOvershoot,
+    ),
+  );
+  const leftWall = wallsOnSide(merged, "left")[0];
+  assert.ok(leftWall);
+  assert.equal(
+    floorWallSeamsBoundTo(merged, leftWall.id)[0]?.observationSource,
+    FOCUSED_SIDE_FLOOR_WALL_OBSERVATION_SOURCE,
+  );
+});
+
+test("Test G/H: S4A enumerates focused overshoot and does not re-veto wall outline", () => {
+  const general = generalEvidence(generalRaw({ includeLeft: false }));
+  const merged = requireMerged(mergeFocusedSideFloorWallObservation({
+    general,
+    focused: focusedEvidence([focusedSide({
+      side: "left",
+      polygon: OVERSHOOT_LEFT_WALL,
+      polyline: LEFT_SEAM,
+      frameTruncated: false,
+    })]),
+  }));
+  const leftWall = wallsOnSide(merged, "left")[0];
+  const leftSeam = floorWallSeamsBoundTo(merged, leftWall.id)[0];
+  assert.ok(leftSeam);
+  const s4a = constructAfcV2RoomBoundaryAuthority(construction(merged));
+  const leftCandidate = s4a.candidates.find((candidate) =>
+    candidate.sourceSeamId === leftSeam.id
+  );
+  assert.ok(leftCandidate);
+  assert.equal(
+    leftCandidate.source.observationSource,
+    FOCUSED_SIDE_FLOOR_WALL_OBSERVATION_SOURCE,
+  );
+  assert.equal(
+    leftCandidate.reasons.includes("focused_observer_cannot_create_world_boundary"),
+    false,
+  );
+  assert.equal(
+    leftCandidate.reasons.includes("seam_not_near_wall_polygon_frontier"),
+    false,
+  );
+  assert.ok(
+    leftCandidate.reasons.includes("focused_supporting_region_wall_outline_overshoot") ||
+      leftCandidate.imageEvidence.frontier?.nearWallFrontier === true,
+  );
+});
+
+test("self-audit: supporting-region overshoot through S4A and S4B", () => {
+  const general = generalEvidence(generalRaw({ includeLeft: false }));
+  const merged = requireMerged(mergeFocusedSideFloorWallObservation({
+    general,
+    focused: focusedEvidence([focusedSide({
+      side: "left",
+      polygon: OVERSHOOT_LEFT_WALL,
+      polyline: LEFT_SEAM,
+      frameTruncated: false,
+    })]),
+  }));
+  const leftWall = wallsOnSide(merged, "left")[0];
+  const leftSeam = floorWallSeamsBoundTo(merged, leftWall.id)[0];
+  const s4a = constructAfcV2RoomBoundaryAuthority(construction(merged));
+  const leftCandidate = s4a.candidates.find((candidate) =>
+    candidate.sourceSeamId === leftSeam.id
+  );
+  assert.ok(leftCandidate);
+  assert.equal(leftCandidate.status, "accepted");
+  assert.equal(leftCandidate.authority.collision, false);
+  assert.equal(s4a.collisionAuthority, false);
+  const s4b = constructAfcV2RoomCollisionAuthority({
+    roomBoundary: s4a,
+    observation: merged,
+  });
+  const leftCollision = s4b.boundaries.find((boundary) =>
+    boundary.sourceSeamId === leftSeam.id
+  );
+  assert.ok(leftCollision);
+  assert.equal(
+    leftCollision.collisionEnabled,
+    true,
+    leftCollision.qualificationReasons.join(" | "),
+  );
+});
+
+test("Test J: focused supporting-region admission is not collision authority", () => {
+  const general = generalEvidence(generalRaw({ includeLeft: false }));
+  const merged = requireMerged(mergeFocusedSideFloorWallObservation({
+    general,
+    focused: focusedEvidence([focusedSide({
+      side: "left",
+      polygon: OVERSHOOT_LEFT_WALL,
+      polyline: LEFT_SEAM,
+      frameTruncated: false,
+    })]),
+  }));
+  assert.equal(receiptOf(merged).addedSeamIds.length, 1);
+  const s4a = constructAfcV2RoomBoundaryAuthority({
+    ...construction(merged),
+    originalIdentity: {
+      sha256: "b".repeat(64),
+      decodedWidth: 400,
+      decodedHeight: 900,
+      orientation: 1 as const,
+    },
+  });
+  const leftWall = wallsOnSide(merged, "left")[0];
+  const leftSeam = floorWallSeamsBoundTo(merged, leftWall.id)[0];
+  const leftCandidate = s4a.candidates.find((candidate) =>
+    candidate.sourceSeamId === leftSeam.id
+  );
+  assert.ok(leftCandidate);
+  assert.notEqual(leftCandidate.status, "accepted");
+  assert.equal(s4a.collisionAuthority, false);
+  const s4b = constructAfcV2RoomCollisionAuthority({
+    roomBoundary: s4a,
+    observation: merged,
+  });
+  const leftCollision = s4b.boundaries.find((boundary) =>
+    boundary.sourceSeamId === leftSeam.id
+  );
+  assert.ok(leftCollision);
+  assert.equal(leftCollision.collisionEnabled, false);
 });
 

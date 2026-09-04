@@ -1,6 +1,7 @@
-import type {
-  EmptyObservedPlane,
-  SourceNormalizedPoint,
+import {
+  FOCUSED_SIDE_FLOOR_WALL_OBSERVATION_SOURCE,
+  type EmptyObservedPlane,
+  type SourceNormalizedPoint,
 } from "./empty-room-observation-contract";
 import {
   ROOM_BOUNDARY_CAMERA_INTERIOR_MIN_ABS_DISTANCE_M,
@@ -257,6 +258,31 @@ function frontierPassFromVertices(
   return { maxDistance, near };
 }
 
+/**
+ * S4A wall-frontier receipt for a certified truncated wall: at least one
+ * applicable PASS plus frame/coverage N/A, and no wall contradiction.
+ * This is not inferred from in-span probes.
+ */
+export function s4aWallFrontierHasCertifiedTruncatedSupport(
+  frontier: RoomBoundaryFrontierEvidence | null | undefined,
+): boolean {
+  if (!frontier) return false;
+  const vertices = frontier.wallVertices;
+  if (vertices.some((vertex) => vertex.status === "contradiction")) {
+    return false;
+  }
+  const hasApplicablePass = vertices.some(
+    (vertex) =>
+      vertex.status === "pass" && vertex.applicability === "applicable",
+  );
+  const hasTruncatedNa = vertices.some((vertex) =>
+    vertex.status === "not_applicable" &&
+      (vertex.applicability === "unsupported_by_frame" ||
+        vertex.applicability === "unsupported_by_polygon_coverage")
+  );
+  return hasApplicablePass && hasTruncatedNa;
+}
+
 export function evaluateFrontierProximity(
   polyline: readonly SourceNormalizedPoint[],
   floorPolygon: readonly SourceNormalizedPoint[],
@@ -507,6 +533,14 @@ export type RegionalProbeClassification = Readonly<{
   minusMembership: RegionalSampleMembership | null;
 }>;
 
+function regionalMembershipIsFloorOnlyPlusNeither(
+  plus: RegionalSampleMembership,
+  minus: RegionalSampleMembership,
+): boolean {
+  return (plus === "floor_only" && minus === "neither") ||
+    (plus === "neither" && minus === "floor_only");
+}
+
 export function classifyRegionalProbeEvidence(input: {
   probe: SourceNormalizedPoint;
   start: SourceNormalizedPoint;
@@ -514,22 +548,39 @@ export function classifyRegionalProbeEvidence(input: {
   occupancy: RoomBoundaryOccupancyEvidence | null;
   floorPolygon: readonly SourceNormalizedPoint[];
   wallPolygon: readonly SourceNormalizedPoint[];
+  supportingRegionWall?: boolean;
+  s4aTruncatedWallSupport?: boolean;
 }): RegionalProbeClassification {
   const floorFrontier = classifyFrontierVertex(
     input.probe,
     input.floorPolygon,
     input.wallPolygon,
   );
-  const wallFrontier = classifyFrontierVertex(
+  let wallFrontier = classifyFrontierVertex(
     input.probe,
     input.wallPolygon,
     input.floorPolygon,
   );
+  if (
+    input.supportingRegionWall === true &&
+    wallFrontier.status === "contradiction" &&
+    pointInPolygon(input.probe, input.wallPolygon)
+  ) {
+    wallFrontier = {
+      ...wallFrontier,
+      applicability: "applicable",
+      status: "pass",
+    };
+  }
+  const truncatedWallSupport = input.s4aTruncatedWallSupport === true;
   const uniqueFloorSide = input.occupancy?.floorSide === "positive" ||
     input.occupancy?.floorSide === "negative";
   const uniqueWallSide = input.occupancy?.wallSide === "positive" ||
     input.occupancy?.wallSide === "negative";
-  if (!uniqueFloorSide || !uniqueWallSide) {
+  const supportingRegionMixedWall = input.supportingRegionWall === true &&
+    uniqueFloorSide &&
+    input.occupancy?.wallSide === "mixed";
+  if (!uniqueFloorSide || (!uniqueWallSide && !supportingRegionMixedWall)) {
     const occupancyStatus: RoomBoundaryEvidenceApplicabilityStatus =
       floorFrontier.status === "contradiction" ||
         wallFrontier.status === "contradiction"
@@ -593,10 +644,42 @@ export function classifyRegionalProbeEvidence(input: {
     floorPolygon: input.floorPolygon,
     wallPolygon: input.wallPolygon,
   });
+  let plusForOccupancy: RegionalSampleMembership =
+    input.supportingRegionWall === true && plus.membership === "both"
+      ? "floor_only"
+      : plus.membership;
+  let minusForOccupancy: RegionalSampleMembership =
+    input.supportingRegionWall === true && minus.membership === "both"
+      ? "floor_only"
+      : minus.membership;
+  const probeInWall = pointInPolygon(input.probe, input.wallPolygon);
+  if (
+    truncatedWallSupport &&
+    floorFrontier.status === "pass" &&
+    !probeInWall &&
+    regionalMembershipIsFloorOnlyPlusNeither(plusForOccupancy, minusForOccupancy)
+  ) {
+    if (plusForOccupancy === "neither") plusForOccupancy = "frame_unsupported";
+    if (minusForOccupancy === "neither") minusForOccupancy = "frame_unsupported";
+  }
   const occupancy = classifyRegionalOppositeOccupancy({
-    plus: plus.membership,
-    minus: minus.membership,
+    plus: plusForOccupancy,
+    minus: minusForOccupancy,
   });
+  if (
+    truncatedWallSupport &&
+    floorFrontier.status === "pass" &&
+    wallFrontier.status === "contradiction" &&
+    !probeInWall &&
+    occupancy !== "contradiction"
+  ) {
+    wallFrontier = {
+      applicability: "unsupported_by_polygon_coverage",
+      status: "not_applicable",
+      distance: wallFrontier.distance,
+      frameAdjacent: wallFrontier.frameAdjacent,
+    };
+  }
   const status: RoomBoundaryEvidenceApplicabilityStatus =
     occupancy === "contradiction" ||
       floorFrontier.status === "contradiction" ||
@@ -664,12 +747,14 @@ export function chooseFloorInteriorWitness(
   floorPolygon: readonly SourceNormalizedPoint[],
   occupancy: RoomBoundaryOccupancyEvidence,
   wallPolygon: readonly SourceNormalizedPoint[] | null = null,
+  supportingRegionWallOverlapAllowed = false,
 ): SourceNormalizedPoint | null {
   return chooseFloorInteriorWitnessAttempt(
     polyline,
     floorPolygon,
     occupancy,
     wallPolygon,
+    supportingRegionWallOverlapAllowed,
   ).witness;
 }
 
@@ -678,6 +763,7 @@ export function chooseFloorInteriorWitnessAttempt(
   floorPolygon: readonly SourceNormalizedPoint[],
   occupancy: RoomBoundaryOccupancyEvidence,
   wallPolygon: readonly SourceNormalizedPoint[] | null = null,
+  supportingRegionWallOverlapAllowed = false,
 ): Readonly<{
   witness: SourceNormalizedPoint | null;
   status: "pass" | "contradiction" | "insufficient";
@@ -706,10 +792,13 @@ export function chooseFloorInteriorWitnessAttempt(
       y: onSpan.y + inward.y * ROOM_BOUNDARY_INTERIOR_WITNESS_INSET,
     };
     if (!inNormalizedImageBounds(inset)) continue;
+    const inFloor = pointInPolygon(inset, floorPolygon);
     if (wallPolygon && pointInPolygon(inset, wallPolygon)) {
-      return { witness: inset, status: "contradiction" };
+      if (!(supportingRegionWallOverlapAllowed && inFloor)) {
+        return { witness: inset, status: "contradiction" };
+      }
     }
-    if (pointInPolygon(inset, floorPolygon)) {
+    if (inFloor) {
       return { witness: inset, status: "pass" };
     }
   }
@@ -744,6 +833,7 @@ export function evaluateInteriorHalfSpace(input: {
   projectWitness: (
     point: SourceNormalizedPoint,
   ) => OriginalWorldProjectionResult | RoomBoundaryWorldXyz | null;
+  supportingRegionWallOverlapAllowed?: boolean;
 }): RoomBoundaryInteriorEvidence {
   const failed = (
     extras: Partial<RoomBoundaryInteriorEvidence> = {},
@@ -763,6 +853,7 @@ export function evaluateInteriorHalfSpace(input: {
     input.floorPolygon,
     input.occupancy,
     input.wallPolygon ?? null,
+    input.supportingRegionWallOverlapAllowed === true,
   );
   if (attempt.status === "contradiction") {
     return failed({ witnessImagePoint: attempt.witness });
@@ -772,7 +863,11 @@ export function evaluateInteriorHalfSpace(input: {
   if (!pointInPolygon(witnessImage, input.floorPolygon)) {
     return failed({ witnessImagePoint: witnessImage });
   }
-  if (input.wallPolygon && pointInPolygon(witnessImage, input.wallPolygon)) {
+  if (
+    input.wallPolygon &&
+    pointInPolygon(witnessImage, input.wallPolygon) &&
+    input.supportingRegionWallOverlapAllowed !== true
+  ) {
     return failed({ witnessImagePoint: witnessImage });
   }
   const projected = input.projectWitness(witnessImage);
@@ -917,4 +1012,77 @@ export function boundPlanesForFloorWall(
     return { floor: second, wall: first };
   }
   return null;
+}
+
+export type FocusedWallSupportingRegionAdmissionClass =
+  | "outline_coherent"
+  | "supporting_region_interior_overshoot"
+  | "true_contradiction";
+
+/**
+ * Focused Floor-Wall only: the focused wall polygon is a supporting visible
+ * region, not a certified exact outline. Interior overshoot is distinguishable
+ * from a floating unrelated seam. Does not snap or manufacture geometry.
+ */
+export function classifyFocusedWallSupportingRegion(
+  seam: readonly SourceNormalizedPoint[],
+  wallPolygon: readonly SourceNormalizedPoint[],
+  floorPolygon: readonly SourceNormalizedPoint[],
+): FocusedWallSupportingRegionAdmissionClass {
+  if (seam.length < 2 || wallPolygon.length < 3) return "true_contradiction";
+  let applicable = 0;
+  let outlinePass = 0;
+  let interiorOvershoot = 0;
+  let trueContradiction = 0;
+  for (const point of seam) {
+    const vertex = classifyFrontierVertex(point, wallPolygon, floorPolygon);
+    if (vertex.status === "not_applicable") continue;
+    applicable += 1;
+    if (vertex.status === "pass") {
+      outlinePass += 1;
+      continue;
+    }
+    if (pointInPolygon(point, wallPolygon)) {
+      interiorOvershoot += 1;
+      continue;
+    }
+    trueContradiction += 1;
+  }
+  if (trueContradiction > 0 || applicable === 0) return "true_contradiction";
+  if (interiorOvershoot > 0) return "supporting_region_interior_overshoot";
+  if (outlinePass === applicable) return "outline_coherent";
+  return "true_contradiction";
+}
+
+export function focusedSupportingRegionOccupancyAcceptable(
+  occupancy: RoomBoundaryOccupancyEvidence | null,
+  supportingRegionClass: FocusedWallSupportingRegionAdmissionClass,
+): boolean {
+  if (!occupancy) return false;
+  const floorUnique = occupancy.floorSide === "positive" ||
+    occupancy.floorSide === "negative";
+  if (!floorUnique) return false;
+  if (supportingRegionClass === "outline_coherent") {
+    return occupancy.opposite === true &&
+      (occupancy.wallSide === "positive" || occupancy.wallSide === "negative");
+  }
+  if (supportingRegionClass === "supporting_region_interior_overshoot") {
+    if (occupancy.wallSide === "undetermined") return false;
+    if (occupancy.wallSide === "mixed") return true;
+    return occupancy.opposite === true;
+  }
+  return false;
+}
+
+export function isFocusedSideFloorWallObservationSource(
+  source: string,
+): boolean {
+  return source === FOCUSED_SIDE_FLOOR_WALL_OBSERVATION_SOURCE;
+}
+
+export function observationSourceMayCreateWorldBoundary(
+  source: string,
+): boolean {
+  return source === "general_empty_observer" ||
+    source === FOCUSED_SIDE_FLOOR_WALL_OBSERVATION_SOURCE;
 }

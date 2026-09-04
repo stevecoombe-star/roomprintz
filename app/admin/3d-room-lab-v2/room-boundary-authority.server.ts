@@ -38,14 +38,18 @@ import {
 } from "./room-boundary-projection.server";
 import {
   boundPlanesForFloorWall,
+  classifyFocusedWallSupportingRegion,
   competingSameWall,
   endpointIsFrameAdjacent,
   evaluateFrontierProximity,
   evaluateInteriorHalfSpace,
   evaluateOppositeOccupancy,
   floorWallProjectionContinuation,
+  focusedSupportingRegionOccupancyAcceptable,
+  isFocusedSideFloorWallObservationSource,
   isNearVerticalFloorWallSeam,
   nearVerticalFloorWallMayContinue,
+  observationSourceMayCreateWorldBoundary,
 } from "./room-boundary-qualification.server";
 
 export type RoomBoundaryConstructionInput = Readonly<{
@@ -339,8 +343,23 @@ function qualifySeam(input: {
       bound.wall.sourceNormalizedPolygon,
     )
     : null;
+  const focusedFloorWall = isFocusedSideFloorWallObservationSource(
+    seam.observationSource,
+  );
+  const supportingRegion = focusedFloorWall && bound
+    ? classifyFocusedWallSupportingRegion(
+      seam.sourceNormalizedPolyline,
+      bound.wall.sourceNormalizedPolygon,
+      bound.floor.sourceNormalizedPolygon,
+    )
+    : null;
+  const supportingRegionOvershoot =
+    supportingRegion === "supporting_region_interior_overshoot";
+  const focusedOccupancyAcceptable = focusedFloorWall && supportingRegion
+    ? focusedSupportingRegionOccupancyAcceptable(occupancy, supportingRegion)
+    : false;
 
-  if (seam.observationSource !== "general_empty_observer") {
+  if (!observationSourceMayCreateWorldBoundary(seam.observationSource)) {
     reasons.push("focused_observer_cannot_create_world_boundary");
     status = "rejected";
   }
@@ -357,9 +376,11 @@ function qualifySeam(input: {
       nearVertical,
       bindingSucceeded: bound !== null,
       ambiguity: seam.ambiguity,
-      occupancyOpposite: occupancy?.opposite === true,
+      occupancyOpposite: occupancy?.opposite === true ||
+        (supportingRegionOvershoot && focusedOccupancyAcceptable),
       nearFloorFrontier: frontier?.nearFloorFrontier === true,
-      nearWallFrontier: frontier?.nearWallFrontier === true,
+      nearWallFrontier: frontier?.nearWallFrontier === true ||
+        supportingRegionOvershoot,
     })
   ) {
     reasons.push("near_vertical_image_seam_insufficient_as_floor_wall");
@@ -369,8 +390,12 @@ function qualifySeam(input: {
     reasons.push("floor_occupancy_not_unique");
     status = status ?? "insufficient";
   } else if (occupancy && occupancy.wallSide === "mixed") {
-    reasons.push("wall_occupancy_not_unique");
-    status = status ?? "insufficient";
+    if (focusedOccupancyAcceptable && supportingRegionOvershoot) {
+      reasons.push("focused_supporting_region_wall_occupancy_mixed");
+    } else {
+      reasons.push("wall_occupancy_not_unique");
+      status = status ?? "insufficient";
+    }
   } else if (occupancy && occupancy.floorSide === "undetermined") {
     reasons.push("floor_occupancy_undetermined");
     status = status ?? "insufficient";
@@ -378,16 +403,22 @@ function qualifySeam(input: {
     reasons.push("wall_occupancy_undetermined");
     status = status ?? "insufficient";
   } else if (occupancy && !occupancy.opposite) {
-    reasons.push("floor_and_wall_occupancy_not_opposite");
-    status = "rejected";
+    if (!(focusedOccupancyAcceptable && supportingRegionOvershoot)) {
+      reasons.push("floor_and_wall_occupancy_not_opposite");
+      status = "rejected";
+    }
   }
   if (frontier && !frontier.nearFloorFrontier) {
     reasons.push("seam_not_near_floor_polygon_frontier");
     status = status ?? "insufficient";
   }
   if (frontier && !frontier.nearWallFrontier) {
-    reasons.push("seam_not_near_wall_polygon_frontier");
-    status = status ?? "insufficient";
+    if (supportingRegionOvershoot) {
+      reasons.push("focused_supporting_region_wall_outline_overshoot");
+    } else {
+      reasons.push("seam_not_near_wall_polygon_frontier");
+      status = status ?? "insufficient";
+    }
   }
   if (!imageFit) {
     reasons.push("image_line_fit_degenerate");
@@ -561,6 +592,15 @@ function attachInterior(
   }
   const floor = planes.find((plane) => plane.id === candidate.source.floorPlaneId);
   const wall = planes.find((plane) => plane.id === candidate.source.wallPlaneId);
+  const supportingRegionOvershoot =
+    isFocusedSideFloorWallObservationSource(candidate.source.observationSource) &&
+    floor !== undefined &&
+    wall !== undefined &&
+    classifyFocusedWallSupportingRegion(
+      candidate.imageEvidence.polyline,
+      wall.sourceNormalizedPolygon,
+      floor.sourceNormalizedPolygon,
+    ) === "supporting_region_interior_overshoot";
   const interior = evaluateInteriorHalfSpace({
     occupancy: candidate.imageEvidence.occupancy,
     polyline: candidate.imageEvidence.polyline,
@@ -569,6 +609,7 @@ function attachInterior(
     geometry: candidate.worldGeometry,
     camera,
     projectWitness,
+    supportingRegionWallOverlapAllowed: supportingRegionOvershoot,
   });
   if (interior.status !== "accepted") {
     const reasons = [...candidate.reasons];
