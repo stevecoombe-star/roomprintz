@@ -51,7 +51,9 @@ function parse(value: unknown): AfcV2AnalyzeInput | null {
     frame.height <= 0 ||
     typeof value.referenceDepthM !== "number" ||
     !Number.isFinite(value.referenceDepthM) ||
-    value.referenceDepthM <= 0
+    value.referenceDepthM <= 0 ||
+    (value.forceTiledRegeneration !== undefined &&
+      typeof value.forceTiledRegeneration !== "boolean")
   ) {
     return null;
   }
@@ -70,6 +72,7 @@ function parse(value: unknown): AfcV2AnalyzeInput | null {
       height: frame.height,
     },
     referenceDepthM: value.referenceDepthM || AFC_V2_REFERENCE_DEPTH_M,
+    forceTiledRegeneration: value.forceTiledRegeneration === true,
   };
 }
 

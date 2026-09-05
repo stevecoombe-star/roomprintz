@@ -850,7 +850,9 @@ export default function RoomLabV2() {
     }
   }
 
-  async function analyzeAndApply() {
+  async function analyzeAndApply(
+    analysisIntent: Readonly<{ forceTiledRegeneration?: boolean }> = {},
+  ) {
     if (
       !basis ||
       !preparedImageUrl ||
@@ -884,6 +886,7 @@ export default function RoomLabV2() {
           loadGeneration: generation,
           frame: originalDisplayFrame,
           referenceDepthM: 4,
+          forceTiledRegeneration: analysisIntent.forceTiledRegeneration === true,
         }),
       });
       const result: unknown = await response.json();
@@ -1215,6 +1218,15 @@ export default function RoomLabV2() {
               }
             >
               Analyze &amp; Apply AFC
+            </button>
+            <button
+              type="button"
+              disabled={!originalAvailable}
+              onClick={() => void analyzeAndApply({ forceTiledRegeneration: true })}
+              className="rounded-lg border border-slate-700 bg-slate-900 px-4 py-2.5 text-sm font-medium text-slate-100 transition hover:border-slate-500 hover:bg-slate-800 disabled:cursor-not-allowed disabled:text-slate-600"
+              title="Re-read the room perspective if the 3D view doesn’t line up well with the photo."
+            >
+              Re-read Room Perspective
             </button>
           </div>
         </header>

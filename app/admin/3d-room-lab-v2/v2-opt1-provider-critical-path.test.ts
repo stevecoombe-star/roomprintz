@@ -22,6 +22,14 @@ import {
   buildUnavailableMetricRoomPriorReceipt,
   type MetricRoomPriorReceipt,
 } from "./metric-room-prior-contract";
+import { classifyAfcR3cImagePairCompatibility } from "../3d-room-lab/research/afc-r3c-image-pair-compatibility";
+import {
+  AFC_SR1_TILE_GRID_SCAFFOLD_GENERATOR_ID,
+  AFC_SR1_TILE_GRID_SCAFFOLD_PRESET,
+  AFC_SR1_TILE_GRID_SCAFFOLD_PROFILE,
+  AFC_SR1_TILE_GRID_SCAFFOLD_REQUESTED_MODEL_ID,
+} from "../3d-room-lab/research/afc-sr1-tile-grid-scaffold";
+import { resetAfcSr1TiledArtifactCacheForTests } from "../3d-room-lab/afc-sr1-tiled-artifact-cache";
 
 const V2_DIRECTORY = path.join(process.cwd(), "app/admin/3d-room-lab-v2");
 const sha = (bytes: Uint8Array) =>
@@ -450,4 +458,484 @@ test("OPT-1 await boundaries keep Floor/Camera ahead of observation and prior jo
   assert.match(analysisSource, /metricCorrespondenceEstimate: null/);
   assert.match(analysisSource, /startMetricRoomPrior/);
   assert.match(analysisSource, /onTiledFloorCameraApplied/);
+});
+
+const PIXEL = Buffer.from(
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScL5WQAAAABJRU5ErkJggg==",
+  "base64",
+);
+const PIXEL_B = Buffer.from(
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIW2NgYGD4DwABBAEAf4cI9QAAAABJRU5ErkJggg==",
+  "base64",
+);
+const PIXEL_SHA = sha(PIXEL);
+const PIXEL_B_SHA = sha(PIXEL_B);
+const cacheEmptyBasis = {
+  sha256: PIXEL_SHA,
+  byteCount: PIXEL.byteLength,
+  decodedWidth: 1200,
+  decodedHeight: 800,
+  mimeType: "image/png" as const,
+  orientation: 1 as const,
+};
+const cacheTiledBasis = {
+  sha256: PIXEL_SHA,
+  byteCount: PIXEL.byteLength,
+  decodedWidth: 1200,
+  decodedHeight: 800,
+  mimeType: "image/png" as const,
+  orientation: 1 as const,
+};
+
+function cacheObservationEvidence(): EmptyRoomObservationEvidence {
+  return buildEmptyRoomObservationEvidence({
+    observedPlanes: observationEvidence().observedPlanes,
+    observedSeams: observationEvidence().observedSeams,
+    observedOpenings: [],
+    observedJunctions: [],
+    unresolved: [],
+  }, {
+    attemptId: input.attemptId,
+    loadGeneration: input.loadGeneration,
+    emptyIdentity: cacheEmptyBasis,
+    originalAncestorSha256: originalBasis.sha256,
+    provider: "controlled_fixture",
+    model: "fixture",
+    observerProfile: "empty-visible-architecture-conservative/v1",
+    promptVersion: "afc-v2-empty-visible-room-observer/v5",
+    generatedAt: "2026-09-04T16:00:00.000Z",
+  });
+}
+
+function cacheProductDependencies(
+  order: string[] = [],
+  options: { emptyGenerated?: boolean; tiledBytes?: Buffer } = {},
+): AfcSr1TiledLiveProductDependencies {
+  const tiledBytes = options.tiledBytes ?? PIXEL;
+  const tiledSha = sha(tiledBytes);
+  const tiledBasis = {
+    ...cacheTiledBasis,
+    sha256: tiledSha,
+    byteCount: tiledBytes.byteLength,
+  };
+  return {
+    createResultId: () => "v2-opt1-cache-result",
+    useTiledArtifactCache: true,
+    qualifyOriginal: async () => {
+      order.push("original");
+      return { sourceImageUrl: input.sourceImageUrl, basis: originalBasis };
+    },
+    resolveEmpty: async () => {
+      order.push("empty");
+      return {
+        basis: cacheEmptyBasis,
+        bytes: Uint8Array.from(PIXEL),
+        generated: options.emptyGenerated ?? true,
+      };
+    },
+    generateTiled: async () => {
+      order.push("tiled");
+      return {
+        status: "generated",
+        input: cacheEmptyBasis,
+        tiled: {
+          base64: tiledBytes.toString("base64"),
+          identity: tiledBasis,
+        },
+        provenance: {
+          generatorId: AFC_SR1_TILE_GRID_SCAFFOLD_GENERATOR_ID,
+          profileId: AFC_SR1_TILE_GRID_SCAFFOLD_PROFILE,
+          researchPreset: AFC_SR1_TILE_GRID_SCAFFOLD_PRESET,
+          requestedModelId: AFC_SR1_TILE_GRID_SCAFFOLD_REQUESTED_MODEL_ID,
+          runId: "v2-opt1-cached-generation",
+          generatedAt: "2026-09-04T16:00:00.000Z",
+          appliedAspectRatio: "3:2",
+          imageTransport: "data_url",
+          generationStatus: "generated",
+        },
+        compatibility: classifyAfcR3cImagePairCompatibility(
+          {
+            fingerprint: cacheEmptyBasis.sha256,
+            decodedWidth: cacheEmptyBasis.decodedWidth,
+            decodedHeight: cacheEmptyBasis.decodedHeight,
+            orientation: 1,
+          },
+          {
+            fingerprint: tiledBasis.sha256,
+            decodedWidth: tiledBasis.decodedWidth,
+            decodedHeight: tiledBasis.decodedHeight,
+            orientation: 1,
+          },
+        ),
+      };
+    },
+    validateTiledLineage: async (result) => ({
+      tiledIdentity: result.status === "generated" ? result.tiled.identity : tiledBasis,
+      authority: { lineageEvidenceDigest: "d".repeat(64) },
+    }) as never,
+    readTiledPerspective: async (args) => {
+      order.push("reader");
+      return {
+        status: "ok",
+        decodedIdentity: args.claimedIdentity,
+        readerVersion: "afc-sr1-tiled-perspective-reader/s1",
+        authoritativeQuadSourceNormalized: authoritativeFloorQuad,
+        authoritativeQuadPixel: [
+          { x: 120, y: 720 },
+          { x: 1080, y: 720 },
+          { x: 780, y: 440 },
+          { x: 420, y: 440 },
+        ],
+        authoritativeCore: {
+          rows: 2,
+          columns: 2,
+          j0: 0,
+          i0: 0,
+          cellIds: [1, 2, 3, 4],
+        },
+        selectedComponentTileCount: 4,
+        rawQuadrilateralCount: 4,
+        deduplicatedCellCount: 4,
+        reprojectionMeanPx: 0.5,
+        reprojectionMaxPx: 1,
+      };
+    },
+  };
+}
+
+test("cold then warm Analyze restores TILED while Gemini and Reader stay fresh", async () => {
+  resetAfcSr1TiledArtifactCacheForTests();
+  const gemini = { prior: 0, general: 0, ceiling: 0, floor: 0 };
+  const firstOrder: string[] = [];
+  const first = await executeAfcV2Analysis({
+    ...input,
+    attemptId: "v2-opt1-cache-cold",
+  }, {
+    product: cacheProductDependencies(firstOrder),
+    estimateMetricRoom: async () => {
+      gemini.prior += 1;
+      return pendingPriorReceipt();
+    },
+    observeRoom: async () => {
+      gemini.general += 1;
+      return cacheObservationEvidence();
+    },
+    observeFocusedSideCeilingWall: async (observationInput) => {
+      gemini.ceiling += 1;
+      return emptyFocusedSideCeilingWallSibling(observationInput);
+    },
+    observeFocusedSideFloorWall: async (observationInput) => {
+      gemini.floor += 1;
+      return emptyFocusedSideFloorWallSibling(observationInput);
+    },
+  });
+  assert.equal(first.status, "applied");
+  if (first.status !== "applied") return;
+  assert.equal(first.executionCounts.emptyGeneration, 1);
+  assert.equal(first.executionCounts.floorOnlyTiledGeneration, 1);
+  assert.equal(first.executionCounts.tiledFloorReader, 1);
+  assert.equal(first.executionCounts.fullyTiledGeneration, 0);
+  assert.equal(first.emptyArtifactSource, "generated");
+  assert.equal(first.tiledArtifactSource, "generated");
+  assert.equal(first.tiledArtifactRefreshRequested, false);
+  assert.deepEqual(gemini, { prior: 1, general: 1, ceiling: 1, floor: 1 });
+  const tiledSha = first.tiled?.identity.sha256;
+  assert.equal(tiledSha, PIXEL_SHA);
+
+  const secondOrder: string[] = [];
+  const secondGemini = { prior: 0, general: 0, ceiling: 0, floor: 0 };
+  const secondProduct = cacheProductDependencies(secondOrder, {
+    emptyGenerated: false,
+  });
+  const second = await executeAfcV2Analysis({
+    ...input,
+    attemptId: "v2-opt1-cache-warm",
+    loadGeneration: 92,
+  }, {
+    product: {
+      ...secondProduct,
+      generateTiled: cacheProductDependencies(firstOrder).generateTiled,
+    },
+    estimateMetricRoom: async () => {
+      secondGemini.prior += 1;
+      return pendingPriorReceipt();
+    },
+    observeRoom: async () => {
+      secondGemini.general += 1;
+      return cacheObservationEvidence();
+    },
+    observeFocusedSideCeilingWall: async (observationInput) => {
+      secondGemini.ceiling += 1;
+      return emptyFocusedSideCeilingWallSibling(observationInput);
+    },
+    observeFocusedSideFloorWall: async (observationInput) => {
+      secondGemini.floor += 1;
+      return emptyFocusedSideFloorWallSibling(observationInput);
+    },
+  });
+  assert.equal(second.status, "applied");
+  if (second.status !== "applied") return;
+  assert.equal(second.executionCounts.emptyGeneration, 0);
+  assert.equal(second.executionCounts.floorOnlyTiledGeneration, 0);
+  assert.equal(second.executionCounts.tiledFloorReader, 1);
+  assert.equal(second.executionCounts.fullyTiledGeneration, 0);
+  assert.equal(second.executionCounts.fullyTiledFloorReader, 0);
+  assert.equal(second.emptyArtifactSource, "cache");
+  assert.equal(second.tiledArtifactSource, "cache");
+  assert.equal(second.tiledArtifactRefreshRequested, false);
+  assert.equal(second.tiled?.identity.sha256, tiledSha);
+  assert.equal(second.metricCorrespondenceEstimate, null);
+  assert.deepEqual(secondGemini, { prior: 1, general: 1, ceiling: 1, floor: 1 });
+  assert.ok(secondOrder.includes("reader"));
+  assert.equal(secondOrder.includes("tiled"), false);
+});
+
+test("warm TILED restore still launches EMPTY observers before Reader", async () => {
+  resetAfcSr1TiledArtifactCacheForTests();
+  await executeAfcV2Analysis({
+    ...input,
+    attemptId: "v2-opt1-cache-prime",
+  }, {
+    product: cacheProductDependencies(),
+    observeRoom: async () => cacheObservationEvidence(),
+  });
+
+  const launched: string[] = [];
+  const generalGate = createDeferred<void>();
+  const ceilingGate = createDeferred<void>();
+  const floorWallGate = createDeferred<void>();
+  const order: string[] = [];
+  const product = cacheProductDependencies(order, { emptyGenerated: false });
+  const resultPromise = executeAfcV2Analysis({
+    ...input,
+    attemptId: "v2-opt1-cache-warm-opt1",
+  }, {
+    product: {
+      ...product,
+      qualifyOriginal: async (request) => {
+        assert.ok(
+          launched.includes("prior"),
+          "Room Size Prior must start before the EMPTY product chain",
+        );
+        return product.qualifyOriginal!(request);
+      },
+      generateTiled: async (args) => {
+        launched.push("tiled");
+        return product.generateTiled!(args);
+      },
+      readTiledPerspective: async (args) => {
+        assert.deepEqual(
+          launched.filter((name) =>
+            name === "general" || name === "ceiling" || name === "floor_wall"
+          ).sort(),
+          ["ceiling", "floor_wall", "general"],
+        );
+        launched.push("reader");
+        return product.readTiledPerspective!(args);
+      },
+    },
+    estimateMetricRoom: async () => {
+      launched.push("prior");
+      return pendingPriorReceipt();
+    },
+    observeRoom: async () => {
+      launched.push("general");
+      await generalGate.promise;
+      return cacheObservationEvidence();
+    },
+    observeFocusedSideCeilingWall: async (observationInput) => {
+      launched.push("ceiling");
+      await ceilingGate.promise;
+      return emptyFocusedSideCeilingWallSibling(observationInput);
+    },
+    observeFocusedSideFloorWall: async (observationInput) => {
+      launched.push("floor_wall");
+      await floorWallGate.promise;
+      return emptyFocusedSideFloorWallSibling(observationInput);
+    },
+  });
+
+  await waitUntil(() => launched.includes("reader"));
+  assert.equal(launched.includes("tiled"), false);
+  generalGate.resolve();
+  ceilingGate.resolve();
+  floorWallGate.resolve();
+  const result = await resultPromise;
+  assert.equal(result.status, "applied");
+  if (result.status !== "applied") return;
+  assert.deepEqual(order, ["original", "empty", "reader"]);
+  assert.equal(result.executionCounts.floorOnlyTiledGeneration, 0);
+  assert.equal(result.executionCounts.tiledFloorReader, 1);
+  assert.equal(result.executionCounts.fullyTiledGeneration, 0);
+  assert.equal(result.metricCorrespondenceEstimate, null);
+});
+
+test("warm Re-read Room Perspective regenerates TILED while Gemini ×4 stay fresh", async () => {
+  resetAfcSr1TiledArtifactCacheForTests();
+  await executeAfcV2Analysis({
+    ...input,
+    attemptId: "v2-opt1-reread-prime",
+  }, {
+    product: cacheProductDependencies(),
+    observeRoom: async () => cacheObservationEvidence(),
+  });
+
+  const gemini = { prior: 0, general: 0, ceiling: 0, floor: 0 };
+  const order: string[] = [];
+  const result = await executeAfcV2Analysis({
+    ...input,
+    attemptId: "v2-opt1-reread-warm",
+    loadGeneration: 93,
+    forceTiledRegeneration: true,
+  }, {
+    product: cacheProductDependencies(order, {
+      emptyGenerated: false,
+      tiledBytes: PIXEL_B,
+    }),
+    estimateMetricRoom: async () => {
+      gemini.prior += 1;
+      return pendingPriorReceipt();
+    },
+    observeRoom: async () => {
+      gemini.general += 1;
+      return cacheObservationEvidence();
+    },
+    observeFocusedSideCeilingWall: async (observationInput) => {
+      gemini.ceiling += 1;
+      return emptyFocusedSideCeilingWallSibling(observationInput);
+    },
+    observeFocusedSideFloorWall: async (observationInput) => {
+      gemini.floor += 1;
+      return emptyFocusedSideFloorWallSibling(observationInput);
+    },
+  });
+  assert.equal(result.status, "applied");
+  if (result.status !== "applied") return;
+  assert.equal(result.executionCounts.emptyGeneration, 0);
+  assert.equal(result.executionCounts.floorOnlyTiledGeneration, 1);
+  assert.equal(result.executionCounts.tiledFloorReader, 1);
+  assert.equal(result.executionCounts.fullyTiledGeneration, 0);
+  assert.equal(result.executionCounts.fullyTiledFloorReader, 0);
+  assert.equal(result.emptyArtifactSource, "cache");
+  assert.equal(result.tiledArtifactSource, "generated");
+  assert.equal(result.tiledArtifactRefreshRequested, true);
+  assert.equal(result.tiled?.identity.sha256, PIXEL_B_SHA);
+  assert.deepEqual(gemini, { prior: 1, general: 1, ceiling: 1, floor: 1 });
+  assert.ok(order.includes("tiled"));
+  assert.ok(order.includes("reader"));
+
+  const nextOrder: string[] = [];
+  const next = await executeAfcV2Analysis({
+    ...input,
+    attemptId: "v2-opt1-reread-next-normal",
+    loadGeneration: 94,
+  }, {
+    product: cacheProductDependencies(nextOrder, { emptyGenerated: false }),
+    observeRoom: async () => cacheObservationEvidence(),
+  });
+  assert.equal(next.status, "applied");
+  if (next.status !== "applied") return;
+  assert.equal(next.executionCounts.floorOnlyTiledGeneration, 0);
+  assert.equal(next.tiledArtifactSource, "cache");
+  assert.equal(next.tiledArtifactRefreshRequested, false);
+  assert.equal(next.tiled?.identity.sha256, PIXEL_B_SHA);
+  assert.equal(nextOrder.includes("tiled"), false);
+  assert.ok(nextOrder.includes("reader"));
+});
+
+test("TILED force refresh does not serialize EMPTY observers or Room Size Prior", async () => {
+  resetAfcSr1TiledArtifactCacheForTests();
+  await executeAfcV2Analysis({
+    ...input,
+    attemptId: "v2-opt1-reread-opt1-prime",
+  }, {
+    product: cacheProductDependencies(),
+    observeRoom: async () => cacheObservationEvidence(),
+  });
+
+  const launched: string[] = [];
+  const tiledGate = createDeferred<void>();
+  const generalGate = createDeferred<void>();
+  const ceilingGate = createDeferred<void>();
+  const floorWallGate = createDeferred<void>();
+  const product = cacheProductDependencies([], {
+    emptyGenerated: false,
+    tiledBytes: PIXEL_B,
+  });
+  const resultPromise = executeAfcV2Analysis({
+    ...input,
+    attemptId: "v2-opt1-reread-opt1",
+    forceTiledRegeneration: true,
+  }, {
+    product: {
+      ...product,
+      qualifyOriginal: async (request) => {
+        assert.ok(
+          launched.includes("prior"),
+          "Room Size Prior must start before the EMPTY product chain",
+        );
+        return product.qualifyOriginal!(request);
+      },
+      generateTiled: async (args) => {
+        launched.push("tiled");
+        await tiledGate.promise;
+        return product.generateTiled!(args);
+      },
+      readTiledPerspective: async (args) => {
+        launched.push("reader");
+        return product.readTiledPerspective!(args);
+      },
+    },
+    estimateMetricRoom: async () => {
+      launched.push("prior");
+      return pendingPriorReceipt();
+    },
+    observeRoom: async () => {
+      launched.push("general");
+      await generalGate.promise;
+      return cacheObservationEvidence();
+    },
+    observeFocusedSideCeilingWall: async (observationInput) => {
+      launched.push("ceiling");
+      await ceilingGate.promise;
+      return emptyFocusedSideCeilingWallSibling(observationInput);
+    },
+    observeFocusedSideFloorWall: async (observationInput) => {
+      launched.push("floor_wall");
+      await floorWallGate.promise;
+      return emptyFocusedSideFloorWallSibling(observationInput);
+    },
+  });
+
+  await waitUntil(() => launched.includes("tiled"));
+  assert.deepEqual(
+    launched.filter((name) =>
+      name === "general" || name === "ceiling" || name === "floor_wall"
+    ).sort(),
+    ["ceiling", "floor_wall", "general"],
+  );
+  assert.equal(launched.includes("reader"), false);
+  tiledGate.resolve();
+  await waitUntil(() => launched.includes("reader"));
+  generalGate.resolve();
+  ceilingGate.resolve();
+  floorWallGate.resolve();
+  const result = await resultPromise;
+  assert.equal(result.status, "applied");
+  if (result.status !== "applied") return;
+  assert.equal(result.executionCounts.floorOnlyTiledGeneration, 1);
+  assert.equal(result.executionCounts.fullyTiledGeneration, 0);
+  assert.equal(result.tiledArtifactRefreshRequested, true);
+});
+
+test("V2 analysis passes explicit forceTiledRegeneration and does not infer it", () => {
+  const analysisSource = readV2("afc-v2-analysis.server.ts");
+  assert.match(
+    analysisSource,
+    /forceTiledRegeneration: input\.forceTiledRegeneration === true/,
+  );
+  assert.doesNotMatch(
+    analysisSource,
+    /forceTiledRegeneration\s*=\s*!(?:input\.)?emptyArtifactSource|attemptCounts\.tiledGeneration\s*>\s*0/,
+  );
 });

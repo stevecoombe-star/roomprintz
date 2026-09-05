@@ -46,3 +46,39 @@ test("live V2 restores the certified floor-only TILED representation", () => {
     /generateFullyTiledFromOriginal|executeAfcV2FullyTiledFloorAnalysis/,
   );
 });
+
+test("Re-read Room Perspective is an explicit secondary Analyze intent", () => {
+  const client = source("admin/3d-room-lab-v2/RoomLabV2.tsx");
+  const analyzeRoute = source("api/admin/3d-room-lab-v2/analyze/route.ts");
+  const analysis = source("admin/3d-room-lab-v2/afc-v2-analysis.server.ts");
+  const analyzeBlock = client.slice(
+    client.indexOf("async function analyzeAndApply"),
+    client.indexOf("function downloadAnalysisEvidence"),
+  );
+  const primaryClick = client.slice(
+    client.indexOf("Analyze &amp; Apply AFC") - 500,
+    client.indexOf("Analyze &amp; Apply AFC"),
+  );
+  const rereadClick = client.slice(
+    client.indexOf("Re-read Room Perspective") - 700,
+    client.indexOf("Re-read Room Perspective"),
+  );
+
+  assert.match(client, /Re-read Room Perspective/);
+  assert.match(
+    client,
+    /Re-read the room perspective if the 3D view doesn’t line up well with the photo\./,
+  );
+  assert.match(analyzeBlock, /forceTiledRegeneration: analysisIntent\.forceTiledRegeneration === true/);
+  assert.match(primaryClick, /onClick=\{\(\) => void analyzeAndApply\(\)\}/);
+  assert.match(
+    rereadClick,
+    /onClick=\{\(\) => void analyzeAndApply\(\{ forceTiledRegeneration: true \}\)\}/,
+  );
+  assert.doesNotMatch(
+    rereadClick,
+    /Regenerate Floor Evidence|Retry TILED|Refresh NBP|Re-run Reader|Camera Recalibration/,
+  );
+  assert.match(analyzeRoute, /forceTiledRegeneration: value\.forceTiledRegeneration === true/);
+  assert.match(analysis, /forceTiledRegeneration: input\.forceTiledRegeneration === true/);
+});

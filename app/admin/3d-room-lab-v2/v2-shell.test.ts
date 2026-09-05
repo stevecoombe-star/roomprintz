@@ -54,6 +54,11 @@ test("V2-S3D route renders separated EMPTY observation and TILED authority", () 
 
   assert.match(routeMarkup, /3D Room Lab v2/);
   assert.match(shellMarkup, /Analyze &amp; Apply AFC/);
+  assert.match(shellMarkup, /Re-read Room Perspective/);
+  assert.match(
+    shellMarkup,
+    /Re-read the room perspective if the 3D view doesn(?:'|’)t line up well with the photo\./,
+  );
   assert.match(shellMarkup, /Prepare Original/);
   assert.match(shellMarkup, /Original/);
   assert.match(shellMarkup, /EMPTY/);

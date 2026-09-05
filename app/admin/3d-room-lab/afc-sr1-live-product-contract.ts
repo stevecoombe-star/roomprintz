@@ -20,6 +20,11 @@ export type AfcSr1LiveAnalyzeRequest = Readonly<{
   }>;
   labLoadGeneration: number;
   referenceDepthM: number;
+  /**
+   * Explicit Re-read Room Perspective intent. Default false/omitted is a
+   * normal Analyze. Never inferred from attempt count, cache state, or UI copy.
+   */
+  forceTiledRegeneration?: boolean;
 }>;
 
 export type AfcSr1LiveBasis = Readonly<{
@@ -106,6 +111,13 @@ export type AfcSr1LiveDiagnostics = Readonly<{
     observables: AfcSr1SupportedRoomViewObservables;
     reason: string;
   }> | null;
+  /**
+   * Process-local artifact restore vs NBP dispatch for this Analyze.
+   * Absent on PATH A and on failures before the corresponding artifact exists.
+   */
+  emptyArtifactSource?: "cache" | "generated";
+  tiledArtifactSource?: "cache" | "generated";
+  tiledArtifactRefreshRequested?: boolean;
 }>;
 
 export type AfcSr1LiveAuthoritativeGeometry = Readonly<{

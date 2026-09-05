@@ -18,6 +18,13 @@ import {
   type AfcSr1TileGridScaffoldResult,
 } from "./research/afc-sr1-tile-grid-scaffold";
 import {
+  buildAfcSr1TiledArtifactCacheKey,
+  evictAfcSr1TiledArtifactCacheEntry,
+  getOrGenerateCachedTiledArtifact,
+  peekAfcSr1CompletedTiledArtifact,
+  restoreAfcSr1CompletedTiledArtifact,
+} from "./afc-sr1-tiled-artifact-cache";
+import {
   AfcSr1TiledPerspectiveExactGridLineageError,
   validateAfcSr1TiledPerspectiveExactGridLineage,
   type AfcSr1TiledPerspectiveExactGridLineage,
@@ -70,7 +77,12 @@ function emptyCounts(): MutableCounts {
 
 function diagnostics(
   counts: AfcSr1LiveAttemptCounts,
-  detail: string | null
+  detail: string | null,
+  sources: Readonly<{
+    empty?: "cache" | "generated";
+    tiled?: "cache" | "generated";
+    tiledArtifactRefreshRequested?: boolean;
+  }> = {}
 ) {
   return Object.freeze({
     finalReason: detail,
@@ -82,6 +94,9 @@ function diagnostics(
     attemptCounts: Object.freeze({ ...counts }),
     floorReadDiagnostic: null,
     supportedRoomClassifier: null,
+    ...(sources.empty ? { emptyArtifactSource: sources.empty } : {}),
+    ...(sources.tiled ? { tiledArtifactSource: sources.tiled } : {}),
+    tiledArtifactRefreshRequested: sources.tiledArtifactRefreshRequested === true,
   });
 }
 
@@ -117,6 +132,11 @@ export type AfcSr1TiledLiveProductDependencies = Readonly<{
     original: AfcSr1QualifiedOriginal
   ) => Promise<AfcSr1ResolvedEmpty | null>;
   generateTiled?: typeof vibodeTileGridScaffoldAssist;
+  /**
+   * Injected generateTiled hooks bypass the process cache unless this is true.
+   * Production omits generateTiled, so the default live wrapper always caches.
+   */
+  useTiledArtifactCache?: boolean;
   validateTiledLineage?: (
     result: AfcSr1TileGridScaffoldResult,
     emptyBytes: Uint8Array,
@@ -149,6 +169,14 @@ export async function executeAfcSr1TiledLiveProductAttempt(
 ): Promise<AfcSr1LiveProductResult> {
   const resultId = dependencies.createResultId?.() ?? randomUUID();
   const counts = emptyCounts();
+  const forceTiledRegeneration = request?.forceTiledRegeneration === true;
+  const artifactSources: {
+    empty?: "cache" | "generated";
+    tiled?: "cache" | "generated";
+    tiledArtifactRefreshRequested: boolean;
+  } = {
+    tiledArtifactRefreshRequested: forceTiledRegeneration,
+  };
   const failed = (
     reason: AfcSr1LiveFailureReason,
     detail: string
@@ -160,7 +188,7 @@ export async function executeAfcSr1TiledLiveProductAttempt(
     labLoadGeneration: request?.labLoadGeneration ?? -1,
     reason,
     detail,
-    diagnostics: diagnostics(counts, detail),
+    diagnostics: diagnostics(counts, detail, artifactSources),
   });
 
   if (!isValidAfcSr1LiveAnalyzeRequest(request)) {
@@ -184,6 +212,7 @@ export async function executeAfcSr1TiledLiveProductAttempt(
     return failed("empty_generation_failed", "empty_generation_or_decode_failed");
   }
   counts.emptyGeneration = empty.generated ? 1 : 0;
+  artifactSources.empty = empty.generated ? "generated" : "cache";
   retainAfcSr1LiveAttemptEmptyEvidence({
     attemptId: request.attemptId,
     resultId,
@@ -230,10 +259,7 @@ export async function executeAfcSr1TiledLiveProductAttempt(
     return failed("original_empty_incompatible", "image_pair_incompatible");
   }
 
-  counts.tiledGeneration = 1;
-  const tiled = await (
-    dependencies.generateTiled ?? vibodeTileGridScaffoldAssist
-  )({
+  const tiledArgs = {
     empty: {
       base64: Buffer.from(empty.bytes).toString("base64"),
       identity: empty.basis,
@@ -242,7 +268,28 @@ export async function executeAfcSr1TiledLiveProductAttempt(
     maxOutputBytes: getAutoFloorVisionImageMaxBytes(),
     fetchTimeoutMs: getAutoFloorVisionImageFetchTimeoutMs(),
     allowLocalhostHttp: isAutoFloorVisionAllowLocalhostHttp(),
+  };
+  const generateTiled =
+    dependencies.generateTiled ?? vibodeTileGridScaffoldAssist;
+  const useTiledArtifactCache =
+    dependencies.useTiledArtifactCache ?? dependencies.generateTiled == null;
+  const tiledCacheKey = buildAfcSr1TiledArtifactCacheKey({
+    emptySha256: empty.basis.sha256,
   });
+  const previousCompleted = useTiledArtifactCache && forceTiledRegeneration
+    ? peekAfcSr1CompletedTiledArtifact(tiledCacheKey)
+    : undefined;
+  const tiledResolve = useTiledArtifactCache
+    ? await getOrGenerateCachedTiledArtifact(tiledArgs, generateTiled, {
+        forceRefresh: forceTiledRegeneration,
+      })
+    : {
+        result: await generateTiled(tiledArgs),
+        source: "generated" as const,
+      };
+  artifactSources.tiled = tiledResolve.source;
+  counts.tiledGeneration = tiledResolve.source === "generated" ? 1 : 0;
+  const tiled = tiledResolve.result;
   if (tiled.status !== "generated") {
     return failed("tiled_generation_failed", tiled.code);
   }
@@ -260,6 +307,13 @@ export async function executeAfcSr1TiledLiveProductAttempt(
       validateAfcSr1TiledPerspectiveExactGridLineage
     )(tiled, empty.bytes, tiledBytes);
   } catch (error) {
+    if (useTiledArtifactCache) {
+      if (forceTiledRegeneration && previousCompleted) {
+        restoreAfcSr1CompletedTiledArtifact(tiledCacheKey, previousCompleted);
+      } else {
+        evictAfcSr1TiledArtifactCacheEntry(tiledCacheKey);
+      }
+    }
     return failed(
       "tiled_lineage_not_exact_grid",
       error instanceof AfcSr1TiledPerspectiveExactGridLineageError
@@ -349,6 +403,6 @@ export async function executeAfcSr1TiledLiveProductAttempt(
       mode: "tiled_symmetric_near_edge_v1",
       reason: "tiled_automatic_baseline_v1",
     }),
-    diagnostics: diagnostics(counts, null),
+    diagnostics: diagnostics(counts, null, artifactSources),
   });
 }

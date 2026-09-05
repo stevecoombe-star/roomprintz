@@ -146,6 +146,7 @@ export type AfcV2AnalyzeInput = Readonly<{
   loadGeneration: number;
   frame: Readonly<{ width: number; height: number }>;
   referenceDepthM: number;
+  forceTiledRegeneration?: boolean;
 }>;
 
 type AfcV2LivePipelineEvidence = Readonly<{
@@ -189,6 +190,9 @@ type AfcV2LivePipelineEvidence = Readonly<{
     focusedSideCeilingObserver: 0 | 1;
     focusedSideFloorWallObserver: 0 | 1;
   }>;
+  emptyArtifactSource: "cache" | "generated" | null;
+  tiledArtifactSource: "cache" | "generated" | null;
+  tiledArtifactRefreshRequested: boolean;
   roomObservation: EmptyRoomObservationEvidence | null;
   roomObservationStatus:
     | "observed"
@@ -505,6 +509,10 @@ function livePipelineEvidence(
       focusedSideCeilingObserver: focusedSideCeilingObservation ? 1 as const : 0 as const,
       focusedSideFloorWallObserver: focusedSideFloorWallObservation ? 1 as const : 0 as const,
     }),
+    emptyArtifactSource: product.diagnostics.emptyArtifactSource ?? null,
+    tiledArtifactSource: product.diagnostics.tiledArtifactSource ?? null,
+    tiledArtifactRefreshRequested:
+      product.diagnostics.tiledArtifactRefreshRequested === true,
     roomObservation,
     roomObservationStatus: roomObservation?.observerStatus ??
       "not_run_empty_unavailable",
@@ -752,6 +760,7 @@ export async function executeAfcV2Analysis(
     sourceImageIdentity: input.sourceImageIdentity,
     labLoadGeneration: input.loadGeneration,
     referenceDepthM: input.referenceDepthM,
+    forceTiledRegeneration: input.forceTiledRegeneration === true,
   }, {
     ...dependencies.product,
     onEmptyRetained: (retained) => {
