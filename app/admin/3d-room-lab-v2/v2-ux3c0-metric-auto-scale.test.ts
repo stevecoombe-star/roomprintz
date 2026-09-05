@@ -136,6 +136,8 @@ function backSpan(
   return {
     id: "rb_floor_back_wall_seam",
     source: "s4a_floor_wall",
+    correspondenceSource: "identity_uv",
+    spanTrust: "trusted",
     role: "back_floor_wall",
     imageSpace: METRIC_CORRESPONDENCE_ORIGINAL_IMAGE_SPACE,
     overlaySafeOnOriginal: true,
@@ -154,6 +156,7 @@ function backSpan(
       s4aCandidateId: "rb_floor_back_wall_seam",
       sourceSeamId: "floor_back_wall_seam",
       registrationClass: "exact_grid_registered",
+      olCandidateId: null,
     },
     ...overrides,
   };
@@ -224,6 +227,11 @@ test("Room 4-style derivation uses Gemini width over the trusted back span", () 
   assert.equal(receipt.canonicalSource?.gaugeLength, ROOM4_LIVE_CANONICAL_LENGTH);
   assert.ok(receipt.autoMetricScale < 0.5);
   assert.ok(Math.abs(ROOM4_LIVE_CANONICAL_LENGTH * receipt.autoMetricScale - 3.6) < 1e-12);
+  assert.deepEqual([...receipt.reasons], [
+    "trusted_back_floor_wall_span_experimental",
+    "lab_trust_enabled",
+    "uniform_physical_span_scale",
+  ]);
 });
 
 test("another gauge realization keeps the same physical width target", () => {
@@ -401,6 +409,18 @@ test("truncated, non-back, and unsafe spans fall back to Auto 1", () => {
   assert.equal(olSource.accepted, false);
   assert.equal(olSource.autoMetricScale, 1);
   assert.ok(olSource.reasons.includes("source_not_s4a_floor_wall"));
+
+  const olCorrespondence = derive({
+    selected: backSpan({
+      correspondenceSource: "original_localization",
+      overlaySafeOnOriginal: false,
+      spanTrust: "candidate",
+    }),
+  });
+  assert.equal(olCorrespondence.accepted, false);
+  assert.equal(olCorrespondence.autoMetricScale, 1);
+  assert.ok(olCorrespondence.reasons.includes("correspondence_not_identity_uv"));
+  assert.ok(olCorrespondence.reasons.includes("overlay_unsafe_on_original"));
 });
 
 test("valid Auto below 0.50 is accepted and is not clamped to the user slider band", () => {

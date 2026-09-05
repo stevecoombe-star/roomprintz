@@ -9,6 +9,9 @@
  * Canonical length is a projective gauge length, not metres. Do not label
  * it as metres. Do not pass canonicalLength to provider-facing prompts.
  *
+ * Geometry authority is S4A floor-wall. ORIGINAL Localization may annotate
+ * same-seam ORIGINAL correspondence only; it is not a metric denominator.
+ *
  * Future host-only (not implemented here):
  *   metricScaleCandidate = physicalSpanLengthM / span.canonicalLength
  * That derivation must stay provider-agnostic (known-span or other
@@ -37,6 +40,13 @@ export const METRIC_CORRESPONDENCE_ROLE_COPY = {
   other_floor_wall: "Other floor-wall",
 } as const;
 
+export const METRIC_SPAN_TRUSTED_LABEL = "Trusted Metric Span" as const;
+export const METRIC_SPAN_CANDIDATE_LABEL = "Candidate Metric Span" as const;
+export const METRIC_SPAN_TRUSTED_HELPER_COPY =
+  "Trusted room span used for automatic metric scale when enabled." as const;
+export const METRIC_SPAN_CANDIDATE_HELPER_COPY =
+  "Detected room span available for metric correspondence, but not trusted for automatic scale." as const;
+
 export type MetricCorrespondenceSpanRole =
   | "back_floor_wall"
   | "left_floor_wall"
@@ -49,9 +59,21 @@ export type MetricCorrespondenceEndpointClass =
   | "frame_adjacent"
   | "inferred";
 
+/**
+ * Geometry authority for the selected metric span. Automatic candidates
+ * are always S4A. `ol_floor_wall` remains only so Auto can fail closed if a
+ * legacy or constructed receipt still names OL as geometry.
+ */
 export type MetricCorrespondenceSpanSource =
   | "s4a_floor_wall"
   | "ol_floor_wall";
+
+export type MetricSpanCorrespondenceSource =
+  | "identity_uv"
+  | "original_localization"
+  | "none";
+
+export type MetricCorrespondenceSpanTrust = "trusted" | "candidate";
 
 export type MetricCorrespondenceImageSpace =
   | typeof METRIC_CORRESPONDENCE_ORIGINAL_IMAGE_SPACE
@@ -82,6 +104,8 @@ export type MetricCorrespondenceWorldXz = Readonly<{
 export type MetricCorrespondenceSpan = Readonly<{
   id: string;
   source: MetricCorrespondenceSpanSource;
+  correspondenceSource: MetricSpanCorrespondenceSource;
+  spanTrust: MetricCorrespondenceSpanTrust;
   role: MetricCorrespondenceSpanRole;
   imageSpace: MetricCorrespondenceImageSpace;
   overlaySafeOnOriginal: boolean;
@@ -100,6 +124,7 @@ export type MetricCorrespondenceSpan = Readonly<{
     s4aCandidateId: string | null;
     sourceSeamId: string | null;
     registrationClass: string | null;
+    olCandidateId: string | null;
   }>;
 }>;
 
@@ -140,6 +165,22 @@ export function metricCorrespondenceRoleCopy(
   role: MetricCorrespondenceSpanRole,
 ): string {
   return METRIC_CORRESPONDENCE_ROLE_COPY[role];
+}
+
+export function metricCorrespondenceSpanLabel(
+  span: Pick<MetricCorrespondenceSpan, "spanTrust">,
+): string {
+  return span.spanTrust === "trusted"
+    ? METRIC_SPAN_TRUSTED_LABEL
+    : METRIC_SPAN_CANDIDATE_LABEL;
+}
+
+export function metricCorrespondenceSpanHelperCopy(
+  span: Pick<MetricCorrespondenceSpan, "spanTrust">,
+): string {
+  return span.spanTrust === "trusted"
+    ? METRIC_SPAN_TRUSTED_HELPER_COPY
+    : METRIC_SPAN_CANDIDATE_HELPER_COPY;
 }
 
 export function formatCanonicalGaugeUnits(length: number): string {

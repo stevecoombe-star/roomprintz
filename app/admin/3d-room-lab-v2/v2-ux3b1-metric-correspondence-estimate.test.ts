@@ -117,6 +117,8 @@ function room4Span(
   return {
     id: "mcs_floor_back_wall_seam",
     source: "s4a_floor_wall",
+    correspondenceSource: "identity_uv",
+    spanTrust: "trusted",
     role: "back_floor_wall",
     imageSpace: METRIC_CORRESPONDENCE_ORIGINAL_IMAGE_SPACE,
     overlaySafeOnOriginal: true,
@@ -135,6 +137,7 @@ function room4Span(
       s4aCandidateId: "rb_floor_back_wall_seam",
       sourceSeamId: "floor_back_wall_seam",
       registrationClass: "exact_grid_registered",
+      olCandidateId: null,
     },
     ...overrides,
   };

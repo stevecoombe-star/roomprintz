@@ -1,9 +1,9 @@
 /**
  * Pure host extraction of one metric-correspondence span.
  *
- * Canonical source: accepted S4A floor_wall wall-base geometry, with OL
- * ORIGINAL-localized floor-wall as the overlay fallback when identity
- * registration is not certified.
+ * Canonical geometry authority: accepted S4A floor_wall wall-base
+ * geometry. ORIGINAL Localization may annotate same-seam ORIGINAL
+ * correspondence only. OL cluster length never becomes canonicalLength.
  *
  * Shadow only. No provider call. No live Auto. No Floor/TILED/collision
  * candidate path.
@@ -33,6 +33,7 @@ import {
   type MetricCorrespondenceSelection,
   type MetricCorrespondenceSpan,
   type MetricCorrespondenceSpanRole,
+  type MetricSpanCorrespondenceSource,
   type MetricCorrespondenceWorldXz,
 } from "./metric-correspondence-span-contract";
 
@@ -285,29 +286,6 @@ function s4aOriginalEndpoints(
   };
 }
 
-function olOriginalEndpoints(
-  candidate: OriginalLocalizedBoundaryCandidate,
-): {
-  imageA: MetricCorrespondenceImagePoint;
-  imageB: MetricCorrespondenceImagePoint;
-} | null {
-  const polyline = candidate.originalImageEvidence.polyline;
-  if (polyline.length < 2) return null;
-  const first = polyline[0];
-  const last = polyline[polyline.length - 1];
-  if (
-    !first || !last ||
-    !finiteNumber(first.x) || !finiteNumber(first.y) ||
-    !finiteNumber(last.x) || !finiteNumber(last.y)
-  ) {
-    return null;
-  }
-  return {
-    imageA: Object.freeze({ x: first.x, y: first.y }),
-    imageB: Object.freeze({ x: last.x, y: last.y }),
-  };
-}
-
 function freezeSpan(span: MetricCorrespondenceSpan): MetricCorrespondenceSpan {
   return Object.freeze({
     ...span,
@@ -340,17 +318,6 @@ function compareEligible(left: RankedEligible, right: RankedEligible): number {
   return (left.span.lineage.sourceSeamId ?? "").localeCompare(
     right.span.lineage.sourceSeamId ?? "",
   );
-}
-
-function overlayUnavailableReason(
-  identityCertified: boolean,
-  olCertified: boolean,
-  registrationPresent: boolean,
-): MetricCorrespondenceRejectionReason {
-  if (!identityCertified && !olCertified && !registrationPresent) {
-    return "registration_unavailable";
-  }
-  return "overlay_unsafe";
 }
 
 function evaluateS4aCandidate(input: {
@@ -392,12 +359,6 @@ function evaluateS4aCandidate(input: {
     candidate.limitations.completeWall
   ) {
     return { ok: false, rejected: reject(candidate.id, roleGuess, "other") };
-  }
-  if (!input.identityCertified) {
-    return {
-      ok: false,
-      rejected: reject(candidate.id, roleGuess, "overlay_unsafe"),
-    };
   }
   const endpoints = s4aOriginalEndpoints(candidate);
   if (!endpoints) {
@@ -462,12 +423,19 @@ function evaluateS4aCandidate(input: {
     candidate.worldGeometry,
     input.cameraPose,
   );
+  const overlaySafeOnOriginal = input.identityCertified;
+  const correspondenceSource: MetricSpanCorrespondenceSource = overlaySafeOnOriginal
+    ? "identity_uv"
+    : "none";
+  const spanTrust = overlaySafeOnOriginal ? "trusted" : "candidate";
   const span = freezeSpan({
     id: candidate.id,
     source: "s4a_floor_wall",
+    correspondenceSource,
+    spanTrust,
     role,
     imageSpace: METRIC_CORRESPONDENCE_ORIGINAL_IMAGE_SPACE,
-    overlaySafeOnOriginal: true,
+    overlaySafeOnOriginal,
     imageA: endpoints.imageA,
     imageB: endpoints.imageB,
     canonicalWorldA,
@@ -480,13 +448,16 @@ function evaluateS4aCandidate(input: {
     confidence: candidate.source.confidence,
     selectionReasons: Object.freeze([
       "accepted_s4a_floor_wall",
-      "identity_certified_original_overlay",
+      overlaySafeOnOriginal
+        ? "identity_certified_original_overlay"
+        : "candidate_uncertified_correspondence",
       `role_${role}`,
     ]),
     lineage: {
       s4aCandidateId: candidate.id,
       sourceSeamId: candidate.sourceSeamId,
       registrationClass: input.registrationClass,
+      olCandidateId: null,
     },
   });
   return {
@@ -498,140 +469,62 @@ function evaluateS4aCandidate(input: {
   };
 }
 
-function evaluateOlCandidate(input: {
-  candidate: OriginalLocalizedBoundaryCandidate;
-  cameraPose: MetricCorrespondenceCameraPose | null;
-  olCertified: boolean;
-  overlayFailure: MetricCorrespondenceRejectionReason;
-  matchingS4aId: string | null;
-  registrationClass: string | null;
-}):
-  | { ok: true; eligible: RankedEligible }
-  | { ok: false; rejected: MetricCorrespondenceRejectedAlternative }
-{
-  const candidate = input.candidate;
-  const roleGuess = candidate.worldGeometry
-    ? deriveMetricCorrespondenceSpanRole(candidate.worldGeometry, input.cameraPose)
-    : "unknown";
+/**
+ * Same-seam ORIGINAL correspondence evidence only. Never supplies
+ * canonical world endpoints, canonicalLength, or overlay-safe mapping.
+ * Cluster endpoints are interior samples, not the S4A wall gauge.
+ */
+function sameSeamOlCorrespondence(
+  span: MetricCorrespondenceSpan,
+  olCandidates: readonly OriginalLocalizedBoundaryCandidate[],
+  olCertified: boolean,
+  cameraPose: MetricCorrespondenceCameraPose | null,
+): OriginalLocalizedBoundaryCandidate | null {
+  if (!olCertified) return null;
+  const seamId = span.lineage.sourceSeamId;
+  if (!seamId) return null;
+  const matches: OriginalLocalizedBoundaryCandidate[] = [];
+  for (const candidate of olCandidates) {
+    if (candidate.sourceObservationSeamId !== seamId) continue;
+    if (candidate.status !== "accepted") continue;
+    if (!candidate.worldGeometry) continue;
+    if (
+      candidate.limitations.hiddenContinuation ||
+      candidate.limitations.geometryManufactured
+    ) {
+      continue;
+    }
+    const role = deriveMetricCorrespondenceSpanRole(
+      candidate.worldGeometry,
+      cameraPose,
+    );
+    if (role !== span.role) continue;
+    matches.push(candidate);
+  }
+  matches.sort((left, right) => left.id.localeCompare(right.id));
+  return matches[0] ?? null;
+}
 
-  if (candidate.status === "ambiguous") {
-    return {
-      ok: false,
-      rejected: reject(candidate.id, roleGuess, "ambiguous_competing_trace"),
-    };
+function annotateUntrustedCorrespondence(
+  span: MetricCorrespondenceSpan,
+  olCandidate: OriginalLocalizedBoundaryCandidate | null,
+): MetricCorrespondenceSpan {
+  if (span.overlaySafeOnOriginal || span.spanTrust === "trusted") {
+    return span;
   }
-  if (candidate.status !== "accepted") {
-    return { ok: false, rejected: reject(candidate.id, roleGuess, "not_accepted") };
-  }
-  if (!candidate.worldGeometry) {
-    return {
-      ok: false,
-      rejected: reject(candidate.id, roleGuess, "missing_world_geometry"),
-    };
-  }
-  if (
-    candidate.limitations.hiddenContinuation ||
-    candidate.limitations.geometryManufactured
-  ) {
-    return { ok: false, rejected: reject(candidate.id, roleGuess, "other") };
-  }
-  if (!input.olCertified) {
-    return {
-      ok: false,
-      rejected: reject(candidate.id, roleGuess, input.overlayFailure),
-    };
-  }
-  const endpoints = olOriginalEndpoints(candidate);
-  if (!endpoints) {
-    return {
-      ok: false,
-      rejected: reject(candidate.id, roleGuess, "missing_world_geometry"),
-    };
-  }
-  const endpointAClass = classifyObservedEndpoint(endpoints.imageA, false);
-  const endpointBClass = classifyObservedEndpoint(endpoints.imageB, false);
-  const truncation = truncationFromEndpoints(endpointAClass, endpointBClass);
-  if (truncation !== "none") {
-    return { ok: false, rejected: reject(candidate.id, roleGuess, "frame_truncated") };
-  }
-
-  const [canonicalWorldA, canonicalWorldB] = orderWorldToImage(
-    null,
-    {
-      x: candidate.worldGeometry.baseStart.x,
-      z: candidate.worldGeometry.baseStart.z,
-    },
-    {
-      x: candidate.worldGeometry.baseEnd.x,
-      z: candidate.worldGeometry.baseEnd.z,
-    },
-  );
-  const canonicalLength = canonicalWorldSpanLength(
-    canonicalWorldA,
-    canonicalWorldB,
-  );
-  if (
-    !finiteNumber(canonicalLength) ||
-    canonicalLength < ROOM_BOUNDARY_MIN_WORLD_SEAM_LENGTH_M
-  ) {
-    return { ok: false, rejected: reject(candidate.id, roleGuess, "degenerate") };
-  }
-  const imageLength = imageSpanLengthNormalized(endpoints.imageA, endpoints.imageB);
-  if (
-    !finiteNumber(imageLength) ||
-    imageLength < METRIC_CORRESPONDENCE_MIN_IMAGE_SPAN_NORMALIZED
-  ) {
-    return {
-      ok: false,
-      rejected: reject(candidate.id, roleGuess, "too_short_in_image"),
-    };
-  }
-
-  const role = deriveMetricCorrespondenceSpanRole(
-    candidate.worldGeometry,
-    input.cameraPose,
-  );
-  const matchedFraction = candidate.originalImageEvidence.matchedFraction;
-  const confidence = typeof matchedFraction === "number" &&
-      finiteNumber(matchedFraction)
-    ? matchedFraction
-    : 0;
-  const span = freezeSpan({
-    id: candidate.id,
-    source: "ol_floor_wall",
-    role,
-    imageSpace: METRIC_CORRESPONDENCE_ORIGINAL_IMAGE_SPACE,
-    overlaySafeOnOriginal: true,
-    imageA: endpoints.imageA,
-    imageB: endpoints.imageB,
-    canonicalWorldA,
-    canonicalWorldB,
-    canonicalLength,
-    endpointAClass,
-    endpointBClass,
-    truncation: "none",
-    imageLengthNormalized: imageLength,
-    confidence,
+  if (!olCandidate) return span;
+  return freezeSpan({
+    ...span,
+    correspondenceSource: "original_localization",
     selectionReasons: Object.freeze([
-      "accepted_ol_floor_wall",
-      "ol_certified_original_overlay",
-      `role_${role}`,
+      ...span.selectionReasons,
+      "ol_same_seam_correspondence_incomplete",
     ]),
     lineage: {
-      s4aCandidateId: input.matchingS4aId,
-      sourceSeamId: candidate.sourceObservationSeamId,
-      registrationClass: input.registrationClass,
+      ...span.lineage,
+      olCandidateId: olCandidate.id,
     },
   });
-  return {
-    ok: true,
-    eligible: {
-      span,
-      residualRank: residualRank(
-        candidate.projection.worldResidual ? "underdetermined" : null,
-      ),
-    },
-  };
 }
 
 function selectUnchecked(
@@ -648,64 +541,15 @@ function selectUnchecked(
   const cameraPose = input.roomBoundary?.lineage?.camera?.pose ??
     input.originalLocalizedBoundary?.camera?.pose ??
     null;
-  const overlayFailure = overlayUnavailableReason(
-    identityCertified,
-    olCertified,
-    Boolean(input.registration),
-  );
 
   const rejected: MetricCorrespondenceRejectedAlternative[] = [];
   const eligible: RankedEligible[] = [];
-  const eligibleS4aSeamIds = new Set<string>();
 
   for (const candidate of s4aCandidates) {
-    if (identityCertified) {
-      const result = evaluateS4aCandidate({
-        candidate,
-        cameraPose,
-        identityCertified: true,
-        registrationClass,
-      });
-      if (result.ok) {
-        eligible.push(result.eligible);
-        eligibleS4aSeamIds.add(candidate.sourceSeamId);
-      } else {
-        rejected.push(result.rejected);
-      }
-      continue;
-    }
-    const roleGuess = candidate.worldGeometry
-      ? deriveMetricCorrespondenceSpanRole(candidate.worldGeometry, cameraPose)
-      : "unknown";
-    if (candidate.source.category !== "floor_wall") {
-      rejected.push(reject(candidate.id, roleGuess, "not_floor_wall"));
-      continue;
-    }
-    if (candidate.status !== "accepted") {
-      if (candidate.status === "ambiguous" &&
-          candidate.reasons.includes("competing_same_wall_trace")) {
-        rejected.push(reject(candidate.id, roleGuess, "ambiguous_competing_trace"));
-      } else {
-        rejected.push(reject(candidate.id, roleGuess, "not_accepted"));
-      }
-      continue;
-    }
-    rejected.push(reject(candidate.id, roleGuess, overlayFailure));
-  }
-
-  for (const candidate of olCandidates) {
-    if (eligibleS4aSeamIds.has(candidate.sourceObservationSeamId)) {
-      continue;
-    }
-    const matchingS4a = s4aCandidates.find(
-      (item) => item.sourceSeamId === candidate.sourceObservationSeamId,
-    );
-    const result = evaluateOlCandidate({
+    const result = evaluateS4aCandidate({
       candidate,
       cameraPose,
-      olCertified,
-      overlayFailure,
-      matchingS4aId: matchingS4a?.id ?? null,
+      identityCertified,
       registrationClass,
     });
     if (result.ok) {
@@ -713,6 +557,20 @@ function selectUnchecked(
     } else {
       rejected.push(result.rejected);
     }
+  }
+
+  for (let index = 0; index < eligible.length; index += 1) {
+    const item = eligible[index]!;
+    const ol = sameSeamOlCorrespondence(
+      item.span,
+      olCandidates,
+      olCertified,
+      cameraPose,
+    );
+    eligible[index] = {
+      ...item,
+      span: annotateUntrustedCorrespondence(item.span, ol),
+    };
   }
 
   const competingIds = new Set<string>();
@@ -743,8 +601,8 @@ function selectUnchecked(
     return buildMetricCorrespondenceSelection(
       null,
       rejected,
-      s4aCandidates.length === 0 && olCandidates.length === 0
-        ? ["no_s4a_or_ol_floor_wall_candidates"]
+      s4aCandidates.length === 0
+        ? ["no_s4a_floor_wall_candidates"]
         : ["no_eligible_finite_span"],
     );
   }

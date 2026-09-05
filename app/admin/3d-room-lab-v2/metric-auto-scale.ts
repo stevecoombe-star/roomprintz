@@ -105,6 +105,9 @@ export function evaluateTrustedBackWallWidthSpan(
   if (selected.source !== "s4a_floor_wall") {
     reasons.push("source_not_s4a_floor_wall");
   }
+  if (selected.correspondenceSource !== "identity_uv") {
+    reasons.push("correspondence_not_identity_uv");
+  }
   if (selected.role !== "back_floor_wall") {
     reasons.push("role_not_back_floor_wall");
   }

@@ -412,6 +412,8 @@ test("eligible accepted S4A back floor-wall is selected with correct canonical l
   assert.ok(result.selected);
   assert.equal(result.selected?.role, "back_floor_wall");
   assert.equal(result.selected?.source, "s4a_floor_wall");
+  assert.equal(result.selected?.correspondenceSource, "identity_uv");
+  assert.equal(result.selected?.spanTrust, "trusted");
   assert.equal(result.selected?.overlaySafeOnOriginal, true);
   assert.equal(result.selected?.truncation, "none");
   assert.equal(result.selected?.endpointAClass, "observed_interior");
@@ -428,6 +430,13 @@ test("eligible accepted S4A back floor-wall is selected with correct canonical l
   );
   assert.equal(result.selected?.lineage.sourceSeamId, "back_floor_wall");
   assert.equal(result.selected?.lineage.registrationClass, "exact_grid_registered");
+  assert.equal(result.selected?.lineage.olCandidateId, null);
+  assert.deepEqual([...result.selectionReasons], [
+    "accepted_s4a_floor_wall",
+    "identity_certified_original_overlay",
+    "role_back_floor_wall",
+    "ranked_best_eligible",
+  ]);
   assert.equal(
     deriveMetricCorrespondenceSpanRole(world, CAMERA),
     "back_floor_wall",
@@ -588,7 +597,7 @@ test("zero or nearly-zero world length is rejected as degenerate", () => {
   assert.equal(result.rejectedAlternatives[0]?.reason, "degenerate");
 });
 
-test("identity-certified ORIGINAL overlay is eligible; OL-certified is eligible; neither is rejected", () => {
+test("identity-certified ORIGINAL overlay is trusted S4A; OL cannot replace gauge", () => {
   const s4a = s4aCandidate();
   const identity = selectMetricCorrespondenceSpan({
     roomBoundary: s4aReceipt([s4a]),
@@ -598,8 +607,15 @@ test("identity-certified ORIGINAL overlay is eligible; OL-certified is eligible;
   });
   assert.equal(identity.selected?.overlaySafeOnOriginal, true);
   assert.equal(identity.selected?.source, "s4a_floor_wall");
+  assert.equal(identity.selected?.correspondenceSource, "identity_uv");
+  assert.equal(identity.selected?.spanTrust, "trusted");
 
-  const ol = olCandidate();
+  const ol = olCandidate({
+    worldGeometry: geometry(-0.4, 0.1, 0.4, 0.1),
+    imageA: { x: 0.30, y: 0.64 },
+    imageB: { x: 0.42, y: 0.64 },
+    matchedFraction: 0.99,
+  });
   const olOnly = selectMetricCorrespondenceSpan({
     roomBoundary: s4aReceipt([s4a]),
     registration: { registrationClass: "rejected" },
@@ -610,9 +626,19 @@ test("identity-certified ORIGINAL overlay is eligible; OL-certified is eligible;
     },
     originalLocalizationClass: "certified_original_localized",
   });
-  assert.equal(olOnly.selected?.source, "ol_floor_wall");
-  assert.equal(olOnly.selected?.overlaySafeOnOriginal, true);
-  assert.equal(olOnly.selected?.imageSpace, "original-source-normalized-image/v1");
+  assert.equal(olOnly.selected?.source, "s4a_floor_wall");
+  assert.equal(olOnly.selected?.id, s4a.id);
+  assert.equal(olOnly.selected?.canonicalLength, 4);
+  assert.equal(olOnly.selected?.overlaySafeOnOriginal, false);
+  assert.equal(olOnly.selected?.spanTrust, "candidate");
+  assert.equal(olOnly.selected?.correspondenceSource, "original_localization");
+  assert.equal(olOnly.selected?.lineage.olCandidateId, ol.id);
+  assert.equal(olOnly.selected?.imageA.x, 0.2);
+  assert.equal(olOnly.selected?.imageB.x, 0.8);
+  assert.equal(
+    olOnly.selected?.canonicalWorldA.x,
+    s4a.worldGeometry!.baseStart.x,
+  );
 
   const neither = selectMetricCorrespondenceSpan({
     roomBoundary: s4aReceipt([s4a]),
@@ -623,12 +649,11 @@ test("identity-certified ORIGINAL overlay is eligible; OL-certified is eligible;
     },
     originalLocalizationClass: "original_localization_insufficient",
   });
-  assert.equal(neither.selected, null);
-  assert.ok(
-    neither.rejectedAlternatives.every((item) =>
-      item.reason === "overlay_unsafe" || item.reason === "registration_unavailable"
-    ),
-  );
+  assert.equal(neither.selected?.source, "s4a_floor_wall");
+  assert.equal(neither.selected?.spanTrust, "candidate");
+  assert.equal(neither.selected?.overlaySafeOnOriginal, false);
+  assert.equal(neither.selected?.correspondenceSource, "none");
+  assert.equal(neither.selected?.canonicalLength, 4);
 });
 
 test("no candidate returns null / no_eligible_finite_span", () => {
@@ -892,7 +917,8 @@ test("lab overlay and diagnostic panel stay shadow-only and do not say metres", 
   assert.match(roomLabSource, /Download Metric Correspondence/);
   assert.match(roomLabSource, /afc-v2-metric-correspondence-selection\.json/);
   assert.match(overlaySource, /data-evidence-role="metric-correspondence-span"/);
-  assert.match(overlaySource, /Metric span/);
+  assert.match(overlaySource, /metricCorrespondenceSpanLabel/);
+  assert.match(overlaySource, /data-span-trust/);
   assert.match(overlaySource, /metric-correspondence-endpoint-a/);
   assert.match(overlaySource, /metric-correspondence-endpoint-b/);
   assert.match(

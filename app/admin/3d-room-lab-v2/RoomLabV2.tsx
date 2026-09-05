@@ -88,6 +88,8 @@ import {
   formatCanonicalGaugeUnits,
   isMetricCorrespondenceSelection,
   metricCorrespondenceRoleCopy,
+  metricCorrespondenceSpanHelperCopy,
+  metricCorrespondenceSpanLabel,
   type MetricCorrespondenceSelection,
 } from "./metric-correspondence-span-contract";
 import {
@@ -1847,6 +1849,16 @@ export default function RoomLabV2() {
                 {pipeline?.metricCorrespondence?.selected ? (
                   <div className="mt-2 space-y-1 text-xs leading-5 text-slate-500">
                     <p>
+                      {metricCorrespondenceSpanLabel(
+                        pipeline.metricCorrespondence.selected,
+                      )}
+                    </p>
+                    <p>
+                      {metricCorrespondenceSpanHelperCopy(
+                        pipeline.metricCorrespondence.selected,
+                      )}
+                    </p>
+                    <p>
                       Selected span:{" "}
                       {metricCorrespondenceRoleCopy(
                         pipeline.metricCorrespondence.selected.role,
@@ -1869,6 +1881,10 @@ export default function RoomLabV2() {
                       {pipeline.metricCorrespondence.selected.overlaySafeOnOriginal
                         ? "ORIGINAL-safe"
                         : "unsafe"}
+                    </p>
+                    <p>
+                      Correspondence:{" "}
+                      {pipeline.metricCorrespondence.selected.correspondenceSource}
                     </p>
                     {pipeline.metricCorrespondence.selected.lineage.sourceSeamId ? (
                       <p>

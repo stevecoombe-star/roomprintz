@@ -7,7 +7,10 @@ import type {
 import type { RoomBoundaryCandidateStatus } from "./room-boundary-authority-contract";
 import type { EmptyOriginalRegistrationCorrespondence } from "./empty-original-registration-authority-contract";
 import type { OriginalLocalizedStructure } from "./original-structural-localization-authority-contract";
-import type { MetricCorrespondenceSpan } from "./metric-correspondence-span-contract";
+import {
+  metricCorrespondenceSpanLabel,
+  type MetricCorrespondenceSpan,
+} from "./metric-correspondence-span-contract";
 
 function perpendicular(tangent: Readonly<{ u: number; v: number }>): Readonly<{ u: number; v: number }> {
   const length = Math.hypot(tangent.u, tangent.v);
@@ -363,6 +366,10 @@ export default function RoomEvidenceOverlay({
             data-source-seam-id={
               metricCorrespondenceSpan.lineage.sourceSeamId ?? undefined
             }
+            data-span-trust={metricCorrespondenceSpan.spanTrust}
+            data-correspondence-source={
+              metricCorrespondenceSpan.correspondenceSource
+            }
           >
             <line
               x1={metricCorrespondenceSpan.imageA.x}
@@ -420,7 +427,7 @@ export default function RoomEvidenceOverlay({
               textAnchor="middle"
               data-evidence-kind="metric-correspondence-label"
             >
-              Metric span
+              {metricCorrespondenceSpanLabel(metricCorrespondenceSpan)}
             </text>
           </g>
         ) : null}
