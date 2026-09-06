@@ -33,6 +33,7 @@ import {
   type MetricCorrespondenceSelection,
   type MetricCorrespondenceSpan,
   type MetricCorrespondenceSpanRole,
+  type MetricCorrespondenceSpanTrust,
   type MetricSpanCorrespondenceSource,
   type MetricCorrespondenceWorldXz,
 } from "./metric-correspondence-span-contract";
@@ -427,7 +428,8 @@ function evaluateS4aCandidate(input: {
   const correspondenceSource: MetricSpanCorrespondenceSource = overlaySafeOnOriginal
     ? "identity_uv"
     : "none";
-  const spanTrust = overlaySafeOnOriginal ? "trusted" : "candidate";
+  const spanTrust: MetricCorrespondenceSpanTrust =
+    role === "back_floor_wall" ? "trusted" : "candidate";
   const span = freezeSpan({
     id: candidate.id,
     source: "s4a_floor_wall",
@@ -509,7 +511,7 @@ function annotateUntrustedCorrespondence(
   span: MetricCorrespondenceSpan,
   olCandidate: OriginalLocalizedBoundaryCandidate | null,
 ): MetricCorrespondenceSpan {
-  if (span.overlaySafeOnOriginal || span.spanTrust === "trusted") {
+  if (span.overlaySafeOnOriginal) {
     return span;
   }
   if (!olCandidate) return span;

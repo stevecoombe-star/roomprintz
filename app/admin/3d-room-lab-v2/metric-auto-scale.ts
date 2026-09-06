@@ -4,6 +4,10 @@
  * Physical target: accepted room-width prior (metres).
  * Canonical denominator: trusted complete back floor-wall span.
  *
+ * Metric trust is qualified EMPTY/S4A geometry plus lab completeness,
+ * accepted Gemini width, and scale sanity. ORIGINAL correspondence and
+ * overlay-safe mapping are not Auto requirements.
+ *
  * Fail closed to autoMetricScale = 1. Never blocks Floor / camera / S4 /
  * collision. Does not claim certified wall completeness.
  */
@@ -91,8 +95,9 @@ function backWallCanonicalSource(
 }
 
 /**
- * Generic controlled trust gate. Does not prove structural completeness.
- * Lab trust is a separate explicit assertion.
+ * EMPTY/S4A metric trust gate. Does not prove structural completeness.
+ * Lab trust is a separate explicit assertion. ORIGINAL correspondence
+ * and overlay-safe mapping are not Auto requirements.
  */
 export function evaluateTrustedBackWallWidthSpan(
   selected: MetricCorrespondenceSpan | null | undefined,
@@ -105,9 +110,6 @@ export function evaluateTrustedBackWallWidthSpan(
   if (selected.source !== "s4a_floor_wall") {
     reasons.push("source_not_s4a_floor_wall");
   }
-  if (selected.correspondenceSource !== "identity_uv") {
-    reasons.push("correspondence_not_identity_uv");
-  }
   if (selected.role !== "back_floor_wall") {
     reasons.push("role_not_back_floor_wall");
   }
@@ -119,9 +121,6 @@ export function evaluateTrustedBackWallWidthSpan(
   }
   if (selected.endpointBClass === "frame_adjacent") {
     reasons.push("endpoint_b_frame_adjacent");
-  }
-  if (selected.overlaySafeOnOriginal !== true) {
-    reasons.push("overlay_unsafe_on_original");
   }
   if (
     !Number.isFinite(selected.canonicalLength) ||

@@ -90,6 +90,8 @@ import {
   metricCorrespondenceRoleCopy,
   metricCorrespondenceSpanHelperCopy,
   metricCorrespondenceSpanLabel,
+  METRIC_SPAN_OVERLAY_UNVERIFIED_HELPER_COPY,
+  METRIC_SPAN_OVERLAY_UNVERIFIED_LABEL,
   type MetricCorrespondenceSelection,
 } from "./metric-correspondence-span-contract";
 import {
@@ -1807,6 +1809,10 @@ export default function RoomLabV2() {
                     <p>User World Scale: {formatAutoMetricScale(userWorldScale)}</p>
                     <p>Combined: {formatAutoMetricScale(metricScale)}</p>
                     <p>Status: {AUTO_METRIC_SCALE_EXPERIMENTAL_COPY}</p>
+                    {selectedMetricSpan &&
+                    !selectedMetricSpan.overlaySafeOnOriginal ? (
+                      <p>{METRIC_SPAN_OVERLAY_UNVERIFIED_HELPER_COPY}</p>
+                    ) : null}
                   </div>
                 ) : acceptedMetricPrior && metricPriorWidth ? (
                   <div className="mt-2 space-y-1 text-xs leading-5 text-slate-500">
@@ -1858,6 +1864,9 @@ export default function RoomLabV2() {
                         pipeline.metricCorrespondence.selected,
                       )}
                     </p>
+                    {!pipeline.metricCorrespondence.selected.overlaySafeOnOriginal ? (
+                      <p>{METRIC_SPAN_OVERLAY_UNVERIFIED_LABEL}</p>
+                    ) : null}
                     <p>
                       Selected span:{" "}
                       {metricCorrespondenceRoleCopy(
@@ -1880,7 +1889,7 @@ export default function RoomLabV2() {
                       Overlay:{" "}
                       {pipeline.metricCorrespondence.selected.overlaySafeOnOriginal
                         ? "ORIGINAL-safe"
-                        : "unsafe"}
+                        : "not verified"}
                     </p>
                     <p>
                       Correspondence:{" "}

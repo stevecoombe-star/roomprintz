@@ -8,8 +8,11 @@ import {
   evaluateTrustedBackWallWidthSpan,
 } from "./metric-auto-scale";
 import {
-  METRIC_SPAN_CANDIDATE_HELPER_COPY,
-  METRIC_SPAN_CANDIDATE_LABEL,
+  AUTO_METRIC_SCALE_SANITY_MAX,
+  deriveUniformMetricScaleFromPhysicalSpan,
+  type AutoMetricS4aSafetyEvidence,
+} from "./metric-auto-scale-contract";
+import {
   METRIC_SPAN_OVERLAY_UNVERIFIED_HELPER_COPY,
   METRIC_SPAN_OVERLAY_UNVERIFIED_LABEL,
   METRIC_SPAN_TRUSTED_HELPER_COPY,
@@ -33,12 +36,12 @@ import {
   buildMetricRoomPriorReceipt,
   parseMetricRoomPriorModelEstimate,
 } from "./metric-room-prior-contract";
+import { AUTO_METRIC_SCALE } from "./scene-metric-world-realization";
 
 const V2_DIRECTORY = path.join(process.cwd(), "app/admin/3d-room-lab-v2");
 const V1_DIRECTORY = path.join(process.cwd(), "app/admin/3d-room-lab");
 const ROOM4_LIVE_CANONICAL_LENGTH = 9.582188;
 const ROOM4_WIDTH_M = 3.6;
-const ROOM4_LIVE_AUTO = ROOM4_WIDTH_M / ROOM4_LIVE_CANONICAL_LENGTH;
 const CLASS_A_AUTO_REASONS = [
   "trusted_back_floor_wall_span_experimental",
   "lab_trust_enabled",
@@ -104,6 +107,7 @@ function s4aCandidate(overrides: {
   worldGeometry?: RoomBoundaryWorldGeometry | null;
   imageA?: { x: number; y: number };
   imageB?: { x: number; y: number };
+  reasons?: readonly string[];
 } = {}): RoomBoundaryCandidate {
   const world = overrides.worldGeometry === undefined
     ? geometry(-2, 0, 2, 0)
@@ -171,7 +175,7 @@ function s4aCandidate(overrides: {
       frameAdjacentEndpoint: overrides.frameAdjacentEndpoint ?? false,
       geometryManufactured: false,
     },
-    reasons: [],
+    reasons: overrides.reasons ?? [],
   };
 }
 
@@ -325,7 +329,7 @@ function room2RightTruncated() {
   });
 }
 
-function priorReceipt() {
+function priorReceipt(overrides: Record<string, unknown> = {}) {
   const parsed = parseMetricRoomPriorModelEstimate({
     observability: "recoverable",
     estimatedRoomDepthM: { low: 4.2, best: 4.5, high: 4.8 },
@@ -334,13 +338,14 @@ function priorReceipt() {
     modelConfidence: 0.8,
     limitations: [],
     notes: null,
+    ...overrides,
   });
   assert.equal(parsed.ok, true);
   if (!parsed.ok) throw new Error("metric prior parse failed");
   return buildMetricRoomPriorReceipt({
     sourceImageHash: "a".repeat(64),
     originalAncestorSha256: "a".repeat(64),
-    attemptId: "v2-m1",
+    attemptId: "v2-m15",
     loadGeneration: 1,
     provider: "controlled_fixture",
     model: "fixture",
@@ -350,26 +355,27 @@ function priorReceipt() {
 function deriveFromSelected(
   selected: ReturnType<typeof selectIdentity>["selected"],
   trust = true,
+  roomPrior: ReturnType<typeof priorReceipt> | null = priorReceipt(),
+  s4aSafety: AutoMetricS4aSafetyEvidence | null = S4A_SAFE,
 ) {
   return deriveAutoMetricScale({
-    roomPrior: priorReceipt(),
+    roomPrior,
     selected,
-    s4aSafety: S4A_SAFE,
+    s4aSafety,
     trustSelectedBackSpanAsFullWidth: trust,
   });
 }
 
-test("Test A: Class A exact-grid S4A geometry, identity UV, Auto reasons unchanged", () => {
+test("Test A: exact-grid Class A seam, gauge, overlay, scale, and reasons are unchanged", () => {
   const back = s4aCandidate();
   const result = selectIdentity([back]);
-  assert.equal(result.selectionStatus, "selected");
   assert.equal(result.selected?.id, "rb_back_floor_wall");
   assert.equal(result.selected?.source, "s4a_floor_wall");
-  assert.equal(result.selected?.correspondenceSource, "identity_uv");
-  assert.equal(result.selected?.spanTrust, "trusted");
   assert.equal(result.selected?.role, "back_floor_wall");
   assert.equal(result.selected?.canonicalLength, 4);
+  assert.equal(result.selected?.correspondenceSource, "identity_uv");
   assert.equal(result.selected?.overlaySafeOnOriginal, true);
+  assert.equal(result.selected?.spanTrust, "trusted");
   assert.equal(result.selected?.lineage.olCandidateId, null);
   assert.deepEqual([...result.selectionReasons], [
     "accepted_s4a_floor_wall",
@@ -377,18 +383,22 @@ test("Test A: Class A exact-grid S4A geometry, identity UV, Auto reasons unchang
     "role_back_floor_wall",
     "ranked_best_eligible",
   ]);
+  assert.equal(metricCorrespondenceSpanLabel(result.selected!), METRIC_SPAN_TRUSTED_LABEL);
+  assert.equal(
+    metricCorrespondenceSpanHelperCopy(result.selected!),
+    METRIC_SPAN_TRUSTED_HELPER_COPY,
+  );
   const auto = deriveFromSelected(result.selected);
   assert.equal(auto.accepted, true);
+  assert.equal(auto.autoMetricScale, ROOM4_WIDTH_M / 4);
   assert.deepEqual([...auto.reasons], [...CLASS_A_AUTO_REASONS]);
   const trust = evaluateTrustedBackWallWidthSpan(result.selected, S4A_SAFE);
   assert.equal(trust.trusted, true);
-  assert.deepEqual([...trust.reasons], [
-    "trusted_back_floor_wall_span_experimental",
-  ]);
+  assert.equal(trust.reasons.includes("correspondence_not_identity_uv"), false);
+  assert.equal(trust.reasons.includes("overlay_unsafe_on_original"), false);
 });
 
-test("Test B: Room 4 formula lock is unchanged", () => {
-  assert.equal(ROOM4_LIVE_AUTO, 3.6 / 9.582188);
+test("Test B: Room 4 formula lock remains 3.6 / 9.582188", () => {
   const auto = deriveAutoMetricScale({
     roomPrior: priorReceipt(),
     selected: selectIdentity([s4aCandidate({
@@ -399,116 +409,203 @@ test("Test B: Room 4 formula lock is unchanged", () => {
     s4aSafety: S4A_SAFE,
     trustSelectedBackSpanAsFullWidth: true,
   });
-  assert.equal(
-    auto.canonicalSource?.gaugeLength,
-    canonicalWorldSpanLength({ x: -4.791094, z: 0 }, { x: 4.791094, z: 0 }),
-  );
   assert.ok(Math.abs(auto.canonicalSource!.gaugeLength - ROOM4_LIVE_CANONICAL_LENGTH) < 1e-6);
   assert.equal(auto.autoMetricScale, ROOM4_WIDTH_M / auto.canonicalSource!.gaugeLength);
+  assert.equal(auto.autoMetricScale, 3.6 / 9.582188);
   assert.ok(Math.abs(auto.autoMetricScale - 0.3757) < 0.0001);
   assert.deepEqual([...auto.reasons], [...CLASS_A_AUTO_REASONS]);
 });
 
-test("Test C: Class B OL fragment cannot replace S4A geometry or denominator", () => {
+test("Test C: Room 2-class qualified S4A back Autoes without identity correspondence", () => {
   const s4a = room2Back();
   const s4aLength = canonicalWorldSpanLength(
     { x: s4a.worldGeometry!.baseStart.x, z: s4a.worldGeometry!.baseStart.z },
     { x: s4a.worldGeometry!.baseEnd.x, z: s4a.worldGeometry!.baseEnd.z },
   );
-  const ol = olCandidate({
-    worldGeometry: geometry(-0.3, 0.04, 0.3, 0.04),
-    imageA: { x: 0.18, y: 0.66 },
-    imageB: { x: 0.31, y: 0.64 },
-    matchedFraction: 0.99,
-  });
-  const olLength = canonicalWorldSpanLength(
-    { x: ol.worldGeometry!.baseStart.x, z: ol.worldGeometry!.baseStart.z },
-    { x: ol.worldGeometry!.baseEnd.x, z: ol.worldGeometry!.baseEnd.z },
+  const result = selectUncertified(
+    [s4a, room2LeftTruncated(), room2RightTruncated()],
+    [],
+    "rejected",
+    null,
   );
-  assert.ok(olLength < s4aLength);
-  const result = selectUncertified([s4a, room2LeftTruncated(), room2RightTruncated()], [ol]);
   assert.equal(result.selected?.source, "s4a_floor_wall");
   assert.equal(result.selected?.id, "rb_room2_back");
   assert.equal(result.selected?.canonicalLength, s4aLength);
-  assert.notEqual(result.selected?.canonicalLength, olLength);
-  assert.equal(result.selected?.imageA.x, ROOM2_BACK_IMAGE.a.x);
-  assert.equal(result.selected?.imageB.x, ROOM2_BACK_IMAGE.b.x);
   assert.equal(result.selected?.spanTrust, "trusted");
   assert.equal(result.selected?.overlaySafeOnOriginal, false);
+  assert.equal(result.selected?.correspondenceSource, "none");
+  assert.equal(metricCorrespondenceSpanLabel(result.selected!), METRIC_SPAN_TRUSTED_LABEL);
   const auto = deriveFromSelected(result.selected);
   assert.equal(auto.accepted, true);
   assert.equal(auto.autoMetricScale, ROOM4_WIDTH_M / s4aLength);
-  assert.equal(auto.reasons.includes("overlay_unsafe_on_original"), false);
+  assert.equal(auto.canonicalSource?.kind, "back_floor_wall_span");
+  assert.equal(auto.canonicalSource?.gaugeLength, s4aLength);
   assert.equal(auto.reasons.includes("correspondence_not_identity_uv"), false);
+  assert.equal(auto.reasons.includes("overlay_unsafe_on_original"), false);
   assert.deepEqual([...auto.reasons], [...CLASS_A_AUTO_REASONS]);
 });
 
-test("Test D: unrelated higher-confidence OL cannot win over S4A back", () => {
+test("Test D: certified same-seam OL cannot change S4A canonicalLength or Auto", () => {
   const s4a = room2Back();
-  const unrelated = olCandidate({
-    id: "olb_right_long",
-    sourceObservationSeamId: "right_floor_wall",
-    worldGeometry: geometry(2, 0.2, 2, 4.2),
-    imageA: { x: 0.42, y: 0.40 },
-    imageB: { x: 0.88, y: 0.82 },
-    matchedFraction: 0.99,
-  });
-  const result = selectUncertified(
+  const withoutOl = selectUncertified(
     [s4a, room2LeftTruncated(), room2RightTruncated()],
-    [unrelated],
+    [],
+    "rejected",
+    null,
   );
-  assert.equal(result.selected?.id, "rb_room2_back");
-  assert.equal(result.selected?.source, "s4a_floor_wall");
-  assert.equal(result.selected?.role, "back_floor_wall");
-  assert.equal(result.selected?.correspondenceSource, "none");
-  assert.equal(result.selected?.lineage.olCandidateId, null);
-  assert.notEqual(result.selected?.id, unrelated.id);
+  const withOl = selectUncertified(
+    [s4a, room2LeftTruncated(), room2RightTruncated()],
+    [olCandidate({
+      worldGeometry: geometry(-0.3, 0.04, 0.3, 0.04),
+      imageA: { x: 0.18, y: 0.66 },
+      imageB: { x: 0.31, y: 0.64 },
+      matchedFraction: 0.99,
+    })],
+  );
+  assert.equal(withOl.selected?.canonicalLength, withoutOl.selected?.canonicalLength);
+  assert.equal(withOl.selected?.source, "s4a_floor_wall");
+  assert.equal(withOl.selected?.correspondenceSource, "original_localization");
+  assert.equal(withOl.selected?.overlaySafeOnOriginal, false);
+  assert.equal(withOl.selected?.spanTrust, "trusted");
+  const autoWithout = deriveFromSelected(withoutOl.selected);
+  const autoWith = deriveFromSelected(withOl.selected);
+  assert.equal(autoWith.autoMetricScale, autoWithout.autoMetricScale);
+  assert.equal(autoWith.canonicalSource?.gaugeLength, autoWithout.canonicalSource?.gaugeLength);
+  assert.notEqual(autoWith.canonicalSource?.gaugeLength, 0.6);
 });
 
-test("Test E: OL interior cluster does not extrapolate endpoints or grant full-wall trust", () => {
-  const s4a = room2Back();
-  const interior = olCandidate({
-    imageA: { x: 0.20, y: 0.66 },
-    imageB: { x: 0.28, y: 0.65 },
-    worldGeometry: geometry(-0.2, 0.02, 0.2, 0.02),
+test("Test E: Room 2-class lab trust OFF keeps Auto = 1", () => {
+  const result = selectUncertified([room2Back()], [], "insufficient", null);
+  assert.equal(result.selected?.spanTrust, "trusted");
+  const auto = deriveFromSelected(result.selected, false);
+  assert.equal(auto.accepted, false);
+  assert.equal(auto.autoMetricScale, AUTO_METRIC_SCALE);
+  assert.ok(auto.reasons.includes("lab_trust_not_enabled"));
+  assert.ok(auto.reasons.includes("completeness_not_certified"));
+});
+
+test("Test F: truncated back stays Auto = 1", () => {
+  const truncated = selectUncertified([s4aCandidate({
+    frameAdjacentEndpoint: true,
+    imageA: { x: 0.01, y: 0.62 },
+    imageB: { x: 0.7, y: 0.62 },
+  })]);
+  assert.equal(truncated.selected, null);
+  assert.equal(truncated.rejectedAlternatives[0]?.reason, "frame_truncated");
+  const auto = deriveFromSelected(null);
+  assert.equal(auto.autoMetricScale, 1);
+  const selected = selectIdentity([s4aCandidate()]).selected!;
+  const truncatedConstructed = deriveAutoMetricScale({
+    roomPrior: priorReceipt(),
+    selected: {
+      ...selected,
+      truncation: "one_end",
+      endpointAClass: "frame_adjacent",
+    },
+    s4aSafety: S4A_SAFE,
+    trustSelectedBackSpanAsFullWidth: true,
   });
-  const result = selectUncertified([s4a], [interior]);
-  assert.equal(result.selected?.canonicalWorldA.x, s4a.worldGeometry!.baseStart.x);
-  assert.equal(result.selected?.canonicalWorldB.x, s4a.worldGeometry!.baseEnd.x);
-  assert.equal(result.selected?.imageA.x, ROOM2_BACK_IMAGE.a.x);
-  assert.equal(result.selected?.imageB.x, ROOM2_BACK_IMAGE.b.x);
-  assert.notEqual(result.selected?.imageA.x, interior.originalImageEvidence.polyline[0]!.x);
+  assert.equal(truncatedConstructed.accepted, false);
+  assert.equal(truncatedConstructed.autoMetricScale, 1);
+  assert.ok(truncatedConstructed.reasons.includes("span_truncated"));
+});
+
+test("Test G: hidden continuation and manufactured geometry stay Auto = 1", () => {
+  const hiddenSelected = selectIdentity([{
+    ...s4aCandidate(),
+    limitations: {
+      ...s4aCandidate().limitations,
+      hiddenContinuation: true,
+    },
+  } as unknown as RoomBoundaryCandidate]);
+  assert.equal(hiddenSelected.selected, null);
+  const manufacturedSelected = selectIdentity([{
+    ...s4aCandidate(),
+    limitations: {
+      ...s4aCandidate().limitations,
+      geometryManufactured: true,
+    },
+  } as unknown as RoomBoundaryCandidate]);
+  assert.equal(manufacturedSelected.selected, null);
+  const hiddenAuto = deriveFromSelected(
+    selectIdentity([s4aCandidate()]).selected,
+    true,
+    priorReceipt(),
+    {
+      observedSpanOnly: true,
+      hiddenContinuation: true,
+      geometryManufactured: false,
+    },
+  );
+  assert.equal(hiddenAuto.autoMetricScale, 1);
+  assert.ok(hiddenAuto.reasons.includes("s4a_hidden_continuation"));
+  const manufacturedAuto = deriveFromSelected(
+    selectIdentity([s4aCandidate()]).selected,
+    true,
+    priorReceipt(),
+    {
+      observedSpanOnly: true,
+      hiddenContinuation: false,
+      geometryManufactured: true,
+    },
+  );
+  assert.equal(manufacturedAuto.autoMetricScale, 1);
+  assert.ok(manufacturedAuto.reasons.includes("s4a_geometry_manufactured"));
+});
+
+test("Test H: invalid / rejected room prior stays Auto = 1", () => {
+  const selected = selectUncertified([room2Back()]).selected;
+  const missing = deriveFromSelected(selected, true, null);
+  assert.equal(missing.autoMetricScale, 1);
+  const weak = deriveFromSelected(
+    selected,
+    true,
+    priorReceipt({ modelConfidence: 0.2 }),
+  );
+  assert.equal(weak.accepted, false);
+  assert.equal(weak.autoMetricScale, 1);
+  assert.ok(weak.reasons.includes("room_prior_not_accepted"));
+});
+
+test("Test I: out-of-range scale falls back to Auto = 1 and is not clamped", () => {
+  const huge = deriveUniformMetricScaleFromPhysicalSpan(0.2, 30);
+  assert.ok(huge !== null && huge > AUTO_METRIC_SCALE_SANITY_MAX);
+  const selected = selectIdentity([s4aCandidate({
+    worldGeometry: geometry(-0.1, 0, 0.1, 0),
+  })]).selected;
+  const receipt = deriveFromSelected(selected);
+  assert.equal(receipt.accepted, false);
+  assert.equal(receipt.autoMetricScale, 1);
+  assert.notEqual(receipt.autoMetricScale, AUTO_METRIC_SCALE_SANITY_MAX);
+  assert.ok(receipt.reasons.includes("candidate_outside_catastrophic_sanity_bounds"));
+});
+
+test("Test J: metric-trusted Class B does not draw cyan ORIGINAL overlay", () => {
+  const result = selectUncertified([room2Back()], [], "rejected", null);
   assert.equal(result.selected?.spanTrust, "trusted");
   assert.equal(result.selected?.overlaySafeOnOriginal, false);
-  assert.equal(result.selected?.correspondenceSource, "original_localization");
-  assert.ok(
-    result.selected?.selectionReasons.includes("ol_same_seam_correspondence_incomplete"),
+  const overlay = readV2("RoomEvidenceOverlay.tsx");
+  const roomLab = readV2("RoomLabV2.tsx");
+  assert.match(
+    overlay,
+    /metricCorrespondenceSpan\.overlaySafeOnOriginal \? \(/,
   );
-  const auto = deriveFromSelected(result.selected);
-  assert.equal(auto.accepted, true);
-  assert.equal(auto.autoMetricScale, ROOM4_WIDTH_M / result.selected!.canonicalLength);
-  assert.deepEqual([...auto.reasons], [...CLASS_A_AUTO_REASONS]);
-});
-
-test("Test F: exact-grid identity UV stays trusted with the same overlay and Auto", () => {
-  const result = selectIdentity([s4aCandidate()]);
-  assert.equal(result.selected?.correspondenceSource, "identity_uv");
-  assert.equal(result.selected?.spanTrust, "trusted");
-  assert.equal(result.selected?.overlaySafeOnOriginal, true);
-  assert.equal(metricCorrespondenceSpanLabel(result.selected!), METRIC_SPAN_TRUSTED_LABEL);
+  assert.match(
+    roomLab,
+    /pipeline\?\.metricCorrespondence\?\.selected\s*\?\.overlaySafeOnOriginal/,
+  );
+  assert.match(roomLab, /METRIC_SPAN_OVERLAY_UNVERIFIED_LABEL/);
+  assert.match(roomLab, /METRIC_SPAN_OVERLAY_UNVERIFIED_HELPER_COPY/);
+  assert.equal(METRIC_SPAN_OVERLAY_UNVERIFIED_LABEL, "Original overlay not verified");
   assert.equal(
-    metricCorrespondenceSpanHelperCopy(result.selected!),
-    METRIC_SPAN_TRUSTED_HELPER_COPY,
+    METRIC_SPAN_OVERLAY_UNVERIFIED_HELPER_COPY,
+    "Scale is based on the reconstructed empty room; the original photo does not have a verified matching overlay.",
   );
-  const auto = deriveFromSelected(result.selected);
-  assert.equal(auto.accepted, true);
-  assert.deepEqual([...auto.reasons], [...CLASS_A_AUTO_REASONS]);
 });
 
-test("Test G: certified-rescaled registration keeps S4A gauge and Auto policy", () => {
-  const s4a = s4aCandidate();
+test("Test K: certified-rescaled still Autoes with overlay remaining on", () => {
   const result = selectMetricCorrespondenceSpan({
-    roomBoundary: s4aReceipt([s4a]),
+    roomBoundary: s4aReceipt([s4aCandidate()]),
     registration: { registrationClass: "certified_rescaled_registered" },
     originalLocalizedBoundary: {
       candidates: [olCandidate()],
@@ -517,174 +614,112 @@ test("Test G: certified-rescaled registration keeps S4A gauge and Auto policy", 
     },
     originalLocalizationClass: "certified_original_localized",
   });
-  assert.equal(result.selected?.source, "s4a_floor_wall");
-  assert.equal(result.selected?.id, s4a.id);
-  assert.equal(result.selected?.canonicalLength, 4);
   assert.equal(result.selected?.correspondenceSource, "identity_uv");
   assert.equal(result.selected?.overlaySafeOnOriginal, true);
+  assert.equal(result.selected?.spanTrust, "trusted");
+  assert.equal(result.selected?.canonicalLength, 4);
   assert.equal(result.selected?.lineage.olCandidateId, null);
   const auto = deriveFromSelected(result.selected);
   assert.equal(auto.accepted, true);
   assert.deepEqual([...auto.reasons], [...CLASS_A_AUTO_REASONS]);
 });
 
-test("Test H: uncertified rescaled registration keeps S4A metric trust and allows Auto", () => {
-  const result = selectUncertified([room2Back()], [], "insufficient", null);
-  assert.equal(result.selected?.source, "s4a_floor_wall");
-  assert.equal(result.selected?.spanTrust, "trusted");
-  assert.equal(result.selected?.correspondenceSource, "none");
-  assert.equal(result.selected?.overlaySafeOnOriginal, false);
-  assert.equal(
-    metricCorrespondenceSpanLabel(result.selected!),
-    METRIC_SPAN_TRUSTED_LABEL,
-  );
-  assert.equal(
-    metricCorrespondenceSpanHelperCopy(result.selected!),
-    METRIC_SPAN_TRUSTED_HELPER_COPY,
-  );
-  const auto = deriveFromSelected(result.selected);
-  assert.equal(auto.accepted, true);
-  assert.equal(auto.autoMetricScale, ROOM4_WIDTH_M / result.selected!.canonicalLength);
-  assert.deepEqual([...auto.reasons], [...CLASS_A_AUTO_REASONS]);
-});
-
-test("Test I: frame-truncated side stays truncated; OL stub cannot erase truncation", () => {
-  const left = room2LeftTruncated();
-  const stub = olCandidate({
-    id: "olb_left_stub",
-    sourceObservationSeamId: "left_floor_wall",
-    worldGeometry: geometry(-2, 1.0, -2, 1.8),
-    imageA: { x: 0.06, y: 0.55 },
-    imageB: { x: 0.07, y: 0.70 },
-    matchedFraction: 0.98,
-  });
-  const result = selectUncertified([left], [stub]);
-  assert.equal(result.selected, null);
-  assert.equal(result.rejectedAlternatives[0]?.reason, "frame_truncated");
-  assert.equal(result.rejectedAlternatives.some((item) => item.id === stub.id), false);
-  const auto = deriveFromSelected(null);
-  assert.equal(auto.autoMetricScale, 1);
-});
-
-test("Test J: hidden continuation and manufactured geometry stay rejected", () => {
-  const hidden = selectIdentity([{
-    ...s4aCandidate(),
-    limitations: {
-      ...s4aCandidate().limitations,
-      hiddenContinuation: true,
-    },
-  } as unknown as RoomBoundaryCandidate]);
-  assert.equal(hidden.selected, null);
-  assert.equal(hidden.rejectedAlternatives[0]?.reason, "other");
-  const manufactured = selectIdentity([{
-    ...s4aCandidate(),
-    limitations: {
-      ...s4aCandidate().limitations,
-      geometryManufactured: true,
-    },
-  } as unknown as RoomBoundaryCandidate]);
-  assert.equal(manufactured.selected, null);
-  assert.equal(manufactured.rejectedAlternatives[0]?.reason, "other");
-});
-
-test("Test K: lab trust off keeps trusted S4A display and Auto = 1", () => {
-  const result = selectIdentity([s4aCandidate()]);
-  assert.equal(result.selected?.spanTrust, "trusted");
-  assert.equal(result.selected?.overlaySafeOnOriginal, true);
-  const auto = deriveFromSelected(result.selected, false);
-  assert.equal(auto.autoMetricScale, 1);
-  assert.equal(auto.accepted, false);
-  assert.ok(auto.reasons.includes("lab_trust_not_enabled"));
-  assert.ok(auto.reasons.includes("completeness_not_certified"));
-});
-
-test("Test L: Reader, TILED, and providers stay out of metric consumption", () => {
+test("Test L: M1.5 adds no provider calls and leaves UX-3b1 null", () => {
   const selector = readV2("metric-correspondence-span.ts");
-  const contract = readV2("metric-correspondence-span-contract.ts");
   const autoSource = readV2("metric-auto-scale.ts");
   const analysis = readV2("afc-v2-analysis.server.ts");
-  for (const source of [selector, contract]) {
+  const estimate = readV2("metric-correspondence-estimate.server.ts");
+  for (const source of [selector, autoSource]) {
     assert.doesNotMatch(source, /readTiledPerspective/);
-    assert.doesNotMatch(source, /afc-sr1-tiled-artifact-cache/);
-    assert.doesNotMatch(source, /estimateMetricCorrespondenceSpan/);
     assert.doesNotMatch(source, /observeRoom/);
-    assert.doesNotMatch(source, /gemini|Gemini/);
-    assert.doesNotMatch(source, /autoMetricScale/);
+    assert.doesNotMatch(source, /estimateMetricCorrespondenceSpan/);
   }
-  assert.doesNotMatch(selector, /source: "ol_floor_wall"/);
-  assert.match(selector, /ol_same_seam_correspondence_incomplete/);
-  assert.doesNotMatch(autoSource, /original_localization" ===/);
+  assert.doesNotMatch(autoSource, /correspondenceSource !== "identity_uv"/);
+  assert.doesNotMatch(autoSource, /overlaySafeOnOriginal !== true/);
+  assert.doesNotMatch(autoSource, /correspondence_not_identity_uv/);
+  assert.doesNotMatch(autoSource, /overlay_unsafe_on_original/);
   assert.match(analysis, /metricCorrespondenceEstimate: null/);
   assert.doesNotMatch(analysis, /estimateMetricCorrespondenceSpan/);
-  const selectCount = analysis.split("selectMetricCorrespondenceSpan").length - 1;
-  assert.ok(selectCount >= 1);
+  assert.match(estimate, /overlaySafeOnOriginal/);
 });
 
-test("Room 2-class fixture keeps back S4A as canonical candidate", () => {
-  const result = selectUncertified(
-    [room2Back(), room2LeftTruncated(), room2RightTruncated()],
-    [olCandidate({
-      imageA: { x: 0.16, y: 0.67 },
-      imageB: { x: 0.29, y: 0.64 },
-    })],
-  );
-  assert.equal(result.selected?.role, "back_floor_wall");
-  assert.equal(result.selected?.source, "s4a_floor_wall");
-  assert.equal(result.selected?.canonicalLength, 4);
-  assert.equal(result.rejectedAlternatives.some((item) =>
-    item.id === "rb_room2_left" && item.reason === "frame_truncated"
-  ), true);
-  assert.equal(result.rejectedAlternatives.some((item) =>
-    item.id === "rb_room2_right" && item.reason === "frame_truncated"
-  ), true);
-});
-
-test("Room 3 live metric receipt is still unavailable; qualified aspect-rescaled S4A may Auto", () => {
-  const generic = selectUncertified([s4aCandidate()], [olCandidate()]);
-  assert.equal(generic.selected?.spanTrust, "trusted");
-  assert.equal(generic.selected?.overlaySafeOnOriginal, false);
-  const auto = deriveFromSelected(generic.selected);
-  assert.equal(auto.accepted, true);
-  assert.equal(auto.autoMetricScale, ROOM4_WIDTH_M / generic.selected!.canonicalLength);
-  const combined = readdirSync(V2_DIRECTORY).join("\n");
-  assert.doesNotMatch(combined, /room-3-live-metric-receipt|ROOM3_LIVE_CANONICAL/);
-});
-
-test("UI distinguishes trusted vs candidate metric span and does not imply OL geometry", () => {
-  const overlay = readV2("RoomEvidenceOverlay.tsx");
-  const roomLab = readV2("RoomLabV2.tsx");
-  assert.match(overlay, /metricCorrespondenceSpanLabel/);
-  assert.match(overlay, /data-span-trust/);
-  assert.match(roomLab, /METRIC_SPAN_TRUSTED_LABEL|metricCorrespondenceSpanLabel/);
-  assert.match(roomLab, /metricCorrespondenceSpanHelperCopy/);
-  assert.equal(METRIC_SPAN_TRUSTED_LABEL, "Trusted Metric Span");
-  assert.equal(METRIC_SPAN_CANDIDATE_LABEL, "Candidate Metric Span");
-  assert.equal(
-    METRIC_SPAN_TRUSTED_HELPER_COPY,
-    "Trusted room span used for automatic metric scale when enabled.",
-  );
-  assert.equal(
-    METRIC_SPAN_CANDIDATE_HELPER_COPY,
-    "Detected room span available for metric correspondence, but not trusted for automatic scale.",
-  );
-  assert.match(roomLab, /overlaySafeOnOriginal/);
-  assert.match(roomLab, /METRIC_SPAN_OVERLAY_UNVERIFIED_LABEL/);
-  assert.match(roomLab, /METRIC_SPAN_OVERLAY_UNVERIFIED_HELPER_COPY/);
-  assert.equal(METRIC_SPAN_OVERLAY_UNVERIFIED_LABEL, "Original overlay not verified");
-  assert.equal(
-    METRIC_SPAN_OVERLAY_UNVERIFIED_HELPER_COPY,
-    "Scale is based on the reconstructed empty room; the original photo does not have a verified matching overlay.",
-  );
-  assert.doesNotMatch(overlay, /ol_floor_wall/);
-});
-
-test("V1 is untouched by M1 metric authority split", () => {
+test("Test M: V1 is untouched by EMPTY-authoritative metric trust", () => {
   const v1Runtime = readdirSync(V1_DIRECTORY)
     .filter((name) => /\.(?:ts|tsx)$/.test(name))
     .map((name) => readFileSync(path.join(V1_DIRECTORY, name), "utf8"))
     .join("\n");
   assert.doesNotMatch(v1Runtime, /spanTrust/);
   assert.doesNotMatch(v1Runtime, /correspondenceSource/);
-  assert.doesNotMatch(v1Runtime, /METRIC_SPAN_TRUSTED_LABEL/);
+  assert.doesNotMatch(v1Runtime, /METRIC_SPAN_OVERLAY_UNVERIFIED/);
   assert.doesNotMatch(v1Runtime, /selectMetricCorrespondenceSpan/);
+  assert.doesNotMatch(v1Runtime, /evaluateTrustedBackWallWidthSpan/);
+});
+
+test("fail-closed: side span, other_floor_wall, rejected S4A, competing backs, missing span", () => {
+  const side = selectIdentity([s4aCandidate({
+    id: "rb_left_floor_wall",
+    sourceSeamId: "left_floor_wall",
+    worldGeometry: geometry(-2, 0.2, -2, 3.2),
+    imageA: { x: 0.12, y: 0.35 },
+    imageB: { x: 0.18, y: 0.82 },
+  })]);
+  assert.equal(side.selected?.role, "left_floor_wall");
+  assert.equal(side.selected?.spanTrust, "candidate");
+  const sideAuto = deriveFromSelected(side.selected);
+  assert.equal(sideAuto.autoMetricScale, 1);
+  assert.ok(sideAuto.reasons.includes("role_not_back_floor_wall"));
+
+  const other = deriveFromSelected({
+    ...selectIdentity([s4aCandidate()]).selected!,
+    role: "other_floor_wall",
+  });
+  assert.equal(other.autoMetricScale, 1);
+  assert.ok(other.reasons.includes("role_not_back_floor_wall"));
+
+  const rejected = selectUncertified([s4aCandidate({ status: "rejected" })]);
+  assert.equal(rejected.selected, null);
+  assert.equal(deriveFromSelected(null).autoMetricScale, 1);
+
+  const competing = selectUncertified([
+    s4aCandidate({
+      id: "rb_back_a",
+      sourceSeamId: "back_a",
+      worldGeometry: geometry(-2, 0, 2, 0),
+    }),
+    s4aCandidate({
+      id: "rb_back_b",
+      sourceSeamId: "back_b",
+      worldGeometry: geometry(-1.5, 0, 1.5, 0),
+    }),
+  ]);
+  assert.equal(competing.selected, null);
+  assert.ok(competing.rejectedAlternatives.every((item) =>
+    item.reason === "ambiguous_competing_trace"
+  ));
+  assert.equal(deriveFromSelected(null).reasons.includes("selected_span_missing"), true);
+});
+
+test("correspondence cannot rescue invalid EMPTY geometry", () => {
+  const identityTruncated = selectIdentity([s4aCandidate({
+    frameAdjacentEndpoint: true,
+    imageA: { x: 0.01, y: 0.62 },
+  })]);
+  assert.equal(identityTruncated.selected, null);
+  const identityHidden = selectIdentity([{
+    ...s4aCandidate(),
+    limitations: {
+      ...s4aCandidate().limitations,
+      hiddenContinuation: true,
+    },
+  } as unknown as RoomBoundaryCandidate]);
+  assert.equal(identityHidden.selected, null);
+  const olSource = deriveFromSelected({
+    ...selectIdentity([s4aCandidate()]).selected!,
+    source: "ol_floor_wall",
+    correspondenceSource: "identity_uv",
+    overlaySafeOnOriginal: true,
+    spanTrust: "trusted",
+  });
+  assert.equal(olSource.autoMetricScale, 1);
+  assert.ok(olSource.reasons.includes("source_not_s4a_floor_wall"));
 });

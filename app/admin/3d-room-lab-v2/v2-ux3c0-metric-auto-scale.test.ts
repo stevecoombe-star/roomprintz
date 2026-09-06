@@ -369,7 +369,7 @@ test("Gemini unavailable, missing width, and missing span fall back to Auto 1", 
   assert.ok(noSpan.reasons.includes("selected_span_missing"));
 });
 
-test("truncated, non-back, and unsafe spans fall back to Auto 1", () => {
+test("truncated, non-back, manufactured, and OL-geometry spans fall back to Auto 1", () => {
   const truncated = derive({
     selected: backSpan({
       truncation: "one_end",
@@ -390,8 +390,9 @@ test("truncated, non-back, and unsafe spans fall back to Auto 1", () => {
   const overlayUnsafe = derive({
     selected: backSpan({ overlaySafeOnOriginal: false }),
   });
-  assert.equal(overlayUnsafe.accepted, false);
-  assert.equal(overlayUnsafe.autoMetricScale, 1);
+  assert.equal(overlayUnsafe.accepted, true);
+  assert.equal(overlayUnsafe.autoMetricScale, ROOM4_LIVE_AUTO);
+  assert.equal(overlayUnsafe.reasons.includes("overlay_unsafe_on_original"), false);
 
   const manufactured = derive({
     s4aSafety: {
@@ -414,13 +415,19 @@ test("truncated, non-back, and unsafe spans fall back to Auto 1", () => {
     selected: backSpan({
       correspondenceSource: "original_localization",
       overlaySafeOnOriginal: false,
-      spanTrust: "candidate",
+      spanTrust: "trusted",
     }),
   });
-  assert.equal(olCorrespondence.accepted, false);
-  assert.equal(olCorrespondence.autoMetricScale, 1);
-  assert.ok(olCorrespondence.reasons.includes("correspondence_not_identity_uv"));
-  assert.ok(olCorrespondence.reasons.includes("overlay_unsafe_on_original"));
+  assert.equal(olCorrespondence.accepted, true);
+  assert.equal(olCorrespondence.autoMetricScale, ROOM4_LIVE_AUTO);
+  assert.equal(
+    olCorrespondence.reasons.includes("correspondence_not_identity_uv"),
+    false,
+  );
+  assert.equal(
+    olCorrespondence.reasons.includes("overlay_unsafe_on_original"),
+    false,
+  );
 });
 
 test("valid Auto below 0.50 is accepted and is not clamped to the user slider band", () => {

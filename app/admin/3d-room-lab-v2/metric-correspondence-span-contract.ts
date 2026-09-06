@@ -11,6 +11,8 @@
  *
  * Geometry authority is S4A floor-wall. ORIGINAL Localization may annotate
  * same-seam ORIGINAL correspondence only; it is not a metric denominator.
+ * spanTrust is EMPTY/S4A metric eligibility. overlaySafeOnOriginal is
+ * ORIGINAL cyan-overlay permission and must not determine Auto.
  *
  * Future host-only (not implemented here):
  *   metricScaleCandidate = physicalSpanLengthM / span.canonicalLength
@@ -46,6 +48,10 @@ export const METRIC_SPAN_TRUSTED_HELPER_COPY =
   "Trusted room span used for automatic metric scale when enabled." as const;
 export const METRIC_SPAN_CANDIDATE_HELPER_COPY =
   "Detected room span available for metric correspondence, but not trusted for automatic scale." as const;
+export const METRIC_SPAN_OVERLAY_UNVERIFIED_LABEL =
+  "Original overlay not verified" as const;
+export const METRIC_SPAN_OVERLAY_UNVERIFIED_HELPER_COPY =
+  "Scale is based on the reconstructed empty room; the original photo does not have a verified matching overlay." as const;
 
 export type MetricCorrespondenceSpanRole =
   | "back_floor_wall"
@@ -73,6 +79,10 @@ export type MetricSpanCorrespondenceSource =
   | "original_localization"
   | "none";
 
+/**
+ * EMPTY/S4A metric eligibility for Auto, not ORIGINAL overlay permission.
+ * A span may be trusted for metric scale while overlaySafeOnOriginal is false.
+ */
 export type MetricCorrespondenceSpanTrust = "trusted" | "candidate";
 
 export type MetricCorrespondenceImageSpace =

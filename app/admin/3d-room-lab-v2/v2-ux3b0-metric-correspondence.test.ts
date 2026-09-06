@@ -630,7 +630,7 @@ test("identity-certified ORIGINAL overlay is trusted S4A; OL cannot replace gaug
   assert.equal(olOnly.selected?.id, s4a.id);
   assert.equal(olOnly.selected?.canonicalLength, 4);
   assert.equal(olOnly.selected?.overlaySafeOnOriginal, false);
-  assert.equal(olOnly.selected?.spanTrust, "candidate");
+  assert.equal(olOnly.selected?.spanTrust, "trusted");
   assert.equal(olOnly.selected?.correspondenceSource, "original_localization");
   assert.equal(olOnly.selected?.lineage.olCandidateId, ol.id);
   assert.equal(olOnly.selected?.imageA.x, 0.2);
@@ -650,7 +650,7 @@ test("identity-certified ORIGINAL overlay is trusted S4A; OL cannot replace gaug
     originalLocalizationClass: "original_localization_insufficient",
   });
   assert.equal(neither.selected?.source, "s4a_floor_wall");
-  assert.equal(neither.selected?.spanTrust, "candidate");
+  assert.equal(neither.selected?.spanTrust, "trusted");
   assert.equal(neither.selected?.overlaySafeOnOriginal, false);
   assert.equal(neither.selected?.correspondenceSource, "none");
   assert.equal(neither.selected?.canonicalLength, 4);
