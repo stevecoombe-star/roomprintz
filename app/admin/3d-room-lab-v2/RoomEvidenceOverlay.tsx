@@ -11,6 +11,8 @@ import {
   metricCorrespondenceSpanLabel,
   type MetricCorrespondenceSpan,
 } from "./metric-correspondence-span-contract";
+import type { ObservedSpanMetricCandidate } from "./observed-span-metric-candidate-contract";
+import { METRIC_SPAN_EMPTY_OVERLAY_IMAGE_SPACE } from "./metric-lab-ux";
 
 function perpendicular(tangent: Readonly<{ u: number; v: number }>): Readonly<{ u: number; v: number }> {
   const length = Math.hypot(tangent.u, tangent.v);
@@ -31,6 +33,11 @@ type Props = Readonly<{
   overlaySpace?: "empty" | "original" | "none";
   originalLocalizationStructures?: readonly OriginalLocalizedStructure[];
   metricCorrespondenceSpan?: MetricCorrespondenceSpan | null;
+  metricCorrespondenceEmptyImage?: Readonly<{
+    imageA: Readonly<{ x: number; y: number }>;
+    imageB: Readonly<{ x: number; y: number }>;
+  }> | null;
+  observedSpanMetricCandidate?: ObservedSpanMetricCandidate | null;
 }>;
 
 function points(value: readonly SourceNormalizedPoint[]): string {
@@ -73,6 +80,8 @@ export default function RoomEvidenceOverlay({
   overlaySpace = "none",
   originalLocalizationStructures = [],
   metricCorrespondenceSpan = null,
+  metricCorrespondenceEmptyImage = null,
+  observedSpanMetricCandidate = null,
 }: Props) {
   const room = showRoomObservation &&
       roomObservation?.observerStatus !== "failed"
@@ -356,9 +365,9 @@ export default function RoomEvidenceOverlay({
             })}
           </g>
         ) : null}
-        {overlaySpace === "original" &&
+        {overlaySpace === "empty" &&
             metricCorrespondenceSpan &&
-            metricCorrespondenceSpan.overlaySafeOnOriginal ? (
+            metricCorrespondenceEmptyImage ? (
           <g
             aria-label="Metric correspondence span"
             data-evidence-role="metric-correspondence-span"
@@ -370,20 +379,21 @@ export default function RoomEvidenceOverlay({
             data-correspondence-source={
               metricCorrespondenceSpan.correspondenceSource
             }
+            data-image-space={METRIC_SPAN_EMPTY_OVERLAY_IMAGE_SPACE}
           >
             <line
-              x1={metricCorrespondenceSpan.imageA.x}
-              y1={metricCorrespondenceSpan.imageA.y}
-              x2={metricCorrespondenceSpan.imageB.x}
-              y2={metricCorrespondenceSpan.imageB.y}
+              x1={metricCorrespondenceEmptyImage.imageA.x}
+              y1={metricCorrespondenceEmptyImage.imageA.y}
+              x2={metricCorrespondenceEmptyImage.imageB.x}
+              y2={metricCorrespondenceEmptyImage.imageB.y}
               stroke="rgb(34, 211, 238)"
               strokeWidth="0.005"
               strokeLinecap="round"
               data-evidence-kind="metric-correspondence-segment"
             />
             <circle
-              cx={metricCorrespondenceSpan.imageA.x}
-              cy={metricCorrespondenceSpan.imageA.y}
+              cx={metricCorrespondenceEmptyImage.imageA.x}
+              cy={metricCorrespondenceEmptyImage.imageA.y}
               r="0.009"
               fill="rgb(34, 211, 238)"
               stroke="rgb(15, 23, 42)"
@@ -391,8 +401,8 @@ export default function RoomEvidenceOverlay({
               data-evidence-kind="metric-correspondence-endpoint-a"
             />
             <text
-              x={metricCorrespondenceSpan.imageA.x}
-              y={metricCorrespondenceSpan.imageA.y - 0.016}
+              x={metricCorrespondenceEmptyImage.imageA.x}
+              y={metricCorrespondenceEmptyImage.imageA.y - 0.016}
               fill="rgb(207, 250, 254)"
               fontSize="0.024"
               textAnchor="middle"
@@ -401,8 +411,8 @@ export default function RoomEvidenceOverlay({
               A
             </text>
             <circle
-              cx={metricCorrespondenceSpan.imageB.x}
-              cy={metricCorrespondenceSpan.imageB.y}
+              cx={metricCorrespondenceEmptyImage.imageB.x}
+              cy={metricCorrespondenceEmptyImage.imageB.y}
               r="0.009"
               fill="rgb(34, 211, 238)"
               stroke="rgb(15, 23, 42)"
@@ -410,8 +420,8 @@ export default function RoomEvidenceOverlay({
               data-evidence-kind="metric-correspondence-endpoint-b"
             />
             <text
-              x={metricCorrespondenceSpan.imageB.x}
-              y={metricCorrespondenceSpan.imageB.y - 0.016}
+              x={metricCorrespondenceEmptyImage.imageB.x}
+              y={metricCorrespondenceEmptyImage.imageB.y - 0.016}
               fill="rgb(207, 250, 254)"
               fontSize="0.024"
               textAnchor="middle"
@@ -420,14 +430,84 @@ export default function RoomEvidenceOverlay({
               B
             </text>
             <text
-              x={(metricCorrespondenceSpan.imageA.x + metricCorrespondenceSpan.imageB.x) / 2}
-              y={(metricCorrespondenceSpan.imageA.y + metricCorrespondenceSpan.imageB.y) / 2 - 0.018}
+              x={(metricCorrespondenceEmptyImage.imageA.x +
+                metricCorrespondenceEmptyImage.imageB.x) / 2}
+              y={(metricCorrespondenceEmptyImage.imageA.y +
+                metricCorrespondenceEmptyImage.imageB.y) / 2 - 0.018}
               fill="rgb(207, 250, 254)"
               fontSize="0.028"
               textAnchor="middle"
               data-evidence-kind="metric-correspondence-label"
             >
               {metricCorrespondenceSpanLabel(metricCorrespondenceSpan)}
+            </text>
+          </g>
+        ) : null}
+        {overlaySpace === "empty" && observedSpanMetricCandidate ? (
+          <g
+            aria-label="Estimated metric span"
+            data-evidence-role="observed-span-metric-segment"
+            data-source-seam-id={observedSpanMetricCandidate.lineage.sourceSeamId}
+            data-truncation={observedSpanMetricCandidate.truncation}
+            data-junction-proof={observedSpanMetricCandidate.junction?.type ?? "none"}
+          >
+            <line
+              x1={observedSpanMetricCandidate.imageA.x}
+              y1={observedSpanMetricCandidate.imageA.y}
+              x2={observedSpanMetricCandidate.imageB.x}
+              y2={observedSpanMetricCandidate.imageB.y}
+              stroke="rgb(250, 204, 21)"
+              strokeWidth="0.005"
+              strokeLinecap="round"
+              data-evidence-kind="observed-span-metric-segment"
+            />
+            <circle
+              cx={observedSpanMetricCandidate.imageA.x}
+              cy={observedSpanMetricCandidate.imageA.y}
+              r="0.009"
+              fill="rgb(250, 204, 21)"
+              stroke="rgb(15, 23, 42)"
+              strokeWidth="0.0015"
+              data-evidence-kind="observed-span-metric-endpoint-a"
+            />
+            <text
+              x={observedSpanMetricCandidate.imageA.x}
+              y={observedSpanMetricCandidate.imageA.y - 0.016}
+              fill="rgb(254, 240, 138)"
+              fontSize="0.024"
+              textAnchor="middle"
+              data-evidence-kind="observed-span-metric-endpoint-a-label"
+            >
+              A
+            </text>
+            <circle
+              cx={observedSpanMetricCandidate.imageB.x}
+              cy={observedSpanMetricCandidate.imageB.y}
+              r="0.009"
+              fill="rgb(250, 204, 21)"
+              stroke="rgb(15, 23, 42)"
+              strokeWidth="0.0015"
+              data-evidence-kind="observed-span-metric-endpoint-b"
+            />
+            <text
+              x={observedSpanMetricCandidate.imageB.x}
+              y={observedSpanMetricCandidate.imageB.y - 0.016}
+              fill="rgb(254, 240, 138)"
+              fontSize="0.024"
+              textAnchor="middle"
+              data-evidence-kind="observed-span-metric-endpoint-b-label"
+            >
+              B
+            </text>
+            <text
+              x={(observedSpanMetricCandidate.imageA.x + observedSpanMetricCandidate.imageB.x) / 2}
+              y={(observedSpanMetricCandidate.imageA.y + observedSpanMetricCandidate.imageB.y) / 2 - 0.018}
+              fill="rgb(254, 240, 138)"
+              fontSize="0.022"
+              textAnchor="middle"
+              data-evidence-kind="observed-span-metric-label"
+            >
+              Estimated Metric Span
             </text>
           </g>
         ) : null}

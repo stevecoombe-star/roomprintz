@@ -163,6 +163,24 @@ export function evaluateOpeningFloorGapGeometry(
   return { accepted: true, interval, reasons: [] };
 }
 
+/**
+ * EMPTY-authoritative opening subtraction. Same jamb/floor-reaching geometry
+ * as S4C, without ORIGINAL registration or S4A semantic acceptance.
+ */
+export function qualifyEmptyAuthoritativeOpeningFloorGap(input: {
+  opening: EmptyObservedOpening;
+  polyline: readonly SourceNormalizedPoint[];
+  occupancy: RoomBoundaryOccupancyEvidence | null;
+  wallPlaneId: string | null;
+}): OpeningQualificationResult {
+  return evaluateOpeningFloorGapGeometry({
+    opening: input.opening,
+    polyline: input.polyline,
+    occupancy: input.occupancy,
+    wallPlaneId: input.wallPlaneId,
+  });
+}
+
 export function qualifyOpeningFloorGap(input: {
   opening: EmptyObservedOpening;
   candidate: RoomBoundaryCandidate;

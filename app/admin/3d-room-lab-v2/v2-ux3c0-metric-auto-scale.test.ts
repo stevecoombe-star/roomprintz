@@ -439,7 +439,7 @@ test("valid Auto below 0.50 is accepted and is not clamped to the user slider ba
   assert.equal(computeMetricScale(receipt.autoMetricScale, 1), receipt.autoMetricScale);
 });
 
-test("lab trust defaults off and is required for experimental Auto", () => {
+test("lab trust defaults off unless exact_grid compatible and is required for experimental Auto", () => {
   const untrusted = derive({ trustSelectedBackSpanAsFullWidth: false });
   assert.equal(untrusted.accepted, false);
   assert.equal(untrusted.autoMetricScale, 1);
@@ -452,7 +452,8 @@ test("lab trust defaults off and is required for experimental Auto", () => {
   const roomLab = readV2("RoomLabV2.tsx");
   assert.match(roomLab, /trustSelectedBackSpanAsFullWidth/);
   assert.match(roomLab, /AUTO_METRIC_LAB_TRUST_LABEL/);
-  assert.match(roomLab, /setTrustSelectedBackSpanAsFullWidth\(false\)/);
+  assert.match(roomLab, /trustSelectedBackSpanUserOverride/);
+  assert.match(roomLab, /defaultTrustSelectedBackSpanAsFullWidth/);
   assert.equal(AUTO_METRIC_LAB_TRUST_LABEL, "Trust selected back span as full width");
 });
 

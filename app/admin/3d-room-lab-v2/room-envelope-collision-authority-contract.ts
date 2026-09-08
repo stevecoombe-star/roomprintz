@@ -21,9 +21,11 @@ import {
 import {
   AFC_V2_EMPTY_AUTHORITATIVE_COLLISION_AUTHORITY_VERSION,
   emptyAuthoritativeCollisionWallDiagnostics,
+  emptyAuthoritativeCompatibilityAdmitted,
   enabledEmptyAuthoritativeCollisionWalls,
   type AfcV2EmptyAuthoritativeCollisionAuthorityReceipt,
 } from "./empty-authoritative-collision-authority-contract";
+import { trustExplicitGeminiFloorWallObservation } from "./explicit-gemini-floor-wall-trust";
 
 export const AFC_V2_ROOM_ENVELOPE_COLLISION_AUTHORITY_VERSION =
   "afc-v2-room-envelope-collision-authority/v1" as const;
@@ -176,10 +178,12 @@ export function envelopeCollisionWallDiagnosticsFromReceipt(
 /**
  * Runtime consumes exactly one wall set.
  *
- * Experimental EMPTY-authoritative policy: aspect_compatible_rescaled uses
- * the EMPTY-authoritative receipt when it constructed, even if identity
- * registration / ORIGINAL localization failed. Exact-grid keeps the
- * certified OL → S4C-CQ → S4B path. Never concatenate.
+ * Flag OFF (a80aad6): aspect_compatible_rescaled uses EMPTY-authoritative
+ * when constructed; exact-grid keeps OL → S4C-CQ → S4B. Never concatenate.
+ *
+ * Flag ON: admitted image tiers use the experimental EMPTY-authoritative
+ * receipt as the only active runtime wall source. Incompatible images
+ * produce no experimental walls. Never concatenate OL / S4C / S4B.
  */
 export function selectActiveRuntimeCollisionWalls(input: {
   emptyAuthoritativeCollision?: AfcV2EmptyAuthoritativeCollisionAuthorityReceipt | null;
@@ -191,6 +195,28 @@ export function selectActiveRuntimeCollisionWalls(input: {
     input.emptyAuthoritativeCollision?.lineage.compatibilityTier ??
     input.roomCollision?.lineage.roomBoundary.compatibilityTier ??
     null;
+  if (
+    trustExplicitGeminiFloorWallObservation() &&
+    input.emptyAuthoritativeCollision?.schemaVersion ===
+      AFC_V2_EMPTY_AUTHORITATIVE_COLLISION_AUTHORITY_VERSION
+  ) {
+    if (emptyAuthoritativeCompatibilityAdmitted(compatibility)) {
+      return Object.freeze({
+        source: "empty_authoritative" as const,
+        walls: enabledEmptyAuthoritativeCollisionWalls(
+          input.emptyAuthoritativeCollision,
+        ),
+        diagnostics: emptyAuthoritativeCollisionWallDiagnostics(
+          input.emptyAuthoritativeCollision,
+        ),
+      });
+    }
+    return Object.freeze({
+      source: "empty_authoritative" as const,
+      walls: Object.freeze([]),
+      diagnostics: Object.freeze([]),
+    });
+  }
   if (
     compatibility === "aspect_compatible_rescaled" &&
     input.emptyAuthoritativeCollision?.schemaVersion ===

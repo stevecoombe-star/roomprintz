@@ -95,6 +95,11 @@ import {
   type MetricCorrespondenceSelection,
 } from "./metric-correspondence-span-contract";
 import {
+  defaultTrustSelectedBackSpanAsFullWidth,
+  emptyImageEndpointsFromS4aCandidate,
+  labCompatibilityTierForTrustDefault,
+} from "./metric-lab-ux";
+import {
   formatCandidateMetricScale,
   isMetricCorrespondenceEstimateReceipt,
   metricCorrespondenceEstimateIsAccepted,
@@ -122,7 +127,31 @@ import {
   AUTO_METRIC_UNRELIABLE_COPY,
   formatAutoMetricScale,
 } from "./metric-auto-scale-contract";
-import { deriveAutoMetricScale } from "./metric-auto-scale";
+import { deriveAutoMetricScale, evaluateTrustedBackWallWidthSpan } from "./metric-auto-scale";
+import {
+  AFC_V2_OBSERVED_SPAN_METRIC_AUTHORITY,
+  OBSERVED_SPAN_COLLISION_AUTHORITY_SEPARATE_COPY,
+  OBSERVED_SPAN_METRIC_GEOMETRY_COPY,
+  OBSERVED_SPAN_METRIC_HELPER_COPY,
+  OBSERVED_SPAN_METRIC_LABEL,
+  OBSERVED_SPAN_METRIC_NOT_ELIGIBLE_COPY,
+  OBSERVED_SPAN_METRIC_NOT_USED_COPY,
+  OBSERVED_SPAN_SEMANTIC_S4A_BYPASSED_COPY,
+  isObservedSpanMetricSelection,
+  observedSpanEndpointDiagnosticCopy,
+  observedSpanTruncationDiagnosticCopy,
+  type ObservedSpanMetricSelection,
+} from "./observed-span-metric-candidate-contract";
+import {
+  isObservedSpanPhysicalEstimateReceipt,
+  observedSpanPhysicalEstimateIsAccepted,
+  type ObservedSpanPhysicalEstimateReceipt,
+} from "./observed-span-physical-estimate-contract";
+import {
+  OBSERVED_SPAN_AUTO_SOURCE_COPY,
+  deriveObservedSpanAutoMetricScale,
+  selectAppliedAutoMetricScale,
+} from "./observed-span-auto-metric-scale";
 import {
   DEFAULT_SHOW_COLLISION_BOUNDARY,
   DEFAULT_SHOW_FLOOR_QUAD,
@@ -224,6 +253,8 @@ type PipelineEvidenceState = {
   metricRoomPrior: MetricRoomPriorReceipt | null;
   metricCorrespondence: MetricCorrespondenceSelection | null;
   metricCorrespondenceEstimate: MetricCorrespondenceEstimateReceipt | null;
+  observedSpanMetricSelection: ObservedSpanMetricSelection | null;
+  observedSpanPhysicalEstimate: ObservedSpanPhysicalEstimateReceipt | null;
   analysisEvidence: unknown;
 };
 
@@ -375,6 +406,8 @@ function pipelineEvidence(value: unknown): PipelineEvidenceState {
       metricRoomPrior: null,
       metricCorrespondence: null,
       metricCorrespondenceEstimate: null,
+      observedSpanMetricSelection: null,
+      observedSpanPhysicalEstimate: null,
       analysisEvidence: value,
     };
   }
@@ -386,6 +419,8 @@ function pipelineEvidence(value: unknown): PipelineEvidenceState {
     metricRoomPrior?: unknown;
     metricCorrespondence?: unknown;
     metricCorrespondenceEstimate?: unknown;
+    observedSpanMetricSelection?: unknown;
+    observedSpanPhysicalEstimate?: unknown;
   };
   const empty = candidate.empty &&
       typeof candidate.empty === "object" &&
@@ -428,6 +463,14 @@ function pipelineEvidence(value: unknown): PipelineEvidenceState {
     metricCorrespondenceEstimate:
       isMetricCorrespondenceEstimateReceipt(candidate.metricCorrespondenceEstimate)
         ? candidate.metricCorrespondenceEstimate
+        : null,
+    observedSpanMetricSelection:
+      isObservedSpanMetricSelection(candidate.observedSpanMetricSelection)
+        ? candidate.observedSpanMetricSelection
+        : null,
+    observedSpanPhysicalEstimate:
+      isObservedSpanPhysicalEstimateReceipt(candidate.observedSpanPhysicalEstimate)
+        ? candidate.observedSpanPhysicalEstimate
         : null,
     analysisEvidence: value,
   };
@@ -541,9 +584,9 @@ export default function RoomLabV2() {
   const [selectedModelExpanded, setSelectedModelExpanded] = useState(false);
   const [userWorldScale, setUserWorldScale] = useState(USER_WORLD_SCALE_DEFAULT);
   const [
-    trustSelectedBackSpanAsFullWidth,
-    setTrustSelectedBackSpanAsFullWidth,
-  ] = useState(false);
+    trustSelectedBackSpanUserOverride,
+    setTrustSelectedBackSpanUserOverride,
+  ] = useState<boolean | null>(null);
   const [viewportInteractionActive, setViewportInteractionActive] = useState(false);
   const [worldScaleInputCaptured, setWorldScaleInputCaptured] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -565,13 +608,24 @@ export default function RoomLabV2() {
   const metricPriorCeiling = acceptedMetricPrior?.estimate?.estimatedCeilingHeightM ?? null;
   const metricPriorConfidence = acceptedMetricPrior?.estimate?.modelConfidence ?? null;
   const selectedMetricSpan = pipeline?.metricCorrespondence?.selected ?? null;
+  const exactGridCompatibilityTier = labCompatibilityTierForTrustDefault({
+    oldCompatibilityTier:
+      applied?.emptyOriginalRegistration?.oldCompatibilityTier,
+    emptyAuthoritativeCompatibilityTier:
+      applied?.emptyAuthoritativeCollision?.lineage.compatibilityTier,
+    roomBoundaryCompatibilityTier:
+      applied?.roomCollision?.lineage.roomBoundary.compatibilityTier,
+  });
+  const trustSelectedBackSpanAsFullWidth =
+    trustSelectedBackSpanUserOverride ??
+    defaultTrustSelectedBackSpanAsFullWidth(exactGridCompatibilityTier);
   const matchedS4aCandidate = selectedMetricSpan?.lineage.s4aCandidateId
     ? applied?.roomBoundaries?.candidates.find(
         (candidate) =>
           candidate.id === selectedMetricSpan.lineage.s4aCandidateId,
       ) ?? null
     : null;
-  const autoMetricReceipt = deriveAutoMetricScale({
+  const pathAMetricReceipt = deriveAutoMetricScale({
     roomPrior: pipeline?.metricRoomPrior ?? null,
     selected: selectedMetricSpan,
     s4aSafety: matchedS4aCandidate
@@ -582,6 +636,26 @@ export default function RoomLabV2() {
         }
       : null,
     trustSelectedBackSpanAsFullWidth,
+  });
+  const completeBackGeometryExists = evaluateTrustedBackWallWidthSpan(
+    selectedMetricSpan,
+    matchedS4aCandidate
+      ? {
+          observedSpanOnly: matchedS4aCandidate.limitations.observedSpanOnly,
+          hiddenContinuation: matchedS4aCandidate.limitations.hiddenContinuation,
+          geometryManufactured: matchedS4aCandidate.limitations.geometryManufactured,
+        }
+      : null,
+  ).trusted;
+  const pathBMetricReceipt = deriveObservedSpanAutoMetricScale({
+    estimate: pipeline?.observedSpanPhysicalEstimate ?? null,
+    candidate: pipeline?.observedSpanMetricSelection?.selected ?? null,
+    completeBackGeometryExists,
+  });
+  const autoMetricReceipt = selectAppliedAutoMetricScale({
+    pathA: pathAMetricReceipt,
+    pathB: pathBMetricReceipt,
+    completeBackGeometryExists,
   });
   const autoMetricScale = autoMetricReceipt.autoMetricScale;
   const metricScale = computeMetricScale(autoMetricScale, userWorldScale);
@@ -820,7 +894,7 @@ export default function RoomLabV2() {
     setPipeline(null);
     resetSceneLayer();
     setUserWorldScale(USER_WORLD_SCALE_DEFAULT);
-    setTrustSelectedBackSpanAsFullWidth(false);
+    setTrustSelectedBackSpanUserOverride(null);
     setShowFloorQuad(DEFAULT_SHOW_FLOOR_QUAD);
     setError(null);
     dispatch({ type: "original_preparation_started" });
@@ -1156,6 +1230,28 @@ export default function RoomLabV2() {
     URL.revokeObjectURL(url);
   }
 
+  function downloadObservedSpanMetricEvidence() {
+    if (
+      !pipeline?.observedSpanMetricSelection &&
+      !pipeline?.observedSpanPhysicalEstimate
+    ) {
+      return;
+    }
+    const blob = new Blob(
+      [JSON.stringify({
+        selection: pipeline.observedSpanMetricSelection,
+        estimate: pipeline.observedSpanPhysicalEstimate,
+      }, null, 2)],
+      { type: "application/json" },
+    );
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = "afc-v2-observed-span-physical-estimate.json";
+    anchor.click();
+    URL.revokeObjectURL(url);
+  }
+
   function downloadAutoMetricScaleEvidence() {
     const blob = new Blob(
       [JSON.stringify(autoMetricReceipt, null, 2)],
@@ -1445,10 +1541,21 @@ export default function RoomLabV2() {
                           : []
                       }
                       metricCorrespondenceSpan={
-                        orchestration.selectedRepresentation === "ORIGINAL" &&
-                          pipeline?.metricCorrespondence?.selected
-                            ?.overlaySafeOnOriginal
-                          ? pipeline.metricCorrespondence.selected
+                        orchestration.selectedRepresentation === "EMPTY"
+                          ? pipeline?.metricCorrespondence?.selected ?? null
+                          : null
+                      }
+                      metricCorrespondenceEmptyImage={
+                        orchestration.selectedRepresentation === "EMPTY"
+                          ? emptyImageEndpointsFromS4aCandidate(
+                              matchedS4aCandidate,
+                            )
+                          : null
+                      }
+                      observedSpanMetricCandidate={
+                        orchestration.selectedRepresentation === "EMPTY"
+                          ? pipeline?.observedSpanMetricSelection?.selected ??
+                            null
                           : null
                       }
                     />
@@ -1790,7 +1897,12 @@ export default function RoomLabV2() {
                 </h3>
                 {autoMetricReceipt.accepted ? (
                   <div className="mt-2 space-y-1 text-xs leading-5 text-slate-500">
-                    <p>Source: {AUTO_METRIC_SCALE_SOURCE_COPY}</p>
+                    <p>
+                      Source:{" "}
+                      {pathAMetricReceipt.accepted
+                        ? AUTO_METRIC_SCALE_SOURCE_COPY
+                        : OBSERVED_SPAN_AUTO_SOURCE_COPY}
+                    </p>
                     {autoMetricReceipt.physicalSource ? (
                       <p>
                         Physical target:{" "}
@@ -1835,7 +1947,7 @@ export default function RoomLabV2() {
                       disabled={!applied || selectedMetricSpan.truncation !== "none"}
                       aria-label={AUTO_METRIC_LAB_TRUST_LABEL}
                       onChange={(event) =>
-                        setTrustSelectedBackSpanAsFullWidth(event.target.checked)}
+                        setTrustSelectedBackSpanUserOverride(event.target.checked)}
                     />
                     <span>{AUTO_METRIC_LAB_TRUST_LABEL}</span>
                   </label>
@@ -1886,9 +1998,9 @@ export default function RoomLabV2() {
                       normalized
                     </p>
                     <p>
-                      Overlay:{" "}
+                      ORIGINAL correspondence:{" "}
                       {pipeline.metricCorrespondence.selected.overlaySafeOnOriginal
-                        ? "ORIGINAL-safe"
+                        ? "verified"
                         : "not verified"}
                     </p>
                     <p>
@@ -1988,6 +2100,133 @@ export default function RoomLabV2() {
                     className="mt-3 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-xs font-medium text-cyan-200 transition hover:border-slate-500"
                   >
                     Download Span Estimate
+                  </button>
+                ) : null}
+              </div>
+              <div className="mt-4 border-t border-slate-800 pt-3">
+                <h3 className="text-xs font-semibold text-slate-300">
+                  {OBSERVED_SPAN_METRIC_LABEL}
+                </h3>
+                {pipeline?.observedSpanMetricSelection?.pathAGeometry.exists ? (
+                  <div className="mt-2 space-y-1 text-xs leading-5 text-slate-500">
+                    <p>{OBSERVED_SPAN_METRIC_NOT_USED_COPY}</p>
+                    <p>
+                      Estimator launched:{" "}
+                      {pipeline.observedSpanMetricSelection.estimatorLaunched
+                        ? "yes"
+                        : "no"}
+                    </p>
+                    <p>Collision experiment ignored for metric</p>
+                  </div>
+                ) : observedSpanPhysicalEstimateIsAccepted(
+                  pipeline?.observedSpanPhysicalEstimate,
+                ) &&
+                  pipeline?.observedSpanMetricSelection?.selected &&
+                  pipeline.observedSpanPhysicalEstimate?.estimate
+                    ?.estimatedLengthM ? (
+                  <div className="mt-2 space-y-1 text-xs leading-5 text-slate-500">
+                    <p>{OBSERVED_SPAN_METRIC_HELPER_COPY}</p>
+                    <p>
+                      Estimated physical length:{" "}
+                      {formatMetricMetres(
+                        pipeline.observedSpanPhysicalEstimate.estimate
+                          .estimatedLengthM.best,
+                      )}
+                    </p>
+                    <p>
+                      Range:{" "}
+                      {pipeline.observedSpanPhysicalEstimate.estimate
+                        .estimatedLengthM.low.toFixed(1)}
+                      –
+                      {pipeline.observedSpanPhysicalEstimate.estimate
+                        .estimatedLengthM.high.toFixed(1)}{" "}
+                      m
+                    </p>
+                    <p>
+                      Confidence:{" "}
+                      {pipeline.observedSpanPhysicalEstimate.estimate
+                        .modelConfidence.toFixed(2)}
+                    </p>
+                    <p>
+                      Source seam:{" "}
+                      {pipeline.observedSpanMetricSelection.selected.lineage
+                        .sourceSeamId}
+                    </p>
+                    <p>
+                      Endpoint diagnostics: A:{" "}
+                      {observedSpanEndpointDiagnosticCopy(
+                        pipeline.observedSpanMetricSelection.selected
+                          .endpointAClass,
+                      )}
+                      ; B:{" "}
+                      {observedSpanEndpointDiagnosticCopy(
+                        pipeline.observedSpanMetricSelection.selected
+                          .endpointBClass,
+                      )}
+                    </p>
+                    {observedSpanTruncationDiagnosticCopy(
+                      pipeline.observedSpanMetricSelection.selected.truncation,
+                    ) ? (
+                      <p>
+                        Truncation diagnostic:{" "}
+                        {observedSpanTruncationDiagnosticCopy(
+                          pipeline.observedSpanMetricSelection.selected
+                            .truncation,
+                        )}
+                      </p>
+                    ) : null}
+                    {pipeline.observedSpanMetricSelection.selected.junction ? (
+                      <p>
+                        Junction diagnostic:{" "}
+                        {pipeline.observedSpanMetricSelection.selected.junction
+                          .type}
+                      </p>
+                    ) : null}
+                    {pipeline.observedSpanMetricSelection.selected
+                      .metricGeometryTrust.semanticQualificationBypassed ? (
+                      <>
+                        <p>
+                          S4A status:{" "}
+                          {pipeline.observedSpanMetricSelection.selected
+                            .metricGeometryTrust.s4aStatus}
+                        </p>
+                        <p>
+                          S4A reasons:{" "}
+                          {pipeline.observedSpanMetricSelection.selected
+                            .metricGeometryTrust.s4aReasons.join(", ") ||
+                            "none"}
+                        </p>
+                        <p>{OBSERVED_SPAN_METRIC_GEOMETRY_COPY}</p>
+                        <p>{OBSERVED_SPAN_SEMANTIC_S4A_BYPASSED_COPY}</p>
+                        <p>{OBSERVED_SPAN_COLLISION_AUTHORITY_SEPARATE_COPY}</p>
+                      </>
+                    ) : null}
+                    <p>Auto: {formatAutoMetricScale(autoMetricScale)}</p>
+                    <p>Authority: {AFC_V2_OBSERVED_SPAN_METRIC_AUTHORITY}</p>
+                    <p>Physical estimate authority: physical_estimate_only</p>
+                  </div>
+                ) : (
+                  <div className="mt-2 space-y-1 text-xs leading-5 text-slate-500">
+                    <p>{OBSERVED_SPAN_METRIC_NOT_ELIGIBLE_COPY}</p>
+                    {pipeline?.observedSpanMetricSelection ? (
+                      <p>
+                        Estimator launched:{" "}
+                        {pipeline.observedSpanMetricSelection.estimatorLaunched
+                          ? "yes"
+                          : "no"}
+                      </p>
+                    ) : null}
+                    <p>Collision experiment ignored for metric</p>
+                  </div>
+                )}
+                {pipeline?.observedSpanMetricSelection ||
+                pipeline?.observedSpanPhysicalEstimate ? (
+                  <button
+                    type="button"
+                    onClick={downloadObservedSpanMetricEvidence}
+                    className="mt-3 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-xs font-medium text-cyan-200 transition hover:border-slate-500"
+                  >
+                    Download M2 Estimate
                   </button>
                 ) : null}
               </div>
@@ -2763,6 +3002,37 @@ export default function RoomLabV2() {
                         : ""}
                     </p>
                   ))}
+                  {applied.emptyAuthoritativeCollision?.walls.some((wall) =>
+                    wall.experimentalTrust
+                  ) ? (
+                    <div className="mt-2 space-y-1 text-orange-200/70">
+                      <p className="font-semibold text-orange-200/80">
+                        Explicit floor-wall trust
+                      </p>
+                      {applied.emptyAuthoritativeCollision.walls.flatMap((wall) =>
+                        wall.experimentalTrust
+                          ? [(
+                            <p key={`${wall.id}-trust`}>
+                              {wall.experimentalTrust.observer} {wall.experimentalTrust.geminiSeamId}
+                              {": S4A "}
+                              {wall.experimentalTrust.priorQualificationStatus}
+                              {" · semantic bypass "}
+                              {String(wall.experimentalTrust.semanticVetoBypassed)}
+                              {" · experimental collision "}
+                              {String(wall.experimentalTrust.collisionEnabled)}
+                              {" · confidence "}
+                              {wall.experimentalTrust.confidence.toFixed(2)}
+                              {" · metric separate "}
+                              {String(wall.experimentalTrust.metricEligibleSeparately)}
+                              {wall.experimentalTrust.priorQualificationReasons[0]
+                                ? ` · ${wall.experimentalTrust.priorQualificationReasons.slice(0, 4).join(", ")}`
+                                : ""}
+                            </p>
+                          )]
+                          : []
+                      )}
+                    </div>
+                  ) : null}
                 </div>
               ) : null}
             </section>

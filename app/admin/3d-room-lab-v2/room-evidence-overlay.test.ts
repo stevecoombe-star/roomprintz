@@ -103,3 +103,23 @@ test("overlay is a read-only evidence consumer", () => {
     /onClick|onChange|setFloor|setCamera|dispatch|evaluateQuadSolvability/,
   );
 });
+
+test("Trusted Metric Span is an EMPTY overlay; ORIGINAL keeps localization only", () => {
+  assert.match(
+    overlaySource,
+    /overlaySpace === "empty" &&[\s\S]*metricCorrespondenceEmptyImage/,
+  );
+  assert.doesNotMatch(
+    overlaySource,
+    /overlaySpace === "original" &&[\s\S]{0,80}metricCorrespondenceSpan/,
+  );
+  assert.match(
+    overlaySource,
+    /overlaySpace === "original" && originalLocalizationStructures/,
+  );
+  assert.match(roomLabSource, /emptyImageEndpointsFromS4aCandidate/);
+  assert.match(
+    roomLabSource,
+    /selectedRepresentation === "EMPTY"[\s\S]*metricCorrespondenceEmptyImage/,
+  );
+});

@@ -775,8 +775,8 @@ test("diagnostic UI keeps canonical gauge, physical metres, and candidate scale 
   assert.equal(METRIC_SPAN_ESTIMATE_NOT_APPLIED_COPY, "Not applied");
   assert.equal(METRIC_SPAN_ESTIMATE_NOT_RUN_COPY, "Not run");
   assert.doesNotMatch(overlaySource, /metricCorrespondenceEstimate/);
-  assert.match(overlaySource, /metricCorrespondenceSpan\.imageA/);
-  assert.match(overlaySource, /metricCorrespondenceSpan\.imageB/);
+  assert.match(overlaySource, /metricCorrespondenceEmptyImage\.imageA/);
+  assert.match(overlaySource, /metricCorrespondenceEmptyImage\.imageB/);
   const panel = roomLabSource.slice(
     roomLabSource.indexOf("Metric Correspondence"),
     roomLabSource.indexOf("Download Span Estimate"),

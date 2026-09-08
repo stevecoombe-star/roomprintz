@@ -16,6 +16,7 @@ import type {
   FocusedSideFloorWallSide,
   FocusedSideFloorWallSideEvidence,
 } from "./empty-side-floor-wall-observation-contract";
+import { trustExplicitGeminiFloorWallObservation } from "./explicit-gemini-floor-wall-trust";
 import {
   classifyFocusedWallSupportingRegion,
   classifyFrontierVertex,
@@ -1128,6 +1129,27 @@ function resolveFocusedSide(args: {
     }));
   };
 
+  const experiment = trustExplicitGeminiFloorWallObservation();
+  const semanticVeto = (
+    reason: string,
+    classification?: FocusedWallSupportingRegionClass,
+  ): boolean => {
+    if (experiment) {
+      resolutionReasons.push(reason);
+      if (classification) supportingRegionClass = classification;
+      return false;
+    }
+    rejectSide(
+      side,
+      reason,
+      rejectedPlaneIds,
+      rejectedSeamIds,
+      resolutionReasons,
+    );
+    noteSide(classification);
+    return true;
+  };
+
   if (side.ambiguity !== null) {
     rejectSide(
       side,
@@ -1145,37 +1167,13 @@ function resolveFocusedSide(args: {
     return;
   }
   if (polylineSide(seamLine) !== side.side && polylineSide(seamLine) !== "center") {
-    rejectSide(
-      side,
-      FLOOR_WALL_MERGE_REASON.sideMismatch,
-      rejectedPlaneIds,
-      rejectedSeamIds,
-      resolutionReasons,
-    );
-    noteSide();
-    return;
+    if (semanticVeto(FLOOR_WALL_MERGE_REASON.sideMismatch)) return;
   }
   if (polylineLength(seamLine) < FOCUSED_SIDE_FLOOR_WALL_MIN_IMAGE_SPAN) {
-    rejectSide(
-      side,
-      FLOOR_WALL_MERGE_REASON.minSpan,
-      rejectedPlaneIds,
-      rejectedSeamIds,
-      resolutionReasons,
-    );
-    noteSide();
-    return;
+    if (semanticVeto(FLOOR_WALL_MERGE_REASON.minSpan)) return;
   }
   if (isNearVerticalFloorWallSeam(seamLine)) {
-    rejectSide(
-      side,
-      FLOOR_WALL_MERGE_REASON.nearVertical,
-      rejectedPlaneIds,
-      rejectedSeamIds,
-      resolutionReasons,
-    );
-    noteSide();
-    return;
+    if (semanticVeto(FLOOR_WALL_MERGE_REASON.nearVertical)) return;
   }
 
   const completePair = findCompleteGeneralSideFloorWallPair({
@@ -1185,15 +1183,7 @@ function resolveFocusedSide(args: {
     seams,
   });
   if (completePair.status === "ambiguous_walls") {
-    rejectSide(
-      side,
-      FLOOR_WALL_MERGE_REASON.ambiguousWallMatch,
-      rejectedPlaneIds,
-      rejectedSeamIds,
-      resolutionReasons,
-    );
-    noteSide();
-    return;
+    if (semanticVeto(FLOOR_WALL_MERGE_REASON.ambiguousWallMatch)) return;
   }
   if (completePair.status === "complete") {
     skippedDuplicateSeamIds.push(`${side.side}_floor_wall`);
@@ -1221,15 +1211,7 @@ function resolveFocusedSide(args: {
       polylinesAreNearDuplicate(seamLine, seam.sourceNormalizedPolyline)
     )
   ) {
-    rejectSide(
-      side,
-      FLOOR_WALL_MERGE_REASON.wallWallEdge,
-      rejectedPlaneIds,
-      rejectedSeamIds,
-      resolutionReasons,
-    );
-    noteSide();
-    return;
+    if (semanticVeto(FLOOR_WALL_MERGE_REASON.wallWallEdge)) return;
   }
   const wallCeilings = seams.filter((seam) => seam.category === "wall_ceiling");
   if (
@@ -1237,15 +1219,7 @@ function resolveFocusedSide(args: {
       polylinesAreNearDuplicate(seamLine, seam.sourceNormalizedPolyline)
     )
   ) {
-    rejectSide(
-      side,
-      FLOOR_WALL_MERGE_REASON.wallCeilingEdge,
-      rejectedPlaneIds,
-      rejectedSeamIds,
-      resolutionReasons,
-    );
-    noteSide();
-    return;
+    if (semanticVeto(FLOOR_WALL_MERGE_REASON.wallCeilingEdge)) return;
   }
 
   const inSpanFloor = focusedSeamPassesFloorFrontierConsistency({
@@ -1255,15 +1229,7 @@ function resolveFocusedSide(args: {
     frameTruncated: side.frameTruncated,
   });
   if (!inSpanFloor.pass) {
-    rejectSide(
-      side,
-      FLOOR_WALL_MERGE_REASON.notNearFloorFrontier,
-      rejectedPlaneIds,
-      rejectedSeamIds,
-      resolutionReasons,
-    );
-    noteSide();
-    return;
+    if (semanticVeto(FLOOR_WALL_MERGE_REASON.notNearFloorFrontier)) return;
   }
 
   let wall = completePair.wall;
@@ -1282,28 +1248,14 @@ function resolveFocusedSide(args: {
     }
     const wallSide = polygonSide(wallPolygon);
     if (wallSide !== side.side) {
-      rejectSide(
-        side,
+      if (semanticVeto(
         wallSide === "center"
           ? FLOOR_WALL_MERGE_REASON.backWallContinuation
           : FLOOR_WALL_MERGE_REASON.sideMismatch,
-        rejectedPlaneIds,
-        rejectedSeamIds,
-        resolutionReasons,
-      );
-      noteSide();
-      return;
+      )) return;
     }
     if (seamExtendsBeyondWallSupport(seamLine, wallPolygon)) {
-      rejectSide(
-        side,
-        FLOOR_WALL_MERGE_REASON.beyondSupport,
-        rejectedPlaneIds,
-        rejectedSeamIds,
-        resolutionReasons,
-      );
-      noteSide();
-      return;
+      if (semanticVeto(FLOOR_WALL_MERGE_REASON.beyondSupport)) return;
     }
     const frontier = frontierCoherent(
       seamLine,
@@ -1311,15 +1263,7 @@ function resolveFocusedSide(args: {
       wallPolygon,
     );
     if (!frontier.nearFloor) {
-      rejectSide(
-        side,
-        FLOOR_WALL_MERGE_REASON.notNearFloorFrontier,
-        rejectedPlaneIds,
-        rejectedSeamIds,
-        resolutionReasons,
-      );
-      noteSide();
-      return;
+      if (semanticVeto(FLOOR_WALL_MERGE_REASON.notNearFloorFrontier)) return;
     }
     const supportingRegion = classifyFocusedWallSupportingRegion(
       seamLine,
@@ -1328,17 +1272,11 @@ function resolveFocusedSide(args: {
     );
     supportingRegionClass = supportingRegion;
     if (supportingRegion === "true_contradiction") {
-      rejectSide(
-        side,
+      if (semanticVeto(
         FLOOR_WALL_MERGE_REASON.notNearWallFrontier,
-        rejectedPlaneIds,
-        rejectedSeamIds,
-        resolutionReasons,
-      );
-      noteSide(supportingRegion);
-      return;
-    }
-    if (
+        supportingRegion,
+      )) return;
+    } else if (
       !focusedAddPlaneOccupancyAdmissible(
         seamLine,
         floor.sourceNormalizedPolygon,
@@ -1346,15 +1284,10 @@ function resolveFocusedSide(args: {
         supportingRegion,
       )
     ) {
-      rejectSide(
-        side,
+      if (semanticVeto(
         FLOOR_WALL_MERGE_REASON.occupancyIncoherent,
-        rejectedPlaneIds,
-        rejectedSeamIds,
-        resolutionReasons,
-      );
-      noteSide(supportingRegion);
-      return;
+        supportingRegion,
+      )) return;
     }
     if (planes.length >= MAX_PLANES || seams.length >= MAX_SEAMS) {
       rejectSide(
@@ -1395,26 +1328,10 @@ function resolveFocusedSide(args: {
       wall.sourceNormalizedPolygon,
     );
     if (!frontier.nearFloor) {
-      rejectSide(
-        side,
-        FLOOR_WALL_MERGE_REASON.notNearFloorFrontier,
-        rejectedPlaneIds,
-        rejectedSeamIds,
-        resolutionReasons,
-      );
-      noteSide();
-      return;
+      if (semanticVeto(FLOOR_WALL_MERGE_REASON.notNearFloorFrontier)) return;
     }
     if (!frontier.nearWall) {
-      rejectSide(
-        side,
-        FLOOR_WALL_MERGE_REASON.notNearWallFrontier,
-        rejectedPlaneIds,
-        rejectedSeamIds,
-        resolutionReasons,
-      );
-      noteSide();
-      return;
+      if (semanticVeto(FLOOR_WALL_MERGE_REASON.notNearWallFrontier)) return;
     }
     if (
       !occupancyCoherent(
@@ -1423,26 +1340,10 @@ function resolveFocusedSide(args: {
         wall.sourceNormalizedPolygon,
       )
     ) {
-      rejectSide(
-        side,
-        FLOOR_WALL_MERGE_REASON.occupancyIncoherent,
-        rejectedPlaneIds,
-        rejectedSeamIds,
-        resolutionReasons,
-      );
-      noteSide();
-      return;
+      if (semanticVeto(FLOOR_WALL_MERGE_REASON.occupancyIncoherent)) return;
     }
     if (seamExtendsBeyondWallSupport(seamLine, wall.sourceNormalizedPolygon)) {
-      rejectSide(
-        side,
-        FLOOR_WALL_MERGE_REASON.beyondSupport,
-        rejectedPlaneIds,
-        rejectedSeamIds,
-        resolutionReasons,
-      );
-      noteSide();
-      return;
+      if (semanticVeto(FLOOR_WALL_MERGE_REASON.beyondSupport)) return;
     }
     if (seams.length >= MAX_SEAMS) {
       rejectSide(

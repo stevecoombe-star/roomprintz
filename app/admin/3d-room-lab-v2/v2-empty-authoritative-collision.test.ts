@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import path from "node:path";
-import test from "node:test";
+import test, { afterEach, beforeEach } from "node:test";
 
 import { buildEmptyRoomObservationEvidence } from "./empty-room-observation-contract";
 import type { AfcV2EmptyOriginalRegistrationAuthorityReceipt } from "./empty-original-registration-authority-contract";
@@ -36,11 +36,19 @@ import {
   enabledEmptyAuthoritativeCollisionWalls,
 } from "./empty-authoritative-collision-authority-contract";
 import { constructAfcV2EmptyAuthoritativeCollisionAuthority } from "./empty-authoritative-collision-qualification.server";
+import { setTrustExplicitGeminiFloorWallObservationForTests } from "./explicit-gemini-floor-wall-trust";
 import { ORIGINAL_LOCALIZED_COLLISION_REASON } from "./original-localized-collision-authority-contract";
 import type { AfcV2OriginalLocalizedCollisionAuthorityReceipt } from "./original-localized-collision-authority-contract";
 import { resolveSceneObjectCollision } from "./scene-collision-resolver";
 import { TEST_CUBE_PLACEMENT_LOCAL_AABB } from "./room-collision-footprint";
 import { DEFAULT_WORLD_TRANSFORM } from "./scene-layer-state";
+
+beforeEach(() => {
+  setTrustExplicitGeminiFloorWallObservationForTests(false);
+});
+afterEach(() => {
+  setTrustExplicitGeminiFloorWallObservationForTests(null);
+});
 
 const V2 = path.join(process.cwd(), "app/admin/3d-room-lab-v2");
 const emptyIdentity = {

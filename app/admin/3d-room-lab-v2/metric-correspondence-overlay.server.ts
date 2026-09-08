@@ -19,6 +19,7 @@ export type MetricCorrespondenceOverlayInput = Readonly<{
   width: number;
   height: number;
   format?: "png" | "jpeg";
+  caption?: string;
 }>;
 
 export type MetricCorrespondenceOverlayResult = Readonly<{
@@ -45,11 +46,20 @@ function formatSvgNumber(value: number): string {
   return Number.isFinite(value) ? value.toFixed(2) : "0";
 }
 
+function escapeSvgText(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
 export function buildMetricCorrespondenceOverlaySvg(
   imageA: MetricCorrespondenceOverlayPoint,
   imageB: MetricCorrespondenceOverlayPoint,
   width: number,
   height: number,
+  caption: string = METRIC_CORRESPONDENCE_OVERLAY_CAPTION,
 ): string {
   const pixelA = normalizedToPixel(imageA, width, height);
   const pixelB = normalizedToPixel(imageB, width, height);
@@ -71,7 +81,7 @@ export function buildMetricCorrespondenceOverlaySvg(
     `<circle cx="${formatSvgNumber(pixelB.x)}" cy="${formatSvgNumber(pixelB.y)}" r="${radius}" fill="#FFE14D" stroke="#111827" stroke-width="${Math.max(2, Math.round(lineWidth / 2))}"/>`,
     `<text x="${formatSvgNumber(pixelA.x)}" y="${formatSvgNumber(pixelA.y - labelOffset)}" text-anchor="middle" font-family="sans-serif" font-size="${fontSize}" font-weight="700" fill="#FFE14D" stroke="#111827" stroke-width="3" paint-order="stroke">A</text>`,
     `<text x="${formatSvgNumber(pixelB.x)}" y="${formatSvgNumber(pixelB.y - labelOffset)}" text-anchor="middle" font-family="sans-serif" font-size="${fontSize}" font-weight="700" fill="#FFE14D" stroke="#111827" stroke-width="3" paint-order="stroke">B</text>`,
-    `<text x="${formatSvgNumber(midX)}" y="${formatSvgNumber(captionY)}" text-anchor="middle" font-family="sans-serif" font-size="${captionSize}" font-weight="700" fill="#FFE14D" stroke="#111827" stroke-width="3" paint-order="stroke">${METRIC_CORRESPONDENCE_OVERLAY_CAPTION}</text>`,
+    `<text x="${formatSvgNumber(midX)}" y="${formatSvgNumber(captionY)}" text-anchor="middle" font-family="sans-serif" font-size="${captionSize}" font-weight="700" fill="#FFE14D" stroke="#111827" stroke-width="3" paint-order="stroke">${escapeSvgText(caption)}</text>`,
     `</svg>`,
   ].join("");
 }
@@ -115,6 +125,7 @@ export async function composeMetricCorrespondenceOverlay(
       input.imageB,
       width,
       height,
+      input.caption ?? METRIC_CORRESPONDENCE_OVERLAY_CAPTION,
     );
     const pixelA = normalizedToPixel(input.imageA, width, height);
     const pixelB = normalizedToPixel(input.imageB, width, height);

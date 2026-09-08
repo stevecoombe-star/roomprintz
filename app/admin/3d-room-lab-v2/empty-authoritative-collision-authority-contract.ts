@@ -1,3 +1,4 @@
+import type { ExplicitGeminiFloorWallExperimentalTrust } from "./explicit-gemini-floor-wall-trust";
 import {
   AFC_V2_ROOM_COLLISION_COORDINATE_SPACE,
   AFC_V2_ROOM_COLLISION_GEOMETRY_KERNEL_VERSION,
@@ -10,6 +11,8 @@ import {
   type RoomCollisionWorldXyz,
   type RoomCollisionWorldXz,
 } from "./room-collision-authority-contract";
+
+export type { ExplicitGeminiFloorWallExperimentalTrust };
 
 export const AFC_V2_EMPTY_AUTHORITATIVE_COLLISION_AUTHORITY_VERSION =
   "afc-v2-empty-authoritative-collision-authority/v1" as const;
@@ -65,6 +68,7 @@ export type EmptyAuthoritativeCollisionWall = Readonly<{
   openingCrossing: boolean;
   openingSubtractionPerformed: boolean;
   derivation: EmptyAuthoritativeCollisionDerivation;
+  experimentalTrust: ExplicitGeminiFloorWallExperimentalTrust | null;
   limitations: Readonly<{
     observedSpanOnly: true;
     verticalExtentUnknown: true;

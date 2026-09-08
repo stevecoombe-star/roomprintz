@@ -923,9 +923,11 @@ test("lab overlay and diagnostic panel stay shadow-only and do not say metres", 
   assert.match(overlaySource, /metric-correspondence-endpoint-b/);
   assert.match(
     roomLabSource,
-    /selectedRepresentation === "ORIGINAL" &&/,
+    /selectedRepresentation === "ORIGINAL"/,
   );
   assert.match(overlaySource, /overlaySpace === "original"/);
+  assert.match(overlaySource, /overlaySpace === "empty"/);
+  assert.match(overlaySource, /metricCorrespondenceEmptyImage/);
   const panel = roomLabSource.slice(
     roomLabSource.indexOf("Metric Correspondence"),
     roomLabSource.indexOf("Download Metric Correspondence"),

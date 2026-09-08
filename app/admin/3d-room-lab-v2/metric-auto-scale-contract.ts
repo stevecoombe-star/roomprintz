@@ -22,11 +22,14 @@ export const AFC_V2_AUTO_METRIC_SCALE_VERSION =
 export const AUTO_METRIC_SCALE_AUTHORITY = {
   none: "none",
   gemini_width_back_span_experimental: "gemini_width_back_span_experimental",
+  gemini_observed_span_physical_estimate:
+    "gemini_observed_span_physical_estimate",
 } as const;
 
 export type AutoMetricScaleAuthority =
   | typeof AUTO_METRIC_SCALE_AUTHORITY.none
-  | typeof AUTO_METRIC_SCALE_AUTHORITY.gemini_width_back_span_experimental;
+  | typeof AUTO_METRIC_SCALE_AUTHORITY.gemini_width_back_span_experimental
+  | typeof AUTO_METRIC_SCALE_AUTHORITY.gemini_observed_span_physical_estimate;
 
 /**
  * Conceptual source order. Only gemini_room_width is implemented.
@@ -41,15 +44,21 @@ export const AUTO_METRIC_SOURCE_PRECEDENCE = [
 export const AUTO_METRIC_PHYSICAL_SOURCE_KIND = {
   gemini_room_width: "gemini_room_width",
   manual_known_span: "manual_known_span",
+  gemini_observed_span_length: "gemini_observed_span_length",
 } as const;
 
-export type AutoMetricPhysicalSource = Readonly<{
-  kind: typeof AUTO_METRIC_PHYSICAL_SOURCE_KIND.gemini_room_width;
-  metres: number;
-}>;
+export type AutoMetricPhysicalSource =
+  | Readonly<{
+      kind: typeof AUTO_METRIC_PHYSICAL_SOURCE_KIND.gemini_room_width;
+      metres: number;
+    }>
+  | Readonly<{
+      kind: typeof AUTO_METRIC_PHYSICAL_SOURCE_KIND.gemini_observed_span_length;
+      metres: number;
+    }>;
 
 export type AutoMetricCanonicalSource = Readonly<{
-  kind: "back_floor_wall_span";
+  kind: "back_floor_wall_span" | "observed_floor_wall_span";
   correspondenceSpanId: string;
   gaugeLength: number;
 }>;
@@ -160,5 +169,7 @@ export function isAutoMetricScaleReceipt(
     value.schemaVersion === AFC_V2_AUTO_METRIC_SCALE_VERSION &&
     (value.authority === AUTO_METRIC_SCALE_AUTHORITY.none ||
       value.authority ===
-        AUTO_METRIC_SCALE_AUTHORITY.gemini_width_back_span_experimental);
+        AUTO_METRIC_SCALE_AUTHORITY.gemini_width_back_span_experimental ||
+      value.authority ===
+        AUTO_METRIC_SCALE_AUTHORITY.gemini_observed_span_physical_estimate);
 }

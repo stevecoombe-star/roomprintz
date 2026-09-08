@@ -125,6 +125,23 @@ import {
   type MetricCorrespondenceEstimateReceipt,
 } from "./metric-correspondence-estimate-contract";
 import {
+  markObservedSpanEstimatorLaunched,
+  selectObservedSpanMetricCandidate,
+} from "./observed-span-metric-candidate";
+import {
+  type ObservedSpanMetricSelection,
+} from "./observed-span-metric-candidate-contract";
+import { acceptObservedSpanPhysicalEstimate } from "./observed-span-physical-estimate-acceptance";
+import {
+  buildObservedSpanPhysicalEstimateReceipt,
+  unavailableObservedSpanEstimateAcceptance,
+  type ObservedSpanPhysicalEstimateReceipt,
+} from "./observed-span-physical-estimate-contract";
+import {
+  estimateObservedSpanPhysicalLength,
+  type ObservedSpanPhysicalEstimateInput,
+} from "./observed-span-physical-estimate.server";
+import {
   getAutoFloorVisionAllowedImageHosts,
   getAutoFloorVisionImageFetchTimeoutMs,
   getAutoFloorVisionImageMaxBytes,
@@ -224,6 +241,8 @@ type AfcV2LivePipelineEvidence = Readonly<{
   metricRoomPrior: MetricRoomPriorReceipt | null;
   metricCorrespondence: MetricCorrespondenceSelection | null;
   metricCorrespondenceEstimate: MetricCorrespondenceEstimateReceipt | null;
+  observedSpanMetricSelection: ObservedSpanMetricSelection | null;
+  observedSpanPhysicalEstimate: ObservedSpanPhysicalEstimateReceipt | null;
 }>;
 
 export type AfcV2AnalyzeResult =
@@ -287,6 +306,9 @@ export type AfcV2AnalysisDependencies = Readonly<{
   estimateMetricRoom?: (
     input: MetricRoomPriorInput,
   ) => Promise<MetricRoomPriorReceipt>;
+  estimateObservedSpanPhysical?: (
+    input: ObservedSpanPhysicalEstimateInput,
+  ) => Promise<ObservedSpanPhysicalEstimateReceipt>;
   /**
    * Scheduling probe only. Fired after TILED Floor/Camera freeze+restore and
    * before the EMPTY Room Observation join. Must not affect authority.
@@ -545,6 +567,8 @@ function livePipelineEvidence(
     metricRoomPrior,
     metricCorrespondence: null,
     metricCorrespondenceEstimate: null,
+    observedSpanMetricSelection: null,
+    observedSpanPhysicalEstimate: null,
   });
 }
 
@@ -731,6 +755,206 @@ function startMetricRoomPrior(
       });
     }
   })();
+}
+
+function freezeLineageIdentity(value: unknown): {
+  receiptVersion: string | null;
+  payloadSha256: string | null;
+} {
+  if (!value || typeof value !== "object") {
+    return { receiptVersion: null, payloadSha256: null };
+  }
+  const receipt = value as {
+    receiptVersion?: unknown;
+    integrity?: { payloadSha256?: unknown };
+  };
+  return {
+    receiptVersion: typeof receipt.receiptVersion === "string"
+      ? receipt.receiptVersion
+      : null,
+    payloadSha256: typeof receipt.integrity?.payloadSha256 === "string"
+      ? receipt.integrity.payloadSha256
+      : null,
+  };
+}
+
+export function launchObservedSpanPhysicalEstimate(args: Readonly<{
+  input: AfcV2AnalyzeInput;
+  dependencies: AfcV2AnalysisDependencies;
+  product: AfcSr1LiveAuthoritativeGeometry;
+  floorAuthorityKey: string;
+  freezeReceipt: unknown;
+  roomBoundaries: AfcV2RoomBoundaryAuthorityReceipt;
+  roomCollision: AfcV2RoomCollisionAuthorityReceipt | null;
+  roomObservation: EmptyRoomObservationEvidence | null;
+  emptyBytes: Uint8Array | null;
+  originalBytes: Uint8Array | null;
+}>): {
+  selection: ObservedSpanMetricSelection;
+  estimatePromise: Promise<ObservedSpanPhysicalEstimateReceipt | null>;
+} {
+  const selection = selectObservedSpanMetricCandidate({
+    roomBoundary: args.roomBoundaries,
+    roomCollision: args.roomCollision,
+    observation: args.roomObservation,
+    suppressWhenCompleteBackGeometryExists: true,
+  });
+  if (selection.pathAGeometry.exists || !selection.selected) {
+    return {
+      selection: markObservedSpanEstimatorLaunched(selection, false),
+      estimatePromise: Promise.resolve(null),
+    };
+  }
+  if (!args.emptyBytes) {
+    return {
+      selection: markObservedSpanEstimatorLaunched(selection, false),
+      estimatePromise: Promise.resolve(null),
+    };
+  }
+  const freeze = freezeLineageIdentity(args.freezeReceipt);
+  const emptyMime = asOriginalMime(args.product.emptyBasis.mimeType);
+  const originalMime = asOriginalMime(args.product.originalBasis.mimeType);
+  if (!emptyMime) {
+    return {
+      selection: markObservedSpanEstimatorLaunched(selection, false),
+      estimatePromise: Promise.resolve(null),
+    };
+  }
+  const estimateInput: ObservedSpanPhysicalEstimateInput = {
+    attemptId: args.input.attemptId,
+    loadGeneration: args.input.loadGeneration,
+    empty: {
+      bytes: args.emptyBytes,
+      identity: {
+        sha256: args.product.emptyBasis.sha256,
+        byteCount: args.product.emptyBasis.byteCount,
+        decodedWidth: args.product.emptyBasis.decodedWidth,
+        decodedHeight: args.product.emptyBasis.decodedHeight,
+        mimeType: emptyMime,
+        orientation: 1,
+      },
+    },
+    original: args.originalBytes && originalMime
+      ? {
+        bytes: args.originalBytes,
+        identity: {
+          sha256: args.product.originalBasis.sha256,
+          byteCount: args.product.originalBasis.byteCount,
+          decodedWidth: args.product.originalBasis.decodedWidth,
+          decodedHeight: args.product.originalBasis.decodedHeight,
+          mimeType: originalMime,
+          orientation: 1,
+        },
+      }
+      : null,
+    candidate: selection.selected,
+    floorAuthorityKey: args.floorAuthorityKey,
+    freezeReceiptVersion: freeze.receiptVersion,
+    freezePayloadSha256: freeze.payloadSha256,
+  };
+  const launched = markObservedSpanEstimatorLaunched(selection, true);
+  if (args.dependencies.estimateObservedSpanPhysical) {
+    return {
+      selection: launched,
+      estimatePromise: args.dependencies.estimateObservedSpanPhysical(estimateInput)
+        .catch(() => null),
+    };
+  }
+  if (isControlledMetricPriorFixture(args.dependencies)) {
+    return {
+      selection: markObservedSpanEstimatorLaunched(selection, false),
+      estimatePromise: Promise.resolve(
+        buildObservedSpanPhysicalEstimateReceipt({
+          lineage: {
+            attemptId: args.input.attemptId,
+            loadGeneration: args.input.loadGeneration,
+            s4aCandidateId: selection.selected.id,
+            sourceSeamId: selection.selected.lineage.sourceSeamId,
+            observationSource: selection.selected.lineage.observationSource,
+            emptySha256: args.product.emptyBasis.sha256,
+            emptyByteCount: args.product.emptyBasis.byteCount,
+            emptyDecodedWidth: args.product.emptyBasis.decodedWidth,
+            emptyDecodedHeight: args.product.emptyBasis.decodedHeight,
+            originalSha256: args.product.originalBasis.sha256,
+            floorAuthorityKey: args.floorAuthorityKey,
+            freezeReceiptVersion: freeze.receiptVersion,
+            freezePayloadSha256: freeze.payloadSha256,
+            emptyNormalizedA: selection.selected.imageA,
+            emptyNormalizedB: selection.selected.imageB,
+            canonicalWorldA: selection.selected.canonicalWorldA,
+            canonicalWorldB: selection.selected.canonicalWorldB,
+            canonicalLength: selection.selected.canonicalLength,
+            highlightedImageKind: "EMPTY_OVERLAY",
+            overlayRasterSha256: "",
+            promptVersion: "afc-v2-observed-span-physical-estimator/v1",
+            schemaVersion: "afc-v2-observed-span-physical-estimate/v1",
+            junctionProofType: selection.selected.junction?.type ?? "none",
+            junctionMateCandidateId: selection.selected.junction?.mateCandidateId ?? null,
+            junctionMateSourceSeamId: selection.selected.junction?.mateSourceSeamId ?? null,
+          },
+          contextImageKind: null,
+          overlayImageHash: "",
+          provider: "controlled_fixture",
+          model: "fixture",
+          estimate: null,
+          hostAcceptance: unavailableObservedSpanEstimateAcceptance([
+            "controlled_fixture_observed_span_not_run",
+          ]),
+          failure: {
+            failureClass: "configuration",
+            failureStage: "configuration",
+            provider: "controlled_fixture",
+            model: "fixture",
+            providerStatus: null,
+            safeDetail:
+              "Observed-span estimator was not invoked in this controlled fixture.",
+            contractValidationReason: "controlled_fixture_observed_span_not_run",
+          },
+          originalIncludedAsUnhighlightedContext: false,
+          forbiddenGeometryFieldsPresent: false,
+          estimatorLaunched: false,
+        }),
+      ),
+    };
+  }
+  return {
+    selection: launched,
+    estimatePromise: estimateObservedSpanPhysicalLength(estimateInput).catch(() => null),
+  };
+}
+
+function finalizeObservedSpanEstimate(
+  selection: ObservedSpanMetricSelection,
+  estimate: ObservedSpanPhysicalEstimateReceipt | null,
+  current: Readonly<{
+    emptySha256: string;
+    originalSha256: string | null;
+    floorAuthorityKey: string;
+    freezeReceiptVersion: string | null;
+    freezePayloadSha256: string | null;
+  }>,
+): ObservedSpanPhysicalEstimateReceipt | null {
+  if (!estimate || !selection.selected) return estimate;
+  return Object.freeze({
+    ...estimate,
+    hostAcceptance: acceptObservedSpanPhysicalEstimate(estimate.estimate, {
+      candidate: selection.selected,
+      lineage: estimate.lineage,
+      current: {
+        s4aCandidateId: selection.selected.lineage.s4aCandidateId,
+        sourceSeamId: selection.selected.lineage.sourceSeamId,
+        emptySha256: current.emptySha256,
+        originalSha256: current.originalSha256,
+        floorAuthorityKey: current.floorAuthorityKey,
+        canonicalLength: selection.selected.canonicalLength,
+        freezeReceiptVersion: current.freezeReceiptVersion,
+        freezePayloadSha256: current.freezePayloadSha256,
+        candidateStillEligible: true,
+      },
+      originalWasIncluded:
+        estimate.diagnostics.originalIncludedAsUnhighlightedContext,
+    }),
+  });
 }
 
 /**
@@ -1124,6 +1348,18 @@ export async function executeAfcV2Analysis(
     originalCapture.bytes ??
     await fetchVerifiedOriginalBytes(input, product) ??
     null;
+  const observedSpanLaunch = launchObservedSpanPhysicalEstimate({
+    input,
+    dependencies,
+    product,
+    floorAuthorityKey,
+    freezeReceipt: freeze.value,
+    roomBoundaries,
+    roomCollision,
+    roomObservation,
+    emptyBytes,
+    originalBytes,
+  });
   let emptyOriginalRegistration: AfcV2EmptyOriginalRegistrationAuthorityReceipt | null =
     null;
   let roomEnvelope: AfcV2RoomEnvelopeAuthorityReceipt | null = null;
@@ -1235,6 +1471,8 @@ export async function executeAfcV2Analysis(
       roomEnvelope,
       identityRegistration: emptyOriginalRegistration,
       originalLocalization: originalStructuralLocalization,
+      roomBoundary: roomBoundaries,
+      observation: roomObservation,
     });
   } catch {
     emptyAuthoritativeCollision = null;
@@ -1257,6 +1495,19 @@ export async function executeAfcV2Analysis(
   }
 
   const metricRoomPrior = await metricPriorPromise;
+  const observedSpanPhysicalRaw = await observedSpanLaunch.estimatePromise;
+  const freezeIdentity = freezeLineageIdentity(freeze.value);
+  const observedSpanPhysicalEstimate = finalizeObservedSpanEstimate(
+    observedSpanLaunch.selection,
+    observedSpanPhysicalRaw,
+    {
+      emptySha256: product.emptyBasis.sha256,
+      originalSha256: product.originalBasis.sha256,
+      floorAuthorityKey,
+      freezeReceiptVersion: freezeIdentity.receiptVersion,
+      freezePayloadSha256: freezeIdentity.payloadSha256,
+    },
+  );
   return {
     ...livePipelineEvidence(
       input,
@@ -1283,6 +1534,8 @@ export async function executeAfcV2Analysis(
     emptyAuthoritativeCollision,
     metricCorrespondence,
     metricCorrespondenceEstimate: null,
+    observedSpanMetricSelection: observedSpanLaunch.selection,
+    observedSpanPhysicalEstimate,
   };
 }
 

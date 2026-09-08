@@ -588,11 +588,11 @@ test("Test J: metric-trusted Class B does not draw cyan ORIGINAL overlay", () =>
   const roomLab = readV2("RoomLabV2.tsx");
   assert.match(
     overlay,
-    /metricCorrespondenceSpan\.overlaySafeOnOriginal \? \(/,
+    /overlaySpace === "empty" &&[\s\S]*metricCorrespondenceSpan &&[\s\S]*metricCorrespondenceEmptyImage/,
   );
-  assert.match(
-    roomLab,
-    /pipeline\?\.metricCorrespondence\?\.selected\s*\?\.overlaySafeOnOriginal/,
+  assert.doesNotMatch(
+    overlay,
+    /overlaySpace === "original" &&[\s\S]{0,80}metricCorrespondenceSpan/,
   );
   assert.match(roomLab, /METRIC_SPAN_OVERLAY_UNVERIFIED_LABEL/);
   assert.match(roomLab, /METRIC_SPAN_OVERLAY_UNVERIFIED_HELPER_COPY/);

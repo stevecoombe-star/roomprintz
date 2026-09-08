@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import path from "node:path";
-import test from "node:test";
+import test, { afterEach, beforeEach } from "node:test";
 
 import {
   buildEmptyRoomObservationEvidence,
@@ -27,6 +27,7 @@ import {
 import { AFC_V2_EMPTY_SIDE_FLOOR_WALL_PROMPT_VERSION } from "./empty-side-floor-wall-observation.server";
 import { constructAfcV2RoomBoundaryAuthority } from "./room-boundary-authority.server";
 import { constructAfcV2RoomCollisionAuthority } from "./room-collision-qualification.server";
+import { setTrustExplicitGeminiFloorWallObservationForTests } from "./explicit-gemini-floor-wall-trust";
 import {
   classifyFocusedWallSupportingRegion,
   classifyFrontierVertex,
@@ -35,6 +36,13 @@ import {
   pointIsFrameAdjacent,
 } from "./room-boundary-qualification.server";
 import { ROOM_BOUNDARY_IMAGE_FRONTIER_MAX_DISTANCE } from "./room-boundary-authority-contract";
+
+beforeEach(() => {
+  setTrustExplicitGeminiFloorWallObservationForTests(false);
+});
+afterEach(() => {
+  setTrustExplicitGeminiFloorWallObservationForTests(null);
+});
 
 const sha = (bytes: Uint8Array) =>
   createHash("sha256").update(bytes).digest("hex");
