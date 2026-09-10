@@ -24,7 +24,10 @@ export function Prepare3dRoomControl({ state, onPrepare }: Props) {
       data-prepare-3d-phase={state.phase}
     >
       {state.phase === "error" && (
-        <span className="max-w-[16rem] text-center text-xs text-red-300">
+        <span
+          className="max-w-[16rem] text-center text-xs text-red-300"
+          role="alert"
+        >
           {PREPARE_3D_ROOM_FAILURE_MESSAGE}
         </span>
       )}
@@ -32,9 +35,9 @@ export function Prepare3dRoomControl({ state, onPrepare }: Props) {
         type="button"
         disabled={prepareDisabled}
         onClick={onPrepare}
-        className={`rounded-md border px-2.5 py-1 text-xs transition ${
+        className={`rounded-md border px-2.5 py-1 text-xs transition focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-neutral-400 ${
           prepareDisabled
-            ? "border-neutral-800 bg-neutral-950 text-neutral-500"
+            ? "cursor-not-allowed border-neutral-800 bg-neutral-950 text-neutral-500"
             : "border-emerald-500/70 bg-emerald-950/40 text-emerald-100 hover:bg-emerald-900/50"
         }`}
       >

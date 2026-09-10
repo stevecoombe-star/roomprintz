@@ -191,7 +191,7 @@ test("History version change does not change AFC world or restore identity", () 
 
 test("production restore hook does not depend on activeAssetId or selected version", () => {
   const hook = source("lib/afc-v2-runtime/use-afc-production-runtime.ts");
-  assert.match(hook, /\[enabled, roomId\]/);
+  assert.match(hook, /\[enabled, roomId, reloadKey\]/);
   assert.doesNotMatch(hook, /activeAssetId/);
   assert.doesNotMatch(hook, /selectedVersionId/);
   assert.doesNotMatch(hook, /selectedVersion/);

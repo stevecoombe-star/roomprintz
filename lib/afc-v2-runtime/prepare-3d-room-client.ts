@@ -106,6 +106,13 @@ export function canRequestPrepare(state: Prepare3dRoomState): boolean {
   return !state.inFlight && (state.phase === "idle" || state.phase === "error");
 }
 
+export function shouldApplyPrepareRoomResponse(input: Readonly<{
+  requestRoomId: string;
+  currentRoomId: string | null;
+}>): boolean {
+  return input.currentRoomId === input.requestRoomId;
+}
+
 export function prepareButtonLabel(state: Prepare3dRoomState): string {
   if (state.phase === "running") return "Preparing your room…";
   if (state.phase === "error") return "Try Again";

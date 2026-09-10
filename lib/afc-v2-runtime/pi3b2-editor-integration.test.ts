@@ -229,7 +229,7 @@ test("AFC restore identity is room-only and ignores version and UI mode", () => 
   assert.equal(threeD.enabled, true);
 
   const hook = source("lib/afc-v2-runtime/use-afc-production-runtime.ts");
-  assert.match(hook, /\[enabled, roomId\]/);
+  assert.match(hook, /\[enabled, roomId, reloadKey\]/);
   assert.doesNotMatch(hook, /activeAssetId/);
   assert.doesNotMatch(hook, /selectedVersionId/);
   assert.doesNotMatch(hook, /workingImageUrl/);
@@ -297,7 +297,8 @@ test("integrated 3D panel owns Move/Rotate and hides 2D workflow controls", () =
   assert.match(integrated, /showInternalControls=\{false\}/);
 
   const panel = source("components/afc-3d/Editor3dModePanel.tsx");
-  assert.match(panel, /3D MODE/);
+  assert.match(panel, />3D</);
+  assert.doesNotMatch(panel, /3D MODE/);
   assert.match(panel, /Move/);
   assert.match(panel, /Rotate/);
   assert.doesNotMatch(panel, /getWorkflowStepDisplayLabel/);

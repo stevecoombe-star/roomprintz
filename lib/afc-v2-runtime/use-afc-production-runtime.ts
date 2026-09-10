@@ -13,9 +13,10 @@ import {
 
 export function useAfcProductionRuntime(
   roomId: string | null,
-  options?: Readonly<{ enabled?: boolean }>,
+  options?: Readonly<{ enabled?: boolean; reloadKey?: number }>,
 ): AfcProductionRuntimeLoadState {
   const enabled = options?.enabled ?? true;
+  const reloadKey = options?.reloadKey ?? 0;
   const [state, setState] = useState<AfcProductionRuntimeLoadState>(
     createIdleAfcProductionRuntimeState,
   );
@@ -42,6 +43,7 @@ export function useAfcProductionRuntime(
         if (!token) {
           throw new Error("Your session expired. Sign in again.");
         }
+        if (cancelled) return;
         const response = await fetch(runtimeRestoreUrl(activeRoomId), {
           method: "GET",
           headers: {
@@ -90,7 +92,7 @@ export function useAfcProductionRuntime(
     return () => {
       cancelled = true;
     };
-  }, [enabled, roomId]);
+  }, [enabled, roomId, reloadKey]);
 
   return state;
 }

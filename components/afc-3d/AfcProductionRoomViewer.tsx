@@ -49,6 +49,7 @@ import {
   worldPositionXZ,
   worldTransformFromObject3D,
 } from "@/lib/afc-v2-runtime/viewport-interaction";
+import { INTEGRATED_3D_RESTORE_ERROR_MESSAGE } from "@/lib/afc-v2-runtime/editor-viewport-mode";
 import {
   VIEWER_BACKGROUND_IMAGE_ALT,
   productionViewerWorldLifecycleKey,
@@ -69,6 +70,7 @@ type ReadyProps = Readonly<{
   roomId: string;
   authority: AfcV2ProductionRoomAuthority;
   visualImageUrl: string;
+  originalImageUrl?: string | null;
   transformMode?: RuntimeTransformMode;
   onTransformModeChange?: (mode: RuntimeTransformMode) => void;
   showInternalControls?: boolean;
@@ -103,14 +105,18 @@ export function AfcProductionRoomViewer({
   if (!validated.ok) {
     return (
       <div className="flex h-full items-center justify-center bg-neutral-950 px-6 text-center text-sm text-red-200">
-        AFC runtime refused this authority: {validated.reason}
+        {showInternalControls
+          ? `AFC runtime refused this authority: ${validated.reason}`
+          : INTEGRATED_3D_RESTORE_ERROR_MESSAGE}
       </div>
     );
   }
   if (!visualImageUrl) {
     return (
       <div className="flex h-full items-center justify-center bg-neutral-950 px-6 text-center text-sm text-red-200">
-        AFC runtime refused this presentation: background image URL is missing
+        {showInternalControls
+          ? "AFC runtime refused this presentation: background image URL is missing"
+          : INTEGRATED_3D_RESTORE_ERROR_MESSAGE}
       </div>
     );
   }
@@ -120,6 +126,7 @@ export function AfcProductionRoomViewer({
       roomId={roomId}
       authority={validated.authority}
       visualImageUrl={visualImageUrl}
+      originalImageUrl={originalImageUrl}
       transformMode={transformMode}
       onTransformModeChange={onTransformModeChange}
       showInternalControls={showInternalControls}
@@ -131,6 +138,7 @@ function AfcProductionRoomViewerReady({
   roomId,
   authority,
   visualImageUrl,
+  originalImageUrl,
   transformMode: transformModeProp,
   onTransformModeChange,
   showInternalControls = true,
@@ -611,11 +619,28 @@ function AfcProductionRoomViewerReady({
             alt={VIEWER_BACKGROUND_IMAGE_ALT}
             className="absolute inset-0 z-0 h-full w-full"
             draggable={false}
+            onError={(event) => {
+              const image = event.currentTarget;
+              const fallback = originalImageUrl?.trim() ?? "";
+              if (
+                !fallback ||
+                fallback === visualImageUrl ||
+                image.dataset.presentationFallback === "applied"
+              ) {
+                return;
+              }
+              image.dataset.presentationFallback = "applied";
+              image.src = fallback;
+            }}
           />
           <div
             ref={mountRef}
             className="absolute inset-0 z-10 bg-transparent"
-            aria-label="Production AFC frozen-camera runtime"
+            aria-label={
+              showInternalControls
+                ? "Production AFC frozen-camera runtime"
+                : "3D room"
+            }
             data-scene-interaction="viewport"
           />
         </div>
@@ -624,11 +649,12 @@ function AfcProductionRoomViewerReady({
         <div className="pointer-events-none absolute left-3 top-3 z-20 flex gap-2">
           <button
             type="button"
-            className={`pointer-events-auto rounded-md border px-2 py-1 text-xs ${
+            className={`pointer-events-auto rounded-md border px-2 py-1 text-xs focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-neutral-400 ${
               transformMode === "move"
                 ? "border-emerald-400/70 bg-emerald-950/70 text-emerald-100"
                 : "border-neutral-700 bg-neutral-900/80 text-neutral-200"
             }`}
+            aria-pressed={transformMode === "move"}
             onClick={() => {
               if (transformModeProp === undefined) {
                 setInternalTransformMode("move");
@@ -640,11 +666,12 @@ function AfcProductionRoomViewerReady({
           </button>
           <button
             type="button"
-            className={`pointer-events-auto rounded-md border px-2 py-1 text-xs ${
+            className={`pointer-events-auto rounded-md border px-2 py-1 text-xs focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-neutral-400 ${
               transformMode === "rotate"
                 ? "border-emerald-400/70 bg-emerald-950/70 text-emerald-100"
                 : "border-neutral-700 bg-neutral-900/80 text-neutral-200"
             }`}
+            aria-pressed={transformMode === "rotate"}
             onClick={() => {
               if (transformModeProp === undefined) {
                 setInternalTransformMode("rotate");

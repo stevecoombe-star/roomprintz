@@ -13,6 +13,7 @@ import {
   productionFailureReason,
   reducePrepare3dRoom,
   restoreStatusUrl,
+  shouldApplyPrepareRoomResponse,
   type Prepare3dRequestIntent,
   type Prepare3dRoomState,
 } from "./prepare-3d-room-client";
@@ -33,7 +34,9 @@ export function usePrepare3dRoom(roomId: string | null): UsePrepare3dRoomResult 
   );
   const inFlightRef = useRef(false);
   const stateRef = useRef(state);
+  const roomIdRef = useRef(roomId);
   stateRef.current = state;
+  roomIdRef.current = roomId;
 
   useEffect(() => {
     inFlightRef.current = false;
@@ -88,6 +91,14 @@ export function usePrepare3dRoom(roomId: string | null): UsePrepare3dRoomResult 
     async (activeRoomId: string, intent: Prepare3dRequestIntent) => {
       const request = buildAnalyzeRequest(activeRoomId, intent);
       const token = await getSupabaseBrowserAccessToken();
+      if (
+        !shouldApplyPrepareRoomResponse({
+          requestRoomId: activeRoomId,
+          currentRoomId: roomIdRef.current,
+        })
+      ) {
+        return;
+      }
       if (!token) {
         logPrepareFailure("missing access token");
         setState((current) =>
@@ -106,6 +117,14 @@ export function usePrepare3dRoom(roomId: string | null): UsePrepare3dRoomResult 
           body: JSON.stringify(request.body),
         });
         const payload = await response.json().catch(() => null);
+        if (
+          !shouldApplyPrepareRoomResponse({
+            requestRoomId: activeRoomId,
+            currentRoomId: roomIdRef.current,
+          })
+        ) {
+          return;
+        }
         if (response.ok && isReadyProductionResponse(payload)) {
           setState((current) =>
             reducePrepare3dRoom(current, { type: "prepare_succeeded" }),
@@ -128,12 +147,27 @@ export function usePrepare3dRoom(roomId: string | null): UsePrepare3dRoomResult 
           }),
         );
       } catch (error) {
+        if (
+          !shouldApplyPrepareRoomResponse({
+            requestRoomId: activeRoomId,
+            currentRoomId: roomIdRef.current,
+          })
+        ) {
+          return;
+        }
         logPrepareFailure(error);
         setState((current) =>
           reducePrepare3dRoom(current, { type: "prepare_failed" }),
         );
       } finally {
-        inFlightRef.current = false;
+        if (
+          shouldApplyPrepareRoomResponse({
+            requestRoomId: activeRoomId,
+            currentRoomId: roomIdRef.current,
+          })
+        ) {
+          inFlightRef.current = false;
+        }
       }
     },
     [],

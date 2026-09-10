@@ -79,6 +79,7 @@ import {
 
 import {
   createInitialEditorViewportMode,
+  isIntegrated3dModeBusy,
   shouldAutoPrepareIntegrated3d,
   shouldRestoreIntegratedAfcRuntime,
   type EditorViewportMode,
@@ -2365,6 +2366,7 @@ function EditorPageInner() {
   );
   const [runtimeTransformMode, setRuntimeTransformMode] =
     useState<RuntimeTransformMode>("move");
+  const [afcRuntimeReloadKey, setAfcRuntimeReloadKey] = useState(0);
   const isExplicitBlankEditorIntent = !requestedRoomId && requestedNewRoomIntent;
   const requestedRoomPreviewUrl = parseRoomPreviewUrlFromSearch(
     searchParams.get("roomPreview") ?? searchParams.get("previewUrl")
@@ -3075,6 +3077,13 @@ function EditorPageInner() {
     vibodeRoomIdRef.current = vibodeRoomId;
   }, [vibodeRoomId]);
   const editorRoomId = vibodeRoomId ?? requestedRoomId;
+  const previousEditorRoomIdRef = useRef(editorRoomId);
+  if (previousEditorRoomIdRef.current !== editorRoomId) {
+    previousEditorRoomIdRef.current = editorRoomId;
+    setViewportMode(createInitialEditorViewportMode());
+    setRuntimeTransformMode("move");
+    setAfcRuntimeReloadKey(0);
+  }
   const prepare3d = usePrepare3dRoom(editorRoomId);
   const restoreIntegratedAfcRuntime = shouldRestoreIntegratedAfcRuntime({
     viewportMode,
@@ -3082,16 +3091,18 @@ function EditorPageInner() {
   });
   const afcRuntime = useAfcProductionRuntime(editorRoomId, {
     enabled: restoreIntegratedAfcRuntime,
+    reloadKey: afcRuntimeReloadKey,
   });
-  const previousEditorRoomIdRef = useRef(editorRoomId);
-  useEffect(() => {
-    if (previousEditorRoomIdRef.current === editorRoomId) return;
-    previousEditorRoomIdRef.current = editorRoomId;
-    setViewportMode(createInitialEditorViewportMode());
-    setRuntimeTransformMode("move");
-  }, [editorRoomId]);
   const prepare3dPhase = prepare3d.state.phase;
   const requestPrepare3d = prepare3d.requestPrepare;
+  const retryIntegratedAfcRestore = useCallback(() => {
+    setAfcRuntimeReloadKey((current) => current + 1);
+  }, []);
+  const integrated3dBusy = isIntegrated3dModeBusy({
+    viewportMode,
+    preparePhase: prepare3dPhase,
+    runtimeLoading: afcRuntime.loading,
+  });
   useEffect(() => {
     if (
       !shouldAutoPrepareIntegrated3d({
@@ -11927,6 +11938,7 @@ function EditorPageInner() {
           <EditorViewportModeControl
             mode={viewportMode}
             disabled={!editorRoomId}
+            busy={integrated3dBusy}
             onChange={setViewportMode}
           />
           <button
@@ -12112,6 +12124,7 @@ function EditorPageInner() {
                   roomId={editorRoomId}
                   prepareState={prepare3d.state}
                   onPrepare={requestPrepare3d}
+                  onRetryRestore={retryIntegratedAfcRestore}
                   runtime={afcRuntime}
                   backgroundImageUrl={integratedViewerBackgroundImageUrl}
                   transformMode={runtimeTransformMode}
