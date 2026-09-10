@@ -1,21 +1,26 @@
 /**
- * PI-4A real furniture runtime object.
+ * Furniture runtime object factories.
  *
  * Geometry is the authored test sofa GLB. Import-placement grounds the
  * asset (minY ≈ 0) without changing authored scale. Transforms are
- * canonical AFC-world. PI-4A does not persist them.
+ * canonical AFC-world. PI-4B does not persist them.
  */
 
 import type { AfcV2ProductionRoomAuthority } from "@/lib/afc-v2-production/production-authority-contract";
 
+import { furnitureAssetDefinition } from "./furniture-assets";
 import {
   AFC_V2_RUNTIME_COORDINATE_SPACE,
   AFC_V2_RUNTIME_FURNITURE_ASSET_ID,
   AFC_V2_RUNTIME_FURNITURE_GLB_PUBLIC_PATH,
   AFC_V2_RUNTIME_FURNITURE_OBJECT_ID,
+  AFC_V2_RUNTIME_PI4B_SOFA_A_OBJECT_ID,
+  AFC_V2_RUNTIME_PI4B_SOFA_B_OBJECT_ID,
   DEFAULT_WORLD_TRANSFORM,
   type LocalAabb,
   type RuntimeSceneObject,
+  type SceneObjectDefinition,
+  type WorldTransform,
 } from "./types";
 
 export const PI4A_FURNITURE_LOADING_MESSAGE = "Loading furniture…";
@@ -62,4 +67,80 @@ export function furnitureBelongsToGeneration(
 
 export function pi4aFurnitureGlbPublicPath(): string {
   return AFC_V2_RUNTIME_FURNITURE_GLB_PUBLIC_PATH;
+}
+
+export const PI4B_SOFA_A_OBJECT_ID = AFC_V2_RUNTIME_PI4B_SOFA_A_OBJECT_ID;
+export const PI4B_SOFA_B_OBJECT_ID = AFC_V2_RUNTIME_PI4B_SOFA_B_OBJECT_ID;
+export const PI4B_INITIAL_SELECTED_OBJECT_ID = PI4B_SOFA_A_OBJECT_ID;
+
+export const PI4B_SOFA_A_TRANSFORM: WorldTransform = Object.freeze({
+  position: Object.freeze({ x: -1.3, y: 0, z: 0.25 }),
+  rotationDeg: Object.freeze({ x: 0, y: 0, z: 0 }),
+  uniformScale: 1,
+});
+
+export const PI4B_SOFA_B_TRANSFORM: WorldTransform = Object.freeze({
+  position: Object.freeze({ x: 1.3, y: 0, z: -0.25 }),
+  rotationDeg: Object.freeze({ x: 0, y: 18, z: 0 }),
+  uniformScale: 1,
+});
+
+export function createPi4bSceneObjectDefinitions(): readonly SceneObjectDefinition[] {
+  return Object.freeze([
+    Object.freeze({
+      objectId: PI4B_SOFA_A_OBJECT_ID,
+      assetId: AFC_V2_RUNTIME_FURNITURE_ASSET_ID,
+      transform: PI4B_SOFA_A_TRANSFORM,
+    }),
+    Object.freeze({
+      objectId: PI4B_SOFA_B_OBJECT_ID,
+      assetId: AFC_V2_RUNTIME_FURNITURE_ASSET_ID,
+      transform: PI4B_SOFA_B_TRANSFORM,
+    }),
+  ]);
+}
+
+export function createRuntimeSceneObjectsFromDefinitions(input: Readonly<{
+  roomId: string;
+  generationId: string;
+  definitions: readonly SceneObjectDefinition[];
+}>): RuntimeSceneObject[] {
+  const objects: RuntimeSceneObject[] = [];
+  for (const definition of input.definitions) {
+    const asset = furnitureAssetDefinition(definition.assetId);
+    if (!asset) continue;
+    objects.push(Object.freeze({
+      roomId: input.roomId,
+      generationId: input.generationId,
+      objectId: definition.objectId,
+      assetIdentity: Object.freeze({
+        kind: "test_furniture_glb" as const,
+        id: asset.assetId,
+      }),
+      coordinateSpace: AFC_V2_RUNTIME_COORDINATE_SPACE,
+      transform: definition.transform,
+    }));
+  }
+  return objects;
+}
+
+export function createPi4bSceneObjects(input: Readonly<{
+  roomId: string;
+  generationId: string;
+}>): RuntimeSceneObject[] {
+  return createRuntimeSceneObjectsFromDefinitions({
+    roomId: input.roomId,
+    generationId: input.generationId,
+    definitions: createPi4bSceneObjectDefinitions(),
+  });
+}
+
+export function createPi4bSceneObjectsFromAuthority(
+  roomId: string,
+  authority: AfcV2ProductionRoomAuthority,
+): RuntimeSceneObject[] {
+  return createPi4bSceneObjects({
+    roomId,
+    generationId: authority.generationId,
+  });
 }

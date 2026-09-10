@@ -7,10 +7,12 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { AfcV2ProductionRoomAuthority } from "@/lib/afc-v2-production/production-authority-contract";
 import { resolveSceneObjectCollision } from "@/lib/afc-v2-runtime/collision-resolver";
 import { containFitRect } from "@/lib/afc-v2-runtime/frame-layout";
-import { loadFurnitureGlb } from "@/lib/afc-v2-runtime/furniture-glb-loader";
+import { cloneFurnitureGlbScene, loadFurnitureGlb } from "@/lib/afc-v2-runtime/furniture-glb-loader";
 import {
   PI4A_FURNITURE_LOADING_MESSAGE,
+  PI4B_INITIAL_SELECTED_OBJECT_ID,
   createPi4aFurnitureObjectFromAuthority,
+  createPi4bSceneObjects,
   pi4aFurnitureGlbPublicPath,
 } from "@/lib/afc-v2-runtime/furniture-runtime";
 import {
@@ -23,11 +25,20 @@ import {
 } from "@/lib/afc-v2-runtime/metric-world-realization";
 import {
   applyWorldTransform,
-  attachImportedObject,
-  createSceneObjectRoot,
   disposeObject3D,
   measurePlacementLocalAabb,
 } from "@/lib/afc-v2-runtime/object-runtime";
+import {
+  attachTargetForSelectedObject,
+  commitLiveSceneObjectTransform,
+  createRuntimeSceneCollection,
+  getLiveSceneObject,
+  liveSceneObjectForBodyDrag,
+  mountLiveRuntimeSceneObject,
+  resolveSelectedObjectId,
+  setLiveSceneObject,
+  type LiveRuntimeSceneObject,
+} from "@/lib/afc-v2-runtime/scene-runtime";
 import { realizeProductionWorld } from "@/lib/afc-v2-runtime/production-world";
 import { validateProductionRuntimeAuthority } from "@/lib/afc-v2-runtime/runtime-authority";
 import type {
@@ -47,8 +58,6 @@ import {
   shouldActivateObjectBodyDrag,
   shouldBeginObjectBodyDrag,
   shouldSuppressSceneSelection,
-  tagSceneObjectRoot,
-  transformControlsAttachmentTarget,
   viewportModeToControlsMode,
   worldPositionXZ,
   worldTransformFromObject3D,
@@ -79,15 +88,6 @@ type ReadyProps = Readonly<{
   onTransformModeChange?: (mode: RuntimeTransformMode) => void;
   showInternalControls?: boolean;
 }>;
-
-type RuntimeEntry = {
-  objectId: string;
-  placement: THREE.Group;
-  importPlacement: THREE.Group;
-  localAabb: ReturnType<typeof measurePlacementLocalAabb>;
-  lastResolved: WorldTransform | null;
-  canonicalTransform: WorldTransform;
-};
 
 export function AfcProductionRoomViewer({
   roomId,
@@ -153,7 +153,9 @@ function AfcProductionRoomViewerReady({
   const [internalTransformMode, setInternalTransformMode] =
     useState<RuntimeTransformMode>("move");
   const transformMode = transformModeProp ?? internalTransformMode;
-  const [selected, setSelected] = useState(true);
+  const [selectedObjectId, setSelectedObjectId] = useState<string | null>(
+    PI4B_INITIAL_SELECTED_OBJECT_ID,
+  );
   const [furniturePhase, setFurniturePhase] = useState<
     "loading" | "ready" | "error"
   >("loading");
@@ -164,7 +166,7 @@ function AfcProductionRoomViewerReady({
     top: number;
   } | null>(null);
   const transformModeRef = useRef(transformMode);
-  const selectedRef = useRef(selected);
+  const selectedObjectIdRef = useRef(selectedObjectId);
 
   const world = useMemo(() => realizeProductionWorld(authority), [authority]);
   const furniture = useMemo(
@@ -176,8 +178,8 @@ function AfcProductionRoomViewerReady({
     transformModeRef.current = transformMode;
   }, [transformMode]);
   useEffect(() => {
-    selectedRef.current = selected;
-  }, [selected]);
+    selectedObjectIdRef.current = selectedObjectId;
+  }, [selectedObjectId]);
 
   useEffect(() => {
     const viewport = viewportRef.current;
@@ -233,24 +235,12 @@ function AfcProductionRoomViewerReady({
     const objectLayer = new THREE.Group();
     scene.add(objectLayer);
 
-    const root = createSceneObjectRoot();
-    const entry: RuntimeEntry = {
-      objectId: furniture.objectId,
-      placement: root.placement,
-      importPlacement: root.importPlacement,
-      localAabb: null,
-      lastResolved: realizeObjectWorldTransform(
-        furniture.transform,
-        world.metricScale,
-      ),
-      canonicalTransform: furniture.transform,
-    };
-    tagSceneObjectRoot(entry.placement, furniture.objectId);
-    const initialTransform = entry.lastResolved ??
-      realizeObjectWorldTransform(furniture.transform, world.metricScale);
-    applyWorldTransform(entry.placement, initialTransform);
-    entry.lastResolved = initialTransform;
-    objectLayer.add(entry.placement);
+    const sceneObjects = createRuntimeSceneCollection();
+    const sceneDescriptors = createPi4bSceneObjects({
+      roomId: furniture.roomId,
+      generationId: furniture.generationId,
+    });
+    const assetTemplates: THREE.Group[] = [];
 
     const controls = new TransformControls(camera, renderer.domElement);
     const controlsHelper = controls.getHelper();
@@ -294,8 +284,11 @@ function AfcProductionRoomViewerReady({
 
     const realizedWalls = world.collisionWalls;
 
-    const reportCanonical = (realized: WorldTransform) => {
-      entry.canonicalTransform = canonicalizeObjectWorldTransform(
+    const reportCanonical = (
+      object: LiveRuntimeSceneObject,
+      realized: WorldTransform,
+    ) => {
+      object.canonicalTransform = canonicalizeObjectWorldTransform(
         realized,
         world.metricScale,
       );
@@ -304,15 +297,20 @@ function AfcProductionRoomViewerReady({
     const writeAttachedTransform = () => {
       const attached = controls.object;
       if (!attached) return;
+      const object = getLiveSceneObject(
+        sceneObjects,
+        resolveSceneObjectId(attached),
+      );
+      if (!object) return;
       enforceNonNegativeWorldY(attached);
       attached.scale.setScalar(1);
       const proposed = worldTransformFromObject3D(attached);
-      const current = entry.lastResolved ?? proposed;
+      const current = object.realizedTransform;
       const mode = controls.getMode() === "translate" ? "move" : "pose";
       const resolved = resolveSceneObjectCollision({
         current,
         proposed,
-        localAabb: entry.localAabb,
+        localAabb: object.localAabb,
         walls: realizedWalls,
         mode,
       });
@@ -321,22 +319,27 @@ function AfcProductionRoomViewerReady({
         uniformScale: 1,
       });
       attached.scale.setScalar(1);
-      entry.lastResolved = {
+      object.realizedTransform = {
         ...resolved.transform,
         uniformScale: 1,
       };
-      reportCanonical(entry.lastResolved);
+      reportCanonical(object, object.realizedTransform);
     };
 
     const syncGizmo = () => {
       const mode = viewportModeToControlsMode(transformModeRef.current);
       if (controls.getMode() !== mode) controls.setMode(mode);
       if (mode === "translate") controls.setSpace("world");
-      if (!furnitureReady || !selectedRef.current) {
+      const target = furnitureReady
+        ? attachTargetForSelectedObject(
+          sceneObjects,
+          selectedObjectIdRef.current,
+        )
+        : null;
+      if (!target) {
         if (controls.object) controls.detach();
         return;
       }
-      const target = transformControlsAttachmentTarget(entry);
       if (controls.object !== target) controls.attach(target);
     };
 
@@ -381,16 +384,20 @@ function AfcProductionRoomViewerReady({
       controls.enabled = true;
       releaseBodyDragCapture(session.pointerId);
       if (!session.active) return;
-      entry.placement.position.y = session.placementY;
-      enforceNonNegativeWorldY(entry.placement);
-      entry.placement.scale.setScalar(1);
-      entry.lastResolved = worldTransformFromObject3D(entry.placement);
-      reportCanonical(entry.lastResolved);
+      const object = liveSceneObjectForBodyDrag(sceneObjects, session);
+      if (!object) return;
+      object.placement.position.y = session.placementY;
+      enforceNonNegativeWorldY(object.placement);
+      object.placement.scale.setScalar(1);
+      object.realizedTransform = worldTransformFromObject3D(object.placement);
+      reportCanonical(object, object.realizedTransform);
     };
 
     const applyBodyDragAt = (clientX: number, clientY: number) => {
       const session = bodyDrag;
       if (!session?.active) return;
+      const object = liveSceneObjectForBodyDrag(sceneObjects, session);
+      if (!object) return;
       const hit = planeHitAt(clientX, clientY, session.grabPlaneY);
       if (!hit) return;
       const next = objectBodyDragWorldPosition({
@@ -400,7 +407,7 @@ function AfcProductionRoomViewerReady({
         offsetZ: session.offsetZ,
         placementY: session.placementY,
       });
-      const current = entry.lastResolved ?? worldTransformFromObject3D(entry.placement);
+      const current = object.realizedTransform;
       const proposed = {
         ...current,
         position: {
@@ -413,18 +420,18 @@ function AfcProductionRoomViewerReady({
       const resolved = resolveSceneObjectCollision({
         current,
         proposed,
-        localAabb: entry.localAabb,
+        localAabb: object.localAabb,
         walls: realizedWalls,
         mode: "move",
       });
-      applyPlacementWorldPosition(entry.placement, {
+      applyPlacementWorldPosition(object.placement, {
         x: resolved.transform.position.x,
         y: session.placementY,
         z: resolved.transform.position.z,
       });
-      entry.placement.position.y = session.placementY;
-      entry.placement.scale.setScalar(1);
-      entry.lastResolved = {
+      object.placement.position.y = session.placementY;
+      object.placement.scale.setScalar(1);
+      object.realizedTransform = {
         ...resolved.transform,
         position: {
           ...resolved.transform.position,
@@ -432,7 +439,7 @@ function AfcProductionRoomViewerReady({
         },
         uniformScale: 1,
       };
-      reportCanonical(entry.lastResolved);
+      reportCanonical(object, object.realizedTransform);
     };
 
     const pointerDownListener = (event: PointerEvent) => {
@@ -459,16 +466,18 @@ function AfcProductionRoomViewerReady({
       ) {
         return;
       }
-      selectedRef.current = true;
-      setSelected(true);
+      const object = getLiveSceneObject(sceneObjects, hitObjectId);
+      if (!object) return;
+      selectedObjectIdRef.current = hitObjectId;
+      setSelectedObjectId(hitObjectId);
       const picked = hits.find((item) => resolveSceneObjectId(item.object) === hitObjectId);
-      const placementY = entry.placement.position.y;
+      const placementY = object.placement.position.y;
       const grabPlaneY = picked?.point && Number.isFinite(picked.point.y)
         ? picked.point.y
         : placementY;
       const hit = planeHitAt(event.clientX, event.clientY, grabPlaneY);
       if (!hit) return;
-      const worldXZ = worldPositionXZ(entry.placement);
+      const worldXZ = worldPositionXZ(object.placement);
       const grab = bodyDragGrabOffset(hit, worldXZ);
       bodyDrag = {
         objectId: hitObjectId,
@@ -529,9 +538,12 @@ function AfcProductionRoomViewerReady({
       ) {
         return;
       }
-      const id = pickSceneObjectId(pickHitsAt(event.clientX, event.clientY));
-      selectedRef.current = id === furniture.objectId;
-      setSelected(id === furniture.objectId);
+      const id = resolveSelectedObjectId(
+        pickSceneObjectId(pickHitsAt(event.clientX, event.clientY)),
+      );
+      const next = id && sceneObjects.has(id) ? id : null;
+      selectedObjectIdRef.current = next;
+      setSelectedObjectId(next);
     };
 
     const pointerCancelListener = (event: PointerEvent) => {
@@ -549,15 +561,26 @@ function AfcProductionRoomViewerReady({
       writeAttachedTransform();
     };
 
-    const attachLoadedFurniture = (object: THREE.Object3D) => {
-      attachImportedObject(entry.importPlacement, object);
-      entry.localAabb = measurePlacementLocalAabb(
-        entry.placement,
-        entry.importPlacement,
-      );
-      applyWorldTransform(entry.placement, initialTransform);
-      entry.lastResolved = initialTransform;
-      reportCanonical(entry.lastResolved);
+    const attachLoadedFurniture = (template: THREE.Group) => {
+      assetTemplates.push(template);
+      for (const descriptor of sceneDescriptors) {
+        const realized = realizeObjectWorldTransform(
+          descriptor.transform,
+          world.metricScale,
+        );
+        const live = mountLiveRuntimeSceneObject({
+          descriptor,
+          imported: cloneFurnitureGlbScene(template),
+          metricScale: world.metricScale,
+        });
+        live.localAabb = measurePlacementLocalAabb(
+          live.placement,
+          live.importPlacement,
+        );
+        commitLiveSceneObjectTransform(live, realized, world.metricScale);
+        setLiveSceneObject(sceneObjects, live);
+        objectLayer.add(live.placement);
+      }
       furnitureReady = true;
       setFurniturePhase("ready");
     };
@@ -586,16 +609,19 @@ function AfcProductionRoomViewerReady({
       animationFrame = window.requestAnimationFrame(animate);
       applyRealizedFrozenCamera(camera, world.camera);
       if (controls.getMode() === "scale") controls.setMode("translate");
-      entry.placement.scale.setScalar(1);
-      if (
-        entry.lastResolved &&
-        !gizmoDragging &&
-        bodyDrag?.active !== true &&
-        !objectMatchesWorldTransform(entry.placement, entry.lastResolved)
-      ) {
-        applyWorldTransform(entry.placement, entry.lastResolved);
+      const skipObjectId = bodyDrag?.active
+        ? bodyDrag.objectId
+        : (gizmoDragging ? resolveSceneObjectId(controls.object) : null);
+      for (const object of sceneObjects.values()) {
+        object.placement.scale.setScalar(1);
+        if (
+          object.objectId !== skipObjectId &&
+          !objectMatchesWorldTransform(object.placement, object.realizedTransform)
+        ) {
+          applyWorldTransform(object.placement, object.realizedTransform);
+        }
+        enforceNonNegativeWorldY(object.placement);
       }
-      enforceNonNegativeWorldY(entry.placement);
       syncGizmo();
       renderer.render(scene, camera);
     };
@@ -616,11 +642,18 @@ function AfcProductionRoomViewerReady({
       controls.detach();
       controls.dispose();
       scene.remove(controlsHelper);
-      objectLayer.remove(entry.placement);
-      disposeObject3D(entry.placement);
+      for (const object of sceneObjects.values()) {
+        objectLayer.remove(object.placement);
+      }
+      sceneObjects.clear();
+      for (const template of assetTemplates) {
+        disposeObject3D(template);
+      }
       renderer.dispose();
       renderer.domElement.remove();
     };
+    // Certified History continuity: do not add visualImageUrl or version identity.
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- PI-3B/PI-4A frozen world deps
   }, [authority.generationId, furniture.objectId, furniture.transform, world]);
 
   return (

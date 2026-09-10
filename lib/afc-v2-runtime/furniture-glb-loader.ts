@@ -29,6 +29,16 @@ export async function parseFurnitureGlb(
   }
 }
 
+/**
+ * Static furniture instance clone for a shared loaded GLB.
+ *
+ * Geometry and materials are shared with the source asset. Do not dispose
+ * clone meshes independently. This is not a skinned-mesh or animation contract.
+ */
+export function cloneFurnitureGlbScene(scene: THREE.Group): THREE.Group {
+  return scene.clone(true);
+}
+
 export async function loadFurnitureGlb(
   url: string,
 ): Promise<LoadFurnitureGlbResult> {

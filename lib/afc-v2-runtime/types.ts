@@ -4,7 +4,7 @@
  * Transforms live in canonical AFC world space:
  *   calibrated-world-xz/v1
  *
- * These records are PI-4-compatible in shape. PI-4A does not persist them.
+ * These records are PI-4-compatible in shape. PI-4B does not persist them.
  */
 
 export const AFC_V2_RUNTIME_COORDINATE_SPACE = "calibrated-world-xz/v1" as const;
@@ -28,6 +28,10 @@ export const AFC_V2_RUNTIME_FURNITURE_ASSET_ID =
 
 export const AFC_V2_RUNTIME_FURNITURE_GLB_PUBLIC_PATH =
   "/afc-v2-runtime/test-fixtures/pi4a-sofa.glb" as const;
+
+export const AFC_V2_RUNTIME_PI4B_SOFA_A_OBJECT_ID = "pi4b-sofa-a" as const;
+
+export const AFC_V2_RUNTIME_PI4B_SOFA_B_OBJECT_ID = "pi4b-sofa-b" as const;
 
 export const AFC_V2_RUNTIME_CAMERA_NEAR = 0.1;
 
@@ -68,6 +72,21 @@ export type RuntimeSceneObject = Readonly<{
   assetIdentity: RuntimeAssetIdentity;
   coordinateSpace: typeof AFC_V2_RUNTIME_COORDINATE_SPACE;
   transform: WorldTransform;
+}>;
+
+export type FurnitureAssetDefinition = Readonly<{
+  assetId: string;
+  glbUrl: string;
+}>;
+
+export type SceneObjectDefinition = Readonly<{
+  objectId: string;
+  assetId: string;
+  transform: WorldTransform;
+}>;
+
+export type SerializedRuntimeScene = Readonly<{
+  objects: readonly SceneObjectDefinition[];
 }>;
 
 export const DEFAULT_WORLD_TRANSFORM: WorldTransform = Object.freeze({

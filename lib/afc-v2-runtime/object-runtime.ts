@@ -103,8 +103,10 @@ export function measurePlacementLocalAabb(
   importPlacement: THREE.Object3D,
 ): LocalAabb | null {
   placement.updateMatrixWorld(true);
-  const inverse = new THREE.Matrix4().copy(placement.matrixWorld).invert();
+  const placementWorldInverse =
+    new THREE.Matrix4().copy(placement.matrixWorld).invert();
   const box = new THREE.Box3();
+  const meshToPlacement = new THREE.Matrix4();
   importPlacement.traverse((child) => {
     const mesh = child as THREE.Mesh;
     if (!mesh.isMesh || !mesh.geometry) return;
@@ -112,9 +114,11 @@ export function measurePlacementLocalAabb(
     mesh.geometry.computeBoundingBox();
     const geometryBox = mesh.geometry.boundingBox;
     if (!geometryBox || geometryBox.isEmpty()) return;
+    // Geometry-local → placement-local in one matrix. Sequential
+    // world-then-inverse Box3.applyMatrix4() expands under placement yaw.
+    meshToPlacement.multiplyMatrices(placementWorldInverse, mesh.matrixWorld);
     const local = geometryBox.clone();
-    local.applyMatrix4(mesh.matrixWorld);
-    local.applyMatrix4(inverse);
+    local.applyMatrix4(meshToPlacement);
     box.union(local);
   });
   if (box.isEmpty()) return null;

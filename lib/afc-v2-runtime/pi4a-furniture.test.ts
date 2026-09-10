@@ -216,6 +216,33 @@ test("PI-4A furniture uses certified metric realization and keeps authored unifo
   assert.match(viewer, /uniformScale: 1/);
 });
 
+test("PI-4A sofa local AABB stays 2.2 × 0.8 × 0.9 after placement yaw", () => {
+  const identityRoot = createSceneObjectRoot();
+  attachImportedObject(identityRoot.importPlacement, createPi4aSofaObject3D());
+  applyWorldTransform(identityRoot.placement, DEFAULT_WORLD_TRANSFORM);
+  const identity = measurePlacementLocalAabb(
+    identityRoot.placement,
+    identityRoot.importPlacement,
+  );
+  assert.ok(identity);
+  assertAuthoredSize(localAabbDimensions(identity), "yaw 0");
+
+  for (const yaw of [0, 18, 45, 90]) {
+    const root = createSceneObjectRoot();
+    attachImportedObject(root.importPlacement, createPi4aSofaObject3D());
+    applyWorldTransform(root.placement, transformAt(0.8, -0.35, 0, yaw));
+    const aabb = measurePlacementLocalAabb(root.placement, root.importPlacement);
+    assert.ok(aabb);
+    assert.ok(Math.abs(aabb.min.y) < DIMENSION_TOLERANCE_M);
+    assertAuthoredSize(localAabbDimensions(aabb), `yaw ${yaw}`);
+    assert.ok(Math.abs(aabb.min.x - identity.min.x) < DIMENSION_TOLERANCE_M);
+    assert.ok(Math.abs(aabb.max.x - identity.max.x) < DIMENSION_TOLERANCE_M);
+    assert.ok(Math.abs(aabb.min.z - identity.min.z) < DIMENSION_TOLERANCE_M);
+    assert.ok(Math.abs(aabb.max.z - identity.max.z) < DIMENSION_TOLERANCE_M);
+    assert.ok(Math.abs(worldMinY(root.placement)) < DIMENSION_TOLERANCE_M);
+  }
+});
+
 test("PI-4A sofa AABB participates in Move and Rotate collision", () => {
   const root = createSceneObjectRoot();
   attachImportedObject(root.importPlacement, createPi4aSofaObject3D());
