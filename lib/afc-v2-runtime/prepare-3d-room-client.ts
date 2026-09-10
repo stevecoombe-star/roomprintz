@@ -61,6 +61,7 @@ export function createInitialPrepare3dRoomState(): Prepare3dRoomState {
   };
 }
 
+/** Diagnostic-only href for /editor/afc-3d. Normal Editor 3D mode does not navigate. */
 export function enter3dRoomHref(roomId: string): string {
   return `/editor/afc-3d?roomId=${encodeURIComponent(roomId)}`;
 }

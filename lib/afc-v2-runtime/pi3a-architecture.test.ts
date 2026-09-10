@@ -54,13 +54,24 @@ test("production AFC runtime cannot import 2D or Lab-v1/v2 authority stacks", ()
   }
 });
 
-test("PI-3A editor mount seam does not give editorStore world authority", () => {
+test("PI-3A diagnostic route remains and editor does not give editorStore world authority", () => {
   const editor = readFileSync(path.join(ROOT, "app/editor/page.tsx"), "utf8");
-  assert.match(editor, /requestedAfc3dSurface/);
-  assert.match(editor, /\/editor\/afc-3d\?roomId=/);
-  const seam = editor.slice(
-    editor.indexOf("requestedAfc3dSurface"),
-    editor.indexOf("requestedAfc3dSurface") + 500,
+  const diagnosticPage = readFileSync(
+    path.join(ROOT, "app/editor/afc-3d/page.tsx"),
+    "utf8",
   );
-  assert.doesNotMatch(seam, /useEditorStore/);
+  const diagnosticRuntime = readFileSync(
+    path.join(ROOT, "components/afc-3d/AfcProductionRuntimePage.tsx"),
+    "utf8",
+  );
+  assert.match(diagnosticPage, /AfcProductionRuntimePage/);
+  assert.match(diagnosticRuntime, /\/editor\/afc-3d\?roomId=/);
+  assert.doesNotMatch(editor, /router\.replace\(`\/editor\/afc-3d/);
+  assert.doesNotMatch(editor, /enter3dRoomHref/);
+  const viewerMount = editor.slice(
+    editor.indexOf("<AfcIntegratedEditorViewport"),
+    editor.indexOf("<AfcIntegratedEditorViewport") + 500,
+  );
+  assert.doesNotMatch(viewerMount, /useEditorStore/);
+  assert.doesNotMatch(viewerMount, /DEFAULT_PX_PER_IN/);
 });

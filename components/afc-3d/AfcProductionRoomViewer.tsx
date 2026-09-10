@@ -60,12 +60,18 @@ type Props = Readonly<{
   authority: AfcV2ProductionRoomAuthority;
   backgroundImageUrl?: string;
   originalImageUrl?: string;
+  transformMode?: RuntimeTransformMode;
+  onTransformModeChange?: (mode: RuntimeTransformMode) => void;
+  showInternalControls?: boolean;
 }>;
 
 type ReadyProps = Readonly<{
   roomId: string;
   authority: AfcV2ProductionRoomAuthority;
   visualImageUrl: string;
+  transformMode?: RuntimeTransformMode;
+  onTransformModeChange?: (mode: RuntimeTransformMode) => void;
+  showInternalControls?: boolean;
 }>;
 
 type RuntimeEntry = {
@@ -82,6 +88,9 @@ export function AfcProductionRoomViewer({
   authority,
   backgroundImageUrl,
   originalImageUrl,
+  transformMode,
+  onTransformModeChange,
+  showInternalControls = true,
 }: Props) {
   const validated = useMemo(
     () => validateProductionRuntimeAuthority(authority),
@@ -111,6 +120,9 @@ export function AfcProductionRoomViewer({
       roomId={roomId}
       authority={validated.authority}
       visualImageUrl={visualImageUrl}
+      transformMode={transformMode}
+      onTransformModeChange={onTransformModeChange}
+      showInternalControls={showInternalControls}
     />
   );
 }
@@ -119,11 +131,16 @@ function AfcProductionRoomViewerReady({
   roomId,
   authority,
   visualImageUrl,
+  transformMode: transformModeProp,
+  onTransformModeChange,
+  showInternalControls = true,
 }: ReadyProps) {
   const viewportRef = useRef<HTMLDivElement | null>(null);
   const frameRef = useRef<HTMLDivElement | null>(null);
   const mountRef = useRef<HTMLDivElement | null>(null);
-  const [transformMode, setTransformMode] = useState<RuntimeTransformMode>("move");
+  const [internalTransformMode, setInternalTransformMode] =
+    useState<RuntimeTransformMode>("move");
+  const transformMode = transformModeProp ?? internalTransformMode;
   const [selected, setSelected] = useState(true);
   const [frameBox, setFrameBox] = useState<{
     width: number;
@@ -603,30 +620,42 @@ function AfcProductionRoomViewerReady({
           />
         </div>
       </div>
-      <div className="pointer-events-none absolute left-3 top-3 z-20 flex gap-2">
-        <button
-          type="button"
-          className={`pointer-events-auto rounded-md border px-2 py-1 text-xs ${
-            transformMode === "move"
-              ? "border-emerald-400/70 bg-emerald-950/70 text-emerald-100"
-              : "border-neutral-700 bg-neutral-900/80 text-neutral-200"
-          }`}
-          onClick={() => setTransformMode("move")}
-        >
-          Move
-        </button>
-        <button
-          type="button"
-          className={`pointer-events-auto rounded-md border px-2 py-1 text-xs ${
-            transformMode === "rotate"
-              ? "border-emerald-400/70 bg-emerald-950/70 text-emerald-100"
-              : "border-neutral-700 bg-neutral-900/80 text-neutral-200"
-          }`}
-          onClick={() => setTransformMode("rotate")}
-        >
-          Rotate
-        </button>
-      </div>
+      {showInternalControls ? (
+        <div className="pointer-events-none absolute left-3 top-3 z-20 flex gap-2">
+          <button
+            type="button"
+            className={`pointer-events-auto rounded-md border px-2 py-1 text-xs ${
+              transformMode === "move"
+                ? "border-emerald-400/70 bg-emerald-950/70 text-emerald-100"
+                : "border-neutral-700 bg-neutral-900/80 text-neutral-200"
+            }`}
+            onClick={() => {
+              if (transformModeProp === undefined) {
+                setInternalTransformMode("move");
+              }
+              onTransformModeChange?.("move");
+            }}
+          >
+            Move
+          </button>
+          <button
+            type="button"
+            className={`pointer-events-auto rounded-md border px-2 py-1 text-xs ${
+              transformMode === "rotate"
+                ? "border-emerald-400/70 bg-emerald-950/70 text-emerald-100"
+                : "border-neutral-700 bg-neutral-900/80 text-neutral-200"
+            }`}
+            onClick={() => {
+              if (transformModeProp === undefined) {
+                setInternalTransformMode("rotate");
+              }
+              onTransformModeChange?.("rotate");
+            }}
+          >
+            Rotate
+          </button>
+        </div>
+      ) : null}
     </div>
   );
 }

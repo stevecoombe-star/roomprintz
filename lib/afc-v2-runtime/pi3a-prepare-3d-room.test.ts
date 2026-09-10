@@ -159,7 +159,7 @@ test("raw AFC failure reason is not rendered in production UI", () => {
   assert.doesNotMatch(markup, /AFC settle failed/);
 });
 
-test("successful retry changes UI to Room ready and Enter 3D Room", () => {
+test("successful retry becomes ready without requiring a dedicated-route link", () => {
   const failed = reducePrepare3dRoom(runningFrom(), {
     type: "prepare_failed",
     failureReason: NO_APPLY_SAFE_CANDIDATE_FAILURE,
@@ -190,7 +190,7 @@ test("failed retry remains retryable", () => {
   assert.equal(third.phase, "running");
 });
 
-test("Enter 3D Room href stays on the same room ID", () => {
+test("Enter 3D Room href stays on the same room ID for the diagnostic route", () => {
   assert.equal(
     enter3dRoomHref(ROOM_ID),
     `/editor/afc-3d?roomId=${ROOM_ID}`,
@@ -240,16 +240,18 @@ test("refresh after failure without a ready generation returns to first-ever Pre
 test("client UI does not import AFC engine, providers, or 2D authority", () => {
   const client = source("lib/afc-v2-runtime/prepare-3d-room-client.ts");
   const retry = source("lib/afc-v2-runtime/prepare-3d-room-retry.ts");
+  const hook = source("lib/afc-v2-runtime/use-prepare-3d-room.ts");
   const control = source("components/afc-3d/Prepare3dRoomControl.tsx");
-  const joined = `${client}\n${retry}\n${control}`;
-  assert.match(control, /getSupabaseBrowserAccessToken/);
-  assert.match(control, /buildAnalyzeRequest/);
-  assert.match(control, /state\.nextIntent/);
-  assert.match(control, /inFlightRef/);
+  const joined = `${client}\n${retry}\n${hook}\n${control}`;
+  assert.match(hook, /getSupabaseBrowserAccessToken/);
+  assert.match(hook, /buildAnalyzeRequest/);
+  assert.match(hook, /current\.nextIntent/);
+  assert.match(hook, /inFlightRef/);
   assert.match(client, /Preparing your room/);
   assert.match(client, /Try Again/);
-  assert.match(control, /Room ready/);
-  assert.match(control, /Enter 3D Room/);
+  assert.match(control, /PREPARE_3D_ROOM_FAILURE_MESSAGE/);
+  assert.doesNotMatch(control, /Enter 3D Room/);
+  assert.doesNotMatch(control, /enter3dRoomHref/);
   assert.doesNotMatch(joined, /executeAfcV2Analysis/);
   assert.doesNotMatch(joined, /runProductionAfcAnalysis/);
   assert.doesNotMatch(joined, /observeRoom|generateTiled|readTiledPerspective/);
@@ -258,16 +260,19 @@ test("client UI does not import AFC engine, providers, or 2D authority", () => {
   assert.doesNotMatch(control, /e6466c0a-1a3f-4184-b828-05e943fa1b12/);
 });
 
-test("editor shell mounts the prepare control without giving it editorStore world authority", () => {
+test("editor shell mounts integrated 2D|3D mode without giving AFC editorStore world authority", () => {
   const editor = source("app/editor/page.tsx");
-  assert.match(editor, /Prepare3dRoomControl/);
-  assert.match(editor, /roomId=\{vibodeRoomId \?\? requestedRoomId\}/);
+  assert.match(editor, /EditorViewportModeControl/);
+  assert.match(editor, /AfcIntegratedEditorViewport/);
+  assert.match(editor, /usePrepare3dRoom\(editorRoomId\)/);
+  assert.match(editor, /roomId=\{editorRoomId\}/);
   const mount = editor.slice(
-    editor.indexOf("<Prepare3dRoomControl"),
-    editor.indexOf("<Prepare3dRoomControl") + 180,
+    editor.indexOf("<EditorViewportModeControl"),
+    editor.indexOf("<EditorViewportModeControl") + 220,
   );
   assert.doesNotMatch(mount, /useEditorStore/);
   assert.doesNotMatch(mount, /EditorCanvas/);
+  assert.doesNotMatch(editor, /enter3dRoomHref/);
 });
 
 test("PI-2 reread_perspective still reuses durable EMPTY and bypasses durable TILED", () => {

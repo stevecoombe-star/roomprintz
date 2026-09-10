@@ -74,7 +74,7 @@ test("background image prefers presentation-neutral URL and keeps ORIGINAL compa
   assert.doesNotMatch(viewer, /Canonical ORIGINAL room basis/);
 
   const page = source(RUNTIME_PAGE);
-  assert.match(page, /originalImageUrl=\{originalImageUrl\}/);
+  assert.match(page, /originalImageUrl=\{runtime\.originalImageUrl\}/);
   assert.doesNotMatch(page, /backgroundImageUrl=/);
 
   const route = source(RUNTIME_ROUTE);

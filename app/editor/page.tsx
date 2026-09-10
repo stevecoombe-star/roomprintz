@@ -18,7 +18,9 @@ import {
 import { SignOutButton } from "@/components/auth/SignOutButton";
 import { LatestFurnitureCollectionImportBanner } from "@/components/LatestFurnitureCollectionImportBanner";
 import { LatestFurnitureCollectionItemsPreview } from "@/components/LatestFurnitureCollectionItemsPreview";
-import { Prepare3dRoomControl } from "@/components/afc-3d/Prepare3dRoomControl";
+import { AfcIntegratedEditorViewport } from "@/components/afc-3d/AfcIntegratedEditorViewport";
+import { Editor3dModePanel } from "@/components/afc-3d/Editor3dModePanel";
+import { EditorViewportModeControl } from "@/components/afc-3d/EditorViewportModeControl";
 import { TokenBalanceBadge } from "@/components/tokens/TokenBalanceBadge";
 import { TokenStatusNotice } from "@/components/tokens/TokenStatusNotice";
 import { SnackbarHost, type Snackbar } from "@/components/ui/SnackbarHost";
@@ -75,6 +77,15 @@ import {
   type VibodeVersionKind,
 } from "@/lib/vibode/version-kind";
 
+import {
+  createInitialEditorViewportMode,
+  shouldAutoPrepareIntegrated3d,
+  shouldRestoreIntegratedAfcRuntime,
+  type EditorViewportMode,
+} from "@/lib/afc-v2-runtime/editor-viewport-mode";
+import { useAfcProductionRuntime } from "@/lib/afc-v2-runtime/use-afc-production-runtime";
+import { usePrepare3dRoom } from "@/lib/afc-v2-runtime/use-prepare-3d-room";
+import type { RuntimeTransformMode } from "@/lib/afc-v2-runtime/types";
 import { getSupabaseBrowserAccessToken, supabaseBrowser } from "@/lib/supabaseBrowser";
 import { useTokenBalance } from "@/hooks/useTokenBalance";
 
@@ -2347,8 +2358,12 @@ function EditorPageInner() {
   const requestedRoomId = parseRoomIdFromSearch(
     searchParams.get("roomId") ?? searchParams.get("vibodeRoomId")
   );
-  const requestedAfc3dSurface = searchParams.get("afc3d") === "1";
   const requestedNewRoomIntent = hasExplicitNewRoomIntent(searchParams);
+  const [viewportMode, setViewportMode] = useState<EditorViewportMode>(
+    createInitialEditorViewportMode,
+  );
+  const [runtimeTransformMode, setRuntimeTransformMode] =
+    useState<RuntimeTransformMode>("move");
   const isExplicitBlankEditorIntent = !requestedRoomId && requestedNewRoomIntent;
   const requestedRoomPreviewUrl = parseRoomPreviewUrlFromSearch(
     searchParams.get("roomPreview") ?? searchParams.get("previewUrl")
@@ -2381,11 +2396,6 @@ function EditorPageInner() {
     () => `/my-furniture?returnTo=${encodeURIComponent(myFurnitureReturnTo)}`,
     [myFurnitureReturnTo]
   );
-
-  useEffect(() => {
-    if (!requestedAfc3dSurface || !requestedRoomId) return;
-    router.replace(`/editor/afc-3d?roomId=${encodeURIComponent(requestedRoomId)}`);
-  }, [requestedAfc3dSurface, requestedRoomId, router]);
 
   const scene = useEditorStore((s) => s.scene);
   const nodes = useEditorStore((s) => s.scene.nodes);
@@ -3063,6 +3073,35 @@ function EditorPageInner() {
   useEffect(() => {
     vibodeRoomIdRef.current = vibodeRoomId;
   }, [vibodeRoomId]);
+  const editorRoomId = vibodeRoomId ?? requestedRoomId;
+  const prepare3d = usePrepare3dRoom(editorRoomId);
+  const restoreIntegratedAfcRuntime = shouldRestoreIntegratedAfcRuntime({
+    viewportMode,
+    preparePhase: prepare3d.state.phase,
+  });
+  const afcRuntime = useAfcProductionRuntime(editorRoomId, {
+    enabled: restoreIntegratedAfcRuntime,
+  });
+  const previousEditorRoomIdRef = useRef(editorRoomId);
+  useEffect(() => {
+    if (previousEditorRoomIdRef.current === editorRoomId) return;
+    previousEditorRoomIdRef.current = editorRoomId;
+    setViewportMode(createInitialEditorViewportMode());
+    setRuntimeTransformMode("move");
+  }, [editorRoomId]);
+  const prepare3dPhase = prepare3d.state.phase;
+  const requestPrepare3d = prepare3d.requestPrepare;
+  useEffect(() => {
+    if (
+      !shouldAutoPrepareIntegrated3d({
+        viewportMode,
+        preparePhase: prepare3dPhase,
+      })
+    ) {
+      return;
+    }
+    requestPrepare3d();
+  }, [prepare3dPhase, requestPrepare3d, viewportMode]);
   const createPasteToPlaceJobControl = useCallback(
     (operationId: number): PasteToPlaceJobControl => {
       const scopeRoomPart = vibodeRoomIdRef.current ?? "no_room";
@@ -11880,7 +11919,11 @@ function EditorPageInner() {
               {queuedSwaps > 0 ? `${queuedSwaps} swap${queuedSwaps === 1 ? "" : "s"} pending` : ""}
             </div>
           )}
-          <Prepare3dRoomControl roomId={vibodeRoomId ?? requestedRoomId} />
+          <EditorViewportModeControl
+            mode={viewportMode}
+            disabled={!editorRoomId}
+            onChange={setViewportMode}
+          />
           <button
             type="button"
             aria-pressed={isFurnitureLayerEnabled}
@@ -11956,16 +11999,17 @@ function EditorPageInner() {
             {/* INNER: clips canvas contents + keeps border/bg */}
             <div
               className={`relative h-full w-full overflow-hidden rounded-lg border border-neutral-800 bg-neutral-900 ${
-                isBusy ? "blur-[1px] brightness-90" : ""
+                viewportMode === "2d" && isBusy ? "blur-[1px] brightness-90" : ""
               } ${
-                isCanvasEmpty && isCanvasDragOver
+                viewportMode === "2d" && isCanvasEmpty && isCanvasDragOver
                   ? "border-blue-700/70 bg-blue-950/20 ring-1 ring-inset ring-blue-400/40"
                   : ""
               }`}
-              onDragEnter={handleCanvasDragEnter}
-              onDragOver={handleCanvasDragOver}
-              onDragLeave={handleCanvasDragLeave}
-              onDrop={handleCanvasDrop}
+              data-editor-viewport-mode={viewportMode}
+              onDragEnter={viewportMode === "2d" ? handleCanvasDragEnter : undefined}
+              onDragOver={viewportMode === "2d" ? handleCanvasDragOver : undefined}
+              onDragLeave={viewportMode === "2d" ? handleCanvasDragLeave : undefined}
+              onDrop={viewportMode === "2d" ? handleCanvasDrop : undefined}
             >
               <input
                 ref={roomPhotoUploadInputRef}
@@ -11976,7 +12020,7 @@ function EditorPageInner() {
                 onChange={handleRoomPhotoInputChange}
               />
 
-              {showSwapReplacementPicker && (
+              {viewportMode === "2d" && showSwapReplacementPicker && (
                 <div className="absolute left-2 top-2 z-20 w-[340px] rounded-lg border border-blue-800/60 bg-neutral-950/95 p-3 shadow-xl backdrop-blur-sm">
                   <div className="flex items-center justify-between gap-2">
                     <div>
@@ -12058,6 +12102,17 @@ function EditorPageInner() {
                 </div>
               )}
 
+              {viewportMode === "3d" && editorRoomId ? (
+                <AfcIntegratedEditorViewport
+                  roomId={editorRoomId}
+                  prepareState={prepare3d.state}
+                  onPrepare={requestPrepare3d}
+                  runtime={afcRuntime}
+                  transformMode={runtimeTransformMode}
+                  onTransformModeChange={setRuntimeTransformMode}
+                />
+              ) : (
+              <div className="absolute inset-0" data-editor-viewport-renderer="canvas">
               <EditorCanvas
                 key={scene.sceneId}
                 className={`absolute inset-0 transition-opacity duration-200 ease-out ${
@@ -12144,8 +12199,10 @@ function EditorPageInner() {
                 onMoveRemoveModeManualMarker={moveRemoveModeManualMarker}
                 onRemoveRemoveModeManualMarker={removeRemoveModeManualMarker}
               />
+              </div>
+              )}
 
-              {shouldShowUploadOverlay && (
+              {viewportMode === "2d" && shouldShowUploadOverlay && (
                 <div
                   className={`absolute inset-0 z-10 flex items-center justify-center transition ${
                     isCanvasDragOver ? "bg-blue-950/20" : "bg-neutral-950/20"
@@ -12188,7 +12245,7 @@ function EditorPageInner() {
                 </div>
               )}
 
-              {isBusy && (
+              {viewportMode === "2d" && isBusy && (
                 <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center">
                   <div className="h-8 w-8 rounded-full border-2 border-neutral-200 border-t-transparent animate-spin" />
                   {scene.genUi.message ? (
@@ -12198,7 +12255,7 @@ function EditorPageInner() {
                   ) : null}
                 </div>
               )}
-              {canShowRestoreOriginalPlacementPositionsAction ? (
+              {viewportMode === "2d" && canShowRestoreOriginalPlacementPositionsAction ? (
                 <div className="pointer-events-none absolute inset-x-0 bottom-3 z-20 flex justify-center px-3">
                   <div className="pointer-events-auto rounded-full border border-neutral-700/80 bg-neutral-950/70 px-3 py-1 shadow-[0_6px_18px_rgba(0,0,0,0.28)] backdrop-blur-sm">
                     <button
@@ -12219,7 +12276,7 @@ function EditorPageInner() {
                 </div>
               ) : null}
             </div>
-            {shouldShowSceneNeedsUpdateOverlay ? (
+            {viewportMode === "2d" && shouldShowSceneNeedsUpdateOverlay ? (
               <div className="pointer-events-none absolute inset-x-0 bottom-3 z-30 flex justify-center px-3">
                 <div className="pointer-events-auto w-full max-w-[min(92vw,920px)] rounded-xl border border-neutral-500/35 bg-neutral-950/70 px-3 py-2 shadow-[0_10px_30px_rgba(0,0,0,0.35)] backdrop-blur-md">
                   <div className="flex flex-wrap items-center justify-center gap-x-3 gap-y-2 text-center sm:justify-between sm:text-left">
@@ -12311,7 +12368,17 @@ function EditorPageInner() {
         </main>
 
         {/* Right panel */}
-        <aside className="flex h-full min-h-0 w-[340px] flex-col overflow-hidden border-l border-neutral-800 bg-neutral-950">
+        <aside
+          className="flex h-full min-h-0 w-[340px] flex-col overflow-hidden border-l border-neutral-800 bg-neutral-950"
+          data-editor-right-panel-surface={viewportMode === "3d" ? "3d" : "workflow"}
+        >
+          {viewportMode === "3d" ? (
+            <Editor3dModePanel
+              transformMode={runtimeTransformMode}
+              onTransformModeChange={setRuntimeTransformMode}
+            />
+          ) : null}
+          {viewportMode === "2d" ? (
           <div className="min-h-0 flex-1 overflow-y-auto">
             <div className="space-y-4 p-4">
             <div className="rounded-lg">
@@ -13390,6 +13457,7 @@ function EditorPageInner() {
 
             </div>
           </div>
+          ) : null}
         </aside>
       </div>
 

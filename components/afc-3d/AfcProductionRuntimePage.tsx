@@ -2,25 +2,14 @@
 
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { Suspense, useEffect, useState } from "react";
+import { Suspense, useEffect } from "react";
 
 import { AfcProductionRoomViewer } from "@/components/afc-3d/AfcProductionRoomViewer";
-import type { AfcV2ProductionRoomAuthority } from "@/lib/afc-v2-production/production-authority-contract";
-import { getSupabaseBrowserAccessToken } from "@/lib/supabaseBrowser";
+import { useAfcProductionRuntime } from "@/lib/afc-v2-runtime/use-afc-production-runtime";
 import { useSupabaseUser } from "@/lib/useSupabaseUser";
 
 const UUID =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-
-type RuntimeResponse = Readonly<{
-  status?: unknown;
-  generationId?: unknown;
-  currentGenerationId?: unknown;
-  authority?: unknown;
-  failureReason?: unknown;
-  originalImageUrl?: unknown;
-  error?: unknown;
-}>;
 
 function parseRoomId(value: string | null): string | null {
   if (!value) return null;
@@ -35,13 +24,9 @@ function AfcProductionRuntimePageInner() {
     searchParams.get("roomId") ?? searchParams.get("vibodeRoomId"),
   );
   const { user, loading: authLoading } = useSupabaseUser();
-  const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [authority, setAuthority] = useState<AfcV2ProductionRoomAuthority | null>(
-    null,
-  );
-  const [originalImageUrl, setOriginalImageUrl] = useState<string | null>(null);
-  const [generationId, setGenerationId] = useState<string | null>(null);
+  const runtime = useAfcProductionRuntime(roomId, {
+    enabled: Boolean(roomId && user),
+  });
 
   useEffect(() => {
     if (authLoading) return;
@@ -52,83 +37,6 @@ function AfcProductionRuntimePageInner() {
       router.replace(`/login?next=${encodeURIComponent(next)}`);
     }
   }, [authLoading, roomId, router, user]);
-
-  useEffect(() => {
-    let cancelled = false;
-    async function load() {
-      if (!roomId || !user) {
-        setLoading(false);
-        return;
-      }
-      setLoading(true);
-      setError(null);
-      try {
-        const token = await getSupabaseBrowserAccessToken();
-        if (!token) {
-          throw new Error("Your session expired. Sign in again.");
-        }
-        const response = await fetch(
-          `/api/vibode/afc/runtime?roomId=${encodeURIComponent(roomId)}`,
-          {
-            method: "GET",
-            headers: {
-              Authorization: `Bearer ${token}`,
-            },
-            cache: "no-store",
-          },
-        );
-        const payload = (await response.json().catch(() => null)) as
-          | RuntimeResponse
-          | null;
-        if (!response.ok) {
-          throw new Error(
-            typeof payload?.error === "string"
-              ? payload.error
-              : "Failed to restore AFC runtime.",
-          );
-        }
-        if (cancelled) return;
-        if (payload?.status !== "ready" || !payload.authority) {
-          setAuthority(null);
-          setOriginalImageUrl(null);
-          setGenerationId(
-            typeof payload?.currentGenerationId === "string"
-              ? payload.currentGenerationId
-              : null,
-          );
-          setError(
-            typeof payload?.failureReason === "string" && payload.failureReason
-              ? payload.failureReason
-              : "This room has no production-ready AFC generation.",
-          );
-          return;
-        }
-        if (typeof payload.originalImageUrl !== "string" || !payload.originalImageUrl) {
-          throw new Error("ORIGINAL image URL is unavailable.");
-        }
-        setAuthority(payload.authority as AfcV2ProductionRoomAuthority);
-        setOriginalImageUrl(payload.originalImageUrl);
-        setGenerationId(
-          typeof payload.generationId === "string" ? payload.generationId : null,
-        );
-      } catch (loadError) {
-        if (cancelled) return;
-        setAuthority(null);
-        setOriginalImageUrl(null);
-        setError(
-          loadError instanceof Error
-            ? loadError.message
-            : "Failed to restore AFC runtime.",
-        );
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    }
-    void load();
-    return () => {
-      cancelled = true;
-    };
-  }, [roomId, user]);
 
   const editorHref = roomId
     ? `/editor?roomId=${encodeURIComponent(roomId)}`
@@ -141,7 +49,7 @@ function AfcProductionRuntimePageInner() {
           <div className="font-medium">PI-3A Production AFC runtime</div>
           <div className="truncate text-xs text-neutral-400">
             {roomId ? `room ${roomId}` : "roomId is required"}
-            {generationId ? ` · generation ${generationId}` : ""}
+            {runtime.generationId ? ` · generation ${runtime.generationId}` : ""}
           </div>
         </div>
         <Link
@@ -157,21 +65,21 @@ function AfcProductionRuntimePageInner() {
             Open with /editor/afc-3d?roomId=&lt;uuid&gt;
           </div>
         )}
-        {roomId && loading && (
+        {roomId && runtime.loading && (
           <div className="flex h-full items-center justify-center text-sm text-neutral-300">
             Restoring persisted AFC authority…
           </div>
         )}
-        {roomId && !loading && error && (
+        {roomId && !runtime.loading && runtime.error && (
           <div className="flex h-full items-center justify-center px-6 text-center text-sm text-red-200">
-            {error}
+            {runtime.error}
           </div>
         )}
-        {roomId && !loading && authority && originalImageUrl && (
+        {roomId && !runtime.loading && runtime.authority && runtime.originalImageUrl && (
           <AfcProductionRoomViewer
             roomId={roomId}
-            authority={authority}
-            originalImageUrl={originalImageUrl}
+            authority={runtime.authority}
+            originalImageUrl={runtime.originalImageUrl}
           />
         )}
       </main>
