@@ -49,11 +49,23 @@ import {
   worldPositionXZ,
   worldTransformFromObject3D,
 } from "@/lib/afc-v2-runtime/viewport-interaction";
+import {
+  VIEWER_BACKGROUND_IMAGE_ALT,
+  productionViewerWorldLifecycleKey,
+  resolveViewerBackgroundImageUrl,
+} from "@/lib/afc-v2-runtime/viewer-presentation";
 
 type Props = Readonly<{
   roomId: string;
   authority: AfcV2ProductionRoomAuthority;
-  originalImageUrl: string;
+  backgroundImageUrl?: string;
+  originalImageUrl?: string;
+}>;
+
+type ReadyProps = Readonly<{
+  roomId: string;
+  authority: AfcV2ProductionRoomAuthority;
+  visualImageUrl: string;
 }>;
 
 type RuntimeEntry = {
@@ -68,12 +80,17 @@ type RuntimeEntry = {
 export function AfcProductionRoomViewer({
   roomId,
   authority,
+  backgroundImageUrl,
   originalImageUrl,
 }: Props) {
   const validated = useMemo(
     () => validateProductionRuntimeAuthority(authority),
     [authority],
   );
+  const visualImageUrl = resolveViewerBackgroundImageUrl({
+    backgroundImageUrl,
+    originalImageUrl,
+  });
   if (!validated.ok) {
     return (
       <div className="flex h-full items-center justify-center bg-neutral-950 px-6 text-center text-sm text-red-200">
@@ -81,12 +98,19 @@ export function AfcProductionRoomViewer({
       </div>
     );
   }
+  if (!visualImageUrl) {
+    return (
+      <div className="flex h-full items-center justify-center bg-neutral-950 px-6 text-center text-sm text-red-200">
+        AFC runtime refused this presentation: background image URL is missing
+      </div>
+    );
+  }
   return (
     <AfcProductionRoomViewerReady
-      key={validated.authority.generationId}
+      key={productionViewerWorldLifecycleKey(validated.authority)}
       roomId={roomId}
       authority={validated.authority}
-      originalImageUrl={originalImageUrl}
+      visualImageUrl={visualImageUrl}
     />
   );
 }
@@ -94,8 +118,8 @@ export function AfcProductionRoomViewer({
 function AfcProductionRoomViewerReady({
   roomId,
   authority,
-  originalImageUrl,
-}: Props) {
+  visualImageUrl,
+}: ReadyProps) {
   const viewportRef = useRef<HTMLDivElement | null>(null);
   const frameRef = useRef<HTMLDivElement | null>(null);
   const mountRef = useRef<HTMLDivElement | null>(null);
@@ -173,22 +197,6 @@ function AfcProductionRoomViewerReady({
     keyLight.position.set(3, 6, 5);
     scene.add(ambient);
     scene.add(keyLight);
-
-    const floorGeometry = new THREE.PlaneGeometry(
-      world.floor.worldWidthM,
-      world.floor.referenceDepthM,
-    );
-    const floorMaterial = new THREE.MeshBasicMaterial({
-      color: 0x22d3ee,
-      opacity: 0.06,
-      transparent: true,
-      side: THREE.DoubleSide,
-      depthWrite: false,
-    });
-    const floorSurface = new THREE.Mesh(floorGeometry, floorMaterial);
-    floorSurface.rotation.x = -Math.PI / 2;
-    floorSurface.raycast = () => {};
-    scene.add(floorSurface);
 
     const objectLayer = new THREE.Group();
     scene.add(objectLayer);
@@ -552,8 +560,6 @@ function AfcProductionRoomViewerReady({
       scene.remove(controlsHelper);
       objectLayer.remove(entry.placement);
       disposeObject3D(entry.placement);
-      floorGeometry.dispose();
-      floorMaterial.dispose();
       renderer.dispose();
       renderer.domElement.remove();
     };
@@ -582,10 +588,10 @@ function AfcProductionRoomViewerReady({
               : { inset: 0 }
           }
         >
-          {/* eslint-disable-next-line @next/next/no-img-element -- signed ORIGINAL URL is not a Next image domain */}
+          {/* eslint-disable-next-line @next/next/no-img-element -- signed room image URL is not a Next image domain */}
           <img
-            src={originalImageUrl}
-            alt="Canonical ORIGINAL room basis"
+            src={visualImageUrl}
+            alt={VIEWER_BACKGROUND_IMAGE_ALT}
             className="absolute inset-0 z-0 h-full w-full"
             draggable={false}
           />
