@@ -6,8 +6,13 @@ import { useEffect, useMemo, useRef, useState } from "react";
 
 import type { AfcV2ProductionRoomAuthority } from "@/lib/afc-v2-production/production-authority-contract";
 import { resolveSceneObjectCollision } from "@/lib/afc-v2-runtime/collision-resolver";
-import { createPi3aCubeObjectFromAuthority } from "@/lib/afc-v2-runtime/cube-runtime";
 import { containFitRect } from "@/lib/afc-v2-runtime/frame-layout";
+import { loadFurnitureGlb } from "@/lib/afc-v2-runtime/furniture-glb-loader";
+import {
+  PI4A_FURNITURE_LOADING_MESSAGE,
+  createPi4aFurnitureObjectFromAuthority,
+  pi4aFurnitureGlbPublicPath,
+} from "@/lib/afc-v2-runtime/furniture-runtime";
 import {
   applyRealizedFrozenCamera,
   buildProductionPerspectiveCamera,
@@ -19,7 +24,6 @@ import {
 import {
   applyWorldTransform,
   attachImportedObject,
-  createOneMetreCubeMesh,
   createSceneObjectRoot,
   disposeObject3D,
   measurePlacementLocalAabb,
@@ -150,6 +154,9 @@ function AfcProductionRoomViewerReady({
     useState<RuntimeTransformMode>("move");
   const transformMode = transformModeProp ?? internalTransformMode;
   const [selected, setSelected] = useState(true);
+  const [furniturePhase, setFurniturePhase] = useState<
+    "loading" | "ready" | "error"
+  >("loading");
   const [frameBox, setFrameBox] = useState<{
     width: number;
     height: number;
@@ -160,8 +167,8 @@ function AfcProductionRoomViewerReady({
   const selectedRef = useRef(selected);
 
   const world = useMemo(() => realizeProductionWorld(authority), [authority]);
-  const cube = useMemo(
-    () => createPi3aCubeObjectFromAuthority(roomId, authority),
+  const furniture = useMemo(
+    () => createPi4aFurnitureObjectFromAuthority(roomId, authority),
     [authority, roomId],
   );
 
@@ -228,18 +235,19 @@ function AfcProductionRoomViewerReady({
 
     const root = createSceneObjectRoot();
     const entry: RuntimeEntry = {
-      objectId: cube.objectId,
+      objectId: furniture.objectId,
       placement: root.placement,
       importPlacement: root.importPlacement,
       localAabb: null,
-      lastResolved: realizeObjectWorldTransform(cube.transform, world.metricScale),
-      canonicalTransform: cube.transform,
+      lastResolved: realizeObjectWorldTransform(
+        furniture.transform,
+        world.metricScale,
+      ),
+      canonicalTransform: furniture.transform,
     };
-    tagSceneObjectRoot(entry.placement, cube.objectId);
-    attachImportedObject(entry.importPlacement, createOneMetreCubeMesh());
-    entry.localAabb = measurePlacementLocalAabb(entry.placement, entry.importPlacement);
+    tagSceneObjectRoot(entry.placement, furniture.objectId);
     const initialTransform = entry.lastResolved ??
-      realizeObjectWorldTransform(cube.transform, world.metricScale);
+      realizeObjectWorldTransform(furniture.transform, world.metricScale);
     applyWorldTransform(entry.placement, initialTransform);
     entry.lastResolved = initialTransform;
     objectLayer.add(entry.placement);
@@ -250,7 +258,7 @@ function AfcProductionRoomViewerReady({
     controls.setSpace("world");
     controls.setSize(0.85);
     controls.setMode("translate");
-    controls.attach(transformControlsAttachmentTarget(entry));
+    let furnitureReady = false;
 
     const raycaster = new THREE.Raycaster();
     const pointerNdc = new THREE.Vector2();
@@ -324,7 +332,7 @@ function AfcProductionRoomViewerReady({
       const mode = viewportModeToControlsMode(transformModeRef.current);
       if (controls.getMode() !== mode) controls.setMode(mode);
       if (mode === "translate") controls.setSpace("world");
-      if (!selectedRef.current) {
+      if (!furnitureReady || !selectedRef.current) {
         if (controls.object) controls.detach();
         return;
       }
@@ -522,8 +530,8 @@ function AfcProductionRoomViewerReady({
         return;
       }
       const id = pickSceneObjectId(pickHitsAt(event.clientX, event.clientY));
-      selectedRef.current = id === cube.objectId;
-      setSelected(id === cube.objectId);
+      selectedRef.current = id === furniture.objectId;
+      setSelected(id === furniture.objectId);
     };
 
     const pointerCancelListener = (event: PointerEvent) => {
@@ -540,6 +548,31 @@ function AfcProductionRoomViewerReady({
     const objectChangeListener = () => {
       writeAttachedTransform();
     };
+
+    const attachLoadedFurniture = (object: THREE.Object3D) => {
+      attachImportedObject(entry.importPlacement, object);
+      entry.localAabb = measurePlacementLocalAabb(
+        entry.placement,
+        entry.importPlacement,
+      );
+      applyWorldTransform(entry.placement, initialTransform);
+      entry.lastResolved = initialTransform;
+      reportCanonical(entry.lastResolved);
+      furnitureReady = true;
+      setFurniturePhase("ready");
+    };
+
+    void loadFurnitureGlb(pi4aFurnitureGlbPublicPath()).then((result) => {
+      if (disposed) {
+        if (result.ok) disposeObject3D(result.scene);
+        return;
+      }
+      if (!result.ok) {
+        setFurniturePhase("error");
+        return;
+      }
+      attachLoadedFurniture(result.scene);
+    });
 
     controls.addEventListener("dragging-changed", draggingChangedListener);
     controls.addEventListener("objectChange", objectChangeListener);
@@ -588,7 +621,7 @@ function AfcProductionRoomViewerReady({
       renderer.dispose();
       renderer.domElement.remove();
     };
-  }, [authority.generationId, cube.objectId, cube.transform, world]);
+  }, [authority.generationId, furniture.objectId, furniture.transform, world]);
 
   return (
     <div className="relative h-full min-h-0 w-full bg-neutral-950">
@@ -643,6 +676,17 @@ function AfcProductionRoomViewerReady({
             }
             data-scene-interaction="viewport"
           />
+          {furniturePhase === "loading" ? (
+            <div
+              className="pointer-events-none absolute inset-0 z-20 flex items-center justify-center"
+              role="status"
+              aria-live="polite"
+            >
+              <div className="rounded-md bg-neutral-950/70 px-3 py-1.5 text-sm text-neutral-100">
+                {PI4A_FURNITURE_LOADING_MESSAGE}
+              </div>
+            </div>
+          ) : null}
         </div>
       </div>
       {showInternalControls ? (

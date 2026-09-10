@@ -256,7 +256,7 @@ test("PI-3B4 History changes do not alter generation, restore, prepare, or trans
   );
   assert.match(
     viewer,
-    /\}, \[authority\.generationId, cube\.objectId, cube\.transform, world\]\);/,
+    /\}, \[authority\.generationId, furniture\.objectId, furniture\.transform, world\]\);/,
   );
 });
 

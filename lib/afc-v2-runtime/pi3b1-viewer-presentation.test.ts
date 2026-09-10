@@ -119,10 +119,10 @@ test("AFC world lifecycle is generation-only and ignores background image identi
   assert.doesNotMatch(viewer, /key=\{[^}]*activeAssetId/);
   assert.match(
     viewer,
-    /\}, \[authority\.generationId, cube\.objectId, cube\.transform, world\]\);/,
+    /\}, \[authority\.generationId, furniture\.objectId, furniture\.transform, world\]\);/,
   );
   assert.doesNotMatch(
     viewer,
-    /\[authority\.generationId, cube\.objectId, cube\.transform, world, visualImageUrl\]/,
+    /\[authority\.generationId, furniture\.objectId, furniture\.transform, world, visualImageUrl\]/,
   );
 });

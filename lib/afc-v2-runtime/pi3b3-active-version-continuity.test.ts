@@ -178,11 +178,11 @@ test("History version change does not change AFC world or restore identity", () 
   assert.doesNotMatch(viewer, /key=\{[^}]*activeAssetId/);
   assert.match(
     viewer,
-    /\}, \[authority\.generationId, cube\.objectId, cube\.transform, world\]\);/,
+    /\}, \[authority\.generationId, furniture\.objectId, furniture\.transform, world\]\);/,
   );
   assert.doesNotMatch(
     viewer,
-    /\[authority\.generationId, cube\.objectId, cube\.transform, world, visualImageUrl\]/,
+    /\[authority\.generationId, furniture\.objectId, furniture\.transform, world, visualImageUrl\]/,
   );
 
   const integrated = source("components/afc-3d/AfcIntegratedEditorViewport.tsx");

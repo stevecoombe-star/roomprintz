@@ -131,6 +131,18 @@ export function worldMinY(object: THREE.Object3D): number {
   return new THREE.Box3().setFromObject(object).min.y;
 }
 
+export function localAabbDimensions(aabb: LocalAabb): {
+  width: number;
+  height: number;
+  depth: number;
+} {
+  return {
+    width: aabb.max.x - aabb.min.x,
+    height: aabb.max.y - aabb.min.y,
+    depth: aabb.max.z - aabb.min.z,
+  };
+}
+
 export function geometryLocalSize(object: THREE.Object3D): {
   x: number;
   y: number;

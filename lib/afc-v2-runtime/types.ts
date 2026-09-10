@@ -4,7 +4,7 @@
  * Transforms live in canonical AFC world space:
  *   calibrated-world-xz/v1
  *
- * These records are PI-4-compatible in shape. PI-3A does not persist them.
+ * These records are PI-4-compatible in shape. PI-4A does not persist them.
  */
 
 export const AFC_V2_RUNTIME_COORDINATE_SPACE = "calibrated-world-xz/v1" as const;
@@ -20,6 +20,14 @@ export const AFC_V2_RUNTIME_CUBE_EDGE_M = 1;
 export const AFC_V2_RUNTIME_CUBE_OBJECT_ID = "pi3a-1m-cube" as const;
 
 export const AFC_V2_RUNTIME_CUBE_ASSET_ID = "afc-v2-runtime/test-cube/1m" as const;
+
+export const AFC_V2_RUNTIME_FURNITURE_OBJECT_ID = "pi4a-test-sofa" as const;
+
+export const AFC_V2_RUNTIME_FURNITURE_ASSET_ID =
+  "afc-v2-runtime/test-fixtures/pi4a-sofa" as const;
+
+export const AFC_V2_RUNTIME_FURNITURE_GLB_PUBLIC_PATH =
+  "/afc-v2-runtime/test-fixtures/pi4a-sofa.glb" as const;
 
 export const AFC_V2_RUNTIME_CAMERA_NEAR = 0.1;
 
@@ -49,7 +57,7 @@ export type WorldTransform = Readonly<{
 export type RuntimeTransformMode = "move" | "rotate";
 
 export type RuntimeAssetIdentity = Readonly<{
-  kind: "test_cube";
+  kind: "test_cube" | "test_furniture_glb";
   id: string;
 }>;
 
