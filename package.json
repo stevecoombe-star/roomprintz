@@ -23,6 +23,7 @@
     "test:ger-w3c0": "node --conditions=react-server --import tsx --test app/admin/3d-room-lab/gemini-evidence-provider-response-capture.test.ts",
     "test:ger-w3c1": "node --conditions=react-server --import tsx --test app/admin/3d-room-lab/gemini-evidence-provider-response-receipts.test.ts",
     "test:afc-v2-pi2": "node --conditions=react-server --import tsx --test --test-concurrency=1 lib/afc-v2-production/*.test.ts",
+    "test:afc-v2-pi3a": "node --conditions=react-server --import tsx --test --test-concurrency=1 lib/afc-v2-runtime/*.test.ts app/api/vibode/afc/runtime/*.test.ts",
     "test:policy-a-containment": "node --conditions=react-server --import tsx --test app/admin/3d-room-lab/policy-a-containment.test.ts",
     "test:image-space": "node --conditions=react-server --import tsx --test app/admin/3d-room-lab/image-space.test.ts",
     "test:afc-cp1a": "node --conditions=react-server --import tsx --test --test-concurrency=1 app/admin/3d-room-lab/image-space.test.ts app/admin/3d-room-lab/lossless-floor-projection.test.ts app/admin/3d-room-lab/floor-handle-presentation.test.ts app/admin/3d-room-lab/floor-authority-separation.test.ts app/admin/3d-room-lab/policy-a-containment.test.ts",

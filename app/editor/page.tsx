@@ -18,6 +18,7 @@ import {
 import { SignOutButton } from "@/components/auth/SignOutButton";
 import { LatestFurnitureCollectionImportBanner } from "@/components/LatestFurnitureCollectionImportBanner";
 import { LatestFurnitureCollectionItemsPreview } from "@/components/LatestFurnitureCollectionItemsPreview";
+import { Prepare3dRoomControl } from "@/components/afc-3d/Prepare3dRoomControl";
 import { TokenBalanceBadge } from "@/components/tokens/TokenBalanceBadge";
 import { TokenStatusNotice } from "@/components/tokens/TokenStatusNotice";
 import { SnackbarHost, type Snackbar } from "@/components/ui/SnackbarHost";
@@ -2346,6 +2347,7 @@ function EditorPageInner() {
   const requestedRoomId = parseRoomIdFromSearch(
     searchParams.get("roomId") ?? searchParams.get("vibodeRoomId")
   );
+  const requestedAfc3dSurface = searchParams.get("afc3d") === "1";
   const requestedNewRoomIntent = hasExplicitNewRoomIntent(searchParams);
   const isExplicitBlankEditorIntent = !requestedRoomId && requestedNewRoomIntent;
   const requestedRoomPreviewUrl = parseRoomPreviewUrlFromSearch(
@@ -2379,6 +2381,11 @@ function EditorPageInner() {
     () => `/my-furniture?returnTo=${encodeURIComponent(myFurnitureReturnTo)}`,
     [myFurnitureReturnTo]
   );
+
+  useEffect(() => {
+    if (!requestedAfc3dSurface || !requestedRoomId) return;
+    router.replace(`/editor/afc-3d?roomId=${encodeURIComponent(requestedRoomId)}`);
+  }, [requestedAfc3dSurface, requestedRoomId, router]);
 
   const scene = useEditorStore((s) => s.scene);
   const nodes = useEditorStore((s) => s.scene.nodes);
@@ -11873,6 +11880,7 @@ function EditorPageInner() {
               {queuedSwaps > 0 ? `${queuedSwaps} swap${queuedSwaps === 1 ? "" : "s"} pending` : ""}
             </div>
           )}
+          <Prepare3dRoomControl roomId={vibodeRoomId ?? requestedRoomId} />
           <button
             type="button"
             aria-pressed={isFurnitureLayerEnabled}

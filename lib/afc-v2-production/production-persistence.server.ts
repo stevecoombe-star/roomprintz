@@ -11,6 +11,7 @@ import { durableArtifactBytesMatch } from "./production-artifact-integrity";
 import {
   AFC_V2_ORIGINAL_SIGNED_URL_EXPIRES_IN_SEC,
   prepareOwnedOriginalForAnalysis,
+  signOwnedOriginalForDisplay,
 } from "./production-original";
 import {
   AFC_V2_ORIGINAL_STORAGE_BUCKET,
@@ -169,6 +170,25 @@ export async function loadOwnedOriginalForProductionAnalysis(
     bytes: prepared.bytes,
     sourceImageUrl: prepared.sourceImageUrl,
   };
+}
+
+export async function signOwnedOriginalDisplayUrl(
+  supabase: AnySupabase,
+  input: Readonly<{ userId: string; room: AfcRoomPointer }>,
+): Promise<string | null> {
+  const signed = await signOwnedOriginalForDisplay({
+    authenticatedUserId: input.userId,
+    room: input.room,
+    sign: async (ref, expiresInSec) => {
+      const { data, error } = await supabase.storage
+        .from(ref.bucket)
+        .createSignedUrl(ref.path, expiresInSec);
+      if (error || typeof data?.signedUrl !== "string") return null;
+      return data.signedUrl;
+    },
+    expiresInSec: AFC_V2_ORIGINAL_SIGNED_URL_EXPIRES_IN_SEC,
+  });
+  return signed.ok ? signed.sourceImageUrl : null;
 }
 
 export function createSupabaseAfcProductionStore(

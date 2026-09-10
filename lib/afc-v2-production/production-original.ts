@@ -174,3 +174,33 @@ export async function prepareOwnedOriginalForAnalysis(input: Readonly<{
     sourceImageUrl,
   });
 }
+
+export async function signOwnedOriginalForDisplay(input: Readonly<{
+  authenticatedUserId: string;
+  room: AfcRoomPointer;
+  sign: (
+    ref: OwnedOriginalStorageRef,
+    expiresInSec: number,
+  ) => Promise<string | null>;
+  expiresInSec?: number;
+}>): Promise<
+  | Readonly<{ ok: true; sourceImageUrl: string }>
+  | Readonly<{ ok: false; code: OwnedOriginalFailureCode }>
+> {
+  const resolved = resolveOwnedOriginalStorage({
+    authenticatedUserId: input.authenticatedUserId,
+    roomId: input.room.id,
+    room: input.room,
+  });
+  if (!resolved.ok) return resolved;
+  const expiresInSec = input.expiresInSec ??
+    AFC_V2_ORIGINAL_SIGNED_URL_EXPIRES_IN_SEC;
+  const sourceImageUrl = await input.sign(resolved.ref, expiresInSec);
+  if (!sourceImageUrl || !isProductionOriginalSourceUrl(sourceImageUrl)) {
+    return { ok: false, code: "sign_failed" };
+  }
+  return Object.freeze({
+    ok: true as const,
+    sourceImageUrl,
+  });
+}
