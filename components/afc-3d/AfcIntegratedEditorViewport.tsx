@@ -14,6 +14,7 @@ type Props = Readonly<{
   prepareState: Prepare3dRoomState;
   onPrepare: () => void;
   runtime: AfcProductionRuntimeLoadState;
+  backgroundImageUrl?: string | null;
   transformMode: RuntimeTransformMode;
   onTransformModeChange: (mode: RuntimeTransformMode) => void;
 }>;
@@ -41,6 +42,7 @@ export function AfcIntegratedEditorViewport({
   prepareState,
   onPrepare,
   runtime,
+  backgroundImageUrl,
   transformMode,
   onTransformModeChange,
 }: Props) {
@@ -115,6 +117,7 @@ export function AfcIntegratedEditorViewport({
       <AfcProductionRoomViewer
         roomId={roomId}
         authority={runtime.authority}
+        backgroundImageUrl={backgroundImageUrl}
         originalImageUrl={runtime.originalImageUrl}
         transformMode={transformMode}
         onTransformModeChange={onTransformModeChange}

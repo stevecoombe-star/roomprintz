@@ -58,8 +58,8 @@ import {
 type Props = Readonly<{
   roomId: string;
   authority: AfcV2ProductionRoomAuthority;
-  backgroundImageUrl?: string;
-  originalImageUrl?: string;
+  backgroundImageUrl?: string | null;
+  originalImageUrl?: string | null;
   transformMode?: RuntimeTransformMode;
   onTransformModeChange?: (mode: RuntimeTransformMode) => void;
   showInternalControls?: boolean;

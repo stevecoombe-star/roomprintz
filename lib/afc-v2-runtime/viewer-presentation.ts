@@ -10,6 +10,20 @@ export type ViewerBackgroundImageInput = Readonly<{
   originalImageUrl?: string | null;
 }>;
 
+export type IntegratedEditorBackgroundImageInput = Readonly<{
+  selectedVersionImageUrl?: string | null;
+  editorVisualUrl?: string | null;
+  originalImageUrl?: string | null;
+}>;
+
+export type IntegratedViewerWorldLifecycleInput = Readonly<{
+  generationId: string;
+  selectedVersionId?: string | null;
+  activeAssetId?: string | null;
+  backgroundImageUrl?: string | null;
+  originalImageUrl?: string | null;
+}>;
+
 export const VIEWER_BACKGROUND_IMAGE_ALT = "Active Vibode room version";
 
 export type ProductionViewerFloorPresentation = Readonly<{
@@ -28,6 +42,21 @@ export function resolveViewerBackgroundImageUrl(
   return normalizePresentationImageUrl(input.originalImageUrl);
 }
 
+/**
+ * Integrated Editor 3D background is the active History version visual.
+ * ORIGINAL / runtime originalImageUrl is last-resort presentation only.
+ */
+export function resolveIntegratedEditorBackgroundImageUrl(
+  input: IntegratedEditorBackgroundImageInput,
+): string | null {
+  return resolveViewerBackgroundImageUrl({
+    backgroundImageUrl:
+      normalizePresentationImageUrl(input.selectedVersionImageUrl) ??
+      normalizePresentationImageUrl(input.editorVisualUrl),
+    originalImageUrl: input.originalImageUrl,
+  });
+}
+
 export function productionViewerWorldLifecycleKey(
   authority: Readonly<{ generationId: string }>,
 ): string {
@@ -40,4 +69,10 @@ function normalizePresentationImageUrl(
   if (typeof value !== "string") return null;
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : null;
+}
+
+export function integratedViewerWorldLifecycleKey(
+  input: IntegratedViewerWorldLifecycleInput,
+): string {
+  return productionViewerWorldLifecycleKey({ generationId: input.generationId });
 }

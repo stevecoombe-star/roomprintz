@@ -198,7 +198,7 @@ test("sibling renderers occupy the viewport exclusively", () => {
   assert.doesNotMatch(integrated, /EditorCanvas/);
   assert.doesNotMatch(integrated, /editorStore/);
   assert.match(integrated, /originalImageUrl=\{runtime\.originalImageUrl\}/);
-  assert.doesNotMatch(integrated, /backgroundImageUrl=/);
+  assert.match(integrated, /backgroundImageUrl=\{backgroundImageUrl\}/);
   assert.doesNotMatch(integrated, /selectedVersion/);
   assert.doesNotMatch(integrated, /workingImageUrl/);
   assert.doesNotMatch(integrated, /DEFAULT_PX_PER_IN/);

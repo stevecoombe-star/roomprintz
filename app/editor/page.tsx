@@ -83,6 +83,7 @@ import {
   shouldRestoreIntegratedAfcRuntime,
   type EditorViewportMode,
 } from "@/lib/afc-v2-runtime/editor-viewport-mode";
+import { resolveIntegratedEditorBackgroundImageUrl } from "@/lib/afc-v2-runtime/viewer-presentation";
 import { useAfcProductionRuntime } from "@/lib/afc-v2-runtime/use-afc-production-runtime";
 import { usePrepare3dRoom } from "@/lib/afc-v2-runtime/use-prepare-3d-room";
 import type { RuntimeTransformMode } from "@/lib/afc-v2-runtime/types";
@@ -5256,6 +5257,10 @@ function EditorPageInner() {
     () => versions.find((asset) => asset.id === selectedVersionId) ?? null,
     [selectedVersionId, versions]
   );
+  const integratedViewerBackgroundImageUrl = resolveIntegratedEditorBackgroundImageUrl({
+    selectedVersionImageUrl: selectedVersion?.image_url,
+    editorVisualUrl: workingImageUrl,
+  });
   const selectedVersionRenderedPlacementStateHash = useMemo(
     () => readRenderedPlacementStateHashFromMetadata(selectedVersion?.metadata),
     [selectedVersion?.metadata]
@@ -12108,6 +12113,7 @@ function EditorPageInner() {
                   prepareState={prepare3d.state}
                   onPrepare={requestPrepare3d}
                   runtime={afcRuntime}
+                  backgroundImageUrl={integratedViewerBackgroundImageUrl}
                   transformMode={runtimeTransformMode}
                   onTransformModeChange={setRuntimeTransformMode}
                 />
