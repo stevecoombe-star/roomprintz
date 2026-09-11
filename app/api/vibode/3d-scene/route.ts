@@ -10,7 +10,7 @@ import {
   validatePersistedSceneObjects,
 } from "@/lib/afc-v2-runtime/persisted-scene";
 import {
-  loadOwnedVersionScene,
+  resolveOwnedVersionScene,
   saveOwnedVersionScene,
 } from "@/lib/afc-v2-runtime/scene-persistence.server";
 
@@ -46,7 +46,7 @@ export async function GET(request: Request) {
     }, 400);
   }
 
-  const loaded = await loadOwnedVersionScene({
+  const loaded = await resolveOwnedVersionScene({
     userId: auth.userId,
     roomId: query.roomId,
     versionId: query.versionId,
@@ -55,36 +55,36 @@ export async function GET(request: Request) {
   if (!loaded.ok) {
     return productionAfcJson({ error: loaded.error }, loaded.status);
   }
-  if (!loaded.found) {
+  const resolved = loaded.resolved;
+  if (resolved.status === "none") {
     return productionAfcJson({
       status: "none",
       scene: null,
       currentAfcGenerationId: query.afcGenerationId,
     }, 200);
   }
-  if ("malformed" in loaded) {
+  if (resolved.status === "malformed") {
     return productionAfcJson({
       status: "malformed",
       scene: null,
-      reason: "Stored 3D scene is malformed.",
+      reason: resolved.reason,
       currentAfcGenerationId: query.afcGenerationId,
     }, 200);
   }
-
-  const compatible = loaded.scene.afcGenerationId === query.afcGenerationId;
-  if (!compatible) {
+  if (resolved.status === "incompatible") {
     return productionAfcJson({
       status: "incompatible",
       scene: null,
-      reason: "Stored 3D scene belongs to a different AFC generation.",
-      storedAfcGenerationId: loaded.scene.afcGenerationId,
+      reason: resolved.reason,
+      storedAfcGenerationId: resolved.storedAfcGenerationId,
       currentAfcGenerationId: query.afcGenerationId,
     }, 200);
   }
 
   return productionAfcJson({
     status: "ready",
-    scene: loaded.scene,
+    scene: resolved.scene,
+    origin: resolved.origin,
     currentAfcGenerationId: query.afcGenerationId,
   }, 200);
 }

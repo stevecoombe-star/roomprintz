@@ -3,7 +3,11 @@
  *
  * Live Three.js objects are never part of this record. Canonical
  * WorldTransform values are the portable AFC-world representation.
- * PI-4C does not inherit parent scenes into child versions.
+ *
+ * PI-4C stores one mutable scene row per History version. PI-4D may
+ * copy a parent's persisted scene into a child version once when the
+ * child has no row. After that copy the child is independent PI-4C
+ * state. This module does not live-sync parent and child.
  */
 
 import {
@@ -313,6 +317,21 @@ export function toPersistedVersionScene(
     coordinateSpace: AFC_V2_RUNTIME_COORDINATE_SPACE,
     objects: persistenceSafeSceneObjects(serialized.objects),
   };
+}
+
+export function createInheritedChildScene(input: Readonly<{
+  parentScene: PersistedVersionScene;
+  childRoomId: string;
+  childVersionId: string;
+  currentAfcGenerationId: string;
+}>): PersistedSceneValidationResult {
+  return validatePersistedVersionScene({
+    roomId: input.childRoomId,
+    versionId: input.childVersionId,
+    afcGenerationId: input.currentAfcGenerationId,
+    coordinateSpace: AFC_V2_RUNTIME_COORDINATE_SPACE,
+    objects: persistenceSafeSceneObjects(input.parentScene.objects),
+  });
 }
 
 export function resolvePersistedSceneCompatibility(input: Readonly<{
