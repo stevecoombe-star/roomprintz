@@ -19,6 +19,7 @@ import { SignOutButton } from "@/components/auth/SignOutButton";
 import { LatestFurnitureCollectionImportBanner } from "@/components/LatestFurnitureCollectionImportBanner";
 import { LatestFurnitureCollectionItemsPreview } from "@/components/LatestFurnitureCollectionItemsPreview";
 import { AfcIntegratedEditorViewport } from "@/components/afc-3d/AfcIntegratedEditorViewport";
+import { AfcSceneObjectCrudSessionProvider } from "@/components/afc-3d/AfcSceneObjectCrudSession";
 import { Editor3dModePanel } from "@/components/afc-3d/Editor3dModePanel";
 import { EditorViewportModeControl } from "@/components/afc-3d/EditorViewportModeControl";
 import { TokenBalanceBadge } from "@/components/tokens/TokenBalanceBadge";
@@ -11902,6 +11903,7 @@ function EditorPageInner() {
   );
 
   return (
+    <AfcSceneObjectCrudSessionProvider>
     <div className="fixed inset-0 z-0 flex min-h-0 flex-col overflow-hidden bg-neutral-950 text-neutral-100">
       {/* Top bar */}
       <header className="flex h-12 shrink-0 items-center justify-between border-b border-neutral-800 px-4">
@@ -13799,6 +13801,7 @@ function EditorPageInner() {
         onRemove={(id) => setSnacks((prev) => prev.filter((s) => s.id !== id))}
       />
     </div>
+    </AfcSceneObjectCrudSessionProvider>
   );
 }
 

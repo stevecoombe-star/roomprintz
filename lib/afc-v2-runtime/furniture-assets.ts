@@ -30,3 +30,11 @@ export function furnitureAssetDefinition(
 export function furnitureAssetGlbUrl(assetId: string): string | null {
   return furnitureAssetDefinition(assetId)?.glbUrl ?? null;
 }
+
+export function defaultFurnitureAssetId(): string {
+  return PI4A_SOFA_FURNITURE_ASSET.assetId;
+}
+
+export function registeredFurnitureAssetIds(): readonly string[] {
+  return Object.freeze([...FURNITURE_ASSET_REGISTRY.keys()]);
+}

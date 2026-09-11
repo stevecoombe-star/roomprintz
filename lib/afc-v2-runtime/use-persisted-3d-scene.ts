@@ -50,6 +50,7 @@ type PendingSave = Readonly<{
 }>;
 
 function defaultObjects(): SceneObjectDefinition[] {
+  // Missing scene row only. A persisted objects:[] snapshot is restored as-is.
   return persistenceSafeSceneObjects(createPi4bSceneObjectDefinitions());
 }
 

@@ -2,6 +2,8 @@
 
 import type { RuntimeTransformMode } from "@/lib/afc-v2-runtime/types";
 
+import { Editor3dSceneObjectControls } from "@/components/afc-3d/Editor3dSceneObjectControls";
+
 type Props = Readonly<{
   transformMode: RuntimeTransformMode;
   onTransformModeChange: (mode: RuntimeTransformMode) => void;
@@ -58,6 +60,7 @@ export function Editor3dModePanel({
               Rotate
             </button>
           </div>
+          <Editor3dSceneObjectControls />
         </div>
       </div>
     </div>

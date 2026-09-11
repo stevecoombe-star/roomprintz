@@ -83,6 +83,16 @@ export function setLiveSceneObject(
   scene.set(object.objectId, object);
 }
 
+export function removeLiveSceneObject(
+  scene: RuntimeSceneCollection,
+  objectId: string,
+): LiveRuntimeSceneObject | null {
+  const object = getLiveSceneObject(scene, objectId);
+  if (!object) return null;
+  scene.delete(objectId);
+  return object;
+}
+
 export function liveSceneObjectForBodyDrag(
   scene: RuntimeSceneCollection,
   session: Readonly<{ objectId: string }> | null,

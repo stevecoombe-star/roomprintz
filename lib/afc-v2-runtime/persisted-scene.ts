@@ -355,18 +355,11 @@ export function shouldReplaceLiveScene(input: Readonly<{
   appliedObjectIds: readonly string[];
   nextObjectIds: readonly string[];
 }>): boolean {
-  if (input.appliedInstanceId !== input.nextInstanceId) return true;
-  if (input.appliedObjectIds.length === 0 && input.nextObjectIds.length > 0) {
-    return true;
-  }
-  if (input.appliedObjectIds.length > 0 && input.nextObjectIds.length === 0) {
-    return true;
-  }
-  if (input.appliedObjectIds.length !== input.nextObjectIds.length) return true;
-  for (let index = 0; index < input.nextObjectIds.length; index += 1) {
-    if (input.appliedObjectIds[index] !== input.nextObjectIds[index]) return true;
-  }
-  return false;
+  // Object-ID collection changes on the same loaded snapshot are local CRUD.
+  // Only an external visit (new instance id) may remount live furniture.
+  void input.appliedObjectIds;
+  void input.nextObjectIds;
+  return input.appliedInstanceId !== input.nextInstanceId;
 }
 
 export function liveSceneObjectIds(
@@ -603,6 +596,8 @@ export function resolveLoadedVersionScene(input: Readonly<{
       storedAfcGenerationId: null,
     };
   }
+  // A persisted row with objects: [] is an intentionally empty scene.
+  // It is not "no scene" and must not be replaced by defaultObjects.
   const compatibility = resolvePersistedSceneCompatibility({
     storedAfcGenerationId: input.stored.afcGenerationId,
     currentAfcGenerationId: input.currentAfcGenerationId,

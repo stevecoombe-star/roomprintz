@@ -10,12 +10,21 @@ import { containFitRect } from "@/lib/afc-v2-runtime/frame-layout";
 import { cloneFurnitureGlbScene, loadFurnitureGlb } from "@/lib/afc-v2-runtime/furniture-glb-loader";
 import {
   PI4A_FURNITURE_LOADING_MESSAGE,
-  PI4B_INITIAL_SELECTED_OBJECT_ID,
   createPi4aFurnitureObjectFromAuthority,
   createPi4bSceneObjects,
   instantiateSceneObjectDefinitions,
   pi4aFurnitureGlbPublicPath,
 } from "@/lib/afc-v2-runtime/furniture-runtime";
+import {
+  addSceneObject as addSceneObjectDescriptor,
+  deleteSceneObject as deleteSceneObjectDescriptor,
+  duplicateSceneObject as duplicateSceneObjectDescriptor,
+  PI5A_INSTANTIATE_FAILED_MESSAGE,
+  PI5A_NOT_READY_MESSAGE,
+  type LiveSceneCrudSnapshot,
+  type ProductionSceneCrudHost,
+  type SceneCrudResult,
+} from "@/lib/afc-v2-runtime/scene-crud";
 import {
   liveSceneObjectIds,
   shouldReplaceLiveScene,
@@ -40,6 +49,7 @@ import {
   getLiveSceneObject,
   liveSceneObjectForBodyDrag,
   mountLiveRuntimeSceneObject,
+  removeLiveSceneObject,
   resolveSelectedObjectId,
   serializeRuntimeScene,
   setLiveSceneObject,
@@ -89,6 +99,9 @@ type Props = Readonly<{
   sceneInstanceId?: string;
   sceneReady?: boolean;
   onObjectTransformCommitted?: (scene: SerializedRuntimeScene) => void;
+  onSelectedObjectIdChange?: (objectId: string | null) => void;
+  onLiveSceneHostChange?: (host: ProductionSceneCrudHost | null) => void;
+  onLiveSceneSnapshotChange?: (snapshot: LiveSceneCrudSnapshot) => void;
 }>;
 
 type ReadyProps = Readonly<{
@@ -103,6 +116,9 @@ type ReadyProps = Readonly<{
   sceneInstanceId?: string;
   sceneReady?: boolean;
   onObjectTransformCommitted?: (scene: SerializedRuntimeScene) => void;
+  onSelectedObjectIdChange?: (objectId: string | null) => void;
+  onLiveSceneHostChange?: (host: ProductionSceneCrudHost | null) => void;
+  onLiveSceneSnapshotChange?: (snapshot: LiveSceneCrudSnapshot) => void;
 }>;
 
 export function AfcProductionRoomViewer({
@@ -117,6 +133,9 @@ export function AfcProductionRoomViewer({
   sceneInstanceId,
   sceneReady = true,
   onObjectTransformCommitted,
+  onSelectedObjectIdChange,
+  onLiveSceneHostChange,
+  onLiveSceneSnapshotChange,
 }: Props) {
   const validated = useMemo(
     () => validateProductionRuntimeAuthority(authority),
@@ -158,6 +177,9 @@ export function AfcProductionRoomViewer({
       sceneInstanceId={sceneInstanceId}
       sceneReady={sceneReady}
       onObjectTransformCommitted={onObjectTransformCommitted}
+      onSelectedObjectIdChange={onSelectedObjectIdChange}
+      onLiveSceneHostChange={onLiveSceneHostChange}
+      onLiveSceneSnapshotChange={onLiveSceneSnapshotChange}
     />
   );
 }
@@ -174,6 +196,9 @@ function AfcProductionRoomViewerReady({
   sceneInstanceId: sceneInstanceIdProp,
   sceneReady = true,
   onObjectTransformCommitted,
+  onSelectedObjectIdChange,
+  onLiveSceneHostChange,
+  onLiveSceneSnapshotChange,
 }: ReadyProps) {
   const viewportRef = useRef<HTMLDivElement | null>(null);
   const frameRef = useRef<HTMLDivElement | null>(null);
@@ -181,9 +206,7 @@ function AfcProductionRoomViewerReady({
   const [internalTransformMode, setInternalTransformMode] =
     useState<RuntimeTransformMode>("move");
   const transformMode = transformModeProp ?? internalTransformMode;
-  const [selectedObjectId, setSelectedObjectId] = useState<string | null>(
-    PI4B_INITIAL_SELECTED_OBJECT_ID,
-  );
+  const [selectedObjectId, setSelectedObjectId] = useState<string | null>(null);
   const [furniturePhase, setFurniturePhase] = useState<
     "loading" | "ready" | "error"
   >("loading");
@@ -225,16 +248,23 @@ function AfcProductionRoomViewerReady({
   const sceneInstanceIdRef = useRef(resolvedSceneInstanceId);
   const sceneReadyRef = useRef(sceneReady);
   const onCommittedRef = useRef(onObjectTransformCommitted);
+  const onSelectedChangeRef = useRef(onSelectedObjectIdChange);
+  const onLiveHostChangeRef = useRef(onLiveSceneHostChange);
+  const onLiveSnapshotChangeRef = useRef(onLiveSceneSnapshotChange);
   sceneObjectsPropRef.current = resolvedSceneObjects;
   sceneInstanceIdRef.current = resolvedSceneInstanceId;
   sceneReadyRef.current = sceneReady;
   onCommittedRef.current = onObjectTransformCommitted;
+  onSelectedChangeRef.current = onSelectedObjectIdChange;
+  onLiveHostChangeRef.current = onLiveSceneHostChange;
+  onLiveSnapshotChangeRef.current = onLiveSceneSnapshotChange;
 
   useEffect(() => {
     transformModeRef.current = transformMode;
   }, [transformMode]);
   useEffect(() => {
     selectedObjectIdRef.current = selectedObjectId;
+    onSelectedChangeRef.current?.(selectedObjectId);
   }, [selectedObjectId]);
 
   useEffect(() => {
@@ -437,8 +467,20 @@ function AfcProductionRoomViewerReady({
     };
 
     const emitCommittedScene = () => {
-      if (sceneObjects.size === 0) return;
       onCommittedRef.current?.(serializeRuntimeScene(sceneObjects));
+    };
+
+    const publishSnapshot = () => {
+      onLiveSnapshotChangeRef.current?.({
+        objectCount: sceneObjects.size,
+        selectedObjectId: selectedObjectIdRef.current,
+        liveReady: furnitureReady && sceneReadyRef.current,
+      });
+    };
+
+    const selectObject = (next: string | null) => {
+      selectedObjectIdRef.current = next;
+      setSelectedObjectId(next);
     };
 
     const endBodyDrag = () => {
@@ -533,8 +575,7 @@ function AfcProductionRoomViewerReady({
       }
       const object = getLiveSceneObject(sceneObjects, hitObjectId);
       if (!object) return;
-      selectedObjectIdRef.current = hitObjectId;
-      setSelectedObjectId(hitObjectId);
+      selectObject(hitObjectId);
       const picked = hits.find((item) => resolveSceneObjectId(item.object) === hitObjectId);
       const placementY = object.placement.position.y;
       const grabPlaneY = picked?.point && Number.isFinite(picked.point.y)
@@ -607,8 +648,7 @@ function AfcProductionRoomViewerReady({
         pickSceneObjectId(pickHitsAt(event.clientX, event.clientY)),
       );
       const next = id && sceneObjects.has(id) ? id : null;
-      selectedObjectIdRef.current = next;
-      setSelectedObjectId(next);
+      selectObject(next);
     };
 
     const pointerCancelListener = (event: PointerEvent) => {
@@ -634,6 +674,49 @@ function AfcProductionRoomViewerReady({
         objectLayer.remove(object.placement);
       }
       sceneObjects.clear();
+    };
+
+    const unmountObject = (objectId: string) => {
+      const object = getLiveSceneObject(sceneObjects, objectId);
+      if (!object) return;
+      if (bodyDrag?.objectId === objectId) {
+        bodyDrag = null;
+        controls.enabled = true;
+      }
+      if (controls.object === object.placement) controls.detach();
+      objectLayer.remove(object.placement);
+      removeLiveSceneObject(sceneObjects, objectId);
+    };
+
+    const mountOne = (
+      definition: SceneObjectDefinition,
+    ): LiveRuntimeSceneObject | null => {
+      if (!template) return null;
+      const instantiated = instantiateSceneObjectDefinitions({
+        roomId: furniture.roomId,
+        generationId: furniture.generationId,
+        definitions: [definition],
+      });
+      if (instantiated.objects.length !== 1) return null;
+      const descriptor = instantiated.objects[0];
+      if (!descriptor) return null;
+      const realized = realizeObjectWorldTransform(
+        descriptor.transform,
+        world.metricScale,
+      );
+      const live = mountLiveRuntimeSceneObject({
+        descriptor,
+        imported: cloneFurnitureGlbScene(template),
+        metricScale: world.metricScale,
+      });
+      live.localAabb = measurePlacementLocalAabb(
+        live.placement,
+        live.importPlacement,
+      );
+      commitLiveSceneObjectTransform(live, realized, world.metricScale);
+      setLiveSceneObject(sceneObjects, live);
+      objectLayer.add(live.placement);
+      return live;
     };
 
     const mountDescriptors = (definitions: readonly SceneObjectDefinition[]) => {
@@ -670,6 +753,29 @@ function AfcProductionRoomViewerReady({
       }
     };
 
+    const syncCollection = (definitions: readonly SceneObjectDefinition[]) => {
+      const nextIds = new Set(liveSceneObjectIds(definitions));
+      for (const objectId of [...sceneObjects.keys()]) {
+        if (!nextIds.has(objectId)) unmountObject(objectId);
+      }
+      const byId = new Map(definitions.map((definition) => [definition.objectId, definition]));
+      for (const objectId of nextIds) {
+        if (sceneObjects.has(objectId)) continue;
+        const definition = byId.get(objectId);
+        if (definition) mountOne(definition);
+      }
+    };
+
+    const currentSerializedObjects = () => serializeRuntimeScene(sceneObjects).objects;
+
+    const notReadyResult = (): SceneCrudResult => ({
+      ok: false,
+      reason: "not_ready",
+      message: PI5A_NOT_READY_MESSAGE,
+      objects: currentSerializedObjects(),
+      selectedObjectId: selectedObjectIdRef.current,
+    });
+
     const applyLiveScene = (input: Readonly<{
       instanceId: string;
       objects: readonly SceneObjectDefinition[];
@@ -677,35 +783,125 @@ function AfcProductionRoomViewerReady({
     }>) => {
       if (!input.ready) {
         objectLayer.visible = false;
+        publishSnapshot();
         return;
       }
       objectLayer.visible = true;
       const nextIds = liveSceneObjectIds(input.objects);
+      if (!template) return;
       if (
-        !shouldReplaceLiveScene({
+        shouldReplaceLiveScene({
           appliedInstanceId,
           nextInstanceId: input.instanceId,
           appliedObjectIds,
           nextObjectIds: nextIds,
         })
       ) {
+        mountDescriptors(input.objects);
+        appliedInstanceId = input.instanceId;
+        appliedObjectIds = nextIds;
+        furnitureReady = true;
+        selectObject(null);
+        publishSnapshot();
         return;
       }
-      if (!template) return;
-      mountDescriptors(input.objects);
-      appliedInstanceId = input.instanceId;
+      syncCollection(input.objects);
       appliedObjectIds = nextIds;
       furnitureReady = true;
-      const keep = selectedObjectIdRef.current &&
-        sceneObjects.has(selectedObjectIdRef.current)
-        ? selectedObjectIdRef.current
-        : sceneObjects.has(PI4B_INITIAL_SELECTED_OBJECT_ID)
-          ? PI4B_INITIAL_SELECTED_OBJECT_ID
-          : (sceneObjects.keys().next().value ?? null);
-      selectedObjectIdRef.current = keep;
-      setSelectedObjectId(keep);
+      if (
+        selectedObjectIdRef.current &&
+        !sceneObjects.has(selectedObjectIdRef.current)
+      ) {
+        selectObject(null);
+      }
+      publishSnapshot();
     };
     applyLiveSceneRef.current = applyLiveScene;
+
+    const liveHost: ProductionSceneCrudHost = {
+      objectCount: () => sceneObjects.size,
+      canMutate: () => furnitureReady && sceneReadyRef.current && template != null,
+      addSceneObject: (assetId) => {
+        if (!furnitureReady || !template || !sceneReadyRef.current) {
+          return notReadyResult();
+        }
+        const result = addSceneObjectDescriptor({
+          objects: currentSerializedObjects(),
+          assetId,
+          selectedObjectId: selectedObjectIdRef.current,
+          placement: {
+            metricScale: world.metricScale,
+            realizedWalls,
+          },
+        });
+        if (!result.ok) return result;
+        const live = mountOne(result.object);
+        if (!live) {
+          return {
+            ok: false,
+            reason: "instantiate_failed",
+            message: PI5A_INSTANTIATE_FAILED_MESSAGE,
+            objects: currentSerializedObjects(),
+            selectedObjectId: selectedObjectIdRef.current,
+          };
+        }
+        appliedObjectIds = [...sceneObjects.keys()];
+        selectObject(result.object.objectId);
+        emitCommittedScene();
+        publishSnapshot();
+        return result;
+      },
+      duplicateSceneObject: (objectId) => {
+        if (!furnitureReady || !template || !sceneReadyRef.current) {
+          return notReadyResult();
+        }
+        const result = duplicateSceneObjectDescriptor({
+          objects: currentSerializedObjects(),
+          objectId,
+          selectedObjectId: selectedObjectIdRef.current,
+          placement: {
+            metricScale: world.metricScale,
+            realizedWalls,
+          },
+        });
+        if (!result.ok) return result;
+        const live = mountOne(result.object);
+        if (!live) {
+          return {
+            ok: false,
+            reason: "instantiate_failed",
+            message: PI5A_INSTANTIATE_FAILED_MESSAGE,
+            objects: currentSerializedObjects(),
+            selectedObjectId: selectedObjectIdRef.current,
+          };
+        }
+        appliedObjectIds = [...sceneObjects.keys()];
+        selectObject(result.object.objectId);
+        emitCommittedScene();
+        publishSnapshot();
+        return result;
+      },
+      deleteSceneObject: (objectId) => {
+        if (!furnitureReady || !sceneReadyRef.current) {
+          return notReadyResult();
+        }
+        const result = deleteSceneObjectDescriptor({
+          objects: currentSerializedObjects(),
+          objectId,
+          selectedObjectId: selectedObjectIdRef.current,
+        });
+        if (!result.ok) return result;
+        unmountObject(objectId);
+        appliedObjectIds = [...sceneObjects.keys()];
+        if (selectedObjectIdRef.current === objectId) {
+          selectObject(null);
+        }
+        emitCommittedScene();
+        publishSnapshot();
+        return result;
+      },
+    };
+    onLiveHostChangeRef.current?.(liveHost);
 
     void loadFurnitureGlb(pi4aFurnitureGlbPublicPath()).then((result) => {
       if (disposed) {
@@ -724,6 +920,7 @@ function AfcProductionRoomViewerReady({
         ready: sceneReadyRef.current,
       });
       setFurniturePhase("ready");
+      publishSnapshot();
     });
 
     controls.addEventListener("dragging-changed", draggingChangedListener);
@@ -760,6 +957,12 @@ function AfcProductionRoomViewerReady({
     return () => {
       disposed = true;
       applyLiveSceneRef.current = null;
+      onLiveHostChangeRef.current?.(null);
+      onLiveSnapshotChangeRef.current?.({
+        objectCount: 0,
+        selectedObjectId: null,
+        liveReady: false,
+      });
       window.cancelAnimationFrame(animationFrame);
       frameObserver.disconnect();
       pointerGesture = null;

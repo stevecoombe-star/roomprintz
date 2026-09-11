@@ -66,6 +66,13 @@ export function furnitureBelongsToGeneration(
     object.objectId === AFC_V2_RUNTIME_FURNITURE_OBJECT_ID;
 }
 
+export function furnitureAssetPlacementAabb(assetId: string): LocalAabb | null {
+  if (assetId === AFC_V2_RUNTIME_FURNITURE_ASSET_ID) {
+    return PI4A_SOFA_PLACEMENT_LOCAL_AABB;
+  }
+  return null;
+}
+
 export function pi4aFurnitureGlbPublicPath(): string {
   return AFC_V2_RUNTIME_FURNITURE_GLB_PUBLIC_PATH;
 }

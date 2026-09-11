@@ -12,6 +12,7 @@ import {
 } from "@/lib/afc-v2-runtime/use-persisted-3d-scene";
 
 import { AfcProductionRoomViewer } from "@/components/afc-3d/AfcProductionRoomViewer";
+import { useAfcSceneObjectCrudSession } from "@/components/afc-3d/AfcSceneObjectCrudSession";
 import { Prepare3dRoomControl } from "@/components/afc-3d/Prepare3dRoomControl";
 
 type Props = Readonly<{
@@ -73,6 +74,7 @@ export function AfcIntegratedEditorViewport({
     enabled: presentation.surface === "viewer" &&
       Boolean(runtime.authority && versionId && spatialAuthorityId),
   });
+  const sceneCrud = useAfcSceneObjectCrudSession();
 
   if (presentation.surface === "status") {
     return (
@@ -151,6 +153,9 @@ export function AfcIntegratedEditorViewport({
         sceneInstanceId={persistedScene.sceneInstanceId}
         sceneReady={persistedScene.sceneReady}
         onObjectTransformCommitted={persistedScene.onObjectTransformCommitted}
+        onSelectedObjectIdChange={sceneCrud?.setSelectedObjectId}
+        onLiveSceneHostChange={sceneCrud?.setHost}
+        onLiveSceneSnapshotChange={sceneCrud?.setSnapshot}
       />
       {!persistedScene.sceneReady ? (
         <div
