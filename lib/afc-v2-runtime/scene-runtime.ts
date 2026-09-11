@@ -3,7 +3,7 @@
  *
  * Domain RuntimeSceneObject remains the persistence-ready record.
  * LiveRuntimeSceneObject is the mounted Three.js consumer of that record.
- * PI-4B does not write this collection to a database.
+ * serializeRuntimeScene is the PI-4C persistence serializer.
  */
 
 import * as THREE from "three";

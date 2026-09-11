@@ -64,10 +64,22 @@ export async function authorizeProductionAfcUser(
   return { ok: true, userId: data.user.id };
 }
 
-export function parseRoomId(value: unknown): string | null {
+export function parseUuid(value: unknown): string | null {
   if (typeof value !== "string") return null;
-  const roomId = value.trim();
-  return UUID.test(roomId) ? roomId : null;
+  const id = value.trim();
+  return UUID.test(id) ? id : null;
+}
+
+export function parseRoomId(value: unknown): string | null {
+  return parseUuid(value);
+}
+
+export function parseVersionId(value: unknown): string | null {
+  return parseUuid(value);
+}
+
+export function parseAfcGenerationId(value: unknown): string | null {
+  return parseUuid(value);
 }
 
 export function parseProductionAfcIntent(

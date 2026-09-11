@@ -12122,6 +12122,8 @@ function EditorPageInner() {
               {viewportMode === "3d" && editorRoomId ? (
                 <AfcIntegratedEditorViewport
                   roomId={editorRoomId}
+                  versionId={selectedVersionId}
+                  spatialAuthorityId={afcRuntime.generationId}
                   prepareState={prepare3d.state}
                   onPrepare={requestPrepare3d}
                   onRetryRestore={retryIntegratedAfcRestore}

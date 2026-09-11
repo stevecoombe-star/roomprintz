@@ -3,7 +3,8 @@
  *
  * Geometry is the authored test sofa GLB. Import-placement grounds the
  * asset (minY ≈ 0) without changing authored scale. Transforms are
- * canonical AFC-world. PI-4B does not persist them.
+ * canonical AFC-world. PI-4C persists objectId, assetId, and canonical
+ * transform per History version.
  */
 
 import type { AfcV2ProductionRoomAuthority } from "@/lib/afc-v2-production/production-authority-contract";
@@ -100,15 +101,34 @@ export function createPi4bSceneObjectDefinitions(): readonly SceneObjectDefiniti
   ]);
 }
 
-export function createRuntimeSceneObjectsFromDefinitions(input: Readonly<{
+export type UnknownSceneAssetSkip = Readonly<{
+  objectId: string;
+  assetId: string;
+  reason: "unknown_asset";
+}>;
+
+export type SceneObjectInstantiation = Readonly<{
+  objects: RuntimeSceneObject[];
+  skipped: readonly UnknownSceneAssetSkip[];
+}>;
+
+export function instantiateSceneObjectDefinitions(input: Readonly<{
   roomId: string;
   generationId: string;
   definitions: readonly SceneObjectDefinition[];
-}>): RuntimeSceneObject[] {
+}>): SceneObjectInstantiation {
   const objects: RuntimeSceneObject[] = [];
+  const skipped: UnknownSceneAssetSkip[] = [];
   for (const definition of input.definitions) {
     const asset = furnitureAssetDefinition(definition.assetId);
-    if (!asset) continue;
+    if (!asset) {
+      skipped.push({
+        objectId: definition.objectId,
+        assetId: definition.assetId,
+        reason: "unknown_asset",
+      });
+      continue;
+    }
     objects.push(Object.freeze({
       roomId: input.roomId,
       generationId: input.generationId,
@@ -121,7 +141,15 @@ export function createRuntimeSceneObjectsFromDefinitions(input: Readonly<{
       transform: definition.transform,
     }));
   }
-  return objects;
+  return { objects, skipped };
+}
+
+export function createRuntimeSceneObjectsFromDefinitions(input: Readonly<{
+  roomId: string;
+  generationId: string;
+  definitions: readonly SceneObjectDefinition[];
+}>): RuntimeSceneObject[] {
+  return instantiateSceneObjectDefinitions(input).objects;
 }
 
 export function createPi4bSceneObjects(input: Readonly<{

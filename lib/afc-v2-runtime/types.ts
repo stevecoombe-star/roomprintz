@@ -4,7 +4,8 @@
  * Transforms live in canonical AFC world space:
  *   calibrated-world-xz/v1
  *
- * These records are PI-4-compatible in shape. PI-4B does not persist them.
+ * These records are PI-4-compatible in shape. PI-4C persists the serializable
+ * scene descriptors per History version; it does not persist Three.js objects.
  */
 
 export const AFC_V2_RUNTIME_COORDINATE_SPACE = "calibrated-world-xz/v1" as const;
