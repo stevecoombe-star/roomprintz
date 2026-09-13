@@ -11,6 +11,17 @@ import {
 export const SCENE_OBJECT_ID_USERDATA_KEY = "sceneObjectId";
 export const SCENE_SELECTION_POINTER_SLOP_PX = 5;
 
+export type SceneSelectionPresentation = Readonly<{
+  objectId: string;
+  dragging: boolean;
+  x: number;
+  y: number;
+  canvasWidth: number;
+  canvasHeight: number;
+  rotationYDeg: number;
+  userSizeMultiplier: number;
+}>;
+
 export type SceneObjectRoot = Readonly<{
   placement: THREE.Object3D;
   importPlacement: THREE.Object3D;
@@ -208,11 +219,19 @@ export function objectMatchesWorldTransform(
     Math.abs(transform.uniformScale - 1) < 1e-5;
 }
 
+function wrapRotationDeg(degrees: number): number {
+  let value = degrees;
+  while (value > 180) value -= 360;
+  while (value <= -180) value += 360;
+  return value;
+}
+
 function radToDegWrapped(radians: number): number {
-  let degrees = THREE.MathUtils.radToDeg(radians);
-  while (degrees > 180) degrees -= 360;
-  while (degrees < -180) degrees += 360;
-  return degrees;
+  return wrapRotationDeg(THREE.MathUtils.radToDeg(radians));
+}
+
+export function wrapSceneRotationDeg(degrees: number): number {
+  return wrapRotationDeg(degrees);
 }
 
 function clamp(value: number, min: number, max: number): number {

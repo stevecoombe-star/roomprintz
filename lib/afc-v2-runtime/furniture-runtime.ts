@@ -17,12 +17,15 @@ import {
   AFC_V2_RUNTIME_FURNITURE_OBJECT_ID,
   AFC_V2_RUNTIME_PI4B_SOFA_A_OBJECT_ID,
   AFC_V2_RUNTIME_PI4B_SOFA_B_OBJECT_ID,
+  AFC_V2_USER_SIZE_DEFAULT,
   DEFAULT_WORLD_TRANSFORM,
+  clampUserSizeMultiplier,
   type LocalAabb,
   type RuntimeSceneObject,
   type SceneObjectDefinition,
   type WorldTransform,
 } from "./types";
+import { cloneSceneObjectIdentity } from "./persisted-scene";
 
 export const PI4A_FURNITURE_LOADING_MESSAGE = "Loading furniture…";
 
@@ -136,6 +139,13 @@ export function instantiateSceneObjectDefinitions(input: Readonly<{
       });
       continue;
     }
+    const identity = cloneSceneObjectIdentity({
+      productId: definition.productId,
+      variantId: definition.variantId,
+      userSizeMultiplier: clampUserSizeMultiplier(
+        definition.userSizeMultiplier ?? AFC_V2_USER_SIZE_DEFAULT,
+      ),
+    });
     objects.push(Object.freeze({
       roomId: input.roomId,
       generationId: input.generationId,
@@ -146,6 +156,7 @@ export function instantiateSceneObjectDefinitions(input: Readonly<{
       }),
       coordinateSpace: AFC_V2_RUNTIME_COORDINATE_SPACE,
       transform: definition.transform,
+      ...identity,
     }));
   }
   return { objects, skipped };

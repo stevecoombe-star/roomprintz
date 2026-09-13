@@ -55,3 +55,24 @@ export function containFitRect(
 export function containRectAspect(rect: ContainRect): number {
   return rect.width / rect.height;
 }
+
+/**
+ * Replace a measured frame box only when width/height/left/top actually
+ * changed. Exact field equality — no rounding and no epsilon — so contain-fit
+ * geometry stays the display-frame authority.
+ */
+export function nextFrameBox(
+  current: ContainRect | null,
+  measured: ContainRect,
+): ContainRect {
+  if (
+    current !== null &&
+    current.width === measured.width &&
+    current.height === measured.height &&
+    current.left === measured.left &&
+    current.top === measured.top
+  ) {
+    return current;
+  }
+  return measured;
+}

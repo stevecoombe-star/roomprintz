@@ -6,7 +6,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 
 import type { AfcV2ProductionRoomAuthority } from "@/lib/afc-v2-production/production-authority-contract";
 import { resolveSceneObjectCollision } from "@/lib/afc-v2-runtime/collision-resolver";
-import { containFitRect } from "@/lib/afc-v2-runtime/frame-layout";
+import { containFitRect, nextFrameBox } from "@/lib/afc-v2-runtime/frame-layout";
 import { cloneFurnitureGlbScene, loadFurnitureGlb } from "@/lib/afc-v2-runtime/furniture-glb-loader";
 import {
   PI4A_FURNITURE_LOADING_MESSAGE,
@@ -44,6 +44,7 @@ import {
 } from "@/lib/afc-v2-runtime/object-runtime";
 import {
   attachTargetForSelectedObject,
+  applyLiveUserSizeMultiplier,
   commitLiveSceneObjectTransform,
   createRuntimeSceneCollection,
   getLiveSceneObject,
@@ -60,6 +61,7 @@ import { validateProductionRuntimeAuthority } from "@/lib/afc-v2-runtime/runtime
 import type {
   RuntimeTransformMode,
   SceneObjectDefinition,
+  SceneObjectProductIdentity,
   SerializedRuntimeScene,
   WorldTransform,
 } from "@/lib/afc-v2-runtime/types";
@@ -77,8 +79,10 @@ import {
   shouldBeginObjectBodyDrag,
   shouldSuppressSceneSelection,
   viewportModeToControlsMode,
+  wrapSceneRotationDeg,
   worldPositionXZ,
   worldTransformFromObject3D,
+  type SceneSelectionPresentation,
 } from "@/lib/afc-v2-runtime/viewport-interaction";
 import { INTEGRATED_3D_RESTORE_ERROR_MESSAGE } from "@/lib/afc-v2-runtime/editor-viewport-mode";
 import {
@@ -102,6 +106,7 @@ type Props = Readonly<{
   onSelectedObjectIdChange?: (objectId: string | null) => void;
   onLiveSceneHostChange?: (host: ProductionSceneCrudHost | null) => void;
   onLiveSceneSnapshotChange?: (snapshot: LiveSceneCrudSnapshot) => void;
+  onSelectionPresentationChange?: (presentation: SceneSelectionPresentation | null) => void;
 }>;
 
 type ReadyProps = Readonly<{
@@ -119,6 +124,7 @@ type ReadyProps = Readonly<{
   onSelectedObjectIdChange?: (objectId: string | null) => void;
   onLiveSceneHostChange?: (host: ProductionSceneCrudHost | null) => void;
   onLiveSceneSnapshotChange?: (snapshot: LiveSceneCrudSnapshot) => void;
+  onSelectionPresentationChange?: (presentation: SceneSelectionPresentation | null) => void;
 }>;
 
 export function AfcProductionRoomViewer({
@@ -136,6 +142,7 @@ export function AfcProductionRoomViewer({
   onSelectedObjectIdChange,
   onLiveSceneHostChange,
   onLiveSceneSnapshotChange,
+  onSelectionPresentationChange,
 }: Props) {
   const validated = useMemo(
     () => validateProductionRuntimeAuthority(authority),
@@ -180,6 +187,7 @@ export function AfcProductionRoomViewer({
       onSelectedObjectIdChange={onSelectedObjectIdChange}
       onLiveSceneHostChange={onLiveSceneHostChange}
       onLiveSceneSnapshotChange={onLiveSceneSnapshotChange}
+      onSelectionPresentationChange={onSelectionPresentationChange}
     />
   );
 }
@@ -199,6 +207,7 @@ function AfcProductionRoomViewerReady({
   onSelectedObjectIdChange,
   onLiveSceneHostChange,
   onLiveSceneSnapshotChange,
+  onSelectionPresentationChange,
 }: ReadyProps) {
   const viewportRef = useRef<HTMLDivElement | null>(null);
   const frameRef = useRef<HTMLDivElement | null>(null);
@@ -251,6 +260,7 @@ function AfcProductionRoomViewerReady({
   const onSelectedChangeRef = useRef(onSelectedObjectIdChange);
   const onLiveHostChangeRef = useRef(onLiveSceneHostChange);
   const onLiveSnapshotChangeRef = useRef(onLiveSceneSnapshotChange);
+  const onPresentationRef = useRef(onSelectionPresentationChange);
   sceneObjectsPropRef.current = resolvedSceneObjects;
   sceneInstanceIdRef.current = resolvedSceneInstanceId;
   sceneReadyRef.current = sceneReady;
@@ -258,6 +268,7 @@ function AfcProductionRoomViewerReady({
   onSelectedChangeRef.current = onSelectedObjectIdChange;
   onLiveHostChangeRef.current = onLiveSceneHostChange;
   onLiveSnapshotChangeRef.current = onLiveSceneSnapshotChange;
+  onPresentationRef.current = onSelectionPresentationChange;
 
   useEffect(() => {
     transformModeRef.current = transformMode;
@@ -279,12 +290,7 @@ function AfcProductionRoomViewerReady({
         frame.height,
       );
       if (!rect) return;
-      setFrameBox({
-        width: rect.width,
-        height: rect.height,
-        left: rect.left,
-        top: rect.top,
-      });
+      setFrameBox((current) => nextFrameBox(current, rect));
     };
     apply();
     const observer = new ResizeObserver(apply);
@@ -470,17 +476,62 @@ function AfcProductionRoomViewerReady({
       onCommittedRef.current?.(serializeRuntimeScene(sceneObjects));
     };
 
+    let lastPresentationSig = "";
+    const emitPresentation = () => {
+      const root = viewportRef.current;
+      const objectId = selectedObjectIdRef.current;
+      const dragging = bodyDrag != null || gizmoDragging;
+      if (!root || !objectId) {
+        if (lastPresentationSig !== "null") {
+          lastPresentationSig = "null";
+          onPresentationRef.current?.(null);
+        }
+        return;
+      }
+      const object = getLiveSceneObject(sceneObjects, objectId);
+      if (!object) {
+        if (lastPresentationSig !== "null") {
+          lastPresentationSig = "null";
+          onPresentationRef.current?.(null);
+        }
+        return;
+      }
+      const worldPos = new THREE.Vector3();
+      object.placement.updateWorldMatrix(true, false);
+      object.placement.getWorldPosition(worldPos);
+      worldPos.y += object.localAabb?.max.y ?? 0.8;
+      worldPos.project(camera);
+      const gl = renderer.domElement.getBoundingClientRect();
+      const rootRect = root.getBoundingClientRect();
+      const next: SceneSelectionPresentation = {
+        objectId,
+        dragging,
+        x: Math.round(gl.left - rootRect.left + ((worldPos.x + 1) / 2) * gl.width),
+        y: Math.round(gl.top - rootRect.top + ((-worldPos.y + 1) / 2) * gl.height),
+        canvasWidth: Math.round(rootRect.width),
+        canvasHeight: Math.round(rootRect.height),
+        rotationYDeg: object.realizedTransform.rotationDeg.y,
+        userSizeMultiplier: object.userSizeMultiplier,
+      };
+      const sig = `${next.objectId}:${next.dragging}:${next.x}:${next.y}:${next.canvasWidth}:${next.canvasHeight}:${Math.round(next.rotationYDeg)}:${next.userSizeMultiplier.toFixed(3)}`;
+      if (sig === lastPresentationSig) return;
+      lastPresentationSig = sig;
+      onPresentationRef.current?.(next);
+    };
+
     const publishSnapshot = () => {
       onLiveSnapshotChangeRef.current?.({
         objectCount: sceneObjects.size,
         selectedObjectId: selectedObjectIdRef.current,
         liveReady: furnitureReady && sceneReadyRef.current,
       });
+      emitPresentation();
     };
 
     const selectObject = (next: string | null) => {
       selectedObjectIdRef.current = next;
       setSelectedObjectId(next);
+      emitPresentation();
     };
 
     const endBodyDrag = () => {
@@ -597,6 +648,7 @@ function AfcProductionRoomViewerReady({
         active: false,
       };
       controls.enabled = false;
+      emitPresentation();
       try {
         renderer.domElement.setPointerCapture(event.pointerId);
       } catch {
@@ -660,6 +712,7 @@ function AfcProductionRoomViewerReady({
     const draggingChangedListener = (event: { value?: unknown }) => {
       gizmoDragging = event.value === true;
       if (gizmoDragging && bodyDrag) endBodyDrag();
+      emitPresentation();
       if (!gizmoDragging) {
         writeAttachedTransform();
         emitCommittedScene();
@@ -821,13 +874,14 @@ function AfcProductionRoomViewerReady({
     const liveHost: ProductionSceneCrudHost = {
       objectCount: () => sceneObjects.size,
       canMutate: () => furnitureReady && sceneReadyRef.current && template != null,
-      addSceneObject: (assetId) => {
+      addSceneObject: (assetId, identity?: SceneObjectProductIdentity) => {
         if (!furnitureReady || !template || !sceneReadyRef.current) {
           return notReadyResult();
         }
         const result = addSceneObjectDescriptor({
           objects: currentSerializedObjects(),
           assetId,
+          identity,
           selectedObjectId: selectedObjectIdRef.current,
           placement: {
             metricScale: world.metricScale,
@@ -900,6 +954,41 @@ function AfcProductionRoomViewerReady({
         publishSnapshot();
         return result;
       },
+      commitRotationYDeg: (objectId, degrees) => {
+        const object = getLiveSceneObject(sceneObjects, objectId);
+        if (!object || !furnitureReady || !sceneReadyRef.current) return false;
+        const proposed = {
+          ...object.realizedTransform,
+          rotationDeg: {
+            ...object.realizedTransform.rotationDeg,
+            y: wrapSceneRotationDeg(degrees),
+          },
+          uniformScale: 1,
+        };
+        const resolved = resolveSceneObjectCollision({
+          current: object.realizedTransform,
+          proposed,
+          localAabb: object.localAabb,
+          walls: realizedWalls,
+          mode: "pose",
+        });
+        commitLiveSceneObjectTransform(
+          object,
+          { ...resolved.transform, uniformScale: 1 },
+          world.metricScale,
+        );
+        emitCommittedScene();
+        emitPresentation();
+        return resolved.status !== "rejected_pose";
+      },
+      commitUserSizeMultiplier: (objectId, multiplier) => {
+        const object = getLiveSceneObject(sceneObjects, objectId);
+        if (!object || !furnitureReady || !sceneReadyRef.current) return false;
+        applyLiveUserSizeMultiplier(object, multiplier);
+        emitCommittedScene();
+        emitPresentation();
+        return true;
+      },
     };
     onLiveHostChangeRef.current?.(liveHost);
 
@@ -951,6 +1040,7 @@ function AfcProductionRoomViewerReady({
       }
       syncGizmo();
       renderer.render(scene, camera);
+      emitPresentation();
     };
     animate();
 
@@ -963,6 +1053,7 @@ function AfcProductionRoomViewerReady({
         selectedObjectId: null,
         liveReady: false,
       });
+      onPresentationRef.current?.(null);
       window.cancelAnimationFrame(animationFrame);
       frameObserver.disconnect();
       pointerGesture = null;

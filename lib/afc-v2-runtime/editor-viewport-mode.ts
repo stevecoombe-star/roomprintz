@@ -9,7 +9,7 @@ import type { Prepare3dRoomPhase } from "./prepare-3d-room-client";
 
 export type EditorViewportMode = "2d" | "3d";
 
-export type EditorRightPanelSurface = "workflow" | "3d";
+export type EditorRightPanelSurface = "workflow" | "none";
 
 export type IntegratedAfcRuntimeRestoreInput = Readonly<{
   roomId: string;
@@ -31,7 +31,7 @@ export function editorViewportShowsAfcRuntime(mode: EditorViewportMode): boolean
 export function editorRightPanelSurface(
   mode: EditorViewportMode,
 ): EditorRightPanelSurface {
-  return mode === "3d" ? "3d" : "workflow";
+  return mode === "3d" ? "none" : "workflow";
 }
 
 export function shouldRestoreIntegratedAfcRuntime(input: Readonly<{

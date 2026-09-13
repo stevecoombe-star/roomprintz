@@ -26,6 +26,9 @@ import type { SceneObjectDefinition, SerializedRuntimeScene } from "./types";
 export const PI4C_SCENE_SAVE_ERROR_MESSAGE =
   "Couldn't save this 3D scene. Your layout is still here.";
 
+export const EMPTY_PERSISTED_SCENE_OBJECTS: readonly SceneObjectDefinition[] =
+  Object.freeze([]);
+
 export type Persisted3dSceneState = Readonly<{
   objects: readonly SceneObjectDefinition[];
   sceneInstanceId: string;
@@ -34,6 +37,8 @@ export type Persisted3dSceneState = Readonly<{
   loadRevision: number;
   saveError: string | null;
   origin: "default" | "persisted";
+  canUndo: boolean;
+  undo: () => void;
   onObjectTransformCommitted: (scene: SerializedRuntimeScene) => void;
 }>;
 
@@ -52,6 +57,12 @@ type PendingSave = Readonly<{
 function defaultObjects(): SceneObjectDefinition[] {
   // Missing scene row only. A persisted objects:[] snapshot is restored as-is.
   return persistenceSafeSceneObjects(createPi4bSceneObjectDefinitions());
+}
+
+const SCENE_UNDO_LIMIT = 40;
+
+function sceneSignature(objects: readonly SceneObjectDefinition[]): string {
+  return JSON.stringify(persistenceSafeSceneObjects(objects));
 }
 
 function warnSceneRestore(detail: unknown) {
@@ -74,12 +85,15 @@ export function usePersisted3dScene(input: Readonly<{
         }
       : null;
 
-  const [objects, setObjects] = useState<readonly SceneObjectDefinition[]>([]);
+  const [objects, setObjects] = useState<readonly SceneObjectDefinition[]>(
+    EMPTY_PERSISTED_SCENE_OBJECTS,
+  );
   const [origin, setOrigin] = useState<"default" | "persisted">("default");
   const [loading, setLoading] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [loadedIdentity, setLoadedIdentity] = useState<PersistedSceneIdentity | null>(null);
   const [loadRevision, setLoadRevision] = useState(0);
+  const [canUndo, setCanUndo] = useState(false);
 
   const latestLoadIdRef = useRef(0);
   const loadRevisionRef = useRef(0);
@@ -87,7 +101,14 @@ export function usePersisted3dScene(input: Readonly<{
   const identityRef = useRef<PersistedSceneIdentity | null>(identity);
   const pendingSaveRef = useRef<PendingSave | null>(null);
   const saveGateRef = useRef<Promise<boolean> | null>(null);
+  const undoStackRef = useRef<SceneObjectDefinition[][]>([]);
+  const applyingUndoRef = useRef(false);
   identityRef.current = identity;
+
+  const clearUndoStack = useCallback(() => {
+    undoStackRef.current = [];
+    setCanUndo(false);
+  }, []);
 
   const persistIdentity = useCallback((
     target: PersistedSceneIdentity,
@@ -187,11 +208,13 @@ export function usePersisted3dScene(input: Readonly<{
     setOrigin(nextOrigin);
     setLoadedIdentity(requestIdentity);
     setLoading(false);
-  }, []);
+    clearUndoStack();
+  }, [clearUndoStack]);
 
   useEffect(() => {
     if (!identity) {
       latestLoadIdRef.current += 1;
+      clearUndoStack();
       void flushLoadedIfDirty();
       return;
     }
@@ -314,6 +337,7 @@ export function usePersisted3dScene(input: Readonly<{
     flushLoadedIfDirty,
     restoreCachedScene,
     commitResolvedSnapshot,
+    clearUndoStack,
   ]);
 
   useEffect(() => {
@@ -329,6 +353,17 @@ export function usePersisted3dScene(input: Readonly<{
       return;
     }
     const next = toPersistedVersionScene(current, scene);
+    if (
+      !applyingUndoRef.current &&
+      sceneSignature(loaded.objects) !== sceneSignature(next.objects)
+    ) {
+      undoStackRef.current = [
+        ...undoStackRef.current,
+        persistenceSafeSceneObjects(loaded.objects),
+      ].slice(-SCENE_UNDO_LIMIT);
+      setCanUndo(true);
+    }
+    applyingUndoRef.current = false;
     loadedRef.current = {
       identity: current,
       objects: next.objects,
@@ -337,6 +372,28 @@ export function usePersisted3dScene(input: Readonly<{
     };
     setObjects(next.objects);
     void persistIdentity(current, scene);
+  }, [persistIdentity]);
+
+  const undo = useCallback(() => {
+    const current = identityRef.current;
+    const loaded = loadedRef.current;
+    const previous = undoStackRef.current.pop();
+    if (!current || !loaded || !previous) {
+      setCanUndo(undoStackRef.current.length > 0);
+      return;
+    }
+    applyingUndoRef.current = true;
+    loadRevisionRef.current += 1;
+    loadedRef.current = {
+      identity: current,
+      objects: previous,
+      origin: loaded.origin,
+      dirty: true,
+    };
+    setLoadRevision(loadRevisionRef.current);
+    setObjects(previous);
+    setCanUndo(undoStackRef.current.length > 0);
+    void persistIdentity(current, { objects: previous });
   }, [persistIdentity]);
 
   const sceneReady =
@@ -350,13 +407,15 @@ export function usePersisted3dScene(input: Readonly<{
       : "local-unbound";
 
   return {
-    objects: sceneReady ? objects : [],
+    objects: sceneReady ? objects : EMPTY_PERSISTED_SCENE_OBJECTS,
     sceneInstanceId,
     sceneReady,
     loading,
     loadRevision,
     saveError,
     origin,
+    canUndo,
+    undo,
     onObjectTransformCommitted,
   };
 }

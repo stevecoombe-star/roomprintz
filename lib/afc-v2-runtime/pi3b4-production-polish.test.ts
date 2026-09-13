@@ -366,7 +366,7 @@ test("PI-3B4 restore/prepare/error copy is product language and fail-closed", ()
   assert.match(editor, /onRetryRestore=\{retryIntegratedAfcRestore\}/);
 });
 
-test("PI-3B4 3D panel remains concise Move/Rotate owner without extra object tools", () => {
+test("PI-3B4 production 3D has no permanent object-tools rail and keeps viewer controls off", () => {
   const panel = source("components/afc-3d/Editor3dModePanel.tsx");
   assert.match(panel, />3D</);
   assert.match(panel, /aria-pressed=\{transformMode === "move"\}/);
@@ -378,5 +378,6 @@ test("PI-3B4 3D panel remains concise Move/Rotate owner without extra object too
   assert.match(integrated, /showInternalControls=\{false\}/);
 
   const editor = source("app/editor/page.tsx");
-  assert.match(editor, /data-editor-right-panel-surface=\{viewportMode === "3d" \? "3d" : "workflow"\}/);
+  assert.doesNotMatch(editor, /<Editor3dModePanel/);
+  assert.match(editor, /data-editor-right-panel-surface="workflow"/);
 });

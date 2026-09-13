@@ -39,7 +39,7 @@ test("editor viewport mode is presentation-only 2d|3d and defaults to 2d", () =>
   assert.equal(editorViewportShowsCanvas("3d"), false);
   assert.equal(editorViewportShowsAfcRuntime("3d"), true);
   assert.equal(editorRightPanelSurface("2d"), "workflow");
-  assert.equal(editorRightPanelSurface("3d"), "3d");
+  assert.equal(editorRightPanelSurface("3d"), "none");
 });
 
 test("normal 3D selection does not navigate to the diagnostic route", () => {
@@ -288,13 +288,22 @@ test("room change resets editor 3D presentation without carrying prior runtime i
   assert.match(prepareHook, /\[roomId\]/);
 });
 
-test("integrated 3D panel owns Move/Rotate and hides 2D workflow controls", () => {
+test("integrated 3D hides 2D workflow controls and does not render a permanent 3D rail", () => {
   const editor = source("app/editor/page.tsx");
-  assert.match(editor, /<Editor3dModePanel/);
-  assert.match(editor, /data-editor-right-panel-surface=\{viewportMode === "3d" \? "3d" : "workflow"\}/);
+  assert.doesNotMatch(editor, /<Editor3dModePanel/);
+  assert.match(editor, /editorRightPanelSurface\(viewportMode\) === "workflow"/);
+  assert.match(editor, /showWorkflowRightPanel/);
+  assert.match(editor, /data-editor-right-panel-surface="workflow"/);
 
   const integrated = source("components/afc-3d/AfcIntegratedEditorViewport.tsx");
   assert.match(integrated, /showInternalControls=\{false\}/);
+  assert.match(integrated, /<StageFurnitureToolbar/);
+
+  const toolbar = source("components/stage/StageFurnitureToolbar.tsx");
+  assert.match(toolbar, /label="Move"/);
+  assert.match(toolbar, /label="Rotate"/);
+  assert.match(toolbar, /setTransformMode\("move"\)/);
+  assert.match(toolbar, /setTransformMode\("rotate"\)/);
 
   const panel = source("components/afc-3d/Editor3dModePanel.tsx");
   assert.match(panel, />3D</);

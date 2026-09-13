@@ -12,7 +12,10 @@
 
 import {
   AFC_V2_RUNTIME_COORDINATE_SPACE,
+  AFC_V2_USER_SIZE_DEFAULT,
+  clampUserSizeMultiplier,
   type SceneObjectDefinition,
+  type SceneObjectProductIdentity,
   type SerializedRuntimeScene,
   type WorldTransform,
 } from "./types";
@@ -103,6 +106,25 @@ export function clonePersistedWorldTransform(
   };
 }
 
+export function cloneSceneObjectIdentity(
+  identity: SceneObjectProductIdentity | null | undefined,
+): SceneObjectProductIdentity {
+  const next: {
+    productId?: string;
+    variantId?: string;
+    userSizeMultiplier?: number;
+  } = {};
+  const productId = typeof identity?.productId === "string" ? identity.productId.trim() : "";
+  const variantId = typeof identity?.variantId === "string" ? identity.variantId.trim() : "";
+  const userSize = clampUserSizeMultiplier(
+    identity?.userSizeMultiplier ?? AFC_V2_USER_SIZE_DEFAULT,
+  );
+  if (productId) next.productId = productId;
+  if (variantId) next.variantId = variantId;
+  if (userSize !== AFC_V2_USER_SIZE_DEFAULT) next.userSizeMultiplier = userSize;
+  return next;
+}
+
 export function cloneSceneObjectDefinition(
   object: SceneObjectDefinition,
 ): SceneObjectDefinition {
@@ -110,6 +132,7 @@ export function cloneSceneObjectDefinition(
     objectId: object.objectId,
     assetId: object.assetId,
     transform: clonePersistedWorldTransform(object.transform),
+    ...cloneSceneObjectIdentity(object),
   };
 }
 
@@ -226,6 +249,34 @@ function validateAssetId(value: unknown): string | null {
   return assetId;
 }
 
+function validateOptionalIdentityId(
+  value: unknown,
+  field: "productId" | "variantId",
+): { ok: true; id?: string } | SceneValidationFailure {
+  if (value == null) return { ok: true };
+  if (typeof value !== "string") {
+    return { ok: false, reason: `${field} is invalid.` };
+  }
+  const id = value.trim();
+  if (id.length === 0) return { ok: true };
+  if (id.length > PI4C_MAX_OBJECT_ID_LENGTH || !OBJECT_ID_PATTERN.test(id)) {
+    return { ok: false, reason: `${field} is invalid.` };
+  }
+  return { ok: true, id };
+}
+
+function validateOptionalUserSizeMultiplier(
+  value: unknown,
+): { ok: true; userSizeMultiplier?: number } | SceneValidationFailure {
+  if (value == null) return { ok: true };
+  if (!isFiniteNumber(value)) {
+    return { ok: false, reason: "userSizeMultiplier must be a finite number." };
+  }
+  const userSizeMultiplier = clampUserSizeMultiplier(value);
+  if (userSizeMultiplier === AFC_V2_USER_SIZE_DEFAULT) return { ok: true };
+  return { ok: true, userSizeMultiplier };
+}
+
 export function validatePersistedSceneObjects(
   value: unknown,
 ): SceneObjectValidationResult {
@@ -262,12 +313,21 @@ export function validatePersistedSceneObjects(
     }
     const transform = validatePersistedWorldTransform(item.transform);
     if (!transform.ok) return transform;
+    const productId = validateOptionalIdentityId(item.productId, "productId");
+    if (!productId.ok) return productId;
+    const variantId = validateOptionalIdentityId(item.variantId, "variantId");
+    if (!variantId.ok) return variantId;
+    const userSize = validateOptionalUserSizeMultiplier(item.userSizeMultiplier);
+    if (!userSize.ok) return userSize;
     seen.add(objectId);
-    objects.push({
+    objects.push(cloneSceneObjectDefinition({
       objectId,
       assetId,
       transform: transform.transform,
-    });
+      productId: productId.id,
+      variantId: variantId.id,
+      userSizeMultiplier: userSize.userSizeMultiplier,
+    }));
   }
   return { ok: true, objects };
 }

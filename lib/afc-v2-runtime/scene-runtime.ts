@@ -32,6 +32,11 @@ import type {
   WorldTransform,
 } from "./types";
 import {
+  AFC_V2_USER_SIZE_DEFAULT,
+  clampUserSizeMultiplier,
+} from "./types";
+import { cloneSceneObjectDefinition } from "./persisted-scene";
+import {
   tagSceneObjectRoot,
   transformControlsAttachmentTarget,
 } from "./viewport-interaction";
@@ -44,6 +49,10 @@ export type LiveRuntimeSceneObject = {
   placement: THREE.Group;
   importPlacement: THREE.Group;
   localAabb: LocalAabb | null;
+  productId?: string;
+  variantId?: string;
+  userSizeMultiplier: number;
+  authoredImportScale: number;
 };
 
 export type RuntimeSceneCollection = Map<string, LiveRuntimeSceneObject>;
@@ -125,10 +134,25 @@ export function mountLiveRuntimeSceneObject(input: Readonly<{
   const root = createSceneObjectRoot();
   tagSceneObjectRoot(root.placement, input.descriptor.objectId);
   attachImportedObject(root.importPlacement, input.imported);
+  const authoredImportScale = root.importPlacement.scale.x;
+  const userSizeMultiplier = clampUserSizeMultiplier(
+    input.descriptor.userSizeMultiplier ?? AFC_V2_USER_SIZE_DEFAULT,
+  );
+  if (userSizeMultiplier !== AFC_V2_USER_SIZE_DEFAULT) {
+    root.importPlacement.scale.setScalar(authoredImportScale * userSizeMultiplier);
+  }
   const realized = cloneWorldTransform(
     realizeObjectWorldTransform(input.descriptor.transform, input.metricScale),
   );
   applyWorldTransform(root.placement, realized);
+  const identity = cloneSceneObjectDefinition({
+    objectId: input.descriptor.objectId,
+    assetId: input.descriptor.assetIdentity.id,
+    transform: input.descriptor.transform,
+    productId: input.descriptor.productId,
+    variantId: input.descriptor.variantId,
+    userSizeMultiplier,
+  });
   return {
     objectId: input.descriptor.objectId,
     assetIdentity: input.descriptor.assetIdentity,
@@ -137,7 +161,24 @@ export function mountLiveRuntimeSceneObject(input: Readonly<{
     placement: root.placement,
     importPlacement: root.importPlacement,
     localAabb: measurePlacementLocalAabb(root.placement, root.importPlacement),
+    productId: identity.productId,
+    variantId: identity.variantId,
+    userSizeMultiplier,
+    authoredImportScale,
   };
+}
+
+export function applyLiveUserSizeMultiplier(
+  object: LiveRuntimeSceneObject,
+  multiplier: number,
+): void {
+  const next = clampUserSizeMultiplier(multiplier);
+  object.userSizeMultiplier = next;
+  object.importPlacement.scale.setScalar(object.authoredImportScale * next);
+  object.localAabb = measurePlacementLocalAabb(
+    object.placement,
+    object.importPlacement,
+  );
 }
 
 export function commitLiveSceneObjectTransform(
@@ -185,10 +226,13 @@ export function serializeRuntimeScene(
   scene: RuntimeSceneCollection,
 ): SerializedRuntimeScene {
   return {
-    objects: [...scene.values()].map((object) => ({
+    objects: [...scene.values()].map((object) => cloneSceneObjectDefinition({
       objectId: object.objectId,
       assetId: object.assetIdentity.id,
       transform: cloneWorldTransform(object.canonicalTransform),
+      productId: object.productId,
+      variantId: object.variantId,
+      userSizeMultiplier: object.userSizeMultiplier,
     })),
   };
 }

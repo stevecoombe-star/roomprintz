@@ -14,6 +14,7 @@ import { realizeObjectWorldTransform } from "./metric-world-realization";
 import {
   PI4C_MAX_SCENE_OBJECTS,
   clonePersistedWorldTransform,
+  cloneSceneObjectIdentity,
   persistenceSafeSceneObjects,
 } from "./persisted-scene";
 import {
@@ -22,6 +23,7 @@ import {
   type LocalAabb,
   type RuntimeCollisionWall,
   type SceneObjectDefinition,
+  type SceneObjectProductIdentity,
   type WorldTransform,
 } from "./types";
 
@@ -71,11 +73,16 @@ export type SceneCrudFailure = Readonly<{
 export type SceneCrudResult = SceneCrudSuccess | SceneCrudFailure;
 
 export type ProductionSceneCrudHost = Readonly<{
-  addSceneObject: (assetId: string) => SceneCrudResult;
+  addSceneObject: (
+    assetId: string,
+    identity?: SceneObjectProductIdentity,
+  ) => SceneCrudResult;
   duplicateSceneObject: (objectId: string) => SceneCrudResult;
   deleteSceneObject: (objectId: string) => SceneCrudResult;
   objectCount: () => number;
   canMutate: () => boolean;
+  commitRotationYDeg?: (objectId: string, degrees: number) => boolean;
+  commitUserSizeMultiplier?: (objectId: string, multiplier: number) => boolean;
 }>;
 
 export type LiveSceneCrudSnapshot = Readonly<{
@@ -236,6 +243,7 @@ function createCanonicalDescriptor(input: Readonly<{
   objectId: string;
   assetId: string;
   transform: WorldTransform;
+  identity?: SceneObjectProductIdentity;
 }>): SceneObjectDefinition {
   return {
     objectId: input.objectId,
@@ -244,12 +252,14 @@ function createCanonicalDescriptor(input: Readonly<{
       ...clonePersistedWorldTransform(input.transform),
       uniformScale: 1,
     },
+    ...cloneSceneObjectIdentity(input.identity),
   };
 }
 
 export function addSceneObject(input: Readonly<{
   objects: readonly SceneObjectDefinition[];
   assetId: string;
+  identity?: SceneObjectProductIdentity;
   placement?: ScenePlacementContext;
   createObjectId?: () => string;
   selectedObjectId?: string | null;
@@ -281,6 +291,7 @@ export function addSceneObject(input: Readonly<{
     objectId,
     assetId: asset.assetId,
     transform,
+    identity: input.identity,
   });
   const objects = [...current, object];
   return {
@@ -350,6 +361,7 @@ export function duplicateSceneObject(input: Readonly<{
     objectId,
     assetId: asset.assetId,
     transform,
+    identity: cloneSceneObjectIdentity(source),
   });
   return {
     ok: true,

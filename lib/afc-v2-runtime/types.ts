@@ -61,6 +61,17 @@ export type WorldTransform = Readonly<{
 
 export type RuntimeTransformMode = "move" | "rotate";
 
+export const AFC_V2_USER_SIZE_DEFAULT = 1;
+
+export const AFC_V2_USER_SIZE_MIN = 0.5;
+
+export const AFC_V2_USER_SIZE_MAX = 2;
+
+export function clampUserSizeMultiplier(value: number): number {
+  if (!Number.isFinite(value)) return AFC_V2_USER_SIZE_DEFAULT;
+  return Math.min(AFC_V2_USER_SIZE_MAX, Math.max(AFC_V2_USER_SIZE_MIN, value));
+}
+
 export type RuntimeAssetIdentity = Readonly<{
   kind: "test_cube" | "test_furniture_glb";
   id: string;
@@ -73,6 +84,9 @@ export type RuntimeSceneObject = Readonly<{
   assetIdentity: RuntimeAssetIdentity;
   coordinateSpace: typeof AFC_V2_RUNTIME_COORDINATE_SPACE;
   transform: WorldTransform;
+  productId?: string;
+  variantId?: string;
+  userSizeMultiplier?: number;
 }>;
 
 export type FurnitureAssetDefinition = Readonly<{
@@ -80,10 +94,19 @@ export type FurnitureAssetDefinition = Readonly<{
   glbUrl: string;
 }>;
 
+export type SceneObjectProductIdentity = Readonly<{
+  productId?: string;
+  variantId?: string;
+  userSizeMultiplier?: number;
+}>;
+
 export type SceneObjectDefinition = Readonly<{
   objectId: string;
   assetId: string;
   transform: WorldTransform;
+  productId?: string;
+  variantId?: string;
+  userSizeMultiplier?: number;
 }>;
 
 export type SerializedRuntimeScene = Readonly<{

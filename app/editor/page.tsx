@@ -20,8 +20,9 @@ import { LatestFurnitureCollectionImportBanner } from "@/components/LatestFurnit
 import { LatestFurnitureCollectionItemsPreview } from "@/components/LatestFurnitureCollectionItemsPreview";
 import { AfcIntegratedEditorViewport } from "@/components/afc-3d/AfcIntegratedEditorViewport";
 import { AfcSceneObjectCrudSessionProvider } from "@/components/afc-3d/AfcSceneObjectCrudSession";
-import { Editor3dModePanel } from "@/components/afc-3d/Editor3dModePanel";
 import { EditorViewportModeControl } from "@/components/afc-3d/EditorViewportModeControl";
+import { StageEditorProvider } from "@/components/stage/StageEditorContext";
+import { StageEditorShell } from "@/components/stage/StageEditorShell";
 import { TokenBalanceBadge } from "@/components/tokens/TokenBalanceBadge";
 import { TokenStatusNotice } from "@/components/tokens/TokenStatusNotice";
 import { SnackbarHost, type Snackbar } from "@/components/ui/SnackbarHost";
@@ -80,6 +81,7 @@ import {
 
 import {
   createInitialEditorViewportMode,
+  editorRightPanelSurface,
   isIntegrated3dModeBusy,
   shouldAutoPrepareIntegrated3d,
   shouldRestoreIntegratedAfcRuntime,
@@ -3104,6 +3106,7 @@ function EditorPageInner() {
     preparePhase: prepare3dPhase,
     runtimeLoading: afcRuntime.loading,
   });
+  const showWorkflowRightPanel = editorRightPanelSurface(viewportMode) === "workflow";
   useEffect(() => {
     if (
       !shouldAutoPrepareIntegrated3d({
@@ -11904,6 +11907,11 @@ function EditorPageInner() {
 
   return (
     <AfcSceneObjectCrudSessionProvider>
+    <StageEditorProvider
+      active={viewportMode === "3d"}
+      transformMode={runtimeTransformMode}
+      onTransformModeChange={setRuntimeTransformMode}
+    >
     <div className="fixed inset-0 z-0 flex min-h-0 flex-col overflow-hidden bg-neutral-950 text-neutral-100">
       {/* Top bar */}
       <header className="flex h-12 shrink-0 items-center justify-between border-b border-neutral-800 px-4">
@@ -12009,11 +12017,13 @@ function EditorPageInner() {
       {/* Main */}
       <div className="flex min-h-0 flex-1 w-full overflow-hidden">
         {/* Canvas area */}
-        <main className="flex min-h-0 flex-1 items-center justify-center overflow-hidden bg-neutral-950">
+        <main className={`flex min-h-0 flex-1 overflow-hidden bg-neutral-950 ${viewportMode === "3d" ? "" : "items-center justify-center"}`}>
+          <StageEditorShell active={viewportMode === "3d"}>
           <div className="flex w-full flex-col items-center justify-center gap-3 px-3">
           {/* OUTER: owns glow pseudo-elements (NO overflow-hidden) */}
           <div
             className="relative h-[70vh] w-[70vw] max-w-[1200px] rounded-lg precision-ring vibe-glow vibe-aura vibe-aura-animate"
+            data-stage-canvas="true"
           >
             {/* INNER: clips canvas contents + keeps border/bg */}
             <div
@@ -12388,20 +12398,14 @@ function EditorPageInner() {
             onSelectVersion={handleSelectVersionFromTimeline}
           />
           </div>
+          </StageEditorShell>
         </main>
 
-        {/* Right panel */}
+        {showWorkflowRightPanel ? (
         <aside
           className="flex h-full min-h-0 w-[340px] flex-col overflow-hidden border-l border-neutral-800 bg-neutral-950"
-          data-editor-right-panel-surface={viewportMode === "3d" ? "3d" : "workflow"}
+          data-editor-right-panel-surface="workflow"
         >
-          {viewportMode === "3d" ? (
-            <Editor3dModePanel
-              transformMode={runtimeTransformMode}
-              onTransformModeChange={setRuntimeTransformMode}
-            />
-          ) : null}
-          {viewportMode === "2d" ? (
           <div className="min-h-0 flex-1 overflow-y-auto">
             <div className="space-y-4 p-4">
             <div className="rounded-lg">
@@ -13480,8 +13484,8 @@ function EditorPageInner() {
 
             </div>
           </div>
-          ) : null}
         </aside>
+        ) : null}
       </div>
 
       {deleteVersionTarget ? (
@@ -13801,6 +13805,7 @@ function EditorPageInner() {
         onRemove={(id) => setSnacks((prev) => prev.filter((s) => s.id !== id))}
       />
     </div>
+    </StageEditorProvider>
     </AfcSceneObjectCrudSessionProvider>
   );
 }

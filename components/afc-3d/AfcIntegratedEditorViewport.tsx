@@ -1,6 +1,6 @@
 "use client";
 
-import type { ReactNode } from "react";
+import { useEffect, type ReactNode } from "react";
 
 import type { AfcProductionRuntimeLoadState } from "@/lib/afc-v2-runtime/production-runtime-client";
 import type { Prepare3dRoomState } from "@/lib/afc-v2-runtime/prepare-3d-room-client";
@@ -14,6 +14,8 @@ import {
 import { AfcProductionRoomViewer } from "@/components/afc-3d/AfcProductionRoomViewer";
 import { useAfcSceneObjectCrudSession } from "@/components/afc-3d/AfcSceneObjectCrudSession";
 import { Prepare3dRoomControl } from "@/components/afc-3d/Prepare3dRoomControl";
+import { StageFurnitureToolbar } from "@/components/stage/StageFurnitureToolbar";
+import { useOptionalStageEditor } from "@/components/stage/StageEditorContext";
 
 type Props = Readonly<{
   roomId: string;
@@ -75,6 +77,17 @@ export function AfcIntegratedEditorViewport({
       Boolean(runtime.authority && versionId && spatialAuthorityId),
   });
   const sceneCrud = useAfcSceneObjectCrudSession();
+  const stage = useOptionalStageEditor();
+  const bindScene = stage?.bindScene;
+  const setSelection = stage?.setSelection;
+
+  useEffect(() => {
+    bindScene?.({
+      objects: persistedScene.objects,
+      canUndo: persistedScene.canUndo,
+      undo: persistedScene.undo,
+    });
+  }, [bindScene, persistedScene.canUndo, persistedScene.objects, persistedScene.undo]);
 
   if (presentation.surface === "status") {
     return (
@@ -156,7 +169,9 @@ export function AfcIntegratedEditorViewport({
         onSelectedObjectIdChange={sceneCrud?.setSelectedObjectId}
         onLiveSceneHostChange={sceneCrud?.setHost}
         onLiveSceneSnapshotChange={sceneCrud?.setSnapshot}
+        onSelectionPresentationChange={setSelection}
       />
+      <StageFurnitureToolbar />
       {!persistedScene.sceneReady ? (
         <div
           className="pointer-events-none absolute inset-0 z-20 flex items-center justify-center"
