@@ -6,7 +6,13 @@ import {
   stageProductById,
   stageVariantById,
 } from "./catalog";
-import type { StageProduct, StageSummaryLine, StageSummaryModel, StageVariant } from "./types";
+import type {
+  StageCatalogSnapshot,
+  StageProduct,
+  StageSummaryLine,
+  StageSummaryModel,
+  StageVariant,
+} from "./types";
 
 export function resolveSceneObjectCatalogRef(object: SceneObjectDefinition): Readonly<{
   productId: string | null;
@@ -31,6 +37,7 @@ export function buildStageSummary(input: Readonly<{
   objects: readonly SceneObjectDefinition[];
   extraProducts?: readonly StageProduct[];
   extraVariants?: readonly StageVariant[];
+  catalog?: StageCatalogSnapshot;
 }>): StageSummaryModel {
   const groups = new Map<string, SceneObjectDefinition[]>();
   for (const object of input.objects) {
@@ -48,10 +55,11 @@ export function buildStageSummary(input: Readonly<{
     const first = objects[0];
     if (!first) continue;
     const ref = resolveSceneObjectCatalogRef(first);
-    const product = stageProductById(ref.productId, input.extraProducts);
+    const product = stageProductById(ref.productId, input.extraProducts, input.catalog);
     const variant = stageVariantById(
       ref.variantId ?? product?.defaultVariantId,
       input.extraVariants,
+      input.catalog,
     );
     const unitPrice = variant?.priceAmount ?? product?.priceAmount ?? null;
     const lineCurrency = variant?.priceCurrency ?? product?.priceCurrency ?? "USD";

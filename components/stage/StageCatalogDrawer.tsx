@@ -1,5 +1,7 @@
 "use client";
 
+import { useCallback, useLayoutEffect, useRef } from "react";
+
 import { StageProductCard } from "@/components/stage/StageProductCard";
 import { StageProductDetail } from "@/components/stage/StageProductDetail";
 import {
@@ -9,26 +11,24 @@ import {
 import {
   favoriteKey,
   STAGE_BROWSE_CATEGORIES,
-  STAGE_SEED_COLLECTIONS,
   stageProductById,
 } from "@/lib/vibode-stage/catalog";
-import { filterStageCatalogProducts } from "@/lib/vibode-stage/catalog-query";
+import { visibleStageCatalogProducts } from "@/lib/vibode-stage/catalog-query";
 import { resolveStagePlacement } from "@/lib/vibode-stage/catalog";
-import { STAGE_CATALOG_WIDTH_PX } from "@/lib/vibode-stage/types";
+import {
+  STAGE_CATALOG_MODES,
+  STAGE_CATALOG_WIDTH_PX,
+} from "@/lib/vibode-stage/types";
 
 const FOCUS =
   "focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-neutral-400";
 
-const MODES = [
-  { id: "browse", label: "Browse" },
-  { id: "collections", label: "Collections" },
-  { id: "favorites", label: "Favorites" },
-] as const;
-
 export function StageCatalogDrawer() {
   const stage = useStageEditor();
-  const products = allStageProducts(stage.extraProducts);
-  const visible = filterStageCatalogProducts({
+  const scrollerRef = useRef<HTMLDivElement>(null);
+  const pendingScrollTopRef = useRef<number | null>(null);
+  const products = allStageProducts(stage.extraProducts, stage.catalog);
+  const visible = visibleStageCatalogProducts({
     products,
     mode: stage.catalogMode,
     query: stage.catalogQuery,
@@ -37,12 +37,29 @@ export function StageCatalogDrawer() {
     collectionId: stage.collectionId,
     favoriteKeys: stage.favorites,
     favoriteKeyFor: (product) => favoriteKey(product.productId, product.defaultVariantId),
+    recentlyUsedProductIds: stage.recentlyUsedProductIds,
   });
   const category = STAGE_BROWSE_CATEGORIES.find((item) => item.id === stage.catalogCategoryId);
-  const recent = stage.recentlyUsedProductIds
-    .map((id) => stageProductById(id, stage.extraProducts))
-    .filter((product): product is NonNullable<typeof product> => product != null)
-    .slice(0, 6);
+
+  useLayoutEffect(() => {
+    if (pendingScrollTopRef.current == null && scrollerRef.current) {
+      scrollerRef.current.scrollTop = 0;
+    }
+  }, [stage.catalogMode]);
+
+  useLayoutEffect(() => {
+    const pending = pendingScrollTopRef.current;
+    const scroller = scrollerRef.current;
+    if (pending == null || !scroller) return;
+    scroller.scrollTop = pending;
+    pendingScrollTopRef.current = null;
+  });
+
+  const addProductPreservingScroll = useCallback((productId: string, variantId?: string | null) => {
+    const scroller = scrollerRef.current;
+    if (scroller) pendingScrollTopRef.current = scroller.scrollTop;
+    stage.addProductToRoom(productId, variantId);
+  }, [stage]);
 
   return (
     <aside
@@ -52,6 +69,8 @@ export function StageCatalogDrawer() {
       style={{ width: stage.catalogOpen ? STAGE_CATALOG_WIDTH_PX : 0 }}
       data-stage-catalog={stage.catalogOpen ? "open" : "closed"}
       data-stage-catalog-pinned={stage.catalogPinned ? "true" : "false"}
+      data-stage-catalog-authority={stage.catalogAuthority}
+      data-stage-catalog-mode={stage.catalogMode}
       aria-hidden={!stage.catalogOpen}
     >
       <div className="flex min-h-0 w-[340px] flex-1 flex-col px-3 py-3">
@@ -94,8 +113,8 @@ export function StageCatalogDrawer() {
               placeholder="Search furniture..."
               className="mt-3 w-full rounded-md border border-neutral-800 bg-neutral-900 px-2.5 py-1.5 text-xs text-neutral-100 outline-none placeholder:text-neutral-600 focus:border-neutral-500"
             />
-            <div className="mt-3 flex gap-1" role="tablist" aria-label="Catalog modes">
-              {MODES.map((mode) => (
+            <div className="mt-3 flex flex-wrap gap-1" role="tablist" aria-label="Catalog modes">
+              {STAGE_CATALOG_MODES.map((mode) => (
                 <button
                   key={mode.id}
                   type="button"
@@ -157,7 +176,7 @@ export function StageCatalogDrawer() {
 
             {stage.catalogMode === "collections" ? (
               <div className="mt-3 flex flex-wrap gap-1">
-                {STAGE_SEED_COLLECTIONS.map((collection) => (
+                {stage.collections.map((collection) => (
                   <button
                     key={collection.collectionId}
                     type="button"
@@ -174,19 +193,11 @@ export function StageCatalogDrawer() {
               </div>
             ) : null}
 
-            <div className="mt-3 min-h-0 flex-1 overflow-y-auto pr-1">
-              {stage.catalogMode === "browse" && recent.length > 0 && !stage.catalogQuery ? (
-                <div className="mb-3">
-                  <div className="mb-1.5 text-[10px] uppercase tracking-wide text-neutral-500">
-                    Recently Used
-                  </div>
-                  <div className="grid grid-cols-2 gap-2">
-                    {recent.map((product) => (
-                      <CatalogCard key={`recent-${product.productId}`} productId={product.productId} />
-                    ))}
-                  </div>
-                </div>
-              ) : null}
+            <div
+              ref={scrollerRef}
+              className="mt-3 min-h-0 flex-1 overflow-y-auto pr-1 [overflow-anchor:none]"
+              data-stage-catalog-scroller="true"
+            >
               {visible.length === 0 ? (
                 <div className="py-8 text-center text-xs text-neutral-500">
                   Nothing here yet.
@@ -194,7 +205,11 @@ export function StageCatalogDrawer() {
               ) : (
                 <div className="grid grid-cols-2 gap-2">
                   {visible.map((product) => (
-                    <CatalogCard key={product.productId} productId={product.productId} />
+                    <CatalogCard
+                      key={product.productId}
+                      productId={product.productId}
+                      onAdd={addProductPreservingScroll}
+                    />
                   ))}
                 </div>
               )}
@@ -234,15 +249,22 @@ export function StageCatalogDrawer() {
   );
 }
 
-function CatalogCard({ productId }: { productId: string }) {
+function CatalogCard({
+  productId,
+  onAdd,
+}: {
+  productId: string;
+  onAdd: (productId: string, variantId?: string | null) => void;
+}) {
   const stage = useStageEditor();
-  const product = stageProductById(productId, stage.extraProducts);
+  const product = stageProductById(productId, stage.extraProducts, stage.catalog);
   if (!product) return null;
   const canAdd = Boolean(resolveStagePlacement({
     productId: product.productId,
     variantId: product.defaultVariantId,
     extras: stage.extraProducts,
     extraVariants: stage.extraVariants,
+    catalog: stage.catalog,
   }));
   return (
     <StageProductCard
@@ -252,7 +274,7 @@ function CatalogCard({ productId }: { productId: string }) {
       canAdd={canAdd}
       onOpen={() => stage.openProductDetail(product.productId)}
       onToggleFavorite={() => stage.toggleFavorite(product.productId, product.defaultVariantId)}
-      onAdd={() => stage.addProductToRoom(product.productId, product.defaultVariantId)}
+      onAdd={() => onAdd(product.productId, product.defaultVariantId)}
     />
   );
 }

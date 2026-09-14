@@ -71,6 +71,9 @@ export function StageProductCard({
           type="button"
           aria-label={`Add ${product.name}`}
           disabled={!canAdd}
+          onMouseDown={(event) => {
+            event.preventDefault();
+          }}
           onClick={onAdd}
           className={`rounded-md border px-2 py-0.5 text-xs ${FOCUS} ${
             !canAdd

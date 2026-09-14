@@ -16,17 +16,22 @@ const FOCUS =
 export function StageProductDetail() {
   const stage = useStageEditor();
   const product = stage.detailProductId
-    ? stageProductById(stage.detailProductId, stage.extraProducts)
+    ? stageProductById(stage.detailProductId, stage.extraProducts, stage.catalog)
     : null;
   if (!product) return null;
-  const variant = stageVariantById(product.defaultVariantId, stage.extraVariants);
+  const variant = stageVariantById(
+    product.defaultVariantId,
+    stage.extraVariants,
+    stage.catalog,
+  );
   const placement = resolveStagePlacement({
     productId: product.productId,
     variantId: product.defaultVariantId,
     extras: stage.extraProducts,
     extraVariants: stage.extraVariants,
+    catalog: stage.catalog,
   });
-  const asset = placement ? stageAssetById(placement.assetId) : null;
+  const asset = placement ? stageAssetById(placement.assetId, stage.catalog) : null;
   const canAdd = Boolean(placement);
   const favorited = stage.favorites.has(favoriteKey(product.productId, product.defaultVariantId));
   const price = formatStagePrice(

@@ -10,6 +10,7 @@ import {
 
 import type {
   StageAsset,
+  StageCatalogSnapshot,
   StageCategory,
   StageCollection,
   StageProduct,
@@ -207,44 +208,123 @@ export const STAGE_SEED_COLLECTIONS: readonly StageCollection[] = Object.freeze(
   }),
 ]);
 
-const PRODUCT_BY_ID = new Map(
-  STAGE_SEED_PRODUCTS.map((product) => [product.productId, product]),
-);
-const VARIANT_BY_ID = new Map(
-  STAGE_SEED_VARIANTS.map((variant) => [variant.variantId, variant]),
-);
-const ASSET_BY_ID = new Map([[STAGE_PI4A_SOFA_ASSET.assetId, STAGE_PI4A_SOFA_ASSET]]);
-const COLLECTION_BY_ID = new Map(
-  STAGE_SEED_COLLECTIONS.map((collection) => [collection.collectionId, collection]),
-);
+export function createStageCatalogSnapshot(input: Readonly<{
+  authority: StageCatalogSnapshot["authority"];
+  fallbackReason?: string | null;
+  products: readonly StageProduct[];
+  variants: readonly StageVariant[];
+  assets: readonly StageAsset[];
+  collections: readonly StageCollection[];
+}>): StageCatalogSnapshot {
+  return Object.freeze({
+    authority: input.authority,
+    fallbackReason: input.fallbackReason ?? null,
+    products: Object.freeze([...input.products]),
+    variants: Object.freeze([...input.variants]),
+    assets: Object.freeze([...input.assets]),
+    collections: Object.freeze([...input.collections]),
+  });
+}
+
+export const STAGE_SEED_ASSETS: readonly StageAsset[] = Object.freeze([
+  STAGE_PI4A_SOFA_ASSET,
+]);
+
+export const STAGE_SEED_CATALOG: StageCatalogSnapshot = createStageCatalogSnapshot({
+  authority: "seed_fixture",
+  fallbackReason: null,
+  products: STAGE_SEED_PRODUCTS,
+  variants: STAGE_SEED_VARIANTS,
+  assets: STAGE_SEED_ASSETS,
+  collections: STAGE_SEED_COLLECTIONS,
+});
+
+export function seedFixtureStageCatalog(reason: string): StageCatalogSnapshot {
+  return createStageCatalogSnapshot({
+    authority: "seed_fixture",
+    fallbackReason: reason,
+    products: STAGE_SEED_PRODUCTS,
+    variants: STAGE_SEED_VARIANTS,
+    assets: STAGE_SEED_ASSETS,
+    collections: STAGE_SEED_COLLECTIONS,
+  });
+}
+
+type StageCatalogIndex = Readonly<{
+  productById: ReadonlyMap<string, StageProduct>;
+  variantById: ReadonlyMap<string, StageVariant>;
+  assetById: ReadonlyMap<string, StageAsset>;
+  collectionById: ReadonlyMap<string, StageCollection>;
+}>;
+
+const CATALOG_INDEXES = new WeakMap<StageCatalogSnapshot, StageCatalogIndex>();
+
+export function indexStageCatalog(
+  catalog: StageCatalogSnapshot = STAGE_SEED_CATALOG,
+): StageCatalogIndex {
+  const cached = CATALOG_INDEXES.get(catalog);
+  if (cached) return cached;
+  const index: StageCatalogIndex = {
+    productById: new Map(catalog.products.map((product) => [product.productId, product])),
+    variantById: new Map(catalog.variants.map((variant) => [variant.variantId, variant])),
+    assetById: new Map(catalog.assets.map((asset) => [asset.assetId, asset])),
+    collectionById: new Map(
+      catalog.collections.map((collection) => [collection.collectionId, collection]),
+    ),
+  };
+  CATALOG_INDEXES.set(catalog, index);
+  return index;
+}
+
+export function allStageProducts(
+  extras: readonly StageProduct[] = [],
+  catalog: StageCatalogSnapshot = STAGE_SEED_CATALOG,
+): StageProduct[] {
+  const byId = new Map<string, StageProduct>();
+  for (const product of catalog.products) byId.set(product.productId, product);
+  for (const product of extras) byId.set(product.productId, product);
+  return [...byId.values()];
+}
 
 export function stageProductById(
   productId: string | null | undefined,
   extras: readonly StageProduct[] = [],
+  catalog: StageCatalogSnapshot = STAGE_SEED_CATALOG,
 ): StageProduct | null {
   if (!productId) return null;
   return extras.find((product) => product.productId === productId) ??
-    PRODUCT_BY_ID.get(productId) ??
+    indexStageCatalog(catalog).productById.get(productId) ??
     null;
 }
 
 export function stageVariantById(
   variantId: string | null | undefined,
   extras: readonly StageVariant[] = [],
+  catalog: StageCatalogSnapshot = STAGE_SEED_CATALOG,
 ): StageVariant | null {
   if (!variantId) return null;
   return extras.find((variant) => variant.variantId === variantId) ??
-    VARIANT_BY_ID.get(variantId) ??
+    indexStageCatalog(catalog).variantById.get(variantId) ??
     null;
 }
 
-export function stageAssetById(assetId: string | null | undefined): StageAsset | null {
+export function stageAssetById(
+  assetId: string | null | undefined,
+  catalog: StageCatalogSnapshot = STAGE_SEED_CATALOG,
+): StageAsset | null {
   if (!assetId) return null;
-  return ASSET_BY_ID.get(assetId) ?? null;
+  return indexStageCatalog(catalog).assetById.get(assetId) ?? null;
 }
 
-export function stageCollectionById(collectionId: string): StageCollection | null {
-  return COLLECTION_BY_ID.get(collectionId) ?? null;
+export function stageCollectionById(
+  collectionId: string,
+  catalog: StageCatalogSnapshot = STAGE_SEED_CATALOG,
+): StageCollection | null {
+  return indexStageCatalog(catalog).collectionById.get(collectionId) ?? null;
+}
+
+export function isStageAssetReady(asset: StageAsset | null | undefined): boolean {
+  return asset?.status === "ready";
 }
 
 export function fallbackProductIdForAsset(assetId: string): string | null {
@@ -258,19 +338,23 @@ export function resolveStagePlacement(input: Readonly<{
   variantId?: string | null;
   extras?: readonly StageProduct[];
   extraVariants?: readonly StageVariant[];
+  catalog?: StageCatalogSnapshot;
 }>): Readonly<{
   product: StageProduct;
   variant: StageVariant;
   assetId: string;
 }> | null {
-  const product = stageProductById(input.productId, input.extras);
+  const catalog = input.catalog ?? STAGE_SEED_CATALOG;
+  const product = stageProductById(input.productId, input.extras, catalog);
   if (!product) return null;
   const variant = stageVariantById(
     input.variantId ?? product.defaultVariantId,
     input.extraVariants,
+    catalog,
   );
   if (!variant || variant.productId !== product.productId) return null;
-  if (!variant.assetId || !stageAssetById(variant.assetId)) return null;
+  const asset = stageAssetById(variant.assetId, catalog);
+  if (!variant.assetId || !isStageAssetReady(asset)) return null;
   return { product, variant, assetId: variant.assetId };
 }
 

@@ -5,12 +5,30 @@ export const STAGE_SUMMARY_WIDTH_PX = 340;
 export const STAGE_CANVAS_HEIGHT_CLASS = "h-[70vh]";
 export const STAGE_CANVAS_WIDTH_CLASS = "w-[70vw] max-w-[1200px]";
 
-export type StageCatalogMode = "browse" | "collections" | "favorites";
+export type StageCatalogMode =
+  | "browse"
+  | "recently_used"
+  | "collections"
+  | "favorites";
+
+export const STAGE_DEFAULT_CATALOG_MODE: StageCatalogMode = "browse";
+
+export const STAGE_CATALOG_MODES: readonly Readonly<{
+  id: StageCatalogMode;
+  label: string;
+}>[] = Object.freeze([
+  Object.freeze({ id: "browse", label: "Browse" }),
+  Object.freeze({ id: "collections", label: "Collections" }),
+  Object.freeze({ id: "recently_used", label: "Recent" }),
+  Object.freeze({ id: "favorites", label: "Favorites" }),
+]);
 
 export type StageProductSource =
   | "vibode_curated"
   | "partner_catalog"
   | "user_pasted";
+
+export type StageCatalogAuthority = "durable" | "seed_fixture";
 
 export type StageAssetStatus = "ready" | "unavailable";
 
@@ -56,6 +74,15 @@ export type StageCollection = Readonly<{
   owner: "vibode" | "partner";
   partnerName: string | null;
   productIds: readonly string[];
+}>;
+
+export type StageCatalogSnapshot = Readonly<{
+  authority: StageCatalogAuthority;
+  fallbackReason: string | null;
+  products: readonly StageProduct[];
+  variants: readonly StageVariant[];
+  assets: readonly StageAsset[];
+  collections: readonly StageCollection[];
 }>;
 
 export type StageCategory = Readonly<{

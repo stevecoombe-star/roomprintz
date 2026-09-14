@@ -1,6 +1,6 @@
 import type { StageCatalogMode, StageProduct } from "./types";
 
-export function filterStageCatalogProducts(input: Readonly<{
+export type StageCatalogQueryInput = Readonly<{
   products: readonly StageProduct[];
   mode: StageCatalogMode;
   query: string;
@@ -9,8 +9,20 @@ export function filterStageCatalogProducts(input: Readonly<{
   collectionId: string | null;
   favoriteKeys: ReadonlySet<string>;
   favoriteKeyFor: (product: StageProduct) => string;
-}>): StageProduct[] {
+  recentlyUsedProductIds?: readonly string[];
+}>;
+
+export type StageCatalogNavigationState = Readonly<{
+  catalogMode: StageCatalogMode;
+  catalogQuery: string;
+  catalogCategoryId: string | null;
+  catalogSubcategoryId: string | null;
+  collectionId: string | null;
+}>;
+
+export function filterStageCatalogProducts(input: StageCatalogQueryInput): StageProduct[] {
   const needle = input.query.trim().toLowerCase();
+  const recentIds = input.recentlyUsedProductIds ?? [];
   return input.products.filter((product) => {
     if (input.mode === "favorites" && !input.favoriteKeys.has(input.favoriteKeyFor(product))) {
       return false;
@@ -20,6 +32,9 @@ export function filterStageCatalogProducts(input: Readonly<{
       input.collectionId &&
       !product.collectionIds.includes(input.collectionId)
     ) {
+      return false;
+    }
+    if (input.mode === "recently_used" && !recentIds.includes(product.productId)) {
       return false;
     }
     if (input.mode === "browse" && input.categoryId && product.categoryId !== input.categoryId) {
@@ -36,6 +51,29 @@ export function filterStageCatalogProducts(input: Readonly<{
     const haystack = `${product.brand} ${product.name} ${product.retailer}`.toLowerCase();
     return haystack.includes(needle);
   });
+}
+
+export function orderStageProductsByRecentIds(
+  products: readonly StageProduct[],
+  recentlyUsedProductIds: readonly string[],
+): StageProduct[] {
+  const byId = new Map(products.map((product) => [product.productId, product]));
+  return recentlyUsedProductIds.flatMap((productId) => {
+    const product = byId.get(productId);
+    return product ? [product] : [];
+  });
+}
+
+export function visibleStageCatalogProducts(input: StageCatalogQueryInput): StageProduct[] {
+  const filtered = filterStageCatalogProducts(input);
+  if (input.mode !== "recently_used") return filtered;
+  return orderStageProductsByRecentIds(filtered, input.recentlyUsedProductIds ?? []);
+}
+
+export function navigationStateAfterCatalogAdd<T extends StageCatalogNavigationState>(
+  current: T,
+): T {
+  return current;
 }
 
 export function rememberRecentlyUsed(

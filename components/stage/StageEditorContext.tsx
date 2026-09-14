@@ -21,12 +21,13 @@ import {
 } from "@/lib/vibode-stage/bound-scene";
 import { rememberRecentlyUsed } from "@/lib/vibode-stage/catalog-query";
 import {
+  allStageProducts,
   createPastedStageProduct,
   createPastedStageVariant,
-  favoriteKey,
   resolveStagePlacement,
-  STAGE_SEED_PRODUCTS,
+  STAGE_SEED_CATALOG,
 } from "@/lib/vibode-stage/catalog";
+import { parseStageCatalogPayload } from "@/lib/vibode-stage/catalog-store";
 import {
   collapseCatalogDrawer,
   pinCatalogDrawer,
@@ -38,10 +39,14 @@ import {
   writeFavoriteKeysToStorage,
 } from "@/lib/vibode-stage/favorites";
 import type {
+  StageCatalogAuthority,
   StageCatalogMode,
+  StageCatalogSnapshot,
+  StageCollection,
   StageProduct,
   StageVariant,
 } from "@/lib/vibode-stage/types";
+import { STAGE_DEFAULT_CATALOG_MODE } from "@/lib/vibode-stage/types";
 
 export type StageToolbarSlider = null | "rotate" | "size";
 
@@ -63,6 +68,9 @@ type StageEditorContextValue = Readonly<{
   recentlyUsedProductIds: readonly string[];
   extraProducts: readonly StageProduct[];
   extraVariants: readonly StageVariant[];
+  catalog: StageCatalogSnapshot;
+  catalogAuthority: StageCatalogAuthority;
+  collections: readonly StageCollection[];
   objects: readonly SceneObjectDefinition[];
   canUndo: boolean;
   undo: () => void;
@@ -123,7 +131,7 @@ export function StageEditorProvider({
   const [catalogOpen, setCatalogOpen] = useState(false);
   const [catalogPinned, setCatalogPinned] = useState(false);
   const [summaryOpen, setSummaryOpen] = useState(false);
-  const [catalogMode, setCatalogMode] = useState<StageCatalogMode>("browse");
+  const [catalogMode, setCatalogMode] = useState<StageCatalogMode>(STAGE_DEFAULT_CATALOG_MODE);
   const [catalogQuery, setCatalogQuery] = useState("");
   const [catalogCategoryId, setCatalogCategoryIdState] = useState<string | null>("living-room");
   const [catalogSubcategoryId, setCatalogSubcategoryId] = useState<string | null>(null);
@@ -136,6 +144,7 @@ export function StageEditorProvider({
   const [recentlyUsedProductIds, setRecentlyUsedProductIds] = useState<string[]>([]);
   const [extraProducts, setExtraProducts] = useState<StageProduct[]>([]);
   const [extraVariants, setExtraVariants] = useState<StageVariant[]>([]);
+  const [catalog, setCatalog] = useState<StageCatalogSnapshot>(STAGE_SEED_CATALOG);
   const [boundScene, setBoundScene] = useState<BoundScene>(EMPTY_SCENE);
   const [selection, setSelection] = useState<SceneSelectionPresentation | null>(null);
   const [toolbarSlider, setToolbarSlider] = useState<StageToolbarSlider>(null);
@@ -145,6 +154,28 @@ export function StageEditorProvider({
     setFavorites(readFavoriteKeysFromStorage(
       typeof window === "undefined" ? null : window.localStorage,
     ));
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const response = await fetch("/api/vibode/stage-catalog", {
+          method: "GET",
+          headers: { Accept: "application/json" },
+          cache: "no-store",
+        });
+        const payload: unknown = await response.json().catch(() => null);
+        const parsed = parseStageCatalogPayload(payload);
+        if (!cancelled && parsed) setCatalog(parsed.catalog);
+      } catch {
+        // Keep the explicit seed fixture. Catalog failure must not touch
+        // AFC, scene persistence, History, or camera/world authority.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   useEffect(() => {
@@ -225,6 +256,7 @@ export function StageEditorProvider({
       variantId,
       extras: extraProducts,
       extraVariants,
+      catalog,
     });
     if (!placement || !session) return false;
     session.addFurnitureWithIdentity(placement.assetId, {
@@ -236,7 +268,7 @@ export function StageEditorProvider({
     onTransformModeChange("move");
     setToolbarSlider(null);
     return true;
-  }, [extraProducts, extraVariants, onTransformModeChange, session]);
+  }, [catalog, extraProducts, extraVariants, onTransformModeChange, session]);
 
   const pasteProductLink = useCallback(async () => {
     const sourceUrl = pasteUrl.trim();
@@ -319,6 +351,9 @@ export function StageEditorProvider({
     recentlyUsedProductIds,
     extraProducts,
     extraVariants,
+    catalog,
+    catalogAuthority: catalog.authority,
+    collections: catalog.collections,
     objects: boundScene.objects,
     canUndo: boundScene.canUndo,
     undo: boundScene.undo,
@@ -352,6 +387,7 @@ export function StageEditorProvider({
     addProductToRoom,
     bindScene,
     boundScene,
+    catalog,
     catalogCategoryId,
     catalogMode,
     catalogOpen,
@@ -403,11 +439,4 @@ export function useOptionalStageEditor(): StageEditorContextValue | null {
   return useContext(StageEditorContext);
 }
 
-export function allStageProducts(
-  extras: readonly StageProduct[] = [],
-): StageProduct[] {
-  const byId = new Map<string, StageProduct>();
-  for (const product of STAGE_SEED_PRODUCTS) byId.set(product.productId, product);
-  for (const product of extras) byId.set(product.productId, product);
-  return [...byId.values()];
-}
+export { allStageProducts };

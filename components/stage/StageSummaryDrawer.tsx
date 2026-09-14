@@ -18,6 +18,7 @@ export function StageSummaryDrawer() {
     objects: stage.objects,
     extraProducts: stage.extraProducts,
     extraVariants: stage.extraVariants,
+    catalog: stage.catalog,
   });
 
   return (
