@@ -315,7 +315,10 @@ test("PI-4A History image changes do not remount furniture during the 3D session
   assert.doesNotMatch(viewer, /key=\{[^}]*backgroundImageUrl/);
   assert.doesNotMatch(viewer, /selectedVersionId/);
   assert.doesNotMatch(viewer, /activeAssetId/);
-  assert.match(viewer, /loadFurnitureGlb\(pi4aFurnitureGlbPublicPath\(\)\)/);
+  assert.doesNotMatch(viewer, /loadFurnitureGlb\(pi4aFurnitureGlbPublicPath\(\)\)/);
+  assert.match(viewer, /createFurnitureTemplateCache/);
+  assert.match(viewer, /cloneFurnitureGlbScene\(template\)/);
+  assert.match(viewer, /templateCache\.template\(definition\.assetId\)/);
   assert.doesNotMatch(viewer, /createOneMetreCubeMesh/);
 });
 

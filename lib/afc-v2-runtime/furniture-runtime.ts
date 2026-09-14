@@ -29,7 +29,35 @@ import { cloneSceneObjectIdentity } from "./persisted-scene";
 
 export const PI4A_FURNITURE_LOADING_MESSAGE = "Loading furniture…";
 
-export const PI4A_SOFA_PLACEMENT_LOCAL_AABB: LocalAabb = Object.freeze({
+export function authoredPlacementLocalAabb(input: Readonly<{
+  authoredWidthM: number;
+  authoredHeightM: number;
+  authoredDepthM: number;
+}>): LocalAabb | null {
+  const width = input.authoredWidthM;
+  const height = input.authoredHeightM;
+  const depth = input.authoredDepthM;
+  if (
+    !Number.isFinite(width) ||
+    !Number.isFinite(height) ||
+    !Number.isFinite(depth) ||
+    width <= 0 ||
+    height <= 0 ||
+    depth <= 0
+  ) {
+    return null;
+  }
+  return Object.freeze({
+    min: Object.freeze({ x: -width / 2, y: 0, z: -depth / 2 }),
+    max: Object.freeze({ x: width / 2, y: height, z: depth / 2 }),
+  });
+}
+
+export const PI4A_SOFA_PLACEMENT_LOCAL_AABB: LocalAabb = authoredPlacementLocalAabb({
+  authoredWidthM: 2.2,
+  authoredHeightM: 0.8,
+  authoredDepthM: 0.9,
+}) ?? Object.freeze({
   min: Object.freeze({ x: -1.1, y: 0, z: -0.45 }),
   max: Object.freeze({ x: 1.1, y: 0.8, z: 0.45 }),
 });
@@ -70,10 +98,9 @@ export function furnitureBelongsToGeneration(
 }
 
 export function furnitureAssetPlacementAabb(assetId: string): LocalAabb | null {
-  if (assetId === AFC_V2_RUNTIME_FURNITURE_ASSET_ID) {
-    return PI4A_SOFA_PLACEMENT_LOCAL_AABB;
-  }
-  return null;
+  const asset = furnitureAssetDefinition(assetId);
+  if (!asset) return null;
+  return authoredPlacementLocalAabb(asset);
 }
 
 export function pi4aFurnitureGlbPublicPath(): string {

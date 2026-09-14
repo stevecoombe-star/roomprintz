@@ -76,8 +76,10 @@ export type ProductionSceneCrudHost = Readonly<{
   addSceneObject: (
     assetId: string,
     identity?: SceneObjectProductIdentity,
-  ) => SceneCrudResult;
-  duplicateSceneObject: (objectId: string) => SceneCrudResult;
+  ) => SceneCrudResult | Promise<SceneCrudResult>;
+  duplicateSceneObject: (
+    objectId: string,
+  ) => SceneCrudResult | Promise<SceneCrudResult>;
   deleteSceneObject: (objectId: string) => SceneCrudResult;
   objectCount: () => number;
   canMutate: () => boolean;

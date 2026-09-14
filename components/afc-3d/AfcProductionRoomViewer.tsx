@@ -7,13 +7,17 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { AfcV2ProductionRoomAuthority } from "@/lib/afc-v2-production/production-authority-contract";
 import { resolveSceneObjectCollision } from "@/lib/afc-v2-runtime/collision-resolver";
 import { containFitRect, nextFrameBox } from "@/lib/afc-v2-runtime/frame-layout";
-import { cloneFurnitureGlbScene, loadFurnitureGlb } from "@/lib/afc-v2-runtime/furniture-glb-loader";
+import { furnitureAssetDefinition } from "@/lib/afc-v2-runtime/furniture-assets";
+import { cloneFurnitureGlbScene } from "@/lib/afc-v2-runtime/furniture-glb-loader";
+import {
+  createFurnitureTemplateCache,
+  mergeMountedAndSkippedSceneObjects,
+} from "@/lib/afc-v2-runtime/furniture-template-cache";
 import {
   PI4A_FURNITURE_LOADING_MESSAGE,
   createPi4aFurnitureObjectFromAuthority,
   createPi4bSceneObjects,
   instantiateSceneObjectDefinitions,
-  pi4aFurnitureGlbPublicPath,
 } from "@/lib/afc-v2-runtime/furniture-runtime";
 import {
   addSceneObject as addSceneObjectDescriptor,
@@ -26,6 +30,7 @@ import {
   type SceneCrudResult,
 } from "@/lib/afc-v2-runtime/scene-crud";
 import {
+  cloneSceneObjectDefinition,
   liveSceneObjectIds,
   shouldReplaceLiveScene,
 } from "@/lib/afc-v2-runtime/persisted-scene";
@@ -39,7 +44,6 @@ import {
 } from "@/lib/afc-v2-runtime/metric-world-realization";
 import {
   applyWorldTransform,
-  disposeObject3D,
   measurePlacementLocalAabb,
 } from "@/lib/afc-v2-runtime/object-runtime";
 import {
@@ -328,10 +332,18 @@ function AfcProductionRoomViewerReady({
     scene.add(objectLayer);
 
     const sceneObjects = createRuntimeSceneCollection();
-    const assetTemplates: THREE.Group[] = [];
+    const templateCache = createFurnitureTemplateCache();
+    const unmountedPersisted = new Map<string, SceneObjectDefinition>();
+    let persistedOrder: SceneObjectDefinition[] = [];
     let appliedInstanceId: string | null = null;
     let appliedObjectIds: string[] = [];
-    let template: THREE.Group | null = null;
+    let applyGeneration = 0;
+    let mutationTail: Promise<unknown> = Promise.resolve();
+    const enqueueMutation = <T,>(run: () => Promise<T>): Promise<T> => {
+      const next = mutationTail.then(run, run);
+      mutationTail = next.then(() => undefined, () => undefined);
+      return next;
+    };
 
     const controls = new TransformControls(camera, renderer.domElement);
     const controlsHelper = controls.getHelper();
@@ -473,7 +485,13 @@ function AfcProductionRoomViewerReady({
     };
 
     const emitCommittedScene = () => {
-      onCommittedRef.current?.(serializeRuntimeScene(sceneObjects));
+      onCommittedRef.current?.({
+        objects: mergeMountedAndSkippedSceneObjects({
+          order: persistedOrder,
+          mounted: serializeRuntimeScene(sceneObjects).objects,
+          skipped: unmountedPersisted,
+        }),
+      });
     };
 
     let lastPresentationSig = "";
@@ -521,7 +539,11 @@ function AfcProductionRoomViewerReady({
 
     const publishSnapshot = () => {
       onLiveSnapshotChangeRef.current?.({
-        objectCount: sceneObjects.size,
+        objectCount: mergeMountedAndSkippedSceneObjects({
+          order: persistedOrder,
+          mounted: serializeRuntimeScene(sceneObjects).objects,
+          skipped: unmountedPersisted,
+        }).length,
         selectedObjectId: selectedObjectIdRef.current,
         liveReady: furnitureReady && sceneReadyRef.current,
       });
@@ -741,9 +763,28 @@ function AfcProductionRoomViewerReady({
       removeLiveSceneObject(sceneObjects, objectId);
     };
 
+    const rememberUnmounted = (definition: SceneObjectDefinition) => {
+      unmountedPersisted.set(
+        definition.objectId,
+        cloneSceneObjectDefinition(definition),
+      );
+    };
+
+    const warnFailedAssetLoad = (definition: SceneObjectDefinition) => {
+      if (typeof console === "undefined") return;
+      console.warn(
+        "[afc-3d-scene] skipped furniture object; asset failed to load",
+        {
+          objectId: definition.objectId,
+          assetId: definition.assetId,
+        },
+      );
+    };
+
     const mountOne = (
       definition: SceneObjectDefinition,
     ): LiveRuntimeSceneObject | null => {
+      const template = templateCache.template(definition.assetId);
       if (!template) return null;
       const instantiated = instantiateSceneObjectDefinitions({
         roomId: furniture.roomId,
@@ -769,12 +810,16 @@ function AfcProductionRoomViewerReady({
       commitLiveSceneObjectTransform(live, realized, world.metricScale);
       setLiveSceneObject(sceneObjects, live);
       objectLayer.add(live.placement);
+      unmountedPersisted.delete(definition.objectId);
       return live;
     };
 
     const mountDescriptors = (definitions: readonly SceneObjectDefinition[]) => {
-      if (!template) return;
       clearMountedObjects();
+      unmountedPersisted.clear();
+      const byId = new Map(
+        definitions.map((definition) => [definition.objectId, definition]),
+      );
       const instantiated = instantiateSceneObjectDefinitions({
         roomId: furniture.roomId,
         generationId: furniture.generationId,
@@ -786,23 +831,18 @@ function AfcProductionRoomViewerReady({
           instantiated.skipped,
         );
       }
+      for (const skipped of instantiated.skipped) {
+        const definition = byId.get(skipped.objectId);
+        if (definition) rememberUnmounted(definition);
+      }
       for (const descriptor of instantiated.objects) {
-        const realized = realizeObjectWorldTransform(
-          descriptor.transform,
-          world.metricScale,
-        );
-        const live = mountLiveRuntimeSceneObject({
-          descriptor,
-          imported: cloneFurnitureGlbScene(template),
-          metricScale: world.metricScale,
-        });
-        live.localAabb = measurePlacementLocalAabb(
-          live.placement,
-          live.importPlacement,
-        );
-        commitLiveSceneObjectTransform(live, realized, world.metricScale);
-        setLiveSceneObject(sceneObjects, live);
-        objectLayer.add(live.placement);
+        const definition = byId.get(descriptor.objectId);
+        if (!definition) continue;
+        const live = mountOne(definition);
+        if (!live) {
+          rememberUnmounted(definition);
+          warnFailedAssetLoad(definition);
+        }
       }
     };
 
@@ -815,11 +855,27 @@ function AfcProductionRoomViewerReady({
       for (const objectId of nextIds) {
         if (sceneObjects.has(objectId)) continue;
         const definition = byId.get(objectId);
-        if (definition) mountOne(definition);
+        if (!definition) continue;
+        const live = mountOne(definition);
+        if (!live) {
+          rememberUnmounted(definition);
+          if (furnitureAssetDefinition(definition.assetId)) {
+            warnFailedAssetLoad(definition);
+          }
+        }
+      }
+      for (const definition of definitions) {
+        if (!sceneObjects.has(definition.objectId)) {
+          rememberUnmounted(definition);
+        }
       }
     };
 
-    const currentSerializedObjects = () => serializeRuntimeScene(sceneObjects).objects;
+    const currentSerializedObjects = () => mergeMountedAndSkippedSceneObjects({
+      order: persistedOrder,
+      mounted: serializeRuntimeScene(sceneObjects).objects,
+      skipped: unmountedPersisted,
+    });
 
     const notReadyResult = (): SceneCrudResult => ({
       ok: false,
@@ -829,19 +885,16 @@ function AfcProductionRoomViewerReady({
       selectedObjectId: selectedObjectIdRef.current,
     });
 
-    const applyLiveScene = (input: Readonly<{
+    const rememberPersistedOrder = (definitions: readonly SceneObjectDefinition[]) => {
+      persistedOrder = definitions.map((definition) => cloneSceneObjectDefinition(definition));
+    };
+
+    const applyMountedScene = (input: Readonly<{
       instanceId: string;
       objects: readonly SceneObjectDefinition[];
-      ready: boolean;
     }>) => {
-      if (!input.ready) {
-        objectLayer.visible = false;
-        publishSnapshot();
-        return;
-      }
-      objectLayer.visible = true;
+      rememberPersistedOrder(input.objects);
       const nextIds = liveSceneObjectIds(input.objects);
-      if (!template) return;
       if (
         shouldReplaceLiveScene({
           appliedInstanceId,
@@ -869,71 +922,126 @@ function AfcProductionRoomViewerReady({
       }
       publishSnapshot();
     };
+
+    const applyLiveScene = (input: Readonly<{
+      instanceId: string;
+      objects: readonly SceneObjectDefinition[];
+      ready: boolean;
+    }>) => {
+      if (!input.ready) {
+        objectLayer.visible = false;
+        publishSnapshot();
+        return;
+      }
+      objectLayer.visible = true;
+      const generation = ++applyGeneration;
+      const objects = input.objects;
+      const instanceId = input.instanceId;
+      void templateCache.ensure(objects.map((object) => object.assetId)).then(() => {
+        if (disposed || generation !== applyGeneration) return;
+        applyMountedScene({ instanceId, objects });
+        setFurniturePhase("ready");
+      });
+    };
     applyLiveSceneRef.current = applyLiveScene;
 
     const liveHost: ProductionSceneCrudHost = {
-      objectCount: () => sceneObjects.size,
-      canMutate: () => furnitureReady && sceneReadyRef.current && template != null,
+      objectCount: () => currentSerializedObjects().length,
+      canMutate: () => furnitureReady && sceneReadyRef.current,
       addSceneObject: (assetId, identity?: SceneObjectProductIdentity) => {
-        if (!furnitureReady || !template || !sceneReadyRef.current) {
-          return notReadyResult();
-        }
-        const result = addSceneObjectDescriptor({
-          objects: currentSerializedObjects(),
-          assetId,
-          identity,
-          selectedObjectId: selectedObjectIdRef.current,
-          placement: {
-            metricScale: world.metricScale,
-            realizedWalls,
-          },
-        });
-        if (!result.ok) return result;
-        const live = mountOne(result.object);
-        if (!live) {
-          return {
-            ok: false,
-            reason: "instantiate_failed",
-            message: PI5A_INSTANTIATE_FAILED_MESSAGE,
+        return enqueueMutation(async () => {
+          if (!furnitureReady || !sceneReadyRef.current) {
+            return notReadyResult();
+          }
+          const resolved = furnitureAssetDefinition(assetId);
+          if (resolved) {
+            await templateCache.ensure([resolved.assetId]);
+            if (disposed) return notReadyResult();
+            if (!templateCache.template(resolved.assetId)) {
+              return {
+                ok: false,
+                reason: "instantiate_failed",
+                message: PI5A_INSTANTIATE_FAILED_MESSAGE,
+                objects: currentSerializedObjects(),
+                selectedObjectId: selectedObjectIdRef.current,
+              };
+            }
+          }
+          const result = addSceneObjectDescriptor({
             objects: currentSerializedObjects(),
+            assetId,
+            identity,
             selectedObjectId: selectedObjectIdRef.current,
-          };
-        }
-        appliedObjectIds = [...sceneObjects.keys()];
-        selectObject(result.object.objectId);
-        emitCommittedScene();
-        publishSnapshot();
-        return result;
+            placement: {
+              metricScale: world.metricScale,
+              realizedWalls,
+            },
+          });
+          if (!result.ok) return result;
+          const live = mountOne(result.object);
+          if (!live) {
+            return {
+              ok: false,
+              reason: "instantiate_failed",
+              message: PI5A_INSTANTIATE_FAILED_MESSAGE,
+              objects: currentSerializedObjects(),
+              selectedObjectId: selectedObjectIdRef.current,
+            };
+          }
+          rememberPersistedOrder(result.objects);
+          appliedObjectIds = liveSceneObjectIds(result.objects);
+          selectObject(result.object.objectId);
+          emitCommittedScene();
+          publishSnapshot();
+          return result;
+        });
       },
       duplicateSceneObject: (objectId) => {
-        if (!furnitureReady || !template || !sceneReadyRef.current) {
-          return notReadyResult();
-        }
-        const result = duplicateSceneObjectDescriptor({
-          objects: currentSerializedObjects(),
-          objectId,
-          selectedObjectId: selectedObjectIdRef.current,
-          placement: {
-            metricScale: world.metricScale,
-            realizedWalls,
-          },
-        });
-        if (!result.ok) return result;
-        const live = mountOne(result.object);
-        if (!live) {
-          return {
-            ok: false,
-            reason: "instantiate_failed",
-            message: PI5A_INSTANTIATE_FAILED_MESSAGE,
+        return enqueueMutation(async () => {
+          if (!furnitureReady || !sceneReadyRef.current) {
+            return notReadyResult();
+          }
+          const source = currentSerializedObjects().find((object) => object.objectId === objectId);
+          if (source && furnitureAssetDefinition(source.assetId)) {
+            await templateCache.ensure([source.assetId]);
+            if (disposed) return notReadyResult();
+            if (!templateCache.template(source.assetId)) {
+              return {
+                ok: false,
+                reason: "instantiate_failed",
+                message: PI5A_INSTANTIATE_FAILED_MESSAGE,
+                objects: currentSerializedObjects(),
+                selectedObjectId: selectedObjectIdRef.current,
+              };
+            }
+          }
+          const result = duplicateSceneObjectDescriptor({
             objects: currentSerializedObjects(),
+            objectId,
             selectedObjectId: selectedObjectIdRef.current,
-          };
-        }
-        appliedObjectIds = [...sceneObjects.keys()];
-        selectObject(result.object.objectId);
-        emitCommittedScene();
-        publishSnapshot();
-        return result;
+            placement: {
+              metricScale: world.metricScale,
+              realizedWalls,
+            },
+          });
+          if (!result.ok) return result;
+          const live = mountOne(result.object);
+          if (!live) {
+            return {
+              ok: false,
+              reason: "instantiate_failed",
+              message: PI5A_INSTANTIATE_FAILED_MESSAGE,
+              objects: currentSerializedObjects(),
+              selectedObjectId: selectedObjectIdRef.current,
+            };
+          }
+          rememberPersistedOrder(result.objects);
+          appliedObjectIds = liveSceneObjectIds(result.objects);
+          selectObject(result.object.objectId);
+          emitCommittedScene();
+          publishSnapshot();
+          return result;
+        });
       },
       deleteSceneObject: (objectId) => {
         if (!furnitureReady || !sceneReadyRef.current) {
@@ -946,7 +1054,9 @@ function AfcProductionRoomViewerReady({
         });
         if (!result.ok) return result;
         unmountObject(objectId);
-        appliedObjectIds = [...sceneObjects.keys()];
+        unmountedPersisted.delete(objectId);
+        rememberPersistedOrder(result.objects);
+        appliedObjectIds = liveSceneObjectIds(result.objects);
         if (selectedObjectIdRef.current === objectId) {
           selectObject(null);
         }
@@ -992,24 +1102,10 @@ function AfcProductionRoomViewerReady({
     };
     onLiveHostChangeRef.current?.(liveHost);
 
-    void loadFurnitureGlb(pi4aFurnitureGlbPublicPath()).then((result) => {
-      if (disposed) {
-        if (result.ok) disposeObject3D(result.scene);
-        return;
-      }
-      if (!result.ok) {
-        setFurniturePhase("error");
-        return;
-      }
-      template = result.scene;
-      assetTemplates.push(result.scene);
-      applyLiveScene({
-        instanceId: sceneInstanceIdRef.current,
-        objects: sceneObjectsPropRef.current,
-        ready: sceneReadyRef.current,
-      });
-      setFurniturePhase("ready");
-      publishSnapshot();
+    applyLiveScene({
+      instanceId: sceneInstanceIdRef.current,
+      objects: sceneObjectsPropRef.current,
+      ready: sceneReadyRef.current,
     });
 
     controls.addEventListener("dragging-changed", draggingChangedListener);
@@ -1046,6 +1142,7 @@ function AfcProductionRoomViewerReady({
 
     return () => {
       disposed = true;
+      applyGeneration += 1;
       applyLiveSceneRef.current = null;
       onLiveHostChangeRef.current?.(null);
       onLiveSnapshotChangeRef.current?.({
@@ -1071,9 +1168,7 @@ function AfcProductionRoomViewerReady({
         objectLayer.remove(object.placement);
       }
       sceneObjects.clear();
-      for (const template of assetTemplates) {
-        disposeObject3D(template);
-      }
+      templateCache.dispose();
       renderer.dispose();
       renderer.domElement.remove();
     };

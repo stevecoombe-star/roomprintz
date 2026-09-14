@@ -30,6 +30,12 @@ export const AFC_V2_RUNTIME_FURNITURE_ASSET_ID =
 export const AFC_V2_RUNTIME_FURNITURE_GLB_PUBLIC_PATH =
   "/afc-v2-runtime/test-fixtures/pi4a-sofa.glb" as const;
 
+export const AFC_V2_RUNTIME_LOUNGE_CHAIR_ASSET_ID =
+  "afc-v2-runtime/test-fixtures/pi5d-lounge-chair" as const;
+
+export const AFC_V2_RUNTIME_LOUNGE_CHAIR_GLB_PUBLIC_PATH =
+  "/afc-v2-runtime/test-fixtures/pi5d-lounge-chair.glb" as const;
+
 export const AFC_V2_RUNTIME_PI4B_SOFA_A_OBJECT_ID = "pi4b-sofa-a" as const;
 
 export const AFC_V2_RUNTIME_PI4B_SOFA_B_OBJECT_ID = "pi4b-sofa-b" as const;
@@ -92,6 +98,9 @@ export type RuntimeSceneObject = Readonly<{
 export type FurnitureAssetDefinition = Readonly<{
   assetId: string;
   glbUrl: string;
+  authoredWidthM: number;
+  authoredHeightM: number;
+  authoredDepthM: number;
 }>;
 
 export type SceneObjectProductIdentity = Readonly<{

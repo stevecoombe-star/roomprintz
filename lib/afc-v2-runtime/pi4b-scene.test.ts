@@ -613,8 +613,10 @@ test("PI-4B loads one GLB asset and clones independent instances", async () => {
   assert.equal(loaded.scene.position.x, 0);
 
   const viewer = source("components/afc-3d/AfcProductionRoomViewer.tsx");
-  assert.match(viewer, /loadFurnitureGlb\(pi4aFurnitureGlbPublicPath\(\)\)/);
+  assert.doesNotMatch(viewer, /loadFurnitureGlb\(pi4aFurnitureGlbPublicPath\(\)\)/);
   assert.match(viewer, /cloneFurnitureGlbScene\(template\)/);
+  assert.match(viewer, /createFurnitureTemplateCache/);
+  assert.match(viewer, /templateCache\.template\(definition\.assetId\)/);
 });
 
 test("PI-4B preserves AFC authority, wall-only collision, and the persistence boundary", () => {

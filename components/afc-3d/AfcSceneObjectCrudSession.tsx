@@ -79,14 +79,16 @@ export function AfcSceneObjectCrudSessionProvider({
       setActionError(PI5A_SCENE_AT_CAPACITY_MESSAGE);
       return;
     }
-    const result = host.addSceneObject(defaultFurnitureAssetId());
-    setObjectCount(host.objectCount());
-    if (!result.ok) {
-      setActionError(result.message);
-      return;
-    }
-    setActionError(null);
-    setSelectedObjectId(result.selectedObjectId);
+    void (async () => {
+      const result = await Promise.resolve(host.addSceneObject(defaultFurnitureAssetId()));
+      setObjectCount(host.objectCount());
+      if (!result.ok) {
+        setActionError(result.message);
+        return;
+      }
+      setActionError(null);
+      setSelectedObjectId(result.selectedObjectId);
+    })();
   }, []);
 
   const addFurnitureWithIdentity = useCallback((
@@ -102,14 +104,16 @@ export function AfcSceneObjectCrudSessionProvider({
       setActionError(PI5A_SCENE_AT_CAPACITY_MESSAGE);
       return;
     }
-    const result = host.addSceneObject(assetId, identity);
-    setObjectCount(host.objectCount());
-    if (!result.ok) {
-      setActionError(result.message);
-      return;
-    }
-    setActionError(null);
-    setSelectedObjectId(result.selectedObjectId);
+    void (async () => {
+      const result = await Promise.resolve(host.addSceneObject(assetId, identity));
+      setObjectCount(host.objectCount());
+      if (!result.ok) {
+        setActionError(result.message);
+        return;
+      }
+      setActionError(null);
+      setSelectedObjectId(result.selectedObjectId);
+    })();
   }, []);
 
   const duplicateSelected = useCallback(() => {
@@ -126,14 +130,16 @@ export function AfcSceneObjectCrudSessionProvider({
       setActionError(PI5A_SCENE_AT_CAPACITY_MESSAGE);
       return;
     }
-    const result = host.duplicateSceneObject(selectedObjectId);
-    setObjectCount(host.objectCount());
-    if (!result.ok) {
-      setActionError(result.message);
-      return;
-    }
-    setActionError(null);
-    setSelectedObjectId(result.selectedObjectId);
+    void (async () => {
+      const result = await Promise.resolve(host.duplicateSceneObject(selectedObjectId));
+      setObjectCount(host.objectCount());
+      if (!result.ok) {
+        setActionError(result.message);
+        return;
+      }
+      setActionError(null);
+      setSelectedObjectId(result.selectedObjectId);
+    })();
   }, [selectedObjectId]);
 
   const deleteSelected = useCallback(() => {

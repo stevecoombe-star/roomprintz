@@ -1,12 +1,19 @@
 import {
   AFC_V2_RUNTIME_FURNITURE_ASSET_ID,
   AFC_V2_RUNTIME_FURNITURE_GLB_PUBLIC_PATH,
+  AFC_V2_RUNTIME_LOUNGE_CHAIR_ASSET_ID,
+  AFC_V2_RUNTIME_LOUNGE_CHAIR_GLB_PUBLIC_PATH,
 } from "@/lib/afc-v2-runtime/types";
 import {
   PI4A_SOFA_AUTHORED_DEPTH_M,
   PI4A_SOFA_AUTHORED_HEIGHT_M,
   PI4A_SOFA_AUTHORED_WIDTH_M,
 } from "@/lib/afc-v2-runtime/pi4a-sofa-geometry";
+import {
+  PI5D_LOUNGE_CHAIR_AUTHORED_DEPTH_M,
+  PI5D_LOUNGE_CHAIR_AUTHORED_HEIGHT_M,
+  PI5D_LOUNGE_CHAIR_AUTHORED_WIDTH_M,
+} from "@/lib/afc-v2-runtime/pi5d-lounge-chair-geometry";
 
 import type {
   StageAsset,
@@ -31,6 +38,15 @@ export const STAGE_PI4A_SOFA_ASSET: StageAsset = Object.freeze({
   authoredWidthM: PI4A_SOFA_AUTHORED_WIDTH_M,
   authoredHeightM: PI4A_SOFA_AUTHORED_HEIGHT_M,
   authoredDepthM: PI4A_SOFA_AUTHORED_DEPTH_M,
+  status: "ready",
+});
+
+export const STAGE_PI5D_LOUNGE_CHAIR_ASSET: StageAsset = Object.freeze({
+  assetId: AFC_V2_RUNTIME_LOUNGE_CHAIR_ASSET_ID,
+  glbUrl: AFC_V2_RUNTIME_LOUNGE_CHAIR_GLB_PUBLIC_PATH,
+  authoredWidthM: PI5D_LOUNGE_CHAIR_AUTHORED_WIDTH_M,
+  authoredHeightM: PI5D_LOUNGE_CHAIR_AUTHORED_HEIGHT_M,
+  authoredDepthM: PI5D_LOUNGE_CHAIR_AUTHORED_DEPTH_M,
   status: "ready",
 });
 
@@ -165,7 +181,7 @@ export const STAGE_SEED_VARIANTS: readonly StageVariant[] = Object.freeze([
   Object.freeze({
     variantId: STAGE_STUDIO_CHAIR_VARIANT_ID,
     productId: STAGE_STUDIO_CHAIR_PRODUCT_ID,
-    assetId: AFC_V2_RUNTIME_FURNITURE_ASSET_ID,
+    assetId: AFC_V2_RUNTIME_LOUNGE_CHAIR_ASSET_ID,
     finishLabel: "Saddle leather",
     sku: null,
     priceAmount: 895,
@@ -228,6 +244,7 @@ export function createStageCatalogSnapshot(input: Readonly<{
 
 export const STAGE_SEED_ASSETS: readonly StageAsset[] = Object.freeze([
   STAGE_PI4A_SOFA_ASSET,
+  STAGE_PI5D_LOUNGE_CHAIR_ASSET,
 ]);
 
 export const STAGE_SEED_CATALOG: StageCatalogSnapshot = createStageCatalogSnapshot({

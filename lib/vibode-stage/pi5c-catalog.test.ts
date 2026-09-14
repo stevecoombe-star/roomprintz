@@ -12,6 +12,7 @@ import {
 import {
   AFC_V2_RUNTIME_FURNITURE_ASSET_ID,
   AFC_V2_RUNTIME_FURNITURE_GLB_PUBLIC_PATH,
+  AFC_V2_RUNTIME_LOUNGE_CHAIR_ASSET_ID,
   DEFAULT_WORLD_TRANSFORM,
 } from "@/lib/afc-v2-runtime/types";
 import {
@@ -124,13 +125,23 @@ test("PI-5C durable catalog round-trips certified product / variant / asset / co
     STAGE_STUDIO_SETTEE_VARIANT_ID,
     STAGE_STUDIO_CHAIR_VARIANT_ID,
   ]);
-  assert.equal(durable.assets.length, 1);
+  assert.equal(durable.assets.length, 2);
   assert.equal(durable.assets[0]?.assetId, AFC_V2_RUNTIME_FURNITURE_ASSET_ID);
   assert.equal(durable.assets[0]?.glbUrl, AFC_V2_RUNTIME_FURNITURE_GLB_PUBLIC_PATH);
   assert.equal(durable.assets[0]?.status, "ready");
-  for (const variant of durable.variants) {
-    assert.equal(variant.assetId, AFC_V2_RUNTIME_FURNITURE_ASSET_ID);
-  }
+  assert.equal(durable.assets[1]?.assetId, AFC_V2_RUNTIME_LOUNGE_CHAIR_ASSET_ID);
+  assert.equal(
+    durable.variants.find((variant) => variant.variantId === STAGE_STUDIO_SOFA_VARIANT_ID)?.assetId,
+    AFC_V2_RUNTIME_FURNITURE_ASSET_ID,
+  );
+  assert.equal(
+    durable.variants.find((variant) => variant.variantId === STAGE_STUDIO_SETTEE_VARIANT_ID)?.assetId,
+    AFC_V2_RUNTIME_FURNITURE_ASSET_ID,
+  );
+  assert.equal(
+    durable.variants.find((variant) => variant.variantId === STAGE_STUDIO_CHAIR_VARIANT_ID)?.assetId,
+    AFC_V2_RUNTIME_LOUNGE_CHAIR_ASSET_ID,
+  );
   const sofa = stageProductById(STAGE_STUDIO_SOFA_PRODUCT_ID, [], durable);
   const settee = stageProductById(STAGE_STUDIO_SETTEE_PRODUCT_ID, [], durable);
   const chair = stageProductById(STAGE_STUDIO_CHAIR_PRODUCT_ID, [], durable);
@@ -206,7 +217,10 @@ test("PI-5C Catalog Add persists the same productId variantId assetId and unifor
     assert.ok(placement);
     assert.equal(placement.product.productId, item.productId);
     assert.equal(placement.variant.variantId, item.variantId);
-    assert.equal(placement.assetId, AFC_V2_RUNTIME_FURNITURE_ASSET_ID);
+    const expectedAssetId = item.productId === STAGE_STUDIO_CHAIR_PRODUCT_ID
+      ? AFC_V2_RUNTIME_LOUNGE_CHAIR_ASSET_ID
+      : AFC_V2_RUNTIME_FURNITURE_ASSET_ID;
+    assert.equal(placement.assetId, expectedAssetId);
     const added = addSceneObject({
       objects,
       assetId: placement.assetId,
@@ -221,7 +235,7 @@ test("PI-5C Catalog Add persists the same productId variantId assetId and unifor
     assert.equal(added.object.objectId, item.objectId);
     assert.equal(added.object.productId, item.productId);
     assert.equal(added.object.variantId, item.variantId);
-    assert.equal(added.object.assetId, AFC_V2_RUNTIME_FURNITURE_ASSET_ID);
+    assert.equal(added.object.assetId, expectedAssetId);
     assert.equal(added.object.transform.uniformScale, 1);
     objects = added.objects;
   }
@@ -282,7 +296,9 @@ test("PI-5C different products sharing one Asset do not collapse in Summary", ()
   });
   assert.ok(sofa && settee && chair);
   assert.equal(sofa.assetId, settee.assetId);
-  assert.equal(settee.assetId, chair.assetId);
+  assert.notEqual(chair.assetId, sofa.assetId);
+  assert.equal(sofa.assetId, AFC_V2_RUNTIME_FURNITURE_ASSET_ID);
+  assert.equal(chair.assetId, AFC_V2_RUNTIME_LOUNGE_CHAIR_ASSET_ID);
   const summary = buildStageSummary({
     catalog: durable,
     objects: [
