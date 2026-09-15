@@ -38,6 +38,7 @@ import {
   PI5D_LOUNGE_CHAIR_AUTHORED_HEIGHT_M,
   PI5D_LOUNGE_CHAIR_AUTHORED_WIDTH_M,
 } from "./pi5d-lounge-chair-geometry";
+import { PI5D2_SIDE_TABLE_ASSET_ID } from "./pi5d2-side-table-geometry";
 import { createPi3aAuthority, PI3A_ROOM_ID } from "./pi3a-test-fixture";
 import { validatePersistedSceneObjects } from "./persisted-scene";
 import {
@@ -467,7 +468,7 @@ test("PI-5D1 failed Asset B load does not drop Asset A or rewrite persistence", 
   cache.dispose();
 });
 
-test("PI-5D1 Summary stays Product/Variant based while Sofa and Settee share Asset A", () => {
+test("PI-5D1 Summary stays Product/Variant based for mixed Sofa/Settee Scene Objects", () => {
   const sofa = resolveStagePlacement({
     productId: STAGE_STUDIO_SOFA_PRODUCT_ID,
     catalog: STAGE_SEED_CATALOG,
@@ -482,7 +483,7 @@ test("PI-5D1 Summary stays Product/Variant based while Sofa and Settee share Ass
   });
   assert.ok(sofa && settee && chair);
   assert.equal(sofa.assetId, AFC_V2_RUNTIME_FURNITURE_ASSET_ID);
-  assert.equal(settee.assetId, AFC_V2_RUNTIME_FURNITURE_ASSET_ID);
+  assert.equal(settee.assetId, PI5D2_SIDE_TABLE_ASSET_ID);
   assert.equal(chair.assetId, AFC_V2_RUNTIME_LOUNGE_CHAIR_ASSET_ID);
   assert.equal(sofa.product.productId, STAGE_STUDIO_SOFA_PRODUCT_ID);
   assert.equal(settee.product.productId, STAGE_STUDIO_SETTEE_PRODUCT_ID);

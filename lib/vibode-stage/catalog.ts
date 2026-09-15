@@ -13,6 +13,7 @@ import type {
   StageProduct,
   StageVariant,
 } from "./types";
+import { GENERATED_VARIANT_CURRENT_ASSETS } from "./variant-current-asset.map.generated";
 
 export const STAGE_STUDIO_SOFA_PRODUCT_ID = "prod-vibode-studio-sofa";
 export const STAGE_STUDIO_SETTEE_PRODUCT_ID = "prod-vibode-studio-settee";
@@ -149,11 +150,24 @@ export const STAGE_SEED_PRODUCTS: readonly StageProduct[] = Object.freeze([
   STUDIO_CHAIR,
 ]);
 
+function certifiedVariantCurrentAssetId(variantId: string, productId: string): string {
+  const row = GENERATED_VARIANT_CURRENT_ASSETS.find((item) => (
+    item.variantId === variantId && item.productId === productId
+  ));
+  if (!row) {
+    throw new Error(`Certified seed Variant current Asset missing: ${variantId}`);
+  }
+  return row.currentAssetId;
+}
+
 export const STAGE_SEED_VARIANTS: readonly StageVariant[] = Object.freeze([
   Object.freeze({
     variantId: STAGE_STUDIO_SOFA_VARIANT_ID,
     productId: STAGE_STUDIO_SOFA_PRODUCT_ID,
-    assetId: AFC_V2_RUNTIME_FURNITURE_ASSET_ID,
+    assetId: certifiedVariantCurrentAssetId(
+      STAGE_STUDIO_SOFA_VARIANT_ID,
+      STAGE_STUDIO_SOFA_PRODUCT_ID,
+    ),
     finishLabel: "Warm oak",
     sku: null,
     priceAmount: 2495,
@@ -163,7 +177,10 @@ export const STAGE_SEED_VARIANTS: readonly StageVariant[] = Object.freeze([
   Object.freeze({
     variantId: STAGE_STUDIO_SETTEE_VARIANT_ID,
     productId: STAGE_STUDIO_SETTEE_PRODUCT_ID,
-    assetId: AFC_V2_RUNTIME_FURNITURE_ASSET_ID,
+    assetId: certifiedVariantCurrentAssetId(
+      STAGE_STUDIO_SETTEE_VARIANT_ID,
+      STAGE_STUDIO_SETTEE_PRODUCT_ID,
+    ),
     finishLabel: "Stone linen",
     sku: null,
     priceAmount: 1895,
@@ -173,7 +190,10 @@ export const STAGE_SEED_VARIANTS: readonly StageVariant[] = Object.freeze([
   Object.freeze({
     variantId: STAGE_STUDIO_CHAIR_VARIANT_ID,
     productId: STAGE_STUDIO_CHAIR_PRODUCT_ID,
-    assetId: AFC_V2_RUNTIME_LOUNGE_CHAIR_ASSET_ID,
+    assetId: certifiedVariantCurrentAssetId(
+      STAGE_STUDIO_CHAIR_VARIANT_ID,
+      STAGE_STUDIO_CHAIR_PRODUCT_ID,
+    ),
     finishLabel: "Saddle leather",
     sku: null,
     priceAmount: 895,

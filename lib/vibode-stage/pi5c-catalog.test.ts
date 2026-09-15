@@ -138,7 +138,7 @@ test("PI-5C durable catalog round-trips certified product / variant / asset / co
   );
   assert.equal(
     durable.variants.find((variant) => variant.variantId === STAGE_STUDIO_SETTEE_VARIANT_ID)?.assetId,
-    AFC_V2_RUNTIME_FURNITURE_ASSET_ID,
+    PI5D2_SIDE_TABLE_ASSET_ID,
   );
   assert.equal(
     durable.variants.find((variant) => variant.variantId === STAGE_STUDIO_CHAIR_VARIANT_ID)?.assetId,
@@ -221,7 +221,9 @@ test("PI-5C Catalog Add persists the same productId variantId assetId and unifor
     assert.equal(placement.variant.variantId, item.variantId);
     const expectedAssetId = item.productId === STAGE_STUDIO_CHAIR_PRODUCT_ID
       ? AFC_V2_RUNTIME_LOUNGE_CHAIR_ASSET_ID
-      : AFC_V2_RUNTIME_FURNITURE_ASSET_ID;
+      : item.productId === STAGE_STUDIO_SETTEE_PRODUCT_ID
+        ? PI5D2_SIDE_TABLE_ASSET_ID
+        : AFC_V2_RUNTIME_FURNITURE_ASSET_ID;
     assert.equal(placement.assetId, expectedAssetId);
     const added = addSceneObject({
       objects,
@@ -297,23 +299,24 @@ test("PI-5C different products sharing one Asset do not collapse in Summary", ()
     catalog: durable,
   });
   assert.ok(sofa && settee && chair);
-  assert.equal(sofa.assetId, settee.assetId);
+  assert.notEqual(sofa.assetId, settee.assetId);
   assert.notEqual(chair.assetId, sofa.assetId);
   assert.equal(sofa.assetId, AFC_V2_RUNTIME_FURNITURE_ASSET_ID);
+  assert.equal(settee.assetId, PI5D2_SIDE_TABLE_ASSET_ID);
   assert.equal(chair.assetId, AFC_V2_RUNTIME_LOUNGE_CHAIR_ASSET_ID);
   const summary = buildStageSummary({
     catalog: durable,
     objects: [
       {
         objectId: "so-a",
-        assetId: sofa.assetId,
+        assetId: AFC_V2_RUNTIME_FURNITURE_ASSET_ID,
         transform: DEFAULT_WORLD_TRANSFORM,
         productId: sofa.product.productId,
         variantId: sofa.variant.variantId,
       },
       {
         objectId: "so-b",
-        assetId: settee.assetId,
+        assetId: AFC_V2_RUNTIME_FURNITURE_ASSET_ID,
         transform: DEFAULT_WORLD_TRANSFORM,
         productId: settee.product.productId,
         variantId: settee.variant.variantId,
