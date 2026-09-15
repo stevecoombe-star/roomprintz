@@ -1,0 +1,83 @@
+{
+  "partner": {
+    "partnerId": "partner-demo-furniture-co",
+    "name": "Demo Furniture Co.",
+    "slug": "demo-furniture-co",
+    "status": "active",
+    "websiteUrl": "https://example.test",
+    "logoUrl": null
+  },
+  "collections": [
+    {
+      "collectionId": "col-demo-furniture-co-demo-living-room",
+      "name": "Demo Living Room",
+      "slug": "demo-living-room"
+    }
+  ],
+  "products": [
+    {
+      "product": {
+        "productId": "prod-demo-furniture-co-demo-sofa",
+        "name": "Demo Sofa",
+        "brand": "Demo Furniture Co.",
+        "retailer": "Demo Furniture Co.",
+        "categoryId": "living-room",
+        "subcategoryId": "sofas",
+        "imageUrl": "https://example.test/images/demo-sofa.jpg",
+        "productUrl": "https://example.test/products/demo-sofa?ref=stage",
+        "priceAmount": 1299,
+        "priceCurrency": "USD",
+        "source": "partner_catalog",
+        "partnerId": "partner-demo-furniture-co",
+        "collectionIds": ["col-demo-furniture-co-demo-living-room"]
+      },
+      "defaultVariant": {
+        "variantId": "var-demo-furniture-co-demo-sofa-natural",
+        "finishLabel": "Natural oak",
+        "sku": "DFC-SOFA-01",
+        "priceAmount": 1299,
+        "priceCurrency": "USD",
+        "productUrl": null,
+        "currentAssetId": "afc-v2-runtime/test-fixtures/pi4a-sofa"
+      },
+      "variants": [
+        {
+          "variantId": "var-demo-furniture-co-demo-sofa-stone",
+          "finishLabel": "Stone linen",
+          "sku": "DFC-SOFA-02",
+          "priceAmount": 1399,
+          "priceCurrency": "USD",
+          "productUrl": null,
+          "currentAssetId": "afc-v2-runtime/test-fixtures/pi4a-sofa"
+        }
+      ]
+    },
+    {
+      "product": {
+        "productId": "prod-demo-furniture-co-demo-lounge-chair",
+        "name": "Demo Lounge Chair",
+        "brand": "Demo Furniture Co.",
+        "retailer": "Demo Furniture Co.",
+        "categoryId": "living-room",
+        "subcategoryId": "chairs",
+        "imageUrl": "https://example.test/images/demo-lounge-chair.jpg",
+        "productUrl": "https://example.test/products/demo-lounge-chair",
+        "priceAmount": 649,
+        "priceCurrency": "USD",
+        "source": "partner_catalog",
+        "partnerId": "partner-demo-furniture-co",
+        "collectionIds": ["col-demo-furniture-co-demo-living-room"]
+      },
+      "defaultVariant": {
+        "variantId": "var-demo-furniture-co-demo-lounge-chair-natural",
+        "finishLabel": "Natural oak",
+        "sku": "DFC-CHAIR-01",
+        "priceAmount": 649,
+        "priceCurrency": "USD",
+        "productUrl": null,
+        "currentAssetId": "afc-v2-runtime/test-fixtures/pi5d-lounge-chair"
+      },
+      "variants": []
+    }
+  ]
+}

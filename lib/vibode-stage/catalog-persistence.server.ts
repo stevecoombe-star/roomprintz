@@ -44,7 +44,7 @@ export async function loadDurableStageCatalogRows(
   const products = await selectRows(
     supabase,
     STAGE_CATALOG_TABLES.products,
-    "product_id, name, brand, retailer, image_url, product_url, price_amount, price_currency, category_id, subcategory_id, source, default_variant_id, status, sort_order",
+    "product_id, name, brand, retailer, image_url, product_url, price_amount, price_currency, category_id, subcategory_id, source, partner_id, default_variant_id, status, sort_order",
     "sort_order",
   );
   if (products.error || !products.rows) return { rows: null, error: products.error };
@@ -60,7 +60,7 @@ export async function loadDurableStageCatalogRows(
   const collections = await selectRows(
     supabase,
     STAGE_CATALOG_TABLES.collections,
-    "collection_id, name, owner, partner_name, status, sort_order",
+    "collection_id, name, owner, partner_name, partner_id, status, sort_order",
     "sort_order",
   );
   if (collections.error || !collections.rows) {
@@ -77,6 +77,16 @@ export async function loadDurableStageCatalogRows(
     return { rows: null, error: memberships.error };
   }
 
+  const partners = await selectRows(
+    supabase,
+    STAGE_CATALOG_TABLES.partners,
+    "partner_id, name, slug, status, website_url, logo_url",
+    "partner_id",
+  );
+  if (partners.error || !partners.rows) {
+    return { rows: null, error: partners.error };
+  }
+
   return {
     rows: {
       assets: assets.rows,
@@ -84,6 +94,7 @@ export async function loadDurableStageCatalogRows(
       variants: variants.rows,
       collections: collections.rows,
       memberships: memberships.rows,
+      partners: partners.rows,
     },
     error: null,
   };

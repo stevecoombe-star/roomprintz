@@ -78,6 +78,7 @@ export type ProductVariantRegistrationInput = Readonly<{
     priceCurrency: string;
     source: StageProductSource;
     collectionIds: readonly string[];
+    partnerId: string | null;
   }>;
   defaultVariant: Readonly<{
     variantId: string;
@@ -167,8 +168,12 @@ export type ProductVariantValidationGates = Readonly<{
   currentGeneratedVariants?: readonly GeneratedRegisteredVariant[];
 }>;
 
-function issue(code: string, message: string): ProductVariantIssue {
+export function commercialIssue(code: string, message: string): ProductVariantIssue {
   return { code, message };
+}
+
+function issue(code: string, message: string): ProductVariantIssue {
+  return commercialIssue(code, message);
 }
 
 function tsString(value: string): string {
@@ -183,19 +188,19 @@ function tsNullableNumber(value: number | null): string {
   return value == null ? "null" : JSON.stringify(value);
 }
 
-function sqlString(value: string): string {
+export function sqlString(value: string): string {
   return `'${value.replace(/'/g, "''")}'`;
 }
 
-function sqlNullableString(value: string | null): string {
+export function sqlNullableString(value: string | null): string {
   return value == null ? "null" : sqlString(value);
 }
 
-function sqlNumber(value: number): string {
+export function sqlNumber(value: number): string {
   return Number.isInteger(value) ? String(value) : String(value);
 }
 
-function utcTimestamp(date = new Date()): string {
+export function utcTimestamp(date = new Date()): string {
   const pad = (value: number) => String(value).padStart(2, "0");
   return (
     `${date.getUTCFullYear()}` +
@@ -207,40 +212,44 @@ function utcTimestamp(date = new Date()): string {
   );
 }
 
-function isPlainObject(value: unknown): value is Record<string, unknown> {
+export function isPlainObject(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
 }
 
-function asNonEmptyString(value: unknown): string | null {
+export function asNonEmptyString(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : null;
 }
 
-function asNullableJsonString(value: unknown): string | null | undefined {
+export function asNullableJsonString(value: unknown): string | null | undefined {
   if (value == null) return null;
   if (typeof value !== "string") return undefined;
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : undefined;
 }
 
-function asFiniteNumber(value: unknown): number | null {
+export function asFiniteNumber(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
-function normalizeCurrency(value: string): string {
+export function normalizeCurrency(value: string): string {
   return value.trim().toUpperCase();
 }
 
-function isValidCurrency(value: string): boolean {
+export function isValidCurrency(value: string): boolean {
   return /^[A-Z]{3}$/.test(value);
 }
 
-function isUuidLike(value: string): boolean {
+export function isUuidLike(value: string): boolean {
   return UUID_SHAPE.test(value);
 }
 
-function isSameOriginPublicPath(imageUrl: string): boolean {
+export function isCommercialId(value: string): boolean {
+  return STAGE_COMMERCIAL_ID_SHAPE.test(value) && !isUuidLike(value);
+}
+
+export function isSameOriginPublicPath(imageUrl: string): boolean {
   if (
     imageUrl.includes("..") ||
     imageUrl.includes("://") ||
@@ -250,6 +259,62 @@ function isSameOriginPublicPath(imageUrl: string): boolean {
     return false;
   }
   return /^\/[A-Za-z0-9][A-Za-z0-9._/-]*\.[A-Za-z0-9]+$/.test(imageUrl);
+}
+
+export function isAbsoluteHttpsUrl(value: string): boolean {
+  try {
+    const parsed = new URL(value);
+    return parsed.protocol === "https:" && parsed.hostname.length > 0;
+  } catch {
+    return false;
+  }
+}
+
+export function skuScopeKey(product: Readonly<{
+  source: StageProductSource;
+  partnerId: string | null;
+}>): string {
+  if (product.source === "partner_catalog" && product.partnerId) {
+    return `partner:${product.partnerId}`;
+  }
+  return "vibode";
+}
+
+export function skuOwnerForVariant(
+  variant: Readonly<{ productId: string }>,
+  catalog: StageCatalogSnapshot,
+  extraProducts: readonly StageProduct[] = [],
+): Readonly<{ source: StageProductSource; partnerId: string | null }> | null {
+  const product = extraProducts.find((item) => item.productId === variant.productId)
+    ?? catalog.products.find((item) => item.productId === variant.productId)
+    ?? null;
+  if (!product) return null;
+  return { source: product.source, partnerId: product.partnerId };
+}
+
+export function hasDuplicateSkuInScope(input: Readonly<{
+  sku: string | null;
+  owner: Readonly<{ source: StageProductSource; partnerId: string | null }>;
+  catalog: StageCatalogSnapshot;
+  extraProducts?: readonly StageProduct[];
+  extraVariants?: readonly StageVariant[];
+  ignoreVariantIds?: readonly string[];
+}>): boolean {
+  if (!input.sku) return false;
+  const ignore = new Set(input.ignoreVariantIds ?? []);
+  const extraProducts = input.extraProducts ?? [];
+  const variants = [
+    ...input.catalog.variants,
+    ...(input.extraVariants ?? []),
+  ];
+  const scope = skuScopeKey(input.owner);
+  return variants.some((variant) => {
+    if (ignore.has(variant.variantId)) return false;
+    if (variant.sku == null || variant.sku !== input.sku) return false;
+    const owner = skuOwnerForVariant(variant, input.catalog, extraProducts);
+    if (!owner) return true;
+    return skuScopeKey(owner) === scope;
+  });
 }
 
 export function publicFilePathFromImageUrl(repoRoot: string, imageUrl: string): string {
@@ -358,6 +423,10 @@ export function parseProductRegistrationJson(
   if (productUrl === undefined) {
     errors.push(issue("INVALID_JSON", "product.productUrl must be a string or null."));
   }
+  const partnerIdRaw = productRaw.partnerId;
+  if (partnerIdRaw != null && typeof partnerIdRaw !== "string") {
+    errors.push(issue("INVALID_JSON", "product.partnerId must be a string or null."));
+  }
   if (!variantId) errors.push(issue("INVALID_VARIANT_ID", "defaultVariant.variantId must be a non-empty string."));
   if (variantPriceAmount == null) {
     errors.push(issue("INVALID_PRICE", "defaultVariant.priceAmount must be a finite number."));
@@ -405,6 +474,9 @@ export function parseProductRegistrationJson(
         collectionIds: Object.freeze(
           (productRaw.collectionIds as unknown[]).map((id) => String(id).trim()),
         ),
+        partnerId: typeof partnerIdRaw === "string"
+          ? (partnerIdRaw.trim() === "" ? null : partnerIdRaw.trim())
+          : null,
       },
       defaultVariant: {
         variantId: variantId!,
@@ -436,6 +508,7 @@ function renderRegisteredProduct(product: StageProduct): string {
     `      defaultVariantId: ${tsString(product.defaultVariantId)},\n` +
     `      collectionIds: Object.freeze([${collections}]),\n` +
     `      source: ${tsString(product.source)},\n` +
+    `      partnerId: ${tsNullableString(product.partnerId)},\n` +
     `    })`
   );
 }
@@ -655,7 +728,7 @@ export function parseProductRegistrationSql(sql: string): ParsedProductRegistrat
   };
 }
 
-function validateTargetAsset(
+export function validateTargetAsset(
   assetId: string,
   gates: ProductVariantValidationGates,
   errors: ProductVariantIssue[],
@@ -708,6 +781,7 @@ function collectSharedVariantRegistrationIssues(
     variantId: string;
     sku: string | null;
     currentAssetId: string;
+    owner: Readonly<{ source: StageProductSource; partnerId: string | null }> | null;
   }>,
   gates: ProductVariantValidationGates,
   errors: ProductVariantIssue[],
@@ -725,13 +799,12 @@ function collectSharedVariantRegistrationIssues(
   if (catalog.variants.some((variant) => variant.variantId === input.variantId)) {
     errors.push(issue("DUPLICATE_VARIANT_ID", `Variant ${input.variantId} already exists.`));
   }
-  if (input.sku) {
-    const duplicateSku = catalog.variants.some((variant) => (
-      variant.sku != null && variant.sku === input.sku
-    ));
-    if (duplicateSku) {
-      errors.push(issue("DUPLICATE_SKU", `SKU ${input.sku} already exists.`));
-    }
+  if (input.sku && input.owner && hasDuplicateSkuInScope({
+    sku: input.sku,
+    owner: input.owner,
+    catalog,
+  })) {
+    errors.push(issue("DUPLICATE_SKU", `SKU ${input.sku} already exists.`));
   }
 
   validateTargetAsset(input.currentAssetId, { ...gates, catalog }, errors);
@@ -821,10 +894,38 @@ export function validateProductVariantRegistration(
   if (!(ALLOWED_SOURCES as readonly string[]).includes(productIn.source)) {
     errors.push(issue("INVALID_SOURCE", `Source ${productIn.source} is not allowed.`));
   }
+  if (productIn.source === "partner_catalog") {
+    if (!asNonEmptyString(productIn.partnerId)) {
+      errors.push(issue("MISSING_PARTNER_ID", "partner_catalog Products require partnerId."));
+    }
+    const productUrl = asNonEmptyString(productIn.productUrl);
+    if (!productUrl) {
+      errors.push(issue("MISSING_PRODUCT_URL", "partner_catalog Products require productUrl."));
+    } else if (!isAbsoluteHttpsUrl(productUrl)) {
+      errors.push(issue("INVALID_PRODUCT_URL", "partner_catalog productUrl must be an absolute HTTPS URL."));
+    }
+  } else if (asNonEmptyString(productIn.partnerId)) {
+    errors.push(issue("UNEXPECTED_PARTNER_ID", "Non-partner Products must not have partnerId."));
+  }
 
   for (const collectionId of productIn.collectionIds) {
-    if (!catalog.collections.some((collection) => collection.collectionId === collectionId)) {
+    const collection = catalog.collections.find((item) => item.collectionId === collectionId);
+    if (!collection) {
       errors.push(issue("UNKNOWN_COLLECTION", `Unknown Collection ${collectionId}.`));
+      continue;
+    }
+    if (productIn.source === "partner_catalog") {
+      if (collection.owner !== "partner" || collection.partnerId !== productIn.partnerId) {
+        errors.push(issue(
+          "COLLECTION_OWNER_MISMATCH",
+          `Product ${productIn.productId} does not match Collection ${collectionId} ownership.`,
+        ));
+      }
+    } else if (collection.owner !== "vibode" || collection.partnerId) {
+      errors.push(issue(
+        "COLLECTION_OWNER_MISMATCH",
+        `Vibode Product ${productIn.productId} cannot join partner Collection ${collectionId}.`,
+      ));
     }
   }
 
@@ -840,12 +941,27 @@ export function validateProductVariantRegistration(
         `Local image file missing for ${productIn.imageUrl}.`,
       ));
     }
+  } else if (productIn.source === "partner_catalog") {
+    if (isSameOriginPublicPath(productIn.imageUrl)) {
+      if (!existsSync(publicFilePathFromImageUrl(repoRoot, productIn.imageUrl))) {
+        errors.push(issue(
+          "MISSING_IMAGE",
+          `Local image file missing for ${productIn.imageUrl}.`,
+        ));
+      }
+    } else if (!isAbsoluteHttpsUrl(productIn.imageUrl)) {
+      errors.push(issue(
+        "INVALID_IMAGE_URL",
+        "partner_catalog imageUrl must be an absolute HTTPS URL or same-origin public path.",
+      ));
+    }
   }
 
   collectSharedVariantRegistrationIssues({
     variantId: variantIn.variantId,
     sku: variantIn.sku,
     currentAssetId: variantIn.currentAssetId,
+    owner: { source: productIn.source, partnerId: productIn.partnerId },
   }, { ...gates, catalog }, errors);
 
   if (errors.length > 0) {
@@ -866,6 +982,7 @@ export function validateProductVariantRegistration(
     defaultVariantId: variantIn.variantId,
     collectionIds: Object.freeze([...productIn.collectionIds]),
     source: productIn.source,
+    partnerId: productIn.partnerId,
   });
   const variant: StageVariant = Object.freeze({
     variantId: variantIn.variantId,
@@ -963,7 +1080,7 @@ function failRegister(
   };
 }
 
-function writePlannedFiles(files: readonly Readonly<{ path: string; contents: string }>[]): void {
+export function writePlannedFiles(files: readonly Readonly<{ path: string; contents: string }>[]): void {
   const temps: { tmp: string; dest: string }[] = [];
   try {
     for (const file of files) {
@@ -1003,6 +1120,14 @@ export function registerProductVariant(input: Readonly<{
   manifestRepoRoot?: string;
 }>): ProductVariantRegisterResult {
   const check = input.check === true;
+  if (input.input.product.source === "partner_catalog") {
+    return failRegister([
+      issue(
+        "PARTNER_CATALOG_DURABLE_ONLY",
+        "Partner catalog Products must be imported with vibode:import-partner-catalog.",
+      ),
+    ], check);
+  }
   const validation = validateProductVariantRegistration(input.input, input);
   if (!validation.ok) return failRegister(validation.errors, check);
 
@@ -1329,6 +1454,9 @@ export function validateVariantRegistration(
     variantId: variantIn.variantId,
     sku: variantIn.sku,
     currentAssetId: variantIn.currentAssetId,
+    owner: product
+      ? { source: product.source, partnerId: product.partnerId }
+      : null,
   }, { ...gates, catalog }, errors);
 
   if (errors.length > 0 || !product) {
@@ -1423,6 +1551,16 @@ export function registerVariant(input: Readonly<{
   manifestRepoRoot?: string;
 }>): AdditionalVariantRegisterResult {
   const check = input.check === true;
+  const catalog = input.catalog ?? STAGE_SEED_CATALOG;
+  const existingProduct = catalog.products.find((item) => item.productId === input.input.productId);
+  if (existingProduct?.source === "partner_catalog") {
+    return failRegister([
+      issue(
+        "PARTNER_CATALOG_DURABLE_ONLY",
+        "Partner catalog Variants must be imported with vibode:import-partner-catalog.",
+      ),
+    ], check);
+  }
   const validation = validateVariantRegistration(input.input, input);
   if (!validation.ok) return failRegister(validation.errors, check);
 

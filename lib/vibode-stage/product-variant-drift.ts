@@ -32,6 +32,8 @@ import {
   productRegistrationRepoPaths,
   publicFilePathFromImageUrl,
   renderGeneratedCommercialSeed,
+  skuOwnerForVariant,
+  skuScopeKey,
   type ProductVariantIssue,
 } from "./product-variant-register";
 import type { StageCatalogSnapshot } from "./types";
@@ -132,7 +134,14 @@ export function detectProductVariantRegistrationDrift(input: Readonly<{
   for (const variant of catalog.variants) {
     variantIds.set(variant.variantId, (variantIds.get(variant.variantId) ?? 0) + 1);
     if (variant.sku) {
-      skus.set(variant.sku, (skus.get(variant.sku) ?? 0) + 1);
+      const owner = skuOwnerForVariant(variant, catalog);
+      const scope = owner ? skuScopeKey(owner) : "unknown";
+      const key = `${scope}::${variant.sku}`;
+      skus.set(key, (skus.get(key) ?? 0) + 1);
+    }
+    const product = catalog.products.find((item) => item.productId === variant.productId);
+    if (product?.source === "partner_catalog") {
+      continue;
     }
     const association = GENERATED_VARIANT_CURRENT_ASSETS.find((row) => (
       row.variantId === variant.variantId
@@ -180,8 +189,9 @@ export function detectProductVariantRegistrationDrift(input: Readonly<{
       issues.push(issue("DUPLICATE_VARIANT_ID", `Duplicate Variant ID ${variantId}.`));
     }
   }
-  for (const [sku, count] of skus) {
+  for (const [skuKey, count] of skus) {
     if (count > 1) {
+      const sku = skuKey.split("::").slice(1).join("::");
       issues.push(issue("DUPLICATE_SKU", `Duplicate non-null SKU ${sku}.`));
     }
   }

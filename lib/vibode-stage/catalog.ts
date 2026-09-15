@@ -10,6 +10,7 @@ import type {
   StageCatalogSnapshot,
   StageCategory,
   StageCollection,
+  StagePartner,
   StageProduct,
   StageVariant,
 } from "./types";
@@ -114,6 +115,7 @@ const STUDIO_SOFA: StageProduct = Object.freeze({
   defaultVariantId: STAGE_STUDIO_SOFA_VARIANT_ID,
   collectionIds: Object.freeze(["col-vibode-picks", "col-modern-living"]),
   source: "vibode_curated",
+  partnerId: null,
 });
 
 const STUDIO_SETTEE: StageProduct = Object.freeze({
@@ -134,6 +136,7 @@ const STUDIO_SETTEE: StageProduct = Object.freeze({
     "col-modern-living",
   ]),
   source: "vibode_curated",
+  partnerId: null,
 });
 
 const STUDIO_CHAIR: StageProduct = Object.freeze({
@@ -150,6 +153,7 @@ const STUDIO_CHAIR: StageProduct = Object.freeze({
   defaultVariantId: STAGE_STUDIO_CHAIR_VARIANT_ID,
   collectionIds: Object.freeze(["col-vibode-picks", "col-small-spaces"]),
   source: "vibode_curated",
+  partnerId: null,
 });
 
 export const STAGE_CERTIFIED_SEED_PRODUCTS: readonly StageProduct[] = Object.freeze([
@@ -235,6 +239,7 @@ export const STAGE_CERTIFIED_SEED_COLLECTIONS: readonly StageCollection[] = Obje
     name: "Vibode Picks",
     owner: "vibode",
     partnerName: null,
+    partnerId: null,
     productIds: Object.freeze([
       STAGE_STUDIO_SOFA_PRODUCT_ID,
       STAGE_STUDIO_SETTEE_PRODUCT_ID,
@@ -246,6 +251,7 @@ export const STAGE_CERTIFIED_SEED_COLLECTIONS: readonly StageCollection[] = Obje
     name: "Small Spaces",
     owner: "vibode",
     partnerName: null,
+    partnerId: null,
     productIds: Object.freeze([
       STAGE_STUDIO_SETTEE_PRODUCT_ID,
       STAGE_STUDIO_CHAIR_PRODUCT_ID,
@@ -256,6 +262,7 @@ export const STAGE_CERTIFIED_SEED_COLLECTIONS: readonly StageCollection[] = Obje
     name: "Modern Living",
     owner: "vibode",
     partnerName: null,
+    partnerId: null,
     productIds: Object.freeze([
       STAGE_STUDIO_SOFA_PRODUCT_ID,
       STAGE_STUDIO_SETTEE_PRODUCT_ID,
@@ -295,6 +302,7 @@ export function createStageCatalogSnapshot(input: Readonly<{
   variants: readonly StageVariant[];
   assets: readonly StageAsset[];
   collections: readonly StageCollection[];
+  partners?: readonly StagePartner[];
 }>): StageCatalogSnapshot {
   return Object.freeze({
     authority: input.authority,
@@ -303,6 +311,7 @@ export function createStageCatalogSnapshot(input: Readonly<{
     variants: Object.freeze([...input.variants]),
     assets: Object.freeze([...input.assets]),
     collections: Object.freeze([...input.collections]),
+    partners: Object.freeze([...(input.partners ?? [])]),
   });
 }
 
@@ -509,6 +518,7 @@ export function createPastedStageProduct(input: Readonly<{
     defaultVariantId: `${input.productId}-default`,
     collectionIds: [],
     source: "user_pasted",
+    partnerId: null,
   };
 }
 

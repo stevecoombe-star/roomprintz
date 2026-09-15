@@ -15,6 +15,8 @@ import type {
   StageCatalogAuthority,
   StageCatalogSnapshot,
   StageCollection,
+  StagePartner,
+  StagePartnerStatus,
   StageProduct,
   StageProductSource,
   StageVariant,
@@ -26,6 +28,7 @@ export const STAGE_CATALOG_TABLES = Object.freeze({
   variants: "vibode_stage_variants",
   collections: "vibode_stage_collections",
   productCollections: "vibode_stage_product_collections",
+  partners: "vibode_stage_partners",
 });
 
 export const FORBIDDEN_STAGE_CATALOG_TABLES = Object.freeze([
@@ -50,6 +53,7 @@ export type StageCatalogRows = Readonly<{
   assets: readonly Record<string, unknown>[];
   collections: readonly Record<string, unknown>[];
   memberships: readonly Record<string, unknown>[];
+  partners?: readonly Record<string, unknown>[];
 }>;
 
 export type StageCatalogLoadResult = Readonly<{
@@ -111,6 +115,27 @@ function asOwner(value: unknown): "vibode" | "partner" | null {
   return null;
 }
 
+function asPartnerStatus(value: unknown): StagePartnerStatus | null {
+  if (value === "active" || value === "inactive") return value;
+  return null;
+}
+
+function mapPartner(row: Record<string, unknown>): StagePartner | null {
+  const partnerId = asTrimmedString(row.partner_id);
+  const name = asTrimmedString(row.name);
+  const slug = asTrimmedString(row.slug);
+  const status = asPartnerStatus(row.status);
+  if (!partnerId || !name || !slug || !status) return null;
+  return {
+    partnerId,
+    name,
+    slug,
+    status,
+    websiteUrl: asNullableString(row.website_url),
+    logoUrl: asNullableString(row.logo_url),
+  };
+}
+
 function mapAsset(row: Record<string, unknown>): StageAsset | null {
   const assetId = asTrimmedString(row.asset_id);
   const glbUrl = asTrimmedString(row.glb_url);
@@ -167,6 +192,7 @@ function mapProduct(
   const defaultVariantId = asTrimmedString(row.default_variant_id);
   const source = asSource(row.source);
   const status = asTrimmedString(row.status);
+  const partnerId = asNullableString(row.partner_id);
   if (
     !productId ||
     !name ||
@@ -180,6 +206,8 @@ function mapProduct(
   ) {
     return null;
   }
+  if (source === "partner_catalog" && !partnerId) return null;
+  if (source !== "partner_catalog" && partnerId) return null;
   return {
     productId,
     brand,
@@ -194,6 +222,7 @@ function mapProduct(
     defaultVariantId,
     collectionIds: Object.freeze([...collectionIds]),
     source,
+    partnerId,
   };
 }
 
@@ -205,12 +234,16 @@ function mapCollection(
   const name = asTrimmedString(row.name);
   const owner = asOwner(row.owner);
   const status = asTrimmedString(row.status);
+  const partnerId = asNullableString(row.partner_id);
   if (!collectionId || !name || !owner || status !== "active") return null;
+  if (owner === "partner" && !partnerId) return null;
+  if (owner === "vibode" && partnerId) return null;
   return {
     collectionId,
     name,
     owner,
     partnerName: asNullableString(row.partner_name),
+    partnerId,
     productIds: Object.freeze([...productIds]),
   };
 }
@@ -236,6 +269,14 @@ export function assembleStageCatalogFromRows(
     const asset = mapAsset(row);
     if (!asset) return null;
     assets.push(asset);
+  }
+
+  const partners: StagePartner[] = [];
+  for (const row of rows.partners ?? []) {
+    if (!isRecord(row)) return null;
+    const partner = mapPartner(row);
+    if (!partner) return null;
+    partners.push(partner);
   }
 
   const membershipByProduct = new Map<string, { collectionId: string; sortOrder: number }[]>();
@@ -320,6 +361,7 @@ export function assembleStageCatalogFromRows(
     variants,
     assets,
     collections,
+    partners,
   });
 }
 
@@ -351,6 +393,7 @@ export function serializeStageCatalogPayload(result: StageCatalogLoadResult): Re
   variants: readonly StageVariant[];
   assets: readonly StageAsset[];
   collections: readonly StageCollection[];
+  partners: readonly StagePartner[];
 }> {
   return {
     ok: true,
@@ -360,6 +403,7 @@ export function serializeStageCatalogPayload(result: StageCatalogLoadResult): Re
     variants: result.catalog.variants,
     assets: result.catalog.assets,
     collections: result.catalog.collections,
+    partners: result.catalog.partners,
   };
 }
 
@@ -369,6 +413,7 @@ export function parseStageCatalogPayload(value: unknown): StageCatalogLoadResult
   if (authority !== "durable" && authority !== "seed_fixture") return null;
   if (!Array.isArray(value.products) || !Array.isArray(value.variants)) return null;
   if (!Array.isArray(value.assets) || !Array.isArray(value.collections)) return null;
+  const partners = Array.isArray(value.partners) ? value.partners as StagePartner[] : [];
   const catalog = createStageCatalogSnapshot({
     authority,
     fallbackReason: asNullableString(value.fallbackReason),
@@ -376,6 +421,7 @@ export function parseStageCatalogPayload(value: unknown): StageCatalogLoadResult
     variants: value.variants as StageVariant[],
     assets: value.assets as StageAsset[],
     collections: value.collections as StageCollection[],
+    partners,
   });
   if (catalog.products.length === 0) return null;
   return {
@@ -419,6 +465,7 @@ export function stageCatalogRowsFromSnapshot(
       category_id: product.categoryId,
       subcategory_id: product.subcategoryId,
       source: product.source,
+      partner_id: product.partnerId,
       default_variant_id: product.defaultVariantId,
       status: "active",
       sort_order: sortOrder,
@@ -438,10 +485,19 @@ export function stageCatalogRowsFromSnapshot(
       name: collection.name,
       owner: collection.owner,
       partner_name: collection.partnerName,
+      partner_id: collection.partnerId,
       status: "active",
       sort_order: sortOrder,
     })),
     memberships,
+    partners: catalog.partners.map((partner) => ({
+      partner_id: partner.partnerId,
+      name: partner.name,
+      slug: partner.slug,
+      status: partner.status,
+      website_url: partner.websiteUrl,
+      logo_url: partner.logoUrl,
+    })),
   };
 }
 
@@ -465,5 +521,6 @@ export function retargetVariantCurrentAsset(
     variants,
     assets: catalog.assets,
     collections: catalog.collections,
+    partners: catalog.partners,
   });
 }

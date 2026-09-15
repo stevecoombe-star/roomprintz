@@ -32,6 +32,17 @@ export type StageCatalogAuthority = "durable" | "seed_fixture";
 
 export type StageAssetStatus = "ready" | "unavailable";
 
+export type StagePartnerStatus = "active" | "inactive";
+
+export type StagePartner = Readonly<{
+  partnerId: string;
+  name: string;
+  slug: string;
+  status: StagePartnerStatus;
+  websiteUrl: string | null;
+  logoUrl: string | null;
+}>;
+
 export type StageAsset = Readonly<{
   assetId: string;
   glbUrl: string;
@@ -66,6 +77,7 @@ export type StageProduct = Readonly<{
   defaultVariantId: string;
   collectionIds: readonly string[];
   source: StageProductSource;
+  partnerId: string | null;
 }>;
 
 export type StageCollection = Readonly<{
@@ -73,6 +85,7 @@ export type StageCollection = Readonly<{
   name: string;
   owner: "vibode" | "partner";
   partnerName: string | null;
+  partnerId: string | null;
   productIds: readonly string[];
 }>;
 
@@ -83,6 +96,7 @@ export type StageCatalogSnapshot = Readonly<{
   variants: readonly StageVariant[];
   assets: readonly StageAsset[];
   collections: readonly StageCollection[];
+  partners: readonly StagePartner[];
 }>;
 
 export type StageCategory = Readonly<{

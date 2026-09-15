@@ -275,6 +275,67 @@ test("PI-5E2 duplicate Variant ID, duplicate SKU, and invalid identity fail clos
   assert.equal(duplicateSku.ok, false);
   assert.equal(hasCode(duplicateSku, "DUPLICATE_SKU"), true);
 
+  const partnerSkuCatalog = createStageCatalogSnapshot({
+    authority: catalogWithoutProofExtras().authority,
+    fallbackReason: catalogWithoutProofExtras().fallbackReason,
+    products: [
+      ...catalogWithoutProofExtras().products,
+      {
+        productId: "prod-other-furniture-co-item",
+        brand: "Other Furniture Co.",
+        name: "Other Item",
+        retailer: "Other Furniture Co.",
+        categoryId: "living-room",
+        subcategoryId: "sofas",
+        productUrl: "https://example.test/other-item",
+        imageUrl: "https://example.test/other-item.jpg",
+        priceAmount: 100,
+        priceCurrency: "USD",
+        defaultVariantId: "var-other-furniture-co-item-default",
+        collectionIds: Object.freeze(["col-other-furniture-co-items"]),
+        source: "partner_catalog",
+        partnerId: "partner-other-furniture-co",
+      },
+    ],
+    variants: [
+      ...catalogWithoutProofExtras().variants,
+      {
+        variantId: "var-other-furniture-co-item-default",
+        productId: "prod-other-furniture-co-item",
+        assetId: ASSET_A,
+        finishLabel: "Oak",
+        sku: "VBD-STUDIO-SIDE-TABLE-WALNUT",
+        priceAmount: 100,
+        priceCurrency: "USD",
+        productUrl: null,
+      },
+    ],
+    assets: STAGE_SEED_ASSETS,
+    collections: [
+      ...catalogWithoutProofExtras().collections,
+      {
+        collectionId: "col-other-furniture-co-items",
+        name: "Other Items",
+        owner: "partner",
+        partnerName: "Other Furniture Co.",
+        partnerId: "partner-other-furniture-co",
+        productIds: ["prod-other-furniture-co-item"],
+      },
+    ],
+    partners: [{
+      partnerId: "partner-other-furniture-co",
+      name: "Other Furniture Co.",
+      slug: "other-furniture-co",
+      status: "active",
+      websiteUrl: "https://example.test",
+      logoUrl: null,
+    }],
+  });
+  const crossPartnerSku = validateVariantRegistration(proofInput(WALNUT_JSON), isolatedGates({
+    catalog: partnerSkuCatalog,
+  }));
+  assert.equal(crossPartnerSku.ok, true);
+
   const uuid = validateVariantRegistration({
     productId: STAGE_STUDIO_SIDE_TABLE_PRODUCT_ID,
     variant: {

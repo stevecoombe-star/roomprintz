@@ -31,6 +31,7 @@ export const GENERATED_REGISTERED_PRODUCTS: readonly StageProduct[] =
       defaultVariantId: "var-vibode-studio-side-table-default",
       collectionIds: Object.freeze(["col-vibode-picks"]),
       source: "vibode_curated",
+      partnerId: null,
     }),
   ]);
 

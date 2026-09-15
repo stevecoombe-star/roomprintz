@@ -284,6 +284,64 @@ test("PI-5E1 invalid Product ID and duplicate Product/Variant/SKU fail closed", 
   assert.deepEqual(snapshotFrozenTree(), before);
 });
 
+test("PI-5E1 SKU uniqueness is scoped so a partner SKU does not block curated registration", () => {
+  const partnerProduct = {
+    productId: "prod-other-furniture-co-item",
+    brand: "Other Furniture Co.",
+    name: "Other Item",
+    retailer: "Other Furniture Co.",
+    categoryId: "living-room",
+    subcategoryId: "sofas",
+    productUrl: "https://example.test/other-item",
+    imageUrl: "https://example.test/other-item.jpg",
+    priceAmount: 100,
+    priceCurrency: "USD",
+    defaultVariantId: "var-other-furniture-co-item-default",
+    collectionIds: Object.freeze(["col-other-furniture-co-items"]),
+    source: "partner_catalog" as const,
+    partnerId: "partner-other-furniture-co",
+  };
+  const catalog = createStageCatalogSnapshot({
+    authority: "seed_fixture",
+    products: [...STAGE_CERTIFIED_SEED_PRODUCTS, partnerProduct],
+    variants: [
+      ...STAGE_CERTIFIED_SEED_VARIANTS,
+      {
+        variantId: "var-other-furniture-co-item-default",
+        productId: partnerProduct.productId,
+        assetId: ASSET_A,
+        finishLabel: "Oak",
+        sku: proofInput().defaultVariant.sku,
+        priceAmount: 100,
+        priceCurrency: "USD",
+        productUrl: null,
+      },
+    ],
+    assets: STAGE_SEED_ASSETS,
+    collections: [
+      ...STAGE_CERTIFIED_SEED_COLLECTIONS,
+      {
+        collectionId: "col-other-furniture-co-items",
+        name: "Other Items",
+        owner: "partner",
+        partnerName: "Other Furniture Co.",
+        partnerId: "partner-other-furniture-co",
+        productIds: [partnerProduct.productId],
+      },
+    ],
+    partners: [{
+      partnerId: "partner-other-furniture-co",
+      name: "Other Furniture Co.",
+      slug: "other-furniture-co",
+      status: "active",
+      websiteUrl: "https://example.test",
+      logoUrl: null,
+    }],
+  });
+  const accepted = validateProductVariantRegistration(proofInput(), isolatedGates({ catalog }));
+  assert.equal(accepted.ok, true);
+});
+
 test("PI-5E1 negative/non-finite price and Product/Variant price-currency mismatch fail", () => {
   const before = snapshotFrozenTree();
   const negative = validateProductVariantRegistration({
