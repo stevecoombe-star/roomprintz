@@ -1,19 +1,9 @@
+import { GENERATED_FURNITURE_ASSETS } from "@/lib/afc-v2-runtime/furniture-asset-registry.generated";
+import { seedAssetFromCanonical } from "@/lib/afc-v2-runtime/furniture-asset-map";
 import {
   AFC_V2_RUNTIME_FURNITURE_ASSET_ID,
-  AFC_V2_RUNTIME_FURNITURE_GLB_PUBLIC_PATH,
   AFC_V2_RUNTIME_LOUNGE_CHAIR_ASSET_ID,
-  AFC_V2_RUNTIME_LOUNGE_CHAIR_GLB_PUBLIC_PATH,
 } from "@/lib/afc-v2-runtime/types";
-import {
-  PI4A_SOFA_AUTHORED_DEPTH_M,
-  PI4A_SOFA_AUTHORED_HEIGHT_M,
-  PI4A_SOFA_AUTHORED_WIDTH_M,
-} from "@/lib/afc-v2-runtime/pi4a-sofa-geometry";
-import {
-  PI5D_LOUNGE_CHAIR_AUTHORED_DEPTH_M,
-  PI5D_LOUNGE_CHAIR_AUTHORED_HEIGHT_M,
-  PI5D_LOUNGE_CHAIR_AUTHORED_WIDTH_M,
-} from "@/lib/afc-v2-runtime/pi5d-lounge-chair-geometry";
 
 import type {
   StageAsset,
@@ -32,23 +22,25 @@ export const STAGE_STUDIO_SOFA_VARIANT_ID = "var-vibode-studio-sofa-default";
 export const STAGE_STUDIO_SETTEE_VARIANT_ID = "var-vibode-studio-settee-default";
 export const STAGE_STUDIO_CHAIR_VARIANT_ID = "var-vibode-studio-chair-default";
 
-export const STAGE_PI4A_SOFA_ASSET: StageAsset = Object.freeze({
-  assetId: AFC_V2_RUNTIME_FURNITURE_ASSET_ID,
-  glbUrl: AFC_V2_RUNTIME_FURNITURE_GLB_PUBLIC_PATH,
-  authoredWidthM: PI4A_SOFA_AUTHORED_WIDTH_M,
-  authoredHeightM: PI4A_SOFA_AUTHORED_HEIGHT_M,
-  authoredDepthM: PI4A_SOFA_AUTHORED_DEPTH_M,
-  status: "ready",
-});
+export const STAGE_SEED_ASSETS: readonly StageAsset[] = Object.freeze(
+  GENERATED_FURNITURE_ASSETS.map((asset) => seedAssetFromCanonical(asset)),
+);
 
-export const STAGE_PI5D_LOUNGE_CHAIR_ASSET: StageAsset = Object.freeze({
-  assetId: AFC_V2_RUNTIME_LOUNGE_CHAIR_ASSET_ID,
-  glbUrl: AFC_V2_RUNTIME_LOUNGE_CHAIR_GLB_PUBLIC_PATH,
-  authoredWidthM: PI5D_LOUNGE_CHAIR_AUTHORED_WIDTH_M,
-  authoredHeightM: PI5D_LOUNGE_CHAIR_AUTHORED_HEIGHT_M,
-  authoredDepthM: PI5D_LOUNGE_CHAIR_AUTHORED_DEPTH_M,
-  status: "ready",
-});
+function certifiedSeedAsset(assetId: string): StageAsset {
+  const asset = STAGE_SEED_ASSETS.find((item) => item.assetId === assetId);
+  if (!asset) {
+    throw new Error(`Certified seed Asset missing: ${assetId}`);
+  }
+  return asset;
+}
+
+export const STAGE_PI4A_SOFA_ASSET: StageAsset = certifiedSeedAsset(
+  AFC_V2_RUNTIME_FURNITURE_ASSET_ID,
+);
+
+export const STAGE_PI5D_LOUNGE_CHAIR_ASSET: StageAsset = certifiedSeedAsset(
+  AFC_V2_RUNTIME_LOUNGE_CHAIR_ASSET_ID,
+);
 
 export const STAGE_BROWSE_CATEGORIES: readonly StageCategory[] = Object.freeze([
   Object.freeze({
@@ -241,11 +233,6 @@ export function createStageCatalogSnapshot(input: Readonly<{
     collections: Object.freeze([...input.collections]),
   });
 }
-
-export const STAGE_SEED_ASSETS: readonly StageAsset[] = Object.freeze([
-  STAGE_PI4A_SOFA_ASSET,
-  STAGE_PI5D_LOUNGE_CHAIR_ASSET,
-]);
 
 export const STAGE_SEED_CATALOG: StageCatalogSnapshot = createStageCatalogSnapshot({
   authority: "seed_fixture",

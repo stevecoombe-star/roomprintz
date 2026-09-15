@@ -4,47 +4,41 @@
  * Scene objects refer to assetId. The GLB URL is not object identity.
  * This is a technical runtime adapter for certified STAGE Assets. It is
  * not a catalogue API, persistence layer, or Supabase client.
+ *
+ * Definitions are generated from the canonical furniture Asset manifest.
+ * Do not hand-author additional runtime Asset entries here.
  */
 
-import {
-  PI4A_SOFA_AUTHORED_DEPTH_M,
-  PI4A_SOFA_AUTHORED_HEIGHT_M,
-  PI4A_SOFA_AUTHORED_WIDTH_M,
-} from "./pi4a-sofa-geometry";
-import {
-  PI5D_LOUNGE_CHAIR_AUTHORED_DEPTH_M,
-  PI5D_LOUNGE_CHAIR_AUTHORED_HEIGHT_M,
-  PI5D_LOUNGE_CHAIR_AUTHORED_WIDTH_M,
-} from "./pi5d-lounge-chair-geometry";
+import { GENERATED_FURNITURE_ASSETS } from "./furniture-asset-registry.generated";
+import { runtimeDefinitionFromCanonical } from "./furniture-asset-map";
 import {
   AFC_V2_RUNTIME_FURNITURE_ASSET_ID,
-  AFC_V2_RUNTIME_FURNITURE_GLB_PUBLIC_PATH,
   AFC_V2_RUNTIME_LOUNGE_CHAIR_ASSET_ID,
-  AFC_V2_RUNTIME_LOUNGE_CHAIR_GLB_PUBLIC_PATH,
   type FurnitureAssetDefinition,
 } from "./types";
 
-export const PI4A_SOFA_FURNITURE_ASSET: FurnitureAssetDefinition = Object.freeze({
-  assetId: AFC_V2_RUNTIME_FURNITURE_ASSET_ID,
-  glbUrl: AFC_V2_RUNTIME_FURNITURE_GLB_PUBLIC_PATH,
-  authoredWidthM: PI4A_SOFA_AUTHORED_WIDTH_M,
-  authoredHeightM: PI4A_SOFA_AUTHORED_HEIGHT_M,
-  authoredDepthM: PI4A_SOFA_AUTHORED_DEPTH_M,
-});
+function requiredCertifiedAsset(assetId: string): FurnitureAssetDefinition {
+  const generated = GENERATED_FURNITURE_ASSETS.find((asset) => asset.assetId === assetId);
+  if (!generated) {
+    throw new Error(`Certified furniture Asset missing from generated registry: ${assetId}`);
+  }
+  return runtimeDefinitionFromCanonical(generated);
+}
 
-export const PI5D_LOUNGE_CHAIR_FURNITURE_ASSET: FurnitureAssetDefinition = Object.freeze({
-  assetId: AFC_V2_RUNTIME_LOUNGE_CHAIR_ASSET_ID,
-  glbUrl: AFC_V2_RUNTIME_LOUNGE_CHAIR_GLB_PUBLIC_PATH,
-  authoredWidthM: PI5D_LOUNGE_CHAIR_AUTHORED_WIDTH_M,
-  authoredHeightM: PI5D_LOUNGE_CHAIR_AUTHORED_HEIGHT_M,
-  authoredDepthM: PI5D_LOUNGE_CHAIR_AUTHORED_DEPTH_M,
-});
+export const PI4A_SOFA_FURNITURE_ASSET: FurnitureAssetDefinition = requiredCertifiedAsset(
+  AFC_V2_RUNTIME_FURNITURE_ASSET_ID,
+);
+
+export const PI5D_LOUNGE_CHAIR_FURNITURE_ASSET: FurnitureAssetDefinition =
+  requiredCertifiedAsset(AFC_V2_RUNTIME_LOUNGE_CHAIR_ASSET_ID);
 
 const FURNITURE_ASSET_REGISTRY: ReadonlyMap<string, FurnitureAssetDefinition> =
-  new Map([
-    [PI4A_SOFA_FURNITURE_ASSET.assetId, PI4A_SOFA_FURNITURE_ASSET],
-    [PI5D_LOUNGE_CHAIR_FURNITURE_ASSET.assetId, PI5D_LOUNGE_CHAIR_FURNITURE_ASSET],
-  ]);
+  new Map(
+    GENERATED_FURNITURE_ASSETS.map((asset) => [
+      asset.assetId,
+      runtimeDefinitionFromCanonical(asset),
+    ]),
+  );
 
 export function furnitureAssetDefinition(
   assetId: string,

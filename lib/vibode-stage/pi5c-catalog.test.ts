@@ -15,6 +15,7 @@ import {
   AFC_V2_RUNTIME_LOUNGE_CHAIR_ASSET_ID,
   DEFAULT_WORLD_TRANSFORM,
 } from "@/lib/afc-v2-runtime/types";
+import { PI5D2_SIDE_TABLE_ASSET_ID } from "@/lib/afc-v2-runtime/pi5d2-side-table-geometry";
 import {
   createPastedStageProduct,
   createPastedStageVariant,
@@ -125,11 +126,12 @@ test("PI-5C durable catalog round-trips certified product / variant / asset / co
     STAGE_STUDIO_SETTEE_VARIANT_ID,
     STAGE_STUDIO_CHAIR_VARIANT_ID,
   ]);
-  assert.equal(durable.assets.length, 2);
+  assert.equal(durable.assets.length, 3);
   assert.equal(durable.assets[0]?.assetId, AFC_V2_RUNTIME_FURNITURE_ASSET_ID);
   assert.equal(durable.assets[0]?.glbUrl, AFC_V2_RUNTIME_FURNITURE_GLB_PUBLIC_PATH);
   assert.equal(durable.assets[0]?.status, "ready");
   assert.equal(durable.assets[1]?.assetId, AFC_V2_RUNTIME_LOUNGE_CHAIR_ASSET_ID);
+  assert.equal(durable.assets[2]?.assetId, PI5D2_SIDE_TABLE_ASSET_ID);
   assert.equal(
     durable.variants.find((variant) => variant.variantId === STAGE_STUDIO_SOFA_VARIANT_ID)?.assetId,
     AFC_V2_RUNTIME_FURNITURE_ASSET_ID,
