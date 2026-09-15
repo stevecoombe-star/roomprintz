@@ -85,12 +85,28 @@ export function namespacedId(kind: "prod" | "var" | "col", partnerSlug: string, 
   return `${kind}-${partnerSlug}-${rest}`;
 }
 
-export function partnerCatalogMigrationFileName(timestamp: string, partnerSlug: string): string {
-  const slug = partnerSlug
+export function partnerCatalogMigrationFileName(
+  timestamp: string,
+  partnerSlug: string,
+  batchKey?: string,
+): string {
+  const raw = batchKey ?? partnerSlug;
+  const slug = raw
     .replace(/[^a-z0-9]+/gi, "_")
     .replace(/^_+|_+$/g, "")
     .toLowerCase();
   return `${timestamp}_vibode_stage_partner_catalog_${slug}.sql`;
+}
+
+export function partnerCatalogSqlSlug(batchKey: string): string {
+  return batchKey
+    .replace(/[^a-z0-9]+/gi, "_")
+    .replace(/^_+|_+$/g, "")
+    .toLowerCase();
+}
+
+export function isPartnerCatalogSqlForSlug(fileName: string, sqlSlug: string): boolean {
+  return new RegExp(`^\\d{14}_vibode_stage_partner_catalog_${sqlSlug}\\.sql$`).test(fileName);
 }
 
 export function isPartnerCatalogMigrationFileName(fileName: string): boolean {
@@ -1170,12 +1186,17 @@ export function planPartnerCatalogImport(input: Readonly<{
   parsed: ParsedPartnerCatalogPlan;
   repoRoot?: string;
   migrationTimestamp?: string;
+  batchKey?: string;
 }>): PartnerCatalogWritePlan {
   const repoRoot = input.repoRoot ?? process.cwd();
   const timestamp = input.migrationTimestamp ?? utcTimestamp();
   const migration = path.join(
     productRegistrationRepoPaths(repoRoot).migrationsDir,
-    partnerCatalogMigrationFileName(timestamp, input.parsed.partner.slug),
+    partnerCatalogMigrationFileName(
+      timestamp,
+      input.parsed.partner.slug,
+      input.batchKey,
+    ),
   );
   const variantCount = input.parsed.products.reduce((sum, item) => (
     sum + 1 + item.additionalVariants.length
@@ -1226,6 +1247,7 @@ export function importPartnerCatalog(input: Readonly<{
   repoRoot?: string;
   check?: boolean;
   migrationTimestamp?: string;
+  batchKey?: string;
   catalog?: StageCatalogSnapshot;
   existingPartners?: readonly StagePartner[];
   existingState?: ExistingPartnerCatalogState;
@@ -1251,6 +1273,7 @@ export function importPartnerCatalog(input: Readonly<{
     parsed: validation.parsed,
     repoRoot: input.repoRoot,
     migrationTimestamp: timestamp,
+    batchKey: input.batchKey,
   });
   if (check) {
     return {

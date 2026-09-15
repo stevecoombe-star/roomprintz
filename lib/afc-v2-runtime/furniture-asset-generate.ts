@@ -97,6 +97,10 @@ export function furnitureAssetMigrationFileName(
   return `${timestamp}_vibode_stage_asset_${assetIdMigrationSlug(assetId)}.sql`;
 }
 
+export function isFurnitureAssetMigrationFileName(fileName: string): boolean {
+  return /^\d{14}_vibode_stage_asset_[a-z0-9_]+\.sql$/.test(fileName);
+}
+
 export function writeGeneratedFurnitureAssetRegistry(
   repoRoot: string,
   assets: readonly CanonicalFurnitureAssetRecord[],

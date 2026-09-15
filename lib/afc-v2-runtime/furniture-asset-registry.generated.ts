@@ -35,4 +35,22 @@ export const GENERATED_FURNITURE_ASSETS: readonly CanonicalFurnitureAssetRecord[
       status: "ready",
       sha256: "00e8614d15d8d6871fbe8a2db5cd4f245b7d9f760e60c7aecb7f3d4bbf6cc418",
     }),
+    Object.freeze({
+      assetId: "afc-v2-runtime/partners/demo-furniture-co/demo-coffee-table-v1",
+      glbUrl: "/afc-v2-runtime/partners/demo-furniture-co/demo-coffee-table-v1.glb",
+      authoredWidthM: 1.2,
+      authoredHeightM: 0.4,
+      authoredDepthM: 0.6,
+      status: "ready",
+      sha256: "90b233c54433370c450ac34f6b5624e771615a71bfc31b3e60b91c64e9132c46",
+    }),
+    Object.freeze({
+      assetId: "afc-v2-runtime/partners/demo-furniture-co/demo-side-table-v1",
+      glbUrl: "/afc-v2-runtime/partners/demo-furniture-co/demo-side-table-v1.glb",
+      authoredWidthM: 0.45,
+      authoredHeightM: 0.55,
+      authoredDepthM: 0.45,
+      status: "ready",
+      sha256: "e552f300e506c02810c59d99b8a2759da31e16fb45736f2310a0e73571d97338",
+    }),
   ]);

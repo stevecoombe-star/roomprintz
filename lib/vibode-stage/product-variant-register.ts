@@ -15,7 +15,10 @@ import {
   findManifestAsset,
   loadFurnitureAssetManifest,
 } from "@/lib/afc-v2-runtime/furniture-asset-manifest";
-import type { CanonicalFurnitureAssetManifest } from "@/lib/afc-v2-runtime/furniture-asset-manifest-types";
+import type {
+  CanonicalFurnitureAssetManifest,
+  CanonicalFurnitureAssetRecord,
+} from "@/lib/afc-v2-runtime/furniture-asset-manifest-types";
 import { furnitureAssetDefinition } from "@/lib/afc-v2-runtime/furniture-assets";
 
 import {
@@ -159,6 +162,7 @@ export type ProductVariantValidationGates = Readonly<{
   catalog?: StageCatalogSnapshot;
   seedAssets?: readonly StageAsset[];
   manifest?: CanonicalFurnitureAssetManifest;
+  plannedReadyAssets?: readonly CanonicalFurnitureAssetRecord[];
   repoRoot?: string;
   manifestRepoRoot?: string;
   runtimeAssetIds?: readonly string[];
@@ -728,11 +732,21 @@ export function parseProductRegistrationSql(sql: string): ParsedProductRegistrat
   };
 }
 
+function plannedReadyAsset(
+  assetId: string,
+  gates: ProductVariantValidationGates,
+): CanonicalFurnitureAssetRecord | null {
+  return (gates.plannedReadyAssets ?? []).find((asset) => (
+    asset.assetId === assetId && asset.status === "ready"
+  )) ?? null;
+}
+
 export function validateTargetAsset(
   assetId: string,
   gates: ProductVariantValidationGates,
   errors: ProductVariantIssue[],
 ): void {
+  const planned = plannedReadyAsset(assetId, gates);
   const loaded = gates.manifest
     ? { ok: true as const, manifest: gates.manifest }
     : loadFurnitureAssetManifest(gates.manifestRepoRoot ?? gates.repoRoot ?? process.cwd());
@@ -742,16 +756,18 @@ export function validateTargetAsset(
     }
   } else {
     const published = findManifestAsset(loaded.manifest, assetId);
-    if (!published) {
+    if (published) {
+      if (published.status !== "ready") {
+        errors.push(issue("UNAVAILABLE_ASSET", `Asset ${assetId} is not ready.`));
+      }
+    } else if (!planned) {
       errors.push(issue("UNKNOWN_ASSET", `Unknown Asset ${assetId}.`));
-    } else if (published.status !== "ready") {
-      errors.push(issue("UNAVAILABLE_ASSET", `Asset ${assetId} is not ready.`));
     }
   }
 
   const runtimeAssetIds = gates.runtimeAssetIds ??
     GENERATED_FURNITURE_ASSETS.map((asset) => asset.assetId);
-  if (!runtimeAssetIds.includes(assetId)) {
+  if (!runtimeAssetIds.includes(assetId) && !planned) {
     errors.push(issue(
       "RUNTIME_MISSING_ASSET",
       `Asset ${assetId} is missing from the generated runtime registry.`,
@@ -760,15 +776,15 @@ export function validateTargetAsset(
 
   const seedAssets = gates.seedAssets ?? gates.catalog?.assets ?? STAGE_SEED_ASSETS;
   const seedAsset = seedAssets.find((asset) => asset.assetId === assetId) ?? null;
-  if (!seedAsset) {
+  if (!seedAsset && !planned) {
     errors.push(issue("SEED_MISSING_ASSET", `Asset ${assetId} is missing from seed Assets.`));
-  } else if (seedAsset.status !== "ready") {
+  } else if (seedAsset && seedAsset.status !== "ready") {
     errors.push(issue("UNAVAILABLE_ASSET", `Seed Asset ${assetId} is not ready.`));
   }
 
   const runtimeKnown = gates.runtimeDefinitionKnown ??
     ((id: string) => furnitureAssetDefinition(id) != null);
-  if (!runtimeKnown(assetId)) {
+  if (!runtimeKnown(assetId) && !planned) {
     errors.push(issue(
       "UNKNOWN_RUNTIME_DEFINITION",
       `Asset ${assetId} is unknown to furnitureAssetDefinition.`,

@@ -20,14 +20,15 @@ import {
 } from "./catalog-commercial.generated";
 import {
   isPartnerCatalogMigrationFileName,
+  isPartnerCatalogSqlForSlug,
   listPartnerCatalogMigrations,
   parsePartnerCatalogJson,
   parsePartnerCatalogSql,
-  PARTNER_CATALOG_JSON_RELATIVE_PATH,
   partnerIdForSlug,
   validatePartnerIdentity,
   type ExistingPartnerCatalogState,
 } from "./partner-catalog";
+import { PARTNER_CATALOG_DOCUMENTS } from "./partner-catalog-documents";
 import {
   isProductRegistrationMigrationFileName,
   isVariantRegistrationMigrationFileName,
@@ -53,8 +54,6 @@ export function detectPartnerCatalogDrift(input: Readonly<{
   const catalog = input.catalog ?? STAGE_SEED_CATALOG;
   const issues: ProductVariantIssue[] = [];
   const paths = productRegistrationRepoPaths(repoRoot);
-  const jsonRelative = input.partnerJsonRelativePath ?? PARTNER_CATALOG_JSON_RELATIVE_PATH;
-  const jsonPath = path.join(repoRoot, jsonRelative);
 
   const partnersById = new Map<string, StagePartner>();
   const slugs = new Map<string, string>();
@@ -220,103 +219,246 @@ export function detectPartnerCatalogDrift(input: Readonly<{
     }
   }
 
-  if (!existsSync(jsonPath)) {
-    issues.push(issue("PARTNER_JSON_MISSING", `Missing partner catalog JSON at ${jsonRelative}.`));
-  } else {
+  const documents = [...PARTNER_CATALOG_DOCUMENTS];
+  if (
+    input.partnerJsonRelativePath
+    && !documents.some((item) => item.jsonRelativePath === input.partnerJsonRelativePath)
+  ) {
+    documents.push({
+      batchId: input.partnerJsonRelativePath,
+      jsonRelativePath: input.partnerJsonRelativePath,
+      sqlSlug: path.basename(input.partnerJsonRelativePath, ".json")
+        .replace(/[^a-z0-9]+/gi, "_")
+        .replace(/^_+|_+$/g, "")
+        .toLowerCase(),
+    });
+  }
+
+  const files = listPartnerCatalogMigrations(repoRoot);
+  const mappedSql = new Set<string>();
+  const unionJsonProductIds = new Set<string>();
+  const unionJsonVariantIds = new Set<string>();
+  const unionJsonPartnerIds = new Set<string>();
+  const unionJsonCollectionIds = new Set<string>();
+  const unionSqlProductIds = new Set<string>();
+  const unionSqlVariantIds = new Set<string>();
+  const unionSqlPartnerIds = new Set<string>();
+  const unionSqlCollectionIds = new Set<string>();
+  const seenPartners = new Set<string>();
+
+  if (files.length === 0) {
+    issues.push(issue("PARTNER_SQL_MISSING", "Missing partner catalog SQL migration."));
+  }
+
+  for (const fileName of files) {
+    if (isVariantAssociationMigrationFileName(fileName)) {
+      issues.push(issue(
+        "SQL_LOOKS_LIKE_ASSOCIATION_MIGRATION",
+        `${fileName} is classified as a PI-5D2B association migration.`,
+      ));
+    }
+    if (isProductRegistrationMigrationFileName(fileName)) {
+      issues.push(issue(
+        "SQL_LOOKS_LIKE_PRODUCT_REGISTRATION",
+        `${fileName} is classified as a PI-5E1 Product registration migration.`,
+      ));
+    }
+    if (isVariantRegistrationMigrationFileName(fileName)) {
+      issues.push(issue(
+        "SQL_LOOKS_LIKE_VARIANT_REGISTRATION",
+        `${fileName} is classified as a PI-5E2 Variant registration migration.`,
+      ));
+    }
+    if (!isPartnerCatalogMigrationFileName(fileName)) {
+      issues.push(issue("SQL_IDENTITY_MISMATCH", `${fileName} is not a partner catalog migration.`));
+    }
+    const sql = readFileSync(path.join(paths.migrationsDir, fileName), "utf8");
+    const parsedSql = parsePartnerCatalogSql(sql);
+    if (parsedSql.mutatesAssets) {
+      issues.push(issue("SQL_TOUCHES_ASSETS", `${fileName} mutates vibode_stage_assets.`));
+    }
+    if (parsedSql.updatesProduct) {
+      issues.push(issue("SQL_UPDATES_PRODUCT", `${fileName} updates Products.`));
+    }
+    if (parsedSql.updatesVariant) {
+      issues.push(issue("SQL_UPDATES_VARIANT", `${fileName} updates Variants.`));
+    }
+    if (parsedSql.touchesObjectsJson) {
+      issues.push(issue("SQL_TOUCHES_OBJECTS_JSON", `${fileName} mentions objects_json.`));
+    }
+    if (parsedSql.touchesScenes) {
+      issues.push(issue("SQL_TOUCHES_SCENE_OBJECTS", `${fileName} mentions vibode_3d_scenes.`));
+    }
+    if (parsedSql.usesUpsert) {
+      issues.push(issue("SQL_USES_UPSERT", `${fileName} uses upsert semantics.`));
+    }
+    if (parsedSql.forbiddenTables.length > 0) {
+      issues.push(issue(
+        "SQL_FORBIDDEN_PARTNER_TABLE",
+        `${fileName} references ${parsedSql.forbiddenTables.join(", ")}.`,
+      ));
+    }
+    for (const productId of parsedSql.productIds) unionSqlProductIds.add(productId);
+    for (const variantId of parsedSql.variantIds) unionSqlVariantIds.add(variantId);
+    for (const partnerId of parsedSql.partnerIds) unionSqlPartnerIds.add(partnerId);
+    for (const collectionId of parsedSql.collectionIds) unionSqlCollectionIds.add(collectionId);
+  }
+
+  for (const documentReg of documents) {
+    const jsonPath = path.join(repoRoot, documentReg.jsonRelativePath);
+    if (!existsSync(jsonPath)) {
+      issues.push(issue(
+        "PARTNER_JSON_MISSING",
+        `Missing partner catalog JSON at ${documentReg.jsonRelativePath}.`,
+      ));
+      continue;
+    }
     let parsedJson: ReturnType<typeof parsePartnerCatalogJson>;
     try {
       parsedJson = parsePartnerCatalogJson(JSON.parse(readFileSync(jsonPath, "utf8")));
     } catch (error) {
       issues.push(issue(
         "INVALID_JSON",
-        error instanceof Error ? error.message : "Partner catalog JSON is malformed.",
+        error instanceof Error ? error.message : `Partner catalog JSON is malformed: ${documentReg.jsonRelativePath}.`,
       ));
-      parsedJson = { ok: false, document: null, errors: [] };
+      continue;
     }
-    const files = listPartnerCatalogMigrations(repoRoot);
-    if (files.length === 0) {
-      issues.push(issue("PARTNER_SQL_MISSING", "Missing partner catalog SQL migration."));
+    if (!parsedJson.ok) {
+      for (const item of parsedJson.errors) {
+        issues.push(issue(item.code, `${documentReg.jsonRelativePath}: ${item.message}`));
+      }
+      continue;
     }
-    for (const fileName of files) {
-      if (isVariantAssociationMigrationFileName(fileName)) {
-        issues.push(issue(
-          "SQL_LOOKS_LIKE_ASSOCIATION_MIGRATION",
-          `${fileName} is classified as a PI-5D2B association migration.`,
-        ));
+
+    const jsonProductIds = parsedJson.document.products.map((item) => item.product.productId);
+    const jsonVariantIds = parsedJson.document.products.flatMap((item) => [
+      item.defaultVariant.variantId,
+      ...item.variants.map((variant) => variant.variantId),
+    ]);
+    const jsonCollectionIds = parsedJson.document.collections.map((item) => item.collectionId);
+    const jsonCollectionRefs = [
+      ...jsonCollectionIds,
+      ...parsedJson.document.products.flatMap((item) => item.product.collectionIds),
+    ];
+    for (const productId of jsonProductIds) unionJsonProductIds.add(productId);
+    for (const variantId of jsonVariantIds) unionJsonVariantIds.add(variantId);
+    unionJsonPartnerIds.add(parsedJson.document.partner.partnerId);
+    for (const collectionId of jsonCollectionRefs) unionJsonCollectionIds.add(collectionId);
+
+    const matches = files.filter((fileName) => (
+      isPartnerCatalogSqlForSlug(fileName, documentReg.sqlSlug)
+    ));
+    if (matches.length === 0) {
+      issues.push(issue(
+        "PARTNER_SQL_MISSING",
+        `Missing partner catalog SQL for batch ${documentReg.batchId}.`,
+      ));
+      continue;
+    }
+    if (matches.length > 1) {
+      issues.push(issue(
+        "SQL_IDENTITY_MISMATCH",
+        `Multiple partner catalog SQL files map to batch ${documentReg.batchId}.`,
+      ));
+    }
+    const fileName = matches[0]!;
+    mappedSql.add(fileName);
+    const sql = readFileSync(path.join(paths.migrationsDir, fileName), "utf8");
+    const parsedSql = parsePartnerCatalogSql(sql);
+    const firstForPartner = !seenPartners.has(parsedJson.document.partner.partnerId);
+    seenPartners.add(parsedJson.document.partner.partnerId);
+
+    for (const productId of jsonProductIds) {
+      if (!parsedSql.productIds.includes(productId)) {
+        issues.push(issue("SQL_JSON_MISMATCH", `${fileName} is missing Product ${productId} from JSON.`));
       }
-      if (isProductRegistrationMigrationFileName(fileName)) {
-        issues.push(issue(
-          "SQL_LOOKS_LIKE_PRODUCT_REGISTRATION",
-          `${fileName} is classified as a PI-5E1 Product registration migration.`,
-        ));
+    }
+    for (const productId of parsedSql.productIds) {
+      if (!jsonProductIds.includes(productId)) {
+        issues.push(issue("SQL_JSON_MISMATCH", `${fileName} has Product ${productId} not in JSON.`));
       }
-      if (isVariantRegistrationMigrationFileName(fileName)) {
-        issues.push(issue(
-          "SQL_LOOKS_LIKE_VARIANT_REGISTRATION",
-          `${fileName} is classified as a PI-5E2 Variant registration migration.`,
-        ));
+    }
+    for (const variantId of jsonVariantIds) {
+      if (!parsedSql.variantIds.includes(variantId)) {
+        issues.push(issue("SQL_JSON_MISMATCH", `${fileName} is missing Variant ${variantId} from JSON.`));
       }
-      if (!isPartnerCatalogMigrationFileName(fileName)) {
-        issues.push(issue("SQL_IDENTITY_MISMATCH", `${fileName} is not a partner catalog migration.`));
+    }
+    for (const variantId of parsedSql.variantIds) {
+      if (!jsonVariantIds.includes(variantId)) {
+        issues.push(issue("SQL_JSON_MISMATCH", `${fileName} has Variant ${variantId} not in JSON.`));
       }
-      const sql = readFileSync(path.join(paths.migrationsDir, fileName), "utf8");
-      const parsedSql = parsePartnerCatalogSql(sql);
-      if (parsedSql.mutatesAssets) {
-        issues.push(issue("SQL_TOUCHES_ASSETS", `${fileName} mutates vibode_stage_assets.`));
+    }
+    for (const collectionId of jsonCollectionIds) {
+      if (!parsedSql.collectionIds.includes(collectionId)) {
+        issues.push(issue("SQL_JSON_MISMATCH", `${fileName} is missing Collection ${collectionId} from JSON.`));
       }
-      if (parsedSql.updatesProduct) {
-        issues.push(issue("SQL_UPDATES_PRODUCT", `${fileName} updates Products.`));
-      }
-      if (parsedSql.updatesVariant) {
-        issues.push(issue("SQL_UPDATES_VARIANT", `${fileName} updates Variants.`));
-      }
-      if (parsedSql.touchesObjectsJson) {
-        issues.push(issue("SQL_TOUCHES_OBJECTS_JSON", `${fileName} mentions objects_json.`));
-      }
-      if (parsedSql.touchesScenes) {
-        issues.push(issue("SQL_TOUCHES_SCENE_OBJECTS", `${fileName} mentions vibode_3d_scenes.`));
-      }
-      if (parsedSql.usesUpsert) {
-        issues.push(issue("SQL_USES_UPSERT", `${fileName} uses upsert semantics.`));
-      }
-      if (parsedSql.forbiddenTables.length > 0) {
-        issues.push(issue(
-          "SQL_FORBIDDEN_PARTNER_TABLE",
-          `${fileName} references ${parsedSql.forbiddenTables.join(", ")}.`,
-        ));
-      }
-      if (parsedJson.ok) {
-        const jsonProductIds = parsedJson.document.products.map((item) => item.product.productId);
-        const jsonVariantIds = parsedJson.document.products.flatMap((item) => [
-          item.defaultVariant.variantId,
-          ...item.variants.map((variant) => variant.variantId),
-        ]);
-        const jsonCollectionIds = parsedJson.document.collections.map((item) => item.collectionId);
-        for (const productId of jsonProductIds) {
-          if (!parsedSql.productIds.includes(productId)) {
-            issues.push(issue("SQL_JSON_MISMATCH", `${fileName} is missing Product ${productId} from JSON.`));
-          }
-        }
-        for (const variantId of jsonVariantIds) {
-          if (!parsedSql.variantIds.includes(variantId)) {
-            issues.push(issue("SQL_JSON_MISMATCH", `${fileName} is missing Variant ${variantId} from JSON.`));
-          }
-        }
-        for (const collectionId of jsonCollectionIds) {
-          if (!parsedSql.collectionIds.includes(collectionId)) {
-            issues.push(issue("SQL_JSON_MISMATCH", `${fileName} is missing Collection ${collectionId} from JSON.`));
-          }
-        }
-        if (!parsedSql.partnerIds.includes(parsedJson.document.partner.partnerId)) {
-          issues.push(issue("SQL_JSON_MISMATCH", `${fileName} Partner ID differs from JSON.`));
-        }
-        if (!parsedSql.insertsPartner || !parsedSql.insertsCollection || !parsedSql.insertsProduct) {
-          issues.push(issue("SQL_IDENTITY_MISMATCH", `${fileName} is missing Partner/Collection/Product inserts.`));
-        }
-        if (!parsedSql.insertsVariant || !parsedSql.insertsMembership) {
-          issues.push(issue("SQL_IDENTITY_MISMATCH", `${fileName} is missing Variant or membership inserts.`));
-        }
-      }
+    }
+    if (!parsedSql.partnerIds.includes(parsedJson.document.partner.partnerId)) {
+      issues.push(issue("SQL_JSON_MISMATCH", `${fileName} Partner ID differs from JSON.`));
+    }
+    if (firstForPartner && !parsedSql.insertsPartner) {
+      issues.push(issue("SQL_IDENTITY_MISMATCH", `${fileName} is missing Partner insert for the first batch.`));
+    }
+    if (!firstForPartner && parsedSql.insertsPartner) {
+      issues.push(issue("SQL_IDENTITY_MISMATCH", `${fileName} re-inserts an existing Partner.`));
+    }
+    if (jsonCollectionIds.length > 0 && !parsedSql.insertsCollection) {
+      issues.push(issue("SQL_IDENTITY_MISMATCH", `${fileName} is missing Collection inserts from JSON.`));
+    }
+    if (jsonCollectionIds.length === 0 && parsedSql.insertsCollection) {
+      issues.push(issue("SQL_IDENTITY_MISMATCH", `${fileName} inserts Collections not declared in JSON.`));
+    }
+    if (!parsedSql.insertsProduct) {
+      issues.push(issue("SQL_IDENTITY_MISMATCH", `${fileName} is missing Product inserts.`));
+    }
+    if (!parsedSql.insertsVariant) {
+      issues.push(issue("SQL_IDENTITY_MISMATCH", `${fileName} is missing Variant inserts.`));
+    }
+    const hasMemberships = parsedJson.document.products.some((item) => (
+      item.product.collectionIds.length > 0
+    ));
+    if (hasMemberships && !parsedSql.insertsMembership) {
+      issues.push(issue("SQL_IDENTITY_MISMATCH", `${fileName} is missing membership inserts.`));
+    }
+  }
+
+  for (const fileName of files) {
+    if (!mappedSql.has(fileName)) {
+      issues.push(issue(
+        "SQL_IDENTITY_MISMATCH",
+        `${fileName} is not mapped to a registered partner catalog document.`,
+      ));
+    }
+  }
+
+  for (const productId of unionJsonProductIds) {
+    if (!unionSqlProductIds.has(productId)) {
+      issues.push(issue("SQL_JSON_MISMATCH", `Union of partner catalog SQL is missing Product ${productId}.`));
+    }
+  }
+  for (const productId of unionSqlProductIds) {
+    if (!unionJsonProductIds.has(productId)) {
+      issues.push(issue("SQL_JSON_MISMATCH", `Union of partner catalog JSON is missing Product ${productId}.`));
+    }
+  }
+  for (const variantId of unionJsonVariantIds) {
+    if (!unionSqlVariantIds.has(variantId)) {
+      issues.push(issue("SQL_JSON_MISMATCH", `Union of partner catalog SQL is missing Variant ${variantId}.`));
+    }
+  }
+  for (const variantId of unionSqlVariantIds) {
+    if (!unionJsonVariantIds.has(variantId)) {
+      issues.push(issue("SQL_JSON_MISMATCH", `Union of partner catalog JSON is missing Variant ${variantId}.`));
+    }
+  }
+  for (const partnerId of unionJsonPartnerIds) {
+    if (!unionSqlPartnerIds.has(partnerId)) {
+      issues.push(issue("SQL_JSON_MISMATCH", `Union of partner catalog SQL is missing Partner ${partnerId}.`));
+    }
+  }
+  for (const collectionId of unionJsonCollectionIds) {
+    if (!unionSqlCollectionIds.has(collectionId)) {
+      issues.push(issue("SQL_JSON_MISMATCH", `Union of partner catalog SQL is missing Collection ${collectionId}.`));
     }
   }
 

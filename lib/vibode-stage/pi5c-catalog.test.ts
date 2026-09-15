@@ -23,6 +23,7 @@ import {
   fallbackProductIdForAsset,
   resolveStagePlacement,
   STAGE_PI4A_SOFA_ASSET,
+  STAGE_SEED_ASSETS,
   STAGE_SEED_CATALOG,
   STAGE_CERTIFIED_SEED_PRODUCTS,
   STAGE_SEED_COLLECTIONS,
@@ -135,7 +136,7 @@ test("PI-5C durable catalog round-trips certified product / variant / asset / co
     STAGE_STUDIO_SIDE_TABLE_WALNUT_VARIANT_ID,
     STAGE_STUDIO_SIDE_TABLE_BLACK_VARIANT_ID,
   ]);
-  assert.equal(durable.assets.length, 3);
+  assert.equal(durable.assets.length, STAGE_SEED_ASSETS.length);
   assert.equal(durable.assets[0]?.assetId, AFC_V2_RUNTIME_FURNITURE_ASSET_ID);
   assert.equal(durable.assets[0]?.glbUrl, AFC_V2_RUNTIME_FURNITURE_GLB_PUBLIC_PATH);
   assert.equal(durable.assets[0]?.status, "ready");

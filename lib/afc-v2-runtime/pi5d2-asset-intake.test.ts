@@ -674,7 +674,12 @@ test("PI-5D2A manifest/runtime/seed/SQL parity holds for Asset C without Product
   assert.equal(sql, renderFurnitureAssetInsertSql(canonical));
   assert.doesNotMatch(sql, /vibode_stage_products|vibode_stage_variants|current_asset_id/);
   assert.match(sql, /status\n\) values/);
-  for (const asset of loaded.manifest.assets) {
+  const certified = loaded.manifest.assets.filter((asset) => (
+    asset.assetId === AFC_V2_RUNTIME_FURNITURE_ASSET_ID
+    || asset.assetId === AFC_V2_RUNTIME_LOUNGE_CHAIR_ASSET_ID
+    || asset.assetId === PI5D2_SIDE_TABLE_ASSET_ID
+  ));
+  for (const asset of certified) {
     const haystack = [
       source("supabase/migrations/20260914120000_vibode_stage_catalog.sql"),
       source("supabase/migrations/20260914140000_vibode_stage_catalog_lounge_chair_asset.sql"),

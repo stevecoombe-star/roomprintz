@@ -1,0 +1,19 @@
+{
+  "partnerId": "partner-demo-furniture-co",
+  "assets": [
+    {
+      "assetId": "afc-v2-runtime/partners/demo-furniture-co/demo-coffee-table-v1",
+      "file": "glbs/demo-coffee-table-v1.glb",
+      "authoredWidthM": 1.2,
+      "authoredHeightM": 0.4,
+      "authoredDepthM": 0.6
+    },
+    {
+      "assetId": "afc-v2-runtime/partners/demo-furniture-co/demo-side-table-v1",
+      "file": "glbs/demo-side-table-v1.glb",
+      "authoredWidthM": 0.45,
+      "authoredHeightM": 0.55,
+      "authoredDepthM": 0.45
+    }
+  ]
+}

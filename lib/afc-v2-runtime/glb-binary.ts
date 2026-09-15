@@ -129,6 +129,24 @@ export function inspectGlbJsonChunk(bytes: Uint8Array): GlbInspectResult {
   };
 }
 
+export function glbBinaryChunk(bytes: Uint8Array): Uint8Array | null {
+  if (bytes.byteLength < 20) return null;
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  let offset = 12;
+  while (offset + 8 <= bytes.byteLength) {
+    const chunkLength = view.getUint32(offset, true);
+    const chunkType = view.getUint32(offset + 4, true);
+    const dataStart = offset + 8;
+    const dataEnd = dataStart + chunkLength;
+    if (dataEnd > bytes.byteLength) return null;
+    if (chunkType === GLB_BIN_CHUNK_TYPE) {
+      return bytes.subarray(dataStart, dataEnd);
+    }
+    offset = dataEnd;
+  }
+  return null;
+}
+
 export function isDataUri(uri: string): boolean {
   return uri.trim().toLowerCase().startsWith("data:");
 }

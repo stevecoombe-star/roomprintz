@@ -1,0 +1,77 @@
+{
+  "partner": {
+    "partnerId": "partner-demo-furniture-co",
+    "name": "Demo Furniture Co.",
+    "slug": "demo-furniture-co",
+    "status": "active",
+    "websiteUrl": "https://example.test",
+    "logoUrl": null
+  },
+  "collections": [],
+  "products": [
+    {
+      "product": {
+        "productId": "prod-demo-furniture-co-demo-coffee-table",
+        "name": "Demo Coffee Table",
+        "brand": "Demo Furniture Co.",
+        "retailer": "Demo Furniture Co.",
+        "categoryId": "living-room",
+        "subcategoryId": "coffee-tables",
+        "imageUrl": "https://example.test/images/demo-coffee-table.jpg",
+        "productUrl": "https://example.test/products/demo-coffee-table",
+        "priceAmount": 399,
+        "priceCurrency": "USD",
+        "source": "partner_catalog",
+        "partnerId": "partner-demo-furniture-co",
+        "collectionIds": ["col-demo-furniture-co-demo-living-room"]
+      },
+      "defaultVariant": {
+        "variantId": "var-demo-furniture-co-demo-coffee-table-natural",
+        "finishLabel": "Natural",
+        "sku": "DFC-COFFEE-01",
+        "priceAmount": 399,
+        "priceCurrency": "USD",
+        "productUrl": null,
+        "currentAssetId": "afc-v2-runtime/partners/demo-furniture-co/demo-coffee-table-v1"
+      },
+      "variants": [
+        {
+          "variantId": "var-demo-furniture-co-demo-coffee-table-black",
+          "finishLabel": "Black",
+          "sku": "DFC-COFFEE-02",
+          "priceAmount": 429,
+          "priceCurrency": "USD",
+          "productUrl": null,
+          "currentAssetId": "afc-v2-runtime/partners/demo-furniture-co/demo-coffee-table-v1"
+        }
+      ]
+    },
+    {
+      "product": {
+        "productId": "prod-demo-furniture-co-demo-side-table",
+        "name": "Demo Side Table",
+        "brand": "Demo Furniture Co.",
+        "retailer": "Demo Furniture Co.",
+        "categoryId": "living-room",
+        "subcategoryId": "side-tables",
+        "imageUrl": "https://example.test/images/demo-side-table.jpg",
+        "productUrl": "https://example.test/products/demo-side-table",
+        "priceAmount": 189,
+        "priceCurrency": "USD",
+        "source": "partner_catalog",
+        "partnerId": "partner-demo-furniture-co",
+        "collectionIds": ["col-demo-furniture-co-demo-living-room"]
+      },
+      "defaultVariant": {
+        "variantId": "var-demo-furniture-co-demo-side-table-natural",
+        "finishLabel": "Natural",
+        "sku": "DFC-SIDE-01",
+        "priceAmount": 189,
+        "priceCurrency": "USD",
+        "productUrl": null,
+        "currentAssetId": "afc-v2-runtime/partners/demo-furniture-co/demo-side-table-v1"
+      },
+      "variants": []
+    }
+  ]
+}
