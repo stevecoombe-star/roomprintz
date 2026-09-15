@@ -24,8 +24,11 @@ import {
 import {
   COMMERCIAL_SEED_RELATIVE_PATH,
   isProductRegistrationMigrationFileName,
+  isVariantRegistrationMigrationFileName,
   listProductRegistrationMigrations,
+  listVariantRegistrationMigrations,
   parseProductRegistrationSql,
+  parseVariantRegistrationSql,
   productRegistrationRepoPaths,
   publicFilePathFromImageUrl,
   renderGeneratedCommercialSeed,
@@ -311,6 +314,138 @@ export function detectProductVariantRegistrationDrift(input: Readonly<{
   for (const fileName of listProductRegistrationMigrations(repoRoot)) {
     if (!isProductRegistrationMigrationFileName(fileName)) {
       issues.push(issue("SQL_IDENTITY_MISMATCH", `${fileName} is not a Product registration migration.`));
+    }
+  }
+
+  const generatedDefaultVariantIds = new Set(
+    GENERATED_REGISTERED_PRODUCTS.map((product) => product.defaultVariantId),
+  );
+  const additionalGeneratedVariants = GENERATED_REGISTERED_VARIANTS.filter((variant) => (
+    !generatedDefaultVariantIds.has(variant.variantId)
+  ));
+  const registerVariantFiles = listVariantRegistrationMigrations(repoRoot);
+  const registerVariantByVariantId = new Map<string, string>();
+
+  for (const fileName of registerVariantFiles) {
+    if (isVariantAssociationMigrationFileName(fileName)) {
+      issues.push(issue(
+        "SQL_LOOKS_LIKE_ASSOCIATION_MIGRATION",
+        `${fileName} is classified as a PI-5D2B association migration.`,
+      ));
+    }
+    if (isProductRegistrationMigrationFileName(fileName)) {
+      issues.push(issue(
+        "SQL_IDENTITY_MISMATCH",
+        `${fileName} is classified as a Product registration migration.`,
+      ));
+    }
+    if (!isVariantRegistrationMigrationFileName(fileName)) {
+      issues.push(issue("SQL_IDENTITY_MISMATCH", `${fileName} is not a Variant registration migration.`));
+    }
+    const sql = readFileSync(path.join(paths.migrationsDir, fileName), "utf8");
+    const parsed = parseVariantRegistrationSql(sql);
+    if (!parsed.insertsVariant) {
+      issues.push(issue("SQL_IDENTITY_MISMATCH", `${fileName} does not insert a Variant.`));
+    }
+    if (parsed.insertsProduct || parsed.updatesProduct || parsed.mentionsDefaultVariant) {
+      issues.push(issue("SQL_MUTATES_PRODUCT", `${fileName} mutates Product rows or default_variant_id.`));
+    }
+    if (parsed.updatesVariant) {
+      issues.push(issue("SQL_UPDATES_VARIANT", `${fileName} updates an existing Variant.`));
+    }
+    if (parsed.mutatesAssets) {
+      issues.push(issue("SQL_TOUCHES_ASSETS", `${fileName} mutates vibode_stage_assets.`));
+    }
+    if (parsed.touchesCollections) {
+      issues.push(issue("SQL_TOUCHES_COLLECTIONS", `${fileName} mentions Collections.`));
+    }
+    if (parsed.touchesObjectsJson) {
+      issues.push(issue("SQL_TOUCHES_OBJECTS_JSON", `${fileName} mentions objects_json.`));
+    }
+    if (parsed.touchesScenes) {
+      issues.push(issue("SQL_TOUCHES_SCENE_OBJECTS", `${fileName} mentions vibode_3d_scenes.`));
+    }
+    const productId = parsed.productIds[0] ?? null;
+    const variantId = parsed.variantIds[0] ?? null;
+    const assetId = parsed.assetIds[0] ?? null;
+    if (!productId || !variantId || !assetId) {
+      issues.push(issue("SQL_IDENTITY_MISMATCH", `${fileName} is missing Product/Variant/Asset identity.`));
+      continue;
+    }
+    registerVariantByVariantId.set(variantId, fileName);
+    const seedProduct = catalog.products.find((item) => item.productId === productId);
+    const seedVariant = catalog.variants.find((item) => item.variantId === variantId);
+    const generatedVariant = GENERATED_REGISTERED_VARIANTS.find((item) => (
+      item.variantId === variantId
+    ));
+    if (!seedProduct || !seedVariant || !generatedVariant) {
+      issues.push(issue(
+        "SQL_IDENTITY_MISMATCH",
+        `${fileName} Product/Variant IDs differ from generated seed.`,
+      ));
+      continue;
+    }
+    if (seedProduct.defaultVariantId === variantId) {
+      issues.push(issue(
+        "SQL_IDENTITY_MISMATCH",
+        `${fileName} targets the Product default Variant rather than an additional Variant.`,
+      ));
+    }
+    if (seedProduct.defaultVariantId !== GENERATED_REGISTERED_PRODUCTS.find((item) => (
+      item.productId === productId
+    ))?.defaultVariantId) {
+      issues.push(issue(
+        "DEFAULT_VARIANT_MISMATCH",
+        `${fileName} Product default Variant drifted.`,
+      ));
+    }
+    if (seedVariant.productId !== productId || generatedVariant.productId !== productId) {
+      issues.push(issue(
+        "SQL_IDENTITY_MISMATCH",
+        `${fileName} Variant does not belong to Product ${productId}.`,
+      ));
+    }
+    const association = GENERATED_VARIANT_CURRENT_ASSETS.find((row) => (
+      row.variantId === variantId
+    ));
+    if (!association || association.currentAssetId !== assetId || seedVariant.assetId !== assetId) {
+      issues.push(issue(
+        "SQL_ASSET_MISMATCH",
+        `${fileName} Asset ${assetId} differs from association map/seed.`,
+      ));
+    }
+    if (generatedVariant.finishLabel && !sql.includes(generatedVariant.finishLabel)) {
+      issues.push(issue("SQL_IDENTITY_MISMATCH", `${fileName} finish label differs from seed.`));
+    }
+    if (generatedVariant.sku && !sql.includes(generatedVariant.sku)) {
+      issues.push(issue("SQL_IDENTITY_MISMATCH", `${fileName} SKU differs from seed.`));
+    }
+    if (
+      generatedVariant.priceAmount != null &&
+      !sql.includes(String(generatedVariant.priceAmount))
+    ) {
+      issues.push(issue("SQL_IDENTITY_MISMATCH", `${fileName} price differs from seed.`));
+    }
+    if (!sql.includes(generatedVariant.priceCurrency)) {
+      issues.push(issue("SQL_IDENTITY_MISMATCH", `${fileName} currency differs from seed.`));
+    }
+    if (generatedVariant.productUrl && !sql.includes(generatedVariant.productUrl)) {
+      issues.push(issue("SQL_IDENTITY_MISMATCH", `${fileName} product URL differs from seed.`));
+    }
+    if (!/status = 'ready'/.test(sql)) {
+      issues.push(issue("SQL_ASSET_NOT_READY", `${fileName} does not require a ready Asset.`));
+    }
+    if (!/status = 'active'/.test(sql)) {
+      issues.push(issue("SQL_IDENTITY_MISMATCH", `${fileName} does not require an active Product.`));
+    }
+  }
+
+  for (const variant of additionalGeneratedVariants) {
+    if (!registerVariantByVariantId.has(variant.variantId)) {
+      issues.push(issue(
+        "REGISTERED_VARIANT_MISSING_SQL",
+        `Additional Variant ${variant.variantId} is missing a register_variant migration.`,
+      ));
     }
   }
 

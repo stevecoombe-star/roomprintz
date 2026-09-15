@@ -25,6 +25,17 @@ export function serializeFavoriteKeys(keys: ReadonlySet<string>): string[] {
   return [...keys];
 }
 
+export function isProductFavorited(
+  productId: string,
+  favoriteKeys: ReadonlySet<string>,
+): boolean {
+  const prefix = `${productId}::`;
+  for (const key of favoriteKeys) {
+    if (key.startsWith(prefix)) return true;
+  }
+  return false;
+}
+
 export function readFavoriteKeysFromStorage(
   storage: Pick<Storage, "getItem"> | null | undefined,
 ): Set<string> {

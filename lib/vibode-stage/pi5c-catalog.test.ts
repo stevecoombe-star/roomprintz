@@ -34,6 +34,8 @@ import {
   STAGE_STUDIO_SETTEE_VARIANT_ID,
   STAGE_STUDIO_SIDE_TABLE_PRODUCT_ID,
   STAGE_STUDIO_SIDE_TABLE_VARIANT_ID,
+  STAGE_STUDIO_SIDE_TABLE_WALNUT_VARIANT_ID,
+  STAGE_STUDIO_SIDE_TABLE_BLACK_VARIANT_ID,
   STAGE_STUDIO_SOFA_PRODUCT_ID,
   STAGE_STUDIO_SOFA_VARIANT_ID,
   favoriteKey,
@@ -130,6 +132,8 @@ test("PI-5C durable catalog round-trips certified product / variant / asset / co
     STAGE_STUDIO_SETTEE_VARIANT_ID,
     STAGE_STUDIO_CHAIR_VARIANT_ID,
     STAGE_STUDIO_SIDE_TABLE_VARIANT_ID,
+    STAGE_STUDIO_SIDE_TABLE_WALNUT_VARIANT_ID,
+    STAGE_STUDIO_SIDE_TABLE_BLACK_VARIANT_ID,
   ]);
   assert.equal(durable.assets.length, 3);
   assert.equal(durable.assets[0]?.assetId, AFC_V2_RUNTIME_FURNITURE_ASSET_ID);
@@ -594,6 +598,6 @@ test("PI-5C STAGE read path is a server catalog loader and does not change AFC r
   assert.match(crud, /function createSceneObjectId/);
   assert.equal(STAGE_CERTIFIED_SEED_PRODUCTS.length, 3);
   assert.equal(STAGE_SEED_PRODUCTS.length, 4);
-  assert.equal(STAGE_SEED_VARIANTS.length, 4);
+  assert.equal(STAGE_SEED_VARIANTS.length, 6);
   assert.equal(STAGE_SEED_COLLECTIONS.length, 3);
 });

@@ -1,9 +1,10 @@
 /**
- * PI-5E1 deterministic Product + default Variant registration.
+ * PI-5E1 deterministic Product + default Variant registration, and
+ * PI-5E2 additional Variant registration for an existing Product.
  *
  * Node-only. Validates commercial identity, then appends generated
- * commercial seed, Variant→Asset association, and a guarded Product SQL
- * migration. Does not mutate Assets, Scene Objects, or existing Products.
+ * commercial seed, Variant→Asset association, and a guarded SQL
+ * migration. Does not mutate Assets, Scene Objects, or Product defaults.
  */
 
 import { existsSync, mkdirSync, readdirSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
@@ -38,6 +39,7 @@ import {
   renderGeneratedVariantCurrentAssetMap,
   sortVariantAssociations,
   VARIANT_ASSOCIATION_MAP_RELATIVE_PATH,
+  variantIdMigrationSlug,
   type VariantCurrentAssetAssociation,
 } from "./variant-asset-association";
 import { GENERATED_VARIANT_CURRENT_ASSETS } from "./variant-current-asset.map.generated";
@@ -701,6 +703,51 @@ function validateTargetAsset(
   }
 }
 
+function collectSharedVariantRegistrationIssues(
+  input: Readonly<{
+    variantId: string;
+    sku: string | null;
+    currentAssetId: string;
+  }>,
+  gates: ProductVariantValidationGates,
+  errors: ProductVariantIssue[],
+): void {
+  const catalog = gates.catalog ?? STAGE_SEED_CATALOG;
+  if (!STAGE_COMMERCIAL_ID_SHAPE.test(input.variantId) || isUuidLike(input.variantId)) {
+    errors.push(issue("INVALID_VARIANT_ID", `Invalid Variant ID ${input.variantId}.`));
+  }
+  if (input.variantId.includes(input.currentAssetId)) {
+    errors.push(issue(
+      "INVALID_VARIANT_ID",
+      "Variant ID must not include the current Asset ID.",
+    ));
+  }
+  if (catalog.variants.some((variant) => variant.variantId === input.variantId)) {
+    errors.push(issue("DUPLICATE_VARIANT_ID", `Variant ${input.variantId} already exists.`));
+  }
+  if (input.sku) {
+    const duplicateSku = catalog.variants.some((variant) => (
+      variant.sku != null && variant.sku === input.sku
+    ));
+    if (duplicateSku) {
+      errors.push(issue("DUPLICATE_SKU", `SKU ${input.sku} already exists.`));
+    }
+  }
+
+  validateTargetAsset(input.currentAssetId, { ...gates, catalog }, errors);
+
+  const currentAssociations = gates.currentAssociations ?? GENERATED_VARIANT_CURRENT_ASSETS;
+  const existingAssociation = currentAssociations.find((row) => (
+    row.variantId === input.variantId
+  ));
+  if (existingAssociation) {
+    errors.push(issue(
+      "ASSOCIATION_CONFLICT",
+      `Variant ${input.variantId} already has a current Asset association.`,
+    ));
+  }
+}
+
 export function validateProductVariantRegistration(
   input: ProductVariantRegistrationInput,
   gates: ProductVariantValidationGates = {},
@@ -795,39 +842,11 @@ export function validateProductVariantRegistration(
     }
   }
 
-  if (!STAGE_COMMERCIAL_ID_SHAPE.test(variantIn.variantId) || isUuidLike(variantIn.variantId)) {
-    errors.push(issue("INVALID_VARIANT_ID", `Invalid Variant ID ${variantIn.variantId}.`));
-  }
-  if (variantIn.variantId.includes(variantIn.currentAssetId)) {
-    errors.push(issue(
-      "INVALID_VARIANT_ID",
-      "Variant ID must not include the current Asset ID.",
-    ));
-  }
-  if (catalog.variants.some((variant) => variant.variantId === variantIn.variantId)) {
-    errors.push(issue("DUPLICATE_VARIANT_ID", `Variant ${variantIn.variantId} already exists.`));
-  }
-  if (variantIn.sku) {
-    const duplicateSku = catalog.variants.some((variant) => (
-      variant.sku != null && variant.sku === variantIn.sku
-    ));
-    if (duplicateSku) {
-      errors.push(issue("DUPLICATE_SKU", `SKU ${variantIn.sku} already exists.`));
-    }
-  }
-
-  validateTargetAsset(variantIn.currentAssetId, { ...gates, catalog }, errors);
-
-  const currentAssociations = gates.currentAssociations ?? GENERATED_VARIANT_CURRENT_ASSETS;
-  const existingAssociation = currentAssociations.find((row) => (
-    row.variantId === variantIn.variantId
-  ));
-  if (existingAssociation) {
-    errors.push(issue(
-      "ASSOCIATION_CONFLICT",
-      `Variant ${variantIn.variantId} already has a current Asset association.`,
-    ));
-  }
+  collectSharedVariantRegistrationIssues({
+    variantId: variantIn.variantId,
+    sku: variantIn.sku,
+    currentAssetId: variantIn.currentAssetId,
+  }, { ...gates, catalog }, errors);
 
   if (errors.length > 0) {
     return { ok: false, parsed: null, errors };
@@ -1033,6 +1052,426 @@ export function registerProductVariant(input: Readonly<{
       issue(
         "WRITE_FAILED",
         error instanceof Error ? error.message : "Unable to write Product registration artifacts.",
+      ),
+    ], check);
+  }
+
+  return {
+    ok: true,
+    check: false,
+    productId: validation.parsed.product.productId,
+    variantId: validation.parsed.variant.variantId,
+    assetId: validation.parsed.assetId,
+    errors: [],
+    written: {
+      commercialSeed: plan.commercialSeed,
+      generatedMap: plan.generatedMap,
+      migration: plan.migration,
+    },
+    plan,
+  };
+}
+
+export type AdditionalVariantRegistrationInput = Readonly<{
+  productId: string;
+  variant: Readonly<{
+    variantId: string;
+    finishLabel: string | null;
+    sku: string | null;
+    priceAmount: number;
+    priceCurrency: string;
+    productUrl: string | null;
+    currentAssetId: string;
+  }>;
+}>;
+
+export type ParsedAdditionalVariantRegistration = Readonly<{
+  product: StageProduct;
+  variant: StageVariant;
+  assetId: string;
+}>;
+
+export type AdditionalVariantValidationSuccess = Readonly<{
+  ok: true;
+  parsed: ParsedAdditionalVariantRegistration;
+  errors: readonly ProductVariantIssue[];
+}>;
+
+export type AdditionalVariantValidationFailure = Readonly<{
+  ok: false;
+  parsed: null;
+  errors: readonly ProductVariantIssue[];
+}>;
+
+export type AdditionalVariantValidationResult =
+  | AdditionalVariantValidationSuccess
+  | AdditionalVariantValidationFailure;
+
+export type AdditionalVariantWritePlan = ProductVariantWritePlan;
+
+export type AdditionalVariantRegisterResult = ProductVariantRegisterResult;
+
+export function variantRegistrationMigrationFileName(
+  timestamp: string,
+  variantId: string,
+): string {
+  return `${timestamp}_vibode_stage_register_variant_${variantIdMigrationSlug(variantId)}.sql`;
+}
+
+export function isVariantRegistrationMigrationFileName(fileName: string): boolean {
+  return /^\d{14}_vibode_stage_register_variant_[a-z0-9_]+\.sql$/.test(fileName);
+}
+
+export function listVariantRegistrationMigrations(repoRoot = process.cwd()): string[] {
+  const dir = productRegistrationRepoPaths(repoRoot).migrationsDir;
+  if (!existsSync(dir)) return [];
+  return readdirSync(dir)
+    .filter((name) => isVariantRegistrationMigrationFileName(name))
+    .sort();
+}
+
+export function parseVariantRegistrationJson(
+  value: unknown,
+): Readonly<{ ok: true; input: AdditionalVariantRegistrationInput }> | Readonly<{
+  ok: false;
+  errors: readonly ProductVariantIssue[];
+}> {
+  const errors: ProductVariantIssue[] = [];
+  if (!isPlainObject(value)) {
+    return {
+      ok: false,
+      errors: [issue("INVALID_JSON", "Variant registration JSON must be an object.")],
+    };
+  }
+  const productId = asNonEmptyString(value.productId);
+  const variantRaw = value.variant;
+  if (!productId) {
+    errors.push(issue("INVALID_PRODUCT_ID", "productId must be a non-empty string."));
+  }
+  if (!isPlainObject(variantRaw)) {
+    errors.push(issue("INVALID_JSON", "variant must be an object."));
+  }
+  if (errors.length > 0 || !isPlainObject(variantRaw) || !productId) {
+    return { ok: false, errors };
+  }
+
+  const variantId = asNonEmptyString(variantRaw.variantId);
+  const priceAmount = asFiniteNumber(variantRaw.priceAmount);
+  const priceCurrency = asNonEmptyString(variantRaw.priceCurrency);
+  const currentAssetId = asNonEmptyString(variantRaw.currentAssetId);
+  if (!variantId) errors.push(issue("INVALID_VARIANT_ID", "variant.variantId must be a non-empty string."));
+  if (priceAmount == null) {
+    errors.push(issue("INVALID_PRICE", "variant.priceAmount must be a finite number."));
+  }
+  if (!priceCurrency) {
+    errors.push(issue("INVALID_CURRENCY", "variant.priceCurrency must be a non-empty string."));
+  }
+  if (!currentAssetId) {
+    errors.push(issue("UNKNOWN_ASSET", "variant.currentAssetId must be a non-empty string."));
+  }
+  const finishLabel = asNullableJsonString(variantRaw.finishLabel);
+  if (finishLabel === undefined) {
+    errors.push(issue("INVALID_JSON", "variant.finishLabel must be a string or null."));
+  }
+  const sku = asNullableJsonString(variantRaw.sku);
+  if (sku === undefined) {
+    errors.push(issue("INVALID_JSON", "variant.sku must be a string or null."));
+  }
+  const productUrl = asNullableJsonString(variantRaw.productUrl);
+  if (productUrl === undefined) {
+    errors.push(issue("INVALID_JSON", "variant.productUrl must be a string or null."));
+  }
+
+  if (errors.length > 0) return { ok: false, errors };
+
+  return {
+    ok: true,
+    input: {
+      productId,
+      variant: {
+        variantId: variantId!,
+        finishLabel: finishLabel ?? null,
+        sku: sku ?? null,
+        priceAmount: priceAmount!,
+        priceCurrency: priceCurrency!,
+        productUrl: productUrl ?? null,
+        currentAssetId: currentAssetId!,
+      },
+    },
+  };
+}
+
+export function renderAdditionalVariantInsertSql(input: Readonly<{
+  product: StageProduct;
+  variant: StageVariant;
+  assetId: string;
+}>): string {
+  return (
+    `-- PI-5E2: additional Variant registration.\n` +
+    `--\n` +
+    `-- Inserts one Variant for an existing Product.\n` +
+    `-- Does not mutate Product, Asset, Collection, or Scene Object rows.\n` +
+    `-- Does not change the Product default Variant.\n` +
+    `\n` +
+    `begin;\n` +
+    `\n` +
+    `do $$\n` +
+    `begin\n` +
+    `  if not exists (\n` +
+    `    select 1\n` +
+    `    from public.vibode_stage_products\n` +
+    `    where product_id = ${sqlString(input.product.productId)}\n` +
+    `      and status = 'active'\n` +
+    `  ) then\n` +
+    `    raise exception 'Product is missing or not active';\n` +
+    `  end if;\n` +
+    `\n` +
+    `  if not exists (\n` +
+    `    select 1\n` +
+    `    from public.vibode_stage_assets\n` +
+    `    where asset_id = ${sqlString(input.assetId)}\n` +
+    `      and status = 'ready'\n` +
+    `  ) then\n` +
+    `    raise exception 'Target Asset is missing or not ready';\n` +
+    `  end if;\n` +
+    `\n` +
+    `  if exists (\n` +
+    `    select 1\n` +
+    `    from public.vibode_stage_variants\n` +
+    `    where variant_id = ${sqlString(input.variant.variantId)}\n` +
+    `  ) then\n` +
+    `    raise exception 'Variant already exists';\n` +
+    `  end if;\n` +
+    `end $$;\n` +
+    `\n` +
+    `insert into public.vibode_stage_variants (\n` +
+    `  variant_id,\n` +
+    `  product_id,\n` +
+    `  current_asset_id,\n` +
+    `  finish_label,\n` +
+    `  sku,\n` +
+    `  price_amount,\n` +
+    `  price_currency,\n` +
+    `  product_url\n` +
+    `) values (\n` +
+    `  ${sqlString(input.variant.variantId)},\n` +
+    `  ${sqlString(input.product.productId)},\n` +
+    `  ${sqlString(input.assetId)},\n` +
+    `  ${sqlNullableString(input.variant.finishLabel)},\n` +
+    `  ${sqlNullableString(input.variant.sku)},\n` +
+    `  ${sqlNumber(input.variant.priceAmount ?? 0)},\n` +
+    `  ${sqlString(input.variant.priceCurrency)},\n` +
+    `  ${sqlNullableString(input.variant.productUrl)}\n` +
+    `);\n` +
+    `\n` +
+    `commit;\n`
+  );
+}
+
+export type ParsedVariantRegistrationSql = Readonly<{
+  productIds: readonly string[];
+  variantIds: readonly string[];
+  assetIds: readonly string[];
+  insertsVariant: boolean;
+  insertsProduct: boolean;
+  updatesProduct: boolean;
+  updatesVariant: boolean;
+  mutatesAssets: boolean;
+  touchesCollections: boolean;
+  touchesObjectsJson: boolean;
+  touchesScenes: boolean;
+  mentionsDefaultVariant: boolean;
+}>;
+
+export function parseVariantRegistrationSql(sql: string): ParsedVariantRegistrationSql {
+  const unique = (values: readonly string[]) => [...new Set(values)];
+  const body = sql.replace(/--[^\n]*/g, "");
+  return {
+    productIds: unique(sqlQuotedEquals(sql, "product_id")),
+    variantIds: unique(sqlQuotedEquals(sql, "variant_id")),
+    assetIds: unique([
+      ...sqlQuotedEquals(sql, "asset_id"),
+      ...sqlQuotedEquals(sql, "current_asset_id"),
+    ]),
+    insertsVariant: /\binsert\s+into\s+public\.vibode_stage_variants\b/i.test(body),
+    insertsProduct: /\binsert\s+into\s+public\.vibode_stage_products\b/i.test(body),
+    updatesProduct: /\bupdate\s+public\.vibode_stage_products\b/i.test(body),
+    updatesVariant: /\bupdate\s+public\.vibode_stage_variants\b/i.test(body),
+    mutatesAssets: /\b(?:insert\s+into|update|delete\s+from)\s+public\.vibode_stage_assets\b/i.test(body),
+    touchesCollections: /vibode_stage_(?:product_)?collections/i.test(body),
+    touchesObjectsJson: /objects_json/i.test(body),
+    touchesScenes: /vibode_3d_scenes/i.test(body),
+    mentionsDefaultVariant: /\bdefault_variant_id\b/i.test(body),
+  };
+}
+
+export function validateVariantRegistration(
+  input: AdditionalVariantRegistrationInput,
+  gates: ProductVariantValidationGates = {},
+): AdditionalVariantValidationResult {
+  const errors: ProductVariantIssue[] = [];
+  const catalog = gates.catalog ?? STAGE_SEED_CATALOG;
+  const variantIn = input.variant;
+  const variantCurrency = normalizeCurrency(variantIn.priceCurrency);
+  const product = catalog.products.find((item) => item.productId === input.productId) ?? null;
+
+  if (!product) {
+    errors.push(issue("UNKNOWN_PRODUCT", `Unknown Product ${input.productId}.`));
+  }
+  if (!Number.isFinite(variantIn.priceAmount) || variantIn.priceAmount < 0) {
+    errors.push(issue("INVALID_PRICE", "Variant price must be finite and >= 0."));
+  }
+  if (!isValidCurrency(variantCurrency)) {
+    errors.push(issue("INVALID_CURRENCY", "Currency must be a 3-letter ISO code."));
+  }
+
+  collectSharedVariantRegistrationIssues({
+    variantId: variantIn.variantId,
+    sku: variantIn.sku,
+    currentAssetId: variantIn.currentAssetId,
+  }, { ...gates, catalog }, errors);
+
+  if (errors.length > 0 || !product) {
+    return { ok: false, parsed: null, errors };
+  }
+
+  const variant: StageVariant = Object.freeze({
+    variantId: variantIn.variantId,
+    productId: product.productId,
+    assetId: variantIn.currentAssetId,
+    finishLabel: variantIn.finishLabel,
+    sku: variantIn.sku,
+    priceAmount: variantIn.priceAmount,
+    priceCurrency: variantCurrency,
+    productUrl: variantIn.productUrl,
+  });
+  return {
+    ok: true,
+    parsed: {
+      product,
+      variant,
+      assetId: variantIn.currentAssetId,
+    },
+    errors: [],
+  };
+}
+
+export function planVariantRegistration(input: Readonly<{
+  parsed: ParsedAdditionalVariantRegistration;
+  repoRoot?: string;
+  migrationTimestamp?: string;
+  currentAssociations?: readonly VariantCurrentAssetAssociation[];
+  currentGeneratedProducts?: readonly StageProduct[];
+  currentGeneratedVariants?: readonly GeneratedRegisteredVariant[];
+}>): AdditionalVariantWritePlan {
+  const repoRoot = input.repoRoot ?? process.cwd();
+  const paths = productRegistrationRepoPaths(repoRoot);
+  const currentAssociations = input.currentAssociations ?? GENERATED_VARIANT_CURRENT_ASSETS;
+  const currentProducts = input.currentGeneratedProducts ?? GENERATED_REGISTERED_PRODUCTS;
+  const currentVariants = input.currentGeneratedVariants ?? GENERATED_REGISTERED_VARIANTS;
+  const nextAssociations = sortVariantAssociations([
+    ...currentAssociations,
+    {
+      variantId: input.parsed.variant.variantId,
+      productId: input.parsed.product.productId,
+      currentAssetId: input.parsed.assetId,
+    },
+  ]);
+  const nextVariants: GeneratedRegisteredVariant[] = [
+    ...currentVariants,
+    {
+      variantId: input.parsed.variant.variantId,
+      productId: input.parsed.product.productId,
+      finishLabel: input.parsed.variant.finishLabel,
+      sku: input.parsed.variant.sku,
+      priceAmount: input.parsed.variant.priceAmount,
+      priceCurrency: input.parsed.variant.priceCurrency,
+      productUrl: input.parsed.variant.productUrl,
+    },
+  ];
+  const timestamp = input.migrationTimestamp ?? utcTimestamp();
+  const migration = path.join(
+    paths.migrationsDir,
+    variantRegistrationMigrationFileName(timestamp, input.parsed.variant.variantId),
+  );
+  return {
+    commercialSeed: paths.commercialSeed,
+    generatedMap: paths.generatedMap,
+    migration,
+    sql: renderAdditionalVariantInsertSql(input.parsed),
+    commercialSource: renderGeneratedCommercialSeed({
+      products: currentProducts,
+      variants: nextVariants,
+    }),
+    mapSource: renderGeneratedVariantCurrentAssetMap(nextAssociations),
+  };
+}
+
+export function registerVariant(input: Readonly<{
+  input: AdditionalVariantRegistrationInput;
+  repoRoot?: string;
+  check?: boolean;
+  migrationTimestamp?: string;
+  catalog?: StageCatalogSnapshot;
+  seedAssets?: readonly StageAsset[];
+  manifest?: CanonicalFurnitureAssetManifest;
+  runtimeAssetIds?: readonly string[];
+  runtimeDefinitionKnown?: (assetId: string) => boolean;
+  currentAssociations?: readonly VariantCurrentAssetAssociation[];
+  currentGeneratedProducts?: readonly StageProduct[];
+  currentGeneratedVariants?: readonly GeneratedRegisteredVariant[];
+  manifestRepoRoot?: string;
+}>): AdditionalVariantRegisterResult {
+  const check = input.check === true;
+  const validation = validateVariantRegistration(input.input, input);
+  if (!validation.ok) return failRegister(validation.errors, check);
+
+  const timestamp = input.migrationTimestamp ?? utcTimestamp();
+  if (!/^\d{14}$/.test(timestamp)) {
+    return failRegister([
+      issue("INVALID_TIMESTAMP", "migration timestamp must be YYYYMMDDHHMMSS."),
+    ], check);
+  }
+
+  const plan = planVariantRegistration({
+    parsed: validation.parsed,
+    repoRoot: input.repoRoot,
+    migrationTimestamp: timestamp,
+    currentAssociations: input.currentAssociations,
+    currentGeneratedProducts: input.currentGeneratedProducts,
+    currentGeneratedVariants: input.currentGeneratedVariants,
+  });
+
+  if (check) {
+    return {
+      ok: true,
+      check: true,
+      productId: validation.parsed.product.productId,
+      variantId: validation.parsed.variant.variantId,
+      assetId: validation.parsed.assetId,
+      errors: [],
+      written: null,
+      plan,
+    };
+  }
+
+  if (existsSync(plan.migration)) {
+    return failRegister([
+      issue("MIGRATION_EXISTS", `Variant registration migration already exists: ${plan.migration}`),
+    ], check);
+  }
+
+  try {
+    writePlannedFiles([
+      { path: plan.commercialSeed, contents: plan.commercialSource },
+      { path: plan.generatedMap, contents: plan.mapSource },
+      { path: plan.migration, contents: plan.sql },
+    ]);
+  } catch (error) {
+    return failRegister([
+      issue(
+        "WRITE_FAILED",
+        error instanceof Error ? error.message : "Unable to write Variant registration artifacts.",
       ),
     ], check);
   }

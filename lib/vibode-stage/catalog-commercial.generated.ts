@@ -45,4 +45,22 @@ export const GENERATED_REGISTERED_VARIANTS: readonly GeneratedRegisteredVariant[
       priceCurrency: "USD",
       productUrl: null,
     }),
+    Object.freeze({
+      variantId: "var-vibode-studio-side-table-walnut",
+      productId: "prod-vibode-studio-side-table",
+      finishLabel: "Walnut",
+      sku: "VBD-STUDIO-SIDE-TABLE-WALNUT",
+      priceAmount: 525,
+      priceCurrency: "USD",
+      productUrl: null,
+    }),
+    Object.freeze({
+      variantId: "var-vibode-studio-side-table-black",
+      productId: "prod-vibode-studio-side-table",
+      finishLabel: "Black",
+      sku: "VBD-STUDIO-SIDE-TABLE-BLACK",
+      priceAmount: 495,
+      priceCurrency: "USD",
+      productUrl: null,
+    }),
   ]);

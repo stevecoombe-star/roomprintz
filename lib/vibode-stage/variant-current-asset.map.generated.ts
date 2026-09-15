@@ -22,7 +22,17 @@ export const GENERATED_VARIANT_CURRENT_ASSETS: readonly GeneratedVariantCurrentA
       currentAssetId: "afc-v2-runtime/test-fixtures/pi5d2-side-table",
     }),
     Object.freeze({
+      variantId: "var-vibode-studio-side-table-black",
+      productId: "prod-vibode-studio-side-table",
+      currentAssetId: "afc-v2-runtime/test-fixtures/pi5d2-side-table",
+    }),
+    Object.freeze({
       variantId: "var-vibode-studio-side-table-default",
+      productId: "prod-vibode-studio-side-table",
+      currentAssetId: "afc-v2-runtime/test-fixtures/pi5d2-side-table",
+    }),
+    Object.freeze({
+      variantId: "var-vibode-studio-side-table-walnut",
       productId: "prod-vibode-studio-side-table",
       currentAssetId: "afc-v2-runtime/test-fixtures/pi5d2-side-table",
     }),

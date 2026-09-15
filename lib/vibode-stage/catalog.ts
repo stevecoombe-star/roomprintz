@@ -28,6 +28,8 @@ export const STAGE_STUDIO_SOFA_VARIANT_ID = "var-vibode-studio-sofa-default";
 export const STAGE_STUDIO_SETTEE_VARIANT_ID = "var-vibode-studio-settee-default";
 export const STAGE_STUDIO_CHAIR_VARIANT_ID = "var-vibode-studio-chair-default";
 export const STAGE_STUDIO_SIDE_TABLE_VARIANT_ID = "var-vibode-studio-side-table-default";
+export const STAGE_STUDIO_SIDE_TABLE_WALNUT_VARIANT_ID = "var-vibode-studio-side-table-walnut";
+export const STAGE_STUDIO_SIDE_TABLE_BLACK_VARIANT_ID = "var-vibode-studio-side-table-black";
 
 export const STAGE_SEED_ASSETS: readonly StageAsset[] = Object.freeze(
   GENERATED_FURNITURE_ASSETS.map((asset) => seedAssetFromCanonical(asset)),
@@ -327,6 +329,7 @@ export function seedFixtureStageCatalog(reason: string): StageCatalogSnapshot {
 type StageCatalogIndex = Readonly<{
   productById: ReadonlyMap<string, StageProduct>;
   variantById: ReadonlyMap<string, StageVariant>;
+  variantsByProductId: ReadonlyMap<string, readonly StageVariant[]>;
   assetById: ReadonlyMap<string, StageAsset>;
   collectionById: ReadonlyMap<string, StageCollection>;
 }>;
@@ -338,9 +341,16 @@ export function indexStageCatalog(
 ): StageCatalogIndex {
   const cached = CATALOG_INDEXES.get(catalog);
   if (cached) return cached;
+  const variantsByProductId = new Map<string, StageVariant[]>();
+  for (const variant of catalog.variants) {
+    const list = variantsByProductId.get(variant.productId);
+    if (list) list.push(variant);
+    else variantsByProductId.set(variant.productId, [variant]);
+  }
   const index: StageCatalogIndex = {
     productById: new Map(catalog.products.map((product) => [product.productId, product])),
     variantById: new Map(catalog.variants.map((variant) => [variant.variantId, variant])),
+    variantsByProductId,
     assetById: new Map(catalog.assets.map((asset) => [asset.assetId, asset])),
     collectionById: new Map(
       catalog.collections.map((collection) => [collection.collectionId, collection]),
@@ -380,6 +390,29 @@ export function stageVariantById(
   return extras.find((variant) => variant.variantId === variantId) ??
     indexStageCatalog(catalog).variantById.get(variantId) ??
     null;
+}
+
+export function stageVariantsForProduct(
+  productId: string,
+  extraVariants: readonly StageVariant[] = [],
+  catalog: StageCatalogSnapshot = STAGE_SEED_CATALOG,
+): StageVariant[] {
+  const product = stageProductById(productId, [], catalog);
+  const byId = new Map<string, StageVariant>();
+  const indexed = indexStageCatalog(catalog).variantsByProductId.get(productId) ?? [];
+  for (const variant of indexed) {
+    if (variant.productId === productId) byId.set(variant.variantId, variant);
+  }
+  for (const variant of extraVariants) {
+    if (variant.productId === productId) byId.set(variant.variantId, variant);
+  }
+  const variants = [...byId.values()];
+  const defaultId = product?.defaultVariantId;
+  const preferred = variants.filter((variant) => variant.variantId === defaultId);
+  const rest = variants
+    .filter((variant) => variant.variantId !== defaultId)
+    .sort((a, b) => a.variantId.localeCompare(b.variantId));
+  return [...preferred, ...rest];
 }
 
 export function stageAssetById(

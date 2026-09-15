@@ -1,5 +1,7 @@
 "use client";
 
+import { useEffect, useState } from "react";
+
 import {
   favoriteKey,
   formatStagePrice,
@@ -7,6 +9,7 @@ import {
   stageAssetById,
   stageProductById,
   stageVariantById,
+  stageVariantsForProduct,
 } from "@/lib/vibode-stage/catalog";
 import { useStageEditor } from "@/components/stage/StageEditorContext";
 
@@ -18,29 +21,48 @@ export function StageProductDetail() {
   const product = stage.detailProductId
     ? stageProductById(stage.detailProductId, stage.extraProducts, stage.catalog)
     : null;
+  const [selectedVariantId, setSelectedVariantId] = useState(
+    product?.defaultVariantId ?? "",
+  );
+
+  useEffect(() => {
+    setSelectedVariantId(product?.defaultVariantId ?? "");
+  }, [product?.productId, product?.defaultVariantId]);
+
   if (!product) return null;
+  const variants = stageVariantsForProduct(
+    product.productId,
+    stage.extraVariants,
+    stage.catalog,
+  );
   const variant = stageVariantById(
-    product.defaultVariantId,
+    selectedVariantId || product.defaultVariantId,
     stage.extraVariants,
     stage.catalog,
   );
   const placement = resolveStagePlacement({
     productId: product.productId,
-    variantId: product.defaultVariantId,
+    variantId: selectedVariantId || product.defaultVariantId,
     extras: stage.extraProducts,
     extraVariants: stage.extraVariants,
     catalog: stage.catalog,
   });
   const asset = placement ? stageAssetById(placement.assetId, stage.catalog) : null;
   const canAdd = Boolean(placement);
-  const favorited = stage.favorites.has(favoriteKey(product.productId, product.defaultVariantId));
+  const favorited = stage.favorites.has(
+    favoriteKey(product.productId, selectedVariantId || product.defaultVariantId),
+  );
   const price = formatStagePrice(
     variant?.priceAmount ?? product.priceAmount,
     variant?.priceCurrency ?? product.priceCurrency,
   );
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col" data-stage-product-detail={product.productId}>
+    <div
+      className="flex min-h-0 flex-1 flex-col"
+      data-stage-product-detail={product.productId}
+      data-stage-selected-variant={selectedVariantId || product.defaultVariantId}
+    >
       <button
         type="button"
         onClick={stage.closeProductDetail}
@@ -55,6 +77,36 @@ export function StageProductDetail() {
       <div className="mt-3 text-[10px] uppercase tracking-wide text-neutral-500">{product.brand}</div>
       <div className="text-sm font-medium text-neutral-100">{product.name}</div>
       {price ? <div className="mt-1 text-sm text-neutral-200">{price}</div> : null}
+      {variants.length > 1 ? (
+        <label className="mt-3 block text-xs text-neutral-400">
+          <span className="sr-only">Variant</span>
+          <select
+            aria-label="Variant"
+            value={selectedVariantId || product.defaultVariantId}
+            onChange={(event) => setSelectedVariantId(event.target.value)}
+            className={`mt-1 w-full rounded-md border border-neutral-700 bg-neutral-900 px-2 py-1.5 text-xs text-neutral-100 ${FOCUS}`}
+          >
+            {variants.map((item) => {
+              const placeable = Boolean(resolveStagePlacement({
+                productId: product.productId,
+                variantId: item.variantId,
+                extras: stage.extraProducts,
+                extraVariants: stage.extraVariants,
+                catalog: stage.catalog,
+              }));
+              return (
+                <option
+                  key={item.variantId}
+                  value={item.variantId}
+                  disabled={!placeable}
+                >
+                  {item.finishLabel || item.variantId}
+                </option>
+              );
+            })}
+          </select>
+        </label>
+      ) : null}
       {variant?.finishLabel ? (
         <div className="mt-2 text-xs text-neutral-400">{variant.finishLabel}</div>
       ) : null}
@@ -71,7 +123,10 @@ export function StageProductDetail() {
         <button
           type="button"
           disabled={!canAdd}
-          onClick={() => stage.addProductToRoom(product.productId, product.defaultVariantId)}
+          onClick={() => stage.addProductToRoom(
+            product.productId,
+            selectedVariantId || product.defaultVariantId,
+          )}
           className={`flex-1 rounded-md border px-3 py-2 text-xs ${FOCUS} ${
             canAdd
               ? "border-neutral-600 bg-neutral-100 text-neutral-950 hover:bg-white"
@@ -83,7 +138,10 @@ export function StageProductDetail() {
         <button
           type="button"
           aria-pressed={favorited}
-          onClick={() => stage.toggleFavorite(product.productId, product.defaultVariantId)}
+          onClick={() => stage.toggleFavorite(
+            product.productId,
+            selectedVariantId || product.defaultVariantId,
+          )}
           className={`rounded-md border border-neutral-700 px-2.5 py-2 text-sm ${FOCUS} ${
             favorited ? "text-rose-300" : "text-neutral-400"
           }`}

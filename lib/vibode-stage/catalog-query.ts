@@ -1,4 +1,5 @@
 import type { StageCatalogMode, StageProduct } from "./types";
+import { isProductFavorited } from "./favorites";
 
 export type StageCatalogQueryInput = Readonly<{
   products: readonly StageProduct[];
@@ -24,7 +25,11 @@ export function filterStageCatalogProducts(input: StageCatalogQueryInput): Stage
   const needle = input.query.trim().toLowerCase();
   const recentIds = input.recentlyUsedProductIds ?? [];
   return input.products.filter((product) => {
-    if (input.mode === "favorites" && !input.favoriteKeys.has(input.favoriteKeyFor(product))) {
+    if (
+      input.mode === "favorites" &&
+      !isProductFavorited(product.productId, input.favoriteKeys) &&
+      !input.favoriteKeys.has(input.favoriteKeyFor(product))
+    ) {
       return false;
     }
     if (
