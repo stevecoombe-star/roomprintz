@@ -274,6 +274,79 @@ export function isAbsoluteHttpsUrl(value: string): boolean {
   }
 }
 
+export function validateBrowseTaxonomy(
+  categoryId: string,
+  subcategoryId: string | null | undefined,
+): ProductVariantIssue[] {
+  const errors: ProductVariantIssue[] = [];
+  const category = STAGE_BROWSE_CATEGORIES.find((item) => item.id === categoryId) ?? null;
+  if (!category) {
+    errors.push(issue("UNKNOWN_CATEGORY", `Unknown category ${categoryId}.`));
+  } else if (subcategoryId) {
+    const subcategory = category.subcategories.find((item) => item.id === subcategoryId);
+    if (!subcategory) {
+      errors.push(issue(
+        "UNKNOWN_SUBCATEGORY",
+        `Unknown subcategory ${subcategoryId} under ${categoryId}.`,
+      ));
+    }
+  }
+  return errors;
+}
+
+export function validateFiniteNonNegativePrice(
+  amount: number,
+  subject: "Product" | "Variant",
+): ProductVariantIssue[] {
+  if (!Number.isFinite(amount) || amount < 0) {
+    return [issue("INVALID_PRICE", `${subject} price must be finite and >= 0.`)];
+  }
+  return [];
+}
+
+export function validateRequiredAbsoluteHttpsUrl(
+  value: string | null | undefined,
+): ProductVariantIssue[] {
+  const url = asNonEmptyString(value ?? null);
+  if (!url) {
+    return [issue("MISSING_PRODUCT_URL", "partner_catalog Products require productUrl.")];
+  }
+  if (!isAbsoluteHttpsUrl(url)) {
+    return [issue("INVALID_PRODUCT_URL", "partner_catalog productUrl must be an absolute HTTPS URL.")];
+  }
+  return [];
+}
+
+export function validateOptionalAbsoluteHttpsUrl(value: string | null): ProductVariantIssue[] {
+  if (value == null) return [];
+  if (!isAbsoluteHttpsUrl(value)) {
+    return [issue("INVALID_PRODUCT_URL", "productUrl must be an absolute HTTPS URL.")];
+  }
+  return [];
+}
+
+export function validatePartnerCatalogImageUrl(
+  imageUrl: string,
+  repoRoot: string,
+): ProductVariantIssue[] {
+  if (!asNonEmptyString(imageUrl)) {
+    return [issue("INVALID_IMAGE_URL", "Image URL must be non-empty.")];
+  }
+  if (isSameOriginPublicPath(imageUrl)) {
+    if (!existsSync(publicFilePathFromImageUrl(repoRoot, imageUrl))) {
+      return [issue("MISSING_IMAGE", `Local image file missing for ${imageUrl}.`)];
+    }
+    return [];
+  }
+  if (!isAbsoluteHttpsUrl(imageUrl)) {
+    return [issue(
+      "INVALID_IMAGE_URL",
+      "partner_catalog imageUrl must be an absolute HTTPS URL or same-origin public path.",
+    )];
+  }
+  return [];
+}
+
 export function skuScopeKey(product: Readonly<{
   source: StageProductSource;
   partnerId: string | null;
@@ -875,25 +948,9 @@ export function validateProductVariantRegistration(
     errors.push(issue("DUPLICATE_PRODUCT_ID", `Product ${productIn.productId} already exists.`));
   }
 
-  const category = STAGE_BROWSE_CATEGORIES.find((item) => item.id === productIn.categoryId) ?? null;
-  if (!category) {
-    errors.push(issue("UNKNOWN_CATEGORY", `Unknown category ${productIn.categoryId}.`));
-  } else if (productIn.subcategoryId) {
-    const subcategory = category.subcategories.find((item) => item.id === productIn.subcategoryId);
-    if (!subcategory) {
-      errors.push(issue(
-        "UNKNOWN_SUBCATEGORY",
-        `Unknown subcategory ${productIn.subcategoryId} under ${productIn.categoryId}.`,
-      ));
-    }
-  }
-
-  if (!Number.isFinite(productIn.priceAmount) || productIn.priceAmount < 0) {
-    errors.push(issue("INVALID_PRICE", "Product price must be finite and >= 0."));
-  }
-  if (!Number.isFinite(variantIn.priceAmount) || variantIn.priceAmount < 0) {
-    errors.push(issue("INVALID_PRICE", "Variant price must be finite and >= 0."));
-  }
+  errors.push(...validateBrowseTaxonomy(productIn.categoryId, productIn.subcategoryId));
+  errors.push(...validateFiniteNonNegativePrice(productIn.priceAmount, "Product"));
+  errors.push(...validateFiniteNonNegativePrice(variantIn.priceAmount, "Variant"));
   if (!isValidCurrency(productCurrency) || !isValidCurrency(variantCurrency)) {
     errors.push(issue("INVALID_CURRENCY", "Currency must be a 3-letter ISO code."));
   }
@@ -914,12 +971,7 @@ export function validateProductVariantRegistration(
     if (!asNonEmptyString(productIn.partnerId)) {
       errors.push(issue("MISSING_PARTNER_ID", "partner_catalog Products require partnerId."));
     }
-    const productUrl = asNonEmptyString(productIn.productUrl);
-    if (!productUrl) {
-      errors.push(issue("MISSING_PRODUCT_URL", "partner_catalog Products require productUrl."));
-    } else if (!isAbsoluteHttpsUrl(productUrl)) {
-      errors.push(issue("INVALID_PRODUCT_URL", "partner_catalog productUrl must be an absolute HTTPS URL."));
-    }
+    errors.push(...validateRequiredAbsoluteHttpsUrl(productIn.productUrl));
   } else if (asNonEmptyString(productIn.partnerId)) {
     errors.push(issue("UNEXPECTED_PARTNER_ID", "Non-partner Products must not have partnerId."));
   }
@@ -958,19 +1010,7 @@ export function validateProductVariantRegistration(
       ));
     }
   } else if (productIn.source === "partner_catalog") {
-    if (isSameOriginPublicPath(productIn.imageUrl)) {
-      if (!existsSync(publicFilePathFromImageUrl(repoRoot, productIn.imageUrl))) {
-        errors.push(issue(
-          "MISSING_IMAGE",
-          `Local image file missing for ${productIn.imageUrl}.`,
-        ));
-      }
-    } else if (!isAbsoluteHttpsUrl(productIn.imageUrl)) {
-      errors.push(issue(
-        "INVALID_IMAGE_URL",
-        "partner_catalog imageUrl must be an absolute HTTPS URL or same-origin public path.",
-      ));
-    }
+    errors.push(...validatePartnerCatalogImageUrl(productIn.imageUrl, repoRoot));
   }
 
   collectSharedVariantRegistrationIssues({

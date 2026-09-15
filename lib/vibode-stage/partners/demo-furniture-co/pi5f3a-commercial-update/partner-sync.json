@@ -1,0 +1,50 @@
+{
+  "partnerId": "partner-demo-furniture-co",
+  "mode": "patch",
+  "products": {
+    "update": [
+      {
+        "productId": "prod-demo-furniture-co-demo-coffee-table",
+        "imageUrl": "https://example.test/images/demo-coffee-table-f3a.jpg",
+        "productUrl": "https://example.test/products/demo-coffee-table?ref=pi5f3a"
+      },
+      {
+        "productId": "prod-demo-furniture-co-demo-side-table",
+        "name": "Demo Pedestal Side Table",
+        "priceAmount": 199
+      }
+    ]
+  },
+  "variants": {
+    "create": [
+      {
+        "variantId": "var-demo-furniture-co-demo-coffee-table-walnut",
+        "productId": "prod-demo-furniture-co-demo-coffee-table",
+        "finishLabel": "Walnut",
+        "sku": "DEMO-COFFEE-TABLE-WALNUT",
+        "priceAmount": 439,
+        "priceCurrency": "USD",
+        "productUrl": null,
+        "currentAssetId": "afc-v2-runtime/partners/demo-furniture-co/demo-coffee-table-v1"
+      }
+    ],
+    "update": [
+      {
+        "variantId": "var-demo-furniture-co-demo-coffee-table-black",
+        "priceAmount": 449
+      },
+      {
+        "variantId": "var-demo-furniture-co-demo-side-table-natural",
+        "priceAmount": 199
+      }
+    ]
+  },
+  "collections": {
+    "membershipRemove": [
+      {
+        "productId": "prod-demo-furniture-co-demo-lounge-chair",
+        "collectionId": "col-demo-furniture-co-demo-living-room"
+      }
+    ]
+  }
+}
