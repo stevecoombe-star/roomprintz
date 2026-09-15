@@ -24,6 +24,7 @@ import {
   resolveStagePlacement,
   STAGE_PI4A_SOFA_ASSET,
   STAGE_SEED_CATALOG,
+  STAGE_CERTIFIED_SEED_PRODUCTS,
   STAGE_SEED_COLLECTIONS,
   STAGE_SEED_PRODUCTS,
   STAGE_SEED_VARIANTS,
@@ -31,6 +32,8 @@ import {
   STAGE_STUDIO_CHAIR_VARIANT_ID,
   STAGE_STUDIO_SETTEE_PRODUCT_ID,
   STAGE_STUDIO_SETTEE_VARIANT_ID,
+  STAGE_STUDIO_SIDE_TABLE_PRODUCT_ID,
+  STAGE_STUDIO_SIDE_TABLE_VARIANT_ID,
   STAGE_STUDIO_SOFA_PRODUCT_ID,
   STAGE_STUDIO_SOFA_VARIANT_ID,
   favoriteKey,
@@ -115,16 +118,18 @@ test("PI-5C durable catalog round-trips certified product / variant / asset / co
   const durable = durableCatalogFromSeed();
   assert.equal(durable.authority, "durable");
   assert.deepEqual(identityRecord(durable), identityRecord(STAGE_SEED_CATALOG));
-  assert.equal(durable.products.length, 3);
+  assert.equal(durable.products.length, 4);
   assert.deepEqual(durable.products.map((product) => product.productId), [
     STAGE_STUDIO_SOFA_PRODUCT_ID,
     STAGE_STUDIO_SETTEE_PRODUCT_ID,
     STAGE_STUDIO_CHAIR_PRODUCT_ID,
+    STAGE_STUDIO_SIDE_TABLE_PRODUCT_ID,
   ]);
   assert.deepEqual(durable.variants.map((variant) => variant.variantId), [
     STAGE_STUDIO_SOFA_VARIANT_ID,
     STAGE_STUDIO_SETTEE_VARIANT_ID,
     STAGE_STUDIO_CHAIR_VARIANT_ID,
+    STAGE_STUDIO_SIDE_TABLE_VARIANT_ID,
   ]);
   assert.equal(durable.assets.length, 3);
   assert.equal(durable.assets[0]?.assetId, AFC_V2_RUNTIME_FURNITURE_ASSET_ID);
@@ -473,7 +478,7 @@ test("PI-5C durable empty or failed loads use an explicit seed fixture fallback"
   const empty = resolveLoadedStageCatalog({ durable: null, reason: "durable_empty" });
   assert.equal(empty.authority, "seed_fixture");
   assert.equal(empty.fallbackReason, "durable_empty");
-  assert.equal(empty.catalog.products.length, 3);
+  assert.equal(empty.catalog.products.length, 4);
   const failed = resolveLoadedStageCatalog({
     durable: null,
     reason: "durable_load_failed",
@@ -486,7 +491,7 @@ test("PI-5C durable empty or failed loads use an explicit seed fixture fallback"
   const payload = serializeStageCatalogPayload(loaded);
   const parsed = parseStageCatalogPayload(payload);
   assert.equal(parsed?.authority, "durable");
-  assert.equal(parsed?.catalog.products.length, 3);
+  assert.equal(parsed?.catalog.products.length, 4);
 });
 
 test("PI-5C Catalog browse still filters durable products without scene presence", () => {
@@ -513,7 +518,7 @@ test("PI-5C Catalog browse still filters durable products without scene presence
     favoriteKeys: new Set(),
     favoriteKeyFor: (product) => favoriteKey(product.productId, product.defaultVariantId),
   });
-  assert.equal(picks.length, 3);
+  assert.equal(picks.length, 4);
 });
 
 test("PI-5C migration seeds the certified STAGE identities and stays a public catalog", () => {
@@ -587,7 +592,8 @@ test("PI-5C STAGE read path is a server catalog loader and does not change AFC r
   assert.doesNotMatch(runtimeAssets, /IMPROVED_ASSET|multi-glb|signed url/i);
   assert.match(crud, /uniformScale: 1/);
   assert.match(crud, /function createSceneObjectId/);
-  assert.equal(STAGE_SEED_PRODUCTS.length, 3);
-  assert.equal(STAGE_SEED_VARIANTS.length, 3);
+  assert.equal(STAGE_CERTIFIED_SEED_PRODUCTS.length, 3);
+  assert.equal(STAGE_SEED_PRODUCTS.length, 4);
+  assert.equal(STAGE_SEED_VARIANTS.length, 4);
   assert.equal(STAGE_SEED_COLLECTIONS.length, 3);
 });

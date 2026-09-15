@@ -8,6 +8,7 @@ import {
   STAGE_SEED_PRODUCTS,
   STAGE_STUDIO_CHAIR_PRODUCT_ID,
   STAGE_STUDIO_SETTEE_PRODUCT_ID,
+  STAGE_STUDIO_SIDE_TABLE_PRODUCT_ID,
   STAGE_STUDIO_SOFA_PRODUCT_ID,
 } from "./catalog";
 import {
@@ -94,6 +95,7 @@ test("PI-5C UX2 Browse no longer renders Recently Used above results", () => {
     STAGE_STUDIO_SOFA_PRODUCT_ID,
     STAGE_STUDIO_SETTEE_PRODUCT_ID,
     STAGE_STUDIO_CHAIR_PRODUCT_ID,
+    STAGE_STUDIO_SIDE_TABLE_PRODUCT_ID,
   ]);
 });
 
@@ -121,7 +123,7 @@ test("PI-5C UX2 Collections and Favorites behavior remains unchanged", () => {
     mode: "collections",
     collectionId: "col-vibode-picks",
   });
-  assert.equal(picks.length, 3);
+  assert.equal(picks.length, 4);
   const small = query({
     mode: "collections",
     collectionId: "col-small-spaces",

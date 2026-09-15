@@ -1,0 +1,25 @@
+{
+  "product": {
+    "productId": "prod-vibode-studio-side-table",
+    "name": "Studio Side Table",
+    "brand": "Vibode",
+    "retailer": "Vibode",
+    "categoryId": "living-room",
+    "subcategoryId": "side-tables",
+    "imageUrl": "/vibode-stage/studio-side-table.svg",
+    "productUrl": null,
+    "priceAmount": 495,
+    "priceCurrency": "USD",
+    "source": "vibode_curated",
+    "collectionIds": ["col-vibode-picks"]
+  },
+  "defaultVariant": {
+    "variantId": "var-vibode-studio-side-table-default",
+    "finishLabel": "Natural oak",
+    "sku": "VBD-STUDIO-SIDE-TABLE-01",
+    "priceAmount": 495,
+    "priceCurrency": "USD",
+    "productUrl": null,
+    "currentAssetId": "afc-v2-runtime/test-fixtures/pi5d2-side-table"
+  }
+}

@@ -13,15 +13,21 @@ import type {
   StageProduct,
   StageVariant,
 } from "./types";
+import {
+  GENERATED_REGISTERED_PRODUCTS,
+  GENERATED_REGISTERED_VARIANTS,
+} from "./catalog-commercial.generated";
 import { GENERATED_VARIANT_CURRENT_ASSETS } from "./variant-current-asset.map.generated";
 
 export const STAGE_STUDIO_SOFA_PRODUCT_ID = "prod-vibode-studio-sofa";
 export const STAGE_STUDIO_SETTEE_PRODUCT_ID = "prod-vibode-studio-settee";
 export const STAGE_STUDIO_CHAIR_PRODUCT_ID = "prod-vibode-studio-lounge-chair";
+export const STAGE_STUDIO_SIDE_TABLE_PRODUCT_ID = "prod-vibode-studio-side-table";
 
 export const STAGE_STUDIO_SOFA_VARIANT_ID = "var-vibode-studio-sofa-default";
 export const STAGE_STUDIO_SETTEE_VARIANT_ID = "var-vibode-studio-settee-default";
 export const STAGE_STUDIO_CHAIR_VARIANT_ID = "var-vibode-studio-chair-default";
+export const STAGE_STUDIO_SIDE_TABLE_VARIANT_ID = "var-vibode-studio-side-table-default";
 
 export const STAGE_SEED_ASSETS: readonly StageAsset[] = Object.freeze(
   GENERATED_FURNITURE_ASSETS.map((asset) => seedAssetFromCanonical(asset)),
@@ -144,10 +150,15 @@ const STUDIO_CHAIR: StageProduct = Object.freeze({
   source: "vibode_curated",
 });
 
-export const STAGE_SEED_PRODUCTS: readonly StageProduct[] = Object.freeze([
+export const STAGE_CERTIFIED_SEED_PRODUCTS: readonly StageProduct[] = Object.freeze([
   STUDIO_SOFA,
   STUDIO_SETTEE,
   STUDIO_CHAIR,
+]);
+
+export const STAGE_SEED_PRODUCTS: readonly StageProduct[] = Object.freeze([
+  ...STAGE_CERTIFIED_SEED_PRODUCTS,
+  ...GENERATED_REGISTERED_PRODUCTS,
 ]);
 
 function certifiedVariantCurrentAssetId(variantId: string, productId: string): string {
@@ -160,7 +171,7 @@ function certifiedVariantCurrentAssetId(variantId: string, productId: string): s
   return row.currentAssetId;
 }
 
-export const STAGE_SEED_VARIANTS: readonly StageVariant[] = Object.freeze([
+export const STAGE_CERTIFIED_SEED_VARIANTS: readonly StageVariant[] = Object.freeze([
   Object.freeze({
     variantId: STAGE_STUDIO_SOFA_VARIANT_ID,
     productId: STAGE_STUDIO_SOFA_PRODUCT_ID,
@@ -202,7 +213,21 @@ export const STAGE_SEED_VARIANTS: readonly StageVariant[] = Object.freeze([
   }),
 ]);
 
-export const STAGE_SEED_COLLECTIONS: readonly StageCollection[] = Object.freeze([
+export const STAGE_SEED_VARIANTS: readonly StageVariant[] = Object.freeze([
+  ...STAGE_CERTIFIED_SEED_VARIANTS,
+  ...GENERATED_REGISTERED_VARIANTS.map((variant) => Object.freeze({
+    variantId: variant.variantId,
+    productId: variant.productId,
+    assetId: certifiedVariantCurrentAssetId(variant.variantId, variant.productId),
+    finishLabel: variant.finishLabel,
+    sku: variant.sku,
+    priceAmount: variant.priceAmount,
+    priceCurrency: variant.priceCurrency,
+    productUrl: variant.productUrl,
+  })),
+]);
+
+export const STAGE_CERTIFIED_SEED_COLLECTIONS: readonly StageCollection[] = Object.freeze([
   Object.freeze({
     collectionId: "col-vibode-picks",
     name: "Vibode Picks",
@@ -235,6 +260,31 @@ export const STAGE_SEED_COLLECTIONS: readonly StageCollection[] = Object.freeze(
     ]),
   }),
 ]);
+
+function collectionsWithRegisteredProducts(
+  collections: readonly StageCollection[],
+  products: readonly StageProduct[],
+): readonly StageCollection[] {
+  return Object.freeze(
+    collections.map((collection) => {
+      const extras = products
+        .filter((product) => product.collectionIds.includes(collection.collectionId))
+        .map((product) => product.productId)
+        .filter((productId) => !collection.productIds.includes(productId));
+      if (extras.length === 0) return collection;
+      return Object.freeze({
+        ...collection,
+        productIds: Object.freeze([...collection.productIds, ...extras]),
+      });
+    }),
+  );
+}
+
+export const STAGE_SEED_COLLECTIONS: readonly StageCollection[] =
+  collectionsWithRegisteredProducts(
+    STAGE_CERTIFIED_SEED_COLLECTIONS,
+    GENERATED_REGISTERED_PRODUCTS,
+  );
 
 export function createStageCatalogSnapshot(input: Readonly<{
   authority: StageCatalogSnapshot["authority"];

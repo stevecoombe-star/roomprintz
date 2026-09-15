@@ -33,6 +33,7 @@ import {
   STAGE_STUDIO_CHAIR_VARIANT_ID,
   STAGE_STUDIO_SETTEE_PRODUCT_ID,
   STAGE_STUDIO_SETTEE_VARIANT_ID,
+  STAGE_STUDIO_SIDE_TABLE_PRODUCT_ID,
   STAGE_STUDIO_SOFA_PRODUCT_ID,
   STAGE_STUDIO_SOFA_VARIANT_ID,
 } from "./catalog";
@@ -459,6 +460,7 @@ test("PI-5D2B Favorites/Recent/Collections stay Product/Variant based", () => {
     STAGE_STUDIO_SOFA_PRODUCT_ID,
     STAGE_STUDIO_SETTEE_PRODUCT_ID,
     STAGE_STUDIO_CHAIR_PRODUCT_ID,
+    STAGE_STUDIO_SIDE_TABLE_PRODUCT_ID,
   ]);
   const favorites = source("lib/vibode-stage/favorites.ts");
   const query = source("lib/vibode-stage/catalog-query.ts");
