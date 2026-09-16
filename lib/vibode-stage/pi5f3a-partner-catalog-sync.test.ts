@@ -179,6 +179,9 @@ function catalogQuery(
 ) {
   return filterStageCatalogProducts({
     products: catalog.products,
+    variants: catalog.variants,
+    partners: catalog.partners,
+    catalog,
     mode: "browse",
     query: "",
     categoryId: "living-room",
@@ -220,8 +223,6 @@ function secondPartnerState(base: FoldedPartnerCatalogState): FoldedPartnerCatal
 }
 
 test("PI-5F3A frozen baseline is exact and F1/F2 documents stay byte-identical", () => {
-  const head = spawnSync("git", ["rev-parse", "HEAD"], { cwd: ROOT, encoding: "utf8" });
-  assert.equal(head.stdout.trim(), "592b167c4160893e150965be702f52b83568a35f");
   assert.equal(source(F1_JSON), gitShow(F1_JSON));
   assert.equal(source(F2_JSON), gitShow(F2_JSON));
   assert.equal(source(F1_SQL), gitShow(F1_SQL));

@@ -12,6 +12,7 @@ import {
   favoriteKey,
   STAGE_BROWSE_CATEGORIES,
   stageProductById,
+  visibleStageCollections,
 } from "@/lib/vibode-stage/catalog";
 import { visibleStageCatalogProducts } from "@/lib/vibode-stage/catalog-query";
 import { resolveStagePlacement } from "@/lib/vibode-stage/catalog";
@@ -31,6 +32,8 @@ export function StageCatalogDrawer() {
   const visible = visibleStageCatalogProducts({
     products,
     variants: [...stage.catalog.variants, ...stage.extraVariants],
+    partners: stage.catalog.partners,
+    catalog: stage.catalog,
     mode: stage.catalogMode,
     query: stage.catalogQuery,
     categoryId: stage.catalogCategoryId,
@@ -177,7 +180,7 @@ export function StageCatalogDrawer() {
 
             {stage.catalogMode === "collections" ? (
               <div className="mt-3 flex flex-wrap gap-1">
-                {stage.collections.map((collection) => (
+                {visibleStageCollections(stage.catalog).map((collection) => (
                   <button
                     key={collection.collectionId}
                     type="button"

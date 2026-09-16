@@ -1,5 +1,9 @@
 /**
- * PI-5F3A Partner catalog sync CLI.
+ * PI-5F3A / PI-5F3C Partner catalog sync CLI.
+ *
+ * Dispatches on document mode:
+ *   patch    → parsePartnerCatalogSyncJson
+ *   snapshot → parsePartnerCatalogSnapshotJson
  *
  * Usage:
  *   npm run vibode:sync-partner-catalog -- --input <sync.json>
@@ -10,9 +14,12 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 
 import {
+  importPartnerCatalogSnapshot,
   importPartnerCatalogSync,
+  inspectPartnerSyncDocumentMode,
   parsePartnerCatalogSyncJson,
 } from "@/lib/vibode-stage/partner-catalog-sync";
+import { parsePartnerCatalogSnapshotJson } from "@/lib/vibode-stage/partner-catalog-snapshot";
 
 type FlagMap = Record<string, string | boolean>;
 
@@ -45,6 +52,26 @@ function flagString(flags: FlagMap, name: string): string | undefined {
 
 function printJson(value: unknown): void {
   process.stdout.write(`${JSON.stringify(value, null, 2)}\n`);
+}
+
+function emptyCliPlan() {
+  return {
+    productCreates: [],
+    productUpdates: [],
+    variantCreates: [],
+    variantUpdates: [],
+    collectionCreates: [],
+    collectionUpdates: [],
+    membershipAdds: [],
+    membershipRemoves: [],
+    partnerStatusTransition: null,
+    productDeactivations: [],
+    productReactivations: [],
+    variantDeactivations: [],
+    variantReactivations: [],
+    written: null,
+    migration: null,
+  };
 }
 
 function help(): string {
@@ -82,60 +109,46 @@ function main(): void {
         code: "INVALID_JSON",
         message: error instanceof Error ? error.message : "Unable to read partner sync JSON.",
       }],
-      productUpdates: [],
-      variantCreates: [],
-      variantUpdates: [],
-      collectionUpdates: [],
-      membershipAdds: [],
-      membershipRemoves: [],
-      productDeactivations: [],
-      productReactivations: [],
-      variantDeactivations: [],
-      variantReactivations: [],
-      written: null,
-      migration: null,
+      ...emptyCliPlan(),
     });
     process.exitCode = 1;
     return;
   }
-  const parsed = parsePartnerCatalogSyncJson(raw);
-  if (!parsed.ok) {
+  const mode = inspectPartnerSyncDocumentMode(raw);
+  const jsonRelativePath = path.relative(repoRoot, resolved).replaceAll("\\", "/");
+  const check = flags.check === true;
+  const migrationTimestamp = flagString(flags, "migration-timestamp");
+  if (mode === "snapshot") {
+    const parsed = parsePartnerCatalogSnapshotJson(raw);
+    if (!parsed.ok) {
+      printJson({
+        ok: false,
+        check,
+        noOp: false,
+        issues: parsed.issues,
+        ...emptyCliPlan(),
+      });
+      process.exitCode = 1;
+      return;
+    }
+    const result = importPartnerCatalogSnapshot({
+      document: parsed.document,
+      repoRoot,
+      check,
+      migrationTimestamp,
+      jsonRelativePath,
+    });
     printJson({
-      ok: false,
-      check: flags.check === true,
-      noOp: false,
-      issues: parsed.issues,
-      productUpdates: [],
-      variantCreates: [],
-      variantUpdates: [],
-      collectionUpdates: [],
-      membershipAdds: [],
-      membershipRemoves: [],
-      productDeactivations: [],
-      productReactivations: [],
-      variantDeactivations: [],
-      variantReactivations: [],
-      written: null,
-      migration: null,
-    });
-    process.exitCode = 1;
-    return;
-  }
-  const result = importPartnerCatalogSync({
-    document: parsed.document,
-    repoRoot,
-    check: flags.check === true,
-    migrationTimestamp: flagString(flags, "migration-timestamp"),
-    jsonRelativePath: path.relative(repoRoot, resolved).replaceAll("\\", "/"),
-  });
-  printJson({
-    ok: result.ok,
-    check: result.check,
-    noOp: result.noOp,
-    issues: result.issues,
+      ok: result.ok,
+      check: result.check,
+      noOp: result.noOp,
+      issues: result.issues,
+      partnerStatusTransition: result.ok ? result.partnerStatusTransition ?? null : null,
+      productCreates: result.ok ? result.productCreates ?? [] : [],
       productUpdates: result.productUpdates,
       variantCreates: result.variantCreates,
       variantUpdates: result.variantUpdates,
+      collectionCreates: result.ok ? result.collectionCreates ?? [] : [],
       collectionUpdates: result.collectionUpdates,
       membershipAdds: result.membershipAdds,
       membershipRemoves: result.membershipRemoves,
@@ -145,6 +158,49 @@ function main(): void {
       variantReactivations: result.variantReactivations,
       written: result.written,
       migration: result.migration,
+    });
+    process.exitCode = result.ok ? 0 : 1;
+    return;
+  }
+  const parsed = parsePartnerCatalogSyncJson(raw);
+  if (!parsed.ok) {
+    printJson({
+      ok: false,
+      check,
+      noOp: false,
+      issues: parsed.issues,
+      ...emptyCliPlan(),
+    });
+    process.exitCode = 1;
+    return;
+  }
+  const result = importPartnerCatalogSync({
+    document: parsed.document,
+    repoRoot,
+    check,
+    migrationTimestamp,
+    jsonRelativePath,
+  });
+  printJson({
+    ok: result.ok,
+    check: result.check,
+    noOp: result.noOp,
+    issues: result.issues,
+    partnerStatusTransition: result.ok ? result.partnerStatusTransition ?? null : null,
+    productCreates: result.ok ? result.productCreates ?? [] : [],
+    productUpdates: result.productUpdates,
+    variantCreates: result.variantCreates,
+    variantUpdates: result.variantUpdates,
+    collectionCreates: result.ok ? result.collectionCreates ?? [] : [],
+    collectionUpdates: result.collectionUpdates,
+    membershipAdds: result.membershipAdds,
+    membershipRemoves: result.membershipRemoves,
+    productDeactivations: result.productDeactivations,
+    productReactivations: result.productReactivations,
+    variantDeactivations: result.variantDeactivations,
+    variantReactivations: result.variantReactivations,
+    written: result.written,
+    migration: result.migration,
   });
   process.exitCode = result.ok ? 0 : 1;
 }

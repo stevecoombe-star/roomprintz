@@ -35,6 +35,11 @@ import {
   partnerCatalogSqlSlug,
   type PartnerCatalogDocument,
 } from "./partner-catalog";
+import {
+  parsePartnerCatalogSnapshotJson,
+  planPartnerCatalogSnapshotSync,
+  type PartnerCatalogSnapshotDocument,
+} from "./partner-catalog-snapshot";
 import { PARTNER_CATALOG_DOCUMENTS } from "./partner-catalog-documents";
 import {
   PARTNER_SYNC_DOCUMENTS,
@@ -65,13 +70,47 @@ import {
   type ProductVariantValidationGates,
 } from "./product-variant-register";
 import type {
+  FoldedPartnerCatalogState,
+  PartnerCatalogSyncPlan,
+  PartnerCatalogSyncSqlPlan,
+  PlannedCollectionCreate,
+  PlannedCollectionUpdate,
+  PlannedFieldChange,
+  PlannedMembership,
+  PlannedPartnerStatusTransition,
+  PlannedProductCreate,
+  PlannedProductStatusTransition,
+  PlannedProductUpdate,
+  PlannedVariantCreate,
+  PlannedVariantStatusTransition,
+  PlannedVariantUpdate,
+} from "./partner-catalog-sync-types";
+import type {
   StageCatalogSnapshot,
   StageCollection,
   StageCommercialStatus,
   StagePartner,
+  StagePartnerStatus,
   StageProduct,
   StageVariant,
 } from "./types";
+
+export type {
+  FoldedPartnerCatalogState,
+  PartnerCatalogSyncPlan,
+  PartnerCatalogSyncSqlPlan,
+  PlannedCollectionCreate,
+  PlannedCollectionUpdate,
+  PlannedFieldChange,
+  PlannedMembership,
+  PlannedPartnerStatusTransition,
+  PlannedProductCreate,
+  PlannedProductStatusTransition,
+  PlannedProductUpdate,
+  PlannedVariantCreate,
+  PlannedVariantStatusTransition,
+  PlannedVariantUpdate,
+} from "./partner-catalog-sync-types";
 
 export const DEMO_COFFEE_TABLE_WALNUT_VARIANT_ID =
   "var-demo-furniture-co-demo-coffee-table-walnut";
@@ -179,12 +218,6 @@ export function listPartnerSyncMigrations(repoRoot = process.cwd()): string[] {
     .sort();
 }
 
-export type FoldedPartnerCatalogState = Readonly<{
-  partners: readonly StagePartner[];
-  products: readonly StageProduct[];
-  variants: readonly StageVariant[];
-  collections: readonly StageCollection[];
-}>;
 
 type MutableProduct = Omit<StageProduct, "collectionIds"> & { collectionIds: string[] };
 type MutableCollection = Omit<StageCollection, "productIds"> & { productIds: string[] };
@@ -1087,75 +1120,17 @@ export function parsePartnerCatalogSyncJson(value: unknown): Readonly<{
   };
 }
 
-export type PlannedFieldChange = Readonly<{
-  column: string;
-  next: string | number | null;
-  previous: string | number | null;
-}>;
+export function inspectPartnerSyncDocumentMode(
+  value: unknown,
+): "patch" | "snapshot" | null {
+  if (!isPlainObject(value)) return null;
+  if (!("mode" in value)) return "patch";
+  const mode = asNonEmptyString(value.mode);
+  if (mode === "patch") return "patch";
+  if (mode === "snapshot") return "snapshot";
+  return null;
+}
 
-export type PlannedProductUpdate = Readonly<{
-  productId: string;
-  changes: readonly PlannedFieldChange[];
-}>;
-
-export type PlannedVariantUpdate = Readonly<{
-  variantId: string;
-  productId: string;
-  changes: readonly PlannedFieldChange[];
-}>;
-
-export type PlannedVariantCreate = Readonly<{
-  variant: StageVariant;
-}>;
-
-export type PlannedCollectionUpdate = Readonly<{
-  collectionId: string;
-  name: string;
-  previousName: string;
-}>;
-
-export type PlannedMembership = Readonly<{
-  productId: string;
-  collectionId: string;
-  sortOrder?: number;
-}>;
-
-export type PlannedProductStatusTransition = Readonly<{
-  productId: string;
-  from: StageCommercialStatus;
-  to: StageCommercialStatus;
-}>;
-
-export type PlannedVariantStatusTransition = Readonly<{
-  variantId: string;
-  productId: string;
-  from: StageCommercialStatus;
-  to: StageCommercialStatus;
-}>;
-
-export type PartnerCatalogSyncSqlPlan = Readonly<{
-  sql: string;
-  migration: string;
-}>;
-
-export type PartnerCatalogSyncPlan = Readonly<{
-  ok: boolean;
-  noOp: boolean;
-  issues: readonly ProductVariantIssue[];
-  partnerId: string | null;
-  productUpdates: readonly PlannedProductUpdate[];
-  variantCreates: readonly PlannedVariantCreate[];
-  variantUpdates: readonly PlannedVariantUpdate[];
-  collectionUpdates: readonly PlannedCollectionUpdate[];
-  membershipAdds: readonly PlannedMembership[];
-  membershipRemoves: readonly PlannedMembership[];
-  productDeactivations: readonly PlannedProductStatusTransition[];
-  productReactivations: readonly PlannedProductStatusTransition[];
-  variantDeactivations: readonly PlannedVariantStatusTransition[];
-  variantReactivations: readonly PlannedVariantStatusTransition[];
-  sqlPlan: PartnerCatalogSyncSqlPlan | null;
-  nextState: FoldedPartnerCatalogState | null;
-}>;
 
 function sameValue(left: string | number | null | undefined, right: string | number | null | undefined): boolean {
   if (left == null && right == null) return true;
@@ -1214,6 +1189,17 @@ function workingCatalogFor(
   return overlayFoldedPartnerCatalog(state, gates.catalog ?? STAGE_SEED_CATALOG);
 }
 
+function emptyCreatePlanFields(): Pick<
+  PartnerCatalogSyncPlan,
+  "partnerStatusTransition" | "productCreates" | "collectionCreates"
+> {
+  return {
+    partnerStatusTransition: null,
+    productCreates: [],
+    collectionCreates: [],
+  };
+}
+
 function emptyStatusPlanFields(): Pick<
   PartnerCatalogSyncPlan,
   | "productDeactivations"
@@ -1238,6 +1224,7 @@ function failedPartnerCatalogSyncPlan(
     noOp: false,
     issues,
     partnerId,
+    ...emptyCreatePlanFields(),
     productUpdates: [],
     variantCreates: [],
     variantUpdates: [],
@@ -1893,6 +1880,7 @@ export function planPartnerCatalogSync(input: Readonly<{
     noOp,
     issues: [],
     partnerId: partner.partnerId,
+    ...emptyCreatePlanFields(),
     productUpdates,
     variantCreates,
     variantUpdates,
@@ -2268,9 +2256,9 @@ export function foldPartnerCatalogCurrentState(input: Readonly<{
         issues: [issue("PARTNER_JSON_MISSING", `Missing partner sync JSON at ${documentReg.jsonRelativePath}.`)],
       };
     }
-    let parsed: ReturnType<typeof parsePartnerCatalogSyncJson>;
+    let raw: unknown;
     try {
-      parsed = parsePartnerCatalogSyncJson(JSON.parse(readFileSync(jsonPath, "utf8")));
+      raw = JSON.parse(readFileSync(jsonPath, "utf8"));
     } catch (error) {
       return {
         ok: false,
@@ -2281,6 +2269,31 @@ export function foldPartnerCatalogCurrentState(input: Readonly<{
         )],
       };
     }
+    const mode = inspectPartnerSyncDocumentMode(raw);
+    if (mode === "snapshot") {
+      const parsed = parsePartnerCatalogSnapshotJson(raw);
+      if (!parsed.ok) {
+        return { ok: false, state: null, issues: parsed.issues };
+      }
+      const plan = planPartnerCatalogSnapshotSync({
+        current: state,
+        document: parsed.document,
+        repoRoot,
+      });
+      if (!plan.ok || !plan.nextState) {
+        return { ok: false, state: null, issues: plan.issues };
+      }
+      state = plan.nextState;
+      continue;
+    }
+    if (mode !== "patch") {
+      return {
+        ok: false,
+        state: null,
+        issues: [issue("UNSUPPORTED_OPERATION", `Unsupported partner sync mode in ${documentReg.jsonRelativePath}.`)],
+      };
+    }
+    const parsed = parsePartnerCatalogSyncJson(raw);
     if (!parsed.ok) {
       return { ok: false, state: null, issues: parsed.issues };
     }
@@ -2325,17 +2338,24 @@ export type ParsedPartnerCatalogSyncSql = Readonly<{
   assetIds: readonly string[];
   updatedProductIds: readonly string[];
   updatedVariantIds: readonly string[];
+  updatedCollectionIds: readonly string[];
   statusUpdatedProductIds: readonly string[];
   statusUpdatedVariantIds: readonly string[];
   productStatusTransitions: readonly PlannedProductStatusTransition[];
   variantStatusTransitions: readonly PlannedVariantStatusTransition[];
   insertedVariantIds: readonly string[];
+  insertedProductIds: readonly string[];
+  insertedCollectionIds: readonly string[];
   insertedMemberships: readonly Readonly<{ productId: string; collectionId: string }>[];
   deletedMemberships: readonly Readonly<{ productId: string; collectionId: string }>[];
   productUpdateColumns: readonly string[];
   variantUpdateColumns: readonly string[];
   collectionUpdateColumns: readonly string[];
+  partnerUpdateColumns: readonly string[];
+  partnerStatusTransitions: readonly PlannedPartnerStatusTransition[];
+  insertsProduct: boolean;
   insertsVariant: boolean;
+  insertsCollection: boolean;
   insertsMembership: boolean;
   deletesMembership: boolean;
   deletesProduct: boolean;
@@ -2346,6 +2366,7 @@ export type ParsedPartnerCatalogSyncSql = Readonly<{
   updatesProduct: boolean;
   updatesVariant: boolean;
   updatesCollection: boolean;
+  updatesPartner: boolean;
   updatesCurrentAssetId: boolean;
   mutatesAssets: boolean;
   touchesObjectsJson: boolean;
@@ -2413,7 +2434,10 @@ export function parsePartnerCatalogSyncSql(sql: string): ParsedPartnerCatalogSyn
   const productUpdateBlocks = blocksMatching(body, /\bupdate\s+public\.vibode_stage_products\b[\s\S]*?;/gi);
   const variantUpdateBlocks = blocksMatching(body, /\bupdate\s+public\.vibode_stage_variants\b[\s\S]*?;/gi);
   const collectionUpdateBlocks = blocksMatching(body, /\bupdate\s+public\.vibode_stage_collections\b[\s\S]*?;/gi);
+  const partnerUpdateBlocks = blocksMatching(body, /\bupdate\s+public\.vibode_stage_partners\b[\s\S]*?;/gi);
   const variantInsertBlocks = blocksMatching(body, /\binsert\s+into\s+public\.vibode_stage_variants\b[\s\S]*?;/gi);
+  const productInsertBlocks = blocksMatching(body, /\binsert\s+into\s+public\.vibode_stage_products\b[\s\S]*?;/gi);
+  const collectionInsertBlocks = blocksMatching(body, /\binsert\s+into\s+public\.vibode_stage_collections\b[\s\S]*?;/gi);
   const membershipInsertBlocks = blocksMatching(body, /\binsert\s+into\s+public\.vibode_stage_product_collections\b[\s\S]*?;/gi);
   const membershipDeleteBlocks = blocksMatching(body, /\bdelete\s+from\s+public\.vibode_stage_product_collections\b[\s\S]*?;/gi);
   const productCommercialBlocks = productUpdateBlocks.filter((block) => !isStatusOnlyUpdate(block));
@@ -2423,6 +2447,7 @@ export function parsePartnerCatalogSyncSql(sql: string): ParsedPartnerCatalogSyn
   const productUpdateColumns = unique(productCommercialBlocks.flatMap(setColumnsFromUpdate));
   const variantUpdateColumns = unique(variantCommercialBlocks.flatMap(setColumnsFromUpdate));
   const collectionUpdateColumns = unique(collectionUpdateBlocks.flatMap(setColumnsFromUpdate));
+  const partnerUpdateColumns = unique(partnerUpdateBlocks.flatMap(setColumnsFromUpdate));
   const productStatusTransitions = productStatusBlocks.flatMap((block) => {
     const parsed = statusTransitionFromBlock(block, "product_id");
     if (!parsed) return [];
@@ -2437,6 +2462,18 @@ export function parsePartnerCatalogSyncSql(sql: string): ParsedPartnerCatalogSyn
       from: parsed.from,
       to: parsed.to,
     }];
+  });
+  const partnerStatusTransitions = partnerUpdateBlocks.flatMap((block) => {
+    if (!isStatusOnlyUpdate(block)) return [];
+    const partnerId = sqlEqualsInClause(block, "partner_id");
+    const fromRaw = sqlEqualsInClause(block.split(/\bwhere\b/i)[1] ?? "", "status");
+    const setMatch = block.match(/\bset\b([\s\S]*?)\bwhere\b/i);
+    const toRaw = sqlEqualsInClause(setMatch?.[1] ?? "", "status");
+    if (!partnerId || (fromRaw !== "active" && fromRaw !== "inactive")) return [];
+    if (toRaw !== "active" && toRaw !== "inactive") return [];
+    const from: StagePartnerStatus = fromRaw;
+    const to: StagePartnerStatus = toRaw;
+    return [{ partnerId, from, to }];
   });
   const forbiddenTables = FORBIDDEN_STAGE_CATALOG_TABLES.filter((table) => {
     const pattern = new RegExp(`(?<![A-Za-z0-9_])${table}(?![A-Za-z0-9_])`);
@@ -2453,11 +2490,21 @@ export function parsePartnerCatalogSyncSql(sql: string): ParsedPartnerCatalogSyn
     ]),
     updatedProductIds: unique(productCommercialBlocks.flatMap((block) => quotedEquals(block, "product_id"))),
     updatedVariantIds: unique(variantCommercialBlocks.flatMap((block) => quotedEquals(block, "variant_id"))),
+    updatedCollectionIds: unique(collectionUpdateBlocks.flatMap((block) => quotedEquals(block, "collection_id"))),
     statusUpdatedProductIds: unique(productStatusTransitions.map((item) => item.productId)),
     statusUpdatedVariantIds: unique(variantStatusTransitions.map((item) => item.variantId)),
     productStatusTransitions,
     variantStatusTransitions,
+    partnerStatusTransitions,
     insertedVariantIds: unique(variantInsertBlocks.flatMap((block) => {
+      const id = firstSqlString(valuesClause(block));
+      return id ? [id] : [];
+    })),
+    insertedProductIds: unique(productInsertBlocks.flatMap((block) => {
+      const id = firstSqlString(valuesClause(block));
+      return id ? [id] : [];
+    })),
+    insertedCollectionIds: unique(collectionInsertBlocks.flatMap((block) => {
       const id = firstSqlString(valuesClause(block));
       return id ? [id] : [];
     })),
@@ -2482,7 +2529,10 @@ export function parsePartnerCatalogSyncSql(sql: string): ParsedPartnerCatalogSyn
     productUpdateColumns,
     variantUpdateColumns,
     collectionUpdateColumns,
+    partnerUpdateColumns,
+    insertsProduct: productInsertBlocks.length > 0,
     insertsVariant: variantInsertBlocks.length > 0,
+    insertsCollection: collectionInsertBlocks.length > 0,
     insertsMembership: membershipInsertBlocks.length > 0,
     deletesMembership: membershipDeleteBlocks.length > 0,
     deletesProduct: /\bdelete\s+from\s+public\.vibode_stage_products\b/i.test(body),
@@ -2493,7 +2543,9 @@ export function parsePartnerCatalogSyncSql(sql: string): ParsedPartnerCatalogSyn
     updatesProduct: productUpdateBlocks.length > 0,
     updatesVariant: variantUpdateBlocks.length > 0,
     updatesCollection: collectionUpdateBlocks.length > 0,
-    updatesCurrentAssetId: variantUpdateColumns.includes("current_asset_id"),
+    updatesPartner: partnerUpdateBlocks.length > 0,
+    updatesCurrentAssetId: variantUpdateColumns.includes("current_asset_id") ||
+      /\bupdate\b[\s\S]*\bcurrent_asset_id\s*=/i.test(body),
     mutatesAssets: /\b(?:insert\s+into|update|delete\s+from)\s+public\.vibode_stage_assets\b/i.test(body),
     touchesObjectsJson: /objects_json/i.test(body),
     touchesScenes: /vibode_3d_scenes/i.test(body),
@@ -2511,9 +2563,12 @@ export type PartnerCatalogSyncImportSuccess = Readonly<{
   noOp: boolean;
   issues: readonly ProductVariantIssue[];
   partnerId: string;
+  partnerStatusTransition?: PlannedPartnerStatusTransition | null;
+  productCreates?: readonly PlannedProductCreate[];
   productUpdates: readonly PlannedProductUpdate[];
   variantCreates: readonly PlannedVariantCreate[];
   variantUpdates: readonly PlannedVariantUpdate[];
+  collectionCreates?: readonly PlannedCollectionCreate[];
   collectionUpdates: readonly PlannedCollectionUpdate[];
   membershipAdds: readonly PlannedMembership[];
   membershipRemoves: readonly PlannedMembership[];
@@ -2776,4 +2831,241 @@ export function importPartnerCatalogSync(input: Readonly<{
     migration: plan.sqlPlan.migration,
     nextState: plan.nextState,
   };
+}
+
+function importFromSyncPlan(input: Readonly<{
+  plan: PartnerCatalogSyncPlan;
+  check: boolean;
+  partnerId: string;
+}>): PartnerCatalogSyncImportResult {
+  const { plan, check, partnerId } = input;
+  if (!plan.ok || !plan.nextState) {
+    return {
+      ok: false,
+      check,
+      noOp: false,
+      issues: plan.issues,
+      partnerId: plan.partnerId,
+      productUpdates: [],
+      variantCreates: [],
+      variantUpdates: [],
+      collectionUpdates: [],
+      membershipAdds: [],
+      membershipRemoves: [],
+      productDeactivations: [],
+      productReactivations: [],
+      variantDeactivations: [],
+      variantReactivations: [],
+      written: null,
+      migration: null,
+      nextState: null,
+    };
+  }
+  const extras = {
+    partnerStatusTransition: plan.partnerStatusTransition,
+    productCreates: plan.productCreates,
+    collectionCreates: plan.collectionCreates,
+  };
+  if (plan.noOp || !plan.sqlPlan) {
+    return {
+      ok: true,
+      check,
+      noOp: true,
+      issues: [],
+      partnerId: plan.partnerId ?? partnerId,
+      ...extras,
+      productUpdates: plan.productUpdates,
+      variantCreates: plan.variantCreates,
+      variantUpdates: plan.variantUpdates,
+      collectionUpdates: plan.collectionUpdates,
+      membershipAdds: plan.membershipAdds,
+      membershipRemoves: plan.membershipRemoves,
+      productDeactivations: plan.productDeactivations,
+      productReactivations: plan.productReactivations,
+      variantDeactivations: plan.variantDeactivations,
+      variantReactivations: plan.variantReactivations,
+      written: null,
+      migration: null,
+      nextState: plan.nextState,
+    };
+  }
+  if (check) {
+    return {
+      ok: true,
+      check: true,
+      noOp: false,
+      issues: [],
+      partnerId: plan.partnerId ?? partnerId,
+      ...extras,
+      productUpdates: plan.productUpdates,
+      variantCreates: plan.variantCreates,
+      variantUpdates: plan.variantUpdates,
+      collectionUpdates: plan.collectionUpdates,
+      membershipAdds: plan.membershipAdds,
+      membershipRemoves: plan.membershipRemoves,
+      productDeactivations: plan.productDeactivations,
+      productReactivations: plan.productReactivations,
+      variantDeactivations: plan.variantDeactivations,
+      variantReactivations: plan.variantReactivations,
+      written: null,
+      migration: plan.sqlPlan.migration,
+      nextState: plan.nextState,
+    };
+  }
+  if (existsSync(plan.sqlPlan.migration)) {
+    return {
+      ok: false,
+      check,
+      noOp: false,
+      issues: [issue("MIGRATION_EXISTS", `Partner sync migration already exists: ${plan.sqlPlan.migration}`)],
+      partnerId: plan.partnerId,
+      productUpdates: [],
+      variantCreates: [],
+      variantUpdates: [],
+      collectionUpdates: [],
+      membershipAdds: [],
+      membershipRemoves: [],
+      productDeactivations: [],
+      productReactivations: [],
+      variantDeactivations: [],
+      variantReactivations: [],
+      written: null,
+      migration: null,
+      nextState: null,
+    };
+  }
+  try {
+    writeFileAtomic(plan.sqlPlan.migration, plan.sqlPlan.sql);
+  } catch (error) {
+    return {
+      ok: false,
+      check,
+      noOp: false,
+      issues: [issue(
+        "WRITE_FAILED",
+        error instanceof Error ? error.message : "Unable to write partner sync SQL.",
+      )],
+      partnerId: plan.partnerId,
+      productUpdates: [],
+      variantCreates: [],
+      variantUpdates: [],
+      collectionUpdates: [],
+      membershipAdds: [],
+      membershipRemoves: [],
+      productDeactivations: [],
+      productReactivations: [],
+      variantDeactivations: [],
+      variantReactivations: [],
+      written: null,
+      migration: null,
+      nextState: null,
+    };
+  }
+  return {
+    ok: true,
+    check: false,
+    noOp: false,
+    issues: [],
+    partnerId: plan.partnerId ?? partnerId,
+    ...extras,
+    productUpdates: plan.productUpdates,
+    variantCreates: plan.variantCreates,
+    variantUpdates: plan.variantUpdates,
+    collectionUpdates: plan.collectionUpdates,
+    membershipAdds: plan.membershipAdds,
+    membershipRemoves: plan.membershipRemoves,
+    productDeactivations: plan.productDeactivations,
+    productReactivations: plan.productReactivations,
+    variantDeactivations: plan.variantDeactivations,
+    variantReactivations: plan.variantReactivations,
+    written: { migration: plan.sqlPlan.migration },
+    migration: plan.sqlPlan.migration,
+    nextState: plan.nextState,
+  };
+}
+
+export function importPartnerCatalogSnapshot(input: Readonly<{
+  document: PartnerCatalogSnapshotDocument;
+  repoRoot?: string;
+  check?: boolean;
+  migrationTimestamp?: string;
+  sqlSlug?: string;
+  current?: FoldedPartnerCatalogState;
+  stopBeforeSyncBatchId?: string;
+  jsonRelativePath?: string;
+  catalog?: StageCatalogSnapshot;
+  manifestRepoRoot?: string;
+}>): PartnerCatalogSyncImportResult {
+  const check = input.check === true;
+  const repoRoot = input.repoRoot ?? process.cwd();
+  const registration = input.jsonRelativePath
+    ? resolvePartnerSyncRegistration(input.jsonRelativePath, repoRoot)
+    : null;
+  let folded = input.current ?? null;
+  if (!folded) {
+    const foldedResult = foldPartnerCatalogCurrentState({
+      repoRoot,
+      stopBeforeSyncBatchId: input.stopBeforeSyncBatchId ?? registration?.batchId,
+    });
+    if (!foldedResult.ok) {
+      return {
+        ok: false,
+        check,
+        noOp: false,
+        issues: foldedResult.issues,
+        partnerId: input.document.partnerId,
+        productUpdates: [],
+        variantCreates: [],
+        variantUpdates: [],
+        collectionUpdates: [],
+        membershipAdds: [],
+        membershipRemoves: [],
+        productDeactivations: [],
+        productReactivations: [],
+        variantDeactivations: [],
+        variantReactivations: [],
+        written: null,
+        migration: null,
+        nextState: null,
+      };
+    }
+    folded = foldedResult.state;
+  }
+  const timestamp = input.migrationTimestamp ?? utcTimestamp();
+  if (!/^\d{14}$/.test(timestamp)) {
+    return {
+      ok: false,
+      check,
+      noOp: false,
+      issues: [issue("INVALID_TIMESTAMP", "migration timestamp must be YYYYMMDDHHMMSS.")],
+      partnerId: input.document.partnerId,
+      productUpdates: [],
+      variantCreates: [],
+      variantUpdates: [],
+      collectionUpdates: [],
+      membershipAdds: [],
+      membershipRemoves: [],
+      productDeactivations: [],
+      productReactivations: [],
+      variantDeactivations: [],
+      variantReactivations: [],
+      written: null,
+      migration: null,
+      nextState: null,
+    };
+  }
+  const plan = planPartnerCatalogSnapshotSync({
+    current: folded,
+    document: input.document,
+    repoRoot,
+    migrationTimestamp: timestamp,
+    sqlSlug: input.sqlSlug ?? registration?.sqlSlug,
+    catalog: input.catalog,
+    manifestRepoRoot: input.manifestRepoRoot,
+  });
+  return importFromSyncPlan({
+    plan,
+    check,
+    partnerId: input.document.partnerId,
+  });
 }

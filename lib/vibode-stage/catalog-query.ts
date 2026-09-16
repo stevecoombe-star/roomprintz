@@ -1,10 +1,23 @@
-import type { StageCatalogMode, StageProduct, StageVariant } from "./types";
+import type {
+  StageCatalogMode,
+  StageCatalogSnapshot,
+  StagePartner,
+  StageProduct,
+  StageVariant,
+} from "./types";
 import { isProductFavorited } from "./favorites";
-import { isStageCommercialActive } from "./catalog";
+import {
+  isStageCommercialActive,
+  isStagePartnerActive,
+  isStageProductAvailable,
+  stagePartnerById,
+} from "./catalog";
 
 export type StageCatalogQueryInput = Readonly<{
   products: readonly StageProduct[];
   variants?: readonly StageVariant[];
+  partners?: readonly StagePartner[];
+  catalog?: StageCatalogSnapshot;
   mode: StageCatalogMode;
   query: string;
   categoryId: string | null;
@@ -14,6 +27,23 @@ export type StageCatalogQueryInput = Readonly<{
   favoriteKeyFor: (product: StageProduct) => string;
   recentlyUsedProductIds?: readonly string[];
 }>;
+
+function partnersForQuery(input: StageCatalogQueryInput): readonly StagePartner[] {
+  return input.partners ?? input.catalog?.partners ?? [];
+}
+
+function isQueryProductAvailable(
+  product: StageProduct,
+  partners: readonly StagePartner[],
+  catalog?: StageCatalogSnapshot,
+): boolean {
+  if (catalog) return isStageProductAvailable(product, catalog);
+  if (!isStageCommercialActive(product.status)) return false;
+  if (!product.partnerId) return true;
+  const partner = partners.find((item) => item.partnerId === product.partnerId)
+    ?? stagePartnerById(product.partnerId);
+  return isStagePartnerActive(partner);
+}
 
 export type StageCatalogNavigationState = Readonly<{
   catalogMode: StageCatalogMode;
@@ -34,8 +64,10 @@ export function productHasActiveFavoriteVariant(
   product: StageProduct,
   favoriteKeys: ReadonlySet<string>,
   variants: readonly StageVariant[],
+  partners: readonly StagePartner[] = [],
+  catalog?: StageCatalogSnapshot,
 ): boolean {
-  if (!isStageCommercialActive(product.status)) return false;
+  if (!isQueryProductAvailable(product, partners, catalog)) return false;
   for (const key of favoriteKeys) {
     const variantId = favoriteVariantIdFromKey(key, product.productId);
     if (!variantId) continue;
@@ -50,15 +82,22 @@ export function productHasActiveFavoriteVariant(
 export function filterStageCatalogProducts(input: StageCatalogQueryInput): StageProduct[] {
   const needle = input.query.trim().toLowerCase();
   const recentIds = input.recentlyUsedProductIds ?? [];
+  const partners = partnersForQuery(input);
   return input.products.filter((product) => {
-    if (!isStageCommercialActive(product.status)) return false;
+    if (!isQueryProductAvailable(product, partners, input.catalog)) return false;
     if (input.mode === "favorites") {
       const prefixOrDefault = isProductFavorited(product.productId, input.favoriteKeys)
         || input.favoriteKeys.has(input.favoriteKeyFor(product));
       if (!prefixOrDefault) return false;
       if (
         input.variants &&
-        !productHasActiveFavoriteVariant(product, input.favoriteKeys, input.variants)
+        !productHasActiveFavoriteVariant(
+          product,
+          input.favoriteKeys,
+          input.variants,
+          partners,
+          input.catalog,
+        )
       ) {
         return false;
       }

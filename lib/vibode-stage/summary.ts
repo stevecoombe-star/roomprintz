@@ -4,6 +4,7 @@ import {
   fallbackProductIdForAsset,
   formatStagePrice,
   isStageCommercialActive,
+  isStageProductAvailable,
   stageProductById,
   stageVariantById,
 } from "./catalog";
@@ -69,7 +70,7 @@ export function buildStageSummary(input: Readonly<{
     const lineTotal = unitPrice == null ? null : unitPrice * quantity;
     const lineShoppable = Boolean(
       product &&
-      isStageCommercialActive(product.status) &&
+      isStageProductAvailable(product, input.catalog) &&
       variant &&
       isStageCommercialActive(variant.status) &&
       (product.productUrl || variant.productUrl),

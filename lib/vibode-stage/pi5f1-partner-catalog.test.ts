@@ -181,6 +181,9 @@ function catalogQuery(
 ) {
   return filterStageCatalogProducts({
     products: catalog.products,
+    variants: catalog.variants,
+    partners: catalog.partners,
+    catalog,
     mode: "browse",
     query: "",
     categoryId: "living-room",

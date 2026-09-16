@@ -18,6 +18,7 @@ import {
   ALLOWED_PRODUCT_SYNC_COLUMNS,
   ALLOWED_VARIANT_SYNC_COLUMNS,
   foldPartnerCatalogCurrentState,
+  inspectPartnerSyncDocumentMode,
   isPartnerSyncMigrationFileName,
   isPartnerSyncSqlForSlug,
   listPartnerSyncMigrations,
@@ -25,6 +26,10 @@ import {
   parsePartnerCatalogSyncSql,
   planPartnerCatalogSync,
 } from "./partner-catalog-sync";
+import {
+  parsePartnerCatalogSnapshotJson,
+  planPartnerCatalogSnapshotSync,
+} from "./partner-catalog-snapshot";
 import { PARTNER_SYNC_DOCUMENTS } from "./partner-sync-documents";
 import {
   productRegistrationRepoPaths,
@@ -94,9 +99,9 @@ export function detectPartnerCatalogSyncDrift(input: Readonly<{
       ));
       continue;
     }
-    let parsedJson: ReturnType<typeof parsePartnerCatalogSyncJson>;
+    let raw: unknown;
     try {
-      parsedJson = parsePartnerCatalogSyncJson(JSON.parse(readFileSync(jsonPath, "utf8")));
+      raw = JSON.parse(readFileSync(jsonPath, "utf8"));
     } catch (error) {
       issues.push(issue(
         "INVALID_JSON",
@@ -104,13 +109,7 @@ export function detectPartnerCatalogSyncDrift(input: Readonly<{
       ));
       continue;
     }
-    if (!parsedJson.ok) {
-      for (const item of parsedJson.issues) {
-        issues.push(issue(item.code, `${documentReg.jsonRelativePath}: ${item.message}`));
-      }
-      continue;
-    }
-
+    const mode = inspectPartnerSyncDocumentMode(raw);
     const prior = foldPartnerCatalogCurrentState({
       repoRoot,
       stopBeforeSyncBatchId: documentReg.batchId,
@@ -119,12 +118,42 @@ export function detectPartnerCatalogSyncDrift(input: Readonly<{
       issues.push(...prior.issues);
       continue;
     }
-    const plan = planPartnerCatalogSync({
-      current: prior.state,
-      document: parsedJson.document,
-      repoRoot,
-      sqlSlug: documentReg.sqlSlug,
-    });
+    let plan: ReturnType<typeof planPartnerCatalogSync>;
+    if (mode === "snapshot") {
+      const parsedJson = parsePartnerCatalogSnapshotJson(raw);
+      if (!parsedJson.ok) {
+        for (const item of parsedJson.issues) {
+          issues.push(issue(item.code, `${documentReg.jsonRelativePath}: ${item.message}`));
+        }
+        continue;
+      }
+      plan = planPartnerCatalogSnapshotSync({
+        current: prior.state,
+        document: parsedJson.document,
+        repoRoot,
+        sqlSlug: documentReg.sqlSlug,
+      });
+    } else if (mode === "patch") {
+      const parsedJson = parsePartnerCatalogSyncJson(raw);
+      if (!parsedJson.ok) {
+        for (const item of parsedJson.issues) {
+          issues.push(issue(item.code, `${documentReg.jsonRelativePath}: ${item.message}`));
+        }
+        continue;
+      }
+      plan = planPartnerCatalogSync({
+        current: prior.state,
+        document: parsedJson.document,
+        repoRoot,
+        sqlSlug: documentReg.sqlSlug,
+      });
+    } else {
+      issues.push(issue(
+        "UNSUPPORTED_OPERATION",
+        `${documentReg.jsonRelativePath} has an unsupported partner sync mode.`,
+      ));
+      continue;
+    }
     if (!plan.ok) {
       issues.push(...plan.issues);
       continue;
@@ -202,6 +231,11 @@ export function detectPartnerCatalogSyncDrift(input: Readonly<{
         issues.push(issue("SQL_FORBIDDEN_COLUMN", `${fileName} updates Collection column ${column}.`));
       }
     }
+    for (const column of parsedSql.partnerUpdateColumns) {
+      if (column !== "status") {
+        issues.push(issue("SQL_FORBIDDEN_COLUMN", `${fileName} updates Partner column ${column}.`));
+      }
+    }
 
     const plannedProductIds = plan.productUpdates.map((item) => item.productId).sort();
     const sqlProductIds = [...parsedSql.updatedProductIds].sort();
@@ -217,6 +251,30 @@ export function detectPartnerCatalogSyncDrift(input: Readonly<{
     const sqlVariantCreateIds = [...parsedSql.insertedVariantIds].sort();
     if (JSON.stringify(plannedVariantCreateIds) !== JSON.stringify(sqlVariantCreateIds)) {
       issues.push(issue("SQL_JSON_MISMATCH", `${fileName} Variant creates differ from the sync document plan.`));
+    }
+    const plannedProductCreateIds = (plan.productCreates ?? []).map((item) => item.product.productId).sort();
+    const sqlProductCreateIds = [...parsedSql.insertedProductIds].sort();
+    if (JSON.stringify(plannedProductCreateIds) !== JSON.stringify(sqlProductCreateIds)) {
+      issues.push(issue("SQL_JSON_MISMATCH", `${fileName} Product creates differ from the sync document plan.`));
+    }
+    const plannedCollectionCreateIds = (plan.collectionCreates ?? []).map((item) => item.collection.collectionId).sort();
+    const sqlCollectionCreateIds = [...parsedSql.insertedCollectionIds].sort();
+    if (JSON.stringify(plannedCollectionCreateIds) !== JSON.stringify(sqlCollectionCreateIds)) {
+      issues.push(issue("SQL_JSON_MISMATCH", `${fileName} Collection creates differ from the sync document plan.`));
+    }
+    const plannedCollectionUpdateIds = plan.collectionUpdates.map((item) => item.collectionId).sort();
+    const sqlCollectionUpdateIds = [...parsedSql.updatedCollectionIds].sort();
+    if (JSON.stringify(plannedCollectionUpdateIds) !== JSON.stringify(sqlCollectionUpdateIds)) {
+      issues.push(issue("SQL_JSON_MISMATCH", `${fileName} Collection updates differ from the sync document plan.`));
+    }
+    const plannedPartnerTransition = plan.partnerStatusTransition
+      ? [`${plan.partnerStatusTransition.partnerId}:${plan.partnerStatusTransition.from}:${plan.partnerStatusTransition.to}`]
+      : [];
+    const sqlPartnerTransition = parsedSql.partnerStatusTransitions
+      .map((item) => `${item.partnerId}:${item.from}:${item.to}`)
+      .sort();
+    if (JSON.stringify(plannedPartnerTransition) !== JSON.stringify(sqlPartnerTransition)) {
+      issues.push(issue("SQL_JSON_MISMATCH", `${fileName} Partner status transitions differ from the sync document plan.`));
     }
 
     const plannedProductDeactivate = plan.productDeactivations

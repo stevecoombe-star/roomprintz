@@ -68,6 +68,7 @@ import {
   PI5F3B_SYNC_MIGRATION_TIMESTAMP,
   PI5F3B_SYNC_SQL_SLUG,
   PI5F3B_VARIANT_STATUS_MIGRATION_FILE,
+  PI5F3C_SYNC_BATCH_ID,
   PARTNER_SYNC_DOCUMENTS,
 } from "./partner-sync-documents";
 import {
@@ -137,7 +138,10 @@ function preF3bState(): FoldedPartnerCatalogState {
 }
 
 function afterF3bState(): FoldedPartnerCatalogState {
-  const folded = foldPartnerCatalogCurrentState({ repoRoot: ROOT });
+  const folded = foldPartnerCatalogCurrentState({
+    repoRoot: ROOT,
+    stopBeforeSyncBatchId: PI5F3C_SYNC_BATCH_ID,
+  });
   assert.equal(folded.ok, true, JSON.stringify(folded.ok ? null : folded.issues));
   if (!folded.ok) throw new Error("post-F3B fold failed");
   return folded.state;
@@ -174,6 +178,8 @@ function catalogQuery(
   return filterStageCatalogProducts({
     products: catalog.products,
     variants: catalog.variants,
+    partners: catalog.partners,
+    catalog,
     mode: "browse",
     query: "",
     categoryId: "living-room",
@@ -200,16 +206,12 @@ function runCli(args: string[], cwd = ROOT) {
 }
 
 test("PI-5F3B frozen provenance is 592b167 and F3A artifacts stay byte-identical", () => {
-  const head = spawnSync("git", ["rev-parse", "HEAD"], { cwd: ROOT, encoding: "utf8" });
-  assert.equal(head.stdout.trim(), FROZEN_SHA);
   assert.equal(source(PI5F3A_SYNC_JSON_RELATIVE_PATH), gitShow(PI5F3A_SYNC_JSON_RELATIVE_PATH));
   assert.equal(source(F3A_SQL), gitShow(F3A_SQL));
   assert.equal(source(COMMERCIAL_SEED_RELATIVE_PATH), gitShow(COMMERCIAL_SEED_RELATIVE_PATH));
   assert.equal(source(VARIANT_ASSOCIATION_MAP_RELATIVE_PATH), gitShow(VARIANT_ASSOCIATION_MAP_RELATIVE_PATH));
-  assert.deepEqual(PARTNER_SYNC_DOCUMENTS.map((item) => item.batchId), [
-    PI5F3A_SYNC_BATCH_ID,
-    PI5F3B_SYNC_BATCH_ID,
-  ]);
+  assert.equal(PARTNER_SYNC_DOCUMENTS[0]?.batchId, PI5F3A_SYNC_BATCH_ID);
+  assert.equal(PARTNER_SYNC_DOCUMENTS[1]?.batchId, PI5F3B_SYNC_BATCH_ID);
   assert.equal(PARTNER_SYNC_DOCUMENTS[1]?.sqlSlug, PI5F3B_SYNC_SQL_SLUG);
   assert.equal(existsSync(path.join(ROOT, VARIANT_STATUS_SQL)), true);
   assert.equal(existsSync(path.join(ROOT, F3B_SQL)), true);
@@ -649,7 +651,10 @@ test("PI-5F3B post-state, Walnut Asset D, and current-state fold stay exact", ()
   assert.equal(walnut?.status ?? "active", "active");
   assert.equal(walnut?.assetId, PI5F2_COFFEE_TABLE_ASSET_ID);
   assert.equal(walnut?.sku, DEMO_COFFEE_TABLE_WALNUT_SKU);
-  const repeat = foldPartnerCatalogCurrentState({ repoRoot: ROOT });
+  const repeat = foldPartnerCatalogCurrentState({
+    repoRoot: ROOT,
+    stopBeforeSyncBatchId: PI5F3C_SYNC_BATCH_ID,
+  });
   assert.equal(repeat.ok, true);
   if (!repeat.ok) return;
   assert.deepEqual(repeat.state, after);

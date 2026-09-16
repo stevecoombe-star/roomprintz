@@ -352,6 +352,7 @@ type StageCatalogIndex = Readonly<{
   variantsByProductId: ReadonlyMap<string, readonly StageVariant[]>;
   assetById: ReadonlyMap<string, StageAsset>;
   collectionById: ReadonlyMap<string, StageCollection>;
+  partnerById: ReadonlyMap<string, StagePartner>;
 }>;
 
 const CATALOG_INDEXES = new WeakMap<StageCatalogSnapshot, StageCatalogIndex>();
@@ -374,6 +375,9 @@ export function indexStageCatalog(
     assetById: new Map(catalog.assets.map((asset) => [asset.assetId, asset])),
     collectionById: new Map(
       catalog.collections.map((collection) => [collection.collectionId, collection]),
+    ),
+    partnerById: new Map(
+      catalog.partners.map((partner) => [partner.partnerId, partner]),
     ),
   };
   CATALOG_INDEXES.set(catalog, index);
@@ -447,6 +451,54 @@ export function isStageCommercialActive(
   return stageCommercialStatus(status) === "active";
 }
 
+export function stagePartnerById(
+  partnerId: string | null | undefined,
+  catalog: StageCatalogSnapshot = STAGE_SEED_CATALOG,
+): StagePartner | null {
+  if (!partnerId) return null;
+  return indexStageCatalog(catalog).partnerById.get(partnerId) ?? null;
+}
+
+export function isStagePartnerActive(
+  partner: StagePartner | null | undefined,
+): boolean {
+  return partner?.status === "active";
+}
+
+export function isStageProductAvailable(
+  product: StageProduct,
+  catalog: StageCatalogSnapshot = STAGE_SEED_CATALOG,
+): boolean {
+  if (!isStageCommercialActive(product.status)) return false;
+  if (!product.partnerId) return true;
+  return isStagePartnerActive(stagePartnerById(product.partnerId, catalog));
+}
+
+export function isStageVariantAvailable(
+  variant: StageVariant,
+  catalog: StageCatalogSnapshot = STAGE_SEED_CATALOG,
+): boolean {
+  if (!isStageCommercialActive(variant.status)) return false;
+  const product = stageProductById(variant.productId, [], catalog);
+  return !!product && isStageProductAvailable(product, catalog);
+}
+
+export function isStageCollectionShoppingVisible(
+  collection: StageCollection,
+  catalog: StageCatalogSnapshot = STAGE_SEED_CATALOG,
+): boolean {
+  if (collection.owner !== "partner" || !collection.partnerId) return true;
+  return isStagePartnerActive(stagePartnerById(collection.partnerId, catalog));
+}
+
+export function visibleStageCollections(
+  catalog: StageCatalogSnapshot = STAGE_SEED_CATALOG,
+): StageCollection[] {
+  return catalog.collections.filter((collection) => (
+    isStageCollectionShoppingVisible(collection, catalog)
+  ));
+}
+
 export function activeStageVariantsForProduct(
   productId: string,
   extraVariants: readonly StageVariant[] = [],
@@ -485,6 +537,7 @@ export function fallbackProductIdForAsset(assetId: string): string | null {
 export type StagePlacementFailureCode =
   | "PRODUCT_NOT_FOUND"
   | "VARIANT_NOT_FOUND"
+  | "PARTNER_INACTIVE"
   | "PRODUCT_INACTIVE"
   | "VARIANT_INACTIVE"
   | "ASSET_UNAVAILABLE";
@@ -511,6 +564,9 @@ export function resolveStagePlacementResult(input: Readonly<{
   const catalog = input.catalog ?? STAGE_SEED_CATALOG;
   const product = stageProductById(input.productId, input.extras, catalog);
   if (!product) return { ok: false, code: "PRODUCT_NOT_FOUND" };
+  if (product.partnerId && !isStagePartnerActive(stagePartnerById(product.partnerId, catalog))) {
+    return { ok: false, code: "PARTNER_INACTIVE" };
+  }
   if (!isStageCommercialActive(product.status)) {
     return { ok: false, code: "PRODUCT_INACTIVE" };
   }
