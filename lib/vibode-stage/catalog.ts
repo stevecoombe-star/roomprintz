@@ -10,6 +10,7 @@ import type {
   StageCatalogSnapshot,
   StageCategory,
   StageCollection,
+  StageCommercialStatus,
   StagePartner,
   StageProduct,
   StageVariant,
@@ -116,6 +117,7 @@ const STUDIO_SOFA: StageProduct = Object.freeze({
   collectionIds: Object.freeze(["col-vibode-picks", "col-modern-living"]),
   source: "vibode_curated",
   partnerId: null,
+  status: "active",
 });
 
 const STUDIO_SETTEE: StageProduct = Object.freeze({
@@ -137,6 +139,7 @@ const STUDIO_SETTEE: StageProduct = Object.freeze({
   ]),
   source: "vibode_curated",
   partnerId: null,
+  status: "active",
 });
 
 const STUDIO_CHAIR: StageProduct = Object.freeze({
@@ -154,6 +157,7 @@ const STUDIO_CHAIR: StageProduct = Object.freeze({
   collectionIds: Object.freeze(["col-vibode-picks", "col-small-spaces"]),
   source: "vibode_curated",
   partnerId: null,
+  status: "active",
 });
 
 export const STAGE_CERTIFIED_SEED_PRODUCTS: readonly StageProduct[] = Object.freeze([
@@ -164,7 +168,10 @@ export const STAGE_CERTIFIED_SEED_PRODUCTS: readonly StageProduct[] = Object.fre
 
 export const STAGE_SEED_PRODUCTS: readonly StageProduct[] = Object.freeze([
   ...STAGE_CERTIFIED_SEED_PRODUCTS,
-  ...GENERATED_REGISTERED_PRODUCTS,
+  ...GENERATED_REGISTERED_PRODUCTS.map((product) => Object.freeze({
+    ...product,
+    status: "active" as const,
+  })),
 ]);
 
 function certifiedVariantCurrentAssetId(variantId: string, productId: string): string {
@@ -190,6 +197,7 @@ export const STAGE_CERTIFIED_SEED_VARIANTS: readonly StageVariant[] = Object.fre
     priceAmount: 2495,
     priceCurrency: "USD",
     productUrl: null,
+    status: "active",
   }),
   Object.freeze({
     variantId: STAGE_STUDIO_SETTEE_VARIANT_ID,
@@ -203,6 +211,7 @@ export const STAGE_CERTIFIED_SEED_VARIANTS: readonly StageVariant[] = Object.fre
     priceAmount: 1895,
     priceCurrency: "USD",
     productUrl: null,
+    status: "active",
   }),
   Object.freeze({
     variantId: STAGE_STUDIO_CHAIR_VARIANT_ID,
@@ -216,6 +225,7 @@ export const STAGE_CERTIFIED_SEED_VARIANTS: readonly StageVariant[] = Object.fre
     priceAmount: 895,
     priceCurrency: "USD",
     productUrl: null,
+    status: "active",
   }),
 ]);
 
@@ -230,6 +240,7 @@ export const STAGE_SEED_VARIANTS: readonly StageVariant[] = Object.freeze([
     priceAmount: variant.priceAmount,
     priceCurrency: variant.priceCurrency,
     productUrl: variant.productUrl,
+    status: "active" as const,
   })),
 ]);
 
@@ -424,6 +435,28 @@ export function stageVariantsForProduct(
   return [...preferred, ...rest];
 }
 
+export function stageCommercialStatus(
+  status: StageCommercialStatus | null | undefined,
+): StageCommercialStatus {
+  return status === "inactive" ? "inactive" : "active";
+}
+
+export function isStageCommercialActive(
+  status: StageCommercialStatus | null | undefined,
+): boolean {
+  return stageCommercialStatus(status) === "active";
+}
+
+export function activeStageVariantsForProduct(
+  productId: string,
+  extraVariants: readonly StageVariant[] = [],
+  catalog: StageCatalogSnapshot = STAGE_SEED_CATALOG,
+): StageVariant[] {
+  return stageVariantsForProduct(productId, extraVariants, catalog).filter((variant) => (
+    isStageCommercialActive(variant.status)
+  ));
+}
+
 export function stageAssetById(
   assetId: string | null | undefined,
   catalog: StageCatalogSnapshot = STAGE_SEED_CATALOG,
@@ -449,6 +482,56 @@ export function fallbackProductIdForAsset(assetId: string): string | null {
     : null;
 }
 
+export type StagePlacementFailureCode =
+  | "PRODUCT_NOT_FOUND"
+  | "VARIANT_NOT_FOUND"
+  | "PRODUCT_INACTIVE"
+  | "VARIANT_INACTIVE"
+  | "ASSET_UNAVAILABLE";
+
+export type StagePlacementResult =
+  | Readonly<{
+    ok: true;
+    product: StageProduct;
+    variant: StageVariant;
+    assetId: string;
+  }>
+  | Readonly<{
+    ok: false;
+    code: StagePlacementFailureCode;
+  }>;
+
+export function resolveStagePlacementResult(input: Readonly<{
+  productId: string;
+  variantId?: string | null;
+  extras?: readonly StageProduct[];
+  extraVariants?: readonly StageVariant[];
+  catalog?: StageCatalogSnapshot;
+}>): StagePlacementResult {
+  const catalog = input.catalog ?? STAGE_SEED_CATALOG;
+  const product = stageProductById(input.productId, input.extras, catalog);
+  if (!product) return { ok: false, code: "PRODUCT_NOT_FOUND" };
+  if (!isStageCommercialActive(product.status)) {
+    return { ok: false, code: "PRODUCT_INACTIVE" };
+  }
+  const variant = stageVariantById(
+    input.variantId ?? product.defaultVariantId,
+    input.extraVariants,
+    catalog,
+  );
+  if (!variant || variant.productId !== product.productId) {
+    return { ok: false, code: "VARIANT_NOT_FOUND" };
+  }
+  if (!isStageCommercialActive(variant.status)) {
+    return { ok: false, code: "VARIANT_INACTIVE" };
+  }
+  const asset = stageAssetById(variant.assetId, catalog);
+  if (!variant.assetId || !isStageAssetReady(asset)) {
+    return { ok: false, code: "ASSET_UNAVAILABLE" };
+  }
+  return { ok: true, product, variant, assetId: variant.assetId };
+}
+
 export function resolveStagePlacement(input: Readonly<{
   productId: string;
   variantId?: string | null;
@@ -460,18 +543,8 @@ export function resolveStagePlacement(input: Readonly<{
   variant: StageVariant;
   assetId: string;
 }> | null {
-  const catalog = input.catalog ?? STAGE_SEED_CATALOG;
-  const product = stageProductById(input.productId, input.extras, catalog);
-  if (!product) return null;
-  const variant = stageVariantById(
-    input.variantId ?? product.defaultVariantId,
-    input.extraVariants,
-    catalog,
-  );
-  if (!variant || variant.productId !== product.productId) return null;
-  const asset = stageAssetById(variant.assetId, catalog);
-  if (!variant.assetId || !isStageAssetReady(asset)) return null;
-  return { product, variant, assetId: variant.assetId };
+  const result = resolveStagePlacementResult(input);
+  return result.ok ? result : null;
 }
 
 export function formatStagePrice(
@@ -519,6 +592,7 @@ export function createPastedStageProduct(input: Readonly<{
     collectionIds: [],
     source: "user_pasted",
     partnerId: null,
+    status: "active",
   };
 }
 
@@ -532,5 +606,6 @@ export function createPastedStageVariant(product: StageProduct): StageVariant {
     priceAmount: product.priceAmount,
     priceCurrency: product.priceCurrency,
     productUrl: product.productUrl,
+    status: "active",
   };
 }

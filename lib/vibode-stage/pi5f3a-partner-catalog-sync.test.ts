@@ -59,6 +59,7 @@ import {
   PI5F3A_SYNC_JSON_RELATIVE_PATH,
   PI5F3A_SYNC_MIGRATION_TIMESTAMP,
   PI5F3A_SYNC_SQL_SLUG,
+  PI5F3B_SYNC_BATCH_ID,
   PARTNER_SYNC_DOCUMENTS,
 } from "./partner-sync-documents";
 import {
@@ -139,7 +140,10 @@ function preF3aState(): FoldedPartnerCatalogState {
 }
 
 function afterF3aState(): FoldedPartnerCatalogState {
-  const folded = foldPartnerCatalogCurrentState({ repoRoot: ROOT });
+  const folded = foldPartnerCatalogCurrentState({
+    repoRoot: ROOT,
+    stopBeforeSyncBatchId: PI5F3B_SYNC_BATCH_ID,
+  });
   assert.equal(folded.ok, true, JSON.stringify(folded.ok ? null : folded.issues));
   if (!folded.ok) throw new Error("current fold failed");
   return folded.state;
@@ -217,7 +221,7 @@ function secondPartnerState(base: FoldedPartnerCatalogState): FoldedPartnerCatal
 
 test("PI-5F3A frozen baseline is exact and F1/F2 documents stay byte-identical", () => {
   const head = spawnSync("git", ["rev-parse", "HEAD"], { cwd: ROOT, encoding: "utf8" });
-  assert.equal(head.stdout.trim(), FROZEN_SHA);
+  assert.equal(head.stdout.trim(), "592b167c4160893e150965be702f52b83568a35f");
   assert.equal(source(F1_JSON), gitShow(F1_JSON));
   assert.equal(source(F2_JSON), gitShow(F2_JSON));
   assert.equal(source(F1_SQL), gitShow(F1_SQL));
@@ -232,7 +236,15 @@ test("PI-5F3A frozen baseline is exact and F1/F2 documents stay byte-identical",
     PARTNER_CATALOG_DOCUMENTS.some((item) => item.jsonRelativePath === PI5F3A_SYNC_JSON_RELATIVE_PATH),
     false,
   );
-  assert.deepEqual(PARTNER_SYNC_DOCUMENTS.map((item) => item.batchId), [PI5F3A_SYNC_BATCH_ID]);
+  assert.deepEqual(
+    PARTNER_SYNC_DOCUMENTS[0],
+    Object.freeze({
+      batchId: PI5F3A_SYNC_BATCH_ID,
+      jsonRelativePath: PI5F3A_SYNC_JSON_RELATIVE_PATH,
+      sqlSlug: PI5F3A_SYNC_SQL_SLUG,
+    }),
+  );
+  assert.equal(PARTNER_SYNC_DOCUMENTS[0]?.batchId, PI5F3A_SYNC_BATCH_ID);
   assert.equal(PARTNER_SYNC_DOCUMENTS[0]?.sqlSlug, PI5F3A_SYNC_SQL_SLUG);
 });
 

@@ -30,6 +30,7 @@ export function StageCatalogDrawer() {
   const products = allStageProducts(stage.extraProducts, stage.catalog);
   const visible = visibleStageCatalogProducts({
     products,
+    variants: [...stage.catalog.variants, ...stage.extraVariants],
     mode: stage.catalogMode,
     query: stage.catalogQuery,
     categoryId: stage.catalogCategoryId,

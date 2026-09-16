@@ -1,15 +1,17 @@
 /**
- * PI-5F3A deterministic Partner catalog patch updates.
+ * PI-5F3A / PI-5F3B deterministic Partner catalog patch updates.
  *
  * Node-only. Reconstructs current commercial state by folding F1/F2
  * registration documents and registered sync patches. Plans explicit
- * patch updates and writes one forward-only partner_sync SQL
- * migration. Does not retarget Assets, mutate Scene Objects, deactivate
- * commercial identity, or rewrite registration history.
+ * patch updates, including Product/Variant deactivate/reactivate, and
+ * writes one forward-only partner_sync SQL migration. Does not retarget
+ * Assets, mutate Scene Objects, hard-delete commercial identity, or
+ * rewrite registration history.
  *
  * Historical commercial contract:
  * - Scene geometry remains frozen to SceneObject.assetId.
  * - Commercial display remains current-state by productId/variantId.
+ * - Inactive Product/Variant identities remain resolvable.
  * - PI-5D2B remains the only Variant Asset retarget path.
  */
 
@@ -20,7 +22,11 @@ import { writeFileAtomic } from "@/lib/afc-v2-runtime/furniture-asset-manifest";
 
 import {
   createStageCatalogSnapshot,
+  isStageAssetReady,
+  isStageCommercialActive,
   STAGE_SEED_CATALOG,
+  stageAssetById,
+  stageCommercialStatus,
 } from "./catalog";
 import { FORBIDDEN_STAGE_CATALOG_TABLES } from "./catalog-store";
 import {
@@ -53,6 +59,7 @@ import {
   validateOptionalAbsoluteHttpsUrl,
   validatePartnerCatalogImageUrl,
   validateRequiredAbsoluteHttpsUrl,
+  validateTargetAsset,
   validateVariantRegistration,
   type ProductVariantIssue,
   type ProductVariantValidationGates,
@@ -60,6 +67,7 @@ import {
 import type {
   StageCatalogSnapshot,
   StageCollection,
+  StageCommercialStatus,
   StagePartner,
   StageProduct,
   StageVariant,
@@ -126,6 +134,10 @@ const COLLECTION_UPDATE_KEYS = Object.freeze([
 ]);
 
 const MEMBERSHIP_KEYS = Object.freeze(["productId", "collectionId"]);
+
+const PRODUCT_STATUS_TARGET_KEYS = Object.freeze(["productId"]);
+
+const VARIANT_STATUS_TARGET_KEYS = Object.freeze(["variantId"]);
 
 const STATUS_KEYS = Object.freeze(["status", "partnerStatus", "productStatus", "variantStatus"]);
 
@@ -257,6 +269,7 @@ function variantFromRegistration(
     priceAmount: variant.priceAmount,
     priceCurrency: normalizeCurrency(variant.priceCurrency),
     productUrl: variant.productUrl,
+    status: "active",
   };
 }
 
@@ -363,6 +376,7 @@ export function foldPartnerCatalogRegistrationDocument(
       collectionIds: [],
       source: "partner_catalog",
       partnerId: document.partner.partnerId,
+      status: "active",
     });
     for (const variant of variants) {
       working.variants.push(variantFromRegistration(productInput.product.productId, variant));
@@ -434,15 +448,27 @@ export type PartnerCatalogMembershipPatch = Readonly<{
   collectionId: string;
 }>;
 
+export type PartnerCatalogProductStatusTarget = Readonly<{
+  productId: string;
+}>;
+
+export type PartnerCatalogVariantStatusTarget = Readonly<{
+  variantId: string;
+}>;
+
 export type PartnerCatalogSyncDocument = Readonly<{
   partnerId: string;
   mode: "patch";
   products: Readonly<{
     update: readonly PartnerCatalogProductPatch[];
+    deactivate?: readonly PartnerCatalogProductStatusTarget[];
+    reactivate?: readonly PartnerCatalogProductStatusTarget[];
   }>;
   variants: Readonly<{
     create: readonly PartnerCatalogVariantCreate[];
     update: readonly PartnerCatalogVariantPatch[];
+    deactivate?: readonly PartnerCatalogVariantStatusTarget[];
+    reactivate?: readonly PartnerCatalogVariantStatusTarget[];
   }>;
   collections: Readonly<{
     update: readonly PartnerCatalogCollectionPatch[];
@@ -816,6 +842,66 @@ function parseMembership(
   return { productId, collectionId };
 }
 
+function parseProductStatusTarget(
+  value: unknown,
+  label: string,
+  index: number,
+  issues: ProductVariantIssue[],
+): PartnerCatalogProductStatusTarget | null {
+  if (!isPlainObject(value)) {
+    issues.push(issue("INVALID_JSON", `${label}[${index}] must be an object.`));
+    return null;
+  }
+  if (hasStatusKey(value)) {
+    issues.push(issue("UNSUPPORTED_OPERATION", `${label}[${index}] status updates are not allowed.`));
+    return null;
+  }
+  const extra = unknownKeys(value, PRODUCT_STATUS_TARGET_KEYS);
+  if (extra.length > 0) {
+    issues.push(issue(
+      "UNSUPPORTED_OPERATION",
+      `${label}[${index}] contains unsupported fields: ${extra.join(", ")}.`,
+    ));
+    return null;
+  }
+  const productId = asNonEmptyString(value.productId);
+  if (!productId) {
+    issues.push(issue("INVALID_PRODUCT_ID", `${label}[${index}].productId must be a non-empty string.`));
+    return null;
+  }
+  return { productId };
+}
+
+function parseVariantStatusTarget(
+  value: unknown,
+  label: string,
+  index: number,
+  issues: ProductVariantIssue[],
+): PartnerCatalogVariantStatusTarget | null {
+  if (!isPlainObject(value)) {
+    issues.push(issue("INVALID_JSON", `${label}[${index}] must be an object.`));
+    return null;
+  }
+  if (hasStatusKey(value)) {
+    issues.push(issue("UNSUPPORTED_OPERATION", `${label}[${index}] status updates are not allowed.`));
+    return null;
+  }
+  const extra = unknownKeys(value, VARIANT_STATUS_TARGET_KEYS);
+  if (extra.length > 0) {
+    issues.push(issue(
+      "UNSUPPORTED_OPERATION",
+      `${label}[${index}] contains unsupported fields: ${extra.join(", ")}.`,
+    ));
+    return null;
+  }
+  const variantId = asNonEmptyString(value.variantId);
+  if (!variantId) {
+    issues.push(issue("INVALID_VARIANT_ID", `${label}[${index}].variantId must be a non-empty string.`));
+    return null;
+  }
+  return { variantId };
+}
+
 function parseObjectArray<T>(
   value: unknown,
   label: string,
@@ -884,13 +970,8 @@ export function parsePartnerCatalogSyncJson(value: unknown): Readonly<{
     issues.push(issue("INVALID_JSON", "collections must be an object."));
   }
   if (isPlainObject(productsRaw)) {
-    const extraProducts = unknownKeys(productsRaw, ["update"]);
-    if (extra.length === 0 && extraProducts.length > 0) {
-      issues.push(issue(
-        "UNSUPPORTED_OPERATION",
-        `products contains unsupported operations: ${extraProducts.join(", ")}.`,
-      ));
-    } else if (extraProducts.length > 0) {
+    const extraProducts = unknownKeys(productsRaw, ["update", "deactivate", "reactivate"]);
+    if (extraProducts.length > 0) {
       issues.push(issue(
         "UNSUPPORTED_OPERATION",
         `products contains unsupported operations: ${extraProducts.join(", ")}.`,
@@ -898,7 +979,7 @@ export function parsePartnerCatalogSyncJson(value: unknown): Readonly<{
     }
   }
   if (isPlainObject(variantsRaw)) {
-    const extraVariants = unknownKeys(variantsRaw, ["create", "update"]);
+    const extraVariants = unknownKeys(variantsRaw, ["create", "update", "deactivate", "reactivate"]);
     if (extraVariants.length > 0) {
       issues.push(issue(
         "UNSUPPORTED_OPERATION",
@@ -922,6 +1003,18 @@ export function parsePartnerCatalogSyncJson(value: unknown): Readonly<{
     issues,
     parseProductPatch,
   );
+  const productDeactivations = parseObjectArray(
+    isPlainObject(productsRaw) ? productsRaw.deactivate : [],
+    "products.deactivate",
+    issues,
+    (item, index, nextIssues) => parseProductStatusTarget(item, "products.deactivate", index, nextIssues),
+  );
+  const productReactivations = parseObjectArray(
+    isPlainObject(productsRaw) ? productsRaw.reactivate : [],
+    "products.reactivate",
+    issues,
+    (item, index, nextIssues) => parseProductStatusTarget(item, "products.reactivate", index, nextIssues),
+  );
   const variantCreates = parseObjectArray(
     isPlainObject(variantsRaw) ? variantsRaw.create : [],
     "variants.create",
@@ -933,6 +1026,18 @@ export function parsePartnerCatalogSyncJson(value: unknown): Readonly<{
     "variants.update",
     issues,
     parseVariantPatch,
+  );
+  const variantDeactivations = parseObjectArray(
+    isPlainObject(variantsRaw) ? variantsRaw.deactivate : [],
+    "variants.deactivate",
+    issues,
+    (item, index, nextIssues) => parseVariantStatusTarget(item, "variants.deactivate", index, nextIssues),
+  );
+  const variantReactivations = parseObjectArray(
+    isPlainObject(variantsRaw) ? variantsRaw.reactivate : [],
+    "variants.reactivate",
+    issues,
+    (item, index, nextIssues) => parseVariantStatusTarget(item, "variants.reactivate", index, nextIssues),
   );
   const collectionUpdates = parseObjectArray(
     isPlainObject(collectionsRaw) ? collectionsRaw.update : [],
@@ -961,8 +1066,17 @@ export function parsePartnerCatalogSyncJson(value: unknown): Readonly<{
     document: {
       partnerId,
       mode: "patch",
-      products: { update: productUpdates },
-      variants: { create: variantCreates, update: variantUpdates },
+      products: {
+        update: productUpdates,
+        deactivate: productDeactivations,
+        reactivate: productReactivations,
+      },
+      variants: {
+        create: variantCreates,
+        update: variantUpdates,
+        deactivate: variantDeactivations,
+        reactivate: variantReactivations,
+      },
       collections: {
         update: collectionUpdates,
         membershipAdd: membershipAdds,
@@ -1006,6 +1120,19 @@ export type PlannedMembership = Readonly<{
   sortOrder?: number;
 }>;
 
+export type PlannedProductStatusTransition = Readonly<{
+  productId: string;
+  from: StageCommercialStatus;
+  to: StageCommercialStatus;
+}>;
+
+export type PlannedVariantStatusTransition = Readonly<{
+  variantId: string;
+  productId: string;
+  from: StageCommercialStatus;
+  to: StageCommercialStatus;
+}>;
+
 export type PartnerCatalogSyncSqlPlan = Readonly<{
   sql: string;
   migration: string;
@@ -1022,6 +1149,10 @@ export type PartnerCatalogSyncPlan = Readonly<{
   collectionUpdates: readonly PlannedCollectionUpdate[];
   membershipAdds: readonly PlannedMembership[];
   membershipRemoves: readonly PlannedMembership[];
+  productDeactivations: readonly PlannedProductStatusTransition[];
+  productReactivations: readonly PlannedProductStatusTransition[];
+  variantDeactivations: readonly PlannedVariantStatusTransition[];
+  variantReactivations: readonly PlannedVariantStatusTransition[];
   sqlPlan: PartnerCatalogSyncSqlPlan | null;
   nextState: FoldedPartnerCatalogState | null;
 }>;
@@ -1083,6 +1214,68 @@ function workingCatalogFor(
   return overlayFoldedPartnerCatalog(state, gates.catalog ?? STAGE_SEED_CATALOG);
 }
 
+function emptyStatusPlanFields(): Pick<
+  PartnerCatalogSyncPlan,
+  | "productDeactivations"
+  | "productReactivations"
+  | "variantDeactivations"
+  | "variantReactivations"
+> {
+  return {
+    productDeactivations: [],
+    productReactivations: [],
+    variantDeactivations: [],
+    variantReactivations: [],
+  };
+}
+
+function failedPartnerCatalogSyncPlan(
+  issues: readonly ProductVariantIssue[],
+  partnerId: string | null,
+): PartnerCatalogSyncPlan {
+  return {
+    ok: false,
+    noOp: false,
+    issues,
+    partnerId,
+    productUpdates: [],
+    variantCreates: [],
+    variantUpdates: [],
+    collectionUpdates: [],
+    membershipAdds: [],
+    membershipRemoves: [],
+    ...emptyStatusPlanFields(),
+    sqlPlan: null,
+    nextState: null,
+  };
+}
+
+function uniqueIds(
+  items: readonly string[],
+  duplicateCode: string,
+  label: string,
+  issues: ProductVariantIssue[],
+): string[] {
+  const seen = new Set<string>();
+  const ids: string[] = [];
+  for (const id of items) {
+    if (seen.has(id)) {
+      issues.push(issue(duplicateCode, `${label} ${id} is listed more than once.`));
+      continue;
+    }
+    seen.add(id);
+    ids.push(id);
+  }
+  return ids;
+}
+
+function partnerOwnedProduct(
+  product: MutableProduct | StageProduct | undefined,
+  partnerId: string,
+): boolean {
+  return !!product && product.partnerId === partnerId && product.source === "partner_catalog";
+}
+
 export function planPartnerCatalogSync(input: Readonly<{
   current: FoldedPartnerCatalogState;
   document: PartnerCatalogSyncDocument;
@@ -1109,20 +1302,10 @@ export function planPartnerCatalogSync(input: Readonly<{
   };
   const partner = input.current.partners.find((item) => item.partnerId === input.document.partnerId) ?? null;
   if (!partner) {
-    return {
-      ok: false,
-      noOp: false,
-      issues: [issue("PARTNER_MISMATCH", `Unknown Partner ${input.document.partnerId}.`)],
-      partnerId: input.document.partnerId,
-      productUpdates: [],
-      variantCreates: [],
-      variantUpdates: [],
-      collectionUpdates: [],
-      membershipAdds: [],
-      membershipRemoves: [],
-      sqlPlan: null,
-      nextState: null,
-    };
+    return failedPartnerCatalogSyncPlan(
+      [issue("PARTNER_MISMATCH", `Unknown Partner ${input.document.partnerId}.`)],
+      input.document.partnerId,
+    );
   }
   const working = cloneMutable(input.current);
   const seenProductUpdates = new Set<string>();
@@ -1334,6 +1517,131 @@ export function planPartnerCatalogSync(input: Readonly<{
     removeMembershipMutable(working, membership.productId, membership.collectionId);
   }
 
+  const productDeactivateIds = uniqueIds(
+    (input.document.products.deactivate ?? []).map((item) => item.productId),
+    "DUPLICATE_PRODUCT_ID",
+    "Product",
+    issues,
+  );
+  const productReactivateIds = uniqueIds(
+    (input.document.products.reactivate ?? []).map((item) => item.productId),
+    "DUPLICATE_PRODUCT_ID",
+    "Product",
+    issues,
+  );
+  const variantDeactivateIds = uniqueIds(
+    (input.document.variants.deactivate ?? []).map((item) => item.variantId),
+    "DUPLICATE_VARIANT_ID",
+    "Variant",
+    issues,
+  );
+  const variantReactivateIds = uniqueIds(
+    (input.document.variants.reactivate ?? []).map((item) => item.variantId),
+    "DUPLICATE_VARIANT_ID",
+    "Variant",
+    issues,
+  );
+
+  for (const productId of productDeactivateIds) {
+    if (productReactivateIds.includes(productId)) {
+      issues.push(issue(
+        "UNSUPPORTED_OPERATION",
+        `Product ${productId} cannot be deactivated and reactivated in the same patch.`,
+      ));
+    }
+  }
+  for (const variantId of variantDeactivateIds) {
+    if (variantReactivateIds.includes(variantId)) {
+      issues.push(issue(
+        "UNSUPPORTED_OPERATION",
+        `Variant ${variantId} cannot be deactivated and reactivated in the same patch.`,
+      ));
+    }
+  }
+
+  for (const variantId of variantDeactivateIds) {
+    const current = working.variants.find((item) => item.variantId === variantId) ?? null;
+    if (!current) {
+      issues.push(issue("NOT_FOUND", `Unknown Variant ${variantId}.`));
+      continue;
+    }
+    const product = working.products.find((item) => item.productId === current.productId);
+    if (!partnerOwnedProduct(product, partner.partnerId)) {
+      issues.push(issue("PARTNER_MISMATCH", `Variant ${variantId} is not owned by ${partner.partnerId}.`));
+      continue;
+    }
+    if (isStageCommercialActive(current.status)) {
+      replaceVariant(working, { ...current, status: "inactive" });
+    }
+  }
+
+  for (const variantId of variantReactivateIds) {
+    const current = working.variants.find((item) => item.variantId === variantId) ?? null;
+    if (!current) {
+      issues.push(issue("NOT_FOUND", `Unknown Variant ${variantId}.`));
+      continue;
+    }
+    const product = working.products.find((item) => item.productId === current.productId);
+    if (!partnerOwnedProduct(product, partner.partnerId)) {
+      issues.push(issue("PARTNER_MISMATCH", `Variant ${variantId} is not owned by ${partner.partnerId}.`));
+      continue;
+    }
+    if (isStageCommercialActive(current.status)) continue;
+    if (current.priceAmount != null) {
+      issues.push(...validateFiniteNonNegativePrice(current.priceAmount, "Variant"));
+    }
+    issues.push(...validateOptionalAbsoluteHttpsUrl(current.productUrl));
+    if (product && current.priceCurrency !== product.priceCurrency) {
+      issues.push(issue("CURRENCY_IMMUTABLE", `Variant ${variantId} currency must match Product currency.`));
+    }
+    const catalogForAsset = workingCatalogFor(freezeFoldedState(working), gates);
+    const asset = stageAssetById(current.assetId, catalogForAsset);
+    if (!current.assetId || !isStageAssetReady(asset)) {
+      issues.push(issue(
+        "UNAVAILABLE_ASSET",
+        `Variant ${variantId} current Asset is missing or not ready.`,
+      ));
+    } else {
+      validateTargetAsset(current.assetId, { ...gates, catalog: catalogForAsset }, issues);
+    }
+    replaceVariant(working, { ...current, status: "active" });
+  }
+
+  for (const productId of productDeactivateIds) {
+    const current = working.products.find((item) => item.productId === productId) ?? null;
+    if (!current) {
+      issues.push(issue("NOT_FOUND", `Unknown Product ${productId}.`));
+      continue;
+    }
+    if (!partnerOwnedProduct(current, partner.partnerId)) {
+      issues.push(issue("PARTNER_MISMATCH", `Product ${productId} is not owned by ${partner.partnerId}.`));
+      continue;
+    }
+    if (isStageCommercialActive(current.status)) {
+      replaceProduct(working, { ...current, status: "inactive" });
+    }
+  }
+
+  for (const productId of productReactivateIds) {
+    const current = working.products.find((item) => item.productId === productId) ?? null;
+    if (!current) {
+      issues.push(issue("NOT_FOUND", `Unknown Product ${productId}.`));
+      continue;
+    }
+    if (!partnerOwnedProduct(current, partner.partnerId)) {
+      issues.push(issue("PARTNER_MISMATCH", `Product ${productId} is not owned by ${partner.partnerId}.`));
+      continue;
+    }
+    if (isStageCommercialActive(current.status)) continue;
+    issues.push(...validateRequiredAbsoluteHttpsUrl(current.productUrl));
+    issues.push(...validatePartnerCatalogImageUrl(current.imageUrl, repoRoot));
+    issues.push(...validateBrowseTaxonomy(current.categoryId, current.subcategoryId));
+    if (current.priceAmount != null) {
+      issues.push(...validateFiniteNonNegativePrice(current.priceAmount, "Product"));
+    }
+    replaceProduct(working, { ...current, status: "active" });
+  }
+
   const nextState = freezeFoldedState(working);
   const nextCatalog = workingCatalogFor(nextState, gates);
 
@@ -1358,6 +1666,25 @@ export function planPartnerCatalogSync(input: Readonly<{
         "PRICE_CURRENCY_MISMATCH",
         "Product and default Variant price/currency must match.",
       ));
+    } else if (
+      isStageCommercialActive(product.status) &&
+      !isStageCommercialActive(defaultVariant.status)
+    ) {
+      issues.push(issue(
+        "DEFAULT_VARIANT_INACTIVE",
+        `Active Product ${product.productId} cannot have inactive default Variant ${product.defaultVariantId}.`,
+      ));
+    }
+    if (isStageCommercialActive(product.status)) {
+      const activeVariants = nextState.variants.filter((variant) => (
+        variant.productId === product.productId && isStageCommercialActive(variant.status)
+      ));
+      if (activeVariants.length === 0) {
+        issues.push(issue(
+          "LAST_ACTIVE_VARIANT",
+          `Active Product ${product.productId} cannot remain with zero active Variants.`,
+        ));
+      }
     }
   }
 
@@ -1381,20 +1708,7 @@ export function planPartnerCatalogSync(input: Readonly<{
   }
 
   if (issues.length > 0) {
-    return {
-      ok: false,
-      noOp: false,
-      issues,
-      partnerId: partner.partnerId,
-      productUpdates: [],
-      variantCreates: [],
-      variantUpdates: [],
-      collectionUpdates: [],
-      membershipAdds: [],
-      membershipRemoves: [],
-      sqlPlan: null,
-      nextState: null,
-    };
+    return failedPartnerCatalogSyncPlan(issues, partner.partnerId);
   }
 
   const productUpdates: PlannedProductUpdate[] = [];
@@ -1504,13 +1818,48 @@ export function planPartnerCatalogSync(input: Readonly<{
     }
   }
 
+  const productDeactivations: PlannedProductStatusTransition[] = [];
+  const productReactivations: PlannedProductStatusTransition[] = [];
+  for (const next of nextState.products) {
+    const previous = input.current.products.find((item) => item.productId === next.productId);
+    if (!previous) continue;
+    const from = stageCommercialStatus(previous.status);
+    const to = stageCommercialStatus(next.status);
+    if (from === to) continue;
+    const transition = { productId: next.productId, from, to };
+    if (to === "inactive") productDeactivations.push(transition);
+    else productReactivations.push(transition);
+  }
+
+  const variantDeactivations: PlannedVariantStatusTransition[] = [];
+  const variantReactivations: PlannedVariantStatusTransition[] = [];
+  for (const next of nextState.variants) {
+    const previous = input.current.variants.find((item) => item.variantId === next.variantId);
+    if (!previous) continue;
+    const from = stageCommercialStatus(previous.status);
+    const to = stageCommercialStatus(next.status);
+    if (from === to) continue;
+    const transition = {
+      variantId: next.variantId,
+      productId: next.productId,
+      from,
+      to,
+    };
+    if (to === "inactive") variantDeactivations.push(transition);
+    else variantReactivations.push(transition);
+  }
+
   const noOp = (
     productUpdates.length === 0 &&
     variantCreates.length === 0 &&
     variantUpdates.length === 0 &&
     collectionUpdates.length === 0 &&
     membershipAdds.length === 0 &&
-    membershipRemoves.length === 0
+    membershipRemoves.length === 0 &&
+    productDeactivations.length === 0 &&
+    productReactivations.length === 0 &&
+    variantDeactivations.length === 0 &&
+    variantReactivations.length === 0
   );
 
   const timestamp = input.migrationTimestamp ?? utcTimestamp();
@@ -1530,6 +1879,10 @@ export function planPartnerCatalogSync(input: Readonly<{
         collectionUpdates,
         membershipAdds,
         membershipRemoves,
+        productDeactivations,
+        productReactivations,
+        variantDeactivations,
+        variantReactivations,
         current: input.current,
       }),
       migration,
@@ -1546,6 +1899,10 @@ export function planPartnerCatalogSync(input: Readonly<{
     collectionUpdates,
     membershipAdds,
     membershipRemoves,
+    productDeactivations,
+    productReactivations,
+    variantDeactivations,
+    variantReactivations,
     sqlPlan,
     nextState,
   };
@@ -1582,6 +1939,10 @@ export function renderPartnerCatalogSyncSql(input: Readonly<{
   collectionUpdates: readonly PlannedCollectionUpdate[];
   membershipAdds: readonly PlannedMembership[];
   membershipRemoves: readonly PlannedMembership[];
+  productDeactivations?: readonly PlannedProductStatusTransition[];
+  productReactivations?: readonly PlannedProductStatusTransition[];
+  variantDeactivations?: readonly PlannedVariantStatusTransition[];
+  variantReactivations?: readonly PlannedVariantStatusTransition[];
   current: FoldedPartnerCatalogState;
 }>): string {
   const parts: string[] = [];
@@ -1765,15 +2126,72 @@ export function renderPartnerCatalogSyncSql(input: Readonly<{
     );
   }
 
+  const productStatusTransitions = [
+    ...(input.productDeactivations ?? []),
+    ...(input.productReactivations ?? []),
+  ].sort((a, b) => a.productId.localeCompare(b.productId));
+  for (const transition of productStatusTransitions) {
+    parts.push(renderGuardedUpdate({
+      table: "public.vibode_stage_products",
+      setClauses: [`status = ${sqlString(transition.to)}`],
+      whereClauses: [
+        `product_id = ${sqlString(transition.productId)}`,
+        `partner_id = ${sqlString(input.partner.partnerId)}`,
+        `source = 'partner_catalog'`,
+        `status = ${sqlString(transition.from)}`,
+      ],
+    }));
+  }
+
+  const variantStatusTransitions = [
+    ...(input.variantDeactivations ?? []),
+    ...(input.variantReactivations ?? []),
+  ].sort((a, b) => a.variantId.localeCompare(b.variantId));
+  for (const transition of variantStatusTransitions) {
+    parts.push(renderGuardedUpdate({
+      table: "public.vibode_stage_variants",
+      setClauses: [`status = ${sqlString(transition.to)}`],
+      whereClauses: [
+        `variant_id = ${sqlString(transition.variantId)}`,
+        `product_id = ${sqlString(transition.productId)}`,
+        `status = ${sqlString(transition.from)}`,
+        `exists (\n` +
+        `      select 1\n` +
+        `      from public.vibode_stage_products products\n` +
+        `      where products.product_id = ${sqlString(transition.productId)}\n` +
+        `        and products.partner_id = ${sqlString(input.partner.partnerId)}\n` +
+        `        and products.source = 'partner_catalog'\n` +
+        `    )`,
+      ],
+    }));
+  }
+
+  const hasStatusOps = productStatusTransitions.length + variantStatusTransitions.length > 0;
+  const header = hasStatusOps
+    ? (
+      `-- PI-5F3B: Partner catalog availability patch.\n` +
+      `--\n` +
+      `-- Explicit Product/Variant deactivate and reactivate only.\n` +
+      `-- Scene geometry remains frozen to SceneObject.assetId.\n` +
+      `-- Commercial display remains current-state by productId/variantId.\n` +
+      `-- Inactive identities remain resolvable. No hard deletes.\n` +
+      `-- Does not mutate Assets, current_asset_id, Scene Objects, or identities.\n` +
+      `-- PI-5D2B remains the only Variant Asset retarget path.\n` +
+      `-- Omission means no change. Patch-only; no snapshot deactivation.\n`
+    )
+    : (
+      `-- PI-5F3A: Partner catalog commercial patch.\n` +
+      `--\n` +
+      `-- Updates current commercial metadata only.\n` +
+      `-- Scene geometry remains frozen to SceneObject.assetId.\n` +
+      `-- Commercial display remains current-state by productId/variantId.\n` +
+      `-- Does not mutate Assets, current_asset_id, Scene Objects, or identities.\n` +
+      `-- PI-5D2B remains the only Variant Asset retarget path.\n` +
+      `-- Omission means no change. Patch-only; no snapshot deactivation.\n`
+    );
+
   return (
-    `-- PI-5F3A: Partner catalog commercial patch.\n` +
-    `--\n` +
-    `-- Updates current commercial metadata only.\n` +
-    `-- Scene geometry remains frozen to SceneObject.assetId.\n` +
-    `-- Commercial display remains current-state by productId/variantId.\n` +
-    `-- Does not mutate Assets, current_asset_id, Scene Objects, or identities.\n` +
-    `-- PI-5D2B remains the only Variant Asset retarget path.\n` +
-    `-- Omission means no change. Patch-only; no snapshot deactivation.\n` +
+    header +
     `\n` +
     `begin;\n` +
     `\n` +
@@ -1907,6 +2325,10 @@ export type ParsedPartnerCatalogSyncSql = Readonly<{
   assetIds: readonly string[];
   updatedProductIds: readonly string[];
   updatedVariantIds: readonly string[];
+  statusUpdatedProductIds: readonly string[];
+  statusUpdatedVariantIds: readonly string[];
+  productStatusTransitions: readonly PlannedProductStatusTransition[];
+  variantStatusTransitions: readonly PlannedVariantStatusTransition[];
   insertedVariantIds: readonly string[];
   insertedMemberships: readonly Readonly<{ productId: string; collectionId: string }>[];
   deletedMemberships: readonly Readonly<{ productId: string; collectionId: string }>[];
@@ -1960,6 +2382,31 @@ function valuesClause(sql: string): string {
   return match?.[1] ?? "";
 }
 
+function isStatusOnlyUpdate(block: string): boolean {
+  const columns = setColumnsFromUpdate(block);
+  return columns.length === 1 && columns[0] === "status";
+}
+
+function sqlEqualsInClause(sql: string, column: string): string | null {
+  const match = sql.match(new RegExp(`${column}\\s*=\\s*'((?:''|[^'])*)'`, "i"));
+  if (!match) return null;
+  return (match[1] ?? "").replace(/''/g, "'");
+}
+
+function statusTransitionFromBlock(
+  block: string,
+  idColumn: "product_id" | "variant_id",
+): { id: string; productId: string | null; from: StageCommercialStatus; to: StageCommercialStatus } | null {
+  const id = sqlEqualsInClause(block, idColumn);
+  const fromRaw = sqlEqualsInClause(block.split(/\bwhere\b/i)[1] ?? "", "status");
+  const setMatch = block.match(/\bset\b([\s\S]*?)\bwhere\b/i);
+  const toRaw = sqlEqualsInClause(setMatch?.[1] ?? "", "status");
+  if (!id || (fromRaw !== "active" && fromRaw !== "inactive")) return null;
+  if (toRaw !== "active" && toRaw !== "inactive") return null;
+  const productId = idColumn === "variant_id" ? sqlEqualsInClause(block, "product_id") : id;
+  return { id, productId, from: fromRaw, to: toRaw };
+}
+
 export function parsePartnerCatalogSyncSql(sql: string): ParsedPartnerCatalogSyncSql {
   const unique = (values: readonly string[]) => [...new Set(values)];
   const body = sql.replace(/--[^\n]*/g, "");
@@ -1969,9 +2416,28 @@ export function parsePartnerCatalogSyncSql(sql: string): ParsedPartnerCatalogSyn
   const variantInsertBlocks = blocksMatching(body, /\binsert\s+into\s+public\.vibode_stage_variants\b[\s\S]*?;/gi);
   const membershipInsertBlocks = blocksMatching(body, /\binsert\s+into\s+public\.vibode_stage_product_collections\b[\s\S]*?;/gi);
   const membershipDeleteBlocks = blocksMatching(body, /\bdelete\s+from\s+public\.vibode_stage_product_collections\b[\s\S]*?;/gi);
-  const productUpdateColumns = unique(productUpdateBlocks.flatMap(setColumnsFromUpdate));
-  const variantUpdateColumns = unique(variantUpdateBlocks.flatMap(setColumnsFromUpdate));
+  const productCommercialBlocks = productUpdateBlocks.filter((block) => !isStatusOnlyUpdate(block));
+  const variantCommercialBlocks = variantUpdateBlocks.filter((block) => !isStatusOnlyUpdate(block));
+  const productStatusBlocks = productUpdateBlocks.filter(isStatusOnlyUpdate);
+  const variantStatusBlocks = variantUpdateBlocks.filter(isStatusOnlyUpdate);
+  const productUpdateColumns = unique(productCommercialBlocks.flatMap(setColumnsFromUpdate));
+  const variantUpdateColumns = unique(variantCommercialBlocks.flatMap(setColumnsFromUpdate));
   const collectionUpdateColumns = unique(collectionUpdateBlocks.flatMap(setColumnsFromUpdate));
+  const productStatusTransitions = productStatusBlocks.flatMap((block) => {
+    const parsed = statusTransitionFromBlock(block, "product_id");
+    if (!parsed) return [];
+    return [{ productId: parsed.id, from: parsed.from, to: parsed.to }];
+  });
+  const variantStatusTransitions = variantStatusBlocks.flatMap((block) => {
+    const parsed = statusTransitionFromBlock(block, "variant_id");
+    if (!parsed || !parsed.productId) return [];
+    return [{
+      variantId: parsed.id,
+      productId: parsed.productId,
+      from: parsed.from,
+      to: parsed.to,
+    }];
+  });
   const forbiddenTables = FORBIDDEN_STAGE_CATALOG_TABLES.filter((table) => {
     const pattern = new RegExp(`(?<![A-Za-z0-9_])${table}(?![A-Za-z0-9_])`);
     return pattern.test(body);
@@ -1985,8 +2451,12 @@ export function parsePartnerCatalogSyncSql(sql: string): ParsedPartnerCatalogSyn
       ...quotedEquals(sql, "asset_id"),
       ...quotedEquals(sql, "current_asset_id"),
     ]),
-    updatedProductIds: unique(productUpdateBlocks.flatMap((block) => quotedEquals(block, "product_id"))),
-    updatedVariantIds: unique(variantUpdateBlocks.flatMap((block) => quotedEquals(block, "variant_id"))),
+    updatedProductIds: unique(productCommercialBlocks.flatMap((block) => quotedEquals(block, "product_id"))),
+    updatedVariantIds: unique(variantCommercialBlocks.flatMap((block) => quotedEquals(block, "variant_id"))),
+    statusUpdatedProductIds: unique(productStatusTransitions.map((item) => item.productId)),
+    statusUpdatedVariantIds: unique(variantStatusTransitions.map((item) => item.variantId)),
+    productStatusTransitions,
+    variantStatusTransitions,
     insertedVariantIds: unique(variantInsertBlocks.flatMap((block) => {
       const id = firstSqlString(valuesClause(block));
       return id ? [id] : [];
@@ -2047,6 +2517,10 @@ export type PartnerCatalogSyncImportSuccess = Readonly<{
   collectionUpdates: readonly PlannedCollectionUpdate[];
   membershipAdds: readonly PlannedMembership[];
   membershipRemoves: readonly PlannedMembership[];
+  productDeactivations: readonly PlannedProductStatusTransition[];
+  productReactivations: readonly PlannedProductStatusTransition[];
+  variantDeactivations: readonly PlannedVariantStatusTransition[];
+  variantReactivations: readonly PlannedVariantStatusTransition[];
   written: Readonly<{ migration: string }> | null;
   migration: string | null;
   nextState: FoldedPartnerCatalogState;
@@ -2061,9 +2535,13 @@ export type PartnerCatalogSyncImportFailure = Readonly<{
   productUpdates: readonly [];
   variantCreates: readonly [];
   variantUpdates: readonly [];
+  variantDeactivations: readonly [];
+  variantReactivations: readonly [];
   collectionUpdates: readonly [];
   membershipAdds: readonly [];
   membershipRemoves: readonly [];
+  productDeactivations: readonly [];
+  productReactivations: readonly [];
   written: null;
   migration: null;
   nextState: null;
@@ -2120,6 +2598,10 @@ export function importPartnerCatalogSync(input: Readonly<{
         collectionUpdates: [],
         membershipAdds: [],
         membershipRemoves: [],
+        productDeactivations: [],
+        productReactivations: [],
+        variantDeactivations: [],
+        variantReactivations: [],
         written: null,
         migration: null,
         nextState: null,
@@ -2141,6 +2623,10 @@ export function importPartnerCatalogSync(input: Readonly<{
       collectionUpdates: [],
       membershipAdds: [],
       membershipRemoves: [],
+      productDeactivations: [],
+      productReactivations: [],
+      variantDeactivations: [],
+      variantReactivations: [],
       written: null,
       migration: null,
       nextState: null,
@@ -2168,6 +2654,10 @@ export function importPartnerCatalogSync(input: Readonly<{
       collectionUpdates: [],
       membershipAdds: [],
       membershipRemoves: [],
+      productDeactivations: [],
+      productReactivations: [],
+      variantDeactivations: [],
+      variantReactivations: [],
       written: null,
       migration: null,
       nextState: null,
@@ -2186,6 +2676,10 @@ export function importPartnerCatalogSync(input: Readonly<{
       collectionUpdates: plan.collectionUpdates,
       membershipAdds: plan.membershipAdds,
       membershipRemoves: plan.membershipRemoves,
+      productDeactivations: plan.productDeactivations,
+      productReactivations: plan.productReactivations,
+      variantDeactivations: plan.variantDeactivations,
+      variantReactivations: plan.variantReactivations,
       written: null,
       migration: null,
       nextState: plan.nextState,
@@ -2204,6 +2698,10 @@ export function importPartnerCatalogSync(input: Readonly<{
       collectionUpdates: plan.collectionUpdates,
       membershipAdds: plan.membershipAdds,
       membershipRemoves: plan.membershipRemoves,
+      productDeactivations: plan.productDeactivations,
+      productReactivations: plan.productReactivations,
+      variantDeactivations: plan.variantDeactivations,
+      variantReactivations: plan.variantReactivations,
       written: null,
       migration: plan.sqlPlan.migration,
       nextState: plan.nextState,
@@ -2222,6 +2720,10 @@ export function importPartnerCatalogSync(input: Readonly<{
       collectionUpdates: [],
       membershipAdds: [],
       membershipRemoves: [],
+      productDeactivations: [],
+      productReactivations: [],
+      variantDeactivations: [],
+      variantReactivations: [],
       written: null,
       migration: null,
       nextState: null,
@@ -2245,6 +2747,10 @@ export function importPartnerCatalogSync(input: Readonly<{
       collectionUpdates: [],
       membershipAdds: [],
       membershipRemoves: [],
+      productDeactivations: [],
+      productReactivations: [],
+      variantDeactivations: [],
+      variantReactivations: [],
       written: null,
       migration: null,
       nextState: null,
@@ -2262,6 +2768,10 @@ export function importPartnerCatalogSync(input: Readonly<{
     collectionUpdates: plan.collectionUpdates,
     membershipAdds: plan.membershipAdds,
     membershipRemoves: plan.membershipRemoves,
+    productDeactivations: plan.productDeactivations,
+    productReactivations: plan.productReactivations,
+    variantDeactivations: plan.variantDeactivations,
+    variantReactivations: plan.variantReactivations,
     written: { migration: plan.sqlPlan.migration },
     migration: plan.sqlPlan.migration,
     nextState: plan.nextState,

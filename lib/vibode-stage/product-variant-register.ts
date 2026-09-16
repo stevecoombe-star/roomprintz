@@ -1039,6 +1039,7 @@ export function validateProductVariantRegistration(
     collectionIds: Object.freeze([...productIn.collectionIds]),
     source: productIn.source,
     partnerId: productIn.partnerId,
+    status: "active",
   });
   const variant: StageVariant = Object.freeze({
     variantId: variantIn.variantId,
@@ -1049,6 +1050,7 @@ export function validateProductVariantRegistration(
     priceAmount: variantIn.priceAmount,
     priceCurrency: variantCurrency,
     productUrl: variantIn.productUrl,
+    status: "active",
   });
   const collectionSortOrders = product.collectionIds.map((collectionId) => {
     const collection = catalog.collections.find((item) => item.collectionId === collectionId);
@@ -1528,6 +1530,7 @@ export function validateVariantRegistration(
     priceAmount: variantIn.priceAmount,
     priceCurrency: variantCurrency,
     productUrl: variantIn.productUrl,
+    status: "active",
   });
   return {
     ok: true,

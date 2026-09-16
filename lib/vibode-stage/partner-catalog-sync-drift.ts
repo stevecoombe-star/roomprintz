@@ -218,6 +218,71 @@ export function detectPartnerCatalogSyncDrift(input: Readonly<{
     if (JSON.stringify(plannedVariantCreateIds) !== JSON.stringify(sqlVariantCreateIds)) {
       issues.push(issue("SQL_JSON_MISMATCH", `${fileName} Variant creates differ from the sync document plan.`));
     }
+
+    const plannedProductDeactivate = plan.productDeactivations
+      .map((item) => `${item.productId}:${item.from}:${item.to}`)
+      .sort();
+    const sqlProductDeactivate = parsedSql.productStatusTransitions
+      .filter((item) => item.to === "inactive")
+      .map((item) => `${item.productId}:${item.from}:${item.to}`)
+      .sort();
+    if (JSON.stringify(plannedProductDeactivate) !== JSON.stringify(sqlProductDeactivate)) {
+      issues.push(issue("SQL_JSON_MISMATCH", `${fileName} Product deactivations differ from the sync document plan.`));
+    }
+    const plannedProductReactivate = plan.productReactivations
+      .map((item) => `${item.productId}:${item.from}:${item.to}`)
+      .sort();
+    const sqlProductReactivate = parsedSql.productStatusTransitions
+      .filter((item) => item.to === "active")
+      .map((item) => `${item.productId}:${item.from}:${item.to}`)
+      .sort();
+    if (JSON.stringify(plannedProductReactivate) !== JSON.stringify(sqlProductReactivate)) {
+      issues.push(issue("SQL_JSON_MISMATCH", `${fileName} Product reactivations differ from the sync document plan.`));
+    }
+    const plannedVariantDeactivate = plan.variantDeactivations
+      .map((item) => `${item.variantId}:${item.from}:${item.to}`)
+      .sort();
+    const sqlVariantDeactivate = parsedSql.variantStatusTransitions
+      .filter((item) => item.to === "inactive")
+      .map((item) => `${item.variantId}:${item.from}:${item.to}`)
+      .sort();
+    if (JSON.stringify(plannedVariantDeactivate) !== JSON.stringify(sqlVariantDeactivate)) {
+      issues.push(issue("SQL_JSON_MISMATCH", `${fileName} Variant deactivations differ from the sync document plan.`));
+    }
+    const plannedVariantReactivate = plan.variantReactivations
+      .map((item) => `${item.variantId}:${item.from}:${item.to}`)
+      .sort();
+    const sqlVariantReactivate = parsedSql.variantStatusTransitions
+      .filter((item) => item.to === "active")
+      .map((item) => `${item.variantId}:${item.from}:${item.to}`)
+      .sort();
+    if (JSON.stringify(plannedVariantReactivate) !== JSON.stringify(sqlVariantReactivate)) {
+      issues.push(issue("SQL_JSON_MISMATCH", `${fileName} Variant reactivations differ from the sync document plan.`));
+    }
+    if (
+      parsedSql.productStatusTransitions.some((item) => (
+        !plan.productDeactivations.some((planned) => (
+          planned.productId === item.productId && planned.from === item.from && planned.to === item.to
+        )) &&
+        !plan.productReactivations.some((planned) => (
+          planned.productId === item.productId && planned.from === item.from && planned.to === item.to
+        ))
+      ))
+    ) {
+      issues.push(issue("SQL_FORBIDDEN_COLUMN", `${fileName} has unplanned Product status SQL.`));
+    }
+    if (
+      parsedSql.variantStatusTransitions.some((item) => (
+        !plan.variantDeactivations.some((planned) => (
+          planned.variantId === item.variantId && planned.from === item.from && planned.to === item.to
+        )) &&
+        !plan.variantReactivations.some((planned) => (
+          planned.variantId === item.variantId && planned.from === item.from && planned.to === item.to
+        ))
+      ))
+    ) {
+      issues.push(issue("SQL_FORBIDDEN_COLUMN", `${fileName} has unplanned Variant status SQL.`));
+    }
     for (const membership of plan.membershipAdds) {
       if (!parsedSql.insertedMemberships.some((item) => sameMembership(item, membership))) {
         issues.push(issue(

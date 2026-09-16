@@ -1,8 +1,10 @@
-import type { StageCatalogMode, StageProduct } from "./types";
+import type { StageCatalogMode, StageProduct, StageVariant } from "./types";
 import { isProductFavorited } from "./favorites";
+import { isStageCommercialActive } from "./catalog";
 
 export type StageCatalogQueryInput = Readonly<{
   products: readonly StageProduct[];
+  variants?: readonly StageVariant[];
   mode: StageCatalogMode;
   query: string;
   categoryId: string | null;
@@ -21,16 +23,45 @@ export type StageCatalogNavigationState = Readonly<{
   collectionId: string | null;
 }>;
 
+function favoriteVariantIdFromKey(key: string, productId: string): string | null {
+  const prefix = `${productId}::`;
+  if (!key.startsWith(prefix)) return null;
+  const variantId = key.slice(prefix.length);
+  return variantId.length > 0 ? variantId : null;
+}
+
+export function productHasActiveFavoriteVariant(
+  product: StageProduct,
+  favoriteKeys: ReadonlySet<string>,
+  variants: readonly StageVariant[],
+): boolean {
+  if (!isStageCommercialActive(product.status)) return false;
+  for (const key of favoriteKeys) {
+    const variantId = favoriteVariantIdFromKey(key, product.productId);
+    if (!variantId) continue;
+    const variant = variants.find((item) => (
+      item.variantId === variantId && item.productId === product.productId
+    ));
+    if (variant && isStageCommercialActive(variant.status)) return true;
+  }
+  return false;
+}
+
 export function filterStageCatalogProducts(input: StageCatalogQueryInput): StageProduct[] {
   const needle = input.query.trim().toLowerCase();
   const recentIds = input.recentlyUsedProductIds ?? [];
   return input.products.filter((product) => {
-    if (
-      input.mode === "favorites" &&
-      !isProductFavorited(product.productId, input.favoriteKeys) &&
-      !input.favoriteKeys.has(input.favoriteKeyFor(product))
-    ) {
-      return false;
+    if (!isStageCommercialActive(product.status)) return false;
+    if (input.mode === "favorites") {
+      const prefixOrDefault = isProductFavorited(product.productId, input.favoriteKeys)
+        || input.favoriteKeys.has(input.favoriteKeyFor(product));
+      if (!prefixOrDefault) return false;
+      if (
+        input.variants &&
+        !productHasActiveFavoriteVariant(product, input.favoriteKeys, input.variants)
+      ) {
+        return false;
+      }
     }
     if (
       input.mode === "collections" &&

@@ -3,6 +3,7 @@ import type { SceneObjectDefinition } from "@/lib/afc-v2-runtime/types";
 import {
   fallbackProductIdForAsset,
   formatStagePrice,
+  isStageCommercialActive,
   stageProductById,
   stageVariantById,
 } from "./catalog";
@@ -66,7 +67,14 @@ export function buildStageSummary(input: Readonly<{
     currency = lineCurrency;
     const quantity = objects.length;
     const lineTotal = unitPrice == null ? null : unitPrice * quantity;
-    if (product?.productUrl || variant?.productUrl) shoppable = true;
+    const lineShoppable = Boolean(
+      product &&
+      isStageCommercialActive(product.status) &&
+      variant &&
+      isStageCommercialActive(variant.status) &&
+      (product.productUrl || variant.productUrl),
+    );
+    if (lineShoppable) shoppable = true;
     lines.push({
       key,
       productId: ref.productId,
@@ -81,6 +89,7 @@ export function buildStageSummary(input: Readonly<{
       quantity,
       lineTotal,
       objectIds: objects.map((object) => object.objectId),
+      shoppable: lineShoppable,
     });
   }
 

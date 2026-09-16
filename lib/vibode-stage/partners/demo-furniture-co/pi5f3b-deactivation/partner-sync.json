@@ -1,0 +1,18 @@
+{
+  "partnerId": "partner-demo-furniture-co",
+  "mode": "patch",
+  "products": {
+    "deactivate": [
+      {
+        "productId": "prod-demo-furniture-co-demo-sofa"
+      }
+    ]
+  },
+  "variants": {
+    "deactivate": [
+      {
+        "variantId": "var-demo-furniture-co-demo-coffee-table-black"
+      }
+    ]
+  }
+}

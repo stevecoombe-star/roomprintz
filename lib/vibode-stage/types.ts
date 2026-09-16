@@ -34,6 +34,8 @@ export type StageAssetStatus = "ready" | "unavailable";
 
 export type StagePartnerStatus = "active" | "inactive";
 
+export type StageCommercialStatus = "active" | "inactive";
+
 export type StagePartner = Readonly<{
   partnerId: string;
   name: string;
@@ -61,6 +63,7 @@ export type StageVariant = Readonly<{
   priceAmount: number | null;
   priceCurrency: string;
   productUrl: string | null;
+  status?: StageCommercialStatus;
 }>;
 
 export type StageProduct = Readonly<{
@@ -78,6 +81,7 @@ export type StageProduct = Readonly<{
   collectionIds: readonly string[];
   source: StageProductSource;
   partnerId: string | null;
+  status?: StageCommercialStatus;
 }>;
 
 export type StageCollection = Readonly<{
@@ -126,6 +130,7 @@ export type StageSummaryLine = Readonly<{
   quantity: number;
   lineTotal: number | null;
   objectIds: readonly string[];
+  shoppable: boolean;
 }>;
 
 export type StageSummaryModel = Readonly<{

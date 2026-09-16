@@ -5,6 +5,7 @@ import { useEffect, useState } from "react";
 import {
   favoriteKey,
   formatStagePrice,
+  isStageCommercialActive,
   resolveStagePlacement,
   stageAssetById,
   stageProductById,
@@ -26,15 +27,45 @@ export function StageProductDetail() {
   );
 
   useEffect(() => {
-    setSelectedVariantId(product?.defaultVariantId ?? "");
+    if (!product) {
+      setSelectedVariantId("");
+      return;
+    }
+    setSelectedVariantId(product.defaultVariantId);
   }, [product?.productId, product?.defaultVariantId]);
+
+  useEffect(() => {
+    if (!product) return;
+    const currentId = selectedVariantId || product.defaultVariantId;
+    const current = stageVariantById(currentId, stage.extraVariants, stage.catalog);
+    if (
+      current &&
+      current.productId === product.productId &&
+      isStageCommercialActive(current.status)
+    ) {
+      return;
+    }
+    const fallback = stageVariantById(
+      product.defaultVariantId,
+      stage.extraVariants,
+      stage.catalog,
+    );
+    if (fallback && isStageCommercialActive(fallback.status)) {
+      setSelectedVariantId(product.defaultVariantId);
+    }
+  }, [
+    product,
+    selectedVariantId,
+    stage.catalog,
+    stage.extraVariants,
+  ]);
 
   if (!product) return null;
   const variants = stageVariantsForProduct(
     product.productId,
     stage.extraVariants,
     stage.catalog,
-  );
+  ).filter((item) => isStageCommercialActive(item.status));
   const variant = stageVariantById(
     selectedVariantId || product.defaultVariantId,
     stage.extraVariants,

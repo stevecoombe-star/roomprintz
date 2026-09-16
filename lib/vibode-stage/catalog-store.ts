@@ -15,6 +15,7 @@ import type {
   StageCatalogAuthority,
   StageCatalogSnapshot,
   StageCollection,
+  StageCommercialStatus,
   StagePartner,
   StagePartnerStatus,
   StageProduct,
@@ -120,6 +121,13 @@ function asPartnerStatus(value: unknown): StagePartnerStatus | null {
   return null;
 }
 
+function asCommercialStatus(value: unknown): StageCommercialStatus | null {
+  if (value == null) return "active";
+  if (typeof value === "string" && value.trim() === "") return "active";
+  if (value === "active" || value === "inactive") return value;
+  return null;
+}
+
 function mapPartner(row: Record<string, unknown>): StagePartner | null {
   const partnerId = asTrimmedString(row.partner_id);
   const name = asTrimmedString(row.name);
@@ -166,7 +174,8 @@ function mapAsset(row: Record<string, unknown>): StageAsset | null {
 function mapVariant(row: Record<string, unknown>): StageVariant | null {
   const variantId = asTrimmedString(row.variant_id);
   const productId = asTrimmedString(row.product_id);
-  if (!variantId || !productId) return null;
+  const status = asCommercialStatus(row.status);
+  if (!variantId || !productId || !status) return null;
   return {
     variantId,
     productId,
@@ -176,6 +185,7 @@ function mapVariant(row: Record<string, unknown>): StageVariant | null {
     priceAmount: asNumber(row.price_amount),
     priceCurrency: asNullableString(row.price_currency) ?? "USD",
     productUrl: asNullableString(row.product_url),
+    status,
   };
 }
 
@@ -191,7 +201,7 @@ function mapProduct(
   const categoryId = asTrimmedString(row.category_id);
   const defaultVariantId = asTrimmedString(row.default_variant_id);
   const source = asSource(row.source);
-  const status = asTrimmedString(row.status);
+  const status = asCommercialStatus(row.status);
   const partnerId = asNullableString(row.partner_id);
   if (
     !productId ||
@@ -202,7 +212,7 @@ function mapProduct(
     !categoryId ||
     !defaultVariantId ||
     !source ||
-    status !== "active"
+    !status
   ) {
     return null;
   }
@@ -223,6 +233,7 @@ function mapProduct(
     collectionIds: Object.freeze([...collectionIds]),
     source,
     partnerId,
+    status,
   };
 }
 
@@ -312,7 +323,6 @@ export function assembleStageCatalogFromRows(
   for (const row of productRows) {
     const productId = asTrimmedString(row.product_id);
     if (!productId) return null;
-    if (asTrimmedString(row.status) !== "active") continue;
     if (asSource(row.source) === "user_pasted") continue;
     const memberships = sortByOrderThenId(
       membershipByProduct.get(productId) ?? [],
@@ -467,7 +477,7 @@ export function stageCatalogRowsFromSnapshot(
       source: product.source,
       partner_id: product.partnerId,
       default_variant_id: product.defaultVariantId,
-      status: "active",
+      status: product.status ?? "active",
       sort_order: sortOrder,
     })),
     variants: catalog.variants.map((variant) => ({
@@ -479,6 +489,7 @@ export function stageCatalogRowsFromSnapshot(
       price_amount: variant.priceAmount,
       price_currency: variant.priceCurrency,
       product_url: variant.productUrl,
+      status: variant.status ?? "active",
     })),
     collections: catalog.collections.map((collection, sortOrder) => ({
       collection_id: collection.collectionId,
