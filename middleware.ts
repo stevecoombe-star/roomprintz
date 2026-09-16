@@ -5,7 +5,7 @@ import { isAdminEmail } from "@/lib/adminAccess";
 const LOGIN_PATH = "/login";
 const ADMIN_PATH = "/admin";
 const ADMIN_LOGIN_PATH = "/admin/login";
-const PROTECTED_PREFIXES = ["/editor", "/my-rooms", "/my-furniture", "/billing", "/app"];
+const PROTECTED_PREFIXES = ["/editor", "/my-rooms", "/my-furniture", "/billing", "/app", "/partner"];
 
 function isProtectedPath(pathname: string): boolean {
   return PROTECTED_PREFIXES.some(
@@ -92,6 +92,8 @@ export const config = {
     "/my-furniture/:path*",
     "/billing/:path*",
     "/app/:path*",
+    "/partner",
+    "/partner/:path*",
     "/admin/:path*",
   ],
 };
