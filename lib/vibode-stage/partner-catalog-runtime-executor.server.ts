@@ -7,10 +7,12 @@ import {
   parseRuntimeApplyRpcError,
   STAGE_PARTNER_APPLY_RPC,
   STAGE_PARTNER_APPLY_RPC_V2,
+  STAGE_PARTNER_APPLY_RPC_V3,
   type PartnerRuntimeApplyFn,
   type PartnerRuntimeApplyResult,
 } from "./partner-catalog-publish";
 import { PARTNER_RUNTIME_PLAN_VERSION_2 } from "./partner-catalog-runtime-executor-v2";
+import { PARTNER_RUNTIME_PLAN_VERSION_3 } from "./partner-catalog-runtime-executor-v3";
 import {
   mapPartnerPublishAuditRow,
   persistablePartnerPublishAuditInsert,
@@ -59,6 +61,14 @@ export function createSupabasePartnerPublishAuditStore(supabase: SupabaseClient)
 
 export function createSupabasePartnerRuntimeApply(supabase: SupabaseClient): PartnerRuntimeApplyFn {
   return async (payload) => {
+    if (payload.planVersion === PARTNER_RUNTIME_PLAN_VERSION_3) {
+      const { data, error } = await supabase.rpc(STAGE_PARTNER_APPLY_RPC_V3, { p_apply: payload });
+      if (error) {
+        const errorCode = parseRuntimeApplyRpcError(error.message) ?? "FAILED";
+        return { ok: false, errorCode };
+      }
+      return parseRuntimeApplyResult(data);
+    }
     if (payload.planVersion === PARTNER_RUNTIME_PLAN_VERSION_2) {
       const { data, error } = await supabase.rpc(STAGE_PARTNER_APPLY_RPC_V2, { p_apply: payload });
       if (error) {

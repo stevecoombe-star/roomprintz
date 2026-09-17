@@ -1,8 +1,10 @@
+import { STAGE_BROWSE_CATEGORIES } from "@/lib/vibode-stage/catalog";
 import { listPartnerReadyAssetsForVariantCreate } from "@/lib/vibode-stage/partner-portal-assets";
 import { loadAuthorizedPartnerPortalCatalog } from "@/lib/vibode-stage/partner-portal-catalog.server";
 import { resolvePartnerPortalContext } from "@/lib/vibode-stage/partner-portal-auth.server";
 import { loadPartnerPortalDraft } from "@/lib/vibode-stage/partner-portal-drafts.server";
 import { toPartnerDraftDto } from "@/lib/vibode-stage/partner-portal-drafts";
+import { partnerCatalogCurrencyForCreate } from "@/lib/vibode-stage/partner-draft-mutations";
 import { PartnerDraftWorkspaceClient } from "./PartnerDraftWorkspaceClient";
 
 export const dynamic = "force-dynamic";
@@ -81,6 +83,8 @@ export default async function PartnerDraftWorkspacePage({
       variants={loaded.catalog.variants}
       collections={loaded.catalog.collections}
       readyAssets={listPartnerReadyAssetsForVariantCreate(loaded.catalog)}
+      categories={STAGE_BROWSE_CATEGORIES}
+      catalogCurrency={partnerCatalogCurrencyForCreate(loaded.catalog, auth.context.partnerId)}
       focusProductId={query.product ?? null}
     />
   );

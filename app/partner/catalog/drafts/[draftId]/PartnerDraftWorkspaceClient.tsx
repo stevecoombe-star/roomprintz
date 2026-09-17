@@ -9,10 +9,21 @@ import {
   type PartnerDraftPreviewView,
 } from "@/lib/vibode-stage/partner-draft-preview-view";
 import type { PartnerReadyAssetChoice } from "@/lib/vibode-stage/partner-portal-assets";
-import type { StageCollection, StageProduct, StageVariant } from "@/lib/vibode-stage/types";
+import type { StageCategory, StageCollection, StageProduct, StageVariant } from "@/lib/vibode-stage/types";
 
 type DraftDocument = {
   products: {
+    create?: ReadonlyArray<{
+      productId: string;
+      name: string;
+      imageUrl: string;
+      productUrl: string;
+      priceAmount: number;
+      priceCurrency: string;
+      categoryId: string;
+      subcategoryId: string | null;
+      defaultVariantId: string;
+    }>;
     update: ReadonlyArray<{
       productId: string;
       name?: string;
@@ -64,6 +75,36 @@ type DraftMutation =
   | { type: "product.set_image_url"; productId: string; imageUrl: string }
   | { type: "product.set_product_url"; productId: string; productUrl: string | null }
   | { type: "product.set_price"; productId: string; priceAmount: number }
+  | {
+      type: "product.create";
+      name: string;
+      imageUrl: string;
+      productUrl: string;
+      priceAmount: number;
+      categoryId: string;
+      subcategoryId?: string | null;
+      productCreationSlug?: string | null;
+      defaultVariant: {
+        finishLabel?: string | null;
+        sku?: string | null;
+        productUrl?: string | null;
+        currentAssetId: string;
+        creationSlug?: string | null;
+      };
+      collectionIds?: readonly string[];
+    }
+  | {
+      type: "product.create_edit";
+      productId: string;
+      name?: string;
+      imageUrl?: string;
+      productUrl?: string;
+      priceAmount?: number;
+      categoryId?: string;
+      subcategoryId?: string | null;
+      collectionIds?: readonly string[];
+    }
+  | { type: "product.create_remove"; productId: string }
   | { type: "variant.set_finish_label"; variantId: string; finishLabel: string | null }
   | { type: "variant.set_sku"; variantId: string; sku: string | null }
   | { type: "variant.set_price"; variantId: string; priceAmount: number }
@@ -143,6 +184,39 @@ function DraftPreviewResult(props: Readonly<{
         <p className="text-xs text-slate-500">No planner issues.</p>
       )}
       <div>
+        <h4 className="text-xs uppercase tracking-wide text-slate-500">Create Product</h4>
+        {view.productCreates.length === 0 ? (
+          <p className="mt-1 text-xs text-slate-500">None</p>
+        ) : view.productCreates.map((item) => {
+          const defaultVariant = view.variantCreates.find((variant) => variant.variantId === item.defaultVariantId);
+          return (
+            <div key={item.productId} className="mt-2 rounded-md border border-sky-900/60 p-2">
+              <p className="text-xs text-sky-200">Create Product</p>
+              <p className="text-xs text-slate-400">{item.productId}</p>
+              <ul className="mt-1 space-y-1 text-sm text-slate-200">
+                <li><span className="text-slate-400">Name:</span> {item.name}</li>
+                <li><span className="text-slate-400">Price:</span> {item.price}</li>
+                <li><span className="text-slate-400">Category:</span> {item.categoryId}{item.subcategoryId !== "—" ? ` / ${item.subcategoryId}` : ""}</li>
+                <li><span className="text-slate-400">Image URL:</span> {item.imageUrl}</li>
+                <li><span className="text-slate-400">Product URL:</span> {item.productUrl}</li>
+              </ul>
+              {defaultVariant ? (
+                <div className="mt-2 rounded-md border border-emerald-900/60 p-2">
+                  <p className="text-xs text-emerald-200">Create Default Variant</p>
+                  <p className="text-xs text-slate-400">{defaultVariant.variantId}</p>
+                  <ul className="mt-1 space-y-1 text-sm text-slate-200">
+                    <li><span className="text-slate-400">Finish:</span> {defaultVariant.finishLabel}</li>
+                    <li><span className="text-slate-400">SKU:</span> {defaultVariant.sku}</li>
+                    <li><span className="text-slate-400">Price:</span> {defaultVariant.price}</li>
+                    <li><span className="text-slate-400">Asset:</span> {defaultVariant.currentAssetId}</li>
+                  </ul>
+                </div>
+              ) : null}
+            </div>
+          );
+        })}
+      </div>
+      <div>
         <h4 className="text-xs uppercase tracking-wide text-slate-500">Product updates</h4>
         {view.productUpdates.length === 0 ? (
           <p className="mt-1 text-xs text-slate-500">None</p>
@@ -155,9 +229,13 @@ function DraftPreviewResult(props: Readonly<{
       </div>
       <div>
         <h4 className="text-xs uppercase tracking-wide text-slate-500">Create Variant</h4>
-        {view.variantCreates.length === 0 ? (
+        {view.variantCreates.filter((item) => (
+          !view.productCreates.some((product) => product.defaultVariantId === item.variantId)
+        )).length === 0 ? (
           <p className="mt-1 text-xs text-slate-500">None</p>
-        ) : view.variantCreates.map((item) => (
+        ) : view.variantCreates.filter((item) => (
+          !view.productCreates.some((product) => product.defaultVariantId === item.variantId)
+        )).map((item) => (
           <div key={item.variantId} className="mt-2 rounded-md border border-emerald-900/60 p-2">
             <p className="text-xs text-emerald-200">Create Variant</p>
             <p className="text-xs text-slate-400">{item.variantId}</p>
@@ -276,6 +354,26 @@ function pendingCreates(document: DraftDocument, productId: string) {
   return (document.variants.create ?? []).filter((item) => item.productId === productId);
 }
 
+function pendingProducts(document: DraftDocument) {
+  return document.products.create ?? [];
+}
+
+function pendingProductCollectionIds(document: DraftDocument, productId: string): string[] {
+  return document.collections.membershipAdd
+    .filter((item) => item.productId === productId)
+    .map((item) => item.collectionId)
+    .sort((left, right) => left.localeCompare(right));
+}
+
+function categoryLabel(categories: readonly StageCategory[], categoryId: string, subcategoryId: string | null): string {
+  const category = categories.find((item) => item.id === categoryId);
+  const subcategory = subcategoryId
+    ? category?.subcategories.find((item) => item.id === subcategoryId)
+    : null;
+  if (!category) return categoryId;
+  return subcategory ? `${category.label} / ${subcategory.label}` : category.label;
+}
+
 function assetLabel(assets: readonly PartnerReadyAssetChoice[], assetId: string): string {
   return assets.find((item) => item.assetId === assetId)?.label ?? assetId;
 }
@@ -290,6 +388,7 @@ function pendingCount(document: DraftDocument): number {
   return (
     productFields
     + variantFields
+    + (document.products.create ?? []).length
     + (document.variants.create ?? []).length
     + document.collections.update.length
     + document.collections.membershipAdd.length
@@ -321,6 +420,8 @@ export function PartnerDraftWorkspaceClient(props: Readonly<{
   variants: readonly StageVariant[];
   collections: readonly StageCollection[];
   readyAssets: readonly PartnerReadyAssetChoice[];
+  categories: readonly StageCategory[];
+  catalogCurrency: string | null;
   focusProductId: string | null;
 }>) {
   const router = useRouter();
@@ -354,6 +455,20 @@ export function PartnerDraftWorkspaceClient(props: Readonly<{
   const [newUrl, setNewUrl] = useState("");
   const [newAssetId, setNewAssetId] = useState(props.readyAssets[0]?.assetId ?? "");
   const [newSlug, setNewSlug] = useState("");
+  const [addingProduct, setAddingProduct] = useState(false);
+  const [newProductName, setNewProductName] = useState("");
+  const [newProductSlug, setNewProductSlug] = useState("");
+  const [newProductImage, setNewProductImage] = useState("");
+  const [newProductUrl, setNewProductUrl] = useState("");
+  const [newProductPrice, setNewProductPrice] = useState("");
+  const [newProductCategory, setNewProductCategory] = useState(props.categories[0]?.id ?? "");
+  const [newProductSubcategory, setNewProductSubcategory] = useState("");
+  const [newProductFinish, setNewProductFinish] = useState("");
+  const [newProductSku, setNewProductSku] = useState("");
+  const [newProductVariantUrl, setNewProductVariantUrl] = useState("");
+  const [newProductAssetId, setNewProductAssetId] = useState(props.readyAssets[0]?.assetId ?? "");
+  const [newProductVariantSlug, setNewProductVariantSlug] = useState("");
+  const [newProductCollections, setNewProductCollections] = useState<string[]>([]);
 
   const variantsByProduct = useMemo(() => {
     const map = new Map<string, StageVariant[]>();
@@ -375,6 +490,12 @@ export function PartnerDraftWorkspaceClient(props: Readonly<{
       nextImages[product.productId] = effective(product.imageUrl, patch?.imageUrl);
       nextUrls[product.productId] = effective(product.productUrl, patch?.productUrl) ?? "";
       nextPrices[product.productId] = String(effective(product.priceAmount, patch?.priceAmount) ?? "");
+    }
+    for (const create of next.document.products.create ?? []) {
+      nextNames[create.productId] = create.name;
+      nextImages[create.productId] = create.imageUrl;
+      nextUrls[create.productId] = create.productUrl;
+      nextPrices[create.productId] = String(create.priceAmount ?? "");
     }
     const nextFinishes: Record<string, string> = {};
     const nextSkus: Record<string, string> = {};
@@ -680,6 +801,478 @@ export function PartnerDraftWorkspaceClient(props: Readonly<{
           <DraftPreviewResult preview={preview} raw={previewRaw} />
         ) : null}
       </section>
+
+      <section className="space-y-3 rounded-xl border border-slate-800 p-4">
+        <div className="flex items-center justify-between gap-3">
+          <h3 className="font-medium">Add Product</h3>
+          {!addingProduct ? (
+            <button
+              type="button"
+              disabled={pending || conflict || props.readyAssets.length === 0 || !props.catalogCurrency}
+              className="rounded-md border border-slate-700 px-3 py-1 text-xs"
+              onClick={() => setAddingProduct(true)}
+            >
+              Add Product
+            </button>
+          ) : null}
+        </div>
+        {props.readyAssets.length === 0 ? (
+          <p className="text-[11px] text-slate-500">
+            Product creation requires an already-certified Partner Asset. G5 will later unlock new geometry.
+          </p>
+        ) : null}
+        {!props.catalogCurrency ? (
+          <p className="text-[11px] text-slate-500">
+            Product creation is disabled until this Partner catalog has a resolvable currency.
+          </p>
+        ) : (
+          <p className="text-[11px] text-slate-500">
+            Inherited currency {props.catalogCurrency}. Image URL must be HTTPS or an allowed same-origin public path. Product URL must be absolute HTTPS.
+          </p>
+        )}
+        {addingProduct ? (
+          <div className="grid gap-3 sm:grid-cols-2">
+            <label className="text-xs text-slate-400 sm:col-span-2">
+              Product name
+              <input
+                className="mt-1 w-full rounded-md border border-slate-700 bg-slate-900 px-2 py-1 text-slate-100"
+                value={newProductName}
+                disabled={pending || conflict}
+                onChange={(event) => setNewProductName(event.target.value)}
+              />
+            </label>
+            <label className="text-xs text-slate-400">
+              Product identity slug
+              <input
+                className="mt-1 w-full rounded-md border border-slate-700 bg-slate-900 px-2 py-1 text-slate-100"
+                value={newProductSlug}
+                disabled={pending || conflict}
+                onChange={(event) => setNewProductSlug(event.target.value)}
+                placeholder="Optional if the name slugs cleanly"
+              />
+            </label>
+            <label className="text-xs text-slate-400">
+              Price ({props.catalogCurrency ?? "—"})
+              <input
+                className="mt-1 w-full rounded-md border border-slate-700 bg-slate-900 px-2 py-1 text-slate-100"
+                value={newProductPrice}
+                disabled={pending || conflict}
+                onChange={(event) => setNewProductPrice(event.target.value)}
+              />
+            </label>
+            <label className="text-xs text-slate-400 sm:col-span-2">
+              Image URL
+              <input
+                className="mt-1 w-full rounded-md border border-slate-700 bg-slate-900 px-2 py-1 text-slate-100"
+                value={newProductImage}
+                disabled={pending || conflict}
+                onChange={(event) => setNewProductImage(event.target.value)}
+              />
+            </label>
+            <label className="text-xs text-slate-400 sm:col-span-2">
+              Product URL
+              <input
+                className="mt-1 w-full rounded-md border border-slate-700 bg-slate-900 px-2 py-1 text-slate-100"
+                value={newProductUrl}
+                disabled={pending || conflict}
+                onChange={(event) => setNewProductUrl(event.target.value)}
+              />
+            </label>
+            <label className="text-xs text-slate-400">
+              Category
+              <select
+                className="mt-1 w-full rounded-md border border-slate-700 bg-slate-900 px-2 py-1 text-slate-100"
+                value={newProductCategory}
+                disabled={pending || conflict}
+                onChange={(event) => {
+                  setNewProductCategory(event.target.value);
+                  setNewProductSubcategory("");
+                }}
+              >
+                {props.categories.map((category) => (
+                  <option key={category.id} value={category.id}>{category.label}</option>
+                ))}
+              </select>
+            </label>
+            <label className="text-xs text-slate-400">
+              Subcategory
+              <select
+                className="mt-1 w-full rounded-md border border-slate-700 bg-slate-900 px-2 py-1 text-slate-100"
+                value={newProductSubcategory}
+                disabled={pending || conflict || (props.categories.find((item) => item.id === newProductCategory)?.subcategories.length ?? 0) === 0}
+                onChange={(event) => setNewProductSubcategory(event.target.value)}
+              >
+                <option value="">None</option>
+                {(props.categories.find((item) => item.id === newProductCategory)?.subcategories ?? []).map((item) => (
+                  <option key={item.id} value={item.id}>{item.label}</option>
+                ))}
+              </select>
+            </label>
+            <label className="text-xs text-slate-400">
+              Default variant finish
+              <input
+                className="mt-1 w-full rounded-md border border-slate-700 bg-slate-900 px-2 py-1 text-slate-100"
+                value={newProductFinish}
+                disabled={pending || conflict}
+                onChange={(event) => setNewProductFinish(event.target.value)}
+              />
+            </label>
+            <label className="text-xs text-slate-400">
+              Variant identity slug
+              <input
+                className="mt-1 w-full rounded-md border border-slate-700 bg-slate-900 px-2 py-1 text-slate-100"
+                value={newProductVariantSlug}
+                disabled={pending || conflict}
+                onChange={(event) => setNewProductVariantSlug(event.target.value)}
+                placeholder="Required if finish is blank"
+              />
+            </label>
+            <label className="text-xs text-slate-400">
+              Default variant SKU
+              <input
+                className="mt-1 w-full rounded-md border border-slate-700 bg-slate-900 px-2 py-1 text-slate-100"
+                value={newProductSku}
+                disabled={pending || conflict}
+                onChange={(event) => setNewProductSku(event.target.value)}
+              />
+            </label>
+            <label className="text-xs text-slate-400">
+              Variant product URL
+              <input
+                className="mt-1 w-full rounded-md border border-slate-700 bg-slate-900 px-2 py-1 text-slate-100"
+                value={newProductVariantUrl}
+                disabled={pending || conflict}
+                onChange={(event) => setNewProductVariantUrl(event.target.value)}
+              />
+            </label>
+            <label className="text-xs text-slate-400 sm:col-span-2">
+              Default variant asset
+              <select
+                className="mt-1 w-full rounded-md border border-slate-700 bg-slate-900 px-2 py-1 text-slate-100"
+                value={newProductAssetId}
+                disabled={pending || conflict || props.readyAssets.length === 0}
+                onChange={(event) => setNewProductAssetId(event.target.value)}
+              >
+                {props.readyAssets.map((asset) => (
+                  <option key={asset.assetId} value={asset.assetId}>{asset.label}</option>
+                ))}
+              </select>
+            </label>
+            {props.collections.length > 0 ? (
+              <fieldset className="sm:col-span-2 space-y-1">
+                <legend className="text-xs text-slate-400">Existing collections</legend>
+                {props.collections.map((collection) => (
+                  <label key={collection.collectionId} className="flex items-center gap-2 text-xs text-slate-300">
+                    <input
+                      type="checkbox"
+                      checked={newProductCollections.includes(collection.collectionId)}
+                      disabled={pending || conflict}
+                      onChange={(event) => {
+                        setNewProductCollections((current) => (
+                          event.target.checked
+                            ? [...current, collection.collectionId]
+                            : current.filter((id) => id !== collection.collectionId)
+                        ));
+                      }}
+                    />
+                    {collection.name}
+                  </label>
+                ))}
+              </fieldset>
+            ) : null}
+            <div className="sm:col-span-2 flex gap-2">
+              <button
+                type="button"
+                disabled={pending || conflict || props.readyAssets.length === 0 || !props.catalogCurrency}
+                className="rounded-md border border-emerald-700 px-3 py-1 text-xs text-emerald-100"
+                onClick={() => {
+                  const priceAmount = Number(newProductPrice);
+                  const productCreationSlug = blankToNull(newProductSlug);
+                  const finishLabel = blankToNull(newProductFinish);
+                  const creationSlug = blankToNull(newProductVariantSlug);
+                  if (!newProductName.trim() || !newProductImage.trim() || !newProductUrl.trim() || !Number.isFinite(priceAmount) || priceAmount < 0) return;
+                  if (!finishLabel && !creationSlug) return;
+                  if (!newProductAssetId) return;
+                  void save([{
+                    type: "product.create",
+                    name: newProductName.trim(),
+                    imageUrl: newProductImage.trim(),
+                    productUrl: newProductUrl.trim(),
+                    priceAmount,
+                    categoryId: newProductCategory,
+                    ...(newProductSubcategory ? { subcategoryId: newProductSubcategory } : { subcategoryId: null }),
+                    ...(productCreationSlug ? { productCreationSlug } : {}),
+                    defaultVariant: {
+                      finishLabel,
+                      sku: blankToNull(newProductSku),
+                      productUrl: blankToNull(newProductVariantUrl),
+                      currentAssetId: newProductAssetId,
+                      ...(creationSlug ? { creationSlug } : {}),
+                    },
+                    ...(newProductCollections.length > 0 ? { collectionIds: newProductCollections } : {}),
+                  }]).then((ok) => {
+                    if (!ok) return;
+                    setAddingProduct(false);
+                    setNewProductName("");
+                    setNewProductSlug("");
+                    setNewProductImage("");
+                    setNewProductUrl("");
+                    setNewProductPrice("");
+                    setNewProductFinish("");
+                    setNewProductSku("");
+                    setNewProductVariantUrl("");
+                    setNewProductVariantSlug("");
+                    setNewProductCollections([]);
+                  });
+                }}
+              >
+                Save product
+              </button>
+              <button
+                type="button"
+                disabled={pending}
+                className="rounded-md border border-slate-700 px-3 py-1 text-xs"
+                onClick={() => setAddingProduct(false)}
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        ) : null}
+      </section>
+
+      {pendingProducts(draft.document).map((create) => {
+        const defaultVariant = (draft.document.variants.create ?? []).find((item) => item.variantId === create.defaultVariantId);
+        const selectedCollections = pendingProductCollectionIds(draft.document, create.productId);
+        const imageSrc = safeHttpUrl(imageUrls[create.productId] ?? create.imageUrl);
+        return (
+          <article key={create.productId} className="space-y-4 rounded-xl border border-sky-900/70 bg-sky-950/10 p-4">
+            <div className="flex gap-4">
+              {imageSrc ? (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img src={imageSrc} alt="" className="h-16 w-16 rounded-md object-cover bg-slate-900" />
+              ) : (
+                <div className="h-16 w-16 rounded-md bg-slate-900" />
+              )}
+              <div>
+                <p className="text-xs text-sky-200">New Product — pending publish</p>
+                <h3 className="font-medium">{names[create.productId] ?? create.name}</h3>
+                <p className="text-xs text-slate-500">{create.productId}</p>
+                <p className="text-[11px] text-slate-500">
+                  {categoryLabel(props.categories, create.categoryId, create.subcategoryId)}
+                  {" · "}
+                  default {create.defaultVariantId}
+                </p>
+              </div>
+            </div>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <label className="text-xs text-slate-400">
+                Name
+                <input
+                  className="mt-1 w-full rounded-md border border-slate-700 bg-slate-900 px-2 py-1 text-slate-100"
+                  value={names[create.productId] ?? ""}
+                  disabled={pending || conflict}
+                  onChange={(event) => setNames((current) => ({ ...current, [create.productId]: event.target.value }))}
+                  onBlur={() => {
+                    const next = (names[create.productId] ?? "").trim();
+                    if (!next || next === create.name) return;
+                    void save([{ type: "product.create_edit", productId: create.productId, name: next }]);
+                  }}
+                />
+              </label>
+              <label className="text-xs text-slate-400">
+                Price ({create.priceCurrency})
+                <input
+                  className="mt-1 w-full rounded-md border border-slate-700 bg-slate-900 px-2 py-1 text-slate-100"
+                  value={prices[create.productId] ?? ""}
+                  disabled={pending || conflict}
+                  onChange={(event) => setPrices((current) => ({ ...current, [create.productId]: event.target.value }))}
+                  onBlur={() => {
+                    const parsed = Number(prices[create.productId]);
+                    if (!Number.isFinite(parsed) || parsed < 0 || parsed === create.priceAmount) return;
+                    void save([{ type: "product.create_edit", productId: create.productId, priceAmount: parsed }]);
+                  }}
+                />
+              </label>
+              <label className="text-xs text-slate-400 sm:col-span-2">
+                Image URL
+                <input
+                  className="mt-1 w-full rounded-md border border-slate-700 bg-slate-900 px-2 py-1 text-slate-100"
+                  value={imageUrls[create.productId] ?? ""}
+                  disabled={pending || conflict}
+                  onChange={(event) => setImageUrls((current) => ({ ...current, [create.productId]: event.target.value }))}
+                  onBlur={() => {
+                    const next = (imageUrls[create.productId] ?? "").trim();
+                    if (!next || next === create.imageUrl) return;
+                    void save([{ type: "product.create_edit", productId: create.productId, imageUrl: next }]);
+                  }}
+                />
+              </label>
+              <label className="text-xs text-slate-400 sm:col-span-2">
+                Product URL
+                <input
+                  className="mt-1 w-full rounded-md border border-slate-700 bg-slate-900 px-2 py-1 text-slate-100"
+                  value={productUrls[create.productId] ?? ""}
+                  disabled={pending || conflict}
+                  onChange={(event) => setProductUrls((current) => ({ ...current, [create.productId]: event.target.value }))}
+                  onBlur={() => {
+                    const next = (productUrls[create.productId] ?? "").trim();
+                    if (!next || next === create.productUrl) return;
+                    void save([{ type: "product.create_edit", productId: create.productId, productUrl: next }]);
+                  }}
+                />
+              </label>
+              <label className="text-xs text-slate-400">
+                Category
+                <select
+                  className="mt-1 w-full rounded-md border border-slate-700 bg-slate-900 px-2 py-1 text-slate-100"
+                  value={create.categoryId}
+                  disabled={pending || conflict}
+                  onChange={(event) => {
+                    const categoryId = event.target.value;
+                    const allowed = props.categories.find((item) => item.id === categoryId)?.subcategories.some((item) => item.id === create.subcategoryId);
+                    void save([{
+                      type: "product.create_edit",
+                      productId: create.productId,
+                      categoryId,
+                      subcategoryId: allowed ? create.subcategoryId : null,
+                    }]);
+                  }}
+                >
+                  {props.categories.map((category) => (
+                    <option key={category.id} value={category.id}>{category.label}</option>
+                  ))}
+                </select>
+              </label>
+              <label className="text-xs text-slate-400">
+                Subcategory
+                <select
+                  className="mt-1 w-full rounded-md border border-slate-700 bg-slate-900 px-2 py-1 text-slate-100"
+                  value={create.subcategoryId ?? ""}
+                  disabled={pending || conflict}
+                  onChange={(event) => {
+                    void save([{
+                      type: "product.create_edit",
+                      productId: create.productId,
+                      subcategoryId: event.target.value || null,
+                    }]);
+                  }}
+                >
+                  <option value="">None</option>
+                  {(props.categories.find((item) => item.id === create.categoryId)?.subcategories ?? []).map((item) => (
+                    <option key={item.id} value={item.id}>{item.label}</option>
+                  ))}
+                </select>
+              </label>
+            </div>
+            {defaultVariant ? (
+              <div className="rounded-md border border-emerald-900/70 bg-emerald-950/20 p-3">
+                <p className="text-xs text-emerald-200">Default Variant — pending publish</p>
+                <p className="text-[11px] text-slate-500">{defaultVariant.variantId}</p>
+                <p className="text-[11px] text-slate-500">
+                  Inherited currency {defaultVariant.priceCurrency}
+                  {" · "}
+                  Asset {assetLabel(props.readyAssets, defaultVariant.currentAssetId)}
+                </p>
+                <div className="mt-2 grid gap-3 sm:grid-cols-2">
+                  <label className="text-xs text-slate-400">
+                    Finish
+                    <input
+                      className="mt-1 w-full rounded-md border border-slate-700 bg-slate-900 px-2 py-1 text-slate-100"
+                      value={finishes[defaultVariant.variantId] ?? ""}
+                      disabled={pending || conflict}
+                      onChange={(event) => setFinishes((current) => ({ ...current, [defaultVariant.variantId]: event.target.value }))}
+                      onBlur={() => {
+                        const next = blankToNull(finishes[defaultVariant.variantId] ?? "");
+                        if (next === defaultVariant.finishLabel) return;
+                        void save([{ type: "variant.create_edit", variantId: defaultVariant.variantId, finishLabel: next }]);
+                      }}
+                    />
+                  </label>
+                  <label className="text-xs text-slate-400">
+                    SKU
+                    <input
+                      className="mt-1 w-full rounded-md border border-slate-700 bg-slate-900 px-2 py-1 text-slate-100"
+                      value={skus[defaultVariant.variantId] ?? ""}
+                      disabled={pending || conflict}
+                      onChange={(event) => setSkus((current) => ({ ...current, [defaultVariant.variantId]: event.target.value }))}
+                      onBlur={() => {
+                        const next = blankToNull(skus[defaultVariant.variantId] ?? "");
+                        if (next === defaultVariant.sku) return;
+                        void save([{ type: "variant.create_edit", variantId: defaultVariant.variantId, sku: next }]);
+                      }}
+                    />
+                  </label>
+                  <label className="text-xs text-slate-400 sm:col-span-2">
+                    Product URL
+                    <input
+                      className="mt-1 w-full rounded-md border border-slate-700 bg-slate-900 px-2 py-1 text-slate-100"
+                      value={variantUrls[defaultVariant.variantId] ?? ""}
+                      disabled={pending || conflict}
+                      onChange={(event) => setVariantUrls((current) => ({ ...current, [defaultVariant.variantId]: event.target.value }))}
+                      onBlur={() => {
+                        const next = blankToNull(variantUrls[defaultVariant.variantId] ?? "");
+                        if (next === defaultVariant.productUrl) return;
+                        void save([{ type: "variant.create_edit", variantId: defaultVariant.variantId, productUrl: next }]);
+                      }}
+                    />
+                  </label>
+                  <label className="text-xs text-slate-400 sm:col-span-2">
+                    Asset
+                    <select
+                      className="mt-1 w-full rounded-md border border-slate-700 bg-slate-900 px-2 py-1 text-slate-100"
+                      value={defaultVariant.currentAssetId}
+                      disabled={pending || conflict || props.readyAssets.length === 0}
+                      onChange={(event) => {
+                        const next = event.target.value;
+                        if (!next || next === defaultVariant.currentAssetId) return;
+                        void save([{ type: "variant.create_edit", variantId: defaultVariant.variantId, currentAssetId: next }]);
+                      }}
+                    >
+                      {props.readyAssets.map((asset) => (
+                        <option key={asset.assetId} value={asset.assetId}>{asset.label}</option>
+                      ))}
+                    </select>
+                  </label>
+                </div>
+              </div>
+            ) : null}
+            {props.collections.length > 0 ? (
+              <fieldset className="space-y-1">
+                <legend className="text-xs text-slate-400">Existing collections</legend>
+                {props.collections.map((collection) => (
+                  <label key={collection.collectionId} className="flex items-center gap-2 text-xs text-slate-300">
+                    <input
+                      type="checkbox"
+                      checked={selectedCollections.includes(collection.collectionId)}
+                      disabled={pending || conflict}
+                      onChange={(event) => {
+                        const next = event.target.checked
+                          ? [...selectedCollections, collection.collectionId]
+                          : selectedCollections.filter((id) => id !== collection.collectionId);
+                        void save([{
+                          type: "product.create_edit",
+                          productId: create.productId,
+                          collectionIds: next,
+                        }]);
+                      }}
+                    />
+                    {collection.name}
+                  </label>
+                ))}
+              </fieldset>
+            ) : null}
+            <button
+              type="button"
+              disabled={pending || conflict}
+              className="rounded-md border border-slate-700 px-3 py-1 text-xs"
+              onClick={() => void save([{ type: "product.create_remove", productId: create.productId }])}
+            >
+              Remove pending product
+            </button>
+          </article>
+        );
+      })}
 
       {props.products.map((product) => {
         const patch = productPatch(draft.document, product.productId);

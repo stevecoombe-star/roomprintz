@@ -65,6 +65,7 @@ import {
   validateOptionalAbsoluteHttpsUrl,
   validatePartnerCatalogImageUrl,
   validateRequiredAbsoluteHttpsUrl,
+  validateProductVariantRegistration,
   validateTargetAsset,
   validateVariantRegistration,
   type ProductVariantIssue,
@@ -163,6 +164,18 @@ const VARIANT_UPDATE_KEYS = Object.freeze([
 ]);
 
 const VARIANT_CREATE_KEYS = VARIANT_UPDATE_KEYS;
+
+const PRODUCT_CREATE_KEYS = Object.freeze([
+  "productId",
+  "name",
+  "imageUrl",
+  "productUrl",
+  "priceAmount",
+  "priceCurrency",
+  "categoryId",
+  "subcategoryId",
+  "defaultVariantId",
+]);
 
 const COLLECTION_UPDATE_KEYS = Object.freeze([
   "collectionId",
@@ -461,6 +474,18 @@ export type PartnerCatalogVariantCreate = Readonly<{
   currentAssetId: string;
 }>;
 
+export type PartnerCatalogProductCreate = Readonly<{
+  productId: string;
+  name: string;
+  imageUrl: string;
+  productUrl: string;
+  priceAmount: number;
+  priceCurrency: string;
+  categoryId: string;
+  subcategoryId: string | null;
+  defaultVariantId: string;
+}>;
+
 export type PartnerCatalogCollectionPatch = Readonly<{
   collectionId: string;
   name?: string;
@@ -487,6 +512,7 @@ export type PartnerCatalogSyncDocument = Readonly<{
   partnerId: string;
   mode: "patch";
   products: Readonly<{
+    create?: readonly PartnerCatalogProductCreate[];
     update: readonly PartnerCatalogProductPatch[];
     deactivate?: readonly PartnerCatalogProductStatusTarget[];
     reactivate?: readonly PartnerCatalogProductStatusTarget[];
@@ -767,6 +793,89 @@ function parseVariantCreate(
   };
 }
 
+function parseProductCreate(
+  value: unknown,
+  index: number,
+  issues: ProductVariantIssue[],
+): PartnerCatalogProductCreate | null {
+  if (!isPlainObject(value)) {
+    issues.push(issue("INVALID_JSON", `products.create[${index}] must be an object.`));
+    return null;
+  }
+  if (hasStatusKey(value)) {
+    issues.push(issue("UNSUPPORTED_OPERATION", `products.create[${index}] status updates are not allowed.`));
+    return null;
+  }
+  const extra = unknownKeys(value, PRODUCT_CREATE_KEYS);
+  if (extra.length > 0) {
+    issues.push(issue(
+      "UNSUPPORTED_OPERATION",
+      `products.create[${index}] contains unsupported fields: ${extra.join(", ")}.`,
+    ));
+    return null;
+  }
+  const productId = asNonEmptyString(value.productId);
+  const name = asNonEmptyString(value.name);
+  const imageUrl = asNonEmptyString(value.imageUrl);
+  const productUrl = asNonEmptyString(value.productUrl);
+  const priceAmount = asFiniteNumber(value.priceAmount);
+  const priceCurrency = asNonEmptyString(value.priceCurrency);
+  const categoryId = asNonEmptyString(value.categoryId);
+  const defaultVariantId = asNonEmptyString(value.defaultVariantId);
+  if (!productId) issues.push(issue("INVALID_PRODUCT_ID", `products.create[${index}].productId must be a non-empty string.`));
+  if (!name) issues.push(issue("EMPTY_NAME", `products.create[${index}].name must be non-empty.`));
+  if (!imageUrl) issues.push(issue("INVALID_IMAGE_URL", `products.create[${index}].imageUrl must be non-empty.`));
+  if (!productUrl) {
+    issues.push(issue("INVALID_PRODUCT_URL", `products.create[${index}].productUrl must be a non-empty string.`));
+  }
+  if (priceAmount == null) {
+    issues.push(issue("INVALID_PRICE", `products.create[${index}].priceAmount must be a finite number.`));
+  }
+  if (!priceCurrency) {
+    issues.push(issue("INVALID_CURRENCY", `products.create[${index}].priceCurrency must be a non-empty string.`));
+  }
+  if (!categoryId) {
+    issues.push(issue("UNKNOWN_CATEGORY", `products.create[${index}].categoryId must be a non-empty string.`));
+  }
+  if (!defaultVariantId) {
+    issues.push(issue(
+      "INVALID_VARIANT_ID",
+      `products.create[${index}].defaultVariantId must be a non-empty string.`,
+    ));
+  }
+  let subcategoryId: string | null = null;
+  if ("subcategoryId" in value) {
+    if (value.subcategoryId == null) subcategoryId = null;
+    else if (typeof value.subcategoryId !== "string") {
+      issues.push(issue("UNKNOWN_SUBCATEGORY", `products.create[${index}].subcategoryId must be a string or null.`));
+      return null;
+    } else subcategoryId = value.subcategoryId.trim() === "" ? null : value.subcategoryId.trim();
+  }
+  if (
+    !productId
+    || !name
+    || !imageUrl
+    || !productUrl
+    || priceAmount == null
+    || !priceCurrency
+    || !categoryId
+    || !defaultVariantId
+  ) {
+    return null;
+  }
+  return {
+    productId,
+    name,
+    imageUrl,
+    productUrl,
+    priceAmount,
+    priceCurrency,
+    categoryId,
+    subcategoryId,
+    defaultVariantId,
+  };
+}
+
 function parseCollectionPatch(
   value: unknown,
   index: number,
@@ -997,7 +1106,7 @@ export function parsePartnerCatalogSyncJson(value: unknown): Readonly<{
     issues.push(issue("INVALID_JSON", "collections must be an object."));
   }
   if (isPlainObject(productsRaw)) {
-    const extraProducts = unknownKeys(productsRaw, ["update", "deactivate", "reactivate"]);
+    const extraProducts = unknownKeys(productsRaw, ["create", "update", "deactivate", "reactivate"]);
     if (extraProducts.length > 0) {
       issues.push(issue(
         "UNSUPPORTED_OPERATION",
@@ -1024,6 +1133,12 @@ export function parsePartnerCatalogSyncJson(value: unknown): Readonly<{
     }
   }
 
+  const productCreates = parseObjectArray(
+    isPlainObject(productsRaw) ? productsRaw.create : [],
+    "products.create",
+    issues,
+    parseProductCreate,
+  );
   const productUpdates = parseObjectArray(
     isPlainObject(productsRaw) ? productsRaw.update : [],
     "products.update",
@@ -1094,6 +1209,7 @@ export function parsePartnerCatalogSyncJson(value: unknown): Readonly<{
       partnerId,
       mode: "patch",
       products: {
+        create: productCreates,
         update: productUpdates,
         deactivate: productDeactivations,
         reactivate: productReactivations,
@@ -1185,11 +1301,10 @@ function workingCatalogFor(
 
 function emptyCreatePlanFields(): Pick<
   PartnerCatalogSyncPlan,
-  "partnerStatusTransition" | "productCreates" | "collectionCreates"
+  "partnerStatusTransition" | "collectionCreates"
 > {
   return {
     partnerStatusTransition: null,
-    productCreates: [],
     collectionCreates: [],
   };
 }
@@ -1219,6 +1334,7 @@ function failedPartnerCatalogSyncPlan(
     issues,
     partnerId,
     ...emptyCreatePlanFields(),
+    productCreates: [],
     productUpdates: [],
     variantCreates: [],
     variantUpdates: [],
@@ -1386,12 +1502,108 @@ export function planPartnerCatalogSync(input: Readonly<{
     replaceVariant(working, next);
   }
 
+  const variantCreatesById = new Map(
+    input.document.variants.create.map((item) => [item.variantId, item]),
+  );
+  const pendingProductIds = new Set<string>();
+  const consumedDefaultVariantIds = new Set<string>();
+  const seenProductCreates = new Set<string>();
+
+  for (const create of input.document.products.create ?? []) {
+    if (seenProductCreates.has(create.productId) || seenProductUpdates.has(create.productId)) {
+      issues.push(issue("DUPLICATE_PRODUCT_ID", `Product ${create.productId} is duplicated in this patch.`));
+      continue;
+    }
+    seenProductCreates.add(create.productId);
+    if (working.products.some((item) => item.productId === create.productId)) {
+      issues.push(issue("DUPLICATE_PRODUCT_ID", `Product ${create.productId} already exists.`));
+      continue;
+    }
+    const defaultCreate = variantCreatesById.get(create.defaultVariantId) ?? null;
+    if (!defaultCreate) {
+      issues.push(issue(
+        "DEFAULT_VARIANT_MISMATCH",
+        `Product ${create.productId} default Variant ${create.defaultVariantId} does not exist.`,
+      ));
+      continue;
+    }
+    if (defaultCreate.productId !== create.productId) {
+      issues.push(issue(
+        "DEFAULT_VARIANT_MISMATCH",
+        `Default Variant ${create.defaultVariantId} does not belong to Product ${create.productId}.`,
+      ));
+      continue;
+    }
+    if (consumedDefaultVariantIds.has(create.defaultVariantId) || seenVariantUpdates.has(create.defaultVariantId)) {
+      issues.push(issue("DUPLICATE_VARIANT_ID", `Variant ${create.defaultVariantId} is duplicated in this patch.`));
+      continue;
+    }
+    const productSlug = productSlugFor(partner.slug, create.productId);
+    if (!isCommercialId(create.productId) || isUuidLike(create.productId) || !productSlug) {
+      issues.push(issue(
+        "PRODUCT_NAMESPACE_MISMATCH",
+        `Product ${create.productId} is not in Partner ${partner.slug} namespace.`,
+      ));
+    }
+    const expectedPrefix = productSlug ? `var-${partner.slug}-${productSlug}-` : null;
+    if (!isCommercialId(create.defaultVariantId) || isUuidLike(create.defaultVariantId)) {
+      issues.push(issue("INVALID_VARIANT_ID", `Invalid Variant ID ${create.defaultVariantId}.`));
+    } else if (expectedPrefix && !create.defaultVariantId.startsWith(expectedPrefix)) {
+      issues.push(issue(
+        "VARIANT_NAMESPACE_MISMATCH",
+        `Variant ${create.defaultVariantId} is not in Product ${create.productId} namespace.`,
+      ));
+    }
+    const stampedProduct = {
+      productId: create.productId,
+      name: create.name,
+      brand: partner.name,
+      retailer: partner.name,
+      imageUrl: create.imageUrl,
+      productUrl: create.productUrl,
+      priceAmount: create.priceAmount,
+      priceCurrency: create.priceCurrency,
+      categoryId: create.categoryId,
+      subcategoryId: create.subcategoryId,
+      source: "partner_catalog" as const,
+      partnerId: partner.partnerId,
+      collectionIds: [] as const,
+    };
+    const registration = validateProductVariantRegistration({
+      product: stampedProduct,
+      defaultVariant: defaultCreate,
+    }, {
+      ...gates,
+      catalog: workingCatalogFor(freezeFoldedState(working), gates),
+    });
+    if (!registration.ok) {
+      issues.push(...registration.errors);
+      continue;
+    }
+    working.products.push({
+      ...registration.parsed.product,
+      collectionIds: [...registration.parsed.product.collectionIds],
+    });
+    working.variants.push(registration.parsed.variant);
+    pendingProductIds.add(create.productId);
+    consumedDefaultVariantIds.add(create.defaultVariantId);
+    seenVariantCreates.add(create.defaultVariantId);
+  }
+
   for (const create of input.document.variants.create) {
+    if (consumedDefaultVariantIds.has(create.variantId)) continue;
     if (seenVariantCreates.has(create.variantId) || seenVariantUpdates.has(create.variantId)) {
       issues.push(issue("DUPLICATE_VARIANT_ID", `Variant ${create.variantId} is duplicated in this patch.`));
       continue;
     }
     seenVariantCreates.add(create.variantId);
+    if (pendingProductIds.has(create.productId)) {
+      issues.push(issue(
+        "UNSUPPORTED_OPERATION",
+        `Additional Variant ${create.variantId} cannot target pending Product ${create.productId}.`,
+      ));
+      continue;
+    }
     const product = working.products.find((item) => item.productId === create.productId) ?? null;
     if (!product || product.partnerId !== partner.partnerId) {
       issues.push(issue("UNKNOWN_PRODUCT", `Unknown Product ${create.productId}.`));
@@ -1692,10 +1904,19 @@ export function planPartnerCatalogSync(input: Readonly<{
     return failedPartnerCatalogSyncPlan(issues, partner.partnerId);
   }
 
+  const productCreates: PlannedProductCreate[] = [];
   const productUpdates: PlannedProductUpdate[] = [];
   for (const next of nextState.products) {
     const previous = input.current.products.find((item) => item.productId === next.productId);
-    if (!previous) continue;
+    if (!previous) {
+      if (next.partnerId === partner.partnerId) {
+        productCreates.push({
+          product: next,
+          sortOrder: input.current.products.length + productCreates.length,
+        });
+      }
+      continue;
+    }
     const changes: PlannedFieldChange[] = [];
     const fields: Array<keyof Pick<StageProduct, "name" | "imageUrl" | "productUrl" | "priceAmount" | "categoryId" | "subcategoryId" | "defaultVariantId">> = [
       "name",
@@ -1831,6 +2052,7 @@ export function planPartnerCatalogSync(input: Readonly<{
   }
 
   const noOp = (
+    productCreates.length === 0 &&
     productUpdates.length === 0 &&
     variantCreates.length === 0 &&
     variantUpdates.length === 0 &&
@@ -1854,6 +2076,7 @@ export function planPartnerCatalogSync(input: Readonly<{
     : {
       sql: renderPartnerCatalogSyncSql({
         partner,
+        productCreates,
         productUpdates,
         variantCreates,
         variantUpdates,
@@ -1875,6 +2098,7 @@ export function planPartnerCatalogSync(input: Readonly<{
     issues: [],
     partnerId: partner.partnerId,
     ...emptyCreatePlanFields(),
+    productCreates,
     productUpdates,
     variantCreates,
     variantUpdates,
@@ -1915,6 +2139,7 @@ function renderGuardedUpdate(input: Readonly<{
 
 export function renderPartnerCatalogSyncSql(input: Readonly<{
   partner: StagePartner;
+  productCreates?: readonly PlannedProductCreate[];
   productUpdates: readonly PlannedProductUpdate[];
   variantCreates: readonly PlannedVariantCreate[];
   variantUpdates: readonly PlannedVariantUpdate[];
@@ -1928,6 +2153,8 @@ export function renderPartnerCatalogSyncSql(input: Readonly<{
   current: FoldedPartnerCatalogState;
 }>): string {
   const parts: string[] = [];
+  const productCreates = input.productCreates ?? [];
+  const creatingProductIds = new Set(productCreates.map((item) => item.product.productId));
   const assetIds = [...new Set(
     input.variantCreates
       .map((item) => item.variant.assetId)
@@ -1942,6 +2169,15 @@ export function renderPartnerCatalogSyncSql(input: Readonly<{
     `      and status = 'ready'\n` +
     `  ) then\n` +
     `    raise exception 'Target Asset is missing or not ready';\n` +
+    `  end if;`
+  ));
+  const productExistsGuards = productCreates.map((item) => (
+    `  if exists (\n` +
+    `    select 1\n` +
+    `    from public.vibode_stage_products\n` +
+    `    where product_id = ${sqlString(item.product.productId)}\n` +
+    `  ) then\n` +
+    `    raise exception 'Product already exists';\n` +
     `  end if;`
   ));
   const variantExistsGuards = input.variantCreates.map((item) => (
@@ -1975,7 +2211,9 @@ export function renderPartnerCatalogSyncSql(input: Readonly<{
     );
   }).filter(Boolean);
 
-  const membershipAddGuards = input.membershipAdds.map((item) => (
+  const membershipAddGuards = input.membershipAdds.filter((item) => (
+    !creatingProductIds.has(item.productId)
+  )).map((item) => (
     `  if not exists (\n` +
     `    select 1\n` +
     `    from public.vibode_stage_products products\n` +
@@ -1993,6 +2231,7 @@ export function renderPartnerCatalogSyncSql(input: Readonly<{
 
   const preludeGuards = [
     ...assetGuards,
+    ...productExistsGuards,
     ...variantExistsGuards,
     ...skuGuards,
     ...membershipAddGuards,
@@ -2039,6 +2278,47 @@ export function renderPartnerCatalogSyncSql(input: Readonly<{
       setClauses,
       whereClauses,
     }));
+  }
+
+  for (const create of [...productCreates].sort((a, b) => (
+    a.product.productId.localeCompare(b.product.productId)
+  ))) {
+    const product = create.product;
+    parts.push(
+      `insert into public.vibode_stage_products (\n` +
+      `  product_id,\n` +
+      `  name,\n` +
+      `  brand,\n` +
+      `  retailer,\n` +
+      `  image_url,\n` +
+      `  product_url,\n` +
+      `  price_amount,\n` +
+      `  price_currency,\n` +
+      `  category_id,\n` +
+      `  subcategory_id,\n` +
+      `  source,\n` +
+      `  partner_id,\n` +
+      `  default_variant_id,\n` +
+      `  status,\n` +
+      `  sort_order\n` +
+      `) values (\n` +
+      `  ${sqlString(product.productId)},\n` +
+      `  ${sqlString(product.name)},\n` +
+      `  ${sqlString(product.brand)},\n` +
+      `  ${sqlString(product.retailer)},\n` +
+      `  ${sqlString(product.imageUrl)},\n` +
+      `  ${sqlNullableString(product.productUrl)},\n` +
+      `  ${sqlNumber(product.priceAmount ?? 0)},\n` +
+      `  ${sqlString(product.priceCurrency)},\n` +
+      `  ${sqlString(product.categoryId)},\n` +
+      `  ${sqlNullableString(product.subcategoryId)},\n` +
+      `  'partner_catalog',\n` +
+      `  ${sqlString(input.partner.partnerId)},\n` +
+      `  ${sqlString(product.defaultVariantId)},\n` +
+      `  'active',\n` +
+      `  ${sqlNumber(create.sortOrder)}\n` +
+      `);`,
+    );
   }
 
   for (const create of [...input.variantCreates].sort((a, b) => (

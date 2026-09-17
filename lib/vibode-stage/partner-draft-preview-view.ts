@@ -24,6 +24,17 @@ export type PartnerDraftPreviewView = Readonly<{
     productId: string;
     changes: readonly PartnerDraftPreviewChange[];
   }>[];
+  productCreates: readonly Readonly<{
+    productId: string;
+    name: string;
+    price: string;
+    priceCurrency: string;
+    categoryId: string;
+    subcategoryId: string;
+    imageUrl: string;
+    productUrl: string;
+    defaultVariantId: string;
+  }>[];
   variantUpdates: readonly Readonly<{
     variantId: string;
     productId: string;
@@ -146,6 +157,33 @@ function asVariantCreates(value: unknown): PartnerDraftPreviewView["variantCreat
   });
 }
 
+function asProductCreates(value: unknown): PartnerDraftPreviewView["productCreates"] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((item) => {
+    const record = asRecord(item);
+    if (!record) return [];
+    const nested = asRecord(record.product) ?? record;
+    const productId = asString(nested.productId);
+    if (!productId) return [];
+    const priceAmount = nested.priceAmount;
+    const priceCurrency = asString(nested.priceCurrency) ?? "";
+    const price = priceAmount == null || priceAmount === ""
+      ? "—"
+      : `${displayValue(priceAmount)}${priceCurrency ? ` ${priceCurrency}` : ""}`;
+    return [{
+      productId,
+      name: displayValue(nested.name),
+      price,
+      priceCurrency: priceCurrency || "—",
+      categoryId: displayValue(nested.categoryId),
+      subcategoryId: displayValue(nested.subcategoryId),
+      imageUrl: displayValue(nested.imageUrl),
+      productUrl: displayValue(nested.productUrl),
+      defaultVariantId: displayValue(nested.defaultVariantId),
+    }];
+  });
+}
+
 export function presentPartnerDraftPreview(body: unknown): PartnerDraftPreviewView | Readonly<{ error: string }> {
   const record = asRecord(body);
   if (!record) return { error: "Preview request failed." };
@@ -199,6 +237,7 @@ export function presentPartnerDraftPreview(body: unknown): PartnerDraftPreviewVi
     partnerId: asString(record.partnerId),
     issues,
     productUpdates,
+    productCreates: asProductCreates(record.productCreates),
     variantUpdates,
     variantCreates: asVariantCreates(record.variantCreates),
     collectionUpdates,
@@ -214,6 +253,7 @@ export function presentPartnerDraftPreview(body: unknown): PartnerDraftPreviewVi
 export function partnerDraftPreviewHasChanges(view: PartnerDraftPreviewView): boolean {
   return (
     view.productUpdates.length > 0
+    || view.productCreates.length > 0
     || view.variantUpdates.length > 0
     || view.variantCreates.length > 0
     || view.collectionUpdates.length > 0

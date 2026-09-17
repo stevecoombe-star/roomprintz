@@ -57,6 +57,23 @@ export function variantCreationSlugFor(input: Readonly<{
   return commercialSlugFromLabel(input.finishLabel);
 }
 
+export function productCreationSlugFor(input: Readonly<{
+  name: string;
+  creationSlug?: string | null;
+}>): string | null {
+  const explicit = input.creationSlug != null && input.creationSlug.trim().length > 0
+    ? commercialSlugFromLabel(input.creationSlug)
+    : null;
+  if (input.creationSlug != null && input.creationSlug.trim().length > 0) {
+    return explicit;
+  }
+  return commercialSlugFromLabel(input.name);
+}
+
+export function productIdForCreate(partnerSlug: string, productSlug: string): string {
+  return namespacedId("prod", partnerSlug, productSlug);
+}
+
 export function variantIdForCreate(
   partnerSlug: string,
   productSlug: string,
