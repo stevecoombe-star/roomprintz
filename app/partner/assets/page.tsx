@@ -14,8 +14,9 @@ export default function PartnerAssetsPage() {
         </p>
         <p className="text-sm text-slate-400">
           The GLB should already be modeled at real-world scale. Vibode does not automatically
-          resize uploaded furniture. A validated intake is not a runtime-ready Asset and is not
-          available in Product or Variant authoring yet.
+          resize uploaded furniture. A validated intake is not a runtime-ready Asset. Register
+          Asset creates an immutable technical Asset whose runtime activation is still pending.
+          Registered Assets are not available in Product or Variant authoring yet.
         </p>
       </section>
       <PartnerAssetWorkspaceClient />

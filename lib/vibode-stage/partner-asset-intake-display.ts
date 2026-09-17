@@ -14,3 +14,7 @@ export function formatPartnerIntakeMetresTriple(
 ): string {
   return `${formatPartnerIntakeMetres(widthM)} × ${formatPartnerIntakeMetres(heightM)} × ${formatPartnerIntakeMetres(depthM)} m`;
 }
+
+export function formatSha256Prefix(sha256: string, length = 12): string {
+  return sha256.slice(0, length);
+}

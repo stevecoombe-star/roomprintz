@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 
-import { formatPartnerIntakeMetresTriple } from "@/lib/vibode-stage/partner-asset-intake-display";
+import { formatPartnerIntakeMetresTriple, formatSha256Prefix } from "@/lib/vibode-stage/partner-asset-intake-display";
 
 type IntakeWarning = Readonly<{
   code: string;
@@ -24,6 +24,7 @@ type IntakeDto = Readonly<{
   warnings: readonly IntakeWarning[];
   errorCode: string | null;
   error: string | null;
+  assetId: string | null;
   createdAt: string;
   updatedAt: string;
 }>;
@@ -48,6 +49,30 @@ type ListResponse = Readonly<{
   ok?: boolean;
   error?: string;
   intakes?: IntakeDto[];
+}>;
+
+type RegisteredAssetDto = Readonly<{
+  assetId: string;
+  status: "ready" | "unavailable";
+  originalFileName: string | null;
+  measuredWidthM: number;
+  measuredHeightM: number;
+  measuredDepthM: number;
+  sha256: string | null;
+  registeredAt: string;
+  origin: "partner_intake" | "catalog_linked";
+}>;
+
+type RegisteredListResponse = Readonly<{
+  ok?: boolean;
+  error?: string;
+  assets?: RegisteredAssetDto[];
+}>;
+
+type RegisterResponse = Readonly<{
+  ok?: boolean;
+  error?: string;
+  asset?: RegisteredAssetDto & { originalFileName: string; sha256: string };
 }>;
 
 type Phase = "idle" | "uploading" | "validating";
@@ -84,11 +109,12 @@ async function uploadToSignedUrl(
   });
 }
 
-function statusLabel(status: IntakeDto["status"]): string {
-  if (status === "validated") return "Validated";
-  if (status === "failed") return "Failed";
-  if (status === "validating") return "Validating";
-  if (status === "uploaded") return "Uploaded";
+function statusLabel(intake: IntakeDto): string {
+  if (intake.assetId) return "Registered";
+  if (intake.status === "validated") return "Validated";
+  if (intake.status === "failed") return "Failed";
+  if (intake.status === "validating") return "Validating";
+  if (intake.status === "uploaded") return "Uploaded";
   return "Created";
 }
 
@@ -120,6 +146,7 @@ function glbMeasuredLabel(intake: IntakeDto): string | null {
 
 export function PartnerAssetWorkspaceClient() {
   const [intakes, setIntakes] = useState<IntakeDto[]>([]);
+  const [registeredAssets, setRegisteredAssets] = useState<RegisteredAssetDto[]>([]);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [file, setFile] = useState<File | null>(null);
   const [widthM, setWidthM] = useState("");
@@ -130,16 +157,24 @@ export function PartnerAssetWorkspaceClient() {
   const [progress, setProgress] = useState<number | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [lastIntake, setLastIntake] = useState<IntakeDto | null>(null);
+  const [registeringId, setRegisteringId] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
-    const response = await fetch("/api/vibode/partner/assets/intakes", { cache: "no-store" });
-    const body = await response.json() as ListResponse;
-    if (!response.ok || !body.ok || !Array.isArray(body.intakes)) {
-      setLoadError(body.error ?? "Asset intakes could not be loaded.");
+    const [intakeResponse, assetResponse] = await Promise.all([
+      fetch("/api/vibode/partner/assets/intakes", { cache: "no-store" }),
+      fetch("/api/vibode/partner/assets", { cache: "no-store" }),
+    ]);
+    const intakeBody = await intakeResponse.json() as ListResponse;
+    if (!intakeResponse.ok || !intakeBody.ok || !Array.isArray(intakeBody.intakes)) {
+      setLoadError(intakeBody.error ?? "Asset intakes could not be loaded.");
       return;
     }
+    const assetBody = await assetResponse.json() as RegisteredListResponse;
     setLoadError(null);
-    setIntakes(body.intakes);
+    setIntakes(intakeBody.intakes);
+    if (assetResponse.ok && assetBody.ok && Array.isArray(assetBody.assets)) {
+      setRegisteredAssets(assetBody.assets);
+    }
   }, []);
 
   useEffect(() => {
@@ -213,7 +248,26 @@ export function PartnerAssetWorkspaceClient() {
     }
   }
 
-  const busy = phase !== "idle";
+  async function onRegister(intakeId: string) {
+    setActionError(null);
+    setRegisteringId(intakeId);
+    try {
+      const response = await fetch(`/api/vibode/partner/assets/intakes/${intakeId}/register`, {
+        method: "POST",
+      });
+      const body = await response.json() as RegisterResponse;
+      if (!response.ok || !body.ok) {
+        setActionError(body.error ?? "The Asset could not be registered.");
+      }
+      await refresh();
+    } catch {
+      setActionError("The Asset could not be registered.");
+    } finally {
+      setRegisteringId(null);
+    }
+  }
+
+  const busy = phase !== "idle" || registeringId != null;
   const phaseCopy = phase === "uploading"
     ? `Uploading${progress == null ? "…" : `… ${progress}%`}`
     : phase === "validating"
@@ -371,10 +425,26 @@ export function PartnerAssetWorkspaceClient() {
               <li key={intake.intakeId} className="rounded-xl border border-slate-800 p-4 text-sm">
                 <div className="flex flex-wrap items-baseline justify-between gap-2">
                   <p className="font-medium">{intake.originalFileName}</p>
-                  <p className={intake.status === "failed" ? "text-rose-300" : intake.status === "validated" ? "text-emerald-300" : "text-slate-400"}>
-                    {statusLabel(intake.status)}
+                  <p className={
+                    intake.status === "failed"
+                      ? "text-rose-300"
+                      : intake.assetId || intake.status === "validated"
+                        ? "text-emerald-300"
+                        : "text-slate-400"
+                  }>
+                    {statusLabel(intake)}
                   </p>
                 </div>
+                {intake.status === "validated" && !intake.assetId ? (
+                  <p className="mt-1 text-xs text-slate-400">GLB intake passed validation.</p>
+                ) : null}
+                {intake.assetId ? (
+                  <div className="mt-2 space-y-1 text-xs text-slate-400">
+                    <p>Immutable Vibode Asset created. Runtime activation is still pending.</p>
+                    <p className="break-all font-mono text-[11px] text-slate-500">Asset ID {intake.assetId}</p>
+                    <p>status = unavailable / not runtime-ready yet</p>
+                  </div>
+                ) : null}
                 <p className="mt-1 text-xs text-slate-400">
                   {intakeUsesGlbDimensions(intake)
                     ? `GLB dimensions used${glbMeasuredLabel(intake) ? `: ${glbMeasuredLabel(intake)}` : ""}`
@@ -385,7 +455,19 @@ export function PartnerAssetWorkspaceClient() {
                       }`}
                 </p>
                 {intake.sha256 ? (
-                  <p className="mt-1 break-all font-mono text-[11px] text-slate-500">{intake.sha256}</p>
+                  <p className="mt-1 break-all font-mono text-[11px] text-slate-500">
+                    SHA {formatSha256Prefix(intake.sha256)}
+                  </p>
+                ) : null}
+                {intake.status === "validated" && !intake.assetId ? (
+                  <button
+                    type="button"
+                    disabled={busy}
+                    className="mt-3 rounded-md border border-slate-700 px-3 py-1.5 text-sm"
+                    onClick={() => void onRegister(intake.intakeId)}
+                  >
+                    {registeringId === intake.intakeId ? "Registering…" : "Register Asset"}
+                  </button>
                 ) : null}
                 {intake.warnings.length > 0 ? (
                   <ul className="mt-2 space-y-1 text-xs text-amber-200">
@@ -403,6 +485,29 @@ export function PartnerAssetWorkspaceClient() {
           </ul>
         )}
       </section>
+
+      {registeredAssets.some((asset) => asset.origin === "catalog_linked") ? (
+        <section className="space-y-3">
+          <h3 className="font-medium">Catalog-linked Assets</h3>
+          <p className="text-xs text-slate-500">
+            Existing Partner catalog Assets. These are not Portal GLB intakes.
+          </p>
+          <ul className="space-y-3">
+            {registeredAssets.filter((asset) => asset.origin === "catalog_linked").map((asset) => (
+              <li key={asset.assetId} className="rounded-xl border border-slate-800 p-4 text-sm">
+                <p className="break-all font-mono text-xs text-slate-300">{asset.assetId}</p>
+                <p className="mt-1 text-xs text-slate-400">
+                  {formatPartnerIntakeMetresTriple(
+                    asset.measuredWidthM,
+                    asset.measuredHeightM,
+                    asset.measuredDepthM,
+                  )}
+                </p>
+              </li>
+            ))}
+          </ul>
+        </section>
+      ) : null}
     </div>
   );
 }

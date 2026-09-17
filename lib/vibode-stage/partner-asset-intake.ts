@@ -27,6 +27,10 @@ import {
 
 import type { PartnerPortalAuthResult } from "./partner-portal-auth";
 import type { PartnerPortalHttpResponse } from "./partner-portal-http";
+import {
+  isForbiddenBrowserUploadObjectPath,
+  PARTNER_RUNTIME_ASSET_OBJECT_PREFIX,
+} from "./partner-runtime-asset-id";
 import { asNonEmptyString, isPlainObject, isUuidLike } from "./product-variant-register";
 
 export const STAGE_PARTNER_ASSET_INTAKES_TABLE = "vibode_stage_partner_asset_intakes";
@@ -100,6 +104,7 @@ export type PartnerAssetIntakeRow = Readonly<{
   validationWarnings: readonly PartnerAssetIntakeWarning[];
   errorCode: string | null;
   errorDetail: string | null;
+  assetId?: string | null;
   createdAt: string;
   updatedAt: string;
 }>;
@@ -119,6 +124,7 @@ export type PartnerAssetIntakeDto = Readonly<{
   warnings: readonly PartnerAssetIntakeWarning[];
   errorCode: string | null;
   error: string | null;
+  assetId: string | null;
   createdAt: string;
   updatedAt: string;
 }>;
@@ -136,6 +142,7 @@ export type PartnerAssetIntakeStore = Readonly<{
     | { ok: false; code: "unique_conflict" | "failed" }
   >;
   findById(partnerId: string, intakeId: string): Promise<PartnerAssetIntakeRow | null>;
+  findByIntakeId(intakeId: string): Promise<PartnerAssetIntakeRow | null>;
   listByPartner(partnerId: string): Promise<readonly PartnerAssetIntakeRow[]>;
   claimForValidation(partnerId: string, intakeId: string, nowIso: string): Promise<
     | { ok: true; kind: "claimed"; row: PartnerAssetIntakeRow }
@@ -453,6 +460,7 @@ export function mapPartnerAssetIntakeRow(row: Record<string, unknown>): PartnerA
     errorDetail: asNonEmptyString(row.error_detail),
     createdAt,
     updatedAt,
+    ...(asNonEmptyString(row.asset_id) ? { assetId: asNonEmptyString(row.asset_id) } : {}),
   };
 }
 
@@ -472,6 +480,7 @@ export function toPartnerAssetIntakeDto(row: PartnerAssetIntakeRow): PartnerAsse
     warnings: row.validationWarnings,
     errorCode: row.errorCode,
     error: row.errorCode ? merchantMessageForIntakeErrorCode(row.errorCode) : null,
+    assetId: row.assetId ?? null,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   };
@@ -492,6 +501,9 @@ export function createMemoryPartnerAssetIntakeStore(
     },
     async findById(partnerId, intakeId) {
       return rows.find((item) => item.partnerId === partnerId && item.intakeId === intakeId) ?? null;
+    },
+    async findByIntakeId(intakeId) {
+      return rows.find((item) => item.intakeId === intakeId) ?? null;
     },
     async listByPartner(partnerId) {
       return rows
@@ -540,6 +552,15 @@ export function createMemoryPartnerAssetIntakeStore(
 export function createMemoryPartnerAssetObjectStore(): PartnerAssetIntakeObjectStore & {
   objects: Map<string, Uint8Array>;
   put(objectPath: string, bytes: Uint8Array): void;
+  uploadFinal(input: Readonly<{
+    objectPath: string;
+    bytes: Uint8Array;
+    contentType: string;
+    upsert: false;
+  }>): Promise<
+    | { ok: true; kind: "written" | "exists" }
+    | { ok: false; code: "failed" }
+  >;
 } {
   const objects = new Map<string, Uint8Array>();
   return {
@@ -548,6 +569,7 @@ export function createMemoryPartnerAssetObjectStore(): PartnerAssetIntakeObjectS
       objects.set(objectPath, bytes);
     },
     async createSignedUpload(input) {
+      if (isForbiddenBrowserUploadObjectPath(input.objectPath)) return { ok: false };
       const token = `intake-upload:${input.objectPath}`;
       const signedUrl =
         `https://example.test/storage/v1/object/upload/sign/${PARTNER_ASSET_INTAKE_BUCKET}/` +
@@ -566,6 +588,21 @@ export function createMemoryPartnerAssetObjectStore(): PartnerAssetIntakeObjectS
       const bytes = objects.get(objectPath);
       if (!bytes) return { ok: false, code: "missing" };
       return { ok: true, bytes };
+    },
+    async uploadFinal(input) {
+      if (input.upsert !== false) return { ok: false, code: "failed" };
+      if (input.contentType !== "model/gltf-binary") return { ok: false, code: "failed" };
+      if (
+        !input.objectPath.startsWith(PARTNER_RUNTIME_ASSET_OBJECT_PREFIX) ||
+        input.objectPath.includes("..") ||
+        input.objectPath.startsWith("/")
+      ) {
+        return { ok: false, code: "failed" };
+      }
+      const existing = objects.get(input.objectPath);
+      if (existing) return { ok: true, kind: "exists" };
+      objects.set(input.objectPath, new Uint8Array(input.bytes));
+      return { ok: true, kind: "written" };
     },
   };
 }

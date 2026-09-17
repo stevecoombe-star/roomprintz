@@ -17,15 +17,16 @@ import {
   type PartnerAssetIntakeRow,
   type PartnerAssetIntakeStore,
 } from "./partner-asset-intake";
+import { isForbiddenBrowserUploadObjectPath } from "./partner-runtime-asset-id";
 
 const INTAKE_SELECT =
-  "intake_id, partner_id, created_by_user_id, status, object_path, original_filename, byte_size, sha256, dimension_source, authored_width_m, authored_height_m, authored_depth_m, measured_width_m, measured_height_m, measured_depth_m, placement_scale, validation_warnings, error_code, error_detail, created_at, updated_at";
+  "intake_id, partner_id, created_by_user_id, status, object_path, original_filename, byte_size, sha256, dimension_source, authored_width_m, authored_height_m, authored_depth_m, measured_width_m, measured_height_m, measured_depth_m, placement_scale, validation_warnings, error_code, error_detail, asset_id, created_at, updated_at";
 
 function isUniqueConflict(error: { code?: string } | null | undefined): boolean {
   return error?.code === "23505";
 }
 
-function createSupabasePartnerAssetIntakeStore(supabase: SupabaseClient): PartnerAssetIntakeStore {
+export function createSupabasePartnerAssetIntakeStore(supabase: SupabaseClient): PartnerAssetIntakeStore {
   return {
     async insertCreated(row) {
       const { data, error } = await supabase
@@ -57,6 +58,15 @@ function createSupabasePartnerAssetIntakeStore(supabase: SupabaseClient): Partne
         .from(STAGE_PARTNER_ASSET_INTAKES_TABLE)
         .select(INTAKE_SELECT)
         .eq("partner_id", partnerId)
+        .eq("intake_id", intakeId)
+        .maybeSingle();
+      if (error || !data) return null;
+      return mapPartnerAssetIntakeRow(data as Record<string, unknown>);
+    },
+    async findByIntakeId(intakeId) {
+      const { data, error } = await supabase
+        .from(STAGE_PARTNER_ASSET_INTAKES_TABLE)
+        .select(INTAKE_SELECT)
         .eq("intake_id", intakeId)
         .maybeSingle();
       if (error || !data) return null;
@@ -127,6 +137,7 @@ function createSupabasePartnerAssetObjectStore(supabase: SupabaseClient): Partne
   const bucket = supabase.storage.from(PARTNER_ASSET_INTAKE_BUCKET);
   return {
     async createSignedUpload(input) {
+      if (isForbiddenBrowserUploadObjectPath(input.objectPath)) return { ok: false };
       const { data, error } = await bucket.createSignedUploadUrl(input.objectPath, {
         upsert: input.upsert,
       });
