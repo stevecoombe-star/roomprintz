@@ -43,6 +43,22 @@ export default async function PartnerDraftWorkspacePage({
     );
   }
 
+  if (dto.status === "published") {
+    return (
+      <main className="space-y-3">
+        <h2 className="text-lg font-semibold">Catalog draft</h2>
+        <p className="text-sm text-slate-300">
+          This draft is published and can no longer be edited. Open a new catalog draft
+          to make further changes.
+        </p>
+        <p className="text-xs text-slate-500">
+          Draft {dto.draftId} · revision {dto.revision}
+        </p>
+        <a className="text-sm text-slate-400 underline" href="/partner/catalog">Back to catalog</a>
+      </main>
+    );
+  }
+
   const loaded = await loadAuthorizedPartnerPortalCatalog(auth.context.partnerId);
   if (!loaded.ok) {
     return (

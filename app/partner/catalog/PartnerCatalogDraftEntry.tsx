@@ -33,8 +33,8 @@ export function PartnerCatalogDraftEntry(props: Readonly<{
     <section className="rounded-xl border border-slate-800 p-4">
       <h3 className="font-medium">Catalog draft</h3>
       <p className="mt-1 text-xs text-slate-500">
-        Edit a Partner-owned patch draft. Changes stay in the draft until a later publish
-        slice. Live Products, Variants, Collections, Assets, and Scenes are not mutated.
+        Edit a Partner-owned patch draft. Publish writes the live catalog after a
+        server re-check. Assets and Scenes are not mutated.
       </p>
       {props.openDraftId ? (
         <p className="mt-2 text-xs text-amber-200">

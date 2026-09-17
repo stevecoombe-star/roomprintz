@@ -21,7 +21,7 @@ import {
 } from "./partner-portal-drafts";
 
 const DRAFT_SELECT =
-  "draft_id, partner_id, created_by_user_id, updated_by_user_id, document_kind, document, status, revision, base_catalog_hash, created_at, updated_at";
+  "draft_id, partner_id, created_by_user_id, updated_by_user_id, document_kind, document, status, revision, base_catalog_hash, touched_base, created_at, updated_at";
 
 function isUniqueConflict(error: { code?: string } | null | undefined): boolean {
   return error?.code === "23505";
@@ -63,6 +63,7 @@ function createSupabasePartnerDraftStore(supabase: SupabaseClient): PartnerDraft
           status: row.status,
           revision: row.revision,
           base_catalog_hash: row.baseCatalogHash,
+          touched_base: row.touchedBase ?? {},
         })
         .select(DRAFT_SELECT)
         .maybeSingle();
@@ -80,6 +81,7 @@ function createSupabasePartnerDraftStore(supabase: SupabaseClient): PartnerDraft
           revision: input.expectedRevision + 1,
           updated_by_user_id: input.updatedByUserId,
           base_catalog_hash: input.baseCatalogHash,
+          touched_base: input.touchedBase ?? {},
           status: input.status,
         })
         .eq("draft_id", input.draftId)
@@ -101,6 +103,10 @@ async function partnerDraftStore(): Promise<PartnerDraftStore | null> {
   const supabase = getServiceRoleSupabaseClient();
   if (!supabase) return null;
   return createSupabasePartnerDraftStore(supabase);
+}
+
+export async function loadPartnerPortalDraftStore(): Promise<PartnerDraftStore | null> {
+  return partnerDraftStore();
 }
 
 function unavailable(): PartnerPortalHttpResponse {

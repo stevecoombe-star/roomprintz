@@ -30,12 +30,19 @@ import {
   PARTNER_DRAFT_MAX_JSON_BYTES,
   PARTNER_DRAFT_MAX_OPERATIONS,
 } from "./partner-draft-mutations";
+import {
+  emptyPartnerDraftTouchedBase,
+  nextPartnerDraftTouchedBase,
+  parsePartnerDraftTouchedBase,
+  persistablePartnerDraftTouchedBase,
+  type PartnerDraftTouchedBase,
+} from "./partner-draft-touched-base";
 import { asNonEmptyString, isPlainObject } from "./product-variant-register";
 import type { StageCatalogSnapshot } from "./types";
 
 export const STAGE_PARTNER_DRAFTS_TABLE = "vibode_stage_partner_drafts";
 export const PARTNER_DRAFT_DOCUMENT_KIND = "patch";
-export const PARTNER_DRAFT_STATUSES = Object.freeze(["open", "abandoned"] as const);
+export const PARTNER_DRAFT_STATUSES = Object.freeze(["open", "abandoned", "published"] as const);
 
 export type PartnerDraftStatus = (typeof PARTNER_DRAFT_STATUSES)[number];
 
@@ -46,6 +53,7 @@ export type PartnerPortalDraftDto = Readonly<{
   status: PartnerDraftStatus;
   revision: number;
   baseCatalogHash: string | null;
+  touchedBase: PartnerDraftTouchedBase;
   document: PartnerCatalogSyncDocument;
   createdAt: string;
   updatedAt: string;
@@ -61,6 +69,7 @@ export type PartnerDraftRow = Readonly<{
   status: PartnerDraftStatus;
   revision: number;
   baseCatalogHash: string | null;
+  touchedBase: unknown;
   createdAt: string;
   updatedAt: string;
 }>;
@@ -79,6 +88,7 @@ export type PartnerDraftStore = Readonly<{
     status: PartnerDraftStatus;
     updatedByUserId: string;
     baseCatalogHash: string | null;
+    touchedBase: unknown;
     updatedAt: string;
   }>): Promise<
     Readonly<{ ok: true; row: PartnerDraftRow }> | Readonly<{ ok: false; code: "no_row" | "failed" }>
@@ -164,7 +174,7 @@ function isoNow(): string {
 }
 
 function asDraftStatus(value: unknown): PartnerDraftStatus | null {
-  return value === "open" || value === "abandoned" ? value : null;
+  return value === "open" || value === "abandoned" || value === "published" ? value : null;
 }
 
 function asRevision(value: unknown): number | null {
@@ -191,6 +201,7 @@ export function toPartnerDraftDto(
     status: row.status,
     revision: row.revision,
     baseCatalogHash: row.baseCatalogHash,
+    touchedBase: parsePartnerDraftTouchedBase(row.touchedBase),
     document,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
@@ -249,6 +260,7 @@ export function createMemoryPartnerDraftStore(options: Readonly<{
         revision: current.revision + 1,
         updatedByUserId: input.updatedByUserId,
         baseCatalogHash: input.baseCatalogHash,
+        touchedBase: input.touchedBase,
         updatedAt: input.updatedAt,
       };
       rows[index] = next;
@@ -318,6 +330,7 @@ export async function getOrCreatePartnerPatchDraft(input: Readonly<{
     status: "open",
     revision: 1,
     baseCatalogHash: partnerCatalogCommercialFingerprint(catalog),
+    touchedBase: persistablePartnerDraftTouchedBase(emptyPartnerDraftTouchedBase()),
     createdAt: now,
     updatedAt: now,
   });
@@ -395,11 +408,22 @@ export async function mutatePartnerDraft(input: Readonly<{
   if (!existing) return missingDraft();
   const current = toPartnerDraftDto(existing, partnerId);
   if (!current) return draftCorrupt();
+  if (current.status === "published") {
+    return {
+      status: 409,
+      body: {
+        ok: false,
+        error: "This draft is published and can no longer be changed.",
+        code: "DRAFT_PUBLISHED",
+      },
+    };
+  }
   if (current.status !== "open") return missingDraft();
 
   let nextDocument = current.document;
   let nextStatus: PartnerDraftStatus = "open";
   let nextHash = current.baseCatalogHash;
+  let nextTouchedBase = current.touchedBase;
   if (wantsAbandon) {
     nextStatus = "abandoned";
   } else {
@@ -419,6 +443,11 @@ export async function mutatePartnerDraft(input: Readonly<{
       return jsonError(mutationStatusCode(applied.code), applied.error);
     }
     nextDocument = applied.document;
+    nextTouchedBase = nextPartnerDraftTouchedBase({
+      previous: current.touchedBase,
+      nextDocument: applied.document,
+      catalog,
+    });
     const operations = countPartnerDraftOperations(nextDocument);
     if (operations > PARTNER_DRAFT_MAX_OPERATIONS) {
       return jsonError(413, "Draft is too large.");
@@ -438,6 +467,7 @@ export async function mutatePartnerDraft(input: Readonly<{
     status: nextStatus,
     updatedByUserId: input.auth.context.userId,
     baseCatalogHash: nextHash,
+    touchedBase: persistablePartnerDraftTouchedBase(nextTouchedBase),
     updatedAt: input.now ?? isoNow(),
   });
   if (updated.ok) {
@@ -520,6 +550,7 @@ export function mapPartnerDraftRow(row: Record<string, unknown>): PartnerDraftRo
     status,
     revision,
     baseCatalogHash: asNonEmptyString(row.base_catalog_hash),
+    touchedBase: row.touched_base ?? {},
     createdAt,
     updatedAt,
   };

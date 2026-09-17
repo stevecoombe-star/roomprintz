@@ -913,6 +913,123 @@ test("PI-5G2 preview DTO is presented as previous → next instead of discarded"
   assert.match(workspace, /DraftPreviewResult/);
 });
 
+test("PI-5G2 first-touch touched_base persists, preserves, and normalizes against live", async () => {
+  const { catalog, load } = certifiedScopedCatalog();
+  const store = createMemoryPartnerDraftStore();
+  const sofa = catalog.products.find((item) => item.productId === DEMO_SOFA_PRODUCT_ID);
+  const stone = catalog.variants.find((item) => item.variantId === DEMO_SOFA_STONE_VARIANT_ID);
+  const living = catalog.collections.find((item) => item.collectionId === DEMO_LIVING_ROOM_COLLECTION_ID);
+  assert.ok(sofa && stone && living);
+
+  const created = await getOrCreatePartnerPatchDraft({
+    auth: authOk(),
+    store,
+    catalog: load,
+    draftId: DRAFT_A,
+  });
+  assert.equal(created.status, 201);
+  const empty = draftFrom(created.body);
+  assert.deepEqual(empty.touchedBase, { products: {}, variants: {}, collections: {} });
+
+  const first = await mutatePartnerDraft({
+    auth: authOk(),
+    store,
+    catalog: load,
+    draftId: DRAFT_A,
+    body: {
+      expectedRevision: 1,
+      mutations: [{ type: "product.set_name", productId: DEMO_SOFA_PRODUCT_ID, name: "Draft Sofa B" }],
+    },
+  });
+  assert.equal(first.status, 200);
+  const afterFirst = draftFrom(first.body);
+  assert.equal(afterFirst.touchedBase.products[DEMO_SOFA_PRODUCT_ID]?.name, sofa.name);
+
+  const second = await mutatePartnerDraft({
+    auth: authOk(),
+    store,
+    catalog: load,
+    draftId: DRAFT_A,
+    body: {
+      expectedRevision: 2,
+      mutations: [{ type: "product.set_name", productId: DEMO_SOFA_PRODUCT_ID, name: "Draft Sofa C" }],
+    },
+  });
+  assert.equal(second.status, 200);
+  assert.equal(draftFrom(second.body).touchedBase.products[DEMO_SOFA_PRODUCT_ID]?.name, sofa.name);
+
+  const reverted = await mutatePartnerDraft({
+    auth: authOk(),
+    store,
+    catalog: load,
+    draftId: DRAFT_A,
+    body: {
+      expectedRevision: 3,
+      mutations: [{ type: "product.set_name", productId: DEMO_SOFA_PRODUCT_ID, name: sofa.name }],
+    },
+  });
+  assert.equal(reverted.status, 200);
+  assert.equal(draftFrom(reverted.body).touchedBase.products[DEMO_SOFA_PRODUCT_ID], undefined);
+
+  const priced = await mutatePartnerDraft({
+    auth: authOk(),
+    store,
+    catalog: load,
+    draftId: DRAFT_A,
+    body: {
+      expectedRevision: 4,
+      mutations: [{ type: "product.set_price", productId: DEMO_SOFA_PRODUCT_ID, priceAmount: 1400 }],
+    },
+  });
+  assert.equal(priced.status, 200);
+  const pricedDraft = draftFrom(priced.body);
+  assert.equal(pricedDraft.touchedBase.products[DEMO_SOFA_PRODUCT_ID]?.price_amount, sofa.priceAmount);
+  assert.equal(
+    pricedDraft.touchedBase.variants[DEMO_SOFA_DEFAULT_VARIANT_ID]?.price_amount,
+    catalog.variants.find((item) => item.variantId === DEMO_SOFA_DEFAULT_VARIANT_ID)?.priceAmount,
+  );
+
+  const membership = await mutatePartnerDraft({
+    auth: authOk(),
+    store,
+    catalog: load,
+    draftId: DRAFT_A,
+    body: {
+      expectedRevision: 5,
+      mutations: [{
+        type: "collection.set_membership",
+        collectionId: DEMO_LIVING_ROOM_COLLECTION_ID,
+        productIds: [DEMO_SOFA_PRODUCT_ID],
+      }],
+    },
+  });
+  assert.equal(membership.status, 200);
+  assert.deepEqual(
+    draftFrom(membership.body).touchedBase.collections[DEMO_LIVING_ROOM_COLLECTION_ID]?.membership_product_ids,
+    [...living.productIds].sort((left, right) => left.localeCompare(right)),
+  );
+
+  const membershipRestored = await mutatePartnerDraft({
+    auth: authOk(),
+    store,
+    catalog: load,
+    draftId: DRAFT_A,
+    body: {
+      expectedRevision: 6,
+      mutations: [{
+        type: "collection.set_membership",
+        collectionId: DEMO_LIVING_ROOM_COLLECTION_ID,
+        productIds: [...living.productIds],
+      }],
+    },
+  });
+  assert.equal(membershipRestored.status, 200);
+  assert.equal(
+    draftFrom(membershipRestored.body).touchedBase.collections[DEMO_LIVING_ROOM_COLLECTION_ID]?.membership_product_ids,
+    undefined,
+  );
+});
+
 test("PI-5G2 source stays inside draft authoring and does not write live catalog", () => {
   const joined = PI5G2_FILES.map((file) => source(file)).join("\n");
   assert.equal(STAGE_PARTNER_DRAFTS_TABLE, "vibode_stage_partner_drafts");

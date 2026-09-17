@@ -40,7 +40,7 @@ type PartnerDraft = {
   draftId: string;
   partnerId: string;
   documentKind: "patch";
-  status: "open" | "abandoned";
+  status: "open" | "abandoned" | "published";
   revision: number;
   baseCatalogHash: string | null;
   document: DraftDocument;
@@ -271,6 +271,13 @@ export function PartnerDraftWorkspaceClient(props: Readonly<{
   const [pending, setPending] = useState(false);
   const [preview, setPreview] = useState<ReturnType<typeof presentPartnerDraftPreview> | null>(null);
   const [previewRaw, setPreviewRaw] = useState<unknown>(null);
+  const [conflicts, setConflicts] = useState<ReadonlyArray<{
+    entity: string;
+    id: string;
+    field: string;
+    expected: unknown;
+    live: unknown;
+  }> | null>(null);
   const [names, setNames] = useState<Record<string, string>>({});
   const [imageUrls, setImageUrls] = useState<Record<string, string>>({});
   const [productUrls, setProductUrls] = useState<Record<string, string>>({});
@@ -351,6 +358,7 @@ export function PartnerDraftWorkspaceClient(props: Readonly<{
     if (conflict) return;
     setPending(true);
     setError(null);
+    setConflicts(null);
     try {
       const response = await fetch(`/api/vibode/partner/drafts/${draft.draftId}`, {
         method: "PATCH",
@@ -379,6 +387,7 @@ export function PartnerDraftWorkspaceClient(props: Readonly<{
   async function reload() {
     setPending(true);
     setError(null);
+    setConflicts(null);
     try {
       const response = await fetch(`/api/vibode/partner/drafts/${draft.draftId}`);
       const body = await response.json() as { error?: string; draft?: PartnerDraft };
@@ -400,6 +409,7 @@ export function PartnerDraftWorkspaceClient(props: Readonly<{
     if (!window.confirm("Abandon this draft? It will stay on file but can no longer be edited.")) return;
     setPending(true);
     setError(null);
+    setConflicts(null);
     try {
       const response = await fetch(`/api/vibode/partner/drafts/${draft.draftId}`, {
         method: "PATCH",
@@ -427,6 +437,7 @@ export function PartnerDraftWorkspaceClient(props: Readonly<{
   async function runPreview() {
     setPending(true);
     setError(null);
+    setConflicts(null);
     try {
       const response = await fetch(`/api/vibode/partner/drafts/${draft.draftId}/preview`, {
         method: "POST",
@@ -443,6 +454,73 @@ export function PartnerDraftWorkspaceClient(props: Readonly<{
     } catch {
       setPreview({ error: "Preview request failed." });
       setPreviewRaw(null);
+    } finally {
+      setPending(false);
+    }
+  }
+
+  async function publishDraft() {
+    if (conflict) return;
+    const confirmed = window.confirm(
+      "Publishing updates the live catalog. Changes become immediately visible in Vibode shopping and runtime. The server will re-check the current catalog before applying.",
+    );
+    if (!confirmed) return;
+    setPending(true);
+    setError(null);
+    setConflicts(null);
+    try {
+      const response = await fetch(`/api/vibode/partner/drafts/${draft.draftId}/publish`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ expectedDraftRevision: draft.revision }),
+      });
+      const body = await response.json() as {
+        ok?: boolean;
+        error?: string;
+        code?: string;
+        conflicts?: ReadonlyArray<{
+          entity: string;
+          id: string;
+          field: string;
+          expected: unknown;
+          live: unknown;
+        }>;
+        issues?: unknown;
+        noOp?: boolean;
+      };
+      if (response.status === 409 && body.code === "STALE_DRAFT_REVISION") {
+        setConflict(true);
+        setError(body.error ?? "Draft revision is stale. Reload before publishing.");
+        return;
+      }
+      if (response.status === 409 && (body.code === "STALE_LIVE_FIELD" || body.code === "STALE_CATALOG_BASE")) {
+        setConflicts(body.conflicts ?? []);
+        setError(body.error ?? "Live catalog changed since this draft edit. Reload and review before publishing.");
+        return;
+      }
+      if (response.status === 409) {
+        if (body.code === "DRAFT_PUBLISHED") {
+          setError(body.error ?? "This draft is published and can no longer be changed.");
+          return;
+        }
+        setConflict(true);
+        setError(body.error ?? "Draft revision is stale. Reload before publishing.");
+        return;
+      }
+      if (response.status === 400 && (body.code === "PLANNER_ISSUE" || body.code === "INVALID_DOCUMENT")) {
+        const presented = presentPartnerDraftPreview({ ...body, error: undefined });
+        setPreview(presented);
+        setPreviewRaw(body);
+        setError(body.error ?? "This draft cannot be published until catalog issues are resolved.");
+        return;
+      }
+      if (!response.ok || body.ok !== true) {
+        setError(body.error ?? "Draft could not be published.");
+        return;
+      }
+      router.push("/partner/catalog");
+    } catch {
+      setError("Draft could not be published.");
     } finally {
       setPending(false);
     }
@@ -479,6 +557,14 @@ export function PartnerDraftWorkspaceClient(props: Readonly<{
           </button>
           <button
             type="button"
+            disabled={pending || conflict}
+            className="rounded-md border border-emerald-700 px-3 py-1 text-xs text-emerald-100"
+            onClick={() => void publishDraft()}
+          >
+            Publish
+          </button>
+          <button
+            type="button"
             disabled={pending}
             className="rounded-md border border-slate-700 px-3 py-1 text-xs"
             onClick={() => void abandon()}
@@ -502,6 +588,18 @@ export function PartnerDraftWorkspaceClient(props: Readonly<{
           </div>
         ) : null}
         {error ? <p className="text-xs text-rose-300">{error}</p> : null}
+        {conflicts && conflicts.length > 0 ? (
+          <div className="rounded-md border border-amber-700 bg-amber-950/40 p-3 text-sm text-amber-100">
+            <p>Live catalog changed since this draft edit. Reload and review before publishing.</p>
+            <ul className="mt-2 space-y-1 text-xs">
+              {conflicts.map((item) => (
+                <li key={`${item.entity}:${item.id}:${item.field}`}>
+                  {item.entity} {item.id} · {item.field}: {String(item.expected ?? "—")} → live {String(item.live ?? "—")}
+                </li>
+              ))}
+            </ul>
+          </div>
+        ) : null}
         {pending && !preview ? (
           <p id="draft-preview-result" className="text-sm text-slate-300">Planning…</p>
         ) : preview ? (
