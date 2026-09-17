@@ -52,6 +52,7 @@ import type {
 
 export {
   STAGE_PARTNER_SLUG_SHAPE,
+  collectionSlugFor,
   isPartnerSlug,
   namespacedId,
   partnerIdForSlug,

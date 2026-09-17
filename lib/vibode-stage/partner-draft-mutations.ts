@@ -10,6 +10,8 @@
  */
 
 import {
+  collectionCreationSlugFor,
+  collectionIdForCreate,
   partnerSlugFromPartnerId,
   productCreationSlugFor,
   productIdForCreate,
@@ -19,6 +21,7 @@ import {
 } from "./partner-catalog-ids";
 import {
   parsePartnerCatalogSyncJson,
+  type PartnerCatalogCollectionCreate,
   type PartnerCatalogCollectionPatch,
   type PartnerCatalogMembershipPatch,
   type PartnerCatalogProductCreate,
@@ -58,6 +61,9 @@ export const PARTNER_DRAFT_MUTATION_TYPES = Object.freeze([
   "variant.create_remove",
   "collection.set_name",
   "collection.set_membership",
+  "collection.create",
+  "collection.create_edit",
+  "collection.create_remove",
 ] as const);
 
 export type PartnerDraftMutationType = (typeof PARTNER_DRAFT_MUTATION_TYPES)[number];
@@ -126,7 +132,20 @@ export type PartnerDraftMutation =
       type: "collection.set_membership";
       collectionId: string;
       productIds: readonly string[];
-    }>;
+    }>
+  | Readonly<{
+      type: "collection.create";
+      name: string;
+      creationSlug?: string | null;
+      productIds?: readonly string[];
+    }>
+  | Readonly<{
+      type: "collection.create_edit";
+      collectionId: string;
+      name?: string;
+      productIds?: readonly string[];
+    }>
+  | Readonly<{ type: "collection.create_remove"; collectionId: string }>;
 
 export type PartnerDraftMutationFailure = Readonly<{
   ok: false;
@@ -147,7 +166,6 @@ const FORBIDDEN_MUTATION_TYPES = Object.freeze([
   "partner.set_status",
   "variant.set_asset",
   "variant.set_current_asset_id",
-  "collection.create",
 ] as const);
 
 type WritableProductPatch = {
@@ -202,6 +220,7 @@ type MutablePatchDocument = {
     reactivate: { variantId: string }[];
   };
   collections: {
+    create: PartnerCatalogCollectionCreate[];
     update: WritableCollectionPatch[];
     membershipAdd: PartnerCatalogMembershipPatch[];
     membershipRemove: PartnerCatalogMembershipPatch[];
@@ -232,6 +251,7 @@ function cloneDocument(document: PartnerCatalogSyncDocument): MutablePatchDocume
       reactivate: [...(document.variants.reactivate ?? [])].map((item) => ({ ...item })),
     },
     collections: {
+      create: (document.collections.create ?? []).map((item) => ({ ...item })),
       update: document.collections.update.map((item) => ({ ...item })),
       membershipAdd: document.collections.membershipAdd.map((item) => ({ ...item })),
       membershipRemove: document.collections.membershipRemove.map((item) => ({ ...item })),
@@ -256,7 +276,7 @@ export function emptyPartnerPatchDocument(partnerId: string): PartnerCatalogSync
     mode: "patch",
     products: { create: [], update: [], deactivate: [], reactivate: [] },
     variants: { create: [], update: [], deactivate: [], reactivate: [] },
-    collections: { update: [], membershipAdd: [], membershipRemove: [] },
+    collections: { create: [], update: [], membershipAdd: [], membershipRemove: [] },
   });
   if (!parsed.ok) {
     throw new Error("Empty Partner patch document must parse.");
@@ -287,6 +307,7 @@ export function countPartnerDraftOperations(document: PartnerCatalogSyncDocument
     document.variants.update.length +
     (document.variants.deactivate?.length ?? 0) +
     (document.variants.reactivate?.length ?? 0) +
+    (document.collections.create ?? []).length +
     document.collections.update.length +
     document.collections.membershipAdd.length +
     document.collections.membershipRemove.length
@@ -730,6 +751,77 @@ export function parsePartnerDraftMutation(
       }
       return { ok: true, mutation: { type, collectionId, productIds } };
     }
+    case "collection.create": {
+      if (extraKeys(value, ["type", "name", "creationSlug", "productIds"]).length > 0) {
+        return fail("invalid_mutation", "Invalid draft mutation.");
+      }
+      const name = asNonEmptyString(value.name);
+      const creationSlug = value.creationSlug === undefined
+        ? undefined
+        : nullableTrimmedString(value.creationSlug);
+      if (!name || creationSlug === undefined && "creationSlug" in value) {
+        return fail("invalid_mutation", "Invalid draft mutation.");
+      }
+      let productIds: string[] | undefined;
+      if ("productIds" in value) {
+        if (!Array.isArray(value.productIds)) return fail("invalid_mutation", "Invalid draft mutation.");
+        productIds = [];
+        for (const item of value.productIds) {
+          const productId = asNonEmptyString(item);
+          if (!productId) return fail("invalid_mutation", "Invalid draft mutation.");
+          productIds.push(productId);
+        }
+      }
+      return {
+        ok: true,
+        mutation: {
+          type,
+          name,
+          ...(creationSlug !== undefined ? { creationSlug } : {}),
+          ...(productIds ? { productIds } : {}),
+        },
+      };
+    }
+    case "collection.create_edit": {
+      if (extraKeys(value, ["type", "collectionId", "name", "productIds"]).length > 0) {
+        return fail("invalid_mutation", "Invalid draft mutation.");
+      }
+      const collectionId = asNonEmptyString(value.collectionId);
+      if (!collectionId) return fail("invalid_mutation", "Invalid draft mutation.");
+      const next: {
+        type: "collection.create_edit";
+        collectionId: string;
+        name?: string;
+        productIds?: readonly string[];
+      } = { type, collectionId };
+      if ("name" in value) {
+        const name = asNonEmptyString(value.name);
+        if (!name) return fail("invalid_mutation", "Invalid draft mutation.");
+        next.name = name;
+      }
+      if ("productIds" in value) {
+        if (!Array.isArray(value.productIds)) return fail("invalid_mutation", "Invalid draft mutation.");
+        const productIds: string[] = [];
+        for (const item of value.productIds) {
+          const productId = asNonEmptyString(item);
+          if (!productId) return fail("invalid_mutation", "Invalid draft mutation.");
+          productIds.push(productId);
+        }
+        next.productIds = productIds;
+      }
+      if (next.name === undefined && next.productIds === undefined) {
+        return fail("invalid_mutation", "Invalid draft mutation.");
+      }
+      return { ok: true, mutation: next };
+    }
+    case "collection.create_remove": {
+      if (extraKeys(value, ["type", "collectionId"]).length > 0) {
+        return fail("invalid_mutation", "Invalid draft mutation.");
+      }
+      const collectionId = asNonEmptyString(value.collectionId);
+      if (!collectionId) return fail("invalid_mutation", "Invalid draft mutation.");
+      return { ok: true, mutation: { type, collectionId } };
+    }
     default:
       return fail("forbidden", "This catalog change is not allowed in draft authoring.");
   }
@@ -824,6 +916,19 @@ export function partnerCatalogCurrencyForCreate(
   return [...currencies][0] ?? null;
 }
 
+function findPendingCollection(
+  working: MutablePatchDocument,
+  collectionId: string,
+): PartnerCatalogCollectionCreate | null {
+  return working.collections.create.find((item) => item.collectionId === collectionId) ?? null;
+}
+
+function sortCollectionCreates(
+  items: PartnerCatalogCollectionCreate[],
+): PartnerCatalogCollectionCreate[] {
+  return [...items].sort((left, right) => left.collectionId.localeCompare(right.collectionId));
+}
+
 function setPendingProductMemberships(
   working: MutablePatchDocument,
   productId: string,
@@ -837,6 +942,60 @@ function setPendingProductMemberships(
   working.collections.membershipRemove = sortMembership(
     working.collections.membershipRemove.filter((item) => item.productId !== productId),
   );
+}
+
+function setPendingCollectionMemberships(
+  working: MutablePatchDocument,
+  collectionId: string,
+  productIds: readonly string[],
+): void {
+  const desired = uniqueSorted(productIds);
+  working.collections.membershipAdd = sortMembership([
+    ...working.collections.membershipAdd.filter((item) => item.collectionId !== collectionId),
+    ...desired.map((productId) => ({ productId, collectionId })),
+  ]);
+  working.collections.membershipRemove = sortMembership(
+    working.collections.membershipRemove.filter((item) => item.collectionId !== collectionId),
+  );
+}
+
+function isAssignableCollection(
+  working: MutablePatchDocument,
+  catalog: StageCatalogSnapshot,
+  collectionId: string,
+): boolean {
+  if (findPendingCollection(working, collectionId)) return true;
+  const collection = findCollection(catalog, collectionId);
+  return !!collection && collection.partnerId === working.partnerId && collection.owner === "partner";
+}
+
+function isAssignableProduct(
+  working: MutablePatchDocument,
+  catalog: StageCatalogSnapshot,
+  productId: string,
+): boolean {
+  if (findPendingProduct(working, productId)) return true;
+  const product = findProduct(catalog, productId);
+  return !!product && product.partnerId === working.partnerId && product.source === "partner_catalog";
+}
+
+function deriveCollectionCreateId(input: Readonly<{
+  partnerId: string;
+  name: string;
+  creationSlug?: string | null;
+}>): string | PartnerDraftMutationFailure {
+  const partnerSlug = partnerSlugFromPartnerId(input.partnerId);
+  const collectionSlug = partnerSlug
+    ? collectionCreationSlugFor({ name: input.name, creationSlug: input.creationSlug })
+    : null;
+  if (!partnerSlug || !collectionSlug) {
+    return fail("invalid_mutation", "A stable collection identity slug is required.");
+  }
+  const collectionId = collectionIdForCreate(partnerSlug, collectionSlug);
+  if (!isCommercialId(collectionId) || isUuidLike(collectionId)) {
+    return fail("invalid_mutation", "A stable collection identity slug is required.");
+  }
+  return collectionId;
 }
 
 function pendingDefaultVariant(
@@ -965,8 +1124,7 @@ function applyOne(
       }
       const collectionIds = uniqueSorted(mutation.collectionIds ?? []);
       for (const collectionId of collectionIds) {
-        const collection = findCollection(catalog, collectionId);
-        if (!collection || collection.partnerId !== working.partnerId || collection.owner !== "partner") {
+        if (!isAssignableCollection(working, catalog, collectionId)) {
           return fail("unknown_id", "Unknown Collection.");
         }
       }
@@ -1024,8 +1182,7 @@ function applyOne(
       }
       if (mutation.collectionIds) {
         for (const collectionId of mutation.collectionIds) {
-          const collection = findCollection(catalog, collectionId);
-          if (!collection || collection.partnerId !== working.partnerId || collection.owner !== "partner") {
+          if (!isAssignableCollection(working, catalog, collectionId)) {
             return fail("unknown_id", "Unknown Collection.");
           }
         }
@@ -1177,6 +1334,9 @@ function applyOne(
       return null;
     }
     case "collection.set_name": {
+      if (findPendingCollection(working, mutation.collectionId)) {
+        return fail("invalid_mutation", "Pending Collection edits use create-edit semantics.");
+      }
       const collection = findCollection(catalog, mutation.collectionId);
       if (!collection) return fail("unknown_id", "Unknown Collection.");
       upsertById(working.collections.update, "collectionId", mutation.collectionId, {
@@ -1185,6 +1345,9 @@ function applyOne(
       return null;
     }
     case "collection.set_membership": {
+      if (findPendingCollection(working, mutation.collectionId)) {
+        return fail("invalid_mutation", "Pending Collection membership uses create-edit semantics.");
+      }
       const collection = findCollection(catalog, mutation.collectionId);
       if (!collection) return fail("unknown_id", "Unknown Collection.");
       const pendingProductIds = new Set(working.products.create.map((item) => item.productId));
@@ -1215,6 +1378,71 @@ function applyOne(
         ...working.collections.membershipRemove.filter((item) => item.collectionId !== mutation.collectionId),
         ...remove,
       ]);
+      return null;
+    }
+    case "collection.create": {
+      const derived = deriveCollectionCreateId({
+        partnerId: working.partnerId,
+        name: mutation.name,
+        creationSlug: mutation.creationSlug,
+      });
+      if (typeof derived !== "string") return derived;
+      if (findCollection(catalog, derived) || findPendingCollection(working, derived)) {
+        return fail("invalid_mutation", "A collection with this identity already exists.");
+      }
+      const productIds = uniqueSorted(mutation.productIds ?? []);
+      for (const productId of productIds) {
+        if (!isAssignableProduct(working, catalog, productId)) {
+          return fail("unknown_id", "Unknown Product.");
+        }
+      }
+      working.collections.create.push({
+        collectionId: derived,
+        name: mutation.name,
+      });
+      working.collections.create = sortCollectionCreates(working.collections.create);
+      setPendingCollectionMemberships(working, derived, productIds);
+      return null;
+    }
+    case "collection.create_edit": {
+      const pending = findPendingCollection(working, mutation.collectionId);
+      if (!pending) return fail("unknown_id", "Unknown pending Collection.");
+      if (mutation.productIds) {
+        for (const productId of mutation.productIds) {
+          if (!isAssignableProduct(working, catalog, productId)) {
+            return fail("unknown_id", "Unknown Product.");
+          }
+        }
+      }
+      const nextCollection: PartnerCatalogCollectionCreate = {
+        ...pending,
+        name: mutation.name ?? pending.name,
+      };
+      working.collections.create = sortCollectionCreates(
+        working.collections.create.map((item) => (
+          item.collectionId === mutation.collectionId ? nextCollection : item
+        )),
+      );
+      if (mutation.productIds) {
+        setPendingCollectionMemberships(working, mutation.collectionId, mutation.productIds);
+      }
+      return null;
+    }
+    case "collection.create_remove": {
+      const pending = findPendingCollection(working, mutation.collectionId);
+      if (!pending) return fail("unknown_id", "Unknown pending Collection.");
+      working.collections.create = working.collections.create.filter((item) => (
+        item.collectionId !== mutation.collectionId
+      ));
+      working.collections.update = working.collections.update.filter((item) => (
+        item.collectionId !== mutation.collectionId
+      ));
+      working.collections.membershipAdd = sortMembership(
+        working.collections.membershipAdd.filter((item) => item.collectionId !== mutation.collectionId),
+      );
+      working.collections.membershipRemove = sortMembership(
+        working.collections.membershipRemove.filter((item) => item.collectionId !== mutation.collectionId),
+      );
       return null;
     }
   }
@@ -1348,6 +1576,7 @@ function canonicalize(
   working.products.update.sort((left, right) => left.productId.localeCompare(right.productId));
   working.variants.create = sortVariantCreates(working.variants.create);
   working.variants.update.sort((left, right) => left.variantId.localeCompare(right.variantId));
+  working.collections.create = sortCollectionCreates(working.collections.create);
   working.collections.update.sort((left, right) => left.collectionId.localeCompare(right.collectionId));
   working.collections.membershipAdd = sortMembership(working.collections.membershipAdd);
   working.collections.membershipRemove = sortMembership(working.collections.membershipRemove);

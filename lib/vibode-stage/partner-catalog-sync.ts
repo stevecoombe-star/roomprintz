@@ -30,10 +30,12 @@ import {
 } from "./catalog";
 import { FORBIDDEN_STAGE_CATALOG_TABLES } from "./catalog-store";
 import {
+  collectionSlugFor,
   namespacedId,
   parsePartnerCatalogJson,
   partnerCatalogSqlSlug,
   productSlugFor,
+  validatePartnerCollection,
   type PartnerCatalogDocument,
 } from "./partner-catalog";
 import {
@@ -175,6 +177,11 @@ const PRODUCT_CREATE_KEYS = Object.freeze([
   "categoryId",
   "subcategoryId",
   "defaultVariantId",
+]);
+
+const COLLECTION_CREATE_KEYS = Object.freeze([
+  "collectionId",
+  "name",
 ]);
 
 const COLLECTION_UPDATE_KEYS = Object.freeze([
@@ -486,6 +493,11 @@ export type PartnerCatalogProductCreate = Readonly<{
   defaultVariantId: string;
 }>;
 
+export type PartnerCatalogCollectionCreate = Readonly<{
+  collectionId: string;
+  name: string;
+}>;
+
 export type PartnerCatalogCollectionPatch = Readonly<{
   collectionId: string;
   name?: string;
@@ -524,6 +536,7 @@ export type PartnerCatalogSyncDocument = Readonly<{
     reactivate?: readonly PartnerCatalogVariantStatusTarget[];
   }>;
   collections: Readonly<{
+    create?: readonly PartnerCatalogCollectionCreate[];
     update: readonly PartnerCatalogCollectionPatch[];
     membershipAdd: readonly PartnerCatalogMembershipPatch[];
     membershipRemove: readonly PartnerCatalogMembershipPatch[];
@@ -876,6 +889,42 @@ function parseProductCreate(
   };
 }
 
+function parseCollectionCreate(
+  value: unknown,
+  index: number,
+  issues: ProductVariantIssue[],
+): PartnerCatalogCollectionCreate | null {
+  if (!isPlainObject(value)) {
+    issues.push(issue("INVALID_JSON", `collections.create[${index}] must be an object.`));
+    return null;
+  }
+  if (hasStatusKey(value)) {
+    issues.push(issue("UNSUPPORTED_OPERATION", `collections.create[${index}] status updates are not allowed.`));
+    return null;
+  }
+  const extra = unknownKeys(value, COLLECTION_CREATE_KEYS);
+  if (extra.length > 0) {
+    issues.push(issue(
+      "UNSUPPORTED_OPERATION",
+      `collections.create[${index}] contains unsupported fields: ${extra.join(", ")}.`,
+    ));
+    return null;
+  }
+  const collectionId = asNonEmptyString(value.collectionId);
+  const name = asNonEmptyString(value.name);
+  if (!collectionId) {
+    issues.push(issue(
+      "INVALID_COLLECTION_ID",
+      `collections.create[${index}].collectionId must be a non-empty string.`,
+    ));
+  }
+  if (!name) {
+    issues.push(issue("EMPTY_COLLECTION_NAME", `collections.create[${index}].name must be non-empty.`));
+  }
+  if (!collectionId || !name) return null;
+  return { collectionId, name };
+}
+
 function parseCollectionPatch(
   value: unknown,
   index: number,
@@ -1124,7 +1173,7 @@ export function parsePartnerCatalogSyncJson(value: unknown): Readonly<{
     }
   }
   if (isPlainObject(collectionsRaw)) {
-    const extraCollections = unknownKeys(collectionsRaw, ["update", "membershipAdd", "membershipRemove"]);
+    const extraCollections = unknownKeys(collectionsRaw, ["create", "update", "membershipAdd", "membershipRemove"]);
     if (extraCollections.length > 0) {
       issues.push(issue(
         "UNSUPPORTED_OPERATION",
@@ -1181,6 +1230,12 @@ export function parsePartnerCatalogSyncJson(value: unknown): Readonly<{
     issues,
     (item, index, nextIssues) => parseVariantStatusTarget(item, "variants.reactivate", index, nextIssues),
   );
+  const collectionCreates = parseObjectArray(
+    isPlainObject(collectionsRaw) ? collectionsRaw.create : [],
+    "collections.create",
+    issues,
+    parseCollectionCreate,
+  );
   const collectionUpdates = parseObjectArray(
     isPlainObject(collectionsRaw) ? collectionsRaw.update : [],
     "collections.update",
@@ -1221,6 +1276,7 @@ export function parsePartnerCatalogSyncJson(value: unknown): Readonly<{
         reactivate: variantReactivations,
       },
       collections: {
+        create: collectionCreates,
         update: collectionUpdates,
         membershipAdd: membershipAdds,
         membershipRemove: membershipRemoves,
@@ -1671,6 +1727,39 @@ export function planPartnerCatalogSync(input: Readonly<{
     replaceCollection(working, next);
   }
 
+  const seenCollectionCreates = new Set<string>();
+  for (const create of input.document.collections.create ?? []) {
+    if (seenCollectionCreates.has(create.collectionId) || working.collections.some((item) => (
+      item.collectionId === create.collectionId
+    ))) {
+      issues.push(issue(
+        "DUPLICATE_COLLECTION_ID",
+        `Collection ${create.collectionId} already exists.`,
+      ));
+      continue;
+    }
+    seenCollectionCreates.add(create.collectionId);
+    const slug = collectionSlugFor(partner.slug, create.collectionId) ?? "";
+    issues.push(...validatePartnerCollection({
+      collection: {
+        collectionId: create.collectionId,
+        name: create.name,
+        slug,
+      },
+      partner,
+      existingCollectionIds: working.collections.map((item) => item.collectionId),
+      catalogCollectionIds: (gates.catalog ?? STAGE_SEED_CATALOG).collections.map((item) => item.collectionId),
+    }));
+    working.collections.push({
+      collectionId: create.collectionId,
+      name: create.name,
+      owner: "partner",
+      partnerName: partner.name,
+      partnerId: partner.partnerId,
+      productIds: [],
+    });
+  }
+
   for (const membership of input.document.collections.membershipAdd) {
     const product = working.products.find((item) => item.productId === membership.productId) ?? null;
     const collection = working.collections.find((item) => item.collectionId === membership.collectionId) ?? null;
@@ -1978,10 +2067,19 @@ export function planPartnerCatalogSync(input: Readonly<{
     .filter((variant) => !input.current.variants.some((item) => item.variantId === variant.variantId))
     .map((variant) => ({ variant }));
 
+  const collectionCreates: PlannedCollectionCreate[] = [];
   const collectionUpdates: PlannedCollectionUpdate[] = [];
   for (const next of nextState.collections) {
     const previous = input.current.collections.find((item) => item.collectionId === next.collectionId);
-    if (!previous) continue;
+    if (!previous) {
+      if (next.partnerId === partner.partnerId) {
+        collectionCreates.push({
+          collection: next,
+          sortOrder: input.current.collections.length + collectionCreates.length,
+        });
+      }
+      continue;
+    }
     if (previous.name !== next.name) {
       collectionUpdates.push({
         collectionId: next.collectionId,
@@ -2056,6 +2154,7 @@ export function planPartnerCatalogSync(input: Readonly<{
     productUpdates.length === 0 &&
     variantCreates.length === 0 &&
     variantUpdates.length === 0 &&
+    collectionCreates.length === 0 &&
     collectionUpdates.length === 0 &&
     membershipAdds.length === 0 &&
     membershipRemoves.length === 0 &&
@@ -2080,6 +2179,7 @@ export function planPartnerCatalogSync(input: Readonly<{
         productUpdates,
         variantCreates,
         variantUpdates,
+        collectionCreates,
         collectionUpdates,
         membershipAdds,
         membershipRemoves,
@@ -2102,6 +2202,7 @@ export function planPartnerCatalogSync(input: Readonly<{
     productUpdates,
     variantCreates,
     variantUpdates,
+    collectionCreates,
     collectionUpdates,
     membershipAdds,
     membershipRemoves,
@@ -2143,6 +2244,7 @@ export function renderPartnerCatalogSyncSql(input: Readonly<{
   productUpdates: readonly PlannedProductUpdate[];
   variantCreates: readonly PlannedVariantCreate[];
   variantUpdates: readonly PlannedVariantUpdate[];
+  collectionCreates?: readonly PlannedCollectionCreate[];
   collectionUpdates: readonly PlannedCollectionUpdate[];
   membershipAdds: readonly PlannedMembership[];
   membershipRemoves: readonly PlannedMembership[];
@@ -2154,7 +2256,9 @@ export function renderPartnerCatalogSyncSql(input: Readonly<{
 }>): string {
   const parts: string[] = [];
   const productCreates = input.productCreates ?? [];
+  const collectionCreates = input.collectionCreates ?? [];
   const creatingProductIds = new Set(productCreates.map((item) => item.product.productId));
+  const creatingCollectionIds = new Set(collectionCreates.map((item) => item.collection.collectionId));
   const assetIds = [...new Set(
     input.variantCreates
       .map((item) => item.variant.assetId)
@@ -2211,8 +2315,17 @@ export function renderPartnerCatalogSyncSql(input: Readonly<{
     );
   }).filter(Boolean);
 
+  const collectionExistsGuards = collectionCreates.map((item) => (
+    `  if exists (\n` +
+    `    select 1\n` +
+    `    from public.vibode_stage_collections\n` +
+    `    where collection_id = ${sqlString(item.collection.collectionId)}\n` +
+    `  ) then\n` +
+    `    raise exception 'Collection already exists';\n` +
+    `  end if;`
+  ));
   const membershipAddGuards = input.membershipAdds.filter((item) => (
-    !creatingProductIds.has(item.productId)
+    !creatingProductIds.has(item.productId) && !creatingCollectionIds.has(item.collectionId)
   )).map((item) => (
     `  if not exists (\n` +
     `    select 1\n` +
@@ -2231,6 +2344,7 @@ export function renderPartnerCatalogSyncSql(input: Readonly<{
 
   const preludeGuards = [
     ...assetGuards,
+    ...collectionExistsGuards,
     ...productExistsGuards,
     ...variantExistsGuards,
     ...skuGuards,
@@ -2278,6 +2392,30 @@ export function renderPartnerCatalogSyncSql(input: Readonly<{
       setClauses,
       whereClauses,
     }));
+  }
+
+  for (const create of [...collectionCreates].sort((a, b) => (
+    a.collection.collectionId.localeCompare(b.collection.collectionId)
+  ))) {
+    parts.push(
+      `insert into public.vibode_stage_collections (\n` +
+      `  collection_id,\n` +
+      `  name,\n` +
+      `  owner,\n` +
+      `  partner_name,\n` +
+      `  partner_id,\n` +
+      `  status,\n` +
+      `  sort_order\n` +
+      `) values (\n` +
+      `  ${sqlString(create.collection.collectionId)},\n` +
+      `  ${sqlString(create.collection.name)},\n` +
+      `  'partner',\n` +
+      `  ${sqlString(input.partner.name)},\n` +
+      `  ${sqlString(input.partner.partnerId)},\n` +
+      `  'active',\n` +
+      `  ${sqlNumber(create.sortOrder)}\n` +
+      `);`,
+    );
   }
 
   for (const create of [...productCreates].sort((a, b) => (

@@ -1055,7 +1055,7 @@ test("PI-5G4b Preview shows Create Product, default Variant, and membership with
   assert.match(workspace, /Add Product/);
   assert.match(workspace, /product\.create_edit/);
   assert.match(workspace, /product\.create_remove/);
-  assert.doesNotMatch(workspace, /collection\.create/);
+  assert.doesNotMatch(workspace, /collection\.set_status/);
   assert.deepEqual(readdirSync(repoRoot), before);
 });
 
@@ -1333,7 +1333,7 @@ test("PI-5G4b race and membership guards are encoded in v3 SQL", () => {
   assert.match(sql, /products\.source = 'partner_catalog'/);
   assert.match(source("lib/vibode-stage/partner-catalog-runtime-executor.server.ts"), /STAGE_PARTNER_APPLY_RPC_V3/);
   assert.match(source("lib/vibode-stage/partner-catalog-runtime-executor.server.ts"), /supabase\.rpc\(STAGE_PARTNER_APPLY_RPC_V3/);
-  const collectionCreate = parsePartnerDraftMutation({ type: "collection.create", name: "Nope" });
+  const collectionCreate = parsePartnerDraftMutation({ type: "collection.set_status", collectionId: "x", status: "inactive" });
   assert.equal(collectionCreate.ok, false);
 });
 
@@ -1358,7 +1358,7 @@ test("PI-5G4b Node paths do not DML commercial, Asset, or Scene tables", () => {
     assert.doesNotMatch(text, /\.from\("vibode_3d_scenes"\)/);
     assert.doesNotMatch(text, /writeFileAtomic|writeGeneratedFurnitureAssetRegistry/);
   }
-  assert.equal(parsePartnerDraftMutation({ type: "collection.create", name: "Nope" }).ok, false);
+  assert.equal(parsePartnerDraftMutation({ type: "collection.set_status", collectionId: "x", status: "inactive" }).ok, false);
   assert.match(source("lib/vibode-stage/partner-draft-mutations.ts"), /"collection.create"/);
   assert.match(source("package.json"), /test:afc-v2-pi5g4b/);
   assert.doesNotMatch(source("lib/vibode-stage/partner-catalog-runtime-executor.ts"), /PARTNER_RUNTIME_PLAN_VERSION_3|planVersion: 3/);

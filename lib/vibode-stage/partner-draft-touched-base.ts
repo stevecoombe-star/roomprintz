@@ -277,9 +277,14 @@ function pendingCollectionNames(document: PartnerCatalogSyncDocument): Set<strin
 }
 
 function pendingCollectionMembership(document: PartnerCatalogSyncDocument): Set<string> {
+  const pendingCreateIds = new Set((document.collections.create ?? []).map((item) => item.collectionId));
   const ids = new Set<string>();
-  for (const item of document.collections.membershipAdd) ids.add(item.collectionId);
-  for (const item of document.collections.membershipRemove) ids.add(item.collectionId);
+  for (const item of document.collections.membershipAdd) {
+    if (!pendingCreateIds.has(item.collectionId)) ids.add(item.collectionId);
+  }
+  for (const item of document.collections.membershipRemove) {
+    if (!pendingCreateIds.has(item.collectionId)) ids.add(item.collectionId);
+  }
   return ids;
 }
 
@@ -337,8 +342,10 @@ export function nextPartnerDraftTouchedBase(input: Readonly<{
   const collections: Record<string, PartnerDraftTouchedCollectionBase> = {};
   const named = pendingCollectionNames(input.nextDocument);
   const membership = pendingCollectionMembership(input.nextDocument);
+  const pendingCreateIds = new Set((input.nextDocument.collections.create ?? []).map((item) => item.collectionId));
   const collectionIds = new Set([...named, ...membership]);
   for (const collectionId of collectionIds) {
+    if (pendingCreateIds.has(collectionId)) continue;
     const live = findCollection(input.catalog, collectionId);
     const previous = input.previous.collections[collectionId] ?? {};
     const entry: {

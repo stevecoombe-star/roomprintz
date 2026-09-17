@@ -70,6 +70,30 @@ export function productCreationSlugFor(input: Readonly<{
   return commercialSlugFromLabel(input.name);
 }
 
+export function collectionSlugFor(partnerSlug: string, collectionId: string): string | null {
+  const prefix = `col-${partnerSlug}-`;
+  if (!collectionId.startsWith(prefix)) return null;
+  const slug = collectionId.slice(prefix.length);
+  return slug.length > 0 ? slug : null;
+}
+
+export function collectionCreationSlugFor(input: Readonly<{
+  name: string;
+  creationSlug?: string | null;
+}>): string | null {
+  const explicit = input.creationSlug != null && input.creationSlug.trim().length > 0
+    ? commercialSlugFromLabel(input.creationSlug)
+    : null;
+  if (input.creationSlug != null && input.creationSlug.trim().length > 0) {
+    return explicit;
+  }
+  return commercialSlugFromLabel(input.name);
+}
+
+export function collectionIdForCreate(partnerSlug: string, collectionSlug: string): string {
+  return namespacedId("col", partnerSlug, collectionSlug);
+}
+
 export function productIdForCreate(partnerSlug: string, productSlug: string): string {
   return namespacedId("prod", partnerSlug, productSlug);
 }

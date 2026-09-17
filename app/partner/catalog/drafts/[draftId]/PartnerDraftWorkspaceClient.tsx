@@ -52,6 +52,7 @@ type DraftDocument = {
     }>;
   };
   collections: {
+    create?: ReadonlyArray<{ collectionId: string; name: string }>;
     update: ReadonlyArray<{ collectionId: string; name?: string }>;
     membershipAdd: ReadonlyArray<{ productId: string; collectionId: string }>;
     membershipRemove: ReadonlyArray<{ productId: string; collectionId: string }>;
@@ -130,7 +131,10 @@ type DraftMutation =
     }
   | { type: "variant.create_remove"; variantId: string }
   | { type: "collection.set_name"; collectionId: string; name: string }
-  | { type: "collection.set_membership"; collectionId: string; productIds: readonly string[] };
+  | { type: "collection.set_membership"; collectionId: string; productIds: readonly string[] }
+  | { type: "collection.create"; name: string; creationSlug?: string | null; productIds?: readonly string[] }
+  | { type: "collection.create_edit"; collectionId: string; name?: string; productIds?: readonly string[] }
+  | { type: "collection.create_remove"; collectionId: string };
 
 function ChangeLines(props: Readonly<{ changes: readonly { label: string; previous: string; next: string }[] }>) {
   if (props.changes.length === 0) return <p className="text-xs text-slate-500">No field changes.</p>;
@@ -261,6 +265,34 @@ function DraftPreviewResult(props: Readonly<{
         ))}
       </div>
       <div>
+        <h4 className="text-xs uppercase tracking-wide text-slate-500">Create Collection</h4>
+        {view.collectionCreates.length === 0 ? (
+          <p className="mt-1 text-xs text-slate-500">None</p>
+        ) : view.collectionCreates.map((item) => {
+          const members = [
+            ...item.productIds,
+            ...view.membershipAdds
+              .filter((membership) => membership.collectionId === item.collectionId)
+              .map((membership) => membership.productId),
+          ].filter((id, index, all) => all.indexOf(id) === index);
+          return (
+            <div key={item.collectionId} className="mt-2 rounded-md border border-violet-900/60 p-2">
+              <p className="text-xs text-violet-200">Create Collection</p>
+              <p className="text-xs text-slate-400">{item.collectionId}</p>
+              <ul className="mt-1 space-y-1 text-sm text-slate-200">
+                <li><span className="text-slate-400">Name:</span> {item.name}</li>
+                <li>
+                  <span className="text-slate-400">Products:</span>{" "}
+                  {members.length === 0
+                    ? "Collection will be created with no Products."
+                    : members.join(", ")}
+                </li>
+              </ul>
+            </div>
+          );
+        })}
+      </div>
+      <div>
         <h4 className="text-xs uppercase tracking-wide text-slate-500">Collection updates</h4>
         {view.collectionUpdates.length === 0 ? (
           <p className="mt-1 text-xs text-slate-500">None</p>
@@ -276,22 +308,28 @@ function DraftPreviewResult(props: Readonly<{
       </div>
       <div>
         <h4 className="text-xs uppercase tracking-wide text-slate-500">Membership</h4>
-        {view.membershipAdds.length === 0 && view.membershipRemoves.length === 0 ? (
-          <p className="mt-1 text-xs text-slate-500">None</p>
-        ) : (
-          <ul className="mt-1 space-y-1 text-sm text-slate-200">
-            {view.membershipAdds.map((item) => (
-              <li key={`add:${item.collectionId}:${item.productId}`}>
-                Add {item.productId} → {item.collectionId}
-              </li>
-            ))}
-            {view.membershipRemoves.map((item) => (
-              <li key={`remove:${item.collectionId}:${item.productId}`}>
-                Remove {item.productId} → {item.collectionId}
-              </li>
-            ))}
-          </ul>
-        )}
+        {(() => {
+          const created = new Set(view.collectionCreates.map((item) => item.collectionId));
+          const adds = view.membershipAdds.filter((item) => !created.has(item.collectionId));
+          const removes = view.membershipRemoves.filter((item) => !created.has(item.collectionId));
+          if (adds.length === 0 && removes.length === 0) {
+            return <p className="mt-1 text-xs text-slate-500">None</p>;
+          }
+          return (
+            <ul className="mt-1 space-y-1 text-sm text-slate-200">
+              {adds.map((item) => (
+                <li key={`add:${item.collectionId}:${item.productId}`}>
+                  Add {item.productId} → {item.collectionId}
+                </li>
+              ))}
+              {removes.map((item) => (
+                <li key={`remove:${item.collectionId}:${item.productId}`}>
+                  Remove {item.productId} → {item.collectionId}
+                </li>
+              ))}
+            </ul>
+          );
+        })()}
       </div>
       {(view.productDeactivations.length + view.productReactivations.length
         + view.variantDeactivations.length + view.variantReactivations.length) > 0 ? (
@@ -378,6 +416,17 @@ function assetLabel(assets: readonly PartnerReadyAssetChoice[], assetId: string)
   return assets.find((item) => item.assetId === assetId)?.label ?? assetId;
 }
 
+function pendingCollections(document: DraftDocument) {
+  return document.collections.create ?? [];
+}
+
+function pendingCollectionProductIds(document: DraftDocument, collectionId: string): string[] {
+  return document.collections.membershipAdd
+    .filter((item) => item.collectionId === collectionId)
+    .map((item) => item.productId)
+    .sort((left, right) => left.localeCompare(right));
+}
+
 function pendingCount(document: DraftDocument): number {
   const productFields = document.products.update.reduce((count, item) => (
     count + Object.keys(item).filter((key) => key !== "productId").length
@@ -390,6 +439,7 @@ function pendingCount(document: DraftDocument): number {
     + variantFields
     + (document.products.create ?? []).length
     + (document.variants.create ?? []).length
+    + (document.collections.create ?? []).length
     + document.collections.update.length
     + document.collections.membershipAdd.length
     + document.collections.membershipRemove.length
@@ -469,6 +519,10 @@ export function PartnerDraftWorkspaceClient(props: Readonly<{
   const [newProductAssetId, setNewProductAssetId] = useState(props.readyAssets[0]?.assetId ?? "");
   const [newProductVariantSlug, setNewProductVariantSlug] = useState("");
   const [newProductCollections, setNewProductCollections] = useState<string[]>([]);
+  const [addingCollection, setAddingCollection] = useState(false);
+  const [newCollectionName, setNewCollectionName] = useState("");
+  const [newCollectionSlug, setNewCollectionSlug] = useState("");
+  const [newCollectionProductIds, setNewCollectionProductIds] = useState<string[]>([]);
 
   const variantsByProduct = useMemo(() => {
     const map = new Map<string, StageVariant[]>();
@@ -524,6 +578,10 @@ export function PartnerDraftWorkspaceClient(props: Readonly<{
         collection.collectionId,
         collection.productIds,
       );
+    }
+    for (const create of next.document.collections.create ?? []) {
+      nextCollectionNames[create.collectionId] = create.name;
+      nextMembership[create.collectionId] = pendingCollectionProductIds(next.document, create.collectionId);
     }
     setNames(nextNames);
     setImageUrls(nextImages);
@@ -958,7 +1016,7 @@ export function PartnerDraftWorkspaceClient(props: Readonly<{
                 ))}
               </select>
             </label>
-            {props.collections.length > 0 ? (
+            {(props.collections.length > 0 || pendingCollections(draft.document).length > 0) ? (
               <fieldset className="sm:col-span-2 space-y-1">
                 <legend className="text-xs text-slate-400">Existing collections</legend>
                 {props.collections.map((collection) => (
@@ -976,6 +1034,24 @@ export function PartnerDraftWorkspaceClient(props: Readonly<{
                       }}
                     />
                     {collection.name}
+                  </label>
+                ))}
+                {pendingCollections(draft.document).map((collection) => (
+                  <label key={collection.collectionId} className="flex items-center gap-2 text-xs text-slate-300">
+                    <input
+                      type="checkbox"
+                      checked={newProductCollections.includes(collection.collectionId)}
+                      disabled={pending || conflict}
+                      onChange={(event) => {
+                        setNewProductCollections((current) => (
+                          event.target.checked
+                            ? [...current, collection.collectionId]
+                            : current.filter((id) => id !== collection.collectionId)
+                        ));
+                      }}
+                    />
+                    {collection.name}
+                    <span className="text-sky-300">pending publish</span>
                   </label>
                 ))}
               </fieldset>
@@ -1237,7 +1313,7 @@ export function PartnerDraftWorkspaceClient(props: Readonly<{
                 </div>
               </div>
             ) : null}
-            {props.collections.length > 0 ? (
+            {(props.collections.length > 0 || pendingCollections(draft.document).length > 0) ? (
               <fieldset className="space-y-1">
                 <legend className="text-xs text-slate-400">Existing collections</legend>
                 {props.collections.map((collection) => (
@@ -1258,6 +1334,27 @@ export function PartnerDraftWorkspaceClient(props: Readonly<{
                       }}
                     />
                     {collection.name}
+                  </label>
+                ))}
+                {pendingCollections(draft.document).map((collection) => (
+                  <label key={collection.collectionId} className="flex items-center gap-2 text-xs text-slate-300">
+                    <input
+                      type="checkbox"
+                      checked={selectedCollections.includes(collection.collectionId)}
+                      disabled={pending || conflict}
+                      onChange={(event) => {
+                        const next = event.target.checked
+                          ? [...selectedCollections, collection.collectionId]
+                          : selectedCollections.filter((id) => id !== collection.collectionId);
+                        void save([{
+                          type: "product.create_edit",
+                          productId: create.productId,
+                          collectionIds: next,
+                        }]);
+                      }}
+                    />
+                    {collection.name}
+                    <span className="text-sky-300">pending publish</span>
                   </label>
                 ))}
               </fieldset>
@@ -1702,6 +1799,212 @@ export function PartnerDraftWorkspaceClient(props: Readonly<{
           </article>
         );
       })}
+
+      <section className="space-y-3 rounded-xl border border-slate-800 p-4">
+        <div className="flex items-center justify-between gap-3">
+          <h3 className="font-medium">Add Collection</h3>
+          {!addingCollection ? (
+            <button
+              type="button"
+              disabled={pending || conflict}
+              className="rounded-md border border-slate-700 px-3 py-1 text-xs"
+              onClick={() => setAddingCollection(true)}
+            >
+              Add Collection
+            </button>
+          ) : null}
+        </div>
+        <p className="text-[11px] text-slate-500">
+          Collection identity is derived from the name or an optional slug. Save with zero Products to create an empty Collection.
+        </p>
+        {addingCollection ? (
+          <div className="grid gap-3 sm:grid-cols-2">
+            <label className="text-xs text-slate-400 sm:col-span-2">
+              Collection name
+              <input
+                className="mt-1 w-full rounded-md border border-slate-700 bg-slate-900 px-2 py-1 text-slate-100"
+                value={newCollectionName}
+                disabled={pending || conflict}
+                onChange={(event) => setNewCollectionName(event.target.value)}
+              />
+            </label>
+            <label className="text-xs text-slate-400 sm:col-span-2">
+              Collection identity slug
+              <input
+                className="mt-1 w-full rounded-md border border-slate-700 bg-slate-900 px-2 py-1 text-slate-100"
+                value={newCollectionSlug}
+                disabled={pending || conflict}
+                onChange={(event) => setNewCollectionSlug(event.target.value)}
+                placeholder="Optional if the name slugs cleanly"
+              />
+            </label>
+            <fieldset className="sm:col-span-2 space-y-1">
+              <legend className="text-xs text-slate-400">Product membership</legend>
+              {props.products.map((product) => (
+                <label key={product.productId} className="flex items-center gap-2 text-xs text-slate-300">
+                  <input
+                    type="checkbox"
+                    checked={newCollectionProductIds.includes(product.productId)}
+                    disabled={pending || conflict}
+                    onChange={(event) => {
+                      setNewCollectionProductIds((current) => (
+                        event.target.checked
+                          ? [...current, product.productId]
+                          : current.filter((id) => id !== product.productId)
+                      ));
+                    }}
+                  />
+                  {product.name}
+                </label>
+              ))}
+              {pendingProducts(draft.document).map((product) => (
+                <label key={product.productId} className="flex items-center gap-2 text-xs text-slate-300">
+                  <input
+                    type="checkbox"
+                    checked={newCollectionProductIds.includes(product.productId)}
+                    disabled={pending || conflict}
+                    onChange={(event) => {
+                      setNewCollectionProductIds((current) => (
+                        event.target.checked
+                          ? [...current, product.productId]
+                          : current.filter((id) => id !== product.productId)
+                      ));
+                    }}
+                  />
+                  {product.name}
+                  <span className="text-sky-300">pending publish</span>
+                </label>
+              ))}
+            </fieldset>
+            <div className="sm:col-span-2 flex gap-2">
+              <button
+                type="button"
+                disabled={pending || conflict || !newCollectionName.trim()}
+                className="rounded-md border border-emerald-700 px-3 py-1 text-xs text-emerald-100"
+                onClick={() => {
+                  const creationSlug = newCollectionSlug.trim() ? newCollectionSlug.trim() : undefined;
+                  void save([{
+                    type: "collection.create",
+                    name: newCollectionName.trim(),
+                    ...(creationSlug ? { creationSlug } : {}),
+                    ...(newCollectionProductIds.length > 0 ? { productIds: newCollectionProductIds } : {}),
+                  }]).then((ok) => {
+                    if (!ok) return;
+                    setAddingCollection(false);
+                    setNewCollectionName("");
+                    setNewCollectionSlug("");
+                    setNewCollectionProductIds([]);
+                  });
+                }}
+              >
+                Save collection
+              </button>
+              <button
+                type="button"
+                disabled={pending}
+                className="rounded-md border border-slate-700 px-3 py-1 text-xs"
+                onClick={() => {
+                  setAddingCollection(false);
+                  setNewCollectionName("");
+                  setNewCollectionSlug("");
+                  setNewCollectionProductIds([]);
+                }}
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        ) : null}
+        {pendingCollections(draft.document).map((create) => {
+          const selected = membership[create.collectionId] ?? pendingCollectionProductIds(draft.document, create.collectionId);
+          return (
+            <article key={create.collectionId} className="space-y-3 rounded-xl border border-violet-900/60 p-4">
+              <p className="text-xs text-violet-200">New Collection — pending publish</p>
+              <label className="text-xs text-slate-400">
+                Name
+                <input
+                  className="mt-1 w-full rounded-md border border-slate-700 bg-slate-900 px-2 py-1 text-slate-100"
+                  value={collectionNames[create.collectionId] ?? create.name}
+                  disabled={pending || conflict}
+                  onChange={(event) => setCollectionNames((current) => ({
+                    ...current,
+                    [create.collectionId]: event.target.value,
+                  }))}
+                  onBlur={() => {
+                    const next = (collectionNames[create.collectionId] ?? "").trim();
+                    if (!next || next === create.name) return;
+                    void save([{ type: "collection.create_edit", collectionId: create.collectionId, name: next }]);
+                  }}
+                />
+              </label>
+              <p className="text-[11px] text-slate-500">{create.collectionId}</p>
+              <fieldset className="space-y-1">
+                <legend className="text-xs text-slate-400">Product membership</legend>
+                {props.products.map((product) => (
+                  <label key={product.productId} className="flex items-center gap-2 text-xs text-slate-300">
+                    <input
+                      type="checkbox"
+                      checked={selected.includes(product.productId)}
+                      disabled={pending || conflict}
+                      onChange={(event) => {
+                        const current = new Set(selected);
+                        if (event.target.checked) current.add(product.productId);
+                        else current.delete(product.productId);
+                        setMembership((prev) => ({ ...prev, [create.collectionId]: [...current] }));
+                      }}
+                    />
+                    {product.name}
+                  </label>
+                ))}
+                {pendingProducts(draft.document).map((product) => (
+                  <label key={product.productId} className="flex items-center gap-2 text-xs text-slate-300">
+                    <input
+                      type="checkbox"
+                      checked={selected.includes(product.productId)}
+                      disabled={pending || conflict}
+                      onChange={(event) => {
+                        const current = new Set(selected);
+                        if (event.target.checked) current.add(product.productId);
+                        else current.delete(product.productId);
+                        setMembership((prev) => ({ ...prev, [create.collectionId]: [...current] }));
+                      }}
+                    />
+                    {product.name}
+                    <span className="text-sky-300">pending publish</span>
+                  </label>
+                ))}
+              </fieldset>
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  disabled={pending || conflict}
+                  className="rounded-md border border-slate-700 px-3 py-1 text-xs"
+                  onClick={() => {
+                    const desired = [...(membership[create.collectionId] ?? selected)].sort();
+                    const currentDesired = pendingCollectionProductIds(draft.document, create.collectionId);
+                    if (desired.join("\0") === currentDesired.join("\0")) return;
+                    void save([{
+                      type: "collection.create_edit",
+                      collectionId: create.collectionId,
+                      productIds: desired,
+                    }]);
+                  }}
+                >
+                  Save membership
+                </button>
+                <button
+                  type="button"
+                  disabled={pending || conflict}
+                  className="rounded-md border border-slate-700 px-3 py-1 text-xs"
+                  onClick={() => void save([{ type: "collection.create_remove", collectionId: create.collectionId }])}
+                >
+                  Remove pending collection
+                </button>
+              </div>
+            </article>
+          );
+        })}
+      </section>
 
       <section className="space-y-4">
         <h3 className="font-medium">Collections</h3>

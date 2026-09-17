@@ -50,6 +50,14 @@ export type PartnerDraftPreviewView = Readonly<{
     currentAssetId: string;
     productUrl: string;
   }>[];
+  collectionCreates: readonly Readonly<{
+    collectionId: string;
+    name: string;
+    owner: string;
+    partnerName: string;
+    partnerId: string;
+    productIds: readonly string[];
+  }>[];
   collectionUpdates: readonly Readonly<{
     collectionId: string;
     previous: string;
@@ -184,6 +192,28 @@ function asProductCreates(value: unknown): PartnerDraftPreviewView["productCreat
   });
 }
 
+function asCollectionCreates(value: unknown): PartnerDraftPreviewView["collectionCreates"] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((item) => {
+    const record = asRecord(item);
+    if (!record) return [];
+    const nested = asRecord(record.collection) ?? record;
+    const collectionId = asString(nested.collectionId);
+    if (!collectionId) return [];
+    const productIds = Array.isArray(nested.productIds)
+      ? nested.productIds.flatMap((id) => (typeof id === "string" && id.trim() ? [id] : []))
+      : [];
+    return [{
+      collectionId,
+      name: displayValue(nested.name),
+      owner: displayValue(nested.owner),
+      partnerName: displayValue(nested.partnerName),
+      partnerId: displayValue(nested.partnerId),
+      productIds,
+    }];
+  });
+}
+
 export function presentPartnerDraftPreview(body: unknown): PartnerDraftPreviewView | Readonly<{ error: string }> {
   const record = asRecord(body);
   if (!record) return { error: "Preview request failed." };
@@ -240,6 +270,7 @@ export function presentPartnerDraftPreview(body: unknown): PartnerDraftPreviewVi
     productCreates: asProductCreates(record.productCreates),
     variantUpdates,
     variantCreates: asVariantCreates(record.variantCreates),
+    collectionCreates: asCollectionCreates(record.collectionCreates),
     collectionUpdates,
     membershipAdds: asMembership(record.membershipAdds),
     membershipRemoves: asMembership(record.membershipRemoves),
@@ -256,6 +287,7 @@ export function partnerDraftPreviewHasChanges(view: PartnerDraftPreviewView): bo
     || view.productCreates.length > 0
     || view.variantUpdates.length > 0
     || view.variantCreates.length > 0
+    || view.collectionCreates.length > 0
     || view.collectionUpdates.length > 0
     || view.membershipAdds.length > 0
     || view.membershipRemoves.length > 0

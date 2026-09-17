@@ -33,6 +33,11 @@ import {
   partnerRuntimePlanNeedsV3,
   toRuntimeApplyPayloadV3,
 } from "./partner-catalog-runtime-executor-v3";
+import {
+  g4cUnsupportedPublishOperations,
+  partnerRuntimePlanNeedsV4,
+  toRuntimeApplyPayloadV4,
+} from "./partner-catalog-runtime-executor-v4";
 import { persistablePartnerPatchDocument } from "./partner-draft-mutations";
 import {
   parsePartnerDraftTouchedBase,
@@ -60,6 +65,7 @@ import type { StageCatalogSnapshot, StageCollection } from "./types";
 export const STAGE_PARTNER_APPLY_RPC = "vibode_stage_apply_partner_patch";
 export const STAGE_PARTNER_APPLY_RPC_V2 = "vibode_stage_apply_partner_patch_v2";
 export const STAGE_PARTNER_APPLY_RPC_V3 = "vibode_stage_apply_partner_patch_v3";
+export const STAGE_PARTNER_APPLY_RPC_V4 = "vibode_stage_apply_partner_patch_v4";
 
 export const PARTNER_PUBLISH_REJECT_BODY_KEYS = Object.freeze([
   "partnerId",
@@ -204,11 +210,15 @@ export function detectPartnerPublishConflicts(input: Readonly<{
     }
   }
 
+  const createdCollectionIds = new Set(
+    input.plan.collectionCreates.map((item) => item.collection.collectionId),
+  );
   const membershipCollections = new Set([
     ...input.plan.membershipAdds.map((item) => item.collectionId),
     ...input.plan.membershipRemoves.map((item) => item.collectionId),
   ]);
   for (const collectionId of membershipCollections) {
+    if (createdCollectionIds.has(collectionId)) continue;
     const base = input.touchedBase.collections[collectionId];
     const live = findCollection(input.catalog, collectionId);
     if (!base || base.membership_product_ids === undefined) {
@@ -267,6 +277,7 @@ export function httpStatusForPublishErrorCode(code: string): number {
     case "DUPLICATE_SKU":
     case "DUPLICATE_VARIANT_ID":
     case "DUPLICATE_PRODUCT_ID":
+    case "DUPLICATE_COLLECTION_ID":
     case "PARENT_PRODUCT_MISMATCH":
     case "ASSET_NOT_READY":
     case "PARTNER_ASSET_UNASSOCIATED":
@@ -280,6 +291,7 @@ export function httpStatusForPublishErrorCode(code: string): number {
     case "INVALID_APPLY_PAYLOAD":
     case "UNSUPPORTED_COLUMN":
     case "PLAN_VERSION_UNSUPPORTED":
+    case "COLLECTION_NAMESPACE_MISMATCH":
       return 400;
     default:
       return 500;
@@ -306,6 +318,8 @@ export function merchantMessageForPublishErrorCode(code: string): string {
       return "A variant with this identity already exists.";
     case "DUPLICATE_PRODUCT_ID":
       return "A product with this identity already exists.";
+    case "DUPLICATE_COLLECTION_ID":
+      return "A collection with this identity already exists.";
     case "DEFAULT_VARIANT_MISMATCH":
       return "The default variant for this product could not be published.";
     case "PARENT_PRODUCT_MISMATCH":
@@ -528,7 +542,11 @@ export function createMemoryPartnerRuntimeApply(input: Readonly<{
       membershipAdds,
       membershipRemoves,
     };
-    if (payload.planVersion === 3 || productCreates.length > 0) {
+    if (payload.planVersion === 4 || collectionCreates.length > 0) {
+      plan.productCreates = productCreates;
+      plan.variantCreates = variantCreates;
+      plan.collectionCreates = collectionCreates;
+    } else if (payload.planVersion === 3 || productCreates.length > 0) {
       plan.productCreates = productCreates;
       plan.variantCreates = variantCreates;
       plan.collectionCreates = collectionCreates;
@@ -669,11 +687,13 @@ export async function publishPartnerPatchDraft(input: Readonly<{
     return plannerRejectBody(plan, merchantMessageForPublishErrorCode("PLANNER_ISSUE"), "PLANNER_ISSUE");
   }
 
-  const unsupported = partnerRuntimePlanNeedsV3(plan)
-    ? g4bUnsupportedPublishOperations(plan)
-    : partnerRuntimePlanNeedsV2(plan)
-      ? g4aUnsupportedPublishOperations(plan)
-      : g3UnsupportedPublishOperations(plan);
+  const unsupported = partnerRuntimePlanNeedsV4(plan)
+    ? g4cUnsupportedPublishOperations(plan)
+    : partnerRuntimePlanNeedsV3(plan)
+      ? g4bUnsupportedPublishOperations(plan)
+      : partnerRuntimePlanNeedsV2(plan)
+        ? g4aUnsupportedPublishOperations(plan)
+        : g3UnsupportedPublishOperations(plan);
   if (unsupported.length > 0) {
     await recordRejected({
       audit: input.audit,
@@ -747,11 +767,13 @@ export async function publishPartnerPatchDraft(input: Readonly<{
 
   const serialized = plan.noOp
     ? { ok: true as const, payload: emptyRuntimeApplyPayload(partnerId) }
-    : partnerRuntimePlanNeedsV3(plan)
-      ? toRuntimeApplyPayloadV3(plan)
-      : partnerRuntimePlanNeedsV2(plan)
-        ? toRuntimeApplyPayloadV2(plan)
-        : toRuntimeApplyPayload(plan);
+    : partnerRuntimePlanNeedsV4(plan)
+      ? toRuntimeApplyPayloadV4(plan)
+      : partnerRuntimePlanNeedsV3(plan)
+        ? toRuntimeApplyPayloadV3(plan)
+        : partnerRuntimePlanNeedsV2(plan)
+          ? toRuntimeApplyPayloadV2(plan)
+          : toRuntimeApplyPayload(plan);
   if (!serialized.ok) {
     await recordRejected({
       audit: input.audit,
