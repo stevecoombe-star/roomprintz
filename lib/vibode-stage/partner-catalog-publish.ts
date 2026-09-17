@@ -23,6 +23,11 @@ import {
   toRuntimeApplyPayload,
   type PartnerRuntimeApplyPayload,
 } from "./partner-catalog-runtime-executor";
+import {
+  g4aUnsupportedPublishOperations,
+  partnerRuntimePlanNeedsV2,
+  toRuntimeApplyPayloadV2,
+} from "./partner-catalog-runtime-executor-v2";
 import { persistablePartnerPatchDocument } from "./partner-draft-mutations";
 import {
   parsePartnerDraftTouchedBase,
@@ -48,6 +53,7 @@ import { asNonEmptyString, isPlainObject } from "./product-variant-register";
 import type { StageCatalogSnapshot, StageCollection } from "./types";
 
 export const STAGE_PARTNER_APPLY_RPC = "vibode_stage_apply_partner_patch";
+export const STAGE_PARTNER_APPLY_RPC_V2 = "vibode_stage_apply_partner_patch_v2";
 
 export const PARTNER_PUBLISH_REJECT_BODY_KEYS = Object.freeze([
   "partnerId",
@@ -253,6 +259,10 @@ export function httpStatusForPublishErrorCode(code: string): number {
     case "STALE_LIVE_FIELD":
     case "STALE_CATALOG_BASE":
     case "DUPLICATE_SKU":
+    case "DUPLICATE_VARIANT_ID":
+    case "PARENT_PRODUCT_MISMATCH":
+    case "ASSET_NOT_READY":
+    case "PARTNER_ASSET_UNASSOCIATED":
     case "COLLECTION_OWNER_MISMATCH":
     case "MEMBERSHIP_CONFLICT":
       return 409;
@@ -284,6 +294,13 @@ export function merchantMessageForPublishErrorCode(code: string): string {
       return "Live catalog changed since this draft edit. Reload and review before publishing.";
     case "DUPLICATE_SKU":
       return "That SKU is already used by another variant for this partner.";
+    case "DUPLICATE_VARIANT_ID":
+      return "A variant with this identity already exists.";
+    case "PARENT_PRODUCT_MISMATCH":
+      return "The selected product is not available for this partner.";
+    case "ASSET_NOT_READY":
+    case "PARTNER_ASSET_UNASSOCIATED":
+      return "The selected asset is not available for this partner.";
     case "UNSUPPORTED_PUBLISH_OPERATION":
       return "This draft includes catalog changes that cannot be published yet.";
     case "PLANNER_ISSUE":
@@ -473,32 +490,38 @@ export function createMemoryPartnerRuntimeApply(input: Readonly<{
 
     const productUpdates = Array.isArray(payload.productUpdates) ? payload.productUpdates : [];
     const variantUpdates = Array.isArray(payload.variantUpdates) ? payload.variantUpdates : [];
+    const variantCreates = Array.isArray(payload.variantCreates) ? payload.variantCreates : [];
     const collectionUpdates = Array.isArray(payload.collectionUpdates) ? payload.collectionUpdates : [];
     const membershipAdds = Array.isArray(payload.membershipAdds) ? payload.membershipAdds : [];
     const membershipRemoves = Array.isArray(payload.membershipRemoves) ? payload.membershipRemoves : [];
     const isNoop = (
       productUpdates.length
       + variantUpdates.length
+      + variantCreates.length
       + collectionUpdates.length
       + membershipAdds.length
       + membershipRemoves.length
     ) === 0;
     const status = isNoop ? "noop" : "accepted";
+    const plan: Record<string, unknown> = {
+      planVersion: payload.planVersion,
+      partnerId,
+      productUpdates,
+      variantUpdates,
+      collectionUpdates,
+      membershipAdds,
+      membershipRemoves,
+    };
+    if (payload.planVersion === 2 || variantCreates.length > 0) {
+      plan.variantCreates = variantCreates;
+    }
     const inserted = await input.audit.insert({
       partnerId,
       userId,
       draftId,
       draftRevision,
       document: payload.document,
-      plan: {
-        planVersion: payload.planVersion,
-        partnerId,
-        productUpdates,
-        variantUpdates,
-        collectionUpdates,
-        membershipAdds,
-        membershipRemoves,
-      },
+      plan,
       status,
       baseCatalogHash: asNonEmptyString(payload.baseCatalogHash),
       prePublishCatalogHash: asNonEmptyString(payload.prePublishCatalogHash),
@@ -626,7 +649,9 @@ export async function publishPartnerPatchDraft(input: Readonly<{
     return plannerRejectBody(plan, merchantMessageForPublishErrorCode("PLANNER_ISSUE"), "PLANNER_ISSUE");
   }
 
-  const unsupported = g3UnsupportedPublishOperations(plan);
+  const unsupported = partnerRuntimePlanNeedsV2(plan)
+    ? g4aUnsupportedPublishOperations(plan)
+    : g3UnsupportedPublishOperations(plan);
   if (unsupported.length > 0) {
     await recordRejected({
       audit: input.audit,
@@ -700,7 +725,9 @@ export async function publishPartnerPatchDraft(input: Readonly<{
 
   const serialized = plan.noOp
     ? { ok: true as const, payload: emptyRuntimeApplyPayload(partnerId) }
-    : toRuntimeApplyPayload(plan);
+    : partnerRuntimePlanNeedsV2(plan)
+      ? toRuntimeApplyPayloadV2(plan)
+      : toRuntimeApplyPayload(plan);
   if (!serialized.ok) {
     await recordRejected({
       audit: input.audit,

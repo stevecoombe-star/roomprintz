@@ -29,6 +29,16 @@ export type PartnerDraftPreviewView = Readonly<{
     productId: string;
     changes: readonly PartnerDraftPreviewChange[];
   }>[];
+  variantCreates: readonly Readonly<{
+    variantId: string;
+    productId: string;
+    finishLabel: string;
+    sku: string;
+    price: string;
+    priceCurrency: string;
+    currentAssetId: string;
+    productUrl: string;
+  }>[];
   collectionUpdates: readonly Readonly<{
     collectionId: string;
     previous: string;
@@ -108,6 +118,34 @@ function asMembership(value: unknown): Readonly<{ productId: string; collectionI
   });
 }
 
+function asVariantCreates(value: unknown): PartnerDraftPreviewView["variantCreates"] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((item) => {
+    const record = asRecord(item);
+    if (!record) return [];
+    const nested = asRecord(record.variant) ?? record;
+    const variantId = asString(nested.variantId);
+    const productId = asString(nested.productId);
+    if (!variantId || !productId) return [];
+    const currentAssetId = asString(nested.currentAssetId) ?? asString(nested.assetId) ?? "—";
+    const priceAmount = nested.priceAmount;
+    const priceCurrency = asString(nested.priceCurrency) ?? "";
+    const price = priceAmount == null || priceAmount === ""
+      ? "—"
+      : `${displayValue(priceAmount)}${priceCurrency ? ` ${priceCurrency}` : ""}`;
+    return [{
+      variantId,
+      productId,
+      finishLabel: displayValue(nested.finishLabel),
+      sku: displayValue(nested.sku),
+      price,
+      priceCurrency: priceCurrency || "—",
+      currentAssetId,
+      productUrl: displayValue(nested.productUrl),
+    }];
+  });
+}
+
 export function presentPartnerDraftPreview(body: unknown): PartnerDraftPreviewView | Readonly<{ error: string }> {
   const record = asRecord(body);
   if (!record) return { error: "Preview request failed." };
@@ -162,6 +200,7 @@ export function presentPartnerDraftPreview(body: unknown): PartnerDraftPreviewVi
     issues,
     productUpdates,
     variantUpdates,
+    variantCreates: asVariantCreates(record.variantCreates),
     collectionUpdates,
     membershipAdds: asMembership(record.membershipAdds),
     membershipRemoves: asMembership(record.membershipRemoves),
@@ -176,6 +215,7 @@ export function partnerDraftPreviewHasChanges(view: PartnerDraftPreviewView): bo
   return (
     view.productUpdates.length > 0
     || view.variantUpdates.length > 0
+    || view.variantCreates.length > 0
     || view.collectionUpdates.length > 0
     || view.membershipAdds.length > 0
     || view.membershipRemoves.length > 0

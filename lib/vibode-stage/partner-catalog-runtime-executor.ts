@@ -253,7 +253,7 @@ export function emptyRuntimeApplyPayload(partnerId: string): PartnerRuntimeApply
   };
 }
 
-export function persistableRuntimeApplyPayload(payload: PartnerRuntimeApplyPayload): Record<string, unknown> {
+export function persistableRuntimeApplyPayload(payload: object): Record<string, unknown> {
   return JSON.parse(JSON.stringify(payload)) as Record<string, unknown>;
 }
 

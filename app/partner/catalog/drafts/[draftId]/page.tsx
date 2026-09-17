@@ -1,3 +1,4 @@
+import { listPartnerReadyAssetsForVariantCreate } from "@/lib/vibode-stage/partner-portal-assets";
 import { loadAuthorizedPartnerPortalCatalog } from "@/lib/vibode-stage/partner-portal-catalog.server";
 import { resolvePartnerPortalContext } from "@/lib/vibode-stage/partner-portal-auth.server";
 import { loadPartnerPortalDraft } from "@/lib/vibode-stage/partner-portal-drafts.server";
@@ -79,6 +80,7 @@ export default async function PartnerDraftWorkspacePage({
       products={loaded.catalog.products}
       variants={loaded.catalog.variants}
       collections={loaded.catalog.collections}
+      readyAssets={listPartnerReadyAssetsForVariantCreate(loaded.catalog)}
       focusProductId={query.product ?? null}
     />
   );

@@ -36,6 +36,11 @@ import {
   type ProductVariantRegistrationInput,
   type ProductVariantValidationGates,
 } from "./product-variant-register";
+import {
+  isPartnerSlug,
+  namespacedId,
+  partnerIdForSlug,
+} from "./partner-catalog-ids";
 import type {
   StageCatalogSnapshot,
   StageCollection,
@@ -44,6 +49,14 @@ import type {
   StageProduct,
   StageVariant,
 } from "./types";
+
+export {
+  STAGE_PARTNER_SLUG_SHAPE,
+  isPartnerSlug,
+  namespacedId,
+  partnerIdForSlug,
+  productSlugFor,
+} from "./partner-catalog-ids";
 
 export const PARTNER_CATALOG_JSON_RELATIVE_PATH =
   "lib/vibode-stage/demo-furniture-co.partner.json";
@@ -58,8 +71,6 @@ export const DEMO_SOFA_STONE_VARIANT_ID = "var-demo-furniture-co-demo-sofa-stone
 export const DEMO_LOUNGE_CHAIR_PRODUCT_ID = "prod-demo-furniture-co-demo-lounge-chair";
 export const DEMO_LOUNGE_CHAIR_VARIANT_ID = "var-demo-furniture-co-demo-lounge-chair-natural";
 
-export const STAGE_PARTNER_SLUG_SHAPE = /^[a-z0-9]+(-[a-z0-9]+)*$/;
-
 export const FORBIDDEN_LEGACY_PARTNER_TABLES = Object.freeze([
   ...FORBIDDEN_STAGE_CATALOG_TABLES,
 ]);
@@ -71,18 +82,6 @@ const PARTNER_STATUSES: readonly StagePartnerStatus[] = Object.freeze([
 
 function issue(code: string, message: string): ProductVariantIssue {
   return { code, message };
-}
-
-export function partnerIdForSlug(slug: string): string {
-  return `partner-${slug}`;
-}
-
-export function isPartnerSlug(value: string): boolean {
-  return STAGE_PARTNER_SLUG_SHAPE.test(value);
-}
-
-export function namespacedId(kind: "prod" | "var" | "col", partnerSlug: string, rest: string): string {
-  return `${kind}-${partnerSlug}-${rest}`;
 }
 
 export function partnerCatalogMigrationFileName(

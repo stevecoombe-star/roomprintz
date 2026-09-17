@@ -8,6 +8,7 @@ import {
   presentPartnerDraftPreview,
   type PartnerDraftPreviewView,
 } from "@/lib/vibode-stage/partner-draft-preview-view";
+import type { PartnerReadyAssetChoice } from "@/lib/vibode-stage/partner-portal-assets";
 import type { StageCollection, StageProduct, StageVariant } from "@/lib/vibode-stage/types";
 
 type DraftDocument = {
@@ -21,6 +22,16 @@ type DraftDocument = {
     }>;
   };
   variants: {
+    create: ReadonlyArray<{
+      variantId: string;
+      productId: string;
+      finishLabel: string | null;
+      sku: string | null;
+      priceAmount: number;
+      priceCurrency: string;
+      productUrl: string | null;
+      currentAssetId: string;
+    }>;
     update: ReadonlyArray<{
       variantId: string;
       finishLabel?: string | null;
@@ -57,6 +68,26 @@ type DraftMutation =
   | { type: "variant.set_sku"; variantId: string; sku: string | null }
   | { type: "variant.set_price"; variantId: string; priceAmount: number }
   | { type: "variant.set_product_url"; variantId: string; productUrl: string | null }
+  | {
+      type: "variant.create";
+      productId: string;
+      finishLabel: string | null;
+      sku: string | null;
+      priceAmount: number;
+      productUrl: string | null;
+      currentAssetId: string;
+      creationSlug?: string | null;
+    }
+  | {
+      type: "variant.create_edit";
+      variantId: string;
+      finishLabel?: string | null;
+      sku?: string | null;
+      priceAmount?: number;
+      productUrl?: string | null;
+      currentAssetId?: string;
+    }
+  | { type: "variant.create_remove"; variantId: string }
   | { type: "collection.set_name"; collectionId: string; name: string }
   | { type: "collection.set_membership"; collectionId: string; productIds: readonly string[] };
 
@@ -123,7 +154,25 @@ function DraftPreviewResult(props: Readonly<{
         ))}
       </div>
       <div>
-        <h4 className="text-xs uppercase tracking-wide text-slate-500">Variant updates</h4>
+        <h4 className="text-xs uppercase tracking-wide text-slate-500">Create Variant</h4>
+        {view.variantCreates.length === 0 ? (
+          <p className="mt-1 text-xs text-slate-500">None</p>
+        ) : view.variantCreates.map((item) => (
+          <div key={item.variantId} className="mt-2 rounded-md border border-emerald-900/60 p-2">
+            <p className="text-xs text-emerald-200">Create Variant</p>
+            <p className="text-xs text-slate-400">{item.variantId}</p>
+            <ul className="mt-1 space-y-1 text-sm text-slate-200">
+              <li><span className="text-slate-400">Product:</span> {item.productId}</li>
+              <li><span className="text-slate-400">Finish:</span> {item.finishLabel}</li>
+              <li><span className="text-slate-400">SKU:</span> {item.sku}</li>
+              <li><span className="text-slate-400">Price:</span> {item.price}</li>
+              <li><span className="text-slate-400">Asset:</span> {item.currentAssetId}</li>
+            </ul>
+          </div>
+        ))}
+      </div>
+      <div>
+        <h4 className="text-xs uppercase tracking-wide text-slate-500">Update Variant</h4>
         {view.variantUpdates.length === 0 ? (
           <p className="mt-1 text-xs text-slate-500">None</p>
         ) : view.variantUpdates.map((item) => (
@@ -223,6 +272,14 @@ function desiredMembership(
   return [...new Set([...liveIds.filter((id) => !removed.has(id)), ...added])];
 }
 
+function pendingCreates(document: DraftDocument, productId: string) {
+  return (document.variants.create ?? []).filter((item) => item.productId === productId);
+}
+
+function assetLabel(assets: readonly PartnerReadyAssetChoice[], assetId: string): string {
+  return assets.find((item) => item.assetId === assetId)?.label ?? assetId;
+}
+
 function pendingCount(document: DraftDocument): number {
   const productFields = document.products.update.reduce((count, item) => (
     count + Object.keys(item).filter((key) => key !== "productId").length
@@ -233,6 +290,7 @@ function pendingCount(document: DraftDocument): number {
   return (
     productFields
     + variantFields
+    + (document.variants.create ?? []).length
     + document.collections.update.length
     + document.collections.membershipAdd.length
     + document.collections.membershipRemove.length
@@ -262,6 +320,7 @@ export function PartnerDraftWorkspaceClient(props: Readonly<{
   products: readonly StageProduct[];
   variants: readonly StageVariant[];
   collections: readonly StageCollection[];
+  readyAssets: readonly PartnerReadyAssetChoice[];
   focusProductId: string | null;
 }>) {
   const router = useRouter();
@@ -288,6 +347,13 @@ export function PartnerDraftWorkspaceClient(props: Readonly<{
   const [variantUrls, setVariantUrls] = useState<Record<string, string>>({});
   const [collectionNames, setCollectionNames] = useState<Record<string, string>>({});
   const [membership, setMembership] = useState<Record<string, string[]>>({});
+  const [addingProductId, setAddingProductId] = useState<string | null>(null);
+  const [newFinish, setNewFinish] = useState("");
+  const [newSku, setNewSku] = useState("");
+  const [newPrice, setNewPrice] = useState("");
+  const [newUrl, setNewUrl] = useState("");
+  const [newAssetId, setNewAssetId] = useState(props.readyAssets[0]?.assetId ?? "");
+  const [newSlug, setNewSlug] = useState("");
 
   const variantsByProduct = useMemo(() => {
     const map = new Map<string, StageVariant[]>();
@@ -320,6 +386,12 @@ export function PartnerDraftWorkspaceClient(props: Readonly<{
       nextSkus[variant.variantId] = effective(variant.sku, patch?.sku) ?? "";
       nextVariantPrices[variant.variantId] = String(effective(variant.priceAmount, patch?.priceAmount) ?? "");
       nextVariantUrls[variant.variantId] = effective(variant.productUrl, patch?.productUrl) ?? "";
+    }
+    for (const create of next.document.variants.create ?? []) {
+      nextFinishes[create.variantId] = create.finishLabel ?? "";
+      nextSkus[create.variantId] = create.sku ?? "";
+      nextVariantPrices[create.variantId] = String(create.priceAmount ?? "");
+      nextVariantUrls[create.variantId] = create.productUrl ?? "";
     }
     const nextCollectionNames: Record<string, string> = {};
     const nextMembership: Record<string, string[]> = {};
@@ -354,8 +426,8 @@ export function PartnerDraftWorkspaceClient(props: Readonly<{
     document.getElementById(`product-${props.focusProductId}`)?.scrollIntoView({ behavior: "smooth" });
   }, [props.focusProductId]);
 
-  async function save(mutations: DraftMutation[]) {
-    if (conflict) return;
+  async function save(mutations: DraftMutation[]): Promise<boolean> {
+    if (conflict) return false;
     setPending(true);
     setError(null);
     setConflicts(null);
@@ -369,16 +441,18 @@ export function PartnerDraftWorkspaceClient(props: Readonly<{
       if (response.status === 409) {
         setConflict(true);
         setError(body.error ?? "Draft revision is stale. Reload before saving.");
-        return;
+        return false;
       }
       if (!response.ok || !body.draft) {
         setError(body.error ?? "Draft could not be saved.");
-        return;
+        return false;
       }
       setDraft(body.draft);
       syncForms(body.draft);
+      return true;
     } catch {
       setError("Draft could not be saved.");
+      return false;
     } finally {
       setPending(false);
     }
@@ -784,6 +858,254 @@ export function PartnerDraftWorkspaceClient(props: Readonly<{
                 );
               })}
             </ul>
+
+            <ul className="space-y-3">
+              {pendingCreates(draft.document, product.productId).map((create) => (
+                <li key={create.variantId} className="rounded-md border border-emerald-900/70 bg-emerald-950/20 p-3">
+                  <p className="text-xs text-emerald-200">New Variant — pending publish</p>
+                  <p className="text-[11px] text-slate-500">{create.variantId}</p>
+                  <p className="text-[11px] text-slate-500">
+                    Inherited currency {create.priceCurrency}
+                    {" · "}
+                    Asset {assetLabel(props.readyAssets, create.currentAssetId)}
+                  </p>
+                  <div className="mt-2 grid gap-3 sm:grid-cols-2">
+                    <label className="text-xs text-slate-400">
+                      Finish
+                      <input
+                        className="mt-1 w-full rounded-md border border-slate-700 bg-slate-900 px-2 py-1 text-slate-100"
+                        value={finishes[create.variantId] ?? ""}
+                        disabled={pending || conflict}
+                        onChange={(event) => setFinishes((current) => ({ ...current, [create.variantId]: event.target.value }))}
+                        onBlur={() => {
+                          const next = blankToNull(finishes[create.variantId] ?? "");
+                          if (next === create.finishLabel) return;
+                          void save([{ type: "variant.create_edit", variantId: create.variantId, finishLabel: next }]);
+                        }}
+                      />
+                    </label>
+                    <label className="text-xs text-slate-400">
+                      SKU
+                      <input
+                        className="mt-1 w-full rounded-md border border-slate-700 bg-slate-900 px-2 py-1 text-slate-100"
+                        value={skus[create.variantId] ?? ""}
+                        disabled={pending || conflict}
+                        onChange={(event) => setSkus((current) => ({ ...current, [create.variantId]: event.target.value }))}
+                        onBlur={() => {
+                          const next = blankToNull(skus[create.variantId] ?? "");
+                          if (next === create.sku) return;
+                          void save([{ type: "variant.create_edit", variantId: create.variantId, sku: next }]);
+                        }}
+                      />
+                    </label>
+                    <label className="text-xs text-slate-400">
+                      Price ({create.priceCurrency})
+                      <input
+                        className="mt-1 w-full rounded-md border border-slate-700 bg-slate-900 px-2 py-1 text-slate-100"
+                        value={variantPrices[create.variantId] ?? ""}
+                        disabled={pending || conflict}
+                        onChange={(event) => setVariantPrices((current) => ({ ...current, [create.variantId]: event.target.value }))}
+                        onBlur={() => {
+                          const parsed = Number(variantPrices[create.variantId]);
+                          if (!Number.isFinite(parsed) || parsed < 0) return;
+                          if (parsed === create.priceAmount) return;
+                          void save([{ type: "variant.create_edit", variantId: create.variantId, priceAmount: parsed }]);
+                        }}
+                      />
+                    </label>
+                    <label className="text-xs text-slate-400">
+                      Product URL
+                      <input
+                        className="mt-1 w-full rounded-md border border-slate-700 bg-slate-900 px-2 py-1 text-slate-100"
+                        value={variantUrls[create.variantId] ?? ""}
+                        disabled={pending || conflict}
+                        onChange={(event) => setVariantUrls((current) => ({ ...current, [create.variantId]: event.target.value }))}
+                        onBlur={() => {
+                          const next = blankToNull(variantUrls[create.variantId] ?? "");
+                          if (next === create.productUrl) return;
+                          void save([{ type: "variant.create_edit", variantId: create.variantId, productUrl: next }]);
+                        }}
+                      />
+                    </label>
+                    <label className="text-xs text-slate-400 sm:col-span-2">
+                      Asset
+                      <select
+                        className="mt-1 w-full rounded-md border border-slate-700 bg-slate-900 px-2 py-1 text-slate-100"
+                        value={create.currentAssetId}
+                        disabled={pending || conflict || props.readyAssets.length === 0}
+                        onChange={(event) => {
+                          const next = event.target.value;
+                          if (!next || next === create.currentAssetId) return;
+                          void save([{ type: "variant.create_edit", variantId: create.variantId, currentAssetId: next }]);
+                        }}
+                      >
+                        {props.readyAssets.map((asset) => (
+                          <option key={asset.assetId} value={asset.assetId}>
+                            {asset.label}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  </div>
+                  <button
+                    type="button"
+                    disabled={pending || conflict}
+                    className="mt-3 rounded-md border border-slate-700 px-3 py-1 text-xs"
+                    onClick={() => void save([{ type: "variant.create_remove", variantId: create.variantId }])}
+                  >
+                    Remove pending variant
+                  </button>
+                </li>
+              ))}
+            </ul>
+
+            {addingProductId === product.productId ? (
+              <div className="rounded-md border border-slate-700 p-3">
+                <p className="text-xs text-slate-300">Add Variant</p>
+                <p className="text-[11px] text-slate-500">
+                  Parent {product.name} · inherited currency {product.priceCurrency}
+                </p>
+                <div className="mt-2 grid gap-3 sm:grid-cols-2">
+                  <label className="text-xs text-slate-400">
+                    Finish label
+                    <input
+                      className="mt-1 w-full rounded-md border border-slate-700 bg-slate-900 px-2 py-1 text-slate-100"
+                      value={newFinish}
+                      disabled={pending || conflict}
+                      onChange={(event) => setNewFinish(event.target.value)}
+                    />
+                  </label>
+                  <label className="text-xs text-slate-400">
+                    Identity slug
+                    <input
+                      className="mt-1 w-full rounded-md border border-slate-700 bg-slate-900 px-2 py-1 text-slate-100"
+                      value={newSlug}
+                      disabled={pending || conflict}
+                      onChange={(event) => setNewSlug(event.target.value)}
+                      placeholder="Required if finish is blank"
+                    />
+                  </label>
+                  <label className="text-xs text-slate-400">
+                    SKU
+                    <input
+                      className="mt-1 w-full rounded-md border border-slate-700 bg-slate-900 px-2 py-1 text-slate-100"
+                      value={newSku}
+                      disabled={pending || conflict}
+                      onChange={(event) => setNewSku(event.target.value)}
+                    />
+                  </label>
+                  <label className="text-xs text-slate-400">
+                    Price ({product.priceCurrency})
+                    <input
+                      className="mt-1 w-full rounded-md border border-slate-700 bg-slate-900 px-2 py-1 text-slate-100"
+                      value={newPrice}
+                      disabled={pending || conflict}
+                      onChange={(event) => setNewPrice(event.target.value)}
+                    />
+                  </label>
+                  <label className="text-xs text-slate-400">
+                    Product URL
+                    <input
+                      className="mt-1 w-full rounded-md border border-slate-700 bg-slate-900 px-2 py-1 text-slate-100"
+                      value={newUrl}
+                      disabled={pending || conflict}
+                      onChange={(event) => setNewUrl(event.target.value)}
+                    />
+                  </label>
+                  <label className="text-xs text-slate-400">
+                    Asset
+                    <select
+                      className="mt-1 w-full rounded-md border border-slate-700 bg-slate-900 px-2 py-1 text-slate-100"
+                      value={newAssetId}
+                      disabled={pending || conflict || props.readyAssets.length === 0}
+                      onChange={(event) => setNewAssetId(event.target.value)}
+                    >
+                      {props.readyAssets.map((asset) => (
+                        <option key={asset.assetId} value={asset.assetId}>
+                          {asset.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                </div>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    disabled={pending || conflict || props.readyAssets.length === 0}
+                    className="rounded-md border border-emerald-700 px-3 py-1 text-xs text-emerald-100"
+                    onClick={() => {
+                      const priceAmount = Number(newPrice);
+                      if (!Number.isFinite(priceAmount) || priceAmount < 0) {
+                        setError("Price is required and must be zero or greater.");
+                        return;
+                      }
+                      if (!newAssetId) {
+                        setError("Select a certified Partner asset.");
+                        return;
+                      }
+                      const finishLabel = blankToNull(newFinish);
+                      const creationSlug = blankToNull(newSlug);
+                      if (!finishLabel && !creationSlug) {
+                        setError("Enter a finish label or identity slug.");
+                        return;
+                      }
+                      void (async () => {
+                        const ok = await save([{
+                          type: "variant.create",
+                          productId: product.productId,
+                          finishLabel,
+                          sku: blankToNull(newSku),
+                          priceAmount,
+                          productUrl: blankToNull(newUrl),
+                          currentAssetId: newAssetId,
+                          ...(creationSlug ? { creationSlug } : {}),
+                        }]);
+                        if (!ok) return;
+                        setAddingProductId(null);
+                        setNewFinish("");
+                        setNewSku("");
+                        setNewPrice("");
+                        setNewUrl("");
+                        setNewSlug("");
+                        setNewAssetId(props.readyAssets[0]?.assetId ?? "");
+                      })();
+                    }}
+                  >
+                    Save variant
+                  </button>
+                  <button
+                    type="button"
+                    disabled={pending}
+                    className="rounded-md border border-slate-700 px-3 py-1 text-xs"
+                    onClick={() => setAddingProductId(null)}
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <button
+                type="button"
+                disabled={pending || conflict || props.readyAssets.length === 0}
+                className="rounded-md border border-slate-700 px-3 py-1 text-xs"
+                onClick={() => {
+                  setAddingProductId(product.productId);
+                  setNewFinish("");
+                  setNewSku("");
+                  setNewPrice("");
+                  setNewUrl("");
+                  setNewSlug("");
+                  setNewAssetId(props.readyAssets[0]?.assetId ?? "");
+                }}
+              >
+                Add Variant
+              </button>
+            )}
+            {props.readyAssets.length === 0 ? (
+              <p className="text-[11px] text-slate-500">
+                No certified Partner assets are available to assign.
+              </p>
+            ) : null}
           </article>
         );
       })}

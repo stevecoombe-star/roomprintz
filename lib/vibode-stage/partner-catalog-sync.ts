@@ -33,6 +33,7 @@ import {
   namespacedId,
   parsePartnerCatalogJson,
   partnerCatalogSqlSlug,
+  productSlugFor,
   type PartnerCatalogDocument,
 } from "./partner-catalog";
 import {
@@ -280,13 +281,6 @@ export function overlayFoldedPartnerCatalog(
     collections: [...seed.collections, ...state.collections],
     partners: [...seed.partners, ...state.partners],
   });
-}
-
-function productSlugFor(partnerSlug: string, productId: string): string | null {
-  const prefix = `prod-${partnerSlug}-`;
-  if (!productId.startsWith(prefix)) return null;
-  const slug = productId.slice(prefix.length);
-  return slug.length > 0 ? slug : null;
 }
 
 function variantFromRegistration(
