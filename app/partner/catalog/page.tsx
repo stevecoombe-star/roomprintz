@@ -1,5 +1,7 @@
 import { loadAuthorizedPartnerPortalCatalog } from "@/lib/vibode-stage/partner-portal-catalog.server";
 import { resolvePartnerPortalContext } from "@/lib/vibode-stage/partner-portal-auth.server";
+import { loadOpenPartnerPortalDraft } from "@/lib/vibode-stage/partner-portal-drafts.server";
+import { PartnerCatalogDraftEntry } from "./PartnerCatalogDraftEntry";
 import { PartnerCatalogPreviewClient } from "../PartnerCatalogPreviewClient";
 
 export const dynamic = "force-dynamic";
@@ -21,6 +23,7 @@ export default async function PartnerCatalogPage() {
   }
 
   const catalog = loaded.catalog;
+  const openDraft = await loadOpenPartnerPortalDraft(auth.context.partnerId);
   const variantsByProduct = new Map<string, typeof catalog.variants>();
   for (const variant of catalog.variants) {
     const current = variantsByProduct.get(variant.productId) ?? [];
@@ -36,6 +39,11 @@ export default async function PartnerCatalogPage() {
           commercial status {catalog.partners[0]?.status}
         </p>
       </section>
+
+      <PartnerCatalogDraftEntry
+        openDraftId={openDraft?.draftId ?? null}
+        openRevision={openDraft?.revision ?? null}
+      />
 
       <section className="space-y-4">
         {catalog.products.map((product) => (

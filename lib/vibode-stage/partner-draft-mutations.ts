@@ -1,0 +1,674 @@
+/**
+ * PI-5G2 structural Partner draft mutations.
+ *
+ * Upserts sparse canonical PI-5F patch deltas against live durable
+ * catalog state. Does not publish, validate SKU uniqueness, or
+ * duplicate certified planner rules. Preview remains authoritative.
+ *
+ * Inactive Collections are omitted by the durable assembler and are
+ * not authorable in G2.
+ */
+
+import {
+  parsePartnerCatalogSyncJson,
+  type PartnerCatalogCollectionPatch,
+  type PartnerCatalogMembershipPatch,
+  type PartnerCatalogProductPatch,
+  type PartnerCatalogSyncDocument,
+  type PartnerCatalogVariantPatch,
+} from "./partner-catalog-sync";
+import { asFiniteNumber, asNonEmptyString, isPlainObject } from "./product-variant-register";
+import type { StageCatalogSnapshot, StageCollection, StageProduct, StageVariant } from "./types";
+
+export const PARTNER_DRAFT_MAX_JSON_BYTES = 256 * 1024;
+export const PARTNER_DRAFT_MAX_OPERATIONS = 2000;
+
+export const PARTNER_DRAFT_MUTATION_TYPES = Object.freeze([
+  "product.set_name",
+  "product.set_image_url",
+  "product.set_product_url",
+  "product.set_price",
+  "variant.set_finish_label",
+  "variant.set_sku",
+  "variant.set_price",
+  "variant.set_product_url",
+  "collection.set_name",
+  "collection.set_membership",
+] as const);
+
+export type PartnerDraftMutationType = (typeof PARTNER_DRAFT_MUTATION_TYPES)[number];
+
+export type PartnerDraftMutation =
+  | Readonly<{ type: "product.set_name"; productId: string; name: string }>
+  | Readonly<{ type: "product.set_image_url"; productId: string; imageUrl: string }>
+  | Readonly<{ type: "product.set_product_url"; productId: string; productUrl: string | null }>
+  | Readonly<{ type: "product.set_price"; productId: string; priceAmount: number }>
+  | Readonly<{ type: "variant.set_finish_label"; variantId: string; finishLabel: string | null }>
+  | Readonly<{ type: "variant.set_sku"; variantId: string; sku: string | null }>
+  | Readonly<{ type: "variant.set_price"; variantId: string; priceAmount: number }>
+  | Readonly<{ type: "variant.set_product_url"; variantId: string; productUrl: string | null }>
+  | Readonly<{ type: "collection.set_name"; collectionId: string; name: string }>
+  | Readonly<{
+      type: "collection.set_membership";
+      collectionId: string;
+      productIds: readonly string[];
+    }>;
+
+export type PartnerDraftMutationFailure = Readonly<{
+  ok: false;
+  code: "invalid_mutation" | "unknown_id" | "forbidden" | "invalid_document";
+  error: string;
+}>;
+
+export type PartnerDraftMutationSuccess = Readonly<{
+  ok: true;
+  document: PartnerCatalogSyncDocument;
+}>;
+
+export type PartnerDraftMutationResult = PartnerDraftMutationSuccess | PartnerDraftMutationFailure;
+
+const FORBIDDEN_MUTATION_TYPES = Object.freeze([
+  "product.set_status",
+  "variant.set_status",
+  "partner.set_status",
+  "variant.set_asset",
+  "variant.set_current_asset_id",
+  "product.create",
+  "variant.create",
+  "collection.create",
+] as const);
+
+type WritableProductPatch = {
+  productId: string;
+  name?: string;
+  imageUrl?: string;
+  productUrl?: string | null;
+  priceAmount?: number;
+  priceCurrency?: string;
+  categoryId?: string;
+  subcategoryId?: string | null;
+  defaultVariantId?: string;
+  brand?: string;
+  retailer?: string;
+  partnerId?: string;
+  source?: string;
+};
+
+type WritableVariantPatch = {
+  variantId: string;
+  productId?: string;
+  finishLabel?: string | null;
+  sku?: string | null;
+  priceAmount?: number;
+  priceCurrency?: string;
+  productUrl?: string | null;
+  currentAssetId?: string;
+};
+
+type WritableCollectionPatch = {
+  collectionId: string;
+  name?: string;
+  partnerId?: string;
+  owner?: string;
+  partnerName?: string;
+  slug?: string;
+};
+
+type MutablePatchDocument = {
+  partnerId: string;
+  mode: "patch";
+  products: {
+    update: WritableProductPatch[];
+    deactivate: { productId: string }[];
+    reactivate: { productId: string }[];
+  };
+  variants: {
+    create: PartnerCatalogSyncDocument["variants"]["create"][number][];
+    update: WritableVariantPatch[];
+    deactivate: { variantId: string }[];
+    reactivate: { variantId: string }[];
+  };
+  collections: {
+    update: WritableCollectionPatch[];
+    membershipAdd: PartnerCatalogMembershipPatch[];
+    membershipRemove: PartnerCatalogMembershipPatch[];
+  };
+};
+
+function fail(
+  code: PartnerDraftMutationFailure["code"],
+  error: string,
+): PartnerDraftMutationFailure {
+  return { ok: false, code, error };
+}
+
+function cloneDocument(document: PartnerCatalogSyncDocument): MutablePatchDocument {
+  return {
+    partnerId: document.partnerId,
+    mode: "patch",
+    products: {
+      update: document.products.update.map((item) => ({ ...item })),
+      deactivate: [...(document.products.deactivate ?? [])].map((item) => ({ ...item })),
+      reactivate: [...(document.products.reactivate ?? [])].map((item) => ({ ...item })),
+    },
+    variants: {
+      create: [...document.variants.create],
+      update: document.variants.update.map((item) => ({ ...item })),
+      deactivate: [...(document.variants.deactivate ?? [])].map((item) => ({ ...item })),
+      reactivate: [...(document.variants.reactivate ?? [])].map((item) => ({ ...item })),
+    },
+    collections: {
+      update: document.collections.update.map((item) => ({ ...item })),
+      membershipAdd: document.collections.membershipAdd.map((item) => ({ ...item })),
+      membershipRemove: document.collections.membershipRemove.map((item) => ({ ...item })),
+    },
+  };
+}
+
+function extraKeys(value: Record<string, unknown>, allowed: readonly string[]): string[] {
+  return Object.keys(value).filter((key) => !allowed.includes(key));
+}
+
+function nullableTrimmedString(value: unknown): string | null | undefined {
+  if (value == null) return null;
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+export function emptyPartnerPatchDocument(partnerId: string): PartnerCatalogSyncDocument {
+  const parsed = parsePartnerCatalogSyncJson({
+    partnerId,
+    mode: "patch",
+    products: { update: [], deactivate: [], reactivate: [] },
+    variants: { create: [], update: [], deactivate: [], reactivate: [] },
+    collections: { update: [], membershipAdd: [], membershipRemove: [] },
+  });
+  if (!parsed.ok) {
+    throw new Error("Empty Partner patch document must parse.");
+  }
+  return parsed.document;
+}
+
+export function persistablePartnerPatchDocument(document: PartnerCatalogSyncDocument): unknown {
+  return JSON.parse(JSON.stringify(document)) as unknown;
+}
+
+export function parsePersistedPartnerPatchDocument(
+  value: unknown,
+  partnerId: string,
+): PartnerCatalogSyncDocument | null {
+  const stamped = isPlainObject(value) ? { ...value, partnerId } : { partnerId, mode: "patch" };
+  const parsed = parsePartnerCatalogSyncJson(stamped);
+  return parsed.ok ? parsed.document : null;
+}
+
+export function countPartnerDraftOperations(document: PartnerCatalogSyncDocument): number {
+  return (
+    document.products.update.length +
+    (document.products.deactivate?.length ?? 0) +
+    (document.products.reactivate?.length ?? 0) +
+    document.variants.create.length +
+    document.variants.update.length +
+    (document.variants.deactivate?.length ?? 0) +
+    (document.variants.reactivate?.length ?? 0) +
+    document.collections.update.length +
+    document.collections.membershipAdd.length +
+    document.collections.membershipRemove.length
+  );
+}
+
+export function partnerDraftJsonByteLength(document: unknown): number {
+  return Buffer.byteLength(JSON.stringify(document), "utf8");
+}
+
+export function parsePartnerDraftMutations(
+  value: unknown,
+): Readonly<{ ok: true; mutations: readonly PartnerDraftMutation[] }> | PartnerDraftMutationFailure {
+  if (!Array.isArray(value)) return fail("invalid_mutation", "Invalid draft mutation.");
+  if (value.length === 0) return fail("invalid_mutation", "Invalid draft mutation.");
+  if (value.length > PARTNER_DRAFT_MAX_OPERATIONS) {
+    return fail("invalid_mutation", "Draft is too large.");
+  }
+  const mutations: PartnerDraftMutation[] = [];
+  for (const item of value) {
+    const parsed = parsePartnerDraftMutation(item);
+    if (!parsed.ok) return parsed;
+    mutations.push(parsed.mutation);
+  }
+  return { ok: true, mutations };
+}
+
+export function parsePartnerDraftMutation(
+  value: unknown,
+): Readonly<{ ok: true; mutation: PartnerDraftMutation }> | PartnerDraftMutationFailure {
+  if (!isPlainObject(value)) return fail("invalid_mutation", "Invalid draft mutation.");
+  const type = asNonEmptyString(value.type);
+  if (!type) return fail("invalid_mutation", "Invalid draft mutation.");
+  if ((FORBIDDEN_MUTATION_TYPES as readonly string[]).includes(type)) {
+    return fail("forbidden", "This catalog change is not allowed in draft authoring.");
+  }
+  if (!(PARTNER_DRAFT_MUTATION_TYPES as readonly string[]).includes(type)) {
+    return fail("forbidden", "This catalog change is not allowed in draft authoring.");
+  }
+
+  switch (type) {
+    case "product.set_name": {
+      if (extraKeys(value, ["type", "productId", "name"]).length > 0) {
+        return fail("invalid_mutation", "Invalid draft mutation.");
+      }
+      const productId = asNonEmptyString(value.productId);
+      const name = asNonEmptyString(value.name);
+      if (!productId || !name) return fail("invalid_mutation", "Invalid draft mutation.");
+      return { ok: true, mutation: { type, productId, name } };
+    }
+    case "product.set_image_url": {
+      if (extraKeys(value, ["type", "productId", "imageUrl"]).length > 0) {
+        return fail("invalid_mutation", "Invalid draft mutation.");
+      }
+      const productId = asNonEmptyString(value.productId);
+      const imageUrl = asNonEmptyString(value.imageUrl);
+      if (!productId || !imageUrl) return fail("invalid_mutation", "Invalid draft mutation.");
+      return { ok: true, mutation: { type, productId, imageUrl } };
+    }
+    case "product.set_product_url": {
+      if (extraKeys(value, ["type", "productId", "productUrl"]).length > 0) {
+        return fail("invalid_mutation", "Invalid draft mutation.");
+      }
+      const productId = asNonEmptyString(value.productId);
+      const productUrl = nullableTrimmedString(value.productUrl);
+      if (!productId || productUrl === undefined) return fail("invalid_mutation", "Invalid draft mutation.");
+      return { ok: true, mutation: { type, productId, productUrl } };
+    }
+    case "product.set_price": {
+      if (extraKeys(value, ["type", "productId", "priceAmount"]).length > 0) {
+        return fail("invalid_mutation", "Invalid draft mutation.");
+      }
+      const productId = asNonEmptyString(value.productId);
+      const priceAmount = asFiniteNumber(value.priceAmount);
+      if (!productId || priceAmount == null) return fail("invalid_mutation", "Invalid draft mutation.");
+      return { ok: true, mutation: { type, productId, priceAmount } };
+    }
+    case "variant.set_finish_label": {
+      if (extraKeys(value, ["type", "variantId", "finishLabel"]).length > 0) {
+        return fail("invalid_mutation", "Invalid draft mutation.");
+      }
+      const variantId = asNonEmptyString(value.variantId);
+      const finishLabel = nullableTrimmedString(value.finishLabel);
+      if (!variantId || finishLabel === undefined) return fail("invalid_mutation", "Invalid draft mutation.");
+      return { ok: true, mutation: { type, variantId, finishLabel } };
+    }
+    case "variant.set_sku": {
+      if (extraKeys(value, ["type", "variantId", "sku"]).length > 0) {
+        return fail("invalid_mutation", "Invalid draft mutation.");
+      }
+      const variantId = asNonEmptyString(value.variantId);
+      const sku = nullableTrimmedString(value.sku);
+      if (!variantId || sku === undefined) return fail("invalid_mutation", "Invalid draft mutation.");
+      return { ok: true, mutation: { type, variantId, sku } };
+    }
+    case "variant.set_price": {
+      if (extraKeys(value, ["type", "variantId", "priceAmount"]).length > 0) {
+        return fail("invalid_mutation", "Invalid draft mutation.");
+      }
+      const variantId = asNonEmptyString(value.variantId);
+      const priceAmount = asFiniteNumber(value.priceAmount);
+      if (!variantId || priceAmount == null) return fail("invalid_mutation", "Invalid draft mutation.");
+      return { ok: true, mutation: { type, variantId, priceAmount } };
+    }
+    case "variant.set_product_url": {
+      if (extraKeys(value, ["type", "variantId", "productUrl"]).length > 0) {
+        return fail("invalid_mutation", "Invalid draft mutation.");
+      }
+      const variantId = asNonEmptyString(value.variantId);
+      const productUrl = nullableTrimmedString(value.productUrl);
+      if (!variantId || productUrl === undefined) return fail("invalid_mutation", "Invalid draft mutation.");
+      return { ok: true, mutation: { type, variantId, productUrl } };
+    }
+    case "collection.set_name": {
+      if (extraKeys(value, ["type", "collectionId", "name"]).length > 0) {
+        return fail("invalid_mutation", "Invalid draft mutation.");
+      }
+      const collectionId = asNonEmptyString(value.collectionId);
+      const name = asNonEmptyString(value.name);
+      if (!collectionId || !name) return fail("invalid_mutation", "Invalid draft mutation.");
+      return { ok: true, mutation: { type, collectionId, name } };
+    }
+    case "collection.set_membership": {
+      if (extraKeys(value, ["type", "collectionId", "productIds"]).length > 0) {
+        return fail("invalid_mutation", "Invalid draft mutation.");
+      }
+      const collectionId = asNonEmptyString(value.collectionId);
+      if (!collectionId || !Array.isArray(value.productIds)) {
+        return fail("invalid_mutation", "Invalid draft mutation.");
+      }
+      const productIds: string[] = [];
+      for (const item of value.productIds) {
+        const productId = asNonEmptyString(item);
+        if (!productId) return fail("invalid_mutation", "Invalid draft mutation.");
+        productIds.push(productId);
+      }
+      return { ok: true, mutation: { type, collectionId, productIds } };
+    }
+    default:
+      return fail("forbidden", "This catalog change is not allowed in draft authoring.");
+  }
+}
+
+function findProduct(catalog: StageCatalogSnapshot, productId: string): StageProduct | null {
+  return catalog.products.find((item) => item.productId === productId) ?? null;
+}
+
+function findVariant(catalog: StageCatalogSnapshot, variantId: string): StageVariant | null {
+  return catalog.variants.find((item) => item.variantId === variantId) ?? null;
+}
+
+function findCollection(catalog: StageCatalogSnapshot, collectionId: string): StageCollection | null {
+  return catalog.collections.find((item) => item.collectionId === collectionId) ?? null;
+}
+
+function upsertById<T extends Record<string, unknown>>(
+  items: T[],
+  idKey: keyof T,
+  id: string,
+  fields: Partial<T>,
+): T {
+  const index = items.findIndex((item) => item[idKey] === id);
+  const current = index >= 0 ? { ...items[index] } : ({ [idKey]: id } as T);
+  const next = { ...current, ...fields };
+  if (index >= 0) items[index] = next;
+  else items.push(next);
+  return next;
+}
+
+function uniqueSorted(values: readonly string[]): string[] {
+  return [...new Set(values)].sort((left, right) => left.localeCompare(right));
+}
+
+function sortMembership(
+  items: readonly PartnerCatalogMembershipPatch[],
+): PartnerCatalogMembershipPatch[] {
+  return [...items].sort((left, right) => (
+    left.collectionId.localeCompare(right.collectionId)
+    || left.productId.localeCompare(right.productId)
+  ));
+}
+
+function applyPriceCoupling(
+  working: MutablePatchDocument,
+  product: StageProduct,
+  priceAmount: number,
+): void {
+  upsertById(working.products.update, "productId", product.productId, { priceAmount });
+  upsertById(working.variants.update, "variantId", product.defaultVariantId, { priceAmount });
+}
+
+function applyOne(
+  working: MutablePatchDocument,
+  catalog: StageCatalogSnapshot,
+  mutation: PartnerDraftMutation,
+): PartnerDraftMutationFailure | null {
+  if ("currentAssetId" in mutation || "assetId" in mutation || "status" in mutation) {
+    return fail("forbidden", "This catalog change is not allowed in draft authoring.");
+  }
+  switch (mutation.type) {
+    case "product.set_name": {
+      const product = findProduct(catalog, mutation.productId);
+      if (!product) return fail("unknown_id", "Unknown Product.");
+      upsertById(working.products.update, "productId", mutation.productId, { name: mutation.name });
+      return null;
+    }
+    case "product.set_image_url": {
+      const product = findProduct(catalog, mutation.productId);
+      if (!product) return fail("unknown_id", "Unknown Product.");
+      upsertById(working.products.update, "productId", mutation.productId, { imageUrl: mutation.imageUrl });
+      return null;
+    }
+    case "product.set_product_url": {
+      const product = findProduct(catalog, mutation.productId);
+      if (!product) return fail("unknown_id", "Unknown Product.");
+      upsertById(working.products.update, "productId", mutation.productId, { productUrl: mutation.productUrl });
+      return null;
+    }
+    case "product.set_price": {
+      const product = findProduct(catalog, mutation.productId);
+      if (!product) return fail("unknown_id", "Unknown Product.");
+      applyPriceCoupling(working, product, mutation.priceAmount);
+      return null;
+    }
+    case "variant.set_finish_label": {
+      const variant = findVariant(catalog, mutation.variantId);
+      if (!variant) return fail("unknown_id", "Unknown Variant.");
+      upsertById(working.variants.update, "variantId", mutation.variantId, {
+        finishLabel: mutation.finishLabel,
+      });
+      return null;
+    }
+    case "variant.set_sku": {
+      const variant = findVariant(catalog, mutation.variantId);
+      if (!variant) return fail("unknown_id", "Unknown Variant.");
+      upsertById(working.variants.update, "variantId", mutation.variantId, { sku: mutation.sku });
+      return null;
+    }
+    case "variant.set_price": {
+      const variant = findVariant(catalog, mutation.variantId);
+      if (!variant) return fail("unknown_id", "Unknown Variant.");
+      const product = findProduct(catalog, variant.productId);
+      if (!product) return fail("unknown_id", "Unknown Product.");
+      upsertById(working.variants.update, "variantId", mutation.variantId, {
+        priceAmount: mutation.priceAmount,
+      });
+      if (product.defaultVariantId === variant.variantId) {
+        applyPriceCoupling(working, product, mutation.priceAmount);
+      }
+      return null;
+    }
+    case "variant.set_product_url": {
+      const variant = findVariant(catalog, mutation.variantId);
+      if (!variant) return fail("unknown_id", "Unknown Variant.");
+      upsertById(working.variants.update, "variantId", mutation.variantId, {
+        productUrl: mutation.productUrl,
+      });
+      return null;
+    }
+    case "collection.set_name": {
+      const collection = findCollection(catalog, mutation.collectionId);
+      if (!collection) return fail("unknown_id", "Unknown Collection.");
+      upsertById(working.collections.update, "collectionId", mutation.collectionId, {
+        name: mutation.name,
+      });
+      return null;
+    }
+    case "collection.set_membership": {
+      const collection = findCollection(catalog, mutation.collectionId);
+      if (!collection) return fail("unknown_id", "Unknown Collection.");
+      const desired = uniqueSorted(mutation.productIds);
+      for (const productId of desired) {
+        if (!findProduct(catalog, productId)) return fail("unknown_id", "Unknown Product.");
+      }
+      const liveIds = new Set(collection.productIds);
+      const desiredSet = new Set(desired);
+      const add = desired
+        .filter((productId) => !liveIds.has(productId))
+        .map((productId) => ({ productId, collectionId: mutation.collectionId }));
+      const remove = [...liveIds]
+        .filter((productId) => !desiredSet.has(productId))
+        .sort((left, right) => left.localeCompare(right))
+        .map((productId) => ({ productId, collectionId: mutation.collectionId }));
+      working.collections.membershipAdd = sortMembership([
+        ...working.collections.membershipAdd.filter((item) => item.collectionId !== mutation.collectionId),
+        ...add,
+      ]);
+      working.collections.membershipRemove = sortMembership([
+        ...working.collections.membershipRemove.filter((item) => item.collectionId !== mutation.collectionId),
+        ...remove,
+      ]);
+      return null;
+    }
+  }
+}
+
+function sameValue(left: unknown, right: unknown): boolean {
+  return left === right;
+}
+
+function normalizeProductPatch(
+  patch: PartnerCatalogProductPatch,
+  live: StageProduct | null,
+): WritableProductPatch | null {
+  if (!live) return Object.keys(patch).length > 1 ? { ...patch } : null;
+  const next: WritableProductPatch = { productId: patch.productId };
+  if (patch.name !== undefined && !sameValue(patch.name, live.name)) next.name = patch.name;
+  if (patch.imageUrl !== undefined && !sameValue(patch.imageUrl, live.imageUrl)) next.imageUrl = patch.imageUrl;
+  if (patch.productUrl !== undefined && !sameValue(patch.productUrl, live.productUrl)) next.productUrl = patch.productUrl;
+  if (patch.priceAmount !== undefined && !sameValue(patch.priceAmount, live.priceAmount)) {
+    next.priceAmount = patch.priceAmount;
+  }
+  if (patch.priceCurrency !== undefined && !sameValue(patch.priceCurrency, live.priceCurrency)) {
+    next.priceCurrency = patch.priceCurrency;
+  }
+  if (patch.categoryId !== undefined && !sameValue(patch.categoryId, live.categoryId)) next.categoryId = patch.categoryId;
+  if (patch.subcategoryId !== undefined && !sameValue(patch.subcategoryId, live.subcategoryId)) {
+    next.subcategoryId = patch.subcategoryId;
+  }
+  if (patch.defaultVariantId !== undefined && !sameValue(patch.defaultVariantId, live.defaultVariantId)) {
+    next.defaultVariantId = patch.defaultVariantId;
+  }
+  if (patch.brand !== undefined && !sameValue(patch.brand, live.brand)) next.brand = patch.brand;
+  if (patch.retailer !== undefined && !sameValue(patch.retailer, live.retailer)) next.retailer = patch.retailer;
+  if (patch.partnerId !== undefined && !sameValue(patch.partnerId, live.partnerId)) next.partnerId = patch.partnerId;
+  if (patch.source !== undefined && !sameValue(patch.source, live.source)) next.source = patch.source;
+  return Object.keys(next).length === 1 ? null : next;
+}
+
+function normalizeVariantPatch(
+  patch: PartnerCatalogVariantPatch,
+  live: StageVariant | null,
+): WritableVariantPatch | null {
+  if (!live) return Object.keys(patch).length > 1 ? { ...patch } : null;
+  const next: WritableVariantPatch = { variantId: patch.variantId };
+  if (patch.productId !== undefined && !sameValue(patch.productId, live.productId)) next.productId = patch.productId;
+  if (patch.finishLabel !== undefined && !sameValue(patch.finishLabel, live.finishLabel)) {
+    next.finishLabel = patch.finishLabel;
+  }
+  if (patch.sku !== undefined && !sameValue(patch.sku, live.sku)) next.sku = patch.sku;
+  if (patch.priceAmount !== undefined && !sameValue(patch.priceAmount, live.priceAmount)) {
+    next.priceAmount = patch.priceAmount;
+  }
+  if (patch.priceCurrency !== undefined && !sameValue(patch.priceCurrency, live.priceCurrency)) {
+    next.priceCurrency = patch.priceCurrency;
+  }
+  if (patch.productUrl !== undefined && !sameValue(patch.productUrl, live.productUrl)) {
+    next.productUrl = patch.productUrl;
+  }
+  if (patch.currentAssetId !== undefined && !sameValue(patch.currentAssetId, live.assetId)) {
+    next.currentAssetId = patch.currentAssetId;
+  }
+  return Object.keys(next).length === 1 ? null : next;
+}
+
+function normalizeCollectionPatch(
+  patch: PartnerCatalogCollectionPatch,
+  live: StageCollection | null,
+): WritableCollectionPatch | null {
+  if (!live) return Object.keys(patch).length > 1 ? { ...patch } : null;
+  const next: WritableCollectionPatch = { collectionId: patch.collectionId };
+  if (patch.name !== undefined && !sameValue(patch.name, live.name)) next.name = patch.name;
+  if (patch.partnerId !== undefined && !sameValue(patch.partnerId, live.partnerId)) next.partnerId = patch.partnerId;
+  if (patch.owner !== undefined && !sameValue(patch.owner, live.owner)) next.owner = patch.owner;
+  if (patch.partnerName !== undefined && !sameValue(patch.partnerName, live.partnerName)) {
+    next.partnerName = patch.partnerName;
+  }
+  if (patch.slug !== undefined) next.slug = patch.slug;
+  return Object.keys(next).length === 1 ? null : next;
+}
+
+export function normalizePartnerDraftDocument(
+  document: PartnerCatalogSyncDocument,
+  catalog: StageCatalogSnapshot,
+  partnerId: string,
+): PartnerCatalogSyncDocument {
+  const working = cloneDocument(document);
+  working.partnerId = partnerId;
+  working.products.update = working.products.update
+    .map((patch) => normalizeProductPatch(patch, findProduct(catalog, patch.productId)))
+    .filter((item): item is WritableProductPatch => item != null)
+    .sort((left, right) => left.productId.localeCompare(right.productId));
+  working.variants.update = working.variants.update
+    .map((patch) => normalizeVariantPatch(patch, findVariant(catalog, patch.variantId)))
+    .filter((item): item is WritableVariantPatch => item != null)
+    .sort((left, right) => left.variantId.localeCompare(right.variantId));
+  working.collections.update = working.collections.update
+    .map((patch) => normalizeCollectionPatch(patch, findCollection(catalog, patch.collectionId)))
+    .filter((item): item is WritableCollectionPatch => item != null)
+    .sort((left, right) => left.collectionId.localeCompare(right.collectionId));
+
+  const liveMembership = new Set(
+    catalog.collections.flatMap((collection) => (
+      collection.productIds.map((productId) => `${collection.collectionId}\0${productId}`)
+    )),
+  );
+  working.collections.membershipAdd = sortMembership(
+    working.collections.membershipAdd.filter((item) => (
+      !liveMembership.has(`${item.collectionId}\0${item.productId}`)
+    )),
+  );
+  working.collections.membershipRemove = sortMembership(
+    working.collections.membershipRemove.filter((item) => (
+      liveMembership.has(`${item.collectionId}\0${item.productId}`)
+    )),
+  );
+
+  const parsed = parsePartnerCatalogSyncJson(working);
+  if (!parsed.ok) {
+    throw new Error("Normalized Partner draft document must parse.");
+  }
+  return parsed.document;
+}
+
+function canonicalize(
+  working: MutablePatchDocument,
+  catalog: StageCatalogSnapshot,
+  partnerId: string,
+): PartnerDraftMutationResult {
+  working.partnerId = partnerId;
+  working.products.update.sort((left, right) => left.productId.localeCompare(right.productId));
+  working.variants.update.sort((left, right) => left.variantId.localeCompare(right.variantId));
+  working.collections.update.sort((left, right) => left.collectionId.localeCompare(right.collectionId));
+  working.collections.membershipAdd = sortMembership(working.collections.membershipAdd);
+  working.collections.membershipRemove = sortMembership(working.collections.membershipRemove);
+  const parsed = parsePartnerCatalogSyncJson(working);
+  if (!parsed.ok) {
+    return fail("invalid_document", parsed.issues[0]?.message ?? "Draft document is not parser-valid.");
+  }
+  try {
+    return { ok: true, document: normalizePartnerDraftDocument(parsed.document, catalog, partnerId) };
+  } catch {
+    return fail("invalid_document", "Draft document is not parser-valid.");
+  }
+}
+
+export function applyPartnerDraftMutation(
+  document: PartnerCatalogSyncDocument,
+  liveCatalog: StageCatalogSnapshot,
+  mutation: PartnerDraftMutation,
+  partnerId: string,
+): PartnerDraftMutationResult {
+  return applyPartnerDraftMutations(document, liveCatalog, [mutation], partnerId);
+}
+
+export function applyPartnerDraftMutations(
+  document: PartnerCatalogSyncDocument,
+  liveCatalog: StageCatalogSnapshot,
+  mutations: readonly PartnerDraftMutation[],
+  partnerId: string,
+): PartnerDraftMutationResult {
+  if (mutations.length === 0) return fail("invalid_mutation", "Invalid draft mutation.");
+  const working = cloneDocument(document);
+  working.partnerId = partnerId;
+  for (const mutation of mutations) {
+    const error = applyOne(working, liveCatalog, mutation);
+    if (error) return error;
+  }
+  return canonicalize(working, liveCatalog, partnerId);
+}
