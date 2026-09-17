@@ -6,6 +6,19 @@ export type LoadFurnitureGlbResult =
   | Readonly<{ ok: false; message: string }>;
 
 /**
+ * Three.js GLTFLoader reads the browser global `self` when creating object
+ * URLs for embedded images. Node has no `self`. Assign the alias only when
+ * missing so browser `window.self` is never overwritten. This does not catch
+ * parse errors, strip textures, or change GLB validation rules.
+ */
+export function ensureNodeGltfHostGlobals(): void {
+  const host = globalThis as typeof globalThis & { self?: unknown };
+  if (typeof host.self === "undefined") {
+    (host as { self: typeof globalThis }).self = globalThis;
+  }
+}
+
+/**
  * Production furniture GLB seam. Interprets glTF units as metres.
  * Does not normalize, fit to a target size, or mutate AFC world authority.
  */
@@ -13,6 +26,7 @@ export async function parseFurnitureGlb(
   data: ArrayBuffer,
 ): Promise<LoadFurnitureGlbResult> {
   try {
+    ensureNodeGltfHostGlobals();
     const loader = new GLTFLoader();
     const gltf = await loader.parseAsync(data, "");
     if (!gltf.scene) {
@@ -47,6 +61,7 @@ export async function loadFurnitureGlb(
     return { ok: false, message: "Furniture asset path is empty." };
   }
   try {
+    ensureNodeGltfHostGlobals();
     const loader = new GLTFLoader();
     const gltf = await loader.loadAsync(trimmed);
     if (!gltf.scene) {

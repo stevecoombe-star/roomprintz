@@ -23,6 +23,7 @@ import { FURNITURE_ASSET_LIFECYCLE, FURNITURE_ASSET_INTAKE_MAX_BYTES } from "./f
 import { registerFurnitureAsset } from "./furniture-asset-register";
 import {
   sha256Hex,
+  toArrayBuffer,
   validateFurnitureAsset,
   validateFurnitureAssetFile,
 } from "./furniture-asset-validate";
@@ -31,6 +32,12 @@ import {
   registeredFurnitureAssetIds,
 } from "./furniture-assets";
 import { encodeGlb } from "./glb-binary";
+import { parseFurnitureGlb } from "./furniture-glb-loader";
+import {
+  encodeTexturedFurnitureProbeGlb,
+  encodeUntexturedFurnitureProbeGlb,
+  TEXTURED_FURNITURE_PROBE_DECLARED_M,
+} from "./textured-furniture-probe-glb";
 import { installNodeGltfFileReader } from "./node-gltf-file-reader";
 import {
   PI4A_SOFA_AUTHORED_DEPTH_M,
@@ -80,6 +87,12 @@ async function exportGlb(object: THREE.Object3D): Promise<Uint8Array> {
     throw new Error("expected binary GLB");
   }
   return new Uint8Array(result);
+}
+
+function bytesWithDeclaredLength(length: number): Uint8Array {
+  const bytes = new Uint8Array(1);
+  Object.defineProperty(bytes, "byteLength", { value: length });
+  return bytes;
 }
 
 function runCli(args: string[]) {
@@ -239,6 +252,45 @@ test("PI-5D2A measured vs declared mismatch fails and slight drift warns", async
   });
   assert.equal(drift.accepted, true);
   assert.equal(drift.warnings.some((item) => item.code === "DIMENSION_DRIFT"), true);
+});
+
+test("PI-5D2A declared dimensions remain required; measured authority is opt-in only", async () => {
+  const bytes = new Uint8Array(readFileSync(SOFA_GLB));
+  const omitted = await validateFurnitureAsset({
+    bytes,
+    glbPath: SOFA_GLB,
+    assetId: AFC_V2_RUNTIME_FURNITURE_ASSET_ID,
+  });
+  assert.equal(omitted.accepted, false);
+  assert.equal(omitted.errors.some((item) => item.code === "INVALID_DECLARED_DIMENSIONS"), true);
+
+  const measured = await validateFurnitureAsset({
+    bytes,
+    glbPath: SOFA_GLB,
+    assetId: AFC_V2_RUNTIME_FURNITURE_ASSET_ID,
+    dimensionAuthority: "measured",
+  });
+  assert.equal(measured.accepted, true);
+  assert.equal(measured.declared, null);
+  assert.ok(measured.measured);
+  assert.equal(measured.errors.some((item) => item.code === "DIMENSION_MISMATCH"), false);
+
+  const stillMismatch = await validateFurnitureAsset({
+    bytes,
+    glbPath: SOFA_GLB,
+    assetId: AFC_V2_RUNTIME_FURNITURE_ASSET_ID,
+    declaredWidthM: 1,
+    declaredHeightM: 1,
+    declaredDepthM: 1,
+  });
+  assert.equal(stillMismatch.accepted, false);
+  assert.equal(stillMismatch.errors.some((item) => item.code === "DIMENSION_MISMATCH"), true);
+
+  assert.doesNotMatch(source("lib/afc-v2-runtime/furniture-asset-register.ts"), /dimensionAuthority/);
+  assert.doesNotMatch(
+    source("lib/afc-v2-runtime/furniture-asset-validate.ts"),
+    /validateFurnitureAssetFile[\s\S]*dimensionAuthority/,
+  );
 });
 
 test("PI-5D2A missing file is detected", async () => {
@@ -415,6 +467,91 @@ test("PI-5D2A intake rejects oversized files and negative scale", async () => {
   });
   assert.equal(negative.accepted, false);
   assert.equal(negative.errors.some((item) => item.code === "NEGATIVE_SCALE"), true);
+});
+
+test("PI-5D2A default size cap remains 25 MiB and maxBytes is additive", async () => {
+  const defaultOversized = await validateFurnitureAsset({
+    bytes: new Uint8Array(FURNITURE_ASSET_INTAKE_MAX_BYTES + 1),
+    glbPath: "huge-default.glb",
+    assetId: "afc-v2-runtime/test-fixtures/huge-default",
+    declaredWidthM: 1,
+    declaredHeightM: 1,
+    declaredDepthM: 1,
+  });
+  assert.equal(defaultOversized.accepted, false);
+  assert.equal(defaultOversized.errors.some((item) => item.code === "FILE_TOO_LARGE"), true);
+  assert.equal(defaultOversized.errors.some((item) => item.message.includes(String(FURNITURE_ASSET_INTAKE_MAX_BYTES))), true);
+
+  const underPortalCap = await validateFurnitureAsset({
+    bytes: new Uint8Array(FURNITURE_ASSET_INTAKE_MAX_BYTES + 1),
+    glbPath: "portal-under.glb",
+    assetId: "afc-v2-runtime/test-fixtures/portal-under",
+    declaredWidthM: 1,
+    declaredHeightM: 1,
+    declaredDepthM: 1,
+    maxBytes: 50 * 1024 * 1024,
+  });
+  assert.equal(underPortalCap.errors.some((item) => item.code === "FILE_TOO_LARGE"), false);
+
+  const overPortalCap = await validateFurnitureAsset({
+    bytes: bytesWithDeclaredLength(50 * 1024 * 1024 + 1),
+    glbPath: "portal-over.glb",
+    assetId: "afc-v2-runtime/test-fixtures/portal-over",
+    declaredWidthM: 1,
+    declaredHeightM: 1,
+    declaredDepthM: 1,
+    maxBytes: 50 * 1024 * 1024,
+  });
+  assert.equal(overPortalCap.accepted, false);
+  assert.equal(overPortalCap.errors.some((item) => item.code === "FILE_TOO_LARGE"), true);
+  assert.equal(overPortalCap.errors.some((item) => item.message.includes(String(50 * 1024 * 1024))), true);
+});
+
+test("PI-5D2A Node parse accepts embedded PNG textures without changing GLB rules", async () => {
+  const untextured = encodeUntexturedFurnitureProbeGlb();
+  const untexturedParsed = await parseFurnitureGlb(toArrayBuffer(untextured));
+  assert.equal(untexturedParsed.ok, true, untexturedParsed.ok ? "" : untexturedParsed.message);
+  const untexturedResult = await validateFurnitureAsset({
+    bytes: untextured,
+    glbPath: "probe-untextured.glb",
+    assetId: "afc-v2-runtime/test-fixtures/probe-untextured",
+    declaredWidthM: TEXTURED_FURNITURE_PROBE_DECLARED_M.widthM,
+    declaredHeightM: TEXTURED_FURNITURE_PROBE_DECLARED_M.heightM,
+    declaredDepthM: TEXTURED_FURNITURE_PROBE_DECLARED_M.depthM,
+  });
+  assert.equal(untexturedResult.parseOk, true);
+  assert.equal(untexturedResult.accepted, true);
+  assert.equal(untexturedResult.errors.length, 0);
+
+  const textured = encodeTexturedFurnitureProbeGlb();
+  const texturedParsed = await parseFurnitureGlb(toArrayBuffer(textured));
+  assert.equal(texturedParsed.ok, true, texturedParsed.ok ? "" : texturedParsed.message);
+  const texturedResult = await validateFurnitureAsset({
+    bytes: textured,
+    glbPath: "probe-textured.glb",
+    assetId: "afc-v2-runtime/test-fixtures/probe-textured",
+    declaredWidthM: TEXTURED_FURNITURE_PROBE_DECLARED_M.widthM,
+    declaredHeightM: TEXTURED_FURNITURE_PROBE_DECLARED_M.heightM,
+    declaredDepthM: TEXTURED_FURNITURE_PROBE_DECLARED_M.depthM,
+  });
+  assert.equal(texturedResult.parseOk, true);
+  assert.equal(texturedResult.errors.some((item) => item.code === "PARSE_FAILED"), false);
+  assert.equal(texturedResult.accepted, true);
+  assert.ok(texturedResult.measured);
+  assert.equal(texturedResult.errors.length, 0);
+
+  const mismatch = await validateFurnitureAsset({
+    bytes: textured,
+    glbPath: "probe-textured-mismatch.glb",
+    assetId: "afc-v2-runtime/test-fixtures/probe-textured-mismatch",
+    declaredWidthM: 2,
+    declaredHeightM: 1,
+    declaredDepthM: 1,
+  });
+  assert.equal(mismatch.parseOk, true);
+  assert.equal(mismatch.accepted, false);
+  assert.equal(mismatch.errors.some((item) => item.code === "DIMENSION_MISMATCH"), true);
+  assert.equal(mismatch.errors.some((item) => item.code === "PARSE_FAILED"), false);
 });
 
 test("PI-5D2A lifecycle rules keep unavailable Assets in runtime and forbid ID reuse", () => {

@@ -57,6 +57,7 @@ export default async function PartnerLayout({
           </div>
           <nav className="flex items-center gap-3 text-sm">
             <Link className="text-slate-300 hover:text-white" href="/partner">Overview</Link>
+            <Link className="text-slate-300 hover:text-white" href="/partner/assets">Assets</Link>
             <Link className="text-slate-300 hover:text-white" href="/partner/catalog">Catalog</Link>
             <SignOutButton className="rounded-md border border-slate-700 px-3 py-1 text-xs text-slate-300" />
           </nav>

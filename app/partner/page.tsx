@@ -7,8 +7,12 @@ export default function PartnerOverviewPage() {
       <p className="text-sm text-slate-300">
         This Partner Portal slice loads your durable STAGE catalog, can preview a
         certified PI-5F patch plan, and can persist one Partner-owned canonical
-        patch draft. It does not publish, upload Assets, or mutate live Products,
+        patch draft. Catalog drafting does not publish or mutate live Products,
         Variants, Collections, Partner availability, or Scenes.
+      </p>
+      <p className="text-sm text-slate-300">
+        GLB intake lives on the Assets page. A validated intake is not a
+        runtime-ready Asset and is not selectable in Product or Variant authoring yet.
       </p>
       <p className="text-sm text-slate-400">
         Commercial Partner status does not control Portal login. Inactive Products

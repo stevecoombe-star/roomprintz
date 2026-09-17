@@ -52,6 +52,8 @@ export type AssetMeasuredSize = Readonly<{
   depthM: number;
 }>;
 
+export type FurnitureAssetDimensionAuthority = "declared" | "measured";
+
 export type AssetValidationResult = Readonly<{
   accepted: boolean;
   assetId: string;
@@ -60,7 +62,7 @@ export type AssetValidationResult = Readonly<{
   sha256: string;
   parseOk: boolean;
   measured: AssetMeasuredSize | null;
-  declared: AssetMeasuredSize;
+  declared: AssetMeasuredSize | null;
   placementScale: number | null;
   warnings: readonly AssetValidationIssue[];
   errors: readonly AssetValidationIssue[];
@@ -217,20 +219,30 @@ export async function validateFurnitureAsset(input: Readonly<{
   bytes: Uint8Array;
   glbPath: string;
   assetId: string;
-  declaredWidthM: number;
-  declaredHeightM: number;
-  declaredDepthM: number;
+  declaredWidthM?: number;
+  declaredHeightM?: number;
+  declaredDepthM?: number;
+  /**
+   * Default `"declared"` keeps the certified D2A/F2A contract: authored
+   * metres are required and compared to measured GLB bounds.
+   * `"measured"` is an explicit opt-in that skips only that comparison.
+   */
+  dimensionAuthority?: FurnitureAssetDimensionAuthority;
+  maxBytes?: number;
 }>): Promise<AssetValidationResult> {
-  const declared: AssetMeasuredSize = {
-    widthM: input.declaredWidthM,
-    heightM: input.declaredHeightM,
-    depthM: input.declaredDepthM,
-  };
+  const skipDeclaredComparison = input.dimensionAuthority === "measured";
+  const declared: AssetMeasuredSize | null = skipDeclaredComparison
+    ? null
+    : {
+        widthM: input.declaredWidthM as number,
+        heightM: input.declaredHeightM as number,
+        depthM: input.declaredDepthM as number,
+      };
   const errors: AssetValidationIssue[] = [];
   const warnings: AssetValidationIssue[] = [];
   const assetIdIssue = validAssetId(input.assetId);
   if (assetIdIssue) errors.push(assetIdIssue);
-  const declaredIssue = validDeclared(declared);
+  const declaredIssue = declared ? validDeclared(declared) : null;
   if (declaredIssue) errors.push(declaredIssue);
 
   const fileSizeBytes = input.bytes.byteLength;
@@ -238,11 +250,12 @@ export async function validateFurnitureAsset(input: Readonly<{
   let parseOk = false;
   let measured: AssetMeasuredSize | null = null;
   let placementScale: number | null = null;
+  const maxBytes = input.maxBytes ?? FURNITURE_ASSET_INTAKE_MAX_BYTES;
 
-  if (fileSizeBytes > FURNITURE_ASSET_INTAKE_MAX_BYTES) {
+  if (fileSizeBytes > maxBytes) {
     errors.push(issue(
       "FILE_TOO_LARGE",
-      `GLB is ${fileSizeBytes} bytes; maximum intake size is ${FURNITURE_ASSET_INTAKE_MAX_BYTES} bytes.`,
+      `GLB is ${fileSizeBytes} bytes; maximum intake size is ${maxBytes} bytes.`,
     ));
   } else if (fileSizeBytes === 0) {
     errors.push(issue("MALFORMED_GLB", "GLB file is empty."));
@@ -384,10 +397,10 @@ export async function validateFurnitureAsset(input: Readonly<{
         heightM: size.height,
         depthM: size.depth,
       };
-      const axes: Array<Readonly<{ axis: "width" | "height" | "depth"; declared: number; measured: number }>> = [
-        { axis: "width", declared: declared.widthM, measured: size.width },
-        { axis: "height", declared: declared.heightM, measured: size.height },
-        { axis: "depth", declared: declared.depthM, measured: size.depth },
+      const axes: Array<Readonly<{ axis: "width" | "height" | "depth"; measured: number }>> = [
+        { axis: "width", measured: size.width },
+        { axis: "height", measured: size.height },
+        { axis: "depth", measured: size.depth },
       ];
       for (const axis of axes) {
         if (!isPlausibleFurnitureAxisM(axis.measured)) {
@@ -396,17 +409,22 @@ export async function validateFurnitureAsset(input: Readonly<{
             `Measured ${axis.axis} ${axis.measured} m is outside ${FURNITURE_ASSET_PLAUSIBLE_MIN_M}–${FURNITURE_ASSET_PLAUSIBLE_MAX_M} m.`,
           ));
         }
-        if (!declaredIssue) {
-          const klass = classifyAuthoredAxisMismatch(axis.declared, axis.measured);
+        if (!skipDeclaredComparison && !declaredIssue && declared) {
+          const declaredM = axis.axis === "width"
+            ? declared.widthM
+            : axis.axis === "height"
+              ? declared.heightM
+              : declared.depthM;
+          const klass = classifyAuthoredAxisMismatch(declaredM, axis.measured);
           if (klass === "fail") {
             errors.push(issue(
               "DIMENSION_MISMATCH",
-              `Measured ${axis.axis} ${axis.measured} m does not match declared ${axis.declared} m.`,
+              `Measured ${axis.axis} ${axis.measured} m does not match declared ${declaredM} m.`,
             ));
           } else if (klass === "warning") {
             warnings.push(issue(
               "DIMENSION_DRIFT",
-              `Measured ${axis.axis} ${axis.measured} m differs slightly from declared ${axis.declared} m.`,
+              `Measured ${axis.axis} ${axis.measured} m differs slightly from declared ${declaredM} m.`,
             ));
           }
         }
@@ -438,6 +456,7 @@ export async function validateFurnitureAssetFile(input: Readonly<{
   declaredWidthM: number;
   declaredHeightM: number;
   declaredDepthM: number;
+  maxBytes?: number;
 }>): Promise<AssetValidationResult> {
   try {
     const buffer = readFileSync(input.glbPath);
@@ -449,6 +468,7 @@ export async function validateFurnitureAssetFile(input: Readonly<{
       declaredWidthM: input.declaredWidthM,
       declaredHeightM: input.declaredHeightM,
       declaredDepthM: input.declaredDepthM,
+      maxBytes: input.maxBytes,
     });
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
