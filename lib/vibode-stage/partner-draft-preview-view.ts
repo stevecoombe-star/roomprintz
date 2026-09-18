@@ -19,6 +19,7 @@ export type PartnerDraftPreviewView = Readonly<{
   ok: boolean;
   noOp: boolean;
   partnerId: string | null;
+  planVersion: number | null;
   issues: readonly PartnerDraftPreviewIssue[];
   productUpdates: readonly Readonly<{
     productId: string;
@@ -265,6 +266,7 @@ export function presentPartnerDraftPreview(body: unknown): PartnerDraftPreviewVi
     ok: record.ok,
     noOp: record.noOp,
     partnerId: asString(record.partnerId),
+    planVersion: typeof record.planVersion === "number" ? record.planVersion : null,
     issues,
     productUpdates,
     productCreates: asProductCreates(record.productCreates),

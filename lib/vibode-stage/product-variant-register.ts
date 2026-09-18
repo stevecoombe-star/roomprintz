@@ -46,15 +46,15 @@ import {
   type VariantCurrentAssetAssociation,
 } from "./variant-asset-association";
 import { GENERATED_VARIANT_CURRENT_ASSETS } from "./variant-current-asset.map.generated";
+import { isUuidLike } from "./asset-id";
+
+export { isUuidLike } from "./asset-id";
 
 export const COMMERCIAL_SEED_RELATIVE_PATH =
   "lib/vibode-stage/catalog-commercial.generated.ts";
 
 export const STAGE_COMMERCIAL_ID_SHAPE =
   /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
-
-const UUID_SHAPE =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 const ALLOWED_SOURCES: readonly StageProductSource[] = Object.freeze([
   "vibode_curated",
@@ -170,6 +170,13 @@ export type ProductVariantValidationGates = Readonly<{
   currentAssociations?: readonly VariantCurrentAssetAssociation[];
   currentGeneratedProducts?: readonly StageProduct[];
   currentGeneratedVariants?: readonly GeneratedRegisteredVariant[];
+  /**
+   * PI-5G5C1 Partner planner Option B. When present, Product/Variant
+   * registration uses this callback instead of validateTargetAsset.
+   * validateTargetAsset itself is unchanged and remains the generated/static
+   * validator. Do not pass plannedReadyAssets as a loophole for dynamic Assets.
+   */
+  assertTargetAsset?: (assetId: string, errors: ProductVariantIssue[]) => void;
 }>;
 
 export function commercialIssue(code: string, message: string): ProductVariantIssue {
@@ -243,10 +250,6 @@ export function normalizeCurrency(value: string): string {
 
 export function isValidCurrency(value: string): boolean {
   return /^[A-Z]{3}$/.test(value);
-}
-
-export function isUuidLike(value: string): boolean {
-  return UUID_SHAPE.test(value);
 }
 
 export function isCommercialId(value: string): boolean {
@@ -896,7 +899,11 @@ function collectSharedVariantRegistrationIssues(
     errors.push(issue("DUPLICATE_SKU", `SKU ${input.sku} already exists.`));
   }
 
-  validateTargetAsset(input.currentAssetId, { ...gates, catalog }, errors);
+  if (gates.assertTargetAsset) {
+    gates.assertTargetAsset(input.currentAssetId, errors);
+  } else {
+    validateTargetAsset(input.currentAssetId, { ...gates, catalog }, errors);
+  }
 
   const currentAssociations = gates.currentAssociations ?? GENERATED_VARIANT_CURRENT_ASSETS;
   const existingAssociation = currentAssociations.find((row) => (

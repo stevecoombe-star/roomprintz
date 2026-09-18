@@ -1,5 +1,6 @@
 import { STAGE_BROWSE_CATEGORIES } from "@/lib/vibode-stage/catalog";
-import { listPartnerReadyAssetsForVariantCreate } from "@/lib/vibode-stage/partner-portal-assets";
+import { loadPartnerCommercialAssetsForPortal } from "@/lib/vibode-stage/partner-commercial-assets.server";
+import { extraCommercialAssetIdsForDraft } from "@/lib/vibode-stage/partner-draft-mutations";
 import { loadAuthorizedPartnerPortalCatalog } from "@/lib/vibode-stage/partner-portal-catalog.server";
 import { resolvePartnerPortalContext } from "@/lib/vibode-stage/partner-portal-auth.server";
 import { loadPartnerPortalDraft } from "@/lib/vibode-stage/partner-portal-drafts.server";
@@ -74,6 +75,22 @@ export default async function PartnerDraftWorkspacePage({
     );
   }
 
+  const commercial = await loadPartnerCommercialAssetsForPortal(
+    auth.context.partnerId,
+    loaded.catalog,
+    extraCommercialAssetIdsForDraft(dto.document, loaded.catalog),
+  );
+  if (!commercial.ok) {
+    return (
+      <main>
+        <h2 className="text-lg font-semibold">Catalog draft</h2>
+        <p className="mt-3 text-sm text-slate-300">
+          Partner commercial Assets could not be loaded. Catalog authoring is paused until Asset eligibility can be read.
+        </p>
+      </main>
+    );
+  }
+
   return (
     <PartnerDraftWorkspaceClient
       partnerName={auth.context.partner.name}
@@ -82,7 +99,7 @@ export default async function PartnerDraftWorkspacePage({
       products={loaded.catalog.products}
       variants={loaded.catalog.variants}
       collections={loaded.catalog.collections}
-      readyAssets={listPartnerReadyAssetsForVariantCreate(loaded.catalog)}
+      commercialAssetOptions={commercial.options}
       categories={STAGE_BROWSE_CATEGORIES}
       catalogCurrency={partnerCatalogCurrencyForCreate(loaded.catalog, auth.context.partnerId)}
       focusProductId={query.product ?? null}

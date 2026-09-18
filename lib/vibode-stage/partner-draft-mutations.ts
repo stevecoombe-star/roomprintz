@@ -1596,8 +1596,9 @@ export function applyPartnerDraftMutation(
   liveCatalog: StageCatalogSnapshot,
   mutation: PartnerDraftMutation,
   partnerId: string,
+  options?: Readonly<{ commercialAssetIds?: ReadonlySet<string> }>,
 ): PartnerDraftMutationResult {
-  return applyPartnerDraftMutations(document, liveCatalog, [mutation], partnerId);
+  return applyPartnerDraftMutations(document, liveCatalog, [mutation], partnerId, options);
 }
 
 export function applyPartnerDraftMutations(
@@ -1605,14 +1606,38 @@ export function applyPartnerDraftMutations(
   liveCatalog: StageCatalogSnapshot,
   mutations: readonly PartnerDraftMutation[],
   partnerId: string,
+  options?: Readonly<{ commercialAssetIds?: ReadonlySet<string> }>,
 ): PartnerDraftMutationResult {
   if (mutations.length === 0) return fail("invalid_mutation", "Invalid draft mutation.");
   const working = cloneDocument(document);
   working.partnerId = partnerId;
-  const allowedAssetIds = partnerReadyAssetIdSet(liveCatalog);
+  const allowedAssetIds = options?.commercialAssetIds ?? partnerReadyAssetIdSet(liveCatalog);
   for (const mutation of mutations) {
     const error = applyOne(working, liveCatalog, mutation, allowedAssetIds);
     if (error) return error;
   }
   return canonicalize(working, liveCatalog, partnerId);
+}
+
+export function draftSelectedAssetIds(document: PartnerCatalogSyncDocument): string[] {
+  const ids = new Set<string>();
+  for (const create of document.variants.create ?? []) {
+    if (create.currentAssetId) ids.add(create.currentAssetId);
+  }
+  for (const update of document.variants.update ?? []) {
+    if (update.currentAssetId) ids.add(update.currentAssetId);
+  }
+  return [...ids];
+}
+
+export function extraCommercialAssetIdsForDraft(
+  document: PartnerCatalogSyncDocument,
+  catalog: StageCatalogSnapshot,
+): string[] {
+  const ids = new Set(draftSelectedAssetIds(document));
+  for (const item of document.variants.reactivate ?? []) {
+    const variant = catalog.variants.find((row) => row.variantId === item.variantId);
+    if (variant?.assetId) ids.add(variant.assetId);
+  }
+  return [...ids];
 }

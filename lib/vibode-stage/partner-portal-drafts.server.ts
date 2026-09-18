@@ -3,8 +3,11 @@ import "server-only";
 import { getServiceRoleSupabaseClient } from "@/lib/adminServer";
 import type { SupabaseClient } from "@supabase/supabase-js";
 
+import { extraCommercialAssetIdsForDraft } from "./partner-draft-mutations";
 import { resolvePartnerPortalContext } from "./partner-portal-auth.server";
 import { loadAuthorizedPartnerPortalCatalog } from "./partner-portal-catalog.server";
+import { loadPartnerCommercialAssetsForPortal } from "./partner-commercial-assets.server";
+import { previewPartnerCatalogFromDurable } from "./partner-catalog-preview";
 import type { PartnerPortalHttpResponse } from "./partner-portal-http";
 import {
   getOpenPartnerPatchDraft,
@@ -145,7 +148,13 @@ export async function partnerPortalDraftMutateResponse(
     return unavailable();
   }
   const catalog = auth.ok ? await loadAuthorizedPartnerPortalCatalog(auth.context.partnerId) : null;
-  return mutatePartnerDraft({ auth, store, catalog, draftId, body });
+  let commercialAssetIds: ReadonlySet<string> | undefined;
+  if (auth.ok && catalog?.ok) {
+    const commercial = await loadPartnerCommercialAssetsForPortal(auth.context.partnerId, catalog.catalog);
+    if (!commercial.ok) return unavailable();
+    commercialAssetIds = new Set(commercial.options.map((item) => item.assetId));
+  }
+  return mutatePartnerDraft({ auth, store, catalog, draftId, body, commercialAssetIds });
 }
 
 export async function partnerPortalDraftPreviewResponse(
@@ -159,7 +168,27 @@ export async function partnerPortalDraftPreviewResponse(
     return unavailable();
   }
   const catalog = auth.ok ? await loadAuthorizedPartnerPortalCatalog(auth.context.partnerId) : null;
-  return previewPersistedPartnerDraft({ auth, store, catalog, draftId, body });
+  if (!auth.ok || !catalog?.ok) {
+    return previewPersistedPartnerDraft({ auth, store, catalog, draftId, body });
+  }
+  const row = await store.findById(auth.context.partnerId, draftId);
+  const dto = row ? toPartnerDraftDto(row, auth.context.partnerId) : null;
+  const extraIds = dto ? extraCommercialAssetIdsForDraft(dto.document, catalog.catalog) : [];
+  const commercial = await loadPartnerCommercialAssetsForPortal(auth.context.partnerId, catalog.catalog, extraIds);
+  if (!commercial.ok) return unavailable();
+  return previewPersistedPartnerDraft({
+    auth,
+    store,
+    catalog,
+    draftId,
+    body,
+    preview: (nextCatalog, partnerId, document) => previewPartnerCatalogFromDurable({
+      catalog: nextCatalog,
+      partnerId,
+      document,
+      commercialEligibility: commercial.context,
+    }),
+  });
 }
 
 export async function loadOpenPartnerPortalDraft(

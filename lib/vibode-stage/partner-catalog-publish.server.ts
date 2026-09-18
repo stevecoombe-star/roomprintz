@@ -7,9 +7,12 @@ import {
   createSupabasePartnerPublishAuditStore,
   createSupabasePartnerRuntimeApply,
 } from "./partner-catalog-runtime-executor.server";
+import { extraCommercialAssetIdsForDraft } from "./partner-draft-mutations";
 import { resolvePartnerPortalContext } from "./partner-portal-auth.server";
 import { loadAuthorizedPartnerPortalCatalog } from "./partner-portal-catalog.server";
+import { loadPartnerCommercialAssetsForPortal } from "./partner-commercial-assets.server";
 import { loadPartnerPortalDraftStore } from "./partner-portal-drafts.server";
+import { toPartnerDraftDto } from "./partner-portal-drafts";
 import type { PartnerPortalHttpResponse } from "./partner-portal-http";
 
 function unavailable(): PartnerPortalHttpResponse {
@@ -29,6 +32,15 @@ export async function partnerPortalDraftPublishResponse(
   }
   const partnerId = auth.ok ? auth.context.partnerId : null;
   const catalog = partnerId ? await loadAuthorizedPartnerPortalCatalog(partnerId) : null;
+  let commercialEligibility = undefined;
+  if (partnerId && catalog?.ok) {
+    const row = await store.findById(partnerId, draftId);
+    const dto = row ? toPartnerDraftDto(row, partnerId) : null;
+    const extraIds = dto ? extraCommercialAssetIdsForDraft(dto.document, catalog.catalog) : [];
+    const commercial = await loadPartnerCommercialAssetsForPortal(partnerId, catalog.catalog, extraIds);
+    if (!commercial.ok) return unavailable();
+    commercialEligibility = commercial.context;
+  }
   return publishPartnerPatchDraft({
     auth,
     store,
@@ -37,6 +49,7 @@ export async function partnerPortalDraftPublishResponse(
     apply: createSupabasePartnerRuntimeApply(supabase),
     draftId,
     body,
+    commercialEligibility,
     reloadCatalog: partnerId
       ? () => loadAuthorizedPartnerPortalCatalog(partnerId)
       : undefined,

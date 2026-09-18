@@ -5,10 +5,13 @@ import {
   executePartnerPortalCatalog,
   executePartnerPortalPreview,
   executePartnerPortalSession,
+  extractPartnerPreviewDocument,
   type PartnerPortalHttpResponse,
 } from "./partner-portal-http";
 import { resolvePartnerPortalContext } from "./partner-portal-auth.server";
 import { loadAuthorizedPartnerPortalCatalog } from "./partner-portal-catalog.server";
+import { collectAssetIdsFromUnknownPatch } from "./partner-commercial-assets";
+import { loadPartnerCommercialAssetsForPortal } from "./partner-commercial-assets.server";
 
 export async function partnerPortalSessionResponse(): Promise<PartnerPortalHttpResponse> {
   const auth = await resolvePartnerPortalContext();
@@ -30,14 +33,27 @@ export async function partnerPortalPreviewResponse(
     return executePartnerPortalPreview({ auth, body, catalog: null });
   }
   const catalog = await loadAuthorizedPartnerPortalCatalog(auth.context.partnerId);
+  const document = extractPartnerPreviewDocument(body);
+  if (!catalog.ok) {
+    return executePartnerPortalPreview({ auth, body, catalog });
+  }
+  const commercial = await loadPartnerCommercialAssetsForPortal(
+    auth.context.partnerId,
+    catalog.catalog,
+    collectAssetIdsFromUnknownPatch(document),
+  );
+  if (!commercial.ok) {
+    return { status: 500, body: { ok: false, error: "Partner commercial Assets could not be loaded." } };
+  }
   return executePartnerPortalPreview({
     auth,
     body,
     catalog,
-    preview: (nextCatalog, partnerId, document) => previewPartnerCatalogFromDurable({
+    preview: (nextCatalog, partnerId, nextDocument) => previewPartnerCatalogFromDurable({
       catalog: nextCatalog,
       partnerId,
-      document,
+      document: nextDocument,
+      commercialEligibility: commercial.context,
     }),
   });
 }

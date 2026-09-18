@@ -73,6 +73,11 @@ import {
   type ProductVariantIssue,
   type ProductVariantValidationGates,
 } from "./product-variant-register";
+import {
+  assertPartnerCommercialAssetEligible,
+  commercialEligibilityInputFromContext,
+  type PartnerCommercialEligibilityContext,
+} from "./partner-commercial-assets";
 import type {
   FoldedPartnerCatalogState,
   PartnerCatalogSyncPlan,
@@ -1441,9 +1446,11 @@ export function planPartnerCatalogSync(input: Readonly<{
   runtimeAssetIds?: readonly string[];
   runtimeDefinitionKnown?: (assetId: string) => boolean;
   manifestRepoRoot?: string;
+  commercialEligibility?: PartnerCommercialEligibilityContext;
 }>): PartnerCatalogSyncPlan {
   const issues: ProductVariantIssue[] = [];
   const repoRoot = input.repoRoot ?? process.cwd();
+  const commercialEligibility = input.commercialEligibility;
   const gates: ProductVariantValidationGates = {
     catalog: input.catalog ?? STAGE_SEED_CATALOG,
     seedAssets: input.seedAssets,
@@ -1452,6 +1459,14 @@ export function planPartnerCatalogSync(input: Readonly<{
     manifestRepoRoot: input.manifestRepoRoot ?? process.cwd(),
     runtimeAssetIds: input.runtimeAssetIds,
     runtimeDefinitionKnown: input.runtimeDefinitionKnown,
+    assertTargetAsset: commercialEligibility
+      ? (assetId, assetErrors) => {
+        assertPartnerCommercialAssetEligible(
+          commercialEligibilityInputFromContext(commercialEligibility, assetId),
+          assetErrors,
+        );
+      }
+      : undefined,
   };
   const partner = input.current.partners.find((item) => item.partnerId === input.document.partnerId) ?? null;
   if (!partner) {
@@ -1876,15 +1891,26 @@ export function planPartnerCatalogSync(input: Readonly<{
     if (product && current.priceCurrency !== product.priceCurrency) {
       issues.push(issue("CURRENCY_IMMUTABLE", `Variant ${variantId} currency must match Product currency.`));
     }
-    const catalogForAsset = workingCatalogFor(freezeFoldedState(working), gates);
-    const asset = stageAssetById(current.assetId, catalogForAsset);
-    if (!current.assetId || !isStageAssetReady(asset)) {
-      issues.push(issue(
-        "UNAVAILABLE_ASSET",
-        `Variant ${variantId} current Asset is missing or not ready.`,
-      ));
+    if (gates.assertTargetAsset) {
+      if (!current.assetId) {
+        issues.push(issue(
+          "UNAVAILABLE_ASSET",
+          `Variant ${variantId} current Asset is missing or not ready.`,
+        ));
+      } else {
+        gates.assertTargetAsset(current.assetId, issues);
+      }
     } else {
-      validateTargetAsset(current.assetId, { ...gates, catalog: catalogForAsset }, issues);
+      const catalogForAsset = workingCatalogFor(freezeFoldedState(working), gates);
+      const asset = stageAssetById(current.assetId, catalogForAsset);
+      if (!current.assetId || !isStageAssetReady(asset)) {
+        issues.push(issue(
+          "UNAVAILABLE_ASSET",
+          `Variant ${variantId} current Asset is missing or not ready.`,
+        ));
+      } else {
+        validateTargetAsset(current.assetId, { ...gates, catalog: catalogForAsset }, issues);
+      }
     }
     replaceVariant(working, { ...current, status: "active" });
   }

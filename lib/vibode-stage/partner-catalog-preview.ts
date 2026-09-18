@@ -14,6 +14,8 @@ import {
   parsePartnerCatalogSyncJson,
   planPartnerCatalogSync,
 } from "./partner-catalog-sync";
+import type { PartnerCommercialEligibilityContext } from "./partner-commercial-assets";
+import { partnerRuntimePlanVersionFor } from "./partner-catalog-runtime-executor-v5";
 import type {
   PartnerCatalogSyncPlan,
   PlannedCollectionCreate,
@@ -35,12 +37,14 @@ export type PartnerCatalogPreviewRequest = Readonly<{
   partnerId: string;
   document: unknown;
   repoRoot?: string;
+  commercialEligibility?: PartnerCommercialEligibilityContext;
 }>;
 
 export type PartnerCatalogPreviewDto = Readonly<{
   ok: boolean;
   noOp: boolean;
   partnerId: string | null;
+  planVersion: 1 | 4 | 5 | null;
   issues: readonly ProductVariantIssue[];
   partnerStatusTransition: PlannedPartnerStatusTransition | null;
   productCreates: readonly PlannedProductCreate[];
@@ -95,6 +99,7 @@ export function presentPartnerCatalogSyncPlan(
     ok: plan.ok,
     noOp: plan.noOp,
     partnerId: plan.partnerId,
+    planVersion: plan.ok && plan.issues.length === 0 ? partnerRuntimePlanVersionFor(plan) : null,
     issues: plan.issues,
     partnerStatusTransition: plan.partnerStatusTransition,
     productCreates: plan.productCreates,
@@ -161,6 +166,7 @@ export function previewPartnerCatalogFromDurable(
     catalog: durableAssetCatalogForPlanning(input.catalog),
     seedAssets: input.catalog.assets,
     repoRoot: input.repoRoot,
+    commercialEligibility: input.commercialEligibility,
   });
   return {
     kind: "preview",

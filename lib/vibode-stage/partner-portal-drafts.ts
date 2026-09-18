@@ -387,6 +387,7 @@ export async function mutatePartnerDraft(input: Readonly<{
   draftId: string;
   body: unknown;
   now?: string;
+  commercialAssetIds?: ReadonlySet<string>;
 }>): Promise<PartnerPortalHttpResponse> {
   if (!input.auth.ok) return jsonError(input.auth.status, input.auth.error);
   const partnerId = input.auth.context.partnerId;
@@ -438,6 +439,7 @@ export async function mutatePartnerDraft(input: Readonly<{
       catalog,
       parsed.mutations,
       partnerId,
+      input.commercialAssetIds ? { commercialAssetIds: input.commercialAssetIds } : undefined,
     );
     if (!applied.ok) {
       return jsonError(mutationStatusCode(applied.code), applied.error);

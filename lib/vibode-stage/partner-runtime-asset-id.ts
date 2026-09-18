@@ -6,7 +6,7 @@
  * G5A validator identity `intake:{intakeId}`.
  */
 
-import { isUuidLike } from "./product-variant-register";
+import { isUuidLike } from "./asset-id";
 
 export const PARTNER_INTAKE_RUNTIME_ASSET_ID_PREFIX = "vibode-stage/partner-intake/";
 export const PARTNER_RUNTIME_ASSET_OBJECT_PREFIX = "assets/";

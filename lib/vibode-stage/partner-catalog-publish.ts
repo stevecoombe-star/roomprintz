@@ -16,6 +16,7 @@ import {
   planPartnerCatalogSync,
 } from "./partner-catalog-sync";
 import type { PartnerCatalogSyncPlan } from "./partner-catalog-sync-types";
+import type { PartnerCommercialEligibilityContext } from "./partner-commercial-assets";
 import {
   emptyRuntimeApplyPayload,
   g3UnsupportedPublishOperations,
@@ -24,20 +25,15 @@ import {
   type PartnerRuntimeApplyPayload,
 } from "./partner-catalog-runtime-executor";
 import {
-  g4aUnsupportedPublishOperations,
-  partnerRuntimePlanNeedsV2,
-  toRuntimeApplyPayloadV2,
-} from "./partner-catalog-runtime-executor-v2";
-import {
-  g4bUnsupportedPublishOperations,
-  partnerRuntimePlanNeedsV3,
-  toRuntimeApplyPayloadV3,
-} from "./partner-catalog-runtime-executor-v3";
-import {
   g4cUnsupportedPublishOperations,
   partnerRuntimePlanNeedsV4,
   toRuntimeApplyPayloadV4,
 } from "./partner-catalog-runtime-executor-v4";
+import {
+  g5c1UnsupportedPublishOperations,
+  partnerRuntimePlanNeedsV5,
+  toRuntimeApplyPayloadV5,
+} from "./partner-catalog-runtime-executor-v5";
 import { persistablePartnerPatchDocument } from "./partner-draft-mutations";
 import {
   parsePartnerDraftTouchedBase,
@@ -66,6 +62,7 @@ export const STAGE_PARTNER_APPLY_RPC = "vibode_stage_apply_partner_patch";
 export const STAGE_PARTNER_APPLY_RPC_V2 = "vibode_stage_apply_partner_patch_v2";
 export const STAGE_PARTNER_APPLY_RPC_V3 = "vibode_stage_apply_partner_patch_v3";
 export const STAGE_PARTNER_APPLY_RPC_V4 = "vibode_stage_apply_partner_patch_v4";
+export const STAGE_PARTNER_APPLY_RPC_V5 = "vibode_stage_apply_partner_patch_v5";
 
 export const PARTNER_PUBLISH_REJECT_BODY_KEYS = Object.freeze([
   "partnerId",
@@ -281,6 +278,8 @@ export function httpStatusForPublishErrorCode(code: string): number {
     case "PARENT_PRODUCT_MISMATCH":
     case "ASSET_NOT_READY":
     case "PARTNER_ASSET_UNASSOCIATED":
+    case "PARTNER_ASSET_UNMAPPED":
+    case "PARTNER_ASSET_NOT_FOUND":
     case "COLLECTION_OWNER_MISMATCH":
     case "MEMBERSHIP_CONFLICT":
     case "DEFAULT_VARIANT_MISMATCH":
@@ -326,6 +325,8 @@ export function merchantMessageForPublishErrorCode(code: string): string {
       return "The selected product is not available for this partner.";
     case "ASSET_NOT_READY":
     case "PARTNER_ASSET_UNASSOCIATED":
+    case "PARTNER_ASSET_UNMAPPED":
+    case "PARTNER_ASSET_NOT_FOUND":
       return "The selected asset is not available for this partner.";
     case "UNSUPPORTED_PUBLISH_OPERATION":
       return "This draft includes catalog changes that cannot be published yet.";
@@ -455,6 +456,7 @@ export function planPartnerPatchForPublish(input: Readonly<{
   partnerId: string;
   document: unknown;
   repoRoot?: string;
+  commercialEligibility?: PartnerCommercialEligibilityContext;
 }>): Readonly<{
   parsed: ReturnType<typeof parsePartnerCatalogSyncJson>;
   plan: PartnerCatalogSyncPlan | null;
@@ -481,6 +483,7 @@ export function planPartnerPatchForPublish(input: Readonly<{
     catalog: durableAssetCatalogForPlanning(input.catalog),
     seedAssets: input.catalog.assets,
     repoRoot: input.repoRoot,
+    commercialEligibility: input.commercialEligibility,
   });
   return { parsed, plan };
 }
@@ -542,7 +545,7 @@ export function createMemoryPartnerRuntimeApply(input: Readonly<{
       membershipAdds,
       membershipRemoves,
     };
-    if (payload.planVersion === 4 || collectionCreates.length > 0) {
+    if (payload.planVersion === 5 || payload.planVersion === 4 || collectionCreates.length > 0) {
       plan.productCreates = productCreates;
       plan.variantCreates = variantCreates;
       plan.collectionCreates = collectionCreates;
@@ -604,6 +607,7 @@ export async function publishPartnerPatchDraft(input: Readonly<{
   body: unknown;
   reloadCatalog?: () => Promise<PartnerPortalCatalogLoadResult | null>;
   repoRoot?: string;
+  commercialEligibility?: PartnerCommercialEligibilityContext;
 }>): Promise<PartnerPortalHttpResponse> {
   if (!input.auth.ok) return jsonError(input.auth.status, input.auth.error);
   const parsedBody = parsePartnerPublishBody(input.body);
@@ -647,6 +651,7 @@ export async function publishPartnerPatchDraft(input: Readonly<{
     partnerId,
     document: dto.document,
     repoRoot: input.repoRoot,
+    commercialEligibility: input.commercialEligibility,
   });
   if (!planned.parsed.ok || !planned.plan) {
     const issues = planned.parsed.ok ? [] : planned.parsed.issues;
@@ -687,13 +692,11 @@ export async function publishPartnerPatchDraft(input: Readonly<{
     return plannerRejectBody(plan, merchantMessageForPublishErrorCode("PLANNER_ISSUE"), "PLANNER_ISSUE");
   }
 
-  const unsupported = partnerRuntimePlanNeedsV4(plan)
-    ? g4cUnsupportedPublishOperations(plan)
-    : partnerRuntimePlanNeedsV3(plan)
-      ? g4bUnsupportedPublishOperations(plan)
-      : partnerRuntimePlanNeedsV2(plan)
-        ? g4aUnsupportedPublishOperations(plan)
-        : g3UnsupportedPublishOperations(plan);
+  const unsupported = partnerRuntimePlanNeedsV5(plan)
+    ? g5c1UnsupportedPublishOperations(plan)
+    : partnerRuntimePlanNeedsV4(plan)
+      ? g4cUnsupportedPublishOperations(plan)
+      : g3UnsupportedPublishOperations(plan);
   if (unsupported.length > 0) {
     await recordRejected({
       audit: input.audit,
@@ -767,13 +770,11 @@ export async function publishPartnerPatchDraft(input: Readonly<{
 
   const serialized = plan.noOp
     ? { ok: true as const, payload: emptyRuntimeApplyPayload(partnerId) }
-    : partnerRuntimePlanNeedsV4(plan)
-      ? toRuntimeApplyPayloadV4(plan)
-      : partnerRuntimePlanNeedsV3(plan)
-        ? toRuntimeApplyPayloadV3(plan)
-        : partnerRuntimePlanNeedsV2(plan)
-          ? toRuntimeApplyPayloadV2(plan)
-          : toRuntimeApplyPayload(plan);
+    : partnerRuntimePlanNeedsV5(plan)
+      ? toRuntimeApplyPayloadV5(plan)
+      : partnerRuntimePlanNeedsV4(plan)
+        ? toRuntimeApplyPayloadV4(plan)
+        : toRuntimeApplyPayload(plan);
   if (!serialized.ok) {
     await recordRejected({
       audit: input.audit,

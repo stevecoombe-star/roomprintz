@@ -8,7 +8,11 @@ import {
   presentPartnerDraftPreview,
   type PartnerDraftPreviewView,
 } from "@/lib/vibode-stage/partner-draft-preview-view";
-import type { PartnerReadyAssetChoice } from "@/lib/vibode-stage/partner-portal-assets";
+import {
+  partnerCommercialAssetKindLabel,
+  partnerCommercialPickerSelection,
+  type PartnerCommercialAssetOption,
+} from "@/lib/vibode-stage/partner-commercial-assets";
 import type { StageCategory, StageCollection, StageProduct, StageVariant } from "@/lib/vibode-stage/types";
 
 type DraftDocument = {
@@ -174,6 +178,7 @@ function DraftPreviewResult(props: Readonly<{
         {view.ok ? "Plan is valid" : "Plan has issues"}
         {" · "}
         {view.noOp ? "no catalog changes" : "changes planned"}
+        {view.planVersion != null ? ` · planVersion ${view.planVersion}` : ""}
       </p>
       {view.issues.length > 0 ? (
         <div>
@@ -412,8 +417,56 @@ function categoryLabel(categories: readonly StageCategory[], categoryId: string,
   return subcategory ? `${category.label} / ${subcategory.label}` : category.label;
 }
 
-function assetLabel(assets: readonly PartnerReadyAssetChoice[], assetId: string): string {
+function assetLabel(assets: readonly PartnerCommercialAssetOption[], assetId: string): string {
   return assets.find((item) => item.assetId === assetId)?.label ?? assetId;
+}
+
+function assetOptionText(asset: PartnerCommercialAssetOption): string {
+  const kind = partnerCommercialAssetKindLabel(asset.origin);
+  const dims = `${asset.authoredWidthM}×${asset.authoredHeightM}×${asset.authoredDepthM} m`;
+  return `${asset.label} · ${kind} · ${dims}`;
+}
+
+function CommercialAssetSelect(props: Readonly<{
+  options: readonly PartnerCommercialAssetOption[];
+  value: string;
+  disabled: boolean;
+  onChange: (next: string) => void;
+}>) {
+  const selection = partnerCommercialPickerSelection({
+    options: props.options,
+    selectedAssetId: props.value,
+  });
+  return (
+    <>
+      <select
+        className={`mt-1 w-full rounded-md bg-slate-900 px-2 py-1 text-slate-100 ${
+          selection.invalid ? "border border-rose-600" : "border border-slate-700"
+        }`}
+        value={props.value}
+        disabled={props.disabled}
+        onChange={(event) => {
+          const next = event.target.value;
+          if (!next || next === props.value) return;
+          props.onChange(next);
+        }}
+      >
+        {selection.invalid && selection.selectedAssetId ? (
+          <option value={selection.selectedAssetId}>
+            {selection.selectedAssetId} (no longer eligible)
+          </option>
+        ) : null}
+        {props.options.map((asset) => (
+          <option key={asset.assetId} value={asset.assetId}>{assetOptionText(asset)}</option>
+        ))}
+      </select>
+      {selection.invalid && selection.selectedAssetId ? (
+        <p className="mt-1 text-[11px] text-rose-300">
+          Selected Asset {selection.selectedAssetId} is no longer mapped and ready for this Partner. The stored Asset ID was preserved and was not cleared.
+        </p>
+      ) : null}
+    </>
+  );
 }
 
 function pendingCollections(document: DraftDocument) {
@@ -469,7 +522,7 @@ export function PartnerDraftWorkspaceClient(props: Readonly<{
   products: readonly StageProduct[];
   variants: readonly StageVariant[];
   collections: readonly StageCollection[];
-  readyAssets: readonly PartnerReadyAssetChoice[];
+  commercialAssetOptions: readonly PartnerCommercialAssetOption[];
   categories: readonly StageCategory[];
   catalogCurrency: string | null;
   focusProductId: string | null;
@@ -503,7 +556,7 @@ export function PartnerDraftWorkspaceClient(props: Readonly<{
   const [newSku, setNewSku] = useState("");
   const [newPrice, setNewPrice] = useState("");
   const [newUrl, setNewUrl] = useState("");
-  const [newAssetId, setNewAssetId] = useState(props.readyAssets[0]?.assetId ?? "");
+  const [newAssetId, setNewAssetId] = useState(props.commercialAssetOptions[0]?.assetId ?? "");
   const [newSlug, setNewSlug] = useState("");
   const [addingProduct, setAddingProduct] = useState(false);
   const [newProductName, setNewProductName] = useState("");
@@ -516,7 +569,7 @@ export function PartnerDraftWorkspaceClient(props: Readonly<{
   const [newProductFinish, setNewProductFinish] = useState("");
   const [newProductSku, setNewProductSku] = useState("");
   const [newProductVariantUrl, setNewProductVariantUrl] = useState("");
-  const [newProductAssetId, setNewProductAssetId] = useState(props.readyAssets[0]?.assetId ?? "");
+  const [newProductAssetId, setNewProductAssetId] = useState(props.commercialAssetOptions[0]?.assetId ?? "");
   const [newProductVariantSlug, setNewProductVariantSlug] = useState("");
   const [newProductCollections, setNewProductCollections] = useState<string[]>([]);
   const [addingCollection, setAddingCollection] = useState(false);
@@ -866,7 +919,7 @@ export function PartnerDraftWorkspaceClient(props: Readonly<{
           {!addingProduct ? (
             <button
               type="button"
-              disabled={pending || conflict || props.readyAssets.length === 0 || !props.catalogCurrency}
+              disabled={pending || conflict || props.commercialAssetOptions.length === 0 || !props.catalogCurrency}
               className="rounded-md border border-slate-700 px-3 py-1 text-xs"
               onClick={() => setAddingProduct(true)}
             >
@@ -874,9 +927,9 @@ export function PartnerDraftWorkspaceClient(props: Readonly<{
             </button>
           ) : null}
         </div>
-        {props.readyAssets.length === 0 ? (
+        {props.commercialAssetOptions.length === 0 ? (
           <p className="text-[11px] text-slate-500">
-            Product creation requires an already-certified Partner Asset. G5 will later unlock new geometry.
+            Product creation requires a mapped, ready Partner Asset. Uploaded ready Assets and existing catalog Assets both appear here. Runtime activation stays on Partner Assets.
           </p>
         ) : null}
         {!props.catalogCurrency ? (
@@ -1005,16 +1058,12 @@ export function PartnerDraftWorkspaceClient(props: Readonly<{
             </label>
             <label className="text-xs text-slate-400 sm:col-span-2">
               Default variant asset
-              <select
-                className="mt-1 w-full rounded-md border border-slate-700 bg-slate-900 px-2 py-1 text-slate-100"
+              <CommercialAssetSelect
+                options={props.commercialAssetOptions}
                 value={newProductAssetId}
-                disabled={pending || conflict || props.readyAssets.length === 0}
-                onChange={(event) => setNewProductAssetId(event.target.value)}
-              >
-                {props.readyAssets.map((asset) => (
-                  <option key={asset.assetId} value={asset.assetId}>{asset.label}</option>
-                ))}
-              </select>
+                disabled={pending || conflict || props.commercialAssetOptions.length === 0}
+                onChange={setNewProductAssetId}
+              />
             </label>
             {(props.collections.length > 0 || pendingCollections(draft.document).length > 0) ? (
               <fieldset className="sm:col-span-2 space-y-1">
@@ -1059,7 +1108,7 @@ export function PartnerDraftWorkspaceClient(props: Readonly<{
             <div className="sm:col-span-2 flex gap-2">
               <button
                 type="button"
-                disabled={pending || conflict || props.readyAssets.length === 0 || !props.catalogCurrency}
+                disabled={pending || conflict || props.commercialAssetOptions.length === 0 || !props.catalogCurrency}
                 className="rounded-md border border-emerald-700 px-3 py-1 text-xs text-emerald-100"
                 onClick={() => {
                   const priceAmount = Number(newProductPrice);
@@ -1248,7 +1297,7 @@ export function PartnerDraftWorkspaceClient(props: Readonly<{
                 <p className="text-[11px] text-slate-500">
                   Inherited currency {defaultVariant.priceCurrency}
                   {" · "}
-                  Asset {assetLabel(props.readyAssets, defaultVariant.currentAssetId)}
+                  Asset {assetLabel(props.commercialAssetOptions, defaultVariant.currentAssetId)}
                 </p>
                 <div className="mt-2 grid gap-3 sm:grid-cols-2">
                   <label className="text-xs text-slate-400">
@@ -1295,20 +1344,14 @@ export function PartnerDraftWorkspaceClient(props: Readonly<{
                   </label>
                   <label className="text-xs text-slate-400 sm:col-span-2">
                     Asset
-                    <select
-                      className="mt-1 w-full rounded-md border border-slate-700 bg-slate-900 px-2 py-1 text-slate-100"
+                    <CommercialAssetSelect
+                      options={props.commercialAssetOptions}
                       value={defaultVariant.currentAssetId}
-                      disabled={pending || conflict || props.readyAssets.length === 0}
-                      onChange={(event) => {
-                        const next = event.target.value;
-                        if (!next || next === defaultVariant.currentAssetId) return;
+                      disabled={pending || conflict || props.commercialAssetOptions.length === 0}
+                      onChange={(next) => {
                         void save([{ type: "variant.create_edit", variantId: defaultVariant.variantId, currentAssetId: next }]);
                       }}
-                    >
-                      {props.readyAssets.map((asset) => (
-                        <option key={asset.assetId} value={asset.assetId}>{asset.label}</option>
-                      ))}
-                    </select>
+                    />
                   </label>
                 </div>
               </div>
@@ -1557,7 +1600,7 @@ export function PartnerDraftWorkspaceClient(props: Readonly<{
                   <p className="text-[11px] text-slate-500">
                     Inherited currency {create.priceCurrency}
                     {" · "}
-                    Asset {assetLabel(props.readyAssets, create.currentAssetId)}
+                    Asset {assetLabel(props.commercialAssetOptions, create.currentAssetId)}
                   </p>
                   <div className="mt-2 grid gap-3 sm:grid-cols-2">
                     <label className="text-xs text-slate-400">
@@ -1619,22 +1662,14 @@ export function PartnerDraftWorkspaceClient(props: Readonly<{
                     </label>
                     <label className="text-xs text-slate-400 sm:col-span-2">
                       Asset
-                      <select
-                        className="mt-1 w-full rounded-md border border-slate-700 bg-slate-900 px-2 py-1 text-slate-100"
+                      <CommercialAssetSelect
+                        options={props.commercialAssetOptions}
                         value={create.currentAssetId}
-                        disabled={pending || conflict || props.readyAssets.length === 0}
-                        onChange={(event) => {
-                          const next = event.target.value;
-                          if (!next || next === create.currentAssetId) return;
+                        disabled={pending || conflict || props.commercialAssetOptions.length === 0}
+                        onChange={(next) => {
                           void save([{ type: "variant.create_edit", variantId: create.variantId, currentAssetId: next }]);
                         }}
-                      >
-                        {props.readyAssets.map((asset) => (
-                          <option key={asset.assetId} value={asset.assetId}>
-                            {asset.label}
-                          </option>
-                        ))}
-                      </select>
+                      />
                     </label>
                   </div>
                   <button
@@ -1704,24 +1739,18 @@ export function PartnerDraftWorkspaceClient(props: Readonly<{
                   </label>
                   <label className="text-xs text-slate-400">
                     Asset
-                    <select
-                      className="mt-1 w-full rounded-md border border-slate-700 bg-slate-900 px-2 py-1 text-slate-100"
+                    <CommercialAssetSelect
+                      options={props.commercialAssetOptions}
                       value={newAssetId}
-                      disabled={pending || conflict || props.readyAssets.length === 0}
-                      onChange={(event) => setNewAssetId(event.target.value)}
-                    >
-                      {props.readyAssets.map((asset) => (
-                        <option key={asset.assetId} value={asset.assetId}>
-                          {asset.label}
-                        </option>
-                      ))}
-                    </select>
+                      disabled={pending || conflict || props.commercialAssetOptions.length === 0}
+                      onChange={setNewAssetId}
+                    />
                   </label>
                 </div>
                 <div className="mt-3 flex flex-wrap gap-2">
                   <button
                     type="button"
-                    disabled={pending || conflict || props.readyAssets.length === 0}
+                    disabled={pending || conflict || props.commercialAssetOptions.length === 0}
                     className="rounded-md border border-emerald-700 px-3 py-1 text-xs text-emerald-100"
                     onClick={() => {
                       const priceAmount = Number(newPrice);
@@ -1757,7 +1786,7 @@ export function PartnerDraftWorkspaceClient(props: Readonly<{
                         setNewPrice("");
                         setNewUrl("");
                         setNewSlug("");
-                        setNewAssetId(props.readyAssets[0]?.assetId ?? "");
+                        setNewAssetId(props.commercialAssetOptions[0]?.assetId ?? "");
                       })();
                     }}
                   >
@@ -1776,7 +1805,7 @@ export function PartnerDraftWorkspaceClient(props: Readonly<{
             ) : (
               <button
                 type="button"
-                disabled={pending || conflict || props.readyAssets.length === 0}
+                disabled={pending || conflict || props.commercialAssetOptions.length === 0}
                 className="rounded-md border border-slate-700 px-3 py-1 text-xs"
                 onClick={() => {
                   setAddingProductId(product.productId);
@@ -1785,15 +1814,15 @@ export function PartnerDraftWorkspaceClient(props: Readonly<{
                   setNewPrice("");
                   setNewUrl("");
                   setNewSlug("");
-                  setNewAssetId(props.readyAssets[0]?.assetId ?? "");
+                  setNewAssetId(props.commercialAssetOptions[0]?.assetId ?? "");
                 }}
               >
                 Add Variant
               </button>
             )}
-            {props.readyAssets.length === 0 ? (
+            {props.commercialAssetOptions.length === 0 ? (
               <p className="text-[11px] text-slate-500">
-                No certified Partner assets are available to assign.
+                No mapped ready Partner Assets are available to assign.
               </p>
             ) : null}
           </article>
