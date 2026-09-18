@@ -165,6 +165,8 @@ export function AfcIntegratedEditorViewport({
         sceneObjects={persistedScene.objects}
         sceneInstanceId={persistedScene.sceneInstanceId}
         sceneReady={persistedScene.sceneReady}
+        runtimeAssetOverlay={persistedScene.runtimeAssetOverlay}
+        refreshRuntimeAsset={persistedScene.refreshRuntimeAsset}
         onObjectTransformCommitted={persistedScene.onObjectTransformCommitted}
         onSelectedObjectIdChange={sceneCrud?.setSelectedObjectId}
         onLiveSceneHostChange={sceneCrud?.setHost}

@@ -5,6 +5,15 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { getSupabaseBrowserAccessToken } from "@/lib/supabaseBrowser";
 
 import { createPi4bSceneObjectDefinitions } from "./furniture-runtime";
+import type { FurnitureAssetDefinition } from "./types";
+import {
+  furnitureAssetDefinitionFromRuntime,
+  interpretRuntimeAssetResolveResponse,
+  overlayFromRuntimeDefinitions,
+  RUNTIME_ASSET_RESOLVE_PATH,
+  type RuntimeAssetIssue,
+  type RuntimeFurnitureAssetDefinition,
+} from "./runtime-furniture-assets";
 import {
   createLoadedSceneInstanceId,
   pendingSceneInstanceId,
@@ -37,6 +46,12 @@ export type Persisted3dSceneState = Readonly<{
   loadRevision: number;
   saveError: string | null;
   origin: "default" | "persisted";
+  assetDefinitions: readonly RuntimeFurnitureAssetDefinition[];
+  assetIssues: readonly RuntimeAssetIssue[];
+  runtimeAssetOverlay: ReadonlyMap<string, FurnitureAssetDefinition>;
+  refreshRuntimeAsset: (
+    assetId: string,
+  ) => Promise<FurnitureAssetDefinition | null>;
   canUndo: boolean;
   undo: () => void;
   onObjectTransformCommitted: (scene: SerializedRuntimeScene) => void;
@@ -94,6 +109,11 @@ export function usePersisted3dScene(input: Readonly<{
   const [loadedIdentity, setLoadedIdentity] = useState<PersistedSceneIdentity | null>(null);
   const [loadRevision, setLoadRevision] = useState(0);
   const [canUndo, setCanUndo] = useState(false);
+  const [assetDefinitions, setAssetDefinitions] = useState<
+    readonly RuntimeFurnitureAssetDefinition[]
+  >([]);
+  const [assetIssues, setAssetIssues] = useState<readonly RuntimeAssetIssue[]>([]);
+  const overlayRef = useRef<Map<string, FurnitureAssetDefinition>>(new Map());
 
   const latestLoadIdRef = useRef(0);
   const loadRevisionRef = useRef(0);
@@ -195,6 +215,8 @@ export function usePersisted3dScene(input: Readonly<{
     requestIdentity: PersistedSceneIdentity,
     nextObjects: readonly SceneObjectDefinition[],
     nextOrigin: "default" | "persisted",
+    nextDefinitions: readonly RuntimeFurnitureAssetDefinition[] = [],
+    nextIssues: readonly RuntimeAssetIssue[] = [],
   ) => {
     loadRevisionRef.current += 1;
     loadedRef.current = {
@@ -203,10 +225,13 @@ export function usePersisted3dScene(input: Readonly<{
       origin: nextOrigin,
       dirty: false,
     };
+    overlayRef.current = new Map(overlayFromRuntimeDefinitions(nextDefinitions));
     setLoadRevision(loadRevisionRef.current);
     setObjects(nextObjects);
     setOrigin(nextOrigin);
     setLoadedIdentity(requestIdentity);
+    setAssetDefinitions(nextDefinitions);
+    setAssetIssues(nextIssues);
     setLoading(false);
     clearUndoStack();
   }, [clearUndoStack]);
@@ -214,6 +239,9 @@ export function usePersisted3dScene(input: Readonly<{
   useEffect(() => {
     if (!identity) {
       latestLoadIdRef.current += 1;
+      overlayRef.current = new Map();
+      setAssetDefinitions([]);
+      setAssetIssues([]);
       clearUndoStack();
       void flushLoadedIfDirty();
       return;
@@ -290,6 +318,8 @@ export function usePersisted3dScene(input: Readonly<{
         }
         let nextObjects: readonly SceneObjectDefinition[] = defaultObjects();
         let nextOrigin: "default" | "persisted" = "default";
+        let nextDefinitions: readonly RuntimeFurnitureAssetDefinition[] = [];
+        let nextIssues: readonly RuntimeAssetIssue[] = [];
         if (interpreted.status === "ready") {
           const parsed = validatePersistedVersionScene(interpreted.scene);
           if (
@@ -300,11 +330,27 @@ export function usePersisted3dScene(input: Readonly<{
           ) {
             nextObjects = parsed.scene.objects;
             nextOrigin = "persisted";
+            nextDefinitions = interpreted.assetDefinitions ?? [];
+            nextIssues = interpreted.assetIssues ?? [];
           } else {
             warnSceneRestore(parsed.ok ? "scene identity mismatch" : parsed.reason);
           }
         }
-        commitResolvedSnapshot(requestIdentity, nextObjects, nextOrigin);
+        if (nextIssues.length > 0 && typeof console !== "undefined") {
+          for (const issue of nextIssues) {
+            console.warn("[afc-3d-scene] runtime asset issue", {
+              assetId: issue.assetId,
+              issueCode: issue.code,
+            });
+          }
+        }
+        commitResolvedSnapshot(
+          requestIdentity,
+          nextObjects,
+          nextOrigin,
+          nextDefinitions,
+          nextIssues,
+        );
       } catch (error) {
         if (
           cancelled ||
@@ -396,6 +442,46 @@ export function usePersisted3dScene(input: Readonly<{
     void persistIdentity(current, { objects: previous });
   }, [persistIdentity]);
 
+  const refreshRuntimeAsset = useCallback(async (
+    assetId: string,
+  ): Promise<FurnitureAssetDefinition | null> => {
+    const current = identityRef.current;
+    if (!current || !assetId.trim()) return null;
+    try {
+      const token = await getSupabaseBrowserAccessToken();
+      if (!token) return null;
+      const response = await fetch(RUNTIME_ASSET_RESOLVE_PATH, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          roomId: current.roomId,
+          versionId: current.versionId,
+          afcGenerationId: current.afcGenerationId,
+          assetIds: [assetId],
+        }),
+        cache: "no-store",
+      });
+      const payload = await response.json().catch(() => null);
+      if (!response.ok) return null;
+      const resolved = interpretRuntimeAssetResolveResponse(payload);
+      const dto = resolved.assetDefinitions.find((item) => item.assetId === assetId);
+      if (!dto) return null;
+      const definition = furnitureAssetDefinitionFromRuntime(dto);
+      overlayRef.current.set(assetId, definition);
+      setAssetDefinitions((currentDefinitions) => {
+        const next = currentDefinitions.filter((item) => item.assetId !== assetId);
+        next.push(dto);
+        return next;
+      });
+      return definition;
+    } catch {
+      return null;
+    }
+  }, []);
+
   const sceneReady =
     Boolean(loadedIdentity) &&
     !loading &&
@@ -414,6 +500,10 @@ export function usePersisted3dScene(input: Readonly<{
     loadRevision,
     saveError,
     origin,
+    assetDefinitions: sceneReady ? assetDefinitions : [],
+    assetIssues: sceneReady ? assetIssues : [],
+    runtimeAssetOverlay: overlayRef.current,
+    refreshRuntimeAsset,
     canUndo,
     undo,
     onObjectTransformCommitted,

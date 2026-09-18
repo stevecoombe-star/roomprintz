@@ -11,9 +11,10 @@ import { loadFurnitureGlb } from "./furniture-glb-loader";
 import {
   furnitureAssetDefinition,
   uniqueRegisteredFurnitureAssetIds,
+  type FurnitureAssetResolver,
 } from "./furniture-assets";
 import { disposeObject3D } from "./object-runtime";
-import type { SceneObjectDefinition } from "./types";
+import type { FurnitureAssetDefinition, SceneObjectDefinition } from "./types";
 
 export type FurnitureTemplateLoadSuccess = Readonly<{
   ok: true;
@@ -42,11 +43,37 @@ export type FurnitureTemplateCache = Readonly<{
 
 export function createFurnitureTemplateCache(input?: Readonly<{
   load?: (url: string) => Promise<LoadFurnitureGlbResult>;
+  resolver?: FurnitureAssetResolver;
+  /**
+   * One refresh for dynamic overlay Assets after the first GLB load
+   * failure. GLTFLoader.loadAsync does not expose HTTP status, so this
+   * cannot distinguish transport/auth expiry from parse errors. Static
+   * generated Assets are never refreshed. There is no second retry.
+   */
+  refreshDynamicAsset?: (
+    assetId: string,
+  ) => Promise<FurnitureAssetDefinition | null>;
 }>): FurnitureTemplateCache {
   const load = input?.load ?? loadFurnitureGlb;
+  const resolve = input?.resolver ?? furnitureAssetDefinition;
   const templates = new Map<string, import("three").Group>();
   const inflight = new Map<string, Promise<FurnitureTemplateLoadOutcome>>();
   let disposed = false;
+
+  const storeTemplate = (
+    assetId: string,
+    result: LoadFurnitureGlbResult,
+  ): FurnitureTemplateLoadOutcome => {
+    if (disposed) {
+      if (result.ok) disposeObject3D(result.scene);
+      return { ok: false, assetId, message: "Furniture cache was disposed." };
+    }
+    if (!result.ok) {
+      return { ok: false, assetId, message: result.message };
+    }
+    templates.set(assetId, result.scene);
+    return { ok: true, assetId, scene: result.scene };
+  };
 
   const loadAsset = (assetId: string): Promise<FurnitureTemplateLoadOutcome> => {
     const cached = templates.get(assetId);
@@ -56,7 +83,7 @@ export function createFurnitureTemplateCache(input?: Readonly<{
     const pending = inflight.get(assetId);
     if (pending) return pending;
 
-    const asset = furnitureAssetDefinition(assetId);
+    const asset = resolve(assetId);
     if (!asset) {
       return Promise.resolve({
         ok: false,
@@ -64,18 +91,27 @@ export function createFurnitureTemplateCache(input?: Readonly<{
         message: "Unknown furniture asset.",
       });
     }
+    const staticHit = furnitureAssetDefinition(assetId) != null;
 
     const promise = load(asset.glbUrl)
-      .then((result): FurnitureTemplateLoadOutcome => {
-        if (disposed) {
-          if (result.ok) disposeObject3D(result.scene);
-          return { ok: false, assetId, message: "Furniture cache was disposed." };
+      .then(async (result): Promise<FurnitureTemplateLoadOutcome> => {
+        if (result.ok || staticHit || !input?.refreshDynamicAsset) {
+          return storeTemplate(assetId, result);
         }
-        if (!result.ok) {
-          return { ok: false, assetId, message: result.message };
+        // Conservative: one refresh for any first dynamic load failure.
+        const refreshed = await input.refreshDynamicAsset(assetId);
+        if (!refreshed || furnitureAssetDefinition(refreshed.assetId)) {
+          return storeTemplate(assetId, result);
         }
-        templates.set(assetId, result.scene);
-        return { ok: true, assetId, scene: result.scene };
+        const retry = await load(refreshed.glbUrl);
+        if (!retry.ok) {
+          return {
+            ok: false,
+            assetId,
+            message: "RUNTIME_ASSET_LOAD_FAILED",
+          };
+        }
+        return storeTemplate(assetId, retry);
       })
       .catch((error: unknown): FurnitureTemplateLoadOutcome => ({
         ok: false,
@@ -94,7 +130,7 @@ export function createFurnitureTemplateCache(input?: Readonly<{
 
   return {
     async ensure(assetIds) {
-      const unique = uniqueRegisteredFurnitureAssetIds(assetIds);
+      const unique = uniqueRegisteredFurnitureAssetIds(assetIds, resolve);
       const settled = await Promise.allSettled(unique.map((id) => loadAsset(id)));
       return unique.map((assetId, index) => {
         const item = settled[index];

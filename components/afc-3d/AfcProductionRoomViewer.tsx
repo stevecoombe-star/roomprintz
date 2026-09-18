@@ -7,7 +7,11 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { AfcV2ProductionRoomAuthority } from "@/lib/afc-v2-production/production-authority-contract";
 import { resolveSceneObjectCollision } from "@/lib/afc-v2-runtime/collision-resolver";
 import { containFitRect, nextFrameBox } from "@/lib/afc-v2-runtime/frame-layout";
-import { furnitureAssetDefinition } from "@/lib/afc-v2-runtime/furniture-assets";
+import {
+  createFurnitureAssetResolver,
+  furnitureAssetDefinition,
+  type FurnitureAssetResolver,
+} from "@/lib/afc-v2-runtime/furniture-assets";
 import { cloneFurnitureGlbScene } from "@/lib/afc-v2-runtime/furniture-glb-loader";
 import {
   createFurnitureTemplateCache,
@@ -63,6 +67,7 @@ import {
 import { realizeProductionWorld } from "@/lib/afc-v2-runtime/production-world";
 import { validateProductionRuntimeAuthority } from "@/lib/afc-v2-runtime/runtime-authority";
 import type {
+  FurnitureAssetDefinition,
   RuntimeTransformMode,
   SceneObjectDefinition,
   SceneObjectProductIdentity,
@@ -111,6 +116,10 @@ type Props = Readonly<{
   onLiveSceneHostChange?: (host: ProductionSceneCrudHost | null) => void;
   onLiveSceneSnapshotChange?: (snapshot: LiveSceneCrudSnapshot) => void;
   onSelectionPresentationChange?: (presentation: SceneSelectionPresentation | null) => void;
+  runtimeAssetOverlay?: ReadonlyMap<string, FurnitureAssetDefinition> | null;
+  refreshRuntimeAsset?: (
+    assetId: string,
+  ) => Promise<FurnitureAssetDefinition | null>;
 }>;
 
 type ReadyProps = Readonly<{
@@ -129,6 +138,10 @@ type ReadyProps = Readonly<{
   onLiveSceneHostChange?: (host: ProductionSceneCrudHost | null) => void;
   onLiveSceneSnapshotChange?: (snapshot: LiveSceneCrudSnapshot) => void;
   onSelectionPresentationChange?: (presentation: SceneSelectionPresentation | null) => void;
+  runtimeAssetOverlay?: ReadonlyMap<string, FurnitureAssetDefinition> | null;
+  refreshRuntimeAsset?: (
+    assetId: string,
+  ) => Promise<FurnitureAssetDefinition | null>;
 }>;
 
 export function AfcProductionRoomViewer({
@@ -147,6 +160,8 @@ export function AfcProductionRoomViewer({
   onLiveSceneHostChange,
   onLiveSceneSnapshotChange,
   onSelectionPresentationChange,
+  runtimeAssetOverlay,
+  refreshRuntimeAsset,
 }: Props) {
   const validated = useMemo(
     () => validateProductionRuntimeAuthority(authority),
@@ -192,6 +207,8 @@ export function AfcProductionRoomViewer({
       onLiveSceneHostChange={onLiveSceneHostChange}
       onLiveSceneSnapshotChange={onLiveSceneSnapshotChange}
       onSelectionPresentationChange={onSelectionPresentationChange}
+      runtimeAssetOverlay={runtimeAssetOverlay}
+      refreshRuntimeAsset={refreshRuntimeAsset}
     />
   );
 }
@@ -212,6 +229,8 @@ function AfcProductionRoomViewerReady({
   onLiveSceneHostChange,
   onLiveSceneSnapshotChange,
   onSelectionPresentationChange,
+  runtimeAssetOverlay,
+  refreshRuntimeAsset,
 }: ReadyProps) {
   const viewportRef = useRef<HTMLDivElement | null>(null);
   const frameRef = useRef<HTMLDivElement | null>(null);
@@ -265,6 +284,9 @@ function AfcProductionRoomViewerReady({
   const onLiveHostChangeRef = useRef(onLiveSceneHostChange);
   const onLiveSnapshotChangeRef = useRef(onLiveSceneSnapshotChange);
   const onPresentationRef = useRef(onSelectionPresentationChange);
+  const overlayRef = useRef(runtimeAssetOverlay ?? null);
+  const refreshRuntimeAssetRef = useRef(refreshRuntimeAsset);
+  const resolveAssetRef = useRef<FurnitureAssetResolver>(furnitureAssetDefinition);
   sceneObjectsPropRef.current = resolvedSceneObjects;
   sceneInstanceIdRef.current = resolvedSceneInstanceId;
   sceneReadyRef.current = sceneReady;
@@ -273,6 +295,9 @@ function AfcProductionRoomViewerReady({
   onLiveHostChangeRef.current = onLiveSceneHostChange;
   onLiveSnapshotChangeRef.current = onLiveSceneSnapshotChange;
   onPresentationRef.current = onSelectionPresentationChange;
+  overlayRef.current = runtimeAssetOverlay ?? null;
+  refreshRuntimeAssetRef.current = refreshRuntimeAsset;
+  resolveAssetRef.current = createFurnitureAssetResolver(overlayRef.current);
 
   useEffect(() => {
     transformModeRef.current = transformMode;
@@ -332,7 +357,12 @@ function AfcProductionRoomViewerReady({
     scene.add(objectLayer);
 
     const sceneObjects = createRuntimeSceneCollection();
-    const templateCache = createFurnitureTemplateCache();
+    const resolveAsset = (assetId: string) => resolveAssetRef.current(assetId);
+    const templateCache = createFurnitureTemplateCache({
+      resolver: resolveAsset,
+      refreshDynamicAsset: (assetId) => refreshRuntimeAssetRef.current?.(assetId) ??
+        Promise.resolve(null),
+    });
     const unmountedPersisted = new Map<string, SceneObjectDefinition>();
     let persistedOrder: SceneObjectDefinition[] = [];
     let appliedInstanceId: string | null = null;
@@ -790,6 +820,7 @@ function AfcProductionRoomViewerReady({
         roomId: furniture.roomId,
         generationId: furniture.generationId,
         definitions: [definition],
+        resolver: resolveAsset,
       });
       if (instantiated.objects.length !== 1) return null;
       const descriptor = instantiated.objects[0];
@@ -824,6 +855,7 @@ function AfcProductionRoomViewerReady({
         roomId: furniture.roomId,
         generationId: furniture.generationId,
         definitions,
+        resolver: resolveAsset,
       });
       if (instantiated.skipped.length > 0 && typeof console !== "undefined") {
         console.warn(
@@ -859,7 +891,7 @@ function AfcProductionRoomViewerReady({
         const live = mountOne(definition);
         if (!live) {
           rememberUnmounted(definition);
-          if (furnitureAssetDefinition(definition.assetId)) {
+          if (resolveAsset(definition.assetId)) {
             warnFailedAssetLoad(definition);
           }
         }
@@ -937,8 +969,18 @@ function AfcProductionRoomViewerReady({
       const generation = ++applyGeneration;
       const objects = input.objects;
       const instanceId = input.instanceId;
-      void templateCache.ensure(objects.map((object) => object.assetId)).then(() => {
+      void templateCache.ensure(objects.map((object) => object.assetId)).then((outcomes) => {
         if (disposed || generation !== applyGeneration) return;
+        for (const outcome of outcomes) {
+          if (!outcome.ok && outcome.message === "RUNTIME_ASSET_LOAD_FAILED") {
+            if (typeof console !== "undefined") {
+              console.warn("[afc-3d-scene] runtime asset issue", {
+                assetId: outcome.assetId,
+                issueCode: "RUNTIME_ASSET_LOAD_FAILED",
+              });
+            }
+          }
+        }
         applyMountedScene({ instanceId, objects });
         setFurniturePhase("ready");
       });
@@ -1002,7 +1044,7 @@ function AfcProductionRoomViewerReady({
             return notReadyResult();
           }
           const source = currentSerializedObjects().find((object) => object.objectId === objectId);
-          if (source && furnitureAssetDefinition(source.assetId)) {
+          if (source && resolveAsset(source.assetId)) {
             await templateCache.ensure([source.assetId]);
             if (disposed) return notReadyResult();
             if (!templateCache.template(source.assetId)) {
@@ -1019,6 +1061,7 @@ function AfcProductionRoomViewerReady({
             objects: currentSerializedObjects(),
             objectId,
             selectedObjectId: selectedObjectIdRef.current,
+            resolver: resolveAsset,
             placement: {
               metricScale: world.metricScale,
               realizedWalls,

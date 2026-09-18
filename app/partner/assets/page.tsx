@@ -16,7 +16,8 @@ export default function PartnerAssetsPage() {
           The GLB should already be modeled at real-world scale. Vibode does not automatically
           resize uploaded furniture. A validated intake is not a runtime-ready Asset. Register
           Asset creates an immutable technical Asset whose runtime activation is still pending.
-          Registered Assets are not available in Product or Variant authoring yet.
+          After registration, Activate Runtime makes the Asset available to the Vibode room
+          runtime. Registered Assets are not available in Product or Variant authoring yet.
         </p>
       </section>
       <PartnerAssetWorkspaceClient />

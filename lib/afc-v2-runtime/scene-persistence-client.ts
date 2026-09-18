@@ -6,6 +6,12 @@
 
 import type { PersistedSceneIdentity, PersistedVersionScene } from "./persisted-scene";
 import type { SerializedRuntimeScene } from "./types";
+import {
+  parseRuntimeAssetDefinitions,
+  parseRuntimeAssetIssues,
+  type RuntimeAssetIssue,
+  type RuntimeFurnitureAssetDefinition,
+} from "./runtime-furniture-assets";
 
 export const AFC_V2_3D_SCENE_PATH = "/api/vibode/3d-scene";
 
@@ -14,6 +20,9 @@ export type VersionSceneLoadResponse =
       status: "ready";
       scene: PersistedVersionScene;
       currentAfcGenerationId: string;
+      origin?: "persisted" | "inherited";
+      assetDefinitions?: RuntimeFurnitureAssetDefinition[];
+      assetIssues?: RuntimeAssetIssue[];
     }>
   | Readonly<{
       status: "none";
@@ -80,10 +89,18 @@ export function interpretVersionSceneLoadResponse(input: Readonly<{
   }
   const status = payload?.status;
   if (status === "ready" && payload?.scene && typeof payload.scene === "object") {
+    const origin = payload.origin === "inherited" || payload.origin === "persisted"
+      ? payload.origin
+      : undefined;
+    const assetDefinitions = parseRuntimeAssetDefinitions(payload.assetDefinitions);
+    const assetIssues = parseRuntimeAssetIssues(payload.assetIssues);
     return {
       status: "ready",
       scene: payload.scene as PersistedVersionScene,
       currentAfcGenerationId: readOptionalString(payload.currentAfcGenerationId) ?? "",
+      origin,
+      assetDefinitions: assetDefinitions.length > 0 ? assetDefinitions : undefined,
+      assetIssues: assetIssues.length > 0 ? assetIssues : undefined,
     };
   }
   if (status === "none") {

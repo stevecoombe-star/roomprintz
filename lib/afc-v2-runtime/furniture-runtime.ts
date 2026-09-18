@@ -9,7 +9,10 @@
 
 import type { AfcV2ProductionRoomAuthority } from "@/lib/afc-v2-production/production-authority-contract";
 
-import { furnitureAssetDefinition } from "./furniture-assets";
+import {
+  furnitureAssetDefinition,
+  type FurnitureAssetResolver,
+} from "./furniture-assets";
 import {
   AFC_V2_RUNTIME_COORDINATE_SPACE,
   AFC_V2_RUNTIME_FURNITURE_ASSET_ID,
@@ -97,8 +100,11 @@ export function furnitureBelongsToGeneration(
     object.objectId === AFC_V2_RUNTIME_FURNITURE_OBJECT_ID;
 }
 
-export function furnitureAssetPlacementAabb(assetId: string): LocalAabb | null {
-  const asset = furnitureAssetDefinition(assetId);
+export function furnitureAssetPlacementAabb(
+  assetId: string,
+  resolver: FurnitureAssetResolver = furnitureAssetDefinition,
+): LocalAabb | null {
+  const asset = resolver(assetId);
   if (!asset) return null;
   return authoredPlacementLocalAabb(asset);
 }
@@ -153,11 +159,13 @@ export function instantiateSceneObjectDefinitions(input: Readonly<{
   roomId: string;
   generationId: string;
   definitions: readonly SceneObjectDefinition[];
+  resolver?: FurnitureAssetResolver;
 }>): SceneObjectInstantiation {
+  const resolve = input.resolver ?? furnitureAssetDefinition;
   const objects: RuntimeSceneObject[] = [];
   const skipped: UnknownSceneAssetSkip[] = [];
   for (const definition of input.definitions) {
-    const asset = furnitureAssetDefinition(definition.assetId);
+    const asset = resolve(definition.assetId);
     if (!asset) {
       skipped.push({
         objectId: definition.objectId,
@@ -193,6 +201,7 @@ export function createRuntimeSceneObjectsFromDefinitions(input: Readonly<{
   roomId: string;
   generationId: string;
   definitions: readonly SceneObjectDefinition[];
+  resolver?: FurnitureAssetResolver;
 }>): RuntimeSceneObject[] {
   return instantiateSceneObjectDefinitions(input).objects;
 }

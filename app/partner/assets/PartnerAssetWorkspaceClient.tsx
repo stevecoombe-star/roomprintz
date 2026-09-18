@@ -75,6 +75,12 @@ type RegisterResponse = Readonly<{
   asset?: RegisteredAssetDto & { originalFileName: string; sha256: string };
 }>;
 
+type ActivateResponse = Readonly<{
+  ok?: boolean;
+  error?: string;
+  asset?: { assetId: string; status: "ready" | "unavailable" };
+}>;
+
 type Phase = "idle" | "uploading" | "validating";
 
 function metresField(value: string): number | null {
@@ -158,6 +164,7 @@ export function PartnerAssetWorkspaceClient() {
   const [actionError, setActionError] = useState<string | null>(null);
   const [lastIntake, setLastIntake] = useState<IntakeDto | null>(null);
   const [registeringId, setRegisteringId] = useState<string | null>(null);
+  const [activatingId, setActivatingId] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
     const [intakeResponse, assetResponse] = await Promise.all([
@@ -267,7 +274,27 @@ export function PartnerAssetWorkspaceClient() {
     }
   }
 
-  const busy = phase !== "idle" || registeringId != null;
+  async function onActivate(assetId: string) {
+    setActionError(null);
+    setActivatingId(assetId);
+    try {
+      const response = await fetch(
+        `/api/vibode/partner/assets/${assetId}/activate`,
+        { method: "POST" },
+      );
+      const body = await response.json() as ActivateResponse;
+      if (!response.ok || !body.ok) {
+        setActionError(body.error ?? "The Asset could not be activated.");
+      }
+      await refresh();
+    } catch {
+      setActionError("The Asset could not be activated.");
+    } finally {
+      setActivatingId(null);
+    }
+  }
+
+  const busy = phase !== "idle" || registeringId != null || activatingId != null;
   const phaseCopy = phase === "uploading"
     ? `Uploading${progress == null ? "…" : `… ${progress}%`}`
     : phase === "validating"
@@ -440,9 +467,19 @@ export function PartnerAssetWorkspaceClient() {
                 ) : null}
                 {intake.assetId ? (
                   <div className="mt-2 space-y-1 text-xs text-slate-400">
-                    <p>Immutable Vibode Asset created. Runtime activation is still pending.</p>
-                    <p className="break-all font-mono text-[11px] text-slate-500">Asset ID {intake.assetId}</p>
-                    <p>status = unavailable / not runtime-ready yet</p>
+                    {registeredAssets.find((asset) => asset.assetId === intake.assetId)?.status === "ready" ? (
+                      <>
+                        <p>Runtime ready</p>
+                        <p className="break-all font-mono text-[11px] text-slate-500">Asset ID {intake.assetId}</p>
+                        <p>status = ready</p>
+                      </>
+                    ) : (
+                      <>
+                        <p>Immutable Vibode Asset created. Runtime activation is still pending.</p>
+                        <p className="break-all font-mono text-[11px] text-slate-500">Asset ID {intake.assetId}</p>
+                        <p>status = unavailable / not runtime-ready yet</p>
+                      </>
+                    )}
                   </div>
                 ) : null}
                 <p className="mt-1 text-xs text-slate-400">
@@ -485,6 +522,47 @@ export function PartnerAssetWorkspaceClient() {
           </ul>
         )}
       </section>
+
+      {registeredAssets.some((asset) => asset.origin === "partner_intake") ? (
+        <section className="space-y-3">
+          <h3 className="font-medium">Registered Assets</h3>
+          <p className="text-xs text-slate-500">
+            Immutable Partner-intake Assets. Activate Runtime makes them available to the
+            Vibode room runtime.
+          </p>
+          <ul className="space-y-3">
+            {registeredAssets.filter((asset) => asset.origin === "partner_intake").map((asset) => (
+              <li key={asset.assetId} className="rounded-xl border border-slate-800 p-4 text-sm">
+                <p className="break-all font-mono text-xs text-slate-300">{asset.assetId}</p>
+                <p className="mt-1 text-xs text-slate-400">
+                  {formatPartnerIntakeMetresTriple(
+                    asset.measuredWidthM,
+                    asset.measuredHeightM,
+                    asset.measuredDepthM,
+                  )}
+                </p>
+                {asset.status === "ready" ? (
+                  <p className="mt-2 text-xs text-emerald-300">Runtime ready</p>
+                ) : (
+                  <>
+                    <p className="mt-2 text-xs text-slate-400">
+                      Make this registered Asset available to the Vibode room runtime.
+                    </p>
+                    <button
+                      type="button"
+                      disabled={busy}
+                      className="mt-3 rounded-md border border-slate-700 px-3 py-1.5 text-sm"
+                      onClick={() => void onActivate(asset.assetId)}
+                    >
+                      {activatingId === asset.assetId ? "Activating…" : "Activate Runtime"}
+                    </button>
+                  </>
+                )}
+              </li>
+            ))}
+          </ul>
+        </section>
+      ) : null}
 
       {registeredAssets.some((asset) => asset.origin === "catalog_linked") ? (
         <section className="space-y-3">

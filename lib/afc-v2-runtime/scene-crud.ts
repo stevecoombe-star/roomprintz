@@ -8,7 +8,10 @@
 
 import { aabbIsValid, footprintFromLocalAabb } from "./collision-footprint";
 import { posePenetratesWalls, prepareCollisionWall } from "./collision-geometry";
-import { furnitureAssetDefinition } from "./furniture-assets";
+import {
+  furnitureAssetDefinition,
+  type FurnitureAssetResolver,
+} from "./furniture-assets";
 import { furnitureAssetPlacementAabb } from "./furniture-runtime";
 import { realizeObjectWorldTransform } from "./metric-world-realization";
 import {
@@ -236,8 +239,10 @@ export function resolveCollisionFreeCanonicalTransform(input: Readonly<{
 function placementAabbForAsset(
   assetId: string,
   override?: LocalAabb | null,
+  resolver?: FurnitureAssetResolver,
 ): LocalAabb | null {
   if (override) return override;
+  if (resolver) return furnitureAssetPlacementAabb(assetId, resolver);
   return furnitureAssetPlacementAabb(assetId);
 }
 
@@ -331,6 +336,7 @@ export function duplicateSceneObject(input: Readonly<{
   placement?: ScenePlacementContext;
   createObjectId?: () => string;
   selectedObjectId?: string | null;
+  resolver?: FurnitureAssetResolver;
 }>): SceneCrudResult {
   const current = persistenceSafeSceneObjects(input.objects);
   const selectedObjectId = input.selectedObjectId ?? null;
@@ -338,7 +344,8 @@ export function duplicateSceneObject(input: Readonly<{
   if (!source) {
     return fail("missing_object", PI5A_MISSING_OBJECT_MESSAGE, current, selectedObjectId);
   }
-  const asset = furnitureAssetDefinition(source.assetId);
+  const resolve = input.resolver ?? furnitureAssetDefinition;
+  const asset = resolve(source.assetId);
   if (!asset) {
     return fail("unknown_asset", PI5A_UNKNOWN_ASSET_MESSAGE, current, selectedObjectId);
   }
@@ -357,7 +364,11 @@ export function duplicateSceneObject(input: Readonly<{
     preferredCanonical: duplicateOffsetCanonicalTransform(source.transform),
     metricScale,
     realizedWalls: input.placement?.realizedWalls ?? [],
-    localAabb: placementAabbForAsset(asset.assetId, input.placement?.localAabb),
+    localAabb: placementAabbForAsset(
+      asset.assetId,
+      input.placement?.localAabb,
+      input.resolver,
+    ),
   });
   const object = createCanonicalDescriptor({
     objectId,

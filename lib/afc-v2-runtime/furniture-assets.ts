@@ -46,6 +46,24 @@ export function furnitureAssetDefinition(
   return FURNITURE_ASSET_REGISTRY.get(assetId) ?? null;
 }
 
+export type FurnitureAssetResolver =
+  (assetId: string) => FurnitureAssetDefinition | null;
+
+/**
+ * Static generated registry first. Overlay is request/session-local and
+ * never mutates FURNITURE_ASSET_REGISTRY. Overlay entries for generated
+ * IDs are ignored; static wins.
+ */
+export function createFurnitureAssetResolver(
+  overlay?: ReadonlyMap<string, FurnitureAssetDefinition> | null,
+): FurnitureAssetResolver {
+  return (assetId: string) => {
+    const generated = furnitureAssetDefinition(assetId);
+    if (generated) return generated;
+    return overlay?.get(assetId) ?? null;
+  };
+}
+
 export function furnitureAssetGlbUrl(assetId: string): string | null {
   return furnitureAssetDefinition(assetId)?.glbUrl ?? null;
 }
@@ -60,12 +78,13 @@ export function registeredFurnitureAssetIds(): readonly string[] {
 
 export function uniqueRegisteredFurnitureAssetIds(
   assetIds: readonly string[],
+  resolver: FurnitureAssetResolver = furnitureAssetDefinition,
 ): string[] {
   const unique: string[] = [];
   const seen = new Set<string>();
   for (const assetId of assetIds) {
     if (seen.has(assetId)) continue;
-    if (!furnitureAssetDefinition(assetId)) continue;
+    if (!resolver(assetId)) continue;
     seen.add(assetId);
     unique.push(assetId);
   }

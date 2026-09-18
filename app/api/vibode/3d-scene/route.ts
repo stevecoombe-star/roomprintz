@@ -13,6 +13,7 @@ import {
   resolveOwnedVersionScene,
   saveOwnedVersionScene,
 } from "@/lib/afc-v2-runtime/scene-persistence.server";
+import { enrichOwnedSceneRuntimeAssets } from "@/lib/vibode-stage/partner-runtime-assets.server";
 
 export const runtime = "nodejs";
 
@@ -81,12 +82,20 @@ export async function GET(request: Request) {
     }, 200);
   }
 
-  return productionAfcJson({
+  const readyBody: Record<string, unknown> = {
     status: "ready",
     scene: resolved.scene,
     origin: resolved.origin,
     currentAfcGenerationId: query.afcGenerationId,
-  }, 200);
+  };
+  const runtime = await enrichOwnedSceneRuntimeAssets(resolved.scene.objects);
+  if (runtime.assetDefinitions.length > 0) {
+    readyBody.assetDefinitions = runtime.assetDefinitions;
+  }
+  if (runtime.assetIssues.length > 0) {
+    readyBody.assetIssues = runtime.assetIssues;
+  }
+  return productionAfcJson(readyBody, 200);
 }
 
 export async function PUT(request: Request) {
