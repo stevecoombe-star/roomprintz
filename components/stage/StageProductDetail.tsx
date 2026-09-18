@@ -12,6 +12,7 @@ import {
   stageVariantById,
   stageVariantsForProduct,
 } from "@/lib/vibode-stage/catalog";
+import { stageAddLockKey } from "@/lib/vibode-stage/stage-runtime-placement";
 import { useStageEditor } from "@/components/stage/StageEditorContext";
 
 const FOCUS =
@@ -80,6 +81,12 @@ export function StageProductDetail() {
   });
   const asset = placement ? stageAssetById(placement.assetId, stage.catalog) : null;
   const canAdd = Boolean(placement);
+  const addKey = stageAddLockKey(
+    product.productId,
+    selectedVariantId || product.defaultVariantId,
+  );
+  const addPending = stage.addPendingKey === addKey;
+  const addError = stage.addErrorKey === addKey ? stage.addError : null;
   const favorited = stage.favorites.has(
     favoriteKey(product.productId, selectedVariantId || product.defaultVariantId),
   );
@@ -153,18 +160,19 @@ export function StageProductDetail() {
       <div className="mt-4 flex items-center gap-2">
         <button
           type="button"
-          disabled={!canAdd}
+          disabled={!canAdd || addPending}
+          data-stage-add-pending={addPending ? "true" : "false"}
           onClick={() => stage.addProductToRoom(
             product.productId,
             selectedVariantId || product.defaultVariantId,
           )}
           className={`flex-1 rounded-md border px-3 py-2 text-xs ${FOCUS} ${
-            canAdd
+            canAdd && !addPending
               ? "border-neutral-600 bg-neutral-100 text-neutral-950 hover:bg-white"
               : "border-neutral-800 bg-neutral-950 text-neutral-600"
           }`}
         >
-          Add to Room
+          {addPending ? "Adding…" : "Add to Room"}
         </button>
         <button
           type="button"
@@ -180,6 +188,11 @@ export function StageProductDetail() {
           {favorited ? "♥" : "♡"}
         </button>
       </div>
+      {addError ? (
+        <div className="mt-2 text-[11px] text-amber-200" role="alert">
+          {addError}
+        </div>
+      ) : null}
       {product.productUrl ? (
         <a
           href={product.productUrl}

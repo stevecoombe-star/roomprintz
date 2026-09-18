@@ -29,6 +29,7 @@ import {
   duplicateSceneObject as duplicateSceneObjectDescriptor,
   PI5A_INSTANTIATE_FAILED_MESSAGE,
   PI5A_NOT_READY_MESSAGE,
+  PI5A_UNKNOWN_ASSET_MESSAGE,
   type LiveSceneCrudSnapshot,
   type ProductionSceneCrudHost,
   type SceneCrudResult,
@@ -99,6 +100,12 @@ import {
   productionViewerWorldLifecycleKey,
   resolveViewerBackgroundImageUrl,
 } from "@/lib/afc-v2-runtime/viewer-presentation";
+import {
+  customerMessageForStageRuntimePlacementError,
+  returnedAssetMatchesExpected,
+  shouldRetryStageDynamicFirstLoad,
+  type EnsureStageCommercialPlacement,
+} from "@/lib/vibode-stage/stage-runtime-placement";
 
 type Props = Readonly<{
   roomId: string;
@@ -120,6 +127,7 @@ type Props = Readonly<{
   refreshRuntimeAsset?: (
     assetId: string,
   ) => Promise<FurnitureAssetDefinition | null>;
+  ensureCommercialPlacement?: EnsureStageCommercialPlacement;
 }>;
 
 type ReadyProps = Readonly<{
@@ -142,6 +150,7 @@ type ReadyProps = Readonly<{
   refreshRuntimeAsset?: (
     assetId: string,
   ) => Promise<FurnitureAssetDefinition | null>;
+  ensureCommercialPlacement?: EnsureStageCommercialPlacement;
 }>;
 
 export function AfcProductionRoomViewer({
@@ -162,6 +171,7 @@ export function AfcProductionRoomViewer({
   onSelectionPresentationChange,
   runtimeAssetOverlay,
   refreshRuntimeAsset,
+  ensureCommercialPlacement,
 }: Props) {
   const validated = useMemo(
     () => validateProductionRuntimeAuthority(authority),
@@ -209,6 +219,7 @@ export function AfcProductionRoomViewer({
       onSelectionPresentationChange={onSelectionPresentationChange}
       runtimeAssetOverlay={runtimeAssetOverlay}
       refreshRuntimeAsset={refreshRuntimeAsset}
+      ensureCommercialPlacement={ensureCommercialPlacement}
     />
   );
 }
@@ -231,6 +242,7 @@ function AfcProductionRoomViewerReady({
   onSelectionPresentationChange,
   runtimeAssetOverlay,
   refreshRuntimeAsset,
+  ensureCommercialPlacement,
 }: ReadyProps) {
   const viewportRef = useRef<HTMLDivElement | null>(null);
   const frameRef = useRef<HTMLDivElement | null>(null);
@@ -286,6 +298,7 @@ function AfcProductionRoomViewerReady({
   const onPresentationRef = useRef(onSelectionPresentationChange);
   const overlayRef = useRef(runtimeAssetOverlay ?? null);
   const refreshRuntimeAssetRef = useRef(refreshRuntimeAsset);
+  const ensureCommercialPlacementRef = useRef(ensureCommercialPlacement);
   const resolveAssetRef = useRef<FurnitureAssetResolver>(furnitureAssetDefinition);
   sceneObjectsPropRef.current = resolvedSceneObjects;
   sceneInstanceIdRef.current = resolvedSceneInstanceId;
@@ -297,6 +310,7 @@ function AfcProductionRoomViewerReady({
   onPresentationRef.current = onSelectionPresentationChange;
   overlayRef.current = runtimeAssetOverlay ?? null;
   refreshRuntimeAssetRef.current = refreshRuntimeAsset;
+  ensureCommercialPlacementRef.current = ensureCommercialPlacement;
   resolveAssetRef.current = createFurnitureAssetResolver(overlayRef.current);
 
   useEffect(() => {
@@ -995,47 +1009,148 @@ function AfcProductionRoomViewerReady({
           if (!furnitureReady || !sceneReadyRef.current) {
             return notReadyResult();
           }
+          const capturedInstanceId = sceneInstanceIdRef.current;
+          const staleOrDisposed = () =>
+            disposed ||
+            !sceneReadyRef.current ||
+            sceneInstanceIdRef.current !== capturedInstanceId;
+          const instantiateFailed = (message = PI5A_INSTANTIATE_FAILED_MESSAGE): SceneCrudResult => ({
+            ok: false,
+            reason: "instantiate_failed",
+            message,
+            objects: currentSerializedObjects(),
+            selectedObjectId: selectedObjectIdRef.current,
+          });
+          const unknownAsset = (): SceneCrudResult => ({
+            ok: false,
+            reason: "unknown_asset",
+            message: PI5A_UNKNOWN_ASSET_MESSAGE,
+            objects: currentSerializedObjects(),
+            selectedObjectId: selectedObjectIdRef.current,
+          });
+
+          const ensureStaticTemplate = async (staticAssetId: string): Promise<SceneCrudResult | null> => {
+            await templateCache.ensure([staticAssetId]);
+            if (staleOrDisposed()) return notReadyResult();
+            if (!templateCache.template(staticAssetId)) {
+              return instantiateFailed();
+            }
+            return null;
+          };
+
+          const mountDescriptor = (
+            nextAssetId: string,
+            nextIdentity: SceneObjectProductIdentity | undefined,
+            resolver?: FurnitureAssetResolver,
+          ): SceneCrudResult => {
+            const result = addSceneObjectDescriptor({
+              objects: currentSerializedObjects(),
+              assetId: nextAssetId,
+              identity: nextIdentity,
+              selectedObjectId: selectedObjectIdRef.current,
+              resolver,
+              placement: {
+                metricScale: world.metricScale,
+                realizedWalls,
+              },
+            });
+            if (!result.ok) return result;
+            const live = mountOne(result.object);
+            if (!live) return instantiateFailed();
+            rememberPersistedOrder(result.objects);
+            appliedObjectIds = liveSceneObjectIds(result.objects);
+            selectObject(result.object.objectId);
+            emitCommittedScene();
+            publishSnapshot();
+            return result;
+          };
+
           const resolved = furnitureAssetDefinition(assetId);
           if (resolved) {
-            await templateCache.ensure([resolved.assetId]);
-            if (disposed) return notReadyResult();
-            if (!templateCache.template(resolved.assetId)) {
-              return {
-                ok: false,
-                reason: "instantiate_failed",
-                message: PI5A_INSTANTIATE_FAILED_MESSAGE,
-                objects: currentSerializedObjects(),
-                selectedObjectId: selectedObjectIdRef.current,
-              };
-            }
+            const failed = await ensureStaticTemplate(resolved.assetId);
+            if (failed) return failed;
+            return mountDescriptor(resolved.assetId, identity);
           }
-          const result = addSceneObjectDescriptor({
-            objects: currentSerializedObjects(),
-            assetId,
-            identity,
-            selectedObjectId: selectedObjectIdRef.current,
-            placement: {
-              metricScale: world.metricScale,
-              realizedWalls,
-            },
+
+          const productId = identity?.productId?.trim() ?? "";
+          const variantId = identity?.variantId?.trim() ?? "";
+          const ensurePlacement = ensureCommercialPlacementRef.current;
+          if (!productId || !variantId || !ensurePlacement) {
+            return unknownAsset();
+          }
+
+          const bootstrap = await ensurePlacement({
+            productId,
+            variantId,
+            expectedAssetId: assetId,
           });
-          if (!result.ok) return result;
-          const live = mountOne(result.object);
-          if (!live) {
-            return {
-              ok: false,
-              reason: "instantiate_failed",
-              message: PI5A_INSTANTIATE_FAILED_MESSAGE,
-              objects: currentSerializedObjects(),
-              selectedObjectId: selectedObjectIdRef.current,
-            };
+          if (staleOrDisposed() || bootstrap.cancelled) return notReadyResult();
+          if (!bootstrap.ok) {
+            return instantiateFailed(
+              bootstrap.message ||
+                customerMessageForStageRuntimePlacementError(bootstrap.errorCode),
+            );
           }
-          rememberPersistedOrder(result.objects);
-          appliedObjectIds = liveSceneObjectIds(result.objects);
-          selectObject(result.object.objectId);
-          emitCommittedScene();
-          publishSnapshot();
-          return result;
+          if (!returnedAssetMatchesExpected(assetId, bootstrap.assetId)) {
+            return instantiateFailed(
+              customerMessageForStageRuntimePlacementError("STALE_VARIANT_ASSET"),
+            );
+          }
+          const confirmedIdentity = {
+            productId: bootstrap.productId,
+            variantId: bootstrap.variantId,
+          };
+
+          if (
+            bootstrap.placementKind === "static" ||
+            furnitureAssetDefinition(bootstrap.assetId)
+          ) {
+            const failed = await ensureStaticTemplate(bootstrap.assetId);
+            if (failed) return failed;
+            return mountDescriptor(bootstrap.assetId, confirmedIdentity);
+          }
+
+          let failedAttempts = 0;
+          await templateCache.ensure([bootstrap.assetId], { allowRefresh: false });
+          if (staleOrDisposed()) return notReadyResult();
+          if (!templateCache.template(bootstrap.assetId)) {
+            failedAttempts += 1;
+            if (shouldRetryStageDynamicFirstLoad(failedAttempts)) {
+              const retry = await ensurePlacement({
+                productId: bootstrap.productId,
+                variantId: bootstrap.variantId,
+                expectedAssetId: bootstrap.assetId,
+              });
+              if (staleOrDisposed() || retry.cancelled) return notReadyResult();
+              if (!retry.ok || retry.placementKind !== "dynamic") {
+                return instantiateFailed(
+                  retry.ok
+                    ? PI5A_INSTANTIATE_FAILED_MESSAGE
+                    : retry.message ||
+                      customerMessageForStageRuntimePlacementError(retry.errorCode),
+                );
+              }
+              await templateCache.ensure([retry.assetId], { allowRefresh: false });
+              if (staleOrDisposed()) return notReadyResult();
+              if (!templateCache.template(retry.assetId)) {
+                return instantiateFailed(
+                  customerMessageForStageRuntimePlacementError(
+                    "RUNTIME_DEFINITION_UNAVAILABLE",
+                  ),
+                );
+              }
+              return mountDescriptor(retry.assetId, {
+                productId: retry.productId,
+                variantId: retry.variantId,
+              }, resolveAsset);
+            }
+            return instantiateFailed(
+              customerMessageForStageRuntimePlacementError(
+                "RUNTIME_DEFINITION_UNAVAILABLE",
+              ),
+            );
+          }
+          return mountDescriptor(bootstrap.assetId, confirmedIdentity, resolveAsset);
         });
       },
       duplicateSceneObject: (objectId) => {

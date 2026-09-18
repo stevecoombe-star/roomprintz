@@ -204,6 +204,28 @@ export function overlayFromRuntimeDefinitions(
   return overlay;
 }
 
+/**
+ * Session overlay upsert. Generated registry IDs are ignored so a
+ * private DTO cannot shadow a certified Asset. Same dynamic ID is
+ * replaced in place with the fresher URL/dimensions.
+ */
+export function upsertRuntimeOverlayDefinition(
+  overlay: Map<string, FurnitureAssetDefinition>,
+  dto: RuntimeFurnitureAssetDefinition,
+): boolean {
+  if (furnitureAssetDefinition(dto.assetId)) return false;
+  overlay.set(dto.assetId, furnitureAssetDefinitionFromRuntime(dto));
+  return true;
+}
+
+export function replaceRuntimeAssetDefinitionList(
+  current: readonly RuntimeFurnitureAssetDefinition[],
+  dto: RuntimeFurnitureAssetDefinition,
+): RuntimeFurnitureAssetDefinition[] {
+  if (furnitureAssetDefinition(dto.assetId)) return [...current];
+  return [...current.filter((item) => item.assetId !== dto.assetId), dto];
+}
+
 export function runtimeExpiryByAssetId(
   definitions: readonly RuntimeFurnitureAssetDefinition[],
 ): ReadonlyMap<string, string> {

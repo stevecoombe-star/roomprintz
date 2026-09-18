@@ -32,9 +32,19 @@ export type FurnitureTemplateLoadOutcome =
   | FurnitureTemplateLoadSuccess
   | FurnitureTemplateLoadFailure;
 
+export type FurnitureTemplateEnsureOptions = Readonly<{
+  /**
+   * Default true. First-add commercial bootstrap retries mint via the
+   * runtime-placement endpoint instead of G5B2 scene resolve, so the
+   * viewer passes false until the SceneObject exists.
+   */
+  allowRefresh?: boolean;
+}>;
+
 export type FurnitureTemplateCache = Readonly<{
   ensure: (
     assetIds: readonly string[],
+    options?: FurnitureTemplateEnsureOptions,
   ) => Promise<readonly FurnitureTemplateLoadOutcome[]>;
   template: (assetId: string) => import("three").Group | null;
   loadedAssetIds: () => ReadonlySet<string>;
@@ -75,7 +85,10 @@ export function createFurnitureTemplateCache(input?: Readonly<{
     return { ok: true, assetId, scene: result.scene };
   };
 
-  const loadAsset = (assetId: string): Promise<FurnitureTemplateLoadOutcome> => {
+  const loadAsset = (
+    assetId: string,
+    allowRefresh: boolean,
+  ): Promise<FurnitureTemplateLoadOutcome> => {
     const cached = templates.get(assetId);
     if (cached) {
       return Promise.resolve({ ok: true, assetId, scene: cached });
@@ -95,7 +108,12 @@ export function createFurnitureTemplateCache(input?: Readonly<{
 
     const promise = load(asset.glbUrl)
       .then(async (result): Promise<FurnitureTemplateLoadOutcome> => {
-        if (result.ok || staticHit || !input?.refreshDynamicAsset) {
+        if (
+          result.ok ||
+          staticHit ||
+          !allowRefresh ||
+          !input?.refreshDynamicAsset
+        ) {
           return storeTemplate(assetId, result);
         }
         // Conservative: one refresh for any first dynamic load failure.
@@ -129,9 +147,12 @@ export function createFurnitureTemplateCache(input?: Readonly<{
   };
 
   return {
-    async ensure(assetIds) {
+    async ensure(assetIds, options) {
+      const allowRefresh = options?.allowRefresh !== false;
       const unique = uniqueRegisteredFurnitureAssetIds(assetIds, resolve);
-      const settled = await Promise.allSettled(unique.map((id) => loadAsset(id)));
+      const settled = await Promise.allSettled(
+        unique.map((id) => loadAsset(id, allowRefresh)),
+      );
       return unique.map((assetId, index) => {
         const item = settled[index];
         if (item?.status === "fulfilled") return item.value;

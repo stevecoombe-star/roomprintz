@@ -10,10 +10,19 @@ import {
   furnitureAssetDefinitionFromRuntime,
   interpretRuntimeAssetResolveResponse,
   overlayFromRuntimeDefinitions,
+  replaceRuntimeAssetDefinitionList,
   RUNTIME_ASSET_RESOLVE_PATH,
+  upsertRuntimeOverlayDefinition,
   type RuntimeAssetIssue,
   type RuntimeFurnitureAssetDefinition,
 } from "./runtime-furniture-assets";
+import {
+  fetchStageRuntimePlacement,
+  isCurrentStageSceneGuard,
+  parseStageRuntimePlacementRequest,
+  type EnsureStageCommercialPlacement,
+  type StageRuntimePlacementClientResult,
+} from "@/lib/vibode-stage/stage-runtime-placement";
 import {
   createLoadedSceneInstanceId,
   pendingSceneInstanceId,
@@ -52,6 +61,10 @@ export type Persisted3dSceneState = Readonly<{
   refreshRuntimeAsset: (
     assetId: string,
   ) => Promise<FurnitureAssetDefinition | null>;
+  upsertRuntimeAssetDefinition: (
+    definition: RuntimeFurnitureAssetDefinition,
+  ) => boolean;
+  ensureCommercialPlacement: EnsureStageCommercialPlacement;
   canUndo: boolean;
   undo: () => void;
   onObjectTransformCommitted: (scene: SerializedRuntimeScene) => void;
@@ -442,6 +455,117 @@ export function usePersisted3dScene(input: Readonly<{
     void persistIdentity(current, { objects: previous });
   }, [persistIdentity]);
 
+  const upsertRuntimeAssetDefinition = useCallback((
+    definition: RuntimeFurnitureAssetDefinition,
+  ): boolean => {
+    const current = identityRef.current;
+    const loaded = loadedRef.current;
+    if (!current || !loaded || !sceneIdentitiesEqual(loaded.identity, current)) {
+      return false;
+    }
+    if (!upsertRuntimeOverlayDefinition(overlayRef.current, definition)) {
+      return false;
+    }
+    setAssetDefinitions((currentDefinitions) =>
+      replaceRuntimeAssetDefinitionList(currentDefinitions, definition),
+    );
+    return true;
+  }, []);
+
+  const ensureCommercialPlacement = useCallback(async (
+    input: Readonly<{
+      productId: string;
+      variantId: string;
+      expectedAssetId: string;
+    }>,
+  ): Promise<StageRuntimePlacementClientResult> => {
+    const capturedIdentity = identityRef.current;
+    const capturedRevision = loadRevisionRef.current;
+    if (!capturedIdentity) {
+      return {
+        ok: false,
+        errorCode: "VERSION_NOT_FOUND",
+        error: "Furniture isn't ready yet.",
+        message: "Furniture isn't ready yet.",
+      };
+    }
+    const parsed = parseStageRuntimePlacementRequest({
+      roomId: capturedIdentity.roomId,
+      versionId: capturedIdentity.versionId,
+      afcGenerationId: capturedIdentity.afcGenerationId,
+      productId: input.productId,
+      variantId: input.variantId,
+      expectedAssetId: input.expectedAssetId,
+    });
+    if (!parsed.ok) {
+      return {
+        ok: false,
+        errorCode: "INVALID_REQUEST",
+        error: "This furniture model is temporarily unavailable.",
+        message: "This furniture model is temporarily unavailable.",
+      };
+    }
+    const stillCurrent = () => isCurrentStageSceneGuard({
+      capturedIdentity,
+      currentIdentity: identityRef.current,
+      capturedRevision,
+      currentRevision: loadRevisionRef.current,
+    });
+    try {
+      const token = await getSupabaseBrowserAccessToken();
+      if (!token) {
+        return {
+          ok: false,
+          errorCode: "UNAUTHORIZED",
+          error: "Unauthorized.",
+          message: "Unauthorized.",
+        };
+      }
+      if (!stillCurrent()) {
+        return {
+          ok: false,
+          errorCode: "VERSION_NOT_FOUND",
+          error: "Furniture isn't ready yet.",
+          message: "Furniture isn't ready yet.",
+          cancelled: true,
+        };
+      }
+      const placed = await fetchStageRuntimePlacement({
+        request: parsed.request,
+        token,
+      });
+      if (!stillCurrent()) {
+        return {
+          ok: false,
+          errorCode: "VERSION_NOT_FOUND",
+          error: "Furniture isn't ready yet.",
+          message: "Furniture isn't ready yet.",
+          cancelled: true,
+        };
+      }
+      if (!placed.ok) return placed;
+      if (placed.placementKind === "dynamic" && placed.runtimeAsset) {
+        if (!upsertRuntimeAssetDefinition(placed.runtimeAsset)) {
+          return {
+            ok: false,
+            errorCode: "VERSION_NOT_FOUND",
+            error: "Furniture isn't ready yet.",
+            message: "Furniture isn't ready yet.",
+            cancelled: true,
+          };
+        }
+      }
+      return placed;
+    } catch {
+      return {
+        ok: false,
+        errorCode: "RUNTIME_DEFINITION_UNAVAILABLE",
+        error: "This furniture model is temporarily unavailable.",
+        message: "This furniture model is temporarily unavailable.",
+      };
+    }
+  }, [upsertRuntimeAssetDefinition]);
+
   const refreshRuntimeAsset = useCallback(async (
     assetId: string,
   ): Promise<FurnitureAssetDefinition | null> => {
@@ -504,6 +628,8 @@ export function usePersisted3dScene(input: Readonly<{
     assetIssues: sceneReady ? assetIssues : [],
     runtimeAssetOverlay: overlayRef.current,
     refreshRuntimeAsset,
+    upsertRuntimeAssetDefinition,
+    ensureCommercialPlacement,
     canUndo,
     undo,
     onObjectTransformCommitted,

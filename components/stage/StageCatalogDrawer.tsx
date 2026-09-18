@@ -16,6 +16,7 @@ import {
 } from "@/lib/vibode-stage/catalog";
 import { visibleStageCatalogProducts } from "@/lib/vibode-stage/catalog-query";
 import { resolveStagePlacement } from "@/lib/vibode-stage/catalog";
+import { stageAddLockKey } from "@/lib/vibode-stage/stage-runtime-placement";
 import {
   STAGE_CATALOG_MODES,
   STAGE_CATALOG_WIDTH_PX,
@@ -270,12 +271,15 @@ function CatalogCard({
     extraVariants: stage.extraVariants,
     catalog: stage.catalog,
   }));
+  const addKey = stageAddLockKey(product.productId, product.defaultVariantId);
   return (
     <StageProductCard
       product={product}
       favorited={stage.favorites.has(favoriteKey(product.productId, product.defaultVariantId))}
       added={stage.addedProductId === product.productId}
       canAdd={canAdd}
+      addPending={stage.addPendingKey === addKey}
+      addError={stage.addErrorKey === addKey ? stage.addError : null}
       onOpen={() => stage.openProductDetail(product.productId)}
       onToggleFavorite={() => stage.toggleFavorite(product.productId, product.defaultVariantId)}
       onAdd={() => onAdd(product.productId, product.defaultVariantId)}

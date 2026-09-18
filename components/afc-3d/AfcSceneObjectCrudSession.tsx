@@ -34,7 +34,7 @@ type SceneObjectCrudSession = Readonly<{
   addFurnitureWithIdentity: (
     assetId: string,
     identity?: SceneObjectProductIdentity,
-  ) => void;
+  ) => Promise<{ ok: true } | { ok: false; message: string }>;
   duplicateSelected: () => void;
   deleteSelected: () => void;
   commitRotationYDeg: (degrees: number) => boolean;
@@ -91,29 +91,28 @@ export function AfcSceneObjectCrudSessionProvider({
     })();
   }, []);
 
-  const addFurnitureWithIdentity = useCallback((
+  const addFurnitureWithIdentity = useCallback(async (
     assetId: string,
     identity?: SceneObjectProductIdentity,
-  ) => {
+  ): Promise<{ ok: true } | { ok: false; message: string }> => {
     const host = hostRef.current;
     if (!host?.canMutate()) {
       setActionError(PI5A_NOT_READY_MESSAGE);
-      return;
+      return { ok: false, message: PI5A_NOT_READY_MESSAGE };
     }
     if (host.objectCount() >= PI4C_MAX_SCENE_OBJECTS) {
       setActionError(PI5A_SCENE_AT_CAPACITY_MESSAGE);
-      return;
+      return { ok: false, message: PI5A_SCENE_AT_CAPACITY_MESSAGE };
     }
-    void (async () => {
-      const result = await Promise.resolve(host.addSceneObject(assetId, identity));
-      setObjectCount(host.objectCount());
-      if (!result.ok) {
-        setActionError(result.message);
-        return;
-      }
-      setActionError(null);
-      setSelectedObjectId(result.selectedObjectId);
-    })();
+    const result = await Promise.resolve(host.addSceneObject(assetId, identity));
+    setObjectCount(host.objectCount());
+    if (!result.ok) {
+      setActionError(result.message);
+      return { ok: false, message: result.message };
+    }
+    setActionError(null);
+    setSelectedObjectId(result.selectedObjectId);
+    return { ok: true };
   }, []);
 
   const duplicateSelected = useCallback(() => {

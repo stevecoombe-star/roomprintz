@@ -6,6 +6,7 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type ReactNode,
 } from "react";
@@ -20,6 +21,11 @@ import {
   type BoundScene,
 } from "@/lib/vibode-stage/bound-scene";
 import { rememberRecentlyUsed } from "@/lib/vibode-stage/catalog-query";
+import {
+  acquireStageAddLock,
+  releaseStageAddLock,
+  stageAddLockKey,
+} from "@/lib/vibode-stage/stage-runtime-placement";
 import {
   allStageProducts,
   createPastedStageProduct,
@@ -78,6 +84,9 @@ type StageEditorContextValue = Readonly<{
   transformMode: RuntimeTransformMode;
   toolbarSlider: StageToolbarSlider;
   addedProductId: string | null;
+  addPendingKey: string | null;
+  addError: string | null;
+  addErrorKey: string | null;
   toggleCatalog: () => void;
   pinCatalog: () => void;
   collapseCatalog: () => void;
@@ -149,6 +158,10 @@ export function StageEditorProvider({
   const [selection, setSelection] = useState<SceneSelectionPresentation | null>(null);
   const [toolbarSlider, setToolbarSlider] = useState<StageToolbarSlider>(null);
   const [addedProductId, setAddedProductId] = useState<string | null>(null);
+  const [addPendingKey, setAddPendingKey] = useState<string | null>(null);
+  const [addError, setAddError] = useState<string | null>(null);
+  const [addErrorKey, setAddErrorKey] = useState<string | null>(null);
+  const addLocksRef = useRef(new Set<string>());
 
   useEffect(() => {
     setFavorites(readFavoriteKeysFromStorage(
@@ -259,14 +272,31 @@ export function StageEditorProvider({
       catalog,
     });
     if (!placement || !session) return false;
-    session.addFurnitureWithIdentity(placement.assetId, {
-      productId: placement.product.productId,
-      variantId: placement.variant.variantId,
-    });
-    setRecentlyUsedProductIds((current) => rememberRecentlyUsed(current, productId));
-    setAddedProductId(productId);
-    onTransformModeChange("move");
-    setToolbarSlider(null);
+    const key = stageAddLockKey(placement.product.productId, placement.variant.variantId);
+    if (!acquireStageAddLock(addLocksRef.current, key)) return false;
+    setAddPendingKey(key);
+    setAddError(null);
+    setAddErrorKey(null);
+    void (async () => {
+      try {
+        const result = await session.addFurnitureWithIdentity(placement.assetId, {
+          productId: placement.product.productId,
+          variantId: placement.variant.variantId,
+        });
+        if (!result.ok) {
+          setAddError(result.message);
+          setAddErrorKey(key);
+          return;
+        }
+        setRecentlyUsedProductIds((current) => rememberRecentlyUsed(current, productId));
+        setAddedProductId(productId);
+        onTransformModeChange("move");
+        setToolbarSlider(null);
+      } finally {
+        releaseStageAddLock(addLocksRef.current, key);
+        setAddPendingKey((current) => (current === key ? null : current));
+      }
+    })();
     return true;
   }, [catalog, extraProducts, extraVariants, onTransformModeChange, session]);
 
@@ -361,6 +391,9 @@ export function StageEditorProvider({
     transformMode,
     toolbarSlider,
     addedProductId,
+    addPendingKey,
+    addError,
+    addErrorKey,
     toggleCatalog,
     pinCatalog,
     collapseCatalog,
@@ -384,6 +417,9 @@ export function StageEditorProvider({
   }), [
     active,
     addedProductId,
+    addPendingKey,
+    addError,
+    addErrorKey,
     addProductToRoom,
     bindScene,
     boundScene,

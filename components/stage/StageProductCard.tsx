@@ -12,6 +12,8 @@ export function StageProductCard({
   favorited,
   added,
   canAdd,
+  addPending = false,
+  addError = null,
   onOpen,
   onToggleFavorite,
   onAdd,
@@ -20,6 +22,8 @@ export function StageProductCard({
   favorited: boolean;
   added: boolean;
   canAdd: boolean;
+  addPending?: boolean;
+  addError?: string | null;
   onOpen: () => void;
   onToggleFavorite: () => void;
   onAdd: () => void;
@@ -70,22 +74,28 @@ export function StageProductCard({
         <button
           type="button"
           aria-label={`Add ${product.name}`}
-          disabled={!canAdd}
+          disabled={!canAdd || addPending}
+          data-stage-add-pending={addPending ? "true" : "false"}
           onMouseDown={(event) => {
             event.preventDefault();
           }}
           onClick={onAdd}
           className={`rounded-md border px-2 py-0.5 text-xs ${FOCUS} ${
-            !canAdd
+            !canAdd || addPending
               ? "border-neutral-800 bg-neutral-950 text-neutral-600"
               : added
                 ? "border-emerald-500/50 bg-emerald-950/50 text-emerald-100"
                 : "border-neutral-700 bg-neutral-950 text-neutral-200 hover:bg-neutral-800"
           }`}
         >
-          {added ? "✓ Added" : "+"}
+          {addPending ? "Adding…" : added ? "✓ Added" : "+"}
         </button>
       </div>
+      {addError ? (
+        <div className="mt-1 px-0.5 text-[11px] text-amber-200" role="alert">
+          {addError}
+        </div>
+      ) : null}
     </article>
   );
 }

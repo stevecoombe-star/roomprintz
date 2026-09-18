@@ -270,10 +270,12 @@ export function addSceneObject(input: Readonly<{
   placement?: ScenePlacementContext;
   createObjectId?: () => string;
   selectedObjectId?: string | null;
+  resolver?: FurnitureAssetResolver;
 }>): SceneCrudResult {
   const current = persistenceSafeSceneObjects(input.objects);
   const selectedObjectId = input.selectedObjectId ?? null;
-  const asset = furnitureAssetDefinition(input.assetId);
+  const resolve = input.resolver ?? furnitureAssetDefinition;
+  const asset = resolve(input.assetId);
   if (!asset) {
     return fail("unknown_asset", PI5A_UNKNOWN_ASSET_MESSAGE, current, selectedObjectId);
   }
@@ -292,7 +294,11 @@ export function addSceneObject(input: Readonly<{
     preferredCanonical: preferredAddCanonicalTransform(),
     metricScale,
     realizedWalls: input.placement?.realizedWalls ?? [],
-    localAabb: placementAabbForAsset(asset.assetId, input.placement?.localAabb),
+    localAabb: placementAabbForAsset(
+      asset.assetId,
+      input.placement?.localAabb,
+      input.resolver,
+    ),
   });
   const object = createCanonicalDescriptor({
     objectId,
