@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import type { PostgrestError, SupabaseClient } from "@supabase/supabase-js";
 import { getAuthenticatedAdminUser, getServiceRoleSupabaseClient } from "@/lib/adminServer";
+import { deleteAfcV2UserStorage } from "@/lib/afc-v2-production/delete-user-afc-storage.server";
 
 export const runtime = "nodejs";
 
@@ -242,11 +243,25 @@ async function deleteRowsByUserId(args: {
   return { deleted: count ?? 0, skipped: false };
 }
 
-export async function POST(request: Request) {
-  const adminUser = await getAuthenticatedAdminUser();
+export type AdminDeleteUserHandlerDeps = {
+  getAuthenticatedAdminUser?: typeof getAuthenticatedAdminUser;
+  getServiceRoleSupabaseClient?: typeof getServiceRoleSupabaseClient;
+  deleteAfcV2UserStorage?: typeof deleteAfcV2UserStorage;
+};
+
+export function createAdminDeleteUserPostHandler(
+  deps: AdminDeleteUserHandlerDeps = {},
+) {
+  const resolveAdminUser = deps.getAuthenticatedAdminUser ?? getAuthenticatedAdminUser;
+  const resolveServiceRoleClient =
+    deps.getServiceRoleSupabaseClient ?? getServiceRoleSupabaseClient;
+  const cleanupAfcV2Storage = deps.deleteAfcV2UserStorage ?? deleteAfcV2UserStorage;
+
+  return async function POST(request: Request) {
+  const adminUser = await resolveAdminUser();
   if (!adminUser) return json(403, { error: "Admin access required." });
 
-  const supabaseAdmin = getServiceRoleSupabaseClient();
+  const supabaseAdmin = resolveServiceRoleClient();
   if (!supabaseAdmin) {
     return json(500, { error: "Server configuration missing for admin controls." });
   }
@@ -273,6 +288,18 @@ export async function POST(request: Request) {
   const targetEmail = authUserData.user.email ?? "";
   if (!targetEmail || confirmEmail !== targetEmail) {
     return json(400, { error: "Confirmation email does not match target user email." });
+  }
+
+  const afcCleanup = await cleanupAfcV2Storage({
+    supabase: supabaseAdmin,
+    userId,
+  });
+  if (!afcCleanup.ok) {
+    return json(500, {
+      error: "Failed deleting AFC storage.",
+      deletedStorageFiles: afcCleanup.deleted,
+      skippedStorageFiles: afcCleanup.skipped,
+    });
   }
 
   const deletedRowsByTable: Record<string, number> = {};
@@ -408,8 +435,8 @@ export async function POST(request: Request) {
     }
   }
 
-  let deletedStorageFiles = 0;
-  let skippedStorageFiles = storageSkipCounter.skipped;
+  let deletedStorageFiles = afcCleanup.deleted;
+  let skippedStorageFiles = storageSkipCounter.skipped + afcCleanup.skipped;
   for (const candidate of storageDeleteCandidates.values()) {
     if (!candidate.bucket || !candidate.path || isUnsafeStorageDeletePath(candidate.path)) {
       skippedStorageFiles += 1;
@@ -487,4 +514,7 @@ export async function POST(request: Request) {
     deletedRowsByTable,
     authUserDeleted: true,
   });
+  };
 }
+
+export const POST = createAdminDeleteUserPostHandler();

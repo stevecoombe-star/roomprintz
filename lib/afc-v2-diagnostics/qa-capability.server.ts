@@ -11,8 +11,9 @@ import {
  * AFD-1C QA capability gate.
  *
  * Server-controlled tester entitlement only. `enabled: true` is not launch-ready.
- * Keep VIBODE_AFC_QA_MODE=off in shared/real testing until vibode-afc-v2
- * user-deletion cleanup is independently hardened (AFD-1D).
+ * AFD-1D implements vibode-afc-v2 user-deletion cleanup. Keep
+ * VIBODE_AFC_QA_MODE=off in shared/real testing until allowlist/all
+ * activation is an explicit later operational decision.
  */
 
 export const AFC_QA_MODES = ["off", "allowlist", "all"] as const;
