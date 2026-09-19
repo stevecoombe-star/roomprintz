@@ -46,3 +46,7 @@ export type {
 export type { AfcQaCapability, AfcQaMode } from "./qa-capability.server";
 export type { AfcDiagnosticMembershipResult } from "./session-lifecycle.server";
 export type { AfcDiagnosticRetryEpisodeSignal } from "./retry-episode-signal.server";
+export type {
+  AfcDiagnosticTesterCaseSubmitResult,
+  AfcDiagnosticTesterCaseTrigger,
+} from "./submit-tester-case.server";
