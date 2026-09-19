@@ -458,14 +458,21 @@ test("25) AFC generation authority, parent lineage, and activation stay untouche
   assert.doesNotMatch(persistence, /afc-v2-diagnostics|vibode_afc_diagnostic_/);
 });
 
-test("26) production AFC routes and persistence do not import diagnostics", () => {
+test("26) production AFC core stays isolated from diagnostics except AFD-2B analyze attach", () => {
+  const analyzeRoute = path.join(ROOT, "app/api/vibode/afc/analyze/route.ts");
   const files = [
     ...walkTs(path.join(ROOT, "app/api/vibode/afc")).filter(
-      (file) => !file.includes(`${path.sep}afc${path.sep}qa${path.sep}`),
+      (file) =>
+        !file.includes(`${path.sep}afc${path.sep}qa${path.sep}`) &&
+        file !== analyzeRoute,
     ),
     ...walkTs(path.join(ROOT, "lib/afc-v2-production")),
+    ...walkTs(path.join(ROOT, "lib/afc-v2-runtime")),
   ];
-  assert.ok(files.some((file) => file.endsWith("analyze/route.ts")));
+  assert.equal(
+    files.some((file) => file.endsWith("analyze/route.ts")),
+    false,
+  );
   for (const file of files) {
     const text = readFileSync(file, "utf8");
     assert.doesNotMatch(
@@ -474,12 +481,23 @@ test("26) production AFC routes and persistence do not import diagnostics", () =
       `${path.relative(ROOT, file)} must not import diagnostics`,
     );
   }
+  const analyze = source("app/api/vibode/afc/analyze/route.ts");
+  assert.match(
+    analyze,
+    /from "@\/lib\/afc-v2-diagnostics\/session-attach\.server"/,
+  );
+  assert.match(analyze, /onGenerationCreated: attachAfcDiagnosticSessionBestEffort/);
+  assert.doesNotMatch(
+    analyze,
+    /session-lifecycle|ensureAfcDiagnosticSessionMembership|qa-capability|vibode_afc_diagnostic_/,
+  );
   const diagnosticsModule = [
     source("lib/afc-v2-diagnostics/index.ts"),
     source("lib/afc-v2-diagnostics/contracts.ts"),
     source("lib/afc-v2-diagnostics/taxonomy.ts"),
     source("lib/afc-v2-diagnostics/qa-capability.server.ts"),
     source("lib/afc-v2-diagnostics/session-lifecycle.server.ts"),
+    source("lib/afc-v2-diagnostics/session-attach.server.ts"),
   ].join("\n");
   assert.doesNotMatch(
     diagnosticsModule,

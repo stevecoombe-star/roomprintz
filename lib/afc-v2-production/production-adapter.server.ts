@@ -52,6 +52,15 @@ export type ProductionOriginalInput = Readonly<{
   sourceImageUrl?: string;
 }>;
 
+export type ProductionAfcGenerationCreated = Readonly<{
+  userId: string;
+  roomId: string;
+  originalSha256: string;
+  baseAssetId: string | null;
+  generationId: string;
+  intent: ProductionAfcIntent;
+}>;
+
 export type RunProductionAfcAnalysisInput = Readonly<{
   roomId: string;
   userId: string;
@@ -60,6 +69,9 @@ export type RunProductionAfcAnalysisInput = Readonly<{
   original: ProductionOriginalInput;
   analysisDependencies?: AfcV2AnalysisDependencies;
   analyze?: typeof executeAfcV2Analysis;
+  onGenerationCreated?: (
+    created: ProductionAfcGenerationCreated,
+  ) => Promise<unknown> | unknown;
 }>;
 
 export type RestoreProductionAfcInput = Readonly<{
@@ -294,6 +306,18 @@ export async function runProductionAfcAnalysis(
     intent,
     tiledForceRegeneration: forceTiledRegeneration,
   });
+  try {
+    await input.onGenerationCreated?.(Object.freeze({
+      userId: generation.userId,
+      roomId: generation.roomId,
+      originalSha256: originalIdentity.sha256,
+      baseAssetId: room.baseAsset?.id ?? null,
+      generationId: generation.id,
+      intent: generation.intent,
+    }));
+  } catch {
+    // Best-effort orchestration hook. Must not fail a created generation.
+  }
   const prefix = afcGenerationStoragePrefix({
     userId: input.userId,
     roomId: input.roomId,

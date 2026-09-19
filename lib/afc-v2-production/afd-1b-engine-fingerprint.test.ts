@@ -527,9 +527,11 @@ test("AFD-1B does not implement capability, sessions, or public fingerprint APIs
   const apiFiles = walkTs(path.join(ROOT, "app/api/vibode/afc")).filter(
     (file) => !file.includes(`${path.sep}afc${path.sep}qa${path.sep}`),
   );
+  const analyzeRoute = path.join(ROOT, "app/api/vibode/afc/analyze/route.ts");
   for (const file of [...productionFiles, ...apiFiles]) {
     const text = readFileSync(file, "utf8");
     assert.doesNotMatch(text, /VIBODE_AFC_QA_MODE|VIBODE_AFC_QA_USER_IDS/);
+    if (file === analyzeRoute) continue;
     assert.doesNotMatch(text, /afc-v2-diagnostics|vibode_afc_diagnostic_/);
   }
   const analyze = source("app/api/vibode/afc/analyze/route.ts");

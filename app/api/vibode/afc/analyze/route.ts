@@ -1,3 +1,4 @@
+import { attachAfcDiagnosticSessionBestEffort } from "@/lib/afc-v2-diagnostics/session-attach.server";
 import {
   runProductionAfcAnalysis,
 } from "@/lib/afc-v2-production/production-adapter.server";
@@ -61,6 +62,7 @@ export async function POST(request: Request) {
       bytes: original.bytes,
       sourceImageUrl: original.sourceImageUrl,
     },
+    onGenerationCreated: attachAfcDiagnosticSessionBestEffort,
   });
 
   if (result.status === "failed" && result.generationId === null) {
