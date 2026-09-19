@@ -489,7 +489,7 @@ test("26) production AFC core stays isolated from diagnostics except AFD-2B anal
   assert.match(analyze, /onGenerationCreated: attachAfcDiagnosticSessionBestEffort/);
   assert.doesNotMatch(
     analyze,
-    /session-lifecycle|ensureAfcDiagnosticSessionMembership|qa-capability|vibode_afc_diagnostic_/,
+    /session-lifecycle|ensureAfcDiagnosticSessionMembership|qa-capability|retry-episode-signal|getAfcDiagnosticRetryEpisodeSignal|vibode_afc_diagnostic_/,
   );
   const diagnosticsModule = [
     source("lib/afc-v2-diagnostics/index.ts"),
@@ -498,6 +498,7 @@ test("26) production AFC core stays isolated from diagnostics except AFD-2B anal
     source("lib/afc-v2-diagnostics/qa-capability.server.ts"),
     source("lib/afc-v2-diagnostics/session-lifecycle.server.ts"),
     source("lib/afc-v2-diagnostics/session-attach.server.ts"),
+    source("lib/afc-v2-diagnostics/retry-episode-signal.server.ts"),
   ].join("\n");
   assert.doesNotMatch(
     diagnosticsModule,
