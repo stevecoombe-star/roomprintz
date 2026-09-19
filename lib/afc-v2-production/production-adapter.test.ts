@@ -13,6 +13,7 @@ import {
 import {
   executeAfcV2Analysis,
   type AfcV2AnalysisDependencies,
+  type AfcV2AnalyzeResult,
 } from "@/app/admin/3d-room-lab-v2/afc-v2-analysis.server";
 import { buildEmptyRoomObservationEvidence } from "@/app/admin/3d-room-lab-v2/empty-room-observation-contract";
 import {
@@ -27,6 +28,10 @@ import {
   isAfcV2ProductionRoomAuthority,
   productionAuthorityKeys,
 } from "./production-authority-contract";
+import {
+  AFC_V2_ENGINE_FINGERPRINT_SCHEMA_VERSION,
+  isAfcV2EngineFingerprintV1,
+} from "./engine-fingerprint";
 import { collectProductionPayloadPrivacyViolations } from "./privacy";
 import {
   createMemoryAfcProductionStore,
@@ -672,5 +677,116 @@ test("corrupt durable TILED is a cache miss and regenerates", async () => {
   assert.equal(retry.status, "ready");
   assert.equal(retry.authority?.tiled.artifactSource, "generated");
   assert.equal(counts.tiled, 1);
+});
+
+const PUBLIC_RESPONSE_KEYS = [
+  "status",
+  "generationId",
+  "currentGenerationId",
+  "authority",
+  "failureReason",
+  "frame",
+] as const;
+
+test("AFD-1B public analyze/restore responses do not expose engine fingerprints", async () => {
+  const store = await seededStore();
+  const result = await analyze(store, createCounts(), "analyze");
+  assert.equal(result.status, "ready");
+  assert.deepEqual(Object.keys(result).sort(), [...PUBLIC_RESPONSE_KEYS].sort());
+  assert.equal("engineFingerprint" in result, false);
+  const restored = await restoreProductionAfcRoom({
+    roomId: ROOM_ID,
+    userId: USER_ID,
+    store,
+  });
+  assert.equal(restored.status, "ready");
+  assert.deepEqual(Object.keys(restored).sort(), [...PUBLIC_RESPONSE_KEYS].sort());
+  assert.equal("engineFingerprint" in restored, false);
+  assert.doesNotMatch(JSON.stringify(result), /engineFingerprint|engine_fingerprint/);
+  assert.doesNotMatch(JSON.stringify(restored), /engineFingerprint|engine_fingerprint/);
+});
+
+test("AFD-1B READY authority engineVersions and readerVersion match the fingerprint", async () => {
+  const store = await seededStore();
+  const result = await analyze(store, createCounts(), "analyze");
+  assert.equal(result.status, "ready");
+  const generation = await store.getGeneration(result.generationId!);
+  assert.ok(generation?.engineFingerprint);
+  assert.equal(isAfcV2EngineFingerprintV1(generation.engineFingerprint), true);
+  assert.deepEqual(
+    generation.engineFingerprint.engineVersions,
+    result.authority?.engineVersions,
+  );
+  assert.equal(
+    generation.engineFingerprint.tiled.readerVersion,
+    result.authority?.tiled.readerVersion,
+  );
+  assert.equal(
+    generation.engineFingerprint.tiled.readerVersion,
+    "afc-sr1-tiled-perspective-reader/s1",
+  );
+});
+
+test("AFD-1B failed generations retain baseline fingerprints", async () => {
+  const store = await seededStore();
+  const failed = await analyze(store, createCounts(), "analyze", undefined, true);
+  assert.equal(failed.status, "failed");
+  const generation = await store.getGeneration(failed.generationId!);
+  assert.equal(generation?.status, "failed");
+  assert.ok(generation?.engineFingerprint);
+  assert.equal(
+    generation.engineFingerprint.fingerprintSchemaVersion,
+    AFC_V2_ENGINE_FINGERPRINT_SCHEMA_VERSION,
+  );
+  assert.equal(generation.engineFingerprint.tiled.readerVersion, null);
+  assert.equal("engineFingerprint" in failed, false);
+});
+
+test("AFD-1B failure after reader version is known fills fingerprint readerVersion once", async () => {
+  const store = await seededStore();
+  const failed = await runProductionAfcAnalysis({
+    roomId: ROOM_ID,
+    userId: USER_ID,
+    intent: "analyze",
+    store,
+    original: {
+      bytes: ORIGINAL_BYTES,
+      identity: originalBasis,
+      sourceImageUrl: SOURCE_IMAGE_URL,
+    },
+    analysisDependencies: analysisDependencies(createCounts()),
+    analyze: async (input, deps) => {
+      const applied = await executeAfcV2Analysis(input, deps);
+      if (applied.status !== "applied") return applied;
+      return {
+        ...applied,
+        status: "failed",
+        reason: "forced failure after reader",
+      } as AfcV2AnalyzeResult;
+    },
+  });
+  assert.equal(failed.status, "failed");
+  const generation = await store.getGeneration(failed.generationId!);
+  assert.equal(generation?.status, "failed");
+  assert.equal(
+    generation?.engineFingerprint?.tiled.readerVersion,
+    "afc-sr1-tiled-perspective-reader/s1",
+  );
+  assert.equal(generation?.productionAuthority, null);
+});
+
+test("AFD-1B parent_generation_id remains current successful generation lineage", async () => {
+  const store = await seededStore();
+  const first = await analyze(store, createCounts(), "analyze");
+  const second = await analyze(store, createCounts(), "run_again");
+  const firstGen = await store.getGeneration(first.generationId!);
+  const secondGen = await store.getGeneration(second.generationId!);
+  assert.equal(firstGen?.parentGenerationId, null);
+  assert.equal(secondGen?.parentGenerationId, first.generationId);
+  const failed = await analyze(store, createCounts(), "run_again", undefined, true);
+  const failedGen = await store.getGeneration(failed.generationId!);
+  assert.equal(failedGen?.parentGenerationId, second.generationId);
+  const room = await store.getRoom(ROOM_ID);
+  assert.equal(room?.currentAfcGenerationId, second.generationId);
 });
 

@@ -1,5 +1,10 @@
 import type { AfcSr1LiveBasis } from "@/app/admin/3d-room-lab/afc-sr1-live-product-contract";
 import type { AfcSr1GeneratedTiledArtifact } from "@/app/admin/3d-room-lab/afc-sr1-tiled-artifact-cache";
+import {
+  buildAfcV2EngineFingerprint,
+  cloneAfcV2EngineFingerprint,
+  type AfcV2EngineFingerprintV1,
+} from "./engine-fingerprint";
 import { durableArtifactBytesMatch } from "./production-artifact-integrity";
 import type { AfcV2ProductionRoomAuthority } from "./production-authority-contract";
 
@@ -55,6 +60,7 @@ export type AfcGenerationRecord = Readonly<{
   tiledCacheKey: string | null;
   tiledForceRegeneration: boolean;
   frame: Readonly<{ width: number; height: number }> | null;
+  engineFingerprint: AfcV2EngineFingerprintV1 | null;
   productionAuthority: AfcV2ProductionRoomAuthority | null;
   diagnosticPayload: unknown;
   failureReason: string | null;
@@ -106,6 +112,7 @@ export type UpdateAfcGenerationInput = Readonly<{
   tiledStoragePath?: string | null;
   tiledCacheKey?: string | null;
   frame?: Readonly<{ width: number; height: number }> | null;
+  engineFingerprint?: AfcV2EngineFingerprintV1 | null;
   productionAuthority?: AfcV2ProductionRoomAuthority | null;
   diagnosticPayload?: unknown;
   failureReason?: string | null;
@@ -179,8 +186,58 @@ function cloneRecord(record: AfcGenerationRecord): AfcGenerationRecord {
     empty: cloneIdentity(record.empty),
     tiled: cloneIdentity(record.tiled),
     frame: record.frame ? Object.freeze({ ...record.frame }) : null,
+    engineFingerprint: record.engineFingerprint
+      ? cloneAfcV2EngineFingerprint(record.engineFingerprint)
+      : null,
     providerProvenance: Object.freeze({ ...record.providerProvenance }),
   });
+}
+
+function isTerminalStatus(status: AfcGenerationStatus): boolean {
+  return status === "ready" || status === "failed";
+}
+
+function jsonEqual(left: unknown, right: unknown): boolean {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+function identityFieldsEqual(
+  existing: AfcGenerationRecord,
+  next: AfcGenerationRecord,
+): boolean {
+  return existing.id === next.id
+    && existing.roomId === next.roomId
+    && existing.userId === next.userId
+    && existing.parentGenerationId === next.parentGenerationId
+    && existing.lineageSeq === next.lineageSeq
+    && existing.runId === next.runId
+    && existing.createdAt === next.createdAt;
+}
+
+function terminalEvidenceEqual(
+  existing: AfcGenerationRecord,
+  next: AfcGenerationRecord,
+): boolean {
+  return existing.status === next.status
+    && existing.intent === next.intent
+    && jsonEqual(existing.engineFingerprint, next.engineFingerprint)
+    && jsonEqual(existing.productionAuthority, next.productionAuthority)
+    && jsonEqual(existing.original, next.original)
+    && jsonEqual(existing.empty, next.empty)
+    && jsonEqual(existing.tiled, next.tiled)
+    && existing.emptyArtifactSource === next.emptyArtifactSource
+    && existing.tiledArtifactSource === next.tiledArtifactSource
+    && existing.emptyStoragePath === next.emptyStoragePath
+    && existing.tiledStoragePath === next.tiledStoragePath
+    && existing.tiledCacheKey === next.tiledCacheKey
+    && existing.tiledForceRegeneration === next.tiledForceRegeneration
+    && jsonEqual(existing.frame, next.frame)
+    && jsonEqual(existing.diagnosticPayload, next.diagnosticPayload)
+    && existing.failureReason === next.failureReason
+    && jsonEqual(existing.providerProvenance, next.providerProvenance)
+    && existing.metricStatus === next.metricStatus
+    && existing.collisionStatus === next.collisionStatus
+    && existing.completedAt === next.completedAt;
 }
 
 export function afcGenerationStoragePrefix(input: Readonly<{
@@ -239,6 +296,7 @@ export function createMemoryAfcProductionStore(
         tiledCacheKey: null,
         tiledForceRegeneration: input.tiledForceRegeneration,
         frame: null,
+        engineFingerprint: buildAfcV2EngineFingerprint(),
         productionAuthority: null,
         diagnosticPayload: null,
         failureReason: null,
@@ -254,38 +312,16 @@ export function createMemoryAfcProductionStore(
       if (!existing) {
         throw new Error(`AFC generation not found: ${generationId}`);
       }
-      if (existing.status === "ready") {
-        if (
-          patch.productionAuthority !== undefined &&
-          patch.productionAuthority !== existing.productionAuthority
-        ) {
-          throw new AfcGenerationImmutabilityError(
-            "AFC generation authority is immutable once ready",
-          );
-        }
-        if (
-          (patch.original && patch.original.sha256 !== existing.original?.sha256) ||
-          (patch.empty && patch.empty.sha256 !== existing.empty?.sha256) ||
-          (patch.tiled && patch.tiled.sha256 !== existing.tiled?.sha256) ||
-          (patch.frame && (
-            patch.frame.width !== existing.frame?.width ||
-            patch.frame.height !== existing.frame?.height
-          ))
-        ) {
-          throw new AfcGenerationImmutabilityError(
-            "AFC generation authority is immutable once ready",
-          );
-        }
-      }
-      if (existing.status === "failed" && patch.status === "ready") {
-        throw new AfcGenerationImmutabilityError(
-          "AFC generation cannot be revived from failed to ready",
-        );
-      }
       const next: AfcGenerationRecord = Object.freeze({
         ...existing,
         ...patch,
+        id: existing.id,
+        roomId: existing.roomId,
+        userId: existing.userId,
+        parentGenerationId: existing.parentGenerationId,
         lineageSeq: existing.lineageSeq,
+        runId: existing.runId,
+        createdAt: existing.createdAt,
         original: patch.original !== undefined
           ? cloneIdentity(patch.original)
           : existing.original,
@@ -294,10 +330,27 @@ export function createMemoryAfcProductionStore(
         frame: patch.frame !== undefined
           ? (patch.frame ? Object.freeze({ ...patch.frame }) : null)
           : existing.frame,
+        engineFingerprint: patch.engineFingerprint !== undefined
+          ? (patch.engineFingerprint
+            ? cloneAfcV2EngineFingerprint(patch.engineFingerprint)
+            : null)
+          : existing.engineFingerprint,
         providerProvenance: patch.providerProvenance
           ? Object.freeze({ ...patch.providerProvenance })
           : existing.providerProvenance,
       });
+      if (!identityFieldsEqual(existing, next)) {
+        throw new AfcGenerationImmutabilityError(
+          "AFC generation identity is immutable",
+        );
+      }
+      if (isTerminalStatus(existing.status)) {
+        if (!terminalEvidenceEqual(existing, next)) {
+          throw new AfcGenerationImmutabilityError(
+            "AFC generation historical evidence is immutable once terminal",
+          );
+        }
+      }
       generations.set(generationId, next);
       return cloneRecord(next);
     },

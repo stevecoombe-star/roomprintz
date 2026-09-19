@@ -27,6 +27,11 @@ import {
   buildAfcV2ProductionRoomAuthority,
   type AfcV2ProductionRoomAuthority,
 } from "./production-authority-contract";
+import {
+  buildAfcV2EngineFingerprint,
+  withAfcV2EngineFingerprintReaderVersion,
+  type AfcV2EngineFingerprintV1,
+} from "./engine-fingerprint";
 import { isProductionOriginalSourceUrl } from "./production-original";
 import { assertProductionPayloadPrivacy } from "./privacy";
 import {
@@ -172,6 +177,24 @@ function currentAuthorityFromGeneration(
   generation: AfcGenerationRecord | null,
 ): AfcV2ProductionRoomAuthority | null {
   return generation?.status === "ready" ? generation.productionAuthority : null;
+}
+
+function analysisTiledReaderVersion(
+  analysis: AfcV2AnalyzeResult | null,
+): string | null {
+  const version = analysis?.tiled?.floorReaderContract.readerVersion;
+  return typeof version === "string" && version.length > 0 ? version : null;
+}
+
+function terminalEngineFingerprint(
+  generation: AfcGenerationRecord,
+  analysis: AfcV2AnalyzeResult | null,
+): AfcV2EngineFingerprintV1 {
+  const baseline = generation.engineFingerprint ?? buildAfcV2EngineFingerprint();
+  return withAfcV2EngineFingerprintReaderVersion(
+    baseline,
+    analysisTiledReaderVersion(analysis),
+  );
 }
 
 export async function restoreProductionAfcRoom(
@@ -401,7 +424,7 @@ export async function runProductionAfcAnalysis(
   } catch (error) {
     await persistFailedGeneration({
       store: input.store,
-      generationId: generation.id,
+      generation,
       prefix,
       capture,
       originalIdentity,
@@ -423,7 +446,7 @@ export async function runProductionAfcAnalysis(
   if (analysis.status !== "applied") {
     await persistFailedGeneration({
       store: input.store,
-      generationId: generation.id,
+      generation,
       prefix,
       capture,
       originalIdentity,
@@ -448,7 +471,7 @@ export async function runProductionAfcAnalysis(
     !capture.tiledSource) {
     await persistFailedGeneration({
       store: input.store,
-      generationId: generation.id,
+      generation,
       prefix,
       capture,
       originalIdentity,
@@ -502,7 +525,7 @@ export async function runProductionAfcAnalysis(
     tiledArtifactSource: capture.tiledSource,
     tiledCacheKey: capture.tiledCacheKey,
     tiledForceRegeneration: forceTiledRegeneration,
-    readerVersion: analysis.tiled?.floorReaderContract.readerVersion ?? null,
+    readerVersion: analysisTiledReaderVersion(analysis),
     frame,
     analysis,
     autoMetric,
@@ -556,6 +579,7 @@ export async function runProductionAfcAnalysis(
     tiledStoragePath: tiledStored.path,
     tiledCacheKey: capture.tiledCacheKey,
     frame,
+    engineFingerprint: terminalEngineFingerprint(generation, analysis),
     productionAuthority: authority,
     diagnosticPayload: compactDiagnostic(
       analysis,
@@ -644,7 +668,7 @@ function compactDiagnostic(
 
 async function persistFailedGeneration(input: Readonly<{
   store: AfcProductionStore;
-  generationId: string;
+  generation: AfcGenerationRecord;
   prefix: string;
   capture: ArtifactCapture;
   originalIdentity: AfcStoredImageIdentity;
@@ -684,7 +708,7 @@ async function persistFailedGeneration(input: Readonly<{
       input.forceTiledRegeneration,
     ),
   });
-  await input.store.updateGeneration(input.generationId, {
+  await input.store.updateGeneration(input.generation.id, {
     status: "failed",
     completedAt: new Date().toISOString(),
     original: input.originalIdentity,
@@ -696,6 +720,10 @@ async function persistFailedGeneration(input: Readonly<{
     tiledStoragePath,
     tiledCacheKey: input.capture.tiledCacheKey,
     frame: input.frame,
+    engineFingerprint: terminalEngineFingerprint(
+      input.generation,
+      input.analysis,
+    ),
     productionAuthority: null,
     diagnosticPayload: compactDiagnostic(
       input.analysis,

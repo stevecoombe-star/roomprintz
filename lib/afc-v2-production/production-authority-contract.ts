@@ -33,6 +33,32 @@ export const AFC_V2_PRODUCTION_COORDINATE_SPACE =
 
 export const AFC_V2_PRODUCTION_READINESS = "production_ready" as const;
 
+export type AfcV2ProductionEngineVersions = Readonly<{
+  liveProduct: typeof AFC_SR1_LIVE_PRODUCT_VERSION;
+  autoMetric: typeof AFC_V2_AUTO_METRIC_SCALE_VERSION;
+  cameraCalibration: typeof CALIBRATED_CAMERA_AUTHORITY_CALIBRATION_VERSION;
+  cameraAuthority: typeof CALIBRATED_CAMERA_APPLIED_AUTHORITY_VERSION;
+  collision: typeof AFC_V2_ROOM_COLLISION_AUTHORITY_VERSION;
+  emptyAuthoritativeCollision: typeof AFC_V2_EMPTY_AUTHORITATIVE_COLLISION_AUTHORITY_VERSION;
+}>;
+
+/**
+ * Single source of current AFC production component versions.
+ * READY `production_authority.engineVersions` and engine fingerprints
+ * must both derive from this helper.
+ */
+export function afcV2ProductionEngineVersions(): AfcV2ProductionEngineVersions {
+  return Object.freeze({
+    liveProduct: AFC_SR1_LIVE_PRODUCT_VERSION,
+    autoMetric: AFC_V2_AUTO_METRIC_SCALE_VERSION,
+    cameraCalibration: CALIBRATED_CAMERA_AUTHORITY_CALIBRATION_VERSION,
+    cameraAuthority: CALIBRATED_CAMERA_APPLIED_AUTHORITY_VERSION,
+    collision: AFC_V2_ROOM_COLLISION_AUTHORITY_VERSION,
+    emptyAuthoritativeCollision:
+      AFC_V2_EMPTY_AUTHORITATIVE_COLLISION_AUTHORITY_VERSION,
+  });
+}
+
 export type AfcProductionArtifactSource = "durable" | "generated";
 
 export type AfcProductionLineageIdentity = Readonly<{
@@ -82,14 +108,7 @@ export type AfcProductionMetricAuthority = Readonly<{
 
 export type AfcV2ProductionRoomAuthority = Readonly<{
   schemaVersion: typeof AFC_V2_PRODUCTION_ROOM_AUTHORITY_VERSION;
-  engineVersions: Readonly<{
-    liveProduct: typeof AFC_SR1_LIVE_PRODUCT_VERSION;
-    autoMetric: typeof AFC_V2_AUTO_METRIC_SCALE_VERSION;
-    cameraCalibration: typeof CALIBRATED_CAMERA_AUTHORITY_CALIBRATION_VERSION;
-    cameraAuthority: typeof CALIBRATED_CAMERA_APPLIED_AUTHORITY_VERSION;
-    collision: typeof AFC_V2_ROOM_COLLISION_AUTHORITY_VERSION;
-    emptyAuthoritativeCollision: typeof AFC_V2_EMPTY_AUTHORITATIVE_COLLISION_AUTHORITY_VERSION;
-  }>;
+  engineVersions: AfcV2ProductionEngineVersions;
   generationId: string;
   runId: string;
   createdAt: string;
@@ -197,15 +216,7 @@ export function buildAfcV2ProductionRoomAuthority(
     : "none";
   return Object.freeze({
     schemaVersion: AFC_V2_PRODUCTION_ROOM_AUTHORITY_VERSION,
-    engineVersions: Object.freeze({
-      liveProduct: AFC_SR1_LIVE_PRODUCT_VERSION,
-      autoMetric: AFC_V2_AUTO_METRIC_SCALE_VERSION,
-      cameraCalibration: CALIBRATED_CAMERA_AUTHORITY_CALIBRATION_VERSION,
-      cameraAuthority: CALIBRATED_CAMERA_APPLIED_AUTHORITY_VERSION,
-      collision: AFC_V2_ROOM_COLLISION_AUTHORITY_VERSION,
-      emptyAuthoritativeCollision:
-        AFC_V2_EMPTY_AUTHORITATIVE_COLLISION_AUTHORITY_VERSION,
-    }),
+    engineVersions: afcV2ProductionEngineVersions(),
     generationId: input.generationId,
     runId: input.runId,
     createdAt: input.createdAt,

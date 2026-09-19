@@ -2,6 +2,7 @@ import {
   AFC_V2_PRODUCTION_COORDINATE_SPACE,
   AFC_V2_PRODUCTION_READINESS,
   AFC_V2_PRODUCTION_ROOM_AUTHORITY_VERSION,
+  afcV2ProductionEngineVersions,
   type AfcV2ProductionRoomAuthority,
 } from "@/lib/afc-v2-production/production-authority-contract";
 
@@ -52,15 +53,7 @@ export function createPi3aAuthority(input: Readonly<{
   const metricScale = input.metricScale ?? 1;
   return Object.freeze({
     schemaVersion: AFC_V2_PRODUCTION_ROOM_AUTHORITY_VERSION,
-    engineVersions: Object.freeze({
-      liveProduct: "afc-sr1-complete-product-attempt/v2" as const,
-      autoMetric: "afc-v2-auto-metric-scale/v1" as const,
-      cameraCalibration: "calibrated-camera/v2" as const,
-      cameraAuthority: "calibrated-camera-applied-authority/v1" as const,
-      collision: "afc-v2-room-collision-authority/v1" as const,
-      emptyAuthoritativeCollision:
-        "afc-v2-empty-authoritative-collision-authority/v1" as const,
-    }),
+    engineVersions: afcV2ProductionEngineVersions(),
     generationId: input.generationId ?? PI3A_GENERATION_A,
     runId: "run-pi3a",
     createdAt: "2026-09-09T00:00:00.000Z",

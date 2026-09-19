@@ -9,6 +9,12 @@ import { getServiceRoleSupabaseClient } from "@/lib/adminServer";
 import type { AfcV2ProductionRoomAuthority } from "./production-authority-contract";
 import { durableArtifactBytesMatch } from "./production-artifact-integrity";
 import {
+  buildAfcV2EngineFingerprint,
+  cloneAfcV2EngineFingerprint,
+  isAfcV2EngineFingerprintV1,
+  type AfcV2EngineFingerprintV1,
+} from "./engine-fingerprint";
+import {
   AFC_V2_ORIGINAL_SIGNED_URL_EXPIRES_IN_SEC,
   prepareOwnedOriginalForAnalysis,
   signOwnedOriginalForDisplay,
@@ -33,6 +39,12 @@ type AnySupabase = SupabaseClient;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+function asEngineFingerprint(value: unknown): AfcV2EngineFingerprintV1 | null {
+  if (value == null) return null;
+  if (!isAfcV2EngineFingerprintV1(value)) return null;
+  return cloneAfcV2EngineFingerprint(value);
 }
 
 function asIdentity(row: Record<string, unknown>, prefix: string): AfcStoredImageIdentity | null {
@@ -120,6 +132,7 @@ function rowToGeneration(row: Record<string, unknown>): AfcGenerationRecord {
     frame: typeof frameWidth === "number" && typeof frameHeight === "number"
       ? Object.freeze({ width: frameWidth, height: frameHeight })
       : null,
+    engineFingerprint: asEngineFingerprint(row.engine_fingerprint),
     productionAuthority: (row.production_authority ??
       null) as AfcV2ProductionRoomAuthority | null,
     diagnosticPayload: row.diagnostic_payload ?? null,
@@ -248,6 +261,7 @@ export function createSupabaseAfcProductionStore(
           intent: input.intent,
           status: "running",
           tiled_force_regeneration: input.tiledForceRegeneration,
+          engine_fingerprint: buildAfcV2EngineFingerprint(),
           ...(input.id ? { id: input.id } : {}),
         })
         .select("*")
@@ -289,6 +303,9 @@ export function createSupabaseAfcProductionStore(
       if (patch.frame !== undefined) {
         update.frame_width = patch.frame?.width ?? null;
         update.frame_height = patch.frame?.height ?? null;
+      }
+      if (patch.engineFingerprint !== undefined) {
+        update.engine_fingerprint = patch.engineFingerprint;
       }
       if (patch.productionAuthority !== undefined) {
         update.production_authority = patch.productionAuthority;
