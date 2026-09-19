@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import test from "node:test";
 
@@ -1306,18 +1306,16 @@ test("52) no Editor changes", () => {
   );
 });
 
-test("53) no QA state endpoint", () => {
-  assert.equal(
-    existsSync(path.join(ROOT, "app/api/vibode/afc/qa/state/route.ts")),
-    false,
-  );
+test("53) AFD-3A Case submit does not implement browser QA state", () => {
   const implementation = source(
     "lib/afc-v2-diagnostics/submit-tester-case.server.ts",
   );
+  const route = source("app/api/vibode/afc/qa/cases/route.ts");
   assert.doesNotMatch(
-    implementation,
-    /offerFeedback|canReport|reportGenerationId|qa\/state/,
+    `${implementation}\n${route}`,
+    /offerFeedback|canReport|reportGenerationId|qa\/state|handleAfcQaBrowserStateGet/,
   );
+  assert.doesNotMatch(route, /export async function GET/);
 });
 
 test("54) no READY rerun changes", () => {

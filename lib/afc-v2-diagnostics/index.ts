@@ -50,3 +50,4 @@ export type {
   AfcDiagnosticTesterCaseSubmitResult,
   AfcDiagnosticTesterCaseTrigger,
 } from "./submit-tester-case.server";
+export type { AfcDiagnosticBrowserQaState } from "./browser-qa-state.server";
