@@ -43,3 +43,4 @@ export type {
   AfcQaIssueTaxonomyValidation,
   AfcQaIssueTaxonomyVersion,
 } from "./taxonomy";
+export type { AfcQaCapability, AfcQaMode } from "./qa-capability.server";

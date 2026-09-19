@@ -460,7 +460,9 @@ test("25) AFC generation authority, parent lineage, and activation stay untouche
 
 test("26) production AFC routes and persistence do not import diagnostics", () => {
   const files = [
-    ...walkTs(path.join(ROOT, "app/api/vibode/afc")),
+    ...walkTs(path.join(ROOT, "app/api/vibode/afc")).filter(
+      (file) => !file.includes(`${path.sep}afc${path.sep}qa${path.sep}`),
+    ),
     ...walkTs(path.join(ROOT, "lib/afc-v2-production")),
   ];
   assert.ok(files.some((file) => file.endsWith("analyze/route.ts")));
@@ -476,6 +478,7 @@ test("26) production AFC routes and persistence do not import diagnostics", () =
     source("lib/afc-v2-diagnostics/index.ts"),
     source("lib/afc-v2-diagnostics/contracts.ts"),
     source("lib/afc-v2-diagnostics/taxonomy.ts"),
+    source("lib/afc-v2-diagnostics/qa-capability.server.ts"),
   ].join("\n");
   assert.doesNotMatch(
     diagnosticsModule,

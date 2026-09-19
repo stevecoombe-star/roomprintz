@@ -524,7 +524,9 @@ test("AFD-1B does not implement capability, sessions, or public fingerprint APIs
   assert.doesNotMatch(MIGRATION, /vibode_afc_diagnostic_sessions/);
   assert.doesNotMatch(MIGRATION, /\/api\/vibode\/afc\/qa/);
   const productionFiles = walkTs(path.join(ROOT, "lib/afc-v2-production"));
-  const apiFiles = walkTs(path.join(ROOT, "app/api/vibode/afc"));
+  const apiFiles = walkTs(path.join(ROOT, "app/api/vibode/afc")).filter(
+    (file) => !file.includes(`${path.sep}afc${path.sep}qa${path.sep}`),
+  );
   for (const file of [...productionFiles, ...apiFiles]) {
     const text = readFileSync(file, "utf8");
     assert.doesNotMatch(text, /VIBODE_AFC_QA_MODE|VIBODE_AFC_QA_USER_IDS/);
