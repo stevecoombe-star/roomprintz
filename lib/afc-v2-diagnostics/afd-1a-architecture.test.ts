@@ -479,6 +479,7 @@ test("26) production AFC routes and persistence do not import diagnostics", () =
     source("lib/afc-v2-diagnostics/contracts.ts"),
     source("lib/afc-v2-diagnostics/taxonomy.ts"),
     source("lib/afc-v2-diagnostics/qa-capability.server.ts"),
+    source("lib/afc-v2-diagnostics/session-lifecycle.server.ts"),
   ].join("\n");
   assert.doesNotMatch(
     diagnosticsModule,

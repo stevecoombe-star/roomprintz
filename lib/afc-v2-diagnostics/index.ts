@@ -44,3 +44,4 @@ export type {
   AfcQaIssueTaxonomyVersion,
 } from "./taxonomy";
 export type { AfcQaCapability, AfcQaMode } from "./qa-capability.server";
+export type { AfcDiagnosticMembershipResult } from "./session-lifecycle.server";
