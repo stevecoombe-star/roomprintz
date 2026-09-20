@@ -215,7 +215,7 @@ test("58-62) mapped status copy and no raw API error printing", () => {
   assert.doesNotMatch(detail, /error:\s*["']Server error/);
 });
 
-test("63-75) detail inspector is GET-only, inbox stays read-only, and scope stays UI-only", () => {
+test("63-75) inbox stays read-only; Case GET remains GET-only; review PATCH is nested-only", () => {
   assert.doesNotMatch(detail, /\bfetch\s*\(/);
   assert.doesNotMatch(detail, /\/api\/admin\/afc-diagnostics/);
   const inspector = source(
@@ -224,6 +224,7 @@ test("63-75) detail inspector is GET-only, inbox stays read-only, and scope stay
   assert.match(inspector, /\bfetch\s*\(/);
   assert.match(inspector, /buildAfcDiagnosticInspectorCaseUrl/);
   assert.match(inspector, /buildAfcDiagnosticInspectorSessionUrl/);
+  assert.match(inspector, /AfcDiagnosticAdminReviewPanel/);
   const detailSources = [detail, inspector].join("\n");
   assert.doesNotMatch(queueSources, /method:\s*["'](POST|PATCH|PUT|DELETE)["']/);
   assert.doesNotMatch(queueSources, /export async function (POST|PATCH|PUT|DELETE)/);
@@ -231,6 +232,7 @@ test("63-75) detail inspector is GET-only, inbox stays read-only, and scope stay
   assert.doesNotMatch(inbox, /Close case|Assign reviewer|Create Case|Delete case|Rerun room/i);
   assert.doesNotMatch(inspector, /Close case|Assign reviewer|Create Case|Delete case|Rerun room/i);
   assert.doesNotMatch(inbox, /reviewStatus:\s*["']closed["']\s*,/);
+  assert.doesNotMatch(inbox, /Save review|patchAfcDiagnosticAdminCaseReview/);
   assert.doesNotMatch(queueSources, /<img|next\/image|signedUrl|createSignedUrl/);
   assert.doesNotMatch(detailSources, /<img|next\/image|signedUrl|createSignedUrl/);
   assert.doesNotMatch(queueSources, /createBrowserClient|getServiceRoleSupabaseClient|getCookieSupabaseClient/);
@@ -242,10 +244,18 @@ test("63-75) detail inspector is GET-only, inbox stays read-only, and scope stay
   assert.doesNotMatch(inspector, /reporterEmail|diagnosticPayload|storage_path|storagePath|providerProvenance/);
   assert.match(source(LIST_ROUTE), /export async function GET/);
   assert.doesNotMatch(source(LIST_ROUTE), /export async function POST/);
+  assert.doesNotMatch(source(LIST_ROUTE), /export async function PATCH/);
   assert.match(source(CASE_ROUTE), /handleAfcDiagnosticsAdminCaseDetailGet/);
+  assert.doesNotMatch(source(CASE_ROUTE), /export async function PATCH/);
   assert.match(source(SESSION_ROUTE), /handleAfcDiagnosticsAdminSessionDetailGet/);
+  assert.doesNotMatch(source(SESSION_ROUTE), /export async function PATCH/);
   const apiFiles = walkTs(path.join(ROOT, "app/api/admin/afc-diagnostics"));
-  assert.equal(apiFiles.length, 5);
+  assert.equal(apiFiles.length, 6);
+  const patchFiles = apiFiles.filter((file) =>
+    /export async function PATCH/.test(readFileSync(file, "utf8")),
+  );
+  assert.equal(patchFiles.length, 1);
+  assert.match(patchFiles[0], /review\/route\.ts$/);
   const migrations = readdirSync(path.join(ROOT, "supabase/migrations")).filter(
     (name) => name.endsWith(".sql"),
   );

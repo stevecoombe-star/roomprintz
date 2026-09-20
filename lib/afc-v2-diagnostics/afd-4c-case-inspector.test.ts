@@ -10,6 +10,8 @@ const INBOX = "app/admin/afc-diagnostics/AfcDiagnosticCaseInbox.tsx";
 const DETAIL_PAGE = "app/admin/afc-diagnostics/cases/[caseId]/page.tsx";
 const INSPECTOR =
   "app/admin/afc-diagnostics/cases/[caseId]/AfcDiagnosticCaseInspector.tsx";
+const REVIEW_PANEL =
+  "app/admin/afc-diagnostics/cases/[caseId]/AfcDiagnosticAdminReviewPanel.tsx";
 const HELPER = "lib/afc-v2-diagnostics/admin-case-inspector.client.ts";
 const COPY = "lib/afc-v2-diagnostics/admin-diagnostics-copy-button.tsx";
 const INBOX_HELPER = "lib/afc-v2-diagnostics/admin-case-inbox.client.ts";
@@ -37,6 +39,7 @@ function walkTs(dir: string): string[] {
 
 const page = source(DETAIL_PAGE);
 const inspector = source(INSPECTOR);
+const reviewPanel = source(REVIEW_PANEL);
 const helper = source(HELPER);
 const copy = source(COPY);
 const inbox = source(INBOX);
@@ -101,18 +104,18 @@ test("inspector stays browser-safe and does not import server read primitives", 
   assert.doesNotMatch(inspectorSources, /createClient\(/);
 });
 
-test("inspector is GET-only and has no review, capture, or overlay controls", () => {
+test("inspector Case/Session fetches stay GET-only; tester evidence stays read-only", () => {
   assert.doesNotMatch(
     inspectorSources,
     /method:\s*["'](POST|PATCH|PUT|DELETE)["']/,
   );
   assert.doesNotMatch(
     inspectorSources,
-    /export async function (POST|PATCH|PUT|DELETE)/,
+    /export async function (POST|PATCH|DELETE|PUT)/,
   );
   assert.doesNotMatch(
     inspector,
-    /Close case|Assign reviewer|Create Case|Delete case|Rerun room|Mark in review|Start review|Save review/i,
+    /Close case|Assign reviewer|Create Case|Delete case|Rerun room|Mark in review|Start review/i,
   );
   assert.doesNotMatch(inspector, /<textarea|<input/);
   assert.doesNotMatch(inspector, /admin capture|capture case/i);
@@ -124,12 +127,26 @@ test("inspector is GET-only and has no review, capture, or overlay controls", ()
   assert.doesNotMatch(inspectorSources, /frozenCamera|sourceNormalizedPolygon/);
   assert.doesNotMatch(inspectorSources, /reporterEmail|storage_path|storagePath|providerProvenance|diagnosticPayload/);
   assert.match(inspector, /AfcDiagnosticVisualEvidence/);
+  assert.match(inspector, /AfcDiagnosticAdminReviewPanel/);
+  assert.match(reviewPanel, /Save review|AFC_DIAGNOSTIC_ADMIN_REVIEW_COPY\.save/);
+  assert.match(reviewPanel, /<textarea/);
+  const reported = inspector.split("Reported issue")[1]?.split(
+    "AfcDiagnosticAdminReviewPanel",
+  )[0] ?? "";
+  assert.doesNotMatch(reported, /<textarea|<input|<select/);
   assert.match(source(CASE_ROUTE), /export async function GET/);
   assert.doesNotMatch(source(CASE_ROUTE), /export async function POST/);
+  assert.doesNotMatch(source(CASE_ROUTE), /export async function PATCH/);
   assert.match(source(SESSION_ROUTE), /export async function GET/);
   assert.doesNotMatch(source(LIST_ROUTE), /export async function POST/);
+  assert.doesNotMatch(source(LIST_ROUTE), /export async function PATCH/);
   const apiFiles = walkTs(path.join(ROOT, "app/api/admin/afc-diagnostics"));
-  assert.equal(apiFiles.length, 5);
+  assert.equal(apiFiles.length, 6);
+  const patchFiles = apiFiles.filter((file) =>
+    /export async function PATCH/.test(readFileSync(file, "utf8")),
+  );
+  assert.equal(patchFiles.length, 1);
+  assert.match(patchFiles[0], /review\/route\.ts$/);
   const migrations = readdirSync(path.join(ROOT, "supabase/migrations")).filter(
     (name) => name.endsWith(".sql"),
   );
@@ -182,7 +199,8 @@ test("accessibility, copy, and read-only review/source copy are present", () => 
   assert.match(helper, /Not reviewed yet/);
   assert.match(helper, /No review notes/);
   assert.match(inspector, /Source photograph/);
-  assert.match(inspector, /Admin review/);
+  assert.match(reviewPanel, /AFC_DIAGNOSTIC_ADMIN_REVIEW_COPY\.title/);
+  assert.match(inspector, /AfcDiagnosticAdminReviewPanel/);
   assert.match(inspector, /Reported issue/);
   assert.match(inspector, /Selected attempt/);
   assert.match(inspector, /Diagnostic session/);

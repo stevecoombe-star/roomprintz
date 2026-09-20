@@ -79,7 +79,7 @@ test("browser loading uses fetch blob object URLs rather than direct img src rou
   assert.match(client, /AbortController/);
 });
 
-test("AFD-4C2A stays GET-only and does not add mutations or signed URLs", () => {
+test("AFD-4C2A stays GET-only and does not add visual-evidence mutations or signed URLs", () => {
   assert.doesNotMatch(
     newFiles,
     /method:\s*["'](POST|PATCH|PUT|DELETE)["']/,
@@ -97,10 +97,11 @@ test("AFD-4C2A stays GET-only and does not add mutations or signed URLs", () => 
   assert.doesNotMatch(client, /<canvas|floor polygon/);
   assert.doesNotMatch(inspector, /<canvas/);
   assert.doesNotMatch(
-    newFiles,
+    [visual, client, server, route].join("\n"),
     /Close case|Assign reviewer|Save review|admin capture|Rerun room/i,
   );
   assert.match(route, /export async function GET/);
+  assert.doesNotMatch(route, /export async function PATCH/);
   assert.match(server, /authorizeAfcDiagnosticsAdmin/);
   assert.doesNotMatch(server, /authorizeProductionAfcUser|VIBODE_AFC_QA_/);
 });
@@ -120,7 +121,8 @@ test("artifact route never returns storage identity in JSON contracts", () => {
     /NextResponse\.json\([^\)]*storage_bucket/,
   );
   const apiFiles = walkTs(path.join(ROOT, "app/api/admin/afc-diagnostics"));
-  assert.equal(apiFiles.length, 5);
+  assert.equal(apiFiles.length, 6);
+  assert.doesNotMatch(route, /export async function PATCH/);
   const migrations = readdirSync(path.join(ROOT, "supabase/migrations")).filter(
     (name) => name.endsWith(".sql"),
   );

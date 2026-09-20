@@ -698,7 +698,7 @@ test("7-9) diagnostics admin auth does not use QA tester env or bearer AFC auth 
   assert.doesNotMatch(operational, /getAuthenticatedAdminUser/);
 });
 
-test("10-12) routes are GET-only node runtime", () => {
+test("10-12) AFD-4A GET routes remain GET-only node runtime", () => {
   for (const relative of [
     "app/api/admin/afc-diagnostics/cases/route.ts",
     "app/api/admin/afc-diagnostics/cases/[caseId]/route.ts",
@@ -709,6 +709,12 @@ test("10-12) routes are GET-only node runtime", () => {
     assert.match(route, /export async function GET/);
     assert.doesNotMatch(route, /export async function (POST|PATCH|DELETE|PUT)/);
   }
+  const reviewRoute = source(
+    "app/api/admin/afc-diagnostics/cases/[caseId]/review/route.ts",
+  );
+  assert.match(reviewRoute, /export const runtime = "nodejs"/);
+  assert.match(reviewRoute, /export async function PATCH/);
+  assert.doesNotMatch(reviewRoute, /export async function GET/);
 });
 
 test("unauthorized requests do not create a service-role store", async () => {
@@ -1257,10 +1263,14 @@ test("101-107) admin privacy assertion and generic error bodies", async () => {
   );
 });
 
-test("108-120) AFD-4A is read-only, has no UI/migration/image/review mutation, and stays in /api/admin/afc-diagnostics", () => {
+test("108-120) AFD-4A read-model stays read-only; only nested review route may PATCH", () => {
   const operational = afd4aOperationalSources();
   const joined = afd4aSources();
   assert.doesNotMatch(joined, /\.insert\(|\.update\(|\.delete\(|\.rpc\(/);
+  assert.doesNotMatch(
+    source("lib/afc-v2-diagnostics/admin-read-model.server.ts"),
+    /\.insert\(|\.update\(|\.delete\(|\.rpc\(/,
+  );
   assert.doesNotMatch(
     operational,
     /submitAfcDiagnosticTesterCase|insertTesterCase|ensureAfcDiagnosticSessionMembership|closeStaleOpenSessions|insertMembership|insertOpenSession/,
@@ -1285,6 +1295,12 @@ test("108-120) AFD-4A is read-only, has no UI/migration/image/review mutation, a
   assert.equal(
     existsSync(
       path.join(ROOT, "app/api/admin/afc-diagnostics/sessions/[sessionId]/route.ts"),
+    ),
+    true,
+  );
+  assert.equal(
+    existsSync(
+      path.join(ROOT, "app/api/admin/afc-diagnostics/cases/[caseId]/review/route.ts"),
     ),
     true,
   );
@@ -1322,7 +1338,12 @@ test("108-120) AFD-4A is read-only, has no UI/migration/image/review mutation, a
     "afc-v2-engine-fingerprint/v1",
   );
   const apiFiles = walkTs(path.join(ROOT, "app/api/admin/afc-diagnostics"));
-  assert.equal(apiFiles.length, 5);
+  assert.equal(apiFiles.length, 6);
+  const patchFiles = apiFiles.filter((file) =>
+    /export async function PATCH/.test(readFileSync(file, "utf8")),
+  );
+  assert.equal(patchFiles.length, 1);
+  assert.match(patchFiles[0], /review\/route\.ts$/);
 });
 
 test("parse helpers reject invalid uuids and accept list query defaults", () => {

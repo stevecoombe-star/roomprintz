@@ -19,7 +19,6 @@ import {
   afcDiagnosticInspectorArtifactSourceLabel,
   afcDiagnosticInspectorCaseErrorMessage,
   afcDiagnosticInspectorIntentLabel,
-  afcDiagnosticInspectorIsUnreviewedNew,
   afcDiagnosticInspectorIssueChips,
   afcDiagnosticInspectorMachineLabel,
   afcDiagnosticInspectorMachineText,
@@ -27,7 +26,6 @@ import {
   afcDiagnosticInspectorParentAttemptOrdinal,
   afcDiagnosticInspectorRecoveryLabel,
   afcDiagnosticInspectorReviewLabel,
-  afcDiagnosticInspectorReviewNotesText,
   afcDiagnosticInspectorSessionErrorMessage,
   afcDiagnosticInspectorSessionSentence,
   afcDiagnosticInspectorSourceText,
@@ -54,6 +52,7 @@ import {
   type AfcDiagnosticInspectorSessionDetail,
   type AfcDiagnosticInspectorSourceSummary,
 } from "@/lib/afc-v2-diagnostics/admin-case-inspector.client";
+import AfcDiagnosticAdminReviewPanel from "./AfcDiagnosticAdminReviewPanel";
 import AfcDiagnosticVisualEvidence from "./AfcDiagnosticVisualEvidence";
 
 const buttonClassName =
@@ -930,44 +929,11 @@ export default function AfcDiagnosticCaseInspector({
             </section>
 
             <section className={`${cardClassName} order-3 lg:col-start-2 lg:row-start-2`}>
-              <h2 className="text-lg font-semibold tracking-tight">Admin review</h2>
-              <dl className="mt-4 grid grid-cols-[minmax(7rem,auto)_minmax(0,1fr)] gap-x-3 gap-y-2">
-                <MetaRow label="Status">
-                  <span
-                    className={`inline-flex rounded-md border px-1.5 py-0.5 text-[11px] ${reviewBadgeClass(caseDetail.review.reviewStatus)}`}
-                  >
-                    {afcDiagnosticInspectorReviewLabel(
-                      caseDetail.review.reviewStatus,
-                    )}
-                  </span>
-                </MetaRow>
-                {afcDiagnosticInspectorIsUnreviewedNew(caseDetail.review) ? (
-                  <MetaRow label="Review">
-                    {AFC_DIAGNOSTIC_INSPECTOR_COPY.notReviewedYet}
-                  </MetaRow>
-                ) : (
-                  <>
-                    <MetaRow label="Reviewer">
-                      {caseDetail.review.reviewerUserId ? (
-                        <IdValue
-                          value={caseDetail.review.reviewerUserId}
-                          ariaLabel="Copy reviewer ID"
-                        />
-                      ) : (
-                        "—"
-                      )}
-                    </MetaRow>
-                    <MetaRow label="Reviewed at">
-                      <TimestampValue value={caseDetail.review.reviewedAt} />
-                    </MetaRow>
-                    <MetaRow label="Review notes">
-                      <p className="whitespace-pre-wrap">
-                        {afcDiagnosticInspectorReviewNotesText(caseDetail.review)}
-                      </p>
-                    </MetaRow>
-                  </>
-                )}
-              </dl>
+              <AfcDiagnosticAdminReviewPanel
+                caseId={caseDetail.caseId}
+                review={caseDetail.review}
+                onSaved={setCaseDetail}
+              />
             </section>
 
             <section className={`${cardClassName} order-4 lg:col-start-2 lg:row-start-1`}>
