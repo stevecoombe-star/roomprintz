@@ -51,3 +51,15 @@ export type {
   AfcDiagnosticTesterCaseTrigger,
 } from "./submit-tester-case.server";
 export type { AfcDiagnosticBrowserQaState } from "./browser-qa-state.server";
+export type {
+  AfcDiagnosticAdminArtifactSummary,
+  AfcDiagnosticAdminCaseDetail,
+  AfcDiagnosticAdminCaseListResult,
+  AfcDiagnosticAdminCaseOrigin,
+  AfcDiagnosticAdminCaseSummary,
+  AfcDiagnosticAdminEngineFingerprint,
+  AfcDiagnosticAdminGenerationEvidence,
+  AfcDiagnosticAdminSessionAttempt,
+  AfcDiagnosticAdminSessionDetail,
+  AfcDiagnosticAdminSourceSummary,
+} from "./admin-read-model";
