@@ -101,7 +101,7 @@ test("inspector stays browser-safe and does not import server read primitives", 
   assert.doesNotMatch(inspectorSources, /createClient\(/);
 });
 
-test("inspector is GET-only and has no review, capture, or visual artifact controls", () => {
+test("inspector is GET-only and has no review, capture, or overlay controls", () => {
   assert.doesNotMatch(
     inspectorSources,
     /method:\s*["'](POST|PATCH|PUT|DELETE)["']/,
@@ -118,17 +118,18 @@ test("inspector is GET-only and has no review, capture, or visual artifact contr
   assert.doesNotMatch(inspector, /admin capture|capture case/i);
   assert.doesNotMatch(
     inspectorSources,
-    /<img|next\/image|signedUrl|createSignedUrl|canvas|quad overlay|wall collision/i,
+    /next\/image|signedUrl|createSignedUrl|canvas|quad overlay|wall collision/i,
   );
   assert.doesNotMatch(inspectorSources, /production_authority|productionAuthority/);
   assert.doesNotMatch(inspectorSources, /frozenCamera|sourceNormalizedPolygon/);
   assert.doesNotMatch(inspectorSources, /reporterEmail|storage_path|storagePath|providerProvenance|diagnosticPayload/);
+  assert.match(inspector, /AfcDiagnosticVisualEvidence/);
   assert.match(source(CASE_ROUTE), /export async function GET/);
   assert.doesNotMatch(source(CASE_ROUTE), /export async function POST/);
   assert.match(source(SESSION_ROUTE), /export async function GET/);
   assert.doesNotMatch(source(LIST_ROUTE), /export async function POST/);
   const apiFiles = walkTs(path.join(ROOT, "app/api/admin/afc-diagnostics"));
-  assert.equal(apiFiles.length, 3);
+  assert.equal(apiFiles.length, 4);
   const migrations = readdirSync(path.join(ROOT, "supabase/migrations")).filter(
     (name) => name.endsWith(".sql"),
   );

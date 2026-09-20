@@ -54,6 +54,7 @@ import {
   type AfcDiagnosticInspectorSessionDetail,
   type AfcDiagnosticInspectorSourceSummary,
 } from "@/lib/afc-v2-diagnostics/admin-case-inspector.client";
+import AfcDiagnosticVisualEvidence from "./AfcDiagnosticVisualEvidence";
 
 const buttonClassName =
   "rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-200 transition hover:border-emerald-400/80 hover:text-emerald-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400/80 disabled:opacity-60";
@@ -353,6 +354,20 @@ function SelectedAttemptInspector({
             </MetaRow>
           </dl>
         </div>
+
+        <AfcDiagnosticVisualEvidence
+          key={caseDetail.caseId}
+          caseId={caseDetail.caseId}
+          generationId={generation.generationId}
+          attemptOrdinal={attemptOrdinal}
+          reported={reported}
+          empty={generation.empty}
+          tiled={generation.tiled}
+          originalSha256={
+            generation.original?.originalSha256 ??
+            caseDetail.source.originalSha256
+          }
+        />
 
         <div>
           <h3 className="text-xs uppercase tracking-wide text-slate-500">Processing</h3>
