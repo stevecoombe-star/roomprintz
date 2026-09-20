@@ -52,8 +52,13 @@ import {
   type AfcDiagnosticInspectorSessionDetail,
   type AfcDiagnosticInspectorSourceSummary,
 } from "@/lib/afc-v2-diagnostics/admin-case-inspector.client";
+import AfcDiagnosticAdminCapturePanel from "../../AfcDiagnosticAdminCapturePanel";
 import AfcDiagnosticAdminReviewPanel from "./AfcDiagnosticAdminReviewPanel";
 import AfcDiagnosticVisualEvidence from "./AfcDiagnosticVisualEvidence";
+import {
+  AFC_DIAGNOSTIC_ADMIN_CAPTURE_COPY,
+  buildAfcDiagnosticAdminCaptureSessionPageUrl,
+} from "@/lib/afc-v2-diagnostics/admin-case-capture.client";
 
 const buttonClassName =
   "rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-200 transition hover:border-emerald-400/80 hover:text-emerald-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400/80 disabled:opacity-60";
@@ -523,6 +528,25 @@ function SelectedAttemptInspector({
             </details>
           </div>
         </details>
+
+        <div className="space-y-3">
+          <Link
+            href={buildAfcDiagnosticAdminCaptureSessionPageUrl(
+              caseDetail.sessionId,
+              generation.generationId,
+            )}
+            prefetch={false}
+            className={buttonClassName}
+          >
+            {AFC_DIAGNOSTIC_ADMIN_CAPTURE_COPY.openSession}
+          </Link>
+          <AfcDiagnosticAdminCapturePanel
+            sessionId={caseDetail.sessionId}
+            generationId={generation.generationId}
+            status={generation.status}
+            attemptOrdinal={attemptOrdinal}
+          />
+        </div>
       </div>
     </section>
   );

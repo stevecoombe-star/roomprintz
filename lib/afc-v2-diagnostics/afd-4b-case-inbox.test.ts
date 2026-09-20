@@ -230,7 +230,9 @@ test("63-75) inbox stays read-only; Case GET remains GET-only; review PATCH is n
   assert.doesNotMatch(queueSources, /export async function (POST|PATCH|PUT|DELETE)/);
   assert.doesNotMatch(detailSources, /method:\s*["'](POST|PATCH|PUT|DELETE)["']/);
   assert.doesNotMatch(inbox, /Close case|Assign reviewer|Create Case|Delete case|Rerun room/i);
-  assert.doesNotMatch(inspector, /Close case|Assign reviewer|Create Case|Delete case|Rerun room/i);
+  assert.doesNotMatch(inbox, /AfcDiagnosticAdminCapturePanel|postAfcDiagnosticAdminCaptureCase/);
+  assert.doesNotMatch(inspector, /Close case|Assign reviewer|Delete case|Rerun room/i);
+  assert.match(inspector, /AfcDiagnosticAdminCapturePanel/);
   assert.doesNotMatch(inbox, /reviewStatus:\s*["']closed["']\s*,/);
   assert.doesNotMatch(inbox, /Save review|patchAfcDiagnosticAdminCaseReview/);
   assert.doesNotMatch(queueSources, /<img|next\/image|signedUrl|createSignedUrl/);
@@ -250,7 +252,7 @@ test("63-75) inbox stays read-only; Case GET remains GET-only; review PATCH is n
   assert.match(source(SESSION_ROUTE), /handleAfcDiagnosticsAdminSessionDetailGet/);
   assert.doesNotMatch(source(SESSION_ROUTE), /export async function PATCH/);
   const apiFiles = walkTs(path.join(ROOT, "app/api/admin/afc-diagnostics"));
-  assert.equal(apiFiles.length, 6);
+  assert.equal(apiFiles.length, 7);
   const patchFiles = apiFiles.filter((file) =>
     /export async function PATCH/.test(readFileSync(file, "utf8")),
   );

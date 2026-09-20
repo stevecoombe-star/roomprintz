@@ -147,7 +147,7 @@ test("4C2A artifact byte route remains unchanged and overlay is a separate JSON 
   assert.doesNotMatch(source(ARTIFACT_SERVER), /AFC_ADMIN_VISUAL_OVERLAY_VERSION/);
   assert.match(server, /searchParams.get\("artifact"\)/);
   const apiFiles = walkTs(path.join(ROOT, "app/api/admin/afc-diagnostics"));
-  assert.equal(apiFiles.length, 6);
+  assert.equal(apiFiles.length, 7);
   assert.doesNotMatch(artifactRoute, /export async function PATCH/);
   assert.doesNotMatch(route, /export async function PATCH/);
   const migrations = readdirSync(path.join(ROOT, "supabase/migrations")).filter(

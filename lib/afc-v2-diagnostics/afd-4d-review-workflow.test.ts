@@ -99,7 +99,7 @@ test("review mutation is a four-column whitelist and never spreads req.body", ()
   assert.doesNotMatch(readModelServer, /\.insert\(|\.update\(|\.delete\(|\.rpc\(/);
 });
 
-test("PATCH exists only on the nested review route", () => {
+test("PATCH exists only on the nested review route; capture POST is Session-scoped", () => {
   for (const relative of [
     LIST_ROUTE,
     CASE_ROUTE,
@@ -115,12 +115,17 @@ test("PATCH exists only on the nested review route", () => {
   assert.match(reviewRoute, /export async function PATCH/);
   assert.doesNotMatch(reviewRoute, /export async function GET/);
   const apiFiles = walkTs(path.join(ROOT, "app/api/admin/afc-diagnostics"));
-  assert.equal(apiFiles.length, 6);
+  assert.equal(apiFiles.length, 7);
   const patchFiles = apiFiles.filter((file) =>
     /export async function PATCH/.test(readFileSync(file, "utf8")),
   );
   assert.equal(patchFiles.length, 1);
   assert.match(patchFiles[0], /review\/route\.ts$/);
+  const postFiles = apiFiles.filter((file) =>
+    /export async function POST/.test(readFileSync(file, "utf8")),
+  );
+  assert.equal(postFiles.length, 1);
+  assert.match(postFiles[0], /sessions\/\[sessionId\]\/cases\/route\.ts$/);
 });
 
 test("tester submission still cannot send review fields", () => {

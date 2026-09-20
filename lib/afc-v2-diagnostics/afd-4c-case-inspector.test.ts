@@ -115,10 +115,10 @@ test("inspector Case/Session fetches stay GET-only; tester evidence stays read-o
   );
   assert.doesNotMatch(
     inspector,
-    /Close case|Assign reviewer|Create Case|Delete case|Rerun room|Mark in review|Start review/i,
+    /Close case|Assign reviewer|Delete case|Rerun room|Mark in review|Start review/i,
   );
   assert.doesNotMatch(inspector, /<textarea|<input/);
-  assert.doesNotMatch(inspector, /admin capture|capture case/i);
+  assert.match(inspector, /AfcDiagnosticAdminCapturePanel/);
   assert.doesNotMatch(
     inspectorSources,
     /next\/image|signedUrl|createSignedUrl|canvas|quad overlay|wall collision/i,
@@ -141,7 +141,7 @@ test("inspector Case/Session fetches stay GET-only; tester evidence stays read-o
   assert.doesNotMatch(source(LIST_ROUTE), /export async function POST/);
   assert.doesNotMatch(source(LIST_ROUTE), /export async function PATCH/);
   const apiFiles = walkTs(path.join(ROOT, "app/api/admin/afc-diagnostics"));
-  assert.equal(apiFiles.length, 6);
+  assert.equal(apiFiles.length, 7);
   const patchFiles = apiFiles.filter((file) =>
     /export async function PATCH/.test(readFileSync(file, "utf8")),
   );

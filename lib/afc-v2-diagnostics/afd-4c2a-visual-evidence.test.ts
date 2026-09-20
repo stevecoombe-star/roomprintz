@@ -121,7 +121,7 @@ test("artifact route never returns storage identity in JSON contracts", () => {
     /NextResponse\.json\([^\)]*storage_bucket/,
   );
   const apiFiles = walkTs(path.join(ROOT, "app/api/admin/afc-diagnostics"));
-  assert.equal(apiFiles.length, 6);
+  assert.equal(apiFiles.length, 7);
   assert.doesNotMatch(route, /export async function PATCH/);
   const migrations = readdirSync(path.join(ROOT, "supabase/migrations")).filter(
     (name) => name.endsWith(".sql"),

@@ -1263,7 +1263,7 @@ test("101-107) admin privacy assertion and generic error bodies", async () => {
   );
 });
 
-test("108-120) AFD-4A read-model stays read-only; only nested review route may PATCH", () => {
+test("108-120) AFD-4A read-model stays read-only; review stays PATCH-only; capture POST is Session-scoped", () => {
   const operational = afd4aOperationalSources();
   const joined = afd4aSources();
   assert.doesNotMatch(joined, /\.insert\(|\.update\(|\.delete\(|\.rpc\(/);
@@ -1338,12 +1338,17 @@ test("108-120) AFD-4A read-model stays read-only; only nested review route may P
     "afc-v2-engine-fingerprint/v1",
   );
   const apiFiles = walkTs(path.join(ROOT, "app/api/admin/afc-diagnostics"));
-  assert.equal(apiFiles.length, 6);
+  assert.equal(apiFiles.length, 7);
   const patchFiles = apiFiles.filter((file) =>
     /export async function PATCH/.test(readFileSync(file, "utf8")),
   );
   assert.equal(patchFiles.length, 1);
   assert.match(patchFiles[0], /review\/route\.ts$/);
+  const postFiles = apiFiles.filter((file) =>
+    /export async function POST/.test(readFileSync(file, "utf8")),
+  );
+  assert.equal(postFiles.length, 1);
+  assert.match(postFiles[0], /sessions\/\[sessionId\]\/cases\/route\.ts$/);
 });
 
 test("parse helpers reject invalid uuids and accept list query defaults", () => {
