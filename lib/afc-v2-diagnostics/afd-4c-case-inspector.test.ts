@@ -129,7 +129,7 @@ test("inspector is GET-only and has no review, capture, or overlay controls", ()
   assert.match(source(SESSION_ROUTE), /export async function GET/);
   assert.doesNotMatch(source(LIST_ROUTE), /export async function POST/);
   const apiFiles = walkTs(path.join(ROOT, "app/api/admin/afc-diagnostics"));
-  assert.equal(apiFiles.length, 4);
+  assert.equal(apiFiles.length, 5);
   const migrations = readdirSync(path.join(ROOT, "supabase/migrations")).filter(
     (name) => name.endsWith(".sql"),
   );

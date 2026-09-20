@@ -18,6 +18,19 @@ import {
   revokeAfcDiagnosticVisualObjectUrl,
   type AfcDiagnosticVisualArtifactKind,
 } from "@/lib/afc-v2-diagnostics/admin-visual-evidence.client";
+import {
+  AFC_DIAGNOSTIC_VISUAL_OVERLAY_COPY,
+  afcDiagnosticVisualOverlayBasisLabel,
+  afcDiagnosticVisualOverlayCollisionAvailable,
+  afcDiagnosticVisualOverlayErrorMessage,
+  afcDiagnosticVisualOverlayFloorAvailable,
+  afcDiagnosticVisualOverlayHasGeometry,
+  buildAfcDiagnosticVisualOverlayUrl,
+  createAfcDiagnosticVisualOverlayCoordinator,
+  isAfcDiagnosticVisualOverlayAbortError,
+  parseAfcAdminVisualOverlayV1,
+  type AfcAdminVisualOverlayV1,
+} from "@/lib/afc-v2-diagnostics/admin-visual-overlay.client";
 
 const buttonClassName =
   "rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-200 transition hover:border-emerald-400/80 hover:text-emerald-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400/80 disabled:opacity-60";
@@ -64,6 +77,12 @@ function currentSource(
   return null;
 }
 
+function polygonPoints(
+  points: ReadonlyArray<{ x: number; y: number }>,
+): string {
+  return points.map((point) => `${point.x},${point.y}`).join(" ");
+}
+
 export default function AfcDiagnosticVisualEvidence({
   caseId,
   generationId,
@@ -82,6 +101,9 @@ export default function AfcDiagnosticVisualEvidence({
   originalSha256: string | null;
 }) {
   const coordinatorRef = useRef(createAfcDiagnosticVisualEvidenceCoordinator());
+  const overlayCoordinatorRef = useRef(
+    createAfcDiagnosticVisualOverlayCoordinator(),
+  );
   const objectUrlRef = useRef<string | null>(null);
   const metaRef = useRef({ empty, tiled, originalSha256 });
   metaRef.current = { empty, tiled, originalSha256 };
@@ -99,12 +121,31 @@ export default function AfcDiagnosticVisualEvidence({
   const [imageUrl, setImageUrl] = useState<string | null>(null);
   const [retryNonce, setRetryNonce] = useState(0);
   const [committedKey, setCommittedKey] = useState<string | null>(null);
+  const [overlayPhase, setOverlayPhase] = useState<
+    "loading" | "ready" | "error"
+  >("loading");
+  const [overlayError, setOverlayError] = useState<string | null>(null);
+  const [overlay, setOverlay] = useState<AfcAdminVisualOverlayV1 | null>(null);
+  const [overlayRetryNonce, setOverlayRetryNonce] = useState(0);
+  const [overlayCommittedKey, setOverlayCommittedKey] = useState<string | null>(
+    null,
+  );
+  const [showFloor, setShowFloor] = useState(true);
+  const [showCollision, setShowCollision] = useState(true);
   const identityKey = afcDiagnosticVisualEvidenceTupleKey({
     caseId,
     generationId,
     kind,
   });
   const isCommitted = committedKey === identityKey;
+  const overlayIsCommitted = overlayCommittedKey === identityKey;
+  const committedOverlay = overlayIsCommitted ? overlay : null;
+  const floorAvailable = afcDiagnosticVisualOverlayFloorAvailable(
+    committedOverlay,
+  );
+  const collisionAvailable = afcDiagnosticVisualOverlayCollisionAvailable(
+    committedOverlay,
+  );
 
   useEffect(() => {
     const started = coordinatorRef.current.begin({
@@ -197,6 +238,87 @@ export default function AfcDiagnosticVisualEvidence({
     };
   }, [caseId, generationId, kind, retryNonce]);
 
+  useEffect(() => {
+    const started = overlayCoordinatorRef.current.begin({
+      caseId,
+      generationId,
+      kind,
+    });
+    setOverlayPhase("loading");
+    setOverlayError(null);
+    setOverlay(null);
+
+    void (async () => {
+      try {
+        const response = await fetch(
+          buildAfcDiagnosticVisualOverlayUrl(started.tuple),
+          {
+            credentials: "same-origin",
+            cache: "no-store",
+            signal: started.signal,
+          },
+        );
+        if (
+          !overlayCoordinatorRef.current.isCurrent(started.seq, started.tuple)
+        ) {
+          return;
+        }
+        if (!response.ok) {
+          setOverlayError(
+            afcDiagnosticVisualOverlayErrorMessage(response.status),
+          );
+          setOverlay(null);
+          setOverlayCommittedKey(
+            afcDiagnosticVisualEvidenceTupleKey(started.tuple),
+          );
+          setOverlayPhase("error");
+          return;
+        }
+        const payload: unknown = await response.json();
+        if (
+          !overlayCoordinatorRef.current.isCurrent(started.seq, started.tuple)
+        ) {
+          return;
+        }
+        const parsed = parseAfcAdminVisualOverlayV1(payload);
+        if (
+          !parsed ||
+          parsed.artifactBasis !== started.tuple.kind
+        ) {
+          setOverlayError(AFC_DIAGNOSTIC_VISUAL_OVERLAY_COPY.error);
+          setOverlay(null);
+          setOverlayCommittedKey(
+            afcDiagnosticVisualEvidenceTupleKey(started.tuple),
+          );
+          setOverlayPhase("error");
+          return;
+        }
+        setOverlay(parsed);
+        setOverlayCommittedKey(
+          afcDiagnosticVisualEvidenceTupleKey(started.tuple),
+        );
+        setOverlayPhase("ready");
+      } catch (cause) {
+        if (isAfcDiagnosticVisualOverlayAbortError(cause)) return;
+        if (
+          !overlayCoordinatorRef.current.isCurrent(started.seq, started.tuple)
+        ) {
+          return;
+        }
+        setOverlayError(afcDiagnosticVisualOverlayErrorMessage("network"));
+        setOverlay(null);
+        setOverlayCommittedKey(
+          afcDiagnosticVisualEvidenceTupleKey(started.tuple),
+        );
+        setOverlayPhase("error");
+      }
+    })();
+
+    return () => {
+      overlayCoordinatorRef.current.abort();
+    };
+  }, [caseId, generationId, kind, overlayRetryNonce]);
+
   const sha = currentSha(kind, empty, tiled, originalSha256);
   const source = currentSource(kind, empty, tiled);
   const present = metadataPresent(kind, empty, tiled, originalSha256);
@@ -218,6 +340,16 @@ export default function AfcDiagnosticVisualEvidence({
     kind === "original"
       ? null
       : afcDiagnosticInspectorArtifactSourceLabel(source);
+  const showImage = isCommitted && phase === "ready" && imageUrl;
+  const overlayFrame = committedOverlay?.frame ?? null;
+  const showFloorOverlay = showFloor && floorAvailable;
+  const showCollisionOverlay = showCollision && collisionAvailable;
+  const showSvg =
+    showImage &&
+    overlayIsCommitted &&
+    overlayPhase === "ready" &&
+    committedOverlay != null &&
+    (showFloorOverlay || showCollisionOverlay);
 
   return (
     <div>
@@ -268,6 +400,68 @@ export default function AfcDiagnosticVisualEvidence({
         ))}
       </div>
 
+      <fieldset className="mt-3 min-w-0">
+        <legend className="text-xs uppercase tracking-wide text-slate-500">
+          Overlays
+        </legend>
+        <div className="mt-2 flex flex-col gap-2 text-sm text-slate-200">
+          <label className="flex cursor-pointer items-start gap-2">
+            <input
+              type="checkbox"
+              className="mt-1 h-4 w-4 accent-sky-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400/80"
+              checked={showFloor}
+              disabled={!floorAvailable}
+              aria-describedby="afc-overlay-floor-help"
+              onChange={(event) => {
+                setShowFloor(event.target.checked);
+              }}
+            />
+            <span>
+              <span>{AFC_DIAGNOSTIC_VISUAL_OVERLAY_COPY.floor}</span>
+              <span
+                id="afc-overlay-floor-help"
+                className="mt-0.5 block text-xs text-slate-400"
+              >
+                {AFC_DIAGNOSTIC_VISUAL_OVERLAY_COPY.floorHelp}
+              </span>
+              {overlayIsCommitted && overlayPhase === "ready" && !floorAvailable ? (
+                <span className="mt-0.5 block text-xs text-slate-500">
+                  {AFC_DIAGNOSTIC_VISUAL_OVERLAY_COPY.floorUnavailable}
+                </span>
+              ) : null}
+            </span>
+          </label>
+          <label className="flex cursor-pointer items-start gap-2">
+            <input
+              type="checkbox"
+              className="mt-1 h-4 w-4 accent-amber-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400/80"
+              checked={showCollision}
+              disabled={!collisionAvailable}
+              aria-describedby="afc-overlay-collision-help"
+              onChange={(event) => {
+                setShowCollision(event.target.checked);
+              }}
+            />
+            <span>
+              <span>{AFC_DIAGNOSTIC_VISUAL_OVERLAY_COPY.collision}</span>
+              <span
+                id="afc-overlay-collision-help"
+                className="mt-0.5 block text-xs text-slate-400"
+              >
+                {AFC_DIAGNOSTIC_VISUAL_OVERLAY_COPY.collisionHelp}
+              </span>
+              {overlayIsCommitted &&
+              overlayPhase === "ready" &&
+              !collisionAvailable ? (
+                <span className="mt-0.5 block text-xs text-slate-500">
+                  {AFC_DIAGNOSTIC_VISUAL_OVERLAY_COPY.collisionUnavailable}
+                </span>
+              ) : null}
+            </span>
+          </label>
+        </div>
+      </fieldset>
+
       <div className="mt-3">
         {(!isCommitted || phase === "loading") &&
         !(isCommitted && phase === "error") ? (
@@ -293,17 +487,106 @@ export default function AfcDiagnosticVisualEvidence({
             </button>
           </div>
         ) : null}
-        {isCommitted && phase === "ready" && imageUrl ? (
+        {showImage ? (
           <div className="flex justify-center overflow-hidden rounded-xl border border-slate-800 bg-slate-950 p-2">
-            {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img
-              src={imageUrl}
-              alt={afcDiagnosticVisualImageAlt({
-                kind,
-                attemptOrdinal,
-              })}
-              className="max-h-[min(70vh,32rem)] w-auto max-w-full object-contain"
-            />
+            {overlayFrame ? (
+              <div
+                className="relative w-full"
+                style={{
+                  aspectRatio: `${overlayFrame.width} / ${overlayFrame.height}`,
+                  maxWidth: `min(100%, calc(min(70vh, 32rem) * ${overlayFrame.width} / ${overlayFrame.height}))`,
+                }}
+              >
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img
+                  src={imageUrl}
+                  alt={afcDiagnosticVisualImageAlt({
+                    kind,
+                    attemptOrdinal,
+                  })}
+                  className="absolute inset-0 h-full w-full object-contain"
+                />
+                {showSvg && committedOverlay ? (
+                  <svg
+                    aria-hidden="true"
+                    viewBox="0 0 1 1"
+                    preserveAspectRatio="none"
+                    className="pointer-events-none absolute inset-0 h-full w-full"
+                  >
+                    {showFloorOverlay && committedOverlay.floorQuad ? (
+                      <polygon
+                        points={polygonPoints(committedOverlay.floorQuad.points)}
+                        fill="rgba(125, 211, 252, 0.12)"
+                        stroke="#7dd3fc"
+                        strokeWidth={2}
+                        vectorEffect="non-scaling-stroke"
+                      />
+                    ) : null}
+                    {showCollisionOverlay
+                      ? committedOverlay.collisionEdges.map((edge) => (
+                          <polyline
+                            key={edge.id}
+                            points={polygonPoints(edge.points)}
+                            fill="none"
+                            stroke="#fcd34d"
+                            strokeWidth={2}
+                            vectorEffect="non-scaling-stroke"
+                          />
+                        ))
+                      : null}
+                  </svg>
+                ) : null}
+              </div>
+            ) : (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img
+                src={imageUrl}
+                alt={afcDiagnosticVisualImageAlt({
+                  kind,
+                  attemptOrdinal,
+                })}
+                className="max-h-[min(70vh,32rem)] w-auto max-w-full object-contain"
+              />
+            )}
+          </div>
+        ) : null}
+        {showImage &&
+        !(overlayIsCommitted && overlayPhase === "ready") &&
+        !(overlayIsCommitted && overlayPhase === "error") ? (
+          <p className="mt-2 text-sm text-slate-400" aria-live="polite">
+            {AFC_DIAGNOSTIC_VISUAL_OVERLAY_COPY.loading}
+          </p>
+        ) : null}
+        {showImage && overlayIsCommitted && overlayPhase === "error" && overlayError ? (
+          <div className="mt-2 rounded-xl border border-slate-700 bg-slate-900/60 p-3" role="status">
+            <p className="text-sm text-slate-200">{overlayError}</p>
+            <button
+              type="button"
+              className={`${buttonClassName} mt-3`}
+              onClick={() => {
+                setOverlayCommittedKey(null);
+                setOverlayRetryNonce((value) => value + 1);
+              }}
+            >
+              {AFC_DIAGNOSTIC_VISUAL_OVERLAY_COPY.retry}
+            </button>
+          </div>
+        ) : null}
+        {showImage && overlayIsCommitted && overlayPhase === "ready" ? (
+          <div className="mt-2 text-xs text-slate-400">
+            <p>{afcDiagnosticVisualOverlayBasisLabel(committedOverlay)}</p>
+            {afcDiagnosticVisualOverlayHasGeometry(committedOverlay) ? (
+              <ul className="mt-1 flex flex-wrap gap-x-4 gap-y-1">
+                <li>
+                  <span className="mr-1 inline-block h-2 w-2 rounded-sm bg-sky-300 align-middle" />
+                  {AFC_DIAGNOSTIC_VISUAL_OVERLAY_COPY.floor}
+                </li>
+                <li>
+                  <span className="mr-1 inline-block h-2 w-2 rounded-sm bg-amber-300 align-middle" />
+                  {AFC_DIAGNOSTIC_VISUAL_OVERLAY_COPY.collision}
+                </li>
+              </ul>
+            ) : null}
           </div>
         ) : null}
       </div>

@@ -181,7 +181,15 @@ export type AfcDiagnosticVisualDurableTiledRecord = Readonly<{
   storagePath: string;
 }>;
 
-export type AfcDiagnosticVisualEvidenceStore = {
+export type AfcDiagnosticVisualMembershipIdentity = Readonly<{
+  id: string;
+  roomId: string;
+  userId: string;
+}>;
+
+export type AfcDiagnosticVisualMembershipStore<
+  G extends AfcDiagnosticVisualMembershipIdentity,
+> = {
   findCaseById(
     caseId: string,
   ): Promise<AfcDiagnosticVisualCaseRecord | null>;
@@ -192,9 +200,11 @@ export type AfcDiagnosticVisualEvidenceStore = {
     sessionId: string,
     generationId: string,
   ): Promise<AfcDiagnosticVisualMembershipRecord | null>;
-  findGenerationById(
-    generationId: string,
-  ): Promise<AfcDiagnosticVisualGenerationRecord | null>;
+  findGenerationById(generationId: string): Promise<G | null>;
+};
+
+export type AfcDiagnosticVisualEvidenceStore =
+  AfcDiagnosticVisualMembershipStore<AfcDiagnosticVisualGenerationRecord> & {
   findRoomAssetById(
     assetId: string,
   ): Promise<AfcDiagnosticVisualRoomAssetRecord | null>;
@@ -1118,13 +1128,17 @@ async function resolveTiled(input: {
   return throwScan(durableScan, expectedSha);
 }
 
-export async function resolveAfcDiagnosticVisualArtifact(input: {
-  store: AfcDiagnosticVisualEvidenceStore;
+export async function resolveAfcDiagnosticVisualMembershipContext<
+  G extends AfcDiagnosticVisualMembershipIdentity,
+>(input: {
+  store: AfcDiagnosticVisualMembershipStore<G>;
   caseId: string;
   generationId: string;
-  kind: AfcDiagnosticVisualArtifactKind;
-  inspectDimensions?: AfcDiagnosticVisualInspectDimensions;
-}): Promise<VerifiedBytes> {
+}): Promise<{
+  caseRow: AfcDiagnosticVisualCaseRecord;
+  session: AfcDiagnosticVisualSessionRecord;
+  generation: G;
+}> {
   const caseRow = await input.store.findCaseById(input.caseId);
   if (!caseRow) throw new AfcDiagnosticVisualNotFoundError();
 
@@ -1155,6 +1169,23 @@ export async function resolveAfcDiagnosticVisualArtifact(input: {
   if (generation.userId !== session.userId) {
     throw new AfcDiagnosticVisualNotFoundError();
   }
+
+  return { caseRow, session, generation };
+}
+
+export async function resolveAfcDiagnosticVisualArtifact(input: {
+  store: AfcDiagnosticVisualEvidenceStore;
+  caseId: string;
+  generationId: string;
+  kind: AfcDiagnosticVisualArtifactKind;
+  inspectDimensions?: AfcDiagnosticVisualInspectDimensions;
+}): Promise<VerifiedBytes> {
+  const { session, generation } =
+    await resolveAfcDiagnosticVisualMembershipContext({
+      store: input.store,
+      caseId: input.caseId,
+      generationId: input.generationId,
+    });
 
   if (input.kind === "original") {
     return resolveOriginal({

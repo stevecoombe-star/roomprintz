@@ -245,7 +245,7 @@ test("63-75) detail inspector is GET-only, inbox stays read-only, and scope stay
   assert.match(source(CASE_ROUTE), /handleAfcDiagnosticsAdminCaseDetailGet/);
   assert.match(source(SESSION_ROUTE), /handleAfcDiagnosticsAdminSessionDetailGet/);
   const apiFiles = walkTs(path.join(ROOT, "app/api/admin/afc-diagnostics"));
-  assert.equal(apiFiles.length, 4);
+  assert.equal(apiFiles.length, 5);
   const migrations = readdirSync(path.join(ROOT, "supabase/migrations")).filter(
     (name) => name.endsWith(".sql"),
   );

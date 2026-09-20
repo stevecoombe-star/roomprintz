@@ -79,7 +79,7 @@ test("browser loading uses fetch blob object URLs rather than direct img src rou
   assert.match(client, /AbortController/);
 });
 
-test("AFD-4C2A stays GET-only and does not implement overlays or mutations", () => {
+test("AFD-4C2A stays GET-only and does not add mutations or signed URLs", () => {
   assert.doesNotMatch(
     newFiles,
     /method:\s*["'](POST|PATCH|PUT|DELETE)["']/,
@@ -93,9 +93,9 @@ test("AFD-4C2A stays GET-only and does not implement overlays or mutations", () 
   assert.doesNotMatch(server, /createSignedUrl|signedUrl/);
   assert.doesNotMatch(uiSources, /production_authority|productionAuthority/);
   assert.doesNotMatch(uiSources, /frozenCamera|sourceNormalizedPolygon/);
-  assert.doesNotMatch(visual, /<svg|<canvas|quad overlay|wall collision/i);
-  assert.doesNotMatch(client, /<svg|<canvas|floor polygon|collision/i);
-  assert.doesNotMatch(inspector, /<svg|<canvas/);
+  assert.doesNotMatch(visual, /<canvas|from ["']three["']|WebGL/);
+  assert.doesNotMatch(client, /<canvas|floor polygon/);
+  assert.doesNotMatch(inspector, /<canvas/);
   assert.doesNotMatch(
     newFiles,
     /Close case|Assign reviewer|Save review|admin capture|Rerun room/i,
@@ -120,7 +120,7 @@ test("artifact route never returns storage identity in JSON contracts", () => {
     /NextResponse\.json\([^\)]*storage_bucket/,
   );
   const apiFiles = walkTs(path.join(ROOT, "app/api/admin/afc-diagnostics"));
-  assert.equal(apiFiles.length, 4);
+  assert.equal(apiFiles.length, 5);
   const migrations = readdirSync(path.join(ROOT, "supabase/migrations")).filter(
     (name) => name.endsWith(".sql"),
   );

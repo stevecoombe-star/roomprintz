@@ -1322,7 +1322,7 @@ test("108-120) AFD-4A is read-only, has no UI/migration/image/review mutation, a
     "afc-v2-engine-fingerprint/v1",
   );
   const apiFiles = walkTs(path.join(ROOT, "app/api/admin/afc-diagnostics"));
-  assert.equal(apiFiles.length, 4);
+  assert.equal(apiFiles.length, 5);
 });
 
 test("parse helpers reject invalid uuids and accept list query defaults", () => {
