@@ -43,7 +43,7 @@ const helperWithoutTypeImport = helper.replace(
   "",
 );
 
-test("2-4) admin diagnostics page, home link, and placeholder detail exist", () => {
+test("2-4) admin diagnostics page, home link, and case detail route exist", () => {
   assert.equal(existsSync(path.join(ROOT, PAGE)), true);
   assert.equal(existsSync(path.join(ROOT, INBOX)), true);
   assert.equal(existsSync(path.join(ROOT, DETAIL)), true);
@@ -57,10 +57,7 @@ test("2-4) admin diagnostics page, home link, and placeholder detail exist", () 
   assert.match(adminHome, /Open AFC Diagnostics/);
   assert.match(adminHome, /href="\/admin\/afc-diagnostics"/);
   assert.match(helper, /detailTitle: "Case detail"/);
-  assert.match(helper, /Full case inspection is not in this view yet/);
-  assert.match(detail, /AFC_DIAGNOSTIC_INBOX_COPY\.detailTitle/);
-  assert.match(detail, /AFC_DIAGNOSTIC_INBOX_COPY\.detailPlaceholder/);
-  assert.match(detail, /AFC_DIAGNOSTIC_INBOX_COPY\.backToDiagnostics/);
+  assert.match(detail, /AfcDiagnosticCaseInspector/);
 });
 
 test("5-6) inbox consumes the list API only and does not import server read primitives", () => {
@@ -218,20 +215,31 @@ test("58-62) mapped status copy and no raw API error printing", () => {
   assert.doesNotMatch(detail, /error:\s*["']Server error/);
 });
 
-test("63-75) placeholder does not fetch, inbox stays read-only, and scope stays UI-only", () => {
+test("63-75) detail inspector is GET-only, inbox stays read-only, and scope stays UI-only", () => {
   assert.doesNotMatch(detail, /\bfetch\s*\(/);
   assert.doesNotMatch(detail, /\/api\/admin\/afc-diagnostics/);
+  const inspector = source(
+    "app/admin/afc-diagnostics/cases/[caseId]/AfcDiagnosticCaseInspector.tsx",
+  );
+  assert.match(inspector, /\bfetch\s*\(/);
+  assert.match(inspector, /buildAfcDiagnosticInspectorCaseUrl/);
+  assert.match(inspector, /buildAfcDiagnosticInspectorSessionUrl/);
+  const detailSources = [detail, inspector].join("\n");
   assert.doesNotMatch(queueSources, /method:\s*["'](POST|PATCH|PUT|DELETE)["']/);
   assert.doesNotMatch(queueSources, /export async function (POST|PATCH|PUT|DELETE)/);
+  assert.doesNotMatch(detailSources, /method:\s*["'](POST|PATCH|PUT|DELETE)["']/);
   assert.doesNotMatch(inbox, /Close case|Assign reviewer|Create Case|Delete case|Rerun room/i);
+  assert.doesNotMatch(inspector, /Close case|Assign reviewer|Create Case|Delete case|Rerun room/i);
   assert.doesNotMatch(inbox, /reviewStatus:\s*["']closed["']\s*,/);
   assert.doesNotMatch(queueSources, /<img|next\/image|signedUrl|createSignedUrl/);
+  assert.doesNotMatch(detailSources, /<img|next\/image|signedUrl|createSignedUrl/);
   assert.doesNotMatch(queueSources, /createBrowserClient|getServiceRoleSupabaseClient|getCookieSupabaseClient/);
   assert.doesNotMatch(page, /admin layout|AdminSidebar|sidebar/i);
   assert.doesNotMatch(inbox, /setInterval/);
   assert.doesNotMatch(inbox, /addEventListener\(\s*["']focus["']/);
   assert.doesNotMatch(inbox, /reporterEmail|reviewNotes|engineFingerprint|storage_path|storagePath|providerProvenance|diagnosticPayload/);
   assert.doesNotMatch(detail, /reporterEmail|reviewNotes|engineFingerprint|notes body|diagnosticPayload/);
+  assert.doesNotMatch(inspector, /reporterEmail|diagnosticPayload|storage_path|storagePath|providerProvenance/);
   assert.match(source(LIST_ROUTE), /export async function GET/);
   assert.doesNotMatch(source(LIST_ROUTE), /export async function POST/);
   assert.match(source(CASE_ROUTE), /handleAfcDiagnosticsAdminCaseDetailGet/);
