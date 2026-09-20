@@ -1300,8 +1300,11 @@ test("108-120) AFD-4A is read-only, has no UI/migration/image/review mutation, a
     migrations.some((name) => /afd.?4a|admin.?diagnostic.?read/i.test(name)),
     false,
   );
+  assert.doesNotMatch(
+    source("app/admin/AdminControls.tsx"),
+    /admin-read-model|authorizeAfcDiagnosticsAdmin|\/api\/admin\/afc-diagnostics/,
+  );
   for (const file of [
-    "app/admin/AdminControls.tsx",
     "app/editor/page.tsx",
     "components/afc-qa/AfcQaTesterReport.tsx",
   ]) {

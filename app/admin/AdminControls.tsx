@@ -740,6 +740,23 @@ export default function AdminControls() {
         <section className="rounded-2xl border border-slate-800 bg-slate-900/70 p-4">
           <div className="flex items-center justify-between gap-3">
             <div>
+              <h2 className="text-base font-medium text-slate-100">AFC Diagnostics</h2>
+              <p className="mt-1 text-xs text-slate-400">
+                Review tester-reported room analysis issues and retry history.
+              </p>
+            </div>
+            <Link
+              href="/admin/afc-diagnostics"
+              className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-200 transition hover:border-emerald-400/80 hover:text-emerald-200"
+            >
+              Open AFC Diagnostics
+            </Link>
+          </div>
+        </section>
+
+        <section className="rounded-2xl border border-slate-800 bg-slate-900/70 p-4">
+          <div className="flex items-center justify-between gap-3">
+            <div>
               <h2 className="text-base font-medium text-slate-100">Token Management</h2>
               <p className="mt-1 text-xs text-slate-400">
                 Token pricing, adjustments, audit, charge-failure reconciliation, and room-read observation moved here.
