@@ -140,6 +140,7 @@ test("5) first READY: manual report visible, no automatic prompt", () => {
   const { view } = apply(reportableModel(projection({ offerFeedback: false })), []);
   assert.equal(view.showManualReport, true);
   assert.equal(view.showAutomaticPrompt, false);
+  assert.equal(view.showRerun, false);
 });
 
 test("6) first FAILED projection is identical: manual only", () => {
@@ -149,6 +150,7 @@ test("6) first FAILED projection is identical: manual only", () => {
   );
   assert.equal(view.showManualReport, true);
   assert.equal(view.showAutomaticPrompt, false);
+  assert.equal(view.showRerun, false);
 });
 
 test("7) repeated unsuccessful shows automatic prompt and keeps manual entry", () => {
@@ -621,7 +623,7 @@ test("AFD-3C UI has no Session, Case, or AFC authority logic", () => {
       text,
       /runProductionAfcAnalysis|production-adapter|production-persistence|production-authority-contract/,
     );
-    assert.doesNotMatch(text, /Re-run room read|canRerun|admin_capture/);
+    assert.doesNotMatch(text, /canRerun|admin_capture/);
     assert.doesNotMatch(text, /findTesterCase|idempotent/);
     assert.doesNotMatch(text, /corpus|regression fixture|screenshot/);
   }
@@ -644,7 +646,7 @@ test("production runtime and STAGE files stay free of tester-report internals", 
     const text = readFileSync(file, "utf8");
     assert.doesNotMatch(
       text,
-      /tester-report|AfcQaTesterReport|\/api\/vibode\/afc\/qa\/state|\/api\/vibode\/afc\/qa\/cases/,
+      /tester-report|AfcQaTesterReport|\/api\/vibode\/afc\/qa\/state|\/api\/vibode\/afc\/qa\/cases|\/api\/vibode\/afc\/qa\/rerun/,
       path.relative(ROOT, file),
     );
   }

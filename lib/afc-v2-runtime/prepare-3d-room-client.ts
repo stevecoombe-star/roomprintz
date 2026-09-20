@@ -34,14 +34,17 @@ export type Prepare3dRoomState = Readonly<{
   inFlight: boolean;
   errorMessage: string | null;
   nextIntent: Prepare3dRequestIntent;
+  generationId: string | null;
 }>;
 
 export type Prepare3dRoomEvent =
-  | { type: "restore_ready" }
+  | { type: "restore_ready"; generationId?: string | null }
   | { type: "restore_absent" }
   | { type: "prepare_requested" }
-  | { type: "prepare_succeeded" }
-  | { type: "prepare_failed"; failureReason?: string | null };
+  | { type: "prepare_succeeded"; generationId?: string | null }
+  | { type: "prepare_failed"; failureReason?: string | null }
+  | { type: "running_requested_from_ready" }
+  | { type: "running_reverted_to_ready" };
 
 export type Prepare3dAnalyzeRequest = Readonly<{
   url: string;
@@ -58,6 +61,7 @@ export function createInitialPrepare3dRoomState(): Prepare3dRoomState {
     inFlight: false,
     errorMessage: null,
     nextIntent: PREPARE_3D_ROOM_FIRST_INTENT,
+    generationId: null,
   };
 }
 
@@ -92,6 +96,24 @@ export function isReadyProductionResponse(payload: unknown): boolean {
   return record.status === "ready" && record.authority != null;
 }
 
+export function readyProductionGenerationId(payload: unknown): string | null {
+  if (!isReadyProductionResponse(payload)) return null;
+  const record = payload as Record<string, unknown>;
+  if (
+    typeof record.currentGenerationId === "string" &&
+    record.currentGenerationId.trim().length > 0
+  ) {
+    return record.currentGenerationId;
+  }
+  if (
+    typeof record.generationId === "string" &&
+    record.generationId.trim().length > 0
+  ) {
+    return record.generationId;
+  }
+  return null;
+}
+
 export function productionFailureReason(payload: unknown): string | null {
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
     return null;
@@ -104,6 +126,10 @@ export function productionFailureReason(payload: unknown): string | null {
 
 export function canRequestPrepare(state: Prepare3dRoomState): boolean {
   return !state.inFlight && (state.phase === "idle" || state.phase === "error");
+}
+
+export function canRequestRunningFromReady(state: Prepare3dRoomState): boolean {
+  return !state.inFlight && state.phase === "ready";
 }
 
 export function shouldApplyPrepareRoomResponse(input: Readonly<{
@@ -119,6 +145,12 @@ export function prepareButtonLabel(state: Prepare3dRoomState): string {
   return "Prepare 3D Room";
 }
 
+function eventGenerationId(value: string | null | undefined): string | null {
+  if (typeof value !== "string") return null;
+  const id = value.trim();
+  return id.length > 0 ? id : null;
+}
+
 export function reducePrepare3dRoom(
   state: Prepare3dRoomState,
   event: Prepare3dRoomEvent,
@@ -130,6 +162,7 @@ export function reducePrepare3dRoom(
         inFlight: false,
         errorMessage: null,
         nextIntent: PREPARE_3D_ROOM_FIRST_INTENT,
+        generationId: eventGenerationId(event.generationId),
       };
     case "restore_absent":
       return {
@@ -137,6 +170,7 @@ export function reducePrepare3dRoom(
         inFlight: false,
         errorMessage: null,
         nextIntent: PREPARE_3D_ROOM_FIRST_INTENT,
+        generationId: null,
       };
     case "prepare_requested":
       if (!canRequestPrepare(state)) return state;
@@ -152,6 +186,7 @@ export function reducePrepare3dRoom(
         inFlight: false,
         errorMessage: null,
         nextIntent: PREPARE_3D_ROOM_FIRST_INTENT,
+        generationId: eventGenerationId(event.generationId),
       };
     case "prepare_failed":
       return {
@@ -159,6 +194,23 @@ export function reducePrepare3dRoom(
         inFlight: false,
         errorMessage: PREPARE_3D_ROOM_FAILURE_MESSAGE,
         nextIntent: classifyPrepare3dRetry(event.failureReason),
+        generationId: null,
+      };
+    case "running_requested_from_ready":
+      if (!canRequestRunningFromReady(state)) return state;
+      return {
+        ...state,
+        phase: "running",
+        inFlight: true,
+        errorMessage: null,
+      };
+    case "running_reverted_to_ready":
+      if (state.phase !== "running") return state;
+      return {
+        ...state,
+        phase: "ready",
+        inFlight: false,
+        errorMessage: null,
       };
     default:
       return state;

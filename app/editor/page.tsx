@@ -11955,6 +11955,7 @@ function EditorPageInner() {
           <AfcQaTesterReport
             roomId={editorRoomId}
             preparePhase={prepare3dPhase}
+            prepareGenerationId={prepare3d.state.generationId}
             onUnauthorized={() => {
               pushSnack("Your session expired. Redirecting to sign in...");
               const next = editorRoomId
@@ -11962,6 +11963,9 @@ function EditorPageInner() {
                 : "/editor";
               router.push(`/login?next=${encodeURIComponent(next)}`);
             }}
+            onRerunStart={() => prepare3d.requestRunningFromReady()}
+            onRerunReverted={() => prepare3d.revertRunningToReady()}
+            onRerunSettled={(result) => prepare3d.settleRunning(result)}
           />
           <button
             type="button"

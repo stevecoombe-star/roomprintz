@@ -38,7 +38,15 @@ const PRIMARY =
 type AfcQaTesterReportProps = Readonly<{
   roomId: string | null;
   preparePhase?: string | null;
+  prepareGenerationId?: string | null;
   onUnauthorized?: () => void;
+  onRerunStart?: () => boolean;
+  onRerunSettled?: (input: {
+    ok: boolean;
+    payload?: unknown;
+    failureReason?: string | null;
+  }) => void;
+  onRerunReverted?: () => void;
 }>;
 
 export type AfcQaTesterReportViewProps = Readonly<{
@@ -50,6 +58,7 @@ export type AfcQaTesterReportViewProps = Readonly<{
   onToggleIssue: (code: AfcQaIssueCode) => void;
   onNotesChange: (notes: string) => void;
   onSubmit: () => void;
+  onRerun: () => void;
 }>;
 
 function isSelected(
@@ -68,6 +77,7 @@ export function AfcQaTesterReportView({
   onToggleIssue,
   onNotesChange,
   onSubmit,
+  onRerun,
 }: AfcQaTesterReportViewProps) {
   const titleId = useId();
   const promptTitleId = useId();
@@ -112,6 +122,7 @@ export function AfcQaTesterReportView({
 
   if (
     !view.showManualReport &&
+    !view.showRerun &&
     !view.showAutomaticPrompt &&
     !view.showForm &&
     !view.successMessage &&
@@ -130,6 +141,19 @@ export function AfcQaTesterReportView({
           onClick={onOpenManual}
         >
           {AFC_QA_TESTER_COPY.manualButton}
+        </button>
+      ) : null}
+
+      {view.showRerun ? (
+        <button
+          type="button"
+          data-afc-qa-ready-rerun="true"
+          className={`rounded-md border border-transparent px-2 py-1 text-xs text-neutral-400 transition hover:border-neutral-800 hover:bg-neutral-900 hover:text-neutral-200 disabled:opacity-50 ${FOCUS}`}
+          disabled={view.rerunDisabled}
+          aria-busy={view.rerunDisabled}
+          onClick={onRerun}
+        >
+          {AFC_QA_TESTER_COPY.rerunButton}
         </button>
       ) : null}
 
@@ -293,7 +317,11 @@ export function AfcQaTesterReportView({
 export function AfcQaTesterReport({
   roomId,
   preparePhase = null,
+  prepareGenerationId = null,
   onUnauthorized,
+  onRerunStart,
+  onRerunSettled,
+  onRerunReverted,
 }: AfcQaTesterReportProps) {
   const [reloadKey, setReloadKey] = useState(0);
   const previousPhaseRef = useRef<string | null>(null);
@@ -304,6 +332,9 @@ export function AfcQaTesterReport({
     modelRef.current,
   );
   const submitInFlightRef = useRef(false);
+  const rerunInFlightRef = useRef(false);
+  const roomIdRef = useRef(roomId);
+  roomIdRef.current = roomId;
   const projection = useAfcQaState(roomId, { reloadKey });
 
   useEffect(() => {
@@ -441,7 +472,107 @@ export function AfcQaTesterReport({
     })();
   }, [applyEffect, dispatch]);
 
-  const view = deriveAfcQaTesterReportView(model);
+  const onRerun = useCallback(() => {
+    if (rerunInFlightRef.current) return;
+    rerunInFlightRef.current = true;
+    const effect = dispatch({
+      type: "rerun_requested",
+      preparePhase,
+      prepareGenerationId,
+    });
+    if (effect.type !== "post_rerun") {
+      rerunInFlightRef.current = false;
+      applyEffect(effect);
+      return;
+    }
+    if (onRerunStart && !onRerunStart()) {
+      applyEffect(dispatch({ type: "rerun_aborted" }));
+      rerunInFlightRef.current = false;
+      return;
+    }
+    const requestedRoomId = effect.body.roomId;
+    void (async () => {
+      const revertPrepare = () => onRerunReverted?.();
+      try {
+        const token = await getSupabaseBrowserAccessToken();
+        if (!token) {
+          revertPrepare();
+          applyEffect(dispatch({ type: "rerun_http_error", status: 401 }));
+          return;
+        }
+        const response = await fetch(effect.url, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify(effect.body),
+          cache: "no-store",
+        });
+        if (roomIdRef.current !== requestedRoomId) {
+          revertPrepare();
+          return;
+        }
+        if (response.status === 401) {
+          revertPrepare();
+          applyEffect(dispatch({ type: "rerun_http_error", status: 401 }));
+          return;
+        }
+        if (!response.ok) {
+          if (response.status === 422) {
+            const payload = (await response.json().catch(() => null)) as
+              | { failureReason?: unknown }
+              | null;
+            onRerunSettled?.({
+              ok: false,
+              payload,
+              failureReason:
+                typeof payload?.failureReason === "string"
+                  ? payload.failureReason
+                  : null,
+            });
+            applyEffect(dispatch({ type: "rerun_succeeded" }));
+            return;
+          }
+          revertPrepare();
+          applyEffect(
+            dispatch({ type: "rerun_http_error", status: response.status }),
+          );
+          return;
+        }
+        const payload = (await response.json().catch(() => null)) as
+          | { status?: unknown }
+          | null;
+        if (payload?.status === "ready") {
+          onRerunSettled?.({ ok: true, payload });
+          applyEffect(dispatch({ type: "rerun_succeeded" }));
+          return;
+        }
+        revertPrepare();
+        applyEffect(dispatch({ type: "rerun_http_error", status: 500 }));
+      } catch {
+        if (roomIdRef.current === requestedRoomId) {
+          revertPrepare();
+          applyEffect(dispatch({ type: "rerun_http_error", status: 500 }));
+        }
+      } finally {
+        rerunInFlightRef.current = false;
+      }
+    })();
+  }, [
+    applyEffect,
+    dispatch,
+    onRerunReverted,
+    onRerunSettled,
+    onRerunStart,
+    prepareGenerationId,
+    preparePhase,
+  ]);
+
+  const view = deriveAfcQaTesterReportView(model, {
+    preparePhase,
+    prepareGenerationId,
+  });
   return (
     <AfcQaTesterReportView
       view={view}
@@ -452,6 +583,7 @@ export function AfcQaTesterReport({
       onToggleIssue={onToggleIssue}
       onNotesChange={onNotesChange}
       onSubmit={onSubmit}
+      onRerun={onRerun}
     />
   );
 }

@@ -11,12 +11,14 @@ import {
   PREPARE_3D_ROOM_RESTORE_PATH,
   buildAnalyzeRequest,
   canRequestPrepare,
+  canRequestRunningFromReady,
   classifyPrepare3dRetry,
   createInitialPrepare3dRoomState,
   enter3dRoomHref,
   isReadyProductionResponse,
   prepareButtonLabel,
   productionFailureReason,
+  readyProductionGenerationId,
   reducePrepare3dRoom,
   restoreStatusUrl,
 } from "./prepare-3d-room-client";
@@ -273,6 +275,63 @@ test("editor shell mounts integrated 2D|3D mode without giving AFC editorStore w
   assert.doesNotMatch(mount, /useEditorStore/);
   assert.doesNotMatch(mount, /EditorCanvas/);
   assert.doesNotMatch(editor, /enter3dRoomHref/);
+});
+
+test("ready production generation identity prefers currentGenerationId", () => {
+  assert.equal(
+    readyProductionGenerationId({
+      status: "ready",
+      authority: { generationId: "ignored" },
+      generationId: "11111111-1111-4111-8111-111111111111",
+      currentGenerationId: "22222222-2222-4222-8222-222222222222",
+    }),
+    "22222222-2222-4222-8222-222222222222",
+  );
+  assert.equal(
+    readyProductionGenerationId({ status: "failed", authority: {} }),
+    null,
+  );
+});
+
+test("running from ready does not change Try Again / requestPrepare", () => {
+  const ready = reducePrepare3dRoom(createInitialPrepare3dRoomState(), {
+    type: "restore_ready",
+    generationId: ROOM_ID,
+  });
+  assert.equal(ready.phase, "ready");
+  assert.equal(ready.generationId, ROOM_ID);
+  assert.equal(canRequestPrepare(ready), false);
+  assert.equal(canRequestRunningFromReady(ready), true);
+  const ignoredPrepare = reducePrepare3dRoom(ready, { type: "prepare_requested" });
+  assert.equal(ignoredPrepare, ready);
+  assert.equal(ignoredPrepare.nextIntent, PREPARE_3D_ROOM_FIRST_INTENT);
+
+  const running = reducePrepare3dRoom(ready, {
+    type: "running_requested_from_ready",
+  });
+  assert.equal(running.phase, "running");
+  assert.equal(running.inFlight, true);
+  assert.equal(running.generationId, ROOM_ID);
+  assert.equal(canRequestPrepare(running), false);
+  assert.equal(canRequestRunningFromReady(running), false);
+  assert.equal(
+    reducePrepare3dRoom(running, { type: "running_requested_from_ready" }),
+    running,
+  );
+
+  const reverted = reducePrepare3dRoom(running, {
+    type: "running_reverted_to_ready",
+  });
+  assert.equal(reverted.phase, "ready");
+  assert.equal(reverted.generationId, ROOM_ID);
+  assert.equal(reverted.nextIntent, PREPARE_3D_ROOM_FIRST_INTENT);
+
+  const idle = idleState();
+  assert.equal(canRequestRunningFromReady(idle), false);
+  assert.equal(
+    reducePrepare3dRoom(idle, { type: "running_requested_from_ready" }),
+    idle,
+  );
 });
 
 test("PI-2 reread_perspective still reuses durable EMPTY and bypasses durable TILED", () => {

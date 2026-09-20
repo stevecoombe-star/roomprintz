@@ -16,6 +16,7 @@ export type { AfcQaIssueCode };
 
 export const AFC_QA_BROWSER_STATE_PATH = "/api/vibode/afc/qa/state";
 export const AFC_QA_TESTER_CASE_PATH = "/api/vibode/afc/qa/cases";
+export const AFC_QA_READY_RERUN_PATH = "/api/vibode/afc/qa/rerun";
 
 export type AfcQaTesterTrigger = "manual_report" | "repeated_unsuccessful";
 
@@ -54,6 +55,11 @@ export const AFC_QA_TESTER_COPY = {
   error404: "This room read is no longer available to report.",
   error500: "We couldn’t submit your feedback. Please try again.",
   sessionExpired: "Your session expired. Sign in again.",
+  rerunButton: "Re-run room read",
+  rerunError400:
+    "Couldn’t re-run the room read. Please refresh and try again.",
+  rerunError404: "This room read is no longer available to re-run.",
+  rerunError500: "We couldn’t re-run the room read. Please try again.",
 } as const;
 
 export const AFC_QA_TESTER_NOTES_MAX_CHARS = AFC_DIAGNOSTIC_NOTES_MAX_CHARS;
@@ -85,6 +91,8 @@ export type AfcQaTesterReportModel = {
   form: AfcQaTesterFormState | null;
   successMessage: string | null;
   noticeMessage: string | null;
+  rerunPending: boolean;
+  rerunBoundGenerationId: string | null;
 };
 
 export type AfcQaTesterReportEvent =
@@ -101,18 +109,43 @@ export type AfcQaTesterReportEvent =
   | { type: "submit_requested" }
   | { type: "submit_succeeded" }
   | { type: "submit_http_error"; status: number }
-  | { type: "clear_success" };
+  | { type: "clear_success" }
+  | {
+      type: "rerun_requested";
+      preparePhase: string | null;
+      prepareGenerationId: string | null;
+    }
+  | { type: "rerun_succeeded" }
+  | { type: "rerun_http_error"; status: number }
+  | { type: "rerun_aborted" };
+
+export type AfcQaReadyRerunBody = Readonly<{
+  roomId: string;
+  generationId: string;
+}>;
 
 export type AfcQaTesterReportEffect =
   | { type: "none" }
   | { type: "post_case"; url: string; body: AfcQaTesterCaseBody }
+  | {
+      type: "post_rerun";
+      url: string;
+      body: AfcQaReadyRerunBody;
+    }
   | { type: "refresh_qa" }
   | { type: "unauthorized" };
+
+export type AfcQaTesterReportViewContext = {
+  preparePhase?: string | null;
+  prepareGenerationId?: string | null;
+};
 
 export type AfcQaTesterReportViewModel = {
   showManualReport: boolean;
   showAutomaticPrompt: boolean;
   showForm: boolean;
+  showRerun: boolean;
+  rerunDisabled: boolean;
   submitting: boolean;
   canSubmit: boolean;
   successMessage: string | null;
@@ -151,6 +184,21 @@ const FORBIDDEN_CASE_BODY_KEYS = [
   "engineFingerprint",
   "engine_fingerprint",
   "originalSha",
+] as const;
+
+const FORBIDDEN_RERUN_BODY_KEYS = [
+  ...FORBIDDEN_CASE_BODY_KEYS,
+  "intent",
+  "userId",
+  "user_id",
+  "machineStatus",
+  "machine_status",
+  "status",
+  "parentGenerationId",
+  "parent_generation_id",
+  "lineageSeq",
+  "lineage_seq",
+  "sourceIdentity",
 ] as const;
 
 const NONE: AfcQaTesterReportEffect = { type: "none" };
@@ -269,6 +317,59 @@ export function canShowAfcQaAutomaticOffer(
   );
 }
 
+export function canShowAfcQaReadyRerun(input: {
+  projection: AfcQaBrowserState | null;
+  preparePhase: string | null | undefined;
+  prepareGenerationId: string | null | undefined;
+}): boolean {
+  const generationId = input.projection?.reportGenerationId;
+  if (!canShowAfcQaManualReport(input.projection) || !generationId) {
+    return false;
+  }
+  if (input.preparePhase !== "ready") return false;
+  if (
+    typeof input.prepareGenerationId !== "string" ||
+    input.prepareGenerationId.length === 0
+  ) {
+    return false;
+  }
+  return input.prepareGenerationId === generationId;
+}
+
+export function buildAfcQaReadyRerunBody(input: {
+  roomId: string;
+  generationId: string;
+}): AfcQaReadyRerunBody {
+  return Object.freeze({
+    roomId: input.roomId,
+    generationId: input.generationId,
+  });
+}
+
+export function collectAfcQaReadyRerunBodyPrivacyViolations(
+  body: unknown,
+): readonly string[] {
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    return Object.freeze(["invalid_body"]);
+  }
+  const record = body as Record<string, unknown>;
+  const found: string[] = [];
+  for (const key of Object.keys(record)) {
+    if (key !== "roomId" && key !== "generationId") found.push(key);
+  }
+  for (const key of FORBIDDEN_RERUN_BODY_KEYS) {
+    if (key in record && !found.includes(key)) found.push(key);
+  }
+  return Object.freeze(found);
+}
+
+export function afcQaReadyRerunErrorMessage(status: number): string {
+  if (status === 400) return AFC_QA_TESTER_COPY.rerunError400;
+  if (status === 401) return AFC_QA_TESTER_COPY.sessionExpired;
+  if (status === 404) return AFC_QA_TESTER_COPY.rerunError404;
+  return AFC_QA_TESTER_COPY.rerunError500;
+}
+
 export function createInitialAfcQaTesterReportModel(
   roomId: string | null = null,
 ): AfcQaTesterReportModel {
@@ -281,6 +382,8 @@ export function createInitialAfcQaTesterReportModel(
     form: null,
     successMessage: null,
     noticeMessage: null,
+    rerunPending: false,
+    rerunBoundGenerationId: null,
   };
 }
 
@@ -343,6 +446,7 @@ function openForm(
 
 export function deriveAfcQaTesterReportView(
   model: AfcQaTesterReportModel,
+  context: AfcQaTesterReportViewContext = {},
 ): AfcQaTesterReportViewModel {
   const generationId = reportableGenerationId(model.projection);
   const showManualReport = generationId != null;
@@ -353,10 +457,17 @@ export function deriveAfcQaTesterReportView(
     model.form == null;
   const selectedCodes = model.form?.selectedCodes ?? [];
   const submitting = Boolean(model.form?.submitting);
+  const showRerun = canShowAfcQaReadyRerun({
+    projection: model.projection,
+    preparePhase: context.preparePhase,
+    prepareGenerationId: context.prepareGenerationId,
+  });
   return {
     showManualReport,
     showAutomaticPrompt,
     showForm: model.form != null,
+    showRerun,
+    rerunDisabled: model.rerunPending || submitting,
     submitting,
     canSubmit: Boolean(model.form && selectedCodes.length > 0 && !submitting),
     successMessage: model.successMessage,
@@ -598,6 +709,95 @@ export function reduceAfcQaTesterReport(
     case "clear_success": {
       return {
         state: { ...model, successMessage: null },
+        effect: NONE,
+      };
+    }
+    case "rerun_requested": {
+      if (model.rerunPending) {
+        return { state: model, effect: NONE };
+      }
+      const generationId = reportableGenerationId(model.projection);
+      if (
+        !model.roomId ||
+        !generationId ||
+        !canShowAfcQaReadyRerun({
+          projection: model.projection,
+          preparePhase: event.preparePhase,
+          prepareGenerationId: event.prepareGenerationId,
+        })
+      ) {
+        return { state: model, effect: NONE };
+      }
+      return {
+        state: {
+          ...model,
+          rerunPending: true,
+          rerunBoundGenerationId: generationId,
+          noticeMessage: null,
+          successMessage: null,
+        },
+        effect: {
+          type: "post_rerun",
+          url: AFC_QA_READY_RERUN_PATH,
+          body: buildAfcQaReadyRerunBody({
+            roomId: model.roomId,
+            generationId,
+          }),
+        },
+      };
+    }
+    case "rerun_succeeded": {
+      return {
+        state: {
+          ...model,
+          rerunPending: false,
+          rerunBoundGenerationId: null,
+          noticeMessage: null,
+        },
+        effect: { type: "refresh_qa" },
+      };
+    }
+    case "rerun_http_error": {
+      if (event.status === 401) {
+        return {
+          state: {
+            ...model,
+            rerunPending: false,
+            noticeMessage: AFC_QA_TESTER_COPY.sessionExpired,
+          },
+          effect: { type: "unauthorized" },
+        };
+      }
+      if (event.status === 404) {
+        return {
+          state: {
+            ...model,
+            rerunPending: false,
+            rerunBoundGenerationId: null,
+            noticeMessage: AFC_QA_TESTER_COPY.rerunError404,
+          },
+          effect: { type: "refresh_qa" },
+        };
+      }
+      return {
+        state: {
+          ...model,
+          rerunPending: false,
+          noticeMessage: afcQaReadyRerunErrorMessage(event.status),
+        },
+        effect: event.status === 400 ? { type: "refresh_qa" } : NONE,
+      };
+    }
+    case "rerun_aborted": {
+      if (!model.rerunPending) {
+        return { state: model, effect: NONE };
+      }
+      return {
+        state: {
+          ...model,
+          rerunPending: false,
+          rerunBoundGenerationId: null,
+        },
         effect: NONE,
       };
     }

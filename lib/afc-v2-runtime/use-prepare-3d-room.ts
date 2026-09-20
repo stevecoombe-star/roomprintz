@@ -7,10 +7,12 @@ import { getSupabaseBrowserAccessToken } from "@/lib/supabaseBrowser";
 import {
   buildAnalyzeRequest,
   canRequestPrepare,
+  canRequestRunningFromReady,
   classifyPrepare3dRetry,
   createInitialPrepare3dRoomState,
   isReadyProductionResponse,
   productionFailureReason,
+  readyProductionGenerationId,
   reducePrepare3dRoom,
   restoreStatusUrl,
   shouldApplyPrepareRoomResponse,
@@ -21,6 +23,13 @@ import {
 export type UsePrepare3dRoomResult = Readonly<{
   state: Prepare3dRoomState;
   requestPrepare: () => void;
+  requestRunningFromReady: () => boolean;
+  revertRunningToReady: () => void;
+  settleRunning: (input: {
+    ok: boolean;
+    payload?: unknown;
+    failureReason?: string | null;
+  }) => void;
 }>;
 
 function logPrepareFailure(detail: unknown) {
@@ -66,7 +75,10 @@ export function usePrepare3dRoom(roomId: string | null): UsePrepare3dRoomResult 
         if (cancelled) return;
         if (response.ok && isReadyProductionResponse(payload)) {
           setState((current) =>
-            reducePrepare3dRoom(current, { type: "restore_ready" }),
+            reducePrepare3dRoom(current, {
+              type: "restore_ready",
+              generationId: readyProductionGenerationId(payload),
+            }),
           );
           return;
         }
@@ -127,7 +139,10 @@ export function usePrepare3dRoom(roomId: string | null): UsePrepare3dRoomResult 
         }
         if (response.ok && isReadyProductionResponse(payload)) {
           setState((current) =>
-            reducePrepare3dRoom(current, { type: "prepare_succeeded" }),
+            reducePrepare3dRoom(current, {
+              type: "prepare_succeeded",
+              generationId: readyProductionGenerationId(payload),
+            }),
           );
           return;
         }
@@ -186,5 +201,57 @@ export function usePrepare3dRoom(roomId: string | null): UsePrepare3dRoomResult 
     void runAnalyze(roomId, intent);
   }, [roomId, runAnalyze]);
 
-  return { state, requestPrepare };
+  const requestRunningFromReady = useCallback((): boolean => {
+    if (inFlightRef.current) return false;
+    const current = stateRef.current;
+    if (!canRequestRunningFromReady(current)) return false;
+    inFlightRef.current = true;
+    setState((latest) =>
+      reducePrepare3dRoom(latest, { type: "running_requested_from_ready" }),
+    );
+    return true;
+  }, []);
+
+  const revertRunningToReady = useCallback(() => {
+    if (stateRef.current.phase !== "running") return;
+    inFlightRef.current = false;
+    setState((latest) =>
+      reducePrepare3dRoom(latest, { type: "running_reverted_to_ready" }),
+    );
+  }, []);
+
+  const settleRunning = useCallback(
+    (input: {
+      ok: boolean;
+      payload?: unknown;
+      failureReason?: string | null;
+    }) => {
+      if (stateRef.current.phase !== "running") return;
+      inFlightRef.current = false;
+      if (input.ok) {
+        setState((latest) =>
+          reducePrepare3dRoom(latest, {
+            type: "prepare_succeeded",
+            generationId: readyProductionGenerationId(input.payload),
+          }),
+        );
+        return;
+      }
+      setState((latest) =>
+        reducePrepare3dRoom(latest, {
+          type: "prepare_failed",
+          failureReason: input.failureReason,
+        }),
+      );
+    },
+    [],
+  );
+
+  return {
+    state,
+    requestPrepare,
+    requestRunningFromReady,
+    revertRunningToReady,
+    settleRunning,
+  };
 }
