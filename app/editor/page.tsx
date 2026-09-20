@@ -21,6 +21,7 @@ import { LatestFurnitureCollectionItemsPreview } from "@/components/LatestFurnit
 import { AfcIntegratedEditorViewport } from "@/components/afc-3d/AfcIntegratedEditorViewport";
 import { AfcSceneObjectCrudSessionProvider } from "@/components/afc-3d/AfcSceneObjectCrudSession";
 import { EditorViewportModeControl } from "@/components/afc-3d/EditorViewportModeControl";
+import { AfcQaTesterReport } from "@/components/afc-qa/AfcQaTesterReport";
 import { StageEditorProvider } from "@/components/stage/StageEditorContext";
 import { StageEditorShell } from "@/components/stage/StageEditorShell";
 import { TokenBalanceBadge } from "@/components/tokens/TokenBalanceBadge";
@@ -11950,6 +11951,17 @@ function EditorPageInner() {
             disabled={!editorRoomId}
             busy={integrated3dBusy}
             onChange={setViewportMode}
+          />
+          <AfcQaTesterReport
+            roomId={editorRoomId}
+            preparePhase={prepare3dPhase}
+            onUnauthorized={() => {
+              pushSnack("Your session expired. Redirecting to sign in...");
+              const next = editorRoomId
+                ? `/editor?roomId=${encodeURIComponent(editorRoomId)}`
+                : "/editor";
+              router.push(`/login?next=${encodeURIComponent(next)}`);
+            }}
           />
           <button
             type="button"

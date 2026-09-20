@@ -501,6 +501,8 @@ test("26) production AFC core stays isolated from diagnostics except AFD-2B anal
     source("lib/afc-v2-diagnostics/retry-episode-signal.server.ts"),
     source("lib/afc-v2-diagnostics/submit-tester-case.server.ts"),
     source("lib/afc-v2-diagnostics/browser-qa-state.server.ts"),
+    source("lib/afc-v2-diagnostics/tester-report.client.ts"),
+    source("lib/afc-v2-diagnostics/use-afc-qa-state.ts"),
   ].join("\n");
   assert.doesNotMatch(
     diagnosticsModule,
