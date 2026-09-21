@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState, type FormEvent } from "react";
+import { useMemo, useState, type FormEvent } from "react";
 
 import { AdminDiagnosticsCopyButton } from "@/lib/afc-v2-diagnostics/admin-diagnostics-copy-button";
 import {
@@ -48,14 +48,16 @@ export default function AfcDiagnosticAdminReviewPanel({
   const [saving, setSaving] = useState(false);
   const [success, setSuccess] = useState(false);
   const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
+  const [draftReview, setDraftReview] = useState(review);
+  if (review !== draftReview) {
+    setDraftReview(review);
     const next = parseAfcDiagnosticAdminReviewSaved(review);
-    if (!next) return;
-    const nextDraft = createAfcDiagnosticAdminReviewDraft(next);
-    setDraftStatus(nextDraft.reviewStatus);
-    setDraftNotes(nextDraft.reviewNotes);
-  }, [review]);
+    if (next) {
+      const nextDraft = createAfcDiagnosticAdminReviewDraft(next);
+      setDraftStatus(nextDraft.reviewStatus);
+      setDraftNotes(nextDraft.reviewNotes);
+    }
+  }
 
   const draft = useMemo(
     () =>

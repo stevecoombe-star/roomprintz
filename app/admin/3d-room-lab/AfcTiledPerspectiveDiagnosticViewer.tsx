@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 
 import type {
   AfcSr1LiveAuthoritativeGeometry,
@@ -101,10 +101,11 @@ export default function AfcTiledPerspectiveDiagnosticViewer({
     emptyAvailable,
     tiledAvailable,
   });
-
-  useEffect(() => {
-    if (basis !== null && basis !== requestedBasis) setRequestedBasis(basis);
-  }, [basis, requestedBasis]);
+  // A fallback basis becomes the next request so a later image recovery
+  // does not yank the view back to a basis the user can no longer see.
+  if (basis !== null && basis !== requestedBasis) {
+    setRequestedBasis(basis);
+  }
 
   if (!model || !basis) {
     return (

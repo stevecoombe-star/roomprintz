@@ -118,7 +118,7 @@ export default function AfcProposalOverlayPanel({
       ) : (
         <div className="space-y-4 text-xs text-slate-300">
           <div className="rounded-lg border border-amber-800/70 bg-amber-950/20 p-3 text-amber-100">
-            This viewer replays a captured receipt and verifies its artifacts before rendering. Dashed AFC geometry remains evidence; an explicit verified Floor Apply sends only exact source geometry to the host's canonical Floor authority. It never applies camera calibration.
+            This viewer replays a captured receipt and verifies its artifacts before rendering. Dashed AFC geometry remains evidence; an explicit verified Floor Apply sends only exact source geometry to the host&apos;s canonical Floor authority. It never applies camera calibration.
           </div>
           <div className="space-y-2">
             <p className="text-slate-400">Inventory fields are receipt claims. Full artifact verification occurs only when Load receipt is used.</p>

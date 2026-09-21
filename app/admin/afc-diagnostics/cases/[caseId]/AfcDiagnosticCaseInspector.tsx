@@ -576,7 +576,20 @@ export default function AfcDiagnosticCaseInspector({
       : AFC_DIAGNOSTIC_INSPECTOR_COPY.errorNotFound,
   );
   const [sessionError, setSessionError] = useState<string | null>(null);
-  const [selectedOrdinal, setSelectedOrdinal] = useState<number | null>(null);
+  const [requestedOrdinal, setRequestedOrdinal] = useState<number | null>(null);
+  const [activeCaseId, setActiveCaseId] = useState(parsedCaseId);
+  if (parsedCaseId !== activeCaseId) {
+    setActiveCaseId(parsedCaseId);
+    setCasePhase(parsedCaseId ? "loading" : "error");
+    setCaseError(
+      parsedCaseId ? null : AFC_DIAGNOSTIC_INSPECTOR_COPY.errorNotFound,
+    );
+    setCaseDetail(null);
+    setSessionDetail(null);
+    setSessionPhase("idle");
+    setSessionError(null);
+    setRequestedOrdinal(null);
+  }
 
   const loadSession = useCallback(
     async (seq: number, sessionId: string, mode: "follow" | "retry") => {
@@ -654,18 +667,24 @@ export default function AfcDiagnosticCaseInspector({
   );
 
   const loadCase = useCallback(
-    async (caseId: string, mode: "page1" | "refresh") => {
+    async (
+      caseId: string,
+      mode: "page1" | "refresh",
+      options?: Readonly<{ preserveUi?: boolean }>,
+    ) => {
       const started = coordinatorRef.current.beginCase();
-      setCaseError(null);
-      setSessionError(null);
-      if (mode === "page1") {
-        setCasePhase("loading");
-        setCaseDetail(null);
-        setSessionDetail(null);
-        setSessionPhase("idle");
-        setSelectedOrdinal(null);
-      } else {
-        setCasePhase("refreshing");
+      if (!options?.preserveUi) {
+        setCaseError(null);
+        setSessionError(null);
+        if (mode === "page1") {
+          setCasePhase("loading");
+          setCaseDetail(null);
+          setSessionDetail(null);
+          setSessionPhase("idle");
+          setRequestedOrdinal(null);
+        } else {
+          setCasePhase("refreshing");
+        }
       }
 
       try {
@@ -703,9 +722,6 @@ export default function AfcDiagnosticCaseInspector({
         setCasePhase("ready");
         setSessionDetail(null);
         setSessionPhase("loading");
-        setSelectedOrdinal((current) =>
-          mode === "refresh" ? current : parsed.reportedAttemptOrdinal,
-        );
         await loadSession(started.seq, parsed.sessionId, "follow");
       } catch (error) {
         if (isAfcDiagnosticInspectorAbortError(error)) return;
@@ -721,34 +737,32 @@ export default function AfcDiagnosticCaseInspector({
   );
 
   useEffect(() => {
-    if (!parsedCaseId) {
-      coordinatorRef.current.abortAll();
-      setCasePhase("error");
-      setCaseError(AFC_DIAGNOSTIC_INSPECTOR_COPY.errorNotFound);
-      setCaseDetail(null);
-      setSessionDetail(null);
-      setSessionPhase("idle");
-      return () => {
-        coordinatorRef.current.abortAll();
-      };
+    const coordinator = coordinatorRef.current;
+    const caseId = parsedCaseId;
+    if (caseId) {
+      void (async () => {
+        await loadCase(caseId, "page1", { preserveUi: true });
+      })();
+    } else {
+      coordinator.abortAll();
     }
-    void loadCase(parsedCaseId, "page1");
     return () => {
-      coordinatorRef.current.abortAll();
+      coordinator.abortAll();
     };
   }, [parsedCaseId, loadCase]);
 
-  useEffect(() => {
-    if (!caseDetail || !sessionDetail) return;
-    setSelectedOrdinal((current) =>
-      defaultAfcDiagnosticInspectorAttemptOrdinal({
-        attempts: sessionDetail.attempts,
-        reportedAttemptOrdinal: caseDetail.reportedAttemptOrdinal,
-        reportedGenerationId: caseDetail.reportedGenerationId,
-        preserveOrdinal: current,
-      }),
-    );
-  }, [caseDetail, sessionDetail]);
+  const selectedOrdinal =
+    parsedCaseId === activeCaseId && caseDetail && sessionDetail
+      ? defaultAfcDiagnosticInspectorAttemptOrdinal({
+          attempts: sessionDetail.attempts,
+          reportedAttemptOrdinal: caseDetail.reportedAttemptOrdinal,
+          reportedGenerationId: caseDetail.reportedGenerationId,
+          preserveOrdinal: requestedOrdinal,
+        })
+      : requestedOrdinal;
+  if (selectedOrdinal !== requestedOrdinal) {
+    setRequestedOrdinal(selectedOrdinal);
+  }
 
   const attempts = useMemo(
     () =>
@@ -1100,7 +1114,7 @@ export default function AfcDiagnosticCaseInspector({
                             } ${selected ? "ring-2 ring-emerald-400/70" : ""}`}
                             onClick={() => {
                               if (attempt.attemptOrdinal === selectedOrdinal) return;
-                              setSelectedOrdinal(attempt.attemptOrdinal);
+                              setRequestedOrdinal(attempt.attemptOrdinal);
                             }}
                           >
                             <div className="flex flex-wrap items-center gap-2">

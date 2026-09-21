@@ -1,6 +1,15 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useEffectEvent, useRef, useState } from "react";
+
+import {
+  nextVisualEvidenceRequest,
+  selectCommittedVisualImage,
+  selectCommittedVisualOverlay,
+  visualEvidenceRequestKey,
+  type VisualImageCommit,
+  type VisualOverlayCommit,
+} from "@/lib/afc-v2-diagnostics/visual-evidence-request";
 
 import { AdminDiagnosticsCopyButton } from "@/lib/afc-v2-diagnostics/admin-diagnostics-copy-button";
 import { afcDiagnosticInspectorArtifactSourceLabel } from "@/lib/afc-v2-diagnostics/admin-case-inspector.client";
@@ -105,31 +114,22 @@ export default function AfcDiagnosticVisualEvidence({
     createAfcDiagnosticVisualOverlayCoordinator(),
   );
   const objectUrlRef = useRef<string | null>(null);
-  const metaRef = useRef({ empty, tiled, originalSha256 });
-  metaRef.current = { empty, tiled, originalSha256 };
+  const readArtifactMetadata = useEffectEvent(() => ({
+    empty,
+    tiled,
+    originalSha256,
+  }));
   const [kind, setKind] = useState<AfcDiagnosticVisualArtifactKind>(() =>
     defaultAfcDiagnosticVisualArtifactKind({
       emptyPresent: empty.present,
       tiledPresent: tiled.present,
     }),
   );
-  const [phase, setPhase] = useState<"loading" | "ready" | "error">("loading");
-  const [error, setError] = useState<string | null>(null);
-  const [errorStatus, setErrorStatus] = useState<number | "network" | "blob" | null>(
-    null,
-  );
-  const [imageUrl, setImageUrl] = useState<string | null>(null);
   const [retryNonce, setRetryNonce] = useState(0);
-  const [committedKey, setCommittedKey] = useState<string | null>(null);
-  const [overlayPhase, setOverlayPhase] = useState<
-    "loading" | "ready" | "error"
-  >("loading");
-  const [overlayError, setOverlayError] = useState<string | null>(null);
-  const [overlay, setOverlay] = useState<AfcAdminVisualOverlayV1 | null>(null);
   const [overlayRetryNonce, setOverlayRetryNonce] = useState(0);
-  const [overlayCommittedKey, setOverlayCommittedKey] = useState<string | null>(
-    null,
-  );
+  const [imageCommit, setImageCommit] = useState<VisualImageCommit | null>(null);
+  const [overlayCommit, setOverlayCommit] =
+    useState<VisualOverlayCommit<AfcAdminVisualOverlayV1> | null>(null);
   const [showFloor, setShowFloor] = useState(true);
   const [showCollision, setShowCollision] = useState(true);
   const identityKey = afcDiagnosticVisualEvidenceTupleKey({
@@ -137,9 +137,48 @@ export default function AfcDiagnosticVisualEvidence({
     generationId,
     kind,
   });
-  const isCommitted = committedKey === identityKey;
-  const overlayIsCommitted = overlayCommittedKey === identityKey;
+  const [imageRequest, setImageRequest] = useState(() => ({
+    key: visualEvidenceRequestKey(identityKey, 0),
+    epoch: 1,
+  }));
+  const [overlayRequest, setOverlayRequest] = useState(() => ({
+    key: visualEvidenceRequestKey(identityKey, 0),
+    epoch: 1,
+  }));
+  const nextImageRequest = nextVisualEvidenceRequest(
+    imageRequest,
+    visualEvidenceRequestKey(identityKey, retryNonce),
+  );
+  if (nextImageRequest !== imageRequest) setImageRequest(nextImageRequest);
+  const nextOverlayRequest = nextVisualEvidenceRequest(
+    overlayRequest,
+    visualEvidenceRequestKey(identityKey, overlayRetryNonce),
+  );
+  if (nextOverlayRequest !== overlayRequest) setOverlayRequest(nextOverlayRequest);
+  const imageView = selectCommittedVisualImage({
+    tupleKey: identityKey,
+    request: nextImageRequest,
+    commit: imageCommit,
+  });
+  const isCommitted = imageView.isCommitted;
+  const phase = imageView.phase;
+  const imageUrl = imageView.imageUrl;
+  const error = imageView.error;
+  const errorStatus = imageView.errorStatus;
+  const overlayView = selectCommittedVisualOverlay({
+    tupleKey: identityKey,
+    request: nextOverlayRequest,
+    commit: overlayCommit,
+  });
+  const overlayCommittedKey = overlayCommit?.key ?? null;
+  const overlayIsCommitted =
+    overlayView.isCommitted && overlayCommittedKey === identityKey;
+  const overlayPhase = overlayView.phase;
+  const overlayError = overlayView.error;
+  const overlay = overlayView.overlay;
   const committedOverlay = overlayIsCommitted ? overlay : null;
+  const readImageRequestEpoch = useEffectEvent(() => nextImageRequest.epoch);
+  const readOverlayRequestEpoch = useEffectEvent(() => nextOverlayRequest.epoch);
   const floorAvailable = afcDiagnosticVisualOverlayFloorAvailable(
     committedOverlay,
   );
@@ -148,19 +187,30 @@ export default function AfcDiagnosticVisualEvidence({
   );
 
   useEffect(() => {
-    const started = coordinatorRef.current.begin({
+    const coordinator = coordinatorRef.current;
+    const requestEpoch = readImageRequestEpoch();
+    const started = coordinator.begin({
       caseId,
       generationId,
       kind,
     });
-    setPhase("loading");
-    setError(null);
-    setErrorStatus(null);
     if (objectUrlRef.current) {
       revokeAfcDiagnosticVisualObjectUrl(objectUrlRef.current);
       objectUrlRef.current = null;
     }
-    setImageUrl(null);
+
+    function commitImage(
+      next: Omit<VisualImageCommit, "epoch" | "key">,
+    ) {
+      setImageCommit({
+        epoch: requestEpoch,
+        key: afcDiagnosticVisualEvidenceTupleKey(started.tuple),
+        phase: next.phase,
+        imageUrl: next.imageUrl,
+        error: next.error,
+        errorStatus: next.errorStatus,
+      });
+    }
 
     void (async () => {
       try {
@@ -176,22 +226,23 @@ export default function AfcDiagnosticVisualEvidence({
           return;
         }
         if (!response.ok) {
+          const metadata = readArtifactMetadata();
           const present = metadataPresent(
             started.tuple.kind,
-            metaRef.current.empty,
-            metaRef.current.tiled,
-            metaRef.current.originalSha256,
+            metadata.empty,
+            metadata.tiled,
+            metadata.originalSha256,
           );
-          setError(
-            afcDiagnosticVisualEvidenceErrorMessage({
+          commitImage({
+            phase: "error",
+            imageUrl: null,
+            error: afcDiagnosticVisualEvidenceErrorMessage({
               status: response.status,
               kind: started.tuple.kind,
               metadataPresent: present,
             }),
-          );
-          setErrorStatus(response.status);
-          setCommittedKey(afcDiagnosticVisualEvidenceTupleKey(started.tuple));
-          setPhase("error");
+            errorStatus: response.status,
+          });
           return;
         }
         const blob = await response.blob();
@@ -199,10 +250,12 @@ export default function AfcDiagnosticVisualEvidence({
           return;
         }
         if (blob.size === 0) {
-          setError(AFC_DIAGNOSTIC_VISUAL_EVIDENCE_COPY.generic);
-          setErrorStatus("blob");
-          setCommittedKey(afcDiagnosticVisualEvidenceTupleKey(started.tuple));
-          setPhase("error");
+          commitImage({
+            phase: "error",
+            imageUrl: null,
+            error: AFC_DIAGNOSTIC_VISUAL_EVIDENCE_COPY.generic,
+            errorStatus: "blob",
+          });
           return;
         }
         const objectUrl = URL.createObjectURL(blob);
@@ -214,23 +267,28 @@ export default function AfcDiagnosticVisualEvidence({
           revokeAfcDiagnosticVisualObjectUrl(objectUrlRef.current);
         }
         objectUrlRef.current = objectUrl;
-        setImageUrl(objectUrl);
-        setCommittedKey(afcDiagnosticVisualEvidenceTupleKey(started.tuple));
-        setPhase("ready");
+        commitImage({
+          phase: "ready",
+          imageUrl: objectUrl,
+          error: null,
+          errorStatus: null,
+        });
       } catch (cause) {
         if (isAfcDiagnosticVisualAbortError(cause)) return;
         if (!coordinatorRef.current.isCurrent(started.seq, started.tuple)) {
           return;
         }
-        setError(AFC_DIAGNOSTIC_VISUAL_EVIDENCE_COPY.generic);
-        setErrorStatus("network");
-        setCommittedKey(afcDiagnosticVisualEvidenceTupleKey(started.tuple));
-        setPhase("error");
+        commitImage({
+          phase: "error",
+          imageUrl: null,
+          error: AFC_DIAGNOSTIC_VISUAL_EVIDENCE_COPY.generic,
+          errorStatus: "network",
+        });
       }
     })();
 
     return () => {
-      coordinatorRef.current.abort();
+      coordinator.abort();
       if (objectUrlRef.current) {
         revokeAfcDiagnosticVisualObjectUrl(objectUrlRef.current);
         objectUrlRef.current = null;
@@ -239,14 +297,25 @@ export default function AfcDiagnosticVisualEvidence({
   }, [caseId, generationId, kind, retryNonce]);
 
   useEffect(() => {
-    const started = overlayCoordinatorRef.current.begin({
+    const overlayCoordinator = overlayCoordinatorRef.current;
+    const requestEpoch = readOverlayRequestEpoch();
+    const started = overlayCoordinator.begin({
       caseId,
       generationId,
       kind,
     });
-    setOverlayPhase("loading");
-    setOverlayError(null);
-    setOverlay(null);
+
+    function commitOverlay(
+      next: Omit<VisualOverlayCommit<AfcAdminVisualOverlayV1>, "epoch" | "key">,
+    ) {
+      setOverlayCommit({
+        epoch: requestEpoch,
+        key: afcDiagnosticVisualEvidenceTupleKey(started.tuple),
+        phase: next.phase,
+        overlay: next.overlay,
+        error: next.error,
+      });
+    }
 
     void (async () => {
       try {
@@ -264,14 +333,11 @@ export default function AfcDiagnosticVisualEvidence({
           return;
         }
         if (!response.ok) {
-          setOverlayError(
-            afcDiagnosticVisualOverlayErrorMessage(response.status),
-          );
-          setOverlay(null);
-          setOverlayCommittedKey(
-            afcDiagnosticVisualEvidenceTupleKey(started.tuple),
-          );
-          setOverlayPhase("error");
+          commitOverlay({
+            phase: "error",
+            overlay: null,
+            error: afcDiagnosticVisualOverlayErrorMessage(response.status),
+          });
           return;
         }
         const payload: unknown = await response.json();
@@ -285,19 +351,18 @@ export default function AfcDiagnosticVisualEvidence({
           !parsed ||
           parsed.artifactBasis !== started.tuple.kind
         ) {
-          setOverlayError(AFC_DIAGNOSTIC_VISUAL_OVERLAY_COPY.error);
-          setOverlay(null);
-          setOverlayCommittedKey(
-            afcDiagnosticVisualEvidenceTupleKey(started.tuple),
-          );
-          setOverlayPhase("error");
+          commitOverlay({
+            phase: "error",
+            overlay: null,
+            error: AFC_DIAGNOSTIC_VISUAL_OVERLAY_COPY.error,
+          });
           return;
         }
-        setOverlay(parsed);
-        setOverlayCommittedKey(
-          afcDiagnosticVisualEvidenceTupleKey(started.tuple),
-        );
-        setOverlayPhase("ready");
+        commitOverlay({
+          phase: "ready",
+          overlay: parsed,
+          error: null,
+        });
       } catch (cause) {
         if (isAfcDiagnosticVisualOverlayAbortError(cause)) return;
         if (
@@ -305,17 +370,16 @@ export default function AfcDiagnosticVisualEvidence({
         ) {
           return;
         }
-        setOverlayError(afcDiagnosticVisualOverlayErrorMessage("network"));
-        setOverlay(null);
-        setOverlayCommittedKey(
-          afcDiagnosticVisualEvidenceTupleKey(started.tuple),
-        );
-        setOverlayPhase("error");
+        commitOverlay({
+          phase: "error",
+          overlay: null,
+          error: afcDiagnosticVisualOverlayErrorMessage("network"),
+        });
       }
     })();
 
     return () => {
-      overlayCoordinatorRef.current.abort();
+      overlayCoordinator.abort();
     };
   }, [caseId, generationId, kind, overlayRetryNonce]);
 
@@ -479,7 +543,6 @@ export default function AfcDiagnosticVisualEvidence({
               type="button"
               className={`${buttonClassName} mt-3`}
               onClick={() => {
-                setCommittedKey(null);
                 setRetryNonce((value) => value + 1);
               }}
             >
@@ -564,7 +627,6 @@ export default function AfcDiagnosticVisualEvidence({
               type="button"
               className={`${buttonClassName} mt-3`}
               onClick={() => {
-                setOverlayCommittedKey(null);
                 setOverlayRetryNonce((value) => value + 1);
               }}
             >

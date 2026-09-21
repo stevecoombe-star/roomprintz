@@ -224,14 +224,29 @@ export default function AfcDiagnosticSessionInspector({
   const [error, setError] = useState<string | null>(() =>
     parsedSessionId ? null : AFC_DIAGNOSTIC_INSPECTOR_COPY.errorSessionGeneric,
   );
-  const [selectedOrdinal, setSelectedOrdinal] = useState<number | null>(null);
+  const [requestedOrdinal, setRequestedOrdinal] = useState<number | null>(null);
+  const [activeSessionId, setActiveSessionId] = useState(parsedSessionId);
+  if (parsedSessionId !== activeSessionId) {
+    setActiveSessionId(parsedSessionId);
+    setPhase(parsedSessionId ? "loading" : "error");
+    setError(
+      parsedSessionId ? null : AFC_DIAGNOSTIC_INSPECTOR_COPY.errorSessionGeneric,
+    );
+    setSessionDetail(null);
+    setRequestedOrdinal(null);
+  }
 
-  const loadSession = useCallback(async (sessionId: string) => {
+  const loadSession = useCallback(async (
+    sessionId: string,
+    options?: Readonly<{ preserveUi?: boolean }>,
+  ) => {
     abortRef.current?.abort();
     const controller = new AbortController();
     abortRef.current = controller;
-    setPhase("loading");
-    setError(null);
+    if (!options?.preserveUi) {
+      setPhase("loading");
+      setError(null);
+    }
     try {
       const response = await fetch(buildAfcDiagnosticInspectorSessionUrl(sessionId), {
         credentials: "same-origin",
@@ -268,29 +283,28 @@ export default function AfcDiagnosticSessionInspector({
   }, []);
 
   useEffect(() => {
-    if (!parsedSessionId) {
-      setPhase("error");
-      setError(AFC_DIAGNOSTIC_INSPECTOR_COPY.errorSessionGeneric);
-      return () => {
-        abortRef.current?.abort();
-      };
+    const sessionId = parsedSessionId;
+    if (sessionId) {
+      void (async () => {
+        await loadSession(sessionId, { preserveUi: true });
+      })();
     }
-    void loadSession(parsedSessionId);
     return () => {
       abortRef.current?.abort();
     };
   }, [parsedSessionId, loadSession]);
 
-  useEffect(() => {
-    if (!sessionDetail) return;
-    setSelectedOrdinal((current) =>
-      defaultAfcDiagnosticAdminCaptureAttemptOrdinal({
-        attempts: sessionDetail.attempts,
-        preferredGenerationId,
-        preserveOrdinal: current,
-      }),
-    );
-  }, [sessionDetail, preferredGenerationId]);
+  const selectedOrdinal =
+    parsedSessionId === activeSessionId && sessionDetail
+      ? defaultAfcDiagnosticAdminCaptureAttemptOrdinal({
+          attempts: sessionDetail.attempts,
+          preferredGenerationId,
+          preserveOrdinal: requestedOrdinal,
+        })
+      : requestedOrdinal;
+  if (selectedOrdinal !== requestedOrdinal) {
+    setRequestedOrdinal(selectedOrdinal);
+  }
 
   const attempts = useMemo(
     () =>
@@ -436,7 +450,7 @@ export default function AfcDiagnosticSessionInspector({
                         }`}
                         onClick={() => {
                           if (attempt.attemptOrdinal === selectedOrdinal) return;
-                          setSelectedOrdinal(attempt.attemptOrdinal);
+                          setRequestedOrdinal(attempt.attemptOrdinal);
                         }}
                       >
                         <div className="flex flex-wrap items-center gap-2">
