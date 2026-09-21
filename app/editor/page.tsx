@@ -3051,6 +3051,14 @@ function EditorPageInner() {
       ui: s.ui.selectedNodeId ? { ...s.ui, selectedNodeId: null } : s.ui,
     }));
   }, []);
+  const hydrateSceneNodesFromPlacements = useCallback(
+    (placements: ScenePlacement[]) => {
+      void placements;
+      // Legacy placement->node hydration is intentionally disabled.
+      clearLegacyPlacementNodes();
+    },
+    [clearLegacyPlacementNodes]
+  );
   const clearTransientInteractionOverlaysAfterImageCommit = useCallback(() => {
     setRemoveMarkerPosition(null);
     setIsRemoveMarkerTargeting(false);
@@ -4495,6 +4503,7 @@ function EditorPageInner() {
     effectiveRequestedInitialFrameAspectRatio,
     effectiveRequestedRoomId,
     effectiveRequestedRoomPreviewUrl,
+    hydrateSceneNodesFromPlacements,
     isWorkspaceRecoveryPending,
     pushSnack,
     requestedRoomId,
@@ -5377,14 +5386,6 @@ function EditorPageInner() {
     scenePlacements,
     stage3OutputPlacements,
   ]);
-  const hydrateSceneNodesFromPlacements = useCallback(
-    (placements: ScenePlacement[]) => {
-      void placements;
-      // Legacy placement->node hydration is intentionally disabled.
-      clearLegacyPlacementNodes();
-    },
-    [clearLegacyPlacementNodes]
-  );
   const versionsWithKind = useMemo<EditorVersionWithKind[]>(
     () =>
       versions.map((version) => ({
@@ -7386,7 +7387,7 @@ function EditorPageInner() {
     void runStageWithCancellation(4, { stage4Actions: selectedActions });
   };
 
-  const runEdit = async (
+  const runEdit = useCallback(async (
     action: EditAction,
     payloadParts: Partial<VibodeEditRunRequest> = {},
     lifecycle?: {
@@ -7679,7 +7680,26 @@ function EditorPageInner() {
         );
       }
     }
-  };
+  }, [
+    activeStage,
+    authoritativeDisplayedPlacements,
+    clearLegacyPlacementNodes,
+    clearPasteToPlaceSettlingForRequest,
+    clearTransientInteractionOverlaysAfterImageCommit,
+    hydrateRoomImageObjects,
+    hydrateSceneNodesFromPlacements,
+    isBaseImageEditReady,
+    isOutOfTokens,
+    notifyTokenBalanceChanged,
+    pushSnack,
+    refreshRoomVersions,
+    scenePlacements,
+    selectedModel,
+    setActiveAssetId,
+    setBaseImageUrl,
+    vibodeRoomId,
+    workingImageUrl,
+  ]);
 
   useEffect(() => {
     const pending = getPendingFurnitureSelection();
@@ -10200,11 +10220,11 @@ function EditorPageInner() {
     setActivePasteToPlaceJobControl,
   ]);
 
-  const warnEdit = (message: string) => {
+  const warnEdit = useCallback((message: string) => {
     setEditWarning(message);
     console.warn(`[edit-run] ${message}`);
     pushSnack(message);
-  };
+  }, [pushSnack]);
 
   const closeMyFurniturePicker = useCallback(() => {
     setMyFurnitureOpen(false);
@@ -10398,7 +10418,7 @@ function EditorPageInner() {
     setEditWarning(null);
   }, []);
 
-  const removeSelectedMarker = async () => {
+  const removeSelectedMarker = useCallback(async () => {
     if (!removeMarkerPosition) {
       warnEdit("Place a remove marker first.");
       return;
@@ -10426,7 +10446,7 @@ function EditorPageInner() {
     if (!res) return;
     clearRemoveMarker(false);
     setEditWarning(null);
-  };
+  }, [clearRemoveMarker, removeMarkerPosition, runEdit, selectedRemoveLabel, warnEdit]);
 
   const engageRemoveMode = useCallback(async () => {
     if (isRemoveModeReadingObjects) return;
