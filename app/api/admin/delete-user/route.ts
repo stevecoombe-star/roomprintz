@@ -498,6 +498,11 @@ export function createAdminDeleteUserPostHandler(
 
   const { error: deleteAuthErr } = await supabaseAdmin.auth.admin.deleteUser(userId);
   if (deleteAuthErr) {
+    console.error("[admin/delete-user] auth delete failed", {
+      message: typeof deleteAuthErr.message === "string" ? deleteAuthErr.message : null,
+      status: typeof deleteAuthErr.status === "number" ? deleteAuthErr.status : null,
+      code: typeof deleteAuthErr.code === "string" ? deleteAuthErr.code : null,
+    });
     return json(500, {
       error: "Failed deleting auth user.",
       deletedStorageFiles,

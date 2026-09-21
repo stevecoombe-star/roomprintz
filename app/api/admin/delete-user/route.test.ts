@@ -44,7 +44,13 @@ function createThenBuilder(
 
 function createRouteSupabase(
   sink: OpSink,
-  options: { afcListError?: { message: string } } = {},
+  options: {
+    afcListError?: { message: string };
+    deleteAuthError?: { message?: unknown; status?: unknown; code?: unknown } & Record<
+      string,
+      unknown
+    >;
+  } = {},
 ) {
   return {
     auth: {
@@ -58,6 +64,9 @@ function createRouteSupabase(
         },
         async deleteUser(userId: string) {
           sink.ops.push(`auth-delete:${userId}`);
+          if (options.deleteAuthError) {
+            return { error: options.deleteAuthError };
+          }
           return { error: null };
         },
       },
@@ -310,6 +319,82 @@ test("delete-user still requires admin, matching email, and rejects self-delete"
       .status,
     400,
   );
+});
+
+test("auth delete failure keeps browser JSON and logs only message/status/code", async () => {
+  const sink: OpSink = { ops: [], removed: [] };
+  const logs: unknown[][] = [];
+  const originalError = console.error;
+  console.error = (...args: unknown[]) => {
+    logs.push(args);
+  };
+  try {
+    const route = createAdminDeleteUserPostHandler({
+      getAuthenticatedAdminUser: async () =>
+        ({ id: ADMIN_ID, email: "admin@example.test" }) as never,
+      getServiceRoleSupabaseClient: () =>
+        createRouteSupabase(sink, {
+          deleteAuthError: {
+            message: "Database error deleting user",
+            status: 500,
+            code: "unexpected_failure",
+            email: EMAIL_A,
+            userId: USER_A,
+            raw: { token: "secret-token" },
+          },
+        }) as never,
+      deleteAfcV2UserStorage: async () => {
+        sink.ops.push("afc-cleanup");
+        return { ok: true, deleted: 2, skipped: 0 };
+      },
+    });
+    const response = await post(route, {
+      userId: USER_A,
+      confirmEmail: EMAIL_A,
+    });
+    const body = await jsonBody(response);
+    const serialized = JSON.stringify(body);
+    assert.equal(response.status, 500);
+    assert.deepEqual(Object.keys(body).sort(), [
+      "authUserDeleted",
+      "deletedRowsByTable",
+      "deletedStorageFiles",
+      "error",
+      "skippedStorageFiles",
+    ]);
+    assert.equal(body.error, "Failed deleting auth user.");
+    assert.equal(body.authUserDeleted, false);
+    assert.equal(body.deletedStorageFiles, 2);
+    assert.equal(serialized.includes(EMAIL_A), false);
+    assert.equal(sink.ops.includes(`auth-delete:${USER_A}`), true);
+    const afcAt = sink.ops.indexOf("afc-cleanup");
+    const authDeleteAt = sink.ops.indexOf(`auth-delete:${USER_A}`);
+    assert.ok(afcAt >= 0);
+    assert.ok(authDeleteAt > afcAt);
+
+    const authLogs = logs.filter(
+      (args) => args[0] === "[admin/delete-user] auth delete failed",
+    );
+    assert.equal(authLogs.length, 1);
+    const payload = authLogs[0]?.[1];
+    assert.equal(payload !== null && typeof payload === "object", true);
+    assert.deepEqual(Object.keys(payload as object).sort(), [
+      "code",
+      "message",
+      "status",
+    ]);
+    assert.deepEqual(payload, {
+      message: "Database error deleting user",
+      status: 500,
+      code: "unexpected_failure",
+    });
+    const logged = JSON.stringify(payload);
+    assert.equal(logged.includes(EMAIL_A), false);
+    assert.equal(logged.includes(USER_A), false);
+    assert.equal(logged.includes("secret-token"), false);
+  } finally {
+    console.error = originalError;
+  }
 });
 
 test("FIX1 8/12 prefix listing failure blocks success and hides storage paths", async () => {
