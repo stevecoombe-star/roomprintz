@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 
 import {
   favoriteKey,
@@ -14,54 +14,55 @@ import {
 } from "@/lib/vibode-stage/catalog";
 import { stageAddLockKey } from "@/lib/vibode-stage/stage-runtime-placement";
 import { useStageEditor } from "@/components/stage/StageEditorContext";
+import type {
+  StageCatalogSnapshot,
+  StageProduct,
+  StageVariant,
+} from "@/lib/vibode-stage/types";
 
 const FOCUS =
   "focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-neutral-400";
+
+function resolveSelectedVariantId(
+  product: StageProduct,
+  requestedVariantId: string,
+  extraVariants: readonly StageVariant[],
+  catalog: StageCatalogSnapshot,
+): string {
+  const currentId = requestedVariantId || product.defaultVariantId;
+  const current = stageVariantById(currentId, extraVariants, catalog);
+  if (
+    current &&
+    current.productId === product.productId &&
+    isStageCommercialActive(current.status)
+  ) {
+    return currentId;
+  }
+  const fallback = stageVariantById(
+    product.defaultVariantId,
+    extraVariants,
+    catalog,
+  );
+  if (fallback && isStageCommercialActive(fallback.status)) {
+    return product.defaultVariantId;
+  }
+  return currentId;
+}
 
 export function StageProductDetail() {
   const stage = useStageEditor();
   const product = stage.detailProductId
     ? stageProductById(stage.detailProductId, stage.extraProducts, stage.catalog)
     : null;
-  const [selectedVariantId, setSelectedVariantId] = useState(
-    product?.defaultVariantId ?? "",
-  );
-
-  useEffect(() => {
-    if (!product) {
-      setSelectedVariantId("");
-      return;
-    }
-    setSelectedVariantId(product.defaultVariantId);
-  }, [product?.productId, product?.defaultVariantId]);
-
-  useEffect(() => {
-    if (!product) return;
-    const currentId = selectedVariantId || product.defaultVariantId;
-    const current = stageVariantById(currentId, stage.extraVariants, stage.catalog);
-    if (
-      current &&
-      current.productId === product.productId &&
-      isStageCommercialActive(current.status)
-    ) {
-      return;
-    }
-    const fallback = stageVariantById(
-      product.defaultVariantId,
-      stage.extraVariants,
-      stage.catalog,
-    );
-    if (fallback && isStageCommercialActive(fallback.status)) {
-      setSelectedVariantId(product.defaultVariantId);
-    }
-  }, [
-    product,
-    selectedVariantId,
-    stage.catalog,
-    stage.extraVariants,
-  ]);
+  const [requestedVariantId, setSelectedVariantId] = useState("");
 
   if (!product) return null;
+  const selectedVariantId = resolveSelectedVariantId(
+    product,
+    requestedVariantId,
+    stage.extraVariants,
+    stage.catalog,
+  );
   const variants = stageVariantsForProduct(
     product.productId,
     stage.extraVariants,
