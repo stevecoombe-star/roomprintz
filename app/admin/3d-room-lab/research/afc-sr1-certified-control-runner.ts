@@ -36,9 +36,6 @@ import {
   sha256HexUtf8,
 } from "../gemini-evidence-contract";
 import {
-  classifyAfcR3cImagePairCompatibility,
-} from "./afc-r3c-image-pair-compatibility";
-import {
   executeAfcSr1RawFirstPlacementAwareOrchestration,
   type AfcSr1RawFirstPlacementAwareDependenciesV1,
   type AfcSr1RawFirstPlacementAwareOrchestrationInputV1,
@@ -48,28 +45,14 @@ import {
   deriveAfcSr1FloorVanishingLineCrossRoom,
 } from "./afc-sr1-floor-vanishing-line-cross-room";
 import {
-  AFC_SR1_TR2_V4_POLICY_VERSION,
-  AFC_SR1_TR2_V4_RESEARCH_PROFILE,
-  validateAfcSr1Tr2ReaderReceipt,
-} from "./afc-sr1-tile-floor-reader-execution";
-import {
   AFC_SR1_TS0_GENERATION_TIMEOUT_CONTRACT_VERSION,
   AFC_SR1_TS0_GENERATION_TIMEOUT_MS,
   AFC_SR1_TILE_GRID_SCAFFOLD_PROFILE,
   AFC_SR1_TILE_GRID_SCAFFOLD_REQUESTED_MODEL_ID,
   vibodeTileGridScaffoldAssist,
   type AfcSr1TileGridScaffoldArgs,
-  type AfcSr1TileGridScaffoldImageIdentity,
-  type AfcSr1TileGridScaffoldProvenance,
   type AfcSr1TileGridScaffoldResult,
 } from "./afc-sr1-tile-grid-scaffold";
-import {
-  validateAfcSr1Ts0ChildProjectivePlacementReceipt,
-  type AfcSr1Ts0LineageIdentityV1,
-} from "./afc-sr1-ts0-child-projective-placement";
-import {
-  validateAfcSr1GeneratedTs0ParentChildLineage,
-} from "./afc-sr1-ts0-parent-child-lineage-authority";
 
 export const AFC_SR1_CERTIFIED_RUNNER_VERSION =
   "afc-sr1-certified-control-runner/v2" as const;
@@ -814,199 +797,6 @@ async function roomCInput(
         allowLocalhostHttp: config.ts0AllowLocalhostHttp,
       }),
     }),
-  });
-}
-
-type RoomCLineageControl = Readonly<{
-  parent: AfcSr1TileGridScaffoldImageIdentity;
-  results: Readonly<
-    Record<
-      "C-T1",
-      Readonly<{
-        child: AfcSr1TileGridScaffoldImageIdentity &
-          Readonly<{ mimeType: "image/png" }>;
-        provenance: AfcSr1TileGridScaffoldProvenance;
-      }>
-    >
-  >;
-}>;
-
-function lineageIdentity(
-  parent: AfcSr1TileGridScaffoldImageIdentity,
-  child: AfcSr1TileGridScaffoldImageIdentity
-): AfcSr1Ts0LineageIdentityV1 {
-  const project = (identity: AfcSr1TileGridScaffoldImageIdentity) =>
-    Object.freeze({
-      sha256: identity.sha256,
-      byteCount: identity.byteCount,
-      decodedWidth: identity.decodedWidth,
-      decodedHeight: identity.decodedHeight,
-      orientation: identity.orientation,
-    });
-  return Object.freeze({
-    parent: project(parent),
-    child: project(child),
-  });
-}
-
-async function certifyExposedC1HttpSeams(args: {
-  control: RoomCControl;
-  parentBytes: Uint8Array;
-  placementWire: ReturnType<typeof createPlacementWireTransport>;
-  childWire: ReturnType<typeof createReaderWireTransport>;
-}): Promise<Readonly<{
-  identity: string;
-  actualPath: string;
-  dispatchCounts: Readonly<{
-    rawReader: 0;
-    ts0: 0;
-    placement: 1;
-    childReader: 1;
-  }>;
-  placementStatus: "usable" | "rejected";
-  placementEvidenceDigest: string;
-  childReaderStatus: "usable" | "rejected";
-  childReaderEvidenceDigest: string;
-  placementResponseWirePresent: boolean;
-  childResponseWirePresent: boolean;
-  errorWiresAbsent: boolean;
-  replayValid: boolean;
-  status: "PASS" | "FAIL";
-}>> {
-  const lineageControl = JSON.parse(
-    await readFile(
-      new URL(
-        "./fixtures/afc-sr1-room-c-ts0-lineage-control.v1.json",
-        import.meta.url
-      ),
-      "utf8"
-    )
-  ) as RoomCLineageControl;
-  const childMetadata = lineageControl.results["C-T1"];
-  const childBytes = await readFile(
-    new URL(
-      args.control.realCompositorV3Evidence["C-T1"].imageFixtureFile,
-      FIXTURE_DIRECTORY
-    )
-  );
-  const scaffoldResult: AfcSr1TileGridScaffoldResult = Object.freeze({
-    status: "generated" as const,
-    input: Object.freeze({ ...lineageControl.parent }),
-    tiled: Object.freeze({
-      base64: Buffer.from(childBytes).toString("base64"),
-      identity: Object.freeze({ ...childMetadata.child }),
-    }),
-    provenance: Object.freeze({ ...childMetadata.provenance }),
-    compatibility: classifyAfcR3cImagePairCompatibility(
-      {
-        fingerprint: lineageControl.parent.sha256,
-        decodedWidth: lineageControl.parent.decodedWidth,
-        decodedHeight: lineageControl.parent.decodedHeight,
-        orientation: lineageControl.parent.orientation,
-      },
-      {
-        fingerprint: childMetadata.child.sha256,
-        decodedWidth: childMetadata.child.decodedWidth,
-        decodedHeight: childMetadata.child.decodedHeight,
-        orientation: childMetadata.child.orientation,
-      }
-    ),
-  });
-  const lineageAuthority =
-    await validateAfcSr1GeneratedTs0ParentChildLineage(
-      scaffoldResult,
-      args.parentBytes,
-      childBytes
-    );
-  const lineage = lineageIdentity(
-    lineageControl.parent,
-    childMetadata.child
-  );
-  const registrationExclusion = Object.freeze({
-    coordinateSpace: "source-normalized/v1" as const,
-    role:
-      "registration_exclusion_support_only_not_placement_authority" as const,
-    evidenceLabel:
-      "STRICT_EMPTY_POLYGON_USED_AS_REGISTRATION_EXCLUSION_MASK_ONLY" as const,
-    polygon: Object.freeze(
-      args.control.authority.basisBoundSourcePolygon.polygon.map((point) =>
-        Object.freeze([point.x, point.y] as const)
-      )
-    ),
-  });
-  const placementWireResponse = await args.placementWire.call({
-    parentImageBytes: Uint8Array.from(args.parentBytes),
-    childImageBytes: Uint8Array.from(childBytes),
-    policyVersion:
-      "afc-sr1-ts0-child-projective-placement-policy/v1",
-    registrationExclusion,
-    ts0Lineage: lineage,
-  });
-  const placementReceipt =
-    validateAfcSr1Ts0ChildProjectivePlacementReceipt(
-      placementWireResponse,
-      {
-        parentBytes: args.parentBytes,
-        childBytes,
-        lineageAuthority,
-      }
-    );
-  const childWireResponse = await args.childWire.call({
-    payload: Object.freeze({
-      researchProfile: AFC_SR1_TR2_V4_RESEARCH_PROFILE,
-      policyVersion: AFC_SR1_TR2_V4_POLICY_VERSION,
-      imageBase64: Buffer.from(childBytes).toString("base64"),
-      roi: args.control.authority.readerRoi,
-    }),
-  });
-  const childReceipt = validateAfcSr1Tr2ReaderReceipt(childWireResponse, {
-    readerVersion: "v4",
-    tiledImageBytes: childBytes,
-    roi: args.control.authority.readerRoi,
-    expectedImageIdentity: {
-      sha256: childMetadata.child.sha256,
-      byteCount: childMetadata.child.byteCount,
-      decodedWidth: childMetadata.child.decodedWidth,
-      decodedHeight: childMetadata.child.decodedHeight,
-    },
-  });
-  const replay =
-    sha256HexUtf8(placementReceipt.evidenceCanonicalJson) ===
-      placementReceipt.evidenceDigest.value &&
-    sha256HexUtf8(childReceipt.evidenceCanonicalJson) ===
-      childReceipt.evidenceDigest.value;
-  const responseWires =
-    args.placementWire.state.responsePath !== null &&
-    args.childWire.state.responsePath !== null;
-  const errorWiresAbsent =
-    args.placementWire.state.errorPath === null &&
-    args.childWire.state.errorPath === null;
-  const pass =
-    placementReceipt.status === "usable" &&
-    childReceipt.status === "usable" &&
-    responseWires &&
-    errorWiresAbsent &&
-    replay;
-  return Object.freeze({
-    identity: "afc-sr1-room-c-exposed-c-t1-http-seam-control/v1",
-    actualPath:
-      "direct_exposed_placement_and_child_reader_http_seam_certification",
-    dispatchCounts: Object.freeze({
-      rawReader: 0 as const,
-      ts0: 0 as const,
-      placement: 1 as const,
-      childReader: 1 as const,
-    }),
-    placementStatus: placementReceipt.status,
-    placementEvidenceDigest: placementReceipt.evidenceDigest.value,
-    childReaderStatus: childReceipt.status,
-    childReaderEvidenceDigest: childReceipt.evidenceDigest.value,
-    placementResponseWirePresent:
-      args.placementWire.state.responsePath !== null,
-    childResponseWirePresent: args.childWire.state.responsePath !== null,
-    errorWiresAbsent,
-    replayValid: replay,
-    status: pass ? ("PASS" as const) : ("FAIL" as const),
   });
 }
 
