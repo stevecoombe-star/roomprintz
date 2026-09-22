@@ -89,6 +89,19 @@ export function buildDurableSourceFloorAuthorityKey(polygon: readonly FloorPoint
 }
 
 /**
+ * Reactive Floor identity for readers that must not throw. A polygon that is
+ * not exactly four finite corners is unavailable. A present key is the
+ * canonical durable source-floor authority key.
+ */
+export function deriveDurableSourceFloorAuthorityKey(polygon: readonly FloorPoint[]): string | null {
+  if (polygon.length !== 4) return null;
+  if (polygon.some((point) => !point || !Number.isFinite(point.x) || !Number.isFinite(point.y))) {
+    return null;
+  }
+  return buildDurableSourceFloorAuthorityKey(polygon);
+}
+
+/**
  * Plans source-first authority intake. Unit-boundary machine noise is
  * canonicalized before widened-extent validation; meaningful off-frame values
  * remain exact. Projection may legitimately be unavailable while the image

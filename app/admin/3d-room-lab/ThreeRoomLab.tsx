@@ -152,6 +152,7 @@ import {
 import { canonicalizeSourceUnitBoundaryPoint } from "./floor-coordinate-extent";
 import {
   buildDurableSourceFloorAuthorityKey,
+  deriveDurableSourceFloorAuthorityKey,
   planContainerFloorPolygon,
   planSourceNormalizedFloorPolygon,
   type FloorSourceAuthorityPlan,
@@ -4648,11 +4649,17 @@ export default function ThreeRoomLab({
   ]);
   calibratedCameraApplyStatusRef.current = calibratedCameraApplyStatus;
 
+  // Reactive durable source-floor key for render-time camera qualification.
+  const durableSourceFloorAuthorityKey = useMemo(
+    () => deriveDurableSourceFloorAuthorityKey(sourceNormalizedFloorPolygon),
+    [sourceNormalizedFloorPolygon]
+  );
+
   const verifiedAfcCameraApplyQualification = useMemo(
     () =>
       qualifyVerifiedAfcCameraApply({
         binding: verifiedAfcFloorCameraBinding,
-        currentFloorAuthorityKey: floorPolygonAuthorityKeyRef.current ?? null,
+        currentFloorAuthorityKey: durableSourceFloorAuthorityKey,
         currentLiveBasis: afcVerifiedFloorLiveBasis,
         currentCameraApplyEvaluation: calibratedCameraApplyStatus,
         hasApplyCandidate: cameraPoseDebug.applyCandidate !== null,
@@ -4661,7 +4668,7 @@ export default function ThreeRoomLab({
       afcVerifiedFloorLiveBasis,
       calibratedCameraApplyStatus,
       cameraPoseDebug.applyCandidate,
-      sourceNormalizedFloorPolygon,
+      durableSourceFloorAuthorityKey,
       verifiedAfcFloorCameraBinding,
     ]
   );

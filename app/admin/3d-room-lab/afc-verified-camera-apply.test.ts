@@ -7,6 +7,10 @@ import {
   type VerifiedAfcFloorCameraBinding,
 } from "./afc-verified-camera-apply";
 import type { CalibratedCameraApplyEvaluation } from "./calibrated-camera-apply";
+import {
+  deriveDurableSourceFloorAuthorityKey,
+  type FloorPoint,
+} from "./floor-source-authority";
 
 const FLOOR_KEY = "0.2,0.8|0.8,0.8|0.9,0.4|0.1,0.4";
 const FINGERPRINT = "a".repeat(64);
@@ -77,6 +81,34 @@ test("rejects a missing or structurally malformed AFC Floor binding", () => {
       { ok: false, reason: "no_afc_floor_binding" }
     );
   }
+});
+
+test("rejects a stale AFC Floor binding when the derived durable key changes", () => {
+  const polygonA: readonly FloorPoint[] = [
+    { x: 0.2, y: 0.8 },
+    { x: 0.8, y: 0.8 },
+    { x: 0.9, y: 0.4 },
+    { x: 0.1, y: 0.4 },
+  ];
+  const keyA = deriveDurableSourceFloorAuthorityKey(polygonA);
+  assert.equal(keyA, FLOOR_KEY);
+  assert.deepEqual(
+    qualifyVerifiedAfcCameraApply(input({ currentFloorAuthorityKey: keyA })),
+    { ok: true, bindingGeneration: 7 }
+  );
+
+  const polygonB: readonly FloorPoint[] = [
+    { x: 0.21, y: 0.8 },
+    { x: 0.8, y: 0.8 },
+    { x: 0.9, y: 0.4 },
+    { x: 0.1, y: 0.4 },
+  ];
+  const keyB = deriveDurableSourceFloorAuthorityKey(polygonB);
+  assert.notEqual(keyB, keyA);
+  assert.deepEqual(
+    qualifyVerifiedAfcCameraApply(input({ currentFloorAuthorityKey: keyB })),
+    { ok: false, reason: "floor_authority_mismatch" }
+  );
 });
 
 test("requires the exact current durable Floor authority key without normalization", () => {

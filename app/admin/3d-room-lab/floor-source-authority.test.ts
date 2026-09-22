@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 
 import {
   buildDurableSourceFloorAuthorityKey,
+  deriveDurableSourceFloorAuthorityKey,
   planContainerFloorPolygon,
   planSourceNormalizedFloorPolygon,
   type FloorPoint,
@@ -135,6 +136,30 @@ test("durable source identity is full precision, semantic order, and negative-ze
   assert.throws(
     () => buildDurableSourceFloorAuthorityKey([{ x: Number.POSITIVE_INFINITY, y: 0 }, ...QUAD.slice(1)]),
     /finite/
+  );
+});
+
+test("derived durable source identity follows coordinates and is unavailable when invalid", () => {
+  const key = deriveDurableSourceFloorAuthorityKey(QUAD);
+  assert.equal(key, buildDurableSourceFloorAuthorityKey(QUAD));
+  assert.equal(key, "0.1,0.2|0.9,0.2|0.8,0.85|0.2,0.85");
+  assert.equal(key, deriveDurableSourceFloorAuthorityKey(QUAD.map((point) => ({ ...point }))));
+  assert.notEqual(
+    key,
+    deriveDurableSourceFloorAuthorityKey([{ x: 0.1000000001, y: 0.2 }, ...QUAD.slice(1)])
+  );
+  assert.equal(deriveDurableSourceFloorAuthorityKey(QUAD.slice(0, 3)), null);
+  assert.equal(
+    deriveDurableSourceFloorAuthorityKey([{ x: Number.NaN, y: 0.2 }, ...QUAD.slice(1)]),
+    null
+  );
+  assert.equal(
+    deriveDurableSourceFloorAuthorityKey([{ x: Number.POSITIVE_INFINITY, y: 0.2 }, ...QUAD.slice(1)]),
+    null
+  );
+  assert.equal(
+    deriveDurableSourceFloorAuthorityKey([{ x: Number.NEGATIVE_INFINITY, y: 0.2 }, ...QUAD.slice(1)]),
+    null
   );
 });
 

@@ -1026,6 +1026,28 @@ test("CP2B: AFC-bound camera Apply stays host-owned and reuses camera authority"
   assert.doesNotMatch(SCENE_STATE_SOURCE, /VerifiedAfcFloorCameraBinding|bindingGeneration|afcVerifiedCameraApply/);
 });
 
+test("camera qualification memo depends on the derived durable source-floor authority key", () => {
+  const derivedStart = UI_SOURCE.indexOf("const durableSourceFloorAuthorityKey = useMemo(");
+  const qualificationStart = UI_SOURCE.indexOf("const verifiedAfcCameraApplyQualification = useMemo(");
+  const qualificationEnd = UI_SOURCE.indexOf(
+    "const handleApplyVerifiedAfcCamera = useCallback(",
+    qualificationStart
+  );
+  assert.ok(derivedStart >= 0 && qualificationStart > derivedStart && qualificationEnd > qualificationStart);
+  const derived = UI_SOURCE.slice(derivedStart, qualificationStart);
+  const qualification = UI_SOURCE.slice(qualificationStart, qualificationEnd);
+
+  assert.match(derived, /deriveDurableSourceFloorAuthorityKey\(sourceNormalizedFloorPolygon\)/);
+  assert.match(qualification, /currentFloorAuthorityKey: durableSourceFloorAuthorityKey/);
+  assert.match(qualification, /durableSourceFloorAuthorityKey,/);
+  assert.doesNotMatch(qualification, /floorPolygonAuthorityKeyRef/);
+  assert.doesNotMatch(qualification, /sourceNormalizedFloorPolygon/);
+  assert.match(
+    extractCallbackBlock("handleApplyVerifiedAfcCamera"),
+    /currentFloorAuthorityKey: floorPolygonAuthorityKeyRef\.current \?\? null/
+  );
+});
+
 test("CP2B: readiness copy separates candidate availability from Floor and basis identity", () => {
   const mappingStart = UI_SOURCE.indexOf(
     '{verifiedAfcCameraApplyQualification.ok\n                ? "Exact AFC-bound Floor is current'
