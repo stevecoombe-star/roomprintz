@@ -60,7 +60,6 @@ const GEN_1 = "11111111-1111-4111-8111-111111111111";
 const GEN_2 = "12121212-1212-4121-8121-121212121212";
 const GEN_3 = "13131313-1313-4131-8131-131313131313";
 const SESSION_A = "aaaaaaa1-aaaa-4aaa-8aaa-aaaaaaaaaaa1";
-const SESSION_B = "bbbbbbb1-bbbb-4bbb-8bbb-bbbbbbbbbbb1";
 const SHA_A = "a".repeat(64);
 const SHA_B = "b".repeat(64);
 

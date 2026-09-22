@@ -640,7 +640,7 @@ test("PI-5F3B generated SQL is status-only, guarded, and has no identity/Asset/S
 
 test("PI-5F3B post-state, Walnut Asset D, and current-state fold stay exact", () => {
   const after = afterF3bState();
-  const catalog = overlayFoldedPartnerCatalog(after);
+  overlayFoldedPartnerCatalog(after);
   assert.equal(after.products.find((item) => item.productId === DEMO_SOFA_PRODUCT_ID)?.status, "inactive");
   assert.equal(after.products.find((item) => item.productId === DEMO_LOUNGE_CHAIR_PRODUCT_ID)?.status ?? "active", "active");
   assert.equal(after.products.find((item) => item.productId === DEMO_COFFEE_TABLE_PRODUCT_ID)?.status ?? "active", "active");

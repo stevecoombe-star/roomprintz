@@ -17,7 +17,6 @@ import {
   certifyAfcSr1JointSolve,
   characterizeAfcSr1JointSolveRuntime,
   enumerateAfcSr1IndependentCoarse,
-  refineAfcSr1IndependentSeed,
 } from "./afc-sr1-solver-certification";
 import {
   DEFAULT_AFC_SR1_JOINT_SOLVER_CONFIG,

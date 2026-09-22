@@ -59,11 +59,10 @@ import {
 } from "./partner-draft-preview-view";
 import { listPartnerReadyAssetsForVariantCreate } from "./partner-portal-assets";
 import {
-  resolvePartnerPortalAuth,
   type PartnerPortalAuthResult,
   type PartnerPortalContext,
 } from "./partner-portal-auth";
-import { partnerCatalogFromDurableSnapshot, type PartnerPortalCatalogLoadResult } from "./partner-portal-catalog";
+import { partnerCatalogFromDurableSnapshot } from "./partner-portal-catalog";
 import {
   createMemoryPartnerDraftStore,
   getOrCreatePartnerPatchDraft,

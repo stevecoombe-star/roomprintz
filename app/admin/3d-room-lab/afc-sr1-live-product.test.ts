@@ -11,6 +11,7 @@ import {
   AFC_SR1_SUPPORTED_ROOM_VIEW_CLASSIFIER_VERSION,
   classifyAfcSr1SupportedRoomView,
 } from "./afc-sr1-supported-room-view";
+import type { AfcSr1V3FamilyPairIndependenceDiagnostics } from "./afc-sr1-v3-reader-diagnostics";
 import type { AfcSr1LiveAnalyzeRequest } from "./afc-sr1-live-product-contract";
 import type { AfcSr1RawFirstPlacementAwareOrchestrationResultV1 } from "./research/afc-sr1-raw-first-placement-aware-orchestration";
 import type { AfcSr1SourcePolygon } from "./research/afc-sr1-semantic-prior";
@@ -291,8 +292,20 @@ test("off-axis RAW-direct is one complete authoritative attempt", async () => {
 
 test("optional pair-independence diagnostics cannot alter live geometry or settle inputs", async () => {
   const baselinePath = pathResult({ mode: "raw-direct", seamT: 0.2 });
-  const sidecarPath = structuredClone(baselinePath) as any;
-  sidecarPath.diagnostics.v3ReaderDiagnostics = {
+  const sidecarPath = structuredClone(baselinePath);
+  const sidecarDiagnostics = sidecarPath.diagnostics as Omit<
+    AfcSr1RawFirstPlacementAwareOrchestrationResultV1["diagnostics"],
+    "v3ReaderDiagnostics"
+  > & {
+    v3ReaderDiagnostics: {
+      rawReader: {
+        familyPairIndependenceDiagnostics: AfcSr1V3FamilyPairIndependenceDiagnostics;
+      };
+      childReader: null;
+      authoritativeReaderRole: "rawReader";
+    };
+  };
+  sidecarDiagnostics.v3ReaderDiagnostics = {
     rawReader: {
       familyPairIndependenceDiagnostics: {
         contractVersion: "afc-sr1-family-pair-independence-diagnostics/v1",

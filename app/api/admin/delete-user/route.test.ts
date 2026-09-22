@@ -23,18 +23,17 @@ function createThenBuilder(
   result: { data: unknown; error: null | { message: string }; count?: number },
 ) {
   const builder: Record<string, unknown> = {};
-  const self = () => builder;
-  builder.select = (..._args: unknown[]) => {
+  builder.select = () => {
     sink.ops.push(`select:${table}`);
     return builder;
   };
-  builder.delete = (..._args: unknown[]) => {
+  builder.delete = () => {
     sink.ops.push(`delete:${table}`);
     return builder;
   };
-  builder.eq = (..._args: unknown[]) => builder;
-  builder.limit = (..._args: unknown[]) => builder;
-  builder.range = (..._args: unknown[]) => builder;
+  builder.eq = () => builder;
+  builder.limit = () => builder;
+  builder.range = () => builder;
   builder.then = (
     resolve: (value: typeof result) => unknown,
     reject?: (reason: unknown) => unknown,

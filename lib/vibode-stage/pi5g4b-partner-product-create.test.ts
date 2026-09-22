@@ -87,7 +87,7 @@ import {
 } from "./partner-portal-drafts";
 import { createMemoryPartnerPublishAuditStore } from "./partner-publish-audit";
 import type { FoldedPartnerCatalogState, PartnerCatalogSyncPlan } from "./partner-catalog-sync-types";
-import type { StageCatalogSnapshot, StageCollection, StagePartner, StageProduct, StageVariant } from "./types";
+import type { StageCatalogSnapshot, StagePartner, StageProduct, StageVariant } from "./types";
 
 const ROOT = process.cwd();
 const G3_SQL = "supabase/migrations/20260917010000_vibode_stage_partner_publish.sql";

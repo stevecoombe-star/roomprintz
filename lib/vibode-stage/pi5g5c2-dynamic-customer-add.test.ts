@@ -24,7 +24,6 @@ import {
 } from "@/lib/afc-v2-runtime/persisted-scene";
 import {
   overlayFromRuntimeDefinitions,
-  parseRuntimeFurnitureAssetDefinition,
   replaceRuntimeAssetDefinitionList,
   runtimeDtoPrivacyViolations,
   upsertRuntimeOverlayDefinition,
@@ -33,7 +32,6 @@ import {
 import { versionScenePutBody } from "@/lib/afc-v2-runtime/scene-persistence-client";
 import {
   AFC_V2_RUNTIME_FURNITURE_ASSET_ID,
-  DEFAULT_WORLD_TRANSFORM,
   type FurnitureAssetDefinition,
   type SceneObjectDefinition,
 } from "@/lib/afc-v2-runtime/types";
@@ -193,19 +191,6 @@ function dynamicDto(overrides: Partial<RuntimeFurnitureAssetDefinition> = {}): R
     authoredDepthM: 0.9,
     expiresAt: "2026-09-18T22:00:00.000Z",
     ...overrides,
-  };
-}
-
-function sceneObject(
-  objectId: string,
-  assetId: string,
-  extra: Partial<SceneObjectDefinition> = {},
-): SceneObjectDefinition {
-  return {
-    objectId,
-    assetId,
-    transform: DEFAULT_WORLD_TRANSFORM,
-    ...extra,
   };
 }
 

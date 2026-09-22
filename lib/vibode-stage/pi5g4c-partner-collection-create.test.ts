@@ -97,7 +97,7 @@ import {
 } from "./partner-portal-drafts";
 import { createMemoryPartnerPublishAuditStore } from "./partner-publish-audit";
 import type { FoldedPartnerCatalogState, PartnerCatalogSyncPlan } from "./partner-catalog-sync-types";
-import type { StageCatalogSnapshot, StageCollection, StagePartner, StageProduct, StageVariant } from "./types";
+import type { StageCatalogSnapshot, StagePartner, StageProduct, StageVariant } from "./types";
 
 const ROOT = process.cwd();
 const G3_SQL = "supabase/migrations/20260917010000_vibode_stage_partner_publish.sql";
@@ -111,7 +111,6 @@ const SHOWROOM_SLUG = "g4c-showroom";
 const SHOWROOM_ID = "col-demo-furniture-co-g4c-showroom";
 const ALT_SHOWROOM_ID = "col-demo-furniture-co-g4c-gallery";
 const OTTOMAN_NAME = "G4c Ottoman";
-const OTTOMAN_SLUG = "g4c-ottoman";
 const OTTOMAN_PRODUCT_ID = "prod-demo-furniture-co-g4c-ottoman";
 const OTTOMAN_VARIANT_ID = "var-demo-furniture-co-g4c-ottoman-natural";
 const OTTOMAN_SKU = "DFC-G4C-OTTOMAN-01";
@@ -1200,7 +1199,7 @@ test("PI-5G4c pending Collection membership does not require live membership tou
 });
 
 test("PI-5G4c Preview shows Create Collection, empty copy, and does not duplicate membership", async () => {
-  const { catalog, load } = certifiedScopedCatalog();
+  const { load } = certifiedScopedCatalog();
   const store = createMemoryPartnerDraftStore();
   await getOrCreatePartnerPatchDraft({
     auth: authOk(),

@@ -30,7 +30,6 @@ import {
   parseGlbPlaceholderAssetPath,
   partnerAssetGlbPlaceholderResponse,
   PARTNER_INTAKE_REGISTRATION_STATUS,
-  PARTNER_RUNTIME_ASSET_CONTENT_TYPE,
   registerPartnerAsset,
   registrationPreconditions,
   STAGE_ASSET_STORAGE_TABLE,
@@ -42,7 +41,6 @@ import {
   resolvePartnerPortalAuth,
   type PartnerPortalAuthResult,
   type PartnerPortalContext,
-  type StagePartnerMembershipRow,
 } from "./partner-portal-auth";
 import {
   CERTIFIED_STATIC_ASSET_SOURCE,
@@ -50,7 +48,6 @@ import {
   isPartnerIntakeRuntimeAssetId,
   isValidatorIntakeAssetId,
   PARTNER_INTAKE_ASSET_SOURCE,
-  PARTNER_INTAKE_RUNTIME_ASSET_ID_PREFIX,
   partnerIntakeRuntimeAssetId,
   partnerRuntimeAssetGlbRoute,
   partnerRuntimeAssetObjectPath,
@@ -128,17 +125,6 @@ function otherPartner(): StagePartner {
     status: "active",
     websiteUrl: null,
     logoUrl: null,
-  };
-}
-
-function membership(overrides: Partial<StagePartnerMembershipRow> = {}): StagePartnerMembershipRow {
-  return {
-    membershipId: "11111111-1111-1111-1111-111111111111",
-    userId: USER_A,
-    partnerId: DEMO_FURNITURE_PARTNER_ID,
-    role: "owner",
-    status: "active",
-    ...overrides,
   };
 }
 

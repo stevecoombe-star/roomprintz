@@ -20,7 +20,6 @@ import { addSceneObject } from "@/lib/afc-v2-runtime/scene-crud";
 import {
   AFC_V2_RUNTIME_FURNITURE_ASSET_ID,
   AFC_V2_RUNTIME_LOUNGE_CHAIR_ASSET_ID,
-  DEFAULT_WORLD_TRANSFORM,
 } from "@/lib/afc-v2-runtime/types";
 
 import {

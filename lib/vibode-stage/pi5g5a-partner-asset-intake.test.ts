@@ -55,7 +55,6 @@ import {
   resolvePartnerPortalAuth,
   type PartnerPortalAuthResult,
   type PartnerPortalContext,
-  type StagePartnerMembershipRow,
 } from "./partner-portal-auth";
 import type { StagePartner } from "./types";
 
@@ -150,17 +149,6 @@ function otherPartner(): StagePartner {
     status: "active",
     websiteUrl: null,
     logoUrl: null,
-  };
-}
-
-function membership(overrides: Partial<StagePartnerMembershipRow> = {}): StagePartnerMembershipRow {
-  return {
-    membershipId: "11111111-1111-1111-1111-111111111111",
-    userId: USER_A,
-    partnerId: DEMO_FURNITURE_PARTNER_ID,
-    role: "owner",
-    status: "active",
-    ...overrides,
   };
 }
 

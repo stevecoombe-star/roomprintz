@@ -10,7 +10,6 @@ import {
   createStageCatalogSnapshot,
   isStageProductAvailable,
   seedFixtureStageCatalog,
-  STAGE_SEED_CATALOG,
   STAGE_SEED_PRODUCTS,
 } from "./catalog";
 import { filterStageCatalogProducts } from "./catalog-query";

@@ -64,7 +64,6 @@ import {
   PARTNER_CATALOG_JSON_RELATIVE_PATH,
 } from "./partner-catalog";
 import {
-  PI5F2_PACKAGE_BATCH_ID,
   PI5F2_PACKAGE_RELATIVE_PATH,
 } from "./partner-catalog-documents";
 import { detectPartnerPackageDrift } from "./partner-package-drift";
@@ -153,7 +152,7 @@ function mutatePackage(
   return packageDir;
 }
 
-function runCli(args: string[], cwd = ROOT) {
+function runCli(args: string[]) {
   return spawnSync(
     process.execPath,
     ["--import", "tsx", path.join(ROOT, "scripts/vibode-partner-package.ts"), ...args],

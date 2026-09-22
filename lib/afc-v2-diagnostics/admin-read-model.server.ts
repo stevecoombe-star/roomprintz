@@ -215,6 +215,7 @@ function throwStoreError(error: unknown): never {
   throw new AfcDiagnosticAdminStoreError(postgresCode(error) ?? "unknown");
 }
 
+// eslint-disable-next-line @typescript-eslint/no-unused-vars -- _label preserves call-site row identity while the stable error code intentionally remains `invalid_row`.
 function requireMapped<T>(value: T | null, _label: string): T {
   if (!value) throw new AfcDiagnosticAdminStoreError("invalid_row");
   return value;

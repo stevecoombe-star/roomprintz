@@ -584,6 +584,7 @@ test("wall confirmation policy is an exact authority match with a v1 legacy base
   assert.equal(isWallConfirmationCurrent(currentInput, "wall-support-geometry-policy/v2"), false);
   assert.equal(isWallConfirmationCurrent(currentInput, "*"), false);
 
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars -- _policyVersion intentionally removes wallGeometryPolicyVersion from the legacy stamp; removing the binding changes the fixture.
   const { wallGeometryPolicyVersion: _policyVersion, ...legacyStamp } = stamp;
   const legacyInput = { ...currentInput, stamp: legacyStamp };
   assert.equal(isWallConfirmationCurrent(legacyInput), true);
@@ -918,12 +919,14 @@ function deriveRoomCLeft(polygon: WallPolygon) {
   return deriveRoomCWall("wall_left", polygon);
 }
 
+// eslint-disable-next-line @typescript-eslint/no-unused-vars -- Historical fail-open Room C boundary coordinates are retained as a record of the refused boundary, not as accepted current geometry.
 const ROOM_C_LEFT_HISTORICAL_FAIL_OPEN_BOUNDARY_WORLD = [
   [-1.5123408318449818, 0.0094084933450993, 0.7225143072393507],
   [-1.5005711655377656, 0.018068594093000545, -1.8739950136342038],
   [-1.3706401755201358, 9.370413648181556, -30.538106454436925],
   [-1.417273615462988, 10.767669398413364, -20.25029044373371],
 ] as const;
+// eslint-disable-next-line @typescript-eslint/no-unused-vars -- Historical fail-open Room C boundary coordinates are retained as a record of the refused boundary, not as accepted current geometry.
 const ROOM_C_LEFT_HISTORICAL_FAIL_OPEN_BOUNDARY_UV = [
   [-0.03697307793319957, 0.0094084933450993],
   [2.559562918048414, 0.018068594093000545],

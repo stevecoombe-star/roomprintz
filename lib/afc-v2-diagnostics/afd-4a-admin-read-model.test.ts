@@ -42,7 +42,6 @@ import {
 
 const ROOT = process.cwd();
 const USER_A = "22222222-2222-4222-8222-222222222222";
-const USER_B = "33333333-3333-4333-8333-333333333333";
 const ADMIN_ID = "55555555-5555-4555-8555-555555555555";
 const ROOM_A = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const ROOM_B = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
@@ -51,7 +50,6 @@ const SESSION_A = "d5fe6ada-3e33-4555-a6bd-f3624e2ad81a";
 const SESSION_B = "bbbbbbb1-bbbb-4bbb-8bbb-bbbbbbbbbbb1";
 const GEN_1 = "95b0d26f-0056-4fd1-8e78-2c05abc5ed70";
 const GEN_2 = "85feaef6-d53a-4a28-a557-04e6abb975d9";
-const GEN_3 = "13131313-1313-4131-8131-131313131313";
 const CASE_1 = "dcd4dbd9-916f-4d70-ac12-bd718be3adce";
 const CASE_2 = "c2c2c2c2-c2c2-4c2c-8c2c-c2c2c2c2c2c2";
 const CASE_3 = "c3c3c3c3-c3c3-4c3c-8c3c-c3c3c3c3c3c3";

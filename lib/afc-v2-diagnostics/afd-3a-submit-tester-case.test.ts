@@ -36,7 +36,6 @@ import {
   AfcDiagnosticTesterCaseQaDisabledError,
   AfcDiagnosticTesterCaseRoomError,
   AfcDiagnosticTesterCaseSessionError,
-  AfcDiagnosticTesterCaseStoreError,
   AfcDiagnosticTesterCaseTaxonomyError,
   AfcDiagnosticTesterCaseTriggerError,
   type AfcDiagnosticTesterCaseStore,

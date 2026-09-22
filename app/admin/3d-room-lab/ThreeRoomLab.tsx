@@ -14102,6 +14102,7 @@ export default function ThreeRoomLab({
             style={{ aspectRatio: "16 / 10" }}
           >
             {roomImageUrl ? (
+              /* eslint-disable-next-line @next/next/no-img-element -- Operator-supplied URL may not be on the Next image allowlist. naturalWidth/naturalHeight feed intrinsic scene geometry. Replacing with next/image would change measurement/loading semantics. */
               <img
                 src={roomImageUrl}
                 alt="Room base"

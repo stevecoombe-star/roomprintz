@@ -42,7 +42,6 @@ import {
   getPartnerDraft,
   mutatePartnerDraft,
   partnerCatalogCommercialFingerprint,
-  type PartnerDraftRow,
   type PartnerPortalDraftDto,
 } from "./partner-portal-drafts";
 import {
@@ -50,7 +49,6 @@ import {
   overlayFoldedPartnerCatalog,
   parsePartnerCatalogSyncJson,
   planPartnerCatalogSync,
-  renderPartnerCatalogSyncSql,
 } from "./partner-catalog-sync";
 import {
   durableAssetCatalogForPlanning,
@@ -635,7 +633,7 @@ test("PI-5G3 publish replans persisted draft and ignores client plan/document", 
 });
 
 test("PI-5G3 stale field conflicts are first-touch specific and unrelated live changes do not block", async () => {
-  const { catalog, load } = certifiedScopedCatalog();
+  const { catalog } = certifiedScopedCatalog();
   const sofa = catalog.products.find((item) => item.productId === DEMO_SOFA_PRODUCT_ID);
   const stone = catalog.variants.find((item) => item.variantId === DEMO_SOFA_STONE_VARIANT_ID);
   assert.ok(sofa && stone);
@@ -761,7 +759,7 @@ test("PI-5G3 reverted touched fields leave the publish conflict set", async () =
 });
 
 test("PI-5G3 membership conflicts compare the full live set and ignore unrelated collections", async () => {
-  const { catalog, load } = certifiedScopedCatalog();
+  const { catalog } = certifiedScopedCatalog();
   const living = catalog.collections.find((item) => item.collectionId === DEMO_LIVING_ROOM_COLLECTION_ID);
   assert.ok(living);
   assert.ok(living.productIds.length > 1);

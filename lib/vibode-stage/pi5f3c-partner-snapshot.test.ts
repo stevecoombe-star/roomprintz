@@ -45,7 +45,6 @@ import {
   DEMO_LOUNGE_CHAIR_VARIANT_ID,
   DEMO_SOFA_DEFAULT_VARIANT_ID,
   DEMO_SOFA_PRODUCT_ID,
-  DEMO_SOFA_STONE_VARIANT_ID,
 } from "./partner-catalog";
 import { detectPartnerCatalogDrift } from "./partner-catalog-drift";
 import {
