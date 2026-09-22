@@ -171,12 +171,9 @@ import {
   type FloorDragOverlayRect,
 } from "./floor-handle-drag";
 import {
-  CALIBRATED_SCENE_STATE_CALIBRATION_VERSION_V2,
   CALIBRATED_SCENE_STATE_MAX_VERTICAL_FOV_DEG,
   CALIBRATED_SCENE_STATE_MIN_VERTICAL_FOV_DEG,
-  CALIBRATED_SCENE_STATE_SOLVER_V1,
   SCENE_IMAGE_COORDINATE_SPACE_V0,
-  buildSceneStatePayload,
   evaluateCalibrationRestoreCompatibility,
   validateImportedSceneJson,
   type CalibratedSceneStateCalibrationV2,
@@ -188,7 +185,10 @@ import {
   type TransformState,
 } from "./scene-state";
 import {
-  CALIBRATED_CAMERA_APPLIED_AUTHORITY_VERSION,
+  assembleCurrentSceneStatePayload,
+  formatSceneModelStatus,
+} from "./scene-state-current-assembly";
+import {
   CALIBRATED_CAMERA_AUTHORITY_CALIBRATION_VERSION,
   CALIBRATED_CAMERA_AUTHORITY_SOLVER,
   CALIBRATED_CAMERA_IDENTITY_EQUIVALENCE_VERSION,
@@ -1113,9 +1113,7 @@ function disposeObject3D(object: THREE.Object3D) {
 }
 
 function formatModelStatus(state: ModelLoadState, errorMessage: string | null): string {
-  if (state === "fallback") return `fallback cube (${errorMessage ?? "GLB load failed"})`;
-  if (state === "error") return `error (${errorMessage ?? "unknown"})`;
-  return state;
+  return formatSceneModelStatus(state, errorMessage);
 }
 
 function defaultTransformForKind(kind: ActiveObjectKind): TransformState {
@@ -11157,217 +11155,85 @@ export default function ThreeRoomLab({
     selectedAutoFloorCandidateScore,
   ]);
 
-  const buildCurrentSceneStatePayload = (exportedAtIso: string) =>
-    {
-      const roomImageUrlTrimmed = roomImageUrl.trim();
-      const hasValidIntrinsicImageSize =
-        !!imageIntrinsicSize &&
-        Number.isFinite(imageIntrinsicSize.width) &&
-        Number.isFinite(imageIntrinsicSize.height) &&
-        imageIntrinsicSize.width > 0 &&
-        imageIntrinsicSize.height > 0;
-      const hasValidRendererSize =
-        Number.isFinite(rendererSize.width) &&
-        Number.isFinite(rendererSize.height) &&
-        rendererSize.width > 0 &&
-        rendererSize.height > 0;
-      const authoritativeCalibrationFovDeg = calibratedCameraSnapshot?.fovDeg ?? null;
-      const hasValidAuthoritativeFov =
-        authoritativeCalibrationFovDeg !== null &&
-        Number.isFinite(authoritativeCalibrationFovDeg) &&
-        authoritativeCalibrationFovDeg >= CALIBRATED_SCENE_STATE_MIN_VERTICAL_FOV_DEG &&
-        authoritativeCalibrationFovDeg <= CALIBRATED_SCENE_STATE_MAX_VERTICAL_FOV_DEG;
-      const calibrationForExport: CalibratedSceneStateCalibrationV2 | undefined =
-        isCalibratedCameraActive &&
-        !!calibratedCameraSnapshot &&
-        !!qualifiedImageBasis &&
-        roomImageUrlTrimmed.length > 0 &&
-        hasValidIntrinsicImageSize &&
-        hasValidRendererSize &&
-        hasValidAuthoritativeFov &&
-        sourceNormalizedFloorPolygon.length === 4
-          ? {
-              calibrationVersion: CALIBRATED_SCENE_STATE_CALIBRATION_VERSION_V2,
-              solver: CALIBRATED_SCENE_STATE_SOLVER_V1,
-              intrinsics: {
-                verticalFovDeg: authoritativeCalibrationFovDeg,
-              },
-              source: {
-                imageBasis: qualifiedImageBasis,
-                sourceFloorPolygon: sourceNormalizedFloorPolygon.map((point) => ({
-                  x: point.x,
-                  y: point.y,
-                })),
-              },
-            }
-          : undefined;
-      const calibrationAppliedAuthorityForExport =
-        calibrationForExport &&
-        calibratedCameraSnapshot &&
-        qualifiedImageBasis &&
-        calibratedCameraSnapshot.imageBasis.basisId === qualifiedImageBasis.basisId &&
-        calibratedCameraSnapshot.imageBasis.basisFingerprint === qualifiedImageBasis.basisFingerprint &&
-        calibratedCameraSnapshot.imageBasis.sourceImageUrl === qualifiedImageBasis.sourceImageUrl &&
-        calibratedCameraSnapshot.imageBasis.decodedWidth === qualifiedImageBasis.decodedWidth &&
-        calibratedCameraSnapshot.imageBasis.decodedHeight === qualifiedImageBasis.decodedHeight &&
-        calibratedCameraSnapshot.imageBasis.encodedOrientation === qualifiedImageBasis.encodedOrientation &&
-        calibratedCameraSnapshot.imageBasis.decodedOrientationNormal === qualifiedImageBasis.decodedOrientationNormal &&
-        calibratedCameraSnapshot.imageBasis.orientationTransform === qualifiedImageBasis.orientationTransform &&
-        calibratedCameraSnapshot.imageBasis.dimensionSource === qualifiedImageBasis.dimensionSource &&
-        calibratedCameraSnapshot.imageBasis.coordinateSpaceVersion.decoderId ===
-          qualifiedImageBasis.coordinateSpaceVersion.decoderId &&
-        calibratedCameraSnapshot.imageBasis.coordinateSpaceVersion.normalizationPolicyVersion ===
-          qualifiedImageBasis.coordinateSpaceVersion.normalizationPolicyVersion &&
-        calibratedCameraSnapshot.imageBasis.coordinateSpaceVersion.orientationApplied ===
-          qualifiedImageBasis.coordinateSpaceVersion.orientationApplied &&
-        calibratedCameraSnapshot.imageBasis.basisKind === qualifiedImageBasis.basisKind &&
-        floorPolygonsEqual(calibratedCameraSnapshot.sourceFloorPolygon, sourceNormalizedFloorPolygon) &&
-        calibratedCameraSnapshot.frameSize.width > 0 &&
-        calibratedCameraSnapshot.frameSize.height > 0 &&
-        calibratedCameraSnapshot.frameSize.width === rendererSize.width &&
-        calibratedCameraSnapshot.frameSize.height === rendererSize.height &&
-        Number.isFinite(floorMapping.worldWidth) &&
-        Number.isFinite(floorMapping.worldDepth) &&
-        floorMapping.worldWidth > 0 &&
-        floorMapping.worldDepth > 0
-          ? {
-              authorityVersion: CALIBRATED_CAMERA_APPLIED_AUTHORITY_VERSION,
-              appliedAtIso: calibratedCameraSnapshot.appliedAtIso,
-              verticalFovDeg: calibratedCameraSnapshot.fovDeg,
-              frameSize: { ...calibratedCameraSnapshot.frameSize },
-              pose: {
-                position: { ...calibratedCameraSnapshot.pose.position },
-                lookAt: { ...calibratedCameraSnapshot.pose.lookAt },
-                up: { ...calibratedCameraSnapshot.pose.up },
-              },
-              imageBasis: calibratedCameraSnapshot.imageBasis,
-              sourceFloorPolygon: calibratedCameraSnapshot.sourceFloorPolygon.map((point) => ({
-                x: point.x,
-                y: point.y,
-              })) as [FloorPoint, FloorPoint, FloorPoint, FloorPoint],
-              floorMapping: {
-                worldWidth: floorMapping.worldWidth,
-                worldDepth: floorMapping.worldDepth,
-              },
-              calibrationVersion: CALIBRATED_CAMERA_AUTHORITY_CALIBRATION_VERSION,
-              solver: CALIBRATED_CAMERA_AUTHORITY_SOLVER,
-              diagnosticsSummary: calibratedCameraSnapshot.diagnosticsSummary,
-            }
-          : undefined;
-
-      return buildSceneStatePayload({
+  const assembleCurrentSceneState = useCallback(
+    (exportedAtIso: string) =>
+      assembleCurrentSceneStatePayload({
         exportedAtIso,
         roomImageUrl,
+        imageIntrinsicSize,
+        rendererSize,
+        calibratedCameraSnapshot,
+        isCalibratedCameraActive,
+        qualifiedImageBasis,
+        sourceNormalizedFloorPolygon,
+        floorMapping,
         modelPath,
         activeObjectType: currentActiveObjectType,
-        glbLoadStatus: modelLoadState,
+        modelLoadState,
+        modelLoadError,
         modelNormalization,
-        transform: {
-          positionX: transform.positionX,
-          positionY: transform.positionY,
-          positionZ: transform.positionZ,
-          rotationYDeg: transform.rotationYDeg,
-          uniformScale: transform.uniformScale,
-          autoRotate: autoRotateEnabled,
-        },
-        floor: {
-          polygon: floorPolygon,
-          overlayVisible: showFloorOverlay,
-          placementModeEnabled: isFloorClickPlacementEnabled,
-          lastAcceptedClick: lastAcceptedFloorClick,
-          lastRejectedClick: lastRejectedFloorClick,
-          mapping: floorMapping,
-          perspectiveDepthScaling,
-        },
-        image: imageIntrinsicSize
-          ? {
-              intrinsicWidth: imageIntrinsicSize.width,
-              intrinsicHeight: imageIntrinsicSize.height,
-              coordinateSpace: SCENE_IMAGE_COORDINATE_SPACE_V0,
-            }
-          : null,
-        calibration: calibrationForExport,
-        calibrationAppliedAuthority: calibrationAppliedAuthorityForExport,
-        supports: {
-          floor: {
-            sourceNormalizedPolygon: sourceNormalizedFloorPolygon,
-            reviewStatus: floorSupportReviewStatus,
-            source: floorSupportSource,
-            supportImageBasis: floorSupportImageBasis,
-            authorityEligible: floorPolygonAuthorityEligible,
-          },
-          walls: {
-            wall_back: {
-              draft: wallSupportDrafts.wall_back,
-              supportImageBasis: wallSupportImageBases.wall_back,
-            },
-            wall_left: {
-              draft: wallSupportDrafts.wall_left,
-              supportImageBasis: wallSupportImageBases.wall_left,
-            },
-            wall_right: {
-              draft: wallSupportDrafts.wall_right,
-              supportImageBasis: wallSupportImageBases.wall_right,
-            },
-          },
-          ceiling: {
-            draft: ceilingSupportDraft,
-            supportImageBasis: ceilingSupportImageBasis,
-          },
-        },
-        attachment: objectSupportAttachment,
+        transform,
+        autoRotateEnabled,
+        floorPolygon,
+        showFloorOverlay,
+        isFloorClickPlacementEnabled,
+        lastAcceptedFloorClick,
+        lastRejectedFloorClick,
+        perspectiveDepthScaling,
+        floorSupportReviewStatus,
+        floorSupportSource,
+        floorSupportImageBasis,
+        floorPolygonAuthorityEligible,
+        wallSupportDrafts,
+        wallSupportImageBases,
+        ceilingSupportDraft,
+        ceilingSupportImageBasis,
+        objectSupportAttachment,
         verticalEvidence,
-        debug: {
-          rendererSize,
-          imageStatus: imageLoadState,
-          modelStatus: formatModelStatus(modelLoadState, modelLoadError),
-        },
-      });
-    };
+        imageLoadState,
+      }),
+    [
+      roomImageUrl,
+      imageIntrinsicSize,
+      rendererSize,
+      calibratedCameraSnapshot,
+      isCalibratedCameraActive,
+      qualifiedImageBasis,
+      sourceNormalizedFloorPolygon,
+      floorMapping,
+      modelPath,
+      currentActiveObjectType,
+      modelLoadState,
+      modelLoadError,
+      modelNormalization,
+      transform,
+      autoRotateEnabled,
+      floorPolygon,
+      showFloorOverlay,
+      isFloorClickPlacementEnabled,
+      lastAcceptedFloorClick,
+      lastRejectedFloorClick,
+      perspectiveDepthScaling,
+      floorSupportReviewStatus,
+      floorSupportSource,
+      floorSupportImageBasis,
+      floorPolygonAuthorityEligible,
+      wallSupportDrafts,
+      wallSupportImageBases,
+      ceilingSupportDraft,
+      ceilingSupportImageBasis,
+      objectSupportAttachment,
+      verticalEvidence,
+      imageLoadState,
+    ]
+  );
 
   const sceneStateJson = useMemo(() => {
-    const result = buildCurrentSceneStatePayload(sceneStateExportedAt);
+    const result = assembleCurrentSceneState(sceneStateExportedAt);
     return result.ok
       ? JSON.stringify(result.payload, null, 2)
       : `Scene export unavailable: ${result.reason}`;
-  }, [
-    activeObjectKind,
-    autoRotateEnabled,
-    floorMapping.depthCenterY,
-    floorMapping.worldDepth,
-    floorMapping.worldWidth,
-    perspectiveDepthScaling.enabled,
-    perspectiveDepthScaling.farFloorY,
-    perspectiveDepthScaling.farScaleMultiplier,
-    perspectiveDepthScaling.nearFloorY,
-    perspectiveDepthScaling.nearScaleMultiplier,
-    floorPolygon,
-    imageIntrinsicSize,
-    imageLoadState,
-    isFloorClickPlacementEnabled,
-    lastAcceptedFloorClick,
-    lastRejectedFloorClick,
-    modelLoadError,
-    modelLoadState,
-    modelPath,
-    modelNormalization.modelScaleMultiplier,
-    modelNormalization.modelYOffset,
-    modelNormalization.modelYawOffsetDeg,
-    calibratedCameraSnapshot,
-    isCalibratedCameraActive,
-    qualifiedImageBasis,
-    rendererSize,
-    roomImageUrl,
-    sceneStateExportedAt,
-    showFloorOverlay,
-    sourceNormalizedFloorPolygon,
-    transform.positionX,
-    transform.positionY,
-    transform.positionZ,
-    transform.rotationYDeg,
-    transform.uniformScale,
-    verticalEvidence,
-  ]);
+  }, [assembleCurrentSceneState, sceneStateExportedAt]);
 
   const recordVerticalEvidenceDecision = (
     suggestion: VerticalEvidenceSuggestion,
@@ -13003,7 +12869,7 @@ export default function ThreeRoomLab({
 
   const handleCopySceneJson = async () => {
     const exportedAtIso = new Date().toISOString();
-    const result = buildCurrentSceneStatePayload(exportedAtIso);
+    const result = assembleCurrentSceneState(exportedAtIso);
     if (!result.ok) {
       setSceneJsonStatus({ kind: "error", message: `Copy unavailable: ${result.reason}` });
       return;
@@ -13027,7 +12893,7 @@ export default function ThreeRoomLab({
 
   const handleDownloadSceneJson = () => {
     const exportedAtIso = new Date().toISOString();
-    const result = buildCurrentSceneStatePayload(exportedAtIso);
+    const result = assembleCurrentSceneState(exportedAtIso);
     if (!result.ok) {
       setSceneJsonStatus({ kind: "error", message: `Download unavailable: ${result.reason}` });
       return;
@@ -13346,7 +13212,7 @@ export default function ThreeRoomLab({
 
   const handleSaveLocalDraft = () => {
     const exportedAtIso = new Date().toISOString();
-    const result = buildCurrentSceneStatePayload(exportedAtIso);
+    const result = assembleCurrentSceneState(exportedAtIso);
     if (!result.ok) {
       setLocalDraftStatus({ kind: "error", message: `Save unavailable: ${result.reason}` });
       return;
