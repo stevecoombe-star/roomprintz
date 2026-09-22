@@ -6,7 +6,7 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint || true",
+    "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "test:b2i": "node --conditions=react-server --import tsx --test --test-concurrency=1 app/admin/3d-room-lab/g0-containment/tests/*.test.ts",
     "test:g0-observed-run": "node --conditions=react-server --import tsx --test --test-concurrency=1 app/admin/3d-room-lab/g0-containment/tests/non-p-stale-observed-run.test.ts",
