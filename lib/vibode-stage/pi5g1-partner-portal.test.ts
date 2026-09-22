@@ -74,7 +74,7 @@ const PI5G1_FILES = [
   "app/partner/page.tsx",
   "app/partner/catalog/page.tsx",
   "app/partner/PartnerCatalogPreviewClient.tsx",
-  "middleware.ts",
+  "proxy.ts",
 ];
 
 function source(relativePath: string): string {
@@ -584,8 +584,8 @@ test("PI-5G1 HTTP boundary fails closed and ignores browser Partner IDs", () => 
 
 test("PI-5G1 Portal code stays inside STAGE membership and certified planner adapters", () => {
   const joined = PI5G1_FILES.map((file) => source(file)).join("\n");
-  assert.match(source("middleware.ts"), /\/partner/);
-  assert.match(source("middleware.ts"), /PROTECTED_PREFIXES/);
+  assert.match(source("proxy.ts"), /\/partner/);
+  assert.match(source("proxy.ts"), /PROTECTED_PREFIXES/);
   assert.match(source("app/partner/layout.tsx"), /resolvePartnerPortalContext/);
   assert.doesNotMatch(source("app/partner/layout.tsx"), /isAdminEmail|VIBODE_ADMIN_EMAIL/);
   assert.doesNotMatch(source("lib/vibode-stage/partner-portal-auth.ts"), /isAdminEmail|VIBODE_ADMIN_EMAIL/);

@@ -29,7 +29,7 @@ function redirectToAdminLogin(req: NextRequest, pathname: string, search: string
   return NextResponse.redirect(adminLoginUrl);
 }
 
-export async function middleware(req: NextRequest) {
+export async function proxy(req: NextRequest) {
   const { pathname, search } = req.nextUrl;
   const isAdminPath = pathname === ADMIN_PATH || pathname.startsWith(`${ADMIN_PATH}/`);
   const isAdminLoginPath = pathname === ADMIN_LOGIN_PATH;
