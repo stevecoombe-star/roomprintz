@@ -11,6 +11,12 @@ import {
   type AfcDiagnosticSessionIntent,
   type AfcDiagnosticSessionStatus,
 } from "./contracts";
+import {
+  type AfcDiagnosticAwaitableQuery,
+  type AfcDiagnosticFilterQuery,
+  type AfcDiagnosticSelectHead,
+  type AfcDiagnosticTableClient,
+} from "./diagnostic-db-client";
 
 /**
  * AFD-2C Diagnostic Session retry-episode signal.
@@ -89,9 +95,15 @@ export type AfcDiagnosticRetryEpisodeStore = {
   ): Promise<AfcDiagnosticRetryEpisodeGenerationStatusRow[]>;
 };
 
-export type AfcDiagnosticRetryEpisodeDbClient = {
-  from: (table: string) => any;
-};
+type RetryEpisodeFilter<S> = AfcDiagnosticFilterQuery<
+  S,
+  "eq" | "in" | "order" | "maybeSingle"
+> &
+  AfcDiagnosticAwaitableQuery;
+
+export type AfcDiagnosticRetryEpisodeDbClient<
+  S extends RetryEpisodeFilter<S>,
+> = AfcDiagnosticTableClient<AfcDiagnosticSelectHead<S>>;
 
 export type AfcDiagnosticRetryEpisodeSignalOptions = {
   store?: AfcDiagnosticRetryEpisodeStore;
@@ -230,8 +242,10 @@ function requireMapped<T>(value: T | null, label: string): T {
   return value;
 }
 
-export function createSupabaseAfcDiagnosticRetryEpisodeStore(
-  supabase: AfcDiagnosticRetryEpisodeDbClient,
+export function createSupabaseAfcDiagnosticRetryEpisodeStore<
+  S extends RetryEpisodeFilter<S>,
+>(
+  supabase: AfcDiagnosticRetryEpisodeDbClient<S>,
 ): AfcDiagnosticRetryEpisodeStore {
   return {
     async findSessionById(sessionId) {

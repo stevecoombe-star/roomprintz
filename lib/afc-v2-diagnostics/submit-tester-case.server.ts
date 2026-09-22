@@ -18,6 +18,12 @@ import {
   type AfcDiagnosticSessionRecord,
 } from "./contracts";
 import {
+  type AfcDiagnosticFilterQuery,
+  type AfcDiagnosticInsertQuery,
+  type AfcDiagnosticSelectHead,
+  type AfcDiagnosticTableClient,
+} from "./diagnostic-db-client";
+import {
   resolveAfcQaCapability,
   type AfcQaCapabilityEnv,
 } from "./qa-capability.server";
@@ -145,9 +151,15 @@ export type AfcDiagnosticTesterCaseStore = {
   ): Promise<{ ok: true } | { ok: false; code: "unique_tester_conflict" }>;
 };
 
-export type AfcDiagnosticTesterCaseDbClient = {
-  from: (table: string) => any;
-};
+type TesterCaseFilter<S> = AfcDiagnosticFilterQuery<S, "eq" | "in" | "maybeSingle">;
+
+export type AfcDiagnosticTesterCaseDbClient<
+  S extends TesterCaseFilter<S>,
+> = AfcDiagnosticTableClient<
+  AfcDiagnosticSelectHead<S> & {
+    insert(values: Record<string, unknown>): AfcDiagnosticInsertQuery;
+  }
+>;
 
 export type AfcDiagnosticTesterCaseOptions = {
   env?: AfcQaCapabilityEnv | NodeJS.ProcessEnv;
@@ -510,8 +522,10 @@ export function isRepeatedUnsuccessfulEligible(
   );
 }
 
-export function createSupabaseAfcDiagnosticTesterCaseStore(
-  supabase: AfcDiagnosticTesterCaseDbClient,
+export function createSupabaseAfcDiagnosticTesterCaseStore<
+  S extends TesterCaseFilter<S>,
+>(
+  supabase: AfcDiagnosticTesterCaseDbClient<S>,
 ): AfcDiagnosticTesterCaseStore {
   return {
     async findRoom(roomId) {

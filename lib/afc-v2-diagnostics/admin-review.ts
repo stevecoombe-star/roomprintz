@@ -5,7 +5,6 @@
 
 import {
   AFC_DIAGNOSTIC_NOTES_MAX_CHARS,
-  AFC_DIAGNOSTIC_REVIEW_STATUSES,
   isAfcDiagnosticReviewStatus,
   type AfcDiagnosticReviewStatus,
 } from "./contracts";

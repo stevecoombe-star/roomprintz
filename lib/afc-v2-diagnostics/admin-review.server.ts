@@ -18,9 +18,14 @@ import {
   AfcDiagnosticAdminStoreError,
   createSupabaseAfcDiagnosticAdminReadStore,
   getAfcDiagnosticAdminCaseDetail,
-  type AfcDiagnosticAdminDbClient,
   type AfcDiagnosticAdminReadStore,
 } from "./admin-read-model.server";
+import {
+  type AfcDiagnosticAwaitableQuery,
+  type AfcDiagnosticFilterQuery,
+  type AfcDiagnosticSelectHead,
+  type AfcDiagnosticTableClient,
+} from "./diagnostic-db-client";
 import { AFC_DIAGNOSTIC_CASE_TABLE, isAfcDiagnosticReviewStatus } from "./contracts";
 import {
   parseAfcDiagnosticAdminReviewPatchRequest,
@@ -109,8 +114,19 @@ function parseReviewRow(
   });
 }
 
-export function createSupabaseAfcDiagnosticAdminReviewStore(
-  supabase: AfcDiagnosticAdminDbClient,
+type AdminReviewFilter<S> = AfcDiagnosticFilterQuery<S, "eq" | "maybeSingle">;
+type AdminReviewUpdate<U> = AfcDiagnosticFilterQuery<U, "eq"> &
+  AfcDiagnosticAwaitableQuery;
+
+export function createSupabaseAfcDiagnosticAdminReviewStore<
+  S extends AdminReviewFilter<S>,
+  U extends AdminReviewUpdate<U>,
+>(
+  supabase: AfcDiagnosticTableClient<
+    AfcDiagnosticSelectHead<S> & {
+      update(values: Record<string, unknown>): U;
+    }
+  >,
 ): AfcDiagnosticAdminReviewStore {
   return {
     async findCaseReviewById(caseId) {

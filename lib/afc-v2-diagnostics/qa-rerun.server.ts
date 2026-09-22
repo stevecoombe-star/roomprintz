@@ -14,6 +14,12 @@ import {
   type AfcDiagnosticSessionRecord,
 } from "./contracts";
 import {
+  type AfcDiagnosticAwaitableQuery,
+  type AfcDiagnosticFilterQuery,
+  type AfcDiagnosticSelectHead,
+  type AfcDiagnosticTableClient,
+} from "./diagnostic-db-client";
+import {
   resolveAfcQaCapability,
   type AfcQaCapabilityEnv,
 } from "./qa-capability.server";
@@ -81,9 +87,12 @@ export type AfcQaReadyRerunStore = {
   }): Promise<readonly { id: string }[]>;
 };
 
-export type AfcQaReadyRerunDbClient = {
-  from: (table: string) => any;
-};
+type QaReadyRerunFilter<S> = AfcDiagnosticFilterQuery<S, "eq" | "maybeSingle"> &
+  AfcDiagnosticAwaitableQuery;
+
+export type AfcQaReadyRerunDbClient<
+  S extends QaReadyRerunFilter<S>,
+> = AfcDiagnosticTableClient<AfcDiagnosticSelectHead<S>>;
 
 export type AfcQaReadyRerunAnalysisResult = {
   status: "ready" | "failed" | "none";
@@ -296,8 +305,10 @@ function requireMapped<T>(value: T | null, label: string): T {
   return value;
 }
 
-export function createSupabaseAfcQaReadyRerunStore(
-  supabase: AfcQaReadyRerunDbClient,
+export function createSupabaseAfcQaReadyRerunStore<
+  S extends QaReadyRerunFilter<S>,
+>(
+  supabase: AfcQaReadyRerunDbClient<S>,
 ): AfcQaReadyRerunStore {
   return {
     async findRoom(roomId) {

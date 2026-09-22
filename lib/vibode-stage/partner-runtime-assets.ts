@@ -31,7 +31,6 @@ import type { FurnitureAssetDefinition, SceneObjectDefinition } from "@/lib/afc-
 import {
   isPositiveFiniteMetres,
   mapPartnerAssetCatalogRow,
-  mapPartnerAssetMappingRow,
   mapPartnerAssetStorageRow,
   type PartnerAssetCatalogRow,
   type PartnerAssetMappingRow,

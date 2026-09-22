@@ -26,9 +26,14 @@ import {
   AfcDiagnosticAdminStoreError,
   createSupabaseAfcDiagnosticAdminReadStore,
   getAfcDiagnosticAdminCaseDetail,
-  type AfcDiagnosticAdminDbClient,
   type AfcDiagnosticAdminReadStore,
 } from "./admin-read-model.server";
+import {
+  type AfcDiagnosticFilterQuery,
+  type AfcDiagnosticInsertQuery,
+  type AfcDiagnosticSelectHead,
+  type AfcDiagnosticTableClient,
+} from "./diagnostic-db-client";
 import {
   AFC_DIAGNOSTIC_CASE_TABLE,
   AFC_DIAGNOSTIC_SESSION_GENERATION_TABLE,
@@ -199,8 +204,16 @@ function requireMapped<T>(value: T | null, _label: string): T {
   return value;
 }
 
-export function createSupabaseAfcDiagnosticAdminCaptureStore(
-  supabase: AfcDiagnosticAdminDbClient,
+type AdminCaptureFilter<S> = AfcDiagnosticFilterQuery<S, "eq" | "maybeSingle">;
+
+export function createSupabaseAfcDiagnosticAdminCaptureStore<
+  S extends AdminCaptureFilter<S>,
+>(
+  supabase: AfcDiagnosticTableClient<
+    AfcDiagnosticSelectHead<S> & {
+      insert(values: Record<string, unknown>): AfcDiagnosticInsertQuery;
+    }
+  >,
 ): AfcDiagnosticAdminCaptureStore {
   return {
     async findSessionById(sessionId) {

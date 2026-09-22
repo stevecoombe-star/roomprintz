@@ -81,7 +81,6 @@ import {
 import type {
   FoldedPartnerCatalogState,
   PartnerCatalogSyncPlan,
-  PartnerCatalogSyncSqlPlan,
   PlannedCollectionCreate,
   PlannedCollectionUpdate,
   PlannedFieldChange,

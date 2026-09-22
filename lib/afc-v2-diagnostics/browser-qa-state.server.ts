@@ -10,6 +10,12 @@ import {
 
 import { AFC_DIAGNOSTIC_SESSION_TABLE } from "./contracts";
 import {
+  type AfcDiagnosticAwaitableQuery,
+  type AfcDiagnosticFilterQuery,
+  type AfcDiagnosticSelectHead,
+  type AfcDiagnosticTableClient,
+} from "./diagnostic-db-client";
+import {
   resolveAfcQaCapability,
   type AfcQaCapabilityEnv,
 } from "./qa-capability.server";
@@ -63,9 +69,12 @@ export type AfcDiagnosticBrowserQaStateStore = {
   }): Promise<readonly { id: string }[]>;
 };
 
-export type AfcDiagnosticBrowserQaStateDbClient = {
-  from: (table: string) => any;
-};
+type BrowserQaFilter<S> = AfcDiagnosticFilterQuery<S, "eq" | "maybeSingle"> &
+  AfcDiagnosticAwaitableQuery;
+
+export type AfcDiagnosticBrowserQaStateDbClient<
+  S extends BrowserQaFilter<S>,
+> = AfcDiagnosticTableClient<AfcDiagnosticSelectHead<S>>;
 
 export type AfcDiagnosticBrowserQaStateOptions = {
   env?: AfcQaCapabilityEnv | NodeJS.ProcessEnv;
@@ -162,8 +171,10 @@ function requireMapped<T>(value: T | null, label: string): T {
   return value;
 }
 
-export function createSupabaseAfcDiagnosticBrowserQaStateStore(
-  supabase: AfcDiagnosticBrowserQaStateDbClient,
+export function createSupabaseAfcDiagnosticBrowserQaStateStore<
+  S extends BrowserQaFilter<S>,
+>(
+  supabase: AfcDiagnosticBrowserQaStateDbClient<S>,
 ): AfcDiagnosticBrowserQaStateStore {
   return {
     async findRoom(roomId) {

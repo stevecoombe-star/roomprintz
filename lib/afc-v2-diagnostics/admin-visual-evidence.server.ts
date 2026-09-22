@@ -22,6 +22,12 @@ import {
 } from "./admin-auth.server";
 import { parseAfcDiagnosticAdminUuid } from "./admin-read-model";
 import { AFC_GENERATION_TABLE } from "./admin-read-model.server";
+import {
+  type AfcDiagnosticAwaitableQuery,
+  type AfcDiagnosticFilterQuery,
+  type AfcDiagnosticSelectHead,
+  type AfcDiagnosticTableClient,
+} from "./diagnostic-db-client";
 
 export const AFC_DIAGNOSTIC_VISUAL_ARTIFACT_KINDS = [
   "original",
@@ -288,12 +294,19 @@ export class AfcDiagnosticVisualStoreError extends Error {
   }
 }
 
-type VisualDbClient = {
-  from: (table: string) => any;
+type VisualFilter<S> = AfcDiagnosticFilterQuery<
+  S,
+  "eq" | "not" | "order" | "limit" | "maybeSingle"
+> &
+  AfcDiagnosticAwaitableQuery;
+
+type VisualDbClient<S extends VisualFilter<S>> = AfcDiagnosticTableClient<
+  AfcDiagnosticSelectHead<S>
+> & {
   storage: {
-    from: (bucket: string) => {
-      download: (path: string) => Promise<{
-        data: { arrayBuffer: () => Promise<ArrayBuffer> } | null;
+    from(bucket: string): {
+      download(path: string): Promise<{
+        data: { arrayBuffer(): Promise<ArrayBuffer> } | null;
         error: unknown;
       }>;
     };
@@ -541,8 +554,10 @@ function parseDurableTiledRow(
   });
 }
 
-export function createSupabaseAfcDiagnosticVisualEvidenceStore(
-  supabase: VisualDbClient,
+export function createSupabaseAfcDiagnosticVisualEvidenceStore<
+  S extends VisualFilter<S>,
+>(
+  supabase: VisualDbClient<S>,
 ): AfcDiagnosticVisualEvidenceStore {
   return {
     async findCaseById(caseId) {
@@ -672,9 +687,7 @@ export function createSupabaseAfcDiagnosticVisualEvidenceStore(
 function storeFromEnv(): AfcDiagnosticVisualEvidenceStore {
   const supabase = getServiceRoleSupabaseClient();
   if (!supabase) throw new AfcDiagnosticVisualStoreError();
-  return createSupabaseAfcDiagnosticVisualEvidenceStore(
-    supabase as unknown as VisualDbClient,
-  );
+  return createSupabaseAfcDiagnosticVisualEvidenceStore(supabase);
 }
 
 function defaultLog(entry: AfcDiagnosticVisualEvidenceLog): void {

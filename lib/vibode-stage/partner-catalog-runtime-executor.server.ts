@@ -1,6 +1,5 @@
 import "server-only";
 
-import { getServiceRoleSupabaseClient } from "@/lib/adminServer";
 import type { SupabaseClient } from "@supabase/supabase-js";
 
 import { PARTNER_RUNTIME_PLAN_VERSION_2 } from "./partner-catalog-runtime-executor-v2";

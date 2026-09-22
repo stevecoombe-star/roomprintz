@@ -54,9 +54,7 @@ import type {
   PlannedVariantUpdate,
 } from "./partner-catalog-sync-types";
 import {
-  asFiniteNumber,
   asNonEmptyString,
-  asNullableJsonString,
   hasDuplicateSkuInScope,
   isCommercialId,
   isPlainObject,

@@ -8,6 +8,12 @@ import {
   AFC_DIAGNOSTIC_SESSION_TABLE,
 } from "./contracts";
 import {
+  type AfcDiagnosticAwaitableQuery,
+  type AfcDiagnosticFilterQuery,
+  type AfcDiagnosticSelectHead,
+  type AfcDiagnosticTableClient,
+} from "./diagnostic-db-client";
+import {
   afcDiagnosticsAdminJson,
   authorizeAfcDiagnosticsAdmin,
   type AfcDiagnosticsAdminAuth,
@@ -122,9 +128,23 @@ export const AFC_DIAGNOSTIC_ADMIN_GENERATION_COLUMNS = [
   "tiled_artifact_source",
 ].join(", ");
 
-export type AfcDiagnosticAdminDbClient = {
-  from: (table: string) => any;
-};
+type AdminReadFilter<S> = AfcDiagnosticFilterQuery<
+  S,
+  | "eq"
+  | "in"
+  | "contains"
+  | "gte"
+  | "lte"
+  | "or"
+  | "order"
+  | "limit"
+  | "maybeSingle"
+> &
+  AfcDiagnosticAwaitableQuery;
+
+export type AfcDiagnosticAdminDbClient<
+  S extends AdminReadFilter<S>,
+> = AfcDiagnosticTableClient<AfcDiagnosticSelectHead<S>>;
 
 export type AfcDiagnosticAdminReadStore = {
   listCases(
@@ -219,8 +239,10 @@ function mapGenerationOrThrow(row: unknown): AfcDiagnosticAdminGenerationEvidenc
   return mapAfcDiagnosticAdminGenerationEvidence(record);
 }
 
-export function createSupabaseAfcDiagnosticAdminReadStore(
-  supabase: AfcDiagnosticAdminDbClient,
+export function createSupabaseAfcDiagnosticAdminReadStore<
+  S extends AdminReadFilter<S>,
+>(
+  supabase: AfcDiagnosticAdminDbClient<S>,
 ): AfcDiagnosticAdminReadStore {
   return {
     async listCases(query) {

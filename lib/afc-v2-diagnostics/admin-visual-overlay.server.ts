@@ -26,6 +26,11 @@ import {
 import { parseAfcDiagnosticAdminUuid } from "./admin-read-model";
 import { AFC_GENERATION_TABLE } from "./admin-read-model.server";
 import {
+  type AfcDiagnosticFilterQuery,
+  type AfcDiagnosticSelectHead,
+  type AfcDiagnosticTableClient,
+} from "./diagnostic-db-client";
+import {
   AFC_DIAGNOSTIC_CASE_TABLE,
   AFC_DIAGNOSTIC_SESSION_GENERATION_TABLE,
   AFC_DIAGNOSTIC_SESSION_TABLE,
@@ -141,9 +146,11 @@ export type AfcDiagnosticVisualOverlayLog = Readonly<{
   reason: string;
 }>;
 
-type OverlayDbClient = {
-  from: (table: string) => any;
-};
+type OverlayFilter<S> = AfcDiagnosticFilterQuery<S, "eq" | "maybeSingle">;
+
+type OverlayDbClient<S extends OverlayFilter<S>> = AfcDiagnosticTableClient<
+  AfcDiagnosticSelectHead<S>
+>;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
@@ -234,8 +241,10 @@ function parseGenerationRow(
   });
 }
 
-export function createSupabaseAfcDiagnosticVisualOverlayStore(
-  supabase: OverlayDbClient,
+export function createSupabaseAfcDiagnosticVisualOverlayStore<
+  S extends OverlayFilter<S>,
+>(
+  supabase: OverlayDbClient<S>,
 ): AfcDiagnosticVisualOverlayStore {
   return {
     async findCaseById(caseId) {
@@ -293,9 +302,7 @@ export function createSupabaseAfcDiagnosticVisualOverlayStore(
 function storeFromEnv(): AfcDiagnosticVisualOverlayStore {
   const supabase = getServiceRoleSupabaseClient();
   if (!supabase) throw new AfcDiagnosticVisualStoreError();
-  return createSupabaseAfcDiagnosticVisualOverlayStore(
-    supabase as unknown as OverlayDbClient,
-  );
+  return createSupabaseAfcDiagnosticVisualOverlayStore(supabase);
 }
 
 const OVERLAY_ALLOWED_KEYS = new Set([

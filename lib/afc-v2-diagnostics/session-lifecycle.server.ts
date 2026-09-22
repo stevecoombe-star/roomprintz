@@ -10,6 +10,13 @@ import {
   type AfcDiagnosticSessionIntent,
 } from "./contracts";
 import {
+  type AfcDiagnosticAwaitableQuery,
+  type AfcDiagnosticFilterQuery,
+  type AfcDiagnosticSelectHead,
+  type AfcDiagnosticTableClient,
+  type AfcDiagnosticWriteQuery,
+} from "./diagnostic-db-client";
+import {
   resolveAfcQaCapability,
   type AfcQaCapabilityEnv,
 } from "./qa-capability.server";
@@ -109,9 +116,22 @@ export type AfcDiagnosticSessionStore = {
   }): Promise<AfcDiagnosticMembershipInsertResult>;
 };
 
-export type AfcDiagnosticDbClient = {
-  from: (table: string) => any;
-};
+type SessionFilter<S> = AfcDiagnosticFilterQuery<
+  S,
+  "eq" | "order" | "limit" | "maybeSingle"
+> &
+  AfcDiagnosticAwaitableQuery;
+
+export type AfcDiagnosticDbClient<
+  S extends SessionFilter<S>,
+  I extends AfcDiagnosticWriteQuery<I>,
+  U extends AfcDiagnosticWriteQuery<U>,
+> = AfcDiagnosticTableClient<
+  AfcDiagnosticSelectHead<S> & {
+    insert(values: Record<string, unknown>): I;
+    update(values: Record<string, unknown>): U;
+  }
+>;
 
 export type AfcDiagnosticSessionLifecycleOptions = {
   env?: AfcQaCapabilityEnv | NodeJS.ProcessEnv;
@@ -294,8 +314,12 @@ function requireMapped<T>(value: T | null, label: string): T {
   return value;
 }
 
-export function createSupabaseAfcDiagnosticSessionStore(
-  supabase: AfcDiagnosticDbClient,
+export function createSupabaseAfcDiagnosticSessionStore<
+  S extends SessionFilter<S>,
+  I extends AfcDiagnosticWriteQuery<I>,
+  U extends AfcDiagnosticWriteQuery<U>,
+>(
+  supabase: AfcDiagnosticDbClient<S, I, U>,
 ): AfcDiagnosticSessionStore {
   const store: AfcDiagnosticSessionStore = {
     async closeStaleOpenSessions(input) {
