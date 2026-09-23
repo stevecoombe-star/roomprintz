@@ -1,0 +1,1038 @@
+{
+  "sourceEvidence": "afc-v2-room-c-fully-tiled-floor-authority-lower-center.json",
+  "room": {
+    "status": "observed",
+    "contract": {
+      "representationIdentity": {
+        "kind": "FULLY_TILED",
+        "identity": {
+          "sha256": "f62995b3583849f2376ef2ce1915f8382bd0683acffe93bc6b1b379d38e7bc5f",
+          "byteCount": 1143855,
+          "decodedWidth": 1264,
+          "decodedHeight": 848,
+          "mimeType": "image/png",
+          "orientation": 1
+        },
+        "generatedFrom": "ORIGINAL",
+        "parentOriginalSha256": "32edb8294a3e5c68d0e54bd5c387eb408b0bc1e15dad781cef0206090df4df1e",
+        "generationId": "e2e2e247-5be7-4be4-a7a9-755ea0633531"
+      },
+      "observationVersion": "afc-v2-room-observation/v1",
+      "sourceBasis": {
+        "coordinateSpace": "fully-tiled-source-normalized-image/v1",
+        "original": {
+          "sha256": "32edb8294a3e5c68d0e54bd5c387eb408b0bc1e15dad781cef0206090df4df1e",
+          "byteCount": 1329642,
+          "decodedWidth": 7360,
+          "decodedHeight": 4912,
+          "mimeType": "image/jpeg",
+          "orientation": 1
+        },
+        "fullyTiled": {
+          "sha256": "f62995b3583849f2376ef2ce1915f8382bd0683acffe93bc6b1b379d38e7bc5f",
+          "byteCount": 1143855,
+          "decodedWidth": 1264,
+          "decodedHeight": 848,
+          "mimeType": "image/png",
+          "orientation": 1
+        },
+        "primitivesBasis": "FULLY_TILED",
+        "calibratedFloorReferenceBasis": "FULLY_TILED",
+        "cameraRealizationBasis": "ORIGINAL",
+        "transfer": "aspect_ratio_compatible_source_normalized",
+        "crossBasisAlignment": "generation_prompt_preserved_not_pixel_verified"
+      },
+      "calibratedCameraReference": {
+        "authority": "certified_floor_camera",
+        "attemptId": "afc-v2-s3b-room-c-certified-final-1787699816955",
+        "floorResultId": "room-c-lower-center-live",
+        "authorityKey": "0.42617350811253857,0.779556462938921|0.6354073903310995,0.9606011858614205|0.7398885556478174,0.7734319142360826|0.5625394223945004,0.6982361322845164",
+        "originalBasisSha256": "32edb8294a3e5c68d0e54bd5c387eb408b0bc1e15dad781cef0206090df4df1e",
+        "frozenSnapshotDigest": "1957f1ce32d6a9c0a056127170ea7d14e3e679f56ee364a90c80d72c6e0bb06a",
+        "role": "consumed_reference_only"
+      },
+      "observedPlanes": [
+        {
+          "id": "plane_floor",
+          "category": "floor",
+          "imagePolygon": [
+            {
+              "x": 0.078,
+              "y": 0.688
+            },
+            {
+              "x": 0.415,
+              "y": 0.618
+            },
+            {
+              "x": 0.445,
+              "y": 0.635
+            },
+            {
+              "x": 0.745,
+              "y": 0.715
+            },
+            {
+              "x": 0.955,
+              "y": 0.805
+            },
+            {
+              "x": 0.955,
+              "y": 1
+            },
+            {
+              "x": 0,
+              "y": 1
+            },
+            {
+              "x": 0,
+              "y": 0.715
+            }
+          ],
+          "confidence": 0.98,
+          "ambiguity": null,
+          "evidenceClass": "provider_reported_visible_evidence",
+          "gridFamilyIds": [
+            "grid_floor_a",
+            "grid_floor_b"
+          ]
+        },
+        {
+          "id": "plane_wall_left",
+          "category": "wall",
+          "imagePolygon": [
+            {
+              "x": 0,
+              "y": 0.125
+            },
+            {
+              "x": 0.078,
+              "y": 0.225
+            },
+            {
+              "x": 0.078,
+              "y": 0.688
+            },
+            {
+              "x": 0,
+              "y": 0.715
+            }
+          ],
+          "confidence": 0.95,
+          "ambiguity": null,
+          "evidenceClass": "provider_reported_visible_evidence",
+          "gridFamilyIds": [
+            "grid_wall_left_axis_a",
+            "grid_wall_left_axis_b"
+          ]
+        },
+        {
+          "id": "plane_wall_far_left",
+          "category": "wall",
+          "imagePolygon": [
+            {
+              "x": 0.078,
+              "y": 0.225
+            },
+            {
+              "x": 0.445,
+              "y": 0.335
+            },
+            {
+              "x": 0.445,
+              "y": 0.635
+            },
+            {
+              "x": 0.078,
+              "y": 0.688
+            }
+          ],
+          "gridFamilyIds": [
+            "grid_wall_far_left_axis_a",
+            "grid_wall_far_left_axis_b"
+          ],
+          "confidence": 0.9,
+          "ambiguity": null,
+          "evidenceClass": "conservative_normalized_visible_evidence"
+        },
+        {
+          "id": "plane_wall_right",
+          "category": "wall",
+          "imagePolygon": [
+            {
+              "x": 0.445,
+              "y": 0.335
+            },
+            {
+              "x": 0.845,
+              "y": 0.075
+            },
+            {
+              "x": 0.955,
+              "y": 0.075
+            },
+            {
+              "x": 0.955,
+              "y": 0.805
+            },
+            {
+              "x": 0.745,
+              "y": 0.715
+            },
+            {
+              "x": 0.445,
+              "y": 0.635
+            }
+          ],
+          "confidence": 0.98,
+          "ambiguity": null,
+          "evidenceClass": "provider_reported_visible_evidence",
+          "gridFamilyIds": [
+            "grid_wall_right_axis_a",
+            "grid_wall_right_axis_b"
+          ]
+        },
+        {
+          "id": "plane_ceiling",
+          "category": "ceiling",
+          "imagePolygon": [
+            {
+              "x": 0,
+              "y": 0
+            },
+            {
+              "x": 0.845,
+              "y": 0
+            },
+            {
+              "x": 0.845,
+              "y": 0.075
+            },
+            {
+              "x": 0.445,
+              "y": 0.335
+            },
+            {
+              "x": 0.415,
+              "y": 0.328
+            },
+            {
+              "x": 0.078,
+              "y": 0.225
+            },
+            {
+              "x": 0,
+              "y": 0.125
+            }
+          ],
+          "confidence": 0.97,
+          "ambiguity": null,
+          "evidenceClass": "provider_reported_visible_evidence",
+          "gridFamilyIds": [
+            "grid_ceiling_axis_a",
+            "grid_ceiling_axis_b"
+          ]
+        }
+      ],
+      "observedSeams": [
+        {
+          "id": "seam_floor_wall_left",
+          "category": "floor_wall",
+          "planeIds": [
+            "plane_floor",
+            "plane_wall_left"
+          ],
+          "imagePolyline": [
+            {
+              "x": 0,
+              "y": 0.715
+            },
+            {
+              "x": 0.078,
+              "y": 0.688
+            }
+          ],
+          "confidence": 0.95,
+          "ambiguity": null,
+          "boundaryEvidence": "architectural_break",
+          "gridCompatibility": "compatible",
+          "evidenceClass": "provider_reported_visible_evidence"
+        },
+        {
+          "id": "seam_floor_wall_far_left",
+          "category": "floor_wall",
+          "planeIds": [
+            "plane_floor",
+            "plane_wall_far_left"
+          ],
+          "imagePolyline": [
+            {
+              "x": 0.078,
+              "y": 0.688
+            },
+            {
+              "x": 0.415,
+              "y": 0.618
+            }
+          ],
+          "confidence": 0.98,
+          "ambiguity": null,
+          "boundaryEvidence": "architectural_break",
+          "gridCompatibility": "compatible",
+          "evidenceClass": "provider_reported_visible_evidence"
+        },
+        {
+          "id": "seam_floor_wall_far_right",
+          "category": "floor_wall",
+          "planeIds": [
+            "plane_floor",
+            "plane_wall_far_left"
+          ],
+          "imagePolyline": [
+            {
+              "x": 0.415,
+              "y": 0.618
+            },
+            {
+              "x": 0.445,
+              "y": 0.635
+            }
+          ],
+          "confidence": 0.9,
+          "ambiguity": null,
+          "boundaryEvidence": "architectural_break",
+          "gridCompatibility": "compatible",
+          "evidenceClass": "provider_reported_visible_evidence"
+        },
+        {
+          "id": "seam_floor_wall_right",
+          "category": "floor_wall",
+          "planeIds": [
+            "plane_floor",
+            "plane_wall_right"
+          ],
+          "imagePolyline": [
+            {
+              "x": 0.445,
+              "y": 0.635
+            },
+            {
+              "x": 0.745,
+              "y": 0.715
+            },
+            {
+              "x": 0.955,
+              "y": 0.805
+            }
+          ],
+          "confidence": 0.98,
+          "ambiguity": null,
+          "boundaryEvidence": "architectural_break",
+          "gridCompatibility": "compatible",
+          "evidenceClass": "provider_reported_visible_evidence"
+        },
+        {
+          "id": "seam_wall_wall_left_far_left",
+          "category": "wall_wall",
+          "planeIds": [
+            "plane_wall_left",
+            "plane_wall_far_left"
+          ],
+          "imagePolyline": [
+            {
+              "x": 0.078,
+              "y": 0.225
+            },
+            {
+              "x": 0.078,
+              "y": 0.688
+            }
+          ],
+          "confidence": 0.95,
+          "ambiguity": null,
+          "boundaryEvidence": "architectural_break",
+          "gridCompatibility": "compatible",
+          "evidenceClass": "provider_reported_visible_evidence"
+        },
+        {
+          "id": "seam_wall_left_ceiling",
+          "category": "wall_ceiling",
+          "planeIds": [
+            "plane_wall_left",
+            "plane_ceiling"
+          ],
+          "imagePolyline": [
+            {
+              "x": 0,
+              "y": 0.125
+            },
+            {
+              "x": 0.078,
+              "y": 0.225
+            }
+          ],
+          "confidence": 0.95,
+          "ambiguity": null,
+          "boundaryEvidence": "architectural_break",
+          "gridCompatibility": "compatible",
+          "evidenceClass": "provider_reported_visible_evidence"
+        },
+        {
+          "id": "seam_wall_far_left_ceiling",
+          "category": "wall_ceiling",
+          "planeIds": [
+            "plane_wall_far_left",
+            "plane_ceiling"
+          ],
+          "imagePolyline": [
+            {
+              "x": 0.078,
+              "y": 0.225
+            },
+            {
+              "x": 0.415,
+              "y": 0.328
+            }
+          ],
+          "confidence": 0.98,
+          "ambiguity": null,
+          "boundaryEvidence": "architectural_break",
+          "gridCompatibility": "compatible",
+          "evidenceClass": "provider_reported_visible_evidence"
+        },
+        {
+          "id": "seam_wall_far_right_ceiling",
+          "category": "wall_ceiling",
+          "planeIds": [
+            "plane_wall_far_left",
+            "plane_ceiling"
+          ],
+          "imagePolyline": [
+            {
+              "x": 0.415,
+              "y": 0.328
+            },
+            {
+              "x": 0.445,
+              "y": 0.335
+            }
+          ],
+          "confidence": 0.9,
+          "ambiguity": null,
+          "boundaryEvidence": "architectural_break",
+          "gridCompatibility": "compatible",
+          "evidenceClass": "provider_reported_visible_evidence"
+        },
+        {
+          "id": "seam_wall_right_ceiling",
+          "category": "wall_ceiling",
+          "planeIds": [
+            "plane_wall_right",
+            "plane_ceiling"
+          ],
+          "imagePolyline": [
+            {
+              "x": 0.445,
+              "y": 0.335
+            },
+            {
+              "x": 0.845,
+              "y": 0.075
+            }
+          ],
+          "confidence": 0.98,
+          "ambiguity": null,
+          "boundaryEvidence": "architectural_break",
+          "gridCompatibility": "compatible",
+          "evidenceClass": "provider_reported_visible_evidence"
+        }
+      ],
+      "observedOpenings": [
+        {
+          "id": "opening_window_left",
+          "category": "window",
+          "hostPlaneId": "plane_wall_far_left",
+          "imageBoundary": [
+            {
+              "x": 0.145,
+              "y": 0.315
+            },
+            {
+              "x": 0.368,
+              "y": 0.365
+            },
+            {
+              "x": 0.368,
+              "y": 0.515
+            },
+            {
+              "x": 0.145,
+              "y": 0.515
+            }
+          ],
+          "confidence": 0.98,
+          "ambiguity": null,
+          "tiledFieldInterruption": true,
+          "evidenceClass": "provider_reported_visible_evidence"
+        },
+        {
+          "id": "opening_window_right",
+          "category": "window",
+          "hostPlaneId": "plane_wall_right",
+          "imageBoundary": [
+            {
+              "x": 0.445,
+              "y": 0.285
+            },
+            {
+              "x": 0.638,
+              "y": 0.285
+            },
+            {
+              "x": 0.638,
+              "y": 0.415
+            },
+            {
+              "x": 0.445,
+              "y": 0.415
+            }
+          ],
+          "confidence": 0.98,
+          "ambiguity": null,
+          "tiledFieldInterruption": true,
+          "evidenceClass": "provider_reported_visible_evidence"
+        }
+      ],
+      "observedGridFamilies": [
+        {
+          "id": "grid_floor_a",
+          "planeId": "plane_floor",
+          "axis": "axis_a",
+          "lineSegments": [
+            {
+              "start": {
+                "x": 0.105,
+                "y": 0.95
+              },
+              "end": {
+                "x": 0.355,
+                "y": 0.63
+              }
+            },
+            {
+              "start": {
+                "x": 0.455,
+                "y": 0.95
+              },
+              "end": {
+                "x": 0.555,
+                "y": 0.66
+              }
+            }
+          ],
+          "confidence": 0.95,
+          "evidenceClass": "provider_reported_visible_evidence"
+        },
+        {
+          "id": "grid_floor_b",
+          "planeId": "plane_floor",
+          "axis": "axis_b",
+          "lineSegments": [
+            {
+              "start": {
+                "x": 0,
+                "y": 0.85
+              },
+              "end": {
+                "x": 0.85,
+                "y": 0.76
+              }
+            },
+            {
+              "start": {
+                "x": 0,
+                "y": 0.95
+              },
+              "end": {
+                "x": 0.95,
+                "y": 0.82
+              }
+            }
+          ],
+          "confidence": 0.95,
+          "evidenceClass": "provider_reported_visible_evidence"
+        },
+        {
+          "id": "grid_wall_left_axis_a",
+          "planeId": "plane_wall_left",
+          "axis": "axis_a",
+          "lineSegments": [
+            {
+              "start": {
+                "x": 0.039,
+                "y": 0.175
+              },
+              "end": {
+                "x": 0.039,
+                "y": 0.695
+              }
+            },
+            {
+              "start": {
+                "x": 0.078,
+                "y": 0.225
+              },
+              "end": {
+                "x": 0.078,
+                "y": 0.688
+              }
+            }
+          ],
+          "confidence": 0.95,
+          "evidenceClass": "provider_reported_visible_evidence"
+        },
+        {
+          "id": "grid_wall_left_axis_b",
+          "planeId": "plane_wall_left",
+          "axis": "axis_b",
+          "lineSegments": [
+            {
+              "start": {
+                "x": 0,
+                "y": 0.355
+              },
+              "end": {
+                "x": 0.078,
+                "y": 0.415
+              }
+            },
+            {
+              "start": {
+                "x": 0,
+                "y": 0.465
+              },
+              "end": {
+                "x": 0.078,
+                "y": 0.515
+              }
+            }
+          ],
+          "confidence": 0.95,
+          "evidenceClass": "provider_reported_visible_evidence"
+        },
+        {
+          "id": "grid_wall_far_left_axis_a",
+          "planeId": "plane_wall_far_left",
+          "axis": "axis_a",
+          "lineSegments": [
+            {
+              "start": {
+                "x": 0.113,
+                "y": 0.235
+              },
+              "end": {
+                "x": 0.113,
+                "y": 0.681
+              }
+            },
+            {
+              "start": {
+                "x": 0.146,
+                "y": 0.245
+              },
+              "end": {
+                "x": 0.146,
+                "y": 0.674
+              }
+            },
+            {
+              "start": {
+                "x": 0.43,
+                "y": 0.332
+              },
+              "end": {
+                "x": 0.43,
+                "y": 0.627
+              }
+            },
+            {
+              "start": {
+                "x": 0.445,
+                "y": 0.335
+              },
+              "end": {
+                "x": 0.445,
+                "y": 0.635
+              }
+            }
+          ],
+          "confidence": 0.95,
+          "evidenceClass": "provider_reported_visible_evidence"
+        },
+        {
+          "id": "grid_wall_far_left_axis_b",
+          "planeId": "plane_wall_far_left",
+          "axis": "axis_b",
+          "lineSegments": [
+            {
+              "start": {
+                "x": 0.078,
+                "y": 0.415
+              },
+              "end": {
+                "x": 0.415,
+                "y": 0.465
+              }
+            },
+            {
+              "start": {
+                "x": 0.078,
+                "y": 0.515
+              },
+              "end": {
+                "x": 0.415,
+                "y": 0.545
+              }
+            },
+            {
+              "start": {
+                "x": 0.415,
+                "y": 0.465
+              },
+              "end": {
+                "x": 0.445,
+                "y": 0.47
+              }
+            },
+            {
+              "start": {
+                "x": 0.415,
+                "y": 0.545
+              },
+              "end": {
+                "x": 0.445,
+                "y": 0.55
+              }
+            }
+          ],
+          "confidence": 0.95,
+          "evidenceClass": "provider_reported_visible_evidence"
+        },
+        {
+          "id": "grid_wall_right_axis_a",
+          "planeId": "plane_wall_right",
+          "axis": "axis_a",
+          "lineSegments": [
+            {
+              "start": {
+                "x": 0.515,
+                "y": 0.29
+              },
+              "end": {
+                "x": 0.515,
+                "y": 0.655
+              }
+            },
+            {
+              "start": {
+                "x": 0.585,
+                "y": 0.245
+              },
+              "end": {
+                "x": 0.585,
+                "y": 0.675
+              }
+            }
+          ],
+          "confidence": 0.95,
+          "evidenceClass": "provider_reported_visible_evidence"
+        },
+        {
+          "id": "grid_wall_right_axis_b",
+          "planeId": "plane_wall_right",
+          "axis": "axis_b",
+          "lineSegments": [
+            {
+              "start": {
+                "x": 0.445,
+                "y": 0.47
+              },
+              "end": {
+                "x": 0.955,
+                "y": 0.245
+              }
+            },
+            {
+              "start": {
+                "x": 0.445,
+                "y": 0.55
+              },
+              "end": {
+                "x": 0.955,
+                "y": 0.415
+              }
+            }
+          ],
+          "confidence": 0.95,
+          "evidenceClass": "provider_reported_visible_evidence"
+        },
+        {
+          "id": "grid_ceiling_axis_a",
+          "planeId": "plane_ceiling",
+          "axis": "axis_a",
+          "lineSegments": [
+            {
+              "start": {
+                "x": 0.078,
+                "y": 0.225
+              },
+              "end": {
+                "x": 0.415,
+                "y": 0.05
+              }
+            },
+            {
+              "start": {
+                "x": 0.113,
+                "y": 0.235
+              },
+              "end": {
+                "x": 0.515,
+                "y": 0.045
+              }
+            }
+          ],
+          "confidence": 0.95,
+          "evidenceClass": "provider_reported_visible_evidence"
+        },
+        {
+          "id": "grid_ceiling_axis_b",
+          "planeId": "plane_ceiling",
+          "axis": "axis_b",
+          "lineSegments": [
+            {
+              "start": {
+                "x": 0.078,
+                "y": 0.225
+              },
+              "end": {
+                "x": 0,
+                "y": 0.125
+              }
+            },
+            {
+              "start": {
+                "x": 0.113,
+                "y": 0.235
+              },
+              "end": {
+                "x": 0.039,
+                "y": 0.175
+              }
+            }
+          ],
+          "confidence": 0.95,
+          "evidenceClass": "provider_reported_visible_evidence"
+        }
+      ],
+      "adjacency": [
+        {
+          "id": "adj_seam_floor_wall_left",
+          "planeAId": "plane_floor",
+          "planeBId": "plane_wall_left",
+          "seamId": "seam_floor_wall_left",
+          "confidence": 0.95,
+          "evidenceClass": "conservative_seam_supported_inference"
+        },
+        {
+          "id": "adj_seam_floor_wall_far_left",
+          "planeAId": "plane_floor",
+          "planeBId": "plane_wall_far_left",
+          "seamId": "seam_floor_wall_far_left",
+          "confidence": 0.98,
+          "evidenceClass": "conservative_seam_supported_inference"
+        },
+        {
+          "id": "adj_seam_floor_wall_far_right",
+          "planeAId": "plane_floor",
+          "planeBId": "plane_wall_far_left",
+          "seamId": "seam_floor_wall_far_right",
+          "confidence": 0.9,
+          "evidenceClass": "conservative_seam_supported_inference"
+        },
+        {
+          "id": "adj_seam_floor_wall_right",
+          "planeAId": "plane_floor",
+          "planeBId": "plane_wall_right",
+          "seamId": "seam_floor_wall_right",
+          "confidence": 0.98,
+          "evidenceClass": "conservative_seam_supported_inference"
+        },
+        {
+          "id": "adj_seam_wall_wall_left_far_left",
+          "planeAId": "plane_wall_left",
+          "planeBId": "plane_wall_far_left",
+          "seamId": "seam_wall_wall_left_far_left",
+          "confidence": 0.95,
+          "evidenceClass": "conservative_seam_supported_inference"
+        },
+        {
+          "id": "adj_seam_wall_left_ceiling",
+          "planeAId": "plane_wall_left",
+          "planeBId": "plane_ceiling",
+          "seamId": "seam_wall_left_ceiling",
+          "confidence": 0.95,
+          "evidenceClass": "conservative_seam_supported_inference"
+        },
+        {
+          "id": "adj_seam_wall_far_left_ceiling",
+          "planeAId": "plane_wall_far_left",
+          "planeBId": "plane_ceiling",
+          "seamId": "seam_wall_far_left_ceiling",
+          "confidence": 0.98,
+          "evidenceClass": "conservative_seam_supported_inference"
+        },
+        {
+          "id": "adj_seam_wall_far_right_ceiling",
+          "planeAId": "plane_wall_far_left",
+          "planeBId": "plane_ceiling",
+          "seamId": "seam_wall_far_right_ceiling",
+          "confidence": 0.9,
+          "evidenceClass": "conservative_seam_supported_inference"
+        },
+        {
+          "id": "adj_seam_wall_right_ceiling",
+          "planeAId": "plane_wall_right",
+          "planeBId": "plane_ceiling",
+          "seamId": "seam_wall_right_ceiling",
+          "confidence": 0.98,
+          "evidenceClass": "conservative_seam_supported_inference"
+        }
+      ],
+      "diagnostics": {
+        "provider": "google_gemini",
+        "model": "gemini-3.5-flash",
+        "promptVersion": "afc-v2-visible-room-envelope-observer/v5",
+        "generatedAt": "2026-08-25T23:17:19.164Z",
+        "providerPasses": {
+          "structuralObservation": 1,
+          "gridRefinement": 1,
+          "seamRefinement": 1
+        },
+        "rejectedForbiddenProviderFields": [],
+        "rejected": {
+          "planes": 0,
+          "gridFamilies": 0,
+          "seams": 0,
+          "openings": 0,
+          "adjacency": 0,
+          "continuity": 0
+        },
+        "normalization": {
+          "version": "afc-v2-room-observation-normalization/v1",
+          "rawCounts": {
+            "planes": 6,
+            "gridFamilies": 12,
+            "seams": 11,
+            "openings": 2,
+            "adjacencySuggestions": 0,
+            "continuityClaims": 3
+          },
+          "normalizedCounts": {
+            "planes": 5,
+            "gridFamilies": 10,
+            "seams": 9,
+            "openings": 2,
+            "adjacency": 9
+          },
+          "merges": [
+            {
+              "normalizedPlaneId": "plane_wall_far_left",
+              "rawPlaneIds": [
+                "plane_wall_far_left",
+                "plane_wall_far_right"
+              ],
+              "continuityEvidenceId": "continuity_wall_far_left_far_right",
+              "reasons": [
+                "same_wall_category",
+                "shared_visible_boundary",
+                "two_family_grid_alignment_rejects_narrow_false_split",
+                "provider_architectural_break_conflicts_with_projective_grid_evidence",
+                "no_separating_opening",
+                "no_supported_corner_seam"
+              ]
+            }
+          ],
+          "continuityAssessments": [
+            {
+              "id": "continuity_wall_left_far_left",
+              "planeIds": [
+                "plane_wall_left",
+                "plane_wall_far_left"
+              ],
+              "assessment": "discontinuous",
+              "gridCompatibility": "compatible",
+              "boundaryEvidence": "architectural_break",
+              "confidence": 0.95,
+              "ambiguity": null
+            },
+            {
+              "id": "continuity_wall_far_left_far_right",
+              "planeIds": [
+                "plane_wall_far_left",
+                "plane_wall_far_right"
+              ],
+              "assessment": "discontinuous",
+              "gridCompatibility": "compatible",
+              "boundaryEvidence": "architectural_break",
+              "confidence": 0.95,
+              "ambiguity": null
+            },
+            {
+              "id": "continuity_wall_far_right_right",
+              "planeIds": [
+                "plane_wall_far_right",
+                "plane_wall_right"
+              ],
+              "assessment": "discontinuous",
+              "gridCompatibility": "compatible",
+              "boundaryEvidence": "architectural_break",
+              "confidence": 0.95,
+              "ambiguity": null
+            }
+          ],
+          "rejectedEvidence": [
+            {
+              "kind": "seam",
+              "rawId": "seam_wall_wall_far_left_far_right",
+              "reason": "seam_collapsed_or_lost_plane_binding_after_normalization"
+            },
+            {
+              "kind": "seam",
+              "rawId": "seam_wall_wall_far_right_right",
+              "reason": "seam_polyline_crosses_visible_opening"
+            }
+          ],
+          "unresolvedTopology": [
+            {
+              "kind": "plane_continuity",
+              "rawIds": [
+                "continuity_wall_far_right_right",
+                "plane_wall_far_right",
+                "plane_wall_right"
+              ],
+              "reason": "discontinuous_continuity_claim_has_no_accepted_wall_wall_seam"
+            }
+          ]
+        },
+        "unresolved": [
+          "discontinuous_continuity_claim_has_no_accepted_wall_wall_seam: continuity_wall_far_right_right,plane_wall_far_right,plane_wall_right"
+        ],
+        "worldGeometryProduced": false,
+        "providerEvidenceStatus": "schema_validated_and_conservatively_normalized_provider_report_not_pixel_verified",
+        "hiddenSurfacePolicy": "prohibited_and_explicit_hidden_claims_filtered",
+        "cameraAuthority": "certified_floor_camera_reference_only"
+      }
+    }
+  }
+}

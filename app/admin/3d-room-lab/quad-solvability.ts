@@ -3,13 +3,12 @@ import {
   type CalibratedCameraApplyCandidate,
   type CalibratedCameraApplyEvaluation,
 } from "./calibrated-camera-apply";
-import { normToPixels, type ImageFrameSize } from "./image-space";
+import { normToPixelsUnclamped, type ImageFrameSize } from "./image-space";
 import {
   buildCameraIntrinsicsFromFov,
   decomposeHomographyToCameraPose,
   floorVec3ToPlane2D,
   getFloorRectCorners,
-  orderFloorCorners,
   projectFloorPointThroughPose,
   scanCameraPoseOverFov,
   solvePlaneHomography,
@@ -19,6 +18,7 @@ import {
   type FovScanResult,
   type HomographyMatrix,
   type Vec2,
+  validateOrderedFloorCorners,
 } from "./perspective-solve";
 import type { FloorPoint } from "./scene-state";
 
@@ -226,7 +226,7 @@ export function evaluateQuadSolvability(input: QuadSolvabilityInput): QuadSolvab
     if (input.quadNorm.length !== 4) {
       homographyUnavailableReason = `floor polygon requires 4 points (got ${input.quadNorm.length})`;
     } else {
-      const orderedCornersResult = orderFloorCorners(input.quadNorm);
+      const orderedCornersResult = validateOrderedFloorCorners(input.quadNorm);
       if (!orderedCornersResult.ok) {
         homographyUnavailableReason = `corner ordering failed: ${orderedCornersResult.reason}`;
       } else {
@@ -236,7 +236,7 @@ export function evaluateQuadSolvability(input: QuadSolvabilityInput): QuadSolvab
         const sourceImagePointsPx: Vec2[] = [];
         let sourceConversionOk = true;
         for (const point of orderedCornersNorm) {
-          const pixels = normToPixels(point, frameSize);
+          const pixels = normToPixelsUnclamped(point, frameSize);
           if (!pixels) {
             sourceConversionOk = false;
             break;
@@ -281,7 +281,7 @@ export function evaluateQuadSolvability(input: QuadSolvabilityInput): QuadSolvab
     const points: Vec2[] = [];
     let conversionFailed = false;
     for (const point of orderedCornersNorm) {
-      const pixels = normToPixels(point, frameSize);
+      const pixels = normToPixelsUnclamped(point, frameSize);
       if (!pixels) {
         conversionFailed = true;
         break;

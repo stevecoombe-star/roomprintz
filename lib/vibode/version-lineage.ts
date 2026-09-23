@@ -57,6 +57,28 @@ function buildGenerationRunParentIndex(
   return parentByOutputId;
 }
 
+/**
+ * Canonical immediate parent for one History version.
+ *
+ * Prefer the existing generation-run edge (output → source_asset_id).
+ * Fall back to persisted metadata source_version_id / sourceVersionId.
+ * Never infers parent from timestamps, History list order, or the
+ * currently active version.
+ */
+export function resolveCanonicalImmediateParentVersionId(
+  version: RoomVersionForLineage,
+  generationRuns: GenerationRunForLineage[]
+): string | null {
+  const candidate = getParentCandidate(
+    version,
+    buildGenerationRunParentIndex(generationRuns)
+  );
+  if (!candidate.parentVersionId || candidate.parentVersionId === version.id) {
+    return null;
+  }
+  return candidate.parentVersionId;
+}
+
 function getParentCandidate(
   version: RoomVersionForLineage,
   parentByOutputId: Map<string, string | null>

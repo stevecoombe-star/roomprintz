@@ -1,0 +1,61 @@
+{
+  "version": "p2-s1-empty-physical-boundary/v1",
+  "roomId": "room-c",
+  "coordinateSpace": "empty-source-normalized/v1",
+  "emptyImage": {
+    "sha256": "b7283bb606d09bc7803543bfcbca14aa5f2041cfb91c5eb590d69d167355243f",
+    "dimensions": { "width": 1264, "height": 848 },
+    "generatorId": "vibode-empty-room-assist/stage1-empty-room/v1",
+    "generatedFromOriginalSha256": "32edb8294a3e5c68d0e54bd5c387eb408b0bc1e15dad781cef0206090df4df1e",
+    "manifestFileName": "afc-r3c-room-c.image-manifest.v1.json"
+  },
+  "evaluationCorridorSourcePx": 6,
+  "annotations": [
+    {
+      "id": "back-wall-left-visible-span",
+      "pointsSourceNormalized": [
+        { "x": 0.078323, "y": 0.695755 },
+        { "x": 0.162184, "y": 0.675708 },
+        { "x": 0.249209, "y": 0.655660 }
+      ],
+      "interpretation": "rear_floor_wall_seam",
+      "evidenceKind": "direct_visible",
+      "boundaryState": "physical_wall",
+      "collisionEligible": true,
+      "startEndpoint": { "status": "visible", "frameContact": "no_frame_contact" },
+      "endEndpoint": { "status": "occluded", "frameContact": "no_frame_contact" },
+      "notes": "Manually reviewed source pixels (99,590) through (315,556) trace the visible baseboard-bottom/floor contact from the in-frame left corner to just before the radiator. The radiator-hidden span is not bridged."
+    },
+    {
+      "id": "back-wall-right-visible-span",
+      "pointsSourceNormalized": [
+        { "x": 0.346519, "y": 0.633255 },
+        { "x": 0.380538, "y": 0.625000 },
+        { "x": 0.414557, "y": 0.616745 }
+      ],
+      "interpretation": "rear_floor_wall_seam",
+      "evidenceKind": "direct_visible",
+      "boundaryState": "physical_wall",
+      "collisionEligible": true,
+      "startEndpoint": { "status": "occluded", "frameContact": "no_frame_contact" },
+      "endEndpoint": { "status": "visible", "frameContact": "no_frame_contact" },
+      "notes": "Manually reviewed source pixels (438,537) through (524,523) trace the visible baseboard-bottom/floor contact after the radiator to the back/right corner. The radiator-hidden gap to the left span remains unknown."
+    },
+    {
+      "id": "right-wall-visible-baseboard",
+      "pointsSourceNormalized": [
+        { "x": 0.414557, "y": 0.616745 },
+        { "x": 0.632911, "y": 0.694575 },
+        { "x": 0.830696, "y": 0.765330 },
+        { "x": 0.999209, "y": 0.825472 }
+      ],
+      "interpretation": "side_wall_floor_seam",
+      "evidenceKind": "direct_visible",
+      "boundaryState": "physical_wall",
+      "collisionEligible": true,
+      "startEndpoint": { "status": "visible", "frameContact": "no_frame_contact" },
+      "endEndpoint": { "status": "frame_truncated", "frameContact": "contacts_frame" },
+      "notes": "Manually reviewed source pixels (524,523) through (1263,700) trace the right baseboard-bottom/floor contact, not the baseboard top or wall face. The final source-column point claims no continuation beyond the right frame."
+    }
+  ]
+}

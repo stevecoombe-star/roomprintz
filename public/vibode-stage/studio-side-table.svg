@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 300" role="img" aria-label="Studio Side Table">
+  <rect width="400" height="300" fill="#ece7e1"/>
+  <rect x="118" y="118" width="164" height="16" rx="4" fill="#c4a574"/>
+  <rect x="130" y="134" width="14" height="86" rx="3" fill="#8b6a45"/>
+  <rect x="256" y="134" width="14" height="86" rx="3" fill="#8b6a45"/>
+  <rect x="148" y="134" width="10" height="72" rx="2" fill="#a98455"/>
+  <rect x="242" y="134" width="10" height="72" rx="2" fill="#a98455"/>
+</svg>

@@ -1,0 +1,59 @@
+{
+  "schemaVersion": "afc-sr1-ts2-development-parity/v1",
+  "cases": [
+    {
+      "room": "C",
+      "generation": "T1",
+      "analysisImage": {"decodedWidth": 1264, "decodedHeight": 848},
+      "sourcePolygon": [{"x": 0.045, "y": 1.0}, {"x": 1.0, "y": 0.82}, {"x": 0.415, "y": 0.616}, {"x": 0.077, "y": 0.694}],
+      "truncatedAnchor": "NL",
+      "floorVanishingLinePixel": {"a": 0.004509195231282803, "b": 0.9999898335275046, "c": -427.2113127729756},
+      "expectedSeamT": 0.6767253259089697
+    },
+    {
+      "room": "C",
+      "generation": "T2",
+      "analysisImage": {"decodedWidth": 1264, "decodedHeight": 848},
+      "sourcePolygon": [{"x": 0.045, "y": 1.0}, {"x": 1.0, "y": 0.82}, {"x": 0.415, "y": 0.616}, {"x": 0.077, "y": 0.694}],
+      "truncatedAnchor": "NL",
+      "floorVanishingLinePixel": {"a": -0.005823037684311108, "b": 0.999983045972344, "c": -424.94728654289406},
+      "expectedSeamT": 0.6967860417339513
+    },
+    {
+      "room": "C",
+      "generation": "T3",
+      "analysisImage": {"decodedWidth": 1264, "decodedHeight": 848},
+      "sourcePolygon": [{"x": 0.045, "y": 1.0}, {"x": 1.0, "y": 0.82}, {"x": 0.415, "y": 0.616}, {"x": 0.077, "y": 0.694}],
+      "truncatedAnchor": "NL",
+      "floorVanishingLinePixel": {"a": 0.00008001062527088676, "b": 0.9999999967991499, "c": -428.5950730661995},
+      "expectedSeamT": 0.6904606574937419
+    },
+    {
+      "room": "D",
+      "generation": "T1",
+      "analysisImage": {"decodedWidth": 1264, "decodedHeight": 848},
+      "sourcePolygon": [{"x": 0.0, "y": 0.844}, {"x": 1.0, "y": 0.876}, {"x": 0.453, "y": 0.626}, {"x": 0.041, "y": 0.716}],
+      "truncatedAnchor": "NL",
+      "floorVanishingLinePixel": {"a": -0.004594584970122338, "b": 0.9999894448387704, "c": -408.3800470446939},
+      "expectedSeamT": 0.8391650201059466
+    },
+    {
+      "room": "D",
+      "generation": "T2",
+      "analysisImage": {"decodedWidth": 1264, "decodedHeight": 848},
+      "sourcePolygon": [{"x": 0.0, "y": 0.844}, {"x": 1.0, "y": 0.876}, {"x": 0.453, "y": 0.626}, {"x": 0.041, "y": 0.716}],
+      "truncatedAnchor": "NL",
+      "floorVanishingLinePixel": {"a": -0.0025664997730578155, "b": 0.999996706534034, "c": -407.6648509625277},
+      "expectedSeamT": 0.8368235659537211
+    },
+    {
+      "room": "D",
+      "generation": "T3",
+      "analysisImage": {"decodedWidth": 1264, "decodedHeight": 848},
+      "sourcePolygon": [{"x": 0.0, "y": 0.844}, {"x": 1.0, "y": 0.876}, {"x": 0.453, "y": 0.626}, {"x": 0.041, "y": 0.716}],
+      "truncatedAnchor": "NL",
+      "floorVanishingLinePixel": {"a": 0.01735743729146096, "b": 0.9998493483373748, "c": -410.56351820501436},
+      "expectedSeamT": 0.8199513029993906
+    }
+  ]
+}

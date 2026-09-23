@@ -1,0 +1,25 @@
+{
+  "contractVersion": "afc-r2-candidate-family/v1",
+  "fixtureId": "afc-r2-room-c-candidate-family",
+  "coordinateSpace": "source-normalized/v1",
+  "semanticOrder": ["NL", "NR", "FR", "FL"],
+  "controlRef": {
+    "fixtureId": "afc-r1-room-c-floor-control",
+    "basisFingerprint": "afc-r1-room-c-original-v1",
+    "approvedPolygonFingerprint": "fnv1a32:8f73b8c3"
+  },
+  "authoring": "Derived coordinates are materialized source-normalized values. intrinsic delta x uses x + dx/7360; y uses y + dy/4912. The historical wrong-NR polygon is unavailable from repository history.",
+  "candidates": [
+    { "candidateId":"approvedControlCandidate","candidateSource":"approved-control","role":"approvedControlCandidate" },
+    { "candidateId":"duplicateOfApproved","candidateSource":"fixture-derived","role":"duplicateOfApproved" },
+    { "candidateId":"equivalentFamilyMemberSubPixel","candidateSource":"fixture-derived","role":"equivalentFamilyMember","transformSpec":{"FR.xIntrinsicDelta":0.4},"sourceFloorPolygon":[{"x":0.045000000000000005,"y":0.9653019205454482},{"x":0.5721046146953405,"y":0.6705558693883779},{"x":0.41205434782608685,"y":0.6159999999999999},{"x":0.07800000000000003,"y":0.6950000000000001}] },
+    { "candidateId":"structuredDecoyFrPlus20","candidateSource":"research-probe","role":"structuredDecoy","transformSpec":{"FR.xIntrinsicDelta":20},"sourceFloorPolygon":[{"x":0.045000000000000005,"y":0.9653019205454482},{"x":0.5721046146953405,"y":0.6705558693883779},{"x":0.41471739130434776,"y":0.6159999999999999},{"x":0.07800000000000003,"y":0.6950000000000001}] },
+    { "candidateId":"structuredDecoyFarEdge","candidateSource":"research-probe","role":"structuredDecoy","transformSpec":{"FL_FR.yIntrinsicDelta":20},"sourceFloorPolygon":[{"x":0.045000000000000005,"y":0.9653019205454482},{"x":0.5721046146953405,"y":0.6705558693883779},{"x":0.4119999999999999,"y":0.6200716612377849},{"x":0.07800000000000003,"y":0.6990716612377851}] },
+    { "candidateId":"ambiguityProbeTranslation","candidateSource":"research-probe","role":"ambiguityProbe","transformSpec":{"wholePolygonIntrinsicDelta":{"x":15,"y":10}},"sourceFloorPolygon":[{"x":0.04703804347826088,"y":0.9673377511643406},{"x":0.5741426581736013,"y":0.6725917000072703},{"x":0.4140380434782608,"y":0.6180358306188923},{"x":0.08003804347826089,"y":0.6970358306188925}] },
+    { "candidateId":"trivialFitProbeHalfScale","candidateSource":"research-probe","role":"trivialFitProbe","transformSpec":{"centroidScale":0.5},"sourceFloorPolygon":[{"x":0.16088807683691758,"y":0.8510081840144523},{"x":0.4244403841845878,"y":0.7036351584359173},{"x":0.3443880768369175,"y":0.6763572237417282},{"x":0.17738807683691757,"y":0.7158572237417283}] },
+    { "candidateId":"semanticAlternativeCandidateCyclic","candidateSource":"research-probe","role":"semanticAlternativeCandidate","sourceFloorPolygon":[{"x":0.5721046146953405,"y":0.6705558693883779},{"x":0.4119999999999999,"y":0.6159999999999999},{"x":0.07800000000000003,"y":0.6950000000000001},{"x":0.045000000000000005,"y":0.9653019205454482}] },
+    { "candidateId":"semanticAlternativeCandidateReversed","candidateSource":"research-probe","role":"semanticAlternativeCandidate","sourceFloorPolygon":[{"x":0.045000000000000005,"y":0.9653019205454482},{"x":0.07800000000000003,"y":0.6950000000000001},{"x":0.4119999999999999,"y":0.6159999999999999},{"x":0.5721046146953405,"y":0.6705558693883779}] },
+    { "candidateId":"annotationRequiredDecoyHiddenNl","candidateSource":"research-probe","role":"annotationRequiredDecoy","notes":"Extrapolated hidden NL; source x is intentionally approximately -0.02.","sourceFloorPolygon":[{"x":-0.02,"y":0.9653019205454482},{"x":0.5721046146953405,"y":0.6705558693883779},{"x":0.4119999999999999,"y":0.6159999999999999},{"x":0.07800000000000003,"y":0.6950000000000001}] },
+    { "candidateId":"invalidInputProbeScreenRecanonicalized","candidateSource":"research-probe","role":"invalidInputProbe","notes":"Audited explicit negative regression: never screen-sort semantic corners.","sourceFloorPolygon":[{"x":0.045,"y":0.96530192},{"x":0.078,"y":0.695},{"x":0.57210461,"y":0.67055587},{"x":0.412,"y":0.616}] }
+  ]
+}

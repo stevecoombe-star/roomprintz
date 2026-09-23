@@ -65,6 +65,27 @@ export function finalizeSupportPointDragTransaction<TSnapshot>(
   };
 }
 
+/**
+ * Creates one completed undo record for a synchronous, non-drag support
+ * mutation. Call this only after the caller has accepted a material mutation;
+ * rejected and no-op actions retain the previous completed record.
+ */
+export function createSupportPointProgrammaticUndoRecord<TSnapshot>(
+  supportKind: SupportKind,
+  before: TSnapshot,
+  beforeKey: string,
+  afterKey: string,
+  previousUndoRecord: SupportPointUndoRecord<TSnapshot> | null
+): SupportPointUndoRecord<TSnapshot> | null {
+  if (beforeKey === afterKey) return previousUndoRecord;
+  return {
+    supportKind,
+    before: cloneSnapshot(before),
+    beforeKey,
+    afterKey,
+  };
+}
+
 export function canApplySupportPointUndo<TSnapshot>(
   record: SupportPointUndoRecord<TSnapshot> | null,
   currentKey: string,

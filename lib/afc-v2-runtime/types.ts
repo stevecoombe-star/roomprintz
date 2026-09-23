@@ -1,0 +1,160 @@
+/**
+ * Production AFC runtime types.
+ *
+ * Transforms live in canonical AFC world space:
+ *   calibrated-world-xz/v1
+ *
+ * These records are PI-4-compatible in shape. PI-4C persists the serializable
+ * scene descriptors per History version; it does not persist Three.js objects.
+ */
+
+export const AFC_V2_RUNTIME_COORDINATE_SPACE = "calibrated-world-xz/v1" as const;
+
+export const AFC_V2_RUNTIME_FLOOR_PLANE_Y = 0;
+
+export const AFC_V2_RUNTIME_ROTATION_EULER_ORDER = "XYZ" as const;
+
+export const AFC_V2_RUNTIME_POSITION_XZ_SAFETY_ABS_M = 500;
+
+export const AFC_V2_RUNTIME_CUBE_EDGE_M = 1;
+
+export const AFC_V2_RUNTIME_CUBE_OBJECT_ID = "pi3a-1m-cube" as const;
+
+export const AFC_V2_RUNTIME_CUBE_ASSET_ID = "afc-v2-runtime/test-cube/1m" as const;
+
+export const AFC_V2_RUNTIME_FURNITURE_OBJECT_ID = "pi4a-test-sofa" as const;
+
+export const AFC_V2_RUNTIME_FURNITURE_ASSET_ID =
+  "afc-v2-runtime/test-fixtures/pi4a-sofa" as const;
+
+export const AFC_V2_RUNTIME_FURNITURE_GLB_PUBLIC_PATH =
+  "/afc-v2-runtime/test-fixtures/pi4a-sofa.glb" as const;
+
+export const AFC_V2_RUNTIME_LOUNGE_CHAIR_ASSET_ID =
+  "afc-v2-runtime/test-fixtures/pi5d-lounge-chair" as const;
+
+export const AFC_V2_RUNTIME_LOUNGE_CHAIR_GLB_PUBLIC_PATH =
+  "/afc-v2-runtime/test-fixtures/pi5d-lounge-chair.glb" as const;
+
+export const AFC_V2_RUNTIME_PI4B_SOFA_A_OBJECT_ID = "pi4b-sofa-a" as const;
+
+export const AFC_V2_RUNTIME_PI4B_SOFA_B_OBJECT_ID = "pi4b-sofa-b" as const;
+
+export const AFC_V2_RUNTIME_CAMERA_NEAR = 0.1;
+
+export const AFC_V2_RUNTIME_CAMERA_FAR = 100;
+
+export type RuntimeVec2 = Readonly<{ x: number; z: number }>;
+
+export type RuntimeVec3 = Readonly<{ x: number; y: number; z: number }>;
+
+export type RuntimeCollisionWall = Readonly<{
+  id: string;
+  sourceBoundaryId: string;
+  sourceSeamId: string;
+  a: RuntimeVec2;
+  b: RuntimeVec2;
+  supportPlaneNormal: RuntimeVec3;
+  supportPlaneConstant: number;
+  sideSign: -1 | 1;
+}>;
+
+export type WorldTransform = Readonly<{
+  position: RuntimeVec3;
+  rotationDeg: RuntimeVec3;
+  uniformScale: number;
+}>;
+
+export type RuntimeTransformMode = "move" | "rotate";
+
+export const AFC_V2_USER_SIZE_DEFAULT = 1;
+
+export const AFC_V2_USER_SIZE_MIN = 0.5;
+
+export const AFC_V2_USER_SIZE_MAX = 2;
+
+export function clampUserSizeMultiplier(value: number): number {
+  if (!Number.isFinite(value)) return AFC_V2_USER_SIZE_DEFAULT;
+  return Math.min(AFC_V2_USER_SIZE_MAX, Math.max(AFC_V2_USER_SIZE_MIN, value));
+}
+
+export type RuntimeAssetIdentity = Readonly<{
+  kind: "test_cube" | "test_furniture_glb";
+  id: string;
+}>;
+
+export type RuntimeSceneObject = Readonly<{
+  roomId: string;
+  generationId: string;
+  objectId: string;
+  assetIdentity: RuntimeAssetIdentity;
+  coordinateSpace: typeof AFC_V2_RUNTIME_COORDINATE_SPACE;
+  transform: WorldTransform;
+  productId?: string;
+  variantId?: string;
+  userSizeMultiplier?: number;
+}>;
+
+export type FurnitureAssetDefinition = Readonly<{
+  assetId: string;
+  glbUrl: string;
+  authoredWidthM: number;
+  authoredHeightM: number;
+  authoredDepthM: number;
+}>;
+
+export type SceneObjectProductIdentity = Readonly<{
+  productId?: string;
+  variantId?: string;
+  userSizeMultiplier?: number;
+}>;
+
+export type SceneObjectDefinition = Readonly<{
+  objectId: string;
+  assetId: string;
+  transform: WorldTransform;
+  productId?: string;
+  variantId?: string;
+  userSizeMultiplier?: number;
+}>;
+
+export type SerializedRuntimeScene = Readonly<{
+  objects: readonly SceneObjectDefinition[];
+}>;
+
+export const DEFAULT_WORLD_TRANSFORM: WorldTransform = Object.freeze({
+  position: Object.freeze({ x: 0, y: 0, z: 0 }),
+  rotationDeg: Object.freeze({ x: 0, y: 0, z: 0 }),
+  uniformScale: 1,
+});
+
+export type LocalAabb = Readonly<{
+  min: RuntimeVec3;
+  max: RuntimeVec3;
+}>;
+
+export type CanonicalFloorRectangle = Readonly<{
+  worldWidthM: number;
+  referenceDepthM: number;
+}>;
+
+export type CameraPose = Readonly<{
+  position: RuntimeVec3;
+  lookAt: RuntimeVec3;
+  up: RuntimeVec3;
+}>;
+
+export type FrozenCameraSnapshot = Readonly<{
+  verticalFovDeg: number;
+  pose: CameraPose;
+  frame: Readonly<{ width: number; height: number }>;
+}>;
+
+export type RealizedFrozenCamera = Readonly<{
+  verticalFovDeg: number;
+  aspect: number;
+  near: number;
+  far: number;
+  pose: CameraPose;
+  frame: Readonly<{ width: number; height: number }>;
+}>;

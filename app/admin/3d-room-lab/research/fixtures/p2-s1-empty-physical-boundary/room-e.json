@@ -1,0 +1,46 @@
+{
+  "version": "p2-s1-empty-physical-boundary/v1",
+  "roomId": "room-e",
+  "coordinateSpace": "empty-source-normalized/v1",
+  "emptyImage": {
+    "sha256": "9c9be335233a65e32c7eb6480c7d9c7fbfec067e11be50fd1b01fd4e07a680d5",
+    "dimensions": { "width": 1264, "height": 848 },
+    "generatorId": "vibode-empty-room-assist/stage1-empty-room/v1",
+    "generatedFromOriginalSha256": "ac1659d7a6d4a582102c631641aeeabcd075a7eda9745a18cf500ab2cd6b18ef",
+    "manifestFileName": "afc-r3c-room-e.image-manifest.v1.json"
+  },
+  "evaluationCorridorSourcePx": 6,
+  "annotations": [
+    {
+      "id": "left-wall-visible-baseboard",
+      "pointsSourceNormalized": [
+        { "x": 0.000000, "y": 0.978774 },
+        { "x": 0.174051, "y": 0.875000 },
+        { "x": 0.348101, "y": 0.773585 },
+        { "x": 0.531646, "y": 0.662736 }
+      ],
+      "interpretation": "side_wall_floor_seam",
+      "evidenceKind": "direct_visible",
+      "boundaryState": "physical_wall",
+      "collisionEligible": true,
+      "startEndpoint": { "status": "frame_truncated", "frameContact": "contacts_frame" },
+      "endEndpoint": { "status": "visible", "frameContact": "no_frame_contact" },
+      "notes": "Manually reviewed source pixels (0,830), (220,742), (440,656), and (672,562) trace the visible white-to-dark baseboard-bottom/floor contact. The heater detail remains above this line and is not used; the left-frame endpoint claims no off-frame continuation."
+    },
+    {
+      "id": "back-wall-visible-baseboard",
+      "pointsSourceNormalized": [
+        { "x": 0.531646, "y": 0.662736 },
+        { "x": 0.727848, "y": 0.711085 },
+        { "x": 0.922468, "y": 0.759434 }
+      ],
+      "interpretation": "rear_floor_wall_seam",
+      "evidenceKind": "direct_visible",
+      "boundaryState": "physical_wall",
+      "collisionEligible": true,
+      "startEndpoint": { "status": "visible", "frameContact": "no_frame_contact" },
+      "endEndpoint": { "status": "visible", "frameContact": "no_frame_contact" },
+      "notes": "Manually reviewed source pixels (672,562) through (1166,644) trace the back-wall baseboard-bottom/floor contact and stop at the visible right corner. The ambiguous short right-side continuation and all image-border geometry are omitted."
+    }
+  ]
+}

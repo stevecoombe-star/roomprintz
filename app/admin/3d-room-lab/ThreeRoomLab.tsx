@@ -1,10 +1,91 @@
 "use client";
 
-import { FormEvent, PointerEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  ChangeEvent as ReactChangeEvent,
+  FormEvent,
+  KeyboardEvent as ReactKeyboardEvent,
+  PointerEvent,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import SceneJsonPanel from "./SceneJsonPanel";
 import CollapsibleSection from "./CollapsibleSection";
+import AfcProposalOverlayPanel from "./AfcProposalOverlayPanel";
+import AfcUi2aRunnerPanel from "./AfcUi2aRunnerPanel";
+import AfcUi2bProposalRunnerPanel from "./AfcUi2bProposalRunnerPanel";
+import AfcPerspectiveAdjustControl from "./AfcPerspectiveAdjustControl";
+import AfcSr1LiveFloorReadOverlay from "./AfcSr1LiveFloorReadOverlay";
+import AfcTiledPerspectiveDiagnosticViewer from "./AfcTiledPerspectiveDiagnosticViewer";
+import {
+  deriveAfcSr1V3ReaderForensics,
+} from "./afc-sr1-v3-reader-diagnostics";
+import {
+  validateAfcSr1LiveResultAcceptance,
+} from "./afc-sr1-live-acceptance";
+import type {
+  AfcSr1LiveAuthoritativeGeometry,
+  AfcSr1LiveProductResult,
+} from "./afc-sr1-live-product-contract";
+import {
+  ROOM_C_AFC_LAB_GEOMETRY_CANDIDATE,
+} from "./afc-lab-geometry-candidate";
+import {
+  AFC_PERSPECTIVE_ADJUST_DELTA_LIMIT,
+  AFC_PERSPECTIVE_ADJUST_KEYBOARD_DEBOUNCE_MS,
+  buildAfcPerspectiveAdjustCandidate,
+  clampAfcPerspectiveAdjustDelta,
+  shouldInvalidateAfcPerspectiveSessionForFloorCommit,
+  type AfcPerspectiveFloorCommitOptions,
+} from "./afc-lab-perspective-adjust";
+import {
+  AFC_TILED_PERSPECTIVE_ADJUST_MODE,
+  buildAfcTiledPerspectiveAdjustPolygon,
+  clampAfcTiledPerspectiveDelta,
+  computeAfcTiledPerspectiveAdjustmentRange,
+  type AfcTiledPerspectiveAdjustmentRange,
+  type AfcTiledPerspectivePolygon,
+} from "./afc-tiled-perspective-adjust";
+import {
+  settleAfcFixedSeamCalibrationWithRatioExtension,
+  type AfcFixedSeamCalibrationResult,
+  type AfcFixedSeamCalibrationSuccess,
+} from "./afc-fixed-seam-calibration";
+import {
+  validatePendingAfcLabCameraApply,
+  type AfcLabCameraApplyToken,
+} from "./afc-lab-apply-transaction";
+import {
+  type AfcQualifiedLiveImageBasis,
+} from "./afc-verified-floor-apply";
+import {
+  revalidateVerifiedAfcFloorApplyRequest,
+  type VerifiedAfcFloorApplyActionStatus,
+  type VerifiedAfcFloorApplyRequest,
+} from "./afc-verified-floor-apply-request";
+import {
+  qualifyVerifiedAfcCameraApply,
+  type VerifiedAfcFloorCameraBinding,
+} from "./afc-verified-camera-apply";
+import {
+  revalidateVerifiedAfcCameraApplyRequest,
+  type VerifiedAfcCameraApplyRequest,
+} from "./afc-verified-camera-apply-request";
+import {
+  establishVerifiedAfcFloorCameraBinding,
+  shouldClearVerifiedAfcFloorCameraBindingForFloorAuthorityChange,
+} from "./afc-verified-camera-binding";
+import type { AfcUi2aCurrentImageDescriptor } from "./afc-ui2a-runner-state";
+import type { AfcProposalOverlayViewModel } from "./research/afc-proposal-overlay-view-model";
+import AfcMainViewportEvidenceOverlay from "./AfcMainViewportEvidenceOverlay";
+import {
+  projectAfcViewportEvidence,
+  type AfcViewportEvidenceSnapshot,
+} from "./afc-main-viewport-evidence";
 import MilestoneValidationPanel from "./MilestoneValidationPanel";
 import RoomEnvelopePanel, { type RoomEnvelopePanelSupport } from "./RoomEnvelopePanel";
 import {
@@ -20,6 +101,20 @@ import {
   CALIBRATED_READ_ONLY_PROJECTION_RENDERER_NEAR,
   buildCalibratedReadOnlyProjectionCamera,
 } from "./calibrated-camera-readonly-projection";
+import {
+  computeProjectionCoherenceDiagnostics,
+  type ProjectionCoherenceWallInput,
+} from "./projection-coherence-diagnostics";
+import {
+  changeVerticalEvidenceDecision,
+  deriveVerticalEvidenceCollectionRuntime,
+  deriveVerticalEvidenceSuggestions,
+  materializeVerticalEvidenceObservation,
+  type VerticalEvidenceOperatorDecision,
+  type VerticalEvidenceSection,
+  type VerticalEvidenceSuggestion,
+} from "./vertical-evidence";
+import { evaluateV3CandidateObservability } from "./v3-candidate-observability";
 import { buildRoomEnvelopeContextKey } from "./room-envelope-identity";
 import { reconcileRoomEnvelope } from "./room-envelope-reconciliation";
 import type {
@@ -45,19 +140,40 @@ import {
   getDepthNearFarOrderingInfo,
   getDepthScaleMultiplier,
   getEffectiveObjectScale,
-  isPointInsidePolygon,
   isWithinViewportBounds,
   mapFloorPointToObjectTransform,
   mapPointerTravelToWorldYDelta,
   selectViewportSafeHandleOffset,
 } from "./floor-math";
 import {
-  CALIBRATED_SCENE_STATE_CALIBRATION_VERSION_V2,
+  DEFAULT_PLACEMENT_CONSTRAINT,
+  applyPlacementConstraint,
+} from "./placement-constraint";
+import { canonicalizeSourceUnitBoundaryPoint } from "./floor-coordinate-extent";
+import {
+  buildDurableSourceFloorAuthorityKey,
+  deriveDurableSourceFloorAuthorityKey,
+  planContainerFloorPolygon,
+  planSourceNormalizedFloorPolygon,
+  type FloorSourceAuthorityPlan,
+} from "./floor-source-authority";
+import {
+  describeFloorHandleAccessibleLabel,
+  resolveFloorHandlePresentation,
+} from "./floor-handle-presentation";
+import {
+  createFloorHandleDragStart,
+  deriveFloorHandleDragCandidate,
+  floorDragCandidateDiffersFromCurrent,
+  floorDragOverlayRectEquals,
+  floorDragPointerFromClient,
+  type FloorHandleDragStart,
+  type FloorDragOverlayRect,
+} from "./floor-handle-drag";
+import {
   CALIBRATED_SCENE_STATE_MAX_VERTICAL_FOV_DEG,
   CALIBRATED_SCENE_STATE_MIN_VERTICAL_FOV_DEG,
-  CALIBRATED_SCENE_STATE_SOLVER_V1,
   SCENE_IMAGE_COORDINATE_SPACE_V0,
-  buildSceneStatePayload,
   evaluateCalibrationRestoreCompatibility,
   validateImportedSceneJson,
   type CalibratedSceneStateCalibrationV2,
@@ -69,7 +185,10 @@ import {
   type TransformState,
 } from "./scene-state";
 import {
-  CALIBRATED_CAMERA_APPLIED_AUTHORITY_VERSION,
+  assembleCurrentSceneStatePayload,
+  formatSceneModelStatus,
+} from "./scene-state-current-assembly";
+import {
   CALIBRATED_CAMERA_AUTHORITY_CALIBRATION_VERSION,
   CALIBRATED_CAMERA_AUTHORITY_SOLVER,
   CALIBRATED_CAMERA_IDENTITY_EQUIVALENCE_VERSION,
@@ -78,6 +197,14 @@ import {
   type CameraIdentityMode,
   type ParsedCalibratedCameraAppliedAuthority,
 } from "./calibrated-camera-restore-authority";
+import {
+  freezeAppliedTiledAfcCamera,
+} from "./afc-calibrated-camera-authority-freeze";
+import {
+  buildCalibratedCameraFreezeReceiptFilename,
+  serializeCalibratedCameraFreezeReceipt,
+  type CalibratedCameraFreezeReceipt,
+} from "./calibrated-camera-freeze-receipt";
 import {
   CALIBRATION_IMAGE_BASIS_COORDINATE_SPACE_VERSION,
   type CalibrationImageBasis,
@@ -103,6 +230,7 @@ import {
   beginSupportPointDragTransaction,
   canApplySupportPointUndo,
   consumeSupportPointUndo,
+  createSupportPointProgrammaticUndoRecord,
   finalizeSupportPointDragTransaction,
   isSupportPointUndoShortcut,
   type SupportPointDragTransaction,
@@ -121,6 +249,8 @@ import {
   getWallLowerPointRole,
   resolveWallFloorPointSnap,
   type FloorCornerKind,
+  type WallFloorSeamTarget,
+  type WallFloorSnapKind,
 } from "./wall-floor-point-snap";
 import {
   buildCeilingPolygonKey,
@@ -133,23 +263,27 @@ import {
 } from "./ceiling-support-geometry";
 import {
   containerNormToSourceNorm,
+  containerNormToSourceNormUnclamped,
   corridorHalfWidthToOverlayStrokeWidth,
   isValidImageSize,
   normToPixels,
+  normToPixelsUnclamped,
   sourceNormToContainerNorm,
+  sourceNormToContainerNormUnclamped,
   type ImageFrameSize,
   type ImageIntrinsicSize,
 } from "./image-space";
+import { intersectOverlayRayWithFloorPlane } from "./calibrated-floor-ray";
+import { buildFloorFitPreviewGridPolylines } from "./floor-fit-preview-grid";
 import {
   applyHomography,
   computeReprojectionError,
   floorVec3ToPlane2D,
   getFloorRectCorners,
   type HomographyMatrix,
-  invertHomography,
-  orderFloorCorners,
   projectFloorPointThroughCameraPoseCv,
   solvePlaneHomography,
+  validateOrderedFloorCorners,
 } from "./perspective-solve";
 import {
   computeAutoBoundsNormalization,
@@ -207,6 +341,7 @@ import {
   CALIBRATED_CAMERA_APPLY_MAX_SCALE_RATIO,
   CALIBRATED_CAMERA_APPLY_MIN_SCALE_RATIO,
   evaluateCalibratedCameraApply,
+  type CalibratedCameraApplyCandidate,
 } from "./calibrated-camera-apply";
 import { evaluateQuadSolvability } from "./quad-solvability";
 import { classifyAutoFloorSupport } from "./auto-floor-support-classification";
@@ -214,7 +349,6 @@ import {
   buildFloorPolygonAuthorityKey,
   shouldDiscardAttestedResponse,
   shouldDropAuthorityOnFrameChange,
-  shouldDropAuthorityOnManualAdjustment,
 } from "./policy-a-containment";
 import {
   createEmptyManualFloorSupportAnnotation,
@@ -507,6 +641,8 @@ type EmptyRoomAssistUiStatus =
 
 const DEFAULT_MODEL_GLB_PATH = "/3d-lab/furniture-test-chair.glb";
 const LOCAL_DRAFT_STORAGE_KEY = "vibode:3d-room-lab:scene-state:v0";
+const LEGACY_V0_FLOOR_PROJECTION_NOT_READY_MESSAGE =
+  "Legacy v0 Floor could not be restored because the room image projection is not ready. Wait for the room image to finish loading, then retry.";
 const DEFAULT_ROOM_IMAGE_URL =
   "https://images.unsplash.com/photo-1505693314120-0d443867891c?auto=format&fit=crop&w=1600&q=80";
 
@@ -531,6 +667,103 @@ type CalibratedCameraSnapshot = {
   imageBasis: CalibrationImageBasis;
   sourceFloorPolygon: FloorPoint[];
 };
+type CameraPoseApplyCandidate = CalibratedCameraApplyCandidate & {
+  diagnosticsSummary: string;
+  pose: CalibratedCameraSnapshot["pose"];
+};
+type VerifiedAfcCameraApplyActionStatus =
+  | Readonly<{ kind: "idle" }>
+  | Readonly<{ kind: "applied" }>
+  | Readonly<{ kind: "invalidated_before_apply" }>
+  | Readonly<{ kind: "rejected" }>;
+type PendingAfcLabCameraApply = AfcLabCameraApplyToken & Readonly<{
+  settle: AfcFixedSeamCalibrationSuccess;
+}>;
+type AfcLabApplyStatus =
+  | Readonly<{ kind: "idle" }>
+  | Readonly<{ kind: "blocked"; reason: string }>
+  | Readonly<{ kind: "failed"; reason: string }>
+  | Readonly<{ kind: "pending"; settle: AfcFixedSeamCalibrationSuccess }>
+  | Readonly<{ kind: "applied"; settle: AfcFixedSeamCalibrationSuccess }>;
+type AfcCameraFreezeStatus =
+  | Readonly<{ kind: "idle" }>
+  | Readonly<{ kind: "freezing"; attemptId: string }>
+  | Readonly<{ kind: "ready"; attemptId: string }>
+  | Readonly<{ kind: "failed"; attemptId: string; reason: string }>;
+type AfcHistoricalPerspectiveAdjustSession = Readonly<{
+  kind: "historical_fixed_seam_v1";
+  attemptId: string;
+  resultId: string;
+  rawSourceNormalizedPolygon: readonly [FloorPoint, FloorPoint, FloorPoint, FloorPoint];
+  adjustableCorner: "NL" | "NR";
+  referenceDepthM: number;
+  acceptanceBasis: Readonly<{
+    basisFingerprint: string;
+    decodedWidth: number;
+    decodedHeight: number;
+    orientation: 1;
+  }>;
+  baselineSeamT: number;
+  committedDeltaSeamT: number;
+  previewDeltaSeamT: number;
+  committedSeamT: number;
+  automaticSettle: AfcFixedSeamCalibrationSuccess;
+  adjustmentCount: number;
+}>;
+type AfcTiledPerspectiveAdjustSession = Readonly<{
+  kind: typeof AFC_TILED_PERSPECTIVE_ADJUST_MODE;
+  attemptId: string;
+  resultId: string;
+  labLoadGeneration: number;
+  acceptanceBasis: Readonly<{
+    basisFingerprint: string;
+    decodedWidth: number;
+    decodedHeight: number;
+    orientation: 1;
+  }>;
+  referenceDepthM: number;
+  automaticPolygon: AfcTiledPerspectivePolygon;
+  previewDelta: number;
+  committedDelta: number;
+  range: AfcTiledPerspectiveAdjustmentRange;
+  tiledReaderVersion: "afc-sr1-tiled-perspective-reader/s1";
+  tiledBasisSha256: string;
+  adjustmentCount: number;
+}>;
+type AfcPerspectiveAdjustSession =
+  | AfcHistoricalPerspectiveAdjustSession
+  | AfcTiledPerspectiveAdjustSession;
+type AfcLiveAnalyzeStatus =
+  | Readonly<{ kind: "ready" }>
+  | Readonly<{ kind: "analyzing"; attemptId: string }>
+  | Readonly<{ kind: "applying"; attemptId: string; mode: string }>
+  | Readonly<{ kind: "completed"; attemptId: string; mode: string }>
+  | Readonly<{ kind: "degraded"; attemptId: string; reason: string }>
+  | Readonly<{ kind: "failed"; attemptId: string | null; reason: string }>;
+type AfcLiveSettleFailure = Readonly<{
+  attemptId: string;
+  reason: string;
+  settle: Extract<AfcFixedSeamCalibrationResult, { ok: false }>;
+  sourceNormalizedPolygon: readonly [FloorPoint, FloorPoint, FloorPoint, FloorPoint];
+  rawSourceNormalizedPolygon: readonly [FloorPoint, FloorPoint, FloorPoint, FloorPoint];
+  originalImageSize: Readonly<{ width: number; height: number }>;
+  rendererSize: Readonly<{ width: number; height: number }>;
+  referenceDepthM: number;
+}>;
+
+function qualifiedSourceUrlMatchesRoomImage(
+  qualifiedSourceUrl: string,
+  roomImageUrl: string
+): boolean {
+  if (qualifiedSourceUrl === roomImageUrl) return true;
+  if (!roomImageUrl.startsWith("/")) return false;
+  try {
+    return new URL(roomImageUrl, qualifiedSourceUrl).toString() ===
+      qualifiedSourceUrl;
+  } catch {
+    return false;
+  }
+}
 type FrozenAttachmentWorldTransform = {
   position: { x: number; y: number; z: number };
   quaternion: { x: number; y: number; z: number; w: number };
@@ -661,10 +894,10 @@ const FALLBACK_DEFAULT_TRANSFORM: TransformState = {
 };
 
 const DEFAULT_FLOOR_POLYGON: FloorPoint[] = [
-  { x: 0.18, y: 0.76 },
-  { x: 0.82, y: 0.76 },
-  { x: 0.62, y: 0.95 },
   { x: 0.38, y: 0.95 },
+  { x: 0.62, y: 0.95 },
+  { x: 0.82, y: 0.76 },
+  { x: 0.18, y: 0.76 },
 ];
 
 const WALL_SUPPORT_KINDS: WallSupportKind[] = ["wall_back", "wall_left", "wall_right"];
@@ -792,62 +1025,6 @@ type WorldProjectionResult = {
   isVisibleInView: boolean;
 };
 
-type RayFloorIntersectionResult =
-  | {
-      ok: true;
-      worldPoint: { x: number; y: number; z: number };
-      floorPlane2D: { x: number; y: number };
-    }
-  | { ok: false; reason: string };
-
-function intersectOverlayRayWithFloorPlane(
-  normalizedPoint: FloorPoint,
-  camera: THREE.PerspectiveCamera | null,
-  floorPlaneY = 0
-): RayFloorIntersectionResult {
-  if (!camera) return { ok: false, reason: "camera unavailable" };
-  if (
-    !Number.isFinite(normalizedPoint.x) ||
-    !Number.isFinite(normalizedPoint.y) ||
-    !Number.isFinite(floorPlaneY)
-  ) {
-    return { ok: false, reason: "non-finite input" };
-  }
-  camera.updateMatrixWorld(true);
-  const rayOrigin = camera.getWorldPosition(new THREE.Vector3());
-  const ndcPoint = new THREE.Vector3(normalizedPoint.x * 2 - 1, 1 - normalizedPoint.y * 2, 0.5);
-  const rayPoint = ndcPoint.unproject(camera);
-  const rayDirection = rayPoint.sub(rayOrigin);
-  const rayDirectionLength = rayDirection.length();
-  if (!Number.isFinite(rayDirectionLength) || rayDirectionLength <= 1e-9) {
-    return { ok: false, reason: "invalid ray direction" };
-  }
-  rayDirection.multiplyScalar(1 / rayDirectionLength);
-  if (!Number.isFinite(rayDirection.y) || Math.abs(rayDirection.y) <= 1e-9) {
-    return { ok: false, reason: "ray parallel to floor" };
-  }
-  const intersectionDistance = (floorPlaneY - rayOrigin.y) / rayDirection.y;
-  if (!Number.isFinite(intersectionDistance)) {
-    return { ok: false, reason: "invalid intersection distance" };
-  }
-  if (intersectionDistance <= 1e-9) {
-    return { ok: false, reason: "intersection behind camera" };
-  }
-  const intersectionPoint = rayOrigin.clone().addScaledVector(rayDirection, intersectionDistance);
-  if (
-    !Number.isFinite(intersectionPoint.x) ||
-    !Number.isFinite(intersectionPoint.y) ||
-    !Number.isFinite(intersectionPoint.z)
-  ) {
-    return { ok: false, reason: "non-finite intersection point" };
-  }
-  return {
-    ok: true,
-    worldPoint: { x: intersectionPoint.x, y: intersectionPoint.y, z: intersectionPoint.z },
-    floorPlane2D: { x: intersectionPoint.x, y: intersectionPoint.z },
-  };
-}
-
 function buildOverlayWorldRay(
   normalizedPoint: FloorPoint,
   camera: THREE.PerspectiveCamera | null
@@ -936,9 +1113,7 @@ function disposeObject3D(object: THREE.Object3D) {
 }
 
 function formatModelStatus(state: ModelLoadState, errorMessage: string | null): string {
-  if (state === "fallback") return `fallback cube (${errorMessage ?? "GLB load failed"})`;
-  if (state === "error") return `error (${errorMessage ?? "unknown"})`;
-  return state;
+  return formatSceneModelStatus(state, errorMessage);
 }
 
 function defaultTransformForKind(kind: ActiveObjectKind): TransformState {
@@ -1002,6 +1177,14 @@ function TransformControlRow({
   );
 }
 
+type AfcSr1CertifiedPreparedPackage = Readonly<{
+  packageId: string;
+  roomId: string;
+  receipt: Readonly<{ fileName: string; sha256: string }>;
+  original: Readonly<{ sha256: string }>;
+  emptyRoomAssist: Readonly<{ sha256: string }>;
+}>;
+
 type ThreeRoomLabProps = {
   // Server-derived (AUTO_FLOOR_VISION_ENABLED). Controls whether the experimental
   // Gemini vision provider is offered in the provider selector. The route remains
@@ -1010,6 +1193,15 @@ type ThreeRoomLabProps = {
   // Server-derived (EMPTY_ROOM_ASSIST_ENABLED). Controls whether the lab-only
   // Empty-Room assist panel is offered. The route remains the hard gate.
   emptyRoomAssistEnabled?: boolean;
+  // Server-derived AFC_UI1_PROPOSAL_OVERLAY_ENABLED. The research route is the
+  // hard gate; this only controls whether the isolated evidence panel is shown.
+  afcProposalOverlayEnabled?: boolean;
+  // Server-derived AFC_UI2A_PREPARATION_ENABLED. This only reveals the isolated
+  // original-preparation panel; the route repeats the hard server gate.
+  afcUi2aPreparationEnabled?: boolean;
+  // Server-derived UI2B gate. It controls only panel visibility; the routes
+  // independently repeat the authorization and feature gate.
+  afcUi2bProposalRunnerEnabled?: boolean;
 };
 
 // --- Phase 2O-O: neutral, descriptive support-qualification presentation -----
@@ -1354,16 +1546,18 @@ type SupportPointUndoSnapshots = {
 type WallFloorSnapPresentation = {
   kind: WallSupportKind;
   index: number;
-  floorCorner: FloorCornerKind;
+  snapKind: WallFloorSnapKind;
+  floorCorner: FloorCornerKind | null;
+  floorSeam: WallFloorSeamTarget | null;
   snapped: boolean;
   targetContainerNorm: FloorPoint;
 };
 
 type ActiveWallFloorSnap = {
+  pointerId: number;
   kind: WallSupportKind;
   index: number;
-  floorCorner: FloorCornerKind;
-  isSnapped: boolean;
+  snapKind: WallFloorSnapKind;
 };
 
 function buildSupportPointUndoSnapshotKey(snapshot: SupportPointUndoSnapshot): string {
@@ -1380,6 +1574,9 @@ function isSupportPointUndoTextEntryTarget(target: EventTarget | null): boolean 
 export default function ThreeRoomLab({
   visionEnabled = false,
   emptyRoomAssistEnabled = false,
+  afcProposalOverlayEnabled = false,
+  afcUi2aPreparationEnabled = false,
+  afcUi2bProposalRunnerEnabled = false,
 }: ThreeRoomLabProps) {
   const envEnabled = process.env.NEXT_PUBLIC_VIBODE_ENABLE_3D_ROOM_LAB === "1";
   const availableAutoFloorProviders = useMemo(
@@ -1436,6 +1633,8 @@ export default function ThreeRoomLab({
   const calibratedLiftStartClientPointRef = useRef<{ x: number; y: number } | null>(null);
   const calibratedLiftStartTransformRef = useRef<TransformState | null>(null);
   const floorAnchorDragPointerIdRef = useRef<number | null>(null);
+  const floorHandleDragRef = useRef<FloorHandleDragStart | null>(null);
+  const floorHandlePointerCaptureSucceededRef = useRef(false);
   const wallHandleDragRef = useRef<{ pointerId: number; kind: WallSupportKind; index: number } | null>(null);
   const activeWallFloorSnapRef = useRef<ActiveWallFloorSnap | null>(null);
   const ceilingHandleDragRef = useRef<{ pointerId: number; index: number } | null>(null);
@@ -1444,6 +1643,7 @@ export default function ThreeRoomLab({
     pointerId: number;
     transaction: SupportPointDragTransaction<SupportPointUndoSnapshot>;
   } | null>(null);
+  const finalizeActiveSupportPointDragRef = useRef<(pointerId?: number) => void>(() => {});
   const supportPointDragMovedRef = useRef(false);
   const supportPointUndoRecordRef = useRef<SupportPointUndoRecord<SupportPointUndoSnapshot> | null>(null);
   const supportPointUndoKeyboardHandlerRef = useRef<(event: KeyboardEvent) => void>(() => {});
@@ -1454,6 +1654,17 @@ export default function ThreeRoomLab({
   const calibratedCameraActiveRef = useRef(false);
   const calibratedCameraSnapshotRef = useRef<CalibratedCameraSnapshot | null>(null);
   const calibratedCameraApplyStatusRef = useRef<{ available: boolean } | null>(null);
+  const cameraPoseApplyCandidateRef = useRef<CameraPoseApplyCandidate | null>(null);
+  const cameraPoseUnavailableReasonRef = useRef<string | null>(null);
+  const afcVerifiedFloorLiveBasisRef = useRef<AfcQualifiedLiveImageBasis | null>(null);
+  const qualifiedImageBasisRef = useRef<CalibrationImageBasis | null>(null);
+  const afcLiveAttemptIdRef = useRef<string | null>(null);
+  const afcLiveLoadGenerationRef = useRef(0);
+  const afcLiveAbortControllerRef = useRef<AbortController | null>(null);
+  const afcLiveApplyingResultRef = useRef<AfcSr1LiveAuthoritativeGeometry | null>(null);
+  const afcCameraFreezeGenerationRef = useRef(0);
+  const verifiedAfcFloorCameraBindingRef = useRef<VerifiedAfcFloorCameraBinding | null>(null);
+  const verifiedAfcFloorCameraBindingGenerationRef = useRef(0);
   const preCalibratedDepthScalingRef = useRef<PerspectiveDepthScalingState | null>(null);
   const attachmentTransformRef = useRef<SupportAttachmentTransformResult | null>(null);
   const objectTransformModeRef = useRef<ObjectTransformMode>("detached");
@@ -1489,6 +1700,14 @@ export default function ThreeRoomLab({
   const [isSupportsOpen, setIsSupportsOpen] = useState(false);
   const [isMilestoneValidationOpen, setIsMilestoneValidationOpen] = useState(false);
   const [isRoomEnvelopeOpen, setIsRoomEnvelopeOpen] = useState(true);
+  const [isProjectionCoherenceDiagnosticsOpen, setIsProjectionCoherenceDiagnosticsOpen] = useState(false);
+  const [isVerticalEvidenceOpen, setIsVerticalEvidenceOpen] = useState(false);
+  const [isAfcProposalOverlayOpen, setIsAfcProposalOverlayOpen] = useState(false);
+  const [isAfcUi2aRunnerOpen, setIsAfcUi2aRunnerOpen] = useState(false);
+  const [isAfcUi2bProposalRunnerOpen, setIsAfcUi2bProposalRunnerOpen] = useState(false);
+  const [isV3CandidateObservabilityOpen, setIsV3CandidateObservabilityOpen] = useState(false);
+  const [verticalEvidence, setVerticalEvidence] = useState<VerticalEvidenceSection | null>(null);
+  const [verticalEvidenceStatus, setVerticalEvidenceStatus] = useState("No operator decisions recorded.");
   const [milestoneOperatorObservations, setMilestoneOperatorObservations] = useState(createEmptyOperatorObservations);
   const [validationAttachmentProvenanceBySupport, setValidationAttachmentProvenanceBySupport] =
     useState<ValidationAttachmentProvenanceBySupport>({});
@@ -1518,6 +1737,72 @@ export default function ThreeRoomLab({
   const [scanAndApplyResult, setScanAndApplyResult] = useState<
     { kind: "applied"; fov: number } | { kind: "blocked"; fov: number } | null
   >(null);
+  // AFC-SR1 Phase 2A: Room C establishes Floor/mapping/FOV in one click, then
+  // waits for a fresh post-render solve before it can enter the existing camera
+  // Apply path. This token is intentionally independent of Scan & Apply.
+  const [pendingAfcLabCameraApply, setPendingAfcLabCameraApply] =
+    useState<PendingAfcLabCameraApply | null>(null);
+  const afcLabCameraApplyTokenRef = useRef(0);
+  const afcLastRealizationFailureRef = useRef<string | null>(null);
+  const [afcLabApplyStatus, setAfcLabApplyStatus] = useState<AfcLabApplyStatus>({ kind: "idle" });
+  const [afcLiveAnalyzeStatus, setAfcLiveAnalyzeStatus] =
+    useState<AfcLiveAnalyzeStatus>({ kind: "ready" });
+  const [afcLiveResult, setAfcLiveResult] =
+    useState<AfcSr1LiveProductResult | null>(null);
+  const [afcLiveSettleFailure, setAfcLiveSettleFailure] =
+    useState<AfcLiveSettleFailure | null>(null);
+  const [afcCertifiedEmptySource, setAfcCertifiedEmptySource] =
+    useState<"live_generate" | "certified_prepared_package">("live_generate");
+  const [afcCertifiedEmptyRoomId, setAfcCertifiedEmptyRoomId] = useState("");
+  const [afcCertifiedEmptyPackages, setAfcCertifiedEmptyPackages] =
+    useState<readonly AfcSr1CertifiedPreparedPackage[]>([]);
+  const [afcCertifiedEmptyInventoryStatus, setAfcCertifiedEmptyInventoryStatus] =
+    useState<"idle" | "loading" | "loaded" | "failed">("idle");
+  const [afcCertifiedEmptyPackageId, setAfcCertifiedEmptyPackageId] =
+    useState<string | null>(null);
+  const [afcCameraFreezeReceipt, setAfcCameraFreezeReceipt] =
+    useState<CalibratedCameraFreezeReceipt | null>(null);
+  const [afcCameraFreezeStatus, setAfcCameraFreezeStatus] =
+    useState<AfcCameraFreezeStatus>({ kind: "idle" });
+  const invalidateAfcCameraFreeze = useCallback(() => {
+    afcCameraFreezeGenerationRef.current += 1;
+    setAfcCameraFreezeReceipt(null);
+    setAfcCameraFreezeStatus({ kind: "idle" });
+  }, []);
+  const [perspectiveAdjustSession, setPerspectiveAdjustSession] = useState<AfcPerspectiveAdjustSession | null>(null);
+  const perspectiveAdjustSessionRef = useRef<AfcPerspectiveAdjustSession | null>(null);
+  const perspectivePreviewDeltaRef = useRef(0);
+  const perspectiveKeyboardCommitTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const invalidatePerspectiveAdjustSession = useCallback(() => {
+    if (perspectiveKeyboardCommitTimerRef.current !== null) {
+      clearTimeout(perspectiveKeyboardCommitTimerRef.current);
+      perspectiveKeyboardCommitTimerRef.current = null;
+    }
+    perspectivePreviewDeltaRef.current = 0;
+    perspectiveAdjustSessionRef.current = null;
+    setPerspectiveAdjustSession(null);
+  }, []);
+  const supersedeAfcLiveAttemptForLoadChange = useCallback(() => {
+    invalidateAfcCameraFreeze();
+    invalidatePerspectiveAdjustSession();
+    afcLiveAbortControllerRef.current?.abort();
+    afcLiveAbortControllerRef.current = null;
+    afcLiveAttemptIdRef.current = null;
+    afcLiveApplyingResultRef.current = null;
+    afcLiveLoadGenerationRef.current += 1;
+    afcLabCameraApplyTokenRef.current += 1;
+    setPendingAfcLabCameraApply(null);
+    setAfcLiveResult(null);
+    setAfcLiveSettleFailure(null);
+    setAfcLiveAnalyzeStatus({ kind: "ready" });
+  }, [invalidateAfcCameraFreeze, invalidatePerspectiveAdjustSession]);
+  useEffect(() => () => {
+    afcLiveAbortControllerRef.current?.abort();
+    afcLiveAbortControllerRef.current = null;
+    afcLiveAttemptIdRef.current = null;
+    afcLiveApplyingResultRef.current = null;
+    afcLiveLoadGenerationRef.current += 1;
+  }, []);
   const [calibratedCameraSnapshot, setCalibratedCameraSnapshot] = useState<CalibratedCameraSnapshot | null>(null);
   const [lastCalibratedCameraAutoRevertReason, setLastCalibratedCameraAutoRevertReason] = useState<string | null>(null);
   // Phase 2J-B3: deferred calibrated-camera restore. A scene import always
@@ -1585,16 +1870,26 @@ export default function ThreeRoomLab({
   const activeSupportEditFocus = supportEditSession.activeFocus;
   const supportEditLocks = supportEditSession.locks;
   const [qualifiedImageBasis, setQualifiedImageBasis] = useState<CalibrationImageBasis | null>(null);
+  // Ephemeral read-only AFC evidence only. It is intentionally absent from
+  // Floor, camera, support, scene, and persistence state.
+  const [afcViewportEvidence, setAfcViewportEvidence] = useState<AfcViewportEvidenceSnapshot | null>(null);
+  const afcReplayValidViewModelRef = useRef<AfcProposalOverlayViewModel | null>(null);
+  const [afcVerifiedFloorApplyStatus, setAfcVerifiedFloorApplyStatus] =
+    useState<VerifiedAfcFloorApplyActionStatus>({ kind: "idle" });
+  const [verifiedAfcFloorCameraBinding, setVerifiedAfcFloorCameraBinding] =
+    useState<VerifiedAfcFloorCameraBinding | null>(null);
+  const [afcVerifiedCameraApplyStatus, setAfcVerifiedCameraApplyStatus] =
+    useState<VerifiedAfcCameraApplyActionStatus>({ kind: "idle" });
   const [basisQualificationStatus, setBasisQualificationStatus] = useState<string>("basis_unavailable");
   const basisQualificationRequestIdRef = useRef(0);
-  const floorPolygonAuthorityKeyRef = useRef(buildFloorPolygonAuthorityKey(DEFAULT_FLOOR_POLYGON));
+  const floorPolygonAuthorityKeyRef = useRef(buildDurableSourceFloorAuthorityKey(DEFAULT_FLOOR_POLYGON));
   supportPointUndoSnapshotsRef.current = {
     floor: {
       kind: "floor",
       floorPolygon: floorPolygon.map((point) => ({ x: point.x, y: point.y })),
       sourceNormalizedFloorPolygon: sourceNormalizedFloorPolygon.map((point) => ({ x: point.x, y: point.y })),
       floorPolygonAuthorityEligible,
-      floorPolygonAuthorityKey: buildFloorPolygonAuthorityKey(floorPolygon),
+      floorPolygonAuthorityKey: buildDurableSourceFloorAuthorityKey(sourceNormalizedFloorPolygon),
       reviewStatus: floorSupportReviewStatus,
       source: floorSupportSource,
       imageBasis: floorSupportImageBasis,
@@ -1855,7 +2150,7 @@ export default function ThreeRoomLab({
   const [isFloorClickPlacementEnabled, setIsFloorClickPlacementEnabled] = useState(false);
   const [isFloorAnchorDragEnabled, setIsFloorAnchorDragEnabled] = useState(false);
   const [isFloorAnchorDragActive, setIsFloorAnchorDragActive] = useState(false);
-  const [isObject2DHandlesEnabled, setIsObject2DHandlesEnabled] = useState(false);
+  const [isObject2DHandlesEnabled, setIsObject2DHandlesEnabled] = useState(true);
   const [activeObjectHandleMode, setActiveObjectHandleMode] = useState<ObjectHandleMode>(null);
   const [wasLastObjectHandleMoveRejected, setWasLastObjectHandleMoveRejected] = useState(false);
   const [lastObjectHandleRotateDeltaDeg, setLastObjectHandleRotateDeltaDeg] = useState<number | null>(null);
@@ -1963,6 +2258,9 @@ export default function ThreeRoomLab({
     (requestedUrl: string) => {
       const trimmedRequestedUrl = requestedUrl.trim();
       const trimmedCurrentRoomImageUrl = roomImageUrl.trim();
+      if (trimmedRequestedUrl !== trimmedCurrentRoomImageUrl) {
+        supersedeAfcLiveAttemptForLoadChange();
+      }
       if (!trimmedRequestedUrl) {
         setImageLoadState("idle");
         setImageIntrinsicSize(null);
@@ -1985,7 +2283,7 @@ export default function ThreeRoomLab({
       setImageIntrinsicSize(null);
       setLoadedImageUrl(null);
     },
-    [imageLoadState, isRoomImageReadyForUrl, roomImageUrl]
+    [imageLoadState, isRoomImageReadyForUrl, roomImageUrl, supersedeAfcLiveAttemptForLoadChange]
   );
 
   const frameSizeForImageSpace = useMemo<ImageFrameSize | null>(() => {
@@ -2000,6 +2298,16 @@ export default function ThreeRoomLab({
     return { width: rendererSize.width, height: rendererSize.height };
   }, [rendererSize.height, rendererSize.width]);
 
+  const afcMainViewportProjection = useMemo(
+    () => projectAfcViewportEvidence(
+      afcViewportEvidence,
+      qualifiedImageBasis?.basisFingerprint ?? null,
+      imageIntrinsicSize,
+      frameSizeForImageSpace
+    ),
+    [afcViewportEvidence, frameSizeForImageSpace, imageIntrinsicSize, qualifiedImageBasis]
+  );
+
   const calibratedReadOnlyProjectionCamera = useMemo<THREE.PerspectiveCamera | null>(() => {
     if (!isCalibratedCameraActive || !calibratedCameraSnapshot || !frameSizeForImageSpace) return null;
     const result = buildCalibratedReadOnlyProjectionCamera({
@@ -2012,6 +2320,10 @@ export default function ThreeRoomLab({
     return result.ok ? result.camera : null;
   }, [calibratedCameraSnapshot, frameSizeForImageSpace, isCalibratedCameraActive]);
 
+  // Generic UI-safe support projection. Wall and Ceiling keep the pre-CP1A
+  // clamped behavior: their derived container polygons stay inside [0,1], so
+  // their handles stay reachable without any boundary-proxy presentation.
+  // Floor authority paths must NOT use these.
   const projectContainerPolygonToSource = useCallback(
     (polygon: FloorPoint[]): FloorPoint[] | null => {
       if (!imageIntrinsicSize || !frameSizeForImageSpace) return null;
@@ -2028,6 +2340,42 @@ export default function ThreeRoomLab({
       if (!imageIntrinsicSize || !frameSizeForImageSpace) return null;
       const projected = polygon
         .map((point) => sourceNormToContainerNorm(point, imageIntrinsicSize, frameSizeForImageSpace))
+        .filter((point): point is FloorPoint => point !== null);
+      return projected.length === polygon.length ? projected : null;
+    },
+    [frameSizeForImageSpace, imageIntrinsicSize]
+  );
+
+  // AFC-CP1A: the canonical FLOOR-ONLY source/container projection pair. These
+  // are authority transforms, so they use the lossless unclamped helpers. A
+  // clamped round trip here silently rewrote untouched source corners whenever
+  // the image aspect differed from the frame aspect.
+  //
+  // Truthful derived Floor container coordinates may fall outside [0,1]; the
+  // Floor handle layers render a presentation-only boundary proxy for those.
+  const projectFloorContainerPolygonToSource = useCallback(
+    (polygon: FloorPoint[]): FloorPoint[] | null => {
+      if (!imageIntrinsicSize || !frameSizeForImageSpace) return null;
+      const projected = polygon
+        .map((point) => {
+          const source = containerNormToSourceNormUnclamped(point, imageIntrinsicSize, frameSizeForImageSpace);
+          // Remove one-ULP noise around a semantic image boundary so an
+          // untouched boundary corner stays exactly 0 or 1 and scene-v1
+          // persistence still accepts it. Not a clamp: a genuinely off-frame
+          // coordinate is preserved verbatim.
+          return source ? canonicalizeSourceUnitBoundaryPoint(source) : null;
+        })
+        .filter((point): point is FloorPoint => point !== null);
+      return projected.length === polygon.length ? projected : null;
+    },
+    [frameSizeForImageSpace, imageIntrinsicSize]
+  );
+
+  const projectFloorSourcePolygonToContainer = useCallback(
+    (polygon: FloorPoint[]): FloorPoint[] | null => {
+      if (!imageIntrinsicSize || !frameSizeForImageSpace) return null;
+      const projected = polygon
+        .map((point) => sourceNormToContainerNormUnclamped(point, imageIntrinsicSize, frameSizeForImageSpace))
         .filter((point): point is FloorPoint => point !== null);
       return projected.length === polygon.length ? projected : null;
     },
@@ -2084,9 +2432,11 @@ export default function ThreeRoomLab({
     activeSupportPointDragRef.current = null;
     supportPointDragMovedRef.current = false;
   };
+  finalizeActiveSupportPointDragRef.current = finalizeActiveSupportPointDrag;
 
   const restoreSupportPointUndoSnapshot = (snapshot: SupportPointUndoSnapshot) => {
     if (snapshot.kind === "floor") {
+      invalidatePerspectiveAdjustSession();
       setFloorPolygon(snapshot.floorPolygon.map((point) => ({ x: point.x, y: point.y })));
       setSourceNormalizedFloorPolygon(snapshot.sourceNormalizedFloorPolygon.map((point) => ({ x: point.x, y: point.y })));
       setFloorPolygonAuthorityEligible(snapshot.floorPolygonAuthorityEligible);
@@ -2094,6 +2444,14 @@ export default function ThreeRoomLab({
       setFloorSupportReviewStatus(snapshot.reviewStatus);
       setFloorSupportSource(snapshot.source);
       setFloorSupportImageBasis(snapshot.imageBasis);
+      clearVerifiedAfcFloorCameraBinding();
+      if (calibratedCameraActiveRef.current) {
+        calibratedCameraActiveRef.current = false;
+        deactivateCalibratedCameraMode();
+        setLastCalibratedCameraAutoRevertReason(
+          "reverted — Floor Undo changed the authority polygon"
+        );
+      }
       return;
     }
     if (snapshot.kind === "ceiling") {
@@ -2154,54 +2512,6 @@ export default function ThreeRoomLab({
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, []);
 
-  const applyContainerFloorPolygon = useCallback(
-    (
-      polygon: FloorPoint[],
-      review?: { status: SupportReviewStatus; source: SupportSource }
-    ) => {
-      setFloorPolygon(polygon);
-      const sourcePolygon = projectContainerPolygonToSource(polygon);
-      if (sourcePolygon && sourcePolygon.length >= 3) {
-        setSourceNormalizedFloorPolygon(sourcePolygon);
-        setFloorPolygonAuthorityEligible(true);
-        if (review) {
-          setFloorSupportReviewStatus(review.status);
-          setFloorSupportSource(review.source);
-          setFloorSupportImageBasis(qualifiedImageBasis);
-        }
-        const current = supportPointUndoSnapshotsRef.current?.floor;
-        if (current) {
-          updateActiveSupportPointUndoSnapshot({
-            kind: "floor",
-            floorPolygon: polygon.map((point) => ({ x: point.x, y: point.y })),
-            sourceNormalizedFloorPolygon: sourcePolygon.map((point) => ({ x: point.x, y: point.y })),
-            floorPolygonAuthorityEligible: true,
-            floorPolygonAuthorityKey: buildFloorPolygonAuthorityKey(polygon),
-            reviewStatus: review?.status ?? current.reviewStatus,
-            source: review?.source ?? current.source,
-            imageBasis: review ? qualifiedImageBasis : current.imageBasis,
-          });
-        }
-      } else {
-        const current = supportPointUndoSnapshotsRef.current?.floor;
-        if (current) {
-          updateActiveSupportPointUndoSnapshot({
-            ...current,
-            floorPolygon: polygon.map((point) => ({ x: point.x, y: point.y })),
-            floorPolygonAuthorityKey: buildFloorPolygonAuthorityKey(polygon),
-          });
-        }
-      }
-    },
-    [projectContainerPolygonToSource, qualifiedImageBasis, updateActiveSupportPointUndoSnapshot]
-  );
-
-  useEffect(() => {
-    const projectedContainer = projectSourcePolygonToContainer(sourceNormalizedFloorPolygon);
-    if (!projectedContainer) return;
-    setFloorPolygon((prev) => (floorPolygonsEqual(prev, projectedContainer) ? prev : projectedContainer));
-  }, [projectSourcePolygonToContainer, sourceNormalizedFloorPolygon]);
-
   useEffect(() => {
     const trimmedUrl = roomImageUrl.trim();
     if (!isRoomImageReadyForUrl(trimmedUrl) || !imageIntrinsicSize) {
@@ -2216,11 +2526,14 @@ export default function ThreeRoomLab({
 
     const run = async () => {
       try {
+        const serverImageUrl = trimmedUrl.startsWith("/")
+          ? new URL(trimmedUrl, window.location.origin).toString()
+          : trimmedUrl;
         const response = await fetch("/api/admin/3d-room-lab/calibration/qualify-basis", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            imageUrl: trimmedUrl,
+            imageUrl: serverImageUrl,
             browserDimensions: {
               width: imageIntrinsicSize.width,
               height: imageIntrinsicSize.height,
@@ -2249,6 +2562,162 @@ export default function ThreeRoomLab({
     void run();
   }, [imageIntrinsicSize, isRoomImageReadyForUrl, roomImageUrl]);
 
+  // Browser dimensions and the qualified basis are only eligibility signals.
+  // UI2A refetches and verifies authoritative bytes on the server before it
+  // can write an Original capture.
+  const afcUi2aCurrentImage = useMemo<AfcUi2aCurrentImageDescriptor | null>(() => {
+    const imageUrl = roomImageUrl.trim();
+    if (
+      !imageUrl ||
+      !isRoomImageReadyForUrl(imageUrl) ||
+      !imageIntrinsicSize ||
+      !qualifiedImageBasis ||
+      basisQualificationStatus !== "qualified" ||
+      !qualifiedSourceUrlMatchesRoomImage(
+        qualifiedImageBasis.sourceImageUrl,
+        imageUrl
+      ) ||
+      qualifiedImageBasis.decodedWidth !== imageIntrinsicSize.width ||
+      qualifiedImageBasis.decodedHeight !== imageIntrinsicSize.height
+    ) {
+      return null;
+    }
+    return Object.freeze({
+      contractVersion: "afc-ui2a-current-image/v1",
+      imageUrl,
+      expectedFingerprint: qualifiedImageBasis.basisFingerprint,
+      expectedWidth: imageIntrinsicSize.width,
+      expectedHeight: imageIntrinsicSize.height,
+      qualificationStatus: basisQualificationStatus,
+    });
+  }, [basisQualificationStatus, imageIntrinsicSize, isRoomImageReadyForUrl, qualifiedImageBasis, roomImageUrl]);
+
+  // A narrow, current basis receipt for the AFC Floor qualifier. This remains
+  // null while the room image is loading, stale, or otherwise unqualified.
+  const afcVerifiedFloorLiveBasis = useMemo<AfcQualifiedLiveImageBasis | null>(() => {
+    const imageUrl = roomImageUrl.trim();
+    if (
+      !imageUrl ||
+      !isRoomImageReadyForUrl(imageUrl) ||
+      !imageIntrinsicSize ||
+      !qualifiedImageBasis ||
+      basisQualificationStatus !== "qualified" ||
+      !qualifiedSourceUrlMatchesRoomImage(
+        qualifiedImageBasis.sourceImageUrl,
+        imageUrl
+      ) ||
+      qualifiedImageBasis.decodedWidth !== imageIntrinsicSize.width ||
+      qualifiedImageBasis.decodedHeight !== imageIntrinsicSize.height
+    ) {
+      return null;
+    }
+    return Object.freeze({
+      basisFingerprint: qualifiedImageBasis.basisFingerprint,
+      decodedWidth: qualifiedImageBasis.decodedWidth,
+      decodedHeight: qualifiedImageBasis.decodedHeight,
+    });
+  }, [basisQualificationStatus, imageIntrinsicSize, isRoomImageReadyForUrl, qualifiedImageBasis, roomImageUrl]);
+  afcVerifiedFloorLiveBasisRef.current = afcVerifiedFloorLiveBasis;
+  qualifiedImageBasisRef.current = qualifiedImageBasis;
+
+  const matchingAfcCertifiedEmptyPackages = useMemo(
+    () => afcCertifiedEmptyPackages.filter(
+      (entry) => entry.original.sha256 === qualifiedImageBasis?.basisFingerprint
+    ),
+    [afcCertifiedEmptyPackages, qualifiedImageBasis?.basisFingerprint]
+  );
+  const selectedAfcCertifiedEmptyPackage = useMemo(
+    () => matchingAfcCertifiedEmptyPackages.find(
+      (entry) => entry.packageId === afcCertifiedEmptyPackageId
+    ) ?? null,
+    [afcCertifiedEmptyPackageId, matchingAfcCertifiedEmptyPackages]
+  );
+  const refreshAfcCertifiedEmptyPackages = useCallback(async () => {
+    if (
+      !afcUi2aPreparationEnabled ||
+      !/^[a-z][a-z0-9-]{0,63}$/.test(afcCertifiedEmptyRoomId)
+    ) {
+      setAfcCertifiedEmptyPackages([]);
+      setAfcCertifiedEmptyPackageId(null);
+      setAfcCertifiedEmptyInventoryStatus("failed");
+      return;
+    }
+    setAfcCertifiedEmptyInventoryStatus("loading");
+    setAfcCertifiedEmptyPackageId(null);
+    try {
+      const response = await fetch(
+        `/api/admin/3d-room-lab/afc-ui2a/packages?roomLabel=${encodeURIComponent(afcCertifiedEmptyRoomId)}`,
+        { cache: "no-store" }
+      );
+      const body: unknown = await response.json().catch(() => null);
+      if (
+        !response.ok ||
+        !body ||
+        typeof body !== "object" ||
+        (body as { status?: unknown }).status !== "inventory" ||
+        !Array.isArray((body as { packages?: unknown }).packages)
+      ) {
+        setAfcCertifiedEmptyPackages([]);
+        setAfcCertifiedEmptyInventoryStatus("failed");
+        return;
+      }
+      const packages = (body as { packages: unknown[] }).packages.flatMap((entry) => {
+        if (
+          !entry ||
+          typeof entry !== "object" ||
+          typeof (entry as { packageId?: unknown }).packageId !== "string" ||
+          typeof (entry as { roomId?: unknown }).roomId !== "string" ||
+          typeof (entry as { receipt?: { fileName?: unknown; sha256?: unknown } }).receipt?.fileName !== "string" ||
+          typeof (entry as { receipt?: { fileName?: unknown; sha256?: unknown } }).receipt?.sha256 !== "string" ||
+          typeof (entry as { original?: { sha256?: unknown } }).original?.sha256 !== "string" ||
+          typeof (entry as { emptyRoomAssist?: { sha256?: unknown } }).emptyRoomAssist?.sha256 !== "string"
+        ) {
+          return [];
+        }
+        const value = entry as AfcSr1CertifiedPreparedPackage;
+        return [value];
+      });
+      setAfcCertifiedEmptyPackages(packages);
+      setAfcCertifiedEmptyInventoryStatus("loaded");
+    } catch {
+      setAfcCertifiedEmptyPackages([]);
+      setAfcCertifiedEmptyInventoryStatus("failed");
+    }
+  }, [afcCertifiedEmptyRoomId, afcUi2aPreparationEnabled]);
+
+  const setCurrentVerifiedAfcFloorCameraBinding = useCallback(
+    (binding: VerifiedAfcFloorCameraBinding | null) => {
+      verifiedAfcFloorCameraBindingRef.current = binding;
+      setVerifiedAfcFloorCameraBinding(binding);
+    },
+    []
+  );
+
+  const clearVerifiedAfcFloorCameraBinding = useCallback(() => {
+    setCurrentVerifiedAfcFloorCameraBinding(null);
+    setAfcVerifiedCameraApplyStatus({ kind: "idle" });
+  }, [setCurrentVerifiedAfcFloorCameraBinding]);
+
+  const establishVerifiedAfcFloorCameraBindingAfterFloorApply = useCallback(
+    (outcome: "applied" | "no_change", liveBasis: AfcQualifiedLiveImageBasis | null) => {
+      const established = establishVerifiedAfcFloorCameraBinding({
+        outcome,
+        previousGeneration: verifiedAfcFloorCameraBindingGenerationRef.current,
+        floorAuthorityKey: floorPolygonAuthorityKeyRef.current,
+        liveBasis,
+      });
+      if (!established) {
+        clearVerifiedAfcFloorCameraBinding();
+        return false;
+      }
+      verifiedAfcFloorCameraBindingGenerationRef.current = established.nextGeneration;
+      setAfcVerifiedCameraApplyStatus({ kind: "idle" });
+      setCurrentVerifiedAfcFloorCameraBinding(established.binding);
+      return true;
+    },
+    [clearVerifiedAfcFloorCameraBinding, setCurrentVerifiedAfcFloorCameraBinding]
+  );
+
   const cancelPendingCalibrationRestoreAfterManualGeometryChange = useCallback(() => {
     if (!pendingCalibrationRestore) return;
     calibrationRestoreRequestIdRef.current += 1;
@@ -2274,8 +2743,10 @@ export default function ThreeRoomLab({
   }, []);
 
   const deactivateCalibratedCameraMode = useCallback((options?: { clearAutoRevertReason?: boolean }) => {
+    invalidateAfcCameraFreeze();
     setIsCalibratedCameraActive(false);
     setCalibratedCameraSnapshot(null);
+    setAfcVerifiedCameraApplyStatus({ kind: "idle" });
     calibratedMoveDragPointerIdRef.current = null;
     calibratedMoveGrabOffsetRef.current = null;
     setLastCalibratedMoveStatus("none");
@@ -2296,7 +2767,920 @@ export default function ThreeRoomLab({
     if (options?.clearAutoRevertReason) {
       setLastCalibratedCameraAutoRevertReason(null);
     }
-  }, [restoreDepthScalingAfterCalibratedMode]);
+  }, [invalidateAfcCameraFreeze, restoreDepthScalingAfterCalibratedMode]);
+
+  // Every authority-eligible runtime Floor mutation reaches this one commit.
+  // Import, draft, undo, and calibrated-camera restore remain specialized
+  // installations because they must retain persisted metadata exactly.
+  const commitFloorAuthorityMutation = useCallback(
+    (
+      plan: Extract<FloorSourceAuthorityPlan, { ok: true }>,
+      review: { status: SupportReviewStatus; source: SupportSource },
+      options: { captureUndo?: "none" | "active_drag" | "programmatic" } & AfcPerspectiveFloorCommitOptions = {}
+    ) => {
+      if (
+        afcLiveAbortControllerRef.current !== null &&
+        afcLiveApplyingResultRef.current === null
+      ) {
+        afcLiveAbortControllerRef.current.abort();
+        afcLiveAbortControllerRef.current = null;
+        afcLiveAttemptIdRef.current = null;
+        setAfcLiveAnalyzeStatus({
+          kind: "failed",
+          attemptId: null,
+          reason: "AFC analysis was superseded by a Floor authority change.",
+        });
+      }
+      const previousAuthorityKey = floorPolygonAuthorityKeyRef.current;
+      const sourcePolygon = plan.sourcePolygon.map((point) => ({ x: point.x, y: point.y }));
+      const containerPolygon = plan.containerPolygon?.map((point) => ({ x: point.x, y: point.y })) ?? null;
+      const programmaticBefore = options.captureUndo === "programmatic"
+        ? supportPointUndoSnapshotsRef.current?.floor
+        : null;
+
+      setSourceNormalizedFloorPolygon(sourcePolygon);
+      if (containerPolygon) setFloorPolygon(containerPolygon);
+      setFloorPolygonAuthorityEligible(true);
+      setFloorSupportReviewStatus(review.status);
+      setFloorSupportSource(review.source);
+      setFloorSupportImageBasis(qualifiedImageBasis);
+      floorPolygonAuthorityKeyRef.current = plan.authorityKey;
+
+      const floorAuthorityChanged = shouldClearVerifiedAfcFloorCameraBindingForFloorAuthorityChange(
+        previousAuthorityKey,
+        plan.authorityKey
+      );
+      if (floorAuthorityChanged) {
+        clearVerifiedAfcFloorCameraBinding();
+        // A pending restore belongs to the pre-mutation source authority and
+        // must not overwrite a later manual or programmatic Floor update.
+        cancelPendingCalibrationRestoreAfterManualGeometryChange();
+      }
+      if (shouldInvalidateAfcPerspectiveSessionForFloorCommit(options)) {
+        invalidatePerspectiveAdjustSession();
+      }
+
+      if (options.captureUndo === "active_drag") {
+        const current = supportPointUndoSnapshotsRef.current?.floor;
+        if (current) {
+          updateActiveSupportPointUndoSnapshot({
+            kind: "floor",
+            floorPolygon: (containerPolygon ?? current.floorPolygon).map((point) => ({ x: point.x, y: point.y })),
+            sourceNormalizedFloorPolygon: sourcePolygon,
+            floorPolygonAuthorityEligible: true,
+            floorPolygonAuthorityKey: plan.authorityKey,
+            reviewStatus: review.status,
+            source: review.source,
+            imageBasis: qualifiedImageBasis,
+          });
+        }
+      }
+      if (programmaticBefore) {
+        const after: FloorSupportPointUndoSnapshot = {
+          kind: "floor",
+          floorPolygon: (containerPolygon ?? programmaticBefore.floorPolygon).map((point) => ({
+            x: point.x,
+            y: point.y,
+          })),
+          sourceNormalizedFloorPolygon: sourcePolygon,
+          floorPolygonAuthorityEligible: true,
+          floorPolygonAuthorityKey: plan.authorityKey,
+          reviewStatus: review.status,
+          source: review.source,
+          imageBasis: qualifiedImageBasis,
+        };
+        const nextRecord = createSupportPointProgrammaticUndoRecord(
+          "floor",
+          programmaticBefore,
+          buildSupportPointUndoSnapshotKey(programmaticBefore),
+          buildSupportPointUndoSnapshotKey(after),
+          supportPointUndoRecordRef.current
+        );
+        if (nextRecord !== supportPointUndoRecordRef.current) {
+          setCompletedSupportPointUndoRecord(nextRecord);
+        }
+      }
+
+      if (
+        floorAuthorityChanged &&
+        calibratedCameraActiveRef.current
+      ) {
+        // Keep repeated pointer events from observing the pre-render active
+        // ref and producing a second mutation-side invalidation.
+        calibratedCameraActiveRef.current = false;
+        deactivateCalibratedCameraMode();
+        setLastCalibratedCameraAutoRevertReason(
+          "reverted — manual floor adjustment changed the authority polygon"
+        );
+      }
+      return true;
+    },
+    [
+      cancelPendingCalibrationRestoreAfterManualGeometryChange,
+      clearVerifiedAfcFloorCameraBinding,
+      deactivateCalibratedCameraMode,
+      invalidatePerspectiveAdjustSession,
+      qualifiedImageBasis,
+      updateActiveSupportPointUndoSnapshot,
+    ]
+  );
+
+  const applyContainerFloorPolygon = useCallback(
+    (
+      polygon: readonly FloorPoint[],
+      review: { status: SupportReviewStatus; source: SupportSource },
+      options?: { captureUndo?: "none" | "active_drag" | "programmatic" } & AfcPerspectiveFloorCommitOptions
+    ): boolean => {
+      const plan = planContainerFloorPolygon({
+        containerPolygon: polygon,
+        projectToSource: (containerPolygon) =>
+          projectFloorContainerPolygonToSource(containerPolygon.map((point) => ({ x: point.x, y: point.y }))),
+      });
+      if (!plan.ok) return false;
+      return commitFloorAuthorityMutation(plan, review, options);
+    },
+    [commitFloorAuthorityMutation, projectFloorContainerPolygonToSource]
+  );
+
+  // Source-first programmatic intake is intentionally generic: callers supply
+  // only existing room-support provenance and never AFC/provider concepts.
+  const applySourceNormalizedFloorPolygon = useCallback(
+    (
+      points: readonly FloorPoint[],
+      review: { status: SupportReviewStatus; source: SupportSource },
+      options?: { captureUndo?: "none" | "active_drag" | "programmatic" } & AfcPerspectiveFloorCommitOptions
+    ): "applied" | "no_change" | "rejected" => {
+      const plan = planSourceNormalizedFloorPolygon({
+        points,
+        projectToContainer: (sourcePolygon) =>
+          projectFloorSourcePolygonToContainer(sourcePolygon.map((point) => ({ x: point.x, y: point.y }))),
+      });
+      if (!plan.ok) return "rejected";
+      if (plan.authorityKey === floorPolygonAuthorityKeyRef.current) return "no_change";
+      return commitFloorAuthorityMutation(plan, review, options) ? "applied" : "rejected";
+    },
+    [commitFloorAuthorityMutation, projectFloorSourcePolygonToContainer]
+  );
+
+  const handleReplayValidAfcViewModelChange = useCallback(
+    (viewModel: AfcProposalOverlayViewModel | null) => {
+      afcReplayValidViewModelRef.current = viewModel;
+    },
+    []
+  );
+
+  const realizeAfcLabGeometry = useCallback((input: {
+    sourceNormalizedPolygon: readonly [FloorPoint, FloorPoint, FloorPoint, FloorPoint];
+    referenceDepthM: number;
+    acceptanceBasis: Readonly<{ basisFingerprint: string; decodedWidth: number; decodedHeight: number; orientation: 1 }>;
+    activeCameraPolicy: "block" | "replace";
+    captureUndo: "none" | "programmatic";
+    preservePerspectiveSession: boolean;
+  }): AfcFixedSeamCalibrationSuccess | null => {
+    afcLastRealizationFailureRef.current = null;
+    if (input.activeCameraPolicy === "block" && isCalibratedCameraActive) {
+      afcLastRealizationFailureRef.current = "Calibrated camera already active.";
+      setAfcLabApplyStatus({
+        kind: "blocked",
+        reason: "Calibrated camera already active.",
+      });
+      return null;
+    }
+    if (pendingScanAndApplyFov !== null || pendingAfcLabCameraApply !== null) return null;
+    const liveBasis = afcVerifiedFloorLiveBasisRef.current;
+    if (
+      !liveBasis ||
+      liveBasis.basisFingerprint !== input.acceptanceBasis.basisFingerprint ||
+      liveBasis.decodedWidth !== input.acceptanceBasis.decodedWidth ||
+      liveBasis.decodedHeight !== input.acceptanceBasis.decodedHeight ||
+      !qualifiedImageBasis ||
+      qualifiedImageBasis.encodedOrientation !== input.acceptanceBasis.orientation
+    ) {
+      afcLastRealizationFailureRef.current =
+        "AFC requires the exact qualified Original acceptance basis; the current image does not match.";
+      setAfcLabApplyStatus({
+        kind: "failed",
+        reason: "AFC requires the exact qualified Original acceptance basis; the current image does not match.",
+      });
+      return null;
+    }
+
+    const settle = settleAfcFixedSeamCalibrationWithRatioExtension({
+      sourceNormalizedPolygon: input.sourceNormalizedPolygon,
+      sourceImageSize: {
+        width: input.acceptanceBasis.decodedWidth,
+        height: input.acceptanceBasis.decodedHeight,
+      },
+      frameSize: { width: rendererSize.width, height: rendererSize.height },
+      referenceDepthM: input.referenceDepthM,
+    });
+    if (!settle.ok) {
+      const reason = `AFC settle failed closed: ${settle.reason}.`;
+      afcLastRealizationFailureRef.current = reason;
+      const liveResult = afcLiveApplyingResultRef.current;
+      if (liveResult) {
+        setAfcLiveSettleFailure({
+          attemptId: liveResult.attemptId,
+          reason,
+          settle,
+          sourceNormalizedPolygon: input.sourceNormalizedPolygon,
+          rawSourceNormalizedPolygon:
+            liveResult.geometry.rawSourceNormalizedPolygon,
+          originalImageSize: {
+            width: input.acceptanceBasis.decodedWidth,
+            height: input.acceptanceBasis.decodedHeight,
+          },
+          rendererSize: {
+            width: rendererSize.width,
+            height: rendererSize.height,
+          },
+          referenceDepthM: input.referenceDepthM,
+        });
+      }
+      setAfcLabApplyStatus({
+        kind: "failed",
+        reason,
+      });
+      return null;
+    }
+    if (!settle.applyObservability.available) {
+      afcLastRealizationFailureRef.current = "AFC settle is not Apply-safe.";
+      setAfcLabApplyStatus({
+        kind: "failed",
+        reason: "AFC settle is not Apply-safe.",
+      });
+      return null;
+    }
+
+    const floorOutcome = applySourceNormalizedFloorPolygon(
+      input.sourceNormalizedPolygon,
+      { status: "needs_review", source: "derived" },
+      { captureUndo: input.captureUndo, preservePerspectiveSession: input.preservePerspectiveSession }
+    );
+    if (floorOutcome === "rejected") {
+      afcLastRealizationFailureRef.current =
+        "AFC Floor Apply was rejected by the existing source-authority path.";
+      setAfcLabApplyStatus({
+        kind: "failed",
+        reason: "AFC Floor Apply was rejected by the existing source-authority path.",
+      });
+      return null;
+    }
+
+    const expectedFloorAuthorityKey = buildDurableSourceFloorAuthorityKey(input.sourceNormalizedPolygon);
+    if (floorPolygonAuthorityKeyRef.current !== expectedFloorAuthorityKey) {
+      afcLastRealizationFailureRef.current =
+        "AFC Floor Apply did not retain the expected source authority.";
+      setAfcLabApplyStatus({
+        kind: "failed",
+        reason: "AFC Floor Apply did not retain the expected source authority.",
+      });
+      return null;
+    }
+
+    // A changed Floor authority already deactivates calibrated mode inside its
+    // successful canonical commit. A no-change Perspective realization still
+    // needs a replacement camera, but only after Floor Apply is confirmed.
+    // This guarantees a rejected Floor Apply leaves the prior good camera up.
+    if (input.activeCameraPolicy === "replace" && (isCalibratedCameraActive || calibratedCameraActiveRef.current)) {
+      calibratedCameraActiveRef.current = false;
+      deactivateCalibratedCameraMode();
+    }
+
+    // This is deliberately a direct, un-clamped metric mapping. The caller
+    // supplies the explicit metric policy; settle has already rejected
+    // widths/depths outside the existing Lab limits.
+    setFloorMapping((previous) => ({
+      ...previous,
+      worldWidth: settle.worldWidthM,
+      worldDepth: settle.worldDepthM,
+    }));
+    setCameraPoseFovYDeg(settle.verticalFovDeg);
+
+    const token = afcLabCameraApplyTokenRef.current + 1;
+    afcLabCameraApplyTokenRef.current = token;
+    setAfcLabApplyStatus({ kind: "pending", settle });
+    setPendingAfcLabCameraApply({
+      token,
+      floorAuthorityKey: expectedFloorAuthorityKey,
+      basisFingerprint: input.acceptanceBasis.basisFingerprint,
+      decodedWidth: input.acceptanceBasis.decodedWidth,
+      decodedHeight: input.acceptanceBasis.decodedHeight,
+      worldWidthM: settle.worldWidthM,
+      worldDepthM: settle.worldDepthM,
+      verticalFovDeg: settle.verticalFovDeg,
+      frameWidth: rendererSize.width,
+      frameHeight: rendererSize.height,
+      settle,
+    });
+    return settle;
+  }, [
+    applySourceNormalizedFloorPolygon,
+    deactivateCalibratedCameraMode,
+    isCalibratedCameraActive,
+    pendingAfcLabCameraApply,
+    pendingScanAndApplyFov,
+    qualifiedImageBasis,
+    rendererSize.height,
+    rendererSize.width,
+  ]);
+
+  const handleApplyRoomCAfcLab = useCallback(() => {
+    // Preserve the original one-click contract: it does not become a generic
+    // re-apply button merely because Perspective Adjust can replace a session.
+    if (isCalibratedCameraActive) {
+      setAfcLabApplyStatus({
+        kind: "blocked",
+        reason: "Calibrated camera already active.",
+      });
+      return;
+    }
+    if (!ROOM_C_AFC_LAB_GEOMETRY_CANDIDATE.ok) {
+      setAfcLabApplyStatus({
+        kind: "failed",
+        reason: `Room C AFC control is unavailable: ${ROOM_C_AFC_LAB_GEOMETRY_CANDIDATE.reason}.`,
+      });
+      return;
+    }
+    // A fresh AFC attempt supersedes any old Perspective gesture, including a
+    // queued keyboard commit from either UI surface.
+    invalidatePerspectiveAdjustSession();
+    const geometry = ROOM_C_AFC_LAB_GEOMETRY_CANDIDATE.candidate;
+    const settle = realizeAfcLabGeometry({
+      sourceNormalizedPolygon: geometry.sourceNormalizedPolygon,
+      referenceDepthM: geometry.referenceDepthM,
+      acceptanceBasis: geometry.acceptanceBasis,
+      activeCameraPolicy: "block",
+      captureUndo: "programmatic",
+      preservePerspectiveSession: false,
+    });
+    if (!settle) return;
+    perspectivePreviewDeltaRef.current = 0;
+    const session: AfcPerspectiveAdjustSession = {
+      kind: "historical_fixed_seam_v1",
+      attemptId: "room-c-control",
+      resultId: "room-c-control",
+      rawSourceNormalizedPolygon: geometry.rawSourceNormalizedPolygon,
+      adjustableCorner: geometry.adjustableCorner,
+      referenceDepthM: geometry.referenceDepthM,
+      acceptanceBasis: geometry.acceptanceBasis,
+      baselineSeamT: geometry.baselineSeamT,
+      committedDeltaSeamT: 0,
+      previewDeltaSeamT: 0,
+      committedSeamT: geometry.baselineSeamT,
+      automaticSettle: settle,
+      adjustmentCount: 0,
+    };
+    perspectiveAdjustSessionRef.current = session;
+    setPerspectiveAdjustSession(session);
+  }, [invalidatePerspectiveAdjustSession, isCalibratedCameraActive, realizeAfcLabGeometry]);
+
+  const handleAnalyzeAndApplyLiveAfc = useCallback(async () => {
+    const basis = qualifiedImageBasisRef.current;
+    const imageUrl = roomImageUrl.trim();
+    const serverImageUrl = imageUrl.startsWith("/")
+      ? new URL(imageUrl, window.location.origin).toString()
+      : imageUrl;
+    if (
+      !basis ||
+      basisQualificationStatus !== "qualified" ||
+      !qualifiedSourceUrlMatchesRoomImage(basis.sourceImageUrl, imageUrl) ||
+      basis.encodedOrientation !== 1 ||
+      !isRoomImageReadyForUrl(imageUrl)
+    ) {
+      setAfcLiveAnalyzeStatus({
+        kind: "failed",
+        attemptId: null,
+        reason: "Load and qualify the current Original image before running AFC.",
+      });
+      return;
+    }
+    if (pendingAfcLabCameraApply !== null || pendingScanAndApplyFov !== null) {
+      setAfcLiveAnalyzeStatus({
+        kind: "failed",
+        attemptId: null,
+        reason: "Wait for the current camera transaction to finish.",
+      });
+      return;
+    }
+    if (
+      afcCertifiedEmptySource === "certified_prepared_package" &&
+      (!afcUi2aPreparationEnabled || !selectedAfcCertifiedEmptyPackage)
+    ) {
+      setAfcLiveAnalyzeStatus({
+        kind: "failed",
+        attemptId: null,
+        reason: "Select a verified prepared package for the current Original image.",
+      });
+      return;
+    }
+
+    invalidateAfcCameraFreeze();
+    afcLiveAbortControllerRef.current?.abort();
+    const controller = new AbortController();
+    afcLiveAbortControllerRef.current = controller;
+    const attemptId = `afc-${window.crypto.randomUUID()}`;
+    const labLoadGeneration = afcLiveLoadGenerationRef.current;
+    afcLiveAttemptIdRef.current = attemptId;
+    afcLiveApplyingResultRef.current = null;
+    setAfcLiveResult(null);
+    setAfcLiveSettleFailure(null);
+    setAfcLiveAnalyzeStatus({ kind: "analyzing", attemptId });
+
+    try {
+      const certifiedPackage = selectedAfcCertifiedEmptyPackage;
+      const certifiedMode =
+        afcCertifiedEmptySource === "certified_prepared_package" &&
+        certifiedPackage !== null;
+      const response = await fetch(
+        certifiedMode
+          ? "/api/admin/3d-room-lab/afc-sr1/live-analyze-certified-empty"
+          : "/api/admin/3d-room-lab/afc-sr1/live-analyze",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          signal: controller.signal,
+          body: JSON.stringify(
+            afcCertifiedEmptySource === "certified_prepared_package" &&
+            certifiedPackage !== null
+            ? {
+                attemptId,
+                sourceImageUrl: serverImageUrl,
+                sourceImageIdentity: {
+                  sha256: basis.basisFingerprint,
+                  decodedWidth: basis.decodedWidth,
+                  decodedHeight: basis.decodedHeight,
+                  orientation: 1,
+                },
+                labLoadGeneration,
+                referenceDepthM: floorMapping.worldDepth,
+                certifiedEmptyPackage: {
+                  roomId: certifiedPackage.roomId,
+                  packageId: certifiedPackage.packageId,
+                  receiptFileName: certifiedPackage.receipt.fileName,
+                  receiptSha256: certifiedPackage.receipt.sha256,
+                },
+              }
+            : {
+                attemptId,
+                sourceImageUrl: serverImageUrl,
+                sourceImageIdentity: {
+                  sha256: basis.basisFingerprint,
+                  decodedWidth: basis.decodedWidth,
+                  decodedHeight: basis.decodedHeight,
+                  orientation: 1,
+                },
+                labLoadGeneration,
+                referenceDepthM: floorMapping.worldDepth,
+              }),
+        }
+      );
+      const result = (await response.json()) as AfcSr1LiveProductResult;
+      if (
+        controller.signal.aborted ||
+        afcLiveAttemptIdRef.current !== attemptId ||
+        afcLiveLoadGenerationRef.current !== labLoadGeneration
+      ) {
+        return;
+      }
+      if (!response.ok) {
+        setAfcLiveAnalyzeStatus({
+          kind: "failed",
+          attemptId,
+          reason: "The AFC product request failed before analysis completed.",
+        });
+        return;
+      }
+      if (result.status === "degraded_evidence") {
+        setAfcLiveResult(result);
+        setAfcLiveAnalyzeStatus({
+          kind: "degraded",
+          attemptId,
+          reason: result.reason,
+        });
+        return;
+      }
+      if (result.status === "failed") {
+        setAfcLiveResult(result);
+        setAfcLiveAnalyzeStatus({
+          kind: "failed",
+          attemptId,
+          reason: result.detail,
+        });
+        return;
+      }
+
+      // This is the final synchronous gate immediately before the canonical
+      // Floor mutation in realizeAfcLabGeometry.
+      const currentBasis = qualifiedImageBasisRef.current;
+      const acceptance = validateAfcSr1LiveResultAcceptance(result, {
+        currentAttemptId: afcLiveAttemptIdRef.current,
+        labLoadGeneration: afcLiveLoadGenerationRef.current,
+        qualifiedBasis: currentBasis
+          ? {
+              basisFingerprint: currentBasis.basisFingerprint,
+              decodedWidth: currentBasis.decodedWidth,
+              decodedHeight: currentBasis.decodedHeight,
+              orientation: currentBasis.encodedOrientation,
+            }
+          : null,
+      });
+      if (!acceptance.accepted) {
+        setAfcLiveAnalyzeStatus({
+          kind: "failed",
+          attemptId,
+          reason: `AFC result was stale and was not applied (${acceptance.reason}).`,
+        });
+        return;
+      }
+
+      setAfcLiveResult(result);
+      setAfcLiveAnalyzeStatus({
+        kind: "applying",
+        attemptId,
+        mode: result.geometry.mode,
+      });
+      afcLiveApplyingResultRef.current = result;
+      const settle = realizeAfcLabGeometry({
+        sourceNormalizedPolygon: result.geometry.sourceNormalizedPolygon,
+        referenceDepthM: result.metric.referenceDepthM,
+        acceptanceBasis: result.geometry.acceptanceBasis,
+        activeCameraPolicy: "replace",
+        captureUndo: "programmatic",
+        preservePerspectiveSession: false,
+      });
+      if (!settle) {
+        afcLiveApplyingResultRef.current = null;
+        setAfcLiveAnalyzeStatus({
+          kind: "failed",
+          attemptId,
+          reason:
+            afcLastRealizationFailureRef.current ??
+            "AFC geometry was not accepted by the existing Lab realization sink.",
+        });
+        return;
+      }
+
+      if (
+        result.perspectiveAdjust.supported &&
+        result.perspectiveAdjust.mode === AFC_TILED_PERSPECTIVE_ADJUST_MODE &&
+        result.geometry.mode === "tiled-perspective-core"
+      ) {
+        const tiledPerspective = result.geometry.tiledPerspective;
+        const automaticPolygon = Object.freeze(
+          result.geometry.sourceNormalizedPolygon.map((point) =>
+            Object.freeze({ x: point.x, y: point.y })
+          )
+        ) as AfcTiledPerspectivePolygon;
+        const range = computeAfcTiledPerspectiveAdjustmentRange(automaticPolygon);
+        if (!range?.usable || !tiledPerspective) {
+          invalidatePerspectiveAdjustSession();
+        } else {
+          perspectivePreviewDeltaRef.current = 0;
+          const session: AfcTiledPerspectiveAdjustSession = {
+            kind: AFC_TILED_PERSPECTIVE_ADJUST_MODE,
+            attemptId: result.attemptId,
+            resultId: result.resultId,
+            labLoadGeneration: result.labLoadGeneration,
+            acceptanceBasis: result.geometry.acceptanceBasis,
+            referenceDepthM: result.metric.referenceDepthM,
+            automaticPolygon,
+            previewDelta: 0,
+            committedDelta: 0,
+            range,
+            tiledReaderVersion: tiledPerspective.readerVersion,
+            tiledBasisSha256: tiledPerspective.tiledBasis.sha256,
+            adjustmentCount: 0,
+          };
+          perspectiveAdjustSessionRef.current = session;
+          setPerspectiveAdjustSession(session);
+        }
+      } else if (
+        result.photoClass === "on_axis" ||
+        !result.perspectiveAdjust.supported
+      ) {
+        invalidatePerspectiveAdjustSession();
+      } else {
+        const baselineSeamT = result.geometry.baselineSeamT;
+        const adjustableCorner = result.geometry.adjustableCorner;
+        if (baselineSeamT === null || adjustableCorner === null) {
+          invalidatePerspectiveAdjustSession();
+        } else {
+          perspectivePreviewDeltaRef.current = 0;
+          const session: AfcPerspectiveAdjustSession = {
+            kind: "historical_fixed_seam_v1",
+            attemptId: result.attemptId,
+            resultId: result.resultId,
+            rawSourceNormalizedPolygon:
+              result.geometry.rawSourceNormalizedPolygon,
+            adjustableCorner,
+            referenceDepthM: result.metric.referenceDepthM,
+            acceptanceBasis: result.geometry.acceptanceBasis,
+            baselineSeamT,
+            committedDeltaSeamT: 0,
+            previewDeltaSeamT: 0,
+            committedSeamT: baselineSeamT,
+            automaticSettle: settle,
+            adjustmentCount: 0,
+          };
+          perspectiveAdjustSessionRef.current = session;
+          setPerspectiveAdjustSession(session);
+        }
+      }
+    } catch (error) {
+      if (
+        error instanceof DOMException &&
+        error.name === "AbortError"
+      ) {
+        return;
+      }
+      if (afcLiveAttemptIdRef.current === attemptId) {
+        setAfcLiveAnalyzeStatus({
+          kind: "failed",
+          attemptId,
+          reason: "AFC analysis could not be completed.",
+        });
+      }
+    } finally {
+      if (afcLiveAbortControllerRef.current === controller) {
+        afcLiveAbortControllerRef.current = null;
+      }
+    }
+  }, [
+    afcCertifiedEmptySource,
+    afcUi2aPreparationEnabled,
+    basisQualificationStatus,
+    floorMapping.worldDepth,
+    invalidateAfcCameraFreeze,
+    invalidatePerspectiveAdjustSession,
+    isRoomImageReadyForUrl,
+    pendingAfcLabCameraApply,
+    pendingScanAndApplyFov,
+    realizeAfcLabGeometry,
+    roomImageUrl,
+    selectedAfcCertifiedEmptyPackage,
+  ]);
+
+  const restorePerspectivePreviewToCommitted = useCallback(() => {
+    const current = perspectiveAdjustSessionRef.current;
+    if (!current) return;
+    const next: AfcPerspectiveAdjustSession = current.kind === AFC_TILED_PERSPECTIVE_ADJUST_MODE
+      ? { ...current, previewDelta: current.committedDelta }
+      : { ...current, previewDeltaSeamT: current.committedDeltaSeamT };
+    perspectivePreviewDeltaRef.current = next.kind === AFC_TILED_PERSPECTIVE_ADJUST_MODE
+      ? next.previewDelta
+      : next.previewDeltaSeamT;
+    perspectiveAdjustSessionRef.current = next;
+    setPerspectiveAdjustSession(next);
+  }, []);
+
+  const commitPerspectiveAdjust = useCallback((requestedDelta: number) => {
+    const session = perspectiveAdjustSessionRef.current;
+    if (!session || pendingAfcLabCameraApply !== null) return;
+    if (session.kind === AFC_TILED_PERSPECTIVE_ADJUST_MODE) {
+      const basis = qualifiedImageBasisRef.current;
+      if (
+        afcLiveAttemptIdRef.current !== session.attemptId ||
+        afcLiveLoadGenerationRef.current !== session.labLoadGeneration ||
+        !basis ||
+        basis.basisFingerprint !== session.acceptanceBasis.basisFingerprint ||
+        basis.decodedWidth !== session.acceptanceBasis.decodedWidth ||
+        basis.decodedHeight !== session.acceptanceBasis.decodedHeight ||
+        basis.encodedOrientation !== session.acceptanceBasis.orientation
+      ) {
+        invalidatePerspectiveAdjustSession();
+        return;
+      }
+      const adjusted = buildAfcTiledPerspectiveAdjustPolygon(
+        session.automaticPolygon,
+        requestedDelta,
+        session.range
+      );
+      if (!adjusted.ok) {
+        restorePerspectivePreviewToCommitted();
+        return;
+      }
+      const settle = realizeAfcLabGeometry({
+        sourceNormalizedPolygon: adjusted.sourceNormalizedPolygon,
+        referenceDepthM: session.referenceDepthM,
+        acceptanceBasis: session.acceptanceBasis,
+        activeCameraPolicy: "replace",
+        captureUndo: "none",
+        preservePerspectiveSession: true,
+      });
+      if (!settle) {
+        restorePerspectivePreviewToCommitted();
+        return;
+      }
+      const current = perspectiveAdjustSessionRef.current;
+      if (
+        !current ||
+        current.kind !== AFC_TILED_PERSPECTIVE_ADJUST_MODE ||
+        current.attemptId !== session.attemptId ||
+        current.resultId !== session.resultId
+      ) {
+        return;
+      }
+      perspectivePreviewDeltaRef.current = adjusted.committedDelta;
+      const next: AfcTiledPerspectiveAdjustSession = {
+        ...current,
+        committedDelta: adjusted.committedDelta,
+        previewDelta: adjusted.committedDelta,
+        adjustmentCount: current.adjustmentCount + 1,
+      };
+      perspectiveAdjustSessionRef.current = next;
+      setPerspectiveAdjustSession(next);
+      return;
+    }
+    const adjusted = buildAfcPerspectiveAdjustCandidate({
+      rawSourceNormalizedPolygon: session.rawSourceNormalizedPolygon,
+      baselineSeamT: session.baselineSeamT,
+      requestedDeltaSeamT: requestedDelta,
+      adjustableCorner: session.adjustableCorner,
+    });
+    if (!adjusted.ok) {
+      setAfcLabApplyStatus({
+        kind: "failed",
+        reason: `Perspective Adjust was not applied: ${adjusted.reason}.`,
+      });
+      restorePerspectivePreviewToCommitted();
+      return;
+    }
+    // The settle above is deliberately complete before the realization helper
+    // replaces calibrated mode and writes any durable Floor authority.
+    const settle = realizeAfcLabGeometry({
+      sourceNormalizedPolygon: adjusted.candidate.sourceNormalizedPolygon,
+      referenceDepthM: session.referenceDepthM,
+      acceptanceBasis: session.acceptanceBasis,
+      activeCameraPolicy: "replace",
+      captureUndo: "none",
+      preservePerspectiveSession: true,
+    });
+    if (!settle) {
+      restorePerspectivePreviewToCommitted();
+      return;
+    }
+    perspectivePreviewDeltaRef.current = adjusted.candidate.committedDeltaSeamT;
+    const current = perspectiveAdjustSessionRef.current;
+    if (
+      !current ||
+      current.kind !== "historical_fixed_seam_v1" ||
+      current.baselineSeamT !== session.baselineSeamT
+    ) {
+      restorePerspectivePreviewToCommitted();
+      return;
+    }
+    const next: AfcHistoricalPerspectiveAdjustSession = {
+      ...current,
+      committedDeltaSeamT: adjusted.candidate.committedDeltaSeamT,
+      previewDeltaSeamT: adjusted.candidate.committedDeltaSeamT,
+      committedSeamT: adjusted.candidate.candidateSeamT,
+      adjustmentCount: current.adjustmentCount + 1,
+    };
+    perspectiveAdjustSessionRef.current = next;
+    setPerspectiveAdjustSession(next);
+  }, [
+    invalidatePerspectiveAdjustSession,
+    pendingAfcLabCameraApply,
+    realizeAfcLabGeometry,
+    restorePerspectivePreviewToCommitted,
+  ]);
+
+  const handlePerspectiveAdjustPreviewChange = useCallback((value: number) => {
+    const current = perspectiveAdjustSessionRef.current;
+    if (!current) return;
+    const preview = current.kind === AFC_TILED_PERSPECTIVE_ADJUST_MODE
+      ? clampAfcTiledPerspectiveDelta(value, current.range)
+      : clampAfcPerspectiveAdjustDelta(value);
+    if (preview === null) return;
+    perspectivePreviewDeltaRef.current = preview;
+    const next: AfcPerspectiveAdjustSession =
+      current.kind === AFC_TILED_PERSPECTIVE_ADJUST_MODE
+        ? { ...current, previewDelta: preview }
+        : { ...current, previewDeltaSeamT: preview };
+    perspectiveAdjustSessionRef.current = next;
+    setPerspectiveAdjustSession(next);
+  }, []);
+
+  const clearPerspectiveKeyboardCommitTimer = useCallback(() => {
+    if (perspectiveKeyboardCommitTimerRef.current !== null) {
+      clearTimeout(perspectiveKeyboardCommitTimerRef.current);
+      perspectiveKeyboardCommitTimerRef.current = null;
+    }
+  }, []);
+
+  const schedulePerspectiveKeyboardCommit = useCallback(() => {
+    clearPerspectiveKeyboardCommitTimer();
+    perspectiveKeyboardCommitTimerRef.current = setTimeout(() => {
+      perspectiveKeyboardCommitTimerRef.current = null;
+      commitPerspectiveAdjust(perspectivePreviewDeltaRef.current);
+    }, AFC_PERSPECTIVE_ADJUST_KEYBOARD_DEBOUNCE_MS);
+  }, [clearPerspectiveKeyboardCommitTimer, commitPerspectiveAdjust]);
+
+  const handlePerspectiveAdjustRangeChange = useCallback((event: ReactChangeEvent<HTMLInputElement>) => {
+    handlePerspectiveAdjustPreviewChange(Number(event.currentTarget.value));
+  }, [handlePerspectiveAdjustPreviewChange]);
+
+  const handlePerspectiveAdjustPointerUp = useCallback((event: PointerEvent<HTMLInputElement>) => {
+    clearPerspectiveKeyboardCommitTimer();
+    commitPerspectiveAdjust(Number(event.currentTarget.value));
+  }, [clearPerspectiveKeyboardCommitTimer, commitPerspectiveAdjust]);
+
+  const handlePerspectiveAdjustPointerCancel = useCallback(() => {
+    clearPerspectiveKeyboardCommitTimer();
+    restorePerspectivePreviewToCommitted();
+  }, [clearPerspectiveKeyboardCommitTimer, restorePerspectivePreviewToCommitted]);
+
+  const handlePerspectiveAdjustKeyDown = useCallback((event: ReactKeyboardEvent<HTMLInputElement>) => {
+    if (
+      event.key === "ArrowLeft" ||
+      event.key === "ArrowRight" ||
+      event.key === "ArrowUp" ||
+      event.key === "ArrowDown" ||
+      event.key === "Home" ||
+      event.key === "End" ||
+      event.key === "PageUp" ||
+      event.key === "PageDown"
+    ) {
+      schedulePerspectiveKeyboardCommit();
+    }
+  }, [schedulePerspectiveKeyboardCommit]);
+
+  const handlePerspectiveAdjustReset = useCallback(() => {
+    clearPerspectiveKeyboardCommitTimer();
+    // Do not move the thumb to Automatic optimistically: commit owns the
+    // transition, so a failed reset remains truthful to committed geometry.
+    commitPerspectiveAdjust(0);
+  }, [clearPerspectiveKeyboardCommitTimer, commitPerspectiveAdjust]);
+
+  const perspectiveAdjustControlProps = {
+    previewDelta: perspectiveAdjustSession?.kind === AFC_TILED_PERSPECTIVE_ADJUST_MODE
+      ? perspectiveAdjustSession.previewDelta
+      : perspectiveAdjustSession?.previewDeltaSeamT ?? 0,
+    committedDelta: perspectiveAdjustSession?.kind === AFC_TILED_PERSPECTIVE_ADJUST_MODE
+      ? perspectiveAdjustSession.committedDelta
+      : perspectiveAdjustSession?.committedDeltaSeamT ?? 0,
+    minDelta: perspectiveAdjustSession?.kind === AFC_TILED_PERSPECTIVE_ADJUST_MODE
+      ? perspectiveAdjustSession.range.minDelta
+      : -AFC_PERSPECTIVE_ADJUST_DELTA_LIMIT,
+    maxDelta: perspectiveAdjustSession?.kind === AFC_TILED_PERSPECTIVE_ADJUST_MODE
+      ? perspectiveAdjustSession.range.maxDelta
+      : AFC_PERSPECTIVE_ADJUST_DELTA_LIMIT,
+    enabled:
+      perspectiveAdjustSession !== null &&
+      isCalibratedCameraActive &&
+      pendingAfcLabCameraApply === null &&
+      pendingScanAndApplyFov === null,
+    pending: pendingAfcLabCameraApply !== null,
+    onChange: handlePerspectiveAdjustRangeChange,
+    onPointerDown: clearPerspectiveKeyboardCommitTimer,
+    onPointerUp: handlePerspectiveAdjustPointerUp,
+    onPointerCancel: handlePerspectiveAdjustPointerCancel,
+    onKeyDown: handlePerspectiveAdjustKeyDown,
+    onReset: handlePerspectiveAdjustReset,
+  };
+
+  useEffect(() => clearPerspectiveKeyboardCommitTimer, [clearPerspectiveKeyboardCommitTimer]);
+
+  const handleApplyVerifiedAfcFloor = useCallback(
+    (request: VerifiedAfcFloorApplyRequest) => {
+      const currentLiveBasis = afcVerifiedFloorLiveBasisRef.current;
+      const revalidated = revalidateVerifiedAfcFloorApplyRequest({
+        request,
+        viewModel: afcReplayValidViewModelRef.current,
+        liveBasis: currentLiveBasis,
+      });
+      if (!revalidated.ok) {
+        setAfcVerifiedFloorApplyStatus({ kind: "invalidated_before_apply" });
+        return;
+      }
+      const outcome = applySourceNormalizedFloorPolygon(
+        revalidated.candidate.sourcePolygon,
+        {
+          status: revalidated.candidate.reviewStatus,
+          source: revalidated.candidate.source,
+        },
+        { captureUndo: "programmatic" }
+      );
+      if (outcome === "applied" || outcome === "no_change") {
+        establishVerifiedAfcFloorCameraBindingAfterFloorApply(outcome, currentLiveBasis);
+      }
+      setAfcVerifiedFloorApplyStatus(
+        outcome === "applied"
+          ? { kind: "applied" }
+          : outcome === "no_change"
+            ? { kind: "no_change" }
+            : { kind: "rejected" }
+      );
+    },
+    [applySourceNormalizedFloorPolygon, establishVerifiedAfcFloorCameraBindingAfterFloorApply]
+  );
+
+  useEffect(() => {
+    const projectedContainer = projectFloorSourcePolygonToContainer(sourceNormalizedFloorPolygon);
+    if (!projectedContainer) return;
+    setFloorPolygon((prev) => (floorPolygonsEqual(prev, projectedContainer) ? prev : projectedContainer));
+  }, [projectFloorSourcePolygonToContainer, sourceNormalizedFloorPolygon]);
 
   // Phase 2J-B3: single established calibrated-camera apply path. Both the manual
   // "Apply calibrated camera" button and the deferred restore effect funnel
@@ -2318,11 +3702,12 @@ export default function ThreeRoomLab({
         !qualifiedImageBasis ||
         sourceNormalizedFloorPolygon.length !== 4
       ) {
-        return;
+        return false;
       }
+      invalidateAfcCameraFreeze();
       captureAndNeutralizeDepthScalingForCalibratedMode();
       setLastCalibratedCameraAutoRevertReason(null);
-      setCalibratedCameraSnapshot({
+      const snapshot: CalibratedCameraSnapshot = {
         pose: candidate.pose,
         fovDeg,
         frameSize: candidate.frameSize,
@@ -2330,10 +3715,13 @@ export default function ThreeRoomLab({
         appliedAtIso: selectAppliedAtIso(identityMode, new Date().toISOString()),
         imageBasis: qualifiedImageBasis,
         sourceFloorPolygon: sourceNormalizedFloorPolygon.map((point) => ({ x: point.x, y: point.y })),
-      });
+      };
+      calibratedCameraSnapshotRef.current = snapshot;
+      setCalibratedCameraSnapshot(snapshot);
       setIsCalibratedCameraActive(true);
+      return true;
     },
-    [captureAndNeutralizeDepthScalingForCalibratedMode, qualifiedImageBasis, sourceNormalizedFloorPolygon]
+    [captureAndNeutralizeDepthScalingForCalibratedMode, invalidateAfcCameraFreeze, qualifiedImageBasis, sourceNormalizedFloorPolygon]
   );
 
   useEffect(() => {
@@ -2349,17 +3737,6 @@ export default function ThreeRoomLab({
     deactivateCalibratedCameraMode();
     setLastCalibratedCameraAutoRevertReason("reverted — frame changed; re-solve and re-qualify to restore authority");
   }, [calibratedCameraSnapshot, deactivateCalibratedCameraMode, isCalibratedCameraActive, rendererSize.height, rendererSize.width]);
-
-  useEffect(() => {
-    const nextKey = buildFloorPolygonAuthorityKey(floorPolygon);
-    if (!shouldDropAuthorityOnManualAdjustment(floorPolygonAuthorityKeyRef.current, nextKey)) return;
-    floorPolygonAuthorityKeyRef.current = nextKey;
-    if (!isCalibratedCameraActive) return;
-    deactivateCalibratedCameraMode();
-    setLastCalibratedCameraAutoRevertReason(
-      "reverted — manual floor adjustment changed the authority polygon"
-    );
-  }, [deactivateCalibratedCameraMode, floorPolygon, isCalibratedCameraActive]);
 
   useEffect(() => {
     if (!isCalibratedCameraActive) return;
@@ -2670,7 +4047,7 @@ export default function ThreeRoomLab({
       };
     }
 
-    const orderedCornersResult = orderFloorCorners(floorPolygon);
+    const orderedCornersResult = validateOrderedFloorCorners(floorPolygon);
     if (!orderedCornersResult.ok) {
       rows.push({
         label: "homography corner order",
@@ -2730,7 +4107,7 @@ export default function ThreeRoomLab({
 
     const sourceImagePointsPx: { x: number; y: number }[] = [];
     for (const point of orderedCornersResult.value.asArray) {
-      const pixels = normToPixels(point, frameSize);
+      const pixels = normToPixelsUnclamped(point, frameSize);
       if (!pixels) {
         rows.push({
           label: "homography solve",
@@ -2799,6 +4176,17 @@ export default function ThreeRoomLab({
     homographyMatrixForPlacement = solveResult.value;
     placementFallbackReason = "none";
 
+    if (showHomographyDebugOverlay) {
+      gridPolylinesNorm = buildFloorFitPreviewGridPolylines({
+        orderedCornersNorm: orderedCornersResult.value.asArray,
+        frameSize,
+        worldWidth: floorMapping.worldWidth,
+        worldDepth: floorMapping.worldDepth,
+        gridLineCount: 7,
+        samplesPerLine: 20,
+      });
+    }
+
     rows.push({
       label: "homography solve",
       value: `ok (${solveResult.confidence})${solveResult.note ? ` — ${solveResult.note}` : ""}`,
@@ -2830,84 +4218,6 @@ export default function ThreeRoomLab({
         label: "homography reprojection",
         value: `fail (${reprojection.reason})`,
       });
-    }
-
-    const buildGridPolylinesNorm = (
-      inverseHomography: HomographyMatrix,
-      renderSize: ImageFrameSize
-    ): FloorPoint[][] => {
-      const halfWidth = floorMapping.worldWidth / 2;
-      const halfDepth = floorMapping.worldDepth / 2;
-      const gridLineCount = 7;
-      const samplesPerLine = 20;
-      const lines: FloorPoint[][] = [];
-
-      const projectFloorToOverlayNorm = (x: number, z: number): FloorPoint | null => {
-        const projectedPx = applyHomography(inverseHomography, { x, y: z });
-        if (!projectedPx) return null;
-        if (!Number.isFinite(projectedPx.x) || !Number.isFinite(projectedPx.y)) return null;
-        const normalizedX = projectedPx.x / renderSize.width;
-        const normalizedY = projectedPx.y / renderSize.height;
-        if (
-          !Number.isFinite(normalizedX) ||
-          !Number.isFinite(normalizedY) ||
-          normalizedX < 0 ||
-          normalizedX > 1 ||
-          normalizedY < 0 ||
-          normalizedY > 1
-        ) {
-          return null;
-        }
-        return { x: normalizedX, y: normalizedY };
-      };
-
-      const pushLineSegments = (points: FloorPoint[]) => {
-        if (points.length >= 2) lines.push(points);
-      };
-
-      const sampleGridLine = (
-        axis: "x" | "z",
-        fixedValue: number,
-        variableMin: number,
-        variableMax: number
-      ) => {
-        let currentSegment: FloorPoint[] = [];
-        for (let sampleIndex = 0; sampleIndex <= samplesPerLine; sampleIndex += 1) {
-          const t = sampleIndex / samplesPerLine;
-          const variable = variableMin + (variableMax - variableMin) * t;
-          const point =
-            axis === "x"
-              ? projectFloorToOverlayNorm(fixedValue, variable)
-              : projectFloorToOverlayNorm(variable, fixedValue);
-          if (!point) {
-            pushLineSegments(currentSegment);
-            currentSegment = [];
-            continue;
-          }
-          currentSegment.push(point);
-        }
-        pushLineSegments(currentSegment);
-      };
-
-      for (let i = 0; i < gridLineCount; i += 1) {
-        const t = i / (gridLineCount - 1);
-        const x = -halfWidth + (halfWidth * 2) * t;
-        sampleGridLine("x", x, -halfDepth, halfDepth);
-      }
-      for (let i = 0; i < gridLineCount; i += 1) {
-        const t = i / (gridLineCount - 1);
-        const z = -halfDepth + (halfDepth * 2) * t;
-        sampleGridLine("z", z, -halfWidth, halfWidth);
-      }
-
-      return lines;
-    };
-
-    if (showHomographyDebugOverlay && frameSize) {
-      const inverseHomography = invertHomography(solveResult.value);
-      if (inverseHomography) {
-        gridPolylinesNorm = buildGridPolylinesNorm(inverseHomography, frameSize);
-      }
     }
 
     if (!lastAcceptedFloorClick) {
@@ -3198,6 +4508,8 @@ export default function ThreeRoomLab({
 
     return makeResult();
   }, [activeQuadSolvability, cameraPoseFovYDeg]);
+  cameraPoseApplyCandidateRef.current = cameraPoseDebug.applyCandidate;
+  cameraPoseUnavailableReasonRef.current = cameraPoseDebug.unavailableReason;
 
   const cameraPoseFovScanDebug = useMemo(() => {
     const rows: { label: string; value: string }[] = [];
@@ -3335,6 +4647,94 @@ export default function ThreeRoomLab({
   ]);
   calibratedCameraApplyStatusRef.current = calibratedCameraApplyStatus;
 
+  // Reactive durable source-floor key for render-time camera qualification.
+  const durableSourceFloorAuthorityKey = useMemo(
+    () => deriveDurableSourceFloorAuthorityKey(sourceNormalizedFloorPolygon),
+    [sourceNormalizedFloorPolygon]
+  );
+
+  const verifiedAfcCameraApplyQualification = useMemo(
+    () =>
+      qualifyVerifiedAfcCameraApply({
+        binding: verifiedAfcFloorCameraBinding,
+        currentFloorAuthorityKey: durableSourceFloorAuthorityKey,
+        currentLiveBasis: afcVerifiedFloorLiveBasis,
+        currentCameraApplyEvaluation: calibratedCameraApplyStatus,
+        hasApplyCandidate: cameraPoseDebug.applyCandidate !== null,
+      }),
+    [
+      afcVerifiedFloorLiveBasis,
+      calibratedCameraApplyStatus,
+      cameraPoseDebug.applyCandidate,
+      durableSourceFloorAuthorityKey,
+      verifiedAfcFloorCameraBinding,
+    ]
+  );
+
+  const handleApplyVerifiedAfcCamera = useCallback(
+    (request: VerifiedAfcCameraApplyRequest) => {
+      if (pendingScanAndApplyFov !== null) {
+        setAfcVerifiedCameraApplyStatus({ kind: "rejected" });
+        return;
+      }
+
+      const candidate = cameraPoseApplyCandidateRef.current;
+      const freshEvaluation = evaluateCalibratedCameraApply(
+        candidate,
+        cameraPoseUnavailableReasonRef.current,
+        {
+          basisQualified:
+            !!qualifiedImageBasis &&
+            floorPolygonAuthorityEligible &&
+            sourceNormalizedFloorPolygon.length === 4,
+          basisUnavailableReason: !floorPolygonAuthorityEligible
+            ? "basis_legacy_receipt_missing"
+            : !qualifiedImageBasis
+              ? basisQualificationStatus === "qualified"
+                ? "basis_unavailable"
+                : basisQualificationStatus
+              : sourceNormalizedFloorPolygon.length !== 4
+                ? "basis_unavailable"
+                : null,
+        }
+      );
+      calibratedCameraApplyStatusRef.current = freshEvaluation;
+      const revalidated = revalidateVerifiedAfcCameraApplyRequest({
+        request,
+        qualificationInput: {
+          binding: verifiedAfcFloorCameraBindingRef.current,
+          currentFloorAuthorityKey: floorPolygonAuthorityKeyRef.current ?? null,
+          currentLiveBasis: afcVerifiedFloorLiveBasisRef.current,
+          currentCameraApplyEvaluation: freshEvaluation,
+          hasApplyCandidate: candidate !== null,
+        },
+      });
+      if (!revalidated.ok) {
+        setAfcVerifiedCameraApplyStatus({
+          kind: revalidated.reason === "request_invalid" ? "rejected" : "invalidated_before_apply",
+        });
+        return;
+      }
+      if (!candidate) {
+        setAfcVerifiedCameraApplyStatus({ kind: "invalidated_before_apply" });
+        return;
+      }
+
+      setScanAndApplyResult(null);
+      const applied = applyCalibratedCameraSnapshotFromCandidate(candidate, cameraPoseFovYDeg);
+      setAfcVerifiedCameraApplyStatus({ kind: applied ? "applied" : "rejected" });
+    },
+    [
+      applyCalibratedCameraSnapshotFromCandidate,
+      basisQualificationStatus,
+      cameraPoseFovYDeg,
+      floorPolygonAuthorityEligible,
+      pendingScanAndApplyFov,
+      qualifiedImageBasis,
+      sourceNormalizedFloorPolygon.length,
+    ]
+  );
+
   // Phase 2J-B3: deferred calibrated-camera restore. This runs reactively, not
   // in a render loop: while a request is pending it simply waits (no side
   // effects) until the imported image + frame become usable, then makes a single
@@ -3404,7 +4804,11 @@ export default function ThreeRoomLab({
       return;
     }
 
-    const projectedRestorePolygon = projectSourcePolygonToContainer(
+    // Floor authority path: this polygon is compared against floorPolygon,
+    // which the Floor sync effect derives losslessly. Projecting it through the
+    // clamped helper would make the two never converge for a boundary-touching
+    // scene and would re-run this effect indefinitely.
+    const projectedRestorePolygon = projectFloorSourcePolygonToContainer(
       pending.calibration.source.sourceFloorPolygon
     );
     if (!projectedRestorePolygon || projectedRestorePolygon.length !== 4) {
@@ -3415,6 +4819,13 @@ export default function ThreeRoomLab({
       !floorPolygonsEqual(sourceNormalizedFloorPolygon, pending.calibration.source.sourceFloorPolygon) ||
       !floorPolygonsEqual(floorPolygon, projectedRestorePolygon)
     ) {
+      // A restore installs exact persisted source authority; it deliberately
+      // bypasses mutation intake and therefore never canonicalizes persisted
+      // geometry. It still invalidates any interactive Perspective session.
+      invalidatePerspectiveAdjustSession();
+      floorPolygonAuthorityKeyRef.current = buildDurableSourceFloorAuthorityKey(
+        pending.calibration.source.sourceFloorPolygon
+      );
       setSourceNormalizedFloorPolygon(
         pending.calibration.source.sourceFloorPolygon.map((point) => ({ x: point.x, y: point.y }))
       );
@@ -3502,9 +4913,10 @@ export default function ThreeRoomLab({
     floorMapping.worldDepth,
     floorPolygon,
     sourceNormalizedFloorPolygon,
-    projectSourcePolygonToContainer,
+    projectFloorSourcePolygonToContainer,
     hasValidIntrinsicDimensions,
     applyCalibratedCameraSnapshotFromCandidate,
+    invalidatePerspectiveAdjustSession,
   ]);
 
   const cameraPoseGridPolylinesNorm = useMemo(() => {
@@ -3672,7 +5084,7 @@ export default function ThreeRoomLab({
     ]
   );
   const floorSourceCornersForWallSnap = useMemo<Partial<Record<FloorCornerKind, FloorPoint>>>(() => {
-    const ordered = orderFloorCorners(sourceNormalizedFloorPolygon);
+    const ordered = validateOrderedFloorCorners(sourceNormalizedFloorPolygon);
     if (!ordered.ok) return {};
     return {
       NL: ordered.value.nearLeft,
@@ -4404,9 +5816,9 @@ export default function ThreeRoomLab({
     if (!isCalibratedCameraActive) return unavailable("calibrated_camera_inactive");
     if (!calibratedCameraSnapshot) return unavailable("calibrated_camera_snapshot_unavailable");
 
-    const sourceOrdered = orderFloorCorners(sourceNormalizedFloorPolygon);
+    const sourceOrdered = validateOrderedFloorCorners(sourceNormalizedFloorPolygon);
     if (!sourceOrdered.ok) return unavailable(`reviewed_source_ordering_failed:${sourceOrdered.reason}`);
-    const containerOrdered = orderFloorCorners(floorPolygon);
+    const containerOrdered = validateOrderedFloorCorners(floorPolygon);
     if (!containerOrdered.ok) return unavailable(`reviewed_container_ordering_failed:${containerOrdered.reason}`);
 
     const floorFrame = attachmentSupportContexts.floor.frame;
@@ -4514,6 +5926,8 @@ export default function ThreeRoomLab({
     attachmentEligibilityMode === "support_attached_current" && attachmentTransform && !attachmentTransform.ok
       ? "support_attached_blocked"
       : attachmentEligibilityMode;
+  const showCalibratedObjectControls =
+    isObject2DHandlesEnabled && isCalibratedCameraActive && objectTransformMode === "detached";
   useEffect(() => {
     objectTransformModeRef.current = objectTransformMode;
     attachmentTransformRef.current = attachmentTransform;
@@ -4554,6 +5968,165 @@ export default function ThreeRoomLab({
       attachmentTransform.contactPointWorld
     );
   }, [attachmentTransform, frameSizeForImageSpace]);
+  // Read-only, runtime-derived observability. This consumes existing camera,
+  // support, attachment, and reprojection facts and owns no scene authority.
+  const projectionCoherenceDiagnostics = useMemo(() => {
+    const walls: ProjectionCoherenceWallInput[] = WALL_SUPPORT_KINDS.map((kind) => {
+      const draft = wallSupportDrafts[kind];
+      const state = wallSupportStates[kind];
+      return {
+        kind,
+        enabled: draft.enabled,
+        reviewState: state.resolvedReviewStatus,
+        confirmationCurrent: state.confirmationCurrent,
+        runtimeUsable: state.runtime.usable,
+        sourcePolygon: draft.imagePolygonSourceNorm,
+        derivation: state.derivation,
+      };
+    });
+    return computeProjectionCoherenceDiagnostics({
+      camera:
+        isCalibratedCameraActive && calibratedCameraSnapshot
+          ? {
+              calibratedCameraVersion: CALIBRATED_CAMERA_AUTHORITY_CALIBRATION_VERSION,
+              appliedAtIso: calibratedCameraSnapshot.appliedAtIso,
+              fovDeg: calibratedCameraSnapshot.fovDeg,
+              pose: calibratedCameraSnapshot.pose,
+            }
+          : null,
+      frame: frameSizeForImageSpace
+        ? {
+            width: frameSizeForImageSpace.width,
+            height: frameSizeForImageSpace.height,
+            intrinsicWidth: imageIntrinsicSize?.width ?? Number.NaN,
+            intrinsicHeight: imageIntrinsicSize?.height ?? Number.NaN,
+            imageBasisId: qualifiedImageBasis?.basisId ?? null,
+            imageBasisFingerprint: qualifiedImageBasis?.basisFingerprint ?? null,
+          }
+        : null,
+      floor: {
+        polygonKey: buildFloorPolygonAuthorityKey(sourceNormalizedFloorPolygon),
+        worldWidth: floorMapping.worldWidth,
+        worldDepth: floorMapping.worldDepth,
+      },
+      walls,
+      attachment:
+        objectSupportAttachment?.supportKind === "floor" && attachmentTransform?.ok
+          ? {
+              current: attachmentBindingCurrent && objectTransformMode === "support_attached_current",
+              supportKind: "floor",
+              contactPointWorld: attachmentTransform.contactPointWorld,
+            }
+          : null,
+      floorReprojection: cameraPoseDebug.applyCandidate
+        ? {
+            cvAveragePx: cameraPoseDebug.applyCandidate.cvAvgPx,
+            cvMaximumPx: cameraPoseDebug.applyCandidate.cvMaxPx,
+            cvPerCornerPx: cameraPoseDebug.cornerResidualDiagnostics?.perCornerCvResidualPx ?? null,
+            rendererAveragePx: cameraPoseDebug.applyCandidate.displayAvgPx,
+            rendererMaximumPx: cameraPoseDebug.applyCandidate.displayMaxPx,
+            scaleRatio: cameraPoseDebug.applyCandidate.scaleRatio,
+          }
+        : null,
+    });
+  }, [
+    attachmentBindingCurrent,
+    attachmentTransform,
+    calibratedCameraSnapshot,
+    cameraPoseDebug.applyCandidate,
+    cameraPoseDebug.cornerResidualDiagnostics,
+    floorMapping.worldDepth,
+    floorMapping.worldWidth,
+    frameSizeForImageSpace,
+    imageIntrinsicSize,
+    isCalibratedCameraActive,
+    objectSupportAttachment?.supportKind,
+    objectTransformMode,
+    qualifiedImageBasis,
+    sourceNormalizedFloorPolygon,
+    wallSupportDrafts,
+    wallSupportStates,
+  ]);
+  // Non-authoritative vertical evidence is deliberately derived from the
+  // existing wall/runtime policy and projection-coherence edge facts. It does
+  // not feed either system back into camera, support, or scene geometry.
+  const verticalEvidenceSuggestions = useMemo(
+    () => deriveVerticalEvidenceSuggestions({
+      imageBasis: qualifiedImageBasis,
+      intrinsicWidth: imageIntrinsicSize?.width ?? null,
+      intrinsicHeight: imageIntrinsicSize?.height ?? null,
+      walls: WALL_SUPPORT_KINDS.map((kind) => ({
+        kind,
+        polygon: wallSupportDrafts[kind].imagePolygonSourceNorm,
+        derivationOk: wallSupportStates[kind].derivation.ok,
+        runtimeUsable: wallSupportStates[kind].runtime.usable,
+      })),
+      structuralObservations: projectionCoherenceDiagnostics.structural.observations,
+    }),
+    [
+      imageIntrinsicSize,
+      projectionCoherenceDiagnostics.structural.observations,
+      qualifiedImageBasis,
+      wallSupportDrafts,
+      wallSupportStates,
+    ]
+  );
+  const verticalEvidenceRuntime = useMemo(
+    () => deriveVerticalEvidenceCollectionRuntime({
+      section: verticalEvidence,
+      context: {
+        imageBasis: qualifiedImageBasis,
+        intrinsicWidth: imageIntrinsicSize?.width ?? null,
+        intrinsicHeight: imageIntrinsicSize?.height ?? null,
+        floor: {
+          polygonKey: buildFloorPolygonAuthorityKey(sourceNormalizedFloorPolygon),
+          worldWidth: floorMapping.worldWidth,
+          worldDepth: floorMapping.worldDepth,
+        },
+        walls: {
+          wall_back: wallSupportDrafts.wall_back.imagePolygonSourceNorm,
+          wall_left: wallSupportDrafts.wall_left.imagePolygonSourceNorm,
+          wall_right: wallSupportDrafts.wall_right.imagePolygonSourceNorm,
+        },
+      },
+      suggestions: verticalEvidenceSuggestions,
+      structuralObservations: projectionCoherenceDiagnostics.structural.observations,
+    }),
+    [
+      floorMapping.worldDepth,
+      floorMapping.worldWidth,
+      imageIntrinsicSize,
+      projectionCoherenceDiagnostics.structural.observations,
+      qualifiedImageBasis,
+      sourceNormalizedFloorPolygon,
+      verticalEvidence,
+      verticalEvidenceSuggestions,
+      wallSupportDrafts,
+    ]
+  );
+  const v3CandidateObservability = useMemo(
+    () =>
+      evaluateV3CandidateObservability({
+        isCalibratedCameraActive,
+        calibratedCameraSnapshot,
+        qualifiedImageBasis,
+        sourceNormalizedFloorPolygon,
+        floorMapping: {
+          worldWidth: floorMapping.worldWidth,
+          worldDepth: floorMapping.worldDepth,
+        },
+        verticalEvidenceRuntimeObservations: verticalEvidenceRuntime,
+      }),
+    [
+      isCalibratedCameraActive,
+      calibratedCameraSnapshot,
+      qualifiedImageBasis,
+      sourceNormalizedFloorPolygon,
+      floorMapping.worldWidth,
+      floorMapping.worldDepth,
+      verticalEvidenceRuntime,
+    ]
+  );
   // Package 5 observes existing authority and derived runtime facts. It does not
   // create support, camera, attachment, or model authority of its own.
   const milestoneMachineFacts = useMemo(() => {
@@ -5181,6 +6754,184 @@ export default function ThreeRoomLab({
     cameraPoseDebug.applyCandidate,
     calibrationReadiness.recommendedFov,
     applyCalibratedCameraSnapshotFromCandidate,
+  ]);
+
+  // AFC-SR1 Phase 2A deferred camera transaction. The Floor authority commit,
+  // absolute mapping, and FOV write above must render before this effect asks
+  // for a candidate. The ref reads are therefore the current memoized solve,
+  // never a click-time pose or a persisted snapshot.
+  useEffect(() => {
+    const pending = pendingAfcLabCameraApply;
+    if (!pending) return;
+
+    const fail = (reason: string) => {
+      setPendingAfcLabCameraApply(null);
+      setAfcLabApplyStatus({ kind: "failed", reason });
+      const liveResult = afcLiveApplyingResultRef.current;
+      if (liveResult) {
+        setAfcLiveAnalyzeStatus({
+          kind: "failed",
+          attemptId: liveResult.attemptId,
+          reason,
+        });
+        afcLiveApplyingResultRef.current = null;
+      }
+    };
+    const liveBasis = afcVerifiedFloorLiveBasisRef.current;
+    const transactionValidation = validatePendingAfcLabCameraApply(pending, {
+      currentToken: afcLabCameraApplyTokenRef.current,
+      floorAuthorityKey: floorPolygonAuthorityKeyRef.current,
+      basis: liveBasis,
+      worldWidthM: floorMapping.worldWidth,
+      worldDepthM: floorMapping.worldDepth,
+      verticalFovDeg: cameraPoseFovYDeg,
+      frameWidth: rendererSize.width,
+      frameHeight: rendererSize.height,
+      isCalibratedCameraActive,
+    });
+    if (!transactionValidation.valid) {
+      const reason =
+        transactionValidation.reason === "stale_token"
+          ? "AFC camera Apply was cancelled because a newer request superseded it."
+          : transactionValidation.reason === "basis_mismatch"
+            ? "AFC camera Apply was cancelled because the Original basis changed."
+            : transactionValidation.reason === "floor_mismatch"
+              ? "AFC camera Apply was cancelled because Floor authority changed before the fresh solve."
+              : transactionValidation.reason === "mapping_mismatch" || transactionValidation.reason === "fov_mismatch"
+                ? "AFC camera Apply was cancelled because mapping or FOV changed before the fresh solve."
+                : transactionValidation.reason === "frame_mismatch"
+                  ? "AFC camera Apply was cancelled because the rendering frame changed before the fresh solve."
+                  : "AFC camera Apply was cancelled because calibrated camera mode became active.";
+      fail(reason);
+      return;
+    }
+
+    const candidate = cameraPoseApplyCandidateRef.current;
+    const freshEvaluation = evaluateCalibratedCameraApply(
+      candidate,
+      cameraPoseUnavailableReasonRef.current,
+      {
+        basisQualified:
+          !!qualifiedImageBasis &&
+          basisQualificationStatus === "qualified" &&
+          floorPolygonAuthorityEligible &&
+          sourceNormalizedFloorPolygon.length === 4,
+        basisUnavailableReason: !floorPolygonAuthorityEligible
+          ? "basis_legacy_receipt_missing"
+          : !qualifiedImageBasis
+            ? "basis_unavailable"
+            : basisQualificationStatus,
+      }
+    );
+    calibratedCameraApplyStatusRef.current = freshEvaluation;
+    if (!candidate || !freshEvaluation.available) {
+      fail(`AFC camera Apply failed closed: ${freshEvaluation.reason}.`);
+      return;
+    }
+
+    // Clear first so a render cannot repeat the camera mutation. The writer
+    // still rechecks the same current Apply gate before it activates the camera.
+    setPendingAfcLabCameraApply(null);
+    const applied = applyCalibratedCameraSnapshotFromCandidate(candidate, pending.verticalFovDeg);
+    const appliedSnapshot = applied
+      ? calibratedCameraSnapshotRef.current
+      : null;
+    setAfcLabApplyStatus(
+      applied
+        ? { kind: "applied", settle: pending.settle }
+        : { kind: "failed", reason: "AFC camera Apply was rejected by the existing calibrated-camera writer." }
+    );
+    const liveResult =
+      afcLiveApplyingResultRef.current ??
+      (afcLiveResult?.status === "authoritative_geometry"
+        ? afcLiveResult
+        : null);
+    if (appliedSnapshot && liveResult) {
+      const freezeGeneration =
+        ++afcCameraFreezeGenerationRef.current;
+      setAfcCameraFreezeStatus({
+        kind: "freezing",
+        attemptId: liveResult.attemptId,
+      });
+      const currentPerspectiveSession =
+        perspectiveAdjustSessionRef.current;
+      const perspectiveAdjustment =
+        currentPerspectiveSession?.kind ===
+          AFC_TILED_PERSPECTIVE_ADJUST_MODE &&
+        currentPerspectiveSession.attemptId === liveResult.attemptId &&
+        currentPerspectiveSession.resultId === liveResult.resultId
+          ? {
+              mode: AFC_TILED_PERSPECTIVE_ADJUST_MODE,
+              committedDelta:
+                currentPerspectiveSession.committedDelta,
+              adjustmentCount:
+                currentPerspectiveSession.adjustmentCount,
+            }
+          : null;
+      void freezeAppliedTiledAfcCamera({
+        appliedSnapshot,
+        liveResult,
+        pending,
+        settle: pending.settle,
+        candidate,
+        candidateEvaluation: freshEvaluation,
+        basisQualified:
+          basisQualificationStatus === "qualified" &&
+          qualifiedImageBasis?.basisKind === "original",
+        frozenAtIso: new Date().toISOString(),
+        perspectiveAdjustment,
+      }).then((freezeResult) => {
+        if (
+          freezeGeneration !==
+          afcCameraFreezeGenerationRef.current
+        ) {
+          return;
+        }
+        if (freezeResult.ok) {
+          setAfcCameraFreezeReceipt(freezeResult.value);
+          setAfcCameraFreezeStatus({
+            kind: "ready",
+            attemptId: liveResult.attemptId,
+          });
+          return;
+        }
+        setAfcCameraFreezeStatus({
+          kind: "failed",
+          attemptId: liveResult.attemptId,
+          reason: `${freezeResult.reason}: ${freezeResult.detail}`,
+        });
+      });
+    }
+    if (liveResult) {
+      setAfcLiveAnalyzeStatus(
+        applied
+          ? {
+              kind: "completed",
+              attemptId: liveResult.attemptId,
+              mode: liveResult.geometry.mode,
+            }
+          : {
+              kind: "failed",
+              attemptId: liveResult.attemptId,
+              reason: "AFC camera Apply was rejected by the existing calibrated-camera writer.",
+            }
+      );
+      afcLiveApplyingResultRef.current = null;
+    }
+  }, [
+    applyCalibratedCameraSnapshotFromCandidate,
+    afcLiveResult,
+    basisQualificationStatus,
+    cameraPoseFovYDeg,
+    floorMapping.worldDepth,
+    floorMapping.worldWidth,
+    floorPolygonAuthorityEligible,
+    isCalibratedCameraActive,
+    pendingAfcLabCameraApply,
+    qualifiedImageBasis,
+    rendererSize.height,
+    rendererSize.width,
+    sourceNormalizedFloorPolygon.length,
   ]);
 
   const objectProjectionDiagnostic = useMemo(() => {
@@ -8239,10 +9990,6 @@ export default function ThreeRoomLab({
       setLocalRefinementPreviewProbeId(null);
       setLocalRefinementPreviewSignature(null);
 
-      // Mirror manual-geometry-change safety (cancel any pending calibration
-      // restore), exactly as the manual polygon-reset path does.
-      cancelPendingCalibrationRestoreAfterManualGeometryChange();
-
       // floor polygon <- EXACT stored local tuple quad (clone; canonical
       // [NL, NR, FR, FL], same as the existing "Apply suggested quad" path).
       const loadedPolygon: FloorPoint[] = tuple.quadNorm.map((point) => ({ x: point.x, y: point.y }));
@@ -8309,7 +10056,6 @@ export default function ThreeRoomLab({
       isCalibratedCameraActive,
       localRefinementPreview,
       applyContainerFloorPolygon,
-      cancelPendingCalibrationRestoreAfterManualGeometryChange,
       floorMapping,
       lastAcceptedFloorClick,
       selectedAutoFloorCandidateId,
@@ -9215,8 +10961,18 @@ export default function ThreeRoomLab({
     setAutoNormalizeBoundsEnabled(enabled);
   };
 
+  // Truthful outline: the polygon keeps the unmodified floorPolygon coordinates
+  // even when a corner projects outside the visible frame.
   const floorPolygonPointsAttribute = useMemo(
     () => floorPolygon.map((point) => `${point.x * 100},${point.y * 100}`).join(" "),
+    [floorPolygon]
+  );
+
+  // Presentation-only render/hit targets shared by BOTH Floor handle layers, so
+  // the base layer and the focused edit layer can never disagree. This never
+  // feeds back into floorPolygon or sourceNormalizedFloorPolygon.
+  const floorHandlePresentations = useMemo(
+    () => floorPolygon.map((point) => resolveFloorHandlePresentation(point)),
     [floorPolygon]
   );
 
@@ -9366,6 +11122,7 @@ export default function ThreeRoomLab({
       x: point.x,
       y: point.y,
     }));
+    const wasCalibratedCameraActive = calibratedCameraActiveRef.current;
     applyContainerFloorPolygon(appliedPolygon, {
       status: floorPolygonAuthorityEligible ? "manually_confirmed" : "needs_review",
       source: "model_suggested",
@@ -9384,12 +11141,7 @@ export default function ThreeRoomLab({
     setIsFloorAnchorDragActive(false);
     setWasLastAnchorDragMoveRejected(false);
 
-    // Applying a new polygon invalidates any active calibrated camera snapshot.
-    const wasCalibratedCameraActive = calibratedCameraActiveRef.current;
-    if (wasCalibratedCameraActive) {
-      deactivateCalibratedCameraMode({ clearAutoRevertReason: true });
-    }
-
+    // The shared Floor-authority commit owns calibrated-camera invalidation.
     setAppliedAutoFloorCandidateId(selectedAutoFloorCandidate.id);
     setLastAutoFloorApplyMessage(
       wasCalibratedCameraActive
@@ -9398,219 +11150,172 @@ export default function ThreeRoomLab({
     );
   }, [
     applyContainerFloorPolygon,
-    deactivateCalibratedCameraMode,
     floorPolygonAuthorityEligible,
     selectedAutoFloorCandidate,
     selectedAutoFloorCandidateScore,
   ]);
 
-  const buildCurrentSceneStatePayload = (exportedAtIso: string) =>
-    {
-      const roomImageUrlTrimmed = roomImageUrl.trim();
-      const hasValidIntrinsicImageSize =
-        !!imageIntrinsicSize &&
-        Number.isFinite(imageIntrinsicSize.width) &&
-        Number.isFinite(imageIntrinsicSize.height) &&
-        imageIntrinsicSize.width > 0 &&
-        imageIntrinsicSize.height > 0;
-      const hasValidRendererSize =
-        Number.isFinite(rendererSize.width) &&
-        Number.isFinite(rendererSize.height) &&
-        rendererSize.width > 0 &&
-        rendererSize.height > 0;
-      const authoritativeCalibrationFovDeg = calibratedCameraSnapshot?.fovDeg ?? null;
-      const hasValidAuthoritativeFov =
-        authoritativeCalibrationFovDeg !== null &&
-        Number.isFinite(authoritativeCalibrationFovDeg) &&
-        authoritativeCalibrationFovDeg >= CALIBRATED_SCENE_STATE_MIN_VERTICAL_FOV_DEG &&
-        authoritativeCalibrationFovDeg <= CALIBRATED_SCENE_STATE_MAX_VERTICAL_FOV_DEG;
-      const calibrationForExport: CalibratedSceneStateCalibrationV2 | undefined =
-        isCalibratedCameraActive &&
-        !!calibratedCameraSnapshot &&
-        !!qualifiedImageBasis &&
-        roomImageUrlTrimmed.length > 0 &&
-        hasValidIntrinsicImageSize &&
-        hasValidRendererSize &&
-        hasValidAuthoritativeFov &&
-        sourceNormalizedFloorPolygon.length === 4
-          ? {
-              calibrationVersion: CALIBRATED_SCENE_STATE_CALIBRATION_VERSION_V2,
-              solver: CALIBRATED_SCENE_STATE_SOLVER_V1,
-              intrinsics: {
-                verticalFovDeg: authoritativeCalibrationFovDeg,
-              },
-              source: {
-                imageBasis: qualifiedImageBasis,
-                sourceFloorPolygon: sourceNormalizedFloorPolygon.map((point) => ({
-                  x: point.x,
-                  y: point.y,
-                })),
-              },
-            }
-          : undefined;
-      const calibrationAppliedAuthorityForExport =
-        calibrationForExport &&
-        calibratedCameraSnapshot &&
-        qualifiedImageBasis &&
-        calibratedCameraSnapshot.imageBasis.basisId === qualifiedImageBasis.basisId &&
-        calibratedCameraSnapshot.imageBasis.basisFingerprint === qualifiedImageBasis.basisFingerprint &&
-        calibratedCameraSnapshot.imageBasis.sourceImageUrl === qualifiedImageBasis.sourceImageUrl &&
-        calibratedCameraSnapshot.imageBasis.decodedWidth === qualifiedImageBasis.decodedWidth &&
-        calibratedCameraSnapshot.imageBasis.decodedHeight === qualifiedImageBasis.decodedHeight &&
-        calibratedCameraSnapshot.imageBasis.encodedOrientation === qualifiedImageBasis.encodedOrientation &&
-        calibratedCameraSnapshot.imageBasis.decodedOrientationNormal === qualifiedImageBasis.decodedOrientationNormal &&
-        calibratedCameraSnapshot.imageBasis.orientationTransform === qualifiedImageBasis.orientationTransform &&
-        calibratedCameraSnapshot.imageBasis.dimensionSource === qualifiedImageBasis.dimensionSource &&
-        calibratedCameraSnapshot.imageBasis.coordinateSpaceVersion.decoderId ===
-          qualifiedImageBasis.coordinateSpaceVersion.decoderId &&
-        calibratedCameraSnapshot.imageBasis.coordinateSpaceVersion.normalizationPolicyVersion ===
-          qualifiedImageBasis.coordinateSpaceVersion.normalizationPolicyVersion &&
-        calibratedCameraSnapshot.imageBasis.coordinateSpaceVersion.orientationApplied ===
-          qualifiedImageBasis.coordinateSpaceVersion.orientationApplied &&
-        calibratedCameraSnapshot.imageBasis.basisKind === qualifiedImageBasis.basisKind &&
-        floorPolygonsEqual(calibratedCameraSnapshot.sourceFloorPolygon, sourceNormalizedFloorPolygon) &&
-        calibratedCameraSnapshot.frameSize.width > 0 &&
-        calibratedCameraSnapshot.frameSize.height > 0 &&
-        calibratedCameraSnapshot.frameSize.width === rendererSize.width &&
-        calibratedCameraSnapshot.frameSize.height === rendererSize.height &&
-        Number.isFinite(floorMapping.worldWidth) &&
-        Number.isFinite(floorMapping.worldDepth) &&
-        floorMapping.worldWidth > 0 &&
-        floorMapping.worldDepth > 0
-          ? {
-              authorityVersion: CALIBRATED_CAMERA_APPLIED_AUTHORITY_VERSION,
-              appliedAtIso: calibratedCameraSnapshot.appliedAtIso,
-              verticalFovDeg: calibratedCameraSnapshot.fovDeg,
-              frameSize: { ...calibratedCameraSnapshot.frameSize },
-              pose: {
-                position: { ...calibratedCameraSnapshot.pose.position },
-                lookAt: { ...calibratedCameraSnapshot.pose.lookAt },
-                up: { ...calibratedCameraSnapshot.pose.up },
-              },
-              imageBasis: calibratedCameraSnapshot.imageBasis,
-              sourceFloorPolygon: calibratedCameraSnapshot.sourceFloorPolygon.map((point) => ({
-                x: point.x,
-                y: point.y,
-              })) as [FloorPoint, FloorPoint, FloorPoint, FloorPoint],
-              floorMapping: {
-                worldWidth: floorMapping.worldWidth,
-                worldDepth: floorMapping.worldDepth,
-              },
-              calibrationVersion: CALIBRATED_CAMERA_AUTHORITY_CALIBRATION_VERSION,
-              solver: CALIBRATED_CAMERA_AUTHORITY_SOLVER,
-              diagnosticsSummary: calibratedCameraSnapshot.diagnosticsSummary,
-            }
-          : undefined;
-
-      return buildSceneStatePayload({
+  const assembleCurrentSceneState = useCallback(
+    (exportedAtIso: string) =>
+      assembleCurrentSceneStatePayload({
         exportedAtIso,
         roomImageUrl,
+        imageIntrinsicSize,
+        rendererSize,
+        calibratedCameraSnapshot,
+        isCalibratedCameraActive,
+        qualifiedImageBasis,
+        sourceNormalizedFloorPolygon,
+        floorMapping,
         modelPath,
         activeObjectType: currentActiveObjectType,
-        glbLoadStatus: modelLoadState,
+        modelLoadState,
+        modelLoadError,
         modelNormalization,
-        transform: {
-          positionX: transform.positionX,
-          positionY: transform.positionY,
-          positionZ: transform.positionZ,
-          rotationYDeg: transform.rotationYDeg,
-          uniformScale: transform.uniformScale,
-          autoRotate: autoRotateEnabled,
-        },
-        floor: {
-          polygon: floorPolygon,
-          overlayVisible: showFloorOverlay,
-          placementModeEnabled: isFloorClickPlacementEnabled,
-          lastAcceptedClick: lastAcceptedFloorClick,
-          lastRejectedClick: lastRejectedFloorClick,
-          mapping: floorMapping,
-          perspectiveDepthScaling,
-        },
-        image: imageIntrinsicSize
-          ? {
-              intrinsicWidth: imageIntrinsicSize.width,
-              intrinsicHeight: imageIntrinsicSize.height,
-              coordinateSpace: SCENE_IMAGE_COORDINATE_SPACE_V0,
-            }
-          : null,
-        calibration: calibrationForExport,
-        calibrationAppliedAuthority: calibrationAppliedAuthorityForExport,
-        supports: {
-          floor: {
-            sourceNormalizedPolygon: sourceNormalizedFloorPolygon,
-            reviewStatus: floorSupportReviewStatus,
-            source: floorSupportSource,
-            supportImageBasis: floorSupportImageBasis,
-            authorityEligible: floorPolygonAuthorityEligible,
-          },
-          walls: {
-            wall_back: {
-              draft: wallSupportDrafts.wall_back,
-              supportImageBasis: wallSupportImageBases.wall_back,
-            },
-            wall_left: {
-              draft: wallSupportDrafts.wall_left,
-              supportImageBasis: wallSupportImageBases.wall_left,
-            },
-            wall_right: {
-              draft: wallSupportDrafts.wall_right,
-              supportImageBasis: wallSupportImageBases.wall_right,
-            },
-          },
-          ceiling: {
-            draft: ceilingSupportDraft,
-            supportImageBasis: ceilingSupportImageBasis,
-          },
-        },
-        attachment: objectSupportAttachment,
-        debug: {
-          rendererSize,
-          imageStatus: imageLoadState,
-          modelStatus: formatModelStatus(modelLoadState, modelLoadError),
-        },
-      });
-    };
+        transform,
+        autoRotateEnabled,
+        floorPolygon,
+        showFloorOverlay,
+        isFloorClickPlacementEnabled,
+        lastAcceptedFloorClick,
+        lastRejectedFloorClick,
+        perspectiveDepthScaling,
+        floorSupportReviewStatus,
+        floorSupportSource,
+        floorSupportImageBasis,
+        floorPolygonAuthorityEligible,
+        wallSupportDrafts,
+        wallSupportImageBases,
+        ceilingSupportDraft,
+        ceilingSupportImageBasis,
+        objectSupportAttachment,
+        verticalEvidence,
+        imageLoadState,
+      }),
+    [
+      roomImageUrl,
+      imageIntrinsicSize,
+      rendererSize,
+      calibratedCameraSnapshot,
+      isCalibratedCameraActive,
+      qualifiedImageBasis,
+      sourceNormalizedFloorPolygon,
+      floorMapping,
+      modelPath,
+      currentActiveObjectType,
+      modelLoadState,
+      modelLoadError,
+      modelNormalization,
+      transform,
+      autoRotateEnabled,
+      floorPolygon,
+      showFloorOverlay,
+      isFloorClickPlacementEnabled,
+      lastAcceptedFloorClick,
+      lastRejectedFloorClick,
+      perspectiveDepthScaling,
+      floorSupportReviewStatus,
+      floorSupportSource,
+      floorSupportImageBasis,
+      floorPolygonAuthorityEligible,
+      wallSupportDrafts,
+      wallSupportImageBases,
+      ceilingSupportDraft,
+      ceilingSupportImageBasis,
+      objectSupportAttachment,
+      verticalEvidence,
+      imageLoadState,
+    ]
+  );
 
   const sceneStateJson = useMemo(() => {
-    const payload = buildCurrentSceneStatePayload(sceneStateExportedAt);
-    return JSON.stringify(payload, null, 2);
-  }, [
-    activeObjectKind,
-    autoRotateEnabled,
-    floorMapping.depthCenterY,
-    floorMapping.worldDepth,
-    floorMapping.worldWidth,
-    perspectiveDepthScaling.enabled,
-    perspectiveDepthScaling.farFloorY,
-    perspectiveDepthScaling.farScaleMultiplier,
-    perspectiveDepthScaling.nearFloorY,
-    perspectiveDepthScaling.nearScaleMultiplier,
-    floorPolygon,
-    imageIntrinsicSize,
-    imageLoadState,
-    isFloorClickPlacementEnabled,
-    lastAcceptedFloorClick,
-    lastRejectedFloorClick,
-    modelLoadError,
-    modelLoadState,
-    modelPath,
-    modelNormalization.modelScaleMultiplier,
-    modelNormalization.modelYOffset,
-    modelNormalization.modelYawOffsetDeg,
-    calibratedCameraSnapshot,
-    isCalibratedCameraActive,
-    qualifiedImageBasis,
-    rendererSize,
-    roomImageUrl,
-    sceneStateExportedAt,
-    showFloorOverlay,
-    sourceNormalizedFloorPolygon,
-    transform.positionX,
-    transform.positionY,
-    transform.positionZ,
-    transform.rotationYDeg,
-    transform.uniformScale,
-  ]);
+    const result = assembleCurrentSceneState(sceneStateExportedAt);
+    return result.ok
+      ? JSON.stringify(result.payload, null, 2)
+      : `Scene export unavailable: ${result.reason}`;
+  }, [assembleCurrentSceneState, sceneStateExportedAt]);
+
+  const recordVerticalEvidenceDecision = (
+    suggestion: VerticalEvidenceSuggestion,
+    decision: Exclude<VerticalEvidenceOperatorDecision, "unreviewed">
+  ) => {
+    const decisionAtIso = new Date().toISOString();
+    const existing = verticalEvidence?.observations.find(
+      (observation) => observation.observationId === `vertical-evidence-observation/v1:${suggestion.suggestionId}`
+    );
+    if (existing) {
+      const changed = changeVerticalEvidenceDecision({
+        observation: existing,
+        operatorDecision: decision,
+        decisionAtIso,
+      });
+      if (!changed) {
+        setVerticalEvidenceStatus("Decision was rejected because its timestamp was invalid.");
+        return;
+      }
+      setVerticalEvidence((current) => current
+        ? { ...current, observations: current.observations.map((observation) => observation.observationId === changed.observationId ? changed : observation) }
+        : current);
+      setVerticalEvidenceStatus(`${decision} decision recorded for existing observation.`);
+      return;
+    }
+    const superseded = verticalEvidenceRuntime.observations.find((item) =>
+      item.observation.wallKind === suggestion.wallKind &&
+      item.observation.physicalVerticalId === suggestion.physicalVerticalId &&
+      item.usability !== "current"
+    )?.observation;
+    const materialized = materializeVerticalEvidenceObservation({
+      suggestion,
+      operatorDecision: decision,
+      decisionAtIso,
+      floor: {
+        sourceNormalizedPolygon: sourceNormalizedFloorPolygon,
+        polygonKey: buildFloorPolygonAuthorityKey(sourceNormalizedFloorPolygon),
+        worldWidth: floorMapping.worldWidth,
+        worldDepth: floorMapping.worldDepth,
+      },
+      historicalContext: {
+        nonBinding: true,
+        cameraVersion: isCalibratedCameraActive ? CALIBRATED_CAMERA_AUTHORITY_CALIBRATION_VERSION : null,
+        cameraAppliedAtIso: isCalibratedCameraActive ? calibratedCameraSnapshot?.appliedAtIso ?? null : null,
+        frameWidth: frameSizeForImageSpace?.width ?? null,
+        frameHeight: frameSizeForImageSpace?.height ?? null,
+      },
+      supersession: superseded
+        ? {
+            supersedesObservationId: superseded.observationId,
+            reason: "operator-selected replacement after source provenance changed",
+            atIso: decisionAtIso,
+          }
+        : null,
+    });
+    if (!materialized.ok) {
+      setVerticalEvidenceStatus(`Could not record observation: ${materialized.reason}`);
+      return;
+    }
+    setVerticalEvidence((current) => ({
+      evidenceModelVersion: "vertical-evidence-model/v1",
+      observations: [...(current?.observations ?? []), materialized.observation],
+    }));
+    setVerticalEvidenceStatus(
+      `${decision} decision materialized as a non-authoritative observation.${superseded ? " It explicitly supersedes a review-required predecessor." : ""}`
+    );
+  };
+
+  const clearVerticalEvidenceDecision = (observationId: string) => {
+    const observation = verticalEvidence?.observations.find((item) => item.observationId === observationId);
+    if (!observation) return;
+    const changed = changeVerticalEvidenceDecision({
+      observation,
+      operatorDecision: "unreviewed",
+      decisionAtIso: null,
+    });
+    if (!changed) return;
+    setVerticalEvidence((current) => current
+      ? { ...current, observations: current.observations.map((item) => item.observationId === observationId ? changed : item) }
+      : current);
+    setVerticalEvidenceStatus("Operator decision cleared; immutable source and frozen anchor were preserved.");
+  };
 
   const getNormalizedOverlayPointFromClient = (clientX: number, clientY: number): FloorPoint | null => {
     const overlay = floorOverlayRef.current;
@@ -9621,6 +11326,23 @@ export default function ThreeRoomLab({
       x: clampValue((clientX - rect.left) / rect.width, 0, 1),
       y: clampValue((clientY - rect.top) / rect.height, 0, 1),
     };
+  };
+
+  const getFloorDragOverlayRect = (): FloorDragOverlayRect | null => {
+    const overlay = floorOverlayRef.current;
+    if (!overlay) return null;
+    const rect = overlay.getBoundingClientRect();
+    if (
+      !Number.isFinite(rect.left) ||
+      !Number.isFinite(rect.top) ||
+      !Number.isFinite(rect.width) ||
+      !Number.isFinite(rect.height) ||
+      rect.width <= 0 ||
+      rect.height <= 0
+    ) {
+      return null;
+    }
+    return { left: rect.left, top: rect.top, width: rect.width, height: rect.height };
   };
 
   const applyFloorPlacement = (point: FloorPoint, options?: { source?: "floor-click" | "other" }) => {
@@ -9712,25 +11434,55 @@ export default function ThreeRoomLab({
       setLastFloorClickMappingResult(mappingResultForDebug);
     }
 
-    updateTransformState((prev) => ({ ...prev, positionX: mapped.positionX, positionZ: mapped.positionZ }), {
+    const placementResult = applyPlacementConstraint(DEFAULT_PLACEMENT_CONSTRAINT, {
+      x: mapped.positionX,
+      z: mapped.positionZ,
+    });
+    if (!placementResult.ok) return placementResult;
+
+    updateTransformState((prev) => ({
+      ...prev,
+      positionX: placementResult.positionXZ.x,
+      positionZ: placementResult.positionXZ.z,
+    }), {
       markOwned: true,
     });
     setLastAcceptedFloorClick(markerPointForAcceptedClick);
     setLastRejectedFloorClick(null);
+    return placementResult;
   };
 
-  const updateFloorHandleFromClientPoint = (clientX: number, clientY: number) => {
-    const activeIndex = activeFloorHandleIndex;
-    if (activeIndex === null) return;
-    const normalizedPoint = getNormalizedOverlayPointFromClient(clientX, clientY);
-    if (!normalizedPoint) return;
-    applyContainerFloorPolygon(
-      floorPolygon.map((point, index) => (index === activeIndex ? normalizedPoint : point)),
+  const updateFloorHandleFromClientPoint = (
+    clientX: number,
+    clientY: number
+  ): "unchanged" | "applied" | "rejected" | "basis_changed" => {
+    const drag = floorHandleDragRef.current;
+    if (!drag) return "rejected";
+    const currentRect = getFloorDragOverlayRect();
+    if (!currentRect || !floorDragOverlayRectEquals(drag.overlayRect, currentRect)) {
+      return "basis_changed";
+    }
+    const currentPointer = floorDragPointerFromClient(clientX, clientY, currentRect);
+    if (!currentPointer) return "rejected";
+    const candidate = deriveFloorHandleDragCandidate(drag, currentPointer);
+    if (!candidate) return "rejected";
+    if (!floorDragCandidateDiffersFromCurrent(candidate, floorPolygon)) return "unchanged";
+
+    const wasMoved = supportPointDragMovedRef.current;
+    supportPointDragMovedRef.current = true;
+    const applied = applyContainerFloorPolygon(
+      candidate,
       {
         status: floorPolygonAuthorityEligible ? "manually_confirmed" : "needs_review",
         source: "manual",
-      }
+      },
+      { captureUndo: "active_drag" }
     );
+    if (!applied) {
+      supportPointDragMovedRef.current = wasMoved;
+      return "rejected";
+    }
+    return "applied";
   };
 
   const configureWall = (kind: WallSupportKind) => {
@@ -10104,6 +11856,7 @@ export default function ThreeRoomLab({
   const updateWallHandleFromClientPoint = (
     kind: WallSupportKind,
     index: number,
+    pointerId: number,
     clientX: number,
     clientY: number
   ): boolean => {
@@ -10128,26 +11881,33 @@ export default function ThreeRoomLab({
           supportEditInteractionStates[kind].interactive,
         wallKind: kind,
         wallPointRole,
-        isSnapped: activeSnap?.kind === kind && activeSnap.index === index ? activeSnap.isSnapped : false,
+        activeSnapKind:
+          activeSnap?.pointerId === pointerId &&
+          activeSnap.kind === kind &&
+          activeSnap.index === index
+            ? activeSnap.snapKind
+            : null,
         unsnappedWallPointSourceNorm: nextSource[index],
         pointerContainerNorm: normalizedPoint,
         floorSourceCorners: floorSourceCornersForWallSnap,
         intrinsicSize: imageIntrinsicSize,
         frameSize: frameSizeForImageSpace,
       });
-      if (snap.floorCorner && snap.targetContainerNorm) {
+      if (snap.snapKind && snap.targetContainerNorm) {
         activeWallFloorSnapRef.current = {
+          pointerId,
           kind,
           index,
-          floorCorner: snap.floorCorner,
-          isSnapped: snap.snapped,
+          snapKind: snap.snapKind,
         };
         setWallFloorSnapPresentation(
           snap.showTarget
             ? {
                 kind,
                 index,
+                snapKind: snap.snapKind,
                 floorCorner: snap.floorCorner,
+                floorSeam: snap.floorSeam,
                 snapped: snap.snapped,
                 targetContainerNorm: snap.targetContainerNorm,
               }
@@ -10205,7 +11965,7 @@ export default function ThreeRoomLab({
     wallHandleDragRef.current = { pointerId: event.pointerId, kind, index };
     setSelectedWallKind(kind);
     setActiveWallHandle({ kind, index });
-    if (updateWallHandleFromClientPoint(kind, index, event.clientX, event.clientY)) {
+    if (updateWallHandleFromClientPoint(kind, index, event.pointerId, event.clientX, event.clientY)) {
       supportPointDragMovedRef.current = true;
     }
     try {
@@ -10500,16 +12260,31 @@ export default function ThreeRoomLab({
   };
 
   const handleFloorHandlePointerDown = (index: number, event: PointerEvent<SVGCircleElement>) => {
-    if (!beginSupportPointDrag("floor", event.pointerId)) return;
+    const overlayRect = getFloorDragOverlayRect();
+    const startPointer = overlayRect ? floorDragPointerFromClient(event.clientX, event.clientY, overlayRect) : null;
+    const drag = startPointer && overlayRect
+      ? createFloorHandleDragStart({
+          cornerIndex: index,
+          floorPolygon,
+          startPointer,
+          overlayRect,
+        })
+      : null;
+    if (!drag || !beginSupportPointDrag("floor", event.pointerId)) return;
     event.preventDefault();
     event.stopPropagation();
+    floorHandleDragRef.current = drag;
     dragPointerIdRef.current = event.pointerId;
     setActiveFloorHandleIndex(index);
-    updateFloorHandleFromClientPoint(event.clientX, event.clientY);
-    try {
-      floorOverlayRef.current?.setPointerCapture(event.pointerId);
-    } catch {
-      // Pointer capture can fail in some edge cases; dragging still works while pointer stays in bounds.
+    floorHandlePointerCaptureSucceededRef.current = false;
+    const overlay = floorOverlayRef.current;
+    if (overlay) {
+      try {
+        overlay.setPointerCapture(event.pointerId);
+        floorHandlePointerCaptureSucceededRef.current = true;
+      } catch {
+        // Pointer capture can fail in some edge cases; dragging still works while pointer stays in bounds.
+      }
     }
   };
 
@@ -10525,13 +12300,21 @@ export default function ThreeRoomLab({
     if (wallDrag && wallDrag.pointerId === event.pointerId) {
       event.preventDefault();
       supportPointDragMovedRef.current = true;
-      updateWallHandleFromClientPoint(wallDrag.kind, wallDrag.index, event.clientX, event.clientY);
+      updateWallHandleFromClientPoint(
+        wallDrag.kind,
+        wallDrag.index,
+        event.pointerId,
+        event.clientX,
+        event.clientY
+      );
       return;
     }
-    if (activeFloorHandleIndex !== null && dragPointerIdRef.current === event.pointerId) {
+    if (floorHandleDragRef.current && dragPointerIdRef.current === event.pointerId) {
       event.preventDefault();
-      supportPointDragMovedRef.current = true;
-      updateFloorHandleFromClientPoint(event.clientX, event.clientY);
+      const result = updateFloorHandleFromClientPoint(event.clientX, event.clientY);
+      if (result === "basis_changed") {
+        stopFloorHandleDrag(event);
+      }
       return;
     }
 
@@ -10567,13 +12350,12 @@ export default function ThreeRoomLab({
       event.preventDefault();
       const normalizedPoint = getNormalizedOverlayPointFromClient(event.clientX, event.clientY);
       if (!normalizedPoint) return;
-      const isInside = isPointInsidePolygon(normalizedPoint, floorPolygon);
-      if (!isInside) {
+      const placementResult = applyFloorPlacement(normalizedPoint);
+      if (!placementResult.ok) {
         setWasLastObjectHandleMoveRejected(true);
         return;
       }
       setWasLastObjectHandleMoveRejected(false);
-      applyFloorPlacement(normalizedPoint);
       return;
     }
 
@@ -10631,12 +12413,19 @@ export default function ThreeRoomLab({
         setLastCalibratedMoveStatus("rejected — floor-contact projection is off-screen");
         return;
       }
-      const isInside = isPointInsidePolygon(projectedNormalized, floorPolygon);
-      if (!isInside) {
-        setLastCalibratedMoveStatus("rejected — outside floor polygon");
+      const placementResult = applyPlacementConstraint(DEFAULT_PLACEMENT_CONSTRAINT, {
+        x: nextX,
+        z: nextZ,
+      });
+      if (!placementResult.ok) {
+        setLastCalibratedMoveStatus(`rejected — ${placementResult.reason}`);
         return;
       }
-      updateTransformState((prev) => ({ ...prev, positionX: nextX, positionZ: nextZ }), {
+      updateTransformState((prev) => ({
+        ...prev,
+        positionX: placementResult.positionXZ.x,
+        positionZ: placementResult.positionXZ.z,
+      }), {
         markOwned: true,
       });
       setLastAcceptedFloorClick(projectedNormalized);
@@ -10886,13 +12675,12 @@ export default function ThreeRoomLab({
     event.preventDefault();
     const normalizedPoint = getNormalizedOverlayPointFromClient(event.clientX, event.clientY);
     if (!normalizedPoint) return;
-    const isInside = isPointInsidePolygon(normalizedPoint, floorPolygon);
-    if (!isInside) {
+    const placementResult = applyFloorPlacement(normalizedPoint, { source: "other" });
+    if (!placementResult.ok) {
       setWasLastAnchorDragMoveRejected(true);
       return;
     }
     setWasLastAnchorDragMoveRejected(false);
-    applyFloorPlacement(normalizedPoint, { source: "other" });
   };
 
   const handleFloorOverlayPointerDown = (event: PointerEvent<SVGSVGElement>) => {
@@ -10902,13 +12690,12 @@ export default function ThreeRoomLab({
     if (activeObjectHandleMode !== null) return;
     const normalizedPoint = getNormalizedOverlayPointFromClient(event.clientX, event.clientY);
     if (!normalizedPoint) return;
-    const isInside = isPointInsidePolygon(normalizedPoint, floorPolygon);
-    if (!isInside) {
+    const placementResult = applyFloorPlacement(normalizedPoint, { source: "floor-click" });
+    if (!placementResult.ok) {
       setLastRejectedFloorClick(normalizedPoint);
       return;
     }
     setWasLastAnchorDragMoveRejected(false);
-    applyFloorPlacement(normalizedPoint, { source: "floor-click" });
   };
 
   const handleFloorAnchorPointerDown = (event: PointerEvent<SVGCircleElement>) => {
@@ -10968,6 +12755,8 @@ export default function ThreeRoomLab({
       }
     }
     dragPointerIdRef.current = null;
+    floorHandleDragRef.current = null;
+    floorHandlePointerCaptureSucceededRef.current = false;
     setActiveFloorHandleIndex(null);
 
     const objectHandlePointerId = event?.pointerId ?? objectHandleDragPointerIdRef.current;
@@ -11038,10 +12827,54 @@ export default function ThreeRoomLab({
     setIsFloorAnchorDragActive(false);
   };
 
+  const handleFloorOverlayPointerLeave = (event: PointerEvent<SVGSVGElement>) => {
+    if (!floorHandleDragRef.current || floorHandlePointerCaptureSucceededRef.current) return;
+    stopFloorHandleDrag(event);
+  };
+
+  // CP1C-B freezes the pointer-normalization basis at drag start. If resize or
+  // layout changes that basis, end the gesture at its last valid authority
+  // state rather than reinterpreting the same client coordinates.
+  useEffect(() => {
+    const drag = floorHandleDragRef.current;
+    if (!drag) return;
+    const overlay = floorOverlayRef.current;
+    const rect = overlay?.getBoundingClientRect();
+    const currentRect =
+      rect &&
+      Number.isFinite(rect.left) &&
+      Number.isFinite(rect.top) &&
+      Number.isFinite(rect.width) &&
+      Number.isFinite(rect.height) &&
+      rect.width > 0 &&
+      rect.height > 0
+        ? { left: rect.left, top: rect.top, width: rect.width, height: rect.height }
+        : null;
+    if (currentRect && floorDragOverlayRectEquals(drag.overlayRect, currentRect)) return;
+
+    const pointerId = dragPointerIdRef.current;
+    floorHandleDragRef.current = null;
+    dragPointerIdRef.current = null;
+    finalizeActiveSupportPointDragRef.current(pointerId ?? undefined);
+    setActiveFloorHandleIndex(null);
+    if (pointerId !== null) {
+      try {
+        floorOverlayRef.current?.releasePointerCapture(pointerId);
+      } catch {
+        // Capture may already have ended because the overlay changed.
+      }
+    }
+    setSupportInteractionStatus("Floor handle drag stopped because the overlay size changed.");
+  }, [rendererSize.height, rendererSize.width]);
+
   const handleCopySceneJson = async () => {
     const exportedAtIso = new Date().toISOString();
-    const payload = buildCurrentSceneStatePayload(exportedAtIso);
-    const jsonText = JSON.stringify(payload, null, 2);
+    const result = assembleCurrentSceneState(exportedAtIso);
+    if (!result.ok) {
+      setSceneJsonStatus({ kind: "error", message: `Copy unavailable: ${result.reason}` });
+      return;
+    }
+    const jsonText = JSON.stringify(result.payload, null, 2);
     setSceneStateExportedAt(exportedAtIso);
     try {
       await navigator.clipboard.writeText(jsonText);
@@ -11060,8 +12893,12 @@ export default function ThreeRoomLab({
 
   const handleDownloadSceneJson = () => {
     const exportedAtIso = new Date().toISOString();
-    const payload = buildCurrentSceneStatePayload(exportedAtIso);
-    const jsonText = JSON.stringify(payload, null, 2);
+    const result = assembleCurrentSceneState(exportedAtIso);
+    if (!result.ok) {
+      setSceneJsonStatus({ kind: "error", message: `Download unavailable: ${result.reason}` });
+      return;
+    }
+    const jsonText = JSON.stringify(result.payload, null, 2);
     setSceneStateExportedAt(exportedAtIso);
     try {
       const blob = new Blob([jsonText], { type: "application/json" });
@@ -11086,8 +12923,52 @@ export default function ThreeRoomLab({
     }
   };
 
+  const handleDownloadAfcCameraFreezeReceipt = () => {
+    if (
+      !afcCameraFreezeReceipt ||
+      afcCameraFreezeStatus.kind !== "ready"
+    ) {
+      return;
+    }
+    const jsonText = serializeCalibratedCameraFreezeReceipt(
+      afcCameraFreezeReceipt
+    );
+    try {
+      const blob = new Blob([jsonText], {
+        type: "application/json",
+      });
+      const objectUrl = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = objectUrl;
+      anchor.download =
+        buildCalibratedCameraFreezeReceiptFilename(
+          afcCameraFreezeReceipt
+        );
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      URL.revokeObjectURL(objectUrl);
+    } catch (error) {
+      const message =
+        error instanceof Error
+          ? error.message
+          : "Receipt download failed.";
+      setAfcCameraFreezeStatus({
+        kind: "failed",
+        attemptId:
+          afcCameraFreezeReceipt.payload.afc.attemptId,
+        reason: message,
+      });
+    }
+  };
+
   const applyValidatedSceneState = (validated: ImportedSceneValidated, nextExportedAt: string): boolean => {
     if (refuseModelMutationWhileAttached()) return false;
+    // Supports-bearing imports install persisted Floor authority directly, so
+    // they bypass the ordinary mutation commit. They are still external to the
+    // active Perspective session and must cancel its queued keyboard work.
+    invalidatePerspectiveAdjustSession();
+    clearVerifiedAfcFloorCameraBinding();
     // Phase 2J-B3: any prior calibrated-camera mode/snapshot must not survive an
     // import. We always drop back to legacy first so a stale pre-import snapshot
     // can never leak into the restored scene; calibrated mode is only ever
@@ -11100,19 +12981,20 @@ export default function ThreeRoomLab({
     setRoomImageUrl(nextRoomImageUrl);
     applyRoomImageRequest(nextRoomImageUrlTrimmed);
 
-    applyContainerFloorPolygon(validated.floor.polygon, {
-      status: "needs_review",
-      source: "derived",
-    });
     if (validated.supports) {
-      // Source authority is restored exactly; container-normalized polygons and
-      // every support derivation remain memoized presentation/runtime outputs.
-      setSourceNormalizedFloorPolygon(validated.supports.floor.sourceNormalizedPolygon);
+      // The persisted source polygon is canonical. The container polygon is
+      // only a provisional display mirror until the source projection refreshes.
+      setSourceNormalizedFloorPolygon(
+        validated.supports.floor.sourceNormalizedPolygon.map((point) => ({ x: point.x, y: point.y }))
+      );
+      setFloorPolygon(validated.floor.polygon.map((point) => ({ x: point.x, y: point.y })));
       setFloorSupportReviewStatus(validated.supports.floor.reviewStatus);
       setFloorSupportSource(validated.supports.floor.source);
       setFloorSupportImageBasis(validated.supports.floor.supportImageBasis);
       setFloorPolygonAuthorityEligible(validated.supports.floor.authorityEligible);
-      floorPolygonAuthorityKeyRef.current = buildFloorPolygonAuthorityKey(validated.floor.polygon);
+      floorPolygonAuthorityKeyRef.current = buildDurableSourceFloorAuthorityKey(
+        validated.supports.floor.sourceNormalizedPolygon
+      );
       setWallSupportDrafts({
         wall_back: validated.supports.walls.wall_back?.draft ?? createUnavailableWallDraft("wall_back"),
         wall_left: validated.supports.walls.wall_left?.draft ?? createUnavailableWallDraft("wall_left"),
@@ -11128,11 +13010,24 @@ export default function ThreeRoomLab({
     } else {
       // Legacy v0 scenes had no support authority. Never infer it from the
       // restored floor/container geometry or fabricate confirmation provenance.
+      const legacyFloorInstalled = applyContainerFloorPolygon(validated.floor.polygon, {
+        status: "needs_review",
+        source: "derived",
+      });
+      if (!legacyFloorInstalled) return false;
       setWallSupportDrafts(createInitialWallDrafts());
       setWallSupportImageBases({ wall_back: null, wall_left: null, wall_right: null });
       setCeilingSupportDraft(createUnavailableCeilingDraft());
       setCeilingSupportImageBasis(null);
     }
+    setVerticalEvidence(validated.verticalEvidence);
+    setVerticalEvidenceStatus(
+      validated.verticalEvidenceDegradationReason
+        ? `Imported vertical evidence was discarded fail-closed: ${validated.verticalEvidenceDegradationReason}`
+        : validated.verticalEvidence
+          ? "Imported vertical evidence restored; currentness will be re-evaluated from current source inputs."
+          : "No vertical evidence collection in imported scene."
+    );
     if (validated.modelPath !== null) {
       setModelPathInput(validated.modelPath);
       setModelPath(validated.modelPath);
@@ -11212,7 +13107,6 @@ export default function ThreeRoomLab({
     const nextRestoreRequestId = calibrationRestoreRequestIdRef.current + 1;
     calibrationRestoreRequestIdRef.current = nextRestoreRequestId;
     if (validated.calibration.kind === "valid") {
-      setFloorPolygonAuthorityEligible(true);
       // Restore the persisted FOV assumption so the existing camera-pose
       // derivation re-solves against the imported floor + current frame.
       setCameraPoseFovYDeg(
@@ -11233,13 +13127,16 @@ export default function ThreeRoomLab({
           : "Calibration pending: waiting for image and frame to become usable."
       );
     } else {
-      if (
-        validated.calibration.kind === "ignored" &&
-        validated.calibration.reason === "basis_legacy_receipt_missing"
-      ) {
-        setFloorPolygonAuthorityEligible(false);
-      } else {
-        setFloorPolygonAuthorityEligible(true);
+      // Supports-bearing v1/v2 scenes retain the persisted eligibility exactly.
+      // Legacy v0 scenes have no persisted support lifecycle, so keep their
+      // established calibration-degradation fallback.
+      if (!validated.supports) {
+        setFloorPolygonAuthorityEligible(
+          !(
+            validated.calibration.kind === "ignored" &&
+            validated.calibration.reason === "basis_legacy_receipt_missing"
+          )
+        );
       }
       setPendingCalibrationRestore(null);
       if (validated.calibration.kind === "ignored") {
@@ -11296,7 +13193,7 @@ export default function ThreeRoomLab({
     }
 
     if (!applyValidatedSceneState(validated, validated.exportedAt ?? "imported-scene")) {
-      setImportSceneStatus({ kind: "error", message: "Detach the object before restoring a scene." });
+      setImportSceneStatus({ kind: "error", message: LEGACY_V0_FLOOR_PROJECTION_NOT_READY_MESSAGE });
       return;
     }
     setImportSceneStatus({
@@ -11315,8 +13212,12 @@ export default function ThreeRoomLab({
 
   const handleSaveLocalDraft = () => {
     const exportedAtIso = new Date().toISOString();
-    const payload = buildCurrentSceneStatePayload(exportedAtIso);
-    const jsonText = JSON.stringify(payload);
+    const result = assembleCurrentSceneState(exportedAtIso);
+    if (!result.ok) {
+      setLocalDraftStatus({ kind: "error", message: `Save unavailable: ${result.reason}` });
+      return;
+    }
+    const jsonText = JSON.stringify(result.payload);
     try {
       window.localStorage.setItem(LOCAL_DRAFT_STORAGE_KEY, jsonText);
       setLocalDraftLastSavedAt(exportedAtIso);
@@ -11389,7 +13290,7 @@ export default function ThreeRoomLab({
 
     const restoredAt = validated.exportedAt ?? "restored-local-draft";
     if (!applyValidatedSceneState(validated, restoredAt)) {
-      setLocalDraftStatus({ kind: "error", message: "Detach the object before restoring a local draft." });
+      setLocalDraftStatus({ kind: "error", message: LEGACY_V0_FLOOR_PROJECTION_NOT_READY_MESSAGE });
       return;
     }
     setLocalDraftLastSavedAt(validated.exportedAt ?? null);
@@ -12074,6 +13975,7 @@ export default function ThreeRoomLab({
             style={{ aspectRatio: "16 / 10" }}
           >
             {roomImageUrl ? (
+              /* eslint-disable-next-line @next/next/no-img-element -- Operator-supplied URL may not be on the Next image allowlist. naturalWidth/naturalHeight feed intrinsic scene geometry. Replacing with next/image would change measurement/loading semantics. */
               <img
                 src={roomImageUrl}
                 alt="Room base"
@@ -12104,19 +14006,20 @@ export default function ThreeRoomLab({
               </div>
             )}
             <div ref={canvasHostRef} className="pointer-events-none absolute inset-0 z-10" />
-            {showFloorOverlay && (
-              <svg
-                ref={floorOverlayRef}
-                className="absolute inset-0 z-20 h-full w-full"
-                viewBox="0 0 100 100"
-                preserveAspectRatio="none"
-                onPointerDown={handleFloorOverlayPointerDown}
-                onPointerMove={handleFloorOverlayPointerMove}
-                onPointerUp={stopFloorHandleDrag}
-                onPointerCancel={stopFloorHandleDrag}
-                onPointerLeave={stopFloorHandleDrag}
-                style={{ touchAction: "none" }}
-              >
+            <svg
+              ref={floorOverlayRef}
+              className="absolute inset-0 z-20 h-full w-full"
+              viewBox="0 0 100 100"
+              preserveAspectRatio="none"
+              onPointerDown={handleFloorOverlayPointerDown}
+              onPointerMove={handleFloorOverlayPointerMove}
+              onPointerUp={stopFloorHandleDrag}
+              onPointerCancel={stopFloorHandleDrag}
+              onLostPointerCapture={stopFloorHandleDrag}
+              onPointerLeave={handleFloorOverlayPointerLeave}
+              style={{ touchAction: "none" }}
+            >
+              {showFloorOverlay && (
                 <polygon
                   points={floorPolygonPointsAttribute}
                   fill="#ffffff"
@@ -12126,6 +14029,7 @@ export default function ThreeRoomLab({
                   strokeWidth={1.2}
                   pointerEvents="none"
                 />
+              )}
                 {WALL_SUPPORT_KINDS.map((kind) => {
                   const polygon = wallContainerPolygons[kind];
                   const draft = wallSupportDrafts[kind];
@@ -12179,18 +14083,30 @@ export default function ThreeRoomLab({
                           <circle
                             cx={snap.targetContainerNorm.x * 100}
                             cy={snap.targetContainerNorm.y * 100}
-                            r={2.6}
+                            r={snap.snapKind === "seam" ? 2.2 : 2.6}
                             fill="none"
-                            stroke="#f8fafc"
+                            stroke={snap.snapKind === "seam" ? "#67e8f9" : "#f8fafc"}
                             strokeOpacity={0.95}
                             strokeWidth={0.55}
-                            strokeDasharray={snap.snapped ? undefined : "0.9 0.65"}
+                            strokeDasharray={
+                              snap.snapKind === "seam"
+                                ? "0.65 0.45"
+                                : snap.snapped
+                                  ? undefined
+                                  : "0.9 0.65"
+                            }
                           />
                           <circle
                             cx={polygon[snap.index].x * 100}
                             cy={polygon[snap.index].y * 100}
                             r={1.15}
-                            fill={snap.snapped ? "#f8fafc" : presentation.color}
+                            fill={
+                              snap.snapped
+                                ? snap.snapKind === "seam"
+                                  ? "#67e8f9"
+                                  : "#f8fafc"
+                                : presentation.color
+                            }
                             stroke="#020617"
                             strokeWidth={0.42}
                           />
@@ -12201,8 +14117,12 @@ export default function ThreeRoomLab({
                             fontSize="1.75"
                             fontWeight="700"
                           >
-                            {snap.snapped ? `Snapped to Floor ${snap.floorCorner}` : `Snap target: Floor ${snap.floorCorner}`}
-                            {snap.snapped && (
+                            {snap.snapKind === "seam"
+                              ? `Snapped to Floor seam ${snap.floorSeam?.startFloorCorner}–${snap.floorSeam?.endFloorCorner}`
+                              : snap.snapped
+                                ? `Snapped to Floor ${snap.floorCorner}`
+                                : `Snap target: Floor ${snap.floorCorner}`}
+                            {snap.snapKind === "corner" && snap.snapped && (
                               <tspan x={snap.targetContainerNorm.x * 100 + 3} dy="2.05" fontWeight="500">
                                 Shared structural corner
                               </tspan>
@@ -12421,23 +14341,27 @@ export default function ThreeRoomLab({
                     )}
                   </g>
                 )}
-                {!supportEditInteractionStates.floor.focused && floorPolygon.map((point, index) => (
-                  <circle
-                    key={`floor-handle-${index}`}
-                    cx={point.x * 100}
-                    cy={point.y * 100}
-                    r={2.1}
-                    fill={activeFloorHandleIndex === index ? "#f97316" : "#22d3ee"}
-                    stroke="#020617"
-                    strokeOpacity={1}
-                    strokeWidth={0.75}
-                    className={supportEditInteractionStates.floor.interactive ? "cursor-grab active:cursor-grabbing" : "cursor-not-allowed"}
-                    pointerEvents={supportEditInteractionStates.floor.interactive ? "all" : "none"}
-                    aria-disabled={!supportEditInteractionStates.floor.interactive}
-                    aria-label={`Floor polygon handle ${index + 1}`}
-                    onPointerDown={(event) => handleFloorHandlePointerDown(index, event)}
-                  />
-                ))}
+                {showFloorOverlay && !supportEditInteractionStates.floor.focused && floorHandlePresentations.map((presentation, index) => {
+                  if (!presentation) return null;
+                  return (
+                    <circle
+                      key={`floor-handle-${index}`}
+                      cx={presentation.point.x * 100}
+                      cy={presentation.point.y * 100}
+                      r={2.1}
+                      fill={activeFloorHandleIndex === index ? "#f97316" : presentation.offFrame ? "#a78bfa" : "#22d3ee"}
+                      stroke="#020617"
+                      strokeOpacity={1}
+                      strokeWidth={presentation.offFrame ? 0.95 : 0.75}
+                      strokeDasharray={presentation.offFrame ? "1.1 0.8" : undefined}
+                      className={supportEditInteractionStates.floor.interactive ? "cursor-grab active:cursor-grabbing" : "cursor-not-allowed"}
+                      pointerEvents={supportEditInteractionStates.floor.interactive ? "all" : "none"}
+                      aria-disabled={!supportEditInteractionStates.floor.interactive}
+                      aria-label={describeFloorHandleAccessibleLabel(index, FLOOR_CORNER_LABELS[index] ?? `corner ${index + 1}`, presentation)}
+                      onPointerDown={(event) => handleFloorHandlePointerDown(index, event)}
+                    />
+                  );
+                })}
                 {/* A focused support renders only its edit affordances here, after
                     every base support-control group. Fills and grids stay in their
                     original presentation layer, while object and attachment
@@ -12445,6 +14369,7 @@ export default function ThreeRoomLab({
                 {supportEditRenderOrder.map((kind) => {
                   const editInteraction = supportEditInteractionStates[kind];
                   if (!editInteraction.focused || !editInteraction.showEditingControls) return null;
+                  if (kind === "floor" && !showFloorOverlay) return null;
                   if (kind === "floor") {
                     return (
                       <g key="focused-floor-edit-controls">
@@ -12456,23 +14381,27 @@ export default function ThreeRoomLab({
                           strokeWidth={1.2}
                           pointerEvents="none"
                         />
-                        {floorPolygon.map((point, index) => (
-                          <circle
-                            key={`focused-floor-handle-${index}`}
-                            cx={point.x * 100}
-                            cy={point.y * 100}
-                            r={2.1}
-                            fill={activeFloorHandleIndex === index ? "#f97316" : "#22d3ee"}
-                            stroke="#020617"
-                            strokeOpacity={1}
-                            strokeWidth={0.75}
-                            className={editInteraction.interactive ? "cursor-grab active:cursor-grabbing" : "cursor-not-allowed"}
-                            pointerEvents={editInteraction.interactive ? "all" : "none"}
-                            aria-disabled={!editInteraction.interactive}
-                            aria-label={`Floor polygon handle ${index + 1}`}
-                            onPointerDown={(event) => handleFloorHandlePointerDown(index, event)}
-                          />
-                        ))}
+                        {floorHandlePresentations.map((presentation, index) => {
+                          if (!presentation) return null;
+                          return (
+                            <circle
+                              key={`focused-floor-handle-${index}`}
+                              cx={presentation.point.x * 100}
+                              cy={presentation.point.y * 100}
+                              r={2.1}
+                              fill={activeFloorHandleIndex === index ? "#f97316" : presentation.offFrame ? "#a78bfa" : "#22d3ee"}
+                              stroke="#020617"
+                              strokeOpacity={1}
+                              strokeWidth={presentation.offFrame ? 0.95 : 0.75}
+                              strokeDasharray={presentation.offFrame ? "1.1 0.8" : undefined}
+                              className={editInteraction.interactive ? "cursor-grab active:cursor-grabbing" : "cursor-not-allowed"}
+                              pointerEvents={editInteraction.interactive ? "all" : "none"}
+                              aria-disabled={!editInteraction.interactive}
+                              aria-label={describeFloorHandleAccessibleLabel(index, FLOOR_CORNER_LABELS[index] ?? `corner ${index + 1}`, presentation)}
+                              onPointerDown={(event) => handleFloorHandlePointerDown(index, event)}
+                            />
+                          );
+                        })}
                       </g>
                     );
                   }
@@ -12566,7 +14495,7 @@ export default function ThreeRoomLab({
                     </g>
                   );
                 })}
-                {lastAcceptedFloorClick && (
+                {isFloorAnchorDragEffectivelyEnabled && lastAcceptedFloorClick && (
                   <circle
                     cx={lastAcceptedFloorClick.x * 100}
                     cy={lastAcceptedFloorClick.y * 100}
@@ -12622,7 +14551,7 @@ export default function ThreeRoomLab({
                     </text>
                   </g>
                 )}
-                {objectTransformMode === "detached" &&
+                {showCalibratedObjectControls &&
                   calibratedMoveHandleStatus.available && calibratedMoveHandleAnchorProjection.normalized && (
                   <g>
                     <circle
@@ -12681,7 +14610,8 @@ export default function ThreeRoomLab({
                     </text>
                   </g>
                 )}
-                {calibratedRotateHandleStatus.available && calibratedMoveHandleAnchorProjection.normalized && (
+                {showCalibratedObjectControls &&
+                  calibratedRotateHandleStatus.available && calibratedMoveHandleAnchorProjection.normalized && (
                   <g>
                     <line
                       x1={calibratedMoveHandleAnchorProjection.normalized.x * 100}
@@ -12728,7 +14658,8 @@ export default function ThreeRoomLab({
                     </text>
                   </g>
                 )}
-                {calibratedScaleHandleStatus.available && calibratedMoveHandleAnchorProjection.normalized && (
+                {showCalibratedObjectControls &&
+                  calibratedScaleHandleStatus.available && calibratedMoveHandleAnchorProjection.normalized && (
                   <g>
                     <line
                       x1={calibratedMoveHandleAnchorProjection.normalized.x * 100}
@@ -12775,7 +14706,8 @@ export default function ThreeRoomLab({
                     </text>
                   </g>
                 )}
-                {calibratedLiftHandleStatus.available &&
+                {showCalibratedObjectControls &&
+                  calibratedLiftHandleStatus.available &&
                   calibratedLiftHandleAnchorProjection.normalized &&
                   calibratedLiftHandlePlacement.available && (
                   <g>
@@ -13058,8 +14990,12 @@ export default function ThreeRoomLab({
                     </text>
                   </g>
                 )}
-              </svg>
-            )}
+            </svg>
+            {afcMainViewportProjection.kind === "projected" ? (
+              // Separate from floorOverlayRef so this evidence layer cannot
+              // receive its pointer handlers or authority-bearing state.
+              <AfcMainViewportEvidenceOverlay projection={afcMainViewportProjection} />
+            ) : null}
             {showRoomEnvelopeWireframe && roomEnvelopeOverlay.segments.length > 0 && (
               <svg
                 className="pointer-events-none absolute inset-0 z-[25] h-full w-full"
@@ -13487,6 +15423,13 @@ export default function ThreeRoomLab({
               </>
             )}
           </div>
+          <div className="mt-3">
+            <AfcPerspectiveAdjustControl
+              {...perspectiveAdjustControlProps}
+              ariaLabel="Perspective Adjust (room viewport)"
+              compact
+            />
+          </div>
         </section>
 
         <section className="rounded-2xl border border-slate-800 bg-slate-900/70 p-4">
@@ -13553,7 +15496,7 @@ export default function ThreeRoomLab({
                   onChange={(event) => setIsObject2DHandlesEnabled(event.target.checked)}
                   className="accent-emerald-400"
                 />
-                Enable object 2D handles
+                Show object controls
               </label>
               <button
                 type="button"
@@ -13574,7 +15517,6 @@ export default function ThreeRoomLab({
               <button
                 type="button"
                 onClick={() => {
-                  cancelPendingCalibrationRestoreAfterManualGeometryChange();
                   applyContainerFloorPolygon(DEFAULT_FLOOR_POLYGON, {
                     status: "needs_review",
                     source: "manual",
@@ -13618,13 +15560,19 @@ export default function ThreeRoomLab({
           )}
           {isObject2DHandlesEffectivelyEnabled && !lastAcceptedFloorClick && (
             <p className="mt-1 text-xs text-amber-300">
-              Enable object 2D handles is on. Click inside the floor polygon first to create an anchor.
+              Show object controls is on. Click inside the floor polygon first to create an anchor.
             </p>
           )}
           {isObject2DHandlesEffectivelyEnabled && lastAcceptedFloorClick && (
             <p className="mt-1 text-xs text-sky-200">
               Overlay handles are attached to the active object anchor. Drag Move/Height/Rotate/Scale handles to manipulate the
               active 3D object.
+            </p>
+          )}
+          {showCalibratedObjectControls && (
+            <p className="mt-1 text-xs text-sky-200">
+              Move: drag the blue handle to move on the calibrated ground plane. Lift: drag the violet handle to
+              raise/lower. Rotate: drag the amber handle to rotate. Scale: drag the green handle to scale.
             </p>
           )}
           <div className="mt-2 rounded-lg border border-slate-800 bg-slate-950/50 p-2 text-[11px] text-slate-300">
@@ -18211,6 +20159,433 @@ export default function ThreeRoomLab({
         </section>
 
         <CollapsibleSection
+          title="Projection coherence diagnostics"
+          description="Diagnostic only — does not change camera, geometry, support confirmation, attachment, or Room Envelope state."
+          open={isProjectionCoherenceDiagnosticsOpen}
+          onToggle={() => setIsProjectionCoherenceDiagnosticsOpen((open) => !open)}
+          meta={
+            <span className="rounded bg-slate-500/15 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-slate-200">
+              read-only · v1
+            </span>
+          }
+        >
+          {(() => {
+            const diagnostic = projectionCoherenceDiagnostics;
+            const number = (value: number | null, digits = 2, suffix = "") =>
+              value !== null && Number.isFinite(value) ? `${value.toFixed(digits)}${suffix}` : "unavailable";
+            const availabilityNumber = (value: { state: string; value?: unknown; reason?: string }, digits = 3, suffix = "") =>
+              value.state === "available" && typeof value.value === "number"
+                ? number(value.value, digits, suffix)
+                : `unavailable — ${value.reason ?? "insufficient evidence"}`;
+            const raw = diagnostic.structural.rawObservedTilt;
+            const residual = diagnostic.structural.locationMatchedResidual;
+            return (
+              <div className="space-y-4 text-[11px] text-slate-300">
+                <div className="rounded-lg border border-slate-700 bg-slate-950/60 p-3">
+                  <p className="text-slate-100">Provenance and availability</p>
+                  <dl className="mt-2 grid gap-x-4 gap-y-1 sm:grid-cols-2">
+                    <div className="flex justify-between gap-2"><dt className="text-slate-500">diagnostic / camera version</dt><dd>{diagnostic.provenance.diagnosticVersion} / {diagnostic.provenance.calibratedCameraVersion ?? "unavailable"}</dd></div>
+                    <div className="flex justify-between gap-2"><dt className="text-slate-500">camera applied</dt><dd>{diagnostic.provenance.cameraAppliedAtIso ?? "unavailable"}</dd></div>
+                    <div className="flex justify-between gap-2"><dt className="text-slate-500">FOV / frame</dt><dd>{number(diagnostic.provenance.fovDeg, 2, "°")} / {diagnostic.provenance.frameWidth ?? "—"} × {diagnostic.provenance.frameHeight ?? "—"}</dd></div>
+                    <div className="flex justify-between gap-2"><dt className="text-slate-500">image basis</dt><dd>{diagnostic.provenance.imageBasisId ?? "unavailable"} · {diagnostic.provenance.imageBasisFingerprint ?? "unavailable"}</dd></div>
+                    <div className="flex justify-between gap-2"><dt className="text-slate-500">Floor key</dt><dd className="max-w-[18rem] truncate">{diagnostic.provenance.floorPolygonKey ?? "unavailable"}</dd></div>
+                    <div className="flex justify-between gap-2"><dt className="text-slate-500">Floor mapping / wall policy</dt><dd>{number(diagnostic.provenance.floorWorldWidth, 3)} × {number(diagnostic.provenance.floorWorldDepth, 3)} m · {diagnostic.provenance.wallGeometryPolicyVersion}</dd></div>
+                  </dl>
+                </div>
+
+                <div className="rounded-lg border border-slate-700 bg-slate-950/60 p-3">
+                  <p className="text-slate-100">Camera</p>
+                  <dl className="mt-2 grid gap-x-4 gap-y-1 sm:grid-cols-2">
+                    <div className="flex justify-between gap-2"><dt className="text-slate-500">signed camera roll</dt><dd>{availabilityNumber(diagnostic.camera.roll, 3, "°")}</dd></div>
+                    <div className="flex justify-between gap-2"><dt className="text-slate-500">signed view yaw</dt><dd>{availabilityNumber(diagnostic.camera.yaw, 3, "°")}</dd></div>
+                    <div className="flex justify-between gap-2"><dt className="text-slate-500">normalized lateral offset</dt><dd>{availabilityNumber(diagnostic.camera.normalizedLateralOffset, 3)}</dd></div>
+                  </dl>
+                </div>
+
+                <div className="rounded-lg border border-slate-700 bg-slate-950/60 p-3">
+                  <p className="text-slate-100">Structural evidence summary</p>
+                  <p className="mt-1 text-slate-500">Length-weighted medians use the first ordered value whose cumulative positive weight reaches 50%. Neither estimator is universally authoritative.</p>
+                  {raw.state === "available" ? (
+                    <dl className="mt-2 grid gap-x-4 gap-y-1 sm:grid-cols-2">
+                      <div className="flex justify-between gap-2"><dt className="text-slate-500">raw observed tilt</dt><dd>{number(raw.value.valueDeg, 3, "°")}</dd></div>
+                      <div className="flex justify-between gap-2"><dt className="text-slate-500">raw range / weighted MAD</dt><dd>{number(raw.value.rangeDeg, 3, "°")} / {number(raw.value.weightedMadDeg, 3, "°")}</dd></div>
+                      <div className="flex justify-between gap-2"><dt className="text-slate-500">raw observations / physical verticals</dt><dd>{raw.value.eligibleObservationCount} / {raw.value.distinctPhysicalVerticalCount}</dd></div>
+                      <div className="flex justify-between gap-2"><dt className="text-slate-500">raw leave-one-out range</dt><dd>{number(raw.value.leaveOneOutMinimumDeg, 3, "°")} to {number(raw.value.leaveOneOutMaximumDeg, 3, "°")} ({number(raw.value.leaveOneOutRangeDeg, 3, "°")})</dd></div>
+                    </dl>
+                  ) : <p className="mt-2 text-slate-400">Raw observed tilt: {raw.reason}</p>}
+                  {residual.state === "available" ? (
+                    <dl className="mt-2 grid gap-x-4 gap-y-1 sm:grid-cols-2">
+                      <div className="flex justify-between gap-2"><dt className="text-slate-500">location-matched residual</dt><dd>{number(residual.value.valueDeg, 3, "°")}</dd></div>
+                      <div className="flex justify-between gap-2"><dt className="text-slate-500">residual range / weighted MAD</dt><dd>{number(residual.value.rangeDeg, 3, "°")} / {number(residual.value.weightedMadDeg, 3, "°")}</dd></div>
+                      <div className="flex justify-between gap-2"><dt className="text-slate-500">residual observations / physical verticals</dt><dd>{residual.value.eligibleObservationCount} / {residual.value.distinctPhysicalVerticalCount}</dd></div>
+                      <div className="flex justify-between gap-2"><dt className="text-slate-500">residual leave-one-out range</dt><dd>{number(residual.value.leaveOneOutMinimumDeg, 3, "°")} to {number(residual.value.leaveOneOutMaximumDeg, 3, "°")} ({number(residual.value.leaveOneOutRangeDeg, 3, "°")})</dd></div>
+                    </dl>
+                  ) : <p className="mt-2 text-slate-400">Location-matched residual: {residual.reason}</p>}
+                  <dl className="mt-2 grid gap-x-4 gap-y-1 sm:grid-cols-2">
+                    <div className="flex justify-between gap-2"><dt className="text-slate-500">camera − raw structural</dt><dd>{number(diagnostic.comparison.signedRawDisagreementDeg, 3, "°")} (abs {number(diagnostic.comparison.absoluteRawDisagreementDeg, 3, "°")})</dd></div>
+                    <div className="flex justify-between gap-2"><dt className="text-slate-500">comparison availability</dt><dd>{diagnostic.comparison.unavailableReason ?? "available"}</dd></div>
+                  </dl>
+                </div>
+
+                <div className="rounded-lg border border-slate-700 bg-slate-950/60 p-3">
+                  <p className="text-slate-100">Per-edge evidence</p>
+                  {diagnostic.structural.observations.length === 0 ? <p className="mt-2 text-slate-400">No derivation-successful wall edges are available for structural observation.</p> : (
+                    <div className="mt-2 space-y-2">
+                      {diagnostic.structural.observations.map((observation) => (
+                        <div key={`${observation.wallKind}-${observation.sideIndex}`} className="rounded border border-slate-800 px-2 py-1.5">
+                          <div className="flex flex-wrap justify-between gap-2 text-slate-100"><span>{observation.wallKind.replace("wall_", "")} side {observation.sideIndex} · {observation.physicalVerticalId}</span><span>{observation.inclusion}{observation.exclusionReason ? ` — ${observation.exclusionReason}` : ""}</span></div>
+                          <div className="mt-1 grid gap-x-4 gap-y-1 sm:grid-cols-2 text-slate-400">
+                            <span>observed / predicted / residual: {number(observation.observedTiltDeg, 3, "°")} / {number(observation.predictedWorldUpTiltDeg, 3, "°")} / {number(observation.locationMatchedResidualDeg, 3, "°")}</span>
+                            <span>source length: {number(observation.sourcePixelLength, 2, " px")} · frame touching/coincident: {observation.frameTouching ? "yes" : "no"} / {observation.frameCoincident ? "yes" : "no"}</span>
+                            <span>review/current/runtime: {observation.reviewState.replaceAll("_", " ")} / {observation.confirmationCurrent ? "yes" : "no"} / {observation.runtimeUsable ? "yes" : "no"}</span>
+                            <span>source endpoints: ({number(observation.sourcePixelEndpoints.lower.x, 2)}, {number(observation.sourcePixelEndpoints.lower.y, 2)}) → ({number(observation.sourcePixelEndpoints.upper.x, 2)}, {number(observation.sourcePixelEndpoints.upper.y, 2)})</span>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                <div className="rounded-lg border border-slate-700 bg-slate-950/60 p-3">
+                  <p className="text-slate-100">Attachment-anchor projection</p>
+                  {diagnostic.anchorProjection.state === "available" ? (
+                    <dl className="mt-2 grid gap-x-4 gap-y-1 sm:grid-cols-2">
+                      <div className="flex justify-between gap-2"><dt className="text-slate-500">1 m world-up tilt</dt><dd>{number(diagnostic.anchorProjection.value.tiltDeg, 3, "°")}</dd></div>
+                      <div className="flex justify-between gap-2"><dt className="text-slate-500">horizontal / projected pixels per metre</dt><dd>{number(diagnostic.anchorProjection.value.horizontalPixelsPerVerticalMetre, 2, " px/m")} / {number(diagnostic.anchorProjection.value.projectedPixelsPerVerticalMetre, 2, " px/m")}</dd></div>
+                      <div className="flex justify-between gap-2"><dt className="text-slate-500">both endpoints in front</dt><dd>{diagnostic.anchorProjection.value.bothInFront ? "yes" : "no"}</dd></div>
+                    </dl>
+                  ) : <p className="mt-2 text-slate-400">{diagnostic.anchorProjection.reason}</p>}
+                </div>
+
+                <div className="rounded-lg border border-slate-700 bg-slate-950/60 p-3">
+                  <p className="text-slate-100">Wall reconstruction</p>
+                  <div className="mt-2 space-y-2">
+                    {diagnostic.walls.map((wall) => (
+                      <div key={wall.kind} className="rounded border border-slate-800 px-2 py-1.5">
+                        <div className="flex flex-wrap justify-between gap-2 text-slate-100"><span>{wall.kind.replace("wall_", "")}: {wall.derivation}</span><span>review/current/runtime: {wall.reviewState.replaceAll("_", " ")} / {wall.confirmationCurrent ? "yes" : "no"} / {wall.runtimeUsable ? "yes" : "no"}</span></div>
+                        {wall.derivation === "refused" ? <p className="mt-1 text-slate-400">refusal: {wall.refusalReasons.join(" · ") || "unspecified"}</p> : null}
+                        <div className="mt-1 grid gap-x-4 gap-y-1 sm:grid-cols-2 text-slate-400">
+                          <span>drift 1 / 2: {number(wall.endpoint1LateralDriftM, 3, " m")} / {number(wall.endpoint2LateralDriftM, 3, " m")}</span>
+                          <span>height 1 / 2: {number(wall.endpoint1HeightM, 3, " m")} / {number(wall.endpoint2HeightM, 3, " m")}</span>
+                          <span>lean 1 / 2: {number(wall.endpoint1LeanDeg, 2, "°")} / {number(wall.endpoint2LeanDeg, 2, "°")}</span>
+                          <span>conditioning 1 / 2 / min: {number(wall.endpoint1UpperRayPlaneDenominator, 4)} / {number(wall.endpoint2UpperRayPlaneDenominator, 4)} / {number(wall.minimumUpperRayPlaneDenominator, 4)}</span>
+                          <span>refusal floor / margin / multiple: {number(wall.refusalFloor, 3)} / {number(wall.conditioningMargin, 3)} / {number(wall.conditioningMultiple, 2, "×")}</span>
+                          <span>reprojection max / lower seam 1 / 2: {number(wall.maximumReprojectionResidualPx, 2, " px")} / {number(wall.lowerSeamDisagreementEndpoint1M, 3, " m")} / {number(wall.lowerSeamDisagreementEndpoint2M, 3, " m")}</span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="rounded-lg border border-slate-700 bg-slate-950/60 p-3">
+                  <p className="text-slate-100">Floor reprojection</p>
+                  <p className="mt-1 text-slate-400">Good Floor reprojection does not establish vertical coherence.</p>
+                  {diagnostic.floorReprojection.state === "available" ? (
+                    <dl className="mt-2 grid gap-x-4 gap-y-1 sm:grid-cols-2">
+                      <div className="flex justify-between gap-2"><dt className="text-slate-500">CV average / maximum</dt><dd>{number(diagnostic.floorReprojection.value.cvAveragePx, 3, " px")} / {number(diagnostic.floorReprojection.value.cvMaximumPx, 3, " px")}</dd></div>
+                      <div className="flex justify-between gap-2"><dt className="text-slate-500">renderer average / maximum</dt><dd>{number(diagnostic.floorReprojection.value.rendererAveragePx, 3, " px")} / {number(diagnostic.floorReprojection.value.rendererMaximumPx, 3, " px")}</dd></div>
+                      <div className="flex justify-between gap-2"><dt className="text-slate-500">CV − renderer average / maximum</dt><dd>{number(diagnostic.floorReprojection.value.cvVsRendererAverageDifferencePx, 3, " px")} / {number(diagnostic.floorReprojection.value.cvVsRendererMaximumDifferencePx, 3, " px")}</dd></div>
+                      <div className="flex justify-between gap-2"><dt className="text-slate-500">CV per corner</dt><dd>{diagnostic.floorReprojection.value.cvPerCornerPx.map((value) => number(value, 3, " px")).join(" · ") || "unavailable"}</dd></div>
+                      <div className="flex justify-between gap-2"><dt className="text-slate-500">scale ratio</dt><dd>{number(diagnostic.floorReprojection.value.scaleRatio, 3)}</dd></div>
+                    </dl>
+                  ) : <p className="mt-2 text-slate-400">{diagnostic.floorReprojection.reason}</p>}
+                </div>
+              </div>
+            );
+          })()}
+        </CollapsibleSection>
+
+        <CollapsibleSection
+          title="Vertical Evidence"
+          description="Non-authoritative photographed wall-edge collection for calibrated-camera/v3 research. It cannot alter camera, geometry, supports, attachments, Room Envelope, or rendered objects."
+          open={isVerticalEvidenceOpen}
+          onToggle={() => setIsVerticalEvidenceOpen((open) => !open)}
+          meta={
+            <span className="rounded bg-amber-500/15 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-amber-100">
+              non-authoritative · v1
+            </span>
+          }
+        >
+          {(() => {
+            const runtime = verticalEvidenceRuntime;
+            const number = (value: number | null, digits = 3, suffix = "") =>
+              value !== null && Number.isFinite(value) ? `${value.toFixed(digits)}${suffix}` : "unavailable";
+            const runtimeBySuggestion = new Map(
+              runtime.observations.map((item) => [item.observation.suggestionSourceId, item])
+            );
+            return (
+              <div className="space-y-4 text-[11px] text-slate-300">
+                <div className="rounded-lg border border-amber-800/70 bg-amber-950/20 p-3 text-amber-100">
+                  <p>Suggestions are ephemeral. A record is persisted only after you explicitly select or exclude it. This panel has no solver, candidate camera, score, or Apply control.</p>
+                  <p className="mt-1 text-amber-200/80">Status: {verticalEvidenceStatus}</p>
+                </div>
+                <div className="rounded-lg border border-slate-700 bg-slate-950/60 p-3">
+                  <p className="text-slate-100">Collection assessment</p>
+                  <dl className="mt-2 grid gap-x-4 gap-y-1 sm:grid-cols-2">
+                    <div className="flex justify-between gap-2"><dt className="text-slate-500">assessment</dt><dd>{runtime.assessment}</dd></div>
+                    <div className="flex justify-between gap-2"><dt className="text-slate-500">eligible selected observations</dt><dd>{runtime.observations.filter((item) => item.eligible).length}</dd></div>
+                    <div className="flex justify-between gap-2"><dt className="text-slate-500">distinct physical verticals</dt><dd>{runtime.metrics.distinctPhysicalVerticalCount}</dd></div>
+                    <div className="flex justify-between gap-2"><dt className="text-slate-500">represented walls / same-wall-only</dt><dd>{runtime.metrics.representedWallCount} / {runtime.metrics.sameWallOnly ? "yes" : "no"}</dd></div>
+                  </dl>
+                  <p className="mt-2 text-slate-500">Only <span className="text-slate-300">insufficient</span> and <span className="text-slate-300">unclassified</span> are intentionally available in Package 1.</p>
+                </div>
+
+                <div className="rounded-lg border border-slate-700 bg-slate-950/60 p-3">
+                  <p className="text-slate-100">Current wall-edge suggestions</p>
+                  {runtime.suggestions.length === 0 ? (
+                    <p className="mt-2 text-slate-400">No currently runtime-usable, derivation-successful structural wall edges are available. Refused walls contribute nothing.</p>
+                  ) : (
+                    <div className="mt-2 space-y-2">
+                      {runtime.suggestions.map((suggestion) => {
+                        const existing = runtimeBySuggestion.get(suggestion.suggestionId);
+                        return (
+                          <div key={suggestion.suggestionId} className="rounded border border-slate-800 p-2">
+                            <div className="flex flex-wrap justify-between gap-2 text-slate-100">
+                              <span>{suggestion.wallKind.replace("wall_", "")} · {suggestion.physicalVerticalId}</span>
+                              <span>{existing ? `recorded: ${existing.observation.operatorDecision}` : "ephemeral"}</span>
+                            </div>
+                            <div className="mt-1 grid gap-x-4 gap-y-1 sm:grid-cols-2 text-slate-400">
+                              <span>source: ({number(suggestion.sourceNormalizedEndpoints.lower.x)}, {number(suggestion.sourceNormalizedEndpoints.lower.y)}) → ({number(suggestion.sourceNormalizedEndpoints.upper.x)}, {number(suggestion.sourceNormalizedEndpoints.upper.y)})</span>
+                              <span>wall key: {suggestion.wallPolygonKey}</span>
+                              <span>basis: {suggestion.imageBasisId} · {suggestion.imageBasisFingerprint}</span>
+                              <span>active raw residual: {number(suggestion.sourceResidualDeg, 3, "°")}</span>
+                              <span className="break-all">suggestion ID: {suggestion.suggestionId}</span>
+                            </div>
+                            <div className="mt-2 flex flex-wrap gap-2">
+                              <button type="button" onClick={() => recordVerticalEvidenceDecision(suggestion, "selected")} className="rounded border border-emerald-600/70 px-2 py-1 text-xs text-emerald-100">Select</button>
+                              <button type="button" onClick={() => recordVerticalEvidenceDecision(suggestion, "excluded")} className="rounded border border-slate-500 px-2 py-1 text-xs text-slate-200">Exclude</button>
+                              {existing ? <button type="button" onClick={() => clearVerticalEvidenceDecision(existing.observation.observationId)} className="rounded border border-amber-600/70 px-2 py-1 text-xs text-amber-100">Clear decision</button> : null}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+
+                <div className="rounded-lg border border-slate-700 bg-slate-950/60 p-3">
+                  <p className="text-slate-100">Persisted observations and provenance</p>
+                  {runtime.observations.length === 0 ? <p className="mt-2 text-slate-400">No operator decision has materialized an observation.</p> : (
+                    <div className="mt-2 space-y-2">
+                      {runtime.observations.map((item) => {
+                        const observation = item.observation;
+                        return (
+                          <div key={observation.observationId} className="rounded border border-slate-800 p-2">
+                            <div className="flex flex-wrap justify-between gap-2 text-slate-100">
+                              <span>{observation.wallKind.replace("wall_", "")} · {observation.physicalVerticalId}</span>
+                              <span>{observation.operatorDecision} · {item.usability}{item.eligible ? " · eligible" : ""}</span>
+                            </div>
+                            <div className="mt-1 grid gap-x-4 gap-y-1 sm:grid-cols-2 text-slate-400">
+                              <span>reasons: {item.reasons.length ? item.reasons.join(" · ") : "none"}</span>
+                              <span>frozen anchor: ({number(observation.frozenWorldAnchor.x)}, 0, {number(observation.frozenWorldAnchor.z)})</span>
+                              <span>Floor provenance: {observation.floorProvenance.floorPolygonKey} · {number(observation.floorProvenance.worldWidth)} × {number(observation.floorProvenance.worldDepth)}</span>
+                              <span>historical non-binding camera/frame: {observation.historicalContext.cameraVersion ?? "none"} / {observation.historicalContext.cameraAppliedAtIso ?? "none"} / {observation.historicalContext.frameWidth ?? "—"} × {observation.historicalContext.frameHeight ?? "—"}</span>
+                              <span>decision at: {observation.decisionAtIso ?? "cleared / unreviewed"}</span>
+                              <span>active raw residual: {number(item.activeRawResidualDeg, 3, "°")}</span>
+                              <span>supersession: {observation.supersession ? `${observation.supersession.supersedesObservationId} · ${observation.supersession.reason}` : "none"}</span>
+                              <span className="break-all">observation ID: {observation.observationId}</span>
+                              <span className="break-all">anchor derivation: {observation.frozenAnchorDerivationId}</span>
+                            </div>
+                            <div className="mt-2 flex flex-wrap gap-2">
+                              <button type="button" onClick={() => clearVerticalEvidenceDecision(observation.observationId)} className="rounded border border-amber-600/70 px-2 py-1 text-xs text-amber-100">Clear decision</button>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+
+                <div className="rounded-lg border border-slate-700 bg-slate-950/60 p-3">
+                  <p className="text-slate-100">Exact physical-vertical groups and threshold-free observability</p>
+                  <div className="mt-2 space-y-2">
+                    {runtime.metrics.observationsPerPhysicalVertical.map((group) => (
+                      <div key={group.physicalVerticalId} className="rounded border border-slate-800 px-2 py-1.5 text-slate-400">
+                        <span className="text-slate-100">{group.physicalVerticalId}</span> · observations {group.observationIds.length} · endpoint disagreement {number(group.withinGroupEndpointDisagreementNormalized)} · frozen-anchor disagreement {number(group.withinGroupFrozenAnchorDisagreementNormalized)}
+                      </div>
+                    ))}
+                  </div>
+                  <dl className="mt-3 grid gap-x-4 gap-y-1 sm:grid-cols-2">
+                    <div className="flex justify-between gap-2"><dt className="text-slate-500">max normalized source separation</dt><dd>{number(runtime.metrics.normalizedSourceImageSeparation)}</dd></div>
+                    <div className="flex justify-between gap-2"><dt className="text-slate-500">max normalized world-anchor separation</dt><dd>{number(runtime.metrics.normalizedWorldAnchorSeparation)}</dd></div>
+                    <div className="flex justify-between gap-2"><dt className="text-slate-500">Floor quadrants</dt><dd>NL {runtime.metrics.floorQuadrantOccupancy.near_left} · NR {runtime.metrics.floorQuadrantOccupancy.near_right} · FL {runtime.metrics.floorQuadrantOccupancy.far_left} · FR {runtime.metrics.floorQuadrantOccupancy.far_right} · outside {runtime.metrics.floorQuadrantOccupancy.outside_or_unavailable}</dd></div>
+                    <div className="flex justify-between gap-2"><dt className="text-slate-500">raw residual summary</dt><dd>{runtime.metrics.activeRawResidualSummary.count} · {number(runtime.metrics.activeRawResidualSummary.minimumDeg, 3, "°")} to {number(runtime.metrics.activeRawResidualSummary.maximumDeg, 3, "°")} · avg {number(runtime.metrics.activeRawResidualSummary.averageDeg, 3, "°")}</dd></div>
+                  </dl>
+                  <p className="mt-2 text-slate-500">{runtime.metrics.activeRawResidualSummary.note}</p>
+                </div>
+              </div>
+            );
+          })()}
+        </CollapsibleSection>
+
+        <AfcUi2aRunnerPanel
+          enabled={afcUi2aPreparationEnabled}
+          open={isAfcUi2aRunnerOpen}
+          onToggle={() => setIsAfcUi2aRunnerOpen((open) => !open)}
+          currentImage={afcUi2aCurrentImage}
+          qualificationStatus={basisQualificationStatus}
+        />
+
+        <AfcUi2bProposalRunnerPanel
+          enabled={afcUi2bProposalRunnerEnabled}
+          open={isAfcUi2bProposalRunnerOpen}
+          onToggle={() => setIsAfcUi2bProposalRunnerOpen((open) => !open)}
+        />
+
+        <AfcProposalOverlayPanel
+          enabled={afcProposalOverlayEnabled}
+          open={isAfcProposalOverlayOpen}
+          onToggle={() => setIsAfcProposalOverlayOpen((open) => !open)}
+          onViewportEvidenceChange={setAfcViewportEvidence}
+          viewportProjection={afcMainViewportProjection}
+          liveBasis={afcVerifiedFloorLiveBasis}
+          onReplayValidViewModelChange={handleReplayValidAfcViewModelChange}
+          onApplyVerifiedFloor={handleApplyVerifiedAfcFloor}
+          applyStatus={afcVerifiedFloorApplyStatus}
+        />
+
+        <CollapsibleSection
+          title="Calibrated Camera V3 Candidate — Research Only"
+          description="Read-only candidate observability for the active calibrated-camera/v2 snapshot. It cannot alter the active camera, scene, or persisted state."
+          open={isV3CandidateObservabilityOpen}
+          onToggle={() => setIsV3CandidateObservabilityOpen((open) => !open)}
+          meta={
+            <span className="rounded bg-violet-500/15 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-violet-100">
+              read-only · non-authoritative
+            </span>
+          }
+        >
+          {(() => {
+            const evaluation = v3CandidateObservability;
+            const number = (value: number | null | undefined, digits = 3, suffix = "") =>
+              value !== null && value !== undefined && Number.isFinite(value) ? `${value.toFixed(digits)}${suffix}` : "unavailable";
+            const radiansToDegrees = (value: number | null | undefined) =>
+              value !== null && value !== undefined && Number.isFinite(value) ? value * 180 / Math.PI : null;
+            if (evaluation.kind === "unavailable") {
+              return (
+                <div className="space-y-3 text-[11px] text-slate-300">
+                  <div className="rounded-lg border border-amber-800/70 bg-amber-950/20 p-3">
+                    <p className="text-amber-100">Candidate evaluation unavailable: {evaluation.reason}</p>
+                    {evaluation.detail ? <p className="mt-1 text-amber-200/80">{evaluation.detail}</p> : null}
+                    <p className="mt-2 text-slate-300">The active camera and scene are unchanged.</p>
+                  </div>
+                </div>
+              );
+            }
+            const { provenance, result } = evaluation;
+            const theta = result.theta;
+            const candidatePose = result.candidatePose;
+            const probeTheta = result.verticalOnlyProbe.theta;
+            return (
+              <div className="space-y-4 text-[11px] text-slate-300">
+                <div className="rounded-lg border border-violet-800/70 bg-violet-950/20 p-3 text-violet-100">
+                  <p>Read-only · non-authoritative. This is an ephemeral Package 2A experiment report; it has no Apply, persistence, preview-camera, or scene-mutation behavior.</p>
+                </div>
+
+                <div className="rounded-lg border border-slate-700 bg-slate-950/60 p-3">
+                  <p className="text-slate-100">Provenance and safety metadata</p>
+                  <dl className="mt-2 grid gap-x-4 gap-y-1 sm:grid-cols-2">
+                    <div className="flex justify-between gap-2"><dt className="text-slate-500">camera applied</dt><dd>{provenance.cameraAppliedAtIso}</dd></div>
+                    <div className="flex justify-between gap-2"><dt className="text-slate-500">calibration version</dt><dd>{provenance.calibrationVersion}</dd></div>
+                    <div className="flex justify-between gap-2"><dt className="text-slate-500">image basis ID</dt><dd>{provenance.imageBasisId}</dd></div>
+                    <div className="flex justify-between gap-2"><dt className="text-slate-500">image basis fingerprint</dt><dd className="break-all">{provenance.imageBasisFingerprint}</dd></div>
+                    <div className="flex justify-between gap-2"><dt className="text-slate-500">Floor-polygon key</dt><dd className="max-w-[20rem] truncate">{provenance.floorPolygonKey}</dd></div>
+                    <div className="flex justify-between gap-2"><dt className="text-slate-500">candidate fingerprint</dt><dd>{result.fingerprint}</dd></div>
+                    <div className="flex justify-between gap-2"><dt className="text-slate-500">applied</dt><dd>{String(result.safety.applied)}</dd></div>
+                    <div className="flex justify-between gap-2"><dt className="text-slate-500">authoritative</dt><dd>{String(result.safety.authoritative)}</dd></div>
+                    <div className="flex justify-between gap-2"><dt className="text-slate-500">persisted</dt><dd>{String(result.safety.persisted)}</dd></div>
+                    <div className="flex justify-between gap-2"><dt className="text-slate-500">active camera unchanged</dt><dd>{String(result.safety.activeCameraUnchanged)}</dd></div>
+                  </dl>
+                </div>
+
+                <div className="rounded-lg border border-slate-700 bg-slate-950/60 p-3">
+                  <p className="text-slate-100">Solver status and evidence counts</p>
+                  <dl className="mt-2 grid gap-x-4 gap-y-1 sm:grid-cols-2">
+                    <div className="flex justify-between gap-2"><dt className="text-slate-500">primary status</dt><dd>{result.status}</dd></div>
+                    <div className="flex justify-between gap-2"><dt className="text-slate-500">warnings</dt><dd>{result.warnings.length ? result.warnings.join(" · ") : "none"}</dd></div>
+                    <div className="flex justify-between gap-2"><dt className="text-slate-500">exploratory</dt><dd>{result.exploratory?.outcome ?? "none"}</dd></div>
+                    <div className="flex justify-between gap-2"><dt className="text-slate-500">active bounds</dt><dd>{result.activeBounds.length ? result.activeBounds.join(" · ") : "none"}</dd></div>
+                    <div className="flex justify-between gap-2"><dt className="text-slate-500">persisted / selected</dt><dd>{provenance.observationCounts.persisted} / {provenance.observationCounts.selected}</dd></div>
+                    <div className="flex justify-between gap-2"><dt className="text-slate-500">current / eligible</dt><dd>{provenance.observationCounts.current} / {provenance.observationCounts.eligible}</dd></div>
+                    <div className="flex justify-between gap-2"><dt className="text-slate-500">admitted observations</dt><dd>{result.admittedObservationIds.length}</dd></div>
+                    <div className="flex justify-between gap-2"><dt className="text-slate-500">distinct physical verticals</dt><dd>{result.distinctPhysicalVerticalCount}</dd></div>
+                  </dl>
+                  <p className="mt-3 text-slate-100">Excluded observations</p>
+                  {result.excludedObservations.length ? (
+                    <div className="mt-1 space-y-1 text-slate-400">
+                      {result.excludedObservations.map((item) => <p key={item.observationId}>{item.observationId} · {item.reason}</p>)}
+                    </div>
+                  ) : <p className="mt-1 text-slate-400">none</p>}
+                </div>
+
+                <div className="rounded-lg border border-slate-700 bg-slate-950/60 p-3">
+                  <p className="text-slate-100">V2-to-candidate pose delta</p>
+                  <p className="mt-1 text-slate-500">Angular signs are right-hand-rule corrections around world +X and world +Z. Translations are metres in the authoritative Y-up world frame.</p>
+                  <dl className="mt-2 grid gap-x-4 gap-y-1 sm:grid-cols-2">
+                    <div className="flex justify-between gap-2"><dt className="text-slate-500">omega X / omega Z</dt><dd>{number(radiansToDegrees(theta?.omegaXRad), 4, "°")} / {number(radiansToDegrees(theta?.omegaZRad), 4, "°")}</dd></div>
+                    <div className="flex justify-between gap-2"><dt className="text-slate-500">swing magnitude</dt><dd>{theta ? number(Math.hypot(theta.omegaXRad, theta.omegaZRad) * 180 / Math.PI, 4, "°") : "unavailable"}</dd></div>
+                    <div className="flex justify-between gap-2"><dt className="text-slate-500">delta X / Y / Z</dt><dd>{number(theta?.deltaTxM, 4, " m")} / {number(theta?.deltaTyM, 4, " m")} / {number(theta?.deltaTzM, 4, " m")}</dd></div>
+                    <div className="flex justify-between gap-2"><dt className="text-slate-500">candidate FOV</dt><dd>{number(candidatePose?.verticalFovDeg, 3, "°")}</dd></div>
+                    <div className="flex justify-between gap-2"><dt className="text-slate-500">active v2 position</dt><dd>{calibratedCameraSnapshot ? `${number(calibratedCameraSnapshot.pose.position.x)} / ${number(calibratedCameraSnapshot.pose.position.y)} / ${number(calibratedCameraSnapshot.pose.position.z)}` : "unavailable"}</dd></div>
+                    <div className="flex justify-between gap-2"><dt className="text-slate-500">candidate position</dt><dd>{candidatePose ? `${number(candidatePose.position.x)} / ${number(candidatePose.position.y)} / ${number(candidatePose.position.z)}` : "unavailable"}</dd></div>
+                    <div className="flex justify-between gap-2"><dt className="text-slate-500">active v2 lookAt</dt><dd>{calibratedCameraSnapshot ? `${number(calibratedCameraSnapshot.pose.lookAt.x)} / ${number(calibratedCameraSnapshot.pose.lookAt.y)} / ${number(calibratedCameraSnapshot.pose.lookAt.z)}` : "unavailable"}</dd></div>
+                    <div className="flex justify-between gap-2"><dt className="text-slate-500">candidate lookAt</dt><dd>{candidatePose ? `${number(candidatePose.lookAt.x)} / ${number(candidatePose.lookAt.y)} / ${number(candidatePose.lookAt.z)}` : "unavailable"}</dd></div>
+                    <div className="flex justify-between gap-2"><dt className="text-slate-500">active v2 up</dt><dd>{calibratedCameraSnapshot ? `${number(calibratedCameraSnapshot.pose.up.x)} / ${number(calibratedCameraSnapshot.pose.up.y)} / ${number(calibratedCameraSnapshot.pose.up.z)}` : "unavailable"}</dd></div>
+                    <div className="flex justify-between gap-2"><dt className="text-slate-500">candidate up</dt><dd>{candidatePose ? `${number(candidatePose.up.x)} / ${number(candidatePose.up.y)} / ${number(candidatePose.up.z)}` : "unavailable"}</dd></div>
+                  </dl>
+                </div>
+
+                <div className="rounded-lg border border-slate-700 bg-slate-950/60 p-3">
+                  <p className="text-slate-100">Residual stages</p>
+                  <dl className="mt-2 grid gap-x-4 gap-y-1 sm:grid-cols-2">
+                    <div className="flex justify-between gap-2"><dt className="text-slate-500">initial / final objective</dt><dd>{number(result.initial.objective, 5)} / {number(result.final.objective, 5)}</dd></div>
+                    <div className="flex justify-between gap-2"><dt className="text-slate-500">initial / final Floor RMS</dt><dd>{number(result.initial.floorRmsPx, 4, " px")} / {number(result.final.floorRmsPx, 4, " px")}</dd></div>
+                    <div className="flex justify-between gap-2"><dt className="text-slate-500">initial vertical summary</dt><dd>unavailable (not emitted by Package 2A)</dd></div>
+                    <div className="flex justify-between gap-2"><dt className="text-slate-500">final group vertical mean abs</dt><dd>{number(result.final.meanAbsGroupVerticalDeg, 4, "°")}</dd></div>
+                    <div className="flex justify-between gap-2"><dt className="text-slate-500">vertical-only probe</dt><dd>{result.verticalOnlyProbe.outcome}</dd></div>
+                    <div className="flex justify-between gap-2"><dt className="text-slate-500">probe Floor RMS</dt><dd>{number(result.verticalOnlyProbe.floorRmsPx, 4, " px")}</dd></div>
+                    <div className="flex justify-between gap-2"><dt className="text-slate-500">probe omega X / Z</dt><dd>{number(radiansToDegrees(probeTheta?.omegaXRad), 4, "°")} / {number(radiansToDegrees(probeTheta?.omegaZRad), 4, "°")}</dd></div>
+                    <div className="flex justify-between gap-2"><dt className="text-slate-500">probe translation X / Y / Z</dt><dd>{number(probeTheta?.deltaTxM, 4, " m")} / {number(probeTheta?.deltaTyM, 4, " m")} / {number(probeTheta?.deltaTzM, 4, " m")}</dd></div>
+                  </dl>
+                  <p className="mt-3 text-slate-100">Per-observation residuals</p>
+                  {result.observations.length ? result.observations.map((item) => (
+                    <p key={item.observationId} className="mt-1 text-slate-400">{item.observationId} · {item.physicalVerticalId} · residual {number(item.residualRad * 180 / Math.PI, 4, "°")} · robust influence {number(item.robustInfluence, 4)}</p>
+                  )) : <p className="mt-1 text-slate-400">none</p>}
+                  <p className="mt-3 text-slate-100">Per-physical-group residuals and duplicate ranges</p>
+                  {result.groups.length ? result.groups.map((group) => (
+                    <p key={group.physicalVerticalId} className="mt-1 text-slate-400">{group.physicalVerticalId} · mean {number(group.meanResidualRad * 180 / Math.PI, 4, "°")} · range {number(group.residualRangeRad * 180 / Math.PI, 4, "°")} · observations {group.observationIds.join(", ")}</p>
+                  )) : <p className="mt-1 text-slate-400">none</p>}
+                  <p className="mt-2 text-slate-500">Vertical-only probe per-observation residuals are unavailable because Package 2A does not emit them.</p>
+                </div>
+
+                <div className="rounded-lg border border-slate-700 bg-slate-950/60 p-3">
+                  <p className="text-slate-100">Solver diagnostics</p>
+                  <dl className="mt-2 grid gap-x-4 gap-y-1 sm:grid-cols-2">
+                    <div className="flex justify-between gap-2"><dt className="text-slate-500">conditioning</dt><dd>{result.conditioning ? `${result.conditioning.passes ? "passes" : "fails"} · ${result.conditioning.singularValues.map((value) => number(value, 5)).join(" / ")}` : "unavailable"}</dd></div>
+                    <div className="flex justify-between gap-2"><dt className="text-slate-500">bimodality</dt><dd>{result.bimodality ? `${result.bimodality.verdict} · largest gap ${number(result.bimodality.largestGapDeg, 4, "°")}` : "unavailable"}</dd></div>
+                    <div className="flex justify-between gap-2"><dt className="text-slate-500">optimizer termination</dt><dd>{result.optimizer.convergenceReason ?? "unavailable"}</dd></div>
+                    <div className="flex justify-between gap-2"><dt className="text-slate-500">iterations / rejected / clamped</dt><dd>{result.optimizer.iterations} / {result.optimizer.rejectedTrials} / {result.optimizer.clampedTrialProposals}</dd></div>
+                    <div className="flex justify-between gap-2"><dt className="text-slate-500">optimizer ran</dt><dd>{String(result.optimizer.ran)}</dd></div>
+                    <div className="flex justify-between gap-2"><dt className="text-slate-500">cross-block tension</dt><dd>{result.crossBlock?.evaluated ? `${String(result.crossBlock.tension)} · unresolved ${String(result.crossBlock.unresolved)}` : result.crossBlock?.reason ?? "unavailable"}</dd></div>
+                  </dl>
+                  {result.bimodality ? (
+                    <div className="mt-2 space-y-1 text-slate-400">
+                      <p>Bimodality groups: {result.bimodality.sortedGroupResidualsDeg.map((item) => `${item.physicalVerticalId} ${number(item.residualDeg, 4, "°")}`).join(" · ") || "none"}</p>
+                      <p>Split index / families: {result.bimodality.splitIndex ?? "unavailable"} / {result.bimodality.families.map((item) => `${item.physicalVerticalId} ${item.family}`).join(" · ") || "none"}</p>
+                      <p>Left count / mean / median / MAD: {result.bimodality.left.count} / {number(result.bimodality.left.meanDeg, 4, "°")} / {number(result.bimodality.left.medianDeg, 4, "°")} / {number(result.bimodality.left.madDeg, 4, "°")}</p>
+                      <p>Right count / mean / median / MAD: {result.bimodality.right.count} / {number(result.bimodality.right.meanDeg, 4, "°")} / {number(result.bimodality.right.medianDeg, 4, "°")} / {number(result.bimodality.right.madDeg, 4, "°")}</p>
+                    </div>
+                  ) : null}
+                  {result.crossBlock?.evaluated ? (
+                    <p className="mt-2 text-slate-400">Cross-block probe: Floor RMS {number(result.crossBlock.floorRmsAtV2Px, 4, " px")} → {number(result.crossBlock.floorRmsAtProbePx, 4, " px")}; vertical mean abs {number(result.crossBlock.verticalMeanAbsAtV2Deg, 4, "°")} → {number(result.crossBlock.verticalMeanAbsAtProbeDeg, 4, "°")}; improvement {number(result.crossBlock.probeVerticalImprovementDeg, 4, "°")}; Floor cost {number(result.crossBlock.probeFloorCostPx, 4, " px")}.</p>
+                  ) : null}
+                </div>
+              </div>
+            );
+          })()}
+        </CollapsibleSection>
+
+        <CollapsibleSection
           title="Supports"
           description="Lab-local support review and runtime usability. Review decisions are separate from the active camera."
           open={isSupportsOpen}
@@ -19060,6 +21435,788 @@ export default function ThreeRoomLab({
                   Recommended FOV applied, but calibration was not applied: {calibratedCameraApplyStatus.reason}
                 </p>
               )}
+          </div>
+
+          <div className="mt-3 rounded-lg border border-emerald-900/70 bg-emerald-950/15 p-3">
+            {afcUi2aPreparationEnabled ? (
+              <div className="mb-3 border-b border-emerald-900/70 pb-3 text-xs">
+                <div className="flex flex-wrap items-center gap-3">
+                  <span className="font-medium text-slate-200">EMPTY source:</span>
+                  <label className="flex items-center gap-1 text-slate-300">
+                    <input
+                      type="radio"
+                      name="afc-certified-empty-source"
+                      checked={afcCertifiedEmptySource === "live_generate"}
+                      onChange={() => setAfcCertifiedEmptySource("live_generate")}
+                    />
+                    Live generate
+                  </label>
+                  <label className="flex items-center gap-1 text-slate-300">
+                    <input
+                      type="radio"
+                      name="afc-certified-empty-source"
+                      checked={afcCertifiedEmptySource === "certified_prepared_package"}
+                      onChange={() => setAfcCertifiedEmptySource("certified_prepared_package")}
+                    />
+                    Certified prepared package
+                  </label>
+                </div>
+                {afcCertifiedEmptySource === "certified_prepared_package" ? (
+                  <div className="mt-2 flex flex-wrap items-center gap-2">
+                    <label className="text-slate-400">
+                      Room label{" "}
+                      <input
+                        value={afcCertifiedEmptyRoomId}
+                        onChange={(event) => {
+                          setAfcCertifiedEmptyRoomId(event.target.value);
+                          setAfcCertifiedEmptyPackages([]);
+                          setAfcCertifiedEmptyPackageId(null);
+                          setAfcCertifiedEmptyInventoryStatus("idle");
+                        }}
+                        placeholder="room-c"
+                        className="ml-1 rounded border border-slate-700 bg-slate-950 px-2 py-1 text-slate-100 outline-none focus:border-emerald-400"
+                      />
+                    </label>
+                    <button
+                      type="button"
+                      onClick={() => void refreshAfcCertifiedEmptyPackages()}
+                      disabled={
+                        !/^[a-z][a-z0-9-]{0,63}$/.test(afcCertifiedEmptyRoomId) ||
+                        afcCertifiedEmptyInventoryStatus === "loading"
+                      }
+                      className="rounded border border-slate-600 px-2 py-1 text-slate-200 transition hover:border-emerald-400 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {afcCertifiedEmptyInventoryStatus === "loading"
+                        ? "Refreshing…"
+                        : "Refresh packages"}
+                    </button>
+                    <select
+                      value={afcCertifiedEmptyPackageId ?? ""}
+                      onChange={(event) => setAfcCertifiedEmptyPackageId(event.target.value || null)}
+                      disabled={matchingAfcCertifiedEmptyPackages.length === 0}
+                      className="max-w-full rounded border border-slate-700 bg-slate-950 px-2 py-1 text-slate-100 outline-none focus:border-emerald-400 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      <option value="">Select a matching package</option>
+                      {matchingAfcCertifiedEmptyPackages.map((entry) => (
+                        <option key={entry.packageId} value={entry.packageId}>
+                          {entry.packageId}
+                        </option>
+                      ))}
+                    </select>
+                    {selectedAfcCertifiedEmptyPackage ? (
+                      <span className="break-all text-emerald-200">
+                        EMPTY SHA: {selectedAfcCertifiedEmptyPackage.emptyRoomAssist.sha256}
+                      </span>
+                    ) : (
+                      <span className="text-amber-200">
+                        Select one verified package matching the current Original.
+                      </span>
+                    )}
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
+            <div className="flex flex-wrap items-center gap-2 text-xs">
+              <button
+                type="button"
+                onClick={() => void handleAnalyzeAndApplyLiveAfc()}
+                disabled={
+                  basisQualificationStatus !== "qualified" ||
+                  afcVerifiedFloorLiveBasis === null ||
+                  afcLiveAnalyzeStatus.kind === "applying" ||
+                  pendingAfcLabCameraApply !== null ||
+                  pendingScanAndApplyFov !== null ||
+                  (
+                    afcCertifiedEmptySource === "certified_prepared_package" &&
+                    (!afcUi2aPreparationEnabled || selectedAfcCertifiedEmptyPackage === null)
+                  )
+                }
+                className="rounded border border-emerald-500/70 px-2 py-1 font-medium text-emerald-100 transition hover:border-emerald-300 hover:text-white disabled:cursor-not-allowed disabled:border-slate-700 disabled:text-slate-500 disabled:opacity-60"
+              >
+                {afcLiveAnalyzeStatus.kind === "analyzing"
+                  ? "Run AFC Again"
+                  : afcLiveAnalyzeStatus.kind === "applying"
+                    ? "Applying AFC…"
+                    : "Analyze & Apply AFC"}
+              </button>
+              <span className="text-slate-400">
+                Current loaded Original → EMPTY → TILED perspective → calibrated Lab.
+              </span>
+            </div>
+            {afcLiveAnalyzeStatus.kind === "completed" ? (
+              <p className="mt-2 text-xs text-emerald-300">
+                AFC completed ({afcLiveAnalyzeStatus.mode}).{" "}
+                {afcLiveResult?.status === "authoritative_geometry" &&
+                afcLiveResult.photoClass === "on_axis"
+                  ? "Perspective Adjust is not applicable to the on-axis v1 constraint."
+                  : afcLiveResult?.status === "authoritative_geometry" &&
+                    afcLiveResult.perspectiveAdjust.supported &&
+                    afcLiveResult.perspectiveAdjust.mode === AFC_TILED_PERSPECTIVE_ADJUST_MODE
+                    ? "Perspective Adjust is available from the TILED Automatic baseline."
+                  : "Perspective Adjust is initialized from this live Automatic baseline."}
+              </p>
+            ) : null}
+            {afcCameraFreezeStatus.kind === "freezing" ? (
+              <p className="mt-2 text-xs text-cyan-200">
+                Freezing immutable calibrated-camera authority receipt…
+              </p>
+            ) : null}
+            {afcCameraFreezeStatus.kind === "ready" &&
+            afcCameraFreezeReceipt ? (
+              <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
+                <button
+                  type="button"
+                  onClick={handleDownloadAfcCameraFreezeReceipt}
+                  className="rounded border border-cyan-500/70 px-2 py-1 font-medium text-cyan-100 transition hover:border-cyan-300 hover:text-white"
+                >
+                  Download camera authority receipt
+                </button>
+                <span className="break-all text-slate-400">
+                  SHA-256:{" "}
+                  {afcCameraFreezeReceipt.integrity.payloadSha256}
+                </span>
+              </div>
+            ) : null}
+            {afcCameraFreezeStatus.kind === "failed" ? (
+              <p className="mt-2 text-xs text-rose-200">
+                Camera authority freeze failed closed:{" "}
+                {afcCameraFreezeStatus.reason}
+              </p>
+            ) : null}
+            {afcLiveAnalyzeStatus.kind === "degraded" ? (
+              <p className="mt-2 text-xs text-amber-300">
+                AFC retained useful evidence but did not apply geometry:{" "}
+                {afcLiveAnalyzeStatus.reason}.
+              </p>
+            ) : null}
+            {afcLiveAnalyzeStatus.kind === "failed" ? (
+              <p className="mt-2 text-xs text-rose-200">
+                {afcLiveAnalyzeStatus.reason}
+              </p>
+            ) : null}
+            {afcLiveResult ? (
+              <div className="mt-2 grid gap-1 text-xs text-slate-400 md:grid-cols-2">
+                <p>
+                  Attempt:{" "}
+                  <span className="break-all text-cyan-200">
+                    {afcLiveResult.attemptId}
+                  </span>
+                </p>
+                <p>
+                  Result:{" "}
+                  <span className="text-cyan-200">{afcLiveResult.status}</span>
+                </p>
+                {afcLiveResult.status !== "failed" ? (
+                  <p>
+                    Room view:{" "}
+                    <span className="text-cyan-200">
+                      {afcLiveResult.photoClass}
+                    </span>
+                  </p>
+                ) : null}
+                <p>
+                  Placement:{" "}
+                  <span className="text-cyan-200">
+                    {afcLiveResult.diagnostics.placementReason ??
+                      afcLiveResult.diagnostics.placementStatus ??
+                      "not reached"}
+                  </span>
+                </p>
+                <p>
+                  Validation P90:{" "}
+                  <span className="text-cyan-200">
+                    {afcLiveResult.diagnostics.validationP90Px ?? "n/a"}
+                  </span>
+                </p>
+                <p className="break-all">
+                  Evidence digest: {afcLiveResult.diagnostics.evidenceDigest}
+                </p>
+              </div>
+            ) : null}
+            {afcLiveResult?.status === "authoritative_geometry" &&
+            afcLiveResult.geometry.mode === "tiled-perspective-core" ? (
+              <AfcTiledPerspectiveDiagnosticViewer
+                key={afcLiveResult.attemptId}
+                result={afcLiveResult}
+                originalImageUrl={
+                  afcLiveResult.attemptId === afcLiveAttemptIdRef.current
+                    ? roomImageUrl
+                    : null
+                }
+                perspectiveAdjustDelta={
+                  perspectiveAdjustSession?.kind === AFC_TILED_PERSPECTIVE_ADJUST_MODE &&
+                  perspectiveAdjustSession.attemptId === afcLiveResult.attemptId &&
+                  perspectiveAdjustSession.resultId === afcLiveResult.resultId
+                    ? perspectiveAdjustSession.committedDelta
+                    : null
+                }
+                settleDidNotApply={
+                  afcLiveSettleFailure?.attemptId === afcLiveResult.attemptId &&
+                  afcLiveSettleFailure.settle.reason === "no_apply_safe_candidate"
+                }
+              />
+            ) : afcLiveResult?.diagnostics.floorReadDiagnostic ? (
+              <AfcSr1LiveFloorReadOverlay
+                key={afcLiveResult.attemptId}
+                diagnostic={afcLiveResult.diagnostics.floorReadDiagnostic}
+                rawV3ReaderDiagnostics={
+                  afcLiveResult.diagnostics.v3ReaderDiagnostics?.rawReader ?? null
+                }
+                finalGeometry={
+                  afcLiveResult.status === "authoritative_geometry"
+                    ? {
+                        polygon:
+                          afcLiveResult.geometry.sourceNormalizedPolygon,
+                        fixedAnchor: afcLiveResult.geometry.fixedAnchor,
+                        adjustableCorner:
+                          afcLiveResult.geometry.adjustableCorner,
+                        baselineSeamT:
+                          afcLiveResult.geometry.baselineSeamT,
+                      }
+                    : null
+                }
+                originalPreviewUrl={
+                  afcLiveResult.attemptId === afcLiveAttemptIdRef.current
+                    ? roomImageUrl
+                    : null
+                }
+              />
+            ) : afcLiveResult ? (
+              <p className="mt-2 text-xs text-slate-500">
+                Floor read unavailable: {afcLiveResult.status === "failed"
+                  ? `${afcLiveResult.reason} (${afcLiveResult.detail})`
+                  : "a valid unique Gemini Floor proposal was not available."}
+              </p>
+            ) : null}
+            {(() => {
+              const readerDiagnostics =
+                afcLiveResult?.diagnostics.v3ReaderDiagnostics;
+              const floorRead = afcLiveResult?.diagnostics.floorReadDiagnostic;
+              if (!readerDiagnostics) return null;
+              const rawReader = readerDiagnostics.rawReader;
+              const childReader = readerDiagnostics.childReader;
+              const authoritativeReader = readerDiagnostics.authoritativeReaderRole === "childReader"
+                ? childReader
+                : rawReader;
+              if (!authoritativeReader && !rawReader && !childReader) return null;
+              const authoritative = afcLiveResult?.status === "authoritative_geometry"
+                ? afcLiveResult.geometry
+                : null;
+              const forensic = rawReader && floorRead
+                ? deriveAfcSr1V3ReaderForensics({
+                    diagnostics: rawReader,
+                    rawPolygon: floorRead.polygon,
+                    finalPolygon: authoritative?.sourceNormalizedPolygon ?? null,
+                    fixedAnchor: authoritative?.fixedAnchor ?? null,
+                    authoritativeSeamT: readerDiagnostics.authoritativeReaderRole === "rawReader"
+                      ? authoritative?.baselineSeamT ?? null
+                      : null,
+                  })
+                : null;
+              const number = (value: number | null) =>
+                value === null ? "n/a" : value.toFixed(4);
+              const vp = (value: NonNullable<typeof forensic>["rawWidthVp"]) =>
+                value.kind === "finite"
+                  ? `(${number(value.sourceNormalized?.x ?? null)}, ${number(value.sourceNormalized?.y ?? null)})`
+                  : value.kind === "directional" ? "directional" : "unavailable";
+              const residual = (value: NonNullable<typeof forensic>["rawWidthVp"]) =>
+                value.kind === "directional"
+                  ? `angular residual ${number(value.horizonResidual.directionalAngularDegrees)}°`
+                  : `residual ${number(value.horizonResidual.decodedPixelDistance)} px`;
+              const readerSummary = (reader: NonNullable<typeof authoritativeReader>) => (
+                <>
+                  <p className="break-all">Receipt: {reader.receiptEvidenceDigest}</p>
+                  <p>EMPTY: {reader.imageIdentity.sha256} · {reader.imageIdentity.decodedWidth}×{reader.imageIdentity.decodedHeight}</p>
+                  <p>Analysis: {reader.analysisIdentity.mode} · {reader.analysisIdentity.analysisWidth}×{reader.analysisIdentity.analysisHeight} · scale {number(reader.analysisIdentity.scaleX)}/{number(reader.analysisIdentity.scaleY)}</p>
+                  <p className="break-all">ROI digest: {reader.roiIdentity.roiDigest}</p>
+                  <p>Winning horizon px: {number(reader.floorVanishingLinePixel.a)}, {number(reader.floorVanishingLinePixel.b)}, {number(reader.floorVanishingLinePixel.c)}</p>
+                  <p>Winning pair: [{reader.winningPair.familyIndices.join(", ")}] · basin {reader.winningPair.basinSupport} · stability {number(reader.winningPair.stability.maxSplitVsFullProbeDistancePx)} px</p>
+                  <p>Valid pairs: {reader.validPairCount} · invalid: {reader.invalidPairs.length} · candidate pairs: {reader.candidateUnorderedPairCount}</p>
+                </>
+              );
+              const pairIndependenceDiagnostics = (
+                reader: NonNullable<typeof authoritativeReader>,
+                label: "RAW" | "CHILD"
+              ) => {
+                const sidecar = reader.familyPairIndependenceDiagnostics;
+                if (!sidecar) return null;
+                const isWinner = (indices: readonly [number, number]) =>
+                  indices[0] === reader.winningPair.familyIndices[0] &&
+                  indices[1] === reader.winningPair.familyIndices[1];
+                const field = (summary: {
+                  supporterCount: number;
+                  medianDegrees: number | null;
+                  p90Degrees: number | null;
+                } | null) => summary
+                  ? `n ${summary.supporterCount} · med ${number(summary.medianDegrees)}° · P90 ${number(summary.p90Degrees)}°`
+                  : "unavailable";
+                const residual = (summary: {
+                  supporterCount: number;
+                  medianResidualPx: number | null;
+                  p90ResidualPx: number | null;
+                  withinExistingInlierBandCount: number;
+                } | null) => summary
+                  ? `n ${summary.supporterCount} · med ${number(summary.medianResidualPx)} px · P90 ${number(summary.p90ResidualPx)} px · existing-band ${summary.withinExistingInlierBandCount}`
+                  : "unavailable";
+                return (
+                  <details className="mt-2 rounded border border-slate-700/80 p-2 text-[11px] text-slate-300">
+                    <summary className="cursor-pointer">
+                      Pair independence diagnostics — observation only ({label})
+                    </summary>
+                    <p className="mt-1 text-slate-500">
+                      V3 winner display context: [{reader.winningPair.familyIndices.join(", ")}]. Pair order is retained from the Reader.
+                    </p>
+                    <div className="mt-1 overflow-x-auto">
+                      <table className="w-full text-left">
+                        <thead className="text-slate-500"><tr><th>Family</th><th>n</th><th>Axial mean°</th><th>Median°</th><th>SD°</th><th>IQR°</th></tr></thead>
+                        <tbody>{sidecar.familyOrientationSummaries.map((summary) => (
+                          <tr key={summary.familyIndex}>
+                            <td>{summary.familyIndex}</td><td>{summary.supporterCount}</td>
+                            <td>{number(summary.axialMeanDegrees)}</td><td>{number(summary.axialMedianDegrees)}</td>
+                            <td>{number(summary.axialCircularStdDevDegrees)}</td><td>{number(summary.axialIqrDegrees)}</td>
+                          </tr>
+                        ))}</tbody>
+                      </table>
+                    </div>
+                    <div className="mt-2 overflow-x-auto">
+                      <table className="w-full text-left">
+                        <thead className="text-slate-500"><tr><th>Pair</th><th>Overlap</th><th>Exclusive support px</th><th>A→B cross-fit</th><th>B→A cross-fit</th><th>Union field Δ</th><th>Shared field Δ</th></tr></thead>
+                        <tbody>{sidecar.pairs.map((pair) => (
+                          <tr key={pair.familyIndices.join("-")}>
+                            <td>[{pair.familyIndices.join(", ")}]{isWinner(pair.familyIndices) ? " · V3 winner" : ""}</td>
+                            <td>shared {pair.overlap.sharedSupporterCount} / union {pair.overlap.unionSupporterCount} · J {number(pair.overlap.jaccard)} · smaller {number(pair.overlap.overlapFractionOfSmaller)}</td>
+                            <td>shared {number(pair.exclusiveSupport.sharedSupportLengthPx)} · A-only {pair.exclusiveSupport.firstOnlySupporterCount}/{number(pair.exclusiveSupport.firstOnlySupportLengthPx)} · B-only {pair.exclusiveSupport.secondOnlySupporterCount}/{number(pair.exclusiveSupport.secondOnlySupportLengthPx)}</td>
+                            <td>{residual(pair.crossFit.firstSupportersAgainstSecond)}</td>
+                            <td>{residual(pair.crossFit.secondSupportersAgainstFirst)}</td>
+                            <td>{field(pair.predictedDirectionFieldDisagreement.onUnionSupporterMidpoints)}</td>
+                            <td>{field(pair.predictedDirectionFieldDisagreement.onSharedSupporterMidpoints)}</td>
+                          </tr>
+                        ))}</tbody>
+                      </table>
+                    </div>
+                  </details>
+                );
+              };
+              return (
+                <details className="mt-3 rounded border border-violet-900/70 bg-slate-950/40 p-2 text-xs">
+                  <summary className="cursor-pointer font-medium text-violet-100">
+                    V3 Reader evidence — observation only
+                  </summary>
+                  <p className="mt-2 text-slate-300">
+                    Authoritative Reader role: <span className="text-violet-200">
+                      {readerDiagnostics.authoritativeReaderRole === "rawReader"
+                        ? "RAW"
+                        : readerDiagnostics.authoritativeReaderRole === "childReader"
+                          ? "CHILD"
+                          : "none"}
+                    </span>
+                  </p>
+                  {rawReader ? (
+                    <>
+                      <p className="mt-2 font-medium text-violet-200">
+                        RAW V3 Reader{readerDiagnostics.authoritativeReaderRole === "rawReader"
+                          ? " — winning horizon / authoritative"
+                          : " — parent EMPTY observation only"}
+                      </p>
+                      <div className="mt-1 grid gap-1 text-slate-300 md:grid-cols-2">
+                        {readerSummary(rawReader)}
+                        {forensic ? (
+                          <>
+                            <p>Horizon source-normalized: {forensic.sourceNormalizedHorizon
+                              ? `${number(forensic.sourceNormalizedHorizon.a)}, ${number(forensic.sourceNormalizedHorizon.b)}, ${number(forensic.sourceNormalizedHorizon.c)}`
+                              : "unavailable"}</p>
+                            <p>Winning replay: {forensic.winningPairReplay.status} · seamT {number(forensic.winningPairReplay.seamT)}</p>
+                            <p>Raw width VP: {vp(forensic.rawWidthVp)} · {forensic.rawWidthVp.side} · {residual(forensic.rawWidthVp)}</p>
+                            <p>Depth VP: {vp(forensic.depthVp)} · {forensic.depthVp.side} · {residual(forensic.depthVp)}</p>
+                            <p>Authoritative width VP: {vp(forensic.authoritativeWidthVp)} · {forensic.authoritativeWidthVp.side} · {residual(forensic.authoritativeWidthVp)}</p>
+                            <p>Width side changed: {forensic.widthVpSideChanged === null ? "n/a" : forensic.widthVpSideChanged ? "yes" : "no"} · near-edge orientation changed: {forensic.nearEdgeOrientationChanged === null ? "n/a" : forensic.nearEdgeOrientationChanged ? "yes" : "no"}</p>
+                            <p>Authoritative seamT: {number(authoritative?.baselineSeamT ?? null)}</p>
+                          </>
+                        ) : null}
+                      </div>
+                      {pairIndependenceDiagnostics(rawReader, "RAW")}
+                    </>
+                  ) : null}
+                  {childReader ? (
+                    <>
+                      <p className="mt-2 font-medium text-violet-200">
+                        CHILD V3 Reader{readerDiagnostics.authoritativeReaderRole === "childReader"
+                          ? " — authoritative Reader"
+                          : " — observation only"} (child-image coordinates)
+                      </p>
+                      <div className="mt-1 grid gap-1 text-slate-300 md:grid-cols-2">
+                        {readerSummary(childReader)}
+                      </div>
+                      {pairIndependenceDiagnostics(childReader, "CHILD")}
+                      <p className="mt-1 text-slate-500">
+                        Child horizon is intentionally not drawn over parent EMPTY.
+                      </p>
+                    </>
+                  ) : null}
+                  {forensic ? (
+                    <p className="mt-2 text-slate-400">
+                      RAW alternate pairs retain V3 discovery order; they are not re-ranked by counterfactual seamT.
+                    </p>
+                  ) : null}
+                  {forensic?.otherValidPairs.length ? (
+                    <div className="mt-1 overflow-x-auto">
+                      <table className="w-full text-left text-[11px] text-slate-300">
+                        <thead className="text-slate-500"><tr><th>Pair</th><th>Basin</th><th>Probe px</th><th>Width VP side</th><th>Track 1a</th><th>Counterfactual seamT</th></tr></thead>
+                        <tbody>{forensic.otherValidPairs.map((pair) => (
+                          <tr key={pair.familyIndices.join("-")}><td>[{pair.familyIndices.join(", ")}]</td><td>{pair.pair.basinSupport}</td><td>{number(pair.pair.stability.maxSplitVsFullProbeDistancePx)}</td><td>{pair.impliedWidthVp.side}</td><td>{pair.track1aStatus}{pair.track1aReason ? `: ${pair.track1aReason}` : ""}</td><td>{number(pair.seamT)}</td></tr>
+                        ))}</tbody>
+                      </table>
+                    </div>
+                  ) : null}
+                  <details className="mt-2 text-[11px] text-slate-500">
+                    <summary>Sanitized V3 diagnostic JSON</summary>
+                    <pre className="mt-1 overflow-x-auto whitespace-pre-wrap">{JSON.stringify(readerDiagnostics, null, 2)}</pre>
+                  </details>
+                </details>
+              );
+            })()}
+            {(() => {
+              const failure = afcLiveSettleFailure;
+              if (
+                !failure ||
+                failure.attemptId !== afcLiveResult?.attemptId ||
+                failure.settle.reason !== "no_apply_safe_candidate"
+              ) {
+                return null;
+              }
+              const settle = failure.settle.diagnostics;
+              const best = settle.bestRejectedCandidate;
+              const boundary = best
+                ? [
+                    best.atRatioMin ? "ratio min" : null,
+                    best.atRatioMax ? "ratio max" : null,
+                    best.atFovMin ? "FOV min" : null,
+                    best.atFovMax ? "FOV max" : null,
+                  ].filter(Boolean).join(" · ") || "interior"
+                : "n/a";
+              return (
+                <div className="mt-3 rounded border border-rose-900/70 bg-slate-950/40 p-2 text-xs">
+                  <p className="font-medium text-rose-100">
+                    Live AFC settle: {failure.reason}
+                  </p>
+                  <p className="mt-1 text-slate-300">
+                    Cells evaluated: {settle.evaluatedCellCount} · Geometric successes:{" "}
+                    {settle.successfulCellCount} · Apply-safe: {settle.applySafeCellCount} ·
+                    Structural failures: {settle.structuralFailureCount}
+                  </p>
+                  {best ? (
+                    <div className="mt-2 grid gap-1 text-slate-400 md:grid-cols-2">
+                      <p>
+                        Best rejected — ratio {formatNumber(best.ratio)} · width{" "}
+                        {formatNumber(best.worldWidthM)} m · FOV{" "}
+                        {formatNumber(best.verticalFovDeg)}°
+                      </p>
+                      <p>
+                        CV avg/max: {formatNumber(best.cvAvgPx)} /{" "}
+                        {formatNumber(best.cvMaxPx)} px (Apply &lt;4 / &lt;10)
+                      </p>
+                      <p>
+                        Display avg/max: {formatNumber(best.displayAvgPx)} /{" "}
+                        {formatNumber(best.displayMaxPx)} px (Apply &lt;10 / &lt;10)
+                      </p>
+                      <p>
+                        Delta avg/max: {formatNumber(best.avgDeltaPx)} /{" "}
+                        {formatNumber(best.maxDeltaPx)} px (Apply ≤1 / ≤1)
+                      </p>
+                      <p>
+                        Scale ratio: {formatNumber(best.scaleRatio)} (Apply 0.85–1.18)
+                      </p>
+                      <p>
+                        First failing gate: <span className="text-rose-200">{best.firstFailingGate}</span> ·
+                        boundary: {boundary}
+                      </p>
+                    </div>
+                  ) : (
+                    <p className="mt-2 text-slate-400">
+                      No geometrically successful cell exists; there is no rejected Apply candidate.
+                    </p>
+                  )}
+                  <p className="mt-2 break-words text-slate-400">
+                    Rejection counts:{" "}
+                    {Object.entries(settle.rejectionCounts).map(([gate, count]) =>
+                      `${gate}=${count}`
+                    ).join(" · ") || "none"}
+                  </p>
+                  <p className="mt-1 break-words text-slate-500">
+                    By category:{" "}
+                    {Object.entries(settle.structuralFailureReasons).map(([category, count]) =>
+                      `${category}=${count}`
+                    ).join(" · ") || "none"}
+                  </p>
+                  <p className="mt-2 text-slate-400">
+                    Replay snapshot — Original {failure.originalImageSize.width}×
+                    {failure.originalImageSize.height} · renderer{" "}
+                    {failure.rendererSize.width}×{failure.rendererSize.height} · reference depth{" "}
+                    {formatNumber(failure.referenceDepthM)} m
+                  </p>
+                  <p className="mt-1 break-all font-mono text-[10px] text-slate-500">
+                    final={JSON.stringify(failure.sourceNormalizedPolygon)} raw=
+                    {JSON.stringify(failure.rawSourceNormalizedPolygon)}
+                  </p>
+                </div>
+              );
+            })()}
+            {afcLiveResult?.status === "failed" &&
+            afcLiveResult.diagnostics.supportedRoomClassifier ? (
+              <div className="mt-2 rounded border border-amber-900/70 bg-slate-950/40 p-2 font-mono text-[11px] text-amber-100">
+                {(() => {
+                  const classifier =
+                    afcLiveResult.diagnostics.supportedRoomClassifier;
+                  const { observables, semanticFloorPolygon } = classifier;
+                  const point = (name: string, value: { x: number; y: number }) =>
+                    `${name}=(${value.x.toFixed(4)},${value.y.toFixed(4)})`;
+                  return (
+                    <>
+                      <p>
+                        classifier={classifier.classifierVersion} reason={classifier.reason} EMPTY=
+                        {classifier.emptyDecodedWidth}×{classifier.emptyDecodedHeight}
+                      </p>
+                      <p>
+                        dyNear={observables.dyNear.toFixed(4)} dyFar=
+                        {observables.dyFar.toFixed(4)} farMidX=
+                        {observables.farMidX.toFixed(4)} widthVP∞=
+                        {String(observables.widthVanishingPointAtInfinity)}
+                      </p>
+                      <p>
+                        leftRun={observables.leftVisibleRunPx.toFixed(2)}px rightRun=
+                        {observables.rightVisibleRunPx.toFixed(2)}px asymmetry=
+                        {observables.truncationAsymmetry.toFixed(4)}
+                      </p>
+                      <p>
+                        {point("NL", semanticFloorPolygon.NL)}{" "}
+                        {point("NR", semanticFloorPolygon.NR)}{" "}
+                        {point("FR", semanticFloorPolygon.FR)}{" "}
+                        {point("FL", semanticFloorPolygon.FL)}
+                      </p>
+                    </>
+                  );
+                })()}
+              </div>
+            ) : null}
+          </div>
+
+          <div className="mt-3 rounded-lg border border-cyan-900/70 bg-cyan-950/15 p-3">
+            <div className="flex flex-wrap items-center gap-2 text-xs">
+              <button
+                type="button"
+                onClick={handleApplyRoomCAfcLab}
+                disabled={
+                  !ROOM_C_AFC_LAB_GEOMETRY_CANDIDATE.ok ||
+                  isCalibratedCameraActive ||
+                  pendingAfcLabCameraApply !== null ||
+                  pendingScanAndApplyFov !== null
+                }
+                className="rounded border border-cyan-500/70 px-2 py-1 font-medium text-cyan-100 transition hover:border-cyan-300 hover:text-white disabled:cursor-not-allowed disabled:border-slate-700 disabled:text-slate-500 disabled:opacity-60"
+              >
+                {pendingAfcLabCameraApply ? "Applying Room C AFC…" : "Apply Room C AFC"}
+              </button>
+              <span className="text-slate-400">
+                Development control — RAW-direct AFC geometry → Floor → Width/FOV → fresh camera Apply.
+              </span>
+              {isCalibratedCameraActive ? (
+                <span className="text-amber-300">Calibrated camera already active.</span>
+              ) : null}
+            </div>
+            {ROOM_C_AFC_LAB_GEOMETRY_CANDIDATE.ok ? (
+              <>
+                <div className="mt-2 grid gap-1 text-xs text-slate-300 md:grid-cols-2">
+                  <p>
+                    Automatic seamT: <span className="text-cyan-200">{ROOM_C_AFC_LAB_GEOMETRY_CANDIDATE.candidate.seamT}</span>
+                  </p>
+                  <p>
+                    Reference depth: <span className="text-cyan-200">{formatNumber(ROOM_C_AFC_LAB_GEOMETRY_CANDIDATE.candidate.referenceDepthM)} m</span>
+                  </p>
+                  <p>
+                    Geometry: <span className="text-cyan-200">RAW-direct / {ROOM_C_AFC_LAB_GEOMETRY_CANDIDATE.candidate.geometryProvenance.pathAEvidenceIdentity}</span>
+                  </p>
+                  <p className="break-all text-slate-500">
+                    Evidence digest: {ROOM_C_AFC_LAB_GEOMETRY_CANDIDATE.candidate.geometryProvenance.pathAEvidenceDigest}
+                  </p>
+                </div>
+                {afcLabApplyStatus.kind === "pending" || afcLabApplyStatus.kind === "applied" ? (
+                  <p className={afcLabApplyStatus.kind === "applied" ? "mt-2 text-xs text-emerald-300" : "mt-2 text-xs text-cyan-200"}>
+                    {afcLabApplyStatus.kind === "applied" ? "Camera Apply completed." : "Floor, Width/Depth, and FOV committed; waiting for a fresh camera solve."}{" "}
+                    Width {formatNumber(afcLabApplyStatus.settle.worldWidthM)} m · Depth{" "}
+                    {formatNumber(afcLabApplyStatus.settle.worldDepthM)} m · FOV{" "}
+                    {formatNumber(afcLabApplyStatus.settle.verticalFovDeg)}° ·{" "}
+                    {afcLabApplyStatus.settle.applyObservability.available ? "Apply-safe" : "not Apply-safe"}
+                  </p>
+                ) : null}
+                {afcLabApplyStatus.kind === "failed" || afcLabApplyStatus.kind === "blocked" ? (
+                  <p className="mt-2 text-xs text-rose-200">{afcLabApplyStatus.reason}</p>
+                ) : null}
+                <div className="mt-3 border-t border-slate-800 pt-2 text-xs">
+                  <AfcPerspectiveAdjustControl
+                    {...perspectiveAdjustControlProps}
+                    ariaLabel="Perspective Adjust (Calibrated camera)"
+                  />
+                  {perspectiveAdjustSession ? (
+                    perspectiveAdjustSession.kind === AFC_TILED_PERSPECTIVE_ADJUST_MODE ? (
+                      <div className="mt-2 grid gap-1 text-slate-400 md:grid-cols-2">
+                        <p>
+                          {perspectiveAdjustSession.previewDelta === 0 ? "Automatic — TILED reader baseline" : "Adjusted — manual TILED override"}:{" "}
+                          <span className="text-cyan-200">{perspectiveAdjustSession.previewDelta.toFixed(3)}</span>
+                        </p>
+                        <p>
+                          Committed perspective delta: <span className="text-cyan-200">{perspectiveAdjustSession.committedDelta.toFixed(3)}</span>
+                        </p>
+                        <p>
+                          Valid delta range: <span className="text-cyan-200">
+                            {perspectiveAdjustSession.range.minDelta.toFixed(3)} to {perspectiveAdjustSession.range.maxDelta.toFixed(3)}
+                          </span>
+                        </p>
+                        <p className="break-all">
+                          TILED baseline: <span className="text-cyan-200">
+                            {perspectiveAdjustSession.tiledReaderVersion} / {perspectiveAdjustSession.tiledBasisSha256}
+                          </span>
+                        </p>
+                        <p>
+                          Adjustments: <span className="text-cyan-200">{perspectiveAdjustSession.adjustmentCount}</span> · session active
+                        </p>
+                        <p className="break-all">
+                          Baseline: <span className="text-cyan-200">{perspectiveAdjustSession.attemptId} / {perspectiveAdjustSession.resultId}</span>
+                        </p>
+                      </div>
+                    ) : (
+                    <div className="mt-2 grid gap-1 text-slate-400 md:grid-cols-2">
+                      <p>
+                        {perspectiveAdjustSession.previewDeltaSeamT === 0 ? "Automatic" : "Preview"} delta:{" "}
+                        <span className="text-cyan-200">{perspectiveAdjustSession.previewDeltaSeamT.toFixed(3)}</span>
+                      </p>
+                      <p>
+                        Committed delta: <span className="text-cyan-200">{perspectiveAdjustSession.committedDeltaSeamT.toFixed(3)}</span>
+                      </p>
+                      <p>
+                        Automatic baseline seamT: <span className="text-cyan-200">{perspectiveAdjustSession.baselineSeamT}</span>
+                      </p>
+                      <p>
+                        Preview seamT:{" "}
+                        <span className="text-cyan-200">
+                          {(perspectiveAdjustSession.baselineSeamT + perspectiveAdjustSession.previewDeltaSeamT).toFixed(6)}
+                        </span>
+                      </p>
+                      <p>
+                        Current committed seamT: <span className="text-cyan-200">{perspectiveAdjustSession.committedSeamT}</span>
+                      </p>
+                      <p>
+                        Automatic Width/FOV:{" "}
+                        <span className="text-cyan-200">
+                          {formatNumber(perspectiveAdjustSession.automaticSettle.worldWidthM)} m /{" "}
+                          {formatNumber(perspectiveAdjustSession.automaticSettle.verticalFovDeg)}°
+                        </span>
+                      </p>
+                      <p>
+                        Current Width/FOV:{" "}
+                        <span className="text-cyan-200">
+                          {formatNumber(floorMapping.worldWidth)} m / {formatNumber(cameraPoseFovYDeg)}°
+                        </span>
+                      </p>
+                      <p>
+                        Winning cell: <span className="text-cyan-200">{afcLabApplyStatus.kind === "pending" || afcLabApplyStatus.kind === "applied" ? afcLabApplyStatus.settle.winningCellId : "last result unavailable"}</span>
+                      </p>
+                      <p>
+                        Evaluated / Apply-safe cells:{" "}
+                        <span className="text-cyan-200">
+                          {afcLabApplyStatus.kind === "pending" || afcLabApplyStatus.kind === "applied"
+                            ? `${afcLabApplyStatus.settle.evaluatedCellCount} / ${afcLabApplyStatus.settle.applySafeCellCount}`
+                            : "last result unavailable"}
+                        </span>
+                      </p>
+                      <p>
+                        Adjustments: <span className="text-cyan-200">{perspectiveAdjustSession.adjustmentCount}</span> · session active
+                      </p>
+                      <p className="break-all">
+                        Baseline: <span className="text-cyan-200">{perspectiveAdjustSession.attemptId} / {perspectiveAdjustSession.resultId}</span>
+                      </p>
+                    </div>
+                    )
+                  ) : (
+                    <p className="mt-2 text-slate-500">Apply supported AFC geometry to enable Perspective Adjust.</p>
+                  )}
+                </div>
+                <div className="mt-3 border-t border-slate-800 pt-2 text-xs">
+                  <p className="font-medium text-slate-200">C-P04 diagnostic sidecar — not geometry provenance</p>
+                  <p className="mt-1 text-slate-400">
+                    Case {ROOM_C_AFC_LAB_GEOMETRY_CANDIDATE.candidate.diagnostics.caseId} · placement{" "}
+                    <span className="text-rose-200">{ROOM_C_AFC_LAB_GEOMETRY_CANDIDATE.candidate.diagnostics.placementStatus}</span> ·{" "}
+                    {ROOM_C_AFC_LAB_GEOMETRY_CANDIDATE.candidate.diagnostics.placementReason}
+                  </p>
+                  <p className="mt-1 text-slate-400">
+                    Validation P90: {ROOM_C_AFC_LAB_GEOMETRY_CANDIDATE.candidate.diagnostics.validationP90Px} px ·
+                    geometry authority: {ROOM_C_AFC_LAB_GEOMETRY_CANDIDATE.candidate.diagnostics.geometryAuthority}
+                  </p>
+                </div>
+              </>
+            ) : (
+              <p className="mt-2 text-xs text-rose-200">
+                Room C AFC control is invalid: {ROOM_C_AFC_LAB_GEOMETRY_CANDIDATE.reason}.
+              </p>
+            )}
+          </div>
+
+          <div className="mt-3 rounded-lg border border-emerald-900/70 bg-emerald-950/15 p-3">
+            <div className="flex flex-wrap items-center gap-2 text-xs">
+              <button
+                type="button"
+                onClick={() => {
+                  if (!verifiedAfcCameraApplyQualification.ok) return;
+                  handleApplyVerifiedAfcCamera({
+                    bindingGeneration: verifiedAfcCameraApplyQualification.bindingGeneration,
+                  });
+                }}
+                disabled={!verifiedAfcCameraApplyQualification.ok || pendingScanAndApplyFov !== null}
+                className="rounded border border-emerald-500/70 px-2 py-1 font-medium text-emerald-200 transition hover:border-emerald-300 hover:text-emerald-100 disabled:cursor-not-allowed disabled:border-slate-700 disabled:text-slate-500 disabled:opacity-60"
+              >
+                Apply calibration from verified AFC Floor
+              </button>
+              <span className="text-slate-500">
+                Uses the current FOV and current solver candidate; it does not run an FOV scan.
+              </span>
+            </div>
+            <p
+              className={
+                verifiedAfcCameraApplyQualification.ok
+                  ? "mt-2 text-xs text-emerald-200"
+                  : "mt-2 text-xs text-amber-200"
+              }
+            >
+              {verifiedAfcCameraApplyQualification.ok
+                ? "Exact AFC-bound Floor is current and the camera solution is Apply-safe. Apply remains explicit."
+                : verifiedAfcCameraApplyQualification.reason === "no_afc_floor_binding"
+                  ? "Apply a verified AFC Floor first to enable AFC-bound calibration."
+                  : verifiedAfcCameraApplyQualification.reason === "camera_candidate_unavailable"
+                    ? "AFC-bound Floor and exact live image basis are current, but no Apply-safe camera candidate is available at the current FOV. It does not run an FOV scan."
+                    : verifiedAfcCameraApplyQualification.reason === "camera_apply_gates_failed"
+                      ? `AFC-bound calibration is unavailable: ${verifiedAfcCameraApplyQualification.cameraReason}`
+                      : (
+                        verifiedAfcCameraApplyQualification.reason === "current_floor_authority_unavailable" ||
+                        verifiedAfcCameraApplyQualification.reason === "floor_authority_mismatch" ||
+                        verifiedAfcCameraApplyQualification.reason === "live_image_basis_unavailable" ||
+                        verifiedAfcCameraApplyQualification.reason === "support_image_basis_mismatch"
+                      )
+                        ? "AFC-bound calibration is unavailable because the current Floor or exact live image basis no longer matches."
+                        : "AFC-bound calibration is unavailable. Refresh the current camera readiness and try again."}
+            </p>
+            {afcVerifiedCameraApplyStatus.kind === "applied" && isCalibratedCameraActive ? (
+              <p className="mt-1 text-xs text-emerald-300">
+                Calibration applied from the current verified AFC Floor.
+              </p>
+            ) : null}
+            {afcVerifiedCameraApplyStatus.kind === "invalidated_before_apply" ? (
+              <p className="mt-1 text-xs text-amber-200">
+                AFC-bound calibration was not applied because the Floor, image basis, or camera readiness changed.
+              </p>
+            ) : null}
+            {afcVerifiedCameraApplyStatus.kind === "rejected" ? (
+              <p className="mt-1 text-xs text-rose-200">
+                AFC-bound calibration was not applied. Refresh readiness and try again.
+              </p>
+            ) : null}
           </div>
 
           <div className="mt-3 flex flex-wrap items-center gap-2 text-xs">

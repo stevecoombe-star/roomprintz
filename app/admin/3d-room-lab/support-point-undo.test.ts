@@ -4,6 +4,7 @@ import {
   beginSupportPointDragTransaction,
   canApplySupportPointUndo,
   consumeSupportPointUndo,
+  createSupportPointProgrammaticUndoRecord,
   finalizeSupportPointDragTransaction,
   isSupportPointUndoShortcut,
   type SupportPointUndoRecord,
@@ -92,6 +93,37 @@ test("a no-op drag preserves the previous valid record", () => {
   const previous = record("wall_back");
   const before = snapshot();
   assert.equal(finalizeSupportPointDragTransaction(transaction("floor", before), materialKey(before), previous), previous);
+});
+
+test("a material programmatic mutation creates one completed record", () => {
+  const before = snapshot();
+  const after = snapshot({ review: "manually_confirmed" });
+  const result = createSupportPointProgrammaticUndoRecord(
+    "floor",
+    before,
+    materialKey(before),
+    materialKey(after),
+    null
+  );
+  assert.ok(result);
+  assert.equal(result?.supportKind, "floor");
+  assert.deepEqual(result?.before, before);
+  assert.equal(result?.afterKey, materialKey(after));
+});
+
+test("a no-op programmatic mutation preserves the previous valid record", () => {
+  const previous = record("wall_back");
+  const before = snapshot();
+  assert.equal(
+    createSupportPointProgrammaticUndoRecord(
+      "floor",
+      before,
+      materialKey(before),
+      materialKey(before),
+      previous
+    ),
+    previous
+  );
 });
 
 test("a new material drag replaces the previous record", () => {

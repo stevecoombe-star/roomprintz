@@ -1,0 +1,25 @@
+{
+  "contractVersion": "afc-r2-candidate-family/v1",
+  "fixtureId": "afc-r2-room-a-candidate-family",
+  "coordinateSpace": "source-normalized/v1",
+  "semanticOrder": ["NL", "NR", "FR", "FL"],
+  "controlRef": {
+    "fixtureId": "afc-r1-room-a-floor-control",
+    "basisFingerprint": "afc-r1-room-a-original-v1",
+    "approvedPolygonFingerprint": "fnv1a32:f0cdf598"
+  },
+  "authoring": "Derived coordinates are materialized source-normalized values. intrinsic delta x uses x + dx/1264; y uses y + dy/848. Centroid scales use the committed control centroid.",
+  "candidates": [
+    { "candidateId": "approvedControlCandidate", "candidateSource": "approved-control", "role": "approvedControlCandidate" },
+    { "candidateId": "duplicateOfApproved", "candidateSource": "fixture-derived", "role": "duplicateOfApproved" },
+    { "candidateId": "equivalentFamilyMemberSubPixel", "candidateSource": "fixture-derived", "role": "equivalentFamilyMember", "transformSpec": { "FR.xIntrinsicDelta": 0.4 }, "sourceFloorPolygon": [{"x":0.10837393593189963,"y":0.9249876495993743},{"x":1,"y":0.93},{"x":0.6883164556962025,"y":0.648},{"x":0.356,"y":0.648}] },
+    { "candidateId": "equivalentFamilyMemberPlusOne", "candidateSource": "fixture-derived", "role": "equivalentFamilyMember", "transformSpec": { "FR.xIntrinsicDelta": 1 }, "sourceFloorPolygon": [{"x":0.10837393593189963,"y":0.9249876495993743},{"x":1,"y":0.93},{"x":0.6887911392405063,"y":0.648},{"x":0.356,"y":0.648}] },
+    { "candidateId": "structuredDecoyFrPlus20", "candidateSource": "research-probe", "role": "structuredDecoy", "transformSpec": { "FR.xIntrinsicDelta": 20 }, "sourceFloorPolygon": [{"x":0.10837393593189963,"y":0.9249876495993743},{"x":1,"y":0.93},{"x":0.7038227848101265,"y":0.648},{"x":0.356,"y":0.648}] },
+    { "candidateId": "ambiguityProbeTranslation", "candidateSource": "research-probe", "role": "ambiguityProbe", "transformSpec": { "wholePolygonIntrinsicDelta": {"x":15,"y":10} }, "sourceFloorPolygon": [{"x":0.12024102453949456,"y":0.936780102429563},{"x":1.0118670886075949,"y":0.9417924528301888},{"x":0.6998670886075948,"y":0.6597924528301887},{"x":0.3678670886075949,"y":0.6597924528301887}] },
+    { "candidateId": "trivialFitProbeHalfScale", "candidateSource": "research-probe", "role": "trivialFitProbe", "transformSpec": { "centroidScale": 0.5 }, "sourceFloorPolygon": [{"x":0.3232337099574373,"y":0.856367280999609},{"x":0.7690467419914875,"y":0.8588734561999218},{"x":0.6130467419914873,"y":0.7178734561999218},{"x":0.4470467419914874,"y":0.7178734561999218}] },
+    { "candidateId": "structuredDecoyBackEdge", "candidateSource": "research-probe", "role": "structuredDecoy", "transformSpec": { "FL_FR.yIntrinsicDelta": 20 }, "sourceFloorPolygon": [{"x":0.10837393593189963,"y":0.9249876495993743},{"x":1,"y":0.93},{"x":0.688,"y":0.6715849056603774},{"x":0.356,"y":0.6715849056603774}] },
+    { "candidateId": "semanticAlternativeCandidateCyclic", "candidateSource": "research-probe", "role": "semanticAlternativeCandidate", "sourceFloorPolygon": [{"x":1,"y":0.93},{"x":0.688,"y":0.648},{"x":0.356,"y":0.648},{"x":0.10837393593189963,"y":0.9249876495993743}] },
+    { "candidateId": "semanticAlternativeCandidateReversed", "candidateSource": "research-probe", "role": "semanticAlternativeCandidate", "sourceFloorPolygon": [{"x":0.10837393593189963,"y":0.9249876495993743},{"x":0.356,"y":0.648},{"x":0.688,"y":0.648},{"x":1,"y":0.93}] },
+    { "candidateId": "invalidInputProbeBowTie", "candidateSource": "research-probe", "role": "invalidInputProbe", "sourceFloorPolygon": [{"x":1,"y":0.93},{"x":0.10837393593189963,"y":0.9249876495993743},{"x":0.688,"y":0.648},{"x":0.356,"y":0.648}] }
+  ]
+}

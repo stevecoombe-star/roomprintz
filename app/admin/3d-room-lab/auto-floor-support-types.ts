@@ -17,7 +17,7 @@ import type { QuadSolvabilityResult } from "./quad-solvability";
 
 export type AutoFloorCornerLabel = "NL" | "NR" | "FR" | "FL";
 
-// Canonical corner order matches orderFloorCorners(...) and the existing
+// Canonical corner order matches the semantic editor Floor order and the existing
 // CALIBRATION_CORNER_LABELS in ThreeRoomLab.tsx: [nearLeft, nearRight,
 // farRight, farLeft]. Index i in a candidate quad maps to label i here.
 export const AUTO_FLOOR_CORNER_LABELS: readonly AutoFloorCornerLabel[] = [

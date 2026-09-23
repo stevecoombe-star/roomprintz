@@ -1,0 +1,116 @@
+{
+  "schemaVersion": "afc-sr1-ground-truth/v1",
+  "roomId": "room-b",
+  "photoClass": {
+    "classification": "unknown",
+    "provenance": "repository_fixture",
+    "notes": [
+      "The R1 control fixture records an Original image basis, not an independently captured photo-class decision."
+    ]
+  },
+  "imageBasis": {
+    "fingerprint": "afc-r1-room-b-original-v1",
+    "decodedWidth": 5000,
+    "decodedHeight": 3333,
+    "orientation": 1,
+    "provenance": "repository_fixture"
+  },
+  "rawFloor": {
+    "polygon": null,
+    "source": "unknown",
+    "receiptFileName": null,
+    "receiptSha256": null,
+    "requestId": null,
+    "r3bCandidateId": null,
+    "r3cCandidateId": null,
+    "sourceBasisFingerprint": null,
+    "sourceDecodedWidth": null,
+    "sourceDecodedHeight": null,
+    "sourceOrientation": null,
+    "projectedToImageBasis": null,
+    "provenance": "unknown",
+    "notes": []
+  },
+  "rawToOriginalPlacement": {
+    "status": "not_projected"
+  },
+  "acceptedFloor": {
+    "polygon": [
+      { "x": 0.21765442988351255, "y": 0.7085225978419112 },
+      { "x": 1, "y": 0.8827832609810005 },
+      { "x": 0.834628416218638, "y": 0.6338394564965875 },
+      { "x": 0.45189992159498205, "y": 0.5951037795153279 }
+    ],
+    "source": "control_fixture",
+    "provenance": "repository_fixture"
+  },
+  "seamRefinement": {
+    "adjustableCorner": "unknown",
+    "side": "unknown",
+    "direction": null,
+    "seamStart": null,
+    "seamEnd": null,
+    "rawCorner": null,
+    "acceptedCorner": null,
+    "seamT": null,
+    "perpendicularErrorSourceNormResearchOnly": null,
+    "collinearWithinTolerance": null,
+    "toleranceSourceNormResearchOnly": null,
+    "provenance": "unknown",
+    "notes": [
+      "Repository controls contain no raw-to-final seam history; no t=0 inference is made."
+    ]
+  },
+  "uncertifiedReceiptSeamEvidence": {
+    "status": "none"
+  },
+  "afcAuthorityPathStatus": "not_tested",
+  "calibration": {
+    "worldWidthMeters": null,
+    "worldDepthMeters": null,
+    "widthDepthRatio": 1.2,
+    "depthWidthAspect": 0.8333333333333334,
+    "verticalFovDeg": 58,
+    "dimensionsTruth": "unknown",
+    "cvAveragePx": 1.75,
+    "cvMaximumPx": 3.3,
+    "displayAveragePx": null,
+    "displayMaximumPx": null,
+    "scaleRatio": null,
+    "scaleRatioProvenance": null,
+    "cameraDiagnosticsContext": null,
+    "cameraApplySafe": null,
+    "cameraAppliedSuccessfully": null,
+    "cameraApplyEvidence": {
+      "status": "not_applied",
+      "provenance": [],
+      "notes": []
+    },
+    "provenance": "repository_fixture"
+  },
+  "manualProcess": {
+    "widthFovIterationCount": null,
+    "visuallyAccepted": null,
+    "notes": [
+      "The R1 harness classifies the control as an isolated optimum; that is repository regression evidence, not a captured camera Apply."
+    ],
+    "provenance": "repository_test"
+  },
+  "completeness": {
+    "status": "partial",
+    "missingFields": [
+      "photoClass.classification",
+      "rawFloor.emptyReceiptPolygon",
+      "rawFloor.receiptIdentity",
+      "rawFloor.sourceBasis",
+      "rawToOriginalPlacement",
+      "seamRefinement.sameBasisEvidence",
+      "calibration.worldDimensions",
+      "calibration.displayDiagnostics",
+      "calibration.scaleRatio",
+      "calibration.cameraApplySafe",
+      "calibration.cameraAppliedSuccessfully",
+      "manualProcess.visualAcceptance"
+    ]
+  }
+}

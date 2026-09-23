@@ -21,6 +21,7 @@ export type VibodeRoomRow = {
   base_image_url: string | null;
   base_storage_path: string | null;
   base_version_id: string | null;
+  current_afc_generation_id: string | null;
   last_opened_at: string | null;
   sort_key: string;
   metadata: JsonObject;

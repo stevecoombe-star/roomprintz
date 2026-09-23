@@ -1,0 +1,760 @@
+{
+  "attemptId": "afc-v2-room-c-lower-center-1787696246213",
+  "executionCounts": {
+    "emptyGeneration": 0,
+    "fullyTiledGeneration": 1,
+    "floorOnlyTiledGeneration": 0,
+    "fullyTiledFloorReader": 1,
+    "roomObserver": 1
+  },
+  "generation": {
+    "identity": {
+      "sha256": "f62995b3583849f2376ef2ce1915f8382bd0683acffe93bc6b1b379d38e7bc5f",
+      "byteCount": 1143855,
+      "decodedWidth": 1264,
+      "decodedHeight": 848,
+      "mimeType": "image/png",
+      "orientation": 1
+    },
+    "provenance": {
+      "generationId": "e2e2e247-5be7-4be4-a7a9-755ea0633531",
+      "generatorId": "afc-v2-fully-tiled-compositor/stage4/v1",
+      "promptVersion": "afc-v2-fully-tiled-generation/v1",
+      "promptSha256": "83657e782dd225c6fc5314748a339b21e860eb461c531f2d981d0fad8f6b755e",
+      "requestedModelId": "NBP",
+      "generatedFrom": "ORIGINAL",
+      "parentOriginalSha256": "32edb8294a3e5c68d0e54bd5c387eb408b0bc1e15dad781cef0206090df4df1e",
+      "generatedAt": "2026-08-25T22:05:48.437Z",
+      "appliedAspectRatio": null,
+      "imageTransport": "data_url"
+    }
+  },
+  "floor": {
+    "status": "applied",
+    "product": {
+      "status": "authoritative_floor",
+      "productVersion": "afc-v2-fully-tiled-floor-authority/v1",
+      "attemptId": "afc-v2-room-c-lower-center-1787696246213",
+      "resultId": "room-c-lower-center-live",
+      "labLoadGeneration": 1,
+      "originalBasis": {
+        "sha256": "32edb8294a3e5c68d0e54bd5c387eb408b0bc1e15dad781cef0206090df4df1e",
+        "byteCount": 1329642,
+        "decodedWidth": 7360,
+        "decodedHeight": 4912,
+        "mimeType": "image/jpeg",
+        "orientation": 1
+      },
+      "emptyBasis": {
+        "sha256": "b7283bb606d09bc7803543bfcbca14aa5f2041cfb91c5eb590d69d167355243f",
+        "byteCount": 1183523,
+        "decodedWidth": 1264,
+        "decodedHeight": 848,
+        "mimeType": "image/png",
+        "orientation": 1
+      },
+      "floorObservationSource": {
+        "kind": "FULLY_TILED",
+        "imageIdentity": {
+          "sha256": "f62995b3583849f2376ef2ce1915f8382bd0683acffe93bc6b1b379d38e7bc5f",
+          "byteCount": 1143855,
+          "decodedWidth": 1264,
+          "decodedHeight": 848,
+          "mimeType": "image/png",
+          "orientation": 1
+        },
+        "generationId": "e2e2e247-5be7-4be4-a7a9-755ea0633531",
+        "generatedFrom": "ORIGINAL",
+        "parentOriginalSha256": "32edb8294a3e5c68d0e54bd5c387eb408b0bc1e15dad781cef0206090df4df1e",
+        "readerVersion": "afc-sr1-tiled-perspective-reader/s1",
+        "readerInput": {
+          "identity": {
+            "sha256": "22ba7f795601de55323c6bb1c01b783a3ae1a8dc4f6d84f961824e080b810c2d",
+            "byteCount": 339886,
+            "decodedWidth": 759,
+            "decodedHeight": 424,
+            "mimeType": "image/png",
+            "orientation": 1
+          },
+          "crop": {
+            "kind": "lower_center_floor_region_crop",
+            "leftSourceNormalized": 0.2,
+            "rightSourceNormalized": 0.8,
+            "topSourceNormalized": 0.5,
+            "sourceIdentitySha256": "f62995b3583849f2376ef2ce1915f8382bd0683acffe93bc6b1b379d38e7bc5f",
+            "sourceNormalizedTransform": "x_source=left+x_crop*(right-left);y_source=top+y_crop*(1-top)"
+          }
+        },
+        "authoritativeQuadSourceNormalized": [
+          {
+            "x": 0.42617350811253857,
+            "y": 0.779556462938921
+          },
+          {
+            "x": 0.6354073903310995,
+            "y": 0.9606011858614205
+          },
+          {
+            "x": 0.7398885556478174,
+            "y": 0.7734319142360826
+          },
+          {
+            "x": 0.5625394223945004,
+            "y": 0.6982361322845164
+          }
+        ],
+        "transferToOriginal": "aspect_compatible_source_normalized_not_pixel_verified"
+      },
+      "metric": {
+        "metricScaleAuthority": "provisional_reference_depth",
+        "referenceDepthM": 4
+      },
+      "readerDiagnostics": {
+        "core": {
+          "rows": 6,
+          "columns": 6,
+          "j0": 4,
+          "i0": -9,
+          "cellIds": [
+            49,
+            53,
+            54,
+            55,
+            59,
+            60,
+            62,
+            63,
+            64,
+            65,
+            66,
+            67,
+            68,
+            69,
+            71,
+            72,
+            77,
+            78,
+            79,
+            82,
+            84,
+            86,
+            87,
+            88,
+            92,
+            93,
+            94,
+            96,
+            100,
+            101,
+            103,
+            108,
+            110,
+            111,
+            117,
+            120
+          ]
+        },
+        "selectedComponentTileCount": 90,
+        "rawQuadrilateralCount": 139,
+        "deduplicatedCellCount": 139,
+        "reprojectionMeanPx": 3.6294935289346997,
+        "reprojectionMaxPx": 9.033471692485886
+      }
+    },
+    "floor": {
+      "authorityKey": "0.42617350811253857,0.779556462938921|0.6354073903310995,0.9606011858614205|0.7398885556478174,0.7734319142360826|0.5625394223945004,0.6982361322845164",
+      "sourceNormalizedPolygon": [
+        {
+          "x": 0.42617350811253857,
+          "y": 0.779556462938921
+        },
+        {
+          "x": 0.6354073903310995,
+          "y": 0.9606011858614205
+        },
+        {
+          "x": 0.7398885556478174,
+          "y": 0.7734319142360826
+        },
+        {
+          "x": 0.5625394223945004,
+          "y": 0.6982361322845164
+        }
+      ],
+      "worldWidthM": 3.84,
+      "referenceDepthM": 4,
+      "widthDepthRatio": 0.96
+    },
+    "camera": {
+      "applied": true,
+      "verticalFovDeg": 81.1,
+      "pose": {
+        "position": {
+          "x": 3.8378834525310612,
+          "y": 3.2009925544024544,
+          "z": 5.90758144370762
+        },
+        "lookAt": {
+          "x": 3.13004833068693,
+          "y": 3.208622226522764,
+          "z": 5.201244959879098
+        },
+        "up": {
+          "x": 0.008146279344616933,
+          "y": 0.9999633394171696,
+          "z": 0.00263779349115733
+        }
+      },
+      "frame": {
+        "width": 1046,
+        "height": 698
+      },
+      "originalBasisRestored": true
+    },
+    "analysisMode": "live",
+    "freezeReceipt": {
+      "receiptVersion": "afc-v2-fully-tiled-camera-freeze/v1",
+      "payload": {
+        "frozenAtIso": "2026-08-25T22:17:27.026Z",
+        "authority": {
+          "authorityVersion": "calibrated-camera-applied-authority/v1",
+          "appliedAtIso": "2026-08-25T22:17:27.025Z",
+          "verticalFovDeg": 81.1,
+          "frameSize": {
+            "width": 1046,
+            "height": 698
+          },
+          "pose": {
+            "position": {
+              "x": 3.8378834525310612,
+              "y": 3.2009925544024544,
+              "z": 5.90758144370762
+            },
+            "lookAt": {
+              "x": 3.13004833068693,
+              "y": 3.208622226522764,
+              "z": 5.201244959879098
+            },
+            "up": {
+              "x": 0.008146279344616933,
+              "y": 0.9999633394171696,
+              "z": 0.00263779349115733
+            }
+          },
+          "imageBasis": {
+            "basisId": "32edb8294a3e5c68d0e54bd5c387eb408b0bc1e15dad781cef0206090df4df1e:7360x4912:http://localhost:3000/room-c.jpg",
+            "basisFingerprint": "32edb8294a3e5c68d0e54bd5c387eb408b0bc1e15dad781cef0206090df4df1e",
+            "sourceImageUrl": "http://localhost:3000/room-c.jpg",
+            "decodedWidth": 7360,
+            "decodedHeight": 4912,
+            "encodedOrientation": 1,
+            "decodedOrientationNormal": true,
+            "orientationTransform": "identity",
+            "dimensionSource": "server",
+            "coordinateSpaceVersion": {
+              "decoderId": "sharp-metadata/v1",
+              "normalizationPolicyVersion": "orientation-normal/v1",
+              "orientationApplied": false
+            },
+            "basisKind": "original"
+          },
+          "sourceFloorPolygon": [
+            {
+              "x": 0.42617350811253857,
+              "y": 0.779556462938921
+            },
+            {
+              "x": 0.6354073903310995,
+              "y": 0.9606011858614205
+            },
+            {
+              "x": 0.7398885556478174,
+              "y": 0.7734319142360826
+            },
+            {
+              "x": 0.5625394223945004,
+              "y": 0.6982361322845164
+            }
+          ],
+          "floorMapping": {
+            "worldWidth": 3.84,
+            "worldDepth": 4
+          },
+          "calibrationVersion": "calibrated-camera/v2",
+          "solver": "homography-planar-cv/v1",
+          "diagnosticsSummary": "cv avg=0.11727005446951747 max=0.2651781418184316 scale=1.0010008370593844"
+        },
+        "original": {
+          "sha256": "32edb8294a3e5c68d0e54bd5c387eb408b0bc1e15dad781cef0206090df4df1e",
+          "byteCount": 1329642,
+          "decodedWidth": 7360,
+          "decodedHeight": 4912,
+          "mimeType": "image/jpeg",
+          "orientation": 1
+        },
+        "empty": {
+          "sha256": "b7283bb606d09bc7803543bfcbca14aa5f2041cfb91c5eb590d69d167355243f",
+          "byteCount": 1183523,
+          "decodedWidth": 1264,
+          "decodedHeight": 848,
+          "mimeType": "image/png",
+          "orientation": 1
+        },
+        "floorObservation": {
+          "kind": "FULLY_TILED",
+          "imageIdentity": {
+            "sha256": "f62995b3583849f2376ef2ce1915f8382bd0683acffe93bc6b1b379d38e7bc5f",
+            "byteCount": 1143855,
+            "decodedWidth": 1264,
+            "decodedHeight": 848,
+            "mimeType": "image/png",
+            "orientation": 1
+          },
+          "generationId": "e2e2e247-5be7-4be4-a7a9-755ea0633531",
+          "generatedFrom": "ORIGINAL",
+          "parentOriginalSha256": "32edb8294a3e5c68d0e54bd5c387eb408b0bc1e15dad781cef0206090df4df1e",
+          "readerVersion": "afc-sr1-tiled-perspective-reader/s1",
+          "readerInput": {
+            "identity": {
+              "sha256": "22ba7f795601de55323c6bb1c01b783a3ae1a8dc4f6d84f961824e080b810c2d",
+              "byteCount": 339886,
+              "decodedWidth": 759,
+              "decodedHeight": 424,
+              "mimeType": "image/png",
+              "orientation": 1
+            },
+            "crop": {
+              "kind": "lower_center_floor_region_crop",
+              "leftSourceNormalized": 0.2,
+              "rightSourceNormalized": 0.8,
+              "topSourceNormalized": 0.5,
+              "sourceIdentitySha256": "f62995b3583849f2376ef2ce1915f8382bd0683acffe93bc6b1b379d38e7bc5f",
+              "sourceNormalizedTransform": "x_source=left+x_crop*(right-left);y_source=top+y_crop*(1-top)"
+            }
+          },
+          "authoritativeQuadSourceNormalized": [
+            {
+              "x": 0.42617350811253857,
+              "y": 0.779556462938921
+            },
+            {
+              "x": 0.6354073903310995,
+              "y": 0.9606011858614205
+            },
+            {
+              "x": 0.7398885556478174,
+              "y": 0.7734319142360826
+            },
+            {
+              "x": 0.5625394223945004,
+              "y": 0.6982361322845164
+            }
+          ],
+          "transferToOriginal": "aspect_compatible_source_normalized_not_pixel_verified"
+        },
+        "floorAuthorityKey": "0.42617350811253857,0.779556462938921|0.6354073903310995,0.9606011858614205|0.7398885556478174,0.7734319142360826|0.5625394223945004,0.6982361322845164",
+        "ratioFovSettle": {
+          "applySafe": true,
+          "winningCellId": "ratio=0.960;fov=81.1",
+          "widthDepthRatio": 0.96,
+          "referenceDepthM": 4,
+          "worldWidthM": 3.84,
+          "worldDepthM": 4,
+          "verticalFovDeg": 81.1
+        },
+        "cameraApply": {
+          "validation": "passed",
+          "confidence": "high",
+          "sourceBasis": "ORIGINAL",
+          "snapshotFrameMatchedRenderer": true
+        }
+      },
+      "integrity": {
+        "algorithm": "sha256",
+        "canonicalization": "roomprintz-canonical-json-sort-keys/v1",
+        "payloadSha256": "f739d90defde476a9d224e4598f8f72bd585ba7405d9ebd04a8563a752691198"
+      }
+    }
+  },
+  "room": {
+    "status": "observed",
+    "contract": {
+      "representationIdentity": {
+        "kind": "FULLY_TILED",
+        "identity": {
+          "sha256": "f62995b3583849f2376ef2ce1915f8382bd0683acffe93bc6b1b379d38e7bc5f",
+          "byteCount": 1143855,
+          "decodedWidth": 1264,
+          "decodedHeight": 848,
+          "mimeType": "image/png",
+          "orientation": 1
+        },
+        "generatedFrom": "ORIGINAL",
+        "parentOriginalSha256": "32edb8294a3e5c68d0e54bd5c387eb408b0bc1e15dad781cef0206090df4df1e",
+        "generationId": "e2e2e247-5be7-4be4-a7a9-755ea0633531"
+      },
+      "observationVersion": "afc-v2-room-observation/v1",
+      "sourceBasis": {
+        "coordinateSpace": "fully-tiled-source-normalized-image/v1",
+        "original": {
+          "sha256": "32edb8294a3e5c68d0e54bd5c387eb408b0bc1e15dad781cef0206090df4df1e",
+          "byteCount": 1329642,
+          "decodedWidth": 7360,
+          "decodedHeight": 4912,
+          "mimeType": "image/jpeg",
+          "orientation": 1
+        },
+        "fullyTiled": {
+          "sha256": "f62995b3583849f2376ef2ce1915f8382bd0683acffe93bc6b1b379d38e7bc5f",
+          "byteCount": 1143855,
+          "decodedWidth": 1264,
+          "decodedHeight": 848,
+          "mimeType": "image/png",
+          "orientation": 1
+        },
+        "primitivesBasis": "FULLY_TILED",
+        "calibratedFloorReferenceBasis": "FULLY_TILED",
+        "cameraRealizationBasis": "ORIGINAL",
+        "transfer": "aspect_ratio_compatible_source_normalized",
+        "crossBasisAlignment": "generation_prompt_preserved_not_pixel_verified"
+      },
+      "calibratedCameraReference": {
+        "authority": "certified_floor_camera",
+        "attemptId": "afc-v2-room-c-lower-center-1787696246213",
+        "floorResultId": "room-c-lower-center-live",
+        "authorityKey": "0.42617350811253857,0.779556462938921|0.6354073903310995,0.9606011858614205|0.7398885556478174,0.7734319142360826|0.5625394223945004,0.6982361322845164",
+        "originalBasisSha256": "32edb8294a3e5c68d0e54bd5c387eb408b0bc1e15dad781cef0206090df4df1e",
+        "frozenSnapshotDigest": "1957f1ce32d6a9c0a056127170ea7d14e3e679f56ee364a90c80d72c6e0bb06a",
+        "role": "consumed_reference_only"
+      },
+      "observedPlanes": [
+        {
+          "id": "floor_plane",
+          "category": "floor",
+          "imagePolygon": [
+            {
+              "x": 0.42617350811253857,
+              "y": 0.779556462938921
+            },
+            {
+              "x": 0.6354073903310995,
+              "y": 0.9606011858614205
+            },
+            {
+              "x": 0.7398885556478174,
+              "y": 0.7734319142360826
+            },
+            {
+              "x": 0.5625394223945004,
+              "y": 0.6982361322845164
+            }
+          ],
+          "confidence": 0.95,
+          "ambiguity": null,
+          "evidenceClass": "provider_reported_visible_evidence",
+          "gridFamilyIds": []
+        },
+        {
+          "id": "wall_left",
+          "category": "wall",
+          "imagePolygon": [
+            {
+              "x": 0,
+              "y": 0
+            },
+            {
+              "x": 0.078,
+              "y": 0.21
+            },
+            {
+              "x": 0.078,
+              "y": 0.69
+            },
+            {
+              "x": 0,
+              "y": 1
+            }
+          ],
+          "confidence": 0.9,
+          "ambiguity": null,
+          "evidenceClass": "provider_reported_visible_evidence",
+          "gridFamilyIds": []
+        },
+        {
+          "id": "wall_back_left",
+          "category": "wall",
+          "imagePolygon": [
+            {
+              "x": 0.078,
+              "y": 0.21
+            },
+            {
+              "x": 0.415,
+              "y": 0.33
+            },
+            {
+              "x": 0.415,
+              "y": 0.62
+            },
+            {
+              "x": 0.078,
+              "y": 0.69
+            }
+          ],
+          "confidence": 0.95,
+          "ambiguity": null,
+          "evidenceClass": "provider_reported_visible_evidence",
+          "gridFamilyIds": []
+        },
+        {
+          "id": "wall_back_right",
+          "category": "wall",
+          "imagePolygon": [
+            {
+              "x": 0.415,
+              "y": 0.33
+            },
+            {
+              "x": 0.64,
+              "y": 0.12
+            },
+            {
+              "x": 0.64,
+              "y": 0.64
+            },
+            {
+              "x": 0.415,
+              "y": 0.62
+            }
+          ],
+          "confidence": 0.95,
+          "ambiguity": null,
+          "evidenceClass": "provider_reported_visible_evidence",
+          "gridFamilyIds": []
+        },
+        {
+          "id": "wall_right",
+          "category": "wall",
+          "imagePolygon": [
+            {
+              "x": 0.64,
+              "y": 0.12
+            },
+            {
+              "x": 1,
+              "y": 0
+            },
+            {
+              "x": 1,
+              "y": 0.8
+            },
+            {
+              "x": 0.64,
+              "y": 0.64
+            }
+          ],
+          "confidence": 0.95,
+          "ambiguity": null,
+          "evidenceClass": "provider_reported_visible_evidence",
+          "gridFamilyIds": []
+        },
+        {
+          "id": "ceiling_plane",
+          "category": "ceiling",
+          "imagePolygon": [
+            {
+              "x": 0,
+              "y": 0
+            },
+            {
+              "x": 0.078,
+              "y": 0.21
+            },
+            {
+              "x": 0.415,
+              "y": 0.33
+            },
+            {
+              "x": 0.64,
+              "y": 0.12
+            },
+            {
+              "x": 1,
+              "y": 0
+            }
+          ],
+          "confidence": 0.9,
+          "ambiguity": null,
+          "evidenceClass": "provider_reported_visible_evidence",
+          "gridFamilyIds": []
+        }
+      ],
+      "observedSeams": [
+        {
+          "id": "seam_wall_left_back_left",
+          "category": "wall_wall",
+          "planeIds": [
+            "wall_left",
+            "wall_back_left"
+          ],
+          "imagePolyline": [
+            {
+              "x": 0.078,
+              "y": 0.21
+            },
+            {
+              "x": 0.078,
+              "y": 0.69
+            }
+          ],
+          "confidence": 0.95,
+          "ambiguity": null,
+          "evidenceClass": "provider_reported_visible_evidence"
+        },
+        {
+          "id": "seam_wall_back_left_back_right",
+          "category": "wall_wall",
+          "planeIds": [
+            "wall_back_left",
+            "wall_back_right"
+          ],
+          "imagePolyline": [
+            {
+              "x": 0.415,
+              "y": 0.33
+            },
+            {
+              "x": 0.415,
+              "y": 0.62
+            }
+          ],
+          "confidence": 0.95,
+          "ambiguity": null,
+          "evidenceClass": "provider_reported_visible_evidence"
+        },
+        {
+          "id": "seam_wall_back_right_right",
+          "category": "wall_wall",
+          "planeIds": [
+            "wall_back_right",
+            "wall_right"
+          ],
+          "imagePolyline": [
+            {
+              "x": 0.64,
+              "y": 0.12
+            },
+            {
+              "x": 0.64,
+              "y": 0.64
+            }
+          ],
+          "confidence": 0.95,
+          "ambiguity": null,
+          "evidenceClass": "provider_reported_visible_evidence"
+        }
+      ],
+      "observedOpenings": [
+        {
+          "id": "window_left",
+          "category": "window",
+          "hostPlaneId": "wall_back_left",
+          "imageBoundary": [
+            {
+              "x": 0.148,
+              "y": 0.32
+            },
+            {
+              "x": 0.368,
+              "y": 0.365
+            },
+            {
+              "x": 0.368,
+              "y": 0.51
+            },
+            {
+              "x": 0.148,
+              "y": 0.51
+            }
+          ],
+          "confidence": 0.95,
+          "ambiguity": null,
+          "tiledFieldInterruption": true,
+          "evidenceClass": "provider_reported_visible_evidence"
+        },
+        {
+          "id": "window_right",
+          "category": "window",
+          "hostPlaneId": "wall_back_right",
+          "imageBoundary": [
+            {
+              "x": 0.447,
+              "y": 0.285
+            },
+            {
+              "x": 0.638,
+              "y": 0.18
+            },
+            {
+              "x": 0.638,
+              "y": 0.37
+            },
+            {
+              "x": 0.447,
+              "y": 0.415
+            }
+          ],
+          "confidence": 0.95,
+          "ambiguity": null,
+          "tiledFieldInterruption": true,
+          "evidenceClass": "provider_reported_visible_evidence"
+        }
+      ],
+      "observedGridFamilies": [],
+      "adjacency": [
+        {
+          "id": "adj_wall_left_back_left",
+          "planeAId": "wall_left",
+          "planeBId": "wall_back_left",
+          "seamId": "seam_wall_left_back_left",
+          "confidence": 0.95,
+          "evidenceClass": "conservative_seam_supported_inference"
+        },
+        {
+          "id": "adj_wall_back_left_back_right",
+          "planeAId": "wall_back_left",
+          "planeBId": "wall_back_right",
+          "seamId": "seam_wall_back_left_back_right",
+          "confidence": 0.95,
+          "evidenceClass": "conservative_seam_supported_inference"
+        },
+        {
+          "id": "adj_wall_back_right_right",
+          "planeAId": "wall_back_right",
+          "planeBId": "wall_right",
+          "seamId": "seam_wall_back_right_right",
+          "confidence": 0.95,
+          "evidenceClass": "conservative_seam_supported_inference"
+        }
+      ],
+      "diagnostics": {
+        "provider": "google_gemini",
+        "model": "gemini-3.5-flash",
+        "promptVersion": "afc-v2-visible-room-envelope-observer/v1",
+        "generatedAt": "2026-08-25T22:17:34.925Z",
+        "rejected": {
+          "planes": 0,
+          "gridFamilies": 0,
+          "seams": 0,
+          "openings": 0,
+          "adjacency": 0
+        },
+        "unresolved": [],
+        "worldGeometryProduced": false,
+        "providerEvidenceStatus": "schema_validated_provider_report_not_pixel_verified",
+        "hiddenSurfacePolicy": "prohibited_and_explicit_hidden_claims_filtered",
+        "cameraAuthority": "certified_floor_camera_reference_only"
+      }
+    }
+  }
+}

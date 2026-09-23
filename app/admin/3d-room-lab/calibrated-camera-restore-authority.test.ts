@@ -13,6 +13,7 @@ import {
   type CalibratedCameraAppliedAuthority,
   type ParsedCalibratedCameraAppliedAuthority,
 } from "./calibrated-camera-restore-authority";
+import { FLOOR_SOURCE_COORDINATE_EXTENT } from "./floor-coordinate-extent";
 import {
   buildCeilingPolygonKey,
   buildRoomHeightKey,
@@ -25,7 +26,12 @@ import {
   selectObjectTransformMode,
   selectPlacementTransformAuthority,
 } from "./support-attachment";
-import { buildWallPolygonKey, isWallConfirmationCurrent, type WallPolygon } from "./wall-support-geometry";
+import {
+  buildWallPolygonKey,
+  createWallConfirmationStamp,
+  isWallConfirmationCurrent,
+  type WallPolygon,
+} from "./wall-support-geometry";
 
 const basis = {
   basisId: "basis-a",
@@ -130,6 +136,18 @@ test("rejects a missing required field", () => {
   assert.deepEqual(parseCalibratedCameraAppliedAuthority(value), { ok: false, reason: "diagnostics_summary" });
 });
 
+test("defaults applied-authority parsing to unit extent while allowing an explicit widened extent", () => {
+  const value = authorityFixture();
+  value.sourceFloorPolygon[0].x = 1.1;
+  assert.deepEqual(parseCalibratedCameraAppliedAuthority(value), {
+    ok: false,
+    reason: "source_floor_polygon",
+  });
+  const widened = parseCalibratedCameraAppliedAuthority(value, FLOOR_SOURCE_COORDINATE_EXTENT);
+  assert.equal(widened.ok, true);
+  if (widened.ok) assert.equal(widened.value.sourceFloorPolygon[0].x, 1.1);
+});
+
 test("strict timestamp validator only accepts Date ISO UTC milliseconds", () => {
   assert.equal(isStrictUtcIsoTimestamp("2026-07-14T00:00:00.000Z"), true);
   assert.equal(isStrictUtcIsoTimestamp("2026-07-14T00:00:00Z"), false);
@@ -220,7 +238,7 @@ test("timestamp selection only accepts the branded evaluated identity for restor
   selectAppliedAtIso({ kind: "restore_existing_identity", identity: parsedAuthority() }, "2026-07-15T00:00:00.000Z");
 });
 
-test("preserved identity naturally restores wall, Ceiling, and attachment currentness", () => {
+test("preserved identity restores wall policy authority, Ceiling, and attachment currentness", () => {
   const authority = parsedAuthority();
   const wallPolygon: WallPolygon = [
     { x: 0.1, y: 0.8 },
@@ -229,7 +247,7 @@ test("preserved identity naturally restores wall, Ceiling, and attachment curren
     { x: 0.2, y: 0.2 },
   ];
   const ceilingPolygon: CeilingPolygon = wallPolygon.map((point) => ({ ...point })) as CeilingPolygon;
-  const wallStamp = {
+  const legacyWallStamp = {
     wallPolygonKey: buildWallPolygonKey(wallPolygon),
     imageBasisId: basis.basisId,
     imageBasisFingerprint: basis.basisFingerprint,
@@ -238,19 +256,53 @@ test("preserved identity naturally restores wall, Ceiling, and attachment curren
     frameHeight: authority.frameSize.height,
   };
   assert.equal(isWallConfirmationCurrent({
-    stamp: wallStamp,
+    stamp: legacyWallStamp,
     polygon: wallPolygon,
     basis,
     cameraAppliedAtIso: authority.appliedAtIso,
     frameSize: authority.frameSize,
   }), true);
   assert.equal(isWallConfirmationCurrent({
-    stamp: wallStamp,
+    stamp: legacyWallStamp,
     polygon: wallPolygon,
     basis,
     cameraAppliedAtIso: "2026-07-15T00:00:00.000Z",
     frameSize: authority.frameSize,
   }), false);
+  assert.equal(
+    isWallConfirmationCurrent({
+      stamp: legacyWallStamp,
+      polygon: wallPolygon,
+      basis,
+      cameraAppliedAtIso: authority.appliedAtIso,
+      frameSize: authority.frameSize,
+    }, "wall-support-geometry-policy/v2"),
+    false
+  );
+
+  const reconfirmedWallStamp = createWallConfirmationStamp(
+    wallPolygon,
+    basis,
+    authority.appliedAtIso,
+    authority.frameSize
+  );
+  assert.equal(isWallConfirmationCurrent({
+    stamp: reconfirmedWallStamp,
+    polygon: wallPolygon,
+    basis,
+    cameraAppliedAtIso: authority.appliedAtIso,
+    frameSize: authority.frameSize,
+  }), true);
+  assert.equal(
+    isWallConfirmationCurrent({
+      stamp: { ...reconfirmedWallStamp, wallGeometryPolicyVersion: "wall-support-geometry-policy/v0" },
+      polygon: wallPolygon,
+      basis,
+      cameraAppliedAtIso: authority.appliedAtIso,
+      frameSize: authority.frameSize,
+    }),
+    false
+  );
 
   const ceilingStamp = {
     ceilingPolygonKey: buildCeilingPolygonKey(ceilingPolygon),

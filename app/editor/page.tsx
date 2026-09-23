@@ -18,6 +18,12 @@ import {
 import { SignOutButton } from "@/components/auth/SignOutButton";
 import { LatestFurnitureCollectionImportBanner } from "@/components/LatestFurnitureCollectionImportBanner";
 import { LatestFurnitureCollectionItemsPreview } from "@/components/LatestFurnitureCollectionItemsPreview";
+import { AfcIntegratedEditorViewport } from "@/components/afc-3d/AfcIntegratedEditorViewport";
+import { AfcSceneObjectCrudSessionProvider } from "@/components/afc-3d/AfcSceneObjectCrudSession";
+import { EditorViewportModeControl } from "@/components/afc-3d/EditorViewportModeControl";
+import { AfcQaTesterReport } from "@/components/afc-qa/AfcQaTesterReport";
+import { StageEditorProvider } from "@/components/stage/StageEditorContext";
+import { StageEditorShell } from "@/components/stage/StageEditorShell";
 import { TokenBalanceBadge } from "@/components/tokens/TokenBalanceBadge";
 import { TokenStatusNotice } from "@/components/tokens/TokenStatusNotice";
 import { SnackbarHost, type Snackbar } from "@/components/ui/SnackbarHost";
@@ -74,6 +80,18 @@ import {
   type VibodeVersionKind,
 } from "@/lib/vibode/version-kind";
 
+import {
+  createInitialEditorViewportMode,
+  editorRightPanelSurface,
+  isIntegrated3dModeBusy,
+  shouldAutoPrepareIntegrated3d,
+  shouldRestoreIntegratedAfcRuntime,
+  type EditorViewportMode,
+} from "@/lib/afc-v2-runtime/editor-viewport-mode";
+import { resolveIntegratedEditorBackgroundImageUrl } from "@/lib/afc-v2-runtime/viewer-presentation";
+import { useAfcProductionRuntime } from "@/lib/afc-v2-runtime/use-afc-production-runtime";
+import { usePrepare3dRoom } from "@/lib/afc-v2-runtime/use-prepare-3d-room";
+import type { RuntimeTransformMode } from "@/lib/afc-v2-runtime/types";
 import { getSupabaseBrowserAccessToken, supabaseBrowser } from "@/lib/supabaseBrowser";
 import { useTokenBalance } from "@/hooks/useTokenBalance";
 
@@ -2347,6 +2365,12 @@ function EditorPageInner() {
     searchParams.get("roomId") ?? searchParams.get("vibodeRoomId")
   );
   const requestedNewRoomIntent = hasExplicitNewRoomIntent(searchParams);
+  const [viewportMode, setViewportMode] = useState<EditorViewportMode>(
+    createInitialEditorViewportMode,
+  );
+  const [runtimeTransformMode, setRuntimeTransformMode] =
+    useState<RuntimeTransformMode>("move");
+  const [afcRuntimeReloadKey, setAfcRuntimeReloadKey] = useState(0);
   const isExplicitBlankEditorIntent = !requestedRoomId && requestedNewRoomIntent;
   const requestedRoomPreviewUrl = parseRoomPreviewUrlFromSearch(
     searchParams.get("roomPreview") ?? searchParams.get("previewUrl")
@@ -3027,6 +3051,14 @@ function EditorPageInner() {
       ui: s.ui.selectedNodeId ? { ...s.ui, selectedNodeId: null } : s.ui,
     }));
   }, []);
+  const hydrateSceneNodesFromPlacements = useCallback(
+    (placements: ScenePlacement[]) => {
+      void placements;
+      // Legacy placement->node hydration is intentionally disabled.
+      clearLegacyPlacementNodes();
+    },
+    [clearLegacyPlacementNodes]
+  );
   const clearTransientInteractionOverlaysAfterImageCommit = useCallback(() => {
     setRemoveMarkerPosition(null);
     setIsRemoveMarkerTargeting(false);
@@ -3056,6 +3088,45 @@ function EditorPageInner() {
   useEffect(() => {
     vibodeRoomIdRef.current = vibodeRoomId;
   }, [vibodeRoomId]);
+  const editorRoomId = vibodeRoomId ?? requestedRoomId;
+  const previousEditorRoomIdRef = useRef(editorRoomId);
+  if (previousEditorRoomIdRef.current !== editorRoomId) {
+    previousEditorRoomIdRef.current = editorRoomId;
+    setViewportMode(createInitialEditorViewportMode());
+    setRuntimeTransformMode("move");
+    setAfcRuntimeReloadKey(0);
+  }
+  const prepare3d = usePrepare3dRoom(editorRoomId);
+  const restoreIntegratedAfcRuntime = shouldRestoreIntegratedAfcRuntime({
+    viewportMode,
+    preparePhase: prepare3d.state.phase,
+  });
+  const afcRuntime = useAfcProductionRuntime(editorRoomId, {
+    enabled: restoreIntegratedAfcRuntime,
+    reloadKey: afcRuntimeReloadKey,
+  });
+  const prepare3dPhase = prepare3d.state.phase;
+  const requestPrepare3d = prepare3d.requestPrepare;
+  const retryIntegratedAfcRestore = useCallback(() => {
+    setAfcRuntimeReloadKey((current) => current + 1);
+  }, []);
+  const integrated3dBusy = isIntegrated3dModeBusy({
+    viewportMode,
+    preparePhase: prepare3dPhase,
+    runtimeLoading: afcRuntime.loading,
+  });
+  const showWorkflowRightPanel = editorRightPanelSurface(viewportMode) === "workflow";
+  useEffect(() => {
+    if (
+      !shouldAutoPrepareIntegrated3d({
+        viewportMode,
+        preparePhase: prepare3dPhase,
+      })
+    ) {
+      return;
+    }
+    requestPrepare3d();
+  }, [prepare3dPhase, requestPrepare3d, viewportMode]);
   const createPasteToPlaceJobControl = useCallback(
     (operationId: number): PasteToPlaceJobControl => {
       const scopeRoomPart = vibodeRoomIdRef.current ?? "no_room";
@@ -4432,6 +4503,7 @@ function EditorPageInner() {
     effectiveRequestedInitialFrameAspectRatio,
     effectiveRequestedRoomId,
     effectiveRequestedRoomPreviewUrl,
+    hydrateSceneNodesFromPlacements,
     isWorkspaceRecoveryPending,
     pushSnack,
     requestedRoomId,
@@ -5210,6 +5282,10 @@ function EditorPageInner() {
     () => versions.find((asset) => asset.id === selectedVersionId) ?? null,
     [selectedVersionId, versions]
   );
+  const integratedViewerBackgroundImageUrl = resolveIntegratedEditorBackgroundImageUrl({
+    selectedVersionImageUrl: selectedVersion?.image_url,
+    editorVisualUrl: workingImageUrl,
+  });
   const selectedVersionRenderedPlacementStateHash = useMemo(
     () => readRenderedPlacementStateHashFromMetadata(selectedVersion?.metadata),
     [selectedVersion?.metadata]
@@ -5310,14 +5386,6 @@ function EditorPageInner() {
     scenePlacements,
     stage3OutputPlacements,
   ]);
-  const hydrateSceneNodesFromPlacements = useCallback(
-    (placements: ScenePlacement[]) => {
-      void placements;
-      // Legacy placement->node hydration is intentionally disabled.
-      clearLegacyPlacementNodes();
-    },
-    [clearLegacyPlacementNodes]
-  );
   const versionsWithKind = useMemo<EditorVersionWithKind[]>(
     () =>
       versions.map((version) => ({
@@ -7319,7 +7387,7 @@ function EditorPageInner() {
     void runStageWithCancellation(4, { stage4Actions: selectedActions });
   };
 
-  const runEdit = async (
+  const runEdit = useCallback(async (
     action: EditAction,
     payloadParts: Partial<VibodeEditRunRequest> = {},
     lifecycle?: {
@@ -7612,7 +7680,26 @@ function EditorPageInner() {
         );
       }
     }
-  };
+  }, [
+    activeStage,
+    authoritativeDisplayedPlacements,
+    clearLegacyPlacementNodes,
+    clearPasteToPlaceSettlingForRequest,
+    clearTransientInteractionOverlaysAfterImageCommit,
+    hydrateRoomImageObjects,
+    hydrateSceneNodesFromPlacements,
+    isBaseImageEditReady,
+    isOutOfTokens,
+    notifyTokenBalanceChanged,
+    pushSnack,
+    refreshRoomVersions,
+    scenePlacements,
+    selectedModel,
+    setActiveAssetId,
+    setBaseImageUrl,
+    vibodeRoomId,
+    workingImageUrl,
+  ]);
 
   useEffect(() => {
     const pending = getPendingFurnitureSelection();
@@ -10133,11 +10220,11 @@ function EditorPageInner() {
     setActivePasteToPlaceJobControl,
   ]);
 
-  const warnEdit = (message: string) => {
+  const warnEdit = useCallback((message: string) => {
     setEditWarning(message);
     console.warn(`[edit-run] ${message}`);
     pushSnack(message);
-  };
+  }, [pushSnack]);
 
   const closeMyFurniturePicker = useCallback(() => {
     setMyFurnitureOpen(false);
@@ -10331,7 +10418,7 @@ function EditorPageInner() {
     setEditWarning(null);
   }, []);
 
-  const removeSelectedMarker = async () => {
+  const removeSelectedMarker = useCallback(async () => {
     if (!removeMarkerPosition) {
       warnEdit("Place a remove marker first.");
       return;
@@ -10359,7 +10446,7 @@ function EditorPageInner() {
     if (!res) return;
     clearRemoveMarker(false);
     setEditWarning(null);
-  };
+  }, [clearRemoveMarker, removeMarkerPosition, runEdit, selectedRemoveLabel, warnEdit]);
 
   const engageRemoveMode = useCallback(async () => {
     if (isRemoveModeReadingObjects) return;
@@ -11840,6 +11927,12 @@ function EditorPageInner() {
   );
 
   return (
+    <AfcSceneObjectCrudSessionProvider>
+    <StageEditorProvider
+      active={viewportMode === "3d"}
+      transformMode={runtimeTransformMode}
+      onTransformModeChange={setRuntimeTransformMode}
+    >
     <div className="fixed inset-0 z-0 flex min-h-0 flex-col overflow-hidden bg-neutral-950 text-neutral-100">
       {/* Top bar */}
       <header className="flex h-12 shrink-0 items-center justify-between border-b border-neutral-800 px-4">
@@ -11873,6 +11966,27 @@ function EditorPageInner() {
               {queuedSwaps > 0 ? `${queuedSwaps} swap${queuedSwaps === 1 ? "" : "s"} pending` : ""}
             </div>
           )}
+          <EditorViewportModeControl
+            mode={viewportMode}
+            disabled={!editorRoomId}
+            busy={integrated3dBusy}
+            onChange={setViewportMode}
+          />
+          <AfcQaTesterReport
+            roomId={editorRoomId}
+            preparePhase={prepare3dPhase}
+            prepareGenerationId={prepare3d.state.generationId}
+            onUnauthorized={() => {
+              pushSnack("Your session expired. Redirecting to sign in...");
+              const next = editorRoomId
+                ? `/editor?roomId=${encodeURIComponent(editorRoomId)}`
+                : "/editor";
+              router.push(`/login?next=${encodeURIComponent(next)}`);
+            }}
+            onRerunStart={() => prepare3d.requestRunningFromReady()}
+            onRerunReverted={() => prepare3d.revertRunningToReady()}
+            onRerunSettled={(result) => prepare3d.settleRunning(result)}
+          />
           <button
             type="button"
             aria-pressed={isFurnitureLayerEnabled}
@@ -11939,25 +12053,28 @@ function EditorPageInner() {
       {/* Main */}
       <div className="flex min-h-0 flex-1 w-full overflow-hidden">
         {/* Canvas area */}
-        <main className="flex min-h-0 flex-1 items-center justify-center overflow-hidden bg-neutral-950">
+        <main className={`flex min-h-0 flex-1 overflow-hidden bg-neutral-950 ${viewportMode === "3d" ? "" : "items-center justify-center"}`}>
+          <StageEditorShell active={viewportMode === "3d"}>
           <div className="flex w-full flex-col items-center justify-center gap-3 px-3">
           {/* OUTER: owns glow pseudo-elements (NO overflow-hidden) */}
           <div
             className="relative h-[70vh] w-[70vw] max-w-[1200px] rounded-lg precision-ring vibe-glow vibe-aura vibe-aura-animate"
+            data-stage-canvas="true"
           >
             {/* INNER: clips canvas contents + keeps border/bg */}
             <div
               className={`relative h-full w-full overflow-hidden rounded-lg border border-neutral-800 bg-neutral-900 ${
-                isBusy ? "blur-[1px] brightness-90" : ""
+                viewportMode === "2d" && isBusy ? "blur-[1px] brightness-90" : ""
               } ${
-                isCanvasEmpty && isCanvasDragOver
+                viewportMode === "2d" && isCanvasEmpty && isCanvasDragOver
                   ? "border-blue-700/70 bg-blue-950/20 ring-1 ring-inset ring-blue-400/40"
                   : ""
               }`}
-              onDragEnter={handleCanvasDragEnter}
-              onDragOver={handleCanvasDragOver}
-              onDragLeave={handleCanvasDragLeave}
-              onDrop={handleCanvasDrop}
+              data-editor-viewport-mode={viewportMode}
+              onDragEnter={viewportMode === "2d" ? handleCanvasDragEnter : undefined}
+              onDragOver={viewportMode === "2d" ? handleCanvasDragOver : undefined}
+              onDragLeave={viewportMode === "2d" ? handleCanvasDragLeave : undefined}
+              onDrop={viewportMode === "2d" ? handleCanvasDrop : undefined}
             >
               <input
                 ref={roomPhotoUploadInputRef}
@@ -11968,7 +12085,7 @@ function EditorPageInner() {
                 onChange={handleRoomPhotoInputChange}
               />
 
-              {showSwapReplacementPicker && (
+              {viewportMode === "2d" && showSwapReplacementPicker && (
                 <div className="absolute left-2 top-2 z-20 w-[340px] rounded-lg border border-blue-800/60 bg-neutral-950/95 p-3 shadow-xl backdrop-blur-sm">
                   <div className="flex items-center justify-between gap-2">
                     <div>
@@ -12050,6 +12167,21 @@ function EditorPageInner() {
                 </div>
               )}
 
+              {viewportMode === "3d" && editorRoomId ? (
+                <AfcIntegratedEditorViewport
+                  roomId={editorRoomId}
+                  versionId={selectedVersionId}
+                  spatialAuthorityId={afcRuntime.generationId}
+                  prepareState={prepare3d.state}
+                  onPrepare={requestPrepare3d}
+                  onRetryRestore={retryIntegratedAfcRestore}
+                  runtime={afcRuntime}
+                  backgroundImageUrl={integratedViewerBackgroundImageUrl}
+                  transformMode={runtimeTransformMode}
+                  onTransformModeChange={setRuntimeTransformMode}
+                />
+              ) : (
+              <div className="absolute inset-0" data-editor-viewport-renderer="canvas">
               <EditorCanvas
                 key={scene.sceneId}
                 className={`absolute inset-0 transition-opacity duration-200 ease-out ${
@@ -12136,8 +12268,10 @@ function EditorPageInner() {
                 onMoveRemoveModeManualMarker={moveRemoveModeManualMarker}
                 onRemoveRemoveModeManualMarker={removeRemoveModeManualMarker}
               />
+              </div>
+              )}
 
-              {shouldShowUploadOverlay && (
+              {viewportMode === "2d" && shouldShowUploadOverlay && (
                 <div
                   className={`absolute inset-0 z-10 flex items-center justify-center transition ${
                     isCanvasDragOver ? "bg-blue-950/20" : "bg-neutral-950/20"
@@ -12180,7 +12314,7 @@ function EditorPageInner() {
                 </div>
               )}
 
-              {isBusy && (
+              {viewportMode === "2d" && isBusy && (
                 <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center">
                   <div className="h-8 w-8 rounded-full border-2 border-neutral-200 border-t-transparent animate-spin" />
                   {scene.genUi.message ? (
@@ -12190,7 +12324,7 @@ function EditorPageInner() {
                   ) : null}
                 </div>
               )}
-              {canShowRestoreOriginalPlacementPositionsAction ? (
+              {viewportMode === "2d" && canShowRestoreOriginalPlacementPositionsAction ? (
                 <div className="pointer-events-none absolute inset-x-0 bottom-3 z-20 flex justify-center px-3">
                   <div className="pointer-events-auto rounded-full border border-neutral-700/80 bg-neutral-950/70 px-3 py-1 shadow-[0_6px_18px_rgba(0,0,0,0.28)] backdrop-blur-sm">
                     <button
@@ -12211,7 +12345,7 @@ function EditorPageInner() {
                 </div>
               ) : null}
             </div>
-            {shouldShowSceneNeedsUpdateOverlay ? (
+            {viewportMode === "2d" && shouldShowSceneNeedsUpdateOverlay ? (
               <div className="pointer-events-none absolute inset-x-0 bottom-3 z-30 flex justify-center px-3">
                 <div className="pointer-events-auto w-full max-w-[min(92vw,920px)] rounded-xl border border-neutral-500/35 bg-neutral-950/70 px-3 py-2 shadow-[0_10px_30px_rgba(0,0,0,0.35)] backdrop-blur-md">
                   <div className="flex flex-wrap items-center justify-center gap-x-3 gap-y-2 text-center sm:justify-between sm:text-left">
@@ -12300,10 +12434,14 @@ function EditorPageInner() {
             onSelectVersion={handleSelectVersionFromTimeline}
           />
           </div>
+          </StageEditorShell>
         </main>
 
-        {/* Right panel */}
-        <aside className="flex h-full min-h-0 w-[340px] flex-col overflow-hidden border-l border-neutral-800 bg-neutral-950">
+        {showWorkflowRightPanel ? (
+        <aside
+          className="flex h-full min-h-0 w-[340px] flex-col overflow-hidden border-l border-neutral-800 bg-neutral-950"
+          data-editor-right-panel-surface="workflow"
+        >
           <div className="min-h-0 flex-1 overflow-y-auto">
             <div className="space-y-4 p-4">
             <div className="rounded-lg">
@@ -13383,6 +13521,7 @@ function EditorPageInner() {
             </div>
           </div>
         </aside>
+        ) : null}
       </div>
 
       {deleteVersionTarget ? (
@@ -13702,6 +13841,8 @@ function EditorPageInner() {
         onRemove={(id) => setSnacks((prev) => prev.filter((s) => s.id !== id))}
       />
     </div>
+    </StageEditorProvider>
+    </AfcSceneObjectCrudSessionProvider>
   );
 }
 

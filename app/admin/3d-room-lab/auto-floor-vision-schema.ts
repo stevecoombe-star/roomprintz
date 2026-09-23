@@ -4,7 +4,7 @@ import {
   type AutoFloorDetectionResult,
 } from "./auto-floor-detection";
 import { scoreAutoFloorCandidateGeometry } from "./auto-floor-scoring";
-import { orderFloorCorners, type Vec2 } from "./perspective-solve";
+import { canonicalizeUnlabelledFloorQuad, type Vec2 } from "./perspective-solve";
 import type { ImageFrameSize } from "./image-space";
 
 // --- Phase 2F-B: Vision provider raw schema + validator (DISABLED) ----------
@@ -52,7 +52,7 @@ export type RawVisionCandidate = {
 export type ValidatedVisionFloorCandidate = {
   id: string;
   label: string;
-  // Canonicalized via orderFloorCorners: [nearLeft, nearRight, farRight, farLeft].
+  // Canonicalized once at provider intake: [nearLeft, nearRight, farRight, farLeft].
   quadNorm: [Vec2, Vec2, Vec2, Vec2];
   // Advisory only — never used to set internal confidence directly.
   modelConfidenceScore: number | null;
@@ -138,7 +138,7 @@ function extractCandidatePoints(candidate: RawVisionCandidate): Vec2[] | null {
 
   if (isRecord(candidate.corners)) {
     const corners = candidate.corners;
-    // Labels are advisory; we still re-canonicalize with orderFloorCorners.
+    // Labels are advisory; this raw provider input is canonicalized once below.
     const labeled = [corners.nearLeft, corners.nearRight, corners.farRight, corners.farLeft];
     const points: Vec2[] = [];
     for (const entry of labeled) {
@@ -177,7 +177,7 @@ export function parseRawVisionFloorResponse(raw: unknown): RawVisionFloorRespons
 
 /**
  * Canonicalizes 4 model-provided points into [nearLeft, nearRight, farRight,
- * farLeft] using the existing orderFloorCorners helper. Mildly out-of-range
+ * farLeft] using the unlabelled-input canonicalizer. Mildly out-of-range
  * points are clamped (with a disclosed risk); grossly out-of-range points are
  * rejected. Model ordering/labels are advisory only.
  */
@@ -212,7 +212,7 @@ export function canonicalizeVisionCandidateQuad(
   }
   if (didClamp) risks.push("corner-out-of-frame-clamped");
 
-  const ordered = orderFloorCorners(clamped);
+  const ordered = canonicalizeUnlabelledFloorQuad(clamped);
   if (!ordered.ok) {
     return { ok: false, reason: `corner ordering failed: ${ordered.reason}` };
   }

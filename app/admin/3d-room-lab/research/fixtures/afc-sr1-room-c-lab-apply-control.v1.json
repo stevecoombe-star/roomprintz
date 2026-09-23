@@ -1,0 +1,61 @@
+{
+  "schemaVersion": "afc-sr1-room-c-lab-apply-control/v1",
+  "room": {
+    "id": "room-c",
+    "label": "Room C Original"
+  },
+  "acceptanceImage": {
+    "role": "original",
+    "basisFingerprint": "32edb8294a3e5c68d0e54bd5c387eb408b0bc1e15dad781cef0206090df4df1e",
+    "decodedWidth": 7360,
+    "decodedHeight": 4912,
+    "orientation": 1,
+    "transfer": {
+      "kind": "paired_cross_role_aspect_rescaled",
+      "sourceCoordinateSpace": "source-normalized/v1",
+      "provenance": "afc-verified-floor-apply/v1 paired cross-role transfer"
+    }
+  },
+  "geometryControl": {
+    "source": "raw-direct-path-a",
+    "coordinateSpace": "source-normalized/v1",
+    "semanticOrder": ["NL", "NR", "FR", "FL"],
+    "emptyBasisBoundPolygon": {
+      "polygon": [
+        { "x": 0.045, "y": 1 },
+        { "x": 1, "y": 0.82 },
+        { "x": 0.415, "y": 0.616 },
+        { "x": 0.077, "y": 0.694 }
+      ],
+      "basisFingerprint": "b7283bb606d09bc7803543bfcbca14aa5f2041cfb91c5eb590d69d167355243f",
+      "decodedWidth": 1264,
+      "decodedHeight": 848,
+      "orientation": 1,
+      "generatedFromOriginalSha256": "32edb8294a3e5c68d0e54bd5c387eb408b0bc1e15dad781cef0206090df4df1e",
+      "polygonFingerprint": "13457889890e7ca7a47d6bbf0505117a3e4f86dbd2159b712bb437b626032b5d",
+      "provenance": "empty_room_read/receipt-sha256:af56e0cec497ecc7c5282c0a211ea923cc958c6ffc05b0ff3d934053354f3bf8"
+    },
+    "seam": {
+      "adjustableCorner": "NR",
+      "direction": "near_to_far",
+      "seamT": 0.7037731582393056,
+      "baselineImmutable": true
+    },
+    "pathAEvidence": {
+      "identity": "C-RAW",
+      "digest": "2c07926f4e2e86ea67027f000bbdf1e123da71b18086b842321e7b1b13078e5e",
+      "provenance": "afc-sr1-room-c-strict-semantic-handoff-control/v1#evaluation/historicalDevelopmentExpectation"
+    },
+    "referenceDepthM": 4
+  },
+  "diagnosticControls": {
+    "C-P04": {
+      "caseId": "C-P04",
+      "placementStatus": "rejected",
+      "placementReason": "validation_residual_exceeds_limit",
+      "validationP90Px": 10.215452234217725,
+      "geometryAuthority": "none",
+      "provenance": "frozen development diagnostic; no placement authority, H_norm, translationPx, or child Reader handoff is present"
+    }
+  }
+}

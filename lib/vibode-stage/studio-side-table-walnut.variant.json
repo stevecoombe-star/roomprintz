@@ -1,0 +1,12 @@
+{
+  "productId": "prod-vibode-studio-side-table",
+  "variant": {
+    "variantId": "var-vibode-studio-side-table-walnut",
+    "finishLabel": "Walnut",
+    "sku": "VBD-STUDIO-SIDE-TABLE-WALNUT",
+    "priceAmount": 525,
+    "priceCurrency": "USD",
+    "productUrl": null,
+    "currentAssetId": "afc-v2-runtime/test-fixtures/pi5d2-side-table"
+  }
+}

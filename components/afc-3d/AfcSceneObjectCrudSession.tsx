@@ -1,0 +1,219 @@
+"use client";
+
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
+
+import { defaultFurnitureAssetId } from "@/lib/afc-v2-runtime/furniture-assets";
+import { PI4C_MAX_SCENE_OBJECTS } from "@/lib/afc-v2-runtime/persisted-scene";
+import {
+  PI5A_MISSING_OBJECT_MESSAGE,
+  PI5A_NOT_READY_MESSAGE,
+  PI5A_SCENE_AT_CAPACITY_MESSAGE,
+  type LiveSceneCrudSnapshot,
+  type ProductionSceneCrudHost,
+} from "@/lib/afc-v2-runtime/scene-crud";
+import type { SceneObjectProductIdentity } from "@/lib/afc-v2-runtime/types";
+
+type SceneObjectCrudSession = Readonly<{
+  selectedObjectId: string | null;
+  objectCount: number;
+  liveReady: boolean;
+  atObjectLimit: boolean;
+  actionError: string | null;
+  setSelectedObjectId: (objectId: string | null) => void;
+  setHost: (host: ProductionSceneCrudHost | null) => void;
+  setSnapshot: (snapshot: LiveSceneCrudSnapshot) => void;
+  addFurniture: () => void;
+  addFurnitureWithIdentity: (
+    assetId: string,
+    identity?: SceneObjectProductIdentity,
+  ) => Promise<{ ok: true } | { ok: false; message: string }>;
+  duplicateSelected: () => void;
+  deleteSelected: () => void;
+  commitRotationYDeg: (degrees: number) => boolean;
+  commitUserSizeMultiplier: (multiplier: number) => boolean;
+}>;
+
+const SceneObjectCrudContext = createContext<SceneObjectCrudSession | null>(null);
+
+export function AfcSceneObjectCrudSessionProvider({
+  children,
+}: {
+  children: ReactNode;
+}) {
+  const hostRef = useRef<ProductionSceneCrudHost | null>(null);
+  const [selectedObjectId, setSelectedObjectId] = useState<string | null>(null);
+  const [objectCount, setObjectCount] = useState(0);
+  const [liveReady, setLiveReady] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
+
+  const setHost = useCallback((host: ProductionSceneCrudHost | null) => {
+    hostRef.current = host;
+    setLiveReady(host?.canMutate() ?? false);
+    setObjectCount(host?.objectCount() ?? 0);
+    if (!host) {
+      setSelectedObjectId(null);
+    }
+  }, []);
+
+  const setSnapshot = useCallback((snapshot: LiveSceneCrudSnapshot) => {
+    setObjectCount(snapshot.objectCount);
+    setSelectedObjectId(snapshot.selectedObjectId);
+    setLiveReady(snapshot.liveReady);
+  }, []);
+
+  const addFurniture = useCallback(() => {
+    const host = hostRef.current;
+    if (!host?.canMutate()) {
+      setActionError(PI5A_NOT_READY_MESSAGE);
+      return;
+    }
+    if (host.objectCount() >= PI4C_MAX_SCENE_OBJECTS) {
+      setActionError(PI5A_SCENE_AT_CAPACITY_MESSAGE);
+      return;
+    }
+    void (async () => {
+      const result = await Promise.resolve(host.addSceneObject(defaultFurnitureAssetId()));
+      setObjectCount(host.objectCount());
+      if (!result.ok) {
+        setActionError(result.message);
+        return;
+      }
+      setActionError(null);
+      setSelectedObjectId(result.selectedObjectId);
+    })();
+  }, []);
+
+  const addFurnitureWithIdentity = useCallback(async (
+    assetId: string,
+    identity?: SceneObjectProductIdentity,
+  ): Promise<{ ok: true } | { ok: false; message: string }> => {
+    const host = hostRef.current;
+    if (!host?.canMutate()) {
+      setActionError(PI5A_NOT_READY_MESSAGE);
+      return { ok: false, message: PI5A_NOT_READY_MESSAGE };
+    }
+    if (host.objectCount() >= PI4C_MAX_SCENE_OBJECTS) {
+      setActionError(PI5A_SCENE_AT_CAPACITY_MESSAGE);
+      return { ok: false, message: PI5A_SCENE_AT_CAPACITY_MESSAGE };
+    }
+    const result = await Promise.resolve(host.addSceneObject(assetId, identity));
+    setObjectCount(host.objectCount());
+    if (!result.ok) {
+      setActionError(result.message);
+      return { ok: false, message: result.message };
+    }
+    setActionError(null);
+    setSelectedObjectId(result.selectedObjectId);
+    return { ok: true };
+  }, []);
+
+  const duplicateSelected = useCallback(() => {
+    const host = hostRef.current;
+    if (!host?.canMutate()) {
+      setActionError(PI5A_NOT_READY_MESSAGE);
+      return;
+    }
+    if (!selectedObjectId) {
+      setActionError(PI5A_MISSING_OBJECT_MESSAGE);
+      return;
+    }
+    if (host.objectCount() >= PI4C_MAX_SCENE_OBJECTS) {
+      setActionError(PI5A_SCENE_AT_CAPACITY_MESSAGE);
+      return;
+    }
+    void (async () => {
+      const result = await Promise.resolve(host.duplicateSceneObject(selectedObjectId));
+      setObjectCount(host.objectCount());
+      if (!result.ok) {
+        setActionError(result.message);
+        return;
+      }
+      setActionError(null);
+      setSelectedObjectId(result.selectedObjectId);
+    })();
+  }, [selectedObjectId]);
+
+  const deleteSelected = useCallback(() => {
+    const host = hostRef.current;
+    if (!host?.canMutate()) {
+      setActionError(PI5A_NOT_READY_MESSAGE);
+      return;
+    }
+    if (!selectedObjectId) {
+      setActionError(PI5A_MISSING_OBJECT_MESSAGE);
+      return;
+    }
+    const result = host.deleteSceneObject(selectedObjectId);
+    setObjectCount(host.objectCount());
+    if (!result.ok) {
+      setActionError(result.message);
+      return;
+    }
+    setActionError(null);
+    setSelectedObjectId(result.selectedObjectId);
+  }, [selectedObjectId]);
+
+  const commitRotationYDeg = useCallback((degrees: number) => {
+    const host = hostRef.current;
+    if (!host?.canMutate() || !selectedObjectId || !host.commitRotationYDeg) {
+      return false;
+    }
+    return host.commitRotationYDeg(selectedObjectId, degrees);
+  }, [selectedObjectId]);
+
+  const commitUserSizeMultiplier = useCallback((multiplier: number) => {
+    const host = hostRef.current;
+    if (!host?.canMutate() || !selectedObjectId || !host.commitUserSizeMultiplier) {
+      return false;
+    }
+    return host.commitUserSizeMultiplier(selectedObjectId, multiplier);
+  }, [selectedObjectId]);
+
+  const value = useMemo<SceneObjectCrudSession>(() => ({
+    selectedObjectId,
+    objectCount,
+    liveReady,
+    atObjectLimit: objectCount >= PI4C_MAX_SCENE_OBJECTS,
+    actionError,
+    setSelectedObjectId,
+    setHost,
+    setSnapshot,
+    addFurniture,
+    addFurnitureWithIdentity,
+    duplicateSelected,
+    deleteSelected,
+    commitRotationYDeg,
+    commitUserSizeMultiplier,
+  }), [
+    actionError,
+    addFurniture,
+    addFurnitureWithIdentity,
+    commitRotationYDeg,
+    commitUserSizeMultiplier,
+    deleteSelected,
+    duplicateSelected,
+    liveReady,
+    objectCount,
+    selectedObjectId,
+    setHost,
+    setSnapshot,
+  ]);
+
+  return (
+    <SceneObjectCrudContext.Provider value={value}>
+      {children}
+    </SceneObjectCrudContext.Provider>
+  );
+}
+
+export function useAfcSceneObjectCrudSession(): SceneObjectCrudSession | null {
+  return useContext(SceneObjectCrudContext);
+}

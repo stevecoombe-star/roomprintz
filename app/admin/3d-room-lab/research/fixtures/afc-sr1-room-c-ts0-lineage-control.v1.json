@@ -1,0 +1,77 @@
+{
+  "schemaVersion": "afc-sr1-room-c-ts0-lineage-control/v1",
+  "source": ".local/afc-sr1-ts1-tile-scaffold/room-c/generation-manifest.json",
+  "parent": {
+    "sha256": "b7283bb606d09bc7803543bfcbca14aa5f2041cfb91c5eb590d69d167355243f",
+    "byteCount": 1183523,
+    "decodedWidth": 1264,
+    "decodedHeight": 848,
+    "mimeType": "image/png",
+    "orientation": 1
+  },
+  "results": {
+    "C-T1": {
+      "child": {
+        "sha256": "93c4c40764c863246cd58976c5bc242689f6dfb0e71cb952248872daac76da92",
+        "byteCount": 1178891,
+        "decodedWidth": 1264,
+        "decodedHeight": 848,
+        "mimeType": "image/png",
+        "orientation": 1
+      },
+      "provenance": {
+        "generatorId": "vibode-tile-grid-scaffold/stage2/v1",
+        "profileId": "afc-sr1-tile-grid-scaffold/v1",
+        "researchPreset": "tile_grid_scaffold",
+        "requestedModelId": "NBP",
+        "runId": "df1e68dd-1fce-4850-9bbe-5ac3e8b48ec6",
+        "generatedAt": "2026-08-09T23:59:51.381Z",
+        "appliedAspectRatio": null,
+        "imageTransport": "data_url",
+        "generationStatus": "generated"
+      }
+    },
+    "C-T2": {
+      "child": {
+        "sha256": "66aa1803fa3cb45516ae639d0bce22eec0afa4fd89ca92e64d412901ce930056",
+        "byteCount": 1181262,
+        "decodedWidth": 1264,
+        "decodedHeight": 848,
+        "mimeType": "image/png",
+        "orientation": 1
+      },
+      "provenance": {
+        "generatorId": "vibode-tile-grid-scaffold/stage2/v1",
+        "profileId": "afc-sr1-tile-grid-scaffold/v1",
+        "researchPreset": "tile_grid_scaffold",
+        "requestedModelId": "NBP",
+        "runId": "66c34c4c-9314-495f-9408-b8da6af1de9e",
+        "generatedAt": "2026-08-10T00:00:08.255Z",
+        "appliedAspectRatio": null,
+        "imageTransport": "data_url",
+        "generationStatus": "generated"
+      }
+    },
+    "C-T3": {
+      "child": {
+        "sha256": "c81e678c1e908d901fea256f56983fcd253e6bb3dbc421c5a492aad5d056d053",
+        "byteCount": 1209805,
+        "decodedWidth": 1264,
+        "decodedHeight": 848,
+        "mimeType": "image/png",
+        "orientation": 1
+      },
+      "provenance": {
+        "generatorId": "vibode-tile-grid-scaffold/stage2/v1",
+        "profileId": "afc-sr1-tile-grid-scaffold/v1",
+        "researchPreset": "tile_grid_scaffold",
+        "requestedModelId": "NBP",
+        "runId": "4504c947-6dcd-4014-b0d9-1c9b879e86e8",
+        "generatedAt": "2026-08-10T00:00:24.004Z",
+        "appliedAspectRatio": null,
+        "imageTransport": "data_url",
+        "generationStatus": "generated"
+      }
+    }
+  }
+}

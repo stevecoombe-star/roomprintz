@@ -1,0 +1,11 @@
+{
+  "basisBinding": "afc-r3b:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+  "empty": {
+    "promptVersion": "afc-r3c-empty-boundary-prompt/v1",
+    "promptSha256": "e7a35e36928a4d1951ac7a16b3a30dec9d373c46a905f928819fd792437760ad"
+  },
+  "original": {
+    "promptVersion": "afc-r3c-original-context-prompt/v1",
+    "promptSha256": "dfa3d64cb46f18d3dfd60e48b3c913bce4fca3ade9187f99bed2d3da7a8842b7"
+  }
+}

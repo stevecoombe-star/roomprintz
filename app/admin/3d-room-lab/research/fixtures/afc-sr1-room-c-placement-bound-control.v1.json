@@ -1,0 +1,515 @@
+{
+  "absoluteTolerance": 0.025,
+  "gt0SeamT": 0.7063703325987577,
+  "placements": {
+    "C-T1": {
+      "expectedSeamT": 0.6829563966393044,
+      "receipt": {
+        "H_norm": [
+          [
+            1,
+            0,
+            -0.0000030119207840931566
+          ],
+          [
+            0,
+            1,
+            -0.000023949821040315448
+          ],
+          [
+            0,
+            0,
+            1
+          ]
+        ],
+        "diagnostics": {
+          "akaze": {
+            "childKeypoints": 367,
+            "goodMatches": 311,
+            "parentKeypoints": 346,
+            "refitApplied": false,
+            "transferP90Px": 0.6277879750926464
+          },
+          "canny": {
+            "hitCount": 11571,
+            "hitRate": 0.8216289142938294,
+            "refitApplied": false,
+            "supportCount": 14083
+          },
+          "coverage": {
+            "collinearityScore": 0.5887519552307425,
+            "maxCellP90Px": 1.0265628847776216,
+            "occupiedCells": 8,
+            "quadrants": 4,
+            "xExtentFraction": 0.8352743100516403,
+            "yExtentFraction": 0.5059610942624649
+          },
+          "holdout": {
+            "fitCount": 73,
+            "fitTranslationPx": {
+              "tx": 0.01641845703125,
+              "ty": -0.01483154296875
+            },
+            "partition": "4x4_even_odd",
+            "validationCount": 121,
+            "validationP90Px": 0.7236757098416212
+          },
+          "sift": {
+            "childKeypoints": 325,
+            "finalInliers": 183,
+            "fitP90Px": 0.5289868068891693,
+            "goodMatches": 194,
+            "inlierRule": "residual_px < 3.0",
+            "parentKeypoints": 325
+          },
+          "thresholds": {
+            "maximumAkazeTransferP90Px": 3.5,
+            "maximumCellP90Px": 5,
+            "maximumCollinearityScore": 0.85,
+            "maximumFitP90Px": 2,
+            "maximumValidationP90Px": 3.5,
+            "minimumAkazeMatches": 20,
+            "minimumEdgeHitRate": 0.55,
+            "minimumEdgeSupport": 2000,
+            "minimumFinalInliers": 40,
+            "minimumOccupiedCells": 4,
+            "minimumQuadrants": 2,
+            "minimumSiftMatches": 12,
+            "minimumXExtentFraction": 0.25,
+            "minimumYExtentFraction": 0.2,
+            "percentileMethod": "linear"
+          }
+        },
+        "elapsedMs": 369.93791699933354,
+        "evidenceCanonicalJson": "{\"H_norm\":[[1,0,-0.0000030119207840931566],[0,1,-0.000023949821040315448],[0,0,1]],\"diagnostics\":{\"akaze\":{\"childKeypoints\":367,\"goodMatches\":311,\"parentKeypoints\":346,\"refitApplied\":false,\"transferP90Px\":0.6277879750926464},\"canny\":{\"hitCount\":11571,\"hitRate\":0.8216289142938294,\"refitApplied\":false,\"supportCount\":14083},\"coverage\":{\"collinearityScore\":0.5887519552307425,\"maxCellP90Px\":1.0265628847776216,\"occupiedCells\":8,\"quadrants\":4,\"xExtentFraction\":0.8352743100516403,\"yExtentFraction\":0.5059610942624649},\"holdout\":{\"fitCount\":73,\"fitTranslationPx\":{\"tx\":0.01641845703125,\"ty\":-0.01483154296875},\"partition\":\"4x4_even_odd\",\"validationCount\":121,\"validationP90Px\":0.7236757098416212},\"sift\":{\"childKeypoints\":325,\"finalInliers\":183,\"fitP90Px\":0.5289868068891693,\"goodMatches\":194,\"inlierRule\":\"residual_px < 3.0\",\"parentKeypoints\":325},\"thresholds\":{\"maximumAkazeTransferP90Px\":3.5,\"maximumCellP90Px\":5,\"maximumCollinearityScore\":0.85,\"maximumFitP90Px\":2,\"maximumValidationP90Px\":3.5,\"minimumAkazeMatches\":20,\"minimumEdgeHitRate\":0.55,\"minimumEdgeSupport\":2000,\"minimumFinalInliers\":40,\"minimumOccupiedCells\":4,\"minimumQuadrants\":2,\"minimumSiftMatches\":12,\"minimumXExtentFraction\":0.25,\"minimumYExtentFraction\":0.2,\"percentileMethod\":\"linear\"}},\"policyVersion\":\"afc-sr1-ts0-child-projective-placement-policy/v1\",\"reason\":null,\"registrationMaskIdentity\":{\"childUsableMaskSha256\":\"e3658595d694726c9f3da83495fc6b0aea9dbf8f10021e8500785a1b482fddc8\",\"coordinateSpace\":\"source-normalized/v1\",\"evidenceLabel\":\"STRICT_EMPTY_POLYGON_USED_AS_REGISTRATION_EXCLUSION_MASK_ONLY\",\"maskDigest\":\"e7dcb9577c26deabf8f2d93178c935725514861932456be62596ff1e121a26ec\",\"parentUsableMaskSha256\":\"e3658595d694726c9f3da83495fc6b0aea9dbf8f10021e8500785a1b482fddc8\",\"polygon\":[[0.045,1],[1,0.82],[0.415,0.616],[0.077,0.694]],\"rasterization\":{\"dilationIterations\":2,\"dilationKernel\":[9,9],\"pixelConversion\":\"int(round(norm * dimension))\",\"usableMaskConvention\":\"inverse_uint8_255\"},\"role\":\"registration_exclusion_support_only_not_placement_authority\"},\"runtimeIdentity\":{\"cvNumThreads\":1,\"cvRngSeed\":0,\"numpyVersion\":\"2.4.6\",\"opencvVersion\":\"4.11.0\",\"placementModuleVersion\":\"afc-sr1-ts0-child-projective-placement/v1\"},\"schemaVersion\":\"afc-sr1-ts0-child-projective-placement/v1\",\"sourceImageBasis\":{\"byteCount\":1183523,\"decodedHeight\":848,\"decodedWidth\":1264,\"orientation\":1,\"sha256\":\"b7283bb606d09bc7803543bfcbca14aa5f2041cfb91c5eb590d69d167355243f\"},\"status\":\"usable\",\"targetImageBasis\":{\"byteCount\":1178891,\"decodedHeight\":848,\"decodedWidth\":1264,\"orientation\":1,\"sha256\":\"93c4c40764c863246cd58976c5bc242689f6dfb0e71cb952248872daac76da92\"},\"transformDirection\":\"parent_to_child\",\"transformType\":\"translation\",\"translationPx\":{\"tx\":-0.00380706787109375,\"ty\":-0.0203094482421875},\"ts0Lineage\":{\"child\":{\"byteCount\":1178891,\"decodedHeight\":848,\"decodedWidth\":1264,\"orientation\":1,\"sha256\":\"93c4c40764c863246cd58976c5bc242689f6dfb0e71cb952248872daac76da92\"},\"parent\":{\"byteCount\":1183523,\"decodedHeight\":848,\"decodedWidth\":1264,\"orientation\":1,\"sha256\":\"b7283bb606d09bc7803543bfcbca14aa5f2041cfb91c5eb590d69d167355243f\"}}}",
+        "evidenceDigest": {
+          "algorithm": "sha256",
+          "encoding": "hex",
+          "value": "609147fca10b1145181ec4359b06a936dd1ad6f7eb9cf822d6a0989dbfcef840"
+        },
+        "policyVersion": "afc-sr1-ts0-child-projective-placement-policy/v1",
+        "reason": null,
+        "registrationMaskIdentity": {
+          "childUsableMaskSha256": "e3658595d694726c9f3da83495fc6b0aea9dbf8f10021e8500785a1b482fddc8",
+          "coordinateSpace": "source-normalized/v1",
+          "evidenceLabel": "STRICT_EMPTY_POLYGON_USED_AS_REGISTRATION_EXCLUSION_MASK_ONLY",
+          "maskDigest": "e7dcb9577c26deabf8f2d93178c935725514861932456be62596ff1e121a26ec",
+          "parentUsableMaskSha256": "e3658595d694726c9f3da83495fc6b0aea9dbf8f10021e8500785a1b482fddc8",
+          "polygon": [
+            [
+              0.045,
+              1
+            ],
+            [
+              1,
+              0.82
+            ],
+            [
+              0.415,
+              0.616
+            ],
+            [
+              0.077,
+              0.694
+            ]
+          ],
+          "rasterization": {
+            "dilationIterations": 2,
+            "dilationKernel": [
+              9,
+              9
+            ],
+            "pixelConversion": "int(round(norm * dimension))",
+            "usableMaskConvention": "inverse_uint8_255"
+          },
+          "role": "registration_exclusion_support_only_not_placement_authority"
+        },
+        "runtimeIdentity": {
+          "cvNumThreads": 1,
+          "cvRngSeed": 0,
+          "numpyVersion": "2.4.6",
+          "opencvVersion": "4.11.0",
+          "placementModuleVersion": "afc-sr1-ts0-child-projective-placement/v1"
+        },
+        "schemaVersion": "afc-sr1-ts0-child-projective-placement/v1",
+        "sourceImageBasis": {
+          "byteCount": 1183523,
+          "decodedHeight": 848,
+          "decodedWidth": 1264,
+          "orientation": 1,
+          "sha256": "b7283bb606d09bc7803543bfcbca14aa5f2041cfb91c5eb590d69d167355243f"
+        },
+        "status": "usable",
+        "targetImageBasis": {
+          "byteCount": 1178891,
+          "decodedHeight": 848,
+          "decodedWidth": 1264,
+          "orientation": 1,
+          "sha256": "93c4c40764c863246cd58976c5bc242689f6dfb0e71cb952248872daac76da92"
+        },
+        "transformDirection": "parent_to_child",
+        "transformType": "translation",
+        "translationPx": {
+          "tx": -0.00380706787109375,
+          "ty": -0.0203094482421875
+        },
+        "ts0Lineage": {
+          "child": {
+            "byteCount": 1178891,
+            "decodedHeight": 848,
+            "decodedWidth": 1264,
+            "orientation": 1,
+            "sha256": "93c4c40764c863246cd58976c5bc242689f6dfb0e71cb952248872daac76da92"
+          },
+          "parent": {
+            "byteCount": 1183523,
+            "decodedHeight": 848,
+            "decodedWidth": 1264,
+            "orientation": 1,
+            "sha256": "b7283bb606d09bc7803543bfcbca14aa5f2041cfb91c5eb590d69d167355243f"
+          }
+        }
+      }
+    },
+    "C-T2": {
+      "expectedSeamT": 0.6944048106610431,
+      "receipt": {
+        "H_norm": [
+          [
+            1,
+            0,
+            0.000006180775316455696
+          ],
+          [
+            0,
+            1,
+            -0.00002224040481279481
+          ],
+          [
+            0,
+            0,
+            1
+          ]
+        ],
+        "diagnostics": {
+          "akaze": {
+            "childKeypoints": 370,
+            "goodMatches": 306,
+            "parentKeypoints": 346,
+            "refitApplied": false,
+            "transferP90Px": 0.8177300308809748
+          },
+          "canny": {
+            "hitCount": 11461,
+            "hitRate": 0.8138180785344031,
+            "refitApplied": false,
+            "supportCount": 14083
+          },
+          "coverage": {
+            "collinearityScore": 0.5622180064809262,
+            "maxCellP90Px": 1.7680431486064028,
+            "occupiedCells": 8,
+            "quadrants": 4,
+            "xExtentFraction": 0.8602408397046826,
+            "yExtentFraction": 0.5069407337116745
+          },
+          "holdout": {
+            "fitCount": 74,
+            "fitTranslationPx": {
+              "tx": 0.009033203125,
+              "ty": -0.01885986328125
+            },
+            "partition": "4x4_even_odd",
+            "validationCount": 129,
+            "validationP90Px": 0.738690190504539
+          },
+          "sift": {
+            "childKeypoints": 285,
+            "finalInliers": 187,
+            "fitP90Px": 0.4421051212872751,
+            "goodMatches": 203,
+            "inlierRule": "residual_px < 3.0",
+            "parentKeypoints": 325
+          },
+          "thresholds": {
+            "maximumAkazeTransferP90Px": 3.5,
+            "maximumCellP90Px": 5,
+            "maximumCollinearityScore": 0.85,
+            "maximumFitP90Px": 2,
+            "maximumValidationP90Px": 3.5,
+            "minimumAkazeMatches": 20,
+            "minimumEdgeHitRate": 0.55,
+            "minimumEdgeSupport": 2000,
+            "minimumFinalInliers": 40,
+            "minimumOccupiedCells": 4,
+            "minimumQuadrants": 2,
+            "minimumSiftMatches": 12,
+            "minimumXExtentFraction": 0.25,
+            "minimumYExtentFraction": 0.2,
+            "percentileMethod": "linear"
+          }
+        },
+        "elapsedMs": 315.59425000159536,
+        "evidenceCanonicalJson": "{\"H_norm\":[[1,0,0.000006180775316455696],[0,1,-0.00002224040481279481],[0,0,1]],\"diagnostics\":{\"akaze\":{\"childKeypoints\":370,\"goodMatches\":306,\"parentKeypoints\":346,\"refitApplied\":false,\"transferP90Px\":0.8177300308809748},\"canny\":{\"hitCount\":11461,\"hitRate\":0.8138180785344031,\"refitApplied\":false,\"supportCount\":14083},\"coverage\":{\"collinearityScore\":0.5622180064809262,\"maxCellP90Px\":1.7680431486064028,\"occupiedCells\":8,\"quadrants\":4,\"xExtentFraction\":0.8602408397046826,\"yExtentFraction\":0.5069407337116745},\"holdout\":{\"fitCount\":74,\"fitTranslationPx\":{\"tx\":0.009033203125,\"ty\":-0.01885986328125},\"partition\":\"4x4_even_odd\",\"validationCount\":129,\"validationP90Px\":0.738690190504539},\"sift\":{\"childKeypoints\":285,\"finalInliers\":187,\"fitP90Px\":0.4421051212872751,\"goodMatches\":203,\"inlierRule\":\"residual_px < 3.0\",\"parentKeypoints\":325},\"thresholds\":{\"maximumAkazeTransferP90Px\":3.5,\"maximumCellP90Px\":5,\"maximumCollinearityScore\":0.85,\"maximumFitP90Px\":2,\"maximumValidationP90Px\":3.5,\"minimumAkazeMatches\":20,\"minimumEdgeHitRate\":0.55,\"minimumEdgeSupport\":2000,\"minimumFinalInliers\":40,\"minimumOccupiedCells\":4,\"minimumQuadrants\":2,\"minimumSiftMatches\":12,\"minimumXExtentFraction\":0.25,\"minimumYExtentFraction\":0.2,\"percentileMethod\":\"linear\"}},\"policyVersion\":\"afc-sr1-ts0-child-projective-placement-policy/v1\",\"reason\":null,\"registrationMaskIdentity\":{\"childUsableMaskSha256\":\"e3658595d694726c9f3da83495fc6b0aea9dbf8f10021e8500785a1b482fddc8\",\"coordinateSpace\":\"source-normalized/v1\",\"evidenceLabel\":\"STRICT_EMPTY_POLYGON_USED_AS_REGISTRATION_EXCLUSION_MASK_ONLY\",\"maskDigest\":\"e7dcb9577c26deabf8f2d93178c935725514861932456be62596ff1e121a26ec\",\"parentUsableMaskSha256\":\"e3658595d694726c9f3da83495fc6b0aea9dbf8f10021e8500785a1b482fddc8\",\"polygon\":[[0.045,1],[1,0.82],[0.415,0.616],[0.077,0.694]],\"rasterization\":{\"dilationIterations\":2,\"dilationKernel\":[9,9],\"pixelConversion\":\"int(round(norm * dimension))\",\"usableMaskConvention\":\"inverse_uint8_255\"},\"role\":\"registration_exclusion_support_only_not_placement_authority\"},\"runtimeIdentity\":{\"cvNumThreads\":1,\"cvRngSeed\":0,\"numpyVersion\":\"2.4.6\",\"opencvVersion\":\"4.11.0\",\"placementModuleVersion\":\"afc-sr1-ts0-child-projective-placement/v1\"},\"schemaVersion\":\"afc-sr1-ts0-child-projective-placement/v1\",\"sourceImageBasis\":{\"byteCount\":1183523,\"decodedHeight\":848,\"decodedWidth\":1264,\"orientation\":1,\"sha256\":\"b7283bb606d09bc7803543bfcbca14aa5f2041cfb91c5eb590d69d167355243f\"},\"status\":\"usable\",\"targetImageBasis\":{\"byteCount\":1181262,\"decodedHeight\":848,\"decodedWidth\":1264,\"orientation\":1,\"sha256\":\"66aa1803fa3cb45516ae639d0bce22eec0afa4fd89ca92e64d412901ce930056\"},\"transformDirection\":\"parent_to_child\",\"transformType\":\"translation\",\"translationPx\":{\"tx\":0.0078125,\"ty\":-0.01885986328125},\"ts0Lineage\":{\"child\":{\"byteCount\":1181262,\"decodedHeight\":848,\"decodedWidth\":1264,\"orientation\":1,\"sha256\":\"66aa1803fa3cb45516ae639d0bce22eec0afa4fd89ca92e64d412901ce930056\"},\"parent\":{\"byteCount\":1183523,\"decodedHeight\":848,\"decodedWidth\":1264,\"orientation\":1,\"sha256\":\"b7283bb606d09bc7803543bfcbca14aa5f2041cfb91c5eb590d69d167355243f\"}}}",
+        "evidenceDigest": {
+          "algorithm": "sha256",
+          "encoding": "hex",
+          "value": "b654f5adf57f317513592997833bb9276083cce1c3e6137e4e3d5ffeafd495fe"
+        },
+        "policyVersion": "afc-sr1-ts0-child-projective-placement-policy/v1",
+        "reason": null,
+        "registrationMaskIdentity": {
+          "childUsableMaskSha256": "e3658595d694726c9f3da83495fc6b0aea9dbf8f10021e8500785a1b482fddc8",
+          "coordinateSpace": "source-normalized/v1",
+          "evidenceLabel": "STRICT_EMPTY_POLYGON_USED_AS_REGISTRATION_EXCLUSION_MASK_ONLY",
+          "maskDigest": "e7dcb9577c26deabf8f2d93178c935725514861932456be62596ff1e121a26ec",
+          "parentUsableMaskSha256": "e3658595d694726c9f3da83495fc6b0aea9dbf8f10021e8500785a1b482fddc8",
+          "polygon": [
+            [
+              0.045,
+              1
+            ],
+            [
+              1,
+              0.82
+            ],
+            [
+              0.415,
+              0.616
+            ],
+            [
+              0.077,
+              0.694
+            ]
+          ],
+          "rasterization": {
+            "dilationIterations": 2,
+            "dilationKernel": [
+              9,
+              9
+            ],
+            "pixelConversion": "int(round(norm * dimension))",
+            "usableMaskConvention": "inverse_uint8_255"
+          },
+          "role": "registration_exclusion_support_only_not_placement_authority"
+        },
+        "runtimeIdentity": {
+          "cvNumThreads": 1,
+          "cvRngSeed": 0,
+          "numpyVersion": "2.4.6",
+          "opencvVersion": "4.11.0",
+          "placementModuleVersion": "afc-sr1-ts0-child-projective-placement/v1"
+        },
+        "schemaVersion": "afc-sr1-ts0-child-projective-placement/v1",
+        "sourceImageBasis": {
+          "byteCount": 1183523,
+          "decodedHeight": 848,
+          "decodedWidth": 1264,
+          "orientation": 1,
+          "sha256": "b7283bb606d09bc7803543bfcbca14aa5f2041cfb91c5eb590d69d167355243f"
+        },
+        "status": "usable",
+        "targetImageBasis": {
+          "byteCount": 1181262,
+          "decodedHeight": 848,
+          "decodedWidth": 1264,
+          "orientation": 1,
+          "sha256": "66aa1803fa3cb45516ae639d0bce22eec0afa4fd89ca92e64d412901ce930056"
+        },
+        "transformDirection": "parent_to_child",
+        "transformType": "translation",
+        "translationPx": {
+          "tx": 0.0078125,
+          "ty": -0.01885986328125
+        },
+        "ts0Lineage": {
+          "child": {
+            "byteCount": 1181262,
+            "decodedHeight": 848,
+            "decodedWidth": 1264,
+            "orientation": 1,
+            "sha256": "66aa1803fa3cb45516ae639d0bce22eec0afa4fd89ca92e64d412901ce930056"
+          },
+          "parent": {
+            "byteCount": 1183523,
+            "decodedHeight": 848,
+            "decodedWidth": 1264,
+            "orientation": 1,
+            "sha256": "b7283bb606d09bc7803543bfcbca14aa5f2041cfb91c5eb590d69d167355243f"
+          }
+        }
+      }
+    },
+    "C-T3": {
+      "expectedSeamT": 0.6903817563795518,
+      "receipt": {
+        "H_norm": [
+          [
+            1,
+            0,
+            0.000008546853367286392
+          ],
+          [
+            0,
+            1,
+            -0.00001561866616303066
+          ],
+          [
+            0,
+            0,
+            1
+          ]
+        ],
+        "diagnostics": {
+          "akaze": {
+            "childKeypoints": 369,
+            "goodMatches": 313,
+            "parentKeypoints": 346,
+            "refitApplied": false,
+            "transferP90Px": 0.7442132169387852
+          },
+          "canny": {
+            "hitCount": 11558,
+            "hitRate": 0.8207058155222609,
+            "refitApplied": false,
+            "supportCount": 14083
+          },
+          "coverage": {
+            "collinearityScore": 0.5900550168275762,
+            "maxCellP90Px": 0.9756519380092767,
+            "occupiedCells": 8,
+            "quadrants": 4,
+            "xExtentFraction": 0.8602408397046826,
+            "yExtentFraction": 0.5069407337116745
+          },
+          "holdout": {
+            "fitCount": 72,
+            "fitTranslationPx": {
+              "tx": 0.007843017578125,
+              "ty": -0.03558349609375
+            },
+            "partition": "4x4_even_odd",
+            "validationCount": 129,
+            "validationP90Px": 0.6412269071670204
+          },
+          "sift": {
+            "childKeypoints": 328,
+            "finalInliers": 190,
+            "fitP90Px": 0.46241583071344966,
+            "goodMatches": 201,
+            "inlierRule": "residual_px < 3.0",
+            "parentKeypoints": 325
+          },
+          "thresholds": {
+            "maximumAkazeTransferP90Px": 3.5,
+            "maximumCellP90Px": 5,
+            "maximumCollinearityScore": 0.85,
+            "maximumFitP90Px": 2,
+            "maximumValidationP90Px": 3.5,
+            "minimumAkazeMatches": 20,
+            "minimumEdgeHitRate": 0.55,
+            "minimumEdgeSupport": 2000,
+            "minimumFinalInliers": 40,
+            "minimumOccupiedCells": 4,
+            "minimumQuadrants": 2,
+            "minimumSiftMatches": 12,
+            "minimumXExtentFraction": 0.25,
+            "minimumYExtentFraction": 0.2,
+            "percentileMethod": "linear"
+          }
+        },
+        "elapsedMs": 316.38249999377877,
+        "evidenceCanonicalJson": "{\"H_norm\":[[1,0,0.000008546853367286392],[0,1,-0.00001561866616303066],[0,0,1]],\"diagnostics\":{\"akaze\":{\"childKeypoints\":369,\"goodMatches\":313,\"parentKeypoints\":346,\"refitApplied\":false,\"transferP90Px\":0.7442132169387852},\"canny\":{\"hitCount\":11558,\"hitRate\":0.8207058155222609,\"refitApplied\":false,\"supportCount\":14083},\"coverage\":{\"collinearityScore\":0.5900550168275762,\"maxCellP90Px\":0.9756519380092767,\"occupiedCells\":8,\"quadrants\":4,\"xExtentFraction\":0.8602408397046826,\"yExtentFraction\":0.5069407337116745},\"holdout\":{\"fitCount\":72,\"fitTranslationPx\":{\"tx\":0.007843017578125,\"ty\":-0.03558349609375},\"partition\":\"4x4_even_odd\",\"validationCount\":129,\"validationP90Px\":0.6412269071670204},\"sift\":{\"childKeypoints\":328,\"finalInliers\":190,\"fitP90Px\":0.46241583071344966,\"goodMatches\":201,\"inlierRule\":\"residual_px < 3.0\",\"parentKeypoints\":325},\"thresholds\":{\"maximumAkazeTransferP90Px\":3.5,\"maximumCellP90Px\":5,\"maximumCollinearityScore\":0.85,\"maximumFitP90Px\":2,\"maximumValidationP90Px\":3.5,\"minimumAkazeMatches\":20,\"minimumEdgeHitRate\":0.55,\"minimumEdgeSupport\":2000,\"minimumFinalInliers\":40,\"minimumOccupiedCells\":4,\"minimumQuadrants\":2,\"minimumSiftMatches\":12,\"minimumXExtentFraction\":0.25,\"minimumYExtentFraction\":0.2,\"percentileMethod\":\"linear\"}},\"policyVersion\":\"afc-sr1-ts0-child-projective-placement-policy/v1\",\"reason\":null,\"registrationMaskIdentity\":{\"childUsableMaskSha256\":\"e3658595d694726c9f3da83495fc6b0aea9dbf8f10021e8500785a1b482fddc8\",\"coordinateSpace\":\"source-normalized/v1\",\"evidenceLabel\":\"STRICT_EMPTY_POLYGON_USED_AS_REGISTRATION_EXCLUSION_MASK_ONLY\",\"maskDigest\":\"e7dcb9577c26deabf8f2d93178c935725514861932456be62596ff1e121a26ec\",\"parentUsableMaskSha256\":\"e3658595d694726c9f3da83495fc6b0aea9dbf8f10021e8500785a1b482fddc8\",\"polygon\":[[0.045,1],[1,0.82],[0.415,0.616],[0.077,0.694]],\"rasterization\":{\"dilationIterations\":2,\"dilationKernel\":[9,9],\"pixelConversion\":\"int(round(norm * dimension))\",\"usableMaskConvention\":\"inverse_uint8_255\"},\"role\":\"registration_exclusion_support_only_not_placement_authority\"},\"runtimeIdentity\":{\"cvNumThreads\":1,\"cvRngSeed\":0,\"numpyVersion\":\"2.4.6\",\"opencvVersion\":\"4.11.0\",\"placementModuleVersion\":\"afc-sr1-ts0-child-projective-placement/v1\"},\"schemaVersion\":\"afc-sr1-ts0-child-projective-placement/v1\",\"sourceImageBasis\":{\"byteCount\":1183523,\"decodedHeight\":848,\"decodedWidth\":1264,\"orientation\":1,\"sha256\":\"b7283bb606d09bc7803543bfcbca14aa5f2041cfb91c5eb590d69d167355243f\"},\"status\":\"usable\",\"targetImageBasis\":{\"byteCount\":1209805,\"decodedHeight\":848,\"decodedWidth\":1264,\"orientation\":1,\"sha256\":\"c81e678c1e908d901fea256f56983fcd253e6bb3dbc421c5a492aad5d056d053\"},\"transformDirection\":\"parent_to_child\",\"transformType\":\"translation\",\"translationPx\":{\"tx\":0.01080322265625,\"ty\":-0.01324462890625},\"ts0Lineage\":{\"child\":{\"byteCount\":1209805,\"decodedHeight\":848,\"decodedWidth\":1264,\"orientation\":1,\"sha256\":\"c81e678c1e908d901fea256f56983fcd253e6bb3dbc421c5a492aad5d056d053\"},\"parent\":{\"byteCount\":1183523,\"decodedHeight\":848,\"decodedWidth\":1264,\"orientation\":1,\"sha256\":\"b7283bb606d09bc7803543bfcbca14aa5f2041cfb91c5eb590d69d167355243f\"}}}",
+        "evidenceDigest": {
+          "algorithm": "sha256",
+          "encoding": "hex",
+          "value": "311a1b2089d075f5461f2a0e119da5aa5a86f5ea509636d0a1e8b4081b3d8dcc"
+        },
+        "policyVersion": "afc-sr1-ts0-child-projective-placement-policy/v1",
+        "reason": null,
+        "registrationMaskIdentity": {
+          "childUsableMaskSha256": "e3658595d694726c9f3da83495fc6b0aea9dbf8f10021e8500785a1b482fddc8",
+          "coordinateSpace": "source-normalized/v1",
+          "evidenceLabel": "STRICT_EMPTY_POLYGON_USED_AS_REGISTRATION_EXCLUSION_MASK_ONLY",
+          "maskDigest": "e7dcb9577c26deabf8f2d93178c935725514861932456be62596ff1e121a26ec",
+          "parentUsableMaskSha256": "e3658595d694726c9f3da83495fc6b0aea9dbf8f10021e8500785a1b482fddc8",
+          "polygon": [
+            [
+              0.045,
+              1
+            ],
+            [
+              1,
+              0.82
+            ],
+            [
+              0.415,
+              0.616
+            ],
+            [
+              0.077,
+              0.694
+            ]
+          ],
+          "rasterization": {
+            "dilationIterations": 2,
+            "dilationKernel": [
+              9,
+              9
+            ],
+            "pixelConversion": "int(round(norm * dimension))",
+            "usableMaskConvention": "inverse_uint8_255"
+          },
+          "role": "registration_exclusion_support_only_not_placement_authority"
+        },
+        "runtimeIdentity": {
+          "cvNumThreads": 1,
+          "cvRngSeed": 0,
+          "numpyVersion": "2.4.6",
+          "opencvVersion": "4.11.0",
+          "placementModuleVersion": "afc-sr1-ts0-child-projective-placement/v1"
+        },
+        "schemaVersion": "afc-sr1-ts0-child-projective-placement/v1",
+        "sourceImageBasis": {
+          "byteCount": 1183523,
+          "decodedHeight": 848,
+          "decodedWidth": 1264,
+          "orientation": 1,
+          "sha256": "b7283bb606d09bc7803543bfcbca14aa5f2041cfb91c5eb590d69d167355243f"
+        },
+        "status": "usable",
+        "targetImageBasis": {
+          "byteCount": 1209805,
+          "decodedHeight": 848,
+          "decodedWidth": 1264,
+          "orientation": 1,
+          "sha256": "c81e678c1e908d901fea256f56983fcd253e6bb3dbc421c5a492aad5d056d053"
+        },
+        "transformDirection": "parent_to_child",
+        "transformType": "translation",
+        "translationPx": {
+          "tx": 0.01080322265625,
+          "ty": -0.01324462890625
+        },
+        "ts0Lineage": {
+          "child": {
+            "byteCount": 1209805,
+            "decodedHeight": 848,
+            "decodedWidth": 1264,
+            "orientation": 1,
+            "sha256": "c81e678c1e908d901fea256f56983fcd253e6bb3dbc421c5a492aad5d056d053"
+          },
+          "parent": {
+            "byteCount": 1183523,
+            "decodedHeight": 848,
+            "decodedWidth": 1264,
+            "orientation": 1,
+            "sha256": "b7283bb606d09bc7803543bfcbca14aa5f2041cfb91c5eb590d69d167355243f"
+          }
+        }
+      }
+    }
+  },
+  "rangeTolerance": 0.03,
+  "schemaVersion": "afc-sr1-room-c-placement-bound-control/v1"
+}
