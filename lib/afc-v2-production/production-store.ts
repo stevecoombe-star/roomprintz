@@ -7,6 +7,7 @@ import {
 } from "./engine-fingerprint";
 import { durableArtifactBytesMatch } from "./production-artifact-integrity";
 import type { AfcV2ProductionRoomAuthority } from "./production-authority-contract";
+import type { AfcV2MetricDecisionPersistedValue } from "./metric-decision-diagnostic";
 
 export const AFC_V2_ORIGINAL_STORAGE_BUCKET = "vibode-base-images";
 export const AFC_V2_PRODUCTION_STORAGE_BUCKET = "vibode-afc-v2";
@@ -66,6 +67,7 @@ export type AfcGenerationRecord = Readonly<{
   failureReason: string | null;
   metricStatus: string | null;
   collisionStatus: string | null;
+  metricDecision: AfcV2MetricDecisionPersistedValue;
   providerProvenance: Readonly<Record<string, unknown>>;
 }>;
 
@@ -118,6 +120,7 @@ export type UpdateAfcGenerationInput = Readonly<{
   failureReason?: string | null;
   metricStatus?: string | null;
   collisionStatus?: string | null;
+  metricDecision?: AfcV2MetricDecisionPersistedValue;
   providerProvenance?: Readonly<Record<string, unknown>>;
 }>;
 
@@ -190,7 +193,15 @@ function cloneRecord(record: AfcGenerationRecord): AfcGenerationRecord {
       ? cloneAfcV2EngineFingerprint(record.engineFingerprint)
       : null,
     providerProvenance: Object.freeze({ ...record.providerProvenance }),
+    metricDecision: cloneMetricDecision(record.metricDecision),
   });
+}
+
+function cloneMetricDecision(
+  value: AfcV2MetricDecisionPersistedValue,
+): AfcV2MetricDecisionPersistedValue {
+  if (value === null) return null;
+  return structuredClone(value);
 }
 
 function isTerminalStatus(status: AfcGenerationStatus): boolean {
@@ -237,6 +248,7 @@ function terminalEvidenceEqual(
     && jsonEqual(existing.providerProvenance, next.providerProvenance)
     && existing.metricStatus === next.metricStatus
     && existing.collisionStatus === next.collisionStatus
+    && jsonEqual(existing.metricDecision, next.metricDecision)
     && existing.completedAt === next.completedAt;
 }
 
@@ -302,6 +314,7 @@ export function createMemoryAfcProductionStore(
         failureReason: null,
         metricStatus: null,
         collisionStatus: null,
+        metricDecision: null,
         providerProvenance: Object.freeze({}),
       });
       generations.set(id, record);
@@ -338,6 +351,9 @@ export function createMemoryAfcProductionStore(
         providerProvenance: patch.providerProvenance
           ? Object.freeze({ ...patch.providerProvenance })
           : existing.providerProvenance,
+        metricDecision: patch.metricDecision !== undefined
+          ? cloneMetricDecision(patch.metricDecision)
+          : existing.metricDecision,
       });
       if (!identityFieldsEqual(existing, next)) {
         throw new AfcGenerationImmutabilityError(

@@ -165,12 +165,9 @@ test("no new anon, authenticated, or public grants and RLS is untouched", () => 
   );
 });
 
-test("AFR-1B does not write metric_decision or expose it to admin clients", () => {
+test("metric_decision stays out of admin clients and unchanged metric policy modules", () => {
   const untouched = [
-    "lib/afc-v2-production/production-adapter.server.ts",
-    "lib/afc-v2-production/production-persistence.server.ts",
     "lib/afc-v2-production/production-auto-metric.ts",
-    "lib/afc-v2-production/production-store.ts",
     "lib/afc-v2-production/production-authority-contract.ts",
     "app/api/vibode/afc/analyze/route.ts",
     "app/admin/3d-room-lab-v2/metric-auto-scale.ts",

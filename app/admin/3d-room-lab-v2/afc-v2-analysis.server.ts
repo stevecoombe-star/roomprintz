@@ -151,6 +151,34 @@ import { fetchRoomImageSafely } from "@/lib/vibodeAutoFloorImageFetch";
 
 export const AFC_V2_REFERENCE_DEPTH_M = 4;
 
+export const AFC_V2_OBSERVED_SPAN_LAUNCH_DISPOSITION = {
+  suppressedCompleteBackGeometry: "suppressed_complete_back_geometry",
+  notLaunchedNoCandidate: "not_launched_no_candidate",
+  notLaunchedEmptyBytesMissing: "not_launched_empty_bytes_missing",
+  notLaunchedEmptyMimeInvalid: "not_launched_empty_mime_invalid",
+  notLaunchedControlledFixture: "not_launched_controlled_fixture",
+  launched: "launched",
+  launchFailed: "launch_failed",
+  notReached: "not_reached",
+} as const;
+
+export type AfcV2ObservedSpanLaunchDisposition =
+  (typeof AFC_V2_OBSERVED_SPAN_LAUNCH_DISPOSITION)[keyof typeof AFC_V2_OBSERVED_SPAN_LAUNCH_DISPOSITION];
+
+/**
+ * Observational label only. A launched call that settles to null is
+ * `launch_failed`. The estimate value itself is unchanged.
+ */
+export function resolveObservedSpanLaunchDisposition(
+  launchDisposition: AfcV2ObservedSpanLaunchDisposition,
+  estimate: ObservedSpanPhysicalEstimateReceipt | null,
+): AfcV2ObservedSpanLaunchDisposition {
+  if (launchDisposition === "launched" && estimate == null) {
+    return "launch_failed";
+  }
+  return launchDisposition;
+}
+
 export type AfcV2AnalyzeInput = Readonly<{
   attemptId: string;
   sourceImageUrl: string;
@@ -243,6 +271,11 @@ type AfcV2LivePipelineEvidence = Readonly<{
   metricCorrespondenceEstimate: MetricCorrespondenceEstimateReceipt | null;
   observedSpanMetricSelection: ObservedSpanMetricSelection | null;
   observedSpanPhysicalEstimate: ObservedSpanPhysicalEstimateReceipt | null;
+  observedSpanLaunchDisposition: AfcV2ObservedSpanLaunchDisposition;
+  observedSpanFloorAuthorityKey: string | null;
+  observedSpanFreezeReceiptVersion: string | null;
+  observedSpanFreezePayloadSha256: string | null;
+  observedSpanSuppressWhenCompleteBackGeometryExists: boolean | null;
 }>;
 
 export type AfcV2AnalyzeResult =
@@ -569,6 +602,11 @@ function livePipelineEvidence(
     metricCorrespondenceEstimate: null,
     observedSpanMetricSelection: null,
     observedSpanPhysicalEstimate: null,
+    observedSpanLaunchDisposition: "not_reached",
+    observedSpanFloorAuthorityKey: null,
+    observedSpanFreezeReceiptVersion: null,
+    observedSpanFreezePayloadSha256: null,
+    observedSpanSuppressWhenCompleteBackGeometryExists: null,
   });
 }
 
@@ -792,33 +830,65 @@ export function launchObservedSpanPhysicalEstimate(args: Readonly<{
 }>): {
   selection: ObservedSpanMetricSelection;
   estimatePromise: Promise<ObservedSpanPhysicalEstimateReceipt | null>;
+  launchDisposition: AfcV2ObservedSpanLaunchDisposition;
+  floorAuthorityKey: string;
+  freezeReceiptVersion: string | null;
+  freezePayloadSha256: string | null;
+  suppressWhenCompleteBackGeometryExists: true;
 } {
+  const suppressWhenCompleteBackGeometryExists = true as const;
   const selection = selectObservedSpanMetricCandidate({
     roomBoundary: args.roomBoundaries,
     roomCollision: args.roomCollision,
     observation: args.roomObservation,
-    suppressWhenCompleteBackGeometryExists: true,
+    suppressWhenCompleteBackGeometryExists,
+  });
+  const noFreeze = { receiptVersion: null, payloadSha256: null } as const;
+  const observe = (
+    selectionValue: ObservedSpanMetricSelection,
+    estimatePromise: Promise<ObservedSpanPhysicalEstimateReceipt | null>,
+    launchDisposition: AfcV2ObservedSpanLaunchDisposition,
+    freeze: Readonly<{
+      receiptVersion: string | null;
+      payloadSha256: string | null;
+    }>,
+  ) => ({
+    selection: selectionValue,
+    estimatePromise,
+    launchDisposition,
+    floorAuthorityKey: args.floorAuthorityKey,
+    freezeReceiptVersion: freeze.receiptVersion,
+    freezePayloadSha256: freeze.payloadSha256,
+    suppressWhenCompleteBackGeometryExists,
   });
   if (selection.pathAGeometry.exists || !selection.selected) {
-    return {
-      selection: markObservedSpanEstimatorLaunched(selection, false),
-      estimatePromise: Promise.resolve(null),
-    };
+    return observe(
+      markObservedSpanEstimatorLaunched(selection, false),
+      Promise.resolve(null),
+      selection.pathAGeometry.exists
+        ? "suppressed_complete_back_geometry"
+        : "not_launched_no_candidate",
+      noFreeze,
+    );
   }
   if (!args.emptyBytes) {
-    return {
-      selection: markObservedSpanEstimatorLaunched(selection, false),
-      estimatePromise: Promise.resolve(null),
-    };
+    return observe(
+      markObservedSpanEstimatorLaunched(selection, false),
+      Promise.resolve(null),
+      "not_launched_empty_bytes_missing",
+      noFreeze,
+    );
   }
   const freeze = freezeLineageIdentity(args.freezeReceipt);
   const emptyMime = asOriginalMime(args.product.emptyBasis.mimeType);
   const originalMime = asOriginalMime(args.product.originalBasis.mimeType);
   if (!emptyMime) {
-    return {
-      selection: markObservedSpanEstimatorLaunched(selection, false),
-      estimatePromise: Promise.resolve(null),
-    };
+    return observe(
+      markObservedSpanEstimatorLaunched(selection, false),
+      Promise.resolve(null),
+      "not_launched_empty_mime_invalid",
+      freeze,
+    );
   }
   const estimateInput: ObservedSpanPhysicalEstimateInput = {
     attemptId: args.input.attemptId,
@@ -854,16 +924,17 @@ export function launchObservedSpanPhysicalEstimate(args: Readonly<{
   };
   const launched = markObservedSpanEstimatorLaunched(selection, true);
   if (args.dependencies.estimateObservedSpanPhysical) {
-    return {
-      selection: launched,
-      estimatePromise: args.dependencies.estimateObservedSpanPhysical(estimateInput)
-        .catch(() => null),
-    };
+    return observe(
+      launched,
+      args.dependencies.estimateObservedSpanPhysical(estimateInput).catch(() => null),
+      "launched",
+      freeze,
+    );
   }
   if (isControlledMetricPriorFixture(args.dependencies)) {
-    return {
-      selection: markObservedSpanEstimatorLaunched(selection, false),
-      estimatePromise: Promise.resolve(
+    return observe(
+      markObservedSpanEstimatorLaunched(selection, false),
+      Promise.resolve(
         buildObservedSpanPhysicalEstimateReceipt({
           lineage: {
             attemptId: args.input.attemptId,
@@ -915,12 +986,16 @@ export function launchObservedSpanPhysicalEstimate(args: Readonly<{
           estimatorLaunched: false,
         }),
       ),
-    };
+      "not_launched_controlled_fixture",
+      freeze,
+    );
   }
-  return {
-    selection: launched,
-    estimatePromise: estimateObservedSpanPhysicalLength(estimateInput).catch(() => null),
-  };
+  return observe(
+    launched,
+    estimateObservedSpanPhysicalLength(estimateInput).catch(() => null),
+    "launched",
+    freeze,
+  );
 }
 
 function finalizeObservedSpanEstimate(
@@ -1496,6 +1571,10 @@ export async function executeAfcV2Analysis(
 
   const metricRoomPrior = await metricPriorPromise;
   const observedSpanPhysicalRaw = await observedSpanLaunch.estimatePromise;
+  const observedSpanLaunchDisposition = resolveObservedSpanLaunchDisposition(
+    observedSpanLaunch.launchDisposition,
+    observedSpanPhysicalRaw,
+  );
   const freezeIdentity = freezeLineageIdentity(freeze.value);
   const observedSpanPhysicalEstimate = finalizeObservedSpanEstimate(
     observedSpanLaunch.selection,
@@ -1536,6 +1615,12 @@ export async function executeAfcV2Analysis(
     metricCorrespondenceEstimate: null,
     observedSpanMetricSelection: observedSpanLaunch.selection,
     observedSpanPhysicalEstimate,
+    observedSpanLaunchDisposition,
+    observedSpanFloorAuthorityKey: observedSpanLaunch.floorAuthorityKey,
+    observedSpanFreezeReceiptVersion: observedSpanLaunch.freezeReceiptVersion,
+    observedSpanFreezePayloadSha256: observedSpanLaunch.freezePayloadSha256,
+    observedSpanSuppressWhenCompleteBackGeometryExists:
+      observedSpanLaunch.suppressWhenCompleteBackGeometryExists,
   };
 }
 

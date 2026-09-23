@@ -22,7 +22,14 @@ import { selectActiveRuntimeCollisionWalls } from "@/app/admin/3d-room-lab-v2/ro
 import { inspectImageMetadata } from "@/lib/vibodeAutoFloorImageFetch";
 
 import { durableArtifactBytesMatch, sha256Hex } from "./production-artifact-integrity";
-import { deriveProductionAutoMetric } from "./production-auto-metric";
+import {
+  createProductionMetricObservation,
+  deriveProductionAutoMetric,
+  type ProductionAutoMetric,
+  type ProductionMetricObservation,
+} from "./production-auto-metric";
+import { captureAfcV2MetricDecision } from "./metric-decision-projector";
+import type { AfcV2MetricDecisionPersistedValue } from "./metric-decision-diagnostic";
 import {
   buildAfcV2ProductionRoomAuthority,
   type AfcV2ProductionRoomAuthority,
@@ -531,7 +538,8 @@ export async function runProductionAfcAnalysis(
     bytes: capture.tiledBytes ?? Buffer.from(tiled.tiled.base64, "base64"),
   });
 
-  const autoMetric = deriveProductionAutoMetric(analysis);
+  const metricObservation = createProductionMetricObservation();
+  const autoMetric = deriveProductionAutoMetric(analysis, metricObservation);
   const collisionSelection = selectActiveRuntimeCollisionWalls({
     emptyAuthoritativeCollision: analysis.emptyAuthoritativeCollision,
     originalLocalizedCollision: analysis.originalLocalizedCollision,
@@ -613,6 +621,14 @@ export async function runProductionAfcAnalysis(
     failureReason: null,
     metricStatus: autoMetric.path,
     collisionStatus: collisionSelection.source,
+    metricDecision: terminalMetricDecision({
+      generationId: generation.id,
+      terminalStatus: "ready",
+      analysis,
+      autoMetric,
+      observation: metricObservation,
+      authority,
+    }),
     providerProvenance: Object.freeze({
       emptyArtifactSource: capture.emptySource,
       tiledArtifactSource: capture.tiledSource,
@@ -690,6 +706,55 @@ function compactDiagnostic(
   });
 }
 
+function terminalMetricDecision(input: Readonly<{
+  generationId: string;
+  terminalStatus: "ready" | "failed";
+  analysis: AfcV2AnalyzeResult | null;
+  autoMetric: ProductionAutoMetric | null;
+  observation: ProductionMetricObservation | null;
+  authority: AfcV2ProductionRoomAuthority | null;
+}>): AfcV2MetricDecisionPersistedValue {
+  try {
+    const analysis = input.analysis;
+    return captureAfcV2MetricDecision({
+      generationId: input.generationId,
+      terminalStatus: input.terminalStatus,
+      attemptId: analysis?.metricRoomPrior?.attemptId ??
+        analysis?.observedSpanPhysicalEstimate?.lineage.attemptId ??
+        null,
+      loadGeneration: analysis?.metricRoomPrior?.loadGeneration ??
+        analysis?.observedSpanPhysicalEstimate?.lineage.loadGeneration ??
+        null,
+      authority: input.authority,
+      autoMetric: input.autoMetric,
+      observation: input.observation,
+      roomPrior: analysis?.metricRoomPrior ?? null,
+      correspondence: analysis?.metricCorrespondence ?? null,
+      observedSpanSelection: analysis?.observedSpanMetricSelection ?? null,
+      observedSpanEstimate: analysis?.observedSpanPhysicalEstimate ?? null,
+      launchDisposition: analysis?.observedSpanLaunchDisposition ?? "not_reached",
+      floorAuthorityKey: analysis?.observedSpanFloorAuthorityKey ?? null,
+      freezeReceiptVersion: analysis?.observedSpanFreezeReceiptVersion ?? null,
+      freezePayloadSha256: analysis?.observedSpanFreezePayloadSha256 ?? null,
+      suppressWhenCompleteBackGeometryExists:
+        analysis?.observedSpanSuppressWhenCompleteBackGeometryExists ?? null,
+      oldCompatibilityTier:
+        analysis?.emptyOriginalRegistration?.oldCompatibilityTier ?? null,
+      emptyAuthoritativeCompatibilityTier:
+        analysis?.emptyAuthoritativeCollision?.lineage.compatibilityTier ?? null,
+      roomBoundaryCompatibilityTier:
+        analysis?.roomCollision?.lineage.roomBoundary.compatibilityTier ?? null,
+    });
+  } catch (error) {
+    console.error(JSON.stringify({
+      event: "afc_v2_metric_decision_capture_failed",
+      generationId: input.generationId,
+      category: error instanceof Error ? error.name : "capture_threw",
+    }));
+    return null;
+  }
+}
+
 async function persistFailedGeneration(input: Readonly<{
   store: AfcProductionStore;
   generation: AfcGenerationRecord;
@@ -757,6 +822,14 @@ async function persistFailedGeneration(input: Readonly<{
     failureReason: input.reason,
     metricStatus: "none",
     collisionStatus: "none",
+    metricDecision: terminalMetricDecision({
+      generationId: input.generation.id,
+      terminalStatus: "failed",
+      analysis: input.analysis,
+      autoMetric: null,
+      observation: null,
+      authority: null,
+    }),
     providerProvenance: Object.freeze({
       emptyArtifactSource: input.capture.emptySource,
       tiledArtifactSource: input.capture.tiledSource,

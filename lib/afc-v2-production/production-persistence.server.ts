@@ -7,6 +7,10 @@ import type { AfcSr1GeneratedTiledArtifact } from "@/app/admin/3d-room-lab/afc-s
 import { getServiceRoleSupabaseClient } from "@/lib/adminServer";
 
 import type { AfcV2ProductionRoomAuthority } from "./production-authority-contract";
+import {
+  parseAfcV2MetricDecision,
+  type AfcV2MetricDecisionPersistedValue,
+} from "./metric-decision-diagnostic";
 import { durableArtifactBytesMatch } from "./production-artifact-integrity";
 import {
   buildAfcV2EngineFingerprint,
@@ -36,6 +40,12 @@ import {
 } from "./production-store";
 
 type AnySupabase = SupabaseClient;
+
+function metricDecisionFromRow(value: unknown): AfcV2MetricDecisionPersistedValue {
+  if (value == null) return null;
+  const parsed = parseAfcV2MetricDecision(value);
+  return parsed.ok ? parsed.decision : null;
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
@@ -141,6 +151,7 @@ function rowToGeneration(row: Record<string, unknown>): AfcGenerationRecord {
     collisionStatus: typeof row.collision_status === "string"
       ? row.collision_status
       : null,
+    metricDecision: metricDecisionFromRow(row.metric_decision),
     providerProvenance: isRecord(row.provider_provenance)
       ? Object.freeze({ ...row.provider_provenance })
       : Object.freeze({}),
@@ -319,6 +330,9 @@ export function createSupabaseAfcProductionStore(
       if (patch.metricStatus !== undefined) update.metric_status = patch.metricStatus;
       if (patch.collisionStatus !== undefined) {
         update.collision_status = patch.collisionStatus;
+      }
+      if (patch.metricDecision !== undefined) {
+        update.metric_decision = patch.metricDecision;
       }
       if (patch.providerProvenance !== undefined) {
         update.provider_provenance = patch.providerProvenance;

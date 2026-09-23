@@ -38,6 +38,14 @@ export type AutoMetricScaleInput = Readonly<{
   trustSelectedBackSpanAsFullWidth: boolean;
 }>;
 
+/**
+ * Observational sink for the scale computed immediately before a fallback
+ * receipt replaces it. Decision code never reads this object.
+ */
+export type AutoMetricCandidateObservation = {
+  candidateScaleBeforeFallback: number | null;
+};
+
 export type TrustedBackWallWidthSpanResult = Readonly<{
   trusted: boolean;
   reasons: readonly string[];
@@ -156,6 +164,7 @@ export function evaluateTrustedBackWallWidthSpan(
  */
 export function deriveAutoMetricScale(
   input: AutoMetricScaleInput,
+  candidateObservation?: AutoMetricCandidateObservation,
 ): AutoMetricScaleReceipt {
   const labTrustEnabled = input.trustSelectedBackSpanAsFullWidth === true;
   const physical = physicalWidthSource(input.roomPrior);
@@ -196,6 +205,10 @@ export function deriveAutoMetricScale(
     canonicalSource.gaugeLength,
     physical.source.metres,
   );
+  if (candidateObservation) {
+    candidateObservation.candidateScaleBeforeFallback =
+      scale !== null && Number.isFinite(scale) ? scale : null;
+  }
   if (scale === null) {
     return fallbackAutoMetricScaleReceipt(["candidate_non_finite"], extras);
   }
