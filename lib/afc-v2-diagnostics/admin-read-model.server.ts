@@ -116,6 +116,7 @@ export const AFC_DIAGNOSTIC_ADMIN_GENERATION_COLUMNS = [
   "diagnostic_payload",
   "engine_fingerprint",
   "production_authority",
+  "metric_decision",
   "original_sha256",
   "original_decoded_width",
   "original_decoded_height",

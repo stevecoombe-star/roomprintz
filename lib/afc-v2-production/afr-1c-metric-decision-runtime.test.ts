@@ -14,7 +14,10 @@ import type { AfcV2AnalysisDependencies } from "@/app/admin/3d-room-lab-v2/afc-v
 import { buildEmptyRoomObservationEvidence } from "@/app/admin/3d-room-lab-v2/empty-room-observation-contract";
 import { buildUnavailableMetricRoomPriorReceipt } from "@/app/admin/3d-room-lab-v2/metric-room-prior-contract";
 import { AUTO_METRIC_SCALE } from "@/app/admin/3d-room-lab-v2/scene-metric-world-realization";
-import { AFC_DIAGNOSTIC_ADMIN_GENERATION_COLUMNS } from "@/lib/afc-v2-diagnostics/admin-read-model.server";
+import {
+  AFC_DIAGNOSTIC_ADMIN_CASE_LIST_COLUMNS,
+  AFC_DIAGNOSTIC_ADMIN_GENERATION_COLUMNS,
+} from "@/lib/afc-v2-diagnostics/admin-read-model.server";
 
 import {
   isAfcV2MetricDecisionCaptureFailedV1,
@@ -328,14 +331,14 @@ test("same terminal metric_decision retries and a distinct mutation is rejected"
   assert.deepEqual(preserved?.metricDecision, generation.metricDecision);
 });
 
-test("admin generation columns and inspector sources still exclude metric_decision", () => {
-  assert.equal(AFC_DIAGNOSTIC_ADMIN_GENERATION_COLUMNS.includes("metric_decision"), false);
+test("admin detail columns select metric_decision and public analyze still excludes it", () => {
+  assert.equal(AFC_DIAGNOSTIC_ADMIN_GENERATION_COLUMNS.includes("metric_decision"), true);
+  assert.equal(AFC_DIAGNOSTIC_ADMIN_CASE_LIST_COLUMNS.includes("metric_decision"), false);
   const files = [
-    "lib/afc-v2-diagnostics/admin-read-model.server.ts",
-    "lib/afc-v2-diagnostics/admin-read-model.ts",
-    "lib/afc-v2-diagnostics/admin-case-inspector.client.ts",
-    "app/admin/afc-diagnostics/cases/[caseId]/AfcDiagnosticCaseInspector.tsx",
     "app/api/vibode/afc/analyze/route.ts",
+    "lib/afc-v2-production/production-auto-metric.ts",
+    "app/admin/3d-room-lab-v2/metric-auto-scale.ts",
+    "app/admin/3d-room-lab-v2/scene-metric-world-realization.ts",
   ];
   for (const relativePath of files) {
     const source = readFileSync(relativePath, "utf8");

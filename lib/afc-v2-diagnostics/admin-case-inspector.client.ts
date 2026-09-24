@@ -23,6 +23,12 @@ import {
   type AfcDiagnosticInboxIssueChip,
 } from "./admin-case-inbox.client";
 import {
+  parseAfcDiagnosticAdminLegacyMetricConclusion,
+  parseAfcDiagnosticAdminMetricDecisionDto,
+  type AfcDiagnosticAdminLegacyMetricConclusion,
+  type AfcDiagnosticAdminMetricDecision,
+} from "./admin-metric-decision-dto";
+import {
   isAfcDiagnosticCaseTrigger,
   isAfcDiagnosticMachineStatusSnapshot,
   isAfcDiagnosticReviewStatus,
@@ -122,6 +128,8 @@ export type AfcDiagnosticInspectorGenerationEvidence = Readonly<{
   analysisStatus: string | null;
   analysisReason: string | null;
   recoverySafeFailureState: string | null;
+  metricDecision: AfcDiagnosticAdminMetricDecision;
+  legacyMetricConclusion: AfcDiagnosticAdminLegacyMetricConclusion | null;
   engineFingerprint: AfcDiagnosticInspectorEngineFingerprint | null;
   original: AfcDiagnosticInspectorSourceSummary | null;
   empty: AfcDiagnosticInspectorArtifactSummary;
@@ -435,6 +443,15 @@ export function parseAfcDiagnosticInspectorGenerationEvidence(
     value.recoverySafeFailureState,
   );
   if (recoverySafeFailureState === undefined) return null;
+  const metricDecision = Object.prototype.hasOwnProperty.call(value, "metricDecision")
+    ? parseAfcDiagnosticAdminMetricDecisionDto(value.metricDecision)
+    : null;
+  const legacyMetricConclusion = Object.prototype.hasOwnProperty.call(
+    value,
+    "legacyMetricConclusion",
+  )
+    ? parseAfcDiagnosticAdminLegacyMetricConclusion(value.legacyMetricConclusion)
+    : null;
   const engineFingerprint = parseEngineFingerprint(value.engineFingerprint);
   if (engineFingerprint === undefined) return null;
   const original = parseOptionalOriginal(value.original);
@@ -461,6 +478,8 @@ export function parseAfcDiagnosticInspectorGenerationEvidence(
     analysisStatus,
     analysisReason,
     recoverySafeFailureState,
+    metricDecision,
+    legacyMetricConclusion,
     engineFingerprint,
     original,
     empty,

@@ -165,7 +165,7 @@ test("no new anon, authenticated, or public grants and RLS is untouched", () => 
   );
 });
 
-test("metric_decision stays out of admin clients and unchanged metric policy modules", () => {
+test("metric_decision stays out of public analyze and unchanged metric policy modules", () => {
   const untouched = [
     "lib/afc-v2-production/production-auto-metric.ts",
     "lib/afc-v2-production/production-authority-contract.ts",
@@ -174,10 +174,6 @@ test("metric_decision stays out of admin clients and unchanged metric policy mod
     "app/admin/3d-room-lab-v2/observed-span-auto-metric-scale.ts",
     "app/admin/3d-room-lab-v2/afc-v2-analysis.server.ts",
     "app/admin/3d-room-lab-v2/scene-metric-world-realization.ts",
-    "lib/afc-v2-diagnostics/admin-read-model.server.ts",
-    "lib/afc-v2-diagnostics/admin-read-model.ts",
-    "lib/afc-v2-diagnostics/admin-case-inspector.client.ts",
-    "app/admin/afc-diagnostics/cases/[caseId]/AfcDiagnosticCaseInspector.tsx",
   ];
   for (const relativePath of untouched) {
     assert.doesNotMatch(

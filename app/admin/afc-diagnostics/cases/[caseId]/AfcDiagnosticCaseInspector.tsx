@@ -54,6 +54,7 @@ import {
 } from "@/lib/afc-v2-diagnostics/admin-case-inspector.client";
 import AfcDiagnosticAdminCapturePanel from "../../AfcDiagnosticAdminCapturePanel";
 import AfcDiagnosticAdminReviewPanel from "./AfcDiagnosticAdminReviewPanel";
+import AfcDiagnosticMetricDecisionPanel from "../../AfcDiagnosticMetricDecisionPanel";
 import AfcDiagnosticVisualEvidence from "./AfcDiagnosticVisualEvidence";
 import {
   AFC_DIAGNOSTIC_ADMIN_CAPTURE_COPY,
@@ -445,6 +446,12 @@ function SelectedAttemptInspector({
             <ArtifactRow label="TILED" artifact={generation.tiled} />
           </dl>
         </div>
+
+        <AfcDiagnosticMetricDecisionPanel
+          metricStatus={generation.metricStatus}
+          metricDecision={generation.metricDecision}
+          legacyMetricConclusion={generation.legacyMetricConclusion}
+        />
 
         {originalDiffers && generation.original ? (
           <div>

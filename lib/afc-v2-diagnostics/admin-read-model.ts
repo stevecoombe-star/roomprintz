@@ -17,6 +17,14 @@ import {
   type AfcDiagnosticSessionIntent,
   type AfcDiagnosticSessionStatus,
 } from "./contracts";
+import {
+  mapAfcDiagnosticAdminLegacyMetricConclusion,
+  mapAfcDiagnosticAdminMetricDecision,
+} from "./admin-metric-decision";
+import type {
+  AfcDiagnosticAdminLegacyMetricConclusion,
+  AfcDiagnosticAdminMetricDecision,
+} from "./admin-metric-decision-dto";
 import { isAfcQaIssueCode } from "./taxonomy";
 
 export const AFC_DIAGNOSTIC_ADMIN_CASE_LIST_DEFAULT_LIMIT = 25;
@@ -142,6 +150,9 @@ export type AfcDiagnosticAdminGenerationEvidence = Readonly<{
   analysisReason: string | null;
 
   recoverySafeFailureState: AfcDiagnosticAdminRecoverySafeFailureState | null;
+
+  metricDecision: AfcDiagnosticAdminMetricDecision;
+  legacyMetricConclusion: AfcDiagnosticAdminLegacyMetricConclusion | null;
 
   engineFingerprint: AfcDiagnosticAdminEngineFingerprint | null;
 
@@ -596,6 +607,7 @@ export type AfcDiagnosticAdminGenerationRecord = Readonly<{
   diagnosticPayload: unknown;
   engineFingerprint: unknown;
   productionAuthority: unknown;
+  metricDecision: unknown;
   originalSha256: string | null;
   originalDecodedWidth: number | null;
   originalDecodedHeight: number | null;
@@ -656,6 +668,9 @@ export function parseAfcDiagnosticAdminGenerationRecord(
     diagnosticPayload: row.diagnostic_payload ?? null,
     engineFingerprint: row.engine_fingerprint ?? null,
     productionAuthority: row.production_authority ?? null,
+    metricDecision: Object.prototype.hasOwnProperty.call(row, "metric_decision")
+      ? row.metric_decision ?? null
+      : null,
     originalSha256: optionalString(row.original_sha256),
     originalDecodedWidth: optionalFiniteNumber(row.original_decoded_width),
     originalDecodedHeight: optionalFiniteNumber(row.original_decoded_height),
@@ -667,6 +682,24 @@ export function parseAfcDiagnosticAdminGenerationRecord(
     tiledSha256: optionalString(row.tiled_sha256),
     tiledArtifactSource: optionalString(row.tiled_artifact_source),
   });
+}
+
+function mapMetricDecision(value: unknown): AfcDiagnosticAdminMetricDecision {
+  try {
+    return mapAfcDiagnosticAdminMetricDecision(value);
+  } catch {
+    return Object.freeze({ kind: "unreadable" });
+  }
+}
+
+function mapLegacyMetricConclusion(
+  authority: unknown,
+): AfcDiagnosticAdminLegacyMetricConclusion | null {
+  try {
+    return mapAfcDiagnosticAdminLegacyMetricConclusion(authority);
+  } catch {
+    return null;
+  }
 }
 
 export function mapAfcDiagnosticAdminGenerationEvidence(
@@ -712,6 +745,8 @@ export function mapAfcDiagnosticAdminGenerationEvidence(
     recoverySafeFailureState: mapRecoverySafeFailureState(
       record.productionAuthority,
     ),
+    metricDecision: mapMetricDecision(record.metricDecision),
+    legacyMetricConclusion: mapLegacyMetricConclusion(record.productionAuthority),
     engineFingerprint: mapAfcDiagnosticAdminEngineFingerprint(
       record.engineFingerprint,
     ),

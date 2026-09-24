@@ -125,6 +125,8 @@ function generationEvidence(): AfcDiagnosticAdminGenerationEvidence {
     analysisStatus: "applied",
     analysisReason: null,
     recoverySafeFailureState: "none",
+    metricDecision: null,
+    legacyMetricConclusion: null,
     engineFingerprint: fingerprint(),
     original: Object.freeze({
       originalSha256: SHA_A,
