@@ -4,8 +4,6 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import { getSupabaseBrowserAccessToken } from "@/lib/supabaseBrowser";
 
-import { createPi4bSceneObjectDefinitions } from "./furniture-runtime";
-import type { FurnitureAssetDefinition } from "./types";
 import {
   furnitureAssetDefinitionFromRuntime,
   interpretRuntimeAssetResolveResponse,
@@ -36,10 +34,15 @@ import {
 import {
   interpretVersionSceneLoadResponse,
   interpretVersionSceneSaveResponse,
+  resolveProductionFurnitureSnapshot,
   versionScenePutBody,
   versionSceneUrl,
 } from "./scene-persistence-client";
-import type { SceneObjectDefinition, SerializedRuntimeScene } from "./types";
+import type {
+  FurnitureAssetDefinition,
+  SceneObjectDefinition,
+  SerializedRuntimeScene,
+} from "./types";
 
 export const PI4C_SCENE_SAVE_ERROR_MESSAGE =
   "Couldn't save this 3D scene. Your layout is still here.";
@@ -81,11 +84,6 @@ type PendingSave = Readonly<{
   identity: PersistedSceneIdentity;
   serialized: SerializedRuntimeScene;
 }>;
-
-function defaultObjects(): SceneObjectDefinition[] {
-  // Missing scene row only. A persisted objects:[] snapshot is restored as-is.
-  return persistenceSafeSceneObjects(createPi4bSceneObjectDefinitions());
-}
 
 const SCENE_UNDO_LIMIT = 40;
 
@@ -329,26 +327,23 @@ export function usePersisted3dScene(input: Readonly<{
               : null,
           });
         }
-        let nextObjects: readonly SceneObjectDefinition[] = defaultObjects();
-        let nextOrigin: "default" | "persisted" = "default";
-        let nextDefinitions: readonly RuntimeFurnitureAssetDefinition[] = [];
-        let nextIssues: readonly RuntimeAssetIssue[] = [];
-        if (interpreted.status === "ready") {
-          const parsed = validatePersistedVersionScene(interpreted.scene);
-          if (
-            parsed.ok &&
-            parsed.scene.roomId === requestIdentity.roomId &&
-            parsed.scene.versionId === requestIdentity.versionId &&
-            parsed.scene.afcGenerationId === requestIdentity.afcGenerationId
-          ) {
-            nextObjects = parsed.scene.objects;
-            nextOrigin = "persisted";
-            nextDefinitions = interpreted.assetDefinitions ?? [];
-            nextIssues = interpreted.assetIssues ?? [];
-          } else {
-            warnSceneRestore(parsed.ok ? "scene identity mismatch" : parsed.reason);
-          }
+        const resolution = resolveProductionFurnitureSnapshot({
+          interpreted,
+          requestIdentity,
+        });
+        if (resolution.status !== "authoritative") {
+          setLoading(false);
+          return;
         }
+        const snapshot = resolution.snapshot;
+        if (interpreted.status === "ready" && snapshot.origin !== "persisted") {
+          const parsed = validatePersistedVersionScene(interpreted.scene);
+          warnSceneRestore(parsed.ok ? "scene identity mismatch" : parsed.reason);
+        }
+        const nextObjects = snapshot.objects;
+        const nextOrigin = snapshot.origin;
+        const nextDefinitions = snapshot.assetDefinitions;
+        const nextIssues = snapshot.assetIssues;
         if (nextIssues.length > 0 && typeof console !== "undefined") {
           for (const issue of nextIssues) {
             console.warn("[afc-3d-scene] runtime asset issue", {
@@ -377,7 +372,7 @@ export function usePersisted3dScene(input: Readonly<{
           return;
         }
         warnSceneRestore(error);
-        commitResolvedSnapshot(requestIdentity, defaultObjects(), "default");
+        setLoading(false);
       }
     }
 
