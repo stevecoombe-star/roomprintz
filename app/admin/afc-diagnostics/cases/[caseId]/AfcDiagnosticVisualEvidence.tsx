@@ -13,6 +13,18 @@ import {
 
 import { AdminDiagnosticsCopyButton } from "@/lib/afc-v2-diagnostics/admin-diagnostics-copy-button";
 import { afcDiagnosticInspectorArtifactSourceLabel } from "@/lib/afc-v2-diagnostics/admin-case-inspector.client";
+import type { AfcDiagnosticAdminMetricDecision } from "@/lib/afc-v2-diagnostics/admin-metric-decision-dto";
+import {
+  AFC_DIAGNOSTIC_METRIC_SPAN_COPY,
+  afcDiagnosticMetricSpanDefaultSource,
+  afcDiagnosticMetricSpanOptions,
+  selectAfcDiagnosticMetricSpanOverlay,
+  type AfcDiagnosticMetricSpanSourcePath,
+} from "@/lib/afc-v2-diagnostics/admin-metric-span-overlay";
+import {
+  AfcDiagnosticEvidenceOverlaySvg,
+  AfcDiagnosticMetricSpanContext,
+} from "./AfcDiagnosticMetricSpanOverlay";
 import {
   AFC_DIAGNOSTIC_VISUAL_ARTIFACT_KINDS,
   AFC_DIAGNOSTIC_VISUAL_EVIDENCE_COPY,
@@ -86,12 +98,6 @@ function currentSource(
   return null;
 }
 
-function polygonPoints(
-  points: ReadonlyArray<{ x: number; y: number }>,
-): string {
-  return points.map((point) => `${point.x},${point.y}`).join(" ");
-}
-
 export default function AfcDiagnosticVisualEvidence({
   caseId,
   generationId,
@@ -100,6 +106,7 @@ export default function AfcDiagnosticVisualEvidence({
   empty,
   tiled,
   originalSha256,
+  metricDecision,
 }: {
   caseId: string;
   generationId: string;
@@ -108,6 +115,7 @@ export default function AfcDiagnosticVisualEvidence({
   empty: ArtifactSummary;
   tiled: ArtifactSummary;
   originalSha256: string | null;
+  metricDecision: AfcDiagnosticAdminMetricDecision;
 }) {
   const coordinatorRef = useRef(createAfcDiagnosticVisualEvidenceCoordinator());
   const overlayCoordinatorRef = useRef(
@@ -132,6 +140,9 @@ export default function AfcDiagnosticVisualEvidence({
     useState<VisualOverlayCommit<AfcAdminVisualOverlayV1> | null>(null);
   const [showFloor, setShowFloor] = useState(true);
   const [showCollision, setShowCollision] = useState(true);
+  const [showMetricSpan, setShowMetricSpan] = useState(true);
+  const [metricSourcePath, setMetricSourcePath] =
+    useState<AfcDiagnosticMetricSpanSourcePath | null>(null);
   const identityKey = afcDiagnosticVisualEvidenceTupleKey({
     caseId,
     generationId,
@@ -185,6 +196,18 @@ export default function AfcDiagnosticVisualEvidence({
   const collisionAvailable = afcDiagnosticVisualOverlayCollisionAvailable(
     committedOverlay,
   );
+  const metricOptions = afcDiagnosticMetricSpanOptions(metricDecision);
+  const defaultMetricSource = afcDiagnosticMetricSpanDefaultSource(metricOptions);
+  const activeMetricSource = metricSourcePath &&
+      metricOptions.some((span) => span.sourcePath === metricSourcePath)
+    ? metricSourcePath
+    : defaultMetricSource;
+  const metricSpan = selectAfcDiagnosticMetricSpanOverlay({
+    metricDecision,
+    artifactKind: kind,
+    sourcePath: activeMetricSource,
+  });
+  const metricAvailable = metricSpan != null;
 
   useEffect(() => {
     const coordinator = coordinatorRef.current;
@@ -408,12 +431,13 @@ export default function AfcDiagnosticVisualEvidence({
   const overlayFrame = committedOverlay?.frame ?? null;
   const showFloorOverlay = showFloor && floorAvailable;
   const showCollisionOverlay = showCollision && collisionAvailable;
+  const showMetricOverlay = showMetricSpan && metricAvailable;
   const showSvg =
     showImage &&
     overlayIsCommitted &&
     overlayPhase === "ready" &&
     committedOverlay != null &&
-    (showFloorOverlay || showCollisionOverlay);
+    (showFloorOverlay || showCollisionOverlay || showMetricOverlay);
 
   return (
     <div>
@@ -523,6 +547,56 @@ export default function AfcDiagnosticVisualEvidence({
               ) : null}
             </span>
           </label>
+          <div>
+            <label className="flex cursor-pointer items-start gap-2">
+              <input
+                type="checkbox"
+                className="mt-1 h-4 w-4 accent-cyan-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400/80"
+                checked={showMetricSpan}
+                disabled={!metricAvailable}
+                aria-describedby="afc-overlay-metric-span-help"
+                onChange={(event) => {
+                  setShowMetricSpan(event.target.checked);
+                }}
+              />
+              <span>
+                <span>{AFC_DIAGNOSTIC_METRIC_SPAN_COPY.label}</span>
+                <span
+                  id="afc-overlay-metric-span-help"
+                  className="mt-0.5 block text-xs text-slate-400"
+                >
+                  {AFC_DIAGNOSTIC_METRIC_SPAN_COPY.help}
+                </span>
+                {!metricAvailable ? (
+                  <span className="mt-0.5 block text-xs text-slate-500">
+                    {AFC_DIAGNOSTIC_METRIC_SPAN_COPY.unavailable}
+                  </span>
+                ) : null}
+                {showMetricOverlay && metricSpan ? (
+                  <AfcDiagnosticMetricSpanContext span={metricSpan} />
+                ) : null}
+              </span>
+            </label>
+            {metricOptions.length > 1 ? (
+              <span className="mt-1 flex flex-wrap gap-1 pl-6">
+                {metricOptions.map((option) => (
+                  <button
+                    key={option.sourcePath}
+                    type="button"
+                    aria-pressed={activeMetricSource === option.sourcePath}
+                    className={buttonClassName}
+                    onClick={() => {
+                      setMetricSourcePath(option.sourcePath);
+                    }}
+                  >
+                    {option.sourcePath === "path_a"
+                      ? AFC_DIAGNOSTIC_METRIC_SPAN_COPY.pathA
+                      : AFC_DIAGNOSTIC_METRIC_SPAN_COPY.pathB}
+                  </button>
+                ))}
+              </span>
+            ) : null}
+          </div>
         </div>
       </fieldset>
 
@@ -570,34 +644,13 @@ export default function AfcDiagnosticVisualEvidence({
                   className="absolute inset-0 h-full w-full object-contain"
                 />
                 {showSvg && committedOverlay ? (
-                  <svg
-                    aria-hidden="true"
-                    viewBox="0 0 1 1"
-                    preserveAspectRatio="none"
-                    className="pointer-events-none absolute inset-0 h-full w-full"
-                  >
-                    {showFloorOverlay && committedOverlay.floorQuad ? (
-                      <polygon
-                        points={polygonPoints(committedOverlay.floorQuad.points)}
-                        fill="rgba(125, 211, 252, 0.12)"
-                        stroke="#7dd3fc"
-                        strokeWidth={2}
-                        vectorEffect="non-scaling-stroke"
-                      />
-                    ) : null}
-                    {showCollisionOverlay
-                      ? committedOverlay.collisionEdges.map((edge) => (
-                          <polyline
-                            key={edge.id}
-                            points={polygonPoints(edge.points)}
-                            fill="none"
-                            stroke="#fcd34d"
-                            strokeWidth={2}
-                            vectorEffect="non-scaling-stroke"
-                          />
-                        ))
-                      : null}
-                  </svg>
+                  <AfcDiagnosticEvidenceOverlaySvg
+                    showFloor={showFloorOverlay}
+                    floorPoints={committedOverlay.floorQuad?.points ?? null}
+                    showCollision={showCollisionOverlay}
+                    collisionEdges={committedOverlay.collisionEdges}
+                    metricSpan={showMetricOverlay ? metricSpan : null}
+                  />
                 ) : null}
               </div>
             ) : (
@@ -647,6 +700,12 @@ export default function AfcDiagnosticVisualEvidence({
                   <span className="mr-1 inline-block h-2 w-2 rounded-sm bg-amber-300 align-middle" />
                   {AFC_DIAGNOSTIC_VISUAL_OVERLAY_COPY.collision}
                 </li>
+                {metricAvailable ? (
+                  <li>
+                    <span className="mr-1 inline-block h-2 w-2 rounded-sm bg-cyan-300 align-middle" />
+                    {AFC_DIAGNOSTIC_METRIC_SPAN_COPY.label}
+                  </li>
+                ) : null}
               </ul>
             ) : null}
           </div>

@@ -17,6 +17,7 @@ import {
   parseAfcDiagnosticAdminMetricDecisionDto,
   publishAfcDiagnosticMetricCodes,
   publishAfcDiagnosticMetricDetail,
+  publishAfcDiagnosticMetricFloorAuthorityKey,
   publishAfcDiagnosticMetricHash,
   publishAfcDiagnosticMetricToken,
   type AfcDiagnosticAdminLegacyMetricConclusion,
@@ -97,7 +98,7 @@ function projectRecorded(
       publishAfcDiagnosticMetricToken(geometry.id) == null ||
       publishAfcDiagnosticMetricToken(geometry.role) == null ||
       publishAfcDiagnosticMetricToken(geometry.sourceSeamId) == null ||
-      publishAfcDiagnosticMetricToken(geometry.floorAuthorityKey) == null ||
+      publishAfcDiagnosticMetricFloorAuthorityKey(geometry.floorAuthorityKey) == null ||
       publishAfcDiagnosticMetricToken(geometry.s4aCandidateId) == null
     ? null
     : Object.freeze({
@@ -107,7 +108,9 @@ function projectRecorded(
         imageA: point(geometry.imageA),
         imageB: point(geometry.imageB),
         sourceSeamId: publishAfcDiagnosticMetricToken(geometry.sourceSeamId) as string,
-        floorAuthorityKey: publishAfcDiagnosticMetricToken(geometry.floorAuthorityKey) as string,
+        floorAuthorityKey: publishAfcDiagnosticMetricFloorAuthorityKey(
+          geometry.floorAuthorityKey,
+        ) as string,
         s4aCandidateId: publishAfcDiagnosticMetricToken(geometry.s4aCandidateId) as string,
         freezeReceiptVersion: publishAfcDiagnosticMetricToken(geometry.freezeReceiptVersion),
         freezePayloadSha256: publishAfcDiagnosticMetricHash(geometry.freezePayloadSha256),

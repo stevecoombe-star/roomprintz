@@ -372,6 +372,7 @@ function SelectedAttemptInspector({
             generation.original?.originalSha256 ??
             caseDetail.source.originalSha256
           }
+          metricDecision={generation.metricDecision}
         />
 
         <div>

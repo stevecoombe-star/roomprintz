@@ -69,6 +69,8 @@ export type AfcDiagnosticMetricLineageStatus =
 const TOKEN = /^[A-Za-z0-9_.:/+-]{1,160}$/;
 const REASON = /^[a-z0-9_]{1,80}$/;
 const HASH = /^[a-f0-9]{16,128}$/i;
+/** Durable floor keys are `x,y|x,y|x,y|x,y`, not reason tokens. */
+const FLOOR_AUTHORITY_KEY = /^[A-Za-z0-9_.:/+|,-]{1,320}$/;
 
 const PRIVATE_TEXT = [
   "storage_bucket",
@@ -104,6 +106,14 @@ export function publishAfcDiagnosticMetricToken(
 ): string | null {
   if (value == null) return null;
   return TOKEN.test(value) ? value : null;
+}
+
+export function publishAfcDiagnosticMetricFloorAuthorityKey(
+  value: string | null,
+): string | null {
+  if (value == null) return null;
+  if (/\s|https?:\/\//i.test(value)) return null;
+  return FLOOR_AUTHORITY_KEY.test(value) ? value : null;
 }
 
 export function publishAfcDiagnosticMetricHash(
@@ -741,8 +751,10 @@ function readHostGeometry(
   if (isFail(imageB)) return FAIL;
   const sourceSeamId = reqToken(value.sourceSeamId);
   if (isFail(sourceSeamId)) return FAIL;
-  const floorAuthorityKey = reqToken(value.floorAuthorityKey);
-  if (isFail(floorAuthorityKey)) return FAIL;
+  const floorAuthorityKey = publishAfcDiagnosticMetricFloorAuthorityKey(
+    typeof value.floorAuthorityKey === "string" ? value.floorAuthorityKey : null,
+  );
+  if (floorAuthorityKey == null) return FAIL;
   const s4aCandidateId = reqToken(value.s4aCandidateId);
   if (isFail(s4aCandidateId)) return FAIL;
   const freezeReceiptVersion = optToken(value.freezeReceiptVersion);

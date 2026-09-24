@@ -7,6 +7,8 @@ const ROOT = process.cwd();
 
 const VISUAL =
   "app/admin/afc-diagnostics/cases/[caseId]/AfcDiagnosticVisualEvidence.tsx";
+const METRIC_SPAN_OVERLAY =
+  "app/admin/afc-diagnostics/cases/[caseId]/AfcDiagnosticMetricSpanOverlay.tsx";
 const INSPECTOR =
   "app/admin/afc-diagnostics/cases/[caseId]/AfcDiagnosticCaseInspector.tsx";
 const CLIENT = "lib/afc-v2-diagnostics/admin-visual-overlay.client.ts";
@@ -37,13 +39,15 @@ function walkTs(dir: string): string[] {
 }
 
 const visual = source(VISUAL);
+const metricSpanOverlay = source(METRIC_SPAN_OVERLAY);
+const overlayMarkup = `${visual}\n${metricSpanOverlay}`;
 const inspector = source(INSPECTOR);
 const client = source(CLIENT);
 const server = source(SERVER);
 const projection = source(PROJECTION);
 const route = source(ROUTE);
 const artifactRoute = source(ARTIFACT_ROUTE);
-const uiSources = [visual, client].join("\n");
+const uiSources = [visual, metricSpanOverlay, client].join("\n");
 
 test("overlay controls, SVG, and copy are wired into visual evidence", () => {
   assert.equal(existsSync(path.join(ROOT, VISUAL)), true);
@@ -62,11 +66,11 @@ test("overlay controls, SVG, and copy are wired into visual evidence", () => {
   );
   assert.match(visual, /type="checkbox"/);
   assert.match(visual, /useState\(true\)/);
-  assert.match(visual, /<svg/);
-  assert.match(visual, /<polygon/);
-  assert.match(visual, /<polyline/);
-  assert.match(visual, /viewBox="0 0 1 1"/);
-  assert.match(visual, /preserveAspectRatio="none"/);
+  assert.match(overlayMarkup, /<svg/);
+  assert.match(overlayMarkup, /<polygon/);
+  assert.match(overlayMarkup, /<polyline/);
+  assert.match(overlayMarkup, /viewBox="0 0 1 1"/);
+  assert.match(overlayMarkup, /preserveAspectRatio="none"/);
   assert.match(visual, /object-contain/);
   assert.match(visual, /aspectRatio/);
   assert.match(uiSources, /Overlay basis: ORIGINAL frame/);
@@ -78,7 +82,7 @@ test("overlay controls, SVG, and copy are wired into visual evidence", () => {
   assert.match(visual, /afcDiagnosticVisualOverlayBasisLabel/);
   assert.match(visual, /disabled=\{!floorAvailable\}/);
   assert.match(visual, /disabled=\{!collisionAvailable\}/);
-  assert.match(visual, /aria-hidden="true"/);
+  assert.match(overlayMarkup, /aria-hidden="true"/);
   assert.match(visual, /aria-describedby="afc-overlay-floor-help"/);
   assert.match(visual, /aria-live="polite"/);
   assert.match(visual, /overlayRetryNonce/);
