@@ -18,8 +18,14 @@ import {
   AFC_DIAGNOSTIC_INBOX_REVIEW_OPTIONS,
   AFC_DIAGNOSTIC_INBOX_TRIGGER_OPTIONS,
   afcDiagnosticInboxAttemptLabel,
+  afcDiagnosticInboxClosedVisibilityLabel,
+  afcDiagnosticInboxEffectiveShowClosed,
+  afcDiagnosticInboxEmptyStateUsesFilterCopy,
   afcDiagnosticInboxHasCommittedFilters,
+  afcDiagnosticInboxShowsClosedVisibilityToggle,
   afcDiagnosticInboxIssueDisplay,
+  countAfcDiagnosticInboxClosedCases,
+  filterAfcDiagnosticCasesByClosedVisibility,
   afcDiagnosticInboxLoadErrorMessage,
   afcDiagnosticInboxMachineLabel,
   afcDiagnosticInboxReviewLabel,
@@ -48,6 +54,34 @@ const controlClassName =
 
 const buttonClassName =
   "rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-200 transition hover:border-emerald-400/80 hover:text-emerald-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400/80 disabled:opacity-60";
+
+const closedVisibilityButtonActiveClassName =
+  "rounded-lg border border-emerald-400/80 px-3 py-1.5 text-xs text-emerald-200 transition hover:border-emerald-400/80 hover:text-emerald-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400/80";
+
+function closedVisibilityButtonClassName(showClosed: boolean): string {
+  return showClosed ? closedVisibilityButtonActiveClassName : buttonClassName;
+}
+
+export function AfcDiagnosticInboxClosedVisibilityButton({
+  showClosed,
+  closedCount,
+  onToggle,
+}: {
+  showClosed: boolean;
+  closedCount: number;
+  onToggle: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      aria-pressed={showClosed}
+      className={closedVisibilityButtonClassName(showClosed)}
+      onClick={onToggle}
+    >
+      {afcDiagnosticInboxClosedVisibilityLabel(showClosed, closedCount)}
+    </button>
+  );
+}
 
 function reviewBadgeClass(status: string): string {
   if (status === "in_review") {
@@ -169,6 +203,7 @@ export default function AfcDiagnosticCaseInbox() {
         : "",
   );
   const [validationMessage, setValidationMessage] = useState<string | null>(null);
+  const [showClosed, setShowClosed] = useState(false);
   const [items, setItems] = useState<AfcDiagnosticAdminCaseSummary[]>([]);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -322,10 +357,27 @@ export default function AfcDiagnosticCaseInbox() {
     replaceFilters(applyAfcDiagnosticInboxSelectFilter(committed, key, value));
   };
 
+  const effectiveShowClosed = afcDiagnosticInboxEffectiveShowClosed(
+    showClosed,
+    committed.reviewStatus,
+  );
+  const visibleCases = useMemo(
+    () => filterAfcDiagnosticCasesByClosedVisibility(items, effectiveShowClosed),
+    [items, effectiveShowClosed],
+  );
+  const closedCount = useMemo(
+    () => countAfcDiagnosticInboxClosedCases(items),
+    [items],
+  );
   const busy = phase === "loading" || phase === "refreshing";
   const showEmpty =
-    phase === "ready" && items.length === 0 && errorMessage == null;
-  const filteredEmpty = afcDiagnosticInboxHasCommittedFilters(committed);
+    phase === "ready" && visibleCases.length === 0 && errorMessage == null;
+  const filteredEmpty = afcDiagnosticInboxEmptyStateUsesFilterCopy({
+    hasCommittedFilters: afcDiagnosticInboxHasCommittedFilters(committed),
+    showClosed: effectiveShowClosed,
+    loadedCount: items.length,
+    visibleCount: visibleCases.length,
+  });
 
   return (
     <main className="min-h-screen bg-slate-950 text-slate-50 px-4 py-10">
@@ -472,6 +524,13 @@ export default function AfcDiagnosticCaseInbox() {
               >
                 {AFC_DIAGNOSTIC_INBOX_COPY.clearFilters}
               </button>
+              {afcDiagnosticInboxShowsClosedVisibilityToggle(committed.reviewStatus) ? (
+                <AfcDiagnosticInboxClosedVisibilityButton
+                  showClosed={showClosed}
+                  closedCount={closedCount}
+                  onToggle={() => setShowClosed((current) => !current)}
+                />
+              ) : null}
             </div>
           </form>
           {validationMessage ? (
@@ -511,8 +570,7 @@ export default function AfcDiagnosticCaseInbox() {
             </p>
           ) : null}
 
-          {items.length > 0 ? (
-            <>
+          {visibleCases.length > 0 ? (
               <div className="overflow-x-auto">
                 <table className="min-w-full border-collapse text-left text-xs">
                   <thead>
@@ -550,7 +608,7 @@ export default function AfcDiagnosticCaseInbox() {
                     </tr>
                   </thead>
                   <tbody>
-                    {items.map((item) => {
+                    {visibleCases.map((item) => {
                       const submitted = formatAfcDiagnosticInboxSubmittedAt(
                         item.submittedAt,
                       );
@@ -661,21 +719,20 @@ export default function AfcDiagnosticCaseInbox() {
                   </tbody>
                 </table>
               </div>
-              {nextCursor ? (
-                <div className="mt-4">
-                  <button
-                    type="button"
-                    className={buttonClassName}
-                    disabled={requestActive}
-                    onClick={() => void runFetch("more", committed, nextCursor)}
-                  >
-                    {phase === "loadingMore"
-                      ? AFC_DIAGNOSTIC_INBOX_COPY.loadMoreLoading
-                      : AFC_DIAGNOSTIC_INBOX_COPY.loadMore}
-                  </button>
-                </div>
-              ) : null}
-            </>
+          ) : null}
+          {nextCursor ? (
+            <div className="mt-4">
+              <button
+                type="button"
+                className={buttonClassName}
+                disabled={requestActive}
+                onClick={() => void runFetch("more", committed, nextCursor)}
+              >
+                {phase === "loadingMore"
+                  ? AFC_DIAGNOSTIC_INBOX_COPY.loadMoreLoading
+                  : AFC_DIAGNOSTIC_INBOX_COPY.loadMore}
+              </button>
+            </div>
           ) : null}
         </section>
       </div>

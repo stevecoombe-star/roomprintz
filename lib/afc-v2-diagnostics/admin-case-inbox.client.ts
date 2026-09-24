@@ -113,6 +113,8 @@ export const AFC_DIAGNOSTIC_INBOX_COPY = {
   retry: "Retry",
   apply: "Apply",
   clearFilters: "Clear filters",
+  showClosed: "Show closed",
+  hideClosed: "Hide closed",
   refresh: "Refresh",
   backToAdmin: "Back to Admin",
   detailTitle: "Case detail",
@@ -252,6 +254,58 @@ export function afcDiagnosticInboxReviewLabel(
   if (status === "in_review") return "In review";
   if (status === "closed") return "Closed";
   return status;
+}
+
+export function afcDiagnosticInboxEffectiveShowClosed(
+  showClosed: boolean,
+  committedReviewStatus: AfcDiagnosticReviewStatus | null,
+): boolean {
+  return showClosed || committedReviewStatus === "closed";
+}
+
+export function afcDiagnosticInboxShowsClosedVisibilityToggle(
+  committedReviewStatus: AfcDiagnosticReviewStatus | null,
+): boolean {
+  return committedReviewStatus !== "closed";
+}
+
+export function filterAfcDiagnosticCasesByClosedVisibility<
+  T extends { readonly reviewStatus: string },
+>(cases: readonly T[], showClosed: boolean): readonly T[] {
+  if (showClosed) return cases;
+  return cases.filter((item) => item.reviewStatus !== "closed");
+}
+
+export function countAfcDiagnosticInboxClosedCases(
+  cases: readonly { readonly reviewStatus: string }[],
+): number {
+  let count = 0;
+  for (const item of cases) {
+    if (item.reviewStatus === "closed") count += 1;
+  }
+  return count;
+}
+
+export function afcDiagnosticInboxClosedVisibilityLabel(
+  showClosed: boolean,
+  closedCount = 0,
+): string {
+  if (showClosed) return AFC_DIAGNOSTIC_INBOX_COPY.hideClosed;
+  if (closedCount > 0) {
+    return `${AFC_DIAGNOSTIC_INBOX_COPY.showClosed} (${closedCount})`;
+  }
+  return AFC_DIAGNOSTIC_INBOX_COPY.showClosed;
+}
+
+export function afcDiagnosticInboxEmptyStateUsesFilterCopy(input: {
+  hasCommittedFilters: boolean;
+  showClosed: boolean;
+  loadedCount: number;
+  visibleCount: number;
+}): boolean {
+  if (input.visibleCount > 0) return false;
+  if (input.hasCommittedFilters) return true;
+  return !input.showClosed && input.loadedCount > 0;
 }
 
 export function afcDiagnosticInboxTriggerLabel(
