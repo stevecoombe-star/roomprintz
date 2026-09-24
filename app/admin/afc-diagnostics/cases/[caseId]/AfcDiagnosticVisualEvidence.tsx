@@ -56,6 +56,13 @@ import {
 const buttonClassName =
   "rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-200 transition hover:border-emerald-400/80 hover:text-emerald-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400/80 disabled:opacity-60";
 
+const visualEvidenceSourceButtonActiveClassName =
+  "rounded-lg border border-emerald-400/80 px-3 py-1.5 text-xs text-emerald-200 transition hover:border-emerald-400/80 hover:text-emerald-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400/80 disabled:opacity-60";
+
+export function visualEvidenceSourceButtonClassName(active: boolean): string {
+  return active ? visualEvidenceSourceButtonActiveClassName : buttonClassName;
+}
+
 type ArtifactSummary = Readonly<{
   present: boolean;
   sha256: string | null;
@@ -477,7 +484,7 @@ export default function AfcDiagnosticVisualEvidence({
             key={candidate}
             type="button"
             aria-pressed={kind === candidate}
-            className={buttonClassName}
+            className={visualEvidenceSourceButtonClassName(kind === candidate)}
             onClick={() => {
               if (candidate === kind) return;
               setKind(candidate);
