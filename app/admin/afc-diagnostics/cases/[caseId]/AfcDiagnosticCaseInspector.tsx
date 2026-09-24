@@ -388,6 +388,16 @@ function SelectedAttemptInspector({
             caseDetail.source.originalSha256
           }
           metricDecision={generation.metricDecision}
+          frame={generation.frame}
+          originalDecodedFrame={
+            generation.original?.decodedWidth != null &&
+            generation.original.decodedHeight != null
+              ? {
+                  width: generation.original.decodedWidth,
+                  height: generation.original.decodedHeight,
+                }
+              : null
+          }
         />
 
         <div>

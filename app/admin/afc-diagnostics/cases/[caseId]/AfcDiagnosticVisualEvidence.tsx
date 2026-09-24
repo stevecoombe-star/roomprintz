@@ -56,11 +56,66 @@ import {
 const buttonClassName =
   "rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-200 transition hover:border-emerald-400/80 hover:text-emerald-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400/80 disabled:opacity-60";
 
+/**
+ * Four text-xs rows (4 × 1rem) plus the context block's mt-1 and two mt-0.5 gaps.
+ * min-height only: rejected reason codes may grow the slot.
+ */
+export const visualEvidenceMetricSpanDetailSlotClassName =
+  "mt-0.5 min-h-[4.5rem] pl-6 text-xs";
+
 const visualEvidenceSourceButtonActiveClassName =
   "rounded-lg border border-emerald-400/80 px-3 py-1.5 text-xs text-emerald-200 transition hover:border-emerald-400/80 hover:text-emerald-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400/80 disabled:opacity-60";
 
 export function visualEvidenceSourceButtonClassName(active: boolean): string {
   return active ? visualEvidenceSourceButtonActiveClassName : buttonClassName;
+}
+
+export type VisualEvidenceFrame = Readonly<{
+  width: number;
+  height: number;
+}>;
+
+export function positiveVisualEvidenceFrame(
+  frame: { width: number; height: number } | null | undefined,
+): VisualEvidenceFrame | null {
+  if (!frame) return null;
+  if (!Number.isFinite(frame.width) || !Number.isFinite(frame.height)) return null;
+  if (!(frame.width > 0) || !(frame.height > 0)) return null;
+  return { width: frame.width, height: frame.height };
+}
+
+/**
+ * Geometry for the reserved Visual Evidence box.
+ * A committed overlay frame is the displayed artifact's decoded size.
+ * Until that arrives, keep the last frame so the box cannot collapse,
+ * then original decoded size, then the generation frame already on the DTO.
+ */
+export function resolveVisualEvidenceViewportFrame(input: {
+  overlayFrame: { width: number; height: number } | null;
+  retainedFrame: { width: number; height: number } | null;
+  originalDecodedFrame: { width: number; height: number } | null;
+  generationFrame: { width: number; height: number } | null;
+  preferOriginalDecoded: boolean;
+}): VisualEvidenceFrame | null {
+  const overlay = positiveVisualEvidenceFrame(input.overlayFrame);
+  if (overlay) return overlay;
+  const retained = positiveVisualEvidenceFrame(input.retainedFrame);
+  if (retained) return retained;
+  if (input.preferOriginalDecoded) {
+    const original = positiveVisualEvidenceFrame(input.originalDecodedFrame);
+    if (original) return original;
+  }
+  return positiveVisualEvidenceFrame(input.generationFrame);
+}
+
+export function visualEvidenceViewportStyle(frame: VisualEvidenceFrame): {
+  aspectRatio: string;
+  maxWidth: string;
+} {
+  return {
+    aspectRatio: `${frame.width} / ${frame.height}`,
+    maxWidth: `min(100%, calc(min(70vh, 32rem) * ${frame.width} / ${frame.height}))`,
+  };
 }
 
 type ArtifactSummary = Readonly<{
@@ -114,6 +169,8 @@ export default function AfcDiagnosticVisualEvidence({
   tiled,
   originalSha256,
   metricDecision,
+  frame = null,
+  originalDecodedFrame = null,
 }: {
   caseId: string;
   generationId: string;
@@ -123,6 +180,8 @@ export default function AfcDiagnosticVisualEvidence({
   tiled: ArtifactSummary;
   originalSha256: string | null;
   metricDecision: AfcDiagnosticAdminMetricDecision;
+  frame?: { width: number; height: number } | null;
+  originalDecodedFrame?: { width: number; height: number } | null;
 }) {
   const coordinatorRef = useRef(createAfcDiagnosticVisualEvidenceCoordinator());
   const overlayCoordinatorRef = useRef(
@@ -150,6 +209,9 @@ export default function AfcDiagnosticVisualEvidence({
   const [showMetricSpan, setShowMetricSpan] = useState(true);
   const [metricSourcePath, setMetricSourcePath] =
     useState<AfcDiagnosticMetricSpanSourcePath | null>(null);
+  const [retainedFrame, setRetainedFrame] = useState<VisualEvidenceFrame | null>(
+    null,
+  );
   const identityKey = afcDiagnosticVisualEvidenceTupleKey({
     caseId,
     generationId,
@@ -436,6 +498,25 @@ export default function AfcDiagnosticVisualEvidence({
       : afcDiagnosticInspectorArtifactSourceLabel(source);
   const showImage = isCommitted && phase === "ready" && imageUrl;
   const overlayFrame = committedOverlay?.frame ?? null;
+  const committedViewportFrame = positiveVisualEvidenceFrame(overlayFrame);
+  if (
+    committedViewportFrame &&
+    (retainedFrame == null ||
+      retainedFrame.width !== committedViewportFrame.width ||
+      retainedFrame.height !== committedViewportFrame.height)
+  ) {
+    setRetainedFrame(committedViewportFrame);
+  }
+  const viewportFrame = resolveVisualEvidenceViewportFrame({
+    overlayFrame,
+    retainedFrame,
+    originalDecodedFrame,
+    generationFrame: frame,
+    preferOriginalDecoded: kind === "original",
+  });
+  const viewportStyle = viewportFrame
+    ? visualEvidenceViewportStyle(viewportFrame)
+    : null;
   const showFloorOverlay = showFloor && floorAvailable;
   const showCollisionOverlay = showCollision && collisionAvailable;
   const showMetricOverlay = showMetricSpan && metricAvailable;
@@ -566,24 +647,27 @@ export default function AfcDiagnosticVisualEvidence({
                   setShowMetricSpan(event.target.checked);
                 }}
               />
-              <span>
-                <span>{AFC_DIAGNOSTIC_METRIC_SPAN_COPY.label}</span>
-                <span
-                  id="afc-overlay-metric-span-help"
-                  className="mt-0.5 block text-xs text-slate-400"
-                >
-                  {AFC_DIAGNOSTIC_METRIC_SPAN_COPY.help}
-                </span>
-                {!metricAvailable ? (
-                  <span className="mt-0.5 block text-xs text-slate-500">
-                    {AFC_DIAGNOSTIC_METRIC_SPAN_COPY.unavailable}
-                  </span>
-                ) : null}
-                {showMetricOverlay && metricSpan ? (
-                  <AfcDiagnosticMetricSpanContext span={metricSpan} />
-                ) : null}
-              </span>
+              <span>{AFC_DIAGNOSTIC_METRIC_SPAN_COPY.label}</span>
             </label>
+            <div
+              data-metric-span-detail-slot=""
+              className={visualEvidenceMetricSpanDetailSlotClassName}
+            >
+              <span
+                id="afc-overlay-metric-span-help"
+                className="block text-slate-400"
+              >
+                {AFC_DIAGNOSTIC_METRIC_SPAN_COPY.help}
+              </span>
+              {!metricAvailable ? (
+                <span className="mt-0.5 block text-slate-500">
+                  {AFC_DIAGNOSTIC_METRIC_SPAN_COPY.unavailable}
+                </span>
+              ) : null}
+              {showMetricOverlay && metricSpan ? (
+                <AfcDiagnosticMetricSpanContext span={metricSpan} />
+              ) : null}
+            </div>
             {metricOptions.length > 1 ? (
               <span className="mt-1 flex flex-wrap gap-1 pl-6">
                 {metricOptions.map((option) => (
@@ -608,40 +692,15 @@ export default function AfcDiagnosticVisualEvidence({
       </fieldset>
 
       <div className="mt-3">
-        {(!isCommitted || phase === "loading") &&
-        !(isCommitted && phase === "error") ? (
-          <p className="text-sm text-slate-400" aria-live="polite">
-            {AFC_DIAGNOSTIC_VISUAL_EVIDENCE_COPY.loading}
-          </p>
-        ) : null}
-        {isCommitted && phase === "error" && error ? (
-          <div
-            role="alert"
-            className="rounded-xl border border-rose-700/60 bg-rose-950/20 p-3"
-          >
-            <p className="text-sm text-rose-200">{error}</p>
-            <button
-              type="button"
-              className={`${buttonClassName} mt-3`}
-              onClick={() => {
-                setRetryNonce((value) => value + 1);
-              }}
-            >
-              {AFC_DIAGNOSTIC_VISUAL_EVIDENCE_COPY.retry}
-            </button>
-          </div>
-        ) : null}
-        {showImage ? (
+        {viewportStyle ? (
           <div className="flex justify-center overflow-hidden rounded-xl border border-slate-800 bg-slate-950 p-2">
-            {overlayFrame ? (
-              <div
-                className="relative w-full"
-                style={{
-                  aspectRatio: `${overlayFrame.width} / ${overlayFrame.height}`,
-                  maxWidth: `min(100%, calc(min(70vh, 32rem) * ${overlayFrame.width} / ${overlayFrame.height}))`,
-                }}
-              >
-                {/* eslint-disable-next-line @next/next/no-img-element */}
+            <div
+              data-visual-evidence-viewport=""
+              className="relative w-full"
+              style={viewportStyle}
+            >
+              {showImage ? (
+                // eslint-disable-next-line @next/next/no-img-element
                 <img
                   src={imageUrl}
                   alt={afcDiagnosticVisualImageAlt({
@@ -650,29 +709,84 @@ export default function AfcDiagnosticVisualEvidence({
                   })}
                   className="absolute inset-0 h-full w-full object-contain"
                 />
-                {showSvg && committedOverlay ? (
-                  <AfcDiagnosticEvidenceOverlaySvg
-                    showFloor={showFloorOverlay}
-                    floorPoints={committedOverlay.floorQuad?.points ?? null}
-                    showCollision={showCollisionOverlay}
-                    collisionEdges={committedOverlay.collisionEdges}
-                    metricSpan={showMetricOverlay ? metricSpan : null}
-                  />
-                ) : null}
-              </div>
-            ) : (
-              // eslint-disable-next-line @next/next/no-img-element
-              <img
-                src={imageUrl}
-                alt={afcDiagnosticVisualImageAlt({
-                  kind,
-                  attemptOrdinal,
-                })}
-                className="max-h-[min(70vh,32rem)] w-auto max-w-full object-contain"
-              />
-            )}
+              ) : null}
+              {(!isCommitted || phase === "loading") &&
+              !(isCommitted && phase === "error") ? (
+                <p
+                  className="absolute inset-0 flex items-center justify-center text-sm text-slate-400"
+                  aria-live="polite"
+                >
+                  {AFC_DIAGNOSTIC_VISUAL_EVIDENCE_COPY.loading}
+                </p>
+              ) : null}
+              {isCommitted && phase === "error" && error ? (
+                <div
+                  role="alert"
+                  className="absolute inset-0 flex flex-col items-center justify-center p-3 text-center"
+                >
+                  <p className="text-sm text-rose-200">{error}</p>
+                  <button
+                    type="button"
+                    className={`${buttonClassName} mt-3`}
+                    onClick={() => {
+                      setRetryNonce((value) => value + 1);
+                    }}
+                  >
+                    {AFC_DIAGNOSTIC_VISUAL_EVIDENCE_COPY.retry}
+                  </button>
+                </div>
+              ) : null}
+              {showSvg && committedOverlay ? (
+                <AfcDiagnosticEvidenceOverlaySvg
+                  showFloor={showFloorOverlay}
+                  floorPoints={committedOverlay.floorQuad?.points ?? null}
+                  showCollision={showCollisionOverlay}
+                  collisionEdges={committedOverlay.collisionEdges}
+                  metricSpan={showMetricOverlay ? metricSpan : null}
+                />
+              ) : null}
+            </div>
           </div>
-        ) : null}
+        ) : (
+          <>
+            {(!isCommitted || phase === "loading") &&
+            !(isCommitted && phase === "error") ? (
+              <p className="text-sm text-slate-400" aria-live="polite">
+                {AFC_DIAGNOSTIC_VISUAL_EVIDENCE_COPY.loading}
+              </p>
+            ) : null}
+            {isCommitted && phase === "error" && error ? (
+              <div
+                role="alert"
+                className="rounded-xl border border-rose-700/60 bg-rose-950/20 p-3"
+              >
+                <p className="text-sm text-rose-200">{error}</p>
+                <button
+                  type="button"
+                  className={`${buttonClassName} mt-3`}
+                  onClick={() => {
+                    setRetryNonce((value) => value + 1);
+                  }}
+                >
+                  {AFC_DIAGNOSTIC_VISUAL_EVIDENCE_COPY.retry}
+                </button>
+              </div>
+            ) : null}
+            {showImage ? (
+              <div className="flex justify-center overflow-hidden rounded-xl border border-slate-800 bg-slate-950 p-2">
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img
+                  src={imageUrl}
+                  alt={afcDiagnosticVisualImageAlt({
+                    kind,
+                    attemptOrdinal,
+                  })}
+                  className="max-h-[min(70vh,32rem)] w-auto max-w-full object-contain"
+                />
+              </div>
+            ) : null}
+          </>
+        )}
         {showImage &&
         !(overlayIsCommitted && overlayPhase === "ready") &&
         !(overlayIsCommitted && overlayPhase === "error") ? (
