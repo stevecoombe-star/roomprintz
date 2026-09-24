@@ -80,6 +80,11 @@ export function AfcIntegratedEditorViewport({
   const stage = useOptionalStageEditor();
   const bindScene = stage?.bindScene;
   const setSelection = stage?.setSelection;
+  const noteFurnitureBaseline = stage?.noteFurnitureBaseline;
+
+  useEffect(() => {
+    noteFurnitureBaseline?.(roomId, persistedScene.furnitureBaseline);
+  }, [noteFurnitureBaseline, persistedScene.furnitureBaseline, roomId]);
 
   useEffect(() => {
     bindScene?.({

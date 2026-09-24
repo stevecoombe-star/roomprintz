@@ -5,6 +5,7 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -35,6 +36,12 @@ import {
 } from "@/lib/vibode-stage/catalog";
 import { parseStageCatalogPayload } from "@/lib/vibode-stage/catalog-store";
 import {
+  readCatalogDrawerPreference,
+  resolveCatalogDrawerOpen,
+  writeCatalogDrawerPreference,
+  type StageFurnitureBaseline,
+} from "@/lib/vibode-stage/catalog-drawer-preference";
+import {
   collapseCatalogDrawer,
   pinCatalogDrawer,
   toggleCatalogDrawer,
@@ -59,6 +66,8 @@ export type StageToolbarSlider = null | "rotate" | "size";
 type StageEditorContextValue = Readonly<{
   active: boolean;
   catalogOpen: boolean;
+  catalogSettled: boolean;
+  catalogMotion: "instant" | "smooth";
   catalogPinned: boolean;
   summaryOpen: boolean;
   catalogMode: StageCatalogMode;
@@ -90,6 +99,7 @@ type StageEditorContextValue = Readonly<{
   toggleCatalog: () => void;
   pinCatalog: () => void;
   collapseCatalog: () => void;
+  noteFurnitureBaseline: (roomId: string, baseline: StageFurnitureBaseline) => void;
   toggleSummary: () => void;
   closeSummary: () => void;
   setCatalogMode: (mode: StageCatalogMode) => void;
@@ -127,18 +137,33 @@ function pastedProductId(url: string): string {
 
 export function StageEditorProvider({
   active,
+  roomId,
   transformMode,
   onTransformModeChange,
   children,
 }: {
   active: boolean;
+  roomId: string | null;
   transformMode: RuntimeTransformMode;
   onTransformModeChange: (mode: RuntimeTransformMode) => void;
   children: ReactNode;
 }) {
   const session = useAfcSceneObjectCrudSession();
   const [catalogOpen, setCatalogOpen] = useState(false);
+  const [catalogSettled, setCatalogSettled] = useState(false);
+  const [catalogMotion, setCatalogMotion] = useState<"instant" | "smooth">("instant");
   const [catalogPinned, setCatalogPinned] = useState(false);
+  const [furnitureBaseline, setFurnitureBaseline] =
+    useState<StageFurnitureBaseline>("unresolved");
+  const [trackedRoomId, setTrackedRoomId] = useState(roomId);
+  const catalogAppliedRoomRef = useRef<string | null>(null);
+  if (roomId !== trackedRoomId) {
+    setTrackedRoomId(roomId);
+    setFurnitureBaseline("unresolved");
+    setCatalogSettled(false);
+    setCatalogMotion("instant");
+    catalogAppliedRoomRef.current = null;
+  }
   const [summaryOpen, setSummaryOpen] = useState(false);
   const [catalogMode, setCatalogMode] = useState<StageCatalogMode>(STAGE_DEFAULT_CATALOG_MODE);
   const [catalogQuery, setCatalogQuery] = useState("");
@@ -193,13 +218,49 @@ export function StageEditorProvider({
 
   useEffect(() => {
     if (!active) {
-      setCatalogOpen(false);
-      setCatalogPinned(false);
       setSummaryOpen(false);
       setDetailProductId(null);
       setToolbarSlider(null);
     }
   }, [active]);
+
+  const rememberCatalog = useCallback((open: boolean) => {
+    setCatalogMotion("smooth");
+    writeCatalogDrawerPreference(
+      typeof window === "undefined" ? null : window.localStorage,
+      roomId,
+      open ? "expanded" : "collapsed",
+    );
+  }, [roomId]);
+
+  useLayoutEffect(() => {
+    if (!active || !roomId) return;
+    if (catalogAppliedRoomRef.current === roomId) return;
+    const preference = readCatalogDrawerPreference(
+      typeof window === "undefined" ? null : window.localStorage,
+      roomId,
+    );
+    const resolution = resolveCatalogDrawerOpen({
+      preference,
+      baseline: furnitureBaseline,
+    });
+    if (!resolution.settled) {
+      setCatalogSettled(false);
+      return;
+    }
+    catalogAppliedRoomRef.current = roomId;
+    setCatalogMotion("instant");
+    setCatalogOpen(resolution.open);
+    setCatalogPinned(false);
+    setCatalogSettled(true);
+    if (resolution.establish) {
+      writeCatalogDrawerPreference(
+        window.localStorage,
+        roomId,
+        resolution.establish,
+      );
+    }
+  }, [active, furnitureBaseline, roomId]);
 
   useEffect(() => {
     if (!addedProductId) return;
@@ -211,21 +272,35 @@ export function StageEditorProvider({
     const next = toggleCatalogDrawer({ open: catalogOpen, pinned: catalogPinned });
     setCatalogOpen(next.open);
     setCatalogPinned(next.pinned);
+    setCatalogSettled(true);
+    rememberCatalog(next.open);
     if (!next.open) setDetailProductId(null);
-  }, [catalogOpen, catalogPinned]);
+  }, [catalogOpen, catalogPinned, rememberCatalog]);
 
   const pinCatalog = useCallback(() => {
     const next = pinCatalogDrawer();
     setCatalogOpen(next.open);
     setCatalogPinned(next.pinned);
-  }, []);
+    setCatalogSettled(true);
+    rememberCatalog(next.open);
+  }, [rememberCatalog]);
 
   const collapseCatalog = useCallback(() => {
     const next = collapseCatalogDrawer();
     setCatalogOpen(next.open);
     setCatalogPinned(next.pinned);
+    setCatalogSettled(true);
+    rememberCatalog(next.open);
     setDetailProductId(null);
-  }, []);
+  }, [rememberCatalog]);
+
+  const noteFurnitureBaseline = useCallback((
+    notedRoomId: string,
+    baseline: StageFurnitureBaseline,
+  ) => {
+    if (notedRoomId !== roomId) return;
+    setFurnitureBaseline((current) => (current === baseline ? current : baseline));
+  }, [roomId]);
 
   const toggleSummary = useCallback(() => {
     setSummaryOpen((open) => !open);
@@ -245,8 +320,10 @@ export function StageEditorProvider({
     if (!catalogOpen) {
       setCatalogOpen(true);
       setCatalogPinned(false);
+      setCatalogSettled(true);
+      rememberCatalog(true);
     }
-  }, [catalogOpen]);
+  }, [catalogOpen, rememberCatalog]);
 
   const closeProductDetail = useCallback(() => {
     setDetailProductId(null);
@@ -345,13 +422,15 @@ export function StageEditorProvider({
       ]);
       setDetailProductId(productId);
       setCatalogOpen(true);
+      setCatalogSettled(true);
+      rememberCatalog(true);
       setPasteUrl("");
     } catch {
       setPasteError("We couldn’t preview this product link.");
     } finally {
       setPasteBusy(false);
     }
-  }, [pasteUrl]);
+  }, [pasteUrl, rememberCatalog]);
 
   const bindScene = useCallback((scene: BoundScene) => {
     setBoundScene((current) => nextBoundScene(current, scene));
@@ -366,6 +445,8 @@ export function StageEditorProvider({
   const value = useMemo<StageEditorContextValue>(() => ({
     active,
     catalogOpen,
+    catalogSettled,
+    catalogMotion,
     catalogPinned,
     summaryOpen,
     catalogMode,
@@ -397,6 +478,7 @@ export function StageEditorProvider({
     toggleCatalog,
     pinCatalog,
     collapseCatalog,
+    noteFurnitureBaseline,
     toggleSummary,
     closeSummary,
     setCatalogMode,
@@ -426,13 +508,16 @@ export function StageEditorProvider({
     catalog,
     catalogCategoryId,
     catalogMode,
+    catalogMotion,
     catalogOpen,
     catalogPinned,
+    catalogSettled,
     catalogQuery,
     catalogSubcategoryId,
     closeProductDetail,
     closeSummary,
     collapseCatalog,
+    noteFurnitureBaseline,
     collectionId,
     detailProductId,
     extraProducts,

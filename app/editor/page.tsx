@@ -11930,6 +11930,7 @@ function EditorPageInner() {
     <AfcSceneObjectCrudSessionProvider>
     <StageEditorProvider
       active={viewportMode === "3d"}
+      roomId={editorRoomId}
       transformMode={runtimeTransformMode}
       onTransformModeChange={setRuntimeTransformMode}
     >
