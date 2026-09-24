@@ -11,6 +11,7 @@ import {
 import Link from "next/link";
 
 import { AdminDiagnosticsCopyButton } from "@/lib/afc-v2-diagnostics/admin-diagnostics-copy-button";
+import { AfcDiagnosticSelectedAttemptCopyJsonButton } from "@/lib/afc-v2-diagnostics/admin-selected-attempt-export-button";
 import {
   AFC_DIAGNOSTIC_INSPECTOR_COPY,
   AFC_DIAGNOSTIC_INSPECTOR_PAGE_PATH,
@@ -331,12 +332,26 @@ function SelectedAttemptInspector({
 
   return (
     <section className={cardClassName}>
-      <h2 className="text-lg font-semibold tracking-tight">Selected attempt</h2>
-      {reported ? (
-        <p className="mt-1 text-sm text-slate-400">
-          {AFC_DIAGNOSTIC_INSPECTOR_COPY.reportedHelper}
-        </p>
-      ) : null}
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h2 className="text-lg font-semibold tracking-tight">Selected attempt</h2>
+          {reported ? (
+            <p className="mt-1 text-sm text-slate-400">
+              {AFC_DIAGNOSTIC_INSPECTOR_COPY.reportedHelper}
+            </p>
+          ) : null}
+        </div>
+        <AfcDiagnosticSelectedAttemptCopyJsonButton
+          source={{
+            caseDetail,
+            session,
+            attempt,
+            generation,
+            associatedAt,
+            attemptOrdinal,
+          }}
+        />
+      </div>
 
       <div className="mt-4 space-y-5">
         <div>
