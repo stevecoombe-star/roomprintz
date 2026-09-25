@@ -127,9 +127,27 @@ export function consumeThumbnailRenderToken(
   issuedTokens().set(claims.nonce, { claims: current.claims, consumedAt: nowMs });
 }
 
+/**
+ * Local room/version mint stays off in production.
+ * The contract GET route uses thumbnailRenderContractRouteEnabled.
+ */
 export function thumbnailRenderRouteEnabled(request: Request): boolean {
   if (process.env.NODE_ENV === "production") return false;
+  return thumbnailRenderLocalHostAllowed(request) && !!thumbnailRenderTokenSecret();
+}
+
+/**
+ * Production contract reads are allowed when the HMAC secret is configured.
+ * The caller still needs a durable render-access token. Missing or invalid
+ * tokens fail closed in the route. Non-production stays on loopback only.
+ */
+export function thumbnailRenderContractRouteEnabled(request: Request): boolean {
   if (!thumbnailRenderTokenSecret()) return false;
+  if (process.env.NODE_ENV === "production") return true;
+  return thumbnailRenderLocalHostAllowed(request);
+}
+
+function thumbnailRenderLocalHostAllowed(request: Request): boolean {
   try {
     const host = new URL(request.url).hostname;
     return host === "localhost" || host === "127.0.0.1" || host === "::1";

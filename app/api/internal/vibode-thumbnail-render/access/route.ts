@@ -10,7 +10,7 @@ export const dynamic = "force-dynamic";
 
 /**
  * Local mint for the thumbnail proof harness.
- * Production stays closed until THUMB-2D claims a real job secret.
+ * Production workers claim a durable job instead of posting room ids.
  */
 export async function POST(request: Request) {
   if (!thumbnailRenderRouteEnabled(request)) {

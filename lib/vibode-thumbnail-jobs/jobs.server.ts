@@ -194,6 +194,32 @@ export async function lookupDurableThumbnailRenderClaim(
   return { jobId, roomId, versionId, contentToken, expiresAtMs };
 }
 
+export async function loadRunningThumbnailJobIdentity(
+  jobId: string,
+  claimNonce: string,
+): Promise<Readonly<{
+  roomId: string;
+  versionId: string;
+  contentToken: string;
+}> | null> {
+  const supabase = getServiceRoleSupabaseClient();
+  if (!supabase || !jobId || !claimNonce) return null;
+  const { data, error } = await supabase
+    .from("vibode_3d_thumbnail_jobs")
+    .select("room_id, version_id, claim_content_token, status, claim_nonce")
+    .eq("id", jobId)
+    .eq("claim_nonce", claimNonce)
+    .eq("status", "running")
+    .maybeSingle();
+  if (error || !data || typeof data !== "object") return null;
+  const row = data as Record<string, unknown>;
+  const roomId = text(row.room_id);
+  const versionId = text(row.version_id);
+  const contentToken = text(row.claim_content_token);
+  if (!roomId || !versionId || !contentToken) return null;
+  return { roomId, versionId, contentToken };
+}
+
 export function thumbnailRenderClaimsMatchJob(
   claims: ThumbnailRenderTokenClaims,
   job: ClaimedThumbnailJob,

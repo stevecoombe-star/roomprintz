@@ -1,14 +1,14 @@
 import { NextResponse } from "next/server";
 
 import { lookupDurableThumbnailRenderClaim } from "@/lib/vibode-thumbnail-jobs/jobs.server";
-import { thumbnailRenderRouteEnabled } from "@/lib/vibode-thumbnail-render/access.server";
+import { thumbnailRenderContractRouteEnabled } from "@/lib/vibode-thumbnail-render/access.server";
 import { readVibodeThumbnailRenderAccess } from "@/lib/vibode-thumbnail-render/payload.server";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export async function GET(request: Request) {
-  if (!thumbnailRenderRouteEnabled(request)) {
+  if (!thumbnailRenderContractRouteEnabled(request)) {
     return NextResponse.json({ error: "Not found." }, { status: 404 });
   }
   const token = request.headers.get("x-vibode-thumbnail-access")?.trim() ?? "";

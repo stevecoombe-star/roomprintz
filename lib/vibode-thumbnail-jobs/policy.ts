@@ -43,6 +43,12 @@ const RETRYABLE_CODES = new Set([
   "glb_load_failed",
   "render_page_error",
   "upload_failed",
+  "browser_launch_failed",
+  "navigation_timeout",
+  "render_timeout",
+  "screenshot_failed",
+  "encode_failed",
+  "publish_failed",
 ]);
 
 export function thumbnailJobRetryBackoffSec(attemptCount: number): number | null {
