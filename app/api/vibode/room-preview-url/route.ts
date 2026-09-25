@@ -1,6 +1,14 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import type { SupabaseClient } from "@supabase/supabase-js";
+import {
+  resolvePublishedVibode3dThumbnail,
+  type ThumbnailPointerReader,
+} from "@/lib/vibode-room-preview/published-thumbnail.server";
+import {
+  resolveRoomPreviewUrl,
+  type RoomPreviewAsset,
+} from "@/lib/vibode-room-preview/resolve-preview";
 
 export const runtime = "nodejs";
 
@@ -35,41 +43,6 @@ type RoomAssetRow = {
 
 function jsonError(message: string, status: number) {
   return NextResponse.json({ error: message }, { status });
-}
-
-function normalizeText(value: string | null | undefined) {
-  return typeof value === "string" ? value.trim() : "";
-}
-
-function isLikelyExpiringSignedUrl(url: string) {
-  try {
-    const parsed = new URL(url);
-    if (parsed.pathname.includes("/storage/v1/object/sign/")) return true;
-    if (parsed.searchParams.has("token")) return true;
-    if (parsed.searchParams.has("X-Amz-Signature")) return true;
-    if (parsed.searchParams.has("X-Amz-Credential")) return true;
-    return false;
-  } catch {
-    return false;
-  }
-}
-
-function getDurablePreviewUrl(candidateUrl: string | null | undefined): string | null {
-  const url = normalizeText(candidateUrl);
-  if (!url) return null;
-  if (url.toLowerCase().startsWith("data:image/")) return null;
-
-  try {
-    const parsed = new URL(url);
-    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-      return null;
-    }
-  } catch {
-    return null;
-  }
-
-  if (isLikelyExpiringSignedUrl(url)) return null;
-  return url;
 }
 
 function parseRoomId(body: unknown): string | null {
@@ -152,17 +125,26 @@ async function getActiveAssetForRoom(
   return (data as RoomAssetRow | null) ?? null;
 }
 
+function toPreviewAsset(asset: RoomAssetRow): RoomPreviewAsset {
+  return {
+    id: asset.id,
+    imageUrl: asset.image_url,
+    storageBucket: asset.storage_bucket,
+    storagePath: asset.storage_path,
+    thumbnailStorageBucket: asset.thumbnail_storage_bucket,
+    thumbnailStoragePath: asset.thumbnail_storage_path,
+  };
+}
+
 async function createSignedStorageUrl(args: {
   adminSupabase: AnySupabaseClient | null;
-  bucket: string | null | undefined;
-  storagePath: string | null | undefined;
+  bucket: string;
+  storagePath: string;
 }): Promise<string | null> {
-  const bucket = normalizeText(args.bucket);
-  const storagePath = normalizeText(args.storagePath);
-  if (!bucket || !storagePath || !args.adminSupabase) return null;
+  if (!args.adminSupabase) return null;
   const { data: signed, error: signErr } = await args.adminSupabase.storage
-    .from(bucket)
-    .createSignedUrl(storagePath, PREVIEW_SIGNED_URL_EXPIRES_IN_SEC);
+    .from(args.bucket)
+    .createSignedUrl(args.storagePath, PREVIEW_SIGNED_URL_EXPIRES_IN_SEC);
   if (signErr || !signed?.signedUrl) return null;
   return signed.signedUrl;
 }
@@ -220,45 +202,33 @@ export async function POST(req: NextRequest) {
       activeAssetId: room.active_asset_id,
     });
 
-    if (preferThumbnail && activeAsset) {
-      const thumbnailPreviewUrl = await createSignedStorageUrl({
-        adminSupabase,
-        bucket: activeAsset.thumbnail_storage_bucket,
-        storagePath: activeAsset.thumbnail_storage_path,
-      });
-      if (thumbnailPreviewUrl) {
-        return NextResponse.json({ previewUrl: thumbnailPreviewUrl });
-      }
-    }
+    const publishedPointer =
+      preferThumbnail && activeAsset
+        ? await resolvePublishedVibode3dThumbnail({
+            supabase: adminSupabase as unknown as ThumbnailPointerReader | null,
+            roomId: room.id,
+            versionId: activeAsset.id,
+          })
+        : null;
 
-    if (activeAsset) {
-      // Prefer the active room image for room-open/editor preview.
-      const assetPreviewUrl = getDurablePreviewUrl(activeAsset.image_url);
-      if (assetPreviewUrl) {
-        return NextResponse.json({ previewUrl: assetPreviewUrl });
-      }
+    const previewUrl = await resolveRoomPreviewUrl({
+      preferThumbnail,
+      roomId: room.id,
+      coverImageUrl: room.cover_image_url,
+      activeAsset: activeAsset ? toPreviewAsset(activeAsset) : null,
+      publishedPointer,
+      signStorageUrl: (input) =>
+        createSignedStorageUrl({
+          adminSupabase,
+          bucket: input.bucket,
+          storagePath: input.storagePath,
+        }),
+    });
 
-      // Fallback: signed URL from active room asset storage location.
-      const signedAssetPreviewUrl = await createSignedStorageUrl({
-        adminSupabase,
-        bucket: activeAsset.storage_bucket,
-        storagePath: activeAsset.storage_path,
-      });
-      if (signedAssetPreviewUrl) {
-        return NextResponse.json({ previewUrl: signedAssetPreviewUrl });
-      }
-    }
-
-    // Legacy fallback: room-level cover URL.
-    const coverPreviewUrl = getDurablePreviewUrl(room.cover_image_url);
-    if (coverPreviewUrl) {
-      return NextResponse.json({ previewUrl: coverPreviewUrl });
-    }
-
-    if (!adminSupabase) {
+    if (!previewUrl && !adminSupabase) {
       console.warn("[vibode/room-preview-url] service role key missing; cannot sign preview URL.");
     }
-    return NextResponse.json({ previewUrl: null });
+    return NextResponse.json({ previewUrl });
   } catch (err) {
     console.error("[vibode/room-preview-url] unexpected error:", err);
     return jsonError("Unexpected room preview error.", 500);
