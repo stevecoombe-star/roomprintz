@@ -17,6 +17,17 @@ import type {
   MyRoomsScope,
   MyRoomsSortMode,
 } from "@/components/my-rooms/types";
+import {
+  applyRoomPreviewBatch,
+  browserPreviewCacheStore,
+  initialDisplayPreview,
+  nextPreviewCache,
+  readFreshPreviewUrls,
+  requestRoomPreviewBatch,
+  retainPreviewCache,
+  settlePendingPreviews,
+  writeFreshPreviewUrls,
+} from "@/components/my-rooms/preview-batch";
 import { scopeLabel, sortRooms } from "@/components/my-rooms/utils";
 import { getSupabaseBrowserAccessToken } from "@/lib/supabaseBrowser";
 import { supabase } from "@/lib/supabaseClient";
@@ -98,6 +109,22 @@ function normalizeText(value: string | null | undefined) {
   return typeof value === "string" ? value.trim() : "";
 }
 
+function isAbortError(err: unknown): boolean {
+  if (!err || typeof err !== "object") return false;
+  const name = "name" in err ? String(err.name) : "";
+  if (name === "AbortError") return true;
+  const message = "message" in err && typeof err.message === "string" ? err.message.toLowerCase() : "";
+  return message.includes("abort");
+}
+
+function markMyRooms(name: string) {
+  try {
+    performance.mark(name);
+  } catch {
+    // Ignore missing performance timelines.
+  }
+}
+
 async function tryGetSupabaseAccessToken(): Promise<string | null> {
   try {
     return await getSupabaseBrowserAccessToken();
@@ -161,6 +188,7 @@ function likelyUniqueViolation(err: unknown): boolean {
 export function MyRoomsPage() {
   const router = useRouter();
   const { user, loading: authLoading } = useSupabaseUser();
+  const userId = user?.id ?? null;
   const [toast, setToast] = useState<{ message: string; type: "error" | "info" } | null>(null);
 
   const [rooms, setRooms] = useState<MyRoomsRoom[]>([]);
@@ -206,6 +234,7 @@ export function MyRoomsPage() {
   const [mutatingRoomId, setMutatingRoomId] = useState<string | null>(null);
   const [mutatingFolderId, setMutatingFolderId] = useState<string | null>(null);
   const toastTimeoutRef = useRef<number | null>(null);
+  const loadGenerationRef = useRef(0);
 
   const showToast = useCallback((message: string, type: "error" | "info" = "info") => {
     if (toastTimeoutRef.current !== null) {
@@ -228,24 +257,38 @@ export function MyRoomsPage() {
 
   useEffect(() => {
     if (authLoading) return;
-    if (!user) {
+    const generation = ++loadGenerationRef.current;
+    if (!userId) {
       setRooms([]);
       setFolders([]);
       setIsLoading(false);
       return;
     }
 
-    let cancelled = false;
+    const controller = new AbortController();
+    const signal = controller.signal;
+    const stale = () => generation !== loadGenerationRef.current;
 
     const load = async () => {
       setIsLoading(true);
       setLoadError(null);
 
+      let mappedRooms: MyRoomsRoom[] = [];
+      let previewCache: Record<string, string> = {};
       try {
         const [roomsRes, foldersRes] = await Promise.all([
-          supabase.from("vibode_rooms").select(ROOM_SELECT).order("sort_key", { ascending: false }),
-          supabase.from("vibode_room_folders").select("id,name,created_at,updated_at").order("name"),
+          supabase
+            .from("vibode_rooms")
+            .select(ROOM_SELECT)
+            .order("sort_key", { ascending: false })
+            .abortSignal(signal),
+          supabase
+            .from("vibode_room_folders")
+            .select("id,name,created_at,updated_at")
+            .order("name")
+            .abortSignal(signal),
         ]);
+        if (stale()) return;
 
         if (roomsRes.error) {
           throw roomsRes.error;
@@ -264,40 +307,32 @@ export function MyRoomsPage() {
           folderRows = (foldersRes.data ?? []) as FolderRow[];
         }
 
-        const previewByRoom = new Map<string, string | null>();
-        if (roomRows.length > 0) {
-          const accessToken = await tryGetSupabaseAccessToken();
-          await Promise.all(
-            roomRows.map(async (room) => {
-              const previewUrl = await fetchPreviewUrlForRoom(room.id, accessToken, {
-                preferThumbnail: true,
-              });
-              previewByRoom.set(room.id, previewUrl);
-            })
-          );
-        }
-
         const folderMap = new Map<string, FolderRow>();
         for (const folder of folderRows) {
           folderMap.set(folder.id, folder);
         }
 
-        const mappedRooms: MyRoomsRoom[] = roomRows.map((room) => ({
-          id: room.id,
-          title: normalizeText(room.title) || "Untitled Room",
-          folder_id: room.folder_id,
-          folder_name: room.folder_id ? folderMap.get(room.folder_id)?.name ?? null : null,
-          current_stage: room.current_stage ?? 0,
-          selected_model: room.selected_model,
-          cover_image_url: room.cover_image_url,
-          display_image_url: previewByRoom.get(room.id) ?? null,
-          created_at: room.created_at,
-          updated_at: room.updated_at,
-          last_opened_at: room.last_opened_at,
-          sort_key: normalizeText(room.sort_key) || room.updated_at || room.created_at,
-          status: room.status,
-          source_type: room.source_type,
-        }));
+        previewCache = readFreshPreviewUrls(browserPreviewCacheStore(), userId, Date.now());
+        mappedRooms = roomRows.map((room) => {
+          const preview = initialDisplayPreview(room.id, previewCache);
+          return {
+            id: room.id,
+            title: normalizeText(room.title) || "Untitled Room",
+            folder_id: room.folder_id,
+            folder_name: room.folder_id ? folderMap.get(room.folder_id)?.name ?? null : null,
+            current_stage: room.current_stage ?? 0,
+            selected_model: room.selected_model,
+            cover_image_url: room.cover_image_url,
+            display_image_url: preview.display_image_url,
+            preview_status: preview.preview_status,
+            created_at: room.created_at,
+            updated_at: room.updated_at,
+            last_opened_at: room.last_opened_at,
+            sort_key: normalizeText(room.sort_key) || room.updated_at || room.created_at,
+            status: room.status,
+            source_type: room.source_type,
+          };
+        });
 
         const roomCountByFolder = new Map<string, number>();
         for (const room of mappedRooms) {
@@ -313,27 +348,57 @@ export function MyRoomsPage() {
           room_count: roomCountByFolder.get(folder.id) ?? 0,
         }));
 
-        if (cancelled) return;
+        if (stale()) return;
         setRooms(mappedRooms);
         setFolders(mappedFolders);
+        setIsLoading(false);
+        markMyRooms("vibode-my-rooms:metadata");
       } catch (err) {
+        if (stale() || isAbortError(err)) return;
         console.error("[MyRooms] load error:", err);
-        if (!cancelled) {
-          setLoadError("We couldn't load your rooms right now. Please refresh and try again.");
+        setLoadError("We couldn't load your rooms right now. Please refresh and try again.");
+        setIsLoading(false);
+        return;
+      }
+
+      if (stale() || mappedRooms.length === 0) return;
+
+      try {
+        const accessToken = await tryGetSupabaseAccessToken();
+        if (stale()) return;
+        const batch = await requestRoomPreviewBatch({
+          roomIds: mappedRooms.map((room) => room.id),
+          accessToken,
+          signal,
+        });
+        if (stale()) return;
+        const now = Date.now();
+        setRooms((prev) => applyRoomPreviewBatch(prev, batch, now));
+        if (batch.ok || batch.completedRoomIds.length > 0) {
+          writeFreshPreviewUrls(
+            browserPreviewCacheStore(),
+            userId,
+            retainPreviewCache(
+              nextPreviewCache(previewCache, batch, now),
+              mappedRooms.map((room) => room.id),
+            ),
+          );
         }
-      } finally {
-        if (!cancelled) {
-          setIsLoading(false);
-        }
+        markMyRooms("vibode-my-rooms:previews");
+      } catch (err) {
+        if (stale() || isAbortError(err)) return;
+        console.warn("[MyRooms] preview batch failed:", err);
+        setRooms((prev) => settlePendingPreviews(prev));
       }
     };
 
     void load();
 
     return () => {
-      cancelled = true;
+      loadGenerationRef.current += 1;
+      controller.abort();
     };
-  }, [authLoading, user]);
+  }, [authLoading, userId]);
 
   useEffect(() => {
     if (selectedScope !== "folder") return;

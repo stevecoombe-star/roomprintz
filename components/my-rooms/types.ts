@@ -10,6 +10,8 @@ export type MyRoomsFolder = {
   room_count?: number;
 };
 
+export type MyRoomsPreviewStatus = "pending" | "ready";
+
 export type MyRoomsRoom = {
   id: string;
   title: string;
@@ -19,6 +21,7 @@ export type MyRoomsRoom = {
   selected_model: string | null;
   cover_image_url: string | null;
   display_image_url: string | null;
+  preview_status: MyRoomsPreviewStatus;
   created_at: string;
   updated_at: string;
   last_opened_at: string | null;

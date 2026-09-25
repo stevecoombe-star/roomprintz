@@ -41,6 +41,7 @@
     "vibode:thumbnail-proof": "node --import tsx scripts/vibode-thumbnail-proof.ts",
     "test:vibode-thumbnail-render": "node --conditions=react-server --import tsx --test --test-concurrency=1 lib/vibode-thumbnail-render/*.test.ts",
     "test:vibode-thumbnail-jobs": "node --conditions=react-server --import tsx --test --test-concurrency=1 lib/vibode-thumbnail-jobs/*.test.ts",
+    "test:vibode-room-preview": "node --conditions=react-server --import tsx --test --test-concurrency=1 lib/vibode-room-preview/*.test.ts components/my-rooms/preview-batch.test.ts",
     "test:vibode-thumbnail-worker": "npm test --prefix worker",
     "vibode:retarget-variant": "node --import tsx scripts/vibode-variant.ts",
     "vibode:register-product": "node --import tsx scripts/vibode-product.ts",

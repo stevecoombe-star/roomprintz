@@ -18,6 +18,19 @@ export type ThumbnailPointerReader = {
   };
 };
 
+type PointerListQuery = {
+  in: (
+    column: string,
+    values: readonly string[],
+  ) => Promise<{ data: unknown; error: { message: string } | null }>;
+};
+
+export type ThumbnailPointerListReader = {
+  from: (table: string) => {
+    select: (columns: string) => PointerListQuery;
+  };
+};
+
 function readPointerRow(data: unknown): PublishedVibode3dThumbnailPointer | null {
   if (!data || typeof data !== "object" || Array.isArray(data)) return null;
   const row = data as Record<string, unknown>;
@@ -68,5 +81,51 @@ export async function resolvePublishedVibode3dThumbnail(args: {
   } catch (err) {
     console.warn("[vibode/room-preview] 3D thumbnail pointer lookup failed:", err);
     return null;
+  }
+}
+
+/**
+ * Read published 3D thumbnails for many owned versions in one query.
+ * Service role only. No scene, GLB, or job read. A failed query returns
+ * an empty map so listing can fall back per room.
+ */
+export async function listPublishedVibode3dThumbnails(args: {
+  supabase: ThumbnailPointerListReader | null;
+  versions: readonly { roomId: string; versionId: string }[];
+}): Promise<Map<string, PublishedVibode3dThumbnailPointer>> {
+  const pointers = new Map<string, PublishedVibode3dThumbnailPointer>();
+  if (!args.supabase || args.versions.length === 0) return pointers;
+
+  const roomIdByVersion = new Map<string, string>();
+  for (const version of args.versions) {
+    roomIdByVersion.set(version.versionId, version.roomId);
+  }
+
+  try {
+    const { data, error } = await args.supabase
+      .from("vibode_3d_thumbnail_pointers")
+      .select(POINTER_COLUMNS)
+      .in("version_id", [...roomIdByVersion.keys()]);
+    if (error) {
+      console.warn("[vibode/room-preview] 3D thumbnail pointer batch lookup failed:", error.message);
+      return pointers;
+    }
+    const rows = Array.isArray(data) ? data : [];
+    for (const row of rows) {
+      const pointer = readPointerRow(row);
+      if (!pointer) continue;
+      const roomId = roomIdByVersion.get(pointer.versionId);
+      if (!roomId) continue;
+      const accepted = acceptPublishedVibode3dThumbnailPointer({
+        roomId,
+        versionId: pointer.versionId,
+        pointer,
+      });
+      if (accepted) pointers.set(accepted.versionId, accepted);
+    }
+    return pointers;
+  } catch (err) {
+    console.warn("[vibode/room-preview] 3D thumbnail pointer batch lookup failed:", err);
+    return pointers;
   }
 }

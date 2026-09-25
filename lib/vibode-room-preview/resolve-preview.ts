@@ -65,13 +65,14 @@ async function signedPreviewUrl(
   }
 }
 
-/**
- * Listing (`preferThumbnail`) tries the published 3D pointer, then the
- * existing 2D thumbnail, then the unchanged full-image chain.
- * Editor and room-open calls leave `preferThumbnail` false and skip both
- * thumbnail derivatives.
- */
-export async function resolveRoomPreviewUrl(input: {
+export type RoomPreviewSource = "3d" | "2d-thumbnail" | "asset" | "cover";
+
+export type RoomPreviewResolution = Readonly<{
+  previewUrl: string | null;
+  source: RoomPreviewSource | null;
+}>;
+
+export type RoomPreviewInput = {
   preferThumbnail: boolean;
   roomId: string;
   coverImageUrl: string | null;
@@ -84,7 +85,15 @@ export async function resolveRoomPreviewUrl(input: {
     storagePath: string;
   } | null;
   signStorageUrl: (signInput: RoomPreviewSignInput) => Promise<string | null>;
-}): Promise<string | null> {
+};
+
+/**
+ * Listing (`preferThumbnail`) tries the published 3D pointer, then the
+ * existing 2D thumbnail, then the unchanged full-image chain.
+ * Editor and room-open calls leave `preferThumbnail` false and skip both
+ * thumbnail derivatives.
+ */
+export async function resolveRoomPreview(input: RoomPreviewInput): Promise<RoomPreviewResolution> {
   const activeAsset = input.activeAsset;
 
   if (input.preferThumbnail && activeAsset) {
@@ -99,7 +108,7 @@ export async function resolveRoomPreviewUrl(input: {
         pointer.storageBucket,
         pointer.storagePath,
       );
-      if (sceneThumbnailUrl) return sceneThumbnailUrl;
+      if (sceneThumbnailUrl) return { previewUrl: sceneThumbnailUrl, source: "3d" };
     }
 
     const thumbnailPreviewUrl = await signedPreviewUrl(
@@ -107,20 +116,26 @@ export async function resolveRoomPreviewUrl(input: {
       activeAsset.thumbnailStorageBucket,
       activeAsset.thumbnailStoragePath,
     );
-    if (thumbnailPreviewUrl) return thumbnailPreviewUrl;
+    if (thumbnailPreviewUrl) return { previewUrl: thumbnailPreviewUrl, source: "2d-thumbnail" };
   }
 
   if (activeAsset) {
     const assetPreviewUrl = durableRoomPreviewUrl(activeAsset.imageUrl);
-    if (assetPreviewUrl) return assetPreviewUrl;
+    if (assetPreviewUrl) return { previewUrl: assetPreviewUrl, source: "asset" };
 
     const signedAssetPreviewUrl = await signedPreviewUrl(
       input.signStorageUrl,
       activeAsset.storageBucket,
       activeAsset.storagePath,
     );
-    if (signedAssetPreviewUrl) return signedAssetPreviewUrl;
+    if (signedAssetPreviewUrl) return { previewUrl: signedAssetPreviewUrl, source: "asset" };
   }
 
-  return durableRoomPreviewUrl(input.coverImageUrl);
+  const coverPreviewUrl = durableRoomPreviewUrl(input.coverImageUrl);
+  if (coverPreviewUrl) return { previewUrl: coverPreviewUrl, source: "cover" };
+  return { previewUrl: null, source: null };
+}
+
+export async function resolveRoomPreviewUrl(input: RoomPreviewInput): Promise<string | null> {
+  return (await resolveRoomPreview(input)).previewUrl;
 }

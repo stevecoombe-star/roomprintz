@@ -356,14 +356,24 @@ test("pointer lookup fails closed on a room or version mismatch and on query err
   }), null);
 });
 
-test("listing still uses one preview request and does not query pointer state in the browser", () => {
+test("listing paints room cards before one preview batch and does not query pointer state in the browser", () => {
   const page = source("components/my-rooms/MyRoomsPage.tsx");
   const card = source("components/my-rooms/RoomCard.tsx");
   const route = source("app/api/vibode/room-preview-url/route.ts");
   const resolver = source("lib/vibode-room-preview/published-thumbnail.server.ts");
   const fetches = page.match(/fetch\(\s*"([^"]+)"/g) ?? [];
   assert.deepEqual(fetches, ['fetch("/api/vibode/room-preview-url"']);
-  assert.equal(page.match(/fetchPreviewUrlForRoom\(/g)?.length, 3);
+  assert.equal(page.match(/fetchPreviewUrlForRoom\(/g)?.length, 2);
+  assert.equal(page.match(/requestRoomPreviewBatch\(/g)?.length, 1);
+  assert.doesNotMatch(page, /roomRows\.map\(\s*async/);
+  assert.doesNotMatch(page, /Promise\.all\(\s*\n?\s*roomRows\.map/);
+  const cardsReady = page.indexOf("setRooms(mappedRooms)");
+  const unblocked = page.indexOf("setIsLoading(false)", cardsReady);
+  const batch = page.indexOf("requestRoomPreviewBatch(");
+  assert.ok(cardsReady > 0 && unblocked > cardsReady && batch > unblocked);
+  assert.match(page, /\[authLoading, userId\]/);
+  assert.match(page, /AbortController/);
+  assert.match(page, /abortSignal\(signal\)/);
   assert.doesNotMatch(page, /vibode_3d_thumbnail_pointers|3d-thumbnail/);
   assert.doesNotMatch(card, /fetch\(|vibode_3d|thumbnail_pointer|supabase/);
   assert.match(route, /resolvePublishedVibode3dThumbnail/);

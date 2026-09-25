@@ -8,6 +8,8 @@ import { formatRoomRecencyLabel } from "@/components/my-rooms/utils";
 type RoomCardProps = {
   room: MyRoomsRoom;
   folders: MyRoomsFolder[];
+  imageLoading?: "eager" | "lazy";
+  imageFetchPriority?: "high" | "low" | "auto";
   onOpen: () => void;
   onRename: () => void;
   onMoveToFolder: (folderId: string | null) => Promise<void>;
@@ -18,6 +20,8 @@ type RoomCardProps = {
 export function RoomCard({
   room,
   folders,
+  imageLoading = "lazy",
+  imageFetchPriority = "auto",
   onOpen,
   onRename,
   onMoveToFolder,
@@ -41,6 +45,7 @@ export function RoomCard({
 
   const recencyLabel = formatRoomRecencyLabel(room);
   const hasImage = typeof room.display_image_url === "string" && room.display_image_url.length > 0;
+  const previewPending = room.preview_status === "pending" && !hasImage;
 
   return (
     <article className="group relative overflow-visible rounded-2xl bg-slate-900/50 transition hover:bg-slate-900/65">
@@ -52,7 +57,7 @@ export function RoomCard({
         disabled={isBusy}
       >
         <div className="overflow-hidden rounded-2xl border border-slate-800/70 bg-slate-900">
-          <div className="relative aspect-[4/3] w-full bg-slate-900">
+          <div className="relative aspect-[4/3] w-full bg-slate-900" aria-busy={previewPending}>
             {hasImage ? (
               <>
                 {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -60,10 +65,14 @@ export function RoomCard({
                   src={room.display_image_url!}
                   alt={room.title}
                   className="h-full w-full object-cover"
-                  loading="lazy"
+                  loading={imageLoading}
+                  fetchPriority={imageFetchPriority}
+                  decoding="async"
                 />
                 <div className="pointer-events-none absolute inset-0 bg-gradient-to-b from-transparent to-black/10" />
               </>
+            ) : previewPending ? (
+              <div className="h-full w-full animate-pulse bg-slate-800/80" />
             ) : (
               <div className="flex h-full w-full items-center justify-center bg-gradient-to-br from-slate-900 to-slate-800 p-4">
                 <div className="w-full max-w-[170px] rounded-lg border border-slate-700/70 bg-slate-900/85 px-3 py-2 text-center">
