@@ -38,8 +38,14 @@ async function main() {
         api,
         openSession: (job) => pool.openSession(job),
       });
-      if (result.outcome === "idle") {
-        if (!health.idle) log("queue_idle", {});
+      if (result.outcome === "idle" || !result.jobId) {
+        if (result.outcome === "failed") {
+          health.lastFailureAt = new Date().toISOString();
+          health.lastFailureCode = result.code ?? "render_page_error";
+          log("claim_failed", { code: result.code ?? "render_page_error" });
+        } else if (!health.idle) {
+          log("queue_idle", {});
+        }
         health.idle = true;
         await sleep(env.pollIntervalMs);
         continue;
