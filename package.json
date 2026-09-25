@@ -38,6 +38,8 @@
     "vibode:validate-asset": "node --import tsx scripts/vibode-asset.ts validate",
     "vibode:register-asset": "node --import tsx scripts/vibode-asset.ts register",
     "vibode:generate-assets": "node --import tsx scripts/vibode-asset.ts generate",
+    "vibode:thumbnail-proof": "node --import tsx scripts/vibode-thumbnail-proof.ts",
+    "test:vibode-thumbnail-render": "node --conditions=react-server --import tsx --test --test-concurrency=1 lib/vibode-thumbnail-render/*.test.ts",
     "vibode:retarget-variant": "node --import tsx scripts/vibode-variant.ts",
     "vibode:register-product": "node --import tsx scripts/vibode-product.ts",
     "vibode:register-variant": "node --import tsx scripts/vibode-register-variant.ts",
