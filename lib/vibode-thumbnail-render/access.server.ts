@@ -8,11 +8,11 @@ import {
 } from "./contract";
 
 /**
- * Temporary render-access seam for THUMB-2C.
+ * Render-access tokens.
  *
- * THUMB-2D replaces this with a job-row secret: the worker claims one
- * job, the database stores the nonce and claimed-at time, and this
- * process-local map goes away. The token shape stays the same.
+ * Local proof mints still use the process-local nonce map. Durable jobs
+ * pass `durable: true` and store the nonce on the job row. The render
+ * route resolves that nonce from the claimed job instead of this map.
  */
 
 export type ThumbnailRenderTokenClaims = Readonly<{
@@ -61,6 +61,8 @@ export function mintThumbnailRenderToken(input: Readonly<{
   versionId: string;
   contentToken: string;
   nowMs?: number;
+  nonce?: string;
+  durable?: boolean;
 }>): { token: string; claims: ThumbnailRenderTokenClaims } | null {
   const secret = thumbnailRenderTokenSecret();
   if (!secret) return null;
@@ -71,14 +73,16 @@ export function mintThumbnailRenderToken(input: Readonly<{
     versionId: input.versionId,
     contentToken: input.contentToken,
     exp: nowMs + VIBODE_THUMBNAIL_RENDER_TOKEN_EXPIRES_SEC * 1000,
-    nonce: randomUUID(),
+    nonce: input.nonce ?? randomUUID(),
   };
   const token = signClaims(claims, secret);
-  issuedTokens().set(claims.nonce, { claims, consumedAt: null });
+  if (!input.durable) {
+    issuedTokens().set(claims.nonce, { claims, consumedAt: null });
+  }
   return { token, claims };
 }
 
-export function verifyThumbnailRenderToken(
+export function readSignedThumbnailRenderToken(
   token: string,
   nowMs: number = Date.now(),
 ): ThumbnailRenderTokenClaims | null {
@@ -86,6 +90,15 @@ export function verifyThumbnailRenderToken(
   if (!secret) return null;
   const claims = readSignedClaims(token, secret);
   if (!claims || claims.exp <= nowMs) return null;
+  return claims;
+}
+
+export function verifyThumbnailRenderToken(
+  token: string,
+  nowMs: number = Date.now(),
+): ThumbnailRenderTokenClaims | null {
+  const claims = readSignedThumbnailRenderToken(token, nowMs);
+  if (!claims) return null;
   const issuedNonce = issuedTokens().get(claims.nonce);
   if (!issuedNonce) return null;
   if (

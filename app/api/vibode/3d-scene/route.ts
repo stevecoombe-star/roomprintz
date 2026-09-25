@@ -13,6 +13,7 @@ import {
   resolveOwnedVersionScene,
   saveOwnedVersionScene,
 } from "@/lib/afc-v2-runtime/scene-persistence.server";
+import { scheduleVibodeThumbnailAfterSceneSave } from "@/lib/vibode-thumbnail-jobs/jobs.server";
 import { enrichOwnedSceneRuntimeAssets } from "@/lib/vibode-stage/partner-runtime-assets.server";
 
 export const runtime = "nodejs";
@@ -137,6 +138,9 @@ export async function PUT(request: Request) {
   if (!saved.ok) {
     return productionAfcJson({ error: saved.error }, saved.status);
   }
+  // Thumbnail enqueue is durable bookkeeping only. A failure here must not
+  // fail the editor save; the next save can coalesce the same derivative.
+  await scheduleVibodeThumbnailAfterSceneSave(saved.scene);
   return productionAfcJson({
     status: "saved",
     scene: saved.scene,

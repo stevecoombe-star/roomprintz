@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 
+import { lookupDurableThumbnailRenderClaim } from "@/lib/vibode-thumbnail-jobs/jobs.server";
 import { thumbnailRenderRouteEnabled } from "@/lib/vibode-thumbnail-render/access.server";
 import { readVibodeThumbnailRenderAccess } from "@/lib/vibode-thumbnail-render/payload.server";
 
@@ -19,7 +20,9 @@ export async function GET(request: Request) {
       retryable: false,
     }, 401);
   }
-  const read = await readVibodeThumbnailRenderAccess(token);
+  const read = await readVibodeThumbnailRenderAccess(token, undefined, {
+    lookupClaim: lookupDurableThumbnailRenderClaim,
+  });
   if (!read.ok) {
     return json(read, statusForCode(read.code));
   }

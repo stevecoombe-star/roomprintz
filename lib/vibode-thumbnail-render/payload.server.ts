@@ -33,6 +33,7 @@ import {
 import {
   consumeThumbnailRenderToken,
   mintThumbnailRenderToken,
+  readSignedThumbnailRenderToken,
   verifyThumbnailRenderToken,
 } from "./access.server";
 import {
@@ -82,6 +83,7 @@ export type ThumbnailRenderSource = Readonly<{
   loadVersion: (versionId: string) => Promise<VersionRecord | null>;
   loadGeneration: (generationId: string) => Promise<GenerationRecord | null>;
   loadScene: (roomId: string, versionId: string) => Promise<LoadedSceneRow>;
+  loadSceneUpdatedAt?: (roomId: string, versionId: string) => Promise<string | null>;
   signStorageUrl: (bucket: string, path: string) => Promise<string | null>;
   lookupDynamicAssets: (
     assetIds: readonly string[],
@@ -237,11 +239,55 @@ export async function mintVibodeThumbnailRenderAccess(
   };
 }
 
+export type ThumbnailRenderClaimRecord = Readonly<{
+  jobId: string;
+  roomId: string;
+  versionId: string;
+  contentToken: string;
+  expiresAtMs: number;
+}>;
+
+export type ThumbnailRenderClaimLookup = (
+  nonce: string,
+) => Promise<ThumbnailRenderClaimRecord | null>;
+
 export async function readVibodeThumbnailRenderAccess(
   token: string,
   source?: ThumbnailRenderSource,
+  authorize?: Readonly<{
+    lookupClaim?: ThumbnailRenderClaimLookup;
+    nowMs?: number;
+  }>,
 ): Promise<ThumbnailRenderBuildResult> {
-  const claims = verifyThumbnailRenderToken(token);
+  const nowMs = authorize?.nowMs ?? Date.now();
+  const signed = readSignedThumbnailRenderToken(token, nowMs);
+  if (!signed) {
+    return thumbnailRenderError(
+      "render_access_denied",
+      "Render access denied.",
+      false,
+    );
+  }
+  const durable = authorize?.lookupClaim
+    ? await authorize.lookupClaim(signed.nonce)
+    : null;
+  if (durable) {
+    const durableMatches = durable.jobId === signed.jobId &&
+      durable.roomId === signed.roomId &&
+      durable.versionId === signed.versionId &&
+      durable.contentToken === signed.contentToken &&
+      durable.expiresAtMs > nowMs;
+    if (!durableMatches) {
+      return thumbnailRenderError(
+        "render_access_denied",
+        "Render access denied.",
+        false,
+      );
+    }
+  }
+  const claims = durable
+    ? signed
+    : verifyThumbnailRenderToken(token, nowMs);
   if (!claims) {
     return thumbnailRenderError(
       "render_access_denied",
@@ -272,6 +318,49 @@ export async function readVibodeThumbnailRenderAccess(
   return built;
 }
 
+export function thumbnailSceneContentToken(input: Readonly<{
+  scene: PersistedVersionScene;
+  authority: AfcV2ProductionRoomAuthority;
+  background: Readonly<{ bucket: string; objectPath: string }>;
+  objects: readonly Readonly<{
+    objectId: string;
+    assetId: string;
+    position: { x: number; y: number; z: number };
+    rotationDeg: { x: number; y: number; z: number };
+    userSizeMultiplier: number;
+  }>[];
+}>): string {
+  const camera = input.authority.frozenCamera;
+  return thumbnailContentToken({
+    renderContract: VIBODE_THUMBNAIL_RENDER_SCHEMA_VERSION,
+    roomId: input.scene.roomId,
+    versionId: input.scene.versionId,
+    afcGenerationId: input.authority.generationId,
+    frame: {
+      width: camera.frame.width,
+      height: camera.frame.height,
+    },
+    camera: {
+      verticalFovDeg: camera.verticalFovDeg,
+      position: camera.pose.position,
+      lookAt: camera.pose.lookAt,
+      up: camera.pose.up,
+      metricScale: input.authority.metric.metricScale,
+    },
+    background: {
+      bucket: input.background.bucket,
+      objectPath: input.background.objectPath,
+    },
+    objects: input.objects.map((object) => ({
+      objectId: object.objectId,
+      assetId: object.assetId,
+      position: object.position,
+      rotationDeg: object.rotationDeg,
+      userSizeMultiplier: object.userSizeMultiplier,
+    })),
+  });
+}
+
 function assemblePayload(input: Readonly<{
   jobId: string;
   scene: PersistedVersionScene;
@@ -282,8 +371,6 @@ function assemblePayload(input: Readonly<{
 }>):
   | Readonly<{ ok: true; payload: VibodeThumbnailRenderPayload }>
   | Readonly<{ ok: false; reason: string }> {
-  const camera = input.authority.frozenCamera;
-  const metricScale = input.authority.metric.metricScale;
   const objects = input.scene.objects.map((object) => {
     const glbUrl = input.glbUrls.get(object.assetId) ?? "";
     return {
@@ -307,33 +394,11 @@ function assemblePayload(input: Readonly<{
     schemaVersion: VIBODE_THUMBNAIL_RENDER_SCHEMA_VERSION,
     job: {
       jobId: input.jobId,
-      contentToken: thumbnailContentToken({
-        renderContract: VIBODE_THUMBNAIL_RENDER_SCHEMA_VERSION,
-        roomId: input.scene.roomId,
-        versionId: input.scene.versionId,
-        afcGenerationId: input.authority.generationId,
-        frame: {
-          width: camera.frame.width,
-          height: camera.frame.height,
-        },
-        camera: {
-          verticalFovDeg: camera.verticalFovDeg,
-          position: camera.pose.position,
-          lookAt: camera.pose.lookAt,
-          up: camera.pose.up,
-          metricScale,
-        },
-        background: {
-          bucket: input.background.bucket,
-          objectPath: input.background.objectPath,
-        },
-        objects: objects.map((object) => ({
-          objectId: object.objectId,
-          assetId: object.assetId,
-          position: object.position,
-          rotationDeg: object.rotationDeg,
-          userSizeMultiplier: object.userSizeMultiplier,
-        })),
+      contentToken: thumbnailSceneContentToken({
+        scene: input.scene,
+        authority: input.authority,
+        background: input.background,
+        objects,
       }),
     },
     room: {
@@ -342,16 +407,16 @@ function assemblePayload(input: Readonly<{
       afcGenerationId: input.authority.generationId,
     },
     frame: {
-      width: camera.frame.width,
-      height: camera.frame.height,
+      width: input.authority.frozenCamera.frame.width,
+      height: input.authority.frozenCamera.frame.height,
     },
     background: { url: input.background.url },
     camera: {
-      verticalFovDeg: camera.verticalFovDeg,
-      position: { ...camera.pose.position },
-      lookAt: { ...camera.pose.lookAt },
-      up: { ...camera.pose.up },
-      metricScale,
+      verticalFovDeg: input.authority.frozenCamera.verticalFovDeg,
+      position: { ...input.authority.frozenCamera.pose.position },
+      lookAt: { ...input.authority.frozenCamera.pose.lookAt },
+      up: { ...input.authority.frozenCamera.pose.up },
+      metricScale: input.authority.metric.metricScale,
       near: AFC_V2_RUNTIME_CAMERA_NEAR,
       far: AFC_V2_RUNTIME_CAMERA_FAR,
     },
@@ -523,6 +588,155 @@ async function resolveObjectAssets(
   return { ok: true, glbUrls };
 }
 
+export type VibodeThumbnailContentInspection =
+  | Readonly<{
+    ok: true;
+    empty: true;
+    roomId: string;
+    versionId: string;
+    afcGenerationId: string;
+    sceneUpdatedAt: string;
+  }>
+  | Readonly<{
+    ok: true;
+    empty: false;
+    contentToken: string;
+    roomId: string;
+    versionId: string;
+    afcGenerationId: string;
+    backgroundBucket: string;
+    backgroundPath: string;
+    sceneUpdatedAt: string;
+    objects: PersistedVersionScene["objects"];
+  }>
+  | VibodeThumbnailRenderFailure;
+
+/**
+ * Authoritative thumbnail identity for enqueue and publish.
+ * Does not mint signed URLs or fetch GLBs.
+ */
+export async function inspectVibodeThumbnailContent(
+  input: Readonly<{ roomId: string; versionId: string }>,
+  source: ThumbnailRenderSource = createProductionThumbnailRenderSource(),
+): Promise<VibodeThumbnailContentInspection> {
+  const room = await source.loadRoom(input.roomId);
+  const version = room ? await source.loadVersion(input.versionId) : null;
+  const generationId = room?.currentAfcGenerationId ?? "";
+  const generation = generationId ? await source.loadGeneration(generationId) : null;
+  const authorized = authorizeOwned3dSceneContext({
+    userId: room?.userId ?? null,
+    room,
+    version,
+    generation: generation
+      ? {
+        id: generation.id,
+        roomId: generation.roomId,
+        userId: generation.userId,
+        status: generation.status,
+      }
+      : null,
+    requestedRoomId: input.roomId,
+    requestedVersionId: input.versionId,
+    requestedAfcGenerationId: generationId,
+  });
+  if (!authorized.ok) {
+    if (
+      authorized.error === "AFC generation is not production-ready." ||
+      authorized.error === "AFC generation is not the room's current spatial authority." ||
+      authorized.error === "AFC generation not found."
+    ) {
+      return thumbnailRenderError(
+        "camera_authority_missing",
+        "Production camera authority is not ready.",
+        false,
+      );
+    }
+    return thumbnailRenderError("render_access_denied", "Render access denied.", false);
+  }
+  const authority = validateProductionRuntimeAuthority(generation?.productionAuthority);
+  if (!authority.ok) {
+    return thumbnailRenderError(
+      "camera_authority_missing",
+      "Production camera authority is missing.",
+      false,
+    );
+  }
+  const loaded = await source.loadScene(input.roomId, input.versionId);
+  const sceneUpdatedAt = source.loadSceneUpdatedAt
+    ? await source.loadSceneUpdatedAt(input.roomId, input.versionId)
+    : null;
+  if (!loaded.found || "malformed" in loaded || !sceneUpdatedAt) {
+    return thumbnailRenderError("scene_missing", "Saved 3D scene is missing.", false);
+  }
+  const compatibility = resolvePersistedSceneCompatibility({
+    storedAfcGenerationId: loaded.scene.afcGenerationId,
+    currentAfcGenerationId: authority.authority.generationId,
+  });
+  if (!compatibility.ok) {
+    return thumbnailRenderError(
+      "generation_mismatch",
+      "Saved scene does not match the current AFC generation.",
+      false,
+    );
+  }
+  if (loaded.scene.objects.length === 0) {
+    return {
+      ok: true,
+      empty: true,
+      roomId: input.roomId,
+      versionId: input.versionId,
+      afcGenerationId: loaded.scene.afcGenerationId,
+      sceneUpdatedAt,
+    };
+  }
+  const background = backgroundIdentityOf(version);
+  if (!background) {
+    return thumbnailRenderError(
+      "background_missing",
+      "History background image is missing.",
+      false,
+    );
+  }
+  const objects = loaded.scene.objects.map((object) => ({
+    objectId: object.objectId,
+    assetId: object.assetId,
+    position: { ...object.transform.position },
+    rotationDeg: { ...object.transform.rotationDeg },
+    userSizeMultiplier: object.userSizeMultiplier ?? AFC_V2_USER_SIZE_DEFAULT,
+  }));
+  return {
+    ok: true,
+    empty: false,
+    contentToken: thumbnailSceneContentToken({
+      scene: loaded.scene,
+      authority: authority.authority,
+      background,
+      objects,
+    }),
+    roomId: loaded.scene.roomId,
+    versionId: loaded.scene.versionId,
+    afcGenerationId: authority.authority.generationId,
+    backgroundBucket: background.bucket,
+    backgroundPath: background.objectPath,
+    sceneUpdatedAt,
+    objects: loaded.scene.objects,
+  };
+}
+
+function backgroundIdentityOf(
+  version: VersionRecord | null,
+): { bucket: string; objectPath: string } | null {
+  if (!version) return null;
+  const bucket = version.storageBucket?.trim() ?? "";
+  const objectPath = version.storagePath?.trim() ?? "";
+  if (bucket && objectPath && !objectPath.includes("..")) {
+    return { bucket, objectPath };
+  }
+  const imageUrl = version.imageUrl?.trim() ?? "";
+  if (!imageUrl) return null;
+  return publicObjectIdentity(imageUrl);
+}
+
 export function createProductionThumbnailRenderSource(): ThumbnailRenderSource {
   const policy = thumbnailAssetUrlPolicyFromEnv();
   return {
@@ -590,6 +804,19 @@ export function createProductionThumbnailRenderSource(): ThumbnailRenderSource {
       });
       if (!scene.ok) return { found: true, malformed: true };
       return { found: true, scene: scene.scene };
+    },
+    async loadSceneUpdatedAt(roomId, versionId) {
+      const supabase = getServiceRoleSupabaseClient();
+      if (!supabase) return null;
+      const { data, error } = await supabase
+        .from(PI4C_SCENE_TABLE)
+        .select("updated_at")
+        .eq("room_id", roomId)
+        .eq("version_id", versionId)
+        .maybeSingle();
+      if (error || !data || typeof data !== "object") return null;
+      const updatedAt = (data as { updated_at?: unknown }).updated_at;
+      return typeof updatedAt === "string" && updatedAt ? updatedAt : null;
     },
     async signStorageUrl(bucket, path) {
       const supabase = getServiceRoleSupabaseClient();
