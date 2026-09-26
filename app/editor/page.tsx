@@ -11987,6 +11987,9 @@ function EditorPageInner() {
             onRerunStart={() => prepare3d.requestRunningFromReady()}
             onRerunReverted={() => prepare3d.revertRunningToReady()}
             onRerunSettled={(result) => prepare3d.settleRunning(result)}
+            onPerspectiveRereadStart={() => prepare3d.requestRunningFromReady()}
+            onPerspectiveRereadReverted={() => prepare3d.revertRunningToReady()}
+            onPerspectiveRereadSettled={(result) => prepare3d.settleRunning(result)}
           />
           <button
             type="button"

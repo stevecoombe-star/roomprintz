@@ -17,6 +17,8 @@ export type { AfcQaIssueCode };
 export const AFC_QA_BROWSER_STATE_PATH = "/api/vibode/afc/qa/state";
 export const AFC_QA_TESTER_CASE_PATH = "/api/vibode/afc/qa/cases";
 export const AFC_QA_READY_RERUN_PATH = "/api/vibode/afc/qa/rerun";
+export const AFC_QA_PERSPECTIVE_REREAD_PATH =
+  "/api/vibode/afc/qa/reread-perspective";
 
 export type AfcQaTesterTrigger = "manual_report" | "repeated_unsuccessful";
 
@@ -60,6 +62,15 @@ export const AFC_QA_TESTER_COPY = {
     "Couldn’t re-run the room read. Please refresh and try again.",
   rerunError404: "This room read is no longer available to re-run.",
   rerunError500: "We couldn’t re-run the room read. Please try again.",
+  rereadButton: "Re-read Room Perspective",
+  rereadPending: "Re-reading Room Perspective…",
+  rereadTitle:
+    "Re-read the room perspective if the 3D view doesn’t line up well with the photo.",
+  rereadSuccess: "Room perspective was re-read.",
+  rereadError400:
+    "Couldn’t re-read the room perspective. Please refresh and try again.",
+  rereadError404: "This room read is no longer available to re-read.",
+  rereadError500: "We couldn’t re-read the room perspective. Please try again.",
 } as const;
 
 export const AFC_QA_TESTER_NOTES_MAX_CHARS = AFC_DIAGNOSTIC_NOTES_MAX_CHARS;
@@ -93,6 +104,8 @@ export type AfcQaTesterReportModel = {
   noticeMessage: string | null;
   rerunPending: boolean;
   rerunBoundGenerationId: string | null;
+  perspectiveRereadPending: boolean;
+  perspectiveRereadBoundGenerationId: string | null;
 };
 
 export type AfcQaTesterReportEvent =
@@ -117,12 +130,22 @@ export type AfcQaTesterReportEvent =
     }
   | { type: "rerun_succeeded" }
   | { type: "rerun_http_error"; status: number }
-  | { type: "rerun_aborted" };
+  | { type: "rerun_aborted" }
+  | {
+      type: "perspective_reread_requested";
+      preparePhase: string | null;
+      prepareGenerationId: string | null;
+    }
+  | { type: "perspective_reread_succeeded" }
+  | { type: "perspective_reread_http_error"; status: number }
+  | { type: "perspective_reread_aborted" };
 
 export type AfcQaReadyRerunBody = Readonly<{
   roomId: string;
   generationId: string;
 }>;
+
+export type AfcQaPerspectiveRereadBody = AfcQaReadyRerunBody;
 
 export type AfcQaTesterReportEffect =
   | { type: "none" }
@@ -131,6 +154,11 @@ export type AfcQaTesterReportEffect =
       type: "post_rerun";
       url: string;
       body: AfcQaReadyRerunBody;
+    }
+  | {
+      type: "post_perspective_reread";
+      url: string;
+      body: AfcQaPerspectiveRereadBody;
     }
   | { type: "refresh_qa" }
   | { type: "unauthorized" };
@@ -146,6 +174,10 @@ export type AfcQaTesterReportViewModel = {
   showForm: boolean;
   showRerun: boolean;
   rerunDisabled: boolean;
+  showPerspectiveReread: boolean;
+  perspectiveRereadDisabled: boolean;
+  perspectiveRereadBusy: boolean;
+  perspectiveRereadLabel: string;
   submitting: boolean;
   canSubmit: boolean;
   successMessage: string | null;
@@ -370,6 +402,27 @@ export function afcQaReadyRerunErrorMessage(status: number): string {
   return AFC_QA_TESTER_COPY.rerunError500;
 }
 
+export function buildAfcQaPerspectiveRereadBody(input: {
+  roomId: string;
+  generationId: string;
+}): AfcQaPerspectiveRereadBody {
+  return buildAfcQaReadyRerunBody(input);
+}
+
+export function collectAfcQaPerspectiveRereadBodyPrivacyViolations(
+  body: unknown,
+): readonly string[] {
+  return collectAfcQaReadyRerunBodyPrivacyViolations(body);
+}
+
+export function afcQaPerspectiveRereadErrorMessage(status: number): string {
+  if (status === 400) return AFC_QA_TESTER_COPY.rereadError400;
+  if (status === 401) return AFC_QA_TESTER_COPY.sessionExpired;
+  if (status === 404) return AFC_QA_TESTER_COPY.rereadError404;
+  if (status === 422) return AFC_QA_TESTER_COPY.rereadError500;
+  return AFC_QA_TESTER_COPY.rereadError500;
+}
+
 export function createInitialAfcQaTesterReportModel(
   roomId: string | null = null,
 ): AfcQaTesterReportModel {
@@ -384,6 +437,8 @@ export function createInitialAfcQaTesterReportModel(
     noticeMessage: null,
     rerunPending: false,
     rerunBoundGenerationId: null,
+    perspectiveRereadPending: false,
+    perspectiveRereadBoundGenerationId: null,
   };
 }
 
@@ -462,12 +517,19 @@ export function deriveAfcQaTesterReportView(
     preparePhase: context.preparePhase,
     prepareGenerationId: context.prepareGenerationId,
   });
+  const roomReadBusy = model.rerunPending || model.perspectiveRereadPending;
   return {
     showManualReport,
     showAutomaticPrompt,
     showForm: model.form != null,
     showRerun,
-    rerunDisabled: model.rerunPending || submitting,
+    rerunDisabled: roomReadBusy || submitting,
+    showPerspectiveReread: showRerun,
+    perspectiveRereadDisabled: roomReadBusy || submitting,
+    perspectiveRereadBusy: model.perspectiveRereadPending,
+    perspectiveRereadLabel: model.perspectiveRereadPending
+      ? AFC_QA_TESTER_COPY.rereadPending
+      : AFC_QA_TESTER_COPY.rereadButton,
     submitting,
     canSubmit: Boolean(model.form && selectedCodes.length > 0 && !submitting),
     successMessage: model.successMessage,
@@ -713,7 +775,7 @@ export function reduceAfcQaTesterReport(
       };
     }
     case "rerun_requested": {
-      if (model.rerunPending) {
+      if (model.rerunPending || model.perspectiveRereadPending) {
         return { state: model, effect: NONE };
       }
       const generationId = reportableGenerationId(model.projection);
@@ -797,6 +859,90 @@ export function reduceAfcQaTesterReport(
           ...model,
           rerunPending: false,
           rerunBoundGenerationId: null,
+        },
+        effect: NONE,
+      };
+    }
+    case "perspective_reread_requested": {
+      if (model.rerunPending || model.perspectiveRereadPending) {
+        return { state: model, effect: NONE };
+      }
+      const generationId = reportableGenerationId(model.projection);
+      if (
+        !model.roomId ||
+        !generationId ||
+        !canShowAfcQaReadyRerun({
+          projection: model.projection,
+          preparePhase: event.preparePhase,
+          prepareGenerationId: event.prepareGenerationId,
+        })
+      ) {
+        return { state: model, effect: NONE };
+      }
+      return {
+        state: {
+          ...model,
+          perspectiveRereadPending: true,
+          perspectiveRereadBoundGenerationId: generationId,
+          noticeMessage: null,
+          successMessage: null,
+        },
+        effect: {
+          type: "post_perspective_reread",
+          url: AFC_QA_PERSPECTIVE_REREAD_PATH,
+          body: buildAfcQaPerspectiveRereadBody({
+            roomId: model.roomId,
+            generationId,
+          }),
+        },
+      };
+    }
+    case "perspective_reread_succeeded": {
+      return {
+        state: {
+          ...model,
+          perspectiveRereadPending: false,
+          perspectiveRereadBoundGenerationId: null,
+          noticeMessage: null,
+          successMessage: AFC_QA_TESTER_COPY.rereadSuccess,
+        },
+        effect: { type: "refresh_qa" },
+      };
+    }
+    case "perspective_reread_http_error": {
+      if (event.status === 401) {
+        return {
+          state: {
+            ...model,
+            perspectiveRereadPending: false,
+            perspectiveRereadBoundGenerationId: null,
+            noticeMessage: AFC_QA_TESTER_COPY.sessionExpired,
+          },
+          effect: { type: "unauthorized" },
+        };
+      }
+      return {
+        state: {
+          ...model,
+          perspectiveRereadPending: false,
+          perspectiveRereadBoundGenerationId: null,
+          noticeMessage: afcQaPerspectiveRereadErrorMessage(event.status),
+        },
+        effect:
+          event.status === 400 || event.status === 404 || event.status === 422
+            ? { type: "refresh_qa" }
+            : NONE,
+      };
+    }
+    case "perspective_reread_aborted": {
+      if (!model.perspectiveRereadPending) {
+        return { state: model, effect: NONE };
+      }
+      return {
+        state: {
+          ...model,
+          perspectiveRereadPending: false,
+          perspectiveRereadBoundGenerationId: null,
         },
         effect: NONE,
       };

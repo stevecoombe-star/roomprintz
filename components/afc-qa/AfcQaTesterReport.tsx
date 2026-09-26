@@ -47,6 +47,13 @@ type AfcQaTesterReportProps = Readonly<{
     failureReason?: string | null;
   }) => void;
   onRerunReverted?: () => void;
+  onPerspectiveRereadStart?: () => boolean;
+  onPerspectiveRereadSettled?: (input: {
+    ok: boolean;
+    payload?: unknown;
+    failureReason?: string | null;
+  }) => void;
+  onPerspectiveRereadReverted?: () => void;
 }>;
 
 export type AfcQaTesterReportViewProps = Readonly<{
@@ -59,6 +66,7 @@ export type AfcQaTesterReportViewProps = Readonly<{
   onNotesChange: (notes: string) => void;
   onSubmit: () => void;
   onRerun: () => void;
+  onPerspectiveReread: () => void;
 }>;
 
 function isSelected(
@@ -78,6 +86,7 @@ export function AfcQaTesterReportView({
   onNotesChange,
   onSubmit,
   onRerun,
+  onPerspectiveReread,
 }: AfcQaTesterReportViewProps) {
   const titleId = useId();
   const promptTitleId = useId();
@@ -123,6 +132,7 @@ export function AfcQaTesterReportView({
   if (
     !view.showManualReport &&
     !view.showRerun &&
+    !view.showPerspectiveReread &&
     !view.showAutomaticPrompt &&
     !view.showForm &&
     !view.successMessage &&
@@ -141,6 +151,20 @@ export function AfcQaTesterReportView({
           onClick={onOpenManual}
         >
           {AFC_QA_TESTER_COPY.manualButton}
+        </button>
+      ) : null}
+
+      {view.showPerspectiveReread ? (
+        <button
+          type="button"
+          data-afc-qa-perspective-reread="true"
+          className={`rounded-md border border-transparent px-2 py-1 text-xs text-neutral-400 transition hover:border-neutral-800 hover:bg-neutral-900 hover:text-neutral-200 disabled:opacity-50 ${FOCUS}`}
+          disabled={view.perspectiveRereadDisabled}
+          aria-busy={view.perspectiveRereadBusy}
+          title={AFC_QA_TESTER_COPY.rereadTitle}
+          onClick={onPerspectiveReread}
+        >
+          {view.perspectiveRereadLabel}
         </button>
       ) : null}
 
@@ -322,6 +346,9 @@ export function AfcQaTesterReport({
   onRerunStart,
   onRerunSettled,
   onRerunReverted,
+  onPerspectiveRereadStart,
+  onPerspectiveRereadSettled,
+  onPerspectiveRereadReverted,
 }: AfcQaTesterReportProps) {
   const [reloadKey, setReloadKey] = useState(0);
   const previousPhaseRef = useRef<string | null>(null);
@@ -333,6 +360,7 @@ export function AfcQaTesterReport({
   );
   const submitInFlightRef = useRef(false);
   const rerunInFlightRef = useRef(false);
+  const perspectiveRereadInFlightRef = useRef(false);
   const roomIdRef = useRef(roomId);
   roomIdRef.current = roomId;
   const projection = useAfcQaState(roomId, { reloadKey });
@@ -473,7 +501,7 @@ export function AfcQaTesterReport({
   }, [applyEffect, dispatch]);
 
   const onRerun = useCallback(() => {
-    if (rerunInFlightRef.current) return;
+    if (rerunInFlightRef.current || perspectiveRereadInFlightRef.current) return;
     rerunInFlightRef.current = true;
     const effect = dispatch({
       type: "rerun_requested",
@@ -569,6 +597,113 @@ export function AfcQaTesterReport({
     preparePhase,
   ]);
 
+  const onPerspectiveReread = useCallback(() => {
+    if (rerunInFlightRef.current || perspectiveRereadInFlightRef.current) return;
+    perspectiveRereadInFlightRef.current = true;
+    const effect = dispatch({
+      type: "perspective_reread_requested",
+      preparePhase,
+      prepareGenerationId,
+    });
+    if (effect.type !== "post_perspective_reread") {
+      perspectiveRereadInFlightRef.current = false;
+      applyEffect(effect);
+      return;
+    }
+    if (onPerspectiveRereadStart && !onPerspectiveRereadStart()) {
+      applyEffect(dispatch({ type: "perspective_reread_aborted" }));
+      perspectiveRereadInFlightRef.current = false;
+      return;
+    }
+    const requestedRoomId = effect.body.roomId;
+    void (async () => {
+      const revertPrepare = () => onPerspectiveRereadReverted?.();
+      try {
+        const token = await getSupabaseBrowserAccessToken();
+        if (!token) {
+          revertPrepare();
+          applyEffect(
+            dispatch({ type: "perspective_reread_http_error", status: 401 }),
+          );
+          return;
+        }
+        const response = await fetch(effect.url, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify(effect.body),
+          cache: "no-store",
+        });
+        if (roomIdRef.current !== requestedRoomId) {
+          revertPrepare();
+          return;
+        }
+        if (response.status === 401) {
+          revertPrepare();
+          applyEffect(
+            dispatch({ type: "perspective_reread_http_error", status: 401 }),
+          );
+          return;
+        }
+        if (!response.ok) {
+          if (response.status === 422) {
+            const payload = (await response.json().catch(() => null)) as
+              | { failureReason?: unknown }
+              | null;
+            onPerspectiveRereadSettled?.({
+              ok: false,
+              payload,
+              failureReason:
+                typeof payload?.failureReason === "string"
+                  ? payload.failureReason
+                  : null,
+            });
+          } else {
+            revertPrepare();
+          }
+          applyEffect(
+            dispatch({
+              type: "perspective_reread_http_error",
+              status: response.status,
+            }),
+          );
+          return;
+        }
+        const payload = (await response.json().catch(() => null)) as
+          | { status?: unknown }
+          | null;
+        if (payload?.status === "ready") {
+          onPerspectiveRereadSettled?.({ ok: true, payload });
+          applyEffect(dispatch({ type: "perspective_reread_succeeded" }));
+          return;
+        }
+        revertPrepare();
+        applyEffect(
+          dispatch({ type: "perspective_reread_http_error", status: 500 }),
+        );
+      } catch {
+        if (roomIdRef.current === requestedRoomId) {
+          revertPrepare();
+          applyEffect(
+            dispatch({ type: "perspective_reread_http_error", status: 500 }),
+          );
+        }
+      } finally {
+        perspectiveRereadInFlightRef.current = false;
+      }
+    })();
+  }, [
+    applyEffect,
+    dispatch,
+    onPerspectiveRereadReverted,
+    onPerspectiveRereadSettled,
+    onPerspectiveRereadStart,
+    prepareGenerationId,
+    preparePhase,
+  ]);
+
   const view = deriveAfcQaTesterReportView(model, {
     preparePhase,
     prepareGenerationId,
@@ -584,6 +719,7 @@ export function AfcQaTesterReport({
       onNotesChange={onNotesChange}
       onSubmit={onSubmit}
       onRerun={onRerun}
+      onPerspectiveReread={onPerspectiveReread}
     />
   );
 }
