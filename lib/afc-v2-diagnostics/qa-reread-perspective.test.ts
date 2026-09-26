@@ -212,8 +212,8 @@ test("QA-enabled ready room shows both controls as separate actions", () => {
   const view = deriveAfcQaTesterReportView(readyModel(), READY_CONTEXT);
   assert.equal(view.showPerspectiveReread, true);
   assert.equal(view.showRerun, true);
-  assert.equal(view.perspectiveRereadLabel, "Re-read Room Perspective");
-  assert.equal(AFC_QA_TESTER_COPY.rerunButton, "Re-run room read");
+  assert.equal(view.perspectiveRereadLabel, "Re-read Perspective");
+  assert.equal(AFC_QA_TESTER_COPY.rerunButton, "Re-run Room Read");
   assert.notEqual(view.perspectiveRereadLabel, AFC_QA_TESTER_COPY.rerunButton);
 
   const hidden = deriveAfcQaTesterReportView(readyModel(), {

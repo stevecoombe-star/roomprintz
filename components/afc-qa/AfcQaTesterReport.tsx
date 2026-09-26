@@ -148,6 +148,7 @@ export function AfcQaTesterReportView({
           type="button"
           data-afc-qa-manual-entry="true"
           className={`rounded-md border border-transparent px-2 py-1 text-xs text-neutral-400 transition hover:border-neutral-800 hover:bg-neutral-900 hover:text-neutral-200 ${FOCUS}`}
+          aria-label={AFC_QA_TESTER_COPY.manualButtonAccessibleName}
           onClick={onOpenManual}
         >
           {AFC_QA_TESTER_COPY.manualButton}
@@ -161,6 +162,11 @@ export function AfcQaTesterReportView({
           className={`rounded-md border border-transparent px-2 py-1 text-xs text-neutral-400 transition hover:border-neutral-800 hover:bg-neutral-900 hover:text-neutral-200 disabled:opacity-50 ${FOCUS}`}
           disabled={view.perspectiveRereadDisabled}
           aria-busy={view.perspectiveRereadBusy}
+          aria-label={
+            view.perspectiveRereadBusy
+              ? undefined
+              : AFC_QA_TESTER_COPY.rereadButtonAccessibleName
+          }
           title={AFC_QA_TESTER_COPY.rereadTitle}
           onClick={onPerspectiveReread}
         >
@@ -175,6 +181,7 @@ export function AfcQaTesterReportView({
           className={`rounded-md border border-transparent px-2 py-1 text-xs text-neutral-400 transition hover:border-neutral-800 hover:bg-neutral-900 hover:text-neutral-200 disabled:opacity-50 ${FOCUS}`}
           disabled={view.rerunDisabled}
           aria-busy={view.rerunDisabled}
+          aria-label={AFC_QA_TESTER_COPY.rerunButtonAccessibleName}
           onClick={onRerun}
         >
           {AFC_QA_TESTER_COPY.rerunButton}

@@ -43,7 +43,8 @@ export const AFC_QA_TESTER_ISSUE_OPTIONS = [
 }>;
 
 export const AFC_QA_TESTER_COPY = {
-  manualButton: "Report an issue",
+  manualButton: "Report Issue",
+  manualButtonAccessibleName: "Report an issue",
   promptTitle: "Still not looking right?",
   promptBody: "Help us improve room reading by telling us what looks off.",
   promptReport: "Report an issue",
@@ -57,12 +58,14 @@ export const AFC_QA_TESTER_COPY = {
   error404: "This room read is no longer available to report.",
   error500: "We couldn’t submit your feedback. Please try again.",
   sessionExpired: "Your session expired. Sign in again.",
-  rerunButton: "Re-run room read",
+  rerunButton: "Re-run Room Read",
+  rerunButtonAccessibleName: "Re-run room read",
   rerunError400:
     "Couldn’t re-run the room read. Please refresh and try again.",
   rerunError404: "This room read is no longer available to re-run.",
   rerunError500: "We couldn’t re-run the room read. Please try again.",
-  rereadButton: "Re-read Room Perspective",
+  rereadButton: "Re-read Perspective",
+  rereadButtonAccessibleName: "Re-read Room Perspective",
   rereadPending: "Re-reading Room Perspective…",
   rereadTitle:
     "Re-read the room perspective if the 3D view doesn’t line up well with the photo.",
