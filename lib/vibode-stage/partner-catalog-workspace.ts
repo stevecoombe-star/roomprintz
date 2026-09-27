@@ -196,3 +196,7 @@ export function partnerCatalogEditorPath(
   const path = `/partner/catalog/drafts/${encodeURIComponent(draftId)}`;
   return intent === "add-product" ? `${path}?intent=add-product` : path;
 }
+
+export function partnerProductEditorPath(productId: string): string {
+  return `/partner/catalog/products/${encodeURIComponent(productId)}`;
+}

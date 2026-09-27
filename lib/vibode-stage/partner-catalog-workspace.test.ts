@@ -233,6 +233,10 @@ function markup(props: Parameters<typeof PartnerCatalogWorkspace>[0]): string {
   return renderToStaticMarkup(createElement(PartnerCatalogWorkspace, props));
 }
 
+function withoutProductEditorHrefs(html: string): string {
+  return html.replace(/href="\/partner\/catalog\/products\/[^"]*"/g, "");
+}
+
 test("A catalog rows keep merchandise order, price, collections, and variant summary", () => {
   const loaded = rows();
   assert.deepEqual(loaded.map((item) => item.name), [
@@ -329,7 +333,8 @@ test("E a product whose referenced assets are ready is labeled Ready", () => {
   assert.match(html, /\$459/);
   assert.match(html, /Living Room/);
   assert.match(html, /https:\/\/cdn\.test\/coffee\.jpg/);
-  assert.doesNotMatch(html, /prod-coffee|var-coffee|asset-coffee|col-living|partner-demo/);
+  assert.match(html, /href="\/partner\/catalog\/products\/prod-coffee"/);
+  assert.doesNotMatch(withoutProductEditorHrefs(html), /prod-coffee|var-coffee|asset-coffee|col-living|partner-demo/);
 });
 
 test("F a product without a referenced asset is labeled No model", () => {
@@ -347,7 +352,8 @@ test("F a product without a referenced asset is labeled No model", () => {
   assert.match(html, /No model/);
   assert.match(html, /No image/);
   assert.match(html, /Price on request/);
-  assert.doesNotMatch(html, /col-missing|prod-side|var-side/);
+  assert.match(html, /href="\/partner\/catalog\/products\/prod-side"/);
+  assert.doesNotMatch(withoutProductEditorHrefs(html), /col-missing|prod-side|var-side/);
 });
 
 test("G unresolved or unready assets need attention, and mixed variants say how many are ready", () => {
@@ -384,7 +390,7 @@ test("G unresolved or unready assets need attention, and mixed variants say how 
   });
   assert.match(html, /1 of 3 ready/);
   assert.match(html, /Needs attention/);
-  assert.doesNotMatch(html, /asset-missing|asset-ottoman|prod-ottoman/);
+  assert.doesNotMatch(withoutProductEditorHrefs(html), /asset-missing|asset-ottoman|prod-ottoman/);
 });
 
 test("H an open draft with changes is unpublished and continues into the existing editor", () => {

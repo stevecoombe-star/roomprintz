@@ -5,6 +5,7 @@ import { useMemo, useState } from "react";
 import {
   filterPartnerCatalogRows,
   partnerCatalogEditorPath,
+  partnerProductEditorPath,
   type PartnerCatalogEditorIntent,
   type PartnerCatalogProductRow,
   type PartnerCatalogReadinessFilter,
@@ -288,7 +289,7 @@ function CatalogProductRow(props: Readonly<{ row: PartnerCatalogProductRow }>) {
       ? "text-amber-200"
       : "text-slate-400";
   return (
-    <article className="flex flex-col gap-4 rounded-xl border border-slate-800 bg-slate-900/40 p-4 sm:flex-row">
+    <article className="relative flex flex-col gap-4 rounded-xl border border-slate-800 bg-slate-900/40 p-4 sm:flex-row">
       <div className="h-28 w-full shrink-0 overflow-hidden rounded-lg bg-slate-800 sm:h-24 sm:w-24">
         {image ? (
           // eslint-disable-next-line @next/next/no-img-element -- partner catalog images are durable remote or public URLs
@@ -299,7 +300,14 @@ function CatalogProductRow(props: Readonly<{ row: PartnerCatalogProductRow }>) {
       </div>
       <div className="min-w-0 flex-1">
         <div className="flex flex-wrap items-start justify-between gap-x-4 gap-y-1">
-          <h2 className="text-base font-medium text-slate-50">{row.name}</h2>
+          <h2 className="text-base font-medium text-slate-50">
+            <a
+              href={partnerProductEditorPath(row.productKey)}
+              className={`rounded-sm after:absolute after:inset-0 hover:underline ${FOCUS}`}
+            >
+              {row.name}
+            </a>
+          </h2>
           <p className="text-sm text-slate-200">{row.priceLabel || "Price on request"}</p>
         </div>
         {row.variantSummary ? (
