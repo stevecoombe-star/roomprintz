@@ -518,6 +518,7 @@ export function presentPartnerVariantModel(input: Readonly<{
   assets: readonly Pick<StageAsset, "assetId" | "status">[];
   options: readonly PartnerCommercialAssetOption[];
   published: boolean;
+  uploadedFileName?: string | null;
 }>): PartnerVariantModelPresentation {
   const assetId = input.assetId?.trim() || null;
   if (!assetId) {
@@ -530,8 +531,9 @@ export function presentPartnerVariantModel(input: Readonly<{
   }
   const option = input.options.find((item) => item.assetId === assetId) ?? null;
   const asset = input.assets.find((item) => item.assetId === assetId) ?? null;
-  const ready = option != null || asset?.status === "ready";
-  const filename = option?.originalFileName?.trim() || null;
+  const uploadedFileName = input.uploadedFileName?.trim() || null;
+  const ready = option != null || asset?.status === "ready" || uploadedFileName != null;
+  const filename = option?.originalFileName?.trim() || uploadedFileName;
   const context = option ? partnerFacingAssetContext(option) : null;
   return {
     stateLabel: ready ? "Ready" : "Needs attention",

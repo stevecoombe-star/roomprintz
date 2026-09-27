@@ -25,29 +25,35 @@ export function PartnerModelBlock(props: Readonly<{
 }
 
 export function PartnerModelSelect(props: Readonly<{
+  label?: string;
+  placeholder?: string;
   options: readonly Readonly<{ assetId: string; label: string }>[];
   value: string;
   disabled: boolean;
   invalid: boolean;
   onChange: (assetId: string) => void;
 }>) {
-  const known = props.options.some((option) => option.assetId === props.value);
+  const knownIndex = props.options.findIndex((option) => option.assetId === props.value);
+  const known = knownIndex >= 0;
   return (
     <label className="block text-xs text-slate-400">
-      3D Model
+      {props.label ?? "3D Model"}
       <select
         className={FIELD}
-        value={known ? props.value : ""}
+        value={known ? String(knownIndex) : ""}
         disabled={props.disabled || props.options.length === 0}
         onChange={(event) => {
-          const next = event.target.value;
-          if (!next || next === props.value) return;
-          props.onChange(next);
+          if (event.target.value === "") return;
+          const index = Number(event.target.value);
+          if (!Number.isInteger(index) || index < 0) return;
+          const next = props.options[index];
+          if (!next || next.assetId === props.value) return;
+          props.onChange(next.assetId);
         }}
       >
-        {!known ? <option value="">Choose a 3D model</option> : null}
-        {props.options.map((option) => (
-          <option key={option.assetId} value={option.assetId}>{option.label}</option>
+        {!known ? <option value="">{props.placeholder ?? "Choose a 3D model"}</option> : null}
+        {props.options.map((option, index) => (
+          <option key={`${option.label}:${index}`} value={String(index)}>{option.label}</option>
         ))}
       </select>
       {props.invalid ? (

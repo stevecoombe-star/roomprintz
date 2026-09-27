@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 
 import { formatPartnerIntakeMetresTriple, formatSha256Prefix } from "@/lib/vibode-stage/partner-asset-intake-display";
+import { putPartnerGlbToSignedUrl } from "@/lib/vibode-stage/partner-glb-signed-upload";
 
 type IntakeWarning = Readonly<{
   code: string;
@@ -87,32 +88,6 @@ function metresField(value: string): number | null {
   if (value.trim() === "") return null;
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : null;
-}
-
-async function uploadToSignedUrl(
-  signedUrl: string,
-  file: File,
-  onProgress: (percent: number) => void,
-): Promise<void> {
-  await new Promise<void>((resolve, reject) => {
-    const xhr = new XMLHttpRequest();
-    xhr.open("PUT", signedUrl);
-    xhr.setRequestHeader("Content-Type", "model/gltf-binary");
-    xhr.upload.onprogress = (event) => {
-      if (!event.lengthComputable || event.total <= 0) return;
-      onProgress(Math.max(0, Math.min(100, Math.round((event.loaded / event.total) * 100))));
-    };
-    xhr.onload = () => {
-      if (xhr.status >= 200 && xhr.status < 300) {
-        onProgress(100);
-        resolve();
-        return;
-      }
-      reject(new Error("Upload failed."));
-    };
-    xhr.onerror = () => reject(new Error("Upload failed."));
-    xhr.send(file);
-  });
 }
 
 function statusLabel(intake: IntakeDto): string {
@@ -235,7 +210,7 @@ export function PartnerAssetWorkspaceClient() {
         setProgress(null);
         return;
       }
-      await uploadToSignedUrl(createdBody.signedUrl, file, setProgress);
+      await putPartnerGlbToSignedUrl(createdBody.signedUrl, file, setProgress);
       setPhase("validating");
       const finalized = await fetch(
         `/api/vibode/partner/assets/intakes/${createdBody.intakeId}/finalize`,

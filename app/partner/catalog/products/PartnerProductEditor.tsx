@@ -5,6 +5,12 @@ import { useMemo, useRef, useState } from "react";
 import type { PartnerCommercialAssetOption } from "@/lib/vibode-stage/partner-commercial-assets";
 import { presentPartnerDraftPreview } from "@/lib/vibode-stage/partner-draft-preview-view";
 import {
+  PARTNER_MODEL_UPLOADED_NOT_ATTACHED,
+  PARTNER_MODEL_UPLOADED_RELOAD,
+  partnerInlineGlbModelStatusLabel,
+  partnerUploadedModelAssociationFailure,
+} from "@/lib/vibode-stage/partner-inline-glb-upload";
+import {
   PARTNER_DISCARD_CONFIRMATION,
   PARTNER_VARIANT_MODEL_REQUIRED,
   buildPartnerVariantCreate,
@@ -47,16 +53,28 @@ import {
   type PartnerEditorProductFields,
   type PartnerEditorVariantFields,
   type PartnerProductReview,
+  type PartnerVariantModelPresentation,
 } from "@/lib/vibode-stage/partner-product-editor";
 import type { PartnerCatalogSyncDocument } from "@/lib/vibode-stage/partner-catalog-sync";
 import type { StageAsset, StageCategory, StageCollection, StageProduct, StageVariant } from "@/lib/vibode-stage/types";
 
 import { safeHttpUrl, SECONDARY } from "./editor-ui";
-import { PartnerModelBlock, PartnerModelSelect } from "./PartnerModelSection";
+import { PartnerInlineModelPanel } from "./PartnerInlineModelPanel";
+import { PartnerModelBlock } from "./PartnerModelSection";
 import { PartnerProductFields } from "./PartnerProductFields";
 import { PartnerPublishSection } from "./PartnerPublishSection";
 import { PartnerSaveState, type PartnerSaveStateValue } from "./PartnerSaveState";
 import { PartnerVariantFields } from "./PartnerVariantFields";
+import { usePartnerInlineGlbUploads } from "./usePartnerInlineGlbUploads";
+
+const PARTNER_EDITOR_CONFLICT = "This product was updated elsewhere. Reload it before saving again.";
+const PARTNER_EDITOR_CONFLICT_ALERT = "This product was updated elsewhere. Reload it and try again.";
+
+type AddModelSelection = Readonly<{
+  assetId: string;
+  fileName: string | null;
+  source: "upload" | "existing";
+}>;
 
 function isEditorDocument(value: unknown): value is PartnerCatalogSyncDocument {
   if (!value || typeof value !== "object") return false;
@@ -142,6 +160,7 @@ export function PartnerProductEditor(props: Readonly<{
   const [busy, setBusy] = useState<null | "save" | "review" | "publish" | "discard">(null);
   const [error, setError] = useState<string | null>(null);
   const [conflict, setConflict] = useState(false);
+  const [conflictNote, setConflictNote] = useState(PARTNER_EDITOR_CONFLICT);
   const [review, setReview] = useState<PartnerProductReview | null>(null);
   const [reviewedRevision, setReviewedRevision] = useState<number | null>(null);
   const [adding, setAdding] = useState(false);
@@ -151,8 +170,10 @@ export function PartnerProductEditor(props: Readonly<{
   const [addSku, setAddSku] = useState("");
   const [addPrice, setAddPrice] = useState("");
   const [addUrl, setAddUrl] = useState("");
-  const [addAssetId, setAddAssetId] = useState(props.commercialAssetOptions[0]?.assetId ?? "");
+  const [addModel, setAddModel] = useState<AddModelSelection | null>(null);
   const [addError, setAddError] = useState<string | null>(null);
+  const uploads = usePartnerInlineGlbUploads();
+  const uploadLocks = useRef(new Set<string>());
   draftRef.current = draft;
 
   const draftDocument = draft?.document ?? null;
@@ -173,7 +194,7 @@ export function PartnerProductEditor(props: Readonly<{
     variants: productVariants,
     collections: props.collections,
     document: draftDocument,
-    assetLabel: (assetId) => partnerEditorAssetLabel(props.commercialAssetOptions, assetId),
+    assetLabel: labelForAsset,
   });
   const draftInclusions = describePartnerPublishInclusions({
     document: draftDocument,
@@ -185,13 +206,29 @@ export function PartnerProductEditor(props: Readonly<{
   const productChanges = reviewCurrent && review ? review.changes : savedChanges;
   const otherLines = reviewCurrent && review ? review.otherLines : draftInclusions;
   const issues = reviewCurrent && review ? review.issues : [];
-  const canPublish = Boolean(reviewCurrent && review?.publishable && !conflict && busy == null);
+  const uploadBusy = uploads.anyBusy();
+  const canPublish = Boolean(reviewCurrent && review?.publishable && !conflict && busy == null && !uploadBusy);
   const canReview = draft != null
     && busy == null
     && !conflict
+    && !uploadBusy
     && partnerEditorDocumentHasChanges(draftDocument);
-  const canDiscard = draft != null && busy == null && partnerEditorDocumentHasChanges(draftDocument);
-  const disabled = busy != null || conflict;
+  const canDiscard = draft != null && busy == null && !uploadBusy && partnerEditorDocumentHasChanges(draftDocument);
+  const disabled = busy != null || conflict || uploadBusy;
+
+  function labelForAsset(assetId: string): string {
+    const label = partnerEditorAssetLabel(props.commercialAssetOptions, assetId);
+    if (label !== "Ready") return label;
+    const fileName = uploads.fileName(assetId);
+    return fileName ? `${fileName} · Ready` : label;
+  }
+
+  function addModelView(): PartnerVariantModelPresentation {
+    if (!addModel) {
+      return { stateLabel: "No 3D model", filename: null, detail: null, note: null };
+    }
+    return { stateLabel: "Ready", filename: addModel.fileName, detail: null, note: null };
+  }
   const imageUrl = safeHttpUrl(productFields.imageUrl);
   const hasReadyModel = props.commercialAssetOptions.length > 0;
 
@@ -243,8 +280,11 @@ export function PartnerProductEditor(props: Readonly<{
     return next;
   }
 
-  async function persist(mutations: readonly PartnerEditorMutation[]): Promise<boolean> {
-    if (conflict || mutations.length === 0) return false;
+  async function persist(
+    mutations: readonly PartnerEditorMutation[],
+    options?: { attachingUploadedModel?: boolean },
+  ): Promise<{ ok: true } | { ok: false; conflict: boolean }> {
+    if (conflict || mutations.length === 0) return { ok: false, conflict };
     setBusy("save");
     setSaveState("saving");
     setError(null);
@@ -252,7 +292,7 @@ export function PartnerProductEditor(props: Readonly<{
       const current = await ensureDraft();
       if (!current) {
         setSaveState("failed");
-        return false;
+        return { ok: false, conflict: false };
       }
       const response = await fetch(`/api/vibode/partner/drafts/${current.draftId}`, {
         method: "PATCH",
@@ -261,24 +301,28 @@ export function PartnerProductEditor(props: Readonly<{
       });
       const body = await response.json() as { error?: string; draft?: unknown };
       if (response.status === 409) {
+        const uploaded = options?.attachingUploadedModel
+          ? partnerUploadedModelAssociationFailure({ uploadReady: true, httpStatus: 409 })
+          : null;
         setConflict(true);
+        setConflictNote(uploaded?.message ?? PARTNER_EDITOR_CONFLICT);
         setSaveState("failed");
-        setError("This product was updated elsewhere. Reload it and try again.");
-        return false;
+        setError(uploaded?.message ?? PARTNER_EDITOR_CONFLICT_ALERT);
+        return { ok: false, conflict: true };
       }
       const next = readReturnedDraft(body.draft);
       if (!response.ok || !next) {
         setSaveState("failed");
         setError(partnerEditorErrorMessage(body.error));
-        return false;
+        return { ok: false, conflict: false };
       }
       adoptDraft(next);
       setSaveState("saved");
-      return true;
+      return { ok: true };
     } catch {
       setSaveState("failed");
       setError("The change could not be saved.");
-      return false;
+      return { ok: false, conflict: false };
     } finally {
       setBusy(null);
     }
@@ -295,6 +339,66 @@ export function PartnerProductEditor(props: Readonly<{
       return;
     }
     void persist([commit.mutation]);
+  }
+
+  async function uploadNewModel(file: File) {
+    if (uploadLocks.current.has("create") || conflict) return;
+    uploadLocks.current.add("create");
+    try {
+      const outcome = await uploads.run("create", file);
+      if (outcome.status !== "ready" || !uploads.isCurrent("create", outcome.token)) return;
+      uploads.remember(outcome.assetId, outcome.fileName);
+      setAddModel({ assetId: outcome.assetId, fileName: outcome.fileName, source: "upload" });
+      uploads.settle("create");
+    } finally {
+      uploadLocks.current.delete("create");
+    }
+  }
+
+  async function uploadPendingModel(variantId: string, file: File) {
+    if (uploadLocks.current.has(variantId) || conflict) return;
+    uploadLocks.current.add(variantId);
+    try {
+      const outcome = await uploads.run(variantId, file);
+      if (outcome.status !== "ready" || !uploads.isCurrent(variantId, outcome.token)) return;
+      const pending = draftRef.current?.document.variants.create.find((item) => item.variantId === variantId);
+      if (!pending || pending.productId !== props.product.productId) return;
+      const commit = commitPendingVariantModel(variantId, outcome.assetId, pending.currentAssetId);
+      if (commit.state !== "mutation") {
+        uploads.settle(variantId);
+        return;
+      }
+      const saved = await persist([commit.mutation], { attachingUploadedModel: true });
+      if (!uploads.isCurrent(variantId, outcome.token)) return;
+      if (!saved.ok) {
+        const failure = saved.conflict
+          ? partnerUploadedModelAssociationFailure({ uploadReady: true, httpStatus: 409 })
+          : null;
+        uploads.showAttention(variantId, {
+          phase: "attention",
+          fileName: outcome.fileName,
+          message: failure?.message ?? PARTNER_MODEL_UPLOADED_NOT_ATTACHED,
+          technical: null,
+          reload: Boolean(failure?.reload),
+        });
+        return;
+      }
+      uploads.remember(outcome.assetId, outcome.fileName);
+      uploads.settle(variantId);
+    } finally {
+      uploadLocks.current.delete(variantId);
+    }
+  }
+
+  function chooseExistingModel(assetId: string) {
+    const option = props.commercialAssetOptions.find((item) => item.assetId === assetId);
+    if (!option) return;
+    uploads.settle("create");
+    setAddModel({
+      assetId: option.assetId,
+      fileName: option.originalFileName,
+      source: "existing",
+    });
   }
 
   function reviewContext(current: PartnerCatalogSyncDocument | null) {
@@ -315,7 +419,7 @@ export function PartnerProductEditor(props: Readonly<{
       variantLabels,
       collectionNames,
       variantProductIds: props.variantProductIds,
-      assetLabel: (assetId: string) => partnerEditorAssetLabel(props.commercialAssetOptions, assetId),
+      assetLabel: (assetId: string) => labelForAsset(assetId),
     };
   }
 
@@ -490,7 +594,7 @@ export function PartnerProductEditor(props: Readonly<{
         </div>
         {conflict ? (
           <div className="rounded-md border border-amber-700 bg-amber-950/40 p-3 text-sm text-amber-100">
-            This product was updated elsewhere. Reload it before saving again.
+            {conflictNote}
             <button
               type="button"
               className="ml-3 rounded-md border border-amber-600 px-2 py-0.5 text-xs"
@@ -542,12 +646,13 @@ export function PartnerProductEditor(props: Readonly<{
       <section aria-labelledby="product-variants-heading" className="space-y-4">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <h2 id="product-variants-heading" className="text-lg font-medium">Variants</h2>
-          {hasReadyModel && !adding ? (
+          {!adding ? (
             <button
               type="button"
               className={SECONDARY}
               disabled={disabled}
               onClick={() => {
+                uploads.invalidate("create");
                 setAdding(true);
                 setAddError(null);
                 setAddFinish("");
@@ -556,7 +661,7 @@ export function PartnerProductEditor(props: Readonly<{
                 setAddSku("");
                 setAddPrice("");
                 setAddUrl("");
-                setAddAssetId(props.commercialAssetOptions[0]?.assetId ?? "");
+                setAddModel(null);
               }}
             >
               Add variant
@@ -621,14 +726,16 @@ export function PartnerProductEditor(props: Readonly<{
               assets: props.assets,
               options: props.commercialAssetOptions,
               published: false,
+              uploadedFileName: uploads.fileName(create.currentAssetId),
             });
+            const uploadView = uploads.view(create.variantId);
             return (
               <PartnerVariantFields
                 key={create.variantId}
                 heading={partnerVariantHeading(fields.finish || null, fields.sku || null)}
                 statusLabel="Active"
                 isDefault={false}
-                modelState={model.stateLabel}
+                modelState={partnerInlineGlbModelStatusLabel(model.stateLabel, uploadView)}
                 finish={fields.finish}
                 sku={fields.sku}
                 price={fields.price}
@@ -656,12 +763,15 @@ export function PartnerProductEditor(props: Readonly<{
                   setVariantFields((current) => ({ ...current, [create.variantId]: { ...fields, productUrl: value } }));
                 }}
                 onProductUrlCommit={() => applyCommit(commitPendingVariantUrl(create.variantId, fields.productUrl, saved.productUrl))}
-                onRemove={() => void persist([removePendingVariantMutation(create.variantId)])}
+                onRemove={() => {
+                  uploads.invalidate(create.variantId);
+                  void persist([removePendingVariantMutation(create.variantId)]);
+                }}
               />
             );
           })}
         </div>
-        {!hasReadyModel ? (
+        {!hasReadyModel && !adding ? (
           <p className="text-sm text-slate-300">{PARTNER_VARIANT_MODEL_REQUIRED}</p>
         ) : null}
         {adding ? (
@@ -669,6 +779,7 @@ export function PartnerProductEditor(props: Readonly<{
             className="space-y-4 rounded-xl border border-slate-800 p-4"
             onSubmit={(event) => {
               event.preventDefault();
+              if (uploads.busy("create") || uploadLocks.current.has("create")) return;
               const commit = buildPartnerVariantCreate({
                 productId: props.product.productId,
                 currency: props.product.priceCurrency,
@@ -677,8 +788,8 @@ export function PartnerProductEditor(props: Readonly<{
                 sku: addSku,
                 price: addPrice,
                 productUrl: addUrl,
-                assetId: addAssetId,
-                hasReadyModel,
+                assetId: addModel?.assetId ?? "",
+                hasReadyModel: Boolean(addModel?.assetId),
               });
               if (commit.state === "invalid") {
                 if (variantNeedsShortName(addFinish)) setShowShortName(true);
@@ -688,10 +799,26 @@ export function PartnerProductEditor(props: Readonly<{
               }
               if (commit.state !== "mutation") return;
               void (async () => {
-                const ok = await persist([commit.mutation]);
-                if (!ok) return;
+                const saved = await persist([commit.mutation], {
+                  attachingUploadedModel: addModel?.source === "upload",
+                });
+                if (!saved.ok) {
+                  if (saved.conflict && addModel?.source === "upload") {
+                    uploads.showAttention("create", {
+                      phase: "attention",
+                      fileName: addModel.fileName,
+                      message: PARTNER_MODEL_UPLOADED_RELOAD,
+                      technical: null,
+                      reload: true,
+                    });
+                  }
+                  return;
+                }
+                if (addModel?.fileName) uploads.remember(addModel.assetId, addModel.fileName);
+                uploads.settle("create");
                 setAdding(false);
                 setAddError(null);
+                setAddModel(null);
                 setAddFinish("");
                 setAddShortName("");
                 setShowShortName(false);
@@ -753,18 +880,21 @@ export function PartnerProductEditor(props: Readonly<{
                 />
               </label>
               <div className="sm:col-span-2">
-                <PartnerModelSelect
+                <PartnerInlineModelPanel
+                  saved={addModelView()}
+                  upload={uploads.view("create")}
                   options={modelOptions}
-                  value={addAssetId}
-                  disabled={disabled}
+                  selectedAssetId={addModel?.assetId ?? ""}
+                  disabled={disabled || uploads.busy("create")}
                   invalid={false}
-                  onChange={setAddAssetId}
+                  onFile={(file) => void uploadNewModel(file)}
+                  onChoose={chooseExistingModel}
                 />
               </div>
             </div>
             {addError ? <p role="alert" className="text-sm text-rose-200">{addError}</p> : null}
             <div className="flex flex-wrap gap-2">
-              <button type="submit" className={SECONDARY} disabled={disabled || !hasReadyModel}>
+              <button type="submit" className={SECONDARY} disabled={disabled || !addModel || uploads.busy("create")}>
                 Add variant
               </button>
               <button
@@ -772,8 +902,10 @@ export function PartnerProductEditor(props: Readonly<{
                 className={SECONDARY}
                 disabled={busy != null}
                 onClick={() => {
+                  uploads.invalidate("create");
                   setAdding(false);
                   setAddError(null);
+                  setAddModel(null);
                 }}
               >
                 Cancel
@@ -806,19 +938,33 @@ export function PartnerProductEditor(props: Readonly<{
             })}
             {pendingVariants.map((create) => {
               const fields = variantFields[create.variantId] ?? readPendingVariantFields(create);
-              const known = props.commercialAssetOptions.some((option) => option.assetId === create.currentAssetId);
+              const presentation = presentPartnerVariantModel({
+                assetId: create.currentAssetId,
+                assets: props.assets,
+                options: props.commercialAssetOptions,
+                published: false,
+                uploadedFileName: uploads.fileName(create.currentAssetId),
+              });
+              const known = props.commercialAssetOptions.some((option) => option.assetId === create.currentAssetId)
+                || uploads.fileName(create.currentAssetId) != null;
               return (
                 <article key={create.variantId} className="rounded-xl border border-slate-800 p-4">
                   <h3 className="text-sm font-medium text-slate-50">
                     {partnerVariantHeading(fields.finish || null, fields.sku || null)}
                   </h3>
                   <div className="mt-3">
-                    <PartnerModelSelect
+                    <PartnerInlineModelPanel
+                      saved={presentation}
+                      upload={uploads.view(create.variantId)}
                       options={modelOptions}
-                      value={create.currentAssetId}
-                      disabled={disabled}
+                      selectedAssetId={create.currentAssetId}
+                      disabled={disabled || uploads.busy(create.variantId)}
                       invalid={!known}
-                      onChange={(next) => applyCommit(commitPendingVariantModel(create.variantId, next, create.currentAssetId))}
+                      onFile={(file) => void uploadPendingModel(create.variantId, file)}
+                      onChoose={(next) => {
+                        uploads.settle(create.variantId);
+                        applyCommit(commitPendingVariantModel(create.variantId, next, create.currentAssetId));
+                      }}
                     />
                   </div>
                 </article>
