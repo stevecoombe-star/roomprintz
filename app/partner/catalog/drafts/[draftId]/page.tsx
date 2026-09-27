@@ -16,7 +16,7 @@ export default async function PartnerDraftWorkspacePage({
   searchParams,
 }: {
   params: Promise<{ draftId: string }>;
-  searchParams: Promise<{ product?: string }>;
+  searchParams: Promise<{ product?: string; intent?: string }>;
 }) {
   const auth = await resolvePartnerPortalContext();
   if (!auth.ok) return null;
@@ -103,6 +103,7 @@ export default async function PartnerDraftWorkspacePage({
       categories={STAGE_BROWSE_CATEGORIES}
       catalogCurrency={partnerCatalogCurrencyForCreate(loaded.catalog, auth.context.partnerId)}
       focusProductId={query.product ?? null}
+      openProductCreate={query.intent === "add-product"}
     />
   );
 }

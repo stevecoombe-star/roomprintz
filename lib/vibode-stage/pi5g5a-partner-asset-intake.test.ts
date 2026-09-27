@@ -1284,7 +1284,7 @@ test("PI-5G5A does not register runtime Assets or mutate commercial/runtime surf
   assert.match(source("app/partner/assets/PartnerAssetWorkspaceClient.tsx"), /Width \(m\)/);
   assert.doesNotMatch(source("app/partner/assets/PartnerAssetWorkspaceClient.tsx"), /productId|variantId|collectionId|planVersion/);
   assert.doesNotMatch(source("app/partner/catalog/drafts/[draftId]/PartnerDraftWorkspaceClient.tsx"), /\/api\/vibode\/partner\/assets\/intakes/);
-  assert.match(source("app/partner/layout.tsx"), /href="\/partner\/assets"/);
+  assert.match(source("app/partner/PartnerPortalNav.tsx"), /href="\/partner\/assets"/);
   assert.match(source("package.json"), /test:afc-v2-pi5g5a/);
   for (const table of LIVE_CATALOG_TABLES) {
     assert.doesNotMatch(source("lib/vibode-stage/partner-asset-intake.server.ts"), new RegExp(`from\\("${table}"\\)`));

@@ -4,6 +4,7 @@ import type { ReactNode } from "react";
 import { SignOutButton } from "@/components/auth/SignOutButton";
 import { resolvePartnerPortalContext } from "@/lib/vibode-stage/partner-portal-auth.server";
 import type { PartnerPortalAuthResult } from "@/lib/vibode-stage/partner-portal-auth";
+import { PartnerPortalNav } from "./PartnerPortalNav";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -43,27 +44,18 @@ export default async function PartnerLayout({
   return (
     <div className="min-h-screen bg-slate-950 text-slate-50">
       <header className="border-b border-slate-800 px-6 py-4">
-        <div className="mx-auto flex max-w-5xl flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-          <div>
-            <p className="text-xs uppercase tracking-wide text-slate-500">Partner Portal</p>
-            <h1 className="text-lg font-semibold">{auth.context.partner.name}</h1>
-            <p className="text-xs text-slate-400">
-              {auth.context.partner.partnerId}
-              {" · "}
-              commercial status {auth.context.partner.status}
-              {" · "}
-              membership {auth.context.role}
-            </p>
+        <div className="mx-auto flex max-w-6xl flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+          <Link href="/partner" className="min-w-0 rounded-md focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-slate-300">
+            <p className="text-[11px] uppercase tracking-[0.16em] text-slate-500">Vibode</p>
+            <p className="truncate text-lg font-semibold tracking-tight">{auth.context.partner.name}</p>
+          </Link>
+          <div className="flex flex-wrap items-center gap-2">
+            <PartnerPortalNav />
+            <SignOutButton className="rounded-md border border-slate-700 px-3 py-1.5 text-xs text-slate-300" />
           </div>
-          <nav className="flex items-center gap-3 text-sm">
-            <Link className="text-slate-300 hover:text-white" href="/partner">Overview</Link>
-            <Link className="text-slate-300 hover:text-white" href="/partner/assets">Assets</Link>
-            <Link className="text-slate-300 hover:text-white" href="/partner/catalog">Catalog</Link>
-            <SignOutButton className="rounded-md border border-slate-700 px-3 py-1 text-xs text-slate-300" />
-          </nav>
         </div>
       </header>
-      <div className="mx-auto max-w-5xl px-6 py-6">{children}</div>
+      <div className="mx-auto max-w-6xl px-6 py-8">{children}</div>
     </div>
   );
 }

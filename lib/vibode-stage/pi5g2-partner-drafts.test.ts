@@ -76,7 +76,7 @@ const PI5G2_FILES = [
   "app/api/vibode/partner/drafts/[draftId]/route.ts",
   "app/api/vibode/partner/drafts/[draftId]/preview/route.ts",
   "app/partner/catalog/page.tsx",
-  "app/partner/catalog/PartnerCatalogDraftEntry.tsx",
+  "app/partner/catalog/PartnerCatalogWorkspace.tsx",
   "app/partner/catalog/drafts/[draftId]/page.tsx",
   "app/partner/catalog/drafts/[draftId]/PartnerDraftWorkspaceClient.tsx",
 ];
@@ -1025,8 +1025,9 @@ test("PI-5G2 source stays inside draft authoring and does not write live catalog
   assert.match(source("lib/vibode-stage/partner-catalog-preview.ts"), /planPartnerCatalogSync/);
   assert.match(source("lib/vibode-stage/partner-portal-drafts.server.ts"), /import "server-only"/);
   assert.match(source("lib/vibode-stage/partner-draft-mutations.ts"), /parsePartnerCatalogSyncJson/);
-  assert.match(source("app/partner/catalog/PartnerCatalogDraftEntry.tsx"), /Edit catalog/);
-  assert.match(source("app/partner/catalog/PartnerCatalogDraftEntry.tsx"), /Resume draft/);
+  assert.match(source("app/partner/catalog/PartnerCatalogWorkspace.tsx"), /Manage catalog/);
+  assert.match(source("app/partner/catalog/PartnerCatalogWorkspace.tsx"), /Continue editing/);
+  assert.match(source("app/partner/catalog/PartnerCatalogWorkspace.tsx"), /\/api\/vibode\/partner\/drafts/);
   assert.match(source("app/partner/catalog/drafts/[draftId]/page.tsx"), /PartnerDraftWorkspaceClient/);
   assert.doesNotMatch(joined, /dangerouslySetInnerHTML/);
   assert.doesNotMatch(joined, /importPartnerCatalogSync|importPartnerCatalogSnapshot|writeFileAtomic/);

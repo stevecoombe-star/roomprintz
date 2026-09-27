@@ -7,7 +7,7 @@ export default function PartnerAssetsPage() {
   return (
     <main className="space-y-6">
       <section className="space-y-2">
-        <h2 className="text-lg font-semibold">Partner assets</h2>
+        <h1 className="text-lg font-semibold">3D Models</h1>
         <p className="text-sm text-slate-300">
           Upload a furniture GLB and enter the actual product dimensions in metres.
           Vibode measures the GLB and checks that the model is correctly scaled.

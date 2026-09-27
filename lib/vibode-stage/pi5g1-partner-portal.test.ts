@@ -72,7 +72,7 @@ const PI5G1_FILES = [
   "app/partner/layout.tsx",
   "app/partner/page.tsx",
   "app/partner/catalog/page.tsx",
-  "app/partner/PartnerCatalogPreviewClient.tsx",
+  "app/partner/catalog/PartnerCatalogWorkspace.tsx",
   "proxy.ts",
 ];
 

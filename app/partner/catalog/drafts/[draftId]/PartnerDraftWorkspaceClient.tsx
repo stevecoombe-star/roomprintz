@@ -526,6 +526,7 @@ export function PartnerDraftWorkspaceClient(props: Readonly<{
   categories: readonly StageCategory[];
   catalogCurrency: string | null;
   focusProductId: string | null;
+  openProductCreate: boolean;
 }>) {
   const router = useRouter();
   const [draft, setDraft] = useState(props.draft);
@@ -558,7 +559,8 @@ export function PartnerDraftWorkspaceClient(props: Readonly<{
   const [newUrl, setNewUrl] = useState("");
   const [newAssetId, setNewAssetId] = useState(props.commercialAssetOptions[0]?.assetId ?? "");
   const [newSlug, setNewSlug] = useState("");
-  const [addingProduct, setAddingProduct] = useState(false);
+  const canCreateProduct = props.commercialAssetOptions.length > 0 && Boolean(props.catalogCurrency);
+  const [addingProduct, setAddingProduct] = useState(props.openProductCreate && canCreateProduct);
   const [newProductName, setNewProductName] = useState("");
   const [newProductSlug, setNewProductSlug] = useState("");
   const [newProductImage, setNewProductImage] = useState("");
@@ -657,6 +659,15 @@ export function PartnerDraftWorkspaceClient(props: Readonly<{
     if (!props.focusProductId) return;
     document.getElementById(`product-${props.focusProductId}`)?.scrollIntoView({ behavior: "smooth" });
   }, [props.focusProductId]);
+
+  useEffect(() => {
+    if (!props.openProductCreate) return;
+    const section = document.getElementById("partner-add-product");
+    section?.scrollIntoView({ behavior: "smooth" });
+    if (!canCreateProduct) return;
+    const field = section?.querySelector("input, select, textarea");
+    if (field instanceof HTMLElement) field.focus();
+  }, [canCreateProduct, props.openProductCreate]);
 
   async function save(mutations: DraftMutation[]): Promise<boolean> {
     if (conflict) return false;
@@ -913,7 +924,7 @@ export function PartnerDraftWorkspaceClient(props: Readonly<{
         ) : null}
       </section>
 
-      <section className="space-y-3 rounded-xl border border-slate-800 p-4">
+      <section id="partner-add-product" className="space-y-3 rounded-xl border border-slate-800 p-4">
         <div className="flex items-center justify-between gap-3">
           <h3 className="font-medium">Add Product</h3>
           {!addingProduct ? (
